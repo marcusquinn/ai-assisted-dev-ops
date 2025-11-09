@@ -1,0 +1,223 @@
+{
+  "servers": {
+    "coolify-main": {
+      "name": "Main Coolify Server",
+      "host": "coolify.example.com",
+      "ip": "192.168.1.100",
+      "port": 22,
+      "username": "root",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "coolify_url": "https://coolify.example.com",
+      "description": "Primary Coolify instance for production deployments"
+    },
+    "coolify-staging": {
+      "name": "Staging Coolify Server", 
+      "host": "staging-coolify.example.com",
+      "ip": "192.168.1.101",
+      "port": 22,
+      "username": "root",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "coolify_url": "https://staging-coolify.example.com",
+      "description": "Staging Coolify instance for testing deployments"
+    }
+  },
+  "api_configuration": {
+    "main_server": {
+      "api_token": "YOUR_COOLIFY_API_TOKEN_HERE",
+      "base_url": "https://coolify.example.com/api/v1",
+      "webhook_secret": "YOUR_WEBHOOK_SECRET_HERE"
+    },
+    "staging_server": {
+      "api_token": "YOUR_STAGING_COOLIFY_API_TOKEN_HERE", 
+      "base_url": "https://staging-coolify.example.com/api/v1",
+      "webhook_secret": "YOUR_STAGING_WEBHOOK_SECRET_HERE"
+    }
+  },
+  "applications": {
+    "main_server": [
+      {
+        "name": "frontend-app",
+        "type": "static",
+        "repository": "https://github.com/username/frontend-app.git",
+        "branch": "main",
+        "domain": "app.example.com",
+        "build_command": "npm run build",
+        "output_directory": "dist"
+      },
+      {
+        "name": "api-backend",
+        "type": "nodejs",
+        "repository": "https://github.com/username/api-backend.git", 
+        "branch": "main",
+        "domain": "api.example.com",
+        "port": 3000,
+        "environment_variables": {
+          "NODE_ENV": "production",
+          "DATABASE_URL": "postgresql://user:pass@db:5432/dbname"
+        }
+      }
+    ],
+    "staging_server": [
+      {
+        "name": "frontend-app-staging",
+        "type": "static",
+        "repository": "https://github.com/username/frontend-app.git",
+        "branch": "develop", 
+        "domain": "staging-app.example.com",
+        "build_command": "npm run build",
+        "output_directory": "dist"
+      }
+    ]
+  },
+  "databases": {
+    "main_server": [
+      {
+        "name": "postgres-main",
+        "type": "postgresql",
+        "version": "15",
+        "port": 5432,
+        "database": "production_db",
+        "username": "app_user",
+        "password_env": "POSTGRES_PASSWORD"
+      },
+      {
+        "name": "redis-cache",
+        "type": "redis", 
+        "version": "7",
+        "port": 6379,
+        "password_env": "REDIS_PASSWORD"
+      }
+    ]
+  },
+  "services": {
+    "monitoring": [
+      {
+        "name": "uptime-kuma",
+        "type": "docker",
+        "image": "louislam/uptime-kuma:latest",
+        "port": 3001,
+        "domain": "status.example.com",
+        "volumes": ["/opt/uptime-kuma:/app/data"]
+      }
+    ],
+    "utilities": [
+      {
+        "name": "plausible-analytics",
+        "type": "docker-compose",
+        "repository": "https://github.com/plausible/hosting.git",
+        "domain": "analytics.example.com"
+      }
+    ]
+  },
+  "backup_configuration": {
+    "enabled": true,
+    "schedule": "0 2 * * *",
+    "retention_days": 30,
+    "destinations": [
+      {
+        "type": "s3",
+        "bucket": "coolify-backups",
+        "region": "us-east-1",
+        "access_key": "YOUR_S3_ACCESS_KEY",
+        "secret_key": "YOUR_S3_SECRET_KEY"
+      }
+    ]
+  },
+  "security_settings": {
+    "ssh_key_management": {
+      "key_type": "ed25519",
+      "key_location": "~/.ssh/id_ed25519",
+      "backup_keys": ["~/.ssh/id_ed25519_backup"]
+    },
+    "ssl_certificates": {
+      "provider": "letsencrypt",
+      "email": "admin@example.com",
+      "auto_renewal": true
+    },
+    "firewall_rules": [
+      {"port": 22, "protocol": "tcp", "source": "your-ip-address/32"},
+      {"port": 80, "protocol": "tcp", "source": "0.0.0.0/0"},
+      {"port": 443, "protocol": "tcp", "source": "0.0.0.0/0"}
+    ]
+  },
+  "deployment_workflows": {
+    "production": {
+      "auto_deploy": false,
+      "require_approval": true,
+      "health_checks": true,
+      "rollback_enabled": true
+    },
+    "staging": {
+      "auto_deploy": true,
+      "require_approval": false,
+      "health_checks": true,
+      "rollback_enabled": true
+    }
+  },
+  "monitoring": {
+    "health_checks": [
+      {"url": "https://app.example.com/health", "interval": "5m"},
+      {"url": "https://api.example.com/health", "interval": "2m"}
+    ],
+    "alerts": {
+      "email": "alerts@example.com",
+      "slack_webhook": "YOUR_SLACK_WEBHOOK_URL",
+      "discord_webhook": "YOUR_DISCORD_WEBHOOK_URL"
+    }
+  },
+  "setup_instructions": {
+    "step_1": "Install Coolify on your server: curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash",
+    "step_2": "Access Coolify web interface at https://your-server-ip:8000",
+    "step_3": "Complete initial setup and create admin account",
+    "step_4": "Generate API token in Settings > API Tokens",
+    "step_5": "Configure SSH keys for Git repository access",
+    "step_6": "Set up your first application deployment",
+    "step_7": "Configure domain names and SSL certificates"
+  },
+  "best_practices": {
+    "server_setup": [
+      "Use dedicated server or VPS with at least 2GB RAM",
+      "Enable automatic security updates",
+      "Configure proper firewall rules",
+      "Set up regular backups",
+      "Monitor disk space and resource usage"
+    ],
+    "application_deployment": [
+      "Use environment variables for configuration",
+      "Implement proper health checks",
+      "Set up staging environments for testing",
+      "Use Git branches for different environments",
+      "Configure proper logging and monitoring"
+    ],
+    "security": [
+      "Use SSH keys instead of passwords",
+      "Enable automatic SSL certificate renewal",
+      "Regularly update Coolify and applications",
+      "Monitor access logs for suspicious activity",
+      "Use strong passwords for database connections"
+    ]
+  },
+  "troubleshooting": {
+    "common_issues": [
+      {
+        "issue": "Deployment fails with build errors",
+        "solution": "Check build logs in Coolify dashboard, verify build commands and dependencies"
+      },
+      {
+        "issue": "SSL certificate not working",
+        "solution": "Verify domain DNS points to server, check firewall allows port 80/443"
+      },
+      {
+        "issue": "Application not accessible",
+        "solution": "Check application logs, verify port configuration and health checks"
+      }
+    ]
+  },
+  "notes": {
+    "coolify_features": "Self-hosted alternative to Vercel/Netlify with Docker support",
+    "supported_languages": "Node.js, Python, PHP, Go, Rust, static sites, Docker containers",
+    "database_support": "PostgreSQL, MySQL, MongoDB, Redis, and more",
+    "git_integration": "GitHub, GitLab, Bitbucket, and self-hosted Git repositories",
+    "documentation": "https://coolify.io/docs"
+  }
+}

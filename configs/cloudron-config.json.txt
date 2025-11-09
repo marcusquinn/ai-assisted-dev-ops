@@ -1,0 +1,27 @@
+{
+  "servers": {
+    "cloudron01": {
+      "domain": "cloudron01.example.com",
+      "ip": "192.168.1.200",
+      "ssh_port": 22,
+      "api_token": "YOUR_CLOUDRON_API_TOKEN_HERE",
+      "description": "Main Cloudron server"
+    },
+    "cloudron-staging": {
+      "domain": "staging.cloudron.example.com",
+      "ip": "192.168.1.201",
+      "ssh_port": 22,
+      "api_token": "YOUR_STAGING_CLOUDRON_API_TOKEN_HERE",
+      "description": "Staging Cloudron server"
+    }
+  },
+  "cli_settings": {
+    "install_command": "npm install -g cloudron",
+    "docs_url": "https://cloudron.io/documentation/cli/"
+  },
+  "notes": {
+    "ssh_access": "Cloudron servers typically require 'root' user for SSH access",
+    "api_tokens": "Get API tokens from Cloudron admin panel under Settings > API",
+    "app_management": "Use 'apps' command to list applications, 'exec-app' to run commands in containers"
+  }
+}

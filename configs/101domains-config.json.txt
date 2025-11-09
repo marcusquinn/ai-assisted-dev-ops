@@ -1,0 +1,128 @@
+{
+  "accounts": {
+    "personal": {
+      "api_key": "YOUR_101DOMAINS_API_KEY_HERE",
+      "api_secret": "YOUR_101DOMAINS_API_SECRET_HERE",
+      "username": "your-101domains-username",
+      "email": "your-email@domain.com",
+      "description": "Personal domain account",
+      "domains": [
+        "yourdomain.com",
+        "anotherdomain.com"
+      ]
+    },
+    "business": {
+      "api_key": "YOUR_BUSINESS_101DOMAINS_API_KEY_HERE",
+      "api_secret": "YOUR_BUSINESS_101DOMAINS_API_SECRET_HERE",
+      "username": "business-101domains-username",
+      "email": "business@company.com",
+      "description": "Business domain account",
+      "domains": [
+        "company.com",
+        "businessdomain.com"
+      ]
+    },
+    "client-project": {
+      "api_key": "YOUR_CLIENT_101DOMAINS_API_KEY_HERE",
+      "api_secret": "YOUR_CLIENT_101DOMAINS_API_SECRET_HERE",
+      "username": "client-101domains-username",
+      "email": "your-email@domain.com",
+      "description": "Client project domains",
+      "domains": [
+        "clientdomain.com"
+      ]
+    }
+  },
+  "default_settings": {
+    "ttl": 3600,
+    "auto_renew": true,
+    "privacy_protection": true,
+    "domain_lock": true,
+    "whois_privacy": true
+  },
+  "monitoring": {
+    "expiration_warning_days": 30,
+    "dns_check_interval": 3600,
+    "ssl_check_enabled": true,
+    "whois_monitoring": true
+  },
+  "common_dns_records": {
+    "mx_records": [
+      {
+        "name": "@",
+        "type": "MX",
+        "content": "10 mail.yourdomain.com",
+        "ttl": 3600
+      }
+    ],
+    "email_records": [
+      {
+        "name": "mail",
+        "type": "A",
+        "content": "192.168.1.100",
+        "ttl": 3600
+      },
+      {
+        "name": "@",
+        "type": "TXT",
+        "content": "v=spf1 include:_spf.yourdomain.com ~all",
+        "ttl": 3600
+      }
+    ],
+    "verification_records": [
+      {
+        "name": "_dmarc",
+        "type": "TXT",
+        "content": "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain.com",
+        "ttl": 3600
+      }
+    ]
+  },
+  "nameserver_sets": {
+    "cloudflare": [
+      "ns1.cloudflare.com",
+      "ns2.cloudflare.com"
+    ],
+    "route53": [
+      "ns-1.awsdns-01.com",
+      "ns-2.awsdns-02.net",
+      "ns-3.awsdns-03.org",
+      "ns-4.awsdns-04.co.uk"
+    ],
+    "101domains_default": [
+      "ns1.101domain.com",
+      "ns2.101domain.com"
+    ]
+  },
+  "domain_categories": {
+    "production": [
+      "yourdomain.com",
+      "company.com"
+    ],
+    "staging": [
+      "staging.yourdomain.com",
+      "dev.company.com"
+    ],
+    "client": [
+      "clientdomain.com"
+    ]
+  },
+  "privacy_settings": {
+    "enable_by_default": true,
+    "contact_privacy": true,
+    "whois_privacy": true,
+    "admin_privacy": true
+  },
+  "transfer_settings": {
+    "auto_approve_transfers": false,
+    "transfer_lock_period": 60,
+    "auth_code_protection": true
+  },
+  "automation": {
+    "auto_ssl_verification": true,
+    "auto_dns_propagation_check": true,
+    "backup_dns_records": true,
+    "expiration_alerts": true,
+    "privacy_monitoring": true
+  }
+}

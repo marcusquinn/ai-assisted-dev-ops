@@ -1,0 +1,62 @@
+{
+  "mcpServers": {
+    "hostinger-api": {
+      "command": "mcp-hostinger",
+      "args": ["--transport", "sse", "--port", "8080"],
+      "env": {
+        "HOSTINGER_API_TOKEN": "YOUR_HOSTINGER_API_TOKEN_HERE"
+      },
+      "description": "Hostinger API MCP server for managing shared hosting"
+    },
+    "hetzner-main": {
+      "command": "mcp-hetzner", 
+      "args": ["--transport", "sse", "--port", "8081"],
+      "env": {
+        "HCLOUD_TOKEN": "YOUR_MAIN_HETZNER_API_TOKEN_HERE"
+      },
+      "description": "Hetzner Cloud MCP server for main project"
+    },
+    "hetzner-dev": {
+      "command": "mcp-hetzner",
+      "args": ["--transport", "sse", "--port", "8082"], 
+      "env": {
+        "HCLOUD_TOKEN": "YOUR_DEV_HETZNER_API_TOKEN_HERE"
+      },
+      "description": "Hetzner Cloud MCP server for development project"
+    },
+    "aws-main": {
+      "command": "mcp-aws",
+      "args": ["--transport", "sse", "--port", "8083"],
+      "env": {
+        "AWS_ACCESS_KEY_ID": "YOUR_AWS_ACCESS_KEY_HERE",
+        "AWS_SECRET_ACCESS_KEY": "YOUR_AWS_SECRET_KEY_HERE",
+        "AWS_DEFAULT_REGION": "us-east-1"
+      },
+      "description": "AWS MCP server for cloud infrastructure"
+    },
+    "digitalocean-main": {
+      "command": "mcp-digitalocean",
+      "args": ["--transport", "sse", "--port", "8084"],
+      "env": {
+        "DO_API_TOKEN": "YOUR_DIGITALOCEAN_API_TOKEN_HERE"
+      },
+      "description": "DigitalOcean MCP server for droplet management"
+    },
+    "localwp": {
+      "command": "mcp-local-wp",
+      "args": ["--transport", "sse", "--port", "8085"],
+      "env": {
+        "DEBUG": "false"
+      },
+      "description": "LocalWP MCP server for WordPress database access via Local by Flywheel"
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@context7/mcp-server@latest"],
+      "env": {
+        "DEBUG": "false"
+      },
+      "description": "Context7 MCP server for accessing latest documentation of development tools and frameworks"
+    }
+  }
+}

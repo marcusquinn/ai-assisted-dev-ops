@@ -1,0 +1,50 @@
+{
+  "servers": {
+    "web-server": {
+      "ip": "192.168.1.100",
+      "port": 22,
+      "username": "root",
+      "password_file": "~/.ssh/closte_web_password",
+      "description": "Main web server"
+    },
+    "app-server": {
+      "ip": "192.168.1.101", 
+      "port": 22,
+      "username": "root",
+      "password_file": "~/.ssh/closte_app_password",
+      "description": "Application server"
+    },
+    "db-server": {
+      "ip": "192.168.1.102",
+      "port": 22,
+      "username": "root",
+      "password_file": "~/.ssh/closte_db_password",
+      "description": "Database server"
+    }
+  },
+  "default_settings": {
+    "username": "root",
+    "port": 22,
+    "password_file": "~/.ssh/closte_password"
+  },
+  "api": {
+    "key": "YOUR_CLOSTE_API_KEY_HERE",
+    "base_url": "https://app.closte.com/api/v1",
+    "endpoints": {
+      "servers": "servers",
+      "server_details": "servers/{id}",
+      "server_actions": "servers/{id}/actions"
+    }
+  },
+  "notes": {
+    "authentication": "Closte.com requires password authentication - SSH keys are not supported",
+    "password_files": "Create password files with: echo 'your-password' > ~/.ssh/closte_password && chmod 600 ~/.ssh/closte_password",
+    "sshpass_required": "Install sshpass: brew install sshpass (macOS) or sudo apt-get install sshpass (Linux)",
+    "security": "Keep password files secure with 600 permissions and add to .gitignore",
+    "control_panel": "Get SSH passwords from Closte.com control panel for each server",
+    "api_access": "Get API key from Closte.com control panel > API section",
+    "api_features": "API supports server listing, details, and actions (start/stop/restart/reboot)",
+    "api_setup": "Check Closte.com documentation for correct API base URL and endpoints",
+    "api_testing": "Use 'api' command to test raw API calls and discover endpoints"
+  }
+}

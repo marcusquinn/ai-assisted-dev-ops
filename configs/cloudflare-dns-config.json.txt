@@ -1,0 +1,88 @@
+{
+  "provider": "cloudflare",
+  "description": "Cloudflare DNS with API token support (RECOMMENDED)",
+  "accounts": {
+    "personal": {
+      "api_token": "YOUR_PERSONAL_CLOUDFLARE_API_TOKEN_HERE",
+      "email": "your-email@domain.com",
+      "account_id": "your-account-id-here",
+      "zones": {
+        "example.com": "zone-id-here",
+        "blog.example.com": "zone-id-here"
+      }
+    },
+    "business": {
+      "api_token": "YOUR_BUSINESS_CLOUDFLARE_API_TOKEN_HERE", 
+      "email": "business@domain.com",
+      "account_id": "business-account-id-here",
+      "zones": {
+        "business.com": "zone-id-here",
+        "api.business.com": "zone-id-here"
+      }
+    },
+    "client": {
+      "api_token": "YOUR_CLIENT_CLOUDFLARE_API_TOKEN_HERE",
+      "email": "client@domain.com", 
+      "account_id": "client-account-id-here",
+      "zones": {
+        "client.com": "zone-id-here"
+      }
+    }
+  },
+  "security_best_practices": {
+    "use_api_tokens": "ALWAYS use API tokens instead of Global API keys",
+    "token_permissions": [
+      "Zone:Read - Read zone information",
+      "Zone:Edit - Modify zone settings (optional)", 
+      "DNS:Read - Read DNS records",
+      "DNS:Edit - Modify DNS records"
+    ],
+    "token_restrictions": [
+      "Limit to specific zones only",
+      "Set expiration dates (1 year max)",
+      "Use least privilege principle",
+      "Regular token rotation (every 6-12 months)"
+    ],
+    "never_use": [
+      "Global API Key - Too broad permissions",
+      "Origin CA Key - Only for SSL certificates",
+      "Shared tokens - Each service should have its own"
+    ]
+  },
+  "api_endpoints": {
+    "base_url": "https://api.cloudflare.com/client/v4",
+    "zones": "/zones",
+    "dns_records": "/zones/{zone_id}/dns_records",
+    "zone_settings": "/zones/{zone_id}/settings"
+  },
+  "common_record_types": {
+    "A": "IPv4 address",
+    "AAAA": "IPv6 address", 
+    "CNAME": "Canonical name (alias)",
+    "MX": "Mail exchange",
+    "TXT": "Text record",
+    "SRV": "Service record",
+    "NS": "Name server"
+  },
+  "setup_instructions": {
+    "step_1": "Log into Cloudflare Dashboard",
+    "step_2": "Go to My Profile → API Tokens",
+    "step_3": "Click 'Create Token' → Use 'Custom token'",
+    "step_4": "Set permissions: Zone:Read, DNS:Read, DNS:Edit",
+    "step_5": "Restrict to specific zones only",
+    "step_6": "Add IP address filtering (recommended)",
+    "step_7": "Set expiration date (1 year max)",
+    "step_8": "Copy token and update this config file"
+  },
+  "testing": {
+    "test_command": "curl -X GET \"https://api.cloudflare.com/client/v4/zones\" -H \"Authorization: Bearer YOUR_API_TOKEN\"",
+    "expected_response": "JSON with success: true and list of zones"
+  },
+  "notes": {
+    "multi_account": "This config supports multiple Cloudflare accounts",
+    "security": "Never use Global API keys - always use scoped API tokens",
+    "rotation": "Rotate API tokens every 6-12 months",
+    "monitoring": "Monitor API usage in Cloudflare dashboard",
+    "documentation": "See docs/CLOUDFLARE-SETUP.md for detailed setup guide"
+  }
+}

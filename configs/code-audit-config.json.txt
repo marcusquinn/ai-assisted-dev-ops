@@ -1,0 +1,182 @@
+{
+  "services": {
+    "coderabbit": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_CODERABBIT_API_TOKEN_HERE",
+          "base_url": "https://api.coderabbit.ai/v1",
+          "description": "Personal CodeRabbit account",
+          "organization": "your-github-username",
+          "repositories": [
+            "repo1",
+            "repo2"
+          ]
+        },
+        "company": {
+          "api_token": "YOUR_COMPANY_CODERABBIT_API_TOKEN_HERE",
+          "base_url": "https://api.coderabbit.ai/v1",
+          "description": "Company CodeRabbit account",
+          "organization": "your-company-github",
+          "repositories": [
+            "company-repo1",
+            "company-repo2"
+          ]
+        }
+      }
+    },
+    "codefactor": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_CODEFACTOR_API_TOKEN_HERE",
+          "base_url": "https://www.codefactor.io/api/v1",
+          "description": "Personal CodeFactor account",
+          "username": "your-github-username",
+          "repositories": [
+            "repo1",
+            "repo2"
+          ]
+        }
+      }
+    },
+    "codacy": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_CODACY_API_TOKEN_HERE",
+          "base_url": "https://app.codacy.com/api/v3",
+          "description": "Personal Codacy account",
+          "username": "your-github-username",
+          "repositories": [
+            "repo1",
+            "repo2"
+          ]
+        },
+        "organization": {
+          "api_token": "YOUR_ORG_CODACY_API_TOKEN_HERE",
+          "base_url": "https://app.codacy.com/api/v3",
+          "description": "Organization Codacy account",
+          "organization": "your-organization",
+          "repositories": [
+            "org-repo1",
+            "org-repo2"
+          ]
+        }
+      }
+    },
+    "sonarcloud": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_SONARCLOUD_API_TOKEN_HERE",
+          "base_url": "https://sonarcloud.io/api",
+          "description": "Personal SonarCloud account",
+          "organization": "your-sonarcloud-org",
+          "projects": [
+            "project-key-1",
+            "project-key-2"
+          ]
+        }
+      }
+    }
+  },
+  "default_settings": {
+    "scan_frequency": "daily",
+    "notification_threshold": "medium",
+    "auto_fix_enabled": false,
+    "report_format": "json",
+    "include_test_files": false,
+    "exclude_patterns": [
+      "node_modules/",
+      "vendor/",
+      "*.min.js",
+      "*.test.js",
+      "coverage/"
+    ]
+  },
+  "quality_gates": {
+    "code_coverage": {
+      "minimum": 80,
+      "target": 90,
+      "fail_build": true
+    },
+    "code_smells": {
+      "maximum": 10,
+      "severity": "major",
+      "fail_build": false
+    },
+    "security_hotspots": {
+      "maximum": 0,
+      "severity": "high",
+      "fail_build": true
+    },
+    "bugs": {
+      "maximum": 0,
+      "severity": "major",
+      "fail_build": true
+    },
+    "vulnerabilities": {
+      "maximum": 0,
+      "severity": "high",
+      "fail_build": true
+    },
+    "duplicated_lines": {
+      "maximum": 3.0,
+      "unit": "percentage",
+      "fail_build": false
+    }
+  },
+  "mcp_servers": {
+    "coderabbit": {
+      "enabled": true,
+      "port": 3003,
+      "host": "localhost"
+    },
+    "codacy": {
+      "enabled": true,
+      "port": 3004,
+      "host": "localhost"
+    },
+    "sonarcloud": {
+      "enabled": true,
+      "port": 3005,
+      "host": "localhost"
+    }
+  },
+  "reporting": {
+    "auto_generate": true,
+    "report_frequency": "weekly",
+    "report_format": ["json", "html", "pdf"],
+    "email_reports": true,
+    "email_recipients": [
+      "dev-team@yourdomain.com",
+      "qa-team@yourdomain.com"
+    ],
+    "slack_notifications": false,
+    "webhook_notifications": false
+  },
+  "integration": {
+    "github_integration": true,
+    "gitlab_integration": false,
+    "bitbucket_integration": false,
+    "jenkins_integration": true,
+    "ci_cd_integration": true,
+    "pull_request_comments": true,
+    "commit_status_checks": true
+  },
+  "security_scanning": {
+    "dependency_scanning": true,
+    "secret_scanning": true,
+    "license_scanning": true,
+    "container_scanning": false,
+    "infrastructure_scanning": false,
+    "sast_scanning": true,
+    "dast_scanning": false
+  },
+  "automation": {
+    "auto_fix_enabled": false,
+    "auto_merge_fixes": false,
+    "create_issues": true,
+    "assign_reviewers": true,
+    "schedule_scans": true,
+    "parallel_scanning": true,
+    "cache_results": true
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "instances": {
+    "production": {
+      "base_url": "https://mainwp.yourdomain.com",
+      "consumer_key": "YOUR_MAINWP_CONSUMER_KEY_HERE",
+      "consumer_secret": "YOUR_MAINWP_CONSUMER_SECRET_HERE",
+      "description": "Production MainWP instance",
+      "admin_email": "admin@yourdomain.com",
+      "version": "4.5.0",
+      "managed_sites_count": 25
+    },
+    "staging": {
+      "base_url": "https://staging-mainwp.yourdomain.com",
+      "consumer_key": "YOUR_STAGING_MAINWP_CONSUMER_KEY_HERE",
+      "consumer_secret": "YOUR_STAGING_MAINWP_CONSUMER_SECRET_HERE",
+      "description": "Staging MainWP instance",
+      "admin_email": "admin@yourdomain.com",
+      "version": "4.5.0",
+      "managed_sites_count": 5
+    },
+    "client-management": {
+      "base_url": "https://client-mainwp.yourdomain.com",
+      "consumer_key": "YOUR_CLIENT_MAINWP_CONSUMER_KEY_HERE",
+      "consumer_secret": "YOUR_CLIENT_MAINWP_CONSUMER_SECRET_HERE",
+      "description": "Client sites management instance",
+      "admin_email": "admin@yourdomain.com",
+      "version": "4.5.0",
+      "managed_sites_count": 50
+    }
+  },
+  "default_settings": {
+    "backup_retention_days": 30,
+    "update_check_frequency": "daily",
+    "security_scan_frequency": "weekly",
+    "uptime_check_interval": 300,
+    "auto_update_core": false,
+    "auto_update_plugins": false,
+    "auto_update_themes": false
+  },
+  "monitoring": {
+    "uptime_monitoring": true,
+    "performance_monitoring": true,
+    "security_monitoring": true,
+    "update_notifications": true,
+    "backup_notifications": true,
+    "ssl_monitoring": true
+  },
+  "backup_settings": {
+    "default_backup_type": "full",
+    "backup_schedule": "daily",
+    "backup_retention": 30,
+    "backup_locations": [
+      "local",
+      "amazon_s3",
+      "google_drive"
+    ],
+    "exclude_patterns": [
+      "*.log",
+      "cache/*",
+      "uploads/cache/*"
+    ]
+  },
+  "security_settings": {
+    "security_scan_enabled": true,
+    "malware_scan_enabled": true,
+    "vulnerability_scan_enabled": true,
+    "blacklist_monitoring": true,
+    "ssl_certificate_monitoring": true,
+    "login_attempt_monitoring": true
+  },
+  "update_settings": {
+    "core_update_policy": "manual",
+    "plugin_update_policy": "manual",
+    "theme_update_policy": "manual",
+    "test_updates_on_staging": true,
+    "rollback_enabled": true,
+    "maintenance_mode_during_updates": true
+  },
+  "notification_settings": {
+    "email_notifications": true,
+    "slack_notifications": false,
+    "webhook_notifications": false,
+    "notification_email": "notifications@yourdomain.com",
+    "critical_alerts_only": false
+  },
+  "site_categories": {
+    "production": {
+      "description": "Live production websites",
+      "update_policy": "manual",
+      "backup_frequency": "daily",
+      "monitoring_level": "high"
+    },
+    "staging": {
+      "description": "Staging and development sites",
+      "update_policy": "automatic",
+      "backup_frequency": "weekly",
+      "monitoring_level": "medium"
+    },
+    "client": {
+      "description": "Client websites",
+      "update_policy": "manual_with_approval",
+      "backup_frequency": "daily",
+      "monitoring_level": "high"
+    }
+  },
+  "automation": {
+    "auto_sync_frequency": "hourly",
+    "auto_cleanup_enabled": true,
+    "auto_optimization_enabled": false,
+    "scheduled_maintenance": true,
+    "bulk_operations_enabled": true
+  },
+  "api_settings": {
+    "rate_limit": 60,
+    "timeout": 30,
+    "retry_attempts": 3,
+    "debug_mode": false
+  }
+}

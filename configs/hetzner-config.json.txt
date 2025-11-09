@@ -1,0 +1,35 @@
+{
+  "accounts": {
+    "main": {
+      "api_token": "YOUR_MAIN_HETZNER_API_TOKEN_HERE",
+      "description": "Main production account",
+      "account": "your-email@domain.com"
+    },
+    "client-project": {
+      "api_token": "YOUR_CLIENT_PROJECT_HETZNER_API_TOKEN_HERE",
+      "description": "Client project account",
+      "account": "your-email@domain.com"
+    },
+    "storagebox": {
+      "api_token": "YOUR_STORAGEBOX_HETZNER_API_TOKEN_HERE",
+      "description": "Storage and backup account", 
+      "account": "your-email@domain.com"
+    },
+    "client-projects": {
+      "api_token": "YOUR_CLIENT_HETZNER_API_TOKEN_HERE",
+      "description": "Client-specific projects",
+      "account": "your-email@domain.com"
+    }
+  },
+  "mcp_integration": {
+    "enabled": true,
+    "base_port": 8081,
+    "notes": "MCP servers will use sequential ports starting from base_port"
+  },
+  "best_practices": {
+    "project_separation": "Use separate API tokens for different projects/clients",
+    "naming_convention": "Use descriptive account names (main, client-project, storagebox, etc.)",
+    "mcp_ports": "Sequential port allocation starting from 8081",
+    "security": "Store API tokens in separate config files, never in code"
+  }
+}

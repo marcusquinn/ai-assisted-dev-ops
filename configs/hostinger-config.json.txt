@@ -1,0 +1,54 @@
+{
+  "sites": {
+    "example.com": {
+      "server": "server-hostname-or-ip",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/example.com/public_html",
+      "description": "Main website"
+    },
+    "blog.example.com": {
+      "server": "server-hostname-or-ip",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/blog.example.com/public_html",
+      "description": "Company blog"
+    },
+    "shop.example.com": {
+      "server": "server-hostname-or-ip",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/shop.example.com/public_html",
+      "description": "Online store"
+    },
+    "api.example.com": {
+      "server": "server-hostname-or-ip",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/api.example.com/public_html",
+      "description": "API backend"
+    },
+    "docs.example.com": {
+      "server": "server-hostname-or-ip",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/docs.example.com/public_html",
+      "description": "Documentation site"
+    }
+  },
+  "api": {
+    "token": "YOUR_HOSTINGER_API_TOKEN_HERE",
+    "base_url": "https://api.hostinger.com/v1"
+  },
+  "default_server": {
+    "server": "server-hostname-or-ip",
+    "port": 65002,
+    "username": "u123456789",
+    "password_file": "~/.ssh/hostinger_password"
+  }
+}

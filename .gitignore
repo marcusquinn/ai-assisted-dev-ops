@@ -1,0 +1,100 @@
+# Security - Never commit sensitive information
+# Protect actual config files with real credentials
+configs/hostinger-config.json
+configs/hetzner-config.json
+configs/closte-config.json
+configs/cloudron-config.json
+configs/coolify-config.json
+configs/ses-config.json
+configs/spaceship-config.json
+configs/101domains-config.json
+configs/mainwp-config.json
+configs/vaultwarden-config.json
+configs/code-audit-config.json
+configs/git-platforms-config.json
+configs/dns-config.json
+configs/localhost-config.json
+configs/mcp-servers-config.json
+configs/cloudflare-dns-config.json
+configs/namecheap-dns-config.json
+configs/route53-dns-config.json
+configs/other-dns-providers-config.json
+configs/context7-mcp-config.json
+configs/setup-wizard-responses.json
+
+# Allow template files and agent directory to be committed
+!configs/*.txt
+!.agent/
+
+# Password files and credentials
+*.password
+*_password
+closte_*
+hostinger_*
+.env
+*.key
+*.pem
+*.p12
+*.pfx
+
+# SSH keys and configs
+id_*
+known_hosts
+authorized_keys
+
+# API tokens and credentials
+*token*
+*secret*
+*credential*
+
+# Backup files
+*.backup
+*.bak
+*~
+
+# Generated reports and exports
+audit-report-*.json
+vault-export-*.json
+vault-export-*.csv
+*-backup-*.json
+setup-wizard-responses.json
+tmp.*.json
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MCP server files and runtime data
+mcp-server-*.pid
+mcp-server-*.log
+*.mcp
+
+# Git platform clones and local repos (if created in repo directory)
+cloned-repos/
+local-repos/
+
+# Domain purchasing receipts and confirmations
+domain-purchase-*.json
+domain-receipt-*.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+tmp.*.json

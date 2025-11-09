@@ -1,0 +1,166 @@
+# AI-Assisted DevOps Framework - Agent Guidance
+
+This repository provides a comprehensive DevOps infrastructure management framework designed specifically for AI agent automation across 25+ services.
+
+## 🤖 **Agent Behavior & Standards**
+
+### **Primary Objectives**
+- **Complete DevOps automation** across hosting, domains, DNS, security, and development services
+- **Secure credential management** with enterprise-grade security practices
+- **Consistent command patterns** for reliable automation across all services
+- **Intelligent setup guidance** for infrastructure configuration
+- **Real-time service integration** through MCP servers
+
+### **Coding Standards**
+- **Bash scripting**: Follow framework patterns in `providers/` directory
+- **JSON configuration**: Use consistent structure across all service configs
+- **Security-first**: Never expose credentials, always validate inputs
+- **Error handling**: Implement comprehensive error handling with clear messages
+- **Documentation**: Maintain comprehensive docs for all additions
+
+### **Framework Architecture**
+```bash
+# Unified command pattern across all 25+ services:
+./providers/[service]-helper.sh [command] [account/instance] [target] [options]
+
+# Standard commands available for all services:
+help                    # Show service-specific help
+accounts|instances      # List configured accounts/instances
+monitor|audit|status    # Service monitoring and auditing
+```
+
+## 📁 **Agent Directory Structure**
+
+### **.agent/spec/** - Requirements & Design
+- `requirements.md` - Framework requirements and capabilities
+- `design.md` - Architecture and design principles
+- `tasks.md` - Common tasks and workflows
+- `security.md` - Security requirements and standards
+- `extension.md` - Guidelines for extending the framework
+
+### **.agent/wiki/** - Knowledge Base
+- `architecture.md` - Complete framework architecture
+- `services.md` - All 25+ service integrations
+- `workflows.md` - Common DevOps workflows
+- `troubleshooting.md` - Common issues and solutions
+- `providers/` - Provider-specific context
+- `configs/` - Configuration management context
+- `docs/` - Documentation standards context
+
+### **.agent/links/** - External Resources
+- `resources.md` - External APIs, documentation, and tools
+- `mcp-servers.md` - MCP server resources and setup
+- `service-apis.md` - Service API documentation links
+
+## 🛠️ **Service Categories**
+
+### **Infrastructure & Hosting (4 services)**
+- Hostinger, Hetzner Cloud, Closte, Cloudron
+
+### **Deployment & Orchestration (1 service)**
+- Coolify
+
+### **Content Management (1 service)**
+- MainWP
+
+### **Security & Secrets (1 service)**
+- Vaultwarden
+
+### **Code Quality & Auditing (4 services)**
+- CodeRabbit, CodeFactor, Codacy, SonarCloud
+
+### **Version Control & Git Platforms (4 services)**
+- GitHub, GitLab, Gitea, Local Git
+
+### **Email Services (1 service)**
+- Amazon SES
+
+### **Domain & DNS (5 services)**
+- Spaceship (with purchasing), 101domains, Cloudflare DNS, Namecheap DNS, Route 53
+
+### **Development & Local (4 services)**
+- Localhost, LocalWP, Context7 MCP, MCP Servers
+
+### **Setup & Configuration (1 service)**
+- Intelligent Setup Wizard
+
+## 🔐 **Security Contract**
+
+### **Credential Management**
+- All credentials stored in `configs/[service]-config.json` (gitignored)
+- Templates in `configs/[service]-config.json.txt` (committed)
+- Vaultwarden integration for secure credential retrieval
+- Never expose credentials in logs, output, or error messages
+
+### **Operational Security**
+- Confirmation required for destructive operations
+- Purchase operations require explicit user confirmation
+- Production environment changes require verification
+- All operations logged for audit purposes
+
+### **File Security**
+- Configuration files have restricted permissions (600)
+- Generated reports and exports are gitignored
+- Temporary files are cleaned up automatically
+- MCP server runtime files are protected
+
+## 🚀 **Agent Capabilities**
+
+### **Complete Project Lifecycle**
+1. **Assessment**: Intelligent setup wizard for needs analysis
+2. **Domain Management**: Automated domain purchasing and DNS configuration
+3. **Infrastructure**: Server provisioning across multiple providers
+4. **Development**: Git repository creation and management
+5. **Quality**: Automated code auditing and security scanning
+6. **Deployment**: Application deployment and monitoring
+7. **Security**: Credential management and security auditing
+8. **Maintenance**: Ongoing monitoring and maintenance
+
+### **MCP Server Integration**
+```bash
+# Real-time data access through MCP servers:
+Port 3001: LocalWP WordPress database access
+Port 3002: Vaultwarden secure credential retrieval
+Port 3003: CodeRabbit code analysis
+Port 3004: Codacy quality metrics
+Port 3005: SonarCloud security analysis
+Port 3006: GitHub repository management
+Port 3007: GitLab project management
+Port 3008: Gitea repository management
+```
+
+## 📚 **Learning Resources**
+
+### **Framework Understanding**
+- Start with `.agent/wiki/architecture.md` for complete overview
+- Review `.agent/spec/requirements.md` for capabilities
+- Check service-specific docs in `docs/[SERVICE].md`
+- Use Context7 MCP for latest external documentation
+
+### **Extension Guidelines**
+- Follow patterns in `.agent/spec/extension.md`
+- Use existing providers as templates
+- Implement security standards from `.agent/spec/security.md`
+- Update all framework files for complete integration
+
+## 🎯 **Agent Success Metrics**
+
+### **Operational Excellence**
+- **Zero credential exposure** in any output or logs
+- **Consistent command patterns** across all services
+- **Comprehensive error handling** with helpful guidance
+- **Complete audit trails** for all operations
+- **Secure by default** configuration and operations
+
+### **User Experience**
+- **Intelligent guidance** through setup wizard
+- **Clear feedback** for all operations
+- **Helpful error messages** with resolution guidance
+- **Efficient workflows** for common tasks
+- **Comprehensive documentation** for all features
+
+---
+
+**This framework represents the most comprehensive AI-assisted DevOps infrastructure management system available, providing enterprise-grade capabilities with AI-first design principles.** 🚀🤖✨
+
+**Agents using this framework should prioritize security, consistency, and user experience while leveraging the complete ecosystem of 25+ integrated services for comprehensive DevOps automation.** 🛡️⚡

@@ -1,0 +1,82 @@
+{
+  "provider": "route53",
+  "description": "Amazon Route 53 DNS with full AWS API support",
+  "aws_credentials": {
+    "access_key_id": "YOUR_AWS_ACCESS_KEY_ID_HERE",
+    "secret_access_key": "YOUR_AWS_SECRET_ACCESS_KEY_HERE",
+    "region": "us-east-1",
+    "profile": "default"
+  },
+  "hosted_zones": {
+    "example.com": {
+      "zone_id": "Z1234567890ABC",
+      "description": "Main domain hosted zone"
+    },
+    "api.example.com": {
+      "zone_id": "Z0987654321DEF", 
+      "description": "API subdomain hosted zone"
+    }
+  },
+  "api_endpoints": {
+    "base_url": "https://route53.amazonaws.com",
+    "version": "2013-04-01"
+  },
+  "supported_operations": {
+    "list_zones": "Full hosted zone management",
+    "dns_records": "Complete DNS record management",
+    "health_checks": "Health check and failover support",
+    "traffic_policies": "Advanced traffic routing",
+    "resolver": "Route 53 Resolver for VPC DNS"
+  },
+  "record_types_supported": {
+    "basic": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR"],
+    "advanced": ["SRV", "SPF", "CAA"],
+    "routing": ["Weighted", "Latency-based", "Failover", "Geolocation", "Geoproximity", "Multivalue"]
+  },
+  "security_best_practices": {
+    "iam_policy": "Use least privilege IAM policies",
+    "access_keys": "Rotate access keys regularly",
+    "mfa": "Enable MFA on AWS account",
+    "cloudtrail": "Enable CloudTrail for API logging",
+    "resource_policies": "Use resource-based policies when possible"
+  },
+  "recommended_iam_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "route53:ListHostedZones",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ChangeResourceRecordSets"
+        ],
+        "Resource": "*"
+      }
+    ]
+  },
+  "setup_instructions": {
+    "step_1": "Create IAM user with Route 53 permissions",
+    "step_2": "Generate access key and secret key",
+    "step_3": "Configure AWS CLI or update this config",
+    "step_4": "Test access with aws route53 list-hosted-zones",
+    "step_5": "Update hosted_zones section with your zone IDs"
+  },
+  "pricing_considerations": {
+    "hosted_zones": "$0.50 per hosted zone per month",
+    "queries": "$0.40 per million queries",
+    "health_checks": "$0.50 per health check per month",
+    "traffic_policies": "Additional charges for advanced routing"
+  },
+  "testing": {
+    "test_command": "aws route53 list-hosted-zones",
+    "expected_response": "JSON list of your hosted zones"
+  },
+  "notes": {
+    "aws_integration": "Integrates seamlessly with other AWS services",
+    "global_network": "Uses AWS global network for fast DNS resolution",
+    "reliability": "100% uptime SLA available",
+    "advanced_features": "Supports advanced routing and health checks",
+    "documentation": "See AWS Route 53 documentation for full feature set"
+  }
+}

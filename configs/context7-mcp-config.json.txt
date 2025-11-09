@@ -1,0 +1,200 @@
+{
+  "provider": "context7",
+  "description": "Context7 MCP server for accessing latest documentation of development tools and frameworks",
+  "mcp_server": {
+    "name": "context7",
+    "command": "npx",
+    "args": ["-y", "@context7/mcp-server@latest"],
+    "port": 8086,
+    "transport": "sse",
+    "description": "Context7 MCP server for real-time documentation access"
+  },
+  "common_libraries": {
+    "frontend_frameworks": [
+      "/vercel/next.js",
+      "/facebook/react", 
+      "/vuejs/vue",
+      "/angular/angular",
+      "/sveltejs/svelte"
+    ],
+    "backend_frameworks": [
+      "/expressjs/express",
+      "/nestjs/nest",
+      "/fastify/fastify",
+      "/koajs/koa",
+      "/django/django",
+      "/flask/flask"
+    ],
+    "databases": [
+      "/mongodb/docs",
+      "/postgres/postgres",
+      "/redis/redis",
+      "/supabase/supabase",
+      "/prisma/prisma"
+    ],
+    "cloud_platforms": [
+      "/vercel/vercel",
+      "/aws/aws-cdk",
+      "/hashicorp/terraform",
+      "/docker/docker",
+      "/kubernetes/kubernetes"
+    ],
+    "development_tools": [
+      "/microsoft/vscode",
+      "/typescript-eslint/typescript-eslint",
+      "/prettier/prettier",
+      "/vitejs/vite",
+      "/webpack/webpack"
+    ],
+    "ai_ml_tools": [
+      "/openai/openai-node",
+      "/anthropic/anthropic-sdk-typescript",
+      "/langchain-ai/langchainjs",
+      "/huggingface/transformers.js"
+    ]
+  },
+  "project_specific_libraries": {
+    "wordpress_development": [
+      "/wordpress/wordpress",
+      "/woocommerce/woocommerce",
+      "/elementor/elementor",
+      "/advanced-custom-fields/acf"
+    ],
+    "nodejs_backend": [
+      "/nodejs/node",
+      "/expressjs/express",
+      "/nestjs/nest",
+      "/typeorm/typeorm",
+      "/sequelize/sequelize"
+    ],
+    "react_frontend": [
+      "/facebook/react",
+      "/vercel/next.js",
+      "/remix-run/remix",
+      "/tanstack/query",
+      "/react-hook-form/react-hook-form"
+    ],
+    "devops_tools": [
+      "/docker/docker",
+      "/kubernetes/kubernetes",
+      "/hashicorp/terraform",
+      "/ansible/ansible",
+      "/prometheus/prometheus"
+    ]
+  },
+  "usage_patterns": {
+    "library_resolution": {
+      "description": "Always resolve library names to Context7-compatible IDs first",
+      "example": "resolve-library-id('next.js') -> '/vercel/next.js'",
+      "best_practice": "Use exact library names for better resolution"
+    },
+    "documentation_retrieval": {
+      "description": "Fetch focused documentation for specific topics",
+      "example": "get-library-docs('/vercel/next.js', topic='routing')",
+      "token_management": "Use appropriate token limits (5000 default, adjust as needed)"
+    },
+    "version_specific": {
+      "description": "Access version-specific documentation when needed",
+      "example": "get-library-docs('/vercel/next.js/v14.3.0-canary.87')",
+      "use_case": "When working with specific versions or beta releases"
+    }
+  },
+  "ai_assistant_integration": {
+    "claude_desktop": {
+      "config_location": "~/Library/Application Support/Claude/claude_desktop_config.json",
+      "mcp_entry": {
+        "context7": {
+          "command": "npx",
+          "args": ["-y", "@context7/mcp-server@latest"],
+          "env": {
+            "DEBUG": "false"
+          }
+        }
+      }
+    },
+    "cursor_ide": {
+      "config_location": ".cursor/mcp.json",
+      "mcp_entry": {
+        "context7": {
+          "command": "npx",
+          "args": ["-y", "@context7/mcp-server@latest"]
+        }
+      }
+    },
+    "augment_agent": {
+      "integration": "Built-in Context7 tools available",
+      "usage": "Use resolve-library-id and get-library-docs tools directly",
+      "benefits": "No additional MCP server setup required"
+    }
+  },
+  "workflow_examples": {
+    "new_project_setup": [
+      "1. Resolve library IDs for project dependencies",
+      "2. Get latest documentation for chosen frameworks",
+      "3. Access setup guides and best practices",
+      "4. Reference API documentation during development"
+    ],
+    "debugging_issues": [
+      "1. Get documentation for specific library version",
+      "2. Access troubleshooting guides and common issues",
+      "3. Reference API changes between versions",
+      "4. Find migration guides for version updates"
+    ],
+    "learning_new_tools": [
+      "1. Get comprehensive documentation for new library",
+      "2. Access getting started guides and tutorials",
+      "3. Reference examples and code snippets",
+      "4. Understand best practices and patterns"
+    ]
+  },
+  "setup_instructions": {
+    "step_1": "Install Context7 MCP server: npm install -g @context7/mcp-server",
+    "step_2": "Add to your AI assistant's MCP configuration",
+    "step_3": "Test connection with a simple library resolution",
+    "step_4": "Configure common libraries for your development stack",
+    "step_5": "Integrate into your development workflow"
+  },
+  "best_practices": {
+    "library_resolution": [
+      "Always resolve library names before getting documentation",
+      "Use specific library names for better accuracy",
+      "Check for version-specific documentation when needed",
+      "Cache resolved library IDs for repeated use"
+    ],
+    "documentation_usage": [
+      "Use topic-specific queries for focused results",
+      "Adjust token limits based on documentation depth needed",
+      "Combine multiple library docs for comprehensive understanding",
+      "Reference official examples and code snippets"
+    ],
+    "development_workflow": [
+      "Get documentation before starting new features",
+      "Reference API docs during implementation",
+      "Check for updates and changes regularly",
+      "Use for code review and best practice validation"
+    ]
+  },
+  "troubleshooting": {
+    "common_issues": [
+      {
+        "issue": "Library not found during resolution",
+        "solution": "Try different variations of the library name or check Context7 registry"
+      },
+      {
+        "issue": "Documentation seems outdated",
+        "solution": "Check if a specific version is needed or if library has moved"
+      },
+      {
+        "issue": "MCP server not responding",
+        "solution": "Restart MCP server and check network connectivity"
+      }
+    ]
+  },
+  "notes": {
+    "context7_features": "Real-time access to latest documentation for thousands of libraries",
+    "ai_optimization": "Documentation is formatted and optimized for AI consumption",
+    "version_support": "Supports both latest and specific version documentation",
+    "coverage": "Covers most popular development tools, frameworks, and libraries",
+    "updates": "Documentation is continuously updated as libraries evolve"
+  }
+}

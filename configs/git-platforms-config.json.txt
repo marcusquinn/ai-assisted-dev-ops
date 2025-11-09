@@ -1,0 +1,154 @@
+{
+  "platforms": {
+    "github": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN_HERE",
+          "username": "your-github-username",
+          "base_url": "https://api.github.com",
+          "description": "Personal GitHub account",
+          "repositories": [
+            "repo1",
+            "repo2"
+          ]
+        },
+        "organization": {
+          "api_token": "YOUR_GITHUB_ORG_ACCESS_TOKEN_HERE",
+          "username": "your-organization",
+          "base_url": "https://api.github.com",
+          "description": "Organization GitHub account",
+          "repositories": [
+            "org-repo1",
+            "org-repo2"
+          ]
+        }
+      }
+    },
+    "gitlab": {
+      "accounts": {
+        "personal": {
+          "api_token": "YOUR_GITLAB_PERSONAL_ACCESS_TOKEN_HERE",
+          "username": "your-gitlab-username",
+          "base_url": "https://gitlab.com/api/v4",
+          "description": "Personal GitLab account",
+          "projects": [
+            "project1",
+            "project2"
+          ]
+        },
+        "self-hosted": {
+          "api_token": "YOUR_SELFHOSTED_GITLAB_TOKEN_HERE",
+          "username": "your-username",
+          "base_url": "https://gitlab.yourdomain.com/api/v4",
+          "description": "Self-hosted GitLab instance",
+          "projects": [
+            "internal-project1",
+            "internal-project2"
+          ]
+        }
+      }
+    },
+    "gitea": {
+      "accounts": {
+        "self-hosted": {
+          "api_token": "YOUR_GITEA_ACCESS_TOKEN_HERE",
+          "username": "your-gitea-username",
+          "base_url": "https://gitea.yourdomain.com/api/v1",
+          "description": "Self-hosted Gitea instance",
+          "repositories": [
+            "gitea-repo1",
+            "gitea-repo2"
+          ]
+        }
+      }
+    }
+  },
+  "default_settings": {
+    "clone_protocol": "https",
+    "default_branch": "main",
+    "auto_init": true,
+    "gitignore_template": "Node",
+    "license_template": "mit",
+    "private_by_default": true
+  },
+  "mcp_servers": {
+    "github": {
+      "enabled": true,
+      "port": 3006,
+      "host": "localhost"
+    },
+    "gitlab": {
+      "enabled": false,
+      "port": 3007,
+      "host": "localhost"
+    },
+    "gitea": {
+      "enabled": false,
+      "port": 3008,
+      "host": "localhost"
+    }
+  },
+  "local_git": {
+    "default_path": "~/git",
+    "auto_remote_setup": true,
+    "default_remote_name": "origin",
+    "commit_signing": false,
+    "hooks_enabled": true
+  },
+  "repository_templates": {
+    "web-app": {
+      "description": "Web application template",
+      "gitignore": "Node",
+      "license": "MIT",
+      "files": [
+        "README.md",
+        "package.json",
+        ".gitignore"
+      ]
+    },
+    "api-service": {
+      "description": "API service template",
+      "gitignore": "Node",
+      "license": "MIT",
+      "files": [
+        "README.md",
+        "package.json",
+        "Dockerfile",
+        ".env.example"
+      ]
+    },
+    "static-site": {
+      "description": "Static website template",
+      "gitignore": "Node",
+      "license": "MIT",
+      "files": [
+        "README.md",
+        "index.html",
+        "style.css"
+      ]
+    }
+  },
+  "automation": {
+    "auto_sync": false,
+    "sync_frequency": 3600,
+    "auto_backup": true,
+    "backup_frequency": "daily",
+    "webhook_notifications": false,
+    "ci_cd_integration": true
+  },
+  "security": {
+    "require_signed_commits": false,
+    "branch_protection": true,
+    "require_reviews": true,
+    "dismiss_stale_reviews": true,
+    "require_status_checks": true,
+    "restrict_pushes": true
+  },
+  "collaboration": {
+    "default_team_permissions": "write",
+    "auto_assign_reviewers": true,
+    "require_assignee": false,
+    "auto_merge_enabled": false,
+    "delete_branch_on_merge": true
+  }
+}

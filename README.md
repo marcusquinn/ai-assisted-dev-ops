@@ -1,0 +1,536 @@
+# AI-Assisted DevOps Framework
+
+A comprehensive, production-ready framework that gives your AI assistant seamless access to your entire DevOps infrastructure including servers, hosting providers, security services, code auditing, and development tools through standardized helper scripts, SSH configurations, and MCP (Model Context Protocol) integrations.
+
+## 🎯 **What This Framework Does**
+
+### **🤖 AI-First Infrastructure Management**
+This framework transforms how you manage infrastructure by enabling your AI assistant to:
+- **SSH into any server** with simple, standardized commands
+- **Execute commands remotely** across all your infrastructure providers
+- **Access hosting provider APIs** (Hostinger, Hetzner, Closte, Coolify, etc.)
+- **Manage DNS records** across multiple providers (Cloudflare, Spaceship, 101domains, Route 53, Namecheap)
+- **Deploy applications** to self-hosted platforms like Coolify
+- **Monitor email delivery** via Amazon SES with comprehensive analytics
+- **Manage WordPress sites** via MainWP with centralized control
+- **Secure credential management** via Vaultwarden with API and MCP access
+- **Automated code auditing** via CodeRabbit, Codacy, SonarCloud, and CodeFactor
+- **Git platform management** across GitHub, GitLab, Gitea, and local repositories
+- **Automated domain purchasing** with availability checking and bulk operations
+- **Intelligent setup wizard** to guide infrastructure configuration
+- **Access real-time documentation** via Context7 MCP integration
+- **Query WordPress databases** directly via LocalWP MCP
+
+### **🏗️ Infrastructure Unification**
+Instead of remembering different commands, APIs, and access methods for each provider, you get:
+- **Unified command interface** - Same patterns across all providers
+- **Standardized configurations** - Consistent setup across all services
+- **Automated SSH management** - Generate and manage SSH configs automatically
+- **Multi-account support** - Handle multiple accounts per provider seamlessly
+- **Security-first design** - Best practices built into every component
+
+### **🚀 Real-World Problem Solving**
+This framework solves common infrastructure management challenges:
+- **Context switching** - No more remembering different provider interfaces
+- **Access complexity** - Simplified access to complex infrastructure
+- **Documentation gaps** - AI has access to latest documentation via Context7
+- **Manual repetition** - Automate common server management tasks
+- **Security inconsistency** - Enforced security best practices
+- **Multi-provider chaos** - Unified management across all providers
+
+## 🎁 **What You Get**
+
+### **🔧 Complete Infrastructure Toolkit**
+- **25+ Service Integrations** - Complete DevOps ecosystem including hosting, Git platforms, domains, DNS, email, WordPress, security, code auditing, and development services
+- **Standardized Helper Scripts** - Consistent commands across all providers
+- **SSH Configuration Management** - Automated SSH config generation and management
+- **MCP Server Integration** - Real-time documentation and database access for AI
+- **DNS Management** - Unified DNS management across multiple providers
+- **Local Development Tools** - LocalWP integration with .local domain support
+
+### **🤖 AI-Ready Infrastructure**
+- **Context7 MCP** - Real-time access to latest documentation for thousands of libraries
+- **LocalWP MCP** - Direct WordPress database access for AI assistants
+- **Structured Commands** - AI can easily understand and execute infrastructure tasks
+- **Comprehensive Logging** - All operations logged for AI learning and debugging
+- **Error Handling** - Clear error messages that AI can understand and act upon
+
+### **🛡️ Security-First Design**
+- **SSH Key Management** - Modern Ed25519 key generation and distribution
+- **API Token Scoping** - Minimal required permissions for each service
+- **Credential Isolation** - Separate configuration files for each provider
+- **Git Security** - All sensitive files properly excluded from version control
+- **Best Practices Enforcement** - Security guidelines built into every component
+
+### **📈 Production-Ready Features**
+- **Multi-Account Support** - Handle multiple accounts per provider
+- **Environment Separation** - Clear separation between dev, staging, and production
+- **Backup Automation** - Automated backup procedures for all services
+- **Monitoring Integration** - Health checks and performance monitoring
+- **Disaster Recovery** - Documented recovery procedures for all components
+
+## 📋 **Requirements**
+
+### System Dependencies
+```bash
+# macOS
+brew install sshpass jq curl mkcert dnsmasq
+
+# Ubuntu/Debian
+sudo apt-get install sshpass jq curl dnsmasq
+# Install mkcert: https://github.com/FiloSottile/mkcert
+
+# CentOS/RHEL
+sudo yum install sshpass jq curl dnsmasq
+# Install mkcert: https://github.com/FiloSottile/mkcert
+```
+
+### SSH Key Setup
+```bash
+# Generate modern Ed25519 SSH key (recommended)
+ssh-keygen -t ed25519 -C "your-email@domain.com"
+
+# Or RSA if Ed25519 not supported
+ssh-keygen -t rsa -b 4096 -C "your-email@domain.com"
+```
+
+## 🤔 **Why This Framework?**
+
+### **The Problem: Infrastructure Chaos**
+Modern development involves managing infrastructure across multiple providers:
+- **Hostinger** for shared hosting and domains
+- **Hetzner Cloud** for production VPS servers
+- **Cloudflare** for DNS and CDN
+- **Coolify** for self-hosted deployments
+- **LocalWP** for WordPress development
+- **AWS/DigitalOcean** for cloud services
+
+Each provider has different:
+- **Access methods** (SSH keys vs passwords vs API tokens)
+- **Command interfaces** (different APIs, different SSH ports)
+- **Configuration formats** (JSON vs YAML vs environment variables)
+- **Security requirements** (different authentication methods)
+- **Documentation locations** (scattered across different sites)
+
+### **The Solution: Unified AI-Accessible Interface**
+This framework provides:
+- **One command pattern** for all providers: `./providers/[provider]-helper.sh [action] [target]`
+- **Consistent configuration** format across all services
+- **Standardized security** practices for all providers
+- **AI-optimized** command structure and error messages
+- **Real-time documentation** access via Context7 MCP
+- **Automated setup** and configuration management
+
+### **Real-World Example**
+Instead of remembering:
+```bash
+# Different for each provider
+ssh -p 65002 u123456789@hostinger-server  # Hostinger
+ssh -i ~/.ssh/hetzner root@hetzner-server  # Hetzner
+sshpass -f ~/.ssh/closte_password ssh root@closte-server  # Closte
+```
+
+You get:
+```bash
+# Same pattern for all providers
+./providers/hostinger-helper.sh connect example.com
+./providers/hetzner-helper.sh connect main web-server
+./providers/closte-helper.sh connect web-server
+```
+
+Your AI assistant can now manage your entire infrastructure with consistent, predictable commands.
+
+## 🏗️ **Architecture**
+
+### 1. **Provider-Specific Helpers**
+Individual scripts for each hosting provider with detailed functionality:
+- `hostinger-helper.sh` - Shared hosting management
+- `hetzner-helper.sh` - VPS server management
+- `closte-helper.sh` - Closte.com VPS servers
+- `cloudron-helper.sh` - Cloudron server and app management
+- `ses-helper.sh` - Amazon SES email delivery management
+- `mainwp-helper.sh` - MainWP WordPress management platform
+- `vaultwarden-helper.sh` - Vaultwarden password and secrets management
+- `code-audit-helper.sh` - Code auditing across multiple services
+- `git-platforms-helper.sh` - Git platform management (GitHub, GitLab, Gitea)
+- `setup-wizard-helper.sh` - Intelligent setup wizard for infrastructure configuration
+- `spaceship-helper.sh` - Spaceship domain registrar with purchasing capabilities
+- `101domains-helper.sh` - 101domains registrar management
+- `dns-helper.sh` - DNS management across providers
+- `localhost-helper.sh` - Local development with .local domains
+- `aws-helper.sh` - AWS infrastructure
+- `digitalocean-helper.sh` - DigitalOcean droplets
+
+### 2. **Global Server Helper**
+Unified access point for all servers across all providers:
+- `servers-helper.sh` - One script to rule them all
+
+### 3. **MCP Integration**
+Model Context Protocol servers for AI assistant integration:
+- Provider-specific MCP servers
+- Standardized API access
+- Real-time infrastructure management
+
+### 4. **SSH Configuration Management**
+Automated SSH config generation and management:
+- Dynamic SSH config updates
+- Key standardization across servers
+- Secure access patterns
+
+## 🚀 **Quick Start**
+
+### 1. Clone and Setup
+```bash
+mkdir -p ~/git/ai-assistant-server-access
+cd ~/git/ai-assistant-server-access
+# Copy framework files here
+chmod +x *.sh
+```
+
+### 2. Configure Your Providers
+```bash
+# Copy sample configs and customize
+cp configs/hostinger-config.json.txt configs/hostinger-config.json
+cp configs/hetzner-config.json.txt configs/hetzner-config.json
+# Edit with your actual credentials
+```
+
+### 3. Test Access
+```bash
+# List all servers across all providers
+./servers-helper.sh hostinger list
+./servers-helper.sh hetzner list
+
+# Connect to specific server
+./servers-helper.sh hostinger connect example.com
+./servers-helper.sh hetzner connect main web-server
+
+# Execute command on server
+./servers-helper.sh hostinger exec example.com "uptime"
+```
+
+## 📁 **File Structure**
+
+```
+~/git/ai-assisted-dev-ops/
+├── README.md                          # This guide
+├── servers-helper.sh                  # Global server access
+├── ai-context.md.txt                  # AI assistant context template
+├── providers/
+│   ├── hostinger-helper.sh            # Hostinger shared hosting
+│   ├── hetzner-helper.sh              # Hetzner Cloud VPS
+│   ├── closte-helper.sh               # Closte.com VPS servers
+│   ├── cloudron-helper.sh             # Cloudron server management
+│   ├── coolify-helper.sh              # Coolify self-hosted deployment platform
+│   ├── ses-helper.sh                  # Amazon SES email delivery management
+│   ├── mainwp-helper.sh               # MainWP WordPress management platform
+│   ├── vaultwarden-helper.sh          # Vaultwarden password and secrets management
+│   ├── code-audit-helper.sh           # Code auditing (CodeRabbit, Codacy, SonarCloud)
+│   ├── git-platforms-helper.sh        # Git platform management (GitHub, GitLab, Gitea)
+│   ├── setup-wizard-helper.sh         # Intelligent setup wizard
+│   ├── spaceship-helper.sh            # Spaceship domain registrar with purchasing
+│   ├── 101domains-helper.sh           # 101domains registrar management
+│   ├── dns-helper.sh                  # DNS management (Cloudflare, Namecheap, etc.)
+│   ├── localhost-helper.sh            # Local development with .local domains
+│   ├── aws-helper.sh                  # AWS infrastructure
+│   └── digitalocean-helper.sh         # DigitalOcean droplets
+├── configs/
+│   ├── hostinger-config.json.txt      # Hostinger config template
+│   ├── hetzner-config.json.txt        # Hetzner config template
+│   ├── closte-config.json.txt         # Closte.com config template
+│   ├── cloudron-config.json.txt       # Cloudron config template
+│   ├── coolify-config.json.txt        # Coolify config template
+│   ├── ses-config.json.txt            # Amazon SES config template
+│   ├── mainwp-config.json.txt         # MainWP WordPress management config template
+│   ├── vaultwarden-config.json.txt    # Vaultwarden password management config template
+│   ├── code-audit-config.json.txt     # Code auditing services config template
+│   ├── git-platforms-config.json.txt  # Git platforms config template
+│   ├── spaceship-config.json.txt      # Spaceship registrar config template
+│   ├── 101domains-config.json.txt     # 101domains registrar config template
+│   ├── context7-mcp-config.json.txt   # Context7 MCP config template
+│   ├── cloudflare-dns-config.json.txt # Cloudflare DNS config template
+│   ├── namecheap-dns-config.json.txt  # Namecheap DNS config template
+│   ├── route53-dns-config.json.txt    # AWS Route 53 DNS config template
+│   ├── other-dns-providers-config.json.txt # Other DNS providers template
+│   ├── localhost-config.json.txt      # Local development config template
+│   └── mcp-servers-config.json.txt    # MCP configuration
+├── ssh/
+│   ├── ssh-key-audit.sh               # SSH key management
+│   └── generate-ssh-configs.sh        # SSH config automation
+└── docs/
+    ├── BEST-PRACTICES.md              # Best practices & provider selection guide
+    ├── HOSTINGER.md                   # Hostinger hosting guide
+    ├── HETZNER.md                     # Hetzner Cloud guide
+    ├── CLOSTE.md                      # Closte VPS hosting guide
+    ├── COOLIFY.md                     # Coolify deployment guide
+    ├── SES.md                         # Amazon SES email delivery guide
+    ├── MAINWP.md                      # MainWP WordPress management guide
+    ├── VAULTWARDEN.md                 # Vaultwarden password management guide
+    ├── CODE-AUDITING.md               # Code auditing services guide
+    ├── GIT-PLATFORMS.md               # Git platforms management guide
+    ├── DOMAIN-PURCHASING.md           # Domain purchasing and management guide
+    ├── SPACESHIP.md                   # Spaceship domain registrar guide
+    ├── 101DOMAINS.md                  # 101domains registrar guide
+    ├── CLOUDRON.md                    # Cloudron app platform guide
+    ├── LOCALHOST.md                   # Localhost development guide
+    ├── MCP-SERVERS.md                 # MCP servers configuration guide
+    ├── DNS-PROVIDERS.md               # DNS providers configuration guide
+    ├── CLOUDFLARE-SETUP.md            # Cloudflare API token setup guide
+    ├── COOLIFY-SETUP.md               # Coolify deployment platform guide
+    ├── CONTEXT7-MCP-SETUP.md          # Context7 MCP documentation access
+    └── LOCALWP-MCP.md                 # LocalWP MCP integration guide
+├── AGENTS.md                          # 🤖 AI Agent Guidance (Standard)
+├── .agent/                            # 🤖 AI Agent Directory (Emerging Standard)
+│   ├── spec/                          # Requirements & design specifications
+│   │   ├── requirements.md            # Framework requirements & capabilities
+│   │   └── extension.md               # Guidelines for extending framework
+│   ├── wiki/                          # Knowledge base & context
+│   │   ├── architecture.md            # Complete framework architecture
+│   │   ├── providers.md               # Provider scripts context
+│   │   ├── configs.md                 # Configuration management context
+│   │   └── docs.md                    # Documentation standards context
+│   └── links/                         # External resources & APIs
+│       └── resources.md               # Service APIs & documentation links
+```
+
+## 🤖 **AI Agent Integration**
+
+Following the emerging **AGENTS.md standard**, this framework provides comprehensive AI agent guidance:
+
+- **`AGENTS.md`**: Root-level agent behavior, standards, and framework overview
+- **`.agent/` directory**: Structured AI guidance following the proposed standard
+  - **`spec/`**: Requirements, design, and extension guidelines
+  - **`wiki/`**: Knowledge base with architecture and context
+  - **`links/`**: External resources and API documentation
+
+This structure ensures optimal AI agent understanding and provides a foundation for the evolving AI agent ecosystem standards.
+
+## 🔧 **Configuration Examples**
+
+### Hostinger Configuration
+```json
+{
+  "sites": {
+    "example.com": {
+      "server": "server-ip-or-hostname",
+      "port": 65002,
+      "username": "u123456789",
+      "password_file": "~/.ssh/hostinger_password",
+      "domain_path": "/domains/example.com/public_html"
+    }
+  },
+  "api": {
+    "token": "your-hostinger-api-token",
+    "base_url": "https://api.hostinger.com/v1"
+  }
+}
+```
+
+### Hetzner Configuration
+```json
+{
+  "accounts": {
+    "main": {
+      "api_token": "YOUR_MAIN_HETZNER_API_TOKEN_HERE",
+      "description": "Main production account",
+      "account": "your-email@domain.com"
+    },
+    "client-project": {
+      "api_token": "YOUR_CLIENT_PROJECT_HETZNER_API_TOKEN_HERE",
+      "description": "Client project account",
+      "account": "your-email@domain.com"
+    }
+  }
+}
+```
+
+## 🤖 **AI Assistant Integration**
+
+### Context Documentation
+Create `ai-context.md` (or customize the template) with:
+```markdown
+# Server Infrastructure Context
+
+## Available Servers
+- **Production**: server1.example.com (Ubuntu 22.04, 4GB RAM)
+- **Staging**: server2.example.com (Ubuntu 20.04, 2GB RAM)
+- **Development**: server3.example.com (Ubuntu 22.04, 1GB RAM)
+
+## Access Methods
+- Global helper: `./servers-helper.sh [server] [command]`
+- Provider helpers: `./providers/[provider]-helper.sh [command]`
+- Direct SSH: All servers configured in ~/.ssh/config
+
+## Common Tasks
+- List servers: `./servers-helper.sh hetzner list`
+- Connect to server: `./servers-helper.sh hetzner connect main web-server`
+- Check status: `./providers/hetzner-helper.sh status main web-server`
+```
+
+### Shell Aliases
+Add to your `.zshrc` or `.bashrc` (adjust path as needed):
+```bash
+# Global server management (adjust path to your installation)
+alias servers='~/git/ai-assistant-server-access/servers-helper.sh'
+
+# Provider-specific shortcuts
+alias hostinger='~/git/ai-assistant-server-access/providers/hostinger-helper.sh'
+alias hetzner='~/git/ai-assistant-server-access/providers/hetzner-helper.sh'
+alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
+```
+
+## 🔐 **Security Best Practices**
+
+### 1. **Credential Management**
+- Store API tokens in separate config files
+- Use password files for SSH passwords (never hardcode)
+- Set proper file permissions (600 for configs)
+- Add config files to `.gitignore`
+
+### 2. **SSH Key Management**
+- Use Ed25519 keys (modern, secure, fast)
+- Standardize keys across all servers
+- Regular key rotation and audit
+- Remove old/unused keys
+
+### 3. **Access Control**
+- Principle of least privilege
+- Regular access audits
+- Monitor for unauthorized access
+- Use jump hosts for sensitive environments
+
+## 📚 **Advanced Features**
+
+### MCP Server Integration
+```bash
+# Start LocalWP MCP server for WordPress database access
+./providers/localhost-helper.sh start-mcp
+
+# Configure in your AI assistant
+# See configs/mcp-servers-config.json.txt for full configuration
+```
+
+### SSH Management
+```bash
+# Generate SSH configs for Coolify servers
+./providers/coolify-helper.sh generate-ssh-configs
+
+# Audit SSH keys across all servers
+./ssh/ssh-key-audit.sh
+
+# Distribute SSH keys to servers
+./ssh/ssh-key-distribute.sh
+```
+
+### Multi-Account Support
+```bash
+# List servers from different Hetzner accounts
+./providers/hetzner-helper.sh list main
+./providers/hetzner-helper.sh list client-project
+
+# Manage different Cloudflare accounts
+./providers/dns-helper.sh records cloudflare personal example.com
+./providers/dns-helper.sh records cloudflare business company.com
+```
+
+## 🛠️ **Customization**
+
+### Adding New Providers
+1. Create `providers/newprovider-helper.sh`
+2. Add configuration template in `configs/`
+3. Update `servers-helper.sh` to include new provider
+4. Add MCP integration if API available
+
+### Custom Commands
+Add provider-specific commands to helper scripts:
+```bash
+case "$1" in
+    "deploy")
+        deploy_application "$2"
+        ;;
+    "backup")
+        create_backup "$2"
+        ;;
+    "monitor")
+        show_monitoring_dashboard
+        ;;
+esac
+```
+
+## 🔍 **Troubleshooting**
+
+### Common Issues
+- **SSH timeouts**: Check network connectivity and SSH config
+- **Permission denied**: Verify SSH keys and file permissions
+- **API errors**: Check API tokens and rate limits
+- **MCP connection issues**: Verify MCP server configuration
+
+### Debug Mode
+```bash
+# Enable debug output
+export DEBUG=1
+./providers/hetzner-helper.sh list main
+```
+
+## 🤝 **Contributing**
+
+1. Fork the repository
+2. Create feature branch
+3. Add provider support or improvements
+4. Test with your infrastructure
+5. Submit pull request
+
+## 📄 **License & Attribution**
+
+### **MIT License**
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+### **Attribution**
+**Created by Marcus Quinn** - Original author and maintainer
+**Copyright © Marcus Quinn 2025** - All rights reserved under MIT License
+
+When using, forking, or building upon this work, please maintain attribution to the original author. This helps support continued development and gives credit where it's due.
+
+### **Contributing**
+Contributions are welcome! When contributing:
+- Maintain the existing code style and patterns
+- Add comprehensive documentation for new features
+- Include proper attribution in commit messages
+- Follow the security guidelines outlined in `.agent/spec/security.md`
+
+### **Commercial Use**
+This framework is free for commercial use under the MIT License. Companies and individuals are encouraged to use, modify, and distribute this software while maintaining the original copyright notice.
+
+## 🎉 **Summary: What This Framework Achieves**
+
+### **🎯 For You:**
+- **Unified Infrastructure Management** - One interface for all your servers and services
+- **AI-Powered Automation** - Your AI assistant can now manage your entire infrastructure
+- **Time Savings** - No more context switching between different provider interfaces
+- **Reduced Errors** - Standardized commands reduce configuration mistakes
+- **Enhanced Security** - Built-in security best practices across all providers
+
+### **🤖 For Your AI Assistant:**
+- **Structured Access** - Clear, consistent commands across all infrastructure
+- **Real-time Documentation** - Context7 MCP provides latest documentation for all tools
+- **Database Access** - Direct WordPress database queries via LocalWP MCP
+- **Error Understanding** - Clear error messages that AI can interpret and act upon
+- **Learning Capability** - Comprehensive logging for AI to learn from operations
+
+### **🏗️ For Your Infrastructure:**
+- **Standardized Management** - Consistent patterns across all providers
+- **Security Enforcement** - Best practices built into every component
+- **Scalable Architecture** - Easy to add new providers and services
+- **Production Ready** - Battle-tested configurations and procedures
+- **Community Driven** - Open source with community contributions
+
+### **🚀 Get Started in Minutes:**
+1. **Clone the repository**
+2. **Run the setup script**: `./setup.sh`
+3. **Configure your providers**: Copy and edit configuration templates
+4. **Test connections**: `./providers/hostinger-helper.sh list` or `./providers/hetzner-helper.sh list`
+5. **Let your AI assistant manage your infrastructure!**
+
+---
+
+**🎯 This framework transforms your AI assistant into a powerful infrastructure management tool, giving you seamless access to all your servers and services through simple, standardized commands.**

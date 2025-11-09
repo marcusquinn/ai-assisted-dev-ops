@@ -1,0 +1,56 @@
+{
+  "provider": "namecheap",
+  "description": "Namecheap DNS with limited API support",
+  "api_credentials": {
+    "api_user": "YOUR_NAMECHEAP_USERNAME",
+    "api_key": "YOUR_NAMECHEAP_API_KEY_HERE",
+    "client_ip": "YOUR_WHITELISTED_IP_ADDRESS",
+    "sandbox": false
+  },
+  "domains": [
+    "example.com",
+    "mydomain.com"
+  ],
+  "api_endpoints": {
+    "base_url": "https://api.namecheap.com/xml.response",
+    "sandbox_url": "https://api.sandbox.namecheap.com/xml.response"
+  },
+  "supported_operations": {
+    "list_records": "namecheap.domains.dns.getHosts",
+    "set_records": "namecheap.domains.dns.setHosts",
+    "get_domain_info": "namecheap.domains.getInfo"
+  },
+  "limitations": {
+    "api_access": "Limited API functionality compared to Cloudflare",
+    "record_types": "Supports A, AAAA, CNAME, MX, TXT, NS records",
+    "bulk_operations": "Must set all records at once (no individual record updates)",
+    "rate_limits": "API rate limits apply",
+    "ip_whitelist": "Client IP must be whitelisted in Namecheap account"
+  },
+  "setup_instructions": {
+    "step_1": "Log into Namecheap account",
+    "step_2": "Go to Profile → Tools → Namecheap API Access",
+    "step_3": "Enable API access",
+    "step_4": "Whitelist your IP address",
+    "step_5": "Copy API key and username",
+    "step_6": "Update this config file with your credentials"
+  },
+  "common_record_types": {
+    "A": "IPv4 address",
+    "AAAA": "IPv6 address",
+    "CNAME": "Canonical name (alias)",
+    "MX": "Mail exchange",
+    "TXT": "Text record",
+    "NS": "Name server"
+  },
+  "testing": {
+    "test_domain": "Use a test domain to verify API access",
+    "sandbox_mode": "Set sandbox: true for testing"
+  },
+  "notes": {
+    "api_limitations": "Namecheap API is more limited than Cloudflare",
+    "ip_whitelist": "Remember to update IP whitelist when your IP changes",
+    "bulk_updates": "API requires setting all DNS records at once",
+    "documentation": "See Namecheap API documentation for full details"
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "instances": {
+    "production": {
+      "server_url": "https://vault.yourdomain.com",
+      "description": "Production Vaultwarden instance",
+      "admin_email": "admin@yourdomain.com",
+      "version": "1.30.0",
+      "users_count": 25,
+      "organizations": [
+        {
+          "name": "Company Organization",
+          "id": "org-uuid-here"
+        }
+      ]
+    },
+    "personal": {
+      "server_url": "https://personal-vault.yourdomain.com",
+      "description": "Personal Vaultwarden instance",
+      "admin_email": "personal@yourdomain.com",
+      "version": "1.30.0",
+      "users_count": 5,
+      "organizations": []
+    },
+    "development": {
+      "server_url": "https://dev-vault.yourdomain.com",
+      "description": "Development Vaultwarden instance",
+      "admin_email": "dev@yourdomain.com",
+      "version": "1.30.0",
+      "users_count": 10,
+      "organizations": [
+        {
+          "name": "Dev Team",
+          "id": "dev-org-uuid-here"
+        }
+      ]
+    }
+  },
+  "default_settings": {
+    "session_timeout": 3600,
+    "vault_timeout": 900,
+    "password_generation": {
+      "default_length": 16,
+      "include_uppercase": true,
+      "include_lowercase": true,
+      "include_numbers": true,
+      "include_symbols": true,
+      "avoid_ambiguous": true
+    },
+    "security": {
+      "require_2fa": true,
+      "password_iterations": 100000,
+      "disable_icon_download": false,
+      "require_device_trust": true
+    }
+  },
+  "mcp_server": {
+    "enabled": true,
+    "port": 3002,
+    "host": "localhost",
+    "auth_required": true,
+    "rate_limit": 100,
+    "timeout": 30
+  },
+  "backup_settings": {
+    "auto_backup": true,
+    "backup_frequency": "daily",
+    "backup_retention_days": 30,
+    "backup_location": "/backups/vaultwarden",
+    "encryption_enabled": true
+  },
+  "monitoring": {
+    "health_check_enabled": true,
+    "metrics_enabled": true,
+    "log_level": "info",
+    "audit_logging": true,
+    "failed_login_attempts": 5,
+    "lockout_duration": 900
+  },
+  "integration": {
+    "ldap_enabled": false,
+    "sso_enabled": false,
+    "api_access": true,
+    "mobile_app_support": true,
+    "browser_extension_support": true
+  },
+  "vault_categories": {
+    "personal": {
+      "description": "Personal passwords and credentials",
+      "auto_lock": true,
+      "sharing_enabled": false
+    },
+    "work": {
+      "description": "Work-related credentials",
+      "auto_lock": true,
+      "sharing_enabled": true,
+      "organization_required": true
+    },
+    "development": {
+      "description": "Development and testing credentials",
+      "auto_lock": false,
+      "sharing_enabled": true,
+      "temporary_access": true
+    }
+  },
+  "security_policies": {
+    "password_policy": {
+      "min_length": 12,
+      "require_uppercase": true,
+      "require_lowercase": true,
+      "require_numbers": true,
+      "require_symbols": true,
+      "password_history": 5
+    },
+    "access_policy": {
+      "max_failed_attempts": 5,
+      "lockout_duration": 900,
+      "session_timeout": 3600,
+      "require_2fa": true,
+      "trusted_devices_only": false
+    },
+    "sharing_policy": {
+      "allow_external_sharing": false,
+      "require_approval": true,
+      "max_share_duration": 86400,
+      "audit_sharing": true
+    }
+  },
+  "automation": {
+    "auto_sync": true,
+    "sync_frequency": 300,
+    "auto_logout": true,
+    "auto_lock": true,
+    "breach_monitoring": true,
+    "weak_password_detection": true
+  }
+}

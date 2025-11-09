@@ -1,0 +1,73 @@
+{
+  "apps": {
+    "plugin-testing": {
+      "domain": "plugin-testing.local",
+      "port": 10004,
+      "ssl": true,
+      "description": "WordPress plugin testing environment",
+      "type": "wordpress",
+      "localwp_integration": true
+    },
+    "waas": {
+      "domain": "waas.local",
+      "port": 10005,
+      "ssl": true,
+      "description": "WordPress as a Service development",
+      "type": "wordpress",
+      "localwp_integration": true
+    },
+    "client-project-dev": {
+      "domain": "client-project.local",
+      "port": 10006,
+      "ssl": true,
+      "description": "Client project development environment",
+      "type": "wordpress",
+      "localwp_integration": false
+    },
+    "api-testing": {
+      "domain": "api.local",
+      "port": 8000,
+      "ssl": true,
+      "description": "API development and testing",
+      "type": "nodejs"
+    }
+  },
+  "proxy": {
+    "type": "traefik",
+    "dashboard_port": 8080,
+    "http_port": 80,
+    "https_port": 443
+  },
+  "ssl": {
+    "cert_directory": "~/.local-ssl-certs",
+    "ca_root": "mkcert",
+    "auto_generate": true
+  },
+  "dns": {
+    "resolver": "dnsmasq",
+    "domain_suffix": ".local",
+    "nameserver": "127.0.0.1"
+  },
+  "docker": {
+    "network": "local-dev",
+    "compose_version": "3.8"
+  },
+  "tools": {
+    "required": ["docker", "mkcert", "dnsmasq"],
+    "optional": ["docker-compose", "traefik"]
+  },
+  "setup_steps": [
+    "1. Install required tools (docker, mkcert, dnsmasq)",
+    "2. Run: ./localhost-helper.sh setup-dns",
+    "3. Run: ./localhost-helper.sh setup-proxy", 
+    "4. Create apps: ./localhost-helper.sh create-app myapp myapp.local 3000",
+    "5. Access at https://myapp.local"
+  ],
+  "notes": {
+    "macos": "Requires sudo for DNS resolver setup",
+    "linux": "May require systemctl for dnsmasq restart",
+    "windows": "Use WSL2 for best compatibility",
+    "certificates": "mkcert automatically installs CA root certificate",
+    "networking": "All apps use shared 'local-dev' Docker network"
+  }
+}
