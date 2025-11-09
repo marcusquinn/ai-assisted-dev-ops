@@ -536,6 +536,7 @@ monitor_expiration() {
         print_error "Failed to retrieve domain expiration data"
         echo "$response"
     fi
+    return 0
 }
 
 # Show help

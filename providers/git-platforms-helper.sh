@@ -506,7 +506,6 @@ main() {
     local account_name="$3"
     local repo_name="$4"
     local description="$5"
-    local private_flag="$6"
 
     check_dependencies
 

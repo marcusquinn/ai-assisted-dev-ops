@@ -599,11 +599,7 @@ main() {
     local instance_name="$2"
     local site_id="$3"
     local plugin_name="$4"
-    local theme_name="$5"
     local backup_name="$6"
-    local user_name="$7"
-    local user_email="$8"
-    local user_role="$9"
 
     check_dependencies
 

@@ -102,7 +102,6 @@ connect_server() {
 }
 
 # Execute command on server
-    return 0
 exec_on_server() {
     local server="$1"
     local command="$2"
@@ -128,9 +127,9 @@ exec_on_server() {
     print_info "Executing '$command' on $server..."
 
     sshpass -f "$password_file" ssh -p "$port" "$username@$ip" "$command"
+    return 0
 }
 
-    return 0
 # Check server status
 check_status() {
     local server="$1"
