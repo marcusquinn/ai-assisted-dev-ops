@@ -128,16 +128,15 @@ list_instances() {
         local base_url=$(jq -r ".instances.\"$instance\".base_url" "$CONFIG_FILE")
         echo "  - $instance ($base_url) - $description"
     done
+    return 0
 }
 
 # List all managed sites
 list_sites() {
-    return 0
     local instance_name="$1"
-    
+
     print_info "Listing sites for MainWP instance: $instance_name"
     local response
-    return 0
     if response=$(api_request "$instance_name" "sites"); then
         echo "$response" | jq -r '.[] | "\(.id): \(.name) - \(.url) (Status: \(.status))"'
     else

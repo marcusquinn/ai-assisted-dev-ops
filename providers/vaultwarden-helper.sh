@@ -461,7 +461,6 @@ main() {
     local instance_name="$2"
     local user_email="$3"
     local password_length="$4"
-    local include_symbols="$5"
 
     check_dependencies
 
