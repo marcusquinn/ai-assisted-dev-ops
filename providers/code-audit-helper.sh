@@ -49,6 +49,7 @@ check_dependencies() {
         echo "  Ubuntu: sudo apt-get install jq"
         exit 1
     fi
+    return 0
 }
 
 # Load configuration
@@ -58,6 +59,7 @@ load_config() {
         print_info "Copy and customize: cp ../configs/code-audit-config.json.txt $CONFIG_FILE"
         exit 1
     fi
+    return 0
 }
 
 # Get service configuration
@@ -79,6 +81,7 @@ get_service_config() {
     fi
     
     echo "$service_config"
+    return 0
 }
 
 # Make API request
@@ -128,6 +131,7 @@ api_request() {
     elif [[ "$method" == "DELETE" ]]; then
         curl -s -X DELETE -H "$auth_header" -H "Content-Type: application/json" "$url"
     fi
+    return 0
 }
 
 # List all configured services
@@ -142,6 +146,7 @@ list_services() {
         done
         echo ""
     done
+    return 0
 }
 
 # CodeRabbit functions
@@ -432,49 +437,56 @@ show_help() {
 
 # Main script logic
 main() {
+    # Assign positional parameters to local variables
+    local command="${1:-help}"
+    local account_name="$2"
+    local project_name="$3"
+    local port="$4"
+
     check_dependencies
 
-    case "${1:-help}" in
+    case "$command" in
         "services")
             list_services
             ;;
         "coderabbit-repos")
-            coderabbit_list_repositories "$2"
+            coderabbit_list_repositories "$account_name"
             ;;
         "coderabbit-analysis")
-            coderabbit_get_analysis "$2" "$3"
+            coderabbit_get_analysis "$account_name" "$project_name"
             ;;
         "codefactor-repos")
-            codefactor_list_repositories "$2"
+            codefactor_list_repositories "$account_name"
             ;;
         "codefactor-issues")
-            codefactor_get_issues "$2" "$3"
+            codefactor_get_issues "$account_name" "$project_name"
             ;;
         "codacy-repos")
-            codacy_list_repositories "$2"
+            codacy_list_repositories "$account_name"
             ;;
         "codacy-quality")
-            codacy_get_quality_overview "$2" "$3"
+            codacy_get_quality_overview "$account_name" "$project_name"
             ;;
         "sonarcloud-projects")
-            sonarcloud_list_projects "$2"
+            sonarcloud_list_projects "$account_name"
             ;;
         "sonarcloud-measures")
-            sonarcloud_get_measures "$2" "$3"
+            sonarcloud_get_measures "$account_name" "$project_name"
             ;;
         "start-mcp")
-            start_mcp_servers "$2" "$3"
+            start_mcp_servers "$account_name" "$port"
             ;;
         "audit")
-            comprehensive_audit "$2"
+            comprehensive_audit "$account_name"
             ;;
         "report")
-            generate_audit_report "$2" "$3"
+            generate_audit_report "$account_name" "$project_name"
             ;;
         "help"|*)
             show_help
             ;;
     esac
+    return 0
 }
 
 main "$@"
