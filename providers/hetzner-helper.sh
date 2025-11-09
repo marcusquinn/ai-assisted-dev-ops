@@ -10,10 +10,29 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_info() {
+    local msg="$1"
+    echo -e "${BLUE}[INFO]${NC} $msg"
+    return 0
+}
+
+print_success() {
+    local msg="$1"
+    echo -e "${GREEN}[SUCCESS]${NC} $msg"
+    return 0
+}
+
+print_warning() {
+    local msg="$1"
+    echo -e "${YELLOW}[WARNING]${NC} $msg"
+    return 0
+}
+
+print_error() {
+    local msg="$1"
+    echo -e "${RED}[ERROR]${NC} $msg" >&2
+    return 0
+}
 
 # Configuration file
 CONFIG_FILE="../configs/hetzner-config.json"
@@ -25,6 +44,13 @@ check_config() {
         print_info "Copy and customize: cp ../configs/hetzner-config.json.txt $CONFIG_FILE"
         exit 1
     fi
+
+    if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+        print_error "Invalid JSON in configuration file: $CONFIG_FILE"
+        exit 1
+    fi
+
+    return 0
 }
 
 # List all servers from all projects
