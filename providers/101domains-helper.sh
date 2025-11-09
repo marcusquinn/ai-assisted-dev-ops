@@ -451,6 +451,7 @@ get_privacy_status() {
         print_error "Failed to get privacy status"
         echo "$response"
     fi
+    return 0
 }
 
 # Toggle domain privacy
@@ -480,6 +481,7 @@ toggle_domain_privacy() {
         print_error "Failed to $action domain privacy"
         echo "$response"
     fi
+    return 0
 }
 
 # Audit domain configuration
@@ -513,6 +515,7 @@ audit_domain() {
 
     print_info "=== PRIVACY STATUS ==="
     get_privacy_status "$account_name" "$domain"
+    return 0
 }
 
 # Monitor domain expiration
@@ -570,6 +573,7 @@ show_help() {
     echo "  $0 audit personal example.com"
     echo "  $0 monitor-expiration personal 30"
     echo "  $0 enable-privacy personal example.com"
+    return 0
 }
 
 # Main script logic
@@ -622,33 +626,34 @@ main() {
             get_domain_contacts "$account_name" "$domain"
             ;;
         "lock")
-            toggle_domain_lock "$2" "$3" "lock"
+            toggle_domain_lock "$account_name" "$domain" "lock"
             ;;
         "unlock")
-            toggle_domain_lock "$2" "$3" "unlock"
+            toggle_domain_lock "$account_name" "$domain" "unlock"
             ;;
         "transfer-status")
-            get_transfer_status "$2" "$3"
+            get_transfer_status "$account_name" "$domain"
             ;;
         "privacy-status")
-            get_privacy_status "$2" "$3"
+            get_privacy_status "$account_name" "$domain"
             ;;
         "enable-privacy")
-            toggle_domain_privacy "$2" "$3" "enable"
+            toggle_domain_privacy "$account_name" "$domain" "enable"
             ;;
         "disable-privacy")
-            toggle_domain_privacy "$2" "$3" "disable"
+            toggle_domain_privacy "$account_name" "$domain" "disable"
             ;;
         "audit")
-            audit_domain "$2" "$3"
+            audit_domain "$account_name" "$domain"
             ;;
         "monitor-expiration")
-            monitor_expiration "$2" "$3"
+            monitor_expiration "$account_name" "$domain"
             ;;
         "help"|*)
             show_help
             ;;
     esac
+    return 0
 }
 
 main "$@"

@@ -86,6 +86,7 @@ get_platform_config() {
     fi
     
     echo "$platform_config"
+    return 0
 }
 
 # Make API request
@@ -132,6 +133,7 @@ api_request() {
     elif [[ "$method" == "DELETE" ]]; then
         curl -s -X DELETE -H "$auth_header" -H "Content-Type: application/json" "$url"
     fi
+    return 0
 }
 
 # List all configured platforms
