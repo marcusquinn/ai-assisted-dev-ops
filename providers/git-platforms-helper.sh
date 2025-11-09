@@ -4,13 +4,6 @@
 # Comprehensive Git platform management for AI assistants (GitHub, GitLab, Gitea, Local Git)
 
 # Colors for output
-# String literal constants
-readonly ERROR_CONFIG_NOT_FOUND="$ERROR_CONFIG_NOT_FOUND"
-readonly ERROR_JQ_REQUIRED="$ERROR_JQ_REQUIRED"
-readonly INFO_JQ_INSTALL_MACOS="$INFO_JQ_INSTALL_MACOS"
-readonly INFO_JQ_INSTALL_UBUNTU="$INFO_JQ_INSTALL_UBUNTU"
-readonly ERROR_CURL_REQUIRED="$ERROR_CURL_REQUIRED"
-readonly DEFAULT_NO_DESCRIPTION="$DEFAULT_NO_DESCRIPTION"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -52,14 +45,14 @@ readonly PLATFORM_GITEA="gitea"
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
-        print_error "$ERROR_CURL_REQUIRED"
+        print_error "curl is required but not installed"
         exit 1
     fi
-    
+
     if ! command -v jq &> /dev/null; then
-        print_error "$ERROR_JQ_REQUIRED"
-        echo "$INFO_JQ_INSTALL_MACOS"
-        echo "$INFO_JQ_INSTALL_UBUNTU"
+        print_error "jq is required but not installed"
+        print_info "Install on macOS: brew install jq"
+        print_info "Install on Ubuntu: sudo apt-get install jq"
         exit 1
     fi
     
@@ -73,7 +66,7 @@ check_dependencies() {
 # Load configuration
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "$ERROR_CONFIG_NOT_FOUND"
+        print_error "Configuration file not found: $CONFIG_FILE"
         print_info "Copy and customize: cp ../configs/git-platforms-config.json.txt $CONFIG_FILE"
         exit 1
     fi
@@ -91,7 +84,8 @@ get_platform_config() {
         exit 1
     fi
     
-    local platform_config=$(jq -r ".platforms.\"$platform\".accounts.\"$account_name\"" "$CONFIG_FILE")
+    local platform_config
+    platform_config=$(jq -r ".platforms.\"$platform\".accounts.\"$account_name\"" "$CONFIG_FILE")
     if [[ "$platform_config" == "null" ]]; then
         print_error "Platform '$platform' account '$account_name' not found in configuration"
         list_platforms
@@ -108,11 +102,14 @@ api_request() {
     local account_name="$2"
     local endpoint="$3"
     local method="${4:-GET}"
-    local data="$param5"
-    
-    local config=$(get_platform_config "$platform" "$account_name")
-    local api_token=$(echo "$config" | jq -r '.api_token')
-    local base_url=$(echo "$config" | jq -r '.base_url')
+    local data="$5"
+
+    local config
+    config=$(get_platform_config "$platform" "$account_name")
+    local api_token
+    api_token=$(echo "$config" | jq -r '.api_token')
+    local base_url
+    base_url=$(echo "$config" | jq -r '.base_url')
     
     if [[ "$api_token" == "null" || "$base_url" == "null" ]]; then
         print_error "Invalid API credentials for $platform account '$account_name'"
@@ -153,11 +150,13 @@ api_request() {
 list_platforms() {
     load_config
     print_info "Available Git platforms:"
-    jq -r '.platforms | keys[]' "$CONFIG_FILE" | while read platform; do
+    jq -r '.platforms | keys[]' "$CONFIG_FILE" | while read -r platform; do
         echo "  Platform: $platform"
-        jq -r ".platforms.\"$platform\".accounts | keys[]" "$CONFIG_FILE" | while read account; do
-            local description=$(jq -r ".platforms.\"$platform\".accounts.\"$account\".description" "$CONFIG_FILE")
-            local base_url=$(jq -r ".platforms.\"$platform\".accounts.\"$account\".base_url" "$CONFIG_FILE")
+        jq -r ".platforms.\"$platform\".accounts | keys[]" "$CONFIG_FILE" | while read -r account; do
+            local description
+            description=$(jq -r ".platforms.\"$platform\".accounts.\"$account\".description" "$CONFIG_FILE")
+            local base_url
+            base_url=$(jq -r ".platforms.\"$platform\".accounts.\"$account\".base_url" "$CONFIG_FILE")
             echo "    - $account ($base_url) - $description"
         done
         echo ""
@@ -172,10 +171,9 @@ github_list_repositories() {
     local visibility="${2:-all}"
     
     print_info "Listing GitHub repositories for account: $account_name"
-    local response=$(api_request "$PLATFORM_GITHUB" "$account_name" "user/repos?visibility=$visibility&sort=updated&per_page=100")
-    
-    if [[ $? -eq 0 ]]; then
-        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "$DEFAULT_NO_DESCRIPTION") (Stars: \(.stargazers_count), Forks: \(.forks_count))"'
+    local response
+    if response=$(api_request "$PLATFORM_GITHUB" "$account_name" "user/repos?visibility=$visibility&sort=updated&per_page=100"); then
+        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.stargazers_count), Forks: \(.forks_count))"'
     else
         print_error "Failed to retrieve repositories"
         echo "$response"
@@ -224,7 +222,7 @@ gitlab_list_projects() {
     
     if [[ $? -eq 0 ]]; then
     return 0
-        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "$DEFAULT_NO_DESCRIPTION") (Stars: \(.star_count), Forks: \(.forks_count))"'
+        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.star_count), Forks: \(.forks_count))"'
     else
         print_error "Failed to retrieve projects"
         echo "$response"
@@ -272,7 +270,7 @@ gitea_list_repositories() {
     return 0
     
     if [[ $? -eq 0 ]]; then
-        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "$DEFAULT_NO_DESCRIPTION") (Stars: \(.stars_count), Forks: \(.forks_count))"'
+        echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.stars_count), Forks: \(.forks_count))"'
     else
         print_error "Failed to retrieve repositories"
         echo "$response"

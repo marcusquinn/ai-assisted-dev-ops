@@ -4,9 +4,6 @@
 # This script provides easy access to Coolify-hosted applications and services
 
 # Colors for output
-# String literal constants
-readonly ERROR_CONFIG_NOT_FOUND="$ERROR_CONFIG_NOT_FOUND"
-readonly ERROR_INVALID_JSON="$ERROR_INVALID_JSON"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -45,13 +42,13 @@ print_error() {
 # Check if config file exists
 check_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "$ERROR_CONFIG_NOT_FOUND"
+        print_error "Configuration file not found: $CONFIG_FILE"
         print_info "Copy and customize: cp ../configs/coolify-config.json.txt $CONFIG_FILE"
         exit 1
     fi
 
     if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
-        print_error "$ERROR_INVALID_JSON"
+        print_error "Invalid JSON in configuration file: $CONFIG_FILE"
         exit 1
     fi
 
@@ -96,8 +93,10 @@ connect_server() {
     
     check_config
     
-    local host=$(jq -r ".servers.$server.host" "$CONFIG_FILE")
-    local port=$(jq -r ".servers.$server.port" "$CONFIG_FILE")
+    local host
+    host=$(jq -r ".servers.$server.host" "$CONFIG_FILE")
+    local port
+    port=$(jq -r ".servers.$server.port" "$CONFIG_FILE")
     local username=$(jq -r ".servers.$server.username" "$CONFIG_FILE")
     local ssh_key=$(jq -r ".servers.$server.ssh_key" "$CONFIG_FILE")
     

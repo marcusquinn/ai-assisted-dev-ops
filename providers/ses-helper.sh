@@ -4,12 +4,6 @@
 # Comprehensive SES management for AI assistants
 
 # Colors for output
-# String literal constants
-readonly ERROR_CONFIG_NOT_FOUND="$ERROR_CONFIG_NOT_FOUND"
-readonly ERROR_ACCOUNT_REQUIRED="$ERROR_ACCOUNT_REQUIRED"
-readonly ERROR_JQ_REQUIRED="$ERROR_JQ_REQUIRED"
-readonly INFO_JQ_INSTALL_MACOS="$INFO_JQ_INSTALL_MACOS"
-readonly INFO_JQ_INSTALL_UBUNTU="$INFO_JQ_INSTALL_UBUNTU"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -62,15 +56,15 @@ check_aws_cli() {
 # Load SES configuration
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "$ERROR_CONFIG_NOT_FOUND"
+        print_error "Configuration file not found: $CONFIG_FILE"
         print_info "Copy and customize: cp ../configs/ses-config.json.txt $CONFIG_FILE"
         exit 1
     fi
-    
+
     if ! command -v jq &> /dev/null; then
-        print_error "$ERROR_JQ_REQUIRED"
-        echo "$INFO_JQ_INSTALL_MACOS"
-        echo "$INFO_JQ_INSTALL_UBUNTU"
+        print_error "jq is required but not installed"
+        print_info "Install on macOS: brew install jq"
+        print_info "Install on Ubuntu: sudo apt-get install jq"
         exit 1
     fi
     return 0
@@ -81,12 +75,13 @@ get_account_config() {
     local account_name="$1"
     
     if [[ -z "$account_name" ]]; then
-        print_error "$ERROR_ACCOUNT_REQUIRED"
+        print_error "Account name is required"
         list_accounts
         exit 1
     fi
     
-    local account_config=$(jq -r ".accounts.\"$account_name\"" "$CONFIG_FILE")
+    local account_config
+    account_config=$(jq -r ".accounts.\"$account_name\"" "$CONFIG_FILE")
     if [[ "$account_config" == "null" ]]; then
         print_error "Account '$account_name' not found in configuration"
         list_accounts
@@ -100,7 +95,8 @@ get_account_config() {
 # Set AWS credentials for account
 set_aws_credentials() {
     local account_name="$1"
-    local config=$(get_account_config "$account_name")
+    local config
+    config=$(get_account_config "$account_name")
     
     export AWS_ACCESS_KEY_ID=$(echo "$config" | jq -r '.aws_access_key_id')
     export AWS_SECRET_ACCESS_KEY=$(echo "$config" | jq -r '.aws_secret_access_key')

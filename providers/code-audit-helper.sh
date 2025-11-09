@@ -4,12 +4,6 @@
 # Comprehensive code quality and security auditing for AI assistants
 
 # Colors for output
-# String literal constants
-readonly ERROR_CONFIG_NOT_FOUND="$ERROR_CONFIG_NOT_FOUND"
-readonly ERROR_JQ_REQUIRED="$ERROR_JQ_REQUIRED"
-readonly INFO_JQ_INSTALL_MACOS="$INFO_JQ_INSTALL_MACOS"
-readonly INFO_JQ_INSTALL_UBUNTU="$INFO_JQ_INSTALL_UBUNTU"
-readonly ERROR_CURL_REQUIRED="$ERROR_CURL_REQUIRED"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -51,14 +45,14 @@ readonly PROVIDER_SONARCLOUD="sonarcloud"
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
-        print_error "$ERROR_CURL_REQUIRED"
+        print_error "curl is required but not installed"
         exit 1
     fi
-    
+
     if ! command -v jq &> /dev/null; then
-        print_error "$ERROR_JQ_REQUIRED"
-        echo "$INFO_JQ_INSTALL_MACOS"
-        echo "$INFO_JQ_INSTALL_UBUNTU"
+        print_error "jq is required but not installed"
+        print_info "Install on macOS: brew install jq"
+        print_info "Install on Ubuntu: sudo apt-get install jq"
         exit 1
     fi
     return 0
@@ -67,7 +61,7 @@ check_dependencies() {
 # Load configuration
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "$ERROR_CONFIG_NOT_FOUND"
+        print_error "Configuration file not found: $CONFIG_FILE"
         print_info "Copy and customize: cp ../configs/code-audit-config.json.txt $CONFIG_FILE"
         exit 1
     fi
@@ -85,7 +79,8 @@ get_service_config() {
         exit 1
     fi
     
-    local service_config=$(jq -r ".services.\"$service_name\".accounts.\"$account_name\"" "$CONFIG_FILE")
+    local service_config
+    service_config=$(jq -r ".services.\"$service_name\".accounts.\"$account_name\"" "$CONFIG_FILE")
     if [[ "$service_config" == "null" ]]; then
         print_error "Service '$service_name' account '$account_name' not found in configuration"
         list_services
@@ -102,7 +97,7 @@ api_request() {
     local account_name="$2"
     local endpoint="$3"
     local method="${4:-GET}"
-    local data="$param5"
+    local data="$5"
     
     local config=$(get_service_config "$service_name" "$account_name")
     local api_token=$(echo "$config" | jq -r '.api_token')
