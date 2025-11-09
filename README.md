@@ -5,6 +5,7 @@
 [![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
 [![Codacy Badge](https://img.shields.io/badge/Codacy-Ready%20for%20Integration-blue)](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/marcusquinn/ai-assisted-dev-ops?utm_source=oss&utm_medium=github&utm_campaign=marcusquinn%2Fai-assisted-dev-ops&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 
 <!-- License & Legal -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
