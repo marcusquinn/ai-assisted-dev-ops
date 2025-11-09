@@ -484,7 +484,10 @@ full_setup_wizard() {
 
 # Main script logic
 main() {
-    case "${1:-help}" in
+    # Assign positional parameters to local variables
+    local command="${1:-help}"
+
+    case "$command" in
         "assess")
             ask_setup_needs
             analyze_and_recommend
