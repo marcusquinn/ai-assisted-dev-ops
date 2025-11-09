@@ -293,16 +293,24 @@ dns_operation() {
     return 0
 }
 
+# Assign positional parameters to local variables
+command="${1:-help}"
+provider="$2"
+domain="$3"
+record_type="$4"
+record_name="$5"
+record_value="$6"
+
 # Main command handler
-case "$1" in
+case "$command" in
     "list")
         list_providers
         ;;
     "records")
-        dns_operation "$2" "list" "$3"
+        dns_operation "$provider" "list" "$domain"
         ;;
     "add")
-        dns_operation "$2" "add" "$3" "$4" "$5" "$6"
+        dns_operation "$provider" "add" "$domain" "$record_type" "$record_name" "$record_value"
         ;;
     "delete")
         dns_operation "$2" "delete" "$3" "$4"
