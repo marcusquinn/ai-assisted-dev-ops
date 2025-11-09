@@ -8,10 +8,6 @@
 reviews:
   # High-level review focus areas
   high_level_summary: true
-
-  # Enable Pro features
-  enable_pro_features: true
-  comprehensive_analysis: true
   
   # Specific areas of focus for this DevOps framework
   review_instructions: |
@@ -89,32 +85,9 @@ path_instructions:
       - Clear documentation
       - Safe defaults
 
-# Language-specific settings
-language_settings:
-  shell:
-    # Enable ShellCheck-style analysis
-    enable_static_analysis: true
-    # Focus on common shell pitfalls
-    focus_areas:
-      - "error_handling"
-      - "variable_quoting"
-      - "parameter_expansion"
-      - "security"
-
 # Exclude certain files from review
-exclude_paths:
+ignore:
   - ".agent/tmp/*"
   - ".agent/memory/*"
   - "*.log"
   - "*.tmp"
-
-# Enable specific review features
-features:
-  # Enable security-focused reviews
-  security_review: true
-  # Enable performance analysis
-  performance_review: true
-  # Enable best practices checking
-  best_practices: true
-  # Enable documentation review
-  documentation_review: true
