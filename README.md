@@ -4,7 +4,7 @@
 [![GitHub Actions](https://github.com/marcusquinn/ai-assisted-dev-ops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/actions)
 [![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
 [![Codacy Badge](https://img.shields.io/badge/Codacy-Ready%20for%20Integration-blue)](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
-[![SonarCloud](https://img.shields.io/badge/SonarCloud-Ready%20for%20Integration-orange)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
 
 <!-- License & Legal -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -391,7 +391,7 @@ This framework is continuously analyzed by multiple code quality and security pl
 - **🚀 External Integration Status**:
   - **CodeFactor**: Ready for 5-minute setup
   - **Codacy**: Ready for integration (badge shows setup status)
-  - **SonarCloud**: Ready for integration (badge shows setup status)
+  - **✅ SonarCloud**: Fully integrated and running analysis
   - **CodeRabbit**: Ready for AI-powered code reviews
 
 ## 🔧 **Configuration Examples**
