@@ -115,7 +115,7 @@ api_request() {
     local auth_header
     
     case "$platform" in
-        "github")
+        "$PLATFORM_GITHUB")
             auth_header="Authorization: token $api_token"
             ;;
         "gitlab")
@@ -164,7 +164,7 @@ github_list_repositories() {
     local visibility="${2:-all}"
     
     print_info "Listing GitHub repositories for account: $account_name"
-    local response=$(api_request "github" "$account_name" "user/repos?visibility=$visibility&sort=updated&per_page=100")
+    local response=$(api_request "$PLATFORM_GITHUB" "$account_name" "user/repos?visibility=$visibility&sort=updated&per_page=100")
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.stargazers_count), Forks: \(.forks_count))"'
@@ -193,7 +193,7 @@ github_create_repository() {
         '{name: $name, description: $description, private: $private}')
     
     print_info "Creating GitHub repository: $repo_name"
-    local response=$(api_request "github" "$account_name" "user/repos" "POST" "$data")
+    local response=$(api_request "$PLATFORM_GITHUB" "$account_name" "user/repos" "POST" "$data")
     
     if [[ $? -eq 0 ]]; then
         print_success "Repository created successfully"
@@ -371,7 +371,7 @@ clone_repository() {
 
     local clone_url
     case "$platform" in
-        "github")
+        "$PLATFORM_GITHUB")
             clone_url="https://github.com/$username/$repo_identifier.git"
             ;;
         "gitlab")
@@ -430,7 +430,7 @@ start_mcp_servers() {
             ;;
         *)
             print_error "Unknown platform: $platform"
-            print_info "Available platforms: github, gitlab, gitea"
+            print_info "Available platforms: $PLATFORM_GITHUB, $PLATFORM_GITLAB, $PLATFORM_GITEA"
             ;;
     esac
     return 0
