@@ -37,18 +37,23 @@ print_error() {
 # Configuration directory
 CONFIG_DIR="../configs"
 
+# Constants for repeated strings
+readonly PROVIDER_CLOUDFLARE="cloudflare"
+readonly PROVIDER_NAMECHEAP="namecheap"
+readonly PROVIDER_ROUTE53="route53"
+
 # Get provider config file
 get_provider_config() {
     local provider="$1"
 
     case "$provider" in
-        "cloudflare")
+        "$PROVIDER_CLOUDFLARE")
             echo "$CONFIG_DIR/cloudflare-dns-config.json"
             ;;
-        "namecheap")
+        "$PROVIDER_NAMECHEAP")
             echo "$CONFIG_DIR/namecheap-dns-config.json"
             ;;
-        "route53")
+        "$PROVIDER_ROUTE53")
             echo "$CONFIG_DIR/route53-dns-config.json"
             ;;
         *)
@@ -67,13 +72,13 @@ check_provider_config() {
     if [[ ! -f "$config_file" ]]; then
         print_error "Configuration file not found: $config_file"
         case "$provider" in
-            "cloudflare")
+            "$PROVIDER_CLOUDFLARE")
                 print_info "Copy and customize: cp $CONFIG_DIR/cloudflare-dns-config.json.txt $config_file"
                 ;;
-            "namecheap")
+            "$PROVIDER_NAMECHEAP")
                 print_info "Copy and customize: cp $CONFIG_DIR/namecheap-dns-config.json.txt $config_file"
                 ;;
-            "route53")
+            "$PROVIDER_ROUTE53")
                 print_info "Copy and customize: cp $CONFIG_DIR/route53-dns-config.json.txt $config_file"
                 ;;
             *)

@@ -36,6 +36,11 @@ print_error() {
 
 CONFIG_FILE="../configs/code-audit-config.json"
 
+# Constants for repeated strings
+readonly PROVIDER_CODERABBIT="coderabbit"
+readonly PROVIDER_CODACY="codacy"
+readonly PROVIDER_SONARCLOUD="sonarcloud"
+
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
@@ -162,6 +167,7 @@ coderabbit_list_repositories() {
         print_error "Failed to retrieve repositories"
         echo "$response"
     fi
+    return 0
 }
 
 coderabbit_get_analysis() {

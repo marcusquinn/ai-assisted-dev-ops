@@ -36,6 +36,11 @@ print_error() {
 
 CONFIG_FILE="../configs/git-platforms-config.json"
 
+# Constants for repeated strings
+readonly PLATFORM_GITHUB="github"
+readonly PLATFORM_GITLAB="gitlab"
+readonly PLATFORM_GITEA="gitea"
+
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
