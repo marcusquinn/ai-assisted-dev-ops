@@ -154,7 +154,6 @@ get_server_details() {
     return 1
 }
 
-    return 0
 # Generate SSH configurations
 generate_ssh_configs() {
     check_config
@@ -197,6 +196,7 @@ generate_ssh_configs() {
     
     print_success "SSH configurations generated in ~/.ssh/hetzner_config"
     print_info "Add 'Include ~/.ssh/hetzner_config' to your ~/.ssh/config"
+    return 0
 }
 
 # Main command handler
