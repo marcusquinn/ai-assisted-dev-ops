@@ -571,42 +571,52 @@ show_help() {
 
 # Main script logic
 main() {
+    # Assign positional parameters to local variables for better maintainability
+    local command="${1:-help}"
+    local account_name="$2"
+    local domain="$3"
+    local record_name="$4"
+    local record_type="$5"
+    local record_content="$6"
+    local record_ttl="$7"
+    local record_id="$8"
+
     check_dependencies
 
-    case "${1:-help}" in
+    case "$command" in
         "accounts")
             list_accounts
             ;;
         "domains")
-            list_domains "$2"
+            list_domains "$account_name"
             ;;
         "domain-details")
-            get_domain_details "$2" "$3"
+            get_domain_details "$account_name" "$domain"
             ;;
         "dns-records")
-            list_dns_records "$2" "$3"
+            list_dns_records "$account_name" "$domain"
             ;;
         "add-dns")
-            add_dns_record "$2" "$3" "$4" "$5" "$6" "$7"
+            add_dns_record "$account_name" "$domain" "$record_name" "$record_type" "$record_content" "$record_ttl"
             ;;
         "update-dns")
-            update_dns_record "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+            update_dns_record "$account_name" "$domain" "$record_name" "$record_type" "$record_content" "$record_ttl" "$record_id"
             ;;
         "delete-dns")
-            delete_dns_record "$2" "$3" "$4"
+            delete_dns_record "$account_name" "$domain" "$record_name"
             ;;
         "nameservers")
-            get_nameservers "$2" "$3"
+            get_nameservers "$account_name" "$domain"
             ;;
         "update-ns")
             shift 3
-            update_nameservers "$2" "$3" "$@"
+            update_nameservers "$account_name" "$domain" "$@"
             ;;
         "check-availability")
-            check_availability "$2" "$3"
+            check_availability "$account_name" "$domain"
             ;;
         "contacts")
-            get_domain_contacts "$2" "$3"
+            get_domain_contacts "$account_name" "$domain"
             ;;
         "lock")
             toggle_domain_lock "$2" "$3" "lock"

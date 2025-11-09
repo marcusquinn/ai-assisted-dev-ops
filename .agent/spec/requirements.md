@@ -22,6 +22,39 @@
 - **Compatibility**: Cross-platform support (macOS, Linux, Windows)
 - **Auditability**: Complete audit trails for all operations
 
+### **🏆 Quality Requirements (MANDATORY)**
+**All code changes MUST maintain these quality standards:**
+
+#### **Code Quality Platforms**
+- **SonarCloud**: A-grade Security, Reliability, Maintainability ratings
+- **CodeFactor**: A-grade overall rating (80%+ A-grade files)
+- **GitHub Actions**: All CI/CD checks must pass
+- **ShellCheck**: Zero violations across all shell scripts
+
+#### **Quality Metrics**
+- **Zero Security Vulnerabilities**: Maintain perfect security rating
+- **Zero Code Duplication**: Keep duplication at 0.0%
+- **Minimal Code Smells**: Target <400 maintainability issues
+- **Professional Standards**: Follow established shell scripting best practices
+
+#### **Quality Validation Process**
+1. **Pre-commit**: Run ShellCheck on all modified shell scripts
+2. **Post-commit**: Verify SonarCloud and CodeFactor improvements
+3. **Continuous**: Monitor quality platforms for regressions
+4. **Documentation**: Update quality guidelines with new learnings
+
+**Quality Check Commands:**
+```bash
+# SonarCloud status
+curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_ai-assisted-dev-ops&metricKeys=bugs,vulnerabilities,code_smells"
+
+# CodeFactor status
+curl -s "https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops"
+
+# ShellCheck validation
+find providers/ -name "*.sh" -exec shellcheck {} \;
+```
+
 ## 🏗️ **Service Categories & Capabilities**
 
 ### **Infrastructure & Hosting**
