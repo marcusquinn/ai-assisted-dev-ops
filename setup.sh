@@ -150,18 +150,58 @@ EOF
     fi
 }
 
+# Deploy AI assistant templates
+deploy_ai_templates() {
+    print_info "Deploying AI assistant templates..."
+
+    if [[ -f "templates/deploy-templates.sh" ]]; then
+        print_info "Running template deployment script..."
+        bash templates/deploy-templates.sh
+
+        if [[ $? -eq 0 ]]; then
+            print_success "AI assistant templates deployed successfully"
+        else
+            print_warning "Template deployment encountered issues (non-critical)"
+        fi
+    else
+        print_warning "Template deployment script not found - skipping"
+    fi
+}
+
+# Verify repository location
+verify_location() {
+    local current_dir
+    current_dir="$(pwd)"
+    local expected_location="$HOME/git/ai-assisted-dev-ops"
+
+    if [[ "$current_dir" != "$expected_location" ]]; then
+        print_warning "Repository is not in the recommended location"
+        print_info "Current location: $current_dir"
+        print_info "Recommended location: $expected_location"
+        echo ""
+        echo "For optimal AI assistant integration, consider moving this repository to:"
+        echo "  mkdir -p ~/git"
+        echo "  mv '$current_dir' '$expected_location'"
+        echo ""
+    else
+        print_success "Repository is in the recommended location: $expected_location"
+    fi
+}
+
 # Main setup function
 main() {
     echo "🤖 AI Assistant Server Access Framework Setup"
     echo "=============================================="
     echo ""
-    
+
+    verify_location
     check_requirements
     check_optional_deps
     setup_ssh_key
     setup_configs
     set_permissions
     setup_aliases
+    deploy_ai_templates
     
     echo ""
     print_success "🎉 Setup complete!"

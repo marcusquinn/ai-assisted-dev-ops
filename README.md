@@ -255,17 +255,58 @@ ai-assisted-dev-ops/
 - **`.agent/tmp/`** - Temporary working directory for AI operations
 - **`.agent/memory/`** - Persistent memory for AI learning and context
 
+## 🔒 **Secure AI Template System**
+
+### **Template Deployment (Automatic)**
+The setup script automatically deploys minimal, secure AGENTS.md templates to prevent prompt injection attacks:
+
+#### **Home Directory Template (`~/AGENTS.md`)**
+- **Minimal configuration** with references to authoritative repository
+- **Security-focused** to prevent prompt injection vulnerabilities
+- **Redirects AI assistants** to use the framework's working directories
+
+#### **Git Directory Template (`~/git/AGENTS.md`)**
+- **DevOps-focused** minimal configuration for git operations
+- **References framework** for all infrastructure operations
+- **Maintains security** by avoiding detailed instructions in user space
+
+#### **Agent Directory (`~/.agent/README.md`)**
+- **Redirects to authoritative** `.agent/` directory in the framework
+- **Prevents misuse** of home-level agent directories
+- **Maintains centralized control** over AI assistant operations
+
+### **Security Mitigations**
+- **Minimal content**: Templates contain only essential references
+- **Authoritative source**: All detailed instructions remain in the repository
+- **Prompt injection protection**: No operational instructions in user-editable files
+- **Centralized control**: All AI operations use framework's working directories
+
 ## 🚀 **Quick Start**
 
-### 1. Clone and Setup
+### 1. Clone to Recommended Location
 ```bash
-mkdir -p ~/git/ai-assistant-server-access
-cd ~/git/ai-assistant-server-access
-# Copy framework files here
-chmod +x *.sh
+# Clone to the standard location for optimal AI assistant integration
+mkdir -p ~/git
+cd ~/git
+git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
+cd ai-assisted-dev-ops
 ```
 
-### 2. Configure Your Providers
+### 2. Run Setup (Includes AI Template Deployment)
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+**The setup script will:**
+- Verify you're in the recommended location (`~/git/ai-assisted-dev-ops`)
+- Check system requirements and dependencies
+- Set up SSH keys and configurations
+- **Deploy secure AI assistant templates** to your home directory
+- Create minimal `~/AGENTS.md` and `~/git/AGENTS.md` files
+- Set up `.agent/` directory structure with security mitigations
+
+### 3. Configure Your Providers
 ```bash
 # Copy sample configs and customize
 cp configs/hostinger-config.json.txt configs/hostinger-config.json

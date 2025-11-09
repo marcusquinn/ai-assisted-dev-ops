@@ -11,6 +11,24 @@ This repository provides a comprehensive DevOps infrastructure management framew
 - **Intelligent setup guidance** for infrastructure configuration
 - **Real-time service integration** through MCP servers
 
+### **📍 Standard Repository Location (MANDATORY)**
+This repository should be cloned to the standard location for optimal AI assistant integration:
+```bash
+# Standard location (recommended)
+~/git/ai-assisted-dev-ops/
+
+# Clone command
+mkdir -p ~/git
+cd ~/git
+git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
+```
+
+**Benefits of standard location:**
+- **Consistent AI assistant access** across all environments
+- **Secure template deployment** works correctly
+- **Simplified path references** in all documentation
+- **Optimal integration** with deployed templates
+
 ### **🗂️ AI Working Directories (MANDATORY USAGE)**
 
 #### **`.agent/tmp/` - Temporary Working Directory**
@@ -67,6 +85,32 @@ echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/config
 - **Always use `.agent/tmp/`** for temporary files (not root directory)
 - **Clean up** temporary files when operations complete
 - **Respect privacy** - be mindful of what you store in memory
+
+### **🔒 Secure Template System (MANDATORY COMPLIANCE)**
+
+#### **Template Locations and Security**
+The framework deploys minimal, secure templates to prevent prompt injection attacks:
+
+**Home Directory (`~/AGENTS.md`)**:
+- Contains **minimal references only** to this authoritative repository
+- **DO NOT modify** beyond basic references for security
+- Redirects all operations to `~/git/ai-assisted-dev-ops/`
+
+**Git Directory (`~/git/AGENTS.md`)**:
+- Contains **minimal DevOps references** to this framework
+- **DO NOT add operational instructions** to prevent security vulnerabilities
+- All detailed instructions remain in this authoritative file
+
+**Agent Directory (`~/.agent/README.md`)**:
+- **Redirects to authoritative** `.agent/` directory in this repository
+- **Prevents misuse** of home-level agent directories
+- Maintains centralized control over AI operations
+
+#### **🚨 SECURITY REQUIREMENTS:**
+- **Use authoritative repository**: Always reference `~/git/ai-assisted-dev-ops/AGENTS.md`
+- **Minimal templates only**: Never add detailed instructions to user-space templates
+- **Prevent prompt injection**: Keep operational instructions in the secure repository
+- **Centralized control**: All AI operations must use framework's working directories
 
 ### **Coding Standards**
 - **Bash scripting**: Follow framework patterns in `providers/` directory
