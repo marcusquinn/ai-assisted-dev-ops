@@ -36,6 +36,9 @@ print_error() {
 
 CONFIG_FILE="../configs/ses-config.json"
 
+# Constants for repeated strings
+readonly ERROR_IDENTITY_REQUIRED="Identity (email or domain) is required"
+
 # Check if AWS CLI is installed
 check_aws_cli() {
     if ! command -v aws &> /dev/null; then
@@ -154,7 +157,7 @@ get_identity_verification() {
     set_aws_credentials "$account_name"
     
     if [[ -z "$identity" ]]; then
-        print_error "Identity (email or domain) is required"
+        print_error "$ERROR_IDENTITY_REQUIRED"
         exit 1
     fi
     
@@ -266,7 +269,7 @@ get_bounce_complaint_notifications() {
     set_aws_credentials "$account_name"
 
     if [[ -z "$identity" ]]; then
-        print_error "Identity (email or domain) is required"
+        print_error "$ERROR_IDENTITY_REQUIRED"
         exit 1
     fi
 
@@ -326,7 +329,7 @@ get_dkim_attributes() {
     set_aws_credentials "$account_name"
 
     if [[ -z "$identity" ]]; then
-        print_error "Identity (email or domain) is required"
+        print_error "$ERROR_IDENTITY_REQUIRED"
         exit 1
     fi
 
@@ -341,7 +344,7 @@ enable_dkim() {
     set_aws_credentials "$account_name"
 
     if [[ -z "$identity" ]]; then
-        print_error "Identity (email or domain) is required"
+        print_error "$ERROR_IDENTITY_REQUIRED"
         exit 1
     fi
 
