@@ -54,6 +54,7 @@ check_dependencies() {
         print_error "git is required but not installed"
         exit 1
     fi
+    return 0
 }
 
 # Load configuration
@@ -63,6 +64,7 @@ load_config() {
         print_info "Copy and customize: cp ../configs/git-platforms-config.json.txt $CONFIG_FILE"
         exit 1
     fi
+    return 0
 }
 
 # Get platform configuration
