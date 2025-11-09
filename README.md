@@ -1,5 +1,10 @@
 # AI-Assisted DevOps Framework
 
+[![GitHub Actions](https://github.com/marcusquinn/ai-assisted-dev-ops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/ai-assisted-dev-ops.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/ai-assisted-dev-ops.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/network)
+
 A comprehensive, production-ready framework that gives your AI assistant seamless access to your entire DevOps infrastructure including servers, hosting providers, security services, code auditing, and development tools through standardized helper scripts, SSH configurations, and MCP (Model Context Protocol) integrations.
 
 ## 🎯 **What This Framework Does**
