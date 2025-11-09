@@ -1,9 +1,42 @@
 # AI-Assisted DevOps Framework
 
+<!-- Build & Quality Status -->
 [![GitHub Actions](https://github.com/marcusquinn/ai-assisted-dev-ops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/actions)
+[![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/placeholder)](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
+
+<!-- License & Legal -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/ai-assisted-dev-ops.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/ai-assisted-dev-ops.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/network)
+[![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025-blue.svg)](https://github.com/marcusquinn)
+
+<!-- GitHub Stats -->
+[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/network)
+[![GitHub watchers](https://img.shields.io/github/watchers/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/watchers)
+
+<!-- Release & Version Info -->
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
+[![GitHub Release Date](https://img.shields.io/github/release-date/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
+[![GitHub commits since latest release](https://img.shields.io/github/commits-since/marcusquinn/ai-assisted-dev-ops/latest)](https://github.com/marcusquinn/ai-assisted-dev-ops/commits/main)
+
+<!-- Repository Stats -->
+[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![Lines of code](https://img.shields.io/tokei/lines/github/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![GitHub language count](https://img.shields.io/github/languages/count/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![GitHub top language](https://img.shields.io/github/languages/top/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+
+<!-- Community & Issues -->
+[![GitHub issues](https://img.shields.io/github/issues/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues)
+[![GitHub closed issues](https://img.shields.io/github/issues-closed/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues?q=is%3Aissue+is%3Aclosed)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/pulls)
+[![GitHub contributors](https://img.shields.io/github/contributors/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/graphs/contributors)
+
+<!-- Framework Specific -->
+[![Services Supported](https://img.shields.io/badge/Services%20Supported-25+-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-service-categories)
+[![AGENTS.md](https://img.shields.io/badge/AGENTS.md-Compliant-blue.svg)](https://agents.md/)
+[![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/blob/main/AGENTS.md)
+[![MCP Servers](https://img.shields.io/badge/MCP%20Servers-8+-orange.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-mcp-server-integration)
 
 A comprehensive, production-ready framework that gives your AI assistant seamless access to your entire DevOps infrastructure including servers, hosting providers, security services, code auditing, and development tools through standardized helper scripts, SSH configurations, and MCP (Model Context Protocol) integrations.
 
