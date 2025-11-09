@@ -271,22 +271,27 @@ generate_ssh_configs() {
     return 0
 }
 
+# Assign positional parameters to local variables
+command="${1:-help}"
+server_name="$2"
+command_to_run="$3"
+
 # Main command handler
-case "$1" in
+case "$command" in
     "list")
         list_servers
         ;;
     "connect")
-        connect_server "$2"
+        connect_server "$server_name"
         ;;
     "open")
-        open_coolify "$2"
+        open_coolify "$server_name"
         ;;
     "apps")
-        list_apps "$2"
+        list_apps "$server_name"
         ;;
     "exec")
-        exec_command "$2" "$3"
+        exec_command "$server_name" "$command_to_run"
         ;;
     "status")
         check_status "$2"
