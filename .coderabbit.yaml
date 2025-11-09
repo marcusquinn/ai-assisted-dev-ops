@@ -1,0 +1,108 @@
+# CodeRabbit Configuration for AI-Assisted DevOps Framework
+# https://docs.coderabbit.ai/guides/review-instructions
+
+# Review Instructions
+reviews:
+  # High-level review focus areas
+  high_level_summary: true
+  
+  # Specific areas of focus for this DevOps framework
+  review_instructions: |
+    This is an AI-Assisted DevOps Framework with comprehensive automation tools.
+    
+    Please focus on:
+    
+    **Shell Script Quality:**
+    - Proper error handling and return statements
+    - Consistent variable naming and local variable usage
+    - Security best practices (no hardcoded credentials)
+    - Proper quoting and parameter expansion
+    - ShellCheck compliance
+    
+    **Architecture & Design:**
+    - Modular design and separation of concerns
+    - Consistent patterns across provider helpers
+    - Clear function responsibilities
+    - Proper abstraction levels
+    
+    **Documentation & Maintainability:**
+    - Clear function and script documentation
+    - Consistent coding style
+    - Meaningful variable and function names
+    - Proper commenting for complex logic
+    
+    **Security & Best Practices:**
+    - No sensitive data in code
+    - Proper input validation
+    - Safe file operations
+    - Secure API interactions
+    
+    **DevOps Automation:**
+    - Quality assurance automation
+    - CI/CD pipeline effectiveness
+    - Multi-platform compatibility
+    - Error handling in automation scripts
+
+  # Auto-approve simple changes
+  auto_approve:
+    enabled: false  # Keep manual review for this critical framework
+    
+  # Request changes for critical issues
+  request_changes_workflow:
+    enabled: true
+    
+# Path-specific instructions
+path_instructions:
+  - path: "providers/*.sh"
+    instructions: |
+      Provider helper scripts - focus on:
+      - Consistent API patterns
+      - Proper error handling
+      - Security of credential handling
+      - Input validation
+      
+  - path: ".agent/scripts/*.sh"
+    instructions: |
+      Automation scripts - focus on:
+      - Reliability and robustness
+      - Clear logging and feedback
+      - Proper exit codes
+      - Error recovery mechanisms
+      
+  - path: "templates/*.sh"
+    instructions: |
+      Template scripts - focus on:
+      - Security (prompt injection protection)
+      - Flexibility and reusability
+      - Clear documentation
+      - Safe defaults
+
+# Language-specific settings
+language_settings:
+  shell:
+    # Enable ShellCheck-style analysis
+    enable_static_analysis: true
+    # Focus on common shell pitfalls
+    focus_areas:
+      - "error_handling"
+      - "variable_quoting"
+      - "parameter_expansion"
+      - "security"
+
+# Exclude certain files from review
+exclude_paths:
+  - ".agent/tmp/*"
+  - ".agent/memory/*"
+  - "*.log"
+  - "*.tmp"
+
+# Enable specific review features
+features:
+  # Enable security-focused reviews
+  security_review: true
+  # Enable performance analysis
+  performance_review: true
+  # Enable best practices checking
+  best_practices: true
+  # Enable documentation review
+  documentation_review: true
