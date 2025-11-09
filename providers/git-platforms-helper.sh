@@ -487,9 +487,17 @@ show_help() {
 
 # Main script logic
 main() {
+    # Assign positional parameters to local variables
+    local command="${1:-help}"
+    local platform="$2"
+    local account_name="$3"
+    local repo_name="$4"
+    local description="$5"
+    local private_flag="$6"
+
     check_dependencies
 
-    case "${1:-help}" in
+    case "$command" in
         "platforms")
             list_platforms
             ;;
@@ -518,18 +526,19 @@ main() {
             local_git_list "$2"
             ;;
         "clone")
-            clone_repository "$2" "$3" "$4" "$5"
+            clone_repository "$platform" "$account_name" "$repo_name" "$description"
             ;;
         "start-mcp")
-            start_mcp_servers "$2" "$3"
+            start_mcp_servers "$platform" "$account_name"
             ;;
         "audit")
-            audit_repositories "$2" "$3"
+            audit_repositories "$platform" "$account_name"
             ;;
         "help"|*)
             show_help
             ;;
     esac
+    return 0
 }
 
 main "$@"
