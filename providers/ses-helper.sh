@@ -477,73 +477,83 @@ show_help() {
 
 # Main script logic
 main() {
+    # Assign positional parameters to local variables
+    local command="${1:-help}"
+    local account_name="$2"
+    local identity="$3"
+    local template_name="$4"
+    local destination="$5"
+    local subject="$6"
+    local body="$7"
+
     check_aws_cli
 
-    case "${1:-help}" in
+    case "$command" in
         "accounts")
             list_accounts
             ;;
         "quota")
-            get_sending_quota "$2"
+            get_sending_quota "$account_name"
             ;;
         "stats")
-            get_sending_statistics "$2"
+            get_sending_statistics "$account_name"
             ;;
         "verified-emails")
-            list_verified_emails "$2"
+            list_verified_emails "$account_name"
             ;;
         "verified-domains")
-            list_verified_domains "$2"
+            list_verified_domains "$account_name"
             ;;
         "verify-identity")
-            get_identity_verification "$2" "$3"
+            get_identity_verification "$account_name" "$identity"
             ;;
         "reputation")
-            get_reputation "$2"
+            get_reputation "$account_name"
             ;;
         "suppressed")
-            list_suppressed_destinations "$2"
+            list_suppressed_destinations "$account_name"
             ;;
         "suppression-details")
-            get_suppression_details "$2" "$3"
+            get_suppression_details "$account_name" "$identity"
             ;;
         "remove-suppression")
-            remove_from_suppression "$2" "$3"
+            remove_from_suppression "$account_name" "$identity"
             ;;
         "send-test")
-            send_test_email "$2" "$3" "$4" "$5" "$6"
+            send_test_email "$account_name" "$identity" "$destination" "$subject" "$body"
             ;;
         "config-sets")
-            list_configuration_sets "$2"
+            list_configuration_sets "$account_name"
             ;;
         "notifications")
-            get_bounce_complaint_notifications "$2" "$3"
+            get_bounce_complaint_notifications "$account_name" "$identity"
             ;;
         "verify-email")
-            verify_email "$2" "$3"
+            verify_email "$account_name" "$identity"
             ;;
         "verify-domain")
-            verify_domain "$2" "$3"
+            verify_domain "$account_name" "$identity"
             ;;
         "dkim")
-            get_dkim_attributes "$2" "$3"
+            get_dkim_attributes "$account_name" "$identity"
             ;;
         "enable-dkim")
-            enable_dkim "$2" "$3"
+            enable_dkim "$account_name" "$identity"
             ;;
         "monitor")
-            monitor_delivery "$2"
+            monitor_delivery "$account_name"
             ;;
         "audit")
-            audit_configuration "$2"
+            audit_configuration "$account_name"
             ;;
         "debug")
-            debug_delivery "$2" "$3"
+            debug_delivery "$account_name" "$identity"
             ;;
         "help"|*)
             show_help
             ;;
     esac
+    return 0
 }
 
 main "$@"
