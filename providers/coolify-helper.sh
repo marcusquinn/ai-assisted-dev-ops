@@ -268,6 +268,7 @@ generate_ssh_configs() {
 
     print_success "SSH configuration generated: $temp_config"
     print_info "To add to your SSH config: cat $temp_config >> $ssh_config"
+    return 0
 }
 
 # Main command handler
