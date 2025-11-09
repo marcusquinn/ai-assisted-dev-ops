@@ -28,7 +28,6 @@ readonly FRAMEWORK_NAME="AI-Assisted DevOps Framework"
 readonly FRAMEWORK_VERSION="1.0.0"
 readonly TOTAL_LINES="18000+"
 readonly PROVIDERS_COUNT="25+"
-readonly ZERO_TECHNICAL_DEBT="TRUE"
 
 # Print functions
 print_success() {
