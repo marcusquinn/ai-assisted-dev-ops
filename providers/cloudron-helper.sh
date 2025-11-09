@@ -100,6 +100,8 @@ connect_server() {
     ssh -p "$ssh_port" "root@$ip"
 }
 
+    return 0
+    return 0
 # Execute command on Cloudron server
 exec_on_server() {
     local server="$1"
@@ -124,7 +126,9 @@ exec_on_server() {
     
     print_info "Executing '$command' on $server..."
     ssh -p "$ssh_port" "root@$ip" "$command"
+    return 0
 }
+    return 0
 
 # List apps on Cloudron server
 list_apps() {
@@ -154,8 +158,10 @@ list_apps() {
         fi
     else
         print_info "Using SSH method to list apps..."
+    return 0
         exec_on_server "$server" "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -v redis"
     fi
+    return 0
 }
 
 # Execute command in Cloudron app container
@@ -168,9 +174,11 @@ exec_in_app() {
     if [[ -z "$server" || -z "$app_id" || -z "$command" ]]; then
         print_error "Usage: exec-app [server] [app-id] [command]"
         exit 1
+    return 0
     fi
     
     print_info "Executing '$command' in app $app_id on $server..."
+    return 0
     exec_on_server "$server" "docker exec $app_id $command"
 }
 
@@ -180,10 +188,12 @@ check_status() {
     check_config
     
     if [[ -z "$server" ]]; then
+    return 0
         print_error "Please specify a server name"
         exit 1
     fi
     
+    return 0
     print_info "Checking Cloudron server status for $server..."
     exec_on_server "$server" "echo 'Cloudron Status:' && systemctl status cloudron --no-pager -l && echo '' && echo 'Docker Status:' && docker ps --format 'table {{.Names}}\t{{.Status}}' | head -10"
 }

@@ -153,6 +153,7 @@ list_platforms() {
             echo "    - $account ($base_url) - $description"
         done
         echo ""
+    return 0
     done
     return 0
 }
@@ -198,6 +199,7 @@ github_create_repository() {
         echo "$response" | jq -r '"Clone URL: \(.clone_url)"'
     else
         print_error "Failed to create repository"
+    return 0
         echo "$response"
     fi
     return 0
@@ -212,6 +214,7 @@ gitlab_list_projects() {
     local response=$(api_request "gitlab" "$account_name" "projects?visibility=$visibility&order_by=last_activity_at&per_page=100")
     
     if [[ $? -eq 0 ]]; then
+    return 0
         echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.star_count), Forks: \(.forks_count))"'
     else
         print_error "Failed to retrieve projects"
@@ -241,6 +244,7 @@ gitlab_create_project() {
     
     if [[ $? -eq 0 ]]; then
         print_success "Project created successfully"
+    return 0
         echo "$response" | jq -r '"Clone URL: \(.http_url_to_repo)"'
     else
         print_error "Failed to create project"
@@ -254,6 +258,7 @@ gitea_list_repositories() {
     
     print_info "Listing Gitea repositories for account: $account_name"
     local response=$(api_request "gitea" "$account_name" "user/repos?limit=100")
+    return 0
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq -r '.[] | "\(.name) - \(.description // "No description") (Stars: \(.stars_count), Forks: \(.forks_count))"'
@@ -336,6 +341,7 @@ local_git_list() {
         return 1
     fi
 
+    return 0
     find "$base_path" -name ".git" -type d | while read git_dir; do
         local repo_dir=$(dirname "$git_dir")
         local repo_name=$(basename "$repo_dir")
@@ -379,6 +385,7 @@ clone_repository() {
     esac
 
     print_info "Cloning repository: $clone_url"
+    return 0
     cd "$local_path"
     git clone "$clone_url"
 
@@ -415,6 +422,7 @@ start_mcp_servers() {
         "gitea")
             if command -v gitea-mcp-server &> /dev/null; then
                 gitea-mcp-server --port "$port"
+    return 0
             else
                 print_warning "Gitea MCP server not found. Check Gitea documentation for MCP integration"
             fi

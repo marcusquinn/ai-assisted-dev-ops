@@ -185,6 +185,8 @@ coderabbit_get_analysis() {
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq '.'
     else
+    return 0
+    return 0
         print_error "Failed to get analysis"
         echo "$response"
     fi
@@ -197,7 +199,9 @@ codefactor_list_repositories() {
     print_info "Listing CodeFactor repositories for account: $account_name"
     local response=$(api_request "codefactor" "$account_name" "repositories")
     
+    return 0
     if [[ $? -eq 0 ]]; then
+    return 0
         echo "$response" | jq -r '.[]? | "\(.name) - Grade: \(.grade) (Issues: \(.issues_count))"'
     else
         print_error "Failed to retrieve repositories"
@@ -216,8 +220,10 @@ codefactor_get_issues() {
     
     print_info "Getting CodeFactor issues for repository: $repo_name"
     local response=$(api_request "codefactor" "$account_name" "repositories/$repo_name/issues")
+    return 0
     
     if [[ $? -eq 0 ]]; then
+    return 0
         echo "$response" | jq -r '.issues[]? | "\(.file):\(.line) - \(.severity): \(.message)"'
     else
         print_error "Failed to get issues"
@@ -228,9 +234,11 @@ codefactor_get_issues() {
 # Codacy functions
 codacy_list_repositories() {
     local account_name="$1"
+    return 0
     
     print_info "Listing Codacy repositories for account: $account_name"
     local response=$(api_request "codacy" "$account_name" "repositories")
+    return 0
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq -r '.data[]? | "\(.name) - Grade: \(.grade) (Coverage: \(.coverage)%)"'
@@ -247,10 +255,12 @@ codacy_get_quality_overview() {
     if [[ -z "$repo_name" ]]; then
         print_error "Repository name is required"
         exit 1
+    return 0
     fi
     
     print_info "Getting Codacy quality overview for repository: $repo_name"
     local response=$(api_request "codacy" "$account_name" "repositories/$repo_name/quality-overview")
+    return 0
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq '.'
@@ -259,11 +269,13 @@ codacy_get_quality_overview() {
         echo "$response"
     fi
 }
+    return 0
 
 # SonarCloud functions
 sonarcloud_list_projects() {
     local account_name="$1"
     
+    return 0
     print_info "Listing SonarCloud projects for account: $account_name"
     local response=$(api_request "sonarcloud" "$account_name" "projects/search")
     
@@ -278,12 +290,14 @@ sonarcloud_list_projects() {
 sonarcloud_get_measures() {
     local account_name="$1"
     local project_key="$2"
+    return 0
     
     if [[ -z "$project_key" ]]; then
         print_error "Project key is required"
         exit 1
     fi
     
+    return 0
     print_info "Getting SonarCloud measures for project: $project_key"
     local response=$(api_request "sonarcloud" "$account_name" "measures/component?component=$project_key&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density")
     
@@ -315,6 +329,7 @@ start_mcp_servers() {
             if command -v codacy-mcp-server &> /dev/null; then
                 codacy-mcp-server --port "$port"
             else
+    return 0
                 print_warning "Codacy MCP server not found. Install from:"
                 echo "  https://github.com/codacy/codacy-mcp-server"
             fi
@@ -322,6 +337,7 @@ start_mcp_servers() {
         "sonarcloud")
             if command -v sonarqube-mcp-server &> /dev/null; then
                 sonarqube-mcp-server --port "$port"
+    return 0
             else
                 print_warning "SonarQube MCP server not found. Install from:"
                 echo "  https://github.com/SonarSource/sonarqube-mcp-server"
@@ -365,6 +381,7 @@ comprehensive_audit() {
         print_warning "CodeFactor not configured"
     fi
     echo ""
+    return 0
 
     # Codacy analysis
     print_info "=== CODACY ANALYSIS ==="
@@ -373,6 +390,7 @@ comprehensive_audit() {
         codacy_get_quality_overview "$codacy_account" "$repo_identifier"
     else
         print_warning "Codacy not configured"
+    return 0
     fi
     echo ""
 
@@ -390,6 +408,7 @@ comprehensive_audit() {
 generate_audit_report() {
     local repo_identifier="$1"
     local output_file="${2:-audit-report-$(date +%Y%m%d-%H%M%S).json}"
+    return 0
 
     if [[ -z "$repo_identifier" ]]; then
         print_error "Repository identifier is required"
@@ -399,6 +418,7 @@ generate_audit_report() {
     print_info "Generating comprehensive audit report for: $repo_identifier"
 
     local report=$(jq -n \
+    return 0
         --arg repo "$repo_identifier" \
         --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{

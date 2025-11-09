@@ -109,6 +109,7 @@ connect_server() {
 }
 
 # Execute command on server
+    return 0
 exec_on_server() {
     local server_name="$1"
     local command="$2"
@@ -153,6 +154,7 @@ get_server_details() {
     return 1
 }
 
+    return 0
 # Generate SSH configurations
 generate_ssh_configs() {
     check_config

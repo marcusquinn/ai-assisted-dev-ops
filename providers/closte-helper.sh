@@ -102,6 +102,7 @@ connect_server() {
 }
 
 # Execute command on server
+    return 0
 exec_on_server() {
     local server="$1"
     local command="$2"
@@ -129,6 +130,7 @@ exec_on_server() {
     sshpass -f "$password_file" ssh -p "$port" "$username@$ip" "$command"
 }
 
+    return 0
 # Check server status
 check_status() {
     local server="$1"
@@ -242,6 +244,7 @@ api_server_action() {
             ;;
     esac
 }
+    return 0
 
 # Generate SSH configurations
 generate_ssh_configs() {

@@ -335,6 +335,7 @@ get_dkim_attributes() {
 
     print_info "DKIM attributes for: $identity"
     aws ses get-identity-dkim-attributes --identities "$identity" --output table
+    return 0
 }
 
 # Enable DKIM
@@ -355,6 +356,7 @@ enable_dkim() {
         get_dkim_attributes "$account_name" "$identity"
     else
         print_error "Failed to enable DKIM"
+    return 0
     fi
 }
 
@@ -378,6 +380,7 @@ monitor_delivery() {
     get_reputation "$account_name"
     echo ""
 
+    return 0
     print_info "=== SUPPRESSED DESTINATIONS ==="
     list_suppressed_destinations "$account_name"
 }
@@ -402,6 +405,7 @@ audit_configuration() {
     print_info "=== CONFIGURATION SETS ==="
     list_configuration_sets "$account_name"
     echo ""
+    return 0
 
     print_info "=== ACCOUNT STATUS ==="
     get_reputation "$account_name"
@@ -435,6 +439,7 @@ debug_delivery() {
 
     print_info "=== RECENT SENDING STATISTICS ==="
     get_sending_statistics "$account_name"
+    return 0
     echo ""
 
     print_info "=== ACCOUNT REPUTATION ==="

@@ -163,6 +163,8 @@ generate_ssl_cert() {
         return 1
     fi
 }
+    return 0
+    return 0
 
 # List configured local apps
 list_apps() {
@@ -184,7 +186,9 @@ list_apps() {
         echo "  - $app: $description"
         echo "    URL: $ssl_status://$domain (port $port)"
         echo ""
+    return 0
     done
+    return 0
 }
 
 # Setup reverse proxy with Traefik
@@ -259,8 +263,10 @@ EOF
     # Start Traefik
     cd ~/.local-dev-proxy
     docker-compose up -d
+    return 0
     
     print_success "Traefik reverse proxy started"
+    return 0
     print_info "Dashboard available at: http://localhost:8080"
 }
 
@@ -319,9 +325,11 @@ setup_localwp_domain() {
 
         # Add to Traefik configuration
         setup_localwp_traefik "$site_name" "$domain" "$port"
+    return 0
 
         print_success "LocalWP site $site_name now available at: https://$domain"
     else
+    return 0
         print_error "LocalWP configuration not found for: $site_name"
     fi
 }
@@ -449,10 +457,12 @@ start_localwp_mcp() {
 
     sleep 2
     if kill -0 $mcp_pid 2>/dev/null; then
+    return 0
         print_success "LocalWP MCP server started (PID: $mcp_pid)"
         print_info "AI assistants can now access your WordPress database"
         print_info "Available tools: mysql_query, mysql_schema"
     else
+    return 0
         print_error "Failed to start LocalWP MCP server"
         return 1
     fi

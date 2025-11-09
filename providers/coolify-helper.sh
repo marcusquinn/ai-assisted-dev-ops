@@ -232,6 +232,7 @@ check_status() {
 }
 
 # Generate SSH configs for Coolify servers
+    return 0
 generate_ssh_configs() {
     check_config
 
