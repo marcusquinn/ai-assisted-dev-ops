@@ -341,7 +341,7 @@ case "$command" in
         echo "  - Coolify installed and running on target servers"
         ;;
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $command"
         print_info "Use '$0 help' for usage information"
         exit 1
         ;;

@@ -102,7 +102,7 @@ api_request() {
     local account_name="$2"
     local endpoint="$3"
     local method="${4:-GET}"
-    local data="$5"
+    local data="$param5"
     
     local config=$(get_service_config "$service_name" "$account_name")
     local api_token=$(echo "$config" | jq -r '.api_token')

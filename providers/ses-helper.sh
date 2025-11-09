@@ -248,7 +248,7 @@ send_test_email() {
     local from_email="$2"
     local to_email="$3"
     local subject="$4"
-    local body="$5"
+    local body="$param5"
     set_aws_credentials "$account_name"
 
     if [[ -z "$from_email" || -z "$to_email" ]]; then
@@ -523,8 +523,8 @@ main() {
     local account_name="$2"
     local identity="$3"
     local destination="$4"
-    local subject="$5"
-    local body="$6"
+    local subject="$param5"
+    local body="$param6"
 
     check_aws_cli
 

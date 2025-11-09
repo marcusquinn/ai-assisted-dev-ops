@@ -356,7 +356,7 @@ case "$command" in
         echo "Note: API commands require API key configuration in config file"
         ;;
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $command"
         print_info "Use '$0 help' for usage information"
         exit 1
         ;;
