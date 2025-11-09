@@ -188,6 +188,29 @@ run_shellcheck() {
     return 0
 }
 
+# Check CodeRabbit CLI integration
+check_coderabbit_cli() {
+    print_info "🤖 Checking CodeRabbit CLI Integration..."
+
+    local coderabbit_script=".agent/scripts/coderabbit-cli.sh"
+
+    if [[ ! -f "$coderabbit_script" ]]; then
+        print_warning "CodeRabbit CLI script not found"
+        return 0
+    fi
+
+    # Check if CodeRabbit CLI is available
+    if bash "$coderabbit_script" status > /dev/null 2>&1; then
+        print_success "CodeRabbit CLI: Integration ready"
+        print_info "Run: bash $coderabbit_script review (for local code review)"
+    else
+        print_info "CodeRabbit CLI: Available for setup"
+        print_info "Run: bash $coderabbit_script install && bash $coderabbit_script setup"
+    fi
+
+    return 0
+}
+
 main() {
     print_header
     
@@ -208,7 +231,10 @@ main() {
     
     run_shellcheck || exit_code=1
     echo ""
-    
+
+    check_coderabbit_cli
+    echo ""
+
     # Final summary
     if [[ $exit_code -eq 0 ]]; then
         print_success "🎉 ALL QUALITY CHECKS PASSED! Framework maintains A-grade standards."
