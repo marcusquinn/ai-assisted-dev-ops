@@ -45,6 +45,13 @@ check_config() {
         print_info "Copy and customize: cp ../configs/coolify-config.json.txt $CONFIG_FILE"
         exit 1
     fi
+
+    if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+        print_error "Invalid JSON in configuration file: $CONFIG_FILE"
+        exit 1
+    fi
+
+    return 0
 }
 
 # List all Coolify servers

@@ -80,6 +80,8 @@ list_servers() {
         
         echo ""
     done
+
+    return 0
 }
 
 # Connect to a specific server
@@ -103,6 +105,7 @@ connect_server() {
     read -r ip name project <<< "$server_info"
     print_info "Connecting to $name ($ip) in project $project..."
     ssh "root@$ip"
+    return 0
 }
 
 # Execute command on server
