@@ -605,10 +605,6 @@ main() {
     local command="${1:-help}"
     local account_name="$2"
     local domain="$3"
-    local record_type="$4"
-    local record_name="$5"
-    local record_value="$6"
-    local years="$7"
 
     check_dependencies
 

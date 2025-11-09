@@ -118,7 +118,7 @@ api_request() {
         "$PLATFORM_GITHUB")
             auth_header="Authorization: token $api_token"
             ;;
-        "gitlab")
+        "$PLATFORM_GITLAB")
             auth_header="PRIVATE-TOKEN: $api_token"
             ;;
         "gitea")
@@ -212,7 +212,7 @@ gitlab_list_projects() {
     local visibility="${2:-private}"
     
     print_info "Listing GitLab projects for account: $account_name"
-    local response=$(api_request "gitlab" "$account_name" "projects?visibility=$visibility&order_by=last_activity_at&per_page=100")
+    local response=$(api_request "$PLATFORM_GITLAB" "$account_name" "projects?visibility=$visibility&order_by=last_activity_at&per_page=100")
     
     if [[ $? -eq 0 ]]; then
     return 0
@@ -241,7 +241,7 @@ gitlab_create_project() {
         '{name: $name, description: $description, visibility: $visibility}')
     
     print_info "Creating GitLab project: $project_name"
-    local response=$(api_request "gitlab" "$account_name" "projects" "POST" "$data")
+    local response=$(api_request "$PLATFORM_GITLAB" "$account_name" "projects" "POST" "$data")
     
     if [[ $? -eq 0 ]]; then
         print_success "Project created successfully"
@@ -297,6 +297,7 @@ gitea_create_repository() {
         print_error "Failed to create repository"
         echo "$response"
     fi
+    return 0
 }
 
 # Local Git functions
