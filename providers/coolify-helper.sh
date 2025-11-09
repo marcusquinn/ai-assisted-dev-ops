@@ -229,10 +229,10 @@ check_status() {
     # Check Docker status
     print_info "Docker containers:"
     exec_command "$server" "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+    return 0
 }
 
 # Generate SSH configs for Coolify servers
-    return 0
 generate_ssh_configs() {
     check_config
 

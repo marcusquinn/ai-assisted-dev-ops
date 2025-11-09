@@ -133,6 +133,7 @@ list_providers() {
             fi
         fi
     done
+    return 0
 }
 
 # Cloudflare DNS operations

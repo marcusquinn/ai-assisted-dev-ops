@@ -231,6 +231,7 @@ generate_ssh_configs() {
     
     print_success "SSH configurations generated in ~/.ssh/cloudron_config"
     print_info "Add 'Include ~/.ssh/cloudron_config' to your ~/.ssh/config"
+    return 0
 }
 
 # Main command handler

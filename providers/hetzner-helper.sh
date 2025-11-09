@@ -109,7 +109,6 @@ connect_server() {
 }
 
 # Execute command on server
-    return 0
 exec_on_server() {
     local server_name="$1"
     local command="$2"
@@ -129,6 +128,7 @@ exec_on_server() {
     read -r ip name project <<< "$server_info"
     print_info "Executing '$command' on $name..."
     ssh "root@$ip" "$command"
+    return 0
 }
 
 # Get server details by name
