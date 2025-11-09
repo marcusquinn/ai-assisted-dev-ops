@@ -651,11 +651,11 @@ main() {
             ;;
         "bulk-update-wp")
             shift 2
-            bulk_update_wordpress "$2" "$@"
+            bulk_update_wordpress "$instance_name" "$@"
             ;;
         "bulk-update-plugins")
             shift 2
-            bulk_update_plugins "$2" "$@"
+            bulk_update_plugins "$instance_name" "$@"
             ;;
         "monitor")
             monitor_all_sites "$2"
