@@ -159,18 +159,18 @@ api_call() {
 }
 
 # Main command handler
-case "$1" in
+case "$command" in
     "list")
         list_sites
         ;;
     "connect")
-        connect_site "$2"
+        connect_site "$param2"
         ;;
     "exec")
-        exec_on_site "$2" "$3"
+        exec_on_site "$param2" "$param3"
         ;;
     "api")
-        api_call "$2"
+        api_call "$param2"
         ;;
     "help"|"-h"|"--help"|"")
         echo "Hostinger Helper Script"

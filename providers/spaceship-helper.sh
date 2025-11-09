@@ -652,48 +652,48 @@ main() {
             list_dns_records "$account_name" "$domain"
             ;;
         "add-dns")
-            add_dns_record "$2" "$3" "$4" "$5" "$6" "$7"
+            add_dns_record "$param2" "$param3" "$param4" "$5" "$6" "$7"
             ;;
         "update-dns")
-            update_dns_record "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+            update_dns_record "$param2" "$param3" "$param4" "$5" "$6" "$7" "$8"
             ;;
         "delete-dns")
-            delete_dns_record "$2" "$3" "$4"
+            delete_dns_record "$param2" "$param3" "$param4"
             ;;
         "nameservers")
-            get_nameservers "$2" "$3"
+            get_nameservers "$param2" "$param3"
             ;;
         "update-ns")
             shift 3
-            update_nameservers "$2" "$3" "$@"
+            update_nameservers "$param2" "$param3" "$@"
             ;;
         "check-availability")
-            check_domain_availability "$2" "$3"
+            check_domain_availability "$param2" "$param3"
             ;;
         "purchase")
-            purchase_domain "$2" "$3" "$4" "$5"
+            purchase_domain "$param2" "$param3" "$param4" "$5"
             ;;
         "bulk-check")
             shift 2
-            bulk_check_domains "$2" "$@"
+            bulk_check_domains "$param2" "$@"
             ;;
         "contacts")
-            get_domain_contacts "$2" "$3"
+            get_domain_contacts "$param2" "$param3"
             ;;
         "lock")
-            toggle_domain_lock "$2" "$3" "lock"
+            toggle_domain_lock "$param2" "$param3" "lock"
             ;;
         "unlock")
-            toggle_domain_lock "$2" "$3" "unlock"
+            toggle_domain_lock "$param2" "$param3" "unlock"
             ;;
         "transfer-status")
-            get_transfer_status "$2" "$3"
+            get_transfer_status "$param2" "$param3"
             ;;
         "audit")
-            audit_domain "$2" "$3"
+            audit_domain "$param2" "$param3"
             ;;
         "monitor-expiration")
-            monitor_expiration "$2" "$3"
+            monitor_expiration "$param2" "$param3"
             ;;
         "help"|*)
             show_help

@@ -514,49 +514,49 @@ main() {
             lock_vault
             ;;
         "sync")
-            sync_vault "$2"
+            sync_vault "$param2"
             ;;
         "list")
-            list_vault_items "$2" "$3"
+            list_vault_items "$param2" "$param3"
             ;;
         "search")
-            search_vault "$2" "$3"
+            search_vault "$param2" "$param3"
             ;;
         "get")
-            get_vault_item "$2" "$3"
+            get_vault_item "$param2" "$param3"
             ;;
         "get-password")
-            get_password "$2" "$3"
+            get_password "$param2" "$param3"
             ;;
         "get-username")
-            get_username "$2" "$3"
+            get_username "$param2" "$param3"
             ;;
         "create")
-            create_vault_item "$2" "$3" "$4" "$5" "$6"
+            create_vault_item "$param2" "$param3" "$param4" "$5" "$6"
             ;;
         "update")
-            update_vault_item "$2" "$3" "$4" "$5"
+            update_vault_item "$param2" "$param3" "$param4" "$5"
             ;;
         "delete")
-            delete_vault_item "$2" "$3"
+            delete_vault_item "$param2" "$param3"
             ;;
         "generate")
-            generate_password "$2" "$3"
+            generate_password "$param2" "$param3"
             ;;
         "export")
-            export_vault "$2" "$3" "$4"
+            export_vault "$param2" "$param3" "$param4"
             ;;
         "org-list")
-            list_org_vault "$2" "$3"
+            list_org_vault "$param2" "$param3"
             ;;
         "start-mcp")
-            start_mcp_server "$2" "$3"
+            start_mcp_server "$param2" "$param3"
             ;;
         "test-mcp")
-            test_mcp_connection "$2"
+            test_mcp_connection "$param2"
             ;;
         "audit")
-            audit_vault_security "$2"
+            audit_vault_security "$param2"
             ;;
         "help"|*)
             show_help

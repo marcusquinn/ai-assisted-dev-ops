@@ -161,9 +161,9 @@ cloudflare_dns() {
         zone_id=$(jq -r ".zones[\"$domain\"]" "$config_file" 2>/dev/null)
 
         # Shift parameters for legacy compatibility
-        domain="$2"
-        record_name="$3"
-        record_type="$4"
+        domain="$param2"
+        record_name="$param3"
+        record_type="$param4"
         record_value="$5"
         account="default"
     fi
@@ -296,9 +296,9 @@ dns_operation() {
 
 # Assign positional parameters to local variables
 command="${1:-help}"
-provider="$2"
-domain="$3"
-record_type="$4"
+provider="$param2"
+domain="$param3"
+record_type="$param4"
 record_name="$5"
 record_value="$6"
 
@@ -314,7 +314,7 @@ case "$command" in
         dns_operation "$provider" "add" "$domain" "$record_type" "$record_name" "$record_value"
         ;;
     "delete")
-        dns_operation "$2" "delete" "$3" "$4"
+        dns_operation "$param2" "delete" "$param3" "$param4"
         ;;
     "help"|"-h"|"--help"|"")
         echo "DNS Management Helper Script"

@@ -200,11 +200,9 @@ validate_fixes() {
     local validation_errors=0
     
     for file in providers/*.sh; do
-        if [[ -f "$file" ]]; then
-            if ! shellcheck "$file" > /dev/null 2>&1; then
-                ((validation_errors++))
-                print_warning "ShellCheck issues remain in $file"
-            fi
+        if [[ -f "$file" ]] && ! shellcheck "$file" > /dev/null 2>&1; then
+            ((validation_errors++))
+            print_warning "ShellCheck issues remain in $file"
         fi
     done
     
@@ -245,6 +243,7 @@ main() {
     print_success "🎉 Universal quality fixes completed!"
     print_info "Review changes and run quality-check.sh to validate improvements"
     print_info "Commit changes with: git add . && git commit -m '🎯 Universal quality fixes'"
+    return 0
 }
 
 main "$@"

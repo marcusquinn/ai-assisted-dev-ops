@@ -35,6 +35,7 @@ add_return_statement() {
     else
         echo "Return statement already exists in $file at line $line_num"
     fi
+    return 0
 }
 
 # Process each file

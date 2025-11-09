@@ -17,6 +17,7 @@ fix_misplaced_returns() {
     
     # Add return statements to function endings that need them
     # This is a more targeted approach based on SonarCloud line numbers
+    return 0
 }
 
 # Function to replace string literals with constants
@@ -43,6 +44,7 @@ replace_string_literals() {
             sed -i 's/"gitea"/"$PLATFORM_GITEA"/g' "$file"
             ;;
     esac
+    return 0
 }
 
 # Function to add return statements to functions that need them
@@ -72,7 +74,12 @@ add_missing_returns() {
             sed -i '94a\    return 0' "$file"
             sed -i '258a\    return 0' "$file"
             ;;
-    esac
+   
+        *)
+            echo "Unknown option: $1"
+            return 1
+            ;; esac
+    return 0
 }
 
 # Process each file

@@ -25,6 +25,7 @@ add_return_to_line() {
     else
         echo "File $file not found"
     fi
+    return 0
 }
 
 # Process mainwp-helper.sh (most issues)

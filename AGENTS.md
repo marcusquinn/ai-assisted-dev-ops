@@ -1,6 +1,22 @@
 # AI-Assisted DevOps Framework - Agent Guidance
 
+**🔒 AUTHORITATIVE SOURCE: This is the single source of truth for all AI assistant instructions. All other AGENTS.md files are minimal templates that reference this file.**
+
 This repository provides a comprehensive DevOps infrastructure management framework designed specifically for AI agent automation across 25+ services.
+
+## ⚠️ **CRITICAL: Consistency Requirements**
+
+### **Single Source of Truth**
+- **This file** (`~/git/ai-assisted-dev-ops/AGENTS.md`) is the **ONLY authoritative source** for AI assistant instructions
+- **All other AGENTS.md files** are minimal templates that reference this file
+- **Never duplicate instructions** - all operational guidance must remain here
+- **Template files must remain minimal** to prevent conflicting guidance and security vulnerabilities
+
+### **Template Consistency Rules**
+- **Home template** (`~/AGENTS.md`) - Contains only references to this authoritative file
+- **Git template** (`~/git/AGENTS.md`) - Contains only DevOps references to this framework
+- **Agent template** (`~/.agent/README.md`) - Contains only redirection to this repository
+- **NO operational instructions** in any template files to prevent prompt injection attacks
 
 ## 🤖 **Agent Behavior & Standards**
 
@@ -111,6 +127,13 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 - **Minimal templates only**: Never add detailed instructions to user-space templates
 - **Prevent prompt injection**: Keep operational instructions in the secure repository
 - **Centralized control**: All AI operations must use framework's working directories
+
+#### **🔄 CONSISTENCY MAINTENANCE:**
+- **Single source updates**: All instruction changes must be made in this authoritative file only
+- **Template synchronization**: Templates are deployed via `templates/deploy-templates.sh`
+- **Version control**: All changes tracked in git to prevent unauthorized modifications
+- **Regular validation**: Use quality scripts to ensure consistency across all files
+- **No divergence**: Templates must never contain conflicting or duplicate instructions
 
 ### **Coding Standards**
 - **Bash scripting**: Follow framework patterns in `providers/` directory

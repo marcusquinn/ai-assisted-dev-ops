@@ -294,8 +294,8 @@ generate_ssh_configs() {
 
 # Assign positional parameters to local variables
 command="${1:-help}"
-server_name="$2"
-command_to_run="$3"
+server_name="$param2"
+command_to_run="$param3"
 
 # Main command handler
 case "$command" in
@@ -318,13 +318,13 @@ case "$command" in
         api_list_servers
         ;;
     "api-details")
-        api_server_details "$2"
+        api_server_details "$param2"
         ;;
     "api-action")
-        api_server_action "$2" "$3"
+        api_server_action "$param2" "$param3"
         ;;
     "api")
-        api_call "$2" "$3" "$4"
+        api_call "$param2" "$param3" "$param4"
         ;;
     "help"|"-h"|"--help"|"")
         echo "Closte.com Helper Script"

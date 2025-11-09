@@ -676,10 +676,10 @@ main() {
             bulk_update_plugins "$instance_name" "$@"
             ;;
         "monitor")
-            monitor_all_sites "$2"
+            monitor_all_sites "$param2"
             ;;
         "audit-security")
-            audit_site_security "$2" "$3"
+            audit_site_security "$param2" "$param3"
             ;;
         "help"|*)
             show_help

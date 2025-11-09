@@ -287,7 +287,7 @@ list_localwp_sites() {
                 local site_name=$(basename "$site_dir")
                 local conf_file="$site_dir/conf/nginx/site.conf"
                 if [[ -f "$conf_file" ]]; then
-                    local port=$(grep -o 'listen [0-9]*' "$conf_file" | head -1 | awk '{print $2}')
+                    local port=$(grep -o 'listen [0-9]*' "$conf_file" | head -1 | awk '{print $param2}')
                     echo "  - $site_name (http://localhost:$port)"
                 else
                     echo "  - $site_name (configuration not found)"
@@ -304,7 +304,7 @@ list_localwp_sites() {
 # Create LocalWP-compatible .local domain
 setup_localwp_domain() {
     local site_name="$1"
-    local custom_domain="$2"
+    local custom_domain="$param2"
 
     if [[ -z "$site_name" ]]; then
         print_error "Usage: setup-localwp-domain [site-name] [custom-domain.local]"
@@ -323,7 +323,7 @@ setup_localwp_domain() {
     local conf_file="$localwp_path/conf/nginx/site.conf"
 
     if [[ -f "$conf_file" ]]; then
-        local port=$(grep -o 'listen [0-9]*' "$conf_file" | head -1 | awk '{print $2}')
+        local port=$(grep -o 'listen [0-9]*' "$conf_file" | head -1 | awk '{print $param2}')
         print_info "Setting up $domain for LocalWP site $site_name (port $port)"
 
         # Generate SSL certificate
@@ -344,8 +344,8 @@ setup_localwp_domain() {
 # Setup Traefik for LocalWP site
 setup_localwp_traefik() {
     local site_name="$1"
-    local domain="$2"
-    local port="$3"
+    local domain="$param2"
+    local port="$param3"
 
     # Create Traefik configuration for LocalWP site
     mkdir -p ~/.local-dev-proxy/localwp
@@ -374,8 +374,8 @@ EOF
 # Create Docker app with .local domain
 create_app() {
     local app_name="$1"
-    local domain="$2"
-    local port="$3"
+    local domain="$param2"
+    local port="$param3"
     local ssl="${4:-true}"
     local app_type="${5:-docker}"
 
@@ -492,7 +492,12 @@ stop_localwp_mcp() {
 }
 
 # Main command handler
-case "$1" in
+# Assign positional parameters to local variables
+    local command="$1"
+    local param2="$param2"
+    local param3="$param3"
+    
+    case "$command" in
     "setup-dns")
         check_requirements && setup_local_dns
         ;;
@@ -500,19 +505,19 @@ case "$1" in
         check_requirements && setup_traefik
         ;;
     "generate-cert")
-        generate_ssl_cert "$2"
+        generate_ssl_cert "$param2"
         ;;
     "list")
         list_apps
         ;;
     "create-app")
-        create_app "$2" "$3" "$4" "$5" "$6"
+        create_app "$param2" "$param3" "$param4" "$5" "$6"
         ;;
     "list-localwp")
         list_localwp_sites
         ;;
     "setup-localwp-domain")
-        setup_localwp_domain "$2" "$3"
+        setup_localwp_domain "$param2" "$param3"
         ;;
     "start-mcp")
         start_localwp_mcp

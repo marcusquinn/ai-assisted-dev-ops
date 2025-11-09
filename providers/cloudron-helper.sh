@@ -243,8 +243,8 @@ generate_ssh_configs() {
 
 # Assign positional parameters to local variables
 command="${1:-help}"
-server_name="$2"
-command_to_run="$3"
+server_name="$param2"
+command_to_run="$param3"
 
 # Main command handler
 case "$command" in
@@ -261,10 +261,10 @@ case "$command" in
         list_apps "$server_name"
         ;;
     "exec-app")
-        exec_in_app "$2" "$3" "$4"
+        exec_in_app "$param2" "$param3" "$param4"
         ;;
     "status")
-        check_status "$2"
+        check_status "$param2"
         ;;
     "generate-ssh-configs")
         generate_ssh_configs

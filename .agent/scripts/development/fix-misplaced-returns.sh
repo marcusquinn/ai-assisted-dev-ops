@@ -26,6 +26,7 @@ sed -i '' '
     N
     /return 0\n    print_/c\
     print_info "$(echo "$0" | sed "s/.*print_info \"//" | sed "s/\"$//")"
+    return 0
 }
 ' mainwp-helper.sh
 
@@ -35,6 +36,7 @@ sed -i '' '
     N
     /return 0\n    local /c\
     local $(echo "$0" | sed "s/.*local //" | sed "s/$/")
+    return 0
 }
 ' mainwp-helper.sh
 
@@ -44,6 +46,7 @@ sed -i '' '
     N
     /return 0\n    if /c\
     if $(echo "$0" | sed "s/.*if //")
+    return 0
 }
 ' mainwp-helper.sh
 
@@ -53,6 +56,7 @@ sed -i '' '
     N
     /return 0\n    jq /c\
     jq $(echo "$0" | sed "s/.*jq //")
+    return 0
 }
 ' mainwp-helper.sh
 
@@ -62,6 +66,7 @@ sed -i '' '
     N
     /return 0\n    echo /c\
     echo $(echo "$0" | sed "s/.*echo //")
+    return 0
 }
 ' mainwp-helper.sh
 

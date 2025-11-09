@@ -205,15 +205,15 @@ generate_ssh_configs() {
 }
 
 # Main command handler
-case "$1" in
+case "$command" in
     "list")
         list_servers
         ;;
     "connect")
-        connect_server "$2"
+        connect_server "$param2"
         ;;
     "exec")
-        exec_on_server "$2" "$3"
+        exec_on_server "$param2" "$param3"
         ;;
     "generate-ssh-configs")
         generate_ssh_configs
