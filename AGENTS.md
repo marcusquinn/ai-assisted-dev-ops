@@ -11,6 +11,63 @@ This repository provides a comprehensive DevOps infrastructure management framew
 - **Intelligent setup guidance** for infrastructure configuration
 - **Real-time service integration** through MCP servers
 
+### **🗂️ AI Working Directories (MANDATORY USAGE)**
+
+#### **`.agent/tmp/` - Temporary Working Directory**
+**ALWAYS use this directory for temporary files during operations:**
+
+```bash
+# Create session-specific working directory
+SESSION_DIR=".agent/tmp/session-$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$SESSION_DIR"
+
+# Use for temporary scripts
+cat > "$SESSION_DIR/temp-fix.sh" << 'EOF'
+#!/bin/bash
+# Temporary script for current operation
+EOF
+
+# Use for backups before modifications
+cp important-file.sh "$SESSION_DIR/backup-important-file.sh"
+
+# Clean up when done
+rm -rf "$SESSION_DIR"
+```
+
+**Use `.agent/tmp/` for:**
+- Temporary scripts and working files
+- Backups before making changes
+- Log outputs and analysis results
+- Intermediate data during operations
+- Any files that don't need to persist
+
+#### **`.agent/memory/` - Persistent Memory Directory**
+**Use this directory to remember context across sessions:**
+
+```bash
+# Store successful patterns
+echo "bulk-operations: Use Python scripts for universal fixes" > .agent/memory/patterns/quality-fixes.txt
+
+# Remember user preferences
+echo "preferred_approach=bulk_operations" > .agent/memory/preferences/user-settings.conf
+
+# Cache configuration discoveries
+echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/configurations/quality-tools.conf
+```
+
+**Use `.agent/memory/` for:**
+- Session context and conversation history
+- Learned patterns and successful approaches
+- User preferences and customizations
+- Configuration details and setups
+- Operation history and outcomes
+
+#### **🚨 CRITICAL RULES:**
+- **NEVER store credentials** in memory or tmp directories
+- **Always use `.agent/tmp/`** for temporary files (not root directory)
+- **Clean up** temporary files when operations complete
+- **Respect privacy** - be mindful of what you store in memory
+
 ### **Coding Standards**
 - **Bash scripting**: Follow framework patterns in `providers/` directory
 - **JSON configuration**: Use consistent structure across all service configs
@@ -146,28 +203,73 @@ accounts|instances      # List configured accounts/instances
 monitor|audit|status    # Service monitoring and auditing
 ```
 
+## 📁 **Complete Repository Structure**
+
+```
+ai-assisted-dev-ops/
+├── 📄 README.md              # Main project documentation
+├── 📄 AGENTS.md              # AI agent integration guide (this file)
+├── 📄 LICENSE                # MIT license
+├── 🔧 setup.sh               # Main setup script for users
+├── 🔧 servers-helper.sh      # Main entry point script
+├── ⚙️  sonar-project.properties # Quality analysis configuration
+├── 📁 providers/             # Core functionality scripts (25+ services)
+├── 📁 configs/               # Configuration templates for users
+├── 📁 docs/                  # Comprehensive user documentation
+├── 📁 templates/             # Reusable templates and examples
+├── 📁 ssh/                   # SSH utilities and key management
+└── 📁 .agent/                # AI agent development and working tools
+    ├── 📁 scripts/           # Quality automation and development tools
+    │   ├── quality-check.sh  # Multi-platform quality validation
+    │   ├── quality-fix.sh    # Universal automated issue resolution
+    │   ├── pre-commit-hook.sh # Continuous quality assurance
+    │   └── development/      # Historical development scripts
+    ├── 📁 spec/              # Technical specifications and standards
+    ├── 📁 wiki/              # Internal knowledge base and documentation
+    ├── 📁 links/             # External resources and API documentation
+    ├── 📁 tmp/               # AI temporary working directory (use this!)
+    └── 📁 memory/            # AI persistent memory directory (use this!)
+```
+
 ## 📁 **Agent Directory Structure**
 
-### **.agent/spec/** - Requirements & Design
+### **.agent/tmp/** - Temporary Working Directory (MANDATORY)
+**Use this for all temporary files during operations:**
+- Session-specific working directories
+- Temporary scripts and analysis files
+- Backups before making changes
+- Log outputs and intermediate data
+- Any files that don't need to persist
+
+### **.agent/memory/** - Persistent Memory Directory (RECOMMENDED)
+**Use this to remember context across sessions:**
+- Successful operation patterns and approaches
+- User preferences and customizations
+- Configuration discoveries and setups
+- Operation history and learned solutions
+- Analytics and usage insights
+
+### **.agent/scripts/** - Quality Automation Tools
+- `quality-check.sh` - Multi-platform quality validation
+- `quality-fix.sh` - Universal automated issue resolution
+- `pre-commit-hook.sh` - Continuous quality assurance
+- `development/` - Historical development scripts with documentation
+
+### **.agent/spec/** - Technical Specifications
+- `code-quality.md` - Multi-platform quality standards and compliance
 - `requirements.md` - Framework requirements and capabilities
-- `design.md` - Architecture and design principles
-- `tasks.md` - Common tasks and workflows
 - `security.md` - Security requirements and standards
 - `extension.md` - Guidelines for extending the framework
 
 ### **.agent/wiki/** - Knowledge Base
 - `architecture.md` - Complete framework architecture
 - `services.md` - All 25+ service integrations
-- `workflows.md` - Common DevOps workflows
-- `troubleshooting.md` - Common issues and solutions
-- `providers/` - Provider-specific context
-- `configs/` - Configuration management context
-- `docs/` - Documentation standards context
+- `providers.md` - Provider-specific implementation details
+- `configs.md` - Configuration management patterns
+- `docs.md` - Documentation standards and guidelines
 
 ### **.agent/links/** - External Resources
 - `resources.md` - External APIs, documentation, and tools
-- `mcp-servers.md` - MCP server resources and setup
-- `service-apis.md` - Service API documentation links
 
 ## 🛠️ **Service Categories**
 

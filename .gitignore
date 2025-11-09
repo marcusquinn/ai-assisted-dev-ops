@@ -98,3 +98,9 @@ tmp/
 temp/
 *.tmp
 tmp.*.json
+
+# AI Assistant working directories
+.agent/tmp/*
+!.agent/tmp/README.md
+.agent/memory/*
+!.agent/memory/README.md
