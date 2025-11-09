@@ -108,7 +108,7 @@ api_request() {
     local account_name="$2"
     local endpoint="$3"
     local method="${4:-GET}"
-    local data="$5"
+    local data="$param5"
     
     local config=$(get_platform_config "$platform" "$account_name")
     local api_token=$(echo "$config" | jq -r '.api_token')
@@ -523,7 +523,7 @@ main() {
     local platform="$2"
     local account_name="$3"
     local repo_name="$4"
-    local description="$5"
+    local description="$param5"
 
     check_dependencies
 

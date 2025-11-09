@@ -108,7 +108,7 @@ ask_setup_needs() {
     
     # Budget assessment
     print_question "What's your monthly budget for DevOps services?"
-    echo "1. Minimal ($0-50/month)"
+    echo "1. Minimal (\$0-50/month)"
     echo "2. Small (\$50-200/month)"
     echo "3. Medium (\$200-500/month)"
     echo "4. Large (\$500+/month)"

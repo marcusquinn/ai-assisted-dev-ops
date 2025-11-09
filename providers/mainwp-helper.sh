@@ -617,7 +617,7 @@ main() {
     local instance_name="$2"
     local site_id="$3"
     local plugin_name="$4"
-    local backup_name="$6"
+    local backup_name="$param6"
 
     check_dependencies
 

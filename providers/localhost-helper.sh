@@ -511,7 +511,7 @@ stop_localwp_mcp() {
         list_apps
         ;;
     "create-app")
-        create_app "$param2" "$param3" "$param4" "$5" "$6"
+        create_app "$param2" "$param3" "$param4" "$param5" "$param6"
         ;;
     "list-localwp")
         list_localwp_sites
@@ -562,7 +562,7 @@ stop_localwp_mcp() {
         echo "  - @verygoodplugins/mcp-local-wp (optional, for AI database access)"
         ;;
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $command"
         print_info "Use '$0 help' for usage information"
         exit 1
         ;;

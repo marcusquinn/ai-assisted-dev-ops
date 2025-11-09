@@ -190,7 +190,7 @@ case "$command" in
         echo "  $0 api domains"
         ;;
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $command"
         print_info "Use '$0 help' for usage information"
         exit 1
         ;;

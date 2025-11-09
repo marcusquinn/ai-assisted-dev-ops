@@ -305,7 +305,7 @@ add_dns_record() {
     local domain="$2"
     local name="$3"
     local type="$4"
-    local content="$5"
+    local content="$param5"
     local ttl="${6:-3600}"
     
     if [[ -z "$domain" || -z "$name" || -z "$type" || -z "$content" ]]; then
@@ -338,8 +338,8 @@ update_dns_record() {
     local domain="$2"
     local record_id="$3"
     local name="$4"
-    local type="$5"
-    local content="$6"
+    local type="$param5"
+    local content="$param6"
     local ttl="${7:-3600}"
     
     if [[ -z "$domain" || -z "$record_id" || -z "$name" || -z "$type" || -z "$content" ]]; then
@@ -631,10 +631,10 @@ main() {
     local account_name="$2"
     local domain="$3"
     local param4="$4"
-    local param5="$5"
-    local param6="$6"
-    local param7="$7"
-    local param8="$8"
+    local param5="$param5"
+    local param6="$param6"
+    local param7="$param7"
+    local param8="$param8"
 
     check_dependencies
 
@@ -671,7 +671,7 @@ main() {
             check_domain_availability "$param2" "$param3"
             ;;
         "purchase")
-            purchase_domain "$param2" "$param3" "$param4" "$5"
+            purchase_domain "$param2" "$param3" "$param4" "$param5"
             ;;
         "bulk-check")
             shift 2

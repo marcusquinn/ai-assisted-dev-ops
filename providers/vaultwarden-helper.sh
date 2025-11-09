@@ -252,7 +252,7 @@ create_vault_item() {
     local item_name="$2"
     local username="$3"
     local password="$4"
-    local uri="$5"
+    local uri="$param5"
     
     configure_bw_cli "$instance_name"
     
@@ -494,8 +494,8 @@ main() {
     local instance_name="$2"
     local user_email="$3"
     local password_length="$4"
-    local param5="$5"
-    local param6="$6"
+    local param5="$param5"
+    local param6="$param6"
 
     check_dependencies
 

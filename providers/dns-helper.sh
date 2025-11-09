@@ -142,8 +142,8 @@ cloudflare_dns() {
     local account="${2:-personal}"
     local domain="$3"
     local record_name="$4"
-    local record_type="$5"
-    local record_value="$6"
+    local record_type="$param5"
+    local record_value="$param6"
 
     local config_file=$(get_provider_config "$PROVIDER_CLOUDFLARE")
 
@@ -164,7 +164,7 @@ cloudflare_dns() {
         domain="$param2"
         record_name="$param3"
         record_type="$param4"
-        record_value="$5"
+        record_value="$param5"
         account="default"
     fi
 
@@ -229,7 +229,7 @@ namecheap_dns() {
     local domain="$2"
     local record_name="$3"
     local record_type="$4"
-    local record_value="$5"
+    local record_value="$param5"
     
     local api_user=$(jq -r '.providers.namecheap.api_user' "$CONFIG_FILE")
     local api_key=$(jq -r '.providers.namecheap.api_key' "$CONFIG_FILE")
@@ -264,8 +264,8 @@ dns_operation() {
     local action="$2"
     local domain="$3"
     local record_name="$4"
-    local record_type="$5"
-    local record_value="$6"
+    local record_type="$param5"
+    local record_value="$param6"
     
     case "$provider" in
         "$PROVIDER_CLOUDFLARE")
@@ -299,8 +299,8 @@ command="${1:-help}"
 provider="$param2"
 domain="$param3"
 record_type="$param4"
-record_name="$5"
-record_value="$6"
+record_name="$param5"
+record_value="$param6"
 
 # Main command handler
 case "$command" in
@@ -348,7 +348,7 @@ case "$command" in
         echo "  $0 delete cloudflare personal example.com www"
         ;;
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $command"
         print_info "Use '$0 help' for usage information"
         exit 1
         ;;
