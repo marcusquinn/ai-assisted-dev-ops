@@ -42,6 +42,12 @@ print_error() {
     return 0
 }
 
+print_info() {
+    local message="$1"
+    echo -e "${BLUE}ℹ️  $message${NC}"
+    return 0
+}
+
 check_sonarcloud_status() {
     echo -e "${BLUE}📊 Checking SonarCloud Status...${NC}"
     
