@@ -124,7 +124,7 @@ api_request() {
 list_accounts() {
     load_config
     print_info "Available Spaceship accounts:"
-    jq -r '.accounts | keys[]' "$CONFIG_FILE" | while read account; do
+    jq -r '.accounts | keys[]' "$CONFIG_FILE" | while read -r account; do
         local description=$(jq -r ".accounts.\"$account\".description" "$CONFIG_FILE")
         local email=$(jq -r ".accounts.\"$account\".email" "$CONFIG_FILE")
         echo "  - $account ($email) - $description"
@@ -136,9 +136,8 @@ list_domains() {
     local account_name="$1"
     
     print_info "Listing domains for account: $account_name"
-    local response=$(api_request "$account_name" "GET" "domains")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains"); then
         echo "$response" | jq -r '.data[] | "\(.domain) - Status: \(.status) - Expires: \(.expires_at)"'
     else
         print_error "Failed to retrieve domains"
@@ -157,9 +156,8 @@ check_domain_availability() {
     fi
 
     print_info "Checking availability for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/check?domain=$domain")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/check?domain=$domain"); then
         local available=$(echo "$response" | jq -r '.available')
         local price=$(echo "$response" | jq -r '.price // "N/A"')
 
@@ -216,9 +214,8 @@ purchase_domain() {
         '{domain: $domain, years: $years, auto_renew: $auto_renew}')
 
     print_info "Purchasing domain: $domain"
-    local response=$(api_request "$account_name" "POST" "domains" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "POST" "domains" "$data"); then
         print_success "Domain purchased successfully"
         echo "$response" | jq '.'
     else
@@ -260,9 +257,8 @@ get_domain_details() {
     fi
     
     print_info "Getting details for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/$domain")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/$domain"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get domain details"
@@ -281,9 +277,8 @@ list_dns_records() {
     fi
     
     print_info "Listing DNS records for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/$domain/dns")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/$domain/dns"); then
         echo "$response" | jq -r '.data[] | "\(.name) \(.type) \(.content) (TTL: \(.ttl))"'
     else
         print_error "Failed to retrieve DNS records"
@@ -313,9 +308,8 @@ add_dns_record() {
         '{name: $name, type: $type, content: $content, ttl: ($ttl | tonumber)}')
     
     print_info "Adding DNS record: $name $type $content"
-    local response=$(api_request "$account_name" "POST" "domains/$domain/dns" "$data")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "POST" "domains/$domain/dns" "$data"); then
         print_success "DNS record added successfully"
         echo "$response" | jq '.'
     else
@@ -347,9 +341,8 @@ update_dns_record() {
         '{name: $name, type: $type, content: $content, ttl: ($ttl | tonumber)}')
     
     print_info "Updating DNS record: $record_id"
-    local response=$(api_request "$account_name" "PUT" "domains/$domain/dns/$record_id" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "PUT" "domains/$domain/dns/$record_id" "$data"); then
         print_success "DNS record updated successfully"
         echo "$response" | jq '.'
     else
@@ -370,9 +363,8 @@ delete_dns_record() {
     fi
 
     print_warning "Deleting DNS record: $record_id"
-    local response=$(api_request "$account_name" "DELETE" "domains/$domain/dns/$record_id")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "DELETE" "domains/$domain/dns/$record_id"); then
         print_success "DNS record deleted successfully"
     else
         print_error "Failed to delete DNS record"
@@ -391,9 +383,8 @@ get_nameservers() {
     fi
 
     print_info "Getting nameservers for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/$domain/nameservers")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/$domain/nameservers"); then
         echo "$response" | jq -r '.data[]'
     else
         print_error "Failed to get nameservers"
@@ -417,9 +408,8 @@ update_nameservers() {
     local data=$(jq -n --argjson nameservers "$ns_json" '{nameservers: $nameservers}')
 
     print_info "Updating nameservers for domain: $domain"
-    local response=$(api_request "$account_name" "PUT" "domains/$domain/nameservers" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "PUT" "domains/$domain/nameservers" "$data"); then
         print_success "Nameservers updated successfully"
         echo "$response" | jq '.'
     else
@@ -439,9 +429,8 @@ check_availability() {
     fi
 
     print_info "Checking availability for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/check?domain=$domain")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/check?domain=$domain"); then
         local available=$(echo "$response" | jq -r '.available')
         local price=$(echo "$response" | jq -r '.price')
 
@@ -468,9 +457,8 @@ get_domain_contacts() {
     fi
 
     print_info "Getting contacts for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/$domain/contacts")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/$domain/contacts"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get domain contacts"
@@ -497,9 +485,8 @@ toggle_domain_lock() {
     local data=$(jq -n --arg locked "$locked" '{locked: ($locked | test("true"))}')
 
     print_info "${action^}ing domain: $domain"
-    local response=$(api_request "$account_name" "PUT" "domains/$domain/lock" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "PUT" "domains/$domain/lock" "$data"); then
         print_success "Domain ${action}ed successfully"
         echo "$response" | jq '.'
     else
@@ -519,9 +506,8 @@ get_transfer_status() {
     fi
 
     print_info "Getting transfer status for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domains/$domain/transfer")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains/$domain/transfer"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get transfer status"
@@ -564,9 +550,8 @@ monitor_expiration() {
     local days_threshold="${2:-30}"
 
     print_info "Monitoring domain expiration (threshold: $days_threshold days)"
-    local response=$(api_request "$account_name" "GET" "domains")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domains"); then
         echo "$response" | jq -r --arg threshold "$days_threshold" '
             .data[] |
             select(.expires_at != null) |
