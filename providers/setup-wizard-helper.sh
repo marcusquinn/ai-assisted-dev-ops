@@ -2,6 +2,20 @@
 
 # Setup Wizard Helper Script
 # Intelligent setup guidance for AI assistants to help users configure their DevOps infrastructure
+#
+# This script provides interactive guidance for setting up DevOps infrastructure
+# based on user requirements including team size, budget, and technical expertise.
+#
+# Usage: ./setup-wizard-helper.sh [command]
+# Commands:
+#   start    - Begin interactive setup wizard
+#   analyze  - Analyze current responses and provide recommendations
+#   reset    - Clear all saved responses
+#   help     - Show this help message
+#
+# Author: AI-Assisted DevOps Framework
+# Version: 1.0.0
+# License: MIT
 
 # Colors for output
 GREEN='\033[0;32m'

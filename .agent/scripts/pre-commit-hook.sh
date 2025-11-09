@@ -173,7 +173,18 @@ main() {
     
     check_quality_standards
     echo ""
-    
+
+    # Optional CodeRabbit CLI review (if available)
+    if [[ -f ".agent/scripts/coderabbit-cli.sh" ]] && command -v coderabbit &> /dev/null; then
+        print_info "🤖 Running CodeRabbit CLI review..."
+        if bash .agent/scripts/coderabbit-cli.sh review > /dev/null 2>&1; then
+            print_success "CodeRabbit CLI review completed"
+        else
+            print_info "CodeRabbit CLI review skipped (setup required)"
+        fi
+        echo ""
+    fi
+
     # Final decision
     if [[ $total_violations -eq 0 ]]; then
         print_success "🎉 All quality checks passed! Commit approved."

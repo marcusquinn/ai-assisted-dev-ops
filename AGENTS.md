@@ -172,6 +172,27 @@ find providers/ -name "*.sh" -exec shellcheck {} \;
 - SC2155: Separate declare and assign
 - SC2015: Avoid `A && B || C` patterns
 
+#### **CodeRabbit CLI Integration (AI-Powered Reviews)**
+```bash
+# Install CodeRabbit CLI
+bash .agent/scripts/coderabbit-cli.sh install
+
+# Setup API key (get from https://app.coderabbit.ai)
+bash .agent/scripts/coderabbit-cli.sh setup
+
+# Review current changes
+bash .agent/scripts/coderabbit-cli.sh review
+
+# Analyze specific files/directories
+bash .agent/scripts/coderabbit-cli.sh analyze providers/
+```
+
+**CodeRabbit API Key Setup:**
+- **Never commit API keys** - Use local configuration only
+- **Get API key**: Visit https://app.coderabbit.ai → Settings → API Keys
+- **Organization**: Use `marcusquinn` GitHub organization key
+- **Local storage**: `~/.config/coderabbit/api_key` (secure permissions)
+
 #### **Shell Script Best Practices (MANDATORY PATTERNS)**
 
 **🚨 CRITICAL: These patterns are REQUIRED to maintain A-grade quality across SonarCloud, CodeFactor, and Codacy:**
