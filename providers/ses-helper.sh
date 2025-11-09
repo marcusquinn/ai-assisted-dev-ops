@@ -488,6 +488,7 @@ main() {
     local command="${1:-help}"
     local account_name="$2"
     local identity="$3"
+    local template_name="$4"
     local destination="$5"
     local subject="$6"
     local body="$7"

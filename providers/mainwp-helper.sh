@@ -108,10 +108,8 @@ api_request() {
     if [[ "$method" == "GET" ]]; then
         curl -s -H "$auth_header" -H "Content-Type: application/json" "$url"
     elif [[ "$method" == "POST" ]]; then
-    return 0
         curl -s -X POST -H "$auth_header" -H "Content-Type: application/json" -d "$data" "$url"
     elif [[ "$method" == "PUT" ]]; then
-    return 0
         curl -s -X PUT -H "$auth_header" -H "Content-Type: application/json" -d "$data" "$url"
     elif [[ "$method" == "DELETE" ]]; then
         curl -s -X DELETE -H "$auth_header" -H "Content-Type: application/json" "$url"
