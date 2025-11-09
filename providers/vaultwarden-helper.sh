@@ -10,10 +10,29 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_info() {
+    local msg="$1"
+    echo -e "${BLUE}[INFO]${NC} $msg"
+    return 0
+}
+
+print_success() {
+    local msg="$1"
+    echo -e "${GREEN}[SUCCESS]${NC} $msg"
+    return 0
+}
+
+print_warning() {
+    local msg="$1"
+    echo -e "${YELLOW}[WARNING]${NC} $msg"
+    return 0
+}
+
+print_error() {
+    local msg="$1"
+    echo -e "${RED}[ERROR]${NC} $msg" >&2
+    return 0
+}
 
 CONFIG_FILE="../configs/vaultwarden-config.json"
 
