@@ -61,8 +61,6 @@ load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         print_error "Configuration file not found: $CONFIG_FILE"
         print_info "Copy and customize: cp ../configs/mainwp-config.json.txt $CONFIG_FILE"
-    return 0
-    return 0
         exit 1
     fi
 }
@@ -81,9 +79,7 @@ get_instance_config() {
     if [[ "$instance_config" == "null" ]]; then
         print_error "Instance '$instance_name' not found in configuration"
         list_instances
-    return 0
         exit 1
-    return 0
     fi
     
     echo "$instance_config"

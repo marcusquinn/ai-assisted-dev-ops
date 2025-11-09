@@ -469,6 +469,7 @@ audit_repositories() {
     echo "- Review repository permissions regularly"
     echo "- Enable branch protection rules"
     echo "- Use signed commits where possible"
+    return 0
 }
 
 # Show help

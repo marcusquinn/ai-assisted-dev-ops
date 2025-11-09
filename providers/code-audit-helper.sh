@@ -456,6 +456,7 @@ show_help() {
     echo "  $0 audit my-repo"
     echo "  $0 start-mcp codacy 3003"
     echo "  $0 report my-repo audit-report.json"
+    return 0
 }
 
 # Main script logic

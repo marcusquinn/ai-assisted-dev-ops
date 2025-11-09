@@ -95,7 +95,6 @@ set_aws_credentials() {
     
     export AWS_ACCESS_KEY_ID=$(echo "$config" | jq -r '.aws_access_key_id')
     export AWS_SECRET_ACCESS_KEY=$(echo "$config" | jq -r '.aws_secret_access_key')
-    export AWS_DEFAULT_REGION=$(echo "$config" | jq -r '.region')
     
     if [[ "$AWS_ACCESS_KEY_ID" == "null" || "$AWS_SECRET_ACCESS_KEY" == "null" ]]; then
         print_error "Invalid AWS credentials for account '$account_name'"

@@ -168,6 +168,10 @@ analyze_and_recommend() {
             echo "  ✅ Cloudron - Enterprise app platform"
             echo "  ✅ Coolify - Advanced deployment automation"
             ;;
+        *)
+            echo "  ✅ Hetzner Cloud - Reliable and affordable VPS"
+            echo "  ✅ Coolify - Self-hosted deployment platform"
+            ;;
     esac
     echo ""
     
