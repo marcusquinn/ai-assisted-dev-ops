@@ -152,9 +152,8 @@ get_domain_details() {
     fi
     
     print_info "Getting details for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "domain/info?domain=$domain")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "domain/info?domain=$domain"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get domain details"
@@ -173,9 +172,8 @@ list_dns_records() {
     fi
     
     print_info "Listing DNS records for domain: $domain"
-    local response=$(api_request "$account_name" "GET" "dns/list?domain=$domain")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$account_name" "GET" "dns/list?domain=$domain"); then
         echo "$response" | jq -r '.result.records[]? | "\(.name) \(.type) \(.content) (TTL: \(.ttl))"'
     else
         print_error "Failed to retrieve DNS records"

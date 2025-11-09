@@ -115,7 +115,7 @@ api_request() {
 list_instances() {
     load_config
     print_info "Available MainWP instances:"
-    jq -r '.instances | keys[]' "$CONFIG_FILE" | while read instance; do
+    jq -r '.instances | keys[]' "$CONFIG_FILE" | while read -r instance; do
         local description=$(jq -r ".instances.\"$instance\".description" "$CONFIG_FILE")
         local base_url=$(jq -r ".instances.\"$instance\".base_url" "$CONFIG_FILE")
         echo "  - $instance ($base_url) - $description"
@@ -127,9 +127,8 @@ list_sites() {
     local instance_name="$1"
     
     print_info "Listing sites for MainWP instance: $instance_name"
-    local response=$(api_request "$instance_name" "sites")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites"); then
         echo "$response" | jq -r '.[] | "\(.id): \(.name) - \(.url) (Status: \(.status))"'
     else
         print_error "Failed to retrieve sites"
@@ -148,9 +147,8 @@ get_site_details() {
     fi
     
     print_info "Getting details for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get site details"
@@ -169,9 +167,8 @@ get_site_status() {
     fi
     
     print_info "Getting status for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/status")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/status"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get site status"
@@ -483,7 +480,7 @@ monitor_all_sites() {
     print_info "=== SITES NEEDING UPDATES ==="
 
     # Check each site for available updates
-    echo "$sites_response" | jq -r '.[].id' | while read site_id; do
+    echo "$sites_response" | jq -r '.[].id' | while read -r site_id; do
         local site_status=$(api_request "$instance_name" "sites/$site_id/status")
         local updates_available=$(echo "$site_status" | jq -r '.updates_available // 0')
 
