@@ -86,8 +86,9 @@ path_instructions:
       - Safe defaults
 
 # Exclude certain files from review
-ignore:
-  - ".agent/tmp/*"
-  - ".agent/memory/*"
-  - "*.log"
-  - "*.tmp"
+path_filters:
+  exclude:
+    - ".agent/tmp/*"
+    - ".agent/memory/*"
+    - "*.log"
+    - "*.tmp"
