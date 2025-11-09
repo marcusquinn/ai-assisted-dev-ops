@@ -58,12 +58,10 @@ reviews:
     - Error handling in automation scripts
 
   # Auto-approve simple changes
-  auto_approve:
-    enabled: false  # Keep manual review for this critical framework
+  auto_approve: false  # Keep manual review for this critical framework
     
   # Request changes for critical issues
-  request_changes_workflow:
-    enabled: true
+  request_changes_workflow: true
     
 # Path-specific instructions
 path_instructions:
