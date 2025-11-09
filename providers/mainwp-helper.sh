@@ -187,9 +187,8 @@ list_site_plugins() {
     fi
     
     print_info "Listing plugins for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/plugins")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/plugins"); then
         echo "$response" | jq -r '.[] | "\(.name) - Version: \(.version) (Status: \(.status))"'
     else
         print_error "Failed to retrieve plugins"
@@ -208,9 +207,8 @@ list_site_themes() {
     fi
     
     print_info "Listing themes for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/themes")
-    
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/themes"); then
         echo "$response" | jq -r '.[] | "\(.name) - Version: \(.version) (Status: \(.status))"'
     else
         print_error "Failed to retrieve themes"
@@ -229,9 +227,8 @@ update_wordpress_core() {
     fi
     
     print_info "Updating WordPress core for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/update-core" "POST")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/update-core" "POST"); then
         print_success "WordPress core update initiated"
         echo "$response" | jq '.'
     else
@@ -251,9 +248,8 @@ update_site_plugins() {
     fi
 
     print_info "Updating all plugins for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/update-plugins" "POST")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/update-plugins" "POST"); then
         print_success "Plugin updates initiated"
         echo "$response" | jq '.'
     else
@@ -276,9 +272,8 @@ update_specific_plugin() {
     local data=$(jq -n --arg plugin "$plugin_slug" '{plugin: $plugin}')
 
     print_info "Updating plugin '$plugin_slug' for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/update-plugin" "POST" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/update-plugin" "POST" "$data"); then
         print_success "Plugin update initiated"
         echo "$response" | jq '.'
     else
@@ -301,9 +296,8 @@ create_backup() {
     local data=$(jq -n --arg type "$backup_type" '{type: $type}')
 
     print_info "Creating $backup_type backup for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/backup" "POST" "$data")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/backup" "POST" "$data"); then
         print_success "Backup initiated"
         echo "$response" | jq '.'
     else
@@ -323,9 +317,8 @@ list_backups() {
     fi
 
     print_info "Listing backups for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/backups")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/backups"); then
         echo "$response" | jq -r '.[] | "\(.date): \(.type) - Size: \(.size) (Status: \(.status))"'
     else
         print_error "Failed to retrieve backups"
@@ -344,9 +337,8 @@ get_uptime_status() {
     fi
 
     print_info "Getting uptime status for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/uptime")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/uptime"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get uptime status"
@@ -365,9 +357,8 @@ run_security_scan() {
     fi
 
     print_info "Running security scan for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/security-scan" "POST")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/security-scan" "POST"); then
         print_success "Security scan initiated"
         echo "$response" | jq '.'
     else
@@ -387,9 +378,8 @@ get_security_scan_results() {
     fi
 
     print_info "Getting security scan results for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/security-results")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/security-results"); then
         echo "$response" | jq '.'
     else
         print_error "Failed to get security scan results"
@@ -408,9 +398,8 @@ sync_site() {
     fi
 
     print_info "Syncing site data for site ID: $site_id"
-    local response=$(api_request "$instance_name" "sites/$site_id/sync" "POST")
-
-    if [[ $? -eq 0 ]]; then
+    local response
+    if response=$(api_request "$instance_name" "sites/$site_id/sync" "POST"); then
         print_success "Site sync initiated"
         echo "$response" | jq '.'
     else
@@ -467,9 +456,8 @@ monitor_all_sites() {
     echo ""
 
     print_info "=== SITE STATUS OVERVIEW ==="
-    local sites_response=$(api_request "$instance_name" "sites")
-
-    if [[ $? -eq 0 ]]; then
+    local sites_response
+    if sites_response=$(api_request "$instance_name" "sites"); then
         echo "$sites_response" | jq -r '.[] | "\(.id): \(.name) - \(.url) (Status: \(.status), WP: \(.wp_version))"'
     else
         print_error "Failed to retrieve sites overview"
