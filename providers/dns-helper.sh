@@ -209,6 +209,10 @@ cloudflare_dns() {
                 print_error "Record not found"
             fi
             ;;
+        *)
+            print_error "Unknown action: $action. Supported actions: list, add, delete"
+            return 1
+            ;;
     esac
 }
 
@@ -238,6 +242,10 @@ namecheap_dns() {
             print_info "Adding DNS record: $record_name.$domain $record_type $record_value"
             print_warning "Namecheap requires getting all records, modifying, and setting all at once"
             print_info "Use Namecheap web interface or implement full record management"
+            ;;
+        *)
+            print_error "Unknown action: $action. Supported actions: list, add"
+            return 1
             ;;
     esac
 }
