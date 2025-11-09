@@ -379,6 +379,7 @@ get_domain_contacts() {
         print_error "Failed to get domain contacts"
         echo "$response"
     fi
+    return 0
 }
 
 # Enable/disable domain lock
@@ -408,6 +409,7 @@ toggle_domain_lock() {
         print_error "Failed to $action domain"
         echo "$response"
     fi
+    return 0
 }
 
 # Get domain transfer status
@@ -428,6 +430,7 @@ get_transfer_status() {
         print_error "Failed to get transfer status"
         echo "$response"
     fi
+    return 0
 }
 
 # Get domain privacy status
