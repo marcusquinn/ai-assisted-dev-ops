@@ -149,6 +149,7 @@ list_platforms() {
         done
         echo ""
     done
+    return 0
 }
 
 # GitHub functions
@@ -194,6 +195,7 @@ github_create_repository() {
         print_error "Failed to create repository"
         echo "$response"
     fi
+    return 0
 }
 
 # GitLab functions
