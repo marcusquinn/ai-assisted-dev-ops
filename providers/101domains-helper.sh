@@ -81,6 +81,7 @@ get_account_config() {
     fi
     
     echo "$account_config"
+    return 0
 }
 
 # Make API request
@@ -92,7 +93,6 @@ api_request() {
     
     local config=$(get_account_config "$account_name")
     local api_key=$(echo "$config" | jq -r '.api_key')
-    local api_secret=$(echo "$config" | jq -r '.api_secret')
     local username=$(echo "$config" | jq -r '.username')
     
     if [[ "$api_key" == "null" || "$username" == "null" ]]; then
@@ -112,6 +112,8 @@ api_request() {
     elif [[ "$method" == "DELETE" ]]; then
         curl -s -X DELETE -H "$auth_header" -H "Content-Type: application/json" "$url"
     fi
+
+    return 0
 }
 
 # List all configured accounts
