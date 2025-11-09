@@ -281,6 +281,7 @@ delete_dns_record() {
         print_error "Failed to delete DNS record"
         echo "$response"
     fi
+    return 0
 }
 
 # Get domain nameservers
@@ -301,6 +302,7 @@ get_nameservers() {
         print_error "Failed to get nameservers"
         echo "$response"
     fi
+    return 0
 }
 
 # Update nameservers
@@ -327,6 +329,7 @@ update_nameservers() {
         print_error "Failed to update nameservers"
         echo "$response"
     fi
+    return 0
 }
 
 # Check domain availability
@@ -355,6 +358,7 @@ check_availability() {
         print_error "Failed to check domain availability"
         echo "$response"
     fi
+    return 0
 }
 
 # Get domain contacts
