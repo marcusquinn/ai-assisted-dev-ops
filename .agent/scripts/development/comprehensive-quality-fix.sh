@@ -43,6 +43,9 @@ replace_string_literals() {
             # Replace remaining platform occurrences
             sed -i 's/"gitea"/"$PLATFORM_GITEA"/g' "$file"
             ;;
+        *)
+            echo "No string literal replacements needed for $file"
+            ;;
     esac
     return 0
 }
