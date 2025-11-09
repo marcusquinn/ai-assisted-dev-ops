@@ -456,20 +456,27 @@ show_help() {
 
 # Main script logic
 main() {
+    # Assign positional parameters to local variables
+    local command="${1:-help}"
+    local instance_name="$2"
+    local user_email="$3"
+    local password_length="$4"
+    local include_symbols="$5"
+
     check_dependencies
 
-    case "${1:-help}" in
+    case "$command" in
         "instances")
             list_instances
             ;;
         "status")
-            get_vault_status "$2"
+            get_vault_status "$instance_name"
             ;;
         "login")
-            login_bw "$2" "$3" "$4"
+            login_bw "$instance_name" "$user_email" "$password_length"
             ;;
         "unlock")
-            unlock_vault "$2"
+            unlock_vault "$instance_name"
             ;;
         "lock")
             lock_vault
