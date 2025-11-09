@@ -5,12 +5,7 @@
 
 # Colors for output
 # String literal constants
-readonly ERROR_CONFIG_NOT_FOUND="$ERROR_CONFIG_NOT_FOUND"
-readonly ERROR_ACCOUNT_REQUIRED="$ERROR_ACCOUNT_REQUIRED"
-readonly ERROR_JQ_REQUIRED="$ERROR_JQ_REQUIRED"
-readonly INFO_JQ_INSTALL_MACOS="$INFO_JQ_INSTALL_MACOS"
-readonly INFO_JQ_INSTALL_UBUNTU="$INFO_JQ_INSTALL_UBUNTU"
-readonly ERROR_CURL_REQUIRED="$ERROR_CURL_REQUIRED"
+readonly ERROR_DOMAIN_NAME_REQUIRED="Domain name is required"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -158,7 +153,7 @@ get_domain_details() {
     local domain="$2"
     
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
     
@@ -179,7 +174,7 @@ list_dns_records() {
     local domain="$2"
     
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
     
@@ -298,7 +293,7 @@ get_nameservers() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 
@@ -346,7 +341,7 @@ check_availability() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 
@@ -375,7 +370,7 @@ get_domain_contacts() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 
@@ -426,7 +421,7 @@ get_transfer_status() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 
@@ -447,7 +442,7 @@ get_privacy_status() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 
@@ -498,7 +493,7 @@ audit_domain() {
     local domain="$2"
 
     if [[ -z "$domain" ]]; then
-        print_error "Domain name is required"
+        print_error "$ERROR_DOMAIN_NAME_REQUIRED"
         exit 1
     fi
 

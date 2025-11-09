@@ -5,7 +5,7 @@
 
 # Colors for output
 # String literal constants
-readonly ERROR_DOMAIN_NAME_REQUIRED="$ERROR_DOMAIN_NAME_REQUIRED"
+readonly ERROR_DOMAIN_NAME_REQUIRED="Domain name is required"
 readonly DOMAINS_ENDPOINT="domains"
 
 GREEN='\033[0;32m'
@@ -144,7 +144,7 @@ list_domains() {
     
     print_info "Listing domains for account: $account_name"
     local response
-    if response=$(api_request "$account_name" "GET" "domains"); then
+    if response=$(api_request "$account_name" "GET" "$DOMAINS_ENDPOINT"); then
         echo "$response" | jq -r '.data[] | "\(.domain) - Status: \(.status) - Expires: \(.expires_at)"'
     else
         print_error "Failed to retrieve domains"
@@ -224,7 +224,7 @@ purchase_domain() {
 
     print_info "Purchasing domain: $domain"
     local response
-    if response=$(api_request "$account_name" "POST" "domains" "$data"); then
+    if response=$(api_request "$account_name" "POST" "$DOMAINS_ENDPOINT" "$data"); then
         print_success "Domain purchased successfully"
         echo "$response" | jq '.'
     else
@@ -574,7 +574,7 @@ monitor_expiration() {
 
     print_info "Monitoring domain expiration (threshold: $days_threshold days)"
     local response
-    if response=$(api_request "$account_name" "GET" "domains"); then
+    if response=$(api_request "$account_name" "GET" "$DOMAINS_ENDPOINT"); then
         echo "$response" | jq -r --arg threshold "$days_threshold" '
             .data[] |
             select(.expires_at != null) |
