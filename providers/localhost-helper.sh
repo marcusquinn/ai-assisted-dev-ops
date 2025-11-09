@@ -333,6 +333,7 @@ setup_localwp_domain() {
     return 0
         print_error "LocalWP configuration not found for: $site_name"
     fi
+    return 0
 }
 
 # Setup Traefik for LocalWP site
@@ -458,12 +459,11 @@ start_localwp_mcp() {
 
     sleep 2
     if kill -0 $mcp_pid 2>/dev/null; then
-    return 0
         print_success "LocalWP MCP server started (PID: $mcp_pid)"
         print_info "AI assistants can now access your WordPress database"
         print_info "Available tools: mysql_query, mysql_schema"
+        return 0
     else
-    return 0
         print_error "Failed to start LocalWP MCP server"
         return 1
     fi

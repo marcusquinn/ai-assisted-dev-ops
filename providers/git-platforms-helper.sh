@@ -500,6 +500,7 @@ show_help() {
     echo "  $0 clone github personal my-repo ~/projects"
     echo "  $0 local-init ~/projects my-local-repo"
     echo "  $0 audit github personal"
+    return 0
 }
 
 # Main script logic
