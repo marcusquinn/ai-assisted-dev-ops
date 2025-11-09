@@ -293,6 +293,7 @@ list_localwp_sites() {
         print_warning "LocalWP sites directory not found at: $localwp_path"
         print_info "Install LocalWP from: https://localwp.com/"
     fi
+    return 0
 }
 
 # Create LocalWP-compatible .local domain

@@ -151,6 +151,7 @@ api_call() {
     fi
     
     curl -s -H "Authorization: Bearer $api_token" "$base_url/$endpoint"
+    return 0
 }
 
 # Main command handler
