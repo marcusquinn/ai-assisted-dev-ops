@@ -142,6 +142,7 @@ check_status() {
 
     print_info "Checking status of $server..."
     exec_on_server "$server" "echo 'Server: \$(hostname)' && echo 'Uptime: \$(uptime)' && echo 'Load: \$(cat /proc/loadavg)' && echo 'Memory:' && free -h && echo 'Disk:' && df -h /"
+    return 0
 }
 
 # API operations

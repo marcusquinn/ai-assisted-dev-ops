@@ -144,9 +144,9 @@ cloudflare_dns() {
     local record_type="$5"
     local record_value="$6"
 
-    local config_file=$(get_provider_config "cloudflare")
+    local config_file=$(get_provider_config "$PROVIDER_CLOUDFLARE")
 
-    if ! check_provider_config "cloudflare"; then
+    if ! check_provider_config "$PROVIDER_CLOUDFLARE"; then
         return 1
     fi
 

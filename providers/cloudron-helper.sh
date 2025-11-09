@@ -98,10 +98,9 @@ connect_server() {
     print_warning "Note: Use 'root' user for initial SSH access to Cloudron servers"
     
     ssh -p "$ssh_port" "root@$ip"
+    return 0
 }
 
-    return 0
-    return 0
 # Execute command on Cloudron server
 exec_on_server() {
     local server="$1"

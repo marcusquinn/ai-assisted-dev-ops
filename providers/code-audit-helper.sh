@@ -180,13 +180,11 @@ coderabbit_get_analysis() {
     fi
     
     print_info "Getting CodeRabbit analysis for repository: $repo_id"
-    local response=$(api_request "coderabbit" "$account_name" "repositories/$repo_id/analysis")
+    local response=$(api_request "$PROVIDER_CODERABBIT" "$account_name" "repositories/$repo_id/analysis")
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq '.'
     else
-    return 0
-    return 0
         print_error "Failed to get analysis"
         echo "$response"
     fi
@@ -259,9 +257,8 @@ codacy_get_quality_overview() {
     fi
     
     print_info "Getting Codacy quality overview for repository: $repo_name"
-    local response=$(api_request "codacy" "$account_name" "repositories/$repo_name/quality-overview")
-    return 0
-    
+    local response=$(api_request "$PROVIDER_CODACY" "$account_name" "repositories/$repo_name/quality-overview")
+
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq '.'
     else
@@ -296,10 +293,9 @@ sonarcloud_get_measures() {
         print_error "Project key is required"
         exit 1
     fi
-    
-    return 0
+
     print_info "Getting SonarCloud measures for project: $project_key"
-    local response=$(api_request "sonarcloud" "$account_name" "measures/component?component=$project_key&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density")
+    local response=$(api_request "$PROVIDER_SONARCLOUD" "$account_name" "measures/component?component=$project_key&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density")
     
     if [[ $? -eq 0 ]]; then
         echo "$response" | jq '.component.measures[] | "\(.metric): \(.value)"'
@@ -346,6 +342,7 @@ start_mcp_servers() {
             print_info "Available services: coderabbit, codacy, sonarcloud"
             ;;
     esac
+    return 0
 }
 
 # Comprehensive code audit across all services
