@@ -63,6 +63,7 @@ load_config() {
         print_info "Copy and customize: cp ../configs/mainwp-config.json.txt $CONFIG_FILE"
         exit 1
     fi
+    return 0
 }
 
 # Get instance configuration
@@ -83,6 +84,7 @@ get_instance_config() {
     fi
     
     echo "$instance_config"
+    return 0
 }
 
 # Make API request
@@ -114,14 +116,13 @@ api_request() {
     elif [[ "$method" == "DELETE" ]]; then
         curl -s -X DELETE -H "$auth_header" -H "Content-Type: application/json" "$url"
     fi
+    return 0
 }
 
 # List all configured instances
-    return 0
 list_instances() {
     load_config
     print_info "Available MainWP instances:"
-    return 0
     jq -r '.instances | keys[]' "$CONFIG_FILE" | while read -r instance; do
         local description=$(jq -r ".instances.\"$instance\".description" "$CONFIG_FILE")
         local base_url=$(jq -r ".instances.\"$instance\".base_url" "$CONFIG_FILE")
