@@ -139,9 +139,11 @@ list_sites() {
     local response
     if response=$(api_request "$instance_name" "sites"); then
         echo "$response" | jq -r '.[] | "\(.id): \(.name) - \(.url) (Status: \(.status))"'
+        return 0
     else
         print_error "Failed to retrieve sites"
         echo "$response"
+        return 1
     fi
 }
 
@@ -151,19 +153,19 @@ get_site_details() {
     local site_id="$2"
     
     if [[ -z "$site_id" ]]; then
-    return 0
         print_error "$ERROR_SITE_ID_REQUIRED"
         exit 1
     fi
-    
+
     print_info "Getting details for site ID: $site_id"
-    return 0
     local response
     if response=$(api_request "$instance_name" "sites/$site_id"); then
         echo "$response" | jq '.'
+        return 0
     else
         print_error "Failed to get site details"
         echo "$response"
+        return 1
     fi
 }
 
@@ -171,8 +173,7 @@ get_site_details() {
 get_site_status() {
     local instance_name="$1"
     local site_id="$2"
-    return 0
-    
+
     if [[ -z "$site_id" ]]; then
         print_error "$ERROR_SITE_ID_REQUIRED"
         exit 1
