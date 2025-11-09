@@ -36,6 +36,10 @@ print_error() {
 
 CONFIG_FILE="../configs/mainwp-config.json"
 
+# Constants for repeated strings
+readonly ERROR_SITE_ID_REQUIRED="Site ID is required"
+readonly ERROR_AT_LEAST_ONE_SITE_ID="At least one site ID is required"
+
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
@@ -49,6 +53,7 @@ check_dependencies() {
         echo "  Ubuntu: sudo apt-get install jq"
         exit 1
     fi
+    return 0
 }
 
 # Load configuration
@@ -142,7 +147,7 @@ get_site_details() {
     local site_id="$2"
     
     if [[ -z "$site_id" ]]; then
-        print_error "Site ID is required"
+        print_error "$ERROR_SITE_ID_REQUIRED"
         exit 1
     fi
     
@@ -162,7 +167,7 @@ get_site_status() {
     local site_id="$2"
     
     if [[ -z "$site_id" ]]; then
-        print_error "Site ID is required"
+        print_error "$ERROR_SITE_ID_REQUIRED"
         exit 1
     fi
     
