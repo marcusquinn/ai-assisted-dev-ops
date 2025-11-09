@@ -12,33 +12,41 @@ readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    local message="$1"
+    echo -e "${GREEN}✅ $message${NC}"
+    return 0
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
+    local message="$1"
+    echo -e "${YELLOW}⚠️  $message${NC}"
+    return 0
 }
 
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    local message="$1"
+    echo -e "${RED}❌ $message${NC}"
+    return 0
 }
 
 print_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
+    local message="$1"
+    echo -e "${BLUE}ℹ️  $message${NC}"
+    return 0
 }
 
 # Get list of modified shell files
 get_modified_shell_files() {
     git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true
+    return 0
 }
 
 validate_return_statements() {
-    local files=("$@")
     local violations=0
     
     print_info "Validating return statements..."
     
-    for file in "${files[@]}"; do
+    for file in "$@"; do
         if [[ -f "$file" ]]; then
             # Check for functions without return statements
             local functions
@@ -57,12 +65,11 @@ validate_return_statements() {
 }
 
 validate_positional_parameters() {
-    local files=("$@")
     local violations=0
-    
+
     print_info "Validating positional parameters..."
-    
-    for file in "${files[@]}"; do
+
+    for file in "$@"; do
         if [[ -f "$file" ]]; then
             # Check for direct positional parameter usage
             if grep -n '\$[1-9]' "$file" | grep -v 'local.*=.*\$[1-9]' > /dev/null; then
@@ -77,12 +84,11 @@ validate_positional_parameters() {
 }
 
 validate_string_literals() {
-    local files=("$@")
     local violations=0
-    
+
     print_info "Validating string literals..."
-    
-    for file in "${files[@]}"; do
+
+    for file in "$@"; do
         if [[ -f "$file" ]]; then
             # Check for repeated string literals
             local repeated
@@ -100,12 +106,11 @@ validate_string_literals() {
 }
 
 run_shellcheck() {
-    local files=("$@")
     local violations=0
-    
+
     print_info "Running ShellCheck validation..."
-    
-    for file in "${files[@]}"; do
+
+    for file in "$@"; do
         if [[ -f "$file" ]]; then
             if ! shellcheck "$file"; then
                 print_error "ShellCheck violations in $file"
@@ -126,16 +131,17 @@ check_quality_standards() {
         if response=$(curl -s --max-time 10 "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1" 2>/dev/null); then
             local total_issues
             total_issues=$(echo "$response" | jq -r '.total // 0' 2>/dev/null || echo "unknown")
-            
+
             if [[ "$total_issues" != "unknown" ]]; then
                 print_info "Current SonarCloud issues: $total_issues"
-                
+
                 if [[ $total_issues -gt 200 ]]; then
                     print_warning "High issue count detected. Consider running quality fixes."
                 fi
             fi
         fi
     fi
+    return 0
 }
 
 main() {

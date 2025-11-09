@@ -21,18 +21,25 @@ readonly MAX_UNUSED_VAR_ISSUES=0
 print_header() {
     echo -e "${BLUE}🎯 AI-Assisted DevOps Framework - Multi-Platform Quality Check${NC}"
     echo -e "${BLUE}================================================================${NC}"
+    return 0
 }
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    local message="$1"
+    echo -e "${GREEN}✅ $message${NC}"
+    return 0
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
+    local message="$1"
+    echo -e "${YELLOW}⚠️  $message${NC}"
+    return 0
 }
 
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    local message="$1"
+    echo -e "${RED}❌ $message${NC}"
+    return 0
 }
 
 check_sonarcloud_status() {

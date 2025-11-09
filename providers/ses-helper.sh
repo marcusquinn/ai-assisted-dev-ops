@@ -209,6 +209,7 @@ get_suppression_details() {
 
     print_info "Getting suppression details for: $email"
     aws sesv2 get-suppressed-destination --email-address "$email" --output table
+    return 0
 }
 
 # Remove from suppression list
@@ -226,8 +227,10 @@ remove_from_suppression() {
     aws sesv2 delete-suppressed-destination --email-address "$email"
     if [[ $? -eq 0 ]]; then
         print_success "Successfully removed $email from suppression list"
+        return 0
     else
         print_error "Failed to remove $email from suppression list"
+        return 1
     fi
 }
 
@@ -258,8 +261,10 @@ send_test_email() {
 
     if [[ $? -eq 0 ]]; then
         print_success "Test email sent successfully. Message ID: $message_id"
+        return 0
     else
         print_error "Failed to send test email"
+        return 1
     fi
 }
 
@@ -270,6 +275,7 @@ list_configuration_sets() {
 
     print_info "Configuration sets for account: $account_name"
     aws ses list-configuration-sets --output table
+    return 0
 }
 
 # Get bounce and complaint notifications

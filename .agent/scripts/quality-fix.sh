@@ -14,22 +14,31 @@ readonly NC='\033[0m' # No Color
 print_header() {
     echo -e "${BLUE}🔧 AI-Assisted DevOps Framework - Universal Quality Fix${NC}"
     echo -e "${BLUE}==========================================================${NC}"
+    return 0
 }
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    local message="$1"
+    echo -e "${GREEN}✅ $message${NC}"
+    return 0
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
+    local message="$1"
+    echo -e "${YELLOW}⚠️  $message${NC}"
+    return 0
 }
 
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    local message="$1"
+    echo -e "${RED}❌ $message${NC}"
+    return 0
 }
 
 print_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
+    local message="$1"
+    echo -e "${BLUE}ℹ️  $message${NC}"
+    return 0
 }
 
 backup_files() {
