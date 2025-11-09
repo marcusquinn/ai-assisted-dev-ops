@@ -87,7 +87,7 @@ ask_setup_needs() {
     echo "7. Enterprise applications"
     echo "8. Multiple project types"
     
-    read -p "Enter your choice (1-8): " project_type
+    read -r -p "Enter your choice (1-8): " project_type
     save_response "project_type" "$project_type"
     
     # Team size assessment
@@ -97,17 +97,17 @@ ask_setup_needs() {
     echo "3. Medium team (6-20 people)"
     echo "4. Large team (20+ people)"
     
-    read -p "Enter your choice (1-4): " team_size
+    read -r -p "Enter your choice (1-4): " team_size
     save_response "team_size" "$team_size"
     
     # Budget assessment
     print_question "What's your monthly budget for DevOps services?"
     echo "1. Minimal ($0-50/month)"
-    echo "2. Small ($50-200/month)"
-    echo "3. Medium ($200-500/month)"
-    echo "4. Large ($500+/month)"
+    echo "2. Small (\$50-200/month)"
+    echo "3. Medium (\$200-500/month)"
+    echo "4. Large (\$500+/month)"
     
-    read -p "Enter your choice (1-4): " budget
+    read -r -p "Enter your choice (1-4): " budget
     save_response "budget" "$budget"
     
     # Technical expertise
@@ -117,7 +117,7 @@ ask_setup_needs() {
     echo "3. Advanced (experienced with DevOps)"
     echo "4. Expert (DevOps professional)"
     
-    read -p "Enter your choice (1-4): " expertise
+    read -r -p "Enter your choice (1-4): " expertise
     save_response "expertise" "$expertise"
     
     # Current infrastructure
@@ -127,17 +127,23 @@ ask_setup_needs() {
     echo "3. Yes, using VPS/cloud servers"
     echo "4. Yes, using multiple providers"
     
-    read -p "Enter your choice (1-4): " current_infra
+    read -r -p "Enter your choice (1-4): " current_infra
     save_response "current_infra" "$current_infra"
 }
 
 # Analyze needs and recommend services
+# shellcheck disable=SC2120
 analyze_and_recommend() {
-    local project_type=$(get_response "project_type")
-    local team_size=$(get_response "team_size")
-    local budget=$(get_response "budget")
-    local expertise=$(get_response "expertise")
-    local current_infra=$(get_response "current_infra")
+    local project_type
+    project_type=$(get_response "project_type")
+    local team_size
+    team_size=$(get_response "team_size")
+    local budget
+    budget=$(get_response "budget")
+    local expertise
+    expertise=$(get_response "expertise")
+    local current_infra
+    current_infra=$(get_response "current_infra")
     
     print_info "🔍 Analyzing your needs..."
     echo ""
@@ -380,21 +386,33 @@ test_connections() {
     print_info "Testing hosting providers..."
     if [[ -f "../configs/hetzner-config.json" ]]; then
         echo "Testing Hetzner Cloud..."
-        ../providers/hetzner-helper.sh accounts 2>/dev/null && print_success "✅ Hetzner Cloud connected" || print_warning "❌ Hetzner Cloud connection failed"
+        if ../providers/hetzner-helper.sh accounts 2>/dev/null; then
+            print_success "✅ Hetzner Cloud connected"
+        else
+            print_warning "❌ Hetzner Cloud connection failed"
+        fi
     fi
 
     # Test domain providers
     print_info "Testing domain providers..."
     if [[ -f "../configs/spaceship-config.json" ]]; then
         echo "Testing Spaceship..."
-        ../providers/spaceship-helper.sh accounts 2>/dev/null && print_success "✅ Spaceship connected" || print_warning "❌ Spaceship connection failed"
+        if ../providers/spaceship-helper.sh accounts 2>/dev/null; then
+            print_success "✅ Spaceship connected"
+        else
+            print_warning "❌ Spaceship connection failed"
+        fi
     fi
 
     # Test Git platforms
     print_info "Testing Git platforms..."
     if [[ -f "../configs/git-platforms-config.json" ]]; then
         echo "Testing Git platforms..."
-        ../providers/git-platforms-helper.sh platforms 2>/dev/null && print_success "✅ Git platforms connected" || print_warning "❌ Git platforms connection failed"
+        if ../providers/git-platforms-helper.sh platforms 2>/dev/null; then
+            print_success "✅ Git platforms connected"
+        else
+            print_warning "❌ Git platforms connection failed"
+        fi
     fi
 
     echo ""
