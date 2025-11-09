@@ -243,8 +243,8 @@ api_server_action() {
             return 1
             ;;
     esac
-}
     return 0
+}
 
 # Generate SSH configurations
 generate_ssh_configs() {
@@ -280,6 +280,7 @@ generate_ssh_configs() {
     
     print_success "SSH configurations generated in ~/.ssh/closte_config"
     print_info "Add 'Include ~/.ssh/closte_config' to your ~/.ssh/config"
+    return 0
 }
 
 # Main command handler

@@ -404,7 +404,7 @@ start_mcp_servers() {
     print_info "Starting MCP server for $platform on port $port"
 
     case "$platform" in
-        "github")
+        "$PLATFORM_GITHUB")
             if command -v github-mcp-server &> /dev/null; then
                 github-mcp-server --port "$port"
             else
@@ -412,17 +412,16 @@ start_mcp_servers() {
                 echo "  npm install -g @github/mcp-server"
             fi
             ;;
-        "gitlab")
+        "$PLATFORM_GITLAB")
             if command -v gitlab-mcp-server &> /dev/null; then
                 gitlab-mcp-server --port "$port"
             else
                 print_warning "GitLab MCP server not found. Check GitLab documentation for MCP integration"
             fi
             ;;
-        "gitea")
+        "$PLATFORM_GITEA")
             if command -v gitea-mcp-server &> /dev/null; then
                 gitea-mcp-server --port "$port"
-    return 0
             else
                 print_warning "Gitea MCP server not found. Check Gitea documentation for MCP integration"
             fi
@@ -432,6 +431,7 @@ start_mcp_servers() {
             print_info "Available platforms: github, gitlab, gitea"
             ;;
     esac
+    return 0
 }
 
 # Comprehensive repository audit

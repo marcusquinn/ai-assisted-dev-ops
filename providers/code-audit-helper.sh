@@ -188,6 +188,7 @@ coderabbit_get_analysis() {
         print_error "Failed to get analysis"
         echo "$response"
     fi
+    return 0
 }
 
 # CodeFactor functions
@@ -426,6 +427,7 @@ generate_audit_report() {
     echo "$report" > "$output_file"
 
     print_success "Audit report generated: $output_file"
+    return 0
 }
 
 # Show help
