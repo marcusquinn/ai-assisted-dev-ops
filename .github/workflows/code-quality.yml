@@ -64,6 +64,16 @@ jobs:
         echo "🎯 Framework Validation: COMPLETE"
         echo "This is a comprehensive AI-Assisted DevOps framework with 25+ service integrations!"
 
+        # Security check - ensure no API keys in repository
+        echo ""
+        echo "🔐 Security Validation:"
+        if grep -r -E "['\"][a-zA-Z0-9]{20,}['\"]" . --include="*.sh" --include="*.json" --include="*.md" | grep -v "YOUR_.*_HERE" | grep -v "example" | grep -v "placeholder" | head -1; then
+          echo "❌ Potential API keys found in repository files!"
+          exit 1
+        else
+          echo "✅ No hardcoded API keys detected"
+        fi
+
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
@@ -83,8 +93,33 @@ jobs:
     - name: Codacy Analysis
       run: |
         if [[ -n "${{ secrets.CODACY_API_TOKEN }}" ]]; then
+          echo "🔍 Running Codacy Analysis..."
           export CODACY_API_TOKEN="${{ secrets.CODACY_API_TOKEN }}"
+
+          # Install Codacy CLI if not available
+          if ! command -v codacy-cli &> /dev/null; then
+            echo "Installing Codacy CLI..."
+            bash .agent/scripts/codacy-cli.sh install
+          fi
+
+          # Run analysis
           bash .agent/scripts/codacy-cli.sh analyze
+
+          echo "✅ Codacy analysis completed"
         else
-          echo "Codacy API token not configured, skipping analysis"
+          echo "⚠️  Codacy API token not configured, skipping analysis"
+          echo "   Add CODACY_API_TOKEN to repository secrets to enable Codacy analysis"
         fi
+
+    - name: Quality Analysis Summary
+      run: |
+        echo "📊 Code Quality Analysis Summary"
+        echo "================================"
+        echo "✅ SonarCloud: Analysis completed"
+        echo "$(if [[ -n "${{ secrets.CODACY_API_TOKEN }}" ]]; then echo '✅ Codacy: Analysis completed'; else echo '⚠️  Codacy: Skipped (token not configured)'; fi)"
+        echo ""
+        echo "🔗 View Results:"
+        echo "   SonarCloud: https://sonarcloud.io/project/overview?id=marcusquinn_ai-assisted-dev-ops"
+        echo "   Codacy: https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops"
+        echo ""
+        echo "🎯 Code Quality Pipeline: COMPLETE"
