@@ -34,23 +34,36 @@ print_header() {
     echo "=========================================="
 }
 
-# Load API configuration for organization-specific tokens
+# Load API configuration for organization-specific tokens and workspace IDs
 load_api_config() {
     local org="${1:-marcusquinn}"  # Default to marcusquinn organization
     local api_key_service="qlty-${org}"
+    local workspace_id_service="qlty-${org}-workspace-id"
 
     # Load API key from secure storage
     if [[ -f "$HOME/.config/ai-assisted-devops/api-keys" ]]; then
-        local api_key
+        local api_key workspace_id
         api_key=$(bash "$(dirname "$0")/setup-local-api-keys.sh" get "$api_key_service" 2>/dev/null)
+        workspace_id=$(bash "$(dirname "$0")/setup-local-api-keys.sh" get "$workspace_id_service" 2>/dev/null)
 
         if [[ -n "$api_key" ]]; then
             export QLTY_COVERAGE_TOKEN="$api_key"
             print_info "Loaded Qlty Coverage Token for organization: $org"
+
+            if [[ -n "$workspace_id" ]]; then
+                export QLTY_WORKSPACE_ID="$workspace_id"
+                print_info "Loaded Qlty Workspace ID for organization: $org"
+            else
+                print_warning "No Qlty Workspace ID found for organization: $org (optional)"
+            fi
+
             return 0
         else
             print_warning "No Qlty Coverage Token found for organization: $org"
             print_info "Run: bash .agent/scripts/setup-local-api-keys.sh set $api_key_service YOUR_TOKEN"
+            if [[ -z "$workspace_id" ]]; then
+                print_info "Run: bash .agent/scripts/setup-local-api-keys.sh set $workspace_id_service YOUR_WORKSPACE_ID"
+            fi
             return 1
         fi
     else
@@ -245,14 +258,28 @@ show_help() {
     echo "  🚨 Security: SAST, SCA, secret detection"
     echo "  ⚡ Performance: Fast, concurrent execution"
     echo ""
-    echo "Organization Token Management:"
-    echo "  Store tokens: bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME TOKEN"
-    echo "  List tokens:  bash .agent/scripts/setup-local-api-keys.sh list"
-    echo "  Default org:  marcusquinn (qlty-marcusquinn)"
+    echo "Organization Configuration Management:"
+    echo "  Store Coverage Token:  bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME TOKEN"
+    echo "  Store Workspace ID:    bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME-workspace-id ID"
+    echo "  List configurations:   bash .agent/scripts/setup-local-api-keys.sh list"
+    echo "  Default org:           marcusquinn (qlty-marcusquinn)"
     echo ""
     echo "Current Configured Organizations:"
     if [[ -f "$HOME/.config/ai-assisted-devops/api-keys" ]]; then
-        grep "qlty-" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null | cut -d'=' -f1 | sed 's/qlty-/  - /' || echo "  - None configured"
+        # Show organizations with tokens
+        local orgs
+        orgs=$(grep "qlty-.*=" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null | grep -v "workspace-id" | cut -d'=' -f1 | sed 's/qlty-//')
+        if [[ -n "$orgs" ]]; then
+            while IFS= read -r org; do
+                local has_workspace=""
+                if grep -q "qlty-${org}-workspace-id=" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null; then
+                    has_workspace=" (+ workspace ID)"
+                fi
+                echo "  - ${org}${has_workspace}"
+            done <<< "$orgs"
+        else
+            echo "  - None configured"
+        fi
     else
         echo "  - None configured"
     fi
