@@ -3,7 +3,7 @@
 # Efficient script to add return statements to functions that need them
 # Based on SonarCloud S7682 analysis
 
-cd providers
+cd providers || exit
 
 # Function to add return statement to a specific line
 add_return_to_line() {

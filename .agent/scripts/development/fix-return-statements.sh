@@ -34,7 +34,7 @@ FUNCTION_END_LINES=(
 for ((i=${#FUNCTION_END_LINES[@]}-1; i>=0; i--)); do
     line_num=${FUNCTION_END_LINES[i]}
     echo "Adding return statement before line $line_num"
-    add_return_statement $line_num
+    add_return_statement "$line_num"
 done
 
 echo "Return statements added to all functions in $FILE"

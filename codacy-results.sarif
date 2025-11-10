@@ -2,17 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
   "runs": [
     {
-      "results": [],
-      "tool": {
-        "driver": {
-          "informationUri": "https://github.com/terryyin/lizard",
-          "name": "Lizard",
-          "rules": null,
-          "version": "1.17.10"
-        }
-      }
-    },
-    {
       "invocations": [
         {
           "executionSuccessful": true,
@@ -67,37 +56,7 @@
           ]
         }
       ],
-      "results": [
-        {
-          "fingerprints": {
-            "matchBasedId/v1": "f5c95658816134ba47168c8fbc0a37afddb0b7337ce7e36a30b259302fc6f67099629f0d5732cc7db47cee48aa0ceed299c31866539771ca43d472993340e9af_0"
-          },
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": ".github/workflows/code-quality.yml",
-                  "uriBaseId": "%SRCROOT%"
-                },
-                "region": {
-                  "endColumn": 56,
-                  "endLine": 86,
-                  "snippet": {
-                    "text": "      uses: SonarSource/sonarcloud-github-action@master"
-                  },
-                  "startColumn": 7,
-                  "startLine": 86
-                }
-              }
-            }
-          ],
-          "message": {
-            "text": "An action sourced from a third-party repository on GitHub is not pinned to a full length commit SHA. Pinning an action to a full length commit SHA is currently the only way to use an action as an immutable release. Pinning to a particular SHA helps mitigate the risk of a bad actor adding a backdoor to the action's repository, as they would need to generate a SHA-1 collision for a valid Git object payload."
-          },
-          "properties": {},
-          "ruleId": "codacy.tools-configs.yaml.github-actions.security.third-party-action-not-pinned-to-commit-sha.third-party-action-not-pinned-to-commit-sha"
-        }
-      ],
+      "results": [],
       "tool": {
         "driver": {
           "name": "Semgrep OSS",
@@ -148,6 +107,17 @@
           "name": "ESLint",
           "rules": null,
           "version": "8.57.0"
+        }
+      }
+    },
+    {
+      "results": [],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/terryyin/lizard",
+          "name": "Lizard",
+          "rules": null,
+          "version": "1.17.10"
         }
       }
     }

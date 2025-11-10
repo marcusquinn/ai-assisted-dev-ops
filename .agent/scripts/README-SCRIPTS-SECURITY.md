@@ -4,7 +4,7 @@
 
 ### **📁 DIRECTORY ORGANIZATION:**
 
-```
+```text
 .agent/
 ├── scripts/              # ✅ SHARED (committed to Git)
 │   ├── codacy-cli.sh

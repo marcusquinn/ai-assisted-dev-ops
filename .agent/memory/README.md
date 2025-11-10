@@ -40,7 +40,7 @@ AI assistants should use this directory for:
 
 ## 📁 **Recommended Structure**
 
-```
+```text
 .agent/memory/
 ├── context/                 # Session context and history
 ├── patterns/                # Learned operation patterns

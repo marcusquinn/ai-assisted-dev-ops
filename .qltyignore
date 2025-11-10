@@ -1,0 +1,27 @@
+# Qlty Ignore File
+# Exclude backup files and development utilities from analysis
+
+# Backup directories - historical snapshots, not active code
+backups/
+*.backup
+*.bak
+*.tmp
+
+# Development utility scripts - not production code  
+.agent/scripts/development/
+
+# Dependencies and build artifacts
+node_modules/
+.git/
+dist/
+build/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary directories
+.tmp/
+tmp/

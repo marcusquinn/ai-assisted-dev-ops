@@ -1,0 +1,46 @@
+# Qlty Configuration
+# Focus analysis on production code, exclude backup files and temporary directories
+
+[files]
+# Explicitly exclude backup directories and development utilities
+ignore = [
+    "backups/",
+    "*.backup",
+    "*.bak",
+    "*.tmp",
+    ".tmp/",
+    "tmp/",
+    # Development utility scripts - not production code
+    ".agent/scripts/development/",
+    # Node modules and dependencies
+    "node_modules/",
+    ".git/",
+    # Build artifacts
+    "dist/",
+    "build/",
+    # IDE files
+    ".vscode/",
+    ".idea/",
+    # OS files
+    ".DS_Store",
+    "Thumbs.db"
+]
+
+# Focus analysis on production code and documentation
+[include]
+paths = [
+    "providers/",
+    ".agent/scripts/",
+    "docs/",
+    "*.md",
+    "*.sh",
+    "*.yml",
+    "*.yaml",
+    "*.json"
+]
+
+# Exclude development utility scripts from critical analysis
+[rules]
+# Allow some flexibility in development scripts
+"shellcheck:SC2317" = { level = "info" }  # Unreachable code warnings
+"shellcheck:SC2329" = { level = "info" }  # Unused function warnings
