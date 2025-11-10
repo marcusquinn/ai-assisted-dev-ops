@@ -2,33 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
   "runs": [
     {
-      "columnKind": "utf16CodeUnits",
-      "originalUriBaseIds": {
-        "ROOTPATH": {
-          "uri": "file:///Users/marcusquinn/git/ai-assisted-dev-ops/"
-        }
-      },
-      "results": [],
-      "tool": {
-        "driver": {
-          "fullName": "Trivy Vulnerability Scanner",
-          "informationUri": "https://github.com/aquasecurity/trivy",
-          "name": "Trivy",
-          "rules": null,
-          "version": "0.66.0"
-        }
-      }
-    },
-    {
-      "results": [],
-      "tool": {
-        "driver": {
-          "name": "dartanalyzer",
-          "rules": null
-        }
-      }
-    },
-    {
       "artifacts": [
         {
           "location": {
@@ -118,6 +91,33 @@
           "name": "Semgrep OSS",
           "rules": null,
           "semanticVersion": "1.78.0"
+        }
+      }
+    },
+    {
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///Users/marcusquinn/git/ai-assisted-dev-ops/"
+        }
+      },
+      "results": [],
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": null,
+          "version": "0.66.0"
+        }
+      }
+    },
+    {
+      "results": [],
+      "tool": {
+        "driver": {
+          "name": "dartanalyzer",
+          "rules": null
         }
       }
     }

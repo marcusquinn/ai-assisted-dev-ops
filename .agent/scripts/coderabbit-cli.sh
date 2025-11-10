@@ -45,6 +45,124 @@ print_info() {
     return 0
 }
 
+# Get CodeRabbit reviews from GitHub API
+get_coderabbit_reviews() {
+    print_header "Fetching CodeRabbit Reviews"
+
+    # Check if gh CLI is available
+    if ! command -v gh &> /dev/null; then
+        print_warning "GitHub CLI (gh) not found. Install it for API access."
+        print_info "Visit: https://cli.github.com/"
+        return 1
+    fi
+
+    # Get recent PRs with CodeRabbit reviews
+    print_info "Fetching recent pull requests with CodeRabbit reviews..."
+
+    local prs
+    prs=$(gh pr list --state all --limit 5 --json number,title,state,url)
+
+    if [[ -n "$prs" && "$prs" != "[]" ]]; then
+        print_success "Found pull requests with potential CodeRabbit reviews"
+        echo "$prs" | jq -r '.[] | "PR #\(.number): \(.title) (\(.state))"'
+
+        # Get reviews for the most recent PR
+        local latest_pr
+        latest_pr=$(echo "$prs" | jq -r '.[0].number')
+
+        if [[ -n "$latest_pr" && "$latest_pr" != "null" ]]; then
+            print_info "Checking reviews for PR #$latest_pr..."
+
+            local reviews
+            reviews=$(gh pr view "$latest_pr" --json reviews)
+
+            if [[ -n "$reviews" ]]; then
+                local coderabbit_reviews
+                coderabbit_reviews=$(echo "$reviews" | jq -r '.reviews[] | select(.author.login == "coderabbitai[bot]") | .body' 2>/dev/null || echo "")
+
+                if [[ -n "$coderabbit_reviews" ]]; then
+                    print_success "Found CodeRabbit reviews!"
+                    print_info "Review summary available for PR #$latest_pr"
+                else
+                    print_warning "No CodeRabbit reviews found in recent PRs"
+                fi
+            fi
+        fi
+    else
+        print_warning "No pull requests found"
+    fi
+
+    return 0
+}
+
+# Apply CodeRabbit auto-fixes
+apply_coderabbit_fixes() {
+    print_header "Applying CodeRabbit Auto-Fixes"
+
+    local file="${1:-}"
+
+    if [[ -z "$file" ]]; then
+        print_error "Please specify a file to fix"
+        print_info "Usage: apply_coderabbit_fixes <file>"
+        return 1
+    fi
+
+    if [[ ! -f "$file" ]]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+
+    print_info "Applying common CodeRabbit fixes to: $file"
+
+    # Backup original file
+    cp "$file" "$file.coderabbit-backup"
+    print_info "Created backup: $file.coderabbit-backup"
+
+    # Apply markdown formatting fixes if it's a markdown file
+    if [[ "$file" == *.md ]]; then
+        print_info "Applying markdown formatting fixes..."
+
+        # Fix heading spacing (add blank line after headings)
+        sed -i.tmp '/^#.*$/{
+            N
+            /\n$/!s/$/\n/
+        }' "$file"
+
+        # Fix list spacing (ensure blank lines around lists)
+        sed -i.tmp '/^[[:space:]]*[-*+][[:space:]]/{
+            i\
+
+        }' "$file"
+
+        rm -f "$file.tmp"
+        print_success "Applied markdown formatting fixes"
+    fi
+
+    # Apply shell script fixes if it's a shell script
+    if [[ "$file" == *.sh ]]; then
+        print_info "Applying shell script fixes..."
+
+        # Add return statements to functions (basic implementation)
+        awk '
+        /^[a-zA-Z_][a-zA-Z0-9_]*\(\)/ { in_function = 1; function_name = $1 }
+        /^}$/ && in_function {
+            print "    return 0"
+            print $0
+            in_function = 0
+            next
+        }
+        { print }
+        ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+
+        print_success "Applied shell script fixes"
+    fi
+
+    print_success "CodeRabbit auto-fixes applied to $file"
+    print_info "Original backed up as: $file.coderabbit-backup"
+
+    return 0
+}
+
 print_warning() {
     local message="$1"
     echo -e "${YELLOW}⚠️  $message${NC}"
@@ -274,6 +392,12 @@ main() {
             ;;
         "status")
             check_status
+            ;;
+        "reviews")
+            get_coderabbit_reviews
+            ;;
+        "fix")
+            apply_coderabbit_fixes "$2"
             ;;
         "help"|"--help"|"-h")
             show_help
