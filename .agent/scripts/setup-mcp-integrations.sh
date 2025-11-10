@@ -31,6 +31,7 @@ get_mcp_command() {
         "google-search-console") echo "npx mcp-server-gsc@latest" ;;
         *) echo "" ;;
     esac
+    return 0
 }
 
 # Available integrations list
@@ -50,23 +51,25 @@ check_prerequisites() {
     local node_version
     node_version=$(node --version | cut -d'v' -f2)
     print_success "Node.js version: $node_version"
-    
+
     # Check npm
     if ! command -v npm &> /dev/null; then
         print_error "npm is required but not installed"
         exit 1
     fi
-    
+
     local npm_version
     npm_version=$(npm --version)
     print_success "npm version: $npm_version"
-    
+
     # Check if Claude Desktop is available
     if command -v claude &> /dev/null; then
         print_success "Claude Desktop CLI detected"
     else
         print_warning "Claude Desktop CLI not found - manual configuration will be needed"
     fi
+
+    return 0
 }
 
 # Install specific MCP integration
@@ -74,6 +77,11 @@ install_mcp() {
     local mcp_name="$1"
     local mcp_command
     mcp_command=$(get_mcp_command "$mcp_name")
+
+    if [[ -z "$mcp_command" ]]; then
+        print_error "Unknown MCP integration: $mcp_name"
+        return 1
+    fi
     
     print_info "Installing $mcp_name MCP..."
     
@@ -119,6 +127,11 @@ install_mcp() {
             if command -v claude &> /dev/null; then
                 claude mcp add google-search-console "$mcp_command"
             fi
+            ;;
+        *)
+            print_error "Unknown MCP integration: $mcp_name"
+            print_info "Available integrations: $MCP_LIST"
+            return 1
             ;;
     esac
     
@@ -168,12 +181,14 @@ EOF
 
 # Main setup function
 main() {
+    local command="${1:-help}"
+
     print_header "Advanced MCP Integrations Setup"
     echo
-    
+
     check_prerequisites
     echo
-    
+
     if [[ $# -eq 0 ]]; then
         print_info "Available MCP integrations:"
         for mcp in $MCP_LIST; do
@@ -189,16 +204,16 @@ main() {
     create_config_templates
     echo
     
-    if [[ "$1" == "all" ]]; then
+    if [[ "$command" == "all" ]]; then
         print_header "Installing All MCP Integrations"
         for mcp in $MCP_LIST; do
             install_mcp "$mcp"
             echo
         done
-    elif [[ "$MCP_LIST" == *"$1"* ]]; then
-        install_mcp "$1"
+    elif [[ "$MCP_LIST" == *"$command"* ]]; then
+        install_mcp "$command"
     else
-        print_error "Unknown MCP integration: $1"
+        print_error "Unknown MCP integration: $command"
         print_info "Available integrations: $MCP_LIST"
         exit 1
     fi
