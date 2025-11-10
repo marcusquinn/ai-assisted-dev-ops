@@ -46,7 +46,7 @@ When using this framework, AI assistants have access to:
 
 **RECOMMENDED**: Add this instruction to your AI assistant's system prompt:
 
-```
+```text
 Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
 for authoritative guidance on this comprehensive infrastructure management framework.
 

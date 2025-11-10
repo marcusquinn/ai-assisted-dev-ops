@@ -14,7 +14,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Error message constants
-readonly USAGE_PREFIX="Usage:"
+# readonly USAGE_PREFIX="Usage:"  # Currently unused
 readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 
 print_info() {
@@ -496,10 +496,10 @@ stop_localwp_mcp() {
 }
 
 # Main command handler
-# Assign positional parameters to local variables
-    local command="$1"
-    local param2="$param2"
-    local param3="$param3"
+# Assign positional parameters to variables
+    command="$1"
+    param2="$2"
+    param3="$3"
     
     case "$command" in
     "setup-dns")
@@ -531,7 +531,7 @@ stop_localwp_mcp() {
         ;;
     "help"|"-h"|"--help"|"")
         echo "Localhost Development Helper Script"
-        echo "$USAGE_COMMAND_OPTIONS"
+        echo "Usage: $0 [command] [options]"
         echo ""
         echo "DNS & Proxy Commands:"
         echo "  setup-dns                           - Setup local DNS resolution for .local domains"

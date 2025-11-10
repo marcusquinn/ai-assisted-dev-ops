@@ -16,7 +16,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Error message constants
-readonly USAGE_PREFIX="Usage:"
+# readonly USAGE_PREFIX="Usage:"  # Currently unused
 readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 
 print_info() {

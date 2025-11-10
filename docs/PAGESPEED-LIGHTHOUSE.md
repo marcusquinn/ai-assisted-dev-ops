@@ -98,9 +98,9 @@ EOF
 
 Add this to your AI assistant's system prompt:
 
-```
-For website performance optimization, use the PageSpeed and Lighthouse tools available in 
-~/git/ai-assisted-dev-ops/providers/pagespeed-helper.sh. Always provide specific, 
+```text
+For website performance optimization, use the PageSpeed and Lighthouse tools available in
+~/git/ai-assisted-dev-ops/providers/pagespeed-helper.sh. Always provide specific,
 actionable recommendations focusing on Core Web Vitals and user experience.
 ```
 
@@ -108,19 +108,19 @@ actionable recommendations focusing on Core Web Vitals and user experience.
 
 1. **Performance Audit**:
 
-   ```
+   ```text
    "Audit the performance of https://example.com and provide actionable recommendations"
    ```
 
 2. **WordPress Optimization**:
 
-   ```
+   ```text
    "Analyze my WordPress site performance and suggest specific optimizations"
    ```
 
 3. **Bulk Analysis**:
 
-   ```
+   ```text
    "Audit all websites in my portfolio and identify the top performance issues"
    ```
 

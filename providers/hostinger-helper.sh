@@ -15,7 +15,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Error message constants
-readonly USAGE_PREFIX="Usage:"
+# readonly USAGE_PREFIX="Usage:"  # Currently unused
 readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 
 print_info() {
@@ -178,7 +178,7 @@ case "$command" in
         ;;
     "help"|"-h"|"--help"|"")
         echo "Hostinger Helper Script"
-        echo "$USAGE_COMMAND_OPTIONS"
+        echo "Usage: $0 [command] [options]"
         echo ""
         echo "Commands:"
         echo "  list              - List all configured sites"

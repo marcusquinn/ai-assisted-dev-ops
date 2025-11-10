@@ -9,6 +9,7 @@
 **Beyond Single-Repo Limitations:** VS Code and Web UIs work on one repo at a time. CLI AI assistants can manage your entire infrastructure when given the right tools, access, and guidance.
 
 **DevOps Superpowers for AI:**
+
 - **Multi-Service Management**: 25+ APIs (hosting, Git, security, monitoring)
 - **Real-Time Operations**: SSH, domain management, database operations
 - **Cross-Service Intelligence**: Connect patterns across your entire ecosystem
@@ -60,6 +61,7 @@
 ## 🏆 **Enterprise-Grade Quality & Security**
 
 **Multi-Platform Quality Excellence:**
+
 - **🏆 SonarCloud**: A-grade ratings (0 bugs, 0 vulnerabilities)
 - **📊 CodeFactor**: A+ maintainability score
 - **🔧 Qlty**: Automated quality control with actionable quick-fixes
@@ -94,17 +96,20 @@ cd ai-assisted-dev-ops && ./setup.sh
 ## 🎯 **Core Capabilities**
 
 **🤖 AI-First Infrastructure Management:**
+
 - SSH server access, remote command execution, API integrations
 - DNS management, application deployment, email monitoring
 - WordPress management, credential security, code auditing
 - Git platform management, domain purchasing, setup automation
 
 **🏗️ Unified Interface:**
+
 - Standardized commands across 25+ providers
 - Automated SSH configuration and multi-account support
 - Security-first design with comprehensive logging
 
 **📊 Quality Control & Monitoring:**
+
 - **Qlty Integration**: Automated quality control with actionable quick-fixes
 - **Multi-Platform Analysis**: SonarCloud, CodeFactor, Codacy, CodeRabbit
 - **Security Monitoring**: Real-time vulnerability detection and remediation
@@ -120,9 +125,11 @@ sudo apt-get install sshpass jq curl dnsmasq  # Ubuntu/Debian
 # Generate SSH key
 ssh-keygen -t ed25519 -C "your-email@domain.com"
 ```
+
 ## 🏗️ **Comprehensive Service Coverage**
 
 ### **🏗️ Infrastructure & Hosting (6 providers)**
+
 - **Hostinger**: Shared hosting, domains, email
 - **Hetzner Cloud**: VPS servers, networking, load balancers
 - **Closte**: Managed hosting, application deployment
@@ -131,6 +138,7 @@ ssh-keygen -t ed25519 -C "your-email@domain.com"
 - **AWS/DigitalOcean**: Cloud infrastructure
 
 ### **🌐 Domain & DNS (5 providers)**
+
 - **Cloudflare**: DNS, CDN, security services
 - **Spaceship**: Domain registration and management
 - **101domains**: Domain purchasing and DNS
@@ -138,12 +146,14 @@ ssh-keygen -t ed25519 -C "your-email@domain.com"
 - **Namecheap**: Domain and DNS services
 
 ### **🔧 Development & Git (4 platforms)**
+
 - **GitHub**: Repository management, actions, API
 - **GitLab**: Self-hosted and cloud Git platform
 - **Gitea**: Lightweight Git service
 - **LocalWP**: WordPress development environment
 
 ### **🔐 Security & Quality (5 platforms)**
+
 - **Vaultwarden**: Password and secrets management
 - **SonarCloud**: Security and quality analysis (A-grade ratings)
 - **CodeFactor**: Code quality metrics (A+ score)
@@ -151,40 +161,49 @@ ssh-keygen -t ed25519 -C "your-email@domain.com"
 - **CodeRabbit**: AI-powered code reviews
 
 ### **📊 Performance & Analytics (2 integrations)**
+
 - **PageSpeed Insights**: Website performance auditing
 - **Lighthouse**: Comprehensive web app analysis
 
 ### **🤖 AI & Documentation (2 MCPs)**
+
 - **Context7**: Real-time documentation access
 - **LocalWP**: WordPress database queries
 
 ### **🔧 Quality Control & Monitoring**
+
 - **Qlty**: Automated quality control with actionable quick-fixes
 - **Multi-platform analysis**: Real-time security monitoring
 - **Performance auditing**: Website optimization recommendations
+
 ## 🤖 **MCP Integrations**
 
 **10 Model Context Protocol servers for real-time AI assistant integration:**
 
 ### **🌐 Web & Browser Automation**
+
 - **Chrome DevTools MCP**: Browser automation, performance analysis, debugging
 - **Playwright MCP**: Cross-browser testing and automation
 - **Cloudflare Browser Rendering**: Server-side web scraping
 
 ### **🔍 SEO & Research Tools**
+
 - **Ahrefs MCP**: SEO analysis, backlink research, keyword data
 - **Perplexity MCP**: AI-powered web search and research
 - **Google Search Console MCP**: Search performance insights
 
 ### **📊 Performance & Analytics**
+
 - **PageSpeed Insights MCP**: Website performance auditing and optimization
 
 ### **⚡ Development Tools**
+
 - **Next.js DevTools MCP**: React/Next.js development assistance
 - **Context7 MCP**: Real-time documentation access for thousands of libraries
 - **LocalWP MCP**: Direct WordPress database access
 
 **Quick Setup:**
+
 ```bash
 # Install all MCP integrations
 bash .agent/scripts/setup-mcp-integrations.sh all
@@ -196,6 +215,7 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 ## 🚀 **Usage Examples**
 
 ### **Server Management**
+
 ```bash
 # List all servers across providers
 ./scripts/servers-helper.sh list
@@ -209,6 +229,7 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 ```
 
 ### **Domain & DNS Management**
+
 ```bash
 # Purchase and configure domain
 ./providers/spaceship-helper.sh purchase example.com
@@ -219,6 +240,7 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 ```
 
 ### **Quality Control & Performance**
+
 ```bash
 # Run quality analysis with auto-fixes
 bash .agent/scripts/qlty-cli.sh check 10
@@ -230,6 +252,7 @@ bash .agent/scripts/qlty-cli.sh fix
 ```
 
 ### **WordPress Management**
+
 ```bash
 # Manage WordPress sites via MainWP
 ./providers/mainwp-helper.sh list-sites
@@ -242,6 +265,7 @@ bash .agent/scripts/qlty-cli.sh fix
 ## 📚 **Documentation & Resources**
 
 **Complete Guides Available:**
+
 - **[MCP Integrations Guide](docs/MCP-INTEGRATIONS.md)** - 10 MCP servers setup
 - **[API Integrations Guide](docs/API-INTEGRATIONS.md)** - 25+ service APIs
 - **[PageSpeed & Lighthouse Guide](docs/PAGESPEED-LIGHTHOUSE.md)** - Performance auditing
@@ -266,6 +290,7 @@ ai-assisted-dev-ops/
 ```
 
 **Key Components:**
+
 - **25+ Provider Scripts**: Standardized access to all services
 - **Configuration Templates**: Secure setup for all integrations
 - **Comprehensive Documentation**: 25+ guides covering all aspects
@@ -304,6 +329,7 @@ qlty fmt  # Format all files
 ```
 
 **Qlty Features:**
+
 - **🔧 Automated Quick-Fixes**: Apply fixes for common issues instantly
 - **📊 Quality Metrics**: Real-time maintainability scoring
 - **🛡️ Security Monitoring**: Continuous vulnerability detection
@@ -311,6 +337,7 @@ qlty fmt  # Format all files
 - **🎯 Actionable Feedback**: Specific, implementable recommendations
 
 **Multi-Platform Quality Excellence:**
+
 - **SonarCloud**: A-grade ratings (0 bugs, 0 vulnerabilities)
 - **CodeFactor**: A+ maintainability score
 - **Codacy**: 0 findings across 8 analysis tools
@@ -319,12 +346,14 @@ qlty fmt  # Format all files
 ## 🔐 **Security & Best Practices**
 
 **Credential Management:**
+
 - Store API tokens in separate config files (never hardcode)
 - Use Ed25519 SSH keys (modern, secure, fast)
 - Set proper file permissions (600 for configs)
 - Regular key rotation and access audits
 
 **Quality Assurance:**
+
 - Multi-platform analysis (SonarCloud, CodeFactor, Codacy, CodeRabbit)
 - Automated security monitoring and vulnerability detection
 - Qlty integration for continuous quality improvement
@@ -333,16 +362,19 @@ qlty fmt  # Format all files
 ## 🛠️ **Customization & Troubleshooting**
 
 **Adding New Providers:**
+
 1. Create `providers/newprovider-helper.sh`
 2. Add configuration template in `configs/`
 3. Update `scripts/servers-helper.sh` to include new provider
 
 **Common Issues:**
+
 - **SSH timeouts**: Check network connectivity and SSH config
 - **Permission denied**: Verify SSH keys and file permissions
 - **API errors**: Check API tokens and rate limits
 
 **Debug Mode:**
+
 ```bash
 export DEBUG=1
 ./providers/hetzner-helper.sh list main
@@ -351,6 +383,7 @@ export DEBUG=1
 ## 🤝 **Contributing & License**
 
 **Contributing:**
+
 1. Fork the repository
 2. Create feature branch
 3. Add provider support or improvements
@@ -365,18 +398,21 @@ export DEBUG=1
 ## 🎉 **What This Framework Achieves**
 
 **🎯 For You:**
+
 - Unified infrastructure management across 25+ services
 - AI-powered automation with standardized commands
 - Enterprise-grade security and quality assurance
 - Time savings through consistent interfaces
 
 **🤖 For Your AI Assistant:**
+
 - Structured access to entire DevOps ecosystem
 - Real-time documentation via Context7 MCP
 - Quality control with Qlty automated fixes
 - Performance monitoring with PageSpeed integration
 
 **🚀 Get Started:**
+
 1. Clone repository: `git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git`
 2. Run setup: `./setup.sh`
 3. Configure providers: Copy and edit config templates

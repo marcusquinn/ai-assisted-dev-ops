@@ -147,7 +147,7 @@ audit_servers() {
         working_key=$(get_working_key "$server_ip" "$username")
         
         if [[ -n "$working_key" ]]; then
-            print_success "Access: Working with key $(basename $working_key)"
+            print_success "Access: Working with key $(basename "$working_key")"
             
             # Check if target key is installed
             if check_target_key_installed "$server_ip" "$working_key" "$username"; then
