@@ -335,7 +335,7 @@ local_git_init() {
     fi
 
     mkdir -p "$full_path"
-    cd "$full_path"
+    cd "$full_path" || exit
     git init
 
     # Create initial README
@@ -406,7 +406,7 @@ clone_repository() {
 
     print_info "Cloning repository: $clone_url"
     return 0
-    cd "$local_path"
+    cd "$local_path" || exit
     git clone "$clone_url"
 
     if [[ $? -eq 0 ]]; then
