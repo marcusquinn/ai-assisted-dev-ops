@@ -84,7 +84,8 @@ get_account_config() {
         exit 1
     fi
     
-    local account_config=$(jq -r ".accounts.\"$account_name\"" "$CONFIG_FILE")
+    local account_config
+    account_config=$(jq -r ".accounts.\"$account_name\"" "$CONFIG_FILE")
     if [[ "$account_config" == "null" ]]; then
         print_error "Account '$account_name' not found in configuration"
         list_accounts
