@@ -12,7 +12,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Error message constants
-readonly USAGE_PREFIX="Usage:"
+# readonly USAGE_PREFIX="Usage:"  # Currently unused
 readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 
 # Configuration file
@@ -155,7 +155,7 @@ list_apps() {
     
     print_info "Applications on $server:"
     
-    local apps=$(jq -r ".applications.$server[]?.name" "$CONFIG_FILE" 2>/dev/null)
+    local apps=$(jq -r ".applications.${server}[]?.name" "$CONFIG_FILE" 2>/dev/null)
     if [[ -z "$apps" ]]; then
         print_warning "No applications configured for server '$server'"
         return 1
@@ -163,9 +163,9 @@ list_apps() {
     
     echo "$apps" | while read -r app; do
         if [[ -n "$app" ]]; then
-            local type=$(jq -r ".applications.$server[] | select(.name==\"$app\") | .type" "$CONFIG_FILE")
-            local domain=$(jq -r ".applications.$server[] | select(.name==\"$app\") | .domain" "$CONFIG_FILE")
-            local branch=$(jq -r ".applications.$server[] | select(.name==\"$app\") | .branch" "$CONFIG_FILE")
+            local type=$(jq -r ".applications.${server}[] | select(.name==\"$app\") | .type" "$CONFIG_FILE")
+            local domain=$(jq -r ".applications.${server}[] | select(.name==\"$app\") | .domain" "$CONFIG_FILE")
+            local branch=$(jq -r ".applications.${server}[] | select(.name==\"$app\") | .branch" "$CONFIG_FILE")
             
             echo "  - $app ($type)"
             echo "    Domain: $domain"

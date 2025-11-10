@@ -353,7 +353,8 @@ install_detected_linters() {
     fi
 
     # Convert output to array
-    local languages=($languages_output)
+    local -a languages
+    mapfile -t languages <<< "$languages_output"
 
     print_info "Detected languages: ${languages[*]}"
     echo ""
