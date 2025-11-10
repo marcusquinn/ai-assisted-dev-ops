@@ -63,6 +63,10 @@ secrets/
 credentials/
 .credentials/
 
+# Private scripts (never commit)
+.agent/scripts-private/
+scripts-private/
+
 # Backup files
 *.backup
 *.bak

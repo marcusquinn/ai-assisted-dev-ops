@@ -39,7 +39,7 @@
 
 3. **Add Codacy Secret**:
    - **Name**: `CODACY_API_TOKEN`
-   - **Value**: Your Codacy API token (same as local: `cJmUNubMKotEYbDvpcHK`)
+   - **Value**: Your Codacy API token (get from secure local storage)
 
 ## 🔄 **WORKFLOW TRIGGERS**
 
