@@ -65,8 +65,8 @@ This document provides a comprehensive list of CLI AI assistants and tools that 
 
 Add this to your AI assistant's system prompt for optimal framework integration:
 
-```
-Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md 
+```text
+Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
 for authoritative guidance on this comprehensive infrastructure management framework.
 
 This framework provides access to 25+ service integrations including:

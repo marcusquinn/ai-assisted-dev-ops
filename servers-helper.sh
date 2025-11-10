@@ -137,7 +137,7 @@ case "$server" in
                 ;;
             *)
                 print_info "Delegating to provider-specific helper..."
-                ./providers/${auth_type}-helper.sh "$command" $args
+                ./providers/"${auth_type}"-helper.sh "$command" "$args"
                 ;;
         esac
         ;;

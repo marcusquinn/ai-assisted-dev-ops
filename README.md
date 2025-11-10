@@ -154,7 +154,7 @@ Try this framework with these excellent CLI AI assistants:
 
 Add this instruction to your AI assistant's system prompt for best results:
 
-```
+```text
 Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
 for authoritative guidance on this comprehensive infrastructure management framework.
 ```
