@@ -52,12 +52,24 @@ print_warning() {
 
 # Load API configuration
 load_api_config() {
+    # Try to load API key from secure local storage first
+    local api_key_script="$(dirname "$0")/setup-local-api-keys.sh"
+    if [[ -f "$api_key_script" ]]; then
+        local stored_key
+        stored_key=$("$api_key_script" get codacy 2>/dev/null)
+        if [[ -n "$stored_key" ]]; then
+            export CODACY_API_TOKEN="$stored_key"
+            print_info "Loaded Codacy API key from secure local storage"
+        fi
+    fi
+
     if [[ -f "$CODACY_API_CONFIG" ]]; then
         print_info "Loading Codacy API configuration from $CODACY_API_CONFIG"
 
         # API token should be set in environment variable CODACY_API_TOKEN
         if [[ -z "$CODACY_API_TOKEN" ]]; then
-            print_error "CODACY_API_TOKEN environment variable not set"
+            print_error "CODACY_API_TOKEN not found in environment or secure storage"
+            print_info "Set up API key with: bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_API_KEY"
             return 1
         fi
 

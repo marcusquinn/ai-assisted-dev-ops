@@ -56,14 +56,17 @@ GITHUB_TOKEN                         # Automatic (provided by GitHub)
    - Name: `SONAR_TOKEN`, Value: [Your SonarCloud token]
    - Name: `CODACY_API_TOKEN`, Value: [Your Codacy API token]
 
-### **3. Set Local Environment Variables**
+### **3. Set Local API Keys Securely**
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
-export CODACY_API_TOKEN="YOUR_CODACY_API_TOKEN_HERE"
-export SONAR_TOKEN="YOUR_SONAR_TOKEN_HERE"
+# Use secure local storage (RECOMMENDED)
+bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_CODACY_API_TOKEN
+bash .agent/scripts/setup-local-api-keys.sh set sonar YOUR_SONAR_TOKEN
 
-# Reload shell configuration
-source ~/.bashrc
+# Load all API keys into environment when needed
+bash .agent/scripts/setup-local-api-keys.sh load
+
+# List configured services
+bash .agent/scripts/setup-local-api-keys.sh list
 ```
 
 ### **4. Test Configuration**

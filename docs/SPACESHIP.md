@@ -57,7 +57,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 1. **Login to Spaceship Dashboard**
 2. **Navigate to API Settings**
 3. **Generate API Key and Secret**
-4. **Copy credentials** to your configuration file
+4. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set spaceship YOUR_API_KEY`
 5. **Test access** with the helper script
 
 ## 🚀 **Usage Examples**
@@ -140,8 +140,9 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 - **Separate API keys**: Use different API keys for different projects
 - **Key rotation**: Rotate API keys every 6-12 months
 - **Minimal permissions**: Use API keys with minimal required permissions
-- **Secure storage**: Store API credentials in secure configuration files
+- **Secure storage**: Store API credentials in `~/.config/ai-assisted-devops/` (user-private only)
 - **Environment separation**: Use different accounts for prod/staging
+- **Never in repository**: API keys must never be stored in repository files
 
 ### **Domain Security:**
 ```bash

@@ -15,13 +15,16 @@ This is the **SINGLE SOURCE OF TRUTH** for AI agents working on this repository.
 
 ### **🔐 API Key Security (ZERO TOLERANCE)**
 ```bash
-# ✅ CORRECT: Use environment variables
-export CODACY_API_TOKEN="your_token_here"
-export SONAR_TOKEN="your_token_here"
+# ✅ CORRECT: Use secure local storage
+bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_TOKEN
+bash .agent/scripts/setup-local-api-keys.sh set sonar YOUR_TOKEN
 
 # ✅ CORRECT: GitHub Actions use secrets
 env:
   CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+
+# ✅ CORRECT: Load from secure storage
+bash .agent/scripts/setup-local-api-keys.sh load
 
 # ❌ NEVER: Hardcode API keys in code
 readonly API_TOKEN="abc123"  # SECURITY BREACH!
@@ -29,7 +32,8 @@ readonly API_TOKEN="abc123"  # SECURITY BREACH!
 
 **MANDATORY RULES:**
 - **NEVER** commit API keys to repository
-- **ALWAYS** use environment variables or GitHub secrets
+- **ALWAYS** use secure local storage (`~/.config/ai-assisted-devops/`)
+- **NEVER** store API keys in repository files or documentation
 - **IMMEDIATELY** revoke any exposed keys
 - **ALWAYS** add sensitive configs to .gitignore
 

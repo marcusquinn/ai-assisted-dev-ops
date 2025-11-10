@@ -111,7 +111,8 @@ This guide outlines proven best practices for infrastructure management and help
 ## 🔐 **Security Best Practices**
 
 ### **API Token Management**
-- **External configuration**: Store tokens in separate config files
+- **Secure local storage**: Store tokens in `~/.config/ai-assisted-devops/` (user-private only)
+- **Never in repository**: API tokens must never be stored in repository files
 - **Environment separation**: Different tokens for prod/dev/staging
 - **Regular rotation**: Rotate tokens quarterly
 - **Least privilege**: Use minimal required permissions
@@ -196,7 +197,7 @@ This guide outlines proven best practices for infrastructure management and help
 ### **Service Organization**
 - **Sequential ports**: Allocate ports sequentially starting from base
 - **Service naming**: Use descriptive names matching account structure
-- **Environment variables**: Store API tokens in environment variables
+- **Secure API storage**: Use secure local storage for API tokens (never in repository)
 - **Health monitoring**: Monitor MCP server health and availability
 
 ## 📁 **File Organization**

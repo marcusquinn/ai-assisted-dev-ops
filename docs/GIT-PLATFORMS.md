@@ -79,7 +79,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
    - `repo` (Full control of private repositories)
    - `admin:repo_hook` (Read and write repository hooks)
    - `user` (Read user profile data)
-3. Copy token to configuration file
+3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set github YOUR_TOKEN`
 
 #### **GitLab Personal Access Token:**
 1. Go to **User Settings** → **Access Tokens**
@@ -87,12 +87,12 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
    - `api` (Access the authenticated user's API)
    - `read_repository`, `write_repository`
    - `read_user`
-3. Copy token to configuration file
+3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set gitlab YOUR_TOKEN`
 
 #### **Gitea Access Token:**
 1. Go to **Settings** → **Applications**
 2. Generate new access token
-3. Copy token to configuration file
+3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set gitea YOUR_TOKEN`
 
 ## 🚀 **Usage Examples**
 
@@ -144,9 +144,10 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ### **API Security:**
 - **Token scoping**: Use tokens with minimal required permissions
 - **Regular rotation**: Rotate API tokens every 6-12 months
-- **Secure storage**: Store tokens in secure configuration files
+- **Secure storage**: Store tokens in `~/.config/ai-assisted-devops/` (user-private only)
 - **Access monitoring**: Monitor API usage and access patterns
 - **Environment separation**: Use different tokens for different environments
+- **Never in repository**: API tokens must never be stored in repository files
 
 ### **Repository Security:**
 ```bash
@@ -183,7 +184,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
     "command": "github-mcp-server",
     "args": ["--port", "3006"],
     "env": {
-      "GITHUB_TOKEN": "your-token"
+      "GITHUB_TOKEN": "${GITHUB_API_TOKEN}"
     }
   }
 }
