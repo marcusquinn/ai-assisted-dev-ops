@@ -2,24 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
   "runs": [
     {
-      "artifacts": [
-        {
-          "location": {
-            "uri": "file:///Users/marcusquinn/Git/ai-assisted-dev-ops/.codacy/tools-configs/eslint.config.mjs"
-          }
-        }
-      ],
-      "results": [],
-      "tool": {
-        "driver": {
-          "informationUri": "https://eslint.org",
-          "name": "ESLint",
-          "rules": null,
-          "version": "8.57.0"
-        }
-      }
-    },
-    {
       "results": [],
       "tool": {
         "driver": {
@@ -148,6 +130,24 @@
         "driver": {
           "name": "dartanalyzer",
           "rules": null
+        }
+      }
+    },
+    {
+      "artifacts": [
+        {
+          "location": {
+            "uri": "file:///Users/marcusquinn/Git/ai-assisted-dev-ops/.codacy/tools-configs/eslint.config.mjs"
+          }
+        }
+      ],
+      "results": [],
+      "tool": {
+        "driver": {
+          "informationUri": "https://eslint.org",
+          "name": "ESLint",
+          "rules": null,
+          "version": "8.57.0"
         }
       }
     }

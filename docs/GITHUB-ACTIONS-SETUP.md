@@ -36,7 +36,7 @@
 
 1. **Go to Repository Settings**:
 
-   ```
+   ```text
    https://github.com/marcusquinn/ai-assisted-dev-ops/settings/secrets/actions
    ```
 
@@ -64,19 +64,19 @@
 
 ### **SonarCloud Dashboard:**
 
-```
+```text
 https://sonarcloud.io/project/overview?id=marcusquinn_ai-assisted-dev-ops
 ```
 
 ### **Codacy Dashboard:**
 
-```
+```text
 https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops
 ```
 
 ### **GitHub Actions:**
 
-```
+```text
 https://github.com/marcusquinn/ai-assisted-dev-ops/actions
 ```
 

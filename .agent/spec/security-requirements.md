@@ -49,7 +49,7 @@ env:
 
 #### **Protected Files (.gitignore):**
 
-```
+```text
 # Security - Never commit sensitive information
 configs/*-config.json
 .env
@@ -61,7 +61,7 @@ secrets/
 
 #### **Template Files (Safe to commit):**
 
-```
+```text
 configs/service-config.json.txt  // Template with placeholders
 configs/service-config.json      // Actual config (gitignored)
 ```

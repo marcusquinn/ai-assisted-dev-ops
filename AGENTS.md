@@ -332,6 +332,7 @@ bash .agent/scripts/linter-manager.sh install python
 - **Reference Documentation**: Complete tool collection in RESOURCES.md
 
 **🎯 Interactive Linter Setup Wizard:**
+
 ```bash
 # Complete guided setup with needs assessment
 bash .agent/scripts/setup-linters-wizard.sh full-setup
@@ -344,6 +345,7 @@ bash .agent/scripts/setup-linters-wizard.sh install
 ```
 
 **🌟 SETUP WIZARD FEATURES:**
+
 - **Intelligent Needs Assessment**: Development type, team size, quality focus analysis
 - **CodeFactor Recommendations**: Professional tool selection based on your needs
 - **Targeted Installation**: Install only relevant linters for your workflow

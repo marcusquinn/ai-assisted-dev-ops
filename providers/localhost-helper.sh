@@ -157,7 +157,7 @@ generate_ssl_cert() {
     mkdir -p ~/.local-ssl-certs
     
     # Generate certificate with mkcert
-    cd ~/.local-ssl-certs
+    cd ~/.local-ssl-certs || exit
     mkcert "$domain" "*.$domain"
     
     if [[ $? -eq 0 ]]; then
@@ -269,7 +269,7 @@ EOF
     docker network create local-dev 2>/dev/null || true
     
     # Start Traefik
-    cd ~/.local-dev-proxy
+    cd ~/.local-dev-proxy || exit
     docker-compose up -d
     return 0
     
@@ -469,7 +469,7 @@ start_localwp_mcp() {
     local mcp_pid=$!
 
     sleep 2
-    if kill -0 $mcp_pid 2>/dev/null; then
+    if kill -0 "$mcp_pid" 2>/dev/null; then
         print_success "LocalWP MCP server started (PID: $mcp_pid)"
         print_info "AI assistants can now access your WordPress database"
         print_info "Available tools: mysql_query, mysql_schema"
