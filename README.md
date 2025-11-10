@@ -16,15 +16,48 @@
 
 ---
 
-## 🏆 **Enterprise-Grade Quality & Security**
-
+<!-- Build & Quality Status -->
+[![GitHub Actions](https://github.com/marcusquinn/ai-assisted-dev-ops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/actions)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
 [![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
 [![Maintainability](https://qlty.sh/gh/marcusquinn/projects/ai-assisted-dev-ops/maintainability.svg)](https://qlty.sh/gh/marcusquinn/projects/ai-assisted-dev-ops)
+[![Codacy Badge](https://img.shields.io/badge/Codacy-Ready%20for%20Integration-blue)](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
 [![CodeRabbit](https://img.shields.io/badge/CodeRabbit-AI%20Reviews-FF570A?logo=coderabbit&logoColor=white)](https://coderabbit.ai)
-[![Services Supported](https://img.shields.io/badge/Services%20Supported-25+-brightgreen.svg)](#-comprehensive-service-coverage)
-[![MCP Servers](https://img.shields.io/badge/MCP%20Servers-10-orange.svg)](#-mcp-integrations)
+
+<!-- License & Legal -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025-blue.svg)](https://github.com/marcusquinn)
+
+<!-- GitHub Stats -->
+[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/network)
+[![GitHub watchers](https://img.shields.io/github/watchers/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/watchers)
+
+<!-- Release & Version Info -->
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
+[![GitHub Release Date](https://img.shields.io/github/release-date/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
+[![GitHub commits since latest release](https://img.shields.io/github/commits-since/marcusquinn/ai-assisted-dev-ops/latest)](https://github.com/marcusquinn/ai-assisted-dev-ops/commits/main)
+
+<!-- Repository Stats -->
+[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![Lines of code](https://img.shields.io/badge/Lines%20of%20Code-18%2C000%2B-brightgreen)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![GitHub language count](https://img.shields.io/github/languages/count/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![GitHub top language](https://img.shields.io/github/languages/top/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+
+<!-- Community & Issues -->
+[![GitHub issues](https://img.shields.io/github/issues/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues)
+[![GitHub closed issues](https://img.shields.io/github/issues-closed/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues?q=is%3Aissue+is%3Aclosed)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/pulls)
+[![GitHub contributors](https://img.shields.io/github/contributors/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/graphs/contributors)
+
+<!-- Framework Specific -->
+[![Services Supported](https://img.shields.io/badge/Services%20Supported-25+-brightgreen.svg)](#-comprehensive-service-coverage)
+[![AGENTS.md](https://img.shields.io/badge/AGENTS.md-Compliant-blue.svg)](https://agents.md/)
+[![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/blob/main/AGENTS.md)
+[![MCP Servers](https://img.shields.io/badge/MCP%20Servers-10-orange.svg)](#-mcp-integrations)
+[![API Integrations](https://img.shields.io/badge/API%20Integrations-25+-blue.svg)](#-comprehensive-service-coverage)
+
+## 🏆 **Enterprise-Grade Quality & Security**
 
 **Multi-Platform Quality Excellence:**
 - **🏆 SonarCloud**: A-grade ratings (0 bugs, 0 vulnerabilities)
@@ -228,7 +261,8 @@ ai-assisted-dev-ops/
 ├── 📁 configs/                       # Configuration templates
 ├── 📁 docs/                          # Comprehensive documentation
 ├── 📁 .agent/                        # AI agent development tools
-└── 📁 ssh/                           # SSH key management
+├── 📁 ssh/                           # SSH key management
+└── 📁 templates/                     # Reusable templates and examples
 ```
 
 **Key Components:**

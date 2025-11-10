@@ -131,6 +131,11 @@ tmp.*.json
 reports/
 .scannerwork/
 
+# Backups (should not be in public repos)
+backups/
+*.backup
+*.bak
+
 # Test files (keep examples in examples/ directory)
 test-*.txt
 test-*.json
