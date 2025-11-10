@@ -208,6 +208,33 @@ bash .agent/scripts/codacy-cli.sh analyze --fix
 - **Time Saving**: Dramatically reduces manual fix time for common issues
 - **Integration Ready**: Works with all configured tools and analysis workflows
 
+**💎 Qlty CLI - Universal Code Quality:**
+```bash
+# Install Qlty CLI
+bash .agent/scripts/qlty-cli.sh install
+
+# Initialize in repository
+bash .agent/scripts/qlty-cli.sh init
+
+# Run code quality check
+bash .agent/scripts/qlty-cli.sh check
+
+# 🚀 AUTO-FORMAT: Universal auto-formatting
+bash .agent/scripts/qlty-cli.sh fmt --all
+
+# Detect code smells
+bash .agent/scripts/qlty-cli.sh smells --all
+```
+
+**🌟 QLTY FEATURES:**
+- **Universal Linting**: 70+ tools for 40+ languages and technologies
+- **Auto-Formatting**: Consistent code style across all languages
+- **Code Smells**: Duplication, complexity, and maintainability analysis
+- **Security Scanning**: SAST, SCA, secret detection, IaC analysis
+- **AI-Generated Fixes**: Tool-generated and AI-powered automatic fixes
+- **Git-Aware**: Focus on newly introduced quality issues
+- **Performance**: Fast execution with caching and concurrency
+
 **🔬 SonarScanner CLI - SonarQube Cloud Analysis:**
 ```bash
 # Install SonarScanner CLI
@@ -680,13 +707,35 @@ Include quality metrics in every commit:
 - **CodeRabbit**: `bash .agent/scripts/coderabbit-cli.sh review`
 - **Codacy**: `bash .agent/scripts/codacy-cli.sh analyze`
 - **Codacy Auto-Fix**: `bash .agent/scripts/codacy-cli.sh analyze --fix` ⚡ **AUTOMATED FIXES**
+- **Qlty Universal**: `bash .agent/scripts/qlty-cli.sh check` 🌟 **70+ TOOLS**
+- **Qlty Auto-Format**: `bash .agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
 - **SonarScanner**: `bash .agent/scripts/sonarscanner-cli.sh analyze`
 
 #### **🚀 AUTOMATED FIX CAPABILITIES:**
-- **Codacy Auto-Fix**: Automatically applies safe fixes for common code quality issues
-- **Equivalent to Web UI**: Same functionality as "Fix Issues" button in Codacy dashboard
-- **Time Efficient**: Reduces manual fix time by 70-90% for standard violations
+
+**🔧 Codacy Auto-Fix:**
+- **Functionality**: Automatically applies safe fixes for common code quality issues
+- **Web UI Equivalent**: Same as "Fix Issues" button in Codacy dashboard
+- **Usage**: `bash .agent/scripts/codacy-cli.sh analyze --fix`
+- **Time Savings**: 70-90% reduction in manual fix time
+
+**🎨 Qlty Auto-Formatting:**
+- **Functionality**: Universal auto-formatting for 40+ languages with 70+ tools
+- **Features**: Linting, formatting, security scanning, code smells detection
+- **Usage**: `bash .agent/scripts/qlty-cli.sh fmt --all`
+- **Coverage**: Comprehensive multi-language support with AI-generated fixes
+
+**📊 Auto-Fix Comparison:**
+
+| Tool | Scope | Languages | Fix Types | Integration |
+|------|-------|-----------|-----------|-------------|
+| **Codacy** | Code Quality | Multi-language | Style, Best Practices, Security | ✅ CLI + Web |
+| **Qlty** | Universal | 40+ Languages | Formatting, Linting, Smells | ✅ CLI Native |
+
+**🛠️ Unified Access:**
 - **Quality CLI Manager**: `bash .agent/scripts/quality-cli-manager.sh analyze codacy-fix`
+- **Direct CLI Access**: Individual tool commands for targeted fixes
+- **Batch Operations**: Run multiple auto-fix tools in sequence
 
 **This framework represents the most comprehensive AI-assisted DevOps infrastructure management system available, providing enterprise-grade capabilities with AI-first design principles and UNIVERSAL MULTI-PLATFORM quality validation.** 🚀🤖✨
 

@@ -139,6 +139,15 @@ install_clis() {
         ((total_count++))
         echo ""
     fi
+
+    if [[ "$target_cli" == "all" || "$target_cli" == "qlty" ]]; then
+        print_info "Installing Qlty CLI..."
+        if execute_cli_command "qlty" "install"; then
+            ((success_count++))
+        fi
+        ((total_count++))
+        echo ""
+    fi
     
     print_info "Installation Summary: $success_count/$total_count CLIs installed successfully"
     
@@ -181,6 +190,15 @@ init_clis() {
     if [[ "$target_cli" == "all" || "$target_cli" == "sonar" ]]; then
         print_info "Initializing SonarScanner CLI..."
         if execute_cli_command "sonar" "init"; then
+            ((success_count++))
+        fi
+        ((total_count++))
+        echo ""
+    fi
+
+    if [[ "$target_cli" == "all" || "$target_cli" == "qlty" ]]; then
+        print_info "Initializing Qlty CLI..."
+        if execute_cli_command "qlty" "init"; then
             ((success_count++))
         fi
         ((total_count++))
@@ -246,6 +264,15 @@ analyze_with_clis() {
         echo ""
     fi
 
+    if [[ "$target_cli" == "all" || "$target_cli" == "qlty" ]]; then
+        print_info "Running Qlty analysis..."
+        if execute_cli_command "qlty" "check" $args; then
+            ((success_count++))
+        fi
+        ((total_count++))
+        echo ""
+    fi
+
     print_info "Analysis Summary: $success_count/$total_count analyses completed successfully"
 
     if [[ $success_count -eq $total_count ]]; then
@@ -281,6 +308,21 @@ show_cli_status() {
         echo ""
     fi
 
+    if [[ "$target_cli" == "all" || "$target_cli" == "qlty" ]]; then
+        print_info "Qlty CLI Status:"
+        if command -v qlty &> /dev/null; then
+            echo "✅ Qlty CLI installed: $(qlty --version 2>/dev/null || echo 'version unknown')"
+            if [[ -f ".qlty/qlty.toml" ]]; then
+                echo "✅ Qlty initialized in repository"
+            else
+                echo "⚠️  Qlty not initialized (run 'qlty init')"
+            fi
+        else
+            echo "❌ Qlty CLI not installed"
+        fi
+        echo ""
+    fi
+
     return 0
 }
 
@@ -302,6 +344,7 @@ show_help() {
     echo "  codacy               - Codacy CLI v2 for comprehensive code analysis"
     echo "  codacy-fix           - Codacy CLI with auto-fix (applies fixes when available)"
     echo "  sonar                - SonarScanner CLI for SonarQube Cloud analysis"
+    echo "  qlty                 - Qlty CLI for universal linting and auto-formatting"
     echo "  all                  - All quality CLIs (default)"
     echo ""
     echo "Examples:"
@@ -309,6 +352,7 @@ show_help() {
     echo "  $0 init codacy"
     echo "  $0 analyze coderabbit"
     echo "  $0 analyze codacy-fix      # Auto-fix issues when possible"
+    echo "  $0 analyze qlty            # Universal linting and formatting"
     echo "  $0 analyze all"
     echo "  $0 status sonar"
     echo ""

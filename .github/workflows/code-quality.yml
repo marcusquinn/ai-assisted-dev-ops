@@ -29,27 +29,27 @@ jobs:
         echo ""
         echo "📊 Framework Statistics:"
         echo "📚 Documentation files: $(find . -name '*.md' | wc -l)"
-        echo "🔧 Provider scripts: $(find providers -name '*.sh' 2>/dev/null | wc -l || echo '0')"
-        echo "⚙️  Config templates: $(find configs -name '*.txt' 2>/dev/null | wc -l || echo '0')"
+        echo "🔧 Agent scripts: $(find .agent/scripts -name '*.sh' 2>/dev/null | wc -l || echo '0')"
+        echo "⚙️  Quality specs: $(find .agent/spec -name '*.md' 2>/dev/null | wc -l || echo '0')"
         echo "📖 Service docs: $(find docs -name '*.md' 2>/dev/null | wc -l || echo '0')"
 
         echo ""
         echo "🔍 Quality Checks:"
 
-        # Check shell scripts exist and are executable
-        if [ -d "providers" ]; then
-          script_count=$(find providers -name "*.sh" | wc -l)
-          echo "✅ Shell scripts found: $script_count"
+        # Check agent scripts exist and are executable
+        if [ -d ".agent/scripts" ]; then
+          script_count=$(find .agent/scripts -name "*.sh" | wc -l)
+          echo "✅ Agent scripts found: $script_count"
         else
-          echo "❌ Providers directory missing"
+          echo "❌ .agent/scripts directory missing"
         fi
 
-        # Check config templates exist
-        if [ -d "configs" ]; then
-          config_count=$(find configs -name "*.txt" | wc -l)
-          echo "✅ Config templates found: $config_count"
+        # Check quality specs exist
+        if [ -d ".agent/spec" ]; then
+          spec_count=$(find .agent/spec -name "*.md" | wc -l)
+          echo "✅ Quality specs found: $spec_count"
         else
-          echo "❌ Configs directory missing"
+          echo "❌ .agent/spec directory missing"
         fi
 
         # Check documentation exists
@@ -62,7 +62,7 @@ jobs:
 
         echo ""
         echo "🎯 Framework Validation: COMPLETE"
-        echo "This is a comprehensive AI-Assisted DevOps framework with 25+ service integrations!"
+        echo "This is a comprehensive AI-Assisted DevOps framework with automated code quality management!"
 
         # Security check - ensure no API keys in repository
         echo ""
@@ -85,7 +85,7 @@ jobs:
         fetch-depth: 0  # Shallow clones should be disabled for better analysis
 
     - name: SonarCloud Scan
-      uses: SonarSource/sonarqube-scan-action@fd88b7d # v6.0.0
+      uses: SonarSource/sonarcloud-github-action@master
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
