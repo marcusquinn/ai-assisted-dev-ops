@@ -1,0 +1,91 @@
+{
+  "mcpServers": {
+    "pagespeed": {
+      "command": "npx",
+      "args": ["mcp-pagespeed-server"],
+      "env": {
+        "GOOGLE_API_KEY": "your-google-api-key-here"
+      },
+      "description": "PageSpeed Insights MCP server for website performance auditing",
+      "capabilities": [
+        "pagespeed_audit",
+        "lighthouse_analysis", 
+        "performance_metrics",
+        "optimization_recommendations"
+      ]
+    },
+    "lighthouse": {
+      "command": "npx",
+      "args": ["lighthouse-mcp-server"],
+      "description": "Lighthouse MCP server for comprehensive website auditing",
+      "capabilities": [
+        "lighthouse_audit",
+        "performance_analysis",
+        "accessibility_check",
+        "seo_analysis",
+        "best_practices_review"
+      ]
+    }
+  },
+  "configuration": {
+    "pagespeed": {
+      "apiKey": {
+        "description": "Google API key for PageSpeed Insights API",
+        "required": false,
+        "note": "Without API key, you'll have lower rate limits"
+      },
+      "defaultStrategy": "desktop",
+      "categories": [
+        "performance",
+        "accessibility", 
+        "best-practices",
+        "seo"
+      ]
+    },
+    "lighthouse": {
+      "outputFormats": ["html", "json", "csv"],
+      "chromeFlags": [
+        "--headless",
+        "--no-sandbox",
+        "--disable-dev-shm-usage"
+      ],
+      "categories": [
+        "performance",
+        "accessibility",
+        "best-practices", 
+        "seo",
+        "pwa"
+      ]
+    }
+  },
+  "usage": {
+    "examples": [
+      {
+        "description": "Audit website performance",
+        "command": "audit https://example.com"
+      },
+      {
+        "description": "WordPress-specific analysis",
+        "command": "wordpress https://myblog.com"
+      },
+      {
+        "description": "Bulk audit multiple sites",
+        "command": "bulk websites.txt"
+      },
+      {
+        "description": "Generate actionable report",
+        "command": "report lighthouse_report.json"
+      }
+    ]
+  },
+  "integration": {
+    "aiAssistantPrompt": "Use the PageSpeed and Lighthouse MCP servers to audit website performance. Always provide actionable recommendations for improvement, focusing on Core Web Vitals and user experience metrics.",
+    "workflowSteps": [
+      "1. Run PageSpeed audit for both desktop and mobile",
+      "2. Run comprehensive Lighthouse audit",
+      "3. Analyze results and identify optimization opportunities",
+      "4. Provide specific, actionable recommendations",
+      "5. For WordPress sites, include WordPress-specific optimizations"
+    ]
+  }
+}

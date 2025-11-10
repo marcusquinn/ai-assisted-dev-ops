@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "chrome-devtools-mcp@latest",
+        "--channel=canary",
+        "--headless=true",
+        "--isolated=true",
+        "--viewport=1920x1080",
+        "--logFile=/tmp/chrome-mcp.log"
+      ]
+    }
+  }
+}

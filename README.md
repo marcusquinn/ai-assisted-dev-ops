@@ -82,7 +82,7 @@ Stop wrestling with DevOps complexity. Stop being limited to single-repo develop
 [![Services Supported](https://img.shields.io/badge/Services%20Supported-25+-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-service-categories)
 [![AGENTS.md](https://img.shields.io/badge/AGENTS.md-Compliant-blue.svg)](https://agents.md/)
 [![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/blob/main/AGENTS.md)
-[![MCP Servers](https://img.shields.io/badge/MCP%20Servers-9-orange.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-advanced-mcp-server-integration)
+[![MCP Servers](https://img.shields.io/badge/MCP%20Servers-10-orange.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-advanced-mcp-server-integration)
 [![API Integrations](https://img.shields.io/badge/API%20Integrations-25+-blue.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops#-comprehensive-api-integration-coverage)
 
 A comprehensive, production-ready framework that gives your AI assistant seamless access to your entire DevOps infrastructure including servers, hosting providers, security services, code auditing, and development tools through standardized helper scripts, SSH configurations, and MCP (Model Context Protocol) integrations.
@@ -752,7 +752,7 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 
 ### 🚀 Advanced MCP Server Integration
 
-Our framework now includes **9 powerful MCP integrations** for comprehensive AI-assisted development:
+Our framework now includes **10 powerful MCP integrations** for comprehensive AI-assisted development:
 
 #### **🌐 Web & Browser Automation**
 
@@ -765,6 +765,10 @@ Our framework now includes **9 powerful MCP integrations** for comprehensive AI-
 - **Ahrefs MCP**: SEO analysis, backlink research, keyword data
 - **Perplexity MCP**: AI-powered web search and research
 - **Google Search Console MCP**: Search performance data and insights
+
+#### **📊 Performance & Analytics**
+
+- **PageSpeed Insights MCP**: Website performance auditing and optimization recommendations
 
 #### **⚡ Development Tools**
 
@@ -801,6 +805,7 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 📚 **[Complete MCP Integration Guide](docs/MCP-INTEGRATIONS.md)**
 🔌 **[Comprehensive API Integration Guide](docs/API-INTEGRATIONS.md)**
 🤖 **[AI CLI Tools & Assistants Reference](docs/AI-CLI-TOOLS.md)**
+🚀 **[PageSpeed & Lighthouse Integration Guide](docs/PAGESPEED-LIGHTHOUSE.md)**
 
 ### 🔌 **Comprehensive API Integration Coverage**
 

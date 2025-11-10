@@ -29,13 +29,14 @@ get_mcp_command() {
         "perplexity") echo "npx perplexity-mcp@latest" ;;
         "nextjs-devtools") echo "npx next-devtools-mcp@latest" ;;
         "google-search-console") echo "npx mcp-server-gsc@latest" ;;
+        "pagespeed-insights") echo "npx mcp-pagespeed-server@latest" ;;
         *) echo "" ;;
     esac
     return 0
 }
 
 # Available integrations list
-MCP_LIST="chrome-devtools playwright cloudflare-browser ahrefs perplexity nextjs-devtools google-search-console"
+MCP_LIST="chrome-devtools playwright cloudflare-browser ahrefs perplexity nextjs-devtools google-search-console pagespeed-insights"
 
 # Check prerequisites
 check_prerequisites() {
@@ -127,6 +128,25 @@ install_mcp() {
             if command -v claude &> /dev/null; then
                 claude mcp add google-search-console "$mcp_command"
             fi
+            ;;
+        "pagespeed-insights")
+            print_info "Setting up PageSpeed Insights MCP for website performance auditing..."
+            print_warning "Optional: Set GOOGLE_API_KEY for higher rate limits"
+            print_info "Get API key from: https://console.cloud.google.com/"
+            print_info "Enable PageSpeed Insights API in your Google Cloud project"
+            print_info "Also installing Lighthouse CLI for comprehensive auditing..."
+
+            # Install Lighthouse CLI if not present
+            if ! command -v lighthouse &> /dev/null; then
+                npm install -g lighthouse
+            fi
+
+            if command -v claude &> /dev/null; then
+                claude mcp add pagespeed-insights "$mcp_command"
+            fi
+
+            print_success "PageSpeed Insights MCP setup complete!"
+            print_info "Use: ./providers/pagespeed-helper.sh for CLI access"
             ;;
         *)
             print_error "Unknown MCP integration: $mcp_name"
