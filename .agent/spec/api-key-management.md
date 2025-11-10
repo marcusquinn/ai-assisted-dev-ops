@@ -16,7 +16,7 @@ echo 'export SONAR_TOKEN="YOUR_SONAR_TOKEN_HERE"' >> ~/.bashrc
 
 ### **2. Local Configuration Files (Gitignored)**
 
-```
+```text
 # Repository configs (gitignored)
 configs/codacy-config.json          # Codacy API configuration
 configs/sonar-config.json           # SonarCloud configuration (if needed)
@@ -28,7 +28,7 @@ configs/sonar-config.json           # SonarCloud configuration (if needed)
 
 ### **3. GitHub Repository Secrets**
 
-```
+```text
 # Required for GitHub Actions
 SONAR_TOKEN                          # SonarCloud analysis
 CODACY_API_TOKEN                     # Codacy analysis

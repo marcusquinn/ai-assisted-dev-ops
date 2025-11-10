@@ -2,8 +2,8 @@
 
 ## Zero Technical Debt Methodology
 
-> **⚠️ IMPORTANT**: This document is supplementary to the [MASTER-GUIDE.md](../MASTER-GUIDE.md).
-> For any conflicts, the Master Guide takes precedence as the single source of truth.
+> **⚠️ IMPORTANT**: This document is supplementary to the [AGENTS.md](../../AGENTS.md).
+> For any conflicts, the main AGENTS.md takes precedence as the single source of truth.
 
 ### Overview
 

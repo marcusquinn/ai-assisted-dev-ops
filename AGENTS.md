@@ -331,6 +331,25 @@ bash .agent/scripts/linter-manager.sh install python
 - **Professional Tools**: pycodestyle, Pylint, ESLint, Stylelint, ShellCheck, Hadolint
 - **Reference Documentation**: Complete tool collection in RESOURCES.md
 
+**🎯 Interactive Linter Setup Wizard:**
+```bash
+# Complete guided setup with needs assessment
+bash .agent/scripts/setup-linters-wizard.sh full-setup
+
+# Just assess development needs
+bash .agent/scripts/setup-linters-wizard.sh assess
+
+# Install based on previous assessment
+bash .agent/scripts/setup-linters-wizard.sh install
+```
+
+**🌟 SETUP WIZARD FEATURES:**
+- **Intelligent Needs Assessment**: Development type, team size, quality focus analysis
+- **CodeFactor Recommendations**: Professional tool selection based on your needs
+- **Targeted Installation**: Install only relevant linters for your workflow
+- **AI Agent Knowledge Integration**: Updates agent understanding of your environment
+- **Professional Guidance**: Based on enterprise-grade linter collections
+
 **🔬 SonarScanner CLI - SonarQube Cloud Analysis:**
 
 ```bash
@@ -864,6 +883,7 @@ Include quality metrics in every commit:
 - **Qlty Auto-Format**: `bash .agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
 - **SonarScanner**: `bash .agent/scripts/sonarscanner-cli.sh analyze`
 - **Linter Manager**: `bash .agent/scripts/linter-manager.sh install-detected` 🔧 **CODEFACTOR-INSPIRED**
+- **Linter Setup Wizard**: `bash .agent/scripts/setup-linters-wizard.sh full-setup` 🎯 **INTELLIGENT NEEDS ASSESSMENT**
 
 #### **🚀 AUTOMATED FIX CAPABILITIES:**
 

@@ -211,9 +211,8 @@ format_qlty() {
     fi
 
     print_info "Executing: $cmd"
-    eval "$cmd"
 
-    if [[ $? -eq 0 ]]; then
+    if eval "$cmd"; then
         print_success "Auto-formatting completed successfully"
         return 0
     else

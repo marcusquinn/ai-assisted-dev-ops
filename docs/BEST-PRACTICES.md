@@ -232,7 +232,7 @@ This guide outlines proven best practices for infrastructure management and help
 
 ### **Configuration Structure**
 
-```
+```text
 ~/
 ├── hetzner-config.json           # Hetzner API tokens
 ├── hostinger-config.json         # Hostinger site configurations
