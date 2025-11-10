@@ -574,7 +574,8 @@ ai-assisted-dev-ops/
 ├── 📄 AGENTS.md              # AI agent integration guide (this file)
 ├── 📄 LICENSE                # MIT license
 ├── 🔧 setup.sh               # Main setup script for users
-├── 🔧 servers-helper.sh      # Main entry point script
+├── 🔧 scripts/
+│   └── servers-helper.sh      # Main entry point script
 ├── ⚙️  sonar-project.properties # Quality analysis configuration
 ├── 📁 providers/             # Core functionality scripts (25+ services)
 ├── 📁 configs/               # Configuration templates for users

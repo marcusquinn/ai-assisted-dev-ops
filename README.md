@@ -346,7 +346,7 @@ Individual scripts for each hosting provider with detailed functionality:
 
 Unified access point for all servers across all providers:
 
-- `servers-helper.sh` - One script to rule them all
+- `scripts/servers-helper.sh` - One script to rule them all
 
 ### 3. **MCP Integration**
 
@@ -372,7 +372,8 @@ ai-assisted-dev-ops/
 ├── 📄 AGENTS.md              # AI agent integration guide
 ├── 📄 LICENSE                # MIT license
 ├── 🔧 setup.sh               # Main setup script for users
-├── 🔧 servers-helper.sh      # Main entry point script
+├── 🔧 scripts/
+│   └── servers-helper.sh      # Main entry point script
 ├── ⚙️  sonar-project.properties # Quality analysis configuration
 ├── 📁 providers/             # Core functionality scripts (25+ services)
 ├── 📁 configs/               # Configuration templates for users
@@ -478,15 +479,15 @@ cp configs/hetzner-config.json.txt configs/hetzner-config.json
 
 ```bash
 # List all servers across all providers
-./servers-helper.sh hostinger list
-./servers-helper.sh hetzner list
+./scripts/servers-helper.sh hostinger list
+./scripts/servers-helper.sh hetzner list
 
 # Connect to specific server
-./servers-helper.sh hostinger connect example.com
-./servers-helper.sh hetzner connect main web-server
+./scripts/servers-helper.sh hostinger connect example.com
+./scripts/servers-helper.sh hetzner connect main web-server
 
 # Execute command on server
-./servers-helper.sh hostinger exec example.com "uptime"
+./scripts/servers-helper.sh hostinger exec example.com "uptime"
 ```
 
 ## 📁 **File Structure**
@@ -494,7 +495,8 @@ cp configs/hetzner-config.json.txt configs/hetzner-config.json
 ```text
 ~/git/ai-assisted-dev-ops/
 ├── README.md                          # This guide
-├── servers-helper.sh                  # Global server access
+├── scripts/
+│   └── servers-helper.sh              # Global server access
 ├── ai-context.md.txt                  # AI assistant context template
 ├── providers/
 │   ├── hostinger-helper.sh            # Hostinger shared hosting
@@ -701,13 +703,13 @@ Create `ai-context.md` (or customize the template) with:
 - **Development**: server3.example.com (Ubuntu 22.04, 1GB RAM)
 
 ## Access Methods
-- Global helper: `./servers-helper.sh [server] [command]`
+- Global helper: `./scripts/servers-helper.sh [server] [command]`
 - Provider helpers: `./providers/[provider]-helper.sh [command]`
 - Direct SSH: All servers configured in ~/.ssh/config
 
 ## Common Tasks
-- List servers: `./servers-helper.sh hetzner list`
-- Connect to server: `./servers-helper.sh hetzner connect main web-server`
+- List servers: `./scripts/servers-helper.sh hetzner list`
+- Connect to server: `./scripts/servers-helper.sh hetzner connect main web-server`
 - Check status: `./providers/hetzner-helper.sh status main web-server`
 ```
 
@@ -717,7 +719,7 @@ Add to your `.zshrc` or `.bashrc` (adjust path as needed):
 
 ```bash
 # Global server management (adjust path to your installation)
-alias servers='~/git/ai-assistant-server-access/servers-helper.sh'
+alias servers='~/git/ai-assisted-dev-ops/scripts/servers-helper.sh'
 
 # Provider-specific shortcuts
 alias hostinger='~/git/ai-assistant-server-access/providers/hostinger-helper.sh'
@@ -892,7 +894,7 @@ Our framework provides standardized access to **25+ service APIs** across all in
 
 1. Create `providers/newprovider-helper.sh`
 2. Add configuration template in `configs/`
-3. Update `servers-helper.sh` to include new provider
+3. Update `scripts/servers-helper.sh` to include new provider
 4. Add MCP integration if API available
 
 ### Custom Commands

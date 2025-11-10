@@ -139,8 +139,8 @@ setup_aliases() {
         cat >> "$shell_rc" << 'EOF'
 
 # AI Assistant Server Access Framework
-alias servers='./servers-helper.sh'
-alias servers-list='./servers-helper.sh list'
+alias servers='./scripts/servers-helper.sh'
+alias servers-list='./scripts/servers-helper.sh list'
 alias hostinger='./providers/hostinger-helper.sh'
 alias hetzner='./providers/hetzner-helper.sh'
 alias aws-helper='./providers/aws-helper.sh'
@@ -212,7 +212,7 @@ main() {
     echo "3. Setup CodeRabbit CLI: bash .agent/scripts/coderabbit-cli.sh install && bash .agent/scripts/coderabbit-cli.sh setup"
     echo "4. Setup API keys: bash .agent/scripts/setup-local-api-keys.sh setup"
     echo "5. Setup Codacy CLI: bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_TOKEN && bash .agent/scripts/codacy-cli.sh install"
-    echo "6. Test access: ./servers-helper.sh list"
+    echo "6. Test access: ./scripts/servers-helper.sh list"
     echo "7. Read documentation in docs/ for provider-specific setup"
     echo ""
     echo "Security reminders:"

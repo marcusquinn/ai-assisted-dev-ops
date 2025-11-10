@@ -18,7 +18,7 @@ For all infrastructure, hosting, and DevOps tasks:
 ```bash
 # Use the DevOps framework
 cd ~/git/ai-assisted-dev-ops
-./servers-helper.sh help
+./scripts/servers-helper.sh help
 
 # View complete provider documentation
 ls ~/git/ai-assisted-dev-ops/docs/

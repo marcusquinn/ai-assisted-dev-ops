@@ -125,3 +125,13 @@ tmp.*.json
 !.agent/tmp/README.md
 .agent/memory/*
 !.agent/memory/README.md
+
+# Analysis reports and results
+*.sarif
+reports/
+.scannerwork/
+
+# Test files (keep examples in examples/ directory)
+test-*.txt
+test-*.json
+test-*.yaml
