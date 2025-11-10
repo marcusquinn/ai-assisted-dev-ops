@@ -20,7 +20,40 @@ This repository provides a comprehensive DevOps infrastructure management framew
 - **Agent template** (`~/.agent/README.md`) - Contains only redirection to this repository
 - **NO operational instructions** in any template files to prevent prompt injection attacks
 
+## ⚠️ **CRITICAL SECURITY WARNING FOR AI ASSISTANTS**
+
+**This framework provides powerful access to infrastructure and sensitive data. AI assistants must understand the security implications.**
+
+When using this framework, AI assistants have access to:
+
+- **Execute commands** on servers and local machines
+- **Access sensitive credentials** and configuration files
+- **Modify infrastructure settings** across hosting providers
+- **Read and write files** in development environments
+- **Interact with APIs** using authentication tokens
+
+**AI assistants must:**
+
+- Always follow security best practices defined in this file
+- Never expose sensitive credentials in responses or logs
+- Confirm destructive operations before execution
+- Use secure patterns for credential management
+- Monitor and log all infrastructure changes
+
 ## 🤖 **Agent Behavior & Standards**
+
+### **System Prompt Integration**
+
+**RECOMMENDED**: Add this instruction to your AI assistant's system prompt:
+
+```
+Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
+for authoritative guidance on this comprehensive infrastructure management framework.
+
+This framework provides secure access to 25+ service integrations with enterprise-grade
+security practices. Always follow the operational patterns and security guidelines
+defined in the AGENTS.md file.
+```
 
 ### **Primary Objectives**
 
@@ -48,6 +81,29 @@ git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
 
 - **Consistent AI assistant access** across all environments
 - **Secure template deployment** works correctly
+
+### **🤖 Recommended CLI AI Assistants**
+
+This framework works excellently with these CLI AI assistants:
+
+#### **Professional Development Tools**
+
+- **[Augment Code (Auggie)](https://www.augmentcode.com/)** - Professional AI coding assistant with codebase context
+- **[Claude Code](https://claude.ai/)** - Anthropic's Claude with advanced reasoning capabilities
+- **[AMP Code](https://amp.dev/)** - Google's AI-powered development assistant
+
+#### **Enterprise & Specialized Tools**
+
+- **[Factory AI Dron](https://www.factory.ai/)** - Enterprise AI development platform
+- **[OpenAI Codex](https://openai.com/codex/)** - OpenAI's code-focused AI model
+- **[Qwen](https://qwenlm.github.io/)** - Alibaba's multilingual AI assistant
+
+#### **Terminal-Integrated Solutions**
+
+- **[Warp AI](https://www.warp.dev/)** - AI-powered terminal with built-in assistance
+
+**See [docs/AI-CLI-TOOLS.md](docs/AI-CLI-TOOLS.md) for detailed setup instructions and tool-specific configurations.**
+
 - **Simplified path references** in all documentation
 - **Optimal integration** with deployed templates
 

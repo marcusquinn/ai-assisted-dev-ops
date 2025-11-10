@@ -2,6 +2,59 @@
   "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
   "runs": [
     {
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "descriptor": {
+                "id": "Syntax error"
+              },
+              "level": "warning",
+              "message": {
+                "text": "Syntax error at line .agent/scripts/add-missing-returns.sh:1:\n `#!/bin/bash\n\n# Add Missing Return Statements\n# Systematically add return 0 to functions missing explicit returns\n#\n# Author: AI-Assisted DevOps Framework\n# Version: 1.0.0\n\n# Colors for output\nreadonly GREEN='\\033[0;32m'\nreadonly BLUE='\\033[0;34m'\nreadonly NC='\\033[0m'\n\nprint_success() {\n    echo -e \"${GREEN}✅ $1${NC}\"\n    return 0\n}\n\nprint_info() {\n    echo -e \"${BLUE}ℹ️  $1${NC}\"\n    return 0\n}\n\n# Add return statements to functions missing them\nadd_returns_to_file() {\n    local file=\"$1\"\n    local temp_file\n    temp_file=$(mktemp)\n    local changes_made=0\n    \n    print_info \"Processing: $file\"\n    \n    # Create backup\n    cp \"$file\" \"${file}.backup\"\n    \n    # Process file line by line\n    local in_function=0\n    local brace_count=0\n    local function_has_return=0\n    \n    while IFS= read -r line; do\n        # Detect function start\n        if [[ $line =~ ^[a-zA-Z_][a-zA-Z0-9_]*\\(\\)[[:space:]]*\\{ ]]; then\n            in_function=1\n            brace_count=1\n            function_has_return=0\n            echo \"$line\" \u003e\u003e \"$temp_file\"\n            continue\n        fi\n        \n        if [[ $in_function -eq 1 ]]; then\n            # Count braces\n            local open_braces\n            open_braces=$(echo \"$line\" | grep -o '{' | wc -l)\n            local close_braces\n            close_braces=$(echo \"$line\" | grep -o '}' | wc -l)\n            \n            brace_count=$((brace_count + open_braces - close_braces))\n            \n            # Check for return statements\n            if [[ $line =~ return[[:space:]]*[0-9]*[[:space:]]*$ ]] || [[ $line =~ exit[[:space:]]+[0-9]+ ]]; then\n                function_has_return=1\n            fi\n            \n            # Function ends\n            if [[ $brace_count -eq 0 ]]; then\n                # Add return if missing\n                if [[ $function_has_return -eq 0 ]]; then\n                    # Check if line is just closing brace\n                    if [[ \"$line\" == *\"}\"* ]] \u0026\u0026 [[ \"$line\" != *[a-zA-Z0-9]* ]]; then\n                        echo \"    return 0\" \u003e\u003e \"$temp_file\"\n                        echo \"$line\" \u003e\u003e \"$temp_file\"\n                    else\n                        # Line has content before brace\n                        echo \"${line%\\}}\" \u003e\u003e \"$temp_file\"\n                        echo \"    return 0\" \u003e\u003e \"$temp_file\"\n                        echo \"}\" \u003e\u003e \"$temp_file\"\n                    fi\n                    changes_made=1\n                else\n                    echo \"$line\" \u003e\u003e \"$temp_file\"\n                fi\n                in_function=0\n            else\n                echo \"$line\" \u003e\u003e \"$temp_file\"\n            fi\n        else\n            echo \"$line\" \u003e\u003e \"$temp_file\"\n        fi\n    done \u003c \"$file\"\n    \n    # Replace original file if changes were made\n    if [[ $changes_made -eq 1 ]]; then\n        mv \"$temp_file\" \"$file\"\n        print_success \"Added return statements to: $file\"\n        rm \"${file}.backup\"\n        return 0\n    else\n        rm \"$temp_file\"\n        mv \"${file}.backup\" \"$file\"\n        print_info \"No return statements needed in: $file\"\n        return 1\n    fi\n}\n\n# Main execution\nmain() {\n    local target=\"${1:-.}\"\n    \n    print_info \"Adding missing return statements...\"\n    \n    local files_fixed=0\n    local files_processed=0\n    \n    if [[ -f \"$target\" \u0026\u0026 \"$target\" == *.sh ]]; then\n        ((files_processed++))\n        if add_returns_to_file \"$target\"; then\n            ((files_fixed++))\n        fi\n    elif [[ -d \"$target\" ]]; then\n        find \"$target\" -name \"*.sh\" -type f | while read -r file; do\n            ((files_processed++))\n            if add_returns_to_file \"$file\"; then\n                ((files_fixed++))\n            fi\n        done\n    else\n        print_info \"Invalid target: $target\"\n        return 1\n    fi\n    \n    print_success \"Summary: $files_fixed/$files_processed files fixed\"\n    return 0\n}\n\nmain \"$@\"\n` was unexpected"
+              }
+            }
+          ]
+        }
+      ],
+      "results": [],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "rules": null,
+          "semanticVersion": "1.78.0"
+        }
+      }
+    },
+    {
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///Users/marcusquinn/git/ai-assisted-dev-ops/"
+        }
+      },
+      "results": [],
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": null,
+          "version": "0.66.0"
+        }
+      }
+    },
+    {
+      "results": [],
+      "tool": {
+        "driver": {
+          "name": "dartanalyzer",
+          "rules": null
+        }
+      }
+    },
+    {
       "artifacts": [
         {
           "location": {
@@ -64,59 +117,6 @@
         "driver": {
           "informationUri": "https://github.com/mgechev/revive",
           "name": "revive",
-          "rules": null
-        }
-      }
-    },
-    {
-      "invocations": [
-        {
-          "executionSuccessful": true,
-          "toolExecutionNotifications": [
-            {
-              "descriptor": {
-                "id": "Syntax error"
-              },
-              "level": "warning",
-              "message": {
-                "text": "Syntax error at line .agent/scripts/add-missing-returns.sh:1:\n `#!/bin/bash\n\n# Add Missing Return Statements\n# Systematically add return 0 to functions missing explicit returns\n#\n# Author: AI-Assisted DevOps Framework\n# Version: 1.0.0\n\n# Colors for output\nreadonly GREEN='\\033[0;32m'\nreadonly BLUE='\\033[0;34m'\nreadonly NC='\\033[0m'\n\nprint_success() {\n    echo -e \"${GREEN}✅ $1${NC}\"\n    return 0\n}\n\nprint_info() {\n    echo -e \"${BLUE}ℹ️  $1${NC}\"\n    return 0\n}\n\n# Add return statements to functions missing them\nadd_returns_to_file() {\n    local file=\"$1\"\n    local temp_file\n    temp_file=$(mktemp)\n    local changes_made=0\n    \n    print_info \"Processing: $file\"\n    \n    # Create backup\n    cp \"$file\" \"${file}.backup\"\n    \n    # Process file line by line\n    local in_function=0\n    local brace_count=0\n    local function_has_return=0\n    \n    while IFS= read -r line; do\n        # Detect function start\n        if [[ $line =~ ^[a-zA-Z_][a-zA-Z0-9_]*\\(\\)[[:space:]]*\\{ ]]; then\n            in_function=1\n            brace_count=1\n            function_has_return=0\n            echo \"$line\" \u003e\u003e \"$temp_file\"\n            continue\n        fi\n        \n        if [[ $in_function -eq 1 ]]; then\n            # Count braces\n            local open_braces\n            open_braces=$(echo \"$line\" | grep -o '{' | wc -l)\n            local close_braces\n            close_braces=$(echo \"$line\" | grep -o '}' | wc -l)\n            \n            brace_count=$((brace_count + open_braces - close_braces))\n            \n            # Check for return statements\n            if [[ $line =~ return[[:space:]]*[0-9]*[[:space:]]*$ ]] || [[ $line =~ exit[[:space:]]+[0-9]+ ]]; then\n                function_has_return=1\n            fi\n            \n            # Function ends\n            if [[ $brace_count -eq 0 ]]; then\n                # Add return if missing\n                if [[ $function_has_return -eq 0 ]]; then\n                    # Check if line is just closing brace\n                    if [[ \"$line\" == *\"}\"* ]] \u0026\u0026 [[ \"$line\" != *[a-zA-Z0-9]* ]]; then\n                        echo \"    return 0\" \u003e\u003e \"$temp_file\"\n                        echo \"$line\" \u003e\u003e \"$temp_file\"\n                    else\n                        # Line has content before brace\n                        echo \"${line%\\}}\" \u003e\u003e \"$temp_file\"\n                        echo \"    return 0\" \u003e\u003e \"$temp_file\"\n                        echo \"}\" \u003e\u003e \"$temp_file\"\n                    fi\n                    changes_made=1\n                else\n                    echo \"$line\" \u003e\u003e \"$temp_file\"\n                fi\n                in_function=0\n            else\n                echo \"$line\" \u003e\u003e \"$temp_file\"\n            fi\n        else\n            echo \"$line\" \u003e\u003e \"$temp_file\"\n        fi\n    done \u003c \"$file\"\n    \n    # Replace original file if changes were made\n    if [[ $changes_made -eq 1 ]]; then\n        mv \"$temp_file\" \"$file\"\n        print_success \"Added return statements to: $file\"\n        rm \"${file}.backup\"\n        return 0\n    else\n        rm \"$temp_file\"\n        mv \"${file}.backup\" \"$file\"\n        print_info \"No return statements needed in: $file\"\n        return 1\n    fi\n}\n\n# Main execution\nmain() {\n    local target=\"${1:-.}\"\n    \n    print_info \"Adding missing return statements...\"\n    \n    local files_fixed=0\n    local files_processed=0\n    \n    if [[ -f \"$target\" \u0026\u0026 \"$target\" == *.sh ]]; then\n        ((files_processed++))\n        if add_returns_to_file \"$target\"; then\n            ((files_fixed++))\n        fi\n    elif [[ -d \"$target\" ]]; then\n        find \"$target\" -name \"*.sh\" -type f | while read -r file; do\n            ((files_processed++))\n            if add_returns_to_file \"$file\"; then\n                ((files_fixed++))\n            fi\n        done\n    else\n        print_info \"Invalid target: $target\"\n        return 1\n    fi\n    \n    print_success \"Summary: $files_fixed/$files_processed files fixed\"\n    return 0\n}\n\nmain \"$@\"\n` was unexpected"
-              }
-            }
-          ]
-        }
-      ],
-      "results": [],
-      "tool": {
-        "driver": {
-          "name": "Semgrep OSS",
-          "rules": null,
-          "semanticVersion": "1.78.0"
-        }
-      }
-    },
-    {
-      "columnKind": "utf16CodeUnits",
-      "originalUriBaseIds": {
-        "ROOTPATH": {
-          "uri": "file:///Users/marcusquinn/git/ai-assisted-dev-ops/"
-        }
-      },
-      "results": [],
-      "tool": {
-        "driver": {
-          "fullName": "Trivy Vulnerability Scanner",
-          "informationUri": "https://github.com/aquasecurity/trivy",
-          "name": "Trivy",
-          "rules": null,
-          "version": "0.66.0"
-        }
-      }
-    },
-    {
-      "results": [],
-      "tool": {
-        "driver": {
-          "name": "dartanalyzer",
           "rules": null
         }
       }

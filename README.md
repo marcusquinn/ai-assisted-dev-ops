@@ -43,6 +43,80 @@
 
 A comprehensive, production-ready framework that gives your AI assistant seamless access to your entire DevOps infrastructure including servers, hosting providers, security services, code auditing, and development tools through standardized helper scripts, SSH configurations, and MCP (Model Context Protocol) integrations.
 
+## ⚠️ **IMPORTANT SECURITY WARNING**
+
+**This framework provides AI assistants with powerful access to your infrastructure and sensitive data. Use responsibly.**
+
+When you grant an AI assistant access to this framework, you are providing the ability to:
+
+- **Execute commands** on your servers and local machine
+- **Access sensitive credentials** and configuration files
+- **Modify infrastructure settings** across hosting providers
+- **Read and write files** in your development environment
+- **Interact with APIs** using your authentication tokens
+
+**You are responsible for:**
+
+- Understanding what data and systems you're exposing to your AI assistant
+- Using trusted AI providers (consider self-hosted or local LLMs for sensitive operations)
+- Regularly reviewing and rotating API keys and credentials
+- Monitoring logs for unexpected activity
+- Never sharing configuration files containing sensitive tokens
+
+**This framework helps make AI-assisted DevOps safer by:**
+
+- Providing structured, auditable command patterns
+- Implementing secure credential management practices
+- Offering comprehensive logging and monitoring capabilities
+- Following enterprise-grade security standards
+
+**Use this tool responsibly and at your own risk.**
+
+## 🚀 **Quick Start - Get Running in 2 Minutes**
+
+**Skip the documentation and start immediately:**
+
+```bash
+# 1. Clone to standard location
+mkdir -p ~/git && cd ~/git
+git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
+cd ai-assisted-dev-ops
+
+# 2. Run setup
+./setup.sh
+
+# 3. Ask your AI assistant to read the guidance file before any operations
+# Add this to your AI assistant's system prompt:
+# "Before any DevOps operations, read ~/git/ai-assisted-dev-ops/AGENTS.md for authoritative guidance"
+```
+
+**That's it! Your AI assistant now has access to 25+ service integrations.**
+
+### **🤖 Recommended CLI AI Assistants**
+
+Try this framework with these excellent CLI AI assistants:
+
+| Assistant | Description | Installation |
+|-----------|-------------|--------------|
+| **[Augment Code (Auggie)](https://www.augmentcode.com/)** | Professional AI coding assistant with codebase context | `npm install -g @augmentcode/cli` |
+| **[AMP Code](https://amp.dev/)** | Google's AI-powered development assistant | Visit [amp.dev](https://amp.dev/) |
+| **[Claude Code](https://claude.ai/)** | Anthropic's Claude with code capabilities | Desktop app + CLI tools |
+| **[OpenAI Codex](https://openai.com/codex/)** | OpenAI's code-focused AI model | Via OpenAI API |
+| **[Factory AI Dron](https://www.factory.ai/)** | Enterprise AI development platform | Visit [factory.ai](https://www.factory.ai/) |
+| **[Qwen](https://qwenlm.github.io/)** | Alibaba's multilingual AI assistant | Visit [qwenlm.github.io](https://qwenlm.github.io/) |
+| **[Warp AI](https://www.warp.dev/)** | AI-powered terminal with built-in assistance | Visit [warp.dev](https://www.warp.dev/) |
+
+### **💡 Pro Tip: System Prompt Enhancement**
+
+Add this instruction to your AI assistant's system prompt for best results:
+
+```
+Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
+for authoritative guidance on this comprehensive infrastructure management framework.
+```
+
+This ensures your AI assistant always has the latest operational guidance and security practices.
+
 ## 🎯 **What This Framework Does**
 
 ### **🤖 AI-First Infrastructure Management**
@@ -637,23 +711,28 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 Our framework now includes **9 powerful MCP integrations** for comprehensive AI-assisted development:
 
 #### **🌐 Web & Browser Automation**
+
 - **Chrome DevTools MCP**: Browser automation, performance analysis, debugging
 - **Playwright MCP**: Cross-browser testing and automation
 - **Cloudflare Browser Rendering**: Server-side web scraping and rendering
 
 #### **🔍 SEO & Research Tools**
+
 - **Ahrefs MCP**: SEO analysis, backlink research, keyword data
 - **Perplexity MCP**: AI-powered web search and research
 - **Google Search Console MCP**: Search performance data and insights
 
 #### **⚡ Development Tools**
+
 - **Next.js DevTools MCP**: Next.js development and debugging assistance
 
 #### **📚 Documentation & Data Access**
+
 - **Context7 MCP**: Real-time documentation access for development libraries
 - **LocalWP MCP**: Direct WordPress database access for local development
 
 #### **Quick Setup**
+
 ```bash
 # Install all MCP integrations
 bash .agent/scripts/setup-mcp-integrations.sh all
@@ -666,6 +745,7 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 ```
 
 #### **Legacy MCP Support**
+
 ```bash
 # Start LocalWP MCP server for WordPress database access
 ./providers/localhost-helper.sh start-mcp
@@ -676,18 +756,21 @@ bash .agent/scripts/setup-mcp-integrations.sh chrome-devtools
 
 📚 **[Complete MCP Integration Guide](docs/MCP-INTEGRATIONS.md)**
 🔌 **[Comprehensive API Integration Guide](docs/API-INTEGRATIONS.md)**
+🤖 **[AI CLI Tools & Assistants Reference](docs/AI-CLI-TOOLS.md)**
 
 ### 🔌 **Comprehensive API Integration Coverage**
 
 Our framework provides standardized access to **25+ service APIs** across all infrastructure categories:
 
 #### **🏗️ Infrastructure & Hosting APIs**
+
 - **Hostinger API**: Server management, domain operations, hosting control
 - **Hetzner Cloud API**: VPS management, networking, load balancers
 - **Closte API**: Managed hosting, application deployment
 - **Coolify API**: Self-hosted PaaS, application management
 
 #### **🌐 Domain & DNS APIs**
+
 - **Cloudflare API**: DNS management, security, performance optimization
 - **Spaceship API**: Domain registration, management, transfers
 - **101domains API**: Domain purchasing, bulk operations, WHOIS
@@ -695,10 +778,12 @@ Our framework provides standardized access to **25+ service APIs** across all in
 - **Namecheap API**: Domain registration, DNS management
 
 #### **📧 Communication APIs**
+
 - **Amazon SES API**: Email delivery, bounce handling, analytics
 - **MainWP API**: WordPress site management, updates, monitoring
 
 #### **🔐 Security & Code Quality APIs**
+
 - **Vaultwarden API**: Password management, secure credential storage
 - **CodeRabbit API**: AI-powered code review, security analysis
 - **Codacy API**: Code quality analysis, technical debt tracking
@@ -706,11 +791,13 @@ Our framework provides standardized access to **25+ service APIs** across all in
 - **CodeFactor API**: Automated code quality grading
 
 #### **🔍 SEO & Analytics APIs**
+
 - **Ahrefs API**: SEO analysis, backlink research, keyword tracking
 - **Google Search Console API**: Search performance, indexing status
 - **Perplexity API**: AI-powered research and content generation
 
 #### **⚡ Development & Git APIs**
+
 - **GitHub API**: Repository management, actions, security
 - **GitLab API**: Project management, CI/CD, security scanning
 - **Gitea API**: Self-hosted Git operations, user management
@@ -718,6 +805,7 @@ Our framework provides standardized access to **25+ service APIs** across all in
 - **LocalWP API**: WordPress database operations, site management
 
 #### **🎯 API Integration Features**
+
 - **Standardized Authentication**: Consistent token management across all APIs
 - **Rate Limiting**: Built-in respect for API limits and quotas
 - **Error Handling**: Comprehensive error messages and retry logic
