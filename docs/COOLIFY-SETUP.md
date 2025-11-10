@@ -5,6 +5,7 @@ Coolify is a self-hosted alternative to Vercel, Netlify, and Heroku that allows 
 ## 🚀 **What is Coolify?**
 
 Coolify is an open-source, self-hostable cloud platform that:
+
 - **Deploys applications** from Git repositories automatically
 - **Manages databases** (PostgreSQL, MySQL, MongoDB, Redis, etc.)
 - **Handles SSL certificates** automatically via Let's Encrypt
@@ -15,6 +16,7 @@ Coolify is an open-source, self-hostable cloud platform that:
 ## 📋 **Prerequisites**
 
 ### **Server Requirements:**
+
 - **VPS or dedicated server** with at least 2GB RAM (4GB+ recommended)
 - **Ubuntu 20.04+ or Debian 11+** (recommended)
 - **Root access** or sudo privileges
@@ -22,6 +24,7 @@ Coolify is an open-source, self-hostable cloud platform that:
 - **Open ports**: 22 (SSH), 80 (HTTP), 443 (HTTPS), 8000 (Coolify dashboard)
 
 ### **Local Requirements:**
+
 - **SSH key** for server access
 - **Git repositories** for your applications
 - **Domain DNS** configured to point to your server
@@ -31,6 +34,7 @@ Coolify is an open-source, self-hostable cloud platform that:
 ### **1. Server Setup**
 
 #### **Install Coolify:**
+
 ```bash
 # Connect to your server
 ssh root@your-server-ip
@@ -40,6 +44,7 @@ curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 ```
 
 #### **Post-Installation:**
+
 ```bash
 # Check Coolify status
 systemctl status coolify
@@ -54,6 +59,7 @@ docker logs coolify
 ### **2. Initial Configuration**
 
 #### **Access Web Interface:**
+
 1. **Open browser**: `https://your-server-ip:8000`
 2. **Create admin account**: Set username and password
 3. **Configure server**: Add your server details
@@ -61,6 +67,7 @@ docker logs coolify
 5. **Generate SSH keys**: For Git repository access
 
 #### **Security Setup:**
+
 ```bash
 # Configure firewall (if using ufw)
 ufw allow 22/tcp
@@ -80,11 +87,13 @@ dpkg-reconfigure -plow unattended-upgrades
 ## 🔧 **Framework Configuration**
 
 ### **1. Copy Configuration Template:**
+
 ```bash
 cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **2. Edit Configuration:**
+
 ```json
 {
   "servers": {
@@ -106,6 +115,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **3. Generate API Token:**
+
 1. **Login to Coolify dashboard**
 2. **Go to Settings** → API Tokens
 3. **Create new token** with required permissions
@@ -114,6 +124,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ## 🚀 **Deploying Your First Application**
 
 ### **1. Static Site (React/Vue/Angular):**
+
 ```bash
 # In Coolify dashboard:
 # 1. Create new application
@@ -125,6 +136,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **2. Node.js Application:**
+
 ```bash
 # In Coolify dashboard:
 # 1. Create new application
@@ -137,6 +149,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **3. Database Setup:**
+
 ```bash
 # In Coolify dashboard:
 # 1. Go to Databases
@@ -148,6 +161,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ## 🔧 **Using the Framework Helper**
 
 ### **Server Management:**
+
 ```bash
 # List Coolify servers
 ./providers/coolify-helper.sh list
@@ -163,6 +177,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **Application Management:**
+
 ```bash
 # List applications on server
 ./providers/coolify-helper.sh apps main_server
@@ -173,6 +188,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **SSH Configuration:**
+
 ```bash
 # Generate SSH configs for easy access
 ./providers/coolify-helper.sh generate-ssh-configs
@@ -184,6 +200,7 @@ ssh coolify-main
 ## 🛡️ **Security Best Practices**
 
 ### **Server Security:**
+
 - **Use SSH keys** instead of passwords
 - **Configure firewall** to allow only necessary ports
 - **Enable automatic security updates**
@@ -191,6 +208,7 @@ ssh coolify-main
 - **Monitor server resources** and logs
 
 ### **Application Security:**
+
 - **Use environment variables** for sensitive configuration
 - **Enable HTTPS** for all applications (automatic with Coolify)
 - **Regular updates** of application dependencies
@@ -198,6 +216,7 @@ ssh coolify-main
 - **Use strong database passwords**
 
 ### **Access Control:**
+
 - **Limit SSH access** to specific IP addresses
 - **Use strong passwords** for Coolify dashboard
 - **Regular API token rotation**
@@ -206,6 +225,7 @@ ssh coolify-main
 ## 🔍 **Monitoring & Maintenance**
 
 ### **Health Checks:**
+
 ```bash
 # Check Coolify service status
 ./providers/coolify-helper.sh exec coolify-main 'systemctl status coolify'
@@ -221,6 +241,7 @@ ssh coolify-main
 ```
 
 ### **Log Management:**
+
 ```bash
 # View Coolify logs
 ./providers/coolify-helper.sh exec coolify-main 'docker logs coolify'
@@ -233,6 +254,7 @@ ssh coolify-main
 ```
 
 ### **Backup Strategy:**
+
 - **Database backups**: Configure automatic backups in Coolify
 - **Application code**: Stored in Git repositories
 - **Server snapshots**: Regular VPS/server snapshots
@@ -243,6 +265,7 @@ ssh coolify-main
 ### **Common Issues:**
 
 #### **Deployment Fails:**
+
 ```bash
 # Check build logs in Coolify dashboard
 # Verify build commands and dependencies
@@ -251,6 +274,7 @@ ssh coolify-main
 ```
 
 #### **SSL Certificate Issues:**
+
 ```bash
 # Verify domain DNS points to server
 # Check firewall allows ports 80 and 443
@@ -259,6 +283,7 @@ ssh coolify-main
 ```
 
 #### **Application Not Accessible:**
+
 ```bash
 # Check application logs in Coolify dashboard
 # Verify port configuration
@@ -267,6 +292,7 @@ ssh coolify-main
 ```
 
 #### **Database Connection Issues:**
+
 ```bash
 # Verify database is running
 # Check connection strings and credentials

@@ -5,6 +5,7 @@ Coolify is a self-hosted, open-source alternative to Vercel, Netlify, and Heroku
 ## 🏢 **Provider Overview**
 
 ### **Coolify Characteristics:**
+
 - **Deployment Type**: Self-hosted PaaS (Platform as a Service)
 - **Technology**: Docker-based containerization
 - **Git Integration**: GitHub, GitLab, Bitbucket, self-hosted Git
@@ -14,6 +15,7 @@ Coolify is a self-hosted, open-source alternative to Vercel, Netlify, and Heroku
 - **Monitoring**: Built-in application and server monitoring
 
 ### **Best Use Cases:**
+
 - **Self-hosted deployments** with full control
 - **Cost-effective alternative** to cloud platforms
 - **Docker-based applications** and microservices
@@ -24,6 +26,7 @@ Coolify is a self-hosted, open-source alternative to Vercel, Netlify, and Heroku
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/coolify-config.json.txt configs/coolify-config.json
@@ -32,6 +35,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **Multi-Server Configuration:**
+
 ```json
 {
   "servers": {
@@ -60,6 +64,7 @@ cp configs/coolify-config.json.txt configs/coolify-config.json
 ```
 
 ### **Initial Server Setup:**
+
 ```bash
 # Install Coolify on your server
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
@@ -71,6 +76,7 @@ curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 ## 🚀 **Usage Examples**
 
 ### **Server Management:**
+
 ```bash
 # List Coolify servers
 ./providers/coolify-helper.sh list
@@ -86,6 +92,7 @@ curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 ```
 
 ### **Application Management:**
+
 ```bash
 # List applications
 ./providers/coolify-helper.sh apps main_server
@@ -99,6 +106,7 @@ curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 ```
 
 ### **SSH Configuration:**
+
 ```bash
 # Generate SSH configs
 ./providers/coolify-helper.sh generate-ssh-configs
@@ -110,6 +118,7 @@ ssh coolify-main
 ## 🛡️ **Security Best Practices**
 
 ### **Server Security:**
+
 ```bash
 # Configure firewall
 ./providers/coolify-helper.sh exec coolify-main 'ufw allow 22/tcp'
@@ -120,12 +129,14 @@ ssh coolify-main
 ```
 
 ### **SSH Key Management:**
+
 - **Use Ed25519 keys**: More secure and faster
 - **Key rotation**: Regular key rotation schedule
 - **Access control**: Limit SSH access to specific IPs
 - **Backup keys**: Maintain backup access methods
 
 ### **Application Security:**
+
 - **Environment variables**: Secure configuration management
 - **HTTPS enforcement**: Automatic SSL for all applications
 - **Container isolation**: Docker provides application isolation
@@ -136,6 +147,7 @@ ssh coolify-main
 ### **Common Issues:**
 
 #### **Deployment Failures:**
+
 ```bash
 # Check build logs in Coolify dashboard
 # Verify build commands and dependencies
@@ -149,6 +161,7 @@ ssh coolify-main
 ```
 
 #### **SSL Certificate Issues:**
+
 ```bash
 # Verify domain DNS
 nslookup yourdomain.com
@@ -161,6 +174,7 @@ nslookup yourdomain.com
 ```
 
 #### **Application Not Accessible:**
+
 ```bash
 # Check application status
 ./providers/coolify-helper.sh exec coolify-main 'docker ps'
@@ -175,6 +189,7 @@ nslookup yourdomain.com
 ## 📊 **Performance Optimization**
 
 ### **Server Resources:**
+
 ```bash
 # Monitor resource usage
 ./providers/coolify-helper.sh exec coolify-main 'htop'
@@ -185,12 +200,14 @@ nslookup yourdomain.com
 ```
 
 ### **Application Performance:**
+
 - **Resource limits**: Set appropriate CPU/memory limits
 - **Health checks**: Configure application health checks
 - **Caching**: Implement Redis caching where appropriate
 - **CDN**: Use CDN for static assets
 
 ### **Database Optimization:**
+
 ```bash
 # Monitor database performance
 ./providers/coolify-helper.sh exec coolify-main 'docker exec postgres-container pg_stat_activity'
@@ -202,12 +219,14 @@ nslookup yourdomain.com
 ## 🔄 **Backup & Disaster Recovery**
 
 ### **Application Backups:**
+
 - **Git repositories**: Source code in version control
 - **Database backups**: Automated database backups
 - **Volume backups**: Docker volume snapshots
 - **Configuration backups**: Coolify configuration exports
 
 ### **Server Snapshots:**
+
 ```bash
 # Create server snapshot (if on cloud provider)
 # Hetzner: Create snapshot via API
@@ -218,6 +237,7 @@ nslookup yourdomain.com
 ## 🐳 **Docker & Container Management**
 
 ### **Container Operations:**
+
 ```bash
 # List containers
 ./providers/coolify-helper.sh exec coolify-main 'docker ps -a'
@@ -233,6 +253,7 @@ nslookup yourdomain.com
 ```
 
 ### **Image Management:**
+
 ```bash
 # List images
 ./providers/coolify-helper.sh exec coolify-main 'docker images'
@@ -247,6 +268,7 @@ nslookup yourdomain.com
 ## 📚 **Best Practices**
 
 ### **Deployment Workflow:**
+
 1. **Local development**: Develop and test locally
 2. **Git integration**: Push to Git repository
 3. **Automatic deployment**: Coolify deploys automatically
@@ -254,12 +276,14 @@ nslookup yourdomain.com
 5. **Rollback capability**: Quick rollback if issues occur
 
 ### **Environment Management:**
+
 - **Separate environments**: Dev, staging, production
 - **Environment variables**: Secure configuration management
 - **Database separation**: Separate databases per environment
 - **Domain management**: Clear domain naming conventions
 
 ### **Monitoring & Maintenance:**
+
 - **Application monitoring**: Built-in Coolify monitoring
 - **Server monitoring**: System resource monitoring
 - **Log management**: Centralized log collection
@@ -268,18 +292,21 @@ nslookup yourdomain.com
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Deployment:**
+
 - **Git webhook integration**: Automatic deployments on push
 - **Build automation**: Automated build processes
 - **Testing integration**: Automated testing before deployment
 - **Rollback automation**: Automated rollback on failure
 
 ### **Monitoring & Alerts:**
+
 - **Health monitoring**: Automated health checks
 - **Performance monitoring**: Resource usage tracking
 - **Error alerting**: Automated error notifications
 - **Capacity planning**: Automated scaling recommendations
 
 ### **Development Workflows:**
+
 - **Environment provisioning**: Automated environment setup
 - **Database migrations**: Automated database updates
 - **SSL management**: Automated certificate renewal

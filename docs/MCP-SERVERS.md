@@ -5,6 +5,7 @@ Model Context Protocol (MCP) servers provide AI assistants with real-time access
 ## 🏢 **MCP Overview**
 
 ### **MCP Characteristics:**
+
 - **Protocol**: Standardized protocol for AI-external service communication
 - **Real-time Data**: Live access to databases, APIs, and services
 - **Contextual**: Provides relevant context to AI conversations
@@ -12,6 +13,7 @@ Model Context Protocol (MCP) servers provide AI assistants with real-time access
 - **Secure**: Built-in authentication and access control
 
 ### **Available MCP Servers:**
+
 - **Context7 MCP** - Real-time documentation access for development libraries
 - **LocalWP MCP** - Direct WordPress database access for local development
 - **Custom MCP Servers** - Project-specific data sources and services
@@ -19,6 +21,7 @@ Model Context Protocol (MCP) servers provide AI assistants with real-time access
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/mcp-servers-config.json.txt configs/mcp-servers-config.json
@@ -27,6 +30,7 @@ cp configs/mcp-servers-config.json.txt configs/mcp-servers-config.json
 ```
 
 ### **Multi-Server Configuration:**
+
 ```json
 {
   "mcpServers": {
@@ -64,9 +68,11 @@ cp configs/mcp-servers-config.json.txt configs/mcp-servers-config.json
 ```
 
 ### **AI Assistant Integration:**
+
 Different AI assistants have different MCP configuration methods:
 
 #### **Claude Desktop:**
+
 ```json
 {
   "mcpServers": {
@@ -83,6 +89,7 @@ Different AI assistants have different MCP configuration methods:
 ```
 
 #### **Cursor IDE:**
+
 ```json
 {
   "mcpServers": {
@@ -97,6 +104,7 @@ Different AI assistants have different MCP configuration methods:
 ## 🚀 **Usage Examples**
 
 ### **Context7 MCP Server:**
+
 ```bash
 # Start Context7 MCP server
 npx -y @context7/mcp-server@latest
@@ -109,6 +117,7 @@ npx -y @context7/mcp-server@latest
 ```
 
 ### **LocalWP MCP Server:**
+
 ```bash
 # Start LocalWP MCP server
 ./providers/localhost-helper.sh start-mcp
@@ -121,6 +130,7 @@ npx -y @context7/mcp-server@latest
 ```
 
 ### **Custom MCP Servers:**
+
 ```bash
 # Start custom MCP server
 node /path/to/custom-mcp-server/server.js
@@ -135,6 +145,7 @@ node /path/to/custom-mcp-server/server.js
 ## 🛡️ **Security Best Practices**
 
 ### **MCP Server Security:**
+
 - **Authentication**: Implement proper authentication for MCP servers
 - **Access control**: Limit access to sensitive data sources
 - **Encryption**: Use encrypted connections for data transmission
@@ -142,6 +153,7 @@ node /path/to/custom-mcp-server/server.js
 - **Rate limiting**: Implement rate limiting to prevent abuse
 
 ### **Data Protection:**
+
 ```bash
 # Secure MCP server configuration
 chmod 600 configs/mcp-servers-config.json
@@ -156,6 +168,7 @@ export DATABASE_PASSWORD="your-secure-password"
 ```
 
 ### **Network Security:**
+
 - **Private networks**: Run MCP servers on private networks when possible
 - **Firewall rules**: Configure appropriate firewall rules
 - **SSL/TLS**: Use encrypted connections for all MCP communications
@@ -167,6 +180,7 @@ export DATABASE_PASSWORD="your-secure-password"
 ### **Common Issues:**
 
 #### **MCP Server Connection Issues:**
+
 ```bash
 # Check if MCP server is running
 ps aux | grep mcp-server
@@ -181,6 +195,7 @@ tail -f /path/to/mcp-server/logs/server.log
 ```
 
 #### **Configuration Issues:**
+
 ```bash
 # Validate MCP configuration
 jq '.' configs/mcp-servers-config.json
@@ -194,6 +209,7 @@ ls -la configs/mcp-servers-config.json
 ```
 
 #### **AI Assistant Integration Issues:**
+
 ```bash
 # Check AI assistant MCP configuration
 # Verify MCP server is accessible from AI assistant
@@ -204,6 +220,7 @@ ls -la configs/mcp-servers-config.json
 ## 📊 **Monitoring & Management**
 
 ### **MCP Server Monitoring:**
+
 ```bash
 # Monitor MCP server health
 curl http://localhost:3001/health
@@ -217,6 +234,7 @@ tail -f /var/log/mcp-servers/localwp.log
 ```
 
 ### **Performance Monitoring:**
+
 ```bash
 # Monitor MCP server resource usage
 ps aux | grep mcp-server
@@ -233,6 +251,7 @@ time curl http://localhost:3001/api/query
 ## 🔄 **Development & Deployment**
 
 ### **Custom MCP Server Development:**
+
 ```javascript
 // Basic MCP server structure
 const express = require('express');
@@ -255,6 +274,7 @@ app.listen(3001, () => {
 ```
 
 ### **Deployment Strategies:**
+
 ```bash
 # Docker deployment
 docker build -t custom-mcp-server .
@@ -273,6 +293,7 @@ sudo systemctl start custom-mcp-server
 ## 📚 **Best Practices**
 
 ### **MCP Server Design:**
+
 1. **Stateless design**: Design MCP servers to be stateless when possible
 2. **Error handling**: Implement comprehensive error handling
 3. **Logging**: Implement detailed logging for debugging and monitoring
@@ -280,6 +301,7 @@ sudo systemctl start custom-mcp-server
 5. **Security**: Implement proper authentication and authorization
 
 ### **Configuration Management:**
+
 - **Environment separation**: Use different configurations for dev/staging/prod
 - **Secret management**: Use secure secret management for sensitive data
 - **Version control**: Version control MCP server configurations
@@ -287,6 +309,7 @@ sudo systemctl start custom-mcp-server
 - **Testing**: Test MCP servers thoroughly before deployment
 
 ### **Integration Patterns:**
+
 - **Graceful degradation**: Handle MCP server unavailability gracefully
 - **Caching**: Implement caching for frequently accessed data
 - **Rate limiting**: Implement rate limiting to protect backend services
@@ -296,6 +319,7 @@ sudo systemctl start custom-mcp-server
 ## 🎯 **AI Assistant Integration**
 
 ### **Enhanced AI Capabilities:**
+
 - **Real-time data**: AI assistants can access live data from various sources
 - **Contextual responses**: Responses based on current, relevant information
 - **Dynamic queries**: AI can query databases and APIs in real-time
@@ -303,6 +327,7 @@ sudo systemctl start custom-mcp-server
 - **Personalized assistance**: Access to user-specific data and preferences
 
 ### **Development Workflows:**
+
 - **Code assistance**: Real-time access to documentation and examples
 - **Database queries**: Direct database access for development tasks
 - **API integration**: Real-time API data for development decisions

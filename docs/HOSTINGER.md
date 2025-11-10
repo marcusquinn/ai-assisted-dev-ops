@@ -5,6 +5,7 @@ Hostinger is a popular web hosting provider offering shared hosting, VPS, and cl
 ## 🏢 **Provider Overview**
 
 ### **Hostinger Characteristics:**
+
 - **Hosting Type**: Shared hosting, VPS, Cloud hosting
 - **SSH Access**: Available on VPS and higher plans
 - **Control Panel**: Custom hPanel (user-friendly)
@@ -14,6 +15,7 @@ Hostinger is a popular web hosting provider offering shared hosting, VPS, and cl
 - **Performance**: Good performance for the price point
 
 ### **Best Use Cases:**
+
 - **Small to medium websites** with moderate traffic
 - **WordPress hosting** with optimized performance
 - **Development environments** for testing and staging
@@ -23,6 +25,7 @@ Hostinger is a popular web hosting provider offering shared hosting, VPS, and cl
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/hostinger-config.json.txt configs/hostinger-config.json
@@ -31,6 +34,7 @@ cp configs/hostinger-config.json.txt configs/hostinger-config.json
 ```
 
 ### **Configuration Structure:**
+
 ```json
 {
   "sites": {
@@ -53,6 +57,7 @@ cp configs/hostinger-config.json.txt configs/hostinger-config.json
 ```
 
 ### **Password File Setup:**
+
 ```bash
 # Create secure password file
 echo 'your-hostinger-password' > ~/.ssh/hostinger_password
@@ -66,6 +71,7 @@ sudo apt-get install sshpass  # Linux
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all Hostinger sites
 ./providers/hostinger-helper.sh list
@@ -84,6 +90,7 @@ sudo apt-get install sshpass  # Linux
 ```
 
 ### **File Management:**
+
 ```bash
 # Upload website files
 ./providers/hostinger-helper.sh upload example.com ./dist/ /domains/example.com/public_html/
@@ -96,6 +103,7 @@ sudo apt-get install sshpass  # Linux
 ```
 
 ### **Database Operations:**
+
 ```bash
 # Access MySQL (if available)
 ./providers/hostinger-helper.sh exec example.com 'mysql -u username -p database_name'
@@ -107,18 +115,21 @@ sudo apt-get install sshpass  # Linux
 ## 🛡️ **Security Considerations**
 
 ### **Password Security:**
+
 - **Secure storage**: Store passwords in files with 600 permissions
 - **Never commit**: Add password files to .gitignore
 - **Regular rotation**: Change passwords periodically
 - **Strong passwords**: Use complex, unique passwords
 
 ### **SSH Security:**
+
 - **Non-standard port**: Hostinger uses port 65002
 - **Password authentication**: SSH keys not supported on shared hosting
 - **Connection limits**: Be aware of concurrent connection limits
 - **IP restrictions**: Consider IP-based access restrictions if available
 
 ### **File Permissions:**
+
 ```bash
 # Set proper permissions for web files
 ./providers/hostinger-helper.sh exec example.com 'chmod 644 /domains/example.com/public_html/*.html'
@@ -130,6 +141,7 @@ sudo apt-get install sshpass  # Linux
 ### **Common Issues:**
 
 #### **Connection Refused:**
+
 ```bash
 # Check if SSH is enabled on your plan
 # Verify server hostname and port (usually 65002)
@@ -137,6 +149,7 @@ sudo apt-get install sshpass  # Linux
 ```
 
 #### **Permission Denied:**
+
 ```bash
 # Verify username format (usually u followed by numbers)
 # Check password file permissions (should be 600)
@@ -144,6 +157,7 @@ sudo apt-get install sshpass  # Linux
 ```
 
 #### **File Upload Issues:**
+
 ```bash
 # Check destination path exists
 ./providers/hostinger-helper.sh exec example.com 'ls -la /domains/example.com/'
@@ -158,6 +172,7 @@ sudo apt-get install sshpass  # Linux
 ## 📊 **Performance Optimization**
 
 ### **Website Performance:**
+
 ```bash
 # Enable compression (if supported)
 ./providers/hostinger-helper.sh exec example.com 'echo "gzip on;" >> /domains/example.com/.htaccess'
@@ -171,6 +186,7 @@ sudo apt-get install sshpass  # Linux
 ```
 
 ### **Caching Strategies:**
+
 - **Browser caching**: Configure .htaccess for static assets
 - **CDN integration**: Use Cloudflare or similar CDN
 - **Image optimization**: Compress images before upload
@@ -179,6 +195,7 @@ sudo apt-get install sshpass  # Linux
 ## 🔄 **Backup & Deployment**
 
 ### **Automated Backups:**
+
 ```bash
 # Create backup script
 #!/bin/bash
@@ -187,6 +204,7 @@ DATE=$(date +%Y%m%d_%H%M%S)
 ```
 
 ### **Deployment Workflow:**
+
 ```bash
 # Build and deploy
 npm run build
@@ -199,6 +217,7 @@ npm run build
 ## 📚 **Best Practices**
 
 ### **Development Workflow:**
+
 1. **Local development**: Develop and test locally first
 2. **Staging environment**: Use subdomain for staging
 3. **Backup before deploy**: Always backup before major changes
@@ -206,12 +225,14 @@ npm run build
 5. **Monitor performance**: Check site performance after deployments
 
 ### **File Organization:**
+
 - **Consistent structure**: Maintain consistent directory structure
 - **Version control**: Use Git for source code management
 - **Documentation**: Document deployment procedures
 - **Environment configs**: Separate configs for different environments
 
 ### **Monitoring:**
+
 - **Uptime monitoring**: Use services like UptimeRobot
 - **Performance monitoring**: Monitor page load times
 - **Error logging**: Check server logs regularly
@@ -220,6 +241,7 @@ npm run build
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Tasks:**
+
 - **Deployment automation**: Automated file uploads after builds
 - **Backup scheduling**: Regular automated backups
 - **Performance monitoring**: Automated performance checks
@@ -227,6 +249,7 @@ npm run build
 - **Content updates**: Automated content deployment
 
 ### **Monitoring & Alerts:**
+
 - **Uptime alerts**: Notifications for site downtime
 - **Performance alerts**: Warnings for slow performance
 - **Security alerts**: Notifications for security issues

@@ -3,11 +3,13 @@
 ## 🔐 **SECURE API KEY MANAGEMENT**
 
 ### **🎯 SECURITY PRINCIPLE:**
+
 **API keys are stored ONLY in your private user directory (`~/.config/ai-assisted-devops/`), NEVER in repository files.**
 
 ## 🛠️ **SETUP INSTRUCTIONS**
 
 ### **1. Initialize Secure Storage**
+
 ```bash
 cd git/ai-assisted-dev-ops
 bash .agent/scripts/setup-local-api-keys.sh setup
@@ -16,36 +18,42 @@ bash .agent/scripts/setup-local-api-keys.sh setup
 ### **2. Store API Keys Securely**
 
 #### **Codacy (Code Quality Analysis):**
+
 ```bash
 # Get API key from: https://app.codacy.com/account/api-tokens
 bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_CODACY_API_TOKEN
 ```
 
 #### **SonarCloud (Code Quality Analysis):**
+
 ```bash
 # Get token from: https://sonarcloud.io/account/security
 bash .agent/scripts/setup-local-api-keys.sh set sonar YOUR_SONAR_TOKEN
 ```
 
 #### **GitHub (Git Platform Integration):**
+
 ```bash
 # Get token from: Settings → Developer settings → Personal access tokens
 bash .agent/scripts/setup-local-api-keys.sh set github YOUR_GITHUB_TOKEN
 ```
 
 #### **GitLab (Git Platform Integration):**
+
 ```bash
 # Get token from: User Settings → Access Tokens
 bash .agent/scripts/setup-local-api-keys.sh set gitlab YOUR_GITLAB_TOKEN
 ```
 
 #### **Spaceship (Domain Management):**
+
 ```bash
 # Get API key from: Spaceship Dashboard → API Settings
 bash .agent/scripts/setup-local-api-keys.sh set spaceship YOUR_SPACESHIP_API_KEY
 ```
 
 ### **3. Verify Storage**
+
 ```bash
 # List configured services (without showing keys)
 bash .agent/scripts/setup-local-api-keys.sh list
@@ -57,11 +65,13 @@ bash .agent/scripts/setup-local-api-keys.sh load
 ## 🔍 **STORAGE LOCATIONS**
 
 ### **✅ SECURE (USER-PRIVATE ONLY):**
+
 - **Unified Storage**: `~/.config/ai-assisted-devops/api-keys` (permissions: 600)
 - **Directory**: `~/.config/ai-assisted-devops/` (permissions: 700)
 - **Legacy CodeRabbit**: `~/.config/coderabbit/api_key` (fallback support)
 
 ### **❌ NEVER STORE IN:**
+
 - Repository files (any `.json`, `.sh`, `.md` files in the repo)
 - Environment variables visible to other processes
 - Configuration files tracked by Git
@@ -70,13 +80,16 @@ bash .agent/scripts/setup-local-api-keys.sh load
 ## 🚀 **CLI INTEGRATION**
 
 ### **Automatic Loading:**
+
 All CLI scripts automatically load API keys from unified secure storage:
+
 - **Codacy CLI**: Loads from unified storage automatically
 - **CodeRabbit CLI**: Loads from unified storage (with legacy fallback)
 - **SonarScanner CLI**: Loads from unified storage automatically
 - **Git Platform helpers**: Load tokens as needed
 
 ### **Manual Loading:**
+
 ```bash
 # Load all API keys into current shell environment
 bash .agent/scripts/setup-local-api-keys.sh load
@@ -89,11 +102,13 @@ echo "Sonar: ${SONAR_API_TOKEN:0:10}..."
 ## 🛡️ **SECURITY FEATURES**
 
 ### **File Permissions:**
+
 - **Directory**: `700` (owner read/write/execute only)
 - **API key file**: `600` (owner read/write only)
 - **No group or world access**
 
 ### **Automatic Security:**
+
 - CLI scripts check secure storage first
 - Fallback to environment variables if needed
 - Never expose keys in process lists
@@ -102,6 +117,7 @@ echo "Sonar: ${SONAR_API_TOKEN:0:10}..."
 ## 🔧 **TROUBLESHOOTING**
 
 ### **API Key Not Found:**
+
 ```bash
 # Check if key is stored
 bash .agent/scripts/setup-local-api-keys.sh get codacy
@@ -111,6 +127,7 @@ bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_NEW_TOKEN
 ```
 
 ### **Permission Issues:**
+
 ```bash
 # Fix directory permissions
 chmod 700 ~/.config/ai-assisted-devops
@@ -118,6 +135,7 @@ chmod 600 ~/.config/ai-assisted-devops/api-keys
 ```
 
 ### **CLI Not Loading Keys:**
+
 ```bash
 # Manually load into environment
 bash .agent/scripts/setup-local-api-keys.sh load

@@ -6,11 +6,13 @@
 > For any conflicts, the Master Guide takes precedence as the single source of truth.
 
 ### Overview
+
 This document provides detailed implementation examples and advanced patterns for AI agents working on the AI-Assisted DevOps Framework.
 
 ### Code Quality Requirements
 
 #### Shell Script Standards (MANDATORY)
+
 **These patterns are REQUIRED for SonarCloud/CodeFactor/Codacy compliance:**
 
 ```bash
@@ -37,6 +39,7 @@ printf 'Price: %s50/month\n' '$'  # Not: echo "Price: $50/month"
 ```
 
 #### Quality Issue Prevention
+
 **Before making ANY changes, check for these patterns:**
 
 1. **Positional Parameters**: Never use `$50`, `$200` in strings - use printf format
@@ -48,12 +51,14 @@ printf 'Price: %s50/month\n' '$'  # Not: echo "Price: $50/month"
 ### Development Workflow
 
 #### Pre-Development Checklist
+
 1. **Run quality check**: `bash .agent/scripts/quality-check.sh`
 2. **Check current issues**: Note SonarCloud/Codacy/CodeFactor status
 3. **Plan improvements**: How will changes enhance quality?
 4. **Test functionality**: Ensure no feature loss
 
 #### Post-Development Validation
+
 1. **Quality verification**: Re-run quality-check.sh
 2. **Functionality testing**: Verify all features work
 3. **Documentation updates**: Update AGENTS.md if needed
@@ -62,7 +67,9 @@ printf 'Price: %s50/month\n' '$'  # Not: echo "Price: $50/month"
 ### Common Patterns & Solutions
 
 #### String Literal Consolidation
+
 **Target patterns with 3+ occurrences:**
+
 - HTTP headers: `Content-Type: application/json`, `Authorization: Bearer`
 - Error messages: `Unknown command:`, `Usage:`, help text
 - API endpoints: Repeated URLs or paths
@@ -79,7 +86,9 @@ readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 ```
 
 #### Error Message Standardization
+
 **Consistent error handling patterns:**
+
 ```bash
 # Error message constants
 readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
@@ -94,7 +103,9 @@ echo "$USAGE_PREFIX $0 [options]"
 ```
 
 #### Function Enhancement Over Deletion
+
 **When fixing unused variables, prefer enhancement:**
+
 ```bash
 # ❌ DON'T: Remove functionality
 # local port  # Removed to fix unused variable
@@ -112,6 +123,7 @@ fi
 ### Quality Tools Usage
 
 #### Available Quality Scripts
+
 - **quality-check.sh**: Run before and after changes
 - **fix-content-type.sh**: Fix Content-Type header duplications
 - **fix-auth-headers.sh**: Fix Authorization header patterns
@@ -119,6 +131,7 @@ fi
 - **markdown-formatter.sh**: Fix markdown formatting issues
 
 #### Quality CLI Integration
+
 ```bash
 # CodeRabbit analysis
 bash .agent/scripts/coderabbit-cli.sh review
@@ -134,6 +147,7 @@ bash .agent/scripts/sonarscanner-cli.sh analyze
 ### Success Metrics
 
 #### Quality Targets
+
 - **SonarCloud**: <50 total issues (currently 42)
 - **Critical Issues**: 0 S7679, 0 S1481 violations
 - **String Literals**: <10 S1192 violations
@@ -141,7 +155,9 @@ bash .agent/scripts/sonarscanner-cli.sh analyze
 - **Functionality**: 100% feature preservation
 
 #### Commit Standards
+
 **Include quality metrics in commit messages:**
+
 ```
 🔧 FEATURE: Enhanced SSH functionality with port support
 

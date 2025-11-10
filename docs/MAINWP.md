@@ -5,6 +5,7 @@ MainWP is a powerful self-hosted WordPress management platform that allows you t
 ## 🏢 **Provider Overview**
 
 ### **MainWP Characteristics:**
+
 - **Service Type**: Self-hosted WordPress management platform
 - **Architecture**: Central dashboard managing multiple WordPress sites
 - **API Support**: Comprehensive REST API for automation
@@ -14,6 +15,7 @@ MainWP is a powerful self-hosted WordPress management platform that allows you t
 - **Update Management**: Centralized WordPress, plugin, and theme updates
 
 ### **Best Use Cases:**
+
 - **WordPress agencies** managing multiple client sites
 - **Large organizations** with multiple WordPress properties
 - **Developers** managing staging and production environments
@@ -24,6 +26,7 @@ MainWP is a powerful self-hosted WordPress management platform that allows you t
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/mainwp-config.json.txt configs/mainwp-config.json
@@ -32,6 +35,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **Multi-Instance Configuration:**
+
 ```json
 {
   "instances": {
@@ -54,6 +58,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **API Credentials Setup:**
+
 1. **Install MainWP Dashboard** on your server
 2. **Install MainWP REST API Extension**
 3. **Generate API credentials** in MainWP Dashboard
@@ -63,6 +68,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all MainWP instances
 ./providers/mainwp-helper.sh instances
@@ -78,6 +84,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **WordPress Management:**
+
 ```bash
 # Update WordPress core for a site
 ./providers/mainwp-helper.sh update-core production 123
@@ -96,6 +103,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **Backup Management:**
+
 ```bash
 # Create full backup
 ./providers/mainwp-helper.sh backup production 123 full
@@ -111,6 +119,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **Security Management:**
+
 ```bash
 # Run security scan
 ./providers/mainwp-helper.sh security-scan production 123
@@ -126,6 +135,7 @@ cp configs/mainwp-config.json.txt configs/mainwp-config.json
 ```
 
 ### **Bulk Operations:**
+
 ```bash
 # Bulk WordPress core updates
 ./providers/mainwp-helper.sh bulk-update-wp production 123 124 125
@@ -140,6 +150,7 @@ done
 ```
 
 ### **Site Monitoring:**
+
 ```bash
 # Get site status
 ./providers/mainwp-helper.sh site-status production 123
@@ -154,6 +165,7 @@ done
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Secure credentials**: Store API credentials securely
 - **HTTPS only**: Always use HTTPS for MainWP instances
 - **Regular rotation**: Rotate API credentials regularly
@@ -161,6 +173,7 @@ done
 - **Rate limiting**: Implement appropriate rate limiting
 
 ### **MainWP Instance Security:**
+
 ```bash
 # Regular security audits
 ./providers/mainwp-helper.sh audit-security production 123
@@ -173,6 +186,7 @@ done
 ```
 
 ### **WordPress Security:**
+
 - **Regular updates**: Keep WordPress core, plugins, and themes updated
 - **Security scanning**: Run regular security scans on all sites
 - **Backup verification**: Verify backup integrity regularly
@@ -184,6 +198,7 @@ done
 ### **Common Issues:**
 
 #### **API Connection Errors:**
+
 ```bash
 # Verify API credentials
 ./providers/mainwp-helper.sh instances
@@ -196,6 +211,7 @@ openssl s_client -connect mainwp.yourdomain.com:443
 ```
 
 #### **Site Sync Issues:**
+
 ```bash
 # Force site sync
 ./providers/mainwp-helper.sh sync production 123
@@ -207,6 +223,7 @@ openssl s_client -connect mainwp.yourdomain.com:443
 ```
 
 #### **Update Failures:**
+
 ```bash
 # Check site details for error messages
 ./providers/mainwp-helper.sh site-details production 123
@@ -220,6 +237,7 @@ openssl s_client -connect mainwp.yourdomain.com:443
 ## 📊 **Monitoring & Analytics**
 
 ### **Site Health Monitoring:**
+
 ```bash
 # Daily monitoring routine
 ./providers/mainwp-helper.sh monitor production
@@ -234,6 +252,7 @@ done
 ```
 
 ### **Automated Monitoring:**
+
 ```bash
 # Create monitoring script
 #!/bin/bash
@@ -260,6 +279,7 @@ done
 ```
 
 ### **Performance Tracking:**
+
 - **Update success rates**: Track successful vs failed updates
 - **Backup completion**: Monitor backup success rates
 - **Site uptime**: Track site availability and performance
@@ -269,6 +289,7 @@ done
 ## 🔄 **Backup & Disaster Recovery**
 
 ### **Backup Strategies:**
+
 ```bash
 # Daily backup routine
 #!/bin/bash
@@ -282,6 +303,7 @@ done
 ```
 
 ### **Backup Verification:**
+
 ```bash
 # Verify recent backups
 for site_id in $(./providers/mainwp-helper.sh sites production | awk '{print $1}' | grep -E '^[0-9]+$'); do
@@ -293,6 +315,7 @@ done
 ## 📚 **Best Practices**
 
 ### **WordPress Management:**
+
 1. **Staged updates**: Test updates on staging before production
 2. **Regular backups**: Maintain regular backup schedules
 3. **Security monitoring**: Run regular security scans
@@ -300,6 +323,7 @@ done
 5. **Documentation**: Document all maintenance procedures
 
 ### **Automation Strategies:**
+
 - **Scheduled maintenance**: Automate routine maintenance tasks
 - **Update workflows**: Implement staged update procedures
 - **Backup verification**: Automate backup integrity checks
@@ -307,6 +331,7 @@ done
 - **Alert integration**: Integrate with monitoring and alerting systems
 
 ### **Multi-Site Management:**
+
 - **Site categorization**: Organize sites by type and criticality
 - **Update policies**: Implement different update policies per site type
 - **Backup strategies**: Tailor backup frequency to site importance
@@ -316,6 +341,7 @@ done
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated WordPress Management:**
+
 - **Update orchestration**: Automated WordPress, plugin, and theme updates
 - **Backup management**: Automated backup scheduling and verification
 - **Security monitoring**: Automated security scanning and threat detection
@@ -323,6 +349,7 @@ done
 - **Issue resolution**: Automated detection and resolution of common issues
 
 ### **Intelligent Operations:**
+
 - **Predictive maintenance**: AI-driven maintenance scheduling
 - **Anomaly detection**: Automated detection of unusual site behavior
 - **Performance analysis**: Automated performance analysis and recommendations

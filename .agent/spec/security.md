@@ -3,6 +3,7 @@
 ## 🔐 **Security Principles**
 
 ### **Zero Trust Architecture**
+
 - **Never trust, always verify**: All operations require validation
 - **Least privilege access**: Minimal permissions for all operations
 - **Defense in depth**: Multiple layers of security controls
@@ -10,6 +11,7 @@
 - **Assume breach**: Design for compromise scenarios
 
 ### **Security by Design**
+
 - **Secure defaults**: All configurations secure by default
 - **Fail securely**: System fails to secure state
 - **Complete mediation**: All access requests are validated
@@ -19,6 +21,7 @@
 ## 🛡️ **Credential Security**
 
 ### **Storage Requirements**
+
 ```bash
 # Credential storage standards:
 - All credentials in configs/[service]-config.json (gitignored)
@@ -29,6 +32,7 @@
 ```
 
 ### **Transmission Security**
+
 ```bash
 # All API communications must use:
 - HTTPS/TLS 1.2 or higher
@@ -39,6 +43,7 @@
 ```
 
 ### **Access Control**
+
 ```bash
 # Credential access controls:
 - Role-based access to credentials
@@ -51,6 +56,7 @@
 ## 🔒 **Operational Security**
 
 ### **Input Validation**
+
 ```bash
 # All inputs must be validated:
 - Sanitize all user inputs
@@ -61,6 +67,7 @@
 ```
 
 ### **Output Security**
+
 ```bash
 # Secure output handling:
 - No credentials in logs or output
@@ -71,6 +78,7 @@
 ```
 
 ### **Confirmation Requirements**
+
 ```bash
 # Operations requiring confirmation:
 - Destructive operations (delete, destroy)
@@ -83,6 +91,7 @@
 ## 🚨 **Error Handling Security**
 
 ### **Secure Error Messages**
+
 ```bash
 # Error message guidelines:
 - No sensitive data in error messages
@@ -93,6 +102,7 @@
 ```
 
 ### **Exception Handling**
+
 ```bash
 # Exception handling requirements:
 - Catch and handle all exceptions
@@ -105,6 +115,7 @@
 ## 🔍 **Audit & Logging**
 
 ### **Audit Requirements**
+
 ```bash
 # All operations must log:
 - User/agent performing operation
@@ -116,6 +127,7 @@
 ```
 
 ### **Log Security**
+
 ```bash
 # Secure logging practices:
 - No credentials or sensitive data in logs
@@ -126,6 +138,7 @@
 ```
 
 ### **Monitoring & Alerting**
+
 ```bash
 # Security monitoring requirements:
 - Failed authentication attempts
@@ -139,6 +152,7 @@
 ## 🔐 **API Security**
 
 ### **Authentication Security**
+
 ```bash
 # API authentication requirements:
 - Strong authentication tokens
@@ -149,6 +163,7 @@
 ```
 
 ### **Rate Limiting**
+
 ```bash
 # Rate limiting implementation:
 - Respect service rate limits
@@ -159,6 +174,7 @@
 ```
 
 ### **Request Security**
+
 ```bash
 # Secure API requests:
 - Validate all request parameters
@@ -171,6 +187,7 @@
 ## 🛡️ **Infrastructure Security**
 
 ### **File System Security**
+
 ```bash
 # File system security requirements:
 - Restricted permissions on all files (600 for configs)
@@ -181,6 +198,7 @@
 ```
 
 ### **Process Security**
+
 ```bash
 # Process security requirements:
 - Run with minimal privileges
@@ -191,6 +209,7 @@
 ```
 
 ### **Network Security**
+
 ```bash
 # Network security requirements:
 - Use encrypted connections only (HTTPS/TLS)
@@ -203,6 +222,7 @@
 ## 🔒 **Development Security**
 
 ### **Code Security**
+
 ```bash
 # Secure coding requirements:
 - No hardcoded credentials
@@ -213,6 +233,7 @@
 ```
 
 ### **Dependency Security**
+
 ```bash
 # Dependency management:
 - Regular dependency updates
@@ -223,6 +244,7 @@
 ```
 
 ### **Testing Security**
+
 ```bash
 # Security testing requirements:
 - No real credentials in tests
@@ -235,6 +257,7 @@
 ## 🚨 **Incident Response**
 
 ### **Security Incident Procedures**
+
 ```bash
 # Incident response steps:
 1. Immediate containment
@@ -247,6 +270,7 @@
 ```
 
 ### **Breach Response**
+
 ```bash
 # Data breach response:
 1. Stop the breach immediately
@@ -260,12 +284,14 @@
 ## 🔐 **Compliance & Standards**
 
 ### **Security Standards**
+
 - **OWASP Top 10**: Address all OWASP security risks
 - **NIST Cybersecurity Framework**: Follow NIST guidelines
 - **ISO 27001**: Align with information security standards
 - **SOC 2**: Implement SOC 2 security controls where applicable
 
 ### **Regulatory Compliance**
+
 - **GDPR**: Data protection and privacy requirements
 - **CCPA**: California privacy requirements
 - **HIPAA**: Healthcare data protection (if applicable)

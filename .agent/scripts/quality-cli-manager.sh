@@ -266,7 +266,12 @@ analyze_with_clis() {
 
     if [[ "$target_cli" == "all" || "$target_cli" == "qlty" ]]; then
         print_info "Running Qlty analysis..."
-        if execute_cli_command "qlty" "check" $args; then
+        # Add organization parameter if provided
+        local qlty_args="$args"
+        if [[ -n "$QLTY_ORG" ]]; then
+            qlty_args="$args $QLTY_ORG"
+        fi
+        if execute_cli_command "qlty" "check" $qlty_args; then
             ((success_count++))
         fi
         ((total_count++))

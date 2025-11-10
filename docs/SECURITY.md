@@ -5,6 +5,7 @@ This document outlines security best practices for the AI Assistant Server Acces
 ## 🔐 **Credential Management**
 
 ### API Tokens
+
 - **Never commit API tokens to version control**
 - Store tokens in separate configuration files
 - Add config files to `.gitignore`
@@ -13,6 +14,7 @@ This document outlines security best practices for the AI Assistant Server Acces
 - Use least-privilege principle for API permissions
 
 ### SSH Keys
+
 - **Use Ed25519 keys** (modern, secure, fast)
 - Generate unique keys per environment if needed
 - Protect private keys with passphrases
@@ -20,6 +22,7 @@ This document outlines security best practices for the AI Assistant Server Acces
 - Regular key rotation and audit
 
 ### Password Files
+
 - Store SSH passwords in separate files (never in scripts)
 - Set restrictive permissions (600)
 - Consider using SSH keys instead of passwords when possible
@@ -27,6 +30,7 @@ This document outlines security best practices for the AI Assistant Server Acces
 ## 🔑 **SSH Security**
 
 ### Key Management Best Practices
+
 ```bash
 # Generate secure Ed25519 key
 ssh-keygen -t ed25519 -C "your-email@domain.com"
@@ -40,6 +44,7 @@ ssh-keygen -p -f ~/.ssh/id_ed25519
 ```
 
 ### SSH Configuration Security
+
 ```bash
 # ~/.ssh/config security settings
 Host *
@@ -63,6 +68,7 @@ Host *
 ```
 
 ### Server Hardening
+
 - Disable root login where possible
 - Use non-standard SSH ports
 - Implement fail2ban or similar
@@ -72,18 +78,21 @@ Host *
 ## 🛡️ **Access Control**
 
 ### Principle of Least Privilege
+
 - Grant minimum necessary permissions
 - Use separate API tokens per project/environment
 - Implement role-based access control
 - Regular access reviews and cleanup
 
 ### Network Security
+
 - Use VPNs or bastion hosts for sensitive environments
 - Implement IP whitelisting where possible
 - Use private networks for internal communication
 - Monitor network traffic
 
 ### Multi-Factor Authentication
+
 - Enable MFA on all cloud provider accounts
 - Use hardware security keys when available
 - Implement time-based OTP for API access
@@ -91,6 +100,7 @@ Host *
 ## 📊 **Monitoring and Auditing**
 
 ### Access Logging
+
 ```bash
 # Enable SSH logging
 # Add to /etc/ssh/sshd_config
@@ -101,12 +111,14 @@ tail -f /var/log/auth.log | grep ssh
 ```
 
 ### API Usage Monitoring
+
 - Monitor API rate limits and usage
 - Set up alerts for unusual activity
 - Regular audit of API token usage
 - Log all API calls in production
 
 ### Security Scanning
+
 ```bash
 # Regular security scans
 nmap -sS -O target-server
@@ -121,12 +133,14 @@ testssl.sh target-server
 ## 🚨 **Incident Response**
 
 ### Compromise Detection
+
 - Monitor for unauthorized SSH connections
 - Watch for unusual API activity
 - Set up alerts for failed authentication attempts
 - Regular review of server logs
 
 ### Response Procedures
+
 1. **Immediate Actions**
    - Disable compromised credentials
    - Block suspicious IP addresses
@@ -150,6 +164,7 @@ testssl.sh target-server
 ## 🔒 **File Permissions**
 
 ### Recommended Permissions
+
 ```bash
 # Configuration files
 chmod 600 configs/.*.json
@@ -170,6 +185,7 @@ chmod 755 ssh/*.sh
 ```
 
 ### Git Security
+
 ```bash
 # .gitignore for security
 echo "configs/.*.json" >> .gitignore
@@ -182,11 +198,13 @@ echo "*.pem" >> .gitignore
 ## 🌐 **Network Security**
 
 ### VPN and Bastion Hosts
+
 - Use VPN for accessing production systems
 - Implement bastion hosts for multi-hop access
 - Restrict direct internet access to servers
 
 ### Firewall Rules
+
 ```bash
 # Basic iptables rules
 iptables -A INPUT -p tcp --dport 22 -s trusted-ip -j ACCEPT
@@ -194,6 +212,7 @@ iptables -A INPUT -p tcp --dport 22 -j DROP
 ```
 
 ### SSL/TLS
+
 - Use TLS 1.2 or higher for all API communications
 - Implement certificate pinning where possible
 - Regular certificate rotation
@@ -201,6 +220,7 @@ iptables -A INPUT -p tcp --dport 22 -j DROP
 ## 📋 **Security Checklist**
 
 ### Initial Setup
+
 - [ ] Generate secure SSH keys with passphrases
 - [ ] Set proper file permissions on all sensitive files
 - [ ] Configure secure SSH client settings
@@ -208,6 +228,7 @@ iptables -A INPUT -p tcp --dport 22 -j DROP
 - [ ] Enable MFA on all cloud accounts
 
 ### Regular Maintenance
+
 - [ ] Rotate API tokens quarterly
 - [ ] Audit SSH keys and remove unused ones
 - [ ] Review and update access permissions
@@ -215,6 +236,7 @@ iptables -A INPUT -p tcp --dport 22 -j DROP
 - [ ] Update and patch all systems
 
 ### Emergency Procedures
+
 - [ ] Document incident response procedures
 - [ ] Test backup and recovery processes
 - [ ] Maintain emergency contact information
@@ -223,6 +245,7 @@ iptables -A INPUT -p tcp --dport 22 -j DROP
 ## 🔍 **Security Tools**
 
 ### Recommended Tools
+
 ```bash
 # SSH security audit
 ssh-audit server-ip
@@ -242,6 +265,7 @@ fail2ban-client status
 ```
 
 ### Automation
+
 - Implement automated security scanning
 - Set up log monitoring and alerting
 - Use configuration management for consistent security settings

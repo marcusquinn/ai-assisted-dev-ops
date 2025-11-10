@@ -19,12 +19,14 @@
 ### **🛡️ SECURITY PRINCIPLES:**
 
 #### **✅ SHARED SCRIPTS (scripts/):**
+
 - **Purpose**: General-purpose scripts safe for public repositories
 - **Security**: Never contain actual API keys or sensitive data
 - **Usage**: Use placeholders like `YOUR_API_KEY_HERE`
 - **Git Status**: ✅ **COMMITTED** to repository
 
 #### **🔒 PRIVATE SCRIPTS (scripts-private/):**
+
 - **Purpose**: Scripts containing actual API keys or sensitive operations
 - **Security**: Never committed to Git (protected by .gitignore)
 - **Usage**: Customized with real API keys for local operations
@@ -35,6 +37,7 @@
 ### **Creating Secure Scripts:**
 
 #### **1. For General Scripts (Shared):**
+
 ```bash
 # ✅ CORRECT: Use placeholders
 readonly API_TOKEN="YOUR_API_TOKEN_HERE"
@@ -47,6 +50,7 @@ readonly API_TOKEN="abc123xyz789"  # SECURITY BREACH!
 ```
 
 #### **2. For Sensitive Scripts (Private):**
+
 ```bash
 # Create in scripts-private/ directory
 cp .agent/scripts-private/clean-git-history-template.sh \
@@ -60,6 +64,7 @@ readonly API_KEYS=(
 ```
 
 ### **Security Verification:**
+
 ```bash
 # Verify private scripts are gitignored
 git status --ignored | grep scripts-private
@@ -70,12 +75,14 @@ git status --ignored | grep scripts-private
 ## 🚨 **SECURITY VIOLATIONS TO AVOID**
 
 ### **❌ NEVER DO:**
+
 1. **Hardcode API keys** in shared scripts
 2. **Commit scripts-private/** directory to Git
 3. **Include actual credentials** in any committed files
 4. **Share private scripts** outside secure channels
 
 ### **✅ ALWAYS DO:**
+
 1. **Use placeholders** in shared scripts
 2. **Keep sensitive scripts** in scripts-private/
 3. **Verify .gitignore** protects private directory
@@ -84,6 +91,7 @@ git status --ignored | grep scripts-private
 ## 🔄 **MIGRATION PROCESS**
 
 ### **Moving Sensitive Scripts:**
+
 ```bash
 # Move sensitive script to private directory
 mv .agent/scripts/sensitive-script.sh \
@@ -101,6 +109,7 @@ sed -i 's/actual_api_key/YOUR_API_KEY_HERE/g' \
 ## 🎯 **BEST PRACTICES**
 
 ### **Script Development Workflow:**
+
 1. **Start with template** in scripts-private/
 2. **Customize with real data** for testing
 3. **Create sanitized version** for scripts/
@@ -108,6 +117,7 @@ sed -i 's/actual_api_key/YOUR_API_KEY_HERE/g' \
 5. **Commit only safe template** to Git
 
 ### **Security Checklist:**
+
 - [ ] No API keys in shared scripts
 - [ ] Private directory properly gitignored
 - [ ] Templates use placeholders only

@@ -5,6 +5,7 @@ Vaultwarden is a self-hosted, lightweight implementation of the Bitwarden server
 ## 🏢 **Provider Overview**
 
 ### **Vaultwarden Characteristics:**
+
 - **Service Type**: Self-hosted password and secrets management
 - **Compatibility**: Full Bitwarden API compatibility
 - **Architecture**: Lightweight Rust implementation
@@ -14,6 +15,7 @@ Vaultwarden is a self-hosted, lightweight implementation of the Bitwarden server
 - **Multi-platform**: Web, desktop, mobile, and CLI access
 
 ### **Best Use Cases:**
+
 - **DevOps credential management** with secure API access
 - **Team password sharing** with organization support
 - **Development secrets** management and rotation
@@ -24,6 +26,7 @@ Vaultwarden is a self-hosted, lightweight implementation of the Bitwarden server
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/vaultwarden-config.json.txt configs/vaultwarden-config.json
@@ -32,6 +35,7 @@ cp configs/vaultwarden-config.json.txt configs/vaultwarden-config.json
 ```
 
 ### **Multi-Instance Configuration:**
+
 ```json
 {
   "instances": {
@@ -56,6 +60,7 @@ cp configs/vaultwarden-config.json.txt configs/vaultwarden-config.json
 ```
 
 ### **Bitwarden CLI Setup:**
+
 ```bash
 # Install Bitwarden CLI
 npm install -g @bitwarden/cli
@@ -70,6 +75,7 @@ bw --version
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all Vaultwarden instances
 ./providers/vaultwarden-helper.sh instances
@@ -85,6 +91,7 @@ bw --version
 ```
 
 ### **Vault Management:**
+
 ```bash
 # List all vault items
 ./providers/vaultwarden-helper.sh list production
@@ -103,6 +110,7 @@ bw --version
 ```
 
 ### **Item Management:**
+
 ```bash
 # Create new vault item
 ./providers/vaultwarden-helper.sh create production "New Service" username password123 https://service.com
@@ -118,6 +126,7 @@ bw --version
 ```
 
 ### **Organization Management:**
+
 ```bash
 # List organization vault items
 ./providers/vaultwarden-helper.sh org-list production org-uuid
@@ -130,6 +139,7 @@ bw --version
 ```
 
 ### **Security & Auditing:**
+
 ```bash
 # Audit vault security
 ./providers/vaultwarden-helper.sh audit production
@@ -147,6 +157,7 @@ bw --version
 ## 🛡️ **Security Best Practices**
 
 ### **Instance Security:**
+
 - **HTTPS only**: Always use HTTPS for Vaultwarden instances
 - **Strong master passwords**: Enforce strong master password policies
 - **Two-factor authentication**: Enable 2FA for all users
@@ -154,6 +165,7 @@ bw --version
 - **Access monitoring**: Monitor and audit vault access
 
 ### **API Security:**
+
 ```bash
 # Use secure session management
 export BW_SESSION=$(bw unlock --raw)
@@ -167,6 +179,7 @@ bw lock
 ```
 
 ### **Organizational Security:**
+
 - **Role-based access**: Implement proper role-based access control
 - **Shared vault policies**: Define clear policies for shared vaults
 - **Regular audits**: Perform regular security audits
@@ -178,6 +191,7 @@ bw lock
 ### **Common Issues:**
 
 #### **Connection Issues:**
+
 ```bash
 # Test server connectivity
 curl -I https://vault.yourdomain.com
@@ -190,6 +204,7 @@ bw config server https://vault.yourdomain.com
 ```
 
 #### **Authentication Issues:**
+
 ```bash
 # Check login status
 bw status
@@ -203,6 +218,7 @@ bw unlock
 ```
 
 #### **Sync Issues:**
+
 ```bash
 # Force sync with server
 bw sync --force
@@ -218,6 +234,7 @@ bw login user@example.com
 ## 📊 **MCP Integration**
 
 ### **Bitwarden MCP Server:**
+
 ```bash
 # Start Bitwarden MCP server
 ./providers/vaultwarden-helper.sh start-mcp production 3002
@@ -239,7 +256,9 @@ bw login user@example.com
 ```
 
 ### **AI Assistant Integration:**
+
 The MCP server enables AI assistants to:
+
 - **Retrieve credentials** securely for automation tasks
 - **Generate secure passwords** with custom policies
 - **Audit vault security** and identify weak passwords
@@ -249,6 +268,7 @@ The MCP server enables AI assistants to:
 ## 🔄 **Backup & Recovery**
 
 ### **Vault Backup:**
+
 ```bash
 # Export encrypted vault
 ./providers/vaultwarden-helper.sh export production json vault-backup-$(date +%Y%m%d).json
@@ -260,6 +280,7 @@ chmod 600 vault-backup-*.json
 ```
 
 ### **Automated Backup:**
+
 ```bash
 #!/bin/bash
 # Automated vault backup script
@@ -285,6 +306,7 @@ find "$BACKUP_DIR" -name "vault-*.json.gpg" -mtime +30 -delete
 ## 📚 **Best Practices**
 
 ### **Vault Organization:**
+
 1. **Logical categorization**: Organize items by service, environment, or team
 2. **Consistent naming**: Use consistent naming conventions
 3. **Regular cleanup**: Remove unused or outdated credentials
@@ -292,6 +314,7 @@ find "$BACKUP_DIR" -name "vault-*.json.gpg" -mtime +30 -delete
 5. **Access control**: Implement proper access controls for shared items
 
 ### **Password Management:**
+
 - **Strong passwords**: Use generated passwords with high entropy
 - **Regular rotation**: Rotate passwords regularly, especially for critical services
 - **Unique passwords**: Never reuse passwords across services
@@ -299,6 +322,7 @@ find "$BACKUP_DIR" -name "vault-*.json.gpg" -mtime +30 -delete
 - **Audit regularly**: Regular security audits to identify weak passwords
 
 ### **Automation Integration:**
+
 - **API access**: Use API access for automated credential retrieval
 - **Session management**: Properly manage CLI sessions and tokens
 - **Error handling**: Implement proper error handling for automation
@@ -308,6 +332,7 @@ find "$BACKUP_DIR" -name "vault-*.json.gpg" -mtime +30 -delete
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Credential Management:**
+
 - **Secure retrieval**: AI can securely retrieve credentials for automation
 - **Password generation**: AI can generate secure passwords with policies
 - **Vault auditing**: AI can audit vault security and identify issues
@@ -315,6 +340,7 @@ find "$BACKUP_DIR" -name "vault-*.json.gpg" -mtime +30 -delete
 - **Access monitoring**: AI can monitor and report on credential access
 
 ### **DevOps Workflows:**
+
 - **Infrastructure deployment**: Secure credential access for deployments
 - **CI/CD integration**: Secure credential injection into pipelines
 - **Service configuration**: Automated service configuration with credentials

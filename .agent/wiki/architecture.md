@@ -5,42 +5,55 @@ This file provides comprehensive context for AI assistants to understand, manage
 ## 🎯 **Framework Overview**
 
 ### **Complete DevOps Ecosystem (25+ Services)**
+
 The AI-Assisted DevOps Framework provides unified management across:
 
 **🏗️ Infrastructure & Hosting (4 services):**
+
 - Hostinger (shared hosting), Hetzner Cloud (VPS/cloud), Closte (VPS), Cloudron (app platform)
 
 **🚀 Deployment & Orchestration (1 service):**
+
 - Coolify (self-hosted PaaS)
 
 **🎯 Content Management (1 service):**
+
 - MainWP (WordPress management)
 
 **🔐 Security & Secrets (1 service):**
+
 - Vaultwarden (password/secrets management)
 
 **🔍 Code Quality & Auditing (4 services):**
+
 - CodeRabbit (AI reviews), CodeFactor (quality), Codacy (quality & security), SonarCloud (professional)
 
 **📚 Version Control & Git Platforms (4 services):**
+
 - GitHub, GitLab, Gitea, Local Git
 
 **📧 Email Services (1 service):**
+
 - Amazon SES (email delivery)
 
 **🌐 Domain & DNS (5 services):**
+
 - Spaceship (with purchasing), 101domains, Cloudflare DNS, Namecheap DNS, Route 53
 
 **🏠 Development & Local (4 services):**
+
 - Localhost (.local domains), LocalWP (WordPress dev), Context7 MCP (docs), MCP Servers
 
 **🧙‍♂️ Setup & Configuration (1 service):**
+
 - Intelligent Setup Wizard
 
 ## 🛠️ **Framework Architecture**
 
 ### **Unified Command Patterns**
+
 All services follow consistent patterns for AI assistant efficiency:
+
 ```bash
 # Standard pattern: ./providers/[service]-helper.sh [command] [account/instance] [target] [options]
 
@@ -58,6 +71,7 @@ All services follow consistent patterns for AI assistant efficiency:
 ```
 
 ### **Configuration Structure**
+
 ```bash
 # Configuration pattern:
 configs/[service]-config.json.txt  # Template (committed)
@@ -78,6 +92,7 @@ configs/[service]-config.json      # Working config (gitignored)
 ```
 
 ### **Documentation Structure**
+
 ```bash
 docs/[SERVICE].md                   # Complete service guide
 docs/BEST-PRACTICES.md              # Provider selection guide
@@ -87,6 +102,7 @@ ai-context.md                       # AI assistant framework context (this file)
 ## 🚀 **Framework Usage Examples**
 
 ### **Complete Project Setup Workflow**
+
 ```bash
 # 1. Setup wizard for intelligent guidance
 ./providers/setup-wizard-helper.sh full-setup
@@ -119,6 +135,7 @@ ai-context.md                       # AI assistant framework context (this file)
 ```
 
 ### **Multi-Service Operations**
+
 ```bash
 # Comprehensive infrastructure audit
 for service in hostinger hetzner coolify mainwp; do
@@ -137,6 +154,7 @@ done
 ## 🔧 **MCP Server Ecosystem**
 
 ### **Available MCP Servers**
+
 ```bash
 # Complete MCP server stack for AI assistants:
 ./providers/localhost-helper.sh start-mcp          # Port 3001 - LocalWP access
@@ -150,6 +168,7 @@ done
 ```
 
 ### **MCP Integration Benefits**
+
 - **Real-time data access** from all services
 - **Contextual AI responses** based on current infrastructure state
 - **Secure credential retrieval** through Vaultwarden MCP
@@ -161,6 +180,7 @@ done
 ### **Adding New Providers/Services**
 
 #### **1. Create Helper Script**
+
 ```bash
 # File: providers/[service-name]-helper.sh
 #!/bin/bash
@@ -194,6 +214,7 @@ CONFIG_FILE="../configs/[service-name]-config.json"
 ```
 
 #### **2. Create Configuration Template**
+
 ```bash
 # File: configs/[service-name]-config.json.txt
 {
@@ -219,6 +240,7 @@ CONFIG_FILE="../configs/[service-name]-config.json"
 ```
 
 #### **3. Create Comprehensive Documentation**
+
 ```bash
 # File: docs/[SERVICE-NAME].md
 # [Service Name] Guide
@@ -254,6 +276,7 @@ CONFIG_FILE="../configs/[service-name]-config.json"
 ```
 
 #### **4. Update Framework Files**
+
 ```bash
 # Update .gitignore
 echo "configs/[service-name]-config.json" >> .gitignore
@@ -271,6 +294,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ### **Framework Standards & Conventions**
 
 #### **Naming Conventions**
+
 ```bash
 # Helper scripts: [service-name]-helper.sh (lowercase, hyphenated)
 # Config files: [service-name]-config.json.txt (template)
@@ -281,6 +305,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 #### **Code Standards**
+
 ```bash
 # All helper scripts must include:
 1. Shebang: #!/bin/bash
@@ -296,6 +321,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 #### **Security Standards**
+
 ```bash
 # All services must implement:
 1. API token validation
@@ -309,6 +335,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 #### **Documentation Standards**
+
 ```bash
 # All documentation must include:
 1. Provider overview with characteristics
@@ -324,6 +351,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 📋 **AI Assistant Operational Guidelines**
 
 ### **Framework Usage Principles**
+
 1. **Consistency First**: Always use framework patterns and conventions
 2. **Security Awareness**: Never expose credentials or sensitive data
 3. **Confirmation Required**: Confirm destructive operations and purchases
@@ -332,6 +360,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 6. **Audit Trails**: Log important operations for accountability
 
 ### **Extension Best Practices**
+
 1. **Research First**: Check if service already has API and MCP support
 2. **Follow Patterns**: Use existing helpers as templates for consistency
 3. **Security Focus**: Implement security measures from the start
@@ -340,6 +369,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 6. **Integration**: Update all framework files for complete integration
 
 ### **Maintenance Guidelines**
+
 1. **Regular Updates**: Keep service APIs and MCPs current
 2. **Security Audits**: Regular security reviews of all integrations
 3. **Documentation Sync**: Keep documentation synchronized with code
@@ -347,6 +377,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 5. **Performance Optimization**: Optimize for AI assistant efficiency
 
 ### **Quality Assurance**
+
 1. **Code Review**: All additions should follow framework standards
 2. **Security Review**: Security implications of all new integrations
 3. **Documentation Review**: Ensure documentation completeness
@@ -356,6 +387,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 🌟 **Framework Evolution Strategy**
 
 ### **Continuous Improvement**
+
 - **Service Monitoring**: Monitor for new services and APIs
 - **Technology Adoption**: Adopt new technologies that enhance capabilities
 - **User Feedback**: Incorporate user feedback for improvements
@@ -363,6 +395,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 - **Security Evolution**: Stay current with security best practices
 
 ### **Scalability Considerations**
+
 - **Modular Design**: Maintain modular architecture for easy extension
 - **Performance**: Optimize for performance at scale
 - **Resource Management**: Efficient resource utilization

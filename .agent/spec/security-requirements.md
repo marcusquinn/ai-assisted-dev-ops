@@ -5,6 +5,7 @@
 ### **API Key Management (MANDATORY)**
 
 #### **❌ NEVER ALLOWED:**
+
 - Hardcoding API keys in source code
 - Committing credentials to repository
 - Storing secrets in configuration files tracked by Git
@@ -15,6 +16,7 @@
 #### **✅ REQUIRED PRACTICES:**
 
 **Local Development:**
+
 ```bash
 # Store in environment variables
 export CODACY_API_TOKEN="your_token_here"
@@ -26,6 +28,7 @@ echo 'export CODACY_API_TOKEN="your_token_here"' >> ~/.bashrc
 ```
 
 **GitHub Actions:**
+
 ```yaml
 # Use GitHub Secrets
 env:
@@ -34,6 +37,7 @@ env:
 ```
 
 **Configuration Files:**
+
 ```json
 {
   "api_token": "YOUR_API_TOKEN_HERE",  // Template placeholder
@@ -44,6 +48,7 @@ env:
 ### **File Security Requirements**
 
 #### **Protected Files (.gitignore):**
+
 ```
 # Security - Never commit sensitive information
 configs/*-config.json
@@ -55,6 +60,7 @@ secrets/
 ```
 
 #### **Template Files (Safe to commit):**
+
 ```
 configs/service-config.json.txt  // Template with placeholders
 configs/service-config.json      // Actual config (gitignored)
@@ -63,6 +69,7 @@ configs/service-config.json      // Actual config (gitignored)
 ### **Security Incident Response**
 
 #### **If API Key is Exposed:**
+
 1. **IMMEDIATE**: Revoke the exposed key at provider
 2. **IMMEDIATE**: Generate new API key
 3. **IMMEDIATE**: Update local environment variables
@@ -71,6 +78,7 @@ configs/service-config.json      // Actual config (gitignored)
 6. **DOCUMENT**: Log incident and remediation steps
 
 #### **Git History Cleanup:**
+
 ```bash
 # Remove sensitive file from history
 git filter-branch --force --index-filter \
@@ -90,6 +98,7 @@ git push origin --force --all
 ### **Compliance Verification**
 
 #### **Pre-Commit Checks:**
+
 ```bash
 # Scan for potential secrets
 grep -r "api_token.*:" . --include="*.sh" --include="*.json"
@@ -100,6 +109,7 @@ git status --ignored
 ```
 
 #### **Regular Security Audits:**
+
 - Monthly review of all API keys and rotation
 - Quarterly access review for all service accounts
 - Annual security policy review and updates
@@ -107,16 +117,19 @@ git status --ignored
 ### **Provider-Specific Security**
 
 #### **Codacy:**
+
 - API tokens from: https://app.codacy.com/account/api-tokens
 - Scope: Repository analysis only
 - Rotation: Every 90 days
 
 #### **SonarCloud:**
+
 - Tokens from: https://sonarcloud.io/account/security
 - Scope: Project analysis only
 - Rotation: Every 90 days
 
 #### **GitHub:**
+
 - Personal Access Tokens with minimal required scopes
 - Fine-grained tokens preferred over classic tokens
 - Regular review of token usage and permissions

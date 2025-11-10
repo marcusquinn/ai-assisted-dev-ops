@@ -5,6 +5,7 @@ Cloudron is a complete solution for running apps on your server, providing easy 
 ## 🏢 **Provider Overview**
 
 ### **Cloudron Characteristics:**
+
 - **Service Type**: Self-hosted app platform and server management
 - **App Ecosystem**: 100+ pre-configured apps available
 - **Management**: Web-based dashboard for complete server management
@@ -14,6 +15,7 @@ Cloudron is a complete solution for running apps on your server, providing easy 
 - **Security**: Built-in firewall, automatic security updates
 
 ### **Best Use Cases:**
+
 - **Small to medium businesses** needing multiple web applications
 - **Self-hosted alternatives** to SaaS applications
 - **Development teams** needing staging and production environments
@@ -24,6 +26,7 @@ Cloudron is a complete solution for running apps on your server, providing easy 
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/cloudron-config.json.txt configs/cloudron-config.json
@@ -32,6 +35,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ```
 
 ### **Configuration Structure:**
+
 ```json
 {
   "servers": {
@@ -56,6 +60,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ```
 
 ### **API Token Setup:**
+
 1. **Login to Cloudron Dashboard**
 2. **Navigate to Settings** → API Access
 3. **Generate API Token** with required permissions
@@ -65,6 +70,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all Cloudron servers
 ./providers/cloudron-helper.sh servers
@@ -80,6 +86,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ```
 
 ### **App Management:**
+
 ```bash
 # Install new app
 ./providers/cloudron-helper.sh install-app production wordpress blog.yourdomain.com
@@ -98,6 +105,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ```
 
 ### **Domain Management:**
+
 ```bash
 # List domains
 ./providers/cloudron-helper.sh domains production
@@ -113,6 +121,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ```
 
 ### **User Management:**
+
 ```bash
 # List users
 ./providers/cloudron-helper.sh users production
@@ -130,6 +139,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ## 🛡️ **Security Best Practices**
 
 ### **Server Security:**
+
 - **Regular updates**: Keep Cloudron platform updated
 - **Firewall configuration**: Use Cloudron's built-in firewall
 - **SSL certificates**: Ensure all apps have valid SSL certificates
@@ -137,6 +147,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 - **Backup encryption**: Enable backup encryption
 
 ### **API Security:**
+
 - **Token rotation**: Rotate API tokens regularly
 - **Minimal permissions**: Use tokens with minimal required permissions
 - **Secure storage**: Store API tokens securely
@@ -144,6 +155,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 - **HTTPS only**: Always use HTTPS for API access
 
 ### **App Security:**
+
 ```bash
 # Check app security status
 ./providers/cloudron-helper.sh security-status production
@@ -163,6 +175,7 @@ cp configs/cloudron-config.json.txt configs/cloudron-config.json
 ### **Common Issues:**
 
 #### **API Connection Issues:**
+
 ```bash
 # Test API connectivity
 curl -H "Authorization: Bearer YOUR_TOKEN" https://cloudron.yourdomain.com/api/v1/cloudron/status
@@ -175,6 +188,7 @@ openssl s_client -connect cloudron.yourdomain.com:443
 ```
 
 #### **App Installation Issues:**
+
 ```bash
 # Check available disk space
 ./providers/cloudron-helper.sh exec production 'df -h'
@@ -187,6 +201,7 @@ openssl s_client -connect cloudron.yourdomain.com:443
 ```
 
 #### **Domain Configuration Issues:**
+
 ```bash
 # Check DNS configuration
 dig cloudron.yourdomain.com
@@ -202,6 +217,7 @@ nslookup cloudron.yourdomain.com
 ## 📊 **Monitoring & Management**
 
 ### **System Monitoring:**
+
 ```bash
 # Get system status
 ./providers/cloudron-helper.sh status production
@@ -217,6 +233,7 @@ nslookup cloudron.yourdomain.com
 ```
 
 ### **App Monitoring:**
+
 ```bash
 # Monitor all apps
 for app_id in $(./providers/cloudron-helper.sh apps production | awk '{print $1}'); do
@@ -228,6 +245,7 @@ done
 ## 🔄 **Backup & Recovery**
 
 ### **Backup Management:**
+
 ```bash
 # Create system backup
 ./providers/cloudron-helper.sh backup-system production
@@ -243,6 +261,7 @@ done
 ```
 
 ### **App-Specific Backups:**
+
 ```bash
 # Backup specific app
 ./providers/cloudron-helper.sh backup-app production app-id
@@ -257,6 +276,7 @@ done
 ## 📚 **Best Practices**
 
 ### **Server Management:**
+
 1. **Regular maintenance**: Schedule regular maintenance windows
 2. **Resource monitoring**: Monitor CPU, memory, and disk usage
 3. **Update management**: Keep platform and apps updated
@@ -264,6 +284,7 @@ done
 5. **Security audits**: Perform regular security audits
 
 ### **App Lifecycle:**
+
 - **Staging first**: Test app installations and updates on staging
 - **Gradual rollout**: Deploy changes gradually to production
 - **Health monitoring**: Monitor app health and performance
@@ -271,6 +292,7 @@ done
 - **Resource allocation**: Properly allocate resources per app
 
 ### **Domain Management:**
+
 - **DNS automation**: Automate DNS configuration where possible
 - **SSL monitoring**: Monitor SSL certificate expiration
 - **Domain organization**: Organize domains by project or client
@@ -279,6 +301,7 @@ done
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Management:**
+
 - **App deployment**: Automated application installation and configuration
 - **Update orchestration**: Automated platform and app updates
 - **Backup management**: Automated backup scheduling and verification
@@ -286,6 +309,7 @@ done
 - **Security monitoring**: Automated security scanning and compliance
 
 ### **Intelligent Operations:**
+
 - **Predictive scaling**: AI-driven resource scaling recommendations
 - **Anomaly detection**: Automated detection of unusual system behavior
 - **Performance optimization**: Automated performance tuning recommendations

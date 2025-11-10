@@ -7,24 +7,28 @@ Comprehensive code quality and security auditing across multiple platforms inclu
 ### **Supported Code Auditing Services:**
 
 #### **CodeRabbit**
+
 - **Focus**: AI-powered code reviews and analysis
 - **Strengths**: Context-aware reviews, security analysis, best practices
 - **API**: Comprehensive REST API with MCP integration
 - **Use Case**: Automated code reviews and quality analysis
 
 #### **CodeFactor**
+
 - **Focus**: Automated code quality analysis
 - **Strengths**: Simple setup, clear metrics, GitHub integration
 - **API**: REST API for repository and issue management
 - **Use Case**: Continuous code quality monitoring
 
 #### **Codacy**
+
 - **Focus**: Automated code quality and security analysis
 - **Strengths**: Comprehensive metrics, team collaboration, custom rules
 - **API**: Full REST API with MCP server support
 - **Use Case**: Enterprise code quality management
 
 #### **SonarCloud**
+
 - **Focus**: Code quality and security analysis
 - **Strengths**: Industry standard, comprehensive rules, quality gates
 - **API**: Extensive web API with MCP integration
@@ -33,6 +37,7 @@ Comprehensive code quality and security auditing across multiple platforms inclu
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/code-audit-config.json.txt configs/code-audit-config.json
@@ -41,6 +46,7 @@ cp configs/code-audit-config.json.txt configs/code-audit-config.json
 ```
 
 ### **Multi-Service Configuration:**
+
 ```json
 {
   "services": {
@@ -69,6 +75,7 @@ cp configs/code-audit-config.json.txt configs/code-audit-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all configured services
 ./providers/code-audit-helper.sh services
@@ -81,6 +88,7 @@ cp configs/code-audit-config.json.txt configs/code-audit-config.json
 ```
 
 ### **CodeRabbit Operations:**
+
 ```bash
 # List CodeRabbit repositories
 ./providers/code-audit-helper.sh coderabbit-repos personal
@@ -93,6 +101,7 @@ cp configs/code-audit-config.json.txt configs/code-audit-config.json
 ```
 
 ### **CodeFactor Operations:**
+
 ```bash
 # List CodeFactor repositories
 ./providers/code-audit-helper.sh codefactor-repos personal
@@ -105,6 +114,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ```
 
 ### **Codacy Operations:**
+
 ```bash
 # List Codacy repositories
 ./providers/code-audit-helper.sh codacy-repos organization
@@ -117,6 +127,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ```
 
 ### **SonarCloud Operations:**
+
 ```bash
 # List SonarCloud projects
 ./providers/code-audit-helper.sh sonarcloud-projects personal
@@ -131,6 +142,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Token management**: Store API tokens securely
 - **Scope limitation**: Use tokens with minimal required permissions
 - **Regular rotation**: Rotate API tokens regularly
@@ -138,6 +150,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 - **Rate limiting**: Respect service rate limits
 
 ### **Code Security:**
+
 ```bash
 # Regular security audits
 ./providers/code-audit-helper.sh audit my-repository
@@ -153,6 +166,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ## 🔍 **Quality Gates & Metrics**
 
 ### **Key Quality Metrics:**
+
 - **Code Coverage**: Minimum 80%, target 90%
 - **Code Smells**: Maximum 10 major issues
 - **Security Hotspots**: Zero high-severity issues
@@ -161,6 +175,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 - **Duplicated Lines**: Maximum 3% duplication
 
 ### **Quality Gate Configuration:**
+
 ```json
 {
   "quality_gates": {
@@ -183,6 +198,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ### **Available MCP Servers:**
 
 #### **CodeRabbit MCP:**
+
 ```bash
 # Start CodeRabbit MCP server
 ./providers/code-audit-helper.sh start-mcp coderabbit 3003
@@ -200,6 +216,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ```
 
 #### **Codacy MCP:**
+
 ```bash
 # Install Codacy MCP server
 # https://github.com/codacy/codacy-mcp-server
@@ -209,6 +226,7 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ```
 
 #### **SonarCloud MCP:**
+
 ```bash
 # Install SonarQube MCP server
 # https://github.com/SonarSource/sonarqube-mcp-server
@@ -218,7 +236,9 @@ curl -H "X-CF-TOKEN: $API_TOKEN" https://www.codefactor.io/api/v1/repositories/m
 ```
 
 ### **AI Assistant Capabilities:**
+
 With MCP integration, AI assistants can:
+
 - **Real-time code analysis** during development
 - **Automated quality reports** generation
 - **Security vulnerability** detection and reporting
@@ -229,6 +249,7 @@ With MCP integration, AI assistants can:
 ## 🔄 **CI/CD Integration**
 
 ### **GitHub Actions Integration:**
+
 ```yaml
 name: Code Quality Audit
 on: [push, pull_request]
@@ -250,6 +271,7 @@ jobs:
 ```
 
 ### **Quality Gate Enforcement:**
+
 ```bash
 #!/bin/bash
 # Quality gate script for CI/CD
@@ -287,6 +309,7 @@ echo "✅ All quality gates passed"
 ## 📚 **Best Practices**
 
 ### **Code Quality Management:**
+
 1. **Consistent standards**: Apply consistent quality standards across projects
 2. **Regular monitoring**: Monitor code quality metrics continuously
 3. **Team education**: Educate team on quality best practices
@@ -294,6 +317,7 @@ echo "✅ All quality gates passed"
 5. **Continuous improvement**: Regularly review and improve quality processes
 
 ### **Security Analysis:**
+
 - **Regular scans**: Run security scans on every commit
 - **Vulnerability tracking**: Track and remediate vulnerabilities promptly
 - **Dependency scanning**: Monitor dependencies for security issues
@@ -301,6 +325,7 @@ echo "✅ All quality gates passed"
 - **Compliance monitoring**: Monitor compliance with security standards
 
 ### **Automation Strategies:**
+
 - **CI/CD integration**: Integrate quality checks into CI/CD pipelines
 - **Automated reporting**: Generate automated quality reports
 - **Issue tracking**: Automatically create issues for quality problems
@@ -310,6 +335,7 @@ echo "✅ All quality gates passed"
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Code Quality:**
+
 - **Real-time analysis**: AI can analyze code quality in real-time
 - **Intelligent prioritization**: AI can prioritize issues by impact
 - **Automated fixes**: AI can suggest or implement automated fixes
@@ -317,6 +343,7 @@ echo "✅ All quality gates passed"
 - **Trend prediction**: AI can predict quality trends and issues
 
 ### **Development Workflows:**
+
 - **Code review assistance**: AI-powered code review suggestions
 - **Quality gate automation**: Automated quality gate enforcement
 - **Issue resolution**: AI-assisted issue resolution and fixes

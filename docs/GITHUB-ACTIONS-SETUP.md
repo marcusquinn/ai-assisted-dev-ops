@@ -5,22 +5,26 @@
 ### **📋 CURRENT GITHUB ACTIONS STATUS:**
 
 #### **✅ CONFIGURED AND WORKING:**
+
 - **SonarCloud Analysis**: ✅ Runs on every push and PR
 - **Framework Validation**: ✅ Validates repository structure
 - **Security Scanning**: ✅ Checks for hardcoded API keys
 
 #### **⚠️ REQUIRES SETUP:**
+
 - **Codacy Analysis**: Requires `CODACY_API_TOKEN` secret
 
 ## 🔑 **REQUIRED GITHUB REPOSITORY SECRETS**
 
 ### **1. SONAR_TOKEN (Already Configured)**
+
 - **Status**: ✅ **CONFIGURED**
 - **Purpose**: SonarCloud analysis in GitHub Actions
 - **Value**: Your SonarCloud API token
 - **Source**: https://sonarcloud.io/account/security
 
 ### **2. CODACY_API_TOKEN (Needs Setup)**
+
 - **Status**: ❌ **NEEDS CONFIGURATION**
 - **Purpose**: Codacy analysis in GitHub Actions
 - **Value**: Your Codacy API token
@@ -31,6 +35,7 @@
 ### **Add Missing GitHub Secret:**
 
 1. **Go to Repository Settings**:
+
    ```
    https://github.com/marcusquinn/ai-assisted-dev-ops/settings/secrets/actions
    ```
@@ -44,11 +49,13 @@
 ## 🔄 **WORKFLOW TRIGGERS**
 
 ### **Automatic Execution:**
+
 - **Push to main**: ✅ Triggers full analysis
 - **Push to develop**: ✅ Triggers full analysis  
 - **Pull Request to main**: ✅ Triggers full analysis
 
 ### **Analysis Jobs:**
+
 1. **Framework Validation**: Repository structure and security checks
 2. **SonarCloud Analysis**: Code quality, security, and maintainability
 3. **Codacy Analysis**: Code quality and complexity analysis
@@ -56,16 +63,19 @@
 ## 📊 **VIEWING RESULTS**
 
 ### **SonarCloud Dashboard:**
+
 ```
 https://sonarcloud.io/project/overview?id=marcusquinn_ai-assisted-dev-ops
 ```
 
 ### **Codacy Dashboard:**
+
 ```
 https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops
 ```
 
 ### **GitHub Actions:**
+
 ```
 https://github.com/marcusquinn/ai-assisted-dev-ops/actions
 ```
@@ -75,6 +85,7 @@ https://github.com/marcusquinn/ai-assisted-dev-ops/actions
 ### **File**: `.github/workflows/code-quality.yml`
 
 #### **Key Features:**
+
 - **Multi-job workflow** with framework validation and code analysis
 - **Security scanning** to prevent API key exposure
 - **Conditional Codacy analysis** (runs only if token is configured)
@@ -82,6 +93,7 @@ https://github.com/marcusquinn/ai-assisted-dev-ops/actions
 - **Fail-fast security** checks to prevent credential exposure
 
 #### **Environment Variables Used:**
+
 - `GITHUB_TOKEN`: Automatic (provided by GitHub)
 - `SONAR_TOKEN`: From repository secrets
 - `CODACY_API_TOKEN`: From repository secrets (optional)
@@ -89,11 +101,13 @@ https://github.com/marcusquinn/ai-assisted-dev-ops/actions
 ## 🛡️ **SECURITY FEATURES**
 
 ### **Automated Security Checks:**
+
 - **API Key Detection**: Scans for hardcoded credentials
 - **Repository Structure**: Validates framework integrity
 - **Secret Management**: Uses GitHub Secrets for sensitive data
 
 ### **Security Best Practices:**
+
 - **No secrets in code**: All API keys use GitHub Secrets
 - **Conditional execution**: Graceful handling of missing secrets
 - **Fail-fast security**: Stops workflow if security issues detected

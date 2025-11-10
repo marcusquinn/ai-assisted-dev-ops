@@ -3,6 +3,7 @@
 ## 🎯 **Extension Principles**
 
 ### **Core Principles**
+
 - **Consistency**: Follow established patterns and conventions
 - **Security**: Implement security measures from the start
 - **Documentation**: Comprehensive documentation for all additions
@@ -10,6 +11,7 @@
 - **Maintainability**: Code that is easy to understand and maintain
 
 ### **Quality Standards**
+
 - **Code review**: All additions must pass code review
 - **Security review**: Security implications must be assessed
 - **Documentation review**: Documentation must be complete and accurate
@@ -19,6 +21,7 @@
 ## 🛠️ **Adding New Service Providers**
 
 ### **Step 1: Research & Planning**
+
 ```bash
 # Research checklist:
 □ Service has public API with documentation
@@ -30,6 +33,7 @@
 ```
 
 ### **Step 2: Create Helper Script**
+
 ```bash
 # File: providers/[service-name]-helper.sh
 #!/bin/bash
@@ -67,6 +71,7 @@ main "$@"
 ```
 
 ### **Step 3: Create Configuration Template**
+
 ```bash
 # File: configs/[service-name]-config.json.txt
 {
@@ -107,6 +112,7 @@ main "$@"
 ```
 
 ### **Step 4: Create Comprehensive Documentation**
+
 ```bash
 # File: docs/[SERVICE-NAME].md
 # [Service Name] Guide
@@ -142,6 +148,7 @@ main "$@"
 ```
 
 ### **Step 5: Update Framework Files**
+
 ```bash
 # Update .gitignore
 echo "configs/[service-name]-config.json" >> .gitignore
@@ -168,6 +175,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 🔐 **Security Implementation**
 
 ### **Required Security Features**
+
 ```bash
 # All new services must implement:
 1. API token validation before use
@@ -181,6 +189,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 ### **Security Testing Checklist**
+
 ```bash
 □ No credentials exposed in logs or output
 □ All inputs properly validated
@@ -195,6 +204,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 📊 **Testing Requirements**
 
 ### **Functional Testing**
+
 ```bash
 # Test all major functions:
 □ Configuration loading and validation
@@ -208,6 +218,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 ### **Integration Testing**
+
 ```bash
 # Test framework integration:
 □ Helper script follows naming conventions
@@ -219,6 +230,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ```
 
 ### **Security Testing**
+
 ```bash
 # Security validation:
 □ No credential exposure in any output
@@ -232,6 +244,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 🔄 **Maintenance Guidelines**
 
 ### **Ongoing Maintenance**
+
 - **API updates**: Monitor service API changes and update accordingly
 - **Security updates**: Regular security reviews and updates
 - **Documentation updates**: Keep documentation current with service changes
@@ -239,6 +252,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 - **User feedback**: Incorporate user feedback and feature requests
 
 ### **Version Management**
+
 - **Semantic versioning**: Use semantic versioning for major changes
 - **Backward compatibility**: Maintain backward compatibility when possible
 - **Migration guides**: Provide migration guides for breaking changes
@@ -248,6 +262,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 ## 🎯 **Quality Assurance**
 
 ### **Code Quality Standards**
+
 - **Consistent formatting**: Follow established code formatting
 - **Clear naming**: Use descriptive function and variable names
 - **Comprehensive comments**: Comment complex logic and decisions
@@ -255,6 +270,7 @@ echo "configs/[service-name]-config.json" >> .gitignore
 - **Performance**: Optimize for performance and resource usage
 
 ### **Documentation Quality**
+
 - **Completeness**: Cover all features and capabilities
 - **Accuracy**: Ensure all examples and instructions work
 - **Clarity**: Write clear, understandable documentation

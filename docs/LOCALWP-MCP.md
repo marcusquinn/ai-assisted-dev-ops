@@ -9,6 +9,7 @@ LocalWP MCP is a Model Context Protocol server that gives AI assistants like Cla
 ## 🚀 **Why This Changes Everything**
 
 ### **Before MCP (AI Flying Blind)**
+
 ```sql
 -- AI guesses at table structure
 SELECT post_id, activity_meta FROM wp_user_activity
@@ -17,6 +18,7 @@ WHERE user_id=123 AND activity_type='quiz';
 ```
 
 ### **After MCP (AI With X-Ray Vision)**
+
 ```sql
 -- AI sees actual table structure and relationships
 SELECT ua.post_id, ua.activity_id, uam.activity_meta_key, uam.activity_meta_value
@@ -29,11 +31,13 @@ WHERE ua.user_id=123 AND ua.activity_type='quiz';
 ## 📦 **Installation**
 
 ### **Prerequisites**
+
 - Local by Flywheel installed and running
 - Node.js 18+ installed
 - At least one active Local site
 
 ### **Install LocalWP MCP Server**
+
 ```bash
 # Global installation (recommended)
 npm install -g @verygoodplugins/mcp-local-wp
@@ -47,6 +51,7 @@ mcp-local-wp --help
 ### **1. Add to MCP Configuration**
 
 **For Claude Desktop:**
+
 ```json
 {
   "mcpServers": {
@@ -62,6 +67,7 @@ mcp-local-wp --help
 ```
 
 **For Cursor IDE:**
+
 ```json
 {
   "mcpServers": {
@@ -74,6 +80,7 @@ mcp-local-wp --help
 ```
 
 ### **2. Using the Framework Helper**
+
 ```bash
 # Start LocalWP MCP server
 ./providers/localhost-helper.sh start-mcp
@@ -88,15 +95,18 @@ mcp-local-wp --help
 ## 🛠️ **Available Tools**
 
 ### **mysql_query**
+
 Execute read-only SQL queries against your WordPress database.
 
 **Supported Operations:**
+
 - `SELECT` - Query data
 - `SHOW` - Show tables, columns, etc.
 - `DESCRIBE` - Describe table structure
 - `EXPLAIN` - Explain query execution
 
 **Examples:**
+
 ```sql
 -- Get recent posts
 SELECT ID, post_title, post_date, post_status
@@ -110,9 +120,11 @@ SELECT * FROM wp_posts WHERE post_status = ? ORDER BY post_date DESC LIMIT ?;
 ```
 
 ### **mysql_schema**
+
 Inspect database schema and structure.
 
 **Usage:**
+
 ```bash
 # List all tables
 mysql_schema()
@@ -124,6 +136,7 @@ mysql_schema("wp_posts")
 ## 🎯 **Real-World Use Cases**
 
 ### **1. Plugin Development**
+
 ```sql
 -- Understand LearnDash table structure
 DESCRIBE wp_learndash_user_activity;
@@ -136,6 +149,7 @@ WHERE ua.activity_type = 'quiz' AND ua.user_id = 123;
 ```
 
 ### **2. WooCommerce Analysis**
+
 ```sql
 -- Get order data with meta
 SELECT p.ID, p.post_date, pm.meta_key, pm.meta_value
@@ -147,6 +161,7 @@ ORDER BY p.post_date DESC LIMIT 10;
 ```
 
 ### **3. User Management**
+
 ```sql
 -- Find users with specific capabilities
 SELECT u.user_login, u.user_email, um.meta_value as capabilities
@@ -157,6 +172,7 @@ AND um.meta_value LIKE '%administrator%';
 ```
 
 ### **4. Content Analysis**
+
 ```sql
 -- Find posts with specific custom fields
 SELECT p.post_title, pm.meta_key, pm.meta_value
@@ -170,6 +186,7 @@ ORDER BY p.post_date DESC;
 ## 🔍 **How It Works**
 
 ### **Automatic Detection**
+
 The MCP server automatically detects your active Local by Flywheel MySQL instance by:
 
 1. **Process Detection**: Scans running processes for active mysqld instances
@@ -178,6 +195,7 @@ The MCP server automatically detects your active Local by Flywheel MySQL instanc
 4. **Fallback Support**: Falls back to environment variables for custom setups
 
 ### **Local Directory Structure**
+
 ```
 ~/Library/Application Support/Local/run/
 ├── lx97vbzE7/                    # Dynamic site ID (changes on restart)
@@ -201,21 +219,25 @@ The MCP server automatically detects your active Local by Flywheel MySQL instanc
 ### **Common Issues**
 
 **"No active MySQL process found"**
+
 - Ensure Local by Flywheel is running
 - Make sure at least one site is started in Local
 - Check that the site's database is running
 
 **"MySQL socket not found"**
+
 - Verify the Local site is fully started
 - Try stopping and restarting the site in Local
 - Check Local's logs for MySQL startup issues
 
 **"Connection refused"**
+
 - Ensure the Local site's MySQL service is running
 - Check if another process is using the MySQL port
 - Try restarting Local by Flywheel
 
 ### **Debug Mode**
+
 ```bash
 # Enable debug logging
 DEBUG=mcp-local-wp ./providers/localhost-helper.sh start-mcp

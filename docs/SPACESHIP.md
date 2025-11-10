@@ -5,6 +5,7 @@ Spaceship is a modern domain registrar offering competitive pricing, comprehensi
 ## 🏢 **Provider Overview**
 
 ### **Spaceship Characteristics:**
+
 - **Service Type**: Domain registrar and DNS hosting
 - **API Quality**: RESTful API with comprehensive functionality
 - **Pricing**: Competitive domain pricing with transparent fees
@@ -14,6 +15,7 @@ Spaceship is a modern domain registrar offering competitive pricing, comprehensi
 - **Security**: Domain locking, privacy protection, DNSSEC support
 
 ### **Best Use Cases:**
+
 - **Domain portfolio management** with multiple domains
 - **DNS automation** for development and production environments
 - **Cost-effective domain registration** with good API access
@@ -24,6 +26,7 @@ Spaceship is a modern domain registrar offering competitive pricing, comprehensi
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/spaceship-config.json.txt configs/spaceship-config.json
@@ -32,6 +35,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **Multi-Account Configuration:**
+
 ```json
 {
   "accounts": {
@@ -54,6 +58,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **API Credentials Setup:**
+
 1. **Login to Spaceship Dashboard**
 2. **Navigate to API Settings**
 3. **Generate API Key and Secret**
@@ -63,6 +68,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all Spaceship accounts
 ./providers/spaceship-helper.sh accounts
@@ -78,6 +84,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **DNS Management:**
+
 ```bash
 # List DNS records
 ./providers/spaceship-helper.sh dns-records personal example.com
@@ -93,6 +100,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **Nameserver Management:**
+
 ```bash
 # Get current nameservers
 ./providers/spaceship-helper.sh nameservers personal example.com
@@ -105,6 +113,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **Domain Management:**
+
 ```bash
 # Check domain availability
 ./providers/spaceship-helper.sh check-availability personal newdomain.com
@@ -123,6 +132,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **Monitoring & Automation:**
+
 ```bash
 # Monitor domain expiration (30 days warning)
 ./providers/spaceship-helper.sh monitor-expiration personal 30
@@ -137,6 +147,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Separate API keys**: Use different API keys for different projects
 - **Key rotation**: Rotate API keys every 6-12 months
 - **Minimal permissions**: Use API keys with minimal required permissions
@@ -145,6 +156,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 - **Never in repository**: API keys must never be stored in repository files
 
 ### **Domain Security:**
+
 ```bash
 # Enable domain lock for protection
 ./providers/spaceship-helper.sh lock personal example.com
@@ -157,6 +169,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 ### **DNS Security:**
+
 - **DNSSEC**: Enable DNSSEC for domains when available
 - **Regular monitoring**: Monitor DNS records for unauthorized changes
 - **Backup records**: Maintain backups of DNS configurations
@@ -167,6 +180,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ### **Common Issues:**
 
 #### **API Authentication Errors:**
+
 ```bash
 # Verify API credentials
 ./providers/spaceship-helper.sh accounts
@@ -176,6 +190,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 ```
 
 #### **DNS Propagation Issues:**
+
 ```bash
 # Check DNS records
 ./providers/spaceship-helper.sh dns-records personal example.com
@@ -189,6 +204,7 @@ nslookup example.com 8.8.8.8
 ```
 
 #### **Domain Management Issues:**
+
 ```bash
 # Check domain status
 ./providers/spaceship-helper.sh domain-details personal example.com
@@ -203,6 +219,7 @@ nslookup example.com 8.8.8.8
 ## 📊 **Monitoring & Analytics**
 
 ### **Domain Portfolio Monitoring:**
+
 ```bash
 # Monitor all domains for expiration
 ./providers/spaceship-helper.sh monitor-expiration personal 30
@@ -214,6 +231,7 @@ done
 ```
 
 ### **Automated Monitoring:**
+
 ```bash
 # Create monitoring script
 #!/bin/bash
@@ -231,6 +249,7 @@ fi
 ```
 
 ### **DNS Health Monitoring:**
+
 - **Record validation**: Regularly validate DNS record configurations
 - **Propagation monitoring**: Monitor DNS propagation across global resolvers
 - **Performance tracking**: Track DNS resolution performance
@@ -239,6 +258,7 @@ fi
 ## 🔄 **Backup & Disaster Recovery**
 
 ### **DNS Record Backup:**
+
 ```bash
 # Backup DNS records for a domain
 ./providers/spaceship-helper.sh dns-records personal example.com > dns-backup-example.com-$(date +%Y%m%d).txt
@@ -248,6 +268,7 @@ fi
 ```
 
 ### **Configuration Backup:**
+
 ```bash
 # Export domain list
 ./providers/spaceship-helper.sh domains personal > domains-backup-$(date +%Y%m%d).txt
@@ -259,6 +280,7 @@ fi
 ## 📚 **Best Practices**
 
 ### **Domain Management:**
+
 1. **Regular monitoring**: Monitor domain expiration dates
 2. **Security settings**: Enable domain lock and privacy protection
 3. **DNS backup**: Maintain backups of DNS configurations
@@ -266,6 +288,7 @@ fi
 5. **Access control**: Limit API access to necessary systems
 
 ### **DNS Management:**
+
 - **Consistent TTL values**: Use appropriate TTL values for different record types
 - **Record validation**: Validate DNS records before applying changes
 - **Gradual changes**: Make DNS changes gradually to avoid service disruption
@@ -273,6 +296,7 @@ fi
 - **Documentation**: Document DNS architecture and changes
 
 ### **Automation Workflow:**
+
 - **Staged deployments**: Test DNS changes in staging first
 - **Rollback procedures**: Have rollback procedures for DNS changes
 - **Change approval**: Implement approval workflows for critical changes
@@ -282,6 +306,7 @@ fi
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Domain Management:**
+
 - **Expiration monitoring**: Automated monitoring of domain expiration dates
 - **DNS change detection**: Automated detection of unauthorized DNS changes
 - **Health monitoring**: Automated DNS health and propagation monitoring
@@ -289,6 +314,7 @@ fi
 - **Performance optimization**: Automated DNS performance optimization
 
 ### **Intelligent Troubleshooting:**
+
 - **Issue diagnosis**: Automated diagnosis of domain and DNS issues
 - **Configuration validation**: Automated validation of domain configurations
 - **Performance analysis**: Automated analysis of DNS performance

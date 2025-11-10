@@ -7,12 +7,14 @@ This repository provides a comprehensive DevOps infrastructure management framew
 ## ⚠️ **CRITICAL: Consistency Requirements**
 
 ### **Single Source of Truth**
+
 - **This file** (`~/git/ai-assisted-dev-ops/AGENTS.md`) is the **ONLY authoritative source** for AI assistant instructions
 - **All other AGENTS.md files** are minimal templates that reference this file
 - **Never duplicate instructions** - all operational guidance must remain here
 - **Template files must remain minimal** to prevent conflicting guidance and security vulnerabilities
 
 ### **Template Consistency Rules**
+
 - **Home template** (`~/AGENTS.md`) - Contains only references to this authoritative file
 - **Git template** (`~/git/AGENTS.md`) - Contains only DevOps references to this framework
 - **Agent template** (`~/.agent/README.md`) - Contains only redirection to this repository
@@ -21,6 +23,7 @@ This repository provides a comprehensive DevOps infrastructure management framew
 ## 🤖 **Agent Behavior & Standards**
 
 ### **Primary Objectives**
+
 - **Complete DevOps automation** across hosting, domains, DNS, security, and development services
 - **Secure credential management** with enterprise-grade security practices
 - **Consistent command patterns** for reliable automation across all services
@@ -28,7 +31,9 @@ This repository provides a comprehensive DevOps infrastructure management framew
 - **Real-time service integration** through MCP servers
 
 ### **📍 Standard Repository Location (MANDATORY)**
+
 This repository should be cloned to the standard location for optimal AI assistant integration:
+
 ```bash
 # Standard location (recommended)
 ~/git/ai-assisted-dev-ops/
@@ -40,6 +45,7 @@ git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
 ```
 
 **Benefits of standard location:**
+
 - **Consistent AI assistant access** across all environments
 - **Secure template deployment** works correctly
 - **Simplified path references** in all documentation
@@ -48,6 +54,7 @@ git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
 ### **🗂️ AI Working Directories (MANDATORY USAGE)**
 
 #### **`.agent/tmp/` - Temporary Working Directory**
+
 **ALWAYS use this directory for temporary files during operations:**
 
 ```bash
@@ -69,6 +76,7 @@ rm -rf "$SESSION_DIR"
 ```
 
 **Use `.agent/tmp/` for:**
+
 - Temporary scripts and working files
 - Backups before making changes
 - Log outputs and analysis results
@@ -76,6 +84,7 @@ rm -rf "$SESSION_DIR"
 - Any files that don't need to persist
 
 #### **`.agent/memory/` - Persistent Memory Directory**
+
 **Use this directory to remember context across sessions:**
 
 ```bash
@@ -90,6 +99,7 @@ echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/config
 ```
 
 **Use `.agent/memory/` for:**
+
 - Session context and conversation history
 - Learned patterns and successful approaches
 - User preferences and customizations
@@ -97,6 +107,7 @@ echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/config
 - Operation history and outcomes
 
 #### **🚨 CRITICAL RULES:**
+
 - **NEVER store credentials** in memory or tmp directories
 - **Always use `.agent/tmp/`** for temporary files (not root directory)
 - **Clean up** temporary files when operations complete
@@ -105,30 +116,36 @@ echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/config
 ### **🔒 Secure Template System (MANDATORY COMPLIANCE)**
 
 #### **Template Locations and Security**
+
 The framework deploys minimal, secure templates to prevent prompt injection attacks:
 
 **Home Directory (`~/AGENTS.md`)**:
+
 - Contains **minimal references only** to this authoritative repository
 - **DO NOT modify** beyond basic references for security
 - Redirects all operations to `~/git/ai-assisted-dev-ops/`
 
 **Git Directory (`~/git/AGENTS.md`)**:
+
 - Contains **minimal DevOps references** to this framework
 - **DO NOT add operational instructions** to prevent security vulnerabilities
 - All detailed instructions remain in this authoritative file
 
 **Agent Directory (`~/.agent/README.md`)**:
+
 - **Redirects to authoritative** `.agent/` directory in this repository
 - **Prevents misuse** of home-level agent directories
 - Maintains centralized control over AI operations
 
 #### **🚨 SECURITY REQUIREMENTS:**
+
 - **Use authoritative repository**: Always reference `~/git/ai-assisted-dev-ops/AGENTS.md`
 - **Minimal templates only**: Never add detailed instructions to user-space templates
 - **Prevent prompt injection**: Keep operational instructions in the secure repository
 - **Centralized control**: All AI operations must use framework's working directories
 
 #### **🔄 CONSISTENCY MAINTENANCE:**
+
 - **Single source updates**: All instruction changes must be made in this authoritative file only
 - **Template synchronization**: Templates are deployed via `templates/deploy-templates.sh`
 - **Version control**: All changes tracked in git to prevent unauthorized modifications
@@ -136,6 +153,7 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 - **No divergence**: Templates must never contain conflicting or duplicate instructions
 
 ### **Coding Standards**
+
 - **Bash scripting**: Follow framework patterns in `providers/` directory
 - **JSON configuration**: Use consistent structure across all service configs
 - **Security-first**: Never expose credentials, always validate inputs
@@ -143,9 +161,11 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 - **Documentation**: Maintain comprehensive docs for all additions
 
 ### **🏆 Quality Standards (MANDATORY)**
+
 **ALWAYS verify and maintain these quality standards:**
 
 #### **SonarCloud Integration (A-Grade Required)**
+
 - **Security Rating**: A (Zero vulnerabilities)
 - **Reliability Rating**: A (Zero bugs)
 - **Maintainability Rating**: A (Minimal code smells)
@@ -153,12 +173,14 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 - **Setup Check**: `curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_ai-assisted-dev-ops&metricKeys=bugs,vulnerabilities,code_smells"`
 
 #### **CodeFactor Integration (A-Grade Required)**
+
 - **Overall Grade**: A (81%+ A-grade files)
 - **Zero D/F-grade files**: All scripts must pass quality checks
 - **ShellCheck Compliance**: Zero violations across all shell scripts
 - **Setup Check**: `curl -s "https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops"`
 
 #### **ShellCheck Compliance (MANDATORY)**
+
 ```bash
 # Install and run ShellCheck on all scripts
 brew install shellcheck  # macOS
@@ -166,6 +188,7 @@ find providers/ -name "*.sh" -exec shellcheck {} \;
 ```
 
 **Critical Rules (Zero Tolerance):**
+
 - SC2162: Use `read -r` not `read`
 - SC2181: Use `if command; then` not `if [[ $? -eq 0 ]]; then`
 - SC1037: Proper variable bracing
@@ -175,6 +198,7 @@ find providers/ -name "*.sh" -exec shellcheck {} \;
 #### **Comprehensive Quality CLI Integration (AI-Powered Analysis)**
 
 **🔍 CodeRabbit CLI - AI-Powered Code Review:**
+
 ```bash
 # Install CodeRabbit CLI
 bash .agent/scripts/coderabbit-cli.sh install
@@ -187,6 +211,7 @@ bash .agent/scripts/coderabbit-cli.sh review
 ```
 
 **📊 Codacy CLI v2 - Comprehensive Code Analysis:**
+
 ```bash
 # Install Codacy CLI v2
 bash .agent/scripts/codacy-cli.sh install
@@ -202,6 +227,7 @@ bash .agent/scripts/codacy-cli.sh analyze --fix
 ```
 
 **🔧 CODACY AUTO-FIX FEATURE:**
+
 - **Automatic Issue Resolution**: Codacy CLI can automatically fix many code quality issues
 - **Same as Web Interface**: Equivalent to clicking "Fix Issues" button in Codacy dashboard
 - **Safe Application**: Only applies fixes that are guaranteed to be safe
@@ -209,6 +235,7 @@ bash .agent/scripts/codacy-cli.sh analyze --fix
 - **Integration Ready**: Works with all configured tools and analysis workflows
 
 **💎 Qlty CLI - Universal Code Quality:**
+
 ```bash
 # Install Qlty CLI
 bash .agent/scripts/qlty-cli.sh install
@@ -216,17 +243,40 @@ bash .agent/scripts/qlty-cli.sh install
 # Initialize in repository
 bash .agent/scripts/qlty-cli.sh init
 
-# Run code quality check
+# Run code quality check (default: marcusquinn org)
 bash .agent/scripts/qlty-cli.sh check
 
-# 🚀 AUTO-FORMAT: Universal auto-formatting
+# Run check for specific organization
+bash .agent/scripts/qlty-cli.sh check 5 myorg
+
+# 🚀 AUTO-FORMAT: Universal auto-formatting (default: marcusquinn org)
 bash .agent/scripts/qlty-cli.sh fmt --all
+
+# Auto-format for specific organization
+bash .agent/scripts/qlty-cli.sh fmt --all myorg
 
 # Detect code smells
 bash .agent/scripts/qlty-cli.sh smells --all
 ```
 
+**🔐 Qlty Organization Token Management:**
+
+```bash
+# Store token for organization
+bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME YOUR_TOKEN
+
+# List configured organizations
+bash .agent/scripts/setup-local-api-keys.sh list
+
+# Example: Store token for 'mycompany' organization
+bash .agent/scripts/setup-local-api-keys.sh set qlty-mycompany qltcw_abc123...
+
+# Use with specific organization
+bash .agent/scripts/qlty-cli.sh check 10 mycompany
+```
+
 **🌟 QLTY FEATURES:**
+
 - **Universal Linting**: 70+ tools for 40+ languages and technologies
 - **Auto-Formatting**: Consistent code style across all languages
 - **Code Smells**: Duplication, complexity, and maintainability analysis
@@ -236,6 +286,7 @@ bash .agent/scripts/qlty-cli.sh smells --all
 - **Performance**: Fast execution with caching and concurrency
 
 **🔬 SonarScanner CLI - SonarQube Cloud Analysis:**
+
 ```bash
 # Install SonarScanner CLI
 bash .agent/scripts/sonarscanner-cli.sh install
@@ -248,6 +299,7 @@ bash .agent/scripts/sonarscanner-cli.sh analyze
 ```
 
 **🎛️ Unified Quality CLI Manager:**
+
 ```bash
 # Install all quality CLIs
 bash .agent/scripts/quality-cli-manager.sh install all
@@ -260,6 +312,7 @@ bash .agent/scripts/quality-cli-manager.sh status all
 ```
 
 **API Key Setup (Secure Local Configuration):**
+
 - **CodeRabbit**: Get from https://app.coderabbit.ai → Settings → API Keys
 - **Codacy**: Get from https://app.codacy.com → Account → API Tokens
 - **SonarCloud**: Get from https://sonarcloud.io/account/security/
@@ -335,25 +388,30 @@ local used_variable="$1"
 **🎯 QUALITY RULE COMPLIANCE:**
 
 **S7682 - Return Statements (83 issues remaining):**
+
 - EVERY function MUST end with explicit `return 0` or `return 1`
 - NO function should end without a return statement
 - Use `return 0` for success, `return 1` for errors
 
 **S7679 - Positional Parameters (79 issues remaining):**
+
 - NEVER use `$1`, `$2`, `$3` directly in function bodies
 - ALWAYS assign to local variables: `local param="$1"`
 - Apply to ALL functions including main() and case statements
 
 **S1192 - String Literals (3 issues remaining):**
+
 - Define constants for any string used 3+ times
 - Use `readonly CONSTANT_NAME="value"` at file top
 - Replace all occurrences with `$CONSTANT_NAME`
 
 **S1481 - Unused Variables (0 issues - maintain):**
+
 - Remove any declared but unused local variables
 - Only declare variables that are actually used in the function
 
 ### **Framework Architecture**
+
 ```bash
 # Unified command pattern across all 25+ services:
 ./providers/[service]-helper.sh [command] [account/instance] [target] [options]
@@ -395,7 +453,9 @@ ai-assisted-dev-ops/
 ## 📁 **Agent Directory Structure**
 
 ### **.agent/tmp/** - Temporary Working Directory (MANDATORY)
+
 **Use this for all temporary files during operations:**
+
 - Session-specific working directories
 - Temporary scripts and analysis files
 - Backups before making changes
@@ -403,7 +463,9 @@ ai-assisted-dev-ops/
 - Any files that don't need to persist
 
 ### **.agent/memory/** - Persistent Memory Directory (RECOMMENDED)
+
 **Use this to remember context across sessions:**
+
 - Successful operation patterns and approaches
 - User preferences and customizations
 - Configuration discoveries and setups
@@ -411,18 +473,21 @@ ai-assisted-dev-ops/
 - Analytics and usage insights
 
 ### **.agent/scripts/** - Quality Automation Tools
+
 - `quality-check.sh` - Multi-platform quality validation
 - `quality-fix.sh` - Universal automated issue resolution
 - `pre-commit-hook.sh` - Continuous quality assurance
 - `development/` - Historical development scripts with documentation
 
 ### **.agent/spec/** - Technical Specifications
+
 - `code-quality.md` - Multi-platform quality standards and compliance
 - `requirements.md` - Framework requirements and capabilities
 - `security.md` - Security requirements and standards
 - `extension.md` - Guidelines for extending the framework
 
 ### **.agent/wiki/** - Knowledge Base
+
 - `architecture.md` - Complete framework architecture
 - `services.md` - All 25+ service integrations
 - `providers.md` - Provider-specific implementation details
@@ -430,55 +495,69 @@ ai-assisted-dev-ops/
 - `docs.md` - Documentation standards and guidelines
 
 ### **.agent/links/** - External Resources
+
 - `resources.md` - External APIs, documentation, and tools
 
 ## 🛠️ **Service Categories**
 
 ### **Infrastructure & Hosting (4 services)**
+
 - Hostinger, Hetzner Cloud, Closte, Cloudron
 
 ### **Deployment & Orchestration (1 service)**
+
 - Coolify
 
 ### **Content Management (1 service)**
+
 - MainWP
 
 ### **Security & Secrets (1 service)**
+
 - Vaultwarden
 
 ### **Code Quality & Auditing (4 services)**
+
 - CodeRabbit, CodeFactor, Codacy, SonarCloud
 
 ### **Version Control & Git Platforms (4 services)**
+
 - GitHub, GitLab, Gitea, Local Git
 
 ### **Email Services (1 service)**
+
 - Amazon SES
 
 ### **Domain & DNS (5 services)**
+
 - Spaceship (with purchasing), 101domains, Cloudflare DNS, Namecheap DNS, Route 53
 
 ### **Development & Local (4 services)**
+
 - Localhost, LocalWP, Context7 MCP, MCP Servers
 
 ### **Setup & Configuration (1 service)**
+
 - Intelligent Setup Wizard
 
 ## 🔐 **Security Contract**
 
 ### **Credential Management**
+
 - All credentials stored in `configs/[service]-config.json` (gitignored)
 - Templates in `configs/[service]-config.json.txt` (committed)
 - Vaultwarden integration for secure credential retrieval
 - Never expose credentials in logs, output, or error messages
 
 ### **Operational Security**
+
 - Confirmation required for destructive operations
 - Purchase operations require explicit user confirmation
 - Production environment changes require verification
 - All operations logged for audit purposes
 
 ### **File Security**
+
 - Configuration files have restricted permissions (600)
 - Generated reports and exports are gitignored
 - Temporary files are cleaned up automatically
@@ -487,6 +566,7 @@ ai-assisted-dev-ops/
 ## 🚀 **Agent Capabilities**
 
 ### **Complete Project Lifecycle**
+
 1. **Assessment**: Intelligent setup wizard for needs analysis
 2. **Domain Management**: Automated domain purchasing and DNS configuration
 3. **Infrastructure**: Server provisioning across multiple providers
@@ -497,6 +577,7 @@ ai-assisted-dev-ops/
 8. **Maintenance**: Ongoing monitoring and maintenance
 
 ### **MCP Server Integration**
+
 ```bash
 # Real-time data access through MCP servers:
 Port 3001: LocalWP WordPress database access
@@ -512,12 +593,14 @@ Port 3008: Gitea repository management
 ## 📚 **Learning Resources**
 
 ### **Framework Understanding**
+
 - Start with `.agent/wiki/architecture.md` for complete overview
 - Review `.agent/spec/requirements.md` for capabilities
 - Check service-specific docs in `docs/[SERVICE].md`
 - Use Context7 MCP for latest external documentation
 
 ### **Extension Guidelines**
+
 - Follow patterns in `.agent/spec/extension.md`
 - Use existing providers as templates
 - Implement security standards from `.agent/spec/security.md`
@@ -526,6 +609,7 @@ Port 3008: Gitea repository management
 ## 🔄 **Quality Improvement Workflow**
 
 ### **🚨 MANDATORY PRE-COMMIT CHECKLIST**
+
 **EVERY code change MUST pass this checklist:**
 
 ```bash
@@ -551,32 +635,38 @@ done
 **Zero Technical Debt Achievement Process:**
 
 **Phase 1 - Critical Issue Resolution (COMPLETED):**
+
 - **S7679 (Positional Parameters)**: 100% resolved using printf format strings
 - **S1481 (Unused Variables)**: 100% resolved through functionality enhancement
 - **Result**: Critical violations eliminated with zero functionality loss
 
 **Phase 2 - String Literal Consolidation (MAJOR PROGRESS):**
+
 - **S1192 (String Literals)**: 50+ violations resolved through constant creation
 - **Patterns**: Content-Type headers, Authorization headers, error messages
 - **Approach**: Target 3+ occurrences, create readonly constants
 - **Result**: Enhanced maintainability and reduced code duplication
 
 **Phase 3 - ShellCheck Compliance (ONGOING):**
+
 - **SC2155**: Separate variable declaration and assignment
 - **SC2181**: Direct exit code checking improvements
 - **SC2317**: Unreachable command analysis and resolution
 
 **Priority 2 - Positional Parameters (S7679):**
+
 - Impact: 79 issues across multiple files
 - Fix: Replace `$1` `$2` with `local var="$1"`
 - Validation: `grep -n '\$[0-9]' providers/*.sh`
 
 **Priority 3 - String Literals (S1192):**
+
 - Impact: 3 remaining issues
 - Fix: Create constants for repeated strings
 - Validation: `grep -o '"[^"]*"' providers/*.sh | sort | uniq -c | sort -nr`
 
 ### **🔧 AUTOMATED QUALITY FIXES**
+
 ```bash
 # Mass Return Statement Fix
 find providers/ -name "*.sh" -exec sed -i '/^}$/i\    return 0' {} \;
@@ -592,7 +682,9 @@ done
 ```
 
 ### **📊 QUALITY MONITORING**
+
 **Current Status (Target: Zero Issues):**
+
 - **SonarCloud**: 165 issues (down from 349) - 52.7% reduction achieved
 - **Return Statements**: 83 remaining (18% reduction from 101+)
 - **Positional Parameters**: 79 remaining (29% reduction from 111+)
@@ -600,6 +692,7 @@ done
 - **Technical Debt**: 573 minutes (28% reduction from 805)
 
 ### **🏆 QUALITY TARGETS (MANDATORY)**
+
 - **SonarCloud**: A-grades maintained, <100 total issues
 - **CodeFactor**: A-grade overall, 85%+ A-grade files
 - **Return Statements**: Zero S7682 violations
@@ -610,6 +703,7 @@ done
 ## 🎯 **Agent Success Metrics**
 
 ### **Quality Excellence (ACHIEVED)**
+
 - **184+ Quality Issues Resolved**: Universal multi-platform improvements
 - **52.7% Issue Reduction**: From 349 to 165 issues (SonarCloud)
 - **Perfect A-Grade CodeFactor**: 84.6% A-grade files maintained
@@ -619,6 +713,7 @@ done
 - **Universal Fix Approach**: Common issues resolved across all platforms
 
 ### **Operational Excellence**
+
 - **Zero credential exposure** in any output or logs
 - **Consistent command patterns** across all services
 - **Comprehensive error handling** with helpful guidance
@@ -626,6 +721,7 @@ done
 - **Secure by default** configuration and operations
 
 ### **User Experience**
+
 - **Intelligent guidance** through setup wizard
 - **Clear feedback** for all operations
 - **Helpful error messages** with resolution guidance
@@ -637,6 +733,7 @@ done
 ## 🏆 **Current Quality Status & Achievement Summary**
 
 ### **📊 CURRENT QUALITY METRICS:**
+
 - **SonarCloud**: 0 issues (Target: <50) ✅ **EXCELLENCE ACHIEVED**
 - **Codacy**: A+ rating achieved ✅ **EXCELLENCE ACHIEVED**
 - **CodeFactor**: A-grade maintained ✅ **EXCELLENCE ACHIEVED**
@@ -647,18 +744,22 @@ done
 ### **🎯 QUALITY TARGETS & PROGRESS:**
 
 #### **Phase 1: Critical Issues ✅ COMPLETED**
+
 - **S7679 (Positional Parameters)**: 100% resolved
 - **S1481 (Unused Variables)**: 100% resolved through functionality enhancement
 
 #### **Phase 2: High-Impact Issues 📊 IN PROGRESS**
+
 - **S7682 (Return Statements)**: Add explicit returns to all functions
 - **S1192 (String Literals)**: Target 3+ occurrences for constant creation
 
 #### **Phase 3: Code Quality 🔧 ONGOING**
+
 - **ShellCheck Issues**: SC2155, SC2181, SC2317 resolution
 - **Markdown Quality**: Professional formatting compliance
 
 **This framework has achieved INDUSTRY-LEADING quality standards:**
+
 - **Near-Zero Technical Debt**: 349 → 0 issues (100% reduction) through systematic resolution
 - **Universal Multi-Platform Excellence**: SonarCloud + CodeFactor + Codacy + CodeRabbit compliance
 - **Critical Issue Resolution**: 100% elimination of S7679 (positional parameters) and S1481 (unused variables)
@@ -671,17 +772,21 @@ done
 ### **🔧 DEVELOPMENT WORKFLOW (MANDATORY)**
 
 #### **Pre-Development Checklist:**
+
 1. **Run quality check**: `bash .agent/scripts/quality-check.sh`
 2. **Identify target issues**: Focus on highest-impact violations
 3. **Plan enhancements**: How will changes improve functionality?
 
 #### **Post-Development Validation:**
+
 1. **Quality verification**: Re-run quality-check.sh
 2. **Functionality testing**: Ensure all features work
 3. **Commit with metrics**: Include before/after quality improvements
 
 #### **Commit Standards:**
+
 Include quality metrics in every commit:
+
 ```
 🔧 FEATURE: Description of changes
 
@@ -694,12 +799,14 @@ Include quality metrics in every commit:
 ```
 
 **🎯 AUTOMATED QUALITY TOOLS PROVIDED:**
+
 - **`.agent/scripts/quality-check.sh`**: Multi-platform quality validation
 - **`.agent/scripts/quality-fix.sh`**: Universal automated issue resolution
 - **`.agent/scripts/pre-commit-hook.sh`**: Prevent quality regressions
 - **`.agent/spec/code-quality.md`**: Comprehensive quality standards
 
 #### **Available Quality Scripts:**
+
 - **add-missing-returns.sh**: Fix S7682 return statement issues
 - **fix-content-type.sh**: Consolidate Content-Type headers
 - **fix-auth-headers.sh**: Standardize Authorization headers
@@ -714,12 +821,14 @@ Include quality metrics in every commit:
 #### **🚀 AUTOMATED FIX CAPABILITIES:**
 
 **🔧 Codacy Auto-Fix:**
+
 - **Functionality**: Automatically applies safe fixes for common code quality issues
 - **Web UI Equivalent**: Same as "Fix Issues" button in Codacy dashboard
 - **Usage**: `bash .agent/scripts/codacy-cli.sh analyze --fix`
 - **Time Savings**: 70-90% reduction in manual fix time
 
 **🎨 Qlty Auto-Formatting:**
+
 - **Functionality**: Universal auto-formatting for 40+ languages with 70+ tools
 - **Features**: Linting, formatting, security scanning, code smells detection
 - **Usage**: `bash .agent/scripts/qlty-cli.sh fmt --all`
@@ -733,6 +842,7 @@ Include quality metrics in every commit:
 | **Qlty** | Universal | 40+ Languages | Formatting, Linting, Smells | ✅ CLI Native |
 
 **🛠️ Unified Access:**
+
 - **Quality CLI Manager**: `bash .agent/scripts/quality-cli-manager.sh analyze codacy-fix`
 - **Direct CLI Access**: Individual tool commands for targeted fixes
 - **Batch Operations**: Run multiple auto-fix tools in sequence

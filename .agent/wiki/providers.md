@@ -5,38 +5,48 @@ This folder contains helper scripts for all 25+ service integrations in the AI-A
 ## 🛠️ **Script Categories**
 
 ### **Infrastructure & Hosting**
+
 - `hostinger-helper.sh` - Shared hosting management
 - `hetzner-helper.sh` - Cloud VPS management
 - `closte-helper.sh` - VPS hosting management
 - `cloudron-helper.sh` - App platform management
 
 ### **Deployment & Orchestration**
+
 - `coolify-helper.sh` - Self-hosted PaaS deployment
 
 ### **Content Management**
+
 - `mainwp-helper.sh` - WordPress management platform
 
 ### **Security & Secrets**
+
 - `vaultwarden-helper.sh` - Password and secrets management
 
 ### **Code Quality & Auditing**
+
 - `code-audit-helper.sh` - Multi-platform code auditing
 
 ### **Version Control & Git Platforms**
+
 - `git-platforms-helper.sh` - GitHub, GitLab, Gitea, Local Git
 
 ### **Email Services**
+
 - `ses-helper.sh` - Amazon SES email delivery
 
 ### **Domain & DNS**
+
 - `spaceship-helper.sh` - Domain registrar with purchasing
 - `101domains-helper.sh` - Domain registrar management
 - `dns-helper.sh` - Multi-provider DNS management
 
 ### **Development & Local**
+
 - `localhost-helper.sh` - Local development with .local domains
 
 ### **Setup & Configuration**
+
 - `setup-wizard-helper.sh` - Intelligent setup wizard
 
 ## 🔧 **Standard Script Structure**
@@ -83,6 +93,7 @@ main "$@"
 ## 🚀 **Usage Patterns**
 
 ### **Standard Commands**
+
 ```bash
 # Help and information
 ./[service]-helper.sh help
@@ -96,6 +107,7 @@ main "$@"
 ```
 
 ### **Common Parameters**
+
 - `account/instance` - Configuration account or instance name
 - `target` - Specific resource (server, domain, repository, etc.)
 - `options` - Additional parameters specific to the operation
@@ -103,17 +115,20 @@ main "$@"
 ## 🛡️ **Security Considerations**
 
 ### **Credential Handling**
+
 - All scripts load credentials from `../configs/[service]-config.json`
 - No credentials are hardcoded in scripts
 - API tokens are validated before use
 - Secure credential storage patterns are followed
 
 ### **Confirmation Prompts**
+
 - Destructive operations require confirmation
 - Purchase operations require explicit confirmation
 - Production environment changes require verification
 
 ### **Error Handling**
+
 - All scripts implement proper error handling
 - Exit codes are consistent (0 = success, 1 = error)
 - Error messages are informative but don't expose sensitive data
@@ -121,6 +136,7 @@ main "$@"
 ## 🔍 **Troubleshooting Scripts**
 
 ### **Common Issues**
+
 ```bash
 # Check script permissions
 ls -la [service]-helper.sh
@@ -134,7 +150,9 @@ chmod +x [service]-helper.sh
 ```
 
 ### **Debug Mode**
+
 Most scripts support verbose output for debugging:
+
 ```bash
 # Enable debug output (if supported)
 DEBUG=1 ./[service]-helper.sh [command]
@@ -155,6 +173,7 @@ When adding new provider scripts, follow these guidelines:
 ## 🎯 **AI Assistant Usage**
 
 AI assistants should:
+
 - **Use helper scripts** instead of direct API calls when possible
 - **Follow confirmation patterns** for destructive operations
 - **Provide clear feedback** to users about operations

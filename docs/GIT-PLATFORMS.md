@@ -7,6 +7,7 @@ Comprehensive Git platform management across GitHub, GitLab, Gitea, and local Gi
 ### **Supported Git Platforms:**
 
 #### **GitHub**
+
 - **Focus**: World's largest code hosting platform
 - **Strengths**: Massive community, excellent CI/CD, comprehensive API
 - **API**: Full REST API v4 with GraphQL support
@@ -14,6 +15,7 @@ Comprehensive Git platform management across GitHub, GitLab, Gitea, and local Gi
 - **Use Case**: Open source projects, team collaboration, enterprise development
 
 #### **GitLab**
+
 - **Focus**: Complete DevOps platform with integrated CI/CD
 - **Strengths**: Built-in CI/CD, security scanning, project management
 - **API**: Comprehensive REST API v4
@@ -21,6 +23,7 @@ Comprehensive Git platform management across GitHub, GitLab, Gitea, and local Gi
 - **Use Case**: Enterprise DevOps, self-hosted solutions, integrated workflows
 
 #### **Gitea**
+
 - **Focus**: Lightweight self-hosted Git service
 - **Strengths**: Minimal resource usage, easy deployment, Git-focused
 - **API**: REST API compatible with GitHub API
@@ -28,6 +31,7 @@ Comprehensive Git platform management across GitHub, GitLab, Gitea, and local Gi
 - **Use Case**: Self-hosted Git, private repositories, lightweight deployments
 
 #### **Local Git**
+
 - **Focus**: Local repository management and initialization
 - **Strengths**: Offline development, full control, no external dependencies
 - **Integration**: Seamless integration with remote platforms
@@ -36,6 +40,7 @@ Comprehensive Git platform management across GitHub, GitLab, Gitea, and local Gi
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
@@ -44,6 +49,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **Multi-Platform Configuration:**
+
 ```json
 {
   "platforms": {
@@ -74,6 +80,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ### **API Token Setup:**
 
 #### **GitHub Personal Access Token:**
+
 1. Go to **Settings** → **Developer settings** → **Personal access tokens**
 2. Generate new token (classic) with permissions:
    - `repo` (Full control of private repositories)
@@ -82,6 +89,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set github YOUR_TOKEN`
 
 #### **GitLab Personal Access Token:**
+
 1. Go to **User Settings** → **Access Tokens**
 2. Create personal access token with scopes:
    - `api` (Access the authenticated user's API)
@@ -90,6 +98,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set gitlab YOUR_TOKEN`
 
 #### **Gitea Access Token:**
+
 1. Go to **Settings** → **Applications**
 2. Generate new access token
 3. **Store securely**: `bash .agent/scripts/setup-local-api-keys.sh set gitea YOUR_TOKEN`
@@ -97,6 +106,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all configured platforms
 ./providers/git-platforms-helper.sh platforms
@@ -108,6 +118,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **Repository Management:**
+
 ```bash
 # Create new repositories
 ./providers/git-platforms-helper.sh github-create personal my-new-repo "Project description" false
@@ -120,6 +131,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **Local Git Management:**
+
 ```bash
 # Initialize local repository
 ./providers/git-platforms-helper.sh local-init ~/projects my-new-project
@@ -132,6 +144,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **Repository Auditing:**
+
 ```bash
 # Audit repositories across platforms
 ./providers/git-platforms-helper.sh audit github personal
@@ -142,6 +155,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Token scoping**: Use tokens with minimal required permissions
 - **Regular rotation**: Rotate API tokens every 6-12 months
 - **Secure storage**: Store tokens in `~/.config/ai-assisted-devops/` (user-private only)
@@ -150,6 +164,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 - **Never in repository**: API tokens must never be stored in repository files
 
 ### **Repository Security:**
+
 ```bash
 # Security recommendations from audit
 ./providers/git-platforms-helper.sh audit github personal
@@ -163,6 +178,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **Access Control:**
+
 - **Branch protection**: Enable branch protection rules for main branches
 - **Required reviews**: Require code reviews for pull requests
 - **Status checks**: Require status checks to pass before merging
@@ -174,6 +190,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ### **Available MCP Servers:**
 
 #### **GitHub MCP Server:**
+
 ```bash
 # Start GitHub MCP server
 ./providers/git-platforms-helper.sh start-mcp github 3006
@@ -191,6 +208,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 #### **GitLab MCP Server:**
+
 ```bash
 # Start GitLab MCP server (if available)
 ./providers/git-platforms-helper.sh start-mcp gitlab 3007
@@ -209,7 +227,9 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 ```
 
 ### **AI Assistant Capabilities:**
+
 With MCP integration, AI assistants can:
+
 - **Repository management**: Create, clone, and manage repositories
 - **Code analysis**: Analyze repository contents and structure
 - **Issue tracking**: Manage issues and pull requests
@@ -220,6 +240,7 @@ With MCP integration, AI assistants can:
 ## 🔄 **Development Workflows**
 
 ### **Project Initialization Workflow:**
+
 ```bash
 # Complete project setup workflow
 1. Create local repository: local-init ~/projects my-new-project
@@ -229,6 +250,7 @@ With MCP integration, AI assistants can:
 ```
 
 ### **Multi-Platform Workflow:**
+
 ```bash
 # Mirror repository across platforms
 1. Create on GitHub: github-create personal my-project "Description" false
@@ -240,6 +262,7 @@ With MCP integration, AI assistants can:
 ```
 
 ### **Team Collaboration Workflow:**
+
 ```bash
 # Set up team repository
 1. Create organization repository: github-create organization team-project "Team project" true
@@ -252,6 +275,7 @@ With MCP integration, AI assistants can:
 ## 📚 **Best Practices**
 
 ### **Repository Organization:**
+
 1. **Consistent naming**: Use consistent naming conventions across platforms
 2. **Clear descriptions**: Provide clear, descriptive repository descriptions
 3. **Proper licensing**: Include appropriate licenses for your projects
@@ -259,6 +283,7 @@ With MCP integration, AI assistants can:
 5. **Issue templates**: Use issue and PR templates for consistency
 
 ### **Branch Management:**
+
 - **Protected branches**: Protect main/master branches from direct pushes
 - **Feature branches**: Use feature branches for development
 - **Naming conventions**: Use consistent branch naming conventions
@@ -266,6 +291,7 @@ With MCP integration, AI assistants can:
 - **Release branches**: Use release branches for production deployments
 
 ### **Collaboration:**
+
 - **Code reviews**: Require code reviews for all changes
 - **Clear commits**: Write clear, descriptive commit messages
 - **Issue tracking**: Use issues to track bugs and feature requests
@@ -275,6 +301,7 @@ With MCP integration, AI assistants can:
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Repository Management:**
+
 - **Repository creation**: AI can create repositories across platforms
 - **Code analysis**: AI can analyze repository structure and content
 - **Issue management**: AI can create and manage issues and PRs
@@ -282,6 +309,7 @@ With MCP integration, AI assistants can:
 - **Team management**: AI can manage team access and permissions
 
 ### **Development Assistance:**
+
 - **Project scaffolding**: AI can initialize projects with templates
 - **Code review**: AI can assist with code review processes
 - **Documentation**: AI can generate and update documentation

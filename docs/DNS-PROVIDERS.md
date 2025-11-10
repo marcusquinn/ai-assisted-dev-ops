@@ -5,12 +5,14 @@ This guide covers DNS management across multiple providers including Cloudflare,
 ## 🏢 **DNS Providers Overview**
 
 ### **Supported DNS Providers:**
+
 - **Cloudflare DNS** - Global CDN with comprehensive DNS management
 - **Namecheap DNS** - Domain registrar with integrated DNS hosting
 - **Route 53** - AWS DNS service with advanced routing capabilities
 - **Other DNS Providers** - Generic DNS provider support
 
 ### **Unified DNS Management:**
+
 The DNS helper provides a consistent interface across all providers while maintaining provider-specific configurations and capabilities.
 
 ## 🔧 **Configuration**
@@ -18,6 +20,7 @@ The DNS helper provides a consistent interface across all providers while mainta
 ### **Provider-Specific Configurations:**
 
 #### **Cloudflare DNS:**
+
 ```bash
 # Copy template
 cp configs/cloudflare-dns-config.json.txt configs/cloudflare-dns-config.json
@@ -36,6 +39,7 @@ cp configs/cloudflare-dns-config.json.txt configs/cloudflare-dns-config.json
 ```
 
 #### **Namecheap DNS:**
+
 ```bash
 # Copy template
 cp configs/namecheap-dns-config.json.txt configs/namecheap-dns-config.json
@@ -55,6 +59,7 @@ cp configs/namecheap-dns-config.json.txt configs/namecheap-dns-config.json
 ```
 
 #### **Route 53:**
+
 ```bash
 # Copy template
 cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
@@ -76,6 +81,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ## 🚀 **Usage Examples**
 
 ### **Unified DNS Commands:**
+
 ```bash
 # List DNS records across providers
 ./providers/dns-helper.sh records cloudflare personal example.com
@@ -97,6 +103,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ### **Provider-Specific Features:**
 
 #### **Cloudflare Advanced Features:**
+
 ```bash
 # Enable Cloudflare proxy
 ./providers/dns-helper.sh proxy-enable cloudflare personal example.com record-id
@@ -109,6 +116,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ```
 
 #### **Route 53 Advanced Features:**
+
 ```bash
 # Create health check
 ./providers/dns-helper.sh health-check route53 production example.com https://example.com/health
@@ -123,6 +131,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Token scoping**: Use API tokens with minimal required permissions
 - **Regular rotation**: Rotate API credentials every 6-12 months
 - **Secure storage**: Store credentials in secure configuration files
@@ -130,6 +139,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 - **IP restrictions**: Use IP restrictions where supported
 
 ### **DNS Security:**
+
 ```bash
 # Enable DNSSEC (where supported)
 ./providers/dns-helper.sh enable-dnssec cloudflare personal example.com
@@ -142,6 +152,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ```
 
 ### **Access Control:**
+
 - **Multi-factor authentication**: Enable MFA on all DNS provider accounts
 - **Role-based access**: Use role-based access control where available
 - **Audit logging**: Enable audit logging for all DNS changes
@@ -153,6 +164,7 @@ cp configs/route53-dns-config.json.txt configs/route53-dns-config.json
 ### **Common Issues:**
 
 #### **DNS Propagation:**
+
 ```bash
 # Check DNS propagation
 dig @8.8.8.8 example.com
@@ -166,6 +178,7 @@ nslookup example.com 1.1.1.1
 ```
 
 #### **API Authentication:**
+
 ```bash
 # Test API connectivity
 ./providers/dns-helper.sh test-auth cloudflare personal
@@ -177,6 +190,7 @@ nslookup example.com 1.1.1.1
 ```
 
 #### **Record Conflicts:**
+
 ```bash
 # Check for conflicting records
 ./providers/dns-helper.sh conflict-check cloudflare personal example.com
@@ -191,6 +205,7 @@ nslookup example.com 1.1.1.1
 ## 📊 **Monitoring & Analytics**
 
 ### **DNS Health Monitoring:**
+
 ```bash
 # Monitor DNS resolution
 ./providers/dns-helper.sh monitor-resolution example.com
@@ -203,6 +218,7 @@ nslookup example.com 1.1.1.1
 ```
 
 ### **Analytics & Reporting:**
+
 ```bash
 # Get DNS query analytics (Cloudflare)
 ./providers/dns-helper.sh analytics cloudflare personal example.com
@@ -217,6 +233,7 @@ nslookup example.com 1.1.1.1
 ## 🔄 **Migration & Backup**
 
 ### **DNS Migration:**
+
 ```bash
 # Export DNS records from source
 ./providers/dns-helper.sh export namecheap personal example.com > source-dns.json
@@ -229,6 +246,7 @@ nslookup example.com 1.1.1.1
 ```
 
 ### **Backup & Restore:**
+
 ```bash
 # Backup DNS configuration
 ./providers/dns-helper.sh backup cloudflare personal example.com
@@ -243,6 +261,7 @@ nslookup example.com 1.1.1.1
 ## 📚 **Best Practices**
 
 ### **DNS Management:**
+
 1. **Consistent TTL values**: Use appropriate TTL values for different record types
 2. **Change documentation**: Document all DNS changes with reasons
 3. **Testing procedures**: Test DNS changes in staging environments first
@@ -250,6 +269,7 @@ nslookup example.com 1.1.1.1
 5. **Monitoring**: Monitor DNS resolution and performance continuously
 
 ### **Multi-Provider Strategy:**
+
 - **Primary/secondary**: Use primary and secondary DNS providers for redundancy
 - **Geographic distribution**: Use different providers in different regions
 - **Load balancing**: Distribute DNS queries across multiple providers
@@ -257,6 +277,7 @@ nslookup example.com 1.1.1.1
 - **Cost optimization**: Balance cost and performance across providers
 
 ### **Automation:**
+
 - **Infrastructure as Code**: Manage DNS configurations as code
 - **CI/CD integration**: Integrate DNS changes into deployment pipelines
 - **Automated testing**: Test DNS configurations automatically
@@ -266,6 +287,7 @@ nslookup example.com 1.1.1.1
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated DNS Management:**
+
 - **Intelligent routing**: AI-driven DNS routing decisions
 - **Performance optimization**: Automated DNS performance optimization
 - **Security monitoring**: Automated DNS security monitoring
@@ -273,6 +295,7 @@ nslookup example.com 1.1.1.1
 - **Incident response**: Automated DNS incident detection and response
 
 ### **Multi-Provider Orchestration:**
+
 - **Provider selection**: AI-driven provider selection based on performance
 - **Load balancing**: Intelligent load balancing across DNS providers
 - **Failover management**: Automated failover between DNS providers

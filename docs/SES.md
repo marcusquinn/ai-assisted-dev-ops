@@ -5,6 +5,7 @@ Amazon Simple Email Service (SES) is a cloud-based email sending service designe
 ## 🏢 **Provider Overview**
 
 ### **Amazon SES Characteristics:**
+
 - **Service Type**: Cloud-based email delivery service
 - **Global Regions**: Multiple AWS regions available
 - **Authentication**: AWS IAM credentials required
@@ -14,6 +15,7 @@ Amazon Simple Email Service (SES) is a cloud-based email sending service designe
 - **Compliance**: GDPR, HIPAA, and other compliance standards
 
 ### **Best Use Cases:**
+
 - **Transactional emails** (order confirmations, password resets)
 - **Marketing campaigns** with high deliverability requirements
 - **Application notifications** and alerts
@@ -24,6 +26,7 @@ Amazon Simple Email Service (SES) is a cloud-based email sending service designe
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/ses-config.json.txt configs/ses-config.json
@@ -32,6 +35,7 @@ cp configs/ses-config.json.txt configs/ses-config.json
 ```
 
 ### **Multi-Account Configuration:**
+
 ```json
 {
   "accounts": {
@@ -56,6 +60,7 @@ cp configs/ses-config.json.txt configs/ses-config.json
 ```
 
 ### **AWS CLI Setup:**
+
 ```bash
 # Install AWS CLI
 brew install awscli  # macOS
@@ -71,6 +76,7 @@ aws --version
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all SES accounts
 ./providers/ses-helper.sh accounts
@@ -86,6 +92,7 @@ aws --version
 ```
 
 ### **Identity Management:**
+
 ```bash
 # List verified email addresses
 ./providers/ses-helper.sh verified-emails production
@@ -104,6 +111,7 @@ aws --version
 ```
 
 ### **DKIM Configuration:**
+
 ```bash
 # Get DKIM attributes
 ./providers/ses-helper.sh dkim production yourdomain.com
@@ -116,6 +124,7 @@ aws --version
 ```
 
 ### **Reputation & Deliverability:**
+
 ```bash
 # Check account reputation
 ./providers/ses-helper.sh reputation production
@@ -131,6 +140,7 @@ aws --version
 ```
 
 ### **Testing & Debugging:**
+
 ```bash
 # Send test email
 ./providers/ses-helper.sh send-test production noreply@yourdomain.com test@example.com "Test Subject" "Test message body"
@@ -149,6 +159,7 @@ aws --version
 ## 🛡️ **Security Best Practices**
 
 ### **AWS Credentials Security:**
+
 - **IAM users**: Create dedicated IAM users for SES access
 - **Minimal permissions**: Grant only required SES permissions
 - **Access keys rotation**: Rotate access keys regularly
@@ -156,6 +167,7 @@ aws --version
 - **Environment separation**: Use different AWS accounts for prod/staging
 
 ### **SES-Specific Security:**
+
 ```bash
 # Recommended IAM policy for SES helper script
 {
@@ -184,6 +196,7 @@ aws --version
 ```
 
 ### **Email Security:**
+
 - **DKIM signing**: Enable DKIM for all verified domains
 - **SPF records**: Configure proper SPF records
 - **DMARC policy**: Implement DMARC for domain protection
@@ -195,6 +208,7 @@ aws --version
 ### **Common Issues:**
 
 #### **Authentication Errors:**
+
 ```bash
 # Check AWS credentials
 aws sts get-caller-identity
@@ -207,6 +221,7 @@ aws configure get region
 ```
 
 #### **Sending Limits:**
+
 ```bash
 # Check current quota
 ./providers/ses-helper.sh quota production
@@ -218,6 +233,7 @@ aws configure get region
 ```
 
 #### **Delivery Issues:**
+
 ```bash
 # Check reputation
 ./providers/ses-helper.sh reputation production
@@ -233,6 +249,7 @@ aws configure get region
 ```
 
 #### **Verification Problems:**
+
 ```bash
 # Check verification status
 ./providers/ses-helper.sh verify-identity production yourdomain.com
@@ -247,6 +264,7 @@ dig TXT _amazonses.yourdomain.com
 ## 📊 **Monitoring & Analytics**
 
 ### **Key Metrics to Monitor:**
+
 ```bash
 # Daily monitoring routine
 ./providers/ses-helper.sh monitor production
@@ -260,6 +278,7 @@ dig TXT _amazonses.yourdomain.com
 ```
 
 ### **Automated Monitoring:**
+
 ```bash
 # Create monitoring script
 #!/bin/bash
@@ -275,6 +294,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 ```
 
 ### **Performance Optimization:**
+
 - **Send rate optimization**: Gradually increase sending volume
 - **List hygiene**: Remove bounced and complained addresses
 - **Content optimization**: Avoid spam trigger words
@@ -284,6 +304,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 ## 🔄 **Backup & Compliance**
 
 ### **Configuration Backup:**
+
 ```bash
 # Export SES configuration
 ./providers/ses-helper.sh audit production > ses-config-backup-$(date +%Y%m%d).txt
@@ -294,6 +315,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 ```
 
 ### **Compliance Considerations:**
+
 - **Data retention**: Configure appropriate data retention policies
 - **Bounce processing**: Implement proper bounce and complaint handling
 - **Unsubscribe handling**: Provide easy unsubscribe mechanisms
@@ -303,6 +325,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 ## 📚 **Best Practices**
 
 ### **Email Deliverability:**
+
 1. **Warm up gradually**: Start with small volumes and increase slowly
 2. **Monitor metrics**: Keep bounce rate < 5%, complaint rate < 0.1%
 3. **Clean lists regularly**: Remove invalid and unengaged addresses
@@ -310,6 +333,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 5. **Content quality**: Avoid spam triggers and maintain good content
 
 ### **Account Management:**
+
 - **Separate environments**: Use different accounts for prod/staging
 - **Monitor quotas**: Track sending limits and request increases proactively
 - **Handle bounces**: Process bounces and complaints promptly
@@ -317,6 +341,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 - **Documentation**: Document all configurations and procedures
 
 ### **Development Workflow:**
+
 - **Test thoroughly**: Use SES simulator addresses for testing
 - **Staging environment**: Test all changes in staging first
 - **Gradual rollout**: Deploy email changes gradually
@@ -326,6 +351,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Email Management:**
+
 - **Delivery monitoring**: Automated monitoring of email delivery metrics
 - **Reputation tracking**: Automated reputation and compliance monitoring
 - **Issue detection**: Automated detection of delivery issues
@@ -333,6 +359,7 @@ STATS=$(./providers/ses-helper.sh stats $ACCOUNT)
 - **Performance optimization**: Automated recommendations for improvement
 
 ### **Troubleshooting Automation:**
+
 - **Delivery debugging**: Automated diagnosis of delivery issues
 - **Configuration validation**: Automated SES configuration checks
 - **Performance analysis**: Automated analysis of sending patterns

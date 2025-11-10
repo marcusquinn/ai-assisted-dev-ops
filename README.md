@@ -44,7 +44,9 @@ A comprehensive, production-ready framework that gives your AI assistant seamles
 ## 🎯 **What This Framework Does**
 
 ### **🤖 AI-First Infrastructure Management**
+
 This framework transforms how you manage infrastructure by enabling your AI assistant to:
+
 - **SSH into any server** with simple, standardized commands
 - **Execute commands remotely** across all your infrastructure providers
 - **Access hosting provider APIs** (Hostinger, Hetzner, Closte, Coolify, etc.)
@@ -61,7 +63,9 @@ This framework transforms how you manage infrastructure by enabling your AI assi
 - **Query WordPress databases** directly via LocalWP MCP
 
 ### **🏗️ Infrastructure Unification**
+
 Instead of remembering different commands, APIs, and access methods for each provider, you get:
+
 - **Unified command interface** - Same patterns across all providers
 - **Standardized configurations** - Consistent setup across all services
 - **Automated SSH management** - Generate and manage SSH configs automatically
@@ -69,7 +73,9 @@ Instead of remembering different commands, APIs, and access methods for each pro
 - **Security-first design** - Best practices built into every component
 
 ### **🚀 Real-World Problem Solving**
+
 This framework solves common infrastructure management challenges:
+
 - **Context switching** - No more remembering different provider interfaces
 - **Access complexity** - Simplified access to complex infrastructure
 - **Documentation gaps** - AI has access to latest documentation via Context7
@@ -80,6 +86,7 @@ This framework solves common infrastructure management challenges:
 ## 🎁 **What You Get**
 
 ### **🔧 Complete Infrastructure Toolkit**
+
 - **25+ Service Integrations** - Complete DevOps ecosystem including hosting, Git platforms, domains, DNS, email, WordPress, security, code auditing, and development services
 - **Standardized Helper Scripts** - Consistent commands across all providers
 - **SSH Configuration Management** - Automated SSH config generation and management
@@ -88,6 +95,7 @@ This framework solves common infrastructure management challenges:
 - **Local Development Tools** - LocalWP integration with .local domain support
 
 ### **🤖 AI-Ready Infrastructure**
+
 - **Context7 MCP** - Real-time access to latest documentation for thousands of libraries
 - **LocalWP MCP** - Direct WordPress database access for AI assistants
 - **Structured Commands** - AI can easily understand and execute infrastructure tasks
@@ -95,6 +103,7 @@ This framework solves common infrastructure management challenges:
 - **Error Handling** - Clear error messages that AI can understand and act upon
 
 ### **🛡️ Security-First Design**
+
 - **SSH Key Management** - Modern Ed25519 key generation and distribution
 - **API Token Scoping** - Minimal required permissions for each service
 - **Credential Isolation** - Separate configuration files for each provider
@@ -102,6 +111,7 @@ This framework solves common infrastructure management challenges:
 - **Best Practices Enforcement** - Security guidelines built into every component
 
 ### **📈 Production-Ready Features**
+
 - **Multi-Account Support** - Handle multiple accounts per provider
 - **Environment Separation** - Clear separation between dev, staging, and production
 - **Backup Automation** - Automated backup procedures for all services
@@ -111,6 +121,7 @@ This framework solves common infrastructure management challenges:
 ## 📋 **Requirements**
 
 ### System Dependencies
+
 ```bash
 # macOS
 brew install sshpass jq curl mkcert dnsmasq
@@ -125,6 +136,7 @@ sudo yum install sshpass jq curl dnsmasq
 ```
 
 ### SSH Key Setup
+
 ```bash
 # Generate modern Ed25519 SSH key (recommended)
 ssh-keygen -t ed25519 -C "your-email@domain.com"
@@ -136,7 +148,9 @@ ssh-keygen -t rsa -b 4096 -C "your-email@domain.com"
 ## 🤔 **Why This Framework?**
 
 ### **The Problem: Infrastructure Chaos**
+
 Modern development involves managing infrastructure across multiple providers:
+
 - **Hostinger** for shared hosting and domains
 - **Hetzner Cloud** for production VPS servers
 - **Cloudflare** for DNS and CDN
@@ -145,6 +159,7 @@ Modern development involves managing infrastructure across multiple providers:
 - **AWS/DigitalOcean** for cloud services
 
 Each provider has different:
+
 - **Access methods** (SSH keys vs passwords vs API tokens)
 - **Command interfaces** (different APIs, different SSH ports)
 - **Configuration formats** (JSON vs YAML vs environment variables)
@@ -152,7 +167,9 @@ Each provider has different:
 - **Documentation locations** (scattered across different sites)
 
 ### **The Solution: Unified AI-Accessible Interface**
+
 This framework provides:
+
 - **One command pattern** for all providers: `./providers/[provider]-helper.sh [action] [target]`
 - **Consistent configuration** format across all services
 - **Standardized security** practices for all providers
@@ -161,7 +178,9 @@ This framework provides:
 - **Automated setup** and configuration management
 
 ### **Real-World Example**
+
 Instead of remembering:
+
 ```bash
 # Different for each provider
 ssh -p 65002 u123456789@hostinger-server  # Hostinger
@@ -170,6 +189,7 @@ sshpass -f ~/.ssh/closte_password ssh root@closte-server  # Closte
 ```
 
 You get:
+
 ```bash
 # Same pattern for all providers
 ./providers/hostinger-helper.sh connect example.com
@@ -182,7 +202,9 @@ Your AI assistant can now manage your entire infrastructure with consistent, pre
 ## 🏗️ **Architecture**
 
 ### 1. **Provider-Specific Helpers**
+
 Individual scripts for each hosting provider with detailed functionality:
+
 - `hostinger-helper.sh` - Shared hosting management
 - `hetzner-helper.sh` - VPS server management
 - `closte-helper.sh` - Closte.com VPS servers
@@ -201,17 +223,23 @@ Individual scripts for each hosting provider with detailed functionality:
 - `digitalocean-helper.sh` - DigitalOcean droplets
 
 ### 2. **Global Server Helper**
+
 Unified access point for all servers across all providers:
+
 - `servers-helper.sh` - One script to rule them all
 
 ### 3. **MCP Integration**
+
 Model Context Protocol servers for AI assistant integration:
+
 - Provider-specific MCP servers
 - Standardized API access
 - Real-time infrastructure management
 
 ### 4. **SSH Configuration Management**
+
 Automated SSH config generation and management:
+
 - Dynamic SSH config updates
 - Key standardization across servers
 - Secure access patterns
@@ -243,6 +271,7 @@ ai-assisted-dev-ops/
 ### **🎯 Directory Purposes**
 
 #### **User-Facing Directories:**
+
 - **`providers/`** - 25+ service integration scripts (hosting, domains, DNS, security, etc.)
 - **`configs/`** - Configuration templates and examples for all services
 - **`docs/`** - Comprehensive documentation for users and administrators
@@ -250,6 +279,7 @@ ai-assisted-dev-ops/
 - **`ssh/`** - SSH key management and connection utilities
 
 #### **AI Agent Directories:**
+
 - **`.agent/scripts/`** - Quality automation tools and development utilities
 - **`.agent/spec/`** - Technical specifications and quality standards
 - **`.agent/wiki/`** - Internal knowledge base and implementation details
@@ -259,24 +289,29 @@ ai-assisted-dev-ops/
 ## 🔒 **Secure AI Template System**
 
 ### **Template Deployment (Automatic)**
+
 The setup script automatically deploys minimal, secure AGENTS.md templates to prevent prompt injection attacks:
 
 #### **Home Directory Template (`~/AGENTS.md`)**
+
 - **Minimal configuration** with references to authoritative repository
 - **Security-focused** to prevent prompt injection vulnerabilities
 - **Redirects AI assistants** to use the framework's working directories
 
 #### **Git Directory Template (`~/git/AGENTS.md`)**
+
 - **DevOps-focused** minimal configuration for git operations
 - **References framework** for all infrastructure operations
 - **Maintains security** by avoiding detailed instructions in user space
 
 #### **Agent Directory (`~/.agent/README.md`)**
+
 - **Redirects to authoritative** `.agent/` directory in the framework
 - **Prevents misuse** of home-level agent directories
 - **Maintains centralized control** over AI assistant operations
 
 ### **Security Mitigations**
+
 - **Minimal content**: Templates contain only essential references
 - **Authoritative source**: All detailed instructions remain in the repository
 - **Prompt injection protection**: No operational instructions in user-editable files
@@ -285,6 +320,7 @@ The setup script automatically deploys minimal, secure AGENTS.md templates to pr
 ## 🚀 **Quick Start**
 
 ### 1. Clone to Recommended Location
+
 ```bash
 # Clone to the standard location for optimal AI assistant integration
 mkdir -p ~/git
@@ -294,12 +330,14 @@ cd ai-assisted-dev-ops
 ```
 
 ### 2. Run Setup (Includes AI Template Deployment)
+
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
 **The setup script will:**
+
 - Verify you're in the recommended location (`~/git/ai-assisted-dev-ops`)
 - Check system requirements and dependencies
 - Set up SSH keys and configurations
@@ -308,6 +346,7 @@ chmod +x setup.sh
 - Set up `.agent/` directory structure with security mitigations
 
 ### 3. Configure Your Providers
+
 ```bash
 # Copy sample configs and customize
 cp configs/hostinger-config.json.txt configs/hostinger-config.json
@@ -316,6 +355,7 @@ cp configs/hetzner-config.json.txt configs/hetzner-config.json
 ```
 
 ### 3. Test Access
+
 ```bash
 # List all servers across all providers
 ./servers-helper.sh hostinger list
@@ -428,6 +468,7 @@ This structure ensures optimal AI agent understanding and provides a foundation 
 ## 📊 **Framework Statistics**
 
 ### **Comprehensive Coverage**
+
 - **📁 Total Files**: 75+ files across all categories
 - **📚 Documentation**: 25+ markdown files with 18,000+ lines
 - **🔧 Provider Scripts**: 25+ helper scripts for service integrations
@@ -436,6 +477,7 @@ This structure ensures optimal AI agent understanding and provides a foundation 
 - **🛡️ Security Files**: Comprehensive .gitignore and security standards
 
 ### **Service Integration Scope**
+
 - **🏗️ Infrastructure Providers**: 4 hosting and infrastructure services
 - **🚀 Deployment Platforms**: 1 comprehensive deployment solution
 - **🎯 Content Management**: 1 WordPress management platform
@@ -452,12 +494,14 @@ This structure ensures optimal AI agent understanding and provides a foundation 
 This framework is continuously analyzed by multiple code quality and security platforms:
 
 ### **Integrated Analysis Platforms**
+
 - **🤖 CodeRabbit** - AI-powered code reviews and security analysis
 - **📊 CodeFactor** - Automated code quality grading and metrics
 - **🛡️ Codacy** - Code quality, security, and coverage analysis
 - **⚡ SonarCloud** - Professional security and maintainability analysis
 
 ### **Quality Metrics (INDUSTRY-LEADING ACHIEVEMENTS)**
+
 - **🏆 Multi-Platform Excellence**: A-grade ratings across SonarCloud, CodeFactor, and Codacy
 - **🎯 ZERO TECHNICAL DEBT ACHIEVED**: 100% issue resolution (349 → 0 issues)
 - **⚡ 100% Technical Debt Elimination**: From 805 to 0 minutes through systematic bulk operations
@@ -469,6 +513,7 @@ This framework is continuously analyzed by multiple code quality and security pl
 - **🔧 Automated Quality Assurance**: Pre-commit hooks, quality checks, and universal fix scripts
 
 ### **Automated Analysis**
+
 - **✅ GitHub Actions**: Framework validation on every commit (currently passing)
 - **🔍 Structure Validation**: Automated verification of framework completeness
 - **📊 Statistics Reporting**: Comprehensive metrics on framework components
@@ -482,6 +527,7 @@ This framework is continuously analyzed by multiple code quality and security pl
 ## 🔧 **Configuration Examples**
 
 ### Hostinger Configuration
+
 ```json
 {
   "sites": {
@@ -501,6 +547,7 @@ This framework is continuously analyzed by multiple code quality and security pl
 ```
 
 ### Hetzner Configuration
+
 ```json
 {
   "accounts": {
@@ -521,7 +568,9 @@ This framework is continuously analyzed by multiple code quality and security pl
 ## 🤖 **AI Assistant Integration**
 
 ### Context Documentation
+
 Create `ai-context.md` (or customize the template) with:
+
 ```markdown
 # Server Infrastructure Context
 
@@ -542,7 +591,9 @@ Create `ai-context.md` (or customize the template) with:
 ```
 
 ### Shell Aliases
+
 Add to your `.zshrc` or `.bashrc` (adjust path as needed):
+
 ```bash
 # Global server management (adjust path to your installation)
 alias servers='~/git/ai-assistant-server-access/servers-helper.sh'
@@ -556,18 +607,21 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 ## 🔐 **Security Best Practices**
 
 ### 1. **Credential Management**
+
 - Store API tokens in separate config files
 - Use password files for SSH passwords (never hardcode)
 - Set proper file permissions (600 for configs)
 - Add config files to `.gitignore`
 
 ### 2. **SSH Key Management**
+
 - Use Ed25519 keys (modern, secure, fast)
 - Standardize keys across all servers
 - Regular key rotation and audit
 - Remove old/unused keys
 
 ### 3. **Access Control**
+
 - Principle of least privilege
 - Regular access audits
 - Monitor for unauthorized access
@@ -576,6 +630,7 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 ## 📚 **Advanced Features**
 
 ### MCP Server Integration
+
 ```bash
 # Start LocalWP MCP server for WordPress database access
 ./providers/localhost-helper.sh start-mcp
@@ -585,6 +640,7 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 ```
 
 ### SSH Management
+
 ```bash
 # Generate SSH configs for Coolify servers
 ./providers/coolify-helper.sh generate-ssh-configs
@@ -597,6 +653,7 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 ```
 
 ### Multi-Account Support
+
 ```bash
 # List servers from different Hetzner accounts
 ./providers/hetzner-helper.sh list main
@@ -610,13 +667,16 @@ alias coolify='~/git/ai-assistant-server-access/providers/coolify-helper.sh'
 ## 🛠️ **Customization**
 
 ### Adding New Providers
+
 1. Create `providers/newprovider-helper.sh`
 2. Add configuration template in `configs/`
 3. Update `servers-helper.sh` to include new provider
 4. Add MCP integration if API available
 
 ### Custom Commands
+
 Add provider-specific commands to helper scripts:
+
 ```bash
 case "$1" in
     "deploy")
@@ -634,12 +694,14 @@ esac
 ## 🔍 **Troubleshooting**
 
 ### Common Issues
+
 - **SSH timeouts**: Check network connectivity and SSH config
 - **Permission denied**: Verify SSH keys and file permissions
 - **API errors**: Check API tokens and rate limits
 - **MCP connection issues**: Verify MCP server configuration
 
 ### Debug Mode
+
 ```bash
 # Enable debug output
 export DEBUG=1
@@ -657,27 +719,33 @@ export DEBUG=1
 ## 📄 **License & Attribution**
 
 ### **MIT License**
+
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ### **Attribution**
+
 **Created by Marcus Quinn** - Original author and maintainer
 **Copyright © Marcus Quinn 2025** - All rights reserved under MIT License
 
 When using, forking, or building upon this work, please maintain attribution to the original author. This helps support continued development and gives credit where it's due.
 
 ### **Contributing**
+
 Contributions are welcome! When contributing:
+
 - Maintain the existing code style and patterns
 - Add comprehensive documentation for new features
 - Include proper attribution in commit messages
 - Follow the security guidelines outlined in `.agent/spec/security.md`
 
 ### **Commercial Use**
+
 This framework is free for commercial use under the MIT License. Companies and individuals are encouraged to use, modify, and distribute this software while maintaining the original copyright notice.
 
 ## 🎉 **Summary: What This Framework Achieves**
 
 ### **🎯 For You:**
+
 - **Unified Infrastructure Management** - One interface for all your servers and services
 - **AI-Powered Automation** - Your AI assistant can now manage your entire infrastructure
 - **Time Savings** - No more context switching between different provider interfaces
@@ -685,6 +753,7 @@ This framework is free for commercial use under the MIT License. Companies and i
 - **Enhanced Security** - Built-in security best practices across all providers
 
 ### **🤖 For Your AI Assistant:**
+
 - **Structured Access** - Clear, consistent commands across all infrastructure
 - **Real-time Documentation** - Context7 MCP provides latest documentation for all tools
 - **Database Access** - Direct WordPress database queries via LocalWP MCP
@@ -692,6 +761,7 @@ This framework is free for commercial use under the MIT License. Companies and i
 - **Learning Capability** - Comprehensive logging for AI to learn from operations
 
 ### **🏗️ For Your Infrastructure:**
+
 - **Standardized Management** - Consistent patterns across all providers
 - **Security Enforcement** - Best practices built into every component
 - **Scalable Architecture** - Easy to add new providers and services
@@ -699,6 +769,7 @@ This framework is free for commercial use under the MIT License. Companies and i
 - **Community Driven** - Open source with community contributions
 
 ### **🚀 Get Started in Minutes:**
+
 1. **Clone the repository**
 2. **Run the setup script**: `./setup.sh`
 3. **Configure your providers**: Copy and edit configuration templates
@@ -708,5 +779,7 @@ This framework is free for commercial use under the MIT License. Companies and i
 ---
 
 **🎯 This framework transforms your AI assistant into a powerful infrastructure management tool, giving you seamless access to all your servers and services through simple, standardized commands.**
+
 # Trigger GitHub Actions
+
 # Test GitHub Actions with Codacy Integration

@@ -5,6 +5,7 @@
 ## 🏢 **Provider Overview**
 
 ### **101domains Characteristics:**
+
 - **Service Type**: Domain registrar and DNS hosting
 - **TLD Coverage**: Extensive coverage of global and specialty TLDs
 - **API Quality**: Comprehensive REST API with detailed documentation
@@ -14,6 +15,7 @@
 - **Global Presence**: International domain extensions and local presence
 
 ### **Best Use Cases:**
+
 - **Large domain portfolios** with diverse TLD requirements
 - **International businesses** needing global TLD coverage
 - **Domain resellers** and agencies managing client domains
@@ -24,6 +26,7 @@
 ## 🔧 **Configuration**
 
 ### **Setup Configuration:**
+
 ```bash
 # Copy template
 cp configs/101domains-config.json.txt configs/101domains-config.json
@@ -32,6 +35,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Multi-Account Configuration:**
+
 ```json
 {
   "accounts": {
@@ -56,6 +60,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **API Credentials Setup:**
+
 1. **Login to 101domains Control Panel**
 2. **Navigate to API Management**
 3. **Generate API Key and Secret**
@@ -66,6 +71,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ## 🚀 **Usage Examples**
 
 ### **Basic Commands:**
+
 ```bash
 # List all 101domains accounts
 ./providers/101domains-helper.sh accounts
@@ -81,6 +87,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **DNS Management:**
+
 ```bash
 # List DNS records
 ./providers/101domains-helper.sh dns-records personal example.com
@@ -96,6 +103,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Nameserver Management:**
+
 ```bash
 # Get current nameservers
 ./providers/101domains-helper.sh nameservers personal example.com
@@ -108,6 +116,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Domain Management:**
+
 ```bash
 # Check domain availability
 ./providers/101domains-helper.sh check-availability personal newdomain.com
@@ -126,6 +135,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Privacy Management:**
+
 ```bash
 # Check privacy status
 ./providers/101domains-helper.sh privacy-status personal example.com
@@ -138,6 +148,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Monitoring & Automation:**
+
 ```bash
 # Monitor domain expiration (30 days warning)
 ./providers/101domains-helper.sh monitor-expiration personal 30
@@ -152,6 +163,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ## 🛡️ **Security Best Practices**
 
 ### **API Security:**
+
 - **Secure credentials**: Store API credentials securely
 - **Permission scoping**: Use API keys with minimal required permissions
 - **Regular rotation**: Rotate API credentials every 6-12 months
@@ -159,6 +171,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 - **Environment separation**: Use different credentials for different environments
 
 ### **Domain Security:**
+
 ```bash
 # Enable domain lock
 ./providers/101domains-helper.sh lock personal example.com
@@ -174,6 +187,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 ### **Privacy Protection:**
+
 - **WHOIS privacy**: Enable WHOIS privacy for all domains
 - **Contact privacy**: Use privacy protection for contact information
 - **Admin privacy**: Protect administrative contact details
@@ -184,6 +198,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ### **Common Issues:**
 
 #### **API Authentication Errors:**
+
 ```bash
 # Verify API credentials
 ./providers/101domains-helper.sh accounts
@@ -193,6 +208,7 @@ cp configs/101domains-config.json.txt configs/101domains-config.json
 ```
 
 #### **DNS Management Issues:**
+
 ```bash
 # Check DNS records
 ./providers/101domains-helper.sh dns-records personal example.com
@@ -206,6 +222,7 @@ nslookup example.com 8.8.8.8
 ```
 
 #### **Domain Transfer Issues:**
+
 ```bash
 # Check domain lock status
 ./providers/101domains-helper.sh audit personal example.com
@@ -220,6 +237,7 @@ nslookup example.com 8.8.8.8
 ## 📊 **Monitoring & Analytics**
 
 ### **Domain Portfolio Monitoring:**
+
 ```bash
 # Monitor all domains for expiration
 ./providers/101domains-helper.sh monitor-expiration personal 30
@@ -231,6 +249,7 @@ done
 ```
 
 ### **Privacy Monitoring:**
+
 ```bash
 # Check privacy status for all domains
 for domain in $(./providers/101domains-helper.sh domains personal | awk '{print $1}'); do
@@ -240,6 +259,7 @@ done
 ```
 
 ### **Automated Monitoring:**
+
 ```bash
 # Create comprehensive monitoring script
 #!/bin/bash
@@ -261,6 +281,7 @@ done
 ## 🔄 **Backup & Disaster Recovery**
 
 ### **Configuration Backup:**
+
 ```bash
 # Backup DNS records
 ./providers/101domains-helper.sh dns-records personal example.com > dns-backup-example.com-$(date +%Y%m%d).txt
@@ -273,6 +294,7 @@ done
 ```
 
 ### **Bulk Operations:**
+
 ```bash
 # Backup all domains
 for domain in $(./providers/101domains-helper.sh domains personal | awk '{print $1}'); do
@@ -283,6 +305,7 @@ done
 ## 📚 **Best Practices**
 
 ### **Domain Portfolio Management:**
+
 1. **Centralized monitoring**: Monitor all domains from a central dashboard
 2. **Privacy by default**: Enable privacy protection for all domains
 3. **Regular audits**: Perform regular security and configuration audits
@@ -290,6 +313,7 @@ done
 5. **Change documentation**: Document all domain and DNS changes
 
 ### **Privacy Management:**
+
 - **Default privacy**: Enable privacy protection by default
 - **Regular reviews**: Review privacy settings regularly
 - **Contact updates**: Keep contact information current
@@ -297,6 +321,7 @@ done
 - **Access control**: Limit access to privacy settings
 
 ### **Automation Strategies:**
+
 - **Bulk operations**: Use bulk operations for managing large portfolios
 - **Scheduled monitoring**: Schedule regular monitoring and audits
 - **Alert integration**: Integrate with alerting systems
@@ -306,6 +331,7 @@ done
 ## 🎯 **AI Assistant Integration**
 
 ### **Automated Domain Management:**
+
 - **Portfolio monitoring**: Automated monitoring of entire domain portfolio
 - **Privacy compliance**: Automated privacy setting compliance monitoring
 - **Expiration management**: Automated domain renewal and expiration tracking
@@ -313,6 +339,7 @@ done
 - **Change detection**: Automated detection of unauthorized changes
 
 ### **Intelligent Operations:**
+
 - **Bulk management**: Automated bulk operations for large portfolios
 - **Cost optimization**: Automated cost analysis and optimization recommendations
 - **Compliance monitoring**: Automated compliance monitoring for regulations

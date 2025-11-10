@@ -5,6 +5,7 @@ This directory is designated for AI assistants to store persistent memory, conte
 ## 🎯 **Purpose**
 
 AI assistants should use this directory for:
+
 - **Session context** and conversation history
 - **Learning data** from previous operations
 - **Configuration preferences** discovered during use
@@ -15,6 +16,7 @@ AI assistants should use this directory for:
 ## 📋 **Usage Guidelines**
 
 ### **✅ DO Use This Directory For:**
+
 - Persistent context that should survive between sessions
 - Learning from successful operations and patterns
 - Storing user preferences and customizations
@@ -23,6 +25,7 @@ AI assistants should use this directory for:
 - Caching frequently used data and configurations
 
 ### **❌ DON'T Use This Directory For:**
+
 - Sensitive credentials or passwords (use secure storage)
 - Large binary files or media
 - Temporary working files (use .agent/tmp/ instead)
