@@ -9,6 +9,8 @@
 - Committing credentials to repository
 - Storing secrets in configuration files tracked by Git
 - Sharing API keys in documentation or comments
+- **Including API keys in commit messages** (CRITICAL VIOLATION)
+- Exposing credentials in Git history or commit metadata
 
 #### **✅ REQUIRED PRACTICES:**
 
@@ -74,6 +76,12 @@ configs/service-config.json      // Actual config (gitignored)
 git filter-branch --force --index-filter \
   'git rm --cached --ignore-unmatch path/to/sensitive/file' \
   --prune-empty --tag-name-filter cat -- --all
+
+# Fix commit message with API key
+git reset --hard COMMIT_HASH
+git commit --amend -F secure-message.txt
+git cherry-pick SUBSEQUENT_COMMITS
+git push --force-with-lease origin main
 
 # Force push to rewrite history
 git push origin --force --all
