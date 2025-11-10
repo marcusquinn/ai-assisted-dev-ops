@@ -61,8 +61,8 @@ readonly ERROR_UNKNOWN_COMMAND="Unknown command:"
 ' "$file"
                 changes_made=1
             fi
-            sed -i '' 's/"Unknown command: \$command"/"$ERROR_UNKNOWN_COMMAND $command"/g' "$file"
-            sed -i '' 's/"Unknown command: $command"/"$ERROR_UNKNOWN_COMMAND $command"/g' "$file"
+            sed -i '' "s/\"Unknown command: \\\$command\"/\"\$ERROR_UNKNOWN_COMMAND \$command\"/g" "$file"
+            sed -i '' "s/\"Unknown command: \$command\"/\"\$ERROR_UNKNOWN_COMMAND \$command\"/g" "$file"
             print_success "Fixed $unknown_cmd_count Unknown command messages"
         fi
         
@@ -74,8 +74,8 @@ readonly USAGE_PREFIX="Usage:"
 ' "$file"
                 changes_made=1
             fi
-            sed -i '' 's/"Usage: \$0"/"$USAGE_PREFIX $0"/g' "$file"
-            sed -i '' 's/"Usage: $0"/"$USAGE_PREFIX $0"/g' "$file"
+            sed -i '' "s/\"Usage: \\\$0\"/\"\$USAGE_PREFIX \$0\"/g" "$file"
+            sed -i '' "s/\"Usage: \$0\"/\"\$USAGE_PREFIX \$0\"/g" "$file"
             print_success "Fixed $usage_count Usage messages"
         fi
         
@@ -87,7 +87,7 @@ readonly HELP_MESSAGE_SUFFIX="Show this help message"
 ' "$file"
                 changes_made=1
             fi
-            sed -i '' 's/".*help.*- Show this help message"/"  help                 - $HELP_MESSAGE_SUFFIX"/g' "$file"
+            sed -i '' "s/\".*help.*- Show this help message\"/\"  help                 - \$HELP_MESSAGE_SUFFIX\"/g" "$file"
             print_success "Fixed $help_count help messages"
         fi
     fi

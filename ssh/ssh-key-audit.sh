@@ -17,14 +17,14 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # SSH keys to test (in order of preference)
 SSH_KEYS=(
-    "~/.ssh/id_ed25519"
-    "~/.ssh/id_rsa"
-    "~/.ssh/id_ecdsa"
+    "$HOME/.ssh/id_ed25519"
+    "$HOME/.ssh/id_rsa"
+    "$HOME/.ssh/id_ecdsa"
 )
 
 # Target key (the one we want all servers to use)
-TARGET_KEY="~/.ssh/id_ed25519"
-TARGET_KEY_PUB="~/.ssh/id_ed25519.pub"
+TARGET_KEY="$HOME/.ssh/id_ed25519"
+TARGET_KEY_PUB="$HOME/.ssh/id_ed25519.pub"
 
 # Test SSH key access to a server
 test_ssh_key() {
@@ -70,7 +70,8 @@ check_target_key_installed() {
     local username="${3:-root}"
     
     # Get the target public key content
-    local target_pub_key=$(cat "${TARGET_KEY_PUB/\~/$HOME}" | cut -d' ' -f2)
+    local target_pub_key
+    target_pub_key=$(cat "${TARGET_KEY_PUB/\~/$HOME}" | cut -d' ' -f2)
     
     # Check if it's in authorized_keys
     ssh -o ConnectTimeout=3 \
@@ -93,7 +94,8 @@ install_target_key() {
     print_info "Installing target key on $server_ip..."
     
     # Get the target public key content
-    local target_pub_key=$(cat "${TARGET_KEY_PUB/\~/$HOME}")
+    local target_pub_key
+    target_pub_key=$(cat "${TARGET_KEY_PUB/\~/$HOME}")
     
     # Add the key to authorized_keys
     ssh -o ConnectTimeout=5 \
@@ -103,8 +105,8 @@ install_target_key() {
         -i "$working_key" \
         "$username@$server_ip" \
         "echo '$target_pub_key' >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys" 2>/dev/null
-    
-    if [[ $? -eq 0 ]]; then
+
+    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$working_key" "$username@$server_ip" "echo '$target_pub_key' >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys" 2>/dev/null; then
         print_success "Target key installed on $server_ip"
         return 0
     else

@@ -13,7 +13,8 @@ add_return_to_line() {
     if [[ -f "$file" ]]; then
         # Check if line before closing brace already has return
         local prev_line=$((line_num - 1))
-        local line_content=$(sed -n "${prev_line}p" "$file")
+        local line_content
+        line_content=$(sed -n "${prev_line}p" "$file")
         
         if [[ ! "$line_content" =~ return ]]; then
             echo "Adding return statement to $file at line $line_num"
@@ -79,9 +80,7 @@ for line in 105 133 247; do
 done
 
 echo "Processing coolify-helper.sh..."
-for line in 235; do
-    add_return_to_line "coolify-helper.sh" "$line"
-done
+add_return_to_line "coolify-helper.sh" "235"
 
 echo "Processing dns-helper.sh..."
 for line in 90 254; do
