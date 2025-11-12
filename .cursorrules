@@ -1,0 +1,25 @@
+# AI-Assisted DevOps Framework - Cursor Rules
+
+This is the authoritative AI-Assisted DevOps Framework project.
+
+## Project Context
+- **Framework**: Comprehensive DevOps automation with 25+ service integrations
+- **Quality Standards**: Enterprise-grade with multi-platform quality assurance
+- **Security**: Zero-trust security principles with comprehensive scanning
+- **AI Integration**: Complete AI CLI ecosystem with automatic context loading
+
+## Development Rules
+1. **Security First**: Never commit credentials, use secure configuration patterns
+2. **Quality Standards**: Maintain zero technical debt, use systematic improvements
+3. **Documentation**: Keep comprehensive documentation, follow existing patterns
+4. **Testing**: Write tests for all new functionality, maintain coverage
+5. **Consistency**: Follow established code patterns and architecture
+
+## File Structure
+- `providers/`: Service integration helpers
+- `scripts/`: Automation and utility scripts
+- `configs/`: Configuration templates (never commit with real credentials)
+- `docs/`: Comprehensive documentation
+- `.agent/`: AI assistant configurations and tools
+
+Refer to AGENTS.md for complete instructions and context.

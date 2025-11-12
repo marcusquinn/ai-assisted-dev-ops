@@ -14,8 +14,8 @@ AI assistants operating in this environment should:
 3. **Follow security protocols** defined in the repository documentation
 
 ## 📁 **Working Directories**
-- **Temporary files**: Use `~/git/ai-assisted-dev-ops/.agent/tmp/`
-- **Persistent memory**: Use `~/git/ai-assisted-dev-ops/.agent/memory/`
+- **Temporary files**: Use `~/.agent/tmp/`
+- **Persistent memory**: Use `~/.agent/memory/`
 - **Never create temporary files** in the home directory root
 
 ## 🔗 **Quick Access**
@@ -27,7 +27,7 @@ cd ~/git/ai-assisted-dev-ops
 cat ~/git/ai-assisted-dev-ops/AGENTS.md
 
 # Access working directories
-ls ~/git/ai-assisted-dev-ops/.agent/
+ls ~/.agent/
 ```
 
 ## ⚠️ **Security Warning**

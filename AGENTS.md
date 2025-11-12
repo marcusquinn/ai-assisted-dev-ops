@@ -109,13 +109,13 @@ This framework works excellently with these CLI AI assistants:
 
 ### **🗂️ AI Working Directories (MANDATORY USAGE)**
 
-#### **`.agent/tmp/` - Temporary Working Directory**
+#### **`~/.agent/tmp/` - Temporary Working Directory**
 
 **ALWAYS use this directory for temporary files during operations:**
 
 ```bash
 # Create session-specific working directory
-SESSION_DIR=".agent/tmp/session-$(date +%Y%m%d_%H%M%S)"
+SESSION_DIR="~/.agent/tmp/session-$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$SESSION_DIR"
 
 # Use for temporary scripts
@@ -131,7 +131,7 @@ cp important-file.sh "$SESSION_DIR/backup-important-file.sh"
 rm -rf "$SESSION_DIR"
 ```
 
-**Use `.agent/tmp/` for:**
+**Use `~/.agent/tmp/` for:**
 
 - Temporary scripts and working files
 - Backups before making changes
@@ -139,22 +139,22 @@ rm -rf "$SESSION_DIR"
 - Intermediate data during operations
 - Any files that don't need to persist
 
-#### **`.agent/memory/` - Persistent Memory Directory**
+#### **`~/.agent/memory/` - Persistent Memory Directory**
 
 **Use this directory to remember context across sessions:**
 
 ```bash
 # Store successful patterns
-echo "bulk-operations: Use Python scripts for universal fixes" > .agent/memory/patterns/quality-fixes.txt
+echo "bulk-operations: Use Python scripts for universal fixes" > ~/.agent/memory/patterns/quality-fixes.txt
 
 # Remember user preferences
-echo "preferred_approach=bulk_operations" > .agent/memory/preferences/user-settings.conf
+echo "preferred_approach=bulk_operations" > ~/.agent/memory/preferences/user-settings.conf
 
 # Cache configuration discoveries
-echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/configurations/quality-tools.conf
+echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > ~/.agent/memory/configurations/quality-tools.conf
 ```
 
-**Use `.agent/memory/` for:**
+**Use `~/.agent/memory/` for:**
 
 - Session context and conversation history
 - Learned patterns and successful approaches
@@ -165,7 +165,7 @@ echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > .agent/memory/config
 #### **🚨 CRITICAL RULES:**
 
 - **NEVER store credentials** in memory or tmp directories
-- **Always use `.agent/tmp/`** for temporary files (not root directory)
+- **Always use `~/.agent/tmp/`** for temporary files (not root directory)
 - **Clean up** temporary files when operations complete
 - **Respect privacy** - be mindful of what you store in memory
 
@@ -189,16 +189,16 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 
 **Agent Directory (`~/.agent/README.md`)**:
 
-- **Redirects to authoritative** `.agent/` directory in this repository
-- **Prevents misuse** of home-level agent directories
-- Maintains centralized control over AI operations
+- **Redirects to authoritative** documentation in this repository
+- **Provides secure working directories** outside of Git control
+- Maintains centralized guidance while keeping personal data private
 
 #### **🚨 SECURITY REQUIREMENTS:**
 
 - **Use authoritative repository**: Always reference `~/git/ai-assisted-dev-ops/AGENTS.md`
 - **Minimal templates only**: Never add detailed instructions to user-space templates
 - **Prevent prompt injection**: Keep operational instructions in the secure repository
-- **Centralized control**: All AI operations must use framework's working directories
+- **Secure working directories**: All AI operations must use `~/.agent/` directories outside Git control
 
 #### **🔄 CONSISTENCY MAINTENANCE:**
 
@@ -257,29 +257,29 @@ find providers/ -name "*.sh" -exec shellcheck {} \;
 
 ```bash
 # Install CodeRabbit CLI
-bash .agent/scripts/coderabbit-cli.sh install
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh install
 
 # Setup API key (get from https://app.coderabbit.ai)
-bash .agent/scripts/coderabbit-cli.sh setup
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh setup
 
 # Review current changes
-bash .agent/scripts/coderabbit-cli.sh review
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh review
 ```
 
 **📊 Codacy CLI v2 - Comprehensive Code Analysis:**
 
 ```bash
 # Install Codacy CLI v2
-bash .agent/scripts/codacy-cli.sh install
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh install
 
 # Initialize project configuration
-bash .agent/scripts/codacy-cli.sh init
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh init
 
 # Run code analysis
-bash .agent/scripts/codacy-cli.sh analyze
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze
 
 # 🚀 AUTO-FIX: Apply automatic fixes when available
-bash .agent/scripts/codacy-cli.sh analyze --fix
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix
 ```
 
 **🔧 CODACY AUTO-FIX FEATURE:**
@@ -294,49 +294,49 @@ bash .agent/scripts/codacy-cli.sh analyze --fix
 
 ```bash
 # Install Qlty CLI
-bash .agent/scripts/qlty-cli.sh install
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh install
 
 # Initialize in repository
-bash .agent/scripts/qlty-cli.sh init
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh init
 
 # Run code quality check (default: marcusquinn org)
-bash .agent/scripts/qlty-cli.sh check
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check
 
 # Run check for specific organization
-bash .agent/scripts/qlty-cli.sh check 5 myorg
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check 5 myorg
 
 # 🚀 AUTO-FORMAT: Universal auto-formatting (default: marcusquinn org)
-bash .agent/scripts/qlty-cli.sh fmt --all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all
 
 # Auto-format for specific organization
-bash .agent/scripts/qlty-cli.sh fmt --all myorg
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all myorg
 
 # Detect code smells
-bash .agent/scripts/qlty-cli.sh smells --all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh smells --all
 ```
 
 **🔐 Qlty Credential Management - Multi-Level Access:**
 
 ```bash
 # 🌟 ACCOUNT-LEVEL API KEY (Preferred - Account-wide access)
-bash .agent/scripts/setup-local-api-keys.sh set qlty-account-api-key YOUR_API_KEY
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-account-api-key YOUR_API_KEY
 
 # 🎯 ORGANIZATION-SPECIFIC CREDENTIALS
 # Store Coverage Token for organization
-bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME YOUR_COVERAGE_TOKEN
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME YOUR_COVERAGE_TOKEN
 
 # Store Workspace ID for organization (optional but recommended)
-bash .agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME-workspace-id YOUR_WORKSPACE_ID
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME-workspace-id YOUR_WORKSPACE_ID
 
 # List all configurations
-bash .agent/scripts/setup-local-api-keys.sh list
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh list
 
 # Example: Complete setup for 'mycompany' organization
-bash .agent/scripts/setup-local-api-keys.sh set qlty-mycompany qltcw_abc123...
-bash .agent/scripts/setup-local-api-keys.sh set qlty-mycompany-workspace-id 12345678-abcd-...
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany qltcw_abc123...
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany-workspace-id 12345678-abcd-...
 
 # Use with any organization (account API key provides access to all)
-bash .agent/scripts/qlty-cli.sh check 10 mycompany
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check 10 mycompany
 ```
 
 **🎯 Intelligent Credential Selection:**
@@ -366,16 +366,16 @@ bash .agent/scripts/qlty-cli.sh check 10 mycompany
 
 ```bash
 # Detect languages in current project
-bash .agent/scripts/linter-manager.sh detect
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh detect
 
 # Install linters for detected languages
-bash .agent/scripts/linter-manager.sh install-detected
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-detected
 
 # Install all supported linters
-bash .agent/scripts/linter-manager.sh install-all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-all
 
 # Install linters for specific language
-bash .agent/scripts/linter-manager.sh install python
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install python
 ```
 
 **📚 LINTER MANAGER FEATURES:**
@@ -391,13 +391,13 @@ bash .agent/scripts/linter-manager.sh install python
 
 ```bash
 # Complete guided setup with needs assessment
-bash .agent/scripts/setup-linters-wizard.sh full-setup
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh full-setup
 
 # Just assess development needs
-bash .agent/scripts/setup-linters-wizard.sh assess
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh assess
 
 # Install based on previous assessment
-bash .agent/scripts/setup-linters-wizard.sh install
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh install
 ```
 
 **🌟 SETUP WIZARD FEATURES:**
@@ -412,26 +412,26 @@ bash .agent/scripts/setup-linters-wizard.sh install
 
 ```bash
 # Install SonarScanner CLI
-bash .agent/scripts/sonarscanner-cli.sh install
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh install
 
 # Initialize project configuration
-bash .agent/scripts/sonarscanner-cli.sh init
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh init
 
 # Run SonarQube analysis
-bash .agent/scripts/sonarscanner-cli.sh analyze
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh analyze
 ```
 
 **🎛️ Unified Quality CLI Manager:**
 
 ```bash
 # Install all quality CLIs
-bash .agent/scripts/quality-cli-manager.sh install all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh install all
 
 # Run analysis with all CLIs
-bash .agent/scripts/quality-cli-manager.sh analyze all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh analyze all
 
 # Check status of all CLIs
-bash .agent/scripts/quality-cli-manager.sh status all
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh status all
 ```
 
 **API Key Setup (Secure Local Configuration):**
@@ -582,7 +582,7 @@ ai-assisted-dev-ops/
 ├── 📁 docs/                  # Comprehensive user documentation
 ├── 📁 templates/             # Reusable templates and examples
 ├── 📁 ssh/                   # SSH utilities and key management
-└── 📁 .agent/                # AI agent development and working tools
+└── 📁 .agent/                # AI agent development tools and templates
     ├── 📁 scripts/           # Quality automation and development tools
     │   ├── quality-check.sh  # Multi-platform quality validation
     │   ├── quality-fix.sh    # Universal automated issue resolution
@@ -591,47 +591,47 @@ ai-assisted-dev-ops/
     ├── 📁 spec/              # Technical specifications and standards
     ├── 📁 wiki/              # Internal knowledge base and documentation
     ├── 📁 links/             # External resources and API documentation
-    ├── 📁 tmp/               # AI temporary working directory (use this!)
-    └── 📁 memory/            # AI persistent memory directory (use this!)
-```
+    ├── 📁 tmp/               # Template for AI temporary working directory
+    └── 📁 memory/            # Template for AI persistent memory directory
 
-## 📁 **Agent Directory Structure**
+## 📁 **User Working Directories (Outside Git Control)**
 
-### **.agent/tmp/** - Temporary Working Directory (MANDATORY)
-
-**Use this for all temporary files during operations:**
-
+### **`~/.agent/tmp/` - Personal Temporary Working Directory**
 - Session-specific working directories
 - Temporary scripts and analysis files
 - Backups before making changes
 - Log outputs and intermediate data
 - Any files that don't need to persist
 
-### **.agent/memory/** - Persistent Memory Directory (RECOMMENDED)
-
-**Use this to remember context across sessions:**
-
+### **`~/.agent/memory/` - Personal Persistent Memory Directory**
 - Successful operation patterns and approaches
 - User preferences and customizations
 - Configuration discoveries and setups
 - Operation history and learned solutions
 - Analytics and usage insights
+```
 
-### **.agent/scripts/** - Quality Automation Tools
+## 📁 **Framework Agent Directory Structure**
+
+### **~/git/ai-assisted-dev-ops/.agent/** - Framework Templates and Tools
+
+**This directory contains templates and development tools (DO NOT use for personal data):**
+
+### **~/git/ai-assisted-dev-ops/.agent/scripts/** - Quality Automation Tools
 
 - `quality-check.sh` - Multi-platform quality validation
 - `quality-fix.sh` - Universal automated issue resolution
 - `pre-commit-hook.sh` - Continuous quality assurance
 - `development/` - Historical development scripts with documentation
 
-### **.agent/spec/** - Technical Specifications
+### **~/git/ai-assisted-dev-ops/.agent/spec/** - Technical Specifications
 
 - `code-quality.md` - Multi-platform quality standards and compliance
 - `requirements.md` - Framework requirements and capabilities
 - `security.md` - Security requirements and standards
 - `extension.md` - Guidelines for extending the framework
 
-### **.agent/wiki/** - Knowledge Base
+### **~/git/ai-assisted-dev-ops/.agent/wiki/** - Knowledge Base
 
 - `architecture.md` - Complete framework architecture
 - `services.md` - All 25+ service integrations
@@ -639,7 +639,7 @@ ai-assisted-dev-ops/
 - `configs.md` - Configuration management patterns
 - `docs.md` - Documentation standards and guidelines
 
-### **.agent/links/** - External Resources
+### **~/git/ai-assisted-dev-ops/.agent/links/** - External Resources
 
 - `resources.md` - External APIs, documentation, and tools
 
@@ -765,16 +765,16 @@ Port 3008: Gitea repository management
 
 ### **Framework Understanding**
 
-- Start with `.agent/wiki/architecture.md` for complete overview
-- Review `.agent/spec/requirements.md` for capabilities
+- Start with `~/git/ai-assisted-dev-ops/.agent/wiki/architecture.md` for complete overview
+- Review `~/git/ai-assisted-dev-ops/.agent/spec/requirements.md` for capabilities
 - Check service-specific docs in `docs/[SERVICE].md`
 - Use Context7 MCP for latest external documentation
 
 ### **Extension Guidelines**
 
-- Follow patterns in `.agent/spec/extension.md`
+- Follow patterns in `~/git/ai-assisted-dev-ops/.agent/spec/extension.md`
 - Use existing providers as templates
-- Implement security standards from `.agent/spec/security.md`
+- Implement security standards from `~/git/ai-assisted-dev-ops/.agent/spec/security.md`
 - Update all framework files for complete integration
 
 ## 🔄 **Quality Improvement Workflow**
@@ -944,7 +944,7 @@ done
 
 #### **Pre-Development Checklist:**
 
-1. **Run quality check**: `bash .agent/scripts/quality-check.sh`
+1. **Run quality check**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-check.sh`
 2. **Identify target issues**: Focus on highest-impact violations
 3. **Plan enhancements**: How will changes improve functionality?
 
@@ -971,10 +971,10 @@ Include quality metrics in every commit:
 
 **🎯 AUTOMATED QUALITY TOOLS PROVIDED:**
 
-- **`.agent/scripts/quality-check.sh`**: Multi-platform quality validation
-- **`.agent/scripts/quality-fix.sh`**: Universal automated issue resolution
-- **`.agent/scripts/pre-commit-hook.sh`**: Prevent quality regressions
-- **`.agent/spec/code-quality.md`**: Comprehensive quality standards
+- **`~/git/ai-assisted-dev-ops/.agent/scripts/quality-check.sh`**: Multi-platform quality validation
+- **`~/git/ai-assisted-dev-ops/.agent/scripts/quality-fix.sh`**: Universal automated issue resolution
+- **`~/git/ai-assisted-dev-ops/.agent/scripts/pre-commit-hook.sh`**: Prevent quality regressions
+- **`~/git/ai-assisted-dev-ops/.agent/spec/code-quality.md`**: Comprehensive quality standards
 
 #### **Available Quality Scripts:**
 
@@ -982,14 +982,14 @@ Include quality metrics in every commit:
 - **fix-content-type.sh**: Consolidate Content-Type headers
 - **fix-auth-headers.sh**: Standardize Authorization headers
 - **fix-error-messages.sh**: Create error message constants
-- **CodeRabbit**: `bash .agent/scripts/coderabbit-cli.sh review`
-- **Codacy**: `bash .agent/scripts/codacy-cli.sh analyze`
-- **Codacy Auto-Fix**: `bash .agent/scripts/codacy-cli.sh analyze --fix` ⚡ **AUTOMATED FIXES**
-- **Qlty Universal**: `bash .agent/scripts/qlty-cli.sh check` 🌟 **70+ TOOLS**
-- **Qlty Auto-Format**: `bash .agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
-- **SonarScanner**: `bash .agent/scripts/sonarscanner-cli.sh analyze`
-- **Linter Manager**: `bash .agent/scripts/linter-manager.sh install-detected` 🔧 **CODEFACTOR-INSPIRED**
-- **Linter Setup Wizard**: `bash .agent/scripts/setup-linters-wizard.sh full-setup` 🎯 **INTELLIGENT NEEDS ASSESSMENT**
+- **CodeRabbit**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh review`
+- **Codacy**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze`
+- **Codacy Auto-Fix**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix` ⚡ **AUTOMATED FIXES**
+- **Qlty Universal**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check` 🌟 **70+ TOOLS**
+- **Qlty Auto-Format**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
+- **SonarScanner**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh analyze`
+- **Linter Manager**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-detected` 🔧 **CODEFACTOR-INSPIRED**
+- **Linter Setup Wizard**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh full-setup` 🎯 **INTELLIGENT NEEDS ASSESSMENT**
 
 #### **🚀 AUTOMATED FIX CAPABILITIES:**
 
@@ -997,14 +997,14 @@ Include quality metrics in every commit:
 
 - **Functionality**: Automatically applies safe fixes for common code quality issues
 - **Web UI Equivalent**: Same as "Fix Issues" button in Codacy dashboard
-- **Usage**: `bash .agent/scripts/codacy-cli.sh analyze --fix`
+- **Usage**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix`
 - **Time Savings**: 70-90% reduction in manual fix time
 
 **🎨 Qlty Auto-Formatting:**
 
 - **Functionality**: Universal auto-formatting for 40+ languages with 70+ tools
 - **Features**: Linting, formatting, security scanning, code smells detection
-- **Usage**: `bash .agent/scripts/qlty-cli.sh fmt --all`
+- **Usage**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all`
 - **Coverage**: Comprehensive multi-language support with AI-generated fixes
 
 **📊 Auto-Fix Comparison:**
@@ -1016,7 +1016,7 @@ Include quality metrics in every commit:
 
 **🛠️ Unified Access:**
 
-- **Quality CLI Manager**: `bash .agent/scripts/quality-cli-manager.sh analyze codacy-fix`
+- **Quality CLI Manager**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh analyze codacy-fix`
 - **Direct CLI Access**: Individual tool commands for targeted fixes
 - **Batch Operations**: Run multiple auto-fix tools in sequence
 

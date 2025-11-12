@@ -140,3 +140,4 @@ backups/
 test-*.txt
 test-*.json
 test-*.yaml
+.aider*

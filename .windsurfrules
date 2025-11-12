@@ -1,0 +1,39 @@
+# AI-Assisted DevOps Framework - Windsurf Rules
+
+At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
+
+This is the authoritative AI-Assisted DevOps Framework project.
+
+## Project Context
+- **Framework**: Comprehensive DevOps automation with 25+ service integrations
+- **Quality Standards**: Enterprise-grade with multi-platform quality assurance
+- **Security**: Zero-trust security principles with comprehensive scanning
+- **AI Integration**: Complete AI CLI ecosystem with automatic context loading
+
+## Windsurf-Specific Development Rules
+1. **Cascade AI Integration**: Leverage Windsurf's Cascade AI for intelligent code generation
+2. **Context Awareness**: Use Windsurf's superior context understanding for complex operations
+3. **Memory Management**: Utilize Windsurf's memory system for project continuity
+4. **Terminal Integration**: Use Windsurf's integrated terminal for DevOps operations
+
+## Development Guidelines
+1. **Security First**: Never commit credentials, use secure configuration patterns
+2. **Quality Standards**: Maintain zero technical debt, use systematic improvements
+3. **Documentation**: Keep comprehensive documentation, follow existing patterns
+4. **Testing**: Write tests for all new functionality, maintain coverage
+5. **Consistency**: Follow established code patterns and architecture
+
+## File Structure
+- `providers/`: Service integration helpers
+- `scripts/`: Automation and utility scripts
+- `configs/`: Configuration templates (never commit with real credentials)
+- `docs/`: Comprehensive documentation
+- `.agent/`: AI assistant configurations and tools
+
+## AI Integration Features
+- **Multi-Platform Quality**: Codacy, SonarCloud, CodeRabbit, Qlty integration
+- **Service Coverage**: AWS, Hetzner, Cloudflare, Hostinger, and 20+ others
+- **AI CLI Ecosystem**: Automatic AGENTS.md context loading across all tools
+- **Security Scanning**: Comprehensive vulnerability detection and prevention
+
+Refer to AGENTS.md for complete instructions and context.

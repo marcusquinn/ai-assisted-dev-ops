@@ -188,6 +188,23 @@ verify_location() {
     fi
 }
 
+# Configure AI CLI tools to read AGENTS.md automatically
+configure_ai_clis() {
+    print_info "Configuring AI CLI tools to read AGENTS.md automatically..."
+
+    local ai_config_script=".agent/scripts/ai-cli-config.sh"
+
+    if [[ -f "$ai_config_script" ]]; then
+        if bash "$ai_config_script"; then
+            print_success "AI CLI tools configured successfully"
+        else
+            print_warning "AI CLI configuration encountered some issues (non-critical)"
+        fi
+    else
+        print_warning "AI CLI configuration script not found at $ai_config_script"
+    fi
+}
+
 # Main setup function
 main() {
     echo "🤖 AI Assistant Server Access Framework Setup"
@@ -202,7 +219,8 @@ main() {
     set_permissions
     setup_aliases
     deploy_ai_templates
-    
+    configure_ai_clis
+
     echo ""
     print_success "🎉 Setup complete!"
     echo ""
@@ -214,6 +232,24 @@ main() {
     echo "5. Setup Codacy CLI: bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_TOKEN && bash .agent/scripts/codacy-cli.sh install"
     echo "6. Test access: ./scripts/servers-helper.sh list"
     echo "7. Read documentation in docs/ for provider-specific setup"
+    echo ""
+    echo "AI CLI Tools (configured to read AGENTS.md automatically):"
+    echo "• aider-guided    - Aider with AGENTS.md context"
+    echo "• claude-guided   - Claude CLI with AGENTS.md context"
+    echo "• qwen-guided     - Qwen CLI with AGENTS.md context"
+    echo "• windsurf-guided - Windsurf IDE with AGENTS.md context"
+    echo "• ai-with-context - Universal wrapper for any AI tool"
+    echo "• agents          - View repository AGENTS.md"
+    echo "• cdai            - Navigate to AI framework"
+    echo ""
+    echo "AI Memory Files (created for comprehensive tool support):"
+    echo "• ~/CLAUDE.md     - Claude CLI memory file"
+    echo "• ~/GEMINI.md     - Gemini CLI memory file"
+    echo "• ~/.qwen/QWEN.md - Qwen CLI memory file"
+    echo "• ~/WINDSURF.md   - Windsurf IDE memory file"
+    echo "• ~/.cursorrules  - Cursor AI rules file"
+    echo "• ~/.github/copilot-instructions.md - GitHub Copilot instructions"
+    echo "• ~/.codeium/windsurf/memories/global_rules.md - Windsurf global rules"
     echo ""
     echo "Security reminders:"
     echo "- Never commit configuration files with real credentials"

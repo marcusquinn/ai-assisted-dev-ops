@@ -25,8 +25,8 @@ ls ~/git/ai-assisted-dev-ops/docs/
 ```
 
 ## 📁 **Working Directories**
-- **DevOps temporary files**: Use `~/git/ai-assisted-dev-ops/.agent/tmp/`
-- **DevOps memory**: Use `~/git/ai-assisted-dev-ops/.agent/memory/`
+- **DevOps temporary files**: Use `~/.agent/tmp/`
+- **DevOps memory**: Use `~/.agent/memory/`
 - **Project-specific work**: Use individual project directories
 
 ## 🔗 **Framework Access**
