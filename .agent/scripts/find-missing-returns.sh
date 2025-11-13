@@ -4,7 +4,7 @@
 # Identify functions that need return statements for S7682 compliance
 #
 # Author: AI DevOps Framework
-# Version: 1.0.0
+# Version: 1.1.1
 
 # Colors for output
 readonly BLUE='\033[0;34m'

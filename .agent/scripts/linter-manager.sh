@@ -4,7 +4,7 @@
 # Based on CodeFactor's comprehensive linter collection
 # 
 # Author: AI DevOps Framework
-# Version: 1.0.0
+# Version: 1.1.1
 # Reference: https://docs.codefactor.io/bootcamp/analysis-tools/
 
 # Colors for output

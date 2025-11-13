@@ -5,7 +5,7 @@
 # Based on CodeFactor's comprehensive linter collection
 # 
 # Author: AI DevOps Framework
-# Version: 1.0.0
+# Version: 1.1.1
 
 # Colors for output
 readonly GREEN='\033[0;32m'

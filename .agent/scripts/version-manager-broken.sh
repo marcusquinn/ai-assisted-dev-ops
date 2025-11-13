@@ -4,7 +4,7 @@
 # Manages semantic versioning and automated version bumping
 #
 # Author: AI DevOps Framework
-# Version: 1.1.0
+# Version: 1.1.1
 
 # Colors for output
 readonly GREEN='\033[0;32m'
@@ -28,6 +28,16 @@ get_current_version() {
         cat "$VERSION_FILE"
     else
         echo "1.0.0"
+    fi
+}
+
+# Function to validate semantic version
+validate_version() {
+    local version="$1"
+    if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -77,26 +87,25 @@ update_version_in_files() {
     
     # Update setup.sh if it exists
     if [[ -f "$REPO_ROOT/setup.sh" ]]; then
-        sed -i '' "s/# Version: .*/# Version: $new_version/" "$REPO_ROOT/setup.sh"
+        sed -i '' "s/VERSION=.*/VERSION=\"$new_version\"/" "$REPO_ROOT/setup.sh"
         print_success "Updated setup.sh"
     fi
     
-    # Update README version badge
-    if [[ -f "$REPO_ROOT/README.md" ]]; then
-        sed -i '' "s/Version-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-blue/Version-$new_version-blue/" "$REPO_ROOT/README.md"
-        print_success "Updated README.md version badge"
-    fi
+    # Update script headers
+    find "$REPO_ROOT/.agent/scripts" -name "*.sh" -type f -exec sed -i '' "s/# Version: 1.1.1
+    print_success "Updated script version headers"
 }
 
 # Function to create git tag
 create_git_tag() {
     local version="$1"
     local tag_name="v$version"
-    
+
     print_info "Creating git tag: $tag_name"
-    
+
     cd "$REPO_ROOT" || exit 1
-    
+
+    # Create tag with simple message
     if git tag -a "$tag_name" -m "Release $tag_name - AI DevOps Framework"; then
         print_success "Created git tag: $tag_name"
         return 0
@@ -166,10 +175,10 @@ main() {
             echo "Usage: $0 [action] [options]"
             echo ""
             echo "Actions:"
-            echo "  get                           Get current version"
-            echo "  bump [major|minor|patch]      Bump version"
-            echo "  tag                           Create git tag for current version"
-            echo "  release [major|minor|patch]   Bump version, update files, and create tag"
+            echo "  get                    Get current version"
+            echo "  bump [major|minor|patch]  Bump version"
+            echo "  tag                    Create git tag for current version"
+            echo "  release [major|minor|patch]  Bump version, update files, and create tag"
             echo ""
             echo "Examples:"
             echo "  $0 get"

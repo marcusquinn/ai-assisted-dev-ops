@@ -4,7 +4,7 @@
 # Automatically determines version bump type based on commit message
 #
 # Author: AI DevOps Framework
-# Version: 1.1.0
+# Version: 1.1.1
 
 # Colors for output
 readonly GREEN='\033[0;32m'
@@ -64,9 +64,9 @@ should_bump_version() {
 update_version_badge() {
     local new_version="$1"
     local readme_file="$REPO_ROOT/README.md"
-    
+
     if [[ -f "$readme_file" ]]; then
-        sed -i '' "s/Version-[0-9]\+\.[0-9]\+\.[0-9]\+-blue/Version-$new_version-blue/" "$readme_file"
+        sed -i '' "s/Version-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-blue/Version-$new_version-blue/" "$readme_file"
         print_success "Updated version badge in README.md"
     fi
 }

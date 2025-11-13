@@ -4,7 +4,7 @@
 # Systematically add return 0 to functions missing explicit returns
 #
 # Author: AI DevOps Framework
-# Version: 1.0.0
+# Version: 1.1.1
 
 # Colors for output
 readonly GREEN='\033[0;32m'
