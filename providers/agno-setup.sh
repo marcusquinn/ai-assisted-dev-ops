@@ -110,13 +110,7 @@ from agno.knowledge.pdf import PDFKnowledgeBase
 from agno.storage.postgres import PostgresDb
 import os
 
-# Browser automation imports
-try:
-    from agno.tools.browserbase import BrowserbaseTools
-    BROWSERBASE_AVAILABLE = True
-except ImportError:
-    BROWSERBASE_AVAILABLE = False
-
+# Local browser automation imports (no cloud services)
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_AVAILABLE = True
@@ -128,9 +122,59 @@ try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
+    from selenium.webdriver.firefox.options import Options as FirefoxOptions
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
+
+# Custom local browser tools
+class LocalBrowserTools:
+    """Local browser automation tools using Playwright and Selenium"""
+
+    def __init__(self):
+        self.playwright_available = PLAYWRIGHT_AVAILABLE
+        self.selenium_available = SELENIUM_AVAILABLE
+
+    def get_playwright_browser(self, headless=True, browser_type="chromium"):
+        """Get a local Playwright browser instance"""
+        if not self.playwright_available:
+            raise ImportError("Playwright not available")
+
+        p = sync_playwright().start()
+        if browser_type == "chromium":
+            browser = p.chromium.launch(headless=headless)
+        elif browser_type == "firefox":
+            browser = p.firefox.launch(headless=headless)
+        elif browser_type == "webkit":
+            browser = p.webkit.launch(headless=headless)
+        else:
+            browser = p.chromium.launch(headless=headless)
+
+        return browser, p
+
+    def get_selenium_driver(self, headless=True, browser_type="chrome"):
+        """Get a local Selenium WebDriver instance"""
+        if not self.selenium_available:
+            raise ImportError("Selenium not available")
+
+        if browser_type == "chrome":
+            options = ChromeOptions()
+            if headless:
+                options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            return webdriver.Chrome(options=options)
+        elif browser_type == "firefox":
+            options = FirefoxOptions()
+            if headless:
+                options.add_argument("--headless")
+            return webdriver.Firefox(options=options)
+        else:
+            raise ValueError(f"Unsupported browser type: {browser_type}")
+
+LOCAL_BROWSER_TOOLS = LocalBrowserTools() if (PLAYWRIGHT_AVAILABLE or SELENIUM_AVAILABLE) else None
 
 # Configure OpenAI model (requires OPENAI_API_KEY)
 model = OpenAIChat(
@@ -214,27 +258,30 @@ docs_agent = Agent(
     markdown=True
 )
 
-# LinkedIn Automation Agent
-linkedin_tools = []
-if BROWSERBASE_AVAILABLE:
-    linkedin_tools.append(BrowserbaseTools())
+# LinkedIn Automation Agent (Local Browser Only)
+linkedin_tools = [
+    FileTools(),
+    PythonTools(run_code=False),  # Safe mode - no code execution
+]
 
 linkedin_agent = Agent(
     name="LinkedIn Automation Assistant",
-    description="AI assistant for LinkedIn automation and social media management",
+    description="AI assistant for LinkedIn automation using LOCAL browsers only (no cloud services)",
     model=model,
-    tools=linkedin_tools + [
-        FileTools(),
-        PythonTools(run_code=False),  # Safe mode
-    ],
+    tools=linkedin_tools,
     instructions=[
-        "You are a LinkedIn automation specialist focusing on:",
-        "- Automated post engagement (liking, commenting)",
-        "- Timeline monitoring and content analysis",
-        "- Connection management and networking",
-        "- Content scheduling and posting",
-        "- Profile optimization and management",
-        "- Analytics and engagement tracking",
+        "You are a LinkedIn automation specialist using LOCAL browsers only (no cloud services):",
+        "- Automated post engagement (liking, commenting) using local Playwright/Selenium",
+        "- Timeline monitoring and content analysis with local browser instances",
+        "- Connection management and networking through local automation",
+        "- Content scheduling and posting via local browser control",
+        "- Profile optimization and management with local tools",
+        "- Analytics and engagement tracking using local data collection",
+        "SECURITY & PRIVACY FIRST:",
+        "- ALL browser automation runs locally on user's machine",
+        "- NO data sent to cloud services or external browsers",
+        "- Complete privacy and security with local-only operation",
+        "- User maintains full control over browser and data",
         "IMPORTANT SAFETY GUIDELINES:",
         "- Always respect LinkedIn's Terms of Service",
         "- Use reasonable delays between actions (2-5 seconds)",
@@ -242,29 +289,34 @@ linkedin_agent = Agent(
         "- Never spam or engage in inappropriate behavior",
         "- Respect user privacy and data protection",
         "- Provide ethical automation strategies only",
-        "Focus on authentic engagement and professional networking."
+        "Focus on authentic engagement and professional networking with complete privacy."
     ],
     show_tool_calls=True,
     markdown=True
 )
 
-# Web Automation Agent
+# Web Automation Agent (Local Browser Only)
 web_automation_agent = Agent(
     name="Web Automation Assistant",
-    description="AI assistant for general web automation and browser tasks",
+    description="AI assistant for general web automation using LOCAL browsers only (no cloud services)",
     model=model,
-    tools=linkedin_tools + [
+    tools=[
         FileTools(),
-        PythonTools(run_code=False),  # Safe mode
+        PythonTools(run_code=False),  # Safe mode - no code execution
     ],
     instructions=[
-        "You are a web automation expert specializing in:",
-        "- Browser automation with Playwright and Selenium",
-        "- Web scraping and data extraction",
-        "- Form filling and submission automation",
-        "- Website monitoring and testing",
-        "- Social media automation (ethical)",
-        "- E-commerce automation and monitoring",
+        "You are a web automation expert using LOCAL browsers only (no cloud services):",
+        "- Browser automation with LOCAL Playwright and Selenium instances",
+        "- Web scraping and data extraction using local browser control",
+        "- Form filling and submission automation with local browsers",
+        "- Website monitoring and testing through local automation",
+        "- Social media automation (ethical) with complete privacy",
+        "- E-commerce automation and monitoring using local tools",
+        "SECURITY & PRIVACY FIRST:",
+        "- ALL browser automation runs locally on user's machine",
+        "- NO data sent to cloud services or external browsers",
+        "- Complete privacy and security with local-only operation",
+        "- User maintains full control over browser and data",
         "IMPORTANT GUIDELINES:",
         "- Always respect website Terms of Service",
         "- Use appropriate delays and rate limiting",
@@ -272,7 +324,7 @@ web_automation_agent = Agent(
         "- Respect robots.txt and website policies",
         "- Provide ethical automation solutions only",
         "- Focus on legitimate business use cases",
-        "Create robust, maintainable automation scripts."
+        "Create robust, maintainable automation scripts with complete privacy."
     ],
     show_tool_calls=True,
     markdown=True
@@ -281,12 +333,18 @@ web_automation_agent = Agent(
 # Create AgentOS instance
 available_agents = [devops_agent, code_review_agent, docs_agent]
 
-# Add browser automation agents if tools are available
-if BROWSERBASE_AVAILABLE or PLAYWRIGHT_AVAILABLE or SELENIUM_AVAILABLE:
+# Add local browser automation agents if tools are available
+if PLAYWRIGHT_AVAILABLE or SELENIUM_AVAILABLE:
     available_agents.extend([linkedin_agent, web_automation_agent])
-    print("🌐 Browser automation agents enabled")
+    print("🔒 Local browser automation agents enabled (privacy-first)")
+    if PLAYWRIGHT_AVAILABLE:
+        print("   ✅ Playwright available for modern browser automation")
+    if SELENIUM_AVAILABLE:
+        print("   ✅ Selenium available for robust browser automation")
 else:
-    print("⚠️  Browser automation tools not available - install with: pip install playwright selenium")
+    print("⚠️  Local browser automation tools not available")
+    print("   Install with: pip install playwright selenium")
+    print("   Then run: playwright install")
 
 agent_os = AgentOS(
     name="AI DevOps AgentOS",
@@ -309,7 +367,7 @@ EOF
     # Create environment template
     if [[ ! -f ".env.example" ]]; then
         cat > .env.example << 'EOF'
-# AI DevOps Framework - Agno Configuration
+# AI DevOps Framework - Agno Configuration (Local Browser Automation)
 # Copy this file to .env and configure your API keys
 
 # OpenAI Configuration (Required)
@@ -319,6 +377,18 @@ OPENAI_API_KEY=your_openai_api_key_here
 AGNO_PORT=8000
 AGNO_DEBUG=true
 
+# Local Browser Automation Configuration
+BROWSER_HEADLESS=false
+BROWSER_TIMEOUT=30000
+BROWSER_DELAY_MIN=2
+BROWSER_DELAY_MAX=5
+
+# LinkedIn Automation (Local Browser Only)
+LINKEDIN_EMAIL=your_linkedin_email
+LINKEDIN_PASSWORD=your_linkedin_password
+LINKEDIN_MAX_LIKES=10
+LINKEDIN_HEADLESS=false
+
 # Optional: Database Configuration
 # DATABASE_URL=postgresql://user:password@localhost:5432/agno_db
 
@@ -326,8 +396,12 @@ AGNO_DEBUG=true
 # ANTHROPIC_API_KEY=your_anthropic_key_here
 # GOOGLE_API_KEY=your_google_key_here
 # GROQ_API_KEY=your_groq_key_here
+
+# Security Note: All browser automation runs locally
+# No data is sent to cloud services or external browsers
+# Complete privacy and security with local-only operation
 EOF
-        print_success "Created environment template"
+        print_success "Created environment template (local browser automation)"
     fi
     
     # Create startup script

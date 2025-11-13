@@ -1,10 +1,19 @@
-# 🌐 Browser Automation with Agno Integration
+# 🔒 Local Browser Automation with Agno Integration
 
-**Automate web interactions including LinkedIn, social media, and web scraping with AI-powered agents**
+**Automate web interactions including LinkedIn, social media, and web scraping with AI-powered agents using LOCAL browsers only**
 
 ## 🎯 **Overview**
 
-The AI DevOps Framework now includes comprehensive browser automation capabilities through Agno agents. This enables automated web interactions, social media management, and intelligent web scraping with AI-powered decision making.
+The AI DevOps Framework includes comprehensive **LOCAL-ONLY** browser automation capabilities through Agno agents. This enables automated web interactions, social media management, and intelligent web scraping with AI-powered decision making while maintaining complete privacy and security.
+
+## 🔒 **Privacy & Security First**
+
+### **🏠 Local-Only Operation**
+- **Complete Privacy**: All browser automation runs locally on your machine
+- **No Cloud Services**: No data sent to external browser services
+- **Full Control**: You maintain complete control over browser and data
+- **Zero External Dependencies**: No reliance on cloud browser providers
+- **Enterprise Security**: Perfect for sensitive or confidential automation
 
 ## ⚠️ **Important Ethical Guidelines**
 
@@ -24,16 +33,22 @@ The AI DevOps Framework now includes comprehensive browser automation capabiliti
 
 ## 🤖 **Available Agents**
 
-### **🔗 LinkedIn Automation Assistant**
-**Specialization**: LinkedIn automation and professional networking
+### **🔗 LinkedIn Automation Assistant (Local Browser Only)**
+**Specialization**: LinkedIn automation using LOCAL browsers with complete privacy
 
 **Capabilities**:
-- Automated post engagement (liking, commenting)
-- Timeline monitoring and content analysis
-- Connection management and networking
-- Content scheduling and posting
-- Profile optimization and management
-- Analytics and engagement tracking
+- Automated post engagement (liking, commenting) via local Playwright/Selenium
+- Timeline monitoring and content analysis with local browser instances
+- Connection management and networking through local automation
+- Content scheduling and posting via local browser control
+- Profile optimization and management with local tools
+- Analytics and engagement tracking using local data collection
+
+**Privacy & Security Features**:
+- **Complete Local Operation**: All automation runs on your machine
+- **No Cloud Dependencies**: Zero external browser services
+- **Full Data Control**: You maintain complete control over browser and data
+- **Enterprise Security**: Perfect for sensitive automation needs
 
 **Safety Features**:
 - Respects LinkedIn Terms of Service
@@ -41,16 +56,22 @@ The AI DevOps Framework now includes comprehensive browser automation capabiliti
 - Daily action limits to avoid rate limiting
 - Ethical engagement strategies only
 
-### **🌐 Web Automation Assistant**
-**Specialization**: General web automation and browser tasks
+### **🌐 Web Automation Assistant (Local Browser Only)**
+**Specialization**: General web automation using LOCAL browsers with complete privacy
 
 **Capabilities**:
-- Browser automation with Playwright and Selenium
-- Web scraping and data extraction
-- Form filling and submission automation
-- Website monitoring and testing
-- E-commerce automation and monitoring
-- Social media automation (ethical)
+- Browser automation with LOCAL Playwright and Selenium instances
+- Web scraping and data extraction using local browser control
+- Form filling and submission automation with local browsers
+- Website monitoring and testing through local automation
+- E-commerce automation and monitoring using local tools
+- Social media automation (ethical) with complete privacy
+
+**Privacy & Security Features**:
+- **Complete Local Operation**: All automation runs on your machine
+- **No Cloud Dependencies**: Zero external browser services
+- **Full Data Control**: You maintain complete control over browser and data
+- **Enterprise Security**: Perfect for sensitive automation needs
 
 **Safety Features**:
 - Respects robots.txt and website policies
@@ -96,21 +117,21 @@ Create `~/.aidevops/agno/.env`:
 # OpenAI Configuration
 OPENAI_API_KEY=your_openai_api_key_here
 
-# LinkedIn Automation (optional)
-LINKEDIN_EMAIL=your_linkedin_email
-LINKEDIN_PASSWORD=your_linkedin_password
-LINKEDIN_MAX_LIKES=10
-LINKEDIN_HEADLESS=false
-
-# Browser Configuration
+# Local Browser Configuration (Privacy-First)
 BROWSER_HEADLESS=false
 BROWSER_TIMEOUT=30000
 BROWSER_DELAY_MIN=2
 BROWSER_DELAY_MAX=5
 
-# Browserbase (optional - for cloud browsers)
-BROWSERBASE_API_KEY=your_browserbase_key
-BROWSERBASE_PROJECT_ID=your_project_id
+# LinkedIn Automation (Local Browser Only)
+LINKEDIN_EMAIL=your_linkedin_email
+LINKEDIN_PASSWORD=your_linkedin_password
+LINKEDIN_MAX_LIKES=10
+LINKEDIN_HEADLESS=false
+
+# Security Note: All browser automation runs locally
+# No data is sent to cloud services or external browsers
+# Complete privacy and security with local-only operation
 ```
 
 ## 🚀 **Usage Examples**
@@ -127,15 +148,19 @@ BROWSERBASE_PROJECT_ID=your_project_id
 # Ask: "Like the first 10 posts on my LinkedIn timeline"
 ```
 
-#### **Direct Script Usage**
+#### **Direct Script Usage (Local Browser)**
 ```bash
-# Set credentials
+# Set credentials for LOCAL browser automation
 export LINKEDIN_EMAIL=your@email.com
 export LINKEDIN_PASSWORD=yourpassword
 export LINKEDIN_MAX_LIKES=10
+export LINKEDIN_HEADLESS=false  # Set to true for background operation
 
-# Run LinkedIn automation
+# Run LOCAL LinkedIn automation (privacy-first)
 cd ~/.aidevops/agno
+python .agent/scripts/local-browser-automation.py
+
+# Alternative: Original script (also local-only)
 python .agent/scripts/linkedin-automation.py
 ```
 

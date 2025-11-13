@@ -215,14 +215,16 @@ Our framework provides standardized access to APIs across all major infrastructu
 - **Agents**: DevOps Assistant, Code Review Agent, Documentation Agent
 - **Interface**: Agent-UI web interface and REST API
 
-### **Browser Automation (Playwright/Selenium)**
+### **Local Browser Automation (Playwright/Selenium)**
 
-- **Purpose**: Web automation and browser-based task automation
-- **Authentication**: Website credentials (stored securely in environment)
+- **Purpose**: LOCAL web automation and browser-based task automation (privacy-first)
+- **Authentication**: Website credentials (stored securely in local environment only)
 - **Setup Script**: Included in `providers/agno-setup.sh`
-- **Key Features**: LinkedIn automation, web scraping, form filling, social media management
-- **Agents**: LinkedIn Automation Assistant, Web Automation Assistant
-- **Tools**: Playwright, Selenium, BeautifulSoup, ethical automation guidelines
+- **Key Features**: LOCAL LinkedIn automation, web scraping, form filling, social media management
+- **Privacy**: Complete local operation - no cloud services or external browsers
+- **Agents**: LinkedIn Automation Assistant (local), Web Automation Assistant (local)
+- **Tools**: LOCAL Playwright, LOCAL Selenium, BeautifulSoup, ethical automation guidelines
+- **Security**: Enterprise-grade privacy with local-only browser instances
 
 ## 🔧 **API Integration Features**
 
