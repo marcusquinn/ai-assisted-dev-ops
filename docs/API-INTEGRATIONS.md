@@ -1,6 +1,6 @@
 # 🔌 Comprehensive API Integration Guide
 
-This document provides detailed information about all 27+ API integrations supported by the AI DevOps framework.
+This document provides detailed information about all 28+ API integrations supported by the AI DevOps framework.
 
 ## 📊 **API Integration Overview**
 
@@ -214,6 +214,15 @@ Our framework provides standardized access to APIs across all major infrastructu
 - **Key Features**: Multi-agent framework, production runtime, complete privacy
 - **Agents**: DevOps Assistant, Code Review Agent, Documentation Agent
 - **Interface**: Agent-UI web interface and REST API
+
+### **Browser Automation (Playwright/Selenium)**
+
+- **Purpose**: Web automation and browser-based task automation
+- **Authentication**: Website credentials (stored securely in environment)
+- **Setup Script**: Included in `providers/agno-setup.sh`
+- **Key Features**: LinkedIn automation, web scraping, form filling, social media management
+- **Agents**: LinkedIn Automation Assistant, Web Automation Assistant
+- **Tools**: Playwright, Selenium, BeautifulSoup, ethical automation guidelines
 
 ## 🔧 **API Integration Features**
 

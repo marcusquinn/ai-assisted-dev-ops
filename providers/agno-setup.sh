@@ -80,10 +80,15 @@ setup_agno() {
     # Activate virtual environment
     source venv/bin/activate
     
-    # Install Agno
-    print_info "Installing Agno..."
+    # Install Agno with browser automation
+    print_info "Installing Agno with browser automation..."
     pip install --upgrade pip
     pip install "agno[all]"
+    pip install playwright selenium beautifulsoup4 requests-html
+
+    # Install Playwright browsers
+    print_info "Installing Playwright browsers..."
+    playwright install
     
     # Create basic AgentOS configuration
     if [[ ! -f "agent_os.py" ]]; then
@@ -104,6 +109,28 @@ from agno.tools.python import PythonTools
 from agno.knowledge.pdf import PDFKnowledgeBase
 from agno.storage.postgres import PostgresDb
 import os
+
+# Browser automation imports
+try:
+    from agno.tools.browserbase import BrowserbaseTools
+    BROWSERBASE_AVAILABLE = True
+except ImportError:
+    BROWSERBASE_AVAILABLE = False
+
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
 
 # Configure OpenAI model (requires OPENAI_API_KEY)
 model = OpenAIChat(
@@ -165,7 +192,7 @@ code_review_agent = Agent(
 
 # Documentation Agent
 docs_agent = Agent(
-    name="Documentation Assistant", 
+    name="Documentation Assistant",
     description="AI assistant for creating and maintaining technical documentation",
     model=model,
     tools=[
@@ -187,10 +214,83 @@ docs_agent = Agent(
     markdown=True
 )
 
+# LinkedIn Automation Agent
+linkedin_tools = []
+if BROWSERBASE_AVAILABLE:
+    linkedin_tools.append(BrowserbaseTools())
+
+linkedin_agent = Agent(
+    name="LinkedIn Automation Assistant",
+    description="AI assistant for LinkedIn automation and social media management",
+    model=model,
+    tools=linkedin_tools + [
+        FileTools(),
+        PythonTools(run_code=False),  # Safe mode
+    ],
+    instructions=[
+        "You are a LinkedIn automation specialist focusing on:",
+        "- Automated post engagement (liking, commenting)",
+        "- Timeline monitoring and content analysis",
+        "- Connection management and networking",
+        "- Content scheduling and posting",
+        "- Profile optimization and management",
+        "- Analytics and engagement tracking",
+        "IMPORTANT SAFETY GUIDELINES:",
+        "- Always respect LinkedIn's Terms of Service",
+        "- Use reasonable delays between actions (2-5 seconds)",
+        "- Limit daily actions to avoid rate limiting",
+        "- Never spam or engage in inappropriate behavior",
+        "- Respect user privacy and data protection",
+        "- Provide ethical automation strategies only",
+        "Focus on authentic engagement and professional networking."
+    ],
+    show_tool_calls=True,
+    markdown=True
+)
+
+# Web Automation Agent
+web_automation_agent = Agent(
+    name="Web Automation Assistant",
+    description="AI assistant for general web automation and browser tasks",
+    model=model,
+    tools=linkedin_tools + [
+        FileTools(),
+        PythonTools(run_code=False),  # Safe mode
+    ],
+    instructions=[
+        "You are a web automation expert specializing in:",
+        "- Browser automation with Playwright and Selenium",
+        "- Web scraping and data extraction",
+        "- Form filling and submission automation",
+        "- Website monitoring and testing",
+        "- Social media automation (ethical)",
+        "- E-commerce automation and monitoring",
+        "IMPORTANT GUIDELINES:",
+        "- Always respect website Terms of Service",
+        "- Use appropriate delays and rate limiting",
+        "- Handle errors gracefully with retries",
+        "- Respect robots.txt and website policies",
+        "- Provide ethical automation solutions only",
+        "- Focus on legitimate business use cases",
+        "Create robust, maintainable automation scripts."
+    ],
+    show_tool_calls=True,
+    markdown=True
+)
+
 # Create AgentOS instance
+available_agents = [devops_agent, code_review_agent, docs_agent]
+
+# Add browser automation agents if tools are available
+if BROWSERBASE_AVAILABLE or PLAYWRIGHT_AVAILABLE or SELENIUM_AVAILABLE:
+    available_agents.extend([linkedin_agent, web_automation_agent])
+    print("🌐 Browser automation agents enabled")
+else:
+    print("⚠️  Browser automation tools not available - install with: pip install playwright selenium")
+
 agent_os = AgentOS(
     name="AI DevOps AgentOS",
-    agents=[devops_agent, code_review_agent, docs_agent],
+    agents=available_agents,
     port=int(os.getenv("AGNO_PORT", "8000")),
     debug=True
 )

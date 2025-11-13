@@ -1,6 +1,6 @@
 # AI DevOps Framework
 
-**Unleash your AI assistant's true potential with seamless access to your entire DevOps ecosystem across 27+ services.**
+**Unleash your AI assistant's true potential with seamless access to your entire DevOps ecosystem across 28+ services.**
 
 *"Deploy my app to production, update the DNS, configure SSL, and set up monitoring"* - **One conversation, complete infrastructure management.**
 
@@ -53,11 +53,11 @@
 [![GitHub contributors](https://img.shields.io/github/contributors/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/graphs/contributors)
 
 <!-- Framework Specific -->
-[![Services Supported](https://img.shields.io/badge/Services%20Supported-27+-brightgreen.svg)](#️-comprehensive-service-coverage)
+[![Services Supported](https://img.shields.io/badge/Services%20Supported-28+-brightgreen.svg)](#️-comprehensive-service-coverage)
 [![AGENTS.md](https://img.shields.io/badge/AGENTS.md-Compliant-blue.svg)](https://agents.md/)
 [![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/aidevops/blob/main/AGENTS.md)
 [![MCP Servers](https://img.shields.io/badge/MCP%20Servers-10-orange.svg)](#-mcp-integrations)
-[![API Integrations](https://img.shields.io/badge/API%20Integrations-27+-blue.svg)](#️-comprehensive-service-coverage)
+[![API Integrations](https://img.shields.io/badge/API%20Integrations-28+-blue.svg)](#️-comprehensive-service-coverage)
 
 ## 🏆 **Enterprise-Grade Quality & Security**
 
@@ -69,7 +69,7 @@
 - **🤖 CodeRabbit**: AI-powered code reviews and security analysis
 - **🛡️ Codacy**: 0 findings across 8 analysis tools (642 security rules)
 
-**Comprehensive DevOps framework with 27+ service integrations, 10 MCP servers, and enterprise-grade quality assurance.**
+**Comprehensive DevOps framework with 28+ service integrations, 10 MCP servers, and enterprise-grade quality assurance.**
 
 ## ⚠️ **Security Notice**
 
@@ -146,7 +146,7 @@ ssh-keygen -t ed25519 -C "your-email@domain.com"
 - **Route 53**: AWS DNS management
 - **Namecheap**: Domain and DNS services
 
-### **🔧 Development & Git (6 platforms)**
+### **🔧 Development & Git (7 platforms)**
 
 - **GitHub**: Repository management, actions, API
 - **GitLab**: Self-hosted and cloud Git platform
@@ -154,6 +154,7 @@ ssh-keygen -t ed25519 -C "your-email@domain.com"
 - **LocalWP**: WordPress development environment
 - **Pandoc**: Document conversion to markdown for AI processing
 - **Agno**: Local AI agent operating system for DevOps automation
+- **Browser Automation**: LinkedIn automation, web scraping, social media management
 
 ### **🔐 Security & Quality (5 platforms)**
 
@@ -270,9 +271,10 @@ bash .agent/scripts/qlty-cli.sh fix
 **Complete Guides Available:**
 
 - **[MCP Integrations Guide](docs/MCP-INTEGRATIONS.md)** - 10 MCP servers setup
-- **[API Integrations Guide](docs/API-INTEGRATIONS.md)** - 27+ service APIs
+- **[API Integrations Guide](docs/API-INTEGRATIONS.md)** - 28+ service APIs
 - **[Pandoc Conversion Guide](docs/PANDOC-CONVERSION.md)** - Document format conversion
 - **[Agno Integration Guide](docs/AGNO-INTEGRATION.md)** - Local AI agent operating system
+- **[Browser Automation Guide](docs/BROWSER-AUTOMATION.md)** - LinkedIn automation and web scraping
 - **[PageSpeed & Lighthouse Guide](docs/PAGESPEED-LIGHTHOUSE.md)** - Performance auditing
 - **[AI CLI Tools Reference](docs/AI-CLI-TOOLS.md)** - AI assistant integration
 - **[Security Best Practices](docs/SECURITY.md)** - Enterprise security standards
