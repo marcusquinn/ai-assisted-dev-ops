@@ -29,6 +29,40 @@ ls ~/git/ai-assisted-dev-ops/docs/
 - **DevOps memory**: Use `~/.agent/memory/`
 - **Project-specific work**: Use individual project directories
 
+## 🔐 **CRITICAL: Credential & Secret Storage**
+**⚠️ MANDATORY SECURITY REQUIREMENTS:**
+
+### **✅ APPROVED Storage Location:**
+- **API Keys & Tokens**: `~/.config/ai-assisted-devops/api-keys`
+- **Service Configurations**: `~/git/ai-assisted-dev-ops/configs/[service]-config.json`
+- **File Permissions**: 600 (owner read/write only)
+
+### **❌ FORBIDDEN Storage Locations:**
+- **NEVER in `~/.agent/tmp/`** - Temporary files are not secure
+- **NEVER in `~/.agent/memory/`** - Memory files may be logged
+- **NEVER in any Git repository** - Risk of accidental commit
+- **NEVER in home directory root** - Security exposure risk
+- **NEVER in code or scripts** - Hardcoded credentials forbidden
+
+### **🛡️ Security Commands:**
+```bash
+# Store API keys securely
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set service-name YOUR_API_KEY
+
+# List configured services (keys are never displayed)
+bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh list
+
+# Verify secure storage location
+ls -la ~/.config/ai-assisted-devops/
+```
+
+### **🚨 ABSOLUTE PROHIBITIONS:**
+- **NO credentials in any working directory**
+- **NO API keys in temporary files**
+- **NO secrets in memory files**
+- **NO tokens in logs or output**
+- **NO passwords in any AI-accessible location**
+
 ## 🔗 **Framework Access**
 ```bash
 # Navigate to DevOps framework
