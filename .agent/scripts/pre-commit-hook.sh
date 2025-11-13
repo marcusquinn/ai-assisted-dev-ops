@@ -123,7 +123,7 @@ check_quality_standards() {
     # Check SonarCloud status if curl is available
     if command -v curl &> /dev/null && command -v jq &> /dev/null; then
         local response
-        if response=$(curl -s --max-time 10 "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1" 2>/dev/null); then
+        if response=$(curl -s --max-time 10 "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1" 2>/dev/null); then
             local total_issues
             total_issues=$(echo "$response" | jq -r '.total // 0' 2>/dev/null || echo "unknown")
 

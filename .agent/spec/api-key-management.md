@@ -57,7 +57,7 @@ GITHUB_TOKEN                         # Automatic (provided by GitHub)
 
 ### **2. Add GitHub Secrets**
 
-1. Go to: https://github.com/marcusquinn/ai-assisted-dev-ops/settings/secrets/actions
+1. Go to: https://github.com/marcusquinn/aidevops/settings/secrets/actions
 2. Click "New repository secret"
 3. Add:
    - Name: `SONAR_TOKEN`, Value: [Your SonarCloud token]
@@ -81,7 +81,7 @@ bash .agent/scripts/setup-local-api-keys.sh list
 
 ```bash
 # Test Codacy CLI
-cd git/ai-assisted-dev-ops
+cd git/aidevops
 bash .agent/scripts/codacy-cli.sh analyze
 
 # Test environment variables

@@ -28,7 +28,7 @@ echo "bulk-operations: Use Python scripts for universal fixes" > ~/.agent/memory
 echo "preferred_approach=bulk_operations" > ~/.agent/memory/preferences/user-settings.conf
 
 # Cache configuration discoveries
-echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > ~/.agent/memory/configurations/quality-tools.conf
+echo "sonarcloud_project=marcusquinn_aidevops" > ~/.agent/memory/configurations/quality-tools.conf
 
 # Track operation history
 echo "$(date): Successfully fixed 50 quality issues with bulk script" >> ~/.agent/memory/history/operations.log

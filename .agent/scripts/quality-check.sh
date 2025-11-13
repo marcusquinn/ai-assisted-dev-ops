@@ -51,7 +51,7 @@ check_sonarcloud_status() {
     echo -e "${BLUE}📊 Checking SonarCloud Status...${NC}"
     
     local response
-    if response=$(curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"); then
+    if response=$(curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"); then
         local total_issues
         total_issues=$(echo "$response" | jq -r '.total // 0')
         
@@ -65,7 +65,7 @@ check_sonarcloud_status() {
         
         # Get detailed breakdown
         local breakdown_response
-        if breakdown_response=$(curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=10&facets=rules"); then
+        if breakdown_response=$(curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=10&facets=rules"); then
             echo "Issue Breakdown:"
             echo "$breakdown_response" | jq -r '.facets[0].values[] | "  \(.val): \(.count) issues"'
         fi

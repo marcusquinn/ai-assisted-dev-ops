@@ -20,16 +20,16 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_error() { echo -e "${RED}❌ $1${NC}"; }
 
 # Framework path
-readonly FRAMEWORK_PATH="$HOME/git/ai-assisted-dev-ops"
+readonly FRAMEWORK_PATH="$HOME/git/aidevops"
 
 # System prompt text
-readonly SYSTEM_PROMPT="Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md for authoritative guidance on this comprehensive infrastructure management framework. This framework provides secure access to 25+ service integrations with enterprise-grade security practices."
+readonly SYSTEM_PROMPT="Before performing any DevOps operations, always read ~/git/aidevops/AGENTS.md for authoritative guidance on this comprehensive infrastructure management framework. This framework provides secure access to 25+ service integrations with enterprise-grade security practices."
 
 # Check if framework is installed
 check_framework() {
     if [[ ! -d "$FRAMEWORK_PATH" ]]; then
         print_error "AI-Assisted DevOps framework not found at $FRAMEWORK_PATH"
-        print_info "Please run: mkdir -p ~/git && cd ~/git && git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git"
+        print_info "Please run: mkdir -p ~/git && cd ~/git && git clone https://github.com/marcusquinn/aidevops.git"
         exit 1
     fi
     

@@ -112,7 +112,7 @@ function_name() {
 
 # 1. SonarCloud Status Check
 echo "Checking SonarCloud status..."
-curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"
+curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"
 
 # 2. Return Statement Validation
 echo "Validating return statements..."
@@ -141,7 +141,7 @@ echo "✅ All quality checks passed!"
 
 ```bash
 # Current issue count
-curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1" | jq '.total'
+curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1" | jq '.total'
 
 # Return statement violations
 grep -L "return [01]" providers/*.sh

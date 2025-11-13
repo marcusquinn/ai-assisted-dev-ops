@@ -172,7 +172,7 @@ deploy_ai_templates() {
 verify_location() {
     local current_dir
     current_dir="$(pwd)"
-    local expected_location="$HOME/git/ai-assisted-dev-ops"
+    local expected_location="$HOME/git/aidevops"
 
     if [[ "$current_dir" != "$expected_location" ]]; then
         print_warning "Repository is not in the recommended location"

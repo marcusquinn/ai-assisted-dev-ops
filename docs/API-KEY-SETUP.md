@@ -11,7 +11,7 @@
 ### **1. Initialize Secure Storage**
 
 ```bash
-cd git/ai-assisted-dev-ops
+cd git/aidevops
 bash .agent/scripts/setup-local-api-keys.sh setup
 ```
 

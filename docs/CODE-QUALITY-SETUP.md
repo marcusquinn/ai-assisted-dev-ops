@@ -20,7 +20,7 @@ The framework integrates with 4 major code analysis platforms:
 1. **Visit**: https://coderabbit.ai/
 2. **Sign up** with your GitHub account
 3. **Authorize** CodeRabbit to access your repositories
-4. **Add Repository**: Select `marcusquinn/ai-assisted-dev-ops`
+4. **Add Repository**: Select `marcusquinn/aidevops`
 5. **Configure**: Enable automatic PR reviews
 
 #### **Features You Get:**
@@ -43,7 +43,7 @@ The framework integrates with 4 major code analysis platforms:
 1. **Visit**: https://www.codefactor.io/
 2. **Sign up** with your GitHub account
 3. **Add Repository**: Click "Add new repository"
-4. **Select**: `marcusquinn/ai-assisted-dev-ops`
+4. **Select**: `marcusquinn/aidevops`
 5. **Enable**: GitHub Checks for PR integration
 
 #### **Features You Get:**
@@ -56,7 +56,7 @@ The framework integrates with 4 major code analysis platforms:
 #### **Badge for README:**
 
 ```markdown
-[![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
+[![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/aidevops/badge)](https://www.codefactor.io/repository/github/marcusquinn/aidevops)
 ```
 
 ### **3. 🛡️ Codacy Setup**
@@ -66,7 +66,7 @@ The framework integrates with 4 major code analysis platforms:
 1. **Visit**: https://app.codacy.com/
 2. **Sign up** with your GitHub account
 3. **Add Repository**: Import from GitHub
-4. **Select**: `marcusquinn/ai-assisted-dev-ops`
+4. **Select**: `marcusquinn/aidevops`
 5. **Configure**: Uses the `.codacy.yml` configuration we provided
 
 #### **Features You Get:**
@@ -79,7 +79,7 @@ The framework integrates with 4 major code analysis platforms:
 #### **Badge for README:**
 
 ```markdown
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/[PROJECT_ID])](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/[PROJECT_ID])](https://app.codacy.com/gh/marcusquinn/aidevops/dashboard)
 ```
 
 ### **4. ⚡ SonarCloud Setup**
@@ -89,7 +89,7 @@ The framework integrates with 4 major code analysis platforms:
 1. **Visit**: https://sonarcloud.io/
 2. **Sign up** with your GitHub account
 3. **Create Organization**: Link to your GitHub account
-4. **Add Project**: Import `marcusquinn/ai-assisted-dev-ops`
+4. **Add Project**: Import `marcusquinn/aidevops`
 5. **Get Token**: My Account → Security → Generate Token
 6. **Add Secret**: In GitHub repo settings → Secrets → `SONAR_TOKEN`
 
@@ -103,7 +103,7 @@ The framework integrates with 4 major code analysis platforms:
 #### **Badge for README:**
 
 ```markdown
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_aidevops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_aidevops)
 ```
 
 ## 🔧 **GitHub Integration Setup**

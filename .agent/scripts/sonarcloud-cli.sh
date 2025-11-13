@@ -20,7 +20,7 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_error() { echo -e "${RED}❌ $1${NC}"; }
 
 # SonarCloud project configuration
-readonly SONAR_PROJECT_KEY="marcusquinn_ai-assisted-dev-ops"
+readonly SONAR_PROJECT_KEY="marcusquinn_aidevops"
 readonly SONAR_ORGANIZATION="marcusquinn"
 readonly SONAR_URL="https://sonarcloud.io"
 

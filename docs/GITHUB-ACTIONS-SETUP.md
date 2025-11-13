@@ -37,7 +37,7 @@
 1. **Go to Repository Settings**:
 
    ```text
-   https://github.com/marcusquinn/ai-assisted-dev-ops/settings/secrets/actions
+   https://github.com/marcusquinn/aidevops/settings/secrets/actions
    ```
 
 2. **Click "New repository secret"**
@@ -65,19 +65,19 @@
 ### **SonarCloud Dashboard:**
 
 ```text
-https://sonarcloud.io/project/overview?id=marcusquinn_ai-assisted-dev-ops
+https://sonarcloud.io/project/overview?id=marcusquinn_aidevops
 ```
 
 ### **Codacy Dashboard:**
 
 ```text
-https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops
+https://app.codacy.com/gh/marcusquinn/aidevops
 ```
 
 ### **GitHub Actions:**
 
 ```text
-https://github.com/marcusquinn/ai-assisted-dev-ops/actions
+https://github.com/marcusquinn/aidevops/actions
 ```
 
 ## 🔧 **WORKFLOW CONFIGURATION**

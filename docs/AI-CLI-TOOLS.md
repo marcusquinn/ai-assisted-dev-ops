@@ -66,7 +66,7 @@ This document provides a comprehensive list of CLI AI assistants and tools that 
 Add this to your AI assistant's system prompt for optimal framework integration:
 
 ```text
-Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
+Before performing any DevOps operations, always read ~/git/aidevops/AGENTS.md
 for authoritative guidance on this comprehensive infrastructure management framework.
 
 This framework provides access to 25+ service integrations including:
@@ -85,7 +85,7 @@ Always follow the security practices and operational patterns defined in the AGE
 
 ```bash
 # Add to your shell profile
-export AUGMENT_SYSTEM_PROMPT="Read ~/git/ai-assisted-dev-ops/AGENTS.md before DevOps operations"
+export AUGMENT_SYSTEM_PROMPT="Read ~/git/aidevops/AGENTS.md before DevOps operations"
 ```
 
 #### **For Claude Desktop**
@@ -94,8 +94,8 @@ Add to `claude_desktop_config.json`:
 
 ```json
 {
-  "systemPrompt": "Before DevOps operations, read ~/git/ai-assisted-dev-ops/AGENTS.md for guidance",
-  "workingDirectory": "~/git/ai-assisted-dev-ops"
+  "systemPrompt": "Before DevOps operations, read ~/git/aidevops/AGENTS.md for guidance",
+  "workingDirectory": "~/git/aidevops"
 }
 ```
 
@@ -104,7 +104,7 @@ Add to `claude_desktop_config.json`:
 ```bash
 # Create a Warp workflow
 warp-cli workflow create devops-setup \
-  --command "cd ~/git/ai-assisted-dev-ops && cat AGENTS.md"
+  --command "cd ~/git/aidevops && cat AGENTS.md"
 ```
 
 ## 🚀 **Quick Setup for Each Tool**
@@ -115,13 +115,13 @@ warp-cli workflow create devops-setup \
 
    ```bash
    mkdir -p ~/git && cd ~/git
-   git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
+   git clone https://github.com/marcusquinn/aidevops.git
    ```
 
 2. **Run initial setup**:
 
    ```bash
-   cd ai-assisted-dev-ops && ./setup.sh
+   cd aidevops && ./setup.sh
    ```
 
 3. **Configure your AI tool** with the system prompt above

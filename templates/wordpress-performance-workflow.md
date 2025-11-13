@@ -116,7 +116,7 @@ Add this to your AI assistant's system prompt:
 
 ```
 For WordPress performance optimization, use the PageSpeed and Lighthouse tools in 
-~/git/ai-assisted-dev-ops/providers/pagespeed-helper.sh. Focus on:
+~/git/aidevops/providers/pagespeed-helper.sh. Focus on:
 
 1. Core Web Vitals improvement
 2. WordPress-specific optimizations (plugins, themes, caching)

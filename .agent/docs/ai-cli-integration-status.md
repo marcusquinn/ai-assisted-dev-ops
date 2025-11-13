@@ -78,15 +78,15 @@
 
 ```bash
 # AI tools with explicit AGENTS.md context
-alias aider-guided='aider --read ~/AGENTS.md --read ~/git/ai-assisted-dev-ops/AGENTS.md'
+alias aider-guided='aider --read ~/AGENTS.md --read ~/git/aidevops/AGENTS.md'
 alias claude-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && claude'
 alias qwen-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && qwen'
 alias openai-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && openai'
 alias ai-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && ai-shell'
 
 # Quick access
-alias agents='cat ~/git/ai-assisted-dev-ops/AGENTS.md'
-alias cdai='cd ~/git/ai-assisted-dev-ops'
+alias agents='cat ~/git/aidevops/AGENTS.md'
+alias cdai='cd ~/git/aidevops'
 ```
 
 ### **✅ AUTOMATIC SETUP INTEGRATION:**

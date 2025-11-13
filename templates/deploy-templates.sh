@@ -24,7 +24,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Validate we're in the correct repository
 if [[ ! -f "$REPO_ROOT/AGENTS.md" ]] || [[ ! -d "$REPO_ROOT/.agent" ]]; then
-    print_error "This script must be run from within the ai-assisted-dev-ops repository"
+    print_error "This script must be run from within the aidevops repository"
     exit 1
 fi
 

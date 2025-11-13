@@ -8,7 +8,7 @@ This repository provides a comprehensive DevOps infrastructure management framew
 
 ### **Single Source of Truth**
 
-- **This file** (`~/git/ai-assisted-dev-ops/AGENTS.md`) is the **ONLY authoritative source** for AI assistant instructions
+- **This file** (`~/git/aidevops/AGENTS.md`) is the **ONLY authoritative source** for AI assistant instructions
 - **All other AGENTS.md files** are minimal templates that reference this file
 - **Never duplicate instructions** - all operational guidance must remain here
 - **Template files must remain minimal** to prevent conflicting guidance and security vulnerabilities
@@ -47,7 +47,7 @@ When using this framework, AI assistants have access to:
 **RECOMMENDED**: Add this instruction to your AI assistant's system prompt:
 
 ```text
-Before performing any DevOps operations, always read ~/git/ai-assisted-dev-ops/AGENTS.md
+Before performing any DevOps operations, always read ~/git/aidevops/AGENTS.md
 for authoritative guidance on this comprehensive infrastructure management framework.
 
 This framework provides secure access to 25+ service integrations with enterprise-grade
@@ -69,12 +69,12 @@ This repository should be cloned to the standard location for optimal AI assista
 
 ```bash
 # Standard location (recommended)
-~/git/ai-assisted-dev-ops/
+~/git/aidevops/
 
 # Clone command
 mkdir -p ~/git
 cd ~/git
-git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
+git clone https://github.com/marcusquinn/aidevops.git
 ```
 
 **Benefits of standard location:**
@@ -151,7 +151,7 @@ echo "bulk-operations: Use Python scripts for universal fixes" > ~/.agent/memory
 echo "preferred_approach=bulk_operations" > ~/.agent/memory/preferences/user-settings.conf
 
 # Cache configuration discoveries
-echo "sonarcloud_project=marcusquinn_ai-assisted-dev-ops" > ~/.agent/memory/configurations/quality-tools.conf
+echo "sonarcloud_project=marcusquinn_aidevops" > ~/.agent/memory/configurations/quality-tools.conf
 ```
 
 **Use `~/.agent/memory/` for:**
@@ -179,7 +179,7 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 
 - Contains **minimal references only** to this authoritative repository
 - **DO NOT modify** beyond basic references for security
-- Redirects all operations to `~/git/ai-assisted-dev-ops/`
+- Redirects all operations to `~/git/aidevops/`
 
 **Git Directory (`~/git/AGENTS.md`)**:
 
@@ -195,7 +195,7 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 
 #### **🚨 SECURITY REQUIREMENTS:**
 
-- **Use authoritative repository**: Always reference `~/git/ai-assisted-dev-ops/AGENTS.md`
+- **Use authoritative repository**: Always reference `~/git/aidevops/AGENTS.md`
 - **Minimal templates only**: Never add detailed instructions to user-space templates
 - **Prevent prompt injection**: Keep operational instructions in the secure repository
 - **Secure working directories**: All AI operations must use `~/.agent/` directories outside Git control
@@ -226,14 +226,14 @@ The framework deploys minimal, secure templates to prevent prompt injection atta
 - **Reliability Rating**: A (Zero bugs)
 - **Maintainability Rating**: A (Minimal code smells)
 - **Code Duplication**: 0.0%
-- **Setup Check**: `curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_ai-assisted-dev-ops&metricKeys=bugs,vulnerabilities,code_smells"`
+- **Setup Check**: `curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_aidevops&metricKeys=bugs,vulnerabilities,code_smells"`
 
 #### **CodeFactor Integration (A-Grade Required)**
 
 - **Overall Grade**: A (81%+ A-grade files)
 - **Zero D/F-grade files**: All scripts must pass quality checks
 - **ShellCheck Compliance**: Zero violations across all shell scripts
-- **Setup Check**: `curl -s "https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops"`
+- **Setup Check**: `curl -s "https://www.codefactor.io/repository/github/marcusquinn/aidevops"`
 
 #### **ShellCheck Compliance (MANDATORY)**
 
@@ -257,29 +257,29 @@ find providers/ -name "*.sh" -exec shellcheck {} \;
 
 ```bash
 # Install CodeRabbit CLI
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh install
+bash ~/git/aidevops/.agent/scripts/coderabbit-cli.sh install
 
 # Setup API key (get from https://app.coderabbit.ai)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh setup
+bash ~/git/aidevops/.agent/scripts/coderabbit-cli.sh setup
 
 # Review current changes
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh review
+bash ~/git/aidevops/.agent/scripts/coderabbit-cli.sh review
 ```
 
 **📊 Codacy CLI v2 - Comprehensive Code Analysis:**
 
 ```bash
 # Install Codacy CLI v2
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh install
+bash ~/git/aidevops/.agent/scripts/codacy-cli.sh install
 
 # Initialize project configuration
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh init
+bash ~/git/aidevops/.agent/scripts/codacy-cli.sh init
 
 # Run code analysis
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze
+bash ~/git/aidevops/.agent/scripts/codacy-cli.sh analyze
 
 # 🚀 AUTO-FIX: Apply automatic fixes when available
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix
+bash ~/git/aidevops/.agent/scripts/codacy-cli.sh analyze --fix
 ```
 
 **🔧 CODACY AUTO-FIX FEATURE:**
@@ -294,49 +294,49 @@ bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix
 
 ```bash
 # Install Qlty CLI
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh install
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh install
 
 # Initialize in repository
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh init
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh init
 
 # Run code quality check (default: marcusquinn org)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh check
 
 # Run check for specific organization
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check 5 myorg
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh check 5 myorg
 
 # 🚀 AUTO-FORMAT: Universal auto-formatting (default: marcusquinn org)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh fmt --all
 
 # Auto-format for specific organization
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all myorg
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh fmt --all myorg
 
 # Detect code smells
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh smells --all
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh smells --all
 ```
 
 **🔐 Qlty Credential Management - Multi-Level Access:**
 
 ```bash
 # 🌟 ACCOUNT-LEVEL API KEY (Preferred - Account-wide access)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-account-api-key YOUR_API_KEY
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh set qlty-account-api-key YOUR_API_KEY
 
 # 🎯 ORGANIZATION-SPECIFIC CREDENTIALS
 # Store Coverage Token for organization
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME YOUR_COVERAGE_TOKEN
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME YOUR_COVERAGE_TOKEN
 
 # Store Workspace ID for organization (optional but recommended)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME-workspace-id YOUR_WORKSPACE_ID
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh set qlty-ORGNAME-workspace-id YOUR_WORKSPACE_ID
 
 # List all configurations
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh list
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh list
 
 # Example: Complete setup for 'mycompany' organization
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany qltcw_abc123...
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany-workspace-id 12345678-abcd-...
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany qltcw_abc123...
+bash ~/git/aidevops/.agent/scripts/setup-local-api-keys.sh set qlty-mycompany-workspace-id 12345678-abcd-...
 
 # Use with any organization (account API key provides access to all)
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check 10 mycompany
+bash ~/git/aidevops/.agent/scripts/qlty-cli.sh check 10 mycompany
 ```
 
 **🎯 Intelligent Credential Selection:**
@@ -366,16 +366,16 @@ bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check 10 mycompany
 
 ```bash
 # Detect languages in current project
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh detect
+bash ~/git/aidevops/.agent/scripts/linter-manager.sh detect
 
 # Install linters for detected languages
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-detected
+bash ~/git/aidevops/.agent/scripts/linter-manager.sh install-detected
 
 # Install all supported linters
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-all
+bash ~/git/aidevops/.agent/scripts/linter-manager.sh install-all
 
 # Install linters for specific language
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install python
+bash ~/git/aidevops/.agent/scripts/linter-manager.sh install python
 ```
 
 **📚 LINTER MANAGER FEATURES:**
@@ -391,13 +391,13 @@ bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install python
 
 ```bash
 # Complete guided setup with needs assessment
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh full-setup
+bash ~/git/aidevops/.agent/scripts/setup-linters-wizard.sh full-setup
 
 # Just assess development needs
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh assess
+bash ~/git/aidevops/.agent/scripts/setup-linters-wizard.sh assess
 
 # Install based on previous assessment
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh install
+bash ~/git/aidevops/.agent/scripts/setup-linters-wizard.sh install
 ```
 
 **🌟 SETUP WIZARD FEATURES:**
@@ -412,26 +412,26 @@ bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh install
 
 ```bash
 # Install SonarScanner CLI
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh install
+bash ~/git/aidevops/.agent/scripts/sonarscanner-cli.sh install
 
 # Initialize project configuration
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh init
+bash ~/git/aidevops/.agent/scripts/sonarscanner-cli.sh init
 
 # Run SonarQube analysis
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh analyze
+bash ~/git/aidevops/.agent/scripts/sonarscanner-cli.sh analyze
 ```
 
 **🎛️ Unified Quality CLI Manager:**
 
 ```bash
 # Install all quality CLIs
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh install all
+bash ~/git/aidevops/.agent/scripts/quality-cli-manager.sh install all
 
 # Run analysis with all CLIs
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh analyze all
+bash ~/git/aidevops/.agent/scripts/quality-cli-manager.sh analyze all
 
 # Check status of all CLIs
-bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh status all
+bash ~/git/aidevops/.agent/scripts/quality-cli-manager.sh status all
 ```
 
 **API Key Setup (Secure Local Configuration):**
@@ -569,7 +569,7 @@ monitor|audit|status    # Service monitoring and auditing
 ## 📁 **Complete Repository Structure**
 
 ```text
-ai-assisted-dev-ops/
+aidevops/
 ├── 📄 README.md              # Main project documentation
 ├── 📄 AGENTS.md              # AI agent integration guide (this file)
 ├── 📄 LICENSE                # MIT license
@@ -613,25 +613,25 @@ ai-assisted-dev-ops/
 
 ## 📁 **Framework Agent Directory Structure**
 
-### **~/git/ai-assisted-dev-ops/.agent/** - Framework Templates and Tools
+### **~/git/aidevops/.agent/** - Framework Templates and Tools
 
 **This directory contains templates and development tools (DO NOT use for personal data):**
 
-### **~/git/ai-assisted-dev-ops/.agent/scripts/** - Quality Automation Tools
+### **~/git/aidevops/.agent/scripts/** - Quality Automation Tools
 
 - `quality-check.sh` - Multi-platform quality validation
 - `quality-fix.sh` - Universal automated issue resolution
 - `pre-commit-hook.sh` - Continuous quality assurance
 - `development/` - Historical development scripts with documentation
 
-### **~/git/ai-assisted-dev-ops/.agent/spec/** - Technical Specifications
+### **~/git/aidevops/.agent/spec/** - Technical Specifications
 
 - `code-quality.md` - Multi-platform quality standards and compliance
 - `requirements.md` - Framework requirements and capabilities
 - `security.md` - Security requirements and standards
 - `extension.md` - Guidelines for extending the framework
 
-### **~/git/ai-assisted-dev-ops/.agent/wiki/** - Knowledge Base
+### **~/git/aidevops/.agent/wiki/** - Knowledge Base
 
 - `architecture.md` - Complete framework architecture
 - `services.md` - All 25+ service integrations
@@ -639,7 +639,7 @@ ai-assisted-dev-ops/
 - `configs.md` - Configuration management patterns
 - `docs.md` - Documentation standards and guidelines
 
-### **~/git/ai-assisted-dev-ops/.agent/links/** - External Resources
+### **~/git/aidevops/.agent/links/** - External Resources
 
 - `resources.md` - External APIs, documentation, and tools
 
@@ -765,16 +765,16 @@ Port 3008: Gitea repository management
 
 ### **Framework Understanding**
 
-- Start with `~/git/ai-assisted-dev-ops/.agent/wiki/architecture.md` for complete overview
-- Review `~/git/ai-assisted-dev-ops/.agent/spec/requirements.md` for capabilities
+- Start with `~/git/aidevops/.agent/wiki/architecture.md` for complete overview
+- Review `~/git/aidevops/.agent/spec/requirements.md` for capabilities
 - Check service-specific docs in `docs/[SERVICE].md`
 - Use Context7 MCP for latest external documentation
 
 ### **Extension Guidelines**
 
-- Follow patterns in `~/git/ai-assisted-dev-ops/.agent/spec/extension.md`
+- Follow patterns in `~/git/aidevops/.agent/spec/extension.md`
 - Use existing providers as templates
-- Implement security standards from `~/git/ai-assisted-dev-ops/.agent/spec/security.md`
+- Implement security standards from `~/git/aidevops/.agent/spec/security.md`
 - Update all framework files for complete integration
 
 ## 🔄 **Quality Improvement Workflow**
@@ -785,10 +785,10 @@ Port 3008: Gitea repository management
 
 ```bash
 # 1. Check SonarCloud Status
-curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_ai-assisted-dev-ops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"
+curl -s "https://sonarcloud.io/api/issues/search?componentKeys=marcusquinn_aidevops&impactSoftwareQualities=MAINTAINABILITY&resolved=false&ps=1"
 
 # 2. Verify CodeFactor Status
-curl -s "https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops"
+curl -s "https://www.codefactor.io/repository/github/marcusquinn/aidevops"
 
 # 3. Run ShellCheck on modified files
 find providers/ -name "*.sh" -newer .git/COMMIT_EDITMSG -exec shellcheck {} \;
@@ -944,7 +944,7 @@ done
 
 #### **Pre-Development Checklist:**
 
-1. **Run quality check**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-check.sh`
+1. **Run quality check**: `bash ~/git/aidevops/.agent/scripts/quality-check.sh`
 2. **Identify target issues**: Focus on highest-impact violations
 3. **Plan enhancements**: How will changes improve functionality?
 
@@ -971,10 +971,10 @@ Include quality metrics in every commit:
 
 **🎯 AUTOMATED QUALITY TOOLS PROVIDED:**
 
-- **`~/git/ai-assisted-dev-ops/.agent/scripts/quality-check.sh`**: Multi-platform quality validation
-- **`~/git/ai-assisted-dev-ops/.agent/scripts/quality-fix.sh`**: Universal automated issue resolution
-- **`~/git/ai-assisted-dev-ops/.agent/scripts/pre-commit-hook.sh`**: Prevent quality regressions
-- **`~/git/ai-assisted-dev-ops/.agent/spec/code-quality.md`**: Comprehensive quality standards
+- **`~/git/aidevops/.agent/scripts/quality-check.sh`**: Multi-platform quality validation
+- **`~/git/aidevops/.agent/scripts/quality-fix.sh`**: Universal automated issue resolution
+- **`~/git/aidevops/.agent/scripts/pre-commit-hook.sh`**: Prevent quality regressions
+- **`~/git/aidevops/.agent/spec/code-quality.md`**: Comprehensive quality standards
 
 #### **Available Quality Scripts:**
 
@@ -982,14 +982,14 @@ Include quality metrics in every commit:
 - **fix-content-type.sh**: Consolidate Content-Type headers
 - **fix-auth-headers.sh**: Standardize Authorization headers
 - **fix-error-messages.sh**: Create error message constants
-- **CodeRabbit**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/coderabbit-cli.sh review`
-- **Codacy**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze`
-- **Codacy Auto-Fix**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix` ⚡ **AUTOMATED FIXES**
-- **Qlty Universal**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh check` 🌟 **70+ TOOLS**
-- **Qlty Auto-Format**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
-- **SonarScanner**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/sonarscanner-cli.sh analyze`
-- **Linter Manager**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/linter-manager.sh install-detected` 🔧 **CODEFACTOR-INSPIRED**
-- **Linter Setup Wizard**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-linters-wizard.sh full-setup` 🎯 **INTELLIGENT NEEDS ASSESSMENT**
+- **CodeRabbit**: `bash ~/git/aidevops/.agent/scripts/coderabbit-cli.sh review`
+- **Codacy**: `bash ~/git/aidevops/.agent/scripts/codacy-cli.sh analyze`
+- **Codacy Auto-Fix**: `bash ~/git/aidevops/.agent/scripts/codacy-cli.sh analyze --fix` ⚡ **AUTOMATED FIXES**
+- **Qlty Universal**: `bash ~/git/aidevops/.agent/scripts/qlty-cli.sh check` 🌟 **70+ TOOLS**
+- **Qlty Auto-Format**: `bash ~/git/aidevops/.agent/scripts/qlty-cli.sh fmt --all` ⚡ **UNIVERSAL FORMATTING**
+- **SonarScanner**: `bash ~/git/aidevops/.agent/scripts/sonarscanner-cli.sh analyze`
+- **Linter Manager**: `bash ~/git/aidevops/.agent/scripts/linter-manager.sh install-detected` 🔧 **CODEFACTOR-INSPIRED**
+- **Linter Setup Wizard**: `bash ~/git/aidevops/.agent/scripts/setup-linters-wizard.sh full-setup` 🎯 **INTELLIGENT NEEDS ASSESSMENT**
 
 #### **🚀 AUTOMATED FIX CAPABILITIES:**
 
@@ -997,14 +997,14 @@ Include quality metrics in every commit:
 
 - **Functionality**: Automatically applies safe fixes for common code quality issues
 - **Web UI Equivalent**: Same as "Fix Issues" button in Codacy dashboard
-- **Usage**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/codacy-cli.sh analyze --fix`
+- **Usage**: `bash ~/git/aidevops/.agent/scripts/codacy-cli.sh analyze --fix`
 - **Time Savings**: 70-90% reduction in manual fix time
 
 **🎨 Qlty Auto-Formatting:**
 
 - **Functionality**: Universal auto-formatting for 40+ languages with 70+ tools
 - **Features**: Linting, formatting, security scanning, code smells detection
-- **Usage**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/qlty-cli.sh fmt --all`
+- **Usage**: `bash ~/git/aidevops/.agent/scripts/qlty-cli.sh fmt --all`
 - **Coverage**: Comprehensive multi-language support with AI-generated fixes
 
 **📊 Auto-Fix Comparison:**
@@ -1016,7 +1016,7 @@ Include quality metrics in every commit:
 
 **🛠️ Unified Access:**
 
-- **Quality CLI Manager**: `bash ~/git/ai-assisted-dev-ops/.agent/scripts/quality-cli-manager.sh analyze codacy-fix`
+- **Quality CLI Manager**: `bash ~/git/aidevops/.agent/scripts/quality-cli-manager.sh analyze codacy-fix`
 - **Direct CLI Access**: Individual tool commands for targeted fixes
 - **Batch Operations**: Run multiple auto-fix tools in sequence
 

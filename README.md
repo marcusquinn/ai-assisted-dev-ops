@@ -18,11 +18,11 @@
 ---
 
 <!-- Build & Quality Status -->
-[![GitHub Actions](https://github.com/marcusquinn/ai-assisted-dev-ops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/actions)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_ai-assisted-dev-ops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_ai-assisted-dev-ops)
-[![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops/badge)](https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops)
-[![Maintainability](https://qlty.sh/gh/marcusquinn/projects/ai-assisted-dev-ops/maintainability.svg)](https://qlty.sh/gh/marcusquinn/projects/ai-assisted-dev-ops)
-[![Codacy Badge](https://img.shields.io/badge/Codacy-Ready%20for%20Integration-blue)](https://app.codacy.com/gh/marcusquinn/ai-assisted-dev-ops/dashboard)
+[![GitHub Actions](https://github.com/marcusquinn/aidevops/workflows/Code%20Quality%20Analysis/badge.svg)](https://github.com/marcusquinn/aidevops/actions)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=marcusquinn_aidevops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=marcusquinn_aidevops)
+[![CodeFactor](https://www.codefactor.io/repository/github/marcusquinn/aidevops/badge)](https://www.codefactor.io/repository/github/marcusquinn/aidevops)
+[![Maintainability](https://qlty.sh/gh/marcusquinn/projects/aidevops/maintainability.svg)](https://qlty.sh/gh/marcusquinn/projects/aidevops)
+[![Codacy Badge](https://img.shields.io/badge/Codacy-Ready%20for%20Integration-blue)](https://app.codacy.com/gh/marcusquinn/aidevops/dashboard)
 [![CodeRabbit](https://img.shields.io/badge/CodeRabbit-AI%20Reviews-FF570A?logo=coderabbit&logoColor=white)](https://coderabbit.ai)
 
 <!-- License & Legal -->
@@ -30,31 +30,31 @@
 [![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025-blue.svg)](https://github.com/marcusquinn)
 
 <!-- GitHub Stats -->
-[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/network)
-[![GitHub watchers](https://img.shields.io/github/watchers/marcusquinn/ai-assisted-dev-ops.svg?style=social)](https://github.com/marcusquinn/ai-assisted-dev-ops/watchers)
+[![GitHub stars](https://img.shields.io/github/stars/marcusquinn/aidevops.svg?style=social)](https://github.com/marcusquinn/aidevops/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/marcusquinn/aidevops.svg?style=social)](https://github.com/marcusquinn/aidevops/network)
+[![GitHub watchers](https://img.shields.io/github/watchers/marcusquinn/aidevops.svg?style=social)](https://github.com/marcusquinn/aidevops/watchers)
 
 <!-- Release & Version Info -->
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
-[![GitHub Release Date](https://img.shields.io/github/release-date/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/releases)
-[![GitHub commits since latest release](https://img.shields.io/github/commits-since/marcusquinn/ai-assisted-dev-ops/latest)](https://github.com/marcusquinn/ai-assisted-dev-ops/commits/main)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/releases)
+[![GitHub Release Date](https://img.shields.io/github/release-date/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/releases)
+[![GitHub commits since latest release](https://img.shields.io/github/commits-since/marcusquinn/aidevops/latest)](https://github.com/marcusquinn/aidevops/commits/main)
 
 <!-- Repository Stats -->
-[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
-[![Lines of code](https://img.shields.io/badge/Lines%20of%20Code-18%2C000%2B-brightgreen)](https://github.com/marcusquinn/ai-assisted-dev-ops)
-[![GitHub language count](https://img.shields.io/github/languages/count/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
-[![GitHub top language](https://img.shields.io/github/languages/top/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops)
+[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
+[![Lines of code](https://img.shields.io/badge/Lines%20of%20Code-18%2C000%2B-brightgreen)](https://github.com/marcusquinn/aidevops)
+[![GitHub language count](https://img.shields.io/github/languages/count/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
+[![GitHub top language](https://img.shields.io/github/languages/top/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
 
 <!-- Community & Issues -->
-[![GitHub issues](https://img.shields.io/github/issues/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues)
-[![GitHub closed issues](https://img.shields.io/github/issues-closed/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/issues?q=is%3Aissue+is%3Aclosed)
-[![GitHub pull requests](https://img.shields.io/github/issues-pr/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/pulls)
-[![GitHub contributors](https://img.shields.io/github/contributors/marcusquinn/ai-assisted-dev-ops)](https://github.com/marcusquinn/ai-assisted-dev-ops/graphs/contributors)
+[![GitHub issues](https://img.shields.io/github/issues/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/issues)
+[![GitHub closed issues](https://img.shields.io/github/issues-closed/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/issues?q=is%3Aissue+is%3Aclosed)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/pulls)
+[![GitHub contributors](https://img.shields.io/github/contributors/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops/graphs/contributors)
 
 <!-- Framework Specific -->
 [![Services Supported](https://img.shields.io/badge/Services%20Supported-25+-brightgreen.svg)](#️-comprehensive-service-coverage)
 [![AGENTS.md](https://img.shields.io/badge/AGENTS.md-Compliant-blue.svg)](https://agents.md/)
-[![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/ai-assisted-dev-ops/blob/main/AGENTS.md)
+[![AI Optimized](https://img.shields.io/badge/AI%20Optimized-Yes-brightgreen.svg)](https://github.com/marcusquinn/aidevops/blob/main/AGENTS.md)
 [![MCP Servers](https://img.shields.io/badge/MCP%20Servers-10-orange.svg)](#-mcp-integrations)
 [![API Integrations](https://img.shields.io/badge/API%20Integrations-25+-blue.svg)](#️-comprehensive-service-coverage)
 
@@ -82,11 +82,11 @@
 ```bash
 # 1. Clone and setup
 mkdir -p ~/git && cd ~/git
-git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git
-cd ai-assisted-dev-ops && ./setup.sh
+git clone https://github.com/marcusquinn/aidevops.git
+cd aidevops && ./setup.sh
 
 # 2. Add to your AI assistant's system prompt:
-# "Before any DevOps operations, read ~/git/ai-assisted-dev-ops/AGENTS.md for authoritative guidance"
+# "Before any DevOps operations, read ~/git/aidevops/AGENTS.md for authoritative guidance"
 ```
 
 **That's it! Your AI assistant now has access to 25+ service integrations.**
@@ -277,7 +277,7 @@ bash .agent/scripts/qlty-cli.sh fix
 ## 🏗️ **Architecture**
 
 ```text
-ai-assisted-dev-ops/
+aidevops/
 ├── 🔧 setup.sh                       # Main setup script
 ├── 📄 AGENTS.md                      # AI agent guidance
 ├── 🔧 scripts/servers-helper.sh      # Global server access
@@ -413,7 +413,7 @@ export DEBUG=1
 
 **🚀 Get Started:**
 
-1. Clone repository: `git clone https://github.com/marcusquinn/ai-assisted-dev-ops.git`
+1. Clone repository: `git clone https://github.com/marcusquinn/aidevops.git`
 2. Run setup: `./setup.sh`
 3. Configure providers: Copy and edit config templates
 4. Let your AI assistant manage your infrastructure!

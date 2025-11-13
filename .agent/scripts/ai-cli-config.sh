@@ -46,7 +46,7 @@ configure_aider() {
 # Auto-add AGENTS.md to every session
 read:
   - "~/AGENTS.md"
-  - "~/git/ai-assisted-dev-ops/AGENTS.md"
+  - "~/git/aidevops/AGENTS.md"
 
 # Model configuration
 model: "openrouter/anthropic/claude-sonnet-4"
@@ -68,7 +68,7 @@ stream: true
 show-diffs: true
 
 # Working directory
-work-dir: "~/git/ai-assisted-dev-ops"
+work-dir: "~/git/aidevops"
 
 # Memory and context
 map-tokens: 2048
@@ -100,11 +100,11 @@ temperature: 0.1
 # Auto-include AGENTS.md context
 system_message: |
   You are an AI assistant with access to a comprehensive DevOps framework.
-  Always read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md
+  Always read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md
   before performing any operations.
 
 # Working directory
-working_directory: "~/git/ai-assisted-dev-ops"
+working_directory: "~/git/aidevops"
 EOF
 
     log_success "OpenAI CLI configuration created at $openai_config"
@@ -122,11 +122,11 @@ configure_claude_cli() {
   "model": "claude-3-sonnet-20240229",
   "max_tokens": 4096,
   "temperature": 0.1,
-  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md before performing any operations.",
-  "working_directory": "~/git/ai-assisted-dev-ops",
+  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md before performing any operations.",
+  "working_directory": "~/git/aidevops",
   "auto_read_files": [
     "~/AGENTS.md",
-    "~/git/ai-assisted-dev-ops/AGENTS.md"
+    "~/git/aidevops/AGENTS.md"
   ]
 }
 EOF
@@ -157,11 +157,11 @@ EOF
   "model": "qwen2.5-72b-instruct",
   "max_tokens": 4096,
   "temperature": 0.1,
-  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md before performing any operations.",
-  "working_directory": "~/git/ai-assisted-dev-ops",
+  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md before performing any operations.",
+  "working_directory": "~/git/aidevops",
   "auto_context": [
     "~/AGENTS.md",
-    "~/git/ai-assisted-dev-ops/AGENTS.md"
+    "~/git/aidevops/AGENTS.md"
   ]
 }
 EOF
@@ -197,8 +197,8 @@ At the beginning of each session, read ~/AGENTS.md to get additional context and
 ## Global Development Guidelines
 
 ### Context Loading
-- Always reference the comprehensive DevOps framework at ~/git/ai-assisted-dev-ops/
-- Read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md
+- Always reference the comprehensive DevOps framework at ~/git/aidevops/
+- Read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md
 - Maintain consistency with existing code patterns and architecture
 
 ### Security Best Practices
@@ -219,7 +219,7 @@ At the beginning of each session, read ~/AGENTS.md to get additional context and
 - Maintain systematic approach to infrastructure automation
 - Preserve comprehensive documentation standards
 
-Refer to ~/git/ai-assisted-dev-ops/AGENTS.md for complete instructions and context.
+Refer to ~/git/aidevops/AGENTS.md for complete instructions and context.
 EOF
         log_success "Created Windsurf global rules at $windsurf_global_rules"
     else
@@ -234,7 +234,7 @@ EOF
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent memory for Windsurf IDE sessions. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent memory for Windsurf IDE sessions. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 
 ## Windsurf-Specific Guidelines
 - Use Cascade AI for intelligent code generation
@@ -269,11 +269,11 @@ configure_ai_shell() {
     cat > "$ai_shell_config" << 'EOF'
 {
   "model": "gpt-4",
-  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md before performing any operations.",
-  "working_directory": "~/git/ai-assisted-dev-ops",
+  "system_message": "You are an AI assistant with access to a comprehensive DevOps framework. Always read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md before performing any operations.",
+  "working_directory": "~/git/aidevops",
   "auto_context": [
     "~/AGENTS.md",
-    "~/git/ai-assisted-dev-ops/AGENTS.md"
+    "~/git/aidevops/AGENTS.md"
   ]
 }
 EOF
@@ -307,10 +307,10 @@ general_settings:
 # Auto-include AGENTS.md context
 system_message: |
   You are an AI assistant with access to a comprehensive DevOps framework.
-  Always read and follow the guidance in ~/AGENTS.md and ~/git/ai-assisted-dev-ops/AGENTS.md
+  Always read and follow the guidance in ~/AGENTS.md and ~/git/aidevops/AGENTS.md
   before performing any operations.
 
-working_directory: "~/git/ai-assisted-dev-ops"
+working_directory: "~/git/aidevops"
 EOF
 
     log_success "LiteLLM configuration created at $litellm_config"
@@ -334,10 +334,10 @@ configure_shell_aliases() {
     cat >> "$shell_config" << 'EOF'
 
 # AI CLI Tools - Auto-read AGENTS.md
-# Added by ai-assisted-dev-ops framework
+# Added by aidevops framework
 
 # Aider with AGENTS.md context
-alias aider-guided='aider --read ~/AGENTS.md --read ~/git/ai-assisted-dev-ops/AGENTS.md'
+alias aider-guided='aider --read ~/AGENTS.md --read ~/git/aidevops/AGENTS.md'
 
 # OpenAI CLI with context
 alias openai-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && openai'
@@ -355,11 +355,11 @@ alias windsurf-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && windsur
 alias ai-guided='echo "Reading AGENTS.md..." && cat ~/AGENTS.md && ai-shell'
 
 # Quick AGENTS.md access
-alias agents='cat ~/git/ai-assisted-dev-ops/AGENTS.md'
+alias agents='cat ~/git/aidevops/AGENTS.md'
 alias agents-home='cat ~/AGENTS.md'
 
 # Navigate to AI framework
-alias cdai='cd ~/git/ai-assisted-dev-ops'
+alias cdai='cd ~/git/aidevops'
 
 EOF
 
@@ -382,7 +382,7 @@ create_ai_wrapper() {
 set -euo pipefail
 
 readonly AGENTS_FILE="$HOME/AGENTS.md"
-readonly REPO_AGENTS_FILE="$HOME/git/ai-assisted-dev-ops/AGENTS.md"
+readonly REPO_AGENTS_FILE="$HOME/git/aidevops/AGENTS.md"
 
 # Colors
 readonly BLUE='\033[0;34m'
@@ -475,7 +475,7 @@ create_ai_memory_files() {
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent memory for Claude CLI sessions. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent memory for Claude CLI sessions. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 EOF
         log_success "Created Claude memory file at $claude_memory"
     fi
@@ -488,7 +488,7 @@ EOF
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent memory for Gemini CLI sessions. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent memory for Gemini CLI sessions. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 EOF
         log_success "Created Gemini memory file at $gemini_memory"
     fi
@@ -501,10 +501,10 @@ EOF
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent rules for Cursor AI. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent rules for Cursor AI. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 
 ## Project Context
-- Always reference the comprehensive DevOps framework at ~/git/ai-assisted-dev-ops/
+- Always reference the comprehensive DevOps framework at ~/git/aidevops/
 - Follow security best practices outlined in AGENTS.md
 - Maintain consistency with existing code patterns and architecture
 EOF
@@ -526,7 +526,7 @@ EOF
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent instructions for GitHub Copilot. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent instructions for GitHub Copilot. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 
 ## Development Guidelines
 - Follow the comprehensive DevOps framework patterns
@@ -545,7 +545,7 @@ EOF
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This file provides persistent memory for Factory.ai Drone sessions. The authoritative DevOps framework documentation is maintained at ~/git/ai-assisted-dev-ops/AGENTS.md.
+This file provides persistent memory for Factory.ai Drone sessions. The authoritative DevOps framework documentation is maintained at ~/git/aidevops/AGENTS.md.
 EOF
             log_success "Created Factory.ai Drone memory file at $factory_memory"
         fi

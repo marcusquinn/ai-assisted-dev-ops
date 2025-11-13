@@ -53,10 +53,10 @@
 
 ```bash
 # SonarCloud status
-curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_ai-assisted-dev-ops&metricKeys=bugs,vulnerabilities,code_smells"
+curl -s "https://sonarcloud.io/api/measures/component?component=marcusquinn_aidevops&metricKeys=bugs,vulnerabilities,code_smells"
 
 # CodeFactor status
-curl -s "https://www.codefactor.io/repository/github/marcusquinn/ai-assisted-dev-ops"
+curl -s "https://www.codefactor.io/repository/github/marcusquinn/aidevops"
 
 # ShellCheck validation
 find providers/ -name "*.sh" -exec shellcheck {} \;

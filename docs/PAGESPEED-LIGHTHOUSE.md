@@ -18,7 +18,7 @@ This integration provides your AI assistant with powerful website performance au
 
 ```bash
 # Install required dependencies
-cd ~/git/ai-assisted-dev-ops
+cd ~/git/aidevops
 ./providers/pagespeed-helper.sh install-deps
 
 # This will install:
@@ -100,7 +100,7 @@ Add this to your AI assistant's system prompt:
 
 ```text
 For website performance optimization, use the PageSpeed and Lighthouse tools available in
-~/git/ai-assisted-dev-ops/providers/pagespeed-helper.sh. Always provide specific,
+~/git/aidevops/providers/pagespeed-helper.sh. Always provide specific,
 actionable recommendations focusing on Core Web Vitals and user experience.
 ```
 

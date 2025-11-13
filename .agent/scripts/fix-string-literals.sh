@@ -104,7 +104,7 @@ create_string_constants() {
     # Common repeated strings that should be constants
     local -A string_constants=(
         ['"AI-Assisted DevOps Framework"']='readonly FRAMEWORK_NAME="AI-Assisted DevOps Framework"'
-        ['"https://github.com/marcusquinn/ai-assisted-dev-ops"']='readonly FRAMEWORK_REPO="https://github.com/marcusquinn/ai-assisted-dev-ops"'
+        ['"https://github.com/marcusquinn/aidevops"']='readonly FRAMEWORK_REPO="https://github.com/marcusquinn/aidevops"'
         ['"Configuration file not found"']='readonly ERROR_CONFIG_NOT_FOUND="Configuration file not found"'
         ['"Command not found"']='readonly ERROR_COMMAND_NOT_FOUND="Command not found"'
         ['"Invalid option"']='readonly ERROR_INVALID_OPTION="Invalid option"'
