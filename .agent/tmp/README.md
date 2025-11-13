@@ -8,6 +8,7 @@ Personal tmp files should be stored in:
 
 ## 🎯 **Purpose**
 This template directory:
+
 1. **Documents the structure** for tmp usage
 2. **Provides examples** of how to organize temporary files
 3. **Maintains framework completeness** without personal data
@@ -45,6 +46,7 @@ rm -rf "$SESSION_DIR"
 ```
 
 ## ⚠️ **Important**
+
 - **Never store personal data** in this template directory
 - **Use ~/.agent/tmp/** for all actual operations
 - **This directory is version controlled** - keep it clean

@@ -24,6 +24,7 @@ This template provides a comprehensive workflow for optimizing WordPress website
 ```
 
 **Key Metrics to Track:**
+
 - Performance Score (target: >90%)
 - First Contentful Paint (target: <1.8s)
 - Largest Contentful Paint (target: <2.5s)
@@ -168,18 +169,22 @@ Always provide specific, actionable recommendations with implementation steps.
 ## 🛠️ **Common WordPress Performance Issues & Solutions**
 
 ### **Slow Loading Times**
+
 - **Issue**: Large images, unoptimized plugins
 - **Solution**: Image optimization, plugin audit, caching
 
 ### **Poor Mobile Performance**
+
 - **Issue**: Unresponsive design, large resources
 - **Solution**: Mobile-first optimization, AMP implementation
 
 ### **High Server Response Time**
+
 - **Issue**: Inadequate hosting, database issues
 - **Solution**: Hosting upgrade, database optimization
 
 ### **Layout Shifts**
+
 - **Issue**: Images without dimensions, dynamic content
 - **Solution**: Specify image dimensions, optimize loading sequence
 

@@ -15,6 +15,7 @@ This directory exists to:
 
 ## 📁 **Working Directory Redirection**
 **DO NOT use this directory for AI operations.** Instead use:
+
 - **Temporary files**: `~/git/aidevops/.agent/tmp/`
 - **Persistent memory**: `~/git/aidevops/.agent/memory/`
 - **Development tools**: `~/git/aidevops/.agent/scripts/`

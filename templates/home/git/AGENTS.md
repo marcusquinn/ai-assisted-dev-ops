@@ -9,6 +9,7 @@ All AI assistant instructions for DevOps operations are maintained at:
 
 ## 🎯 **Git Directory Context**
 AI assistants operating in the git directory should:
+
 1. **Reference the DevOps framework** for all infrastructure operations
 2. **Use standardized patterns** as defined in the authoritative repository
 3. **Follow security protocols** for all git and DevOps operations
@@ -25,7 +26,9 @@ ls ~/git/aidevops/docs/
 ```
 
 ## 📁 **Working Directories**
+
 - **DevOps temporary files**: Use `~/.agent/tmp/`
+
 - **DevOps memory**: Use `~/.agent/memory/`
 - **Project-specific work**: Use individual project directories
 
@@ -33,15 +36,21 @@ ls ~/git/aidevops/docs/
 **⚠️ MANDATORY SECURITY REQUIREMENTS:**
 
 ### **✅ APPROVED Storage Location:**
+
 - **API Keys & Tokens**: `~/.config/aidevops/api-keys.txt`
 - **Service Configurations**: `~/git/aidevops/configs/[service]-config.json`
 - **File Permissions**: 600 (owner read/write only)
 
 ### **❌ FORBIDDEN Storage Locations:**
+
 - **NEVER in `~/.agent/tmp/`** - Temporary files are not secure
+
 - **NEVER in `~/.agent/memory/`** - Memory files may be logged
+
 - **NEVER in any Git repository** - Risk of accidental commit
+
 - **NEVER in home directory root** - Security exposure risk
+
 - **NEVER in code or scripts** - Hardcoded credentials forbidden
 
 ### **🛡️ Security Commands:**
@@ -58,6 +67,7 @@ cat ~/.config/aidevops/api-keys.txt
 ```
 
 ### **🚨 ABSOLUTE PROHIBITIONS:**
+
 - **NO credentials in any working directory**
 - **NO API keys in temporary files**
 - **NO secrets in memory files**

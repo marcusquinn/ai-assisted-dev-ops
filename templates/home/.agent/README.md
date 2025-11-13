@@ -8,6 +8,7 @@ This directory provides secure working space for AI assistants while keeping per
 ## 📁 **Directory Structure**
 
 ### **`~/.agent/tmp/` - Temporary Working Directory**
+
 - Session-specific working directories
 - Temporary scripts and analysis files
 - Backups before making changes
@@ -15,6 +16,7 @@ This directory provides secure working space for AI assistants while keeping per
 - Any files that don't need to persist
 
 ### **`~/.agent/memory/` - Persistent Memory Directory**
+
 - Successful operation patterns and approaches
 - User preferences and customizations
 - Configuration discoveries and setups
@@ -23,11 +25,13 @@ This directory provides secure working space for AI assistants while keeping per
 
 ## 🎯 **Framework Integration**
 For AI assistant framework tools and documentation:
+
 - **Repository**: `~/git/aidevops/`
 - **Documentation**: `~/git/aidevops/AGENTS.md`
 - **Tools**: `~/git/aidevops/.agent/scripts/`
 
 ## 🔐 **Security Features**
+
 - **Outside Git Control**: This directory is never committed to version control
 - **Personal Data Safe**: Your preferences and history stay private
 - **Secure Permissions**: Directory has restricted access permissions
@@ -48,6 +52,7 @@ echo "preferred_approach=bulk_operations" > ~/.agent/memory/preferences/user-set
 ```
 
 ## ⚠️ **Important Notes**
+
 - **Never store credentials** in this directory
 - **Clean up temporary files** when operations complete
 - **Respect privacy** - be mindful of what you store in memory
@@ -57,15 +62,21 @@ echo "preferred_approach=bulk_operations" > ~/.agent/memory/preferences/user-set
 **⚠️ MANDATORY SECURITY REQUIREMENTS:**
 
 ### **✅ APPROVED Storage Location:**
+
 - **API Keys & Tokens**: `~/.config/aidevops/api-keys.txt`
 - **Service Configurations**: `~/git/aidevops/configs/[service]-config.json`
 - **File Permissions**: 600 (owner read/write only)
 
 ### **❌ FORBIDDEN Storage Locations:**
+
 - **NEVER in `~/.agent/tmp/`** - Temporary files are not secure
+
 - **NEVER in `~/.agent/memory/`** - Memory files may be logged
+
 - **NEVER in any Git repository** - Risk of accidental commit
+
 - **NEVER in home directory root** - Security exposure risk
+
 - **NEVER in code or scripts** - Hardcoded credentials forbidden
 
 ### **🛡️ Security Commands:**
@@ -82,6 +93,7 @@ cat ~/.config/aidevops/api-keys.txt
 ```
 
 ### **🚨 ABSOLUTE PROHIBITIONS:**
+
 - **NO credentials in any working directory**
 - **NO API keys in temporary files**
 - **NO secrets in memory files**

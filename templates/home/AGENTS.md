@@ -9,12 +9,14 @@ All AI assistant instructions, configurations, and documentation are maintained 
 
 ## 🎯 **Primary Directive**
 AI assistants operating in this environment should:
+
 1. **Reference the authoritative repository** for all detailed instructions
 2. **Use only the working directories** as specified in this user's ~/AGENTS.md
 3. **Follow security protocols** defined in the repository documentation
 4. **NEVER store credentials** in any working directories or temporary files
 
 ## 📁 **Working Directories**
+
 - **Temporary files**: Use `~/.agent/tmp/`
 - **Persistent memory**: Use `~/.agent/memory/`
 - **Never create temporary files** in the home directory root
@@ -23,15 +25,21 @@ AI assistants operating in this environment should:
 **⚠️ MANDATORY SECURITY REQUIREMENTS:**
 
 ### **✅ APPROVED Storage Location:**
+
 - **API Keys & Tokens**: `~/.config/aidevops/api-keys.txt`
 - **Service Configurations**: `~/git/aidevops/configs/[service]-config.json`
 - **File Permissions**: 600 (owner read/write only)
 
 ### **❌ FORBIDDEN Storage Locations:**
+
 - **NEVER in `~/.agent/tmp/`** - Temporary files are not secure
+
 - **NEVER in `~/.agent/memory/`** - Memory files may be logged
+
 - **NEVER in any Git repository** - Risk of accidental commit
+
 - **NEVER in home directory root** - Security exposure risk
+
 - **NEVER in code or scripts** - Hardcoded credentials forbidden
 
 ### **🛡️ Security Commands:**
@@ -48,6 +56,7 @@ cat ~/.config/aidevops/api-keys.txt
 ```
 
 ### **🚨 ABSOLUTE PROHIBITIONS:**
+
 - **NO credentials in any working directory**
 - **NO API keys in temporary files**
 - **NO secrets in memory files**
