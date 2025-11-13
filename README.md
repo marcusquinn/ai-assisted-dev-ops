@@ -40,7 +40,7 @@
 [![GitHub commits since latest release](https://img.shields.io/github/commits-since/marcusquinn/aidevops/latest)](https://github.com/marcusquinn/aidevops/commits/main)
 
 <!-- Repository Stats -->
-[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
+[![GitHub repo size](https://img.shields.io/github/repo-size/marcusquinn/aidevops?style=flat&color=blue)](https://github.com/marcusquinn/aidevops)
 [![Lines of code](https://img.shields.io/badge/Lines%20of%20Code-18%2C000%2B-brightgreen)](https://github.com/marcusquinn/aidevops)
 [![GitHub language count](https://img.shields.io/github/languages/count/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
 [![GitHub top language](https://img.shields.io/github/languages/top/marcusquinn/aidevops)](https://github.com/marcusquinn/aidevops)
