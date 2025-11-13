@@ -349,7 +349,7 @@ else:
 agent_os = AgentOS(
     name="AI DevOps AgentOS",
     agents=available_agents,
-    port=int(os.getenv("AGNO_PORT", "8000")),
+    port=int(os.getenv("AGNO_PORT", "7777")),
     debug=True
 )
 
@@ -374,7 +374,7 @@ EOF
 OPENAI_API_KEY=your_openai_api_key_here
 
 # Agno Configuration
-AGNO_PORT=8000
+AGNO_PORT=7777
 AGNO_DEBUG=true
 
 # Local Browser Automation Configuration
