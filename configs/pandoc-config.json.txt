@@ -1,0 +1,126 @@
+{
+  "pandoc_config": {
+    "description": "Pandoc document conversion configuration for AI DevOps Framework",
+    "version": "1.1.2",
+    "
+": {
+      "input_directory": "./documents",
+      "output_directory": "./markdown",
+      "temp_directory": "./tmp/pandoc",
+      "backup_originals": true
+    },
+    "conversion_settings": {
+      "default_output_format": "markdown",
+      "wrap_mode": "none",
+      "header_style": "atx",
+      "include_toc": false,
+      "standalone": false,
+      "extract_media": true,
+      "media_directory": "./media"
+    },
+    "format_specific": {
+      "pdf": {
+        "requires": "pdftotext (poppler-utils)",
+        "options": "--pdf-engine=xelatex",
+        "notes": "PDF conversion quality depends on source document structure"
+      },
+      "docx": {
+        "options": "--extract-media=./media",
+        "preserve_formatting": true,
+        "notes": "Best conversion quality for Word documents"
+      },
+      "html": {
+        "options": "--from=html --to=markdown",
+        "strip_comments": true,
+        "preserve_links": true
+      },
+      "epub": {
+        "options": "--extract-media=./media",
+        "preserve_structure": true,
+        "notes": "Excellent for book-like documents"
+      },
+      "latex": {
+        "options": "--from=latex --to=markdown",
+        "math_support": true,
+        "notes": "Good for academic papers with equations"
+      }
+    },
+    "batch_processing": {
+      "max_concurrent": 4,
+      "file_patterns": {
+        "documents": "*.{docx,doc,pdf,odt,rtf}",
+        "web": "*.{html,htm,epub}",
+        "markup": "*.{rst,org,textile,mediawiki}",
+        "data": "*.{json,csv,xml}",
+        "presentations": "*.{pptx,ppt}"
+      },
+      "exclude_patterns": [
+        "*.tmp",
+        "*.bak",
+        "*~",
+        ".DS_Store"
+      ]
+    },
+    "ai_optimization": {
+      "chunk_large_files": true,
+      "max_file_size_mb": 10,
+      "add_metadata_headers": true,
+      "clean_formatting": true,
+      "preserve_structure": true,
+      "add_source_info": true
+    },
+    "quality_settings": {
+      "validate_output": true,
+      "check_encoding": true,
+      "fix_line_endings": true,
+      "remove_empty_lines": false,
+      "normalize_whitespace": true
+    },
+    "integration": {
+      "auto_index": true,
+      "create_manifest": true,
+      "update_git": false,
+      "notify_completion": true
+    }
+  },
+  "usage_examples": {
+    "single_file": "bash providers/pandoc-helper.sh convert document.docx",
+    "with_options": "bash providers/pandoc-helper.sh convert document.pdf output.md pdf '--extract-media=./images'",
+    "batch_conversion": "bash providers/pandoc-helper.sh batch ./documents ./markdown '*.docx'",
+    "detect_format": "bash providers/pandoc-helper.sh detect unknown_file.ext",
+    "show_formats": "bash providers/pandoc-helper.sh formats"
+  },
+  "installation": {
+    "pandoc_required": true,
+    "optional_dependencies": {
+      "poppler-utils": "For PDF conversion (pdftotext)",
+      "wkhtmltopdf": "For HTML to PDF conversion",
+      "librsvg2-bin": "For SVG image support",
+      "texlive": "For LaTeX document support"
+    },
+    "install_commands": {
+      "macos": "brew install pandoc poppler",
+      "ubuntu": "sudo apt-get install pandoc poppler-utils",
+      "centos": "sudo yum install pandoc poppler-utils",
+      "windows": "choco install pandoc"
+    }
+  },
+  "ai_assistant_benefits": {
+    "markdown_advantages": [
+      "Consistent formatting for AI processing",
+      "Easy to parse and analyze",
+      "Preserves document structure",
+      "Lightweight and fast to process",
+      "Version control friendly",
+      "Cross-platform compatibility"
+    ],
+    "use_cases": [
+      "Convert documentation for AI analysis",
+      "Process legacy documents for modernization",
+      "Extract content from various formats",
+      "Create searchable document archives",
+      "Prepare documents for AI training",
+      "Standardize document formats across projects"
+    ]
+  }
+}

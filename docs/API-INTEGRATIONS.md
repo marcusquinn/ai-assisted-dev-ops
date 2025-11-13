@@ -1,6 +1,6 @@
 # 🔌 Comprehensive API Integration Guide
 
-This document provides detailed information about all 25+ API integrations supported by the AI DevOps framework.
+This document provides detailed information about all 26+ API integrations supported by the AI DevOps framework.
 
 ## 📊 **API Integration Overview**
 
@@ -197,6 +197,14 @@ Our framework provides standardized access to APIs across all major infrastructu
 - **Authentication**: Local access
 - **MCP Integration**: Custom MCP server
 - **Key Features**: Database queries, site management, development tools
+
+### **Pandoc Document Conversion**
+
+- **Purpose**: Convert various document formats to markdown for AI processing
+- **Authentication**: Local tool (no API key required)
+- **Helper Script**: `providers/pandoc-helper.sh`
+- **Key Features**: Multi-format conversion, batch processing, AI-optimized output
+- **Supported Formats**: Word, PDF, HTML, EPUB, LaTeX, and 20+ other formats
 
 ## 🔧 **API Integration Features**
 
