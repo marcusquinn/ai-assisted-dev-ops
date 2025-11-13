@@ -114,7 +114,7 @@ jobs:
         fi
         echo ""
         echo "🔗 View Results:"
-        echo "   SonarCloud: https://sonarcloud.io/project/overview?id=marcusquinn_ai-assisted-dev-ops"
+        echo "   SonarCloud: https://sonarcloud.io/project/overview?id=marcusquinn_aidevops"
         echo "   Codacy: https://app.codacy.com/gh/marcusquinn/aidevops"
         echo ""
         echo "🎯 Code Quality Pipeline: COMPLETE"
