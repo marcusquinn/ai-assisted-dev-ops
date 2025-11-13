@@ -67,7 +67,7 @@ jobs:
         # Security check - ensure no obvious API keys in repository
         echo ""
         echo "🔐 Security Validation:"
-        echo "✅ API keys stored securely in local storage (~/.config/ai-assisted-devops/)"
+        echo "✅ API keys stored securely in local storage (~/.config/aidevops/)"
         echo "✅ GitHub Actions use repository secrets (SONAR_TOKEN, CODACY_API_TOKEN)"
         echo "✅ Private scripts directory (.agent/scripts-private/) gitignored"
         echo "✅ Security documentation and best practices implemented"

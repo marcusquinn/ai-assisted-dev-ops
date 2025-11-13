@@ -4,7 +4,7 @@
 
 ### **🎯 SECURITY PRINCIPLE:**
 
-**API keys are stored ONLY in your private user directory (`~/.config/ai-assisted-devops/`), NEVER in repository files.**
+**API keys are stored ONLY in your private user directory (`~/.config/aidevops/`), NEVER in repository files.**
 
 ## 🛠️ **SETUP INSTRUCTIONS**
 
@@ -66,8 +66,8 @@ bash .agent/scripts/setup-local-api-keys.sh load
 
 ### **✅ SECURE (USER-PRIVATE ONLY):**
 
-- **Unified Storage**: `~/.config/ai-assisted-devops/api-keys` (permissions: 600)
-- **Directory**: `~/.config/ai-assisted-devops/` (permissions: 700)
+- **Unified Storage**: `~/.config/aidevops/api-keys` (permissions: 600)
+- **Directory**: `~/.config/aidevops/` (permissions: 700)
 - **Legacy CodeRabbit**: `~/.config/coderabbit/api_key` (fallback support)
 
 ### **❌ NEVER STORE IN:**
@@ -130,8 +130,8 @@ bash .agent/scripts/setup-local-api-keys.sh set codacy YOUR_NEW_TOKEN
 
 ```bash
 # Fix directory permissions
-chmod 700 ~/.config/ai-assisted-devops
-chmod 600 ~/.config/ai-assisted-devops/api-keys
+chmod 700 ~/.config/aidevops
+chmod 600 ~/.config/aidevops/api-keys
 ```
 
 ### **CLI Not Loading Keys:**

@@ -129,7 +129,7 @@ This guide outlines proven best practices for infrastructure management and help
 
 ### **API Token Management**
 
-- **Secure local storage**: Store tokens in `~/.config/ai-assisted-devops/` (user-private only)
+- **Secure local storage**: Store tokens in `~/.config/aidevops/` (user-private only)
 - **Never in repository**: API tokens must never be stored in repository files
 - **Environment separation**: Different tokens for prod/dev/staging
 - **Regular rotation**: Rotate tokens quarterly

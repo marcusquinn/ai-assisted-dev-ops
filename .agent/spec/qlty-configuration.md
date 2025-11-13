@@ -154,7 +154,7 @@ bash .agent/scripts/qlty-cli.sh smells --all teamproject
 
 ### Secure Storage
 
-- **Location**: `~/.config/ai-assisted-devops/api-keys`
+- **Location**: `~/.config/aidevops/api-keys`
 - **Permissions**: User-only access (600)
 - **Encryption**: Local file system security
 - **No Exposure**: Tokens never appear in code or logs

@@ -42,7 +42,7 @@ load_api_config() {
     local account_api_key_service="qlty-account-api-key"
 
     # Load credentials from secure storage
-    if [[ -f "$HOME/.config/ai-assisted-devops/api-keys" ]]; then
+    if [[ -f "$HOME/.config/aidevops/api-keys" ]]; then
         local org_coverage_token workspace_id account_api_key
         org_coverage_token=$(bash "$(dirname "$0")/setup-local-api-keys.sh" get "$api_key_service" 2>/dev/null)
         workspace_id=$(bash "$(dirname "$0")/setup-local-api-keys.sh" get "$workspace_id_service" 2>/dev/null)
@@ -293,9 +293,9 @@ show_help() {
     echo "  2. Coverage Token (qltcw_...) - Organization-specific access"
     echo ""
     echo "Current Qlty Configuration:"
-    if [[ -f "$HOME/.config/ai-assisted-devops/api-keys" ]]; then
+    if [[ -f "$HOME/.config/aidevops/api-keys" ]]; then
         # Check for account-level API key
-        if grep -q "qlty-account-api-key=" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null; then
+        if grep -q "qlty-account-api-key=" "$HOME/.config/aidevops/api-keys" 2>/dev/null; then
             echo "  🌟 Account API Key: ✅ Configured (account-wide access)"
         else
             echo "  🌟 Account API Key: ❌ Not configured"
@@ -306,11 +306,11 @@ show_help() {
 
         # Show organizations with coverage tokens
         local orgs
-        orgs=$(grep "qlty-.*=" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null | grep -v "workspace-id" | grep -v "account-api-key" | cut -d'=' -f1 | sed 's/qlty-//')
+        orgs=$(grep "qlty-.*=" "$HOME/.config/aidevops/api-keys" 2>/dev/null | grep -v "workspace-id" | grep -v "account-api-key" | cut -d'=' -f1 | sed 's/qlty-//')
         if [[ -n "$orgs" ]]; then
             while IFS= read -r org; do
                 local has_workspace=""
-                if grep -q "qlty-${org}-workspace-id=" "$HOME/.config/ai-assisted-devops/api-keys" 2>/dev/null; then
+                if grep -q "qlty-${org}-workspace-id=" "$HOME/.config/aidevops/api-keys" 2>/dev/null; then
                     has_workspace=" + workspace ID"
                 fi
                 echo "    - ${org}: Coverage Token${has_workspace}"

@@ -151,7 +151,7 @@ cp configs/spaceship-config.json.txt configs/spaceship-config.json
 - **Separate API keys**: Use different API keys for different projects
 - **Key rotation**: Rotate API keys every 6-12 months
 - **Minimal permissions**: Use API keys with minimal required permissions
-- **Secure storage**: Store API credentials in `~/.config/ai-assisted-devops/` (user-private only)
+- **Secure storage**: Store API credentials in `~/.config/aidevops/` (user-private only)
 - **Environment separation**: Use different accounts for prod/staging
 - **Never in repository**: API keys must never be stored in repository files
 

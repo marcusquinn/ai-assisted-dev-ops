@@ -158,7 +158,7 @@ cp configs/git-platforms-config.json.txt configs/git-platforms-config.json
 
 - **Token scoping**: Use tokens with minimal required permissions
 - **Regular rotation**: Rotate API tokens every 6-12 months
-- **Secure storage**: Store tokens in `~/.config/ai-assisted-devops/` (user-private only)
+- **Secure storage**: Store tokens in `~/.config/aidevops/` (user-private only)
 - **Access monitoring**: Monitor API usage and access patterns
 - **Environment separation**: Use different tokens for different environments
 - **Never in repository**: API tokens must never be stored in repository files
