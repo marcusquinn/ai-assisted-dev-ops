@@ -1,6 +1,6 @@
 # 🔌 Comprehensive API Integration Guide
 
-This document provides detailed information about all 26+ API integrations supported by the AI DevOps framework.
+This document provides detailed information about all 27+ API integrations supported by the AI DevOps framework.
 
 ## 📊 **API Integration Overview**
 
@@ -205,6 +205,15 @@ Our framework provides standardized access to APIs across all major infrastructu
 - **Helper Script**: `providers/pandoc-helper.sh`
 - **Key Features**: Multi-format conversion, batch processing, AI-optimized output
 - **Supported Formats**: Word, PDF, HTML, EPUB, LaTeX, and 20+ other formats
+
+### **Agno AgentOS**
+
+- **Purpose**: Local AI agent operating system for DevOps automation
+- **Authentication**: API keys for LLM providers (OpenAI, Anthropic, etc.)
+- **Setup Script**: `providers/agno-setup.sh`
+- **Key Features**: Multi-agent framework, production runtime, complete privacy
+- **Agents**: DevOps Assistant, Code Review Agent, Documentation Agent
+- **Interface**: Agent-UI web interface and REST API
 
 ## 🔧 **API Integration Features**
 

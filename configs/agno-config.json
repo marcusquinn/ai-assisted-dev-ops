@@ -1,0 +1,185 @@
+{
+  "agno_config": {
+    "description": "Agno AgentOS configuration for AI DevOps Framework",
+    "version": "1.2.0",
+    "framework_integration": true,
+    "setup": {
+      "agno_directory": "~/.aidevops/agno",
+      "agent_ui_directory": "~/.aidevops/agent-ui",
+      "scripts_directory": "~/.aidevops/scripts",
+      "default_ports": {
+        "agno_port": 8000,
+        "agent_ui_port": 3000
+      }
+    },
+    "agents": {
+      "devops_assistant": {
+        "name": "AI DevOps Assistant",
+        "description": "Expert AI assistant for DevOps operations, infrastructure management, and automation",
+        "specialization": "Infrastructure automation and management",
+        "tools": [
+          "DuckDuckGoTools",
+          "ShellTools (safe mode)",
+          "FileTools",
+          "PythonTools (safe mode)"
+        ],
+        "capabilities": [
+          "Infrastructure automation and management",
+          "CI/CD pipeline optimization",
+          "Cloud platform integration",
+          "Security best practices",
+          "Monitoring and observability",
+          "Container orchestration"
+        ]
+      },
+      "code_review_assistant": {
+        "name": "Code Review Assistant", 
+        "description": "AI assistant for code review, quality analysis, and best practices",
+        "specialization": "Code quality analysis and best practices",
+        "tools": [
+          "FileTools",
+          "PythonTools (safe mode)"
+        ],
+        "capabilities": [
+          "Code quality and best practices analysis",
+          "Security vulnerability detection",
+          "Performance optimization opportunities",
+          "Documentation and maintainability review",
+          "Testing coverage and strategies"
+        ]
+      },
+      "documentation_assistant": {
+        "name": "Documentation Assistant",
+        "description": "AI assistant for creating and maintaining technical documentation",
+        "specialization": "Technical writing and documentation",
+        "tools": [
+          "FileTools",
+          "DuckDuckGoTools"
+        ],
+        "capabilities": [
+          "API documentation and guides",
+          "Architecture documentation",
+          "User manuals and tutorials",
+          "README files and project documentation",
+          "Runbooks and operational procedures"
+        ]
+      }
+    },
+    "model_configuration": {
+      "default_provider": "openai",
+      "default_model": "gpt-4o-mini",
+      "settings": {
+        "temperature": 0.1,
+        "max_tokens": 4000,
+        "timeout": 30
+      },
+      "supported_providers": [
+        "openai",
+        "anthropic", 
+        "google",
+        "groq",
+        "ollama"
+      ]
+    },
+    "security": {
+      "safe_mode": true,
+      "code_execution": false,
+      "shell_execution": false,
+      "file_access": "read_only",
+      "network_access": "limited",
+      "api_key_storage": "environment_variables"
+    },
+    "features": {
+      "streaming": true,
+      "markdown_support": true,
+      "tool_calls_visible": true,
+      "debug_mode": true,
+      "session_management": true,
+      "knowledge_base": true,
+      "memory": true
+    },
+    "integration": {
+      "pandoc_conversion": {
+        "enabled": true,
+        "auto_convert": false,
+        "supported_formats": ["pdf", "docx", "html", "epub", "latex"]
+      },
+      "version_management": {
+        "enabled": true,
+        "auto_context": true,
+        "version_aware": true
+      },
+      "quality_monitoring": {
+        "enabled": true,
+        "platforms": ["sonarcloud", "codacy", "codefactor", "qlty"],
+        "auto_analysis": false
+      },
+      "devops_tools": {
+        "enabled": true,
+        "safe_mode": true,
+        "supported_tools": [
+          "docker",
+          "kubernetes", 
+          "terraform",
+          "ansible",
+          "git",
+          "ci_cd_platforms"
+        ]
+      }
+    },
+    "deployment": {
+      "environment": "local",
+      "privacy": "complete",
+      "data_retention": "local_only",
+      "external_calls": "none",
+      "infrastructure": "user_controlled"
+    },
+    "monitoring": {
+      "health_checks": true,
+      "performance_metrics": true,
+      "error_tracking": true,
+      "usage_analytics": "local_only"
+    },
+    "api": {
+      "rest_api": true,
+      "websocket": true,
+      "streaming": true,
+      "authentication": "optional",
+      "rate_limiting": false,
+      "cors": "localhost_only"
+    }
+  },
+  "setup_requirements": {
+    "python": {
+      "version": "3.8+",
+      "packages": ["agno[all]"],
+      "virtual_environment": "recommended"
+    },
+    "nodejs": {
+      "version": "18+",
+      "packages": ["create-agent-ui"],
+      "package_manager": "npm"
+    },
+    "system": {
+      "memory": "4GB minimum, 8GB recommended",
+      "disk": "2GB for installation, 5GB for operation",
+      "network": "Internet for initial setup and model API calls"
+    }
+  },
+  "usage_examples": {
+    "setup": "bash providers/agno-setup.sh setup",
+    "start_services": "~/.aidevops/scripts/start-agno-stack.sh",
+    "check_status": "~/.aidevops/scripts/agno-status.sh",
+    "stop_services": "~/.aidevops/scripts/stop-agno-stack.sh",
+    "access_ui": "http://localhost:3000",
+    "access_api": "http://localhost:8000"
+  },
+  "ai_devops_benefits": {
+    "privacy": "Complete data ownership and local processing",
+    "security": "Enterprise-grade security with no external data transmission",
+    "specialization": "Purpose-built agents for DevOps workflows",
+    "integration": "Seamless integration with existing AI DevOps tools",
+    "scalability": "Production-ready runtime for enterprise deployment",
+    "flexibility": "Customizable agents and workflows for specific needs"
+  }
+}
