@@ -33,7 +33,7 @@ ls ~/git/ai-assisted-dev-ops/docs/
 **⚠️ MANDATORY SECURITY REQUIREMENTS:**
 
 ### **✅ APPROVED Storage Location:**
-- **API Keys & Tokens**: `~/.config/ai-assisted-devops/api-keys`
+- **API Keys & Tokens**: `~/.config/ai-assisted-devops/api-keys.txt`
 - **Service Configurations**: `~/git/ai-assisted-dev-ops/configs/[service]-config.json`
 - **File Permissions**: 600 (owner read/write only)
 
@@ -52,8 +52,9 @@ bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh set servic
 # List configured services (keys are never displayed)
 bash ~/git/ai-assisted-dev-ops/.agent/scripts/setup-local-api-keys.sh list
 
-# Verify secure storage location
+# Verify secure storage location and preview API keys
 ls -la ~/.config/ai-assisted-devops/
+cat ~/.config/ai-assisted-devops/api-keys.txt
 ```
 
 ### **🚨 ABSOLUTE PROHIBITIONS:**

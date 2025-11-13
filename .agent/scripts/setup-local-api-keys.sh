@@ -26,7 +26,7 @@ print_warning() {
 
 # Secure API key directory
 readonly API_KEY_DIR="$HOME/.config/ai-assisted-devops"
-readonly API_KEY_FILE="$API_KEY_DIR/api-keys"
+readonly API_KEY_FILE="$API_KEY_DIR/api-keys.txt"
 
 # Create secure API key directory
 setup_secure_directory() {
