@@ -3,16 +3,20 @@
 **🔒 SECURITY NOTICE: This is a template directory only.**
 
 ## 📍 **Actual Usage Location**
+
 Personal memory files should be stored in:
 `~/.agent/memory/`
 
 ## 🎯 **Purpose**
+
 This template directory:
+
 1. **Documents the structure** for memory usage
 2. **Provides examples** of how to organize persistent data
 3. **Maintains framework completeness** without personal data
 
 ## 🚀 **Usage**
+
 ```bash
 # Use the personal directory for actual work
 mkdir -p ~/.agent/memory/{patterns,preferences,configurations,history}
@@ -31,6 +35,7 @@ echo "$(date): Successfully fixed 50 quality issues with bulk script" >> ~/.agen
 ```
 
 ## 📁 **Recommended Structure**
+
 ```
 ~/.agent/memory/
 ├── patterns/           # Successful operation patterns
@@ -52,12 +57,14 @@ echo "$(date): Successfully fixed 50 quality issues with bulk script" >> ~/.agen
 ```
 
 ## 🔐 **Security Guidelines**
+
 - **Never store credentials** in memory files
 - **Use configuration references** instead of actual API keys
 - **Keep sensitive data** in separate secure locations
 - **Regular cleanup** of outdated information
 
 ## ⚠️ **Important**
+
 - **Never store personal data** in this template directory
 - **Use ~/.agent/memory/** for all actual operations
 - **This directory is version controlled** - keep it clean
