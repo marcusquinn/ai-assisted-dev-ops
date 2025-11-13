@@ -3,7 +3,7 @@
 # Fix Remaining String Literals
 # Target specific high-impact string literal patterns
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

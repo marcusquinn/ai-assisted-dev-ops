@@ -1,4 +1,4 @@
-# AI-Assisted DevOps Framework - Agent Guidance
+# AI DevOps Framework - Agent Guidance
 
 **🔒 AUTHORITATIVE SOURCE: This is the single source of truth for all AI assistant instructions. All other AGENTS.md files are minimal templates that reference this file.**
 

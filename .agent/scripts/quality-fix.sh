@@ -12,7 +12,7 @@ readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
 print_header() {
-    echo -e "${BLUE}🔧 AI-Assisted DevOps Framework - Universal Quality Fix${NC}"
+    echo -e "${BLUE}🔧 AI DevOps Framework - Universal Quality Fix${NC}"
     echo -e "${BLUE}==========================================================${NC}"
     return 0
 }

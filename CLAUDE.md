@@ -1,6 +1,6 @@
 # Claude CLI Project Memory
 
-This is the authoritative AI-Assisted DevOps Framework project.
+This is the authoritative AI DevOps Framework project.
 
 ## Project Overview
 

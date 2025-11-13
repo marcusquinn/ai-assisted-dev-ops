@@ -1,4 +1,4 @@
-# AI-Assisted DevOps Resources
+# AI DevOps Resources
 
 ## Code Quality & Linting Tools
 

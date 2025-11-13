@@ -11,7 +11,7 @@
 #   metrics     - Show current quality metrics
 #   help        - Show this help message
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 
@@ -25,7 +25,7 @@ readonly NC='\033[0m' # No Color
 
 # Framework constants (verified November 2024)
 # These metrics are validated against live quality platforms
-readonly FRAMEWORK_NAME="AI-Assisted DevOps Framework"
+readonly FRAMEWORK_NAME="AI DevOps Framework"
 readonly FRAMEWORK_VERSION="1.0.0"
 readonly TOTAL_LINES="18000+"
 readonly PROVIDERS_COUNT="25+"
@@ -198,7 +198,7 @@ show_help() {
     echo "  $0 report"
     echo "  $0 metrics"
     echo ""
-    echo "This script showcases the AI-Assisted DevOps Framework"
+    echo "This script showcases the AI DevOps Framework"
     echo "for comprehensive CodeRabbit Pro analysis and review."
     return 0
 }

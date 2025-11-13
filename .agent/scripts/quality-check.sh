@@ -18,7 +18,7 @@ readonly MAX_POSITIONAL_ISSUES=0
 readonly MAX_STRING_LITERAL_ISSUES=0
 
 print_header() {
-    echo -e "${BLUE}🎯 AI-Assisted DevOps Framework - Multi-Platform Quality Check${NC}"
+    echo -e "${BLUE}🎯 AI DevOps Framework - Multi-Platform Quality Check${NC}"
     echo -e "${BLUE}================================================================${NC}"
     return 0
 }

@@ -1,12 +1,12 @@
-# AI-Assisted DevOps Framework Context
+# AI DevOps Framework Context
 
-This file provides comprehensive context for AI assistants to understand, manage, and extend the AI-Assisted DevOps Framework.
+This file provides comprehensive context for AI assistants to understand, manage, and extend the AI DevOps Framework.
 
 ## 🎯 **Framework Overview**
 
 ### **Complete DevOps Ecosystem (25+ Services)**
 
-The AI-Assisted DevOps Framework provides unified management across:
+The AI DevOps Framework provides unified management across:
 
 **🏗️ Infrastructure & Hosting (4 services):**
 

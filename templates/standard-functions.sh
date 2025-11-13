@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Standard Functions Template for AI-Assisted DevOps Framework
+# Standard Functions Template for AI DevOps Framework
 # This template provides SonarCloud-compliant function definitions
 
 # Color definitions

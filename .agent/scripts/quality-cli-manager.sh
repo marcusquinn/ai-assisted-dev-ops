@@ -17,7 +17,7 @@
 #   sonar       - SonarScanner CLI for SonarQube Cloud analysis
 #   all         - All quality CLIs (default)
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 
@@ -389,7 +389,7 @@ show_help() {
     echo "    SONAR_PROJECT_KEY    - Project key"
     echo ""
     echo "This script provides unified management for all quality analysis CLIs"
-    echo "in the AI-Assisted DevOps Framework."
+    echo "in the AI DevOps Framework."
     return 0
 }
 

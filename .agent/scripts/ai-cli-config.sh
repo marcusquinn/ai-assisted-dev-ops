@@ -567,7 +567,7 @@ create_project_memory_files() {
         cat > "$claude_project" << 'EOF'
 # Claude CLI Project Memory
 
-This is the authoritative AI-Assisted DevOps Framework project.
+This is the authoritative AI DevOps Framework project.
 
 ## Project Overview
 - **Purpose**: Comprehensive DevOps automation and AI integration framework
@@ -596,9 +596,9 @@ EOF
     local cursor_project="$project_dir/.cursorrules"
     if [[ ! -f "$cursor_project" ]]; then
         cat > "$cursor_project" << 'EOF'
-# AI-Assisted DevOps Framework - Cursor Rules
+# AI DevOps Framework - Cursor Rules
 
-This is the authoritative AI-Assisted DevOps Framework project.
+This is the authoritative AI DevOps Framework project.
 
 ## Project Context
 - **Framework**: Comprehensive DevOps automation with 25+ service integrations
@@ -631,7 +631,7 @@ EOF
         cat > "$gemini_project" << 'EOF'
 # Gemini CLI Project Memory
 
-This is the authoritative AI-Assisted DevOps Framework project.
+This is the authoritative AI DevOps Framework project.
 
 ## Project Overview
 Comprehensive DevOps automation framework with enterprise-grade quality standards, 25+ service integrations, and complete AI CLI ecosystem integration.
@@ -657,11 +657,11 @@ EOF
     local windsurf_project="$project_dir/.windsurfrules"
     if [[ ! -f "$windsurf_project" ]]; then
         cat > "$windsurf_project" << 'EOF'
-# AI-Assisted DevOps Framework - Windsurf Rules
+# AI DevOps Framework - Windsurf Rules
 
 At the beginning of each session, read ~/AGENTS.md to get additional context and instructions.
 
-This is the authoritative AI-Assisted DevOps Framework project.
+This is the authoritative AI DevOps Framework project.
 
 ## Project Context
 - **Framework**: Comprehensive DevOps automation with 25+ service integrations

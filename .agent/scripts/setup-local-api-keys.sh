@@ -3,7 +3,7 @@
 # Setup Local API Keys - Secure User-Private Storage
 # Store API keys securely in user's private config directory
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output
@@ -165,7 +165,7 @@ main() {
             print_info "  $0 list  # List configured services"
             ;;
         *)
-            print_info "AI-Assisted DevOps - Secure Local API Key Management"
+            print_info "AI DevOps - Secure Local API Key Management"
             print_info ""
             print_info "Usage: $0 <command> [args]"
             print_info ""

@@ -5,7 +5,7 @@
 #
 # Usage: ./fix-string-literals.sh [file|directory]
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 
@@ -103,7 +103,7 @@ create_string_constants() {
     
     # Common repeated strings that should be constants
     local -A string_constants=(
-        ['"AI-Assisted DevOps Framework"']='readonly FRAMEWORK_NAME="AI-Assisted DevOps Framework"'
+        ['"AI DevOps Framework"']='readonly FRAMEWORK_NAME="AI DevOps Framework"'
         ['"https://github.com/marcusquinn/aidevops"']='readonly FRAMEWORK_REPO="https://github.com/marcusquinn/aidevops"'
         ['"Configuration file not found"']='readonly ERROR_CONFIG_NOT_FOUND="Configuration file not found"'
         ['"Command not found"']='readonly ERROR_COMMAND_NOT_FOUND="Command not found"'

@@ -1,6 +1,6 @@
 # Configuration Files AI Context
 
-This folder contains configuration templates and working configuration files for all services in the AI-Assisted DevOps Framework.
+This folder contains configuration templates and working configuration files for all services in the AI DevOps Framework.
 
 ## 📁 **File Structure**
 

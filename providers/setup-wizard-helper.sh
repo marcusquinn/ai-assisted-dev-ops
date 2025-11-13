@@ -13,7 +13,7 @@
 #   reset    - Clear all saved responses
 #   help     - Show this help message
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 
@@ -101,7 +101,7 @@ get_response() {
 
 # Ask user about their setup needs
 ask_setup_needs() {
-    print_info "🚀 Welcome to the AI-Assisted DevOps Setup Wizard!"
+    print_info "🚀 Welcome to the AI DevOps Setup Wizard!"
     echo ""
     print_info "I'll help you identify the services you need and guide you through setting up accounts and API keys."
     echo ""
@@ -516,7 +516,7 @@ full_setup_wizard() {
     echo "2. Generate API keys following the guide above"
     echo "3. Update configuration files with your credentials"
     echo "4. Run 'test-connections' to verify everything works"
-    echo "5. Start using the AI-Assisted DevOps Framework!"
+    echo "5. Start using the AI DevOps Framework!"
     return 0
 }
 

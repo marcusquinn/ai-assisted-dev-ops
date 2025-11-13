@@ -3,7 +3,7 @@
 # Fix Common Error Message String Literals
 # Replace repeated error message patterns with constants
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

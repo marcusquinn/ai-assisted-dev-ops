@@ -3,7 +3,7 @@
 # Qlty CLI Integration Script
 # Universal linting, auto-formatting, security scanning, and maintainability
 # 
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

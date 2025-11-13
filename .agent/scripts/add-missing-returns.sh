@@ -3,7 +3,7 @@
 # Add Missing Return Statements
 # Systematically add return 0 to functions missing explicit returns
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

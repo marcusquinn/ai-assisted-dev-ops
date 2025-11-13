@@ -3,7 +3,7 @@
 # CodeRabbit CLI Integration Script
 # Provides AI-powered code review capabilities through CodeRabbit CLI
 #
-# This script integrates CodeRabbit CLI into the AI-Assisted DevOps workflow
+# This script integrates CodeRabbit CLI into the AI DevOps workflow
 # for local code analysis, review automation, and quality assurance.
 #
 # Usage: ./coderabbit-cli.sh [command] [options]
@@ -15,7 +15,7 @@
 #   status      - Check CodeRabbit CLI status
 #   help        - Show this help message
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 

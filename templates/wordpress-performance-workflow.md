@@ -1,6 +1,6 @@
 # WordPress Performance Optimization Workflow
 
-This template provides a comprehensive workflow for optimizing WordPress website performance using the AI-Assisted DevOps framework.
+This template provides a comprehensive workflow for optimizing WordPress website performance using the AI DevOps framework.
 
 ## 🚀 **Quick Performance Audit**
 

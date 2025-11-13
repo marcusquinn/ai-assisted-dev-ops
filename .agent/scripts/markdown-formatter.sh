@@ -15,7 +15,7 @@
 # - Fix header spacing
 # - Normalize emphasis markers
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # License: MIT
 

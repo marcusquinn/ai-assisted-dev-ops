@@ -3,7 +3,7 @@
 # Linter Manager - CodeFactor-Inspired Multi-Language Linter Installation
 # Based on CodeFactor's comprehensive linter collection
 # 
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 # Reference: https://docs.codefactor.io/bootcamp/analysis-tools/
 

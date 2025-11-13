@@ -7,7 +7,7 @@
 
 ### Overview
 
-This document provides detailed implementation examples and advanced patterns for AI agents working on the AI-Assisted DevOps Framework.
+This document provides detailed implementation examples and advanced patterns for AI agents working on the AI DevOps Framework.
 
 ### Code Quality Requirements
 

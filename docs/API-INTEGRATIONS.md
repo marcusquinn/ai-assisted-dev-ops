@@ -1,6 +1,6 @@
 # 🔌 Comprehensive API Integration Guide
 
-This document provides detailed information about all 25+ API integrations supported by the AI-Assisted DevOps framework.
+This document provides detailed information about all 25+ API integrations supported by the AI DevOps framework.
 
 ## 📊 **API Integration Overview**
 

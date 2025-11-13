@@ -28,7 +28,7 @@ readonly SYSTEM_PROMPT="Before performing any DevOps operations, always read ~/g
 # Check if framework is installed
 check_framework() {
     if [[ ! -d "$FRAMEWORK_PATH" ]]; then
-        print_error "AI-Assisted DevOps framework not found at $FRAMEWORK_PATH"
+        print_error "AI DevOps framework not found at $FRAMEWORK_PATH"
         print_info "Please run: mkdir -p ~/git && cd ~/git && git clone https://github.com/marcusquinn/aidevops.git"
         exit 1
     fi
@@ -62,7 +62,7 @@ configure_augment() {
     
     if ! grep -q "AUGMENT_SYSTEM_PROMPT" "$shell_profile" 2>/dev/null; then
         echo "" >> "$shell_profile"
-        echo "# AI-Assisted DevOps Framework - Augment Integration" >> "$shell_profile"
+        echo "# AI DevOps Framework - Augment Integration" >> "$shell_profile"
         echo "export AUGMENT_SYSTEM_PROMPT=\"$SYSTEM_PROMPT\"" >> "$shell_profile"
         print_success "Added system prompt to $shell_profile"
         print_info "Restart your terminal or run: source $shell_profile"
@@ -112,7 +112,7 @@ configure_warp() {
     
     if warp-cli workflow create devops-setup \
         --command "cd $FRAMEWORK_PATH && cat AGENTS.md" \
-        --description "Read AI-Assisted DevOps framework guidance" 2>/dev/null; then
+        --description "Read AI DevOps framework guidance" 2>/dev/null; then
         print_success "Created Warp workflow 'devops-setup'"
         print_info "Use: warp-cli workflow run devops-setup"
     else
@@ -182,7 +182,7 @@ main() {
             echo "  help     - Show this help"
             echo ""
             echo "This script helps configure AI CLI tools to use the"
-            echo "AI-Assisted DevOps framework guidance automatically."
+            echo "AI DevOps framework guidance automatically."
             ;;
     esac
 }

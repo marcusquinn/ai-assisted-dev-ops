@@ -1,6 +1,6 @@
 # Documentation AI Context
 
-This folder contains comprehensive documentation for all services and components in the AI-Assisted DevOps Framework.
+This folder contains comprehensive documentation for all services and components in the AI DevOps Framework.
 
 ## 📚 **Documentation Categories**
 

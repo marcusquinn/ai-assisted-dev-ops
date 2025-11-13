@@ -3,7 +3,7 @@
 # Fix Missing Return Statements (S7682)
 # Add explicit return statements to all functions
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

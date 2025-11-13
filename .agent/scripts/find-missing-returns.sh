@@ -3,7 +3,7 @@
 # Find Functions Missing Return Statements
 # Identify functions that need return statements for S7682 compliance
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

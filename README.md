@@ -1,4 +1,4 @@
-# AI-Assisted DevOps Framework
+# AI DevOps Framework
 
 **Unleash your AI assistant's true potential with seamless access to your entire DevOps ecosystem across 25+ services.**
 

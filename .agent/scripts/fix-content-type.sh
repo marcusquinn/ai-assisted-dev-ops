@@ -3,7 +3,7 @@
 # Fix Content-Type String Literals
 # Replace repeated "Content-Type: application/json" with constants
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

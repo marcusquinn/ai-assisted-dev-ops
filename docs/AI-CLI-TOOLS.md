@@ -1,6 +1,6 @@
 # AI CLI Tools & Assistants - Comprehensive Reference
 
-This document provides a comprehensive list of CLI AI assistants and tools that work excellently with the AI-Assisted DevOps Framework.
+This document provides a comprehensive list of CLI AI assistants and tools that work excellently with the AI DevOps Framework.
 
 ## 🤖 **Recommended CLI AI Assistants**
 

@@ -182,4 +182,4 @@
 
 ---
 
-**These resources provide comprehensive external documentation and tools needed to effectively use and extend the AI-Assisted DevOps Framework.** 🌐🛠️📚
+**These resources provide comprehensive external documentation and tools needed to effectively use and extend the AI DevOps Framework.** 🌐🛠️📚

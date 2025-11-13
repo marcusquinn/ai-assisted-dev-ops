@@ -3,7 +3,7 @@
 # Fix Authorization Header String Literals
 # Replace repeated "Authorization: Bearer" patterns with constants
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

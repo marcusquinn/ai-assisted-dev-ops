@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AI-Assisted DevOps Framework - Template Deployment Script
+# AI DevOps Framework - Template Deployment Script
 # Securely deploys minimal AGENTS.md templates to user's home directory
 
 set -euo pipefail
@@ -122,7 +122,7 @@ verify_deployment() {
 }
 
 main() {
-    echo -e "${BLUE}🔒 AI-Assisted DevOps Framework - Secure Template Deployment${NC}"
+    echo -e "${BLUE}🔒 AI DevOps Framework - Secure Template Deployment${NC}"
     echo -e "${BLUE}============================================================${NC}"
     
     print_info "Deploying minimal, secure AGENTS.md templates..."

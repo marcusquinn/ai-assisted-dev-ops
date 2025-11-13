@@ -1,6 +1,6 @@
 # Provider Scripts AI Context
 
-This folder contains helper scripts for all 25+ service integrations in the AI-Assisted DevOps Framework.
+This folder contains helper scripts for all 25+ service integrations in the AI DevOps Framework.
 
 ## 🛠️ **Script Categories**
 

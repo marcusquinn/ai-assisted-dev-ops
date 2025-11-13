@@ -3,7 +3,7 @@
 # Fix SC2155 Issues - Simple Approach
 # Fix "declare and assign separately" issues
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

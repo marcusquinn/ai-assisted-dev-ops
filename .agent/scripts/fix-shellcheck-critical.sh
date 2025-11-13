@@ -3,7 +3,7 @@
 # Fix Critical ShellCheck Issues
 # Address SC2155 (declare and assign separately) and SC2181 (exit code checking)
 #
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output

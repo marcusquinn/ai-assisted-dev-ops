@@ -1,6 +1,6 @@
 # Code Quality Services Setup Guide
 
-This guide walks you through setting up all 4 integrated code quality and security analysis platforms for your AI-Assisted DevOps Framework.
+This guide walks you through setting up all 4 integrated code quality and security analysis platforms for your AI DevOps Framework.
 
 ## 🎯 **Overview**
 

@@ -4,7 +4,7 @@
 # Intelligent assessment of user needs for targeted linter installation
 # Based on CodeFactor's comprehensive linter collection
 # 
-# Author: AI-Assisted DevOps Framework
+# Author: AI DevOps Framework
 # Version: 1.0.0
 
 # Colors for output
