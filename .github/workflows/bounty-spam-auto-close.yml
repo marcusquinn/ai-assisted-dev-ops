@@ -21,10 +21,9 @@
 # Skip conditions (defense against false-positives):
 #   - Author is OWNER, MEMBER, or COLLABORATOR
 #   - Author is a bot (user.type == 'Bot')
-#   - PR title has task ID prefix (`tNNN:` or `GH#NNN:`)
 #
-# These are the same trust signals used by pr-triage-gate.yml — keeps the
-# bypass logic consistent across both gates.
+# Trust comes only from immutable GitHub author metadata. PR title text is
+# untrusted input and never bypasses this external-author detector.
 
 name: Bounty Spam Auto-Close
 
@@ -45,6 +44,7 @@ jobs:
       group: bounty-spam-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     # Skip trusted authors and bots up front to save cycles.
+    #aidevops:trust-boundary GH#17671/GH#28567
     if: >-
       github.event.pull_request.user.type != 'Bot' &&
       github.event.pull_request.author_association != 'OWNER' &&
@@ -65,19 +65,11 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
-          # Bypass for internal task-ID prefixes (matches pr-triage-gate.yml).
-          if [[ "$PR_TITLE" =~ ^t[0-9]+: ]] || [[ "$PR_TITLE" =~ ^GH#[0-9]+: ]]; then
-            echo "PR title has internal task ID prefix — skipping bounty check."
-            echo "verdict=bypassed" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
           DETECTOR=".agents/scripts/bounty-spam-detector.sh"
           if [[ ! -x "$DETECTOR" ]]; then

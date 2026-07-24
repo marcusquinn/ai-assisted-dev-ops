@@ -9,9 +9,10 @@
 #
 # Exemptions:
 # - Bot accounts (github-actions[bot], dependabot[bot], etc.)
-# - PRs with a task-ID prefix in the title (tNNN: or GH#NNN:) — these are
-#   already linked to issues via the task system and the maintainer gate's
-#   title-based lookup.
+# - PRs from OWNER, MEMBER, or COLLABORATOR authors with a task-ID prefix
+#   in the title (tNNN: or GH#NNN:)
+#
+# Title text alone is untrusted and never establishes issue linkage.
 #
 # This check is intentionally separate from maintainer-gate.yml (which checks
 # the *status* of linked issues). This check is earlier — it gates on whether
@@ -91,11 +92,15 @@ jobs:
               return;
             }
 
-            // PRs with task-ID prefix are exempt (tNNN: or GH#NNN:)
-            // These are already tracked via the task system / maintainer-gate title lookup
-            if (/^(t\d+(\.\d+)*|GH#\d+)[:\s]/.test(title)) {
-              console.log(`PR "${title}" has task-ID prefix — exempt from linked-issue check`);
-              await publishStatus('success', 'Task-ID prefix detected — issue linkage via task system');
+            // Internal task prefixes are meaningful only when immutable GitHub
+            // author metadata independently establishes maintainer trust.
+            // CONTRIBUTOR remains untrusted even after prior contributions.
+            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            const hasTaskPrefix = /^(t\d+(\.\d+)*|GH#\d+)[:\s]/.test(title);
+            // #aidevops:trust-boundary GH#17671/GH#28567
+            if (trustedRoles.includes(pr.author_association) && hasTaskPrefix) {
+              console.log(`Trusted ${pr.author_association} author has task-ID prefix — exempt from linked-issue check`);
+              await publishStatus('success', 'Trusted task-ID prefix — issue linkage via task system');
               return;
             }
 

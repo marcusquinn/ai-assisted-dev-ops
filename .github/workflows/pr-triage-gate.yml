@@ -44,24 +44,12 @@ jobs:
               return;
             }
 
-            // PRs with task ID prefix (t1234: ...) are from internal tooling — bypass
-            const title = pr.title || '';
-            if (/^t\d+/.test(title)) {
-              console.log(`PR "${title}" has task ID prefix — bypassing triage`);
-              return;
-            }
-
-            // PRs with GH# prefix are from internal tooling — bypass
-            if (/^GH#\d+/.test(title)) {
-              console.log(`PR "${title}" has GH# prefix — bypassing triage`);
-              return;
-            }
-
             // Maintainers and collaborators bypass triage
             // OWNER, MEMBER, COLLABORATOR are trusted roles
             // CONTRIBUTOR (has previous merged PRs) is NOT trusted
             const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 
+            // #aidevops:trust-boundary GH#17671/GH#28567
             if (trustedRoles.includes(association)) {
               console.log(`Author ${author} has role ${association} — bypassing triage`);
               return;
