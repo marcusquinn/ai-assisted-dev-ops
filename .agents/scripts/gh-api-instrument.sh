@@ -62,6 +62,9 @@
 #   AIDEVOPS_GH_API_RETENTION_SECONDS — maximum record age (default 172800)
 #   AIDEVOPS_GH_API_EMPTY_LOCK_GRACE_TRIES — 10ms waits before reclaiming an
 #                                   empty lock directory (default 100)
+#   AIDEVOPS_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS — minimum age before exact
+#                                   legacy .source/.tmp/.trim files are reaped
+#                                   (default 3600)
 #   AIDEVOPS_GH_API_INSTRUMENT_DISABLE=1 — make all calls no-ops
 #
 # Part of aidevops framework: https://aidevops.sh
@@ -117,6 +120,9 @@ GH_API_RETENTION_SECONDS="${AIDEVOPS_GH_API_RETENTION_SECONDS:-$_GH_API_DEFAULT_
 GH_API_ERROR_KEY="error"
 _GH_API_EMPTY_LOCK_GRACE_TRIES="${AIDEVOPS_GH_API_EMPTY_LOCK_GRACE_TRIES:-100}"
 [[ "$_GH_API_EMPTY_LOCK_GRACE_TRIES" =~ ^[0-9]+$ ]] || _GH_API_EMPTY_LOCK_GRACE_TRIES=100
+_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS="${AIDEVOPS_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS:-3600}"
+[[ "$_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS" =~ ^[0-9]+$ ]] || _GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS=3600
+_GH_API_SCRATCH_DIR=""
 
 _gh_now_seconds() {
 	local now=""
@@ -137,6 +143,115 @@ _gh_now_ms() {
 		now=$((now * 1000))
 	fi
 	printf '%s\n' "$now"
+	return 0
+}
+
+_gh_file_mtime_epoch() {
+	local file="$1"
+	local modified=""
+	modified=$(stat --format='%Y' "$file" 2>/dev/null) || modified=$(stat -f '%m' "$file" 2>/dev/null) || return 1
+	[[ "$modified" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$modified"
+	return 0
+}
+
+_gh_managed_scratch_owner_pid() {
+	local basename="$1"
+	if [[ "$basename" =~ ^(report|source|trim)\.([1-9][0-9]*)\.[[:alnum:]]{6}$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[2]}"
+		return 0
+	fi
+	return 1
+}
+
+# Remove only framework-owned scratch files whose filename carries a dead
+# creator PID. The private directory and exact basename grammar keep unrelated
+# files and symlinks outside the deletion boundary.
+_gh_cleanup_managed_scratch() {
+	local scratch_dir="$1"
+	local candidate=""
+	local basename=""
+	local owner_pid=""
+	[[ -d "$scratch_dir" && ! -L "$scratch_dir" && -O "$scratch_dir" ]] || return 1
+	for candidate in \
+		"$scratch_dir"/report.*.* \
+		"$scratch_dir"/source.*.* \
+		"$scratch_dir"/trim.*.*; do
+		[[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || continue
+		basename="${candidate##*/}"
+		owner_pid=$(_gh_managed_scratch_owner_pid "$basename") || continue
+		if ! kill -0 "$owner_pid" 2>/dev/null; then
+			rm -f "$candidate" 2>/dev/null || true
+		fi
+	done
+	return 0
+}
+
+# Scratch files that must be renamed atomically live in a private child of the
+# destination directory. This preserves same-filesystem rename semantics while
+# keeping transient files out of the durable log namespace.
+_gh_prepare_scratch_dir() {
+	local target="$1"
+	local target_dir="."
+	local scratch_dir=""
+	[[ -n "$target" ]] || return 1
+	if [[ "$target" == */* ]]; then
+		target_dir="${target%/*}"
+		[[ -n "$target_dir" ]] || target_dir="/"
+	fi
+	[[ -d "$target_dir" && ! -L "$target_dir" && -O "$target_dir" ]] || return 1
+	scratch_dir="${target_dir%/}/.gh-api-instrument-scratch"
+	[[ -n "$scratch_dir" ]] || return 1
+	if [[ ! -e "$scratch_dir" && ! -L "$scratch_dir" ]]; then
+		if ! (umask 077 && mkdir "$scratch_dir" 2>/dev/null); then
+			[[ -d "$scratch_dir" && ! -L "$scratch_dir" ]] || return 1
+		fi
+	fi
+	[[ -d "$scratch_dir" && ! -L "$scratch_dir" && -O "$scratch_dir" ]] || return 1
+	chmod 0700 "$scratch_dir" 2>/dev/null || return 1
+	_GH_API_SCRATCH_DIR="$scratch_dir"
+	_gh_cleanup_managed_scratch "$scratch_dir" || return 1
+	return 0
+}
+
+# Migrate exact pre-owner scratch names left by older releases. These files do
+# not encode a PID, so deletion is restricted to regular user-owned files under
+# configured output prefixes and a conservative age floor.
+_gh_cleanup_legacy_scratch() {
+	local candidate=""
+	local candidate_dir="."
+	local legacy_prefix=""
+	local legacy_suffix=""
+	local modified=""
+	local now=""
+	local age=0
+	now=$(_gh_now_seconds) || return 0
+	for candidate in \
+		"${GH_API_REPORT}.source."* \
+		"${GH_API_REPORT}.tmp."* \
+		"${GH_API_LOG}.trim."*; do
+		[[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || continue
+		case "$candidate" in
+		"${GH_API_REPORT}.source."*) legacy_prefix="${GH_API_REPORT}.source." ;;
+		"${GH_API_REPORT}.tmp."*) legacy_prefix="${GH_API_REPORT}.tmp." ;;
+		"${GH_API_LOG}.trim."*) legacy_prefix="${GH_API_LOG}.trim." ;;
+		*) continue ;;
+		esac
+		legacy_suffix="${candidate#"$legacy_prefix"}"
+		[[ "$legacy_suffix" =~ ^[[:alnum:]]{6}$ ]] || continue
+		if [[ "$candidate" == */* ]]; then
+			candidate_dir="${candidate%/*}"
+			[[ -n "$candidate_dir" ]] || candidate_dir="/"
+		else
+			candidate_dir="."
+		fi
+		[[ -d "$candidate_dir" && ! -L "$candidate_dir" && -O "$candidate_dir" ]] || continue
+		modified=$(_gh_file_mtime_epoch "$candidate") || continue
+		[[ "$now" -ge "$modified" ]] || continue
+		age=$((now - modified))
+		[[ "$age" -ge "$_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS" ]] || continue
+		rm -f "$candidate" 2>/dev/null || true
+	done
 	return 0
 }
 
@@ -584,7 +699,9 @@ gh_aggregate_calls() {
 	local tmp=""
 	local snapshot=""
 	local awk_script=""
+	local owner_pid="${BASHPID:-$$}"
 	[[ "$window" =~ ^[1-9][0-9]*$ ]] || window=86400
+	[[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 1
 	current_now=$(_gh_now_seconds) || return 1
 	now="$current_now"
 	if [[ -n "$requested_end" ]]; then
@@ -596,7 +713,9 @@ gh_aggregate_calls() {
 		out_dir="${out%/*}"
 	fi
 	mkdir -p "$out_dir" 2>/dev/null || return 1
-	tmp=$(mktemp "${out}.tmp.XXXXXX" 2>/dev/null) || return 1
+	_gh_cleanup_legacy_scratch || true
+	_gh_prepare_scratch_dir "$out" || return 1
+	tmp=$(mktemp "${_GH_API_SCRATCH_DIR}/report.${owner_pid}.XXXXXX" 2>/dev/null) || return 1
 	chmod 600 "$tmp" 2>/dev/null || {
 		rm -f "$tmp"
 		return 1
@@ -620,7 +739,7 @@ gh_aggregate_calls() {
 		mv "$tmp" "$out" 2>/dev/null || rm -f "$tmp"
 		return 1
 	fi
-	snapshot=$(mktemp "${out}.source.XXXXXX" 2>/dev/null) || {
+	snapshot=$(mktemp "${_GH_API_SCRATCH_DIR}/source.${owner_pid}.XXXXXX" 2>/dev/null) || {
 		rm -f "$tmp"
 		return 1
 	}
@@ -650,17 +769,26 @@ gh_aggregate_calls() {
 # bounds. Appenders share the same short-lived lock so replacement cannot lose
 # a concurrent record. The original remains untouched if filtering fails.
 gh_trim_log() {
-	[[ -f "$GH_API_LOG" ]] || return 0
 	local now=""
 	local cutoff=0
 	local tmp=""
+	local owner_pid="${BASHPID:-$$}"
+	_gh_cleanup_legacy_scratch || true
+	[[ -f "$GH_API_LOG" ]] || return 0
+	[[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 0
 	[[ "$GH_API_LOG_MAX_LINES" =~ ^[0-9]+$ && "$GH_API_LOG_MAX_LINES" -gt 0 ]] || GH_API_LOG_MAX_LINES="$_GH_API_DEFAULT_LOG_MAX_LINES"
 	[[ "$GH_API_LOG_MAX_BYTES" =~ ^[0-9]+$ && "$GH_API_LOG_MAX_BYTES" -gt 0 ]] || GH_API_LOG_MAX_BYTES="$_GH_API_DEFAULT_LOG_MAX_BYTES"
 	[[ "$GH_API_RETENTION_SECONDS" =~ ^[0-9]+$ && "$GH_API_RETENTION_SECONDS" -gt 0 ]] || GH_API_RETENTION_SECONDS="$_GH_API_DEFAULT_RETENTION_SECONDS"
 	now=$(_gh_now_seconds) || return 0
 	cutoff=$((now - GH_API_RETENTION_SECONDS))
+	_gh_prepare_scratch_dir "$GH_API_LOG" || return 0
 	_gh_log_lock_acquire || return 0
-	tmp=$(mktemp "${GH_API_LOG}.trim.XXXXXX") || {
+	tmp=$(mktemp "${_GH_API_SCRATCH_DIR}/trim.${owner_pid}.XXXXXX") || {
+		_gh_log_lock_release
+		return 0
+	}
+	chmod 0600 "$tmp" 2>/dev/null || {
+		rm -f "$tmp" 2>/dev/null || true
 		_gh_log_lock_release
 		return 0
 	}

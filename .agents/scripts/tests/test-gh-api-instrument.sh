@@ -63,6 +63,19 @@ assert_file_exists() {
 	return 1
 }
 
+assert_path_absent() {
+	local label="$1"
+	local path="$2"
+	if [[ ! -e "$path" && ! -L "$path" ]]; then
+		echo "  PASS: $label"
+		PASS=$((PASS + 1))
+		return 0
+	fi
+	echo "  FAIL: $label (unexpected path: $path)"
+	FAIL=$((FAIL + 1))
+	return 1
+}
+
 echo "Test: gh-api-instrument.sh recording and aggregation"
 echo "===================================================="
 echo ""
@@ -906,6 +919,215 @@ PATH="$NATIVE_FIXTURE:/usr/bin:/bin" AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
 	GH_SHIM_FIXTURE="$SHIM_FIXTURE/gh" \
 	bash -euo pipefail "$SHIM_FIXTURE/parent-caller.sh"
 assert_eq "interpreter flags preserve framework caller attribution" "2" "$(awk -F'\t' '$9 == "attempt" && $2 == "parent-caller.sh" { count++ } END { print count + 0 }' "$AIDEVOPS_GH_API_LOG")"
+
+# --- Test 16: managed scratch cleanup is owner-aware and exact ---------------
+scratch_fixture="$TMPDIR/managed-scratch"
+mkdir -p "$scratch_fixture"
+export AIDEVOPS_GH_API_LOG="$scratch_fixture/gh-api-calls.log"
+export AIDEVOPS_GH_API_REPORT="$scratch_fixture/report.json"
+export AIDEVOPS_GH_API_EVIDENCE="$scratch_fixture/evidence.json"
+export AIDEVOPS_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS=3600
+unset _GH_API_INSTRUMENT_LOADED
+# shellcheck source=../gh-api-instrument.sh
+source "${PARENT_DIR}/gh-api-instrument.sh"
+
+_gh_prepare_scratch_dir "$GH_API_REPORT"
+scratch_dir="$scratch_fixture/.gh-api-instrument-scratch"
+assert_eq "managed scratch is target-adjacent for atomic rename" "$scratch_dir" "$_GH_API_SCRATCH_DIR"
+scratch_mode=$(stat -f '%Lp' "$scratch_dir" 2>/dev/null || stat -c '%a' "$scratch_dir" 2>/dev/null)
+assert_eq "managed scratch directory is private" "700" "$scratch_mode"
+
+dead_pid=999999999
+while kill -0 "$dead_pid" 2>/dev/null; do
+	dead_pid=$((dead_pid - 1))
+done
+live_pid="${BASHPID:-$$}"
+dead_report="$scratch_dir/report.${dead_pid}.ABC123"
+dead_source="$scratch_dir/source.${dead_pid}.DEF456"
+dead_trim="$scratch_dir/trim.${dead_pid}.GHI789"
+live_source="$scratch_dir/source.${live_pid}.LIV123"
+invalid_suffix="$scratch_dir/report.${dead_pid}.ABC12_"
+unrelated_file="$scratch_dir/unrelated.${dead_pid}.ABC123"
+symlink_target="$scratch_fixture/symlink-target"
+scratch_symlink="$scratch_dir/source.${dead_pid}.SYM123"
+printf 'dead report\n' >"$dead_report"
+printf 'dead source\n' >"$dead_source"
+printf 'dead trim\n' >"$dead_trim"
+printf 'live source\n' >"$live_source"
+printf 'invalid suffix\n' >"$invalid_suffix"
+printf 'unrelated\n' >"$unrelated_file"
+printf 'target\n' >"$symlink_target"
+ln -s "$symlink_target" "$scratch_symlink"
+
+assert_eq "managed scratch parser returns creator PID" "$dead_pid" "$(_gh_managed_scratch_owner_pid "report.${dead_pid}.ABC123")"
+invalid_owner_status=0
+_gh_managed_scratch_owner_pid "report.${dead_pid}.ABC12_" >/dev/null || invalid_owner_status=$?
+assert_eq "managed scratch parser rejects non-exact suffixes" "1" "$invalid_owner_status"
+_gh_cleanup_managed_scratch "$scratch_dir"
+assert_path_absent "dead-owner report scratch is reaped" "$dead_report"
+assert_path_absent "dead-owner source scratch is reaped" "$dead_source"
+assert_path_absent "dead-owner trim scratch is reaped" "$dead_trim"
+assert_file_exists "live-owner scratch is preserved" "$live_source"
+assert_file_exists "non-exact managed filename is preserved" "$invalid_suffix"
+assert_file_exists "unrelated managed-directory file is preserved" "$unrelated_file"
+assert_eq "managed scratch symlink is preserved" "yes" "$([[ -L "$scratch_symlink" ]] && printf 'yes' || printf 'no')"
+assert_file_exists "managed scratch symlink target is untouched" "$symlink_target"
+
+# SIGKILL aggregate fixture: replace cp in the child only. The wrapper copies
+# the snapshot, then kills its parent before normal report/source cleanup.
+kill_bin="$scratch_fixture/kill-bin"
+aggregate_marker="$scratch_fixture/aggregate-killed.marker"
+aggregate_owner_pid_file="$scratch_fixture/aggregate-owner.pid"
+mkdir -p "$kill_bin"
+cat >"$kill_bin/cp" <<'EOF_KILL_CP'
+#!/usr/bin/env bash
+set -euo pipefail
+/bin/cp "$@"
+printf 'ready\n' >"$GH_API_KILL_MARKER"
+kill -KILL "$PPID"
+exit 137
+EOF_KILL_CP
+chmod +x "$kill_bin/cp"
+cat >"$kill_bin/run-sigkill-fixture" <<'EOF_SIGKILL_RUNNER'
+#!/usr/bin/env bash
+set +e
+bash -c '
+	printf "%s\n" "${BASHPID:-$$}" >"$GH_API_OWNER_PID_FILE"
+	unset _GH_API_INSTRUMENT_LOADED
+	source "$1"
+	case "$2" in
+	aggregate) gh_aggregate_calls "$GH_API_REPORT_PATH" ;;
+	trim) gh_trim_log ;;
+	*) exit 2 ;;
+	esac
+' _ "$GH_API_INSTRUMENT_SCRIPT" "$GH_API_KILL_MODE"
+fixture_status=$?
+exit "$fixture_status"
+EOF_SIGKILL_RUNNER
+chmod +x "$kill_bin/run-sigkill-fixture"
+gh_clear_log
+gh_record_call rest scratch-sigkill-aggregate
+set +e
+PATH="$kill_bin:$PATH" GH_API_KILL_MARKER="$aggregate_marker" \
+	AIDEVOPS_GH_API_LOG="$GH_API_LOG" AIDEVOPS_GH_API_REPORT="$GH_API_REPORT" \
+	GH_API_OWNER_PID_FILE="$aggregate_owner_pid_file" GH_API_KILL_MODE=aggregate \
+	GH_API_INSTRUMENT_SCRIPT="${PARENT_DIR}/gh-api-instrument.sh" GH_API_REPORT_PATH="$GH_API_REPORT" \
+	"$kill_bin/run-sigkill-fixture" >/dev/null 2>&1
+aggregate_kill_status=$?
+set -e
+aggregate_kill_pid=$(<"$aggregate_owner_pid_file")
+assert_eq "aggregate SIGKILL fixture reached snapshot copy" "yes" "$([[ -f "$aggregate_marker" ]] && printf 'yes' || printf 'no')"
+assert_eq "aggregate fixture exits from SIGKILL" "137" "$aggregate_kill_status"
+shopt -s nullglob
+aggregate_orphans=(
+	"$scratch_dir/report.${aggregate_kill_pid}."*
+	"$scratch_dir/source.${aggregate_kill_pid}."*
+)
+shopt -u nullglob
+assert_eq "aggregate SIGKILL leaves owner-tagged report and source scratch" "2" "${#aggregate_orphans[@]}"
+for aggregate_orphan in "${aggregate_orphans[@]}"; do
+	aggregate_orphan_mode=$(stat -f '%Lp' "$aggregate_orphan" 2>/dev/null || stat -c '%a' "$aggregate_orphan" 2>/dev/null)
+	assert_eq "aggregate scratch remains private after SIGKILL" "600" "$aggregate_orphan_mode"
+done
+_gh_cleanup_managed_scratch "$scratch_dir"
+shopt -s nullglob
+aggregate_orphans=(
+	"$scratch_dir/report.${aggregate_kill_pid}."*
+	"$scratch_dir/source.${aggregate_kill_pid}."*
+)
+shopt -u nullglob
+assert_eq "next cleanup reaps aggregate SIGKILL scratch" "0" "${#aggregate_orphans[@]}"
+gh_record_call rest scratch-post-aggregate-recovery
+assert_eq "aggregate SIGKILL lock is recoverable" "2" "$(wc -l <"$GH_API_LOG" | tr -d ' ')"
+
+# SIGKILL trim fixture: replace awk in the child so the process dies after its
+# owner-tagged trim file and lock exist but before atomic replacement.
+trim_marker="$scratch_fixture/trim-killed.marker"
+trim_owner_pid_file="$scratch_fixture/trim-owner.pid"
+cat >"$kill_bin/awk" <<'EOF_KILL_AWK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ready\n' >"$GH_API_KILL_MARKER"
+kill -KILL "$PPID"
+exit 137
+EOF_KILL_AWK
+chmod +x "$kill_bin/awk"
+set +e
+PATH="$kill_bin:$PATH" GH_API_KILL_MARKER="$trim_marker" \
+	AIDEVOPS_GH_API_LOG="$GH_API_LOG" AIDEVOPS_GH_API_REPORT="$GH_API_REPORT" \
+	GH_API_OWNER_PID_FILE="$trim_owner_pid_file" GH_API_KILL_MODE=trim \
+	GH_API_INSTRUMENT_SCRIPT="${PARENT_DIR}/gh-api-instrument.sh" GH_API_REPORT_PATH="$GH_API_REPORT" \
+	"$kill_bin/run-sigkill-fixture" >/dev/null 2>&1
+trim_kill_status=$?
+set -e
+trim_kill_pid=$(<"$trim_owner_pid_file")
+assert_eq "trim SIGKILL fixture reached retention filter" "yes" "$([[ -f "$trim_marker" ]] && printf 'yes' || printf 'no')"
+assert_eq "trim fixture exits from SIGKILL" "137" "$trim_kill_status"
+shopt -s nullglob
+trim_orphans=("$scratch_dir/trim.${trim_kill_pid}."*)
+shopt -u nullglob
+assert_eq "trim SIGKILL leaves one owner-tagged scratch file" "1" "${#trim_orphans[@]}"
+trim_orphan_mode=$(stat -f '%Lp' "${trim_orphans[0]}" 2>/dev/null || stat -c '%a' "${trim_orphans[0]}" 2>/dev/null)
+assert_eq "trim scratch remains private after SIGKILL" "600" "$trim_orphan_mode"
+_gh_cleanup_managed_scratch "$scratch_dir"
+shopt -s nullglob
+trim_orphans=("$scratch_dir/trim.${trim_kill_pid}."*)
+shopt -u nullglob
+assert_eq "next cleanup reaps trim SIGKILL scratch" "0" "${#trim_orphans[@]}"
+gh_trim_log
+assert_eq "trim SIGKILL lock is recoverable" "no" "$([[ -d "${GH_API_LOG}.lock" ]] && printf 'yes' || printf 'no')"
+trimmed_log_mode=$(stat -f '%Lp' "$GH_API_LOG" 2>/dev/null || stat -c '%a' "$GH_API_LOG" 2>/dev/null)
+assert_eq "trim replacement keeps the durable log private" "600" "$trimmed_log_mode"
+
+# Legacy migration is age-gated and accepts only the exact historical six-
+# character mktemp suffixes. Symlinks, recent files, and near-matches survive.
+legacy_source="${GH_API_REPORT}.source.LEG123"
+legacy_report="${GH_API_REPORT}.tmp.LEG456"
+legacy_trim="${GH_API_LOG}.trim.LEG789"
+legacy_recent="${GH_API_REPORT}.source.NEW123"
+legacy_near_match="${GH_API_REPORT}.source.TOOLONG"
+legacy_symlink_target="$scratch_fixture/legacy-symlink-target"
+legacy_symlink="${GH_API_LOG}.trim.SYM123"
+printf 'legacy source\n' >"$legacy_source"
+printf 'legacy report\n' >"$legacy_report"
+printf 'legacy trim\n' >"$legacy_trim"
+printf 'recent\n' >"$legacy_recent"
+printf 'near match\n' >"$legacy_near_match"
+printf 'target\n' >"$legacy_symlink_target"
+ln -s "$legacy_symlink_target" "$legacy_symlink"
+python3 - "$legacy_source" "$legacy_report" "$legacy_trim" "$legacy_near_match" <<'PY_LEGACY_MTIME'
+import os
+import sys
+import time
+
+old = time.time() - 7200
+for path in sys.argv[1:]:
+    os.utime(path, (old, old))
+PY_LEGACY_MTIME
+_gh_cleanup_legacy_scratch
+assert_path_absent "old exact legacy source scratch is removed" "$legacy_source"
+assert_path_absent "old exact legacy report scratch is removed" "$legacy_report"
+assert_path_absent "old exact legacy trim scratch is removed" "$legacy_trim"
+assert_file_exists "recent exact legacy scratch is preserved" "$legacy_recent"
+assert_file_exists "old near-match legacy file is preserved" "$legacy_near_match"
+assert_eq "legacy scratch symlink is preserved" "yes" "$([[ -L "$legacy_symlink" ]] && printf 'yes' || printf 'no')"
+assert_file_exists "legacy scratch symlink target is untouched" "$legacy_symlink_target"
+invalid_legacy_age=$(AIDEVOPS_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS=invalid bash -c '
+	# shellcheck source=/dev/null
+	source "$1"
+	printf "%s\n" "$_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS"
+' _ "${PARENT_DIR}/gh-api-instrument.sh")
+assert_eq "invalid legacy scratch age uses the safe default" "3600" "$invalid_legacy_age"
+
+# A pre-created symlink cannot redirect the managed scratch directory.
+bad_scratch_parent="$TMPDIR/bad-scratch-parent"
+bad_scratch_target="$TMPDIR/bad-scratch-target"
+mkdir -p "$bad_scratch_parent" "$bad_scratch_target"
+ln -s "$bad_scratch_target" "$bad_scratch_parent/.gh-api-instrument-scratch"
+bad_scratch_status=0
+_gh_prepare_scratch_dir "$bad_scratch_parent/report.json" || bad_scratch_status=$?
+assert_eq "managed scratch rejects a pre-created directory symlink" "1" "$bad_scratch_status"
+assert_eq "rejected scratch symlink target stays empty" "0" "$(ls -A "$bad_scratch_target" | wc -l | tr -d ' ')"
 
 # --- Summary ----------------------------------------------------------
 echo ""
