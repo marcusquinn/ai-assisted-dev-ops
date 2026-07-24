@@ -77,6 +77,18 @@ _GH_API_INSTRUMENT_LOADED=1
 # Apply strict mode only when executed directly (not when sourced).
 [[ "${BASH_SOURCE[0]}" == "${0}" ]] && set -euo pipefail
 
+# Legacy scratch cleanup needs portable file timestamps, but this helper is
+# also sourced standalone by the gh shim. Load only the focused stat library;
+# sourcing shared-constants.sh here would create a circular dependency through
+# shared-gh-wrappers.sh.
+_GH_API_INSTRUMENT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_GH_API_INSTRUMENT_DIR" == "${BASH_SOURCE[0]}" ]] && _GH_API_INSTRUMENT_DIR="."
+if ! command -v _file_mtime_epoch >/dev/null 2>&1 &&
+	[[ -f "${_GH_API_INSTRUMENT_DIR}/portable-stat.sh" ]]; then
+	# shellcheck source=portable-stat.sh
+	source "${_GH_API_INSTRUMENT_DIR}/portable-stat.sh"
+fi
+
 # --- Configuration --------------------------------------------------------
 _GH_API_HOME="${HOME:-}"
 if [[ -z "$_GH_API_HOME" ]]; then
@@ -143,15 +155,6 @@ _gh_now_ms() {
 		now=$((now * 1000))
 	fi
 	printf '%s\n' "$now"
-	return 0
-}
-
-_gh_file_mtime_epoch() {
-	local file="$1"
-	local modified=""
-	modified=$(stat --format='%Y' "$file" 2>/dev/null) || modified=$(stat -f '%m' "$file" 2>/dev/null) || return 1
-	[[ "$modified" =~ ^[0-9]+$ ]] || return 1
-	printf '%s\n' "$modified"
 	return 0
 }
 
@@ -225,6 +228,7 @@ _gh_cleanup_legacy_scratch() {
 	local modified=""
 	local now=""
 	local age=0
+	command -v _file_mtime_epoch >/dev/null 2>&1 || return 0
 	now=$(_gh_now_seconds) || return 0
 	for candidate in \
 		"${GH_API_REPORT}.source."* \
@@ -246,7 +250,7 @@ _gh_cleanup_legacy_scratch() {
 			candidate_dir="."
 		fi
 		[[ -d "$candidate_dir" && ! -L "$candidate_dir" && -O "$candidate_dir" ]] || continue
-		modified=$(_gh_file_mtime_epoch "$candidate") || continue
+		modified=$(_file_mtime_epoch "$candidate") || continue
 		[[ "$now" -ge "$modified" ]] || continue
 		age=$((now - modified))
 		[[ "$age" -ge "$_GH_API_LEGACY_SCRATCH_MIN_AGE_SECONDS" ]] || continue
