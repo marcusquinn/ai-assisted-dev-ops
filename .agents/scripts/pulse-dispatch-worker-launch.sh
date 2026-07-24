@@ -2509,8 +2509,8 @@ DLW_STAGE_CANARY_PREFLIGHT="canary_preflight"
 # Thin orchestrator for worker launch. Delegates each distinct concern
 # (assignment + labels, log files, model resolution, issue lock, repo pull,
 # worktree pre-creation, nohup launch, post-launch bookkeeping) to dedicated
-# `_dlw_*` helpers. Byte-for-byte behaviourally equivalent to the
-# pre-GH#18654 monolithic implementation.
+# `_dlw_*` helpers. GH#28572 keeps deterministic no-op gates under the
+# cross-runner claim and publishes queued ownership only at the runtime boundary.
 #
 # Arguments:
 #   $1  - issue_number
@@ -2594,10 +2594,6 @@ _dispatch_launch_worker() {
 	local launch_prompt=""
 	launch_prompt=$(_dlw_prepare_prompt_for_launch "$issue_number" "$repo_slug" "$issue_title" "$prompt" "$zero_output_comment_metrics")
 
-	# GH#28572: the cross-runner claim is sufficient ownership while expected
-	# pre-launch no-op gates run. Publish queued ownership and lock the issue plus
-	# linked PRs only at the final runtime boundary so those aborts cannot leak the
-	# dispatcher assignment or require avoidable rollback.
 	_ds_t0=$(_ds_now_ns)
 	_dlw_assign_and_label "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || {
 		_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
