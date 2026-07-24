@@ -2568,23 +2568,11 @@ _dispatch_launch_worker() {
 		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "claim_lock_failed" 2 || return $?
 	fi
 
-	_ds_t0=$(_ds_now_ns)
-	_dlw_assign_and_label "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || {
-		_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
-		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "assignment_failed" 2 || return $?
-	}
-	_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
-
 	local zero_output_comment_metrics=""
 	zero_output_comment_metrics=$(_dlw_comment_bloat_metrics "$issue_number" "$repo_slug")
 	if _dlw_hold_repeated_zero_output "$issue_number" "$repo_slug" "$zero_output_comment_metrics"; then
 		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "repeated_zero_output_hold" 2 || return $?
 	fi
-
-	# t1894/t1934: Lock issue and linked PRs during worker execution
-	_ds_t0=$(_ds_now_ns)
-	lock_issue_for_worker "$issue_number" "$repo_slug"
-	_ds_record "$issue_number" "$repo_slug" "lock_issue" "$_ds_t0"
 
 	# t2981: capture pre-creation return code — skip dispatch on failure
 	# instead of falling back to canonical repo on the default branch.
@@ -2600,12 +2588,29 @@ _dispatch_launch_worker() {
 	_dlw_final_worker_spawn_gates "$issue_number" "$repo_slug" "$worker_worktree_branch" "$worker_worktree_reused" \
 		"${repo_path}/TODO.md" "$worker_worktree_path" "$issue_meta_json" "$repo_path" || return $?
 
-	_ds_t0=$(_ds_now_ns)
 	local worker_pid attempt_id="" attempt_started_at=""
 	attempt_id=$(aidevops_generate_execution_id "attempt")
 	attempt_started_at=$(_worker_attempt_start_marker)
 	local launch_prompt=""
 	launch_prompt=$(_dlw_prepare_prompt_for_launch "$issue_number" "$repo_slug" "$issue_title" "$prompt" "$zero_output_comment_metrics")
+
+	# GH#28572: the cross-runner claim is sufficient ownership while expected
+	# pre-launch no-op gates run. Publish queued ownership and lock the issue plus
+	# linked PRs only at the final runtime boundary so those aborts cannot leak the
+	# dispatcher assignment or require avoidable rollback.
+	_ds_t0=$(_ds_now_ns)
+	_dlw_assign_and_label "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || {
+		_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
+		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "assignment_failed" 2 || return $?
+	}
+	_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
+
+	# t1894/t1934: Lock issue and linked PRs during worker execution.
+	_ds_t0=$(_ds_now_ns)
+	lock_issue_for_worker "$issue_number" "$repo_slug"
+	_ds_record "$issue_number" "$repo_slug" "lock_issue" "$_ds_t0"
+
+	_ds_t0=$(_ds_now_ns)
 	if ! worker_pid=$(_dlw_nohup_launch "$issue_number" "$repo_slug" "$dispatch_title" "$issue_title" \
 		"$session_key" "$worker_log" "$launch_prompt" "$repo_path" \
 		"$dispatch_model_tier" "$selected_model" \

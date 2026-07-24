@@ -241,6 +241,7 @@ _dlw_min_worker_floor_active() { return 1; }
 _dlw_bundle_agent_name() { return 1; }
 _worker_attempt_start_marker() { printf '123\n'; return 0; }
 _dlw_exec_detached() {
+	[[ -z "${ORCHESTRATOR_CALLS_FILE:-}" ]] || printf 'spawn\n' >>"$ORCHESTRATOR_CALLS_FILE"
 	echo "SETSID_CALLED" >>"${TMP}/setsid-calls.txt"
 	printf '%s\n' "$@" >"${TMP}/launch-args.txt"
 	echo "12345"
@@ -620,14 +621,62 @@ fi
 STUB_REFRESH_STATE="OPEN"
 
 # =============================================================================
-# Test 8: assignment failure aborts before lock, worktree, and spawn
+# Tests 8-12: queued ownership starts only at the final runtime boundary
 # =============================================================================
-: >"${TMP}/lock-calls.txt"
-: >"${TMP}/precreate-calls.txt"
+ORCHESTRATOR_CALLS_FILE="${TMP}/orchestrator-calls.txt"
+ORCHESTRATOR_WORKTREE="${TMP}/orchestrator-worktree"
+mkdir -p "$ORCHESTRATOR_WORKTREE"
+STUB_HOLD_RC=1
+STUB_PRECREATE_RC=0
+STUB_FINAL_GATES_RC=0
+STUB_ASSIGN_RC=0
+
+_dlw_comment_bloat_metrics() { printf '0\t0\t0\t0\n'; return 0; }
+_dlw_hold_repeated_zero_output() {
+	printf 'hold\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	return "$STUB_HOLD_RC"
+}
+_dlw_precreate_worktree() {
+	printf 'precreate\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	_DLW_WORKTREE_PATH=""
+	_DLW_WORKTREE_BRANCH=""
+	_DLW_WORKTREE_REUSED=0
+	if [[ "$STUB_PRECREATE_RC" -ne 0 ]]; then
+		return "$STUB_PRECREATE_RC"
+	fi
+	_DLW_WORKTREE_PATH="$ORCHESTRATOR_WORKTREE"
+	_DLW_WORKTREE_BRANCH="feature/auto-test"
+	return 0
+}
+_dlw_final_worker_spawn_gates() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	printf 'final-gates\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	if [[ "$STUB_FINAL_GATES_RC" -ne 0 ]]; then
+		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "final_dependency_recheck" "$STUB_FINAL_GATES_RC" || return $?
+	fi
+	return 0
+}
+_dlw_prepare_prompt_for_launch() {
+	printf 'prompt\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	printf 'test prompt'
+	return 0
+}
+_dlw_assign_and_label() {
+	printf 'assign\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	return "$STUB_ASSIGN_RC"
+}
+lock_issue_for_worker() {
+	printf 'lock\n' >>"$ORCHESTRATOR_CALLS_FILE"
+	return 0
+}
+_dlw_post_launch_hooks() { return 0; }
+
+# Assignment failure occurs after deterministic gates and prompt preparation,
+# but still before the issue lock and runtime spawn.
+: >"$ORCHESTRATOR_CALLS_FILE"
 : >"${TMP}/setsid-calls.txt"
-_dlw_assign_and_label() { return 1; }
-lock_issue_for_worker() { printf 'lock\n' >>"${TMP}/lock-calls.txt"; return 0; }
-_dlw_precreate_worktree() { printf 'precreate\n' >>"${TMP}/precreate-calls.txt"; return 0; }
+STUB_ASSIGN_RC=1
 
 assignment_failure_rc=0
 _dispatch_launch_worker "77779" "owner/repo" "test-dispatch" "Test Issue" \
@@ -637,30 +686,35 @@ if [[ "$assignment_failure_rc" -eq 2 ]]; then
 else
 	fail "assignment failure returns explicit no-op rc=2" "got rc=$assignment_failure_rc"
 fi
-if [[ ! -s "${TMP}/lock-calls.txt" && ! -s "${TMP}/precreate-calls.txt" && ! -s "${TMP}/setsid-calls.txt" ]]; then
-	pass "assignment failure prevents lock, worktree creation, and spawn"
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$actual_calls" == "hold precreate final-gates prompt assign " && ! -s "${TMP}/setsid-calls.txt" ]]; then
+	pass "assignment failure occurs at final boundary before lock and spawn"
 else
-	fail "assignment failure prevents lock, worktree creation, and spawn"
+	fail "assignment failure occurs at final boundary before lock and spawn" "calls='$actual_calls'"
 fi
-_dlw_assign_and_label() { return 0; }
-lock_issue_for_worker() { return 0; }
+STUB_ASSIGN_RC=0
 
-# =============================================================================
-# Test 8: _dispatch_launch_worker skips dispatch when pre-creation fails
-# =============================================================================
-_dlw_canary_preflight() { return 0; }
+# A repeated-zero-output hold must stop before worktree, ownership, lock, or spawn.
+: >"$ORCHESTRATOR_CALLS_FILE"
+: >"${TMP}/setsid-calls.txt"
+STUB_HOLD_RC=0
+hold_rc=0
+_dispatch_launch_worker "77780" "owner/repo" "test-dispatch" "Test Issue" \
+	"testuser" "$FAKE_REPO" "test prompt" "session-key-hold" "" "{}" || hold_rc=$?
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$hold_rc" -eq 2 && "$actual_calls" == "hold " && ! -s "${TMP}/setsid-calls.txt" ]]; then
+	pass "repeated-zero-output hold stops before queued ownership"
+else
+	fail "repeated-zero-output hold stops before queued ownership" "rc=$hold_rc calls='$actual_calls'"
+fi
+STUB_HOLD_RC=1
 
-# Override _dlw_precreate_worktree to simulate failure
-_dlw_precreate_worktree() {
-	_DLW_WORKTREE_PATH=""
-	_DLW_WORKTREE_BRANCH=""
-	_DLW_WORKTREE_REUSED=0
-	return 1
-}
-
+# Worktree-precreation failure must retain only the cross-runner claim.
 : >"$LOGFILE"
 : >"${TMP}/setsid-calls.txt"
 : >"$CLAIM_LOCK_CALLS_FILE"
+: >"$ORCHESTRATOR_CALLS_FILE"
+STUB_PRECREATE_RC=1
 # Reset stats file
 printf '{"counters":{}}\n' >"$PULSE_STATS_FILE"
 
@@ -680,6 +734,13 @@ else
 	fail "dispatch skip returns explicit no-op rc=2" "got rc=$launch_rc"
 fi
 
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$actual_calls" == "hold precreate " ]]; then
+	pass "pre-creation failure stops before final gates and queued ownership"
+else
+	fail "pre-creation failure stops before final gates and queued ownership" "calls='$actual_calls'"
+fi
+
 if [[ "${_DLW_LAST_PRE_RUNTIME_FAILURE:-}" == "worktree_precreation_failed" ]] && \
 	grep -q "PRE_RUNTIME_FAILURE issue=77777 repo=owner/repo reason=worktree_precreation_failed" "$LOGFILE" 2>/dev/null; then
 	pass "pre-runtime failure records issue-correlated worktree reason"
@@ -692,9 +753,38 @@ if grep -q '^77777$' "$CLAIM_LOCK_CALLS_FILE" 2>/dev/null; then
 else
 	fail "pre-creation failure happens after claim lock" "claim lock not called"
 fi
+STUB_PRECREATE_RC=0
+
+# Final dependency/orphan gate failures likewise stop before queued ownership.
+: >"$ORCHESTRATOR_CALLS_FILE"
+: >"${TMP}/setsid-calls.txt"
+STUB_FINAL_GATES_RC=2
+final_gate_rc=0
+_dispatch_launch_worker "77781" "owner/repo" "test-dispatch" "Test Issue" \
+	"testuser" "$FAKE_REPO" "test prompt" "session-key-final-gate" "" "{}" || final_gate_rc=$?
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$final_gate_rc" -eq 2 && "$actual_calls" == "hold precreate final-gates " && ! -s "${TMP}/setsid-calls.txt" ]]; then
+	pass "final spawn gate failure stops before queued ownership"
+else
+	fail "final spawn gate failure stops before queued ownership" "rc=$final_gate_rc calls='$actual_calls'"
+fi
+STUB_FINAL_GATES_RC=0
+
+# The successful path publishes ownership and locks only immediately before spawn.
+: >"$ORCHESTRATOR_CALLS_FILE"
+: >"${TMP}/setsid-calls.txt"
+success_rc=0
+_dispatch_launch_worker "77782" "owner/repo" "test-dispatch" "Test Issue" \
+	"testuser" "$FAKE_REPO" "test prompt" "session-key-success" "" "{}" || success_rc=$?
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$success_rc" -eq 0 && "$actual_calls" == "hold precreate final-gates prompt assign lock spawn " && -s "${TMP}/setsid-calls.txt" ]]; then
+	pass "successful launch acquires queued ownership at final boundary"
+else
+	fail "successful launch acquires queued ownership at final boundary" "rc=$success_rc calls='$actual_calls'"
+fi
 
 # =============================================================================
-# Test 9: worktree_precreation_failed_count counter is incremented
+# Worktree-precreation failure observability remains intact
 # =============================================================================
 local_count=""
 if command -v jq &>/dev/null; then
