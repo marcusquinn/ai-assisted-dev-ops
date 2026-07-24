@@ -166,6 +166,7 @@ T_FUTURE_SENTINEL_MS=$((T_FUTURE_SENTINEL * 1000))
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-source"}\n' "$T_2H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_grant_applied","status":"resuming","reason":"scoped_permission_granted","blocking":false,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-envelope"}\n' "$T_5MIN_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_request_non_grantable","status":"blocked","reason":"permission_non_grantable","blocking":true,"source":"test","issue_number":21,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21","request_id":"perm-sensitive"}\n' "$T_5MIN_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"terminal","event":"issue_terminal_reconciled","status":"resolved","reason":"issue_closed_completed","blocking":false,"source":"test","issue_number":21,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21","request_id":"perm-sensitive"}\n' "$((T_5MIN_AGO + 1))"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_awaiting_approval","status":"blocked","reason":"needs_maintainer_permissions","blocking":true,"source":"test","issue_number":22,"repo_slug":"marcusquinn/aidevops","session_key":"issue-22","request_id":"perm-old"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"future","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":23,"repo_slug":"marcusquinn/aidevops","session_key":"issue-23","request_id":"perm-future"}\n' "$T_FUTURE_SENTINEL"
 	printf 'malformed-jsonl-row\n'
@@ -327,12 +328,14 @@ assert_eq "2n: pr check_state = skipped" "skipped" \
 	"$(printf '%s' "$JSON" | jq -r '.worker_solved_issues.check_state')"
 assert_eq "2n2: delivery stages are explicitly skipped" "skipped" \
 	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.check_state')"
-assert_eq "2o: blocker events obey the 24h window" "3" \
+assert_eq "2o: blocker events obey the 24h window" "4" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.event_total')"
-assert_eq "2p: unresolved old blocker remains active until cleared" "2" \
+assert_eq "2p: unresolved old blocker remains active until cleared" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.active_total')"
 assert_eq "2q: grant event clears the earlier request for the same session" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-20")] | length')"
+assert_eq "2q2: terminal issue event clears a stale blocker identity" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-21")] | length')"
 assert_eq "2r: malformed blocker rows fail open" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.reason_counts.permission_non_grantable')"
 
@@ -354,7 +357,7 @@ assert_eq "3d: 1h watchdog_killed = 0" "0" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.watchdog_killed')"
 assert_eq "3e: 1h recent examples exclude future sentinel" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.recent_examples[] | select(.session_key == "issue-9")] | length')"
-assert_eq "3f: 1h blocker event total is bounded" "2" \
+assert_eq "3f: 1h blocker event total is bounded" "3" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.event_total')"
 
 # ---------------------------------------------------------------------------
@@ -423,7 +426,7 @@ assert_contains "5g: human output shows failure groups" "Failure groups" "$OUT"
 assert_contains "5h: human output shows diagnostic focus" "Diagnostic focus" "$OUT"
 assert_contains "5i: human output shows failure families" "Failure families" "$OUT"
 assert_contains "5j: human output shows bounded blocker evidence" "worker-progress-blockers.jsonl" "$OUT"
-assert_contains "5k: human output shows active blocker count" "Currently active:            2" "$OUT"
+assert_contains "5k: human output shows active blocker count" "Currently active:            1" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Section 6: provider/account diagnostics expose redacted capacity slots.

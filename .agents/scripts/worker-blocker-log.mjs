@@ -120,30 +120,77 @@ function trimBeforeAppend(logPath, incomingBytes, maxBytes) {
   renameSync(temporary, logPath);
 }
 
+function parseWorkerBlockerEvents(content) {
+  const events = [];
+  for (const line of content.toString("utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event?.schema === WORKER_BLOCKER_SCHEMA) events.push(event);
+    } catch {
+      // Malformed historical rows are ignored, matching the fail-open readers.
+    }
+  }
+  return events;
+}
+
+function workerBlockerIdentity(event) {
+  const sessionKey = typeof event.session_key === "string" ? event.session_key : "";
+  const requestId = event.request_id === null || event.request_id === undefined
+    ? "unknown"
+    : String(event.request_id);
+  return `${event.repo_slug || ""}|${event.issue_number ?? ""}|${sessionKey || requestId}`;
+}
+
+function latestWorkerBlockerEvents(events) {
+  const latest = new Map();
+  for (const event of events) {
+    const identity = workerBlockerIdentity(event);
+    const timestamp = Number.isFinite(Number(event.ts)) ? Number(event.ts) : 0;
+    const current = latest.get(identity);
+    if (!current || timestamp >= current.timestamp) latest.set(identity, { event, timestamp });
+  }
+  return [...latest.values()].map(({ event }) => event);
+}
+
+function scopedWorkerBlockerEvents(content, repoSlug, issueNumber = null) {
+  return parseWorkerBlockerEvents(content).filter((event) => {
+    const eventRepo = String(event.repo_slug || "").toLowerCase();
+    const eventIssue = cleanIssueNumber(event.issue_number);
+    return eventRepo === repoSlug && eventIssue !== null
+      && (issueNumber === null || eventIssue === issueNumber);
+  });
+}
+
+function appendNormalizedEventsUnlocked(logPath, inputs, options, maxBytes) {
+  const content = inputs
+    .map((input) => `${JSON.stringify(normalizeWorkerBlockerEvent(input, options))}\n`)
+    .join("");
+  const incomingBytes = Buffer.byteLength(content);
+  if (!content || incomingBytes > maxBytes) return false;
+  trimBeforeAppend(logPath, incomingBytes, maxBytes);
+  const descriptor = openSync(logPath, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try {
+    writeFileSync(descriptor, content);
+    fchmodSync(descriptor, 0o600);
+  } finally {
+    closeSync(descriptor);
+  }
+  return true;
+}
+
 export function appendWorkerBlockerEvent(input, options = {}) {
   let lockPath = "";
   let lockToken = "";
   try {
     const logPath = resolveLogPath(options);
     const maxBytes = resolveMaxBytes(options);
-    const line = `${JSON.stringify(normalizeWorkerBlockerEvent(input, options))}\n`;
-    const incomingBytes = Buffer.byteLength(line);
-    if (incomingBytes > maxBytes) return false;
-
     mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
     if (existsSync(logPath) && lstatSync(logPath).isSymbolicLink()) return false;
     lockPath = `${logPath}.lock`;
     lockToken = acquireLock(lockPath);
     if (!lockToken) return false;
-    trimBeforeAppend(logPath, incomingBytes, maxBytes);
-    const descriptor = openSync(logPath, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    try {
-      writeFileSync(descriptor, line);
-      fchmodSync(descriptor, 0o600);
-    } finally {
-      closeSync(descriptor);
-    }
-    return true;
+    return appendNormalizedEventsUnlocked(logPath, [input], options, maxBytes);
   } catch {
     return false;
   } finally {
@@ -152,6 +199,110 @@ export function appendWorkerBlockerEvent(input, options = {}) {
         releaseLock(lockPath, lockToken);
       } catch {
         // Logging remains best effort and must never stop worker execution.
+      }
+    }
+  }
+}
+
+export function resolveWorkerBlockersForIssue(input = {}, options = {}) {
+  let lockPath = "";
+  let lockToken = "";
+  try {
+    const issueNumber = cleanIssueNumber(input.issue_number);
+    const repoSlug = cleanText(input.repo_slug || "", MAX_FIELD_LENGTH, options).toLowerCase();
+    if (issueNumber === null || !repoSlug.includes("/")) return { ok: false, resolvedCount: 0 };
+
+    const logPath = resolveLogPath(options);
+    const maxBytes = resolveMaxBytes(options);
+    mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
+    if (existsSync(logPath) && lstatSync(logPath).isSymbolicLink()) return { ok: false, resolvedCount: 0 };
+    lockPath = `${logPath}.lock`;
+    lockToken = acquireLock(lockPath);
+    if (!lockToken) return { ok: false, resolvedCount: 0 };
+    if (!existsSync(logPath)) return { ok: true, resolvedCount: 0 };
+    if (lstatSync(logPath).isSymbolicLink()) return { ok: false, resolvedCount: 0 };
+
+    const latest = latestWorkerBlockerEvents(
+      scopedWorkerBlockerEvents(readFileSync(logPath), repoSlug, issueNumber),
+    );
+    const active = latest.filter((event) => event.blocking === true);
+    if (active.length === 0) return { ok: true, resolvedCount: 0 };
+
+    const requestedNow = options.now instanceof Date ? options.now : new Date();
+    const latestActiveTimestamp = active.reduce((maximum, event) => {
+      const timestamp = Number.isFinite(Number(event.ts)) ? Number(event.ts) : 0;
+      return Math.max(maximum, timestamp);
+    }, 0);
+    const resolutionEpoch = Math.max(Math.floor(requestedNow.getTime() / 1000), latestActiveTimestamp + 1);
+    const resolutionOptions = { ...options, now: new Date(resolutionEpoch * 1000) };
+    const terminalEvents = active.map((event) => ({
+      event: input.event || "issue_terminal_reconciled",
+      status: input.status || "resolved",
+      reason: input.reason || "issue_terminal",
+      blocking: false,
+      source: input.source || "worker-blocker-log",
+      issue_number: issueNumber,
+      repo_slug: repoSlug,
+      session_key: event.session_key || "",
+      request_id: event.request_id ?? "",
+      permission: event.permission || "",
+      tool: event.tool || "",
+      risk_level: event.risk_level || "",
+      grantable: typeof event.grantable === "boolean" ? event.grantable : null,
+      detail: input.detail || "",
+    }));
+    if (!appendNormalizedEventsUnlocked(logPath, terminalEvents, resolutionOptions, maxBytes)) {
+      return { ok: false, resolvedCount: 0 };
+    }
+    return { ok: true, resolvedCount: terminalEvents.length };
+  } catch {
+    return { ok: false, resolvedCount: 0 };
+  } finally {
+    if (lockToken) {
+      try {
+        releaseLock(lockPath, lockToken);
+      } catch {
+        // Reconciliation remains best effort and must not block closure paths.
+      }
+    }
+  }
+}
+
+export function listActiveWorkerBlockerIssues(input = {}, options = {}) {
+  let lockPath = "";
+  let lockToken = "";
+  try {
+    const repoSlug = cleanText(input.repo_slug || "", MAX_FIELD_LENGTH, options).toLowerCase();
+    const requestedLimit = Number(input.limit ?? 50);
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50;
+    if (!repoSlug.includes("/")) return { ok: false, issues: [] };
+
+    const logPath = resolveLogPath(options);
+    if (!existsSync(logPath)) return { ok: true, issues: [] };
+    if (lstatSync(logPath).isSymbolicLink()) return { ok: false, issues: [] };
+    lockPath = `${logPath}.lock`;
+    lockToken = acquireLock(lockPath);
+    if (!lockToken) return { ok: false, issues: [] };
+    if (!existsSync(logPath) || lstatSync(logPath).isSymbolicLink()) return { ok: false, issues: [] };
+
+    const latest = latestWorkerBlockerEvents(
+      scopedWorkerBlockerEvents(readFileSync(logPath), repoSlug),
+    );
+    const issues = [...new Set(latest
+      .filter((event) => event.blocking === true)
+      .map((event) => cleanIssueNumber(event.issue_number))
+      .filter((issueNumber) => issueNumber !== null))]
+      .sort((left, right) => left - right)
+      .slice(0, limit);
+    return { ok: true, issues };
+  } catch {
+    return { ok: false, issues: [] };
+  } finally {
+    if (lockToken) {
+      try {
+        releaseLock(lockPath, lockToken);
+      } catch {
+        // Read-only candidate discovery remains fail open.
       }
     }
   }
@@ -183,9 +334,19 @@ function parseCliArguments(argv) {
 
 function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== "append") return 2;
   const { event, options } = parseCliArguments(args);
-  return appendWorkerBlockerEvent(event, options) ? 0 : 1;
+  if (command === "append") return appendWorkerBlockerEvent(event, options) ? 0 : 1;
+  if (command === "resolve-issue") {
+    const result = resolveWorkerBlockersForIssue(event, options);
+    if (result.ok) process.stdout.write(`${result.resolvedCount}\n`);
+    return result.ok ? 0 : 1;
+  }
+  if (command === "list-active-issues") {
+    const result = listActiveWorkerBlockerIssues(event, options);
+    if (result.ok && result.issues.length > 0) process.stdout.write(`${result.issues.join("\n")}\n`);
+    return result.ok ? 0 : 1;
+  }
+  return 2;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

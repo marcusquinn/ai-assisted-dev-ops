@@ -19,6 +19,13 @@ SEARCH_AMBIGUOUS=false
 EXPLICIT_LABEL=true
 BODY20="Blocked by #10"
 CLOSED_TITLE="t10: blocker"
+CONTEXT_REPO="owner/repo"
+CONTEXT_STATE="CLOSED"
+CONTEXT_HAS_NEXT_PAGE=false
+CLOSED_LIVE_STATE="CLOSED"
+BLOCKER_RECONCILE_FAIL=false
+BLOCKER_RECONCILE_LOG=$(mktemp)
+trap 'rm -f "$BLOCKER_RECONCILE_LOG"' EXIT
 
 pass() {
 	printf 'PASS: %s\n' "$1"
@@ -56,9 +63,33 @@ _der_fetch_closed_context() {
 	if [[ "$NATIVE_DIRECT" == "true" ]]; then
 		native=$(candidate 20 OPEN "t20: direct" "$BODY20" $'status:blocked\nblocked-by:#10' | jq -sc '.')
 	fi
-	jq -cn --arg title "$CLOSED_TITLE" --argjson native "$native" '
-      {data:{repository:{nameWithOwner:"owner/repo",issue:{number:10,state:"CLOSED",title:$title,
-        blocking:{nodes:$native,pageInfo:{hasNextPage:false}}}}}}'
+	jq -cn --arg title "$CLOSED_TITLE" --arg repo "$CONTEXT_REPO" \
+		--arg state "$CONTEXT_STATE" --argjson native "$native" \
+		--argjson has_next_page "$CONTEXT_HAS_NEXT_PAGE" '
+      {data:{repository:{nameWithOwner:$repo,issue:{number:10,state:$state,title:$title,
+        blocking:{nodes:$native,pageInfo:{hasNextPage:$has_next_page}}}}}}'
+	return 0
+}
+
+_der_reconcile_terminal_worker_blockers() {
+	local repo="$1"
+	local issue_number="$2"
+	printf '%s#%s\n' "$repo" "$issue_number" >>"$BLOCKER_RECONCILE_LOG"
+	if [[ "$BLOCKER_RECONCILE_FAIL" == "true" ]]; then
+		return 1
+	fi
+	return 0
+}
+
+reset_blocker_reconcile_log() {
+	: >"$BLOCKER_RECONCILE_LOG"
+	return 0
+}
+
+blocker_reconcile_count() {
+	local count=0
+	count=$(wc -l <"$BLOCKER_RECONCILE_LOG")
+	printf '%s\n' "${count//[[:space:]]/}"
 	return 0
 }
 
@@ -85,7 +116,7 @@ gh() {
 	case "$command $1" in
 	"issue view")
 		if [[ "$*" == *"--json state"* ]]; then
-			[[ "$*" == "view 11 "* ]] && printf 'OPEN\n' || printf 'CLOSED\n'
+			[[ "$*" == "view 11 "* ]] && printf 'OPEN\n' || printf '%s\n' "$CLOSED_LIVE_STATE"
 		else
 			printf '%s\n' "$REREAD_LABELS"
 		fi
@@ -119,7 +150,34 @@ run_reconcile() {
 	return 0
 }
 
+reset_blocker_reconcile_log
 assert_eq 1 "$(run_reconcile)" "repository with 27000 unrelated issues still reconciles targeted child"
+assert_eq 1 "$(blocker_reconcile_count)" "verified terminal issue reconciles its worker blocker identities"
+assert_eq "owner/repo#10" "$(cat "$BLOCKER_RECONCILE_LOG")" "worker blocker reconciliation preserves exact issue identity"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" CONTEXT_HAS_NEXT_PAGE=true
+reset_blocker_reconcile_log
+assert_eq 0 "$(run_reconcile)" "incomplete closure context blocks dependant mutation"
+assert_eq 0 "$(blocker_reconcile_count)" "incomplete closure context cannot resolve worker blockers"
+CONTEXT_HAS_NEXT_PAGE=false
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" CONTEXT_REPO="other/repo"
+reset_blocker_reconcile_log
+assert_eq 0 "$(run_reconcile)" "closure context repository mismatch blocks dependant mutation"
+assert_eq 0 "$(blocker_reconcile_count)" "repository mismatch cannot resolve worker blockers"
+CONTEXT_REPO="owner/repo"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" CLOSED_LIVE_STATE="OPEN"
+reset_blocker_reconcile_log
+assert_eq 0 "$(run_reconcile)" "non-terminal live state blocks dependant mutation"
+assert_eq 0 "$(blocker_reconcile_count)" "non-terminal live state cannot resolve worker blockers"
+CLOSED_LIVE_STATE="CLOSED"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" BLOCKER_RECONCILE_FAIL=true
+reset_blocker_reconcile_log
+assert_eq 1 "$(run_reconcile)" "blocker logger failure remains fail-open for dependency reconciliation"
+assert_eq 1 "$(blocker_reconcile_count)" "fail-open dependency reconciliation attempts blocker resolution once"
+BLOCKER_RECONCILE_FAIL=false
 
 EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20="Blocked by #10 and #11"
 assert_eq 0 "$(run_reconcile)" "multiple blockers remain blocked when one is open"

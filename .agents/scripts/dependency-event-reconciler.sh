@@ -10,9 +10,31 @@ DER_NOT_READY=2
 
 _der_dir="${BASH_SOURCE[0]%/*}"
 [[ "$_der_dir" == "${BASH_SOURCE[0]}" ]] && _der_dir="."
+: "${DER_WORKER_BLOCKER_LOGGER:=${_der_dir}/worker-blocker-log.mjs}"
 # shellcheck source=./task-identity-lib.sh
 source "${_der_dir}/task-identity-lib.sh"
 unset _der_dir
+
+_der_reconcile_terminal_worker_blockers() {
+	local repo="$1"
+	local issue_number="$2"
+	local logger="${DER_WORKER_BLOCKER_LOGGER}"
+
+	if [[ "$repo" != */* || ! "$issue_number" =~ ^[0-9]+$ || ! -f "$logger" || -L "$logger" ]]; then
+		return 1
+	fi
+	command -v node >/dev/null 2>&1 || return 1
+	if node "$logger" resolve-issue \
+		--repo-slug "$repo" \
+		--issue-number "$issue_number" \
+		--event "issue_terminal_reconciled" \
+		--status "resolved" \
+		--reason "issue_closed_verified" \
+		--source "dependency-event-reconciler" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
 
 _der_dependency_text() {
 	local body="$1"
@@ -344,6 +366,7 @@ reconcile_dependants_after_verified_closure() {
       and .data.repository.issue.blocking.pageInfo.hasNextPage == false
       and all(.data.repository.issue.blocking.nodes[];
           .repository.nameWithOwner == $repo and .labels.pageInfo.hasNextPage == false)' >/dev/null 2>&1 || return 1
+	_der_reconcile_terminal_worker_blockers "$repo" "$closed_number" || true
 	closed_task_id=$(task_identity_parse_title_prefix "$(printf '%s' "$context" | jq -r '.data.repository.issue.title')" || true)
 	candidates=$(_der_collect_candidates "$repo" "$closed_number" "$closed_task_id" "$context") || return 1
 	while IFS= read -r candidate; do

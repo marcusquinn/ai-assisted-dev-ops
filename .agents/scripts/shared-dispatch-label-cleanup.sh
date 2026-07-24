@@ -11,6 +11,10 @@ _SHARED_DISPATCH_LABEL_CLEANUP_LOADED=1
 : "${PULSE_STALE_DISPATCH_LABEL_SWEEP_INTERVAL:=86400}"
 : "${PULSE_STALE_DISPATCH_LABEL_SWEEP_LIMIT_PER_REPO:=50}"
 
+_DISPATCH_LABEL_CLEANUP_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_DISPATCH_LABEL_CLEANUP_DIR" == "${BASH_SOURCE[0]}" ]] && _DISPATCH_LABEL_CLEANUP_DIR="."
+: "${DISPATCH_LABEL_CLEANUP_BLOCKER_LOGGER:=${_DISPATCH_LABEL_CLEANUP_DIR}/worker-blocker-log.mjs}"
+
 _TERMINAL_DISPATCH_LABELS=(
 	"auto-dispatch"
 	"status:available"
@@ -30,12 +34,13 @@ clear_terminal_issue_dispatch_labels() {
 	local repo_slug="$2"
 	local context="${3:-terminal}"
 	local current_labels="${4:-}"
+	local labels_fetched="${5:-false}"
 
 	if [[ ! "$issue_number" =~ ^[0-9]+$ || -z "$repo_slug" ]]; then
 		return 1
 	fi
 
-	if [[ -z "$current_labels" ]] && ! current_labels=$(gh issue view "$issue_number" --repo "$repo_slug" --json labels --jq '.labels[].name'); then
+	if [[ -z "$current_labels" && "$labels_fetched" != "true" ]] && ! current_labels=$(gh issue view "$issue_number" --repo "$repo_slug" --json labels --jq '.labels[].name'); then
 		echo "[pulse-wrapper] dispatch-label-cleanup: failed to fetch labels for ${repo_slug}#${issue_number} (${context})" >>"$LOGFILE"
 		return 1
 	fi
@@ -63,6 +68,64 @@ clear_terminal_issue_dispatch_labels() {
 
 	echo "[pulse-wrapper] dispatch-label-cleanup: failed to strip terminal dispatch labels from ${repo_slug}#${issue_number} (${context}) [exit: ${exit_code}]" >>"$LOGFILE"
 	return "$exit_code"
+}
+
+reconcile_terminal_issue_worker_blockers() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local reason="${3:-issue_terminal}"
+	local source="${4:-dispatch-label-cleanup}"
+	local logger="${DISPATCH_LABEL_CLEANUP_BLOCKER_LOGGER}"
+
+	if [[ ! "$issue_number" =~ ^[0-9]+$ || -z "$repo_slug" || ! -f "$logger" || -L "$logger" ]]; then
+		return 1
+	fi
+	command -v node >/dev/null 2>&1 || return 1
+	if node "$logger" resolve-issue \
+		--issue-number "$issue_number" \
+		--repo-slug "$repo_slug" \
+		--event "issue_terminal_reconciled" \
+		--status "resolved" \
+		--reason "$reason" \
+		--source "$source" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+_dispatch_blocker_active_issue_candidates() {
+	local repo_slug="$1"
+	local limit="$2"
+	local logger="${DISPATCH_LABEL_CLEANUP_BLOCKER_LOGGER}"
+
+	if [[ -z "$repo_slug" || ! "$limit" =~ ^[1-9][0-9]*$ || ! -f "$logger" || -L "$logger" ]]; then
+		return 1
+	fi
+	command -v node >/dev/null 2>&1 || return 1
+	if node "$logger" list-active-issues --repo-slug "$repo_slug" --limit "$limit"; then
+		return 0
+	fi
+	return 1
+}
+
+_dispatch_terminal_issue_snapshot() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local snapshot=""
+	local state=""
+
+	if [[ ! "$issue_number" =~ ^[0-9]+$ || -z "$repo_slug" ]]; then
+		return 1
+	fi
+	snapshot=$(gh issue view "$issue_number" --repo "$repo_slug" \
+		--json state,stateReason,labels \
+		--jq '[.state, (.stateReason // ""), ([.labels[].name] | join("|"))] | @tsv' 2>/dev/null) || return 1
+	IFS=$'\t' read -r state _ <<<"$snapshot"
+	if [[ "$state" != "OPEN" && "$state" != "CLOSED" ]]; then
+		return 1
+	fi
+	printf '%s\n' "$snapshot"
+	return 0
 }
 
 _dispatch_label_sweep_due() {
@@ -117,24 +180,40 @@ sweep_closed_auto_dispatch_issues() {
 	[[ "$limit" =~ ^[0-9]+$ ]] || limit=50
 	[[ "$limit" -gt 0 ]] || limit=50
 
-	local total=0 repo_slug issue_number issue_rows labels_csv
+	local total=0 checked=0 open=0 ambiguous=0 logger_failed=0 label_failed=0
+	local repo_slug issue_number issue_rows snapshot state state_reason labels_csv reason
 	while IFS= read -r repo_slug; do
 		[[ -n "$repo_slug" ]] || continue
-		issue_rows=$(gh issue list --repo "$repo_slug" --state closed \
-			--label "auto-dispatch" --limit "$limit" \
-			--json number,labels --jq '.[] | [.number, ([.labels[].name] | join("|"))] | @tsv' 2>/dev/null) || issue_rows=""
+		issue_rows=$(_dispatch_blocker_active_issue_candidates "$repo_slug" "$limit") || {
+			logger_failed=$((logger_failed + 1))
+			continue
+		}
 		[[ -n "$issue_rows" ]] || continue
-		while IFS=$'\t' read -r issue_number labels_csv; do
+		while IFS= read -r issue_number; do
 			[[ "$issue_number" =~ ^[0-9]+$ ]] || continue
-			local exit_code=0
-			clear_terminal_issue_dispatch_labels "$issue_number" "$repo_slug" "closed-issue-sweep" "${labels_csv//|/$'\n'}" || exit_code=$?
-			if [[ "$exit_code" -eq 0 ]]; then
+			snapshot=$(_dispatch_terminal_issue_snapshot "$issue_number" "$repo_slug") || {
+				ambiguous=$((ambiguous + 1))
+				continue
+			}
+			IFS=$'\t' read -r state state_reason labels_csv <<<"$snapshot"
+			checked=$((checked + 1))
+			if [[ "$state" == "OPEN" ]]; then
+				open=$((open + 1))
+				continue
+			fi
+			reason="issue_closed_completed"
+			[[ "$state_reason" == "NOT_PLANNED" ]] && reason="issue_closed_not_planned"
+			clear_terminal_issue_dispatch_labels "$issue_number" "$repo_slug" \
+				"closed-blocker-sweep" "${labels_csv//|/$'\n'}" "true" || label_failed=$((label_failed + 1))
+			if reconcile_terminal_issue_worker_blockers "$issue_number" "$repo_slug" "$reason" "dispatch-label-cleanup-sweep"; then
 				total=$((total + 1))
+			else
+				logger_failed=$((logger_failed + 1))
 			fi
 		done <<<"$issue_rows"
 	done < <(_dispatch_label_sweep_repos "$repos_json" || true)
 
 	_dispatch_label_sweep_mark_run
-	echo "[pulse-wrapper] dispatch-label-cleanup: closed issue sweep stripped labels from ${total} issue(s)" >>"$LOGFILE"
+	echo "[pulse-wrapper] dispatch-label-cleanup: blocker sweep resolved=${total} checked=${checked} open=${open} ambiguous=${ambiguous} logger_failed=${logger_failed} label_failed=${label_failed}" >>"$LOGFILE"
 	return 0
 }

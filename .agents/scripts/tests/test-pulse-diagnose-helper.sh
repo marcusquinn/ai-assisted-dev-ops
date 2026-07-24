@@ -115,6 +115,7 @@ cat >"$FIXTURE_BLOCKERS" <<'BLOCKERS'
 {"schema":"aidevops-worker-blocker/v1","ts":100,"timestamp":"2026-04-27T09:00:00Z","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"opencode-permission-broker","issue_number":21860,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21860","request_id":"perm-source"}
 {"schema":"aidevops-worker-blocker/v1","ts":110,"timestamp":"2026-04-27T09:01:00Z","event":"permission_grant_applied","status":"resuming","reason":"scoped_permission_granted","blocking":false,"source":"opencode-config-hook","issue_number":21860,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21860","request_id":"perm-envelope"}
 {"schema":"aidevops-worker-blocker/v1","ts":120,"timestamp":"2026-04-27T09:02:00Z","event":"permission_request_non_grantable","status":"blocked","reason":"permission_non_grantable","blocking":true,"source":"opencode-permission-broker","issue_number":21860,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21860-retry","request_id":"perm-sensitive"}
+{"schema":"aidevops-worker-blocker/v1","ts":130,"timestamp":"2026-04-27T09:03:00Z","event":"issue_terminal_reconciled","status":"resolved","reason":"issue_closed_completed","blocking":false,"source":"dependency-event-reconciler","issue_number":21860,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21860-retry","request_id":"perm-sensitive"}
 malformed-row
 BLOCKERS
 
@@ -437,8 +438,9 @@ assert_contains "shows issue title" "worker re-dispatch" "$output"
 assert_contains "shows issue labels" "auto-dispatch" "$output"
 assert_contains "shows lifecycle comments section" "Lifecycle comments:" "$output"
 assert_contains "shows worker progress blockers section" "Worker progress blockers:" "$output"
-assert_contains "shows current blocker count" "Currently active: 1" "$output"
+assert_contains "shows current blocker count" "Currently active: 0" "$output"
 assert_contains "shows non-grantable blocker reason" "permission_non_grantable" "$output"
+assert_contains "shows terminal blocker lifecycle event" "issue_closed_completed" "$output"
 assert_contains "shows WORKER_BRANCH_ORPHAN comment" "WORKER_BRANCH_ORPHAN" "$output"
 assert_contains "shows repeated attempts section" "Repeated attempts / dispatch backoff:" "$output"
 assert_contains "shows metric attempt count" "Attempts in metrics: 3" "$output"
@@ -515,9 +517,9 @@ if command -v jq >/dev/null 2>&1; then
 		printf '  ✗ JSON repeated_attempts dispatch_log_events has ≥1 entry (got %s)\n' "$json_dispatch_events"
 	fi
 	json_blocker_events=$(echo "$output" | jq '.progress_blockers.event_total' 2>/dev/null || echo 0)
-	assert_eq "JSON progress_blockers event_total" "3" "$json_blocker_events"
+	assert_eq "JSON progress_blockers event_total" "4" "$json_blocker_events"
 	json_active_blockers=$(echo "$output" | jq '.progress_blockers.active_total' 2>/dev/null || echo 0)
-	assert_eq "JSON progress_blockers active_total" "1" "$json_active_blockers"
+	assert_eq "JSON progress_blockers active_total" "0" "$json_active_blockers"
 fi
 
 # --- Test 17: issue --verbose shows raw log lines ---

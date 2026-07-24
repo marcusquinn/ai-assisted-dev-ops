@@ -11,7 +11,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   appendWorkerBlockerEvent,
+  listActiveWorkerBlockerIssues,
   normalizeWorkerBlockerEvent,
+  resolveWorkerBlockersForIssue,
   WORKER_BLOCKER_SCHEMA,
 } from "../../../scripts/worker-blocker-log.mjs";
 
@@ -77,6 +79,99 @@ test("append fails open when the parent path is not a directory", () => {
     { event: "permission_blocked" },
     { logPath: join(parentFile, "events.jsonl") },
   ), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("resolve-issue clears every active identity exactly once and preserves correlation", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-worker-blocker-resolve-"));
+  const logPath = join(root, "events.jsonl");
+  const base = {
+    reason: "permission_required",
+    source: "test",
+    issue_number: 123,
+    repo_slug: "Owner/Repo",
+  };
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    event: "permission_request_captured",
+    session_key: "issue-123",
+    request_id: "request-a",
+  }, { logPath, now: new Date("2026-07-24T12:00:00Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    event: "permission_request_non_grantable",
+    session_key: "issue-123-retry",
+    request_id: "request-b",
+  }, { logPath, now: new Date("2026-07-24T12:00:01Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    event: "permission_grant_applied",
+    blocking: false,
+    session_key: "issue-123-cleared",
+    request_id: "request-c",
+  }, { logPath, now: new Date("2026-07-24T12:00:02Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    issue_number: 124,
+    session_key: "issue-124",
+  }, { logPath, now: new Date("2026-07-24T12:00:03Z") }), true);
+
+  const resolution = resolveWorkerBlockersForIssue({
+    issue_number: "123",
+    repo_slug: "OWNER/REPO",
+    event: "issue_terminal_reconciled",
+    reason: "issue_closed_completed",
+    source: "dispatch-label-cleanup",
+  }, { logPath, now: new Date("2026-07-24T12:00:04Z") });
+  assert.deepEqual(resolution, { ok: true, resolvedCount: 2 });
+
+  const events = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const terminal = events.filter((event) => event.event === "issue_terminal_reconciled");
+  assert.deepEqual(new Set(terminal.map((event) => event.session_key)), new Set(["issue-123", "issue-123-retry"]));
+  assert.deepEqual(new Set(terminal.map((event) => event.request_id)), new Set(["request-a", "request-b"]));
+  assert.equal(terminal.every((event) => event.blocking === false), true);
+  assert.deepEqual(listActiveWorkerBlockerIssues({ repo_slug: "owner/repo", limit: 10 }, { logPath }), {
+    ok: true,
+    issues: [124],
+  });
+
+  const lineCount = events.length;
+  assert.deepEqual(resolveWorkerBlockersForIssue({
+    issue_number: 123,
+    repo_slug: "owner/repo",
+  }, { logPath, now: new Date("2026-07-24T12:00:05Z") }), { ok: true, resolvedCount: 0 });
+  assert.equal(readFileSync(logPath, "utf8").trim().split("\n").length, lineCount);
+
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    event: "permission_request_captured",
+    session_key: "issue-123",
+    request_id: "request-reopened",
+  }, { logPath, now: new Date("2026-07-24T12:00:06Z") }), true);
+  assert.deepEqual(listActiveWorkerBlockerIssues({ repo_slug: "owner/repo", limit: 10 }, { logPath }).issues, [123, 124]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("resolve-issue leaves the log unchanged when the terminal batch cannot fit", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-worker-blocker-resolve-fail-"));
+  const logPath = join(root, "events.jsonl");
+  for (const sessionKey of ["issue-321-a", "issue-321-b"]) {
+    assert.equal(appendWorkerBlockerEvent({
+      event: "permission_request_captured",
+      reason: "permission_required",
+      source: "test",
+      issue_number: 321,
+      repo_slug: "owner/repo",
+      session_key: sessionKey,
+      detail: "x".repeat(200),
+    }, { logPath, maxBytes: 4096 }), true);
+  }
+  const before = readFileSync(logPath, "utf8");
+  assert.deepEqual(resolveWorkerBlockersForIssue({
+    issue_number: 321,
+    repo_slug: "owner/repo",
+  }, { logPath, maxBytes: 512 }), { ok: false, resolvedCount: 0 });
+  assert.equal(readFileSync(logPath, "utf8"), before);
   rmSync(root, { recursive: true, force: true });
 });
 
