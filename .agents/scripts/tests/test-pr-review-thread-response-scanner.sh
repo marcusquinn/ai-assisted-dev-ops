@@ -858,6 +858,44 @@ test_dispatch_prompt_requires_machine_readable_completion_state() {
 	return 0
 }
 
+test_dispatch_prompt_requires_contract_v3_praise_only_resolution() {
+	setup_test_env
+	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if grep -q '^worker_contract_version=3$' "$state_file" 2>/dev/null &&
+		grep -Fq 'classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		print_result "dispatch prompt requires contract-v3 praise-only resolution" 0
+	else
+		print_result "dispatch prompt requires contract-v3 praise-only resolution" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_prompt_requires_exactly_one_terminal_call() {
+	setup_test_env
+	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if grep -Fq 'terminal-state command exactly once for this dispatch' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'Never invoke both' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'fatal or otherwise non-recoverable' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq "${stable_scanner} mark-blocked owner/repo 1" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'A successful process exit or prose report is not a terminal state' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		print_result "dispatch prompt requires exactly one terminal-state call" 0
+	else
+		print_result "dispatch prompt requires exactly one terminal-state call" 1 \
+			"prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_prompt_explains_shell_redirection_constraint() {
 	setup_test_env
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
@@ -979,7 +1017,7 @@ test_dispatch_escalates_repeated_same_fingerprint_without_worker_loop() {
 	return 0
 }
 
-test_dispatch_retries_escalated_legacy_worker_contract() {
+test_dispatch_retries_escalated_previous_worker_contract() {
 	setup_test_env
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	local old_epoch=""
@@ -990,6 +1028,7 @@ test_dispatch_retries_escalated_legacy_worker_contract() {
 		printf 'thread_count=1\n'
 		printf 'attempt_count=5\n'
 		printf 'last_head_sha=%s\n' "$TEST_HEAD_OID_1"
+		printf 'worker_contract_version=2\n'
 		printf 'maintainer_attention=true\n'
 		printf 'attention_reason=same_unresolved_thread_fingerprint\n'
 	} >"$state_file"
@@ -997,12 +1036,12 @@ test_dispatch_retries_escalated_legacy_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=2$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=3$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 2 (stored=legacy)' "$LOGFILE" 2>/dev/null; then
-		print_result "dispatch retries escalation created under legacy worker contract" 0
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 3 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
-		print_result "dispatch retries escalation created under legacy worker contract" 1 \
+		print_result "dispatch retries escalation created under previous worker contract" 1 \
 			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
@@ -1566,6 +1605,8 @@ main() {
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
 	test_dispatch_prompt_mentions_graphql_only_thread_operations
 	test_dispatch_prompt_requires_machine_readable_completion_state
+	test_dispatch_prompt_requires_contract_v3_praise_only_resolution
+	test_dispatch_prompt_requires_exactly_one_terminal_call
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract
 	test_dispatch_prompt_marks_dynamic_metadata_untrusted
@@ -1573,7 +1614,7 @@ main() {
 	test_dispatch_is_idempotent_for_same_fingerprint
 	test_dispatch_skips_mixed_fingerprint_during_inflight_window
 	test_dispatch_escalates_repeated_same_fingerprint_without_worker_loop
-	test_dispatch_retries_escalated_legacy_worker_contract
+	test_dispatch_retries_escalated_previous_worker_contract
 	test_new_head_sha_resets_repeated_fingerprint_attempts
 	test_mark_blocked_skips_same_fingerprint_without_retry
 	test_dispatch_retries_stale_branch_validation_blocker_once

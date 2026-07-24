@@ -47,7 +47,7 @@ PRRTS_BOOL_FALSE="false"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="2"
+PRRTS_WORKER_CONTRACT_VERSION="3"
 PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
@@ -1088,8 +1088,12 @@ Thread preview: ${safe_preview}
    Review-thread read/reply/resolve operations are GraphQL-only in this helper;
    use the scanner commands above or 'gh api graphql'. The resolveReviewThread
    mutation has no REST endpoint, so do not try 'gh api repos/...' for resolve.
-4. For each unresolved bot finding:
-   - Verify the premise by reading the cited file and surrounding context.
+4. For each unresolved bot finding, classify it as actionable or praise-only:
+   - Actionable means the thread requests a code, documentation, configuration,
+     or follow-up change. Verify the premise in the cited file and context.
+   - Praise-only means positive feedback or an observation with no requested
+     change or follow-up. Verify no action is requested, do not edit code, and
+     resolve with '${scanner_path} resolve ${repo_slug} <thread_id>'.
    - If it is a correctness/security defect in PR-owned code, hand-apply the fix,
      run the relevant focused verification, commit, and push to the PR branch.
    - If it is additive/non-critical, create or recommend a follow-up task per
@@ -1098,14 +1102,19 @@ Thread preview: ${safe_preview}
      the affected code/path before replying in-thread and resolving.
    - If the premise is false, leave a concise in-thread reply with file:line evidence.
    - Include an idempotency marker such as '<!-- aidevops:review-thread-response:<thread_id> -->' in each in-thread reply.
-5. Stop after one bounded pass and report what changed, what was verified, and
-   which threads still need human attention. Before reporting, record machine-
-   readable scanner state:
-   - If all verified-addressed threads are resolved and no unresolved action is
-     pending, run '${scanner_path} mark-complete ${repo_slug} ${pr_number} analysis_complete'.
-   - If you intentionally leave any thread unresolved because maintainer,
-     infrastructure, decision, or code action is required, write a concise
-     details file and run '${scanner_path} mark-blocked ${repo_slug} ${pr_number} <maintainer|infrastructure|decision|code> <short_reason> <details_file>'.
+5. Stop after one bounded pass and record machine-readable scanner state.
+   Before reporting or exiting, invoke exactly one
+   terminal-state command exactly once for this dispatch. Never invoke both
+   terminal commands and never invoke either command more than once:
+   - If every thread has been classified, verified, and resolved (including
+     praise-only threads), and no unresolved action remains, run
+     '${scanner_path} mark-complete ${repo_slug} ${pr_number} analysis_complete'.
+   - If any thread remains unresolved, or a fatal or otherwise non-recoverable
+     error prevents completing the pass, write a concise details file and run
+     '${scanner_path} mark-blocked ${repo_slug} ${pr_number} <maintainer|infrastructure|decision|code> <short_reason> <details_file>'.
+   A successful process exit or prose report is not a terminal state. After the
+   single terminal call, report what changed, what was verified, and which
+   threads still need human attention.
    The reason and details are sanitized into local state; do not include secrets
    or untrusted review text verbatim.
 
