@@ -489,6 +489,26 @@ JSON
 	return 0
 }
 
+# Operational workflow comments reproduced from GH#28564-#28566. Both are
+# user-authored and exceed the production length threshold, but neither changes
+# issue scope and neither belongs in consolidation decisions or child bodies.
+fixture_operational_review_comments() {
+	cat <<'JSON'
+[
+  {"user": {"login": "maintainer-one", "type": "User"}, "created_at": "2026-07-24T10:00:00Z", "body": "<!-- triage-escalation -->\nAutomated triage escalation metadata and decision context. This operational body is intentionally long enough to clear the consolidation threshold without representing human scope discussion."},
+  {"user": {"login": "maintainer-one", "type": "User"}, "created_at": "2026-07-24T10:05:00Z", "body": "## Review: Recommendation: Approve\n\nStructured maintainer review evidence. This canonical workflow body is intentionally long enough to clear the consolidation threshold without representing human scope discussion."}
+]
+JSON
+	return 0
+}
+
+fixture_one_substantive_comment() {
+	cat <<'JSON'
+{"user": {"login": "alice", "type": "User"}, "created_at": "2026-07-24T11:00:00Z", "body": "A genuine scope-changing comment with enough implementation detail to clear the configured consolidation threshold."}
+JSON
+	return 0
+}
+
 # Fixture: gh api --paginate --jq '.' emits one JSON array per page. The
 # consolidation filter must slurp and combine those pages before counting.
 fixture_paginated_substantive_comments() {
@@ -609,6 +629,77 @@ test_cost_circuit_breaker_comments_are_filtered() {
 	else
 		print_result "cost-circuit-breaker comments are excluded from consolidation body input" 1 \
 			"(substantive_json=$substantive_json)"
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_operational_review_comments_are_filtered() {
+	setup_gh_stub
+	GH_ISSUE_VIEW_LABELS="bug,tier:standard,needs-consolidation"
+	GH_API_COMMENTS_JSON=$(fixture_operational_review_comments)
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	export GH_ISSUE_VIEW_LABELS GH_API_COMMENTS_JSON
+	export GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _issue_needs_consolidation 28564 "marcusquinn/aidevops"; then
+		print_result "operational review comments do not trigger consolidation" 1 \
+			"_issue_needs_consolidation returned 0 for triage escalation and canonical review noise"
+	else
+		print_result "operational review comments do not trigger consolidation" 0
+	fi
+
+	local substantive_json
+	substantive_json=$(_consolidation_substantive_comments 28564 "marcusquinn/aidevops")
+	if [[ "$substantive_json" == "[]" ]]; then
+		print_result "operational review comments are excluded from consolidation body input" 0
+	else
+		print_result "operational review comments are excluded from consolidation body input" 1 \
+			"(substantive_json=$substantive_json)"
+	fi
+
+	if grep -qE 'issue edit .* --remove-label needs-consolidation' "$GH_LOG" 2>/dev/null; then
+		print_result "operational-only comments auto-clear needs-consolidation" 0
+	else
+		print_result "operational-only comments auto-clear needs-consolidation" 1 \
+			"expected remove-label call not found in gh log"
+	fi
+
+	local operational_index
+	for operational_index in 0 1; do
+		GH_ISSUE_VIEW_LABELS="bug,tier:standard"
+		GH_API_COMMENTS_JSON=$(jq -n \
+			--argjson operational "$(fixture_operational_review_comments)" \
+			--argjson substantive "$(fixture_one_substantive_comment)" \
+			--argjson index "$operational_index" \
+			'[$operational[$index], $substantive]')
+		export GH_ISSUE_VIEW_LABELS GH_API_COMMENTS_JSON
+
+		if _issue_needs_consolidation 28565 "marcusquinn/aidevops"; then
+			print_result "operational comment ${operational_index} is excluded individually" 1 \
+				"operational comment plus one genuine comment met threshold=2"
+		else
+			print_result "operational comment ${operational_index} is excluded individually" 0
+		fi
+
+		substantive_json=$(_consolidation_substantive_comments 28565 "marcusquinn/aidevops")
+		if [[ "$(printf '%s' "$substantive_json" | jq -r 'length')" -eq 1 ]]; then
+			print_result "operational comment ${operational_index} is excluded individually from body input" 0
+		else
+			print_result "operational comment ${operational_index} is excluded individually from body input" 1 \
+				"(substantive_json=$substantive_json)"
+		fi
+	done
+
+	GH_API_COMMENTS_JSON=$(fixture_two_substantive_comments)
+	export GH_API_COMMENTS_JSON
+	if _issue_needs_consolidation 28566 "marcusquinn/aidevops"; then
+		print_result "two genuine human comments still trigger consolidation" 0
+	else
+		print_result "two genuine human comments still trigger consolidation" 1 \
+			"_issue_needs_consolidation returned 1 for two substantive comments"
 	fi
 
 	teardown_gh_stub
@@ -919,6 +1010,7 @@ main() {
 	test_worker_superseded_comments_are_filtered
 	test_stale_recovery_tick_comments_are_filtered
 	test_cost_circuit_breaker_comments_are_filtered
+	test_operational_review_comments_are_filtered
 	test_recently_closed_child_blocks_redispatch_within_grace
 	test_grace_zero_restores_open_only_semantics
 	test_backfill_clears_stale_label_on_consolidated_parent
