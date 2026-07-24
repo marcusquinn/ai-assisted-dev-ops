@@ -11,11 +11,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   appendWorkerBlockerEvent,
-  listActiveWorkerBlockerIssues,
   normalizeWorkerBlockerEvent,
-  resolveWorkerBlockersForIssue,
   WORKER_BLOCKER_SCHEMA,
 } from "../../../scripts/worker-blocker-log.mjs";
+import {
+  listActiveWorkerBlockerIssues,
+  resolveWorkerBlockersForIssue,
+} from "../../../scripts/worker-blocker-reconcile.mjs";
 
 const LOGGER_PATH = fileURLToPath(new URL("../../../scripts/worker-blocker-log.mjs", import.meta.url));
 
