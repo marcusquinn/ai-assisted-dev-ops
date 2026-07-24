@@ -31,21 +31,39 @@
 
 set -euo pipefail
 
-# Use pure-bash parameter expansion instead of dirname (external binary) to avoid
-# "dirname: command not found" in headless/MCP environments where PATH is restricted.
-# Preserve caller-provided shims before adding fallback system tool locations.
-export PATH="${PATH:+${PATH}:}/usr/local/bin:/usr/bin:/bin"
+# Use helper-private names so sourced modules cannot clobber directory resolution.
+# Pure-bash parameter expansion avoids dirname in restricted headless PATHs.
+_issue_sync_script_path="${BASH_SOURCE[0]%/*}"
+[[ "$_issue_sync_script_path" == "${BASH_SOURCE[0]}" ]] && _issue_sync_script_path="."
+_issue_sync_script_dir="$(cd "$_issue_sync_script_path" && pwd)" || exit
+[[ -n "$_issue_sync_script_dir" ]] || exit 1
+unset _issue_sync_script_path
 
-_script_path="${BASH_SOURCE[0]%/*}"
-[[ "$_script_path" == "${BASH_SOURCE[0]}" ]] && _script_path="."
-SCRIPT_DIR="$(cd "$_script_path" && pwd)" || exit
-unset _script_path
-# Keep the framework gh shim ahead of native gh so issue-sync transport attempts
-# retain policy enforcement and exact telemetry when called from Pulse or directly.
-export PATH="${SCRIPT_DIR}:${PATH}"
-source "${SCRIPT_DIR}/shared-constants.sh"
+# Preserve caller-provided shims before fallback system tool locations, while
+# removing empty and stale framework entries. This keeps the framework gh shim
+# exactly first and makes repeated sourcing idempotent on Bash 3.2 and newer.
+_issue_sync_path_input="${PATH:+${PATH}:}/usr/local/bin:/usr/bin:/bin"
+_issue_sync_path_tail=""
+while [[ -n "$_issue_sync_path_input" ]]; do
+	_issue_sync_path_component="${_issue_sync_path_input%%:*}"
+	if [[ "$_issue_sync_path_input" == *:* ]]; then
+		_issue_sync_path_input="${_issue_sync_path_input#*:}"
+	else
+		_issue_sync_path_input=""
+	fi
+	if [[ -n "$_issue_sync_path_component" && "$_issue_sync_path_component" != "$_issue_sync_script_dir" ]]; then
+		_issue_sync_path_tail="${_issue_sync_path_tail:+${_issue_sync_path_tail}:}${_issue_sync_path_component}"
+	fi
+done
+export PATH="${_issue_sync_script_dir}${_issue_sync_path_tail:+:${_issue_sync_path_tail}}"
+unset _issue_sync_path_input _issue_sync_path_tail _issue_sync_path_component
+
+# Keep SCRIPT_DIR for the public source contract, but use the private directory
+# for sibling loading so later modules cannot affect this helper's source chain.
+SCRIPT_DIR="$_issue_sync_script_dir"
+source "${_issue_sync_script_dir}/shared-constants.sh"
 # shellcheck source=issue-sync-lib.sh
-source "${SCRIPT_DIR}/issue-sync-lib.sh"
+source "${_issue_sync_script_dir}/issue-sync-lib.sh"
 
 # =============================================================================
 # Sub-library sourcing
@@ -53,33 +71,33 @@ source "${SCRIPT_DIR}/issue-sync-lib.sh"
 
 # shellcheck source=./issue-sync-helper-labels.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-labels.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-labels.sh"
 
 # shellcheck source=./issue-sync-helper-close.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-close.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-close.sh"
 
 # shellcheck source=./issue-sync-helper-push.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-push.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-push.sh"
 
 # shellcheck source=./issue-sync-helper-enrich.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-enrich.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-enrich.sh"
 
 # shellcheck source=./issue-sync-helper-body.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-body.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-body.sh"
 
 # shellcheck source=./issue-sync-helper-commands.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
-source "${SCRIPT_DIR}/issue-sync-helper-commands.sh"
+source "${_issue_sync_script_dir}/issue-sync-helper-commands.sh"
 
 # =============================================================================
 # Relationships & Backfill (extracted to issue-sync-relationships.sh — GH#19502)
 # =============================================================================
 # shellcheck source=issue-sync-relationships.sh
-source "${SCRIPT_DIR}/issue-sync-relationships.sh"
+source "${_issue_sync_script_dir}/issue-sync-relationships.sh"
 
 # =============================================================================
 # Configuration & Utility

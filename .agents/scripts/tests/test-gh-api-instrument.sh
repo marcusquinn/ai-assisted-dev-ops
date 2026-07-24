@@ -50,6 +50,18 @@ assert_eq() {
 	return 1
 }
 
+file_mode() {
+	local path="$1"
+	local platform=""
+	platform=$(uname -s) || return 1
+	case "$platform" in
+	Linux*) stat -c '%a' "$path" || return 1 ;;
+	Darwin* | FreeBSD*) stat -f '%Lp' "$path" || return 1 ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
 assert_file_exists() {
 	local label="$1"
 	local path="$2"
@@ -100,7 +112,7 @@ assert_eq "log has 6 lines" "6" "$line_count"
 gh_aggregate_calls
 
 assert_file_exists "report file created" "$AIDEVOPS_GH_API_REPORT"
-report_mode=$(stat -f '%Lp' "$AIDEVOPS_GH_API_REPORT" 2>/dev/null || stat -c '%a' "$AIDEVOPS_GH_API_REPORT" 2>/dev/null)
+report_mode=$(file_mode "$AIDEVOPS_GH_API_REPORT")
 assert_eq "atomic report is private" "600" "$report_mode"
 
 if ! jq -e '.' "$AIDEVOPS_GH_API_REPORT" >/dev/null 2>&1; then
@@ -334,10 +346,28 @@ cat >"$issue_sync_probe" <<'EOF_ISSUE_SYNC_PROBE'
 set -euo pipefail
 # shellcheck source=../issue-sync-helper.sh
 source "$ISSUE_SYNC_HELPER" >/dev/null
-printf '%s\n' "${PATH%%:*}"
+source "$ISSUE_SYNC_HELPER" >/dev/null
+printf '%s\n' "$PATH"
 EOF_ISSUE_SYNC_PROBE
-issue_sync_path_head=$(ISSUE_SYNC_HELPER="${PARENT_DIR}/issue-sync-helper.sh" PATH="$FAKE_BIN:$saved_path" "$BASH" "$issue_sync_probe")
+issue_sync_path=$(ISSUE_SYNC_HELPER="${PARENT_DIR}/issue-sync-helper.sh" PATH="$FAKE_BIN:$saved_path" "$BASH" "$issue_sync_probe")
+issue_sync_path_head="${issue_sync_path%%:*}"
 assert_eq "issue sync preserves framework gh shim precedence" "$issue_sync_scripts_dir" "$issue_sync_path_head"
+case "$issue_sync_path" in
+:* | *::* | *:) issue_sync_empty_component="yes" ;;
+*) issue_sync_empty_component="no" ;;
+esac
+assert_eq "issue sync removes empty PATH components" "no" "$issue_sync_empty_component"
+case ":$issue_sync_path:" in
+*":$FAKE_BIN:"*) issue_sync_caller_shim="present" ;;
+*) issue_sync_caller_shim="missing" ;;
+esac
+assert_eq "issue sync preserves caller-provided shim directories" "present" "$issue_sync_caller_shim"
+issue_sync_path_tail="${issue_sync_path#*:}"
+case ":$issue_sync_path_tail:" in
+*":$issue_sync_scripts_dir:"*) issue_sync_duplicate_framework_dir="yes" ;;
+*) issue_sync_duplicate_framework_dir="no" ;;
+esac
+assert_eq "re-sourcing issue sync does not duplicate its scripts directory" "no" "$issue_sync_duplicate_framework_dir"
 
 # Restore per-test overrides for summary diagnostics if future tests append.
 export AIDEVOPS_GH_API_LOG="$TMPDIR/gh-api-calls.log"
@@ -431,7 +461,7 @@ report_digest=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.arg
 evidence_digest=$(jq -r '.transport_sha256' "$AIDEVOPS_GH_API_EVIDENCE")
 assert_eq "evidence sidecar is bound to report bytes" "$report_digest" "$evidence_digest"
 assert_eq "incomplete production evidence fails closed" "false" "$(jq -r '.complete' "$AIDEVOPS_GH_API_EVIDENCE")"
-evidence_mode=$(stat -f '%Lp' "$AIDEVOPS_GH_API_EVIDENCE" 2>/dev/null || stat -c '%a' "$AIDEVOPS_GH_API_EVIDENCE" 2>/dev/null)
+evidence_mode=$(file_mode "$AIDEVOPS_GH_API_EVIDENCE")
 assert_eq "evidence sidecar is private" "600" "$evidence_mode"
 rm -f "$AIDEVOPS_GH_API_LOG"
 gh_record_call rest invalid-window-caller
@@ -934,7 +964,7 @@ source "${PARENT_DIR}/gh-api-instrument.sh"
 _gh_prepare_scratch_dir "$GH_API_REPORT"
 scratch_dir="$scratch_fixture/.gh-api-instrument-scratch"
 assert_eq "managed scratch is target-adjacent for atomic rename" "$scratch_dir" "$_GH_API_SCRATCH_DIR"
-scratch_mode=$(stat -f '%Lp' "$scratch_dir" 2>/dev/null || stat -c '%a' "$scratch_dir" 2>/dev/null)
+scratch_mode=$(file_mode "$scratch_dir")
 assert_eq "managed scratch directory is private" "700" "$scratch_mode"
 
 dead_pid=999999999
@@ -1026,7 +1056,7 @@ aggregate_orphans=(
 shopt -u nullglob
 assert_eq "aggregate SIGKILL leaves owner-tagged report and source scratch" "2" "${#aggregate_orphans[@]}"
 for aggregate_orphan in "${aggregate_orphans[@]}"; do
-	aggregate_orphan_mode=$(stat -f '%Lp' "$aggregate_orphan" 2>/dev/null || stat -c '%a' "$aggregate_orphan" 2>/dev/null)
+	aggregate_orphan_mode=$(file_mode "$aggregate_orphan")
 	assert_eq "aggregate scratch remains private after SIGKILL" "600" "$aggregate_orphan_mode"
 done
 _gh_cleanup_managed_scratch "$scratch_dir"
@@ -1067,7 +1097,7 @@ shopt -s nullglob
 trim_orphans=("$scratch_dir/trim.${trim_kill_pid}."*)
 shopt -u nullglob
 assert_eq "trim SIGKILL leaves one owner-tagged scratch file" "1" "${#trim_orphans[@]}"
-trim_orphan_mode=$(stat -f '%Lp' "${trim_orphans[0]}" 2>/dev/null || stat -c '%a' "${trim_orphans[0]}" 2>/dev/null)
+trim_orphan_mode=$(file_mode "${trim_orphans[0]}")
 assert_eq "trim scratch remains private after SIGKILL" "600" "$trim_orphan_mode"
 _gh_cleanup_managed_scratch "$scratch_dir"
 shopt -s nullglob
@@ -1076,7 +1106,7 @@ shopt -u nullglob
 assert_eq "next cleanup reaps trim SIGKILL scratch" "0" "${#trim_orphans[@]}"
 gh_trim_log
 assert_eq "trim SIGKILL lock is recoverable" "no" "$([[ -d "${GH_API_LOG}.lock" ]] && printf 'yes' || printf 'no')"
-trimmed_log_mode=$(stat -f '%Lp' "$GH_API_LOG" 2>/dev/null || stat -c '%a' "$GH_API_LOG" 2>/dev/null)
+trimmed_log_mode=$(file_mode "$GH_API_LOG")
 assert_eq "trim replacement keeps the durable log private" "600" "$trimmed_log_mode"
 
 # Legacy migration is age-gated and accepts only the exact historical six-
