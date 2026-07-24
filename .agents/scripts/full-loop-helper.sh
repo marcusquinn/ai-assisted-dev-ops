@@ -86,6 +86,7 @@ cmd_commit_and_pr() {
 	# Validate inputs and detect repo/branch (sets $repo and $branch in this scope)
 	local repo="" branch=""
 	_validate_commit_and_pr_inputs "$issue_number" "$commit_message" || return 1
+	_validate_explicit_pr_metadata "$runtime_risk" "$testing_level" || return 1
 
 	_stage_and_commit "$commit_message" || return 1
 	# GH#27902: WIP commits are durable checkpoints, not publishable history.

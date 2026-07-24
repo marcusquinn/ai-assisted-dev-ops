@@ -26,6 +26,36 @@ _normalize_runtime_risk() {
 	return 0
 }
 
+# Normalize an explicit testing-evidence level to the spelling used in PR bodies.
+_normalize_runtime_testing_level() {
+	local requested_testing_level="${1:-}"
+	local normalized=""
+	normalized=$(printf '%s' "$requested_testing_level" | tr '[:upper:]' '[:lower:]')
+	case "$normalized" in
+	"$_full_loop_runtime_verified_marker" | self-assessed) printf '%s\n' "$normalized" ;;
+	*)
+		print_error "Invalid --testing-level '${requested_testing_level}'. Expected ${_full_loop_runtime_verified_marker} or self-assessed."
+		return 1
+		;;
+	esac
+	return 0
+}
+
+# Reject invalid caller-supplied metadata before commit-and-pr mutates Git state.
+# Empty values remain deferred because their defaults require the final diff.
+_validate_explicit_pr_metadata() {
+	local requested_risk="${1:-}"
+	local requested_testing_level="${2:-}"
+
+	if [[ -n "$requested_risk" ]]; then
+		_normalize_runtime_risk "$requested_risk" >/dev/null || return 1
+	fi
+	if [[ -n "$requested_testing_level" ]]; then
+		_normalize_runtime_testing_level "$requested_testing_level" >/dev/null || return 1
+	fi
+	return 0
+}
+
 _runtime_risk_rank() {
 	local runtime_risk="$1"
 	case "$runtime_risk" in
@@ -280,20 +310,12 @@ _resolve_runtime_testing_level() {
 	local testing_level=""
 
 	if [[ -n "$requested_testing_level" ]]; then
-		testing_level=$(printf '%s' "$requested_testing_level" | tr '[:upper:]' '[:lower:]')
+		testing_level=$(_normalize_runtime_testing_level "$requested_testing_level") || return 1
 	elif _summary_declares_runtime_verified "$summary_testing"; then
 		testing_level="$_full_loop_runtime_verified_marker"
 	else
 		testing_level="self-assessed"
 	fi
-
-	case "$testing_level" in
-	"$_full_loop_runtime_verified_marker" | self-assessed) ;;
-	*)
-		print_error "Invalid --testing-level '${requested_testing_level}'. Expected ${_full_loop_runtime_verified_marker} or self-assessed."
-		return 1
-		;;
-	esac
 
 	if [[ "$testing_level" == "$_full_loop_runtime_verified_marker" ]] && ! _runtime_evidence_is_substantive "$summary_testing"; then
 		print_error "${_full_loop_runtime_verified_marker} requires non-empty testing evidence; PR body generation blocked."

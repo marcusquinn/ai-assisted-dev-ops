@@ -118,11 +118,11 @@ mkdir -p "${COMMENT_REPO}/src"
 /usr/bin/git -C "$COMMENT_REPO" config user.email "runtime-risk@example.invalid"
 printf '#!/usr/bin/env bash\nprintf "ok\\n"\n# Old credential comment.\n' >"${COMMENT_REPO}/src/app.sh"
 /usr/bin/git -C "$COMMENT_REPO" add src/app.sh
-/usr/bin/git -C "$COMMENT_REPO" commit -qm "fixture: add runtime file"
+/usr/bin/git -C "$COMMENT_REPO" -c commit.gpgSign=false commit -qm "fixture: add runtime file"
 comment_base=$(/usr/bin/git -C "$COMMENT_REPO" rev-parse HEAD)
 printf '#!/usr/bin/env bash\nprintf "ok\\n"\n# New credential comment.\n' >"${COMMENT_REPO}/src/app.sh"
 /usr/bin/git -C "$COMMENT_REPO" add src/app.sh
-/usr/bin/git -C "$COMMENT_REPO" commit -qm "docs: update source comment"
+/usr/bin/git -C "$COMMENT_REPO" -c commit.gpgSign=false commit -qm "docs: update source comment"
 comment_body=$(cd "$COMMENT_REPO" && _build_pr_body \
 	"7" \
 	"Update a source comment" \
@@ -150,6 +150,46 @@ extra_labels=()
 _parse_commit_and_pr_args --issue 4 --message "test" --risk-level High --testing-level runtime-verified
 assert_contains "risk level flag is accepted" "$runtime_risk" "High"
 assert_contains "testing level flag is accepted" "$testing_level" "runtime-verified"
+
+ORDERING_BIN="${TEST_ROOT}/ordering-bin"
+ORDERING_TRACE="${TEST_ROOT}/ordering-trace"
+mkdir -p "$ORDERING_BIN"
+cat >"${ORDERING_BIN}/git" <<'EOF'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >>"$ORDERING_TRACE"
+if [[ "$1" == "branch" && "$2" == "--show-current" ]]; then
+	printf 'feature/metadata-ordering\n'
+fi
+exit 0
+EOF
+cat >"${ORDERING_BIN}/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"$ORDERING_TRACE"
+if [[ "$1" == "repo" && "$2" == "view" ]]; then
+	printf 'example/ordering\n'
+fi
+exit 0
+EOF
+chmod +x "${ORDERING_BIN}/git" "${ORDERING_BIN}/gh"
+
+for invalid_flag in "--testing-level invalid" "--risk-level invalid"; do
+	invalid_option="${invalid_flag%% *}"
+	invalid_value="${invalid_flag#* }"
+	: >"$ORDERING_TRACE"
+	if PATH="${ORDERING_BIN}:$PATH" ORDERING_TRACE="$ORDERING_TRACE" \
+		"${SCRIPT_DIR_TEST}/full-loop-helper.sh" commit-and-pr --issue 4 --message "fix: validate metadata" "$invalid_option" "$invalid_value" >/dev/null 2>&1; then
+		printf 'FAIL invalid metadata is rejected before mutation: %s\n' "$invalid_flag"
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	else
+		if grep -Eq '^git (add|commit|rebase|push)|^gh (pr|api .*POST)' "$ORDERING_TRACE"; then
+			printf 'FAIL invalid metadata avoids Git and GitHub mutations: %s\n' "$invalid_flag"
+			TESTS_FAILED=$((TESTS_FAILED + 1))
+		else
+			printf 'PASS invalid metadata avoids Git and GitHub mutations: %s\n' "$invalid_flag"
+		fi
+	fi
+	TESTS_RUN=$((TESTS_RUN + 1))
+done
 
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1
