@@ -59,6 +59,20 @@ mkdir -p "${BASE}/_knowledge/sources"
 printf 'legacy-data\n' >"${BASE}/_knowledge/sources/existing.txt"
 assert_success "provision creates catalog" bash "$HELPER" provision --base "$BASE"
 
+MISSING_CATALOG_BASE="${TMP_DIR}/missing-catalog"
+mkdir -p "${MISSING_CATALOG_BASE}/_config"
+chmod 0700 "${MISSING_CATALOG_BASE}" "${MISSING_CATALOG_BASE}/_config"
+cp "${BASE}/_config/principal.json" "${MISSING_CATALOG_BASE}/_config/principal.json"
+assert_denied "resolve rejects a missing catalog" "invalid or unavailable corpus catalog" \
+	bash "$HELPER" resolve --base "$MISSING_CATALOG_BASE"
+assert_denied "list rejects a missing catalog" "invalid or unavailable corpus catalog" \
+	bash "$HELPER" list --base "$MISSING_CATALOG_BASE"
+if [[ ! -e "${MISSING_CATALOG_BASE}/catalog.db" ]]; then
+	pass "read commands do not create a missing catalog"
+else
+	fail "read commands do not create a missing catalog" "catalog.db was created"
+fi
+
 resolved=$(bash "$HELPER" resolve --base "$BASE" --alias personal:default --capability knowledge.read)
 if [[ "$resolved" == "${BASE}/_knowledge" && -f "${resolved}/sources/existing.txt" ]]; then
 	pass "legacy personal alias resolves without moving files"

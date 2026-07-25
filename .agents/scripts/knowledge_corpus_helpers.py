@@ -166,14 +166,25 @@ def validate_catalog_file(path: Path) -> None:
     validate_private_file(path, "catalog")
 
 
-def connect_catalog(path: Path) -> sqlite3.Connection:
+def connect_catalog(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
     """Open a catalog with the required durability and concurrency settings."""
+    if read_only and not path.exists():
+        raise CorpusError("invalid or unavailable corpus catalog")
     validate_catalog_file(path)
-    connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
-    path.chmod(0o600)
+    if read_only:
+        uri = f"{path.resolve(strict=True).as_uri()}?mode=ro"
+        connection = sqlite3.connect(
+            uri, timeout=5.0, isolation_level=None, uri=True
+        )
+    else:
+        connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
+        path.chmod(0o600)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 5000")
-    connection.execute("PRAGMA journal_mode = WAL")
+    if read_only:
+        connection.execute("PRAGMA query_only = ON")
+    else:
+        connection.execute("PRAGMA journal_mode = WAL")
     return connection
 
 
@@ -257,7 +268,7 @@ def authorized_rows(base: Path, capability: str, alias: str | None = None) -> li
     if capability not in CAPABILITIES:
         raise CorpusError(f"unsupported capability: {capability}")
     principal_id = load_principal(base / "_config" / "principal.json")
-    connection = connect_catalog(base / "catalog.db")
+    connection = connect_catalog(base / "catalog.db", read_only=True)
     connection.row_factory = sqlite3.Row
     query = """
         SELECT a.alias, c.corpus_id, c.workspace_id, c.location_ref, g.capability
