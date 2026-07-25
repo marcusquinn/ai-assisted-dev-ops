@@ -94,7 +94,9 @@ local projection without changing repo-mode knowledge:
 authenticated catalog before it provisions schema v1, imports a provider-neutral
 archive, reports per-stream coverage, or rebuilds the FTS5 projection. Mutating
 operations require `knowledge.write`; coverage requires `knowledge.read`.
-Callers cannot provide a physical corpus root. Archives
+Coverage opens only an existing, checkpointed database through SQLite immutable
+read-only mode; it never creates or migrates schema and rejects mutable journal
+sidecars. Callers cannot provide a physical corpus root. Archives
 contain `provider`, opaque `connection_id`, immutable remote account ID,
 `exported_at`, and optional `accounts`, `objects`, `activities`, `media`, and
 `coverage` arrays. Provider-only fields remain in `provider_json`; credential
