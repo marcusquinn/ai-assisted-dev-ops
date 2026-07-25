@@ -46,7 +46,7 @@ Use scoped setup when the change is isolated and a full deploy would add avoidab
 | OpenCode CLI/shim/setup logic | `./setup.sh --stage opencode` or `aidevops setup --scope opencode` |
 | Hook change | `./setup.sh --stage hooks` or `aidevops setup --scope hooks` |
 | Tabby profile change | `./setup.sh --stage tabby` or `aidevops setup --scope tabby` |
-| launchd/routine/pulse plist change | `./setup.sh --stage pulse` or `aidevops setup --scope pulse` |
+| Pulse or merge-scheduler plist change | `./setup.sh --stage pulse` or `aidevops setup --scope pulse` |
 | AI session after release/update | `./setup.sh --stage ai-session` or `aidevops setup --scope ai-session` |
 
 `./setup.sh --stage` also accepts the canonical stage names: `setup_opencode_cli`,
@@ -54,7 +54,8 @@ Use scoped setup when the change is isolated and a full deploy would add avoidab
 `setup_supervisor_pulse`. The `ai-session` scope compares `~/.aidevops/.deployed-sha`
 with the current checkout, runs the changed deploy stages, verifies `VERSION` and
 `.deployed-sha`, and then runs full non-interactive setup only when incremental setup
-is unsafe or fails. Unknown stages fail non-zero and print the valid list.
+is unsafe or fails. The Pulse scope refreshes both the main supervisor and the
+dedicated merge scheduler. Unknown stages fail non-zero and print the valid list.
 
 ## Manual Configuration
 

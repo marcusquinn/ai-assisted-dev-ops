@@ -1460,6 +1460,7 @@ _setup_run_scoped_stage() {
 		;;
 	"$SETUP_STAGE_PULSE")
 		_time_step "$SETUP_STAGE_PULSE" setup_supervisor_pulse "$os"
+		_time_step "setup_pulse_merge_routine" setup_pulse_merge_routine
 		;;
 	"$SETUP_STAGE_GUI_DESKTOP")
 		_time_step "$SETUP_STAGE_GUI_DESKTOP" setup_gui_desktop_app
