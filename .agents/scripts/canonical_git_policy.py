@@ -14,32 +14,34 @@ from canonical_git_repository import is_canonical as _is_canonical
 from canonical_git_repository import real_git
 
 BLOCK_EXIT = 42
-READ_ONLY = {
-    "status",
-    "diff",
-    "diff-files",
-    "log",
-    "show",
-    "rev-parse",
-    "show-ref",
-    "for-each-ref",
-    "cat-file",
-    "check-ref-format",
-    "ls-files",
-    "ls-remote",
-    "ls-tree",
-    "rev-list",
-    "merge-base",
-    "describe",
-    "grep",
-    "blame",
-    "shortlog",
-    "whatchanged",
-    "name-rev",
-    "count-objects",
-    "version",
-    "help",
-}
+READ_ONLY = frozenset(
+    (
+        "status",
+        "diff",
+        "diff-files",
+        "log",
+        "show",
+        "rev-parse",
+        "show-ref",
+        "for-each-ref",
+        "cat-file",
+        "check-ref-format",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "rev-list",
+        "merge-base",
+        "describe",
+        "grep",
+        "blame",
+        "shortlog",
+        "whatchanged",
+        "name-rev",
+        "count-objects",
+        "version",
+        "help",
+    )
+)
 
 
 def _is_allowed_canonical(subcommand: str, args: list[str]) -> bool:

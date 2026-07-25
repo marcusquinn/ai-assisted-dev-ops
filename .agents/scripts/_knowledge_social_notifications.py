@@ -169,7 +169,6 @@ def set_notification_status(
     principal_id: str,
     notification_id: str,
     status: str,
-    *,
     updated_at: int,
 ) -> dict[str, Any]:
     """Apply one explicit, authorized notification workflow transition."""

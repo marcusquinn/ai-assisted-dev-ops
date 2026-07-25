@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Approval-bound outbound social operation state and receipts."""
+"""Approval-bound outbound social operation intent and authorization state."""
 
 from __future__ import annotations
 
@@ -29,6 +29,23 @@ FAILURE_CLASSES = (
 MAX_PAYLOAD_BYTES = 16 * 1024
 MAX_SELECTOR_BYTES = 256
 MAX_APPROVAL_SECONDS = 31 * 24 * 60 * 60
+
+
+@dataclass(frozen=True)
+class OperationIntent:
+    """Private immutable values from which one outbound intent is created."""
+
+    connection_id: str
+    remote_account_id: str
+    action: str
+    target_remote_id: str | None
+    payload: str | None
+    app_profile: str | None
+    username: str | None
+    scheduled_at: int
+    created_by: str
+    operation_id: str | None = None
+    created_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,13 +79,11 @@ def _digest(value: str) -> str:
 def _optional_selector(value: str | None, field: str) -> str | None:
     if value is None:
         return None
-    if (
-        not value
-        or value.startswith("-")
-        or "\x00" in value
-        or "\n" in value
-        or "\r" in value
-    ):
+    if not value:
+        raise SocialStoreError(f"{field} must be one non-empty line")
+    if value.startswith("-"):
+        raise SocialStoreError(f"{field} must not be option-shaped")
+    if any(marker in value for marker in ("\x00", "\n", "\r")):
         raise SocialStoreError(f"{field} must be one non-empty line")
     if len(value.encode("utf-8")) > MAX_SELECTOR_BYTES:
         raise SocialStoreError(f"{field} is too long")
@@ -129,38 +144,29 @@ def _verify_operation_row(row: sqlite3.Row) -> sqlite3.Row:
     return row
 
 
-def _operation_values(
-    operation_id: str,
-    connection_id: str,
-    remote_account_id: str,
-    action: str,
-    target_remote_id: str | None,
-    payload: str | None,
-    app_profile: str | None,
-    username: str | None,
-    scheduled_at: int,
-    created_by: str,
-) -> dict[str, Any]:
-    if action not in ACTIONS:
+def _operation_values(intent: OperationIntent, operation_id: str) -> dict[str, Any]:
+    if intent.action not in ACTIONS:
         raise SocialStoreError("unsupported outbound action")
-    if scheduled_at < 0:
+    if intent.scheduled_at < 0:
         raise SocialStoreError("scheduled_at must be a non-negative epoch")
-    payload = _validated_payload(action, payload)
+    payload = _validated_payload(intent.action, intent.payload)
     return {
         "operation_id": validate_opaque(operation_id, "operation_id"),
         "provider": "xapi",
-        "connection_id": validate_opaque(connection_id, "connection_id"),
+        "connection_id": validate_opaque(intent.connection_id, "connection_id"),
         "remote_account_id": validate_opaque(
-            remote_account_id, "remote_account_id"
+            intent.remote_account_id, "remote_account_id"
         ),
-        "action": action,
-        "target_remote_id": _validated_target(action, target_remote_id),
+        "action": intent.action,
+        "target_remote_id": _validated_target(
+            intent.action, intent.target_remote_id
+        ),
         "payload": payload,
         "payload_sha256": _digest(payload or ""),
-        "app_profile": _optional_selector(app_profile, "app_profile"),
-        "username": _optional_selector(username, "username"),
-        "scheduled_at": scheduled_at,
-        "created_by": validate_opaque(created_by, "created_by"),
+        "app_profile": _optional_selector(intent.app_profile, "app_profile"),
+        "username": _optional_selector(intent.username, "username"),
+        "scheduled_at": intent.scheduled_at,
+        "created_by": validate_opaque(intent.created_by, "created_by"),
     }
 
 
@@ -188,35 +194,12 @@ def _public_operation(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def create_operation(
-    database: sqlite3.Connection,
-    *,
-    connection_id: str,
-    remote_account_id: str,
-    action: str,
-    target_remote_id: str | None,
-    payload: str | None,
-    app_profile: str | None,
-    username: str | None,
-    scheduled_at: int,
-    created_by: str,
-    operation_id: str | None = None,
-    created_at: int | None = None,
+    database: sqlite3.Connection, intent: OperationIntent
 ) -> dict[str, Any]:
     """Create or idempotently recover one immutable draft operation."""
-    operation_id = operation_id or _new_id("op")
-    created_at = now_epoch() if created_at is None else created_at
-    values = _operation_values(
-        operation_id,
-        connection_id,
-        remote_account_id,
-        action,
-        target_remote_id,
-        payload,
-        app_profile,
-        username,
-        scheduled_at,
-        created_by,
-    )
+    operation_id = intent.operation_id or _new_id("op")
+    created_at = now_epoch() if intent.created_at is None else intent.created_at
+    values = _operation_values(intent, operation_id)
     values["intent_sha256"] = _intent_sha256(values)
     database.execute("BEGIN IMMEDIATE")
     try:
@@ -262,9 +245,9 @@ def create_operation(
         raise
     return {
         "operation_id": operation_id,
-        "action": action,
+        "action": intent.action,
         "state": "draft",
-        "scheduled_at": scheduled_at,
+        "scheduled_at": intent.scheduled_at,
         "updated_at": created_at,
     }
 
@@ -284,7 +267,6 @@ def approve_operation(
     operation_id: str,
     principal_id: str,
     expires_at: int,
-    *,
     approved_at: int | None = None,
 ) -> dict[str, Any]:
     """Bind one authenticated owner approval to the exact stored intent."""
@@ -406,380 +388,3 @@ def cancel_operation(
             database.execute("ROLLBACK")
         raise
     return {"operation_id": operation_id, "state": "cancelled"}
-
-
-def due_operation_ids(
-    database: sqlite3.Connection,
-    principal_id: str,
-    current_time: int,
-    limit: int,
-) -> list[str]:
-    """Return deterministic due IDs with a current exact-intent approval."""
-    if limit < 1 or limit > 100:
-        raise SocialStoreError("due limit must be between 1 and 100")
-    principal_id = validate_opaque(principal_id, "principal_id")
-    rows = database.execute(
-        """SELECT DISTINCT o.* FROM outbound_operations o
-              JOIN outbound_approvals a ON a.operation_id=o.operation_id
-             WHERE o.state='approved' AND o.scheduled_at<=?
-               AND o.created_by=? AND a.principal_id=?
-               AND a.intent_sha256=o.intent_sha256
-               AND a.revoked_at IS NULL AND a.expires_at>?
-             ORDER BY o.scheduled_at,o.operation_id LIMIT ?""",
-        (current_time, principal_id, principal_id, current_time, limit),
-    ).fetchall()
-    return [str(_verify_operation_row(row)["operation_id"]) for row in rows]
-
-
-def claim_operation(
-    database: sqlite3.Connection,
-    operation_id: str,
-    principal_id: str,
-    executor_id: str,
-    current_time: int,
-    claim_seconds: int,
-) -> ClaimedOperation:
-    """Atomically claim one due operation and persist its sole running attempt."""
-    if claim_seconds < 1 or claim_seconds > 3600:
-        raise SocialStoreError("claim_seconds must be between 1 and 3600")
-    principal_id = validate_opaque(principal_id, "principal_id")
-    executor_id = validate_opaque(executor_id, "executor_id")
-    database.execute("BEGIN IMMEDIATE")
-    try:
-        row = _verified_operation(database, operation_id)
-        if (
-            row["state"] != "approved"
-            or int(row["scheduled_at"]) > current_time
-            or row["created_by"] != principal_id
-        ):
-            raise SocialStoreError("operation is not due and approved")
-        approval = database.execute(
-            """SELECT approval_id FROM outbound_approvals
-                WHERE operation_id=? AND principal_id=? AND intent_sha256=?
-                  AND revoked_at IS NULL AND expires_at>?
-                ORDER BY approved_at DESC LIMIT 1""",
-            (operation_id, principal_id, row["intent_sha256"], current_time),
-        ).fetchone()
-        if approval is None:
-            raise SocialStoreError("operation approval is missing or expired")
-        claim_token = int(row["claim_token"]) + 1
-        attempt_id = _new_id("att")
-        changed = database.execute(
-            """UPDATE outbound_operations
-                  SET state='claimed',claim_token=?,claimed_by=?,claim_expires_at=?,
-                      last_attempt_id=?,updated_at=?
-                WHERE operation_id=? AND state='approved'""",
-            (
-                claim_token,
-                executor_id,
-                current_time + claim_seconds,
-                attempt_id,
-                current_time,
-                operation_id,
-            ),
-        ).rowcount
-        if changed != 1:
-            raise SocialStoreError("operation claim lost a concurrent race")
-        database.execute(
-            """INSERT INTO outbound_attempts(
-                attempt_id,operation_id,claim_token,executor_id,status,started_at)
-               VALUES(?,?,?,?,?,?)""",
-            (attempt_id, operation_id, claim_token, executor_id, "running", current_time),
-        )
-        database.execute("COMMIT")
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
-    return ClaimedOperation(
-        operation_id,
-        str(row["action"]),
-        str(row["remote_account_id"]),
-        row["target_remote_id"],
-        row["payload"],
-        row["app_profile"],
-        row["username"],
-        claim_token,
-        attempt_id,
-    )
-
-
-def mark_provider_started(
-    database: sqlite3.Connection,
-    claimed: ClaimedOperation,
-    executor_id: str,
-    *,
-    started_at: int | None = None,
-) -> None:
-    """Durably mark the boundary after which failures are always ambiguous."""
-    started_at = now_epoch() if started_at is None else started_at
-    executor_id = validate_opaque(executor_id, "executor_id")
-    changed = database.execute(
-        """UPDATE outbound_attempts SET provider_started_at=?
-             WHERE attempt_id=? AND operation_id=? AND claim_token=?
-               AND executor_id=? AND status='running' AND provider_started_at IS NULL
-               AND EXISTS(
-                   SELECT 1 FROM outbound_operations o
-                   JOIN outbound_approvals a ON a.operation_id=o.operation_id
-                    WHERE o.operation_id=outbound_attempts.operation_id
-                      AND o.state='claimed' AND o.claim_token=outbound_attempts.claim_token
-                      AND o.claimed_by=? AND o.last_attempt_id=outbound_attempts.attempt_id
-                      AND o.claim_expires_at>? AND a.principal_id=o.created_by
-                      AND a.intent_sha256=o.intent_sha256 AND a.revoked_at IS NULL
-                      AND a.expires_at>?
-               )""",
-        (
-            started_at,
-            claimed.attempt_id,
-            claimed.operation_id,
-            claimed.claim_token,
-            executor_id,
-            executor_id,
-            started_at,
-            started_at,
-        ),
-    ).rowcount
-    if changed != 1:
-        raise SocialStoreError("outbound provider boundary is stale or already marked")
-
-
-def finalize_operation(
-    database: sqlite3.Connection,
-    claimed: ClaimedOperation,
-    executor_id: str,
-    status: str,
-    *,
-    provider_remote_id: str | None = None,
-    failure_class: str | None = None,
-    finished_at: int | None = None,
-) -> dict[str, Any]:
-    """Fence and record the provider attempt's privacy-safe terminal outcome."""
-    if status not in ("succeeded", "failed", "unknown"):
-        raise SocialStoreError("invalid outbound terminal status")
-    finished_at = now_epoch() if finished_at is None else finished_at
-    if provider_remote_id is not None:
-        provider_remote_id = validate_opaque(provider_remote_id, "provider_remote_id")
-    if failure_class is not None and failure_class not in FAILURE_CLASSES:
-        raise SocialStoreError("invalid outbound failure class")
-    if status == "succeeded" and (
-        provider_remote_id is None or failure_class is not None
-    ):
-        raise SocialStoreError("successful outbound receipt requires only a provider ID")
-    if status != "succeeded" and (
-        provider_remote_id is not None or failure_class is None
-    ):
-        raise SocialStoreError("unsuccessful outbound receipt requires only a failure class")
-    executor_id = validate_opaque(executor_id, "executor_id")
-    database.execute("BEGIN IMMEDIATE")
-    try:
-        row = database.execute(
-            "SELECT state,claim_token,claimed_by,last_attempt_id FROM outbound_operations "
-            "WHERE operation_id=?",
-            (claimed.operation_id,),
-        ).fetchone()
-        expected = (
-            "claimed",
-            claimed.claim_token,
-            executor_id,
-            claimed.attempt_id,
-        )
-        actual = tuple(row) if row is not None else ()
-        if actual != expected:
-            raise SocialStoreError("stale outbound executor cannot finalize")
-        attempt = database.execute(
-            """SELECT provider_started_at FROM outbound_attempts
-                 WHERE attempt_id=? AND operation_id=? AND claim_token=?
-                   AND executor_id=? AND status='running'""",
-            (
-                claimed.attempt_id,
-                claimed.operation_id,
-                claimed.claim_token,
-                executor_id,
-            ),
-        ).fetchone()
-        if attempt is None:
-            raise SocialStoreError("outbound attempt is no longer running")
-        provider_started = attempt["provider_started_at"] is not None
-        if provider_started and status == "failed":
-            raise SocialStoreError("started provider attempts cannot be retry-safe failures")
-        if not provider_started and status in ("succeeded", "unknown"):
-            raise SocialStoreError("provider outcome requires a started provider attempt")
-        changed = database.execute(
-            """UPDATE outbound_attempts
-                  SET status=?,finished_at=?,provider_remote_id=?,failure_class=?,diagnostics=?
-                WHERE attempt_id=? AND operation_id=? AND claim_token=? AND status='running'""",
-            (
-                status,
-                finished_at,
-                provider_remote_id,
-                failure_class,
-                canonical_json({"phase": "provider" if provider_started else "pre-provider"}),
-                claimed.attempt_id,
-                claimed.operation_id,
-                claimed.claim_token,
-            ),
-        ).rowcount
-        if changed != 1:
-            raise SocialStoreError("outbound attempt is no longer running")
-        database.execute(
-            """UPDATE outbound_operations
-                  SET state=?,claim_expires_at=NULL,updated_at=?
-                WHERE operation_id=?""",
-            (status, finished_at, claimed.operation_id),
-        )
-        database.execute("COMMIT")
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
-    result: dict[str, Any] = {
-        "operation_id": claimed.operation_id,
-        "attempt_id": claimed.attempt_id,
-        "state": status,
-    }
-    if provider_remote_id is not None:
-        result["provider_remote_id"] = provider_remote_id
-    if failure_class is not None:
-        result["failure_class"] = failure_class
-    return result
-
-
-def expire_claims(
-    database: sqlite3.Connection,
-    principal_id: str,
-    current_time: int,
-    limit: int,
-) -> list[str]:
-    """Fence expired executors and conservatively make their outcomes unknown."""
-    if limit < 1 or limit > 100:
-        raise SocialStoreError("claim expiry limit must be between 1 and 100")
-    principal_id = validate_opaque(principal_id, "principal_id")
-    database.execute("BEGIN IMMEDIATE")
-    try:
-        rows = database.execute(
-            """SELECT operation_id,last_attempt_id,claim_token
-                 FROM outbound_operations
-                WHERE state='claimed' AND created_by=? AND claim_expires_at<=?
-                ORDER BY claim_expires_at,operation_id LIMIT ?""",
-            (principal_id, current_time, limit),
-        ).fetchall()
-        expired: list[str] = []
-        for row in rows:
-            changed = database.execute(
-                """UPDATE outbound_attempts
-                      SET status='unknown',finished_at=?,failure_class='executor_lost',
-                          diagnostics=?
-                    WHERE attempt_id=? AND operation_id=? AND claim_token=?
-                      AND status='running'""",
-                (
-                    current_time,
-                    canonical_json({"phase": "executor"}),
-                    row["last_attempt_id"],
-                    row["operation_id"],
-                    row["claim_token"],
-                ),
-            ).rowcount
-            if changed != 1:
-                raise SocialStoreError("expired outbound attempt is inconsistent")
-            operation_changed = database.execute(
-                """UPDATE outbound_operations
-                      SET state='unknown',claim_expires_at=NULL,updated_at=?
-                    WHERE operation_id=? AND state='claimed' AND claim_token=?""",
-                (current_time, row["operation_id"], row["claim_token"]),
-            ).rowcount
-            if operation_changed != 1:
-                raise SocialStoreError("expired outbound operation is inconsistent")
-            expired.append(str(row["operation_id"]))
-        database.execute("COMMIT")
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
-    return expired
-
-
-def reconcile_unknown(
-    database: sqlite3.Connection,
-    operation_id: str,
-    principal_id: str,
-    outcome: str,
-    provider_remote_id: str | None,
-    *,
-    reconciled_at: int | None = None,
-) -> dict[str, Any]:
-    """Resolve an ambiguous attempt without ever placing it back in the queue."""
-    if outcome not in ("succeeded", "not-sent"):
-        raise SocialStoreError("reconciliation outcome must be succeeded or not-sent")
-    reconciled_at = now_epoch() if reconciled_at is None else reconciled_at
-    principal_id = validate_opaque(principal_id, "principal_id")
-    state = "succeeded" if outcome == "succeeded" else "failed"
-    if state == "succeeded" and provider_remote_id is None:
-        raise SocialStoreError("successful reconciliation requires a provider ID")
-    if state == "failed" and provider_remote_id is not None:
-        raise SocialStoreError("not-sent reconciliation forbids a provider ID")
-    if provider_remote_id is not None:
-        provider_remote_id = validate_opaque(provider_remote_id, "provider_remote_id")
-    database.execute("BEGIN IMMEDIATE")
-    try:
-        row = _verified_operation(database, operation_id)
-        if row["state"] != "unknown" or row["created_by"] != principal_id:
-            raise SocialStoreError("only an owner unknown operation can be reconciled")
-        changed = database.execute(
-            """UPDATE outbound_attempts
-                  SET status=?,finished_at=?,provider_remote_id=?,failure_class=?,diagnostics=?
-                WHERE attempt_id=? AND operation_id=? AND claim_token=? AND status='unknown'""",
-            (
-                state,
-                reconciled_at,
-                provider_remote_id,
-                None if state == "succeeded" else "reconciled_not_sent",
-                canonical_json({"reconciled": outcome}),
-                row["last_attempt_id"],
-                operation_id,
-                row["claim_token"],
-            ),
-        ).rowcount
-        if changed != 1:
-            raise SocialStoreError("unknown outbound receipt is inconsistent")
-        database.execute(
-            "UPDATE outbound_operations SET state=?,updated_at=? WHERE operation_id=?",
-            (state, reconciled_at, operation_id),
-        )
-        database.execute("COMMIT")
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
-    result = {"operation_id": operation_id, "state": state}
-    if provider_remote_id is not None:
-        result["provider_remote_id"] = provider_remote_id
-    return result
-
-
-def list_operations(
-    database: sqlite3.Connection,
-    principal_id: str,
-    operation_id: str | None,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """List privacy-safe operation and receipt metadata for one owner."""
-    if limit < 1 or limit > 1000:
-        raise SocialStoreError("operation list limit must be between 1 and 1000")
-    principal_id = validate_opaque(principal_id, "principal_id")
-    parameters: list[Any] = [principal_id]
-    condition = "o.created_by=?"
-    if operation_id is not None:
-        condition += " AND o.operation_id=?"
-        parameters.append(validate_opaque(operation_id, "operation_id"))
-    parameters.append(limit)
-    rows = database.execute(
-        f"""SELECT o.operation_id,o.action,o.state,o.scheduled_at,o.updated_at,
-                    a.attempt_id,a.status AS attempt_status,a.provider_remote_id,
-                    a.failure_class,a.started_at,a.finished_at
-               FROM outbound_operations o
-               LEFT JOIN outbound_attempts a ON a.attempt_id=o.last_attempt_id
-              WHERE {condition}
-              ORDER BY o.created_at DESC,o.operation_id LIMIT ?""",  # nosec B608 -- fixed clauses
-        parameters,
-    ).fetchall()
-    return [dict(row) for row in rows]

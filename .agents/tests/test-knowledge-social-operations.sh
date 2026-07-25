@@ -369,9 +369,14 @@ import sys
 from pathlib import Path
 
 from _knowledge_social_outbound import (
+    OperationIntent,
     approve_operation,
-    claim_operation,
     create_operation,
+)
+from _knowledge_social_outbound_runtime import (
+    AttemptOutcome,
+    ClaimRequest,
+    claim_operation,
     due_operation_ids,
     expire_claims,
     finalize_operation,
@@ -394,6 +399,29 @@ def rejected(callback):
     raise AssertionError("unsafe outbound state mutation was accepted")
 
 
+def intent(
+    operation_id,
+    target_remote_id,
+    action="like",
+    payload=None,
+    app_profile=None,
+    username=None,
+):
+    return OperationIntent(
+        connection_id="conn_ops",
+        remote_account_id="acct42",
+        action=action,
+        target_remote_id=target_remote_id,
+        payload=payload,
+        app_profile=app_profile,
+        username=username,
+        scheduled_at=1000,
+        created_by=principal,
+        operation_id=operation_id,
+        created_at=1000,
+    )
+
+
 tampering = (
     ("payload", "changed body"),
     ("connection_id", "conn_other"),
@@ -407,17 +435,14 @@ for index, (field, value) in enumerate(tampering):
     operation_id = f"op_tamper_{index:03d}"
     create_operation(
         database,
-        connection_id="conn_ops",
-        remote_account_id="acct42",
-        action="reply",
-        target_remote_id="post_original_001",
-        payload="bound fixture body",
-        app_profile="fixture-app",
-        username="fixture-user",
-        scheduled_at=1000,
-        created_by=principal,
-        operation_id=operation_id,
-        created_at=1000,
+        intent(
+            operation_id,
+            "post_original_001",
+            action="reply",
+            payload="bound fixture body",
+            app_profile="fixture-app",
+            username="fixture-user",
+        ),
     )
     approve_operation(database, operation_id, principal, 2000, approved_at=1000)
     database.execute(f"UPDATE outbound_operations SET {field}=? WHERE operation_id=?", (value, operation_id))
@@ -429,17 +454,7 @@ for index, (field, value) in enumerate(tampering):
 
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_action_001",
-    payload=None,
-    app_profile=None,
-    username=None,
-    scheduled_at=1000,
-    created_by=principal,
-    operation_id="op_tamper_action",
-    created_at=1000,
+    intent("op_tamper_action", "post_action_001"),
 )
 approve_operation(database, "op_tamper_action", principal, 2000, approved_at=1000)
 database.execute("UPDATE outbound_operations SET action='bookmark' WHERE operation_id='op_tamper_action'")
@@ -450,43 +465,27 @@ database.execute(
 
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_approval_expired",
-    payload=None,
-    app_profile=None,
-    username=None,
-    scheduled_at=1000,
-    created_by=principal,
-    operation_id="op_approval_expired",
-    created_at=1000,
+    intent("op_approval_expired", "post_approval_expired"),
 )
 approve_operation(database, "op_approval_expired", principal, 1100, approved_at=1000)
 assert due_operation_ids(database, principal, 1100, 100) == []
 rejected(
     lambda: claim_operation(
-        database, "op_approval_expired", principal, "exe_approval_expired", 1100, 300
+        database,
+        ClaimRequest(
+            "op_approval_expired", principal, "exe_approval_expired", 1100, 300
+        ),
     )
 )
 
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_boundary_expired",
-    payload=None,
-    app_profile=None,
-    username=None,
-    scheduled_at=1000,
-    created_by=principal,
-    operation_id="op_boundary_expired",
-    created_at=1000,
+    intent("op_boundary_expired", "post_boundary_expired"),
 )
 approve_operation(database, "op_boundary_expired", principal, 1101, approved_at=1000)
 boundary = claim_operation(
-    database, "op_boundary_expired", principal, "exe_boundary", 1100, 300
+    database,
+    ClaimRequest("op_boundary_expired", principal, "exe_boundary", 1100, 300),
 )
 rejected(
     lambda: mark_provider_started(database, boundary, "exe_boundary", started_at=1101)
@@ -495,73 +494,51 @@ finalize_operation(
     database,
     boundary,
     "exe_boundary",
-    "failed",
-    failure_class="authorization",
-    finished_at=1101,
+    AttemptOutcome("failed", failure_class="authorization", finished_at=1101),
 )
 
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_expired_claim",
-    payload=None,
-    app_profile=None,
-    username=None,
-    scheduled_at=1000,
-    created_by=principal,
-    operation_id="op_expired_claim",
-    created_at=1000,
+    intent("op_expired_claim", "post_expired_claim"),
 )
 approve_operation(database, "op_expired_claim", principal, 2000, approved_at=1000)
-claimed = claim_operation(database, "op_expired_claim", principal, "exe_expired", 1100, 1)
+claimed = claim_operation(
+    database, ClaimRequest("op_expired_claim", principal, "exe_expired", 1100, 1)
+)
 assert expire_claims(database, principal, 1101, 10) == ["op_expired_claim"]
 rejected(
     lambda: finalize_operation(
         database,
         claimed,
         "exe_expired",
-        "failed",
-        failure_class="runtime",
-        finished_at=1102,
+        AttemptOutcome("failed", failure_class="runtime", finished_at=1102),
     )
 )
 
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_started_001",
-    payload=None,
-    app_profile=None,
-    username=None,
-    scheduled_at=1000,
-    created_by=principal,
-    operation_id="op_started_001",
-    created_at=1000,
+    intent("op_started_001", "post_started_001"),
 )
 approve_operation(database, "op_started_001", principal, 2000, approved_at=1000)
-started = claim_operation(database, "op_started_001", principal, "exe_started", 1100, 300)
+started = claim_operation(
+    database, ClaimRequest("op_started_001", principal, "exe_started", 1100, 300)
+)
 mark_provider_started(database, started, "exe_started", started_at=1101)
 rejected(
     lambda: finalize_operation(
         database,
         started,
         "exe_started",
-        "failed",
-        failure_class="runtime",
-        finished_at=1102,
+        AttemptOutcome("failed", failure_class="runtime", finished_at=1102),
     )
 )
 finalize_operation(
     database,
     started,
     "exe_started",
-    "unknown",
-    failure_class="provider_unavailable",
-    finished_at=1102,
+    AttemptOutcome(
+        "unknown", failure_class="provider_unavailable", finished_at=1102
+    ),
 )
 database.close()
 PY
@@ -644,7 +621,7 @@ import sys
 from pathlib import Path
 
 from _knowledge_social_notifications import project_notifications, set_notification_status
-from _knowledge_social_outbound import create_operation
+from _knowledge_social_outbound import OperationIntent, create_operation
 from _knowledge_social_share_data import (
     LOCAL_ONLY_TABLES,
     TABLE_COLUMNS,
@@ -675,17 +652,19 @@ database = connect(restore_root)
 migrate(database)
 create_operation(
     database,
-    connection_id="conn_ops",
-    remote_account_id="acct42",
-    action="like",
-    target_remote_id="post_local_only",
-    payload=None,
-    app_profile="local-profile",
-    username=None,
-    scheduled_at=1000,
-    created_by="prn_local_owner",
-    operation_id="op_local_only",
-    created_at=1000,
+    OperationIntent(
+        connection_id="conn_ops",
+        remote_account_id="acct42",
+        action="like",
+        target_remote_id="post_local_only",
+        payload=None,
+        app_profile="local-profile",
+        username=None,
+        scheduled_at=1000,
+        created_by="prn_local_owner",
+        operation_id="op_local_only",
+        created_at=1000,
+    ),
 )
 project_notifications(database, "prn_local_owner", projected_at=1000)
 notification = database.execute(

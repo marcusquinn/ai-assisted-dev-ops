@@ -255,10 +255,9 @@ DELETE_STATEMENTS = (
     "DELETE FROM accounts",
     "DELETE FROM connections",
 )
-if not LOCAL_ONLY_TABLES.isdisjoint(TABLE_COLUMNS) or any(
-    statement == f"DELETE FROM {table}"
-    for table in LOCAL_ONLY_TABLES
-    for statement in DELETE_STATEMENTS
+DELETED_TABLES = frozenset(statement.rsplit(" ", 1)[-1] for statement in DELETE_STATEMENTS)
+if not LOCAL_ONLY_TABLES.isdisjoint(TABLE_COLUMNS) or not LOCAL_ONLY_TABLES.isdisjoint(
+    DELETED_TABLES
 ):
     raise RuntimeError("local social operation state cannot enter or be erased by sharing")
 

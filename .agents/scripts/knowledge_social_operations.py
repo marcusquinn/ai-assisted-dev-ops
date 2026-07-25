@@ -26,23 +26,31 @@ from _knowledge_social_outbound import (
     ACTIONS,
     MAX_PAYLOAD_BYTES,
     ClaimedOperation,
+    OperationIntent,
     approve_operation,
     cancel_operation,
-    claim_operation,
     create_operation,
+    revoke_approval,
+)
+from _knowledge_social_outbound_provider import ProviderAdapterError, invoke_provider
+from _knowledge_social_outbound_reconciliation import (
+    ReconciliationRequest,
+    list_operations,
+    reconcile_unknown,
+)
+from _knowledge_social_outbound_runtime import (
+    AttemptOutcome,
+    ClaimRequest,
+    claim_operation,
     due_operation_ids,
     expire_claims,
     finalize_operation,
-    list_operations,
     mark_provider_started,
-    reconcile_unknown,
-    revoke_approval,
 )
-from _knowledge_social_x import XAdapterError, response_status
+from _knowledge_social_x import XAdapterError
 from _knowledge_social_x_reader import GuardedXurl, verified_identity
 from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
 from knowledge_corpus_context import CatalogError, validate_private_file
-from knowledge_social_import import reject_credentials
 from knowledge_social_store import (
     SocialStoreError,
     connect,
@@ -53,8 +61,6 @@ from knowledge_social_store import (
 )
 
 DEFAULT_BASE = Path.home() / ".aidevops" / ".agent-workspace" / "knowledge"
-WRITE_TIMEOUT_SECONDS = 120
-MAX_PROVIDER_OUTPUT_BYTES = 1024 * 1024
 CONCURRENT_CLAIM_ERRORS = {
     "operation is not due and approved",
     "operation claim lost a concurrent race",
@@ -113,53 +119,6 @@ def _managed_context(args: argparse.Namespace) -> tuple[str, Path]:
     return principal_id, validate_root(corpora[0][1])
 
 
-def _profile_args(claimed: ClaimedOperation) -> list[str]:
-    arguments: list[str] = []
-    if claimed.app_profile:
-        arguments.extend(("--app", claimed.app_profile))
-    if claimed.username:
-        arguments.extend(("--username", claimed.username))
-    return arguments
-
-
-def _write_args(claimed: ClaimedOperation) -> list[str]:
-    if claimed.action == "post" and claimed.payload is not None:
-        return ["post", claimed.payload]
-    if (
-        claimed.action == "reply"
-        and claimed.target_remote_id is not None
-        and claimed.payload is not None
-    ):
-        return ["reply", claimed.target_remote_id, claimed.payload]
-    if claimed.action in ("like", "bookmark") and claimed.target_remote_id:
-        return [claimed.action, claimed.target_remote_id]
-    raise OperationsError("approved outbound operation has an invalid action shape")
-
-
-def _provider_remote_id(claimed: ClaimedOperation, output: str) -> str:
-    if len(output.encode("utf-8")) > MAX_PROVIDER_OUTPUT_BYTES:
-        raise OperationsError("xurl write response exceeds the safety limit")
-    try:
-        response = json.loads(output)
-    except json.JSONDecodeError as error:
-        raise OperationsError("xurl write response is not valid JSON") from error
-    if not isinstance(response, dict):
-        raise OperationsError("xurl write response root must be an object")
-    reject_credentials(response)
-    status = response_status(response)
-    if status < 200 or status >= 300:
-        raise OperationsError("xurl write response reports a provider failure")
-    if claimed.action in ("like", "bookmark"):
-        if claimed.target_remote_id is None:
-            raise OperationsError("engagement receipt has no target ID")
-        return claimed.target_remote_id
-    data = response.get("data", response)
-    remote_id = data.get("id") if isinstance(data, dict) else None
-    if not isinstance(remote_id, str):
-        raise OperationsError("xurl write response has no stable post ID")
-    return validate_opaque(remote_id, "provider_remote_id")
-
-
 def _pre_provider_failure(
     database: sqlite3.Connection,
     claimed: ClaimedOperation,
@@ -171,9 +130,9 @@ def _pre_provider_failure(
         database,
         claimed,
         executor_id,
-        "failed",
-        failure_class=failure_class,
-        finished_at=_clock(args),
+        AttemptOutcome(
+            "failed", failure_class=failure_class, finished_at=_clock(args)
+        ),
     )
 
 
@@ -188,9 +147,9 @@ def _unknown_provider_outcome(
         database,
         claimed,
         executor_id,
-        "unknown",
-        failure_class=failure_class,
-        finished_at=_clock(args),
+        AttemptOutcome(
+            "unknown", failure_class=failure_class, finished_at=_clock(args)
+        ),
     )
 
 
@@ -220,44 +179,22 @@ def _execute_claimed(
             database, claimed, executor_id, "authorization", args
         )
 
-    write_args = _write_args(claimed)
-    command = [
-        str(helper),
-        write_args[0],
-        *_profile_args(claimed),
-        "--confirm-write",
-        "--",
-        *write_args[1:],
-    ]
-    try:
-        completed = subprocess.run(  # nosec B603 -- fixed helper and allowlisted action argv
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=WRITE_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError):
+    provider_remote_id, failure_class = invoke_provider(helper, claimed)
+    if failure_class is not None:
         return _unknown_provider_outcome(
-            database, claimed, executor_id, "provider_unavailable", args
+            database, claimed, executor_id, failure_class, args
         )
-    if completed.returncode != 0:
-        return _unknown_provider_outcome(
-            database, claimed, executor_id, "provider_unavailable", args
-        )
-    try:
-        provider_remote_id = _provider_remote_id(claimed, completed.stdout)
-    except (OperationsError, SocialStoreError, UnicodeError, XAdapterError):
-        return _unknown_provider_outcome(
-            database, claimed, executor_id, "validation", args
-        )
+    if provider_remote_id is None:
+        raise OperationsError("successful provider outcome has no remote ID")
     return finalize_operation(
         database,
         claimed,
         executor_id,
-        "succeeded",
-        provider_remote_id=provider_remote_id,
-        finished_at=_clock(args),
+        AttemptOutcome(
+            "succeeded",
+            provider_remote_id=provider_remote_id,
+            finished_at=_clock(args),
+        ),
     )
 
 
@@ -276,11 +213,13 @@ def _run_one(
 ) -> dict[str, Any]:
     claimed = claim_operation(
         database,
-        operation_id,
-        principal_id,
-        executor_id,
-        _clock(args),
-        args.claim_seconds,
+        ClaimRequest(
+            operation_id,
+            principal_id,
+            executor_id,
+            _clock(args),
+            args.claim_seconds,
+        ),
     )
     return _execute_claimed(database, claimed, executor_id, args)
 
@@ -308,16 +247,23 @@ def _run_due(
     return {"expired_claims": len(expired), "results": results}
 
 
-def _dispatch(
+def _required_now(current_time: int | None) -> int:
+    if current_time is None:
+        raise OperationsError("operation command requires a current time")
+    return current_time
+
+
+def _handle_operation_create(
     args: argparse.Namespace,
     principal_id: str,
     database: sqlite3.Connection,
-) -> Any:
-    now = _clock(args) if hasattr(args, "now_epoch") else None
-    if args.command == "operation-create":
-        payload = _read_private_body(args.body_file) if args.body_file else None
-        return create_operation(
-            database,
+    current_time: int | None,
+) -> dict[str, Any]:
+    created_at = _required_now(current_time)
+    payload = _read_private_body(args.body_file) if args.body_file else None
+    return create_operation(
+        database,
+        OperationIntent(
             connection_id=args.connection_id,
             remote_account_id=args.account_id,
             action=args.action,
@@ -325,67 +271,176 @@ def _dispatch(
             payload=payload,
             app_profile=args.app,
             username=args.username,
-            scheduled_at=args.scheduled_at if args.scheduled_at is not None else now,
+            scheduled_at=(
+                args.scheduled_at
+                if args.scheduled_at is not None
+                else created_at
+            ),
             created_by=principal_id,
             operation_id=args.operation_id,
-            created_at=now,
-        )
-    if args.command == "operation-approve":
-        return approve_operation(
-            database,
-            args.operation_id,
-            principal_id,
-            args.expires_at,
-            approved_at=now,
-        )
-    if args.command == "operation-revoke":
-        return revoke_approval(
-            database, args.operation_id, principal_id, revoked_at=now
-        )
-    if args.command == "operation-cancel":
-        return cancel_operation(
-            database, args.operation_id, principal_id, cancelled_at=now
-        )
-    if args.command == "operation-run":
-        return _run_one(
-            database,
-            principal_id,
-            args.operation_id,
-            _executor_id(args),
-            args,
-        )
-    if args.command == "operations-run-due":
-        return _run_due(database, principal_id, args)
-    if args.command == "operations-due":
-        return due_operation_ids(database, principal_id, now, args.limit)
-    if args.command == "operations-list":
-        return list_operations(
-            database, principal_id, args.operation_id, args.limit
-        )
-    if args.command == "operation-reconcile":
-        if args.outcome == "succeeded" and args.provider_id is None:
-            raise OperationsError("successful reconciliation requires --provider-id")
-        if args.outcome == "not-sent" and args.provider_id is not None:
-            raise OperationsError("not-sent reconciliation forbids --provider-id")
-        return reconcile_unknown(
-            database,
+            created_at=created_at,
+        ),
+    )
+
+
+def _handle_operation_approve(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, Any]:
+    return approve_operation(
+        database,
+        args.operation_id,
+        principal_id,
+        args.expires_at,
+        approved_at=current_time,
+    )
+
+
+def _handle_operation_revoke(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, Any]:
+    return revoke_approval(
+        database, args.operation_id, principal_id, revoked_at=current_time
+    )
+
+
+def _handle_operation_cancel(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, Any]:
+    return cancel_operation(
+        database, args.operation_id, principal_id, cancelled_at=current_time
+    )
+
+
+def _handle_operation_run(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    _current_time: int | None,
+) -> dict[str, Any]:
+    return _run_one(
+        database, principal_id, args.operation_id, _executor_id(args), args
+    )
+
+
+def _handle_operations_run_due(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    _current_time: int | None,
+) -> dict[str, Any]:
+    return _run_due(database, principal_id, args)
+
+
+def _handle_operations_due(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> list[str]:
+    return due_operation_ids(
+        database, principal_id, _required_now(current_time), args.limit
+    )
+
+
+def _handle_operations_list(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    _current_time: int | None,
+) -> list[dict[str, Any]]:
+    return list_operations(database, principal_id, args.operation_id, args.limit)
+
+
+def _handle_operation_reconcile(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, Any]:
+    if args.outcome == "succeeded" and args.provider_id is None:
+        raise OperationsError("successful reconciliation requires --provider-id")
+    if args.outcome == "not-sent" and args.provider_id is not None:
+        raise OperationsError("not-sent reconciliation forbids --provider-id")
+    return reconcile_unknown(
+        database,
+        ReconciliationRequest(
             args.operation_id,
             principal_id,
             args.outcome,
             args.provider_id,
-            reconciled_at=now,
-        )
-    if args.command == "notifications-refresh":
-        return project_notifications(database, principal_id, projected_at=now)
-    if args.command == "notifications-list":
-        return list_notifications(database, principal_id, args.status, args.limit)
+            current_time,
+        ),
+    )
+
+
+def _handle_notifications_refresh(
+    _args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, int]:
+    return project_notifications(database, principal_id, projected_at=current_time)
+
+
+def _handle_notifications_list(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    _current_time: int | None,
+) -> list[dict[str, Any]]:
+    return list_notifications(database, principal_id, args.status, args.limit)
+
+
+def _handle_notification_set(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+    current_time: int | None,
+) -> dict[str, Any]:
     return set_notification_status(
         database,
         principal_id,
         args.notification_id,
         args.status,
-        updated_at=now,
+        updated_at=current_time,
     )
+
+
+COMMAND_HANDLERS = {
+    "operation-create": _handle_operation_create,
+    "operation-approve": _handle_operation_approve,
+    "operation-revoke": _handle_operation_revoke,
+    "operation-cancel": _handle_operation_cancel,
+    "operation-run": _handle_operation_run,
+    "operations-run-due": _handle_operations_run_due,
+    "operations-due": _handle_operations_due,
+    "operations-list": _handle_operations_list,
+    "operation-reconcile": _handle_operation_reconcile,
+    "notifications-refresh": _handle_notifications_refresh,
+    "notifications-list": _handle_notifications_list,
+    "notification-set": _handle_notification_set,
+}
+
+
+def _dispatch(
+    args: argparse.Namespace,
+    principal_id: str,
+    database: sqlite3.Connection,
+) -> Any:
+    current_time = _clock(args) if hasattr(args, "now_epoch") else None
+    handler = COMMAND_HANDLERS.get(args.command)
+    if handler is None:
+        raise OperationsError("unsupported operation command")
+    return handler(args, principal_id, database, current_time)
 
 
 def _add_scope(parser: argparse.ArgumentParser) -> None:
@@ -492,6 +547,7 @@ def main() -> int:
         CatalogError,
         OSError,
         OperationsError,
+        ProviderAdapterError,
         SocialStoreError,
         XAdapterError,
         sqlite3.Error,

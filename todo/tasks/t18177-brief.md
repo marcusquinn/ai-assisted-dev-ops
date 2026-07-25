@@ -82,7 +82,10 @@ ambiguous outcomes, and must preserve encrypted-sharing and read-only boundaries
 ### Files to Modify
 
 - `EDIT: .agents/scripts/knowledge_social_store.py` — additive schema migration.
-- `NEW: .agents/scripts/_knowledge_social_outbound.py` — canonical intent, approvals, claims, attempts, and transitions.
+- `NEW: .agents/scripts/_knowledge_social_outbound.py` — canonical intent and approval state.
+- `NEW: .agents/scripts/_knowledge_social_outbound_runtime.py` — fenced claims, attempts, receipts, and lease expiry.
+- `NEW: .agents/scripts/_knowledge_social_outbound_reconciliation.py` — explicit unknown-outcome reconciliation and privacy-safe history.
+- `NEW: .agents/scripts/_knowledge_social_outbound_provider.py` — fixed-argv X write mapping and response validation.
 - `NEW: .agents/scripts/_knowledge_social_notifications.py` — idempotent notification projection and state changes.
 - `NEW: .agents/scripts/knowledge_social_operations.py` — authenticated CLI and mapped X executor.
 - `EDIT: .agents/scripts/knowledge-social-helper.sh` — operator command dispatch.
@@ -93,12 +96,12 @@ ambiguous outcomes, and must preserve encrypted-sharing and read-only boundaries
 ### Complete Write Surface
 
 - **Callers/readers:** `knowledge-social-helper.sh`, authenticated corpus catalog, private scheduler/routine invocation, `xurl-helper.sh`, operators reading due work/receipts/notifications, and sharing export/import.
-- **Writers/mutation paths:** `.agents/scripts/knowledge_social_operations.py` owns create/approve/cancel, one atomic due executor, operation reconciliation, notification projection, and per-principal notification transitions.
+- **Writers/mutation paths:** `.agents/scripts/knowledge_social_operations.py` dispatches create/approve/cancel, one atomic due executor, operation reconciliation, notification projection, and per-principal notification transitions through the split outbound state modules.
 - **Tests/fixtures:** new fake-`xurl` runtime suite plus existing corpus, X, sync, query, sharing, and browser suites.
 - **Schemas/config:** additive per-corpus `social.db` migration; local app/profile selection is private and excluded from transport. No credentials are stored.
 - **Generated/deployed mirrors:** `.agents/` remains the setup source; no top-level path or independent deployed mirror is added.
 - **Migrations/backfills:** schema migration creates empty operational tables. Existing mention evidence is projected idempotently on explicit refresh; no provider backfill is triggered automatically.
-- **Cleanup/rollback paths:** `.agents/scripts/_knowledge_social_outbound.py` uses monotonic tokens, terminal attempts, explicit cancellation, and unknown-outcome reconciliation; it never auto-retries.
+- **Cleanup/rollback paths:** `_knowledge_social_outbound_runtime.py` and `_knowledge_social_outbound_reconciliation.py` use monotonic tokens, terminal attempts, explicit cancellation, and unknown-outcome reconciliation; they never auto-retry.
 
 ### Implementation Steps
 
@@ -131,7 +134,7 @@ bash .agents/tests/test-knowledge-social-query.sh
 bash .agents/tests/test-knowledge-social-sharing.sh
 bash .agents/tests/test-knowledge-social-browser.sh
 shellcheck .agents/scripts/knowledge-social-helper.sh .agents/scripts/xurl-helper.sh
-python3 -m py_compile .agents/scripts/knowledge_social_store.py .agents/scripts/knowledge_social_operations.py .agents/scripts/_knowledge_social_outbound.py .agents/scripts/_knowledge_social_notifications.py
+python3 -m py_compile .agents/scripts/knowledge_social_store.py .agents/scripts/knowledge_social_operations.py .agents/scripts/_knowledge_social_outbound.py .agents/scripts/_knowledge_social_outbound_runtime.py .agents/scripts/_knowledge_social_outbound_reconciliation.py .agents/scripts/_knowledge_social_outbound_provider.py .agents/scripts/_knowledge_social_notifications.py
 .agents/scripts/linters-local.sh --changed
 ```
 
