@@ -172,20 +172,21 @@ def _citation_classification(citation: dict[str, Any]) -> str:
         str(activity["activity_type"]).lower()
         for activity in citation.get("activities", [])
     }
+    classification = "observed"
     if evidence_class in AUTHORED_CLASSES:
-        return "authored"
-    if evidence_class in INFERRED_CLASSES:
-        return "inferred"
-    if evidence_class == "weak_signal" or activity_types & WEAK_ACTIVITY_TYPES:
-        return "weak_signal"
-    if (
+        classification = "authored"
+    elif evidence_class in INFERRED_CLASSES:
+        classification = "inferred"
+    elif evidence_class == "weak_signal" or activity_types & WEAK_ACTIVITY_TYPES:
+        classification = "weak_signal"
+    elif (
         evidence_class in {"distributed", "quoted", "reposted"}
         or activity_types & DISTRIBUTION_ACTIVITY_TYPES
     ):
-        return "distribution"
-    if evidence_class == "relationship" or activity_types & RELATIONSHIP_ACTIVITY_TYPES:
-        return "relationship"
-    return "observed"
+        classification = "distribution"
+    elif evidence_class == "relationship" or activity_types & RELATIONSHIP_ACTIVITY_TYPES:
+        classification = "relationship"
+    return classification
 
 
 def opinion_semantics(citations: list[dict[str, Any]]) -> dict[str, Any]:
