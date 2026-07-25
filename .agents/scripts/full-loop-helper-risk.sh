@@ -88,21 +88,47 @@ _runtime_paths_are_low() {
 	local files_changed="${1:-}"
 	local path=""
 	local saw_path=0
-	local old_ifs="$IFS"
-	IFS=','
-	for path in $files_changed; do
-		IFS="$old_ifs"
+	while IFS= read -r path; do
 		path="${path#"${path%%[![:space:]]*}"}"
 		[[ -z "$path" ]] && continue
 		saw_path=1
 		if ! _runtime_path_is_low "$path"; then
-			IFS="$old_ifs"
 			return 1
 		fi
-	done
-	IFS="$old_ifs"
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
 	[[ "$saw_path" -eq 1 ]] && return 0
 	return 1
+}
+
+# Print only runtime-relevant path names from the comma-separated PR file list.
+# Low-only path names must not contribute policy keywords to a mixed diff.
+_runtime_paths_keyword_context() {
+	local files_changed="${1:-}"
+	local path=""
+	while IFS= read -r path; do
+		path="${path#"${path%%[![:space:]]*}"}"
+		[[ -z "$path" ]] && continue
+		if ! _runtime_path_is_low "$path"; then
+			printf '%s\n' "$path"
+		fi
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
+	return 0
+}
+
+# Print diff hunks only for runtime-relevant files. Documentation, tests,
+# fixtures, and linter configuration remain evidence that the branch changed,
+# but their prose must not raise the risk of unrelated runtime code.
+_runtime_diff_keyword_context() {
+	local base_ref="$1"
+	local path=""
+	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
+	while IFS= read -r path; do
+		[[ -z "$path" ]] && continue
+		if ! _runtime_path_is_low "$path"; then
+			git diff --unified=0 --no-color --no-ext-diff "${base_ref}..HEAD" -- "$path" 2>/dev/null || true
+		fi
+	done < <(git diff --name-only "${base_ref}..HEAD" 2>/dev/null)
+	return 0
 }
 
 # Return success only when every changed content line is visibly a comment or
@@ -238,7 +264,8 @@ _derive_runtime_risk() {
 	local files_changed="${2:-}"
 	local summary_what="${3:-}"
 	local base_ref="${4:-}"
-	local context="${summary_what} ${files_changed}"
+	local runtime_paths=""
+	local context="${summary_what}"
 	local diff_context=""
 	local detected_risk="Medium"
 
@@ -247,8 +274,12 @@ _derive_runtime_risk() {
 	elif [[ -n "$base_ref" ]] && _runtime_diff_is_comments_only "$base_ref"; then
 		detected_risk="Low"
 	else
+		runtime_paths=$(_runtime_paths_keyword_context "$files_changed") || return 1
+		context="${context} ${runtime_paths}"
 		if [[ -n "$base_ref" ]]; then
-			diff_context=$(git diff --unified=0 --no-color --no-ext-diff "${base_ref}..HEAD" 2>/dev/null || true)
+			if ! diff_context=$(_runtime_diff_keyword_context "$base_ref"); then
+				return 1
+			fi
 			context="${context} ${diff_context}"
 		fi
 		context=$(printf '%s' "$context" | tr '[:upper:]' '[:lower:]')

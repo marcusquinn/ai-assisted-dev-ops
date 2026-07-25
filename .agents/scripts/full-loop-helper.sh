@@ -97,7 +97,18 @@ cmd_commit_and_pr() {
 	# Inserted between commit and push so amends apply to the same commit
 	# the worker just made, and so failures abort BEFORE we push broken code.
 	_run_project_validators "$skip_hooks" || return 1
-	_rebase_and_push "$branch" "$skip_hooks" "$skip_rebase" || return 1
+	_rebase_for_push "$branch" "$skip_rebase" || return 1
+
+	# Derive final-diff metadata after rebase but before any remote mutation.
+	# Invalid risk/testing evidence must not leave a pushed orphan branch.
+	local files_changed=""
+	local base_branch="" base_ref=""
+	local closing_keyword="Resolves"
+	base_branch=$(_resolve_remote_default_branch origin) || return 1
+	base_ref="origin/${base_branch}"
+	files_changed=$(git diff --name-only "${base_ref}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//; s/,/, /g' || echo "")
+	local pr_body=""
+	pr_body=$(_build_pr_body "$issue_number" "$summary_what" "$summary_testing" "$files_changed" "" "$closing_keyword" "$runtime_risk" "$testing_level" "$base_ref") || return 1
 
 	# Build PR metadata (t2720: prefer tNNN from TODO.md so issue-sync's
 	# PR-merge auto-completion regex can extract a task_id and flip [ ] → [x]).
@@ -125,15 +136,8 @@ cmd_commit_and_pr() {
 		sig_footer=$("$sig_helper" footer 2>/dev/null || echo "")
 	fi
 
-	local files_changed=""
-	local base_branch="" base_ref=""
-	base_branch=$(_resolve_remote_default_branch origin) || return 1
-	base_ref="origin/${base_branch}"
-	files_changed=$(git diff --name-only "${base_ref}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//; s/,/, /g' || echo "")
-
 	# t2242: Determine closing keyword — auto-swap Resolves to For when linked
 	# issue has parent-task label, unless --allow-parent-close overrides.
-	local closing_keyword="Resolves"
 	if [[ "$allow_parent_close" -eq 1 ]]; then
 		closing_keyword="Resolves"
 	elif _issue_has_parent_task_label "$issue_number" "$repo"; then
@@ -141,7 +145,6 @@ cmd_commit_and_pr() {
 		print_info "Issue #${issue_number} has parent-task label — using 'For' keyword (t2242)"
 	fi
 
-	local pr_body=""
 	pr_body=$(_build_pr_body "$issue_number" "$summary_what" "$summary_testing" "$files_changed" "$sig_footer" "$closing_keyword" "$runtime_risk" "$testing_level" "$base_ref") || return 1
 
 	# t2046: parent-task keyword guard — prevent Resolves/Closes/Fixes on
@@ -188,6 +191,8 @@ Worker aborted PR creation: issue #${issue_number} was already closed by the tim
 			2>/dev/null || true
 		return 1
 	fi
+
+	_push_branch "$branch" "$skip_hooks" || return 1
 
 	local pr_number=""
 	pr_number=$(_create_pr "$repo" "$pr_title" "$pr_body" "$origin_label" "${extra_labels[@]+"${extra_labels[@]}"}") || return 1
