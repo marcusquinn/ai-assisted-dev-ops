@@ -81,6 +81,7 @@ readonly PERMISSION_GRANT_SCHEMA="aidevops-permission-grant/v1"
 readonly PERMISSION_SHA256_PATTERN='^[0-9a-f]{64}$'
 readonly PERMISSION_JSON_ARRAY_TYPE="array"
 readonly PERMISSION_JSON_STRING_TYPE="string"
+readonly _APPROVAL_NMR_LABEL="needs-maintainer-review"
 readonly _APPROVAL_AUTO_DISPATCH_LABEL="auto-dispatch"
 readonly _PERMISSION_BLOCKER_STATUS="blocked"
 readonly _PERMISSION_BLOCKER_TRUE="true"
@@ -637,7 +638,7 @@ _approval_verify_issue_state() {
 		return 1
 	}
 
-	if ! printf '%s' "$issue_json" | jq -e '(.labels // []) | any(.name == "needs-maintainer-review") | not' >/dev/null 2>&1; then
+	if ! printf '%s' "$issue_json" | jq -e --arg label "$_APPROVAL_NMR_LABEL" '(.labels // []) | any(.name == $label) | not' >/dev/null 2>&1; then
 		_print_error "Approval state verification failed: needs-maintainer-review is still present on #$target_number"
 		return 1
 	fi
@@ -666,7 +667,7 @@ _approval_verify_pr_state() {
 		_print_error "Approval state verification failed: could not read PR #$target_number via REST"
 		return 1
 	}
-	if ! printf '%s' "$issue_json" | jq -e '(.labels // []) | any(.name == "needs-maintainer-review") | not' >/dev/null 2>&1; then
+	if ! printf '%s' "$issue_json" | jq -e --arg label "$_APPROVAL_NMR_LABEL" '(.labels // []) | any(.name == $label) | not' >/dev/null 2>&1; then
 		_print_error "Approval state verification failed: needs-maintainer-review is still present on PR #$target_number"
 		return 1
 	fi
@@ -688,7 +689,7 @@ _approval_apply_issue_lifecycle_updates() {
 	fi
 
 	edit_err=$(gh_issue_edit_safe "$target_number" --repo "$slug" \
-		--remove-label "needs-maintainer-review" \
+		--remove-label "$_APPROVAL_NMR_LABEL" \
 		--add-label "$_APPROVAL_AUTO_DISPATCH_LABEL" \
 		--add-assignee "$gh_user" 2>&1 >/dev/null) || {
 		_print_error "Failed to update approval labels/assignee on issue #$target_number"
@@ -747,7 +748,7 @@ _approval_apply_pr_lifecycle_updates() {
 		return 1
 	}
 	edit_err=$(gh_pr_edit_safe "$target_number" --repo "$slug" \
-		--remove-label "needs-maintainer-review" 2>&1 >/dev/null) || {
+		--remove-label "$_APPROVAL_NMR_LABEL" 2>&1 >/dev/null) || {
 		_print_error "Failed to clear needs-maintainer-review on PR #$target_number after approval"
 		[[ -n "$edit_err" ]] && _print_error "$edit_err"
 		return 1

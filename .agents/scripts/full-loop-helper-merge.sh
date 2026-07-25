@@ -299,10 +299,12 @@ _merge_issue_requires_maintainer_review() {
 	local issue_number="$1"
 	local repo="$2"
 	local labels_csv=""
+	local labels_padded=""
 
 	labels_csv=$(gh issue view "$issue_number" --repo "$repo" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || return 2
-	if [[ ",${labels_csv}," == *",needs-maintainer-review,"* ]]; then
+	printf -v labels_padded ',%s,' "$labels_csv"
+	if [[ "$labels_padded" == *",needs-maintainer-review,"* ]]; then
 		return 0
 	fi
 	return 1
@@ -370,7 +372,7 @@ _merge_guard_admin_merge_maintainer_review() {
 	local pr_number="$1"
 	local repo="$2"
 	local expected_head_sha="${3:-}"
-	local pr_json="" pr_author="" current_head_sha="" labels_csv="" is_fork="false"
+	local pr_json="" pr_author="" current_head_sha="" labels_csv="" labels_padded="" is_fork="false"
 	local issue_numbers=""
 	local issue_number=""
 	local verify_rc=0 author_rc=0 treat_as_external=0
@@ -381,13 +383,14 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	fi
 	if ! printf '%s' "$pr_json" | jq -e '
+		def is_string: type == "string";
 		type == "object"
-		and (.author.login | type == "string" and length > 0)
-		and (.headRefOid | type == "string" and length > 0)
+		and (.author.login | is_string and length > 0)
+		and (.headRefOid | is_string and length > 0)
 		and (.labels | type == "array")
 		and (.isCrossRepository | type == "boolean")
 		and (.closingIssuesReferences | type == "array")
-		and ((.body == null) or (.body | type == "string"))
+		and ((.body == null) or (.body | is_string))
 	' >/dev/null 2>&1; then
 		print_error "Merge blocked: PR #${pr_number} returned malformed authority metadata"
 		return 1
@@ -396,6 +399,7 @@ _merge_guard_admin_merge_maintainer_review() {
 	pr_author=$(printf '%s' "$pr_json" | jq -r '.author.login') || return 1
 	current_head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid') || return 1
 	labels_csv=$(printf '%s' "$pr_json" | jq -r '[.labels[].name] | join(",")') || return 1
+	printf -v labels_padded ',%s,' "$labels_csv"
 	is_fork=$(printf '%s' "$pr_json" | jq -r '.isCrossRepository') || return 1
 	if [[ -n "$expected_head_sha" && "$current_head_sha" != "$expected_head_sha" ]]; then
 		print_error "Merge blocked: PR #${pr_number} head changed before the final authority check"
@@ -404,7 +408,7 @@ _merge_guard_admin_merge_maintainer_review() {
 
 	#aidevops:trust-boundary GH#17671/GH#28622 -- a live PR NMR label is an
 	# explicit hold. Marker text is never merge authority at this boundary.
-	if [[ ",${labels_csv}," == *",needs-maintainer-review,"* ]]; then
+	if [[ "$labels_padded" == *",needs-maintainer-review,"* ]]; then
 		print_error "Merge blocked: PR #${pr_number} still requires maintainer review"
 		return 1
 	fi
@@ -414,7 +418,7 @@ _merge_guard_admin_merge_maintainer_review() {
 		print_error "Merge blocked: unable to verify live repository permission for PR author ${pr_author}"
 		return 1
 	fi
-	if [[ ",${labels_csv}," == *",external-contributor,"* ]] || \
+	if [[ "$labels_padded" == *",external-contributor,"* ]] || \
 		[[ "$is_fork" == "true" ]] || [[ "$author_rc" -ne 0 ]]; then
 		treat_as_external=1
 	fi
