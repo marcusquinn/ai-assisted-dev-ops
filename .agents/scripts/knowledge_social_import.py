@@ -31,6 +31,21 @@ FORBIDDEN_CREDENTIAL_KEYS = {
     "password",
     "refresh_token",
 }
+OBJECT_UPSERT = """INSERT INTO objects(
+    provider,object_type,remote_id,account_remote_id,text_content,created_at,
+    observed_at,evidence_class,provider_json,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(provider,object_type,remote_id) DO UPDATE SET
+    account_remote_id=excluded.account_remote_id,text_content=excluded.text_content,
+    created_at=excluded.created_at,observed_at=excluded.observed_at,
+    evidence_class=excluded.evidence_class,provider_json=excluded.provider_json,
+    batch_id=excluded.batch_id"""
+ACTIVITY_UPSERT = """INSERT INTO activities(
+    provider,activity_type,remote_id,actor_remote_id,object_remote_id,occurred_at,
+    observed_at,state,provider_json,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(provider,activity_type,remote_id) DO UPDATE SET
+    object_remote_id=excluded.object_remote_id,occurred_at=excluded.occurred_at,
+    observed_at=excluded.observed_at,state=excluded.state,
+    provider_json=excluded.provider_json,batch_id=excluded.batch_id"""
 
 
 def canonical_json(value: Any) -> str:
@@ -70,20 +85,6 @@ def reject_credentials(value: Any) -> None:
     elif isinstance(value, list):
         for child in value:
             reject_credentials(child)
-
-
-def upsert_sql(
-    table: str,
-    columns: tuple[str, ...],
-    conflict_columns: tuple[str, ...],
-    update_columns: tuple[str, ...],
-) -> str:
-    placeholders = ",".join("?" for _column in columns)
-    updates = ",".join(f"{column}=excluded.{column}" for column in update_columns)
-    return (
-        f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders}) "
-        f"ON CONFLICT({','.join(conflict_columns)}) DO UPDATE SET {updates}"
-    )
 
 
 def load_archive(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -131,17 +132,9 @@ def import_accounts(connection: Any, archive: dict[str, Any], provider: str) -> 
 
 
 def import_objects(connection: Any, archive: dict[str, Any], provider: str, batch_id: str) -> None:
-    statement = upsert_sql(
-        "objects",
-        ("provider", "object_type", "remote_id", "account_remote_id", "text_content", "created_at",
-         "observed_at", "evidence_class", "provider_json", "batch_id"),
-        ("provider", "object_type", "remote_id"),
-        ("account_remote_id", "text_content", "created_at", "observed_at",
-         "evidence_class", "provider_json", "batch_id"),
-    )
     for record in record_list(archive, "objects"):
         connection.execute(
-            statement,
+            OBJECT_UPSERT,
             (provider, required_text(record, "object_type"), required_text(record, "remote_id"),
              optional_text(record, "account_remote_id"), optional_text(record, "text"),
              optional_text(record, "created_at"), required_text(record, "observed_at"),
@@ -150,16 +143,9 @@ def import_objects(connection: Any, archive: dict[str, Any], provider: str, batc
 
 
 def import_activities(connection: Any, archive: dict[str, Any], provider: str, batch_id: str) -> None:
-    statement = upsert_sql(
-        "activities",
-        ("provider", "activity_type", "remote_id", "actor_remote_id", "object_remote_id", "occurred_at",
-         "observed_at", "state", "provider_json", "batch_id"),
-        ("provider", "activity_type", "remote_id"),
-        ("object_remote_id", "occurred_at", "observed_at", "state", "provider_json", "batch_id"),
-    )
     for record in record_list(archive, "activities"):
         connection.execute(
-            statement,
+            ACTIVITY_UPSERT,
             (provider, required_text(record, "activity_type"), required_text(record, "remote_id"),
              required_text(record, "actor_remote_id"), optional_text(record, "object_remote_id"),
              optional_text(record, "occurred_at"), required_text(record, "observed_at"),
