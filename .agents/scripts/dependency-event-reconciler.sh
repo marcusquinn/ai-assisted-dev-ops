@@ -152,8 +152,8 @@ _der_search_issues() {
 	local result=""
 	# shellcheck disable=SC2016
 	result=$(gh api graphql -f query='
-query($query:String!) {
-  search(query:$query,type:ISSUE,first:100) {
+query($searchQuery:String!) {
+  search(query:$searchQuery,type:ISSUE,first:100) {
     issueCount pageInfo { hasNextPage }
     nodes {
       __typename
@@ -163,7 +163,7 @@ query($query:String!) {
       }
     }
   }
-}' -F query="$search_query" 2>/dev/null) || return 1
+}' -F searchQuery="$search_query" 2>/dev/null) || return 1
 	printf '%s' "$result" | jq -ce --arg repo "$repo" '
       .data.search
       | select((.issueCount | type) == "number" and .issueCount <= 100)
@@ -300,14 +300,26 @@ _der_native_blockers_closed() {
 	local issue_number="$2"
 	local owner="${repo%%/*}"
 	local name="${repo#*/}"
-	local result="" blocker=""
+	local result=""
 	# shellcheck disable=SC2016
 	result=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){blockedBy(first:100){nodes{number state repository{nameWithOwner}}pageInfo{hasNextPage}}}}}' -F o="$owner" -F r="$name" -F n="$issue_number" 2>/dev/null) || return 1
-	printf '%s' "$result" | jq -e --arg repo "$repo" '.data.repository.issue.blockedBy | .pageInfo.hasNextPage == false and all(.nodes[]; .repository.nameWithOwner == $repo)' >/dev/null 2>&1 || return 1
-	while IFS= read -r blocker; do
-		[[ -n "$blocker" ]] || continue
-		[[ "${blocker#*:}" == "$DER_STATE_CLOSED" ]] || return "$DER_NOT_READY"
-	done < <(printf '%s' "$result" | jq -r '.data.repository.issue.blockedBy.nodes[]? | "\(.number):\(.state)"' 2>/dev/null)
+	printf '%s' "$result" | jq -e --arg closed "$DER_STATE_CLOSED" '
+      def is_object: type == "object";
+      def is_array: type == ([] | type);
+      .data.repository.issue.blockedBy
+      | is_object
+        and (.pageInfo | is_object)
+        and .pageInfo.hasNextPage == false
+        and (.nodes | is_array)
+        and all(.nodes[];
+          is_object
+          and (.number | type == "number")
+          and (.state == "OPEN" or .state == $closed)
+          and (.repository | is_object)
+          and (.repository.nameWithOwner | type == "string")
+          and (.repository.nameWithOwner | test("^[^/[:space:]]+/[^/[:space:]]+$")))' >/dev/null 2>&1 || return 1
+	printf '%s' "$result" | jq -e --arg closed "$DER_STATE_CLOSED" '
+      all(.data.repository.issue.blockedBy.nodes[]; .state == $closed)' >/dev/null 2>&1 || return "$DER_NOT_READY"
 	return 0
 }
 

@@ -14,6 +14,11 @@ EDIT_COUNT=0
 REREAD_LABELS="status:blocked"
 COMMENTS='[[]]'
 NATIVE_STATE="CLOSED"
+NATIVE_REPO="owner/repo"
+NATIVE_HAS_NEXT_PAGE=false
+NATIVE_NULL_NODE=false
+NATIVE_EXTRA_STATE=""
+NATIVE_EXTRA_REPO=""
 NATIVE_DIRECT=true
 SEARCH_AMBIGUOUS=false
 EXPLICIT_LABEL=true
@@ -93,6 +98,42 @@ blocker_reconcile_count() {
 	return 0
 }
 
+# Exercise the production GraphQL argument shape before replacing the search
+# helper with deterministic candidate fixtures. The deployed gh wrapper rejects
+# reusing `query` for both the document and a GraphQL variable.
+gh() {
+	local command="$1"
+	local flag=""
+	local value=""
+	local document_seen=false
+	local search_query_seen=false
+	shift
+	[[ "$command" == "api" && "${1:-}" == "graphql" ]] || return 1
+	shift
+	while [[ $# -gt 1 ]]; do
+		flag="$1"
+		value="$2"
+		shift 2
+		case "$flag" in
+		-f)
+			[[ "$value" == query=* ]] && document_seen=true
+			;;
+		-F)
+			[[ "$value" == query=* ]] && return 1
+			[[ "$value" == searchQuery=* ]] && search_query_seen=true
+			;;
+		esac
+	done
+	[[ "$document_seen" == "true" && "$search_query_seen" == "true" ]] || return 1
+	jq -cn '{data:{search:{issueCount:0,pageInfo:{hasNextPage:false},nodes:[]}}}'
+	return 0
+}
+
+search_transport_status=0
+search_transport_result=$(_der_search_issues "owner/repo" "repo:owner/repo is:issue is:open") || search_transport_status=$?
+assert_eq 0 "$search_transport_status" "search GraphQL document and variable use distinct form fields"
+assert_eq '[]' "$search_transport_result" "search transport preserves parsed empty candidate results"
+
 _der_search_issues() {
 	local repo="$1"
 	local query="$2"
@@ -112,6 +153,7 @@ _der_search_issues() {
 
 gh() {
 	local command="$1"
+	local nodes=""
 	shift
 	case "$command $1" in
 	"issue view")
@@ -128,7 +170,18 @@ gh() {
 		return 0
 		;;
 	"api graphql")
-		jq -cn --arg state "$NATIVE_STATE" '{data:{repository:{issue:{blockedBy:{nodes:[{number:10,state:$state,repository:{nameWithOwner:"owner/repo"}}],pageInfo:{hasNextPage:false}}}}}}'
+		if [[ "$NATIVE_NULL_NODE" == "true" ]]; then
+			nodes='[null]'
+		else
+			nodes=$(jq -cn --arg state "$NATIVE_STATE" --arg repo "$NATIVE_REPO" \
+				--arg extra_state "$NATIVE_EXTRA_STATE" --arg extra_repo "$NATIVE_EXTRA_REPO" '
+              [{number:10,state:$state,repository:{nameWithOwner:$repo}}]
+              + (if $extra_state == "" then [] else
+                  [{number:11,state:$extra_state,repository:{nameWithOwner:$extra_repo}}]
+                end)') || return 1
+		fi
+		jq -cn --argjson nodes "$nodes" --argjson has_next_page "$NATIVE_HAS_NEXT_PAGE" \
+			'{data:{repository:{issue:{blockedBy:{nodes:$nodes,pageInfo:{hasNextPage:$has_next_page}}}}}}'
 		return 0
 		;;
 	"api --paginate")
@@ -212,6 +265,17 @@ completion_status=0
 _der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
 assert_eq 0 "$completion_status" "completion accepts a positively closed task dependency"
 
+NATIVE_REPO="other/repo" NATIVE_EXTRA_STATE="CLOSED" NATIVE_EXTRA_REPO="owner/repo"
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq 0 "$completion_status" "completion accepts closed local and cross-repository native blockers"
+
+NATIVE_EXTRA_STATE="OPEN"
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq "$DER_NOT_READY" "$completion_status" "completion preserves an open cross-repository native blocker"
+NATIVE_REPO="owner/repo" NATIVE_EXTRA_STATE="" NATIVE_EXTRA_REPO=""
+
 completion_status=0
 _der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:#10,#11" || completion_status=$?
 assert_eq "$DER_NOT_READY" "$completion_status" "completion preserves a mixed closed and open dependency set"
@@ -225,6 +289,24 @@ completion_status=0
 _der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
 assert_eq "$DER_NOT_READY" "$completion_status" "completion preserves an open native dependency"
 NATIVE_STATE="CLOSED"
+
+NATIVE_REPO=""
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq 1 "$completion_status" "completion fails closed on a missing native blocker repository"
+NATIVE_REPO="owner/repo" NATIVE_STATE="UNKNOWN"
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq 1 "$completion_status" "completion fails closed on an unknown native blocker state"
+NATIVE_STATE="CLOSED" NATIVE_HAS_NEXT_PAGE=true
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq 1 "$completion_status" "completion fails closed on paginated native blockers"
+NATIVE_HAS_NEXT_PAGE=false NATIVE_NULL_NODE=true
+completion_status=0
+_der_completion_blockers_closed "owner/repo" 20 "- [ ] t20 delivered blocked-by:t10" || completion_status=$?
+assert_eq 1 "$completion_status" "completion fails closed on null native blocker nodes"
+NATIVE_NULL_NODE=false
 
 EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20="Blocked by #10" COMMENTS='[[]]'
 reconcile_stale_blocked_issues owner/repo >/dev/null 2>&1 || true
