@@ -30,6 +30,8 @@ source "$REPO_ROOT/.agents/scripts/setup/modules/agent-runtime.sh"
 source "$REPO_ROOT/.agents/scripts/setup/modules/schedulers-pulse.sh"
 # shellcheck source=../runtime-bundle-lease.sh
 source "$REPO_ROOT/.agents/scripts/runtime-bundle-lease.sh"
+# shellcheck source=../pulse-runtime-pin.sh
+source "$REPO_ROOT/.agents/scripts/pulse-runtime-pin.sh"
 
 _xml_escape() { local value="$1"; printf '%s' "$value"; return 0; }
 
@@ -66,6 +68,24 @@ assert_file_contains() {
 	local message="$3"
 	grep -q "$pattern" "$file" || fail "$message"
 	pass "$message"
+	return 0
+}
+
+write_pinnable_bundle_fixture() {
+	local agents_root="$1"
+	local bundle_id="$2"
+	local entrypoint=""
+	mkdir -p "$agents_root/scripts"
+	for entrypoint in \
+		pulse-runtime-pin.sh \
+		pulse-wrapper.sh \
+		pulse-lifecycle-helper.sh \
+		pulse-merge-routine.sh \
+		pulse-merge-webhook-receiver.sh; do
+		printf '#!/usr/bin/env bash\nexit 0\n' >"$agents_root/scripts/$entrypoint"
+		chmod +x "$agents_root/scripts/$entrypoint"
+	done
+	printf 'schema=1\nstatus=validated\nbundle_id=%s\n' "$bundle_id" >"$agents_root/.bundle-manifest"
 	return 0
 }
 
@@ -321,6 +341,7 @@ test_count_and_byte_pressure_preserve_protected_bundles() {
 	local active_root=""
 	local previous_root=""
 	local live_bundle="$bundles_dir/pressure-live"
+	local pinned_bundle="$bundles_dir/pressure-pinned"
 	local before_checksum=""
 	local after_checksum=""
 	active_root=$(_runtime_bundle_resolve_root "$target_dir")
@@ -332,17 +353,19 @@ test_count_and_byte_pressure_preserve_protected_bundles() {
 	mkdir -p "$live_bundle/agents" "$bundles_dir/.leases/pressure-live"
 	printf 'live\n' >"$live_bundle/agents/marker"
 	printf '%s\n' "$live_bundle/agents" >"$bundles_dir/.leases/pressure-live/$$"
+	write_pinnable_bundle_fixture "$pinned_bundle/agents" "pressure-pinned"
+	pulse_runtime_pin_set "$pinned_bundle/agents" "$(($(date +%s) + 600))" || fail "pressure fixture could not pin a runtime bundle"
 	mkdir -p "$bundles_dir/pressure-count-a/agents" "$bundles_dir/pressure-count-b/agents"
 	printf 'candidate-a\n' >"$bundles_dir/pressure-count-a/agents/marker"
 	printf 'candidate-b\n' >"$bundles_dir/pressure-count-b/agents/marker"
-	before_checksum=$(cksum "$active_root/scripts/helper.sh" "$previous_root/scripts/helper.sh" "$live_bundle/agents/marker")
+	before_checksum=$(cksum "$active_root/scripts/helper.sh" "$previous_root/scripts/helper.sh" "$live_bundle/agents/marker" "$pinned_bundle/agents/.bundle-manifest")
 
 	AIDEVOPS_RUNTIME_BUNDLE_RETENTION_SECONDS=999999999 \
 		AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT=3 \
 		AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES=999999999999 \
 		_runtime_bundle_prune "$bundles_dir" "$active_root" "$previous_root"
 	[[ ! -d "$bundles_dir/pressure-count-a" && ! -d "$bundles_dir/pressure-count-b" ]] || fail "count pressure did not converge unprotected bundles"
-	[[ -d "$active_root" && -d "$previous_root" && -d "$live_bundle" ]] || fail "count pressure removed a protected bundle"
+	[[ -d "$active_root" && -d "$previous_root" && -d "$live_bundle" && -d "$pinned_bundle" ]] || fail "count pressure removed a protected bundle"
 
 	mkdir -p "$bundles_dir/pressure-bytes/agents"
 	printf 'byte-pressure-candidate\n' >"$bundles_dir/pressure-bytes/agents/marker"
@@ -351,19 +374,23 @@ test_count_and_byte_pressure_preserve_protected_bundles() {
 		AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES=1 \
 		_runtime_bundle_prune "$bundles_dir" "$active_root" "$previous_root"
 	[[ ! -d "$bundles_dir/pressure-bytes" ]] || fail "byte pressure did not prune the unprotected candidate"
-	after_checksum=$(cksum "$active_root/scripts/helper.sh" "$previous_root/scripts/helper.sh" "$live_bundle/agents/marker")
+	after_checksum=$(cksum "$active_root/scripts/helper.sh" "$previous_root/scripts/helper.sh" "$live_bundle/agents/marker" "$pinned_bundle/agents/.bundle-manifest")
 	assert_eq "$before_checksum" "$after_checksum" "count and byte pressure preserve protected bundle byte identity"
+	pulse_runtime_pin_clear
 	return 0
 }
 
 test_runtime_bundle_inventory_explains_protection() {
 	local bundles_dir="$HOME/.aidevops/runtime-bundles"
 	local report_candidate="$bundles_dir/report-candidate"
+	local report_pinned="$bundles_dir/report-pinned"
 	local report=""
 	local before_checksum=""
 	local after_checksum=""
 	mkdir -p "$report_candidate/agents"
 	printf 'reclaimable-candidate\n' >"$report_candidate/agents/marker"
+	write_pinnable_bundle_fixture "$report_pinned/agents" "report-pinned"
+	pulse_runtime_pin_set "$report_pinned/agents" "$(($(date +%s) + 600))" || fail "inventory fixture could not pin a runtime bundle"
 	before_checksum=$(cksum "$report_candidate/agents/marker")
 	report=$(bash "$REPO_ROOT/.agents/scripts/storage-inventory-helper.sh" json)
 	after_checksum=$(cksum "$report_candidate/agents/marker")
@@ -371,6 +398,8 @@ test_runtime_bundle_inventory_explains_protection() {
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .protected_bytes > 0')" == "true" ]] || fail "runtime inventory omitted protected bytes"
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .reclaimable_bytes > 0')" == "true" ]] || fail "runtime inventory omitted unreferenced reclaimable bytes"
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .unknown_bytes')" == "0" ]] || fail "runtime inventory left classified bundles unknown"
+	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .protection_reasons[]' | grep -c 'active Pulse runtime pin')" -eq 1 ]] || fail "runtime inventory omitted the active Pulse pin reason"
+	pulse_runtime_pin_clear
 	pass "runtime inventory explains protected and reclaimable bundle bytes"
 	return 0
 }

@@ -66,6 +66,8 @@ run_restart_helper_with_stub() {
 	local output_dir="$4"
 	local restart_rc="${5:-0}"
 	local log_path="${output_dir}/pulse-helper.log"
+	local pin_root="${6:-}"
+	local stub_pin_rc="${7:-1}"
 	local helper_rc=0
 	mkdir -p "${output_dir}/.aidevops/agents/scripts"
 
@@ -83,6 +85,11 @@ run_restart_helper_with_stub() {
 		resolve_aidevops_runtime_bundle_root() {
 			local requested_root="$1"
 			printf '%s\n' "$requested_root"
+			return 0
+		}
+		pulse_runtime_pin_resolve() {
+			[[ -n "$pin_root" ]] || return "$stub_pin_rc"
+			printf '%s\n' "$pin_root"
 			return 0
 		}
 		_restart_pulse_if_running() {
@@ -154,6 +161,18 @@ test_skip_flag_suppresses_restart_and_start() {
 	return 0
 }
 
+test_active_runtime_pin_overrides_release_bundle() {
+	local output=""
+	local root="${TEST_DIR}/pinned/.aidevops/runtime-bundles/pinned/agents"
+	output="$(run_restart_helper_with_stub "0" "true" "" "${TEST_DIR}/pinned" "0" "$root")"
+	if [[ "$output" == "${root}|true|${root} " ]]; then
+		print_result "release deploy reconciles Pulse against its active runtime pin" 0
+		return 0
+	fi
+	print_result "release deploy reconciles Pulse against its active runtime pin" 1 "helper calls=${output}"
+	return 0
+}
+
 test_reconciliation_failure_blocks_setup_success() {
 	local output=""
 	local rc=0
@@ -168,6 +187,20 @@ test_reconciliation_failure_blocks_setup_success() {
 	return 0
 }
 
+test_invalid_runtime_pin_blocks_reconciliation() {
+	local output=""
+	local rc=0
+	output="$(run_restart_helper_with_stub "0" "true" "" "${TEST_DIR}/invalid-pin" "0" "" "2")" || rc=$?
+
+	if [[ "$rc" -eq 1 && -z "$output" ]]; then
+		print_result "release deploy fails closed on an invalid Pulse runtime pin" 0
+		return 0
+	fi
+
+	print_result "release deploy fails closed on an invalid Pulse runtime pin" 1 "rc=${rc} helper calls=${output}"
+	return 0
+}
+
 main() {
 	TEST_DIR="$(mktemp -d)"
 	trap cleanup EXIT
@@ -176,7 +209,9 @@ main() {
 	test_disabled_supervisor_is_forwarded_to_reconcile
 	test_scoped_deploy_resolves_existing_consent
 	test_skip_flag_suppresses_restart_and_start
+	test_active_runtime_pin_overrides_release_bundle
 	test_reconciliation_failure_blocks_setup_success
+	test_invalid_runtime_pin_blocks_reconciliation
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

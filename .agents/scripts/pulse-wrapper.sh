@@ -203,6 +203,15 @@ _pw_bootstrap_script_dir="$(_pulse_wrapper_resolve_script_dir "$_pw_source_path"
 	printf '[pulse-wrapper] FATAL: cannot resolve script directory for %s\n' "$_pw_source_path" >&2
 	return 2 2>/dev/null || exit 2
 }
+if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" && -r "${_pw_bootstrap_script_dir}/pulse-runtime-pin.sh" ]]; then
+	# shellcheck source=./pulse-runtime-pin.sh
+	source "${_pw_bootstrap_script_dir}/pulse-runtime-pin.sh"
+	pulse_runtime_pin_reexec "${_pw_bootstrap_script_dir%/scripts}" "scripts/pulse-wrapper.sh" "$@" || {
+		_pw_pin_rc=$?
+		return "$_pw_pin_rc" 2>/dev/null || exit "$_pw_pin_rc"
+	}
+	unset _pw_pin_rc
+fi
 source "${_pw_bootstrap_script_dir}/portable-stat.sh"
 # shellcheck source=./runtime-bundle-lease.sh
 source "${_pw_bootstrap_script_dir}/runtime-bundle-lease.sh"

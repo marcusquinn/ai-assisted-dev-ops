@@ -9,6 +9,10 @@ if [[ -f "$SCRIPT_DIR/shared-constants.sh" ]]; then
 	# shellcheck source=shared-constants.sh
 	source "$SCRIPT_DIR/shared-constants.sh"
 fi
+if [[ -f "$SCRIPT_DIR/pulse-runtime-pin.sh" ]]; then
+	# shellcheck source=pulse-runtime-pin.sh
+	source "$SCRIPT_DIR/pulse-runtime-pin.sh"
+fi
 # Read-only policy classifiers are sourced from each producer. Their apply
 # functions are never called by this inventory helper.
 # shellcheck source=setup/_backup.sh
@@ -393,6 +397,23 @@ _storage_bundle_lease_is_live() {
 	return 1
 }
 
+_storage_resolve_pinned_runtime_bundle() {
+	local pinned_agents_root=""
+	local pin_rc=1
+	[[ -n "${HOME:-}" ]] || return 1
+	declare -F pulse_runtime_pin_resolve >/dev/null 2>&1 || return 1
+	pinned_agents_root=$(pulse_runtime_pin_resolve 2>/dev/null) || pin_rc=$?
+	case "$pin_rc" in
+	0)
+		printf '%s\n' "${pinned_agents_root%/agents}"
+		return 0
+		;;
+	1 | 3) return 1 ;;
+	*) return 2 ;;
+	esac
+	return 1
+}
+
 _storage_emit_runtime_bundle_record() {
 	local bundles_dir="${HOME:+$HOME/.aidevops/runtime-bundles}"
 	local measured=""
@@ -404,6 +425,8 @@ _storage_emit_runtime_bundle_record() {
 	local unknown_bytes="null"
 	local active_bundle=""
 	local previous_bundle=""
+	local pinned_bundle=""
+	local pin_rc=1
 	local protected_list=$'\n'
 	local lease_dir=""
 	local leased_bundle=""
@@ -415,6 +438,8 @@ _storage_emit_runtime_bundle_record() {
 
 	measured=$(_storage_measure_path "$bundles_dir")
 	IFS='|' read -r total_bytes confidence error <<<"$measured"
+	pinned_bundle=$(_storage_resolve_pinned_runtime_bundle) || pin_rc=$?
+	[[ "$pin_rc" -ne 2 ]] || error="pulse-pin-reference-invalid"
 	if [[ "$total_bytes" == "0" ]]; then
 		unknown_bytes=0
 	elif [[ "$total_bytes" != "null" ]]; then
@@ -423,6 +448,9 @@ _storage_emit_runtime_bundle_record() {
 			unknown_bytes="$total_bytes"
 		else
 			protected_list+="${active_bundle}"$'\n'
+			if [[ -n "$pinned_bundle" ]]; then
+				[[ "$protected_list" == *$'\n'"${pinned_bundle}"$'\n'* ]] || protected_list+="${pinned_bundle}"$'\n'
+			fi
 			if [[ -L "${HOME}/.aidevops/previous-runtime-bundle" ]]; then
 				if previous_bundle=$(_storage_bundle_root_from_link "${HOME}/.aidevops/previous-runtime-bundle" "$bundles_dir"); then
 					[[ "$protected_list" == *$'\n'"${previous_bundle}"$'\n'* ]] || protected_list+="${previous_bundle}"$'\n'
@@ -483,7 +511,7 @@ _storage_emit_runtime_bundle_record() {
 		--argjson protected_bytes "$protected_bytes" \
 		--argjson reclaimable_bytes "$reclaimable_bytes" \
 		--argjson unknown_bytes "$unknown_bytes" \
-		'{store_id:"runtime-bundles",producer:"agent-deploy",path:"~/.aidevops/runtime-bundles",owner:$owner,safety_class:$safety_class,policy:"30-day age, 30-bundle count, and 8 GiB soft limits; references and live leases veto deletion",total_bytes:$total_bytes,protected_bytes:$protected_bytes,reclaimable_bytes:$reclaimable_bytes,unknown_bytes:$unknown_bytes,protection_reasons:["current bundle, previous rollback bundle, live leases, and lease metadata"],sizing_confidence:$confidence,next_action:"Use setup activation for policy-owned pruning; do not delete protected bundles manually",error:(if $error == "" or $error == "missing" then null else $error end)}'
+		'{store_id:"runtime-bundles",producer:"agent-deploy",path:"~/.aidevops/runtime-bundles",owner:$owner,safety_class:$safety_class,policy:"30-day age, 30-bundle count, and 8 GiB soft limits; references, an active Pulse runtime pin, and live leases veto deletion",total_bytes:$total_bytes,protected_bytes:$protected_bytes,reclaimable_bytes:$reclaimable_bytes,unknown_bytes:$unknown_bytes,protection_reasons:["current bundle, previous rollback bundle, active Pulse runtime pin, live leases, and lease metadata"],sizing_confidence:$confidence,next_action:"Use setup activation for policy-owned pruning; do not delete protected bundles manually",error:(if $error == "" or $error == "missing" then null else $error end)}'
 	return 0
 }
 

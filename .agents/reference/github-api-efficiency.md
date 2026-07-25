@@ -95,6 +95,42 @@ headers: a delta above one cannot distinguish the operation from another client.
 Partial attribution does not relax the benchmark's zero-unknown-cost
 comparability gate.
 
+### Pinning Pulse during controlled windows
+
+Framework releases may continue during a long observation, but Pulse must not
+change revisions inside either immutable window. Pin only Pulse to the current
+validated runtime bundle with a bounded TTL; normal aidevops activation and
+other interactive sessions continue using new releases:
+
+```bash
+~/.aidevops/agents/scripts/pulse-runtime-pin.sh set-current 108000
+./setup.sh --stage pulse --non-interactive
+```
+
+The pin file is private, has a hard 48-hour maximum, expires automatically, and
+protects its bundle from runtime pruning. The stable Pulse launcher, lifecycle
+helper, standalone merge routine, and webhook receiver re-enter the pinned
+bundle after an update or restart. An invalid non-expired pin blocks those
+entrypoints instead of silently running a different revision. Setup preserves
+installed Pulse schedulers while the pin is active. A controlled profile switch
+may refresh them explicitly without changing the pinned runtime:
+
+```bash
+AIDEVOPS_PULSE_RUNTIME_PIN_REFRESH_SCHEDULERS=1 \
+  ./setup.sh --stage pulse --non-interactive
+```
+
+Clear the pin and reconcile Pulse after capture or failure:
+
+```bash
+~/.aidevops/agents/scripts/pulse-runtime-pin.sh clear
+./setup.sh --stage pulse --non-interactive
+```
+
+Collectors must still bind reports to fixed activation/cutoff timestamps and
+fail closed on incomplete evidence. A Pulse pin does not authorize a release,
+relax quota attribution, or make concurrent uninstrumented API traffic exact.
+
 ### Evidence sidecar
 
 Each transport aggregate has one sidecar using

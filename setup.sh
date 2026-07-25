@@ -351,6 +351,8 @@ unset _setup_script_dir
 SETUP_IMPL_MODULES_DIR="${SETUP_MODULES_DIR}/modules"
 # shellcheck source=.agents/scripts/runtime-bundle-verifier.sh
 source "${INSTALL_DIR}/.agents/scripts/runtime-bundle-verifier.sh"
+# shellcheck source=.agents/scripts/pulse-runtime-pin.sh
+source "${INSTALL_DIR}/.agents/scripts/pulse-runtime-pin.sh"
 # shellcheck disable=SC1091  # Dynamic path via $SETUP_IMPL_MODULES_DIR
 source "${SETUP_IMPL_MODULES_DIR}/core.sh"
 # shellcheck disable=SC1091
@@ -1889,6 +1891,8 @@ _setup_restart_pulse_if_running() {
 
 	local activated_root="${_AIDEVOPS_ACTIVE_BUNDLE_ROOT:-}"
 	local current_root=""
+	local pin_rc=0
+	local pulse_active_link="${HOME}/.aidevops/agents"
 	local managed_enabled="${PULSE_ENABLED:-}"
 	local configured_pulse_consent=""
 	if [[ "$managed_enabled" != "true" && "$managed_enabled" != "false" ]]; then
@@ -1900,8 +1904,22 @@ _setup_restart_pulse_if_running() {
 		*) managed_enabled=false ;;
 		esac
 	fi
-	if current_root=$(resolve_aidevops_runtime_bundle_root "${HOME}/.aidevops/agents"); then
+	if current_root=$(pulse_runtime_pin_resolve 2>/dev/null); then
 		activated_root="$current_root"
+		pulse_active_link="$current_root"
+	else
+		pin_rc=$?
+		case "$pin_rc" in
+		1 | 3)
+			if current_root=$(resolve_aidevops_runtime_bundle_root "${HOME}/.aidevops/agents"); then
+				activated_root="$current_root"
+			fi
+			;;
+		*)
+			print_error "Pulse reconciliation refused an invalid runtime pin; clear or repair the private pin file"
+			return 1
+			;;
+		esac
 	fi
 	if [[ -z "$activated_root" ]]; then
 		print_error "Pulse reconciliation failed because the activated runtime bundle could not be resolved"
@@ -1910,7 +1928,7 @@ _setup_restart_pulse_if_running() {
 	if ! _restart_pulse_if_running \
 		"$activated_root" \
 		"$managed_enabled" \
-		"${HOME}/.aidevops/agents"; then
+		"$pulse_active_link"; then
 		print_error "Pulse reconciliation failed; setup cannot verify the activated runtime bundle"
 		return 1
 	fi

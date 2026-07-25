@@ -53,9 +53,36 @@ set -euo pipefail
 
 # Paths
 _PULSE_AGENTS_DIR="${AIDEVOPS_AGENTS_DIR:-${HOME}/.aidevops/agents}"
+_PULSE_ACTIVE_AGENTS_LINK="${AIDEVOPS_ACTIVE_AGENTS_LINK:-${HOME}/.aidevops/agents}"
+_PULSE_BOOTSTRAP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+_PULSE_RUNTIME_PIN_HELPER="${_PULSE_BOOTSTRAP_SCRIPT_DIR}/pulse-runtime-pin.sh"
+if [[ -r "$_PULSE_RUNTIME_PIN_HELPER" ]]; then
+	# shellcheck source=./pulse-runtime-pin.sh
+	source "$_PULSE_RUNTIME_PIN_HELPER"
+	if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]]; then
+		pulse_runtime_pin_reexec "${_PULSE_BOOTSTRAP_SCRIPT_DIR%/scripts}" "scripts/pulse-lifecycle-helper.sh" "$@" || {
+			_PULSE_PIN_RC=$?
+			exit "$_PULSE_PIN_RC"
+		}
+	fi
+	_PULSE_PIN_RC=0
+	if _PULSE_PINNED_ROOT=$(pulse_runtime_pin_resolve 2>/dev/null); then
+		_PULSE_AGENTS_DIR="$_PULSE_PINNED_ROOT"
+		_PULSE_ACTIVE_AGENTS_LINK="$_PULSE_PINNED_ROOT"
+	else
+		_PULSE_PIN_RC=$?
+		case "$_PULSE_PIN_RC" in
+		1 | 3) ;;
+		*)
+			printf '[pulse-lifecycle] FATAL: Pulse runtime pin is invalid\n' >&2
+			return 2 2>/dev/null || exit 2
+			;;
+		esac
+	fi
+fi
+unset _PULSE_BOOTSTRAP_SCRIPT_DIR _PULSE_RUNTIME_PIN_HELPER _PULSE_PINNED_ROOT _PULSE_PIN_RC
 _PULSE_SCRIPT="${_PULSE_AGENTS_DIR}/scripts/pulse-wrapper.sh"
 _PULSE_LOG="${HOME}/.aidevops/logs/pulse-wrapper.log"
-_PULSE_ACTIVE_AGENTS_LINK="${AIDEVOPS_ACTIVE_AGENTS_LINK:-${HOME}/.aidevops/agents}"
 
 # Process-match pattern for pgrep. The production default matches any
 # pulse-wrapper.sh script regardless of path. Tests may override this to

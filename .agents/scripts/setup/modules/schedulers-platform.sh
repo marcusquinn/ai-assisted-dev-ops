@@ -451,8 +451,26 @@ _install_pulse_merge_routine_linux() {
 setup_pulse_merge_routine() {
 	local pmr_wrapper="$HOME/.aidevops/agents/scripts/pulse-merge-routine.sh"
 	local pmr_label="com.aidevops.aidevops-supervisor-merge"
+	local legacy_pmr_label="sh.aidevops.pulse-merge-routine"
+	local pmr_installed=false
+	local pin_scheduler_rc=0
 	if ! [[ -x "$pmr_wrapper" ]]; then
 		return 0
+	fi
+	if _launchd_has_agent "$pmr_label" || _launchd_has_agent "$legacy_pmr_label"; then
+		pmr_installed=true
+	elif command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "pulse-merge-routine"; then
+		pmr_installed=true
+	elif command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled "aidevops-pulse-merge.timer" >/dev/null 2>&1; then
+		pmr_installed=true
+	fi
+	_pulse_runtime_pin_preserves_scheduler "$pmr_installed" || pin_scheduler_rc=$?
+	if [[ "$pin_scheduler_rc" -eq 0 ]]; then
+		print_info "Pulse merge scheduler preserved while its bounded runtime pin is active"
+		return 0
+	elif [[ "$pin_scheduler_rc" -ne 1 ]]; then
+		print_error "Pulse merge scheduler refused an invalid runtime pin"
+		return 1
 	fi
 
 	# Reuse contribution-watch's log-dir resolver (same logic, same config key).

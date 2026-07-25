@@ -618,6 +618,24 @@ _schedulers_record_template_hash() {
 	return 0
 }
 
+_pulse_runtime_pin_preserves_scheduler() {
+	local pulse_installed="$1"
+	local pinned_root=""
+	local pin_rc=0
+	declare -F pulse_runtime_pin_resolve >/dev/null 2>&1 || return 1
+	pinned_root=$(pulse_runtime_pin_resolve 2>/dev/null) || pin_rc=$?
+	case "$pin_rc" in
+	0)
+		[[ "${AIDEVOPS_PULSE_RUNTIME_PIN_REFRESH_SCHEDULERS:-0}" != "1" ]] || return 1
+		[[ -n "$pinned_root" && "$pulse_installed" == "true" ]] || return 1
+		return 0
+		;;
+	1 | 3) return 1 ;;
+	*) return 2 ;;
+	esac
+	return 1
+}
+
 setup_supervisor_pulse() {
 	local _os="$1"
 
@@ -653,6 +671,7 @@ setup_supervisor_pulse() {
 	# Detect if pulse is already installed (for upgrade messaging)
 	# Uses shared helper to check launchd, cron, and systemd (GH#17381)
 	local _pulse_installed=false
+	local _pin_scheduler_rc=0
 	if _is_pulse_installed "$pulse_label"; then
 		_pulse_installed=true
 	fi
@@ -662,7 +681,15 @@ setup_supervisor_pulse() {
 	opencode_bin=$(_resolve_pulse_runtime_binary)
 
 	if [[ "$_do_install" == "true" ]]; then
-		_install_supervisor_pulse "$_os" "$pulse_label" "$wrapper_script" "$opencode_bin" "$_pulse_installed"
+		_pulse_runtime_pin_preserves_scheduler "$_pulse_installed" || _pin_scheduler_rc=$?
+		if [[ "$_pin_scheduler_rc" -eq 0 ]]; then
+			print_info "Supervisor pulse scheduler preserved while its bounded runtime pin is active"
+		elif [[ "$_pin_scheduler_rc" -eq 1 ]]; then
+			_install_supervisor_pulse "$_os" "$pulse_label" "$wrapper_script" "$opencode_bin" "$_pulse_installed"
+		else
+			print_error "Supervisor pulse scheduler refused an invalid runtime pin"
+			return 1
+		fi
 	elif [[ "$_pulse_lower" == "false" && "$_pulse_installed" == "true" ]]; then
 		# User explicitly disabled but pulse is still installed — clean up
 		_uninstall_pulse "$_os" "$pulse_label"

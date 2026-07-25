@@ -51,6 +51,14 @@ unset _aidevops_path_prefix
 
 # SCRIPT_DIR resolution — uses BASH_SOURCE[0]:-$0 for zsh portability (GH#3931).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [[ -r "${SCRIPT_DIR}/pulse-runtime-pin.sh" ]]; then
+	# shellcheck source=./pulse-runtime-pin.sh
+	source "${SCRIPT_DIR}/pulse-runtime-pin.sh"
+	pulse_runtime_pin_reexec "${SCRIPT_DIR%/scripts}" "scripts/pulse-merge-routine.sh" "$@" || exit $?
+fi
+AIDEVOPS_AGENTS_DIR="${SCRIPT_DIR%/scripts}"
+AGENTS_DIR="$AIDEVOPS_AGENTS_DIR"
+export AIDEVOPS_AGENTS_DIR AGENTS_DIR
 
 # GH#24900: launchd/cron PATH repair must not bypass the aidevops gh shim.
 # Keep the framework script directory first so standalone merge runs inherit

@@ -897,6 +897,8 @@ _runtime_bundle_prune() {
 	local modified=""
 	local bundle_bytes=""
 	local candidate_rows=""
+	local pinned_root=""
+	local pin_rc=0
 	local total_count=0
 	local total_bytes=0
 	local bytes_known=1
@@ -906,6 +908,16 @@ _runtime_bundle_prune() {
 	max_count=$(_runtime_bundle_numeric_limit "${AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT:-30}" 30)
 	max_bytes=$(_runtime_bundle_numeric_limit "${AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES:-8589934592}" 8589934592)
 	now=$(date +%s) || return 1
+	if declare -F pulse_runtime_pin_resolve >/dev/null 2>&1; then
+		pinned_root=$(pulse_runtime_pin_resolve 2>/dev/null) || pin_rc=$?
+		case "$pin_rc" in
+		0 | 1 | 3) ;;
+		*)
+			print_warning "Skipping runtime bundle pruning because the Pulse runtime pin is invalid"
+			return 0
+			;;
+		esac
+	fi
 
 	for candidate_dir in "$bundles_dir"/*; do
 		[[ -d "$candidate_dir/agents" ]] || continue
@@ -917,7 +929,7 @@ _runtime_bundle_prune() {
 			bundle_bytes=0
 			bytes_known=0
 		fi
-		[[ "$candidate_agents_root" == "$active_root" || "$candidate_agents_root" == "$previous_root" ]] && continue
+		[[ "$candidate_agents_root" == "$active_root" || "$candidate_agents_root" == "$previous_root" || "$candidate_agents_root" == "$pinned_root" ]] && continue
 		bundle_id="${candidate_dir##*/}"
 		if _runtime_bundle_has_live_lease "$bundles_dir/.leases/$bundle_id"; then
 			continue
