@@ -60,6 +60,10 @@ This is a `parent-task`. Planning and intermediate child PRs use a non-closing
 reference to the parent. Only the final child may close the parent after every
 declared phase is filed, merged, and verified.
 
+Keep the `parent-task` label as the permanent parent dispatch block. Do not add
+`no-auto-dispatch`: `shared-phase-filing.sh` interprets that label as an explicit
+opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
+
 ## Seeded Draft PR
 
 - **Decision:** Skipped
@@ -122,8 +126,8 @@ declared phase is filed, merged, and verified.
 ### Implementation Steps
 
 1. Land this parent plan and brief without changing runtime behavior.
-2. Let parent reconciliation file Phase 1 as a native child issue after the
-   planning state is canonical.
+2. Keep the parent blocked by `parent-task`, without `no-auto-dispatch`, and let
+   parent reconciliation file Phase 1 after the planning state is canonical.
 3. Before each child is dispatchable, re-run memory recall, duplicate discovery,
    file-reference verification, task-tier validation, and brief readiness.
 4. Preserve sequential GitHub dependencies so only one schema-changing leaf is

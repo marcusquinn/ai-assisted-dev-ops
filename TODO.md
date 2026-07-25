@@ -1202,7 +1202,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18175 Clarify self-improvement auto-dispatch authority boundary #documentation ref:GH#28582
 
-- [ ] t18176 Plan secure personal and shared social knowledge corpora #parent-task #no-auto-dispatch #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md]
+- [ ] t18176 Plan secure personal and shared social knowledge corpora #parent-task #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md]
 
 ## In Progress
 
