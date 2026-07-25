@@ -30,8 +30,8 @@ require_runtime() {
 		printf 'ERROR: python3 is required for the corpus catalog\n' >&2
 		return 1
 	fi
-	if [[ ! -f "$PYTHON_HELPER" ]]; then
-		printf 'ERROR: corpus catalog implementation missing: %s\n' "$PYTHON_HELPER" >&2
+	if [[ ! -r "$PYTHON_HELPER" ]]; then
+		printf 'ERROR: corpus catalog implementation missing or unreadable: %s\n' "$PYTHON_HELPER" >&2
 		return 1
 	fi
 	return 0

@@ -184,6 +184,10 @@ test_personal_mode() {
 	assert_file "${personal_base}/catalog.db" "3.3 personal catalog.db created"
 	assert_file "${personal_base}/_config/principal.json" "3.4 principal context created"
 	assert_not_dir "${tmp_dir}/repo/_knowledge" "3.5 no in-repo _knowledge in personal mode"
+	local marker_file="${personal_base}/_knowledge/sources/legacy-marker.txt"
+	printf 'preserved\n' >"$marker_file"
+	REPOS_FILE="$repos_file" PERSONAL_PLANE_BASE="$personal_base" bash "$HELPER" provision "${tmp_dir}/repo"
+	assert_file "$marker_file" "3.6 repeated provision preserves legacy personal content"
 	rm -rf "$tmp_dir"
 	trap - EXIT
 	return 0

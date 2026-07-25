@@ -265,8 +265,8 @@ _provision_personal_plane() {
 		_write_config "${base_dir}/${KNOWLEDGE_ROOT}"
 		print_success "Provisioned: ${base_dir}/${KNOWLEDGE_ROOT}"
 	fi
-	if [[ ! -f "$CORPUS_HELPER" ]]; then
-		print_error "Corpus catalog helper not found at $CORPUS_HELPER"
+	if [[ ! -r "$CORPUS_HELPER" ]]; then
+		print_error "Corpus catalog helper not found or not readable at $CORPUS_HELPER"
 		return 1
 	fi
 	bash "$CORPUS_HELPER" provision --base "$base_dir" || return 1
@@ -462,8 +462,8 @@ _cmd_add_resolve_knowledge_root() {
 		echo "${repo_path}/${KNOWLEDGE_ROOT}"
 		;;
 	personal)
-		if [[ ! -f "$CORPUS_HELPER" ]]; then
-			print_error "Corpus catalog helper not found at $CORPUS_HELPER"
+		if [[ ! -r "$CORPUS_HELPER" ]]; then
+			print_error "Corpus catalog helper not found or not readable at $CORPUS_HELPER"
 			return 1
 		fi
 		bash "$CORPUS_HELPER" resolve \
