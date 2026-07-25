@@ -826,3 +826,76 @@ else
 	printf 'FAIL repeated synchronization duplicated evidence or lost auditability\n'
 	exit 1
 fi
+
+UPDATE_REMOTE="${ROOT}/update-remote.git"
+UPDATE_REPO="${ROOT}/update-repo"
+UPDATE_PEER="${ROOT}/update-peer"
+UPDATE_BACKUPS="${ROOT}/update-backups"
+mkdir -p "$UPDATE_REPO"
+/usr/bin/git init -q --bare "$UPDATE_REMOTE"
+/usr/bin/git -C "$UPDATE_REPO" init -q -b main
+/usr/bin/git -C "$UPDATE_REPO" config user.name Test
+/usr/bin/git -C "$UPDATE_REPO" config user.email test@example.invalid
+/usr/bin/git -C "$UPDATE_REPO" config commit.gpgsign false
+printf 'update seed\n' >"${UPDATE_REPO}/README.md"
+/usr/bin/git -C "$UPDATE_REPO" add README.md
+/usr/bin/git -C "$UPDATE_REPO" commit -q -m seed
+/usr/bin/git -C "$UPDATE_REPO" remote add origin "$UPDATE_REMOTE"
+/usr/bin/git -C "$UPDATE_REPO" push -q -u origin main
+/usr/bin/git -C "$UPDATE_REMOTE" symbolic-ref HEAD refs/heads/main
+/usr/bin/git -C "$UPDATE_REPO" remote set-head origin main
+/usr/bin/git clone -q "$UPDATE_REMOTE" "$UPDATE_PEER"
+/usr/bin/git -C "$UPDATE_PEER" config user.name Test
+/usr/bin/git -C "$UPDATE_PEER" config user.email test@example.invalid
+
+printf 'old retained state\n' >"${UPDATE_REPO}/old-untracked.txt"
+old_backup_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" \
+	bash "$DIRTY_HELPER" backup --repo "$UPDATE_REPO" --operation-id old-update --machine)
+IFS='|' read -r old_backup_id old_backup_dir <<<"$old_backup_output"
+AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" \
+	bash "$DIRTY_HELPER" clean --repo "$UPDATE_REPO" --backup "$old_backup_id" \
+	--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP >/dev/null
+AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" bash "$DIRTY_HELPER" acknowledge \
+	--backup "$old_backup_id" --confirm ACKNOWLEDGE_DIRTY_WORKTREE_BACKUP >/dev/null
+touch -t 202001010000 "$old_backup_dir"
+
+printf 'remote update\n' >"${UPDATE_PEER}/remote.txt"
+/usr/bin/git -C "$UPDATE_PEER" add remote.txt
+/usr/bin/git -C "$UPDATE_PEER" commit -q -m 'remote update'
+/usr/bin/git -C "$UPDATE_PEER" push -q origin main
+update_remote_tip=$(/usr/bin/git -C "$UPDATE_REMOTE" rev-parse refs/heads/main)
+printf 'current retained state\n' >"${UPDATE_REPO}/current-untracked.txt"
+
+update_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" \
+	bash "$HELPER" sync-mirror --repo "$UPDATE_REPO" --reason aidevops-update \
+	--confirm SYNCHRONIZE_CANONICAL_MIRROR 2>&1)
+update_backup_id=""
+while IFS= read -r update_line; do
+	case "$update_line" in
+	PRESERVED_BACKUP_ID=*) update_backup_id="${update_line#PRESERVED_BACKUP_ID=}" ;;
+	esac
+done <<<"$update_output"
+update_backup_dir="${UPDATE_BACKUPS}/${update_backup_id}"
+if [[ "$update_output" == *"SYNCHRONIZED_CANONICAL_MIRROR=true"* ]] &&
+	[[ "$update_output" == *"RESTORE_COMMAND="* ]] &&
+	[[ "$(/usr/bin/git -C "$UPDATE_REPO" rev-parse HEAD)" == "$update_remote_tip" ]] &&
+	[[ -z "$(/usr/bin/git -C "$UPDATE_REPO" status --porcelain=v1)" ]] &&
+	[[ "$(awk -F '\t' '$1 == "state" { print $2 }' "$update_backup_dir/manifest.tsv")" == "acknowledged" ]] &&
+	[[ ! -d "$old_backup_dir" ]]; then
+	printf 'PASS routine update preserves untracked state, acknowledges reusable evidence, and prunes backups older than 30 days\n'
+else
+	printf 'FAIL routine update did not preserve, acknowledge, or prune backup evidence safely\n'
+	exit 1
+fi
+
+AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" \
+	bash "$DIRTY_HELPER" restore --repo "$UPDATE_REPO" --backup "$update_backup_id" \
+	--confirm RESTORE_DIRTY_WORKTREE_BACKUP >/dev/null
+if [[ -f "${UPDATE_REPO}/current-untracked.txt" ]] &&
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$UPDATE_BACKUPS" \
+		bash "$DIRTY_HELPER" matches --repo "$UPDATE_REPO" --backup "$update_backup_id" >/dev/null; then
+	printf 'PASS routine update backup remains byte-restorable during the retention window\n'
+else
+	printf 'FAIL routine update backup did not restore the original untracked state\n'
+	exit 1
+fi

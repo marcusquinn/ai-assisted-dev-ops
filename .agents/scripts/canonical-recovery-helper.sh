@@ -3,11 +3,13 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 set -euo pipefail
+# Supports: sync-mirror --repo PATH --reason aidevops-update
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 FAST_FORWARD_CMD="fast-forward-current"
 SYNC_MIRROR_CMD="sync-mirror"
 CLEAR_STALE_REBASE_CMD="clear-stale-rebase"
 CLEAR_ABANDONED_REBASE_CMD="clear-abandoned-rebase"
+AIDEVOPS_UPDATE_REASON="aidevops-update"
 ABANDONED_REBASE_MIN_AGE_SECONDS=86400
 ABANDONED_REBASE_KIND="abandoned"
 HEAD_COMMIT_EXPR='HEAD^{commit}'
@@ -265,8 +267,9 @@ usage() {
 		"  canonical-recovery-helper.sh ${CLEAR_STALE_REBASE_CMD} --repo PATH --issue N --confirm CLEAR_CONVERGED_STALE_REBASE" \
 		"  canonical-recovery-helper.sh ${CLEAR_ABANDONED_REBASE_CMD} --repo PATH --issue N --confirm CLEAR_ABANDONED_STALE_REBASE" \
 		"  canonical-recovery-helper.sh ${FAST_FORWARD_CMD} --repo PATH --branch BRANCH --issue N --confirm FAST_FORWARD_CANONICAL_BRANCH" \
-		"  canonical-recovery-helper.sh ${FAST_FORWARD_CMD} --repo PATH --branch BRANCH --reason aidevops-update --confirm FAST_FORWARD_CANONICAL_BRANCH" \
-		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --issue N --confirm SYNCHRONIZE_CANONICAL_MIRROR"
+		"  canonical-recovery-helper.sh ${FAST_FORWARD_CMD} --repo PATH --branch BRANCH --reason ${AIDEVOPS_UPDATE_REASON} --confirm FAST_FORWARD_CANONICAL_BRANCH" \
+		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --issue N --confirm SYNCHRONIZE_CANONICAL_MIRROR" \
+		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --reason ${AIDEVOPS_UPDATE_REASON} --confirm SYNCHRONIZE_CANONICAL_MIRROR"
 	return 0
 }
 
@@ -353,7 +356,8 @@ esac
 }
 if [[ "$issue_number" =~ ^[0-9]+$ && -z "$maintenance_reason" ]]; then
 	audit_reference="issue ${issue_number}"
-elif [[ -z "$issue_number" && "$cmd" == "$FAST_FORWARD_CMD" && "$maintenance_reason" == "aidevops-update" ]]; then
+elif [[ -z "$issue_number" && ("$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD") &&
+	"$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 	audit_reference="reason ${maintenance_reason}"
 else
 	usage
@@ -444,6 +448,20 @@ local_sha=$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${local_ref}^{commit
 	printf 'BLOCKED: local %s tip cannot be resolved\n' "$target_branch" >&2
 	exit 1
 }
+if [[ "$cmd" == "$SYNC_MIRROR_CMD" && "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
+	tracked_status=$("$REAL_GIT" -C "$repo_path" status --porcelain=v1 --untracked-files=no) || {
+		printf 'BLOCKED: canonical tracked/index state cannot be read safely\n' >&2
+		exit 1
+	}
+	[[ -z "$tracked_status" ]] || {
+		printf 'BLOCKED: routine update synchronization accepts untracked-only state\n' >&2
+		exit 1
+	}
+	"$REAL_GIT" -C "$repo_path" merge-base --is-ancestor "$local_ref" "$target_sha" || {
+		printf 'BLOCKED: routine update synchronization will not replace local commits\n' >&2
+		exit 1
+	}
+fi
 
 stale_rebase_dir=""
 stale_rebase_fingerprint=""
@@ -575,10 +593,11 @@ if [[ "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 			printf 'BLOCKED: dirty-worktree backup helper is unavailable\n' >&2
 			exit 1
 		}
+		backup_operation_key="${issue_number:-$maintenance_reason}"
 		backup_output=$(AIDEVOPS_REAL_GIT_BIN="$REAL_GIT" bash "$backup_helper" backup \
 			--repo "$repo_path" --reason "canonical mirror synchronization" \
 			--issue "$issue_number" \
-			--operation-id "canonical-sync-${issue_number}-${target_sha}" --machine) || {
+			--operation-id "canonical-sync-${backup_operation_key}-${target_sha}" --machine) || {
 			printf 'BLOCKED: canonical dirty state could not be preserved\n' >&2
 			exit 1
 		}
@@ -998,6 +1017,18 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 	[[ "$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${remote_ref}^{commit}")" == "$target_sha" ]] || exit 1
 	[[ -z "$("$REAL_GIT" -C "$repo_path" status --porcelain)" ]] || exit 1
 	if [[ "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
+		if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" && -n "$sync_backup_id" ]]; then
+			retention_days="${AIDEVOPS_DIRTY_BACKUP_RETENTION_DAYS:-30}"
+			[[ "$retention_days" =~ ^[0-9]+$ ]] || retention_days=30
+			if ! AIDEVOPS_REAL_GIT_BIN="$REAL_GIT" bash "$backup_helper" acknowledge \
+				--backup "$sync_backup_id" --confirm ACKNOWLEDGE_DIRTY_WORKTREE_BACKUP >/dev/null; then
+				printf 'WARNING: synchronized backup remains open and requires manual acknowledgement: %s\n' \
+					"$sync_backup_id" >&2
+			elif ! AIDEVOPS_REAL_GIT_BIN="$REAL_GIT" bash "$backup_helper" prune \
+				--force --retention-days "$retention_days" >/dev/null; then
+				printf 'WARNING: synchronized mirror succeeded but expired backup pruning failed\n' >&2
+			fi
+		fi
 		printf 'SYNCHRONIZED_CANONICAL_MIRROR=true\n'
 		printf 'OLD_SHA=%s\n' "$local_sha"
 		printf 'NEW_SHA=%s\n' "$target_sha"

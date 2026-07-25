@@ -708,8 +708,8 @@ backup_age_days() {
 	local now_epoch=""
 	local backup_epoch=""
 	now_epoch=$(date +%s)
-	if command -v portable_stat_mtime >/dev/null 2>&1; then
-		backup_epoch=$(portable_stat_mtime "$backup_dir" 2>/dev/null || printf '%s' "$now_epoch")
+	if command -v _file_mtime_epoch >/dev/null 2>&1; then
+		backup_epoch=$(_file_mtime_epoch "$backup_dir" 2>/dev/null || printf '%s' "$now_epoch")
 	else
 		backup_epoch="$now_epoch"
 	fi

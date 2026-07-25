@@ -33,6 +33,18 @@ fi
 
 _AIDEVOPS_UPDATE_TRUE=true
 
+_update_canonical_has_untracked_only() {
+	local real_git="$1"
+	local repo_path="$2"
+	local tracked_status=""
+	local untracked_files=""
+	tracked_status=$("$real_git" -C "$repo_path" status --porcelain=v1 --untracked-files=no 2>/dev/null) || return 1
+	[[ -z "$tracked_status" ]] || return 1
+	untracked_files=$("$real_git" -C "$repo_path" ls-files --others --exclude-standard 2>/dev/null) || return 1
+	[[ -n "$untracked_files" ]]
+	return $?
+}
+
 _update_fetch_main() {
 	local branch="$1"
 	_AIDEVOPS_UPDATE_CANONICAL_FAST_FORWARDED=false
@@ -53,7 +65,7 @@ _update_fetch_main() {
 	local stable_helper="${HOME}/.aidevops/agents/scripts/canonical-recovery-helper.sh"
 	for candidate in "$bundled_helper" "$source_helper" "$stable_helper"; do
 		[[ -f "$candidate" ]] || continue
-		if grep -q -- '--reason aidevops-update' "$candidate" 2>/dev/null; then
+		if grep -q -- 'sync-mirror.*--reason aidevops-update' "$candidate" 2>/dev/null; then
 			helper="$candidate"
 			break
 		fi
@@ -64,10 +76,27 @@ _update_fetch_main() {
 		return 1
 	fi
 
-	print_info "Using audited canonical fast-forward for the source checkout..."
-	if ! AIDEVOPS_REAL_GIT_BIN="$real_git" bash "$helper" fast-forward-current \
-		--repo "$INSTALL_DIR" --branch "$branch" --reason aidevops-update \
-		--confirm FAST_FORWARD_CANONICAL_BRANCH; then
+	local recovery_command="fast-forward-current"
+	local recovery_confirmation="FAST_FORWARD_CANONICAL_BRANCH"
+	local status_output=""
+	status_output=$("$real_git" -C "$INSTALL_DIR" status --porcelain=v1 2>/dev/null) || return 1
+	if [[ -n "$status_output" ]]; then
+		if ! _update_canonical_has_untracked_only "$real_git" "$INSTALL_DIR"; then
+			print_error "Audited canonical update requires a clean tracked/index state."
+			return 1
+		fi
+		recovery_command="sync-mirror"
+		recovery_confirmation="SYNCHRONIZE_CANONICAL_MIRROR"
+		print_info "Preserving untracked canonical files before the audited update..."
+	else
+		print_info "Using audited canonical fast-forward for the source checkout..."
+	fi
+	local recovery_args=("$recovery_command" --repo "$INSTALL_DIR")
+	if [[ "$recovery_command" == "fast-forward-current" ]]; then
+		recovery_args+=(--branch "$branch")
+	fi
+	recovery_args+=(--reason aidevops-update --confirm "$recovery_confirmation")
+	if ! AIDEVOPS_REAL_GIT_BIN="$real_git" bash "$helper" "${recovery_args[@]}"; then
 		print_error "Audited canonical fast-forward failed; no update was deployed."
 		return 1
 	fi

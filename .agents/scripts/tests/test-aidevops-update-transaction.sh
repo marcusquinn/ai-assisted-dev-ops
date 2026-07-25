@@ -53,6 +53,10 @@ for function_name in _update_verify_deployment_state _run_update_setup_transacti
 done
 extract_function _update_fetch_main "$TEST_ROOT/_update_fetch_main.sh" \
 	"$REPO_ROOT/.agents/scripts/aidevops-cli/aidevops-update-lib.sh"
+extract_function _update_canonical_has_untracked_only "$TEST_ROOT/_update_canonical_has_untracked_only.sh" \
+	"$REPO_ROOT/.agents/scripts/aidevops-cli/aidevops-update-lib.sh"
+# shellcheck source=/dev/null
+source "$TEST_ROOT/_update_canonical_has_untracked_only.sh"
 # shellcheck source=/dev/null
 source "$TEST_ROOT/_update_fetch_main.sh"
 
@@ -335,6 +339,7 @@ INTEGRATION_REPO="$TEST_ROOT/integration-repo"
 INTEGRATION_PEER="$TEST_ROOT/integration-peer"
 SETUP_CALLS="$TEST_ROOT/setup-calls"
 CANONICAL_HELPER_CALLS="$TEST_ROOT/canonical-helper-calls"
+UPDATE_HELPER_DIR="$TEST_ROOT/update-helper"
 /usr/bin/git init -q --bare -b main "$INTEGRATION_REMOTE"
 /usr/bin/git init -q -b main "$INTEGRATION_REPO"
 /usr/bin/git -C "$INTEGRATION_REPO" config user.email test@example.invalid
@@ -354,12 +359,14 @@ printf 'updated\n' >"$INTEGRATION_PEER/runtime.txt"
 /usr/bin/git -C "$INTEGRATION_PEER" push -q origin main
 REMOTE_SHA=$(/usr/bin/git -C "$INTEGRATION_PEER" rev-parse HEAD)
 
-mkdir -p "$INTEGRATION_REPO/.agents/scripts"
-cat >"$INTEGRATION_REPO/.agents/scripts/canonical-recovery-helper.sh" <<'EOF'
+mkdir -p "$UPDATE_HELPER_DIR"
+cat >"$UPDATE_HELPER_DIR/canonical-recovery-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-# Supports: --reason aidevops-update
+# Supports: sync-mirror --repo PATH --reason aidevops-update
 set -euo pipefail
 printf '%s\n' "$*" >>"$CANONICAL_HELPER_CALLS"
+command_name="$1"
+shift
 repo=""
 branch=""
 while [[ $# -gt 0 ]]; do
@@ -368,12 +375,22 @@ while [[ $# -gt 0 ]]; do
 	--branch) branch="$2"; shift 2 ;;
 	*) shift ;;
 	esac
-done
+	done
+if [[ "$command_name" == "sync-mirror" ]]; then
+	branch="main"
+	mkdir -p "$HOME/untracked-update-backup"
+	while IFS= read -r untracked_path; do
+		[[ -n "$untracked_path" ]] || continue
+	cp "$repo/$untracked_path" "$HOME/untracked-update-backup/${untracked_path##*/}"
+	rm "$repo/$untracked_path"
+	done < <(/usr/bin/git -C "$repo" ls-files --others --exclude-standard)
+fi
 /usr/bin/git -C "$repo" fetch origin "$branch" --tags --quiet
 /usr/bin/git -C "$repo" merge --ff-only "origin/$branch" --quiet
 EOF
-chmod +x "$INTEGRATION_REPO/.agents/scripts/canonical-recovery-helper.sh"
+chmod +x "$UPDATE_HELPER_DIR/canonical-recovery-helper.sh"
 export CANONICAL_HELPER_CALLS
+_AIDEVOPS_UPDATE_HELPER_DIR="$UPDATE_HELPER_DIR"
 
 INSTALL_DIR="$INTEGRATION_REPO"
 SETUP_RC=0
@@ -413,6 +430,17 @@ else
 	fail "shim-safe audited canonical fast-forward reaches setup and verifies activation" "$integration_output"
 fi
 
+printf 'untracked update fixture\n' >"$INTEGRATION_REPO/untracked-update.txt"
+if untracked_output=$(cmd_update --skip-project-sync --compact) &&
+	[[ ! -e "$INTEGRATION_REPO/untracked-update.txt" ]] &&
+	[[ -f "$HOME/untracked-update-backup/untracked-update.txt" ]] &&
+	grep -q -- '^sync-mirror .*--reason aidevops-update' "$CANONICAL_HELPER_CALLS" &&
+	[[ "$untracked_output" == *"Preserving untracked canonical files"* ]]; then
+	pass "untracked-only canonical update uses lossless mirror synchronization"
+else
+	fail "untracked-only canonical update uses lossless mirror synchronization" "$untracked_output"
+fi
+
 printf 'dirty update fixture\n' >>"$INTEGRATION_REPO/runtime.txt"
 helper_calls_before=$(wc -l <"$CANONICAL_HELPER_CALLS")
 if dirty_output=$(cmd_update --skip-project-sync --compact 2>&1); then
@@ -426,7 +454,7 @@ else
 fi
 /usr/bin/git -C "$INTEGRATION_REPO" checkout -q -- runtime.txt
 
-rm "$INTEGRATION_REPO/.agents/scripts/canonical-recovery-helper.sh"
+rm "$UPDATE_HELPER_DIR/canonical-recovery-helper.sh"
 if missing_helper_output=$(_update_fetch_main main 2>&1); then
 	fail "missing canonical helper fails with stable-path guidance" "unexpected success"
 elif [[ "$missing_helper_output" == *"$HOME/.aidevops/agents/scripts/canonical-recovery-helper.sh"* ]] &&
