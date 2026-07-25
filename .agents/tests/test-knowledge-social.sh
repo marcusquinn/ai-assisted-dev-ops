@@ -94,8 +94,8 @@ mkdir -p "$CORPUS_ROOT"
 chmod 0700 "$BASE" "$CORPUS_ROOT"
 "$CORPUS_HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
-assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "1"
-assert_eq "all provider-neutral tables exist" "$(sql_value "SELECT count(*) FROM sqlite_master WHERE name IN ('connections','accounts','objects','activities','media','fetch_batches','sync_cursors','sync_runs','tombstones','annotations','coverage_records','objects_fts')")" "12"
+assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "2"
+assert_eq "all provider-neutral tables exist" "$(sql_value "SELECT count(*) FROM sqlite_master WHERE name IN ('connections','accounts','objects','activities','media','fetch_batches','sync_cursors','sync_runs','collector_leases','reconciliation_observations','tombstones','annotations','coverage_records','objects_fts')")" "14"
 
 first_result=$("$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$ARCHIVE")
 first_hash=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["batch_id"])' "$first_result")

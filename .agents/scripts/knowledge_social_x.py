@@ -159,7 +159,12 @@ def collect(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     runner = xurl_runner(args)
     account = verified_identity(runner.identity(), account_id)
     context = load_context(
-        root, connection_id, account, args.stream, args.media_policy
+        root,
+        connection_id,
+        account,
+        args.stream,
+        args.media_policy,
+        args.fencing_token,
     )
     if context.state.backfill_complete and not context.spec.supports_since_id:
         record_bounded_stop(context, "unavailable", "delta_not_supported")
@@ -186,6 +191,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--app")
     parser.add_argument("--username")
+    parser.add_argument("--fencing-token", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.budget < 1 or args.budget > 1000:

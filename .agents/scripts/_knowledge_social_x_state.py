@@ -36,6 +36,7 @@ class CollectionContext:
     config: ConnectionConfig
     state: CursorState
     spec: StreamSpec
+    fencing_token: int | None
 
 
 def _json_array(value: str, field: str) -> list[str]:
@@ -102,6 +103,7 @@ def load_context(
     account: dict[str, Any],
     stream: str,
     media_policy: str,
+    fencing_token: int | None = None,
 ) -> CollectionContext:
     """Read the connection policy and selected stream checkpoint."""
     database = connect(root)
@@ -122,4 +124,5 @@ def load_context(
         config,
         state,
         STREAMS[stream],
+        fencing_token,
     )

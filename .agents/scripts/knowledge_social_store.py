@@ -18,7 +18,7 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -139,11 +139,22 @@ def _tables() -> tuple[str, ...]:
         """CREATE TABLE IF NOT EXISTS sync_cursors (
             connection_id TEXT NOT NULL, stream TEXT NOT NULL, cursor TEXT, watermark TEXT,
             last_success_at TEXT, backfill_complete INTEGER NOT NULL DEFAULT 0,
+            fencing_token INTEGER,
             PRIMARY KEY(connection_id, stream))""",
         """CREATE TABLE IF NOT EXISTS sync_runs (
             run_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, status TEXT NOT NULL,
             resource_count INTEGER NOT NULL DEFAULT 0, failure_class TEXT, retry_after TEXT,
-            fencing_token TEXT, diagnostics TEXT)""",
+            fencing_token TEXT, diagnostics TEXT, stream TEXT, run_type TEXT NOT NULL DEFAULT 'sync',
+            started_at TEXT, completed_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS collector_leases (
+            connection_id TEXT PRIMARY KEY, holder_id TEXT NOT NULL,
+            fencing_token INTEGER NOT NULL, lease_until TEXT NOT NULL,
+            acquired_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS reconciliation_observations (
+            provider TEXT NOT NULL, connection_id TEXT NOT NULL, stream TEXT NOT NULL,
+            object_type TEXT NOT NULL, remote_id TEXT NOT NULL, state TEXT NOT NULL,
+            observed_at TEXT NOT NULL, run_id TEXT NOT NULL,
+            PRIMARY KEY(provider, connection_id, stream, object_type, remote_id))""",
         """CREATE TABLE IF NOT EXISTS tombstones (
             provider TEXT NOT NULL, object_type TEXT NOT NULL, remote_id TEXT NOT NULL,
             observed_at TEXT NOT NULL, reason TEXT NOT NULL, retention_action TEXT NOT NULL,
@@ -161,6 +172,7 @@ def _tables() -> tuple[str, ...]:
         "CREATE INDEX IF NOT EXISTS idx_objects_account ON objects(provider, account_remote_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_activities_actor ON activities(provider, actor_remote_id, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_coverage_connection ON coverage_records(connection_id, stream)",
+        "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection ON sync_runs(connection_id, stream, started_at)",
     )
 
 
@@ -178,10 +190,18 @@ def create_fts(connection: sqlite3.Connection) -> None:
 
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
-    if current not in (0, SCHEMA_VERSION):
+    if current not in (0, 1, SCHEMA_VERSION):
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        if current == 1:
+            connection.execute("ALTER TABLE sync_cursors ADD COLUMN fencing_token INTEGER")
+            connection.execute("ALTER TABLE sync_runs ADD COLUMN stream TEXT")
+            connection.execute(
+                "ALTER TABLE sync_runs ADD COLUMN run_type TEXT NOT NULL DEFAULT 'sync'"
+            )
+            connection.execute("ALTER TABLE sync_runs ADD COLUMN started_at TEXT")
+            connection.execute("ALTER TABLE sync_runs ADD COLUMN completed_at TEXT")
         for statement in _tables():
             connection.execute(statement)
         create_fts(connection)
