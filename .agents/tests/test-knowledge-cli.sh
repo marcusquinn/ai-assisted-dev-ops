@@ -79,6 +79,7 @@ assert_json_field() {
 # ---------------------------------------------------------------------------
 
 TMP_DIR=$(mktemp -d)
+export AIDEVOPS_VAULT_DIR="${TMP_DIR}/vault-disabled"
 REPO_PATH="${TMP_DIR}/test-repo"
 mkdir -p "$REPO_PATH"
 
