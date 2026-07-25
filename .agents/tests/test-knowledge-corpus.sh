@@ -59,6 +59,17 @@ assert_file() {
 	return 0
 }
 
+assert_not_exists() {
+	local description="$1"
+	local path="$2"
+	if [[ ! -e "$path" && ! -L "$path" ]]; then
+		pass "$description"
+	else
+		fail "$description" "expected path to remain absent: $path"
+	fi
+	return 0
+}
+
 assert_contains() {
 	local description="$1"
 	local value="$2"
@@ -191,26 +202,38 @@ assert_contains "1.10 authorized list includes legacy path" "$listed" "$LEGACY_R
 assert_eq "1.11 schema version is 1" \
 	"$(db_query "$CATALOG" "SELECT value FROM schema_meta WHERE key='schema_version'")" "1"
 assert_eq "1.12 bootstrap graph has one row per ownership edge" \
-	"$(db_query "$CATALOG" "SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora)")" \
-	"1|1|1|1"
+	"$(db_query "$CATALOG" "SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_aliases)")" \
+	"1|1|1|1|1"
 assert_eq "1.13 bootstrap graph has three explicit grants" \
 	"$(db_query "$CATALOG" "SELECT count(*) FROM corpus_grants")" "3"
 workspace_and_corpus=$(db_query "$CATALOG" \
-	"SELECT workspace_id,corpus_id FROM corpora WHERE alias='personal:default'")
+	"SELECT c.workspace_id,c.corpus_id FROM corpora c JOIN corpus_aliases a ON a.corpus_id=c.corpus_id WHERE a.alias='personal:default'")
 assert_matches "1.14 workspace and corpus IDs are opaque" "$workspace_and_corpus" \
 	'^wsp_[0-9a-f]{32}\|cor_[0-9a-f]{32}$'
 
 principal_before=$(context_principal "$CONTEXT")
 counts_before=$(db_query "$CATALOG" \
-	"SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_grants)")
+	"SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_aliases),(SELECT count(*) FROM corpus_grants)")
 assert_matches "1.15 principal ID is opaque" "$principal_before" '^prn_[0-9a-f]{32}$'
 
 bash "$CORPUS_HELPER" provision --base "$BASE"
 assert_eq "1.16 repeated provision preserves principal" \
 	"$(context_principal "$CONTEXT")" "$principal_before"
 assert_eq "1.17 repeated provision creates no duplicate graph rows" \
-	"$(db_query "$CATALOG" "SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_grants)")" \
+	"$(db_query "$CATALOG" "SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_aliases),(SELECT count(*) FROM corpus_grants)")" \
 	"$counts_before"
+
+MISSING_CATALOG_BASE="${TMP_DIR}/missing-catalog"
+mkdir -p "${MISSING_CATALOG_BASE}/_config"
+chmod 0700 "$MISSING_CATALOG_BASE" "${MISSING_CATALOG_BASE}/_config"
+cp "$CONTEXT" "${MISSING_CATALOG_BASE}/_config/principal.json"
+chmod 0600 "${MISSING_CATALOG_BASE}/_config/principal.json"
+expect_failure "1.18 resolve rejects a missing catalog without creating it" "catalog missing" \
+	bash "$CORPUS_HELPER" resolve --base "$MISSING_CATALOG_BASE"
+expect_failure "1.19 list rejects a missing catalog without creating it" "catalog missing" \
+	bash "$CORPUS_HELPER" list --base "$MISSING_CATALOG_BASE"
+assert_not_exists "1.20 read commands leave a missing catalog absent" \
+	"${MISSING_CATALOG_BASE}/catalog.db"
 
 printf 'Test 2: default-deny authorization edges\n'
 db_exec "$CATALOG" "UPDATE workspace_memberships SET status='inactive'"
@@ -220,6 +243,9 @@ db_exec "$CATALOG" "UPDATE workspace_memberships SET status='active'"
 
 db_exec "$CATALOG" "UPDATE corpus_grants SET status='inactive' WHERE capability='knowledge.read'"
 expect_failure "2.2 inactive capability grant denies resolution" "access denied" \
+	bash "$CORPUS_HELPER" resolve --base "$BASE" --alias personal:default --capability knowledge.read
+bash "$CORPUS_HELPER" provision --base "$BASE"
+expect_failure "2.2a provision does not reactivate a revoked grant" "access denied" \
 	bash "$CORPUS_HELPER" resolve --base "$BASE" --alias personal:default --capability knowledge.read
 db_exec "$CATALOG" "UPDATE corpus_grants SET status='active' WHERE capability='knowledge.read'"
 
@@ -255,9 +281,13 @@ with sqlite3.connect(database) as connection:
         ("wsp_" + "a" * 32, "shared", "active"),
     )
     connection.execute(
-        "INSERT INTO corpora(corpus_id,workspace_id,alias,location_ref,sensitivity,status) "
-        "VALUES(?,?,?,?,?,?)",
-        ("cor_" + "b" * 32, "wsp_" + "a" * 32, "workspace:forged", base + "/_knowledge", "internal", "active"),
+        "INSERT INTO corpora(corpus_id,workspace_id,location_ref,sensitivity,status) "
+        "VALUES(?,?,?,?,?)",
+        ("cor_" + "b" * 32, "wsp_" + "a" * 32, base + "/_knowledge", "internal", "active"),
+    )
+    connection.execute(
+        "INSERT INTO corpus_aliases(alias,corpus_id) VALUES(?,?)",
+        ("workspace:forged", "cor_" + "b" * 32),
     )
     connection.execute(
         "INSERT INTO corpus_grants(corpus_id,principal_id,role,capability,scope,status) "
@@ -272,16 +302,16 @@ expect_failure "2.8 unknown alias fails closed" "access denied" \
 
 OUTSIDE="${TMP_DIR}/outside"
 mkdir -p "$OUTSIDE"
-db_exec "$CATALOG" "UPDATE corpora SET location_ref='${OUTSIDE}' WHERE alias='personal:default'"
+db_exec "$CATALOG" "UPDATE corpora SET location_ref='${OUTSIDE}' WHERE corpus_id=(SELECT corpus_id FROM corpus_aliases WHERE alias='personal:default')"
 expect_failure "2.9 out-of-base catalog path is rejected" "unsafe path" \
 	bash "$CORPUS_HELPER" resolve --base "$BASE" --alias personal:default --capability knowledge.read
-db_exec "$CATALOG" "UPDATE corpora SET location_ref='${LEGACY_ROOT}' WHERE alias='personal:default'"
+db_exec "$CATALOG" "UPDATE corpora SET location_ref='${LEGACY_ROOT}' WHERE corpus_id=(SELECT corpus_id FROM corpus_aliases WHERE alias='personal:default')"
 
 ln -s "$OUTSIDE" "${BASE}/linked-outside"
-db_exec "$CATALOG" "UPDATE corpora SET location_ref='${BASE}/linked-outside' WHERE alias='personal:default'"
+db_exec "$CATALOG" "UPDATE corpora SET location_ref='${BASE}/linked-outside' WHERE corpus_id=(SELECT corpus_id FROM corpus_aliases WHERE alias='personal:default')"
 expect_failure "2.10 symlinked catalog path is rejected" "unsafe path" \
 	bash "$CORPUS_HELPER" resolve --base "$BASE" --alias personal:default --capability knowledge.read
-db_exec "$CATALOG" "UPDATE corpora SET location_ref='${LEGACY_ROOT}' WHERE alias='personal:default'"
+db_exec "$CATALOG" "UPDATE corpora SET location_ref='${LEGACY_ROOT}' WHERE corpus_id=(SELECT corpus_id FROM corpus_aliases WHERE alias='personal:default')"
 rm "${BASE}/linked-outside"
 
 expect_failure "2.11 unsupported capabilities fail closed" "access denied" \

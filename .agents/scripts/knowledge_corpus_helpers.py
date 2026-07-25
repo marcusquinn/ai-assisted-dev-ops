@@ -262,10 +262,13 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS corpora (
             corpus_id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
-            alias TEXT NOT NULL UNIQUE,
             location_ref TEXT NOT NULL,
             sensitivity TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('active','inactive'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS corpus_aliases (
+            alias TEXT PRIMARY KEY,
+            corpus_id TEXT NOT NULL UNIQUE REFERENCES corpora(corpus_id)
         )""",
         """CREATE TABLE IF NOT EXISTS corpus_grants (
             corpus_id TEXT NOT NULL REFERENCES corpora(corpus_id),
@@ -275,6 +278,11 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             scope TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('active','inactive')),
             PRIMARY KEY(corpus_id, principal_id, capability, scope)
+        )""",
+        """CREATE TABLE IF NOT EXISTS collector_assignments (
+            connection_id TEXT PRIMARY KEY,
+            collector_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+            runner_ref TEXT NOT NULL
         )""",
         """CREATE INDEX IF NOT EXISTS idx_memberships_principal
             ON workspace_memberships(principal_id, status)""",
@@ -305,7 +313,8 @@ def _recover_principal(connection: sqlite3.Connection) -> str | None:
           JOIN workspace_memberships m ON m.principal_id=p.principal_id
           JOIN workspaces w ON w.workspace_id=m.workspace_id
           JOIN corpora c ON c.workspace_id=w.workspace_id
-         WHERE c.alias=? AND p.kind='human' AND w.kind='personal'
+          JOIN corpus_aliases a ON a.corpus_id=c.corpus_id
+         WHERE a.alias=? AND p.kind='human' AND w.kind='personal'
            AND m.role='owner'
         """,
         (DEFAULT_ALIAS,),
@@ -361,23 +370,29 @@ def _bootstrap_graph(
         )
 
     corpus = connection.execute(
-        "SELECT corpus_id,workspace_id,location_ref FROM corpora WHERE alias=?",
+        """SELECT c.corpus_id,c.workspace_id,c.location_ref
+             FROM corpus_aliases a
+             JOIN corpora c ON c.corpus_id=a.corpus_id
+            WHERE a.alias=?""",
         (DEFAULT_ALIAS,),
     ).fetchone()
     if corpus is None:
         corpus_id = _opaque_id("cor")
         connection.execute(
             "INSERT INTO corpora"
-            "(corpus_id,workspace_id,alias,location_ref,sensitivity,status) "
-            "VALUES(?,?,?,?,?,?)",
+            "(corpus_id,workspace_id,location_ref,sensitivity,status) "
+            "VALUES(?,?,?,?,?)",
             (
                 corpus_id,
                 workspace_id,
-                DEFAULT_ALIAS,
                 str(legacy_root),
                 "internal",
                 "active",
             ),
+        )
+        connection.execute(
+            "INSERT INTO corpus_aliases(alias,corpus_id) VALUES(?,?)",
+            (DEFAULT_ALIAS, corpus_id),
         )
     else:
         corpus_id = str(corpus["corpus_id"])
@@ -462,11 +477,12 @@ def _authorized_rows(
     if capability not in CAPABILITIES:
         raise CatalogError(f"access denied: unsupported capability {capability}")
     query = """
-        SELECT c.alias,c.location_ref,c.corpus_id,c.workspace_id
+        SELECT a.alias,c.location_ref,c.corpus_id,c.workspace_id
           FROM principals p
           JOIN workspace_memberships m ON m.principal_id=p.principal_id
           JOIN workspaces w ON w.workspace_id=m.workspace_id
           JOIN corpora c ON c.workspace_id=w.workspace_id
+          JOIN corpus_aliases a ON a.corpus_id=c.corpus_id
           JOIN corpus_grants g ON g.corpus_id=c.corpus_id
                                AND g.principal_id=p.principal_id
          WHERE p.principal_id=?
@@ -480,9 +496,9 @@ def _authorized_rows(
     """
     parameters: list[str] = [principal_id, capability]
     if alias is not None:
-        query += " AND c.alias=?"
+        query += " AND a.alias=?"
         parameters.append(alias)
-    query += " ORDER BY c.alias,c.corpus_id"
+    query += " ORDER BY a.alias,c.corpus_id"
     return list(connection.execute(query, parameters).fetchall())
 
 

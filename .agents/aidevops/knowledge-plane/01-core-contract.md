@@ -60,6 +60,12 @@ existing path once as the logical `personal:default` corpus. `catalog.db` and
 `principal.json` are mode `0600`; their containing private directories are mode
 `0700`.
 
+Schema v1 implements the parent catalog contract with `principals`,
+`workspaces`, `workspace_memberships`, `corpora`, `corpus_grants`, and the
+reserved `collector_assignments` table. Private logical names are isolated in
+`corpus_aliases`; aliases are not path components or authorization inputs by
+themselves.
+
 Personal add operations require `knowledge.write`; list and search require
 `knowledge.read`. The resolver derives an opaque principal ID from the current
 filesystem owner's non-symlink `principal.json`, then requires an active
