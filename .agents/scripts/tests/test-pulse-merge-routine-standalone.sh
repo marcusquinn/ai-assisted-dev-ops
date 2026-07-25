@@ -435,7 +435,7 @@ cat >"$BUDGET_HARNESS" <<'BUDGET_HARNESS_EOF'
 set -uo pipefail
 
 gh() {
-	if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
 		printf '700\n'
 		return 0
 	fi
@@ -443,7 +443,7 @@ gh() {
 }
 
 # Extract the production read wrapper and budget probe without executing the
-# routine entry point. The mock deliberately rejects every non-GraphQL call.
+# routine entry point. The mock accepts only the zero-cost REST budget probe.
 # shellcheck disable=SC1090
 source <(awk '
 	/^_pmr_gh_read\(\)/ { capture=1 }
@@ -460,9 +460,9 @@ budget_output=$(ROUTINE_FILE="$ROUTINE_FILE" bash "$BUDGET_HARNESS" 2>&1)
 budget_rc=$?
 
 if [[ "$budget_rc" -eq 0 ]]; then
-	pass "17: GraphQL budget probe is independent of REST core rate limit"
+	pass "17: GraphQL budget probe uses the zero-cost REST rate resource"
 else
-	fail "17: GraphQL budget probe is independent of REST core rate limit" \
+	fail "17: GraphQL budget probe uses the zero-cost REST rate resource" \
 		"harness rc=${budget_rc}, output=${budget_output}"
 fi
 

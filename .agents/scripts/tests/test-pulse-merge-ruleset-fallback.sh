@@ -106,7 +106,7 @@ if [[ "$mode" == "pending-check" && "$1" == "pr" && "$2" == "merge" && "$*" == *
 	exit 1
 fi
 
-if [[ ( "$mode" == "expected-check" || "$mode" == "pending-check" ) && "$1" == "pr" && "$2" == "update-branch" ]]; then
+if [[ ( "$mode" == "expected-check" || "$mode" == "pending-check" ) && "$1" == "api" && "${2:-}" == "--method" && "${3:-}" == "PUT" && "${4:-}" == "repos/owner/repo/pulls/77/update-branch" ]]; then
 	exit 0
 fi
 
@@ -240,6 +240,12 @@ _set_native_auto_merge_or_skip() { return 1; }
 _repo_allows_auto_merge() { return "${REPO_ALLOWS_AUTO_MERGE_RC:-0}"; }
 _attempt_existing_auto_merge_behind_update_branch() { return 1; }
 _attempt_green_behind_update_branch() { return "${GREEN_BEHIND_UPDATE_RC:-1}"; }
+_pmp_update_branch_rest() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	gh api --method PUT "repos/${repo_slug}/pulls/${pr_number}/update-branch"
+	return $?
+}
 sleep() {
 	local seconds="$1"
 	printf 'sleep:%s\n' "$seconds" >>"$MERGE_EVENT_LOG"
@@ -542,7 +548,7 @@ test_expected_required_check_updates_branch_and_defers() {
 		unset GH_STUB_MODE
 		return 0
 	fi
-	if ! grep -qE 'gh pr update-branch 77 --repo owner/repo' "$GH_LOG"; then
+	if ! grep -qE 'gh api --method PUT repos/owner/repo/pulls/77/update-branch' "$GH_LOG"; then
 		print_result "expected required-check blocker invokes update-branch" 1 \
 			"gh log: $(cat "$GH_LOG")"
 		teardown_test_env
@@ -578,7 +584,7 @@ test_pending_required_check_updates_branch_and_defers() {
 		unset GH_STUB_MODE
 		return 0
 	fi
-	if ! grep -qE 'gh pr update-branch 77 --repo owner/repo' "$GH_LOG"; then
+	if ! grep -qE 'gh api --method PUT repos/owner/repo/pulls/77/update-branch' "$GH_LOG"; then
 		print_result "pending required-check blocker invokes update-branch" 1 \
 			"gh log: $(cat "$GH_LOG")"
 		teardown_test_env

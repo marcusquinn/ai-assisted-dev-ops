@@ -27,6 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 PROCESS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-process.sh"
+REST_STATE_SCRIPT="${SCRIPT_DIR}/../pulse-merge-rest-state.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -78,12 +79,15 @@ setup_test_env() {
   "autoMergeRequest": {"enabledAt": "${enabled_at_default}", "mergeMethod": "SQUASH"},
   "mergeStateStatus": "BLOCKED",
   "mergeable": "MERGEABLE",
+  "headRefOid": "stuck-head",
   "reviewDecision": "APPROVED"
 }
 JSONEOF
 	# Default required-checks state: 0 non-pass/skipping (i.e. all green).
 	printf '0' >"${TEST_ROOT}/non_ok_count.txt"
 	printf 'true' >"${TEST_ROOT}/allow_auto_merge.txt"
+	printf '%s' '[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-07-25T12:00:00Z"}]' \
+		>"${TEST_ROOT}/reviews.json"
 
 	# Cache dir is keyed on PID — wipe between tests so allow_auto_merge
 	# fixture changes are honoured.
@@ -94,16 +98,14 @@ JSONEOF
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >>"${GH_LOG:-/dev/null}"
 
-# `gh pr view <N> --repo <slug> --json autoMergeRequest,mergeStateStatus,...`
-if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"autoMergeRequest"* && "$*" == *"mergeStateStatus"* ]]; then
-	cat "${TEST_ROOT}/pr_state.json"
+# Exact single-PR REST merge-state projection.
+if [[ "$1" == "api" && "$2" == repos/*/pulls/*/reviews\?* ]]; then
+	[[ "${FAIL_REVIEWS:-0}" == "1" ]] && exit 1
+	cat "${TEST_ROOT}/reviews.json"
 	exit 0
 fi
-
-# Legacy single-field call (for fall-through tests that bypass stuck check).
-if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"autoMergeRequest"* ]]; then
-	jq -c '.autoMergeRequest // empty' "${TEST_ROOT}/pr_state.json" 2>/dev/null
-	echo
+if [[ "$1" == "api" && "$2" == repos/*/pulls/* ]]; then
+	cat "${TEST_ROOT}/pr_state.json"
 	exit 0
 fi
 
@@ -136,6 +138,7 @@ GHEOF
 }
 
 teardown_test_env() {
+	unset FAIL_REVIEWS
 	rm -rf "${TMPDIR:-/tmp}/aidevops-pulse-allow-auto-merge-$$" 2>/dev/null || true
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
@@ -148,7 +151,9 @@ teardown_test_env() {
 # _repo_allows_auto_merge and _set_native_auto_merge_or_skip are the
 # pre-existing t3070 helpers we extend.
 define_helpers_under_test() {
-	local src_stuck src_repo_allow src_set_native
+	local src_stuck src_repo_allow src_stop_external src_handle_existing src_set_native
+	# shellcheck source=/dev/null
+	source "$REST_STATE_SCRIPT"
 	src_stuck=$(awk '
 		/^_auto_merge_stuck_seconds\(\) \{/,/^\}$/ { print }
 	' "$PROCESS_SCRIPT")
@@ -158,7 +163,15 @@ define_helpers_under_test() {
 	src_set_native=$(awk '
 		/^_set_native_auto_merge_or_skip\(\) \{/,/^\}$/ { print }
 	' "$PROCESS_SCRIPT")
-	if [[ -z "$src_stuck" || -z "$src_repo_allow" || -z "$src_set_native" ]]; then
+	src_handle_existing=$(awk '
+		/^_handle_existing_native_auto_merge\(\) \{/,/^\}$/ { print }
+	' "$PROCESS_SCRIPT")
+	src_stop_external=$(awk '
+		/^_stop_external_native_auto_merge\(\) \{/,/^\}$/ { print }
+	' "$PROCESS_SCRIPT")
+	if [[ -z "$src_stuck" || -z "$src_repo_allow" || -z "$src_stop_external" \
+		|| -z "$src_handle_existing" || -z "$src_set_native" ]] \
+		|| ! declare -F _pmp_rest_pr_merge_state >/dev/null 2>&1; then
 		printf 'ERROR: could not extract helpers from %s\n' "$PROCESS_SCRIPT" >&2
 		return 1
 	fi
@@ -167,7 +180,20 @@ define_helpers_under_test() {
 	# shellcheck disable=SC1090
 	eval "$src_repo_allow"
 	# shellcheck disable=SC1090
+	eval "$src_stop_external"
+	# shellcheck disable=SC1090
+	eval "$src_handle_existing"
+	# shellcheck disable=SC1090
 	eval "$src_set_native"
+	_check_required_checks_passing() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local non_ok_count=""
+		[[ -n "$repo_slug$pr_number" ]] || return 1
+		non_ok_count=$(<"${TEST_ROOT}/non_ok_count.txt")
+		[[ "$non_ok_count" == "0" ]]
+		return $?
+	}
 	return 0
 }
 
@@ -182,7 +208,7 @@ test_case_1_stuck_falls_through() {
 	# 0 non-ok checks. Threshold default is 300s, 1h >> 300s → stuck.
 
 	local result=0
-	_set_native_auto_merge_or_skip "100" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "100" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
 
 	if [[ "$result" -ne 1 ]]; then
 		print_result "Case (1): stuck → returns 1 (fall-through to --admin)" 1 \
@@ -224,12 +250,13 @@ test_case_2_under_threshold_defers() {
   "autoMergeRequest": {"enabledAt": "${enabled_at_recent}", "mergeMethod": "SQUASH"},
   "mergeStateStatus": "BLOCKED",
   "mergeable": "MERGEABLE",
+  "headRefOid": "stuck-head",
   "reviewDecision": "APPROVED"
 }
 JSONEOF
 
 	local result=0
-	_set_native_auto_merge_or_skip "200" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "200" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (2): under threshold → returns 0 (defer)" 1 \
@@ -266,7 +293,7 @@ test_case_3_pending_ci_defers() {
 	printf '1' >"${TEST_ROOT}/non_ok_count.txt"
 
 	local result=0
-	_set_native_auto_merge_or_skip "300" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "300" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (3): pending CI → returns 0 (defer)" 1 \
@@ -304,12 +331,13 @@ test_case_4_changes_requested_defers() {
   "autoMergeRequest": {"enabledAt": "${enabled_at_old}", "mergeMethod": "SQUASH"},
   "mergeStateStatus": "BLOCKED",
   "mergeable": "MERGEABLE",
+  "headRefOid": "stuck-head",
   "reviewDecision": "CHANGES_REQUESTED"
 }
 JSONEOF
 
 	local result=0
-	_set_native_auto_merge_or_skip "400" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "400" "owner/repo" "0" "CHANGES_REQUESTED" "stuck-head" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (4): CHANGES_REQUESTED → returns 0 (defer, not our problem)" 1 \
@@ -329,6 +357,65 @@ JSONEOF
 }
 
 # =============================================================================
+# Case (4b): unknown review state cannot authorize wedge bypass
+# =============================================================================
+test_case_4b_unknown_review_defers() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+
+	local result=0
+	_set_native_auto_merge_or_skip "401" "owner/repo" "0" "UNKNOWN" "stuck-head" || result=$?
+
+	if [[ "$result" -eq 0 ]] && ! grep -qE 'auto_merge stuck.*t3192' "$LOGFILE"; then
+		print_result "Case (4b): UNKNOWN review state defers wedge recovery" 0
+	else
+		print_result "Case (4b): UNKNOWN review state defers wedge recovery" 1 \
+			"rc=${result}; pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_case_4c_fresh_changes_requested_defers() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	printf '%s' '[{"id":2,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","submitted_at":"2026-07-25T12:01:00Z"}]' \
+		>"${TEST_ROOT}/reviews.json"
+
+	local result=0
+	_set_native_auto_merge_or_skip "402" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
+	if [[ "$result" -eq 0 ]] \
+		&& grep -qE 'pulls/402/reviews\?per_page=100&page=1' "$GH_LOG" \
+		&& ! grep -qE 'gh pr merge 402 .*--disable-auto' "$GH_LOG"; then
+		print_result "Case (4c): fresh CHANGES_REQUESTED blocks stale wedge recovery" 0
+	else
+		print_result "Case (4c): fresh CHANGES_REQUESTED blocks stale wedge recovery" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_case_4d_unavailable_review_refresh_defers() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	export FAIL_REVIEWS=1
+
+	local result=0
+	_set_native_auto_merge_or_skip "403" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
+	if [[ "$result" -eq 0 ]] \
+		&& grep -qE 'pulls/403/reviews\?per_page=100&page=1' "$GH_LOG" \
+		&& ! grep -qE 'gh pr merge 403 .*--disable-auto' "$GH_LOG"; then
+		print_result "Case (4d): unavailable fresh review evidence blocks wedge recovery" 0
+	else
+		print_result "Case (4d): unavailable fresh review evidence blocks wedge recovery" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+# =============================================================================
 # Case (5): threshold override via env → larger threshold defers a 1h-stuck PR
 # =============================================================================
 test_case_5_env_threshold_override() {
@@ -339,7 +426,7 @@ test_case_5_env_threshold_override() {
 	# would fall through; with threshold=7200 (2h) it should defer.
 	local result=0
 	AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS=7200 \
-		_set_native_auto_merge_or_skip "500" "owner/repo" || result=$?
+		_set_native_auto_merge_or_skip "500" "owner/repo" "0" "APPROVED" "stuck-head" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (5): env threshold override → defer when raised above stuck duration" 1 \
@@ -363,6 +450,9 @@ main() {
 	test_case_2_under_threshold_defers
 	test_case_3_pending_ci_defers
 	test_case_4_changes_requested_defers
+	test_case_4b_unknown_review_defers
+	test_case_4c_fresh_changes_requested_defers
+	test_case_4d_unavailable_review_refresh_defers
 	test_case_5_env_threshold_override
 
 	printf '\n=================================\n'

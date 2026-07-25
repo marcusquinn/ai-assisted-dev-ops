@@ -33,6 +33,7 @@ setup_env() {
 	export PULSE_PREFETCH_FULL_SWEEP_INTERVAL=86400
 	export PULSE_PREFETCH_PR_LIMIT=100
 	export PULSE_PREFETCH_ISSUE_LIMIT=100
+	export DAILY_PR_CAP=10
 	mkdir -p "$HOME" "$PULSE_BATCH_PREFETCH_CACHE_DIR" "$TEST_ROOT/bin"
 	: >"$LOGFILE"
 	: >"$TEST_ROOT/provider-calls.log"
@@ -128,7 +129,7 @@ write_snapshot() {
 	local generation="$4"
 	local projection="$5"
 	local timestamp="${6:-}"
-	local auth_scope="${7:-github.com}"
+	local auth_scope="${7:-${PULSE_BATCH_SNAPSHOT_AUTH_SCOPE}|${AIDEVOPS_GH_API_POOL:-default}}"
 	[[ -n "$timestamp" ]] || timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	jq -n --arg schema "$_PREFETCH_SNAPSHOT_SCHEMA" --arg repo "owner/repo" \
 		--arg kind "$kind" --arg projection "$projection" --arg auth_scope "$auth_scope" \
@@ -317,6 +318,32 @@ test_cache_entry_records_snapshot_contract() {
 	return 0
 }
 
+test_rest_first_prefetch_avoids_unattributed_review_search() {
+	local pr_err="$TEST_ROOT/pr-fetch.err"
+	: >"$pr_err"
+	: >"$TEST_ROOT/github-list-calls.log"
+	AIDEVOPS_GH_REST_FIRST_READS=1
+	PREFETCH_PR_SWEEP_MODE="delta"
+	_prefetch_prs_try_delta owner/repo '{}' "$pr_err"
+	if [[ "$PREFETCH_PR_SWEEP_MODE" == "full" && ! -s "$TEST_ROOT/github-list-calls.log" ]]; then
+		print_result "REST-first prefetch bypasses GraphQL-only delta search" 0
+	else
+		print_result "REST-first prefetch bypasses GraphQL-only delta search" 1
+	fi
+	unset AIDEVOPS_GH_REST_FIRST_READS
+
+	: >"$TEST_ROOT/github-list-calls.log"
+	_prefetch_prs_fetch_full owner/repo "$pr_err"
+	if grep -q -- '--json number,title,updatedAt,headRefName,headRefOid,createdAt,author' \
+		"$TEST_ROOT/github-list-calls.log" \
+		&& ! grep -q 'reviewDecision' "$TEST_ROOT/github-list-calls.log"; then
+		print_result "full prefetch projection remains REST-equivalent" 0
+	else
+		print_result "full prefetch projection remains REST-equivalent" 1
+	fi
+	return 0
+}
+
 setup_env
 trap teardown_env EXIT
 test_single_resolution_and_local_reuse
@@ -325,6 +352,7 @@ test_single_repo_cycle_threads_one_snapshot_pair
 test_local_eviction_invalidates_completeness
 test_incomplete_and_incompatible_pairs_miss
 test_cache_entry_records_snapshot_contract
+test_rest_first_prefetch_avoids_unattributed_review_search
 
 printf 'Tests run: %s\n' "$TESTS_RUN"
 printf 'Tests failed: %s\n' "$TESTS_FAILED"

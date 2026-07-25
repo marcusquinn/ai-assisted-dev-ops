@@ -167,7 +167,7 @@ _rest_issue_view_fields_supported() {
 	local field=""
 	while IFS= read -r field; do
 		case "$field" in
-		number|state|url|title|body|createdAt|updatedAt|closedAt|labels|assignees|author|stateReason|closed) ;;
+		number|state|url|title|body|createdAt|updatedAt|closedAt|labels|assignees|author|stateReason|closed|locked) ;;
 		*) return 1 ;;
 		esac
 	done < <(_rest_split_csv "$fields")
@@ -266,8 +266,7 @@ _rest_pr_view_fields_supported() {
 	local field=""
 	while IFS= read -r field; do
 		case "$field" in
-		number|state|merged|mergedAt|closedAt|mergeCommit|mergedBy|isDraft|labels|author|title|body|url|createdAt|updatedAt|baseRefName|headRefName|headRefOid) ;;
-		mergeable) [[ "$mode" == "emergency" ]] || return 1 ;;
+		number|state|merged|mergedAt|closedAt|mergeCommit|mergedBy|mergeable|isDraft|labels|author|title|body|url|createdAt|updatedAt|baseRefName|headRefName|headRefOid) ;;
 		*) return 1 ;;
 		esac
 	done < <(_rest_split_csv "$fields")

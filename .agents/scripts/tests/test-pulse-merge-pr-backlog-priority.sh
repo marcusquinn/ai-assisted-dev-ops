@@ -51,10 +51,10 @@ set +o pipefail 2>/dev/null || true
 REFRESHED_REVIEW_DECISION="CHANGES_REQUESTED"
 REFRESH_SHOULD_FAIL=0
 : >"${TEST_TMPDIR}/review-refresh.log"
-gh_pr_view() {
-	local pr_number="$1" repo_flag="$2" repo_slug="$3"
-	[[ -n "$pr_number$repo_flag$repo_slug" ]]
-	printf '%s|%s|%s\n' "$pr_number" "$repo_flag" "$repo_slug" >>"${TEST_TMPDIR}/review-refresh.log"
+_pmp_rest_review_decision_from_reviews() {
+	local pr_number="$1" repo_slug="$2"
+	[[ -n "$pr_number$repo_slug" ]]
+	printf '%s|%s\n' "$pr_number" "$repo_slug" >>"${TEST_TMPDIR}/review-refresh.log"
 	[[ "$REFRESH_SHOULD_FAIL" -eq 0 ]] || return 1
 	printf '%s\n' "$REFRESHED_REVIEW_DECISION"
 	return 0

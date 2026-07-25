@@ -76,6 +76,9 @@ source "${_PULSE_MERGE_PROCESS_DIR}/pulse-merge-timing.sh"
 # shellcheck source=./pulse-merge-pass.sh
 # shellcheck disable=SC1091  # sub-library resolved via _PULSE_MERGE_PROCESS_DIR
 source "${_PULSE_MERGE_PROCESS_DIR}/pulse-merge-pass.sh"
+# shellcheck source=./pulse-merge-rest-state.sh
+# shellcheck disable=SC1091  # sub-library resolved via _PULSE_MERGE_PROCESS_DIR
+source "${_PULSE_MERGE_PROCESS_DIR}/pulse-merge-rest-state.sh"
 
 _pmp_cache_key() {
 	local raw_key="$1"
@@ -120,210 +123,6 @@ _pmp_normalize_pr_lifecycle_state_into() {
 	*) normalized_state="$raw_state" ;;
 	esac
 	printf -v "$dest_var" '%s' "$normalized_state"
-	return 0
-}
-
-#######################################
-# Normalize PR mergeable values from mixed GitHub API paths.
-#
-# gh GraphQL returns MERGEABLE/CONFLICTING/UNKNOWN, while REST fallback and
-# some cached jq paths can surface true/false/null. The merge gate is enum-
-# based, so normalize before comparing to avoid treating boolean `true` as a
-# non-mergeable state.
-#
-# Args: $1=raw mergeable value
-# Stdout: normalized mergeable enum
-#######################################
-_pmp_normalize_mergeable_state() {
-	local raw_state="$1"
-	local normalized_state=""
-	case "$raw_state" in
-	MERGEABLE|mergeable|true|TRUE) normalized_state="MERGEABLE" ;;
-	CONFLICTING|conflicting|false|FALSE) normalized_state="CONFLICTING" ;;
-	UNKNOWN|unknown|''|null|NULL) normalized_state="UNKNOWN" ;;
-	*) normalized_state="$raw_state" ;;
-	esac
-	printf '%s' "$normalized_state"
-	return 0
-}
-
-#######################################
-# Normalize PR mergeable values into a caller variable without command substitution.
-#
-# Args: $1=destination variable name, $2=raw mergeable value
-#######################################
-_pmp_normalize_mergeable_state_into() {
-	local dest_var="$1"
-	local raw_state="$2"
-	local normalized_state=""
-
-	[[ "$dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-	case "$raw_state" in
-	MERGEABLE|mergeable|true|TRUE) normalized_state="MERGEABLE" ;;
-	CONFLICTING|conflicting|false|FALSE) normalized_state="CONFLICTING" ;;
-	UNKNOWN|unknown|''|null|NULL) normalized_state="UNKNOWN" ;;
-	*) normalized_state="$raw_state" ;;
-	esac
-	printf -v "$dest_var" '%s' "$normalized_state"
-	return 0
-}
-
-#######################################
-# Refresh empty/UNKNOWN PR mergeable state into a caller variable.
-#
-# REST-first PR list reads cannot preserve GraphQL-only mergeable data. Before
-# write decisions, refresh only ambiguous per-PR states through gh_pr_view with
-# the PR-view cache disabled so existing CONFLICTING handling can run.
-#
-# Args:
-#   $1 - destination variable name
-#   $2 - PR number
-#   $3 - repo slug
-#   $4 - current mergeable state
-#######################################
-_pmp_refresh_unknown_mergeable_state_into() {
-	local _pmp_dest_var="$1"
-	local _pmp_pr_number="$2"
-	local _pmp_repo_slug="$3"
-	local _pmp_current_mergeable="$4"
-	local _pmp_refreshed_mergeable=""
-	local _pmp_refresh_exit=0
-
-	[[ "$_pmp_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-	_pmp_normalize_mergeable_state_into _pmp_refreshed_mergeable "$_pmp_current_mergeable"
-
-	if [[ "$_pmp_refreshed_mergeable" == "UNKNOWN" || -z "$_pmp_refreshed_mergeable" ]]; then
-		_pmp_refreshed_mergeable=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$_pmp_pr_number" --repo "$_pmp_repo_slug" \
-			--json mergeable --jq '.mergeable // ""')
-		_pmp_refresh_exit=$?
-		[[ $_pmp_refresh_exit -eq 0 && -n "$_pmp_refreshed_mergeable" ]] || _pmp_refreshed_mergeable="UNKNOWN"
-		_pmp_normalize_mergeable_state_into _pmp_refreshed_mergeable "$_pmp_refreshed_mergeable"
-	fi
-
-	printf -v "$_pmp_dest_var" '%s' "$_pmp_refreshed_mergeable"
-	return 0
-}
-
-# Normalize mixed-path reviewDecision values. REST PR payloads omit this
-# GraphQL-only field, so null/empty means UNKNOWN, not NONE (GH#26218).
-_pmp_normalize_review_decision_into() {
-	local dest_var="$1"
-	local raw_decision="$2"
-	local normalized_decision=""
-
-	[[ "$dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-	case "$raw_decision" in
-	CHANGES_REQUESTED|APPROVED|REVIEW_REQUIRED|NONE) normalized_decision="$raw_decision" ;;
-	changes_requested) normalized_decision="CHANGES_REQUESTED" ;;
-	approved) normalized_decision="APPROVED" ;;
-	review_required) normalized_decision="REVIEW_REQUIRED" ;;
-	none) normalized_decision="NONE" ;;
-	''|null|NULL|UNKNOWN|unknown) normalized_decision="UNKNOWN" ;;
-	*) normalized_decision="$raw_decision" ;;
-	esac
-	printf -v "$dest_var" '%s' "$normalized_decision"
-	return 0
-}
-
-_pmp_review_decision_is_unknown() {
-	local raw_decision="$1"
-	local _pmp_normalized_decision=""
-	_pmp_normalize_review_decision_into _pmp_normalized_decision "$raw_decision"
-	[[ "$_pmp_normalized_decision" == "UNKNOWN" ]]
-	return $?
-}
-
-# Conservative REST fallback for GraphQL reviewDecision refresh failures.
-# Groups state-changing reviews by reviewer and keeps each latest state.
-_pmp_rest_review_decision_from_reviews() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local reviews_json=""
-
-	reviews_json=$(_gh_with_timeout read gh api --paginate \
-		"repos/${repo_slug}/pulls/${pr_number}/reviews" 2>/dev/null) || return 1
-	printf '%s' "$reviews_json" | jq -rs '
-		flatten
-		| map(select((.user.login // "") != "" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")))
-		| group_by(.user.login)
-		| map(max_by(.submitted_at // .submittedAt // ""))
-		| if any(.state == "CHANGES_REQUESTED") then "CHANGES_REQUESTED" else "NONE" end
-	' 2>/dev/null || return 1
-	return 0
-}
-
-# Refresh unknown PR reviewDecision state into a caller variable.
-# Args: $1=dest var, $2=PR number, $3=repo slug, $4=current state
-_pmp_refresh_unknown_review_decision_into() {
-	local _pmp_dest_var="$1"
-	local _pmp_pr_number="$2"
-	local _pmp_repo_slug="$3"
-	local _pmp_current_review="$4"
-	local _pmp_refreshed_review=""
-	local _pmp_refresh_exit=0
-
-	[[ "$_pmp_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-	_pmp_normalize_review_decision_into _pmp_refreshed_review "$_pmp_current_review"
-
-	if [[ "$_pmp_refreshed_review" == "UNKNOWN" ]]; then
-		_pmp_refreshed_review=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$_pmp_pr_number" --repo "$_pmp_repo_slug" \
-			--json reviewDecision --jq '.reviewDecision // ""' 2>/dev/null)
-		_pmp_refresh_exit=$?
-		_pmp_normalize_review_decision_into _pmp_refreshed_review "$_pmp_refreshed_review"
-		if [[ $_pmp_refresh_exit -ne 0 || "$_pmp_refreshed_review" == "UNKNOWN" ]]; then
-			_pmp_refreshed_review=$(_pmp_rest_review_decision_from_reviews "$_pmp_pr_number" "$_pmp_repo_slug" 2>/dev/null) || _pmp_refreshed_review="UNKNOWN"
-			_pmp_normalize_review_decision_into _pmp_refreshed_review "$_pmp_refreshed_review"
-		fi
-	fi
-
-	printf -v "$_pmp_dest_var" '%s' "$_pmp_refreshed_review"
-	return 0
-}
-
-# Resolve unknown review decisions once before backlog logging and sorting.
-# Both consumers classify the full PR list, so network refreshes inside the
-# classifier would otherwise run twice per unknown PR in one merge pass.
-# Args: $1=repo slug, $2=PR JSON array
-_pmp_enrich_prs_with_review_decisions() {
-	local repo_slug="$1"
-	local pr_json="$2"
-	local enriched_json="$pr_json"
-	local pr_rows=""
-	local _US=$'\x1f'
-	local i="" number="" review_decision=""
-
-	if [[ -z "$repo_slug" ]]; then
-		printf '%s' "$pr_json"
-		return 0
-	fi
-
-	pr_rows=$(printf '%s' "$pr_json" | jq -r '
-		if type != "array" then error("expected PR array")
-		else to_entries[] | [
-			(.key | tostring),
-			(if ((.value | has("number") | not) or .value.number == null or (.value.number | tostring | length) == 0)
-			 then "" else (.value.number | tostring) end),
-			(if ((.value | has("reviewDecision") | not) or .value.reviewDecision == null or (.value.reviewDecision | tostring | length) == 0)
-			 then "UNKNOWN" else .value.reviewDecision end)
-		] | join("\u001f")
-		end' 2>/dev/null) || {
-		printf '%s' "$pr_json"
-		return 0
-	}
-
-	while IFS="$_US" read -r i number review_decision; do
-		[[ -n "$i" ]] || continue
-		_pmp_normalize_review_decision_into review_decision "$review_decision"
-		if [[ "$number" =~ ^[0-9]+$ ]] && _pmp_review_decision_is_unknown "$review_decision"; then
-			_pmp_refresh_unknown_review_decision_into review_decision "$number" "$repo_slug" "$review_decision"
-			enriched_json=$(printf '%s' "$enriched_json" | jq --argjson index "$i" --arg review "$review_decision" '.[$index].reviewDecision = $review' 2>/dev/null) || {
-				printf '%s' "$pr_json"
-				return 0
-			}
-		fi
-	done <<<"$pr_rows"
-
-	printf '%s' "$enriched_json"
 	return 0
 }
 
@@ -591,6 +390,7 @@ _merge_ready_prs_for_repo() {
 		echo "[pulse-wrapper] Merge pass: per-repo cache setup incomplete for ${repo_slug}; continuing without one or more caches (GH#25696)" >>"$LOGFILE"
 	fi
 
+	pr_json=$(_pmp_enrich_prs_with_mergeability "$repo_slug" "$pr_json")
 	pr_json=$(_pmp_enrich_prs_with_rest_check_status "$repo_slug" "$pr_json")
 	pr_json=$(_pmp_enrich_prs_with_review_decisions "$repo_slug" "$pr_json")
 
@@ -641,7 +441,8 @@ _merge_ready_prs_for_repo() {
 
 #######################################
 # Attempt to fast-forward the PR's branch to the latest base branch head
-# via `gh pr update-branch`. GitHub's server-side merger will merge main
+# via GitHub's update-a-pull-request-branch REST endpoint. The server-side
+# merger will merge main
 # into the branch when the changes don't semantically conflict; this
 # salvages a large class of CONFLICTING PRs where the only issue is that
 # main advanced while the worker was finishing or waiting (t2116).
@@ -650,18 +451,19 @@ _merge_ready_prs_for_repo() {
 # mergeable state), 1 on failure (true semantic conflict, caller should
 # fall through to the close path).
 #
-# Rate-limit considerations: one `gh pr update-branch` call per CONFLICTING
+# Rate-limit considerations: one REST update-branch call per CONFLICTING
 # PR per merge cycle. No retry — the next pulse cycle will try again if
 # appropriate.
 #
-# Args: $1=pr_number, $2=repo_slug
+# Args: $1=pr_number, $2=repo_slug, $3=expected current head SHA
 #######################################
 _attempt_pr_update_branch() {
 	local pr_number="$1"
 	local repo_slug="$2"
+	local expected_head_sha="${3:-}"
 
 	local _ub_output _ub_exit
-	_ub_output=$(gh pr update-branch "$pr_number" --repo "$repo_slug" 2>&1)
+	_ub_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$expected_head_sha" 2>&1)
 	_ub_exit=$?
 
 	if [[ $_ub_exit -eq 0 ]]; then
@@ -859,7 +661,7 @@ _attempt_pr_ci_rebase_retry() {
 	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: attempting CI-drift rebase via update-branch (t2805)" >>"$LOGFILE"
 
 	local _ub_output _ub_exit
-	_ub_output=$(gh pr update-branch "$pr_number" --repo "$repo_slug" 2>&1)
+	_ub_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$_head_oid" 2>&1)
 	_ub_exit=$?
 
 	if [[ $_ub_exit -eq 0 ]]; then
@@ -869,23 +671,6 @@ _attempt_pr_ci_rebase_retry() {
 
 	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: CI-drift rebase failed (update-branch exit ${_ub_exit}), falling through to fix-worker routing (t2805): ${_ub_output}" >>"$LOGFILE"
 	return 1
-}
-
-_pmp_extract_update_branch_state() {
-	local __auto_var="$1"
-	local __state_var="$2"
-	local __mergeable_var="$3"
-	local _pr_state="$4"
-	local __existing_auto_val="" __merge_state_val="" __mergeable_val="" _RS=$'\x1e'
-
-	IFS="$_RS" read -r __existing_auto_val __merge_state_val __mergeable_val <<<"$(printf '%s' "$_pr_state" \
-		| jq -r '"\(if .autoMergeRequest then "present" else "" end)\u001e\(.mergeStateStatus // "")\u001e\(.mergeable // "")"' \
-		|| true)"
-	_pmp_normalize_mergeable_state_into __mergeable_val "$__mergeable_val"
-	printf -v "$__auto_var" '%s' "$__existing_auto_val"
-	printf -v "$__state_var" '%s' "$__merge_state_val"
-	printf -v "$__mergeable_var" '%s' "$__mergeable_val"
-	return 0
 }
 
 #######################################
@@ -908,12 +693,11 @@ _attempt_existing_auto_merge_behind_update_branch() {
 	local repo_slug="$2"
 
 	local _pr_state=""
-	_pr_state=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json autoMergeRequest,mergeStateStatus,mergeable 2>/dev/null) || _pr_state=""
+	_pr_state=$(_pmp_rest_pr_merge_state "$pr_number" "$repo_slug" 2>/dev/null) || _pr_state=""
 	[[ -n "$_pr_state" ]] || return 1
 
-	local _existing_auto="" _merge_state="" _mergeable=""
-	_pmp_extract_update_branch_state _existing_auto _merge_state _mergeable "$_pr_state"
+	local _existing_auto="" _merge_state="" _mergeable="" _head_oid=""
+	_pmp_extract_update_branch_state _existing_auto _merge_state _mergeable "$_pr_state" _head_oid
 
 	[[ -n "$_existing_auto" ]] || return 1
 	[[ "$_merge_state" == BEHIND ]] || return 1
@@ -921,7 +705,7 @@ _attempt_existing_auto_merge_behind_update_branch() {
 	_check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1 || return 1
 
 	local _ub_output="" _ub_exit=0
-	_ub_output=$(gh pr update-branch "$pr_number" --repo "$repo_slug" 2>&1)
+	_ub_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$_head_oid" 2>&1)
 	_ub_exit=$?
 	if [[ $_ub_exit -eq 0 ]]; then
 		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge is green but BEHIND — update-branch succeeded, deferring to next cycle (GH#24839)" >>"$LOGFILE"
@@ -952,12 +736,11 @@ _attempt_green_behind_update_branch() {
 	local repo_slug="$2"
 
 	local _pr_state=""
-	_pr_state=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json autoMergeRequest,mergeStateStatus,mergeable 2>/dev/null) || _pr_state=""
+	_pr_state=$(_pmp_rest_pr_merge_state "$pr_number" "$repo_slug" 2>/dev/null) || _pr_state=""
 	[[ -n "$_pr_state" ]] || return 1
 
-	local _existing_auto="" _merge_state="" _mergeable=""
-	_pmp_extract_update_branch_state _existing_auto _merge_state _mergeable "$_pr_state"
+	local _existing_auto="" _merge_state="" _mergeable="" _head_oid=""
+	_pmp_extract_update_branch_state _existing_auto _merge_state _mergeable "$_pr_state" _head_oid
 
 	[[ -z "$_existing_auto" ]] || return 1
 	[[ "$_merge_state" == BEHIND ]] || return 1
@@ -965,7 +748,7 @@ _attempt_green_behind_update_branch() {
 	_check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1 || return 1
 
 	local _ub_output="" _ub_exit=0
-	_ub_output=$(gh pr update-branch "$pr_number" --repo "$repo_slug" 2>&1)
+	_ub_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$_head_oid" 2>&1)
 	_ub_exit=$?
 	if [[ $_ub_exit -eq 0 ]]; then
 		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: green but BEHIND without native auto-merge — update-branch succeeded, deferring to next cycle (GH#26659)" >>"$LOGFILE"
@@ -1807,14 +1590,14 @@ _repo_allows_auto_merge() {
 # Stuck means ALL of:
 #   * mergeStateStatus == BLOCKED
 #   * mergeable == MERGEABLE
-#   * reviewDecision != CHANGES_REQUESTED  (don't bypass real review blocks)
+#   * reviewDecision is known-safe for this already-gated cycle
 #   * autoMergeRequest.enabledAt > $threshold seconds ago
 #   * No required check is in fail/pending/cancel bucket (only pass/skipping)
 #
 # Threshold defaults to 300s, overridable via
 # AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS.
 #
-# Args: $1=pr_number, $2=repo_slug, $3=raw JSON from gh_pr_view
+# Args: $1=pr_number, $2=repo_slug, $3=normalized current-cycle PR state JSON
 # Stdout: stuck-seconds count when stuck (caller logs it)
 # Returns: 0=stuck, safe to fall through to --admin; 1=defer to GitHub
 #######################################
@@ -1829,12 +1612,10 @@ _auto_merge_stuck_seconds() {
 		| jq -r '[.autoMergeRequest.enabledAt // "", .mergeStateStatus // "", .mergeable // "", .reviewDecision // ""] | @tsv' \
 		|| true)"
 
-	# Glob form (unquoted RHS inside [[ ]]) avoids adding new repeated
-	# string literals to this file — the validator counts only quoted
-	# 4+-char literals (see pre-commit-hook.sh::_count_repeated_literals).
+	# Glob form (unquoted RHS inside [[ ]]) avoids adding new repeated string
+	# literals — the validator counts only quoted 4+-char literals.
 	[[ "$merge_state" == BLOCKED ]] || return 1
 	[[ "$mergeable" == MERGEABLE ]] || return 1
-	[[ "$review_decision" != CHANGES_REQUESTED ]] || return 1
 	[[ -n "$enabled_at" ]] || return 1
 
 	local enabled_epoch now_epoch stuck_seconds
@@ -1845,6 +1626,16 @@ _auto_merge_stuck_seconds() {
 	now_epoch=$(date -u +%s)
 	stuck_seconds=$((now_epoch - enabled_epoch))
 	[[ "$stuck_seconds" -gt "$threshold" ]] || return 1
+
+	# The cycle's review projection can become stale between its gate and this
+	# destructive wedge bypass. Re-read bounded REST history now; unavailable or
+	# contradictory evidence must not authorize an admin fall-through.
+	local fresh_review_decision=""
+	_pmp_refresh_native_auto_review_into fresh_review_decision "$pr_number" "$repo_slug" "$review_decision" || return 1
+	case "$fresh_review_decision" in
+	OBSERVED_APPROVED | NONE) ;;
+	*) return 1 ;;
+	esac
 
 	# Confirm no required check is still pending or has failed. We require
 	# every required check to be in `pass` or `skipping` bucket — anything
@@ -1862,19 +1653,102 @@ _auto_merge_stuck_seconds() {
 _stop_external_native_auto_merge() {
 	local pr_number="$1"
 	local repo_slug="$2"
+	local hold_reason="${3:-external approval state must be revalidated at the actual merge call}"
 	local disable_output=""
 	local draft_hold_output=""
 
 	if disable_output=$(gh pr merge "$pr_number" --repo "$repo_slug" --disable-auto 2>&1); then
-		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disabled deferred native auto-merge because external approval state must be revalidated at the actual merge call" >>"$LOGFILE"
-		return 2
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disabled deferred native auto-merge because ${hold_reason}" >>"$LOGFILE"
+		return 0
 	fi
 	if draft_hold_output=$(gh pr ready "$pr_number" --repo "$repo_slug" --undo 2>&1); then
-		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disable-auto failed, so PR was returned to draft to stop deferred merge pending fresh approval: ${disable_output}" >>"$LOGFILE"
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disable-auto failed, so PR was returned to draft because ${hold_reason}: ${disable_output}" >>"$LOGFILE"
 		return 2
 	fi
-	echo "[pulse-merge] SECURITY HOLD FAILED for PR #${pr_number} in ${repo_slug}: could not disable external auto-merge or return PR to draft; manual intervention required. disable=${disable_output}; draft=${draft_hold_output}" >>"$LOGFILE"
+	echo "[pulse-merge] SECURITY HOLD FAILED for PR #${pr_number} in ${repo_slug}: could not disable external auto-merge or return PR to draft because ${hold_reason}; manual intervention required. disable=${disable_output}; draft=${draft_hold_output}" >>"$LOGFILE"
 	return 3
+}
+
+_enable_native_auto_merge_for_head() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head_sha="$3"
+	local pending_count="$4"
+	local auto_output=""
+	local auto_exit=0
+
+	if [[ -z "$expected_head_sha" ]]; then
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: native auto-merge not set because the gated head SHA is unavailable" >>"$LOGFILE"
+		return 1
+	fi
+	auto_output=$(gh pr merge "$pr_number" --repo "$repo_slug" --auto --squash \
+		--match-head-commit "$expected_head_sha" 2>&1)
+	auto_exit=$?
+	if [[ "$auto_exit" -eq 0 ]]; then
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: native auto-merge set (CI ${pending_count} pending), GitHub merges on green (t3070)" >>"$LOGFILE"
+		return 0
+	fi
+	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: gh pr merge --auto failed (exit ${auto_exit}): ${auto_output} — falling through to immediate merge (t3070)" >>"$LOGFILE"
+	return 1
+}
+
+_handle_existing_native_auto_merge() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local require_synchronous_final_gate="$3"
+	local expected_head_sha="$4"
+	local pr_state="$5"
+	local snapshot_head_sha="" stop_rc=0
+
+	if [[ "$require_synchronous_final_gate" == "1" ]]; then
+		_stop_external_native_auto_merge "$pr_number" "$repo_slug" || stop_rc=$?
+		[[ "$stop_rc" -eq 0 ]] && return 2
+		return "$stop_rc"
+	fi
+	snapshot_head_sha=$(printf '%s' "$pr_state" | jq -r '.headRefOid // empty' 2>/dev/null) || snapshot_head_sha=""
+	if [[ -z "$expected_head_sha" || -z "$snapshot_head_sha" || "$snapshot_head_sha" != "$expected_head_sha" ]]; then
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: existing native auto-merge head no longer matches the gated head; disarming and deferring" >>"$LOGFILE"
+		_stop_external_native_auto_merge "$pr_number" "$repo_slug" \
+			"the live head no longer matches the gated head" || stop_rc=$?
+		[[ "$stop_rc" -eq 0 ]] && return 2
+		return "$stop_rc"
+	fi
+
+	local stuck_seconds=""
+	if stuck_seconds=$(_auto_merge_stuck_seconds "$pr_number" "$repo_slug" "$pr_state"); then
+		local threshold="${AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS:-300}"
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge stuck ${stuck_seconds}s (>${threshold}s) in BLOCKED+MERGEABLE with no failing/pending required checks — attempting synchronous recovery (t3192)" >>"$LOGFILE"
+		stop_rc=0
+		_stop_external_native_auto_merge "$pr_number" "$repo_slug" \
+			"stale wedge recovery requires a fresh synchronous merge (GH#26897)" || stop_rc=$?
+		if [[ "$stop_rc" -eq 0 ]]; then
+			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disabled stale native auto-merge before immediate merge (GH#26897)" >>"$LOGFILE"
+			return 1
+		fi
+		return "$stop_rc"
+	fi
+
+	local pending_count=0
+	if ! _check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1; then
+		pending_count=1
+	fi
+	if [[ "$pending_count" -gt 0 ]]; then
+		local enabled_at="" enabled_epoch="0" now_epoch="0" age_seconds="0"
+		enabled_at=$(printf '%s' "$pr_state" | jq -r '.autoMergeRequest.enabledAt // ""' 2>/dev/null) || enabled_at=""
+		enabled_epoch=$(date -u -d "$enabled_at" +%s 2>/dev/null \
+			|| TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$enabled_at" +%s 2>/dev/null \
+			|| echo "0")
+		[[ "$enabled_epoch" =~ ^[0-9]+$ ]] || enabled_epoch=0
+		now_epoch=$(date -u +%s)
+		age_seconds=$((now_epoch - enabled_epoch))
+		local threshold="${AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS:-300}"
+		if [[ "$enabled_epoch" -gt 0 && "$age_seconds" -gt "$threshold" ]]; then
+			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge has ${pending_count} required check(s) pending for ${age_seconds}s (>${threshold}s) — deferring as non-terminal (t3567)" >>"$LOGFILE"
+			return 0
+		fi
+	fi
+	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge already set, deferring to GitHub (t3070)" >>"$LOGFILE"
+	return 0
 }
 
 #######################################
@@ -1909,7 +1783,8 @@ _stop_external_native_auto_merge() {
 # fallback (returns 1 path) — this trade-off is acceptable for owned-org
 # repos where allow_auto_merge=true is bulk-enabled and CI is fast.
 #
-# Args: $1=pr_number, $2=repo_slug, $3=require synchronous final gate (0|1)
+# Args: $1=pr_number, $2=repo_slug, $3=require synchronous final gate (0|1),
+#       $4=current already-gated review state, $5=gated head SHA
 # Returns: 0=native-auto requested/deferred, 1=fall through,
 #          2=defer without native auto-merge so mutable approval state is
 #            revalidated on a later synchronous merge cycle
@@ -1918,12 +1793,14 @@ _set_native_auto_merge_or_skip() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local require_synchronous_final_gate="${3:-0}"
+	local current_review="${4:-UNKNOWN}"
+	local expected_head_sha="${5:-}"
 
-	# Fetch auto_merge metadata + merge state in one call so the stuck-state
-	# check (t3192) does not require an extra round trip.
+	# Fetch auto_merge metadata + merge state through exact-attribution routes.
+	# Carry forward the review state that passed this cycle's gate; unknown or
+	# blocking states cannot authorize stale native-auto wedge recovery.
 	local _pr_state
-	_pr_state=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json autoMergeRequest,mergeStateStatus,mergeable,reviewDecision 2>/dev/null)
+	_pr_state=$(_pmp_native_auto_merge_state "$pr_number" "$repo_slug" "$current_review" 2>/dev/null) || _pr_state=""
 
 	local _existing_auto=""
 	if [[ -n "$_pr_state" ]]; then
@@ -1931,49 +1808,9 @@ _set_native_auto_merge_or_skip() {
 	fi
 
 	if [[ -n "$_existing_auto" ]]; then
-		if [[ "$require_synchronous_final_gate" == "1" ]]; then
-			_stop_external_native_auto_merge "$pr_number" "$repo_slug"
-			return $?
-		fi
-		# Auto-merge already requested — check for the GitHub auto_merge wedge
-		# before unconditionally deferring (t3192).
-		local _stuck_seconds=""
-		if _stuck_seconds=$(_auto_merge_stuck_seconds "$pr_number" "$repo_slug" "$_pr_state"); then
-			local _threshold="${AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS:-300}"
-			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge stuck ${_stuck_seconds}s (>${_threshold}s) in BLOCKED+MERGEABLE with no failing/pending required checks — falling through to immediate merge (t3192)" >>"$LOGFILE"
-			local _disable_auto_output=""
-			if _disable_auto_output=$(gh pr merge "$pr_number" --repo "$repo_slug" --disable-auto 2>&1); then
-				echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: disabled stale native auto-merge before immediate merge (GH#26897)" >>"$LOGFILE"
-			else
-				echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: failed to disable stale native auto-merge before immediate merge (GH#26897): ${_disable_auto_output}" >>"$LOGFILE"
-			fi
-			return 1
-		fi
-
-		# t3567: pending required checks are non-terminal. Even if native
-		# auto-merge has been waiting past the stuck threshold, do not route CI
-		# repair/close/requeue unless a terminal failure has been observed.
-		local _pending_count=0
-		if ! _check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1; then
-			_pending_count=1
-		fi
-		if [[ "$_pending_count" -gt 0 ]]; then
-			local _enabled_at="" _enabled_epoch="0" _now_epoch="0" _age_seconds="0"
-			_enabled_at=$(printf '%s' "$_pr_state" | jq -r '.autoMergeRequest.enabledAt // ""' 2>/dev/null) || _enabled_at=""
-			_enabled_epoch=$(date -u -d "$_enabled_at" +%s 2>/dev/null \
-				|| TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$_enabled_at" +%s 2>/dev/null \
-				|| echo "0")
-			[[ "$_enabled_epoch" =~ ^[0-9]+$ ]] || _enabled_epoch=0
-			_now_epoch=$(date -u +%s)
-			_age_seconds=$((_now_epoch - _enabled_epoch))
-			local _threshold="${AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS:-300}"
-			if [[ "$_enabled_epoch" -gt 0 && "$_age_seconds" -gt "$_threshold" ]]; then
-				echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge has ${_pending_count} required check(s) pending for ${_age_seconds}s (>${_threshold}s) — deferring as non-terminal (t3567)" >>"$LOGFILE"
-				return 0
-			fi
-		fi
-		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: auto_merge already set, deferring to GitHub (t3070)" >>"$LOGFILE"
-		return 0
+		_handle_existing_native_auto_merge "$pr_number" "$repo_slug" \
+			"$require_synchronous_final_gate" "$expected_head_sha" "$_pr_state"
+		return $?
 	fi
 
 	# Skip if repo does not allow auto-merge — fall through to immediate merge.
@@ -1999,16 +1836,7 @@ _set_native_auto_merge_or_skip() {
 		return 2
 	fi
 
-	# CI in flight — ask GitHub to merge on green.
-	local _auto_output=""
-	local _auto_exit=0
-	_auto_output=$(gh pr merge "$pr_number" --repo "$repo_slug" --auto --squash 2>&1)
-	_auto_exit=$?
-	if [[ $_auto_exit -eq 0 ]]; then
-		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: native auto-merge set (CI ${pending_count} pending), GitHub merges on green (t3070)" >>"$LOGFILE"
-		return 0
-	fi
-
-	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: gh pr merge --auto failed (exit ${_auto_exit}): ${_auto_output} — falling through to immediate merge (t3070)" >>"$LOGFILE"
-	return 1
+	# CI in flight — ask GitHub to merge on green, bound to the gated head.
+	_enable_native_auto_merge_for_head "$pr_number" "$repo_slug" "$expected_head_sha" "$pending_count"
+	return $?
 }

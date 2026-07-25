@@ -345,8 +345,8 @@ _gh_pr_view_snapshot_put() {
 _gh_pr_view_field_route_class() {
 	local _field="$1"
 	case "$_field" in
-	number|state|merged|mergedAt|closedAt|mergeCommit|mergedBy|isDraft|labels|author|title|body|url|createdAt|updatedAt|baseRefName|headRefName|headRefOid) printf 'rest' ;;
-	mergeable|statusCheckRollup|reviews|latestReviews|reviewThreads|commits|files|reviewDecision|autoMergeRequest|mergeStateStatus) printf 'gql' ;;
+	number|state|merged|mergedAt|closedAt|mergeCommit|mergedBy|mergeable|isDraft|labels|author|title|body|url|createdAt|updatedAt|baseRefName|headRefName|headRefOid) printf 'rest' ;;
+	statusCheckRollup|reviews|latestReviews|reviewThreads|commits|files|reviewDecision|autoMergeRequest|mergeStateStatus) printf 'gql' ;;
 	*) printf 'unsupported' ;;
 	esac
 	return 0

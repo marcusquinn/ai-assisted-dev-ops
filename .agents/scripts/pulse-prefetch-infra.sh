@@ -74,10 +74,10 @@ _pulse_gh_err_is_rate_limit() {
 }
 
 #######################################
-# Verify live GraphQL rate limit before committing to rate-limit abort.
+# Verify live GraphQL-pool rate limit before committing to rate-limit abort.
 #
-# Cross-checks the classifier's signal against a non-cached query path
-# (rateLimit query, not SearchType_enumValues introspection). Defends
+# Cross-checks the classifier's signal against the zero-cost REST rate_limit
+# resource instead of spending an unattributable GraphQL request. Defends
 # against gh CLI cache poisoning (stale RATE_LIMIT response from a prior
 # transient budget exhaustion) keeping the pulse stuck for hours.
 #
@@ -95,9 +95,9 @@ _pulse_gh_err_is_rate_limit() {
 _pulse_verify_rate_limit_live() {
 	local threshold="${1:-100}"
 	local remaining
-	# rateLimit query does not hit the --label/--search introspection cache.
+	# The REST rate_limit resource does not hit the --label/--search cache.
 	# Failure modes: network error, auth error — treat as "can't verify, trust classifier".
-	remaining=$(gh api graphql -f query='{rateLimit{remaining}}' --jq '.data.rateLimit.remaining' 2>/dev/null) || return 0
+	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null) || return 0
 	[[ -z "$remaining" || ! "$remaining" =~ ^[0-9]+$ ]] && return 0
 	[[ "$remaining" -lt "$threshold" ]] && return 0
 	return 1

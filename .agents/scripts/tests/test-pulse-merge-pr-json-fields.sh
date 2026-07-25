@@ -69,16 +69,21 @@ test_ready_pr_fields_include_process_metadata() {
 	fields="$(_pulse_merge_ready_pr_json_fields)"
 
 	local required missing=""
-	for required in number state mergeable reviewDecision author title isDraft labels updatedAt headRefOid headRefName baseRefName createdAt; do
+	for required in number state author title isDraft labels updatedAt headRefOid headRefName baseRefName createdAt; do
 		if [[ ",${fields}," != *",${required},"* ]]; then
 			missing="${missing:+${missing},}${required}"
 		fi
 	done
 	if [[ -n "$missing" ]]; then
-		print_result "ready PR fields include process metadata" 1 "missing=${missing}; fields=${fields}"
+		print_result "ready PR REST fields include process metadata" 1 "missing=${missing}; fields=${fields}"
 		return 0
 	fi
-	print_result "ready PR fields include process metadata" 0
+	if [[ ",${fields}," == *",mergeable,"* || ",${fields}," == *",reviewDecision,"* || ",${fields}," == *",statusCheckRollup,"* ]]; then
+		print_result "ready PR REST fields exclude enriched GraphQL metadata" 1 "fields=${fields}"
+		return 0
+	fi
+	print_result "ready PR REST fields include process metadata" 0
+	print_result "ready PR REST fields exclude enriched GraphQL metadata" 0
 	return 0
 }
 

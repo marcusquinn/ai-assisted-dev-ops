@@ -132,13 +132,27 @@ readonly _PMS_ISSUE_STATE_OPEN="OPEN"
 #######################################
 # Shared open-PR field shape for stuck-merge list scans.
 #
-# Keeps the zero-progress counter and stuck detector on one exact-output
-# provider-cache key while preserving both consumers' fields: author is needed
-# by _pms_count_eligible_unmerged_for_repo, updatedAt by
-# pulse_merge_stuck_run_pass, and the remaining fields gate eligibility.
+# Keeps the zero-progress counter and stuck detector on one REST-safe provider
+# cache key. Exact mergeability and observed active review state are enriched
+# per PR before either consumer classifies eligibility.
 #######################################
 _pms_pr_list_json_fields() {
-	printf '%s' 'number,mergeable,reviewDecision,isDraft,labels,author,updatedAt,headRefOid'
+	printf '%s' 'number,isDraft,labels,author,updatedAt,headRefOid'
+	return 0
+}
+
+_pms_enrich_pr_state() {
+	local repo_slug="$1"
+	local pr_json="$2"
+
+	if ! declare -F _pmp_enrich_prs_with_mergeability >/dev/null 2>&1 \
+		|| ! declare -F _pmp_enrich_prs_with_review_decisions >/dev/null 2>&1; then
+		printf '%s' "$pr_json"
+		return 0
+	fi
+	pr_json=$(_pmp_enrich_prs_with_mergeability "$repo_slug" "$pr_json")
+	pr_json=$(_pmp_enrich_prs_with_review_decisions "$repo_slug" "$pr_json")
+	printf '%s' "$pr_json"
 	return 0
 }
 
@@ -1384,11 +1398,12 @@ _pms_count_eligible_unmerged_for_repo() {
 		--json "$(_pms_pr_list_json_fields)" \
 		--limit 50 2>/dev/null) || pr_json="[]"
 	[[ -n "$pr_json" && "$pr_json" != "$_PMS_JQ_NULL_GUARD" ]] || pr_json="[]"
+	pr_json=$(_pms_enrich_pr_state "$repo_slug" "$pr_json")
 
 	# Enumerate PRs matching the basic eligibility criteria via jq. .mergeable and
-	# .reviewDecision are already upper-case in the GraphQL response — no
-	# ascii_upcase needed (the FAILURE selector keeps it because legacy
-	# commit-status `.state` values can be lower-case).
+	# .mergeable and .reviewDecision are normalized to upper-case enums. Only a
+	# policy-level APPROVED value qualifies; REST history's OBSERVED_APPROVED
+	# cannot trigger stuck-PR escalation or sibling-affecting diagnostics.
 	local candidates
 	candidates=$(printf '%s' "$pr_json" | jq -r '
 		[ .[]
@@ -1610,6 +1625,7 @@ pulse_merge_stuck_run_pass() {
 		--json "$(_pms_pr_list_json_fields)" \
 		--limit 50 2>/dev/null) || pr_json="[]"
 	[[ -n "$pr_json" && "$pr_json" != "$_PMS_JQ_NULL_GUARD" ]] || pr_json="[]"
+	pr_json=$(_pms_enrich_pr_state "$repo_slug" "$pr_json")
 
 	local pr_count
 	pr_count=$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null) || pr_count=0

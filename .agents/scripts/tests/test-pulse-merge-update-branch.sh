@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 # read it from $MERGE_SCRIPT.
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
 PROCESS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-process.sh"
+REST_STATE_SCRIPT="${SCRIPT_DIR}/../pulse-merge-rest-state.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -78,7 +79,7 @@ teardown_test_env() {
 
 # Install a gh stub that:
 #   - logs every invocation to LAST_GH_ARGS_FILE (one line per call, tab-joined)
-#   - `gh pr update-branch <N> --repo <slug>` → exit code controlled by GH_UB_EXIT
+#   - REST update-branch endpoint → exit code controlled by GH_UB_EXIT
 #   - `gh pr view <N> --repo <slug> --json mergeable --jq ...` → emits
 #     GH_VIEW_MERGEABLE (default MERGEABLE)
 #   - every other gh call → exit 0, no output
@@ -86,7 +87,7 @@ install_gh_stub() {
 	cat >"${TEST_ROOT}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${LAST_GH_ARGS_FILE}"
-if [[ "${1:-}" == "pr" && "${2:-}" == "update-branch" ]]; then
+if [[ "${1:-}" == "api" && "${2:-}" == "--method" && "${3:-}" == "PUT" && "${4:-}" == repos/*/pulls/*/update-branch ]]; then
 	exit "${GH_UB_EXIT:-0}"
 fi
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
@@ -109,14 +110,15 @@ gh_pr_view() {
 # pattern used by test-pulse-merge-rebase-nudge.sh.
 define_helper_under_test() {
 	local helper_src
+	# shellcheck source=/dev/null
+	source "$REST_STATE_SCRIPT"
 	helper_src=$(awk '
-		/^_pmp_normalize_mergeable_state\(\) \{/,/^}$/ { print }
-		/^_pmp_normalize_mergeable_state_into\(\) \{/,/^}$/ { print }
-		/^_pmp_refresh_unknown_mergeable_state_into\(\) \{/,/^}$/ { print }
 		/^_attempt_pr_update_branch\(\) \{/,/^}$/ { print }
 		/^_resolve_pr_mergeable_status\(\) \{/,/^}$/ { print }
 	' "$PROCESS_SCRIPT")
-	if [[ -z "$helper_src" || "$helper_src" != *"_pmp_normalize_mergeable_state"* || "$helper_src" != *"_pmp_normalize_mergeable_state_into"* || "$helper_src" != *"_pmp_refresh_unknown_mergeable_state_into"* || "$helper_src" != *"_attempt_pr_update_branch"* || "$helper_src" != *"_resolve_pr_mergeable_status"* ]]; then
+	if [[ -z "$helper_src" || "$helper_src" != *"_attempt_pr_update_branch"* || "$helper_src" != *"_resolve_pr_mergeable_status"* ]] \
+		|| ! declare -F _pmp_update_branch_rest >/dev/null 2>&1 \
+		|| ! declare -F _pmp_refresh_unknown_mergeable_state_into >/dev/null 2>&1; then
 		printf 'ERROR: could not extract pulse-merge-process helpers from %s\n' "$PROCESS_SCRIPT" >&2
 		return 1
 	fi
@@ -127,7 +129,7 @@ define_helper_under_test() {
 
 test_update_branch_success_returns_zero() {
 	install_gh_stub
-	GH_UB_EXIT=0 _attempt_pr_update_branch "18988" "marcusquinn/aidevops"
+	GH_UB_EXIT=0 _attempt_pr_update_branch "18988" "marcusquinn/aidevops" "0123456789abcdef"
 	local rc=$?
 
 	if [[ $rc -ne 0 ]]; then
@@ -137,9 +139,9 @@ test_update_branch_success_returns_zero() {
 	fi
 
 	# Verify gh was called with the expected arguments.
-	if ! grep -qE '^pr update-branch 18988 --repo marcusquinn/aidevops$' "$LAST_GH_ARGS_FILE"; then
+	if ! grep -qE '^api --method PUT repos/marcusquinn/aidevops/pulls/18988/update-branch -f expected_head_sha=0123456789abcdef$' "$LAST_GH_ARGS_FILE"; then
 		print_result "update-branch success → return 0" 1 \
-			"Expected 'pr update-branch 18988 --repo marcusquinn/aidevops' in gh args. Got: $(cat "$LAST_GH_ARGS_FILE")"
+			"Expected exact REST update-branch endpoint in gh args. Got: $(cat "$LAST_GH_ARGS_FILE")"
 		return 0
 	fi
 
@@ -154,12 +156,27 @@ test_update_branch_success_returns_zero() {
 	return 0
 }
 
+test_update_branch_missing_head_fails_before_write() {
+	install_gh_stub
+	: >"$LAST_GH_ARGS_FILE"
+	local output="" rc=0
+	output=$(_pmp_update_branch_rest "18988" "marcusquinn/aidevops" 2>&1) || rc=$?
+
+	if [[ "$rc" -eq 2 && ! -s "$LAST_GH_ARGS_FILE" && "$output" == *"expected head SHA is required"* ]]; then
+		print_result "update-branch without expected head fails before write" 0
+	else
+		print_result "update-branch without expected head fails before write" 1 \
+			"rc=${rc}; output=${output}; calls=$(cat "$LAST_GH_ARGS_FILE")"
+	fi
+	return 0
+}
+
 test_update_branch_failure_returns_one() {
 	install_gh_stub
 	# gh returns non-zero (true semantic conflict). `set -e` is active so
 	# we MUST guard the failing call with a conditional to capture rc.
 	local rc=0
-	GH_UB_EXIT=1 _attempt_pr_update_branch "19094" "marcusquinn/aidevops" || rc=$?
+	GH_UB_EXIT=1 _attempt_pr_update_branch "19094" "marcusquinn/aidevops" "fedcba9876543210" || rc=$?
 
 	if [[ $rc -ne 1 ]]; then
 		print_result "update-branch failure → return 1" 1 \
@@ -181,7 +198,7 @@ test_update_branch_failure_returns_one() {
 test_update_branch_tags_log_with_task_id() {
 	install_gh_stub
 	: >"$LOGFILE"
-	GH_UB_EXIT=0 _attempt_pr_update_branch "12345" "marcusquinn/aidevops"
+	GH_UB_EXIT=0 _attempt_pr_update_branch "12345" "marcusquinn/aidevops" "1234567890abcdef"
 
 	# All t2116 log entries must carry the (t2116) tag for later audit.
 	if ! grep -q '(t2116)' "$LOGFILE"; then
@@ -467,8 +484,8 @@ test_unknown_mergeable_refreshed_before_conflict_handler() {
 		/^_pmp_refresh_unknown_mergeable_state_into\(\) \{/ { in_fn=1 }
 		in_fn { print }
 		in_fn && /^\}$/ { exit }
-	' "$PROCESS_SCRIPT")
-	if [[ "$helper_src" != *"AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view"* || "$helper_src" != *"_pmp_normalize_mergeable_state_into _pmp_refreshed_mergeable"* || "$helper_src" != *"printf -v \"\$_pmp_dest_var\""* ]]; then
+	' "$REST_STATE_SCRIPT")
+	if [[ "$helper_src" != *"AIDEVOPS_GH_REST_FIRST_READS=1"* || "$helper_src" != *"AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1"* || "$helper_src" != *"_pmp_normalize_mergeable_state_into refreshed_mergeable"* || "$helper_src" != *"printf -v \"\$dest_var\""* ]]; then
 		print_result "UNKNOWN mergeable refresh precedes CONFLICTING branch" 1 \
 			"Helper must bypass cache, normalize refreshed state, and write caller variable"
 		return 0
@@ -488,7 +505,7 @@ test_ci_rebase_update_branch_has_active_check_guard() {
 
 	terminal_pos=$(printf '%s\n' "$helper_src" | awk '/_check_required_checks_has_terminal_failure/ { print NR; exit }')
 	guard_pos=$(printf '%s\n' "$helper_src" | awk '/_check_required_checks_have_pending_or_in_progress/ { print NR; exit }')
-	update_pos=$(printf '%s\n' "$helper_src" | awk '/_ub_output=\$\(gh pr update-branch/ { print NR; exit }')
+	update_pos=$(printf '%s\n' "$helper_src" | awk '/_ub_output=\$\(_pmp_update_branch_rest/ { print NR; exit }')
 
 	if [[ -z "$terminal_pos" || -z "$guard_pos" || -z "$update_pos" ]]; then
 		print_result "CI-drift update-branch checks current-head required state first" 1 \
@@ -552,6 +569,7 @@ main() {
 	fi
 
 	test_update_branch_success_returns_zero
+	test_update_branch_missing_head_fails_before_write
 	test_update_branch_failure_returns_one
 	test_update_branch_tags_log_with_task_id
 	test_resolve_mergeable_retries_unknown

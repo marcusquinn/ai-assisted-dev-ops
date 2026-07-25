@@ -229,13 +229,11 @@ _pmr_graphql_remaining() {
 		printf '%s\n' "$remaining"
 		return 0
 	fi
-	# Query the GraphQL budget through GraphQL itself. The REST /rate_limit
-	# endpoint consumes the independent core budget and returns 403 when core is
-	# exhausted, even while GraphQL still has capacity. Treating that failure as
-	# zero falsely disabled every standalone merge pass (GH#24904 regression).
-	remaining=$(_pmr_gh_read gh api graphql \
-		-f 'query=query { rateLimit { remaining } }' \
-		--jq '.data.rateLimit.remaining // 0' 2>/dev/null) || remaining="0"
+	# The REST rate_limit endpoint reports the independent GraphQL pool without
+	# consuming primary quota, and unlike a native GraphQL probe has exact
+	# zero-cost attribution in transport telemetry.
+	remaining=$(_pmr_gh_read gh api rate_limit \
+		--jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="0"
 	[[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
 	printf '%s\n' "$remaining"
 	return 0

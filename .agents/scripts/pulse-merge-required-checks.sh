@@ -257,11 +257,17 @@ _pmrc_snapshot_review_threads_clear() {
 	local pr_number="$2"
 	local base_branch="$3"
 	local owner="${repo_slug%%/*}" name="${repo_slug##*/}" response="" counts="" has_next=""
-	local total_count="" bot_count="" resolution_required="" log_target="${LOGFILE:-/dev/stderr}"
+	local total_count="" bot_count="" resolution_required="" reported_cost="" log_target="${LOGFILE:-/dev/stderr}"
 	local bot_re="coderabbitai|gemini-code-assist|augment-code|augmentcode|copilot"
 
+	# This fixed query has a documented/calibrated GraphQL cost of one point.
+	# Request the operation-owned cost in the same response and fail closed if
+	# GitHub ever changes that contract; exact-capture telemetry can therefore
+	# attribute this otherwise irreducible GraphQL review-thread read without a
+	# racy before/after pool delta (GH#27777).
 	# shellcheck disable=SC2016
-	response=$(_pmrc_gh_read gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_ROUTE_DECISION="pulse-review-threads-exact-cost" \
+		_pmrc_gh_read gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
 		query($owner: String!, $name: String!, $pr: Int!) {
 			repository(owner: $owner, name: $name) {
 				pullRequest(number: $pr) {
@@ -271,10 +277,16 @@ _pmrc_snapshot_review_threads_clear() {
 					}
 				}
 			}
+			rateLimit { cost }
 		}
 	' 2>/dev/null) || return 1
 	[[ -n "$response" ]] || return 1
 	if ! printf '%s' "$response" | jq -e 'try (.data.repository.pullRequest != null) catch false' >/dev/null; then
+		return 1
+	fi
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty') || return 1
+	if [[ "$reported_cost" != "1" ]]; then
+		echo "[pulse-merge] pre-merge snapshot: review-thread GraphQL cost contract changed for ${repo_slug} PR #${pr_number} — failing closed (GH#27777)" >>"$log_target"
 		return 1
 	fi
 	has_next=$(printf '%s' "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false') || return 1

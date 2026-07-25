@@ -19,23 +19,29 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # Stub environment — the helpers read $LOGFILE and $PULSE_RATE_LIMIT_FLAG
 LOGFILE=$(mktemp)
 PULSE_RATE_LIMIT_FLAG=$(mktemp -u)
-export LOGFILE PULSE_RATE_LIMIT_FLAG
+GH_CALL_LOG=$(mktemp)
+GH_GRAPHQL_REMAINING=0
+export LOGFILE PULSE_RATE_LIMIT_FLAG GH_CALL_LOG GH_GRAPHQL_REMAINING
 
 cleanup() {
-	rm -f "$LOGFILE" "$PULSE_RATE_LIMIT_FLAG"
+	rm -f "$LOGFILE" "$PULSE_RATE_LIMIT_FLAG" "$GH_CALL_LOG"
 }
 trap cleanup EXIT
 
-# Stub module guard (pulse-prefetch.sh checks this) + stub helpers we don't need
-_PULSE_PREFETCH_LOADED=""
+# Stub the only live API read used by _pulse_mark_rate_limited.
+gh() {
+	printf '%s\n' "$*" >>"$GH_CALL_LOG"
+	if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
+		printf '%s\n' "$GH_GRAPHQL_REMAINING"
+		return 0
+	fi
+	return 1
+}
 
-# Source only the helper functions we need, in a minimal way. We can't source
-# the whole pulse-prefetch.sh because it transitively depends on pulse-wrapper
-# state. Extract the two helper function bodies instead.
-eval "$(awk '
-	/^_pulse_gh_err_is_rate_limit\(\) \{$/,/^\}$/ { print }
-	/^_pulse_mark_rate_limited\(\) \{$/,/^\}$/ { print }
-' "${REPO_ROOT}/.agents/scripts/pulse-prefetch.sh")"
+# Source the focused infrastructure module without the pulse orchestrator.
+_PULSE_PREFETCH_INFRA_LOADED=""
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/.agents/scripts/pulse-prefetch-infra.sh"
 
 # Verify the helpers were extracted
 if ! declare -F _pulse_gh_err_is_rate_limit >/dev/null; then
@@ -179,6 +185,15 @@ if grep -q "RATE_LIMIT_EXHAUSTED during site_one:owner/repo1" "$LOGFILE" 2>/dev/
 	PASS=$((PASS + 1))
 else
 	echo "FAIL: log-line-emitted — expected loud log line" >&2
+	FAIL=$((FAIL + 1))
+fi
+
+if grep -q '^api rate_limit --jq .resources.graphql.remaining$' "$GH_CALL_LOG" &&
+	! grep -q 'api graphql' "$GH_CALL_LOG"; then
+	echo "PASS: live-probe-uses-rest-rate-limit"
+	PASS=$((PASS + 1))
+else
+	echo "FAIL: live-probe-uses-rest-rate-limit — calls: $(tr '\n' ';' <"$GH_CALL_LOG")" >&2
 	FAIL=$((FAIL + 1))
 fi
 

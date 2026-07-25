@@ -6,9 +6,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 MERGE_PROCESS="${SCRIPT_DIR}/../pulse-merge-process.sh"
+REST_STATE_MODULE="${SCRIPT_DIR}/../pulse-merge-rest-state.sh"
+
+# shellcheck source=/dev/null
+source "$REST_STATE_MODULE"
 
 TESTS_RUN=0
 TESTS_FAILED=0
+MERGEABLE_CALLS=""
 
 print_result() {
 	local name="$1"
@@ -44,6 +49,19 @@ gh_pr_check_status_rest_batch() {
 	return 0
 }
 
+gh_pr_view() {
+	local pr_number="$1"
+	shift
+	[[ -n "$MERGEABLE_CALLS" ]] || return 1
+	printf '%s\n' "$pr_number" >>"$MERGEABLE_CALLS"
+	case "$pr_number" in
+	1) printf 'MERGEABLE\n' ;;
+	2) printf 'CONFLICTING\n' ;;
+	*) printf 'UNKNOWN\n' ;;
+	esac
+	return 0
+}
+
 assert_rollup() {
 	local name="$1"
 	local number="$2"
@@ -58,8 +76,17 @@ assert_rollup() {
 
 main() {
 	define_functions_under_test || { printf 'failed to load function\n' >&2; return 1; }
-	local prs output
+	local prs output mergeability_output actual
+	MERGEABLE_CALLS=$(mktemp)
+	trap 'rm -f "$MERGEABLE_CALLS"' EXIT
 	prs='[{"number":1,"headRefOid":"a"},{"number":2,"headRefOid":"b"},{"number":3,"headRefOid":"c"},{"number":4,"headRefOid":"d"}]'
+	mergeability_output=$(_pmp_enrich_prs_with_mergeability "owner/repo" "$prs")
+	actual=$(printf '%s' "$mergeability_output" | jq -r '[.[].mergeable] | join(",")') || actual=""
+	if [[ "$actual" == "MERGEABLE,CONFLICTING,UNKNOWN,UNKNOWN" && "$(wc -l <"$MERGEABLE_CALLS" | tr -d ' ')" == "4" ]]; then
+		print_result "REST mergeability enriches every unknown list item" 0
+	else
+		print_result "REST mergeability enriches every unknown list item" 1 "states=${actual} calls=$(wc -l <"$MERGEABLE_CALLS" | tr -d ' ')"
+	fi
 	output=$(_pmp_enrich_prs_with_rest_check_status "owner/repo" "$prs")
 	assert_rollup "green REST check maps to success rollup" 1 "SUCCESS" "$output"
 	assert_rollup "failing REST check maps to failure rollup" 2 "FAILURE" "$output"

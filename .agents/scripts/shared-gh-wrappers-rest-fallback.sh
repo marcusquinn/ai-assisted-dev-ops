@@ -1036,6 +1036,7 @@ _rest_issue_object_json_jq() {
 		author) projection="${projection}${projection:+,}author: (.user | ${actor_projection})" ;;
 		stateReason) projection="${projection}${projection:+,}stateReason: (if .state_reason == null then null else (.state_reason | ascii_upcase) end)" ;;
 		closed) projection="${projection}${projection:+,}closed: (.state == \"closed\")" ;;
+		locked) projection="${projection}${projection:+,}locked: (if (.locked | type) == \"boolean\" then .locked else error(\"REST issue locked field must be boolean\") end)" ;;
 		*) return 1 ;;
 		esac
 	done < <(_rest_split_csv "$fields")

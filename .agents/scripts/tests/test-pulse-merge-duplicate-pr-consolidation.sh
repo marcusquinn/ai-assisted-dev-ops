@@ -186,10 +186,11 @@ test_healthiest_candidate_beats_newer_unhealthy_pr() {
 
 test_health_score_handles_precomputed_legacy_mergeable_values() {
 	reset_case
-	local lowercase_score="" true_score="" false_score=""
+	local lowercase_score="" true_score="" false_score="" observed_approval_score=""
 	lowercase_score=$(_pmp_pr_consolidation_health_score "owner/repo" '{}' "501" "mergeable" "NONE" "false") || lowercase_score="0"
 	true_score=$(_pmp_pr_consolidation_health_score "owner/repo" '{}' "502" "true" "NONE" "false") || true_score="0"
 	false_score=$(_pmp_pr_consolidation_health_score "owner/repo" '{}' "503" "false" "NONE" "false") || false_score="0"
+	observed_approval_score=$(_pmp_pr_consolidation_health_score "owner/repo" '{}' "504" "MERGEABLE" "OBSERVED_APPROVED" "false") || observed_approval_score="0"
 	if [[ "$lowercase_score" -eq 250 ]]; then
 		pass "lowercase mergeable keeps healthy score"
 	else
@@ -204,6 +205,12 @@ test_health_score_handles_precomputed_legacy_mergeable_values() {
 		pass "boolean-string conflicting value does not get mergeable score"
 	else
 		fail "boolean-string conflicting value does not get mergeable score" "Expected 50, got ${false_score}"
+	fi
+	if [[ "$observed_approval_score" -eq 250 ]]; then
+		pass "observed REST approval does not receive policy-approval score"
+	else
+		fail "observed REST approval does not receive policy-approval score" \
+			"Expected 250, got ${observed_approval_score}"
 	fi
 	return 0
 }

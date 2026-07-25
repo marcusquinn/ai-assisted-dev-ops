@@ -83,13 +83,15 @@ _ci_check_url_has_infra_failure_log() {
 
 stub_review_threads() {
 	if [[ "$SNAPSHOT_MODE" == "review_threads_paginated" ]]; then
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"}}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"}}]}}]}}},"rateLimit":{"cost":1}}}'
 	elif [[ "$SNAPSHOT_MODE" == "unresolved" ]]; then
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"}}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"}}]}}]}}},"rateLimit":{"cost":1}}}'
 	elif [[ "$SNAPSHOT_MODE" == human_* ]]; then
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"human-reviewer"}}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"human-reviewer"}}]}}]}}},"rateLimit":{"cost":1}}}'
+	elif [[ "$SNAPSHOT_MODE" == "review_threads_cost_changed" ]]; then
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}},"rateLimit":{"cost":2}}}'
 	else
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}},"rateLimit":{"cost":1}}}'
 	fi
 	return 0
 }
@@ -411,6 +413,8 @@ assert_review_and_head_snapshot_cases() {
 	assert_gate_blocker "unresolved late inline finding blocks merge" unresolved 1 "$PMRC_BLOCKER_REVIEW_BOT_THREADS"
 	assert_gate_blocker "paginated review-thread snapshot fails closed without actionable remediation" \
 		review_threads_paginated 1 "$PMRC_BLOCKER_SNAPSHOT_UNAVAILABLE"
+	assert_gate_logged "review-thread quota-cost contract drift" \
+		review_threads_cost_changed "GraphQL cost contract changed"
 	assert_human_review_thread_rules
 	assert_gate "late review activity invalidates stale gate success" stale_gate 1
 	set_live_evidence PASS sha-reviewed trusted true 2026-01-01T00:00:50Z

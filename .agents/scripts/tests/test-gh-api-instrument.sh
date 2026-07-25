@@ -95,6 +95,8 @@ echo ""
 # --- Test 1: source instrumentation directly and record a few calls ----
 # shellcheck source=../gh-api-instrument.sh
 source "${PARENT_DIR}/gh-api-instrument.sh"
+# shellcheck source=../gh-quota-attribution-lib.sh
+source "${PARENT_DIR}/gh-quota-attribution-lib.sh"
 
 gh_record_call rest test-instrument
 gh_record_call graphql test-instrument
@@ -444,6 +446,36 @@ assert_eq "inferred-cost transport failure status preserved" "1" "$inferred_fail
 gh_aggregate_calls
 assert_eq "successful inferred and explicit costs reconcile" "4" "$(jq -r '._meta.known_quota_cost' "$AIDEVOPS_GH_API_REPORT")"
 assert_eq "failed inferred cost remains unknown" "1" "$(jq -r '._meta.unknown_quota_cost_attempts' "$AIDEVOPS_GH_API_REPORT")"
+
+# --- Test 11c: exact-frame capture honours success-only quota costs ----------
+exact_success_result="$TMPDIR/exact-success.result"
+exact_failure_result="$TMPDIR/exact-failure.result"
+exact_success_state="$TMPDIR/exact-success.state"
+exact_failure_state="$TMPDIR/exact-failure.state"
+: >"$exact_success_result"
+: >"$exact_failure_result"
+_ghqa_state_write_all "$exact_success_state" 0 1800000000 0 1800000000 0 1800000000
+_ghqa_state_write_all "$exact_failure_state" 0 1800000000 0 1800000000 0 1800000000
+exact_success_frame=$'frame\t1\t1\t200\tgraphql\t10\t4990\t1800000000\t25'
+exact_failure_frame=$'frame\t1\t1\t200\tgraphql\t12\t4988\t1800000000\t25'
+exact_success_rc=0
+exact_failure_rc=0
+set +e
+AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS=1 \
+	_ghqa_write_complete_frames "$exact_success_result" "$exact_success_state" graphql 1 0 \
+	"$exact_success_frame" -- gh api graphql
+exact_success_rc=$?
+AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS=1 \
+	_ghqa_write_complete_frames "$exact_failure_result" "$exact_failure_state" graphql 1 1 \
+	"$exact_failure_frame" -- gh api graphql
+exact_failure_rc=$?
+set -e
+assert_eq "exact successful frame writer returns zero" "0" "$exact_success_rc"
+assert_eq "exact failed-command frame writer returns zero" "0" "$exact_failure_rc"
+assert_eq "exact successful frame records inferred quota" "1" \
+	"$(awk -F '\t' 'NR == 1 { print $7 }' "$exact_success_result")"
+assert_eq "exact failed frame leaves inferred quota unknown" "x" \
+	"$(awk -F '\t' 'NR == 1 { print $7 }' "$exact_failure_result")"
 
 # --- Test 12: effective window comes from retained attempt timestamps -----
 gh_clear_log

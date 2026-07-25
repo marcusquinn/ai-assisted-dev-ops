@@ -249,6 +249,12 @@ _stub_gh_api() {
 		return $?
 	fi
 	if [[ "$subcommand" =~ ^/repos/.+/issues/[0-9]+$ ]]; then
+		if [[ -n "${STUB_ISSUE_VIEW_FIXTURE:-}" ]]; then
+			local jq_filter=""
+			jq_filter="$(_stub_jq_filter_arg 3 api "$@")"
+			_stub_print_fixture_with_jq "$STUB_ISSUE_VIEW_FIXTURE" "$jq_filter" -r
+			return $?
+		fi
 		printf '%s\n' "${STUB_CURRENT_LABELS:-bug}"
 		return 0
 	fi
@@ -843,6 +849,44 @@ else
 		"GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
 fi
 
+# Locked is a direct REST issue field used by Pulse dispatch admission. Keep
+# the full state/label/assignee view on REST instead of falling back to GraphQL.
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export STUB_RATE_LIMIT_REMAINING=5000
+export AIDEVOPS_GH_REST_FIRST_READS=1
+export STUB_ISSUE_VIEW_FIXTURE='{"state":"open","locked":true,"labels":[{"name":"status:available"}],"assignees":[]}'
+
+issue_locked=$(gh_issue_view 4242 --repo "owner/repo" \
+	--json state,labels,assignees,locked --jq '.locked' 2>/dev/null || true)
+
+if [[ "$issue_locked" == "true" ]] &&
+	grep -qE '^api /repos/owner/repo/issues/4242' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^issue view 4242' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_issue_view preserves locked admission state through REST"
+else
+	fail "gh_issue_view preserves locked admission state through REST" \
+		"locked=${issue_locked} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+
+# Missing or malformed admission state must never be projected as unlocked.
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"state":"open","locked":null,"labels":[{"name":"status:available"}],"assignees":[]}'
+issue_locked=""
+issue_locked_rc=0
+issue_locked=$(gh_issue_view 4242 --repo "owner/repo" \
+	--json state,labels,assignees,locked --jq '.locked' 2>/dev/null) || issue_locked_rc=$?
+
+if [[ "$issue_locked_rc" -ne 0 && -z "$issue_locked" ]] &&
+	grep -qE '^api /repos/owner/repo/issues/4242' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^issue view 4242' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_issue_view fails closed on malformed REST locked state"
+else
+	fail "gh_issue_view fails closed on malformed REST locked state" \
+		"rc=${issue_locked_rc} locked=${issue_locked} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_VIEW_FIXTURE AIDEVOPS_GH_REST_FIRST_READS
+
 # =============================================================================
 # Test 21: gh_issue_list keeps the primary path when GraphQL is healthy
 # =============================================================================
@@ -1170,6 +1214,26 @@ else
 		"output=${pr_view_merged} GH_CALLS=$(cat "$GH_CALLS")"
 fi
 unset STUB_PR_VIEW_FIXTURE
+
+# Exact REST-first reads can preserve the volatile mergeable enum from the
+# single-PR endpoint without spending GraphQL quota.
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export STUB_RATE_LIMIT_REMAINING=5000
+export AIDEVOPS_GH_REST_FIRST_READS=1
+export STUB_PR_VIEW_FIXTURE='{"number":123,"mergeable":false}'
+
+pr_view_mergeable=$(gh_pr_view 123 --repo "owner/repo" --json mergeable --jq '.mergeable' 2>/dev/null || true)
+
+if [[ "$pr_view_mergeable" == "CONFLICTING" ]] &&
+	grep -qE '^api /repos/owner/repo/pulls/123( |$)' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^pr view 123' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_pr_view REST-first mode preserves exact mergeable state"
+else
+	fail "gh_pr_view REST-first mode preserves exact mergeable state" \
+		"output=${pr_view_mergeable} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_PR_VIEW_FIXTURE AIDEVOPS_GH_REST_FIRST_READS
 
 # =============================================================================
 # Test 25b: REST PR view normalizes REST boolean mergeable to gh GraphQL enum
@@ -1572,7 +1636,7 @@ unset AIDEVOPS_GH_PR_VIEW_CACHE AIDEVOPS_GH_PR_VIEW_CACHE_DIR AIDEVOPS_GH_PR_VIE
 
 : >"$GH_CALLS"
 : >"$GH_INFO_OUTPUT"
-unsupported_pr_view_fields=(mergeable statusCheckRollup reviews latestReviews reviewThreads commits files reviewDecision autoMergeRequest mergeStateStatus)
+unsupported_pr_view_fields=(statusCheckRollup reviews latestReviews reviewThreads commits files reviewDecision autoMergeRequest mergeStateStatus)
 unsupported_preserve_ok=1
 for field in "${unsupported_pr_view_fields[@]}"; do
 	if _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json "$field"; then
@@ -1629,12 +1693,12 @@ else
 fi
 
 if _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json title &&
-	! _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json mergeable &&
+	_rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json mergeable &&
 	_rest_pr_view_can_emergency_fallback_args 123 --repo "owner/repo" --json mergeable &&
 	! _rest_pr_view_can_emergency_fallback_args 123 --repo "owner/repo" --json reviewDecision; then
-	pass "gh_pr_view validators distinguish stable, volatile, and GraphQL-only fields"
+	pass "gh_pr_view validators preserve exact REST and GraphQL-only fields"
 else
-	fail "gh_pr_view validators distinguish stable, volatile, and GraphQL-only fields" \
+	fail "gh_pr_view validators preserve exact REST and GraphQL-only fields" \
 		"unexpected proactive or emergency field classification"
 fi
 

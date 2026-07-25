@@ -55,7 +55,7 @@ _fetch_queue_metrics() {
 		# PASS/FAIL/PENDING via REST check-suites (separate budget pool).
 		local pr_json pr_qm_err
 		pr_qm_err=$(mktemp)
-		pr_json=$(pulse_pr_list_get --repo "$slug" --state open --json number,reviewDecision,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_qm_err") || pr_json="[]"
+		pr_json=$(pulse_pr_list_get --repo "$slug" --state open --json number,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_qm_err") || pr_json="[]"
 		if [[ -z "$pr_json" || "$pr_json" == "null" ]]; then
 			local _pr_qm_err_msg
 			_pr_qm_err_msg=$(cat "$pr_qm_err" 2>/dev/null || echo "unknown error")
@@ -63,6 +63,9 @@ _fetch_queue_metrics() {
 			pr_json="[]"
 		fi
 		rm -f "$pr_qm_err"
+		if declare -F _pmp_enrich_prs_with_review_decisions >/dev/null 2>&1; then
+			pr_json=$(_pmp_enrich_prs_with_review_decisions "$slug" "$pr_json")
+		fi
 
 		# Enrich with REST check status; aggregate counts using the resulting
 		# pre-computed status string per PR.
@@ -72,6 +75,9 @@ _fetch_queue_metrics() {
 
 		local repo_pr_total repo_ready repo_failing
 		repo_pr_total=$(echo "$pr_json" | jq 'length' 2>/dev/null) || repo_pr_total=0
+		# Only policy-level APPROVED counts as ready. REST review history emits
+		# OBSERVED_APPROVED instead, which is intentionally not promoted without
+		# required-count/code-owner proof.
 		repo_ready=$(jq -n --argjson prs "$pr_json" --argjson checks "$pr_checks_json" '
 			($checks | map({(.number | tostring): .status}) | add // {}) as $check_map |
 			[$prs[] | (.number | tostring) as $n | select(.reviewDecision == "APPROVED" and ($check_map[$n] // "none") == "PASS")] | length

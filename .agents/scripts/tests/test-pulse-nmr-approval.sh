@@ -64,7 +64,7 @@ setup_test_env() {
 	export COMMENTS_FIXTURE PR_LIST_FIXTURE CHECK_RUNS_FIXTURE POSTED_COMMENT
 
 	# gh stub: serves comments from COMMENTS_FIXTURE for 'gh api ...comments',
-	# serves PR list from PR_LIST_FIXTURE for 'gh pr list', serves REST
+	# serves exact GraphQL PR-search data from PR_LIST_FIXTURE, serves REST
 	# check-runs from CHECK_RUNS_FIXTURE for 'gh api ...commits/SHA/check-runs'
 	# (GH#21799), and captures comment posts for 'gh issue comment'.
 	cat >"${TEST_ROOT}/bin/gh" <<'GHEOF'
@@ -72,6 +72,11 @@ setup_test_env() {
 set -euo pipefail
 if [[ "${1:-}" == "api" ]]; then
 	path="${2:-}"
+	if [[ "$path" == "graphql" ]]; then
+		jq -c --argjson cost "${STUB_GRAPHQL_COST:-1}" \
+			'{data:{search:{nodes:[.[] | .labels={nodes:(.labels // []),pageInfo:{hasNextPage:false}}]},rateLimit:{cost:$cost}}}' "$PR_LIST_FIXTURE"
+		exit 0
+	fi
 	jq_filter=""
 	shift 2 2>/dev/null || true
 	while [[ $# -gt 0 ]]; do
@@ -108,18 +113,6 @@ if [[ "${1:-}" == "api" ]]; then
 		fi
 		exit 0
 	fi
-fi
-if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
-	shift 2
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-			--search|--state|--repo|--limit) shift 2 ;;
-			--json) shift 2 ;;
-			*) shift ;;
-		esac
-	done
-	cat "$PR_LIST_FIXTURE"
-	exit 0
 fi
 if [[ "${1:-}" == "issue" && "${2:-}" == "comment" ]]; then
 	shift 2
@@ -517,6 +510,26 @@ test_j_ever_nmr_remediation_includes_repo_slug() {
 	return 0
 }
 
+# Case K: calibrated GraphQL cost drift must fail closed rather than treating
+# an unmetered policy-level review decision as authoritative.
+test_k_graphql_cost_drift_no_candidate() {
+	reset_posted_comment
+	local pr_data candidate
+	pr_data=$(build_pr_json 21716 "APPROVED" "OWNER" "2026-04-29T09:19:00Z" "origin:worker" "SUCCESS" "FAILURE")
+	set_pr_list "[${pr_data}]"
+	export STUB_GRAPHQL_COST=2
+	candidate=$(_find_qualifying_pr_for_stale_recovery 21699 "marcusquinn/aidevops" "2026-04-29T09:14:00Z")
+	unset STUB_GRAPHQL_COST
+
+	if [[ -z "$candidate" ]]; then
+		print_result "Case K: GraphQL cost drift fails closed" 0
+	else
+		print_result "Case K: GraphQL cost drift fails closed" 1 \
+			"Expected no candidate when cost contract changes, got: ${candidate}"
+	fi
+	return 0
+}
+
 # ============================================================
 # Main
 # ============================================================
@@ -540,6 +553,7 @@ main() {
 	test_h_idempotency_no_duplicate
 	test_i_empty_nmr_timestamp_no_candidate
 	test_j_ever_nmr_remediation_includes_repo_slug
+	test_k_graphql_cost_drift_no_candidate
 
 	printf '\n%d tests run, %d failures\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

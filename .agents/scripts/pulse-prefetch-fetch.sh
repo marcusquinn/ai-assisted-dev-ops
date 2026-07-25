@@ -63,6 +63,15 @@ _prefetch_prs_try_delta() {
 	local cache_entry="$2"
 	local pr_err="$3"
 
+	# gh pr list --search is GraphQL-only in the compatibility wrapper and does
+	# not expose operation-owned cost. Under REST-first collection, prefer one
+	# full REST list over an unattributable delta query (GH#27777).
+	if [[ "${AIDEVOPS_GH_REST_FIRST_READS:-0}" == "1" || "${AIDEVOPS_GH_FORCE_REST_READS:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] _prefetch_repo_prs: REST-first mode bypasses GraphQL-only delta search for ${slug}; using full REST sweep (GH#27777)" >>"$LOGFILE"
+		PREFETCH_PR_SWEEP_MODE="$_PREFETCH_PR_SWEEP_FULL"
+		return 0
+	fi
+
 	local last_prefetch
 	last_prefetch=$(echo "$cache_entry" | jq -r '.last_prefetch // ""' 2>/dev/null) || last_prefetch=""
 
@@ -76,7 +85,7 @@ _prefetch_prs_try_delta() {
 	# headRefOid required for REST check-suites lookup (GH#21799).
 	local delta_json=""
 	delta_json=$(gh_pr_list --repo "$slug" --state open \
-		--json number,title,reviewDecision,updatedAt,headRefName,headRefOid,createdAt,author \
+		--json number,title,updatedAt,headRefName,headRefOid,createdAt,author \
 		--search "updated:>=${last_prefetch}" \
 		--limit "$PULSE_PREFETCH_PR_LIMIT" 2>"$pr_err") || delta_json=""
 
@@ -258,7 +267,7 @@ _prefetch_prs_fetch_full() {
 	local err_msg=""
 
 	PREFETCH_PR_RESULT=$(gh_pr_list --repo "$slug" --state open \
-		--json number,title,reviewDecision,updatedAt,headRefName,headRefOid,createdAt,author \
+		--json number,title,updatedAt,headRefName,headRefOid,createdAt,author \
 		--limit "$PULSE_PREFETCH_PR_LIMIT" 2>"$pr_err") || PREFETCH_PR_RESULT=""
 	if [[ -z "$PREFETCH_PR_RESULT" || "$PREFETCH_PR_RESULT" == "$_PREFETCH_JSON_NULL" ]]; then
 		err_msg=$(cat "$pr_err" 2>/dev/null || echo "$_PREFETCH_UNKNOWN_ERROR")
@@ -291,7 +300,8 @@ _prefetch_repo_prs() {
 	#
 	# Fix: fetch without statusCheckRollup first (fast, always works), then
 	# enrich with check status in a separate lightweight call. If the enrichment
-	# fails, the pulse still sees the PR list and can act on review status.
+	# fails, the pulse still sees the PR list; authoritative merge review state is
+	# enriched separately from bounded REST review history.
 	#
 	# GH#15286: Delta mode — fetch only PRs updated since last_prefetch, then
 	# merge into cached full list. Full sweep replaces the cache entirely.

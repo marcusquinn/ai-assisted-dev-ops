@@ -34,6 +34,7 @@ unset AIDEVOPS_USER_INSTIGATED_EXTERNAL_GH_WRITE
 unset AIDEVOPS_EXTERNAL_GH_WRITE_ALLOWLIST
 unset AIDEVOPS_GH_QUOTA_COST
 unset AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS
+unset AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE
 unset GH_HOST
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit
@@ -113,6 +114,10 @@ elif [[ -n "${STUB_GH_UNFRAMED_PRIVATE_STDERR:-}" ]]; then
 fi
 if [[ "${STUB_GH_EXIT_CODE:-0}" =~ ^[1-9][0-9]*$ ]]; then
 	exit "$STUB_GH_EXIT_CODE"
+fi
+if [[ "$1" == "api" && "$2" == "graphql" && -n "${STUB_GRAPHQL_RESPONSE_JSON:-}" ]]; then
+	printf '%s\n' "$STUB_GRAPHQL_RESPONSE_JSON"
+	exit 0
 fi
 if [[ "$1" == "api" && "$2" == "-i" && "$3" =~ ^/search/issues\? ]]; then
 	fixture='{"items":[{"number":22350,"state":"open","title":"Authored PR","html_url":"https://github.com/owner/repo/pull/22350","user":{"login":"managed"},"pull_request":{"merged_at":null}}]}'
@@ -1081,6 +1086,38 @@ if [[ "$(grep -c $'\tattempt\t' "$local_log" || true)" == "0" && ! -e "$local_st
 	_pass "known local-only gh commands avoid quota bootstrap and transport attempts"
 else
 	_fail "local-only exact-capture bypass" "log: $(cat "$local_log" 2>/dev/null || true)"
+fi
+
+# =============================================================================
+# Test 24: response-owned GraphQL cost is recorded after reading the response
+# =============================================================================
+echo ""
+echo "Test 24: response-metered GraphQL quota attribution"
+response_cost_log="$TMP/response-cost-graphql.log"
+response_cost_out="$TMP/response-cost-graphql.out"
+: >"$response_cost_log"
+STUB_GRAPHQL_RESPONSE_JSON='{"data":{"rateLimit":{"cost":2},"viewer":{"login":"fixture"}}}' \
+	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$response_cost_log" "$SHIM_RUN" api graphql \
+	-f 'query={viewer{login} rateLimit{cost}}' >"$response_cost_out"
+if [[ "$(_read_attempt_quota "$response_cost_log")" == "2" \
+	&& "$(_read_last_attempt_field "$response_cost_log" 12)" == "1" \
+	&& "$(jq -r '.data.rateLimit.cost' "$response_cost_out")" == "2" ]]; then
+	_pass "GraphQL response-owned cost records the returned value on page one"
+else
+	_fail "response-metered GraphQL attribution" "log: $(cat "$response_cost_log" 2>/dev/null || true) output: $(cat "$response_cost_out" 2>/dev/null || true)"
+fi
+
+response_missing_log="$TMP/response-cost-missing.log"
+: >"$response_missing_log"
+STUB_GRAPHQL_RESPONSE_JSON='{"data":{"viewer":{"login":"fixture"}}}' \
+	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$response_missing_log" "$SHIM_RUN" api graphql \
+	-f 'query={viewer{login}}' >/dev/null
+if [[ "$(_read_attempt_quota "$response_missing_log")" == "unknown" ]]; then
+	_pass "missing GraphQL response cost remains unknown"
+else
+	_fail "missing response-cost fail-closed behavior" "log: $(cat "$response_missing_log" 2>/dev/null || true)"
 fi
 
 # =============================================================================

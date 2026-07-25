@@ -24,6 +24,12 @@
 #             → update-branch succeeds and caller defers to the next cycle
 #   Case (G): no autoMergeRequest + MERGEABLE + BEHIND + green required checks
 #             → update-branch succeeds and caller defers to the next cycle
+#   Case (H): stale autoMergeRequest + green required checks
+#             → disables stale auto-merge and falls through
+#   Case (I): REST auto_merge omits enabled_at
+#             → unavailable exact fallback keeps wedge age unknown and defers
+#   Case (J): REST auto_merge omits enabled_at, exact GraphQL fallback has it
+#             → stale wedge recovery remains available
 #
 # Also verifies the caller contract: native auto-merge defer returns 4 from
 # _process_single_ready_pr and _merge_ready_prs_for_repo does not count that as
@@ -40,6 +46,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 PROCESS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-process.sh"
+REST_STATE_SCRIPT="${SCRIPT_DIR}/../pulse-merge-rest-state.sh"
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
 
 readonly TEST_RED='\033[0;31m'
@@ -50,6 +57,15 @@ TESTS_RUN=0
 TESTS_FAILED=0
 TEST_ROOT=""
 GH_LOG=""
+
+initialize_native_auto_fixtures() {
+	printf '{"auto_merge":null,"mergeable_state":"blocked","mergeable":true,"head":{"sha":"default-head-sha"}}' \
+		>"${TEST_ROOT}/auto_merge_request.txt"
+	printf 'true' >"${TEST_ROOT}/allow_auto_merge.txt"
+	printf '1' >"${TEST_ROOT}/pending_count.txt"
+	printf '[]' >"${TEST_ROOT}/reviews.json"
+	return 0
+}
 
 print_result() {
 	local test_name="$1"
@@ -78,15 +94,8 @@ setup_test_env() {
 	: >"$GH_LOG"
 	export TEST_ROOT GH_LOG
 
-	# Default fixtures. Overridden per-test before invocation.
-	#  * pr_state:           autoMergeRequest=null (auto-merge NOT set);
-	#                        full state JSON since t3192 added stuck check
-	#  * allow_auto_merge:   true  (repo allows it)
-	#  * pending_count:      1     (one required check pending)
-	printf '{"autoMergeRequest":null,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
-		>"${TEST_ROOT}/auto_merge_request.txt"
-	printf 'true' >"${TEST_ROOT}/allow_auto_merge.txt"
-	printf '1' >"${TEST_ROOT}/pending_count.txt"
+	# Default fixtures are overridden per test before invocation.
+	initialize_native_auto_fixtures
 
 	# Cache dir is keyed on PID — wipe between tests so allow_auto_merge
 	# fixture changes are honoured (otherwise Case D inherits Case A).
@@ -97,11 +106,36 @@ setup_test_env() {
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >>"${GH_LOG:-/dev/null}"
 
-# `gh pr view <N> --repo <slug> --json autoMergeRequest --jq ...`
-if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"autoMergeRequest"* ]]; then
-	cat "${TEST_ROOT}/auto_merge_request.txt"
+# Exact single-PR REST merge-state projection.
+if [[ "$1" == "api" && "$2" == repos/*/pulls/*/reviews\?* ]]; then
+	cat "${TEST_ROOT}/reviews.json"
 	echo
 	exit 0
+fi
+if [[ "$1" == "api" && "$2" == repos/*/pulls/* && "$2" != */update-branch ]]; then
+	filter=""
+	while [[ $# -gt 0 ]]; do
+		if [[ "$1" == "--jq" && $# -ge 2 ]]; then
+			filter="$2"
+			break
+		fi
+		shift
+	done
+	if [[ -n "$filter" ]]; then
+		jq -c "$filter" "${TEST_ROOT}/auto_merge_request.txt"
+	else
+		cat "${TEST_ROOT}/auto_merge_request.txt"
+		echo
+	fi
+	exit 0
+fi
+
+# Fixed-cost GraphQL fallback for REST's missing auto_merge.enabled_at field.
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+	[[ -f "${TEST_ROOT}/graphql_auto_merge_response.txt" ]] || exit 1
+	cat "${TEST_ROOT}/graphql_auto_merge_response.txt"
+	echo
+	exit "${GRAPHQL_AUTO_EXIT:-0}"
 fi
 
 # `gh api repos/<slug> --jq '.allow_auto_merge // false'`
@@ -134,8 +168,8 @@ if [[ "$1" == "pr" && "$2" == "ready" && "$*" == *"--undo"* ]]; then
 	exit 0
 fi
 
-# `gh pr update-branch <N> --repo <slug>`
-if [[ "$1" == "pr" && "$2" == "update-branch" ]]; then
+# REST update-a-pull-request-branch endpoint.
+if [[ "$1" == "api" && "$2" == "--method" && "$3" == "PUT" && "$4" == repos/*/pulls/*/update-branch ]]; then
 	exit 0
 fi
 
@@ -149,6 +183,7 @@ GHEOF
 teardown_test_env() {
 	# Wipe cache dir for next test.
 	rm -rf "${TMPDIR:-/tmp}/aidevops-pulse-allow-auto-merge-$$" 2>/dev/null || true
+	unset GRAPHQL_AUTO_EXIT
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
 	fi
@@ -159,15 +194,15 @@ teardown_test_env() {
 # into the test shell. _set_native_auto_merge_or_skip calls
 # _auto_merge_stuck_seconds (t3192), so we extract that too.
 define_helpers_under_test() {
-	local src_stuck src_repo_allow src_extract_state src_existing_green_behind src_green_behind src_stop_external src_set_native
+	local src_stuck src_repo_allow src_existing_green_behind src_green_behind
+	local src_stop_external src_enable_native src_handle_existing src_set_native
+	# shellcheck source=/dev/null
+	source "$REST_STATE_SCRIPT"
 	src_stuck=$(awk '
 		/^_auto_merge_stuck_seconds\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$PROCESS_SCRIPT")
 	src_repo_allow=$(awk '
 		/^_repo_allows_auto_merge\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
-	' "$PROCESS_SCRIPT")
-	src_extract_state=$(awk '
-		/^_pmp_extract_update_branch_state\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$PROCESS_SCRIPT")
 	src_existing_green_behind=$(awk '
 		/^_attempt_existing_auto_merge_behind_update_branch\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
@@ -181,7 +216,18 @@ define_helpers_under_test() {
 	src_stop_external=$(awk '
 		/^_stop_external_native_auto_merge\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$PROCESS_SCRIPT")
-	if [[ -z "$src_stuck" || -z "$src_repo_allow" || -z "$src_extract_state" || -z "$src_existing_green_behind" || -z "$src_green_behind" || -z "$src_stop_external" || -z "$src_set_native" ]]; then
+	src_enable_native=$(awk '
+		/^_enable_native_auto_merge_for_head\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+	' "$PROCESS_SCRIPT")
+	src_handle_existing=$(awk '
+		/^_handle_existing_native_auto_merge\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+	' "$PROCESS_SCRIPT")
+	if [[ -z "$src_stuck" || -z "$src_repo_allow" || -z "$src_existing_green_behind" \
+		|| -z "$src_green_behind" || -z "$src_stop_external" || -z "$src_enable_native" \
+		|| -z "$src_handle_existing" || -z "$src_set_native" ]] \
+		|| ! declare -F _pmp_extract_update_branch_state >/dev/null 2>&1 \
+		|| ! declare -F _pmp_rest_pr_merge_state >/dev/null 2>&1 \
+		|| ! declare -F _pmp_update_branch_rest >/dev/null 2>&1; then
 		printf 'ERROR: could not extract helpers from %s\n' "$PROCESS_SCRIPT" >&2
 		return 1
 	fi
@@ -189,20 +235,17 @@ define_helpers_under_test() {
 	eval "$src_stuck"
 	# shellcheck disable=SC1090
 	eval "$src_repo_allow"
-	# shellcheck disable=SC1090
-	eval "$src_extract_state"
-	# shellcheck disable=SC1090
 	eval "$src_existing_green_behind"
 	# shellcheck disable=SC1090
 	eval "$src_green_behind"
 	# shellcheck disable=SC1090
 	eval "$src_stop_external"
 	# shellcheck disable=SC1090
+	eval "$src_enable_native"
+	# shellcheck disable=SC1090
+	eval "$src_handle_existing"
+	# shellcheck disable=SC1090
 	eval "$src_set_native"
-	gh_pr_view() {
-		gh pr view "$@"
-		return $?
-	}
 	_pmp_normalize_mergeable_state_into() {
 		local __target_var="$1"
 		local __value="$2"
@@ -256,7 +299,7 @@ test_case_a_pending_ci_sets_auto_merge() {
 	# pending_count=1.
 
 	local result=0
-	_set_native_auto_merge_or_skip "100" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "100" "owner/repo" "0" "NONE" "case-a-head-sha" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (A): CI pending + repo allows → returns 0" 1 \
@@ -264,7 +307,7 @@ test_case_a_pending_ci_sets_auto_merge() {
 		teardown_test_env
 		return 0
 	fi
-	if ! grep -qE 'gh pr merge 100 --repo owner/repo --auto --squash' "$GH_LOG"; then
+	if ! grep -qE 'gh pr merge 100 --repo owner/repo --auto --squash --match-head-commit case-a-head-sha$' "$GH_LOG"; then
 		print_result "Case (A): CI pending + repo allows → invokes gh pr merge --auto" 1 \
 			"gh log: $(cat "$GH_LOG")"
 		teardown_test_env
@@ -277,6 +320,24 @@ test_case_a_pending_ci_sets_auto_merge() {
 		return 0
 	fi
 	print_result "Case (A): CI pending + repo allows → returns 0 + invokes --auto" 0
+	teardown_test_env
+	return 0
+}
+
+test_case_a_missing_head_does_not_set_auto_merge() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+
+	local result=0
+	_set_native_auto_merge_or_skip "101" "owner/repo" "0" "NONE" || result=$?
+	if [[ "$result" -eq 1 ]] \
+		&& ! grep -qE 'gh pr merge 101 .*--auto' "$GH_LOG" \
+		&& grep -qF 'gated head SHA is unavailable' "$LOGFILE"; then
+		print_result "Case (A2): missing gated head never enables native auto-merge" 0
+	else
+		print_result "Case (A2): missing gated head never enables native auto-merge" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
 	teardown_test_env
 	return 0
 }
@@ -325,11 +386,11 @@ test_case_c_already_set_no_op() {
 	# and we fall through to the t3070 "auto_merge already set" path.
 	local enabled_at_now
 	enabled_at_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '2026-04-30T16:00:00Z')
-	printf '{"autoMergeRequest":{"enabledAt":"%s"},"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '{"auto_merge":{"enabled_at":"%s"},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-c-head"}}' \
 		"$enabled_at_now" >"${TEST_ROOT}/auto_merge_request.txt"
 
 	local result=0
-	_set_native_auto_merge_or_skip "300" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "300" "owner/repo" "0" "NONE" "case-c-head" || result=$?
 
 	if [[ "$result" -ne 0 ]]; then
 		print_result "Case (C): auto_merge already set → returns 0 (no-op)" 1 \
@@ -350,6 +411,28 @@ test_case_c_already_set_no_op() {
 		return 0
 	fi
 	print_result "Case (C): auto_merge already set → returns 0 (deferred to GitHub)" 0
+	teardown_test_env
+	return 0
+}
+
+test_case_c2_existing_auto_head_mismatch_is_disarmed() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local enabled_at_now
+	enabled_at_now=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '2026-04-30T16:00:00Z')
+	printf '{"auto_merge":{"enabled_at":"%s"},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"new-live-head"}}' \
+		"$enabled_at_now" >"${TEST_ROOT}/auto_merge_request.txt"
+
+	local result=0
+	_set_native_auto_merge_or_skip "301" "owner/repo" "0" "NONE" "previous-gated-head" || result=$?
+	if [[ "$result" -eq 2 ]] \
+		&& grep -qE 'gh pr merge 301 --repo owner/repo --disable-auto' "$GH_LOG" \
+		&& grep -qF 'existing native auto-merge head no longer matches the gated head' "$LOGFILE"; then
+		print_result "Case (C2): existing auto-merge is disarmed after a head race" 0
+	else
+		print_result "Case (C2): existing auto-merge is disarmed after a head race" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
 	teardown_test_env
 	return 0
 }
@@ -394,13 +477,13 @@ test_case_e_stale_pending_defers() {
 	old_enabled_at=$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
 		|| date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
 		|| echo '2026-04-30T16:00:00Z')
-	printf '{"autoMergeRequest":{"enabledAt":"%s"},"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '{"auto_merge":{"enabled_at":"%s"},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-e-head"}}' \
 		"$old_enabled_at" >"${TEST_ROOT}/auto_merge_request.txt"
 	printf '1' >"${TEST_ROOT}/pending_count.txt"
 	export AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS=60
 
 	local result=0
-	_set_native_auto_merge_or_skip "500" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "500" "owner/repo" "0" "NONE" "case-e-head" || result=$?
 	unset AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS
 
 	if [[ "$result" -ne 0 ]]; then
@@ -437,13 +520,13 @@ test_case_h_stuck_green_disables_auto_before_fallthrough() {
 	old_enabled_at=$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
 		|| date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
 		|| echo '2026-04-30T16:00:00Z')
-	printf '{"autoMergeRequest":{"enabledAt":"%s"},"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '{"auto_merge":{"enabled_at":"%s"},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-h-head"}}' \
 		"$old_enabled_at" >"${TEST_ROOT}/auto_merge_request.txt"
 	printf '0' >"${TEST_ROOT}/pending_count.txt"
 	export AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS=60
 
 	local result=0
-	_set_native_auto_merge_or_skip "800" "owner/repo" || result=$?
+	_set_native_auto_merge_or_skip "800" "owner/repo" "0" "NONE" "case-h-head" || result=$?
 	unset AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS
 
 	if [[ "$result" -ne 1 ]]; then
@@ -469,6 +552,90 @@ test_case_h_stuck_green_disables_auto_before_fallthrough() {
 	return 0
 }
 
+test_case_h2_stale_disarm_failure_applies_hold() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local old_enabled_at
+	old_enabled_at=$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+		|| date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+		|| echo '2026-04-30T16:00:00Z')
+	printf '{"auto_merge":{"enabled_at":"%s"},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-h2-head"}}' \
+		"$old_enabled_at" >"${TEST_ROOT}/auto_merge_request.txt"
+	printf '0' >"${TEST_ROOT}/pending_count.txt"
+	export AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS=60 FAIL_DISABLE_AUTO=1
+
+	local result=0
+	_set_native_auto_merge_or_skip "801" "owner/repo" "0" "NONE" "case-h2-head" || result=$?
+	unset AIDEVOPS_PULSE_AUTO_MERGE_STUCK_SECONDS FAIL_DISABLE_AUTO
+	if [[ "$result" -eq 2 ]] \
+		&& grep -qE 'gh pr merge 801 --repo owner/repo --disable-auto' "$GH_LOG" \
+		&& grep -qE 'gh pr ready 801 --repo owner/repo --undo' "$GH_LOG"; then
+		print_result "Case (H2): stale-auto disable failure applies a draft hold" 0
+	else
+		print_result "Case (H2): stale-auto disable failure applies a draft hold" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+# =============================================================================
+# Case (I): REST auto_merge without enabled_at keeps wedge recovery fail-closed
+# =============================================================================
+test_case_i_missing_enabled_at_defers() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+
+	printf '%s' '{"auto_merge":{"enabled_by":{"login":"maintainer"}},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-i-head"}}' \
+		>"${TEST_ROOT}/auto_merge_request.txt"
+	printf '0' >"${TEST_ROOT}/pending_count.txt"
+
+	local result=0
+	_set_native_auto_merge_or_skip "850" "owner/repo" "0" "NONE" "case-i-head" || result=$?
+
+	if [[ "$result" -eq 0 ]] \
+		&& grep -qE 'gh api repos/owner/repo/pulls/850 --jq' "$GH_LOG" \
+		&& ! grep -qE 'gh pr view|gh pr merge 850 .*--disable-auto' "$GH_LOG" \
+		&& grep -qE 'auto_merge already set.*t3070' "$LOGFILE"; then
+		print_result "Case (I): missing REST enabled_at keeps wedge recovery fail-closed" 0
+	else
+		print_result "Case (I): missing REST enabled_at keeps wedge recovery fail-closed" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+# =============================================================================
+# Case (J): exact GraphQL enabledAt fallback preserves stale-wedge recovery
+# =============================================================================
+test_case_j_graphql_enabled_at_restores_wedge_recovery() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+
+	printf '%s' '{"auto_merge":{"enabled_by":{"login":"maintainer"}},"mergeable_state":"blocked","mergeable":true,"head":{"sha":"case-j-head"}}' \
+		>"${TEST_ROOT}/auto_merge_request.txt"
+	printf '%s' '{"data":{"repository":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-06-15T14:00:00Z"}}},"rateLimit":{"cost":1}}}' \
+		>"${TEST_ROOT}/graphql_auto_merge_response.txt"
+	printf '0' >"${TEST_ROOT}/pending_count.txt"
+
+	local result=0
+	_set_native_auto_merge_or_skip "851" "owner/repo" "0" "NONE" "case-j-head" || result=$?
+
+	if [[ "$result" -eq 1 ]] \
+		&& grep -qE '^gh api graphql ' "$GH_LOG" \
+		&& grep -qF 'rateLimit { cost }' "$GH_LOG" \
+		&& grep -qE 'gh pr merge 851 --repo owner/repo --disable-auto' "$GH_LOG" \
+		&& grep -qE 'disabled stale native auto-merge.*GH#26897' "$LOGFILE"; then
+		print_result "Case (J): exact enabledAt fallback restores stale-wedge recovery" 0
+	else
+		print_result "Case (J): exact enabledAt fallback restores stale-wedge recovery" 1 \
+			"rc=${result}; gh log: $(cat "$GH_LOG"); pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 # =============================================================================
 # Case (F): existing auto-merge is green but behind → update branch and defer
 # =============================================================================
@@ -476,7 +643,7 @@ test_case_f_green_behind_updates_branch() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
 
-	printf '{"autoMergeRequest":{"enabledAt":"2026-06-15T14:00:00Z"},"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '{"auto_merge":{"enabled_at":"2026-06-15T14:00:00Z"},"mergeable_state":"behind","mergeable":true,"head":{"sha":"case-f-head-sha"}}' \
 		>"${TEST_ROOT}/auto_merge_request.txt"
 	printf '0' >"${TEST_ROOT}/pending_count.txt"
 
@@ -489,7 +656,7 @@ test_case_f_green_behind_updates_branch() {
 		teardown_test_env
 		return 0
 	fi
-	if ! grep -qE 'gh pr update-branch 600 --repo owner/repo' "$GH_LOG"; then
+	if ! grep -qE 'gh api --method PUT repos/owner/repo/pulls/600/update-branch -f expected_head_sha=case-f-head-sha' "$GH_LOG"; then
 		print_result "Case (F): green BEHIND auto_merge → invokes update-branch" 1 \
 			"gh log: $(cat "$GH_LOG")"
 		teardown_test_env
@@ -513,7 +680,7 @@ test_case_g_green_behind_without_auto_merge_updates_branch() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
 
-	printf '{"autoMergeRequest":null,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '{"auto_merge":null,"mergeable_state":"behind","mergeable":true,"head":{"sha":"case-g-head-sha"}}' \
 		>"${TEST_ROOT}/auto_merge_request.txt"
 	printf '0' >"${TEST_ROOT}/pending_count.txt"
 
@@ -526,7 +693,7 @@ test_case_g_green_behind_without_auto_merge_updates_branch() {
 		teardown_test_env
 		return 0
 	fi
-	if ! grep -qE 'gh pr update-branch 700 --repo owner/repo' "$GH_LOG"; then
+	if ! grep -qE 'gh api --method PUT repos/owner/repo/pulls/700/update-branch -f expected_head_sha=case-g-head-sha' "$GH_LOG"; then
 		print_result "Case (G): green BEHIND without auto_merge → invokes update-branch" 1 \
 			"gh log: $(cat "$GH_LOG")"
 		teardown_test_env
@@ -546,7 +713,7 @@ test_case_g_green_behind_without_auto_merge_updates_branch() {
 test_native_auto_defer_not_counted_as_completed_merge() {
 	local process_src merge_src
 	process_src=$(awk '
-		/^_merge_ready_prs_for_repo\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+		/^_pmp_record_processed_pr_result\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$PROCESS_SCRIPT")
 	merge_src=$(awk '
 		/^_process_single_ready_pr\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
@@ -564,9 +731,9 @@ test_native_auto_defer_not_counted_as_completed_merge() {
 		return 0
 	fi
 
-	if [[ "$process_src" != *'4) ;;'* ]]; then
+	if [[ "$process_src" != *'4) outcome="deferred" ;;'* ]]; then
 		print_result "Native auto defer is not counted as completed merge" 1 \
-			"Expected _merge_ready_prs_for_repo to handle rc=4 without merged++"
+			"Expected _pmp_record_processed_pr_result to record rc=4 as deferred without merged++"
 		return 0
 	fi
 
@@ -593,7 +760,7 @@ test_external_pending_ci_never_sets_deferred_auto_merge() {
 test_external_existing_auto_merge_is_disabled() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
-	printf '%s' '{"autoMergeRequest":{"enabledAt":"2026-07-14T12:00:00Z"},"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '%s' '{"auto_merge":{"enabled_at":"2026-07-14T12:00:00Z"},"mergeable_state":"blocked","mergeable":true}' \
 		>"${TEST_ROOT}/auto_merge_request.txt"
 
 	local result=0
@@ -611,7 +778,7 @@ test_external_existing_auto_merge_is_disabled() {
 test_external_auto_merge_disable_failure_applies_draft_hold() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
-	printf '%s' '{"autoMergeRequest":{"enabledAt":"2026-07-14T12:00:00Z"},"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED"}' \
+	printf '%s' '{"auto_merge":{"enabled_at":"2026-07-14T12:00:00Z"},"mergeable_state":"blocked","mergeable":true}' \
 		>"${TEST_ROOT}/auto_merge_request.txt"
 	export FAIL_DISABLE_AUTO=1
 	local result=0
@@ -629,11 +796,16 @@ test_external_auto_merge_disable_failure_applies_draft_hold() {
 
 main() {
 	test_case_a_pending_ci_sets_auto_merge
+	test_case_a_missing_head_does_not_set_auto_merge
 	test_case_b_ci_green_falls_through
 	test_case_c_already_set_no_op
+	test_case_c2_existing_auto_head_mismatch_is_disarmed
 	test_case_d_repo_disallows_falls_through
 	test_case_e_stale_pending_defers
 	test_case_h_stuck_green_disables_auto_before_fallthrough
+	test_case_h2_stale_disarm_failure_applies_hold
+	test_case_i_missing_enabled_at_defers
+	test_case_j_graphql_enabled_at_restores_wedge_recovery
 	test_case_f_green_behind_updates_branch
 	test_case_g_green_behind_without_auto_merge_updates_branch
 	test_native_auto_defer_not_counted_as_completed_merge

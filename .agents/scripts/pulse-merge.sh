@@ -170,11 +170,11 @@ _pulse_merge_changes_requested_thread_remediation_first_enabled() {
 	return 0
 }
 
-# Standard PR JSON fields consumed by _process_single_ready_pr. Keep every
-# caller that builds a PR object on this helper so draft/label/staleness
-# metadata cannot drift between list-based and webhook-triggered merge paths.
+# REST-safe PR list fields consumed by _process_single_ready_pr. Exact
+# mergeability, active review state, and check status are enriched separately
+# from bounded REST endpoints before any classification or write decision.
 _pulse_merge_ready_pr_json_fields() {
-	printf '%s' 'number,state,mergeable,reviewDecision,author,title,isDraft,labels,updatedAt,headRefOid,headRefName,baseRefName,createdAt,statusCheckRollup'
+	printf '%s' 'number,state,author,title,isDraft,labels,updatedAt,headRefOid,headRefName,baseRefName,createdAt'
 	return 0
 }
 
@@ -1293,7 +1293,7 @@ _process_single_ready_pr() {
 	fi
 
 	# CONFLICTING handling (t2116): before closing, attempt to salvage the
-	# PR via `gh pr update-branch` which fast-forwards the base branch into
+	# PR via GitHub's REST update-branch endpoint, which fast-forwards the base branch into
 	# the PR's branch when the conflict is purely due to base advancement
 	# (common case: ratchet PRs on a file that other PRs also touched, docs
 	# simplifications on adjacent sections). If update-branch succeeds, the
@@ -1327,11 +1327,11 @@ _process_single_ready_pr() {
 			fi
 		fi
 
-		# Attempt auto-rebase via gh pr update-branch. This is idempotent
+		# Attempt auto-rebase via the REST update-branch endpoint. This is idempotent
 		# and cheap: on success the branch is fast-forwarded and the next
 		# mergeable re-fetch returns MERGEABLE; on failure (true semantic
 		# conflict) we fall through to the close path.
-		if _attempt_pr_update_branch "$pr_number" "$repo_slug"; then
+		if _attempt_pr_update_branch "$pr_number" "$repo_slug" "$pr_head_ref_oid"; then
 			# Re-fetch mergeable state after update-branch; GitHub needs a
 			# moment to recompute it. _resolve_pr_mergeable_status already
 			# has a UNKNOWN-retry loop so we reuse it.
@@ -1547,7 +1547,9 @@ _process_single_ready_pr() {
 	# pulse poll cycle (~120s). Falls through to --admin immediate merge
 	# when CI is already green, repo opts out, or the API call fails.
 	local _native_auto_rc=0
-	_set_native_auto_merge_or_skip "$pr_number" "$repo_slug" "${_PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE:-0}" || _native_auto_rc=$?
+	_set_native_auto_merge_or_skip "$pr_number" "$repo_slug" \
+		"${_PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE:-0}" "$pr_review" \
+		"$pr_head_ref_oid" || _native_auto_rc=$?
 	case "$_native_auto_rc" in
 		0)
 			return 4
@@ -1598,7 +1600,7 @@ ${merge_output}"
 		&& ( "$merge_output" == *" is expected"* || "$merge_output" == *" is pending"* ) ]]; then
 		local _missing_check_update_output=""
 		local _missing_check_update_exit=0
-		_missing_check_update_output=$(gh pr update-branch "$pr_number" --repo "$repo_slug" 2>&1)
+		_missing_check_update_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$pr_head_ref_oid" 2>&1)
 		_missing_check_update_exit=$?
 		if [[ $_missing_check_update_exit -eq 0 ]]; then
 			echo "[pulse-wrapper] Deterministic merge: admin merge reported an expected/pending required status check for PR #${pr_number} in ${repo_slug}; update-branch requested and merge deferred (GH#26899): ${merge_output}" >>"$LOGFILE"

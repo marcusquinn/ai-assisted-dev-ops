@@ -470,12 +470,14 @@ _ghqa_run_uncaptured_to_result() {
 	local path="$2"
 	local page="$3"
 	shift 3
-	local started_ms finished_ms elapsed_ms exact_success_cost
+	local started_ms="" finished_ms="" elapsed_ms="" exact_success_cost=""
 	local rc=0 outcome=success quota_cost="${AIDEVOPS_GH_QUOTA_COST:-}"
+	local success_quota_cost="${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}"
 	started_ms=$(_gh_now_ms 2>/dev/null || true)
 	if "$@"; then
 		rc=0
 		exact_success_cost=$(_ghqa_exact_success_cost "$path" "${@:2}" 2>/dev/null || true)
+		[[ -n "$quota_cost" || -z "$success_quota_cost" ]] || quota_cost="$success_quota_cost"
 		[[ -n "$quota_cost" ]] || quota_cost="$exact_success_cost"
 	else
 		rc=$?
@@ -530,7 +532,7 @@ _ghqa_response_cost() {
 	local resource="$2"
 	local used="$3"
 	local reset="$4"
-	local previous previous_used previous_reset delta
+	local previous="" previous_used="" previous_reset="" delta=""
 	previous=$(_ghqa_state_get "$state_file" "$resource" 2>/dev/null || true)
 	IFS=$'\t' read -r previous_used previous_reset <<<"$previous"
 	if [[ "$previous_used" =~ ^[0-9]+$ && "$previous_reset" == "$reset" \
@@ -554,8 +556,9 @@ _ghqa_write_complete_frames() {
 	local command_rc="$5"
 	local parsed="$6"
 	shift 6
-	local kind frame_index status_count status resource used remaining reset elapsed
-	local frame_total=0 path pool page outcome quota_cost exact_success_cost decision
+	local kind="" frame_index="" status_count="" status="" resource="" used="" remaining="" reset="" elapsed=""
+	local frame_total=0 path="" pool="" page="" outcome="" quota_cost="" exact_success_cost="" decision=""
+	local success_quota_cost="${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}"
 	frame_total=$(printf '%s\n' "$parsed" | awk -F '\t' '$1 == "frame" { count++ } END { print count + 0 }')
 	if [[ "$command_rc" -eq 0 && "$frame_total" -eq 1 ]]; then
 		exact_success_cost=$(_ghqa_exact_success_cost "$original_path" "${@:2}" 2>/dev/null || true)
@@ -573,6 +576,8 @@ _ghqa_write_complete_frames() {
 		quota_cost=""
 		if [[ "$frame_total" -eq 1 && -n "${AIDEVOPS_GH_QUOTA_COST:-}" ]]; then
 			quota_cost="$AIDEVOPS_GH_QUOTA_COST"
+		elif [[ "$command_rc" -eq 0 && -n "$success_quota_cost" ]]; then
+			quota_cost="$success_quota_cost"
 		elif [[ -n "$exact_success_cost" ]]; then
 			quota_cost="$exact_success_cost"
 		else

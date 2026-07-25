@@ -372,7 +372,7 @@ count_runnable_candidates() {
 		# (separate budget pool, ~15x smaller payload).
 		local pr_json pr_rc_err
 		pr_rc_err=$(mktemp)
-		pr_json=$(pulse_pr_list_get --repo "$slug" --state open --json number,reviewDecision,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_rc_err") || pr_json="[]"
+		pr_json=$(pulse_pr_list_get --repo "$slug" --state open --json number,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_rc_err") || pr_json="[]"
 		if [[ -z "$pr_json" || "$pr_json" == "null" ]]; then
 			local _pr_rc_err_msg
 			_pr_rc_err_msg=$(cat "$pr_rc_err" 2>/dev/null || echo "unknown error")
@@ -380,6 +380,9 @@ count_runnable_candidates() {
 			pr_json="[]"
 		fi
 		rm -f "$pr_rc_err"
+		if declare -F _pmp_enrich_prs_with_review_decisions >/dev/null 2>&1; then
+			pr_json=$(_pmp_enrich_prs_with_review_decisions "$slug" "$pr_json")
+		fi
 
 		# Enrich with REST check status, then count "runnable" PRs:
 		# CHANGES_REQUESTED OR aggregate check status == FAIL.

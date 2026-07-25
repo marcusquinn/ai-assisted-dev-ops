@@ -1337,15 +1337,51 @@ _find_qualifying_pr_for_stale_recovery() {
 	local slug="$2"
 	local nmr_at="$3"
 
-	# GH#21799: dropped statusCheckRollup (heaviest GraphQL field). headRefOid
-	# is added so per-PR check-run state can be fetched via REST below — that
-	# call only fires for PRs that pass the cheap gates first.
-	local pr_json
-	pr_json=$(gh_pr_list --search "Resolves #${issue_num} in:body" --state open \
-		--repo "$slug" --json number,reviewDecision,headRefOid,authorAssociation,labels,createdAt \
-		--limit 10 2>/dev/null) || pr_json="[]"
-	[[ -n "$pr_json" && "$pr_json" != "null" ]] || pr_json="[]"
 	[[ -n "$nmr_at" ]] || return 0
+
+	# reviewDecision is policy-level GraphQL state and cannot be reconstructed
+	# from REST review history. Use a fixed-shape search query that reports its
+	# own calibrated one-point cost instead of native gh pr list, whose cost is
+	# otherwise unattributable (GH#27777). headRefOid feeds REST check-runs below.
+	local query_string="repo:${slug} is:pr is:open Resolves #${issue_num} in:body"
+	local response="" reported_cost="" pr_json="[]"
+	# shellcheck disable=SC2016
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_ROUTE_DECISION="pulse-nmr-pr-search-exact-cost" \
+		gh api graphql -F queryString="$query_string" -f query='
+		query($queryString: String!) {
+			search(type: ISSUE, query: $queryString, first: 10) {
+				nodes {
+					... on PullRequest {
+						number
+						reviewDecision
+						headRefOid
+						authorAssociation
+						labels(first: 100) { nodes { name } pageInfo { hasNextPage } }
+						createdAt
+					}
+				}
+			}
+			rateLimit { cost }
+		}
+	' 2>/dev/null) || response=""
+	[[ -n "$response" ]] || return 0
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	[[ "$reported_cost" == "1" ]] || return 0
+	pr_json=$(printf '%s' "$response" | jq -c '
+		.data.search.nodes
+		| if type != "array" then error("search nodes must be an array") else . end
+		| if any(.[]?; (.labels.pageInfo.hasNextPage // false) == true)
+			then error("PR label page is incomplete") else . end
+		| map({
+			number,
+			reviewDecision,
+			headRefOid,
+			authorAssociation,
+			labels: (.labels.nodes // []),
+			createdAt
+		})
+	' 2>/dev/null) || pr_json="[]"
+	[[ -n "$pr_json" && "$pr_json" != "null" ]] || pr_json="[]"
 
 	local candidate_prs
 	candidate_prs=$(printf '%s' "$pr_json" | jq -r \

@@ -385,6 +385,58 @@ _shim_transport_page() {
 	return 0
 }
 
+#######################################
+# Execute one fixed-shape GraphQL query whose response includes
+# data.rateLimit.cost. Capture stdout privately, record the returned operation-
+# owned cost, then replay stdout unchanged to the caller. Return 125 when this
+# exact path is unavailable so normal fail-closed instrumentation can run.
+#######################################
+_shim_run_response_metered_graphql() {
+	local response_rc=0
+	(
+		local executable="$1"; shift
+		local path="$1"; shift
+		local caller="$1"; shift
+		local retry="$1"; shift
+		local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+		local output_file="" start_ms="" end_ms="" elapsed_ms="" quota_cost=""
+		local rc=0 replay_rc=0 outcome="success"
+
+		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-0}" == "1" && "$path" == "graphql" ]] || return 125
+		declare -F gh_record_attempt >/dev/null 2>&1 || return 125
+		declare -F _ghqa_prepare_private_dir >/dev/null 2>&1 || return 125
+		command -v jq >/dev/null 2>&1 || return 125
+		_ghqa_prepare_private_dir "$temp_dir" || return 125
+		output_file=$(mktemp "${temp_dir}/gh-graphql-cost-response.XXXXXX" 2>/dev/null) || return 125
+		trap 'rm -f -- "$output_file" 2>/dev/null || true' EXIT
+		trap 'exit 129' HUP
+		trap 'exit 130' INT
+		trap 'exit 143' TERM
+		chmod 0600 "$output_file" 2>/dev/null || return 125
+
+		start_ms=$(_gh_now_ms 2>/dev/null || true)
+		if "$executable" "$@" >"$output_file"; then
+			rc=0
+		else
+			rc=$?
+			outcome="error"
+		fi
+		end_ms=$(_gh_now_ms 2>/dev/null || true)
+		elapsed_ms=$(_ghqa_elapsed_ms "$start_ms" "$end_ms" 2>/dev/null || true)
+		quota_cost=$(jq -r 'try (.data.rateLimit.cost // empty) catch empty' "$output_file" 2>/dev/null) || quota_cost=""
+		[[ "$quota_cost" =~ ^[0-9]+$ ]] || quota_cost=""
+
+		command cat "$output_file" || replay_rc=$?
+		gh_record_attempt graphql "$caller" "$AIDEVOPS_GH_LOGICAL_ID" "" 1 "$retry" "$outcome" \
+			"" "$elapsed_ms" "$quota_cost" "${AIDEVOPS_GH_AUTH_MODE:-}" graphql \
+			"${AIDEVOPS_GH_ROUTE_DECISION:-graphql-response-metered}" "" 2>/dev/null || true
+		[[ "$rc" -ne 0 ]] && return "$rc"
+		[[ "$replay_rc" -ne 0 ]] && return "$replay_rc"
+		return 0
+	) || response_rc=$?
+	return "$response_rc"
+}
+
 _shim_run_single_transport() {
 	local executable="$1"; shift
 	local path="$1"; shift
@@ -396,6 +448,11 @@ _shim_run_single_transport() {
 	page=$(_shim_transport_page "$@")
 	if [[ "$page" == "0" ]]; then
 		decision="native-pagination-opaque"
+	fi
+	local response_metered_rc=0
+	_shim_run_response_metered_graphql "$executable" "$path" "$caller" "$retry" "$@" || response_metered_rc=$?
+	if [[ "$response_metered_rc" -ne 125 ]]; then
+		return "$response_metered_rc"
 	fi
 	exact_success_cost=$(_ghqa_exact_success_cost "$path" "$@" 2>/dev/null || true)
 	AIDEVOPS_GH_ROUTE_DECISION="$decision" \
