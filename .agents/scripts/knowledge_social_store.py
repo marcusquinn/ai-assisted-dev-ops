@@ -18,7 +18,7 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -176,10 +176,59 @@ def _tables() -> tuple[str, ...]:
             retention_limit TEXT, unavailable_reason TEXT, status TEXT NOT NULL,
             batch_id TEXT NOT NULL, observed_at TEXT NOT NULL,
             PRIMARY KEY(provider, connection_id, stream))""",
+        """CREATE TABLE IF NOT EXISTS outbound_operations (
+            operation_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+            connection_id TEXT NOT NULL, remote_account_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('post','reply','like','bookmark')),
+            target_remote_id TEXT, payload TEXT, payload_sha256 TEXT NOT NULL,
+            intent_sha256 TEXT NOT NULL UNIQUE, app_profile TEXT, username TEXT,
+            scheduled_at INTEGER NOT NULL, state TEXT NOT NULL
+                CHECK(state IN ('draft','approved','claimed','succeeded','failed','unknown','cancelled')),
+            created_by TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            claim_token INTEGER NOT NULL DEFAULT 0, claimed_by TEXT, claim_expires_at INTEGER,
+            last_attempt_id TEXT,
+            CHECK(
+                (action='post' AND payload IS NOT NULL AND target_remote_id IS NULL) OR
+                (action='reply' AND payload IS NOT NULL AND target_remote_id IS NOT NULL) OR
+                (action IN ('like','bookmark') AND payload IS NULL AND target_remote_id IS NOT NULL)
+            ))""",
+        """CREATE TABLE IF NOT EXISTS outbound_approvals (
+            approval_id TEXT PRIMARY KEY,
+            operation_id TEXT NOT NULL REFERENCES outbound_operations(operation_id),
+            principal_id TEXT NOT NULL, intent_sha256 TEXT NOT NULL,
+            approved_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            CHECK(expires_at>approved_at),
+            CHECK(revoked_at IS NULL OR revoked_at>=approved_at),
+            UNIQUE(operation_id, approval_id))""",
+        """CREATE TABLE IF NOT EXISTS outbound_attempts (
+            attempt_id TEXT PRIMARY KEY,
+            operation_id TEXT NOT NULL REFERENCES outbound_operations(operation_id),
+            claim_token INTEGER NOT NULL, executor_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','unknown')),
+            started_at INTEGER NOT NULL, provider_started_at INTEGER, finished_at INTEGER,
+            provider_remote_id TEXT, failure_class TEXT, diagnostics TEXT,
+            CHECK(provider_started_at IS NULL OR provider_started_at>=started_at),
+            CHECK((status='running' AND finished_at IS NULL) OR
+                  (status!='running' AND finished_at IS NOT NULL)),
+            UNIQUE(operation_id, claim_token))""",
+        """CREATE TABLE IF NOT EXISTS notification_state (
+            notification_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL,
+            provider TEXT NOT NULL, connection_id TEXT NOT NULL,
+            activity_type TEXT NOT NULL, activity_remote_id TEXT NOT NULL,
+            object_remote_id TEXT, actor_remote_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('mention','reply')),
+            status TEXT NOT NULL
+                CHECK(status IN ('unread','seen','action-required','responded','dismissed')),
+            observed_at TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            UNIQUE(principal_id, provider, activity_type, activity_remote_id))""",
         "CREATE INDEX IF NOT EXISTS idx_objects_account ON objects(provider, account_remote_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_activities_actor ON activities(provider, actor_remote_id, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_coverage_connection ON coverage_records(connection_id, stream)",
         "CREATE INDEX IF NOT EXISTS idx_reconciliation_status ON reconciliation_items(connection_id, stream, status)",
+        "CREATE INDEX IF NOT EXISTS idx_outbound_due ON outbound_operations(state,scheduled_at,operation_id)",
+        "CREATE INDEX IF NOT EXISTS idx_outbound_approvals ON outbound_approvals(operation_id,expires_at,revoked_at)",
+        "CREATE INDEX IF NOT EXISTS idx_notification_status ON notification_state(principal_id,status,updated_at)",
     )
 
 
@@ -239,7 +288,7 @@ def migrate(connection: sqlite3.Connection) -> None:
                 "VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (version,),
             )
-        connection.execute("PRAGMA user_version=2")
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         connection.execute("COMMIT")
     except Exception:
         connection.execute("ROLLBACK")

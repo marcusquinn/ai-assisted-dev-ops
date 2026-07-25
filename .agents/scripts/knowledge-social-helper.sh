@@ -12,8 +12,44 @@ QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
 BROWSER_HELPER="${SCRIPT_DIR}/knowledge_social_browser.py"
+OPERATIONS_HELPER="${SCRIPT_DIR}/knowledge_social_operations.py"
 VAULT_RUNTIME_CHECK="${SCRIPT_DIR}/vault-runtime-check.py"
 VAULT_RUNTIME_PYTHON="${HOME:+$HOME/.aidevops/.agent-workspace/python-env/vault/bin/python3}"
+
+usage_operations() {
+	cat <<'EOF'
+  knowledge-social-helper.sh operation-create [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id ID --action post|reply|like|bookmark \
+    [--target-id ID] [--body-file FILE] [--scheduled-at EPOCH] \
+    [--app PROFILE] [--username HANDLE] [--operation-id ID]
+  knowledge-social-helper.sh operation-approve [--base PATH] [--alias ALIAS] \
+    --operation-id ID --expires-at EPOCH
+  knowledge-social-helper.sh operation-revoke|operation-cancel \
+    [--base PATH] [--alias ALIAS] --operation-id ID
+  knowledge-social-helper.sh operation-run [--base PATH] [--alias ALIAS] \
+    --operation-id ID [--executor-id ID] [--claim-seconds 1-3600]
+  knowledge-social-helper.sh operations-run-due [--base PATH] [--alias ALIAS] \
+    [--executor-id ID] [--claim-seconds 1-3600] [--limit 1-100]
+  knowledge-social-helper.sh operations-due|operations-list \
+    [--base PATH] [--alias ALIAS] [--operation-id ID] [--limit N]
+  knowledge-social-helper.sh operation-reconcile [--base PATH] [--alias ALIAS] \
+    --operation-id ID --outcome succeeded|not-sent [--provider-id ID]
+  knowledge-social-helper.sh notifications-refresh [--base PATH] [--alias ALIAS]
+  knowledge-social-helper.sh notifications-list [--base PATH] [--alias ALIAS] \
+    [--status unread|seen|action-required|responded|dismissed] [--limit 1-1000]
+  knowledge-social-helper.sh notification-set [--base PATH] [--alias ALIAS] \
+    --notification-id ID --status unread|seen|action-required|responded|dismissed
+
+Outbound operations require owner-only knowledge.manage authority. Drafts bind
+the account, action, target, private body, local profile selectors, and schedule
+to an expiring approval. Due runners verify the stable X identity immediately
+before one mapped write attempt. Ambiguous outcomes are never retried; reconcile
+them explicitly. Notification commands maintain a local workflow overlay without
+mutating mention/reply evidence.
+
+EOF
+	return 0
+}
 
 usage() {
 	cat <<'EOF'
@@ -39,6 +75,9 @@ Usage:
     [--lease-seconds SECONDS] [--now-epoch EPOCH]
   knowledge-social-helper.sh receipts [--base PATH] [--alias ALIAS] \
     [--connection-id ID] [--limit 1-1000]
+EOF
+	usage_operations
+	cat <<'EOF'
   knowledge-social-helper.sh identity-export [--base PATH] [--vault-dir DIR] --output FILE
   knowledge-social-helper.sh workspace-create [--base PATH] --alias ALIAS [--vault-dir DIR]
   knowledge-social-helper.sh workspace-grant [--base PATH] --alias ALIAS \
@@ -203,6 +242,14 @@ main() {
 			return 1
 		fi
 		python3 "$SYNC_HELPER" "$subcommand" "$@" || return 1
+		;;
+	operation-create | operation-approve | operation-revoke | operation-cancel | operation-run | operations-run-due | operations-due | operations-list | operation-reconcile | notifications-refresh | notifications-list | notification-set)
+		require_runtime || return 1
+		if [[ ! -r "$OPERATIONS_HELPER" ]]; then
+			printf 'ERROR: social operations implementation missing: %s\n' "$OPERATIONS_HELPER" >&2
+			return 1
+		fi
+		python3 "$OPERATIONS_HELPER" "$subcommand" "$@" || return 1
 		;;
 	identity-export | workspace-create | workspace-grant | workspace-accept | share-export | share-import | workspace-revoke | revocation-apply)
 		run_share_command "$subcommand" "$@" || return 1

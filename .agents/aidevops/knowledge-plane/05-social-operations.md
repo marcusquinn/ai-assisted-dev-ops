@@ -30,6 +30,76 @@ credential-shaped fields, use independent stream checkpoints, expose hard cost
 budgets, and add pagination, terminal-failure, replay, and write-reachability
 tests. No provider may add engagement or other platform mutations.
 
+## Approval-bound account operations
+
+Outbound account operations are a separate owner-only subsystem; they do not
+expand the read-only collector or provider-manifest contract. The authenticated
+alias must grant `knowledge.manage`, which encrypted sharing reserves for the
+workspace owner. Recipient `knowledge.read` and `knowledge.write` grants never
+become posting authority.
+
+Create a draft from a mode-0600 UTF-8 body file, then approve its exact immutable
+intent. Omit `--scheduled-at` for an immediately due operation:
+
+```bash
+knowledge-social-helper.sh operation-create --alias workspace:example \
+  --connection-id CONNECTION_ID --account-id ACCOUNT_ID --action post \
+  --body-file approved-post.txt --scheduled-at EPOCH \
+  --app PROFILE --username HANDLE
+
+knowledge-social-helper.sh operation-approve --alias workspace:example \
+  --operation-id OPERATION_ID --expires-at EPOCH
+```
+
+The intent binds the operation ID, connection, stable account ID, action, target,
+body digest, local app/account selectors, schedule, creator, and provider. Reply
+uses `--target-id POST_ID --body-file FILE`; like and bookmark use only
+`--target-id POST_ID`. Revoke approval or cancel before a claim with
+`operation-revoke` or `operation-cancel`.
+
+A private routine may invoke the bounded due runner:
+
+```bash
+knowledge-social-helper.sh operations-run-due --alias workspace:example \
+  --executor-id EXECUTOR_ID --claim-seconds 300 --limit 10
+```
+
+Each runner atomically claims an operation, verifies `xurl whoami` against the
+approved stable account immediately before execution, records a durable provider
+boundary, and invokes only mapped `post`, `reply`, `like`, or `bookmark` helper
+commands. Competing runners cannot create another local attempt. Any timeout,
+non-zero exit, malformed receipt, or executor loss after the provider boundary is
+`unknown`, never retryable. Resolve it only after external verification:
+
+```bash
+knowledge-social-helper.sh operation-reconcile --alias workspace:example \
+  --operation-id OPERATION_ID --outcome succeeded --provider-id POST_ID
+```
+
+Use `--outcome not-sent` without a provider ID only when verification proves the
+write was not accepted. `operations-list` returns bounded, content-free receipt
+metadata; it never returns body text, handles, profile names, or raw provider
+responses.
+
+## Mention and reply workflow
+
+Notification projection is a mutable local overlay on immutable mention/reply
+evidence. Refreshing is idempotent and never resets an existing workflow state:
+
+```bash
+knowledge-social-helper.sh notifications-refresh --alias workspace:example
+knowledge-social-helper.sh notifications-list --alias workspace:example \
+  --status action-required --limit 100
+knowledge-social-helper.sh notification-set --alias workspace:example \
+  --notification-id NOTIFICATION_ID --status responded
+```
+
+Supported states are `unread`, `seen`, `action-required`, `responded`, and
+`dismissed`. Listings contain only opaque notification metadata. Drafts,
+approvals, attempts, local profile selectors, receipts, and notification workflow
+state remain owner-local: shared snapshots neither export nor erase them during a
+restore.
+
 ## Bounded browser-gap capture
 
 Browser execution remains outside the corpus helper and uses an approved private
@@ -66,7 +136,10 @@ Before enabling a routine:
    raw private content.
 6. Verify request budgets and terminal rate-limit state remain unchanged by the
    browser route; browser capture never disguises provider API cost.
-7. Run corpus, social-store, query, sync, sharing, provider, and browser-gap tests.
+7. For outbound use, verify exact approval expiry, X stable-account identity, and
+   the private due routine before enabling it.
+8. Run corpus, social-store, operation, query, sync, sharing, provider, and
+   browser-gap tests.
 
 Shared deployments remain limited to the tested encrypted grant/distribution
 contract. Revocation must be verified before cached results are served. Combined

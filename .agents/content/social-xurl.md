@@ -26,7 +26,7 @@ tools:
 - **Runtime model**: use the host agent's current model/provider connection (OpenCode xAI, Anthropic, etc.); `xurl` auth is only for X API access and is separate from model-provider auth.
 - **Multi-account**: use `--app APP_NAME` for a specific X developer app/subscription context and `--username HANDLE` for a specific authenticated X account.
 - **Auth check**: `xurl-helper.sh status` then `xurl-helper.sh whoami`; never read `~/.xurl`.
-- **Write safety**: posting, deleting, replies, quotes, likes, reposts, follows, mutes, blocks, DMs, media upload, and raw mutating API calls require explicit user intent and `--confirm-write`.
+- **Write safety**: ad hoc writes require explicit user intent and `--confirm-write`; scheduled/shared-account post, reply, like, and bookmark actions use the owner-only approval-bound social operation queue.
 - **Fallback**: `content/social-bird.md` can use browser cookies when official API access is unavailable, but `xurl` is preferred because it uses the official X API.
 
 <!-- AI-CONTEXT-END -->
@@ -124,6 +124,40 @@ Fixture and fake-executable tests verify pagination, resume, terminal failures,
 credential rejection, and the guarded command route. They do not prove live X
 access; live verification requires a separately configured `xurl` profile.
 
+## Approval-Bound Scheduling and Shared Accounts
+
+For personal or workspace corpora, use `knowledge-social-helper.sh` instead of a
+bare confirmation flag when an action must be durable, scheduled, or auditable.
+The alias must grant owner-only `knowledge.manage`; encrypted workspace members
+with read/write grants cannot post as the shared account.
+
+```bash
+.agents/scripts/knowledge-social-helper.sh operation-create \
+  --alias workspace:example --connection-id CONNECTION_ID \
+  --account-id X_ACCOUNT_ID --action reply --target-id POST_ID \
+  --body-file approved-reply.txt --scheduled-at EPOCH \
+  --app PROFILE --username HANDLE
+
+.agents/scripts/knowledge-social-helper.sh operation-approve \
+  --alias workspace:example --operation-id OPERATION_ID --expires-at EPOCH
+
+.agents/scripts/knowledge-social-helper.sh operations-run-due \
+  --alias workspace:example --executor-id EXECUTOR_ID --limit 10
+```
+
+The body file must be owner-only mode 0600. Approval binds its digest plus the
+action, stable account ID, target, app/account selectors, schedule, approver, and
+expiry. The runner repeats `whoami` immediately before one mapped write and stores
+only a content-free receipt. A provider timeout or non-zero response after that
+boundary becomes `unknown` and is never retried automatically; use
+`operation-reconcile` only after independently confirming `succeeded` or
+`not-sent`.
+
+`notifications-refresh`, `notifications-list`, and `notification-set` project
+mentions/replies into the local `unread`, `seen`, `action-required`, `responded`,
+and `dismissed` workflow. Operational state and local profile selectors are
+excluded from encrypted workspace snapshots.
+
 ## Command Map
 
 | Intent | Helper command |
@@ -135,7 +169,8 @@ access; live verification requires a separately configured `xurl` profile.
 | Timeline / mentions | `xurl-helper.sh timeline --limit 20` / `xurl-helper.sh mentions --limit 10` |
 | Bookmarks / likes / DMs | `xurl-helper.sh bookmarks --limit 20` / `xurl-helper.sh likes --limit 20` / `xurl-helper.sh dms --limit 10` |
 | User lookup | `xurl-helper.sh user @handle` |
-| Post / reply / quote | add `--confirm-write` after explicit user approval |
+| Ad hoc post / reply / quote | add `--confirm-write` after explicit user approval |
+| Scheduled/shared post, reply, like, bookmark | use the approval-bound social operation queue |
 | Raw read-only API | `xurl-helper.sh run -- /2/users/me` |
 
 ## Operating Workflow
