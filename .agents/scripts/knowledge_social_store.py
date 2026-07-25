@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+"""Private per-corpus social schema and immutable raw-batch storage."""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import os
+import re
+import sqlite3
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
+
+
+class SocialStoreError(RuntimeError):
+    """Raised when private social storage cannot be used safely."""
+
+
+def private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise SocialStoreError(f"private directory is unsafe: {path}")
+    path.chmod(0o700)
+
+
+def validate_root(root: Path) -> Path:
+    resolved = root.expanduser().resolve()
+    private_directory(resolved)
+    return resolved
+
+
+def database_path(root: Path) -> Path:
+    return root / "index" / "social.db"
+
+
+def connect(root: Path) -> sqlite3.Connection:
+    private_directory(root / "index")
+    path = database_path(root)
+    if path.is_symlink():
+        raise SocialStoreError("social database cannot be a symlink")
+    connection = sqlite3.connect(str(path), isolation_level=None, timeout=5.0)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=5000")
+    connection.execute("PRAGMA foreign_keys=ON")
+    mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    if str(mode).lower() != "wal":
+        connection.close()
+        raise SocialStoreError("social database could not enable WAL mode")
+    connection.execute("PRAGMA synchronous=FULL")
+    os.chmod(path, 0o600)
+    return connection
+
+
+def _tables() -> tuple[str, ...]:
+    return (
+        "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+        """CREATE TABLE IF NOT EXISTS connections (
+            connection_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+            remote_account_id TEXT NOT NULL, auth_profile_ref TEXT,
+            enabled_streams TEXT NOT NULL DEFAULT '[]', policy_json TEXT NOT NULL DEFAULT '{}')""",
+        """CREATE TABLE IF NOT EXISTS accounts (
+            provider TEXT NOT NULL, remote_id TEXT NOT NULL, handle TEXT,
+            display_name TEXT, observed_at TEXT NOT NULL, provider_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY(provider, remote_id))""",
+        """CREATE TABLE IF NOT EXISTS objects (
+            object_id INTEGER PRIMARY KEY, provider TEXT NOT NULL, object_type TEXT NOT NULL,
+            remote_id TEXT NOT NULL, account_remote_id TEXT, text_content TEXT,
+            created_at TEXT, observed_at TEXT NOT NULL, evidence_class TEXT NOT NULL,
+            provider_json TEXT NOT NULL DEFAULT '{}', batch_id TEXT NOT NULL,
+            UNIQUE(provider, object_type, remote_id))""",
+        """CREATE TABLE IF NOT EXISTS activities (
+            provider TEXT NOT NULL, activity_type TEXT NOT NULL, remote_id TEXT NOT NULL,
+            actor_remote_id TEXT NOT NULL, object_remote_id TEXT, occurred_at TEXT,
+            observed_at TEXT NOT NULL, state TEXT NOT NULL, provider_json TEXT NOT NULL DEFAULT '{}',
+            batch_id TEXT NOT NULL, PRIMARY KEY(provider, activity_type, remote_id))""",
+        """CREATE TABLE IF NOT EXISTS media (
+            provider TEXT NOT NULL, remote_id TEXT NOT NULL, object_remote_id TEXT,
+            content_sha256 TEXT, mime_type TEXT, byte_size INTEGER, blob_ref TEXT,
+            hydration_state TEXT NOT NULL, batch_id TEXT NOT NULL,
+            PRIMARY KEY(provider, remote_id))""",
+        """CREATE TABLE IF NOT EXISTS fetch_batches (
+            batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL, connection_id TEXT NOT NULL,
+            stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL UNIQUE,
+            blob_ref TEXT NOT NULL, resource_count INTEGER NOT NULL, budget_units INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS sync_cursors (
+            connection_id TEXT NOT NULL, stream TEXT NOT NULL, cursor TEXT, watermark TEXT,
+            last_success_at TEXT, backfill_complete INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(connection_id, stream))""",
+        """CREATE TABLE IF NOT EXISTS sync_runs (
+            run_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, status TEXT NOT NULL,
+            resource_count INTEGER NOT NULL DEFAULT 0, failure_class TEXT, retry_after TEXT,
+            fencing_token TEXT, diagnostics TEXT)""",
+        """CREATE TABLE IF NOT EXISTS tombstones (
+            provider TEXT NOT NULL, object_type TEXT NOT NULL, remote_id TEXT NOT NULL,
+            observed_at TEXT NOT NULL, reason TEXT NOT NULL, retention_action TEXT NOT NULL,
+            batch_id TEXT NOT NULL, PRIMARY KEY(provider, object_type, remote_id))""",
+        """CREATE TABLE IF NOT EXISTS annotations (
+            annotation_id TEXT PRIMARY KEY, object_id INTEGER NOT NULL REFERENCES objects(object_id),
+            principal_id TEXT NOT NULL, visibility TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS coverage_records (
+            provider TEXT NOT NULL, connection_id TEXT NOT NULL, stream TEXT NOT NULL,
+            earliest_at TEXT, latest_at TEXT, cursor_exhausted INTEGER NOT NULL DEFAULT 0,
+            retention_limit TEXT, unavailable_reason TEXT, status TEXT NOT NULL,
+            batch_id TEXT NOT NULL, observed_at TEXT NOT NULL,
+            PRIMARY KEY(provider, connection_id, stream))""",
+        "CREATE INDEX IF NOT EXISTS idx_objects_account ON objects(provider, account_remote_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_activities_actor ON activities(provider, actor_remote_id, occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_coverage_connection ON coverage_records(connection_id, stream)",
+    )
+
+
+def create_fts(connection: sqlite3.Connection) -> None:
+    try:
+        connection.execute(
+            """CREATE VIRTUAL TABLE IF NOT EXISTS objects_fts USING fts5(
+                provider UNINDEXED, object_type UNINDEXED, remote_id UNINDEXED,
+                account_remote_id UNINDEXED, text_content, evidence_class UNINDEXED,
+                tokenize='unicode61')"""
+        )
+    except sqlite3.OperationalError as error:
+        raise SocialStoreError("SQLite runtime does not provide required FTS5") from error
+
+
+def migrate(connection: sqlite3.Connection) -> None:
+    current = connection.execute("PRAGMA user_version").fetchone()[0]
+    if current not in (0, SCHEMA_VERSION):
+        raise SocialStoreError(f"unsupported social schema version: {current}")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in _tables():
+            connection.execute(statement)
+        create_fts(connection)
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_meta(version,applied_at) VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            (SCHEMA_VERSION,),
+        )
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        connection.execute("COMMIT")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+
+
+def rebuild_fts(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("DROP TABLE IF EXISTS objects_fts")
+        create_fts(connection)
+        connection.execute(
+            """INSERT INTO objects_fts(
+                provider,object_type,remote_id,account_remote_id,text_content,evidence_class)
+               SELECT provider,object_type,remote_id,account_remote_id,text_content,evidence_class
+                 FROM objects ORDER BY object_id"""
+        )
+        connection.execute("COMMIT")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+
+
+def validate_opaque(value: str, field: str) -> str:
+    if not OPAQUE_ID.fullmatch(value):
+        raise SocialStoreError(f"{field} must be an opaque identifier")
+    return value
+
+
+def write_raw_batch(root: Path, provider: str, connection_id: str, payload: bytes) -> tuple[str, str]:
+    provider = validate_opaque(provider, "provider")
+    connection_id = validate_opaque(connection_id, "connection_id")
+    digest = hashlib.sha256(payload).hexdigest()
+    directory = root / "sources" / "social" / "raw" / provider / connection_id
+    private_directory(directory)
+    path = directory / f"{digest}.json.gz"
+    relative = path.relative_to(root).as_posix()
+    if path.exists():
+        if path.is_symlink():
+            raise SocialStoreError("raw batch cannot be a symlink")
+        with gzip.open(path, "rb") as existing:
+            if hashlib.sha256(existing.read()).hexdigest() != digest:
+                raise SocialStoreError("immutable raw batch hash mismatch")
+        return digest, relative
+    compressed = gzip.compress(payload, compresslevel=9, mtime=0)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as target:
+            target.write(compressed)
+            target.flush()
+            os.fsync(target.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return digest, relative
