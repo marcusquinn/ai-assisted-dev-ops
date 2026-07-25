@@ -20,6 +20,7 @@ from knowledge_corpus_context import (
 
 SCHEMA_VERSION = 1
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
+SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
 
 class SocialStoreError(RuntimeError):
@@ -49,6 +50,15 @@ def database_path(root: Path) -> Path:
     return root / "index" / "social.db"
 
 
+def require_checkpointed_database(path: Path) -> None:
+    for suffix in SQLITE_MUTABLE_SIDECARS:
+        sidecar = path.with_name(f"{path.name}{suffix}")
+        if sidecar.exists() or sidecar.is_symlink():
+            raise SocialStoreError(
+                "social database has active or uncheckpointed journal state"
+            )
+
+
 def connect(root: Path) -> sqlite3.Connection:
     private_directory(root, Path("index"))
     path = database_path(root)
@@ -74,8 +84,12 @@ def connect_read_only(root: Path) -> sqlite3.Connection:
         validate_private_file(path, "social database", repair=False)
     except CatalogError as error:
         raise SocialStoreError(str(error)) from error
+    require_checkpointed_database(path)
     connection = sqlite3.connect(
-        f"{path.as_uri()}?mode=ro", uri=True, isolation_level=None, timeout=5.0
+        f"{path.as_uri()}?mode=ro&immutable=1",
+        uri=True,
+        isolation_level=None,
+        timeout=5.0,
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=5000")

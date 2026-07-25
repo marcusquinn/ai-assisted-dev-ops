@@ -47,6 +47,32 @@ PY
 	return 0
 }
 
+store_snapshot() {
+	local root="$1"
+	python3 - "$root" <<'PY'
+import hashlib
+import json
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+snapshot = {}
+for path in sorted(root.rglob("*")):
+    file_stat = path.lstat()
+    record = {
+        "mode": stat.S_IMODE(file_stat.st_mode),
+        "mtime_ns": file_stat.st_mtime_ns,
+        "size": file_stat.st_size,
+    }
+    if path.is_file():
+        record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    snapshot[path.relative_to(root).as_posix()] = record
+print(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
+PY
+	return 0
+}
+
 cat >"$ARCHIVE" <<'JSON'
 {
   "provider": "xapi",
@@ -92,7 +118,37 @@ connection.close()
 PY
 "$HELPER" rebuild --base "$BASE" --alias personal:default >/dev/null
 assert_eq "projection rebuilds from canonical rows" "$(sql_value "SELECT count(*) FROM objects_fts WHERE objects_fts MATCH 'evidence'")" "1"
-assert_eq "coverage survives restart and rebuild" "$("$HELPER" coverage --base "$BASE" --alias personal:default | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data[0]["batch_id"] + ":" + data[0]["status"])')" "${first_hash}:complete"
+python3 - "$BASE/catalog.db" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+connection.execute("UPDATE corpus_grants SET status='inactive' WHERE capability='knowledge.write'")
+connection.commit()
+connection.close()
+PY
+coverage_snapshot_before=$(store_snapshot "$CORPUS_ROOT")
+coverage_result=$("$HELPER" coverage --base "$BASE" --alias personal:default)
+coverage_snapshot_after=$(store_snapshot "$CORPUS_ROOT")
+assert_eq "coverage survives restart with only a read grant" "$(python3 -c 'import json,sys; data=json.loads(sys.argv[1]); print(data[0]["batch_id"] + ":" + data[0]["status"])' "$coverage_result")" "${first_hash}:complete"
+assert_eq "read-only coverage leaves the store unchanged" "$coverage_snapshot_after" "$coverage_snapshot_before"
+: >"$CORPUS_ROOT/index/social.db-wal"
+chmod 0600 "$CORPUS_ROOT/index/social.db-wal"
+if "$HELPER" coverage --base "$BASE" --alias personal:default >/dev/null 2>&1; then
+	assert_eq "coverage rejects active or uncheckpointed journal state" "accepted" "rejected"
+else
+	assert_eq "coverage rejects active or uncheckpointed journal state" "rejected" "rejected"
+fi
+rm "$CORPUS_ROOT/index/social.db-wal"
+python3 - "$BASE/catalog.db" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+connection.execute("UPDATE corpus_grants SET status='active' WHERE capability='knowledge.write'")
+connection.commit()
+connection.close()
+PY
 assert_eq "database is private" "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$CORPUS_ROOT/index/social.db")" "0o600"
 
 corrected_archive="${TMP_DIR}/corrected.json"
