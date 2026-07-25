@@ -37,7 +37,7 @@ tools:
 - Never ask the user to paste X credentials, client IDs, client secrets, access tokens, refresh tokens, cookies, or bearer tokens into chat.
 - Never run `xurl auth apps add` with inline secrets from an agent session. The user registers app credentials manually in their terminal.
 - Never pass `--verbose`, `-v`, `--bearer-token`, `--consumer-key`, `--consumer-secret`, `--access-token`, `--token-secret`, `--client-id`, or `--client-secret`.
-- Treat DMs, protected/private account data, bookmarks, and timelines as sensitive; summarize minimally and do not persist raw output unless the user explicitly asks.
+- Treat DMs, protected/private account data, bookmarks, and timelines as sensitive. For ad hoc requests, summarize minimally and do not persist raw output unless the user explicitly asks. An explicitly requested authorized corpus sync stores immutable response evidence under that corpus's policy.
 
 ## User Setup Boundary
 
@@ -85,6 +85,44 @@ Use the helper for normal agent work:
 ```
 
 The helper rejects secret-bearing flags and verbose output, maps common read/write actions to `xurl`, and blocks write actions unless `--confirm-write` is present.
+
+## Authorized Social Corpus Sync
+
+Use the provider-neutral helper to collect one bounded official stream into a
+catalog-resolved corpus:
+
+```bash
+.agents/scripts/knowledge-social-helper.sh sync-x \
+  --alias personal:default --connection-id CONNECTION_ID \
+  --account-id X_ACCOUNT_ID --stream authored --budget 10 \
+  --media-policy metadata --app PROFILE --username HANDLE
+```
+
+The alias must grant `knowledge.write`. `connection-id` is an opaque local ID;
+`account-id` is the stable X account ID expected from `whoami`. The adapter
+rejects an account mismatch before collection and does not allow an existing
+connection to be rebound to another account.
+
+Supported streams are `authored`, `mentions`, `likes`, `bookmarks`, `followers`,
+and `following`. Each stream owns an independent pagination cursor and
+watermark. After initial backfill, authored and mentions use the official
+`since_id` delta parameter. Streams without an official delta parameter report
+`delta_unavailable` and record the coverage gap without issuing a page request.
+
+`--budget` is a bounded request-cost allowance from 1 to 1000 units, not a retry
+count. Terminal authorization, not-found, rate-limit, and provider failures
+store credential-filtered immutable evidence but never advance the stream cursor.
+Command output contains counts and failure classes rather than private provider
+content.
+
+Media policy `none` stores no media rows. `metadata` stores references and
+content links only; the adapter never downloads media binaries. The provider
+route is externally read-only: it can reach only guarded `whoami` and allowlisted
+official raw-read endpoints, never posting or engagement commands.
+
+Fixture and fake-executable tests verify pagination, resume, terminal failures,
+credential rejection, and the guarded command route. They do not prove live X
+access; live verification requires a separately configured `xurl` profile.
 
 ## Command Map
 

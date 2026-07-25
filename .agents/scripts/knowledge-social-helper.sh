@@ -17,7 +17,7 @@ Usage:
   knowledge-social-helper.sh rebuild [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh coverage [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh sync-x [--base PATH] [--alias ALIAS] \
-    --connection-id ID --account-id ID --stream STREAM [--budget PAGES] \
+    --connection-id ID --account-id ID --stream STREAM [--budget UNITS] \
     [--media-policy none|metadata] [--app PROFILE] [--username HANDLE]
 
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
@@ -29,6 +29,12 @@ Archive format:
   objects, activities, media, and coverage. IDs must be provider-stable IDs;
   connection_id must be an opaque local ID. Unknown provider fields belong in
   provider_json objects. The original canonical payload is stored immutably.
+
+X synchronization:
+  sync-x verifies the selected xurl account, then reads one official stream:
+  authored, mentions, likes, bookmarks, followers, or following. --budget is a
+  bounded request-cost allowance from 1 to 1000 units. Media policy none stores
+  no media rows; metadata stores references only, never binary media.
 EOF
 	return 0
 }
