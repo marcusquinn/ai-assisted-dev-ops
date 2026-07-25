@@ -109,6 +109,32 @@ recreates FTS5 from canonical object rows without changing raw evidence. The
 database is mode `0600`, containing directories are `0700`, unsafe IDs and
 symlinks fail closed, and unsupported schema versions reject writes.
 
+`knowledge-social-helper.sh query` derives the authenticated principal and
+searches `personal:default` plus every active workspace corpus carrying an
+explicit `knowledge.read` grant. `--alias` only narrows that resolved set.
+Physical paths and caller-supplied principal/corpus IDs are not accepted. Each
+store is opened independently through the immutable read-only guard; absent
+social stores contribute no candidates, while symlinks, mutable journal state,
+and incompatible schemas fail the whole query closed.
+
+FTS candidates are ranked within each corpus, fused with deterministic
+reciprocal-rank fusion (`k=60`), and deduplicated by provider/object type/stable
+remote ID. A result retains every authorized corpus, batch, object, activity,
+event-time, and observation-time citation. Query output contains logical aliases,
+never physical corpus paths, and creates no cache, journal, index, or database.
+
+Private annotations are written only to the authenticated
+`personal:default` corpus through `knowledge.write`. Combined queries may
+overlay those notes onto the same stable object returned from a workspace
+corpus, but a team-only query never opens or emits the personal overlay. Social
+query semantics permit attributed opinion only from cited `authored` evidence;
+quotes without commentary, reposts, likes, bookmarks, follows, list membership,
+and captured observations remain distribution, weak, relationship, or observed
+signals. Generated inference remains explicitly labelled and reviewable. An
+inferred object must carry a finite `provider_json.confidence` score from `0` to
+`1`; malformed or missing confidence fails the query closed, and output retains
+the score with a mandatory-review marker and its evidence citation count.
+
 **Provision:** `aidevops knowledge init repo` or `aidevops knowledge init personal`.
 **Repair:** `aidevops knowledge provision` is idempotent — safe to re-run.
 

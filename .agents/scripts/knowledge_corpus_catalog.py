@@ -318,26 +318,33 @@ def _authorized_rows(
     return list(connection.execute(query, parameters).fetchall())
 
 
-def resolve(base: Path, alias: str, capability: str) -> Path:
+def authorized_scope(
+    base: Path, capability: str, alias: str | None = None
+) -> tuple[str, list[tuple[str, Path]]]:
     resolved_base, principal_id, connection = _open_authorized_catalog(base)
     try:
         rows = _authorized_rows(connection, principal_id, capability, alias)
-        if len(rows) != 1:
+        if alias is not None and len(rows) != 1:
             raise CatalogError(
                 f"access denied: alias {alias} is unavailable or ambiguous"
             )
-        return safe_location(resolved_base, str(rows[0]["location_ref"]))
+        corpora = [
+            (
+                str(row["alias"]),
+                safe_location(resolved_base, str(row["location_ref"])),
+            )
+            for row in rows
+        ]
+        return principal_id, corpora
     finally:
         connection.close()
+
+
+def resolve(base: Path, alias: str, capability: str) -> Path:
+    _, corpora = authorized_scope(base, capability, alias)
+    return corpora[0][1]
 
 
 def list_authorized(base: Path, capability: str) -> Iterable[tuple[str, Path]]:
-    resolved_base, principal_id, connection = _open_authorized_catalog(base)
-    try:
-        rows = _authorized_rows(connection, principal_id, capability, None)
-        return [
-            (str(row["alias"]), safe_location(resolved_base, row["location_ref"]))
-            for row in rows
-        ]
-    finally:
-        connection.close()
+    _, corpora = authorized_scope(base, capability)
+    return corpora

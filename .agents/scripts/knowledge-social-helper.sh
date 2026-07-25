@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
+QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 
 usage() {
 	cat <<'EOF'
@@ -16,6 +17,10 @@ Usage:
   knowledge-social-helper.sh import-archive [--base PATH] [--alias ALIAS] --archive FILE
   knowledge-social-helper.sh rebuild [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh coverage [--base PATH] [--alias ALIAS]
+  knowledge-social-helper.sh query [--base PATH] [--alias ALIAS] \
+    (--query TEXT | --query-file FILE) [--limit 1-100]
+  knowledge-social-helper.sh annotate [--base PATH] --provider PROVIDER \
+    --object-type TYPE --remote-id ID [--annotation-id ID] --body-file FILE
   knowledge-social-helper.sh sync-x [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id ID --stream STREAM [--budget UNITS] \
     [--media-policy none|metadata] [--app PROFILE] [--username HANDLE]
@@ -23,6 +28,11 @@ Usage:
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
 mutating operations or knowledge.read for coverage. Physical corpus paths are
 not accepted from callers.
+
+Query resolves the authenticated principal and searches the personal corpus plus
+every authorized workspace corpus by default. --alias can narrow but never widen
+that scope. Annotate writes an owner-only private note to personal:default; the
+body file must be a non-symlink UTF-8 file with mode 0600.
 
 Archive format:
   A UTF-8 JSON object with provider, connection_id, and arrays named accounts,
@@ -68,6 +78,14 @@ main() {
 			return 1
 		fi
 		python3 "$X_HELPER" "$@" || return 1
+		;;
+	query | annotate)
+		require_runtime || return 1
+		if [[ ! -r "$QUERY_HELPER" ]]; then
+			printf 'ERROR: social query implementation missing: %s\n' "$QUERY_HELPER" >&2
+			return 1
+		fi
+		python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
 		;;
 	help | -h | --help)
 		usage
