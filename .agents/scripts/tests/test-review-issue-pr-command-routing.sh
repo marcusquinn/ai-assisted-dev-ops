@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Regression coverage for parent-session /review-issue-pr routing.
+# Regression coverage for unified /review discovery and legacy
+# parent-session /review-issue-pr routing.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 COMMAND_LIB="${SCRIPT_DIR}/../generate-runtime-config-commands.sh"
 LEGACY_LIB="${SCRIPT_DIR}/../generate-opencode-commands-quality.sh"
+REVIEW_COMMAND_SOURCE="${SCRIPT_DIR}/../commands/review.md"
+FULL_LOOP_SOURCE="${SCRIPT_DIR}/../../workflows/full-loop.md"
 TMP_DIR=$(mktemp -d -t aidevops-review-command.XXXXXX) || exit 1
 COMMAND_DIR="${TMP_DIR}/commands"
 CALL_LOG="${TMP_DIR}/legacy-calls"
@@ -23,6 +26,19 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$COMMAND_DIR" || exit 1
+
+grep -Fq 'agent: Build+' "$REVIEW_COMMAND_SOURCE" || {
+	printf 'FAIL unified review command does not target Build+\n' >&2
+	exit 1
+}
+grep -Fq 'workflows/review.md' "$REVIEW_COMMAND_SOURCE" || {
+	printf 'FAIL unified review command does not load the canonical workflow\n' >&2
+	exit 1
+}
+grep -Fq 'reference/review-core.md' "$FULL_LOOP_SOURCE" || {
+	printf 'FAIL full-loop does not load the shared review policy\n' >&2
+	exit 1
+}
 
 # shellcheck source=../generate-runtime-config-commands.sh
 source "$COMMAND_LIB"
@@ -45,6 +61,10 @@ if grep -Fq 'subtask: true' "${COMMAND_DIR}/review-issue-pr.md"; then
 fi
 grep -Fq 'workflows/review-issue-pr.md' "${COMMAND_DIR}/review-issue-pr.md" || {
 	printf 'FAIL stale review command body was not refreshed\n' >&2
+	exit 1
+}
+grep -Fq 'workflows/review.md' "${COMMAND_DIR}/review-issue-pr.md" || {
+	printf 'FAIL review command does not load the shared review policy\n' >&2
 	exit 1
 }
 grep -Fq 'subtask: true' "${COMMAND_DIR}/agent-review.md" || {
@@ -79,6 +99,10 @@ define_review_commands
 
 grep -Fq 'review-issue-pr|Review external issue or PR - validate problem and evaluate solution|Build+||' "$CALL_LOG" || {
 	printf 'FAIL fallback generator still marks review-issue-pr as a subtask\n' >&2
+	exit 1
+}
+grep -Fq 'workflows/review.md' "$CALL_LOG" || {
+	printf 'FAIL fallback generator does not load the shared review policy\n' >&2
 	exit 1
 }
 grep -Fq 'agent-review|Systematic review and improvement of agent instructions|Build+|true|' "$CALL_LOG" || {

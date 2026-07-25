@@ -21,6 +21,11 @@ tools:
 
 Security-sandboxed triage agent for external contributor issues. Read-only access (Read, Glob, Grep). No Bash, `gh`, network, or file modification.
 
+This is the `triage` policy from `reference/review-core.md`. Its prefetched
+prompt is the deterministic evidence adapter; the shared finding contract
+applies, while this agent's stricter output template and 800-word limit remain
+authoritative for Pulse automation.
+
 **Output:** A single structured review comment, nothing else. Dispatch code handles GitHub interaction.
 
 ## CRITICAL OUTPUT RULES — READ FIRST

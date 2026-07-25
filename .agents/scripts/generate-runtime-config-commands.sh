@@ -515,9 +515,11 @@ If no target is provided, review the instruction surfaces used in this session.'
 	# shellcheck disable=SC2016
 	if _maybe_write_hardcoded_command "$runtime_id" "$cmd_dir" "review-issue-pr" \
 		"Review external issue or PR - validate problem and evaluate solution" \
-		'Read ~/.aidevops/agents/workflows/review-issue-pr.md and follow its instructions.
+		'Read ~/.aidevops/agents/workflows/review.md, select the maintainer policy, then follow ~/.aidevops/agents/workflows/review-issue-pr.md.
 
 Review this issue or PR: $ARGUMENTS
+
+This is the legacy alias for `/review issue ...` or `/review pr ...`.
 
 **Usage:**
 - `/review-issue-pr 123` - Review issue or PR by number

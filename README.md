@@ -670,6 +670,7 @@ See `.agents/tools/terminal/terminal-title.md` for customization options.
 
 - **[Bundles](#project-bundles-auto-configuration)** - Project-type presets that auto-configure model tiers, quality gates, and agent routing per repo. 7 built-in bundles (web-app, library, cli-tool, content-site, infrastructure, agent, schema) with auto-detection from marker files (`bundle-helper.sh`)
 - **TTSR rules** - Soft rule engine (`ttsr-rule-loader.sh`) with `.agents/rules/` directory for AI output correction (e.g., no-edit-on-main, no-glob-for-discovery)
+- **Unified review** - `/review` applies one evidence and finding contract to issues, PRs, local patches, branches, and commits. Workflow-owned findings are verified and repaired autonomously; ad-hoc human reviews can remain report-only
 - **Cross-review** - `/cross-review` dispatches the same prompt to multiple AI models in parallel, diffs results, and optionally auto-scores via a judge model
 - **Local models** - Run AI models locally via llama.cpp for free, private, offline inference (`local-model-helper.sh`) with HuggingFace GGUF model management
 - **Tech stack lookup** - `/tech-stack` detects technology stacks of URLs or finds sites using specific technologies (Wappalyzer, httpx, nuclei, BuiltWith)
@@ -2200,6 +2201,7 @@ Configure time tracking per-repo via `.aidevops.json`.
 | `/list-keys` | List all configured API keys and their storage locations |
 | `/performance` | Web performance audit (Core Web Vitals, Lighthouse, PageSpeed) |
 | `/pr` | Unified PR workflow (orchestrates all checks) |
+| `/review` | Review an issue, PR, local patch, branch, or commit through the shared review core |
 | `/cross-review` | Dispatch prompt to multiple AI models, diff results, auto-score |
 | `/tech-stack` | Detect technology stacks of URLs or find sites using specific technologies |
 | `/mission` | Scope a high-level goal into milestones and features for autonomous execution |

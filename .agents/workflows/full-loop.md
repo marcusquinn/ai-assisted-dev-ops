@@ -95,6 +95,7 @@ Iterate until emitting `<promise>TASK_COMPLETE</promise>`.
 6. **Managed-repo signature footer gate (GH#12805 — MANDATORY):** Managed PR bodies and issue closing comments MUST contain the `aidevops.sh` footer. External contributions follow upstream templates and MUST NOT add internal audit/signature boilerplate.
 7. **Pre-close verification gate (GH#17372 — MANDATORY):** NEVER close an issue citing an existing PR unless: (a) the PR was created by this session, OR (b) `verify-issue-close-helper.sh check <issue> <pr> <slug>` returns exit 0. If verification fails, leave the issue open and comment with your analysis.
 8. **Worktree edit verification gate (GH#22816):** After file edits in a linked worktree, verify the worktree still exists and the changes are visible before reporting completion or asking to push. Minimum evidence: `git status --short --branch` from the worktree plus a diff/stat or the intended commit. If the worktree vanished or the files are not visible, stop, reconstruct from evidence, and do not claim the edit succeeded.
+9. **Review evidence gate:** Apply `reference/review-core.md` before PR readiness. Low-risk changes receive direct diff inspection; medium-risk changes receive closeout review when it reduces uncertainty; high/critical changes require independent review. Verify and repair in-scope findings autonomously, reuse unchanged bundle evidence, and route additive findings to follow-up work.
 
 ### Runtime Testing Gate (t1660.7 — MANDATORY)
 
@@ -119,6 +120,17 @@ Do not skip linters/type-checkers. Optimise how they run:
 4. Avoid launching `format:fix && lint:fix && typecheck && test` unbounded across multiple active sessions. Stagger expensive broad gates or lower concurrency so worker throughput stays reliable without exhausting local CPU/RAM.
 5. If a repo lacks scoped/bounded scripts, use available package-level commands for this loop and create a worker-ready follow-up to add repo-level optimisation.
 6. A resource fuse stops only that command shape. Record a durable recovery checkpoint, keep the objective open, and continue with narrower inputs, lower concurrency, resumable phases, an existing higher-capacity runner, or a later session. See `reference/safety-stop-recovery.md`.
+
+### Review Evidence Gate
+
+Formatting precedes review bundling. Build the exact `local` or `branch` bundle
+with `review-evidence-helper.sh`, apply the `closeout` policy in
+`reference/review-core.md`, and record its digest. Tests and review may run in
+parallel, but any resulting edit invalidates affected evidence and requires
+focused proof plus a rebuilt bundle. Do not rerun a reviewer against an unchanged
+digest or wait for an optional remote reviewer when existing exact-head evidence
+already resolves the risk. Keep review-triggered fixes inside the task boundary;
+the shared two-cycle and scope-growth limits prevent reviewer-driven scope creep.
 
 ### Headless Dispatch Rules (t158/t174 — MANDATORY)
 

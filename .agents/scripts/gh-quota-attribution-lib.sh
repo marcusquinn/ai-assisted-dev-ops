@@ -636,9 +636,8 @@ _ghqa_capture_locked() {
 		if [[ "$rc" -ne 0 ]]; then
 			printf '[aidevops] native gh command failed before an HTTP request\n' >&2
 		fi
-		# A valid parser header with zero response frames proves this invocation
-		# made no HTTP request. Keep its logical event, but do not fabricate an
-		# unknown transport attempt for local or cache-only gh behavior.
+		_ghqa_write_fallback_attempt "$result_file" "$path" 0 \
+			"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""
 		return "$rc"
 	fi
 	if [[ "$version" == v1 && "$frame_count" =~ ^[1-9][0-9]*$ ]] \

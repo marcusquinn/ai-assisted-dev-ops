@@ -39,9 +39,11 @@ BODY
 	create_command "review-issue-pr" \
 		"Review external issue or PR - validate problem and evaluate solution" \
 		"$AGENT_BUILD" "" <<'BODY'
-Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/workflows/review-issue-pr.md and follow its instructions.
+Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/workflows/review.md, select the maintainer policy, then follow ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/workflows/review-issue-pr.md.
 
 Review this issue or PR: $ARGUMENTS
+
+This is the legacy alias for `/review issue ...` or `/review pr ...`.
 
 **Usage:**
 - `/review-issue-pr 123` - Review issue or PR by number

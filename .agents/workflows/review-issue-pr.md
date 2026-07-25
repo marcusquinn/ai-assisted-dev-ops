@@ -1,5 +1,5 @@
 ---
-description: Review external issues and PRs - validate problems and evaluate proposed solutions. Used interactively and by the pulse supervisor for automated triage of needs-maintainer-review items.
+description: Interactively review issues and PRs - validate problems, evaluate solutions, and choose the next executable disposition.
 mode: subagent
 tools:
   read: true
@@ -36,6 +36,22 @@ tools:
 <!-- AI-CONTEXT-END -->
 
 ## 0. Pre-Review Discovery (MANDATORY)
+
+This is the interactive `maintainer` policy defined in
+`reference/review-core.md`. Use its shared evidence and finding contract. The
+sandboxed Pulse path is owned separately by `workflows/triage-review.md`.
+
+After resolving the target repository and issue/PR number, build the immutable
+baseline before evaluating the proposal:
+
+```bash
+review-evidence-helper.sh bundle issue <number> --repo <owner/repo>
+review-evidence-helper.sh bundle pr <number> --repo <owner/repo>
+```
+
+The bundle does not replace freshness, duplicate, provenance, reproduction, or
+architecture discovery below. Reuse its digest when the target evidence is
+unchanged; rebuild it after a new PR head or material issue/comment update.
 
 Before reading the proposed fix, establish the current state of the codebase and the issue landscape. Skipping this step is how reviewers rubber-stamp fixes for problems that have already been solved, endorse caches that defeat recently-added invariants, or approve symptom-patches whose root cause lives elsewhere. The review verdict is only as good as this discovery step — if it's weak, the rest is decoration.
 
@@ -348,13 +364,17 @@ Accepted and queued for implementation as #{internal_issue}. We'll link back her
 
 **When to skip:** Pulse-automated triage only (headless mode without a human session). The pulse posts its own review comment; the maintainer closes the loop after approving.
 
-## Headless / Pulse-Driven Mode
+## Sandboxed Pulse Relationship
 
-> **Note (t1894):** Pulse-dispatched triage reviews now use the sandboxed `triage-review.md` agent which has NO Bash/network access. This file (`review-issue-pr.md`) is only used for interactive `/review-issue-pr` sessions where the user is present. The sandboxed agent receives all GitHub data pre-fetched by deterministic code.
+> **Note (t1894):** Pulse-dispatched triage reviews use the sandboxed
+> `triage-review.md` agent with no Bash/network access. This file is only used
+> for interactive `/review issue`, `/review pr`, and legacy
+> `/review-issue-pr` sessions. The sandboxed agent receives all GitHub data
+> pre-fetched by deterministic code.
 >
 > **Closed by t2886 / GH#20987:** The prefetch in `pulse-ancillary-dispatch.sh` now supplies `EVIDENCE_RECENT_MERGED_PRS`, `EVIDENCE_RECENT_COMMITS_ON_CITED_FILES`, and `EVIDENCE_CITED_FILE_CONTENTS` — enabling the sandboxed `triage-review.md` agent to verify `file:line` claims and detect already-fixed issues without Bash or network access.
 
-When invoked by pulse (via `/review-issue-pr <number>`):
+The Pulse path performs these operations outside this interactive workflow:
 
 1. Fetch issue/PR: `gh issue view` or `gh pr view`
 2. Read codebase files referenced in the issue body
