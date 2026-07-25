@@ -160,11 +160,20 @@ verify_release_source_pr() {
 	fi
 
 	local merge_sha=""
+	local release_head=""
 	merge_sha=$(printf '%s' "$pr_json" | jq -r '.mergeCommit.oid')
 	if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$merge_sha" "origin/${branch}" 2>/dev/null; then
 		print_error "Source PR #${source_pr} merge SHA is not reachable from origin/${branch}"
 		return 1
 	fi
+	release_head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) || {
+		print_error "Cannot resolve release checkout HEAD"
+		return 1
+	}
+	[[ "$merge_sha" == "$release_head" ]] || {
+		print_error "Source PR #${source_pr} must be the direct source of the release checkout"
+		return 1
+	}
 	VERSION_MANAGER_SOURCE_PR="$source_pr"
 	VERSION_MANAGER_SOURCE_MERGE_SHA="$merge_sha"
 	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA
@@ -591,7 +600,12 @@ commit_version_changes() {
 push_changes() {
 	local version="$1" # version string, e.g. "3.8.71"
 	local tag_name="v$version"
+	local release_parent=""
 	cd "$REPO_ROOT" || exit 1
+	release_parent=$(git rev-parse HEAD^ 2>/dev/null) || {
+		print_error "Cannot resolve release source parent"
+		return 1
+	}
 
 	local attempt=0 max_attempts=10 delay=2
 	while [[ $attempt -lt $max_attempts ]]; do
@@ -604,46 +618,19 @@ push_changes() {
 			return 0
 		fi
 
-		# Non-fast-forward: rebase and retry
-		print_info "Push failed (conflict). Fetching and rebasing..."
+		# A release tag's signed provenance binds the bump commit directly to its
+		# source merge. Never rebase and recreate that tag after concurrent main
+		# movement; doing so would invalidate both the signature and provenance.
+		print_info "Push failed. Refreshing remote state before retry..."
 		if ! git fetch origin main --quiet; then
 			print_error "Fetch failed, cannot retry"
 			return 1
 		fi
-
-		if ! git rebase origin/main; then
-			print_error "Rebase conflict, manual intervention needed"
-			git rebase --abort 2>/dev/null || true
-			return 1
-		fi
-
-		# CRITICAL (t2437/GH#20073): Verify the rebase did NOT silently drop our
-		# bump commit before retagging HEAD. A rebase can lose the bump commit
-		# without a conflict if (a) Git treats it as already applied (duplicate
-		# patch upstream), (b) an interactive rebase drops it, or (c) the remote
-		# fast-forwards past it in a way that makes our commit empty. In every
-		# such case, HEAD becomes origin/main and retagging HEAD would place
-		# the release tag on the wrong commit — exactly the symptom observed
-		# in the broken v3.8.82 release (GH#20073).
-		if ! _verify_bump_commit_at_ref HEAD "$version"; then
-			print_error "Rebase silently dropped the bump commit for v$version"
-			print_info "HEAD is now $(git rev-parse HEAD), not a bump-version commit"
-			print_info "Recovery:"
-			print_info "  1. Inspect: git log --oneline origin/main..HEAD"
-			print_info "  2. Discard this release worktree and create a fresh detached worktree from origin/main"
-			print_info "  3. Delete local tag: git tag -d $tag_name"
-			print_info "  4. Re-run: $0 release <bump-type>"
-			# Clean up the stale local tag to avoid divergence on next attempt.
+		if [[ "$(git rev-parse origin/main 2>/dev/null)" != "$release_parent" ]]; then
+			print_error "origin/main advanced after release provenance was recorded"
+			print_info "Discard this release worktree and rerun from the latest merged source PR"
 			git tag -d "$tag_name" 2>/dev/null || true
 			return 1
-		fi
-
-		# Tag must be recreated on the new HEAD after rebase (HEAD has been
-		# verified above to be the bump commit for $version).
-		if git show-ref --tags "$tag_name" &>/dev/null; then
-			print_info "Recreating tag $tag_name on rebased HEAD..."
-			git tag -d "$tag_name"
-			git tag -a "$tag_name" -m "$tag_name"
 		fi
 
 		if [[ $attempt -lt $max_attempts ]]; then

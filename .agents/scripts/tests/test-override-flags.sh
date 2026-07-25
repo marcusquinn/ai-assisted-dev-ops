@@ -288,7 +288,7 @@ else
 	fi
 
 	# Verify the floor still exists (tag creation is after the bypass)
-	if grep -qF "git tag -a" "$VERSION_MGMT_RELEASE"; then
+	if grep -qF "git tag -s" "$VERSION_MGMT_RELEASE"; then
 		pass "AIDEVOPS_VM_SKIP_BUMP_VERIFY floor: git tag command still present after bypass site"
 	else
 		fail "AIDEVOPS_VM_SKIP_BUMP_VERIFY floor: git tag command missing from version-manager-release.sh"

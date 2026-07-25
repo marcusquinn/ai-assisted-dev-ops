@@ -48,6 +48,27 @@ _version_manager_repo_slug() {
 	return 0
 }
 
+_verify_github_release_provenance() {
+	local version="$1"
+	local tag_name="v${version}"
+	local slug=""
+
+	slug=$(_version_manager_repo_slug)
+	[[ -n "$slug" ]] || {
+		print_error "Cannot verify GitHub release provenance: cannot determine repo slug from origin"
+		return 1
+	}
+	if ! (
+		cd "$REPO_ROOT" || exit 1
+		bash "${SCRIPT_DIR}/release-provenance-helper.sh" verify \
+			--tag "$tag_name" --repo "$slug"
+	); then
+		print_error "GitHub release provenance verification failed for ${tag_name}"
+		return 1
+	fi
+	return 0
+}
+
 _github_release_rest_view() {
 	local slug="$1"
 	local tag_name="$2"
@@ -107,10 +128,36 @@ _github_release_recover_with_rest() {
 	return 1
 }
 
+_release_tag_message() {
+	local version="$1"
+	local source_pr="${VERSION_MANAGER_SOURCE_PR:-}"
+	local source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
+
+	if release_source_pr_required; then
+		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
+			print_error "Release tag requires verified source-PR provenance"
+			return 1
+		}
+		[[ "$source_merge" =~ ^[0-9a-f]{40}$ ]] || {
+			print_error "Release tag requires a verified source merge SHA"
+			return 1
+		}
+	fi
+
+	printf 'Release v%s - AI DevOps Framework\n\n' "$version"
+	printf 'Aidevops-Version: %s\n' "$version"
+	if [[ -n "$source_pr" && -n "$source_merge" ]]; then
+		printf 'Aidevops-Source-PR: %s\n' "$source_pr"
+		printf 'Aidevops-Source-Merge: %s\n' "$source_merge"
+	fi
+	return 0
+}
+
 # Function to create git tag
 create_git_tag() {
 	local version="$1"
 	local tag_name="v$version"
+	local tag_message=""
 
 	print_info "Creating git tag: $tag_name"
 
@@ -165,7 +212,8 @@ create_git_tag() {
 		fi
 	fi
 
-	if git tag -a "$tag_name" -m "Release $tag_name - AI DevOps Framework"; then
+	tag_message=$(_release_tag_message "$version") || return 1
+	if git tag -s "$tag_name" -m "$tag_message"; then
 		print_success "Created git tag: $tag_name"
 		return 0
 	else
@@ -181,6 +229,10 @@ create_github_release() {
 	local tag_name="v$version"
 
 	print_info "Creating GitHub release: $tag_name"
+	if ! _verify_github_release_provenance "$version"; then
+		print_error "Refusing to create or reconcile an unverified GitHub release"
+		return 1
+	fi
 
 	# Try GitHub CLI first
 	if command -v gh &>/dev/null && gh auth status &>/dev/null; then

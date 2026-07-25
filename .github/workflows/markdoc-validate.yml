@@ -26,6 +26,9 @@ on:
       - '.agents/tools/markdoc/schemas/**'
       - '.agents/scripts/markdoc-validate.sh'
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}

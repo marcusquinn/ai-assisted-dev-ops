@@ -14,6 +14,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Verify immutable release provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          bash .agents/scripts/release-provenance-helper.sh verify \
+            --tag "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: Extract CHANGELOG section
         id: changelog

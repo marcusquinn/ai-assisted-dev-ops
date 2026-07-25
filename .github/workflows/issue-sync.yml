@@ -49,6 +49,12 @@ on:
         required: false
         type: string
 
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
   sync:
     uses: ./.github/workflows/issue-sync-reusable.yml

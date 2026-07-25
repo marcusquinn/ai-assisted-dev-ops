@@ -32,6 +32,11 @@ on:
     # not on the Phase 2 edit that makes the placeholder a real review.
     types: [created, edited]
 
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
 jobs:
   gate:
     # Apply the complete event matrix before concurrency admission. GitHub keeps

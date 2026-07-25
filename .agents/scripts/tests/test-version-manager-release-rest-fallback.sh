@@ -9,6 +9,12 @@
 
 set -uo pipefail
 
+# Keep the disposable fixture repository isolated from the developer Git shim.
+PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_NOSYSTEM=1
+
 TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_RED=$'\033[0;31m'
 TEST_GREEN=$'\033[0;32m'
@@ -96,6 +102,16 @@ export FAKE_GH_LOG="${TEST_ROOT}/gh.log"
 export FAKE_GH_RELEASE_MARKER="${TEST_ROOT}/release-created.marker"
 
 rm -f "$FAKE_GH_LOG" "$FAKE_GH_RELEASE_MARKER"
+_verify_github_release_provenance() { return 1; }
+rc=0
+create_github_release '1.2.4' >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -ne 0 && ! -s "$FAKE_GH_LOG" ]]; then
+	print_result 'GitHub release creation fails closed before publication' 0
+else
+	print_result 'GitHub release creation fails closed before publication' 1 "rc=$rc"
+fi
+
+_verify_github_release_provenance() { return 0; }
 export FAKE_REST_VIEW_SUCCEEDS=1
 rc=0
 output=$(create_github_release '1.2.4' 2>&1) || rc=$?

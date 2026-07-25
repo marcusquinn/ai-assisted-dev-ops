@@ -341,11 +341,9 @@ _release_handle_push_failure() {
 	print_warning "Rolling back local tag v$new_version due to push failure"
 	git tag -d "v$new_version" 2>/dev/null || true
 	echo ""
-	print_info "The version commit exists locally. To complete the release:"
-	print_info "  1. Fix the issue (e.g., git fetch origin && git rebase origin/main)"
-	print_info "  2. Re-create tag: git tag -a v$new_version -m 'Release v$new_version'"
-	print_info "  3. Push: git push --atomic origin main --tags"
-	print_info "  4. Create release: $0 github-release"
+	print_info "The unpushed version commit remains local for diagnosis only."
+	print_info "Discard this release worktree and rerun the release from current origin/main"
+	print_info "with the latest merged source PR; never recreate the provenance tag manually."
 	exit 1
 }
 
