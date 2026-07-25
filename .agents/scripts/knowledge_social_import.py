@@ -21,6 +21,17 @@ from knowledge_social_store import (
     write_raw_batch,
 )
 
+FORBIDDEN_CREDENTIAL_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "client_secret",
+    "cookie",
+    "cookies",
+    "password",
+    "refresh_token",
+}
+
 
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -49,6 +60,32 @@ def record_list(archive: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return value
 
 
+def reject_credentials(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized in FORBIDDEN_CREDENTIAL_KEYS:
+                raise SocialStoreError("archive contains forbidden credential material")
+            reject_credentials(child)
+    elif isinstance(value, list):
+        for child in value:
+            reject_credentials(child)
+
+
+def upsert_sql(
+    table: str,
+    columns: tuple[str, ...],
+    conflict_columns: tuple[str, ...],
+    update_columns: tuple[str, ...],
+) -> str:
+    placeholders = ",".join("?" for _column in columns)
+    updates = ",".join(f"{column}=excluded.{column}" for column in update_columns)
+    return (
+        f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders}) "
+        f"ON CONFLICT({','.join(conflict_columns)}) DO UPDATE SET {updates}"
+    )
+
+
 def load_archive(path: Path) -> tuple[dict[str, Any], bytes]:
     if path.is_symlink() or not path.is_file():
         raise SocialStoreError("archive must be a regular non-symlink file")
@@ -58,6 +95,7 @@ def load_archive(path: Path) -> tuple[dict[str, Any], bytes]:
         raise SocialStoreError("archive is not valid UTF-8 JSON") from error
     if not isinstance(parsed, dict):
         raise SocialStoreError("archive root must be an object")
+    reject_credentials(parsed)
     payload = canonical_json(parsed).encode("utf-8")
     return parsed, payload
 
@@ -93,16 +131,17 @@ def import_accounts(connection: Any, archive: dict[str, Any], provider: str) -> 
 
 
 def import_objects(connection: Any, archive: dict[str, Any], provider: str, batch_id: str) -> None:
+    statement = upsert_sql(
+        "objects",
+        ("provider", "object_type", "remote_id", "account_remote_id", "text_content", "created_at",
+         "observed_at", "evidence_class", "provider_json", "batch_id"),
+        ("provider", "object_type", "remote_id"),
+        ("account_remote_id", "text_content", "created_at", "observed_at",
+         "evidence_class", "provider_json", "batch_id"),
+    )
     for record in record_list(archive, "objects"):
         connection.execute(
-            """INSERT INTO objects(
-                provider,object_type,remote_id,account_remote_id,text_content,created_at,
-                observed_at,evidence_class,provider_json,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(provider,object_type,remote_id) DO UPDATE SET
-                account_remote_id=excluded.account_remote_id,text_content=excluded.text_content,
-                created_at=excluded.created_at,observed_at=excluded.observed_at,
-                evidence_class=excluded.evidence_class,provider_json=excluded.provider_json,
-                batch_id=excluded.batch_id""",
+            statement,
             (provider, required_text(record, "object_type"), required_text(record, "remote_id"),
              optional_text(record, "account_remote_id"), optional_text(record, "text"),
              optional_text(record, "created_at"), required_text(record, "observed_at"),
@@ -111,15 +150,16 @@ def import_objects(connection: Any, archive: dict[str, Any], provider: str, batc
 
 
 def import_activities(connection: Any, archive: dict[str, Any], provider: str, batch_id: str) -> None:
+    statement = upsert_sql(
+        "activities",
+        ("provider", "activity_type", "remote_id", "actor_remote_id", "object_remote_id", "occurred_at",
+         "observed_at", "state", "provider_json", "batch_id"),
+        ("provider", "activity_type", "remote_id"),
+        ("object_remote_id", "occurred_at", "observed_at", "state", "provider_json", "batch_id"),
+    )
     for record in record_list(archive, "activities"):
         connection.execute(
-            """INSERT INTO activities(
-                provider,activity_type,remote_id,actor_remote_id,object_remote_id,occurred_at,
-                observed_at,state,provider_json,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(provider,activity_type,remote_id) DO UPDATE SET
-                object_remote_id=excluded.object_remote_id,occurred_at=excluded.occurred_at,
-                observed_at=excluded.observed_at,state=excluded.state,
-                provider_json=excluded.provider_json,batch_id=excluded.batch_id""",
+            statement,
             (provider, required_text(record, "activity_type"), required_text(record, "remote_id"),
              required_text(record, "actor_remote_id"), optional_text(record, "object_remote_id"),
              optional_text(record, "occurred_at"), required_text(record, "observed_at"),

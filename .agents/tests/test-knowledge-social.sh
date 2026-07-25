@@ -104,5 +104,20 @@ else
 	assert_eq "path traversal connection ID is rejected" "rejected" "rejected"
 fi
 
+credential_archive="${TMP_DIR}/credential.json"
+python3 - "$ARCHIVE" "$credential_archive" <<'PY'
+import json
+import sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+data["provider_json"] = {"access_token": "must-not-persist"}
+json.dump(data, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+if "$HELPER" import-archive --corpus-root "$CORPUS_ROOT" --archive "$credential_archive" >/dev/null 2>&1; then
+	assert_eq "credential material is rejected before raw persistence" "accepted" "rejected"
+else
+	assert_eq "credential material is rejected before raw persistence" "rejected" "rejected"
+fi
+assert_eq "rejected archives create no raw batches" "$(python3 -c 'from pathlib import Path; import sys; print(len(list(Path(sys.argv[1]).rglob("*.json.gz"))))' "$CORPUS_ROOT/sources/social/raw")" "1"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
