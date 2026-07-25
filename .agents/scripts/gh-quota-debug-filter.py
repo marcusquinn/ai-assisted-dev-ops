@@ -103,6 +103,12 @@ def main() -> int:
     lines = data.splitlines(keepends=True)
     ranges = _frame_ranges(lines)
     _write_sanitized_stderr(lines, ranges)
+    if data and not ranges:
+        # Non-empty stderr without a recognized request frame may be a changed
+        # GH_DEBUG format containing private request or response data. Keep it
+        # suppressed and mark capture invalid rather than claiming no request.
+        print("v1\tinvalid")
+        return 0
     print(f"v1\t{len(ranges)}")
     for frame_index, (start, end) in enumerate(ranges, start=1):
         frame = lines[start:end]

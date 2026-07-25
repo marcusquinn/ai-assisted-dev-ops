@@ -1058,6 +1058,19 @@ else
 	_fail "debug framing drift handling" "log: $(cat "$drift_log" 2>/dev/null || true) stderr: $(cat "$drift_err" 2>/dev/null || true)"
 fi
 
+zero_frame_log="$TMP/exact-zero-frame.log"
+zero_frame_state="$TMP/exact-zero-frame-state"
+: >"$zero_frame_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$zero_frame_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$zero_frame_log" "$SHIM_RUN" auth status >/dev/null 2>/dev/null
+if [[ "$(grep -c $'\tgh-quota-bootstrap\t.*\tattempt\t' "$zero_frame_log" || true)" == "1" \
+	&& "$(grep -c $'\tgh_auth_status\t.*\tattempt\t' "$zero_frame_log" || true)" == "0" ]]; then
+	_pass "valid zero-response capture adds no synthetic transport attempt"
+else
+	_fail "zero-response exact capture" "log: $(cat "$zero_frame_log" 2>/dev/null || true)"
+fi
+
 local_log="$TMP/exact-local-command.log"
 local_state="$TMP/exact-local-command-state"
 : >"$local_log"

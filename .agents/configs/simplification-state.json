@@ -2478,9 +2478,9 @@
       "pr": 18655
     },
     ".agents/scripts/pulse-wrapper.sh": {
-      "at": "2026-07-20T22:48:46Z",
-      "hash": "c231d5bbbe4d1215abab830b95477326bfb94d6d",
-      "passes": 61,
+      "at": "2026-07-25T17:42:26Z",
+      "hash": "b2caec1946a503071d7fdfdb13987d7742d68ffd",
+      "passes": 62,
       "pr": 18689
     },
     ".agents/scripts/quality-feedback-findings-lib.sh": {
@@ -7319,9 +7319,9 @@
       "pr": 13014
     },
     ".agents/workflows/pre-edit.md": {
-      "at": "2026-07-12T05:42:20Z",
-      "hash": "792022f12d850b7ad5d0811298f3564e2374fada",
-      "passes": 7
+      "at": "2026-07-25T17:44:35Z",
+      "hash": "509684a3c701c2fc4dc9ddf5a91c1456ea7509e0",
+      "passes": 8
     },
     ".agents/workflows/preflight.md": {
       "at": "2026-07-08T02:29:05Z",
@@ -7492,9 +7492,9 @@
       "pr": 19029
     },
     "setup.sh": {
-      "at": "2026-07-24T06:06:41Z",
-      "hash": "5b49385a47800bcbf4b39988c796d4d95aa9ae0d",
-      "passes": 296,
+      "at": "2026-07-25T17:44:39Z",
+      "hash": "e1933273d9cbf6877ad9ab87d00f13f728423d0d",
+      "passes": 297,
       "pr": 15470
     },
     "todo/tasks/GH#15363-brief.md": {
@@ -7840,10 +7840,10 @@
       "passes": 3
     },
     ".agents/scripts/setup/modules/agent-deploy.sh": {
-      "hash": "f743b4b51ddcda8506dd54459efeb8a829b24dbb",
-      "at": "2026-07-21T22:55:09Z",
+      "hash": "b71f602e5b04e8233c7c1cdfd2125f5183beef89",
+      "at": "2026-07-25T17:42:27Z",
       "pr": 26053,
-      "passes": 7
+      "passes": 8
     },
     ".agents/scripts/subagent-index-helper.sh": {
       "hash": "5f40ba773a083c3327db96d65aeafa1b836f80fd",
