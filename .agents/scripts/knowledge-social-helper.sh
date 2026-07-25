@@ -12,6 +12,8 @@ QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
 BROWSER_HELPER="${SCRIPT_DIR}/knowledge_social_browser.py"
+VAULT_RUNTIME_CHECK="${SCRIPT_DIR}/vault-runtime-check.py"
+VAULT_RUNTIME_PYTHON="${HOME:+$HOME/.aidevops/.agent-workspace/python-env/vault/bin/python3}"
 
 usage() {
 	cat <<'EOF'
@@ -37,13 +39,21 @@ Usage:
     [--lease-seconds SECONDS] [--now-epoch EPOCH]
   knowledge-social-helper.sh receipts [--base PATH] [--alias ALIAS] \
     [--connection-id ID] [--limit 1-1000]
-  knowledge-social-helper.sh share-keygen --base PATH --private-key FILE --public-key FILE
-  knowledge-social-helper.sh share-grant --base PATH --alias ALIAS --public-key FILE
-  knowledge-social-helper.sh share-export --base PATH --alias ALIAS \
-    --recipient-key FILE --sender-key FILE --output FILE
-  knowledge-social-helper.sh share-import --base PATH --alias ALIAS \
-    --private-key FILE --bundle FILE
-  knowledge-social-helper.sh share-revoke --base PATH --alias ALIAS --principal-id ID
+  knowledge-social-helper.sh identity-export [--base PATH] [--vault-dir DIR] --output FILE
+  knowledge-social-helper.sh workspace-create [--base PATH] --alias ALIAS [--vault-dir DIR]
+  knowledge-social-helper.sh workspace-grant [--base PATH] --alias ALIAS \
+    [--vault-dir DIR] --recipient FILE [--capability knowledge.read|knowledge.write] \
+    --output FILE
+  knowledge-social-helper.sh workspace-accept [--base PATH] --alias ALIAS \
+    [--vault-dir DIR] --sender FILE --grant FILE
+  knowledge-social-helper.sh share-export [--base PATH] --alias ALIAS \
+    [--vault-dir DIR] --output FILE [--expires-at EPOCH]
+  knowledge-social-helper.sh share-import [--base PATH] --alias ALIAS \
+    [--vault-dir DIR] --sender FILE --batch FILE
+  knowledge-social-helper.sh workspace-revoke [--base PATH] --alias ALIAS \
+    [--vault-dir DIR] --principal-id ID --output FILE
+  knowledge-social-helper.sh revocation-apply [--base PATH] --alias ALIAS \
+    --sender FILE --revocation FILE
   knowledge-social-helper.sh provider-validate --manifest FILE
   knowledge-social-helper.sh capture-browser-gap [--base PATH] [--alias ALIAS] \
     --manifest FILE --gap FILE --capture FILE [--max-items 1-1000] \
@@ -83,7 +93,60 @@ Browser gap capture:
   Capture files are read-only artifacts from an approved profile; this helper
   cannot launch a browser or perform a platform write. Item and byte limits are
   hard bounds, and replay is content-addressed and idempotent.
+
+Encrypted workspace sharing:
+  Public identity and grant files contain only opaque IDs, public keys, and signed
+  metadata. Shared snapshots are encrypted once with a random AES-256-GCM content
+  key and wrapped separately to each active Vault message-device X25519 key. The
+  recipient authorizes the signed header before decryption and rebuilds SQLite/FTS
+  locally. Revocation blocks local query first and excludes the member from every
+  later key generation; it cannot erase plaintext already delivered to a device.
 EOF
+	return 0
+}
+
+resolve_share_python() {
+	local managed_python="$VAULT_RUNTIME_PYTHON"
+	if [[ "${AIDEVOPS_VAULT_TEST_MODE:-0}" == "1" && -n "${AIDEVOPS_VAULT_PYTHON:-}" ]]; then
+		managed_python="$AIDEVOPS_VAULT_PYTHON"
+		if [[ -x "$managed_python" && -r "$VAULT_RUNTIME_CHECK" ]] &&
+			"$managed_python" "$VAULT_RUNTIME_CHECK" >/dev/null 2>&1; then
+			printf '%s\n' "$managed_python"
+			return 0
+		fi
+		printf 'ERROR: managed Vault test crypto runtime failed verification\n' >&2
+		return 1
+	fi
+	local env_dir="${managed_python%/bin/python3}"
+	local marker="${env_dir}/.aidevops-managed-runtime"
+	local marker_value=""
+	if [[ ! -x "$managed_python" || ! -r "$VAULT_RUNTIME_CHECK" || ! -x /usr/bin/python3 ||
+		! -f "$marker" || -L "$marker" ]]; then
+		printf 'ERROR: managed Vault crypto runtime is unavailable; run aidevops setup\n' >&2
+		return 1
+	fi
+	marker_value=$(<"$marker")
+	if [[ "$marker_value" != "aidevops-vault-runtime-v1" ]] ||
+		! /usr/bin/python3 "$VAULT_RUNTIME_CHECK" --check-ancestors "$HOME" "$env_dir" >/dev/null 2>&1 ||
+		! /usr/bin/python3 "$VAULT_RUNTIME_CHECK" --check-path "$env_dir" "$marker" >/dev/null 2>&1 ||
+		! "$managed_python" "$VAULT_RUNTIME_CHECK" >/dev/null 2>&1; then
+		printf 'ERROR: managed Vault crypto runtime failed verification\n' >&2
+		return 1
+	fi
+	printf '%s\n' "$managed_python"
+	return 0
+}
+
+run_share_command() {
+	local subcommand="$1"
+	shift || true
+	if [[ ! -r "$SHARE_HELPER" ]]; then
+		printf 'ERROR: encrypted social sharing implementation missing: %s\n' "$SHARE_HELPER" >&2
+		return 1
+	fi
+	local python_bin=""
+	python_bin=$(resolve_share_python) || return 1
+	PATH="${python_bin%/*}:${PATH}" "$python_bin" "$SHARE_HELPER" "$subcommand" "$@" || return 1
 	return 0
 }
 
@@ -125,14 +188,6 @@ main() {
 		fi
 		python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
 		;;
-	share-keygen | share-grant | share-export | share-import | share-revoke)
-		require_runtime || return 1
-		if [[ ! -r "$SHARE_HELPER" ]]; then
-			printf 'ERROR: social sharing implementation missing: %s\n' "$SHARE_HELPER" >&2
-			return 1
-		fi
-		python3 "$SHARE_HELPER" "$subcommand" "$@" || return 1
-		;;
 	provider-validate | capture-browser-gap)
 		require_runtime || return 1
 		if [[ ! -r "$BROWSER_HELPER" ]]; then
@@ -148,6 +203,9 @@ main() {
 			return 1
 		fi
 		python3 "$SYNC_HELPER" "$subcommand" "$@" || return 1
+		;;
+	identity-export | workspace-create | workspace-grant | workspace-accept | share-export | share-import | workspace-revoke | revocation-apply)
+		run_share_command "$subcommand" "$@" || return 1
 		;;
 	help | -h | --help)
 		usage

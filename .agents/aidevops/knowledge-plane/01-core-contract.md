@@ -43,7 +43,7 @@ Personal mode adds a private catalog around the unchanged legacy tree:
 
 ```text
 ~/.aidevops/.agent-workspace/knowledge/
-  catalog.db                     ← schema-v1 corpus and authorization catalog
+  catalog.db                     ← schema-v2 corpus and authorization catalog
   _config/
     principal.json               ← owner-only local authentication context
   _knowledge/                    ← personal:default (existing location)
@@ -60,11 +60,13 @@ existing path once as the logical `personal:default` corpus. `catalog.db` and
 `principal.json` are mode `0600`; their containing private directories are mode
 `0700`.
 
-Schema v1 implements the parent catalog contract with `principals`,
+Schema v2 implements the parent catalog contract with `principals`,
 `workspaces`, `workspace_memberships`, `corpora`, `corpus_grants`, and the
 reserved `collector_assignments` table. Private logical names are isolated in
 `corpus_aliases`; aliases are not path components or authorization inputs by
-themselves.
+themselves. Encrypted sharing adds an independently versioned private extension
+with principal devices, per-workspace device grants, key generations, monotonic
+export/import sequences, and signed grant, revocation, and import events.
 
 The implementation keeps command dispatch, catalog transactions, and private
 filesystem/authentication-context checks in separate Python modules so each
@@ -135,17 +137,31 @@ inferred object must carry a finite `provider_json.confidence` score from `0` to
 `1`; malformed or missing confidence fails the query closed, and output retains
 the score with a mandatory-review marker and its evidence citation count.
 
-Workspace owners register X25519 encryption and Ed25519 signing public keys in
-the authenticated catalog before granting a member. Shared raw batches are
-canonicalized, signed by an active workspace principal, and wrapped separately
-for each active recipient with ephemeral X25519, HKDF-SHA256, and AES-256-GCM.
-Transport files contain ciphertext and opaque principal identifiers only; local
-paths and plaintext FTS databases are never included. An authorized recipient
-decrypts in memory, verifies the sender and batch hashes, imports immutable raw
-evidence, and rebuilds its own projection. Revocation atomically disables the
-membership and corpus grants, revokes that corpus-specific public key, and
-advances the corpus key epoch, so stale bundles and cached local queries fail
-before content access.
+Encrypted sharing reuses each local Vault message device's Ed25519 signing and
+X25519 encryption keys. An owner issues a signed grant to one opaque principal
+and device; the recipient verifies the out-of-band owner identity and accepts
+that grant into its own private catalog without copying another device's catalog
+or physical paths. Export remains owner-device-only and requires the owner's
+`knowledge.manage` grant until the dedicated social capability model is added.
+
+Each snapshot contains immutable raw evidence plus normalized rows, but never
+aliases, physical paths, SQLite files, FTS tables, auth-profile references, or
+private annotations. A random AES-256-GCM content key encrypts the canonical
+snapshot and is wrapped independently to every active recipient device with
+ephemeral X25519 and HKDF-SHA256. The owner signs the public header, wraps, and
+ciphertext. Recipients verify that signature and authorize the workspace,
+principal, device, capability, sender, key generation, and monotonic sequence
+before content-key unwrap or payload decryption, then restore raw evidence and
+normalized rows and rebuild SQLite/FTS locally.
+
+Signed revocation disables the local membership, grants, and device wraps and
+advances the key generation before later snapshots are accepted. Recipients
+apply contiguous signed generations so an out-of-order record cannot skip an
+earlier local revocation. Revocation prevents local cached queries and future key
+delivery but cannot erase plaintext or old content keys already delivered to a
+malicious, offline, or rollback-controlled device. Multi-human sharing therefore
+remains opt-in pending the external Vault crypto/security review; one trusted
+team runner remains the default documented deployment.
 
 Provider extensions and browser-gap ingestion follow
 `05-social-operations.md`. The provider contract permits no platform writes and

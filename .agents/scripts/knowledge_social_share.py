@@ -1,291 +1,276 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Encrypted workspace social-batch distribution and grant revocation."""
+"""Manage encrypted, signed social workspace sharing between principals."""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import gzip
-import hashlib
 import json
 import os
-import secrets
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature, InvalidTag
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
-from knowledge_corpus_catalog import (
-    _connect_catalog,
-    _open_authorized_catalog,
-    _authorized_rows,
-    resolve,
+from _knowledge_social_share_catalog import (
+    create_workspace,
+    current_principal,
 )
-from knowledge_corpus_context import CatalogError, validate_private_file
-from knowledge_social_import import import_archive_payload
-from knowledge_social_store import SocialStoreError, validate_root
+from _knowledge_social_share_crypto import (
+    ShareError,
+    identity_envelope,
+    load_identity,
+    load_private_identity,
+    read_json,
+    write_json_atomic,
+)
+from _knowledge_social_share_data import build_snapshot, restore_snapshot
+from _knowledge_social_share_envelope import (
+    BatchParameters,
+    WorkspaceScope,
+    create_batch_envelope,
+    create_revocation_envelope,
+    open_batch_envelope,
+    open_grant_envelope,
+    open_revocation_envelope,
+    validated_batch_header,
+)
+from _knowledge_social_share_grants import accept_grant, authorized_grant
+from _knowledge_social_share_state import (
+    apply_revocation,
+    authorized_export,
+    authorized_import,
+    authorized_revocation,
+)
+from knowledge_corpus_context import CatalogError
+from knowledge_social_import import provision
+from knowledge_social_store import SocialStoreError
 
-FORMAT_VERSION = 1
-AAD = b"aidevops-social-share-v1"
-
-
-class ShareError(RuntimeError):
-    """Raised when a social sharing boundary fails closed."""
-
-
-def b64e(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
-
-
-def b64d(value: str) -> bytes:
-    return base64.b64decode((value + "=" * (-len(value) % 4)).encode("ascii"), altchars=b"-_", validate=True)
-
-
-def canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def read_json(path: Path, *, private: bool = False) -> dict[str, Any]:
-    if private:
-        validate_private_file(path, "social share private key", repair=False)
-    elif path.is_symlink() or not path.is_file():
-        raise ShareError("social share input must be a regular non-symlink file")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ShareError("social share input is not valid UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise ShareError("social share input must contain a JSON object")
-    return value
+DEFAULT_BASE = Path.home() / ".aidevops" / ".agent-workspace" / "knowledge"
+DEFAULT_VAULT = Path(
+    os.environ.get("AIDEVOPS_VAULT_DIR", str(Path.home() / ".config" / "aidevops" / "vault"))
+)
 
 
-def write_json(path: Path, value: dict[str, Any], mode: int) -> None:
-    if path.exists() or path.is_symlink():
-        raise ShareError("refusing to replace an existing social share file")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(value, handle, sort_keys=True, separators=(",", ":"))
-        handle.write("\n")
+def _base(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--base", type=Path, default=DEFAULT_BASE)
 
 
-def keygen(base: Path, private_path: Path, public_path: Path) -> dict[str, Any]:
-    _resolved, principal_id, read_connection = _open_authorized_catalog(base)
-    read_connection.close()
-    encryption = X25519PrivateKey.generate()
-    signing = Ed25519PrivateKey.generate()
-    public = {
-        "format": FORMAT_VERSION,
-        "principal_id": principal_id,
-        "encryption_public": b64e(encryption.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)),
-        "signing_public": b64e(signing.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)),
-    }
-    private = dict(public)
-    private["encryption_private"] = b64e(encryption.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()))
-    private["signing_private"] = b64e(signing.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()))
-    write_json(private_path, private, 0o600)
-    write_json(public_path, public, 0o644)
-    return {"principal_id": principal_id, "public_key": str(public_path)}
+def _identity(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--vault-dir", type=Path, default=DEFAULT_VAULT)
 
 
-def writable_catalog(base: Path, alias: str) -> tuple[str, sqlite3.Connection, sqlite3.Row]:
-    resolved, principal_id, read_connection = _open_authorized_catalog(base)
-    try:
-        rows = _authorized_rows(read_connection, principal_id, "knowledge.manage", alias)
-        if len(rows) != 1:
-            raise ShareError("access denied: workspace management grant required")
-        row = rows[0]
-    finally:
-        read_connection.close()
-    connection = _connect_catalog(resolved / "catalog.db", read_only=False)
-    return principal_id, connection, row
-
-
-def grant(base: Path, alias: str, public_path: Path) -> dict[str, Any]:
-    public = read_json(public_path)
-    target = str(public.get("principal_id", ""))
-    if not target.startswith("prn_") or len(target) != 36:
-        raise ShareError("recipient public key has invalid principal identity")
-    try:
-        X25519PublicKey.from_public_bytes(b64d(str(public["encryption_public"])))
-        Ed25519PublicKey.from_public_bytes(b64d(str(public["signing_public"])))
-    except (KeyError, ValueError) as error:
-        raise ShareError("recipient public key has invalid key material") from error
-    owner, connection, corpus = writable_catalog(base, alias)
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        workspace = connection.execute("SELECT kind,status FROM workspaces WHERE workspace_id=?", (corpus["workspace_id"],)).fetchone()
-        if workspace is None or workspace["kind"] != "workspace" or workspace["status"] != "active":
-            raise ShareError("sharing requires an active workspace corpus")
-        if target != owner:
-            connection.execute("INSERT INTO principals(principal_id,kind,status) VALUES(?, 'human', 'active') ON CONFLICT(principal_id) DO UPDATE SET status='active'", (target,))
-            connection.execute("INSERT INTO workspace_memberships(workspace_id,principal_id,role,status) VALUES(?,?,'member','active') ON CONFLICT(workspace_id,principal_id) DO UPDATE SET role='member',status='active'", (corpus["workspace_id"], target))
-            for capability in ("knowledge.read", "knowledge.write"):
-                connection.execute("INSERT INTO corpus_grants(corpus_id,principal_id,role,capability,scope,status) VALUES(?,?,'member',?,'corpus','active') ON CONFLICT(corpus_id,principal_id,capability,scope) DO UPDATE SET role='member',status='active'", (corpus["corpus_id"], target, capability))
-        connection.execute("INSERT INTO social_share_principals(corpus_id,principal_id,encryption_public,signing_public,status) VALUES(?,?,?,?,'active') ON CONFLICT(corpus_id,principal_id) DO UPDATE SET encryption_public=excluded.encryption_public,signing_public=excluded.signing_public,status='active'", (corpus["corpus_id"], target, str(public["encryption_public"]), str(public["signing_public"])))
-        connection.execute("INSERT OR IGNORE INTO social_share_epochs(corpus_id,key_epoch) VALUES(?,1)", (corpus["corpus_id"],))
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-    return {"alias": alias, "principal_id": target, "status": "active"}
-
-
-def active_share_record(base: Path, alias: str, principal_id: str) -> tuple[sqlite3.Row, int]:
-    resolved, _current, connection = _open_authorized_catalog(base)
-    try:
-        row = connection.execute("""SELECT s.*,c.corpus_id FROM social_share_principals s
-            JOIN corpus_grants g ON g.principal_id=s.principal_id AND g.corpus_id=s.corpus_id AND g.status='active' AND g.capability='knowledge.read'
-            JOIN corpora c ON c.corpus_id=g.corpus_id JOIN corpus_aliases a ON a.corpus_id=c.corpus_id
-            JOIN workspace_memberships m ON m.workspace_id=c.workspace_id AND m.principal_id=s.principal_id AND m.status='active'
-            WHERE a.alias=? AND s.principal_id=? AND s.status='active'""", (alias, principal_id)).fetchone()
-        if row is None:
-            raise ShareError("recipient is not an active authorized workspace principal")
-        epoch_row = connection.execute("SELECT key_epoch FROM social_share_epochs WHERE corpus_id=?", (row["corpus_id"],)).fetchone()
-        return row, int(epoch_row["key_epoch"] if epoch_row else 1)
-    finally:
-        connection.close()
-
-
-def export_bundle(base: Path, alias: str, recipient_path: Path, sender_path: Path, output: Path) -> dict[str, Any]:
-    recipient = read_json(recipient_path)
-    sender = read_json(sender_path, private=True)
-    root = validate_root(resolve(base, alias, "knowledge.read"))
-    recipient_record, epoch = active_share_record(base, alias, str(recipient.get("principal_id", "")))
-    if str(recipient.get("encryption_public")) != recipient_record["encryption_public"]:
-        raise ShareError("recipient key does not match the active workspace grant")
-    sender_record, sender_epoch = active_share_record(base, alias, str(sender.get("principal_id", "")))
-    if sender_epoch != epoch or str(sender.get("signing_public")) != sender_record["signing_public"]:
-        raise ShareError("sender key does not match an active workspace grant")
-    raw_root = root / "sources" / "social" / "raw"
-    batches = []
-    if raw_root.exists():
-        for path in sorted(raw_root.glob("*/*/*.json.gz")):
-            if path.is_symlink() or not path.is_file():
-                raise ShareError("raw batch tree contains an unsafe entry")
-            payload = gzip.decompress(path.read_bytes())
-            batches.append({"sha256": hashlib.sha256(payload).hexdigest(), "archive": json.loads(payload)})
-    plaintext = canonical({"alias": alias, "epoch": epoch, "batches": batches})
-    ephemeral = X25519PrivateKey.generate()
-    shared = ephemeral.exchange(X25519PublicKey.from_public_bytes(b64d(recipient_record["encryption_public"])))
-    salt = secrets.token_bytes(16)
-    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=AAD).derive(shared)
-    nonce = secrets.token_bytes(12)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, AAD)
-    unsigned = {"format": FORMAT_VERSION, "recipient": recipient_record["principal_id"], "sender": sender["principal_id"], "epoch": epoch, "ephemeral_public": b64e(ephemeral.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)), "salt": b64e(salt), "nonce": b64e(nonce), "ciphertext": b64e(ciphertext)}
-    signature = Ed25519PrivateKey.from_private_bytes(b64d(str(sender["signing_private"]))).sign(canonical(unsigned))
-    bundle = dict(unsigned, signature=b64e(signature))
-    write_json(output, bundle, 0o600)
-    return {"batches": len(batches), "epoch": epoch, "recipient": recipient_record["principal_id"]}
-
-
-def import_bundle(base: Path, alias: str, private_path: Path, bundle_path: Path) -> dict[str, Any]:
-    private = read_json(private_path, private=True)
-    bundle = read_json(bundle_path)
-    _resolved, current, connection = _open_authorized_catalog(base)
-    connection.close()
-    if bundle.get("recipient") != current or private.get("principal_id") != current:
-        raise ShareError("bundle recipient does not match the authenticated principal")
-    sender_record, epoch = active_share_record(base, alias, str(bundle.get("sender", "")))
-    if int(bundle.get("epoch", 0)) != epoch:
-        raise ShareError("bundle key epoch is stale or revoked")
-    unsigned = {key: value for key, value in bundle.items() if key != "signature"}
-    try:
-        Ed25519PublicKey.from_public_bytes(
-            b64d(sender_record["signing_public"])
-        ).verify(b64d(str(bundle["signature"])), canonical(unsigned))
-    except InvalidSignature as error:
-        raise ShareError("bundle sender signature verification failed") from error
-    recipient_private = X25519PrivateKey.from_private_bytes(b64d(str(private["encryption_private"])))
-    shared = recipient_private.exchange(X25519PublicKey.from_public_bytes(b64d(str(bundle["ephemeral_public"]))))
-    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b64d(str(bundle["salt"])), info=AAD).derive(shared)
-    try:
-        plaintext = AESGCM(key).decrypt(
-            b64d(str(bundle["nonce"])), b64d(str(bundle["ciphertext"])), AAD
-        )
-    except InvalidTag as error:
-        raise ShareError("bundle authenticated decryption failed") from error
-    payload = json.loads(plaintext)
-    if not isinstance(payload, dict) or payload.get("alias") != alias or payload.get("epoch") != epoch:
-        raise ShareError("decrypted bundle scope does not match the authorized corpus")
-    batches = payload.get("batches")
-    if not isinstance(batches, list) or any(not isinstance(batch, dict) for batch in batches):
-        raise ShareError("decrypted bundle has invalid batch records")
-    root = validate_root(resolve(base, alias, "knowledge.write"))
-    imported = 0
-    for batch in batches:
-        archive_bytes = canonical(batch["archive"])
-        if hashlib.sha256(archive_bytes).hexdigest() != batch["sha256"]:
-            raise ShareError("decrypted batch hash mismatch")
-        import_archive_payload(root, batch["archive"], archive_bytes)
-        imported += 1
-    return {"imported": imported, "epoch": epoch}
-
-
-def revoke(base: Path, alias: str, principal_id: str) -> dict[str, Any]:
-    _owner, connection, corpus = writable_catalog(base, alias)
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        membership = connection.execute("UPDATE workspace_memberships SET status='inactive' WHERE workspace_id=? AND principal_id=? AND status='active'", (corpus["workspace_id"], principal_id)).rowcount
-        grants = connection.execute("UPDATE corpus_grants SET status='inactive' WHERE corpus_id=? AND principal_id=? AND status='active'", (corpus["corpus_id"], principal_id)).rowcount
-        share_key = connection.execute("UPDATE social_share_principals SET status='revoked' WHERE corpus_id=? AND principal_id=? AND status='active'", (corpus["corpus_id"], principal_id)).rowcount
-        if membership != 1 or grants < 1 or share_key != 1:
-            raise ShareError("principal did not have an active complete workspace grant")
-        connection.execute("INSERT INTO social_share_epochs(corpus_id,key_epoch) VALUES(?,2) ON CONFLICT(corpus_id) DO UPDATE SET key_epoch=key_epoch+1", (corpus["corpus_id"],))
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-    return {"principal_id": principal_id, "status": "revoked"}
+def _alias(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--alias", required=True)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("share-keygen", "share-grant", "share-export", "share-import", "share-revoke"))
-    parser.add_argument("--base", type=Path, required=True)
-    parser.add_argument("--alias", default="personal:default")
-    parser.add_argument("--private-key", type=Path)
-    parser.add_argument("--public-key", type=Path)
-    parser.add_argument("--recipient-key", type=Path)
-    parser.add_argument("--sender-key", type=Path)
-    parser.add_argument("--bundle", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--principal-id")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    identity = commands.add_parser("identity-export", help="export a signed public identity")
+    _base(identity)
+    _identity(identity)
+    identity.add_argument("--output", type=Path, required=True)
+
+    create = commands.add_parser("workspace-create", help="create an owner-managed workspace")
+    _base(create)
+    _identity(create)
+    _alias(create)
+
+    grant = commands.add_parser("workspace-grant", help="grant a recipient device access")
+    _base(grant)
+    _identity(grant)
+    _alias(grant)
+    grant.add_argument("--recipient", type=Path, required=True)
+    grant.add_argument(
+        "--capability",
+        action="append",
+        choices=("knowledge.read", "knowledge.write"),
+    )
+    grant.add_argument("--output", type=Path, required=True)
+
+    accept = commands.add_parser("workspace-accept", help="accept a signed workspace grant")
+    _base(accept)
+    _identity(accept)
+    _alias(accept)
+    accept.add_argument("--sender", type=Path, required=True)
+    accept.add_argument("--grant", type=Path, required=True)
+
+    export = commands.add_parser("share-export", help="encrypt a full shared snapshot")
+    _base(export)
+    _identity(export)
+    _alias(export)
+    export.add_argument("--output", type=Path, required=True)
+    export.add_argument("--expires-at", type=int)
+
+    import_command = commands.add_parser(
+        "share-import", help="authorize, decrypt, and rebuild a local shared index"
+    )
+    _base(import_command)
+    _identity(import_command)
+    _alias(import_command)
+    import_command.add_argument("--sender", type=Path, required=True)
+    import_command.add_argument("--batch", type=Path, required=True)
+
+    revoke = commands.add_parser("workspace-revoke", help="revoke a member and rotate epoch")
+    _base(revoke)
+    _identity(revoke)
+    _alias(revoke)
+    revoke.add_argument("--principal-id", required=True)
+    revoke.add_argument("--output", type=Path, required=True)
+
+    apply = commands.add_parser("revocation-apply", help="apply a signed local revocation")
+    _base(apply)
+    _alias(apply)
+    apply.add_argument("--sender", type=Path, required=True)
+    apply.add_argument("--revocation", type=Path, required=True)
     return parser.parse_args()
+
+
+def _private_identity(args: argparse.Namespace) -> Any:
+    principal_id = current_principal(args.base)
+    return load_private_identity(args.vault_dir, principal_id)
+
+
+def _state_result(state: Any) -> dict[str, Any]:
+    return {
+        "workspace_id": state.workspace_id,
+        "corpus_id": state.corpus_id,
+        "key_generation": state.key_generation,
+    }
+
+
+def _identity_export(args: argparse.Namespace) -> dict[str, Any]:
+    identity = _private_identity(args)
+    write_json_atomic(args.output, identity_envelope(identity), private=False)
+    return {
+        "principal_id": identity.public.principal_id,
+        "device_id": identity.public.device_id,
+    }
+
+
+def _workspace_create(args: argparse.Namespace) -> dict[str, Any]:
+    state = create_workspace(args.base, args.alias, _private_identity(args))
+    provision(state.root)
+    return _state_result(state)
+
+
+def _workspace_grant(args: argparse.Namespace) -> dict[str, Any]:
+    owner = _private_identity(args)
+    recipient = load_identity(args.recipient)
+    capabilities = args.capability or ["knowledge.read"]
+    with authorized_grant(
+        args.base, args.alias, owner, recipient, capabilities
+    ) as (state, envelope):
+        write_json_atomic(args.output, envelope, private=False)
+    return {
+        **_state_result(state),
+        "recipient_principal_id": recipient.principal_id,
+        "capabilities": sorted(set(capabilities)),
+    }
+
+
+def _workspace_accept(args: argparse.Namespace) -> dict[str, Any]:
+    recipient = _private_identity(args)
+    owner = load_identity(args.sender)
+    record = open_grant_envelope(read_json(args.grant), owner, recipient.public)
+    state = accept_grant(args.base, args.alias, owner, recipient, record)
+    provision(state.root)
+    return _state_result(state)
+
+
+def _share_export(args: argparse.Namespace) -> dict[str, Any]:
+    owner = _private_identity(args)
+    with authorized_export(args.base, args.alias, owner) as (state, recipients):
+        snapshot = build_snapshot(state.root, state.workspace_id, state.corpus_id)
+        envelope = create_batch_envelope(
+            snapshot,
+            owner,
+            recipients,
+            BatchParameters(
+                WorkspaceScope(state.workspace_id, state.corpus_id, state.key_generation),
+                state.export_sequence,
+                args.expires_at,
+            ),
+        )
+        write_json_atomic(args.output, envelope, private=False)
+    return {
+        **_state_result(state),
+        "batch_sequence": state.export_sequence,
+        "recipients": len(recipients),
+    }
+
+
+def _share_import(args: argparse.Namespace) -> dict[str, Any]:
+    recipient = _private_identity(args)
+    sender = load_identity(args.sender)
+    envelope = read_json(args.batch)
+    header = validated_batch_header(envelope, sender)
+    with authorized_import(args.base, args.alias, sender, recipient, header) as state:
+        opened_header, snapshot = open_batch_envelope(envelope, sender, recipient)
+        if opened_header != header:
+            raise ShareError("SOCIAL_SHARE_INVALID", "sharing header changed during validation", 3)
+        counts = restore_snapshot(state.root, snapshot, state.workspace_id, state.corpus_id)
+    return {**_state_result(state), "batch_sequence": header["batch_sequence"], **counts}
+
+
+def _workspace_revoke(args: argparse.Namespace) -> dict[str, Any]:
+    owner = _private_identity(args)
+    with authorized_revocation(
+        args.base, args.alias, owner, args.principal_id
+    ) as (state, devices):
+        envelope = create_revocation_envelope(
+            owner,
+            WorkspaceScope(state.workspace_id, state.corpus_id, state.key_generation),
+            args.principal_id,
+            devices,
+        )
+        write_json_atomic(args.output, envelope, private=False)
+    return {
+        **_state_result(state),
+        "revoked_principal_id": args.principal_id,
+        "revoked_devices": len(devices),
+    }
+
+
+def _revocation_apply(args: argparse.Namespace) -> dict[str, Any]:
+    sender = load_identity(args.sender)
+    record = open_revocation_envelope(read_json(args.revocation), sender)
+    state = apply_revocation(args.base, args.alias, sender, record)
+    return {
+        **_state_result(state),
+        "revoked_principal_id": record["revoked_principal_id"],
+    }
+
+
+COMMANDS = {
+    "identity-export": _identity_export,
+    "workspace-create": _workspace_create,
+    "workspace-grant": _workspace_grant,
+    "workspace-accept": _workspace_accept,
+    "share-export": _share_export,
+    "share-import": _share_import,
+    "workspace-revoke": _workspace_revoke,
+    "revocation-apply": _revocation_apply,
+}
 
 
 def main() -> int:
     args = parse_args()
     try:
-        if args.command == "share-keygen" and args.private_key and args.public_key:
-            result = keygen(args.base, args.private_key, args.public_key)
-        elif args.command == "share-grant" and args.public_key:
-            result = grant(args.base, args.alias, args.public_key)
-        elif args.command == "share-export" and args.recipient_key and args.sender_key and args.output:
-            result = export_bundle(args.base, args.alias, args.recipient_key, args.sender_key, args.output)
-        elif args.command == "share-import" and args.private_key and args.bundle:
-            result = import_bundle(args.base, args.alias, args.private_key, args.bundle)
-        elif args.command == "share-revoke" and args.principal_id:
-            result = revoke(args.base, args.alias, args.principal_id)
-        else:
-            raise ShareError("required command arguments are missing")
+        result = COMMANDS[args.command](args)
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (CatalogError, InvalidSignature, InvalidTag, KeyError, OSError, ShareError, SocialStoreError, ValueError) as error:
+    except ShareError as error:
+        print(f"ERROR: {error.code}: {error}", file=sys.stderr)
+        return error.exit_code
+    except (CatalogError, OSError, SocialStoreError, UnicodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    except sqlite3.Error:
+        print("ERROR: social sharing catalog operation failed safely", file=sys.stderr)
         return 1
 
 

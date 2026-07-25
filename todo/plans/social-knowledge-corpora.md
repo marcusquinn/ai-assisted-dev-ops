@@ -301,9 +301,23 @@ silently turns weak signals into user preferences or beliefs.
 - Shared collection keys are wrapped only for active authorized principals or
   devices. Revocation stops new key grants, rejects new writes from revoked
   collectors, rotates/rewraps affected keys, and preserves minimal audit evidence.
-- Until multi-human membership/key distribution is implemented and tested, the
-  supported shared deployment is one trusted team runner. Documentation must not
-  imply broader team readiness.
+- Phase 6 uses signed Vault message-device Ed25519/X25519 identities, signed
+  workspace grants and revocations, random AES-256-GCM content keys per snapshot,
+  and HKDF-SHA256 X25519 wraps for every active recipient device. The signed public
+  header is authorized before decryption; raw and normalized content are restored
+  locally and SQLite/FTS is rebuilt rather than transported.
+- Phase 6 export is owner-device-only and requires `knowledge.manage`; ordinary
+  members cannot redistribute a corpus. The planned dedicated `social.export`
+  capability must preserve that default-deny boundary when added.
+- Revocation is forward-looking and cooperative: the local catalog denies query
+  before opening a revoked workspace, later snapshots omit revoked devices, and a
+  new key generation is required. Recipients apply signed revocations in
+  contiguous generation order so later records cannot skip an earlier local
+  revocation. It cannot erase plaintext or old content keys already delivered to
+  a malicious or offline device.
+- Multi-human sharing remains opt-in pending the external crypto/security review
+  required by `reference/vault-security-review.md`; one trusted team runner remains
+  the default documented deployment until that review is complete.
 
 ## 11. Browser fallback
 
@@ -393,6 +407,10 @@ security contracts converge before automation expands.
 | 2026-07-25 | Raw evidence is authoritative; indexes and Markdown are projections | Enables deterministic rebuilds, schema migration, and citation verification. |
 | 2026-07-25 | DMs/private content are separate opt-in scope | Their sensitivity and authorization needs are materially stricter than public/owned activity. |
 | 2026-07-25 | Browser collection is a bounded gap adapter | Official APIs and archives are more stable, auditable, and cost/rate predictable. |
+| 2026-07-25 | Shared snapshots use Vault device Ed25519/X25519 identities, HKDF-SHA256 wraps, and AES-256-GCM | Reuses maintained standard primitives and gives each active device an independently removable content-key wrap. |
+| 2026-07-25 | Transport normalized rows and immutable raw batches, never SQLite/FTS | Preserves authoritative evidence while rebuilding local query projections without leaking plaintext paths or indexes. |
+| 2026-07-25 | Membership revocation is cooperative and forward-only | Local authorization and new key generations can block later use, but cannot retract plaintext already delivered to an adversarial device. |
+| 2026-07-25 | Shared snapshot export remains owner-device-only | `knowledge.manage` plus the bound owner identity denies member redistribution until a dedicated default-deny `social.export` capability is implemented. |
 
 ## 16. Relevant existing contracts
 
@@ -425,6 +443,7 @@ These are bounded child-level choices, not blockers to the parent architecture:
    select the default in Phase 2.
 3. Whether semantic retrieval reuses the memory embedding engine directly or a
    knowledge-specific shared library. FTS5 remains the mandatory baseline.
-4. Which multi-human key-wrapping primitive extends Vault in Phase 6. Do not
-   invent cryptography or claim team sync before this decision is implemented
-   and externally reviewed where required.
+
+Phase 6 resolved the prior key-wrapping question with the standard primitives in
+the decision log. Default-on team sync remains gated on external review rather
+than being treated as an open implementation choice.
