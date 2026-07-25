@@ -1,7 +1,7 @@
 ---
 description: Drive active missions to completion — sequential milestones, parallel features, validation, re-planning
 mode: subagent
-model: opus  # architecture-level reasoning, multi-milestone coordination, re-planning on failure
+model: thinking  # architecture, multi-milestone coordination, re-planning
 tools:
   read: true
   write: true
@@ -112,7 +112,9 @@ Commands: `budget-analysis-helper.sh recommend --goal "{goal}" --json` (pre-exec
 | 80-100% | Pause; report options |
 | > 100% | Stop new dispatches |
 
-**Tiers**: haiku=research, sonnet=implementation, opus=re-planning only.
+**Workload tiers**: `simple` for bounded research, `standard` for implementation,
+and `thinking` only when re-planning requires consequential trade-offs. Runtime
+routing selects concrete models.
 
 ## Modes
 

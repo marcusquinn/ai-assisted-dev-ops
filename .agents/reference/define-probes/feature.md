@@ -8,7 +8,7 @@ mode: subagent
 
 # Feature Probes
 
-Use 2 probes from this file during `/define` for tasks classified as **feature**.
+Use this file as a candidate pool during `/define` for **feature** tasks. Ask only about unanswered points whose resolution could materially change scope, architecture, trust boundaries, user-visible behaviour, or acceptance criteria.
 
 **Defaults** (apply unless overridden): minimal footprint, follow existing patterns, include tests for new behaviour, no breaking API changes.
 
@@ -21,9 +21,9 @@ Before generating the brief, verify you can answer all four:
 - What would a code reviewer reject?
 - What's the one edge case most likely missed?
 
-If any answer is "I don't know" — ask one more targeted question.
+If an unknown is consequential and repository evidence or a safe default cannot resolve it, ask one targeted question. Otherwise record the assumption when useful and continue.
 
-## Required Questions
+## Decision-Relevant Candidates
 
 **Scope & Integration** — Where does this feature live in the user's workflow?
 Options: Standalone menu/command/button (recommended) · Inline in existing flow · Background automatic · Describe integration point
@@ -31,7 +31,7 @@ Options: Standalone menu/command/button (recommended) · Inline in existing flow
 **Data & State** — Does this feature need to persist state?
 Options: No — stateless, computed on demand (recommended) · Yes — local storage/file system · Yes — database/API · Not sure yet
 
-## Probes (select 2)
+## Optional Probes
 
 **Pre-mortem** — Feature ships, user reports a problem in week one. Most likely complaint?
 Options: Inferred from description (recommended) · Performance too slow for large inputs · UI confusing or hard to discover · Conflicts with existing feature

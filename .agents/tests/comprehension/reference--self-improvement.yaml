@@ -1,6 +1,6 @@
 # Test: .agents/reference/self-improvement.md (59 lines — moderate reference doc)
 file: .agents/reference/self-improvement.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies framework vs project routing"

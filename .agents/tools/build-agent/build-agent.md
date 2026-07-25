@@ -22,7 +22,7 @@ mode: subagent
 - **Related**: `@code-standards`, `.agents/aidevops/architecture.md`, `tools/browser/browser-automation.md`
 - **After creating/promoting**: `~/.aidevops/agents/scripts/subagent-index-helper.sh generate`
 - **Testing**: `agent-test-helper.sh run my-tests` or `claude -p "Test query"`
-- **Model tier**: `/route "task"` or `/patterns recommend "type"`. Static: `haiku`→formatting, `sonnet`→code, `opus`→architecture. Pattern data overrides at >75% success, 3+ samples.
+- **Workload tier**: Author `simple`, `standard`, or `thinking`; the preference-ordered runtime mapping in `tools/context/model-routing.md` selects concrete providers/models.
 
 <!-- AI-CONTEXT-END -->
 
@@ -111,17 +111,17 @@ External skills retain `-skill` suffix (provenance marker for `skill-update-help
 
 ## Model Tier Selection
 
-Record outcomes: `/remember "SUCCESS/FAILURE: agent with model — reason"`. Frontmatter: `model: sonnet  # 87% success, 14 samples`. Full docs: `tools/context/model-routing.md`, `reference/task-taxonomy.md`.
+Author workload semantics, not provider families. Frontmatter uses `model: simple|standard|thinking`; `tools/context/model-routing.md` owns the current preference-ordered provider/model mapping. Concrete names belong in that mapping or in dated outcome/benchmark evidence, not as abstract tier definitions. Record outcomes with `/remember "SUCCESS/FAILURE: agent with model — reason"`. Full routing guidance: `tools/context/model-routing.md`, `reference/task-taxonomy.md`.
 
-| Tier | Model | Agent use |
-|------|-------|-----------|
-| `tier:simple` | Haiku | Execution of prescriptive briefs with exact code blocks. 100% success when oldString/newString provided verbatim. |
-| `tier:standard` | Sonnet | Standard implementation, judgment, error recovery, multi-file coordination. Default for code tasks. |
-| `tier:thinking` | Opus | Architecture decisions, novel design, security audits, analysis that creates work for lower tiers. |
+| Tier | Workload contract | Agent use |
+|------|-------------------|-----------|
+| `tier:simple` | Complete, bounded instructions with no unresolved design choice | Mechanical execution of prescriptive briefs with exact code blocks |
+| `tier:standard` | Established patterns plus normal implementation judgment and recovery | Code, review, debugging, documentation, and multi-file coordination |
+| `tier:thinking` | Planning, design, refactoring, or consequential trade-offs | Architecture, novel problems, security analysis, and work decomposition |
 
 | Situation | Action |
 |-----------|--------|
-| >75% success, 3+ samples | Use pattern data (overrides static rule) |
+| >75% success, 3+ comparable samples | Use pattern data to justify a workload-tier override |
 | Insufficient data | Use routing rules, record outcomes |
 | Contradicts routing rules | Note conflict in agent docs |
 
@@ -129,7 +129,7 @@ Record outcomes: `/remember "SUCCESS/FAILURE: agent with model — reason"`. Fro
 
 Agents that *create work* (issues, briefs, review findings) should format output so the implementing worker can be dispatched at `tier:simple`:
 
-- **Provide verbatim code**: `Current` / `Proposed` blocks should be exact oldString/newString, not paraphrased descriptions. Research: Haiku achieves 100% success with exact code, 0% with "change X to Y" descriptions.
+- **Provide verbatim code**: `Current` / `Proposed` blocks should be exact oldString/newString, not paraphrased descriptions. Historical benchmark evidence: Haiku achieved 100% success with exact code and 0% with "change X to Y" descriptions.
 - **Include file paths with line ranges**: `path/to/file.ts:45-60`, not "the auth module".
 - **One finding = one edit**: Don't bundle multiple changes into a single narrative finding. Each discrete edit should be a separate, mechanically executable step.
 - **Add verification**: A bash one-liner the worker runs after applying the edit.
@@ -153,13 +153,13 @@ Linter order: (1) deterministic (ShellCheck, ESLint, Ruff/Pylint), (2) static an
 9. **Markdown linting?** MD025/MD022/MD031/MD012. Run `bunx markdownlint-cli2 "path/to/file.md"`
 10. **Terse pass done?** See below
 
-## Post-Creation Terse Pass (MANDATORY)
+## Post-Creation Semantic Terse Pass (MANDATORY)
 
-Every token costs on every load. Compress before committing.
+Every loaded token needs decision value, but size reduction is not the success criterion. Apply the canonical rubric in `agent-review.md` before shortening an instruction surface: recover provenance, classify each retained directive, and preserve activation/exclusion boundaries and delivery paths.
 
-**Compress:** verbose phrasing → direct rule; narrative → keep task ID, drop story; redundant examples → keep one; multi-sentence rule → single sentence. **Preserve:** task IDs (`tNNN`), issue refs (`GH#NNN`), all rules/constraints, file paths, command examples, code blocks, safety-critical detail.
+**Tighten only with semantic equivalence:** verbose phrasing → direct rule; narrative → preserve the protected rationale and its task/issue evidence; repeated examples → keep an authoritative example only when every boundary remains covered; multi-sentence rule → one sentence only when scope and conditions survive. **Preserve:** task IDs (`tNNN`), issue refs (`GH#NNN`), all rules/constraints, interfaces, triggers, file paths, command examples, code blocks, safety-critical detail.
 
-Target: reference cards, not tutorials. Evidence: 63% byte reduction on `build.txt` with zero rule loss. See `tools/code-review/code-simplifier.md` "Prose tightening".
+Verify the target with Agent Testing/comprehension scenarios and domain-specific checks. Historical evidence: the t1679 `build.txt` pass reduced bytes by 63% while its 25 protected patterns remained covered; that result is not blanket permission to remove untested prose. See `agent-review.md` and `tools/code-review/code-simplifier.md` "Instruction surfaces".
 
 ## Code Examples: When to Include
 

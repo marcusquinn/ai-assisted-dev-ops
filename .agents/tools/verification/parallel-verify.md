@@ -33,15 +33,17 @@ Verify high-stakes operations by obtaining an independent judgment from a differ
 
 ## Provider Selection
 
-1. Identify primary provider: `claude-*`/`anthropic/*` → Anthropic; `gemini-*`/`google/*` → Google; `gpt-*`/`o1-*`/`o3-*`/`openai/*` → OpenAI
-2. Select verifier (preference order):
-   - Anthropic primary → Google (flash), then OpenAI
-   - Google primary → Anthropic (haiku), then OpenAI
-   - OpenAI primary → Anthropic (haiku), then Google
-3. Fallback: same-provider different-model (e.g., sonnet → haiku). Log warning: reduced effectiveness.
-4. Check availability: `model-availability-helper.sh check <provider>`. Try next in chain if unavailable.
+1. Identify the primary provider from the concrete model ID.
+2. Select an approved `simple`-tier model on a different provider from the active
+   routing table.
+3. If no cross-provider candidate is available, use a different approved model
+   from the primary provider and log the reduced-independence warning.
+4. Check availability with `model-availability-helper.sh check <provider>` and try
+   the next routed candidate when unavailable.
 
-**Cost constraints:** Use cheapest tier (haiku/flash/gpt-4.1-mini). Max 2000 tokens input, 500 output. Summarize if context exceeds 2000 tokens.
+**Cost constraints:** Request the `simple` workload tier and let the
+cross-provider routing policy select a concrete verifier. Max 2000 tokens input,
+500 output. Summarize if context exceeds 2000 tokens.
 
 ## Verification Prompt Template
 

@@ -65,7 +65,7 @@ goal: 1.0
 ## Models
 
 ```text
-researcher: sonnet
+researcher: standard
 ```
 
 ## Evaluation

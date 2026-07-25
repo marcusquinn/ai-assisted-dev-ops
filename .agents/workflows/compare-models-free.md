@@ -30,7 +30,7 @@ Present results as a structured comparison table:
 - Context window sizes
 - Capability matrix
 - Task suitability recommendations
-- aidevops tier mapping (haiku/flash/sonnet/pro/opus)
+- canonical aidevops workload tier (`simple`, `standard`, or `thinking`) for each model
 
 ## Examples
 

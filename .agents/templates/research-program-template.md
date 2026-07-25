@@ -71,12 +71,20 @@ Examples:
 ## Models
 
 ```text
-researcher: sonnet     # required: model that runs the experiment loop
-evaluator: haiku       # optional: model that scores qualitative output
-target: sonnet         # optional: model under test (agent optimization mode only)
+researcher: standard   # required: workload tier that runs the experiment loop
+evaluator: simple      # optional: workload tier that scores qualitative output
+target: standard       # optional: workload tier under test (agent optimization only)
 ```
 
-Model tiers: `haiku` (fast/cheap), `sonnet` (balanced), `opus` (best quality).
+Workload tiers are `simple`, `standard`, and `thinking`; runtime configuration
+owns concrete model mappings. Use a concrete `target` only for an explicitly
+declared model benchmark that records provider/model/version provenance and
+compares equivalent workloads within a tier.
+
+Instruction-semantic candidates automatically load
+`.agents/tools/build-agent/agent-review.md` and must pass provenance, delivery,
+classification, activation/exclusion, and target-specific behavioural checks
+before the metric is evaluated. Missing coverage defaults to preservation.
 
 ## Budget
 
@@ -188,9 +196,9 @@ goal: null
 ## Models
 
 \`\`\`
-researcher: sonnet
-evaluator: haiku
-target: sonnet
+researcher: standard
+evaluator: simple
+target: standard
 \`\`\`
 
 ## Budget
@@ -203,9 +211,10 @@ per_experiment: 600
 
 ## Hints
 
-- Redundant instructions are the primary token waste — look for rules stated twice
+- Treat apparent duplication as review pressure; recover provenance and decision
+  boundaries before consolidating
 - Examples with long code blocks inflate tokens; prefer references to file:line
-- Section headers add tokens; merge thin sections
+- Merge thin sections only when activation, ownership, semantics, and delivery match
 - Avoid removing security rules or traceability requirements
 ```
 
@@ -248,7 +257,7 @@ goal: "< 10.0"
 ## Models
 
 \`\`\`
-researcher: sonnet
+researcher: standard
 \`\`\`
 
 ## Budget
@@ -307,7 +316,7 @@ baseline: null
 ## Models
 
 \`\`\`
-researcher: sonnet
+researcher: standard
 \`\`\`
 
 ## Budget

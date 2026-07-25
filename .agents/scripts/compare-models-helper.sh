@@ -48,7 +48,7 @@ has_pattern_data() {
 }
 
 # Internal helper: get raw success/failure counts for a tier
-# Usage: _get_tier_pattern_counts "sonnet" [task_type]
+# Usage: _get_tier_pattern_counts "standard" [task_type]
 # Output: "successes|failures" (e.g. "12|3") or "0|0" if no data
 _get_tier_pattern_counts() {
 	local tier="$1"
@@ -74,7 +74,7 @@ _get_tier_pattern_counts() {
 }
 
 # Get success rate for a model tier
-# Usage: get_tier_success_rate "sonnet" [task_type]
+# Usage: get_tier_success_rate "standard" [task_type]
 # Output: "85|47" (rate|sample_count) or "" if no data
 get_tier_success_rate() {
 	local tier="$1"
@@ -816,19 +816,19 @@ cmd_help() {
 	echo ""
 	echo "Cross-review examples:"
 	echo "  compare-models-helper.sh cross-review \\"
-	echo "    --prompt 'Review this code for security issues: ...' \\"
-	echo "    --models 'sonnet,opus,pro'"
+	echo "    --prompt 'Review this code for security issues: ...'"
+	echo "    # defaults to all configured standard-tier models"
 	echo "  compare-models-helper.sh cross-review \\"
 	echo "    --prompt 'Audit the architecture of this project' \\"
-	echo "    --models 'opus,pro' --timeout 900"
+	echo "    --models 'openai/gpt-5.6-sol,anthropic/claude-sonnet-4-6' --timeout 900"
 	echo "  compare-models-helper.sh cross-review \\"
-	echo "    --prompt 'Review this PR diff' --models 'sonnet,gemini-pro' \\"
+	echo "    --prompt 'Review this PR diff' \\"
 	echo "    --score                          # auto-score via judge model (default: thinking)"
 	echo "  compare-models-helper.sh cross-review \\"
-	echo "    --prompt 'Review this PR diff' --models 'sonnet,gemini-pro' \\"
-	echo "    --score --judge sonnet            # use sonnet as judge instead"
+	echo "    --prompt 'Review this PR diff' \\"
+	echo "    --score --judge standard          # use the standard workload tier as judge"
 	echo "  compare-models-helper.sh cross-review \\"
-	echo "    --prompt 'Review this code' --models 'sonnet,opus' \\"
+	echo "    --prompt 'Review this code' \\"
 	echo "    --prompt-file prompts/build.txt   # track prompt version in results"
 	echo ""
 	echo "Bench examples (t1393):"

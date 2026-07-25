@@ -1,5 +1,5 @@
 ---
-description: Opus-tier strategic review of queue health, resource utilisation, and systemic issues
+description: Thinking-tier strategic review of queue health, resource utilisation, and systemic issues
 agent: Build+
 mode: subagent
 model: thinking

@@ -4,7 +4,8 @@
 # Comprehension Benchmark
 
 Tests whether agent files are comprehensible at each workload tier (`simple`,
-`standard`, `thinking`). Produces per-file compatibility ratings for routing.
+`standard`, `thinking`). The runtime resolves each tier to its current preferred
+provider/model mapping; scenario files never encode provider families as tiers.
 
 ## Schema
 
@@ -37,11 +38,20 @@ scenarios:
       - disengagement                    # Response <20% expected length with no justification
 ```
 
-## Scoring Layers (cheapest first)
+## Execution and Scoring
 
-1. **Deterministic** (free) -- regex/string matching on output
-2. **Simple self-check** -- the mapped simple model compares output to the specification
-3. **Standard adjudication** -- the mapped standard model judges simple output against the thinking-tier reference
+1. Run the scenario at `simple`, escalating to `standard` and then `thinking`
+   until one tier passes.
+2. Apply deterministic string, action, and length checks to each response.
+3. Send ambiguous responses to the mapped adjudicator with both the expected
+   checks and the authored reference answer.
+4. Report `unresolved` when no tier passes. An unresolved scenario or an
+   expected-tier mismatch makes the command exit non-zero.
+
+Provider comparisons are like-for-like only: keep the workload tier, assembled
+prompt, tools, token budget, and verification equivalent while changing the
+mapped model. Concrete provider/model names belong in benchmark result evidence,
+not in `tier_minimum`.
 
 ## Fast-Fail Escalation
 
@@ -50,8 +60,8 @@ These signals skip adjudication and escalate to the next tier immediately:
 | Trigger | Detection | Cost |
 |---------|-----------|------|
 | Refusal | `"I don't understand"`, `"I cannot"`, `"not able to"` | Free (regex) |
-| Confabulation | Paths/tools/IDs not in input context | Free (set diff) |
-| Structural violation | Core constraint violated | Free (action check) |
+| Confabulation | More than three file paths absent from the full agent + task context | Free (set diff) |
+| Structural violation | An explicit `expected.action` token is absent | Free (action check) |
 | Disengagement | Response length < 20% of `min_length` | Free (length check) |
 
 ## Slow-Fail Signals (adjudicate before escalating)
@@ -89,15 +99,26 @@ suffix. Example: `.agents/reference/task-taxonomy.md` becomes
 .agents/scripts/comprehension-benchmark-helper.sh update-state
 ```
 
+`sweep` writes `.agents/tests/comprehension/results/latest-sweep.json` even when
+it returns non-zero. `report` reads that artifact. `update-state` rejects empty,
+errored, unresolved, or expected-tier-mismatched sweeps and updates only files
+already tracked under `simplification-state.json`'s `files` object.
+
 ## Integration Points
 
-- **simplification-state.json**: `tier_minimum` field per file entry
-- **Pulse dispatch**: reads `tier_minimum` for cost-aware model routing
-- **Code-simplifier**: re-runs comprehension test after simplification to verify
-  tier did not regress
+- **Implemented:** explicit `update-state` can add reviewed `tier_minimum` evidence
+  to existing simplification-state entries.
+- **Not wired:** Pulse dispatch does not read per-file comprehension state; it
+  resolves task tiers through `.agents/configs/model-routing-table.json`.
+- **Not wired:** Code Simplifier does not automatically invoke this benchmark.
+  A simplification brief must name the relevant scenario or verification command
+  when comprehension evidence is required.
 
-## Cost Targets
+## Cost Control
 
-- Per-file full 3-tier sweep: < $0.02
-- Full sweep of 300 files: $1-3
-- Deterministic checks handle ~60-70% of pass/fail decisions at zero cost
+- Run focused scenario files during development; reserve a full sweep for a
+  deliberate benchmark or release gate.
+- Deterministic checks avoid adjudication when the response is clearly passing or
+  failing.
+- Estimate cost from the active runtime mappings and provider pricing rather than
+  embedding provider-specific dollar assumptions in the scenario contract.

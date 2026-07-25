@@ -23,9 +23,10 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Opus Tier Model
+# Anthropic Opus Model Profile
 
-Highest-capability tier for tasks where stronger reasoning materially changes the outcome.
+Concrete model profile that the runtime routing table may select for `thinking`
+work when stronger reasoning materially changes the outcome.
 
 ## Use For
 
@@ -38,9 +39,9 @@ Highest-capability tier for tasks where stronger reasoning materially changes th
 
 ## Routing Rules
 
-- Default to sonnet unless the task genuinely needs extra reasoning depth.
-- Route routine implementation, code review, and docs → sonnet.
-- Route very large context needs (100K+ tokens) → pro.
+- Default authored work to `standard` unless it genuinely needs deeper reasoning.
+- Route routine implementation, code review, and docs through `standard`.
+- Treat large-context requirements as routing evidence, not a provider-named tier.
 
 ## Constraints
 

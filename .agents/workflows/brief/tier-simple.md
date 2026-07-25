@@ -3,7 +3,7 @@
 
 # Prescriptive Brief Format (tier:simple)
 
-For single-file changes with exact code blocks. Haiku copies this verbatim — it does not explore, interpret, or decide.
+For bounded changes with exact code blocks and no unresolved design, interpretation, or recovery decisions. The worker executes the interface verbatim and verifies it.
 
 ## Format
 
@@ -37,4 +37,4 @@ Every finding/task that targets `tier:simple` MUST include this structure:
 3. **One edit per finding**: Don't bundle multiple changes into a single oldString/newString. If a task requires 3 edits to 3 locations, write 3 separate edit blocks.
 4. **New files**: Provide complete file content, not a skeleton. Include imports, function signatures, and all boilerplate.
 5. **Verification must be automated**: `grep`, `shellcheck`, `test -f`, `jq .`, etc. Never "verify visually" or "check manually".
-6. **Done When is mandatory**: End every issue body with `### Done When` containing a concrete check (e.g., `shellcheck {file}` exits 0, PR merged, issue closed). Without this, even Haiku may stop after applying the edit without committing/pushing/creating a PR.
+6. **Done When is mandatory**: End every issue body with `### Done When` containing a concrete check (e.g., `shellcheck {file}` exits 0, PR merged, issue closed). Without this, a worker may stop after applying the edit without completing the delivery lifecycle.

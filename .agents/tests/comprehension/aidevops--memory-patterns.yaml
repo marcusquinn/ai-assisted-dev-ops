@@ -1,6 +1,6 @@
 # Test: .agents/aidevops/memory-patterns.md (48 lines — simple config doc)
 file: .agents/aidevops/memory-patterns.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies memory file purpose"

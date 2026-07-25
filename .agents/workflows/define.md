@@ -1,5 +1,5 @@
 ---
-description: Interactive brief generation — interview the user to surface latent requirements before creating a task brief
+description: Decision-complete brief generation — resolve only consequential unknowns before creating a task brief
 agent: Build+
 mode: subagent
 tools:
@@ -12,7 +12,7 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Interview the user, then generate a complete brief from `templates/brief-template.md`. Surface implicit requirements before code is written — most task failures come from unstated assumptions, not implementation bugs.
+Resolve consequential unknowns, then generate a complete brief from `templates/brief-template.md`. Surface assumptions that can change the result without spending user attention on information already supplied or safely inferable.
 
 Topic: $ARGUMENTS
 
@@ -38,37 +38,45 @@ Also classify **agent domain** and **model tier** using `reference/task-taxonomy
 
 If task type is ambiguous, offer numbered options (1–5 matching table) with a recommendation.
 
-### Step 2: Structured Interview (3–5 questions)
+### Step 2: Evidence-First, Sufficiency-Driven Interview
 
-Ask sequentially. Each question: 2–4 concrete options, one recommended. Adapt to task type.
+Extract the goal, constraints, decisions, and acceptance evidence already present in `$ARGUMENTS`, linked issues, conversation context, and repository discovery. Do not ask the user to repeat known information. Ask one question at a time only when its answer could materially change **scope, architecture, trust/security boundaries, user-visible behaviour, or acceptance criteria**. When an unknown has a safe reversible default, infer it and record the assumption when it helps the implementer.
 
-**Core questions (all types):**
+When a question is necessary, offer 2–4 concrete options with one evidence-backed recommendation. Candidate questions, not a quota:
 
-- **Q1 Goal** (always first): "In one sentence, what must this task produce?" — offer inferred goal as option 1
-- **Q2 Scope boundary**: "What is explicitly NOT in scope?" — offer inferred exclusion, "nothing", or custom
-- **Q3 Success criteria**: "How will you know this is done?" — automated tests (recommended for feature/bugfix), manual verification, code review, or custom
-- **Q4 Implementation anchor** (t1901 — MANDATORY for code tasks): "Which files will need to change, and is there an existing file to model on?" — search the codebase (`git ls-files`, `rg`) to offer concrete file paths. The brief's How section MUST contain at least one file path — briefs without file paths waste worker tokens on exploration.
+- **Goal**: "What must this task produce?" — ask only when multiple materially different outcomes remain plausible.
+- **Scope boundary**: "What is explicitly not in scope?" — ask when an exclusion changes blast radius or delivery.
+- **Success criteria**: "Which observable result proves completion?" — ask when verification or user-visible behaviour is unresolved.
+- **Implementation anchor** (t1901): discover likely files and reference patterns with `git ls-files` and exact search. Ask the user only when multiple plausible boundaries require a product or architecture choice. The brief must name concrete paths when knowable; use evidence-backed "not yet knowable" only for `tier:thinking` decisions that genuinely determine the files.
 
-**Type-specific questions:** Load from `reference/define-probes/${task_type}.md` and ask 1–2 additional questions.
+Load `reference/define-probes/${task_type}.md` as a candidate pool, not a mandatory questionnaire.
 
-### Step 3: Latent Criteria Probing
+### Step 3: Targeted Latent-Criteria Probing
 
-After the interview, run exactly **2 probes** from the task-type probe file:
+Use zero or more probes only for unresolved, consequential unknowns:
 
 | Technique | Pattern | When |
 |-----------|---------|------|
-| **Domain grounding** | "In [domain], the usual pitfall is X. Does that apply?" | Always |
+| **Domain grounding** | "In [domain], the usual pitfall is X. Does that apply?" | Existing domain practice could change the approach |
 | **Pre-mortem** | "Imagine this ships and fails. What went wrong?" | Features, refactors |
 | **Backcasting** | "Working backwards from 'done' — what's the last thing you'd verify?" | Features, research |
 | **Outside view** | "Similar tasks in this codebase took N approach. Follow or diverge?" | Refactors, features |
 | **Negative space** | "What would make a correct solution unacceptable?" | All types |
 | **Assumption surfacing** | "I'm assuming X — correct, or should it be Y?" | All types |
 
-Present probes as concrete questions with options, not open-ended prompts.
+Present any necessary probe as a concrete question with options, not an open-ended prompt. Stop probing when the brief is decision-complete; a fixed question count is not evidence of sufficiency.
 
 ### Step 4: Sufficiency Gate
 
-Before generating: "Do I know enough to predict what a code review would reject?" If NO — ask one more targeted question. Maximum total: 7 questions (including probes).
+For each remaining unknown:
+
+1. If its answer cannot materially change scope, architecture, trust/security boundaries, user-visible behaviour, or acceptance criteria, omit the question and infer a safe default when needed.
+2. If it can, first try repository evidence or an explicit safe default.
+3. If neither resolves it, ask one targeted question. When the decision belongs to the future `tier:thinking` worker, record the decision to make, evidence to inspect, and acceptance boundary instead of inventing an answer.
+
+Before generating, confirm: "Do I know enough to predict what a review would reject, or have I made the unresolved decisions explicit?" Do not enforce a minimum or maximum question count.
+
+After drafting, run one compact blind-spot pass across assumptions, affected surfaces, trust boundaries, user-visible behaviour, non-goals, and verification. Revise or ask only for a material omission; do not add an empty checklist to the brief.
 
 ### Step 5: Generate Brief
 
@@ -87,14 +95,18 @@ For auto-dispatch, use the single `workflows/brief.md` "Dispatch Readiness Contr
 | Interview Data | Brief Section |
 |---------------|---------------|
 | Task type + goal | **What** |
-| Why this matters (from probes) | **Why** |
+| Why this matters (from evidence or probes) | **Why** |
 | Scope + exclusions | **Context & Decisions** (non-goals) |
 | Success criteria | **Acceptance Criteria** |
-| Domain grounding results | **How (Approach)** |
-| Pre-mortem / negative space | **Acceptance Criteria** (negative criteria) |
-| Files mentioned | **Relevant Files** |
+| Decision-relevant domain grounding | **How (Approach)** |
+| Material pre-mortem / negative space finding | **Acceptance Criteria** (negative criteria) |
+| Files discovered or mentioned | **Relevant Files** |
 
-**Code scaffolding (t1901 — MANDATORY for code tasks):** For each file in Files to Modify, draft a code skeleton or diff in Implementation Steps as fenced code blocks. New files: complete skeleton with imports, function signatures, and inline comments. Edits: exact block with surrounding context showing insertion point.
+**Tier-aware implementation context (preserves t1901 mentorship):**
+
+- `tier:simple`: provide every exact file and complete verbatim `oldString`/`newString` or new-file content plus verification. No unresolved choice remains.
+- `tier:standard`: provide verified files, reference patterns, resolved boundaries, and implementation-ready skeletons where they reduce invention. Do not pretend unresolved logic is exact.
+- `tier:thinking`: keep the brief problem-first — problem, hard/soft constraints, prior art and evidence to inspect, decisions to make, non-goals, and acceptance boundaries. Do not invent speculative file-by-file skeletons before architecture or design decisions are resolved; add scaffolding later if the decision becomes implementation-ready.
 
 ### Step 6: Present and Confirm
 
@@ -116,7 +128,7 @@ When `--headless` or `$ARGUMENTS` contains ` -- ` (supervisor dispatch), skip in
 ```
 
 1. Auto-classify task type from description
-2. Apply default assumptions for that type
+2. Apply safe defaults only after the same consequence test; record consequential unresolved decisions rather than inventing answers
 3. **(t2417) Check worker-readiness** — if linked issue body scores 4+ on the heading heuristic, write a stub brief linking to the issue instead of generating a full brief. Default: skip.
 4. Generate brief with `Created by: ai-supervisor` in Origin (only if step 3 did not skip)
 5. Write to `todo/tasks/{task_id}-brief.md`
@@ -126,6 +138,6 @@ When `--headless` or `$ARGUMENTS` contains ` -- ` (supervisor dispatch), skip in
 ## Related
 
 - `templates/brief-template.md` — Output template
-- `reference/define-probes/` — Per-type probing questions
+- `reference/define-probes/` — Per-type candidate questions
 - `scripts/commands/new-task.md` — Task creation (called after brief generation)
 - `workflows/plans.md` — Planning workflow integration

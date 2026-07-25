@@ -20,7 +20,7 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Single source of truth for all GitHub-written content — briefs, issue bodies, PR descriptions, comments, escalation reports
-- **Evidence**: 47-PR research corpus — 100% Haiku success with exact oldString/newString, 0% with descriptive prose.
+- **Historical evidence**: 47-PR research corpus — 100% Haiku success with exact oldString/newString, 0% with descriptive prose.
 - **Template**: `templates/brief-template.md`
 - **Escalation template**: `templates/escalation-report-template.md`
 - **Tier criteria**: `reference/task-taxonomy.md`
@@ -125,7 +125,7 @@ brief unless that brief has been migrated to this complete contract.
 
 ## Core Rule
 
-**The brief IS the product.** A vague brief dispatched to Opus wastes more money than a prescriptive brief dispatched to Haiku. Invest the effort in the brief, not the worker.
+**The brief IS the product.** A vague brief wastes high-capability reasoning, while a mechanically complete brief can run reliably at a lower workload tier. Invest the effort in decision-relevant context, not question or token quotas.
 
 ## Ordered Work / Dependencies
 
@@ -178,7 +178,7 @@ Assess every work item against these empirical criteria (from 47-PR research):
 | **Files** | Single file | 2-3 files with coordination | 4+ files or architectural |
 | **Lines changed** | Under 100 | 100-500 | 500+ or novel design |
 | **Pattern** | Follows existing pattern | Adapts pattern to new context | Creates new pattern |
-| **Code provided** | Exact oldString/newString | Skeletons with signatures | Approach description |
+| **Implementation detail** | Exact oldString/newString; no unresolved choice | Verified files/patterns; skeletons for resolved boundaries | Problem, constraints, evidence, and decisions; no speculative skeletons |
 | **Judgment needed** | None — mechanical execution | Error recovery, approach selection | Design decisions, trade-offs |
 | **Examples** | Review feedback, config tweaks, quote fixes, docs additions | Bug fixes, refactors, feature impl | Architecture, security audits |
 
@@ -196,9 +196,11 @@ Every piece of GitHub-written content mentors the next reader. Apply these check
 | Does this tell the reader WHEN they are done? | Add a concrete completion signal |
 | Does this tell the reader WHAT to do when stuck? | Add fallback/recovery steps |
 | Does this tell the reader WHAT was already tried? | Add prior attempt context (escalation, kill comments) |
-| Could a cheaper model execute this? | Make it more prescriptive |
+| Could a lower workload tier execute this reliably? | Resolve ambiguity or add exact interfaces without fabricating decisions |
 
 A dispatch comment that says "implement issue #42" teaches nothing. One that says "edit `src/auth.ts:45` — replace `([^0-9]|$)` with `\b` — verify with `shellcheck src/auth.ts`" enables tier:simple dispatch.
+
+At implementation review, record material deviations from the brief and verification gaps in the existing PR summary/review evidence. Routine work that followed the brief does not require a separate implementation-notes artifact.
 
 Verification commands must also mentor efficient execution. Brief ordinary code
 work with focused tests plus changed-file or affected-package lint/typecheck.

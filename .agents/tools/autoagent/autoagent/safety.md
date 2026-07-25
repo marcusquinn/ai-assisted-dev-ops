@@ -7,6 +7,39 @@ Sub-doc for `autoagent.md`. Loaded during Step 1 (Setup) before any modification
 
 ---
 
+## Instruction-Semantic Preservation Gate
+
+Any hypothesis that removes, consolidates, relocates, weakens, or materially
+rephrases an instruction must load and satisfy
+`.agents/tools/build-agent/agent-review.md` before metric evaluation. This applies
+to agents, prompts, workflows, command bodies, templates, and generated/runtime
+adapters; the security patterns below are hard minimums, not an allowlist of the
+only lessons worth preserving.
+
+Before modification, create an instruction-review record that:
+
+1. Recovers directive provenance from task/issue/PR context, nearby identifiers,
+   recent file history, observed failures, and current enforcement.
+2. Assembles the canonical source, always-loaded guidance, triggered references,
+   generated wrappers, runtime overlays, and adjacent owners that reach the task.
+3. States activation and exclusion boundaries and classifies each affected
+   directive as an invariant, judgment rule, interface, triggered pointer,
+   rationale, or deterministic enforcement candidate.
+4. Distinguishes exact duplication from decision-boundary reinforcement,
+   runtime variants, and similar-but-different hazards.
+5. Names the reliable delivery or enforcement mechanism and target-specific
+   behavioural scenarios that preserve both activation and exclusion cases.
+
+After modification, compare the exact diff with that record and run the named
+target-specific checks across every changed delivery route. Incomplete provenance,
+delivery, or behavioural evidence defaults to preservation: reject the hypothesis,
+record `provenance_fail`, and do not run or interpret the aggregate metric. A lower
+token count, smaller file, unchanged broad pass rate, or improved composite score
+cannot override this gate. Semantically neutral formatting may bypass the gate only
+when the diff demonstrably changes no directive or delivery route.
+
+---
+
 ## Security Instruction Exemptions
 
 Discard any hypothesis that removes or weakens the following — do not test:

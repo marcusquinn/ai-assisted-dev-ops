@@ -1,24 +1,23 @@
 # Test: .agents/reference/planning-detail.md (165 lines — complex reference doc)
 file: .agents/reference/planning-detail.md
-tier_minimum: sonnet
+tier_minimum: standard
 
 scenarios:
   - name: "identifies task completion rules"
     prompt: "Can a task be marked [x] in TODO.md without a merged PR? What evidence is required?"
     expected:
       contains:
-        - "never"
         - "pr"
+        - "verified"
       not_contains:
         - "yes"
         - "mark complete without"
       min_length: 40
       max_length: 600
     reference_answer: |
-      NEVER mark [x] unless a merged PR exists with real deliverables. Every
-      completion must have pr:#NNN or verified:YYYY-MM-DD. File existence alone
-      is not sufficient -- verify the PR was merged and contains substantive
-      changes.
+      Completion normally requires a substantive merged PR recorded as pr:#NNN.
+      A verified non-PR deliverable may instead use task-complete-helper.sh
+      --verified and verified:YYYY-MM-DD. File existence alone is never enough.
     fast_fail_triggers:
       - refusal
       - structural_violation

@@ -3,11 +3,17 @@
 
 # Standard Brief Format (tier:standard)
 
-For tasks requiring judgment. Provide skeletons rather than verbatim code.
+For tasks following established patterns with normal implementation judgment and recovery. Make the task implementation-ready with verified files, resolved boundaries, reference patterns, and focused verification. Provide skeletons when they reduce invention, not when they would fabricate an unresolved decision.
 
 ## Format
 
 ```markdown
+### Context and Decisions
+
+- {Resolved scope/behaviour decision}
+- {Non-goal or compatibility boundary}
+- {Material assumption and evidence}
+
 ### Files to Modify
 
 - `EDIT: path/to/file.ts:45-60` — {what to change and why}
@@ -37,10 +43,10 @@ export function handleAuth(req: Request): Response {
 
 ## Key principles
 
-- **Skeletons, not verbatim**: Provide function signatures and structure; worker fills in logic
+- **Resolved skeletons, not false precision**: Provide function signatures and structure after boundaries are known; leave genuine design choices explicit
 - **Reference patterns**: Point to existing code that demonstrates the pattern
 - **Line ranges**: Use `file:line-line` format for clarity
-- **Judgment required**: Worker decides approach, error handling, edge cases
+- **Normal judgment**: Worker adapts established patterns and handles known errors/edge cases within the stated boundaries
 
 ## Recovery paths (mandatory)
 

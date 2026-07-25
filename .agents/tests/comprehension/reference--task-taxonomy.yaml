@@ -1,6 +1,6 @@
 # Test: .agents/reference/task-taxonomy.md (63 lines — simple reference doc)
 file: .agents/reference/task-taxonomy.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "routes SEO task correctly"
@@ -40,12 +40,17 @@ scenarios:
     expected:
       contains:
         - "docs"
+        - "disqualifier"
+        - "exact"
       action:
         - "simple"
       min_length: 30
       max_length: 500
     reference_answer: |
-      The tier:simple label should be applied for docs-only changes, simple
-      renames, formatting, config tweaks, and label/tag updates.
+      Docs-only changes, simple renames, formatting, and config tweaks may use
+      tier:simple only when the work is prescriptive and mechanical and no
+      disqualifier applies. More than two files, incomplete code, unresolved
+      judgment or error handling, or an estimate over one hour require a higher
+      tier; code edits need exact copy-pasteable blocks.
     fast_fail_triggers:
       - refusal

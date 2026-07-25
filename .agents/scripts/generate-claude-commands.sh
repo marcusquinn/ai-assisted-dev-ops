@@ -236,18 +236,11 @@ discover_commands() {
 _generate_workflow_commands() {
 	maybe_write_command "agent-review" \
 		"Systematic review and improvement of agent instructions" \
-		'Read ~/.aidevops/agents/tools/build-agent/agent-review.md and follow its instructions.
+		'Read ~/.aidevops/agents/tools/build-agent/agent-review.md and follow it as the canonical review rubric.
 
-Review the agent file(s) specified: $ARGUMENTS
+Review target: $ARGUMENTS
 
-If no specific file is provided, review the agents used in this session and propose improvements based on:
-1. Any corrections the user made
-2. Any commands or paths that failed
-3. Instruction count (target <50 for main, <100 for subagents)
-4. Universal applicability (>80% of tasks)
-5. Duplicate detection across agents
-
-Follow the improvement proposal format from the agent-review instructions.' || return 1
+If no target is provided, review the instruction surfaces used in this session.' || return 1
 
 	maybe_write_command "preflight" \
 		"Run quality checks before version bump and release" \
@@ -394,19 +387,9 @@ This validates against our documented standards:
 
 	maybe_write_command "code-simplifier" \
 		"Simplify and refine code for clarity, consistency, and maintainability" \
-		'Read ~/.aidevops/agents/tools/code-review/code-simplifier.md and follow its instructions.
+		'Read ~/.aidevops/agents/tools/code-review/code-simplifier.md and follow it as the canonical analysis guide.
 
-Target: $ARGUMENTS
-
-**Usage:**
-- `/code-simplifier` — Simplify recently modified code
-- `/code-simplifier src/` — Simplify code in specific directory
-- `/code-simplifier --all` — Review entire codebase (use sparingly)
-
-**Key Principles:**
-- Preserve exact functionality
-- Clarity over brevity
-- Apply project standards' || return 1
+Target: $ARGUMENTS' || return 1
 
 	return 0
 }

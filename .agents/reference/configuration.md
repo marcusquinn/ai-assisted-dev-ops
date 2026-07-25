@@ -342,8 +342,8 @@ High-stakes operation verification policy. Complements `safety.verification_enab
 | `verification.enabled` | boolean | `true` | Global verification switch. |
 | `verification.default_gate` | string | `"warn"` | Default gate for uncategorised operations. Options: `block`, `warn`, `allow`. |
 | `verification.cross_provider` | boolean | `true` | Use a different AI provider for verification (reduces correlated hallucinations). |
-| `verification.verifier_tier` | string | `"sonnet"` | Model tier for the verifier. |
-| `verification.escalation_tier` | string | `"opus"` | Model tier for escalation when verifier is uncertain. |
+| `verification.verifier_tier` | string | `"standard"` | Workload tier for the verifier. |
+| `verification.escalation_tier` | string | `"thinking"` | Workload tier used when the verifier is uncertain. |
 
 #### verification.categories
 
@@ -486,7 +486,7 @@ A fully customised `~/.config/aidevops/config.jsonc`:
     "supervisor_pulse": false
   },
 
-  // Use opus for verification (I want the strongest reasoning)
+  // Use the thinking workload tier for verification
   "safety": {
     "verification_tier": "thinking"
   },

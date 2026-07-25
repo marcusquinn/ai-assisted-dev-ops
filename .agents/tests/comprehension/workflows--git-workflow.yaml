@@ -1,22 +1,24 @@
 # Test: .agents/workflows/git-workflow.md (158 lines — complex workflow doc)
 file: .agents/workflows/git-workflow.md
-tier_minimum: sonnet
+tier_minimum: standard
 
 scenarios:
   - name: "identifies pre-edit gate"
-    prompt: "Before editing any file, what must the agent check? What happens if the result is 'main'?"
+    prompt: "Before editing any file, what gate must the agent run? What happens if it reports the canonical checkout?"
     expected:
       contains:
-        - "branch"
+        - "pre-edit-check"
         - "stop"
+        - "worktree"
       not_contains:
         - "proceed"
         - "continue editing"
       min_length: 30
       max_length: 500
     reference_answer: |
-      Before any file edit, run git branch --show-current. If the result is
-      main, STOP and present branch options before proceeding.
+      Run pre-edit-check.sh before every edit. If it reports the canonical
+      checkout, stop and create a safe linked worktree; branch inspection alone
+      cannot prove that the checkout is safe to edit.
     fast_fail_triggers:
       - refusal
       - structural_violation

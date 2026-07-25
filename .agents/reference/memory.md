@@ -129,7 +129,13 @@ The opportunity scan is actionable in live mode: repeated failures, popular low-
 
 ## Memory Consolidation
 
-Haiku-tier LLM call (~$0.001/call) scans unconsolidated memories, discovers cross-cutting connections, stores synthesized insights. Inspired by Google's [always-on-memory-agent](https://github.com/GoogleCloudPlatform/generative-ai/tree/main/gemini/agents/always-on-memory-agent). Insights in `memory_consolidations`; connections as `derives` relations in `learning_relations`. Skips gracefully if `ai-research-helper.sh` or API key unavailable. Manual: `memory-helper.sh insights [--dry-run]`. Daily cron: `0 4 * * * ~/.aidevops/agents/scripts/memory-audit-pulse.sh run --quiet`.
+A `simple`-tier LLM call scans unconsolidated memories, discovers cross-cutting
+connections, and stores synthesized insights. Runtime routing determines its
+provider and cost. Inspired by Google's [always-on-memory-agent](https://github.com/GoogleCloudPlatform/generative-ai/tree/main/gemini/agents/always-on-memory-agent).
+Insights live in `memory_consolidations`; connections use `derives` relations in
+`learning_relations`. The scan skips gracefully if `ai-research-helper.sh` or an
+approved model route is unavailable. Manual: `memory-helper.sh insights [--dry-run]`.
+Daily cron: `0 4 * * * ~/.aidevops/agents/scripts/memory-audit-pulse.sh run --quiet`.
 
 ## Entity Memory System
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# comprehension-benchmark-helper.sh — Benchmark agent file comprehension across model tiers
-# Tests whether haiku/sonnet/opus can correctly follow agent file instructions.
-# Uses deterministic scoring first, model adjudication second.
+# comprehension-benchmark-helper.sh — Benchmark instruction comprehension across workload tiers
+# Resolves simple/standard/thinking through the runtime model mapping, using
+# deterministic scoring first and model adjudication second.
 #
 # Usage:
 #   comprehension-benchmark-helper.sh test <scenario.yaml>     # Test one file
@@ -12,15 +12,16 @@
 #   comprehension-benchmark-helper.sh update-state              # Write tier_minimum to state
 #   comprehension-benchmark-helper.sh pre-filter <agent.md>     # Structural heuristics only
 #
-# Exit codes: 0=success, 1=error, 2=no API key
+# Exit codes: 0=expected tier matched, 1=error, unresolved scenario, or mismatch
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)" || exit 1
-TESTS_DIR="${REPO_ROOT}/.agents/tests/comprehension"
-STATE_FILE="${REPO_ROOT}/.agents/configs/simplification-state.json"
-RESULTS_DIR="${TESTS_DIR}/results"
+TESTS_DIR="${COMPREHENSION_TESTS_DIR:-${REPO_ROOT}/.agents/tests/comprehension}"
+STATE_FILE="${COMPREHENSION_STATE_FILE:-${REPO_ROOT}/.agents/configs/simplification-state.json}"
+RESULTS_DIR="${COMPREHENSION_RESULTS_DIR:-${TESTS_DIR}/results}"
+AI_RESEARCH_HELPER="${COMPREHENSION_AI_HELPER:-${SCRIPT_DIR}/ai-research-helper.sh}"
 
 # Source shared constants if available
 if [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]]; then
@@ -168,7 +169,7 @@ deterministic_check() {
 
 #######################################
 # Detect fast-fail escalation triggers
-# Arguments: $1 — output, $2 — triggers JSON, $3 — prompt
+# Arguments: $1 — output, $2 — triggers JSON, $3 — full prompt, $4 — expected JSON
 # Output: trigger name if detected, empty if none
 # Returns: 0=no trigger, 1=trigger detected
 #######################################
@@ -176,8 +177,9 @@ detect_fast_fail() {
 	local output="$1"
 	local triggers_json="$2"
 	local prompt="$3"
+	local expected_json="$4"
 
-	python3 "${LIB_DIR}/detect_fast_fail.py" "$output" "$triggers_json" "$prompt" 2>/dev/null
+	python3 "${LIB_DIR}/detect_fast_fail.py" "$output" "$triggers_json" "$prompt" "$expected_json" 2>/dev/null
 	return $?
 }
 
@@ -207,7 +209,7 @@ build_scenario_prompt() {
 
 #######################################
 # Run adjudication on ambiguous results
-# Arguments: $1 — expected JSON, $2 — model output, $3 — tier
+# Arguments: $1 — expected JSON, $2 — model output, $3 — tier, $4 — reference answer
 # Output: "pass" or "fail" on stdout
 # Returns: 0=pass, 1=fail
 #######################################
@@ -215,6 +217,7 @@ run_adjudication() {
 	local expected_json="$1"
 	local model_output="$2"
 	local tier="$3"
+	local reference_answer="$4"
 
 	local adjudication_tier="simple"
 	[[ "$tier" != "simple" ]] && adjudication_tier="standard"
@@ -224,13 +227,15 @@ run_adjudication() {
 
 Expected behavior: ${expected_json}
 
+Reference answer: ${reference_answer:-not supplied}
+
 Model output:
 ${model_output}
 
 Answer format: PASS: <reason> or FAIL: <reason>"
 
 	local adj_result
-	adj_result=$("${SCRIPT_DIR}/ai-research-helper.sh" --prompt "$adj_prompt" --model "$adjudication_tier" --max-tokens 100 2>/dev/null) || {
+	adj_result=$("$AI_RESEARCH_HELPER" --prompt "$adj_prompt" --model "$adjudication_tier" --max-tokens 100 2>/dev/null) || {
 		echo "fail"
 		return 1
 	}
@@ -285,6 +290,8 @@ run_scenario() {
 	expected_json=$(echo "$scenario_json" | jq -c '.expected // {}')
 	local fast_fail_json
 	fast_fail_json=$(echo "$scenario_json" | jq -c '.fast_fail_triggers // []')
+	local reference_answer
+	reference_answer=$(echo "$scenario_json" | jq -r '.reference_answer // ""')
 
 	log_info "Running scenario '$scenario_name' at tier=$tier"
 
@@ -297,14 +304,14 @@ run_scenario() {
 
 	# Call model
 	local model_output
-	model_output=$("${SCRIPT_DIR}/ai-research-helper.sh" --prompt "$full_prompt" --model "$tier" --max-tokens 500 2>/dev/null) || {
+	model_output=$("$AI_RESEARCH_HELPER" --prompt "$full_prompt" --model "$tier" --max-tokens 500 2>/dev/null) || {
 		format_result "$scenario_name" "$tier" "error" "api" '"reason":"model_call_failed"'
 		return 1
 	}
 
 	# Check fast-fail triggers
 	local ff_result
-	ff_result=$(detect_fast_fail "$model_output" "$fast_fail_json" "$prompt" 2>/dev/null) || true
+	ff_result=$(detect_fast_fail "$model_output" "$fast_fail_json" "$full_prompt" "$expected_json" 2>/dev/null) || true
 	if [[ -n "$ff_result" ]]; then
 		log_fail "Fast-fail: $ff_result (scenario=$scenario_name, tier=$tier)"
 		format_result "$scenario_name" "$tier" "fast_fail" "escalation" '"trigger":"'"$ff_result"'"'
@@ -318,6 +325,8 @@ run_scenario() {
 	det_pass=$(echo "$det_result" | jq -r '.pass // false')
 	local det_ambiguous
 	det_ambiguous=$(echo "$det_result" | jq -r '.ambiguous // false')
+	local det_hard_fail
+	det_hard_fail=$(echo "$det_result" | jq -r '.hard_fail // false')
 
 	# Clear pass
 	if [[ "$det_pass" == "true" && "$det_ambiguous" != "true" ]]; then
@@ -326,7 +335,13 @@ run_scenario() {
 		return 0
 	fi
 
-	# Clear fail
+	# Objective length violations are hard failures. Missing or forbidden wording
+	# remains ambiguous because synonyms, quotation, and negation need adjudication.
+	if [[ "$det_hard_fail" == "true" ]]; then
+		log_fail "Deterministic fail (scenario=$scenario_name, tier=$tier)"
+		format_result "$scenario_name" "$tier" "fail" "deterministic" '"checks":'"$det_result"
+		return 1
+	fi
 	if [[ "$det_pass" == "false" && "$det_ambiguous" != "true" ]]; then
 		log_fail "Deterministic fail (scenario=$scenario_name, tier=$tier)"
 		format_result "$scenario_name" "$tier" "fail" "deterministic" '"checks":'"$det_result"
@@ -336,7 +351,7 @@ run_scenario() {
 	# Ambiguous — adjudicate
 	log_info "Ambiguous, adjudicating (scenario=$scenario_name, tier=$tier)"
 	local adj_out
-	adj_out=$(run_adjudication "$expected_json" "$model_output" "$tier" 2>/dev/null) || true
+	adj_out=$(run_adjudication "$expected_json" "$model_output" "$tier" "$reference_answer" 2>/dev/null) || true
 	local adj_verdict="${adj_out%%:*}"
 
 	if [[ "$adj_verdict" == "pass" ]]; then
@@ -375,7 +390,7 @@ escalate_scenario() {
 		fi
 		current_order=$((current_order + 1))
 	done
-	echo "opus:${results}"
+	echo "unresolved:${results}"
 	return 1
 }
 
@@ -393,9 +408,22 @@ cmd_test() {
 	local agent_file
 	agent_file=$(echo "$scenario_data" | jq -r '.file // ""')
 	local expected_tier
-	expected_tier=$(echo "$scenario_data" | jq -r '.tier_minimum // "haiku"')
+	expected_tier=$(echo "$scenario_data" | jq -r '.tier_minimum // ""')
 	local scenario_count
 	scenario_count=$(echo "$scenario_data" | jq '.scenarios | length')
+
+	if [[ -z "$agent_file" ]]; then
+		log_error "Scenario file is missing a target file: $yaml_file"
+		return 1
+	fi
+	if [[ "$(tier_order "$expected_tier")" -eq 0 ]]; then
+		log_error "Scenario file uses a non-canonical tier_minimum '$expected_tier': $yaml_file"
+		return 1
+	fi
+	if ! [[ "$scenario_count" =~ ^[1-9][0-9]*$ ]]; then
+		log_error "Scenario file must define at least one scenario: $yaml_file"
+		return 1
+	fi
 
 	log_info "Testing: $agent_file (expected=$expected_tier, scenarios=$scenario_count)"
 
@@ -405,6 +433,7 @@ cmd_test() {
 
 	local all_results="[]"
 	local actual_tier_minimum="simple"
+	local unresolved_count=0
 	local i=0
 
 	while [[ "$i" -lt "$scenario_count" ]]; do
@@ -412,20 +441,39 @@ cmd_test() {
 		scenario_json=$(echo "$scenario_data" | jq -c ".scenarios[$i]")
 
 		local esc_output
-		esc_output=$(escalate_scenario "$agent_file" "$scenario_json" 2>/dev/null) || true
+		local esc_status=0
+		esc_output=$(escalate_scenario "$agent_file" "$scenario_json" 2>/dev/null) || esc_status=$?
 		local scenario_tier="${esc_output%%:*}"
 		local scenario_results="${esc_output#*:}"
 		all_results=$(echo "$all_results" | jq --argjson r "$scenario_results" '. + $r')
+		if [[ "$esc_status" -ne 0 || "$scenario_tier" == "unresolved" ]]; then
+			unresolved_count=$((unresolved_count + 1))
+			i=$((i + 1))
+			continue
+		fi
 
 		# Update minimum tier
 		local s_order
 		s_order=$(tier_order "$scenario_tier")
+		if [[ "$s_order" -eq 0 ]]; then
+			unresolved_count=$((unresolved_count + 1))
+			i=$((i + 1))
+			continue
+		fi
 		local m_order
 		m_order=$(tier_order "$actual_tier_minimum")
 		[[ "$s_order" -gt "$m_order" ]] && actual_tier_minimum="$scenario_tier"
 
 		i=$((i + 1))
 	done
+	if [[ "$unresolved_count" -gt 0 ]]; then
+		actual_tier_minimum="unresolved"
+	fi
+
+	local matched="false"
+	if [[ "$unresolved_count" -eq 0 && "$actual_tier_minimum" == "$expected_tier" ]]; then
+		matched="true"
+	fi
 
 	local summary
 	summary=$(jq -n \
@@ -433,17 +481,19 @@ cmd_test() {
 		--arg expected "$expected_tier" \
 		--arg actual "$actual_tier_minimum" \
 		--arg complexity "$complexity" \
+		--argjson matched "$matched" \
+		--argjson unresolved "$unresolved_count" \
 		--argjson results "$all_results" \
-		'{file: $file, expected_tier: $expected, actual_tier: $actual, complexity: $complexity, results: $results}')
+		'{file: $file, expected_tier: $expected, actual_tier: $actual, matched: $matched, unresolved_scenarios: $unresolved, complexity: $complexity, results: $results}')
 
 	echo "$summary"
 
-	if [[ "$actual_tier_minimum" == "$expected_tier" ]]; then
+	if [[ "$matched" == "true" ]]; then
 		log_pass "RESULT: $agent_file — tier=$actual_tier_minimum (matches expected)"
-	else
-		log_info "RESULT: $agent_file — tier=$actual_tier_minimum (expected=$expected_tier)"
+		return 0
 	fi
-	return 0
+	log_fail "RESULT: $agent_file — tier=$actual_tier_minimum (expected=$expected_tier, unresolved=$unresolved_count)"
+	return 1
 }
 
 #######################################
@@ -460,35 +510,56 @@ cmd_sweep() {
 	local all_results="[]"
 	local pass_count=0
 	local fail_count=0
+	local error_count=0
 	local total_count=0
 
-	while IFS= read -r yaml_file; do
+	local yaml_file=""
+	for yaml_file in "$TESTS_DIR"/*.yaml; do
+		[[ -f "$yaml_file" ]] || continue
 		total_count=$((total_count + 1))
 		local result
-		result=$(cmd_test "$yaml_file" 2>/dev/null) || true
+		local test_status=0
+		result=$(cmd_test "$yaml_file" 2>/dev/null) || test_status=$?
 
-		if [[ -n "$result" ]]; then
+		if [[ -n "$result" ]] && echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
 			all_results=$(echo "$all_results" | jq --argjson r "$result" '. + [$r]')
-			local actual
-			actual=$(echo "$result" | jq -r '.actual_tier // "unknown"')
-			local expected
-			expected=$(echo "$result" | jq -r '.expected_tier // "unknown"')
-			if [[ "$actual" == "$expected" ]]; then
+			local matched
+			matched=$(echo "$result" | jq -r '.matched // false')
+			if [[ "$test_status" -eq 0 && "$matched" == "true" ]]; then
 				pass_count=$((pass_count + 1))
 			else
 				fail_count=$((fail_count + 1))
 			fi
+		else
+			error_count=$((error_count + 1))
+			local error_result
+			error_result=$(jq -n --arg scenario_file "$yaml_file" '{scenario_file: $scenario_file, error: "test_execution_failed"}')
+			all_results=$(echo "$all_results" | jq --argjson r "$error_result" '. + [$r]')
 		fi
-	done < <(find "$TESTS_DIR" -name '*.yaml' -type f | sort)
+	done
 
-	log_info "Sweep complete: $total_count files, $pass_count matched expected, $fail_count mismatched"
+	log_info "Sweep complete: $total_count files, $pass_count matched expected, $fail_count mismatched, $error_count errors"
 
-	jq -n \
+	local sweep_result
+	sweep_result=$(jq -n \
 		--argjson results "$all_results" \
 		--arg total "$total_count" \
 		--arg pass "$pass_count" \
 		--arg fail "$fail_count" \
-		'{summary: {total: ($total|tonumber), matched: ($pass|tonumber), mismatched: ($fail|tonumber)}, results: $results}'
+		--arg errors "$error_count" \
+		'{summary: {total: ($total|tonumber), matched: ($pass|tonumber), mismatched: ($fail|tonumber), errors: ($errors|tonumber)}, results: $results}')
+
+	mkdir -p "$RESULTS_DIR"
+	local results_file="${RESULTS_DIR}/latest-sweep.json"
+	local temporary_results=""
+	temporary_results=$(mktemp "${RESULTS_DIR}/.latest-sweep.XXXXXX") || return 1
+	printf '%s\n' "$sweep_result" >"$temporary_results"
+	mv "$temporary_results" "$results_file"
+	printf '%s\n' "$sweep_result"
+
+	if [[ "$total_count" -eq 0 || "$fail_count" -gt 0 || "$error_count" -gt 0 ]]; then
+		return 1
+	fi
 	return 0
 }
 
@@ -502,8 +573,7 @@ cmd_report() {
 	local results_file="${RESULTS_DIR}/latest-sweep.json"
 	if [[ ! -f "$results_file" ]]; then
 		log_info "No sweep results found. Running sweep first..."
-		mkdir -p "$RESULTS_DIR"
-		cmd_sweep >"$results_file" 2>/dev/null || true
+		cmd_sweep >/dev/null 2>&1 || true
 	fi
 
 	if [[ ! -f "$results_file" ]]; then
@@ -520,6 +590,11 @@ cmd_report() {
 
 	echo ""
 	jq -r '"**Summary:** \(.summary.total) files tested, \(.summary.matched) matched expected tier, \(.summary.mismatched) mismatched"' "$results_file" 2>/dev/null || true
+	local failed
+	failed=$(jq -r '(.summary.mismatched // 0) + (.summary.errors // 0)' "$results_file" 2>/dev/null || echo 1)
+	if [[ "$failed" -gt 0 ]]; then
+		return 1
+	fi
 	return 0
 }
 
@@ -536,6 +611,10 @@ cmd_update_state() {
 
 	if [[ ! -f "$STATE_FILE" ]]; then
 		log_error "State file not found: $STATE_FILE"
+		return 1
+	fi
+	if ! jq -e '(.summary.mismatched // 0) == 0 and (.summary.errors // 0) == 0 and (.summary.total // 0) > 0' "$results_file" >/dev/null 2>&1; then
+		log_error "Refusing state update from an incomplete or mismatched sweep"
 		return 1
 	fi
 
@@ -629,4 +708,6 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

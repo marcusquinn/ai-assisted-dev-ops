@@ -26,7 +26,21 @@ while true:
         peer_discoveries = check_peer_discoveries()
 
     hypothesis = generate_hypothesis(...)
+    instruction_review = prepare_instruction_review(hypothesis)
+    if instruction_review == INCOMPLETE:
+        FAILED_HYPOTHESES.append(hypothesis)
+        track_tokens(ITER_START_TOKENS)
+        log_result(ITERATION_COUNT, null, null, "provenance_fail", hypothesis, ITER_TOKENS, 0, "-")
+        continue
     apply_modification(hypothesis)
+
+    semantic_result = verify_instruction_semantic_preservation(instruction_review)
+    if semantic_result == FAIL:
+        git -C WORKTREE_PATH reset --hard HEAD
+        FAILED_HYPOTHESES.append(hypothesis)
+        track_tokens(ITER_START_TOKENS)
+        log_result(ITERATION_COUNT, null, null, "provenance_fail", hypothesis, ITER_TOKENS, 0, "-")
+        continue
 
     constraint_result = run_constraints()
     if constraint_result == FAIL:
@@ -95,6 +109,9 @@ while true:
 5. **Current best** — metric value and which commit achieved it
 6. **Current code state** — read the target files (FILES glob)
 7. **Iteration number** — to guide progression strategy
+8. **Agent Review context** — for instruction-semantic candidates, the assembled
+   delivery stack, provenance, classification, boundaries, and target-specific
+   behaviour required by `.agents/tools/build-agent/agent-review.md`
 
 ### Progression strategy
 
@@ -104,15 +121,17 @@ while true:
 | **Systematic** | 6–20 | Vary one parameter at a time; measure effect of each change |
 | **Combination** | 21–35 | Combine two individually-successful changes |
 | **Radical** | 36–45 | Try fundamentally different approaches if incremental gains stall |
-| **Simplification** | 46+ | Remove things; equal-or-better with less code is a win |
+| **Simplification** | 46+ | Reduce mechanics or context only after applicable preservation gates pass |
 
 ### Rules
 
 - Never repeat a discarded hypothesis (check FAILED_HYPOTHESES)
 - Prefer high-impact changes with low constraint-failure risk
-- Agent optimization: higher information density > longer verbose instructions
+- Agent optimization: prefer relevant information density after proving retained
+  semantics, delivery, and target-specific behaviour
 - Build optimization: structural changes (tree-shaking, module boundaries) > config tweaks
-- Simplification is always valid: less code with equal-or-better metric is a win
+- Simplification is a hypothesis, not proof: aggregate metrics cannot override an
+  incomplete instruction-semantic review
 
 ---
 

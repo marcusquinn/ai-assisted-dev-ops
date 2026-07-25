@@ -1,7 +1,7 @@
 ---
 description: Browser QA — Playwright-based visual testing for milestone validation, detecting layout bugs, broken links, missing content, and console errors
 mode: subagent
-model: sonnet  # structured checking, not complex reasoning
+model: standard  # structured checking with coordinated judgment
 tools:
   read: true
   write: false

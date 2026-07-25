@@ -1,0 +1,96 @@
+# Test: .agents/tools/build-agent/agent-review.md
+file: .agents/tools/build-agent/agent-review.md
+tier_minimum: standard
+
+scenarios:
+  - name: "preserves reinforcement at distinct decision boundaries"
+    prompt: "Two rules both say never expose credentials, one before writing files and one before public push. Are they duplicates to consolidate?"
+    expected:
+      contains:
+        - "boundary"
+        - "preserve"
+      not_contains:
+        - "remove one"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      Text similarity is not enough. These rules protect different decision
+      boundaries, so classify them as intentional reinforcement and preserve
+      both unless one boundary has a verified equivalent enforcement mechanism.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "requires provenance before semantic deletion"
+    prompt: "A directive looks rare and has no current test. What evidence is required before removing it?"
+    expected:
+      contains:
+        - "history"
+        - "obsolete"
+        - "superseded"
+      min_length: 60
+      max_length: 900
+    reference_answer: |
+      Inspect nearby task IDs, issue/PR context, recent file history, current
+      routing, and enforcement to recover the protected failure. Missing test
+      coverage is not removal evidence. Remove only when the lesson is obsolete
+      or fully superseded and identify the preserving mechanism.
+    fast_fail_triggers:
+      - refusal
+      - disengagement
+
+  - name: "requires a reliable trigger for relocation"
+    prompt: "When may a narrow directive move out of always-loaded context?"
+    expected:
+      contains:
+        - "trigger"
+        - "decision point"
+      min_length: 40
+      max_length: 700
+    reference_answer: |
+      Relocate it only when a reliable trigger delivers the complete lesson
+      before its decision point. Record the delivery path and preserve any
+      separate boundary reinforcement or deterministic enforcement.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "classifies executable contracts before tightening"
+    prompt: "A generated command contains an exact template that workers execute. How should Agent Review classify and treat it?"
+    expected:
+      contains:
+        - "interface"
+        - "preserve"
+      not_contains:
+        - "ordinary prose"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      Classify the exact executable template as an interface, not ordinary
+      prose. Preserve its executable shape and verify every delivery route;
+      tighten surrounding explanation only when provenance and target-specific
+      tests show the contract still reaches its decision point unchanged.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "keeps instruction semantics under Agent Review"
+    prompt: "Code Simplifier proposes deleting a rare workflow instruction because aggregate tests are unchanged. Who decides, and is that evidence sufficient?"
+    expected:
+      contains:
+        - "Agent Review"
+        - "provenance"
+        - "target-specific"
+      not_contains:
+        - "safe to delete"
+      min_length: 70
+      max_length: 900
+    reference_answer: |
+      Agent Review owns the semantic decision. Code Simplifier may identify the
+      candidate, but unchanged aggregate tests are insufficient. Recover the
+      directive provenance, inspect activation and exclusion boundaries, and
+      require target-specific behavioural coverage; incomplete evidence means
+      the instruction stays.
+    fast_fail_triggers:
+      - refusal
+      - disengagement

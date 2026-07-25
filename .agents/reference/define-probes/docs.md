@@ -8,7 +8,7 @@ mode: subagent
 
 # Docs Probes
 
-Use for `/define` tasks classified as **docs**: ask the 2 required questions, then select 2 probes.
+Use this candidate pool for `/define` tasks classified as **docs**. Reuse known audience and format context; ask only when an answer could materially change scope, reader outcome, accuracy verification, or acceptance criteria.
 
 ## Defaults
 
@@ -17,7 +17,7 @@ Use for `/define` tasks classified as **docs**: ask the 2 required questions, th
 - Concise — prefer examples over lengthy explanations
 - Maintainable — don't document implementation details that change frequently
 
-## Required Questions
+## Decision-Relevant Candidates
 
 **Audience** — Who is the primary reader?
 1. Developers using this project (recommended)
@@ -31,7 +31,7 @@ Use for `/define` tasks classified as **docs**: ask the 2 required questions, th
 3. API documentation (OpenAPI, JSDoc, etc.)
 4. Tutorial / walkthrough with examples
 
-## Probes (select 2)
+## Optional Probes
 
 **Accuracy Verification** — How will you verify the documentation is accurate?
 1. Run the examples / commands described (recommended)
@@ -65,4 +65,4 @@ Before generating the brief, verify you can answer:
 - How will accuracy be verified?
 - What's the maintenance burden?
 
-If any answer is "I don't know" — ask one more targeted question.
+Ask one targeted question only when an unknown is consequential and source evidence or a safe default cannot resolve it.

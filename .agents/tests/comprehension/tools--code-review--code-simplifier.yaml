@@ -1,6 +1,6 @@
 # Test: .agents/tools/code-review/code-simplifier.md (137 lines — complex agent doc)
 file: .agents/tools/code-review/code-simplifier.md
-tier_minimum: sonnet
+tier_minimum: standard
 
 scenarios:
   - name: "identifies protected files"

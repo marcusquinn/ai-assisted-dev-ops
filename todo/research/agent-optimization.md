@@ -9,8 +9,9 @@ target_repo: .
 
 # Research: Agent Instruction Optimization
 
-Optimize agent instruction files to reduce token usage while maintaining test pass rate.
-Uses the composite metric `pass_rate * (1 - 0.3 * token_ratio)` to balance quality and size.
+Improve agent instruction delivery while preserving directive provenance and
+target-specific behaviour. After the semantic-preservation gate passes, use the
+composite metric `pass_rate * (1 - 0.3 * token_ratio)` to compare quality and size.
 
 <!-- AI-CONTEXT-START -->
 
@@ -18,7 +19,8 @@ Uses the composite metric `pass_rate * (1 - 0.3 * token_ratio)` to balance quali
 
 1. Set the target agent and test suite in the Target and Metric sections below.
 2. Run: `/auto-research --program todo/research/agent-optimization.md`
-3. The auto-research subagent will iterate, keeping only changes that improve the composite score.
+3. The auto-research subagent will iterate, keeping only changes that pass Agent
+   Review's semantic gate and improve the composite score.
 
 Default target: `build-plus.md` with `smoke-test` suite. Override by editing the Target section.
 
@@ -41,7 +43,8 @@ baseline: null
 goal: null
 ```
 
-The composite score formula: `pass_rate * (1 - 0.3 * token_ratio)`
+The composite score formula `pass_rate * (1 - 0.3 * token_ratio)` applies only
+after directive provenance, delivery, and target-specific behaviour are verified.
 
 - `pass_rate`: fraction of tests passing (0–1). Computed from `agent-test-helper.sh --json` output.
 - `token_ratio`: `avg_response_chars / baseline_chars`. Proxy for token usage relative to baseline.
@@ -55,6 +58,11 @@ The composite score formula: `pass_rate * (1 - 0.3 * token_ratio)`
 
 Each constraint must exit 0 before the metric is measured. Failure = discard the experiment.
 
+Instruction-semantic candidates also load
+`.agents/tools/build-agent/agent-review.md`. Missing provenance, assembled-context
+analysis, directive classification, activation/exclusion boundaries, or
+target-specific behavioural coverage records `provenance_fail` before this metric.
+
 ```text
 - Lint clean: markdownlint-cli2 .agents/build-plus.md
 - Pass rate must not drop below 80%: agent-test-helper.sh run smoke-test --json | jq -e '.pass_rate >= 0.8'
@@ -63,11 +71,11 @@ Each constraint must exit 0 before the metric is measured. Failure = discard the
 - Traceability rules intact: grep -q "PR title MUST have task ID" .agents/build-plus.md || grep -q "task ID" .agents/build-plus.md
 ```
 
-## Security Instruction Exemptions
+## Instruction-Semantic Preservation
 
-The following instruction categories must NEVER be removed by automated optimization.
-The constraints above enforce this, but the researcher model must also respect these exemptions
-when generating hypotheses:
+The following instruction categories must NEVER be removed by automated
+optimization. They are hard minimums, not an allowlist: every changed directive
+must satisfy the Agent Review provenance and delivery gate before metric evaluation.
 
 - Credential and secret handling rules (gopass, credentials.sh, NEVER expose)
 - File operation safety rules (Read before Edit/Write, verify paths)
@@ -76,7 +84,10 @@ when generating hypotheses:
 - Prompt injection defense rules
 - Destructive operation confirmation requirements
 
-When a hypothesis would remove or weaken any of the above, discard it without testing.
+When a hypothesis would remove or weaken any of the above, discard it without
+testing. For every other directive, incomplete provenance, delivery, or behavioural
+evidence also defaults to preservation; a stable broad test or improved token ratio
+does not prove the lesson is redundant.
 
 ## Simplification State Integration
 
@@ -84,27 +95,30 @@ Before generating hypotheses, check if the target file's hash matches the last-t
 in `.agents/configs/simplification-state.json`. If the hash matches, the file has not changed
 since the last optimization session — skip to the next target file or exit if no targets remain.
 
-After a successful optimization session (composite_score improved), update the hash:
+After a successful optimization session (semantic gate passed and composite score
+improved), update the hash:
 
 ```bash
 # Read current hash
 CURRENT_HASH=$(md5sum .agents/build-plus.md | awk '{print $1}')
+STATE_TMP="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/agent-optimization-state.json"
+mkdir -p "$(dirname "$STATE_TMP")"
 
 # Update simplification-state.json
 jq --arg file ".agents/build-plus.md" \
    --arg hash "$CURRENT_HASH" \
    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
    '.files[$file] = {"hash": $hash, "at": $ts, "pr": null}' \
-   .agents/configs/simplification-state.json > /tmp/ss.json && \
-   mv /tmp/ss.json .agents/configs/simplification-state.json
+   .agents/configs/simplification-state.json > "$STATE_TMP" && \
+   mv "$STATE_TMP" .agents/configs/simplification-state.json
 ```
 
 ## Models
 
 ```text
-researcher: sonnet
-evaluator: haiku
-target: sonnet
+researcher: standard
+evaluator: simple
+target: standard
 ```
 
 ## Budget
@@ -117,16 +131,17 @@ per_experiment: 300
 
 ## Hints
 
-- Redundant instructions are the primary token waste — look for rules stated twice
+- Treat apparent duplicates as review candidates; recover their history and
+  decision boundaries before consolidation
 - Examples with long code blocks inflate tokens; prefer references to `file:line`
-- Section headers add tokens; merge thin sections that cover the same topic
+- Merge thin sections only when activation, owner, semantics, and delivery match
 - Verbose preambles ("Before doing X, you must always...") can often be shortened
 - Tables with many columns can sometimes be replaced with a shorter prose rule
 - Avoid removing security rules, traceability requirements, or file operation rules
-- The constraint list enforces hard limits; the researcher should self-filter before testing
+- The Agent Review gate protects non-security lessons as well as hard limits
 - Start with the most verbose sections (long tables, multi-paragraph rules)
-- Prefer consolidation over deletion: merge two related rules into one tighter rule
-- Test with the smoke-test suite first; use agents-md-knowledge for deeper validation
+- Prefer proven semantic equivalence over presumed consolidation
+- Add focused activation/exclusion scenarios before relying on aggregate suites
 
 ## Multi-Agent Targets
 
@@ -134,8 +149,7 @@ To optimize multiple agent files in sequence, run separate sessions with differe
 Suggested order (highest token impact first):
 
 1. `build-plus.md` — primary agent, highest usage
-2. `.agents/prompts/build.txt` — system prompt, loaded every session
-3. `.agents/AGENTS.md` — user guide, loaded on every interactive session
+2. `.agents/AGENTS.md` — user guide, loaded on every interactive session
 
 For each target, update the `files:` and `branch:` in the Target section, and update
 the `command:` in the Metric section to use the appropriate test suite.

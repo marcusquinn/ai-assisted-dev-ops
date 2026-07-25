@@ -1,6 +1,6 @@
 # Test: .agents/prompts/worker-efficiency-protocol.md (106 lines — complex protocol doc)
 file: .agents/prompts/worker-efficiency-protocol.md
-tier_minimum: sonnet
+tier_minimum: standard
 
 scenarios:
   - name: "identifies commit-first workflow"
@@ -31,10 +31,10 @@ scenarios:
       min_length: 40
       max_length: 600
     reference_answer: |
-      Before exiting BLOCKED, the worker must attempt model escalation -- retry
-      with the next tier (sonnet to opus). BLOCKED is only valid after exhausting
-      all autonomous solution paths. One opus attempt is cheaper than a failed
-      worker cycle plus human triage.
+      Before exiting BLOCKED, the worker must attempt model escalation with the
+      configured escalation model. BLOCKED is valid only after exhausting all
+      autonomous solution paths. The current protocol records a concrete Opus
+      attempt as cheaper than a failed worker cycle plus human triage.
     fast_fail_triggers:
       - refusal
       - structural_violation

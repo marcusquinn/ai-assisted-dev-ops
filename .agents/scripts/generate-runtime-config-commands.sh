@@ -501,18 +501,11 @@ _generate_hardcoded_quality_commands() {
 	# shellcheck disable=SC2016
 	if _maybe_write_hardcoded_command "$runtime_id" "$cmd_dir" "agent-review" \
 		"Systematic review and improvement of agent instructions" \
-		'Read ~/.aidevops/agents/tools/build-agent/agent-review.md and follow its instructions.
+		'Read ~/.aidevops/agents/tools/build-agent/agent-review.md and follow it as the canonical review rubric.
 
-Review the agent file(s) specified: $ARGUMENTS
+Review target: $ARGUMENTS
 
-If no specific file is provided, review the agents used in this session and propose improvements based on:
-1. Any corrections the user made
-2. Any commands or paths that failed
-3. Instruction count (target <50 for main, <100 for subagents)
-4. Universal applicability (>80% of tasks)
-5. Duplicate detection across agents
-
-Follow the improvement proposal format from the agent-review instructions.'; then
+If no target is provided, review the instruction surfaces used in this session.'; then
 		count=$((count + 1))
 	fi
 

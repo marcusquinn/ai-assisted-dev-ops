@@ -1,0 +1,61 @@
+# Test: .agents/tools/build-agent/build-agent.md
+file: .agents/tools/build-agent/build-agent.md
+tier_minimum: standard
+
+scenarios:
+  - name: "treats instruction counts as diagnostic evidence"
+    prompt: "An agent has 120 instructions. Should the reviewer delete enough rules to get below 100?"
+    expected:
+      contains:
+        - "heuristic"
+        - "provenance"
+      not_contains:
+        - "delete enough"
+      min_length: 50
+      max_length: 700
+    reference_answer: |
+      No. The count is a maintainability heuristic that triggers investigation,
+      not a deletion target. Recover directive provenance, distinguish exact
+      duplication from reinforcement at another decision boundary, and remove a
+      rule only when its protected knowledge is obsolete or fully superseded.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "makes simple-tier implementation mechanically complete"
+    prompt: "What must an agent include when creating implementation work that is genuinely tier:simple?"
+    expected:
+      contains:
+        - "oldString"
+        - "newString"
+        - "verification"
+      not_contains:
+        - "paraphrased"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      Provide exact file paths, verbatim oldString/newString blocks for every
+      edit, one mechanically executable change per step, and the verification
+      command. If design, exploration, or error-handling judgment remains, the
+      work is not tier:simple.
+    fast_fail_triggers:
+      - refusal
+      - disengagement
+
+  - name: "separates workload semantics from provider mappings"
+    prompt: "Should an authored agent say 'use Sonnet for code and Opus for architecture'? Explain the durable contract."
+    expected:
+      contains:
+        - "standard"
+        - "thinking"
+        - "mapping"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      Authored work uses provider-agnostic simple, standard, and thinking
+      semantics. Concrete models belong in the central preference-ordered
+      runtime mapping and in historical benchmark evidence, not as abstract
+      tiers embedded in agent instructions.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation

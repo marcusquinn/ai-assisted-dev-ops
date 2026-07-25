@@ -15,5 +15,6 @@ only those matching the risk taxonomy.
 - pre-edit-check.sh accepts `--verify-op "command"` to gate operations at the pre-edit stage.
 - dispatch.sh automatically screens task descriptions via `check_task_high_stakes()` before committing workers.
 - Verification is opt-out (`VERIFY_ENABLED=false`) not opt-in. High-stakes operations are verified by default.
-- Verification uses the cheapest model tier (haiku) — cost is minimal per check.
+- Verification requests the `simple` workload tier by default; runtime routing
+  selects the cheapest available approved model for that tier.
 - When verification is unavailable (no verifier model reachable): critical operations are blocked in headless mode, warned in interactive mode. Non-critical operations proceed.

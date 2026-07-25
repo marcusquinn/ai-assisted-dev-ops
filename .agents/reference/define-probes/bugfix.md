@@ -8,17 +8,21 @@ mode: subagent
 
 # Bugfix Probes
 
-Use 2 probes during `/define` for **bugfix** tasks.
+Use this file as a candidate pool during `/define` for **bugfix** tasks. Reuse supplied reproduction and expected-behaviour evidence; ask only when an unanswered point can materially change scope, root-cause strategy, user-visible behaviour, or regression acceptance.
 
 ## Default Assumptions
+
 Apply unless overridden:
+
 - Preserve all behavior except the bug.
 - Add a regression test (fail before, pass after).
 - Prefer root-cause fix over symptom suppression.
 - No scope creep — fix the reported bug only.
 
-## Core Probes
+## Decision-Relevant Candidates
+
 ### Reproduction
+
 ```text
 Can you reproduce this reliably?
 1. Yes (steps provided)
@@ -28,14 +32,17 @@ Can you reproduce this reliably?
 ```
 
 ### Expected vs Actual
+
 ```text
 What is the expected behavior vs actual?
 1. Inferred from description (recommended)
 2. Explicitly described
 ```
 
-## Specialist Probes (Select 2)
+## Optional Specialist Probes
+
 ### Root Cause vs Symptom
+
 ```text
 Is the fix addressing the root cause or a symptom?
 1. Root cause (recommended)
@@ -44,6 +51,7 @@ Is the fix addressing the root cause or a symptom?
 ```
 
 ### Blast Radius
+
 ```text
 What else could break?
 1. Nothing (isolated fix - recommended)
@@ -53,6 +61,7 @@ What else could break?
 ```
 
 ### Regression Context
+
 ```text
 Did this work before?
 1. Yes (regression)
@@ -62,6 +71,7 @@ Did this work before?
 ```
 
 ### Assumption Surfacing
+
 ```text
 I'm assuming this affects [inferred scope]. Correct?
 1. Yes
@@ -70,6 +80,7 @@ I'm assuming this affects [inferred scope]. Correct?
 ```
 
 ### Pre-mortem
+
 ```text
 If the bug returns in a different form, what's most likely?
 1. Same root cause, different trigger (recommended)
@@ -79,10 +90,12 @@ If the bug returns in a different form, what's most likely?
 ```
 
 ## Sufficiency Test
+
 Verify before generating brief:
+
 - Reproduction steps clear?
 - Root cause identified or investigation path set?
 - Regression test defined?
 - Blast radius assessed?
 
-If any answer is "I don't know," ask one more targeted question.
+Ask one targeted question only when an unknown above is consequential and cannot be resolved from evidence or a safe default.

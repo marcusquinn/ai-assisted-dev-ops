@@ -54,7 +54,7 @@ aidevops-memory store \
 
 - Total: ~{TOTAL_TOKENS:,} tokens across {ITERATION_COUNT} iterations
 - Average per iteration: ~{avg_tokens:,} tokens
-- Cost estimate: ~${cost_estimate:.2f} (sonnet pricing)
+- Cost estimate: ~${cost_estimate:.2f} (configured researcher-model pricing)
 ```
 
 Sparkline (if ≥5 kept iterations):

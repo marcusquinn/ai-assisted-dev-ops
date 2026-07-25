@@ -1,6 +1,6 @@
 # Test: .agents/scripts/commands/code-simplifier.md (12 lines — very simple command doc)
 file: .agents/scripts/commands/code-simplifier.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies analysis-only mode"
@@ -20,15 +20,15 @@ scenarios:
       - refusal
       - disengagement
 
-  - name: "identifies required model tier"
-    prompt: "What model tier is required for this command?"
+  - name: "identifies required workload tier"
+    prompt: "What workload tier is required for this command?"
     expected:
       contains:
-        - "opus"
+        - "thinking"
       min_length: 10
       max_length: 300
     reference_answer: |
-      The code-simplifier command requires the opus model tier.
+      The code-simplifier command requires the thinking workload tier.
     fast_fail_triggers:
       - refusal
       - confabulation

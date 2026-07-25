@@ -253,7 +253,9 @@ Check `ps` for workers running 3+ hours with no open PR. Before killing, read th
 
 ### Model escalation
 
-After 2+ failed attempts (count kill/failure comments): escalate to opus via `model-availability-helper.sh resolve opus`. At 3+ failures, also summarise what previous workers attempted.
+After 2+ failed attempts (count kill/failure comments), escalate to
+`tier:thinking` via `model-availability-helper.sh resolve thinking`. At 3+
+failures, also summarise what previous workers attempted.
 
 ## Dispatch Refinements
 
@@ -269,7 +271,10 @@ RESOLVED_MODEL=$(~/.aidevops/agents/scripts/model-availability-helper.sh resolve
 dispatch_with_dedup NUMBER SLUG ... "$RESOLVED_MODEL"
 ```
 
-Precedence: (1) failure escalation (cascade: `tier:simple` → `tier:standard` → `tier:thinking`) > (2) issue labels (`tier:thinking` → opus, `tier:standard` → sonnet, `tier:simple` → haiku) > (3) **omit the 9th parameter** (runtime resolver selects). See [Task Taxonomy](../reference/task-taxonomy.md) for tier purposes.
+Precedence: (1) failure escalation (cascade: `tier:simple` → `tier:standard` →
+`tier:thinking`) > (2) the issue's canonical workload-tier label > (3) **omit
+the 9th parameter** so the runtime resolver selects. See
+[Task Taxonomy](../reference/task-taxonomy.md) for tier purposes.
 
 ### Agent routing from labels
 
