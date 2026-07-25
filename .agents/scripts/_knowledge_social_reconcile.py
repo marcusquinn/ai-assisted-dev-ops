@@ -17,6 +17,7 @@ from typing import Any
 
 from _knowledge_social_lease import (
     RunLease,
+    RunReceiptUpdate,
     assert_run_lease,
     social_now,
     update_run_receipt,
@@ -205,7 +206,6 @@ def _previous_missing_at(
 
 def _upsert_state(
     database: sqlite3.Connection,
-    provider: str,
     lease: RunLease,
     snapshot: ReconciliationSnapshot,
     item: tuple[str, str, str],
@@ -213,7 +213,9 @@ def _upsert_state(
 ) -> None:
     first_missing = None
     if status == "missing":
-        first_missing = _previous_missing_at(database, provider, lease, item)
+        first_missing = _previous_missing_at(
+            database, snapshot.provider, lease, item
+        )
         first_missing = first_missing or snapshot.observed_at
     database.execute(
         "INSERT INTO reconciliation_items(provider,connection_id,stream,item_kind,"
@@ -223,7 +225,7 @@ def _upsert_state(
         "first_missing_at=excluded.first_missing_at,"
         "last_observed_at=excluded.last_observed_at,run_id=excluded.run_id",
         (
-            provider,
+            snapshot.provider,
             lease.connection_id,
             lease.stream,
             *item,
@@ -240,7 +242,7 @@ def _upsert_state(
             (
                 "active" if status == "present" else "missing",
                 snapshot.observed_at,
-                provider,
+                snapshot.provider,
                 item[1],
                 item[2],
             ),
@@ -312,7 +314,6 @@ def _present_items(
 
 def _apply_states(
     database: sqlite3.Connection,
-    provider: str,
     lease: RunLease,
     snapshot: ReconciliationSnapshot,
     inventory: set[tuple[str, str, str]],
@@ -322,10 +323,10 @@ def _apply_states(
     missing_count = 0
     for item in sorted(inventory):
         if item in present:
-            _upsert_state(database, provider, lease, snapshot, item, "present")
+            _upsert_state(database, lease, snapshot, item, "present")
             present_count += 1
         elif snapshot.complete:
-            _upsert_state(database, provider, lease, snapshot, item, "missing")
+            _upsert_state(database, lease, snapshot, item, "missing")
             missing_count += 1
     return present_count, missing_count, len(present - inventory)
 
@@ -353,14 +354,14 @@ def reconcile_snapshot(
         _insert_evidence_batch(database, root, lease, snapshot)
         inventory = _inventory(database, lease.connection_id, lease.stream)
         present_count, missing_count, unknown_count = _apply_states(
-            database, provider, lease, snapshot, inventory
+            database, lease, snapshot, inventory
         )
         update_run_receipt(
             database,
             lease,
-            "complete",
-            resource_delta=len(inventory),
-            terminal=True,
+            RunReceiptUpdate(
+                "complete", resource_delta=len(inventory), terminal=True
+            ),
             now_epoch=now,
         )
         database.execute("COMMIT")

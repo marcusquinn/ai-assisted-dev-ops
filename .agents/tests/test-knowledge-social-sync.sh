@@ -69,6 +69,19 @@ assert_eq "lease and reconciliation tables are provisioned" \
 	"$(sql_value "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('collector_lease_generations','collector_leases','reconciliation_items')")" \
 	"3"
 
+if AIDEVOPS_TEST_MODE='' AIDEVOPS_SOCIAL_NOW_EPOCH='' \
+	"$HELPER" sync-due --base "$BASE" --now-epoch 1000 >/dev/null 2>&1; then
+	assert_eq "explicit clock override is unavailable outside tests" accepted rejected
+else
+	assert_eq "explicit clock override is unavailable outside tests" rejected rejected
+fi
+if AIDEVOPS_TEST_MODE='' AIDEVOPS_SOCIAL_NOW_EPOCH=1000 \
+	"$HELPER" sync-due --base "$BASE" >/dev/null 2>&1; then
+	assert_eq "environment clock override is unavailable outside tests" accepted rejected
+else
+	assert_eq "environment clock override is unavailable outside tests" rejected rejected
+fi
+
 cat >"$TMP_DIR/initial.json" <<'JSON'
 {
   "identity": {"data": {"id": "acct42", "username": "private-handle"}},
@@ -144,6 +157,7 @@ from pathlib import Path
 
 sys.path.insert(0, sys.argv[2])
 from _knowledge_social_lease import (
+    RunLeaseRequest,
     SocialLeaseBusyError,
     SocialLeaseLostError,
     acquire_run_lease,
@@ -162,7 +176,9 @@ def contender(owner, barrier, queue):
     barrier.wait()
     try:
         lease = acquire_run_lease(
-            root, "conn_race", "authored", owner, "sync", 10, now_epoch=2000
+            root,
+            RunLeaseRequest("conn_race", "authored", owner, "sync", 10),
+            now_epoch=2000,
         )
         queue.put(("writer", owner, lease.fencing_token, lease.run_id))
     except SocialLeaseBusyError:
@@ -187,10 +203,14 @@ if sorted(result[0] for result in results) != ["busy", "writer"]:
     raise SystemExit("competing collectors did not elect exactly one writer")
 
 stale = acquire_run_lease(
-    root, "conn_stale", "authored", "runner_old", "sync", 10, now_epoch=3000
+    root,
+    RunLeaseRequest("conn_stale", "authored", "runner_old", "sync", 10),
+    now_epoch=3000,
 )
 fresh = acquire_run_lease(
-    root, "conn_stale", "authored", "runner_new", "sync", 10, now_epoch=3010
+    root,
+    RunLeaseRequest("conn_stale", "authored", "runner_new", "sync", 10),
+    now_epoch=3010,
 )
 database = sqlite3.connect(root / "index" / "social.db")
 database.row_factory = sqlite3.Row
@@ -206,10 +226,14 @@ finally:
 release_run_lease(root, fresh)
 
 old = acquire_run_lease(
-    root, "conn_sync", "authored", "runner_old", "sync", 10, now_epoch=4000
+    root,
+    RunLeaseRequest("conn_sync", "authored", "runner_old", "sync", 10),
+    now_epoch=4000,
 )
 new = acquire_run_lease(
-    root, "conn_sync", "authored", "runner_new", "sync", 10, now_epoch=4010
+    root,
+    RunLeaseRequest("conn_sync", "authored", "runner_new", "sync", 10),
+    now_epoch=4010,
 )
 database = sqlite3.connect(root / "index" / "social.db")
 stored = database.execute(

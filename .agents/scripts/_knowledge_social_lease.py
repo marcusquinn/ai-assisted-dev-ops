@@ -48,13 +48,43 @@ class RunLease:
     expires_at: int
 
 
+@dataclass(frozen=True)
+class RunLeaseRequest:
+    """Validated inputs for acquiring one connection-scoped run lease."""
+
+    connection_id: str
+    stream: str
+    collector_id: str
+    run_kind: str
+    lease_seconds: int
+    request_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class RunReceiptUpdate:
+    """Privacy-safe state transition for one fenced run receipt."""
+
+    status: str
+    resource_delta: int = 0
+    failure_class: str | None = None
+    retry_after: str | None = None
+    terminal: bool = False
+
+
 def social_now(explicit: int | None = None) -> int:
     """Return one validated clock value, with a deterministic test seam."""
+    test_mode = os.environ.get("AIDEVOPS_TEST_MODE") == "1"
+    override = os.environ.get("AIDEVOPS_SOCIAL_NOW_EPOCH")
     if explicit is not None:
+        if not test_mode:
+            raise SocialStoreError("explicit social clock is test-only")
         value: Any = explicit
+    elif override is not None:
+        if not test_mode:
+            raise SocialStoreError("social clock override is test-only")
+        value = override
     else:
-        override = os.environ.get("AIDEVOPS_SOCIAL_NOW_EPOCH")
-        value = override if override is not None else int(datetime.now(UTC).timestamp())
+        value = int(datetime.now(UTC).timestamp())
     if isinstance(value, bool):
         raise SocialStoreError("social clock must be a non-negative integer")
     try:
@@ -66,26 +96,24 @@ def social_now(explicit: int | None = None) -> int:
     return epoch
 
 
-def _validate_run_inputs(
-    connection_id: str,
-    stream: str,
-    collector_id: str,
-    run_kind: str,
-    lease_seconds: int,
-) -> tuple[str, str, str]:
-    connection = validate_opaque(connection_id, "connection_id")
-    collector = validate_opaque(collector_id, "collector_id")
-    if not isinstance(stream, str) or not stream or len(stream) > 127:
+def _validate_run_request(request: RunLeaseRequest) -> RunLeaseRequest:
+    connection = validate_opaque(request.connection_id, "connection_id")
+    collector = validate_opaque(request.collector_id, "collector_id")
+    if (
+        not isinstance(request.stream, str)
+        or not request.stream
+        or len(request.stream) > 127
+    ):
         raise SocialStoreError("stream must be non-empty text")
-    if run_kind not in RUN_KINDS:
+    if request.run_kind not in RUN_KINDS:
         raise SocialStoreError("run_kind must be sync or reconcile")
     if (
-        isinstance(lease_seconds, bool)
-        or not isinstance(lease_seconds, int)
-        or not 1 <= lease_seconds <= 86_400
+        isinstance(request.lease_seconds, bool)
+        or not isinstance(request.lease_seconds, int)
+        or not 1 <= request.lease_seconds <= 86_400
     ):
         raise SocialStoreError("lease_seconds must be between 1 and 86400")
-    return connection, stream, collector
+    return replace(request, connection_id=connection, collector_id=collector)
 
 
 def _run_id(
@@ -123,19 +151,12 @@ def _abandon_expired_run(
 
 def acquire_run_lease(
     root: Path,
-    connection_id: str,
-    stream: str,
-    collector_id: str,
-    run_kind: str,
-    lease_seconds: int,
+    request: RunLeaseRequest,
     *,
     now_epoch: int | None = None,
-    request_hash: str | None = None,
 ) -> RunLease:
     """Elect one collector and create its running receipt atomically."""
-    connection_id, stream, collector_id = _validate_run_inputs(
-        connection_id, stream, collector_id, run_kind, lease_seconds
-    )
+    request = _validate_run_request(request)
     now = social_now(now_epoch)
     database = connect(root)
     try:
@@ -143,15 +164,17 @@ def acquire_run_lease(
         database.execute("BEGIN IMMEDIATE")
         current = database.execute(
             "SELECT * FROM collector_leases WHERE connection_id=?",
-            (connection_id,),
+            (request.connection_id,),
         ).fetchone()
         if current is not None and int(current["expires_at"]) > now:
             raise SocialLeaseBusyError("social connection already has a live collector")
         if current is not None:
             _abandon_expired_run(database, current, now)
-        token = _next_fencing_token(database, connection_id)
-        run_id = _run_id(connection_id, stream, run_kind, token)
-        expires_at = now + lease_seconds
+        token = _next_fencing_token(database, request.connection_id)
+        run_id = _run_id(
+            request.connection_id, request.stream, request.run_kind, token
+        )
+        expires_at = now + request.lease_seconds
         database.execute(
             "INSERT INTO collector_leases(connection_id,collector_id,fencing_token,"
             "run_id,acquired_at,expires_at) VALUES(?,?,?,?,?,?) "
@@ -159,7 +182,14 @@ def acquire_run_lease(
             "collector_id=excluded.collector_id,"
             "fencing_token=excluded.fencing_token,run_id=excluded.run_id,"
             "acquired_at=excluded.acquired_at,expires_at=excluded.expires_at",
-            (connection_id, collector_id, token, run_id, now, expires_at),
+            (
+                request.connection_id,
+                request.collector_id,
+                token,
+                run_id,
+                now,
+                expires_at,
+            ),
         )
         database.execute(
             "INSERT INTO sync_runs(run_id,connection_id,status,fencing_token,"
@@ -167,23 +197,23 @@ def acquire_run_lease(
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id,
-                connection_id,
+                request.connection_id,
                 "running",
                 token,
-                json.dumps({"stream": stream}, separators=(",", ":")),
-                stream,
-                run_kind,
-                collector_id,
+                json.dumps({"stream": request.stream}, separators=(",", ":")),
+                request.stream,
+                request.run_kind,
+                request.collector_id,
                 now,
-                request_hash,
+                request.request_hash,
             ),
         )
         database.execute("COMMIT")
         return RunLease(
-            connection_id,
-            stream,
-            run_kind,
-            collector_id,
+            request.connection_id,
+            request.stream,
+            request.run_kind,
+            request.collector_id,
             token,
             run_id,
             now,
@@ -210,14 +240,17 @@ def assert_run_lease(
         "FROM collector_leases WHERE connection_id=?",
         (lease.connection_id,),
     ).fetchone()
-    matches = bool(
-        row
-        and row["collector_id"] == lease.collector_id
-        and int(row["fencing_token"]) == lease.fencing_token
-        and row["run_id"] == lease.run_id
-        and int(row["acquired_at"]) <= now < int(row["expires_at"])
+    if row is None:
+        raise SocialLeaseLostError("social collector lease is stale or expired")
+    stored_identity = (
+        row["collector_id"],
+        int(row["fencing_token"]),
+        row["run_id"],
     )
-    if not matches:
+    expected_identity = (lease.collector_id, lease.fencing_token, lease.run_id)
+    if stored_identity != expected_identity:
+        raise SocialLeaseLostError("social collector lease is stale or expired")
+    if int(row["acquired_at"]) > now or now >= int(row["expires_at"]):
         raise SocialLeaseLostError("social collector lease is stale or expired")
 
 
@@ -229,12 +262,14 @@ def renew_run_lease(
     now_epoch: int | None = None,
 ) -> RunLease:
     """Renew only the exact live lease; stale generations cannot revive."""
-    _validate_run_inputs(
-        lease.connection_id,
-        lease.stream,
-        lease.collector_id,
-        lease.run_kind,
-        lease_seconds,
+    _validate_run_request(
+        RunLeaseRequest(
+            lease.connection_id,
+            lease.stream,
+            lease.collector_id,
+            lease.run_kind,
+            lease_seconds,
+        )
     )
     now = social_now(now_epoch)
     database = connect(root)
@@ -267,18 +302,14 @@ def renew_run_lease(
 def update_run_receipt(
     database: sqlite3.Connection,
     lease: RunLease,
-    status: str,
+    update: RunReceiptUpdate,
     *,
-    resource_delta: int = 0,
-    failure_class: str | None = None,
-    retry_after: str | None = None,
-    terminal: bool = False,
     now_epoch: int | None = None,
 ) -> None:
     """Update the receipt in the caller's content/cursor transaction."""
-    if resource_delta < 0:
+    if update.resource_delta < 0:
         raise SocialStoreError("receipt resource delta cannot be negative")
-    if terminal and status not in TERMINAL_RUN_STATES:
+    if update.terminal and update.status not in TERMINAL_RUN_STATES:
         raise SocialStoreError("terminal receipt has an invalid status")
     now = social_now(now_epoch)
     assert_run_lease(database, lease, now_epoch=now)
@@ -287,11 +318,11 @@ def update_run_receipt(
         "failure_class=?,retry_after=?,completed_at=? WHERE run_id=? "
         "AND collector_id=? AND fencing_token=?",
         (
-            status,
-            resource_delta,
-            failure_class,
-            retry_after,
-            now if terminal else None,
+            update.status,
+            update.resource_delta,
+            update.failure_class,
+            update.retry_after,
+            now if update.terminal else None,
             lease.run_id,
             lease.collector_id,
             lease.fencing_token,
@@ -316,9 +347,9 @@ def fail_active_run(
         update_run_receipt(
             database,
             lease,
-            "failed",
-            failure_class=failure_class,
-            terminal=True,
+            RunReceiptUpdate(
+                "failed", failure_class=failure_class, terminal=True
+            ),
             now_epoch=now_epoch,
         )
         database.execute("COMMIT")

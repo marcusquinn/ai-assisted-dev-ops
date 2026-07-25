@@ -13,6 +13,7 @@ from typing import Any
 
 from _knowledge_social_lease import (
     RunLease,
+    RunReceiptUpdate,
     assert_run_lease,
     social_now,
     update_run_receipt,
@@ -266,9 +267,11 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         update_run_receipt(
             database,
             lease,
-            "complete" if page.complete else "running",
-            resource_delta=resource_count,
-            terminal=page.complete,
+            RunReceiptUpdate(
+                "complete" if page.complete else "running",
+                resource_delta=resource_count,
+                terminal=page.complete,
+            ),
             now_epoch=now,
         )
         database.execute("COMMIT")
@@ -360,10 +363,12 @@ def record_terminal(
         update_run_receipt(
             database,
             lease,
-            decision.run_status,
-            failure_class=decision.failure_class,
-            retry_after=retry_after,
-            terminal=True,
+            RunReceiptUpdate(
+                decision.run_status,
+                failure_class=decision.failure_class,
+                retry_after=retry_after,
+                terminal=True,
+            ),
             now_epoch=now,
         )
         _upsert_terminal_coverage(database, context, raw, decision)
@@ -393,9 +398,7 @@ def record_bounded_stop(
         update_run_receipt(
             database,
             lease,
-            status,
-            failure_class=failure,
-            terminal=True,
+            RunReceiptUpdate(status, failure_class=failure, terminal=True),
             now_epoch=now,
         )
         updated = database.execute(

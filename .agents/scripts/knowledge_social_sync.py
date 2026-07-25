@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from _knowledge_social_lease import (
+    RunLeaseRequest,
     SocialLeaseLostError,
     acquire_run_lease,
     fail_active_run,
@@ -54,13 +55,15 @@ def _run_reconcile(args: argparse.Namespace) -> dict[str, Any]:
     snapshot = load_reconciliation_snapshot(args.snapshot)
     lease = acquire_run_lease(
         root,
-        args.connection_id,
-        args.stream,
-        _collector(args, principal_id),
-        "reconcile",
-        args.lease_seconds,
+        RunLeaseRequest(
+            args.connection_id,
+            args.stream,
+            _collector(args, principal_id),
+            "reconcile",
+            args.lease_seconds,
+            snapshot.request_hash,
+        ),
         now_epoch=args.now_epoch,
-        request_hash=snapshot.request_hash,
     )
     try:
         return reconcile_snapshot(root, lease, snapshot, now_epoch=args.now_epoch)
@@ -100,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     for command in ("sync-due", "reconcile-due"):
         due = subparsers.add_parser(command)
         _add_scope(due)
-        due.add_argument("--now-epoch", type=int)
+        due.add_argument("--now-epoch", type=int, help=argparse.SUPPRESS)
         due.add_argument("--interval-seconds", type=int)
     reconcile = subparsers.add_parser("reconcile")
     _add_scope(reconcile)
@@ -109,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     reconcile.add_argument("--snapshot", required=True, type=Path)
     reconcile.add_argument("--collector-id")
     reconcile.add_argument("--lease-seconds", type=int, default=300)
-    reconcile.add_argument("--now-epoch", type=int)
+    reconcile.add_argument("--now-epoch", type=int, help=argparse.SUPPRESS)
     receipts = subparsers.add_parser("receipts")
     _add_scope(receipts)
     receipts.add_argument("--connection-id")

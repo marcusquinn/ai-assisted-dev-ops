@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from _knowledge_social_lease import (
+    RunLeaseRequest,
     SocialLeaseLostError,
     acquire_run_lease,
     fail_active_run,
@@ -196,11 +197,13 @@ def collect(
     account_id = validate_opaque(args.account_id, "account_id")
     lease = acquire_run_lease(
         root,
-        connection_id,
-        args.stream,
-        collector_id,
-        "sync",
-        args.lease_seconds,
+        RunLeaseRequest(
+            connection_id,
+            args.stream,
+            collector_id,
+            "sync",
+            args.lease_seconds,
+        ),
     )
     try:
         runner = xurl_runner(args)
