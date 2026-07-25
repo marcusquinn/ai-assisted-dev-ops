@@ -26,8 +26,14 @@ assert "forge-event-mapping-helper.sh" in normal
 assert "task-publication-worker-helper.sh" in normal
 assert "forge-coordinator-state-helper.sh" in normal
 assert "upload-artifact" in normal
+projection_checkout = next(step for step in jobs["forge-event"]["steps"] if step.get("name") == "Checkout repository projection")
+assert projection_checkout["with"]["token"] == "${{ secrets.GITHUB_TOKEN }}"
 ingest = next(step for step in jobs["forge-event"]["steps"] if step.get("name") == "Ingest event and execute publication queue")
 assert ingest["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+push_checkout = next(step for step in jobs["sync-on-push"]["steps"] if step.get("name") == "Checkout")
+assert push_checkout["with"]["token"] == "${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}"
+push_warning = next(step for step in jobs["sync-on-push"]["steps"] if step.get("name") == "Check SYNC_PAT visibility (t2166)")
+assert "SYNC_PAT not present in this run" in push_warning["run"]
 PY
 
 for caller in "$SELF_CALLER" "$CALLER_TEMPLATE"; do
