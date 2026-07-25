@@ -18,7 +18,7 @@ from knowledge_social_import import canonical_json, import_archive_payload, reje
 from knowledge_social_store import SocialStoreError, validate_opaque, validate_root
 
 CONTRACT_VERSION = 1
-GAP_STATES = {"partial", "unavailable"}
+GAP_STATES = ("partial", "unavailable")
 
 
 def private_json(path: Path, label: str, max_bytes: int) -> dict[str, Any]:
