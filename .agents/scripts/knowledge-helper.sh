@@ -1034,6 +1034,22 @@ _search_grep_sources() {
 # falls back to grep over source.md (preferred) or text.txt files otherwise.
 # ---------------------------------------------------------------------------
 
+_cmd_search_resolve_knowledge_root() {
+	local repo_path="$1"
+	local mode
+	mode=$(_get_knowledge_mode "$repo_path")
+	case "$mode" in
+	repo) printf '%s\n' "${repo_path}/${KNOWLEDGE_ROOT}" ;;
+	personal) _cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read" || return 1 ;;
+	off) print_warning "search: knowledge plane is disabled for $repo_path" >&2 ;;
+	*)
+		print_error "search: unknown knowledge mode '$mode' for $repo_path" >&2
+		return 1
+		;;
+	esac
+	return 0
+}
+
 cmd_search() {
 	# Flag-based invocation (preferred):
 	#   cmd_search [--sensitivity <tier>] [--case <id>] [--status <ds>]
@@ -1088,19 +1104,9 @@ cmd_search() {
 		return 1
 	fi
 
-	local mode
-	mode=$(_get_knowledge_mode "$repo_path")
 	local knowledge_root=""
-	case "$mode" in
-	repo) knowledge_root="${repo_path}/${KNOWLEDGE_ROOT}" ;;
-	personal)
-		knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
-		;;
-	off)
-		print_warning "search: knowledge plane is disabled for $repo_path"
-		return 0
-		;;
-	esac
+	knowledge_root=$(_cmd_search_resolve_knowledge_root "$repo_path") || return 1
+	[[ -z "$knowledge_root" ]] && return 0
 
 	local sources_dir="${knowledge_root}/sources"
 	# Compute allowed source IDs for active filters.
