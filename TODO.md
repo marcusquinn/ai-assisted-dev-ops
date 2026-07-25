@@ -4719,3 +4719,5 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18176 Plan secure personal and shared social knowledge corpora #enhancement #framework #knowledge #parent #security ref:GH#28587
 
 - [ ] t18177 Add approval-bound shared X scheduling and notification operations #enhancement #framework #knowledge #security ref:GH#28627
+
+- [ ] t18178 Unify review evidence and policy adapters #bug ref:GH#28632
