@@ -79,6 +79,31 @@ and paths outside the configured personal base fail closed. Callers cannot
 supply a principal ID or physical corpus ID. Repo mode does not use this catalog
 in Phase 1.
 
+### Per-corpus social store
+
+An authorized personal or workspace corpus may add a private social source and
+local projection without changing repo-mode knowledge:
+
+```text
+<corpus-root>/
+  sources/social/raw/<provider>/<opaque-connection-id>/<sha256>.json.gz
+  index/social.db
+```
+
+`knowledge-social-helper.sh` provisions schema v1, imports a provider-neutral
+archive, reports per-stream coverage, or rebuilds the FTS5 projection. Archives
+contain `provider`, opaque `connection_id`, immutable remote account ID,
+`exported_at`, and optional `accounts`, `objects`, `activities`, `media`, and
+`coverage` arrays. Provider-only fields remain in `provider_json`; credential
+keys are rejected before raw persistence.
+
+Canonical JSON bytes are SHA-256 addressed before deterministic compression.
+The raw batch is authoritative and immutable. Normalized rows, coverage, and
+`objects_fts` are projections: repeat import is idempotent, and `rebuild`
+recreates FTS5 from canonical object rows without changing raw evidence. The
+database is mode `0600`, containing directories are `0700`, unsafe IDs and
+symlinks fail closed, and unsupported schema versions reject writes.
+
 **Provision:** `aidevops knowledge init repo` or `aidevops knowledge init personal`.
 **Repair:** `aidevops knowledge provision` is idempotent — safe to re-run.
 
