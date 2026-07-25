@@ -66,6 +66,10 @@ reserved `collector_assignments` table. Private logical names are isolated in
 `corpus_aliases`; aliases are not path components or authorization inputs by
 themselves.
 
+The implementation keeps command dispatch, catalog transactions, and private
+filesystem/authentication-context checks in separate Python modules so each
+security boundary remains independently reviewable.
+
 Personal add operations require `knowledge.write`; list and search require
 `knowledge.read`. The resolver derives an opaque principal ID from the current
 filesystem owner's non-symlink `principal.json`, then requires an active
