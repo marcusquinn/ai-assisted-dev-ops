@@ -161,7 +161,11 @@ mixed_body=$(cd "$MIXED_REPO" && _build_pr_body \
 	"$mixed_base")
 assert_contains "documentation keywords do not contaminate mixed runtime risk" "$mixed_body" "**Risk level:** Medium"
 
-printf '#!/usr/bin/env bash\ncredential="enabled"\nprintf "%%s\\n" "$credential"\n' >"${MIXED_REPO}/src/helper.sh"
+cat >"${MIXED_REPO}/src/helper.sh" <<'EOF'
+#!/usr/bin/env bash
+credential="enabled"
+printf '%s\n' "$credential"
+EOF
 /usr/bin/git -C "$MIXED_REPO" add src/helper.sh
 /usr/bin/git -C "$MIXED_REPO" -c commit.gpgSign=false commit -qm "fixture: add critical runtime behavior"
 mixed_critical_body=$(cd "$MIXED_REPO" && _build_pr_body \
