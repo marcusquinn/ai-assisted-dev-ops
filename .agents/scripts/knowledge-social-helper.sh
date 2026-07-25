@@ -11,6 +11,7 @@ X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
+BROWSER_HELPER="${SCRIPT_DIR}/knowledge_social_browser.py"
 
 usage() {
 	cat <<'EOF'
@@ -43,6 +44,10 @@ Usage:
   knowledge-social-helper.sh share-import --base PATH --alias ALIAS \
     --private-key FILE --bundle FILE
   knowledge-social-helper.sh share-revoke --base PATH --alias ALIAS --principal-id ID
+  knowledge-social-helper.sh provider-validate --manifest FILE
+  knowledge-social-helper.sh capture-browser-gap [--base PATH] [--alias ALIAS] \
+    --manifest FILE --gap FILE --capture FILE [--max-items 1-1000] \
+    [--max-bytes 1024-10485760]
 
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
 mutating operations or knowledge.read for coverage, due plans, receipts, and
@@ -71,6 +76,13 @@ Deterministic routines:
   normalized rows, checkpoints, and the run receipt commit in one transaction.
   Reconciliation snapshots must be private JSON files and mark remote absence as
   missing evidence. They never purge canonical content.
+
+Browser gap capture:
+  Browser input is accepted only for a provider-declared stream after a private
+  gap record proves official API/archive coverage is unavailable or partial.
+  Capture files are read-only artifacts from an approved profile; this helper
+  cannot launch a browser or perform a platform write. Item and byte limits are
+  hard bounds, and replay is content-addressed and idempotent.
 EOF
 	return 0
 }
@@ -120,6 +132,14 @@ main() {
 			return 1
 		fi
 		python3 "$SHARE_HELPER" "$subcommand" "$@" || return 1
+		;;
+	provider-validate | capture-browser-gap)
+		require_runtime || return 1
+		if [[ ! -r "$BROWSER_HELPER" ]]; then
+			printf 'ERROR: social browser adapter missing: %s\n' "$BROWSER_HELPER" >&2
+			return 1
+		fi
+		python3 "$BROWSER_HELPER" "$subcommand" "$@" || return 1
 		;;
 	sync-due | reconcile-due | reconcile | receipts)
 		require_runtime || return 1

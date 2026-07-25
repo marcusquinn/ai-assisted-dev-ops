@@ -147,6 +147,13 @@ membership and corpus grants, revokes that corpus-specific public key, and
 advances the corpus key epoch, so stale bundles and cached local queries fail
 before content access.
 
+Provider extensions and browser-gap ingestion follow
+`05-social-operations.md`. The provider contract permits no platform writes and
+fixes collection priority at API, archive, then browser gap. A browser artifact
+requires an explicit API/archive coverage gap, matching tested selector version,
+private mode-0600 inputs, hard item/byte limits, and a resumable checkpoint.
+Canonical replay is idempotent and consumes no provider request budget.
+
 **Provision:** `aidevops knowledge init repo` or `aidevops knowledge init personal`.
 **Repair:** `aidevops knowledge provision` is idempotent — safe to re-run.
 
