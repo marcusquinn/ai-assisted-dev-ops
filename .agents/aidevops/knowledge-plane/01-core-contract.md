@@ -91,7 +91,7 @@ local projection without changing repo-mode knowledge:
 ```
 
 `knowledge-social-helper.sh` resolves a logical corpus alias through the
-authenticated catalog before it provisions schema v1, imports a provider-neutral
+authenticated catalog before it provisions schema v2, imports a provider-neutral
 archive, reports per-stream coverage, or rebuilds the FTS5 projection. Mutating
 operations require `knowledge.write`; coverage requires `knowledge.read`.
 Coverage opens only an existing, checkpointed database through SQLite immutable
@@ -108,6 +108,22 @@ The raw batch is authoritative and immutable. Normalized rows, coverage, and
 recreates FTS5 from canonical object rows without changing raw evidence. The
 database is mode `0600`, containing directories are `0700`, unsafe IDs and
 symlinks fail closed, and unsupported schema versions reject writes.
+
+`sync-due` enumerates connection IDs and enabled streams in stable order and
+collects only work outside the configured successful-run interval. A designated
+collector must hold the connection's expiring lease; every takeover increments a
+monotonic fencing token, and the adapter verifies that token inside the same
+transaction that commits normalized evidence and advances the cursor. An active
+lease blocks unfenced writes, stale generations cannot write or release a newer
+lease, provider reset times suppress duplicate retries, and expired leases close
+abandoned `running` receipts as `interrupted` before recovery continues.
+
+Each routine writes a privacy-safe `sync_runs` receipt with opaque connection ID,
+stream, run type, timestamps, counts, terminal status, retry boundary, and fencing
+generation. `reconcile` accepts only a mode `0600`, explicitly complete provider
+snapshot. It deterministically records stable objects as `present` or `missing`;
+remote absence never deletes raw evidence or canonical rows. Purge remains a
+separate retention-policy and audit operation.
 
 `knowledge-social-helper.sh query` derives the authenticated principal and
 searches `personal:default` plus every active workspace corpus carrying an

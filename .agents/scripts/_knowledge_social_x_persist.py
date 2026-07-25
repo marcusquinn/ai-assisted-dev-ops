@@ -82,6 +82,25 @@ def _assert_connection_binding(
         raise XAdapterError("stored connection does not match the verified X account")
 
 
+def _assert_fence(
+    database: sqlite3.Connection, context: CollectionContext
+) -> None:
+    """Reject stale generations and unfenced writers while a lease is active."""
+    row = database.execute(
+        "SELECT fencing_token,lease_until FROM collector_leases WHERE connection_id=?",
+        (context.connection_id,),
+    ).fetchone()
+    active = row is not None and datetime.fromisoformat(
+        str(row["lease_until"]).replace("Z", "+00:00")
+    ) > datetime.now(UTC)
+    if context.fencing_token is None:
+        if active:
+            raise XAdapterError("connection has an active fenced collector lease")
+        return
+    if not active or int(row["fencing_token"]) != context.fencing_token:
+        raise XAdapterError("collector lease is stale")
+
+
 def _connection_archive(context: CollectionContext) -> dict[str, Any]:
     return {
         "remote_account_id": context.account["id"],
@@ -165,11 +184,12 @@ def _update_cursor(
 ) -> None:
     database.execute(
         """INSERT INTO sync_cursors(
-           connection_id,stream,cursor,watermark,last_success_at,backfill_complete)
-           VALUES(?,?,?,?,?,?) ON CONFLICT(connection_id,stream) DO UPDATE SET
+           connection_id,stream,cursor,watermark,last_success_at,backfill_complete,fencing_token)
+           VALUES(?,?,?,?,?,?,?) ON CONFLICT(connection_id,stream) DO UPDATE SET
            cursor=excluded.cursor,watermark=excluded.watermark,
            last_success_at=excluded.last_success_at,
-           backfill_complete=excluded.backfill_complete""",
+           backfill_complete=excluded.backfill_complete,
+           fencing_token=excluded.fencing_token""",
         (
             context.connection_id,
             context.stream,
@@ -177,6 +197,7 @@ def _update_cursor(
             page.checkpoint.watermark,
             page.archive["exported_at"],
             int(page.complete),
+            context.fencing_token,
         ),
     )
 
@@ -228,6 +249,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        _assert_fence(database, context)
         _assert_connection_binding(database, context)
         raw = _raw_batch(
             context, page.payload, page.endpoint, page.archive["exported_at"]
@@ -275,16 +297,24 @@ def _record_run(
     failure: str,
     retry_after: str | None,
 ) -> None:
+    observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     database.execute(
-        "INSERT INTO sync_runs(run_id,connection_id,status,failure_class,retry_after,diagnostics) "
-        "VALUES(?,?,?,?,?,?)",
+        """INSERT INTO sync_runs(
+           run_id,connection_id,status,failure_class,retry_after,fencing_token,
+           diagnostics,stream,run_type,started_at,completed_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (
             uuid.uuid4().hex,
             context.connection_id,
             status,
             failure,
             retry_after,
+            None if context.fencing_token is None else str(context.fencing_token),
             canonical_json({"stream": context.stream}),
+            context.stream,
+            "sync",
+            observed_at,
+            observed_at,
         ),
     )
 
@@ -340,6 +370,7 @@ def record_terminal(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        _assert_fence(database, context)
         _assert_connection_binding(database, context)
         raw = _raw_batch(context, payload, endpoint, observed_at)
         upsert_connection(
@@ -380,6 +411,7 @@ def record_bounded_stop(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        _assert_fence(database, context)
         _assert_connection_binding(database, context)
         _record_run(database, context, status, failure, None)
         updated = database.execute(

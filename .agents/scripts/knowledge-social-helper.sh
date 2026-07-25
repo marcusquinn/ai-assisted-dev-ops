@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
+SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 
 usage() {
 	cat <<'EOF'
@@ -24,6 +25,11 @@ Usage:
   knowledge-social-helper.sh sync-x [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id ID --stream STREAM [--budget UNITS] \
     [--media-policy none|metadata] [--app PROFILE] [--username HANDLE]
+  knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
+    --collector-id ID [--interval-seconds N] [--execute] [--budget UNITS]
+  knowledge-social-helper.sh reconcile [--base PATH] [--alias ALIAS] \
+    --connection-id ID --stream STREAM --collector-id ID --snapshot FILE
+  knowledge-social-helper.sh acquire-lease|release-lease [options]
 
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
 mutating operations or knowledge.read for coverage. Physical corpus paths are
@@ -45,6 +51,12 @@ X synchronization:
   authored, mentions, likes, bookmarks, followers, or following. --budget is a
   bounded request-cost allowance from 1 to 1000 units. Media policy none stores
   no media rows; metadata stores references only, never binary media.
+
+Routine synchronization:
+  sync-due emits a deterministic due-work summary by default; --execute runs the
+  guarded adapter. Shared collectors use expiring leases and monotonic fencing
+  tokens. Reconcile accepts only an explicitly complete provider snapshot and
+  marks remote absence as missing; it never purges evidence.
 EOF
 	return 0
 }
@@ -78,6 +90,14 @@ main() {
 			return 1
 		fi
 		python3 "$X_HELPER" "$@" || return 1
+		;;
+	sync-due | reconcile | acquire-lease | release-lease)
+		require_runtime || return 1
+		if [[ ! -r "$SYNC_HELPER" ]]; then
+			printf 'ERROR: social sync implementation missing: %s\n' "$SYNC_HELPER" >&2
+			return 1
+		fi
+		python3 "$SYNC_HELPER" "$subcommand" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1

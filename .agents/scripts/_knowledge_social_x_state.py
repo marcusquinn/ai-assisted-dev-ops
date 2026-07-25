@@ -36,6 +36,19 @@ class CollectionContext:
     config: ConnectionConfig
     state: CursorState
     spec: StreamSpec
+    fencing_token: int | None
+
+
+@dataclass(frozen=True)
+class CollectionRequest:
+    """Validated inputs needed to load one collection context."""
+
+    root: Path
+    connection_id: str
+    account: dict[str, Any]
+    stream: str
+    media_policy: str
+    fencing_token: int | None = None
 
 
 def _json_array(value: str, field: str) -> list[str]:
@@ -96,30 +109,29 @@ def _cursor_state(
     return CursorState(row["cursor"], row["watermark"], bool(row["backfill_complete"]))
 
 
-def load_context(
-    root: Path,
-    connection_id: str,
-    account: dict[str, Any],
-    stream: str,
-    media_policy: str,
-) -> CollectionContext:
+def load_context(request: CollectionRequest) -> CollectionContext:
     """Read the connection policy and selected stream checkpoint."""
-    database = connect(root)
+    database = connect(request.root)
     try:
         migrate(database)
         config = _connection_config(
-            database, connection_id, account["id"], stream, media_policy
+            database,
+            request.connection_id,
+            request.account["id"],
+            request.stream,
+            request.media_policy,
         )
-        state = _cursor_state(database, connection_id, stream)
+        state = _cursor_state(database, request.connection_id, request.stream)
     finally:
         database.close()
     return CollectionContext(
-        root,
-        connection_id,
-        account,
-        stream,
-        media_policy,
+        request.root,
+        request.connection_id,
+        request.account,
+        request.stream,
+        request.media_policy,
         config,
         state,
-        STREAMS[stream],
+        STREAMS[request.stream],
+        request.fencing_token,
     )
