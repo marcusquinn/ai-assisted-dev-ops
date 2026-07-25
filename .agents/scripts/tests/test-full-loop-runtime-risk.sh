@@ -82,6 +82,14 @@ low_body=$(_build_pr_body \
 assert_contains "non-runtime files remain Low despite policy terms" "$low_body" "**Risk level:** Low"
 assert_contains "Low fixture is self-assessed" "$low_body" "**Verification:** self-assessed"
 
+GLOB_REPO="${TEST_ROOT}/glob-repo"
+mkdir -p "${GLOB_REPO}/src"
+printf 'fixture\n' >"${GLOB_REPO}/src/a.sh"
+glob_context=$(cd "$GLOB_REPO" && _runtime_paths_keyword_context 'src/[ab].sh')
+assert_contains "runtime path context preserves glob metacharacters" "$glob_context" "src/[ab].sh"
+assert_rejected "invalid diff base fails closed" \
+	_derive_runtime_risk "" "src/app.sh" "Adjust helper behavior" "missing-runtime-base"
+
 author_body=$(_build_pr_body \
 	"4" \
 	"Update author metadata" \
@@ -273,11 +281,11 @@ chmod +x "${MUTATION_BIN}/git" "${MUTATION_BIN}/gh"
 if (cd "$MUTATION_REPO" && PATH="${MUTATION_BIN}:$PATH" MUTATION_TRACE="$MUTATION_TRACE" \
 	"${SCRIPT_DIR_TEST}/full-loop-helper.sh" commit-and-pr --issue 9 --message "fix: update runtime behavior" \
 	--summary "Adjust helper behavior" --testing "unit tests pass" >/dev/null 2>&1); then
-	printf 'FAIL derived runtime evidence is rejected before mutation\n'
+	printf 'FAIL commit-and-pr accepted invalid derived runtime evidence\n'
 	TESTS_FAILED=$((TESTS_FAILED + 1))
 elif grep -Eq '^git push|^gh (pr|api .*POST)' "$MUTATION_TRACE" ||
 	/usr/bin/git --git-dir="$MUTATION_REMOTE" show-ref --verify --quiet refs/heads/feature/risk-order; then
-	printf 'FAIL invalid derived evidence avoids remote mutations\n'
+	printf 'FAIL invalid derived evidence allowed remote mutations\n'
 	TESTS_FAILED=$((TESTS_FAILED + 1))
 else
 	printf 'PASS invalid derived evidence avoids remote mutations\n'

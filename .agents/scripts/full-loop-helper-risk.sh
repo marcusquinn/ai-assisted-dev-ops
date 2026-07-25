@@ -88,19 +88,14 @@ _runtime_paths_are_low() {
 	local files_changed="${1:-}"
 	local path=""
 	local saw_path=0
-	local old_ifs="$IFS"
-	IFS=','
-	for path in $files_changed; do
-		IFS="$old_ifs"
+	while IFS= read -r path; do
 		path="${path#"${path%%[![:space:]]*}"}"
 		[[ -z "$path" ]] && continue
 		saw_path=1
 		if ! _runtime_path_is_low "$path"; then
-			IFS="$old_ifs"
 			return 1
 		fi
-	done
-	IFS="$old_ifs"
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
 	[[ "$saw_path" -eq 1 ]] && return 0
 	return 1
 }
@@ -110,17 +105,13 @@ _runtime_paths_are_low() {
 _runtime_paths_keyword_context() {
 	local files_changed="${1:-}"
 	local path=""
-	local old_ifs="$IFS"
-	IFS=','
-	for path in $files_changed; do
-		IFS="$old_ifs"
+	while IFS= read -r path; do
 		path="${path#"${path%%[![:space:]]*}"}"
 		[[ -z "$path" ]] && continue
 		if ! _runtime_path_is_low "$path"; then
 			printf '%s\n' "$path"
 		fi
-	done
-	IFS="$old_ifs"
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
 	return 0
 }
 
@@ -286,7 +277,9 @@ _derive_runtime_risk() {
 		runtime_paths=$(_runtime_paths_keyword_context "$files_changed") || return 1
 		context="${context} ${runtime_paths}"
 		if [[ -n "$base_ref" ]]; then
-			diff_context=$(_runtime_diff_keyword_context "$base_ref" || true)
+			if ! diff_context=$(_runtime_diff_keyword_context "$base_ref"); then
+				return 1
+			fi
 			context="${context} ${diff_context}"
 		fi
 		context=$(printf '%s' "$context" | tr '[:upper:]' '[:lower:]')
