@@ -30,6 +30,22 @@ Interactive sessions have no `main`/`master` exception: every edit uses a linked
 
 All other paths and all interactive edits require a linked worktree. `pre-edit-check.sh` is authoritative for the mode and path decision; write-time hooks provide additional enforcement where available.
 
+## Git Hook Status Without External-Directory Access
+
+Linked worktrees share Git hooks with their canonical repository through
+`git rev-parse --git-common-dir`. Never inspect that external `.git/hooks`
+directory with generic Read, Glob, Edit, or Write tools.
+
+Use `aidevops_hook_status` to inspect known pre-commit and pre-push marker
+status for the current worktree. The tool is repository-bound for headless
+workers and returns statuses only, never hook content or filesystem paths.
+Until a running OpenCode session has loaded that tool, use the existing bounded
+fallback from the target worktree:
+
+```bash
+bash ~/.aidevops/agents/scripts/install-hooks-helper.sh status
+```
+
 ## Exit Codes
 
 | Code | Meaning | Action |

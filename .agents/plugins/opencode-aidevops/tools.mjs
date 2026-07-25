@@ -1,6 +1,6 @@
 import { execFileSync, execSync, spawn } from "child_process";
-import { existsSync, realpathSync, statSync } from "fs";
-import { join } from "path";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "fs";
+import { isAbsolute, join, resolve } from "path";
 
 export let tool;
 try {
@@ -171,6 +171,18 @@ const PRE_EDIT_GUIDANCE = {
   3: "WARNING — proceed with caution.",
 };
 
+const MAX_HOOK_INSPECTION_BYTES = 1024 * 1024;
+const HOOK_MARKERS = {
+  "pre-commit": {
+    quality: "# aidevops-pre-commit-hook",
+    markdoc: "# aidevops-markdoc-validate-hook",
+  },
+  "pre-push": {
+    ghWrapper: "# aidevops-gh-wrapper-guard",
+    quality: "# aidevops-pre-push-quality-hook",
+  },
+};
+
 /**
  * Resolve and validate a requested Git worktree path.
  * @param {string} requestedWorkdir
@@ -196,6 +208,98 @@ function resolveGitWorktree(requestedWorkdir) {
     targetWorkdir = "";
   }
   return targetWorkdir;
+}
+
+function resolveGitMetadataPath(worktree, selector) {
+  const rawPath = execFileSync(
+    "git",
+    ["-C", worktree, "rev-parse", selector],
+    {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  ).trim();
+  return realpathSync(isAbsolute(rawPath) ? rawPath : resolve(worktree, rawPath));
+}
+
+function inspectHookFile(hooksDir, hookName, markers, directorySafe) {
+  const markerStatus = Object.fromEntries(Object.keys(markers).map((name) => [name, false]));
+  if (!directorySafe) return { status: "unsafe-hooks-directory", markers: markerStatus };
+
+  const hookPath = join(hooksDir, hookName);
+  let hookStat;
+  try {
+    hookStat = lstatSync(hookPath);
+  } catch {
+    return { status: "missing", markers: markerStatus };
+  }
+  if (hookStat.isSymbolicLink()) return { status: "unsafe-symlink", markers: markerStatus };
+  if (!hookStat.isFile()) return { status: "unsupported-file-type", markers: markerStatus };
+  if (hookStat.size > MAX_HOOK_INSPECTION_BYTES) return { status: "oversized", markers: markerStatus };
+
+  const content = readFileSync(hookPath, "utf-8");
+  for (const [name, marker] of Object.entries(markers)) markerStatus[name] = content.includes(marker);
+  return { status: "regular-file", markers: markerStatus };
+}
+
+function inspectGitHooks(worktree) {
+  const gitDir = resolveGitMetadataPath(worktree, "--git-dir");
+  const commonDir = resolveGitMetadataPath(worktree, "--git-common-dir");
+  const hooksDir = join(commonDir, "hooks");
+  let hooksDirectoryStatus = "missing";
+  let directorySafe = false;
+  try {
+    const hooksStat = lstatSync(hooksDir);
+    if (hooksStat.isSymbolicLink()) hooksDirectoryStatus = "unsafe-symlink";
+    else if (hooksStat.isDirectory()) {
+      hooksDirectoryStatus = "directory";
+      directorySafe = true;
+    } else hooksDirectoryStatus = "unsupported-file-type";
+  } catch {
+    hooksDirectoryStatus = "missing";
+  }
+
+  return {
+    schema: "aidevops-hook-status/v1",
+    sharedGitDirectory: gitDir !== commonDir,
+    hooksDirectory: hooksDirectoryStatus,
+    hooks: Object.fromEntries(Object.entries(HOOK_MARKERS).map(([hookName, markers]) => [
+      hookName,
+      inspectHookFile(hooksDir, hookName, markers, directorySafe),
+    ])),
+  };
+}
+
+function createHookStatusTool(options = {}) {
+  return tool({
+    description:
+      "Inspect known aidevops Git hook markers for an existing worktree without reading canonical .git/hooks through file tools. " +
+      "Use this for pre-commit/pre-push hook integrity checks. Returns statuses only—never hook contents or filesystem paths.",
+    args: {
+      workdir: z.string().optional().describe("Optional existing Git worktree; defaults to the current worktree"),
+    },
+    async execute(args) {
+      args = args && typeof args === "object" ? args : {};
+      const requestedWorkdir = args.workdir || process.cwd();
+      const targetWorkdir = resolveGitWorktree(requestedWorkdir);
+      if (!targetWorkdir) return "Hook status unavailable: target must resolve to an existing Git worktree";
+
+      const workerWorktree = options.workerWorktree ?? process.env.WORKER_WORKTREE_PATH ?? "";
+      if (workerWorktree) {
+        const boundWorktree = resolveGitWorktree(workerWorktree);
+        if (!boundWorktree || boundWorktree !== targetWorkdir) {
+          return "Hook status denied: headless workers may inspect only their assigned worktree";
+        }
+      }
+
+      try {
+        return JSON.stringify(inspectGitHooks(targetWorkdir), null, 2);
+      } catch {
+        return "Hook status unavailable: Git metadata could not be validated";
+      }
+    },
+  });
 }
 
 /**
@@ -298,10 +402,11 @@ function runPreEditCheck(script, args, cwd, timeoutMs) {
 /**
  * Create all tool definitions for the plugin.
  *
- * Tools (4 total):
+ * Tools (5 total):
  *   - aidevops              — aidevops CLI runner
  *   - aidevops_memory       — unified recall/store (merged from former recall + store pair)
  *   - aidevops_pre_edit_check — git safety check before file edits
+ *   - aidevops_hook_status — bounded Git hook marker inspection
  *   - model-accounts-pool   — OAuth account pool management (added in index.mjs)
  *
  * NOTE: aidevops_quality_check was removed. Quality checks run automatically
@@ -319,7 +424,7 @@ function runPreEditCheck(script, args, cwd, timeoutMs) {
  *
  * @param {string} scriptsDir - Path to scripts directory
  * @param {function} run - Shell command runner
- * @param {{preEditTimeoutMs?: number}} [options] - Tool-specific test/runtime overrides
+ * @param {{preEditTimeoutMs?: number, workerWorktree?: string}} [options] - Tool-specific test/runtime overrides
  * @returns {Record<string, object>}
  */
 export function createTools(scriptsDir, run, options = {}) {
@@ -327,5 +432,6 @@ export function createTools(scriptsDir, run, options = {}) {
     aidevops: createAidevopsTool(run),
     aidevops_memory: createMemoryTool(scriptsDir, run),
     aidevops_pre_edit_check: createPreEditCheckTool(scriptsDir, options.preEditTimeoutMs),
+    aidevops_hook_status: createHookStatusTool({ workerWorktree: options.workerWorktree }),
   };
 }
