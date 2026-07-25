@@ -176,19 +176,22 @@ else
 	assert_eq "path traversal connection ID is rejected" "rejected" "rejected"
 fi
 
-credential_archive="${TMP_DIR}/credential.json"
-python3 - "$ARCHIVE" "$credential_archive" <<'PY'
+credential_keys=(accessToken clientSecret token secret sessionCookie bearerToken oauthToken setCookie privateKey secretAccessKey x-api-key)
+accepted_credential_keys=""
+for credential_key in "${credential_keys[@]}"; do
+	credential_archive="${TMP_DIR}/credential-${credential_key}.json"
+	python3 - "$ARCHIVE" "$credential_archive" "$credential_key" <<'PY'
 import json
 import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
-data["provider_json"] = {"accessToken": "must-not-persist", "nested": {"clientSecret": "also-forbidden"}}
+data["provider_json"] = {sys.argv[3]: "must-not-persist"}
 json.dump(data, open(sys.argv[2], "w", encoding="utf-8"))
 PY
-if "$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$credential_archive" >/dev/null 2>&1; then
-	assert_eq "credential material is rejected before raw persistence" "accepted" "rejected"
-else
-	assert_eq "credential material is rejected before raw persistence" "rejected" "rejected"
-fi
+	if "$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$credential_archive" >/dev/null 2>&1; then
+		accepted_credential_keys="${accepted_credential_keys}${credential_key},"
+	fi
+done
+assert_eq "credential key variants are rejected before raw persistence" "$accepted_credential_keys" ""
 assert_eq "rejected archives create no raw batches" "$(python3 -c 'from pathlib import Path; import sys; print(len(list(Path(sys.argv[1]).rglob("*.json.gz"))))' "$CORPUS_ROOT/sources/social/raw")" "2"
 
 unsupported_archive="${TMP_DIR}/unsupported-schema.json"

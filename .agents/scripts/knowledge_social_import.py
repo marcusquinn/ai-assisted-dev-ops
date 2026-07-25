@@ -28,13 +28,45 @@ from knowledge_social_store import (
 FORBIDDEN_CREDENTIAL_KEYS = {
     "accesstoken",
     "apikey",
+    "apitoken",
+    "auth",
+    "authentication",
+    "authorization",
+    "bearer",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "cookiejar",
+    "cookies",
+    "credential",
+    "credentials",
+    "csrftoken",
+    "idtoken",
+    "jwt",
+    "oauthtoken",
+    "passphrase",
+    "password",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+    "secretaccesskey",
+    "sessioncookie",
+    "sessiontoken",
+    "setcookie",
+    "token",
+}
+FORBIDDEN_CREDENTIAL_SUFFIXES = (
+    "accesstoken",
+    "apikey",
     "authorization",
     "clientsecret",
     "cookie",
-    "cookies",
     "password",
+    "privatekey",
     "refreshtoken",
-}
+    "secretaccesskey",
+    "sessiontoken",
+)
 OBJECT_UPSERT = """INSERT INTO objects(
     provider,object_type,remote_id,account_remote_id,text_content,created_at,
     observed_at,evidence_class,provider_json,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -84,7 +116,9 @@ def reject_credentials(value: Any) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = "".join(character for character in str(key).lower() if character.isalnum())
-            if normalized in FORBIDDEN_CREDENTIAL_KEYS:
+            if normalized in FORBIDDEN_CREDENTIAL_KEYS or normalized.endswith(
+                FORBIDDEN_CREDENTIAL_SUFFIXES
+            ):
                 raise SocialStoreError("archive contains forbidden credential material")
             reject_credentials(child)
     elif isinstance(value, list):
