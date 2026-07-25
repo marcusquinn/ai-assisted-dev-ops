@@ -82,7 +82,7 @@ def _clock(args: argparse.Namespace) -> int:
     return int(time.time())
 
 
-def _read_private_body(path: Path) -> str:
+def _open_private_body(path: Path) -> tuple[int, os.stat_result]:
     try:
         validate_private_file(path, "outbound body", repair=False)
         before = path.lstat()
@@ -92,6 +92,10 @@ def _read_private_body(path: Path) -> str:
         descriptor = os.open(path, flags)
     except (CatalogError, OSError) as error:
         raise OperationsError("outbound body is unavailable or unsafe") from error
+    return descriptor, before
+
+
+def _read_private_bytes(descriptor: int, before: os.stat_result) -> bytes:
     try:
         after = os.fstat(descriptor)
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
@@ -104,6 +108,12 @@ def _read_private_body(path: Path) -> str:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    return payload
+
+
+def _read_private_body(path: Path) -> str:
+    descriptor, before = _open_private_body(path)
+    payload = _read_private_bytes(descriptor, before)
     if len(payload) > MAX_PAYLOAD_BYTES:
         raise OperationsError("outbound body exceeds the private payload limit")
     try:
@@ -461,10 +471,7 @@ def _add_executor(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--claim-seconds", type=int, default=300)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-
+def _add_create_command(commands: Any) -> None:
     create = commands.add_parser("operation-create")
     _add_scope(create)
     _add_test_clock(create)
@@ -478,6 +485,8 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--scheduled-at", type=int)
     create.add_argument("--operation-id")
 
+
+def _add_state_commands(commands: Any) -> None:
     for command in ("operation-approve", "operation-revoke", "operation-cancel"):
         operation = commands.add_parser(command)
         _add_scope(operation)
@@ -486,6 +495,8 @@ def parse_args() -> argparse.Namespace:
         if command == "operation-approve":
             operation.add_argument("--expires-at", type=int, required=True)
 
+
+def _add_run_commands(commands: Any) -> None:
     run = commands.add_parser("operation-run")
     _add_scope(run)
     _add_test_clock(run)
@@ -498,6 +509,8 @@ def parse_args() -> argparse.Namespace:
     _add_executor(run_due)
     run_due.add_argument("--limit", type=int, default=10)
 
+
+def _add_inspection_commands(commands: Any) -> None:
     due = commands.add_parser("operations-due")
     _add_scope(due)
     _add_test_clock(due)
@@ -515,6 +528,8 @@ def parse_args() -> argparse.Namespace:
     reconcile.add_argument("--outcome", choices=("succeeded", "not-sent"), required=True)
     reconcile.add_argument("--provider-id")
 
+
+def _add_notification_commands(commands: Any) -> None:
     refresh = commands.add_parser("notifications-refresh")
     _add_scope(refresh)
     _add_test_clock(refresh)
@@ -529,6 +544,16 @@ def parse_args() -> argparse.Namespace:
     _add_test_clock(notification_set)
     notification_set.add_argument("--notification-id", required=True)
     notification_set.add_argument("--status", choices=NOTIFICATION_STATUSES, required=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    _add_create_command(commands)
+    _add_state_commands(commands)
+    _add_run_commands(commands)
+    _add_inspection_commands(commands)
+    _add_notification_commands(commands)
     return parser.parse_args()
 
 

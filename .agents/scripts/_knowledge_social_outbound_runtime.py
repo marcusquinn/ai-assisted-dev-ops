@@ -19,6 +19,14 @@ from _knowledge_social_outbound import (
 from knowledge_social_import import canonical_json
 from knowledge_social_store import SocialStoreError, validate_opaque
 
+CLAIM_OPERATION_SQL = """UPDATE outbound_operations
+                  SET state='claimed',claim_token=?,claimed_by=?,claim_expires_at=?,
+                      last_attempt_id=?,updated_at=?
+                WHERE operation_id=? AND state='approved'"""
+INSERT_ATTEMPT_SQL = """INSERT INTO outbound_attempts(
+                attempt_id,operation_id,claim_token,executor_id,status,started_at)
+               VALUES(?,?,?,?,?,?)"""
+
 
 @dataclass(frozen=True)
 class ClaimRequest:
@@ -64,6 +72,68 @@ def due_operation_ids(
     return [str(_verified_operation(database, row["operation_id"])["operation_id"]) for row in rows]
 
 
+def _claimable_operation(
+    database: sqlite3.Connection, request: ClaimRequest, principal_id: str
+) -> sqlite3.Row:
+    row = _verified_operation(database, request.operation_id)
+    if (
+        row["state"] != "approved"
+        or int(row["scheduled_at"]) > request.current_time
+        or row["created_by"] != principal_id
+    ):
+        raise SocialStoreError("operation is not due and approved")
+    approval = database.execute(
+        """SELECT approval_id FROM outbound_approvals
+            WHERE operation_id=? AND principal_id=? AND intent_sha256=?
+              AND revoked_at IS NULL AND expires_at>?
+            ORDER BY approved_at DESC LIMIT 1""",
+        (
+            request.operation_id,
+            principal_id,
+            row["intent_sha256"],
+            request.current_time,
+        ),
+    ).fetchone()
+    if approval is None:
+        raise SocialStoreError("operation approval is missing or expired")
+    return row
+
+
+def _persist_claim(
+    database: sqlite3.Connection,
+    request: ClaimRequest,
+    row: sqlite3.Row,
+    executor_id: str,
+) -> tuple[int, str]:
+    claim_token = int(row["claim_token"]) + 1
+    attempt_id = _new_id("att")
+    changed = database.execute(
+        CLAIM_OPERATION_SQL,
+        (
+            claim_token,
+            executor_id,
+            request.current_time + request.claim_seconds,
+            attempt_id,
+            request.current_time,
+            request.operation_id,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise SocialStoreError("operation claim lost a concurrent race")
+    database.execute(
+        INSERT_ATTEMPT_SQL,
+        (
+            attempt_id,
+            request.operation_id,
+            claim_token,
+            executor_id,
+            "running",
+            request.current_time,
+        ),
+    )
+    return claim_token, attempt_id
+
+
 def claim_operation(
     database: sqlite3.Connection, request: ClaimRequest
 ) -> ClaimedOperation:
@@ -74,57 +144,9 @@ def claim_operation(
     executor_id = validate_opaque(request.executor_id, "executor_id")
     database.execute("BEGIN IMMEDIATE")
     try:
-        row = _verified_operation(database, request.operation_id)
-        if (
-            row["state"] != "approved"
-            or int(row["scheduled_at"]) > request.current_time
-            or row["created_by"] != principal_id
-        ):
-            raise SocialStoreError("operation is not due and approved")
-        approval = database.execute(
-            """SELECT approval_id FROM outbound_approvals
-                WHERE operation_id=? AND principal_id=? AND intent_sha256=?
-                  AND revoked_at IS NULL AND expires_at>?
-                ORDER BY approved_at DESC LIMIT 1""",
-            (
-                request.operation_id,
-                principal_id,
-                row["intent_sha256"],
-                request.current_time,
-            ),
-        ).fetchone()
-        if approval is None:
-            raise SocialStoreError("operation approval is missing or expired")
-        claim_token = int(row["claim_token"]) + 1
-        attempt_id = _new_id("att")
-        changed = database.execute(
-            """UPDATE outbound_operations
-                  SET state='claimed',claim_token=?,claimed_by=?,claim_expires_at=?,
-                      last_attempt_id=?,updated_at=?
-                WHERE operation_id=? AND state='approved'""",
-            (
-                claim_token,
-                executor_id,
-                request.current_time + request.claim_seconds,
-                attempt_id,
-                request.current_time,
-                request.operation_id,
-            ),
-        ).rowcount
-        if changed != 1:
-            raise SocialStoreError("operation claim lost a concurrent race")
-        database.execute(
-            """INSERT INTO outbound_attempts(
-                attempt_id,operation_id,claim_token,executor_id,status,started_at)
-               VALUES(?,?,?,?,?,?)""",
-            (
-                attempt_id,
-                request.operation_id,
-                claim_token,
-                executor_id,
-                "running",
-                request.current_time,
-            ),
+        row = _claimable_operation(database, request, principal_id)
+        claim_token, attempt_id = _persist_claim(
+            database, request, row, executor_id
         )
         database.execute("COMMIT")
     except Exception:
@@ -183,6 +205,16 @@ def mark_provider_started(
         raise SocialStoreError("outbound provider boundary is stale or already marked")
 
 
+def _assert_outcome_fields(
+    status: str, provider_remote_id: str | None, failure_class: str | None
+) -> None:
+    if status == "succeeded":
+        if provider_remote_id is None or failure_class is not None:
+            raise SocialStoreError("successful outbound receipt requires only a provider ID")
+    elif provider_remote_id is not None or failure_class is None:
+        raise SocialStoreError("unsuccessful outbound receipt requires only a failure class")
+
+
 def _validated_outcome(outcome: AttemptOutcome) -> AttemptOutcome:
     if outcome.status not in ("succeeded", "failed", "unknown"):
         raise SocialStoreError("invalid outbound terminal status")
@@ -192,11 +224,9 @@ def _validated_outcome(outcome: AttemptOutcome) -> AttemptOutcome:
         provider_remote_id = validate_opaque(provider_remote_id, "provider_remote_id")
     if outcome.failure_class is not None and outcome.failure_class not in FAILURE_CLASSES:
         raise SocialStoreError("invalid outbound failure class")
-    if outcome.status == "succeeded":
-        if provider_remote_id is None or outcome.failure_class is not None:
-            raise SocialStoreError("successful outbound receipt requires only a provider ID")
-    elif provider_remote_id is not None or outcome.failure_class is None:
-        raise SocialStoreError("unsuccessful outbound receipt requires only a failure class")
+    _assert_outcome_fields(
+        outcome.status, provider_remote_id, outcome.failure_class
+    )
     return AttemptOutcome(
         outcome.status,
         provider_remote_id,
@@ -313,6 +343,36 @@ def finalize_operation(
     return _outcome_receipt(claimed, outcome)
 
 
+def _expire_claim(
+    database: sqlite3.Connection, row: sqlite3.Row, current_time: int
+) -> str:
+    changed = database.execute(
+        """UPDATE outbound_attempts
+              SET status='unknown',finished_at=?,failure_class='executor_lost',
+                  diagnostics=?
+            WHERE attempt_id=? AND operation_id=? AND claim_token=?
+              AND status='running'""",
+        (
+            current_time,
+            canonical_json({"phase": "executor"}),
+            row["last_attempt_id"],
+            row["operation_id"],
+            row["claim_token"],
+        ),
+    ).rowcount
+    if changed != 1:
+        raise SocialStoreError("expired outbound attempt is inconsistent")
+    operation_changed = database.execute(
+        """UPDATE outbound_operations
+              SET state='unknown',claim_expires_at=NULL,updated_at=?
+            WHERE operation_id=? AND state='claimed' AND claim_token=?""",
+        (current_time, row["operation_id"], row["claim_token"]),
+    ).rowcount
+    if operation_changed != 1:
+        raise SocialStoreError("expired outbound operation is inconsistent")
+    return str(row["operation_id"])
+
+
 def expire_claims(
     database: sqlite3.Connection,
     principal_id: str,
@@ -332,37 +392,10 @@ def expire_claims(
                 ORDER BY claim_expires_at,operation_id LIMIT ?""",
             (principal_id, current_time, limit),
         ).fetchall()
-        expired: list[str] = []
-        for row in rows:
-            changed = database.execute(
-                """UPDATE outbound_attempts
-                      SET status='unknown',finished_at=?,failure_class='executor_lost',
-                          diagnostics=?
-                    WHERE attempt_id=? AND operation_id=? AND claim_token=?
-                      AND status='running'""",
-                (
-                    current_time,
-                    canonical_json({"phase": "executor"}),
-                    row["last_attempt_id"],
-                    row["operation_id"],
-                    row["claim_token"],
-                ),
-            ).rowcount
-            if changed != 1:
-                raise SocialStoreError("expired outbound attempt is inconsistent")
-            operation_changed = database.execute(
-                """UPDATE outbound_operations
-                      SET state='unknown',claim_expires_at=NULL,updated_at=?
-                    WHERE operation_id=? AND state='claimed' AND claim_token=?""",
-                (current_time, row["operation_id"], row["claim_token"]),
-            ).rowcount
-            if operation_changed != 1:
-                raise SocialStoreError("expired outbound operation is inconsistent")
-            expired.append(str(row["operation_id"]))
+        expired = [_expire_claim(database, row, current_time) for row in rows]
         database.execute("COMMIT")
     except Exception:
         if database.in_transaction:
             database.execute("ROLLBACK")
         raise
     return expired
-

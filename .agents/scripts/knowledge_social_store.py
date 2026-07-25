@@ -19,6 +19,7 @@ from knowledge_corpus_context import (
 )
 
 SCHEMA_VERSION = 3
+SCHEMA_VERSION_SQL = "PRAGMA user_version=3"
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -288,7 +289,7 @@ def migrate(connection: sqlite3.Connection) -> None:
                 "VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (version,),
             )
-        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        connection.execute(SCHEMA_VERSION_SQL)
         connection.execute("COMMIT")
     except Exception:
         connection.execute("ROLLBACK")

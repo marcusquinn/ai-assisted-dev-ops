@@ -45,7 +45,7 @@ def _write_args(claimed: ClaimedOperation) -> list[str]:
     raise ProviderAdapterError("approved outbound operation has an invalid action shape")
 
 
-def _provider_remote_id(claimed: ClaimedOperation, output: str) -> str:
+def _decoded_response(output: str) -> dict[str, object]:
     if len(output.encode("utf-8")) > MAX_PROVIDER_OUTPUT_BYTES:
         raise ProviderAdapterError("xurl write response exceeds the safety limit")
     try:
@@ -58,6 +58,12 @@ def _provider_remote_id(claimed: ClaimedOperation, output: str) -> str:
     status = response_status(response)
     if status < 200 or status >= 300:
         raise ProviderAdapterError("xurl write response reports a provider failure")
+    return response
+
+
+def _receipt_remote_id(
+    claimed: ClaimedOperation, response: dict[str, object]
+) -> str:
     if claimed.action in ("like", "bookmark"):
         if claimed.target_remote_id is None:
             raise ProviderAdapterError("engagement receipt has no target ID")
@@ -67,6 +73,10 @@ def _provider_remote_id(claimed: ClaimedOperation, output: str) -> str:
     if not isinstance(remote_id, str):
         raise ProviderAdapterError("xurl write response has no stable post ID")
     return validate_opaque(remote_id, "provider_remote_id")
+
+
+def _provider_remote_id(claimed: ClaimedOperation, output: str) -> str:
+    return _receipt_remote_id(claimed, _decoded_response(output))
 
 
 def invoke_provider(

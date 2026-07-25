@@ -49,6 +49,16 @@ class OperationIntent:
 
 
 @dataclass(frozen=True)
+class ApprovalDecision:
+    """Normalized approval authority for one exact stored intent."""
+
+    operation_id: str
+    principal_id: str
+    expires_at: int
+    approved_at: int
+
+
+@dataclass(frozen=True)
 class ClaimedOperation:
     """Private operation values needed for exactly one provider attempt."""
 
@@ -193,6 +203,50 @@ def _public_operation(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _existing_public_operation(
+    database: sqlite3.Connection, operation_id: str, intent_sha256: str
+) -> dict[str, Any] | None:
+    existing = database.execute(
+        "SELECT * FROM outbound_operations WHERE operation_id=?", (operation_id,)
+    ).fetchone()
+    if existing is None:
+        return None
+    _verify_operation_row(existing)
+    if existing["intent_sha256"] != intent_sha256:
+        raise SocialStoreError("operation ID is bound to another intent")
+    return _public_operation(existing)
+
+
+def _insert_operation(
+    database: sqlite3.Connection, values: dict[str, Any], created_at: int
+) -> None:
+    database.execute(
+        """INSERT INTO outbound_operations(
+            operation_id,provider,connection_id,remote_account_id,action,
+            target_remote_id,payload,payload_sha256,intent_sha256,app_profile,
+            username,scheduled_at,state,created_by,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            values["operation_id"],
+            values["provider"],
+            values["connection_id"],
+            values["remote_account_id"],
+            values["action"],
+            values["target_remote_id"],
+            values["payload"],
+            values["payload_sha256"],
+            values["intent_sha256"],
+            values["app_profile"],
+            values["username"],
+            values["scheduled_at"],
+            "draft",
+            values["created_by"],
+            created_at,
+            created_at,
+        ),
+    )
+
+
 def create_operation(
     database: sqlite3.Connection, intent: OperationIntent
 ) -> dict[str, Any]:
@@ -204,40 +258,13 @@ def create_operation(
     database.execute("BEGIN IMMEDIATE")
     try:
         _assert_connection(database, values)
-        existing = database.execute(
-            "SELECT * FROM outbound_operations WHERE operation_id=?", (operation_id,)
-        ).fetchone()
-        if existing is not None:
-            _verify_operation_row(existing)
-            if existing["intent_sha256"] != values["intent_sha256"]:
-                raise SocialStoreError("operation ID is bound to another intent")
-            database.execute("COMMIT")
-            return _public_operation(existing)
-        database.execute(
-            """INSERT INTO outbound_operations(
-                operation_id,provider,connection_id,remote_account_id,action,
-                target_remote_id,payload,payload_sha256,intent_sha256,app_profile,
-                username,scheduled_at,state,created_by,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                values["operation_id"],
-                values["provider"],
-                values["connection_id"],
-                values["remote_account_id"],
-                values["action"],
-                values["target_remote_id"],
-                values["payload"],
-                values["payload_sha256"],
-                values["intent_sha256"],
-                values["app_profile"],
-                values["username"],
-                values["scheduled_at"],
-                "draft",
-                values["created_by"],
-                created_at,
-                created_at,
-            ),
+        existing = _existing_public_operation(
+            database, operation_id, str(values["intent_sha256"])
         )
+        if existing is not None:
+            database.execute("COMMIT")
+            return existing
+        _insert_operation(database, values, created_at)
         database.execute("COMMIT")
     except Exception:
         if database.in_transaction:
@@ -262,6 +289,49 @@ def _verified_operation(database: sqlite3.Connection, operation_id: str) -> sqli
     return _verify_operation_row(row)
 
 
+def _validated_approval_row(
+    database: sqlite3.Connection, decision: ApprovalDecision
+) -> sqlite3.Row:
+    row = _verified_operation(database, decision.operation_id)
+    if row["created_by"] != decision.principal_id:
+        raise SocialStoreError("operation approval requires its owner")
+    if row["state"] in TERMINAL_STATES or row["state"] == "claimed":
+        raise SocialStoreError("operation cannot be approved in its current state")
+    return row
+
+
+def _persist_approval(
+    database: sqlite3.Connection,
+    row: sqlite3.Row,
+    decision: ApprovalDecision,
+) -> str:
+    database.execute(
+        """UPDATE outbound_approvals SET revoked_at=?
+            WHERE operation_id=? AND principal_id=? AND revoked_at IS NULL""",
+        (decision.approved_at, decision.operation_id, decision.principal_id),
+    )
+    approval_id = _new_id("apr")
+    database.execute(
+        """INSERT INTO outbound_approvals(
+            approval_id,operation_id,principal_id,intent_sha256,
+            approved_at,expires_at,revoked_at)
+           VALUES(?,?,?,?,?,?,NULL)""",
+        (
+            approval_id,
+            decision.operation_id,
+            decision.principal_id,
+            row["intent_sha256"],
+            decision.approved_at,
+            decision.expires_at,
+        ),
+    )
+    database.execute(
+        "UPDATE outbound_operations SET state='approved',updated_at=? WHERE operation_id=?",
+        (decision.approved_at, decision.operation_id),
+    )
+    return approval_id
+
+
 def approve_operation(
     database: sqlite3.Connection,
     operation_id: str,
@@ -273,48 +343,26 @@ def approve_operation(
     approved_at = now_epoch() if approved_at is None else approved_at
     if expires_at <= approved_at or expires_at - approved_at > MAX_APPROVAL_SECONDS:
         raise SocialStoreError("approval expiry must be within 31 days")
-    principal_id = validate_opaque(principal_id, "principal_id")
+    decision = ApprovalDecision(
+        validate_opaque(operation_id, "operation_id"),
+        validate_opaque(principal_id, "principal_id"),
+        expires_at,
+        approved_at,
+    )
     database.execute("BEGIN IMMEDIATE")
     try:
-        row = _verified_operation(database, operation_id)
-        if row["created_by"] != principal_id:
-            raise SocialStoreError("operation approval requires its owner")
-        if row["state"] in TERMINAL_STATES or row["state"] == "claimed":
-            raise SocialStoreError("operation cannot be approved in its current state")
-        database.execute(
-            """UPDATE outbound_approvals SET revoked_at=?
-                WHERE operation_id=? AND principal_id=? AND revoked_at IS NULL""",
-            (approved_at, operation_id, principal_id),
-        )
-        approval_id = _new_id("apr")
-        database.execute(
-            """INSERT INTO outbound_approvals(
-                approval_id,operation_id,principal_id,intent_sha256,
-                approved_at,expires_at,revoked_at)
-               VALUES(?,?,?,?,?,?,NULL)""",
-            (
-                approval_id,
-                operation_id,
-                principal_id,
-                row["intent_sha256"],
-                approved_at,
-                expires_at,
-            ),
-        )
-        database.execute(
-            "UPDATE outbound_operations SET state='approved',updated_at=? WHERE operation_id=?",
-            (approved_at, operation_id),
-        )
+        row = _validated_approval_row(database, decision)
+        approval_id = _persist_approval(database, row, decision)
         database.execute("COMMIT")
     except Exception:
         if database.in_transaction:
             database.execute("ROLLBACK")
         raise
     return {
-        "operation_id": operation_id,
+        "operation_id": decision.operation_id,
         "approval_id": approval_id,
         "state": "approved",
-        "expires_at": expires_at,
+        "expires_at": decision.expires_at,
     }
 
 
