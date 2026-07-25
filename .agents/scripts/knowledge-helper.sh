@@ -1051,7 +1051,14 @@ _cmd_search_resolve_knowledge_root() {
 }
 
 cmd_search() {
+	# Flag-based invocation (preferred):
+	#   cmd_search [--sensitivity <tier>] [--case <id>] [--status <ds>]
+	#              [--repo-path <path>] <query>
+	# Legacy positional: cmd_search <query> [repo_path]
 	local query="" repo_path="" filter_sensitivity="" filter_case="" filter_status=""
+
+	# Parse flags and positional args in any order.
+	# First non-flag arg is the query; second non-flag arg (legacy) is repo_path.
 	local _positional_count=0
 	while [[ $# -gt 0 ]]; do
 		local _opt="$1"
@@ -1088,6 +1095,7 @@ cmd_search() {
 			;;
 		esac
 	done
+
 	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
 	repo_path="$(cd "$repo_path" && pwd)"
 
