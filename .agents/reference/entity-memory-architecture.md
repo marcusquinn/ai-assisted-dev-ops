@@ -31,7 +31,7 @@ Cross-channel relationship continuity for agents on Matrix, SimpleX, email, CLI,
 | Three layers, not two | Layer 0 raw data is primary; summaries and profiles are derived |
 | Versioned profiles via `supersedes_id` | Never update in place; mirrors `learning_relations` |
 | Identity resolution requires confirmation | Never auto-link across channels |
-| AI judgment for thresholds | Haiku-tier (~$0.001/call) handles outliers better than fixed thresholds |
+| AI judgment for thresholds | A `simple`-tier routed model handles outliers better than fixed thresholds |
 | Structured summaries over flat dumps | ~2k tokens recovers ~80% continuity at ~10% of raw-dump cost |
 
 ## Layer Model

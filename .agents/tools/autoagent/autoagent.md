@@ -87,7 +87,8 @@ duplicated, empty, or malformed. Required fields are `name`, `mode`, `target_rep
   keys, accept only literal `true` or `false`, and require at least one enabled
   key in each section.
 - Accept only `in-repo`, `cross-repo`, or `standalone` for `mode`.
-- Accept only `haiku`, `sonnet`, or `opus` for `researcher`.
+- Accept only the provider-agnostic workload tiers `simple`, `standard`, or
+  `thinking` for `researcher`; runtime configuration owns concrete model mapping.
 - Require `PROGRAM_NAME` to match the safe slug pattern
   `^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$` before using it in any path.
 - Resolve the default or supplied `BRANCH`, then require
@@ -203,7 +204,10 @@ else:
 
 **1.9 Mine signals:** Load `autoagent/signal-mining.md`. Run signal extraction for each source in `SIGNAL_SOURCES`. Store as `SIGNAL_FINDINGS` — list of `{file, issue, source}` objects.
 
-**1.10 Load safety constraints:** Load `autoagent/safety.md`. Apply `SAFETY_LEVEL` to determine modifiable files and elevated-approval requirements.
+**1.10 Load safety constraints:** Load `autoagent/safety.md`. Apply `SAFETY_LEVEL`
+to determine modifiable files and elevated-approval requirements. For every
+instruction-semantic hypothesis, also load `.agents/tools/build-agent/agent-review.md`
+and enforce the instruction-semantic preservation gate before metric evaluation.
 
 **1.11 Initialize and commit baseline state:** On a new worktree, run constraints and,
 when `BASELINE == null`, run `METRIC_CMD`. On success update only `PROGRAM_FILE`'s
@@ -258,11 +262,32 @@ while true:
 
     hypothesis = generate_hypothesis(SIGNAL_FINDINGS, MEMORY_CONTEXT, FAILED_HYPOTHESES,
                                      BEST_METRIC, ITERATION_COUNT, HYPOTHESIS_TYPES)
+    instruction_review = prepare_instruction_review(hypothesis)
+    if instruction_review == INCOMPLETE:
+        FAILED_HYPOTHESES.append(hypothesis)
+        track_tokens(ITER_START_TOKENS)
+        log_result(ITERATION_COUNT, null, null, "provenance_fail", hypothesis, ITER_TOKENS)
+        record_trajectory(ITERATION_COUNT, hypothesis, null, "provenance_fail")
+        commit_runner_state("provenance_fail")
+        continue
     BEST_SHA = current HEAD of WORKTREE_PATH
     CANDIDATE_PATH = create_owned_detached_candidate_worktree(BEST_SHA, ITERATION_COUNT)
     run_pre_edit_check(CANDIDATE_PATH)
     apply_modification(hypothesis, CANDIDATE_PATH)
     validate_candidate_paths(CANDIDATE_PATH, ALLOWED_FILES)
+
+    semantic_result = verify_instruction_semantic_preservation(
+        CANDIDATE_PATH, instruction_review
+    )
+    if semantic_result == FAIL:
+        checkpoint_candidate_diff(CANDIDATE_PATH, WORKTREE_PATH, "provenance_fail")
+        remove_owned_candidate_worktree(CANDIDATE_PATH)
+        FAILED_HYPOTHESES.append(hypothesis)
+        track_tokens(ITER_START_TOKENS)
+        log_result(ITERATION_COUNT, null, null, "provenance_fail", hypothesis, ITER_TOKENS)
+        record_trajectory(ITERATION_COUNT, hypothesis, null, "provenance_fail")
+        commit_runner_state("provenance_fail")
+        continue
 
     constraint_result = run_constraints(CANDIDATE_PATH)
     if constraint_result == FAIL:

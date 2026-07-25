@@ -12,19 +12,25 @@ mode: subagent
 ```bash
 ~/.aidevops/agents/scripts/compare-models-helper.sh cross-review \
   --prompt "your prompt here" \
-  --models "sonnet,opus" \
-  [--score] [--judge sonnet]
+  [--models "provider/model-a,provider/model-b"] \
+  [--score] [--judge thinking]
 ```
 
 Present response summaries, diff (2-model), judge scores+winner if `--score` used, note failures. Scores → model-comparisons DB → `/route`, `/patterns`.
+
+For broad evaluation, compare the same prompt, context, tools, timeout, and
+verification across concrete models configured in one workload tier. With no
+`--models`, the helper loads every model from the active `standard` routing tier.
+Use an explicit cross-tier list only when the research question is the capability
+boundary itself, and label that result as non-like-for-like.
 
 ## Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--models` | `standard,thinking` | Comma-separated tiers: `simple`, `standard`, `thinking`, or fully-qualified model IDs |
+| `--models` | configured `standard`-tier models | Comma-separated fully qualified model IDs or canonical tiers |
 | `--score` | off | Auto-score outputs via judge model |
-| `--judge` | `opus` | Judge model tier (used with `--score`) |
+| `--judge` | `thinking` | Judge workload tier or explicit model (used with `--score`) |
 | `--timeout` | `600` | Seconds per model |
 | `--output` | auto | Directory for raw outputs |
 | `--workdir` | `pwd` | Working directory for model context |
@@ -36,15 +42,16 @@ Present response summaries, diff (2-model), judge scores+winner if `--score` use
 ## Examples
 
 ```bash
-# Compare sonnet vs opus on a code review task
+# Compare all configured standard-tier models on a code review task
 /cross-review "Review this function for bugs and suggest improvements: $(cat src/auth.ts)"
 
-# Three-way comparison with auto-scoring
+# Explicit cross-tier comparison of a capability boundary (not like-for-like)
 /cross-review "Design a rate limiting strategy for a REST API" \
-  --models sonnet,opus,pro --score
+  --models standard,thinking --score
 
-# Quick diff with custom timeout
-/cross-review "Summarize the key changes in this diff" --models haiku,sonnet --timeout 120
+# Explicit same-tier concrete-model comparison with custom timeout
+/cross-review "Summarize the key changes in this diff" \
+  --models openai/gpt-5.6-sol,anthropic/claude-sonnet-4-6 --timeout 120
 
 # View scoring results after a cross-review
 /score-responses --leaderboard

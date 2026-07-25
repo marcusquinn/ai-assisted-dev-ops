@@ -1,41 +1,52 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Model-Specific Subagents
+# Concrete Model Profiles
 
-Orchestrator selects subagents based on frontmatter `model` declaration for cross-provider routing.
+These provider-named files describe concrete model capabilities and compatibility
+behaviour. They are runtime mapping inputs, not workload tiers for tasks, briefs,
+agents, or research programs.
 
 ## Core Rules
 
-- **Runtimes may use `model:` from subagent frontmatter.** OpenCode reads `model:` and switches models for subagent dispatch. Claude Code ignores it (subagents use the session model). Other runtimes: check their docs.
-- **Deploy-time resolution ensures compatibility.** Source files use tier names (`model: sonnet`); `setup.sh` resolves them to fully-qualified IDs (`model: anthropic/claude-sonnet-4-6`) at deploy time via `model-routing-table.json`. This means deployed files work on all runtimes regardless of whether they resolve tiers natively.
-- **Headless dispatch also resolves tiers.** Supervisor reads subagent frontmatter and passes resolved model ID to CLI via `resolve_model_tier()`.
-- **Tier names are the stable interface in source.** Target `haiku`, `sonnet`, `pro`, `opus`, etc. in source `.md` files; concrete models change behind these aliases and are resolved at deploy time.
+- **Canonical authoring interface:** use only `simple`, `standard`, or `thinking`
+  in task labels, agent `model:` fields, briefs, and research role fields.
+- **Central mapping:** `configs/model-routing-table.json` owns each tier's ordered
+  provider/model list. Runtime availability, provider policy, and local overrides
+  choose the concrete model at execution time.
+- **Concrete profile exception:** provider profile files may contain fully
+  qualified `model:`, fallback, capability, cost, and compatibility evidence
+  because their purpose is to inform runtime mapping.
+- **Legacy filenames are provenance:** names such as `models-haiku.md` identify
+  the concrete family documented; they do not create an authored `haiku` tier.
 
-## Tier Mapping
+## Workload Mapping
 
-| Tier | Subagent | Primary Model | Fallback |
-|------|----------|---------------|----------|
-| `haiku` | `models/haiku.md` | claude-haiku-4-5-20251001 | gemini-2.5-flash-preview-05-20 |
-| `flash` | `models/flash.md` | gemini-2.5-flash-preview-05-20 | gpt-4.1-mini |
-| `sonnet` | `models/sonnet.md` | claude-sonnet-4-6 | gpt-5.3-codex |
-| `composer2` | `models/composer2.md` | cursor/composer-2 | claude-sonnet-4-6 |
-| `pro` | `models/pro.md` | gemini-2.5-pro | claude-sonnet-4-6 |
-| `opus` | `models/opus.md` | claude-opus-4-6 | gpt-5.4 |
+| Workload tier | Authored request | Concrete source of truth |
+|---------------|------------------|--------------------------|
+| `simple` | Bounded mechanical work | `.tiers.simple.models` in `configs/model-routing-table.json` |
+| `standard` | General implementation and review | `.tiers.standard.models` in `configs/model-routing-table.json` |
+| `thinking` | Architecture and complex trade-offs | `.tiers.thinking.models` in `configs/model-routing-table.json` |
 
 ## Resolution Flow
 
-**Deploy-time (all runtimes):** `setup.sh` resolves tier shorthands in `model:` frontmatter to FQIDs using `model-routing-table.json`. Deployed files at `~/.aidevops/agents/` contain fully-qualified IDs that any runtime can consume directly.
+**Deploy-time:** generated runtime adapters resolve canonical workload tiers through
+`model-routing-table.json` where the runtime requires a fully qualified ID.
 
 **In-session (runtime-dependent):**
-- **OpenCode:** reads `model:` from subagent frontmatter and switches models for subagent dispatch. Requires `provider/model-id` format (e.g., `anthropic/claude-sonnet-4-6`). Deploy-time resolution provides this.
+- **OpenCode:** generated agents receive the routed provider/model ID where model
+  switching is supported.
 - **Claude Code:** `Task(subagent_type="general", ...)` — ignores `model:` frontmatter; subagents run on the session model.
 
-**Headless:** `opencode run -m "anthropic/claude-sonnet-4-6" -p "..."` — task metadata specifies tier → supervisor reads `models/<tier>.md` frontmatter → runner receives `--model` with resolved ID.
+**Headless:** task metadata supplies `simple`, `standard`, or `thinking`; the
+runtime helper resolves the active routing table and passes the selected concrete
+ID to the runtime CLI.
 
 ## Fallback Chains (t132.4)
 
-Tiers define fallback chains for provider failures (API error, timeout, rate limit). Resolution walks the chain until a healthy provider is found.
+The routing table defines ordered provider/model chains for API errors, timeouts,
+rate limits, and policy exclusions. Resolution walks the requested workload tier's
+chain until a healthy approved provider is found.
 
 ```yaml
 fallback-chain:
@@ -47,15 +58,19 @@ fallback-chain:
 
 > **Note:** codex/code-completion models (gpt-5.3-codex, gpt-5.4-codex) are NOT agentic and must never appear in fallback chains. See `configs/model-routing-table.json` for the canonical tier→model mappings.
 
-- **Per-tier override:** Add `fallback-chain:` to model subagent frontmatter.
-- **Global defaults:** `configs/fallback-chain-config.json`.
+- **Per-profile compatibility:** Concrete profile frontmatter may document a
+  model-specific fallback.
+- **Canonical route:** Edit the ordered tier mapping in
+  `configs/model-routing-table.json` or the documented local override.
 - **Docs:** `tools/ai-assistants/fallback-chains.md`.
 
-## Adding or Updating a Tier
+## Adding or Updating a Concrete Model
 
-1. Edit/create model subagent in `models/`.
-2. Set `model:` to provider/model ID.
-3. Update mapping in `tools/context/model-routing.md`.
+1. Update `configs/model-routing-table.json` with the fully qualified model ID in
+   the appropriate canonical workload tier.
+2. Edit or create a provider profile only when durable capability, compatibility,
+   cost, or context-limit evidence is needed.
+3. Update mapping evidence in `tools/context/model-routing.md`.
 4. Update `compare-models-helper.sh` `MODEL_DATA` if applicable.
 5. Run `model-registry-helper.sh sync --force && model-registry-helper.sh check`.
 

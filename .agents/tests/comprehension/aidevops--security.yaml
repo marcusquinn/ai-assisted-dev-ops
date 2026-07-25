@@ -1,6 +1,6 @@
 # Test: .agents/aidevops/security.md (80 lines — moderate security doc)
 file: .agents/aidevops/security.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies credential storage locations"

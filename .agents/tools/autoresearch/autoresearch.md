@@ -76,6 +76,17 @@ Extract `--program <path>`; exit with error if missing or file not found. Extrac
 | `CONVOY_ID` | `## Concurrency` section, `convoy_id:` line (`null` = auto-generate) |
 | `DIMENSIONS` | `## Dimensions` section, parsed list of `{name, files, metric}` objects |
 
+`RESEARCHER` and optional `EVALUATOR` are provider-agnostic workload tiers and
+accept only `simple`, `standard`, or `thinking`; runtime configuration owns their
+concrete model mappings. `TARGET_MODEL` defaults to one of the same tiers. A
+concrete provider/model identifier is permitted only for an explicitly declared
+model benchmark that records model/version provenance and compares equivalent
+workloads within a tier.
+
+Any candidate that changes instruction semantics must load
+`.agents/tools/build-agent/agent-review.md` and satisfy the preservation gate in
+`autoresearch/agent-optimization.md`, regardless of program name or metric command.
+
 ## Step 1: Setup
 
 **1.1 Resolve target repo:** `REPO_ROOT = cwd` if `MODE == "in-repo"` or `TARGET_REPO == "."`, else expand `TARGET_REPO` and verify it's a git repo.
@@ -126,8 +137,9 @@ Graceful degradation: when no concurrent peers exist, mailbox calls return empty
 
 ## Step 2: Experiment Loop
 
-See `autoresearch/loop.md` for full loop pseudocode, hypothesis generation rules,
-constraint checking, metric measurement, improvement check, and token estimation.
+See `autoresearch/loop.md` for full loop pseudocode, instruction-semantic review,
+hypothesis generation rules, constraint checking, metric measurement, improvement
+check, and token estimation.
 
 Loop exits when any budget condition is met (timeout / max_iterations / goal_reached).
 
@@ -255,9 +267,11 @@ and mailbox discovery integration (multi-dimension campaigns).
 
 ## Agent Optimization Domain
 
-When `PROGRAM_NAME == "agent-optimization"` or `METRIC_CMD` contains `agent-test-helper.sh`,
-load `autoresearch/agent-optimization.md` for composite metric parsing, security exemptions,
-simplification state integration, and hypothesis type ordering.
+When a candidate changes instruction semantics, or when `PROGRAM_NAME ==
+"agent-optimization"` or `METRIC_CMD` contains `agent-test-helper.sh`, load
+`autoresearch/agent-optimization.md` for the preservation gate, composite metric
+parsing, security exemptions, simplification state integration, and hypothesis
+type ordering.
 
 ## Related
 

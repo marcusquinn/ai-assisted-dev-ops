@@ -26,6 +26,7 @@ tools:
 - **Effort**: `thinking`; inherit the parent model and never exceed the parent's reasoning level
 - **Trigger**: `/code-simplifier`
 - **Rule**: Never lose functionality, knowledge, capability, or decision rationale. Human approves every suggestion before work begins.
+- **Instruction surfaces**: Agent Review owns semantic tightening of prompts, agents, workflows, and command bodies; Code Simplifier may identify candidates but cannot approve semantic deletion.
 
 <!-- AI-CONTEXT-END -->
 
@@ -39,7 +40,7 @@ Per finding: `### [file:line_range] Category: Brief description` with sections *
 
 ### Prescriptive format for tier:simple dispatch (MANDATORY for issue creation)
 
-Format findings using `workflows/brief.md` prescriptive format. Research finding: Haiku achieves 100% success rate when issues provide verbatim oldString/newString. Simplification issues are inherently single-file, pattern-following, exact-code-known — the ideal `tier:simple` candidates. Every finding MUST include explicit Edit tool parameters, and verification MUST include a Qlty smells check for simplification targets rather than relying on shellcheck or grep alone:
+Format eligible high-confidence code findings using `workflows/brief.md` prescriptive format. Historical benchmark evidence: Haiku achieved 100% success when issues provided verbatim oldString/newString. A finding is `tier:simple` only when it is single-file, pattern-following, exact-code-known, and leaves no semantic or design judgment to the worker; instruction-surface findings remain under Agent Review. Every prescriptive finding MUST include explicit Edit tool parameters, and verification MUST include a Qlty smells check for simplification targets rather than relying on shellcheck or grep alone:
 
 ```markdown
 ### [path/to/file.sh:45-52] Safe: Remove decorative emoji from log message
@@ -63,7 +64,7 @@ log_info "Configuring environment..."
 **Confidence:** high
 ```
 
-This format enables direct dispatch at `tier:simple` — Haiku copies the oldString/newString into an Edit tool call and runs verification. No codebase exploration needed.
+This format enables direct dispatch at `tier:simple`: the worker copies the oldString/newString into an Edit tool call and runs verification without codebase exploration.
 
 ## Regression Verification
 
@@ -81,9 +82,11 @@ This format enables direct dispatch at `tier:simple` — Haiku copies the oldStr
 
 Decorative emojis, "what" comments restating the next line, duplicated structure (one can reference the other), dead/unreachable code, redundant formatting (excessive bold, unnecessary headers for single-line content), format inconsistency (e.g., `### **EMOJI ALL CAPS**` when 91% of codebase uses `### Section Name`), stale references to removed files/tools.
 
-### Prose tightening for agent docs (high confidence)
+### Instruction surfaces — route through Agent Review
 
-**Preserve**: task IDs (`tNNN`), issue refs (`GH#NNN`), incident identifiers, rules/constraints (compress wording not the rule), file paths, command examples, code blocks, safety-critical detail. **Evidence (t1679):** `build.txt` 63% reduction (45k→17k), `AGENTS.md` 48% (22k→12k) — zero rule loss, 25 critical patterns verified.
+Prompts, agent docs, workflow instructions, and generated command bodies are not ordinary prose. Code Simplifier may flag decorative formatting, obvious narration, or a possible exact duplicate, but Agent Review must recover directive provenance, classify the retained context, inspect activation/exclusion boundaries and the assembled delivery stack, and decide whether wording may change. Agent Testing/comprehension scenarios plus target-specific deterministic checks must verify the resulting behaviour. Incomplete provenance, delivery, or coverage evidence means no deletion.
+
+**Preserve**: task IDs (`tNNN`), issue refs (`GH#NNN`), incident identifiers, rules/constraints, interfaces, triggers, rationale, file paths, command examples, code blocks, and safety-critical detail. **Historical evidence (t1679):** `build.txt` 63% reduction (45k→17k), `AGENTS.md` 48% (22k→12k) with 25 critical patterns verified. This evidence supports that reviewed change only; it is not a general size-reduction target.
 
 ### Requires judgment (medium confidence)
 
@@ -177,3 +180,5 @@ When the authenticated user IS the maintainer, issues skip the review gate and g
 | `best-practices.md` | AI-assisted coding patterns |
 | `auditing.md` | Security and quality audits |
 | `codacy.md` | Codacy integration (maintainability grades) |
+| `tools/build-agent/agent-review.md` | Canonical semantic review for instruction surfaces |
+| `tools/build-agent/agent-testing.md` | Behavioural validation for agent changes |

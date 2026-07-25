@@ -93,7 +93,9 @@ Scores feed the shared pattern tracker:
 - **On score**: `SUCCESS_PATTERN` (weighted avg >= 3.5) or `FAILURE_PATTERN` (< 3.5), tagged with model tier + category
 - **On compare**: Winner → `SUCCESS_PATTERN` with comparison metadata
 - **Bulk sync**: `response-scoring-helper.sh sync` (`--dry-run` to preview). Disable: `SCORING_NO_PATTERN_SYNC=1`
-- **Tier mapping**: Full model names (e.g., `claude-sonnet-4-6`) auto-mapped to routing tiers (`sonnet`)
+- **Tier mapping**: Full model names (for example, `claude-sonnet-4-6`) map to
+  canonical workload tiers (`simple`, `standard`, or `thinking`) for comparable
+  result grouping
 
 Outputs feed `/route <task>` and `/patterns recommend --task-type <type>` with real A/B data.
 

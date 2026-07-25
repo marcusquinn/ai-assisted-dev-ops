@@ -37,7 +37,7 @@ AI reads the routing table directly; bash only checks availability. All routing 
 
 ```bash
 fallback-chain-helper.sh resolve coding
-fallback-chain-helper.sh resolve sonnet --json --quiet
+fallback-chain-helper.sh resolve standard --json --quiet
 fallback-chain-helper.sh table
 fallback-chain-helper.sh help
 ```

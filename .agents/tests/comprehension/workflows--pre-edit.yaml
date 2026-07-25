@@ -1,6 +1,6 @@
 # Test: .agents/workflows/pre-edit.md (78 lines — moderate workflow doc)
 file: .agents/workflows/pre-edit.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies exit code actions"

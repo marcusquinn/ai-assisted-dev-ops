@@ -54,23 +54,24 @@ Accept either direct prompt mode or program-file mode.
 |----------|--------|---------|
 | `TASK_PROMPT` | `--prompt` or program `## Task` | required |
 | `RUBRIC` | program `## Rubric` | correctness, usefulness, restraint, clarity |
-| `PROVIDERS` | program `## Models` | runtime default tiers |
-| `AUTHOR_MODEL` | `author:` | `sonnet` |
-| `CRITIC_MODEL` | `critic:` | `haiku` |
-| `SYNTHESIZER_MODEL` | `synthesizer:` | `sonnet` |
-| `JUDGE_MODELS` | `judges:` comma list | `haiku,haiku,sonnet` |
+| `PROVIDERS` | program `## Models` | runtime workload tiers or explicit benchmark models |
+| `AUTHOR_MODEL` | `author:` | `standard` |
+| `CRITIC_MODEL` | `critic:` | `simple` |
+| `SYNTHESIZER_MODEL` | `synthesizer:` | `standard` |
+| `JUDGE_MODELS` | `judges:` comma list | `simple,simple,standard` |
 | `JUDGE_COUNT` | `judge_count:` | length of `JUDGE_MODELS`, minimum 3 |
 | `PATIENCE` | `patience:` | 2 A-wins |
 | `MAX_ROUNDS` | `max_rounds:` | 6 |
 | `MAX_EXPANSION` | `max_expansion:` | 1.10× incumbent length |
 | `OUTPUT_DIR` | `output_dir:` | `~/.aidevops/.agent-workspace/work/auto-reason/{slug}` |
 
-Provider/model values may be aidevops tiers or provider-qualified identifiers:
+Provider/model values may be canonical workload tiers or provider-qualified
+identifiers used for an intentional comparison:
 
 ```text
-haiku
-sonnet
-opus
+simple
+standard
+thinking
 openai/gpt-5.5
 anthropic/claude-sonnet-4-6
 google/gemini-pro
@@ -78,7 +79,9 @@ openrouter/deepseek-r1
 local/ollama-qwen3
 ```
 
-Treat these as routing labels for the active runtime, `ai-research` tool, MCP model router, or future model adapter. Do not hardcode provider SDK syntax in this agent doc.
+Treat workload tiers as the normal authoring interface. Runtime routing resolves
+them for the active runtime, `ai-research` tool, MCP model router, or future model
+adapter. Do not hardcode provider SDK syntax in this agent doc.
 
 ## Step 1: Establish Incumbent A
 

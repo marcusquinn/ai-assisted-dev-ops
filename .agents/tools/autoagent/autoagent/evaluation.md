@@ -58,6 +58,12 @@ checkpoint state after every keep, discard, constraint failure, or crash.
   "decision": "keep",
   "constraint_result": "pass",
   "regression_check": "pass",
+  "instruction_review": {
+    "status": "pass",
+    "provenance": ["task/issue/PR and file-history evidence"],
+    "context_stack": ["canonical source", "runtime adapter"],
+    "verification": ["target-specific activation and exclusion scenarios"]
+  },
   "timestamp": "2026-04-03T15:00:00Z",
   "tokens_used": 2340
 }
@@ -95,6 +101,7 @@ record_trajectory() {
 | `metric_neutral` | Metric equals `BEST_METRIC` | Log as neutral; try a different approach |
 | `crash` | Metric command errors | Log error; check if modification broke the metric command itself |
 | `safety_skip` | Elevated-only file under standard safety | Log as skipped; not a failure |
+| `provenance_fail` | Instruction provenance, delivery, classification, or target-specific evidence is incomplete | Preserve the directive; do not evaluate the metric |
 
 After 3+ consecutive discards of the same type:
 
@@ -134,6 +141,10 @@ TOKEN_RATIO=$(jq '.sub_scores.token_cost_ratio' <<<"$METRIC_JSON")
 
 **Composite score formula:**
 `wc * comprehension + wl * lint + wt * clamp(2 - token_ratio, 0, 1)`
+
+For instruction-semantic candidates, this metric is evaluated only after the
+preservation gate in `autoagent/safety.md` passes. It ranks already-safe candidates;
+it cannot establish that a directive was redundant or unneeded.
 
 - `comprehension`: fraction of suite tests passing (0–1)
 - `token_ratio`: `avg_response_chars / baseline_chars`; ratios at or below 1 earn

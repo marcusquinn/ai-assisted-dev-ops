@@ -7,6 +7,25 @@ Sub-doc for `autoresearch.md`. Load when `PROGRAM_NAME == "agent-optimization"` 
 
 ---
 
+## Instruction-Semantic Preservation Gate
+
+Before evaluating any hypothesis that removes, consolidates, relocates, weakens,
+or materially rephrases instructions, load
+`.agents/tools/build-agent/agent-review.md` and complete its canonical review flow.
+The review record must recover directive provenance, inspect the assembled context
+stack, classify affected directives, define activation/exclusion boundaries,
+distinguish exact duplication from boundary reinforcement, and name the delivery
+mechanism plus target-specific behavioural scenarios that preserve the lesson.
+
+Verify the exact candidate diff and every changed delivery route against that
+record before running the metric. Incomplete provenance, delivery, or behavioural
+evidence defaults to preservation: record `provenance_fail`, discard the candidate,
+and do not interpret aggregate test stability or token reduction. Semantically
+neutral formatting is exempt only when the diff demonstrably changes no directive
+or delivery route.
+
+---
+
 ## Security Instruction Exemptions
 
 Discard any hypothesis that removes or weakens the following — do not test:
@@ -20,7 +39,9 @@ Discard any hypothesis that removes or weakens the following — do not test:
 | Prompt injection | `prompt injection`, `adversarial`, `scan` |
 | Destructive operations | `destructive`, `confirm before`, `irreversible` |
 
-Enforced by both the research program constraint list and the researcher model. Both layers must hold.
+Enforced by both the research program constraint list and the researcher model.
+These are unconditional hard stops within the broader semantic-preservation gate,
+not the complete set of directives that deserve protection. Both layers must hold.
 
 ---
 
@@ -33,7 +54,8 @@ PASS_RATE=$(echo "$METRIC_JSON" | jq '.pass_rate')
 TOKEN_RATIO=$(echo "$METRIC_JSON" | jq '.token_ratio')
 ```
 
-Use `COMPOSITE_SCORE` as the primary metric for keep/discard decisions.
+Use `COMPOSITE_SCORE` as the primary metric for keep/discard decisions only after
+the instruction-semantic preservation gate passes.
 Log `PASS_RATE` and `TOKEN_RATIO` as supplementary columns in results.tsv.
 
 **Formula**: `composite_score = pass_rate * (1 - 0.3 * token_ratio)` (higher = better)
@@ -85,9 +107,12 @@ jq --arg file "$TARGET_FILE" \
 
 | Phase | Hypothesis type | Example |
 |-------|----------------|---------|
-| 1–5 | Consolidate redundant rules | Merge two similar "Read before Edit" rules into one |
-| 6–15 | Remove low-value instructions | Delete rules that don't affect any test outcome |
-| 16–25 | Shorten verbose phrasing | Replace 3-sentence rule with 1-sentence equivalent |
-| 26–35 | Replace inline code with references | `rg "pattern"` instead of inline code blocks |
-| 36–45 | Merge thin sections | Combine two small sections covering the same topic |
-| 46+ | Aggressive removal | Remove anything that doesn't affect the metric |
+| 1–5 | Recover provenance and conflicts | Identify which history, owner, and decision boundary an apparent duplicate protects |
+| 6–15 | Tighten proven repetition | Merge only exact duplicates with equivalent activation, semantics, owner, and delivery |
+| 16–25 | Clarify phrasing and boundaries | Shorten wording while preserving every actionable clause and interface |
+| 26–35 | Relocate triggered detail | Replace inline rationale with a pointer whose trigger reaches the same decision point |
+| 36–45 | Add deterministic enforcement | Move mechanics behind a verified hook or validator while retaining the invariant until delivery is proven |
+| 46+ | Evidence-backed simplification | Reduce context only when provenance and target-specific activation/exclusion scenarios pass |
+
+The metric ranks candidates that have already passed these gates. A rule's absence
+from broad tests proves a coverage gap, not that the rule is low value.

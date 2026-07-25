@@ -8,11 +8,11 @@ mode: subagent
 
 # Refactor Probes
 
-Use 2 probes from this file during `/define` for tasks classified as **refactor**.
+Use this file as a candidate pool during `/define` for **refactor** tasks. Ask only when an unanswered point can materially change scope, behaviour-preservation boundaries, migration risk, or acceptance criteria.
 
 **Defaults** (apply unless overridden): zero behaviour changes, all existing tests pass unchanged, no new dependencies, improve one primary goal (readability/maintainability/performance), no tests → add before refactoring.
 
-## Required Questions
+## Decision-Relevant Candidates
 
 **Primary Goal** — What's the main reason for this refactor?
 1. Readability — code is hard to understand or maintain (recommended)
@@ -27,7 +27,7 @@ Use 2 probes from this file during `/define` for tasks classified as **refactor*
 3. Cross-cutting — follow the pattern change across the codebase
 4. Let me specify the boundary
 
-## Probes (select 2)
+## Optional Probes
 
 **Behaviour Preservation** — How will you verify that behaviour hasn't changed?
 1. Existing tests cover it — they must all pass (recommended)
@@ -64,4 +64,4 @@ Before generating the brief, confirm you can answer:
 - What's the primary metric that improves (readability/performance/extensibility)?
 - What would a reviewer check to verify behaviour preservation?
 
-Unknown answer → ask one more targeted question.
+Ask one targeted question only when an unknown is consequential and repository evidence or a safe default cannot resolve it.

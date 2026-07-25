@@ -9,6 +9,7 @@ import re
 output = sys.argv[1]
 triggers = json.loads(sys.argv[2])
 prompt = sys.argv[3]
+expected = json.loads(sys.argv[4])
 output_lower = output.lower()
 
 detected = []
@@ -33,10 +34,16 @@ for trigger in triggers:
             detected.append("confabulation")
 
     elif trigger == "structural_violation":
-        pass  # Detected by action checks in deterministic_check
+        required_actions = expected.get("action", [])
+        if required_actions and any(
+            action.lower() not in output_lower for action in required_actions
+        ):
+            detected.append("structural_violation")
 
     elif trigger == "disengagement":
-        if len(output.strip()) < 50:
+        minimum_length = expected.get("min_length", 0)
+        threshold = max(1, (minimum_length + 4) // 5)
+        if minimum_length > 0 and len(output.strip()) < threshold:
             detected.append("disengagement")
 
 if detected:

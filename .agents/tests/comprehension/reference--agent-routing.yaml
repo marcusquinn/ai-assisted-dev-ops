@@ -1,6 +1,6 @@
 # Test: .agents/reference/agent-routing.md (69 lines — moderate routing doc)
 file: .agents/reference/agent-routing.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies correct dispatch method"
@@ -25,10 +25,14 @@ scenarios:
     expected:
       contains:
         - "SEO"
+        - "readiness"
+        - "fallback"
       min_length: 10
       max_length: 300
     reference_answer: |
-      Pass --agent SEO for SEO audit tasks.
+      Resolve SEO capability readiness first. Pass --agent SEO only when every
+      mandatory readiness dimension is true; otherwise use the structured
+      response's declared fallback.
     fast_fail_triggers:
       - refusal
 

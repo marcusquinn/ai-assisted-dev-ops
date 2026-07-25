@@ -22,15 +22,17 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Haiku Tier Model
+# Anthropic Haiku Model Profile
 
-Lowest-cost tier for fast, simple tasks where reasoning depth is not required.
+Concrete model profile that the runtime routing table may select for `simple`
+work. Task and agent authors request a workload tier, never this provider family.
 
 ## Routing Rules
 
-- Default to haiku only when the task is clearly classification, formatting, or simple extraction.
-- Route code writing, debugging, and review → sonnet.
-- Route architecture decisions and novel problems → opus.
+- Map this profile only into `simple` when current cost, availability, and
+  equivalent-workload evidence support it.
+- Route implementation and review work through `standard`.
+- Route architecture decisions and novel problems through `thinking`.
 
 ## Use For
 
@@ -42,7 +44,8 @@ Lowest-cost tier for fast, simple tasks where reasoning depth is not required.
 ## Constraints
 
 - Keep responses under 500 tokens when possible.
-- Do not attempt complex reasoning or architecture decisions — escalate to sonnet or opus.
+- Do not attempt unresolved implementation or architecture decisions — escalate
+  to `standard` or `thinking`.
 - Prioritize speed over thoroughness.
 
 ## Model Details
@@ -56,4 +59,4 @@ Lowest-cost tier for fast, simple tasks where reasoning depth is not required.
 | Training cutoff | July 2025 ([Anthropic models overview](https://docs.anthropic.com/en/docs/about-claude/models)) |
 | Input cost | $1.00/1M tokens |
 | Output cost | $5.00/1M tokens |
-| Tier | haiku (lowest cost) |
+| Workload tier | Candidate for `simple` |

@@ -1,7 +1,7 @@
 ---
 description: Milestone validation — verify milestone completion by running tests, build, linting, browser QA, and integration checks, then report results and create fix tasks on failure
 mode: subagent
-model: sonnet  # validation is structured checking, not complex reasoning
+model: standard  # validation requires coordinated judgment, not architecture
 tools:
   read: true
   write: true

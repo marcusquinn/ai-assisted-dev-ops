@@ -1,6 +1,6 @@
 # Test: .agents/aidevops/architecture.md (124 lines — complex architecture doc)
 file: .agents/aidevops/architecture.md
-tier_minimum: sonnet
+tier_minimum: standard
 
 scenarios:
   - name: "identifies intelligence over scripts principle"

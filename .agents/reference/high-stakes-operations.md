@@ -109,13 +109,16 @@ Per-repo config in `.aidevops.json` or `repos.json`:
       "infrastructure_destruction": { "gate": "block", "enabled": true }
     },
     "cross_provider": true,
-    "verifier_tier": "sonnet",
-    "escalation_tier": "opus"
+    "verifier_tier": "standard",
+    "escalation_tier": "thinking"
   }
 }
 ```
 
-Fields: `enabled` (master switch), `default_gate` (fallback gate), `overrides` (per-category), `cross_provider` (prefer different provider), `verifier_tier` (default: sonnet), `escalation_tier` (default: opus, used when primary and verifier disagree).
+Fields: `enabled` (master switch), `default_gate` (fallback gate), `overrides`
+(per-category), `cross_provider` (prefer different provider), `verifier_tier`
+(default: `standard`), `escalation_tier` (default: `thinking`, used when
+primary and verifier disagree).
 
 ## Trigger Detection and Integration
 

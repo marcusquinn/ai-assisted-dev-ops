@@ -196,11 +196,11 @@ or "Single-file config edit with exact code block provided -> tier:simple"}
 
      TIER-AWARE DETAIL LEVEL:
      - tier:simple: Code blocks must be COMPLETE — exact oldString/newString for edits,
-       full file content for new files. The worker copies and verifies, not invents.
-     - tier:standard: Code skeletons with function signatures and inline comments.
-       The worker fills in logic following the specified pattern.
-     - tier:thinking: Approach description with constraints and trade-offs.
-       The worker designs the solution.
+       full file content for new files. No unresolved choice remains.
+     - tier:standard: Verified files/reference patterns and skeletons for resolved
+       boundaries. Do not fabricate precision for decisions the worker must make.
+     - tier:thinking: Problem, hard/soft constraints, prior art/evidence, decisions,
+       non-goals, and acceptance boundaries. No speculative file-by-file skeletons.
 
      INLINE DATA RULE (GH#18458 — worker token budget protection):
      When a brief references data from a large file (plan doc, source file, config),
@@ -265,7 +265,7 @@ or "Single-file config edit with exact code block provided -> tier:simple"}
 <!-- OPTIONAL but RECOMMENDED for tasks with 3+ reference files or >2,000 lines of
      total reference material. Gives the worker the 5-10 most critical commands/facts
      to start implementing immediately, without reading all reference files first.
-     Workers dispatched at tier:standard (sonnet) have limited context budgets —
+     Workers dispatched at tier:standard have limited context budgets —
      front-loading the critical data here prevents token exhaustion during reading.
      Omit for simple tasks where Implementation Steps are sufficient. -->
 
@@ -305,14 +305,17 @@ or "Single-file config edit with exact code block provided -> tier:simple"}
 
 ### Implementation Steps
 
-<!-- For each file above, read the reference pattern and include a code skeleton
-     or diff as a fenced code block. New files: complete skeleton with imports,
-     function signatures, and inline comments marking where logic goes.
-     Edits: exact code block to insert with surrounding context.
-     The implementing worker should copy and fill in, not invent structure. -->
+<!-- Match detail to the selected tier. tier:simple gets complete oldString/newString
+     blocks or full new-file content. tier:standard gets verified reference patterns
+     and skeletons where resolved structure reduces invention. tier:thinking gets
+     evidence-gathering and decision steps; add code only after the relevant design
+     choice is resolved. -->
 
-1. {Concrete step with code skeleton:}
+1. {Tier-appropriate exact edit, resolved implementation step, or evidence/decision step}
 
+<!-- Include a fenced code block below only for complete tier:simple edits or a
+     tier:standard skeleton whose boundary is resolved. Delete it for unresolved
+     tier:thinking decisions. -->
 ```{language}
 {Code skeleton for new file — or exact diff block for edits.
  Include imports, function signatures, inline comments for logic.

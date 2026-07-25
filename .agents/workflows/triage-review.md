@@ -67,7 +67,8 @@ Analyze issue/PR using ONLY the pre-fetched context above. Do not explore the co
 2. **Duplicate Check**: Compare against `RECENT_CLOSED` titles AND `EVIDENCE_RECENT_MERGED_PRS` — if a matching merged PR exists, the issue may already be fixed.
 3. **Root Cause**: 1-3 sentences based only on the pre-fetched context.
 4. **Scope Assessment**: In scope for project?
-5. **Complexity**: Estimate `tier:simple` (haiku), `tier:standard` (sonnet), or `tier:thinking` (opus).
+5. **Complexity**: Estimate the provider-agnostic workload as `tier:simple`,
+   `tier:standard`, or `tier:thinking`; runtime routing selects the model.
 6. **Resolution Ownership**: Select one canonical root-cause fix and give the worker exact files, pattern, and verification. Never ask the contributor to choose an implementation or provide facts already available in the evidence.
 
 ### For PRs (all of the above, plus)

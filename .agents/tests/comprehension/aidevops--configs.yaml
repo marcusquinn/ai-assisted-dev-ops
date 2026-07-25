@@ -1,6 +1,6 @@
 # Test: .agents/aidevops/configs.md (89 lines — moderate config doc)
 file: .agents/aidevops/configs.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies template vs working file rule"

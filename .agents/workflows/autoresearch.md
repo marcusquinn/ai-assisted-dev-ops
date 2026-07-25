@@ -66,7 +66,7 @@ Research program: optimize-build-time
   Metric:     build_time_seconds (lower) — npm run build 2>&1 | grep 'Time:' | awk '{print $2}'
   Constraints: npm test
   Budget:     2h / 50 iterations / 5m per-experiment
-  Models:     researcher=sonnet
+  Models:     researcher=standard
 
 [Enter] confirm  [e] edit  [q] quit
 ```
@@ -130,7 +130,10 @@ Ask sequentially; show inferred default as option 1; Enter accepts default.
 
 **Q6 — Budget?** Defaults: `2h / 50 iterations / 5m per-experiment / no goal`.
 
-**Q7 — Models?** Defaults: `researcher=sonnet, evaluator=haiku`. Ask about Target model only if Q1 mentions "agent" or "instruction" (`target=sonnet`).
+**Q7 — Workload tiers?** Defaults: `researcher=standard, evaluator=simple`.
+Ask about the Target tier only if Q1 mentions "agent" or "instruction"
+(`target=standard`). Concrete target models are accepted only for an explicitly
+declared, like-for-like model benchmark; runtime configuration maps normal tiers.
 
 **Q8 — Concurrency?**
 

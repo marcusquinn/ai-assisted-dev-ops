@@ -29,11 +29,16 @@ tools:
 
 <!-- AI-CONTEXT-END -->
 
-## Preferred Tool
+## Supported Runtime Integrations
 
-**[Claude Code](https://Claude.ai/)** is the primary-tested AI coding agent. All features, agents, workflows, and MCP integrations are designed for Claude Code first.
+Claude Code and OpenCode are supported runtimes. Canonical agents, workflows, and
+workload tiers remain provider-agnostic; generated adapters and runtime
+configuration supply runtime-specific commands, tools, and concrete model mappings.
 
-Key integrations: agents via `generate-opencode-agents.sh`, 41 slash commands, compaction plugin at `.agents/plugins/opencode-aidevops/`, system prompt at `.agents/prompts/build.txt`, native tools at `.opencode/tool/*.ts`.
+Key OpenCode integrations: agents via `generate-opencode-agents.sh`, generated slash
+commands, the compaction plugin at `.agents/plugins/opencode-aidevops/`, the
+near-empty compatibility placeholder at `.agents/prompts/build.txt`, and native
+tools at `.opencode/tool/*.ts`.
 
 ### OpenCode Native Tools (`.opencode/tool/`)
 
@@ -44,17 +49,31 @@ Files in `.opencode/tool/` are **OpenCode plugin tools** — TypeScript modules 
 | `ai-research.ts` | Spawns research queries via Anthropic API |
 | `session-rename.ts` | Renames sessions via direct SQLite write — no HTTP API exists |
 
-## Intelligence Over Scripts (Core Principle)
+## Judgment and Deterministic Enforcement
 
-**Guide intelligence with agent docs. Do not replace it with deterministic bash logic.**
+Use model judgment for open-ended decisions; use deterministic automation for
+mechanics whose correct outcome can be specified and tested.
 
-aidevops replaced a 37,000-line deterministic bash supervisor with a simple pattern: an AI agent reads guidance docs, fetches live state from GitHub, reasons, and acts. When the agent errs, fix the guidance — not a new script.
+aidevops replaced a 37,000-line deterministic supervisor because scripts were
+encoding prioritisation, triage, stuck detection, and trade-offs without enough
+context. Preserve that lesson: agent guidance owns judgment semantics and helpers
+may collect evidence, but a script must not silently decide an open-ended policy.
 
-**When you encounter a supervisor/orchestration bug:** Improve the relevant agent doc. Never create a bash script to enforce what the agent should reason about. Never add state files, databases, or tracking layers.
+Deterministic hooks, validators, wrappers, and CI checks should enforce syntax,
+schemas, path safety, idempotency, exact state transitions, and other reproducible
+invariants. State or tracking is justified only when the workflow has an explicit
+owner, lifecycle, privacy boundary, and recovery contract.
 
-**The test:** Fix adds a `.sh` file or state mechanism → wrong direction. Fix adds a paragraph of clear guidance → right track.
+**Decision test:** If reasonable models could choose differently from the same
+evidence, improve the owning decision rule and expose better evidence. If the
+expected result is mechanically decidable, implement or strengthen deterministic
+enforcement and retain the concise invariant until delivery is verified. Use
+`.agents/tools/build-agent/agent-review.md` before changing instruction semantics.
 
-Helper scripts are for **deterministic utilities** (version bumping, file discovery, credential lookup) — not **judgment calls** (dispatch priority, stuck detection, triage).
+Examples: version bumping, file discovery, credential lookup, schema validation,
+and safety guards belong in tools; dispatch priority, diagnosis, decomposition,
+and trade-offs remain model judgment. See `reference/progressive-disclosure.md`
+for prompt-to-hook migration.
 
 ## Agent Architecture
 

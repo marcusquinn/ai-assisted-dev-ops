@@ -23,9 +23,10 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Sonnet Tier Model (Default)
+# Anthropic Sonnet Model Profile
 
-Default tier for most development work: balanced capability, cost, and speed.
+Concrete model profile that the runtime routing table may select for `standard`
+work. Task and agent authors request a workload tier, never this provider family.
 
 ## Use For
 
@@ -35,15 +36,16 @@ Default tier for most development work: balanced capability, cost, and speed.
 
 ## Routing Rules
 
-- Default: use sonnet unless the task clearly needs less, more, or much larger context.
-- Route simple classification and formatting → haiku.
-- Route architecture decisions and novel problems → opus.
-- Route very large context needs (100K+ tokens) → pro.
+- Map this profile into a tier only when current capability, cost, availability,
+  and equivalent-workload evidence support it.
+- Route bounded classification and formatting through `simple`.
+- Route architecture decisions and novel problems through `thinking`.
+- Treat large-context requirements as routing evidence, not a provider-named tier.
 
 ## Constraints
 
-- Do not use for tasks that are purely classification or reformatting — route to haiku.
-- Do not use for novel architecture decisions or complex trade-offs — route to opus.
+- Do not use for work classified as `simple` when a cheaper routed model is reliable.
+- Do not use for `thinking` work unless the active routing table selects it.
 
 ## Model Details
 
@@ -56,4 +58,4 @@ Default tier for most development work: balanced capability, cost, and speed.
 | Training cutoff | January 2026 |
 | Input cost | $3.00/1M tokens |
 | Output cost | $15.00/1M tokens |
-| Tier | sonnet (default, balanced) |
+| Workload tier | Candidate for `standard` |

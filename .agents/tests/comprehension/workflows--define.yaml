@@ -1,0 +1,98 @@
+# Test: .agents/workflows/define.md
+file: .agents/workflows/define.md
+tier_minimum: standard
+
+scenarios:
+  - name: "does not force probes when the brief is already sufficient"
+    prompt: "The goal, exact file, behavior, non-goals, and acceptance test are already known. Must /define still ask exactly two latent-criteria probes?"
+    expected:
+      contains:
+        - "no"
+        - "decision"
+      not_contains:
+        - "must ask exactly two"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      No. Ask a probe only when its answer could change scope, architecture,
+      trust boundaries, user-visible behavior, or acceptance criteria. Stop when
+      the brief is decision-complete instead of spending attention on a quota.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "keeps thinking-tier briefs problem first"
+    prompt: "A thinking-tier task must choose an architecture after reviewing constraints and prior art. Should /define invent complete code skeletons for every likely file?"
+    expected:
+      contains:
+        - "constraints"
+        - "prior art"
+        - "decision"
+      not_contains:
+        - "complete code skeletons"
+      min_length: 60
+      max_length: 900
+    reference_answer: |
+      No. A thinking-tier brief should define the problem, constraints, prior
+      art, evidence to inspect, decisions to make, and acceptance boundaries.
+      Add implementation scaffolding only after those decisions are resolved;
+      speculative skeletons create false certainty.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "asks only consequential unknowns"
+    prompt: "What test should /define apply before asking another interview question?"
+    expected:
+      contains:
+        - "change"
+        - "acceptance"
+      min_length: 40
+      max_length: 700
+    reference_answer: |
+      Ask whether the answer could materially change scope, architecture, trust
+      boundaries, user-visible behavior, or acceptance criteria. If not, infer
+      the safe default, record it when useful, and continue without interrupting
+      the user.
+    fast_fail_triggers:
+      - refusal
+      - disengagement
+
+  - name: "makes standard briefs implementation ready without false precision"
+    prompt: "For a standard-tier bug fix following an existing pattern, what implementation context should /define provide?"
+    expected:
+      contains:
+        - "reference"
+        - "skeleton"
+        - "verification"
+      not_contains:
+        - "invent the architecture"
+      min_length: 60
+      max_length: 900
+    reference_answer: |
+      Provide verified target files, the established reference pattern, resolved
+      behaviour and compatibility boundaries, focused verification, and a code
+      skeleton where it reduces invention. Keep any genuine implementation
+      choice explicit instead of presenting speculative code as exact.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
+
+  - name: "runs a compact material blind spot pass"
+    prompt: "After drafting a brief, should /define append a generic assumptions checklist?"
+    expected:
+      contains:
+        - "material"
+        - "revise"
+      not_contains:
+        - "always append"
+      min_length: 50
+      max_length: 800
+    reference_answer: |
+      No. Run a compact internal pass across assumptions, affected surfaces,
+      trust boundaries, user-visible behaviour, non-goals, and verification.
+      Revise the brief or ask a targeted question only when the pass finds a
+      material omission; do not append an empty ritual checklist.
+    fast_fail_triggers:
+      - refusal
+      - disengagement

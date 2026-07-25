@@ -1,11 +1,11 @@
 ---
-description: Canonical routing taxonomy — domain labels and model tier labels for task creation and dispatch
+description: Canonical routing taxonomy — domain labels and workload tier labels for task creation and dispatch
 ---
 
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Task Taxonomy: Domain and Model Tier Classification
+# Task Taxonomy: Domain and Workload Tier Classification
 
 Canonical source for `/new-task`, `/save-todo`, `/define`, and `/pulse`. When a domain or tier changes, update **only this file** — command docs point here, not duplicate the tables.
 
@@ -29,15 +29,18 @@ Apply a domain tag only when the task clearly belongs to a specialist agent. Cod
 
 **Rule:** Omit the domain tag for code tasks. Build+ is the default.
 
-## Model Tier Table
+## Workload Tier Table
 
-Tiers route tasks to models with appropriate capability. The pulse resolves labels via `model-availability-helper.sh resolve <tier>`. Label every task — explicit tiers enable cascade dispatch (try cheap first, escalate with accumulated context).
+Tiers describe the work and route it through centrally configured model chains.
+The pulse resolves labels via `model-availability-helper.sh resolve <tier>`; runtime
+configuration owns concrete provider/model selection. Label every task so cascade
+dispatch can start with the lowest capable tier and escalate with accumulated context.
 
-| Tier | TODO Tag | GitHub Label | Model | When to Apply |
-|------|----------|--------------|-------|---------------|
-| simple | `tier:simple` | `tier:simple` | Haiku | Prescriptive brief with code blocks; single-file edits following existing patterns; config tweaks; docs-only changes |
-| standard | `tier:standard` | `tier:standard` | Sonnet | Standard implementation, bug fixes, refactors, tests — needs judgment, error recovery, multi-file reasoning |
-| reasoning | `tier:thinking` | `tier:thinking` | Opus | Architecture decisions, novel design with no existing patterns, complex multi-system trade-offs, security audits requiring deep reasoning |
+| Tier | TODO Tag | GitHub Label | Workload contract |
+|------|----------|--------------|-------------------|
+| simple | `tier:simple` | `tier:simple` | Mechanically complete brief with exact edits; bounded changes following an existing pattern |
+| standard | `tier:standard` | `tier:standard` | Implementation-ready work requiring local judgment, recovery, or coordinated changes |
+| thinking | `tier:thinking` | `tier:thinking` | Problem/constraint-led work requiring architecture, novel design, or complex trade-offs |
 
 **Rules:**
 - Default to `tier:standard` when uncertain. Use `tier:simple` for prescriptive work, `tier:thinking` for deep reasoning.
@@ -53,7 +56,7 @@ If **any** of the following are true, the task is **not** `tier:simple`. Use `ti
 
 | # | Disqualifier | Rationale |
 |---|-------------|-----------|
-| 1 | >2 files to modify | Simple-tier models cannot coordinate multi-file changes reliably |
+| 1 | >2 files to modify | Simple-tier work should not require non-trivial multi-file coordination |
 | 2 | Code blocks are skeletons, not complete | `tier:simple` requires exact oldString/newString or full file content; if the worker must invent logic, it needs judgment |
 | 3 | Conditional logic or branching to design | "if enabled, do X; if gateway fails, fall back to Y" requires reasoning about states |
 | 4 | Error handling, retry, or fallback logic | Designing resilience patterns is not copy-paste work |
@@ -77,8 +80,9 @@ If **any** of the following are true, the task is **not** `tier:simple`. Use `ti
 ### High-Reference Tasks (GH#18458 — context budget awareness)
 
 Some tasks require reading large volumes of reference material before implementation
-can begin. These are systematically prone to worker timeout at `tier:standard` because
-sonnet burns its token budget on reading rather than implementing. Indicators:
+can begin. These are systematically prone to worker timeout at `tier:standard`
+because reference loading consumes the context budget before implementation.
+Indicators:
 
 | Indicator | Example | Mitigation |
 |-----------|---------|------------|
@@ -127,15 +131,15 @@ Tests: `.agents/scripts/tests/test-tier-simple-body-shape.sh` (18 fixture cases 
 Instead of classifying tasks to the "correct" tier upfront, the cascade model starts cheap and escalates with knowledge:
 
 ```text
-tier:simple (Haiku, 1x cost)
+tier:simple (lowest-cost configured route)
   ✓ Success → done (cheapest resolution)
   ✗ Failure → structured escalation report on issue → re-dispatch at tier:standard
 
-tier:standard (Sonnet, 12x cost)
+tier:standard (general implementation route)
   ✓ Success → done (saved exploration tokens via escalation context)
   ✗ Failure → richer escalation report → re-dispatch at tier:thinking
 
-tier:thinking (Opus, 60x cost)
+tier:thinking (deep-reasoning route)
   ✓ Success → done (had full diagnostic context from both prior attempts)
   ✗ Failure → human review with complete attempt history
 ```
@@ -162,6 +166,6 @@ Structured reasons feed back into brief template optimisation:
 - `/new-task` — classify after brief creation; apply labels via `gh issue edit`
 - `/save-todo` — classify during dispatch tag evaluation
 - `/define` — classify during task type detection
-- `/pulse` — consume labels for agent routing, model tier selection, and cascade dispatch
+- `/pulse` — consume labels for agent routing, workload tier selection, and cascade dispatch
 
 See `scripts/commands/pulse.md` "Agent routing from labels" and "Model tier selection" for dispatch behaviour.

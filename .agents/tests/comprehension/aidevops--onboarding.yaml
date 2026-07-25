@@ -1,6 +1,6 @@
 # Test: .agents/aidevops/onboarding.md (130 lines — complex onboarding doc)
 file: .agents/aidevops/onboarding.md
-tier_minimum: haiku
+tier_minimum: simple
 
 scenarios:
   - name: "identifies onboarding flow steps"
@@ -9,12 +9,14 @@ scenarios:
       contains:
         - "capabilities"
         - "status"
+        - "setup-git"
       min_length: 40
       max_length: 600
     reference_answer: |
       The welcome flow is: 1) Introduce capabilities, 2) Capture concept
       familiarity, 3) Capture work type, 4) Show status, 5) Guide
-      service-by-service setup.
+      service-by-service setup, 6) After GitHub authentication, mention
+      /setup-git for per-repository secrets.
     fast_fail_triggers:
       - refusal
       - disengagement

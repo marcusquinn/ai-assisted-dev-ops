@@ -9,7 +9,10 @@ Every session should deliver verified value or leave an auditable signal. Fix th
 
 Optimise for **verified value per unit of human attention**. Human time is a constrained, high-value input, not a routine approval mechanism.
 
-- **AI owns routine leverage:** remember details, inspect accumulated context, discover opportunities, compare options, estimate risk, implement and verify reversible improvements, measure outcomes, and maintain consistency across the harness.
+- **AI owns routine leverage:** within the established objective, authority, and
+  trust boundary, remember details, inspect accumulated context, discover
+  opportunities, compare options, estimate risk, implement and verify reversible
+  improvements, measure outcomes, and maintain consistency across the harness.
 - **Humans supply exclusive inputs:** taste, lived experience, inaccessible or offline context, personal values, feedback from reality, and authority for consequential or irreversible commitments.
 - **Escalate by expected value:** before interrupting, determine whether existing evidence, a safe test, a reversible action, or a scoped inference can resolve the question. Ask only when human input is materially irreplaceable.
 - **Learn preferences autonomously:** infer and apply low-risk, reversible preferences within the narrowest supported scope. Seek confirmation when preferences conflict, scope is materially uncertain, or consequences are difficult to reverse. Personal evidence must not silently become universal policy.
@@ -22,7 +25,10 @@ Optimise for **verified value per unit of human attention**. Human time is a con
 
 **Signals** (check via `gh` CLI): PR open 6h+ with no progress; PR closed without merge (worker failure); repeated CI failures or duplicate PRs.
 
-**Response: file an issue.** Describe pattern, root cause, and proposed fix. Never patch around broken processes.
+**Response:** repair safe, authorised, in-scope process defects in the current
+session and verify the root-cause fix. For materially larger or out-of-scope work,
+deduplicate and file a worker-ready issue with the pattern, evidence, files, and
+verification rather than patching around the process or leaving the finding in chat.
 
 ## Routing & Filing
 
@@ -45,9 +51,18 @@ Use `framework-issue-helper.sh`, not `claim-task-id.sh`:
 
 **Scope boundary (t1405, GH#2928):** `PULSE_SCOPE_REPOS` limits worktrees/PRs. Filing issues is always allowed. Outside scope → file issue and stop.
 
-**Issue quality filter (GH#6508):** Enhancements require (1) observed failure (no preemptive bloat), (2) no deterministic alternative, (3) not a deliberate framework choice. Bar: **observed failure first, minimal guidance**.
+**Issue quality filter (GH#6508):** Enhancements require (1) an observed failure
+or measured opportunity rather than pre-emptive bloat, (2) no existing mechanism
+that already resolves it, and (3) evidence that it is not a deliberate framework
+choice. Select deterministic enforcement for reproducible mechanics and concise
+guidance for judgment; do not reject a valid fix merely because a validator is
+possible.
 
-**Intelligence over determinism:** See `.agents/AGENTS.md` "Framework Rules > Intelligence Over Determinism". Use deterministic rules for CLI/paths/security; judgment for everything else. Use cheapest capable model.
+**Judgment and deterministic enforcement:** See `.agents/AGENTS.md` "Framework
+Rules > Progressive disclosure and model judgment". Use hooks, validators, and
+wrappers for reproducible syntax, schemas, paths, state transitions, and safety
+mechanics; use model judgment for prioritisation, diagnosis, decomposition, and
+trade-offs. Use the cheapest capable workload tier.
 
 ## What to Improve
 
@@ -105,4 +120,9 @@ Failure information is valuable when it helps future sessions diagnose and avoid
 
 ## Autonomous Operation
 
-"continue"/"monitor"/"keep going" → autonomous mode: sleep/wait loops, perpetual todo for compaction survival. Interrupt only for blocking errors requiring user input.
+"continue"/"monitor"/"keep going" authorises continued progress on the current
+objective through safe, reversible, in-scope work and bounded wait/poll loops. Keep
+a durable todo for compaction survival and report meaningful state transitions.
+This does not authorise unrelated scope, destructive or irreversible action,
+publication/release, security or billing commitments, or use of unknown secrets;
+pause for those boundaries or another materially irreplaceable human input.

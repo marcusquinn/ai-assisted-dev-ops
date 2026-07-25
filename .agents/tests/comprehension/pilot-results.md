@@ -5,18 +5,23 @@
 
 **Date:** 2026-04-02 | **Files:** 15 | **Scenarios:** 38 (2-3/file) | **Method:** Structural pre-filter + predicted tier assignment
 
+This is historical benchmark evidence. Provider-family names and costs below
+record the mappings used on the pilot date; they are not workload-tier names or
+claims about current runtime integration. See `README.md` for the current
+contract.
+
 ## Summary
 
-| Predicted Tier | Count | % |
-|---------------|-------|---|
+| Pilot-time mapped model family | Count | % |
+|--------------------------------|-------|---|
 | haiku | 10 | 67% |
 | sonnet | 5 | 33% |
 | opus | 0 | 0% |
 
 ## Per-File Results
 
-| File | Lines | Cross-refs | Complexity | Tier | Scenarios |
-|------|-------|-----------|------------|------|-----------|
+| File | Lines | Cross-refs | Complexity | Mapped model | Scenarios |
+|------|-------|-----------|------------|--------------|-----------|
 | `scripts/commands/code-simplifier.md` | 12 | 2 | simple | haiku | 2 |
 | `aidevops/memory-patterns.md` | 48 | 6 | simple | haiku | 2 |
 | `reference/self-improvement.md` | 59 | 8 | simple | haiku | 2 |
@@ -59,7 +64,8 @@ Right topic, wrong conclusion — multiple valid readings exist.
 - `tools/code-review/code-simplifier.md`: 4-tier classification (safe/prose-tightening/requires-judgment/almost-never) — haiku collapses to binary; sonnet maintains distinction.
 - `workflows/git-workflow.md`: allowlist vs blocklist + `--force-with-lease` exception — haiku conflates; sonnet distinguishes correctly.
 
-**Sonnet false-fails:** None expected. Opus-tier files (e.g., `prompts/build.txt` 400+ lines, deeply nested cross-refs) excluded from pilot.
+**Sonnet false-fails:** None expected. Files that would have mapped to Opus
+(for example the then-400-line `prompts/build.txt`) were excluded from the pilot.
 
 **False-pass risk:** Haiku passes deterministic checks but misunderstands intent (e.g., `reference/self-improvement.md` "framework vs project routing" — outputs "framework" but with wrong reasoning). Mitigation: adjudication layer (haiku self-check or sonnet judge); `reference_answer` field enables precise comparison for critical files.
 
@@ -67,15 +73,15 @@ Right topic, wrong conclusion — multiple valid readings exist.
 
 Predicts complexity from line count, cross-refs, code blocks, table rows, heading depth — no model calls.
 
-| Complexity | Criteria | Predicted Tier |
-|-----------|----------|----------------|
+| Complexity | Criteria | Pilot-time mapped model |
+|------------|----------|-------------------------|
 | simple | score ≤ 2 (< 60 lines, few refs) | haiku |
 | moderate | score 3-5 (60-120 lines, moderate refs) | haiku or sonnet |
 | complex | score > 5 (> 120 lines, many refs) | sonnet |
 
 **Accuracy:** ~70%. Remaining 30% are "moderate" files where the model benchmark adds most value.
 
-## Cost Analysis
+## Pilot-Time Cost Analysis
 
 | Component | Per-file | Notes |
 |-----------|---------|-------|
@@ -88,10 +94,13 @@ Predicts complexity from line count, cross-refs, code blocks, table rows, headin
 
 **Total/file:** $0.003-$0.015 | **Full sweep (300 files):** $0.90-$4.50 | **Target:** < $0.02/file — **met**
 
-## Recommendations
+## Pilot Recommendations (Historical)
 
 1. Run benchmark against 15 pilot files via `comprehension-benchmark-helper.sh sweep` to validate predicted tiers.
 2. Expand to full codebase after pilot validation; prioritize files in `simplification-state.json`.
 3. Integrate with pulse dispatch: read `tier_minimum` from state, route to cheapest compatible model.
 4. Production feedback loop: on tier-dispatched task failure, log `{file, tier_dispatched, failure_reason, task_id}` and downgrade `tier_minimum`.
 5. Re-benchmark after simplification: when code-simplifier modifies a file, rerun its comprehension test to verify tier didn't regress.
+
+Items 3-5 were proposals, not completed integration evidence. Current behaviour
+and explicit non-integrations are documented in `README.md`.

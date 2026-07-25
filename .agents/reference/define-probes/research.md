@@ -8,9 +8,9 @@ mode: subagent
 
 # Research Probes
 
-Use 2 probes during `/define` for tasks classified as **research**. Defaults: time-boxed, written recommendation (not code), compare ≥2 options with cost/effort estimates.
+Use this candidate pool during `/define` for **research** tasks. Defaults: time-boxed, written recommendation (not code), compare ≥2 options with cost/effort estimates. Ask only when an answer could materially change the decision, evidence scope, deliverable, or acceptance criteria.
 
-## Required (ask both)
+## Decision-Relevant Candidates
 
 **Time Box** — How much time should be spent?
 1. 30 minutes — quick comparison (recommended for simple evaluations)
@@ -24,7 +24,7 @@ Use 2 probes during `/define` for tasks classified as **research**. Defaults: ti
 3. Decision document for team review
 4. Just a verbal summary in this conversation
 
-## Probes (pick 2)
+## Optional Probes
 
 **Decision Criteria** — What matters most when choosing?
 1. Cost (monetary or compute) (recommended if comparing services/tools)
@@ -59,4 +59,4 @@ Use 2 probes during `/define` for tasks classified as **research**. Defaults: ti
 
 ## Sufficiency Test
 
-Before generating the brief, confirm you can answer: time box, deliverable, ranked decision criteria, decision owner. If any is unknown — ask one more targeted question.
+Before generating the brief, confirm that the time box, deliverable, decision criteria, and decision owner are known or safely defaulted. Ask one targeted question only when an unknown would materially change the research outcome.

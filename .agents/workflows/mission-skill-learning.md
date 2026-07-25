@@ -1,7 +1,7 @@
 ---
 description: Mission skill learning — auto-capture reusable patterns from missions, suggest promotion of temporary agents/scripts, track recurring patterns across missions
 mode: subagent
-model: sonnet  # pattern evaluation, not architecture-level reasoning
+model: standard  # pattern evaluation, not architecture-level reasoning
 tools:
   read: true
   write: false

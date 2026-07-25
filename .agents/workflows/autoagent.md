@@ -73,7 +73,7 @@ Safety constraints shown alongside defaults. Confirm or override.
 | Timeout | `2h` |
 | Max iterations | `30` |
 | Per-experiment | `5m` |
-| Researcher model | `sonnet` |
+| Researcher workload tier | `standard` |
 | Trials per hypothesis | `2` |
 
 After setup, stage the research program outside the invoking repository, review it,

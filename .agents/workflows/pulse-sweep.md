@@ -231,7 +231,9 @@ Pre-fetched Active Workers includes `struggle_ratio` (messages / commits). Infor
 
 ### Model escalation
 
-After 2+ failed attempts (count kill/failure comments): escalate to opus via `model-availability-helper.sh resolve opus`. At 3+ failures, also summarise what previous workers attempted.
+After 2+ failed attempts (count kill/failure comments), escalate to
+`tier:thinking` via `model-availability-helper.sh resolve thinking`. At 3+
+failures, also summarise what previous workers attempted.
 
 ## Dispatch Refinements
 
@@ -242,7 +244,10 @@ RESOLVED_MODEL=$(~/.aidevops/agents/scripts/model-availability-helper.sh resolve
 # Pass: --model "$RESOLVED_MODEL"
 ```
 
-Precedence: (1) failure escalation (cascade: `tier:simple` → `tier:standard` → `tier:thinking`) > (2) issue labels (`tier:thinking` → opus, `tier:standard` → sonnet, `tier:simple` → haiku) > (3) bundle defaults > (4) omit (default round-robin). See [Task Taxonomy](../reference/task-taxonomy.md) for tier purposes.
+Precedence: (1) failure escalation (cascade: `tier:simple` → `tier:standard` →
+`tier:thinking`) > (2) the issue's canonical workload-tier label > (3) bundle
+defaults > (4) omit (default runtime routing). See
+[Task Taxonomy](../reference/task-taxonomy.md) for tier purposes.
 
 ### Agent routing from labels
 

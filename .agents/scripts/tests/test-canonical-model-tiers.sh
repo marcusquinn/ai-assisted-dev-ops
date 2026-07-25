@@ -53,15 +53,49 @@ check_present() {
 	return 0
 }
 
-check_absent \
-	"agent frontmatter uses only canonical workload tiers" \
-	'^(model|model-tier): (haiku|sonnet|opus|flash|pro|composer2)$' \
-	.agents --glob '*.md'
+check_frontmatter_tiers() {
+	local description="agent frontmatter uses only canonical workload tiers"
+	local matches=""
+	matches=$(git ls-files '*.md' | while IFS= read -r file; do
+		awk '
+			FNR == 1 {
+				if ($0 != "---") exit
+				next
+			}
+			$0 == "---" { exit }
+			$0 ~ /^model(-tier)?:[[:space:]]*(haiku|sonnet|opus|flash|pro|composer2)([[:space:]]*(#.*)?)$/ {
+				print FILENAME ":" FNR ":" $0
+			}
+		' "$file"
+	done)
+	if [[ -n "$matches" ]]; then
+		printf '%s\n' "$matches"
+		printf 'FAIL: %s\n' "$description" >&2
+		failures=$((failures + 1))
+		return 0
+	fi
+	printf 'PASS: %s\n' "$description"
+	return 0
+}
+
+check_frontmatter_tiers
 
 check_absent \
 	"documentation does not describe provider families as tiers" \
 	'\b(haiku|sonnet|opus|flash|pro|composer2)[ -]tier\b|\btier[ :_-]+(haiku|sonnet|opus|flash|pro|composer2)\b' \
 	.agents --glob '*.{md,sh,py,mjs,json,jsonc,toon}'
+
+check_absent \
+	"canonical task taxonomy does not hardcode provider families" \
+	'\b(Haiku|Sonnet|Opus|Flash|Pro|Composer2)\b' \
+	.agents/reference/task-taxonomy.md
+
+for tier in simple standard thinking; do
+	check_present \
+		"canonical task taxonomy includes $tier workload tier" \
+		"^\\| $tier \\| .*tier:$tier.*\\|" \
+		.agents/reference/task-taxonomy.md
+done
 
 check_absent \
 	"framework configuration contains no legacy tier values" \

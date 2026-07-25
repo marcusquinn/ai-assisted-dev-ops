@@ -30,6 +30,88 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+# Convert a tier or provider/model identifier into a path-safe, injective key.
+# Args: model identifier
+_cross_review_model_key() {
+	local model="$1"
+	if [[ ! "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*$ ]]; then
+		return 1
+	fi
+	local key="" char="" char_code="" index=0
+	while [[ "$index" -lt "${#model}" ]]; do
+		char="${model:index:1}"
+		case "$char" in
+		[a-z0-9._-]) key+="$char" ;;
+		*)
+			printf -v char_code '%02X' "'$char"
+			key+="%${char_code}"
+			;;
+		esac
+		index=$((index + 1))
+	done
+	printf '%s\n' "$key"
+	return 0
+}
+
+# Build a runner-helper-compatible name without embedding a provider/model ID.
+# Args: role (model|judge), numeric ordinal
+_cross_review_runner_name() {
+	local role="$1"
+	local ordinal="$2"
+	local role_key=""
+	case "$role" in
+	model) role_key="m" ;;
+	judge) role_key="j" ;;
+	*) return 1 ;;
+	esac
+	if [[ ! "$ordinal" =~ ^[0-9]+$ ]]; then
+		return 1
+	fi
+	local runner_name="cross-review-${role_key}${ordinal}-$$"
+	if [[ ${#runner_name} -gt 40 ]]; then
+		return 1
+	fi
+	printf '%s\n' "$runner_name"
+	return 0
+}
+
+# Return the active routing table's concrete models for one workload tier.
+# Args: simple|standard|thinking
+_cross_review_models_for_tier() {
+	local tier="$1"
+	local default_table="${SCRIPT_DIR}/../configs/model-routing-table.json"
+	local custom_table="${SCRIPT_DIR}/../custom/configs/model-routing-table.json"
+	local table_path="${CROSS_REVIEW_ROUTING_TABLE:-$default_table}"
+	local models="" joined="" model="" count=0
+
+	if [[ ! "$tier" =~ ^(simple|standard|thinking)$ ]]; then
+		return 1
+	fi
+	if [[ -z "${CROSS_REVIEW_ROUTING_TABLE:-}" && -f "$custom_table" ]]; then
+		table_path="$custom_table"
+	fi
+	if [[ ! -r "$table_path" ]]; then
+		return 1
+	fi
+
+	models=$(jq -r --arg tier "$tier" '.tiers[$tier].models[]?' "$table_path" 2>/dev/null) || return 1
+	while IFS= read -r model; do
+		[[ -z "$model" ]] && continue
+		_cross_review_model_key "$model" >/dev/null || return 1
+		if [[ -n "$joined" ]]; then
+			joined+=","
+		fi
+		joined+="$model"
+		count=$((count + 1))
+	done <<<"$models"
+
+	if [[ "$count" -lt 2 ]]; then
+		return 1
+	fi
+	printf '%s\n' "$joined"
+	return 0
+}
+
 # Build judge prompt from model outputs
 # Args: output_dir, max_chars_per_model, original_prompt, model_names array
 # Output: judge_prompt, models_with_output array
@@ -50,7 +132,9 @@ MODEL RESPONSES:
 "
 	local models_with_output=()
 	for model_tier in "${model_names[@]}"; do
-		local result_file="${output_dir}/${model_tier}.txt"
+		local model_key
+		model_key=$(_cross_review_model_key "$model_tier") || continue
+		local result_file="${output_dir}/${model_key}.txt"
 		if [[ -f "$result_file" && -s "$result_file" ]]; then
 			local response_text
 			response_text=$(head -c "$max_chars_per_model" "$result_file")
@@ -82,8 +166,11 @@ _judge_dispatch() {
 	local runner_helper="${SCRIPT_DIR}/runner-helper.sh"
 	[[ ! -x "$runner_helper" ]] && return 1
 
-	local judge_runner="cross-review-judge-$$"
-	local judge_output_file="${output_dir}/judge-${judge_model}.json"
+	local judge_key
+	judge_key=$(_cross_review_model_key "$judge_model") || return 1
+	local judge_runner
+	judge_runner=$(_cross_review_runner_name judge 0) || return 1
+	local judge_output_file="${output_dir}/judge-${judge_key}.json"
 	local judge_err_log="${output_dir}/judge-errors.log"
 
 	echo "  Dispatching to judge (${judge_model})..."
@@ -316,12 +403,12 @@ _cross_review_judge_score() {
 	shift 6
 	local -a model_names=("$@")
 	local judge_err_log="${output_dir}/judge-errors.log"
-	local judge_output_file="${output_dir}/judge-${judge_model}.json"
-
-	if [[ ! "$judge_model" =~ ^[A-Za-z0-9._-]+$ ]]; then
+	local judge_key
+	if ! judge_key=$(_cross_review_model_key "$judge_model"); then
 		print_error "Invalid judge model identifier: $judge_model"
 		return 1
 	fi
+	local judge_output_file="${output_dir}/judge-${judge_key}.json"
 	if [[ ! -x "${SCRIPT_DIR}/runner-helper.sh" ]]; then
 		print_warning "runner-helper.sh not found — skipping judge scoring"
 		return 0
@@ -338,7 +425,9 @@ _cross_review_judge_score() {
 	local -a models_with_output=()
 	local model_tier
 	for model_tier in "${model_names[@]}"; do
-		[[ -f "${output_dir}/${model_tier}.txt" && -s "${output_dir}/${model_tier}.txt" ]] &&
+		local model_key
+		model_key=$(_cross_review_model_key "$model_tier") || continue
+		[[ -f "${output_dir}/${model_key}.txt" && -s "${output_dir}/${model_key}.txt" ]] &&
 			models_with_output+=("$model_tier")
 	done
 	if [[ ${#models_with_output[@]} -lt 2 ]]; then
@@ -383,7 +472,8 @@ _cross_review_judge_score() {
 #######################################
 # Cross-model review: dispatch same prompt to multiple models (t132.8, t1329)
 # Usage: compare-models-helper.sh cross-review --prompt "review this code" \
-#          --models "sonnet,opus,pro" [--workdir path] [--timeout N] [--output dir]
+#          [--models "provider/model-a,provider/model-b"] [--workdir path]
+#          [--timeout N] [--output dir]
 #          [--score] [--judge <model>]
 # Dispatches via runner-helper.sh in parallel, collects outputs, produces summary.
 # With --score: feeds outputs to a thinking-tier judge for structured scoring
@@ -418,8 +508,8 @@ _cross_review_parse_args() {
 		--judge)
 			[[ $# -lt 2 ]] && { print_error "--judge requires a value"; return 1; }
 			local _judge_val="$2"
-			if [[ ! "$_judge_val" =~ ^[A-Za-z0-9._-]+$ ]]; then
-				print_error "Invalid judge model identifier: $_judge_val (only alphanumeric, dots, hyphens, underscores)"
+			if ! _cross_review_model_key "$_judge_val" >/dev/null; then
+				print_error "Invalid judge model identifier: $_judge_val"
 				return 1
 			fi
 			printf -v "$_r_judge" '%s' "$_judge_val"; shift 2 ;;
@@ -445,7 +535,9 @@ _cross_review_show_diff() {
 	# Word count comparison
 	echo "Response sizes:"
 	for model_tier in "${model_names[@]}"; do
-		local result_file="${output_dir}/${model_tier}.txt"
+		local model_key
+		model_key=$(_cross_review_model_key "$model_tier") || continue
+		local result_file="${output_dir}/${model_key}.txt"
 		if [[ -f "$result_file" && -s "$result_file" ]]; then
 			local wc_result
 			wc_result=$(wc -w <"$result_file" | tr -d ' ')
@@ -456,8 +548,11 @@ _cross_review_show_diff() {
 
 	# If exactly 2 models, show a simple diff
 	if [[ ${#model_names[@]} -eq 2 ]]; then
-		local file_a="${output_dir}/${model_names[0]}.txt"
-		local file_b="${output_dir}/${model_names[1]}.txt"
+		local key_a key_b
+		key_a=$(_cross_review_model_key "${model_names[0]}") || return 1
+		key_b=$(_cross_review_model_key "${model_names[1]}") || return 1
+		local file_a="${output_dir}/${key_a}.txt"
+		local file_b="${output_dir}/${key_b}.txt"
 		if [[ -f "$file_a" && -f "$file_b" ]]; then
 			echo "Diff (${model_names[0]} vs ${model_names[1]}):"
 			local diff_output diff_status
@@ -483,8 +578,10 @@ _cross_review_dispatch_one() {
 	local review_timeout="$5"
 	local workdir="$6"
 	local output_dir="$7"
-	local model_err_log="${output_dir}/${model_tier}-errors.log"
-	local result_file="${output_dir}/${model_tier}.txt"
+	local model_key
+	model_key=$(_cross_review_model_key "$model_tier") || return 1
+	local model_err_log="${output_dir}/${model_key}-errors.log"
+	local result_file="${output_dir}/${model_key}.txt"
 	local model_failed=0
 
 	"$runner_helper" create "$runner_name" \
@@ -495,12 +592,12 @@ _cross_review_dispatch_one() {
 	"$runner_helper" run "$runner_name" "$prompt" \
 		--model "$model_tier" \
 		--timeout "$review_timeout" \
-		--format json 2>>"$model_err_log" >"${output_dir}/${model_tier}.json" || model_failed=1
+		--format json 2>>"$model_err_log" >"${output_dir}/${model_key}.json" || model_failed=1
 
 	# Extract text response from JSON
-	if [[ -f "${output_dir}/${model_tier}.json" ]]; then
+	if [[ -f "${output_dir}/${model_key}.json" ]]; then
 		jq -r '.parts[]? | select(.type == "text") | .text' \
-			"${output_dir}/${model_tier}.json" 2>>"$model_err_log" >"$result_file" || model_failed=1
+			"${output_dir}/${model_key}.json" 2>>"$model_err_log" >"$result_file" || model_failed=1
 	fi
 
 	# Clean up runner (always attempt cleanup, even on failure)
@@ -523,7 +620,9 @@ _cross_review_wait_results() {
 		local model_name="$2"
 		shift 2
 		if ! wait "$pid" 2>/dev/null; then
-			local err_log="${output_dir}/${model_name}-errors.log"
+			local model_key
+			model_key=$(_cross_review_model_key "$model_name") || model_key="invalid-model"
+			local err_log="${output_dir}/${model_key}-errors.log"
 			echo "  ${model_name}: failed (see ${err_log})"
 			failed=$((failed + 1))
 		else
@@ -544,12 +643,17 @@ cmd_cross_review() {
 
 	if [[ -z "$prompt" ]]; then
 		print_error "--prompt is required"
-		echo "Usage: compare-models-helper.sh cross-review --prompt \"review this code\" --models \"sonnet,opus,pro\""
+		echo "Usage: compare-models-helper.sh cross-review --prompt \"review this code\" [--models \"provider/model-a,provider/model-b\"]"
 		return 1
 	fi
 
-	# Default models: sonnet + opus (Anthropic second opinion)
-	[[ -z "$models_str" ]] && models_str="sonnet,opus"
+	# Default: compare every configured standard-tier model on the same workload.
+	if [[ -z "$models_str" ]]; then
+		models_str=$(_cross_review_models_for_tier standard) || {
+			print_error "The standard routing tier must contain at least two valid models; pass --models explicitly"
+			return 1
+		}
+	fi
 
 	# Set up output directory and workdir
 	[[ -z "$output_dir" ]] && output_dir="${HOME}/.aidevops/.agent-workspace/tmp/cross-review-$(date +%Y%m%d%H%M%S)"
@@ -587,7 +691,9 @@ cmd_cross_review() {
 	local results_found=0
 	local model_tier
 	for model_tier in "${model_names[@]}"; do
-		local result_file="${output_dir}/${model_tier}.txt"
+		local model_key
+		model_key=$(_cross_review_model_key "$model_tier") || continue
+		local result_file="${output_dir}/${model_key}.txt"
 		if [[ -f "$result_file" && -s "$result_file" ]]; then
 			results_found=$((results_found + 1))
 			echo "=== ${model_tier} ==="
@@ -640,15 +746,18 @@ _cross_review_dispatch_all() {
 	local -a model_array=("$@")
 
 	local -a pids=()
-	local model_tier
+	local model_tier model_ordinal=0
 	for model_tier in "${model_array[@]}"; do
 		model_tier="${model_tier// /}"
 		[[ -z "$model_tier" ]] && continue
-		if [[ ! "$model_tier" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		local model_key
+		if ! model_key=$(_cross_review_model_key "$model_tier"); then
 			print_warning "Skipping invalid model identifier: $model_tier"
 			continue
 		fi
-		local runner_name="cross-review-${model_tier}-$$"
+		model_ordinal=$((model_ordinal + 1))
+		local runner_name
+		runner_name=$(_cross_review_runner_name model "$model_ordinal") || return 1
 		eval "${_r_model_names}+=(\"\$model_tier\")"
 		local resolved_model
 		resolved_model=$(resolve_model_tier "$model_tier")

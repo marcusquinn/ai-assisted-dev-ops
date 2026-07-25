@@ -88,7 +88,7 @@ The optimisation pipeline parses escalation reports to:
 
 ## Examples
 
-### tier:simple → tier:standard (Haiku failed, Sonnet gets context)
+### tier:simple → tier:standard (standard worker receives prior context)
 
 ```markdown
 ## Escalating from tier:simple
@@ -124,7 +124,7 @@ The optimisation pipeline parses escalation reports to:
 - Missing: whether to handle refresh tokens (3 call sites suggest yes)
 ```
 
-### tier:standard → tier:thinking (Sonnet failed, Opus gets both reports)
+### tier:standard → tier:thinking (thinking worker receives both reports)
 
 ```markdown
 ## Escalating from tier:standard

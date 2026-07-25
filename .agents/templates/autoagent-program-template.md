@@ -130,12 +130,19 @@ modification; any non-zero exit discards the experiment.
 ## Models
 
 ```text
-researcher: sonnet     # required: model that runs the experiment loop
+researcher: standard   # required: workload tier that runs the experiment loop
 ```
 
-Model tiers: `haiku` (fast/cheap), `sonnet` (balanced), `opus` (best quality).
-Use `sonnet` for most programs. Reserve `opus` for full-autonomous overnight runs
-where hypothesis quality matters more than cost.
+Workload tiers: `simple` (mechanical), `standard` (implementation/review), and
+`thinking` (complex reasoning). Use `standard` for most programs and reserve
+`thinking` for hypotheses whose ambiguity or consequence justifies deeper
+reasoning. Runtime configuration maps tiers to concrete models.
+
+Instruction-semantic candidates automatically load
+`.agents/tools/build-agent/agent-review.md`. They fail closed as `provenance_fail`
+before metric evaluation unless provenance, assembled delivery, classification,
+activation/exclusion boundaries, preservation, and target-specific behavioural
+coverage are complete.
 
 ## Evaluation
 
@@ -242,7 +249,7 @@ weights: "0.6,0.3,0.1"
 ## Models
 
 \`\`\`text
-researcher: sonnet
+researcher: standard
 \`\`\`
 
 ## Evaluation
@@ -340,7 +347,7 @@ weights: "0.4,0.2,0.4"
 ## Models
 
 \`\`\`text
-researcher: sonnet
+researcher: standard
 \`\`\`
 
 ## Evaluation
@@ -360,12 +367,14 @@ per_experiment: 300
 
 ## Hints
 
-- Redundant rules across files are the primary token waste
-- Merge thin sections covering the same topic
+- Treat apparent duplicates as review candidates; distinguish exact duplication
+  from decision-boundary reinforcement
+- Merge thin sections only when provenance, activation, and delivery are equivalent
 - Never remove security instructions or traceability requirements
-- Shorter phrasing that preserves meaning is always a win
+- Treat shorter phrasing as a candidate until target-specific scenarios prove the
+  same semantics and delivery
 - Comprehension test failures reveal which instructions are unclear — fix those first
-- weights "0.4,0.2,0.4" emphasizes token reduction equally with comprehension
+- weights "0.4,0.2,0.4" ranks candidates only after the semantic gate passes
 ```
 
 ---
@@ -440,7 +449,7 @@ weights: "0.6,0.3,0.1"
 ## Models
 
 \`\`\`text
-researcher: sonnet
+researcher: standard
 \`\`\`
 
 ## Evaluation
@@ -463,7 +472,7 @@ per_experiment: 600
 - Start with self-healing (highest signal, lowest risk)
 - Progress to instruction refinement after self-healing exhausts low-hanging fruit
 - Tool creation and agent composition only after iteration 20
-- Equal-or-better with less code is always a win
+- Simplification is kept only after applicable semantic and behavioural gates pass
 - Elevated safety: all target-matched elevated-only files require review
 - 3 trials required for consistency — a change must improve in 2 of 3 runs to be kept
 - pulse_outcomes requires pulse history in ~/.aidevops/.agent-workspace/; skip if absent

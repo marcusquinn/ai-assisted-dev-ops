@@ -117,7 +117,7 @@ tools:
 ---
 ```
 
-**Model tier:** omit by default. Add `model: sonnet  # N% success, M samples` only when pattern data supports an override. See `tools/build-agent/build-agent.md` "Model Tier Selection".
+**Model tier:** omit by default. When an override is justified, use `model: simple|standard|thinking`; the central routing table resolves concrete providers/models. Keep concrete names only in dated benchmark evidence. See `tools/build-agent/build-agent.md` "Model Tier Selection".
 
 **MCP tools:** enable per-agent with glob patterns (e.g. `context7_*: true`). Never enable MCPs globally. New MCP server? Also update `agent-loader.mjs` `AGENT_MCP_TOOLS` and `mcp-registry.mjs` — see `tools/build-agent/build-agent.md` "Adding a new MCP".
 
@@ -164,8 +164,9 @@ tools:
 | {sibling agent} | `{path}` | {one line} |
 ```
 
-**Budget:** ~50–100 instructions max. Over ~300 lines → split into an entry-point file plus a
-sibling directory (see `tools/build-agent/build-agent.md` "The `{name}.md` + `{name}/` Convention").
+**Budget:** ~50–100 instructions is a maintainability heuristic, not a deletion target. Over ~300
+lines, investigate splitting into an entry-point file plus a sibling directory without losing
+directive provenance (see `tools/build-agent/build-agent.md` "The `{name}.md` + `{name}/` Convention").
 
 **Cross-references:** before writing the Related Agents table:
 

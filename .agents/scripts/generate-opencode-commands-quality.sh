@@ -29,18 +29,11 @@ define_review_commands() {
 	create_command "agent-review" \
 		"Systematic review and improvement of agent instructions" \
 		"$AGENT_BUILD" "true" <<'BODY'
-Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/tools/build-agent/agent-review.md and follow its instructions.
+Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/tools/build-agent/agent-review.md and follow it as the canonical review rubric.
 
-Review the agent file(s) specified: $ARGUMENTS
+Review target: $ARGUMENTS
 
-If no specific file is provided, review the agents used in this session and propose improvements based on:
-1. Any corrections the user made
-2. Any commands or paths that failed
-3. Instruction count (target <50 for main, <100 for subagents)
-4. Universal applicability (>80% of tasks)
-5. Duplicate detection across agents
-
-Follow the improvement proposal format from the agent-review instructions.
+If no target is provided, review the instruction surfaces used in this session.
 BODY
 
 	create_command "review-issue-pr" \
@@ -79,23 +72,9 @@ BODY
 	create_command "code-simplifier" \
 		"Simplify and refine code for clarity, consistency, and maintainability" \
 		"$AGENT_BUILD" "" <<'BODY'
-Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/tools/code-review/code-simplifier.md and follow its instructions.
+Read ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/tools/code-review/code-simplifier.md and follow it as the canonical analysis guide.
 
 Target: $ARGUMENTS
-
-**Usage:**
-```bash
-/code-simplifier              # Simplify recently modified code
-/code-simplifier src/         # Simplify code in specific directory
-/code-simplifier --all        # Review entire codebase (use sparingly)
-```
-
-**Key Principles:**
-- Preserve exact functionality
-- Clarity over brevity
-- Avoid nested ternaries
-- Remove obvious comments
-- Apply project standards
 BODY
 
 	return 0
