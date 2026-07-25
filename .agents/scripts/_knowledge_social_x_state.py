@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from _knowledge_social_lease import RunLease
 from _knowledge_social_x import PROVIDER, STREAMS, CursorState, StreamSpec, XAdapterError
 from knowledge_social_import import reject_credentials
 from knowledge_social_store import connect, migrate
@@ -36,6 +37,7 @@ class CollectionContext:
     config: ConnectionConfig
     state: CursorState
     spec: StreamSpec
+    lease: RunLease | None = None
 
 
 def _json_array(value: str, field: str) -> list[str]:

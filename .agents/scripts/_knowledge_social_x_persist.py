@@ -7,11 +7,16 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from _knowledge_social_lease import (
+    RunLease,
+    assert_run_lease,
+    social_now,
+    update_run_receipt,
+)
 from _knowledge_social_x import PROVIDER, PageCheckpoint, XAdapterError
 from _knowledge_social_x_normalize import observation_time, page_time_bounds
 from _knowledge_social_x_state import CollectionContext
@@ -66,6 +71,12 @@ class TerminalDecision:
     output_status: str
     run_status: str
     failure_class: str
+
+
+def _run_lease(context: CollectionContext) -> RunLease:
+    if context.lease is None:
+        raise XAdapterError("X persistence requires a collector lease")
+    return context.lease
 
 
 def _assert_connection_binding(
@@ -228,6 +239,9 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        lease = _run_lease(context)
+        now = social_now()
+        assert_run_lease(database, lease, now_epoch=now)
         _assert_connection_binding(database, context)
         raw = _raw_batch(
             context, page.payload, page.endpoint, page.archive["exported_at"]
@@ -249,6 +263,14 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         )
         _update_cursor(database, context, page)
         _upsert_success_coverage(database, context, page, raw.batch_id)
+        update_run_receipt(
+            database,
+            lease,
+            "complete" if page.complete else "running",
+            resource_delta=resource_count,
+            terminal=page.complete,
+            now_epoch=now,
+        )
         database.execute("COMMIT")
         return resource_count
     except Exception:
@@ -266,27 +288,6 @@ def _retry_after(payload: dict[str, Any]) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise XAdapterError("X retry_after must be text or an integer")
     return str(value)
-
-
-def _record_run(
-    database: sqlite3.Connection,
-    context: CollectionContext,
-    status: str,
-    failure: str,
-    retry_after: str | None,
-) -> None:
-    database.execute(
-        "INSERT INTO sync_runs(run_id,connection_id,status,failure_class,retry_after,diagnostics) "
-        "VALUES(?,?,?,?,?,?)",
-        (
-            uuid.uuid4().hex,
-            context.connection_id,
-            status,
-            failure,
-            retry_after,
-            canonical_json({"stream": context.stream}),
-        ),
-    )
 
 
 def _terminal_coverage_status(decision: TerminalDecision) -> str:
@@ -340,6 +341,9 @@ def record_terminal(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        lease = _run_lease(context)
+        now = social_now()
+        assert_run_lease(database, lease, now_epoch=now)
         _assert_connection_binding(database, context)
         raw = _raw_batch(context, payload, endpoint, observed_at)
         upsert_connection(
@@ -353,12 +357,14 @@ def record_terminal(
             context,
             FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
         )
-        _record_run(
+        update_run_receipt(
             database,
-            context,
+            lease,
             decision.run_status,
-            decision.failure_class,
-            retry_after,
+            failure_class=decision.failure_class,
+            retry_after=retry_after,
+            terminal=True,
+            now_epoch=now,
         )
         _upsert_terminal_coverage(database, context, raw, decision)
         database.execute("COMMIT")
@@ -375,13 +381,23 @@ def record_bounded_stop(
     context: CollectionContext, status: str, failure: str
 ) -> None:
     """Record a budget or capability stop while preserving prior evidence."""
-    observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    now = social_now()
+    observed_at = datetime.fromtimestamp(now, UTC).isoformat().replace("+00:00", "Z")
     database = connect(context.root)
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
+        lease = _run_lease(context)
+        assert_run_lease(database, lease, now_epoch=now)
         _assert_connection_binding(database, context)
-        _record_run(database, context, status, failure, None)
+        update_run_receipt(
+            database,
+            lease,
+            status,
+            failure_class=failure,
+            terminal=True,
+            now_epoch=now,
+        )
         updated = database.execute(
             "UPDATE coverage_records SET status=?,unavailable_reason=?,observed_at=? "
             "WHERE provider=? AND connection_id=? AND stream=?",

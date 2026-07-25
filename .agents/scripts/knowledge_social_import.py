@@ -14,6 +14,7 @@ from typing import Any
 from knowledge_corpus_catalog import DEFAULT_ALIAS, resolve
 from knowledge_corpus_context import CatalogError
 from knowledge_social_store import (
+    SCHEMA_VERSION,
     SocialStoreError,
     connect,
     connect_read_only,
@@ -320,7 +321,7 @@ def main() -> int:
         root = validate_root(resolve(base, args.alias, capability))
         if args.command == "provision":
             provision(root)
-            result: Any = {"schema_version": 1}
+            result: Any = {"schema_version": SCHEMA_VERSION}
         elif args.command == "import-archive":
             result = import_archive(root, args.archive)
         elif args.command == "rebuild":

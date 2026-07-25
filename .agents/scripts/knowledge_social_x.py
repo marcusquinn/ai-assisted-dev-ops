@@ -15,6 +15,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from _knowledge_social_lease import (
+    SocialLeaseLostError,
+    acquire_run_lease,
+    fail_active_run,
+    release_run_lease,
+    renew_run_lease,
+)
 from _knowledge_social_x import (
     STREAMS,
     CursorState,
@@ -38,7 +45,7 @@ from _knowledge_social_x_reader import (
     verified_identity,
 )
 from _knowledge_social_x_state import CollectionContext, load_context
-from knowledge_corpus_catalog import DEFAULT_ALIAS, resolve
+from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
 from knowledge_corpus_context import CatalogError
 from knowledge_social_import import reject_credentials
 from knowledge_social_store import (
@@ -112,6 +119,12 @@ def collect_pages(
     resources = 0
     budget_units = 0
     while budget_units + context.spec.cost_units <= args.budget:
+        if context.lease is None:
+            raise XAdapterError("X collection requires a collector lease")
+        renewed = renew_run_lease(
+            context.root, context.lease, args.lease_seconds
+        )
+        context = replace(context, lease=renewed)
         endpoint = stream_endpoint(
             context.stream, context.account["id"], context.state
         )
@@ -127,6 +140,7 @@ def collect_pages(
                 budget_units + context.spec.cost_units,
                 failure_class=decision.failure_class,
                 retry_after=retry_after,
+                run_id=context.lease.run_id,
             )
         checkpoint = page_checkpoint(payload, context.state.watermark)
         archive = normalize_page(payload, _page_context(context))
@@ -147,30 +161,79 @@ def collect_pages(
         )
         context = replace(context, state=state)
         if complete:
-            return _result("complete", pages, resources, budget_units)
+            return _result(
+                "complete",
+                pages,
+                resources,
+                budget_units,
+                run_id=context.lease.run_id,
+            )
     record_bounded_stop(context, "paused", "budget")
-    return _result("budget_exhausted", pages, resources, budget_units)
+    return _result(
+        "budget_exhausted",
+        pages,
+        resources,
+        budget_units,
+        run_id=context.lease.run_id if context.lease else None,
+    )
 
 
-def collect(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+def _failure_class(error: Exception) -> str:
+    if isinstance(error, XAdapterError):
+        return "validation"
+    if isinstance(error, sqlite3.Error):
+        return "storage"
+    if isinstance(error, subprocess.SubprocessError):
+        return "provider"
+    return "runtime"
+
+
+def collect(
+    args: argparse.Namespace, root: Path, collector_id: str
+) -> dict[str, Any]:
     """Verify identity and collect one configured stream."""
     connection_id = validate_opaque(args.connection_id, "connection_id")
     account_id = validate_opaque(args.account_id, "account_id")
-    runner = xurl_runner(args)
-    account = verified_identity(runner.identity(), account_id)
-    context = load_context(
-        root, connection_id, account, args.stream, args.media_policy
+    lease = acquire_run_lease(
+        root,
+        connection_id,
+        args.stream,
+        collector_id,
+        "sync",
+        args.lease_seconds,
     )
-    if context.state.backfill_complete and not context.spec.supports_since_id:
-        record_bounded_stop(context, "unavailable", "delta_not_supported")
-        return _result(
-            "delta_unavailable",
-            0,
-            0,
-            0,
-            failure_class="delta_not_supported",
+    try:
+        runner = xurl_runner(args)
+        account = verified_identity(runner.identity(), account_id)
+        context = replace(
+            load_context(
+                root,
+                connection_id,
+                account,
+                args.stream,
+                args.media_policy,
+            ),
+            lease=lease,
         )
-    return collect_pages(args, runner, context)
+        if context.state.backfill_complete and not context.spec.supports_since_id:
+            record_bounded_stop(context, "unavailable", "delta_not_supported")
+            return _result(
+                "delta_unavailable",
+                0,
+                0,
+                0,
+                failure_class="delta_not_supported",
+                run_id=lease.run_id,
+            )
+        return collect_pages(args, runner, context)
+    except Exception as error:
+        try:
+            fail_active_run(root, lease, _failure_class(error))
+        except SocialLeaseLostError:
+            pass
+        raise
+    finally:
+        release_run_lease(root, lease)
 
 
 def parse_args() -> argparse.Namespace:
@@ -186,10 +249,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--app")
     parser.add_argument("--username")
+    parser.add_argument("--collector-id")
+    parser.add_argument("--lease-seconds", type=int, default=300)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.budget < 1 or args.budget > 1000:
         parser.error("--budget must be between 1 and 1000 request units")
+    if args.lease_seconds < 1 or args.lease_seconds > 86400:
+        parser.error("--lease-seconds must be between 1 and 86400")
     return args
 
 
@@ -201,8 +268,14 @@ def main() -> int:
             if args.base
             else Path.home() / ".aidevops" / ".agent-workspace" / "knowledge"
         )
-        root = validate_root(resolve(base, args.alias, "knowledge.write"))
-        print(json.dumps(collect(args, root), sort_keys=True))
+        principal_id, corpora = authorized_scope(
+            base, "knowledge.write", args.alias
+        )
+        root = validate_root(corpora[0][1])
+        collector_id = validate_opaque(
+            args.collector_id or principal_id, "collector_id"
+        )
+        print(json.dumps(collect(args, root, collector_id), sort_keys=True))
         return 0
     except (
         CatalogError,

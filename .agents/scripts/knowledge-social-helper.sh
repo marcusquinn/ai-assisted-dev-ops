@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
+SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 
 usage() {
 	cat <<'EOF'
@@ -23,11 +24,21 @@ Usage:
     --object-type TYPE --remote-id ID [--annotation-id ID] --body-file FILE
   knowledge-social-helper.sh sync-x [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id ID --stream STREAM [--budget UNITS] \
-    [--media-policy none|metadata] [--app PROFILE] [--username HANDLE]
+    [--media-policy none|metadata] [--app PROFILE] [--username HANDLE] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
+    [--now-epoch EPOCH] [--interval-seconds SECONDS]
+  knowledge-social-helper.sh reconcile-due [--base PATH] [--alias ALIAS] \
+    [--now-epoch EPOCH] [--interval-seconds SECONDS]
+  knowledge-social-helper.sh reconcile [--base PATH] [--alias ALIAS] \
+    --connection-id ID --stream STREAM --snapshot FILE [--collector-id ID] \
+    [--lease-seconds SECONDS] [--now-epoch EPOCH]
+  knowledge-social-helper.sh receipts [--base PATH] [--alias ALIAS] \
+    [--connection-id ID] [--limit 1-1000]
 
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
-mutating operations or knowledge.read for coverage. Physical corpus paths are
-not accepted from callers.
+mutating operations or knowledge.read for coverage, due plans, receipts, and
+queries. Physical corpus paths are not accepted from callers.
 
 Query resolves the authenticated principal and searches the personal corpus plus
 every authorized workspace corpus by default. --alias can narrow but never widen
@@ -45,6 +56,13 @@ X synchronization:
   authored, mentions, likes, bookmarks, followers, or following. --budget is a
   bounded request-cost allowance from 1 to 1000 units. Media policy none stores
   no media rows; metadata stores references only, never binary media.
+
+Deterministic routines:
+  sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
+  reconciliation owns one expiring connection lease and monotonic fencing token;
+  normalized rows, checkpoints, and the run receipt commit in one transaction.
+  Reconciliation snapshots must be private JSON files and mark remote absence as
+  missing evidence. They never purge canonical content.
 EOF
 	return 0
 }
@@ -86,6 +104,14 @@ main() {
 			return 1
 		fi
 		python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
+		;;
+	sync-due | reconcile-due | reconcile | receipts)
+		require_runtime || return 1
+		if [[ ! -r "$SYNC_HELPER" ]]; then
+			printf 'ERROR: social sync implementation missing: %s\n' "$SYNC_HELPER" >&2
+			return 1
+		fi
+		python3 "$SYNC_HELPER" "$subcommand" "$@" || return 1
 		;;
 	help | -h | --help)
 		usage

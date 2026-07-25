@@ -18,7 +18,7 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -143,7 +143,25 @@ def _tables() -> tuple[str, ...]:
         """CREATE TABLE IF NOT EXISTS sync_runs (
             run_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, status TEXT NOT NULL,
             resource_count INTEGER NOT NULL DEFAULT 0, failure_class TEXT, retry_after TEXT,
-            fencing_token TEXT, diagnostics TEXT)""",
+            fencing_token INTEGER, diagnostics TEXT, stream TEXT NOT NULL DEFAULT '',
+            run_kind TEXT NOT NULL DEFAULT 'sync', collector_id TEXT,
+            started_at INTEGER, completed_at INTEGER, request_hash TEXT)""",
+        """CREATE TABLE IF NOT EXISTS collector_lease_generations (
+            connection_id TEXT PRIMARY KEY, last_token INTEGER NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS collector_leases (
+            connection_id TEXT PRIMARY KEY, collector_id TEXT NOT NULL,
+            fencing_token INTEGER NOT NULL, run_id TEXT NOT NULL,
+            acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS reconciliation_items (
+            provider TEXT NOT NULL, connection_id TEXT NOT NULL, stream TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('object','activity')),
+            item_type TEXT NOT NULL, remote_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('present','missing')),
+            first_missing_at TEXT, last_observed_at TEXT NOT NULL, run_id TEXT NOT NULL,
+            PRIMARY KEY(provider,connection_id,stream,item_kind,item_type,remote_id)
+        )""",
         """CREATE TABLE IF NOT EXISTS tombstones (
             provider TEXT NOT NULL, object_type TEXT NOT NULL, remote_id TEXT NOT NULL,
             observed_at TEXT NOT NULL, reason TEXT NOT NULL, retention_action TEXT NOT NULL,
@@ -161,6 +179,7 @@ def _tables() -> tuple[str, ...]:
         "CREATE INDEX IF NOT EXISTS idx_objects_account ON objects(provider, account_remote_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_activities_actor ON activities(provider, actor_remote_id, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_coverage_connection ON coverage_records(connection_id, stream)",
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_status ON reconciliation_items(connection_id, stream, status)",
     )
 
 
@@ -178,17 +197,41 @@ def create_fts(connection: sqlite3.Connection) -> None:
 
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
-    if current not in (0, SCHEMA_VERSION):
+    if current < 0 or current > SCHEMA_VERSION:
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
         for statement in _tables():
             connection.execute(statement)
-        create_fts(connection)
+        if current < 2:
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(sync_runs)").fetchall()
+            }
+            additions = (
+                ("stream", "TEXT NOT NULL DEFAULT ''"),
+                ("run_kind", "TEXT NOT NULL DEFAULT 'sync'"),
+                ("collector_id", "TEXT"),
+                ("started_at", "INTEGER"),
+                ("completed_at", "INTEGER"),
+                ("request_hash", "TEXT"),
+            )
+            for name, definition in additions:
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE sync_runs ADD COLUMN {name} {definition}"
+                    )
         connection.execute(
-            "INSERT OR IGNORE INTO schema_meta(version,applied_at) VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-            (SCHEMA_VERSION,),
+            "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "
+            "ON sync_runs(connection_id,stream,run_kind,started_at)"
         )
+        create_fts(connection)
+        for version in range(1, SCHEMA_VERSION + 1):
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_meta(version,applied_at) "
+                "VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                (version,),
+            )
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         connection.execute("COMMIT")
     except Exception:
