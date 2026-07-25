@@ -2,7 +2,90 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Marcus Quinn
 
-set -euo pipefail
+[[ "${BASH_SOURCE[0]}" == "$0" ]] && set -euo pipefail
+
+# Emit one canonical key per task ID and issue mapping on TODO checkbox rows.
+# Keeping this parser here makes issue-sync resolution, push guards, and merge
+# guards agree about what constitutes a mapping.
+todo_mapping_keys() {
+	local todo_file="$1"
+	local line=""
+	local task_id=""
+	local issue_refs=""
+
+	[[ -f "$todo_file" ]] || return 1
+	while IFS= read -r line; do
+		if ! [[ "$line" =~ ^[[:space:]]*-[[:space:]]\[.\][[:space:]]+(t[0-9]+(\.[0-9]+)*)([[:space:]]|$) ]]; then
+			continue
+		fi
+		task_id="${BASH_REMATCH[1]}"
+		printf 'task:%s\n' "$task_id"
+		issue_refs=$(printf '%s\n' "$line" | grep -oE 'ref:GH#[0-9]+' || true)
+		if [[ -n "$issue_refs" ]]; then
+			printf '%s\n' "$issue_refs" | sed 's/^ref:GH#/issue:/'
+		fi
+	done <"$todo_file"
+	return 0
+}
+
+# Report duplicate task IDs and issue mappings introduced relative to a
+# baseline TODO snapshot. Return 0 for no regression, 1 for duplicates, and 2
+# when evidence cannot be read. Output is suitable for push/merge diagnostics.
+todo_duplicate_report() {
+	local todo_file="$1"
+	local baseline_file="${2:-}"
+	local temp_dir=""
+	local candidate_keys=""
+	local baseline_keys=""
+	local duplicates=""
+	local key=""
+	local candidate_count="0"
+	local baseline_count="0"
+	local value=""
+	local escaped=""
+	local line_numbers=""
+	local found_regression="0"
+
+	[[ -f "$todo_file" ]] || return 2
+	temp_dir=$(mktemp -d) || return 2
+	candidate_keys="${temp_dir}/candidate-keys"
+	baseline_keys="${temp_dir}/baseline-keys"
+	if ! todo_mapping_keys "$todo_file" >"$candidate_keys"; then
+		rm -rf "$temp_dir"
+		return 2
+	fi
+	: >"$baseline_keys"
+	if [[ -n "$baseline_file" ]]; then
+		if [[ ! -f "$baseline_file" ]] || ! todo_mapping_keys "$baseline_file" >"$baseline_keys"; then
+			rm -rf "$temp_dir"
+			return 2
+		fi
+	fi
+
+	duplicates=$(sort "$candidate_keys" | uniq -d)
+	while IFS= read -r key; do
+		[[ -n "$key" ]] || continue
+		candidate_count=$(grep -Fxc "$key" "$candidate_keys" || true)
+		baseline_count=$(grep -Fxc "$key" "$baseline_keys" || true)
+		[[ "$candidate_count" -gt "$baseline_count" ]] || continue
+		found_regression="1"
+		value="${key#*:}"
+		if [[ "$key" == task:* ]]; then
+			escaped=$(printf '%s' "$value" | sed 's/\./\\./g')
+			line_numbers=$(grep -nE '^[[:space:]]*- \[.\] '"${escaped}"'([[:space:]]|$)' "$todo_file" \
+				| cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
+			printf '  Duplicate task ID: %s  (TODO.md lines: %s)\n' "$value" "$line_numbers"
+		else
+			line_numbers=$(grep -nE 'ref:GH#'"${value}"'([[:space:]]|$)' "$todo_file" \
+				| cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
+			printf '  Duplicate issue mapping: ref:GH#%s  (TODO.md lines: %s)\n' "$value" "$line_numbers"
+		fi
+	done <<<"$duplicates"
+
+	rm -rf "$temp_dir"
+	[[ "$found_regression" -eq 1 ]] && return 1
+	return 0
+}
 
 collect_effective_issues() {
 	local todo_file="$1"
@@ -100,4 +183,6 @@ main() {
 	return $?
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

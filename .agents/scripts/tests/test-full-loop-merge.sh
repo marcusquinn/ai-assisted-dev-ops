@@ -324,6 +324,7 @@ set -euo pipefail
 SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
+_merge_guard_prospective_todo() { return 0; }
 _merge_execute '$pr_number' '$repo' '$merge_method' '$has_admin' '$has_auto'
 RUNNER_EOF
 	chmod +x "$tmp_runner"
@@ -359,6 +360,7 @@ SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
 cmd_pre_merge_gate() { return '${gate_rc}'; }
+_merge_guard_prospective_todo() { return 0; }
 _retarget_stacked_children_interactive() { return 0; }
 release_interactive_claim_on_merge() { return 0; }
 auto_file_next_phase() { printf '%s %s\n' "\$1" "\$2" >> "${TEST_ROOT}/logs/phase-autofile.txt"; return 0; }
@@ -391,6 +393,7 @@ SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
 cmd_pre_merge_gate() { return 0; }
+_merge_guard_prospective_todo() { return 0; }
 _retarget_stacked_children_interactive() { return 0; }
 _merge_report_canonical_sync_state() { return 0; }
 _merge_finalize_post_merge() {
@@ -889,6 +892,84 @@ test_post_merge_api_indeterminate_fails_closed() {
 	return 0
 }
 
+run_prospective_todo_guard() {
+	local fixture_dir="$1"
+	local base_sha="$2"
+	local head_sha="$3"
+	local scripts_dir="${SCRIPT_DIR}/.."
+	local tmp_runner=""
+	tmp_runner=$(mktemp)
+	cat >"$tmp_runner" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${scripts_dir}'
+source '${scripts_dir}/shared-constants.sh'
+source '${scripts_dir}/full-loop-helper-merge.sh'
+_merge_fetch_pr_refs_rest() { printf 'main\t%s\t%s\n' '${base_sha}' '${head_sha}'; return 0; }
+_merge_fetch_pinned_commit_objects() { return 0; }
+cd '${fixture_dir}'
+_merge_guard_prospective_todo '42' 'testorg/testrepo'
+RUNNER_EOF
+	chmod +x "$tmp_runner"
+	local rc=0
+	env PATH="${TEST_ROOT}/bin:/usr/bin:/bin:${scripts_dir}:${PATH}" bash "$tmp_runner" 2>&1 || rc=$?
+	rm -f "$tmp_runner"
+	[[ "$rc" -eq 0 ]] && return 0
+	return 1
+}
+
+create_prospective_fixture() {
+	local mode="$1"
+	local fixture_dir="${TEST_ROOT}/prospective-${mode}"
+	mkdir -p "$fixture_dir"
+	(
+		cd "$fixture_dir" || exit 1
+		/usr/bin/git init -q
+		/usr/bin/git config user.email test@test.local
+		/usr/bin/git config user.name Test
+		printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n' >TODO.md
+		/usr/bin/git add TODO.md
+		/usr/bin/git commit -q -m root
+		local root_sha=""
+		root_sha=$(/usr/bin/git rev-parse HEAD)
+		printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n- [ ] t2 Base addition ref:GH#2\n\n## Branch tasks\n' >TODO.md
+		/usr/bin/git commit -q -am base
+		/usr/bin/git rev-parse HEAD >base.sha
+		/usr/bin/git checkout -q --detach "$root_sha"
+		if [[ "$mode" == "collision" ]]; then
+			printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n- [ ] t2 Head addition ref:GH#2\n' >TODO.md
+		else
+			printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n- [ ] t3 Unique head addition ref:GH#3\n' >TODO.md
+		fi
+		/usr/bin/git commit -q -am head
+		/usr/bin/git rev-parse HEAD >head.sha
+	)
+	printf '%s\n' "$fixture_dir"
+	return 0
+}
+
+test_prospective_todo_merge_guard() {
+	local fixture_dir="" base_sha="" head_sha="" output="" rc=0
+	fixture_dir=$(create_prospective_fixture collision)
+	base_sha=$(<"${fixture_dir}/base.sha")
+	head_sha=$(<"${fixture_dir}/head.sha")
+	output=$(run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha") || rc=$?
+	print_result "prospective TODO: merge-only collision is blocked" "$((rc == 0 ? 1 : 0))" "output=$output"
+	print_result "prospective TODO: task and issue duplicates are reported" "$([[ "$output" == *"Duplicate task ID: t2"* && "$output" == *"Duplicate issue mapping: ref:GH#2"* ]] && printf '0' || printf '1')" "output=$output"
+
+	rc=0
+	fixture_dir=$(create_prospective_fixture unique)
+	base_sha=$(<"${fixture_dir}/base.sha")
+	head_sha=$(<"${fixture_dir}/head.sha")
+	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" >/dev/null || rc=$?
+	print_result "prospective TODO: unique stale branch passes" "$rc"
+
+	rc=0
+	output=$(run_prospective_todo_guard "$fixture_dir" deadbeef deadbeef) || rc=$?
+	print_result "prospective TODO: indeterminate merge-tree fails closed" "$((rc == 0 ? 1 : 0))" "output=$output"
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -914,6 +995,7 @@ main() {
 	test_post_merge_stale_evidence_retries_fresh_read
 	test_post_merge_unmerged_evidence_fails_closed
 	test_post_merge_api_indeterminate_fails_closed
+	test_prospective_todo_merge_guard
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

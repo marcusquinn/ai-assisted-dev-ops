@@ -41,6 +41,9 @@
 set -u
 
 GUARD_NAME="dup-todo-guard"
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
+# shellcheck source=../scripts/issue-sync-pr-task-resolver.sh
+source "${HOOK_DIR}/../scripts/issue-sync-pr-task-resolver.sh"
 
 _log() {
 	local _level="$1"
@@ -129,85 +132,46 @@ while IFS=' ' read -r _local_ref _local_sha _remote_ref _remote_sha; do
 		continue
 	}
 
-	# Extract task IDs from checkbox lines only.
-	# Pattern: ^[whitespace]*- [x] tNNN[.N]*<space|EOL> — supports indented
-	# subtasks and hierarchical IDs (e.g., t1271.1). Anchored to checkbox-and-
-	# task-ID prefix to avoid matching prose that mentions a task ID.
-	# BSD sed and GNU sed both support \1 backreference in basic RE.
-	_task_ids=$(printf '%s\n' "$_todo_content" \
-		| grep -E '^[[:space:]]*- \[.\] t[0-9]+(\.[0-9]+)*([[:space:]]|$)' \
-		| sed 's/^[[:space:]]*- \[.\] \(t[0-9][0-9.]*\).*/\1/')
-
-	if [[ -z "$_task_ids" ]]; then
-		_dbg "no task IDs extracted from TODO.md in ${_local_sha}"
-		continue
-	fi
-
-	# Find IDs that appear more than once.
-	_duplicates=$(printf '%s\n' "$_task_ids" | sort | uniq -d)
-
-	if [[ -z "$_duplicates" ]]; then
-		_dbg "no duplicate task IDs in TODO.md at ${_local_sha}"
-		continue
-	fi
-
-	# Compare duplicate occurrence counts with the remote baseline. This is a
-	# ratchet: unchanged legacy duplicates are tolerated, but a new duplicate
-	# or an increased count remains blocking. If no baseline can be resolved,
-	# retain the original fail-closed full-snapshot behaviour.
-	_base_task_ids=""
+	# Compare canonical task-ID and issue-mapping counts with the remote
+	# baseline. The shared detector is also used by the prospective merge gate.
 	_base_sha=""
 	if _base_sha=$(_compute_baseline "$_remote_name" "$_local_sha" "${_remote_sha:-}"); then
 		if git cat-file -e "${_base_sha}:TODO.md" 2>/dev/null; then
 			_base_content=$(git show "${_base_sha}:TODO.md" 2>/dev/null) || _base_content=""
-			if [[ -n "$_base_content" ]]; then
-				_base_task_ids=$(printf '%s\n' "$_base_content" \
-					| grep -E '^[[:space:]]*- \[.\] t[0-9]+(\.[0-9]+)*([[:space:]]|$)' \
-					| sed 's/^[[:space:]]*- \[.\] \(t[0-9][0-9.]*\).*/\1/')
-			fi
+		else
+			_base_content=""
 		fi
 		_dbg "baseline for ${_local_ref}: ${_base_sha}"
 	else
+		_base_content=""
 		_dbg "no baseline resolved for ${_local_ref} — enforcing full duplicate scan"
 	fi
 
-	_increased_duplicates=""
-	while IFS= read -r _dup_id; do
-		[[ -n "$_dup_id" ]] || continue
-		_head_count=$(printf '%s\n' "$_task_ids" | grep -Fxc "$_dup_id" || true)
-		_base_count=0
-		if [[ -n "$_base_task_ids" ]]; then
-			_base_count=$(printf '%s\n' "$_base_task_ids" | grep -Fxc "$_dup_id" || true)
-		fi
-		if [[ "$_head_count" -gt "$_base_count" ]]; then
-			_increased_duplicates="${_increased_duplicates}${_increased_duplicates:+$'\n'}${_dup_id}"
-		else
-			_dbg "grandfathering unchanged duplicate ${_dup_id} (${_head_count} occurrences)"
-		fi
-	done <<<"$_duplicates"
-
-	if [[ -z "$_increased_duplicates" ]]; then
+	_guard_tmp=$(mktemp -d) || {
+		_log ERROR "could not create duplicate-check workspace — blocking push"
+		_exit_code=1
+		continue
+	}
+	printf '%s\n' "$_todo_content" >"${_guard_tmp}/candidate"
+	printf '%s\n' "$_base_content" >"${_guard_tmp}/baseline"
+	_report=""
+	_report_rc=0
+	_report=$(todo_duplicate_report "${_guard_tmp}/candidate" "${_guard_tmp}/baseline") || _report_rc=$?
+	rm -rf "$_guard_tmp"
+	if [[ "$_report_rc" -eq 0 ]]; then
+		_dbg "no new duplicate TODO mappings at ${_local_sha}"
 		continue
 	fi
-	_duplicates="$_increased_duplicates"
+	if [[ "$_report_rc" -ne 1 ]]; then
+		_log ERROR "duplicate evidence could not be evaluated — blocking push"
+		_exit_code=1
+		continue
+	fi
 
 	# Found duplicates — block and report line numbers for each.
 	_exit_code=1
-	printf '\n[%s][BLOCK] Push blocked: new or increased duplicate task IDs in TODO.md\n\n' "$GUARD_NAME" >&2
-
-	printf '%s\n' "$_duplicates" | while IFS= read -r _dup_id; do
-		[[ -z "$_dup_id" ]] && continue
-		# Find line numbers of the duplicate entries (1-indexed, matching the
-		# checkbox-and-ID anchor so description-only mentions are excluded).
-		# Dots in the task ID must be escaped for ERE to prevent false positives.
-		_dup_id_esc=$(printf '%s' "$_dup_id" | sed 's/\./\\./g')
-		_line_nums=$(printf '%s\n' "$_todo_content" \
-			| grep -nE '^[[:space:]]*- \[.\] '"${_dup_id_esc}"'([[:space:]]|$)' \
-			| cut -d: -f1 \
-			| tr '\n' ',' \
-			| sed 's/,$//')
-		printf '  Duplicate task ID: %s  (TODO.md lines: %s)\n' "$_dup_id" "$_line_nums" >&2
-	done
+	printf '\n[%s][BLOCK] Push blocked: new or increased duplicate TODO mappings\n\n' "$GUARD_NAME" >&2
+	printf '%s\n' "$_report" >&2
 
 	printf '\n' >&2
 	printf '  Fix: remove the duplicate entry from TODO.md, amend the commit,\n' >&2

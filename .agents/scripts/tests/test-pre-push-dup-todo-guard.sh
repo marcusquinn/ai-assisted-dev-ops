@@ -4,7 +4,7 @@
 #
 # test-pre-push-dup-todo-guard.sh — Unit tests for pre-push-dup-todo-guard.sh (t2745).
 #
-# Tests 11 fixtures:
+# Tests 12 fixtures:
 #   1. Clean TODO.md (no duplicates)               → exit 0
 #   2. Single duplicate (t2743 twice)              → exit 1, cites lines
 #   3. Multiple duplicates (t2743 AND t2742)       → exit 1, cites both IDs
@@ -16,6 +16,7 @@
 #   9. Indented subtask duplicate                  → exit 1, cites lines
 #  10. Unchanged pre-existing duplicate            → exit 0
 #  11. Increased pre-existing duplicate count      → exit 1
+#  12. Duplicate issue mapping on distinct tasks    → exit 1
 #
 # Usage: bash .agents/scripts/tests/test-pre-push-dup-todo-guard.sh
 # Exit 0 = all tests passed. Exit 1 = one or more tests failed.
@@ -501,6 +502,33 @@ test_increased_preexisting_duplicate() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 12: one issue mapped by two distinct task IDs is also a duplicate.
+# ---------------------------------------------------------------------------
+test_duplicate_issue_mapping() {
+	local _name="test_12_duplicate_issue_mapping"
+	_setup_git_repo || { _fail "$_name" "git repo setup failed"; return 0; }
+
+	local _base_content _head_content
+	_base_content="## Ready
+- [ ] t2743 First task ref:GH#20480"
+	_head_content="${_base_content}
+- [ ] t2744 Different task, same issue ref:GH#20480"
+	local _base_sha _head_sha _stderr _rc
+	_base_sha=$(_commit_todo "$_base_content")
+	_head_sha=$(_commit_todo "$_head_content")
+	_stderr=$(_run_hook "$_head_sha" "" "$_base_sha" 2>&1 1>/dev/null)
+	_rc=$?
+
+	_teardown_git_repo
+	if [[ "$_rc" -eq 1 && "$_stderr" == *"Duplicate issue mapping: ref:GH#20480"* ]]; then
+		_pass "$_name"
+	else
+		_fail "$_name" "expected duplicate issue mapping diagnostic; rc=${_rc}, stderr=${_stderr}"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 main() {
@@ -517,6 +545,7 @@ main() {
 	test_indented_subtask_duplicate
 	test_unchanged_preexisting_duplicate
 	test_increased_preexisting_duplicate
+	test_duplicate_issue_mapping
 
 	printf '\n'
 	printf 'Results: %d passed, %d failed\n' "$_TESTS_PASSED" "$_TESTS_FAILED"

@@ -56,6 +56,11 @@ fi
 # shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
 source "${SCRIPT_DIR}/full-loop-helper-evidence.sh"
 
+# Canonical TODO task/issue mapping parser shared with issue-sync and pre-push.
+# shellcheck source=./issue-sync-pr-task-resolver.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
+source "${SCRIPT_DIR}/issue-sync-pr-task-resolver.sh"
+
 # --- Repo Resolution ---
 
 # _merge_resolve_repo — resolve repo slug from argument or auto-detect from git remote.
@@ -473,6 +478,118 @@ _merge_fetch_head_sha_rest() {
 	return 0
 }
 
+# Return the fresh base ref, base SHA, and head SHA that GitHub currently binds
+# to the PR. The three fields form the pinned evidence boundary for a local
+# prospective merge-tree check.
+_merge_fetch_pr_refs_rest() {
+	local pr_number="$1"
+	local repo="$2"
+	local refs=""
+	refs=$(gh api "repos/${repo}/pulls/${pr_number}" \
+		--jq '[.base.ref // empty, .base.sha // empty, .head.sha // empty] | @tsv' 2>/dev/null) || return 1
+	[[ "$refs" == *$'\t'*$'\t'* ]] || return 1
+	printf '%s\n' "$refs"
+	return 0
+}
+
+_merge_fetch_pinned_commit_objects() {
+	local pr_number="$1"
+	local base_ref="$2"
+	local base_sha="$3"
+	local head_sha="$4"
+
+	if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+		git fetch --quiet --no-tags origin "refs/heads/${base_ref}" || return 1
+	fi
+	if ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+		git fetch --quiet --no-tags origin "refs/pull/${pr_number}/head" || return 1
+	fi
+	git cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
+	git cat-file -e "${head_sha}^{commit}" 2>/dev/null || return 1
+	return 0
+}
+
+# Fail closed unless the exact current PR head can be merged prospectively into
+# the fresh base without introducing duplicate TODO task IDs or issue mappings.
+_merge_guard_prospective_todo() {
+	local pr_number="$1"
+	local repo="$2"
+	local refs=""
+	local base_ref=""
+	local base_sha=""
+	local head_sha=""
+	local merge_tree_output=""
+	local merge_tree_sha=""
+	local temp_dir=""
+	local report=""
+	local report_rc="0"
+
+	refs=$(_merge_fetch_pr_refs_rest "$pr_number" "$repo") || {
+		print_error "Merge blocked: unable to pin fresh PR base/head evidence for prospective TODO validation"
+		return 1
+	}
+	IFS=$'\t' read -r base_ref base_sha head_sha <<<"$refs"
+	if [[ -z "$base_ref" || -z "$base_sha" || -z "$head_sha" ]]; then
+		print_error "Merge blocked: incomplete PR base/head evidence for prospective TODO validation"
+		return 1
+	fi
+	if [[ -n "${FULL_LOOP_VERIFIED_PR_HEAD_SHA:-}" && "$head_sha" != "$FULL_LOOP_VERIFIED_PR_HEAD_SHA" ]]; then
+		print_error "Merge blocked: PR head changed before prospective TODO validation"
+		return 1
+	fi
+	_merge_fetch_pinned_commit_objects "$pr_number" "$base_ref" "$base_sha" "$head_sha" || {
+		print_error "Merge blocked: unable to materialize pinned PR commits for prospective TODO validation"
+		return 1
+	}
+
+	if ! merge_tree_output=$(git merge-tree --write-tree "$base_sha" "$head_sha" 2>&1); then
+		print_error "Merge blocked: prospective merge-tree evidence is indeterminate"
+		printf '%s\n' "$merge_tree_output" >&2
+		return 1
+	fi
+	merge_tree_sha=$(printf '%s\n' "$merge_tree_output" | sed -n '1p')
+	if ! [[ "$merge_tree_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || \
+		! git cat-file -e "${merge_tree_sha}^{tree}" 2>/dev/null; then
+		print_error "Merge blocked: prospective merge-tree did not produce a verifiable tree"
+		return 1
+	fi
+
+	# Repositories without TODO.md have no task mapping surface to validate.
+	if ! git cat-file -e "${merge_tree_sha}:TODO.md" 2>/dev/null; then
+		return 0
+	fi
+	temp_dir=$(mktemp -d) || {
+		print_error "Merge blocked: unable to create prospective TODO validation workspace"
+		return 1
+	}
+	if ! git show "${merge_tree_sha}:TODO.md" >"${temp_dir}/merged"; then
+		rm -rf "$temp_dir"
+		print_error "Merge blocked: unable to read prospective TODO evidence"
+		return 1
+	fi
+	if git cat-file -e "${base_sha}:TODO.md" 2>/dev/null; then
+		if ! git show "${base_sha}:TODO.md" >"${temp_dir}/base"; then
+			rm -rf "$temp_dir"
+			print_error "Merge blocked: unable to read base TODO evidence"
+			return 1
+		fi
+	else
+		: >"${temp_dir}/base"
+	fi
+	report=$(todo_duplicate_report "${temp_dir}/merged" "${temp_dir}/base") || report_rc=$?
+	rm -rf "$temp_dir"
+	if [[ "$report_rc" -eq 0 ]]; then
+		return 0
+	fi
+	if [[ "$report_rc" -eq 1 ]]; then
+		print_error "Merge blocked: prospective merge introduces duplicate TODO mappings"
+		printf '%s\n' "$report" >&2
+		return 1
+	fi
+	print_error "Merge blocked: prospective TODO duplicate evidence is indeterminate"
+	return 1
+}
+
 # _merge_rest_fallback — squash/merge/rebase a PR via the REST pull merge endpoint.
 #
 # This is a transport fallback only. It is called after review-bot-gate has
@@ -583,6 +700,7 @@ _merge_execute() {
 	# --auto and the non-admin REST transport fallback, must pass the same live
 	# external/fork and exact-head cryptographic authority check.
 	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
+	_merge_guard_prospective_todo "$pr_number" "$repo" || return 1
 	merge_flags+=("--match-head-commit" "$match_head_sha")
 
 	# Capture output AND exit code under set -e. A bare assignment `out=$(cmd)`
@@ -1039,7 +1157,6 @@ cmd_merge() {
 		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
 		return 1
 	}
-
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
 	# branch disappears; retargeting to the default branch prevents this.
