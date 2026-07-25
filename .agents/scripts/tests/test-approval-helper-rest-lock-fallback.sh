@@ -167,6 +167,8 @@ run_case "PR approval locks conversation with gh pr lock" '
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
 	_rest_should_fallback() { return 1; }
 	gh_pr_comment() { return 0; }
+	pr_edit_trace=$(mktemp)
+	gh_pr_edit_safe() { printf "PR_EDIT %s\n" "$*" >"$pr_edit_trace"; return 0; }
 	gh() {
 		local arg1="${1:-}"
 		local arg2="${2:-}"
@@ -177,9 +179,12 @@ run_case "PR approval locks conversation with gh pr lock" '
 		fi
 		return 1
 	}
-	_post_issue_approval_updates pr 456 marcusquinn/aidevops
+	_post_issue_approval_updates pr 456 marcusquinn/aidevops || exit 1
+	cat "$pr_edit_trace"
+	rm -f "$pr_edit_trace"
 ' 0
-assert_contains "PR approval reports real conversation lock" "$LAST_OUTPUT" "PR #456 approval recorded and conversation locked"
+assert_contains "PR approval clears live NMR label" "$LAST_OUTPUT" "PR_EDIT 456 --repo marcusquinn/aidevops --remove-label needs-maintainer-review"
+assert_contains "PR approval reports real conversation lock" "$LAST_OUTPUT" "PR #456 NMR hold cleared and conversation locked"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "conversation lock verification reuses provided issue JSON" '
@@ -199,6 +204,8 @@ run_case "PR approval REST fallback locks conversation" '
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
 	_rest_should_fallback() { return 1; }
 	gh_pr_comment() { return 0; }
+	pr_edit_trace=$(mktemp)
+	gh_pr_edit_safe() { printf "PR_EDIT %s\n" "$*" >"$pr_edit_trace"; return 0; }
 	gh() {
 		local arg1="${1:-}"
 		local arg2="${2:-}"
@@ -212,10 +219,25 @@ run_case "PR approval REST fallback locks conversation" '
 		fi
 		return 1
 	}
-	_post_issue_approval_updates pr 456 marcusquinn/aidevops
+	_post_issue_approval_updates pr 456 marcusquinn/aidevops || exit 1
+	cat "$pr_edit_trace"
+	rm -f "$pr_edit_trace"
 ' 0
-assert_contains "PR approval fallback reports real lock" "$LAST_OUTPUT" "PR #456 approval recorded and conversation locked"
+assert_contains "PR approval fallback clears live NMR label" "$LAST_OUTPUT" "PR_EDIT 456 --repo marcusquinn/aidevops --remove-label needs-maintainer-review"
+assert_contains "PR approval fallback reports real lock" "$LAST_OUTPUT" "PR #456 NMR hold cleared and conversation locked"
 assert_not_contains "PR approval fallback avoids advisory failure" "$LAST_OUTPUT" "Approval advisory lock failure"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "PR label-clear failure blocks approval completion" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_lock_pr() { return 0; }
+	gh_pr_edit_safe() { return 1; }
+	_post_issue_approval_updates pr 456 marcusquinn/aidevops
+' 1
+assert_contains "PR label-clear failure is explicit" "$LAST_OUTPUT" "Failed to clear needs-maintainer-review on PR #456 after approval"
+assert_not_contains "PR label-clear failure suppresses success" "$LAST_OUTPUT" "NMR hold cleared and conversation locked"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "genuine lock failure is distinguished" '

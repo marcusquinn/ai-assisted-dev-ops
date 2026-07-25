@@ -214,8 +214,8 @@ jobs:
           # GH#17671 post-mortem: external PRs without linked issues bypassed
           # the gate because only linked-issue labels were checked. This block
           # catches that case — the PR's own labels are the primary signal for
-          # external contributor PRs. Requires cryptographic approval on the
-          # PR's comments (same pattern as issue approval).
+          # external contributor PRs. A live label is an explicit hold; approval
+          # marker text never overrides current label state at the merge gate.
           # ---------------------------------------------------------------
           #aidevops:trust-boundary GH#17671/GH#27611: a failed PR-label read
           # cannot be treated as an empty trusted label set.
@@ -227,44 +227,18 @@ jobs:
             exit 1
           fi
 
+          #aidevops:trust-boundary GH#17671/GH#28622: comment bodies are
+          # attacker-controlled. The approval command must clear the live hold;
+          # copying its marker into a comment can never make this check pass.
           if echo "$PR_LABELS" | grep -q 'needs-maintainer-review'; then
-            # Check for signed approval comment on the PR itself
-            #aidevops:trust-boundary GH#17671/GH#27611: an API failure is not
-            # evidence that a signed approval is absent. Fail the check rather
-            # than silently converting infrastructure uncertainty into a trust
-            # verdict.
-            APPROVAL_COMMENTS=""
-            SIGNED_APPROVAL=""
-            if ! APPROVAL_COMMENTS=$(gh api --paginate --slurp \
-              "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null); then
-              echo "::error::Unable to verify signed approvals for PR #$PR_NUMBER"
-              post_maintainer_gate_status_with_retry failure "Unable to verify signed maintainer approval"
-              exit 1
-            fi
-            if ! SIGNED_APPROVAL=$(printf '%s' "$APPROVAL_COMMENTS" | jq -r \
-              '[.[][] | select(.body | contains("<!-- aidevops-signed-approval -->"))] | length' 2>/dev/null); then
-              echo "::error::Unable to parse signed approvals for PR #$PR_NUMBER"
-              post_maintainer_gate_status_with_retry failure "Unable to parse signed maintainer approval"
-              exit 1
-            fi
-            if [[ ! "$SIGNED_APPROVAL" =~ ^[0-9]+$ ]]; then
-              echo "::error::Invalid signed-approval response for PR #$PR_NUMBER"
-              post_maintainer_gate_status_with_retry failure "Invalid signed maintainer approval response"
-              exit 1
-            fi
-
-            if [[ "$SIGNED_APPROVAL" -gt 0 ]]; then
-              echo "PR #$PR_NUMBER has needs-maintainer-review but signed approval found — continuing"
-            else
-              echo "BLOCKED: PR #$PR_NUMBER has needs-maintainer-review label with no signed approval"
-              echo "blocked=true" >> "$GITHUB_OUTPUT"
-              printf 'PR #%s has \x60needs-maintainer-review\x60 label — a maintainer must cryptographically approve it before merge.\n' "$PR_NUMBER" > /tmp/gate-reasons.txt
-              echo "has_reasons=true" >> "$GITHUB_OUTPUT"
-              post_maintainer_gate_status_with_retry \
-                failure \
-                "PR has needs-maintainer-review — requires cryptographic approval"
-              exit 0
-            fi
+            echo "BLOCKED: PR #$PR_NUMBER has needs-maintainer-review label"
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            printf 'PR #%s has \x60needs-maintainer-review\x60 label — a maintainer must cryptographically approve it and clear the live hold before merge.\n' "$PR_NUMBER" > /tmp/gate-reasons.txt
+            echo "has_reasons=true" >> "$GITHUB_OUTPUT"
+            post_maintainer_gate_status_with_retry \
+              failure \
+              "PR has needs-maintainer-review — live hold blocks merge"
+            exit 0
           fi
 
           # Collect linked issue numbers from PR body
@@ -573,7 +547,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Re-apply label if no signed approval exists (t1894)
+      - name: Re-apply label unless approval marker has maintainer authority (t1894)
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
@@ -584,44 +558,68 @@ jobs:
         run: |
           echo "Label 'needs-maintainer-review' removed from issue #$ISSUE_NUMBER by $ACTOR"
 
-          # Always allow the bot — the approval-helper.sh removes labels after
-          # posting a signed approval comment, so this is the legitimate path.
-          if [[ "$ACTOR" == "github-actions[bot]" ]] || [[ "$ACTOR" == "github-actions" ]]; then
-            echo "ALLOWED: GitHub Actions bot — label removal accepted"
-            exit 0
-          fi
+          approval_comments_have_maintainer_authority() {
+            local comments_json="$1"
+            local identities=""
+            local commenter=""
+            local association=""
+            local permission=""
 
-          # t1894: Check for a cryptographic signed approval comment.
-          # Even admin/maintainer actors must use the approval command —
-          # manual label removal alone is insufficient because it leaves
-          # no auditable cryptographic proof of approval.
-          #aidevops:trust-boundary GH#1894/GH#27611: comments API failures are
-          # infrastructure uncertainty, not proof that approval is absent.
-          # Never create/recreate an irreversible ever-NMR authority record from
-          # a failed lookup.
+            if ! identities=$(printf '%s' "$comments_json" | jq -r --arg actor "$ACTOR" '
+              if type == "array" and all(.[]; type == "array") then
+                [.[][]
+                  | select((.body // "") | contains("<!-- aidevops-signed-approval -->"))
+                  | select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))
+                  | [(.user.login // ""), (.author_association // "")]
+                  | @tsv
+                ] | .[]
+              else error("invalid paginated comments response") end
+            ' 2>/dev/null); then
+              return 2
+            fi
+
+            while IFS=$'\t' read -r commenter association; do
+              [[ -n "$commenter" ]] || continue
+              case "$association" in
+                OWNER|MEMBER) return 0 ;;
+                CONTRIBUTOR|COLLABORATOR) ;;
+                *) continue ;;
+              esac
+              permission=""
+              if ! permission=$(gh api "repos/${REPO}/collaborators/${commenter}/permission" \
+                --jq '.permission // "none"' 2>/dev/null); then
+                echo "::warning::Unable to verify repository permission for approval commenter $commenter"
+                continue
+              fi
+              case "$permission" in
+                admin|maintain|write) return 0 ;;
+              esac
+            done <<< "$identities"
+            return 1
+          }
+
+          #aidevops:trust-boundary GH#1894/GH#27611/GH#28622: marker text is
+          # attacker-controlled and bot identity alone is not approval. Require
+          # authenticated maintainer authority on a marker authored by the same
+          # actor who removed the label. Any lookup uncertainty restores the
+          # existing hold instead of converting missing evidence into authority.
           APPROVAL_COMMENTS=""
-          SIGNED_APPROVAL=""
           if ! APPROVAL_COMMENTS=$(gh api --paginate --slurp \
             "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null); then
-            echo "::error::Unable to verify signed approvals for issue #$ISSUE_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-          if ! SIGNED_APPROVAL=$(printf '%s' "$APPROVAL_COMMENTS" | jq -r \
-            '[.[][] | select(.body | contains("<!-- aidevops-signed-approval -->"))] | length' 2>/dev/null); then
-            echo "::error::Unable to parse signed approvals for issue #$ISSUE_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-          if [[ ! "$SIGNED_APPROVAL" =~ ^[0-9]+$ ]]; then
-            echo "::error::Invalid signed-approval response for issue #$ISSUE_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-
-          if [[ "$SIGNED_APPROVAL" -gt 0 ]]; then
-            echo "ALLOWED: Signed approval comment found — label removal accepted"
-            exit 0
+            echo "::error::Unable to read approval comments for issue #$ISSUE_NUMBER — restoring NMR"
+          else
+            APPROVAL_RC=0
+            approval_comments_have_maintainer_authority "$APPROVAL_COMMENTS" || APPROVAL_RC=$?
+            if [[ "$APPROVAL_RC" -eq 0 ]]; then
+              echo "ALLOWED: Label-removal actor authored an approval marker with authenticated maintainer authority"
+              exit 0
+            fi
+            if [[ "$APPROVAL_RC" -eq 2 ]]; then
+              echo "::error::Unable to parse approval comments for issue #$ISSUE_NUMBER — restoring NMR"
+            fi
           fi
 
-          echo "DENIED: No signed approval found — re-applying label (actor: $ACTOR)"
+          echo "DENIED: Label-removal actor lacks a marker with authenticated maintainer authority — re-applying label (actor: $ACTOR)"
 
           # Re-apply the label
           gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "needs-maintainer-review"
@@ -983,7 +981,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Re-apply label if no signed approval exists
+      - name: Re-apply label unless approval marker has maintainer authority
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -993,12 +991,45 @@ jobs:
         run: |
           echo "Label 'needs-maintainer-review' removed from PR #$PR_NUMBER by $ACTOR"
 
-          # Always allow the bot — the approval-helper.sh removes labels after
-          # posting a signed approval comment, so this is the legitimate path.
-          if [[ "$ACTOR" == "github-actions[bot]" ]] || [[ "$ACTOR" == "github-actions" ]]; then
-            echo "ALLOWED: GitHub Actions bot — label removal accepted"
-            exit 0
-          fi
+          approval_comments_have_maintainer_authority() {
+            local comments_json="$1"
+            local identities=""
+            local commenter=""
+            local association=""
+            local permission=""
+
+            if ! identities=$(printf '%s' "$comments_json" | jq -r --arg actor "$ACTOR" '
+              if type == "array" and all(.[]; type == "array") then
+                [.[][]
+                  | select((.body // "") | contains("<!-- aidevops-signed-approval -->"))
+                  | select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))
+                  | [(.user.login // ""), (.author_association // "")]
+                  | @tsv
+                ] | .[]
+              else error("invalid paginated comments response") end
+            ' 2>/dev/null); then
+              return 2
+            fi
+
+            while IFS=$'\t' read -r commenter association; do
+              [[ -n "$commenter" ]] || continue
+              case "$association" in
+                OWNER|MEMBER) return 0 ;;
+                CONTRIBUTOR|COLLABORATOR) ;;
+                *) continue ;;
+              esac
+              permission=""
+              if ! permission=$(gh api "repos/${REPO}/collaborators/${commenter}/permission" \
+                --jq '.permission // "none"' 2>/dev/null); then
+                echo "::warning::Unable to verify repository permission for approval commenter $commenter"
+                continue
+              fi
+              case "$permission" in
+                admin|maintain|write) return 0 ;;
+              esac
+            done <<< "$identities"
+            return 1
+          }
 
           # Only protect PRs that were labelled external-contributor.
           # Internal PRs (from collaborators) should never have had NMR in
@@ -1009,8 +1040,9 @@ jobs:
           PR_LABELS=""
           if ! PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json labels --jq '.labels[].name' 2>/dev/null); then
-            echo "::error::Unable to verify labels for PR #$PR_NUMBER — leaving labels unchanged"
-            exit 1
+            echo "::error::Unable to verify labels for PR #$PR_NUMBER — restoring NMR"
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "needs-maintainer-review"
+            exit 0
           fi
 
           if ! echo "$PR_LABELS" | grep -q 'external-contributor'; then
@@ -1018,31 +1050,28 @@ jobs:
             exit 0
           fi
 
-          # Check for a cryptographic signed approval comment on the PR.
-          # PRs use the same issues API endpoint for comments.
+          #aidevops:trust-boundary GH#17671/GH#27611/GH#28622: PR comments use
+          # the issues endpoint, but marker text remains attacker-controlled.
+          # Require authenticated maintainer authority on a marker authored by
+          # the label-removal actor; bot identity, malformed data, and lookup
+          # uncertainty restore NMR.
           APPROVAL_COMMENTS=""
-          SIGNED_APPROVAL=""
           if ! APPROVAL_COMMENTS=$(gh api --paginate --slurp \
             "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null); then
-            echo "::error::Unable to verify signed approvals for PR #$PR_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-          if ! SIGNED_APPROVAL=$(printf '%s' "$APPROVAL_COMMENTS" | jq -r \
-            '[.[][] | select(.body | contains("<!-- aidevops-signed-approval -->"))] | length' 2>/dev/null); then
-            echo "::error::Unable to parse signed approvals for PR #$PR_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-          if [[ ! "$SIGNED_APPROVAL" =~ ^[0-9]+$ ]]; then
-            echo "::error::Invalid signed-approval response for PR #$PR_NUMBER — leaving labels unchanged"
-            exit 1
-          fi
-
-          if [[ "$SIGNED_APPROVAL" -gt 0 ]]; then
-            echo "ALLOWED: Signed approval comment found — label removal accepted"
-            exit 0
+            echo "::error::Unable to read approval comments for PR #$PR_NUMBER — restoring NMR"
+          else
+            APPROVAL_RC=0
+            approval_comments_have_maintainer_authority "$APPROVAL_COMMENTS" || APPROVAL_RC=$?
+            if [[ "$APPROVAL_RC" -eq 0 ]]; then
+              echo "ALLOWED: Label-removal actor authored an approval marker with authenticated maintainer authority"
+              exit 0
+            fi
+            if [[ "$APPROVAL_RC" -eq 2 ]]; then
+              echo "::error::Unable to parse approval comments for PR #$PR_NUMBER — restoring NMR"
+            fi
           fi
 
-          echo "DENIED: No signed approval found — re-applying label (actor: $ACTOR)"
+          echo "DENIED: Label-removal actor lacks a marker with authenticated maintainer authority — re-applying label (actor: $ACTOR)"
 
           # Re-apply the label
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "needs-maintainer-review"

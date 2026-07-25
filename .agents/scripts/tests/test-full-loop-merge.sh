@@ -167,6 +167,14 @@ write_gh_stub_pr_issue_views() {
 		echo '{"state":"MERGED","mergedAt":"2026-07-11T00:00:00Z","mergeCommit":{"oid":"merged123sha"}}'
 		exit 0
 	fi
+	if [[ "\$*" == *"--json author,labels,isCrossRepository,headRefOid,closingIssuesReferences,body"* ]]; then
+		if [[ "$mode" == "fallback-nmr" ]]; then
+			echo '{"author":{"login":"tester"},"labels":[],"isCrossRepository":false,"headRefOid":"abc123headsha","closingIssuesReferences":[{"number":24354}],"body":"Resolves #22621"}'
+		else
+			echo '{"author":{"login":"tester"},"labels":[],"isCrossRepository":false,"headRefOid":"abc123headsha","closingIssuesReferences":[],"body":"Resolves #22621"}'
+		fi
+		exit 0
+	fi
 	if [[ "\$*" == *"--json isDraft,reviewDecision,statusCheckRollup"* ]]; then
 		if [[ "$mode" == "auto-review-required" ]]; then
 			echo '{"isDraft":false,"reviewDecision":"","statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS","status":"COMPLETED"}]}'
@@ -220,6 +228,14 @@ if [[ "\$_gh_cmd" == "api" ]]; then
 	echo "gh api \$*" >> "${TEST_ROOT}/logs/gh-api-calls.txt"
 	if [[ "\$*" == "user" ]]; then
 		echo '{"login":"tester"}'
+		exit 0
+	fi
+	if [[ "\$*" == *"repos/testorg/testrepo/collaborators/tester/permission"* ]]; then
+		if [[ "\$*" == *" -i "* ]]; then
+			printf 'HTTP/2 200\ncontent-type: application/json\n\n{"permission":"write"}\n'
+		else
+			echo 'write'
+		fi
 		exit 0
 	fi
 	if [[ "\$*" == *"repos/testorg/testrepo/pulls/42/merge"* ]]; then

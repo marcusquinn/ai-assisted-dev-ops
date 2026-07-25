@@ -657,6 +657,23 @@ _approval_verify_issue_state() {
 	return 0
 }
 
+_approval_verify_pr_state() {
+	local target_number="$1"
+	local slug="$2"
+	local issue_json=""
+
+	issue_json=$(_approval_fetch_issue_json "$target_number" "$slug") || {
+		_print_error "Approval state verification failed: could not read PR #$target_number via REST"
+		return 1
+	}
+	if ! printf '%s' "$issue_json" | jq -e '(.labels // []) | any(.name == "needs-maintainer-review") | not' >/dev/null 2>&1; then
+		_print_error "Approval state verification failed: needs-maintainer-review is still present on PR #$target_number"
+		return 1
+	fi
+	_approval_verify_conversation_locked pr "$target_number" "$slug" "$issue_json"
+	return $?
+}
+
 _approval_apply_issue_lifecycle_updates() {
 	local target_number="$1"
 	local slug="$2"
@@ -715,31 +732,44 @@ _approval_apply_issue_lifecycle_updates() {
 	return $?
 }
 
+_approval_apply_pr_lifecycle_updates() {
+	local target_number="$1"
+	local slug="$2"
+	local lock_err=""
+	local edit_err=""
+
+	# Lock before clearing the live hold so no untrusted comment can land in the
+	# approval-to-merge window. The final merge gate still re-verifies the V2
+	# signature against current content and the exact PR head.
+	lock_err=$(_approval_lock_pr "$target_number" "$slug" 2>&1 >/dev/null) || {
+		_print_error "Approval advisory lock failure: PR #$target_number conversation could not be locked before clearing the NMR hold"
+		[[ -n "$lock_err" ]] && _print_error "$lock_err"
+		return 1
+	}
+	edit_err=$(gh_pr_edit_safe "$target_number" --repo "$slug" \
+		--remove-label "needs-maintainer-review" 2>&1 >/dev/null) || {
+		_print_error "Failed to clear needs-maintainer-review on PR #$target_number after approval"
+		[[ -n "$edit_err" ]] && _print_error "$edit_err"
+		return 1
+	}
+	_approval_verify_pr_state "$target_number" "$slug" || return 1
+	_print_info "PR #$target_number NMR hold cleared and conversation locked"
+	return 0
+}
+
 _post_issue_approval_updates() {
 	local target_type="$1"
 	local target_number="$2"
 	local slug="$3"
 
-	# Label updates and assignee are issue-specific (PRs don't use these labels).
+	# Issues become dispatchable; PRs clear their live NMR hold only after the
+	# signed comment has been posted and verified by _approve_target.
 	if [[ "$target_type" == "issue" ]]; then
 		_approval_apply_issue_lifecycle_updates "$target_number" "$slug"
 		return $?
-	else
-		# GH#17903: Lock PRs at approval time to close the same prompt-injection
-		# window that exists for issues. Without locking, non-collaborators can
-		# add comments to an approved PR between approval and merge, potentially
-		# influencing automated review or merge decisions.
-		local lock_err=""
-		lock_err=$(_approval_lock_pr "$target_number" "$slug" 2>&1 >/dev/null) || {
-			_print_error "Approval advisory lock failure: PR #$target_number conversation could not be locked after approval state updates"
-			[[ -n "$lock_err" ]] && _print_error "$lock_err"
-			return 1
-		}
-		_approval_verify_conversation_locked "$target_type" "$target_number" "$slug" || return 1
-		_print_info "PR #$target_number approval recorded and conversation locked"
 	fi
-
-	return 0
+	_approval_apply_pr_lifecycle_updates "$target_number" "$slug"
+	return $?
 }
 
 #######################################

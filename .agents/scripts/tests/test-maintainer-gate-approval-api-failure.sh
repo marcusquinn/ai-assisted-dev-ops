@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Regression coverage for GH#27611: signed-approval and PR-label API failures
-# must not be coerced into authority decisions or label mutations.
+# Regression coverage for GH#27611/GH#28622: approval API failures and copied
+# marker text must restore NMR, while authenticated maintainer authority passes.
 
 set -euo pipefail
 
@@ -46,6 +46,7 @@ import yaml
 workflow = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
 root = pathlib.Path(sys.argv[2])
 for job_name, output_name in (
+    ("check-pr", "check-pr-job.sh"),
     ("protect-labels", "issue-job.sh"),
     ("protect-pr-labels", "pr-job.sh"),
 ):
@@ -62,6 +63,7 @@ printf '%s\n' "$*" >>"$GH_CALLS"
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 	case "${GH_SCENARIO:-}" in
 		pr-label-failure) exit 1 ;;
+		check-pr-nmr) printf 'needs-maintainer-review\n'; exit 0 ;;
 		pr-*) printf 'external-contributor\n'; exit 0 ;;
 	esac
 fi
@@ -70,9 +72,24 @@ if [[ "${1:-}" == "api" && "$*" == *"/comments"* ]]; then
 	case "${GH_SCENARIO:-}" in
 		issue-api-failure|pr-approval-failure) exit 1 ;;
 		issue-invalid|pr-invalid) printf '{"message":"rate limited"}\n'; exit 0 ;;
-		issue-signed|pr-signed) printf '[[{"body":"<!-- aidevops-signed-approval -->"}]]\n'; exit 0 ;;
+		issue-signed|pr-signed) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"maintainer"},"author_association":"OWNER"}]]\n'; exit 0 ;;
+		issue-other-maintainer|pr-other-maintainer) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"owner"},"author_association":"OWNER"}]]\n'; exit 0 ;;
+		issue-collab|pr-collab|issue-permission-failure|pr-permission-failure) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"trusted-collab"},"author_association":"COLLABORATOR"}]]\n'; exit 0 ;;
+		issue-forged|pr-forged) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"external"},"author_association":"NONE"}]]\n'; exit 0 ;;
+		issue-bot|pr-bot) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"github-actions[bot]"},"author_association":"NONE"}]]\n'; exit 0 ;;
 		issue-unsigned|pr-unsigned) printf '[[]]\n'; exit 0 ;;
 	esac
+fi
+
+if [[ "${1:-}" == "api" && "$*" == *"collaborators/trusted-collab/permission"* ]]; then
+	case "${GH_SCENARIO:-}" in
+		issue-permission-failure|pr-permission-failure) exit 1 ;;
+		*) printf 'write\n'; exit 0 ;;
+	esac
+fi
+
+if [[ "${1:-}" == "api" && "$*" == *"/statuses/"* ]]; then
+	exit 0
 fi
 
 if [[ "${1:-}" == "issue" && ( "${2:-}" == "edit" || "${2:-}" == "comment" ) ]]; then
@@ -98,10 +115,11 @@ teardown_test_env() {
 
 run_issue_job() {
 	local scenario="$1"
+	local actor="${2:-maintainer}"
 	GH_SCENARIO="$scenario" \
 		ISSUE_NUMBER=42 \
 		ISSUE_AUTHOR=external \
-		ACTOR=maintainer \
+		ACTOR="$actor" \
 		ACTOR_ASSOCIATION=OWNER \
 		REPO=owner/repo \
 		GH_TOKEN=test-token \
@@ -111,10 +129,11 @@ run_issue_job() {
 
 run_pr_job() {
 	local scenario="$1"
+	local actor="${2:-maintainer}"
 	GH_SCENARIO="$scenario" \
 		PR_NUMBER=43 \
 		PR_AUTHOR=external \
-		ACTOR=maintainer \
+		ACTOR="$actor" \
 		REPO=owner/repo \
 		GH_TOKEN=test-token \
 		PATH="${TEST_ROOT}/bin:${PATH}" \
@@ -131,31 +150,37 @@ assert_no_mutation() {
 	return 0
 }
 
-assert_job_fails_without_mutation() {
+assert_job_restores_nmr() {
 	local target="$1"
 	local scenario="$2"
 	local test_prefix="$3"
+	local actor="${4:-maintainer}"
 	: >"$GH_CALLS"
 	if [[ "$target" == "issue" ]]; then
-		if run_issue_job "$scenario" >/dev/null 2>&1; then
-			print_result "$test_prefix fails the job" 1 "expected non-zero exit"
+		run_issue_job "$scenario" "$actor" >/dev/null 2>&1 || true
+		if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
+			print_result "$test_prefix restores NMR" 0
 		else
-			print_result "$test_prefix fails the job" 0
+			print_result "$test_prefix restores NMR" 1 "expected issue edit"
 		fi
 	else
-		if run_pr_job "$scenario" >/dev/null 2>&1; then
-			print_result "$test_prefix fails the job" 1 "expected non-zero exit"
+		run_pr_job "$scenario" "$actor" >/dev/null 2>&1 || true
+		if grep -q '^pr edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
+			print_result "$test_prefix restores NMR" 0
 		else
-			print_result "$test_prefix fails the job" 0
+			print_result "$test_prefix restores NMR" 1 "expected PR edit"
 		fi
 	fi
-	assert_no_mutation "$test_prefix leaves labels unchanged"
 	return 0
 }
 
 test_issue_approval_paths() {
-	assert_job_fails_without_mutation issue issue-api-failure "issue approval API failure"
-	assert_job_fails_without_mutation issue issue-invalid "invalid issue approval response"
+	assert_job_restores_nmr issue issue-api-failure "issue approval API failure"
+	assert_job_restores_nmr issue issue-invalid "invalid issue approval response"
+	assert_job_restores_nmr issue issue-forged "forged external issue marker"
+	assert_job_restores_nmr issue issue-permission-failure "unverifiable collaborator issue marker" "trusted-collab"
+	assert_job_restores_nmr issue issue-bot "bot-authored issue marker" "github-actions[bot]"
+	assert_job_restores_nmr issue issue-other-maintainer "different actor's issue marker"
 	: >"$GH_CALLS"
 	if run_issue_job issue-signed >/dev/null 2>&1; then
 		print_result "signed issue approval is accepted" 0
@@ -163,6 +188,13 @@ test_issue_approval_paths() {
 		print_result "signed issue approval is accepted" 1 "job returned non-zero"
 	fi
 	assert_no_mutation "signed issue approval does not restore NMR"
+	: >"$GH_CALLS"
+	if run_issue_job issue-collab trusted-collab >/dev/null 2>&1; then
+		print_result "write-collaborator issue approval is accepted" 0
+	else
+		print_result "write-collaborator issue approval is accepted" 1 "job returned non-zero"
+	fi
+	assert_no_mutation "write-collaborator issue approval does not restore NMR"
 	: >"$GH_CALLS"
 	run_issue_job issue-unsigned >/dev/null 2>&1 || true
 	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
@@ -174,9 +206,13 @@ test_issue_approval_paths() {
 }
 
 test_pr_approval_paths() {
-	assert_job_fails_without_mutation pr pr-label-failure "PR label API failure"
-	assert_job_fails_without_mutation pr pr-approval-failure "PR approval API failure"
-	assert_job_fails_without_mutation pr pr-invalid "invalid PR approval response"
+	assert_job_restores_nmr pr pr-label-failure "PR label API failure"
+	assert_job_restores_nmr pr pr-approval-failure "PR approval API failure"
+	assert_job_restores_nmr pr pr-invalid "invalid PR approval response"
+	assert_job_restores_nmr pr pr-forged "forged external PR marker"
+	assert_job_restores_nmr pr pr-permission-failure "unverifiable collaborator PR marker" "trusted-collab"
+	assert_job_restores_nmr pr pr-bot "bot-authored PR marker" "github-actions[bot]"
+	assert_job_restores_nmr pr pr-other-maintainer "different actor's PR marker"
 	: >"$GH_CALLS"
 	if run_pr_job pr-signed >/dev/null 2>&1; then
 		print_result "signed PR approval is accepted" 0
@@ -185,11 +221,47 @@ test_pr_approval_paths() {
 	fi
 	assert_no_mutation "signed PR approval does not restore NMR"
 	: >"$GH_CALLS"
+	if run_pr_job pr-collab trusted-collab >/dev/null 2>&1; then
+		print_result "write-collaborator PR approval is accepted" 0
+	else
+		print_result "write-collaborator PR approval is accepted" 1 "job returned non-zero"
+	fi
+	assert_no_mutation "write-collaborator PR approval does not restore NMR"
+	: >"$GH_CALLS"
 	run_pr_job pr-unsigned >/dev/null 2>&1 || true
 	if grep -q '^pr edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
 		print_result "confirmed unsigned external PR restores NMR" 0
 	else
 		print_result "confirmed unsigned external PR restores NMR" 1 "expected PR edit"
+	fi
+	return 0
+}
+
+test_live_pr_nmr_blocks_before_comments() {
+	local output_file="${TEST_ROOT}/check-pr-output"
+	: >"$GH_CALLS"
+	: >"$output_file"
+	if GH_SCENARIO=check-pr-nmr \
+		PR_TITLE="External change" \
+		PR_BODY="" \
+		PR_NUMBER=44 \
+		PR_AUTHOR=external \
+		HEAD_SHA=fixture-head \
+		PR_AUTHOR_ASSOCIATION=NONE \
+		REPO=owner/repo \
+		REPO_OWNER=owner \
+		GH_TOKEN=test-token \
+		MAINTAINER_GATE_DEBUG=false \
+		GITHUB_OUTPUT="$output_file" \
+		PATH="${TEST_ROOT}/bin:${PATH}" \
+		bash -e "${TEST_ROOT}/check-pr-job.sh" >/dev/null 2>&1; then
+		if grep -q '^blocked=true$' "$output_file" && ! grep -q '/comments' "$GH_CALLS"; then
+			print_result "live PR NMR blocks without consulting comment markers" 0
+		else
+			print_result "live PR NMR blocks without consulting comment markers" 1 "missing blocked output or comments API was queried"
+		fi
+	else
+		print_result "live PR NMR blocks without consulting comment markers" 1 "check-pr job returned non-zero"
 	fi
 	return 0
 }
@@ -231,6 +303,7 @@ main() {
 	trap teardown_test_env EXIT
 	test_issue_approval_paths
 	test_pr_approval_paths
+	test_live_pr_nmr_blocks_before_comments
 	test_slurp_and_jq_are_separate
 	printf '\nTests run: %d\nTests failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

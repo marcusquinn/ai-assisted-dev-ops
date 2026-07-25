@@ -195,8 +195,9 @@ _merge_try_interactive_admin_auto_fallback() {
 	_merge_output_is_review_policy_block "$merge_output" || return 1
 	_merge_pr_ready_for_interactive_admin_bypass "$pr_number" "$repo" || return 1
 
-	#aidevops:trust-boundary -- interactive admin fallback still enforces linked NMR crypto gate before bypassing review-count protection.
-	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" || return 2
+	#aidevops:trust-boundary -- interactive admin fallback re-checks exact-head
+	# authority immediately before bypassing review-count protection.
+	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$expected_head_sha" || return 2
 	print_info "Auto-merge is blocked only by review-required branch policy/self-approval; interactive maintainer session is using --admin merge after gates passed."
 	if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" 2>&1; then
 		print_success "PR #${pr_number} merged with interactive --admin fallback"
@@ -307,16 +308,119 @@ _merge_issue_requires_maintainer_review() {
 	return 1
 }
 
+# Resolve the verifier from the current framework tree first so worktree fixes
+# are exercised before deployment. The public key remains in the user's
+# root-protected aidevops approval-key directory and is read by the helper.
+_merge_approval_helper_path() {
+	local approval_helper="${SCRIPT_DIR}/approval-helper.sh"
+	if [[ ! -f "$approval_helper" ]]; then
+		approval_helper="${HOME}/.aidevops/agents/scripts/approval-helper.sh"
+	fi
+	[[ -f "$approval_helper" ]] || return 1
+	printf '%s\n' "$approval_helper"
+	return 0
+}
+
+_merge_target_crypto_approved() {
+	local target_type="$1"
+	local target_number="$2"
+	local repo="$3"
+	local expected_head_sha="${4:-}"
+	local approval_helper=""
+	local result=""
+
+	approval_helper=$(_merge_approval_helper_path) || return 1
+	if [[ "$target_type" == "pr" ]]; then
+		[[ -n "$expected_head_sha" ]] || return 1
+		result=$(bash "$approval_helper" verify pr "$target_number" "$repo" \
+			--expect-head "$expected_head_sha" 2>/dev/null) || result=""
+	else
+		result=$(bash "$approval_helper" verify issue "$target_number" "$repo" 2>/dev/null) || result=""
+	fi
+	[[ "$result" == "VERIFIED" ]]
+	return $?
+}
+
+# Returns 0 for live admin/maintain/write authority, 1 for a confirmed external
+# author, and 2 when GitHub cannot provide a trustworthy verdict.
+_merge_author_has_write_authority() {
+	local author="$1"
+	local repo="$2"
+	local permission=""
+
+	# shared-constants.sh loads the App-aware helper in normal full-loop use. It
+	# distinguishes a confirmed 404 non-collaborator (permission=none) from API
+	# uncertainty; the direct gh fallback keeps this library sourceable in tests.
+	if declare -F _gh_collaborator_permission_lookup >/dev/null 2>&1; then
+		_gh_collaborator_permission_lookup "$repo" "$author" permission || return 2
+	else
+		permission=$(gh api "repos/${repo}/collaborators/${author}/permission" \
+			--jq '.permission // "none"' 2>/dev/null) || return 2
+	fi
+	case "$permission" in
+	admin | maintain | write) return 0 ;;
+	none | read | triage) return 1 ;;
+	*) return 2 ;;
+	esac
+}
+
+# Legacy name retained for sourced callers and tests. This is now the common
+# final authority guard for every full-loop merge mode, not only --admin.
 _merge_guard_admin_merge_maintainer_review() {
 	local pr_number="$1"
 	local repo="$2"
+	local expected_head_sha="${3:-}"
+	local pr_json="" pr_author="" current_head_sha="" labels_csv="" is_fork="false"
 	local issue_numbers=""
 	local issue_number=""
-	local blocked_issues=""
-	local verify_rc=0
+	local verify_rc=0 author_rc=0 treat_as_external=0
 
-	issue_numbers=$(_merge_linked_issue_numbers "$pr_number" "$repo") || {
-		print_error "Admin merge blocked: unable to verify linked issues for PR #${pr_number}; refusing to override branch protection"
+	if ! pr_json=$(gh pr view "$pr_number" --repo "$repo" \
+		--json author,labels,isCrossRepository,headRefOid,closingIssuesReferences,body 2>/dev/null); then
+		print_error "Merge blocked: unable to verify PR #${pr_number} authority metadata"
+		return 1
+	fi
+	if ! printf '%s' "$pr_json" | jq -e '
+		type == "object"
+		and (.author.login | type == "string" and length > 0)
+		and (.headRefOid | type == "string" and length > 0)
+		and (.labels | type == "array")
+		and (.isCrossRepository | type == "boolean")
+		and (.closingIssuesReferences | type == "array")
+		and ((.body == null) or (.body | type == "string"))
+	' >/dev/null 2>&1; then
+		print_error "Merge blocked: PR #${pr_number} returned malformed authority metadata"
+		return 1
+	fi
+
+	pr_author=$(printf '%s' "$pr_json" | jq -r '.author.login') || return 1
+	current_head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid') || return 1
+	labels_csv=$(printf '%s' "$pr_json" | jq -r '[.labels[].name] | join(",")') || return 1
+	is_fork=$(printf '%s' "$pr_json" | jq -r '.isCrossRepository') || return 1
+	if [[ -n "$expected_head_sha" && "$current_head_sha" != "$expected_head_sha" ]]; then
+		print_error "Merge blocked: PR #${pr_number} head changed before the final authority check"
+		return 1
+	fi
+
+	#aidevops:trust-boundary GH#17671/GH#28622 -- a live PR NMR label is an
+	# explicit hold. Marker text is never merge authority at this boundary.
+	if [[ ",${labels_csv}," == *",needs-maintainer-review,"* ]]; then
+		print_error "Merge blocked: PR #${pr_number} still requires maintainer review"
+		return 1
+	fi
+
+	_merge_author_has_write_authority "$pr_author" "$repo" || author_rc=$?
+	if [[ "$author_rc" -eq 2 ]]; then
+		print_error "Merge blocked: unable to verify live repository permission for PR author ${pr_author}"
+		return 1
+	fi
+	if [[ ",${labels_csv}," == *",external-contributor,"* ]] || \
+		[[ "$is_fork" == "true" ]] || [[ "$author_rc" -ne 0 ]]; then
+		treat_as_external=1
+	fi
+
+	issue_numbers=$(_merge_linked_issue_numbers "$pr_number" "$repo" "$pr_json") || {
+		print_error "Merge blocked: unable to verify linked issues for PR #${pr_number}"
 		return 1
 	}
 
@@ -325,17 +429,28 @@ _merge_guard_admin_merge_maintainer_review() {
 		verify_rc=0
 		_merge_issue_requires_maintainer_review "$issue_number" "$repo" || verify_rc=$?
 		if [[ "$verify_rc" -eq 0 ]]; then
-			blocked_issues+=" #${issue_number}"
+			print_error "Merge blocked: linked issue #${issue_number} still requires maintainer review"
+			return 1
 		elif [[ "$verify_rc" -ne 1 ]]; then
-			print_error "Admin merge blocked: unable to verify maintainer-review labels on issue #${issue_number}"
+			print_error "Merge blocked: unable to verify maintainer-review labels on issue #${issue_number}"
+			return 1
+		fi
+		if [[ "$treat_as_external" -eq 1 ]] && \
+			! _merge_target_crypto_approved issue "$issue_number" "$repo"; then
+			print_error "Merge blocked: external/fork PR linked issue #${issue_number} lacks current cryptographic development authority"
 			return 1
 		fi
 	done <<<"$issue_numbers"
 
-	#aidevops:trust-boundary -- admin merge must not bypass signed/maintainer issue approval.
-	if [[ -n "$blocked_issues" ]]; then
-		print_error "Admin merge blocked: linked issue(s)${blocked_issues} still require maintainer review"
-		print_info "Required action: run 'sudo aidevops approve issue <issue_number> ${repo}' or record an equivalent maintainer decision before merging."
+	if [[ "$treat_as_external" -eq 0 ]]; then
+		return 0
+	fi
+	if [[ -z "$issue_numbers" ]]; then
+		print_error "Merge blocked: external/fork PR #${pr_number} has no linked issue"
+		return 1
+	fi
+	if ! _merge_target_crypto_approved pr "$pr_number" "$repo" "$current_head_sha"; then
+		print_error "Merge blocked: external/fork PR #${pr_number} lacks V2 merge authority for the current head"
 		return 1
 	fi
 
@@ -450,9 +565,6 @@ _merge_execute() {
 	local merge_flags=()
 	[[ "$has_admin" -eq 1 ]] && merge_flags+=("--admin")
 	[[ "$has_auto" -eq 1 ]] && merge_flags+=("--auto")
-	if [[ "$has_admin" -eq 1 ]]; then
-		_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" || return 1
-	fi
 
 	local merge_desc="$merge_method"
 	[[ ${#merge_flags[@]} -gt 0 ]] && merge_desc+=" ${merge_flags[*]}"
@@ -463,6 +575,10 @@ _merge_execute() {
 		print_error "Cannot bind merge to a remotely verified PR head SHA"
 		return 1
 	}
+	#aidevops:trust-boundary GH#17671/GH#28622 -- every merge mode, including
+	# --auto and the non-admin REST transport fallback, must pass the same live
+	# external/fork and exact-head cryptographic authority check.
+	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
 	merge_flags+=("--match-head-commit" "$match_head_sha")
 
 	# Capture output AND exit code under set -e. A bare assignment `out=$(cmd)`
@@ -507,7 +623,7 @@ ${_merge_retry_out}"
 		# Only fall back to --admin when caller passed neither --admin nor --auto.
 		elif [[ $has_admin -eq 0 && $has_auto -eq 0 ]] &&
 			printf '%s' "$_merge_out" | grep -qE 'base branch policy prohibits|Required status checks? (is|are) expected|At least [0-9]+ approving review'; then
-			_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" || return 1
+			_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
 			print_info "Branch protection blocked plain merge; retrying with --admin (workers share the maintainer's gh auth per GH#18538)..."
 			if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" 2>&1; then
 				print_success "PR #${pr_number} merged with --admin fallback"
