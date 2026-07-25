@@ -53,6 +53,12 @@ jobs:
             const issueNumber = issue.number;
             const actor = context.actor;
 
+            // A locked issue cannot accept guidance and needs no further API reads.
+            if (issue.locked === true) {
+              console.log(`Issue #${issueNumber} is locked — hold guidance is unnecessary`);
+              return;
+            }
+
             // Dedup: check for existing comments with the approve command.
             // Covers prior posts from issue-triage-gate, maintainer-gate
             // label protection, or a previous run of this workflow.
@@ -109,11 +115,22 @@ jobs:
               ].join('\n');
             }
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber,
-              body: body
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: body
+              });
+            } catch (error) {
+              const messages = [error.message, error.response?.data?.message];
+              const lockedIssueMessage = 'Unable to create comment because issue is locked.';
+              const lockedConcurrently = error.status === 403 && messages.includes(lockedIssueMessage);
+              if (lockedConcurrently) {
+                console.log(`Issue #${issueNumber} was locked before guidance could be posted — skipping`);
+                return;
+              }
+              throw error;
+            }
 
             console.log(`Posted hold guidance comment on #${issueNumber} (collaborator=${isCollaboratorIssue}, actor=${actor})`);
