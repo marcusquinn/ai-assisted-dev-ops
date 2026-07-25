@@ -181,7 +181,9 @@ test_personal_mode() {
 	REPOS_FILE="$repos_file" PERSONAL_PLANE_BASE="$personal_base" bash "$HELPER" provision "${tmp_dir}/repo"
 	assert_dir "${personal_base}/_knowledge" "3.1 personal _knowledge root created"
 	assert_dir "${personal_base}/_knowledge/inbox" "3.2 personal inbox/ created"
-	assert_not_dir "${tmp_dir}/repo/_knowledge" "3.3 no in-repo _knowledge in personal mode"
+	assert_file "${personal_base}/catalog.db" "3.3 personal catalog.db created"
+	assert_file "${personal_base}/_config/principal.json" "3.4 principal context created"
+	assert_not_dir "${tmp_dir}/repo/_knowledge" "3.5 no in-repo _knowledge in personal mode"
 	rm -rf "$tmp_dir"
 	trap - EXIT
 	return 0
