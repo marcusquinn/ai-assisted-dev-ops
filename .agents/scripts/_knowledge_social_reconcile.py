@@ -55,7 +55,7 @@ def _records(
     return frozenset(records)
 
 
-def _read_private_snapshot(path: Path) -> dict[str, Any]:
+def _snapshot_stat(path: Path) -> os.stat_result:
     try:
         before = path.lstat()
     except OSError as error:
@@ -66,13 +66,22 @@ def _read_private_snapshot(path: Path) -> dict[str, Any]:
         raise SocialStoreError("reconciliation snapshot owner must be the current user")
     if stat.S_IMODE(before.st_mode) != 0o600:
         raise SocialStoreError("reconciliation snapshot permissions must be 0600")
+    return before
+
+
+def _open_snapshot(path: Path) -> int:
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags)
+        return os.open(path, flags)
     except OSError as error:
         raise SocialStoreError("reconciliation snapshot replacement detected") from error
+
+
+def _load_snapshot_json(
+    descriptor: int, before: os.stat_result
+) -> dict[str, Any]:
     try:
         with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
             after = os.fstat(handle.fileno())
@@ -84,6 +93,11 @@ def _read_private_snapshot(path: Path) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise SocialStoreError("reconciliation snapshot root must be an object")
     return parsed
+
+
+def _read_private_snapshot(path: Path) -> dict[str, Any]:
+    before = _snapshot_stat(path)
+    return _load_snapshot_json(_open_snapshot(path), before)
 
 
 def _observed_epoch(value: str) -> float:
@@ -162,14 +176,14 @@ def _inventory(
     inventory = {
         ("object", str(row["object_type"]), str(row["remote_id"]))
         for row in database.execute(
-            "SELECT o.object_type,o.remote_id FROM objects o "
-            "JOIN fetch_batches b ON b.batch_id=o.batch_id "
-            "WHERE b.connection_id=? AND b.stream=? UNION "
-            "SELECT o.object_type,o.remote_id FROM objects o "
-            "JOIN activities a ON a.provider=o.provider "
-            "AND a.object_remote_id=o.remote_id "
-            "JOIN fetch_batches b ON b.batch_id=a.batch_id "
-            "WHERE b.connection_id=? AND b.stream=?",
+            """SELECT o.object_type,o.remote_id FROM objects o
+               JOIN fetch_batches b ON b.batch_id=o.batch_id
+               WHERE b.connection_id=? AND b.stream=? UNION
+               SELECT o.object_type,o.remote_id FROM objects o
+               JOIN activities a ON a.provider=o.provider
+                 AND a.object_remote_id=o.remote_id
+               JOIN fetch_batches b ON b.batch_id=a.batch_id
+               WHERE b.connection_id=? AND b.stream=?""",
             (connection_id, stream, connection_id, stream),
         ).fetchall()
     }
@@ -177,9 +191,9 @@ def _inventory(
         {
             ("activity", str(row["activity_type"]), str(row["remote_id"]))
             for row in database.execute(
-                "SELECT DISTINCT a.activity_type,a.remote_id FROM activities a "
-                "JOIN fetch_batches b ON b.batch_id=a.batch_id "
-                "WHERE b.connection_id=? AND b.stream=?",
+                """SELECT DISTINCT a.activity_type,a.remote_id FROM activities a
+                   JOIN fetch_batches b ON b.batch_id=a.batch_id
+                   WHERE b.connection_id=? AND b.stream=?""",
                 (connection_id, stream),
             ).fetchall()
         }

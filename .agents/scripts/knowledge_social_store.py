@@ -195,6 +195,29 @@ def create_fts(connection: sqlite3.Connection) -> None:
         raise SocialStoreError("SQLite runtime does not provide required FTS5") from error
 
 
+def _add_sync_run_v2_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(sync_runs)").fetchall()
+    }
+    if "stream" not in columns:
+        connection.execute(
+            "ALTER TABLE sync_runs ADD COLUMN stream TEXT NOT NULL DEFAULT ''"
+        )
+    if "run_kind" not in columns:
+        connection.execute(
+            "ALTER TABLE sync_runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'sync'"
+        )
+    if "collector_id" not in columns:
+        connection.execute("ALTER TABLE sync_runs ADD COLUMN collector_id TEXT")
+    if "started_at" not in columns:
+        connection.execute("ALTER TABLE sync_runs ADD COLUMN started_at INTEGER")
+    if "completed_at" not in columns:
+        connection.execute("ALTER TABLE sync_runs ADD COLUMN completed_at INTEGER")
+    if "request_hash" not in columns:
+        connection.execute("ALTER TABLE sync_runs ADD COLUMN request_hash TEXT")
+
+
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current < 0 or current > SCHEMA_VERSION:
@@ -204,23 +227,7 @@ def migrate(connection: sqlite3.Connection) -> None:
         for statement in _tables():
             connection.execute(statement)
         if current < 2:
-            columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(sync_runs)").fetchall()
-            }
-            additions = (
-                ("stream", "TEXT NOT NULL DEFAULT ''"),
-                ("run_kind", "TEXT NOT NULL DEFAULT 'sync'"),
-                ("collector_id", "TEXT"),
-                ("started_at", "INTEGER"),
-                ("completed_at", "INTEGER"),
-                ("request_hash", "TEXT"),
-            )
-            for name, definition in additions:
-                if name not in columns:
-                    connection.execute(
-                        f"ALTER TABLE sync_runs ADD COLUMN {name} {definition}"
-                    )
+            _add_sync_run_v2_columns(connection)
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "
             "ON sync_runs(connection_id,stream,run_kind,started_at)"
@@ -232,7 +239,7 @@ def migrate(connection: sqlite3.Connection) -> None:
                 "VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (version,),
             )
-        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        connection.execute("PRAGMA user_version=2")
         connection.execute("COMMIT")
     except Exception:
         connection.execute("ROLLBACK")

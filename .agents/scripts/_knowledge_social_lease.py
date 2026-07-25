@@ -71,20 +71,19 @@ class RunReceiptUpdate:
     terminal: bool = False
 
 
+def _clock_value(explicit: int | None) -> Any:
+    """Select the real clock or an authorized deterministic test value."""
+    override = os.environ.get("AIDEVOPS_SOCIAL_NOW_EPOCH")
+    if explicit is None and override is None:
+        return int(datetime.now(UTC).timestamp())
+    if os.environ.get("AIDEVOPS_TEST_MODE") != "1":
+        raise SocialStoreError("social clock override is test-only")
+    return explicit if explicit is not None else override
+
+
 def social_now(explicit: int | None = None) -> int:
     """Return one validated clock value, with a deterministic test seam."""
-    test_mode = os.environ.get("AIDEVOPS_TEST_MODE") == "1"
-    override = os.environ.get("AIDEVOPS_SOCIAL_NOW_EPOCH")
-    if explicit is not None:
-        if not test_mode:
-            raise SocialStoreError("explicit social clock is test-only")
-        value: Any = explicit
-    elif override is not None:
-        if not test_mode:
-            raise SocialStoreError("social clock override is test-only")
-        value = override
-    else:
-        value = int(datetime.now(UTC).timestamp())
+    value = _clock_value(explicit)
     if isinstance(value, bool):
         raise SocialStoreError("social clock must be a non-negative integer")
     try:
@@ -149,6 +148,85 @@ def _abandon_expired_run(
     )
 
 
+def _prepare_connection_lease(
+    database: sqlite3.Connection, connection_id: str, now_epoch: int
+) -> None:
+    current = database.execute(
+        "SELECT * FROM collector_leases WHERE connection_id=?",
+        (connection_id,),
+    ).fetchone()
+    if current is None:
+        return
+    if int(current["expires_at"]) > now_epoch:
+        raise SocialLeaseBusyError("social connection already has a live collector")
+    _abandon_expired_run(database, current, now_epoch)
+
+
+def _upsert_collector_lease(
+    database: sqlite3.Connection, lease: RunLease
+) -> None:
+    database.execute(
+        """INSERT INTO collector_leases(
+           connection_id,collector_id,fencing_token,run_id,acquired_at,expires_at)
+           VALUES(?,?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET
+           collector_id=excluded.collector_id,
+           fencing_token=excluded.fencing_token,run_id=excluded.run_id,
+           acquired_at=excluded.acquired_at,expires_at=excluded.expires_at""",
+        (
+            lease.connection_id,
+            lease.collector_id,
+            lease.fencing_token,
+            lease.run_id,
+            lease.acquired_at,
+            lease.expires_at,
+        ),
+    )
+
+
+def _insert_running_receipt(
+    database: sqlite3.Connection,
+    lease: RunLease,
+    request_hash: str | None,
+) -> None:
+    database.execute(
+        """INSERT INTO sync_runs(
+           run_id,connection_id,status,fencing_token,diagnostics,stream,run_kind,
+           collector_id,started_at,request_hash) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (
+            lease.run_id,
+            lease.connection_id,
+            "running",
+            lease.fencing_token,
+            json.dumps({"stream": lease.stream}, separators=(",", ":")),
+            lease.stream,
+            lease.run_kind,
+            lease.collector_id,
+            lease.acquired_at,
+            request_hash,
+        ),
+    )
+
+
+def _create_run_lease(
+    database: sqlite3.Connection, request: RunLeaseRequest, now_epoch: int
+) -> RunLease:
+    _prepare_connection_lease(database, request.connection_id, now_epoch)
+    token = _next_fencing_token(database, request.connection_id)
+    lease = RunLease(
+        request.connection_id,
+        request.stream,
+        request.run_kind,
+        request.collector_id,
+        token,
+        _run_id(request.connection_id, request.stream, request.run_kind, token),
+        now_epoch,
+        now_epoch + request.lease_seconds,
+    )
+    _upsert_collector_lease(database, lease)
+    _insert_running_receipt(database, lease, request.request_hash)
+    return lease
+
+
 def acquire_run_lease(
     root: Path,
     request: RunLeaseRequest,
@@ -162,63 +240,9 @@ def acquire_run_lease(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
-        current = database.execute(
-            "SELECT * FROM collector_leases WHERE connection_id=?",
-            (request.connection_id,),
-        ).fetchone()
-        if current is not None and int(current["expires_at"]) > now:
-            raise SocialLeaseBusyError("social connection already has a live collector")
-        if current is not None:
-            _abandon_expired_run(database, current, now)
-        token = _next_fencing_token(database, request.connection_id)
-        run_id = _run_id(
-            request.connection_id, request.stream, request.run_kind, token
-        )
-        expires_at = now + request.lease_seconds
-        database.execute(
-            "INSERT INTO collector_leases(connection_id,collector_id,fencing_token,"
-            "run_id,acquired_at,expires_at) VALUES(?,?,?,?,?,?) "
-            "ON CONFLICT(connection_id) DO UPDATE SET "
-            "collector_id=excluded.collector_id,"
-            "fencing_token=excluded.fencing_token,run_id=excluded.run_id,"
-            "acquired_at=excluded.acquired_at,expires_at=excluded.expires_at",
-            (
-                request.connection_id,
-                request.collector_id,
-                token,
-                run_id,
-                now,
-                expires_at,
-            ),
-        )
-        database.execute(
-            "INSERT INTO sync_runs(run_id,connection_id,status,fencing_token,"
-            "diagnostics,stream,run_kind,collector_id,started_at,request_hash) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (
-                run_id,
-                request.connection_id,
-                "running",
-                token,
-                json.dumps({"stream": request.stream}, separators=(",", ":")),
-                request.stream,
-                request.run_kind,
-                request.collector_id,
-                now,
-                request.request_hash,
-            ),
-        )
+        lease = _create_run_lease(database, request, now)
         database.execute("COMMIT")
-        return RunLease(
-            request.connection_id,
-            request.stream,
-            request.run_kind,
-            request.collector_id,
-            token,
-            run_id,
-            now,
-            expires_at,
-        )
+        return lease
     except Exception:
         if database.in_transaction:
             database.execute("ROLLBACK")

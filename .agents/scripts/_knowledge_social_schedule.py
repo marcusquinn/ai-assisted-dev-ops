@@ -95,6 +95,13 @@ def _cursor_due_at(
     return last_success + interval if last_success is not None else 0
 
 
+def _rate_limit_due_at(run: sqlite3.Row) -> int | None:
+    if run["status"] != "paused" or run["failure_class"] != "rate_limit":
+        return None
+    retry_after = str(run["retry_after"] or "")
+    return int(retry_after) if retry_after.isdigit() else None
+
+
 def _due_at(
     database: sqlite3.Connection,
     connection_id: str,
@@ -103,21 +110,64 @@ def _due_at(
     interval: int,
 ) -> int:
     run = _last_run(database, connection_id, stream, run_kind)
-    if run is not None and run["status"] == "running":
+    if run is None:
+        return _cursor_due_at(database, connection_id, stream, interval) if run_kind == "sync" else 0
+    if run["status"] == "running":
         return _running_due_at(database, connection_id)
-    if run is not None and run["completed_at"] is not None:
+    if run["completed_at"] is not None:
         due_at = int(run["completed_at"]) + interval
-        retry_after = run["retry_after"]
-        if (
-            run["status"] == "paused"
-            and run["failure_class"] == "rate_limit"
-            and str(retry_after or "").isdigit()
-        ):
-            due_at = int(retry_after)
-        return due_at
+        rate_limit_due = _rate_limit_due_at(run)
+        return rate_limit_due if rate_limit_due is not None else due_at
     if run_kind == "sync":
         return _cursor_due_at(database, connection_id, stream, interval)
     return 0
+
+
+def _validate_due_inputs(run_kind: str, interval_seconds: int | None) -> None:
+    if run_kind not in RUN_KINDS:
+        raise SocialStoreError("run_kind must be sync or reconcile")
+    if interval_seconds is not None and (
+        isinstance(interval_seconds, bool) or interval_seconds < 60
+    ):
+        raise SocialStoreError("interval_seconds must be at least 60")
+
+
+def _schedule_settings(run_kind: str) -> tuple[str, int]:
+    if run_kind == "sync":
+        return "sync_interval_seconds", DEFAULT_SYNC_INTERVAL
+    return "reconcile_interval_seconds", DEFAULT_RECONCILE_INTERVAL
+
+
+def _connection_due_plan(
+    database: sqlite3.Connection,
+    row: sqlite3.Row,
+    run_kind: str,
+    now_epoch: int,
+    interval_seconds: int | None,
+) -> list[dict[str, Any]]:
+    key, fallback = _schedule_settings(run_kind)
+    policy = _parse_json_object(row["policy_json"], "policy")
+    interval = (
+        interval_seconds
+        if interval_seconds is not None
+        else _interval(policy, key, fallback)
+    )
+    streams = sorted(set(_parse_json_array(row["enabled_streams"], "streams")))
+    due: list[dict[str, Any]] = []
+    for stream in streams:
+        due_at = _due_at(
+            database, row["connection_id"], stream, run_kind, interval
+        )
+        if due_at <= now_epoch:
+            due.append(
+                {
+                    "connection_id": row["connection_id"],
+                    "stream": stream,
+                    "run_kind": run_kind,
+                    "due_at": due_at,
+                }
+            )
+    return due
 
 
 def due_plan(
@@ -128,12 +178,7 @@ def due_plan(
     interval_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return a stable list of due opaque connection streams."""
-    if run_kind not in RUN_KINDS:
-        raise SocialStoreError("run_kind must be sync or reconcile")
-    if interval_seconds is not None and (
-        isinstance(interval_seconds, bool) or interval_seconds < 60
-    ):
-        raise SocialStoreError("interval_seconds must be at least 60")
+    _validate_due_inputs(run_kind, interval_seconds)
     now = social_now(now_epoch)
     database = connect_read_only(root)
     try:
@@ -144,38 +189,11 @@ def due_plan(
         ).fetchall()
         due: list[dict[str, Any]] = []
         for row in rows:
-            policy = _parse_json_object(row["policy_json"], "policy")
-            fallback = (
-                DEFAULT_SYNC_INTERVAL
-                if run_kind == "sync"
-                else DEFAULT_RECONCILE_INTERVAL
-            )
-            key = (
-                "sync_interval_seconds"
-                if run_kind == "sync"
-                else "reconcile_interval_seconds"
-            )
-            interval = (
-                interval_seconds
-                if interval_seconds is not None
-                else _interval(policy, key, fallback)
-            )
-            streams = sorted(
-                set(_parse_json_array(row["enabled_streams"], "streams"))
-            )
-            for stream in streams:
-                due_at = _due_at(
-                    database, row["connection_id"], stream, run_kind, interval
+            due.extend(
+                _connection_due_plan(
+                    database, row, run_kind, now, interval_seconds
                 )
-                if due_at <= now:
-                    due.append(
-                        {
-                            "connection_id": row["connection_id"],
-                            "stream": stream,
-                            "run_kind": run_kind,
-                            "due_at": due_at,
-                        }
-                    )
+            )
         return due
     finally:
         database.close()
@@ -192,18 +210,22 @@ def run_receipts(
     database = connect_read_only(root)
     try:
         require_schema(database)
-        query = (
-            "SELECT run_id,connection_id,stream,run_kind,status,resource_count,"
-            "failure_class,retry_after,fencing_token,collector_id,started_at,"
-            "completed_at,request_hash FROM sync_runs"
-        )
-        parameters: list[Any] = []
         if connection_id is not None:
-            query += " WHERE connection_id=?"
-            parameters.append(connection_id)
-        query += " ORDER BY started_at DESC,rowid DESC LIMIT ?"
-        parameters.append(limit)
-        rows = database.execute(query, parameters).fetchall()
+            rows = database.execute(
+                """SELECT run_id,connection_id,stream,run_kind,status,resource_count,
+                   failure_class,retry_after,fencing_token,collector_id,started_at,
+                   completed_at,request_hash FROM sync_runs WHERE connection_id=?
+                   ORDER BY started_at DESC,rowid DESC LIMIT ?""",
+                (connection_id, limit),
+            ).fetchall()
+        else:
+            rows = database.execute(
+                """SELECT run_id,connection_id,stream,run_kind,status,resource_count,
+                   failure_class,retry_after,fencing_token,collector_id,started_at,
+                   completed_at,request_hash FROM sync_runs
+                   ORDER BY started_at DESC,rowid DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
         return [dict(row) for row in rows]
     finally:
         database.close()
