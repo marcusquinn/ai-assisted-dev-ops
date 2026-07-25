@@ -344,6 +344,8 @@ _install_pulse_merge_routine_launchd() {
 	_xml_pmr_home=$(_xml_escape "$HOME")
 	_xml_pmr_log_dir=$(_xml_escape "$_pmr_log_dir")
 	_xml_bash_bin=$(_xml_escape "$(_resolve_modern_bash)")
+	local _env_overrides_xml
+	_env_overrides_xml=$(_build_plist_env_overrides_xml "$pmr_label")
 
 	local pmr_plist_content
 	pmr_plist_content=$(
@@ -372,7 +374,7 @@ _install_pulse_merge_routine_launchd() {
 		<string>$(aidevops_launchd_sanitized_path)</string>
 		<key>HOME</key>
 		<string>${_xml_pmr_home}</string>
-	</dict>
+${_env_overrides_xml}	</dict>
 	<key>RunAtLoad</key>
 	<false/>
 	<key>KeepAlive</key>
@@ -389,6 +391,7 @@ PMR_PLIST
 
 	if _launchd_install_if_changed "$pmr_label" "$pmr_plist" "$pmr_plist_content"; then
 		print_info "Pulse merge pass enabled (launchd, every 60s via pulse-merge-routine.sh)"
+		_log_plist_env_overrides "$pmr_label"
 	else
 		print_warning "Failed to load pulse merge pass LaunchAgent"
 	fi

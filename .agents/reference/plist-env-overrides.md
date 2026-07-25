@@ -7,8 +7,9 @@ losing them on every `aidevops update` or `setup.sh` run.
 
 `setup.sh` regenerates launchd plists on every run (~every 10 min via
 `aidevops update`). Any manual edits to
-`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist`
-are silently wiped.
+`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist` or
+`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-merge.plist` are
+silently wiped.
 
 The override file survives framework updates because it lives in the stable
 user config root, outside replaceable runtime bundles.
@@ -49,14 +50,16 @@ Keys prefixed with `_` are skipped — they serve as in-file comments.
 
 ## Supported Labels
 
-Currently only the supervisor pulse label is handled:
+The main Pulse and dedicated merge-pass supervisors are handled:
 
 | Label | Plist |
 |-------|-------|
 | `com.aidevops.aidevops-supervisor-pulse` | `~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist` |
+| `com.aidevops.aidevops-supervisor-merge` | `~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-merge.plist` |
 
 Additional labels can be supported by extending
-`_build_plist_env_overrides_xml` in `setup-modules/schedulers.sh`.
+their plist generators to call `_build_plist_env_overrides_xml` from
+`.agents/scripts/setup/modules/schedulers-pulse.sh`.
 
 ## Worked Example: Tune Per-Runner Thresholds
 

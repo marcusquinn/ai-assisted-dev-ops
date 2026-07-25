@@ -215,6 +215,45 @@ EOF
 	return 0
 }
 
+test_merge_scheduler_injects_label_overrides() {
+	local original_home="$HOME"
+	local label="com.aidevops.aidevops-supervisor-merge"
+	local override_file="$TEST_DIR/home/.config/aidevops/plist-env-overrides.json"
+	local captured_plist=""
+	local ok=0
+	HOME="$TEST_DIR/home"
+	mkdir -p "${override_file%/*}" "$TEST_DIR/logs"
+	cat >"$override_file" <<'EOF'
+{
+  "com.aidevops.aidevops-supervisor-merge": {
+    "AIDEVOPS_GH_EXACT_QUOTA_CAPTURE": "1"
+  }
+}
+EOF
+	_resolve_modern_bash() {
+		printf '/bin/bash'
+		return 0
+	}
+	_launchd_install_if_changed() {
+		local installed_label="$1"
+		local installed_path="$2"
+		local installed_content="$3"
+		[[ "$installed_label" == "$label" ]] || return 1
+		[[ "$installed_path" == "$HOME/Library/LaunchAgents/${label}.plist" ]] || return 1
+		captured_plist="$installed_content"
+		return 0
+	}
+
+	_install_pulse_merge_routine_launchd "$label" "$TEST_DIR/pulse-merge-routine.sh" "$TEST_DIR/logs"
+	[[ "$captured_plist" == *"AIDEVOPS_GH_EXACT_QUOTA_CAPTURE"* ]] || ok=1
+	[[ "$captured_plist" == *"<string>1</string>"* ]] || ok=1
+
+	HOME="$original_home"
+	print_result "merge_scheduler: injects overrides for dedicated merge label" "$ok" \
+		"captured plist was: $captured_plist"
+	return 0
+}
+
 test_xml_structure_valid() {
 	# Check that the output is parseable XML when embedded in a minimal plist.
 	# Only runs if xmllint is available.
@@ -273,6 +312,7 @@ main() {
 	test_malformed_json_logs_warn_and_emits_nothing
 	test_default_path_prefers_stable_config_with_legacy_fallback
 	test_logging_contains_keys_not_values
+	test_merge_scheduler_injects_label_overrides
 	test_xml_structure_valid
 
 	echo ""
