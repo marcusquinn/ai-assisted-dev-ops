@@ -43,6 +43,7 @@ _HRW_REASON_CLOSED_UNMERGED="worker_closed_unmerged_pr"
 _HRW_REASON_UNVERIFIED_HANDOFF="worker_post_pr_handoff_unverified"
 _HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED="worker_worktree_continuation_state_rejected"
 _HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION="worker_worktree_owner_concurrent_mutation"
+_HRW_REASON_OWNERSHIP_LOST="worker_ownership_lost"
 _HRW_EVENT_FAILED="worker.failed"
 _HRW_EVENT_DEFERRED="worker.deferred"
 _HRW_NMR_LABEL="needs-maintainer-review"
@@ -1833,7 +1834,15 @@ _cmd_run_finish() {
 	# (dispatch-dedup-helper.sh:1044), so this is safe — if a worker DID
 	# create a PR with Closes, the PR-based dedup signal still wins and the
 	# CLAIM_RELEASED comment is redundant operational metadata.
-	if [[ "$ledger_status" == "$_HRW_STATUS_FAIL" ]]; then
+	if [[ "$ledger_status" == "$_HRW_STATUS_FAIL" && "${_run_failure_reason:-}" == "$_HRW_REASON_OWNERSHIP_LOST" ]]; then
+		# Another owner took the issue after dispatch. Terminalize only this
+		# worker's lease; do not run recovery or mutate the new owner's issue state.
+		_hrw_release_dispatch_claim "$session_key" "$_HRW_REASON_OWNERSHIP_LOST"
+		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_FAILED"
+		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_FAILED"
+		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_FAILED"
+		_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_REASON_OWNERSHIP_LOST"
+	elif [[ "$ledger_status" == "$_HRW_STATUS_FAIL" ]]; then
 		_hrw_finish_failed_run "$session_key" "$work_dir" "$external_terminal_confirmed"
 	elif [[ "$ledger_status" == "rate_limit_fast" ]]; then
 		_hrw_finish_rate_limit_fast_run "$session_key"

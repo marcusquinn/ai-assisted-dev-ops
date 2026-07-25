@@ -1059,7 +1059,7 @@ _guard_no_active_assignment_before_claim() {
 		return 0
 	fi
 
-	local dedup_helper="${DISPATCH_CLAIM_HELPER_DIR}/dispatch-dedup-helper.sh"
+	local dedup_helper="${DISPATCH_ASSIGNMENT_GUARD_HELPER:-${DISPATCH_CLAIM_HELPER_DIR}/dispatch-dedup-helper.sh}"
 	if [[ ! -x "$dedup_helper" ]]; then
 		printf 'CLAIM_BLOCKED: assignment_guard_unavailable issue=#%s repo=%s helper=%s\n' \
 			"$issue_number" "$repo_slug" "$dedup_helper"
@@ -1068,6 +1068,37 @@ _guard_no_active_assignment_before_claim() {
 
 	local guard_output="" guard_rc=0
 	guard_output=$("$dedup_helper" is-assigned "$issue_number" "$repo_slug" "$runner" 2>&1) || guard_rc=$?
+	case "$guard_rc" in
+	0)
+		printf 'CLAIM_BLOCKED: active_assignment issue=#%s repo=%s runner=%s signal=%s\n' \
+			"$issue_number" "$repo_slug" "$runner" "$guard_output"
+		return 1
+		;;
+	1)
+		return 0
+		;;
+	*)
+		printf 'CLAIM_BLOCKED: assignment_guard_error issue=#%s repo=%s runner=%s rc=%s signal=%s\n' \
+			"$issue_number" "$repo_slug" "$runner" "$guard_rc" "$guard_output"
+		return 1
+		;;
+	esac
+}
+
+_guard_no_active_assignment_read_only() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local runner="$3"
+	local dedup_helper="${DISPATCH_ASSIGNMENT_GUARD_HELPER:-${DISPATCH_CLAIM_HELPER_DIR}/dispatch-dedup-helper.sh}"
+	if [[ ! -x "$dedup_helper" ]]; then
+		printf 'CLAIM_BLOCKED: assignment_guard_unavailable issue=#%s repo=%s helper=%s\n' \
+			"$issue_number" "$repo_slug" "$dedup_helper"
+		return 1
+	fi
+
+	local guard_output=""
+	local guard_rc=0
+	guard_output=$("$dedup_helper" is-assigned-read-only "$issue_number" "$repo_slug" "$runner" 2>&1) || guard_rc=$?
 	case "$guard_rc" in
 	0)
 		printf 'CLAIM_BLOCKED: active_assignment issue=#%s repo=%s runner=%s signal=%s\n' \
@@ -1201,8 +1232,76 @@ cmd_claim() {
 		return 2
 	}
 
-	_resolve_claim_race_result "$issue_number" "$repo_slug" "$runner" "$nonce" "$comment_id" "$claims"
+	local race_rc=0
+	_resolve_claim_race_result "$issue_number" "$repo_slug" "$runner" "$nonce" "$comment_id" "$claims" || race_rc=$?
+	[[ "$race_rc" -eq 0 ]] || return "$race_rc"
+
+	# The interactive owner can arrive during the consensus window after the
+	# pre-claim assignment guard. Revalidate the live assignment before handing
+	# the winning lease back to the dispatcher, and delete the lease on loss.
+	if [[ "${AIDEVOPS_TEST_MODE:-}" != "1" || -n "${AIDEVOPS_FORCE_CLAIM_ASSIGNMENT_GUARD:-}" ]]; then
+		if ! _guard_no_active_assignment_read_only "$issue_number" "$repo_slug" "$runner"; then
+			_delete_losing_claim_comment "$repo_slug" "$comment_id"
+			printf 'CLAIM_REVOKED: interactive_or_active_assignment_after_consensus issue=#%s repo=%s runner=%s comment_id=%s\n' \
+				"$issue_number" "$repo_slug" "$runner" "$comment_id"
+			return 1
+		fi
+	fi
+	return 0
+}
+
+cmd_guard_ownership() {
+	local issue_number="${1:-}"
+	local repo_slug="${2:-}"
+	local runner_login="${3:-}"
+	if [[ ! "$issue_number" =~ ^[0-9]+$ || -z "$repo_slug" ]]; then
+		return 2
+	fi
+	local runner=""
+	runner=$(_resolve_runner "$runner_login") || runner="unknown"
+	_guard_no_active_assignment_read_only "$issue_number" "$repo_slug" "$runner"
 	return $?
+}
+
+cmd_verify_worker_ownership() {
+	local issue_number="${1:-}"
+	local repo_slug="${2:-}"
+	local runner="${3:-}"
+	if [[ ! "$issue_number" =~ ^[0-9]+$ || -z "$repo_slug" || -z "$runner" ]]; then
+		return 2
+	fi
+
+	local issue_json=""
+	if ! issue_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
+		--json state,labels,assignees 2>/dev/null); then
+		printf 'WORKER_OWNERSHIP_UNKNOWN: issue=#%s repo=%s runner=%s\n' \
+			"$issue_number" "$repo_slug" "$runner"
+		return 2
+	fi
+	if printf '%s' "$issue_json" | jq -e --arg runner "$runner" '
+		(.state == "OPEN") and
+		([.labels[].name] as $labels |
+			(($labels | index("status:queued")) != null or
+			 ($labels | index("status:in-progress")) != null) and
+			(($labels | index("status:in-review")) == null) and
+			(($labels | index("no-auto-dispatch")) == null)) and
+		((.assignees | length) == 1) and
+		(.assignees[0].login == $runner)
+	' >/dev/null 2>&1; then
+		printf 'WORKER_OWNERSHIP_VALID: issue=#%s repo=%s runner=%s\n' \
+			"$issue_number" "$repo_slug" "$runner"
+		return 0
+	fi
+
+	local ownership_summary=""
+	ownership_summary=$(printf '%s' "$issue_json" | jq -c '{
+		state: (.state // "unknown"),
+		labels: [.labels[].name],
+		assignees: [.assignees[].login]
+	}' 2>/dev/null) || ownership_summary="unparseable"
+	printf 'WORKER_OWNERSHIP_LOST: issue=#%s repo=%s runner=%s state=%s\n' \
+		"$issue_number" "$repo_slug" "$runner" "$ownership_summary"
+	return 1
 }
 
 cmd_transition() {
@@ -1371,6 +1470,17 @@ Usage:
     Exit 1 = no active claim (safe to proceed to claim step)
     Exit 2 = coordination error (fail closed; do NOT dispatch)
 
+  dispatch-claim-helper.sh guard-ownership <issue-number> <repo-slug> [runner-login]
+    Read-only final assignment fence after claim consensus.
+    Exit 0 = no active assignment (safe to continue)
+    Exit 1 = interactive/active assignment exists (do NOT assign or spawn)
+
+  dispatch-claim-helper.sh verify-worker-ownership <issue-number> <repo-slug> <runner-login>
+    Verify the live worker runtime still owns the issue exclusively.
+    Exit 0 = OPEN + queued/in-progress + sole expected assignee
+    Exit 1 = ownership changed (terminalize worker lease)
+    Exit 2 = metadata unavailable or invalid (fail closed)
+
   dispatch-claim-helper.sh help
     Show this help.
 
@@ -1414,6 +1524,12 @@ main() {
 		;;
 	check)
 		cmd_check "$@"
+		;;
+	guard-ownership)
+		cmd_guard_ownership "$@"
+		;;
+	verify-worker-ownership)
+		cmd_verify_worker_ownership "$@"
 		;;
 	transition)
 		cmd_transition "$@"

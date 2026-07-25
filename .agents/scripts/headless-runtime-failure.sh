@@ -527,6 +527,10 @@ ${machine_readable_part}
 		return 1
 	fi
 	print_info "Released claim on #${issue_number} (reason: ${reason})"
+	if [[ "$reason" == "${_HRW_REASON_OWNERSHIP_LOST:-worker_ownership_lost}" ]]; then
+		print_info "Preserving live issue ownership for #${issue_number} after worker ownership loss"
+		return 0
+	fi
 
 	# t2420: clear active-lifecycle status labels + worker assignment so the
 	# pulse's combined-signal dedup guard (t1996) doesn't treat the issue

@@ -698,6 +698,66 @@ test_worker_worktree_claim_classifies_unreclaimed_live_owner() {
 	return 0
 }
 
+test_worker_runtime_ownership_fence_rejects_takeover() {
+	local ownership_helper="${TEST_ROOT}/runtime-ownership-helper.sh"
+	local calls_file="${TEST_ROOT}/runtime-ownership-calls"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${RUNTIME_OWNERSHIP_CALLS:?}"
+printf 'WORKER_OWNERSHIP_LOST: interactive takeover\n'
+exit 1
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export RUNTIME_OWNERSHIP_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="22438"
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_GITHUB_LOGIN="expected-runner"
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	local calls=""
+	calls=$(<"$calls_file")
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER RUNTIME_OWNERSHIP_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_GITHUB_LOGIN 2>/dev/null || true
+
+	if [[ "$status" -eq 1 && "$calls" == "verify-worker-ownership 22438 owner/repo expected-runner" && \
+		"$output" == *"worker ownership unavailable"* ]]; then
+		print_result "worker runtime ownership fence rejects interactive takeover" 0
+		return 0
+	fi
+	print_result "worker runtime ownership fence rejects interactive takeover" 1 \
+		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	return 0
+}
+
+test_worker_ownership_loss_terminalizes_without_recovery() {
+	local output=""
+	output=$(
+		_headless_private_workload_enabled() { return 1; }
+		_hrw_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
+		_hrw_finish_failed_run() { printf 'unexpected-recovery\n'; return 0; }
+		_hrw_record_terminal_outcome() { printf 'outcome=%s:%s\n' "$2" "$3"; return 0; }
+		_emit_worker_runtime_event() { return 0; }
+		_hrw_record_reconciled_outcome() { return 0; }
+		_hrw_finish_cleanup() { printf 'cleanup=%s\n' "$2"; return 0; }
+		_run_failure_reason="$_HRW_REASON_OWNERSHIP_LOST"
+		_run_result_label="$_HRW_REASON_OWNERSHIP_LOST"
+		_cmd_run_finish "issue-22438" "$_HRW_STATUS_FAIL" "${TEST_ROOT}/ownership-worktree"
+	)
+
+	if [[ "$output" == *"release=${_HRW_REASON_OWNERSHIP_LOST}"* && \
+		"$output" == *"outcome=${_HRW_TELEMETRY_FAILED}:${_HRW_REASON_OWNERSHIP_LOST}"* && \
+		"$output" == *"cleanup=${_HRW_STATUS_FAIL}"* && "$output" != *"unexpected-recovery"* ]]; then
+		print_result "ownership loss terminalizes lease without worker recovery" 0
+		return 0
+	fi
+	print_result "ownership loss terminalizes lease without worker recovery" 1 "output=${output:-<empty>}"
+	return 0
+}
+
 test_runtime_launch_marker_precedes_invocation() {
 	local marker_file="${TEST_ROOT}/runtime-launch-marker.log"
 	_WORKER_RUNTIME_LAUNCH_STARTED=0
@@ -705,16 +765,19 @@ test_runtime_launch_marker_precedes_invocation() {
 	local output=""
 	output=$(<"$marker_file")
 
-	local marker_line="" invoke_line=""
+	local ownership_line="" marker_line="" invoke_line=""
+	# shellcheck disable=SC2016 # Match the literal caller variables in source.
+	ownership_line=$(grep -n '"$role" == "worker".*_hrw_verify_dispatch_ownership' "$HELPER_SCRIPT" | cut -d: -f1)
 	# shellcheck disable=SC2016 # Match the literal caller variables in source.
 	marker_line=$(grep -n '_hrw_mark_runtime_launch_started "$session_key" "$runtime"' "$HELPER_SCRIPT" | cut -d: -f1)
 	invoke_line=$(grep -n 'claude) _invoke_claude' "$HELPER_SCRIPT" | cut -d: -f1)
 	if [[ "$_WORKER_RUNTIME_LAUNCH_STARTED" -eq 1 && "$output" == *"pre_runtime_launch session=issue-28060 runtime=opencode"* &&
-		"$marker_line" =~ ^[0-9]+$ && "$invoke_line" =~ ^[0-9]+$ && "$marker_line" -lt "$invoke_line" ]]; then
+		"$ownership_line" =~ ^[0-9]+$ && "$marker_line" =~ ^[0-9]+$ && "$invoke_line" =~ ^[0-9]+$ &&
+		"$ownership_line" -lt "$marker_line" && "$marker_line" -lt "$invoke_line" ]]; then
 		print_result "runtime launch marker is emitted immediately before invocation" 0
 	else
 		print_result "runtime launch marker is emitted immediately before invocation" 1 \
-			"started=$_WORKER_RUNTIME_LAUNCH_STARTED marker_line=$marker_line invoke_line=$invoke_line output=$output"
+			"started=$_WORKER_RUNTIME_LAUNCH_STARTED ownership_line=$ownership_line marker_line=$marker_line invoke_line=$invoke_line output=$output"
 	fi
 	_WORKER_RUNTIME_LAUNCH_STARTED=0
 	return 0
@@ -872,4 +935,3 @@ test_deleted_launch_cwd_recovers_to_work_dir() {
 		"status=$status output=${output:-<empty>}"
 	return 0
 }
-

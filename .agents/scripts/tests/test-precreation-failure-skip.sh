@@ -623,13 +623,21 @@ STUB_REFRESH_STATE="OPEN"
 # =============================================================================
 # Tests 8-12: queued ownership starts only at the final runtime boundary
 # =============================================================================
-ORCHESTRATOR_CALLS_FILE="${TMP}/orchestrator-calls.txt"
+export ORCHESTRATOR_CALLS_FILE="${TMP}/orchestrator-calls.txt"
 ORCHESTRATOR_WORKTREE="${TMP}/orchestrator-worktree"
 mkdir -p "$ORCHESTRATOR_WORKTREE"
 STUB_HOLD_RC=1
 STUB_PRECREATE_RC=0
 STUB_FINAL_GATES_RC=0
 STUB_ASSIGN_RC=0
+export STUB_FINAL_OWNERSHIP_RC=0
+
+cat >"${TMP}/dispatch-claim-helper.sh" <<'STUB_CLAIM_EOF'
+#!/usr/bin/env bash
+printf 'ownership-guard\n' >>"${ORCHESTRATOR_CALLS_FILE:?}"
+exit "${STUB_FINAL_OWNERSHIP_RC:-0}"
+STUB_CLAIM_EOF
+chmod +x "${TMP}/dispatch-claim-helper.sh"
 
 _dlw_comment_bloat_metrics() { printf '0\t0\t0\t0\n'; return 0; }
 _dlw_hold_repeated_zero_output() {
@@ -687,7 +695,7 @@ else
 	fail "assignment failure returns explicit no-op rc=2" "got rc=$assignment_failure_rc"
 fi
 actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
-if [[ "$actual_calls" == "hold precreate final-gates prompt assign " && ! -s "${TMP}/setsid-calls.txt" ]]; then
+if [[ "$actual_calls" == "hold precreate final-gates prompt ownership-guard assign " && ! -s "${TMP}/setsid-calls.txt" ]]; then
 	pass "assignment failure occurs at final boundary before lock and spawn"
 else
 	fail "assignment failure occurs at final boundary before lock and spawn" "calls='$actual_calls'"
@@ -770,6 +778,29 @@ else
 fi
 STUB_FINAL_GATES_RC=0
 
+# An interactive takeover after worktree precreation must stop before queued
+# assignment, issue lock, or runtime spawn, without removing the worktree.
+: >"$ORCHESTRATOR_CALLS_FILE"
+: >"${TMP}/setsid-calls.txt"
+STUB_FINAL_OWNERSHIP_RC=1
+ownership_fence_rc=0
+_dispatch_launch_worker "77783" "owner/repo" "test-dispatch" "Test Issue" \
+	"testuser" "$FAKE_REPO" "test prompt" "session-key-ownership-fence" "" "{}" || ownership_fence_rc=$?
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$ownership_fence_rc" -eq 2 && "$actual_calls" == "hold precreate final-gates prompt ownership-guard " && \
+	! -s "${TMP}/setsid-calls.txt" && -d "$ORCHESTRATOR_WORKTREE" ]]; then
+	pass "final ownership fence preserves worktree and blocks assignment, lock, and spawn"
+else
+	fail "final ownership fence preserves worktree and blocks assignment, lock, and spawn" \
+		"rc=$ownership_fence_rc calls='$actual_calls' worktree=$([[ -d "$ORCHESTRATOR_WORKTREE" ]] && printf present || printf missing)"
+fi
+if [[ "${_DLW_LAST_PRE_RUNTIME_FAILURE:-}" == "final_ownership_fence" ]]; then
+	pass "final ownership fence records issue-correlated pre-runtime failure"
+else
+	fail "final ownership fence records issue-correlated pre-runtime failure" "reason=${_DLW_LAST_PRE_RUNTIME_FAILURE:-unset}"
+fi
+STUB_FINAL_OWNERSHIP_RC=0
+
 # The successful path publishes ownership and locks only immediately before spawn.
 : >"$ORCHESTRATOR_CALLS_FILE"
 : >"${TMP}/setsid-calls.txt"
@@ -777,7 +808,7 @@ success_rc=0
 _dispatch_launch_worker "77782" "owner/repo" "test-dispatch" "Test Issue" \
 	"testuser" "$FAKE_REPO" "test prompt" "session-key-success" "" "{}" || success_rc=$?
 actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
-if [[ "$success_rc" -eq 0 && "$actual_calls" == "hold precreate final-gates prompt assign lock spawn " && -s "${TMP}/setsid-calls.txt" ]]; then
+if [[ "$success_rc" -eq 0 && "$actual_calls" == "hold precreate final-gates prompt ownership-guard assign lock spawn " && -s "${TMP}/setsid-calls.txt" ]]; then
 	pass "successful launch acquires queued ownership at final boundary"
 else
 	fail "successful launch acquires queued ownership at final boundary" "rc=$success_rc calls='$actual_calls'"

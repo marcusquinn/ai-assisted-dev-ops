@@ -712,41 +712,81 @@ _recover_stale_assignment() {
 
 #######################################
 # t2132: Resolve the effective stale threshold for an issue.
-# Interactive sessions (origin:interactive label) use a longer threshold
-# because human-driven sessions routinely go 30-60+ minutes between actions.
+# Interactive sessions use a longer threshold because human-driven sessions
+# routinely go 30-60+ minutes between actions. Creation provenance remains one
+# signal, but a recent interactive claim paired with live in-review ownership is
+# authoritative even when immutable provenance is origin:worker.
 #
 # t2153 (GH#19424): Also returns the issue's createdAt timestamp so the
 # caller can apply the age-floor guard. A single `gh issue view --json
 # labels,createdAt,updatedAt` round-trip serves the age-floor and issue-level
 # timeline liveness checks — no extra API call.
 #
-# Args: $1 = issue number, $2 = repo slug
+# Args: $1 = issue number, $2 = repo slug, $3 = normalized comments JSON,
+#       $4 = current epoch
 # Stdout: four lines —
 #   1. "is_interactive" ("true"/"false")
 #   2. threshold (seconds)
-#   3. createdAt (ISO 8601, or empty on API failure)
-#   4. updatedAt (ISO 8601, or empty on API failure)
+#   3. createdAt (ISO 8601, or empty when absent)
+#   4. updatedAt (ISO 8601, or empty when absent)
 #######################################
+_stale_assignment_has_live_interactive_claim() {
+	local issue_meta_json="$1"
+	local comments_json="$2"
+	local now_epoch="$3"
+	local claim_record=""
+	claim_record=$(printf '%s' "$comments_json" | jq -r '
+		[.[] | select((.body_start // "") | contains("Interactive session claimed"))]
+		| first
+		| if . == null then empty else [.created_at, .author] | @tsv end
+	' 2>/dev/null) || return 1
+	[[ -n "$claim_record" ]] || return 1
+
+	local claim_timestamp=""
+	local claim_author=""
+	IFS=$'\t' read -r claim_timestamp claim_author <<<"$claim_record"
+	[[ -n "$claim_timestamp" && -n "$claim_author" ]] || return 1
+	local claim_epoch=0
+	claim_epoch=$(_ts_to_epoch "$claim_timestamp")
+	[[ "$claim_epoch" -gt 0 ]] || return 1
+	local claim_age=$((now_epoch - claim_epoch))
+	if [[ "$claim_age" -lt 0 || "$claim_age" -ge "$INTERACTIVE_STALE_THRESHOLD_SECONDS" ]]; then
+		return 1
+	fi
+
+	printf '%s' "$issue_meta_json" | jq -e --arg claimant "$claim_author" '
+		(.state | ascii_downcase) == "open" and
+		([.labels[]?.name] | index("status:in-review") != null) and
+		([.assignees[]?.login] | index($claimant) != null)
+	' >/dev/null 2>&1 || return 1
+	return 0
+}
+
 _resolve_stale_threshold() {
 	local issue_number="$1"
 	local repo_slug="$2"
+	local comments_json="${3:-[]}"
+	local now_epoch="${4:-}"
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch=$(date +%s)
 	local _issue_meta_json _meta_rc=0
 	_issue_meta_json=$(gh_issue_view "$issue_number" --repo "$repo_slug" \
-		--json labels,createdAt,updatedAt 2>/dev/null) || _meta_rc=$?
+		--json state,labels,assignees,createdAt,updatedAt 2>/dev/null) || _meta_rc=$?
+	if [[ "$_meta_rc" -ne 0 || -z "$_issue_meta_json" ]]; then
+		return 1
+	fi
 
 	local is_interactive='false'
 	local threshold="$STALE_ASSIGNMENT_THRESHOLD_SECONDS"
 	local created_at=''
 	local updated_at=''
 
-	if [[ "$_meta_rc" -eq 0 && -n "$_issue_meta_json" ]]; then
-		if printf '%s' "$_issue_meta_json" | jq -e '.labels | map(.name) | index("origin:interactive")' >/dev/null 2>&1; then
-			is_interactive='true'
-			threshold="$INTERACTIVE_STALE_THRESHOLD_SECONDS"
-		fi
-		created_at=$(printf '%s' "$_issue_meta_json" | jq -r '.createdAt // empty' 2>/dev/null) || created_at=''
-		updated_at=$(printf '%s' "$_issue_meta_json" | jq -r '.updatedAt // empty' 2>/dev/null) || updated_at=''
+	if printf '%s' "$_issue_meta_json" | jq -e '.labels | map(.name) | index("origin:interactive")' >/dev/null 2>&1 ||
+		_stale_assignment_has_live_interactive_claim "$_issue_meta_json" "$comments_json" "$now_epoch"; then
+		is_interactive='true'
+		threshold="$INTERACTIVE_STALE_THRESHOLD_SECONDS"
 	fi
+	created_at=$(printf '%s' "$_issue_meta_json" | jq -r '.createdAt // empty' 2>/dev/null) || created_at=''
+	updated_at=$(printf '%s' "$_issue_meta_json" | jq -r '.updatedAt // empty' 2>/dev/null) || updated_at=''
 	printf '%s\n%s\n%s\n%s\n' "$is_interactive" "$threshold" "$created_at" "$updated_at"
 	return 0
 }
@@ -891,18 +931,34 @@ _stale_assignment_has_recent_open_pr_activity() {
 	return 1
 }
 
+_stale_assignment_load_threshold_context() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local comments_json="$3"
+	local now_epoch="$4"
+	local threshold_output=""
+	if ! threshold_output=$(_resolve_stale_threshold "$issue_number" "$repo_slug" "$comments_json" "$now_epoch"); then
+		return 1
+	fi
+	local -a threshold_fields=()
+	local threshold_line=""
+	while IFS= read -r threshold_line; do
+		threshold_fields[${#threshold_fields[@]}]="$threshold_line"
+	done <<<"$threshold_output"
+	_STALE_CONTEXT_INTERACTIVE="${threshold_fields[0]:-false}"
+	_STALE_CONTEXT_THRESHOLD="${threshold_fields[1]:-$STALE_ASSIGNMENT_THRESHOLD_SECONDS}"
+	_STALE_CONTEXT_CREATED_AT="${threshold_fields[2]:-}"
+	_STALE_CONTEXT_UPDATED_AT="${threshold_fields[3]:-}"
+	return 0
+}
+
 _is_stale_assignment() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local blocking_assignees="$3"
 
-	# t2132+t2153: resolve interactive flag, threshold, issue createdAt/updatedAt.
-	local is_interactive effective_threshold issue_created_at issue_updated_at now_epoch
-	read -r is_interactive effective_threshold issue_created_at issue_updated_at \
-		< <(_resolve_stale_threshold "$issue_number" "$repo_slug" | tr '\n' ' ')
+	local now_epoch
 	now_epoch=$(date +%s)
-	# t2153 age-floor guard: issue cannot be stale before it could signal.
-	_issue_too_young_for_staleness "$issue_created_at" "$effective_threshold" "$now_epoch" && return 1
 
 	# Fetch issue comments to find the most recent dispatch claim and
 	# overall activity timestamp. Use --paginate --slurp so gh combines all
@@ -918,6 +974,19 @@ _is_stale_assignment() {
 		# keep the existing assignment protection for this pulse cycle.
 		return 1
 	fi
+
+	# t2132+t2153: resolve interactive ownership after comments are available so
+	# origin:worker issues can still honor a live interactive takeover. Metadata
+	# lookup failures fail closed instead of silently falling back to 600 seconds.
+	if ! _stale_assignment_load_threshold_context "$issue_number" "$repo_slug" "$comments_json" "$now_epoch"; then
+		return 1
+	fi
+	local is_interactive="$_STALE_CONTEXT_INTERACTIVE"
+	local effective_threshold="$_STALE_CONTEXT_THRESHOLD"
+	local issue_created_at="$_STALE_CONTEXT_CREATED_AT"
+	local issue_updated_at="$_STALE_CONTEXT_UPDATED_AT"
+	# t2153 age-floor guard: issue cannot be stale before it could signal.
+	_issue_too_young_for_staleness "$issue_created_at" "$effective_threshold" "$now_epoch" && return 1
 
 	# t2132 Fix D: Find the most recent dispatch/claim comment.
 	# Matches worker dispatch patterns AND interactive session claim pattern.

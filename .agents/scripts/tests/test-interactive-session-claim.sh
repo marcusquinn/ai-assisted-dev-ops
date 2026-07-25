@@ -254,6 +254,37 @@ else
 	print_result "claim idempotent on re-call" 1 "(rc=$claim2_rc)"
 fi
 
+# An initial pathless refresh must not erase the verified worktree from the
+# existing stamp. This is the first half of every repeated issue-start call.
+_isc_cmd_claim 18738 testowner/testrepo --implementing --defer-comment >/dev/null 2>&1
+preserved_worktree=$(jq -r '.worktree_path // empty' "$STAMP_FILE" 2>/dev/null)
+if [[ "$preserved_worktree" == "/tmp/wt-fake" ]]; then
+	print_result "pathless idempotent claim preserves verified worktree" 0
+else
+	print_result "pathless idempotent claim preserves verified worktree" 1 "(worktree=$preserved_worktree)"
+fi
+
+# Canonical-rooted interactive start defers its one audit comment until the
+# second claim supplies the linked worktree. Repeating both phases remains
+# idempotent and does not add another ownership comment.
+: >"$STUB_LOG"
+STAGED_STAMP_FILE="${HOME}/.aidevops/.agent-workspace/interactive-claims/testowner-testrepo-18739.json"
+export STUB_ISSUE_HAS_IN_REVIEW=0
+_isc_cmd_claim 18739 testowner/testrepo --implementing --defer-comment >/dev/null 2>&1
+export STUB_ISSUE_HAS_IN_REVIEW=1
+_isc_cmd_claim 18739 testowner/testrepo --implementing --worktree /tmp/wt-linked >/dev/null 2>&1
+_isc_cmd_claim 18739 testowner/testrepo --implementing --defer-comment >/dev/null 2>&1
+_isc_cmd_claim 18739 testowner/testrepo --implementing --worktree /tmp/wt-linked >/dev/null 2>&1
+staged_comment_count=$(grep -c '^gh issue comment ' "$STUB_LOG" 2>/dev/null || true)
+staged_worktree=$(jq -r '.worktree_path // empty' "$STAGED_STAMP_FILE" 2>/dev/null)
+if [[ "$staged_comment_count" == "1" && "$staged_worktree" == "/tmp/wt-linked" ]]; then
+	print_result "deferred worktree claim posts one idempotent ownership comment" 0
+else
+	print_result "deferred worktree claim posts one idempotent ownership comment" 1 \
+		"(comments=$staged_comment_count worktree=$staged_worktree)"
+fi
+_isc_delete_stamp 18739 testowner/testrepo
+
 # =============================================================================
 # Test 3 — release deletes the stamp
 # =============================================================================

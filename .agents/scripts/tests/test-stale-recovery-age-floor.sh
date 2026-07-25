@@ -242,6 +242,34 @@ else
 		"(rc=$rc output='$output')"
 fi
 
+# =============================================================================
+# Test 6 — Immutable worker provenance plus a live interactive claim uses the
+# interactive threshold. The claim is 13 minutes old: stale at 600 seconds but
+# live at 7200 seconds. This reproduces the #28591 ownership shape.
+# =============================================================================
+old_issue_iso=$(iso_minus_seconds 10800)
+interactive_claim_iso=$(iso_minus_seconds 780)
+live_interactive_comments="[[{\"created_at\":\"${interactive_claim_iso}\",\"user\":{\"login\":\"other-runner\"},\"body\":\"> Interactive session claimed by @other-runner in linked-worktree.\"}]]"
+write_stub_gh_age_floor "{\"state\":\"OPEN\",\"assignees\":[{\"login\":\"other-runner\"}],\"labels\":[{\"name\":\"origin:worker\"},{\"name\":\"auto-dispatch\"},{\"name\":\"status:in-review\"}],\"createdAt\":\"${old_issue_iso}\",\"updatedAt\":\"${old_issue_iso}\"}" "$live_interactive_comments"
+run_is_assigned 99706 "owner/repo"
+if [[ "$rc" -eq 0 && "$output" == *"ASSIGNED"* && "$output" != *"WORKER_SUPERSEDED"* ]]; then
+	print_result "origin:worker live interactive claim beyond 600s remains protected" 0
+else
+	print_result "origin:worker live interactive claim beyond 600s remains protected" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# The comment alone is not a lock: without compatible in-review state, worker
+# provenance retains the 600-second policy and stale recovery still proceeds.
+write_stub_gh_age_floor "{\"state\":\"OPEN\",\"assignees\":[{\"login\":\"other-runner\"}],\"labels\":[{\"name\":\"origin:worker\"},{\"name\":\"auto-dispatch\"},{\"name\":\"status:available\"}],\"createdAt\":\"${old_issue_iso}\",\"updatedAt\":\"${old_issue_iso}\"}" "$live_interactive_comments"
+run_is_assigned 99707 "owner/repo"
+if [[ "$rc" -eq 1 && "$output" != *"ASSIGNED"* ]]; then
+	print_result "interactive comment without live ownership retains worker stale policy" 0
+else
+	print_result "interactive comment without live ownership retains worker stale policy" 1 \
+		"(rc=$rc output='$output')"
+fi
+
 export PATH="$OLD_PATH"
 
 # =============================================================================

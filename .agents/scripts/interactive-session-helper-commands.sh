@@ -93,6 +93,8 @@ _isc_claim_closed_issue_guard() {
 #                      Without this flag, the helper refuses to claim
 #                      auto-dispatch issues so the pulse can dispatch a
 #                      worker (see auto-dispatch carve-out below).
+#   [--defer-comment] = defer the audit comment until a worktree refresh
+#                       supplies the linked path.
 #
 # Auto-dispatch carve-out (GH#20946):
 #   Calling claim on an `auto-dispatch`-tagged issue WITHOUT `--implementing`
@@ -120,8 +122,53 @@ _isc_claim_closed_issue_guard() {
 #     errors are swallowed so the caller's interactive workflow never stalls.
 #
 # Exit: 0 always (warn-and-continue contract).
+_isc_existing_stamp_worktree() {
+	local issue="$1"
+	local slug="$2"
+	local stamp_file=""
+	stamp_file=$(_isc_stamp_path "$issue" "$slug")
+	[[ -f "$stamp_file" ]] || return 0
+	jq -r '.worktree_path // empty' "$stamp_file" 2>/dev/null || true
+	return 0
+}
+
+_isc_refresh_existing_claim() {
+	local issue="$1"
+	local slug="$2"
+	local worktree_path="$3"
+	local user="$4"
+	local defer_comment="$5"
+	local existing_worktree_path=""
+	existing_worktree_path=$(_isc_existing_stamp_worktree "$issue" "$slug")
+	local refreshed_worktree_path="$worktree_path"
+	[[ -n "$refreshed_worktree_path" ]] || refreshed_worktree_path="$existing_worktree_path"
+	_isc_write_stamp "$issue" "$slug" "$refreshed_worktree_path" "$user"
+	if [[ "$defer_comment" -eq 0 && -n "$worktree_path" && -z "$existing_worktree_path" ]]; then
+		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
+	fi
+	return 0
+}
+
+_isc_apply_new_claim() {
+	local issue="$1"
+	local slug="$2"
+	local worktree_path="$3"
+	local user="$4"
+	local defer_comment="$5"
+	if set_issue_status "$issue" "$slug" "in-review" --add-assignee "$user" >/dev/null 2>&1; then
+		_isc_info "claim: #$issue in $slug → status:in-review + assigned $user"
+		_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
+		if [[ "$defer_comment" -eq 0 || -n "$worktree_path" ]]; then
+			_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
+		fi
+		return 0
+	fi
+	_isc_warn "claim: gh failed on #$issue — continuing without lock (collision is harmless)"
+	return 0
+}
+
 _isc_cmd_claim() {
-	local issue="" slug="" worktree_path="" implementing=0
+	local issue="" slug="" worktree_path="" implementing=0 defer_comment=0
 
 	# Parse positional + flags
 	while [[ $# -gt 0 ]]; do
@@ -137,6 +184,10 @@ _isc_cmd_claim() {
 			;;
 		--implementing)
 			implementing=1
+			shift
+			;;
+		--defer-comment)
+			defer_comment=1
 			shift
 			;;
 		-h | --help)
@@ -158,7 +209,7 @@ _isc_cmd_claim() {
 
 	if [[ -z "$issue" || -z "$slug" ]]; then
 		_isc_err "claim: <issue> and <slug> are required"
-		_isc_err "usage: interactive-session-helper.sh claim <issue> <slug> [--worktree PATH] [--implementing]"
+		_isc_err "usage: interactive-session-helper.sh claim <issue> <slug> [--worktree PATH] [--implementing] [--defer-comment]"
 		return 2
 	fi
 
@@ -188,7 +239,7 @@ _isc_cmd_claim() {
 	# for the full set -e foot-gun (GH#18770/GH#18784/GH#18786 sibling class).
 	if _isc_has_in_review "$issue" "$slug"; then
 		_isc_info "claim: #$issue already has status:in-review — refreshing stamp"
-		_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
+		_isc_refresh_existing_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment"
 		return 0
 	fi
 
@@ -205,20 +256,9 @@ _isc_cmd_claim() {
 		return 0
 	fi
 
-	# Transition to in-review with atomic self-assign. Uses set_issue_status
-	# from shared-constants.sh which removes all sibling core status labels
-	# in the same gh call — preserves the t2033 mutual-exclusivity invariant.
-	if set_issue_status "$issue" "$slug" "in-review" --add-assignee "$user" >/dev/null 2>&1; then
-		_isc_info "claim: #$issue in $slug → status:in-review + assigned $user"
-		_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
-		# Post a claim comment for audit trail visibility (like worker dispatch
-		# comments but for interactive sessions). Best-effort — swallow errors.
-		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
-		return 0
-	fi
-
-	# Fallback: gh failed. Warn but don't block the caller.
-	_isc_warn "claim: gh failed on #$issue — continuing without lock (collision is harmless)"
+	# Transition to in-review with atomic self-assign. The helper preserves the
+	# deferred-comment contract for canonical-rooted issue starts.
+	_isc_apply_new_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment"
 	return 0
 }
 

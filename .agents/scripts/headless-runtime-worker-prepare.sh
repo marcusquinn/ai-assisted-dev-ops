@@ -47,6 +47,34 @@ _hrw_mark_runtime_launch_started() {
 	return 0
 }
 
+#######################################
+# Verify that an issue-scoped worker still has the exact GitHub ownership
+# granted at dispatch: open issue, queued/in-progress status, sole expected
+# assignee, and no interactive hold. This helper is read-only and fail-closed.
+#######################################
+_hrw_verify_dispatch_ownership() {
+	local issue_number="${WORKER_ISSUE_NUMBER:-}"
+	[[ -n "$issue_number" ]] || return 0
+	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
+	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
+	local ownership_helper="${HEADLESS_RUNTIME_OWNERSHIP_HELPER:-${SCRIPT_DIR}/dispatch-claim-helper.sh}"
+	if [[ -z "$repo_slug" || -z "$runner_login" || ! -x "$ownership_helper" ]]; then
+		print_error "[ownership-fence] incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} runner=${runner_login:-missing}"
+		return 1
+	fi
+
+	local ownership_output=""
+	local ownership_rc=0
+	ownership_output=$("$ownership_helper" verify-worker-ownership \
+		"$issue_number" "$repo_slug" "$runner_login" 2>&1) || ownership_rc=$?
+	if [[ "$ownership_rc" -eq 0 ]]; then
+		print_info "[ownership-fence] ${ownership_output}"
+		return 0
+	fi
+	print_warning "[ownership-fence] worker ownership unavailable issue=${issue_number} repo=${repo_slug} runner=${runner_login} rc=${ownership_rc}: ${ownership_output}"
+	return 1
+}
+
 _private_workload_directory_lock_key() {
 	local work_dir="$1"
 	local resolved_work_dir=""
@@ -146,6 +174,10 @@ _cmd_run_prepare() {
 	fi
 	# shellcheck disable=SC2064
 	trap "_exit_trap_handler '$session_key'; aidevops_runtime_bundle_lease_release" EXIT
+	if ! _hrw_verify_dispatch_ownership; then
+		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
+		return 1
+	fi
 
 	_WORKER_START_EPOCH_MS=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
 	export _WORKER_WORKTREE_PATH="$work_dir"

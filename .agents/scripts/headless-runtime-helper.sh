@@ -1260,6 +1260,11 @@ _execute_run_attempt() {
 		exit_code=11
 		return 11
 	fi
+	if [[ "$role" == "worker" ]] && ! _hrw_verify_dispatch_ownership; then
+		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
+		print_error "[lifecycle] runtime ownership fence stopped session=${session_key} before model invocation"
+		return 85
+	fi
 
 	if [[ -x "$RESOURCE_METRICS_HELPER" ]]; then
 		"$RESOURCE_METRICS_HELPER" sample \
@@ -1795,6 +1800,13 @@ cmd_run() {
 			# GH#20721: Pass work_dir so _cmd_run_finish can detect no-op exits.
 			_cmd_run_finish "$session_key" "complete" "$work_dir"
 			return $?
+		fi
+		if [[ "$attempt_exit" -eq 85 ]]; then
+			_run_failure_reason="$_HRW_REASON_OWNERSHIP_LOST"
+			_run_result_label="$_HRW_REASON_OWNERSHIP_LOST"
+			_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_FAILED" "$_HRW_REASON_OWNERSHIP_LOST"
+			_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL" "$work_dir"
+			return 1
 		fi
 
 		# GH#21578 / t3021: Rate-limit fast-exit (exit 80).

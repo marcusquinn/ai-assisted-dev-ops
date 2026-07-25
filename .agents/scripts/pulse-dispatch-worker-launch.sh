@@ -140,6 +140,53 @@ _dlw_assign_and_label() {
 }
 
 #######################################
+# Re-read live ownership immediately before queued assignment. The earlier
+# claim-consensus guard cannot protect the worktree-precreation interval from
+# an interactive takeover, so this fence must remain adjacent to assignment.
+# Arguments: issue number, repo slug, dispatching runner login
+#######################################
+_dlw_final_assignment_guard() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local self_login="$3"
+	local claim_helper="${SCRIPT_DIR}/dispatch-claim-helper.sh"
+	if [[ ! -x "$claim_helper" ]]; then
+		echo "[dispatch_with_dedup] Final ownership fence unavailable for #${issue_number} in ${repo_slug}: ${claim_helper}" >>"$LOGFILE"
+		return 1
+	fi
+
+	local guard_output=""
+	local guard_rc=0
+	guard_output=$("$claim_helper" guard-ownership "$issue_number" "$repo_slug" "$self_login" 2>&1) || guard_rc=$?
+	if [[ "$guard_rc" -eq 0 ]]; then
+		return 0
+	fi
+	echo "[dispatch_with_dedup] Final ownership fence blocked #${issue_number} in ${repo_slug} before assignment (rc=${guard_rc}): ${guard_output}" >>"$LOGFILE"
+	return 1
+}
+
+_dlw_publish_queued_ownership() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local self_login="$3"
+	local issue_meta_json="$4"
+	if ! _dlw_final_assignment_guard "$issue_number" "$repo_slug" "$self_login"; then
+		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "final_ownership_fence" 2
+		return $?
+	fi
+
+	local assignment_started_ns=""
+	assignment_started_ns=$(_ds_now_ns)
+	if ! _dlw_assign_and_label "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json"; then
+		_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$assignment_started_ns"
+		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "assignment_failed" 2
+		return $?
+	fi
+	_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$assignment_started_ns"
+	return 0
+}
+
+#######################################
 # Create per-issue worker log files with a shared fallback symlink (GH#14483).
 # The primary log is namespaced by repo_slug + issue_number; the fallback is
 # a plain `pulse-{issue}.log` symlink in the same per-user pulse temp dir.
@@ -2594,12 +2641,7 @@ _dispatch_launch_worker() {
 	local launch_prompt=""
 	launch_prompt=$(_dlw_prepare_prompt_for_launch "$issue_number" "$repo_slug" "$issue_title" "$prompt" "$zero_output_comment_metrics")
 
-	_ds_t0=$(_ds_now_ns)
-	_dlw_assign_and_label "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || {
-		_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
-		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "assignment_failed" 2 || return $?
-	}
-	_ds_record "$issue_number" "$repo_slug" "assign_and_label" "$_ds_t0"
+	_dlw_publish_queued_ownership "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || return $?
 
 	# t1894/t1934: Lock issue and linked PRs during worker execution.
 	_ds_t0=$(_ds_now_ns)

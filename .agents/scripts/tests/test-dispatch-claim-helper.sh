@@ -927,6 +927,128 @@ EOF
 }
 
 #######################################
+# Test: an interactive takeover after DISPATCH_CLAIM consensus revokes the
+# winning lease before queued ownership can be published.
+#######################################
+test_claim_revoked_after_consensus_takeover() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local mock_path=""
+	mock_path=$(create_mock_gh "$tmp_dir")
+	local guard_helper="${tmp_dir}/assignment-guard.sh"
+	cat >"$guard_helper" <<'EOF'
+#!/usr/bin/env bash
+count=0
+[[ -f "${MOCK_GUARD_COUNT_FILE:?}" ]] && count=$(<"$MOCK_GUARD_COUNT_FILE")
+count=$((count + 1))
+printf '%s' "$count" >"$MOCK_GUARD_COUNT_FILE"
+if [[ "$count" -eq 1 && "${1:-}" == "is-assigned" ]]; then
+	exit 1
+fi
+printf 'ASSIGNED: interactive takeover\n'
+exit 0
+EOF
+	chmod +x "$guard_helper"
+	local old_ts=""
+	local new_ts=""
+	old_ts=$(iso_seconds_ago 300)
+	new_ts=$(iso_seconds_ago 0)
+	local output=""
+	local exit_code=0
+
+	set +e
+	output=$(PATH="${mock_path}:$PATH" \
+		MOCK_GH_STATE_DIR="$tmp_dir" \
+		MOCK_OLD_CLAIM_CREATED_AT="$old_ts" \
+		MOCK_NEW_CLAIM_CREATED_AT="$new_ts" \
+		MOCK_OLD_CLAIM_RUNNER="other-runner" \
+		MOCK_GUARD_COUNT_FILE="${tmp_dir}/guard-count" \
+		DISPATCH_ASSIGNMENT_GUARD_HELPER="$guard_helper" \
+		AIDEVOPS_FORCE_CLAIM_ASSIGNMENT_GUARD=1 \
+		DISPATCH_CLAIM_WINDOW=0 \
+		DISPATCH_CLAIM_MAX_AGE=120 \
+		"$CLAIM_HELPER" claim 42 owner/repo mockrunner 2>&1)
+	exit_code=$?
+	set -e
+
+	local guard_count=""
+	guard_count=$(<"${tmp_dir}/guard-count")
+	if [[ "$exit_code" -eq 1 && "$guard_count" == "2" && "$output" == *"CLAIM_REVOKED: interactive_or_active_assignment_after_consensus"* ]]; then
+		print_result "interactive takeover after consensus revokes winning claim" 0
+	else
+		print_result "interactive takeover after consensus revokes winning claim" 1 \
+			"exit=${exit_code} guards=${guard_count} output=${output}"
+	fi
+	if grep -Fxq '999' "${tmp_dir}/delete_ids.log" 2>/dev/null; then
+		print_result "revoked post-consensus claim deletes its lease comment" 0
+	else
+		print_result "revoked post-consensus claim deletes its lease comment" 1 "delete log missing claim 999"
+	fi
+	rm -rf "$tmp_dir"
+	return 0
+}
+
+#######################################
+# Test: runtime ownership verification accepts only the expected worker state
+# and fails closed after an interactive takeover or metadata failure.
+#######################################
+test_worker_runtime_ownership_verification() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	mkdir -p "${tmp_dir}/bin"
+	cat >"${tmp_dir}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MOCK_WORKER_GH_CALLS:?}"
+if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
+	[[ "${MOCK_WORKER_GH_RC:-0}" -eq 0 ]] || exit "$MOCK_WORKER_GH_RC"
+	printf '%s\n' "${MOCK_WORKER_ISSUE_JSON:?}"
+	exit 0
+fi
+exit 1
+EOF
+	chmod +x "${tmp_dir}/bin/gh"
+	local calls_file="${tmp_dir}/gh-calls"
+	local output=""
+	local status=0
+
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_WORKER_GH_CALLS="$calls_file" \
+		MOCK_WORKER_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"status:queued"}],"assignees":[{"login":"mockrunner"}]}' \
+		"$CLAIM_HELPER" verify-worker-ownership 42 owner/repo mockrunner 2>&1) || status=$?
+	if [[ "$status" -eq 0 && "$output" == *"WORKER_OWNERSHIP_VALID"* ]]; then
+		print_result "runtime ownership accepts sole expected queued worker" 0
+	else
+		print_result "runtime ownership accepts sole expected queued worker" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_WORKER_GH_CALLS="$calls_file" \
+		MOCK_WORKER_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"status:in-review"},{"name":"no-auto-dispatch"}],"assignees":[{"login":"mockrunner"}]}' \
+		"$CLAIM_HELPER" verify-worker-ownership 42 owner/repo mockrunner 2>&1) || status=$?
+	if [[ "$status" -eq 1 && "$output" == *"WORKER_OWNERSHIP_LOST"* ]]; then
+		print_result "runtime ownership rejects interactive takeover state" 0
+	else
+		print_result "runtime ownership rejects interactive takeover state" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_WORKER_GH_CALLS="$calls_file" \
+		MOCK_WORKER_GH_RC=1 \
+		MOCK_WORKER_ISSUE_JSON='{}' \
+		"$CLAIM_HELPER" verify-worker-ownership 42 owner/repo mockrunner 2>&1) || status=$?
+	if [[ "$status" -eq 2 && "$output" == *"WORKER_OWNERSHIP_UNKNOWN"* ]]; then
+		print_result "runtime ownership metadata failure fails closed" 0
+	else
+		print_result "runtime ownership metadata failure fails closed" 1 "status=$status output=$output"
+	fi
+
+	rm -rf "$tmp_dir"
+	return 0
+}
+
+#######################################
 # Test: DISPATCH_CLAIM_WINDOW env var is respected
 #######################################
 test_env_var_defaults() {
@@ -1591,6 +1713,8 @@ main() {
 	test_check_missing_args
 	test_unknown_command
 	test_dedup_claim_routing
+	test_claim_revoked_after_consensus_takeover
+	test_worker_runtime_ownership_verification
 	test_env_var_defaults
 	test_check_releases_claim_only_orphan
 	test_check_preserves_fresh_claim_only_marker
