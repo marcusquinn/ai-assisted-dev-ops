@@ -174,28 +174,37 @@ _isc_gh_reachable() {
 	return 0
 }
 
-# Check whether an issue already carries `status:in-review`. Returns 0 when
-# present, 1 when absent, 2 when the metadata lookup failed.
-#
-# NOTE on the jq query: the two-argument form `any(generator; condition)`
-# passed `.name` as the generator on `(.labels // [])`, which tries to
-# index the *array itself* with string "name" and raises
-# "Cannot index array with string". The single-argument form
-# `any(condition)` iterates over the array automatically, which is both
-# shorter and correct. This was a latent bug that masked the bug fixed
-# in GH#18786 — the jq error (exit 5) was swallowed by `>/dev/null 2>&1`
-# and the function always returned 1 ("label absent"), so the idempotency
-# branch was dead code even before the set -e exit propagation killed
-# the whole claim flow.
+# Read the authoritative state needed to classify interactive ownership in one
+# bounded request. Labels alone are workflow state, not principal ownership.
+# Comments are included so a recent compatible interactive claim can protect a
+# foreign human owner even when immutable origin provenance says worker.
+# Returns 0 with JSON on stdout, 2 when metadata is unavailable or malformed.
+_isc_read_claim_metadata() {
+	local issue="$1"
+	local slug="$2"
+	local json=""
+	local array_type="array"
+	json=$(gh issue view "$issue" --repo "$slug" \
+		--json state,labels,assignees,comments 2>/dev/null) || return 2
+	printf '%s' "$json" | jq -e --arg array_type "$array_type" '
+		type == "object" and
+		((.labels // []) | type == $array_type) and
+		((.assignees // []) | type == $array_type) and
+		((.comments // []) | type == $array_type)
+	' >/dev/null 2>&1 || return 2
+	printf '%s' "$json"
+	return 0
+}
+
+# Compatibility label probe used by release paths and focused regression tests.
+# Claim acquisition intentionally uses the richer ownership metadata above.
 _isc_has_in_review() {
 	local issue="$1"
 	local slug="$2"
-	local json
+	local json=""
 	json=$(gh issue view "$issue" --repo "$slug" --json labels 2>/dev/null) || return 2
-	if printf '%s' "$json" | jq -e '(.labels // []) | any(.name == "status:in-review")' >/dev/null 2>&1; then
-		return 0
-	fi
-	return 1
+	printf '%s' "$json" | jq -e '(.labels // []) | any(.name == "status:in-review")' >/dev/null 2>&1
+	return $?
 }
 
 # Generic label probe — returns 0 if the issue carries the named label, 1 if

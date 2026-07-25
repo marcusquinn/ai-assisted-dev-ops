@@ -62,13 +62,14 @@ mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/.agent-workspace"
 # -----------------------------------------------------------------------------
 STUB_BIN="${TEST_ROOT}/stub-bin"
 STUB_LOG="${TEST_ROOT}/stub-calls.log"
-mkdir -p "$STUB_BIN"
+STUB_STATE_DIR="${TEST_ROOT}/stub-state"
+mkdir -p "$STUB_BIN" "$STUB_STATE_DIR"
 : >"$STUB_LOG"
 # Export STUB_LOG so subprocess invocations of the stub gh see it. Without
 # the export, subprocesses spawned by `"$HELPER_PATH" claim ...` inherit an
 # unset STUB_LOG and the stub logs to /dev/null, making subprocess-driven
 # assertions blind. Added in the GH#18786 regression coverage.
-export STUB_LOG
+export STUB_LOG STUB_STATE_DIR
 
 # Default stub mode — override via STUB_GH_MODE
 #   online   — gh returns successful responses
@@ -131,7 +132,7 @@ issue)
 		# response used by the release closed-issue check. Defaults to OPEN.
 		# When args include "--json state", return the state string directly.
 		case "$*" in
-		*"--json state"*)
+		*"--json state --jq .state"*)
 			printf '%s\n' "${STUB_ISSUE_STATE:-OPEN}"
 			exit 0
 			;;
@@ -151,6 +152,26 @@ issue)
 		if [[ "${STUB_ISSUE_HAS_PARENT_TASK:-0}" == "1" ]]; then
 			labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"parent-task\"}"
 		fi
+		if [[ "$*" == *"--json state,labels,assignees,comments"* ]]; then
+			state_file="${STUB_STATE_DIR:?}/${3}.json"
+			if [[ -f "$state_file" ]]; then
+				cat "$state_file"
+				exit 0
+			fi
+			assignees_json=""
+			assignees_csv="${STUB_ISSUE_ASSIGNEES:-testuser}"
+			while IFS= read -r assignee; do
+				[[ -n "$assignee" ]] && assignees_json="${assignees_json:+$assignees_json,}{\"login\":\"${assignee}\"}"
+			done < <(printf '%s' "$assignees_csv" | tr ',' '\n')
+			comments_json=""
+			if [[ -n "${STUB_INTERACTIVE_CLAIM_USER:-}" ]]; then
+				claim_time="${STUB_INTERACTIVE_CLAIM_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+				comments_json="{\"author\":{\"login\":\"${STUB_INTERACTIVE_CLAIM_USER}\"},\"createdAt\":\"${claim_time}\",\"body\":\"> Interactive session claimed by @${STUB_INTERACTIVE_CLAIM_USER} on test-host.\"}"
+			fi
+			printf '{"state":"%s","labels":[%s],"assignees":[%s],"comments":[%s]}\n' \
+				"${STUB_ISSUE_STATE:-OPEN}" "$labels_arr" "$assignees_json" "$comments_json"
+			exit 0
+		fi
 		printf '{"labels":[%s]}\n' "$labels_arr"
 		exit 0
 		;;
@@ -159,6 +180,21 @@ issue)
 		if [[ "${STUB_GH_EDIT_FAILS:-0}" == "1" ]]; then
 			printf 'simulated issue edit failure\n' >&2
 			exit 1
+		fi
+		if [[ -n "${STUB_STATE_DIR:-}" && "${STUB_GH_EDIT_NO_MUTATE:-0}" != "1" ]]; then
+			new_assignee=""
+			previous=""
+			for argument in "$@"; do
+				if [[ "$previous" == "--add-assignee" ]]; then
+					new_assignee="$argument"
+					break
+				fi
+				previous="$argument"
+			done
+			if [[ -n "$new_assignee" ]]; then
+				printf '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"%s"}],"comments":[]}\n' \
+					"$new_assignee" >"${STUB_STATE_DIR}/${3}.json"
+			fi
 		fi
 		exit 0
 		;;
@@ -499,7 +535,7 @@ idempotent_out=$(STUB_ISSUE_HAS_IN_REVIEW=1 STUB_GH_MODE=online \
 	2>&1)
 idempotent_rc=$?
 
-if [[ $idempotent_rc -eq 0 ]] && printf '%s' "$idempotent_out" | grep -q 'already has status:in-review'; then
+if [[ $idempotent_rc -eq 0 ]] && printf '%s' "$idempotent_out" | grep -q 'already belongs to testuser'; then
 	print_result "GH#18786: claim idempotent when label already present (subprocess)" 0
 else
 	print_result "GH#18786: claim idempotent when label already present (subprocess)" 1 \
@@ -513,6 +549,60 @@ if ! grep -q 'issue edit' "$STUB_LOG"; then
 else
 	print_result "GH#18786: idempotent claim skips gh issue edit" 1 \
 		"(stub log: $(tr '\n' '|' <"$STUB_LOG"))"
+fi
+
+# --- Case (d2): explicit worker takeover replaces and verifies ownership ---
+rm -f "${claim_dir}"/*.json 2>/dev/null || true
+: >"$STUB_LOG"
+printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:in-review"},{"name":"origin:worker"}],"assignees":[{"login":"worker-runner"}],"comments":[]}' \
+	>"${STUB_STATE_DIR}/56004.json"
+
+takeover_out=$("$HELPER_PATH" claim 56004 regress/test --implementing --worktree /tmp/takeover-wt 2>&1)
+takeover_rc=$?
+takeover_stamp="${claim_dir}/regress-test-56004.json"
+takeover_owner=$(jq -r '.assignees | map(.login) | join(",")' "${STUB_STATE_DIR}/56004.json")
+if [[ $takeover_rc -eq 0 && "$takeover_owner" == "testuser" && -f "$takeover_stamp" ]] &&
+	grep -q 'remove-assignee worker-runner' "$STUB_LOG" &&
+	grep -q 'add-assignee testuser' "$STUB_LOG"; then
+	print_result "foreign worker claim transfers to verified interactive owner" 0
+else
+	print_result "foreign worker claim transfers to verified interactive owner" 1 \
+		"(rc=$takeover_rc owner=$takeover_owner stamp=$([[ -f "$takeover_stamp" ]] && echo yes || echo no) log=$(tr '\n' '|' <"$STUB_LOG") out=${takeover_out:0:120})"
+fi
+
+# --- Case (d3): a recent compatible foreign interactive claim is protected ---
+rm -f "${claim_dir}"/*.json 2>/dev/null || true
+: >"$STUB_LOG"
+claim_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"other-human"}],"comments":[{"author":{"login":"other-human"},"createdAt":"%s","body":"> Interactive session claimed by @other-human on other-host."}]}\n' \
+	"$claim_now" >"${STUB_STATE_DIR}/56005.json"
+
+foreign_out=$("$HELPER_PATH" claim 56005 regress/test --implementing --worktree /tmp/foreign-wt 2>&1)
+foreign_rc=$?
+foreign_stamp="${claim_dir}/regress-test-56005.json"
+if [[ $foreign_rc -eq 1 && ! -f "$foreign_stamp" ]] &&
+	! grep -q 'issue edit 56005' "$STUB_LOG" &&
+	printf '%s' "$foreign_out" | grep -q 'live interactive owner @other-human'; then
+	print_result "live foreign interactive claim is never stolen" 0
+else
+	print_result "live foreign interactive claim is never stolen" 1 \
+		"(rc=$foreign_rc stamp=$([[ -f "$foreign_stamp" ]] && echo yes || echo no) out=${foreign_out:0:160})"
+fi
+
+# --- Case (d4): a transition that cannot be verified writes no stamp ---
+rm -f "${claim_dir}"/*.json 2>/dev/null || true
+: >"$STUB_LOG"
+printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"worker-runner"}],"comments":[]}' \
+	>"${STUB_STATE_DIR}/56006.json"
+unverified_out=$(STUB_GH_EDIT_NO_MUTATE=1 "$HELPER_PATH" claim 56006 regress/test --implementing 2>&1)
+unverified_rc=$?
+unverified_stamp="${claim_dir}/regress-test-56006.json"
+if [[ $unverified_rc -eq 1 && ! -f "$unverified_stamp" ]] &&
+	printf '%s' "$unverified_out" | grep -q 'could not be verified'; then
+	print_result "unverified worker takeover writes no stamp" 0
+else
+	print_result "unverified worker takeover writes no stamp" 1 \
+		"(rc=$unverified_rc stamp=$([[ -f "$unverified_stamp" ]] && echo yes || echo no) out=${unverified_out:0:160})"
 fi
 
 # --- Case (e): release subprocess also survives set -euo pipefail ---
@@ -807,16 +897,11 @@ export STUB_ISSUE_HAS_AUTO_DISPATCH=0
 export STUB_ISSUE_HAS_PARENT_TASK=0
 
 # =============================================================================
-# Test 20 — GH#20946 PR #20977 review: claim proceeds when carve-out probe
-# fails (fail-OPEN integration test).
+# Test 20 — ownership metadata failure fails closed without a stamp.
 #
-# Direct caller-side verification of the `&& _isc_carve_out_required` short-
-# circuit semantics — when the probe returns rc=2 (gh lookup failed), the
-# `&&` short-circuit evaluates false and the claim falls through to the
-# normal `set_issue_status` path. This was the exact failure mode flagged
-# by augmentcode in the original two-call pattern: rc=2 on the inner
-# parent-task check entered the warning branch and silently blocked a
-# legitimate claim. The new single-call form fails OPEN consistently.
+# Ownership-aware idempotency cannot safely classify the incumbent when the
+# bounded metadata read fails. It must not mutate GitHub or write caller-owned
+# stamp evidence in that state.
 # =============================================================================
 fo_stamp=$(_isc_stamp_path 60006 carveout/failopen)
 rm -f "$fo_stamp" >/dev/null 2>&1 || true
@@ -826,14 +911,13 @@ fo_out=$(STUB_ISSUE_HAS_IN_REVIEW=0 STUB_ISSUE_HAS_AUTO_DISPATCH=1 STUB_ISSUE_HA
 	_isc_cmd_claim 60006 carveout/failopen 2>&1)
 fo_rc=$?
 
-if [[ $fo_rc -eq 0 ]] &&
-	! grep -q "skipping to avoid permanent dispatch block" <<<"$fo_out" &&
-	grep -q 'issue edit 60006' "$STUB_LOG" &&
-	grep -q 'add-label status:in-review' "$STUB_LOG" &&
-	[[ -f "$fo_stamp" ]]; then
-	print_result "GH#20946 review: claim proceeds (fail-OPEN) when carve-out probe gh fails" 0
+if [[ $fo_rc -eq 1 ]] &&
+	! grep -q 'issue edit 60006' "$STUB_LOG" &&
+	[[ ! -f "$fo_stamp" ]] &&
+	printf '%s' "$fo_out" | grep -q 'ownership metadata unavailable'; then
+	print_result "ownership metadata failure writes no stamp or GitHub state" 0
 else
-	print_result "GH#20946 review: claim proceeds (fail-OPEN) when carve-out probe gh fails" 1 \
+	print_result "ownership metadata failure writes no stamp or GitHub state" 1 \
 		"(rc=$fo_rc, stamp=$([[ -f "$fo_stamp" ]] && echo yes || echo no), out=${fo_out:0:200})"
 fi
 

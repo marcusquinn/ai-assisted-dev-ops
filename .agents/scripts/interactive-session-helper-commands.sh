@@ -14,7 +14,8 @@
 #   - interactive-session-helper-stamp.sh (_isc_write_stamp, _isc_delete_stamp, _isc_post_claim_comment)
 #   - Logging/utility functions from orchestrator (_isc_info, _isc_warn, _isc_err,
 #     _isc_gh_reachable, _isc_current_user, _isc_can_manage_issue_state,
-#     _isc_has_in_review, _isc_has_label, _isc_carve_out_required, _isc_cmd_help)
+#     _isc_read_claim_metadata, _isc_has_label, _isc_carve_out_required,
+#     _isc_cmd_help)
 #
 # Part of aidevops framework: https://aidevops.sh
 
@@ -116,12 +117,13 @@ _isc_claim_closed_issue_guard() {
 # Behaviour:
 #   - Offline gh: warn-and-continue (exit 0). A collision with a pulse worker
 #     is harmless — the interactive work naturally becomes its own issue/PR.
-#   - Idempotent: re-calling on an already-claimed issue refreshes the stamp
-#     timestamp but does not re-transition the label (saves an API round-trip).
-#   - Non-blocking on gh failures: best-effort label transition; all gh
-#     errors are swallowed so the caller's interactive workflow never stalls.
+#   - Idempotent: a re-call by the sole current assignee refreshes the stamp
+#     without a redundant GitHub edit.
+#   - Ownership failures fail closed: unavailable metadata, a foreign live
+#     interactive owner, or an unverifiable takeover never writes a stamp.
 #
-# Exit: 0 always (warn-and-continue contract).
+# Exit: 0 on a verified claim/idempotent skip, 1 on ownership conflict or
+# unverifiable metadata/transition, 2 on invalid arguments.
 _isc_existing_stamp_worktree() {
 	local issue="$1"
 	local slug="$2"
@@ -149,22 +151,133 @@ _isc_refresh_existing_claim() {
 	return 0
 }
 
+_isc_claim_ownership_class() {
+	local metadata="$1"
+	local user="$2"
+	local now_epoch=""
+	now_epoch=$(date +%s)
+	printf '%s' "$metadata" | jq -r --arg user "$user" --argjson now "$now_epoch" '
+		(.state // "" | ascii_downcase) as $state |
+		([.labels[]?.name] | index("status:in-review") != null) as $in_review |
+		[.assignees[]?.login] as $assignees |
+		[.comments[]?
+			| select((.body // "") | contains("Interactive session claimed by @"))
+			| select((.author.login // "") as $author
+				| ($assignees | index($author)) != null
+				and ((.body // "") | contains("Interactive session claimed by @\($author)")))
+			| select((.createdAt // "" | fromdateiso8601?) as $created
+				| $created != null and ($now - $created) >= 0 and ($now - $created) < 7200)
+		] | sort_by(.createdAt) | reverse | first as $live_claim |
+		if $state != "open" then "invalid-state"
+		elif ($in_review | not) then "unclaimed"
+		elif ($assignees | length) == 1 and $assignees[0] == $user then "own"
+		elif $live_claim != null then "foreign-interactive:" + $live_claim.author.login
+		else "foreign-worker" end
+	' 2>/dev/null
+	return $?
+}
+
+_isc_verified_caller_owns_claim() {
+	local issue="$1"
+	local slug="$2"
+	local user="$3"
+	local metadata=""
+	metadata=$(_isc_read_claim_metadata "$issue" "$slug") || return 1
+	printf '%s' "$metadata" | jq -e --arg user "$user" '
+		(.state | ascii_downcase) == "open" and
+		([.labels[]?.name] | index("status:in-review") != null) and
+		([.assignees[]?.login] == [$user])
+	' >/dev/null 2>&1
+	return $?
+}
+
 _isc_apply_new_claim() {
 	local issue="$1"
 	local slug="$2"
 	local worktree_path="$3"
 	local user="$4"
 	local defer_comment="$5"
-	if set_issue_status "$issue" "$slug" "in-review" --add-assignee "$user" >/dev/null 2>&1; then
-		_isc_info "claim: #$issue in $slug → status:in-review + assigned $user"
-		_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
-		if [[ "$defer_comment" -eq 0 || -n "$worktree_path" ]]; then
-			_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
-		fi
-		return 0
+	shift 5
+	local -a transition_args=(--add-assignee "$user" "$@")
+	if ! set_issue_status "$issue" "$slug" "in-review" "${transition_args[@]}" >/dev/null 2>&1; then
+		_isc_err "claim: ownership transition failed on #$issue; no stamp written"
+		return 1
 	fi
-	_isc_warn "claim: gh failed on #$issue — continuing without lock (collision is harmless)"
+	if ! _isc_verified_caller_owns_claim "$issue" "$slug" "$user"; then
+		_isc_err "claim: ownership transition on #$issue could not be verified; no stamp written"
+		return 1
+	fi
+	_isc_info "claim: #$issue in $slug → status:in-review + sole assignee $user"
+	_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
+	if [[ "$defer_comment" -eq 0 || -n "$worktree_path" ]]; then
+		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
+	fi
 	return 0
+}
+
+_isc_take_over_worker_claim() {
+	local issue="$1"
+	local slug="$2"
+	local worktree_path="$3"
+	local user="$4"
+	local defer_comment="$5"
+	local assignees_csv="$6"
+	local -a remove_args=()
+	local -a assignees=()
+	local saved_ifs="${IFS:-}"
+	IFS=',' read -ra assignees <<<"$assignees_csv"
+	IFS="$saved_ifs"
+	local assignee=""
+	for assignee in "${assignees[@]}"; do
+		[[ -n "$assignee" && "$assignee" != "$user" ]] && remove_args+=(--remove-assignee "$assignee")
+	done
+	_isc_apply_new_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment" "${remove_args[@]}"
+	return $?
+}
+
+_isc_handle_existing_claim_ownership() {
+	local issue="$1"
+	local slug="$2"
+	local worktree_path="$3"
+	local user="$4"
+	local defer_comment="$5"
+	local implementing="$6"
+	local claim_metadata="$7"
+	local ownership_class=""
+	if ! ownership_class=$(_isc_claim_ownership_class "$claim_metadata" "$user"); then
+		_isc_err "claim: ownership metadata invalid for #$issue; no stamp written"
+		return 1
+	fi
+	case "$ownership_class" in
+	own)
+		_isc_info "claim: #$issue already belongs to $user — refreshing stamp"
+		_isc_refresh_existing_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment"
+		return 0
+		;;
+	foreign-interactive:*)
+		_isc_err "claim: #$issue has a live interactive owner @${ownership_class#*:}; refusing takeover"
+		return 1
+		;;
+	foreign-worker)
+		if [[ "$implementing" -eq 0 ]]; then
+			_isc_err "claim: #$issue is assigned to another principal; re-run with --implementing for an explicit worker takeover"
+			return 1
+		fi
+		local foreign_assignees=""
+		foreign_assignees=$(printf '%s' "$claim_metadata" | jq -r \
+			'[.assignees[]?.login] | join(",")' 2>/dev/null) || return 1
+		_isc_info "claim: #$issue has foreign worker ownership (${foreign_assignees:-unassigned}) — performing verified interactive takeover"
+		_isc_take_over_worker_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment" "$foreign_assignees"
+		return $?
+		;;
+	unclaimed)
+		return 3
+		;;
+	*)
+		_isc_err "claim: unrecognized ownership state for #$issue; no stamp written"
+		return 1
+		;;
+	esac
 }
 
 _isc_cmd_claim() {
@@ -233,15 +346,19 @@ _isc_cmd_claim() {
 
 	_isc_claim_closed_issue_guard "$issue" "$slug" && return 0
 
-	# Idempotency: if already in-review, refresh stamp and exit. The `if`
-	# conditional consumes any non-zero return so set -e doesn't propagate
-	# rc=2 (lookup failed) up the call stack — see _isc_has_in_review header
-	# for the full set -e foot-gun (GH#18770/GH#18784/GH#18786 sibling class).
-	if _isc_has_in_review "$issue" "$slug"; then
-		_isc_info "claim: #$issue already has status:in-review — refreshing stamp"
-		_isc_refresh_existing_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment"
-		return 0
+	local claim_metadata=""
+	if ! claim_metadata=$(_isc_read_claim_metadata "$issue" "$slug"); then
+		_isc_err "claim: ownership metadata unavailable for #$issue; no stamp written"
+		return 1
 	fi
+	local ownership_rc=0
+	_isc_handle_existing_claim_ownership "$issue" "$slug" "$worktree_path" "$user" \
+		"$defer_comment" "$implementing" "$claim_metadata" || ownership_rc=$?
+	case "$ownership_rc" in
+	0) return 0 ;;
+	3) ;;
+	*) return "$ownership_rc" ;;
+	esac
 
 	# Auto-dispatch carve-out (GH#20946): refuse to claim auto-dispatch issues
 	# unless --implementing was passed or the issue is also a parent-task.

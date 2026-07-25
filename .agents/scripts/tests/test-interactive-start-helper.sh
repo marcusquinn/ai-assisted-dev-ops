@@ -37,6 +37,12 @@ assert_log_line() {
 git init -q -b main "$canonical_root" || fail "could not initialize canonical fixture"
 git -C "$canonical_root" worktree add -q --orphan -b feature/interactive-start-test "$linked_worktree" ||
 	fail "could not create linked-worktree fixture"
+canonical_root=$(cd "$canonical_root" && pwd -P) || fail "could not resolve canonical fixture"
+linked_worktree=$(cd "$linked_worktree" && pwd -P) || fail "could not resolve linked fixture"
+unregistered_path=$(cd "$unregistered_path" && pwd -P) || fail "could not resolve unregistered fixture"
+export CANONICAL_ROOT="$canonical_root"
+export LINKED_WORKTREE="$linked_worktree"
+export UNREGISTERED_PATH="$unregistered_path"
 
 headless_out=$(AIDEVOPS_INTERACTIVE_ISSUE_IMPLEMENTATION=1 \
 	"$full_loop_helper" start "GH#42 local fix" --headless 2>&1)
