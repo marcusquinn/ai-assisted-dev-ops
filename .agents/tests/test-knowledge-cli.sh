@@ -29,8 +29,18 @@ HELPER="${SCRIPT_DIR}/../scripts/knowledge-helper.sh"
 _PASS=0
 _FAIL=0
 
-_pass() { local name="$1"; printf "[PASS] %s\n" "$name"; _PASS=$((_PASS + 1)); return 0; }
-_fail() { local name="$1" msg="$2"; printf "[FAIL] %s — %s\n" "$name" "$msg"; _FAIL=$((_FAIL + 1)); return 0; }
+_pass() {
+	local name="$1"
+	printf "[PASS] %s\n" "$name"
+	_PASS=$((_PASS + 1))
+	return 0
+}
+_fail() {
+	local name="$1" msg="$2"
+	printf "[FAIL] %s — %s\n" "$name" "$msg"
+	_FAIL=$((_FAIL + 1))
+	return 0
+}
 
 assert_eq() {
 	local name="$1" got="$2" want="$3"
@@ -79,6 +89,7 @@ assert_json_field() {
 # ---------------------------------------------------------------------------
 
 TMP_DIR=$(mktemp -d)
+export AIDEVOPS_VAULT_DIR="${TMP_DIR}/vault-disabled"
 REPO_PATH="${TMP_DIR}/test-repo"
 mkdir -p "$REPO_PATH"
 

@@ -98,6 +98,7 @@ GITIGNORE_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-gitignore.txt"
 CONFIG_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-config.json"
 SENSITIVITY_DETECTOR="${SCRIPT_DIR}/sensitivity-detector-helper.sh"
 CORPUS_HELPER="${SCRIPT_DIR}/knowledge-corpus-helper.sh"
+PERSONAL_CORPUS_ALIAS="personal:default"
 BLOB_THRESHOLD_BYTES=31457280
 META_DEFAULT_SENSITIVITY="internal"
 META_DEFAULT_TRUST="unverified"
@@ -265,10 +266,10 @@ _provision_personal_plane() {
 		print_success "Provisioned: ${base_dir}/${KNOWLEDGE_ROOT}"
 	fi
 	if [[ ! -r "$CORPUS_HELPER" ]]; then
-		print_error "Corpus catalog helper not found or not readable: $CORPUS_HELPER"
+		print_error "Corpus catalog helper not found or not readable at $CORPUS_HELPER"
 		return 1
 	fi
-	bash "$CORPUS_HELPER" provision --base "$base_dir" >/dev/null
+	bash "$CORPUS_HELPER" provision --base "$base_dir" || return 1
 	return 0
 }
 
@@ -289,7 +290,7 @@ cmd_provision() {
 		_provision_repo_plane "$repo_path" "$repo_path"
 		;;
 	personal)
-		_provision_personal_plane
+		_provision_personal_plane || return 1
 		;;
 	*)
 		print_error "Unknown knowledge mode '$mode' for $repo_path"
@@ -453,7 +454,7 @@ _write_meta_json() {
 # Prints error and returns 1 on failure.
 _cmd_add_resolve_knowledge_root() {
 	local repo_path="$1"
-	local capability="${2:-knowledge.read}"
+	local capability="${2:-knowledge.write}"
 	local mode
 	mode=$(_get_knowledge_mode "$repo_path")
 	case "$mode" in
@@ -462,11 +463,13 @@ _cmd_add_resolve_knowledge_root() {
 		;;
 	personal)
 		if [[ ! -r "$CORPUS_HELPER" ]]; then
-			print_error "Corpus catalog helper not found or not readable: $CORPUS_HELPER"
+			print_error "Corpus catalog helper not found or not readable at $CORPUS_HELPER"
 			return 1
 		fi
-		bash "$CORPUS_HELPER" resolve --base "$PERSONAL_PLANE_BASE" \
-			--alias "personal:default" --capability "$capability"
+		bash "$CORPUS_HELPER" resolve \
+			--base "$PERSONAL_PLANE_BASE" \
+			--alias "$PERSONAL_CORPUS_ALIAS" \
+			--capability "$capability" || return 1
 		;;
 	off)
 		print_error "Knowledge plane is disabled for $repo_path — run: knowledge-helper.sh init repo"
@@ -1031,6 +1034,22 @@ _search_grep_sources() {
 # falls back to grep over source.md (preferred) or text.txt files otherwise.
 # ---------------------------------------------------------------------------
 
+_cmd_search_resolve_knowledge_root() {
+	local repo_path="$1"
+	local mode
+	mode=$(_get_knowledge_mode "$repo_path")
+	case "$mode" in
+	repo) printf '%s\n' "${repo_path}/${KNOWLEDGE_ROOT}" ;;
+	personal) _cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read" || return 1 ;;
+	off) print_warning "search: knowledge plane is disabled for $repo_path" >&2 ;;
+	*)
+		print_error "search: unknown knowledge mode '$mode' for $repo_path" >&2
+		return 1
+		;;
+	esac
+	return 0
+}
+
 cmd_search() {
 	local query="" repo_path="" filter_sensitivity="" filter_case="" filter_status=""
 	local _positional_count=0
@@ -1077,17 +1096,9 @@ cmd_search() {
 		return 1
 	fi
 
-	local mode knowledge_root=""
-	mode=$(_get_knowledge_mode "$repo_path")
-	case "$mode" in
-	repo | personal)
-		knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
-		;;
-	off)
-		print_warning "search: knowledge plane is disabled for $repo_path"
-		return 0
-		;;
-	esac
+	local knowledge_root=""
+	knowledge_root=$(_cmd_search_resolve_knowledge_root "$repo_path") || return 1
+	[[ -z "$knowledge_root" ]] && return 0
 
 	local sources_dir="${knowledge_root}/sources"
 	# Compute allowed source IDs for active filters.
