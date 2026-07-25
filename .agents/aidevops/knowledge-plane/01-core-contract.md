@@ -27,7 +27,7 @@ and retrieval surfaces.
 ## Directory Layout
 
 ```text
-_knowledge/          ← root (or ~/.aidevops/.agent-workspace/knowledge/)
+_knowledge/          ← repo root, or legacy tree under the personal base
   inbox/             ← raw drops — gitignored, pre-review zone
   staging/           ← curated before commit — gitignored
   sources/           ← versioned originals (files ≤30MB)
@@ -36,6 +36,26 @@ _knowledge/          ← root (or ~/.aidevops/.agent-workspace/knowledge/)
   _config/
     knowledge.json   ← defaults (sensitivity, trust, ingest policy)
 ```
+
+Personal mode adds a private catalog around that unchanged legacy tree:
+
+```text
+~/.aidevops/.agent-workspace/knowledge/
+  catalog.db                  ← schema-v1 corpus and grant catalog (0600)
+  _config/principal.json      ← owner-only local authentication context (0600)
+  _knowledge/                 ← existing tree, registered as personal:default
+```
+
+Provisioning does not move or rewrite existing personal files. It idempotently
+registers `_knowledge/` as the `personal:default` logical alias. Physical catalog
+IDs are opaque; aliases are private catalog metadata rather than path components.
+
+Personal add, list, and search operations derive their principal from the local
+authentication context. The resolver returns a path only when the principal,
+workspace, membership, corpus, and requested `knowledge.read` or
+`knowledge.write` grant are all active. Unknown aliases, caller-selected
+principals, malformed or non-owner-only context files, and locations outside the
+configured personal base fail closed. Repo mode remains outside this catalog.
 
 **Provision:** `aidevops knowledge init repo` or `aidevops knowledge init personal`.
 **Repair:** `aidevops knowledge provision` is idempotent — safe to re-run.

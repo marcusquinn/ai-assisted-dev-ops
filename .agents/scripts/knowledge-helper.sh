@@ -53,16 +53,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Prefer print_* from shared-constants; define fallbacks only when absent.
 if ! declare -f print_info >/dev/null 2>&1; then
-	print_info() { local _m="$1"; printf "${BLUE}[INFO]${NC} %s\n" "$_m"; }
+	print_info() {
+		local _m="$1"
+		printf "${BLUE}[INFO]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_success >/dev/null 2>&1; then
-	print_success() { local _m="$1"; printf "${GREEN}[OK]${NC} %s\n" "$_m"; }
+	print_success() {
+		local _m="$1"
+		printf "${GREEN}[OK]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_warning >/dev/null 2>&1; then
-	print_warning() { local _m="$1"; printf "${YELLOW}[WARN]${NC} %s\n" "$_m"; }
+	print_warning() {
+		local _m="$1"
+		printf "${YELLOW}[WARN]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_error >/dev/null 2>&1; then
-	print_error() { local _m="$1"; printf "${RED}[ERROR]${NC} %s\n" "$_m"; }
+	print_error() {
+		local _m="$1"
+		printf "${RED}[ERROR]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 
 # ---------------------------------------------------------------------------
@@ -81,6 +97,7 @@ SCRIPT_TEMPLATES_DIR="${SCRIPT_DIR%/scripts}/templates"
 GITIGNORE_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-gitignore.txt"
 CONFIG_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-config.json"
 SENSITIVITY_DETECTOR="${SCRIPT_DIR}/sensitivity-detector-helper.sh"
+CORPUS_HELPER="${SCRIPT_DIR}/knowledge-corpus-helper.sh"
 BLOB_THRESHOLD_BYTES=31457280
 META_DEFAULT_SENSITIVITY="internal"
 META_DEFAULT_TRUST="unverified"
@@ -247,6 +264,11 @@ _provision_personal_plane() {
 		_write_config "${base_dir}/${KNOWLEDGE_ROOT}"
 		print_success "Provisioned: ${base_dir}/${KNOWLEDGE_ROOT}"
 	fi
+	if [[ ! -x "$CORPUS_HELPER" ]]; then
+		print_error "Corpus catalog helper not found or not executable: $CORPUS_HELPER"
+		return 1
+	fi
+	bash "$CORPUS_HELPER" provision --base "$base_dir" >/dev/null
 	return 0
 }
 
@@ -431,6 +453,7 @@ _write_meta_json() {
 # Prints error and returns 1 on failure.
 _cmd_add_resolve_knowledge_root() {
 	local repo_path="$1"
+	local capability="${2:-knowledge.read}"
 	local mode
 	mode=$(_get_knowledge_mode "$repo_path")
 	case "$mode" in
@@ -438,7 +461,12 @@ _cmd_add_resolve_knowledge_root() {
 		echo "${repo_path}/${KNOWLEDGE_ROOT}"
 		;;
 	personal)
-		echo "${PERSONAL_PLANE_BASE}/${KNOWLEDGE_ROOT}"
+		if [[ ! -x "$CORPUS_HELPER" ]]; then
+			print_error "Corpus catalog helper not found or not executable: $CORPUS_HELPER"
+			return 1
+		fi
+		bash "$CORPUS_HELPER" resolve --base "$PERSONAL_PLANE_BASE" \
+			--alias "personal:default" --capability "$capability"
 		;;
 	off)
 		print_error "Knowledge plane is disabled for $repo_path — run: knowledge-helper.sh init repo"
@@ -615,7 +643,7 @@ cmd_add() {
 	fi
 	repo_path="$(cd "$repo_path" && pwd)"
 	local knowledge_root
-	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path") || return 1
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.write") || return 1
 	if ! _is_provisioned "${knowledge_root%/"$KNOWLEDGE_ROOT"}"; then
 		print_error "Knowledge plane not provisioned. Run: knowledge-helper.sh provision"
 		return 1
@@ -740,7 +768,7 @@ cmd_list() {
 	repo_path="$(cd "$repo_path" && pwd)"
 	_require_jq || return 1
 	local knowledge_root
-	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path") || return 1
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
 	# Print header
 	printf "%-36s %-10s %-12s %-12s %-8s  %s\n" \
 		"SOURCE-ID" "STATE" "KIND" "SENSITIVITY" "SHA256" "SIZE"
@@ -871,8 +899,8 @@ _search_ids_by_sensitivity() {
 	_require_jq || return 1
 	find "$sources_dir" -maxdepth 2 -name "meta.json" \
 		-exec jq -r --arg tier "$tier" --arg def "$META_DEFAULT_SENSITIVITY" \
-		'select((.sensitivity // $def) == $tier) | (.id // empty)' {} + 2>/dev/null \
-		| sort || true
+		'select((.sensitivity // $def) == $tier) | (.id // empty)' {} + 2>/dev/null |
+		sort || true
 	return 0
 }
 
@@ -912,9 +940,9 @@ _search_ids_by_status() {
 	# Match Markdoc draft-status tag: {% draft-status status="<value>" ... %}
 	local pattern="\\{%\\s*draft-status\\b[^%]*status\\s*=\\s*[\"']?${draft_status}[\"']?"
 	find "$sources_dir" -maxdepth 2 -name "source.md" \
-		-exec grep -liE "$pattern" {} + 2>/dev/null \
-		| sed 's|/source.md$||; s|.*/||' \
-		| sort || true
+		-exec grep -liE "$pattern" {} + 2>/dev/null |
+		sed 's|/source.md$||; s|.*/||' |
+		sort || true
 	return 0
 }
 
@@ -1004,25 +1032,33 @@ _search_grep_sources() {
 # ---------------------------------------------------------------------------
 
 cmd_search() {
-	# Flag-based invocation (preferred):
-	#   cmd_search [--sensitivity <tier>] [--case <id>] [--status <ds>]
-	#              [--repo-path <path>] <query>
-	# Legacy positional: cmd_search <query> [repo_path]
 	local query="" repo_path="" filter_sensitivity="" filter_case="" filter_status=""
-
-	# Parse flags and positional args in any order.
-	# First non-flag arg is the query; second non-flag arg (legacy) is repo_path.
 	local _positional_count=0
 	while [[ $# -gt 0 ]]; do
 		local _opt="$1"
 		local _nxt="${2:-}"
 		shift
 		case "$_opt" in
-		--sensitivity) filter_sensitivity="$_nxt"; shift ;;
-		--case)        filter_case="$_nxt";        shift ;;
-		--status)      filter_status="$_nxt";      shift ;;
-		--repo-path)   repo_path="$_nxt";          shift ;;
-		-*)            print_error "search: unknown option: $_opt"; return 1 ;;
+		--sensitivity)
+			filter_sensitivity="$_nxt"
+			shift
+			;;
+		--case)
+			filter_case="$_nxt"
+			shift
+			;;
+		--status)
+			filter_status="$_nxt"
+			shift
+			;;
+		--repo-path)
+			repo_path="$_nxt"
+			shift
+			;;
+		-*)
+			print_error "search: unknown option: $_opt"
+			return 1
+			;;
 		*)
 			if [[ $_positional_count -eq 0 ]]; then
 				query="$_opt"
@@ -1033,7 +1069,6 @@ cmd_search() {
 			;;
 		esac
 	done
-
 	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
 	repo_path="$(cd "$repo_path" && pwd)"
 
@@ -1042,12 +1077,12 @@ cmd_search() {
 		return 1
 	fi
 
-	local mode
+	local mode knowledge_root=""
 	mode=$(_get_knowledge_mode "$repo_path")
-	local knowledge_root=""
 	case "$mode" in
-	repo)     knowledge_root="${repo_path}/${KNOWLEDGE_ROOT}" ;;
-	personal) knowledge_root="${PERSONAL_PLANE_BASE}/${KNOWLEDGE_ROOT}" ;;
+	repo | personal)
+		knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
+		;;
 	off)
 		print_warning "search: knowledge plane is disabled for $repo_path"
 		return 0
@@ -1105,14 +1140,14 @@ main() {
 	local subcommand="${1:-help}"
 	shift || true
 	case "$subcommand" in
-	provision)   cmd_provision "$@" ;;
-	init)        cmd_init "$@" ;;
-	add)         vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_add "$@" ;;
-	list)        vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_list "$@" ;;
+	provision) cmd_provision "$@" ;;
+	init) cmd_init "$@" ;;
+	add) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_add "$@" ;;
+	list) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_list "$@" ;;
 	sensitivity) cmd_sensitivity "$@" ;;
-	enrich)      cmd_enrich "$@" ;;
-	status)      cmd_status "$@" ;;
-	search)      vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_search "$@" ;;
+	enrich) cmd_enrich "$@" ;;
+	status) cmd_status "$@" ;;
+	search) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_search "$@" ;;
 	help | -h | --help) cmd_help ;;
 	*)
 		print_error "Unknown subcommand: $subcommand"
