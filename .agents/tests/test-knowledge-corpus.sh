@@ -199,8 +199,8 @@ assert_eq "1.8 read grant resolves legacy root" "$resolved" "$LEGACY_ROOT"
 listed=$(bash "$CORPUS_HELPER" list --base "$BASE" --capability knowledge.read)
 assert_contains "1.9 authorized list includes personal alias" "$listed" "personal:default"
 assert_contains "1.10 authorized list includes legacy path" "$listed" "$LEGACY_ROOT"
-assert_eq "1.11 schema version is 1" \
-	"$(db_query "$CATALOG" "SELECT value FROM schema_meta WHERE key='schema_version'")" "1"
+assert_eq "1.11 schema version is 2" \
+	"$(db_query "$CATALOG" "SELECT value FROM schema_meta WHERE key='schema_version'")" "2"
 assert_eq "1.12 bootstrap graph has one row per ownership edge" \
 	"$(db_query "$CATALOG" "SELECT (SELECT count(*) FROM principals),(SELECT count(*) FROM workspaces),(SELECT count(*) FROM workspace_memberships),(SELECT count(*) FROM corpora),(SELECT count(*) FROM corpus_aliases)")" \
 	"1|1|1|1|1"

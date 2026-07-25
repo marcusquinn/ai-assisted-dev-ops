@@ -23,7 +23,7 @@ from knowledge_corpus_context import (
     write_context_atomic,
 )
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 DEFAULT_ALIAS = "personal:default"
 DEFAULT_CAPABILITY = "knowledge.read"
 CAPABILITIES = ("knowledge.read", "knowledge.write", "knowledge.manage")
@@ -107,6 +107,18 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             collector_principal_id TEXT NOT NULL REFERENCES principals(principal_id),
             runner_ref TEXT NOT NULL
         )""",
+        """CREATE TABLE IF NOT EXISTS social_share_principals (
+            corpus_id TEXT NOT NULL REFERENCES corpora(corpus_id),
+            principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+            encryption_public TEXT NOT NULL,
+            signing_public TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+            PRIMARY KEY(corpus_id, principal_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS social_share_epochs (
+            corpus_id TEXT PRIMARY KEY REFERENCES corpora(corpus_id),
+            key_epoch INTEGER NOT NULL DEFAULT 1 CHECK(key_epoch > 0)
+        )""",
         """CREATE INDEX IF NOT EXISTS idx_memberships_principal
             ON workspace_memberships(principal_id, status)""",
         """CREATE INDEX IF NOT EXISTS idx_corpora_workspace
@@ -119,10 +131,11 @@ def _create_schema(connection: sqlite3.Connection) -> None:
     row = connection.execute(
         "SELECT value FROM schema_meta WHERE key='schema_version'"
     ).fetchone()
-    if row is not None and row["value"] != SCHEMA_VERSION:
+    if row is not None and row["value"] not in ("1", SCHEMA_VERSION):
         raise CatalogError(f"unsupported catalog schema version: {row['value']}")
     connection.execute(
-        "INSERT OR IGNORE INTO schema_meta(key,value) VALUES('schema_version',?)",
+        "INSERT INTO schema_meta(key,value) VALUES('schema_version',?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (SCHEMA_VERSION,),
     )
     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

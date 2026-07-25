@@ -10,6 +10,7 @@ PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
+SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
 
 usage() {
 	cat <<'EOF'
@@ -35,6 +36,13 @@ Usage:
     [--lease-seconds SECONDS] [--now-epoch EPOCH]
   knowledge-social-helper.sh receipts [--base PATH] [--alias ALIAS] \
     [--connection-id ID] [--limit 1-1000]
+  knowledge-social-helper.sh share-keygen --base PATH --private-key FILE --public-key FILE
+  knowledge-social-helper.sh share-grant --base PATH --alias ALIAS --public-key FILE
+  knowledge-social-helper.sh share-export --base PATH --alias ALIAS \
+    --recipient-key FILE --sender-key FILE --output FILE
+  knowledge-social-helper.sh share-import --base PATH --alias ALIAS \
+    --private-key FILE --bundle FILE
+  knowledge-social-helper.sh share-revoke --base PATH --alias ALIAS --principal-id ID
 
 The authenticated corpus catalog resolves ALIAS with knowledge.write for
 mutating operations or knowledge.read for coverage, due plans, receipts, and
@@ -104,6 +112,14 @@ main() {
 			return 1
 		fi
 		python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
+		;;
+	share-keygen | share-grant | share-export | share-import | share-revoke)
+		require_runtime || return 1
+		if [[ ! -r "$SHARE_HELPER" ]]; then
+			printf 'ERROR: social sharing implementation missing: %s\n' "$SHARE_HELPER" >&2
+			return 1
+		fi
+		python3 "$SHARE_HELPER" "$subcommand" "$@" || return 1
 		;;
 	sync-due | reconcile-due | reconcile | receipts)
 		require_runtime || return 1

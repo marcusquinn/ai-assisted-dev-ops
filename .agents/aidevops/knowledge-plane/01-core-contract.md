@@ -135,6 +135,18 @@ inferred object must carry a finite `provider_json.confidence` score from `0` to
 `1`; malformed or missing confidence fails the query closed, and output retains
 the score with a mandatory-review marker and its evidence citation count.
 
+Workspace owners register X25519 encryption and Ed25519 signing public keys in
+the authenticated catalog before granting a member. Shared raw batches are
+canonicalized, signed by an active workspace principal, and wrapped separately
+for each active recipient with ephemeral X25519, HKDF-SHA256, and AES-256-GCM.
+Transport files contain ciphertext and opaque principal identifiers only; local
+paths and plaintext FTS databases are never included. An authorized recipient
+decrypts in memory, verifies the sender and batch hashes, imports immutable raw
+evidence, and rebuilds its own projection. Revocation atomically disables the
+membership and corpus grants, revokes that corpus-specific public key, and
+advances the corpus key epoch, so stale bundles and cached local queries fail
+before content access.
+
 **Provision:** `aidevops knowledge init repo` or `aidevops knowledge init personal`.
 **Repair:** `aidevops knowledge provision` is idempotent — safe to re-run.
 

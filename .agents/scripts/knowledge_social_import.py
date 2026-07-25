@@ -235,6 +235,16 @@ def import_coverage(connection: Any, archive: dict[str, Any], provider: str, con
 
 def import_archive(root: Path, archive_path: Path) -> dict[str, Any]:
     archive, payload = load_archive(archive_path)
+    return import_archive_payload(root, archive, payload)
+
+
+def import_archive_payload(
+    root: Path, archive: dict[str, Any], payload: bytes
+) -> dict[str, Any]:
+    """Import an already-validated in-memory archive without plaintext staging."""
+    reject_credentials(archive)
+    if payload != canonical_json(archive).encode("utf-8"):
+        raise SocialStoreError("archive payload is not canonical")
     provider = validate_opaque(required_text(archive, "provider"), "provider")
     connection_id = validate_opaque(required_text(archive, "connection_id"), "connection_id")
     completed_at = required_text(archive, "exported_at")
