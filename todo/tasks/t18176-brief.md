@@ -22,7 +22,7 @@ mode: subagent
 - **Session:** OpenCode interactive social-knowledge architecture session
 - **Created by:** ai-interactive
 - **Parent task:** none
-- **Blocked by:** none
+- **Blocked by:** Cryptographic maintainer approval for parent closeout; no implementation blocker remains.
 - **Conversation context:** The user requested a local knowledge base for personal and shared X accounts, initial backfill plus periodic collection, future multi-platform support, and evidence-backed questions about gathered knowledge, ideas, products, and opinions.
 
 ## What
@@ -57,8 +57,9 @@ and re-tiered before dispatch.
 ## PR Conventions
 
 This is a `parent-task`. Planning and intermediate child PRs use a non-closing
-reference to the parent. Only the final child may close the parent after every
-declared phase is filed, merged, and verified.
+reference to the parent. The final child, or an evidence-only closeout PR after
+that child merges, may close the parent only after every declared phase is filed,
+merged, and verified.
 
 Keep the `parent-task` label as the permanent parent dispatch block. Do not add
 `no-auto-dispatch`: `shared-phase-filing.sh` interprets that label as an explicit
@@ -165,12 +166,12 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 - **Original objective:** Create a secure personal/shared social knowledge capability with API-first ingestion and federated retrieval.
 - **Preserved user directions:** Initial backfill, periodic routines, shared collection once, personal plus shared queries, future provider support, and evidence-backed opinion semantics.
 - **Trigger and evidence:** not triggered.
-- **Completed and verified:** Architecture research and decisions are recorded in the plan.
-- **Remaining acceptance criteria:** Every declared implementation phase and final end-to-end verification.
+- **Completed and verified:** The architecture plan, all seven sequential phases, Phase 6 security hardening, and the final end-to-end fixture matrix are merged.
+- **Remaining acceptance criteria:** None in the implementation; parent closure remains subject to the recorded maintainer-approval gate.
 - **Unsafe route not to repeat:** No unbounded API/browser retry, plaintext team sync, central collection of personal corpora, or weak-signal opinion inference.
-- **Next safe route:** Execute one verified sequential child at a time.
-- **Resume condition:** Current child has a worker-ready brief and all predecessor PRs are merged.
-- **Owner and status:** Parent coordinator; not-triggered.
+- **Next safe route:** Reconcile the checked parent criteria after cryptographic maintainer approval, without adding another implementation phase.
+- **Resume condition:** Issue #28587 has a current valid approval and still shows all seven child issues closed.
+- **Owner and status:** Parent coordinator; implementation complete, authority gate pending.
 
 ### Files Scope
 
@@ -180,7 +181,7 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 
 ## Acceptance Criteria
 
-- [ ] The canonical plan defines placement, physical layout, catalog/social schemas, API/archive/browser boundaries, authorization, routines, Vault sharing, query semantics, migrations, and negative tests.
+- [x] The canonical plan defines placement, physical layout, catalog/social schemas, API/archive/browser boundaries, authorization, routines, Vault sharing, query semantics, migrations, and negative tests.
 
   ```yaml
   verify:
@@ -189,7 +190,7 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
     path: "todo/plans/social-knowledge-corpora.md"
   ```
 
-- [ ] Seven ordered, independently mergeable phases are declared and later phases use prior-merge auto-fire markers.
+- [x] Seven ordered, independently mergeable phases are declared and later phases use prior-merge auto-fire markers.
 
   ```yaml
   verify:
@@ -197,7 +198,7 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
     run: "test $(rg -c '^- Phase [1-7] - ' todo/tasks/t18176-brief.md) -eq 7 && test $(rg -c '\\[auto-fire:on-prior-merge\\]' todo/tasks/t18176-brief.md) -eq 6"
   ```
 
-- [ ] The architecture explicitly prevents cross-corpus access, personal-to-team annotation/cache leakage, platform writes, credential exposure, and opinion inference from weak signals.
+- [x] The architecture explicitly prevents cross-corpus access, personal-to-team annotation/cache leakage, platform writes, credential exposure, and opinion inference from weak signals.
 
   ```yaml
   verify:
@@ -206,9 +207,37 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
     path: "todo"
   ```
 
-- [ ] Existing repo/personal knowledge behavior is preserved until child migration and compatibility tests pass.
-- [ ] The parent remains `parent-task`/non-dispatchable and is not closed by this planning PR.
-- [ ] Brief validation and changed-file lint pass.
+- [x] Existing repo/personal knowledge behavior is preserved until child migration and compatibility tests pass.
+
+  ```yaml
+  verify:
+    method: bash
+    run: "bash .agents/tests/test-knowledge-corpus.sh && bash tests/test-knowledge-provisioning.sh && bash .agents/tests/test-knowledge-cli.sh"
+  ```
+
+- [x] The parent remains `parent-task`/non-dispatchable and is not closed by this planning PR.
+
+  ```yaml
+  verify:
+    method: manual
+    prompt: "Verify issue #28587 remains the parent-task, planning PR #28588 did not close it, and child issues #28591, #28597, #28602, #28605, #28607, #28613, and #28617 are closed."
+  ```
+
+- [x] Brief validation and changed-file lint pass.
+
+  ```yaml
+  verify:
+    method: bash
+    run: ".agents/scripts/verify-brief-helper.sh check-readiness todo/tasks/t18176-brief.md && .agents/scripts/linters-local.sh --changed"
+  ```
+
+## Closeout Evidence
+
+- Planning PR #28588 and phase PRs #28592, #28600, #28603, #28606, #28612, #28616, and #28619 are merged; Phase 6 hardening PR #28620 is also merged.
+- Child issues #28591, #28597, #28602, #28605, #28607, #28613, and #28617 are closed.
+- Final verification covers corpus compatibility, provider-neutral storage, X pagination and terminal failures, federated authorization, fenced routines, encrypted sharing/revocation, and bounded browser-gap capture.
+- Live X account validation remains optional and credential-gated; default-on multi-human sharing remains gated on external crypto/security review.
+- No release was requested for the implementation or this closeout.
 
 ## Context & Decisions
 
@@ -236,8 +265,8 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 
 ## Dependencies
 
-- **Blocked by:** none.
-- **Blocks:** all seven declared child phases.
+- **Blocked by:** Cryptographic maintainer approval before closing issue #28587; implementation and verification are complete.
+- **Blocks:** none; all seven declared child phases are closed.
 - **External:** X developer-app/account authorization is required only for live Phase 3 testing; credentials never enter issue bodies, briefs, arguments, logs, or model context.
 
 ## Estimate Breakdown
