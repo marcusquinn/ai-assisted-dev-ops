@@ -872,13 +872,12 @@ _check_and_handle_shallow_clone() {
 	fi
 }
 
-# Rebase onto the detected origin default branch and force-push the current branch.
-# Args: $1=branch $2=skip_hooks (0|1, optional, default 0) $3=skip_rebase (0|1, optional, default 0)
-# Returns 1 on rebase conflict or push failure.
-_rebase_and_push() {
+# Rebase onto the detected origin default branch without mutating the remote.
+# Args: $1=branch $2=skip_rebase (0|1, optional, default 0)
+# Returns 1 on rebase conflict.
+_rebase_for_push() {
 	local branch="$1"
-	local skip_hooks="${2:-0}"
-	local skip_rebase="${3:-0}"
+	local skip_rebase="${2:-0}"
 	local base_branch="" base_ref=""
 	base_branch=$(_resolve_remote_default_branch origin) || return 1
 	base_ref="origin/${base_branch}"
@@ -927,6 +926,14 @@ _rebase_and_push() {
 			git commit -m "chore: reset .task-counter to ${base_ref} value (t2229 race prevention)" --no-verify
 		fi
 	fi
+	return 0
+}
+
+# Push a branch after all final-diff metadata validation has passed.
+# Args: $1=branch $2=skip_hooks (0|1, optional, default 0)
+_push_branch() {
+	local branch="$1"
+	local skip_hooks="${2:-0}"
 
 	print_info "Pushing to origin/${branch}..."
 
@@ -960,6 +967,16 @@ _rebase_and_push() {
 		print_error "Push failed (exit ${push_rc}). Check remote state and retry."
 		return 1
 	fi
+	return 0
+}
+
+# Compatibility wrapper for callers that do not need a pre-push validation gap.
+_rebase_and_push() {
+	local branch="$1"
+	local skip_hooks="${2:-0}"
+	local skip_rebase="${3:-0}"
+	_rebase_for_push "$branch" "$skip_rebase" || return 1
+	_push_branch "$branch" "$skip_hooks" || return 1
 	return 0
 }
 
