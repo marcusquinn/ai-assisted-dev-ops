@@ -1,6 +1,7 @@
 import { execFileSync, execSync, spawn } from "child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
+import { inspectHookFile } from "./hook-file-inspection.mjs";
 
 export let tool;
 try {
@@ -171,7 +172,6 @@ const PRE_EDIT_GUIDANCE = {
   3: "WARNING — proceed with caution.",
 };
 
-const MAX_HOOK_INSPECTION_BYTES = 1024 * 1024;
 const HOOK_MARKERS = {
   "pre-commit": {
     quality: "# aidevops-pre-commit-hook",
@@ -221,26 +221,6 @@ function resolveGitMetadataPath(worktree, selector) {
     },
   ).trim();
   return realpathSync(isAbsolute(rawPath) ? rawPath : resolve(worktree, rawPath));
-}
-
-function inspectHookFile(hooksDir, hookName, markers, directorySafe) {
-  const markerStatus = Object.fromEntries(Object.keys(markers).map((name) => [name, false]));
-  if (!directorySafe) return { status: "unsafe-hooks-directory", markers: markerStatus };
-
-  const hookPath = join(hooksDir, hookName);
-  let hookStat;
-  try {
-    hookStat = lstatSync(hookPath);
-  } catch {
-    return { status: "missing", markers: markerStatus };
-  }
-  if (hookStat.isSymbolicLink()) return { status: "unsafe-symlink", markers: markerStatus };
-  if (!hookStat.isFile()) return { status: "unsupported-file-type", markers: markerStatus };
-  if (hookStat.size > MAX_HOOK_INSPECTION_BYTES) return { status: "oversized", markers: markerStatus };
-
-  const content = readFileSync(hookPath, "utf-8");
-  for (const [name, marker] of Object.entries(markers)) markerStatus[name] = content.includes(marker);
-  return { status: "regular-file", markers: markerStatus };
 }
 
 function inspectGitHooks(worktree) {
