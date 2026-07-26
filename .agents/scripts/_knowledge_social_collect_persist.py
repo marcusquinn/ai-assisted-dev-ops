@@ -254,8 +254,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
         lease = _run_lease(context)
-        now = social_now()
-        assert_run_lease(database, lease, now_epoch=now)
+        assert_run_lease(database, lease, now_epoch=social_now())
         _assert_connection_binding(database, context)
         raw = _raw_batch(
             context, page.payload, page.request, page.archive["exported_at"]
@@ -285,7 +284,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
                 resource_delta=resource_count,
                 terminal=page.complete,
             ),
-            now_epoch=now,
+            now_epoch=social_now(),
         )
         database.execute("COMMIT")
         return resource_count
@@ -367,8 +366,7 @@ def record_terminal(
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
         lease = _run_lease(context)
-        now = social_now()
-        assert_run_lease(database, lease, now_epoch=now)
+        assert_run_lease(database, lease, now_epoch=social_now())
         _assert_connection_binding(database, context)
         raw = _raw_batch(context, payload, request, observed_at)
         upsert_connection(
@@ -382,6 +380,7 @@ def record_terminal(
             context,
             FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
         )
+        _upsert_terminal_coverage(database, context, raw, decision)
         update_run_receipt(
             database,
             lease,
@@ -391,9 +390,8 @@ def record_terminal(
                 retry_after=retry_after,
                 terminal=True,
             ),
-            now_epoch=now,
+            now_epoch=social_now(),
         )
-        _upsert_terminal_coverage(database, context, raw, decision)
         database.execute("COMMIT")
         return retry_after
     except Exception:
@@ -417,12 +415,6 @@ def record_bounded_stop(
         lease = _run_lease(context)
         assert_run_lease(database, lease, now_epoch=now)
         _assert_connection_binding(database, context)
-        update_run_receipt(
-            database,
-            lease,
-            RunReceiptUpdate(status, failure_class=failure, terminal=True),
-            now_epoch=now,
-        )
         updated = database.execute(
             "UPDATE coverage_records SET status=?,unavailable_reason=?,observed_at=? "
             "WHERE provider=? AND connection_id=? AND stream=?",
@@ -437,6 +429,12 @@ def record_bounded_stop(
         ).rowcount
         if updated != 1:
             raise SocialStoreError("social stop has no durable coverage checkpoint")
+        update_run_receipt(
+            database,
+            lease,
+            RunReceiptUpdate(status, failure_class=failure, terminal=True),
+            now_epoch=social_now(),
+        )
         database.execute("COMMIT")
     except Exception:
         if database.in_transaction:

@@ -308,6 +308,151 @@ assert_eq "stale collector cannot advance the committed watermark" \
 	"$(sql_value "SELECT watermark FROM sync_cursors WHERE connection_id='conn_sync' AND stream='authored'")" \
 	"post101"
 
+expiry_summary=$(
+	python3 - "$ROOT" "$SCRIPT_DIR/../scripts" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+import _knowledge_social_collect_persist as persistence
+from _knowledge_social_collect import (
+    CollectionContext,
+    ConnectionConfig,
+    CursorState,
+    PageCheckpoint,
+    SuccessfulPage,
+    TerminalDecision,
+)
+from _knowledge_social_lease import (
+    RunLeaseRequest,
+    SocialLeaseLostError,
+    acquire_run_lease,
+    fail_active_run,
+    release_run_lease,
+)
+from _knowledge_social_x import STREAMS
+
+root = Path(sys.argv[1])
+
+
+def durable_state():
+    with sqlite3.connect(root / "index" / "social.db") as database:
+        cursor = database.execute(
+            "SELECT cursor,watermark,backfill_complete FROM sync_cursors "
+            "WHERE connection_id='conn_sync' AND stream='authored'"
+        ).fetchone()
+        fetches = database.execute(
+            "SELECT count(*) FROM fetch_batches "
+            "WHERE connection_id='conn_sync' AND stream='authored'"
+        ).fetchone()[0]
+        coverage = database.execute(
+            "SELECT status,unavailable_reason,batch_id FROM coverage_records "
+            "WHERE provider='xapi' AND connection_id='conn_sync' "
+            "AND stream='authored'"
+        ).fetchone()
+    return cursor, fetches, coverage
+
+
+def collection_for(lease):
+    cursor = durable_state()[0]
+    return CollectionContext(
+        root,
+        "conn_sync",
+        {"id": "acct42"},
+        "authored",
+        "none",
+        ConnectionConfig(("authored",), {"media_hydration": "none"}),
+        CursorState(cursor[0], cursor[1], bool(cursor[2])),
+        STREAMS["authored"],
+        lease=lease,
+        provider="xapi",
+    )
+
+
+def reject_after_expiry(start, operation):
+    lease = acquire_run_lease(
+        root,
+        RunLeaseRequest(
+            "conn_sync", "authored", f"expiry_{start}", "sync", 2
+        ),
+        now_epoch=start,
+    )
+    clock_calls = 0
+
+    def advancing_clock():
+        nonlocal clock_calls
+        clock_calls += 1
+        return start + (1 if clock_calls == 1 else 2)
+
+    original_clock = persistence.social_now
+    persistence.social_now = advancing_clock
+    try:
+        try:
+            operation(collection_for(lease))
+        except SocialLeaseLostError:
+            pass
+        else:
+            raise SystemExit("expired lease committed social persistence")
+    finally:
+        persistence.social_now = original_clock
+    successor = acquire_run_lease(
+        root,
+        RunLeaseRequest(
+            "conn_sync", "authored", f"successor_{start}", "sync", 10
+        ),
+        now_epoch=start + 2,
+    )
+    fail_active_run(root, successor, "test_cleanup", now_epoch=start + 2)
+    release_run_lease(root, successor)
+
+
+def persist_success(context):
+    page = SuccessfulPage(
+        {"status": 200, "observed_at": "2026-07-25T08:00:00Z", "data": []},
+        "/2/users/acct42/tweets?max_results=100",
+        {
+            "remote_account_id": "acct42",
+            "enabled_streams": ["authored"],
+            "policy": {"media_hydration": "none"},
+            "accounts": [],
+            "objects": [],
+            "activities": [],
+            "media": [],
+            "exported_at": "2026-07-25T08:00:00Z",
+        },
+        PageCheckpoint(None, "must_not_commit"),
+        True,
+        1,
+    )
+    persistence.persist_page(context, page)
+
+
+def persist_terminal(context):
+    persistence.record_terminal(
+        context,
+        {"status": 500, "observed_at": "2026-07-25T08:01:00Z"},
+        "/2/users/acct42/tweets?max_results=100",
+        TerminalDecision("failed", "failed", "provider"),
+    )
+
+
+def persist_stop(context):
+    persistence.record_bounded_stop(context, "paused", "budget")
+
+
+before = durable_state()
+reject_after_expiry(6000, persist_success)
+reject_after_expiry(7000, persist_terminal)
+reject_after_expiry(8000, persist_stop)
+if durable_state() != before:
+    raise SystemExit("expired persistence changed durable social state")
+print("page:terminal:stop:rolled-back")
+PY
+)
+assert_eq "leases expiring during persistence roll back every durable path" \
+	"$expiry_summary" "page:terminal:stop:rolled-back"
+
 cat >"$TMP_DIR/missing.json" <<'JSON'
 {
   "provider": "xapi",
