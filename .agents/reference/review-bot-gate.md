@@ -40,6 +40,24 @@ check and completion behaviour are consistent across CI and in-agent merge paths
 
 Workers MUST use `full-loop-helper.sh merge` — direct `gh pr merge` bypasses the gate (GH#17541).
 
+## Superseded CodeRabbit change requests
+
+The full-loop readiness gate may dismiss a stale CodeRabbit `CHANGES_REQUESTED`
+review only when every active blocker is the exact `coderabbitai[bot]` identity,
+each blocking review names a non-current commit, and the trusted bot subsequently
+posts both the addressed marker and the deterministic “no blocking findings”
+message for the exact current SHA. The current SHA must also have a terminal-
+success `CodeRabbit` status context from a trusted PR author.
+
+The helper reduces each reviewer's history to their latest state-changing review,
+re-reads the head immediately before each dismissal, and re-reads the aggregate
+review decision afterward. The merge transport checks the exact-head aggregate
+again immediately before mutation. Human or mixed reviewers, current-head
+requests, head drift, malformed evidence, missing/failed/pending status, and
+untrusted authors remain blocking. This is separate from the maintainer-applied
+`coderabbit-nits-ok` cosmetic override; the shared helper independently verifies
+that label while reusing reviewer enumeration and dismissal mechanics.
+
 ## Workflow
 
 - Before merging, run `review-bot-gate-helper.sh check <PR_NUMBER>` to collect

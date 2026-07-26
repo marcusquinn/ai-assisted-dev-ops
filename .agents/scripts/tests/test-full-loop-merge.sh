@@ -146,6 +146,12 @@ write_gh_stub_pr_issue_views() {
 	cat >>"${TEST_ROOT}/bin/gh" <<GHSTUB
 
 	if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "view" ]]; then
+	if [[ "\$*" == *"--json state,isDraft,reviewDecision,headRefOid"* ]]; then
+		_review_decision=""
+		[[ "$mode" == "late-review-block" ]] && _review_decision="CHANGES_REQUESTED"
+		printf '{"state":"OPEN","isDraft":false,"reviewDecision":"%s","headRefOid":"abc123headsha"}\n' "\$_review_decision"
+		exit 0
+	fi
 	if [[ "\$*" == *"--json state,mergedAt,mergeCommit"* ]]; then
 		_evidence_count=0
 		if [[ -f "${TEST_ROOT}/logs/evidence-count.txt" ]]; then
@@ -546,6 +552,19 @@ test_other_error_no_fallback() {
 	fi
 	print_result "other error: no signaling artifacts" "$any_signaling"
 
+	return 0
+}
+
+test_late_review_blocks_every_merge_transport() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "late-review-block"
+
+	local exit_code=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "1" "0" >/dev/null 2>&1 || exit_code=$?
+	local merge_calls=0
+	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "late review: live CHANGES_REQUESTED blocks merge" "$((exit_code == 0 ? 1 : 0))"
+	print_result "late review: admin merge transport is never invoked" "$((merge_calls == 0 ? 0 : 1))" "merge_calls=$merge_calls"
 	return 0
 }
 
@@ -981,6 +1000,7 @@ main() {
 	test_admin_fallback_blocks_needs_maintainer_review_issue
 	test_explicit_admin_no_signaling
 	test_other_error_no_fallback
+	test_late_review_blocks_every_merge_transport
 	test_graphql_rate_limit_rest_fallback
 	test_graphql_rate_limit_cmd_merge_phase_autofile
 	test_graphql_rate_limit_auto_no_rest_fallback

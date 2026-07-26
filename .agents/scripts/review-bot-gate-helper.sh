@@ -12,6 +12,8 @@
 #   review-bot-gate-helper.sh request-retry <PR_NUMBER> [REPO]
 #   review-bot-gate-helper.sh status-json   <PR_NUMBER> [REPO]
 #   review-bot-gate-helper.sh batch-retry   [REPO]
+#   review-bot-gate-helper.sh reconcile-stale-coderabbit <PR_NUMBER> [REPO] [EXPECTED_HEAD_SHA]
+#   review-bot-gate-helper.sh dismiss-coderabbit-nits <PR_NUMBER> [REPO]
 #
 # Commands:
 #   check          — Check once, return PASS/PASS_ADVISORY/PASS_RATE_LIMITED/WAITING/SKIP
@@ -25,6 +27,9 @@
 #   batch-retry    — Process all open PRs with 0 formal reviews, request retries
 #                     for rate-limited ones. Staggers requests to avoid re-triggering
 #                     rate limits. (GH#3932)
+#   reconcile-stale-coderabbit — Dismiss only superseded CodeRabbit change
+#                     requests after trusted clean exact-head evidence
+#   dismiss-coderabbit-nits — Preserve the maintainer-labelled cosmetic override
 #
 # Output values for check/wait:
 #   PASS              — At least one bot posted a real review
@@ -83,6 +88,13 @@ RBG_PASS_ADVISORY="PASS_ADVISORY"
 RBG_PASS_RATE_LIMITED="PASS_RATE_LIMITED"
 RBG_FALSE="false"
 RBG_COMPLETION_STRICT="strict"
+RBG_CODERABBIT_LOGIN="coderabbitai[bot]"
+RBG_CODERABBIT_STATUS_CONTEXT="coderabbit"
+RBG_CODERABBIT_ADDRESSED_MARKER='<!-- <review_comment_addressed> -->'
+RBG_CODERABBIT_NITS_LABEL="coderabbit-nits-ok"
+RBG_RECONCILE_MODE_NITS="nits"
+RBG_RECONCILE_MODE_SUPERSEDED="superseded"
+RBG_AUTHOR_CLASS_TRUSTED="trusted"
 
 # Rate-limit / quota notice patterns — entries that indicate the bot tried to
 # review but was capacity-constrained. Used by grace-period logic
@@ -172,7 +184,7 @@ _RBG_EVIDENCE_SNAPSHOT_READY=0
 # --- Functions ---
 
 usage() {
-	echo "Usage: $(basename "$0") {check|event-check|classify-infra-rate-limit|wait|list|request-retry|status-json|batch-retry} <PR_NUMBER> [REPO] [MAX_WAIT]"
+	echo "Usage: $(basename "$0") {check|event-check|classify-infra-rate-limit|wait|list|request-retry|status-json|batch-retry|reconcile-stale-coderabbit|dismiss-coderabbit-nits} <PR_NUMBER> [REPO] [EXTRA]"
 	echo ""
 	echo "Commands:"
 	echo "  check          Check once for bot reviews (returns PASS/PASS_ADVISORY/PASS_RATE_LIMITED/WAITING/SKIP)"
@@ -183,6 +195,8 @@ usage() {
 	echo "  request-retry  Request review retry if bots were rate-limited (idempotent)"
 	echo "  status-json    Print machine-readable gate status"
 	echo "  batch-retry    Process all open PRs with 0 reviews, request retries (GH#3932)"
+	echo "  reconcile-stale-coderabbit  Reconcile a stale CodeRabbit-only change request"
+	echo "  dismiss-coderabbit-nits  Dismiss CodeRabbit-only reviews under the maintainer label"
 	return 0
 }
 
@@ -549,6 +563,204 @@ _rbg_fetch_evidence_collection() {
 		return 1
 	fi
 	printf '%s\n' "$records_json"
+	return 0
+}
+
+_rbg_pr_reconciliation_snapshot() {
+	local pr_number="$1"
+	local repo="$2"
+	local pr_json=""
+	local pull_endpoint=""
+
+	printf -v pull_endpoint 'repos/%s/pulls/%s' "$repo" "$pr_number"
+	pr_json=$(gh api "$pull_endpoint" 2>/dev/null) || return 1
+	printf '%s\n' "$pr_json" | jq -ce '{
+		head:(.head.sha // ""),
+		state:(.state // ""),
+		association:(.author_association // ""),
+		labels:[.labels[]? | .name // empty]
+	}' || return 1
+	return 0
+}
+
+_rbg_changes_requested_reviews() {
+	local pr_number="$1"
+	local repo="$2"
+	local reviews_json=""
+
+	reviews_json=$(_rbg_fetch_evidence_collection "$pr_number" "$repo" reviews) || return 1
+	printf '%s\n' "$reviews_json" | jq -ce '
+		def state_changing: .state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED";
+		if any(.[]?; state_changing and (
+			(.user | type) != "object"
+			or (.user.login | type) != "string"
+			or (.user.login | length) == 0
+			or (.submitted_at | type) != "string"
+			or (.submitted_at | length) == 0
+			or (.id | type) != "number"
+		)) then error("malformed state-changing review")
+		else map(select(state_changing))
+		| group_by(.user.login)
+		| map(max_by([.submitted_at, .id]))
+		| map(select(.state == "CHANGES_REQUESTED")
+			| {id,login:.user.login,user_type:(.user.type // ""),commit_id:(.commit_id // ""),submitted_at})
+		| sort_by(.id)
+		end
+	' || return 1
+	return 0
+}
+
+_rbg_coderabbit_status_is_terminal_success() {
+	local repo="$1"
+	local head_sha="$2"
+	local status_json=""
+
+	status_json=$(gh api "repos/${repo}/commits/${head_sha}/status?per_page=100" 2>/dev/null) || return 1
+	#aidevops:trust-boundary — accept only the exact CodeRabbit context on this immutable head.
+	printf '%s\n' "$status_json" | jq -e \
+		--arg context "$RBG_CODERABBIT_STATUS_CONTEXT" \
+		--arg login "$RBG_CODERABBIT_LOGIN" '
+		[.statuses[]? | select(((.context // "") | ascii_downcase) == $context)] as $matches
+		| ($matches | length) > 0
+		and all($matches[];
+			((.state // "") | ascii_downcase) == "success"
+			and (.creator == null or (
+				(.creator.login // "") == $login
+				and (.creator.type // "") == "Bot"
+			))
+		)
+	' >/dev/null 2>&1 || return 1
+	return 0
+}
+
+_rbg_exact_head_clean_coderabbit_evidence() {
+	local pr_number="$1"
+	local repo="$2"
+	local head_sha="$3"
+	local reviews_json="$4"
+	local comments_json=""
+	local latest_stale_at=""
+	local completion_marker=""
+	local evidence_id=""
+
+	latest_stale_at=$(printf '%s\n' "$reviews_json" | jq -er '[.[].submitted_at | select(. != "")] | max // empty') || return 1
+	comments_json=$(_rbg_fetch_evidence_collection "$pr_number" "$repo" issue-comments) || return 1
+	completion_marker="Re-review of exact head \`${head_sha}\` complete — **no blocking findings**."
+	#aidevops:trust-boundary — prose is evidence only from the exact GitHub bot identity with both deterministic markers.
+	evidence_id=$(printf '%s\n' "$comments_json" | jq -er \
+		--arg login "$RBG_CODERABBIT_LOGIN" \
+		--arg addressed "$RBG_CODERABBIT_ADDRESSED_MARKER" \
+		--arg completion "$completion_marker" \
+		--arg after "$latest_stale_at" '
+		[.[] | select(
+			(.user.login // "") == $login
+			and (.user.type // "") == "Bot"
+			and (.created_at // "") > $after
+			and ((.body // "") | contains($addressed))
+			and ((.body // "") | contains($completion))
+		) | .id] | first // empty
+	') || return 1
+	[[ -n "$evidence_id" ]] || return 1
+	printf '%s\n' "$evidence_id"
+	return 0
+}
+
+_rbg_dismiss_coderabbit_reviews() {
+	local mode="$1"
+	local pr_number="$2"
+	local repo="$3"
+	local head_sha="$4"
+	local reviews_json="$5"
+	local records=""
+	local review_id=""
+	local stale_sha=""
+	local snapshot=""
+	local snapshot_head=""
+	local snapshot_state=""
+	local message=""
+	local pull_endpoint=""
+
+	printf -v pull_endpoint 'repos/%s/pulls/%s' "$repo" "$pr_number"
+	records=$(printf '%s\n' "$reviews_json" | jq -er '.[] | [(.id | tostring),.commit_id] | @tsv') || return 1
+	while IFS=$'\t' read -r review_id stale_sha; do
+		[[ "$review_id" =~ ^[0-9]+$ ]] || return 1
+		snapshot=$(_rbg_pr_reconciliation_snapshot "$pr_number" "$repo") || return 1
+		snapshot_head=$(printf '%s\n' "$snapshot" | jq -r '.head')
+		snapshot_state=$(printf '%s\n' "$snapshot" | jq -r '.state | ascii_downcase')
+		[[ "$snapshot_state" == "open" && "$snapshot_head" == "$head_sha" ]] || {
+			printf 'ERROR: PR #%s head drifted before CodeRabbit review %s dismissal\n' "$pr_number" "$review_id" >&2
+			return 1
+		}
+		if [[ "$mode" == "$RBG_RECONCILE_MODE_NITS" ]]; then
+			message="Auto-dismissed: coderabbit-nits-ok label applied by maintainer (PR #${pr_number})"
+		else
+			message="Auto-dismissed superseded CodeRabbit review ${review_id}: stale head ${stale_sha}; clean exact-head re-review confirmed at ${head_sha}."
+		fi
+		gh api -X PUT "${pull_endpoint}/reviews/${review_id}/dismissals" \
+			-f message="$message" >/dev/null 2>&1 || return 1
+		printf 'dismissed CodeRabbit review %s: stale head %s; current head %s\n' "$review_id" "${stale_sha:-unknown}" "$head_sha" >&2
+	done <<<"$records"
+	return 0
+}
+
+do_reconcile_coderabbit_reviews() {
+	local mode="$1"
+	local pr_number="$2"
+	local repo="$3"
+	local expected_head="${4:-}"
+	local snapshot=""
+	local head_sha=""
+	local state=""
+	local association=""
+	local reviews_json=""
+	local fresh_reviews_json=""
+	local review_count=0
+	local post_json=""
+
+	[[ "$mode" == "$RBG_RECONCILE_MODE_SUPERSEDED" || "$mode" == "$RBG_RECONCILE_MODE_NITS" ]] || return 2
+	snapshot=$(_rbg_pr_reconciliation_snapshot "$pr_number" "$repo") || return 1
+	head_sha=$(printf '%s\n' "$snapshot" | jq -r '.head')
+	state=$(printf '%s\n' "$snapshot" | jq -r '.state | ascii_downcase')
+	association=$(printf '%s\n' "$snapshot" | jq -r '.association | ascii_upcase')
+	[[ "$state" == "open" && "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+	[[ -z "$expected_head" || "$expected_head" == "$head_sha" ]] || return 1
+	if [[ "$mode" == "$RBG_RECONCILE_MODE_NITS" ]]; then
+		#aidevops:trust-boundary — the cosmetic override is inert without its explicit maintainer label.
+		printf '%s\n' "$snapshot" | jq -e --arg label "$RBG_CODERABBIT_NITS_LABEL" \
+			'any(.labels[]?; . == $label)' >/dev/null 2>&1 || return 1
+	fi
+	if [[ "$mode" == "$RBG_RECONCILE_MODE_SUPERSEDED" ]]; then
+		#aidevops:trust-boundary — automatic reconciliation is restricted to trusted PR authors.
+		case "$association" in OWNER | MEMBER | COLLABORATOR) ;; *) return 1 ;; esac
+	fi
+
+	reviews_json=$(_rbg_changes_requested_reviews "$pr_number" "$repo") || return 1
+	review_count=$(printf '%s\n' "$reviews_json" | jq 'length') || return 1
+	if [[ "$review_count" -eq 0 ]]; then
+		[[ "$mode" == "$RBG_RECONCILE_MODE_NITS" ]] && return 0
+		return 1
+	fi
+	#aidevops:trust-boundary — never dismiss a human, lookalike, or malformed reviewer identity.
+	printf '%s\n' "$reviews_json" | jq -e --arg login "$RBG_CODERABBIT_LOGIN" '
+		all(.[]; (.id | type) == "number" and .login == $login and .user_type == "Bot")
+	' >/dev/null 2>&1 || return 1
+
+	if [[ "$mode" == "$RBG_RECONCILE_MODE_SUPERSEDED" ]]; then
+		printf '%s\n' "$reviews_json" | jq -e --arg head "$head_sha" '
+			all(.[]; (.commit_id | test("^[0-9a-fA-F]{40}$")) and .commit_id != $head and .submitted_at != "")
+		' >/dev/null 2>&1 || return 1
+		_rbg_exact_head_clean_coderabbit_evidence "$pr_number" "$repo" "$head_sha" "$reviews_json" >/dev/null || return 1
+		_rbg_coderabbit_status_is_terminal_success "$repo" "$head_sha" || return 1
+	fi
+
+	fresh_reviews_json=$(_rbg_changes_requested_reviews "$pr_number" "$repo") || return 1
+	[[ "$(printf '%s\n' "$reviews_json" | jq -cS .)" == "$(printf '%s\n' "$fresh_reviews_json" | jq -cS .)" ]] || return 1
+	_rbg_dismiss_coderabbit_reviews "$mode" "$pr_number" "$repo" "$head_sha" "$reviews_json" || return 1
+	post_json=$(gh pr view "$pr_number" --repo "$repo" --json headRefOid,reviewDecision 2>/dev/null) || return 1
+	printf '%s\n' "$post_json" | jq -e --arg head "$head_sha" '
+		(.headRefOid // "") == $head and ((.reviewDecision // "") | ascii_upcase) != "CHANGES_REQUESTED"
+	' >/dev/null 2>&1 || return 1
+	printf 'RECONCILED_CODERABBIT_REVIEW head=%s reviews=%s mode=%s\n' "$head_sha" "$review_count" "$mode"
 	return 0
 }
 
@@ -1342,7 +1554,7 @@ do_status_json() {
 	fi
 	jq -e --arg label "$SKIP_LABEL" '[.labels[]?.name] | index($label) != null' <<<"$pr_json" >/dev/null 2>&1 && skip_label_present_after="true"
 	case "$author_association" in
-	OWNER | MEMBER | COLLABORATOR) author_class="trusted" ;;
+	OWNER | MEMBER | COLLABORATOR) author_class="$RBG_AUTHOR_CLASS_TRUSTED" ;;
 	esac
 
 	# #aidevops:trust-boundary — SKIP, advisory completion, and rate-limit grace are trusted-author
@@ -1356,7 +1568,7 @@ do_status_json() {
 		fi
 		;;
 	SKIP)
-		if [[ "$author_class" == "trusted" && "$head_stable" == "true" && "$skip_label_present_after" == "true" ]]; then
+		if [[ "$author_class" == "$RBG_AUTHOR_CLASS_TRUSTED" && "$head_stable" == "true" && "$skip_label_present_after" == "true" ]]; then
 			permitted="true"
 			reason="trusted_skip"
 		else
@@ -1364,7 +1576,7 @@ do_status_json() {
 		fi
 		;;
 	P[A]SS_RATE_LIMITED)
-		if [[ "$author_class" == "trusted" && "$head_stable" == "true" ]]; then
+		if [[ "$author_class" == "$RBG_AUTHOR_CLASS_TRUSTED" && "$head_stable" == "true" ]]; then
 			permitted="true"
 			reason="trusted_rate_limit_grace"
 		else
@@ -1372,7 +1584,7 @@ do_status_json() {
 		fi
 		;;
 	P[A]SS_ADVISORY)
-		if [[ "$author_class" == "trusted" && "$head_stable" == "true" ]]; then
+		if [[ "$author_class" == "$RBG_AUTHOR_CLASS_TRUSTED" && "$head_stable" == "true" ]]; then
 			permitted="true"
 			reason="trusted_advisory_default"
 		else
@@ -1763,6 +1975,12 @@ main() {
 		;;
 	status-json)
 		do_status_json "$pr_number" "$repo"
+		;;
+	reconcile-stale-coderabbit)
+		do_reconcile_coderabbit_reviews "$RBG_RECONCILE_MODE_SUPERSEDED" "$pr_number" "$repo" "$max_wait"
+		;;
+	dismiss-coderabbit-nits)
+		do_reconcile_coderabbit_reviews "$RBG_RECONCILE_MODE_NITS" "$pr_number" "$repo"
 		;;
 	-h | --help | help)
 		usage

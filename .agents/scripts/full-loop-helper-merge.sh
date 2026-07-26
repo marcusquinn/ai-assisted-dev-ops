@@ -675,6 +675,30 @@ _merge_resolve_match_head() {
 	return 0
 }
 
+_merge_review_state_still_clear() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head="$3"
+	local review_json=""
+
+	review_json=$(gh pr view "$pr_number" --repo "$repo" \
+		--json state,isDraft,reviewDecision,headRefOid 2>/dev/null) || {
+		print_error "Could not refresh PR #${pr_number} review state immediately before merge"
+		return 1
+	}
+	#aidevops:trust-boundary — admin and REST merge paths must not bypass a review added after readiness verification.
+	if ! printf '%s\n' "$review_json" | jq -e --arg head "$expected_head" '
+		.state == "OPEN"
+		and .isDraft != true
+		and (.headRefOid // "") == $head
+		and ((.reviewDecision // "") | ascii_upcase) != "CHANGES_REQUESTED"
+	' >/dev/null 2>&1; then
+		print_error "PR #${pr_number} review or head state changed after readiness verification; refusing merge"
+		return 1
+	fi
+	return 0
+}
+
 _merge_execute() {
 	local pr_number="$1"
 	local repo="$2"
@@ -696,6 +720,7 @@ _merge_execute() {
 		print_error "Cannot bind merge to a remotely verified PR head SHA"
 		return 1
 	}
+	_merge_review_state_still_clear "$pr_number" "$repo" "$match_head_sha" || return 1
 	#aidevops:trust-boundary GH#17671/GH#28622 -- every merge mode, including
 	# --auto and the non-admin REST transport fallback, must pass the same live
 	# external/fork and exact-head cryptographic authority check.

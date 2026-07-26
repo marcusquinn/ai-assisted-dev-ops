@@ -51,10 +51,11 @@ print_result() {
 # Reset review fixture to the default (two CR-only CHANGES_REQUESTED reviews).
 reset_mock_state() {
 	: >"$GH_LOG"
+	export PR_HAS_NITS_LABEL=1
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
 [
-  {"id": 1001, "user": {"login": "coderabbitai[bot]"}, "state": "CHANGES_REQUESTED"},
-  {"id": 1002, "user": {"login": "coderabbitai[bot]"}, "state": "CHANGES_REQUESTED"}
+  {"id": 1001, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "state": "CHANGES_REQUESTED", "commit_id": "1111111111111111111111111111111111111111", "submitted_at": "2026-07-26T10:00:00Z"},
+  {"id": 1002, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "state": "CHANGES_REQUESTED", "commit_id": "2222222222222222222222222222222222222222", "submitted_at": "2026-07-26T10:01:00Z"}
 ]
 EOF
 	return 0
@@ -65,6 +66,7 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export AIDEVOPS_REVIEW_BOT_GATE_HELPER="${SCRIPT_DIR}/../review-bot-gate-helper.sh"
 	: >"$LOGFILE"
 	GH_LOG="${TEST_ROOT}/gh-calls.log"
 	: >"$GH_LOG"
@@ -101,6 +103,19 @@ if [[ "${1:-}" == "api" ]]; then
 	if [[ "$*" == *"dismissals"* || "$*" == *"-X PUT"* ]]; then
 		exit 0
 	fi
+
+	# GET /pulls/<number> snapshot used for the pre-dismiss head-drift guard.
+	if [[ "$*" == *"/pulls/"* && "$*" != *"/reviews"* ]]; then
+		_labels='[]'
+		[[ "${PR_HAS_NITS_LABEL:-0}" == "1" ]] && _labels='[{"name":"coderabbit-nits-ok"}]'
+		printf '%s\n' "{\"state\":\"open\",\"head\":{\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"author_association\":\"CONTRIBUTOR\",\"labels\":${_labels}}"
+		exit 0
+	fi
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	printf '%s\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewDecision":""}'
+	exit 0
 fi
 
 exit 0
@@ -175,8 +190,8 @@ test_case_b_mixed_reviewers_returns_1_no_dismissals() {
 	# Override fixture: one CR review + one human review.
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
 [
-  {"id": 2001, "user": {"login": "coderabbitai[bot]"}, "state": "CHANGES_REQUESTED"},
-  {"id": 2002, "user": {"login": "human-reviewer"}, "state": "CHANGES_REQUESTED"}
+  {"id": 2001, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "state": "CHANGES_REQUESTED", "commit_id": "1111111111111111111111111111111111111111", "submitted_at": "2026-07-26T10:00:00Z"},
+  {"id": 2002, "user": {"login": "human-reviewer", "type": "User"}, "state": "CHANGES_REQUESTED", "commit_id": "2222222222222222222222222222222222222222", "submitted_at": "2026-07-26T10:01:00Z"}
 ]
 EOF
 	: >"$GH_LOG"
@@ -209,7 +224,7 @@ test_case_c_no_changes_requested_reviews_returns_0() {
 	# Override fixture: no CHANGES_REQUESTED reviews (e.g. already dismissed).
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
 [
-  {"id": 3001, "user": {"login": "coderabbitai[bot]"}, "state": "APPROVED"}
+  {"id": 3001, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "state": "APPROVED", "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "submitted_at": "2026-07-26T10:00:00Z"}
 ]
 EOF
 	: >"$GH_LOG"
@@ -260,6 +275,24 @@ test_case_d_empty_reviews_array_returns_0() {
 	return 0
 }
 
+# =============================================================================
+# Case E: shared helper must enforce the explicit maintainer label itself.
+# =============================================================================
+
+test_case_e_missing_label_returns_1_no_dismissals() {
+	reset_mock_state
+	export PR_HAS_NITS_LABEL=0
+	local result=0
+	_pulse_merge_dismiss_coderabbit_nits "500" "owner/repo" || result=$?
+	if [[ "$result" -ne 0 ]] && ! grep -q "dismissals" "$GH_LOG"; then
+		print_result "Case E: missing nits label — returns 1, no dismissals" 0
+	else
+		print_result "Case E: missing nits label — returns 1, no dismissals" 1 \
+			"Expected fail-closed result without dismissal. Log: $(cat "$GH_LOG")"
+	fi
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -273,6 +306,7 @@ main() {
 	test_case_b_mixed_reviewers_returns_1_no_dismissals
 	test_case_c_no_changes_requested_reviews_returns_0
 	test_case_d_empty_reviews_array_returns_0
+	test_case_e_missing_label_returns_1_no_dismissals
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

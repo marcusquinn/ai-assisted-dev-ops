@@ -518,10 +518,8 @@ _resolve_pr_mergeable_status() {
 # Auto-dismiss CodeRabbit-only CHANGES_REQUESTED reviews when the
 # coderabbit-nits-ok PR label has been applied by a maintainer (t2179).
 #
-# Enumerates all CHANGES_REQUESTED reviews on the PR. If any reviewer is
-# NOT coderabbitai[bot], returns 1 immediately — human reviewers are never
-# auto-dismissed. Otherwise dismisses each CodeRabbit review via the GitHub
-# reviews/dismissals API and returns 0.
+# Delegates reviewer enumeration and dismissal to review-bot-gate-helper.sh so
+# the maintainer override and exact-head reconciliation share one trust boundary.
 #
 # Returns: 0 if all CR reviews dismissed (or none existed)
 #          1 if a non-CR human review is blocking dismissal
@@ -531,37 +529,18 @@ _resolve_pr_mergeable_status() {
 _pulse_merge_dismiss_coderabbit_nits() {
 	local pr_number="$1"
 	local repo_slug="$2"
-	local reviews_json review_count has_human ids review_id
+	local review_helper="${AIDEVOPS_REVIEW_BOT_GATE_HELPER:-${_PULSE_MERGE_PROCESS_DIR}/review-bot-gate-helper.sh}"
+	local helper_output=""
 
-	# Fetch all CHANGES_REQUESTED reviews as id+login pairs.
-	reviews_json=$(gh api "repos/${repo_slug}/pulls/${pr_number}/reviews" \
-		--jq '[.[] | select(.state=="CHANGES_REQUESTED") | {id: .id, login: .user.login}]' \
-		2>/dev/null) || reviews_json="[]"
-
-	# No CHANGES_REQUESTED reviews — nothing to dismiss, safe to proceed.
-	review_count=$(printf '%s' "$reviews_json" | jq 'length' 2>/dev/null) || review_count=0
-	if [[ "$review_count" -eq 0 ]]; then
-		return 0
+	if [[ ! -f "$review_helper" ]]; then
+		review_helper="${HOME}/.aidevops/agents/scripts/review-bot-gate-helper.sh"
 	fi
-
-	# If any CHANGES_REQUESTED reviewer is not coderabbitai[bot], bail immediately.
-	# Human reviewers are never auto-dismissed regardless of the label.
-	has_human=$(printf '%s' "$reviews_json" | \
-		jq -r '[.[] | select(.login != "coderabbitai[bot]")] | length' 2>/dev/null) || has_human=0
-	if [[ "$has_human" -gt 0 ]]; then
+	[[ -f "$review_helper" ]] || return 1
+	if ! helper_output=$(bash "$review_helper" dismiss-coderabbit-nits "$pr_number" "$repo_slug" 2>&1); then
+		[[ -n "$helper_output" ]] && printf '%s\n' "$helper_output" >>"$LOGFILE"
 		return 1
 	fi
-
-	# All CHANGES_REQUESTED reviews are from coderabbitai[bot] — dismiss each.
-	ids=$(printf '%s' "$reviews_json" | jq -r '.[].id' 2>/dev/null) || ids=""
-	while IFS= read -r review_id; do
-		[[ -z "$review_id" ]] && continue
-		gh api -X PUT \
-			"repos/${repo_slug}/pulls/${pr_number}/reviews/${review_id}/dismissals" \
-			-f message="Auto-dismissed: coderabbit-nits-ok label applied by maintainer (PR #${pr_number})" \
-			>/dev/null 2>&1 || true
-		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — dismissed CodeRabbit review ${review_id} (t2179)" >>"$LOGFILE"
-	done <<<"$ids"
+	[[ -n "$helper_output" ]] && printf '%s\n' "$helper_output" >>"$LOGFILE"
 
 	return 0
 }

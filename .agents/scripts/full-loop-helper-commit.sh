@@ -110,16 +110,65 @@ _full_loop_query_required_checks() {
 	return 0
 }
 
+_full_loop_review_bot_gate_helper_path() {
+	local helper_path="${SCRIPT_DIR}/review-bot-gate-helper.sh"
+
+	if [[ ! -f "$helper_path" ]]; then
+		helper_path="${HOME}/.aidevops/agents/scripts/review-bot-gate-helper.sh"
+	fi
+	[[ -f "$helper_path" ]] || return 1
+	printf '%s\n' "$helper_path"
+	return 0
+}
+
+_full_loop_reconcile_stale_coderabbit_review() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head="$3"
+	local rbg_helper=""
+	local refreshed_json=""
+
+	FULL_LOOP_RECONCILED_PR_JSON=""
+	rbg_helper=$(_full_loop_review_bot_gate_helper_path) || {
+		print_error "review-bot-gate-helper.sh not found — cannot reconcile stale CodeRabbit review state"
+		return 1
+	}
+	print_info "Checking whether CodeRabbit's blocking review is superseded at exact head ${expected_head}..."
+	if ! bash "$rbg_helper" reconcile-stale-coderabbit "$pr_number" "$repo" "$expected_head"; then
+		print_error "PR #${pr_number} retains changes-requested review state; automatic reconciliation was not authorized"
+		return 1
+	fi
+	refreshed_json=$(gh pr view "$pr_number" --repo "$repo" \
+		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
+		print_error "Cannot refresh PR #${pr_number} after CodeRabbit reconciliation"
+		return 1
+	}
+	if [[ "$(printf '%s' "$refreshed_json" | jq -r '.headRefOid // empty')" != "$expected_head" ]]; then
+		print_error "PR #${pr_number} head changed during CodeRabbit reconciliation"
+		return 1
+	fi
+	FULL_LOOP_RECONCILED_PR_JSON="$refreshed_json"
+	return 0
+}
+
 _full_loop_verify_pr_readiness() {
 	local pr_number="$1"
 	local repo="$2"
 	local pr_json=""
+	local verified_head=""
+	local review_decision=""
 
 	pr_json=$(gh pr view "$pr_number" --repo "$repo" \
 		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
 		print_error "Cannot read PR #${pr_number} readiness evidence"
 		return 1
 	}
+	verified_head=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
+	review_decision=$(printf '%s' "$pr_json" | jq -r '(.reviewDecision // "") | ascii_upcase')
+	if [[ "$review_decision" == "CHANGES_REQUESTED" && -n "$verified_head" ]]; then
+		_full_loop_reconcile_stale_coderabbit_review "$pr_number" "$repo" "$verified_head" || return 1
+		pr_json="$FULL_LOOP_RECONCILED_PR_JSON"
+	fi
 
 	if ! printf '%s' "$pr_json" | jq -e '
 		def up(v): (v // "" | ascii_upcase);
@@ -131,7 +180,6 @@ _full_loop_verify_pr_readiness() {
 		print_error "PR #${pr_number} is not remotely verified: require OPEN, non-draft, no changes requested, and a stable head"
 		return 1
 	fi
-	local verified_head=""
 	verified_head=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
 	local pr_head_ref=""
 	pr_head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // empty')
@@ -213,13 +261,8 @@ cmd_pre_merge_gate() {
 
 	_full_loop_verify_pr_readiness "$pr_number" "$repo" || return 1
 
-	local rbg_helper="${SCRIPT_DIR}/review-bot-gate-helper.sh"
-	if [[ ! -f "$rbg_helper" ]]; then
-		# Fallback to deployed location
-		rbg_helper="${HOME}/.aidevops/agents/scripts/review-bot-gate-helper.sh"
-	fi
-
-	if [[ ! -f "$rbg_helper" ]]; then
+	local rbg_helper=""
+	if ! rbg_helper=$(_full_loop_review_bot_gate_helper_path); then
 		print_error "review-bot-gate-helper.sh not found — refusing an unreviewed merge"
 		return 1
 	fi
