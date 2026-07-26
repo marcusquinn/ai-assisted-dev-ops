@@ -46,7 +46,8 @@ the previous checkpoint. Snapshot streams never infer deletion from partial
 coverage.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
-optional PRAW 8 child with a filtered environment and fixed read-only routing:
+optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and
+OAuth user identity; it never reuses the service-account research helper:
 
 ```bash
 knowledge-social-helper.sh sync-x --alias personal:default \
@@ -59,6 +60,11 @@ aidevops secret REDDIT_DEFAULT_CLIENT_ID REDDIT_DEFAULT_CLIENT_SECRET \
   --connection-id REDDIT_CONNECTION_ID \
   --account-id STABLE_REDDIT_ACCOUNT_ID \
   --stream authored_comments --profile default --budget 10 --page-size 100
+
+aidevops secret YOUTUBE_PERSONAL_ACCESS_TOKEN -- \
+  knowledge-social-helper.sh sync-youtube --alias personal:default \
+  --connection-id YOUTUBE_CONNECTION_ID --account-id STABLE_CHANNEL_ID \
+  --stream authored_videos --profile personal --budget 11 --page-size 50
 ```
 
 Every Reddit stream has an independent cursor. Authored content, inbox activity,
@@ -71,6 +77,17 @@ retention boundary rather than complete account history.
 Named Reddit profile selectors and handles remain local. The child receives only
 the selected `REDDIT_<PROFILE>_*` variables, emits an explicit serialized field
 allowlist, and cannot reach the separate approval-bound mutation provider.
+
+YouTube requires `youtube.readonly` user OAuth. The child receives only
+`YOUTUBE_<PROFILE>_ACCESS_TOKEN`, verifies `channels.list(mine=true)` before each
+page, and allows only list endpoints. Uploaded videos, bounded channel activity,
+owned playlists and membership, outbound subscriptions, channel-related comments
+and complete API-visible replies, and liked videos have independent checkpoints.
+Every page reserves one identity plus one list quota unit. Watch history, Watch
+Later, saved third-party playlists, and complete authored-comment history remain
+explicit unavailable/export-unverified coverage. API metadata carries the current
+30-day refresh/delete retention boundary. Details and official evidence:
+`.agents/content/social-youtube.md`.
 
 ## Approval-bound account operations
 

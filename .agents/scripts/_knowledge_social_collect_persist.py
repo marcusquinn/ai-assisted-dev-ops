@@ -27,6 +27,7 @@ from knowledge_social_import import (
     canonical_json,
     import_accounts,
     import_activities,
+    import_coverage,
     import_media,
     import_objects,
     reject_credentials,
@@ -264,6 +265,9 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         import_objects(database, page.archive, provider, raw.batch_id)
         import_activities(database, page.archive, provider, raw.batch_id)
         import_media(database, page.archive, provider, raw.batch_id)
+        import_coverage(
+            database, page.archive, provider, context.connection_id, raw.batch_id
+        )
         _refresh_fts(database, provider, page.archive)
         resource_count = sum(
             len(page.archive[key])
