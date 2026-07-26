@@ -6,16 +6,23 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sqlite3
 import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from _knowledge_social_collect import CursorState, SuccessfulPage, TerminalDecision
+from _knowledge_social_collect import (
+    CollectionContext,
+    CollectionProgress,
+    ContextRequest,
+    CursorState,
+    SuccessfulPage,
+    TerminalDecision,
+    terminal_decision_for_status,
+)
+from _knowledge_social_collect_cli import run_collector
 from _knowledge_social_collect_persist import (
     persist_page,
     record_bounded_stop,
@@ -47,10 +54,9 @@ from _knowledge_social_reddit_reader import (
     RedditReader,
     verified_identity,
 )
-from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
-from knowledge_corpus_context import CatalogError
+from knowledge_corpus_catalog import DEFAULT_ALIAS
 from knowledge_social_import import reject_credentials
-from knowledge_social_store import SocialStoreError, validate_opaque, validate_root
+from knowledge_social_store import validate_opaque
 
 
 def reddit_runner(args: argparse.Namespace) -> RedditReader:
@@ -65,21 +71,10 @@ def reddit_runner(args: argparse.Namespace) -> RedditReader:
 
 def terminal_decision(payload: dict[str, Any]) -> TerminalDecision | None:
     """Map terminal provider status codes to sanitized local run states."""
-    status = response_status(payload)
-    if status == 200:
-        return None
-    if status == 429:
-        return TerminalDecision("rate_limited", "paused", "rate_limit")
-    if status in (401, 403):
-        return TerminalDecision("failed", "failed", "authorization")
-    if status == 404:
-        return TerminalDecision("failed", "failed", "unavailable")
-    if status >= 500:
-        return TerminalDecision("failed", "failed", "provider")
-    return TerminalDecision("failed", "failed", "request")
+    return terminal_decision_for_status(response_status(payload))
 
 
-def _page_context(context: Any) -> PageContext:
+def _page_context(context: CollectionContext) -> PageContext:
     return PageContext(
         context.connection_id,
         context.account,
@@ -91,35 +86,78 @@ def _page_context(context: Any) -> PageContext:
 
 def _result(
     status: str,
-    pages: int,
-    resources: int,
-    budget_units: int,
+    progress: CollectionProgress,
     **extra: Any,
 ) -> dict[str, Any]:
     return {
         "status": status,
-        "pages": pages,
-        "resources": resources,
-        "budget_units": budget_units,
+        "pages": progress.pages,
+        "resources": progress.resources,
+        "budget_units": progress.budget_units,
         **extra,
     }
 
 
+def _terminal_result(
+    context: CollectionContext,
+    payload: dict[str, Any],
+    request: PageRequest,
+    decision: TerminalDecision,
+    progress: CollectionProgress,
+) -> dict[str, Any]:
+    retry_after = record_terminal(
+        context, payload, request.evidence_key(), decision
+    )
+    stopped = CollectionProgress(
+        progress.pages,
+        progress.resources,
+        progress.budget_units + context.spec.cost_units,
+    )
+    return _result(
+        decision.output_status,
+        stopped,
+        failure_class=decision.failure_class,
+        retry_after=retry_after,
+        run_id=context.lease.run_id if context.lease else None,
+    )
+
+
+def _persist_success(
+    context: CollectionContext,
+    payload: dict[str, Any],
+    request: PageRequest,
+) -> tuple[CollectionContext, int, bool]:
+    checkpoint, complete = page_checkpoint(payload, context.state, request)
+    archive = normalize_page(payload, _page_context(context))
+    page = SuccessfulPage(
+        payload,
+        request.evidence_key(),
+        archive,
+        checkpoint,
+        complete,
+        context.spec.cost_units,
+        retention_limit=context.spec.retention_limit,
+    )
+    resources = persist_page(context, page)
+    state = CursorState(checkpoint.next_cursor, checkpoint.watermark, complete)
+    return replace(context, state=state), resources, complete
+
+
 def collect_pages(
-    args: argparse.Namespace, runner: RedditReader, initial: Any
+    args: argparse.Namespace, runner: RedditReader, initial: CollectionContext
 ) -> dict[str, Any]:
     """Collect successful Reddit pages until completion, failure, or budget stop."""
     context = initial
-    pages = 0
-    resources = 0
-    budget_units = 0
-    while budget_units + context.spec.cost_units <= args.budget:
+    progress = CollectionProgress()
+    while progress.budget_units + context.spec.cost_units <= args.budget:
         if context.lease is None:
             raise RedditAdapterError("Reddit collection requires a collector lease")
-        renewed = renew_run_lease(
-            context.root, context.lease, args.lease_seconds
+        context = replace(
+            context,
+            lease=renew_run_lease(
+                context.root, context.lease, args.lease_seconds
+            ),
         )
-        context = replace(context, lease=renewed)
         request: PageRequest = page_request(
             context.stream,
             context.account["id"],
@@ -130,52 +168,19 @@ def collect_pages(
         reject_credentials(payload)
         decision = terminal_decision(payload)
         if decision:
-            retry_after = record_terminal(
-                context, payload, request.evidence_key(), decision
-            )
-            return _result(
-                decision.output_status,
-                pages,
-                resources,
-                budget_units + context.spec.cost_units,
-                failure_class=decision.failure_class,
-                retry_after=retry_after,
-                run_id=context.lease.run_id,
-            )
-        checkpoint, complete = page_checkpoint(payload, context.state, request)
-        archive = normalize_page(payload, _page_context(context))
-        page = SuccessfulPage(
-            payload,
-            request.evidence_key(),
-            archive,
-            checkpoint,
-            complete,
-            context.spec.cost_units,
-            retention_limit=context.spec.retention_limit,
-        )
-        resources += persist_page(context, page)
-        pages += 1
-        budget_units += context.spec.cost_units
-        context = replace(
-            context,
-            state=CursorState(
-                checkpoint.next_cursor, checkpoint.watermark, complete
-            ),
-        )
+            return _terminal_result(context, payload, request, decision, progress)
+        context, resources, complete = _persist_success(context, payload, request)
+        progress = progress.advance(resources, context.spec.cost_units)
         if complete:
             return _result(
                 "complete",
-                pages,
-                resources,
-                budget_units,
-                run_id=context.lease.run_id,
+                progress,
+                run_id=context.lease.run_id if context.lease else None,
             )
     record_bounded_stop(context, "paused", "budget")
     return _result(
         "budget_exhausted",
-        pages,
-        resources,
-        budget_units,
+        progress,
         run_id=context.lease.run_id if context.lease else None,
     )
 
@@ -214,11 +219,9 @@ def collect(
         context = replace(
             load_context(
                 root,
-                PROVIDER,
-                connection_id,
-                account,
-                args.stream,
-                "none",
+                ContextRequest(
+                    PROVIDER, connection_id, account, args.stream, "none"
+                ),
                 STREAMS,
             ),
             lease=lease,
@@ -258,32 +261,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    try:
-        base = (
-            args.base
-            if args.base
-            else Path.home() / ".aidevops" / ".agent-workspace" / "knowledge"
-        )
-        principal_id, corpora = authorized_scope(
-            base, "knowledge.write", args.alias
-        )
-        root = validate_root(corpora[0][1])
-        collector_id = validate_opaque(
-            args.collector_id or principal_id, "collector_id"
-        )
-        print(json.dumps(collect(args, root, collector_id), sort_keys=True))
-        return 0
-    except (
-        CatalogError,
-        OSError,
-        SocialStoreError,
-        sqlite3.Error,
-        subprocess.SubprocessError,
-        ValueError,
-    ) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 1
+    return run_collector(parse_args(), collect)
 
 
 if __name__ == "__main__":

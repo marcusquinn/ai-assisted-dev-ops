@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Protocol
 
+from _knowledge_social_fixture import FixtureSequence
 from _knowledge_social_x import XAdapterError, response_status
 from knowledge_social_import import reject_credentials
 
@@ -63,18 +64,6 @@ class GuardedXurl:
         )
 
 
-def _load_fixture(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise XAdapterError("X fixture must be a regular non-symlink file")
-    try:
-        fixture = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise XAdapterError("X fixture is not valid UTF-8 JSON") from error
-    if not isinstance(fixture, dict) or not isinstance(fixture.get("pages"), list):
-        raise XAdapterError("X fixture requires identity and pages")
-    return fixture
-
-
 def _fixture_page(entry: dict[str, Any], endpoint: str) -> dict[str, Any]:
     expectations = entry.get("expect_endpoint_contains", [])
     if not isinstance(expectations, list) or any(
@@ -93,22 +82,13 @@ class FixtureXurl:
     """Deterministic xurl substitute for pagination and failure fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = _load_fixture(path)
-        self.position = 0
+        self.fixture = FixtureSequence(path, "X", XAdapterError)
 
     def identity(self) -> dict[str, Any]:
-        identity = self.fixture.get("identity")
-        if not isinstance(identity, dict):
-            raise XAdapterError("X fixture identity must be an object")
-        return identity
+        return self.fixture.identity()
 
     def page(self, endpoint: str) -> dict[str, Any]:
-        pages = self.fixture["pages"]
-        if self.position >= len(pages) or not isinstance(pages[self.position], dict):
-            raise XAdapterError("X fixture has no page for request")
-        page = _fixture_page(pages[self.position], endpoint)
-        self.position += 1
-        return page
+        return _fixture_page(self.fixture.next_page(), endpoint)
 
 
 def _optional_text(record: dict[str, Any], key: str) -> None:

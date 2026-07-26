@@ -6,15 +6,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sqlite3
 import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from _knowledge_social_collect import terminal_decision_for_status
+from _knowledge_social_collect_cli import run_collector
 from _knowledge_social_lease import (
     RunLeaseRequest,
     SocialLeaseLostError,
@@ -46,14 +46,9 @@ from _knowledge_social_x_reader import (
     verified_identity,
 )
 from _knowledge_social_x_state import CollectionContext, load_context
-from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
-from knowledge_corpus_context import CatalogError
+from knowledge_corpus_catalog import DEFAULT_ALIAS
 from knowledge_social_import import reject_credentials
-from knowledge_social_store import (
-    SocialStoreError,
-    validate_opaque,
-    validate_root,
-)
+from knowledge_social_store import validate_opaque
 
 
 def xurl_runner(args: argparse.Namespace) -> XReader:
@@ -68,20 +63,7 @@ def xurl_runner(args: argparse.Namespace) -> XReader:
 
 def terminal_decision(payload: dict[str, Any]) -> TerminalDecision | None:
     """Map terminal response codes to sanitized local run states."""
-    status = response_status(payload)
-    if status == 200:
-        decision = None
-    elif status == 429:
-        decision = TerminalDecision("rate_limited", "paused", "rate_limit")
-    elif status in (401, 403):
-        decision = TerminalDecision("failed", "failed", "authorization")
-    elif status == 404:
-        decision = TerminalDecision("failed", "failed", "unavailable")
-    elif status >= 500:
-        decision = TerminalDecision("failed", "failed", "provider")
-    else:
-        decision = TerminalDecision("failed", "failed", "request")
-    return decision
+    return terminal_decision_for_status(response_status(payload))
 
 
 def _page_context(context: CollectionContext) -> PageContext:
@@ -264,32 +246,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    try:
-        base = (
-            args.base
-            if args.base
-            else Path.home() / ".aidevops" / ".agent-workspace" / "knowledge"
-        )
-        principal_id, corpora = authorized_scope(
-            base, "knowledge.write", args.alias
-        )
-        root = validate_root(corpora[0][1])
-        collector_id = validate_opaque(
-            args.collector_id or principal_id, "collector_id"
-        )
-        print(json.dumps(collect(args, root, collector_id), sort_keys=True))
-        return 0
-    except (
-        CatalogError,
-        OSError,
-        SocialStoreError,
-        sqlite3.Error,
-        subprocess.SubprocessError,
-        ValueError,
-    ) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 1
+    return run_collector(parse_args(), collect)
 
 
 if __name__ == "__main__":

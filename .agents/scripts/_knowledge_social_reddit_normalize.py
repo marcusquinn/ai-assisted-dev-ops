@@ -25,6 +25,28 @@ class PageContext:
     policy: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ActivityValue:
+    """Provider-neutral activity fields before dictionary serialization."""
+
+    activity_type: str
+    remote_id: str
+    actor_id: str
+    object_id: str | None
+    observed_at: str
+    occurred_at: str | None = None
+    provider_json: dict[str, Any] | None = None
+
+
+@dataclass
+class NormalizedRows:
+    """Mutable normalized row sets for one bounded page."""
+
+    accounts: dict[str, dict[str, Any]]
+    objects: dict[tuple[str, str], dict[str, Any]]
+    activities: dict[tuple[str, str], dict[str, Any]]
+
+
 def observation_time(payload: dict[str, Any]) -> str:
     value = payload.get("observed_at")
     if not isinstance(value, str) or not value:
@@ -196,24 +218,16 @@ def _content_object(
     }
 
 
-def _activity(
-    stream: str,
-    remote_id: str,
-    actor_id: str,
-    object_id: str | None,
-    observed_at: str,
-    occurred_at: str | None = None,
-    provider_json: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def _activity(value: ActivityValue) -> dict[str, Any]:
     return {
-        "activity_type": stream,
-        "remote_id": remote_id,
-        "actor_remote_id": actor_id,
-        "object_remote_id": object_id,
-        "occurred_at": occurred_at,
-        "observed_at": observed_at,
+        "activity_type": value.activity_type,
+        "remote_id": value.remote_id,
+        "actor_remote_id": value.actor_id,
+        "object_remote_id": value.object_id,
+        "occurred_at": value.occurred_at,
+        "observed_at": value.observed_at,
         "state": "active",
-        "provider_json": provider_json or {},
+        "provider_json": value.provider_json or {},
     }
 
 
@@ -221,18 +235,16 @@ def _normalize_content(
     item: dict[str, Any],
     context: PageContext,
     observed_at: str,
-    accounts: dict[str, dict[str, Any]],
-    objects: dict[tuple[str, str], dict[str, Any]],
-    activities: dict[tuple[str, str], dict[str, Any]],
+    rows: NormalizedRows,
 ) -> None:
     kind = item.get("kind")
     if kind not in ("submission", "comment", "message"):
         raise RedditAdapterError("Reddit content kind is unsupported")
-    author_id = _author(item, accounts, observed_at)
-    _add_subreddit(item, objects, observed_at)
+    author_id = _author(item, rows.accounts, observed_at)
+    _add_subreddit(item, rows.objects, observed_at)
     content = _content_object(item, kind, author_id, context.stream, observed_at)
     key = (content["object_type"], content["remote_id"])
-    objects[key] = content
+    rows.objects[key] = content
     selected_id = context.account["id"]
     actor_id = (
         author_id
@@ -242,63 +254,91 @@ def _normalize_content(
     actor_id = actor_id or selected_id
     remote_id = f"{selected_id}-{context.stream}-{content['remote_id']}"
     activity = _activity(
-        context.stream,
-        remote_id,
-        actor_id,
-        content["remote_id"],
-        observed_at,
-        content["created_at"],
+        ActivityValue(
+            context.stream,
+            remote_id,
+            actor_id,
+            content["remote_id"],
+            observed_at,
+            content["created_at"],
+        )
     )
-    activities[(activity["activity_type"], activity["remote_id"])] = activity
+    rows.activities[(activity["activity_type"], activity["remote_id"])] = activity
 
 
 def _normalize_subreddit(
     item: dict[str, Any],
     context: PageContext,
     observed_at: str,
-    objects: dict[tuple[str, str], dict[str, Any]],
-    activities: dict[tuple[str, str], dict[str, Any]],
+    rows: NormalizedRows,
 ) -> None:
     community = _community_object(item, observed_at)
-    objects[(community["object_type"], community["remote_id"])] = community
+    rows.objects[(community["object_type"], community["remote_id"])] = community
     remote_id = f"{context.account['id']}-{context.stream}-{community['remote_id']}"
     activity = _activity(
-        context.stream,
-        remote_id,
-        context.account["id"],
-        community["remote_id"],
-        observed_at,
+        ActivityValue(
+            context.stream,
+            remote_id,
+            context.account["id"],
+            community["remote_id"],
+            observed_at,
+        )
     )
-    activities[(activity["activity_type"], activity["remote_id"])] = activity
+    rows.activities[(activity["activity_type"], activity["remote_id"])] = activity
 
 
 def _normalize_redditor(
     item: dict[str, Any],
     context: PageContext,
     observed_at: str,
-    accounts: dict[str, dict[str, Any]],
-    activities: dict[tuple[str, str], dict[str, Any]],
+    rows: NormalizedRows,
 ) -> None:
     account = _account_record(item, observed_at)
-    accounts[account["remote_id"]] = account
+    rows.accounts[account["remote_id"]] = account
     remote_id = f"{context.account['id']}-{context.stream}-{account['remote_id']}"
     activity = _activity(
-        context.stream,
-        remote_id,
-        context.account["id"],
-        account["remote_id"],
-        observed_at,
-        account["provider_json"].get("relationship_at"),
+        ActivityValue(
+            context.stream,
+            remote_id,
+            context.account["id"],
+            account["remote_id"],
+            observed_at,
+            account["provider_json"].get("relationship_at"),
+        )
     )
-    activities[(activity["activity_type"], activity["remote_id"])] = activity
+    rows.activities[(activity["activity_type"], activity["remote_id"])] = activity
+
+
+def _add_multireddit_memberships(
+    remote_id: str,
+    members: list[dict[str, Any]],
+    context: PageContext,
+    observed_at: str,
+    rows: NormalizedRows,
+) -> None:
+    for member in members:
+        community = _community_object(member, observed_at)
+        rows.objects[(community["object_type"], community["remote_id"])] = community
+        membership = _activity(
+            ActivityValue(
+                "multireddit_membership",
+                f"{remote_id}-contains-{community['remote_id']}",
+                remote_id,
+                community["remote_id"],
+                observed_at,
+                provider_json={"stream": context.stream},
+            )
+        )
+        rows.activities[(membership["activity_type"], membership["remote_id"])] = (
+            membership
+        )
 
 
 def _normalize_multireddit(
     item: dict[str, Any],
     context: PageContext,
     observed_at: str,
-    objects: dict[tuple[str, str], dict[str, Any]],
-    activities: dict[tuple[str, str], dict[str, Any]],
+    rows: NormalizedRows,
 ) -> None:
     remote_id = _required_text(item, "remote_id")
     display_name = _required_text(item, "display_name")
@@ -324,52 +364,39 @@ def _normalize_multireddit(
             {"kind", "remote_id", "display_name", "description_md", "subreddits"},
         ),
     }
-    objects[(feed["object_type"], remote_id)] = feed
+    rows.objects[(feed["object_type"], remote_id)] = feed
     selected_activity = _activity(
-        context.stream,
-        f"{context.account['id']}-{context.stream}-{remote_id}",
-        context.account["id"],
-        remote_id,
-        observed_at,
+        ActivityValue(
+            context.stream,
+            f"{context.account['id']}-{context.stream}-{remote_id}",
+            context.account["id"],
+            remote_id,
+            observed_at,
+        )
     )
-    activities[
+    rows.activities[
         (selected_activity["activity_type"], selected_activity["remote_id"])
     ] = selected_activity
-    for member in members:
-        community = _community_object(member, observed_at)
-        objects[(community["object_type"], community["remote_id"])] = community
-        membership = _activity(
-            "multireddit_membership",
-            f"{remote_id}-contains-{community['remote_id']}",
-            remote_id,
-            community["remote_id"],
-            observed_at,
-            provider_json={"stream": context.stream},
-        )
-        activities[(membership["activity_type"], membership["remote_id"])] = membership
+    _add_multireddit_memberships(remote_id, members, context, observed_at, rows)
 
 
 def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
     """Validate one successful Reddit page and build provider-neutral rows."""
     reject_credentials(payload)
     observed_at = observation_time(payload)
-    accounts: dict[str, dict[str, Any]] = {}
+    rows = NormalizedRows({}, {}, {})
     selected = _selected_account(context.account, observed_at)
-    accounts[selected["remote_id"]] = selected
-    objects: dict[tuple[str, str], dict[str, Any]] = {}
-    activities: dict[tuple[str, str], dict[str, Any]] = {}
+    rows.accounts[selected["remote_id"]] = selected
     for item in page_data(payload):
         kind = item.get("kind")
         if kind in ("submission", "comment", "message"):
-            _normalize_content(
-                item, context, observed_at, accounts, objects, activities
-            )
+            _normalize_content(item, context, observed_at, rows)
         elif kind == "subreddit":
-            _normalize_subreddit(item, context, observed_at, objects, activities)
+            _normalize_subreddit(item, context, observed_at, rows)
         elif kind == "redditor":
-            _normalize_redditor(item, context, observed_at, accounts, activities)
+            _normalize_redditor(item, context, observed_at, rows)
         elif kind == "multireddit":
-            _normalize_multireddit(item, context, observed_at, objects, activities)
+            _normalize_multireddit(item, context, observed_at, rows)
         else:
             raise RedditAdapterError("Reddit page contains an unsupported item kind")
     archive = {
@@ -379,9 +406,9 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
         "exported_at": observed_at,
         "enabled_streams": list(context.enabled_streams),
         "policy": context.policy,
-        "accounts": list(accounts.values()),
-        "objects": list(objects.values()),
-        "activities": list(activities.values()),
+        "accounts": list(rows.accounts.values()),
+        "objects": list(rows.objects.values()),
+        "activities": list(rows.activities.values()),
         "media": [],
         "coverage": [],
     }

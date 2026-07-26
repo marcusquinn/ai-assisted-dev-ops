@@ -130,6 +130,11 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from _knowledge_social_reddit import STREAMS
 from _knowledge_social_reddit_read_provider import LISTING_STREAMS, SNAPSHOT_STREAMS
+from _knowledge_social_reddit_read_routes import (
+    ProviderPageRequest,
+    _listing_generator,
+    _snapshot_values,
+)
 from _knowledge_social_reddit_reader import _provider_failure
 
 expected = {
@@ -140,9 +145,10 @@ expected = {
 }
 assert set(STREAMS) == expected
 assert LISTING_STREAMS | SNAPSHOT_STREAMS == expected
-source = (Path(sys.argv[1]) / "_knowledge_social_reddit_read_provider.py").read_text(
-    encoding="utf-8"
-)
+sources = [
+    path.read_text(encoding="utf-8")
+    for path in sorted(Path(sys.argv[1]).glob("_knowledge_social_reddit_read_*.py"))
+]
 banned = {
     "submit", "reply", "upvote", "downvote", "save", "hide", "unhide",
     "message", "subscribe", "unsubscribe", "friend", "unfriend", "block",
@@ -150,10 +156,63 @@ banned = {
 }
 calls = {
     node.func.attr
+    for source in sources
     for node in ast.walk(ast.parse(source))
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
 }
 assert calls.isdisjoint(banned), sorted(calls & banned)
+
+
+class RecordingNode:
+    def __init__(self, path, calls):
+        self.path = path
+        self.calls = calls
+
+    def __getattr__(self, name):
+        return RecordingNode(f"{self.path}.{name}", self.calls)
+
+    def __call__(self, **kwargs):
+        self.calls.append((self.path, kwargs))
+        return []
+
+
+expected_listing_routes = {
+    "authored_submissions": "selected.submissions.new",
+    "authored_comments": "selected.comments.new",
+    "mentions": "client.inbox.mentions",
+    "comment_replies": "client.inbox.comment_replies",
+    "submission_replies": "client.inbox.submission_replies",
+    "inbox_messages": "client.inbox.messages",
+    "sent_messages": "client.inbox.sent",
+    "saved": "selected.saved",
+    "upvoted": "selected.upvoted",
+    "downvoted": "selected.downvoted",
+    "hidden": "selected.hidden",
+    "subscribed_subreddits": "client.user.subreddits",
+    "moderated_subreddits": "client.user.moderator_subreddits",
+    "contributor_subreddits": "client.user.contributor_subreddits",
+}
+expected_snapshot_routes = {
+    "multireddits": "client.user.multireddits",
+    "friends": "client.user.friends",
+    "blocked": "client.user.blocked",
+    "trusted": "client.user.trusted",
+}
+for stream, expected_route in expected_listing_routes.items():
+    route_calls = []
+    client = RecordingNode("client", route_calls)
+    selected = RecordingNode("selected", route_calls)
+    request = ProviderPageRequest(stream, "account", None, None, 7)
+    assert list(_listing_generator(client, selected, request)) == []
+    assert route_calls == [
+        (expected_route, {"limit": 7, "params": {}, "request_limit": 7})
+    ]
+for stream, expected_route in expected_snapshot_routes.items():
+    route_calls = []
+    client = RecordingNode("client", route_calls)
+    assert _snapshot_values(client, stream) == []
+    assert route_calls == [(expected_route, {})]
+
 missing = "PRAW is unavailable; install it outside the agent session"
 assert str(_provider_failure(f"ERROR: {missing}")) == missing
 assert str(_provider_failure("ERROR: private provider detail")) == (

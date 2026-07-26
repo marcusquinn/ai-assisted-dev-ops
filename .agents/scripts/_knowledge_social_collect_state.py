@@ -14,6 +14,7 @@ from _knowledge_social_collect import (
     CollectionContext,
     CollectionStreamSpec,
     ConnectionConfig,
+    ContextRequest,
     CursorState,
 )
 from knowledge_social_import import reject_credentials
@@ -43,28 +44,27 @@ def _json_object(value: str, field: str) -> dict[str, Any]:
 
 def _connection_config(
     database: sqlite3.Connection,
-    provider: str,
-    connection_id: str,
+    request: ContextRequest,
     account_id: str,
-    stream: str,
-    media_policy: str,
 ) -> ConnectionConfig:
     row = database.execute(
         "SELECT provider,remote_account_id,enabled_streams,policy_json "
         "FROM connections WHERE connection_id=?",
-        (connection_id,),
+        (request.connection_id,),
     ).fetchone()
     if row is None:
-        return ConnectionConfig((stream,), {"media_hydration": media_policy})
-    if row["provider"] != provider or row["remote_account_id"] != account_id:
+        return ConnectionConfig(
+            (request.stream,), {"media_hydration": request.media_policy}
+        )
+    if row["provider"] != request.provider or row["remote_account_id"] != account_id:
         raise SocialStoreError(
             "stored connection does not match the verified social account"
         )
     enabled = _json_array(row["enabled_streams"], "enabled_streams")
-    if stream not in enabled:
-        enabled.append(stream)
+    if request.stream not in enabled:
+        enabled.append(request.stream)
     policy = dict(_json_object(row["policy_json"], "policy"))
-    policy["media_hydration"] = media_policy
+    policy["media_hydration"] = request.media_policy
     return ConnectionConfig(tuple(enabled), policy)
 
 
@@ -83,42 +83,31 @@ def _cursor_state(
 
 def load_context(
     root: Path,
-    provider: str,
-    connection_id: str,
-    account: dict[str, Any],
-    stream: str,
-    media_policy: str,
+    request: ContextRequest,
     streams: Mapping[str, CollectionStreamSpec],
 ) -> CollectionContext:
     """Read one provider connection policy and selected stream checkpoint."""
-    provider = validate_opaque(provider, "provider")
-    if stream not in streams:
+    provider = validate_opaque(request.provider, "provider")
+    if request.stream not in streams:
         raise SocialStoreError("social stream is not allowlisted")
-    account_id = account.get("id")
+    account_id = request.account.get("id")
     if not isinstance(account_id, str) or not account_id:
         raise SocialStoreError("verified social account requires an ID")
     database = connect(root)
     try:
         migrate(database)
-        config = _connection_config(
-            database,
-            provider,
-            connection_id,
-            account_id,
-            stream,
-            media_policy,
-        )
-        state = _cursor_state(database, connection_id, stream)
+        config = _connection_config(database, request, account_id)
+        state = _cursor_state(database, request.connection_id, request.stream)
     finally:
         database.close()
     return CollectionContext(
         root,
-        connection_id,
-        account,
-        stream,
-        media_policy,
+        request.connection_id,
+        request.account,
+        request.stream,
+        request.media_policy,
         config,
         state,
-        streams[stream],
+        streams[request.stream],
         provider=provider,
     )

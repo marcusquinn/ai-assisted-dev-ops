@@ -41,6 +41,16 @@ class StreamSpec:
     cost_units: int = 1
 
 
+@dataclass(frozen=True)
+class PaginationMeta:
+    """Validated pagination facts returned by the bounded PRAW child."""
+
+    next_after: str | None
+    newest: str | None
+    reached: bool
+    complete: bool
+
+
 def _listing(
     resource_kind: str,
     activity_mode: str,
@@ -182,6 +192,32 @@ def _page_meta(payload: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
+def _meta_boolean(meta: dict[str, Any], field: str) -> bool:
+    value = meta.get(field)
+    if not isinstance(value, bool):
+        raise RedditAdapterError("Reddit page completion metadata is invalid")
+    return value
+
+
+def _pagination_meta(payload: dict[str, Any], spec: StreamSpec) -> PaginationMeta:
+    meta = _page_meta(payload)
+    next_after = _fullname(meta.get("next_after"), "next_after", optional=True)
+    newest = _fullname(meta.get("newest_fullname"), "newest item", optional=True)
+    reached = _meta_boolean(meta, "reached_watermark")
+    complete = _meta_boolean(meta, "complete") or reached
+    snapshot = meta.get("snapshot")
+    if not isinstance(snapshot, bool) or snapshot != (spec.pagination == "snapshot"):
+        raise RedditAdapterError("Reddit page pagination metadata is invalid")
+    if complete == (next_after is not None):
+        message = (
+            "complete Reddit page cannot have a next cursor"
+            if complete
+            else "partial Reddit page requires a next cursor"
+        )
+        raise RedditAdapterError(message)
+    return PaginationMeta(next_after, newest, reached, complete)
+
+
 def page_checkpoint(
     payload: dict[str, Any],
     state: CursorState,
@@ -189,27 +225,13 @@ def page_checkpoint(
 ) -> tuple[PageCheckpoint, bool]:
     """Calculate a resumable cursor and stable newest-item watermark."""
     spec = STREAMS[request.stream]
-    meta = _page_meta(payload)
-    next_after = _fullname(meta.get("next_after"), "next_after", optional=True)
-    newest = _fullname(meta.get("newest_fullname"), "newest item", optional=True)
-    reached = meta.get("reached_watermark", False)
-    complete_value = meta.get("complete")
-    snapshot = meta.get("snapshot")
-    if not isinstance(reached, bool) or not isinstance(complete_value, bool):
-        raise RedditAdapterError("Reddit page completion metadata is invalid")
-    if not isinstance(snapshot, bool) or snapshot != (spec.pagination == "snapshot"):
-        raise RedditAdapterError("Reddit page pagination metadata is invalid")
-    complete = complete_value or reached
-    if complete and next_after is not None:
-        raise RedditAdapterError("complete Reddit page cannot have a next cursor")
-    if not complete and next_after is None:
-        raise RedditAdapterError("partial Reddit page requires a next cursor")
+    meta = _pagination_meta(payload, spec)
     watermark = state.watermark
-    if spec.incremental and request.after is None and newest is not None:
-        watermark = newest
+    if spec.incremental and request.after is None and meta.newest is not None:
+        watermark = meta.newest
     next_cursor = (
-        _encode_cursor(next_after, request.stop_at)
-        if next_after is not None
+        _encode_cursor(meta.next_after, request.stop_at)
+        if meta.next_after is not None
         else None
     )
-    return PageCheckpoint(next_cursor, watermark), complete
+    return PageCheckpoint(next_cursor, watermark), meta.complete

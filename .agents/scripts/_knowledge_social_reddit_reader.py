@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Protocol
 
+from _knowledge_social_fixture import FixtureSequence
 from _knowledge_social_reddit import (
     PageRequest,
     RedditAdapterError,
@@ -118,6 +119,7 @@ class GuardedPraw:
                 capture_output=True,
                 input=canonical_json(request),
                 env=self._environment(),
+                shell=False,
                 text=True,
                 timeout=READ_TIMEOUT_SECONDS,
             )
@@ -140,18 +142,6 @@ class GuardedPraw:
         return self._run(request.payload())
 
 
-def _load_fixture(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise RedditAdapterError("Reddit fixture must be a regular non-symlink file")
-    try:
-        fixture = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise RedditAdapterError("Reddit fixture is not valid UTF-8 JSON") from error
-    if not isinstance(fixture, dict) or not isinstance(fixture.get("pages"), list):
-        raise RedditAdapterError("Reddit fixture requires identity and pages")
-    return fixture
-
-
 def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
     expectation = entry.get("expect_request", {})
     if not isinstance(expectation, dict):
@@ -169,22 +159,13 @@ class FixtureReddit:
     """Deterministic PRAW substitute for pagination and failure fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = _load_fixture(path)
-        self.position = 0
+        self.fixture = FixtureSequence(path, "Reddit", RedditAdapterError)
 
     def identity(self) -> dict[str, Any]:
-        identity = self.fixture.get("identity")
-        if not isinstance(identity, dict):
-            raise RedditAdapterError("Reddit fixture identity must be an object")
-        return identity
+        return self.fixture.identity()
 
     def page(self, request: PageRequest) -> dict[str, Any]:
-        pages = self.fixture["pages"]
-        if self.position >= len(pages) or not isinstance(pages[self.position], dict):
-            raise RedditAdapterError("Reddit fixture has no page for request")
-        page = _fixture_page(pages[self.position], request)
-        self.position += 1
-        return page
+        return _fixture_page(self.fixture.next_page(), request)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:

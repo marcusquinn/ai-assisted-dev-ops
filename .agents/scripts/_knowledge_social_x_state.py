@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from _knowledge_social_collect import CollectionContext, ConnectionConfig
+from _knowledge_social_collect import CollectionContext, ConnectionConfig, ContextRequest
 from _knowledge_social_collect_state import load_context as load_social_context
 from _knowledge_social_x import PROVIDER, STREAMS
 
@@ -23,11 +23,7 @@ def load_context(
     """Read the X connection policy and selected stream checkpoint."""
     return load_social_context(
         root,
-        PROVIDER,
-        connection_id,
-        account,
-        stream,
-        media_policy,
+        ContextRequest(PROVIDER, connection_id, account, stream, media_policy),
         STREAMS,
     )
 
