@@ -59,13 +59,14 @@ reddit = praw.Reddit(
 for post in reddit.subreddit("devops").hot(limit=10):
     print(f"{post.score}: {post.title}")
 
-# Submit post
-reddit.subreddit("test").submit("Title", selftext="Body text")
-
-# Reply to comment
+# Read one comment
 comment = reddit.comment("COMMENT_ID")
-comment.reply("Reply text")
+print(comment.body)
 ```
+
+Use direct PRAW calls for reads only. Every automated post, reply, upvote, or
+save must use the owner-only queue through `operation-create`; never call PRAW
+write methods directly from automation.
 
 ## Approval-bound outbound operations
 

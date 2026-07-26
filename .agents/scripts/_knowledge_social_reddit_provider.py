@@ -188,7 +188,7 @@ def main() -> int:
     except RedditProviderError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    except Exception:
+    except Exception:  # noqa: BLE001 - intentionally redact provider internals
         print("ERROR: Reddit provider request failed", file=sys.stderr)
         return 1
 

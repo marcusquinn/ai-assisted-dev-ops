@@ -27,6 +27,7 @@ REPLY_BODY="${TMP_DIR}/reply.txt"
 OPTION_BODY="${TMP_DIR}/option.txt"
 REDDIT_POST_BODY="${TMP_DIR}/reddit-post.txt"
 REDDIT_SUBJECT="${TMP_DIR}/reddit-subject.txt"
+REDDIT_LONG_SUBJECT="${TMP_DIR}/reddit-long-subject.txt"
 PASS=0
 FAIL=0
 
@@ -403,8 +404,14 @@ printf '%s\n' 'private reply fixture marker' >"$REPLY_BODY"
 printf '%s' '--app' >"$OPTION_BODY"
 printf '%s\n' 'private reddit post fixture marker' >"$REDDIT_POST_BODY"
 printf '%s\n' 'Reddit subject fixture' >"$REDDIT_SUBJECT"
+python3 - "$REDDIT_LONG_SUBJECT" <<'PY'
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text("x" * 301, encoding="utf-8")
+PY
 chmod 0600 "$ARCHIVE" "$REDDIT_ARCHIVE" "$POST_BODY" "$REPLY_BODY" \
-	"$OPTION_BODY" "$REDDIT_POST_BODY" "$REDDIT_SUBJECT"
+	"$OPTION_BODY" "$REDDIT_POST_BODY" "$REDDIT_SUBJECT" "$REDDIT_LONG_SUBJECT"
 
 printf 'Approval-bound social operations tests\n'
 "$CORPUS_HELPER" provision --base "$MIGRATION_BASE" >/dev/null
@@ -552,6 +559,12 @@ assert_eq "Reddit provider fields use the versioned immutable intent" \
 	"$(sql_value "$ROOT/index/social.db" "SELECT provider || ':' || intent_version || ':' || destination_remote_id FROM outbound_operations WHERE operation_id='op_reddit_post'")" \
 	"reddit:2:aidevops"
 
+expect_failure "Reddit post titles reject more than 300 characters" \
+	"300-character title limit" "$HELPER" operation-create --base "$BASE" \
+	--connection-id conn_reddit --account-id acct_reddit_42 --action post \
+	--body-file "$REDDIT_POST_BODY" --subject-file "$REDDIT_LONG_SUBJECT" \
+	--destination-id aidevops --profile fixture \
+	--operation-id op_reddit_long_subject --now-epoch 1000
 expect_failure "Reddit operations require an explicit named auth profile" \
 	"named auth profile" "$HELPER" operation-create --base "$BASE" \
 	--connection-id conn_reddit --account-id acct_reddit_42 --action like \

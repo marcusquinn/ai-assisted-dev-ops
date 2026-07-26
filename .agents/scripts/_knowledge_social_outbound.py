@@ -33,6 +33,7 @@ FAILURE_CLASSES = (
 )
 MAX_PAYLOAD_BYTES = 16 * 1024
 MAX_SUBJECT_BYTES = 4 * 1024
+MAX_REDDIT_SUBJECT_CHARS = 300
 MAX_SELECTOR_BYTES = 256
 MAX_APPROVAL_SECONDS = 31 * 24 * 60 * 60
 CURRENT_INTENT_VERSION = 2
@@ -133,6 +134,10 @@ def _validated_subject(provider: str, action: str, subject: str | None) -> str |
             raise SocialStoreError("Reddit posts require a non-empty private subject file")
         if any(marker in subject for marker in ("\x00", "\n", "\r")):
             raise SocialStoreError("outbound subject must be one non-empty line")
+        if len(subject) > MAX_REDDIT_SUBJECT_CHARS:
+            raise SocialStoreError(
+                "Reddit post subject exceeds the 300-character title limit"
+            )
         if len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
             raise SocialStoreError("outbound subject exceeds the private subject limit")
         return subject
