@@ -91,6 +91,64 @@ claim_token() {
 	return 0
 }
 
+write_large_claim_history() {
+	local comments_file="$1"
+	local mode="$2"
+	mkdir -p "$(dirname "$comments_file")"
+	python3 - "$comments_file" "$mode" <<'PY'
+from datetime import datetime, timedelta, timezone
+import json
+import sys
+
+comments_file, mode = sys.argv[1:]
+now = datetime.now(timezone.utc)
+claim_at = now - timedelta(seconds=300)
+dispatch_at = now - timedelta(seconds=250)
+terminal_at = now - timedelta(seconds=200)
+expires_at = int((now + timedelta(seconds=600)).timestamp())
+stamp = lambda value: value.strftime("%Y-%m-%dT%H:%M:%SZ")
+token = "large-token"
+comments = [
+    {
+        "id": 1,
+        "body": (
+            f"DISPATCH_CLAIM nonce={token} runner=shared-login ts={stamp(claim_at)} "
+            f"max_age_s=600 version=test lease_token={token} device=device-large "
+            f"session=issue-49 phase=prelaunch expires_at={expires_at}"
+        ),
+        "created_at": stamp(claim_at),
+        "user": {"login": "shared-login"},
+        "author_association": "MEMBER",
+    },
+    {
+        "id": 2,
+        "body": "Dispatching worker (deterministic). " + ("x" * 2_200_000),
+        "created_at": stamp(dispatch_at),
+        "user": {"login": "shared-login"},
+        "author_association": "MEMBER",
+    },
+]
+if mode == "terminal":
+    comments.append(
+        {
+            "id": 3,
+            "body": (
+                f"DISPATCH_LEASE phase=terminal lease_token={token} device=device-large "
+                f"session=issue-49 expires_at=0 ts={stamp(terminal_at)}"
+            ),
+            "created_at": stamp(terminal_at),
+            "user": {"login": "shared-login"},
+            "author_association": "MEMBER",
+        }
+    )
+with open(comments_file, "w", encoding="utf-8") as handle:
+    for comment in comments:
+        json.dump(comment, handle, separators=(",", ":"))
+        handle.write("\n")
+PY
+	return $?
+}
+
 test_local_ledger_guards() {
 	local ledger_dir="${TMP_DIR}/ledger"
 	export AIDEVOPS_DISPATCH_LEDGER_DIR="$ledger_dir"
@@ -267,6 +325,41 @@ test_untrusted_dispatch_identity_cannot_replace_active_lock() {
 	return 0
 }
 
+test_large_comment_history_avoids_argv_limits() {
+	local root="${TMP_DIR}/large-history" output="" exit_code=0 dispatch_ts=""
+	create_mock_gh "$root"
+	write_large_claim_history "$root/state/comments.jsonl" active
+
+	set +e
+	output=$(PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		DISPATCH_CLAIM_MAX_AGE=600 DISPATCH_CLAIM_ORPHAN_GRACE=120 \
+		"$CLAIM" check 49 owner/repo 2>&1)
+	exit_code=$?
+	set -e
+	[[ "$exit_code" -eq 0 && "$output" == *"ACTIVE_CLAIM"* ]] ||
+		fail "oversized active claim history failed: exit=${exit_code} output=${output}"
+	pass "oversized claim history preserves launch evidence without argv transport"
+
+	write_large_claim_history "$root/state/comments.jsonl" terminal
+	set +e
+	output=$(PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		DISPATCH_CLAIM_MAX_AGE=600 "$CLAIM" check 49 owner/repo 2>&1)
+	exit_code=$?
+	set -e
+	[[ "$exit_code" -eq 1 && "$output" != *"failed to parse claim comments"* ]] ||
+		fail "oversized terminal claim history failed: exit=${exit_code} output=${output}"
+	if PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 49 owner/repo shared-login >/dev/null 2>&1; then
+		fail "oversized terminal history did not release dispatch dedup"
+	fi
+	dispatch_ts=$(jq -sr '[.[] | select(.body | contains("Dispatching worker"))] | last.created_at' "$root/state/comments.jsonl")
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		_stale_recovery_final_evidence_recheck 49 owner/repo "$dispatch_ts" ||
+		fail "oversized terminal history blocked stale final evidence recheck"
+	pass "oversized terminal history preserves dedup and stale-recovery semantics"
+	return 0
+}
+
 test_prelaunch_renewal_covers_slow_startup() {
 	local root="${TMP_DIR}/renewal" token="" renewal_call=""
 	create_mock_gh "$root"
@@ -320,6 +413,7 @@ test_local_ledger_guards
 test_concurrent_same_login_devices
 test_launch_crash_ready_terminal_race
 test_untrusted_dispatch_identity_cannot_replace_active_lock
+test_large_comment_history_avoids_argv_limits
 test_prelaunch_renewal_covers_slow_startup
 test_invalid_device_not_public
 test_takeover_recheck_precedes_mutation

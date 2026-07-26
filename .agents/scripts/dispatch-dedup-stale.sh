@@ -158,8 +158,8 @@ _stale_recovery_final_evidence_recheck() {
 	local comments="" claims="" parsed=""
 	comments=$(printf '%s' "$pages" | jq -c '[.[] | .[]?]' 2>/dev/null) || return 1
 	claims=$(printf '%s' "$comments" | jq -c '[.[] | select((.body // "") | contains("DISPATCH_CLAIM nonce="))]' 2>/dev/null) || return 1
-	parsed=$(printf '%s' "$claims" | jq -c --argjson now "$now_epoch" --argjson max_age 2147483647 \
-		--argjson include_terminal false --argjson comments "$comments" \
+	parsed=$(printf '%s\n%s\n' "$claims" "$comments" | jq -nc --argjson now "$now_epoch" --argjson max_age 2147483647 \
+		--argjson include_terminal false \
 		-f "${SCRIPT_DIR}/dispatch-lease-claims.jq" 2>/dev/null) || return 1
 	if printf '%s' "$parsed" | jq -e 'any(.lease_phase == "ready")' >/dev/null 2>&1; then
 		return 1

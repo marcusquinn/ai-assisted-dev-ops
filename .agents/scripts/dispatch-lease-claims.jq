@@ -1,4 +1,6 @@
-[.[] |
+input as $claims |
+input as $comments |
+[$claims[] |
     (.body | capture("nonce=(?<nonce>[^ ]+) runner=(?<runner>[^ ]+) ts=(?<ts>[^ ]+)(?: max_age_s=[^ ]+)?(?: version=(?<version>[^ ]+))?")) as $fields |
     ((.body | try capture("lease_token=(?<value>[^ ]+)").value catch "") // "") as $token |
     ((.body | try capture("device=(?<value>[^ ]+)").value catch "") // "") as $device |

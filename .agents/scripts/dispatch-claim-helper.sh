@@ -573,9 +573,8 @@ _fetch_claims() {
 	# t2401: version is an optional trailing field; legacy pre-t2401 claims
 	# lack it and parse as "unknown".
 	local parsed
-	parsed=$(printf '%s' "$claims_only" | jq -c --argjson now "$now_epoch" \
+	parsed=$(printf '%s\n%s\n' "$claims_only" "$comments_json" | jq -nc --argjson now "$now_epoch" \
 		--argjson max_age "$DISPATCH_CLAIM_MAX_AGE" --argjson include_terminal false \
-		--argjson comments "$comments_json" \
 		-f "${DISPATCH_CLAIM_HELPER_DIR}/dispatch-lease-claims.jq" 2>/dev/null) || {
 		echo "Error: failed to parse claim comments" >&2
 		return 1
@@ -630,7 +629,7 @@ _filter_orphan_prelaunch_claims() {
 
 	local filtered_claims removed_count remaining_count
 	filtered_claims=$(_filter_claims_with_launch_evidence "$parsed_claims" "$comments_json")
-	removed_count=$(jq -n --argjson before "$parsed_claims" --argjson after "$filtered_claims" '$before|length - ($after|length)' 2>/dev/null) || removed_count=0
+	removed_count=$(printf '%s\n%s\n' "$parsed_claims" "$filtered_claims" | jq -nr 'input as $before | input as $after | $before | length - ($after | length)' 2>/dev/null) || removed_count=0
 	remaining_count=$(printf '%s' "$filtered_claims" | jq 'length' 2>/dev/null) || remaining_count=0
 	if [[ "$removed_count" -gt 0 && "$remaining_count" -eq 0 ]]; then
 		_post_orphan_claim_release "$issue_number" "$repo_slug" "$self_runner" "$removed_count" || true
@@ -648,10 +647,11 @@ _filter_claims_with_launch_evidence() {
 	local parsed_claims="$1"
 	local comments_json="$2"
 
-	printf '%s' "$parsed_claims" | jq -c \
-		--argjson comments "$comments_json" \
+	printf '%s\n%s\n' "$parsed_claims" "$comments_json" | jq -nc \
 		--argjson orphan_grace "$DISPATCH_CLAIM_ORPHAN_GRACE" '
-		[.[]
+		input as $claims |
+		input as $comments |
+		[$claims[]
 		| . as $claim
 		| ([ $comments[]
 			| select((.created_at // "") > ($claim.created_at // ""))

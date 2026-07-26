@@ -466,9 +466,9 @@ collect_comments() {
 
 	# Merge both arrays, marking issue comments with negative IDs
 	local merged_json
-	merged_json=$(jq -n \
-		--argjson pr_comments "$comments_json" \
-		--argjson issue_comments "$issue_comments_json" '
+	merged_json=$(printf '%s\n%s\n' "$comments_json" "$issue_comments_json" | jq -nc '
+		input as $pr_comments |
+		input as $issue_comments |
         [($pr_comments // [])[] | . + {"_source": "pr"}] +
         [($issue_comments // [])[] | . + {"_source": "issue", "id": (-.id), "path": "", "line": 0, "side": ""}]
     ')

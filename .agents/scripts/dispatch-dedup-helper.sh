@@ -2290,9 +2290,9 @@ _dd_has_matching_terminal_lease() {
 		2>/dev/null) || return 1
 	[[ "$claims_json" != "[]" ]] || return 1
 	now_epoch=$(date -u '+%s')
-	parsed_claims=$(printf '%s' "$claims_json" | jq -c \
+	parsed_claims=$(printf '%s\n%s\n' "$claims_json" "$comments_json" | jq -nc \
 		--argjson now "$now_epoch" --argjson max_age 2147483647 \
-		--argjson include_terminal true --argjson comments "$comments_json" \
+		--argjson include_terminal true \
 		-f "$lease_filter" 2>/dev/null) || return 1
 
 	if printf '%s' "$parsed_claims" | jq -e \
