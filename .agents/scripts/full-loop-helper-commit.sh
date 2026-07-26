@@ -138,7 +138,7 @@ _full_loop_reconcile_stale_coderabbit_review() {
 		print_error "PR #${pr_number} retains changes-requested review state; automatic reconciliation was not authorized"
 		return 1
 	fi
-	refreshed_json=$(gh pr view "$pr_number" --repo "$repo" \
+	refreshed_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
 		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
 		print_error "Cannot refresh PR #${pr_number} after CodeRabbit reconciliation"
 		return 1
@@ -158,7 +158,7 @@ _full_loop_verify_pr_readiness() {
 	local verified_head=""
 	local review_decision=""
 
-	pr_json=$(gh pr view "$pr_number" --repo "$repo" \
+	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
 		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
 		print_error "Cannot read PR #${pr_number} readiness evidence"
 		return 1
@@ -194,7 +194,8 @@ _full_loop_verify_pr_readiness() {
 	}
 	required_checks="$FULL_LOOP_REQUIRED_CHECKS_JSON"
 	local post_checks_head=""
-	post_checks_head=$(gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq '.headRefOid // empty' 2>/dev/null) || true
+	post_checks_head=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
+		--json headRefOid --jq '.headRefOid // empty' 2>/dev/null) || true
 	if [[ -z "$post_checks_head" || "$post_checks_head" != "$verified_head" ]]; then
 		FULL_LOOP_PR_CHECK_STATUS="$_FULL_LOOP_CHECK_INDETERMINATE"
 		export FULL_LOOP_PR_CHECK_STATUS

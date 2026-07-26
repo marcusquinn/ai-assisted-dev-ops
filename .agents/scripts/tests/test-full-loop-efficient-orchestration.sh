@@ -103,8 +103,11 @@ pass "heuristic decomposition remains available without jq"
 source "${SCRIPTS_DIR}/full-loop-helper-commit.sh"
 CHECK_MODE="pending"
 POST_CHECK_HEAD="abc123"
+PR_VIEW_CACHE_CONTROL_FILE="${TMP_DIR}/pr-view-cache-control.log"
+: >"$PR_VIEW_CACHE_CONTROL_FILE"
 gh() {
 	if [[ "$1 $2" == "pr view" ]]; then
+		printf '%s\n' "${AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE:-0}" >>"$PR_VIEW_CACHE_CONTROL_FILE"
 		if printf '%s\n' "$*" | grep -q -- '--jq'; then
 			printf '%s\n' "$POST_CHECK_HEAD"
 			return 0
@@ -184,6 +187,10 @@ _full_loop_verify_pr_readiness 42 owner/repo && fail "head drift during check qu
 load_state
 [[ "$PR_CHECK_STATUS" == "indeterminate" && "$PR_CHECK_HEAD" == "def456" ]] || fail "head drift did not invalidate durable success evidence"
 POST_CHECK_HEAD="abc123"
+if [[ ! -s "$PR_VIEW_CACHE_CONTROL_FILE" ]] || grep -qv '^1$' "$PR_VIEW_CACHE_CONTROL_FILE"; then
+	fail "PR readiness reads did not bypass stale PR view caches"
+fi
+pass "PR readiness reads bypass stale PR view caches"
 pass "PR convergence distinguishes pending, failure, no-required, indeterminate, and exact-head success"
 
 EXECUTOR_STATUS="running"
