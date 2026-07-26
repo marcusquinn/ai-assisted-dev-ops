@@ -160,9 +160,67 @@ _source_helper() {
 @test "validate brief accepts confirmed transport claim with direct evidence" {
 	_source_helper
 	local body
-	body="$(printf '## Reproducer\n**Symptom command**\n```\nps -ef --forest\n```\n**Actual output**\n```\npulse -> gh api rate_limit remained blocked\n```\n**Blocked command**: gh api rate_limit (PID 42)\n**Backend state**: x-ratelimit-remaining=0 captured at the same timestamp\nThe exhausted rate limit caused the probe to hang.')"
+	body="$(printf '## Reproducer\n**Symptom command**\n```\nps -ef --forest\n```\n**Actual output**\n```\npulse -> gh api rate_limit remained blocked\n```\n**Blocked command**: gh api rate_limit (PID 42)\n**Backend state**: x-ratelimit-remaining=0 captured at the same timestamp\n**Causal status**: confirmed\n**Owning-path proof**:\n- **Production entry point**: pulse.sh:42 invokes the rate-limit probe\n- **Call chain**: pulse_tick -> probe_budget -> gh api rate_limit\n- **Integrated verification**: bash tests/test-pulse-rate-limit.sh exercises pulse_tick\nThe exhausted rate limit caused the probe to hang.')"
 	run validate_brief_has_reproducer "$body"
 	[ "$status" -eq 0 ]
+}
+
+@test "validate brief rejects confirmed cause without owning-path proof" {
+	_source_helper
+	local body
+	body="$(printf '## Reproducer\n**Symptom command**: aidevops pulse\n**Actual output**: cleanup failed with rc=2\n**Causal status**: confirmed\nThe root cause is a permissive guard in cleanup.sh:42.')"
+	run validate_brief_has_reproducer "$body"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"owning-path proof"* ]]
+}
+
+@test "validate brief accepts confirmed cause with owning-path proof" {
+	_source_helper
+	local body
+	body="$(printf '## Reproducer\n**Symptom command**: aidevops pulse\n**Actual output**: cleanup failed with rc=2\n**Causal status**: confirmed\n**Owning-path proof**:\n- **Production entry point**: pulse.sh:42 starts merged-PR cleanup\n- **Call chain**: pulse_tick -> cleanup_merged_pr -> remove_worktree\n- **Integrated verification**: bash tests/test-cleanup.sh exercises pulse_tick with rc=2\nThe root cause is cleanup_merged_pr dropping the recovery return code.')"
+	run validate_brief_has_reproducer "$body"
+	[ "$status" -eq 0 ]
+}
+
+@test "validate brief accepts explicit unconfirmed investigation" {
+	_source_helper
+	local body
+	body="$(printf '## Reproducer\n**Symptom command**: aidevops pulse\n**Actual output**: cleanup failed with rc=2\n**Causal status**: unconfirmed investigation\nA guard in cleanup.sh:42 is a suspected cause; causality is not established.')"
+	run validate_brief_has_reproducer "$body"
+	[ "$status" -eq 0 ]
+}
+
+@test "validate brief does not let unrelated investigation text bypass confirmed status" {
+	_source_helper
+	local body
+	body="$(printf '## Reproducer\n**Symptom command**: aidevops pulse\n**Actual output**: cleanup failed with rc=2\n**Causal status**: confirmed\nThe prior investigation collected useful logs. The root cause is cleanup.sh:42.')"
+	run validate_brief_has_reproducer "$body"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"owning-path proof"* ]]
+}
+
+@test "diagnostics includes a supplied AI model" {
+	_source_helper
+	get_aidevops_version() { printf '%s\n' "test-version"; return 0; }
+	get_latest_version() { printf '%s\n' "test-version"; return 0; }
+	get_install_method() { printf '%s\n' "test"; return 0; }
+	get_git_context() { printf '%s\n' "test (branch)"; return 0; }
+	export AIDEVOPS_SIG_MODEL="openai/test-model"
+	run gather_diagnostics
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"**AI Model**: openai/test-model"* ]]
+}
+
+@test "diagnostics omits an unknown AI model" {
+	_source_helper
+	get_aidevops_version() { printf '%s\n' "test-version"; return 0; }
+	get_latest_version() { printf '%s\n' "test-version"; return 0; }
+	get_install_method() { printf '%s\n' "test"; return 0; }
+	get_git_context() { printf '%s\n' "test (branch)"; return 0; }
+	unset AIDEVOPS_SIG_MODEL
+	run gather_diagnostics
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"**AI Model**"* ]]
 }
 
 @test "check_recent_filing returns OK when no state file" {

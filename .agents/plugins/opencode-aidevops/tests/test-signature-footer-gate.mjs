@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "child_process";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, symlinkSync, rmSync, mkdirSync } from "fs";
 import { tmpdir, homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
 import {
   SIG_MARKER,
@@ -27,6 +28,7 @@ import {
   hasTrustedSignatureSignal,
   tryRepairSignature,
   checkSignatureFooterGate,
+  createQualityHooks,
 } from "../quality-hooks.mjs";
 import { FAIL_REASON } from "../quality-hooks-signature.mjs";
 
@@ -489,6 +491,70 @@ printf '\n\n${SIG_MARKER}\n---\n[aidevops.sh](https://aidevops.sh) v9.9.9 stub\n
       } else {
         process.env.OPENCODE_MODEL = priorOpenCodeModel;
       }
+    }
+  });
+
+  test("explicit session model overrides plugin-process model", () => {
+    const priorSigModel = process.env.AIDEVOPS_SIG_MODEL;
+    process.env.AIDEVOPS_SIG_MODEL = "openai/wrong-session";
+    const dir = mkdtempSync(join(tmpdir(), "session-model-"));
+    try {
+      const helper = join(dir, "gh-signature-helper.sh");
+      const envLog = join(dir, "helper-env.log");
+      writeFileSync(
+        helper,
+        `#!/usr/bin/env bash
+printf '%s' "\${AIDEVOPS_SIG_MODEL-}" >"${envLog}"
+printf '\n\n${SIG_MARKER}\n---\n[aidevops.sh](https://aidevops.sh) v9.9.9 stub\n'
+`,
+      );
+      chmodSync(helper, 0o755);
+      const { log } = makeLogger();
+      const cmd = 'gh issue comment 1 --repo o/r --body "hello"';
+      const out = tryRepairSignature(cmd, dir, log, { model: "anthropic/correct-session" });
+      assert.equal(out.status, "ok");
+      assert.equal(readFileSync(envLog, "utf-8"), "anthropic/correct-session");
+    } finally {
+      if (priorSigModel === undefined) delete process.env.AIDEVOPS_SIG_MODEL;
+      else process.env.AIDEVOPS_SIG_MODEL = priorSigModel;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("pre-execution hook resolves model by session without process-env leakage", async () => {
+    const priorSigModel = process.env.AIDEVOPS_SIG_MODEL;
+    process.env.AIDEVOPS_SIG_MODEL = "openai/stale-global";
+    const dir = mkdtempSync(join(tmpdir(), "session-hook-model-"));
+    try {
+      const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
+      const hooks = createQualityHooks({
+        scriptsDir,
+        logsDir: dir,
+        resolveSessionModel: (sessionId) =>
+          sessionId === "session-a" ? "anthropic/session-a" : "",
+      });
+
+      const sessionAOutput = {
+        args: { command: 'gh issue comment 1 --repo o/r --body "one"', workdir: process.cwd() },
+      };
+      await hooks.toolExecuteBefore(
+        { tool: "bash", sessionID: "session-a" },
+        sessionAOutput,
+      );
+      const sessionBOutput = {
+        args: { command: 'gh issue comment 1 --repo o/r --body "two"', workdir: process.cwd() },
+      };
+      await hooks.toolExecuteBefore(
+        { tool: "bash", sessionID: "session-b" },
+        sessionBOutput,
+      );
+
+      assert.match(sessionAOutput.args.command, / with session-a/);
+      assert.doesNotMatch(sessionBOutput.args.command, / with stale-global/);
+    } finally {
+      if (priorSigModel === undefined) delete process.env.AIDEVOPS_SIG_MODEL;
+      else process.env.AIDEVOPS_SIG_MODEL = priorSigModel;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

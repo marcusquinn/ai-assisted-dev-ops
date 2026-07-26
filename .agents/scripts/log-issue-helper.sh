@@ -105,13 +105,16 @@ get_git_context() {
 
 gather_diagnostics() {
 	local current_version latest_version ai_assistant install_method
-	local os_info shell_info git_context
+	local os_info shell_info git_context ai_model_line=""
 
 	current_version=$(get_aidevops_version)
 	latest_version=$(get_latest_version)
 	ai_assistant=$(detect_ai_assistant)
 	install_method=$(get_install_method)
 	git_context=$(get_git_context)
+	if [[ -n "${AIDEVOPS_SIG_MODEL:-}" ]]; then
+		ai_model_line=$'\n- **AI Model**: '"${AIDEVOPS_SIG_MODEL//$'\n'/}"
+	fi
 
 	# OS info
 	if [[ "$(uname)" == "Darwin" ]]; then
@@ -138,7 +141,7 @@ gather_diagnostics() {
 - **aidevops version**: $current_version
 - **Latest version**: $latest_version
 - **Install method**: $install_method
-- **AI Assistant**: $ai_assistant
+- **AI Assistant**: $ai_assistant${ai_model_line}
 - **OS**: $os_info
 - **Shell**: $shell_info
 - **Working repo**: $git_context
@@ -241,15 +244,15 @@ check_recent_filing() {
 	local now
 	now=$(date +%s)
 	local cutoff
-	cutoff=$(( now - dedup_window ))
+	cutoff=$((now - dedup_window))
 
 	local match filed_epoch issue_num age
 	match=$(grep -F "\"hash\":\"$fingerprint\"" "$fp_file" | tail -n 1 || true)
 
 	if [[ -n "$match" ]]; then
-		read -r filed_epoch issue_num < <(sed -E 's/.*"issue":([0-9]+).*"filed_epoch":([0-9]+).*/\2 \1/' <<< "$match" || true)
+		read -r filed_epoch issue_num < <(sed -E 's/.*"issue":([0-9]+).*"filed_epoch":([0-9]+).*/\2 \1/' <<<"$match" || true)
 		if [[ "$filed_epoch" =~ ^[0-9]+$ ]] && is_valid_issue_number "$issue_num" && [[ "$filed_epoch" -gt "$cutoff" ]]; then
-			age=$(( now - filed_epoch ))
+			age=$((now - filed_epoch))
 			echo "DUPLICATE:${issue_num}:${age}"
 			return 1
 		fi
@@ -286,7 +289,7 @@ record_filing() {
 	fi
 
 	printf '{"hash":"%s","issue":%s,"filed_at":"%s","filed_epoch":%s}\n' \
-		"$fingerprint" "$issue_number" "$iso_ts" "$now" >> "$fp_file"
+		"$fingerprint" "$issue_number" "$iso_ts" "$now" >>"$fp_file"
 
 	echo "[INFO] Fingerprint recorded for issue #${issue_number} in ${fp_file}"
 	return 0
@@ -331,6 +334,17 @@ cause as unconfirmed rather than asserting that it caused the symptom.
 <describe what you expected>
 ```
 
+**Causal status**: unconfirmed investigation | confirmed
+
+For a confirmed cause, provide all three owning-path facts. These prove that the
+cited code owns the observed production behavior rather than merely resembling it.
+
+**Owning-path proof**:
+
+- **Production entry point**: <file:line and command/event that enters the owning path>
+- **Call chain**: <end-to-end calls from the entry point to the observed failure>
+- **Integrated verification**: <test or trace that exercises that same production path>
+
 **Causal code** (optional — if you identified the file/line or commit that introduced this):
 
 ```bash
@@ -368,7 +382,10 @@ _brief_has_placeholder() {
 
 _brief_is_causal_investigation() {
 	local body="$1"
-	if grep -Eqi 'investigation|candidate cause|suspected cause|cause (is )?unconfirmed|causality (is )?not established' <<<"$body"; then
+	if grep -Eqi '\*\*Causal status\*\*:[[:space:]]*confirmed' <<<"$body"; then
+		return 1
+	fi
+	if grep -Eqi '\*\*Causal status\*\*:[[:space:]]*unconfirmed investigation|(^|[[:space:]])investigation:|candidate cause|suspected cause|cause (is )?unconfirmed|causality (is )?not established' <<<"$body"; then
 		return 0
 	fi
 	return 1
@@ -388,6 +405,25 @@ _brief_has_transport_evidence() {
 	local body="$1"
 	if grep -Eqi '\*\*Blocked command\*\*[^[:alnum:]]*.{4,}' <<<"$body" &&
 		grep -Eqi '\*\*Backend state\*\*[^[:alnum:]]*.{4,}' <<<"$body"; then
+		return 0
+	fi
+	return 1
+}
+
+_brief_asserts_confirmed_cause() {
+	local body="$1"
+	local confirmed='\*\*Causal status\*\*:[[:space:]]*confirmed|root cause[[:space:]]*(is|:)|confirmed cause[[:space:]]*(is|:)|cause(s|d)? the observed|results? in the observed|leads? to the observed|triggers? the observed'
+	if grep -Eqi "$confirmed" <<<"$body"; then
+		return 0
+	fi
+	return 1
+}
+
+_brief_has_owning_path_proof() {
+	local body="$1"
+	if grep -Eqi '\*\*Production entry point\*\*:[[:space:]]*.{8,}' <<<"$body" &&
+		grep -Eqi '\*\*Call chain\*\*:[[:space:]]*.{8,}' <<<"$body" &&
+		grep -Eqi '\*\*Integrated verification\*\*:[[:space:]]*.{8,}' <<<"$body"; then
 		return 0
 	fi
 	return 1
@@ -415,6 +451,10 @@ validate_brief_has_reproducer() {
 	fi
 	if _brief_asserts_transport_cause "$body" && ! _brief_is_causal_investigation "$body" && ! _brief_has_transport_evidence "$body"; then
 		echo "ERROR: Confirmed hang/timeout/rate-limit/API-budget/transport claims require **Blocked command** and **Backend state** evidence; otherwise frame this as an investigation with an unconfirmed cause" >&2
+		return 1
+	fi
+	if _brief_asserts_confirmed_cause "$body" && ! _brief_is_causal_investigation "$body" && ! _brief_has_owning_path_proof "$body"; then
+		echo "ERROR: Confirmed root-cause claims require substantive **Production entry point**, **Call chain**, and **Integrated verification** owning-path proof; otherwise use **Causal status**: unconfirmed investigation" >&2
 		return 1
 	fi
 

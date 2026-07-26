@@ -102,6 +102,8 @@ This outputs the section template. Collect and include in the issue body:
 2. **Expected**: what should have happened
 3. **Causal code**: `git blame <file> -L <line>,<line>` output or commit SHA suspected to have introduced the regression
 4. **Call-site sweep**: `rg "<function-or-pattern>" .agents/scripts/` to enumerate all affected locations
+5. **Causal status**: explicitly choose `unconfirmed investigation` or `confirmed`
+6. **Owning-path proof** (required for `confirmed`): the production entry point, end-to-end call chain, and an integrated test or trace that exercises that same path
 
 For hang, timeout, rate-limit, API-budget, or transport claims, distinguish the
 observed symptom from its cause. A long-running parent process proves only the
@@ -220,6 +222,14 @@ For framework bugs, use this expanded template that includes Evidence Attributio
 
 {what should have happened}
 
+**Causal status**: {unconfirmed investigation | confirmed}
+
+**Owning-path proof**:
+
+- **Production entry point**: {file:line and command/event that enters the owning path}
+- **Call chain**: {end-to-end calls from entry point to observed failure}
+- **Integrated verification**: {test or trace exercising that production path}
+
 **Causal code** (if identified):
 
 ```bash
@@ -305,6 +315,17 @@ posting.
 
 Then use a separate Bash tool call to post the already-created file. Do not
 combine body-file creation and the `gh issue create` write in one call.
+
+For framework bugs, validate that final body file immediately before posting.
+Do not validate an earlier draft or inline copy:
+
+```bash
+~/.aidevops/agents/scripts/log-issue-helper.sh validate-brief \
+  "/absolute/path/to/aidevops-issue-body.md"
+```
+
+If validation fails, correct the evidence or explicitly reframe the report as an
+unconfirmed investigation. Do not run `gh issue create` until validation passes.
 
 ```bash
 gh issue create -R marcusquinn/aidevops \

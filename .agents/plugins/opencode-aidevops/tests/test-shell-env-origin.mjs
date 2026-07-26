@@ -11,7 +11,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createShellEnvHook } from "../shell-env.mjs";
+import {
+  createSessionModelStore,
+  createShellEnvHook,
+  sessionModelIdentity,
+} from "../shell-env.mjs";
 
 function makeHook() {
   return createShellEnvHook({
@@ -160,6 +164,50 @@ test("shell env derives the signature model without replacing an explicit value"
   const explicit = { env: { PATH: "/usr/bin:/bin", AIDEVOPS_SIG_MODEL: "configured/model" } };
   await hook({ model: { providerID: "openai", modelID: "other-model" } }, explicit);
   assert.equal(explicit.env.AIDEVOPS_SIG_MODEL, "configured/model");
+});
+
+test("shell env records the effective model against only its session", async () => {
+  const store = createSessionModelStore();
+  const hook = createShellEnvHook({
+    agentsDir: "/tmp/aidevops-agents",
+    scriptsDir: "/tmp/aidevops-scripts",
+    workspaceDir: "/tmp/aidevops-workspace",
+    onSessionIdentity: (sessionId, modelId) => store.remember(sessionId, modelId),
+  });
+
+  await hook(
+    { sessionID: "session-a", model: { providerID: "openai", modelID: "model-a" } },
+    { env: { PATH: "/usr/bin:/bin" } },
+  );
+  await hook(
+    { sessionID: "session-b", model: { providerID: "anthropic", modelID: "model-b" } },
+    { env: { PATH: "/usr/bin:/bin" } },
+  );
+
+  assert.equal(store.resolve("session-a"), "openai/model-a");
+  assert.equal(store.resolve("session-b"), "anthropic/model-b");
+  assert.equal(store.resolve("session-missing"), "");
+});
+
+test("session model store evicts old entries at its bound", () => {
+  const store = createSessionModelStore(2);
+  store.remember("session-a", "model-a");
+  store.remember("session-b", "model-b");
+  store.remember("session-c", "model-c");
+  assert.equal(store.resolve("session-a"), "");
+  assert.equal(store.resolve("session-b"), "model-b");
+  assert.equal(store.resolve("session-c"), "model-c");
+});
+
+test("chat params identity seeds the session model before tool execution", () => {
+  assert.deepEqual(
+    sessionModelIdentity({
+      message: { sessionID: "chat-session" },
+      provider: { id: "openai" },
+      model: { id: "gpt-5.6-sol" },
+    }),
+    { sessionId: "chat-session", modelId: "openai/gpt-5.6-sol" },
+  );
 });
 
 test("shell env forwards OTEL values without replacing shell-specific values", async () => {

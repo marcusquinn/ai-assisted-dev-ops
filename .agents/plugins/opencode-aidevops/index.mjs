@@ -31,7 +31,11 @@ import { execSync } from "child_process";
 // Extracted modules
 import { createConfigHook } from "./config-hook.mjs";
 import { createQualityHooks } from "./quality-hooks.mjs";
-import { createShellEnvHook } from "./shell-env.mjs";
+import {
+  createSessionModelStore,
+  createShellEnvHook,
+  sessionModelIdentity,
+} from "./shell-env.mjs";
 import { compactingHook } from "./compaction.mjs";
 import { createCompactionAutoContinueGuard } from "./compaction-lifecycle.mjs";
 import { INTENT_FIELD } from "./intent-tracing.mjs";
@@ -242,11 +246,13 @@ export async function AidevopsPlugin({ directory, client }) {
     repository: directory,
     checkpointHelper: join(SCRIPTS_DIR, "session-checkpoint-helper.sh"),
   });
+  const sessionModels = createSessionModelStore();
   const { toolExecuteBefore, toolExecuteAfter, qualityLog } = createQualityHooks({
     activeScriptsDir: join(ACTIVE_AGENTS_DIR, "scripts"),
     scriptsDir: SCRIPTS_DIR,
     logsDir: LOGS_DIR,
     continuationGuard,
+    resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId),
   });
 
   const shellEnvHook = createShellEnvHook({
@@ -254,6 +260,7 @@ export async function AidevopsPlugin({ directory, client }) {
     agentsDir: AGENTS_DIR,
     scriptsDir: SCRIPTS_DIR,
     workspaceDir: WORKSPACE_DIR,
+    onSessionIdentity: (sessionId, modelId) => sessionModels.remember(sessionId, modelId),
   });
   const tierReasoning = loadTierReasoningPolicies([
     join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
@@ -381,7 +388,11 @@ export async function AidevopsPlugin({ directory, client }) {
 
     // Select the lowest suitable child effort, capped by the parent session.
     "chat.message": subagentEffortHooks.chatMessage,
-    "chat.params": subagentEffortHooks.chatParams,
+    "chat.params": async (input, output) => {
+      const { sessionId, modelId } = sessionModelIdentity(input);
+      sessionModels.remember(sessionId, modelId);
+      return subagentEffortHooks.chatParams(input, output);
+    },
 
     // Quality hooks
     "tool.execute.before": async (input, output) => {

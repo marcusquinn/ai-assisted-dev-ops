@@ -41,7 +41,13 @@ function hasAgentsDir(value) {
  * @returns {string}
  */
 function getSessionId(input) {
-  const candidates = [input?.session?.id, input?.sessionID, input?.session_id, input?.id];
+  const candidates = [
+    input?.session?.id,
+    input?.message?.sessionID,
+    input?.sessionID,
+    input?.session_id,
+    input?.id,
+  ];
   return candidates.find((value) => value) || "";
 }
 
@@ -51,13 +57,45 @@ function getSessionId(input) {
  * @returns {string}
  */
 function getModelId(input) {
-  const provider = input?.model?.providerID || "";
-  const model = input?.model?.modelID || input?.modelID || input?.model || "";
+  const provider = input?.model?.providerID || input?.provider?.id || "";
+  const model = input?.model?.modelID || input?.model?.id || input?.modelID || input?.model || "";
 
   if (provider && model && typeof model === "string" && !model.includes("/")) {
     return `${provider}/${model}`;
   }
   return typeof model === "string" ? model : "";
+}
+
+/**
+ * Extract normalized session/model identity from shell.env or chat.params input.
+ * @param {object} input
+ * @returns {{ sessionId: string, modelId: string }}
+ */
+export function sessionModelIdentity(input) {
+  return { sessionId: getSessionId(input), modelId: getModelId(input) };
+}
+
+/**
+ * Create bounded session-scoped model state for hooks that do not receive model
+ * metadata directly. Entries are keyed by OpenCode session ID so concurrent
+ * sessions cannot inherit one another's signature attribution.
+ * @param {number} maxEntries
+ * @returns {{ remember: Function, resolve: Function }}
+ */
+export function createSessionModelStore(maxEntries = 128) {
+  const models = new Map();
+  const limit = Math.max(1, Number(maxEntries) || 128);
+  return {
+    remember(sessionId, modelId) {
+      if (!sessionId || !modelId) return;
+      models.delete(sessionId);
+      models.set(sessionId, modelId);
+      while (models.size > limit) models.delete(models.keys().next().value);
+    },
+    resolve(sessionId) {
+      return sessionId ? models.get(sessionId) || "" : "";
+    },
+  };
 }
 
 /**
@@ -157,15 +195,17 @@ function projectFrameworkEnvironment(env, config) {
   if (version) env.AIDEVOPS_VERSION = version;
 }
 
-function projectSessionIdentity(input, env) {
-  const sessionId = getSessionId(input);
+function projectSessionIdentity(input, env, onSessionIdentity) {
+  const { sessionId, modelId } = sessionModelIdentity(input);
   if (sessionId) {
     env.OPENCODE_SESSION_ID = sessionId;
     env.AIDEVOPS_OPENCODE_SESSION_ID = sessionId;
   }
 
-  const modelId = getModelId(input);
   if (modelId && !env.AIDEVOPS_SIG_MODEL) env.AIDEVOPS_SIG_MODEL = modelId;
+  if (sessionId && env.AIDEVOPS_SIG_MODEL) {
+    onSessionIdentity(sessionId, env.AIDEVOPS_SIG_MODEL);
+  }
 }
 
 function projectOtelEnvironment(env) {
@@ -182,6 +222,7 @@ function normalizeDependencies(deps) {
     scriptsDir = "",
     workspaceDir = "",
     version,
+    onSessionIdentity,
   } = deps || {};
   return {
     activeAgentsDir,
@@ -189,19 +230,20 @@ function normalizeDependencies(deps) {
     scriptsDir,
     workspaceDir,
     precomputedVersion: typeof version === "string" ? version.trim() : "",
+    onSessionIdentity: typeof onSessionIdentity === "function" ? onSessionIdentity : () => {},
   };
 }
 
 async function shellEnvHook(config, input, output) {
   prependFrameworkPaths(output.env, config.scriptsDir, config.agentsDir);
   projectFrameworkEnvironment(output.env, config);
-  projectSessionIdentity(input, output.env);
+  projectSessionIdentity(input, output.env, config.onSessionIdentity);
   projectOtelEnvironment(output.env);
 }
 
 /**
  * Create the shell environment hook.
- * @param {object} deps - { activeAgentsDir?, agentsDir, scriptsDir, workspaceDir, version? }
+ * @param {object} deps - { activeAgentsDir?, agentsDir, scriptsDir, workspaceDir, version?, onSessionIdentity? }
  * @returns {Function} Shell env hook function
  */
 export function createShellEnvHook(deps) {

@@ -63,13 +63,16 @@ import {
 export { FAIL_REASON };
 export { SIG_MARKER, hasTrustedSignatureSignal, isGhWriteCommand, isMachineProtocolCommand };
 
-function _signatureHelperEnv() {
+function _signatureHelperEnv(explicitModel = "", useProcessModelFallback = true) {
   const helperEnv = {
     ...process.env,
     AIDEVOPS_SIG_CLI: process.env.AIDEVOPS_SIG_CLI || "OpenCode",
     AIDEVOPS_SIG_TOKENS: process.env.AIDEVOPS_SIG_TOKENS || "0",
   };
-  const model = process.env.AIDEVOPS_SIG_MODEL || process.env.OPENCODE_MODEL || "";
+  const fallbackModel = useProcessModelFallback
+    ? process.env.AIDEVOPS_SIG_MODEL || process.env.OPENCODE_MODEL || ""
+    : "";
+  const model = explicitModel || fallbackModel;
   if (model) {
     helperEnv.AIDEVOPS_SIG_MODEL = model;
   } else {
@@ -88,13 +91,13 @@ function _signatureHelperEnv() {
  * @param {Function} log
  * @returns {{ status: "ok", sig: string } | { status: "fail", reason: string, detail: string }}
  */
-function _generateSignature(helperPath, bodyValue, log) {
+function _generateSignature(helperPath, bodyValue, log, options = {}) {
   try {
     const sig = execFileSync(helperPath, ["footer", "--no-session", "--body", bodyValue], {
       encoding: "utf-8",
       timeout: 1500,
       stdio: ["pipe", "pipe", "pipe"],
-      env: _signatureHelperEnv(),
+      env: _signatureHelperEnv(options.model, options.useProcessModelFallback),
     });
     if (!sig || !sig.includes(SIG_MARKER)) {
       log("WARN", "gh-signature-helper output missing marker; refusing to inject");
@@ -173,9 +176,9 @@ function _matchBodyArg(cmd) {
  * @param {Function} log
  * @returns {{ status: "ok", cmd: string } | { status: "fail", reason: string, detail: string }}
  */
-function _repairBodyArg(cmd, parsed, helperPath, log) {
+function _repairBodyArg(cmd, parsed, helperPath, log, options = {}) {
   const { match, bodyValue, quote } = parsed;
-  const sigResult = _generateSignature(helperPath, bodyValue, log);
+  const sigResult = _generateSignature(helperPath, bodyValue, log, options);
   if (sigResult.status === "fail") return sigResult;
   const { sig } = sigResult;
   // If sig contains our delimiter quote, rewrite would break escaping —
@@ -232,7 +235,8 @@ export function tryRepairSignature(cmd, scriptsDir, log, options = {}) {
       commandWorkdir: options.commandWorkdir,
       sigMarker: SIG_MARKER,
       isMachineProtocolCommand,
-      generateSignature: _generateSignature,
+      generateSignature: (path, body, signatureLog) =>
+        _generateSignature(path, body, signatureLog, options),
     });
   }
 
@@ -247,7 +251,7 @@ export function tryRepairSignature(cmd, scriptsDir, log, options = {}) {
       : `gh-signature-helper.sh not found at ${helperPath}; cannot repair`);
     return { status: "fail", reason, ...(detail ? { detail } : {}) };
   }
-  return _repairBodyArg(cmd, parsed, helperPath, log);
+  return _repairBodyArg(cmd, parsed, helperPath, log, options);
 }
 
 /**
@@ -257,7 +261,7 @@ export function tryRepairSignature(cmd, scriptsDir, log, options = {}) {
  * @param {string} scriptsDir - Path to .agents/scripts (for helper invocation)
  * @param {object} output - Tool output (mutated on successful repair)
  */
-export function checkSignatureFooterGate(cmd, log, scriptsDir, output) {
+export function checkSignatureFooterGate(cmd, log, scriptsDir, output, options = {}) {
   if (!isGhWriteCommand(cmd)) return;
   if (isMachineProtocolCommand(cmd)) return;
   if (hasTrustedSignatureSignal(cmd)) return;
@@ -267,7 +271,11 @@ export function checkSignatureFooterGate(cmd, log, scriptsDir, output) {
   // user/session gets correct output without an error-retry cycle.
   if (scriptsDir && output && output.args) {
     const commandWorkdir = output.args.workdir || output.args.cwd || process.cwd();
-    const result = tryRepairSignature(cmd, scriptsDir, log, { commandWorkdir });
+    const result = tryRepairSignature(cmd, scriptsDir, log, {
+      commandWorkdir,
+      model: options.model,
+      useProcessModelFallback: options.useProcessModelFallback,
+    });
     if (result.status === "ok") {
       if (result.cmd !== cmd) {
         output.args.command = result.cmd;

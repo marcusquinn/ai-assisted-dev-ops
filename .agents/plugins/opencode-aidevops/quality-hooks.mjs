@@ -301,7 +301,12 @@ function handleToolBefore(ctx, log, input, output) {
     );
     // t2685: pass scriptsDir + output so the hook can repair (mutate
     // output.args.command) or block (throw) as appropriate.
-    checkSignatureFooterGate(bashArgs.command || "", log, ctx.scriptsDir, output);
+    const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
+    const signatureModel = ctx.resolveSessionModel(sessionId);
+    checkSignatureFooterGate(bashArgs.command || "", log, ctx.scriptsDir, output, {
+      model: signatureModel,
+      useProcessModelFallback: false,
+    });
   }
 
   checkSecretReadGate(input.tool, output.args || {}, log);
@@ -390,6 +395,9 @@ export function createQualityHooks(deps) {
     detailLogPath,
     detailMaxBytes,
     continuationGuard,
+    resolveSessionModel: typeof deps.resolveSessionModel === "function"
+      ? deps.resolveSessionModel
+      : () => "",
   };
 
   function boundQualityLog(level, message) {
