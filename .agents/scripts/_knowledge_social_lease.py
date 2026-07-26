@@ -359,9 +359,7 @@ def update_run_receipt(
 def finish_active_run(
     root: Path,
     lease: RunLease,
-    status: str,
-    failure_class: str,
-    retry_after: str | None = None,
+    update: RunReceiptUpdate,
     *,
     now_epoch: int | None = None,
 ) -> None:
@@ -373,12 +371,7 @@ def finish_active_run(
         update_run_receipt(
             database,
             lease,
-            RunReceiptUpdate(
-                status,
-                failure_class=failure_class,
-                retry_after=retry_after,
-                terminal=True,
-            ),
+            replace(update, terminal=True),
             now_epoch=now_epoch,
         )
         database.execute("COMMIT")
@@ -401,8 +394,7 @@ def fail_active_run(
     finish_active_run(
         root,
         lease,
-        "failed",
-        failure_class,
+        RunReceiptUpdate("failed", failure_class=failure_class),
         now_epoch=now_epoch,
     )
 

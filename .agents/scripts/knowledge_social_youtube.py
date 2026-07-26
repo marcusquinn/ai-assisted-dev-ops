@@ -37,6 +37,7 @@ from _knowledge_social_collect_state import load_context
 from _knowledge_social_lease import (
     RunLease,
     RunLeaseRequest,
+    RunReceiptUpdate,
     SocialLeaseLostError,
     acquire_run_lease,
     fail_active_run,
@@ -190,9 +191,11 @@ def _identity_terminal_result(
     finish_active_run(
         root,
         lease,
-        decision.run_status,
-        decision.failure_class,
-        retry_after,
+        RunReceiptUpdate(
+            decision.run_status,
+            failure_class=decision.failure_class,
+            retry_after=retry_after,
+        ),
     )
     return collection_result(
         decision.output_status,
