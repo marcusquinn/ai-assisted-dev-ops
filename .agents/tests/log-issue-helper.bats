@@ -149,6 +149,29 @@ _source_helper() {
 	[[ "$output" == *"require **Blocked command** and **Backend state**"* ]]
 }
 
+@test "validate brief ignores transport-like substrings in confirmed causes" {
+	_source_helper
+	local body
+	body="$(printf '## Reproducer\n**Symptom command**: aidevops review\n**Actual output**: reviewDecision=CHANGES_REQUESTED\n**Causal status**: confirmed\n**Production entry point**: review.sh:42 reads the review decision\n**Call chain**: review_tick -> read_decision -> classify_review\n**Integrated verification**: test-review.sh exercises the confirmed path\nThe root cause is CHANGES_REQUESTED, not hanger, transporter, timeoutSeconds, rate_limiter, or api_budgeter.')"
+	run validate_brief_has_reproducer "$body"
+	[ "$status" -eq 0 ]
+}
+
+@test "validate brief detects mixed-case transport tokens and explicit arrows" {
+	_source_helper
+	local claim body
+	for claim in "root cause is a HANG" "worker HuNg because backend stopped" \
+		"root cause is a Timeout" "request TIMED OUT because backend stopped" \
+		"root cause is a Rate_Limit" "rate limit state preceded a hang" \
+		"root cause is an API-BUDGET" \
+		"root cause is a TrAnSpOrT failure" "pulse → gh api remained blocked"; do
+		body="$(printf '## Reproducer\n**Symptom command**: aidevops pulse\n**Actual output**: operation stopped\n%s' "$claim")"
+		run validate_brief_has_reproducer "$body"
+		[ "$status" -eq 1 ]
+		[[ "$output" == *"require **Blocked command** and **Backend state**"* ]]
+	done
+}
+
 @test "validate brief accepts investigation framing without causal proof" {
 	_source_helper
 	local body

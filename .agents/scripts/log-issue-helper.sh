@@ -393,9 +393,11 @@ _brief_is_causal_investigation() {
 
 _brief_asserts_transport_cause() {
 	local body="$1"
-	local failure='hang|hung|timeout|timed out|rate.?limit|API.?budget|transport'
+	local failure='(^|[^[:alnum:]_])(hang|hung|timeout|timed[[:space:]]+out|rate[[:space:]_-]?limit|api[[:space:]_-]?budget|transport)([^[:alnum:]_]|$)'
+	local rate_limit='(^|[^[:alnum:]_])rate[[:space:]_-]?limit([^[:alnum:]_]|$)'
+	local stalled='(^|[^[:alnum:]_])(hang|hung|timeout)([^[:alnum:]_]|$)'
 	local causal='because|due to|root cause|cause(d|s)?|results? in|leads? to|triggers?'
-	if grep -Eqi "(${causal}).{0,120}(${failure})|(${failure}).{0,120}(${causal})|rate.?limit.{0,120}(hang|hung|timeout)|[→]" <<<"$body"; then
+	if grep -Eqi "(${causal}).{0,120}(${failure})|(${failure}).{0,120}(${causal})|(${rate_limit}).{0,120}(${stalled})|[→]" <<<"$body"; then
 		return 0
 	fi
 	return 1

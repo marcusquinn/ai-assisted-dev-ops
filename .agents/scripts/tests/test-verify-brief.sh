@@ -508,6 +508,56 @@ else
 fi
 
 # =============================================================================
+# Class G: transport-cause terms use portable token boundaries (GH#28677)
+# =============================================================================
+
+printf '\n%sClass G: transport-cause token boundaries%s\n' "$TEST_BLUE" "$TEST_NC"
+
+cat >"$TMP/brief-transport-near-misses.md" <<'BRIEF'
+## Reproducer
+**Symptom command**: `aidevops review`
+**Actual output**: `reviewDecision=CHANGES_REQUESTED`
+**Causal status**: confirmed
+**Production entry point**: review.sh:42 reads the review decision
+**Call chain**: review_tick -> read_decision -> classify_review
+**Integrated verification**: test-review.sh exercises the confirmed path
+The root cause is the mixed-case CHANGES_REQUESTED value, not the hanger,
+transporter, timeoutSeconds, rate_limiter, or api_budgeter metadata nearby.
+BRIEF
+
+output=$(bash "$HELPER" validate-brief "$TMP/brief-transport-near-misses.md" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]]; then
+	pass "G1 transport substrings and CHANGES_REQUESTED do not require transport evidence"
+else
+	fail "G1 transport token boundaries" "expected rc=0, got rc=$rc; output: $output"
+fi
+
+for transport_claim in \
+	"The root cause is a hang." \
+	"The worker HUNG because the scheduler stopped." \
+	"The root cause is a TiMeOuT." \
+	"The request timed out because the backend stalled." \
+	"The root cause is the RATE-LIMIT state." \
+	"The rate limit state preceded a hang." \
+	"The root cause is the Api Budget state." \
+	"The root cause is a TRANSPORT failure."; do
+	cat >"$TMP/brief-real-transport-claim.md" <<BRIEF
+## Reproducer
+**Symptom command**: \`aidevops pulse\`
+**Actual output**: the operation stopped
+${transport_claim}
+BRIEF
+	output=$(bash "$HELPER" validate-brief "$TMP/brief-real-transport-claim.md" 2>&1)
+	rc=$?
+	if [[ $rc -ne 0 && "$output" == *"require **Blocked command** and **Backend state**"* ]]; then
+		pass "G2 genuine transport claim is rejected without evidence: $transport_claim"
+	else
+		fail "G2 genuine transport claim detection: $transport_claim" "expected transport-evidence rejection, got rc=$rc; output: $output"
+	fi
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 
