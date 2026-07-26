@@ -28,7 +28,7 @@ tools:
 - **Cloudflare Vectorize**: `services/hosting/cloudflare-platform-skill/vectorize.md`
 - **Isolation strategy**: Collection-per-tenant (physical) or namespace/metadata filtering (logical)
 
-**Scope**: SaaS apps where users/organisations upload documents for RAG. NOT for aidevops internal memory (SQLite FTS5) or code search (osgrep).
+**Scope**: SaaS apps where users/organisations upload documents for RAG. NOT for aidevops internal memory (SQLite FTS5) or code search (exact local search plus targeted reads).
 
 <!-- AI-CONTEXT-END -->
 

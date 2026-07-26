@@ -45,7 +45,7 @@ aidevops status
 | **Optional Dependencies** | sshpass |
 | **Recommended Tools** | Tabby terminal, Zed editor + OpenCode extension |
 | **Git CLI Tools** | gh (GitHub), glab (GitLab), tea (Gitea) |
-| **AI Tools & MCPs** | OpenCode CLI, Augment Context Engine, osgrep |
+| **AI Tools & MCPs** | OpenCode CLI, Context7 |
 | **Development Environments** | DSPy, DSPyGround |
 | **AI Assistant Configs** | OpenCode, Cursor, Claude, Continue.dev, Windsurf, Gemini, Warp, Codex, Kiro |
 | **SSH Configuration** | Ed25519 key presence |

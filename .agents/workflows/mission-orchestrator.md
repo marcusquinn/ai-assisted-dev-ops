@@ -99,7 +99,7 @@ Dirs: `mission.md` (always) · `research/` · `agents/` · `scripts/` · `assets
 
 ## Research
 
-**Sources**: context7 MCP → local search/osgrep → `gh api` (README) → `ai-research` MCP (haiku) → `webfetch` (URLs from README only). Capture in `research/{topic}.md` (decision, options, recommendation). 1-2 pages. Skip well-known topics; time-box unfamiliar to 30-60 min; POC → popular defaults; Full → 2-3 options.
+**Sources**: context7 MCP → exact local search and targeted reads → `gh api` (README) → `ai-research` MCP (haiku) → `webfetch` (URLs from README only). Capture in `research/{topic}.md` (decision, options, recommendation). 1-2 pages. Skip well-known topics; time-box unfamiliar to 30-60 min; POC → popular defaults; Full → 2-3 options.
 
 ## Budget
 

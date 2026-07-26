@@ -31,7 +31,7 @@ tools:
 
 ```text
 Need vector search for SaaS with per-tenant data?
-  NO  --> Use osgrep (code search) or SQLite FTS5 (cross-session memory).
+  NO  --> Use exact local search plus targeted reads (code) or SQLite FTS5 (cross-session memory).
   YES --> Already on Postgres?
     YES --> >10M vectors/tenant? → pgvector with partitioning, or Qdrant/Pinecone
             ≤10M vectors/tenant? → pgvector (simplest — one fewer dependency)

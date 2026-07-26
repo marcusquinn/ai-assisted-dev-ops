@@ -31,7 +31,7 @@ tools:
 
 **Use when**: Documents exceed context limits — financial reports, regulatory filings, academic textbooks, legal/technical manuals. Need explainable retrieval with page/section references. No vector DB infrastructure wanted.
 
-**Do NOT use**: Short documents fitting in context. Keyword search (use rg/grep). Codebase search (use osgrep). Real-time streaming. Existing vector pipeline (see [vector-search](../database/vector-search.md)).
+**Do NOT use**: Short documents fitting in context. Keyword or codebase search (use `git grep`/`rg`, file discovery, and targeted reads). Real-time streaming. Existing vector pipeline (see [vector-search](../database/vector-search.md)).
 
 <!-- AI-CONTEXT-END -->
 

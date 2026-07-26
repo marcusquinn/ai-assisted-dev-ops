@@ -136,7 +136,7 @@ else
 fi
 
 # ============================================================================
-section "Test: does NOT remove supervisor-archived/"
+section "Test: removes orphaned supervisor-archived/"
 # ============================================================================
 
 mkdir -p "$SCRIPTS_DIR/supervisor-archived"
@@ -144,10 +144,10 @@ echo '#!/usr/bin/env bash' >"$SCRIPTS_DIR/supervisor-archived/supervisor-helper.
 
 migrate_orphaned_supervisor >/dev/null 2>&1
 
-if [[ -d "$SCRIPTS_DIR/supervisor-archived" ]]; then
-	pass "supervisor-archived/ preserved after migration"
+if [[ ! -d "$SCRIPTS_DIR/supervisor-archived" ]]; then
+	pass "orphaned supervisor-archived/ removed after migration"
 else
-	fail "supervisor-archived/ should NOT have been removed"
+	fail "orphaned supervisor-archived/ should have been removed"
 fi
 
 # ============================================================================

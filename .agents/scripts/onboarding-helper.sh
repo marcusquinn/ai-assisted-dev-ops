@@ -318,9 +318,9 @@ check_seo() {
 
 # Check context tools
 check_context_tools() {
-	echo -e "${BLUE}Context & Semantic Search${NC}"
+	echo -e "${BLUE}Context & Local Search${NC}"
 
-	print_service "Local search" "ready" "rg plus osgrep semantic search"
+	print_service "Local search" "ready" "git grep, rg, git ls-files, and fd"
 
 	# Context7 is MCP-only, no auth needed
 	print_service "Context7" "ready" "MCP (no auth needed)"
@@ -745,7 +745,7 @@ show_recommendations() {
 		echo "Essential:"
 		echo "  • GitHub CLI (gh) - Repository management"
 		echo "  • OpenAI API - AI-powered coding assistance"
-		echo "  • Local search - rg plus osgrep semantic search"
+		echo "  • Local search - git grep, rg, git ls-files, and fd"
 		echo "  • Playwright - Browser testing"
 		echo ""
 		echo "Recommended:"
@@ -799,7 +799,7 @@ show_recommendations() {
 		echo "Start with these core services:"
 		echo "  1. GitHub CLI (gh auth login)"
 		echo "  2. OpenAI or Anthropic API key"
-		echo "  3. Local semantic search (osgrep)"
+		echo "  3. Local code search (git grep and rg)"
 		echo ""
 		echo "Then add based on your needs:"
 		echo "  • Orchestration: aidevops pulse start (autonomous workers)"

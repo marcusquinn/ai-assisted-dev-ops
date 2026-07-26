@@ -64,7 +64,7 @@ npx mcporter generate-cli --command https://mcp.context7.com/mcp --compile
 |-----|----------|-------|
 | `grep_app` | `@github-search` | GitHub code search (no MCP used) |
 
-**Primary search**: `rg`/`fd` (local, instant). Use `osgrep` for semantic code search.
+**Primary search**: use `git grep`/`rg` for exact content search and `git ls-files`/`fd` for file discovery, then read likely files directly for model comprehension.
 
 <!-- AI-CONTEXT-END -->
 
