@@ -328,10 +328,10 @@ _interactive_session_auto_claim() {
 
 # --- cmd_add Helpers ---
 
-# Restore gitignored node_modules from the canonical repo into a new worktree.
+# Link gitignored dependencies from the canonical repo into a new worktree.
 # Git worktrees only contain tracked files — dirs in .gitignore are missing.
-# If .opencode/tool/*.ts imports from node_modules the runtime crashes on
-# startup. See pulse-dispatch-worker-launch.sh _dlw_restore_worktree_deps.
+# A symlink avoids expensive copies while ensuring the worktree uses the same
+# locked dependency tree as its canonical checkout.
 _restore_worktree_node_modules_lock_dir() {
 	local workspace_dir="${AIDEVOPS_WORKSPACE_DIR:-${HOME}/.aidevops/.agent-workspace}"
 	printf '%s\n' "${workspace_dir}/tmp/worktree-node-modules-restore.lock.d"
@@ -397,15 +397,16 @@ _restore_worktree_node_modules() {
 		local _pdir="" _rel=""
 		_pdir=$(dirname "$_pkg_file") || continue
 		_rel="${_pdir#"$wt_path"}"
-		local _src="${repo_root}${_rel}/node_modules"
-		local _dst="${wt_path}${_rel}/node_modules"
-		if [[ -d "$_src" && ! -d "$_dst" ]]; then
-			# t2889: fast_cp uses APFS clonefile / btrfs reflink CoW where
-			# available — sub-second copy on macOS, near-zero disk delta.
-			fast_cp "$_src" "$_dst" 2>/dev/null || true
-			_restored=$((_restored + 1))
-		fi
-	done < <(find "$wt_path" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" 2>/dev/null)
+		local _dependency=""
+		for _dependency in node_modules vendor; do
+			local _src="${repo_root}${_rel}/${_dependency}"
+			local _dst="${wt_path}${_rel}/${_dependency}"
+			if [[ -d "$_src" && ! -e "$_dst" ]]; then
+				ln -s "$_src" "$_dst" 2>/dev/null || true
+				[[ -L "$_dst" ]] && _restored=$((_restored + 1))
+			fi
+		done
+	done < <(find "$wt_path" -maxdepth 3 \( -name "package.json" -o -name "composer.json" \) -not -path "*/node_modules/*" -not -path "*/vendor/*" 2>/dev/null)
 	_restore_worktree_node_modules_release_lock "$_lock_dir"
 	return 0
 }
