@@ -13,8 +13,10 @@ from typing import Any
 
 from _knowledge_social_collect import (
     CollectionContext,
+    CollectionProgress,
     SuccessfulPage,
     TerminalDecision,
+    collection_result,
 )
 from _knowledge_social_lease import (
     RunLease,
@@ -27,6 +29,7 @@ from knowledge_social_import import (
     canonical_json,
     import_accounts,
     import_activities,
+    import_coverage,
     import_media,
     import_objects,
     reject_credentials,
@@ -264,6 +267,9 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         import_objects(database, page.archive, provider, raw.batch_id)
         import_activities(database, page.archive, provider, raw.batch_id)
         import_media(database, page.archive, provider, raw.batch_id)
+        import_coverage(
+            database, page.archive, provider, context.connection_id, raw.batch_id
+        )
         _refresh_fts(database, provider, page.archive)
         resource_count = sum(
             len(page.archive[key])
@@ -400,6 +406,29 @@ def record_terminal(
         raise
     finally:
         database.close()
+
+
+def record_terminal_result(
+    context: CollectionContext,
+    payload: dict[str, Any],
+    request: str,
+    decision: TerminalDecision,
+    progress: CollectionProgress,
+) -> dict[str, Any]:
+    """Persist one terminal page and return sanitized invocation counters."""
+    retry_after = record_terminal(context, payload, request, decision)
+    stopped = CollectionProgress(
+        progress.pages,
+        progress.resources,
+        progress.budget_units + context.spec.cost_units,
+    )
+    return collection_result(
+        decision.output_status,
+        stopped,
+        failure_class=decision.failure_class,
+        retry_after=retry_after,
+        run_id=context.lease.run_id if context.lease else None,
+    )
 
 
 def record_bounded_stop(

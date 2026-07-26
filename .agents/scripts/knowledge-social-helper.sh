@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 REDDIT_HELPER="${SCRIPT_DIR}/knowledge_social_reddit.py"
+YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -67,6 +68,14 @@ Reddit synchronization:
   snapshots have a hard 1000-item safety limit. --budget permits 1-1000 request
   units. Collection is read-only and cannot invoke the approval-bound write path.
 
+YouTube synchronization:
+  sync-youtube verifies an OAuth user-owned channel, then reads one allowlisted
+  stream: authored_videos, channel_activity, owned_playlists, subscriptions,
+  comments, or liked_videos. The initial identity request costs one quota unit;
+  every page reserves two units: one account rebinding request and one list read.
+  --budget is a hard 3-1000 unit limit and --page-size is 1-50 items.
+  Collection uses youtube.readonly user OAuth and never the service-account helper.
+
 EOF
 	return 0
 }
@@ -89,6 +98,10 @@ Usage:
   knowledge-social-helper.sh sync-reddit [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id ID --stream STREAM --profile PROFILE \
     [--budget UNITS] [--page-size 1-100] [--collector-id ID] \
+    [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-youtube [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id CHANNEL_ID --stream STREAM --profile PROFILE \
+    [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
     [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
@@ -247,6 +260,14 @@ main() {
 			return 1
 		fi
 		python3 "$REDDIT_HELPER" "$@" || return 1
+		;;
+	sync-youtube)
+		require_runtime || return 1
+		if [[ ! -r "$YOUTUBE_HELPER" ]]; then
+			printf 'ERROR: YouTube social adapter missing: %s\n' "$YOUTUBE_HELPER" >&2
+			return 1
+		fi
+		python3 "$YOUTUBE_HELPER" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1
