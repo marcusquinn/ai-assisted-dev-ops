@@ -328,10 +328,11 @@ _interactive_session_auto_claim() {
 
 # --- cmd_add Helpers ---
 
-# Link gitignored dependencies from the canonical repo into a new worktree.
+# Link gitignored Node dependencies from the canonical repo into a new worktree.
 # Git worktrees only contain tracked files — dirs in .gitignore are missing.
-# A symlink avoids expensive copies while ensuring the worktree uses the same
-# locked dependency tree as its canonical checkout.
+# Composer vendor is deliberately excluded: Composer's authoritative classmap
+# embeds the canonical source path, which would load stale classes from another
+# worktree. A symlink avoids expensive copies while preserving JS tooling.
 _restore_worktree_node_modules_lock_dir() {
 	local workspace_dir="${AIDEVOPS_WORKSPACE_DIR:-${HOME}/.aidevops/.agent-workspace}"
 	printf '%s\n' "${workspace_dir}/tmp/worktree-node-modules-restore.lock.d"
@@ -397,16 +398,13 @@ _restore_worktree_node_modules() {
 		local _pdir="" _rel=""
 		_pdir=$(dirname "$_pkg_file") || continue
 		_rel="${_pdir#"$wt_path"}"
-		local _dependency=""
-		for _dependency in node_modules vendor; do
-			local _src="${repo_root}${_rel}/${_dependency}"
-			local _dst="${wt_path}${_rel}/${_dependency}"
-			if [[ -d "$_src" && ! -e "$_dst" ]]; then
-				ln -s "$_src" "$_dst" 2>/dev/null || true
-				[[ -L "$_dst" ]] && _restored=$((_restored + 1))
-			fi
-		done
-	done < <(find "$wt_path" -maxdepth 3 \( -name "package.json" -o -name "composer.json" \) -not -path "*/node_modules/*" -not -path "*/vendor/*" 2>/dev/null)
+		local _src="${repo_root}${_rel}/node_modules"
+		local _dst="${wt_path}${_rel}/node_modules"
+		if [[ -d "$_src" && ! -e "$_dst" ]]; then
+			ln -s "$_src" "$_dst" 2>/dev/null || true
+			[[ -L "$_dst" ]] && _restored=$((_restored + 1))
+		fi
+	done < <(find "$wt_path" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" 2>/dev/null)
 	_restore_worktree_node_modules_release_lock "$_lock_dir"
 	return 0
 }
