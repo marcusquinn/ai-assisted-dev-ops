@@ -33,7 +33,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Node 24 ships npm 11.5+ which natively supports OIDC Trusted Publishers.
           # Do NOT downgrade to 22 + `npm install -g npm@latest` — that self-replaces
