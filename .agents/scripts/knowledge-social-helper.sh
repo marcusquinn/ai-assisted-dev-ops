@@ -57,9 +57,11 @@ usage_sync() {
 	cat <<'EOF'
 X synchronization:
   sync-x verifies the selected xurl account, then reads one official stream:
-  authored, mentions, likes, bookmarks, followers, or following. --budget is a
-  bounded request-cost allowance from 1 to 1000 units. Media policy none stores
-  no media rows; metadata stores references only, never binary media.
+  authored, mentions, likes, bookmarks, followers, following, owned_lists,
+  followed_lists, or list_memberships. List streams are bounded snapshots with
+  independent cursors. --budget is a request-cost allowance from 1 to 1000
+  units. Media policy none stores no media rows; metadata stores references
+  only, never binary media.
 
 Reddit synchronization:
   sync-reddit verifies the selected PRAW profile, then reads one explicitly

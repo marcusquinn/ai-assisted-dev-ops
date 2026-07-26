@@ -77,6 +77,10 @@ raw_args_are_mutating() {
 		-XPOST | -Xpost | -XPUT | -Xput | -XPATCH | -Xpatch | -XDELETE | -Xdelete | --request=POST | --request=post | --request=PUT | --request=put | --request=PATCH | --request=patch | --request=DELETE | --request=delete)
 			return 0
 			;;
+		-d | -d?* | --data | --data=* | -F | -F?* | --file | --file=*)
+			# xurl v1.3.1 treats request data as POST and files as multipart writes.
+			return 0
+			;;
 		esac
 		previous="${arg}"
 	done

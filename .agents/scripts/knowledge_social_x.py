@@ -200,7 +200,11 @@ def collect(
             ),
             lease=lease,
         )
-        if context.state.backfill_complete and not context.spec.supports_since_id:
+        if (
+            context.state.backfill_complete
+            and not context.spec.supports_since_id
+            and not context.spec.refresh_after_complete
+        ):
             record_bounded_stop(context, "unavailable", "delta_not_supported")
             return _result(
                 "delta_unavailable",

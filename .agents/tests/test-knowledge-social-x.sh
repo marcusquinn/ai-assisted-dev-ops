@@ -9,6 +9,7 @@ export AIDEVOPS_TEST_MODE=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${SCRIPT_DIR}/../scripts/knowledge-social-helper.sh"
 CORPUS_HELPER="${SCRIPT_DIR}/../scripts/knowledge-corpus-helper.sh"
+XURL_HELPER="${SCRIPT_DIR}/../scripts/xurl-helper.sh"
 TMP_DIR=$(mktemp -d)
 BASE="${TMP_DIR}/knowledge"
 ROOT="${BASE}/_knowledge"
@@ -95,6 +96,34 @@ mkdir -p "$ROOT"
 chmod 0700 "$BASE" "$ROOT"
 "$CORPUS_HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
+
+python3 - "$SCRIPT_DIR/../scripts" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from _knowledge_social_x import CursorState, STREAMS, stream_endpoint
+
+expected = {
+    "authored", "mentions", "likes", "bookmarks", "followers", "following",
+    "owned_lists", "followed_lists", "list_memberships",
+}
+assert set(STREAMS) == expected
+routes = {
+    "owned_lists": "/2/users/acct42/owned_lists?",
+    "followed_lists": "/2/users/acct42/followed_lists?",
+    "list_memberships": "/2/users/acct42/list_memberships?",
+}
+for stream, route in routes.items():
+    endpoint = stream_endpoint(stream, "acct42", CursorState(None, None, True))
+    assert route in endpoint
+    assert "max_results=100" in endpoint
+    assert "list.fields=" in endpoint
+    assert "pagination_token=" not in endpoint
+    assert not any(flag in endpoint for flag in ("-X", "--request", "-d", "--data"))
+    assert STREAMS[stream].refresh_after_complete
+PY
+assert_eq "X stream allowlist exposes only the three official List snapshots" \
+	verified verified
 
 cat >"$TMP_DIR/page-1.json" <<'JSON'
 {
@@ -263,6 +292,158 @@ JSON
 assert_eq "following activity preserves relationship direction" \
 	"$(sql_value "SELECT actor_remote_id || ':' || object_remote_id FROM activities WHERE activity_type='following'")" "acct42:target88"
 
+cat >"$TMP_DIR/owned-lists-1.json" <<'JSON'
+{
+  "identity": {"data": {"id": "acct42"}},
+  "pages": [{
+    "expect_endpoint_contains": ["/2/users/acct42/owned_lists?", "max_results=100", "list.fields="],
+    "response": {
+      "status": 200,
+      "observed_at": "2026-07-25T05:07:00Z",
+      "data": [{
+        "id": "9002", "name": "Research", "description": "Private sources",
+        "created_at": "2026-07-20T10:00:00Z", "owner_id": "acct42",
+        "private": true, "follower_count": 4, "member_count": 12,
+        "unexpected_field": "discarded"
+      }],
+      "meta": {"next_token": "owned-cursor"}
+    }
+  }]
+}
+JSON
+owned_first=$(
+	"$HELPER" sync-x --base "$BASE" --alias personal:default \
+		--connection-id conn_lists --account-id acct42 --stream owned_lists \
+		--budget 1 --fixture "$TMP_DIR/owned-lists-1.json"
+)
+assert_eq "owned Lists stop at the request budget with a resumable cursor" \
+	"$(json_field "$owned_first" status):$(sql_value "SELECT cursor || ':' || backfill_complete FROM sync_cursors WHERE connection_id='conn_lists' AND stream='owned_lists'")" \
+	"budget_exhausted:owned-cursor:0"
+assert_eq "X Lists normalize only allowlisted fields into a custom feed" \
+	"$(sql_value "SELECT object_type || ':' || provider_json FROM objects WHERE provider='xapi' AND remote_id='9002'")" \
+	'custom_feed:{"follower_count":4,"member_count":12,"owner_id":"acct42","private":true}'
+assert_eq "owned List relationships preserve account-to-list direction" \
+	"$(sql_value "SELECT actor_remote_id || ':' || object_remote_id || ':' || coalesce(occurred_at,'observed') FROM activities WHERE activity_type='owned_lists' AND remote_id='acct42-owned_lists-9002'")" \
+	"acct42:9002:observed"
+
+cat >"$TMP_DIR/owned-lists-2.json" <<'JSON'
+{
+  "identity": {"data": {"id": "acct42"}},
+  "pages": [{
+    "expect_endpoint_contains": ["pagination_token=owned-cursor"],
+    "response": {
+      "status": 200,
+      "observed_at": "2026-07-25T05:08:00Z",
+      "data": [{
+        "id": "9001", "name": "Operations", "owner_id": "acct42",
+        "private": false, "follower_count": 2, "member_count": 8
+      }],
+      "meta": {}
+    }
+  }]
+}
+JSON
+owned_second=$(
+	"$HELPER" sync-x --base "$BASE" --alias personal:default \
+		--connection-id conn_lists --account-id acct42 --stream owned_lists \
+		--fixture "$TMP_DIR/owned-lists-2.json"
+)
+assert_eq "owned List pagination resumes and preserves its first watermark" \
+	"$(json_field "$owned_second" status):$(sql_value "SELECT coalesce(cursor,'done') || ':' || watermark || ':' || backfill_complete FROM sync_cursors WHERE connection_id='conn_lists' AND stream='owned_lists'")" \
+	"complete:done:9002:1"
+assert_eq "both owned Lists are searchable provider-neutral custom feeds" \
+	"$(sql_value "SELECT count(*) FROM objects WHERE provider='xapi' AND object_type='custom_feed' AND remote_id IN ('9001','9002')")" "2"
+
+cat >"$TMP_DIR/owned-lists-snapshot.json" <<'JSON'
+{
+  "identity": {"data": {"id": "acct42"}},
+  "pages": [{
+    "expect_endpoint_contains": ["/2/users/acct42/owned_lists?"],
+    "response": {
+      "status": 200,
+      "observed_at": "2026-07-25T05:09:00Z",
+      "data": [{
+        "id": "9002", "name": "Research", "description": "Private sources",
+        "created_at": "2026-07-20T10:00:00Z", "owner_id": "acct42",
+        "private": true, "follower_count": 4, "member_count": 12
+      }],
+      "meta": {}
+    }
+  }]
+}
+JSON
+owned_batches_before=$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_lists' AND stream='owned_lists'")
+"$HELPER" sync-x --base "$BASE" --alias personal:default \
+	--connection-id conn_lists --account-id acct42 --stream owned_lists \
+	--fixture "$TMP_DIR/owned-lists-snapshot.json" >/dev/null
+owned_batches_once=$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_lists' AND stream='owned_lists'")
+"$HELPER" sync-x --base "$BASE" --alias personal:default \
+	--connection-id conn_lists --account-id acct42 --stream owned_lists \
+	--fixture "$TMP_DIR/owned-lists-snapshot.json" >/dev/null
+owned_batches_replayed=$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_lists' AND stream='owned_lists'")
+assert_eq "completed List snapshots rescan from the beginning" \
+	"$((owned_batches_once - owned_batches_before)):$(sql_value "SELECT backfill_complete || ':' || coalesce(cursor,'reset') FROM sync_cursors WHERE connection_id='conn_lists' AND stream='owned_lists'")" \
+	"1:1:reset"
+assert_eq "exact List snapshot replay is content-addressed and idempotent" \
+	"$owned_batches_replayed" "$owned_batches_once"
+
+cat >"$TMP_DIR/followed-lists.json" <<'JSON'
+{
+  "identity": {"data": {"id": "acct42"}},
+  "pages": [{
+    "expect_endpoint_contains": ["/2/users/acct42/followed_lists?"],
+    "response": {
+      "status": 200, "observed_at": "2026-07-25T05:10:00Z",
+      "data": [{"id": "9100", "name": "Followed feed", "owner_id": "owner77", "private": false}],
+      "meta": {}
+    }
+  }]
+}
+JSON
+"$HELPER" sync-x --base "$BASE" --alias personal:default \
+	--connection-id conn_lists --account-id acct42 --stream followed_lists \
+	--fixture "$TMP_DIR/followed-lists.json" >/dev/null
+assert_eq "followed List relationships preserve selected-account direction" \
+	"$(sql_value "SELECT actor_remote_id || ':' || object_remote_id FROM activities WHERE activity_type='followed_lists'")" \
+	"acct42:9100"
+
+cat >"$TMP_DIR/list-memberships.json" <<'JSON'
+{
+  "identity": {"data": {"id": "acct42"}},
+  "pages": [{
+    "expect_endpoint_contains": ["/2/users/acct42/list_memberships?"],
+    "response": {
+      "status": 200, "observed_at": "2026-07-25T05:11:00Z",
+      "data": [{"id": "9200", "name": "Member feed", "owner_id": "owner88", "private": true}],
+      "meta": {}
+    }
+  }]
+}
+JSON
+"$HELPER" sync-x --base "$BASE" --alias personal:default \
+	--connection-id conn_lists --account-id acct42 --stream list_memberships \
+	--fixture "$TMP_DIR/list-memberships.json" >/dev/null
+assert_eq "List membership direction is stable from list to selected account" \
+	"$(sql_value "SELECT actor_remote_id || ':' || object_remote_id FROM activities WHERE activity_type='list_memberships'")" \
+	"9200:acct42"
+assert_eq "each X List category owns an independent checkpoint" \
+	"$(sql_value "SELECT count(*) FROM sync_cursors WHERE connection_id='conn_lists'")" "3"
+
+list_batches_before=$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_lists'")
+cat >"$TMP_DIR/malformed-list.json" <<'JSON'
+{"identity":{"data":{"id":"acct42"}},"pages":[{"status":200,"observed_at":"2026-07-25T05:12:00Z","data":[{"id":"9300","name":42}],"meta":{}}]}
+JSON
+if "$HELPER" sync-x --base "$BASE" --alias personal:default \
+	--connection-id conn_lists --account-id acct42 --stream owned_lists \
+	--fixture "$TMP_DIR/malformed-list.json" >/dev/null 2>&1; then
+	assert_eq "malformed X Lists fail before persistence" accepted rejected
+else
+	assert_eq "malformed X Lists fail before persistence" rejected rejected
+fi
+assert_eq "malformed X Lists leave prior evidence and checkpoints safe" \
+	"$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_lists'"):$(sql_value "SELECT watermark FROM sync_cursors WHERE connection_id='conn_lists' AND stream='owned_lists'")" \
+	"${list_batches_before}:9002"
+
 cursor_before=$(sql_value "SELECT watermark FROM sync_cursors WHERE connection_id='conn_authored' AND stream='authored'")
 cat >"$TMP_DIR/rate-limit.json" <<'JSON'
 {
@@ -387,26 +568,59 @@ case "$*" in
 *"/2/users/acct42/tweets?"*)
 	printf '%s\n' '{"status":200,"observed_at":"2026-07-25T05:08:00Z","data":[{"id":"301","author_id":"acct42","text":"guarded path","created_at":"2026-07-25T05:08:00Z"}],"meta":{}}'
 	;;
+*"/2/users/acct42/owned_lists?"*)
+	printf '%s\n' '{"status":200,"observed_at":"2026-07-25T05:13:00Z","data":[{"id":"9401","name":"Owned fixture","owner_id":"acct42"}],"meta":{}}'
+	;;
+*"/2/users/acct42/followed_lists?"*)
+	printf '%s\n' '{"status":200,"observed_at":"2026-07-25T05:14:00Z","data":[{"id":"9402","name":"Followed fixture","owner_id":"owner77"}],"meta":{}}'
+	;;
+*"/2/users/acct42/list_memberships?"*)
+	printf '%s\n' '{"status":200,"observed_at":"2026-07-25T05:15:00Z","data":[{"id":"9403","name":"Membership fixture","owner_id":"owner88"}],"meta":{}}'
+	;;
 *)
 	exit 7
 	;;
 esac
 SH
 chmod 0700 "$TMP_DIR/bin/xurl"
+if XURL_LOG="$TMP_DIR/xurl.log" PATH="$TMP_DIR/bin:$PATH" \
+	"$XURL_HELPER" run -- /2/lists -d '{}' >/dev/null 2>&1; then
+	assert_eq "raw xurl request bodies cannot bypass write confirmation" accepted rejected
+else
+	assert_eq "raw xurl request bodies cannot bypass write confirmation" rejected rejected
+fi
 XURL_LOG="$TMP_DIR/xurl.log" PATH="$TMP_DIR/bin:$PATH" \
 	"$HELPER" sync-x --base "$BASE" --alias personal:default \
 	--connection-id conn_guarded --account-id acct42 --stream authored \
 	--app fixture-app --username @fixture >/dev/null
+for list_stream in owned_lists followed_lists list_memberships; do
+	XURL_LOG="$TMP_DIR/xurl.log" PATH="$TMP_DIR/bin:$PATH" \
+		"$HELPER" sync-x --base "$BASE" --alias personal:default \
+		--connection-id conn_guarded_lists --account-id acct42 \
+		--stream "$list_stream" --app fixture-app --username @fixture >/dev/null
+done
 guard_result=$(
 	python3 - "$TMP_DIR/xurl.log" <<'PY'
 import sys
 from pathlib import Path
 lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-writes = {"post", "reply", "quote", "delete", "like", "follow", "dm", "media", "--confirm-write"}
+writes = {
+    "post", "reply", "quote", "delete", "like", "follow", "dm", "media",
+    "--confirm-write", "-X", "--request", "-d", "--data", "-F", "--file",
+}
+routes = [
+    "/2/users/acct42/tweets?",
+    "/2/users/acct42/owned_lists?",
+    "/2/users/acct42/followed_lists?",
+    "/2/users/acct42/list_memberships?",
+]
+identities = [line for line in lines if line.endswith(" whoami")]
+reads = [line for line in lines if not line.endswith(" whoami")]
 safe = (
-    len(lines) == 2
-    and lines[0].endswith(" whoami")
-    and "/2/users/acct42/tweets?" in lines[1]
+    len(lines) == 8
+    and len(identities) == 4
+    and len(reads) == 4
+    and all(route in line for route, line in zip(routes, reads, strict=True))
     and not any(word in line.split() for word in writes for line in lines)
 )
 print("read-only" if safe else "unsafe")
@@ -415,6 +629,8 @@ PY
 assert_eq "live adapter route reaches only guarded whoami and raw-read commands" "$guard_result" "read-only"
 assert_eq "guarded route persists searchable provider content" \
 	"$(sql_value "SELECT count(*) FROM objects_fts WHERE objects_fts MATCH 'guarded'")" "1"
+assert_eq "guarded live List routes persist only the three allowlisted feeds" \
+	"$(sql_value "SELECT count(*) FROM objects WHERE provider='xapi' AND object_type='custom_feed' AND remote_id IN ('9401','9402','9403')")" "3"
 
 assert_eq "all immutable raw paths remain opaque" \
 	"$(
