@@ -11,6 +11,9 @@
 # stale-recovery cascade.
 
 set -euo pipefail
+# Fixture repositories are disposable; bypass interactive canonical-repo guards.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_SCRIPTS="${SCRIPT_DIR}/.."
@@ -136,215 +139,261 @@ test_routines_loader_isolates_errors() {
 	return 0
 }
 
-# Regression: GH#22199 — when the routines remote advances between clone and
-# setup_routines, the scaffold commit must be rebased before push instead of
-# leaving a local-only "chore: scaffold aidevops-routines repo" commit behind.
-test_commit_and_push_syncs_remote_ahead_repo() {
+# Captures all operator-visible canonical checkout state without updating refs.
+canonical_fingerprint() {
+	local repo_path="$1"
+	local untracked=""
+	{
+		git -C "$repo_path" rev-parse HEAD
+		git -C "$repo_path" ls-files --stage
+		git -C "$repo_path" status --porcelain=v1 -uall
+		git -C "$repo_path" diff --binary
+		git -C "$repo_path" diff --cached --binary
+		git -C "$repo_path" stash list
+		while IFS= read -r untracked; do
+			[[ -n "$untracked" ]] || continue
+			printf '%s %s\n' "$untracked" "$(git -C "$repo_path" hash-object -- "$untracked")"
+		done < <(git -C "$repo_path" ls-files --others --exclude-standard)
+		for untracked in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD; do
+			local state_path=""
+			state_path=$(git -C "$repo_path" rev-parse --git-path "$untracked")
+			[[ ! -e "$state_path" ]] || printf 'state:%s\n' "$untracked"
+		done
+	} | git hash-object --stdin
+	return 0
+}
+
+create_remote_fixture() {
+	local remote_repo="$1"
+	local canonical_repo="$2"
+	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
+	git -c init.defaultBranch=main init "$canonical_repo" >/dev/null
+	git -C "$canonical_repo" remote add origin "$remote_repo"
+	configure_test_git_identity "$canonical_repo"
+	printf 'base\n' >"${canonical_repo}/operator.txt"
+	git -C "$canonical_repo" add operator.txt
+	git -C "$canonical_repo" commit -m "initial" >/dev/null
+	git -C "$canonical_repo" push -u origin main >/dev/null 2>&1
+	return 0
+}
+
+test_isolated_publication_preserves_canonical_checkout() {
 	local tmp_dir=""
 	tmp_dir=$(mktemp -d)
 	local remote_repo="${tmp_dir}/remote.git"
-	local local_repo="${tmp_dir}/local"
+	local canonical_repo="${tmp_dir}/mirror"
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	printf 'operator edit\n' >>"${canonical_repo}/operator.txt"
+	printf 'untracked\n' >"${canonical_repo}/notes.txt"
+	local before=""
+	before=$(canonical_fingerprint "$canonical_repo")
+
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	_publish_routines_scaffold "$canonical_repo"
+	local after=""
+	after=$(canonical_fingerprint "$canonical_repo")
+	local remote_todo=""
+	remote_todo=$(git --git-dir="$remote_repo" show main:TODO.md 2>/dev/null || true)
+	rm -rf "$tmp_dir"
+
+	if [[ "$before" == "$after" && "$remote_todo" == "# Routines"* ]]; then
+		print_result "isolated publication preserves canonical HEAD/index/worktree/stash/rebase state (GH#28640)" 0
+		return 0
+	fi
+	print_result "isolated publication preserves canonical HEAD/index/worktree/stash/rebase state (GH#28640)" 1 \
+		"before=${before} after=${after} remote_todo_present=$([[ -n "$remote_todo" ]] && printf yes || printf no)"
+	return 0
+}
+
+test_isolated_publication_uses_remote_ahead_tip() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local remote_repo="${tmp_dir}/remote.git"
+	local canonical_repo="${tmp_dir}/mirror"
 	local advancer_repo="${tmp_dir}/advancer"
-
-	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
-	git clone "$remote_repo" "$local_repo" >/dev/null 2>&1
-	git -C "$local_repo" checkout -b main >/dev/null 2>&1
-	configure_test_git_identity "$local_repo"
-	printf 'base\n' >"${local_repo}/README.md"
-	git -C "$local_repo" add README.md
-	git -C "$local_repo" commit -m "initial" >/dev/null
-	git -C "$local_repo" push -u origin main >/dev/null 2>&1
-
-	git clone "$remote_repo" "$advancer_repo" >/dev/null 2>&1
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	git clone -q "$remote_repo" "$advancer_repo"
 	configure_test_git_identity "$advancer_repo"
-	printf 'remote-ahead\n' >>"${advancer_repo}/README.md"
-	git -C "$advancer_repo" commit -am "remote ahead" >/dev/null
-	git -C "$advancer_repo" push origin main >/dev/null 2>&1
+	printf 'remote ahead\n' >"${advancer_repo}/remote-only.txt"
+	git -C "$advancer_repo" add remote-only.txt
+	git -C "$advancer_repo" commit -m "remote ahead" >/dev/null
+	git -C "$advancer_repo" push -q origin main
+	local before=""
+	before=$(canonical_fingerprint "$canonical_repo")
 
-	printf 'scaffold\n' >"${local_repo}/TODO.md"
-	# shellcheck disable=SC1090  # dynamic repo-relative helper path
+	# shellcheck disable=SC1090
 	source "$INIT_ROUTINES"
-	_commit_and_push "$local_repo"
-	git -C "$local_repo" fetch origin main >/dev/null 2>&1
-
-	local ahead_count=""
-	ahead_count=$(git -C "$local_repo" rev-list --count '@{u}..HEAD')
-	local scaffold_commit_count=""
-	scaffold_commit_count=$(git -C "$local_repo" log --oneline origin/main --grep 'chore: scaffold aidevops-routines repo' | wc -l | tr -d ' ')
-	local status_output=""
-	status_output=$(git -C "$local_repo" status --porcelain)
-
+	_publish_routines_scaffold "$canonical_repo"
+	local after=""
+	after=$(canonical_fingerprint "$canonical_repo")
+	local remote_has_both=1
+	git --git-dir="$remote_repo" cat-file -e main:remote-only.txt &&
+		git --git-dir="$remote_repo" cat-file -e main:TODO.md && remote_has_both=0
 	rm -rf "$tmp_dir"
 
-	if [[ "$ahead_count" == "0" && "$scaffold_commit_count" == "1" && -z "$status_output" ]]; then
-		print_result "_commit_and_push rebases before push when routines remote is ahead (GH#22199)" 0
+	if [[ "$before" == "$after" && "$remote_has_both" -eq 0 ]]; then
+		print_result "isolated publication builds on the remote-ahead tip without syncing canonical refs (GH#22199)" 0
 		return 0
 	fi
-
-	print_result "_commit_and_push rebases before push when routines remote is ahead (GH#22199)" 1 \
-		"ahead=${ahead_count} scaffold_commits=${scaffold_commit_count} status=${status_output}"
+	print_result "isolated publication builds on the remote-ahead tip without syncing canonical refs (GH#22199)" 1 \
+		"before=${before} after=${after} remote_has_both=${remote_has_both}"
 	return 0
 }
 
-# Regression: GH#22205 — when git pull --rebase conflicts during routines
-# remote sync, the helper must abort the failed rebase and skip creating the
-# scaffold commit rather than leaving the routines repo mid-rebase.
-test_commit_and_push_aborts_failed_remote_sync_rebase() {
+test_isolated_publication_fails_closed_on_validation() {
 	local tmp_dir=""
 	tmp_dir=$(mktemp -d)
 	local remote_repo="${tmp_dir}/remote.git"
-	local local_repo="${tmp_dir}/local"
-	local advancer_repo="${tmp_dir}/advancer"
+	local canonical_repo="${tmp_dir}/mirror"
+	local validator="${tmp_dir}/reject.sh"
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	printf '#!/usr/bin/env bash\nexit 1\n' >"$validator"
+	chmod +x "$validator"
+	local canonical_before=""
+	local remote_before=""
+	canonical_before=$(canonical_fingerprint "$canonical_repo")
+	remote_before=$(git --git-dir="$remote_repo" rev-parse main)
 
-	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
-	git clone "$remote_repo" "$local_repo" >/dev/null 2>&1
-	git -C "$local_repo" checkout -b main >/dev/null 2>&1
-	configure_test_git_identity "$local_repo"
-	printf 'base\n' >"${local_repo}/README.md"
-	git -C "$local_repo" add README.md
-	git -C "$local_repo" commit -m "initial" >/dev/null
-	git -C "$local_repo" push -u origin main >/dev/null 2>&1
-
-	git clone "$remote_repo" "$advancer_repo" >/dev/null 2>&1
-	configure_test_git_identity "$advancer_repo"
-	printf 'remote-change\n' >"${advancer_repo}/README.md"
-	git -C "$advancer_repo" commit -am "remote conflicting change" >/dev/null
-	git -C "$advancer_repo" push origin main >/dev/null 2>&1
-
-	printf 'local-change\n' >"${local_repo}/README.md"
-	git -C "$local_repo" commit -am "local conflicting change" >/dev/null
-	printf 'scaffold\n' >"${local_repo}/TODO.md"
-	# shellcheck disable=SC1090  # dynamic repo-relative helper path
+	# shellcheck disable=SC1090
 	source "$INIT_ROUTINES"
-	_commit_and_push "$local_repo"
-
-	local rebase_merge_path=""
-	rebase_merge_path=$(git -C "$local_repo" rev-parse --git-path rebase-merge)
-	local rebase_apply_path=""
-	rebase_apply_path=$(git -C "$local_repo" rev-parse --git-path rebase-apply)
-	local rebase_state_present=0
-	if [[ -d "$rebase_merge_path" || -d "$rebase_apply_path" ]]; then
-		rebase_state_present=1
-	fi
-	local scaffold_commit_count=""
-	scaffold_commit_count=$(git -C "$local_repo" log --oneline --grep 'chore: scaffold aidevops-routines repo' | wc -l | tr -d ' ')
-	local scaffold_preserved=1
-	if [[ -f "${local_repo}/TODO.md" ]] && [[ "$(<"${local_repo}/TODO.md")" == "scaffold" ]]; then
-		scaffold_preserved=0
-	fi
-
+	local rc=0
+	AIDEVOPS_ROUTINES_PUBLISH_VALIDATOR="$validator" _publish_routines_scaffold "$canonical_repo" >/dev/null 2>&1 || rc=$?
+	local canonical_after=""
+	local remote_after=""
+	canonical_after=$(canonical_fingerprint "$canonical_repo")
+	remote_after=$(git --git-dir="$remote_repo" rev-parse main)
 	rm -rf "$tmp_dir"
 
-	if [[ "$rebase_state_present" -eq 0 && "$scaffold_commit_count" == "0" && "$scaffold_preserved" -eq 0 ]]; then
-		print_result "_commit_and_push aborts conflicted routines remote-sync rebase (GH#22205)" 0
+	if [[ "$rc" -eq 1 && "$canonical_before" == "$canonical_after" && "$remote_before" == "$remote_after" ]]; then
+		print_result "validation failure leaves canonical checkout and remote unchanged (GH#28640)" 0
 		return 0
 	fi
-
-	print_result "_commit_and_push aborts conflicted routines remote-sync rebase (GH#22205)" 1 \
-		"rebase_state=${rebase_state_present} scaffold_commits=${scaffold_commit_count} scaffold_preserved=${scaffold_preserved}"
+	print_result "validation failure leaves canonical checkout and remote unchanged (GH#28640)" 1 \
+		"rc=${rc} canonical_unchanged=$([[ "$canonical_before" == "$canonical_after" ]] && printf yes || printf no) remote_unchanged=$([[ "$remote_before" == "$remote_after" ]] && printf yes || printf no)"
 	return 0
 }
 
-# Regression: GH#22235 — detached/stale routines worktrees must not push a raw
-# HEAD destination. The helper should derive origin/HEAD and push with a fully
-# qualified branch ref so setup_routines avoids Git's "destination provided is
-# not a full refname" error.
-test_commit_and_push_uses_full_refspec_when_head_detached() {
+test_isolated_publication_retries_nonconflicting_race() {
 	local tmp_dir=""
 	tmp_dir=$(mktemp -d)
 	local remote_repo="${tmp_dir}/remote.git"
-	local local_repo="${tmp_dir}/local"
-
-	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
-	git clone "$remote_repo" "$local_repo" >/dev/null 2>&1
-	git -C "$local_repo" checkout -b main >/dev/null 2>&1
-	configure_test_git_identity "$local_repo"
-	printf 'base\n' >"${local_repo}/README.md"
-	git -C "$local_repo" add README.md
-	git -C "$local_repo" commit -m "initial" >/dev/null
-	git -C "$local_repo" push -u origin main >/dev/null 2>&1
-	git -C "$local_repo" remote set-head origin main >/dev/null 2>&1
-	git -C "$local_repo" checkout --detach HEAD >/dev/null 2>&1
-
-	printf 'scaffold\n' >"${local_repo}/TODO.md"
-	# shellcheck disable=SC1090  # dynamic repo-relative helper path
-	source "$INIT_ROUTINES"
-	local output=""
-	output=$(_commit_and_push "$local_repo" 2>&1)
-	git -C "$local_repo" fetch origin main >/dev/null 2>&1
-
-	local scaffold_commit_count=""
-	scaffold_commit_count=$(git -C "$local_repo" log --oneline origin/main --grep 'chore: scaffold aidevops-routines repo' | wc -l | tr -d ' ')
-	local status_output=""
-	status_output=$(git -C "$local_repo" status --porcelain)
-
-	rm -rf "$tmp_dir"
-
-	if [[ "$scaffold_commit_count" == "1" && -z "$status_output" && "$output" != *"destination provided is not a full refname"* ]]; then
-		print_result "_commit_and_push uses full refspec when routines HEAD is detached (GH#22235)" 0
-		return 0
-	fi
-
-	print_result "_commit_and_push uses full refspec when routines HEAD is detached (GH#22235)" 1 \
-		"scaffold_commits=${scaffold_commit_count} status=${status_output} output=${output}"
-	return 0
-}
-
-# Regression: GH#22235 — if a push fails while scaffold changes are already
-# unstaged, retry must not run git pull --rebase over those local changes.
-test_commit_and_push_skips_rebase_retry_with_unstaged_scaffold() {
-	local tmp_dir=""
-	tmp_dir=$(mktemp -d)
-	local remote_repo="${tmp_dir}/remote.git"
-	local local_repo="${tmp_dir}/local"
-	local fake_bin="${tmp_dir}/bin"
-	local push_failed_marker="${tmp_dir}/push-failed"
-	mkdir -p "$fake_bin"
-
-	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
-	git clone "$remote_repo" "$local_repo" >/dev/null 2>&1
-	git -C "$local_repo" checkout -b main >/dev/null 2>&1
-	configure_test_git_identity "$local_repo"
-	printf 'base\n' >"${local_repo}/README.md"
-	git -C "$local_repo" add README.md
-	git -C "$local_repo" commit -m "initial" >/dev/null
-	git -C "$local_repo" push -u origin main >/dev/null 2>&1
-
-	local real_git=""
-	real_git=$(command -v git)
-	cat >"${fake_bin}/git" <<EOF
+	local canonical_repo="${tmp_dir}/mirror"
+	local hook="${tmp_dir}/advance-once.sh"
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	cat >"$hook" <<'HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "\$1" == "push" ]]; then
-  "${real_git}" reset --soft HEAD~1 >/dev/null
-  : >"${push_failed_marker}"
-  exit 1
-fi
-if [[ "\$1" == "pull" && -f "${push_failed_marker}" ]]; then
-  printf 'unexpected pull --rebase with unstaged scaffold changes\\n' >&2
-  exit 42
-fi
-exec "${real_git}" "\$@"
-EOF
-	chmod +x "${fake_bin}/git"
+remote_repo="$1"
+branch="$2"
+attempt="$3"
+[[ "$attempt" == "1" ]] || exit 0
+temp_repo=$(mktemp -d)
+git clone -q --branch "$branch" "$remote_repo" "$temp_repo"
+git -C "$temp_repo" config user.email test@example.invalid
+git -C "$temp_repo" config user.name "Concurrent Writer"
+git -C "$temp_repo" config commit.gpgsign false
+printf 'concurrent non-generated change\n' >"${temp_repo}/remote-only.txt"
+git -C "$temp_repo" add remote-only.txt
+git -C "$temp_repo" commit -q -m "concurrent unrelated update"
+git -C "$temp_repo" push -q origin "HEAD:refs/heads/${branch}"
+rm -rf "$temp_repo"
+HOOK
+	chmod +x "$hook"
+	local before=""
+	before=$(canonical_fingerprint "$canonical_repo")
 
-	printf 'scaffold\n' >"${local_repo}/TODO.md"
-	# shellcheck disable=SC1090  # dynamic repo-relative helper path
+	# shellcheck disable=SC1090
 	source "$INIT_ROUTINES"
-	local output=""
-	PATH="${fake_bin}:$PATH" output=$(_commit_and_push "$local_repo" 2>&1)
-	local status_output=""
-	status_output=$(git -C "$local_repo" status --porcelain)
-
+	AIDEVOPS_ROUTINES_PUBLISH_MAX_RETRIES=2 AIDEVOPS_ROUTINES_BEFORE_PUSH_HOOK="$hook" \
+		_publish_routines_scaffold "$canonical_repo" >/dev/null
+	local after=""
+	after=$(canonical_fingerprint "$canonical_repo")
+	local remote_has_both=1
+	git --git-dir="$remote_repo" cat-file -e main:remote-only.txt &&
+		git --git-dir="$remote_repo" cat-file -e main:TODO.md && remote_has_both=0
 	rm -rf "$tmp_dir"
 
-	if [[ "$status_output" == *"TODO.md"* && "$output" == *"Push retry skipped"* && "$output" != *"unexpected pull --rebase"* ]]; then
-		print_result "_commit_and_push skips rebase retry with unstaged scaffold changes (GH#22235)" 0
+	if [[ "$before" == "$after" && "$remote_has_both" -eq 0 ]]; then
+		print_result "lease rejection retries when concurrent changes do not touch generated paths (GH#28640)" 0
 		return 0
 	fi
+	print_result "lease rejection retries when concurrent changes do not touch generated paths (GH#28640)" 1 \
+		"canonical_unchanged=$([[ "$before" == "$after" ]] && printf yes || printf no) remote_has_both=${remote_has_both}"
+	return 0
+}
 
-	print_result "_commit_and_push skips rebase retry with unstaged scaffold changes (GH#22235)" 1 \
-		"status=${status_output} output=${output}"
+test_isolated_publication_refuses_push_conflict() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local remote_repo="${tmp_dir}/remote.git"
+	local canonical_repo="${tmp_dir}/mirror"
+	local hook="${tmp_dir}/advance.sh"
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	cat >"$hook" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+remote_repo="$1"
+branch="$2"
+attempt="$3"
+temp_repo=$(mktemp -d)
+git clone -q --branch "$branch" "$remote_repo" "$temp_repo"
+git -C "$temp_repo" config user.email test@example.invalid
+git -C "$temp_repo" config user.name "Conflict Writer"
+git -C "$temp_repo" config commit.gpgsign false
+printf 'concurrent %s\n' "$attempt" >"${temp_repo}/TODO.md"
+git -C "$temp_repo" add TODO.md
+git -C "$temp_repo" commit -q -m "concurrent generated-path update"
+git -C "$temp_repo" push -q origin "HEAD:refs/heads/${branch}"
+rm -rf "$temp_repo"
+HOOK
+	chmod +x "$hook"
+	local before=""
+	before=$(canonical_fingerprint "$canonical_repo")
+
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	local rc=0
+	AIDEVOPS_ROUTINES_PUBLISH_MAX_RETRIES=1 AIDEVOPS_ROUTINES_BEFORE_PUSH_HOOK="$hook" \
+		_publish_routines_scaffold "$canonical_repo" >/dev/null 2>&1 || rc=$?
+	local after=""
+	after=$(canonical_fingerprint "$canonical_repo")
+	local remote_todo=""
+	remote_todo=$(git --git-dir="$remote_repo" show main:TODO.md)
+	rm -rf "$tmp_dir"
+
+	if [[ "$rc" -eq 2 && "$before" == "$after" && "$remote_todo" == "concurrent 1" ]]; then
+		print_result "lease rejection fails closed without overwriting concurrent generated paths (GH#28640)" 0
+		return 0
+	fi
+	print_result "lease rejection fails closed without overwriting concurrent generated paths (GH#28640)" 1 \
+		"rc=${rc} canonical_unchanged=$([[ "$before" == "$after" ]] && printf yes || printf no) remote_todo=${remote_todo}"
+	return 0
+}
+
+test_first_clone_initialization_remains_functional() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local remote_repo="${tmp_dir}/remote.git"
+	local new_clone="${tmp_dir}/new-clone"
+	git -c init.defaultBranch=main init --bare "$remote_repo" >/dev/null
+	git -c init.defaultBranch=main init "$new_clone" >/dev/null
+	git -C "$new_clone" remote add origin "$remote_repo"
+	configure_test_git_identity "$new_clone"
+
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	scaffold_repo "$new_clone" >/dev/null
+	_commit_and_push "$new_clone" >/dev/null
+	local remote_todo=""
+	remote_todo=$(git --git-dir="$remote_repo" show main:TODO.md 2>/dev/null || true)
+	rm -rf "$tmp_dir"
+
+	if [[ "$remote_todo" == "# Routines"* ]]; then
+		print_result "first-clone initialization still scaffolds and pushes its checkout" 0
+		return 0
+	fi
+	print_result "first-clone initialization still scaffolds and pushes its checkout" 1
 	return 0
 }
 
@@ -352,10 +401,12 @@ main() {
 	test_init_routines_sources_after_shared_constants
 	test_common_tolerates_readonly_colors
 	test_routines_loader_isolates_errors
-	test_commit_and_push_syncs_remote_ahead_repo
-	test_commit_and_push_aborts_failed_remote_sync_rebase
-	test_commit_and_push_uses_full_refspec_when_head_detached
-	test_commit_and_push_skips_rebase_retry_with_unstaged_scaffold
+	test_isolated_publication_preserves_canonical_checkout
+	test_isolated_publication_uses_remote_ahead_tip
+	test_isolated_publication_fails_closed_on_validation
+	test_isolated_publication_retries_nonconflicting_race
+	test_isolated_publication_refuses_push_conflict
+	test_first_clone_initialization_remains_functional
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

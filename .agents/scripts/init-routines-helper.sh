@@ -38,6 +38,7 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 REPOS_JSON="${HOME}/.config/aidevops/repos.json"
 GIT_PARENT="${HOME}/Git"
 DRY_RUN=false
+ROUTINES_SCAFFOLD_COMMIT_MESSAGE="chore: scaffold aidevops-routines repo"
 # SCRIPT_DIR: resolve from BASH_SOURCE when available, fall back to deployed path
 if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ "${BASH_SOURCE[0]}" != "$0" || -f "${BASH_SOURCE[0]}" ]]; then
 	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -488,137 +489,158 @@ register_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# _sync_with_remote_before_commit <path>
-# Pulls remote changes before creating the scaffold commit so a remote-ahead
-# routines repo does not leave a local-only commit after a non-fast-forward push.
+# _routines_publish_path_allowed <path>
+# Restricts isolated publication to files owned by routines scaffolding.
 # ---------------------------------------------------------------------------
-_sync_with_remote_before_commit() {
-	local repo_path="$1"
-	(
-		cd "$repo_path"
-
-		if ! git remote get-url origin &>/dev/null; then
-			return 0
-		fi
-
-		local upstream=""
-		upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
-		if [[ -z "$upstream" ]]; then
-			return 0
-		fi
-
-		local stashed=false
-		if [[ -n "$(git status --porcelain)" ]]; then
-			if git stash push -u -m "aidevops-routines scaffold before remote sync" >/dev/null; then
-				stashed=true
-			else
-				return 1
-			fi
-		fi
-
-		if ! git pull --rebase; then
-			local pull_status=1
-			local rebase_merge_path=""
-			local rebase_apply_path=""
-			rebase_merge_path=$(git rev-parse --git-path rebase-merge 2>/dev/null || true)
-			rebase_apply_path=$(git rev-parse --git-path rebase-apply 2>/dev/null || true)
-
-			if [[ -n "$rebase_merge_path" && -d "$rebase_merge_path" ]] || [[ -n "$rebase_apply_path" && -d "$rebase_apply_path" ]]; then
-				git rebase --abort >/dev/null 2>&1 || true
-			fi
-
-			if [[ "$stashed" == true ]]; then
-				if ! git stash pop >/dev/null; then
-					print_warning "Remote sync failed and scaffold changes were preserved in git stash"
-				fi
-			fi
-
-			return "$pull_status"
-		fi
-
-		if [[ "$stashed" == true ]]; then
-			if ! git stash pop >/dev/null; then
-				return 1
-			fi
-		fi
-
-		return 0
-	)
-	return $?
+_routines_publish_path_allowed() {
+	local path="$1"
+	case "$path" in
+	TODO.md | AGENTS.md | README.md | .gitignore | .github/CODEOWNERS | .github/ISSUE_TEMPLATE/routine.md | routines/custom/README.md | routines/core/*.md)
+		[[ "$path" != *'..'* && "$path" != *'//'* && "$path" != */ ]]
+		return $?
+		;;
+	*) return 1 ;;
+	esac
 }
 
 # ---------------------------------------------------------------------------
-# _current_origin_push_refspec
-# Prints a fully-qualified refspec for pushing the current HEAD to origin.
+# _routines_remote_default_branch <path>
+# Resolves origin's default branch without updating canonical refs.
 # ---------------------------------------------------------------------------
-_current_origin_push_refspec() {
+_routines_remote_default_branch() {
+	local repo_path="$1"
+	local remote_head=""
 	local branch=""
-	branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-
-	if [[ -z "$branch" ]]; then
-		local origin_head=""
-		origin_head=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-		if [[ "$origin_head" == origin/* ]]; then
-			branch="${origin_head#origin/}"
-		fi
-	fi
-
-	if [[ -z "$branch" ]]; then
-		return 1
-	fi
-
-	printf 'HEAD:refs/heads/%s\n' "$branch"
+	remote_head=$(git -C "$repo_path" ls-remote --symref origin HEAD 2>/dev/null) || return 1
+	branch=$(printf '%s\n' "$remote_head" | sed -n 's@^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$@\1@p')
+	[[ -n "$branch" && "$branch" != *$'\n'* ]] || return 1
+	printf '%s\n' "$branch"
 	return 0
 }
 
 # ---------------------------------------------------------------------------
-# _push_current_head_to_origin
-# Pushes HEAD using a fully-qualified destination ref to avoid raw HEAD ambiguity.
+# _routines_publish_changed_paths_allowed <path>
+# Fails closed when staging contains a path not owned by scaffold_repo.
 # ---------------------------------------------------------------------------
-_push_current_head_to_origin() {
-	local refspec=""
-	if ! refspec=$(_current_origin_push_refspec); then
-		print_warning "Unable to determine routines repo branch — skipping push to avoid ambiguous HEAD refspec"
-		return 1
-	fi
+_routines_publish_changed_paths_allowed() {
+	local repo_path="$1"
+	local path=""
+	while IFS= read -r path; do
+		[[ -n "$path" ]] || continue
+		if ! _routines_publish_path_allowed "$path"; then
+			print_warning "Routines publication refused unexpected path: $path"
+			return 1
+		fi
+	done < <(git -C "$repo_path" diff --cached --name-only)
+	return 0
+}
 
-	git push origin "$refspec"
-	return $?
+# ---------------------------------------------------------------------------
+# _publish_routines_scaffold <canonical-path>
+# Clones, scaffolds, validates, commits, and lease-pushes from disposable state.
+# The pre-existing canonical checkout is queried only with read-only commands.
+# ---------------------------------------------------------------------------
+_publish_routines_scaffold() {
+	local repo_path="$1"
+	local origin_url=""
+	local branch=""
+	local attempt=0
+	local max_retries="${AIDEVOPS_ROUTINES_PUBLISH_MAX_RETRIES:-3}"
+	origin_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null) || return 1
+	branch=$(_routines_remote_default_branch "$repo_path") || {
+		print_warning "Unable to determine routines remote default branch"
+		return 1
+	}
+
+	while [[ "$attempt" -lt "$max_retries" ]]; do
+		attempt=$((attempt + 1))
+		local temp_dir=""
+		local staging_repo=""
+		local parent_sha=""
+		local changed_paths=""
+		temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/routines-publisher.XXXXXX") || return 1
+		staging_repo="${temp_dir}/repo"
+		if ! git clone -q --single-branch --branch "$branch" "$origin_url" "$staging_repo"; then
+			rm -rf "$temp_dir"
+			return 1
+		fi
+		parent_sha=$(git -C "$staging_repo" rev-parse HEAD) || {
+			rm -rf "$temp_dir"
+			return 1
+		}
+		scaffold_repo "$staging_repo"
+		git -C "$staging_repo" add -A || {
+			rm -rf "$temp_dir"
+			return 1
+		}
+		if git -C "$staging_repo" diff --cached --quiet; then
+			rm -rf "$temp_dir"
+			return 0
+		fi
+		_routines_publish_changed_paths_allowed "$staging_repo" || {
+			rm -rf "$temp_dir"
+			return 1
+		}
+		changed_paths=$(git -C "$staging_repo" diff --cached --name-only) || {
+			rm -rf "$temp_dir"
+			return 1
+		}
+		if [[ -n "${AIDEVOPS_ROUTINES_PUBLISH_VALIDATOR:-}" ]] && ! "${AIDEVOPS_ROUTINES_PUBLISH_VALIDATOR}" "$staging_repo" "$parent_sha"; then
+			print_warning "Routines publication validation failed; canonical checkout and remote are unchanged"
+			rm -rf "$temp_dir"
+			return 1
+		fi
+		git -C "$staging_repo" -c user.name="aidevops" -c user.email="aidevops@example.invalid" -c commit.gpgsign=false \
+			commit -q -m "$ROUTINES_SCAFFOLD_COMMIT_MESSAGE" || {
+			rm -rf "$temp_dir"
+			return 1
+		}
+		if [[ -n "${AIDEVOPS_ROUTINES_BEFORE_PUSH_HOOK:-}" ]]; then
+			"${AIDEVOPS_ROUTINES_BEFORE_PUSH_HOOK}" "$origin_url" "$branch" "$attempt" || {
+				rm -rf "$temp_dir"
+				return 1
+			}
+		fi
+		if git -C "$staging_repo" push -q --force-with-lease="refs/heads/${branch}:${parent_sha}" \
+			origin "HEAD:refs/heads/${branch}"; then
+			rm -rf "$temp_dir"
+			print_success "Published routines scaffold from isolated state"
+			return 0
+		fi
+		local latest_sha=""
+		local changed_path=""
+		if ! git -C "$staging_repo" fetch -q origin "$branch" ||
+			! latest_sha=$(git -C "$staging_repo" rev-parse FETCH_HEAD); then
+			rm -rf "$temp_dir"
+			return 1
+		fi
+		while IFS= read -r changed_path; do
+			[[ -n "$changed_path" ]] || continue
+			if ! git -C "$staging_repo" diff --quiet "$parent_sha" "$latest_sha" -- "$changed_path"; then
+				rm -rf "$temp_dir"
+				print_warning "Routines publication conflict on generated path: $changed_path"
+				return 2
+			fi
+		done <<<"$changed_paths"
+		rm -rf "$temp_dir"
+	done
+
+	print_warning "Routines publication encountered concurrent remote updates; canonical checkout is unchanged"
+	return 2
 }
 
 # ---------------------------------------------------------------------------
 # _commit_and_push <path>
-# Commits scaffolded files and pushes to remote.
+# Initializes a newly cloned checkout. Existing mirrors use isolated publishing.
 # ---------------------------------------------------------------------------
 _commit_and_push() {
 	local repo_path="$1"
-	(
-		cd "$repo_path"
-		if ! _sync_with_remote_before_commit "$repo_path"; then
-			print_warning "Remote sync failed — skipping routines scaffold commit to avoid a stranded local commit"
-			return 0
-		fi
-		git add -A
-		if ! git diff --cached --quiet; then
-			if ! git commit -m "chore: scaffold aidevops-routines repo"; then
-				print_warning "Routines scaffold commit failed — uncommitted scaffold changes preserved"
-				return 0
-			fi
-			if ! _push_current_head_to_origin; then
-				print_warning "Push rejected — rebasing onto remote and retrying"
-				if [[ -n "$(git status --porcelain)" ]]; then
-					git reset --soft HEAD~1
-					print_warning "Push retry skipped — scaffold changes are unstaged and were preserved"
-					return 0
-				fi
-				if git pull --rebase && _push_current_head_to_origin; then
-					return 0
-				fi
-				git reset --soft HEAD~1
-				print_warning "Push failed — uncommitted scaffold changes preserved; no local-only commit left behind"
-			fi
-		fi
-	)
+	git -C "$repo_path" add -A || return 1
+	if git -C "$repo_path" diff --cached --quiet; then
+		return 0
+	fi
+	git -C "$repo_path" commit -m "$ROUTINES_SCAFFOLD_COMMIT_MESSAGE" || return 1
+	git -C "$repo_path" push origin HEAD || return 1
 	return 0
 }
 
@@ -931,6 +953,10 @@ init_personal() {
 
 	local slug="${username}/aidevops-routines"
 	local repo_path="${GIT_PARENT}/aidevops-routines"
+	local existing_remote=false
+	if [[ -d "$repo_path/.git" ]] && git -C "$repo_path" remote get-url origin &>/dev/null; then
+		existing_remote=true
+	fi
 
 	print_info "Creating personal routines repo: $slug"
 
@@ -944,9 +970,13 @@ init_personal() {
 
 	_ensure_gh_repo "$slug" "Private routines"
 	_ensure_cloned "$slug" "$repo_path"
-	scaffold_repo "$repo_path"
 	register_repo "$repo_path" "$slug"
-	_commit_and_push "$repo_path"
+	if [[ "$existing_remote" == true ]]; then
+		_publish_routines_scaffold "$repo_path" || print_warning "Routines scaffold publication deferred"
+	else
+		scaffold_repo "$repo_path"
+		_commit_and_push "$repo_path"
+	fi
 	_create_core_routine_issues "$slug"
 
 	print_success "Personal routines repo ready: $repo_path"
@@ -964,6 +994,10 @@ init_org() {
 
 	local slug="${org_name}/aidevops-routines"
 	local repo_path="${GIT_PARENT}/${org_name}-aidevops-routines"
+	local existing_remote=false
+	if [[ -d "$repo_path/.git" ]] && git -C "$repo_path" remote get-url origin &>/dev/null; then
+		existing_remote=true
+	fi
 
 	print_info "Creating org routines repo: $slug"
 
@@ -977,9 +1011,13 @@ init_org() {
 
 	_ensure_gh_repo "$slug" "Private routines (${org_name})"
 	_ensure_cloned "$slug" "$repo_path"
-	scaffold_repo "$repo_path"
 	register_repo "$repo_path" "$slug"
-	_commit_and_push "$repo_path"
+	if [[ "$existing_remote" == true ]]; then
+		_publish_routines_scaffold "$repo_path" || print_warning "Routines scaffold publication deferred"
+	else
+		scaffold_repo "$repo_path"
+		_commit_and_push "$repo_path"
+	fi
 	_create_core_routine_issues "$slug"
 
 	print_success "Org routines repo ready: $repo_path"
