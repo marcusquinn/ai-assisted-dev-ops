@@ -68,6 +68,55 @@ Use direct PRAW calls for reads only. Every automated post, reply, upvote, or
 save must use the owner-only queue through `operation-create`; never call PRAW
 write methods directly from automation.
 
+## Read-only account knowledge synchronization
+
+Use `sync-reddit` for authenticated corpus collection. The optional dependency
+must be PRAW major version 8 and must be installed outside the agent session.
+Store one secret set for each lowercase profile slug:
+
+- `REDDIT_<PROFILE>_CLIENT_ID`
+- `REDDIT_<PROFILE>_CLIENT_SECRET`
+- `REDDIT_<PROFILE>_USERNAME`
+- `REDDIT_<PROFILE>_PASSWORD`
+- `REDDIT_<PROFILE>_USER_AGENT`
+
+The selected profile is local execution state. It is never stored in evidence,
+receipts, cursors, or command output. Run one explicitly selected stream:
+
+```bash
+aidevops secret REDDIT_DEFAULT_CLIENT_ID REDDIT_DEFAULT_CLIENT_SECRET \
+  REDDIT_DEFAULT_USERNAME REDDIT_DEFAULT_PASSWORD REDDIT_DEFAULT_USER_AGENT -- \
+  knowledge-social-helper.sh sync-reddit --alias personal:default \
+  --connection-id REDDIT_CONNECTION_ID \
+  --account-id STABLE_REDDIT_ACCOUNT_ID \
+  --stream saved --profile default --budget 10 --page-size 100
+```
+
+The read adapter verifies `reddit.user.me().id` before collecting and exposes
+these independently checkpointed streams:
+
+- authored submissions and comments;
+- mentions, comment replies, submission replies, inbox messages, and sent
+  messages;
+- saved, upvoted, downvoted, and hidden submissions/comments;
+- subscribed, moderated, and contributor subreddits;
+- multireddits/custom feeds and their subreddit membership;
+- friends, blocked accounts, and trusted accounts.
+
+Listing streams fetch one bounded page per request unit. Initial history resumes
+from PRAW's stable fullname checkpoint. Newest-first streams retain their first
+item as a watermark and stop a later incremental scan when that item is reached.
+Reddit listing retention is provider-limited, so an exhausted listing proves only
+the available provider window. Relationship and custom-feed snapshots restart
+from the beginning after a complete run and never infer deletion from a partial
+or failed snapshot.
+
+The child process receives only the selected profile's environment variables,
+has a hard timeout, serializes an explicit field allowlist without lazy model
+fetches, and returns sanitized failure classes. The collector cannot import or
+invoke posting, reply, voting, saving, messaging, moderation, or subscription
+mutation methods. Provider writes remain in the separate approval queue below.
+
 ## Approval-bound outbound operations
 
 Automated writes use the owner-only social operation queue rather than direct
@@ -99,4 +148,5 @@ blindly retried. Multiple accounts use separate profile slugs and separate
 
 - `scripts/x-helper.sh` - X/Twitter fetching via fxtwitter
 - `aidevops/knowledge-plane/05-social-operations.md` - approval, scheduling, receipts, and reconciliation
+- `aidevops/knowledge-plane/06-social-provider-capabilities.md` - account-knowledge capability and gap matrix
 - `tools/browser/curl-copy.md` - Authenticated scraping workflow

@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
+REDDIT_HELPER="${SCRIPT_DIR}/knowledge_social_reddit.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -51,6 +52,25 @@ EOF
 	return 0
 }
 
+usage_sync() {
+	cat <<'EOF'
+X synchronization:
+  sync-x verifies the selected xurl account, then reads one official stream:
+  authored, mentions, likes, bookmarks, followers, or following. --budget is a
+  bounded request-cost allowance from 1 to 1000 units. Media policy none stores
+  no media rows; metadata stores references only, never binary media.
+
+Reddit synchronization:
+  sync-reddit verifies the selected PRAW profile, then reads one explicitly
+  allowlisted account stream. Listing requests fetch one page with independent
+  cursors and a bounded 1-100 item size; plain relationship/custom-feed
+  snapshots have a hard 1000-item safety limit. --budget permits 1-1000 request
+  units. Collection is read-only and cannot invoke the approval-bound write path.
+
+EOF
+	return 0
+}
+
 usage() {
 	cat <<'EOF'
 Usage:
@@ -66,6 +86,10 @@ Usage:
     --connection-id ID --account-id ID --stream STREAM [--budget UNITS] \
     [--media-policy none|metadata] [--app PROFILE] [--username HANDLE] \
     [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-reddit [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id ID --stream STREAM --profile PROFILE \
+    [--budget UNITS] [--page-size 1-100] [--collector-id ID] \
+    [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
   knowledge-social-helper.sh reconcile-due [--base PATH] [--alias ALIAS] \
@@ -113,12 +137,9 @@ Archive format:
   connection_id must be an opaque local ID. Unknown provider fields belong in
   provider_json objects. The original canonical payload is stored immutably.
 
-X synchronization:
-  sync-x verifies the selected xurl account, then reads one official stream:
-  authored, mentions, likes, bookmarks, followers, or following. --budget is a
-  bounded request-cost allowance from 1 to 1000 units. Media policy none stores
-  no media rows; metadata stores references only, never binary media.
-
+EOF
+	usage_sync
+	cat <<'EOF'
 Deterministic routines:
   sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
   reconciliation owns one expiring connection lease and monotonic fencing token;
@@ -218,6 +239,14 @@ main() {
 			return 1
 		fi
 		python3 "$X_HELPER" "$@" || return 1
+		;;
+	sync-reddit)
+		require_runtime || return 1
+		if [[ ! -r "$REDDIT_HELPER" ]]; then
+			printf 'ERROR: Reddit social adapter missing: %s\n' "$REDDIT_HELPER" >&2
+			return 1
+		fi
+		python3 "$REDDIT_HELPER" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1

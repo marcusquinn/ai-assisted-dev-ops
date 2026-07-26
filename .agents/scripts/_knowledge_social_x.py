@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
+from _knowledge_social_collect import CursorState, PageCheckpoint
 from knowledge_social_store import SocialStoreError
 
 PROVIDER = "xapi"
@@ -49,23 +50,6 @@ STREAMS = {
         "/2/users/{account_id}/following", "account", "selected_follows_remote", False
     ),
 }
-
-
-@dataclass(frozen=True)
-class CursorState:
-    """Durable per-connection/per-stream checkpoint."""
-
-    cursor: str | None
-    watermark: str | None
-    backfill_complete: bool
-
-
-@dataclass(frozen=True)
-class PageCheckpoint:
-    """Checkpoint calculated from a successful provider page."""
-
-    next_cursor: str | None
-    watermark: str | None
 
 
 def response_status(payload: dict[str, Any]) -> int:

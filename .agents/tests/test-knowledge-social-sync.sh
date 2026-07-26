@@ -251,6 +251,7 @@ collection = CollectionContext(
     CursorState(stored[0], stored[1], bool(stored[2])),
     STREAMS["authored"],
     old,
+    "xapi",
 )
 page = SuccessfulPage(
     {

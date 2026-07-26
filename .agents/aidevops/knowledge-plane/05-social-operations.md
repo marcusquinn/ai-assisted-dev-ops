@@ -30,6 +30,48 @@ credential-shaped fields, use independent stream checkpoints, expose hard cost
 budgets, and add pagination, terminal-failure, replay, and write-reachability
 tests. No provider may add engagement or other platform mutations.
 
+The maintained planning and gap inventory is
+`06-social-provider-capabilities.md`. A matrix entry is not implementation
+authority: every provider child must revalidate current official API/export
+access, required scopes, installed dependency symbols, retention, and terms
+before adding a route.
+
+## Live account collection
+
+Live collectors verify the selected stable account before the first evidence
+write. Each invocation owns one stream lease and fencing token, spends a bounded
+request budget, and atomically commits the raw boundary envelope, normalized
+rows, coverage, receipt, and next checkpoint. A terminal or malformed page keeps
+the previous checkpoint. Snapshot streams never infer deletion from partial
+coverage.
+
+X collection uses the guarded official `xurl` helper. Reddit collection uses an
+optional PRAW 8 child with a filtered environment and fixed read-only routing:
+
+```bash
+knowledge-social-helper.sh sync-x --alias personal:default \
+  --connection-id CONNECTION_ID --account-id ACCOUNT_ID \
+  --stream authored --budget 10 --media-policy metadata
+
+aidevops secret REDDIT_DEFAULT_CLIENT_ID REDDIT_DEFAULT_CLIENT_SECRET \
+  REDDIT_DEFAULT_USERNAME REDDIT_DEFAULT_PASSWORD REDDIT_DEFAULT_USER_AGENT -- \
+  knowledge-social-helper.sh sync-reddit --alias personal:default \
+  --connection-id REDDIT_CONNECTION_ID \
+  --account-id STABLE_REDDIT_ACCOUNT_ID \
+  --stream authored_comments --profile default --budget 10 --page-size 100
+```
+
+Every Reddit stream has an independent cursor. Authored content, inbox activity,
+curation signals, and other newest-first listings preserve a stable watermark
+across interruptions. Subscription listings and the friends, blocked, trusted,
+and multireddit/custom-feed snapshots rescan after completion without claiming
+that missing rows were deleted. PRAW's available listing window is recorded as a
+retention boundary rather than complete account history.
+
+Named Reddit profile selectors and handles remain local. The child receives only
+the selected `REDDIT_<PROFILE>_*` variables, emits an explicit serialized field
+allowlist, and cannot reach the separate approval-bound mutation provider.
+
 ## Approval-bound account operations
 
 Outbound account operations are a separate owner-only subsystem; they do not
@@ -168,9 +210,11 @@ Before enabling a routine:
    raw private content.
 6. Verify request budgets and terminal rate-limit state remain unchanged by the
    browser route; browser capture never disguises provider API cost.
-7. For outbound use, verify exact approval expiry, X stable-account identity, and
-   the private due routine before enabling it.
-8. Run corpus, social-store, operation, query, sync, sharing, provider, and
+7. For live collection, verify the selected stable-account identity, each enabled
+   stream's independent checkpoint, and honest retention/snapshot coverage.
+8. For outbound use, verify exact approval expiry, provider stable-account
+   identity, and the private due routine before enabling it.
+9. Run corpus, social-store, operation, query, sync, sharing, provider, and
    browser-gap tests.
 
 Shared deployments remain limited to the tested encrypted grant/distribution
