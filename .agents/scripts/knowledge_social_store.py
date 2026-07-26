@@ -18,8 +18,8 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 3
-SCHEMA_VERSION_SQL = "PRAGMA user_version=3"
+SCHEMA_VERSION = 4
+SCHEMA_VERSION_SQL = "PRAGMA user_version=4"
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -181,7 +181,10 @@ def _tables() -> tuple[str, ...]:
             operation_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
             connection_id TEXT NOT NULL, remote_account_id TEXT NOT NULL,
             action TEXT NOT NULL CHECK(action IN ('post','reply','like','bookmark')),
-            target_remote_id TEXT, payload TEXT, payload_sha256 TEXT NOT NULL,
+            target_remote_id TEXT, destination_remote_id TEXT,
+            payload TEXT, payload_sha256 TEXT NOT NULL,
+            subject TEXT, subject_sha256 TEXT,
+            intent_version INTEGER NOT NULL DEFAULT 2 CHECK(intent_version IN (1,2)),
             intent_sha256 TEXT NOT NULL UNIQUE, app_profile TEXT, username TEXT,
             scheduled_at INTEGER NOT NULL, state TEXT NOT NULL
                 CHECK(state IN ('draft','approved','claimed','succeeded','failed','unknown','cancelled')),
@@ -268,6 +271,32 @@ def _add_sync_run_v2_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE sync_runs ADD COLUMN request_hash TEXT")
 
 
+def _add_outbound_v4_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(outbound_operations)").fetchall()
+    }
+    additions = (
+        (
+            "destination_remote_id",
+            "ALTER TABLE outbound_operations ADD COLUMN destination_remote_id TEXT",
+        ),
+        ("subject", "ALTER TABLE outbound_operations ADD COLUMN subject TEXT"),
+        (
+            "subject_sha256",
+            "ALTER TABLE outbound_operations ADD COLUMN subject_sha256 TEXT",
+        ),
+        (
+            "intent_version",
+            "ALTER TABLE outbound_operations ADD COLUMN "
+            "intent_version INTEGER NOT NULL DEFAULT 1",
+        ),
+    )
+    for column, statement in additions:
+        if column not in columns:
+            connection.execute(statement)
+
+
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current < 0 or current > SCHEMA_VERSION:
@@ -278,6 +307,8 @@ def migrate(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
         if current < 2:
             _add_sync_run_v2_columns(connection)
+        if current < 4:
+            _add_outbound_v4_columns(connection)
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "
             "ON sync_runs(connection_id,stream,run_kind,started_at)"

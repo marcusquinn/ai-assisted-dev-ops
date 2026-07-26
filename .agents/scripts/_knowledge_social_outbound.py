@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import time
 import uuid
@@ -16,6 +17,10 @@ from knowledge_social_import import canonical_json
 from knowledge_social_store import SocialStoreError, validate_opaque
 
 ACTIONS = ("post", "reply", "like", "bookmark")
+OUTBOUND_PROVIDER_ACTIONS = {
+    "reddit": ACTIONS,
+    "xapi": ACTIONS,
+}
 TERMINAL_STATES = ("succeeded", "failed", "unknown", "cancelled")
 FAILURE_CLASSES = (
     "authorization",
@@ -27,8 +32,13 @@ FAILURE_CLASSES = (
     "validation",
 )
 MAX_PAYLOAD_BYTES = 16 * 1024
+MAX_SUBJECT_BYTES = 4 * 1024
 MAX_SELECTOR_BYTES = 256
 MAX_APPROVAL_SECONDS = 31 * 24 * 60 * 60
+CURRENT_INTENT_VERSION = 2
+REDDIT_TARGET_ID = re.compile(r"^t[13]_[A-Za-z0-9]+$")
+REDDIT_PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+REDDIT_DESTINATION_ID = re.compile(r"^[A-Za-z0-9_]{3,21}$")
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,8 @@ class OperationIntent:
     username: str | None
     scheduled_at: int
     created_by: str
+    destination_remote_id: str | None = None
+    subject: str | None = None
     operation_id: str | None = None
     created_at: int | None = None
 
@@ -63,10 +75,13 @@ class ClaimedOperation:
     """Private operation values needed for exactly one provider attempt."""
 
     operation_id: str
+    provider: str
     action: str
     remote_account_id: str
     target_remote_id: str | None
+    destination_remote_id: str | None
     payload: str | None
+    subject: str | None
     app_profile: str | None
     username: str | None
     claim_token: int
@@ -112,19 +127,52 @@ def _validated_payload(action: str, payload: str | None) -> str | None:
     return None
 
 
-def _validated_target(action: str, target: str | None) -> str | None:
+def _validated_subject(provider: str, action: str, subject: str | None) -> str | None:
+    if provider == "reddit" and action == "post":
+        if subject is None or not subject.strip():
+            raise SocialStoreError("Reddit posts require a non-empty private subject file")
+        if any(marker in subject for marker in ("\x00", "\n", "\r")):
+            raise SocialStoreError("outbound subject must be one non-empty line")
+        if len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
+            raise SocialStoreError("outbound subject exceeds the private subject limit")
+        return subject
+    if subject is not None:
+        raise SocialStoreError("this outbound operation does not accept a subject")
+    return None
+
+
+def _validated_destination(
+    provider: str, action: str, destination: str | None
+) -> str | None:
+    if provider == "reddit" and action == "post":
+        if destination is None:
+            raise SocialStoreError("Reddit posts require a destination subreddit ID")
+        destination = validate_opaque(destination, "destination_remote_id")
+        if REDDIT_DESTINATION_ID.fullmatch(destination) is None:
+            raise SocialStoreError("Reddit destination subreddit ID is invalid")
+        return destination
+    if destination is not None:
+        raise SocialStoreError("this outbound operation does not accept a destination")
+    return None
+
+
+def _validated_target(provider: str, action: str, target: str | None) -> str | None:
     if action == "post":
         if target is not None:
             raise SocialStoreError("post does not accept a target")
         return None
     if target is None:
         raise SocialStoreError(f"{action} requires a target post ID")
-    return validate_opaque(target, "target_remote_id")
+    target = validate_opaque(target, "target_remote_id")
+    if provider == "reddit" and REDDIT_TARGET_ID.fullmatch(target) is None:
+        raise SocialStoreError("Reddit targets require a t1_ or t3_ fullname")
+    return target
 
 
 def _intent_document(values: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "version": 1,
+    version = int(values["intent_version"])
+    document = {
+        "version": version,
         "operation_id": values["operation_id"],
         "provider": values["provider"],
         "connection_id": values["connection_id"],
@@ -137,6 +185,16 @@ def _intent_document(values: dict[str, Any]) -> dict[str, Any]:
         "scheduled_at": values["scheduled_at"],
         "created_by": values["created_by"],
     }
+    if version == 2:
+        document.update(
+            {
+                "destination_remote_id": values["destination_remote_id"],
+                "subject_sha256": values["subject_sha256"],
+            }
+        )
+    elif version != 1:
+        raise SocialStoreError("unsupported outbound intent version")
+    return document
 
 
 def _intent_sha256(values: dict[str, Any]) -> str:
@@ -147,6 +205,19 @@ def _verify_operation_row(row: sqlite3.Row) -> sqlite3.Row:
     payload_sha256 = _digest(row["payload"] or "")
     if payload_sha256 != row["payload_sha256"]:
         raise SocialStoreError("outbound operation payload integrity check failed")
+    intent_version = int(row["intent_version"])
+    if intent_version == 1:
+        if any(
+            row[field] is not None
+            for field in ("destination_remote_id", "subject", "subject_sha256")
+        ):
+            raise SocialStoreError("legacy outbound operation has unbound provider fields")
+    elif intent_version == 2:
+        subject_sha256 = _digest(row["subject"] or "")
+        if subject_sha256 != row["subject_sha256"]:
+            raise SocialStoreError("outbound operation subject integrity check failed")
+    else:
+        raise SocialStoreError("unsupported outbound intent version")
     values = dict(row)
     values["payload_sha256"] = payload_sha256
     if _intent_sha256(values) != row["intent_sha256"]:
@@ -154,48 +225,80 @@ def _verify_operation_row(row: sqlite3.Row) -> sqlite3.Row:
     return row
 
 
-def _operation_values(intent: OperationIntent, operation_id: str) -> dict[str, Any]:
-    if intent.action not in ACTIONS:
+def _connection_values(
+    database: sqlite3.Connection, intent: OperationIntent
+) -> tuple[str, str, str, str | None]:
+    connection_id = validate_opaque(intent.connection_id, "connection_id")
+    remote_account_id = validate_opaque(intent.remote_account_id, "remote_account_id")
+    row = database.execute(
+        "SELECT provider,remote_account_id,auth_profile_ref FROM connections "
+        "WHERE connection_id=?",
+        (connection_id,),
+    ).fetchone()
+    if row is None:
+        raise SocialStoreError("outbound connection is unavailable")
+    if row["remote_account_id"] != remote_account_id:
+        raise SocialStoreError("outbound connection does not match the account")
+    provider = validate_opaque(str(row["provider"]), "provider")
+    if provider not in OUTBOUND_PROVIDER_ACTIONS:
+        raise SocialStoreError("outbound connection provider is unsupported")
+    return provider, connection_id, remote_account_id, row["auth_profile_ref"]
+
+
+def _operation_values(
+    intent: OperationIntent,
+    operation_id: str,
+    provider: str,
+    connection_id: str,
+    remote_account_id: str,
+    auth_profile_ref: str | None,
+) -> dict[str, Any]:
+    if intent.action not in OUTBOUND_PROVIDER_ACTIONS[provider]:
         raise SocialStoreError("unsupported outbound action")
     if intent.scheduled_at < 0:
         raise SocialStoreError("scheduled_at must be a non-negative epoch")
     payload = _validated_payload(intent.action, intent.payload)
+    profile = intent.app_profile if intent.app_profile is not None else auth_profile_ref
+    app_profile = _optional_selector(profile, "app_profile")
+    username = _optional_selector(intent.username, "username")
+    if provider == "reddit":
+        if app_profile is None:
+            raise SocialStoreError("Reddit operations require a named auth profile")
+        if REDDIT_PROFILE_NAME.fullmatch(app_profile) is None:
+            raise SocialStoreError(
+                "Reddit auth profile must be a lowercase environment-safe slug"
+            )
+        if username is not None:
+            raise SocialStoreError("Reddit identity is selected only by its auth profile")
+    subject = _validated_subject(provider, intent.action, intent.subject)
     return {
         "operation_id": validate_opaque(operation_id, "operation_id"),
-        "provider": "xapi",
-        "connection_id": validate_opaque(intent.connection_id, "connection_id"),
-        "remote_account_id": validate_opaque(
-            intent.remote_account_id, "remote_account_id"
-        ),
+        "provider": provider,
+        "connection_id": connection_id,
+        "remote_account_id": remote_account_id,
         "action": intent.action,
         "target_remote_id": _validated_target(
-            intent.action, intent.target_remote_id
+            provider, intent.action, intent.target_remote_id
+        ),
+        "destination_remote_id": _validated_destination(
+            provider, intent.action, intent.destination_remote_id
         ),
         "payload": payload,
         "payload_sha256": _digest(payload or ""),
-        "app_profile": _optional_selector(intent.app_profile, "app_profile"),
-        "username": _optional_selector(intent.username, "username"),
+        "subject": subject,
+        "subject_sha256": _digest(subject or ""),
+        "intent_version": CURRENT_INTENT_VERSION,
+        "app_profile": app_profile,
+        "username": username,
         "scheduled_at": intent.scheduled_at,
         "created_by": validate_opaque(intent.created_by, "created_by"),
     }
 
 
-def _assert_connection(database: sqlite3.Connection, values: dict[str, Any]) -> None:
-    row = database.execute(
-        "SELECT provider,remote_account_id FROM connections WHERE connection_id=?",
-        (values["connection_id"],),
-    ).fetchone()
-    if row is None:
-        raise SocialStoreError("outbound connection is unavailable")
-    if row["provider"] != "xapi" or row["remote_account_id"] != values[
-        "remote_account_id"
-    ]:
-        raise SocialStoreError("outbound connection does not match the X account")
-
-
 def _public_operation(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "operation_id": str(row["operation_id"]),
+        "provider": str(row["provider"]),
         "action": str(row["action"]),
         "state": str(row["state"]),
         "scheduled_at": int(row["scheduled_at"]),
@@ -223,9 +326,10 @@ def _insert_operation(
     database.execute(
         """INSERT INTO outbound_operations(
             operation_id,provider,connection_id,remote_account_id,action,
-            target_remote_id,payload,payload_sha256,intent_sha256,app_profile,
+            target_remote_id,destination_remote_id,payload,payload_sha256,
+            subject,subject_sha256,intent_version,intent_sha256,app_profile,
             username,scheduled_at,state,created_by,created_at,updated_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             values["operation_id"],
             values["provider"],
@@ -233,8 +337,12 @@ def _insert_operation(
             values["remote_account_id"],
             values["action"],
             values["target_remote_id"],
+            values["destination_remote_id"],
             values["payload"],
             values["payload_sha256"],
+            values["subject"],
+            values["subject_sha256"],
+            values["intent_version"],
             values["intent_sha256"],
             values["app_profile"],
             values["username"],
@@ -253,11 +361,20 @@ def create_operation(
     """Create or idempotently recover one immutable draft operation."""
     operation_id = intent.operation_id or _new_id("op")
     created_at = now_epoch() if intent.created_at is None else intent.created_at
-    values = _operation_values(intent, operation_id)
-    values["intent_sha256"] = _intent_sha256(values)
     database.execute("BEGIN IMMEDIATE")
     try:
-        _assert_connection(database, values)
+        provider, connection_id, remote_account_id, auth_profile_ref = (
+            _connection_values(database, intent)
+        )
+        values = _operation_values(
+            intent,
+            operation_id,
+            provider,
+            connection_id,
+            remote_account_id,
+            auth_profile_ref,
+        )
+        values["intent_sha256"] = _intent_sha256(values)
         existing = _existing_public_operation(
             database, operation_id, str(values["intent_sha256"])
         )
@@ -272,6 +389,7 @@ def create_operation(
         raise
     return {
         "operation_id": operation_id,
+        "provider": str(values["provider"]),
         "action": intent.action,
         "state": "draft",
         "scheduled_at": intent.scheduled_at,

@@ -39,7 +39,9 @@ workspace owner. Recipient `knowledge.read` and `knowledge.write` grants never
 become posting authority.
 
 Create a draft from a mode-0600 UTF-8 body file, then approve its exact immutable
-intent. Omit `--scheduled-at` for an immediately due operation:
+intent. The connection selects the allowlisted outbound provider; callers cannot
+substitute a provider at execution time. Omit `--scheduled-at` for an immediately
+due X operation:
 
 ```bash
 knowledge-social-helper.sh operation-create --alias workspace:example \
@@ -51,11 +53,39 @@ knowledge-social-helper.sh operation-approve --alias workspace:example \
   --operation-id OPERATION_ID --expires-at EPOCH
 ```
 
-The intent binds the operation ID, connection, stable account ID, action, target,
-body digest, local app/account selectors, schedule, creator, and provider. Reply
-uses `--target-id POST_ID --body-file FILE`; like and bookmark use only
-`--target-id POST_ID`. Revoke approval or cancel before a claim with
-`operation-revoke` or `operation-cancel`.
+The versioned intent binds the operation ID, connection, stable account ID,
+provider, action, target, destination, body and subject digests, local auth/account
+selectors, schedule, and creator. Reply uses `--target-id POST_ID` with
+`--body-file FILE`; like and bookmark use only `--target-id POST_ID`. Revoke
+approval or cancel before a claim with `operation-revoke` or `operation-cancel`.
+
+Reddit uses the same queue. Install PRAW outside the agent session and store one
+credential set per named profile as `REDDIT_<PROFILE>_CLIENT_ID`,
+`REDDIT_<PROFILE>_CLIENT_SECRET`, `REDDIT_<PROFILE>_USERNAME`,
+`REDDIT_<PROFILE>_PASSWORD`, and `REDDIT_<PROFILE>_USER_AGENT`. For example, a
+`work` profile creates a self-post with a separately protected one-line subject:
+
+```bash
+knowledge-social-helper.sh operation-create --alias workspace:example \
+  --connection-id REDDIT_CONNECTION_ID --account-id STABLE_REDDIT_ACCOUNT_ID \
+  --action post --destination-id SUBREDDIT_NAME --subject-file subject.txt \
+  --body-file approved-post.txt --profile work
+```
+
+Reddit reply, like, and bookmark targets use stable `t1_...` comment or `t3_...`
+submission fullnames. Like maps to PRAW `upvote()` and bookmark maps to `save()`.
+Run the approved operation through the secret execution context so the selected
+profile variables exist only in the child environment:
+
+```bash
+aidevops secret REDDIT_WORK_CLIENT_ID REDDIT_WORK_CLIENT_SECRET \
+  REDDIT_WORK_USERNAME REDDIT_WORK_PASSWORD REDDIT_WORK_USER_AGENT -- \
+  knowledge-social-helper.sh operation-run --alias workspace:example \
+  --operation-id OPERATION_ID
+```
+
+Credential values never belong in command arguments, operation rows, receipts,
+or logs.
 
 A private routine may invoke the bounded due runner:
 
@@ -64,10 +94,12 @@ knowledge-social-helper.sh operations-run-due --alias workspace:example \
   --executor-id EXECUTOR_ID --claim-seconds 300 --limit 10
 ```
 
-Each runner atomically claims an operation, verifies `xurl whoami` against the
-approved stable account immediately before execution, records a durable provider
-boundary, and invokes only mapped `post`, `reply`, `like`, or `bookmark` helper
-commands. Competing runners cannot create another local attempt. Any timeout,
+Each runner atomically claims an operation, resolves the stored provider through
+the fixed registry, verifies the provider's current identity against the approved
+stable account immediately before execution, records a durable provider boundary,
+and invokes only mapped `post`, `reply`, `like`, or `bookmark` operations. X uses
+the guarded official `xurl` helper; Reddit uses a bounded privacy-safe PRAW child
+process. Competing runners cannot create another local attempt. Any timeout,
 non-zero exit, malformed receipt, or executor loss after the provider boundary is
 `unknown`, never retryable. Resolve it only after external verification:
 

@@ -9,7 +9,6 @@ import argparse
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import time
 import uuid
@@ -25,6 +24,7 @@ from _knowledge_social_notifications import (
 from _knowledge_social_outbound import (
     ACTIONS,
     MAX_PAYLOAD_BYTES,
+    MAX_SUBJECT_BYTES,
     ClaimedOperation,
     OperationIntent,
     approve_operation,
@@ -32,7 +32,11 @@ from _knowledge_social_outbound import (
     create_operation,
     revoke_approval,
 )
-from _knowledge_social_outbound_provider import ProviderAdapterError, invoke_provider
+from _knowledge_social_outbound_provider import (
+    ProviderAdapterError,
+    ProviderIdentityError,
+    prepare_provider,
+)
 from _knowledge_social_outbound_reconciliation import (
     ReconciliationRequest,
     list_operations,
@@ -47,8 +51,6 @@ from _knowledge_social_outbound_runtime import (
     finalize_operation,
     mark_provider_started,
 )
-from _knowledge_social_x import XAdapterError
-from _knowledge_social_x_reader import GuardedXurl, verified_identity
 from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
 from knowledge_corpus_context import CatalogError, validate_private_file
 from knowledge_social_store import (
@@ -122,6 +124,15 @@ def _read_private_body(path: Path) -> str:
         raise OperationsError("outbound body must be UTF-8") from error
 
 
+def _read_private_subject(path: Path) -> str:
+    subject = _read_private_body(path)
+    if subject.endswith("\n"):
+        subject = subject[:-1]
+        if subject.endswith("\r"):
+            subject = subject[:-1]
+    return subject
+
+
 def _managed_context(args: argparse.Namespace) -> tuple[str, Path]:
     principal_id, corpora = authorized_scope(
         args.base or DEFAULT_BASE, "knowledge.manage", args.alias
@@ -169,13 +180,15 @@ def _execute_claimed(
     executor_id: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    helper = Path(__file__).with_name("xurl-helper.sh")
     try:
-        identity_reader = GuardedXurl(
-            helper, claimed.app_profile, claimed.username
+        provider = prepare_provider(claimed)
+    except ProviderAdapterError:
+        return _pre_provider_failure(
+            database, claimed, executor_id, "validation", args
         )
-        verified_identity(identity_reader.identity(), claimed.remote_account_id)
-    except (OSError, SocialStoreError, subprocess.SubprocessError, XAdapterError):
+    try:
+        provider.verify_identity()
+    except ProviderIdentityError:
         return _pre_provider_failure(
             database, claimed, executor_id, "identity", args
         )
@@ -189,7 +202,7 @@ def _execute_claimed(
             database, claimed, executor_id, "authorization", args
         )
 
-    provider_remote_id, failure_class = invoke_provider(helper, claimed)
+    provider_remote_id, failure_class = provider.invoke()
     if failure_class is not None:
         return _unknown_provider_outcome(
             database, claimed, executor_id, failure_class, args
@@ -271,6 +284,9 @@ def _handle_operation_create(
 ) -> dict[str, Any]:
     created_at = _required_now(current_time)
     payload = _read_private_body(args.body_file) if args.body_file else None
+    subject = _read_private_subject(args.subject_file) if args.subject_file else None
+    if subject is not None and len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
+        raise OperationsError("outbound subject exceeds the private subject limit")
     return create_operation(
         database,
         OperationIntent(
@@ -287,6 +303,8 @@ def _handle_operation_create(
                 else created_at
             ),
             created_by=principal_id,
+            destination_remote_id=args.destination_id,
+            subject=subject,
             operation_id=args.operation_id,
             created_at=created_at,
         ),
@@ -479,8 +497,10 @@ def _add_create_command(commands: Any) -> None:
     create.add_argument("--account-id", required=True)
     create.add_argument("--action", choices=ACTIONS, required=True)
     create.add_argument("--target-id")
+    create.add_argument("--destination-id")
     create.add_argument("--body-file", type=Path)
-    create.add_argument("--app")
+    create.add_argument("--subject-file", type=Path)
+    create.add_argument("--app", "--profile", dest="app")
     create.add_argument("--username")
     create.add_argument("--scheduled-at", type=int)
     create.add_argument("--operation-id")
@@ -573,10 +593,9 @@ def main() -> int:
         OSError,
         OperationsError,
         ProviderAdapterError,
+        ProviderIdentityError,
         SocialStoreError,
-        XAdapterError,
         sqlite3.Error,
-        subprocess.SubprocessError,
         ValueError,
     ) as error:
         print(f"ERROR: {error}", file=sys.stderr)

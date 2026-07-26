@@ -154,15 +154,18 @@ def claim_operation(
             database.execute("ROLLBACK")
         raise
     return ClaimedOperation(
-        request.operation_id,
-        str(row["action"]),
-        str(row["remote_account_id"]),
-        row["target_remote_id"],
-        row["payload"],
-        row["app_profile"],
-        row["username"],
-        claim_token,
-        attempt_id,
+        operation_id=request.operation_id,
+        provider=str(row["provider"]),
+        action=str(row["action"]),
+        remote_account_id=str(row["remote_account_id"]),
+        target_remote_id=row["target_remote_id"],
+        destination_remote_id=row["destination_remote_id"],
+        payload=row["payload"],
+        subject=row["subject"],
+        app_profile=row["app_profile"],
+        username=row["username"],
+        claim_token=claim_token,
+        attempt_id=attempt_id,
     )
 
 

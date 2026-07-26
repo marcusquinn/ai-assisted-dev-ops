@@ -37,17 +37,22 @@ curl -s "https://www.reddit.com/search.json?q=aidevops&sort=relevance" | jq '.da
 
 ## PRAW (Authenticated)
 
-OAuth app: https://www.reddit.com/prefs/apps → create "script" type → `aidevops secret set REDDIT_CLIENT_ID`.
+OAuth app: https://www.reddit.com/prefs/apps → create "script" type. Store a
+named profile with `aidevops secret set REDDIT_DEFAULT_CLIENT_ID` and matching
+`CLIENT_SECRET`, `USERNAME`, `PASSWORD`, and `USER_AGENT` entries; never put the
+values in a command or repository file.
 
 ```python
+import os
+
 import praw
 
 reddit = praw.Reddit(
-    client_id="YOUR_CLIENT_ID",
-    client_secret="YOUR_CLIENT_SECRET",
-    user_agent="aidevops/1.0",
-    username="YOUR_USERNAME",
-    password="YOUR_PASSWORD"
+    client_id=os.environ["REDDIT_DEFAULT_CLIENT_ID"],
+    client_secret=os.environ["REDDIT_DEFAULT_CLIENT_SECRET"],
+    user_agent=os.environ["REDDIT_DEFAULT_USER_AGENT"],
+    username=os.environ["REDDIT_DEFAULT_USERNAME"],
+    password=os.environ["REDDIT_DEFAULT_PASSWORD"],
 )
 
 # Read subreddit
@@ -62,7 +67,35 @@ comment = reddit.comment("COMMENT_ID")
 comment.reply("Reply text")
 ```
 
+## Approval-bound outbound operations
+
+Automated writes use the owner-only social operation queue rather than direct
+PRAW snippets. The connection fixes provider `reddit` and its stable account ID;
+`--profile default` selects only `REDDIT_DEFAULT_*` environment variables. Every
+immutable draft requires a separate owner approval before execution.
+
+```bash
+# Self-post: subject and body remain in separate mode-0600 files until execution.
+knowledge-social-helper.sh operation-create --alias workspace:example \
+  --connection-id REDDIT_CONNECTION_ID --account-id STABLE_REDDIT_ACCOUNT_ID \
+  --action post --destination-id SUBREDDIT_NAME --subject-file subject.txt \
+  --body-file post.txt --profile default
+
+# Reply targets t1_ comments or t3_ submissions. Like maps to upvote; bookmark to save.
+knowledge-social-helper.sh operation-create --alias workspace:example \
+  --connection-id REDDIT_CONNECTION_ID --account-id STABLE_REDDIT_ACCOUNT_ID \
+  --action reply --target-id t1_COMMENT_ID --body-file reply.txt \
+  --profile default
+```
+
+Execution verifies `reddit.user.me().id` against the approved stable account
+before recording the provider boundary. A timeout or provider failure after that
+boundary becomes `unknown` and requires external reconciliation; it is never
+blindly retried. Multiple accounts use separate profile slugs and separate
+`REDDIT_<PROFILE>_*` secret sets.
+
 ## Related
 
 - `scripts/x-helper.sh` - X/Twitter fetching via fxtwitter
+- `aidevops/knowledge-plane/05-social-operations.md` - approval, scheduling, receipts, and reconciliation
 - `tools/browser/curl-copy.md` - Authenticated scraping workflow

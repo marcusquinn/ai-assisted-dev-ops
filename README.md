@@ -688,7 +688,7 @@ See `.agents/tools/terminal/terminal-title.md` for customization options.
 
 - **SimpleX bot** - Channel-agnostic gateway with SimpleX Chat as first adapter for AI agent dispatch (`simplex-bot/`)
 - **Matterbridge** - Multi-platform chat bridge connecting 20+ platforms including Matrix, Discord, Telegram, Slack, IRC, WhatsApp, XMPP (`matterbridge-helper.sh`)
-- **X API via xurl** - Official X/Twitter API operations through guarded `xurl` workflows for search, timelines, bookmarks, posting, replies, DMs, media, and raw API reads, plus an owner-only approval-bound queue for immediate/scheduled shared-account posts, replies, likes, bookmarks, receipts, and mention/reply workflow state. Supports multiple X developer apps/subscription tiers with `--app` and multiple authenticated accounts with `--username`; model-provider auth such as OpenCode xAI/Grok remains separate from X API OAuth (`content/social-xurl.md`, `knowledge-social-helper.sh`, `xurl-helper.sh`)
+- **Approval-bound social operations** - Owner-only immediate/scheduled posts, replies, likes/upvotes, bookmarks/saves, receipts, reconciliation, and mention/reply workflow state through a fixed provider registry. X uses the guarded official `xurl` CLI with multiple apps/accounts; Reddit uses named PRAW profiles with stable-account verification and separately protected post subjects/destinations. Model-provider auth such as OpenCode xAI/Grok remains separate from social API OAuth (`content/social-xurl.md`, `content/social-reddit.md`, `knowledge-social-helper.sh`)
 - **Localdev** - Local development environment manager with dnsmasq, Traefik, mkcert for production-like `.local` domains with HTTPS (`localdev-helper.sh`)
 
 **MCP Toolkit:**

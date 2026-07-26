@@ -19,10 +19,14 @@ MIGRATION_BASE="${TMP_DIR}/migration"
 MIGRATION_ROOT="${MIGRATION_BASE}/_knowledge"
 FAKE_BIN="${TMP_DIR}/bin"
 XURL_LOG="${TMP_DIR}/xurl.log"
+REDDIT_LOG="${TMP_DIR}/reddit.log"
 ARCHIVE="${TMP_DIR}/archive.json"
+REDDIT_ARCHIVE="${TMP_DIR}/reddit-archive.json"
 POST_BODY="${TMP_DIR}/post.txt"
 REPLY_BODY="${TMP_DIR}/reply.txt"
 OPTION_BODY="${TMP_DIR}/option.txt"
+REDDIT_POST_BODY="${TMP_DIR}/reddit-post.txt"
+REDDIT_SUBJECT="${TMP_DIR}/reddit-subject.txt"
 PASS=0
 FAIL=0
 
@@ -117,6 +121,19 @@ PY
 	return 0
 }
 
+reddit_log_count() {
+	local needle="$1"
+	python3 - "$REDDIT_LOG" "$needle" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+print(sum(sys.argv[2] in line for line in lines))
+PY
+	return 0
+}
+
 create_and_approve() {
 	local operation_id="$1"
 	local action="$2"
@@ -140,11 +157,34 @@ create_and_approve() {
 	return 0
 }
 
+create_reddit_and_approve() {
+	local operation_id="$1"
+	local action="$2"
+	local target_id="$3"
+	local body_file="$4"
+	local arguments=(
+		operation-create --base "$BASE" --connection-id conn_reddit
+		--account-id acct_reddit_42 --action "$action" --scheduled-at 1000
+		--operation-id "$operation_id" --profile fixture --now-epoch 1000
+	)
+	if [[ "$target_id" != "none" ]]; then
+		arguments+=(--target-id "$target_id")
+	fi
+	if [[ "$body_file" != "none" ]]; then
+		arguments+=(--body-file "$body_file")
+	fi
+	"$HELPER" "${arguments[@]}" >/dev/null
+	"$HELPER" operation-approve --base "$BASE" --operation-id "$operation_id" \
+		--expires-at 2000 --now-epoch 1000 >/dev/null
+	return 0
+}
+
 mkdir -p "$ROOT" "$FAKE_BIN" "$RESTORE_ROOT" "$MIGRATION_ROOT"
 chmod 0700 "$BASE" "$ROOT" "$FAKE_BIN" "$RESTORE_ROOT" \
 	"$MIGRATION_BASE" "$MIGRATION_ROOT"
 : >"$XURL_LOG"
-chmod 0600 "$XURL_LOG"
+: >"$REDDIT_LOG"
+chmod 0600 "$XURL_LOG" "$REDDIT_LOG"
 
 cat >"${FAKE_BIN}/xurl" <<'FAKE'
 #!/usr/bin/env bash
@@ -186,6 +226,118 @@ FAKE
 chmod 0700 "${FAKE_BIN}/xurl"
 export XURL_LOG
 export PATH="${FAKE_BIN}:${PATH}"
+
+cat >"${TMP_DIR}/praw.py" <<'PY'
+import os
+from pathlib import Path
+
+__version__ = "fixture"
+
+
+def log(*values):
+    path = Path(os.environ["REDDIT_LOG"])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(" ".join(values) + "\n")
+
+
+def maybe_fail():
+    if os.environ.get("REDDIT_MODE") == "write-fail":
+        raise RuntimeError("fixture provider failure")
+
+
+class Identity:
+    @property
+    def id(self):
+        if os.environ.get("REDDIT_MODE") == "identity-mismatch":
+            return "acct_reddit_other"
+        return "acct_reddit_42"
+
+
+class User:
+    def me(self):
+        return Identity()
+
+
+class Thing:
+    def __init__(self, fullname):
+        self.fullname = fullname
+        self.id = fullname.split("_", 1)[1]
+
+    def reply(self, payload):
+        log("reply", self.fullname, payload)
+        maybe_fail()
+        return Thing("t1_created_reply")
+
+    def upvote(self):
+        log("like", self.fullname)
+        maybe_fail()
+
+    def save(self):
+        log("bookmark", self.fullname)
+        maybe_fail()
+
+
+class Subreddit:
+    def __init__(self, name):
+        self.name = name
+
+    def submit(self, subject, selftext):
+        log("post", self.name, subject, selftext)
+        maybe_fail()
+        return Thing("t3_created_post")
+
+
+class Reddit:
+    def __init__(self, **credentials):
+        required = {"client_id", "client_secret", "username", "password", "user_agent"}
+        if set(credentials) != required or any(not value for value in credentials.values()):
+            raise RuntimeError("fixture credentials missing")
+        if "UNRELATED_PROVIDER_TOKEN" in os.environ:
+            raise RuntimeError("unrelated credential reached provider child")
+        self.user = User()
+
+    def subreddit(self, name):
+        return Subreddit(name)
+
+    def comment(self, remote_id):
+        return Thing(f"t1_{remote_id}")
+
+    def submission(self, *, id):
+        return Thing(f"t3_{id}")
+PY
+export PYTHONPATH="${TMP_DIR}:${SCRIPT_DIR}/../scripts"
+export REDDIT_LOG
+export REDDIT_FIXTURE_CLIENT_ID="fixture-client-id"
+export REDDIT_FIXTURE_CLIENT_SECRET="fixture-client-secret"
+export REDDIT_FIXTURE_USERNAME="fixture-user"
+export REDDIT_FIXTURE_PASSWORD="fixture-password"
+export REDDIT_FIXTURE_USER_AGENT="fixture-user-agent"
+export UNRELATED_PROVIDER_TOKEN="fixture-unrelated-token"
+
+AIDEVOPS_TEST_MODE=0 python3 - <<'PY'
+from pathlib import Path
+
+from _knowledge_social_outbound import ClaimedOperation
+from _knowledge_social_outbound_provider import RedditPreparedProvider
+
+claimed = ClaimedOperation(
+    operation_id="op_environment_check",
+    provider="reddit",
+    action="like",
+    remote_account_id="acct_reddit_42",
+    target_remote_id="t3_environment_check",
+    destination_remote_id=None,
+    payload=None,
+    subject=None,
+    app_profile="fixture",
+    username=None,
+    claim_token=1,
+    attempt_id="att_environment_check",
+)
+environment = RedditPreparedProvider(Path("provider-helper"), claimed)._environment()
+if "PYTHONPATH" in environment or "UNRELATED_PROVIDER_TOKEN" in environment:
+    raise SystemExit("production Reddit child environment inherited unrelated values")
+PY
 
 cat >"$ARCHIVE" <<'JSON'
 {
@@ -229,10 +381,30 @@ cat >"$ARCHIVE" <<'JSON'
   "coverage": []
 }
 JSON
+cat >"$REDDIT_ARCHIVE" <<'JSON'
+{
+  "provider": "reddit",
+  "connection_id": "conn_reddit",
+  "remote_account_id": "acct_reddit_42",
+  "exported_at": "2026-07-25T12:00:00Z",
+  "enabled_streams": [],
+  "policy": {},
+  "accounts": [
+    {"remote_id":"acct_reddit_42","observed_at":"2026-07-25T12:00:00Z"}
+  ],
+  "objects": [],
+  "activities": [],
+  "media": [],
+  "coverage": []
+}
+JSON
 printf '%s\n' 'private post fixture marker' >"$POST_BODY"
 printf '%s\n' 'private reply fixture marker' >"$REPLY_BODY"
 printf '%s' '--app' >"$OPTION_BODY"
-chmod 0600 "$ARCHIVE" "$POST_BODY" "$REPLY_BODY" "$OPTION_BODY"
+printf '%s\n' 'private reddit post fixture marker' >"$REDDIT_POST_BODY"
+printf '%s\n' 'Reddit subject fixture' >"$REDDIT_SUBJECT"
+chmod 0600 "$ARCHIVE" "$REDDIT_ARCHIVE" "$POST_BODY" "$REPLY_BODY" \
+	"$OPTION_BODY" "$REDDIT_POST_BODY" "$REDDIT_SUBJECT"
 
 printf 'Approval-bound social operations tests\n'
 "$CORPUS_HELPER" provision --base "$MIGRATION_BASE" >/dev/null
@@ -246,17 +418,21 @@ with sqlite3.connect(sys.argv[1]) as database:
     database.execute("DROP TABLE outbound_attempts")
     database.execute("DROP TABLE outbound_approvals")
     database.execute("DROP TABLE outbound_operations")
-    database.execute("DELETE FROM schema_meta WHERE version=3")
+    database.execute("DELETE FROM schema_meta WHERE version>=3")
     database.execute("PRAGMA user_version=2")
 PY
 "$HELPER" provision --base "$MIGRATION_BASE" >/dev/null
 assert_eq "schema v2 migrates additively to all local operation tables" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT (SELECT user_version FROM pragma_user_version) || ':' || count(*) FROM sqlite_master WHERE name IN ('outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" \
-	"3:4"
+	"4:4"
+assert_eq "schema v4 adds provider-neutral subject and destination fields" \
+	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT count(*) FROM pragma_table_info('outbound_operations') WHERE name IN ('destination_remote_id','subject','subject_sha256','intent_version')")" \
+	"4"
 
 "$CORPUS_HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" import-archive --base "$BASE" --archive "$ARCHIVE" >/dev/null
+"$HELPER" import-archive --base "$BASE" --archive "$REDDIT_ARCHIVE" >/dev/null
 
 create_result=$("$HELPER" operation-create --base "$BASE" \
 	--connection-id conn_ops --account-id acct42 --action post \
@@ -351,6 +527,77 @@ status_result=$(XURL_MODE=status-error "$HELPER" operation-run --base "$BASE" \
 assert_eq "provider error JSON cannot masquerade as engagement success" \
 	"$(json_field "$status_result" state)" "unknown"
 
+reddit_create=$(
+	"$HELPER" operation-create --base "$BASE" --connection-id conn_reddit \
+		--account-id acct_reddit_42 --action post --body-file "$REDDIT_POST_BODY" \
+		--subject-file "$REDDIT_SUBJECT" --destination-id aidevops \
+		--profile fixture --scheduled-at 1000 --operation-id op_reddit_post \
+		--now-epoch 1000
+)
+assert_eq "Reddit connection selects the provider without a provider CLI argument" \
+	"$(json_field "$reddit_create" provider)" "reddit"
+assert_absent "Reddit draft receipts omit private post text" \
+	"$reddit_create" "private reddit post fixture marker"
+"$HELPER" operation-approve --base "$BASE" --operation-id op_reddit_post \
+	--expires-at 2000 --now-epoch 1000 >/dev/null
+reddit_post_result=$(
+	"$HELPER" operation-run --base "$BASE" --operation-id op_reddit_post \
+		--executor-id exe_reddit_post --now-epoch 1200
+)
+assert_eq "approved Reddit posts return a stable fullname receipt" \
+	"$(json_field "$reddit_post_result" provider_remote_id)" "t3_created_post"
+assert_eq "Reddit post mapping binds destination, subject, and private body" \
+	"$(reddit_log_count 'post aidevops Reddit subject fixture private reddit post fixture marker')" "1"
+assert_eq "Reddit provider fields use the versioned immutable intent" \
+	"$(sql_value "$ROOT/index/social.db" "SELECT provider || ':' || intent_version || ':' || destination_remote_id FROM outbound_operations WHERE operation_id='op_reddit_post'")" \
+	"reddit:2:aidevops"
+
+expect_failure "Reddit operations require an explicit named auth profile" \
+	"named auth profile" "$HELPER" operation-create --base "$BASE" \
+	--connection-id conn_reddit --account-id acct_reddit_42 --action like \
+	--target-id t3_missing_profile --operation-id op_reddit_no_profile \
+	--now-epoch 1000
+expect_failure "Reddit targets reject non-fullname identifiers" \
+	"t1_ or t3_ fullname" "$HELPER" operation-create --base "$BASE" \
+	--connection-id conn_reddit --account-id acct_reddit_42 --action like \
+	--target-id post_plain_id --profile fixture \
+	--operation-id op_reddit_bad_target --now-epoch 1000
+
+create_reddit_and_approve op_reddit_reply reply t1_comment001 "$REPLY_BODY"
+create_reddit_and_approve op_reddit_like like t3_submission001 none
+create_reddit_and_approve op_reddit_bookmark bookmark t1_comment002 none
+reddit_due_result=$(
+	"$HELPER" operations-run-due --base "$BASE" --executor-id exe_reddit_due \
+		--limit 10 --now-epoch 1200
+)
+assert_eq "Reddit reply, upvote, and save share the approval queue" \
+	"$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["results"]))' "$reddit_due_result")" "3"
+assert_eq "Reddit reply maps to a comment fullname" \
+	"$(reddit_log_count 'reply t1_comment001 private reply fixture marker')" "1"
+assert_eq "Reddit like maps to one upvote" \
+	"$(reddit_log_count 'like t3_submission001')" "1"
+assert_eq "Reddit bookmark maps to one save" \
+	"$(reddit_log_count 'bookmark t1_comment002')" "1"
+
+create_reddit_and_approve op_reddit_identity like t3_submission002 none
+reddit_identity_result=$(REDDIT_MODE=identity-mismatch "$HELPER" operation-run \
+	--base "$BASE" --operation-id op_reddit_identity \
+	--executor-id exe_reddit_identity --now-epoch 1200)
+assert_eq "Reddit identity mismatch fails before the provider boundary" \
+	"$(json_field "$reddit_identity_result" state):$(json_field "$reddit_identity_result" failure_class)" \
+	"failed:identity"
+assert_eq "Reddit identity mismatch performs no upvote" \
+	"$(reddit_log_count 'like t3_submission002')" "0"
+
+create_reddit_and_approve op_reddit_unknown bookmark t3_submission003 none
+reddit_unknown_result=$(REDDIT_MODE=write-fail "$HELPER" operation-run \
+	--base "$BASE" --operation-id op_reddit_unknown \
+	--executor-id exe_reddit_unknown --now-epoch 1200)
+assert_eq "Reddit write failures after the boundary remain unknown" \
+	"$(json_field "$reddit_unknown_result" state)" "unknown"
+assert_eq "ambiguous Reddit writes execute at most once" \
+	"$(reddit_log_count 'bookmark t3_submission003')" "1"
+
 create_and_approve op_cancel_001 bookmark post_target_006 none
 "$HELPER" operation-revoke --base "$BASE" --operation-id op_cancel_001 \
 	--now-epoch 1100 >/dev/null
@@ -370,6 +617,7 @@ from pathlib import Path
 
 from _knowledge_social_outbound import (
     OperationIntent,
+    _intent_sha256,
     approve_operation,
     create_operation,
 )
@@ -424,9 +672,14 @@ def intent(
 
 tampering = (
     ("payload", "changed body"),
+    ("provider", "reddit"),
     ("connection_id", "conn_other"),
     ("remote_account_id", "acct_other"),
     ("target_remote_id", "post_changed_001"),
+    ("destination_remote_id", "changed_destination"),
+    ("subject", "changed subject"),
+    ("subject_sha256", "0" * 64),
+    ("intent_version", 1),
     ("app_profile", "changed-profile"),
     ("username", "changed-user"),
     ("scheduled_at", 999),
@@ -461,6 +714,33 @@ database.execute("UPDATE outbound_operations SET action='bookmark' WHERE operati
 rejected(lambda: due_operation_ids(database, principal, 1200, 100))
 database.execute(
     "UPDATE outbound_operations SET state='cancelled' WHERE operation_id='op_tamper_action'"
+)
+
+create_operation(
+    database,
+    intent("op_legacy_intent", "post_legacy_intent"),
+)
+legacy = dict(
+    database.execute(
+        "SELECT * FROM outbound_operations WHERE operation_id='op_legacy_intent'"
+    ).fetchone()
+)
+legacy["intent_version"] = 1
+legacy["destination_remote_id"] = None
+legacy["subject"] = None
+legacy["subject_sha256"] = None
+legacy_hash = _intent_sha256(legacy)
+database.execute(
+    """UPDATE outbound_operations
+          SET intent_version=1,destination_remote_id=NULL,subject=NULL,
+              subject_sha256=NULL,intent_sha256=?
+        WHERE operation_id='op_legacy_intent'""",
+    (legacy_hash,),
+)
+approve_operation(database, "op_legacy_intent", principal, 2000, approved_at=1000)
+assert "op_legacy_intent" in due_operation_ids(database, principal, 1200, 100)
+database.execute(
+    "UPDATE outbound_operations SET state='cancelled' WHERE operation_id='op_legacy_intent'"
 )
 
 create_operation(

@@ -94,7 +94,7 @@ mkdir -p "$CORPUS_ROOT"
 chmod 0700 "$BASE" "$CORPUS_ROOT"
 "$CORPUS_HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
-assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "3"
+assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "4"
 assert_eq "all provider-neutral and local-operation tables exist" "$(sql_value "SELECT count(*) FROM sqlite_master WHERE name IN ('connections','accounts','objects','activities','media','fetch_batches','sync_cursors','sync_runs','tombstones','annotations','coverage_records','objects_fts','outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" "16"
 
 first_result=$("$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$ARCHIVE")
@@ -219,7 +219,7 @@ python3 - "$CORPUS_ROOT/index/social.db" <<'PY'
 import sqlite3
 import sys
 connection = sqlite3.connect(sys.argv[1])
-connection.execute("PRAGMA user_version=3")
+connection.execute("PRAGMA user_version=4")
 connection.close()
 PY
 
