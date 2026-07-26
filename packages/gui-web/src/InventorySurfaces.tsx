@@ -3,6 +3,7 @@ import { type CSSProperties, type Dispatch, type FocusEvent as ReactFocusEvent, 
 import { ManagedAppPanel } from "./ManagedAppPanel";
 import { text } from "./app-model";
 import { RecommendedAppsSurface, nextRecommendedFilterValue, recommendedAppMatchesFilters, recommendedApps, type RecommendedOsId, type RecommendedPlatformFilterId } from "./RecommendedAppsSurface";
+import { useRunningJobRefresh } from "./useRunningJobRefresh";
 
 export { EditableInventorySurface, InstallationSurface } from "./InventoryEditorSurfaces";
 export { nextRecommendedFilterValue } from "./RecommendedAppsSurface";
@@ -32,23 +33,7 @@ export function AppsSurface({ status }: { status: GuiStatusData }): ReactElement
   }, [firstVisibleManagedAppId]);
 
   const runningJobIdsKey = Object.values(jobs).filter((job) => job.status === "running").map((job) => job.id).sort().join("|");
-
-  useEffect(() => {
-    const runningJobIds = runningJobIdsKey.split("|").filter(Boolean);
-    if (runningJobIds.length === 0) {
-      return undefined;
-    }
-
-    const refreshRunningJobs = () => {
-      for (const jobId of runningJobIds) {
-        void refreshJob(jobId, setJobs);
-      }
-    };
-    refreshRunningJobs();
-    const timer = window.setInterval(refreshRunningJobs, 1_500);
-
-    return () => window.clearInterval(timer);
-  }, [runningJobIdsKey]);
+  useRunningJobRefresh(runningJobIdsKey, refreshJob, setJobs);
 
   return (
     <section className="apps-surface" aria-label={text.apps} onBlur={() => setTooltip(null)} onFocus={showFocusedAppTooltip(setTooltip)} onPointerLeave={() => setTooltip(null)} onPointerMove={showPointedAppTooltip(setTooltip)}>

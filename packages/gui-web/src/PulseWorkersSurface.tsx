@@ -1,7 +1,8 @@
-import { type CSSProperties, type Dispatch, type ReactElement, type SetStateAction, useEffect, useState } from "react";
+import { type CSSProperties, type Dispatch, type ReactElement, type SetStateAction, useState } from "react";
 import type { GuiPulseWorkerActionJobSummary, GuiPulseWorkerActionSummary, GuiPulseWorkerActivityEvent, GuiPulseWorkerChartSeries, GuiResponseEnvelope, GuiStatusData } from "../../gui-shared/src";
 import { AppActionTerminal } from "./AppActionTerminal";
 import { text } from "./app-model";
+import { useRunningJobRefresh } from "./useRunningJobRefresh";
 
 type PulseEvent = GuiPulseWorkerActivityEvent;
 type PulseFilterGroup = { label: string; values: string[] };
@@ -20,23 +21,7 @@ export function PulseWorkersSurface({ status }: { status: GuiStatusData }): Reac
   const chartSeries = pulse.charts.slice(0, 4);
   const sampleSize = pulse.kpis.reduce((total, kpi) => total + (kpi.sample_size ?? 0), 0);
   const runningJobIdsKey = Object.values(jobs).filter((job) => job.status === "running").map((job) => job.id).sort().join("|");
-
-  useEffect(() => {
-    const runningJobIds = runningJobIdsKey.split("|").filter(Boolean);
-    if (runningJobIds.length === 0) {
-      return undefined;
-    }
-
-    const refreshRunningJobs = () => {
-      for (const jobId of runningJobIds) {
-        void refreshPulseWorkerJob(jobId, setJobs);
-      }
-    };
-    refreshRunningJobs();
-    const timer = window.setInterval(refreshRunningJobs, 1_500);
-
-    return () => window.clearInterval(timer);
-  }, [runningJobIdsKey]);
+  useRunningJobRefresh(runningJobIdsKey, refreshPulseWorkerJob, setJobs);
 
   return (
     <section className="pulse-workers-surface" aria-label={text.workers}>
