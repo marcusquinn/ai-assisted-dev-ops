@@ -137,7 +137,8 @@ def _decode_cursor(cursor: str) -> tuple[str, str | None]:
         raise RedditAdapterError("stored Reddit cursor has an invalid shape")
     after = _fullname(parsed["after"], "cursor after")
     stop_at = _fullname(parsed["stop_at"], "cursor watermark", optional=True)
-    assert after is not None
+    if after is None:
+        raise RedditAdapterError("stored Reddit cursor has no resume value")
     return after, stop_at
 
 
