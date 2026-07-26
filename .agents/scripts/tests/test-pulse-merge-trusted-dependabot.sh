@@ -59,10 +59,37 @@ write_pr_fixture() {
 	"statusCheckRollup": [
 		{"name": "Socket Security: Pull Request Alerts", "conclusion": "${security_conclusion}", "status": "COMPLETED"},
 		{"name": "Framework Validation", "conclusion": "${framework_conclusion}", "status": "COMPLETED"},
-		{"name": "gate / review-bot-gate", "workflowName": "Review Bot Gate", "conclusion": "FAILURE", "status": "COMPLETED"}
+		{"name": "review status", "workflowName": "Review Bot Gate", "conclusion": "FAILURE", "status": "COMPLETED"}
 	]
 }
 EOF
+	jq '{data:{
+		repository:{pullRequest:{
+			author:.author,
+			body:.body,
+			headRepository:.headRepository,
+			headRepositoryOwner:.headRepositoryOwner,
+			commits:{
+				nodes:[.commits[] | {commit:{authors:{
+					nodes:[.authors[] | {user:{login:.login}}],
+					pageInfo:{hasNextPage:false}
+				}}}],
+				pageInfo:{hasNextPage:false}
+			},
+			files:{nodes:.files,pageInfo:{hasNextPage:false}},
+			statusCheckRollup:{contexts:{
+				nodes:[.statusCheckRollup[] | {
+					__typename:"CheckRun",
+					name,
+					conclusion,
+					status,
+					checkSuite:{workflowRun:{workflow:{name:(.workflowName // null)}}}
+				}],
+				pageInfo:{hasNextPage:false}
+			}}
+		}},
+		rateLimit:{cost:2}
+	}}' "${TEST_ROOT}/pr.json" >"${TEST_ROOT}/graphql.json"
 	return 0
 }
 
@@ -82,7 +109,14 @@ setup_test_env() {
 
 	cat >"${TEST_ROOT}/bin/gh" <<'GHEOF'
 #!/usr/bin/env bash
-printf '%s\n' "gh $*" >>"${GH_LOG:-/dev/null}"
+printf '%s|%s|gh %s\n' \
+	"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+	"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >>"${GH_LOG:-/dev/null}"
+
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	cat "${TEST_ROOT}/graphql.json"
+	exit 0
+fi
 
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 	cat "${TEST_ROOT}/pr.json"
@@ -144,6 +178,7 @@ define_helpers_under_test() {
 	dependabot_src=$(awk '
 		/^_trusted_dependabot_updates_conf\(\) \{/,/^}$/ { print }
 		/^_trusted_dependabot_dependency_allowed\(\) \{/,/^}$/ { print }
+		/^_trusted_dependabot_pr_json_graphql\(\) \{/,/^}$/ { print }
 		/^_is_trusted_dependabot_update_pr\(\) \{/,/^}$/ { print }
 		/^_trusted_dependabot_non_review_checks_green\(\) \{/,/^}$/ { print }
 	' "$GATES_SCRIPT")
@@ -163,6 +198,32 @@ define_helpers_under_test() {
 	eval "$trusted_approval_src"
 	# shellcheck disable=SC1090
 	eval "$approve_src"
+	return 0
+}
+
+test_trusted_dependabot_uses_response_metered_graphql() {
+	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	: >"$GH_LOG"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" \
+		&& grep -qF '1|pulse-trusted-dependabot-exact-cost|gh api graphql' "$GH_LOG" \
+		&& ! grep -qF '|gh pr view 24473' "$GH_LOG"; then
+		print_result "trusted Dependabot snapshot reports operation-owned GraphQL cost" 0
+		return 0
+	fi
+	print_result "trusted Dependabot snapshot reports operation-owned GraphQL cost" 1 "gh log: $(<"$GH_LOG")"
+	return 0
+}
+
+test_trusted_dependabot_rejects_paginated_snapshot() {
+	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	jq '.data.repository.pullRequest.files.pageInfo.hasNextPage = true' \
+		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-paginated.json"
+	mv "${TEST_ROOT}/graphql-paginated.json" "${TEST_ROOT}/graphql.json"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+		print_result "paginated trusted Dependabot snapshot fails closed" 1
+		return 0
+	fi
+	print_result "paginated trusted Dependabot snapshot fails closed" 0
 	return 0
 }
 
@@ -228,18 +289,18 @@ test_review_bot_failure_is_ignored_when_other_checks_green() {
 	return 0
 }
 
-test_precomputed_status_rollup_skips_pr_view() {
+test_precomputed_status_rollup_skips_graphql() {
 	local pr_json=""
 
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "SUCCESS"
 	pr_json=$(<"${TEST_ROOT}/pr.json")
 	: >"$GH_LOG"
 	if _trusted_dependabot_non_review_checks_green "24473" "owner/repo" "$pr_json" \
-		&& ! grep -qF 'gh pr view 24473' "$GH_LOG"; then
-		print_result "precomputed status rollup skips PR view" 0
+		&& ! grep -qF 'gh api graphql' "$GH_LOG"; then
+		print_result "precomputed status rollup skips GraphQL fetch" 0
 		return 0
 	fi
-	print_result "precomputed status rollup skips PR view" 1 "Expected no gh pr view call. gh log: $(<"$GH_LOG")"
+	print_result "precomputed status rollup skips GraphQL fetch" 1 "Expected no GraphQL call. gh log: $(<"$GH_LOG")"
 	return 0
 }
 
@@ -258,12 +319,14 @@ main() {
 	trap teardown_test_env EXIT
 	define_helpers_under_test
 	test_trusted_dependabot_passes
+	test_trusted_dependabot_uses_response_metered_graphql
+	test_trusted_dependabot_rejects_paginated_snapshot
 	test_spoofed_author_fails
 	test_security_failure_fails
 	test_non_dependency_file_fails
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
-	test_precomputed_status_rollup_skips_pr_view
+	test_precomputed_status_rollup_skips_graphql
 	test_non_review_failure_blocks_required_check_bypass
 
 	printf '\nTests run: %s\n' "$TESTS_RUN"

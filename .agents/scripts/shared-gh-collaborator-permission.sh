@@ -49,7 +49,9 @@ _gh_collaborator_permission_lookup() {
 		return 2
 	fi
 
-	api_response=$(_rest_api_call read gh api -i "$perm_url" 2>&1)
+	api_response=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="collaborator-permission-rest" \
+		_rest_api_call read gh api -i "$perm_url" 2>&1)
 	rc=$?
 	while IFS= read -r line; do
 		line="${line%$'\r'}"

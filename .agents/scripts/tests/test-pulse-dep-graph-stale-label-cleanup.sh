@@ -62,9 +62,23 @@ teardown_test() {
 gh() {
 	local top_command="${1:-}"
 	shift || true
+	if [[ "$top_command" == "api" ]]; then
+		printf 'api|%s|%s|%s|%s\n' \
+			"${AIDEVOPS_GH_QUOTA_COST:-}" \
+			"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+			"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >>"$GH_LOG"
+	fi
+	if [[ "$top_command" == "api" && "${1:-}" == "graphql" ]]; then
+		printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[{"number":2,"state":"CLOSED"}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
+		return 0
+	fi
 	if [[ "$top_command" == "api" && "${1:-}" == "repos/example/repo" ]]; then
-		printf 'api %s\n' "$*" >>"$GH_LOG"
 		printf '%s\n' R_example
+		return 0
+	fi
+	if [[ "$top_command" == "api" && "${1:-}" == repos/example/repo/issues/* ]]; then
+		local issue_num="${1##*/}"
+		printf '%s\tI_%s\n' "$issue_num" "$issue_num"
 		return 0
 	fi
 	if [[ "$top_command" == "issue" ]]; then
@@ -74,10 +88,6 @@ gh() {
 		view)
 			local issue_num="${1:-}"
 			shift || true
-			if [[ "$*" == *"--json id,number"* ]]; then
-				printf '{"id":"I_%s","number":%s}\n' "$issue_num" "$issue_num"
-				return 0
-			fi
 			if [[ "$*" == *"--json labels"* ]]; then
 				printf '%s\n' "$GH_LABELS_CSV"
 				return 0
@@ -116,9 +126,29 @@ test_repository_identity_is_cached() {
 	_dep_validate_issue_target "example/repo" "3"
 	_dep_validate_issue_target "example/repo" "4"
 	while IFS= read -r line; do
-		[[ "$line" == api\ * ]] && api_calls=$((api_calls + 1))
+		if [[ "$line" == *'|repos/example/repo --jq .node_id // ""' ]]; then
+			api_calls=$((api_calls + 1))
+		fi
 	done <"$GH_LOG"
 	[[ "$api_calls" -eq 1 ]] && print_result "repository identity is cached" 0 || print_result "repository identity is cached" 1 "expected 1 API call; got ${api_calls}"
+	assert_log_contains "issue identity uses exact-cost REST" "$GH_LOG" \
+		"api|1||pulse-dep-issue-identity-rest|repos/example/repo/issues/3"
+	assert_log_not_contains "issue identity avoids native GraphQL view" "$GH_LOG" \
+		"--json id,number"
+	return 0
+}
+
+test_native_relationships_use_response_cost() {
+	local rc=0
+	reset_logs
+	_blocked_by_check_native_relationships "example/repo" "3" || rc=$?
+	if [[ "$rc" -eq 2 ]]; then
+		print_result "closed native relationship resolves positively" 0
+	else
+		print_result "closed native relationship resolves positively" 1 "expected rc=2; got ${rc}"
+	fi
+	assert_log_contains "native relationship query reports response-owned cost" "$GH_LOG" \
+		"api||1|pulse-blocked-by-exact-cost|graphql"
 	return 0
 }
 
@@ -222,6 +252,7 @@ source "$DEP_GRAPH"
 test_label_only_blocker_enters_graph
 test_unvalidated_repository_fails_closed
 test_repository_identity_is_cached
+test_native_relationships_use_response_cost
 test_available_issue_stale_label_removed
 test_blocked_issue_label_removed_and_status_available
 test_defer_marker_preserves_label

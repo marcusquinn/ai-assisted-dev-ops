@@ -550,21 +550,25 @@ _dep_labels_has_active_status() {
 _dep_validate_issue_target() {
 	local slug="$1"
 	local issue_num="$2"
-	local repository_id="" issue_json="" resolved_num="" issue_id=""
+	local repository_id="" resolved_num="" issue_id=""
 	[[ "$slug" =~ ^[^/[:space:]]+/[^/[:space:]]+$ && "$issue_num" =~ ^[1-9][0-9]*$ ]] || return 1
 	if [[ "$_DEP_CACHED_REPO_SLUG" == "$slug" && -n "$_DEP_CACHED_REPO_ID" ]]; then
 		repository_id="$_DEP_CACHED_REPO_ID"
 	else
-		repository_id=$(gh api "repos/${slug}" --jq '.node_id // ""' || true)
+		repository_id=$(AIDEVOPS_GH_QUOTA_COST=1 \
+			AIDEVOPS_GH_ROUTE_DECISION="pulse-dep-repository-identity-rest" \
+			gh api "repos/${slug}" --jq '.node_id // ""' || true)
 		if [[ -n "$repository_id" ]]; then
 			_DEP_CACHED_REPO_SLUG="$slug"
 			_DEP_CACHED_REPO_ID="$repository_id"
 		fi
 	fi
 	[[ -n "$repository_id" ]] || return 1
-	issue_json=$(gh issue view "$issue_num" --repo "$slug" --json id,number 2>/dev/null || true)
 	IFS=$'\t' read -r resolved_num issue_id < <(
-		printf '%s' "$issue_json" | jq -r '[.number // "", .id // ""] | @tsv'
+		AIDEVOPS_GH_QUOTA_COST=1 \
+			AIDEVOPS_GH_ROUTE_DECISION="pulse-dep-issue-identity-rest" \
+			gh api "repos/${slug}/issues/${issue_num}" \
+				--jq '[.number // "", .node_id // ""] | @tsv' 2>/dev/null || true
 	)
 	[[ "$resolved_num" == "$issue_num" && -n "$issue_id" ]]
 	return $?
@@ -947,9 +951,11 @@ _blocked_by_check_native_relationships() {
 	repo_name="${repo_slug#*/}"
 	[[ -n "$owner" && -n "$repo_name" ]] || return 1
 
-	local rel_states=""
+	local response="" reported_cost="" rel_states=""
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
-	if ! rel_states=$(gh api graphql \
+	if ! response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-blocked-by-exact-cost" \
+		gh api graphql \
 		-f query='
 query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner, name:$name) {
@@ -960,13 +966,26 @@ query($owner:String!,$name:String!,$number:Int!) {
       }
     }
   }
+	rateLimit { cost }
 }' \
 		-F owner="$owner" -F name="$repo_name" -F number="$issue_number" \
-		--jq '.data.repository.issue.blockedBy as $b | (if $b.pageInfo.hasNextPage then "__TRUNCATED__:UNKNOWN" else empty end), ($b.nodes[]? | "\(.number):\(.state)")' \
 		2>/dev/null); then
 		echo "[pulse-wrapper] is_blocked_by_unresolved: #${issue_number} native blockedBy lookup unavailable — checking body fallback (GH#24576)" >>"$LOGFILE"
 		return 3
 	fi
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	if [[ ! "$reported_cost" =~ ^[1-9][0-9]*$ ]]; then
+		echo "[pulse-wrapper] is_blocked_by_unresolved: #${issue_number} native blockedBy cost unavailable — checking body fallback (GH#27777)" >>"$LOGFILE"
+		return 3
+	fi
+	rel_states=$(printf '%s' "$response" | jq -r '
+		.data.repository.issue.blockedBy as $b
+		| (if $b.pageInfo.hasNextPage then "__TRUNCATED__:UNKNOWN" else empty end),
+		  ($b.nodes[]? | "\(.number):\(.state)")
+	' 2>/dev/null) || {
+		echo "[pulse-wrapper] is_blocked_by_unresolved: #${issue_number} native blockedBy response invalid — checking body fallback (GH#24576)" >>"$LOGFILE"
+		return 3
+	}
 
 	local rel_state="" rel_num="" state="" saw_relationship="${DEP_FALSE}"
 	while IFS= read -r rel_state; do

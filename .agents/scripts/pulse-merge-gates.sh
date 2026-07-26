@@ -146,6 +146,100 @@ _trusted_dependabot_dependency_allowed() {
 }
 
 #######################################
+# Fetch the fixed trusted-Dependabot trust snapshot with operation-owned cost.
+# Native `gh pr view` hides its GraphQL cost. This query includes rateLimit in
+# the same response, rejects partial connections, and projects the established
+# gh JSON contract consumed by the trust-boundary checks below.
+# Args: $1=pr_number, $2=repo_slug
+# Output: projected PR JSON
+# Returns: 0=complete exact-cost snapshot, 1=API/parse/pagination failure
+#######################################
+_trusted_dependabot_pr_json_graphql() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local owner="${repo_slug%%/*}"
+	local name="${repo_slug##*/}"
+	local response="" reported_cost="" pr_json=""
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" ]] || return 1
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-trusted-dependabot-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+		query($owner: String!, $name: String!, $pr: Int!) {
+			repository(owner: $owner, name: $name) {
+				pullRequest(number: $pr) {
+					author { login }
+					body
+					headRepository { nameWithOwner }
+					headRepositoryOwner { login }
+					commits(first: 100) {
+						pageInfo { hasNextPage }
+						nodes {
+							commit {
+								authors(first: 100) {
+									pageInfo { hasNextPage }
+									nodes { user { login } }
+								}
+							}
+						}
+					}
+					files(first: 100) { pageInfo { hasNextPage } nodes { path } }
+					statusCheckRollup {
+						contexts(first: 100) {
+							pageInfo { hasNextPage }
+							nodes {
+								__typename
+								... on CheckRun {
+									name
+									conclusion
+									status
+									checkSuite { workflowRun { workflow { name } } }
+								}
+								... on StatusContext { context state }
+							}
+						}
+					}
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 1
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
+	pr_json=$(printf '%s' "$response" | jq -c '
+		.data.repository.pullRequest as $pr
+		| if $pr == null then error("pull request unavailable")
+		  elif (($pr.commits.pageInfo.hasNextPage // false)
+			or ($pr.files.pageInfo.hasNextPage // false)
+			or ($pr.statusCheckRollup.contexts.pageInfo.hasNextPage // false)
+			or ([$pr.commits.nodes[]?.commit.authors.pageInfo.hasNextPage // false] | any))
+		  then error("trusted Dependabot snapshot is paginated")
+		  else {
+			author: $pr.author,
+			body: ($pr.body // ""),
+			headRepository: $pr.headRepository,
+			headRepositoryOwner: $pr.headRepositoryOwner,
+			commits: [$pr.commits.nodes[]? | {
+				authors: [.commit.authors.nodes[]? | {login: (.user.login // "")}]
+			}],
+			files: [$pr.files.nodes[]? | {path}],
+			statusCheckRollup: [$pr.statusCheckRollup.contexts.nodes[]?
+				| if .__typename == "CheckRun" then {
+					name,
+					conclusion,
+					status,
+					workflowName: .checkSuite.workflowRun.workflow.name
+				  }
+				  elif .__typename == "StatusContext" then {context, state}
+				  else empty end]
+		  } end
+	' 2>/dev/null) || return 1
+	[[ -n "$pr_json" ]] || return 1
+	printf '%s\n' "$pr_json"
+	return 0
+}
+
+#######################################
 # Verify a Dependabot PR is an authentic, maintainer-allowed version update.
 #
 # This is intentionally narrow: it only grants the collaborator/review-bot
@@ -175,9 +269,7 @@ _is_trusted_dependabot_update_pr() {
 	esac
 
 	local pr_json
-	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json author,body,commits,files,headRepository,headRepositoryOwner,statusCheckRollup \
-		2>/dev/null) || return 1
+	pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
 	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
 
 	local repo_owner="${repo_slug%%/*}"
@@ -241,7 +333,7 @@ _trusted_dependabot_non_review_checks_green() {
 
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
 	if [[ -z "$pr_json" ]]; then
-		pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" --json statusCheckRollup 2>/dev/null) || return 1
+		pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
 	fi
 	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
 

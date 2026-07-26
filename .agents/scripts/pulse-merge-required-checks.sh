@@ -229,7 +229,9 @@ _pmrc_review_thread_resolution_required() {
 	[[ -n "$repo_slug" && -n "$base_branch" ]] || return 1
 	encoded_branch=$(jq -nr --arg branch "$base_branch" '$branch | @uri') || return 1
 	[[ -n "$encoded_branch" ]] || return 1
-	rules_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rules/branches/${encoded_branch}" 2>/dev/null) || {
+	rules_json=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-effective-rules-rest" \
+		_pmrc_gh_read gh api "repos/${repo_slug}/rules/branches/${encoded_branch}" 2>/dev/null) || {
 		echo "[pulse-merge] pre-merge snapshot: effective rules fetch failed for ${repo_slug} branch ${base_branch} — failing closed (GH#28130)" >>"$log_target"
 		return 1
 	}

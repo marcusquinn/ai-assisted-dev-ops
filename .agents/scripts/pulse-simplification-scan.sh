@@ -111,6 +111,27 @@ _complexity_scan_tree_changed() {
 	return 0
 }
 
+# Run a fixed GraphQL scalar query with operation-owned response cost.
+# Arguments: $1 - route decision, $2 - query, $3 - jq scalar filter
+# Output: non-negative integer scalar
+_complexity_graphql_scalar_exact() {
+	local route_decision="$1"
+	local query="$2"
+	local jq_filter="$3"
+	local response="" reported_cost="" value=""
+
+	[[ "$route_decision" == pulse-complexity-*-exact-cost ]] || return 1
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="$route_decision" \
+		gh api graphql -f query="$query" 2>/dev/null) || return 1
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
+	value=$(printf '%s' "$response" | jq -r "$jq_filter" 2>/dev/null) || return 1
+	[[ "$value" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$value"
+	return 0
+}
+
 # Count recently closed function-complexity-debt issues for throughput-aware stall checks.
 # Arguments: $1 - now_epoch, $2 - aidevops_slug, $3 - window_seconds
 # Outputs: integer closure count
@@ -130,9 +151,10 @@ _complexity_recent_debt_closures() {
 		return 0
 	fi
 
-	recent_closures=$(gh api graphql \
-		-f query="query { search(query:\"repo:${aidevops_slug} label:function-complexity-debt is:issue is:closed closed:>${since_date}\", type:ISSUE) { issueCount } }" \
-		--jq '.data.search.issueCount' 2>/dev/null) || recent_closures="0"
+	recent_closures=$(_complexity_graphql_scalar_exact \
+		"pulse-complexity-closures-exact-cost" \
+		"query { search(query:\"repo:${aidevops_slug} label:function-complexity-debt is:issue is:closed closed:>${since_date}\", type:ISSUE) { issueCount } rateLimit { cost } }" \
+		'.data.search.issueCount') || recent_closures="0"
 	[[ "$recent_closures" =~ ^[0-9]+$ ]] || recent_closures="0"
 	printf '%s\n' "$recent_closures"
 	return 0
@@ -162,10 +184,11 @@ _complexity_llm_sweep_due() {
 	fi
 
 	# Fetch current open debt count
-	local current_count
-	current_count=$(gh api graphql \
-		-f query="query { repository(owner:\"${aidevops_slug%%/*}\", name:\"${aidevops_slug##*/}\") { issues(labels:[\"function-complexity-debt\"], states:OPEN) { totalCount } } }" \
-		--jq '.data.repository.issues.totalCount' 2>/dev/null) || current_count=""
+	local current_count=""
+	current_count=$(_complexity_graphql_scalar_exact \
+		"pulse-complexity-open-count-exact-cost" \
+		"query { repository(owner:\"${aidevops_slug%%/*}\", name:\"${aidevops_slug##*/}\") { issues(labels:[\"function-complexity-debt\"], states:OPEN) { totalCount } } rateLimit { cost } }" \
+		'.data.repository.issues.totalCount') || current_count=""
 	[[ "$current_count" =~ ^[0-9]+$ ]] || return 1
 
 	# Compare against last recorded count
@@ -507,9 +530,11 @@ _complexity_scan_check_open_cap() {
 	local cap="${2:-200}"
 	local log_prefix="${3:-Complexity scan}"
 
-	local total_open
-	total_open=$(gh api graphql -f query="query { repository(owner:\"${aidevops_slug%%/*}\", name:\"${aidevops_slug##*/}\") { issues(labels:[\"function-complexity-debt\"], states:OPEN) { totalCount } } }" \
-		--jq '.data.repository.issues.totalCount' 2>/dev/null) || total_open="0"
+	local total_open=""
+	total_open=$(_complexity_graphql_scalar_exact \
+		"pulse-complexity-cap-exact-cost" \
+		"query { repository(owner:\"${aidevops_slug%%/*}\", name:\"${aidevops_slug##*/}\") { issues(labels:[\"function-complexity-debt\"], states:OPEN) { totalCount } } rateLimit { cost } }" \
+		'.data.repository.issues.totalCount') || total_open="0"
 	if [[ "${total_open:-0}" -ge "$cap" ]]; then
 		echo "[pulse-wrapper] ${log_prefix}: skipping — ${total_open} open function-complexity-debt issues (cap: ${cap})" >>"$LOGFILE"
 		return 1

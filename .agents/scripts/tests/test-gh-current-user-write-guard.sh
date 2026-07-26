@@ -11,6 +11,8 @@ PARENT_DIR="${SCRIPT_DIR}/.."
 TESTS_RUN=0
 TESTS_FAILED=0
 CURRENT_LOGIN="owner"
+ATTRIBUTION_LOG=$(mktemp)
+trap 'rm -f "$ATTRIBUTION_LOG"' EXIT
 
 print_result() {
 	local name="$1"
@@ -42,6 +44,8 @@ _rest_api_call() {
 	local api_subcommand="${2:-}"
 	local flag="${3:-}"
 	local path="${4:-}"
+	printf '%s|%s\n' "${AIDEVOPS_GH_QUOTA_COST:-}" \
+		"${AIDEVOPS_GH_ROUTE_DECISION:-}" >>"$ATTRIBUTION_LOG"
 	[[ "$class_name" == "read" && "$command_name" == "gh" && "$api_subcommand" == "api" && "$flag" == "-i" ]] || return 1
 	if [[ "$path" == */collaborators/owner/permission ]]; then
 		printf 'HTTP/2.0 200 OK\n\n{"permission":"write"}\n'
@@ -69,6 +73,19 @@ if _gh_current_user_allows_repo_write "example/repo"; then
 	print_result "rotated outsider token is not allowed after owner token" 1
 else
 	print_result "rotated outsider token is not allowed after owner token" 0
+fi
+
+CURRENT_LOGIN="missing"
+if _gh_current_user_allows_repo_write "example/repo"; then
+	print_result "missing collaborator remains denied on HTTP 404" 1
+else
+	print_result "missing collaborator remains denied on HTTP 404" 0
+fi
+
+if grep -qF '1|collaborator-permission-rest' "$ATTRIBUTION_LOG"; then
+	print_result "collaborator permission lookup declares exact REST cost" 0
+else
+	print_result "collaborator permission lookup declares exact REST cost" 1
 fi
 
 printf '%d test(s), %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"

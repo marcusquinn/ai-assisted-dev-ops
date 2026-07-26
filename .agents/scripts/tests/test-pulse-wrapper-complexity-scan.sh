@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
-WRAPPER_SCRIPT="${SCRIPT_DIR}/../pulse-wrapper.sh"
+SCAN_SCRIPT="${SCRIPT_DIR}/../pulse-simplification-scan.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -29,6 +29,7 @@ TESTS_FAILED=0
 TEST_ROOT=""
 ORIGINAL_HOME="${HOME}"
 ORIGINAL_PATH="${PATH}"
+GH_GRAPHQL_LOG=""
 
 print_result() {
 	local test_name="$1"
@@ -50,13 +51,23 @@ print_result() {
 }
 
 setup_test_env() {
-	TEST_ROOT=$(mktemp -d)
+	local temp_base="${AIDEVOPS_TEMP_DIR:-${ORIGINAL_HOME}/.aidevops/.agent-workspace/tmp}"
+	mkdir -p "$temp_base"
+	TEST_ROOT=$(mktemp -d "${temp_base%/}/pulse-complexity-test.XXXXXX")
 	export HOME="${TEST_ROOT}/home"
 	mkdir -p "${HOME}/.aidevops/logs"
 	LOGFILE="${HOME}/.aidevops/logs/pulse.log"
-	export LOGFILE
+	GH_GRAPHQL_LOG="${TEST_ROOT}/graphql.log"
+	COMPLEXITY_SCAN_LAST_RUN="${HOME}/.aidevops/logs/complexity-scan-last-run"
+	COMPLEXITY_SCAN_INTERVAL=900
+	COMPLEXITY_SCAN_TREE_HASH_FILE="${HOME}/.aidevops/logs/complexity-scan-tree-hash"
+	COMPLEXITY_LLM_SWEEP_LAST_RUN="${HOME}/.aidevops/logs/complexity-llm-sweep-last-run"
+	COMPLEXITY_LLM_SWEEP_INTERVAL=21600
+	COMPLEXITY_DEBT_COUNT_FILE="${HOME}/.aidevops/logs/complexity-debt-count"
+	: >"$GH_GRAPHQL_LOG"
+	export LOGFILE GH_GRAPHQL_LOG
 	# shellcheck source=/dev/null
-	source "$WRAPPER_SCRIPT"
+	source "$SCAN_SCRIPT"
 	return 0
 }
 
@@ -69,15 +80,26 @@ teardown_test_env() {
 	return 0
 }
 
+# Disposable fixture repositories bypass the production canonical-repository shim.
+_fixture_git() {
+	/usr/bin/git "$@"
+	return $?
+}
+
+gh_issue_list() {
+	gh issue list "$@"
+	return $?
+}
+
 make_test_repo() {
 	local repo_path="$1"
 	mkdir -p "${repo_path}/.agents/scripts"
-	git -C "$repo_path" init -q 2>/dev/null
-	git -C "$repo_path" config user.email "test@test.com" 2>/dev/null
-	git -C "$repo_path" config user.name "Test" 2>/dev/null
+	_fixture_git -C "$repo_path" init -q --initial-branch=test-fixture 2>/dev/null
 	printf '#!/usr/bin/env bash\n# test file\necho hello\n' >"${repo_path}/.agents/scripts/test.sh"
-	git -C "$repo_path" add . 2>/dev/null
-	git -C "$repo_path" commit -q -m "init" 2>/dev/null
+	_fixture_git -C "$repo_path" add . 2>/dev/null
+	GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@example.invalid" \
+		GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@example.invalid" \
+		_fixture_git -C "$repo_path" commit -q -m "init" 2>/dev/null
 	return 0
 }
 
@@ -92,10 +114,15 @@ args="$*"
 case "$cmd" in
 	api)
 		if [[ "$subcmd" == "graphql" ]]; then
+			printf '%s|%s|%s\n' \
+				"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+				"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$args" >>"${GH_GRAPHQL_LOG}"
 			if [[ "$args" == *"search(query"* ]]; then
-				printf '%s\n' "${GH_RECENT_CLOSURES:-0}"
+				printf '{"data":{"search":{"issueCount":%s},"rateLimit":{"cost":1}}}\n' \
+					"${GH_RECENT_CLOSURES:-0}"
 			else
-				printf '%s\n' "${GH_OPEN_DEBT_COUNT:-0}"
+				printf '{"data":{"repository":{"issues":{"totalCount":%s}},"rateLimit":{"cost":1}}}\n' \
+					"${GH_OPEN_DEBT_COUNT:-0}"
 			fi
 			exit 0
 		fi
@@ -111,6 +138,29 @@ exit 0
 EOF
 	chmod +x "${stub_dir}/gh"
 	export PATH="${stub_dir}:${ORIGINAL_PATH}"
+	return 0
+}
+
+test_graphql_reads_report_operation_owned_cost() {
+	install_fake_gh_for_sweep
+	: >"$GH_GRAPHQL_LOG"
+	export GH_RECENT_CLOSURES=2 GH_OPEN_DEBT_COUNT=0
+	local recent_closures=""
+	recent_closures=$(_complexity_recent_debt_closures "100000" "test/repo" "3600")
+	rm -f "$COMPLEXITY_LLM_SWEEP_LAST_RUN"
+	_complexity_llm_sweep_due "100000" "test/repo" >/dev/null 2>&1 || true
+	_complexity_scan_check_open_cap "test/repo" "10" "test" >/dev/null 2>&1 || true
+	if [[ "$recent_closures" == "2" ]] \
+		&& grep -qF '1|pulse-complexity-closures-exact-cost|api graphql' "$GH_GRAPHQL_LOG" \
+		&& grep -qF '1|pulse-complexity-open-count-exact-cost|api graphql' "$GH_GRAPHQL_LOG" \
+		&& grep -qF '1|pulse-complexity-cap-exact-cost|api graphql' "$GH_GRAPHQL_LOG" \
+		&& grep -qF 'rateLimit { cost }' "$GH_GRAPHQL_LOG"; then
+		print_result "complexity GraphQL reads report operation-owned cost" 0
+	else
+		print_result "complexity GraphQL reads report operation-owned cost" 1 \
+			"value=${recent_closures}; calls=$(<"$GH_GRAPHQL_LOG")"
+	fi
+	unset GH_RECENT_CLOSURES GH_OPEN_DEBT_COUNT
 	return 0
 }
 
@@ -182,8 +232,10 @@ test_tree_changed_after_commit_returns_changed() {
 	_complexity_scan_tree_changed "$repo_path" >/dev/null 2>&1 || true
 	# Modify and commit a file
 	printf '#!/usr/bin/env bash\n# modified\necho world\n' >"${repo_path}/.agents/scripts/test.sh"
-	git -C "$repo_path" add . 2>/dev/null
-	git -C "$repo_path" commit -q -m "modify" 2>/dev/null
+	_fixture_git -C "$repo_path" add . 2>/dev/null
+	GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@example.invalid" \
+		GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@example.invalid" \
+		_fixture_git -C "$repo_path" commit -q -m "modify" 2>/dev/null
 	# Should return 0 (changed)
 	if _complexity_scan_tree_changed "$repo_path"; then
 		print_result "_complexity_scan_tree_changed: returns changed after commit" 0
@@ -359,6 +411,7 @@ main() {
 	test_tree_changed_first_call_returns_changed
 	test_tree_changed_second_call_returns_unchanged
 	test_tree_changed_after_commit_returns_changed
+	test_graphql_reads_report_operation_owned_cost
 	test_llm_sweep_not_due_when_interval_not_elapsed
 	test_llm_sweep_check_interval_guard
 	test_llm_sweep_skips_when_recent_closures_exist

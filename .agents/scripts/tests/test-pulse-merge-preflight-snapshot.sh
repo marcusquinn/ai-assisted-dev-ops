@@ -23,7 +23,9 @@ RERUN_CALLS=0
 TESTS_RUN=0
 TESTS_FAILED=0
 EVIDENCE_LOG="${TEST_ROOT}/efficiency-evidence.log"
+RULES_ATTRIBUTION_LOG="${TEST_ROOT}/rules-attribution.log"
 : >"$EVIDENCE_LOG"
+: >"$RULES_ATTRIBUTION_LOG"
 
 gh_record_efficiency_evidence() {
 	local name="$1"
@@ -152,6 +154,8 @@ gh() {
 		fi
 		;;
 	repos/owner/repo/rules/branches/*)
+		printf '%s|%s|%s\n' "${AIDEVOPS_GH_QUOTA_COST:-}" \
+			"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$endpoint" >>"$RULES_ATTRIBUTION_LOG"
 		stub_effective_rules "$endpoint"
 		return $?
 		;;
@@ -333,6 +337,23 @@ assert_human_review_thread_rules() {
 	return 0
 }
 
+assert_effective_rules_have_exact_rest_cost() {
+	local rc=0
+	SNAPSHOT_MODE="human_rules_error"
+	: >"$RULES_ATTRIBUTION_LOG"
+	_pmrc_review_thread_resolution_required "owner/repo" "main" >/dev/null 2>&1 || rc=$?
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$rc" -eq 1 ]] \
+		&& grep -qF '1|pulse-effective-rules-rest|repos/owner/repo/rules/branches/main' \
+			"$RULES_ATTRIBUTION_LOG"; then
+		printf 'PASS failed effective-rules reads retain exact REST cost\n'
+		return 0
+	fi
+	printf 'FAIL failed effective-rules read lacked exact REST cost (rc=%s)\n' "$rc"
+	TESTS_FAILED=$((TESTS_FAILED + 1))
+	return 0
+}
+
 set_live_evidence() {
 	local status="$1"
 	local head_sha="${2:-sha-reviewed}"
@@ -439,6 +460,7 @@ assert_review_and_head_snapshot_cases() {
 main() {
 	assert_infrastructure_rerun_unset_defaults_safe
 	assert_infrastructure_rerun_unset_logfile_safe
+	assert_effective_rules_have_exact_rest_cost
 	assert_snapshot_acquisition_failures_are_audited
 	assert_gate "large paginated check payload streams without argument overflow" large_payload 0
 	assert_large_bot_activity_streams
