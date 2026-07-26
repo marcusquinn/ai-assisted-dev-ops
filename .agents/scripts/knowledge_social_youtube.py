@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Collect one read-only Reddit account stream into a social corpus."""
+"""Collect one read-only OAuth YouTube account stream into a social corpus."""
 
 from __future__ import annotations
 
@@ -35,42 +35,46 @@ from _knowledge_social_collect_persist import (
 )
 from _knowledge_social_collect_state import load_context
 from _knowledge_social_lease import (
+    RunLease,
     RunLeaseRequest,
     SocialLeaseLostError,
     acquire_run_lease,
     fail_active_run,
+    finish_active_run,
     release_run_lease,
     renew_run_lease,
 )
-from _knowledge_social_reddit import (
+from _knowledge_social_youtube import (
     PROVIDER,
     STREAMS,
     PageRequest,
-    RedditAdapterError,
-    RedditProviderUnavailableError,
+    YouTubeAdapterError,
+    YouTubeProviderUnavailableError,
     page_checkpoint,
     page_request,
     response_status,
 )
-from _knowledge_social_reddit_normalize import PageContext, normalize_page
-from _knowledge_social_reddit_reader import (
-    FixtureReddit,
-    GuardedPraw,
-    RedditReader,
+from _knowledge_social_youtube_normalize import PageContext, normalize_page
+from _knowledge_social_youtube_reader import (
+    FixtureYouTube,
+    GuardedYouTubeOAuth,
+    YouTubeReader,
     verified_identity,
 )
 from knowledge_social_import import reject_credentials
 from knowledge_social_store import validate_opaque
 
+IDENTITY_COST_UNITS = 1
 
-def reddit_runner(args: argparse.Namespace) -> RedditReader:
-    """Select the guarded live reader or a test-only fixture reader."""
+
+def youtube_runner(args: argparse.Namespace) -> YouTubeReader:
+    """Select the guarded OAuth reader or a test-only fixture reader."""
     if args.fixture and os.environ.get("AIDEVOPS_TEST_MODE") != "1":
-        raise RedditAdapterError("Reddit fixtures are disabled outside the test harness")
+        raise YouTubeAdapterError("YouTube fixtures are disabled outside the test harness")
     if args.fixture:
-        return FixtureReddit(args.fixture)
-    helper = Path(__file__).with_name("_knowledge_social_reddit_read_provider.py")
-    return GuardedPraw(helper, args.profile)
+        return FixtureYouTube(args.fixture)
+    helper = Path(__file__).with_name("_knowledge_social_youtube_provider.py")
+    return GuardedYouTubeOAuth(helper, args.profile)
 
 
 def terminal_decision(payload: dict[str, Any]) -> TerminalDecision | None:
@@ -103,6 +107,8 @@ def _persist_success(
         complete,
         context.spec.cost_units,
         retention_limit=context.spec.retention_limit,
+        unavailable_reason=context.spec.unavailable_reason,
+        coverage_status=context.spec.coverage_status,
     )
     resources = persist_page(context, page)
     state = CursorState(checkpoint.next_cursor, checkpoint.watermark, complete)
@@ -110,23 +116,23 @@ def _persist_success(
 
 
 def collect_pages(
-    args: argparse.Namespace, runner: RedditReader, initial: CollectionContext
+    args: argparse.Namespace, runner: YouTubeReader, initial: CollectionContext
 ) -> dict[str, Any]:
-    """Collect successful Reddit pages until completion, failure, or budget stop."""
+    """Collect successful YouTube pages until completion, failure, or budget stop."""
     context = initial
-    progress = CollectionProgress()
+    progress = CollectionProgress(budget_units=IDENTITY_COST_UNITS)
     while progress.budget_units + context.spec.cost_units <= args.budget:
         if context.lease is None:
-            raise RedditAdapterError("Reddit collection requires a collector lease")
+            raise YouTubeAdapterError("YouTube collection requires a collector lease")
         context = replace(
             context,
             lease=renew_run_lease(
                 context.root, context.lease, args.lease_seconds
             ),
         )
-        request: PageRequest = page_request(
+        request = page_request(
             context.stream,
-            context.account["id"],
+            context.account,
             context.state,
             args.page_size,
         )
@@ -154,9 +160,9 @@ def collect_pages(
 
 
 def _failure_class(error: Exception) -> str:
-    if isinstance(error, RedditProviderUnavailableError):
+    if isinstance(error, YouTubeProviderUnavailableError):
         return "provider"
-    if isinstance(error, RedditAdapterError):
+    if isinstance(error, YouTubeAdapterError):
         return "validation"
     if isinstance(error, sqlite3.Error):
         return "storage"
@@ -165,10 +171,42 @@ def _failure_class(error: Exception) -> str:
     return "runtime"
 
 
+def _identity_terminal_result(
+    root: Path,
+    lease: RunLease,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Finish a terminal identity request without binding unverified account data."""
+    reject_credentials(payload)
+    decision = terminal_decision(payload)
+    if decision is None:
+        return None
+    retry_value = payload.get("retry_after")
+    if retry_value is not None and (
+        isinstance(retry_value, bool) or not isinstance(retry_value, (int, str))
+    ):
+        raise YouTubeAdapterError("YouTube retry_after must be text or an integer")
+    retry_after = str(retry_value) if retry_value is not None else None
+    finish_active_run(
+        root,
+        lease,
+        decision.run_status,
+        decision.failure_class,
+        retry_after,
+    )
+    return collection_result(
+        decision.output_status,
+        CollectionProgress(budget_units=IDENTITY_COST_UNITS),
+        failure_class=decision.failure_class,
+        retry_after=retry_after,
+        run_id=lease.run_id,
+    )
+
+
 def collect(
     args: argparse.Namespace, root: Path, collector_id: str
 ) -> dict[str, Any]:
-    """Verify the selected account and collect one configured Reddit stream."""
+    """Verify the selected OAuth channel and collect one configured stream."""
     connection_id = validate_opaque(args.connection_id, "connection_id")
     account_id = validate_opaque(args.account_id, "account_id")
     lease = acquire_run_lease(
@@ -182,8 +220,12 @@ def collect(
         ),
     )
     try:
-        runner = reddit_runner(args)
-        account = verified_identity(runner.identity(), account_id)
+        runner = youtube_runner(args)
+        identity = runner.identity(account_id)
+        terminal_result = _identity_terminal_result(root, lease, identity)
+        if terminal_result is not None:
+            return terminal_result
+        account = verified_identity(identity, account_id)
         context = replace(
             load_context(
                 root,
@@ -210,10 +252,10 @@ def parse_args() -> argparse.Namespace:
         CollectorCliPolicy(
             description=__doc__ or "",
             streams=tuple(STREAMS),
-            default_budget=10,
-            min_budget=1,
-            max_page_size=100,
-            budget_unit="request",
+            default_budget=11,
+            min_budget=3,
+            max_page_size=50,
+            budget_unit="quota",
         )
     )
 

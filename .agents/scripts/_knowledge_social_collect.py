@@ -125,3 +125,18 @@ class CollectionProgress:
             self.resources + resources,
             self.budget_units + budget_units,
         )
+
+
+def collection_result(
+    status: str,
+    progress: CollectionProgress,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build one provider-neutral, privacy-safe collector result."""
+    return {
+        "status": status,
+        "pages": progress.pages,
+        "resources": progress.resources,
+        "budget_units": progress.budget_units,
+        **extra,
+    }

@@ -7,18 +7,17 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Protocol
 
+from _knowledge_social_collect_cli import GuardedReaderProcess
 from _knowledge_social_fixture import FixtureSequence
 from _knowledge_social_reddit import (
     PageRequest,
     RedditAdapterError,
     RedditProviderUnavailableError,
 )
-from knowledge_social_import import canonical_json, reject_credentials
+from knowledge_social_import import reject_credentials
 
 READ_TIMEOUT_SECONDS = 120
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -65,8 +64,17 @@ class GuardedPraw:
     def __init__(self, helper: Path, profile: str) -> None:
         if helper.is_symlink() or not helper.is_file():
             raise RedditProviderUnavailableError("Reddit read provider is unavailable")
-        self.helper = helper
         self.profile = profile
+        self.process = GuardedReaderProcess(
+            helper=helper,
+            profile=profile,
+            environment=self._environment,
+            timeout_seconds=READ_TIMEOUT_SECONDS,
+            decode_output=_decode_output,
+            provider_failure=_provider_failure,
+            unavailable_error=RedditProviderUnavailableError,
+            provider_name="Reddit",
+        )
 
     def _environment(self) -> dict[str, str]:
         profile_prefix = f"REDDIT_{self.profile.upper()}_"
@@ -111,35 +119,11 @@ class GuardedPraw:
                     environment[key] = os.environ[key]
         return environment
 
-    def _run(self, request: dict[str, Any]) -> dict[str, Any]:
-        try:
-            completed = subprocess.run(  # nosec B603 -- fixed helper and fixed argv
-                [sys.executable, str(self.helper), "--profile", self.profile],
-                check=False,
-                capture_output=True,
-                input=canonical_json(request),
-                env=self._environment(),
-                shell=False,
-                text=True,
-                timeout=READ_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise RedditProviderUnavailableError(
-                "Reddit read provider timed out"
-            ) from error
-        except OSError as error:
-            raise RedditProviderUnavailableError(
-                "Reddit read provider is unavailable"
-            ) from error
-        if completed.returncode != 0:
-            raise _provider_failure(completed.stderr)
-        return _decode_output(completed.stdout)
-
     def identity(self) -> dict[str, Any]:
-        return self._run({"action": "identity"})
+        return self.process.run({"action": "identity"})
 
     def page(self, request: PageRequest) -> dict[str, Any]:
-        return self._run(request.payload())
+        return self.process.run(request.payload())
 
 
 def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:

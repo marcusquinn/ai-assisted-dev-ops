@@ -32,7 +32,7 @@ a claim that the route is enabled.
 |---|---|---|---|---|---|---|
 | X | **Live** posts | **Live** likes and bookmarks | **Live** mentions | **Live** followers and following | **No** in the current adapter | Maintain the six guarded `xurl` streams; investigate lists separately. |
 | Reddit | **Live** submissions and comments | **Live** saved, votes, and hidden | **Live** mentions, replies, inbox, and sent | **Live** subreddit and account relationships | **Live** multireddits and membership | PRAW 8, bounded one-page reads, independent cursors, and provider-window coverage. |
-| YouTube | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** comments | **API/Gate/Export** subscriptions | **API/Gate/Export** playlists | Child must verify OAuth user routes separately from existing service-account research tooling. |
+| YouTube | **Live** uploads; **Live/Partial** activity | **Live** likes; **No/Export** watch history and Watch Later | **Live/Gate** channel-related comments and replies; **No/Export** complete authored history | **Live** outbound subscriptions | **Live** owned playlists and membership; **No/Export** saved playlists | `youtube.readonly` user OAuth, identity recheck per page, bounded list quota, 30-day refresh/delete boundary, and explicit gap rows. |
 | LinkedIn | **Gate/Export** | **Gate/Export** | **Export** | **Gate/Export** | **Export/No** | Treat member access as restricted; do not reuse browser engagement automation as a collector. |
 | Facebook | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | Shared Meta authorization needs app-review and product-specific evidence. |
 | Instagram | **Gate/Export** media | **Gate/Export** | **Gate/Export** comments and mentions | **Gate/Export** | **Export/No** | Verify Professional versus personal-account coverage before implementation. |
@@ -64,6 +64,13 @@ a claim that the route is enabled.
   `.agents/scripts/_knowledge_social_reddit*.py`, and
   `.agents/tests/test-knowledge-social-reddit.sh` prove the stream allowlist,
   read-only boundary, cursor behavior, snapshots, and sanitized failures.
+- **Live YouTube:** `.agents/scripts/knowledge_social_youtube.py`,
+  `.agents/scripts/_knowledge_social_youtube*.py`, and
+  `.agents/tests/test-knowledge-social-youtube.sh` prove OAuth-owned identity,
+  quota accounting, compound playlist/comment checkpoints, explicit gaps, and a
+  GET-only provider boundary. `.agents/content/social-youtube.md` records the
+  official route, scope, retention, export, and unsupported evidence checked on
+  2026-07-26.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.
