@@ -133,9 +133,17 @@ When composing TODOs or issues that must run in sequence, include the textual
 `blocked-by:*` or `blocks:*` marker for auditability and ensure the GitHub native
 issue relationship is or will be synced. Treat GitHub's `blockedBy` relationship
 as the primary dispatch gate; body markers are fallback intent for
-`issue-sync-relationships.sh` and pulse repair. If a blocker cannot be resolved
-to a GitHub issue relationship, mark the dependent issue `status:blocked` and do
-not add `#auto-dispatch` until the relationship exists or the blocker is closed.
+`issue-sync-relationships.sh` and Pulse repair.
+
+For an ordered worker-ready chain, the first leaf uses `#auto-dispatch` with
+`status:available`; every later leaf uses `#auto-dispatch` with `status:blocked`
+after its native relationship is verified. During publication, fail closed:
+never expose a dependent leaf as available before the edge is verified. If the
+edge cannot be resolved, retain `status:blocked` and repair the relationship.
+Once every blocker closes, Pulse changes the next leaf to `status:available`;
+the completing worker closes only its own leaf and does not edit its successor.
+Independent children may remain `status:available` for parallel dispatch, while
+the roadmap parent keeps `parent-task` and never receives `#auto-dispatch`.
 
 ## Seeded Draft PR Decision
 

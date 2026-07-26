@@ -120,7 +120,7 @@ After the brief is worker-ready, consider an optional implementation-seeded draf
 Run `task-decompose-helper.sh classify "{title}"` if available. Skip with `--no-decompose` or if helper missing (t1408.1).
 
 - **Atomic (default):** Proceed to Step 4.
-- **Composite:** Present decomposition tree. If approved: allocate `{task_id}.N` IDs via `claim-task-id.sh`, create brief per subtask, add `blocked-by:` edges, mark parent `status:blocked`. Each subtask brief must (1) reference parent, (2) inherit parent context, (3) include supervisor session ID, (4) set `blocked-by:` from `depends_on`. `batch_strategy` (depth-first/breadth-first) informs pulse dispatch ordering.
+- **Composite:** Present decomposition tree. If approved: allocate `{task_id}.N` IDs via `claim-task-id.sh`, create a brief per subtask, add textual and native `blockedBy` edges, and mark the parent `parent-task`. Each subtask brief must (1) reference the parent, (2) inherit parent context, (3) include the supervisor session ID, and (4) set `blocked-by:` from `depends_on`. Worker-ready roots and independent children use `#auto-dispatch` plus `status:available`; worker-ready dependent children use `#auto-dispatch` plus `status:blocked` after their native edges are verified. `batch_strategy` (depth-first/breadth-first) informs Pulse ordering. Pulse promotes resolved dependents; workers do not edit successors manually.
 
 ### Step 3.6: Declare Phases for Parent Tasks
 
@@ -188,7 +188,7 @@ If any readiness element is missing, finish the brief before filing/queueing; if
 - Decomposition or human-decision work
 - Hardware or external service setup
 - Investigation/evaluation without a clear deliverable
-- Incomplete dependencies
+- Dependencies that cannot yet be resolved to verified native relationships
 - Explicit user preference for interactive/manual handling
 
 Canonical dispatch-blocker labels: `reference/dispatch-blockers.md`.

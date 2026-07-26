@@ -379,10 +379,7 @@ mutation($blocked:ID!,$blocking:ID!) {
 	return 1
 }
 
-# Keep a dependency-bearing issue out of the available queue when native
-# relationship repair cannot complete. This is intentionally label-only and
-# retryable: the next relationship pass can repair the edge, while the pulse
-# dependency resolver supplies the positive proof required to unblock it.
+# Keep dependency status normalization from overwriting active lifecycle state.
 _dependency_sync_has_active_status() {
 	local labels_csv="$1"
 	local padded_labels=",${labels_csv},"
@@ -401,7 +398,10 @@ _relationship_task_line() {
 	return 0
 }
 
-_hold_dependency_sync_retry() {
+# Move an inactive dependency-bearing issue out of the available queue. This is
+# intentionally label-only: auto-dispatch remains attached so Pulse can promote
+# the issue after every native blocker closes.
+_ensure_dependency_status_blocked() {
 	local issue_num="$1"
 	local repo="$2"
 	local reason="$3"
@@ -410,14 +410,14 @@ _hold_dependency_sync_retry() {
 	[[ "$issue_num" =~ ^[0-9]+$ && "$repo" == */* ]] || return 1
 	current_labels=$(_gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || {
-		log_verbose "$issue_num: dependency_relationship_sync_retryable reason=${reason}_status_read_failed"
+		log_verbose "$issue_num: dependency_status_sync_failed reason=${reason}_status_read_failed"
 		return 1
 	}
 	[[ ",${current_labels}," == *",status:available,"* ]] || return 0
 	_dependency_sync_has_active_status "$current_labels" && return 0
 	if ! _gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" \
 		--remove-label "status:available" --add-label "status:blocked" >/dev/null 2>&1; then
-		log_verbose "$issue_num: dependency_relationship_sync_retryable reason=${reason}_status_write_failed"
+		log_verbose "$issue_num: dependency_status_sync_failed reason=${reason}_status_write_failed"
 		return 1
 	fi
 	# A dispatcher may have advanced state between the read and edit. Repair any
@@ -427,6 +427,21 @@ _hold_dependency_sync_retry() {
 	if _dependency_sync_has_active_status "$current_labels" && \
 		[[ ",${current_labels}," == *",status:blocked,"* ]]; then
 		_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" --remove-label "status:blocked" >/dev/null 2>&1 || true
+	fi
+	log_verbose "$issue_num: dependency_status_blocked reason=${reason}"
+	return 0
+}
+
+# Keep a dependency-bearing issue out of the available queue when native
+# relationship repair cannot complete. The next relationship pass can repair
+# the edge, while Pulse supplies the positive proof required to unblock it.
+_hold_dependency_sync_retry() {
+	local issue_num="$1"
+	local repo="$2"
+	local reason="$3"
+	if ! _ensure_dependency_status_blocked "$issue_num" "$repo" "$reason"; then
+		log_verbose "$issue_num: dependency_relationship_sync_retryable reason=${reason}_status_sync_failed"
+		return 1
 	fi
 	log_verbose "$issue_num: dependency_relationship_sync_retryable reason=${reason}"
 	return 0
@@ -594,6 +609,10 @@ _sync_declared_blocked_by_edges() {
 			fi
 			if ! _relationship_edge_should_attempt "$this_gh_num" "$dep_gh_num"; then
 				log_verbose "$task_id: skipping duplicate native edge #$this_gh_num blocked-by #$dep_gh_num"
+				if [[ "$DRY_RUN" != "true" ]] && ! _ensure_dependency_status_blocked \
+					"$this_gh_num" "$repo" "native_relationship_already_attempted"; then
+					retryable_errors=$((retryable_errors + 1))
+				fi
 				continue
 			fi
 			local dep_node_id
@@ -601,6 +620,7 @@ _sync_declared_blocked_by_edges() {
 			if [[ -z "$dep_node_id" ]]; then
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
 				retryable_errors=$((retryable_errors + 1))
+				_hold_dependency_sync_retry "$this_gh_num" "$repo" "blocking_node_unresolved"
 				continue
 			fi
 
@@ -620,8 +640,13 @@ _sync_declared_blocked_by_edges() {
 			elif _gh_add_blocked_by "$this_node_id" "$dep_node_id"; then
 				log_verbose "$task_id (#$this_gh_num) blocked-by $dep_task_id (#$dep_gh_num) ✓"
 				rels_set=$((rels_set + 1))
+				if ! _ensure_dependency_status_blocked \
+					"$this_gh_num" "$repo" "native_relationship_linked"; then
+					retryable_errors=$((retryable_errors + 1))
+				fi
 			else
 				retryable_errors=$((retryable_errors + 1))
+				_hold_dependency_sync_retry "$this_gh_num" "$repo" "native_relationship_write_failed"
 			fi
 	done
 	IFS="$saved_ifs"
@@ -657,6 +682,10 @@ _sync_declared_blocks_edges() {
 			[[ "$dep_gh_num" == "$this_gh_num" ]] && continue
 			if ! _relationship_edge_should_attempt "$dep_gh_num" "$this_gh_num"; then
 				log_verbose "$task_id: skipping duplicate native edge #$dep_gh_num blocked-by #$this_gh_num"
+				if [[ "$DRY_RUN" != "true" ]] && ! _ensure_dependency_status_blocked \
+					"$dep_gh_num" "$repo" "native_relationship_already_attempted"; then
+					retryable_errors=$((retryable_errors + 1))
+				fi
 				continue
 			fi
 			local dep_node_id
@@ -685,6 +714,10 @@ _sync_declared_blocks_edges() {
 			elif _gh_add_blocked_by "$dep_node_id" "$this_node_id"; then
 				log_verbose "$dep_task_id (#$dep_gh_num) blocked-by $task_id (#$this_gh_num) ✓"
 				rels_set=$((rels_set + 1))
+				if ! _ensure_dependency_status_blocked \
+					"$dep_gh_num" "$repo" "native_relationship_linked"; then
+					retryable_errors=$((retryable_errors + 1))
+				fi
 			else
 				retryable_errors=$((retryable_errors + 1))
 				_hold_dependency_sync_retry "$dep_gh_num" "$repo" "native_relationship_write_failed"
@@ -1874,7 +1907,7 @@ cmd_backfill_cross_phase_blocked_by() {
 			continue
 		fi
 
-		if _backfill_cross_phase_pair "$_bn" "$_lr" "$child_node" "$blocker_node"; then
+		if _backfill_cross_phase_pair "$_bn" "$_lr" "$child_node" "$blocker_node" "$repo"; then
 			pairs_set=$((pairs_set + 1))
 		else
 			pairs_skipped=$((pairs_skipped + 1))
@@ -1888,12 +1921,17 @@ cmd_backfill_cross_phase_blocked_by() {
 
 _backfill_cross_phase_pair() {
 	local blocked_num="$1" blocker_num="$2" child_node="$3" blocker_node="$4"
+	local repo="$5"
 	if [[ "$DRY_RUN" == "true" ]]; then
 		print_info "[DRY-RUN] Would set #$blocked_num blocked-by #$blocker_num"
 		return 0
 	fi
 	if _gh_add_blocked_by "$child_node" "$blocker_node"; then
 		log_verbose "#$blocked_num blocked-by #$blocker_num ✓"
+		if ! _ensure_dependency_status_blocked \
+			"$blocked_num" "$repo" "cross_phase_native_relationship_linked"; then
+			return 1
+		fi
 		return 0
 	fi
 	return 1

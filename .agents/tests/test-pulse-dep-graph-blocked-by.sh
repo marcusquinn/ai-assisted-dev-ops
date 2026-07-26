@@ -122,25 +122,27 @@ gh_issue_list() {
 }
 
 gh() {
-	if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	local command="${1:-}"
+	local target="${2:-}"
+	if [[ "$command" == "api" && "$target" == "graphql" ]]; then
 		case "${TEST_GH_RELATIONSHIP_MODE:-clear}" in
 			fail)
 				return 1
 				;;
 			open)
-				printf '1000:OPEN\n'
+				printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[{"number":1000,"state":"OPEN"}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 				return 0
 				;;
 			closed)
-				printf '1000:CLOSED\n'
+				printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[{"number":1000,"state":"CLOSED"}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 				return 0
 				;;
 			unknown)
-				printf '1000:\n'
+				printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[{"number":1000,"state":null}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 				return 0
 				;;
 			*)
-				printf '\n'
+				printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 				return 0
 				;;
 		esac

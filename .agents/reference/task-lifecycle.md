@@ -37,10 +37,14 @@ Dependency rule: when a TODO/issue declares ordered work with `blocked-by:*`
 or `blocks:*`, preserve the text marker for human/reconciliation context and
 sync it into GitHub's native issue relationship field. The native `blockedBy`
 relationship is the primary dispatch gate; body/TODO markers are fallback intent
-and repair signals. If the relationship cannot be created or verified, keep the
-dependent task non-dispatchable (`status:blocked`, no `#auto-dispatch`) until the
-blocker is positively linked or resolved. `issue-sync-relationships.sh` performs
-the normal TODO-to-GitHub relationship backfill.
+and repair signals. Worker-ready ordered leaves retain `#auto-dispatch`: the
+first ready leaf is `status:available`, while every unresolved dependent is
+`status:blocked` after its native edge is verified. If an edge cannot be created
+or verified, fail closed by retaining `status:blocked` and never exposing the
+dependent to the available queue. `issue-sync-relationships.sh` performs the
+normal TODO-to-GitHub relationship backfill and status normalization; Pulse
+changes the next leaf to `status:available` after all blockers close. Workers
+complete only their own leaf and do not manually edit successors.
 
 Task IDs: `/new-task` or `claim-task-id.sh`. NEVER grep TODO.md for next ID.
 
@@ -131,7 +135,7 @@ Do not end a save flow with only "start anytime" when the task is worker-ready; 
   - decomposition or human-decision work;
   - hardware or external service setup;
   - investigation/evaluation without a clear deliverable;
-  - incomplete dependencies; or
+  - dependencies that cannot yet be resolved to verified native relationships; or
   - explicit user preference for interactive/manual handling.
 
   Dispatch-path files are **not** excluded post-t2920; they auto-dispatch with opus-4-7 elevation. Canonical blocker label set: `reference/dispatch-blockers.md`.

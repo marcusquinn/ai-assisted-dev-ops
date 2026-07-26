@@ -55,6 +55,20 @@ Env override: `PARENT_DECOMPOSITION_ESCALATION_HOURS` (default 168). Capped at `
 
 `.agents/scripts/tests/test-parent-prose-child-detection.sh`, `test-parent-task-application-warn.sh`, `test-parent-decomposition-escalation.sh`, `test-auto-decomposer-scanner.sh`, `test-auto-decomposer-per-parent-gate.sh` (84+ structural assertions total).
 
+## Child Dispatch Contract
+
+- The roadmap issue keeps `parent-task` and never receives `auto-dispatch`.
+- Independent worker-ready children use `auto-dispatch,status:available` and may
+  run in parallel.
+- In an ordered chain, only the first ready child is available. Every later
+  worker-ready child keeps `auto-dispatch,status:blocked` plus a verified native
+  `blockedBy` relationship and an auditable textual marker.
+- Issue publication must fail closed: never expose a dependent child as
+  available before its native edge is verified.
+- Pulse owns the handoff. When every blocker closes, dependency reconciliation
+  changes the next child to `status:available`; the completing worker closes
+  only its own issue and does not remove successor blockers or labels manually.
+
 ## Sequential Phase Auto-File (t2740, enabled by default since t2787)
 
 The sequential phase auto-file mechanism reads phase declarations from the parent-task issue body and files the **next unfiled phase** as a child issue automatically once the prior phase's PR merges.
@@ -69,7 +83,7 @@ Two formats are supported. Both are parsed by `_extract_sequential_phases` in `s
 
 **List format (preferred — auto-fire enabled by default):**
 
-```
+```markdown
 - Phase 1 - description [auto-fire:on-prior-merge]
 - Phase 2 - description [auto-fire:on-prior-merge]
 - Phase 3 - description
@@ -77,14 +91,14 @@ Two formats are supported. Both are parsed by `_extract_sequential_phases` in `s
 
 Bullet-wrapped bold headings are also accepted, which is the common parent-brief style:
 
-```
+```markdown
 - **Phase 1 — description**: optional detail text.
 - **Phase 2 — design CLI `new|list|status` surface**: pipes in CLI prose are text, not child references.
 ```
 
 **Narrative bold-heading format (for prose-style decomposition plans):**
 
-```
+```markdown
 **Phase 1 — description [auto-fire:on-prior-merge]**
 Detailed implementation notes for Phase 1...
 

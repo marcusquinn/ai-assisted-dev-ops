@@ -45,6 +45,27 @@ assert_true() {
 # shellcheck disable=SC1090
 source "${SCRIPTS_DIR}/pulse-dep-graph.sh"
 
+_test_dep_identity_api() {
+	local endpoint="$1"
+	case "$endpoint" in
+	repos/owner/repo) printf 'R_owner_repo\n' ;;
+	repos/owner/repo/issues/20) printf '20\tI_20\n' ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+_test_render_args() {
+	local rendered=""
+	local arg=""
+	for arg in "$@"; do
+		[[ -z "$rendered" ]] || rendered="${rendered} "
+		rendered="${rendered}${arg}"
+	done
+	printf '%s' "$rendered"
+	return 0
+}
+
 acc='{"open_nums":[],"closed_nums":[],"known_nums":[],"task_to_issue":{},"blocked_by_map":{},"defer_flags_map":{}}'
 # shellcheck disable=SC2016  # Markdown backticks are literal fixture content.
 issue='{"number":20,"title":"t20: roadmap child","state":"OPEN","body":"**Blocked by:** `t20`, #20, #10","labels":[]}'
@@ -76,14 +97,15 @@ assert_eq "active lifecycle wins blocked available conflict" "in-review" "$(_pic
 status_write=""
 current_status="status:available"
 gh() {
-	if [[ "$1 $2" == "api repos/owner/repo" ]]; then
-		printf 'R_owner_repo\n'
-	elif [[ "$1 $2" == "issue view" && "$*" == *"--json id,number"* ]]; then
-		printf '{"id":"I_20","number":20}\n'
-	elif [[ "$1 $2" == "issue view" ]]; then
+	local command="$1"
+	local target="${2:-}"
+	if [[ "$command" == "api" ]]; then
+		_test_dep_identity_api "$target"
+		return $?
+	elif [[ "$command $target" == "issue view" ]]; then
 		printf '%s\n' "$current_status"
-	elif [[ "$1 $2" == "issue edit" ]]; then
-		status_write="$*"
+	elif [[ "$command $target" == "issue edit" ]]; then
+		status_write=$(_test_render_args "$@")
 		current_status="status:blocked"
 	fi
 	return 0
@@ -95,11 +117,12 @@ assert_eq "available issue normalized blocked" "issue edit 20 --repo owner/repo 
 status_write=""
 current_status="status:available,status:queued"
 gh() {
-	if [[ "$1 $2" == "api repos/owner/repo" ]]; then
-		printf 'R_owner_repo\n'
-	elif [[ "$1 $2" == "issue view" && "$*" == *"--json id,number"* ]]; then
-		printf '{"id":"I_20","number":20}\n'
-	elif [[ "$1 $2" == "issue view" ]]; then
+	local command="$1"
+	local target="${2:-}"
+	if [[ "$command" == "api" ]]; then
+		_test_dep_identity_api "$target"
+		return $?
+	elif [[ "$command $target" == "issue view" ]]; then
 		printf '%s\n' "$current_status"
 	fi
 	return 0
@@ -112,11 +135,12 @@ status_write=""
 view_counter_file="${TMP_ROOT}/view-count"
 printf '0\n' >"$view_counter_file"
 gh() {
-	if [[ "$1 $2" == "api repos/owner/repo" ]]; then
-		printf 'R_owner_repo\n'
-	elif [[ "$1 $2" == "issue view" && "$*" == *"--json id,number"* ]]; then
-		printf '{"id":"I_20","number":20}\n'
-	elif [[ "$1 $2" == "issue view" ]]; then
+	local command="$1"
+	local target="${2:-}"
+	if [[ "$command" == "api" ]]; then
+		_test_dep_identity_api "$target"
+		return $?
+	elif [[ "$command $target" == "issue view" ]]; then
 		local view_count=""
 		view_count=$(<"$view_counter_file")
 		view_count=$((view_count + 1))
@@ -126,8 +150,8 @@ gh() {
 		else
 			printf 'status:queued,status:blocked\n'
 		fi
-	elif [[ "$1 $2" == "issue edit" ]]; then
-		status_write="${status_write}${*}"$'\n'
+	elif [[ "$command $target" == "issue edit" ]]; then
+		status_write="${status_write}$(_test_render_args "$@")"$'\n'
 	fi
 	return 0
 }
@@ -158,6 +182,111 @@ source "${SCRIPTS_DIR}/issue-sync-lib-parse.sh"
 # shellcheck disable=SC1090
 source "${SCRIPTS_DIR}/issue-sync-relationships.sh"
 assert_true "concurrent native relationship write is idempotent" _gh_add_blocked_by "I_blocked" "I_blocker"
+
+dependency_status="status:available,auto-dispatch"
+dependency_status_writes=""
+gh() {
+	local command="$1"
+	local target="${2:-}"
+	if [[ "$command $target" == "issue view" ]]; then
+		printf '%s\n' "$dependency_status"
+	elif [[ "$command $target" == "issue edit" ]]; then
+		dependency_status_writes="${dependency_status_writes}$(_test_render_args "$@")"$'\n'
+		dependency_status="status:blocked,auto-dispatch"
+	fi
+	return 0
+}
+export -f gh
+assert_true "linked dependency moves available issue to blocked" \
+	_ensure_dependency_status_blocked "20" "owner/repo" "native_relationship_linked"
+assert_true "dependency status edit preserves auto-dispatch" \
+	grep -Fq -- "issue edit 20 --repo owner/repo --remove-label status:available --add-label status:blocked" \
+	<<<"$dependency_status_writes"
+assert_eq "auto-dispatch remains attached after dependency status edit" \
+	"status:blocked,auto-dispatch" "$dependency_status"
+
+dependency_status="status:available,status:in-progress,auto-dispatch"
+dependency_status_writes=""
+assert_true "active dependency lifecycle is left unchanged" \
+	_ensure_dependency_status_blocked "20" "owner/repo" "native_relationship_linked"
+assert_eq "active dependency lifecycle receives no status write" "" "$dependency_status_writes"
+
+_run_relationship_status_sync_cases() (
+	local dependency_status="status:available,auto-dispatch"
+	local dependency_status_writes=""
+	local cross_phase_rc=0
+
+	_relationship_deadline_expired() {
+		return 1
+	}
+	resolve_task_gh_number() {
+		local task_id="$1"
+		case "$task_id" in
+		t10) printf '10\n' ;;
+		t20) printf '20\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_relationship_edge_should_attempt() {
+		return 0
+	}
+	_cached_node_id() {
+		local issue_num="$1"
+		printf 'I_%s\n' "$issue_num"
+		return 0
+	}
+	_dependency_cycle_should_skip_edge() {
+		return 1
+	}
+	_gh_add_blocked_by() {
+		return 0
+	}
+	_relationship_record_outcome() {
+		return 0
+	}
+	gh() {
+		local command="$1"
+		local target="${2:-}"
+		if [[ "$command $target" == "issue view" ]]; then
+			printf '%s\n' "$dependency_status"
+		elif [[ "$command $target" == "issue edit" ]]; then
+			dependency_status_writes="${dependency_status_writes}$(_test_render_args "$@")"$'\n'
+			dependency_status="status:blocked,auto-dispatch"
+		fi
+		return 0
+	}
+	DRY_RUN="false"
+
+	_sync_declared_blocked_by_edges "t20" "/dev/null" "owner/repo" "20" "I_20" "t10" \
+		>"${TMP_ROOT}/direct-blocked-by.out"
+	printf '%s' "$dependency_status_writes" >"${TMP_ROOT}/direct-blocked-by-writes.out"
+
+	dependency_status="status:available,auto-dispatch"
+	dependency_status_writes=""
+	_sync_declared_blocks_edges "t10" "/dev/null" "owner/repo" "10" "I_10" "t20" \
+		>"${TMP_ROOT}/inverse-blocks.out"
+	printf '%s' "$dependency_status_writes" >"${TMP_ROOT}/inverse-blocks-writes.out"
+
+	dependency_status="status:available,auto-dispatch"
+	dependency_status_writes=""
+	_backfill_cross_phase_pair "20" "10" "I_20" "I_10" "owner/repo" || cross_phase_rc=$?
+	printf '%s' "$dependency_status_writes" >"${TMP_ROOT}/cross-phase-writes.out"
+	return "$cross_phase_rc"
+)
+
+relationship_sync_rc=0
+_run_relationship_status_sync_cases || relationship_sync_rc=$?
+assert_true "direct blocked-by sync normalizes the dependent issue" \
+	grep -Fq -- "issue edit 20 --repo owner/repo --remove-label status:available --add-label status:blocked" \
+	"${TMP_ROOT}/direct-blocked-by-writes.out"
+assert_true "inverse blocks sync normalizes the dependent issue" \
+	grep -Fq -- "issue edit 20 --repo owner/repo --remove-label status:available --add-label status:blocked" \
+	"${TMP_ROOT}/inverse-blocks-writes.out"
+assert_eq "cross-phase sync succeeds" "0" "$relationship_sync_rc"
+assert_true "cross-phase sync normalizes the dependent issue" \
+	grep -Fq -- "issue edit 20 --repo owner/repo --remove-label status:available --add-label status:blocked" \
+	"${TMP_ROOT}/cross-phase-writes.out"
 
 gh() {
 	if [[ "$*" == *"query("* ]]; then
@@ -318,11 +447,12 @@ status_write=""
 view_counter_file="${TMP_ROOT}/unblock-view-count"
 printf '0\n' >"$view_counter_file"
 gh() {
-	if [[ "$1 $2" == "api repos/owner/repo" ]]; then
-		printf 'R_owner_repo\n'
-	elif [[ "$1 $2" == "issue view" && "$*" == *"--json id,number"* ]]; then
-		printf '{"id":"I_20","number":20}\n'
-	elif [[ "$1 $2" == "issue view" ]]; then
+	local command="$1"
+	local target="${2:-}"
+	if [[ "$command" == "api" ]]; then
+		_test_dep_identity_api "$target"
+		return $?
+	elif [[ "$command $target" == "issue view" ]]; then
 		local view_count=""
 		view_count=$(<"$view_counter_file")
 		view_count=$((view_count + 1))
@@ -331,8 +461,8 @@ gh() {
 			1 | 2) printf 'status:blocked\n' ;;
 			*) printf 'status:queued,status:available\n' ;;
 		esac
-	elif [[ "$1 $2" == "issue edit" ]]; then
-		status_write="${status_write}${*}"$'\n'
+	elif [[ "$command $target" == "issue edit" ]]; then
+		status_write="${status_write}$(_test_render_args "$@")"$'\n'
 	fi
 	return 0
 }
