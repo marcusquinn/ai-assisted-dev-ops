@@ -23,11 +23,7 @@ from _knowledge_social_reddit_read_contract import (
     identity_value,
     observed_at,
 )
-from _knowledge_social_reddit_read_routes import (
-    LISTING_STREAMS,
-    SNAPSHOT_STREAMS,
-    page as read_page,
-)
+from _knowledge_social_reddit_read_routes import page as read_page
 
 MAX_REQUEST_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024

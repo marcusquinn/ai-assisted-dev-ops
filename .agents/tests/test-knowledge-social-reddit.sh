@@ -129,9 +129,10 @@ from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
 from _knowledge_social_reddit import STREAMS
-from _knowledge_social_reddit_read_provider import LISTING_STREAMS, SNAPSHOT_STREAMS
 from _knowledge_social_reddit_read_routes import (
+    LISTING_STREAMS,
     ProviderPageRequest,
+    SNAPSHOT_STREAMS,
     _listing_generator,
     _snapshot_values,
 )
