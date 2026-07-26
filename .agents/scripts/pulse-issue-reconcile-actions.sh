@@ -90,12 +90,18 @@ _fetch_subissue_numbers() {
 	# reconciler close parents before the tail children are checked.
 	# The jq filter returns `PAGINATED` (non-numeric) when hasNextPage=true,
 	# which the caller treats as "empty" → falls back to body regex.
-	local graphql_result
+	local graphql_response="" graphql_result="" reported_cost=""
 	# shellcheck disable=SC2016  # GraphQL variable markers ($owner/$name/$number) are intentional literals, not bash expansions
-	graphql_result=$(gh api graphql \
-		-f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:50){nodes{number state}pageInfo{hasNextPage}}}}}' \
+	graphql_response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_ROUTE_DECISION="pulse-subissues-exact-cost" \
+		gh api graphql \
+		-f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:50){nodes{number state}pageInfo{hasNextPage}}}}rateLimit{cost}}' \
 		-F "owner=$owner" -F "name=$name" -F "number=$issue_num" \
-		--jq 'if (.data.repository.issue.subIssues.pageInfo.hasNextPage // false) then "PAGINATED" else (.data.repository.issue.subIssues.nodes // [] | .[] | .number) end' 2>/dev/null) || return 0
+		2>/dev/null) || return 0
+	reported_cost=$(printf '%s' "$graphql_response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 0
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 0
+	graphql_result=$(printf '%s' "$graphql_response" | jq -r \
+		'if (.data.repository.issue.subIssues.pageInfo.hasNextPage // false) then "PAGINATED" else (.data.repository.issue.subIssues.nodes // [] | .[] | .number) end' \
+		2>/dev/null) || return 0
 
 	# Fail-closed guard: if hasNextPage, pretend we got nothing so the
 	# caller falls back to body regex (where pagination is not an issue).

@@ -344,7 +344,8 @@ _pmp_update_branch_rest() {
 			"$pr_number" "$repo_slug" >&2
 		return 2
 	fi
-	AIDEVOPS_GH_ROUTE_DECISION="pulse-update-branch-rest" \
+	AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-update-branch-rest" \
 		_pmrs_gh_call write gh api --method PUT "repos/${repo_slug}/pulls/${pr_number}/update-branch" \
 			-f expected_head_sha="$expected_head_sha"
 	return $?

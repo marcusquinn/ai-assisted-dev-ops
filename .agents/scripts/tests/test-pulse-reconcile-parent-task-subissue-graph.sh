@@ -73,25 +73,36 @@ case "$1" in
 	api)
 		shift
 		if [[ "${1:-}" == "graphql" ]]; then
+			printf 'graphql-cost-from-response=%s\n' "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" >>"${GH_CALLS}"
 			# Per-scenario override: non-zero exit simulates a GraphQL
 			# failure (auth, rate-limit, network). The helper under test
 			# must treat this as empty and fall back to body regex.
 			if [[ -n "${GH_GRAPHQL_EXIT_CODE:-}" ]]; then
 				exit "${GH_GRAPHQL_EXIT_CODE}"
 			fi
-			# Per-scenario override: hasNextPage=true makes the helper's
-			# jq filter emit "PAGINATED" which the helper maps to empty →
-			# body-regex fallback (fail-closed on partial child lists).
-			if [[ "${GH_GRAPHQL_HAS_NEXT_PAGE:-false}" == "true" ]]; then
-				printf '%s\n' "PAGINATED"
-				exit 0
-			fi
-			# Emit the subIssues nodes list. Matches the jq filter
-			# `.data.repository.issue.subIssues.nodes // [] | .[] | .number`
-			# that the helper uses to pull numbers.
+			# Emit the raw GraphQL envelope. Production retains this shape until
+			# response-owned rateLimit.cost is metered and validated, then projects
+			# child numbers locally.
+			_nodes='[]'
 			if [[ -f "${TEST_ROOT}/gh-subissues.json" ]]; then
-				jq '.[] | .number' "${TEST_ROOT}/gh-subissues.json" 2>/dev/null
+				_nodes=$(jq -c '.' "${TEST_ROOT}/gh-subissues.json" 2>/dev/null) || _nodes='[]'
 			fi
+			_has_next="${GH_GRAPHQL_HAS_NEXT_PAGE:-false}"
+			case "${GH_GRAPHQL_COST:-1}" in
+			missing)
+				jq -cn --argjson nodes "$_nodes" --argjson has_next "$_has_next" \
+					'{data:{repository:{issue:{subIssues:{nodes:$nodes,pageInfo:{hasNextPage:$has_next}}}}}}'
+				;;
+			malformed)
+				jq -cn --argjson nodes "$_nodes" --argjson has_next "$_has_next" \
+					'{data:{repository:{issue:{subIssues:{nodes:$nodes,pageInfo:{hasNextPage:$has_next}}}},rateLimit:{cost:"invalid"}}}'
+				;;
+			*)
+				jq -cn --argjson nodes "$_nodes" --argjson has_next "$_has_next" \
+					--argjson cost "${GH_GRAPHQL_COST:-1}" \
+					'{data:{repository:{issue:{subIssues:{nodes:$nodes,pageInfo:{hasNextPage:$has_next}}}},rateLimit:{cost:$cost}}}'
+				;;
+			esac
 			exit 0
 		fi
 		# `gh api repos/X/Y/issues/N --jq '.state // "unknown"'` or `--jq '.title // ""'`
@@ -194,6 +205,7 @@ reset_scenario() {
 	: >"$LOGFILE"
 	rm -f "${TEST_ROOT}/gh-subissues.json" "${TEST_ROOT}/gh-child-states.env" \
 		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"
+	return 0
 }
 
 set_parent_list() {
@@ -201,6 +213,7 @@ set_parent_list() {
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
 		'[{number:$n, title:$t, body:$b}]' >"${TEST_ROOT}/gh-issue-list.json"
+	return 0
 }
 
 set_closed_parent_list() {
@@ -225,6 +238,7 @@ set_subissues() {
 	done
 	json+="]"
 	printf '%s\n' "$json" >"${TEST_ROOT}/gh-subissues.json"
+	return 0
 }
 
 set_child_states() {
@@ -237,6 +251,7 @@ set_child_states() {
 			echo "ISSUE_${num}_TITLE=${title}"
 		} >>"${TEST_ROOT}/gh-child-states.env"
 	done
+	return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -360,6 +375,34 @@ if grep -q "api graphql" "$GH_CALLS"; then
 else
 	print_result "graph query is always attempted first" 1 \
 		"(expected 'api graphql' invocation; calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
+fi
+
+if grep -q 'graphql-cost-from-response=1' "$GH_CALLS" \
+	&& grep -q 'rateLimit{cost}' "$GH_CALLS"; then
+	print_result "graph query carries response-owned quota cost through projection" 0
+else
+	print_result "graph query carries response-owned quota cost through projection" 1 \
+		"(expected metering env and rateLimit field; calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
+fi
+
+# Missing or malformed response-owned cost must fail closed before child-number
+# projection. The parent reconciler will then use its legacy body fallback.
+reset_scenario
+set_subissues "910:CLOSED"
+missing_cost_result=$(GH_GRAPHQL_COST=missing _fetch_subissue_numbers "test/repo" "909")
+if [[ -z "$missing_cost_result" ]]; then
+	print_result "missing GraphQL rateLimit.cost blocks projected child output" 0
+else
+	print_result "missing GraphQL rateLimit.cost blocks projected child output" 1 \
+		"(unexpected output: ${missing_cost_result})"
+fi
+
+malformed_cost_result=$(GH_GRAPHQL_COST=malformed _fetch_subissue_numbers "test/repo" "909")
+if [[ -z "$malformed_cost_result" ]]; then
+	print_result "malformed GraphQL rateLimit.cost blocks projected child output" 0
+else
+	print_result "malformed GraphQL rateLimit.cost blocks projected child output" 1 \
+		"(unexpected output: ${malformed_cost_result})"
 fi
 
 # -----------------------------------------------------------------------------

@@ -1357,7 +1357,9 @@ _required_contexts_for_default_branch_uncached() {
 	# intentionally-unprotected default branches and blocking the worker-
 	# briefed merge cascade.
 	local protection_resp="" _rc_exit=0
-	protection_resp=$(gh api \
+	protection_resp=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-branch-protection-required-contexts-rest" \
+		gh api \
 		"repos/${repo_slug}/branches/${default_branch}/protection/required_status_checks" \
 		2>&1)
 	_rc_exit=$?

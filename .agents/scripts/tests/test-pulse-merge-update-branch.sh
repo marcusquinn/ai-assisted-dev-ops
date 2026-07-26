@@ -38,6 +38,7 @@ TESTS_RUN=0
 TESTS_FAILED=0
 TEST_ROOT=""
 LAST_GH_ARGS_FILE=""
+LAST_GH_QUOTA_FILE=""
 
 print_result() {
 	local test_name="$1"
@@ -65,8 +66,10 @@ setup_test_env() {
 	export LOGFILE="${TEST_ROOT}/pulse.log"
 	: >"$LOGFILE"
 	LAST_GH_ARGS_FILE="${TEST_ROOT}/gh-args.log"
-	export LAST_GH_ARGS_FILE
+	LAST_GH_QUOTA_FILE="${TEST_ROOT}/gh-quota.log"
+	export LAST_GH_ARGS_FILE LAST_GH_QUOTA_FILE
 	: >"$LAST_GH_ARGS_FILE"
+	: >"$LAST_GH_QUOTA_FILE"
 	return 0
 }
 
@@ -88,6 +91,11 @@ install_gh_stub() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${LAST_GH_ARGS_FILE}"
 if [[ "${1:-}" == "api" && "${2:-}" == "--method" && "${3:-}" == "PUT" && "${4:-}" == repos/*/pulls/*/update-branch ]]; then
+	printf '%s|%s|%s\n' "${AIDEVOPS_GH_QUOTA_COST:-}" \
+		"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >>"${LAST_GH_QUOTA_FILE}"
+	if [[ -n "${GH_UB_STATUS:-}" ]]; then
+		printf 'gh: HTTP %s: update branch rejected\n' "$GH_UB_STATUS" >&2
+	fi
 	exit "${GH_UB_EXIT:-0}"
 fi
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
@@ -192,6 +200,24 @@ test_update_branch_failure_returns_one() {
 	fi
 
 	print_result "update-branch failure → return 1" 0
+	return 0
+}
+
+test_update_branch_http_422_records_known_cost() {
+	install_gh_stub
+	: >"$LAST_GH_QUOTA_FILE"
+	local rc=0
+	GH_UB_EXIT=1 GH_UB_STATUS=422 \
+		_pmp_update_branch_rest "19094" "marcusquinn/aidevops" "fedcba9876543210" \
+		>/dev/null 2>&1 || rc=$?
+
+	local expected="1|pulse-update-branch-rest|api --method PUT repos/marcusquinn/aidevops/pulls/19094/update-branch -f expected_head_sha=fedcba9876543210"
+	if [[ "$rc" -eq 1 ]] && grep -Fqx "$expected" "$LAST_GH_QUOTA_FILE"; then
+		print_result "update-branch HTTP 422 carries explicit one-request cost" 0
+	else
+		print_result "update-branch HTTP 422 carries explicit one-request cost" 1 \
+			"rc=${rc}; quota=$(cat "$LAST_GH_QUOTA_FILE")"
+	fi
 	return 0
 }
 
@@ -571,6 +597,7 @@ main() {
 	test_update_branch_success_returns_zero
 	test_update_branch_missing_head_fails_before_write
 	test_update_branch_failure_returns_one
+	test_update_branch_http_422_records_known_cost
 	test_update_branch_tags_log_with_task_id
 	test_resolve_mergeable_retries_unknown
 	test_resolve_mergeable_accepts_boolean_true

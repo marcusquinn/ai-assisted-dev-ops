@@ -44,6 +44,40 @@ _PULSE_MERGE_GATES_LOADED=1
 # --- Functions ---
 
 #######################################
+# Read PR conversation comments through the issue-comments REST endpoint.
+# Native `gh pr view --json comments` is GraphQL-only and cannot return its
+# operation-owned cost, so exact-attribution Pulse paths use bounded REST pages.
+# Args: $1=pr_number, $2=repo_slug
+# Output: newline-delimited comment bodies
+#######################################
+_pulse_merge_pr_comment_bodies_rest() {
+	local pr_number="$1"
+	local repo_slug="$2"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-pr-comments-rest" \
+		gh api --paginate "repos/${repo_slug}/issues/${pr_number}/comments?per_page=100" \
+			--jq '.[].body'
+	return $?
+}
+
+#######################################
+# Read PR changed-file paths through the pull-files REST endpoint.
+# Args: $1=pr_number, $2=repo_slug
+# Output: newline-delimited paths
+#######################################
+_pulse_merge_pr_file_paths_rest() {
+	local pr_number="$1"
+	local repo_slug="$2"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-pr-files-rest" \
+		gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
+			--jq '.[].filename'
+	return $?
+}
+
+#######################################
 # Confirm PR gate helpers may write GitHub issue/PR state for this repo.
 # #aidevops:trust-boundary — contributor/read-only repos are external
 # observation targets. Pulse must never comment, label, close, approve, or
@@ -282,7 +316,7 @@ check_external_contributor_pr() {
 
 	# Step 2: Check for existing comment
 	local comment_output
-	comment_output=$(gh pr view "$pr_number" --repo "$repo_slug" --json comments --jq '.comments[].body')
+	comment_output=$(_pulse_merge_pr_comment_bodies_rest "$pr_number" "$repo_slug")
 	local comment_exit=$?
 
 	local has_comment=false
@@ -620,7 +654,7 @@ check_permission_failure_pr() {
 
 	# Check for existing permission-failure comment (fail closed on API error)
 	local perm_comments
-	perm_comments=$(gh pr view "$pr_number" --repo "$repo_slug" --json comments --jq '.comments[].body')
+	perm_comments=$(_pulse_merge_pr_comment_bodies_rest "$pr_number" "$repo_slug")
 	local perm_exit=$?
 
 	if [[ $perm_exit -ne 0 ]]; then
@@ -846,7 +880,7 @@ check_pr_modifies_workflows() {
 	fi
 
 	local files_output
-	files_output=$(gh pr view "$pr_number" --repo "$repo_slug" --json files --jq '.files[].path')
+	files_output=$(_pulse_merge_pr_file_paths_rest "$pr_number" "$repo_slug")
 	local files_exit=$?
 
 	if [[ $files_exit -ne 0 ]]; then
@@ -953,7 +987,7 @@ check_workflow_merge_guard() {
 
 	# Step 3: PR modifies workflows AND token lacks scope — check for existing comment
 	local comments_output
-	comments_output=$(gh pr view "$pr_number" --repo "$repo_slug" --json comments --jq '.comments[].body')
+	comments_output=$(_pulse_merge_pr_comment_bodies_rest "$pr_number" "$repo_slug")
 	local comments_exit=$?
 
 	if [[ $comments_exit -ne 0 ]]; then

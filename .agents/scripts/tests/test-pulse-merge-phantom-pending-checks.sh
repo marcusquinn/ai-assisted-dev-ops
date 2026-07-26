@@ -94,12 +94,14 @@ setup_test_env() {
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
 	export GH_CALL_LOG="${TEST_ROOT}/gh-calls.log"
+	export GH_QUOTA_LOG="${TEST_ROOT}/gh-quota.log"
 	export MOCK_REPO_MODE="ok"
 	export MOCK_BP_MODE="three_required"
 	export MOCK_RULESETS_MODE="none"
 	export MOCK_ROLLUP_MODE="all_required_pass"
 	: >"$LOGFILE"
 	: >"$GH_CALL_LOG"
+	: >"$GH_QUOTA_LOG"
 
 	cat >"${TEST_ROOT}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -216,6 +218,8 @@ fi
 
 # Match: gh api repos/SLUG/branches/BRANCH/protection/required_status_checks
 if [[ "$1" == "api" && "$*" == *"protection/required_status_checks"* ]]; then
+	printf '%s|%s\n' "${AIDEVOPS_GH_QUOTA_COST:-}" \
+		"${AIDEVOPS_GH_ROUTE_DECISION:-}" >>"${GH_QUOTA_LOG}"
 	local_json=""
 	case "${MOCK_BP_MODE:-three_required}" in
 	three_required)
@@ -436,6 +440,7 @@ assert_log_contains() {
 reset_logs() {
 	: >"$LOGFILE"
 	: >"$GH_CALL_LOG"
+	: >"$GH_QUOTA_LOG"
 	export MOCK_REPO_MODE="ok"
 	export MOCK_BP_MODE="three_required"
 	export MOCK_RULESETS_MODE="none"
@@ -520,6 +525,12 @@ test_rulesets_required_on_branch_protection_404_block() {
 		"rulesets_404_block: ruleset context logged"
 	assert_log_contains "required context(s) not passing" \
 		"rulesets_404_block: block message logged"
+	if grep -Fqx '1|pulse-branch-protection-required-contexts-rest' "$GH_QUOTA_LOG"; then
+		print_result "branch protection HTTP 404 carries explicit one-request cost" 0
+	else
+		print_result "branch protection HTTP 404 carries explicit one-request cost" 1 \
+			"quota log: $(cat "$GH_QUOTA_LOG")"
+	fi
 	return 0
 }
 
