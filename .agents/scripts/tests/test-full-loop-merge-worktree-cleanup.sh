@@ -9,6 +9,9 @@ AGENTS_SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TEST_ROOT=""
 FIXTURE_GIT_BIN=""
+GH_PR_HEAD_REF=""
+GH_PR_HEAD_OID=""
+GH_PR_HEAD_REPO=""
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -58,8 +61,10 @@ gh() {
 			printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-11T00:00:00Z","mergeCommit":{"oid":"merge123"}}'
 			return 0
 		fi
-		if [[ "$args" == *"headRefName"* ]]; then
-			printf '%s\n' "feature/full-loop-cleanup"
+		if [[ "$args" == *"headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+			jq -cn --arg head_ref "$GH_PR_HEAD_REF" --arg head_oid "$GH_PR_HEAD_OID" \
+				--arg head_repo "$GH_PR_HEAD_REPO" \
+				'{headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
 			return 0
 		fi
 		if [[ "$args" == *"body"* ]]; then
@@ -209,6 +214,9 @@ TRASH
 	git -C "$canonical_repo" remote add origin "$origin_repo"
 	git -C "$canonical_repo" push -q -u origin main
 	git -C "$canonical_repo" worktree add -q "$worktree_path" -b feature/full-loop-cleanup
+	GH_PR_HEAD_REF="feature/full-loop-cleanup"
+	GH_PR_HEAD_OID=$(git -C "$worktree_path" rev-parse HEAD)
+	GH_PR_HEAD_REPO="example/repo"
 	git -C "$canonical_repo" checkout -q -b feature/active
 	git clone -q "$origin_repo" "$updater_repo"
 	git -C "$updater_repo" config user.email test@example.invalid
@@ -225,6 +233,14 @@ TRASH
 	# shellcheck source=../full-loop-helper-merge.sh
 	source "${AGENTS_SCRIPTS_DIR}/full-loop-helper-merge.sh"
 	install_subject_stubs
+	return 0
+}
+
+configure_alias_repo_identity() {
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	local alias_branch="$1"
+	git -C "$worktree_path" branch -m "$alias_branch"
+	git -C "$worktree_path" remote add pr-head "https://github.com/${GH_PR_HEAD_REPO}.git"
 	return 0
 }
 
@@ -267,6 +283,113 @@ test_cmd_merge_defers_current_linked_worktree() {
 	# still use this logical project directory.
 	if [[ "$(git -C "$canonical_repo" rev-parse main)" == "$remote_main" ]]; then rc=1; fi
 	print_result "cmd_merge persists external deferred-cleanup ownership" "$rc"
+	return 0
+}
+
+test_cmd_merge_defers_exact_head_alias_worktree() {
+	setup_subject
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	local alias_branch="bugfix/repair-pr-head"
+	configure_alias_repo_identity "$alias_branch"
+	local receipt_worktree=""
+	receipt_worktree=$(git -C "$worktree_path" rev-parse --show-toplevel)
+
+	local cleanup_plan=""
+	cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo") || true
+	local planned_worktree="" planned_branch="" canonical_dir="" delete_remote_branch=""
+	IFS=$'\t' read -r planned_worktree planned_branch canonical_dir delete_remote_branch <<<"$cleanup_plan"
+	cmd_merge "123" "example/repo" --squash
+
+	local rc=0
+	local receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	[[ "$planned_worktree" == "$receipt_worktree" ]] || rc=1
+	[[ "$planned_branch" == "$alias_branch" ]] || rc=1
+	[[ -n "$canonical_dir" ]] || rc=1
+	[[ "$delete_remote_branch" == "0" ]] || rc=1
+	[[ -f "$receipt_path" ]] || rc=1
+	jq -e --arg worktree "$receipt_worktree" --arg branch "$alias_branch" '
+		.resource_cleanup_state == "CLEANUP_DEFERRED"
+		and .executor_completion_state == "FINALIZATION_PENDING"
+		and .worktree == $worktree and .branch == $branch
+	' "$receipt_path" >/dev/null || rc=1
+	print_result "exact-head repair alias persists its actual local cleanup target" "$rc"
+	return 0
+}
+
+test_cleanup_plan_rejects_head_drift() {
+	setup_subject
+	GH_PR_HEAD_OID="0000000000000000000000000000000000000000"
+	local cleanup_plan=""
+	local rc=0
+	if cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo"); then rc=1; fi
+	[[ -z "$cleanup_plan" ]] || rc=1
+	print_result "cleanup plan rejects PR head drift" "$rc"
+	return 0
+}
+
+test_cleanup_plan_rejects_detached_checkout() {
+	setup_subject
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	git -C "$worktree_path" checkout -q --detach
+	local cleanup_plan=""
+	local rc=0
+	if cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo"); then rc=1; fi
+	[[ -z "$cleanup_plan" ]] || rc=1
+	print_result "cleanup plan rejects detached checkout" "$rc"
+	return 0
+}
+
+test_cleanup_plan_rejects_canonical_checkout() {
+	setup_subject
+	local canonical_repo="${TEST_ROOT}/repo"
+	cd "$canonical_repo"
+	GH_PR_HEAD_REF="feature/active"
+	GH_PR_HEAD_OID=$(git rev-parse HEAD)
+	local cleanup_plan=""
+	local rc=0
+	if cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo"); then rc=1; fi
+	[[ -z "$cleanup_plan" ]] || rc=1
+	print_result "cleanup plan rejects canonical checkout" "$rc"
+	return 0
+}
+
+test_cleanup_plan_rejects_unrelated_same_content_branch() {
+	setup_subject
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	git -C "$worktree_path" branch -m "bugfix/unrelated-same-content"
+	git -C "$worktree_path" remote add unrelated "https://github.com/other/repository.git"
+	local cleanup_plan=""
+	local rc=0
+	if cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo"); then rc=1; fi
+	[[ -z "$cleanup_plan" ]] || rc=1
+	print_result "cleanup plan rejects unrelated same-content branch" "$rc"
+	return 0
+}
+
+test_cleanup_plan_rejects_ambiguous_alias_repository() {
+	setup_subject
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	configure_alias_repo_identity "bugfix/ambiguous-repository"
+	git -C "$worktree_path" remote add other-head "https://github.com/other/repository.git"
+	local cleanup_plan=""
+	local rc=0
+	if cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "123" "example/repo"); then rc=1; fi
+	[[ -z "$cleanup_plan" ]] || rc=1
+	print_result "cleanup plan rejects ambiguous alias repository identity" "$rc"
+	return 0
+}
+
+test_worktree_metadata_match_rejects_missing_record() {
+	setup_subject
+	local current_root=""
+	local current_head=""
+	local porcelain=""
+	current_root=$(git rev-parse --show-toplevel)
+	current_head=$(git rev-parse HEAD)
+	porcelain=$(printf 'worktree %s\nHEAD %s\nbranch refs/heads/main\n' "${TEST_ROOT}/unrelated" "$current_head")
+	local rc=0
+	if _merge_worktree_record_matches "$porcelain" "$current_root" "feature/full-loop-cleanup" "$current_head"; then rc=1; fi
+	print_result "cleanup plan rejects missing current-worktree metadata" "$rc"
 	return 0
 }
 
@@ -338,6 +461,13 @@ main() {
 	test_refresh_canonical_reports_pending_without_mutation
 	test_cmd_merge_defers_current_linked_worktree
 	test_cmd_merge_defers_cleanup_for_live_process_cwd
+	test_cmd_merge_defers_exact_head_alias_worktree
+	test_cleanup_plan_rejects_head_drift
+	test_cleanup_plan_rejects_detached_checkout
+	test_cleanup_plan_rejects_canonical_checkout
+	test_cleanup_plan_rejects_unrelated_same_content_branch
+	test_cleanup_plan_rejects_ambiguous_alias_repository
+	test_worktree_metadata_match_rejects_missing_record
 	printf '\n%d/%d tests passed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN"
 	[[ "$TESTS_FAILED" -eq 0 ]] || return 1
 	return 0

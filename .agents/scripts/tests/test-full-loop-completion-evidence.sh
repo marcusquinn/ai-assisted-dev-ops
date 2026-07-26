@@ -14,6 +14,14 @@ cleanup_receipt_dir="${ROOT}/cleanup-receipts"
 
 cat >"${ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$*" == *"headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+	jq -cn \
+		--arg head_ref "${COMPLETION_PR_HEAD_REF:-}" \
+		--arg head_oid "${COMPLETION_PR_HEAD_OID:-}" \
+		--arg head_repo "${COMPLETION_PR_HEAD_REPO:-}" \
+		'{headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
+	exit 0
+fi
 call_count=1
 if [[ -n "${COMPLETION_PR_STATE_CALLS:-}" ]]; then
 	[[ -f "$COMPLETION_PR_STATE_CALLS" ]] && call_count=$(( $(<"$COMPLETION_PR_STATE_CALLS") + 1 ))
@@ -139,6 +147,64 @@ jq -e '.executor_completion_state == "COMPLETE" and .release_status == "not-requ
 AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
 	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$finalize_runner" 42 marcusquinn/aidevops >/dev/null
 printf 'PASS direct merge-only receipt finalizes idempotently without local lifecycle state\n'
+
+alias_canonical="${ROOT}/alias-canonical"
+alias_worktree="${ROOT}/alias-worktree"
+alias_branch="bugfix/repair-pr-head"
+alias_pr_head="feature/original-pr-head"
+alias_repo="marcusquinn/aidevops"
+fixture_git="${AIDEVOPS_TEST_GIT_BIN:-$(command -p -v git)}"
+mkdir -p "$alias_canonical"
+"$fixture_git" -C "$alias_canonical" init -q -b main
+"$fixture_git" -C "$alias_canonical" config user.email test@example.invalid
+"$fixture_git" -C "$alias_canonical" config user.name 'Aidevops Test'
+"$fixture_git" -C "$alias_canonical" config commit.gpgsign false
+printf 'alias fixture\n' >"${alias_canonical}/README.md"
+"$fixture_git" -C "$alias_canonical" add README.md
+"$fixture_git" -C "$alias_canonical" commit -q -m 'init alias fixture'
+"$fixture_git" -C "$alias_canonical" worktree add -q "$alias_worktree" -b "$alias_branch"
+alias_head=$("$fixture_git" -C "$alias_worktree" rev-parse HEAD)
+"$fixture_git" -C "$alias_worktree" remote add pr-head "https://github.com/${alias_repo}.git"
+
+alias_receipt_runner="${ROOT}/alias-receipt-runner.sh"
+cat >"$alias_receipt_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-merge.sh'
+cd "\$1"
+cleanup_plan=\$(_merge_fresh_worktree_cleanup_plan "\$2" "\$3")
+[[ -n "\$cleanup_plan" ]]
+_merge_record_deferred_cleanup_owner "\$2" "\$3" "\$cleanup_plan"
+RUNNER
+chmod +x "$alias_receipt_runner"
+
+COMPLETION_PR_HEAD_REF="$alias_pr_head" \
+	COMPLETION_PR_HEAD_OID="$alias_head" \
+	COMPLETION_PR_HEAD_REPO="$alias_repo" \
+	AIDEVOPS_SESSION_ID=completion-alias \
+	AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$alias_receipt_runner" "$alias_worktree" 43 "$alias_repo" >/dev/null
+alias_receipt="${cleanup_receipt_dir}/marcusquinn_aidevops-43.json"
+jq -e --arg branch "$alias_branch" '
+	.executor_completion_state == "FINALIZATION_PENDING"
+	and .resource_cleanup_state == "CLEANUP_DEFERRED"
+	and .branch == $branch
+' "$alias_receipt" >/dev/null
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$record_runner" 43 "$alias_repo" >/dev/null
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$finalize_runner" 43 "$alias_repo" >/dev/null
+jq -e --arg branch "$alias_branch" '
+	.executor_completion_state == "COMPLETE"
+	and .resource_cleanup_state == "CLEANUP_DEFERRED"
+	and .release_status == "not-requested"
+	and .branch == $branch
+' "$alias_receipt" >/dev/null
+printf 'PASS exact-head alias receipt flows through record-no-release and finalize-receipt without reconstruction\n'
 
 cp "$direct_receipt" "${ROOT}/direct-receipt-before.json"
 if COMPLETION_PR_STATE=OPEN AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \

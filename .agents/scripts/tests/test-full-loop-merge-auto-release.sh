@@ -18,13 +18,14 @@
 #   from both merge paths.
 #
 # Tests:
-#   1. Happy path: stamp exists + origin:interactive label → release called,
-#      stamp removed by the mocked helper.
-#   2. No-op: origin:worker label (not origin:interactive) → stamp untouched.
+#   1. Happy path: matching stamp exists → release + unassign called and stamp
+#      removed by the mocked helper.
+#   2. Takeover path: origin:worker provenance + matching stamp → release called.
 #   3. No-op: linked_issue empty → stamp untouched, no API calls.
-#   4. No-op: stamp file absent → release NOT called.
+#   4. No-op: worker PR stamp absent → release NOT called.
 #   5. Idempotency: calling release twice on same issue → second call is no-op.
 #   6. Backward compat: underscore-prefixed alias works identically.
+#   7. Mismatched stamp payloads fail closed.
 #
 # Strategy:
 #   Sources shared-claim-lifecycle.sh directly (the real extraction target).
@@ -90,7 +91,7 @@ cat >"$FAKE_ISC" <<'FAKE_EOF'
 action="$1"
 issue="$2"
 slug="$3"
-printf '%s %s %s\n' "$action" "$issue" "$slug" >>"${RELEASE_CALLS}"
+printf '%s\n' "$*" >>"${RELEASE_CALLS}"
 if [[ "$action" == "release" ]]; then
 	stamp="${CLAIM_STAMP_DIR}/${slug//\//-}-${issue}.json"
 	rm -f "$stamp"
@@ -103,6 +104,15 @@ AGENTS_DIR="${TMP}/agents"
 mkdir -p "${AGENTS_DIR}/scripts"
 cp "$FAKE_ISC" "${AGENTS_DIR}/scripts/interactive-session-helper.sh"
 export AGENTS_DIR
+
+write_stamp() {
+	local stamp_file="$1"
+	local issue="$2"
+	local slug="$3"
+	jq -cn --argjson issue "$issue" --arg slug "$slug" \
+		'{issue:$issue,slug:$slug,pid:1234}' >"$stamp_file"
+	return 0
+}
 
 # =============================================================================
 # gh stub — returns controlled label/body output for pr view queries
@@ -154,7 +164,7 @@ printf '%sRunning shared-claim-lifecycle / full-loop merge auto-release tests (t
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8801.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8801" "marcusquinn/aidevops"
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
 release_interactive_claim_on_merge "50" "marcusquinn/aidevops" "8801"
@@ -164,6 +174,13 @@ if grep -q "release 8801 marcusquinn/aidevops" "$RELEASE_CALLS" 2>/dev/null; the
 else
 	fail "happy path: release called for origin:interactive PR with stamp" \
 		"expected 'release 8801 marcusquinn/aidevops' in release calls — got: $(cat "$RELEASE_CALLS" 2>/dev/null || printf '(empty)')"
+fi
+
+if grep -q -- "release 8801 marcusquinn/aidevops --unassign" "$RELEASE_CALLS" 2>/dev/null; then
+	pass "happy path: release requests assignee cleanup"
+else
+	fail "happy path: release requests assignee cleanup" \
+		"expected --unassign in release call — got: $(cat "$RELEASE_CALLS" 2>/dev/null || printf '(empty)')"
 fi
 
 if [[ ! -f "$STAMP" ]]; then
@@ -181,29 +198,29 @@ else
 fi
 
 # =============================================================================
-# Test 2 — No-op: origin:worker label (not origin:interactive) → stamp untouched
+# Test 2 — Worker provenance with a matching interactive takeover stamp → release
 # =============================================================================
 : >"$GH_CALLS"
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8802.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8802" "marcusquinn/aidevops"
 GH_LABELS_RESPONSE="origin:worker,tier:standard"
 
-release_interactive_claim_on_merge "51" "marcusquinn/aidevops" "8802"
+release_interactive_claim_on_merge "51" "marcusquinn/aidevops" "8802" "origin:worker,tier:standard"
 
-if [[ -f "$STAMP" ]]; then
-	pass "no origin:interactive label → stamp untouched"
+if [[ ! -f "$STAMP" ]]; then
+	pass "origin:worker takeover → matching stamp released"
 else
-	fail "no origin:interactive label → stamp untouched" \
-		"stamp was removed when origin:interactive label was absent"
+	fail "origin:worker takeover → matching stamp released" \
+		"matching takeover stamp was not removed"
 fi
 
-if ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
-	pass "no origin:interactive label → release NOT called"
+if grep -q "release 8802 marcusquinn/aidevops --unassign" "$RELEASE_CALLS" 2>/dev/null; then
+	pass "origin:worker takeover → release and unassign called"
 else
-	fail "no origin:interactive label → release NOT called" \
-		"release was called when origin:interactive label was absent"
+	fail "origin:worker takeover → release and unassign called" \
+		"release was not called for the matching takeover stamp"
 fi
 
 # =============================================================================
@@ -219,7 +236,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8803.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8803" "marcusquinn/aidevops"
 GH_BODY_RESPONSE=""
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
@@ -240,22 +257,22 @@ else
 fi
 
 # =============================================================================
-# Test 4 — No-op: stamp file absent → release NOT called
+# Test 4 — No-op: worker PR without a takeover stamp → release NOT called
 # =============================================================================
 : >"$GH_CALLS"
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 MISSING_STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8804.json"
 rm -f "$MISSING_STAMP"
-GH_LABELS_RESPONSE="origin:interactive,tier:standard"
+GH_LABELS_RESPONSE="origin:worker,tier:standard"
 
-release_interactive_claim_on_merge "53" "marcusquinn/aidevops" "8804"
+release_interactive_claim_on_merge "53" "marcusquinn/aidevops" "8804" "origin:worker,tier:standard"
 
 if ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
-	pass "no stamp file → release NOT called"
+	pass "unstamped worker PR → release NOT called"
 else
-	fail "no stamp file → release NOT called" \
-		"release was called when no stamp file existed"
+	fail "unstamped worker PR → release NOT called" \
+		"release was called when no takeover stamp existed"
 fi
 
 # =============================================================================
@@ -265,7 +282,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8805.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8805" "marcusquinn/aidevops"
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
 release_interactive_claim_on_merge "54" "marcusquinn/aidevops" "8805"
@@ -287,7 +304,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8806.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8806" "marcusquinn/aidevops"
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
 _release_interactive_claim_on_merge "55" "marcusquinn/aidevops" "8806"
@@ -314,7 +331,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8807.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8807" "marcusquinn/aidevops"
 GH_BODY_RESPONSE="Planning pass for t2809. Ref #8807 — keeps issue open until all phases merge."
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
@@ -342,7 +359,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8808.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8808" "marcusquinn/aidevops"
 GH_BODY_RESPONSE="For #8808 — planning-only PR per parent-task keyword rule."
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
@@ -370,7 +387,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8809.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8809" "marcusquinn/aidevops"
 GH_BODY_RESPONSE="This PR has no issue reference in the body at all."
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
@@ -391,42 +408,39 @@ else
 fi
 
 # =============================================================================
-# Test 10 — Early-return pre-guard (GH#20791): pr_labels provided without
-#            origin:interactive → return 0 immediately, no gh API calls at all.
-#            Verifies the optimization that skips the expensive body fetch when
-#            the caller already knows the PR is not origin:interactive.
+# Test 10 — Caller-provided origin:worker labels do not suppress a matching
+#            takeover stamp discovered through the Ref/For body fallback.
 # =============================================================================
 : >"$GH_CALLS"
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8810.json"
-printf '{"pid":1234}\n' >"$STAMP"
-# Set body so that if the body IS fetched, linked_issue would be extracted
+write_stamp "$STAMP" "8810" "marcusquinn/aidevops"
 GH_BODY_RESPONSE="For #8810 — planning-only PR."
 GH_LABELS_RESPONSE="origin:worker,tier:standard"
 
 # Pass pr_labels as 4th argument — caller already knows it's not interactive
 release_interactive_claim_on_merge "63" "marcusquinn/aidevops" "" "origin:worker,tier:standard"
 
-if [[ -f "$STAMP" ]]; then
-	pass "pre-guard: pr_labels provided without origin:interactive → stamp untouched"
+if [[ ! -f "$STAMP" ]]; then
+	pass "provided origin:worker labels → matching takeover stamp released"
 else
-	fail "pre-guard: pr_labels provided without origin:interactive → stamp untouched" \
-		"stamp was removed when caller-provided pr_labels lacked origin:interactive"
+	fail "provided origin:worker labels → matching takeover stamp released" \
+		"matching takeover stamp remained"
 fi
 
-if [[ ! -s "$GH_CALLS" ]]; then
-	pass "pre-guard: pr_labels provided without origin:interactive → no gh API calls made"
+if grep -q -- "--json body" "$GH_CALLS" 2>/dev/null; then
+	pass "provided origin:worker labels → body fallback still evaluated"
 else
-	fail "pre-guard: pr_labels provided without origin:interactive → no gh API calls made" \
-		"gh was called even though pr_labels already indicated non-interactive: $(cat "$GH_CALLS")"
+	fail "provided origin:worker labels → body fallback still evaluated" \
+		"expected a body lookup — got: $(cat "$GH_CALLS" 2>/dev/null || printf '(empty)')"
 fi
 
-if ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
-	pass "pre-guard: release NOT called when pr_labels lacks origin:interactive"
+if grep -q "release 8810 marcusquinn/aidevops --unassign" "$RELEASE_CALLS" 2>/dev/null; then
+	pass "provided origin:worker labels → release called"
 else
-	fail "pre-guard: release NOT called when pr_labels lacks origin:interactive" \
-		"release was called when pr_labels lacked origin:interactive"
+	fail "provided origin:worker labels → release called" \
+		"release was not called for matching takeover ownership"
 fi
 
 # =============================================================================
@@ -439,7 +453,7 @@ fi
 : >"$RELEASE_CALLS"
 : >"$LOGFILE"
 STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8811.json"
-printf '{"pid":1234}\n' >"$STAMP"
+write_stamp "$STAMP" "8811" "marcusquinn/aidevops"
 GH_BODY_RESPONSE="Update the prefix #8811 to include the new format."
 GH_LABELS_RESPONSE="origin:interactive,tier:standard"
 
@@ -457,6 +471,42 @@ if ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
 else
 	fail "word-boundary: release NOT called due to false 'fix' in 'prefix'" \
 		"release was called from false 'fix' match inside 'prefix'"
+fi
+
+# =============================================================================
+# Test 12 — Mismatched issue payload fails closed even at the expected path
+# =============================================================================
+: >"$GH_CALLS"
+: >"$RELEASE_CALLS"
+: >"$LOGFILE"
+STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8812.json"
+write_stamp "$STAMP" "9999" "marcusquinn/aidevops"
+
+release_interactive_claim_on_merge "66" "marcusquinn/aidevops" "8812" "origin:worker"
+
+if [[ -f "$STAMP" ]] && ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
+	pass "mismatched stamp issue → release fails closed"
+else
+	fail "mismatched stamp issue → release fails closed" \
+		"mismatched issue stamp was released"
+fi
+
+# =============================================================================
+# Test 13 — Mismatched repository payload fails closed at the scoped path
+# =============================================================================
+: >"$GH_CALLS"
+: >"$RELEASE_CALLS"
+: >"$LOGFILE"
+STAMP="${CLAIM_STAMP_DIR}/marcusquinn-aidevops-8813.json"
+write_stamp "$STAMP" "8813" "other/repository"
+
+release_interactive_claim_on_merge "67" "marcusquinn/aidevops" "8813" "origin:worker"
+
+if [[ -f "$STAMP" ]] && ! grep -q "release" "$RELEASE_CALLS" 2>/dev/null; then
+	pass "mismatched stamp repository → release fails closed"
+else
+	fail "mismatched stamp repository → release fails closed" \
+		"mismatched repository stamp was released"
 fi
 
 # =============================================================================

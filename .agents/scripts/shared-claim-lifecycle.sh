@@ -11,9 +11,10 @@
 #
 # Public API:
 #   - release_interactive_claim_on_merge <pr_number> <repo_slug> <linked_issue> [pr_labels]
-#       Releases the interactive claim stamp + status:in-review label for the
-#       linked issue if all guards pass. Best-effort; failures are logged but
-#       never propagate.
+#       Releases the interactive claim stamp, assignee, and status:in-review
+#       label for the linked issue if all guards pass. Best-effort; failures
+#       are logged but never propagate. pr_labels is retained for compatibility
+#       but immutable PR provenance does not determine live claim ownership.
 #
 # Guards (all must pass for release to fire):
 #   1. linked_issue is non-empty after permissive fallback — no issue linked
@@ -21,10 +22,9 @@
 #      result (closing keywords only); when that is empty, a permissive
 #      body scan for Ref/For planning-PR keywords fires before giving up.
 #      (t2811)
-#   2. PR carries origin:interactive label — worker PRs manage their own
-#      lifecycle via worker-lifecycle-common.sh; do not interfere.
-#   3. Claim stamp file exists for the issue — no active interactive session
-#      was tracking it; release is a no-op and API calls are unnecessary.
+#   2. A claim stamp exists at the repository-and-issue-scoped path.
+#   3. The stamp payload matches that repository and linked issue. A worker PR
+#      without a matching live interactive takeover stamp remains untouched.
 #
 # Release failure is logged but does NOT propagate — release is best-effort
 # hygiene and must never block the merge completion path.
@@ -65,18 +65,18 @@ unset _scl_script_dir
 # gh pr merge. The function is intentionally best-effort: a failed release is
 # logged but never blocks the merge completion path.
 #
-# Short-circuits (returns 0 silently) when ALL guards fail:
+# Short-circuits (returns 0 silently) when any guard fails:
 #   1. linked_issue is empty after permissive fallback — callers pass the
 #      strict _extract_linked_issue result (closing keywords only). When that
 #      is empty, a permissive body scan for Ref/For planning-PR keywords runs
 #      before giving up. This fixes the claim-stamp leak on planning-only PRs
 #      that MUST use "Ref #NNN" / "For #NNN" per the planning-PR keyword rule.
 #      (t2811/GH#20757; false-positive risk is accepted per issue analysis;
-#      Guards 2-4 further constrain scope to origin:interactive + stamp.)
-#   2. PR does not carry origin:interactive label — worker PRs manage their
-#      own lifecycle via worker-lifecycle-common.sh; do not interfere.
-#   3. No claim stamp exists for the issue — no active interactive session
-#      was tracking it; release is a no-op and API calls are unnecessary.
+#      Guards 2-3 further constrain scope to a matching claim stamp.)
+#   2. No repository-and-issue-scoped claim stamp exists — no active
+#      interactive session was tracking it; release is a no-op.
+#   3. The stamp payload does not match the repository and linked issue — fail
+#      closed instead of releasing another claim.
 #
 # Args: $1=pr_number, $2=repo_slug, $3=linked_issue, $4=pr_labels (optional)
 #######################################
@@ -86,52 +86,44 @@ release_interactive_claim_on_merge() {
 	local linked_issue="$3"
 	local pr_labels="${4:-}"
 	local _log="${LOGFILE:-/dev/null}"
-
-	# Pre-Guard: if the caller already provided labels and the PR is NOT
-	# origin:interactive, skip the expensive gh pr view body fetch — Guard 3
-	# would return 0 at that point anyway. Only skip when labels are non-empty
-	# so callers that omit the arg still fall through to the full path. (GH#20791)
-	if [[ -n "$pr_labels" ]] && [[ ",${pr_labels}," != *",origin:interactive,"* ]]; then
-		return 0
-	fi
+	: "$pr_labels"
 
 	# Guard 1: no linked issue from strict caller extraction → try permissive
 	# fallback for planning-only PRs that use "Ref #NNN" / "For #NNN".
 	# Strict _extract_linked_issue (callers) only matches closing keywords and
 	# returns empty for planning PRs. The permissive scan here adds Ref/For so
 	# both pulse-merge and full-loop call sites get the fix without duplication.
-	# Guards 2-4 still constrain scope to origin:interactive + existing stamp.
+	# Guards 2-3 still constrain scope to a matching existing stamp.
 	# (t2811/GH#20757; precedent: interactive-session-helper.sh:850-858)
 	if [[ -z "$linked_issue" ]]; then
 		local _pr_body
 		_pr_body=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
 			--json body --jq '.body // empty' 2>/dev/null) || _pr_body=""
-		linked_issue=$(printf '%s' "$_pr_body" \
-			| grep -ioE '\b(close[ds]?|fix(es|ed)?|resolve[ds]?|ref(s|erences?)?|for)\b[[:space:]]+#[0-9]+' \
-			| head -1 | grep -oE '[0-9]+')
+		linked_issue=$(printf '%s' "$_pr_body" |
+			grep -ioE '\b(close[ds]?|fix(es|ed)?|resolve[ds]?|ref(s|erences?)?|for)\b[[:space:]]+#[0-9]+' |
+			head -1 | grep -oE '[0-9]+')
 	fi
 	[[ -z "$linked_issue" ]] && return 0
+	[[ "$linked_issue" =~ ^[0-9]+$ ]] || return 0
 
-	# Guard 2: fetch labels if not provided by caller
-	if [[ -z "$pr_labels" ]]; then
-		pr_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
-			--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels=""
-	fi
-
-	# Guard 3: only fire for origin:interactive PRs — worker PRs handle their
-	# own lifecycle, external contributor PRs have no interactive claim stamp
-	[[ ",${pr_labels}," == *",origin:interactive,"* ]] || return 0
-
-	# Guard 4: only fire when a claim stamp exists — avoids spurious
-	# interactive-session-helper.sh invocations on every origin:interactive merge
+	# Guard 2: immutable PR origin and live ownership are separate. The scoped
+	# stamp is the authority for an interactive takeover, including a worker PR.
 	local _stamp_base="${CLAIM_STAMP_DIR:-${HOME}/.aidevops/.agent-workspace/interactive-claims}"
 	local _stamp_file="${_stamp_base}/${repo_slug//\//-}-${linked_issue}.json"
 	[[ -f "$_stamp_file" ]] || return 0
 
-	echo "[claim-lifecycle] Auto-releasing interactive claim on ${repo_slug}#${linked_issue} (PR #${pr_number} merged) — t2413/t2429" >>"$_log"
+	# Guard 3: the filename is only an index. Verify the durable payload before
+	# releasing so malformed or misplaced stamps cannot affect another issue.
+	if ! jq -e --arg repo "$repo_slug" --argjson issue "$linked_issue" \
+		'.slug == $repo and .issue == $issue' "$_stamp_file" >/dev/null 2>&1; then
+		echo "[claim-lifecycle] Claim stamp mismatch for ${repo_slug}#${linked_issue}; skipping release (GH#28690)" >>"$_log"
+		return 0
+	fi
+
+	echo "[claim-lifecycle] Auto-releasing matching interactive claim on ${repo_slug}#${linked_issue} (PR #${pr_number} merged) — t2413/t2429/GH#28690" >>"$_log"
 	local _isc_helper="${AGENTS_DIR:-${HOME}/.aidevops/agents}/scripts/interactive-session-helper.sh"
 	if [[ -x "$_isc_helper" ]]; then
-		"$_isc_helper" release "$linked_issue" "$repo_slug" >>"$_log" 2>&1 || \
+		"$_isc_helper" release "$linked_issue" "$repo_slug" --unassign >>"$_log" 2>&1 ||
 			echo "[claim-lifecycle] Interactive claim release failed for ${repo_slug}#${linked_issue} — non-fatal (t2413/t2429)" >>"$_log"
 	else
 		echo "[claim-lifecycle] interactive-session-helper.sh not found/not executable at ${_isc_helper} — skipping release for ${repo_slug}#${linked_issue} (t2413/t2429)" >>"$_log"
@@ -143,7 +135,8 @@ release_interactive_claim_on_merge() {
 # Callers may use either form; the underscore-prefixed name is kept so existing
 # code (and tests that inline the function) continue to work without changes.
 _release_interactive_claim_on_merge() {
-	release_interactive_claim_on_merge "$@"
+	release_interactive_claim_on_merge "$@" || return $?
+	return 0
 }
 
 #######################################

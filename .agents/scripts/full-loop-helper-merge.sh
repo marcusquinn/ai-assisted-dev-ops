@@ -880,28 +880,163 @@ _retarget_stacked_children_interactive() {
 
 # --- Post-Merge Worktree Cleanup ---
 
+_merge_github_slug_from_remote() {
+	local worktree_root="$1"
+	local remote_name="$2"
+	local remote_url=""
+	local repo_slug=""
+	[[ -n "$worktree_root" && -n "$remote_name" ]] || return 1
+
+	remote_url=$(git -C "$worktree_root" remote get-url "$remote_name" 2>/dev/null || true)
+	case "$remote_url" in
+	git@github.com:*) repo_slug="${remote_url#git@github.com:}" ;;
+	ssh://git@github.com/*) repo_slug="${remote_url#ssh://git@github.com/}" ;;
+	https://github.com/*) repo_slug="${remote_url#https://github.com/}" ;;
+	http://github.com/*) repo_slug="${remote_url#http://github.com/}" ;;
+	git://github.com/*) repo_slug="${remote_url#git://github.com/}" ;;
+	*) return 1 ;;
+	esac
+	repo_slug="${repo_slug%%\?*}"
+	repo_slug="${repo_slug%%#*}"
+	repo_slug="${repo_slug%/}"
+	repo_slug="${repo_slug%.git}"
+	[[ -n "$repo_slug" && "$repo_slug" == */* && "${repo_slug#*/}" != */* ]] || return 1
+	printf '%s\n' "$repo_slug"
+	return 0
+}
+
+_merge_current_github_repo_identity() {
+	local worktree_root="$1"
+	local origin_slug=""
+	origin_slug=$(_merge_github_slug_from_remote "$worktree_root" "origin" 2>/dev/null || true)
+	if [[ -n "$origin_slug" ]]; then
+		printf '%s\n' "$origin_slug"
+		return 0
+	fi
+
+	# Local-only test mirrors and migrated checkouts may use a non-GitHub origin.
+	# Accept a fallback only when every parseable GitHub remote identifies the
+	# same repository; multiple identities are ambiguous and fail closed.
+	local remote_names=""
+	remote_names=$(git -C "$worktree_root" remote 2>/dev/null || true)
+	local remote_name=""
+	local remote_slug=""
+	local candidate_slug=""
+	while IFS= read -r remote_name; do
+		[[ -n "$remote_name" && "$remote_name" != "origin" ]] || continue
+		remote_slug=$(_merge_github_slug_from_remote "$worktree_root" "$remote_name" 2>/dev/null || true)
+		[[ -n "$remote_slug" ]] || continue
+		if [[ -n "$candidate_slug" && "$candidate_slug" != "$remote_slug" ]]; then
+			return 1
+		fi
+		candidate_slug="$remote_slug"
+	done <<<"$remote_names"
+	[[ -n "$candidate_slug" ]] || return 1
+	printf '%s\n' "$candidate_slug"
+	return 0
+}
+
+_merge_worktree_record_matches() {
+	local porcelain="$1"
+	local current_root="$2"
+	local current_branch="$3"
+	local current_head="$4"
+	local record_root=""
+	local record_branch=""
+	local record_head=""
+	local line=""
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ -z "$line" ]]; then
+			if [[ "$record_root" == "$current_root" && "$record_branch" == "refs/heads/${current_branch}" && "$record_head" == "$current_head" ]]; then
+				return 0
+			fi
+			record_root=""
+			record_branch=""
+			record_head=""
+			continue
+		fi
+		case "$line" in
+		worktree\ *) record_root="${line#worktree }" ;;
+		HEAD\ *) record_head="${line#HEAD }" ;;
+		branch\ *) record_branch="${line#branch }" ;;
+		esac
+	done <<<"$porcelain"
+
+	if [[ "$record_root" == "$current_root" && "$record_branch" == "refs/heads/${current_branch}" && "$record_head" == "$current_head" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 _merge_current_worktree_cleanup_plan() {
 	local pr_head_ref="$1"
-	[[ -n "$pr_head_ref" ]] || return 1
+	local pr_head_oid="$2"
+	local pr_head_repo="$3"
+	local repo="$4"
+	[[ -n "$pr_head_ref" && -n "$pr_head_oid" ]] || return 1
 
 	local current_branch=""
 	current_branch=$(git branch --show-current 2>/dev/null || true)
-	[[ -n "$current_branch" && "$current_branch" == "$pr_head_ref" ]] || return 1
+	[[ -n "$current_branch" ]] || return 1
 
 	local current_root=""
 	current_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 	[[ -n "$current_root" ]] || return 1
+	local current_head=""
+	current_head=$(git rev-parse --verify "HEAD^{commit}" 2>/dev/null || true)
+	[[ -n "$current_head" && "$current_head" == "$pr_head_oid" ]] || return 1
 
 	local porcelain=""
 	porcelain=$(git worktree list --porcelain 2>/dev/null || true)
 	[[ -n "$porcelain" ]] || return 1
+	_merge_worktree_record_matches "$porcelain" "$current_root" "$current_branch" "$current_head" || return 1
 
 	local canonical_dir=""
 	canonical_dir="${porcelain%%$'\n'*}"
 	canonical_dir="${canonical_dir#worktree }"
 	[[ -n "$canonical_dir" && "$canonical_dir" != "$current_root" ]] || return 1
 
-	printf '%s\t%s\t%s\n' "$current_root" "$current_branch" "$canonical_dir"
+	local delete_remote_branch="1"
+	if [[ "$current_branch" != "$pr_head_ref" ]]; then
+		# An alias is accepted only when the linked worktree belongs to the exact
+		# PR head repository. The fresh head OID, worktree record, and repository
+		# identity jointly prove association without branch-name heuristics.
+		[[ -n "$repo" && -n "$pr_head_repo" && "$repo" == "$pr_head_repo" ]] || return 1
+		local current_repo=""
+		current_repo=$(_merge_current_github_repo_identity "$current_root" 2>/dev/null || true)
+		[[ -n "$current_repo" && "$current_repo" == "$repo" ]] || return 1
+
+		# The local repair branch is the cleanup target, but its same-named
+		# remote ref is not the PR head and must never be deleted implicitly.
+		delete_remote_branch="0"
+	fi
+
+	printf '%s\t%s\t%s\t%s\n' "$current_root" "$current_branch" "$canonical_dir" "$delete_remote_branch"
+	return 0
+}
+
+_merge_fresh_worktree_cleanup_plan() {
+	local pr_number="$1"
+	local repo="$2"
+	local pr_json=""
+	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
+		--json headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 1
+	printf '%s' "$pr_json" | jq -e --arg string_type "string" '
+		(.headRefName | type == $string_type and length > 0)
+		and (.headRefOid | type == $string_type and length > 0)
+		and (.headRepository.nameWithOwner | type == $string_type and length > 0)
+		and (.isCrossRepository | type == "boolean")' >/dev/null 2>&1 || return 1
+
+	local pr_head_ref=""
+	local pr_head_oid=""
+	local pr_head_repo=""
+	local is_cross_repository=""
+	IFS=$'\t' read -r pr_head_ref pr_head_oid pr_head_repo is_cross_repository < <(
+		printf '%s' "$pr_json" | jq -r '[.headRefName, .headRefOid, .headRepository.nameWithOwner, .isCrossRepository] | @tsv'
+	)
+	: "$is_cross_repository"
+	_merge_current_worktree_cleanup_plan "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo" || return 1
 	return 0
 }
 
@@ -947,9 +1082,9 @@ _merge_report_canonical_sync_state() {
 		print_warning "CANONICAL_SYNC_PENDING=true reason=canonical_path_unavailable"
 		return 1
 	fi
-	local worktree_path branch_name canonical_dir
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir <<<"$cleanup_plan"
-	: "$worktree_path" "$branch_name"
+	local worktree_path branch_name canonical_dir delete_remote_branch
+	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
+	: "$worktree_path" "$branch_name" "$delete_remote_branch"
 	local default_branch
 	default_branch=$(_merge_default_branch_for_cleanup "$canonical_dir")
 	_merge_refresh_canonical_for_cleanup "$canonical_dir" "$default_branch"
@@ -987,8 +1122,8 @@ _merge_cleanup_linked_worktree() {
 	local repo="$2"
 	[[ -n "$cleanup_plan" ]] || return 0
 
-	local worktree_path branch_name canonical_dir
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir <<<"$cleanup_plan"
+	local worktree_path branch_name canonical_dir delete_remote_branch
+	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
 	[[ -n "$worktree_path" && -n "$branch_name" && -n "$canonical_dir" ]] || return 0
 	[[ -d "$canonical_dir" ]] || return 0
 	print_info "Post-merge worktree cleanup: removing linked worktree ${worktree_path} for ${branch_name} in ${repo}"
@@ -1002,7 +1137,9 @@ _merge_cleanup_linked_worktree() {
 	fi
 
 	if _merge_remove_worktree_for_cleanup "$branch_name"; then
-		git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+		if [[ "$delete_remote_branch" == "1" ]]; then
+			git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+		fi
 		git branch -D "$branch_name" >/dev/null 2>&1 || true
 		print_success "Post-merge worktree cleanup complete for ${branch_name}"
 		return 0
@@ -1016,8 +1153,9 @@ _merge_record_deferred_cleanup_owner() {
 	local pr_number="$1"
 	local repo="$2"
 	local cleanup_plan="$3"
-	local worktree_path="" branch_name="" canonical_dir=""
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir <<<"$cleanup_plan"
+	local worktree_path="" branch_name="" canonical_dir="" delete_remote_branch=""
+	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
+	: "$canonical_dir" "$delete_remote_branch"
 	[[ -n "$worktree_path" && -n "$branch_name" ]] || return 1
 	[[ -d "$worktree_path" ]] || return 1
 
@@ -1056,9 +1194,9 @@ _merge_capture_session_distill_provenance() {
 	local pr_number="$1"
 	local repo="$2"
 	local cleanup_plan="$3"
-	local worktree_path branch_name canonical_dir
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir <<<"$cleanup_plan"
-	: "$canonical_dir"
+	local worktree_path branch_name canonical_dir delete_remote_branch
+	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
+	: "$canonical_dir" "$delete_remote_branch"
 	local distill_helper="${SCRIPT_DIR}/session-distill-helper.sh"
 	[[ -x "$distill_helper" ]] || return 0
 	local session_id="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
@@ -1170,18 +1308,15 @@ cmd_merge() {
 
 	repo=$(_merge_resolve_repo "$repo") || return 1
 
-	local _cleanup_plan=""
-	if [[ "$has_auto" -eq 0 ]]; then
-		local _pr_head_ref=""
-		_pr_head_ref=$(gh pr view "$pr_number" --repo "$repo" --json headRefName --jq '.headRefName // empty' 2>/dev/null || true)
-		_cleanup_plan=$(_merge_current_worktree_cleanup_plan "$_pr_head_ref" 2>/dev/null || true)
-	fi
-
 	# Gate: enforce review-bot-gate before merge.
 	cmd_pre_merge_gate "$pr_number" "$repo" || {
 		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
 		return 1
 	}
+	local _cleanup_plan=""
+	if [[ "$has_auto" -eq 0 ]]; then
+		_cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "$pr_number" "$repo" 2>/dev/null || true)
+	fi
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
 	# branch disappears; retargeting to the default branch prevents this.
