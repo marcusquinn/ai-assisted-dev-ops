@@ -120,19 +120,56 @@ def _tweet_object(
     }
 
 
+def _list_object(
+    item: dict[str, Any], remote_id: str, observed_at: str
+) -> dict[str, Any]:
+    """Normalize one allowlisted X List without retaining unknown fields."""
+    name = item.get("name")
+    if not isinstance(name, str) or not name:
+        raise XAdapterError("X List requires a name")
+    description = item.get("description")
+    if description is not None and not isinstance(description, str):
+        raise XAdapterError("X List description must be text")
+    created_at = item.get("created_at")
+    if created_at is not None and not isinstance(created_at, str):
+        raise XAdapterError("X List created_at must be text")
+    owner_id = item.get("owner_id")
+    if owner_id is not None and (not isinstance(owner_id, str) or not owner_id):
+        raise XAdapterError("X List owner_id must be text")
+    for key in ("follower_count", "member_count"):
+        value = item.get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise XAdapterError(f"X List {key} must be a non-negative integer")
+    private = item.get("private")
+    if private is not None and not isinstance(private, bool):
+        raise XAdapterError("X List private must be boolean")
+    provider_fields = ("follower_count", "member_count", "owner_id", "private")
+    return {
+        "object_type": "custom_feed",
+        "remote_id": remote_id,
+        "account_remote_id": owner_id,
+        "text": "\n\n".join(value for value in (name, description) if value),
+        "created_at": created_at,
+        "observed_at": observed_at,
+        "evidence_class": "observed",
+        "provider_json": {key: item[key] for key in provider_fields if key in item},
+    }
+
+
 def _activity_participants(
     spec: StreamSpec, item: dict[str, Any], account_id: str, remote_id: str
 ) -> tuple[str, str | None]:
+    actor_id, target_id = account_id, remote_id
     if spec.activity_mode == "content_author":
         author_id = item.get("author_id")
         if not isinstance(author_id, str) or not author_id:
             raise XAdapterError("X activity author_id must be text")
-        return author_id, remote_id
-    if spec.activity_mode == "remote_follows_selected":
-        return remote_id, account_id
-    if spec.activity_mode == "selected_follows_remote":
-        return account_id, remote_id
-    return account_id, remote_id
+        actor_id = author_id
+    elif spec.activity_mode in {"remote_follows_selected", "remote_contains_selected"}:
+        actor_id, target_id = remote_id, account_id
+    return actor_id, target_id
 
 
 def page_resources(
@@ -145,9 +182,10 @@ def page_resources(
         remote_id = item.get("id")
         if not isinstance(remote_id, str) or not remote_id:
             raise XAdapterError("X resource requires an ID")
-        object_id = remote_id if spec.resource_kind == "tweet" else None
-        if object_id:
+        if spec.resource_kind == "tweet":
             objects.append(_tweet_object(item, remote_id, stream, observed_at))
+        elif spec.resource_kind == "custom_feed":
+            objects.append(_list_object(item, remote_id, observed_at))
         actor_id, target_id = _activity_participants(
             spec, item, account_id, remote_id
         )
@@ -157,7 +195,9 @@ def page_resources(
                 "remote_id": f"{account_id}-{stream}-{remote_id}",
                 "actor_remote_id": actor_id,
                 "object_remote_id": target_id,
-                "occurred_at": item.get("created_at"),
+                "occurred_at": (
+                    item.get("created_at") if spec.resource_kind == "tweet" else None
+                ),
                 "observed_at": observed_at,
                 "state": "active",
             }

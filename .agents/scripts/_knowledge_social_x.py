@@ -28,6 +28,7 @@ class StreamSpec:
     activity_mode: str
     supports_since_id: bool
     cost_units: int = 1
+    refresh_after_complete: bool = False
 
 
 STREAMS = {
@@ -48,6 +49,27 @@ STREAMS = {
     ),
     "following": StreamSpec(
         "/2/users/{account_id}/following", "account", "selected_follows_remote", False
+    ),
+    "owned_lists": StreamSpec(
+        "/2/users/{account_id}/owned_lists",
+        "custom_feed",
+        "selected_owns_remote",
+        False,
+        refresh_after_complete=True,
+    ),
+    "followed_lists": StreamSpec(
+        "/2/users/{account_id}/followed_lists",
+        "custom_feed",
+        "selected_follows_remote",
+        False,
+        refresh_after_complete=True,
+    ),
+    "list_memberships": StreamSpec(
+        "/2/users/{account_id}/list_memberships",
+        "custom_feed",
+        "remote_contains_selected",
+        False,
+        refresh_after_complete=True,
     ),
 }
 
@@ -109,8 +131,14 @@ def stream_endpoint(stream: str, account_id: str, state: CursorState) -> str:
                 "media.fields": "media_key,type",
             }
         )
-    else:
+    elif spec.resource_kind == "account":
         params["user.fields"] = "id,name,username"
+    elif spec.resource_kind == "custom_feed":
+        params["list.fields"] = (
+            "created_at,description,follower_count,member_count,owner_id,private"
+        )
+    else:
+        raise XAdapterError("X stream resource kind is unsupported")
     if state.cursor:
         params["pagination_token"] = state.cursor
     elif state.backfill_complete and state.watermark and spec.supports_since_id:

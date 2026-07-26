@@ -104,10 +104,33 @@ rejects an account mismatch before collection and does not allow an existing
 connection to be rebound to another account.
 
 Supported streams are `authored`, `mentions`, `likes`, `bookmarks`, `followers`,
-and `following`. Each stream owns an independent pagination cursor and
-watermark. After initial backfill, authored and mentions use the official
-`since_id` delta parameter. Streams without an official delta parameter report
-`delta_unavailable` and record the coverage gap without issuing a page request.
+`following`, `owned_lists`, `followed_lists`, and `list_memberships`. Each stream
+owns an independent pagination cursor and watermark. After initial backfill,
+authored and mentions use the official `since_id` delta parameter. The three
+List streams are bounded snapshots that rescan after completion without claiming
+that an absent relationship was deleted. Other streams without an official
+delta parameter report `delta_unavailable` without issuing a page request.
+
+List support was revalidated on 2026-07-26. The implementation worker had no
+installed `xurl` executable, so no local version is claimed; the reviewed
+official upstream baseline was [v1.3.1](https://github.com/xdevplatform/xurl/releases/tag/v1.3.1).
+That release exposes generic raw GET requests but no dedicated List shortcuts.
+The collector therefore allowlists only the official [owned Lists](https://docs.x.com/x-api/users/get-owned-lists.md),
+[followed Lists](https://docs.x.com/x-api/users/get-followed-lists.md), and
+[List memberships](https://docs.x.com/x-api/users/get-list-memberships.md)
+routes. Each accepts 1-100 results, an opaque `pagination_token`, and OAuth user
+scopes `list.read`, `tweet.read`, and `users.read`. Stock `xurl` v1.3.1 requests
+additional write scopes during OAuth, so use an isolated local profile even
+though collector reachability is limited to `whoami` plus exact GET paths.
+
+List timelines and arbitrary List-member expansion remain disabled: they would
+widen content volume and have no documented delta boundary. Account-archive List
+coverage also remains unverified, so there is no archive fallback. Stored X
+evidence remains subject to the current [Developer Agreement](https://docs.x.com/developer-terms/agreement)
+and [Developer Policy](https://docs.x.com/developer-terms/policy): keep offline
+content synchronized with deletion, protection, withholding, and modification;
+honour applicable removal requests within 24 hours; secure private content; and
+do not use API content to train a foundation or frontier model.
 
 `--budget` is a bounded request-cost allowance from 1 to 1000 units, not a retry
 count. Terminal authorization, not-found, rate-limit, and provider failures
@@ -118,7 +141,9 @@ content.
 Media policy `none` stores no media rows. `metadata` stores references and
 content links only; the adapter never downloads media binaries. The provider
 route is externally read-only: it can reach only guarded `whoami` and allowlisted
-official raw-read endpoints, never posting or engagement commands.
+official raw-read endpoints, never posting or engagement commands. The guarded
+raw helper also treats `-d`/`--data` and `-F`/`--file` as write-capable arguments
+because `xurl` turns request bodies into POST requests.
 
 Fixture and fake-executable tests verify pagination, resume, terminal failures,
 credential rejection, and the guarded command route. They do not prove live X

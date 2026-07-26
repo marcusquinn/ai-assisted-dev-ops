@@ -30,7 +30,7 @@ a claim that the route is enabled.
 
 | Provider | Authored content | Interactions and curation | Mentions or messages | Relationships and subscriptions | Lists or custom feeds | Current disposition |
 |---|---|---|---|---|---|---|
-| X | **Live** posts | **Live** likes and bookmarks | **Live** mentions | **Live** followers and following | **No** in the current adapter | Maintain the six guarded `xurl` streams; investigate lists separately. |
+| X | **Live** posts | **Live** likes and bookmarks | **Live** mentions | **Live** followers and following | **Live** owned/followed Lists and account memberships; **No** List timelines | Nine guarded `xurl` streams; bounded List snapshots rescan without inferring deletion. |
 | Reddit | **Live** submissions and comments | **Live** saved, votes, and hidden | **Live** mentions, replies, inbox, and sent | **Live** subreddit and account relationships | **Live** multireddits and membership | PRAW 8, bounded one-page reads, independent cursors, and provider-window coverage. |
 | YouTube | **Live** uploads; **Live/Partial** activity | **Live** likes; **No/Export** watch history and Watch Later | **Live/Gate** channel-related comments and replies; **No/Export** complete authored history | **Live** outbound subscriptions | **Live** owned playlists and membership; **No/Export** saved playlists | `youtube.readonly` user OAuth, identity recheck per page, bounded list quota, 30-day refresh/delete boundary, and explicit gap rows. |
 | LinkedIn | **Gate/Export** | **Gate/Export** | **Export** | **Gate/Export** | **Export/No** | Treat member access as restricted; do not reuse browser engagement automation as a collector. |
@@ -59,7 +59,13 @@ a claim that the route is enabled.
 ## Evidence and update discipline
 
 - **Live X:** `.agents/scripts/knowledge_social_x.py` and
-  `.agents/tests/test-knowledge-social-x.sh` prove the six implemented streams.
+  `.agents/tests/test-knowledge-social-x.sh` prove nine implemented streams,
+  including independently checkpointed owned, followed, and membership List
+  snapshots with stable relationship direction. The 2026-07-26 dependency check
+  found no worker-local `xurl`; official v1.3.1 source exposes generic raw GETs
+  but no List shortcut. Official endpoints require `list.read`, `tweet.read`,
+  and `users.read`; List timelines and archive coverage remain explicitly
+  unimplemented.
 - **Live Reddit:** `.agents/scripts/knowledge_social_reddit.py`,
   `.agents/scripts/_knowledge_social_reddit*.py`, and
   `.agents/tests/test-knowledge-social-reddit.sh` prove the stream allowlist,
