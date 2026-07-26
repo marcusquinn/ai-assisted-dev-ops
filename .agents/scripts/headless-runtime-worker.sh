@@ -1586,6 +1586,26 @@ _hrw_record_permission_blocker_failure() {
 	return 0
 }
 
+_hrw_reconcile_session_permission_blockers() {
+	local session_key="$1"
+	local terminal_reason="$2"
+	local logger="${SCRIPT_DIR}/worker-blocker-log.mjs"
+	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
+	local issue_number="${WORKER_ISSUE_NUMBER:-}"
+	[[ -f "$logger" && -n "$session_key" && -n "$repo_slug" ]] || return 0
+	command -v node >/dev/null 2>&1 || return 0
+	node "$logger" resolve-session \
+		--repo-slug "$repo_slug" \
+		--issue-number "$issue_number" \
+		--session-key "$session_key" \
+		--event "headless_session_terminal_reconciled" \
+		--status "resolved" \
+		--reason "$terminal_reason" \
+		--source "headless-runtime-worker" \
+		--detail "Headless runtime exited without an active permission handoff" >/dev/null 2>&1 || true
+	return 0
+}
+
 _hrw_finish_permission_required_run() {
 	local session_key="$1"
 	local work_dir="$2"

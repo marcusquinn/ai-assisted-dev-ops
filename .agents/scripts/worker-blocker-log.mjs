@@ -58,6 +58,14 @@ export function normalizeWorkerBlockerRepoSlug(value, options = {}) {
   return cleanText(value || "", MAX_FIELD_LENGTH, options).toLowerCase();
 }
 
+export function normalizeWorkerBlockerSessionKey(value, options = {}) {
+  return cleanText(value || "", MAX_FIELD_LENGTH, options);
+}
+
+export function normalizeWorkerBlockerRequestId(value, options = {}) {
+  return cleanText(value || "", MAX_FIELD_LENGTH, options);
+}
+
 export function resolveWorkerBlockerLogPath(options = {}) {
   return options.logPath
     || process.env.AIDEVOPS_WORKER_BLOCKER_LOG_FILE
@@ -75,7 +83,10 @@ export function resolveWorkerBlockerMaxBytes(options = {}) {
 
 export function normalizeWorkerBlockerEvent(input = {}, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
-  const issueNumber = cleanWorkerBlockerIssueNumber(input.issue_number ?? process.env.WORKER_ISSUE_NUMBER);
+  const issueValue = Object.hasOwn(input, "issue_number")
+    ? input.issue_number
+    : process.env.WORKER_ISSUE_NUMBER;
+  const issueNumber = cleanWorkerBlockerIssueNumber(issueValue);
   const grantable = typeof input.grantable === "boolean" ? input.grantable : null;
   return {
     schema: WORKER_BLOCKER_SCHEMA,
@@ -88,8 +99,8 @@ export function normalizeWorkerBlockerEvent(input = {}, options = {}) {
     source: cleanText(input.source || "unknown", MAX_FIELD_LENGTH, options),
     issue_number: issueNumber,
     repo_slug: normalizeWorkerBlockerRepoSlug(input.repo_slug || process.env.WORKER_REPO_SLUG || process.env.DISPATCH_REPO_SLUG || "", options),
-    session_key: cleanText(input.session_key || process.env.WORKER_SESSION_KEY || "", MAX_FIELD_LENGTH, options),
-    request_id: cleanText(input.request_id || process.env.AIDEVOPS_PERMISSION_REQUEST_ID || "", MAX_FIELD_LENGTH, options),
+    session_key: normalizeWorkerBlockerSessionKey(input.session_key || process.env.WORKER_SESSION_KEY || "", options),
+    request_id: normalizeWorkerBlockerRequestId(input.request_id || process.env.AIDEVOPS_PERMISSION_REQUEST_ID || "", options),
     permission: cleanText(input.permission || "", 100, options),
     tool: cleanText(input.tool || "", 100, options),
     risk_level: cleanText(input.risk_level || "", 20, options),
@@ -197,6 +208,12 @@ async function main() {
   if (command === "resolve-issue") {
     const { resolveWorkerBlockersForIssue } = await import("./worker-blocker-reconcile.mjs");
     const result = resolveWorkerBlockersForIssue(event, options);
+    if (result.ok) process.stdout.write(`${result.resolvedCount}\n`);
+    return result.ok ? 0 : 1;
+  }
+  if (command === "resolve-session") {
+    const { resolveWorkerBlockersForSession } = await import("./worker-blocker-reconcile.mjs");
+    const result = resolveWorkerBlockersForSession(event, options);
     if (result.ok) process.stdout.write(`${result.resolvedCount}\n`);
     return result.ok ? 0 : 1;
   }

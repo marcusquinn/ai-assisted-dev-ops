@@ -1397,7 +1397,7 @@ _SC_SELF="${BASH_SOURCE[0]:-${0:-}}"
 # These helpers verify the PID is alive AND its command matches what we expect.
 #
 # Constants: WORKER_PROCESS_PATTERN, PULSE_PROCESS_PATTERN, FRAMEWORK_PROCESS_PATTERN
-# Functions: _compute_argv_hash, _is_process_alive_and_matches
+# Functions: _process_start_token, _compute_argv_hash, _is_process_alive_and_matches
 # =============================================================================
 
 # Expected command patterns for PID-owner verification.
@@ -1406,6 +1406,34 @@ _SC_SELF="${BASH_SOURCE[0]:-${0:-}}"
 [[ -z "${WORKER_PROCESS_PATTERN+x}" ]] && WORKER_PROCESS_PATTERN='opencode|claude|Claude'
 [[ -z "${PULSE_PROCESS_PATTERN+x}" ]] && PULSE_PROCESS_PATTERN='pulse-wrapper'
 [[ -z "${FRAMEWORK_PROCESS_PATTERN+x}" ]] && FRAMEWORK_PROCESS_PATTERN='opencode|claude|Claude|pulse|aidevops|headless-runtime'
+
+#######################################
+# Return a stable process-start token for PID-reuse-resistant ownership checks.
+# Uses Linux /proc start ticks when available and portable ps output elsewhere.
+# Args: $1 = PID
+# Outputs: process-start token on stdout.
+# Returns: 0 on success, 1 on failure.
+#######################################
+_process_start_token() {
+	local pid="$1"
+	local stat_content=""
+	local stat_after_comm=""
+	local start_token=""
+	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
+	if [[ -r "/proc/${pid}/stat" ]]; then
+		stat_content=$(<"/proc/${pid}/stat") || stat_content=""
+		[[ -n "$stat_content" ]] || return 1
+		stat_after_comm="${stat_content##*) }"
+		start_token=$(printf '%s\n' "$stat_after_comm" | awk '{print $20}') || start_token=""
+	else
+		start_token=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null | tr -s ' ') || start_token=""
+		start_token="${start_token#"${start_token%%[![:space:]]*}"}"
+		start_token="${start_token%"${start_token##*[![:space:]]}"}"
+	fi
+	[[ -n "$start_token" ]] || return 1
+	printf '%s\n' "$start_token"
+	return 0
+}
 
 #######################################
 # Compute a short hash of a process's command line.
@@ -1445,6 +1473,8 @@ _compute_argv_hash() {
 #        current process command hash must match. This catches PID reuse
 #        even when the new process name happens to match the pattern
 #        (e.g., two different claude sessions).
+#   $4 = (optional) stored process-start token. If provided and non-empty,
+#        the current process start token must match exactly.
 #
 # Returns: 0 if alive and matches, 1 otherwise.
 #######################################
@@ -1452,6 +1482,7 @@ _is_process_alive_and_matches() {
 	local pid="$1"
 	local pattern="${2:-}"
 	local stored_hash="${3:-}"
+	local stored_start="${4:-}"
 
 	# Basic validation
 	[[ -z "$pid" ]] && return 1
@@ -1472,9 +1503,17 @@ _is_process_alive_and_matches() {
 	# Step 3: if a stored hash was provided, verify it matches
 	if [[ -n "$stored_hash" ]]; then
 		local current_hash
-		current_hash=$(_compute_argv_hash "$pid") || return 0  # no hash tool = skip check
-		[[ -z "$current_hash" ]] && return 0  # can't compute = optimistic pass
-		[[ "$stored_hash" == "$current_hash" ]] || return 1
+		current_hash=$(_compute_argv_hash "$pid") || current_hash=""
+		if [[ -n "$current_hash" ]]; then
+			[[ "$stored_hash" == "$current_hash" ]] || return 1
+		fi
+	fi
+
+	# Step 4: a stored process-start token must always match exactly.
+	if [[ -n "$stored_start" ]]; then
+		local current_start
+		current_start=$(_process_start_token "$pid") || return 1
+		[[ "$stored_start" == "$current_start" ]] || return 1
 	fi
 
 	return 0

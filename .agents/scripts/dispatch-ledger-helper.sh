@@ -22,6 +22,7 @@
 #   issue_number - GitHub issue number (string, may be empty)
 #   repo_slug    - owner/repo (may be empty for non-repo dispatches)
 #   pid          - PID of the dispatching process
+#   owner_process_start - stable process-start token when available
 #   dispatched_at - ISO 8601 UTC timestamp
 #   status       - "in-flight" | "completed" | "failed"
 #   updated_at   - ISO 8601 UTC timestamp of last status change
@@ -362,6 +363,7 @@ cmd_register() {
 	local dispatch_tier=""
 	local dispatch_model=""
 	local worktree_path=""
+	local owner_process_start=""
 	local lease_token="" attempt_id=""
 	local runner_device=""
 	local lease_ttl="$PRELAUNCH_TTL"
@@ -384,18 +386,9 @@ cmd_register() {
 			dispatch_pid="${2:-$$}"
 			shift 2
 			;;
-		--worktree)
-			worktree_path="${2:-}"
-			shift 2
-			;;
-		--tier)
-			dispatch_tier="${2:-}"
-			shift 2
-			;;
-		--model)
-			dispatch_model="${2:-}"
-			shift 2
-			;;
+		--worktree) worktree_path="${2:-}"; shift 2 ;;
+		--tier) dispatch_tier="${2:-}"; shift 2 ;;
+		--model) dispatch_model="${2:-}"; shift 2 ;;
 		--lease-token)
 			lease_token="${2:-}"
 			shift 2
@@ -428,6 +421,7 @@ cmd_register() {
 	if _lease_registration_exists "$session_key" "$lease_token"; then _release_lock; return 0; fi
 	local now
 	now=$(_now_utc)
+	owner_process_start=$(_process_start_token "$dispatch_pid" 2>/dev/null || true)
 
 	[[ -n "$runner_device" ]] || runner_device=$(_lease_device_id)
 	[[ "$lease_ttl" =~ ^[0-9]+$ ]] || lease_ttl="$PRELAUNCH_TTL"
@@ -444,12 +438,13 @@ cmd_register() {
 		--arg tier "$dispatch_tier" \
 		--arg model "$dispatch_model" \
 		--arg worktree "$worktree_path" \
+		--arg owner_process_start "$owner_process_start" \
 		--arg token "$lease_token" \
 		--arg attempt "$attempt_id" \
 		--arg device "$runner_device" \
 		--argjson expires "$lease_expires_at" \
 		--arg status "$LEDGER_STATUS_ACTIVE" \
-		'{session_key: $sk, attempt_id: $attempt, issue_number: $inum, repo_slug: $slug, pid: $pid, dispatched_at: $ts, status: $status, updated_at: $ts, tier: $tier, model: $model, worktree_path: $worktree, lease_token:$token, runner_device:$device, lease_phase:"prelaunch", lease_expires_at:$expires}' \
+		'{session_key: $sk, attempt_id: $attempt, issue_number: $inum, repo_slug: $slug, pid: $pid, owner_process_start: $owner_process_start, dispatched_at: $ts, status: $status, updated_at: $ts, tier: $tier, model: $model, worktree_path: $worktree, lease_token:$token, runner_device:$device, lease_phase:"prelaunch", lease_expires_at:$expires}' \
 		>>"$LEDGER_FILE"
 	_append_tier_telemetry "$issue_number" "$repo_slug" "$dispatch_tier" "$dispatch_model" "$now" "$session_key" "$attempt_id"
 	_release_lock

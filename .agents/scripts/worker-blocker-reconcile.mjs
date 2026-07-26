@@ -17,6 +17,8 @@ import {
   appendNormalizedWorkerBlockerEventsUnlocked,
   cleanWorkerBlockerIssueNumber,
   normalizeWorkerBlockerRepoSlug,
+  normalizeWorkerBlockerRequestId,
+  normalizeWorkerBlockerSessionKey,
   resolveWorkerBlockerLogPath,
   resolveWorkerBlockerMaxBytes,
   WORKER_BLOCKER_SCHEMA,
@@ -36,7 +38,7 @@ function parseWorkerBlockerEvents(content) {
   return events;
 }
 
-function workerBlockerIdentity(event) {
+export function workerBlockerIdentity(event) {
   const sessionKey = typeof event.session_key === "string" ? event.session_key : "";
   const requestId = event.request_id === null || event.request_id === undefined
     ? "unknown"
@@ -64,8 +66,28 @@ function scopedWorkerBlockerEvents(content, repoSlug, issueNumber = null) {
   });
 }
 
+function scopedWorkerBlockerSessionEvents(content, scope) {
+  return parseWorkerBlockerEvents(content).filter((event) => {
+    const eventRepo = String(event.repo_slug || "").toLowerCase();
+    const eventIssue = cleanWorkerBlockerIssueNumber(event.issue_number);
+    const eventSession = typeof event.session_key === "string" ? event.session_key : "";
+    const eventRequest = event.request_id === null || event.request_id === undefined
+      ? ""
+      : String(event.request_id);
+    return eventRepo === scope.repoSlug
+      && eventIssue === scope.issueNumber
+      && eventSession === scope.sessionKey
+      && (!scope.requestId || eventRequest === scope.requestId);
+  });
+}
+
 function activeWorkerBlockerEvents(logPath, repoSlug, issueNumber = null) {
   const scoped = scopedWorkerBlockerEvents(readFileSync(logPath), repoSlug, issueNumber);
+  return latestWorkerBlockerEvents(scoped).filter((event) => event.blocking === true);
+}
+
+function activeWorkerBlockerSessionEvents(logPath, scope) {
+  const scoped = scopedWorkerBlockerSessionEvents(readFileSync(logPath), scope);
   return latestWorkerBlockerEvents(scoped).filter((event) => event.blocking === true);
 }
 
@@ -74,6 +96,15 @@ function workerBlockerScope(input, options) {
   const repoSlug = normalizeWorkerBlockerRepoSlug(input.repo_slug, options);
   if (issueNumber === null || !repoSlug.includes("/")) throw new Error("Invalid worker blocker scope");
   return { issueNumber, repoSlug };
+}
+
+function workerBlockerSessionScope(input, options) {
+  const issueNumber = cleanWorkerBlockerIssueNumber(input.issue_number);
+  const repoSlug = normalizeWorkerBlockerRepoSlug(input.repo_slug, options);
+  const sessionKey = normalizeWorkerBlockerSessionKey(input.session_key, options);
+  const requestId = normalizeWorkerBlockerRequestId(input.request_id, options);
+  if (!repoSlug.includes("/") || !sessionKey) throw new Error("Invalid worker blocker session scope");
+  return { issueNumber, repoSlug, sessionKey, requestId };
 }
 
 function safeWorkerBlockerLog(logPath) {
@@ -99,6 +130,25 @@ function terminalWorkerBlockerEvents(active, input, issueNumber, repoSlug) {
     source: input.source || "worker-blocker-log",
     issue_number: issueNumber,
     repo_slug: repoSlug,
+    session_key: event.session_key || "",
+    request_id: event.request_id ?? "",
+    permission: event.permission || "",
+    tool: event.tool || "",
+    risk_level: event.risk_level || "",
+    grantable: typeof event.grantable === "boolean" ? event.grantable : null,
+    detail: input.detail || "",
+  }));
+}
+
+function terminalSessionWorkerBlockerEvents(active, input) {
+  return active.map((event) => ({
+    event: input.event || "session_terminal_reconciled",
+    status: input.status || "resolved",
+    reason: input.reason || "session_terminal",
+    blocking: false,
+    source: input.source || "worker-blocker-log",
+    issue_number: event.issue_number ?? null,
+    repo_slug: event.repo_slug || "",
     session_key: event.session_key || "",
     request_id: event.request_id ?? "",
     permission: event.permission || "",
@@ -156,6 +206,46 @@ export function resolveWorkerBlockersForIssue(input = {}, options = {}) {
     }
   } catch {
     // Fail open: closure paths continue while the active record stays visible.
+  } finally {
+    releaseLockSafely(lockPath, lockToken);
+  }
+  return result;
+}
+
+export function resolveWorkerBlockersForSession(input = {}, options = {}) {
+  let result = resolutionResult(false);
+  let lockPath = "";
+  let lockToken = "";
+  try {
+    const scope = workerBlockerSessionScope(input, options);
+    const logPath = resolveWorkerBlockerLogPath(options);
+    const maxBytes = resolveWorkerBlockerMaxBytes(options);
+    mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
+    if (existsSync(logPath)) safeWorkerBlockerLog(logPath);
+    lockPath = `${logPath}.lock`;
+    lockToken = acquireLock(lockPath);
+    if (!lockToken) throw new Error("Worker blocker lock unavailable");
+
+    if (!existsSync(logPath)) {
+      result = resolutionResult(true);
+    } else {
+      safeWorkerBlockerLog(logPath);
+      const active = activeWorkerBlockerSessionEvents(logPath, scope);
+      if (active.length === 0) {
+        result = resolutionResult(true);
+      } else {
+        const terminalEvents = terminalSessionWorkerBlockerEvents(active, input);
+        const resolutionOptions = terminalResolutionOptions(active, options);
+        if (appendNormalizedWorkerBlockerEventsUnlocked(
+          logPath,
+          terminalEvents,
+          resolutionOptions,
+          maxBytes,
+        )) result = resolutionResult(true, terminalEvents.length);
+      }
+    }
+  } catch {
+    // Fail open: session completion continues while ambiguous records stay visible.
   } finally {
     releaseLockSafely(lockPath, lockToken);
   }

@@ -223,6 +223,50 @@ test_release_dispatch_claim_ignores_non_issue_session_key_digits() {
 	return 0
 }
 
+test_session_terminal_reconciliation_preserves_null_issue_scope() {
+	local result=""
+	local args_file="${TEST_ROOT}/session-terminal-reconcile-args"
+	(
+		local fake_script_dir="${TEST_ROOT}/session-terminal-reconcile"
+		mkdir -p "$fake_script_dir"
+		: >"${fake_script_dir}/worker-blocker-log.mjs"
+		SCRIPT_DIR="$fake_script_dir"
+		DISPATCH_REPO_SLUG="owner/repo"
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG 2>/dev/null || true
+		node() {
+			local args=("$@")
+			local arg=""
+			for arg in "${args[@]}"; do printf '<%s>' "$arg"; done >"$args_file"
+			return 0
+		}
+		_hrw_reconcile_session_permission_blockers "routine-r004" "success"
+	)
+	result=$(<"$args_file")
+	if [[ "$result" == *"<resolve-session>"* && "$result" == *"<--repo-slug><owner/repo>"* && \
+		"$result" == *"<--issue-number><>"* && "$result" == *"<--session-key><routine-r004>"* && \
+		"$result" == *"<--reason><success>"* ]]; then
+		print_result "session terminal reconciliation preserves null issue scope" 0
+		return 0
+	fi
+	print_result "session terminal reconciliation preserves null issue scope" 1 "args=${result:-<empty>}"
+	return 0
+}
+
+test_rate_limit_fast_reconciles_session_blockers() {
+	local helper_file="$HELPER_SCRIPT"
+	local callback_count=""
+	local callback_pattern=''
+	# shellcheck disable=SC2016 # Match the literal runtime variable reference.
+	callback_pattern='_hrw_reconcile_session_permission_blockers "$session_key"'
+	callback_count=$(grep -cF "$callback_pattern" "$helper_file")
+	if [[ "$callback_count" == "2" ]]; then
+		print_result "rate-limit fast exit reconciles session blockers" 0
+		return 0
+	fi
+	print_result "rate-limit fast exit reconciles session blockers" 1 "callback_count=${callback_count:-0}"
+	return 0
+}
+
 test_cmd_run_finish_emits_noop_for_zero_output() {
 	local work_dir="${TEST_ROOT}/repo-finish-noop"
 	_setup_test_git_repo "$work_dir" 0
@@ -1170,4 +1214,3 @@ test_cmd_run_finish_fail_confirmed_terminal_state_releases_complete() {
 	fi
 	return 0
 }
-

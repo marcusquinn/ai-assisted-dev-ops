@@ -1417,12 +1417,13 @@ _execute_run_attempt() {
 			_rl_metric_session_id=$(extract_session_id_from_output "$output_file" 2>/dev/null || true)
 			_rl_metric_output_file=$(_metric_failure_excerpt_path "$output_file" "$session_key")
 		fi
-		rm -f "$_rl_fast_sentinel" "$output_file" "$permission_request_file" 2>/dev/null || true
-		_run_permission_request_file=""
-		unset AIDEVOPS_PERMISSION_REQUEST_FILE
 		# One literal here; _cmd_run_finish elif is a second. Keeping total at 2
 		# avoids the repeated-string-literal ratchet gate (threshold: >=3).
 		_run_result_label="rate_limit_fast"
+		_hrw_reconcile_session_permission_blockers "$session_key" "$_run_result_label"
+		rm -f "$_rl_fast_sentinel" "$output_file" "$permission_request_file" 2>/dev/null || true
+		_run_permission_request_file=""
+		unset AIDEVOPS_PERMISSION_REQUEST_FILE
 		_run_failure_reason="$_run_result_label"
 		_run_provider_error_type="rate_limit"
 		_run_provider_status="429"
@@ -1492,6 +1493,7 @@ _execute_run_attempt() {
 		handle_exit=$?
 	fi
 	if [[ "$handle_exit" -ne 84 ]]; then
+		_hrw_reconcile_session_permission_blockers "$session_key" "${_run_result_label:-headless_session_exit}"
 		rm -f "$permission_request_file" 2>/dev/null || true
 		_run_permission_request_file=""
 		unset AIDEVOPS_PERMISSION_REQUEST_FILE
