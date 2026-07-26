@@ -776,6 +776,29 @@ _dirty_pr_classify() {
 # Each action returns 0 on success (or dry-run), 1 on failure. Actions post
 # PR comments with idempotency markers so repeated invocations don't spam.
 
+#######################################
+# Read PR conversation comment bodies through the issue-comments REST endpoint.
+# Native `gh pr view --json comments` is GraphQL-only and cannot report its
+# operation-owned cost to exact Pulse instrumentation.
+#
+# Arguments:
+#   $1 - pr_number
+#   $2 - repo_slug
+#
+# Output: newline-delimited comment bodies.
+#######################################
+_dps_pr_comment_bodies_rest() {
+	local pr_number="$1"
+	local repo_slug="$2"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-dirty-pr-comments-rest" \
+		gh api --paginate \
+			"repos/${repo_slug}/issues/${pr_number}/comments?per_page=100" \
+			--jq '.[].body'
+	return $?
+}
+
 # Post a comment if the marker doesn't already exist on the PR.
 # Idempotent by design — safe to call every cycle.
 _dps_post_comment_if_new() {
@@ -786,8 +809,7 @@ _dps_post_comment_if_new() {
 
 	# Check existing comments for marker.
 	local existing
-	existing=$(gh pr view "$pr_number" --repo "$repo_slug" --json comments \
-		--jq '.comments[].body' 2>/dev/null) || existing=""
+	existing=$(_dps_pr_comment_bodies_rest "$pr_number" "$repo_slug" 2>/dev/null) || existing=""
 	if printf '%s' "$existing" | grep -qF "$marker"; then
 		_dps_log "PR #$pr_number ($repo_slug): comment marker '$marker' already present — skipping"
 		return 0

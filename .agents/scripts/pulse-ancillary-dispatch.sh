@@ -12,6 +12,7 @@
 # Functions in this module (in source order):
 #   - _triage_prefetch_issue        (private: fetch issue data + skip checks)
 #   - _triage_write_prompt_file     (private: write prompt heredoc to temp file)
+#   - _triage_pr_file_paths_json_rest (private: exact REST PR-file projection)
 #   - _build_triage_review_prompt   (private: orchestrate prompt construction)
 #   - _extract_and_post_triage_review (private: validate + post review output)
 #   - _finalize_triage_state        (private: label management + cache update)
@@ -839,6 +840,30 @@ PREFETCH_EOF
 }
 
 #######################################
+# Read all changed-file paths for a PR through the pull-files REST endpoint.
+# Native `gh pr view --json files` is GraphQL-only and cannot report its
+# operation-owned cost. Slurping REST pages preserves the JSON-array prompt
+# contract while exact instrumentation accounts for every response page.
+#
+# Arguments:
+#   $1 - pr_number
+#   $2 - repo_slug
+#
+# Output: JSON array of changed-file paths.
+#######################################
+_triage_pr_file_paths_json_rest() {
+	local pr_number="$1"
+	local repo_slug="$2"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-pr-files-rest" \
+		gh api --paginate --slurp \
+			"repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
+			--jq '[.[][] | .filename]'
+	return $?
+}
+
+#######################################
 # Build the triage review prompt for a given issue/PR.
 #
 # Orchestrates: issue prefetch + skip checks, PR context fetch,
@@ -878,7 +903,7 @@ _build_triage_review_prompt() {
 	is_pr=$(gh pr view "$issue_num" --repo "$repo_slug" --json number --jq '.number' 2>/dev/null) || is_pr=""
 	if [[ -n "$is_pr" ]]; then
 		pr_diff=$(gh pr diff "$issue_num" --repo "$repo_slug" 2>/dev/null | head -500) || pr_diff=""
-		pr_files=$(gh pr view "$issue_num" --repo "$repo_slug" --json files --jq '[.files[].path]' 2>/dev/null) || pr_files="[]"
+		pr_files=$(_triage_pr_file_paths_json_rest "$issue_num" "$repo_slug" 2>/dev/null) || pr_files="[]"
 	fi
 
 	local prefetch_file=""
