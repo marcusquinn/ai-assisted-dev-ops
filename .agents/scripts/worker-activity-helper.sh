@@ -46,6 +46,8 @@ WAH_PULSE_STATS_FILE="${WAH_PULSE_STATS_FILE:-${HOME}/.aidevops/logs/pulse-stats
 WAH_PR_CACHE_FILE="${WAH_PR_CACHE_FILE:-${HOME}/.aidevops/cache/worker-activity-prs.json}"
 WAH_OAUTH_POOL_FILE="${WAH_OAUTH_POOL_FILE:-${HOME}/.aidevops/oauth-pool.json}"
 WAH_BLOCKER_LOG_FILE="${WAH_BLOCKER_LOG_FILE:-${HOME}/.aidevops/logs/worker-progress-blockers.jsonl}"
+WAH_DISPATCH_LEDGER_FILE="${WAH_DISPATCH_LEDGER_FILE:-${HOME}/.aidevops/.agent-workspace/tmp/dispatch-ledger.jsonl}"
+WAH_BLOCKER_OWNER_PROCESS_PATTERN="${WAH_BLOCKER_OWNER_PROCESS_PATTERN:-$FRAMEWORK_PROCESS_PATTERN}"
 WAH_OBJECTIVE_EVIDENCE_FILE="${WAH_OBJECTIVE_EVIDENCE_FILE:-${HOME}/.aidevops/state/objective-evidence.jsonl}"
 WAH_PR_CACHE_TTL="${WAH_PR_CACHE_TTL:-60}" # seconds
 WAH_SERVICE_INTERRUPTION_RESULT="service_interruption_continue"
@@ -319,41 +321,97 @@ _wah_metric_details_json() {
 }
 
 #######################################
+# Return bounded session identities whose dispatch ledger owner PID is live.
+# This is local/offline evidence and never performs per-blocker GitHub queries.
+# Args: optional_repo_slug
+#######################################
+_wah_live_blocker_sessions_json() {
+	local repo_slug="${1:-}"
+	local ledger="$WAH_DISPATCH_LEDGER_FILE"
+	local live_sessions='[]'
+	local session_key="" event_repo="" owner_pid="" owner_argv_hash="" owner_process_start=""
+	if [[ ! -f "$ledger" ]]; then
+		printf '%s\n' "$live_sessions"
+		return 0
+	fi
+	while IFS=$'\x1f' read -r session_key event_repo owner_pid owner_argv_hash owner_process_start; do
+		[[ -n "$session_key" && "$owner_pid" =~ ^[0-9]+$ && -n "$owner_process_start" ]] || continue
+		if _is_process_alive_and_matches "$owner_pid" "$WAH_BLOCKER_OWNER_PROCESS_PATTERN" "$owner_argv_hash" "$owner_process_start"; then
+			live_sessions=$(jq -cn \
+				--argjson current "$live_sessions" \
+				--arg session "$session_key" \
+				--arg repo "$event_repo" \
+				'$current + [{session_key:$session, repo_slug:$repo}]')
+		fi
+	done < <(jq -sr --arg repo "$repo_slug" --arg empty '' '
+		to_entries
+		| map(.value + {__wah_index: .key})
+		| map(select((.session_key // $empty) != $empty)
+			| select(($repo == $empty) or (((.repo_slug // $empty) | ascii_downcase) == ($repo | ascii_downcase))))
+		| group_by([(.repo_slug // $empty), .session_key])
+		| map(max_by(.__wah_index))
+		| map(select((.status // $empty) == "in-flight"))
+		| sort_by(.updated_at // .dispatched_at // $empty) | reverse
+		| .[0:200][]
+		| [(.session_key // $empty), (.repo_slug // $empty), ((.pid // $empty) | tostring), (.owner_argv_hash // $empty), (.owner_process_start // $empty)]
+		| join("\u001f")' "$ledger" 2>/dev/null)
+	printf '%s\n' "$live_sessions"
+	return 0
+}
+
+#######################################
 # Summarise bounded worker progress-blocker events and current blocker state.
 # Event counts obey the requested window; current blockers use the latest
-# retained event for each repo/issue/session identity so older unresolved holds
-# remain visible until a later non-blocking event clears them.
-# Args: cutoff_epoch now_epoch optional_repo_slug
+# retained event for each repo/issue/session/request identity. Null-issue identities
+# require a live local dispatch owner; otherwise they remain visible as retained
+# and unverified rather than being labelled a current worker stall.
+# Args: cutoff_epoch now_epoch optional_repo_slug live_sessions_json
 #######################################
 _wah_blocker_details_json() {
 	local cutoff_epoch="$1"
 	local now_epoch="$2"
 	local repo_slug="${3:-}"
+	local live_sessions_json="${4:-[]}"
 	local blocker_log="$WAH_BLOCKER_LOG_FILE"
 	if [[ ! -f "$blocker_log" ]]; then
-		printf '{"event_total":0,"active_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"recent_blockers":[]}'
+		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 		return 0
 	fi
-	jq -Rsc --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg repo "$repo_slug" '
+	jq -Rsc --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg repo "$repo_slug" --arg empty '' --argjson live_sessions "$live_sessions_json" '
 		def scoped:
 			select(.schema == "aidevops-worker-blocker/v1")
-			| select(($repo == "") or (((.repo_slug // "") | ascii_downcase) == ($repo | ascii_downcase)))
+			| select(($repo == $empty) or (((.repo_slug // $empty) | ascii_downcase) == ($repo | ascii_downcase)))
 			| select((.ts // 0) <= $now);
 		def identity:
-			(.repo_slug // "") + "|" + ((.issue_number // "") | tostring) + "|"
-			+ (if ((.session_key // "") | length) > 0 then .session_key else (.request_id // "unknown") end);
+			(.repo_slug // $empty) + "|" + ((.issue_number // $empty) | tostring) + "|"
+			+ (if ((.session_key // $empty) | length) > 0 then .session_key else "unknown" end) + "|"
+			+ (if ((.request_id // $empty) | length) > 0 then .request_id else "unknown" end);
+		def has_issue_scope:
+			if (.issue_number | type) == "number" then .issue_number > 0
+			elif (.issue_number | type) == "string" then (.issue_number | test("^[1-9][0-9]*$"))
+			else false end;
+		def has_live_owner:
+			. as $row
+			| any($live_sessions[];
+				((.repo_slug // $empty) | ascii_downcase) == (($row.repo_slug // $empty) | ascii_downcase)
+				and (.session_key // $empty) == ($row.session_key // $empty));
+		def proven_current: has_issue_scope or has_live_owner;
 		[split("\n")[] | fromjson? | scoped] as $all
 		| [$all[] | select((.ts // 0) >= $cutoff)] as $window
-		| ($all | group_by(identity) | map(sort_by(.ts // 0) | last) | map(select(.blocking == true))) as $active
+		| ($all | group_by(identity) | map(sort_by(.ts // 0) | last) | map(select(.blocking == true))) as $unresolved
+		| ($unresolved | map(select(proven_current))) as $active
+		| ($unresolved | map(select(proven_current | not))) as $retained
 		| {
 			event_total: ($window | length),
 			active_total: ($active | length),
+			retained_unverified_total: ($retained | length),
 			event_counts: (reduce $window[] as $row ({}; .[$row.event // "unknown"] += 1)),
 			reason_counts: (reduce $window[] as $row ({}; .[$row.reason // "unknown"] += 1)),
 			active_blockers: ($active | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source, permission, tool, risk_level, grantable, detail})),
+			retained_unverified: ($retained | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source})),
 			recent_blockers: ($window | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, blocking, source}))
 		}' "$blocker_log" 2>/dev/null || \
-		printf '{"event_total":0,"active_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"recent_blockers":[]}'
+		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 	return 0
 }
 
@@ -629,9 +687,11 @@ _wah_emit_human() {
 	printf '\n'
 	printf 'worker-progress-blockers.jsonl (bounded progress holds):\n'
 	printf '  Events in window:            %s\n' "$(printf '%s' "$blocker_json" | jq -r '.event_total // 0' 2>/dev/null || printf '0')"
-	printf '  Currently active:            %s\n' "$(printf '%s' "$blocker_json" | jq -r '.active_total // 0' 2>/dev/null || printf '0')"
+	printf '  Proven current:              %s\n' "$(printf '%s' "$blocker_json" | jq -r '.active_total // 0' 2>/dev/null || printf '0')"
+	printf '  Retained/unverified:         %s\n' "$(printf '%s' "$blocker_json" | jq -r '.retained_unverified_total // 0' 2>/dev/null || printf '0')"
 	printf '  Reasons:                     %s\n' "$(printf '%s' "$blocker_json" | jq -c '.reason_counts // {}' 2>/dev/null || printf '{}')"
 	printf '  Active blockers:             %s\n' "$(printf '%s' "$blocker_json" | jq -c '.active_blockers // []' 2>/dev/null || printf '[]')"
+	printf '  Retained blockers:           %s\n' "$(printf '%s' "$blocker_json" | jq -c '.retained_unverified // []' 2>/dev/null || printf '[]')"
 	printf '\n'
 	printf 'pulse-stats.json (dispatch-side counters):\n'
 	printf '  pulse_dispatch_circuit_broken:           %d\n' "$cb"
@@ -811,11 +871,12 @@ cmd_summary() {
 		cutoff_iso="(unknown)"
 
 	# Aggregate metrics (single jq+awk pass).
-	local agg total terminal_total succ wk wc sic rl of details_json blocker_json
+	local agg total terminal_total succ wk wc sic rl of details_json blocker_json live_blocker_sessions_json
 	agg=$(_wah_aggregate_metrics "$cutoff_epoch" "$now_epoch")
 	read -r total terminal_total succ wk wc sic rl of <<<"$agg"
 	details_json=$(_wah_metric_details_json "$cutoff_epoch" "$now_epoch")
-	blocker_json=$(_wah_blocker_details_json "$cutoff_epoch" "$now_epoch" "$repo_label")
+	live_blocker_sessions_json=$(_wah_live_blocker_sessions_json "$repo_label")
+	blocker_json=$(_wah_blocker_details_json "$cutoff_epoch" "$now_epoch" "$repo_label" "$live_blocker_sessions_json")
 
 	# Pulse-stats counters.
 	local cb gqlow db_skip nwbreaker

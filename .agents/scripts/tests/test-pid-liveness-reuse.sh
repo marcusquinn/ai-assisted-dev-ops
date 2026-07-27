@@ -11,6 +11,7 @@
 #   4. PID with stored argv_hash mismatching current → fails (exit 1).
 #   5. Empty/zero/non-numeric PID → fails (exit 1).
 #   6. _compute_argv_hash produces a stable 12-char hex hash.
+#   7. A process-start token must match exactly when supplied.
 #
 # Run: bash .agents/scripts/tests/test-pid-liveness-reuse.sh
 # Expected: all tests PASS.
@@ -157,6 +158,22 @@ fi
 _compute_argv_hash "$dead_pid" >/dev/null 2>&1
 rc=$?
 print_result "11. _compute_argv_hash for dead PID → fails" "$([[ $rc -ne 0 ]] && echo 0 || echo 1)"
+
+# -------------------------------------------------------------------------
+# Tests 12-13: process-start identity matches exactly and rejects PID reuse.
+# -------------------------------------------------------------------------
+our_process_start=$(_process_start_token "$$" 2>/dev/null || echo "")
+if [[ -n "$our_process_start" ]]; then
+	_is_process_alive_and_matches "$$" "bash" "" "$our_process_start"
+	rc=$?
+	print_result "12. Alive PID + matching process-start token → passes" "$([[ $rc -eq 0 ]] && echo 0 || echo 1)"
+	_is_process_alive_and_matches "$$" "bash" "" "not-${our_process_start}" 2>/dev/null
+	rc=$?
+	print_result "13. Alive same-command PID + wrong process-start token → fails" "$([[ $rc -ne 0 ]] && echo 0 || echo 1)"
+else
+	print_result "12. Alive PID + matching process-start token → passes" 1 "(process start unavailable)"
+	print_result "13. Alive same-command PID + wrong process-start token → fails" 1 "(process start unavailable)"
+fi
 
 # -------------------------------------------------------------------------
 # Summary

@@ -223,6 +223,50 @@ test_release_dispatch_claim_ignores_non_issue_session_key_digits() {
 	return 0
 }
 
+test_session_terminal_reconciliation_preserves_null_issue_scope() {
+	local result=""
+	local args_file="${TEST_ROOT}/session-terminal-reconcile-args"
+	(
+		local fake_script_dir="${TEST_ROOT}/session-terminal-reconcile"
+		mkdir -p "$fake_script_dir"
+		: >"${fake_script_dir}/worker-blocker-log.mjs"
+		SCRIPT_DIR="$fake_script_dir"
+		DISPATCH_REPO_SLUG="owner/repo"
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG 2>/dev/null || true
+		node() {
+			local args=("$@")
+			local arg=""
+			for arg in "${args[@]}"; do printf '<%s>' "$arg"; done >"$args_file"
+			return 0
+		}
+		_hrw_reconcile_session_permission_blockers "routine-r004" "success"
+	)
+	result=$(<"$args_file")
+	if [[ "$result" == *"<resolve-session>"* && "$result" == *"<--repo-slug><owner/repo>"* && \
+		"$result" == *"<--issue-number><>"* && "$result" == *"<--session-key><routine-r004>"* && \
+		"$result" == *"<--reason><success>"* ]]; then
+		print_result "session terminal reconciliation preserves null issue scope" 0
+		return 0
+	fi
+	print_result "session terminal reconciliation preserves null issue scope" 1 "args=${result:-<empty>}"
+	return 0
+}
+
+test_rate_limit_fast_reconciles_session_blockers() {
+	local helper_file="$HELPER_SCRIPT"
+	local callback_count=""
+	local callback_pattern=''
+	# shellcheck disable=SC2016 # Match the literal runtime variable reference.
+	callback_pattern='_hrw_reconcile_session_permission_blockers "$session_key"'
+	callback_count=$(grep -cF "$callback_pattern" "$helper_file")
+	if [[ "$callback_count" == "2" ]]; then
+		print_result "rate-limit fast exit reconciles session blockers" 0
+		return 0
+	fi
+	print_result "rate-limit fast exit reconciles session blockers" 1 "callback_count=${callback_count:-0}"
+	return 0
+}
+
 test_cmd_run_finish_emits_noop_for_zero_output() {
 	local work_dir="${TEST_ROOT}/repo-finish-noop"
 	_setup_test_git_repo "$work_dir" 0
@@ -522,6 +566,75 @@ test_permission_finish_failure_without_output_releases_and_cleans_up() {
 	return 0
 }
 
+test_null_issue_permission_failure_reconciles_terminal_blockers() {
+	local result=""
+	result=$(
+		(
+			unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+			_run_result_label="permission_required"
+			_run_failure_reason=""
+			local reconciled=0 reconcile_reason=""
+			_hrw_finish_permission_required_run() {
+				_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_PERMISSION_PERSISTENCE_FAILED"
+				return 1
+			}
+			_hrw_reconcile_session_permission_blockers() {
+				local session_key="$1"
+				local terminal_reason="$2"
+				reconciled=$((reconciled + 1))
+				reconcile_reason="${session_key}|${terminal_reason}"
+				return 0
+			}
+			_worker_external_terminal_complete() { return 1; }
+			_recover_worker_output_on_failure() { return 1; }
+			_release_dispatch_claim() { return 0; }
+			_report_failure_to_fast_fail() { return 0; }
+			_hrw_record_terminal_outcome() { return 0; }
+			_emit_worker_runtime_event() { return 0; }
+			_hrw_record_reconciled_outcome() { return 0; }
+			_hrw_finish_cleanup() { return 0; }
+
+			local status=0
+			_cmd_run_finish "routine-r004" "$_HRW_STATUS_PERMISSION_REQUIRED" "${TEST_ROOT}" || status=$?
+			printf 'status=%s|reconciled=%s|reason=%s\n' "$status" "$reconciled" "$reconcile_reason"
+		)
+	)
+	if [[ "$result" == "status=1|reconciled=1|reason=routine-r004|permission_request_persistence_failed" ]]; then
+		print_result "null-issue permission failure reconciles terminal blockers" 0
+	else
+		print_result "null-issue permission failure reconciles terminal blockers" 1 "$result"
+	fi
+	return 0
+}
+
+test_issue_permission_handoff_skips_post_persistence_reconciliation() {
+	local result=""
+	result=$(
+		(
+			WORKER_ISSUE_NUMBER="99999"
+			export WORKER_ISSUE_NUMBER
+			_run_result_label="permission_required"
+			local reconciled=0
+			_hrw_finish_permission_required_run() { return 0; }
+			_hrw_reconcile_session_permission_blockers() { reconciled=$((reconciled + 1)); return 0; }
+			_hrw_record_terminal_outcome() { return 0; }
+			_emit_worker_runtime_event() { return 0; }
+			_hrw_record_reconciled_outcome() { return 0; }
+			_hrw_finish_cleanup() { return 0; }
+
+			local status=0
+			_cmd_run_finish "issue-99999" "$_HRW_STATUS_PERMISSION_REQUIRED" "${TEST_ROOT}" || status=$?
+			printf 'status=%s|reconciled=%s\n' "$status" "$reconciled"
+		)
+	)
+	if [[ "$result" == "status=0|reconciled=0" ]]; then
+		print_result "issue permission handoff stays active after persistence" 0
+	else
+		print_result "issue permission handoff stays active after persistence" 1 "$result"
+	fi
+	return 0
+}
+
 test_begin_worker_runtime_run_refreshes_run_id() {
 	local first_run_id="" second_run_id=""
 	AIDEVOPS_RUN_ID="run:stale"
@@ -603,6 +716,36 @@ SH
 	else
 		print_result "reconciled outcome persistence retries bounded transient failures" 1 \
 			"calls=${call_count:-<empty>} args=${captured_args:-<empty>}"
+	fi
+	return 0
+}
+
+test_reconciled_outcome_requires_explicit_issue() {
+	local fake_helper="${TEST_ROOT}/fake-objective-helper-no-issue.sh"
+	local called_file="${TEST_ROOT}/fake-objective-helper-no-issue.called"
+	cat >"$fake_helper" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'called\n' >"$AIDEVOPS_FAKE_OBJECTIVE_CALLED_FILE"
+exit 0
+SH
+	chmod +x "$fake_helper"
+
+	(
+		unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+		export OBJECTIVE_RECONCILIATION_HELPER="$fake_helper"
+		export AIDEVOPS_FAKE_OBJECTIVE_CALLED_FILE="$called_file"
+		export AIDEVOPS_ATTEMPT_ID="attempt:null-issue"
+		export DISPATCH_REPO_SLUG="owner/repo"
+		_hrw_record_reconciled_outcome "routine-r004" "permission_required" \
+			"failed" "failed" "permission_request_persistence_failed"
+	)
+
+	if [[ ! -e "$called_file" ]]; then
+		print_result "reconciled outcome requires an explicit issue number" 0
+	else
+		print_result "reconciled outcome requires an explicit issue number" 1 \
+			"non-issue session routine-r004 was attributed to issue 4"
 	fi
 	return 0
 }
@@ -1170,4 +1313,3 @@ test_cmd_run_finish_fail_confirmed_terminal_state_releases_complete() {
 	fi
 	return 0
 }
-

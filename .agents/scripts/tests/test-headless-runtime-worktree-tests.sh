@@ -26,6 +26,59 @@ test_issue_worker_env_contract_rejects_missing_env() {
 	return 0
 }
 
+test_issue_worker_env_contract_rejects_invalid_or_mismatched_issue() {
+	local output=""
+	local status=0
+	export WORKER_ISSUE_NUMBER="not-an-issue"
+	output=$(_validate_issue_worker_env_contract \
+		"worker" "issue-22438" "$TEST_ROOT" "Issue #22438: env contract" \
+		"/full-loop Implement issue #22438" 2>&1) || status=$?
+	if [[ "$status" -ne 0 && "$output" == *"WORKER_ISSUE_NUMBER invalid"* ]]; then
+		print_result "issue worker env contract rejects a non-numeric issue" 0
+	else
+		print_result "issue worker env contract rejects a non-numeric issue" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+
+	status=0
+	export WORKER_ISSUE_NUMBER="99999"
+	output=$(_validate_issue_worker_env_contract \
+		"worker" "issue-22438" "$TEST_ROOT" "Issue #22438: env contract" \
+		"/full-loop Implement issue #22438" 2>&1) || status=$?
+	if [[ "$status" -ne 0 && "$output" == *"does not match session issue identity"* ]]; then
+		print_result "issue worker env contract rejects mismatched session identity" 0
+	else
+		print_result "issue worker env contract rejects mismatched session identity" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+
+	status=0
+	export WORKER_ISSUE_NUMBER="4"
+	output=$(_validate_issue_worker_env_contract \
+		"worker" "issue-0004" "$TEST_ROOT" "Issue #4: env contract" \
+		"/full-loop Implement issue #4" 2>&1) || status=$?
+	if [[ "$status" -ne 0 && "$output" == *"does not match session issue identity"* ]]; then
+		print_result "issue worker env contract rejects leading-zero session identity" 0
+	else
+		print_result "issue worker env contract rejects leading-zero session identity" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+
+	status=0
+	export WORKER_ISSUE_NUMBER="1"
+	output=$(_validate_issue_worker_env_contract \
+		"worker" "issue-0" "$TEST_ROOT" "Issue #1: env contract" \
+		"/full-loop Implement issue #1" 2>&1) || status=$?
+	if [[ "$status" -ne 0 && "$output" == *"does not match session issue identity"* ]]; then
+		print_result "issue worker env contract rejects zero session identity" 0
+	else
+		print_result "issue worker env contract rejects zero session identity" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+	unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+	return 0
+}
+
 test_issue_worker_env_contract_rejects_missing_worktree() {
 	export WORKER_ISSUE_NUMBER="22438"
 	export WORKER_REPO_SLUG="owner/repo"

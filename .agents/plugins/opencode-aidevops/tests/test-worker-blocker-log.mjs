@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
 import {
   listActiveWorkerBlockerIssues,
   resolveWorkerBlockersForIssue,
+  resolveWorkerBlockersForSession,
 } from "../../../scripts/worker-blocker-reconcile.mjs";
 
 const LOGGER_PATH = fileURLToPath(new URL("../../../scripts/worker-blocker-log.mjs", import.meta.url));
@@ -174,6 +175,101 @@ test("resolve-issue leaves the log unchanged when the terminal batch cannot fit"
     repo_slug: "owner/repo",
   }, { logPath, maxBytes: 512 }), { ok: false, resolvedCount: 0 });
   assert.equal(readFileSync(logPath, "utf8"), before);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("resolve-session clears only the exact null-issue session and preserves request identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-worker-blocker-session-resolve-"));
+  const logPath = join(root, "events.jsonl");
+  const base = {
+    event: "permission_request_captured",
+    reason: "permission_required",
+    source: "test",
+    issue_number: null,
+    repo_slug: "owner/repo",
+    request_id: "request-routine",
+  };
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    session_key: "routine-r004",
+  }, { logPath, now: new Date("2026-07-24T12:00:00Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    session_key: "routine-r004",
+    request_id: "request-routine-b",
+  }, { logPath, now: new Date("2026-07-24T12:00:00.500Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    issue_number: 404,
+    session_key: "routine-r004",
+    request_id: "request-issue",
+  }, { logPath, now: new Date("2026-07-24T12:00:01Z") }), true);
+  assert.equal(appendWorkerBlockerEvent({
+    ...base,
+    session_key: "routine-other",
+    request_id: "request-other",
+  }, { logPath, now: new Date("2026-07-24T12:00:02Z") }), true);
+
+  assert.deepEqual(resolveWorkerBlockersForSession({
+    repo_slug: "OWNER/REPO",
+    session_key: "routine-r004",
+    event: "headless_session_terminal_reconciled",
+    reason: "success",
+    source: "headless-runtime-worker",
+  }, { logPath, now: new Date("2026-07-24T12:00:03Z") }), { ok: true, resolvedCount: 2 });
+
+  const events = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const terminal = events.filter((event) => event.event === "headless_session_terminal_reconciled");
+  assert.equal(terminal.length, 2);
+  assert.equal(terminal.every((event) => event.issue_number === null), true);
+  assert.equal(terminal.every((event) => event.repo_slug === "owner/repo"), true);
+  assert.equal(terminal.every((event) => event.session_key === "routine-r004"), true);
+  assert.deepEqual(
+    new Set(terminal.map((event) => event.request_id)),
+    new Set(["request-routine", "request-routine-b"]),
+  );
+  assert.equal(terminal.every((event) => event.blocking === false), true);
+  assert.deepEqual(resolveWorkerBlockersForSession({
+    repo_slug: "owner/repo",
+    session_key: "routine-r004",
+  }, { logPath, now: new Date("2026-07-24T12:00:04Z") }), { ok: true, resolvedCount: 0 });
+  assert.deepEqual(listActiveWorkerBlockerIssues({ repo_slug: "owner/repo" }, { logPath }).issues, [404]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("resolve-session CLI appends a terminal event for a null-issue identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-worker-blocker-session-cli-"));
+  const logPath = join(root, "events.jsonl");
+  assert.equal(appendWorkerBlockerEvent({
+    event: "permission_request_captured",
+    reason: "permission_required",
+    source: "test",
+    issue_number: null,
+    repo_slug: "owner/repo",
+    session_key: "routine-r005",
+    request_id: "request-cli",
+  }, { logPath, now: new Date("2026-07-24T12:00:00Z") }), true);
+
+  const result = spawnSync(process.execPath, [
+    LOGGER_PATH,
+    "resolve-session",
+    "--log-file", logPath,
+    "--repo-slug", "owner/repo",
+    "--issue-number", "",
+    "--session-key", "routine-r005",
+    "--event", "headless_session_terminal_reconciled",
+    "--reason", "success",
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "1");
+
+  const events = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const terminal = events.at(-1);
+  assert.equal(terminal.event, "headless_session_terminal_reconciled");
+  assert.equal(terminal.issue_number, null);
+  assert.equal(terminal.session_key, "routine-r005");
+  assert.equal(terminal.request_id, "request-cli");
+  assert.equal(terminal.blocking, false);
   rmSync(root, { recursive: true, force: true });
 });
 

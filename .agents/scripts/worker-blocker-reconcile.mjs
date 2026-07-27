@@ -1,62 +1,28 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 
 import {
   acquireWorkerBlockerLock as acquireLock,
-  releaseWorkerBlockerLock as releaseLock,
 } from "./worker-blocker-lock.mjs";
 import {
-  appendNormalizedWorkerBlockerEventsUnlocked,
   cleanWorkerBlockerIssueNumber,
   normalizeWorkerBlockerRepoSlug,
   resolveWorkerBlockerLogPath,
-  resolveWorkerBlockerMaxBytes,
-  WORKER_BLOCKER_SCHEMA,
 } from "./worker-blocker-log.mjs";
+import {
+  activeWorkerBlockerEventsMatching,
+  reconcileWorkerBlockers,
+  releaseWorkerBlockerLockSafely,
+  safeWorkerBlockerLog,
+} from "./worker-blocker-reconcile-common.mjs";
 
-function parseWorkerBlockerEvents(content) {
-  const events = [];
-  for (const line of content.toString("utf8").split("\n")) {
-    if (!line) continue;
-    try {
-      const event = JSON.parse(line);
-      if (event?.schema === WORKER_BLOCKER_SCHEMA) events.push(event);
-    } catch {
-      // Malformed historical rows are ignored, matching the fail-open readers.
-    }
-  }
-  return events;
-}
+export { workerBlockerIdentity } from "./worker-blocker-reconcile-common.mjs";
+export { resolveWorkerBlockersForSession } from "./worker-blocker-session-reconcile.mjs";
 
-function workerBlockerIdentity(event) {
-  const sessionKey = typeof event.session_key === "string" ? event.session_key : "";
-  const requestId = event.request_id === null || event.request_id === undefined
-    ? "unknown"
-    : String(event.request_id);
-  return `${event.repo_slug || ""}|${event.issue_number ?? ""}|${sessionKey || requestId}`;
-}
-
-function latestWorkerBlockerEvents(events) {
-  const latest = new Map();
-  for (const event of events) {
-    const identity = workerBlockerIdentity(event);
-    const timestamp = Number.isFinite(Number(event.ts)) ? Number(event.ts) : 0;
-    const current = latest.get(identity);
-    if (!current || timestamp >= current.timestamp) latest.set(identity, { event, timestamp });
-  }
-  return [...latest.values()].map(({ event }) => event);
-}
-
-function scopedWorkerBlockerEvents(content, repoSlug, issueNumber = null) {
-  return parseWorkerBlockerEvents(content).filter((event) => {
+function activeWorkerBlockerEvents(logPath, repoSlug, issueNumber = null) {
+  return activeWorkerBlockerEventsMatching(logPath, (event) => {
     const eventRepo = String(event.repo_slug || "").toLowerCase();
     const eventIssue = cleanWorkerBlockerIssueNumber(event.issue_number);
     return eventRepo === repoSlug && eventIssue !== null
@@ -64,30 +30,11 @@ function scopedWorkerBlockerEvents(content, repoSlug, issueNumber = null) {
   });
 }
 
-function activeWorkerBlockerEvents(logPath, repoSlug, issueNumber = null) {
-  const scoped = scopedWorkerBlockerEvents(readFileSync(logPath), repoSlug, issueNumber);
-  return latestWorkerBlockerEvents(scoped).filter((event) => event.blocking === true);
-}
-
 function workerBlockerScope(input, options) {
   const issueNumber = cleanWorkerBlockerIssueNumber(input.issue_number);
   const repoSlug = normalizeWorkerBlockerRepoSlug(input.repo_slug, options);
   if (issueNumber === null || !repoSlug.includes("/")) throw new Error("Invalid worker blocker scope");
   return { issueNumber, repoSlug };
-}
-
-function safeWorkerBlockerLog(logPath) {
-  if (lstatSync(logPath).isSymbolicLink()) throw new Error("Refusing symlinked blocker log");
-}
-
-function terminalResolutionOptions(active, options) {
-  const requestedNow = options.now instanceof Date ? options.now : new Date();
-  const latestActiveTimestamp = active.reduce((maximum, event) => {
-    const timestamp = Number.isFinite(Number(event.ts)) ? Number(event.ts) : 0;
-    return Math.max(maximum, timestamp);
-  }, 0);
-  const resolutionEpoch = Math.max(Math.floor(requestedNow.getTime() / 1000), latestActiveTimestamp + 1);
-  return { ...options, now: new Date(resolutionEpoch * 1000) };
 }
 
 function terminalWorkerBlockerEvents(active, input, issueNumber, repoSlug) {
@@ -109,57 +56,22 @@ function terminalWorkerBlockerEvents(active, input, issueNumber, repoSlug) {
   }));
 }
 
-function releaseLockSafely(lockPath, lockToken) {
-  if (!lockToken) return;
-  try {
-    releaseLock(lockPath, lockToken);
-  } catch {
-    // Reconciliation is best effort and must not block issue closure.
-  }
+function issueActiveEvents(logPath, scope) {
+  return activeWorkerBlockerEvents(logPath, scope.repoSlug, scope.issueNumber);
 }
 
-function resolutionResult(ok, resolvedCount = 0) {
-  return { ok, resolvedCount };
+function issueTerminalEvents(active, input, scope) {
+  return terminalWorkerBlockerEvents(active, input, scope.issueNumber, scope.repoSlug);
 }
+
+const ISSUE_RECONCILIATION_CONTRACT = {
+  resolveScope: workerBlockerScope,
+  activeEvents: issueActiveEvents,
+  terminalEvents: issueTerminalEvents,
+};
 
 export function resolveWorkerBlockersForIssue(input = {}, options = {}) {
-  let result = resolutionResult(false);
-  let lockPath = "";
-  let lockToken = "";
-  try {
-    const { issueNumber, repoSlug } = workerBlockerScope(input, options);
-    const logPath = resolveWorkerBlockerLogPath(options);
-    const maxBytes = resolveWorkerBlockerMaxBytes(options);
-    mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
-    if (existsSync(logPath)) safeWorkerBlockerLog(logPath);
-    lockPath = `${logPath}.lock`;
-    lockToken = acquireLock(lockPath);
-    if (!lockToken) throw new Error("Worker blocker lock unavailable");
-
-    if (!existsSync(logPath)) {
-      result = resolutionResult(true);
-    } else {
-      safeWorkerBlockerLog(logPath);
-      const active = activeWorkerBlockerEvents(logPath, repoSlug, issueNumber);
-      if (active.length === 0) {
-        result = resolutionResult(true);
-      } else {
-        const terminalEvents = terminalWorkerBlockerEvents(active, input, issueNumber, repoSlug);
-        const resolutionOptions = terminalResolutionOptions(active, options);
-        if (appendNormalizedWorkerBlockerEventsUnlocked(
-          logPath,
-          terminalEvents,
-          resolutionOptions,
-          maxBytes,
-        )) result = resolutionResult(true, terminalEvents.length);
-      }
-    }
-  } catch {
-    // Fail open: closure paths continue while the active record stays visible.
-  } finally {
-    releaseLockSafely(lockPath, lockToken);
-  }
-  return result;
+  return reconcileWorkerBlockers(input, options, ISSUE_RECONCILIATION_CONTRACT);
 }
 
 function activeIssueNumbers(logPath, repoSlug, limit) {
@@ -199,7 +111,7 @@ export function listActiveWorkerBlockerIssues(input = {}, options = {}) {
   } catch {
     // Fail open: callers skip ambiguous candidate discovery.
   } finally {
-    releaseLockSafely(lockPath, lockToken);
+    releaseWorkerBlockerLockSafely(lockPath, lockToken);
   }
   return result;
 }

@@ -1586,11 +1586,35 @@ _hrw_record_permission_blocker_failure() {
 	return 0
 }
 
+_hrw_reconcile_session_permission_blockers() {
+	local session_key="$1"
+	local terminal_reason="$2"
+	local logger="${SCRIPT_DIR}/worker-blocker-log.mjs"
+	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
+	local issue_number="${WORKER_ISSUE_NUMBER:-}"
+	[[ -f "$logger" && -n "$session_key" && -n "$repo_slug" ]] || return 0
+	command -v node >/dev/null 2>&1 || return 0
+	node "$logger" resolve-session \
+		--repo-slug "$repo_slug" \
+		--issue-number "$issue_number" \
+		--session-key "$session_key" \
+		--event "headless_session_terminal_reconciled" \
+		--status "resolved" \
+		--reason "$terminal_reason" \
+		--source "headless-runtime-worker" \
+		--detail "Headless runtime ended ownership of this permission blocker identity" >/dev/null 2>&1 || true
+	return 0
+}
+
 _hrw_finish_permission_required_run() {
 	local session_key="$1"
 	local work_dir="$2"
 	local helper="${SCRIPT_DIR}/worker-permission-helper.sh"
 	local permission_status="$_HRW_STATUS_PERMISSION_REQUIRED"
+	# Captured tool-request identities end with the runtime session. A successful
+	# issue handoff appends its own aggregate request identity below, which stays
+	# blocking until the scoped grant is applied.
+	_hrw_reconcile_session_permission_blockers "$session_key" "permission_handoff_transition"
 	if [[ ! -x "$helper" || -z "${_run_permission_request_file:-}" ]]; then
 		_hrw_record_permission_blocker_failure "$session_key" "permission_capture_or_helper_unavailable"
 		_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_PERMISSION_PERSISTENCE_FAILED"
@@ -1647,9 +1671,6 @@ _hrw_record_reconciled_outcome() {
 	local max_write_attempts="${AIDEVOPS_OBJECTIVE_OUTCOME_WRITE_ATTEMPTS:-3}"
 	[[ "$max_write_attempts" =~ ^[1-5]$ ]] || max_write_attempts=3
 
-	if [[ -z "$issue_number" && "$session_key" =~ ([0-9]+)$ ]]; then
-		issue_number="${BASH_REMATCH[1]}"
-	fi
 	case "$outcome" in
 	success) next_action="monitor_pr" ;;
 	deferred)
@@ -1856,6 +1877,10 @@ _cmd_run_finish() {
 			_hrw_finish_failed_run "$session_key" "$work_dir" "$external_terminal_confirmed"
 			finish_status=1
 			ledger_status="$_HRW_STATUS_FAIL"
+		fi
+		if [[ ! "${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ ]]; then
+			_hrw_reconcile_session_permission_blockers "$session_key" \
+				"${_run_failure_reason:-permission_session_terminal}"
 		fi
 	else
 		if ! _hrw_finish_success_run "$session_key" "$work_dir"; then

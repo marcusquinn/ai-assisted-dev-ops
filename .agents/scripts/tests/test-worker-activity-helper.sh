@@ -77,6 +77,27 @@ assert_rc() {
 	return 0
 }
 
+_test_process_start_token() {
+	local test_pid="$1"
+	local stat_content=""
+	local stat_after_comm=""
+	local start_token=""
+	[[ "$test_pid" =~ ^[0-9]+$ ]] || return 1
+	if [[ -r "/proc/${test_pid}/stat" ]]; then
+		stat_content=$(<"/proc/${test_pid}/stat") || stat_content=""
+		[[ -n "$stat_content" ]] || return 1
+		stat_after_comm="${stat_content##*) }"
+		start_token=$(printf '%s\n' "$stat_after_comm" | awk '{print $20}') || start_token=""
+	else
+		start_token=$(LC_ALL=C ps -p "$test_pid" -o lstart= 2>/dev/null | tr -s ' ') || start_token=""
+		start_token="${start_token#"${start_token%%[![:space:]]*}"}"
+		start_token="${start_token%"${start_token##*[![:space:]]}"}"
+	fi
+	[[ -n "$start_token" ]] || return 1
+	printf '%s\n' "$start_token"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Setup: locate the helper, build temp fixtures.
 # ---------------------------------------------------------------------------
@@ -94,6 +115,7 @@ STATS="$FIXTURE_DIR/pulse-stats.json"
 PR_CACHE="$FIXTURE_DIR/pr-cache.json"
 OAUTH_POOL="$FIXTURE_DIR/oauth-pool.json"
 BLOCKERS="$FIXTURE_DIR/worker-progress-blockers.jsonl"
+LEDGER="$FIXTURE_DIR/dispatch-ledger.jsonl"
 OBJECTIVE_EVIDENCE="$FIXTURE_DIR/objective-evidence.jsonl"
 
 cleanup() {
@@ -108,6 +130,7 @@ T_2H_AGO=$((NOW - 7200))
 T_25H_AGO=$((NOW - 90000))
 T_FUTURE_SENTINEL=4102444800
 T_FUTURE_SENTINEL_MS=$((T_FUTURE_SENTINEL * 1000))
+OWNER_PROCESS_START=$(_test_process_start_token "$$")
 
 # Build metrics fixture covering every bucket and the regression cases that
 # the original awk implementation handled correctly:
@@ -164,13 +187,28 @@ T_FUTURE_SENTINEL_MS=$((T_FUTURE_SENTINEL * 1000))
 
 {
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-source"}\n' "$T_2H_AGO"
-	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_grant_applied","status":"resuming","reason":"scoped_permission_granted","blocking":false,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-envelope"}\n' "$T_5MIN_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-other"}\n' "$((T_2H_AGO + 1))"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_grant_applied","status":"resuming","reason":"scoped_permission_granted","blocking":false,"source":"test","issue_number":20,"repo_slug":"marcusquinn/aidevops","session_key":"issue-20","request_id":"perm-source"}\n' "$T_5MIN_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"recent","event":"permission_request_non_grantable","status":"blocked","reason":"permission_non_grantable","blocking":true,"source":"test","issue_number":21,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21","request_id":"perm-sensitive"}\n' "$T_5MIN_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"terminal","event":"issue_terminal_reconciled","status":"resolved","reason":"issue_closed_completed","blocking":false,"source":"test","issue_number":21,"repo_slug":"marcusquinn/aidevops","session_key":"issue-21","request_id":"perm-sensitive"}\n' "$((T_5MIN_AGO + 1))"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_awaiting_approval","status":"blocked","reason":"needs_maintainer_permissions","blocking":true,"source":"test","issue_number":22,"repo_slug":"marcusquinn/aidevops","session_key":"issue-22","request_id":"perm-old"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 2))"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"headless_session_terminal_reconciled","status":"resolved","reason":"success","blocking":false,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 1))"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-retained","request_id":"perm-retained"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-live","request_id":"perm-live"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-pid-reuse","request_id":"perm-pid-reuse"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-legacy","request_id":"perm-legacy"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"future","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":23,"repo_slug":"marcusquinn/aidevops","session_key":"issue-23","request_id":"perm-future"}\n' "$T_FUTURE_SENTINEL"
 	printf 'malformed-jsonl-row\n'
 } >"$BLOCKERS"
+
+{
+	printf '{"session_key":"routine-live","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:00Z"}\n' "$$" "$OWNER_PROCESS_START"
+	printf '{"session_key":"routine-retained","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:01Z"}\n' "$$" "$OWNER_PROCESS_START"
+	printf '{"session_key":"routine-retained","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"completed","updated_at":"2026-07-26T01:00:02Z"}\n' "$$"
+	printf '{"session_key":"routine-pid-reuse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"not-%s","status":"in-flight","updated_at":"2026-07-26T01:00:03Z"}\n' "$$" "$OWNER_PROCESS_START"
+	printf '{"session_key":"routine-legacy","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"in-flight","updated_at":"2026-07-26T01:00:04Z"}\n' "$$"
+} >"$LEDGER"
 
 cat >"$OAUTH_POOL" <<EOF
 {
@@ -206,6 +244,8 @@ RUN_ENV=(
 	"WAH_PR_CACHE_FILE=$PR_CACHE"
 	"WAH_OAUTH_POOL_FILE=$OAUTH_POOL"
 	"WAH_BLOCKER_LOG_FILE=$BLOCKERS"
+	"WAH_DISPATCH_LEDGER_FILE=$LEDGER"
+	"WAH_BLOCKER_OWNER_PROCESS_PATTERN=.*"
 	"WAH_OBJECTIVE_EVIDENCE_FILE=$OBJECTIVE_EVIDENCE"
 	"PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER=24"
 )
@@ -328,16 +368,28 @@ assert_eq "2n: pr check_state = skipped" "skipped" \
 	"$(printf '%s' "$JSON" | jq -r '.worker_solved_issues.check_state')"
 assert_eq "2n2: delivery stages are explicitly skipped" "skipped" \
 	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.check_state')"
-assert_eq "2o: blocker events obey the 24h window" "4" \
+assert_eq "2o: blocker events obey the 24h window" "5" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.event_total')"
-assert_eq "2p: unresolved old blocker remains active until cleared" "1" \
+assert_eq "2p: issue-scoped and live unscoped blockers remain proven current" "3" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.active_total')"
-assert_eq "2q: grant event clears the earlier request for the same session" "0" \
-	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-20")] | length')"
+assert_eq "2q: grant clears only the exact request identity" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-20" and .request_id == "perm-other")] | length')"
 assert_eq "2q2: terminal issue event clears a stale blocker identity" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-21")] | length')"
 assert_eq "2r: malformed blocker rows fail open" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.reason_counts.permission_non_grantable')"
+assert_eq "2s: terminated null-issue session is absent from unresolved buckets" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[], .progress_blockers.retained_unverified[] | select(.session_key == "routine-terminal")] | length')"
+assert_eq "2t: live null-issue session remains proven current" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "routine-live")] | length')"
+assert_eq "2u: unowned null-issue records remain visible but unverified" "3" \
+	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.retained_unverified_total')"
+assert_eq "2v: retained bucket preserves the unowned session identity" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-retained")] | length')"
+assert_eq "2w: mismatched PID identity is not treated as a live owner" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-pid-reuse")] | length')"
+assert_eq "2x: legacy PID-only ownership remains unverified" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-legacy")] | length')"
 
 # ---------------------------------------------------------------------------
 # Section 3: 1h window narrows correctly.
@@ -426,7 +478,8 @@ assert_contains "5g: human output shows failure groups" "Failure groups" "$OUT"
 assert_contains "5h: human output shows diagnostic focus" "Diagnostic focus" "$OUT"
 assert_contains "5i: human output shows failure families" "Failure families" "$OUT"
 assert_contains "5j: human output shows bounded blocker evidence" "worker-progress-blockers.jsonl" "$OUT"
-assert_contains "5k: human output shows active blocker count" "Currently active:            1" "$OUT"
+assert_contains "5k: human output shows proven current blocker count" "Proven current:              3" "$OUT"
+assert_contains "5l: human output separates retained blocker count" "Retained/unverified:         3" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Section 6: provider/account diagnostics expose redacted capacity slots.

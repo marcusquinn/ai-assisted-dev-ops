@@ -98,7 +98,13 @@ test_register_creates_entry() {
 		result=1
 	fi
 
-	print_result "register creates a ledger entry with correct fields" "$result" "count=${entry_count}, status=${status}, key=${session_key}, worktree=${worktree_path}"
+	local owner_process_start
+	owner_process_start=$(jq -r '.owner_process_start' "${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl" 2>/dev/null | head -1)
+	if [[ -z "$owner_process_start" ]]; then
+		result=1
+	fi
+
+	print_result "register creates a ledger entry with correct fields" "$result" "count=${entry_count}, status=${status}, key=${session_key}, worktree=${worktree_path}, owner_start=${owner_process_start}"
 	teardown_test_env
 	return 0
 }

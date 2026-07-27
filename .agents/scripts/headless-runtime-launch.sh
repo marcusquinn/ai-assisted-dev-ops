@@ -426,6 +426,7 @@ _validate_issue_worker_env_contract() {
 	local work_dir_value="$3"
 	local title_value="$4"
 	local prompt_value="$5"
+	local session_issue_number=""
 
 	if ! _run_requires_issue_env_contract "$role_value" "$session_key_value" "$title_value" "$prompt_value"; then
 		return 0
@@ -433,6 +434,19 @@ _validate_issue_worker_env_contract() {
 
 	if [[ -z "${WORKER_ISSUE_NUMBER:-}" ]]; then
 		print_error "[fatal] WORKER_ISSUE_NUMBER unset — issue worker env contract missing; aborting before model launch"
+		return 1
+	fi
+	if [[ ! "${WORKER_ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
+		print_error "[fatal] WORKER_ISSUE_NUMBER invalid — expected a positive integer; aborting before model launch"
+		return 1
+	fi
+	if [[ "$session_key_value" =~ ^issue-([0-9]+)$ ]]; then
+		session_issue_number="${BASH_REMATCH[1]}"
+	elif [[ "$session_key_value" =~ ^triage-review-([0-9]+)$ ]]; then
+		session_issue_number="${BASH_REMATCH[1]}"
+	fi
+	if [[ -n "$session_issue_number" && "$WORKER_ISSUE_NUMBER" != "$session_issue_number" ]]; then
+		print_error "[fatal] WORKER_ISSUE_NUMBER does not match session issue identity; aborting before model launch"
 		return 1
 	fi
 	if [[ -z "${WORKER_REPO_SLUG:-}" ]]; then
