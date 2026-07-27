@@ -33,7 +33,7 @@ a claim that the route is enabled.
 | X | **Live** posts | **Live** likes and bookmarks | **Live** mentions | **Live** followers and following | **Live** owned/followed Lists and account memberships; **No** List timelines | Nine guarded `xurl` streams; bounded List snapshots rescan without inferring deletion. |
 | Reddit | **Live** submissions and comments | **Live** saved, votes, and hidden | **Live** mentions, replies, inbox, and sent | **Live** subreddit and account relationships | **Live** multireddits and membership | PRAW 8, bounded one-page reads, independent cursors, and provider-window coverage. |
 | YouTube | **Live** uploads; **Live/Partial** activity | **Live** likes; **No/Export** watch history and Watch Later | **Live/Gate** channel-related comments and replies; **No/Export** complete authored history | **Live** outbound subscriptions | **Live** owned playlists and membership; **No/Export** saved playlists | `youtube.readonly` user OAuth, identity recheck per page, bounded list quota, 30-day refresh/delete boundary, and explicit gap rows. |
-| LinkedIn | **Gate/Export** | **Gate/Export** | **Export** | **Gate/Export** | **Export/No** | Treat member access as restricted; do not reuse browser engagement automation as a collector. |
+| LinkedIn | **Live/Gate/Export** posts and articles | **Live/Gate/Export** comments, reactions, and saved items | **Live/Gate/Export** messages | **Live/Gate/Export** follows, connections, company follows, and groups | **No** newsletter subscriptions | Ten GET-only Member Snapshot streams for eligible EEA/Swiss members; account download remains an unwired export fallback. |
 | Facebook | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | Shared Meta authorization needs app-review and product-specific evidence. |
 | Instagram | **Gate/Export** media | **Gate/Export** | **Gate/Export** comments and mentions | **Gate/Export** | **Export/No** | Verify Professional versus personal-account coverage before implementation. |
 | Threads | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** replies | **Gate/Export** | **No** until verified | Keep authorization and gaps distinct from Facebook and Instagram despite shared Meta identity. |
@@ -77,6 +77,15 @@ a claim that the route is enabled.
   GET-only provider boundary. `.agents/content/social-youtube.md` records the
   official route, scope, retention, export, and unsupported evidence checked on
   2026-07-26.
+- **Live LinkedIn:** `.agents/scripts/knowledge_social_linkedin.py`,
+  `.agents/scripts/_knowledge_social_linkedin*.py`, and
+  `.agents/tests/test-knowledge-social-linkedin.sh` prove ten independently
+  checkpointed Member Snapshot domains, identity rebinding, content-addressed
+  replay, credential rejection, bounded GET-only transport, consent/deletion
+  coverage, and static isolation from browser mutation tooling.
+  `.agents/content/social-linkedin.md` records the official regional/product
+  gates, `202312` endpoint version, 28-day changelog boundary, account export,
+  storage terms, and explicit newsletter disposition checked on 2026-07-27.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.

@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_collect_cli import GuardedReaderProcess
 from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_oauth_reader import (
+    GuardedOAuthPolicy,
+    GuardedOAuthReader,
+)
 from _knowledge_social_youtube import (
     PageRequest,
     YouTubeAdapterError,
@@ -23,7 +24,6 @@ from knowledge_social_import import reject_credentials
 
 READ_TIMEOUT_SECONDS = 120
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 SAFE_PROVIDER_FAILURES = (
     "Python urllib HTTP exports are unavailable",
     "YouTube OAuth profile access token is missing",
@@ -59,63 +59,22 @@ def _provider_failure(stderr: str) -> YouTubeProviderUnavailableError:
     return YouTubeProviderUnavailableError("YouTube read provider is unavailable")
 
 
-class GuardedYouTubeOAuth:
+YOUTUBE_OAUTH_POLICY = GuardedOAuthPolicy(
+    "YouTube",
+    "YOUTUBE",
+    "YOUTUBE_READ_LOG",
+    READ_TIMEOUT_SECONDS,
+    _decode_output,
+    _provider_failure,
+    YouTubeProviderUnavailableError,
+)
+
+
+class GuardedYouTubeOAuth(GuardedOAuthReader):
     """Execute only identity and allowlisted page reads in a bounded child."""
 
     def __init__(self, helper: Path, profile: str) -> None:
-        if PROFILE_NAME.fullmatch(profile) is None:
-            raise YouTubeProviderUnavailableError("YouTube OAuth profile name is invalid")
-        if helper.is_symlink() or not helper.is_file():
-            raise YouTubeProviderUnavailableError("YouTube read provider is unavailable")
-        self.profile = profile
-        self.process = GuardedReaderProcess(
-            helper=helper,
-            profile=profile,
-            environment=self._environment,
-            timeout_seconds=READ_TIMEOUT_SECONDS,
-            decode_output=_decode_output,
-            provider_failure=_provider_failure,
-            unavailable_error=YouTubeProviderUnavailableError,
-            provider_name="YouTube",
-        )
-
-    def _environment(self) -> dict[str, str]:
-        token_name = f"YOUTUBE_{self.profile.upper()}_ACCESS_TOKEN"
-        inherited = {
-            "HOME",
-            "HTTPS_PROXY",
-            "HTTP_PROXY",
-            "LANG",
-            "LC_ALL",
-            "NO_PROXY",
-            "PATH",
-            "REQUESTS_CA_BUNDLE",
-            "SSL_CERT_FILE",
-            "TMPDIR",
-            "https_proxy",
-            "http_proxy",
-            "no_proxy",
-        }
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key in inherited or key == token_name
-        }
-        if os.environ.get("AIDEVOPS_TEST_MODE") == "1":
-            for key in (
-                "AIDEVOPS_TEST_MODE",
-                "PYTHONPATH",
-                "YOUTUBE_READ_LOG",
-            ):
-                if key in os.environ:
-                    environment[key] = os.environ[key]
-        return environment
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        return self.process.run({"action": "identity", "account_id": expected_id})
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return self.process.run(request.payload())
+        super().__init__(helper, profile, YOUTUBE_OAUTH_POLICY)
 
 
 def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:

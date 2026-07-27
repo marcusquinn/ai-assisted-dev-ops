@@ -29,6 +29,10 @@ class YouTubeProviderUnavailableError(YouTubeAdapterError):
     """Raised when the bounded OAuth child cannot complete a read."""
 
 
+ADAPTER_ERROR = YouTubeAdapterError
+PROVIDER_UNAVAILABLE_ERROR = YouTubeProviderUnavailableError
+
+
 @dataclass(frozen=True)
 class StreamSpec:
     """Static collection and coverage policy for one YouTube stream."""

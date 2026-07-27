@@ -10,6 +10,7 @@ PYTHON_HELPER="${SCRIPT_DIR}/knowledge_social_import.py"
 X_HELPER="${SCRIPT_DIR}/knowledge_social_x.py"
 REDDIT_HELPER="${SCRIPT_DIR}/knowledge_social_reddit.py"
 YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
+LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -78,6 +79,13 @@ YouTube synchronization:
   --budget is a hard 3-1000 unit limit and --page-size is 1-50 items.
   Collection uses youtube.readonly user OAuth and never the service-account helper.
 
+LinkedIn synchronization:
+  sync-linkedin verifies the selected member authorization, then reads one
+  documented Member Snapshot domain. Access is limited to eligible EEA or Swiss
+  members and a provisioned Member Data Portability product. The initial identity
+  request costs one unit; every page reserves two units for identity rebinding and
+  one GET-only snapshot read. --budget is 3-1000 and --page-size is 1-50.
+
 EOF
 	return 0
 }
@@ -103,6 +111,10 @@ Usage:
     [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-youtube [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id CHANNEL_ID --stream STREAM --profile PROFILE \
+    [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
+    [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-linkedin [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id MEMBER_ID --stream STREAM --profile PROFILE \
     [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
     [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
@@ -270,6 +282,14 @@ main() {
 			return 1
 		fi
 		python3 "$YOUTUBE_HELPER" "$@" || return 1
+		;;
+	sync-linkedin)
+		require_runtime || return 1
+		if [[ ! -r "$LINKEDIN_HELPER" ]]; then
+			printf 'ERROR: LinkedIn social adapter missing: %s\n' "$LINKEDIN_HELPER" >&2
+			return 1
+		fi
+		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1

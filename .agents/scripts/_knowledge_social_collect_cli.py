@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -23,6 +24,23 @@ Collector = Callable[[argparse.Namespace, Path, str], dict[str, Any]]
 EnvironmentFactory = Callable[[], dict[str, str]]
 OutputDecoder = Callable[[str], dict[str, Any]]
 ProviderFailure = Callable[[str], Exception]
+READER_ENVIRONMENT_KEYS = frozenset(
+    {
+        "HOME",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "LANG",
+        "LC_ALL",
+        "NO_PROXY",
+        "PATH",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+        "https_proxy",
+        "http_proxy",
+        "no_proxy",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -74,6 +92,22 @@ class GuardedReaderProcess:
         if completed.returncode != 0:
             raise self.provider_failure(completed.stderr)
         return self.decode_output(completed.stdout)
+
+
+def guarded_reader_environment(
+    token_name: str, test_keys: tuple[str, ...] = ()
+) -> dict[str, str]:
+    """Expose only one provider token and bounded runtime support variables."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in READER_ENVIRONMENT_KEYS or key == token_name
+    }
+    if os.environ.get("AIDEVOPS_TEST_MODE") == "1":
+        for key in ("AIDEVOPS_TEST_MODE", "PYTHONPATH", *test_keys):
+            if key in os.environ:
+                environment[key] = os.environ[key]
+    return environment
 
 
 def parse_collector_args(policy: CollectorCliPolicy) -> argparse.Namespace:
