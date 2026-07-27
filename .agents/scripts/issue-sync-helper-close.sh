@@ -277,7 +277,7 @@ _mark_reopen_merged_pr_task() {
 _reopen_find_merged_pr() {
 	local repo="$1" tid="$2" ref_num="$3"
 	local owner="${repo%%/*}" name="${repo#*/}"
-	local pr_info="" result=""
+	local pr_info="" result="" reported_cost=""
 
 	pr_info=$(gh_find_merged_pr "$repo" "$tid" 2>/dev/null || true)
 	if [[ -n "$pr_info" ]]; then
@@ -290,7 +290,9 @@ _reopen_find_merged_pr() {
 	# cannot be reopened merely because title-based discovery missed it.
 	[[ "$repo" == */* && -n "$owner" && -n "$name" && "$ref_num" =~ ^[0-9]+$ ]] || return 1
 	# shellcheck disable=SC2016
-	result=$(gh api graphql -f query='
+	result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-reopen-closing-pr-exact-cost" \
+		gh api graphql -f query='
 query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner,name:$name) {
     nameWithOwner
@@ -301,7 +303,10 @@ query($owner:String!,$name:String!,$number:Int!) {
       }
     }
   }
+	rateLimit { cost }
 }' -F owner="$owner" -F name="$name" -F number="$ref_num" 2>/dev/null) || return 1
+	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
 	printf '%s' "$result" | jq -er --arg repo "$repo" '
       .data.repository
       | select(.nameWithOwner == $repo)

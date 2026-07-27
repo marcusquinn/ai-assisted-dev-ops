@@ -119,18 +119,26 @@ pass "edge loop stops with retryable state after aggregate exhaustion"
 MUTATION_FIXTURE=""
 _gh_with_timeout() {
 	local operation="$1"
-	: "$operation"
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || return 1
 	case "$MUTATION_FIXTURE" in
 	created)
-		printf '{"data":{"issue":{"number":101}}}\n'
+		if [[ "$operation" == "read" ]]; then
+			printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+		else
+			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":101}},"rateLimit":{"cost":1}}}'
+		fi
 		return 0
 		;;
 	already-present)
-		printf 'already been taken\n'
-		return 1
+		printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[{"id":"NODE_103"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+		return 0
 		;;
 	failed)
-		printf '{"errors":[{"message":"SECRET_PAYLOAD"}]}\n'
+		if [[ "$operation" == "read" ]]; then
+			printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+			return 0
+		fi
+		printf '%s\n' '{"errors":[{"message":"SECRET_PAYLOAD"}]}'
 		return 1
 		;;
 	esac
