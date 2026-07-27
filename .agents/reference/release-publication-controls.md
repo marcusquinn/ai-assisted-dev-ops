@@ -106,10 +106,13 @@ session. Do not create a release, package, deployment, or test tag as validation
 
 ### Pre-mutation state and rollback matrix
 
-Read-only inventory on 2026-07-27 confirmed the original exposure remains live.
-Capture a fresh machine-readable snapshot immediately before mutation with
-`release-publication-settings-helper.sh snapshot`; do not rely on this dated
-summary if the live state has changed.
+Read-only inventory on 2026-07-27 captured the original exposure immediately
+before mutation. The approved rollout completed later that day: API-visible
+controls passed the read-only verifier, the unsupported GitHub and npm settings
+were captured before and after through their UIs, and PR #28722 merged only after
+the protected environment existed. Preserve the private machine-readable
+snapshot captured by `release-publication-settings-helper.sh snapshot` as the
+rollback source; do not reconstruct rollback values from this summary.
 
 | Control | Pre-mutation state | Approved target | Exact rollback input |
 |---|---|---|---|
@@ -119,6 +122,24 @@ summary if the live state has changed.
 | Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`; exact `refs/tags/v*` include with no exclusions; creation, update, and deletion restrictions only; one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
 | Environments | No environments | Protected `release` environment; the approved release-author user as the sole reviewer, no team reviewers, self-review allowed, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
 | npm Trusted Publisher | Existing GitHub Actions publisher; environment binding must be checked in npmjs.com | `marcusquinn/aidevops`, `publish-packages.yml`, environment `release`, `npm publish` only | Restore the exact pre-change publisher fields captured in the npm UI; npm exposes no supported management API for this configuration. |
+
+### Activated state
+
+The verified live state after the rollout is:
+
+- Actions defaults are read-only and workflow-authored pull-request approval is
+  disabled; the repository Actions policy remains otherwise unchanged.
+- `Protect aidevops release tags` is active for exact `refs/tags/v*` creation,
+  update, and deletion, with `marcusquinn` as its sole user bypass.
+- `release` requires `marcusquinn`, permits self-review, disallows administrator
+  bypass, and accepts only the `v*` tag deployment policy.
+- npm Trusted Publisher is bound to `marcusquinn/aidevops`,
+  `publish-packages.yml`, environment `release`, with `npm publish` allowed and
+  staged publication disabled.
+
+No tag, release, package, deployment, or Homebrew update was created to validate
+the rollout. Any subsequent publication still requires separate explicit release
+intent and the canonical full-loop release path.
 
 The release-author identity is a consequential live-policy choice and is not
 guessed here. The current GitHub REST schema explicitly supports a `User`
