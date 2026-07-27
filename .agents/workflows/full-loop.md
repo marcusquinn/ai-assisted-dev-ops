@@ -75,8 +75,7 @@ entrypoint instead of calling `full-loop-helper.sh start` directly:
 
 ```bash
 ~/.aidevops/agents/scripts/interactive-start-helper.sh \
-  --issue "$ISSUE_NUMBER" --repo "$REPO" --task "$ARGUMENTS" \
-  ${ISSUE_HAS_AUTO_DISPATCH:+--auto-dispatch}
+  --issue "$ISSUE_NUMBER" --repo "$REPO" --task "$ARGUMENTS"
 ```
 
 This route preserves `no-auto-dispatch` so unattended pickup stays blocked while
