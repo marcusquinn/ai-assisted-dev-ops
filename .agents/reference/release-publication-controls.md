@@ -57,7 +57,9 @@ as a draft from an initial documentation commit, then add the allocated PR
 number and every authorized `PR@MERGE_SHA` source in a follow-up commit without
 rewriting the published branch. The follow-up commit message carries the same
 trailers so the repository's squash-merge commit preserves the reviewed
-manifest consumed by the release verifier.
+manifest consumed by the release verifier. Keep the trailer lines contiguous in
+one terminal commit-message block so `git interpret-trailers --parse` retains
+the aggregator identity and every repeated source.
 
 PR #28725 reviews this recovery manifest:
 
