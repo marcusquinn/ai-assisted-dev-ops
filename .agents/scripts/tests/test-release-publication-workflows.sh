@@ -58,6 +58,7 @@ assert_contains "release workflow verifies provenance" "release-provenance-helpe
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
 assert_contains "package workflow checks out release tag" 'ref: ${{ github.event.release.tag_name }}' "$PACKAGE_WORKFLOW"
 assert_contains "Homebrew job has read-only repository permission" "contents: read" "$PACKAGE_WORKFLOW"
+assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
 assert_order "release provenance precedes release creation" \
 	"release-provenance-helper.sh verify" "github-release-helper.sh create" "$RELEASE_WORKFLOW"
 assert_order "package provenance precedes npm publication" \

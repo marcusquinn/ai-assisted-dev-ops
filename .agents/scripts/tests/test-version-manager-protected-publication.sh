@@ -110,11 +110,15 @@ create_github_release() {
 	printf 'direct:%s\n' "$version" >>"$route_log"
 	return 0
 }
-_publish_github_release '1.2.4'
+get_current_version() {
+	printf '1.2.4\n'
+	return 0
+}
+main github-release
 if grep -qx 'protected:1.2.4' "$route_log" && ! grep -q '^direct:' "$route_log"; then
-	print_result 'aidevops release cannot use direct GitHub release creation' true
+	print_result 'aidevops github-release recovery cannot create a release directly' true
 else
-	print_result 'aidevops release cannot use direct GitHub release creation' false "$(tr '\n' ' ' <"$route_log")"
+	print_result 'aidevops github-release recovery cannot create a release directly' false "$(tr '\n' ' ' <"$route_log")"
 fi
 
 : >"$route_log"

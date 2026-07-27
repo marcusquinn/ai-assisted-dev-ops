@@ -138,7 +138,6 @@ jobs:
           user_email: 'github-actions[bot]@users.noreply.github.com'
           user_name: 'github-actions[bot]'
           commit_message: 'Update aidevops to v${{ steps.release.outputs.version }}'
-        continue-on-error: true
       
       - name: Summary
         env:

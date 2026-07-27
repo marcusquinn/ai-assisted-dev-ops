@@ -661,7 +661,7 @@ main() {
 	"github-release")
 		local version
 		version=$(get_current_version)
-		create_github_release "$version"
+		_publish_github_release "$version"
 		;;
 	"post-release")
 		local version
