@@ -627,7 +627,7 @@ gh_issue_view() {
 # Routes directly to REST (`gh api GET /repos/{owner}/{repo}/pulls`) when
 # GraphQL remaining is below the fallback threshold, and still falls back to
 # REST if the primary call fails during an exhaustion window. Direct list reads
-# use /pulls; --author reads use pagination-complete Search API qualifiers.
+# use /pulls; search-only filters use pagination-complete Search API qualifiers.
 # Unsupported argument or JSON-field shapes remain on native GraphQL.
 #
 #   gh_pr_list --repo owner/repo --state open --json number,title
@@ -641,7 +641,7 @@ gh_pr_list() {
 	local _uses_search=0
 	local _pool="rest-core"
 	_rest_pr_list_can_preserve_args "$@" && _rest_capable=1
-	if _rest_args_have_author "$@"; then
+	if _rest_pr_list_requires_search "$@"; then
 		_uses_search=1
 		_pool="rest-search"
 	fi
@@ -654,7 +654,7 @@ gh_pr_list() {
 	local _out="" _rc=0
 	if [[ $_rest_capable -eq 1 ]] && _rest_read_first_enabled; then
 		if [[ $_uses_search -eq 1 ]]; then
-			print_info "[INFO] gh-wrapper: REST-first read mode, routing author-filtered pr list to /search/issues"
+			print_info "[INFO] gh-wrapper: REST-first read mode, routing search-filtered pr list to /search/issues"
 		else
 			print_info "[INFO] gh-wrapper: REST-first read mode, routing pr list to REST"
 		fi
@@ -668,7 +668,7 @@ gh_pr_list() {
 	fi
 	if [[ $_rest_capable -eq 1 ]] && { { command -v github_app_should_route_rest >/dev/null 2>&1 && github_app_should_route_rest "$_pool" gh_pr_list; } || _rest_should_fallback; }; then
 		if [[ $_uses_search -eq 1 ]]; then
-			print_info "[INFO] gh-wrapper: GraphQL budget low, routing author-filtered pr list to /search/issues"
+			print_info "[INFO] gh-wrapper: GraphQL budget low, routing search-filtered pr list to /search/issues"
 		else
 			print_info "[INFO] gh-wrapper: GraphQL budget low, routing pr list to REST"
 		fi
@@ -685,7 +685,7 @@ gh_pr_list() {
 	local rc=$?
 	if [[ $rc -ne 0 && $_rest_capable -eq 1 ]] && _rest_should_fallback; then
 		if [[ $_uses_search -eq 1 ]]; then
-			print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to /search/issues for author-filtered pr list"
+			print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to /search/issues for search-filtered pr list"
 		else
 			print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to REST for pr list"
 		fi

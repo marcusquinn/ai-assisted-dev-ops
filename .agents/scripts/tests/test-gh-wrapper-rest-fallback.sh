@@ -1156,21 +1156,42 @@ fi
 unset STUB_PRIMARY_FAIL
 
 # =============================================================================
-# Test 24: gh_pr_list keeps --search on GraphQL path when budget is low
+# Test 24: gh_pr_list routes --search through exact Search API semantics
 # =============================================================================
 : >"$GH_CALLS"
 : >"$GH_INFO_OUTPUT"
 export STUB_RATE_LIMIT_REMAINING=0
 
-gh_pr_list --repo "owner/repo" --search "fallback" --state open --json number --jq length >/dev/null 2>&1 || true
+pr_search_count=$(gh_pr_list --repo "owner/repo" --search "fallback" --state open --json number --jq length 2>/dev/null || true)
 
-if grep -qE '^pr list' "$GH_CALLS" 2>/dev/null &&
-	! grep -qE '^api /repos/owner/repo/pulls\?' "$GH_CALLS" 2>/dev/null; then
-	pass "gh_pr_list leaves --search on primary path when REST cannot preserve semantics"
+if [[ "$pr_search_count" == "1" ]] && grep -qE '^api -i /search/issues\?' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'fallback%20repo%3Aowner%2Frepo%20is%3Apr%20is%3Aopen' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^(pr list|api /repos/owner/repo/pulls\?)' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_pr_list preserves --search through Search API qualifiers without requiring --author"
 else
-	fail "gh_pr_list leaves --search on primary path when REST cannot preserve semantics" \
-		"GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
+	fail "gh_pr_list preserves --search through Search API qualifiers without requiring --author" \
+		"count=${pr_search_count} GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
 fi
+
+# Search-only PR filters must select /search/issues even without --search or
+# --author; the direct /pulls endpoint cannot preserve these semantics.
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export AIDEVOPS_GH_PR_LIST_CACHE_DISABLE=1
+gh_pr_list --repo "owner/repo" --assignee bob --state open --json number >/dev/null 2>&1 || true
+gh_pr_list --repo "owner/repo" --label "needs review" --state open --json number >/dev/null 2>&1 || true
+gh_pr_list --repo "owner/repo" --draft --state open --json number >/dev/null 2>&1 || true
+search_only_calls=$(grep -cE '^api -i /search/issues\?' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$search_only_calls" == "3" ]] && grep -q 'assignee%3Abob' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'label%3A%22needs%20review%22' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'draft%3Atrue' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^(pr list|api /repos/owner/repo/pulls\?)' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_pr_list routes assignee, label, and draft filters through Search API"
+else
+	fail "gh_pr_list routes assignee, label, and draft filters through Search API" \
+		"search_calls=${search_only_calls} GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
+fi
+unset AIDEVOPS_GH_PR_LIST_CACHE_DISABLE
 
 # =============================================================================
 # Test 25: gh_pr_view routes directly to REST when GraphQL remaining is low
@@ -1749,25 +1770,29 @@ unset AIDEVOPS_GH_PR_VIEW_CACHE AIDEVOPS_GH_PR_VIEW_CACHE_DIR AIDEVOPS_GH_PR_VIE
 unset AIDEVOPS_GH_REST_FIRST_READS
 
 # =============================================================================
-# Test 28: gh_pr_list --search → no non-equivalent REST fallback
+# Test 28: gh_pr_list combines caller search and exact filter qualifiers
 # =============================================================================
 : >"$GH_CALLS"
 : >"$GH_INFO_OUTPUT"
-export STUB_PRIMARY_FAIL=1
 export STUB_RATE_LIMIT_REMAINING=0
+export STUB_SEARCH_FIXTURE='{"items":[{"number":42,"state":"open","title":"Matching draft PR","html_url":"https://github.com/owner/repo/pull/42","draft":true,"assignees":[{"login":"bob"}],"labels":[{"name":"needs review"}],"pull_request":{"merged_at":null}}]}'
 
-gh_pr_list --repo "owner/repo" --state open --search "Resolves #42 in:body" \
-	--json number --limit 5 >/dev/null 2>&1 || true
+filtered_pr_number=$(gh_pr_list --repo "owner/repo" --state open --search "Resolves #42 in:body" \
+	--assignee bob --label "needs review" --draft --json number --limit 5 --jq '.[0].number' 2>/dev/null || true)
 
-if grep -qE '^pr list' "$GH_CALLS" 2>/dev/null &&
-	! grep -qE '^api /repos/owner/repo/pulls' "$GH_CALLS" 2>/dev/null; then
-	pass "gh_pr_list --search preserves semantics by skipping REST fallback"
+if [[ "$filtered_pr_number" == "42" ]] && grep -qE '^api -i /search/issues\?' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'Resolves%20%2342%20in%3Abody' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'assignee%3Abob' "$GH_CALLS" 2>/dev/null && grep -q 'draft%3Atrue' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'label%3A%22needs%20review%22' "$GH_CALLS" 2>/dev/null &&
+	! grep -q 'author%3A' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^(pr list|api /repos/owner/repo/pulls)' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_pr_list combines caller search and exact filters without an author qualifier"
 else
-	fail "gh_pr_list --search preserves semantics by skipping REST fallback" \
-		"GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
+	fail "gh_pr_list combines caller search and exact filters without an author qualifier" \
+		"number=${filtered_pr_number} GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
 fi
 
-unset STUB_PRIMARY_FAIL
+unset STUB_SEARCH_FIXTURE
 export STUB_RATE_LIMIT_REMAINING=5000
 
 # =============================================================================
