@@ -117,9 +117,11 @@ repos/test/repo/rulesets)
 	;;
 repos/test/repo/rulesets/99)
 	if [[ "$mode" == "bad-ruleset" ]]; then
-		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"]}},"rules":[{"type":"deletion"}],"bypass_actors":[]}'
+		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"deletion"}],"bypass_actors":[]}'
+	elif [[ "$mode" == "bad-ruleset-exclusion" ]]; then
+		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":["refs/tags/v*"]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"}]}'
 	else
-		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"}]}'
+		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"}]}'
 	fi
 	;;
 repos/test/repo/environments)
@@ -132,6 +134,8 @@ repos/test/repo/environments)
 repos/test/repo/environments/release)
 	if [[ "$mode" == "bad-environment" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":null}'
+	elif [[ "$mode" == "bad-reviewer-team" ]]; then
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}},{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	else
 		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	fi
@@ -185,7 +189,8 @@ if ! run_settings_helper valid verify-github --repo test/repo \
 fi
 printf 'PASS valid GitHub release settings are accepted\n'
 
-for invalid_mode in bad-author bad-actions bad-ruleset bad-environment; do
+for invalid_mode in bad-author bad-actions bad-ruleset bad-ruleset-exclusion \
+	bad-environment bad-reviewer-team; do
 	if run_settings_helper "$invalid_mode" verify-github --repo test/repo \
 		--release-author releaser --reviewer reviewer >/dev/null 2>&1; then
 		printf 'FAIL invalid settings mode was accepted: %s\n' "$invalid_mode"

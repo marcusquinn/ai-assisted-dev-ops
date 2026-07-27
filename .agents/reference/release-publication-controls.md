@@ -69,15 +69,18 @@ summary if the live state has changed.
 | Actions defaults | `default_workflow_permissions=write`; workflow PR approval enabled | `read`; PR approval disabled | Restore both values from `actions.workflow_permissions` in the snapshot. |
 | Actions policy | Actions enabled; all actions allowed | No change in this checkpoint | Preserve `actions.policy` unchanged. |
 | Workflow permissions | All 55 workflows declare `permissions`; the eight previous default-dependent callers are listed above | Keep every declaration explicit | Revert code normally; do not compensate by restoring broad defaults. |
-| Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`, targeting `refs/tags/v*`, restricting creation, update, and deletion, with one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
-| Environments | No environments | Protected `release` environment; independent reviewer(s), self-review prevented, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
+| Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`; exact `refs/tags/v*` include with no exclusions; creation, update, and deletion restrictions only; one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
+| Environments | No environments | Protected `release` environment; exact independent user reviewer set with no team reviewers, self-review prevented, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
 | npm Trusted Publisher | Existing GitHub Actions publisher; environment binding must be checked in npmjs.com | `marcusquinn/aidevops`, `publish-packages.yml`, environment `release`, `npm publish` only | Restore the exact pre-change publisher fields captured in the npm UI; npm exposes no supported management API for this configuration. |
 
 The current release author and independent reviewer identities are consequential
 live-policy choices and are intentionally not guessed or committed here. The
-release author must be the single ruleset bypass actor. At least one different
-repository collaborator must review the `release` environment, and GitHub's
-"Prevent self-review" and "Disallow admin bypass" controls must remain enabled.
+current GitHub REST schema explicitly supports a `User` repository-ruleset bypass
+actor on personal repositories, so the release author can be the single bypass
+principal rather than granting bypass to an entire repository role. At least one
+different repository collaborator must review the `release` environment, and
+GitHub's "Prevent self-review" and "Disallow admin bypass" controls must remain
+enabled.
 
 The GitHub snapshot and verifier are read-only:
 

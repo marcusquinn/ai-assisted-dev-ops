@@ -15,6 +15,7 @@ readonly RELEASE_REF_PATTERN="refs/tags/v*"
 readonly RELEASE_DEPLOYMENT_PATTERN="v*"
 readonly SNAPSHOT_SCHEMA="aidevops.release-publication-settings/v1"
 readonly REQUIRED_REVIEWERS_RULE="required_reviewers"
+readonly USER_ACTOR_TYPE="User"
 
 _release_settings_error() {
 	local message="$1"
@@ -273,16 +274,16 @@ _release_settings_verify_ruleset() {
 	ruleset_detail=$(_release_settings_release_ruleset "$repo_slug") || return 1
 	if ! jq -e \
 		--arg pattern "$RELEASE_REF_PATTERN" \
+		--arg user_type "$USER_ACTOR_TYPE" \
 		--argjson author_id "$author_id" '
 		.target == "tag"
 		and .enforcement == "active"
-		and ((.conditions.ref_name.include // []) | index($pattern) != null)
-		and (([.rules[]?.type] | index("creation")) != null)
-		and (([.rules[]?.type] | index("update")) != null)
-		and (([.rules[]?.type] | index("deletion")) != null)
+		and ((.conditions.ref_name.include // []) == [$pattern])
+		and ((.conditions.ref_name.exclude // []) == [])
+		and (([.rules[]?.type] | sort) == (["creation", "update", "deletion"] | sort))
 		and ([.bypass_actors[]?] | length == 1)
 		and any(.bypass_actors[]?;
-		  .actor_type == "User" and .actor_id == $author_id and .bypass_mode == "always")
+		  .actor_type == $user_type and .actor_id == $author_id and .bypass_mode == "always")
 	' <<<"$ruleset_detail" >/dev/null; then
 		_release_settings_error "release tag ruleset does not match the fail-closed policy"
 		return 1
@@ -295,37 +296,41 @@ _release_settings_verify_reviewers() {
 	local release_author="$2"
 	shift 2
 	local expected_count="$#"
-	local actual_count=""
 	local reviewer=""
+	local seen_reviewers=" "
 
-	actual_count=$(jq --arg rule "$REQUIRED_REVIEWERS_RULE" '[.protection_rules[]?
-		| select(.type == $rule)
-		| .reviewers[]? | .reviewer.login] | unique | length' \
-		<<<"$environment_detail") || return 1
-	if [[ "$actual_count" -ne "$expected_count" ]]; then
+	if ! jq -e --arg rule "$REQUIRED_REVIEWERS_RULE" \
+		--arg user_type "$USER_ACTOR_TYPE" --argjson count "$expected_count" '
+		[.protection_rules[]? | select(.type == $rule)] as $rules
+		| ($rules | length) == 1
+		and $rules[0].prevent_self_review == true
+		and (($rules[0].reviewers // []) | length) == $count
+		and all($rules[0].reviewers[]?;
+		  .type == $user_type and (.reviewer.login | type == "string"))
+	' <<<"$environment_detail" >/dev/null; then
 		_release_settings_error "release environment reviewer set is not exact"
 		return 1
 	fi
 	for reviewer in "$@"; do
 		_release_settings_validate_login "$reviewer" || return 1
+		if [[ "$seen_reviewers" == *" ${reviewer} "* ]]; then
+			_release_settings_error "duplicate required reviewer: ${reviewer}"
+			return 1
+		fi
+		seen_reviewers+="${reviewer} "
 		if [[ "$reviewer" == "$release_author" ]]; then
 			_release_settings_error "release author cannot be an independent reviewer"
 			return 1
 		fi
 		if ! jq -e --arg login "$reviewer" --arg rule "$REQUIRED_REVIEWERS_RULE" \
+			--arg user_type "$USER_ACTOR_TYPE" \
 			'any(.protection_rules[]?; .type == $rule
-			and any(.reviewers[]?; .reviewer.login == $login))' \
+			and any(.reviewers[]?; .type == $user_type and .reviewer.login == $login))' \
 			<<<"$environment_detail" >/dev/null; then
 			_release_settings_error "missing required reviewer: ${reviewer}"
 			return 1
 		fi
 	done
-	if ! jq -e --arg rule "$REQUIRED_REVIEWERS_RULE" \
-		'any(.protection_rules[]?; .type == $rule and .prevent_self_review == true)' \
-		<<<"$environment_detail" >/dev/null; then
-		_release_settings_error "release environment does not prevent self-review"
-		return 1
-	fi
 	return 0
 }
 
