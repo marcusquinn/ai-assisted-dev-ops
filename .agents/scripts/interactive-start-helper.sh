@@ -121,6 +121,7 @@ _interactive_start_parse_args() {
 	_INTERACTIVE_START_TASK=""
 	_INTERACTIVE_START_AUTO_DISPATCH=0
 	_INTERACTIVE_START_BACKGROUND=0
+	_INTERACTIVE_START_HELP_REQUESTED=0
 	while [[ $# -gt 0 ]]; do
 		local arg="$1"
 		shift
@@ -155,6 +156,7 @@ _interactive_start_parse_args() {
 		--auto-dispatch) _INTERACTIVE_START_AUTO_DISPATCH=1 ;;
 		--background | --bg) _INTERACTIVE_START_BACKGROUND=1 ;;
 		--help | -h)
+			_INTERACTIVE_START_HELP_REQUESTED=1
 			_usage
 			return 0
 			;;
@@ -173,6 +175,9 @@ _interactive_start_parse_args() {
 
 main() {
 	_interactive_start_parse_args "$@" || return $?
+	if [[ "$_INTERACTIVE_START_HELP_REQUESTED" -eq 1 ]]; then
+		return 0
+	fi
 	local issue="$_INTERACTIVE_START_ISSUE"
 	local repo="$_INTERACTIVE_START_REPO"
 	local task="$_INTERACTIVE_START_TASK"

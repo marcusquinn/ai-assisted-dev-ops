@@ -106,6 +106,25 @@ exit 0
 STUB
 chmod +x "${stub_dir}/interactive-session-helper.sh" "${stub_dir}/pre-edit-check.sh" "${stub_dir}/full-loop-helper.sh"
 
+assert_help_only() {
+	local description="$1"
+	shift
+	local help_output=""
+	local help_rc=0
+	local usage_count=0
+	: >"$call_log"
+	help_output=$(PATH="${stub_dir}:$PATH" "$helper" "$@" 2>&1) || help_rc=$?
+	[[ "$help_rc" -eq 0 ]] || fail "${description} returned ${help_rc}"
+	usage_count=$(printf '%s\n' "$help_output" | grep -c '^Usage:')
+	[[ "$usage_count" -eq 1 ]] || fail "${description} printed usage ${usage_count} times"
+	[[ ! -s "$call_log" ]] || fail "${description} invoked a lifecycle helper"
+	return 0
+}
+
+assert_help_only "long help" --help
+assert_help_only "short help" -h
+assert_help_only "help after options" --issue 42 --repo owner/repo --help --task "ignored task"
+
 (
 	cd "$canonical_root" || exit 1
 	PRE_EDIT_MODE=valid PATH="${stub_dir}:$PATH" \
