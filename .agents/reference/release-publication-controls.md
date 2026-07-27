@@ -70,7 +70,8 @@ terminal-receipt guard: publication was rejected because its manifest included
 PR #28720, which already recorded `release:not-requested`. Aggregation manifests
 must include only sources whose current receipts still permit publication; code
 from terminal non-publishing sources may remain in the release tree without
-rewriting those receipts.
+rewriting those receipts. PR #28729 reviews the remaining authorized source,
+PR #28701 at its exact merge SHA.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
