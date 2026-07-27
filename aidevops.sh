@@ -1251,20 +1251,16 @@ cmd_version() {
 _dispatch_helper() {
 	local script_name="$1" error_name="$2"
 	shift 2
-	local source_hp="$INSTALL_DIR/.agents/scripts/$script_name"
+	local coherent_hp="${AIDEVOPS_CLI_MODULES_DIR%/aidevops-cli}/$script_name"
 	local deployed_hp="$AGENTS_DIR/scripts/$script_name"
-	local hp="$deployed_hp"
-	if [[ -f "$source_hp" && -f "$INSTALL_DIR/.agents/scripts/aidevops-cli/aidevops-repos-lib.sh" ]]; then
-		hp="$source_hp"
-	fi
-	[[ ! -f "$hp" ]] && hp="$source_hp"
+	local hp="$coherent_hp"
+	[[ ! -f "$hp" ]] && hp="$deployed_hp"
 	if [[ -f "$hp" ]]; then
 		bash "$hp" "$@"
-	else
-		print_error "$error_name not found. Run: aidevops update"
-		exit 1
+		return $?
 	fi
-	return 0
+	print_error "$error_name not found. Run: aidevops update"
+	return 1
 }
 
 _dispatch_config() {

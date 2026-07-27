@@ -15,12 +15,25 @@ git -C "${TEST_ROOT}/other-repo" init -q
 
 IFS= read -r repo_version <"${REPO_ROOT}/VERSION"
 printf '%s\n' "$repo_version" >"${TEST_ROOT}/agents/VERSION"
+cp "$AIDEVOPS_SH" "${TEST_ROOT}/agents/aidevops.sh"
+cp -R "${REPO_ROOT}/.agents/scripts/aidevops-cli" "${TEST_ROOT}/agents/scripts/"
+cp "${REPO_ROOT}/.agents/scripts/plugin-source-trust-lib.sh" "${TEST_ROOT}/agents/scripts/"
+cp "${REPO_ROOT}/.agents/scripts/runtime-bundle-verifier.sh" "${TEST_ROOT}/agents/scripts/"
 
 run_cli() {
 	(
 		cd "${TEST_ROOT}/other-repo" || exit 1
 		HOME="${TEST_ROOT}/home" AIDEVOPS_AGENTS_DIR="${TEST_ROOT}/agents" \
 			AIDEVOPS_REPO_PATH="$REPO_ROOT" bash "$AIDEVOPS_SH" "$@"
+	)
+	return $?
+}
+
+run_deployed_cli() {
+	(
+		cd "${TEST_ROOT}/other-repo" || exit 1
+		HOME="${TEST_ROOT}/home" AIDEVOPS_AGENTS_DIR="${TEST_ROOT}/agents" \
+			AIDEVOPS_REPO_PATH="$REPO_ROOT" bash "${TEST_ROOT}/agents/aidevops.sh" "$@"
 	)
 	return $?
 }
@@ -47,5 +60,31 @@ if [[ "$release_rc" -ne 1 ]]; then
 	exit 1
 fi
 printf 'PASS release helper validation exit code is preserved\n'
+
+mkdir -p "${TEST_ROOT}/home/Git/aidevops/.agents/scripts/aidevops-cli"
+cat >"${TEST_ROOT}/home/Git/aidevops/.agents/scripts/full-loop-release-helper.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'stale canonical helper invoked\n'
+exit 71
+STUB
+printf '# canonical module marker\n' \
+	>"${TEST_ROOT}/home/Git/aidevops/.agents/scripts/aidevops-cli/aidevops-repos-lib.sh"
+cat >"${TEST_ROOT}/agents/scripts/full-loop-release-helper.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'deployed release helper: %s\n' "$*"
+exit "${FAKE_DEPLOYED_HELPER_RC:-0}"
+STUB
+chmod +x "${TEST_ROOT}/home/Git/aidevops/.agents/scripts/full-loop-release-helper.sh" \
+	"${TEST_ROOT}/agents/scripts/full-loop-release-helper.sh"
+
+deployed_rc=0
+deployed_output=$(FAKE_DEPLOYED_HELPER_RC=23 run_deployed_cli release status 90) || deployed_rc=$?
+if [[ "$deployed_output" != *"deployed release helper: status 90"* ]] ||
+	[[ "$deployed_output" == *"stale canonical helper invoked"* ]] ||
+	[[ "$deployed_rc" -ne 23 ]]; then
+	printf 'FAIL deployed CLI did not preserve coherent helper selection and exit status\n'
+	exit 1
+fi
+printf 'PASS deployed CLI ignores stale canonical helpers and preserves helper exit status\n'
 
 exit 0
