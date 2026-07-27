@@ -1,9 +1,9 @@
 /**
  * AI Research Tool for OpenCode Workers
  *
- * Lightweight sub-worker that spawns focused research queries via the
- * Anthropic API without burning the caller's context window. Workers call
- * this to get domain-specific answers using agent files as system context.
+ * Lightweight sub-worker that routes focused research through OpenCode's
+ * configured providers without burning the caller's context window. Workers
+ * call this to get domain-specific answers using agent files as context.
  *
  * Rate limit: 10 calls per session.
  *
@@ -15,6 +15,7 @@
 
 import { tool } from "@opencode-ai/plugin"
 import {
+  formatResearchResult,
   research,
   getCallsRemaining,
   DOMAIN_AGENTS,
@@ -22,9 +23,9 @@ import {
 
 export default tool({
   description:
-    "Spawn a focused research query via Anthropic API without burning your context. " +
+    "Spawn a focused provider-neutral research query through OpenCode without burning your context. " +
     "Accepts agent files as system context for domain expertise. " +
-    "Rate limit: 10 calls per session. Default model: haiku (cheapest).",
+    "Rate limit: 10 calls per session. Default workload tier: simple.",
   args: {
     prompt: tool.schema
       .string()
@@ -52,17 +53,21 @@ export default tool({
           "(e.g. 'src/index.ts:10-50,README.md')"
       ),
     model: tool.schema
-      .enum(["haiku", "sonnet", "opus"])
+      .enum(["simple", "standard", "thinking", "haiku", "sonnet", "opus"])
       .optional()
       .describe(
-        "Model tier: haiku (default, cheapest), sonnet (code), opus (complex reasoning)"
+        "Workload tier: simple (default), standard, or thinking. " +
+          "Legacy aliases haiku, sonnet, and opus remain supported."
       ),
     max_tokens: tool.schema
       .number()
       .optional()
-      .describe("Max response tokens (default: 500, max: 4096)"),
+      .describe(
+        "Approximate response-token budget (default: 500, max: 4096). " +
+          "OpenCode providers may not expose exact output-token enforcement."
+      ),
   },
-  async execute(args) {
+  async execute(args, context) {
     try {
       // Parse comma-separated lists
       const agents = args.agents
@@ -82,16 +87,14 @@ export default tool({
         agents,
         domain: args.domain,
         files,
-        model: args.model as "haiku" | "sonnet" | "opus" | undefined,
+        model: args.model,
         max_tokens: maxTokens,
+      }, {
+        cwd: context.directory,
+        signal: context.abort,
       })
 
-      return (
-        `${result.content}\n\n` +
-        `--- ai-research: ${result.model} | ` +
-        `in:${result.input_tokens} out:${result.output_tokens} | ` +
-        `${result.calls_remaining} calls remaining ---`
-      )
+      return formatResearchResult(result)
     } catch (error) {
       const remaining = getCallsRemaining()
       const message = error instanceof Error ? error.message : String(error)

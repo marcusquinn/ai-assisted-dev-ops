@@ -10,6 +10,8 @@
     "types": ["bun"]
   },
   "include": [
+    ".opencode/lib/ai-research.ts",
+    ".opencode/lib/ai-research.test.ts",
     ".opencode/lib/session-rename-guards.ts",
     ".opencode/lib/session-title-suffix.ts",
     ".opencode/lib/terminal-title.ts",

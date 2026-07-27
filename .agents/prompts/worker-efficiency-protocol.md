@@ -62,9 +62,13 @@ fi
 ai_research(prompt: "Find all functions that dispatch workers in pulse-wrapper.sh. Return: function name, line number, key variables.", domain: "orchestration")
 ```
 
-- Rate limit: 10 per session. Default model: haiku.
+- Rate limit: 10 per session. Default workload tier: `simple`; OpenCode selects
+  an available configured provider/model through canonical routing.
 - Domain shorthand auto-loads agent files: `git=git-workflow,github-cli,conflict-resolution`; `planning=plans,beads`; `code=code-standards,code-simplifier`; `seo=seo,dataforseo,google-search-console`; `content=content,research,writing`; `wordpress=wp-dev,mainwp`; `browser=browser-automation,playwright`; `deploy=coolify,coolify-cli,vercel`; `security=tirith,encryption-stack`; `mcp=build-mcp,server-patterns`; `agent=build-agent,agent-review`; `framework=architecture,setup`; `release=release,version-bump`; `pr=pr,preflight`; `orchestration=headless-dispatch`; `context=model-routing,toon,mcp-discovery`; `video=video-prompt-design,remotion,wavespeed`; `voice=speech-to-speech,voice-bridge`; `mobile=agent-device,maestro,serve-sim`; `hosting=hostinger,cloudflare,hetzner`; `email=email-testing,email-delivery-test`; `accessibility=accessibility,accessibility-audit`; `containers=orbstack`; `vision=overview,image-generation`.
 - Parameters: `prompt` required; optional `domain`, `agents` (paths relative to `~/.aidevops/agents/`), `files` (line ranges allowed, e.g. `src/foo.ts:10-50`), `model` (`simple|standard|thinking`), `max_tokens` (default 500, max 4096).
+- `haiku|sonnet|opus` remain compatibility aliases. `max_tokens` is an advisory
+  generation budget plus a bounded transport ceiling when the selected OpenCode
+  provider does not expose exact output-token controls or usage.
 
 ## 3. Avoid wasted execution
 

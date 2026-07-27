@@ -46,8 +46,17 @@ Files in `.opencode/tool/` are **OpenCode plugin tools** — TypeScript modules 
 
 | File | Purpose |
 |------|---------|
-| `ai-research.ts` | Spawns research queries via Anthropic API |
+| `ai-research.ts` | Routes isolated research queries through configured OpenCode providers |
 | `session-rename.ts` | Renames sessions via direct SQLite write — no HTTP API exists |
+
+The native `ai_research` tool uses canonical `simple`, `standard`, and `thinking`
+workload tiers. The headless OpenCode runtime owns model availability, provider
+selection, credential isolation, and inference transport. A per-child ceiling
+reduces the `research-only` profile to inference-only because the parent supplies
+all requested agent and file context in a private bounded artifact. Legacy
+`haiku`, `sonnet`, and `opus` inputs remain aliases; exact provider-neutral token
+usage and output-token enforcement are reported as unavailable or advisory when
+the selected runtime does not expose them.
 
 ## Judgment and Deterministic Enforcement
 

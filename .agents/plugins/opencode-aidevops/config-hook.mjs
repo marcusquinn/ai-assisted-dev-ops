@@ -573,6 +573,7 @@ function registerAgents(config, agentsDir) {
 }
 
 const RESEARCH_ONLY_AGENT_NAME = "research-only";
+const AI_RESEARCH_TOOL_CEILING_ENV = "AIDEVOPS_AI_RESEARCH_TOOL_CEILING";
 const UNSAFE_FRONTMATTER_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RESEARCH_ONLY_FALLBACK_PROMPT = `# Research-only subagent
 
@@ -651,9 +652,17 @@ function researchOnlyProfile(agentsDir) {
  * @param {string} agentsDir
  * @returns {number} Number of enforced profiles
  */
-export function registerResearchOnlyAgent(config, agentsDir) {
+export function registerResearchOnlyAgent(config, agentsDir, env = process.env) {
   if (!config.agent) config.agent = {};
-  config.agent[RESEARCH_ONLY_AGENT_NAME] = researchOnlyProfile(agentsDir);
+  const profile = researchOnlyProfile(agentsDir);
+  if (env[AI_RESEARCH_TOOL_CEILING_ENV] === "1") {
+    // The native ai_research tool supplies all context up front. Its nested
+    // runtime needs inference only, so fail closed even against read-only tools
+    // that the general research-only profile normally permits.
+    profile.tools = { "*": false };
+    profile.permission = "deny";
+  }
+  config.agent[RESEARCH_ONLY_AGENT_NAME] = profile;
   return 1;
 }
 

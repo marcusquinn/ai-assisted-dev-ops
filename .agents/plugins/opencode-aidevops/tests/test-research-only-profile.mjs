@@ -81,3 +81,41 @@ test("research-only profile fails closed when canonical frontmatter is invalid",
     rmSync(agentsDir, { recursive: true, force: true });
   }
 });
+
+test("native ai-research child receives an inference-only tool ceiling", () => {
+  const agentsDir = mkdtempSync(join(tmpdir(), "aidevops-research-only-"));
+  const sourceDir = join(agentsDir, "tools", "ai-assistants");
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, "research-only.md"), `---
+name: research-only
+description: Canonical research profile
+mode: subagent
+tools:
+  "*": false
+  read: true
+  webfetch: true
+permission:
+  "*": deny
+  read: allow
+  webfetch: allow
+---
+
+Canonical research prompt.
+`);
+
+  try {
+    const config = { agent: {} };
+    assert.equal(registerResearchOnlyAgent(
+      config,
+      agentsDir,
+      { AIDEVOPS_AI_RESEARCH_TOOL_CEILING: "1" },
+    ), 1);
+    const profile = config.agent["research-only"];
+
+    assert.deepEqual(profile.tools, { "*": false });
+    assert.equal(profile.permission, "deny");
+    assert.equal(profile.prompt, "Canonical research prompt.");
+  } finally {
+    rmSync(agentsDir, { recursive: true, force: true });
+  }
+});
