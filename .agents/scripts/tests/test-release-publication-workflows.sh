@@ -85,6 +85,10 @@ assert_absent "release-note collection avoids pipefail truncation" '| head -10' 
 assert_contains "recovery is idempotent for npm" 'npm view "aidevops@${RELEASE_VERSION}"' "$PACKAGE_WORKFLOW"
 assert_contains "npm registry uncertainty fails closed" \
 	"Unable to determine npm publication state" "$PACKAGE_WORKFLOW"
+assert_contains "npm publication state keeps its executable test selector" \
+	"name: Check npm publication state" "$PACKAGE_WORKFLOW"
+assert_contains "npm verification keeps its executable test selector" \
+	"name: Verify npm publication" "$PACKAGE_WORKFLOW"
 assert_contains "npm publication skips an existing exact version" \
 	"if: steps.npm-state.outputs.published != 'true'" "$PACKAGE_WORKFLOW"
 assert_contains "npm state binds the locally packed artifact integrity" \
@@ -100,6 +104,10 @@ assert_contains "all versions serialize through one publication lock" "group: re
 assert_contains "concurrency cannot cancel an in-flight publication" "cancel-in-progress: false" "$PACKAGE_WORKFLOW"
 assert_contains "Homebrew API uncertainty fails closed before writing" \
 	"Unable to determine Homebrew tap publication state" "$PACKAGE_WORKFLOW"
+assert_contains "Homebrew tap state keeps its executable test selector" \
+	"name: Check Homebrew tap state" "$PACKAGE_WORKFLOW"
+assert_contains "Homebrew verification keeps its executable test selector" \
+	"name: Verify Homebrew tap" "$PACKAGE_WORKFLOW"
 assert_contains "Homebrew convergence compares the complete generated formula" \
 	"cmp -s homebrew/aidevops.rb" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
