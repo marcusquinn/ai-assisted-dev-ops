@@ -43,6 +43,110 @@ if ! jq -e '.source_pr == 90
 fi
 printf 'PASS signed tag trailers reconstruct release provenance\n'
 
+mkdir -p "${TEST_ROOT}/worktrees" "${TEST_ROOT}/tag-checkout" \
+	"${TEST_ROOT}/runtime" "${TEST_ROOT}/tag-checkout/.agents/scripts"
+export AIDEVOPS_WORKTREE_BASE_DIR="${TEST_ROOT}/worktrees"
+PREPARE_GIT_LOG="${TEST_ROOT}/prepare-git.log"
+export PREPARE_GIT_LOG
+_FULL_LOOP_RELEASE_PATH="${TEST_ROOT}/tag-checkout"
+git() {
+	local args="$*"
+	case "$args" in
+	*" rev-parse refs/tags/v1.2.3^{commit}" | *" rev-parse HEAD")
+		printf '%s\n' '3333333333333333333333333333333333333333'
+		return 0
+		;;
+	*" worktree add "*)
+		printf '%s\n' "$args" >>"$PREPARE_GIT_LOG"
+		return 1
+		;;
+	esac
+	return 1
+}
+if ! _full_loop_release_prepare_tag_worktree v1.2.3 || [[ -e "$PREPARE_GIT_LOG" ]]; then
+	printf 'FAIL exact detached tag checkout was not reused safely\n'
+	exit 1
+fi
+unset -f git
+printf 'PASS exact detached tag checkout is reused across discovery and finalization\n'
+
+FAKE_VERIFY_LOG="${TEST_ROOT}/verify.log"
+FAKE_POST_RELEASE_LOG="${TEST_ROOT}/post-release.log"
+FAKE_PERSIST_LOG="${TEST_ROOT}/persist.log"
+FAKE_OLD_RUNTIME_LOG="${TEST_ROOT}/old-runtime.log"
+export FAKE_VERIFY_LOG FAKE_POST_RELEASE_LOG FAKE_PERSIST_LOG FAKE_OLD_RUNTIME_LOG
+cat >"${TEST_ROOT}/runtime/release-provenance-helper.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$PWD" >"${FAKE_VERIFY_LOG:?}"
+printf '%s\n' "$*" >>"${FAKE_VERIFY_LOG:?}"
+STUB
+cat >"${TEST_ROOT}/runtime/version-manager.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'cwd=%s\naction=%s\nsync_root=%s\ndeploy_helper=%s\n' \
+	"$PWD" "$*" "${AIDEVOPS_SYNC_REPO_ROOT:-}" \
+	"${AIDEVOPS_SYNC_DEPLOY_SCRIPT:-}" >"${FAKE_POST_RELEASE_LOG:?}"
+STUB
+cat >"${TEST_ROOT}/tag-checkout/.agents/scripts/version-manager.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'obsolete tag runtime invoked\n' >"${FAKE_OLD_RUNTIME_LOG:?}"
+exit 1
+STUB
+printf '#!/usr/bin/env bash\nexit 0\n' \
+	>"${TEST_ROOT}/runtime/deploy-agents-on-merge.sh"
+chmod +x "${TEST_ROOT}/runtime/release-provenance-helper.sh" \
+	"${TEST_ROOT}/runtime/version-manager.sh" \
+	"${TEST_ROOT}/runtime/deploy-agents-on-merge.sh" \
+	"${TEST_ROOT}/tag-checkout/.agents/scripts/version-manager.sh"
+
+saved_script_dir="$SCRIPT_DIR"
+SCRIPT_DIR="${TEST_ROOT}/runtime"
+_full_loop_release_prepare_tag_worktree() {
+	local tag_name="$1"
+	[[ "$tag_name" == "v1.2.3" ]] || return 1
+	_FULL_LOOP_RELEASE_PATH="${TEST_ROOT}/tag-checkout"
+	return 0
+}
+if ! _full_loop_release_verify_tag_provenance test/repo v1.2.3 ||
+	! grep -qx "${TEST_ROOT}/tag-checkout" "$FAKE_VERIFY_LOG" ||
+	! grep -qx 'verify --tag v1.2.3 --repo test/repo' "$FAKE_VERIFY_LOG"; then
+	printf 'FAIL release provenance was not verified from the detached tag checkout\n'
+	exit 1
+fi
+printf 'PASS release provenance verification runs from the detached tag checkout\n'
+
+_full_loop_validate_release_candidates() {
+	local repo="$1"
+	local source_json="$2"
+	[[ -n "$repo" && -n "$source_json" ]]
+	return $?
+}
+_full_loop_persist_release_success() {
+	local repo="$1"
+	local release_path="$2"
+	local source_json="$3"
+	local source_pr="$4"
+	local source_merge="$5"
+	printf '%s|%s|%s|%s|%s\n' \
+		"$repo" "$release_path" "$source_json" "$source_pr" "$source_merge" \
+		>"$FAKE_PERSIST_LOG"
+	return 0
+}
+if ! _full_loop_release_finalize_reconciliation test/repo 90 v1.2.3 ||
+	! grep -qx "cwd=${TEST_ROOT}/tag-checkout" "$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx 'action=post-release' "$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx "sync_root=${TEST_ROOT}/tag-checkout" "$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx "deploy_helper=${TEST_ROOT}/runtime/deploy-agents-on-merge.sh" \
+		"$FAKE_POST_RELEASE_LOG" ||
+	[[ -e "$FAKE_OLD_RUNTIME_LOG" || ! -s "$FAKE_PERSIST_LOG" ]]; then
+	printf 'FAIL reconciliation did not finalize with current hardened runtime against the tag checkout\n'
+	exit 1
+fi
+SCRIPT_DIR="$saved_script_dir"
+_FULL_LOOP_RELEASE_PATH=""
+printf 'PASS reconciliation uses current hardened runtime against immutable tag content\n'
+
 cat >"${TEST_ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 args=" $* "

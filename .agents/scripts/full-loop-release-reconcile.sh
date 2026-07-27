@@ -22,6 +22,20 @@ _full_loop_release_tag_body() {
 	return $?
 }
 
+_full_loop_release_verify_tag_provenance() {
+	local repo="$1"
+	local tag_name="$2"
+	local verifier="${SCRIPT_DIR}/release-provenance-helper.sh"
+
+	[[ -x "$verifier" ]] || return 1
+	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
+	(
+		cd "$_FULL_LOOP_RELEASE_PATH" || exit 1
+		bash "$verifier" verify --tag "$tag_name" --repo "$repo" >/dev/null
+	)
+	return $?
+}
+
 _full_loop_release_find_tag_for_pr() {
 	local repo="$1"
 	local requested_pr="$2"
@@ -29,7 +43,6 @@ _full_loop_release_find_tag_for_pr() {
 	local tag_body=""
 	local trailer=""
 	local matched=0
-	local verifier="${SCRIPT_DIR}/release-provenance-helper.sh"
 
 	_FULL_LOOP_RELEASE_FOUND_TAG=""
 	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
@@ -46,8 +59,7 @@ _full_loop_release_find_tag_for_pr() {
 			esac
 		done <<<"$tag_body"
 		[[ "$matched" -eq 1 ]] || continue
-		[[ -x "$verifier" ]] || return 1
-		bash "$verifier" verify --tag "$candidate_tag" --repo "$repo" >/dev/null || return 1
+		_full_loop_release_verify_tag_provenance "$repo" "$candidate_tag" || return 1
 		_FULL_LOOP_RELEASE_FOUND_TAG="$candidate_tag"
 		return 0
 	done < <(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname)
@@ -319,6 +331,17 @@ _full_loop_release_verify_channels() {
 	return 0
 }
 
+_full_loop_release_resolve_tag_commit() {
+	local tag_name="$1"
+	local tag_ref="refs/tags/${tag_name}^{commit}"
+	local tag_commit=""
+
+	tag_commit=$(git -C "$REPO_ROOT" rev-parse "$tag_ref" 2>/dev/null) || return 1
+	[[ "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	printf '%s\n' "$tag_commit"
+	return 0
+}
+
 _full_loop_release_inspect_remote() {
 	local repo="$1"
 	local tag_name="$2"
@@ -328,7 +351,7 @@ _full_loop_release_inspect_remote() {
 	local run_url=""
 	local find_rc=0
 
-	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	tag_commit=$(_full_loop_release_resolve_tag_commit "$tag_name") || return 1
 	_full_loop_release_find_workflow_run "$repo" "$tag_name" "$tag_commit" || find_rc=$?
 	if [[ "$find_rc" -eq 3 ]]; then
 		printf 'RELEASE_TAG=%s\nWORKFLOW_STATUS=absent\n' "$tag_name"
@@ -359,8 +382,7 @@ _full_loop_release_dispatch_recovery() {
 	local tag_commit=""
 	local correlation=""
 
-	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
-	[[ "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	tag_commit=$(_full_loop_release_resolve_tag_commit "$tag_name") || return 1
 	correlation="$tag_commit"
 
 	if [[ -x "$audit_helper" ]]; then
@@ -379,9 +401,27 @@ _full_loop_release_prepare_tag_worktree() {
 	local tag_name="$1"
 	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
 	local release_path="${worktree_base}/aidevops-release-reconcile-${tag_name#v}-$$"
+	local tag_commit=""
+	local checkout_commit=""
 
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
 	[[ -d "$worktree_base" ]] || return 1
+	tag_commit=$(_full_loop_release_resolve_tag_commit "$tag_name") || return 1
+	if [[ -n "${_FULL_LOOP_RELEASE_PATH:-}" ]]; then
+		[[ -d "$_FULL_LOOP_RELEASE_PATH" ]] || return 1
+		checkout_commit=$(git -C "$_FULL_LOOP_RELEASE_PATH" rev-parse HEAD 2>/dev/null) || return 1
+		[[ "$checkout_commit" == "$tag_commit" ]] || return 1
+		return 0
+	fi
 	git -C "$REPO_ROOT" worktree add --detach "$release_path" "$tag_name" >/dev/null || return 1
+	checkout_commit=$(git -C "$release_path" rev-parse HEAD 2>/dev/null) || {
+		git -C "$REPO_ROOT" worktree remove "$release_path" >/dev/null 2>&1 || true
+		return 1
+	}
+	if [[ "$checkout_commit" != "$tag_commit" ]]; then
+		git -C "$REPO_ROOT" worktree remove "$release_path" >/dev/null 2>&1 || true
+		return 1
+	fi
 	_FULL_LOOP_RELEASE_PATH="$release_path"
 	trap 'cleanup_release_worktree' EXIT
 	return 0
@@ -396,6 +436,7 @@ _full_loop_release_finalize_reconciliation() {
 	local source_merge=""
 	local requested_present=""
 	local version_manager=""
+	local deploy_helper=""
 
 	source_json=$(_full_loop_release_source_json_from_tag "$tag_name") || return 1
 	source_pr=$(jq -er '.source_pr' <<<"$source_json") || return 1
@@ -405,12 +446,16 @@ _full_loop_release_finalize_reconciliation() {
 	[[ "$requested_present" == "true" ]] || return 1
 	_full_loop_validate_release_candidates "$repo" "$source_json" || return 1
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
-	version_manager="${_FULL_LOOP_RELEASE_PATH}/.agents/scripts/version-manager.sh"
+	version_manager="${SCRIPT_DIR}/version-manager.sh"
+	deploy_helper="${SCRIPT_DIR}/deploy-agents-on-merge.sh"
 	[[ -f "$version_manager" ]] || return 1
+	[[ -f "$deploy_helper" ]] || return 1
 	(
 		cd "$_FULL_LOOP_RELEASE_PATH" || exit 1
 		AIDEVOPS_RELEASE_INTENT_TRUSTED=1 \
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
+			AIDEVOPS_SYNC_REPO_ROOT="$_FULL_LOOP_RELEASE_PATH" \
+			AIDEVOPS_SYNC_DEPLOY_SCRIPT="$deploy_helper" \
 			bash "$version_manager" post-release
 	) || return 1
 	_full_loop_persist_release_success "$repo" "$_FULL_LOOP_RELEASE_PATH" "$source_json" \
