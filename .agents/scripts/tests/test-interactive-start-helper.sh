@@ -7,6 +7,8 @@ set -uo pipefail
 scripts_dir="$(cd "$(dirname "$0")/.." && pwd)"
 helper="${scripts_dir}/interactive-start-helper.sh"
 full_loop_helper="${scripts_dir}/full-loop-helper.sh"
+command_workflow="${scripts_dir}/commands/full-loop.md"
+canonical_workflow="${scripts_dir}/../workflows/full-loop.md"
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 stub_dir="${test_root}/bin"
@@ -33,6 +35,13 @@ assert_log_line() {
 	grep -Fxq "$expected" "$call_log" || fail "missing call log line: $expected"
 	return 0
 }
+
+for workflow_path in "$command_workflow" "$canonical_workflow"; do
+	grep -Fq "interactive-start-helper.sh \\" "$workflow_path" ||
+		fail "issue-started workflow does not route through interactive-start-helper: $workflow_path"
+	grep -Fq "This route preserves" "$workflow_path" ||
+		fail "issue-started workflow does not preserve no-auto-dispatch: $workflow_path"
+done
 
 git init -q -b main "$canonical_root" || fail "could not initialize canonical fixture"
 git -C "$canonical_root" worktree add -q --orphan -b feature/interactive-start-test "$linked_worktree" ||

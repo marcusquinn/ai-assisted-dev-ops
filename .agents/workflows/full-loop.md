@@ -70,6 +70,20 @@ Extract first positional arg; if ` -- ` present, use suffix (t158). Resolve `t\d
 
 ## Step 1: Auto-Worktree Setup
 
+For an issue-started interactive implementation, use the authority-bearing
+entrypoint instead of calling `full-loop-helper.sh start` directly:
+
+```bash
+~/.aidevops/agents/scripts/interactive-start-helper.sh \
+  --issue "$ISSUE_NUMBER" --repo "$REPO" --task "$ARGUMENTS" \
+  ${ISSUE_HAS_AUTO_DISPATCH:+--auto-dispatch}
+```
+
+This route preserves `no-auto-dispatch` so unattended pickup stays blocked while
+exporting interactive implementation authority to the local full-loop child.
+Never translate interactive authority into a blanket non-headless exemption.
+The direct pre-edit/start sequence below is for non-issue work.
+
 ```bash
 ~/.aidevops/agents/scripts/pre-edit-check.sh --loop-mode --task "$ARGUMENTS"
 ```
