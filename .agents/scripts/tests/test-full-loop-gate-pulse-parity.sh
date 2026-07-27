@@ -61,6 +61,7 @@ print_result "helper file exists" 0
 # Extract just the _check_linked_issue_gate function body so per-check
 # assertions only see the function we care about.
 GATE_BODY=$(awk '/^_check_linked_issue_gate\(\) \{/,/^}/' "$HELPER_FILE")
+TRUST_HELPER_BODY=$(awk '/^_linked_issue_trust_blocks_start\(\) \{/,/^}/' "$HELPER_FILE")
 STRUCTURAL_HELPER_BODY=$(awk '/^_linked_issue_structural_blocker_reasons\(\) \{/,/^}/' "$HELPER_FILE")
 AUTO_CLAIM_BODY=$(awk '/^_auto_claim_interactive\(\) \{/,/^}/' "$HELPER_FILE")
 
@@ -70,6 +71,13 @@ if [[ -z "$GATE_BODY" ]]; then
 	exit 1
 fi
 print_result "extract _check_linked_issue_gate function body" 0
+
+if [[ -z "$TRUST_HELPER_BODY" ]]; then
+	print_result "extract _linked_issue_trust_blocks_start function body" 1 "function not found in $HELPER_FILE"
+	printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
+	exit 1
+fi
+print_result "extract _linked_issue_trust_blocks_start function body" 0
 
 if [[ -z "$STRUCTURAL_HELPER_BODY" ]]; then
 	print_result "extract _linked_issue_structural_blocker_reasons function body" 1 "function not found in $HELPER_FILE"
@@ -101,6 +109,16 @@ assert_in_structural_helper() {
 		print_result "$label" 0
 	else
 		print_result "$label" 1 "pattern '${pattern}' not found in _linked_issue_structural_blocker_reasons body"
+	fi
+	return 0
+}
+
+assert_in_trust_helper() {
+	local pattern="$1" label="$2"
+	if printf '%s\n' "$TRUST_HELPER_BODY" | grep -qE -- "$pattern"; then
+		print_result "$label" 0
+	else
+		print_result "$label" 1 "pattern '${pattern}' not found in _linked_issue_trust_blocks_start body"
 	fi
 	return 0
 }
@@ -178,11 +196,20 @@ assert_in_structural_helper \
 # Assertion C3: trusted maintainer-only interactive NMR path exists
 # -------------------------------------------------------------------
 assert_in_gate \
+	'_linked_issue_trust_blocks_start' \
+	"_check_linked_issue_gate calls linked-issue trust helper"
+assert_in_trust_helper \
 	'_issue_thread_is_trusted_maintainer_only' \
-	"_check_linked_issue_gate checks trusted maintainer-only NMR threads"
-assert_in_gate \
+	"linked-issue trust helper checks trusted maintainer-only NMR threads"
+assert_in_trust_helper \
 	'not a trusted maintainer-only interactive thread' \
-	"_check_linked_issue_gate keeps NMR blocking untrusted or headless flows"
+	"linked-issue trust helper keeps NMR blocking untrusted or headless flows"
+assert_in_trust_helper \
+	'_linked_issue_author_allows_start' \
+	"linked-issue trust helper verifies live author authority when NMR is absent"
+assert_in_trust_helper \
+	'cannot begin merely because the review label is absent' \
+	"linked-issue trust helper blocks missing-label trust bypasses"
 
 # -------------------------------------------------------------------
 # Assertion D: fail-open pattern present (matches existing gh-api fail-open)

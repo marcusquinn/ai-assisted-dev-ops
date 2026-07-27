@@ -85,7 +85,7 @@ if [[ "\$1" == "api" ]]; then
       printf 'HTTP/2 200\\r\\netag: "etag-pr-v2"\\r\\n\\r\\n[{"number":7,"title":"PR","updated_at":"2026-05-02T00:00:00Z","user":{"login":"dev"},"head":{"sha":"abc","ref":"branch"}}]'
       exit 0
     fi
-		printf 'HTTP/2 200\\r\\netag: "etag-issue-v2"\\r\\n\\r\\n[{"number":3,"title":"Issue","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[]},{"number":4,"title":"PR-shaped issue","pull_request":{},"updated_at":"2026-05-02T00:00:00Z"}]'
+		printf 'HTTP/2 200\\r\\netag: "etag-issue-v2"\\r\\n\\r\\n[{"number":3,"title":"Issue","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[],"author_association":"CONTRIBUTOR","user":{"login":"reporter","type":"User"}},{"number":4,"title":"PR-shaped issue","pull_request":{},"updated_at":"2026-05-02T00:00:00Z"}]'
     exit 0
   fi
   if [[ "$mode" == "paginated" ]]; then
@@ -93,7 +93,7 @@ if [[ "\$1" == "api" ]]; then
       printf 'HTTP/2 200\r\netag: "etag-pr-page"\r\nlink: <https://api.github.com/repositories/1/pulls?page=2>; rel="next"\r\n\r\n[{"number":8,"title":"PR page","updated_at":"2026-05-02T00:00:00Z","user":{"login":"dev"},"head":{"sha":"def","ref":"branch"}}]'
       exit 0
     fi
-    printf 'HTTP/2 200\r\netag: "etag-issue-page"\r\nlink: <https://api.github.com/repositories/1/issues?page=2>; rel="next"\r\n\r\n[{"number":9,"title":"Issue page","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[]}]'
+		printf 'HTTP/2 200\r\netag: "etag-issue-page"\r\nlink: <https://api.github.com/repositories/1/issues?page=2>; rel="next"\r\n\r\n[{"number":9,"title":"Issue page","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[],"author_association":"MEMBER","user":{"login":"member","type":"User"}}]'
     exit 0
   fi
   printf 'HTTP/2 500\\r\\n\\r\\n{}'
@@ -101,7 +101,7 @@ if [[ "\$1" == "api" ]]; then
 fi
 if [[ "\$1" == "search" ]]; then
 	if [[ "\$*" == *'search issues'* ]]; then
-		printf '[{"number":5,"title":"Search issue","state":"open","updatedAt":"2026-05-03T00:00:00Z","labels":[],"assignees":[],"repository":{"nameWithOwner":"owner/repo"}}]'
+		printf '[{"number":5,"title":"Search issue","state":"open","updatedAt":"2026-05-03T00:00:00Z","labels":[],"assignees":[],"authorAssociation":"CONTRIBUTOR","author":{"login":"reporter","type":"User","is_bot":false},"repository":{"nameWithOwner":"owner/repo"}}]'
 		exit 0
 	fi
 	printf '[]'
@@ -116,7 +116,7 @@ SH
 
 seed_cache() {
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json" <<'JSON'
-{"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"issues","projection":"number,title,state,labels,updatedAt,assignees","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":1,"title":"Cached issue","state":"open","labels":[],"assignees":[],"updatedAt":"2026-05-01T00:00:00Z"}]}
+{"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"issues","projection":"number,title,state,labels,updatedAt,assignees,authorAssociation,author","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":1,"title":"Cached issue","state":"open","labels":[],"assignees":[],"updatedAt":"2026-05-01T00:00:00Z","authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]}
 JSON
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/prs-owner__repo.json" <<'JSON'
 {"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"prs","projection":"number,title,labels,updatedAt,assignees,createdAt,author,headRefOid,headRefName","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":2,"title":"Cached PR","labels":[],"assignees":[],"updatedAt":"2026-05-01T00:00:00Z","createdAt":"2026-05-01T00:00:00Z","author":{"login":"dev"},"headRefOid":"seed-sha","headRefName":"seed-branch"}]}
@@ -194,16 +194,19 @@ test_changed_repo_refreshes_cache() {
 	write_gh_stub changed
 	local output
 	output=$("$HELPER" refresh)
-	local issue_count pr_author
+	local issue_count pr_author issue_association issue_author
 	issue_count=$(jq '.items | length' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	pr_author=$(jq -r '.items[0].author.login' "$PULSE_BATCH_PREFETCH_CACHE_DIR/prs-owner__repo.json")
 	local issue_state
 	issue_state=$(jq -r '.items[0].state' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
+	issue_association=$(jq -r '.items[0].authorAssociation' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
+	issue_author=$(jq -r '.items[0].author.login' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	local issues_snapshot="" prs_snapshot=""
 	issues_snapshot=$("$HELPER" read-snapshot --kind issues --slug owner/repo 2>/dev/null) || issues_snapshot="{}"
 	prs_snapshot=$("$HELPER" read-snapshot --kind prs --slug owner/repo 2>/dev/null) || prs_snapshot="{}"
 	if grep -q 'conditional_refreshes=2' <<<"$output" \
 		&& [[ "$issue_count" == "1" && "$pr_author" == "dev" && "$issue_state" == "open" ]] \
+		&& [[ "$issue_association" == "CONTRIBUTOR" && "$issue_author" == "reporter" ]] \
 		&& [[ "$(printf '%s' "$issues_snapshot" | jq -r '.schema')" == "aidevops-pulse-snapshot/v1" ]] \
 		&& [[ "$(printf '%s' "$issues_snapshot" | jq -r '.generation')" == "$(printf '%s' "$prs_snapshot" | jq -r '.generation')" ]] \
 		&& [[ "$(printf '%s' "$prs_snapshot" | jq -r '.items[0].headRefOid')" == "abc" ]]; then
@@ -598,7 +601,12 @@ test_search_opt_in_preserves_owner_search() {
 	export PULSE_BATCH_SEARCH_LAST_RESORT=0
 	export AIDEVOPS_GH_READ_RAMP_ENABLED=0
 	"$HELPER" refresh >/dev/null
-	if grep -q 'search issues' "$TEST_ROOT/gh-calls.log" && grep -q 'search prs' "$TEST_ROOT/gh-calls.log"; then
+	local search_association=""
+	search_association=$(jq -r '.items[0].authorAssociation // ""' \
+		"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
+	if grep -q 'search issues' "$TEST_ROOT/gh-calls.log" \
+		&& grep -q 'search prs' "$TEST_ROOT/gh-calls.log" \
+		&& [[ "$search_association" == "CONTRIBUTOR" ]]; then
 		print_result "search opt-in preserves owner search fallback" 0
 	else
 		print_result "search opt-in preserves owner search fallback" 1

@@ -1197,9 +1197,10 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 #
 # Replaces five sequential sub-stage calls (each with their own slug loop and
 # issue list fetch) with one slug loop + one issue list fetch per repo, applying
-# all five reconcile checks per issue in sub-stage order.
+# all reconcile checks per issue in sub-stage order.
 #
 # Sub-stage order (short-circuit per issue — first action that fires skips rest):
+#   0. external issue trust gate (_should/_action_reconcile_external_issue_gate)
 #   1. close_issues_with_merged_prs  (_should_ciw + _action_ciw_single)
 #   2. reconcile_stale_done_issues   (_should_rsd + _action_rsd_single)
 #   3. reconcile_open_issues_with_merged_prs (_should_oimp + _action_oimp_single)
@@ -1210,7 +1211,7 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 # to stage 5. A status:done issue also always `continue`s after stage 2
 # (even if no action was taken) — done issues are never labelless candidates.
 #
-# Iteration: 5N → N per repo per cycle (N = issue count per repo).
+# Iteration remains N per repo per cycle (N = issue count per repo).
 # Cache: one _read_cache_issues_for_slug call per slug (shared by all stages).
 #
 # Returns: 0 always (best-effort)
@@ -1282,7 +1283,7 @@ reconcile_issues_single_pass() {
 	local cbb_total_run=0 cbb_max_per_cycle=10
 
 	# Cycle-wide counters for log summary
-	local ciw_closed=0 rsd_closed=0 rsd_reset=0 lia_fixed=0
+	local external_gated=0 ciw_closed=0 rsd_closed=0 rsd_reset=0 lia_fixed=0
 
 	# Cross-platform base64 decode flag: GNU uses -d, BSD/macOS canonical is -D.
 	# Both flags work on modern macOS (10.15+), but -D is the documented BSD form.
@@ -1339,7 +1340,9 @@ reconcile_issues_single_pass() {
 
 		# Fetch issues ONCE for this slug — all fields required by any stage.
 		# The cache (written each cycle by pulse-prefetch.sh) covers:
-		#   number, title, labels, updatedAt, assignees, body
+		#   number, title, labels, updatedAt, assignees, body plus
+		#   authorAssociation/author trust metadata from canonical snapshots.
+		#   Legacy/fallback rows without trust metadata block lifecycle actions.
 		local issues_json _cache_issues_sp
 		if _cache_issues_sp=$(_read_cache_issues_for_slug "$slug" 2>/dev/null); then
 			issues_json="$_cache_issues_sp"
@@ -1374,7 +1377,11 @@ reconcile_issues_single_pass() {
 				(.number // "" | tostring),
 				((.title // "") | @base64),
 				((.labels // []) | map(.name) | join(",")),
-				((.body // "") | @base64)
+				((.body // "") | @base64),
+				(.authorAssociation // ""),
+				((.author.login // "") | @base64),
+				(.author.type // ""),
+				((.author.is_bot // false) | tostring)
 			] | join("|")
 		') || issues_tsv=""
 		[[ -n "$issues_tsv" ]] || continue
@@ -1408,7 +1415,8 @@ reconcile_issues_single_pass() {
 			fi
 		fi
 
-		while IFS='|' read -r issue_num issue_title_b64 labels_csv issue_body_b64; do
+		while IFS='|' read -r issue_num issue_title_b64 labels_csv issue_body_b64 \
+			issue_author_association issue_author_login_b64 issue_author_type issue_author_is_bot; do
 			[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
 
 			# t2984: per-issue budget gate (cheap — uses Bash builtin SECONDS)
@@ -1419,12 +1427,26 @@ reconcile_issues_single_pass() {
 				fi
 			fi
 
-			local issue_title="" issue_body=""
+			local issue_title="" issue_body="" issue_author_login=""
 			if [[ -n "$issue_title_b64" ]]; then
 				issue_title=$(printf '%s' "$issue_title_b64" | base64 "$_b64d_flag" 2>/dev/null) || issue_title=""
 			fi
 			if [[ -n "$issue_body_b64" ]]; then
 				issue_body=$(printf '%s' "$issue_body_b64" | base64 "$_b64d_flag" 2>/dev/null) || issue_body=""
+			fi
+			if [[ -n "$issue_author_login_b64" ]]; then
+				issue_author_login=$(printf '%s' "$issue_author_login_b64" | base64 "$_b64d_flag" 2>/dev/null) || issue_author_login=""
+			fi
+
+			# Stage 0: cached trust metadata heals missed creation-time NMR labels
+			# and blocks every later action for unapproved external issue input.
+			if _should_reconcile_external_issue_gate "$issue_author_association" \
+				"$issue_author_type" "$issue_author_is_bot"; then
+				if _action_reconcile_external_issue_gate "$slug" "$issue_num" "$labels_csv" \
+					"$issue_author_association" "$issue_author_login"; then
+					[[ "${_PIR_EXTERNAL_GATE_MUTATED:-0}" -eq 1 ]] && external_gated=$((external_gated + 1))
+					continue
+				fi
 			fi
 
 			# Stage 1: close issues whose dedup guard detects a merged PR
@@ -1535,7 +1557,7 @@ reconcile_issues_single_pass() {
 	fi
 
 	local _total_actions
-	_total_actions=$((ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + lia_fixed + pbf_total_run + cbb_total_run))
+	_total_actions=$((external_gated + ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + lia_fixed + pbf_total_run + cbb_total_run))
 
 	# t2984: log when time-budget aborted iteration mid-cycle so operators
 	# can correlate with stage-timing log entries. Always logs (not gated
@@ -1543,9 +1565,9 @@ reconcile_issues_single_pass() {
 	if [[ "$_t2984_aborted" -eq 1 ]]; then
 		local _t2984_elapsed_end
 		_t2984_elapsed_end=$((SECONDS - _t2984_start_ts))
-		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	elif [[ "$_total_actions" -gt 0 ]]; then
-		echo "[pulse-wrapper] reconcile_issues_single_pass: ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	fi
 	return 0
 }

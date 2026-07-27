@@ -388,6 +388,80 @@ _issue_thread_is_trusted_maintainer_only() {
 	return 1
 }
 
+_linked_issue_author_allows_start() {
+	local issue_num="$1"
+	local repo="$2"
+	local raw_issue="$3"
+	local author_meta="" author_association="NONE" author_type="" author_login=""
+
+	author_meta=$(printf '%s' "$raw_issue" | jq -r \
+		'[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || author_meta=""
+	if [[ -n "$author_meta" ]]; then
+		IFS='|' read -r author_association author_type author_login <<<"$author_meta"
+	fi
+	[[ -n "$author_association" ]] || author_association="NONE"
+	if [[ "$author_type" == "Bot" ]]; then
+		return 0
+	fi
+
+	local authority_rc=0
+	if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+		_gh_actor_has_repo_write_authority "$repo" "$author_login" "$author_association" || authority_rc=$?
+	else
+		authority_rc=2
+	fi
+	if [[ "$authority_rc" -eq 0 ]]; then
+		return 0
+	fi
+
+	local approval_helper="${SCRIPT_DIR}/approval-helper.sh"
+	local verification=""
+	if [[ -x "$approval_helper" ]]; then
+		verification=$("$approval_helper" verify "$issue_num" "$repo" 2>/dev/null) || true
+	fi
+	if [[ "$verification" == "VERIFIED" ]]; then
+		return 0
+	fi
+	if [[ "$verification" == "NO_APPROVAL" ]]; then
+		#aidevops:trust-boundary -- containment is best-effort; this live gate is authoritative.
+		if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
+			gh_issue_edit_safe "$issue_num" --repo "$repo" \
+				--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+		else
+			gh issue edit "$issue_num" --repo "$repo" \
+				--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+		fi
+	fi
+
+	_FULL_LOOP_LINKED_AUTHOR_GATE_REASON="author_association=${author_association}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}, approval=${verification:-unavailable}"
+	return 1
+}
+
+_linked_issue_trust_blocks_start() {
+	local issue_num="$1"
+	local repo="$2"
+	local raw_issue="$3"
+	local labels="$4"
+	local issue_author_association="$5"
+	_FULL_LOOP_LINKED_TRUST_BLOCKER_REASON=""
+
+	if printf '%s\n' "$labels" | grep -qxF 'needs-maintainer-review'; then
+		if ! is_headless && _issue_thread_is_trusted_maintainer_only \
+			"$issue_num" "$repo" "$issue_author_association"; then
+			print_info "Issue #${issue_num} has needs-maintainer-review, but this interactive thread is maintainer-only; continuing without treating NMR as a maintainer hold."
+			return 1
+		fi
+		_FULL_LOOP_LINKED_TRUST_BLOCKER_REASON="Issue #${issue_num} has \`needs-maintainer-review\` label and is not a trusted maintainer-only interactive thread — a maintainer must approve before work begins.\n"
+		return 0
+	fi
+
+	if ! _linked_issue_author_allows_start "$issue_num" "$repo" "$raw_issue"; then
+		_FULL_LOOP_LINKED_TRUST_BLOCKER_REASON="Issue #${issue_num} does not have trusted author authority or verified maintainer approval (${_FULL_LOOP_LINKED_AUTHOR_GATE_REASON:-unknown}) — work cannot begin merely because the review label is absent.\n"
+		return 0
+	fi
+	return 1
+}
+
 _linked_issue_structural_blocker_reasons() {
 	local issue_num="$1"
 	local repo="$2"
@@ -444,8 +518,9 @@ _linked_issue_structural_blocker_reasons() {
 #
 # Skips gracefully when:
 #   - No issue number found in prompt (not all tasks have linked issues)
-#   - gh CLI unavailable or API call fails (fail-open to avoid blocking non-issue tasks)
 #   - Issue is closed (already reviewed)
+# Once a prompt resolves to an issue and repository, metadata lookup failures
+# block rather than silently converting unknown input into trusted input.
 _check_linked_issue_gate() {
 	local prompt="$1"
 	local repo="${2:-}"
@@ -463,15 +538,19 @@ _check_linked_issue_gate() {
 		repo=$(git remote get-url origin 2>/dev/null | sed -E 's|.*github\.com[:/]||;s|\.git$||' || true)
 	fi
 	if [[ -z "$repo" ]]; then
-		# Cannot determine repo — skip gate (fail-open)
+		if is_headless; then
+			print_error "Maintainer gate pre-check: cannot resolve repository for linked issue #${issue_num}"
+			return 1
+		fi
 		return 0
 	fi
 
-	# Fetch issue data — fail-open on API errors (don't block non-issue tasks)
+	# Fetch issue data. Every mode fails closed because the prompt has already
+	# supplied both an issue reference and repository context.
 	local raw_issue
 	raw_issue=$(gh api "repos/${repo}/issues/${issue_num}" 2>/dev/null) || {
-		print_warning "Maintainer gate pre-check: could not fetch issue #${issue_num} — skipping gate"
-		return 0
+		print_error "Maintainer gate pre-check: could not fetch linked issue #${issue_num} — refusing start"
+		return 1
 	}
 
 	local state labels assignees issue_author_association
@@ -487,17 +566,12 @@ _check_linked_issue_gate() {
 
 	local blocked=false reasons=""
 
-	# Check 1: needs-maintainer-review label. Interactive maintainer sessions may
-	# proceed on trusted maintainer-only threads so NMR does not become a generic
-	# maintainer hold label. Headless workers and any issue with non-maintainer
-	# content remain blocked until cryptographic approval.
-	if printf '%s\n' "$labels" | grep -qxF 'needs-maintainer-review'; then
-		if ! is_headless && _issue_thread_is_trusted_maintainer_only "$issue_num" "$repo" "$issue_author_association"; then
-			print_info "Issue #${issue_num} has needs-maintainer-review, but this interactive thread is maintainer-only; continuing without treating NMR as a maintainer hold."
-		else
-			blocked=true
-			reasons="${reasons}Issue #${issue_num} has \`needs-maintainer-review\` label and is not a trusted maintainer-only interactive thread — a maintainer must approve before work begins.\n"
-		fi
+	# Check 1: labels are advisory; author authority or signed approval is also
+	# required when the creation-time review label is absent.
+	if _linked_issue_trust_blocks_start "$issue_num" "$repo" "$raw_issue" \
+		"$labels" "$issue_author_association"; then
+		blocked=true
+		reasons="${reasons}${_FULL_LOOP_LINKED_TRUST_BLOCKER_REASON}"
 	fi
 
 	# Check 2: no assignee (exempt quality-debt issues per GH#6623).
@@ -523,7 +597,7 @@ _check_linked_issue_gate() {
 	# every blocker in one /full-loop invocation instead of one per retry.
 	# Cost-budget, hydration window, and ownership-by-other are intentionally
 	# out of scope (need nuanced interactive UX). Fail-open on missing helper
-	# or empty stdout (matches the gh-api fail-open above).
+	# or empty stdout. Author/API trust checks above remain independently fail-closed.
 	local structural_reasons
 	if structural_reasons=$(_linked_issue_structural_blocker_reasons "$issue_num" "$repo"); then
 		blocked=true

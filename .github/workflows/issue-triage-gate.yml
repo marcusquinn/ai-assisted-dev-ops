@@ -22,6 +22,7 @@ jobs:
             const issue = context.payload.issue;
             const author = issue.user.login;
             const association = issue.author_association;
+            const issueLabels = new Set((issue.labels || []).map(label => label.name));
 
             // Bot accounts always bypass triage (github-actions[bot], dependabot, etc.)
             if (issue.user.type === 'Bot') {
@@ -29,25 +30,93 @@ jobs:
               return;
             }
 
-            // Maintainers and collaborators bypass triage
-            // OWNER, MEMBER, COLLABORATOR are trusted roles
-            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            // OWNER/MEMBER are authoritative associations. COLLABORATOR can
+            // represent read/triage access, so require a live write-level lookup.
+            const trustedRoles = ['OWNER', 'MEMBER'];
+            let authorIsTrusted = trustedRoles.includes(association);
+            if (!authorIsTrusted && association === 'COLLABORATOR') {
+              try {
+                const permissionResponse = await github.request(
+                  'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    username: author
+                  }
+                );
+                authorIsTrusted = ['admin', 'maintain', 'write'].includes(
+                  permissionResponse.data.permission
+                );
+              } catch (error) {
+                core.warning(`Unable to verify collaborator permission for ${author}; treating as untrusted: ${error.message}`);
+              }
+            }
 
-            if (trustedRoles.includes(association)) {
+            if (authorIsTrusted) {
               console.log(`Author ${author} has role ${association} — bypassing triage`);
 
               // Remove needs-maintainer-review if the YAML form template added it
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  name: 'needs-maintainer-review'
-                });
-              } catch (e) {
-                // Label may not exist yet — that's fine
+              if (issueLabels.has('needs-maintainer-review')) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: 'needs-maintainer-review'
+                  });
+                } catch (error) {
+                  core.warning(`Unable to remove stale review label: ${error.message}`);
+                }
               }
               return;
+            }
+
+            console.log(`Author ${author} has role ${association} — applying triage gate`);
+
+            // Apply the critical trust label before cleanup/comment calls. Only
+            // attempt label creation after addLabels reports a missing/invalid
+            // label and getLabel independently confirms a 404.
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['needs-maintainer-review']
+              });
+            } catch (addError) {
+              if (![404, 422].includes(addError.status)) {
+                throw addError;
+              }
+              let labelIsMissing = false;
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'needs-maintainer-review'
+                });
+              } catch (lookupError) {
+                if (lookupError.status === 404) {
+                  labelIsMissing = true;
+                } else {
+                  throw addError;
+                }
+              }
+              if (!labelIsMissing) {
+                throw addError;
+              }
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'needs-maintainer-review',
+                description: 'External issue awaiting maintainer review before pipeline pickup',
+                color: 'FBCA04'
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['needs-maintainer-review']
+              });
             }
 
             // GH#18197: file-size-debt and function-complexity-debt issues are exclusively
@@ -58,10 +127,9 @@ jobs:
             // file-size-debt/function-complexity-debt. A non-maintainer opening an issue with
             // only the origin:worker label would previously keep that label, since the stripping
             // logic was nested inside the debt-label check.
-            const issueLabels = (issue.labels || []).map(l => l.name);
             const debtLabels = ['file-size-debt', 'function-complexity-debt'];
             for (const debtLabel of debtLabels) {
-              if (issueLabels.includes(debtLabel)) {
+              if (issueLabels.has(debtLabel)) {
                 console.log(`Non-maintainer ${author} created issue with ${debtLabel} label — stripping label and gating`);
                 try {
                   await github.rest.issues.removeLabel({
@@ -75,7 +143,7 @@ jobs:
                 }
               }
             }
-            if (issueLabels.includes('origin:worker')) {
+            if (issueLabels.has('origin:worker')) {
               console.log(`Non-maintainer ${author} created issue with origin:worker label — stripping label`);
               try {
                 await github.rest.issues.removeLabel({
@@ -89,31 +157,11 @@ jobs:
               }
             }
 
-            console.log(`Author ${author} has role ${association} — applying triage gate`);
-
-            // Ensure needs-maintainer-review label exists
-            try {
-              await github.rest.issues.createLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'needs-maintainer-review',
-                description: 'External issue awaiting maintainer review before pipeline pickup',
-                color: 'FBCA04'
-              });
-            } catch (e) {
-              // Label already exists — expected
-            }
-
-            // Ensure the label is applied (template may have added it, but belt-and-suspenders)
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              labels: ['needs-maintainer-review']
-            });
-
             // Remove any auto-dispatch labels that could trigger the pipeline
             for (const label of ['status:available', 'auto-dispatch']) {
+              if (!issueLabels.has(label)) {
+                continue;
+              }
               try {
                 await github.rest.issues.removeLabel({
                   owner: context.repo.owner,
@@ -127,18 +175,22 @@ jobs:
             }
 
             // Post a welcome comment
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              body: [
-                `Thanks for the report, @${author}.`,
-                '',
-                'This issue has been queued for maintainer review. A maintainer will review it and either:',
-                '- **Approve** it using: `sudo aidevops approve issue ' + issue.number + '`',
-                '- **Ask for more information** if the report needs clarification',
-                '- **Close** it if it\'s a duplicate or out of scope',
-                '',
-                '**Tip:** For faster, higher-quality issue reporting, use `/log-issue-aidevops` in your AI assistant session. It gathers diagnostics automatically and checks for duplicates.'
-              ].join('\n')
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  `Thanks for the report, @${author}.`,
+                  '',
+                  'This issue has been queued for maintainer review. A maintainer will review it and either:',
+                  '- **Approve** it using: `sudo aidevops approve issue ' + issue.number + '`',
+                  '- **Ask for more information** if the report needs clarification',
+                  '- **Close** it if it\'s a duplicate or out of scope',
+                  '',
+                  '**Tip:** For faster, higher-quality issue reporting, use `/log-issue-aidevops` in your AI assistant session. It gathers diagnostics automatically and checks for duplicates.'
+                ].join('\n')
+              });
+            } catch (error) {
+              core.warning(`Review label is applied but welcome comment failed: ${error.message}`);
+            }

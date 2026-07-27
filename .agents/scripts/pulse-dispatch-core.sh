@@ -60,6 +60,7 @@
 _PULSE_DISPATCH_CORE_LOADED=1
 _PULSE_DISPATCH_FALSE="false"
 _PULSE_DISPATCH_ELIGIBILITY_STAGE="eligibility_gate"
+_PULSE_DISPATCH_NMR_LABEL="needs-maintainer-review"
 
 # t2863: Module-level variable defaults (set -u guards).
 # Ensures LOGFILE is safe to dereference in all functions when this module
@@ -644,20 +645,13 @@ _issue_thread_is_trusted_maintainer_only() {
 _issue_actor_has_repo_write_permission() {
 	local repo_slug="$1"
 	local login="$2"
-	local permission=""
 
 	[[ -n "$repo_slug" && -n "$login" ]] || return 1
 	# #aidevops:trust-boundary — never trust bare COLLABORATOR association for
 	# ever-NMR bypass. GitHub can use COLLABORATOR for ambiguous private-org
 	# events; require an authenticated per-repo permission lookup.
-	_gh_collaborator_permission_lookup "$repo_slug" "$login" permission || return 1
-	case "$permission" in
-		admin | maintain | write)
-			return 0
-			;;
-	esac
-
-	return 1
+	_gh_actor_has_repo_write_authority "$repo_slug" "$login" "COLLABORATOR"
+	return $?
 }
 
 _check_nmr_approval_gate() {
@@ -707,10 +701,10 @@ _check_nmr_approval_gate() {
 # GitHub Actions issue-triage-gate.yml applies needs-maintainer-review to
 # non-collaborator issues, but Actions can sit queued while the pulse keeps
 # dispatching. This gate repeats the trust-boundary check in the dispatch path
-# immediately before worker launch. OWNER/MEMBER/COLLABORATOR and bot-created
-# issues keep the existing fast path. External or unknown authors must carry a
-# valid cryptographic approval; otherwise the pulse applies NMR and blocks this
-# candidate in the current cycle.
+# immediately before worker launch. OWNER/MEMBER, write-authorized collaborators,
+# and bot-created issues keep the fast path. External, read/triage collaborator,
+# or unknown authors must carry a valid cryptographic approval; otherwise the
+# pulse applies NMR and blocks this candidate in the current cycle.
 #
 # Args:
 #   $1 - issue_number
@@ -723,24 +717,26 @@ _check_nmr_approval_gate() {
 _check_external_issue_author_gate() {
 	local issue_number="$1"
 	local repo_slug="$2"
+	local nmr_label="${_PULSE_DISPATCH_NMR_LABEL:-needs-maintainer-review}"
 
 	local issue_author_meta=""
 	issue_author_meta=$(gh api "repos/${repo_slug}/issues/${issue_number}" \
-		--jq '[.author_association // "NONE", .user.type // ""] | @tsv' 2>/dev/null) || issue_author_meta=""
+		--jq '[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || issue_author_meta=""
 
 	local author_association="NONE"
 	local author_type=""
+	local author_login=""
 	if [[ -n "$issue_author_meta" ]]; then
-		IFS=$'\t' read -r author_association author_type <<<"$issue_author_meta"
+		IFS='|' read -r author_association author_type author_login <<<"$issue_author_meta"
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
 
-	case "$author_association" in
-		OWNER | MEMBER | COLLABORATOR)
-			return 1
-			;;
-	esac
 	if [[ "$author_type" == "Bot" ]]; then
+		return 1
+	fi
+	local authority_rc=0
+	_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
+	if [[ "$authority_rc" -eq 0 ]]; then
 		return 1
 	fi
 
@@ -757,18 +753,18 @@ _check_external_issue_author_gate() {
 		# worker missing the approval public key must fail closed for dispatch, but
 		# must not mutate lifecycle labels over a maintainer's signed handoff.
 		if [[ -n "$verify_result" && "$verify_result" != "NO_APPROVAL" ]]; then
-			echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: cryptographic approval marker present but verification returned ${verify_result}; not re-applying needs-maintainer-review (GH#22733)" >>"$LOGFILE"
+			echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: cryptographic approval marker present but verification returned ${verify_result}; not re-applying ${nmr_label} (GH#22733)" >>"$LOGFILE"
 			return 0
 		fi
 	fi
 
-	echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: author_association=${author_association}, author_type=${author_type:-unknown}; applying needs-maintainer-review until cryptographic approval lands (GH#22399)" >>"$LOGFILE"
+	echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: author_association=${author_association}, author_type=${author_type:-unknown}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}; applying ${nmr_label} until cryptographic approval lands (GH#22399)" >>"$LOGFILE"
 	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
 		gh_issue_edit_safe "$issue_number" --repo "$repo_slug" \
-			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+			--add-label "$nmr_label" >/dev/null 2>&1 || true
 	else
 		gh issue edit "$issue_number" --repo "$repo_slug" \
-			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+			--add-label "$nmr_label" >/dev/null 2>&1 || true
 	fi
 	return 0
 }

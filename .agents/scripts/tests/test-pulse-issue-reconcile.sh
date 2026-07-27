@@ -161,11 +161,11 @@ test_no_raw_gh_issue_list_outside_fallback() {
 # ---------------------------------------------------------------------------
 test_single_pass_cache_consolidation() {
 	# After t2776, reconcile_issues_single_pass holds ONE cache-read call
-	# covering all five sub-stages. The five legacy functions keep their own
+	# covering all six sub-stages. The five legacy functions keep their own
 	# call sites for standalone/test use. We verify:
 	#   a) reconcile_issues_single_pass is defined
 	#   b) _read_cache_issues_for_slug is still present (≥2: definition + single-pass)
-	#   c) The five _should_* predicates are defined
+	#   c) The six _should_* predicates are defined
 
 	# (a) single-pass function defined
 	local sp_count
@@ -187,16 +187,16 @@ test_single_pass_cache_consolidation() {
 		_fail "single-pass: expected ≥2 _read_cache_issues_for_slug matches, got ${cache_read_count}"
 	fi
 
-	# (c) all five _should_* predicates defined in the actions sub-library
+	# (c) all six _should_* predicates defined in the actions sub-library
 	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
 	local pred_count
-	pred_count=$(grep -c '^_should_ciw()\|^_should_rsd()\|^_should_oimp()\|^_should_cpt()\|^_should_lia()' \
+	pred_count=$(grep -c '^_should_reconcile_external_issue_gate()\|^_should_ciw()\|^_should_rsd()\|^_should_oimp()\|^_should_cpt()\|^_should_lia()' \
 		"${actions_sh}" 2>/dev/null || true)
 	[[ "$pred_count" =~ ^[0-9]+$ ]] || pred_count=0
-	if [[ "$pred_count" -eq 5 ]]; then
-		_pass "single-pass: all 5 _should_* predicates defined"
+	if [[ "$pred_count" -eq 6 ]]; then
+		_pass "single-pass: all 6 _should_* predicates defined"
 	else
-		_fail "single-pass: expected 5 _should_* predicates, found ${pred_count}"
+		_fail "single-pass: expected 6 _should_* predicates, found ${pred_count}"
 	fi
 	return 0
 }
@@ -410,6 +410,23 @@ test_single_pass_wired_in_engine() {
 # UTF-8. Catches the @tsv-without-base64 footgun where embedded \n / \t
 # break the consumer (_extract_children_section grep'ing for child refs).
 # ---------------------------------------------------------------------------
+_extract_batched_test_rows() {
+	local fixture_json="$1"
+	printf '%s' "$fixture_json" | jq -r '
+		.[] | [
+			(.number // "" | tostring),
+			((.title // "") | @base64),
+			((.labels // []) | map(.name) | join(",")),
+			((.body // "") | @base64),
+			(.authorAssociation // ""),
+			((.author.login // "") | @base64),
+			(.author.type // ""),
+			((.author.is_bot // false) | tostring)
+		] | join("|")
+	'
+	return $?
+}
+
 test_batched_field_extraction_parity() {
 	# Fixture: 2 issues, body[0] has multiline + tab + UTF-8, body[1] is empty.
 	local fixture_json
@@ -418,7 +435,9 @@ test_batched_field_extraction_parity() {
 			number: 12345,
 			title: "t2904: batch jq extraction",
 			labels: [{name:"origin:worker"},{name:"status:available"}],
-			body: "Line 1\nLine 2\twith tab\n— em-dash + Unicode ✓"
+			body: "Line 1\nLine 2\twith tab\n— em-dash + Unicode ✓",
+			authorAssociation: "CONTRIBUTOR",
+			author: {login:"fixture-author", type:"User", is_bot:false}
 		},
 		{
 			number: 67890,
@@ -430,14 +449,7 @@ test_batched_field_extraction_parity() {
 
 	# Run the extraction pattern from reconcile_issues_single_pass.
 	local extracted
-	extracted=$(printf '%s' "$fixture_json" | jq -r '
-		.[] | [
-			(.number // "" | tostring),
-			((.title // "") | @base64),
-			((.labels // []) | map(.name) | join(",")),
-			((.body // "") | @base64)
-		] | join("|")
-	')
+	extracted=$(_extract_batched_test_rows "$fixture_json")
 
 	local row_count
 	row_count=$(printf '%s\n' "$extracted" | grep -c .)
@@ -450,10 +462,11 @@ test_batched_field_extraction_parity() {
 	local all_ok=1
 
 	# Decode and verify row 1 (multiline + tab + UTF-8 body).
-	local r1_num r1_title_b64 r1_labels r1_body_b64 r1_title r1_body
-	IFS='|' read -r r1_num r1_title_b64 r1_labels r1_body_b64 < <(printf '%s\n' "$extracted" | sed -n 1p)
+	local r1_num r1_title_b64 r1_labels r1_body_b64 r1_assoc r1_login_b64 r1_type r1_bot r1_title r1_body r1_login
+	IFS='|' read -r r1_num r1_title_b64 r1_labels r1_body_b64 r1_assoc r1_login_b64 r1_type r1_bot < <(printf '%s\n' "$extracted" | sed -n 1p)
 	r1_title=$(printf '%s' "$r1_title_b64" | base64 -d 2>/dev/null)
 	r1_body=$(printf '%s' "$r1_body_b64" | base64 -d 2>/dev/null)
+	r1_login=$(printf '%s' "$r1_login_b64" | base64 -d 2>/dev/null)
 
 	[[ "$r1_num" == "12345" ]] || {
 		_fail "row1 number: expected 12345, got '$r1_num'"
@@ -478,13 +491,21 @@ test_batched_field_extraction_parity() {
 		_fail "row1 body: UTF-8 corrupted in round-trip"
 		all_ok=0
 	fi
+	if [[ "$r1_assoc" != "CONTRIBUTOR" || "$r1_login" != "fixture-author" || "$r1_type" != "User" || "$r1_bot" != "false" ]]; then
+		_fail "row1 author trust metadata corrupted in round-trip"
+		all_ok=0
+	fi
 
 	# Decode and verify row 2 (empty body, empty labels).
-	local r2_num r2_title_b64 r2_labels r2_body_b64 r2_title r2_body
-	IFS='|' read -r r2_num r2_title_b64 r2_labels r2_body_b64 < <(printf '%s\n' "$extracted" | sed -n 2p)
+	local r2_num r2_title_b64 r2_labels r2_body_b64 r2_assoc r2_login_b64 r2_type r2_bot r2_title r2_body
+	IFS='|' read -r r2_num r2_title_b64 r2_labels r2_body_b64 r2_assoc r2_login_b64 r2_type r2_bot < <(printf '%s\n' "$extracted" | sed -n 2p)
 	r2_title=$(printf '%s' "$r2_title_b64" | base64 -d 2>/dev/null)
 	# Empty body — base64-decode of empty input is empty.
 	r2_body=$(printf '%s' "$r2_body_b64" | base64 -d 2>/dev/null)
+	if [[ -n "$r2_assoc" || -n "$r2_login_b64" || -n "$r2_type" || "$r2_bot" != "false" ]]; then
+		_fail "row2 legacy author metadata defaults corrupted"
+		all_ok=0
+	fi
 
 	[[ "$r2_num" == "67890" ]] || {
 		_fail "row2 number: expected 67890, got '$r2_num'"

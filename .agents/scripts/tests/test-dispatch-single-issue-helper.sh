@@ -39,6 +39,9 @@ MOCK_GH_ISSUE_STATE="OPEN"
 MOCK_GH_LABELS_JSON="[]"
 MOCK_GH_FAIL="0"
 MOCK_GH_TARGET_IS_PR="0"
+MOCK_GH_AUTHOR_ASSOCIATION="OWNER"
+MOCK_GH_AUTHOR_LOGIN="fixture-owner"
+MOCK_GH_AUTHOR_TYPE="User"
 MOCK_GH_PERMISSION_EVENTS_JSON='[[]]'
 MOCK_GH_REST_LOGIN_MODE="success"
 MOCK_GH_GRAPHQL_LOGIN_MODE="success"
@@ -212,9 +215,9 @@ gh() {
 
 	if [[ "$gh_subcommand" == "api" && "$gh_resource" == repos/*/issues/* ]]; then
 		case "$MOCK_GH_TARGET_IS_PR" in
-		1) printf '{"number":123,"pull_request":{"url":"https://api.example.invalid/pulls/123"}}\n' ;;
+		1) printf '{"number":123,"author_association":"%s","user":{"login":"%s","type":"%s"},"pull_request":{"url":"https://api.example.invalid/pulls/123"}}\n' "$MOCK_GH_AUTHOR_ASSOCIATION" "$MOCK_GH_AUTHOR_LOGIN" "$MOCK_GH_AUTHOR_TYPE" ;;
 		api_fail) return 1 ;;
-		*) printf '{"number":123}\n' ;;
+		*) printf '{"number":123,"author_association":"%s","user":{"login":"%s","type":"%s"}}\n' "$MOCK_GH_AUTHOR_ASSOCIATION" "$MOCK_GH_AUTHOR_LOGIN" "$MOCK_GH_AUTHOR_TYPE" ;;
 		esac
 		return 0
 	fi
@@ -680,6 +683,41 @@ test_maintainer_review_guard_blocks_manual_dispatch() {
 	local check=1
 	[[ "$rc" -eq 1 && "$out" == *"requires maintainer review"* && "$out" == *"sudo aidevops approve issue 24354 owner/repo"* ]] && check=0
 	print_result "maintainer-review guard blocks manual dispatch" "$check" "rc=$rc output=$out"
+	return 0
+}
+
+test_issue_author_guard_blocks_missing_label_bypass() {
+	local helper_dir="" helper="" original_helper="$_DSI_APPROVAL_HELPER"
+	helper_dir=$(mktemp -d)
+	helper="${helper_dir}/approval-helper.sh"
+	printf '%s\n' '#!/usr/bin/env bash' 'printf "NO_APPROVAL\n"' >"$helper"
+	chmod +x "$helper"
+	_DSI_APPROVAL_HELPER="$helper"
+	_DSI_TARGET_JSON='{"author_association":"CONTRIBUTOR","user":{"login":"reporter","type":"User"}}'
+	local out="" rc=0
+	out=$(_dsi_guard_issue_author_trust 28700 owner/repo 2>&1) || rc=$?
+	local check=1
+	[[ "$rc" -eq 1 && "$out" == *"no verified approval"* ]] && check=0
+	print_result "issue-author guard blocks missing-label bypass" "$check" "rc=$rc output=$out"
+
+	printf '%s\n' '#!/usr/bin/env bash' 'printf "VERIFIED\n"' >"$helper"
+	rc=0
+	_dsi_guard_issue_author_trust 28700 owner/repo >/dev/null 2>&1 || rc=$?
+	check=1
+	[[ "$rc" -eq 0 ]] && check=0
+	print_result "issue-author guard accepts verified approval" "$check" "rc=$rc"
+
+	_DSI_TARGET_JSON='{"author_association":"OWNER","user":{"login":"owner","type":"User"}}'
+	_DSI_APPROVAL_HELPER="/path/that/does/not/exist"
+	rc=0
+	_dsi_guard_issue_author_trust 28700 owner/repo >/dev/null 2>&1 || rc=$?
+	check=1
+	[[ "$rc" -eq 0 ]] && check=0
+	print_result "issue-author guard accepts owner without approval helper" "$check" "rc=$rc"
+
+	_DSI_APPROVAL_HELPER="$original_helper"
+	_DSI_TARGET_JSON=""
+	rm -rf "$helper_dir"
 	return 0
 }
 
@@ -1353,6 +1391,7 @@ _run_tests() {
 	test_interactive_hold_guard_allows_auto_dispatch_handoff
 	test_interactive_hold_guard_allows_auto_dispatch_review_handoff
 	test_maintainer_review_guard_blocks_manual_dispatch
+	test_issue_author_guard_blocks_missing_label_bypass
 	test_maintainer_permission_guard_blocks_manual_dispatch
 	test_permission_history_guard_requires_current_grant
 	test_cmd_dispatch_blocks_needs_maintainer_review_before_dedup

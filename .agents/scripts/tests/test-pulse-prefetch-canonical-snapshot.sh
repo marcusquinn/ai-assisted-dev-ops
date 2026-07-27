@@ -113,7 +113,7 @@ update_repo_tier_check_timestamp() {
 	return 0
 }
 
-ISSUE_ITEMS='[{"number":3,"title":"Issue","state":"open","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[]}]'
+ISSUE_ITEMS='[{"number":3,"title":"Issue","state":"open","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[],"authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]'
 PR_ITEMS='[{"number":7,"title":"PR","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[],"createdAt":"2026-07-17T09:00:00Z","author":{"login":"dev"},"headRefOid":"abcdef123456","headRefName":"feature"}]'
 
 snapshot_path() {

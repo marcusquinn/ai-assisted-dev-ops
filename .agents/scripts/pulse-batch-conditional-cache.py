@@ -75,6 +75,16 @@ def _normalize_items(kind: str, body: str) -> list[dict[str, Any]]:
                     "labels": item.get("labels") or [],
                     "updatedAt": item.get("updated_at") or item.get("updatedAt"),
                     "assignees": item.get("assignees") or [],
+                    "authorAssociation": item.get("author_association") or "NONE",
+                    "author": (
+                        {
+                            "login": (item.get("user") or {}).get("login") or "",
+                            "type": (item.get("user") or {}).get("type") or "",
+                            "is_bot": (item.get("user") or {}).get("type") == "Bot",
+                        }
+                        if item.get("user")
+                        else None
+                    ),
                 }
             )
             continue

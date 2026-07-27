@@ -182,7 +182,7 @@ _prefetch_cached_label_count_is_zero() {
 : "${PULSE_SWEEP_CACHE_HIT_ENABLED:=true}"
 
 _PREFETCH_SNAPSHOT_SCHEMA="aidevops-pulse-snapshot/v1"
-_PREFETCH_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees"
+_PREFETCH_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees,authorAssociation,author"
 _PREFETCH_PRS_PROJECTION="number,title,labels,updatedAt,assignees,createdAt,author,headRefOid,headRefName"
 _PREFETCH_FINGERPRINT_SCHEMA="canonical-snapshot-v1"
 
@@ -271,7 +271,8 @@ _canonical_snapshot_pair_complete() {
 		select(.projection == $projection and .complete == true and (.items | type) == "array") |
 		select(all(.items[];
 			(.number | type) == "number" and (.state | type) == "string" and
-			(.labels | type) == "array" and (.assignees | type) == "array" and has("updatedAt"))) |
+			(.labels | type) == "array" and (.assignees | type) == "array" and
+			(.authorAssociation | type) == "string" and has("updatedAt"))) |
 		select((.source | type) == "string" and (.fetched_at | type) == "string") |
 		[.generation, .auth_scope] | select(all(.[]; type == "string" and length > 0)) | @tsv
 	' 2>/dev/null) || return 1

@@ -138,7 +138,7 @@ _CACHE_CARDINALITY_UNKNOWN=unknown
 _CACHE_SNAPSHOT_STATE="missing"
 _CACHE_SNAPSHOT_PATH=""
 _SNAPSHOT_SCHEMA="aidevops-pulse-snapshot/v1"
-_SNAPSHOT_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees"
+_SNAPSHOT_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees,authorAssociation,author"
 _SNAPSHOT_PRS_PROJECTION="number,title,labels,updatedAt,assignees,createdAt,author,headRefOid,headRefName"
 _BATCH_SNAPSHOT_GENERATION="${PULSE_BATCH_SNAPSHOT_GENERATION:-}"
 _BATCH_SNAPSHOT_AUTH_SCOPE="${PULSE_BATCH_SNAPSHOT_AUTH_SCOPE:-${GH_HOST:-github.com}|${AIDEVOPS_GH_AUTH_MODE:-gh}|${AIDEVOPS_GH_AUTH_PRINCIPAL:-default}}|${AIDEVOPS_GH_API_POOL:-default}"
@@ -310,7 +310,13 @@ _prefetch_rest_issues_for_slug() {
 			state: (.state // $state_open),
 			labels: (.labels // []),
 			updatedAt: .updated_at,
-			assignees: (.assignees // [])
+			assignees: (.assignees // []),
+			authorAssociation: (.author_association // "NONE"),
+			author: (if .user then {
+				login: (.user.login // ""),
+				type: (.user.type // ""),
+				is_bot: ((.user.type // "") == "Bot")
+			} else null end)
 		}]
 	}' >"$tmp_file" 2>/dev/null; then
 		rm -f "$tmp_file"
@@ -494,7 +500,9 @@ _normalize_search_to_prefetch_schema() {
 					state: (.state // $state_open),
 					labels: .labels,
 					updatedAt: .updatedAt,
-					assignees: .assignees
+					assignees: .assignees,
+					authorAssociation: (.authorAssociation // "NONE"),
+					author: (.author // null)
 				}]
 			}) |
 			from_entries
@@ -902,7 +910,7 @@ _refresh_owner_issues() {
 	local issue_json=""
 	issue_json=$(_prefetch_gh_read gh search issues --owner "$owner" --state open \
 		--limit "$BATCH_SEARCH_LIMIT" \
-		--json number,title,state,labels,updatedAt,assignees,repository 2>"$issue_err") || issue_json=""
+		--json number,title,state,labels,updatedAt,assignees,authorAssociation,author,repository 2>"$issue_err") || issue_json=""
 	_OWNER_SEARCH_CALLS=$((_OWNER_SEARCH_CALLS + 1))
 
 	if [[ -z "$issue_json" || "$issue_json" == "$_JSON_NULL" ]]; then

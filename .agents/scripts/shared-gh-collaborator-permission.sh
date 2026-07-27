@@ -11,6 +11,76 @@ _SHARED_GH_COLLABORATOR_PERMISSION_LOADED=1
 _AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE="unknown"
 
 #######################################
+# Decide whether an issue actor has maintainer-equivalent repository authority.
+#
+# OWNER and MEMBER are authoritative webhook associations. COLLABORATOR is
+# ambiguous because GitHub also emits it for read/triage collaborators, so it
+# must be backed by the authenticated per-repository permission endpoint.
+# Other associations are confirmed non-maintainer inputs and do not spend an
+# additional API request.
+#
+# Globals written:
+#   AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL
+#   AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+#
+# Args: $1=repo_slug owner/repo, $2=user login, $3=author association
+# Returns: 0=trusted, 1=confirmed untrusted, 2=lookup/argument failure.
+#######################################
+_gh_actor_has_repo_write_authority() {
+	local repo_slug="$1"
+	local user="$2"
+	local association="${3:-NONE}"
+	local permission_value=""
+
+	AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
+	AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
+	export AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+
+	#aidevops:trust-boundary -- bare COLLABORATOR must never authorize worker input.
+	case "$association" in
+	OWNER | MEMBER)
+		AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL="$association"
+		AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="trusted-association"
+		export AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+		return 0
+		;;
+	COLLABORATOR)
+		if [[ -z "$repo_slug" || -z "$user" ]]; then
+			AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="missing-collaborator-identity"
+			export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+			return 2
+		fi
+		if ! _gh_collaborator_permission_lookup "$repo_slug" "$user" permission_value; then
+			AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="permission-lookup-failed:${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE}"
+			export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+			return 2
+		fi
+		AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL="$permission_value"
+		export AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL
+		case "$permission_value" in
+		admin | maintain | write)
+			AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="trusted-permission"
+			export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+			return 0
+			;;
+		*)
+			AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="insufficient-permission:${permission_value:-none}"
+			export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+			return 1
+			;;
+		esac
+		;;
+	*)
+		AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="untrusted-association:${association:-NONE}"
+		export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+		return 1
+		;;
+	esac
+
+	return 1
+}
+
+#######################################
 # Look up a repository collaborator permission through App-aware REST routing.
 #
 # Auth selection stays in _rest_api_call/github_app_api_call: GitHub App

@@ -18,6 +18,7 @@ TESTS_RUN=0
 TESTS_FAILED=0
 GH_CALLS_FILE=""
 TEST_ROOT=""
+MOCK_AUTHORITY_RC=1
 
 print_result() {
 	local test_name="$1"
@@ -56,6 +57,8 @@ setup_case() {
 	local association="$1"
 	local author_type="${2:-User}"
 	local approval_result="${3:-}"
+	local authority_rc="${4:-1}"
+	MOCK_AUTHORITY_RC="$authority_rc"
 
 	TEST_ROOT=$(mktemp -d 2>/dev/null || mktemp -d -t aidevops-gh22399)
 	GH_CALLS_FILE="${TEST_ROOT}/gh-calls.log"
@@ -67,7 +70,7 @@ setup_case() {
 	: >"$LOGFILE"
 
 	cat >"${TEST_ROOT}/issue-meta.tsv" <<EOF
-${association}	${author_type}
+${association}|${author_type}|fixture-author
 EOF
 	cat >"${TEST_ROOT}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -101,6 +104,16 @@ EOF
 	return 0
 }
 
+_gh_actor_has_repo_write_authority() {
+	local repo_slug="$1"
+	local author_login="$2"
+	local association="$3"
+	[[ -n "$repo_slug" && -n "$association" ]] || return 2
+	: "$author_login"
+	AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="fixture-authority-${MOCK_AUTHORITY_RC}"
+	return "$MOCK_AUTHORITY_RC"
+}
+
 cleanup_case() {
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
@@ -131,7 +144,7 @@ test_external_author_without_approval_blocks_and_applies_nmr() {
 }
 
 test_owner_author_allows_dispatch() {
-	setup_case "OWNER" "User" ""
+	setup_case "OWNER" "User" "" 0
 	if _check_external_issue_author_gate 1 "owner/repo"; then
 		print_result "OWNER author bypasses external gate" 1 "Expected gate to allow OWNER"
 		cleanup_case
@@ -143,13 +156,35 @@ test_owner_author_allows_dispatch() {
 }
 
 test_collaborator_author_allows_dispatch() {
-	setup_case "COLLABORATOR" "User" ""
+	setup_case "COLLABORATOR" "User" "" 0
 	if _check_external_issue_author_gate 2 "owner/repo"; then
 		print_result "COLLABORATOR author bypasses external gate" 1 "Expected gate to allow COLLABORATOR"
 		cleanup_case
 		return 0
 	fi
 	print_result "COLLABORATOR author bypasses external gate" 0
+	cleanup_case
+	return 0
+}
+
+test_read_collaborator_without_approval_blocks() {
+	setup_case "COLLABORATOR" "User" "" 1
+	if _check_external_issue_author_gate 22 "owner/repo"; then
+		print_result "read collaborator without approval blocks" 0
+	else
+		print_result "read collaborator without approval blocks" 1 "Expected gate to block"
+	fi
+	cleanup_case
+	return 0
+}
+
+test_collaborator_permission_lookup_failure_blocks() {
+	setup_case "COLLABORATOR" "User" "" 2
+	if _check_external_issue_author_gate 23 "owner/repo"; then
+		print_result "collaborator permission lookup failure blocks" 0
+	else
+		print_result "collaborator permission lookup failure blocks" 1 "Expected gate to fail closed"
+	fi
 	cleanup_case
 	return 0
 }
@@ -210,6 +245,8 @@ main() {
 	test_external_author_without_approval_blocks_and_applies_nmr
 	test_owner_author_allows_dispatch
 	test_collaborator_author_allows_dispatch
+	test_read_collaborator_without_approval_blocks
+	test_collaborator_permission_lookup_failure_blocks
 	test_external_author_with_crypto_approval_allows_dispatch
 	test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr
 	test_author_lookup_failure_fails_closed

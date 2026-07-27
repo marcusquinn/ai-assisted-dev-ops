@@ -24,6 +24,7 @@
 #   _try_close_parent_tracker     — close parent if all children are resolved
 #
 # Exports — single-pass stage predicates:
+#   _should_reconcile_external_issue_gate — stage 0 trust predicate
 #   _should_ciw   — stage 1 predicate (status:available)
 #   _should_rsd   — stage 2 predicate (status:done)
 #   _should_oimp  — stage 3 predicate (not a parent-task)
@@ -31,6 +32,7 @@
 #   _should_lia   — stage 5 predicate (labelless aidevops-shaped)
 #
 # Exports — single-pass per-issue action helpers:
+#   _action_reconcile_external_issue_gate — stage 0 trust repair/block
 #   _action_ciw_single   — close issue with merged PR (stage 1)
 #   _action_rsd_single   — reconcile stale-done issue (stage 2)
 #   _action_oimp_single  — close open issue with merged PR (stage 3)
@@ -575,6 +577,98 @@ _Detected by reconcile_completed_parent_tasks (pulse-issue-reconcile.sh)._" \
 		>/dev/null 2>&1 || return 1
 
 	echo "[pulse-wrapper] Reconcile parent-task: closed #${parent_num} in ${slug} — all ${child_count} children closed (source=${child_source})" >>"$LOGFILE"
+	return 0
+}
+
+# Stage 0 predicate: cached metadata identifies a non-maintainer issue author,
+# or metadata is unavailable and later lifecycle stages must remain blocked.
+# Unknown rows are not relabeled because that could misclassify legacy trusted
+# issues; live worker entry gates independently remain fail-closed.
+# Args: $1=author association, $2=author type, $3=author is_bot boolean
+_should_reconcile_external_issue_gate() {
+	local author_association="$1"
+	local author_type="$2"
+	local author_is_bot="$3"
+	if [[ "$author_type" == "Bot" || "$author_is_bot" == "true" ]]; then
+		return 1
+	fi
+	case "$author_association" in
+	OWNER | MEMBER) return 1 ;;
+	esac
+	return 0
+}
+
+#######################################
+# Stage 0 action: repair a missing NMR gate from cached author metadata and
+# prevent later reconciliation stages from acting on unapproved external input.
+# Verified approvals and write-authorized collaborators continue normally.
+#
+# Args: $1=slug, $2=issue number, $3=labels CSV, $4=association, $5=login
+# Returns: 0=block remaining stages, 1=trusted/approved and may continue
+#######################################
+_action_reconcile_external_issue_gate() {
+	local slug="$1"
+	local issue_num="$2"
+	local labels_csv="$3"
+	local author_association="$4"
+	local author_login="$5"
+	local labels_with_commas=",${labels_csv},"
+	_PIR_EXTERNAL_GATE_MUTATED=0
+
+	if [[ "$labels_with_commas" == *",${_PIR_NMR_LABEL},"* ]]; then
+		return 0
+	fi
+	if [[ -z "$author_association" ]]; then
+		echo "[pulse-wrapper] External issue trust reconcile: blocked #${issue_num} in ${slug}; author metadata unavailable, labels unchanged" >>"$LOGFILE"
+		return 0
+	fi
+
+	local authority_rc=0
+	if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+		_gh_actor_has_repo_write_authority "$slug" "$author_login" "$author_association" || authority_rc=$?
+	else
+		authority_rc=2
+	fi
+	if [[ "$authority_rc" -eq 0 ]]; then
+		return 1
+	fi
+
+	local approval_helper="${_PIR_SCRIPT_DIR}/approval-helper.sh"
+	local verification=""
+	if [[ ! -x "$approval_helper" ]]; then
+		echo "[pulse-wrapper] External issue trust reconcile: blocked #${issue_num} in ${slug}; approval helper unavailable, labels unchanged" >>"$LOGFILE"
+		return 0
+	fi
+	verification=$("$approval_helper" verify "$issue_num" "$slug" 2>/dev/null) || true
+	if [[ "$verification" == "VERIFIED" ]]; then
+		return 1
+	fi
+	if [[ -n "$verification" && "$verification" != "NO_APPROVAL" ]]; then
+		echo "[pulse-wrapper] External issue trust reconcile: blocked #${issue_num} in ${slug}; approval verification=${verification}, labels unchanged" >>"$LOGFILE"
+		return 0
+	fi
+
+	local -a edit_args=("$_PIR_ADD_LABEL_FLAG" "$_PIR_NMR_LABEL")
+	if [[ "$labels_with_commas" == *",${_PIR_AUTO_DISPATCH_LABEL},"* ]]; then
+		edit_args+=("$_PIR_REMOVE_LABEL_FLAG" "$_PIR_AUTO_DISPATCH_LABEL")
+	fi
+	if [[ "$labels_with_commas" == *",${_PIR_STATUS_AVAILABLE},"* ]]; then
+		edit_args+=("$_PIR_REMOVE_LABEL_FLAG" "$_PIR_STATUS_AVAILABLE")
+	fi
+
+	#aidevops:trust-boundary -- cached metadata repairs labels; live gates remain authoritative.
+	local edit_rc=0
+	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
+		gh_issue_edit_safe "$issue_num" --repo "$slug" "${edit_args[@]}" >/dev/null 2>&1 || edit_rc=$?
+	else
+		gh issue edit "$issue_num" --repo "$slug" "${edit_args[@]}" >/dev/null 2>&1 || edit_rc=$?
+	fi
+	if [[ "$edit_rc" -eq 0 ]]; then
+		_PIR_EXTERNAL_GATE_MUTATED=1
+		echo "[pulse-wrapper] External issue trust reconcile: applied ${_PIR_NMR_LABEL} to #${issue_num} in ${slug}" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] External issue trust reconcile: label repair failed for #${issue_num} in ${slug}; remaining stages blocked" >>"$LOGFILE"
+	fi
 	return 0
 }
 

@@ -71,6 +71,7 @@ _DSI_STATE_RECOVERING="recovering"
 _DSI_UNKNOWN_VALUE="<unknown>"
 _DSI_CLAIM_WON=0
 _DSI_CLAIM_COMMENT_ID=""
+_DSI_TARGET_JSON=""
 
 # Colors (guarded — don't collide with shared-constants)
 [[ -z "${_DSI_GREEN+x}" ]] && _DSI_GREEN='\033[0;32m'
@@ -158,7 +159,9 @@ _dsi_target_is_pull_request() {
 	local repo_slug="$2"
 	local target_json="" has_pull_request=""
 
+	_DSI_TARGET_JSON=""
 	target_json=$(gh api "repos/${repo_slug}/issues/${issue_number}" 2>/dev/null) || return 2
+	_DSI_TARGET_JSON="$target_json"
 	has_pull_request=$(printf '%s' "$target_json" | jq -r 'has("pull_request")' 2>/dev/null) || return 2
 	if [[ "$has_pull_request" == "true" ]]; then
 		return 0
@@ -187,6 +190,70 @@ _dsi_guard_no_interactive_hold() {
 		return 1
 	fi
 	return 0
+}
+
+#######################################
+# Independently verify issue-author authority before a manual worker launch.
+# This closes the gap where creation-time NMR labeling failed and the manual
+# dispatcher previously treated the missing label as approval.
+# Args: $1 - issue number, $2 - owner/repo slug
+# Returns: 0 when trusted/approved, 1 when dispatch must remain blocked
+#######################################
+_dsi_guard_issue_author_trust() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local issue_json="${_DSI_TARGET_JSON:-}"
+	local author_meta="" author_association="NONE" author_type="" author_login=""
+
+	if [[ -z "$issue_json" ]]; then
+		issue_json=$(gh api "repos/${repo_slug}/issues/${issue_number}" 2>/dev/null) || issue_json=""
+	fi
+	if [[ -n "$issue_json" ]]; then
+		author_meta=$(printf '%s' "$issue_json" | jq -r \
+			'[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || author_meta=""
+	fi
+	if [[ -n "$author_meta" ]]; then
+		IFS='|' read -r author_association author_type author_login <<<"$author_meta"
+	fi
+	[[ -n "$author_association" ]] || author_association="NONE"
+	if [[ "$author_type" == "Bot" ]]; then
+		return 0
+	fi
+
+	local authority_rc=0
+	if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+		_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
+	else
+		authority_rc=2
+	fi
+	if [[ "$authority_rc" -eq 0 ]]; then
+		return 0
+	fi
+
+	if [[ ! -x "$_DSI_APPROVAL_HELPER" ]]; then
+		_dsi_err "Issue-author approval verifier is unavailable; refusing manual worker dispatch"
+		return 1
+	fi
+	local verification=""
+	verification=$("$_DSI_APPROVAL_HELPER" verify "$issue_number" "$repo_slug" 2>/dev/null) || true
+	if [[ "$verification" == "VERIFIED" ]]; then
+		return 0
+	fi
+	if [[ -n "$verification" && "$verification" != "NO_APPROVAL" ]]; then
+		_dsi_err "Issue #${issue_number} in ${repo_slug} has an unverifiable approval marker (${verification}); refusing manual worker dispatch"
+		return 1
+	fi
+
+	#aidevops:trust-boundary -- label mutation is containment, never the authority source.
+	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
+		gh_issue_edit_safe "$issue_number" --repo "$repo_slug" \
+			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+	else
+		gh issue edit "$issue_number" --repo "$repo_slug" \
+			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+	fi
+	_dsi_err "Issue #${issue_number} in ${repo_slug} has untrusted or unknown author authority (${author_association}; ${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}) and no verified approval; refusing manual worker dispatch"
+	return 1
 }
 
 #######################################
@@ -1386,6 +1453,7 @@ cmd_dispatch() {
 	fi
 	_dsi_guard_no_interactive_hold "$_DSI_ISSUE_LABELS" || return 1
 	_dsi_guard_no_maintainer_review_required "$_DSI_ISSUE_LABELS" "$issue_number" "$repo_slug" || return 1
+	_dsi_guard_issue_author_trust "$issue_number" "$repo_slug" || return 1
 	_dsi_guard_no_maintainer_permission_required "$_DSI_ISSUE_LABELS" "$issue_number" "$repo_slug" || return 1
 	_dsi_guard_permission_history_verified "$issue_number" "$repo_slug" || return 1
 	_dsi_check_parent_task "$_DSI_ISSUE_LABELS" || return 1
