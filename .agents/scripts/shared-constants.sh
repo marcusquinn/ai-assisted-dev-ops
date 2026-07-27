@@ -145,10 +145,10 @@ aidevops_ensure_pulse_start_epoch() {
 # Set to "latest" to resume tracking upstream. Grep for the variable name to
 # find all consumers that need updating when unpinning.
 
-# OpenCode unpinned: root cause was SQLite contention (shared DB, busy_timeout=0),
-# not version-specific. Fixed by DB isolation per worker (v3.6.130).
-# Upstream context: https://github.com/anomalyco/opencode/issues/21215
-readonly OPENCODE_PINNED_VERSION="latest"
+# GH#28766: OpenCode 1.18.7 stalls Linux headless workers while bootstrapping
+# location services with an isolated XDG_DATA_HOME. Keep the last verified
+# working release until a newer version passes that same headless smoke test.
+readonly OPENCODE_PINNED_VERSION="1.18.5"
 
 # Minimum GitHub CLI version required for `gh api --paginate --slurp`.
 # Older distro packages can parse `gh` as installed while dispatch paths fail

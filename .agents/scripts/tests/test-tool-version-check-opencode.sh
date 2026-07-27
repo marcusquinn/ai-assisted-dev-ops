@@ -10,9 +10,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TOOL_VERSION_CHECK="$REPO_ROOT/.agents/scripts/tool-version-check.sh"
+SHARED_CONSTANTS="$REPO_ROOT/.agents/scripts/shared-constants.sh"
+HEADLESS_RUNTIME_LIB="$REPO_ROOT/.agents/scripts/headless-runtime-lib.sh"
 
-if [[ ! -f "$TOOL_VERSION_CHECK" ]]; then
-	printf 'FAIL: cannot find %s\n' "$TOOL_VERSION_CHECK" >&2
+if [[ ! -f "$TOOL_VERSION_CHECK" || ! -f "$SHARED_CONSTANTS" || ! -f "$HEADLESS_RUNTIME_LIB" ]]; then
+	printf 'FAIL: cannot find OpenCode version policy sources\n' >&2
 	exit 1
 fi
 
@@ -43,8 +45,12 @@ extract_function() {
 	awk '
 		/^_opencode_upgrade_cmd\(\)/, /^}$/ { print; next }
 	' "$TOOL_VERSION_CHECK" >"$SANDBOX/extract.sh"
-	if ! grep -q '^_opencode_upgrade_cmd()' "$SANDBOX/extract.sh"; then
-		printf 'FAIL: extraction did not capture _opencode_upgrade_cmd\n' >&2
+	awk '
+		/^_enforce_opencode_version_pin\(\)/, /^}$/ { print; next }
+	' "$HEADLESS_RUNTIME_LIB" >>"$SANDBOX/extract.sh"
+	if ! grep -q '^_opencode_upgrade_cmd()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_enforce_opencode_version_pin()' "$SANDBOX/extract.sh"; then
+		printf 'FAIL: extraction did not capture OpenCode version functions\n' >&2
 		exit 1
 	fi
 	return 0
@@ -67,6 +73,11 @@ write_executable() {
 }
 
 extract_function
+
+printf 'Test 0: OpenCode remains pinned to the last verified headless release\n'
+# shellcheck source=../shared-constants.sh
+source "$SHARED_CONSTANTS"
+assert_eq "OpenCode headless regression pin" "1.18.5" "$OPENCODE_PINNED_VERSION"
 
 printf 'Test 1: Homebrew OpenCode chooses brew instead of npm\n'
 mkdir -p "$SANDBOX/opt/homebrew/bin" "$SANDBOX/opt/homebrew/Cellar/opencode/1.15.10/bin" "$SANDBOX/opt/homebrew/opt" "$SANDBOX/homebrew-case"
@@ -147,6 +158,22 @@ printf "npm %s\n" "$*" >>"'"$SANDBOX"'/npm-case/calls"'
 	PATH="$SANDBOX/npm-bin:$SANDBOX/npm-case:$SYSTEM_PATH" bash -c "$cmd"
 )
 assert_eq "npm OpenCode upgrade command" "npm install -g opencode-ai@1.15.10" "$(tr '\n' ';' <"$SANDBOX/npm-case/calls" | sed 's/;$//')"
+
+printf 'Test 4: headless version guard restores the pinned release\n'
+mkdir -p "$SANDBOX/version-guard"
+write_executable "$SANDBOX/version-guard/opencode" '#!/usr/bin/env bash
+printf "1.18.7\n"'
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/version-guard/npm" '#!/usr/bin/env bash
+printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"'
+(
+	source_extracted
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/opencode"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	PATH="$SANDBOX/version-guard:$SYSTEM_PATH" _enforce_opencode_version_pin
+)
+assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.5" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
