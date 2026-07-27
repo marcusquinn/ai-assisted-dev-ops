@@ -55,15 +55,25 @@ assert_order() {
 assert_contains "package workflow exposes provenance-bound dispatch" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
 assert_contains "package dispatch requires an existing signed tag" \
 	"Existing signed aidevops release tag" "$PACKAGE_WORKFLOW"
+assert_contains "package dispatch requires a correlation identity" \
+	"Non-secret dispatch correlation identifier" "$PACKAGE_WORKFLOW"
 assert_absent "package metadata is not rewritten before publish" "--no-git-tag-version" "$PACKAGE_WORKFLOW"
 assert_contains "release workflow verifies provenance" "release-provenance-helper.sh verify" "$RELEASE_WORKFLOW"
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
 assert_contains "package workflow checks out the resolved release tag" \
 	'ref: ${{ inputs.tag || github.event.release.tag_name }}' "$PACKAGE_WORKFLOW"
 assert_contains "package runs expose their immutable tag identity" \
-	"run-name: Publish packages for \${{ inputs.tag || github.event.release.tag_name }}" "$PACKAGE_WORKFLOW"
+	"inputs.request_id && format('Publish packages for {0} ({1})'" "$PACKAGE_WORKFLOW"
 assert_contains "package jobs verify a published GitHub release" \
 	"releases/tags/\$RELEASE_TAG" "$PACKAGE_WORKFLOW"
+assert_contains "package input is bound to the event tag ref" \
+	"\"\$GITHUB_REF\" != \"refs/tags/\$RELEASE_TAG\"" "$PACKAGE_WORKFLOW"
+assert_contains "package input is bound to the event commit" \
+	"\"\$GITHUB_SHA\" != \"\$TAG_COMMIT\"" "$PACKAGE_WORKFLOW"
+assert_contains "existing exact npm versions are reused" \
+	"already-published=true" "$PACKAGE_WORKFLOW"
+assert_contains "npm publication skips an existing exact version" \
+	"if: steps.npm-state.outputs.already-published != 'true'" "$PACKAGE_WORKFLOW"
 assert_contains "duplicate dispatches never cancel in-flight publication" \
 	"cancel-in-progress: false" "$PACKAGE_WORKFLOW"
 assert_absent "in-flight package publication cannot be cancelled" \

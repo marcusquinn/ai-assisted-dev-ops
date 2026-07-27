@@ -162,9 +162,21 @@ _release_lookup_exact_workflow_run() {
 			| select($title == "" or (.display_title // "") == $title)]
 		| sort_by(.created_at // "") | last // empty
 	' <<<"$runs_json") || return 1
-	[[ -n "$run_json" && "$run_json" != "null" ]] || return 1
+	[[ -n "$run_json" && "$run_json" != "null" ]] || return 3
 	printf '%s\n' "$run_json"
 	return 0
+}
+
+_release_package_dispatch_supported_at_tag() {
+	local tag_name="$1"
+	local workflow_path=".github/workflows/publish-packages.yml"
+
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	if git -C "$REPO_ROOT" show "refs/tags/${tag_name}:${workflow_path}" 2>/dev/null |
+		grep -qE '^[[:space:]]+workflow_dispatch:'; then
+		return 0
+	fi
+	return 1
 }
 
 _release_find_exact_workflow_run() {
@@ -293,9 +305,18 @@ _wait_for_protected_package_publication() {
 	local run_json=""
 	local event_name=""
 	local expected_title=""
+	local lookup_rc=0
+	local dispatch_request_id="${AIDEVOPS_RELEASE_DISPATCH_REQUEST_ID:-}"
 
 	printf -v tag_name 'v%s' "$version"
-	dispatch_title="Publish packages for ${tag_name}"
+	if [[ -z "$dispatch_request_id" ]]; then
+		printf -v dispatch_request_id '%s-%s-%s' "$tag_name" "$(date +%s)" "$$"
+	fi
+	[[ "$dispatch_request_id" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || {
+		print_error "Package dispatch request identity is malformed"
+		return 1
+	}
+	dispatch_title="Publish packages for ${tag_name} (${dispatch_request_id})"
 	_verify_github_release_provenance "$version" || return 1
 	slug=$(_version_manager_repo_slug)
 	[[ -n "$slug" ]] || {
@@ -310,20 +331,30 @@ _wait_for_protected_package_publication() {
 
 	for event_name in workflow_dispatch release; do
 		expected_title=""
-		[[ "$event_name" == "workflow_dispatch" ]] && expected_title="$dispatch_title"
+		lookup_rc=0
 		run_json=$(_release_lookup_exact_workflow_run "$slug" "$workflow_file" \
-			"$event_name" "$tag_commit" "$expected_title" 2>/dev/null || true)
-		if [[ -n "$run_json" ]]; then
+			"$event_name" "$tag_commit" "$expected_title" 2>/dev/null) || lookup_rc=$?
+		if [[ "$lookup_rc" -eq 0 ]]; then
 			print_info "Reusing existing protected package workflow for ${tag_name}"
 			_release_wait_exact_workflow "$version" "$workflow_file" "$event_name" \
 				"$workflow_label" "$expected_title"
 			return $?
 		fi
+		if [[ "$lookup_rc" -ne 3 ]]; then
+			print_error "Cannot inspect existing package workflows for ${tag_name}; refusing duplicate dispatch"
+			return 1
+		fi
 	done
 
+	if ! _release_package_dispatch_supported_at_tag "$tag_name"; then
+		print_error "Release tag ${tag_name} predates explicit package dispatch"
+		print_error "Use the reviewed release-event recovery path without moving the signed tag"
+		return 1
+	fi
 	print_info "Dispatching protected package publication for ${tag_name}"
 	if ! gh api --method POST "repos/${slug}/actions/workflows/${workflow_file}/dispatches" \
-		-f "ref=${tag_name}" -f "inputs[tag]=${tag_name}" >/dev/null; then
+		-f "ref=${tag_name}" -f "inputs[tag]=${tag_name}" \
+		-f "inputs[request_id]=${dispatch_request_id}" >/dev/null; then
 		print_error "Failed to dispatch protected package publication for ${tag_name}"
 		return 1
 	fi

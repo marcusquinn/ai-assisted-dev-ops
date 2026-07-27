@@ -9,8 +9,12 @@ on:
         description: 'Existing signed aidevops release tag'
         required: true
         type: string
+      request_id:
+        description: 'Non-secret dispatch correlation identifier'
+        required: true
+        type: string
 
-run-name: Publish packages for ${{ inputs.tag || github.event.release.tag_name }}
+run-name: ${{ inputs.request_id && format('Publish packages for {0} ({1})', inputs.tag, inputs.request_id) || format('Publish packages for {0}', github.event.release.tag_name) }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name }}
@@ -36,9 +40,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "::error::Release input $RELEASE_TAG does not match event ref $GITHUB_REF"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ! "$DISPATCH_REQUEST_ID" =~ ^[A-Za-z0-9._-]{1,100}$ ]]; then
+            echo "::error::Invalid package dispatch request identity"
+            exit 1
+          fi
+          TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" ]]; then
+            echo "::error::Release event SHA $GITHUB_SHA does not match tag commit $TAG_COMMIT"
             exit 1
           fi
           RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
@@ -78,9 +96,33 @@ jobs:
         id: version
         run: |
           echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm publication state
+        id: npm-state
+        env:
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          VIEW_OUTPUT=""
+          if VIEW_OUTPUT=$(npm view "aidevops@$PKG_VERSION" version --json 2>&1); then
+            PUBLISHED_VERSION=$(jq -er 'if type == "array" then .[0] else . end' <<<"$VIEW_OUTPUT")
+            if [[ "$PUBLISHED_VERSION" != "$PKG_VERSION" ]]; then
+              echo "::error::Registry returned $PUBLISHED_VERSION for requested version $PKG_VERSION"
+              exit 1
+            fi
+            echo "already-published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qE 'E404|No match found' <<<"$VIEW_OUTPUT"; then
+            echo "already-published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::Unable to determine npm publication state"
+          printf '%s\n' "$VIEW_OUTPUT" >&2
+          exit 1
       
       # No token needed - uses OIDC Trusted Publisher authentication
       - name: Publish to npm
+        if: steps.npm-state.outputs.already-published != 'true'
         run: npm publish --provenance --access public
       
       - name: Summary
@@ -116,9 +158,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "::error::Release input $RELEASE_TAG does not match event ref $GITHUB_REF"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ! "$DISPATCH_REQUEST_ID" =~ ^[A-Za-z0-9._-]{1,100}$ ]]; then
+            echo "::error::Invalid package dispatch request identity"
+            exit 1
+          fi
+          TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" ]]; then
+            echo "::error::Release event SHA $GITHUB_SHA does not match tag commit $TAG_COMMIT"
             exit 1
           fi
           RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
