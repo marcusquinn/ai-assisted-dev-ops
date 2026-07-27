@@ -55,44 +55,111 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=ai-cli-config.sh
 source "${SCRIPT_DIR}/ai-cli-config.sh"
 
-_mcp_adapter_run_with_timeout() {
+_mcp_adapter_kill_timeout_target() {
+	local child_pid="$1"
+	local child_pgid="$2"
+	local kill_after_seconds="$3"
+	local self_pgid=""
+	local signal_target="$child_pid"
+	[[ -n "$child_pid" ]] || return 0
+
+	self_pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')" || true
+	if [[ -n "$child_pgid" && -n "$self_pgid" && "$child_pgid" != "$self_pgid" ]]; then
+		signal_target="-${child_pgid}"
+	fi
+
+	if ! kill -0 -- "$signal_target" 2>/dev/null; then
+		return 0
+	fi
+
+	kill -TERM -- "$signal_target" 2>/dev/null || true
+	sleep "$kill_after_seconds"
+	if kill -0 -- "$signal_target" 2>/dev/null; then
+		kill -KILL -- "$signal_target" 2>/dev/null || true
+	fi
+	return 0
+}
+
+_mcp_adapter_timeout_watchdog() {
+	local timeout_seconds="$1"
+	local child_pid="$2"
+	local child_pgid="$3"
+	local kill_after_seconds="$4"
+	local timeout_marker="$5"
+
+	sleep "$timeout_seconds"
+	if kill -0 "$child_pid" 2>/dev/null; then
+		printf 'timed-out\n' >"$timeout_marker"
+		_mcp_adapter_kill_timeout_target "$child_pid" "$child_pgid" "$kill_after_seconds"
+	fi
+	return 0
+}
+
+_mcp_adapter_timeout_cleanup() {
+	local watchdog_pid="$1"
+	local child_pid="$2"
+	local child_pgid="$3"
+	local kill_after_seconds="$4"
+	local timeout_marker="$5"
+
+	if [[ -n "$watchdog_pid" ]]; then
+		kill "$watchdog_pid" 2>/dev/null || true
+		wait "$watchdog_pid" 2>/dev/null || true
+	fi
+	_mcp_adapter_kill_timeout_target "$child_pid" "$child_pgid" "$kill_after_seconds"
+	wait "$child_pid" 2>/dev/null || true
+	rm -f "$timeout_marker"
+	return 0
+}
+
+_mcp_adapter_run_with_timeout() (
 	local timeout_seconds="$1"
 	shift
 	local kill_after_seconds="${AIDEVOPS_MCP_TIMEOUT_KILL_AFTER_SECONDS:-2}"
+	local timeout_marker=""
+	local child_pid=""
+	local child_pgid=""
+	local watchdog_pid=""
+	local command_status=0
+	local monitor_was_enabled=false
 
-	if command -v timeout >/dev/null 2>&1; then
-		if _mcp_adapter_timeout_supports_kill_after timeout; then
-			timeout -k "${kill_after_seconds}s" "${timeout_seconds}s" "$@"
-		else
-			timeout "${timeout_seconds}s" "$@"
-		fi
-		return $?
+	timeout_marker="$(mktemp "${TMPDIR:-/tmp}/aidevops-mcp-timeout.XXXXXX")"
+	trap '_mcp_adapter_timeout_cleanup "$watchdog_pid" "$child_pid" "$child_pgid" "$kill_after_seconds" "$timeout_marker"' EXIT
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$@" &
+		child_pid=$!
+		child_pgid="$child_pid"
+	else
+		# Bash job control gives a background command its own process group on
+		# macOS systems where setsid is unavailable. Restore the caller's mode
+		# immediately after launch so sourcing this adapter has no lasting effect.
+		[[ $- == *m* ]] && monitor_was_enabled=true
+		set -m
+		"$@" &
+		child_pid=$!
+		child_pgid="$child_pid"
+		$monitor_was_enabled && set -m || set +m
 	fi
 
-	if command -v gtimeout >/dev/null 2>&1; then
-		if _mcp_adapter_timeout_supports_kill_after gtimeout; then
-			gtimeout -k "${kill_after_seconds}s" "${timeout_seconds}s" "$@"
-		else
-			gtimeout "${timeout_seconds}s" "$@"
-		fi
-		return $?
+	_mcp_adapter_timeout_watchdog "$timeout_seconds" "$child_pid" "$child_pgid" "$kill_after_seconds" "$timeout_marker" &
+	watchdog_pid=$!
+
+	if wait "$child_pid"; then
+		command_status=0
+	else
+		command_status=$?
 	fi
 
-	if command -v perl >/dev/null 2>&1; then
-		perl -e 'alarm shift @ARGV; exec @ARGV' "$timeout_seconds" "$@"
-		return $?
+	if [[ -s "$timeout_marker" ]]; then
+		wait "$watchdog_pid" 2>/dev/null || true
+		return 124
 	fi
 
-	"$@"
-	return $?
-}
-
-_mcp_adapter_timeout_supports_kill_after() {
-	local timeout_cmd="$1"
-
-	"$timeout_cmd" --help 2>&1 | grep -q -- '-k'
-	return $?
-}
+	kill "$watchdog_pid" 2>/dev/null || true
+	wait "$watchdog_pid" 2>/dev/null || true
+	return "$command_status"
+)
 
 _MCP_ADAPTER_CLAUDE_EXISTING_CACHE=""
 _MCP_ADAPTER_CLAUDE_LIST_STATUS_CACHE=""

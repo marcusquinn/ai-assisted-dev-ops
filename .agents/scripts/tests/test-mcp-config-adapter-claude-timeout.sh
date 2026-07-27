@@ -69,27 +69,6 @@ EOF
 	return 0
 }
 
-make_stub_timeout_with_kill_after_log() {
-	local temp_dir="$1"
-
-	cat >"${temp_dir}/timeout" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "--help" ]]; then
-	printf 'Usage: timeout [-k DURATION] DURATION COMMAND\n'
-	exit 0
-fi
-printf '%s\n' "$*" >"${TIMEOUT_STUB_ARGS_FILE:?}"
-if [[ "${1:-}" == "-k" ]]; then
-	shift 2
-fi
-shift
-"$@"
-EOF
-	chmod +x "${temp_dir}/timeout"
-	return 0
-}
-
 run_claude_registration_with_stub() {
 	local mode="$1"
 	local temp_dir
@@ -98,11 +77,14 @@ run_claude_registration_with_stub() {
 
 	make_stub_claude "$temp_dir" "$mode"
 
-	PATH="${temp_dir}:$PATH" AIDEVOPS_MCP_CLAUDE_TIMEOUT_SECONDS=1 bash -c '
+	PATH="${temp_dir}:$PATH" AIDEVOPS_MCP_CLAUDE_TIMEOUT_SECONDS=1 \
+		AIDEVOPS_MCP_TIMEOUT_KILL_AFTER_SECONDS=0.2 bash -c '
 		set -euo pipefail
 		source "$1"
 		_register_mcp_claude "macos-automator" "{\"command\":\"npx\",\"args\":[\"-y\",\"@example/mcp\"]}"
 	' bash "$ADAPTER"
+	trap - RETURN
+	rm -rf "$temp_dir"
 	return 0
 }
 
@@ -127,30 +109,9 @@ run_two_claude_registrations_with_stub() {
 	if [[ -f "$list_count_file" ]]; then
 		read -r list_count <"$list_count_file" || list_count=0
 	fi
+	trap - RETURN
+	rm -rf "$temp_dir"
 	printf '%s\n' "$list_count"
-	return 0
-}
-
-run_timeout_with_stub() {
-	local temp_dir args_file
-	temp_dir="$(mktemp -d)"
-	trap 'rm -rf "$temp_dir"' RETURN
-	args_file="${temp_dir}/timeout-args"
-
-	make_stub_claude "$temp_dir" "ok"
-	make_stub_timeout_with_kill_after_log "$temp_dir"
-
-	PATH="${temp_dir}:$PATH" TIMEOUT_STUB_ARGS_FILE="$args_file" bash -c '
-		set -euo pipefail
-		source "$1"
-		_mcp_adapter_run_with_timeout 1 claude mcp list >/dev/null
-	' bash "$ADAPTER"
-
-	if [[ -f "$args_file" ]]; then
-		local timeout_args
-		read -r timeout_args <"$args_file" || timeout_args=""
-		printf '%s\n' "$timeout_args"
-	fi
 	return 0
 }
 
@@ -199,16 +160,115 @@ test_claude_mcp_list_is_cached_per_registration_pass() {
 	return 0
 }
 
-test_timeout_uses_kill_after_when_available() {
-	local timeout_args
-	timeout_args="$(run_timeout_with_stub)"
+test_timeout_terminates_process_group() {
+	local temp_dir fixture child_pid_file grandchild_pid_file status child_pid grandchild_pid isolation_mode
+	local failure_message=""
+	temp_dir="$(mktemp -d)"
+	trap 'rm -rf "$temp_dir"' RETURN
+	fixture="${temp_dir}/spawn-tree.sh"
+	child_pid_file="${temp_dir}/child.pid"
+	grandchild_pid_file="${temp_dir}/grandchild.pid"
+	cat >"$fixture" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+child_pid_file="$1"
+grandchild_pid_file="$2"
+bash -c 'sleep 30 & printf "%s\n" "$!" >"$1"; wait' bash "$grandchild_pid_file" &
+printf '%s\n' "$!" >"$child_pid_file"
+wait
+EOF
+	chmod +x "$fixture"
 
-	if [[ "$timeout_args" == "-k 2s 1s claude mcp list" ]]; then
-		print_result "timeout uses kill-after when supported" 0
+	for isolation_mode in auto fallback; do
+		rm -f "$child_pid_file" "$grandchild_pid_file"
+		set +e
+		AIDEVOPS_MCP_TIMEOUT_KILL_AFTER_SECONDS=0.2 bash -c '
+			set -euo pipefail
+			source "$1"
+			if [[ "$5" == "fallback" ]]; then
+				command() {
+					local command_flag="${1:-}"
+					local command_name="${2:-}"
+					if [[ "$command_flag" == "-v" && "$command_name" == "setsid" ]]; then
+						return 1
+					fi
+					builtin command "$@"
+					return $?
+				}
+			fi
+			_mcp_adapter_run_with_timeout 1 "$2" "$3" "$4"
+		' bash "$ADAPTER" "$fixture" "$child_pid_file" "$grandchild_pid_file" "$isolation_mode" >/dev/null 2>&1
+		status=$?
+		set -e
+
+		child_pid="$(read_pid_file "$child_pid_file")" || true
+		grandchild_pid="$(read_pid_file "$grandchild_pid_file")" || true
+		if [[ "$status" -ne 124 ]] || pid_is_alive "$child_pid" || pid_is_alive "$grandchild_pid"; then
+			failure_message="mode=${isolation_mode} status=${status} child=${child_pid:-missing} grandchild=${grandchild_pid:-missing}"
+			break
+		fi
+	done
+
+	trap - RETURN
+	rm -rf "$temp_dir"
+	if [[ -z "$failure_message" ]]; then
+		print_result "timeout terminates process group with setsid and portable fallback" 0
 		return 0
 	fi
 
-	print_result "timeout uses kill-after when supported" 1 "timeout_args=${timeout_args}"
+	print_result "timeout terminates child and grandchild process group" 1 \
+		"$failure_message"
+	return 0
+}
+
+read_pid_file() {
+	local pid_file="$1"
+	local pid=""
+	local attempts=20
+
+	while [[ "$attempts" -gt 0 ]]; do
+		if [[ -s "$pid_file" ]]; then
+			read -r pid <"$pid_file" || pid=""
+			printf '%s\n' "$pid"
+			return 0
+		fi
+		sleep 0.1
+		attempts=$((attempts - 1))
+	done
+	return 1
+}
+
+pid_is_alive() {
+	local pid="$1"
+	[[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+	return $?
+}
+
+test_success_preserves_output_and_status() {
+	local output status failure_status
+
+	set +e
+	output="$(bash -c '
+		set -euo pipefail
+		source "$1"
+		_mcp_adapter_run_with_timeout 5 bash -c '\''printf "ready\\n"; exit 0'\''
+	' bash "$ADAPTER")"
+	status=$?
+	bash -c '
+		set -euo pipefail
+		source "$1"
+		_mcp_adapter_run_with_timeout 5 bash -c '\''exit 7'\''
+	' bash "$ADAPTER" >/dev/null 2>&1
+	failure_status=$?
+	set -e
+
+	if [[ "$status" -eq 0 && "$output" == "ready" && "$failure_status" -eq 7 ]]; then
+		print_result "successful command preserves output and status" 0
+		return 0
+	fi
+
+	print_result "successful command preserves output and status" 1 \
+		"status=${status} failure_status=${failure_status} output=${output}"
 	return 0
 }
 
@@ -216,7 +276,8 @@ main() {
 	test_claude_mcp_list_timeout_is_non_blocking
 	test_claude_mcp_add_timeout_is_non_blocking
 	test_claude_mcp_list_is_cached_per_registration_pass
-	test_timeout_uses_kill_after_when_available
+	test_timeout_terminates_process_group
+	test_success_preserves_output_and_status
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then
