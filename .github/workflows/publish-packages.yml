@@ -84,7 +84,8 @@ jobs:
           BODY=$(awk "/^## \[$VERSION\]/,/^## \[/" CHANGELOG.md | sed '$d')
           PREV_TAG=$(git describe --tags --abbrev=0 "$RELEASE_TAG^" 2>/dev/null || true)
           if [[ -n "$PREV_TAG" ]]; then
-            EXTRA=$(git log --oneline "$PREV_TAG..$RELEASE_TAG" -- | grep -v 'chore: claim t' | head -10)
+            EXTRA=$(git log --oneline --max-count=10 --invert-grep \
+              --grep='^chore: claim t' "$PREV_TAG..$RELEASE_TAG" --)
             BODY="$BODY"$'\n\n### Commits since CHANGELOG generation\n'"$EXTRA"
           fi
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/release-notes.md"
@@ -183,9 +184,17 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           CURRENT="$RUNNER_TEMP/aidevops.rb"
-          if gh api repos/marcusquinn/homebrew-tap/contents/Formula/aidevops.rb \
-            --jq '.content' | base64 --decode > "$CURRENT" \
-            && cmp -s homebrew/aidevops.rb "$CURRENT"; then
+          TAP_JSON=""
+          if ! TAP_JSON=$(gh api \
+            repos/marcusquinn/homebrew-tap/contents/Formula/aidevops.rb 2>&1); then
+            echo "::error::Unable to determine Homebrew tap publication state"
+            exit 1
+          fi
+          if ! jq -er '.content' <<<"$TAP_JSON" | base64 --decode > "$CURRENT"; then
+            echo "::error::Homebrew tap returned malformed formula content"
+            exit 1
+          fi
+          if cmp -s homebrew/aidevops.rb "$CURRENT"; then
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
             echo "current=false" >> "$GITHUB_OUTPUT"

@@ -73,6 +73,7 @@ assert_contains "checked-out commit is bound to the immutable tag" \
 # shellcheck disable=SC2016 # Match the literal workflow shell variable.
 assert_contains "release notes cross steps through a file" '--notes-file "$RUNNER_TEMP/release-notes.md"' "$PACKAGE_WORKFLOW"
 assert_absent "release notes cannot inject into generated workflow shell" 'steps.changelog.outputs.body' "$PACKAGE_WORKFLOW"
+assert_absent "release-note collection avoids pipefail truncation" '| head -10' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow expression.
 assert_contains "recovery is idempotent for npm" 'npm view "aidevops@${RELEASE_VERSION}"' "$PACKAGE_WORKFLOW"
 assert_contains "npm registry uncertainty fails closed" \
@@ -81,6 +82,8 @@ assert_contains "npm publication skips an existing exact version" \
 	"if: steps.npm-state.outputs.published != 'true'" "$PACKAGE_WORKFLOW"
 assert_contains "all versions serialize through one publication lock" "group: release-publication" "$PACKAGE_WORKFLOW"
 assert_contains "concurrency cannot cancel an in-flight publication" "cancel-in-progress: false" "$PACKAGE_WORKFLOW"
+assert_contains "Homebrew API uncertainty fails closed before writing" \
+	"Unable to determine Homebrew tap publication state" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
 assert_order "release provenance precedes release creation" \
 	"release-provenance-helper.sh verify" "github-release-helper.sh create" "$PACKAGE_WORKFLOW"

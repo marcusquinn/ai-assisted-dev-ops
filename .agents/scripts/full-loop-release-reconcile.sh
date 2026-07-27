@@ -90,6 +90,13 @@ _full_loop_release_source_json_from_tag() {
 	return $?
 }
 
+_full_loop_release_runs_payload_valid() {
+	local runs_json="$1"
+	jq -e 'type == "object" and (.workflow_runs | type == "array")' \
+		<<<"$runs_json" >/dev/null
+	return $?
+}
+
 _full_loop_release_find_workflow_run() {
 	local repo="$1"
 	local tag_name="$2"
@@ -97,19 +104,51 @@ _full_loop_release_find_workflow_run() {
 	local push_runs=""
 	local recovery_runs=""
 	local display_title="Publish ${tag_name}"
+	local string_type="string"
 
 	_FULL_LOOP_RELEASE_RUN_JSON=""
 	push_runs=$(gh api --method GET "repos/${repo}/actions/workflows/publish-packages.yml/runs" \
 		-f event=push -F per_page=50 2>/dev/null) || return 1
 	recovery_runs=$(gh api --method GET "repos/${repo}/actions/workflows/publish-packages.yml/runs" \
 		-f event=workflow_dispatch -F per_page=50 2>/dev/null) || return 1
+	_full_loop_release_runs_payload_valid "$push_runs" || return 1
+	_full_loop_release_runs_payload_valid "$recovery_runs" || return 1
 	_FULL_LOOP_RELEASE_RUN_JSON=$(jq -cn --arg sha "$tag_commit" --arg title "$display_title" \
 		--argjson push "$push_runs" --argjson recovery "$recovery_runs" '
 		([($push.workflow_runs[]? | select(.event == "push" and .head_sha == $sha))]
-		 + [($recovery.workflow_runs[]? | select(.event == "workflow_dispatch" and .display_title == $title))])
+		 + [($recovery.workflow_runs[]?
+			| select(.event == "workflow_dispatch" and .head_branch == "main"
+				and .display_title == $title))])
 		| sort_by(.created_at // "") | last // empty
 	') || return 1
 	[[ -n "$_FULL_LOOP_RELEASE_RUN_JSON" && "$_FULL_LOOP_RELEASE_RUN_JSON" != "null" ]] || return 3
+	jq -e --arg string_type "$string_type" '
+		((.id | type) == "number")
+		and (.event == "push" or .event == "workflow_dispatch")
+		and ((.head_sha | type) == $string_type)
+		and (.head_sha | test("^[0-9a-f]{40}$"))
+		and ((.status | type) == $string_type)
+		and ((.status // "") | length > 0)
+		and ((.created_at | type) == $string_type)
+		and ((.created_at // "") | length > 0)
+		and (if .status == "completed" then
+			((.conclusion | type) == $string_type) and ((.conclusion // "") | length > 0)
+		else .conclusion == null or ((.conclusion | type) == $string_type) end)
+	' <<<"$_FULL_LOOP_RELEASE_RUN_JSON" >/dev/null || return 1
+	return 0
+}
+
+_full_loop_release_sha256_stream() {
+	local digest=""
+	if command -v sha256sum >/dev/null 2>&1; then
+		digest=$(sha256sum | awk '{print $1}') || return 1
+	elif command -v shasum >/dev/null 2>&1; then
+		digest=$(shasum -a 256 | awk '{print $1}') || return 1
+	else
+		return 1
+	fi
+	[[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+	printf '%s\n' "$digest"
 	return 0
 }
 
@@ -117,23 +156,38 @@ _full_loop_release_verify_channels() {
 	local repo="$1"
 	local tag_name="$2"
 	local version="${tag_name#v}"
-	local release_tag=""
+	local release_json=""
+	local npm_output=""
 	local npm_version=""
 	local tap_owner="${repo%%/*}"
 	local formula=""
+	local formula_sha=""
+	local sha_pattern='sha256[[:space:]]+"([0-9a-f]{64})"'
+	local tarball_url="https://github.com/${repo}/archive/refs/tags/${tag_name}.tar.gz"
+	local expected_sha=""
 
-	release_tag=$(gh release view "$tag_name" --repo "$repo" --json tagName -q '.tagName' 2>/dev/null) || return 1
-	[[ "$release_tag" == "$tag_name" ]] || return 1
+	release_json=$(gh api "repos/${repo}/releases/tags/${tag_name}" 2>/dev/null) || return 1
+	jq -e --arg tag "$tag_name" '
+		.tag_name == $tag and .draft == false and ((.published_at // "") | length > 0)
+	' <<<"$release_json" >/dev/null || return 1
 	command -v npm >/dev/null 2>&1 || return 1
-	npm_version=$(npm view "aidevops@${version}" version --json 2>/dev/null |
-		jq -r 'if type == "array" then .[0] // "" else . // "" end') || return 1
+	npm_output=$(npm view "aidevops@${version}" version --json 2>/dev/null) || return 1
+	npm_version=$(jq -er '
+		if type == "array" then .[0] else . end | select(type == "string")
+	' <<<"$npm_output") || return 1
 	[[ "$npm_version" == "$version" ]] || return 1
 	formula=$(gh api "repos/${tap_owner}/homebrew-tap/contents/Formula/aidevops.rb" \
 		--jq '.content | @base64d' 2>/dev/null) || return 1
 	[[ "$formula" == *"/archive/refs/tags/${tag_name}.tar.gz"* ]] || return 1
+	[[ "$formula" =~ $sha_pattern ]] || return 1
+	formula_sha="${BASH_REMATCH[1]}"
+	command -v curl >/dev/null 2>&1 || return 1
+	expected_sha=$(curl -fsSL "$tarball_url" | _full_loop_release_sha256_stream) || return 1
+	[[ "$formula_sha" == "$expected_sha" ]] || return 1
 	printf 'GITHUB_RELEASE=%s\n' "$tag_name"
 	printf 'NPM_VERSION=%s\n' "$npm_version"
 	printf 'HOMEBREW_VERSION=%s\n' "$version"
+	printf 'HOMEBREW_SHA256=%s\n' "$formula_sha"
 	return 0
 }
 
@@ -281,9 +335,14 @@ _full_loop_release_existing_command() {
 		fi
 		return 0
 	fi
-	if [[ "$mode" == "status" || "$inspect_rc" -eq 8 ]]; then
-		return "$inspect_rc"
-	fi
-	_full_loop_release_dispatch_recovery "$repo" "$tag_name"
-	return $?
+	case "$inspect_rc" in
+	8) return 8 ;;
+	1) return 1 ;;
+	3 | 4 | 5)
+		[[ "$mode" == "status" ]] && return "$inspect_rc"
+		_full_loop_release_dispatch_recovery "$repo" "$tag_name"
+		return $?
+		;;
+	*) return 1 ;;
+	esac
 }
