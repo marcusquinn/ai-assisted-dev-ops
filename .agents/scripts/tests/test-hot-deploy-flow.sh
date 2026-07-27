@@ -318,6 +318,7 @@ print_success() { return 0; }
 print_warning() { return 0; }
 _create_hotfix_tag() { local version="$1"; printf "hotfix:%s\n" "$version" >>"$EVENTS_FILE"; return 0; }
 run_post_release_agent_sync() { printf "deploy\n" >>"$EVENTS_FILE"; return 1; }
+release_source_pr_required() { return 1; }
 run_post_publication_gates 9.8.7 1
 ' _ "$RELEASE_LIB" "$SCRIPT_DIR/../../.." 2>&1) || exit_code=$?
 
@@ -338,7 +339,7 @@ test_publication_disables_rollback_before_local_gates() {
 	local rollback_disable_line=""
 	local post_gate_line=""
 	# shellcheck disable=SC2016 # Match the literal source expression.
-	publication_line=$(grep -n 'if ! create_github_release "$new_version"' "$VM_SCRIPT" | cut -d: -f1)
+	publication_line=$(grep -n 'if ! _publish_github_release "$new_version"' "$VM_SCRIPT" | cut -d: -f1)
 	rollback_disable_line=$(grep -n '_release_disable_failure_rollback' "$VM_SCRIPT" | while IFS=: read -r line_number _; do
 		if [[ "$line_number" -gt "$publication_line" ]]; then
 			printf '%s\n' "$line_number"

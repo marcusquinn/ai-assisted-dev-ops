@@ -347,7 +347,7 @@ _release_handle_push_failure() {
 	exit 1
 }
 
-# Perform the version bump, file updates, tag, push, and GitHub release.
+# Perform the version bump, file updates, tag, push, and protected publication.
 # Arguments: bump_type new_version hotfix_flag
 _release_execute() {
 	local bump_type="$1"
@@ -393,7 +393,7 @@ _release_execute() {
 		if ! push_changes "$new_version"; then
 			_release_handle_push_failure "$new_version"
 		fi
-		if ! create_github_release "$new_version"; then
+		if ! _publish_github_release "$new_version"; then
 			print_error "GitHub release publication failed for v$new_version"
 			print_error "release:failed"
 			return 1

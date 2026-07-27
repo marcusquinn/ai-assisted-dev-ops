@@ -128,6 +128,144 @@ _github_release_recover_with_rest() {
 	return 1
 }
 
+_release_find_exact_workflow_run() {
+	local slug="$1"
+	local workflow_file="$2"
+	local event_name="$3"
+	local tag_commit="$4"
+	local deadline="$5"
+	local poll_seconds="$6"
+	local runs_json=""
+	local run_json=""
+	local now=""
+
+	while true; do
+		now=$(date +%s) || return 1
+		if [[ "$now" -ge "$deadline" ]]; then
+			print_error "Timed out waiting for ${workflow_file} to start at ${tag_commit}" >&2
+			return 1
+		fi
+		if runs_json=$(gh api --method GET \
+			"repos/${slug}/actions/workflows/${workflow_file}/runs" \
+			-f "event=${event_name}" -F per_page=20 2>/dev/null); then
+			run_json=$(jq -c --arg sha "$tag_commit" --arg event "$event_name" '
+				[.workflow_runs[]? | select(.head_sha == $sha and .event == $event)]
+				| sort_by(.created_at // "") | last // empty
+			' <<<"$runs_json") || return 1
+			if [[ -n "$run_json" && "$run_json" != "null" ]]; then
+				printf '%s\n' "$run_json"
+				return 0
+			fi
+		fi
+		sleep "$poll_seconds"
+	done
+}
+
+_release_wait_workflow_run() {
+	local slug="$1"
+	local run_json="$2"
+	local workflow_label="$3"
+	local deadline="$4"
+	local poll_seconds="$5"
+	local run_id=""
+	local run_url=""
+	local status=""
+	local conclusion=""
+	local now=""
+
+	run_id=$(jq -er '.id' <<<"$run_json") || return 1
+	run_url=$(jq -r '.html_url // ""' <<<"$run_json") || return 1
+	print_info "Protected ${workflow_label} workflow run ${run_id} is awaiting completion"
+	[[ -z "$run_url" ]] || print_info "Approve each pending release-environment deployment at ${run_url}"
+
+	while true; do
+		status=$(jq -r '.status // ""' <<<"$run_json") || return 1
+		conclusion=$(jq -r '.conclusion // ""' <<<"$run_json") || return 1
+		if [[ "$status" == "completed" ]]; then
+			if [[ "$conclusion" == "success" ]]; then
+				print_success "Protected ${workflow_label} workflow completed successfully"
+				return 0
+			fi
+			print_error "Protected ${workflow_label} workflow concluded ${conclusion:-unknown}"
+			return 1
+		fi
+		now=$(date +%s) || return 1
+		if [[ "$now" -ge "$deadline" ]]; then
+			print_error "Timed out waiting for protected ${workflow_label} workflow run ${run_id}"
+			return 1
+		fi
+		sleep "$poll_seconds"
+		run_json=$(gh api "repos/${slug}/actions/runs/${run_id}" 2>/dev/null) || continue
+	done
+}
+
+_release_wait_exact_workflow() {
+	local version="$1"
+	local workflow_file="$2"
+	local event_name="$3"
+	local workflow_label="$4"
+	local timeout_seconds="${AIDEVOPS_RELEASE_WORKFLOW_TIMEOUT_SECONDS:-1800}"
+	local poll_seconds="${AIDEVOPS_RELEASE_WORKFLOW_POLL_SECONDS:-15}"
+	local slug=""
+	local tag_commit=""
+	local started_at=""
+	local deadline=""
+	local run_json=""
+
+	if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
+		print_error "Release workflow wait settings must be positive integers"
+		return 1
+	fi
+	slug=$(_version_manager_repo_slug)
+	[[ -n "$slug" ]] || {
+		print_error "Cannot wait for ${workflow_label}: repository slug is unavailable"
+		return 1
+	}
+	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/v${version}^{commit}" 2>/dev/null) || {
+		print_error "Cannot wait for ${workflow_label}: release tag commit is unavailable"
+		return 1
+	}
+	started_at=$(date +%s) || return 1
+	deadline=$((started_at + timeout_seconds))
+	print_info "Waiting for protected ${workflow_label} workflow at ${tag_commit}"
+	run_json=$(_release_find_exact_workflow_run "$slug" "$workflow_file" "$event_name" \
+		"$tag_commit" "$deadline" "$poll_seconds") || return 1
+	_release_wait_workflow_run "$slug" "$run_json" "$workflow_label" "$deadline" "$poll_seconds"
+	return $?
+}
+
+_wait_for_protected_github_release() {
+	local version="$1"
+	local tag_name="v${version}"
+	local slug=""
+
+	_release_wait_exact_workflow "$version" "release.yml" "push" "GitHub release" || return 1
+	_verify_github_release_provenance "$version" || return 1
+	slug=$(_version_manager_repo_slug)
+	if ! _github_release_rest_view "$slug" "$tag_name"; then
+		print_error "Protected workflow succeeded but GitHub release ${tag_name} is unavailable"
+		return 1
+	fi
+	return 0
+}
+
+_wait_for_protected_package_publication() {
+	local version="$1"
+	_release_wait_exact_workflow "$version" "publish-packages.yml" "release" \
+		"npm and Homebrew publication"
+	return $?
+}
+
+_publish_github_release() {
+	local version="$1"
+	if release_source_pr_required; then
+		_wait_for_protected_github_release "$version"
+		return $?
+	fi
+	create_github_release "$version"
+	return $?
+}
+
 _release_tag_message() {
 	local version="$1"
 	local source_pr="${VERSION_MANAGER_SOURCE_PR:-}"
@@ -473,6 +611,15 @@ run_post_publication_gates() {
 	local hotfix_flag="$2"
 	local hotfix_exit=0
 	local deployment_exit=0
+	local package_exit=0
+
+	if release_source_pr_required; then
+		_wait_for_protected_package_publication "$version" || package_exit=$?
+	fi
+	if [[ "$package_exit" -ne 0 ]]; then
+		print_error "PARTIAL RELEASE SUCCESS: GitHub release v$version remains published; protected package publication failed"
+		return 1
+	fi
 
 	# Publication is already durable at this point. Hotfix propagation must run
 	# before machine-local convergence so a local PATH problem cannot prevent

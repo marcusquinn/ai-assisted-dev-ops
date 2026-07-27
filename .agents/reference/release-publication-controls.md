@@ -160,7 +160,9 @@ later if the repository's operating model changes.
 Operationally, the GitHub release, npm publication, and Homebrew update jobs each
 reference `release` and can prompt for approval separately; the Homebrew job waits
 for npm first. The designated release-author reviewer must explicitly approve each
-pending deployment.
+pending deployment. The canonical release helper waits for the exact-commit
+GitHub Actions runs to complete and never creates the GitHub release directly for
+this repository, so local maintainer credentials cannot bypass the environment.
 
 The GitHub snapshot and verifier are read-only:
 
