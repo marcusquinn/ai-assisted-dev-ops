@@ -59,6 +59,14 @@ rewriting the published branch. The follow-up commit message carries the same
 trailers so the repository's squash-merge commit preserves the reviewed
 manifest consumed by the release verifier.
 
+PR #28725 reviews this recovery manifest:
+
+```text
+Aidevops-Release-Aggregator-PR: 28725
+Aidevops-Release-Aggregates: 28701@a8f2cf28004aabdbd774cf3157d984eaafad7cee
+Aidevops-Release-Aggregates: 28720@00faf1c84be08457b27bd7ba64c8773b2837726c
+```
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
