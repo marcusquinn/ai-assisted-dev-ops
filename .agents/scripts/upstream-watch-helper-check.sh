@@ -32,9 +32,55 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+readonly UPSTREAM_WATCH_MODE_RELEASES="releases"
+readonly UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS="releases-and-commits"
+
 # =============================================================================
 # GitHub API probes
 # =============================================================================
+
+#######################################
+# Validate a GitHub upstream watch mode.
+# Arguments:
+#   $1 - Watch mode
+# Returns: 0 when supported, 1 otherwise
+#######################################
+_upstream_watch_mode_valid() {
+	local watch_mode="$1"
+	if [[ "$watch_mode" == "$UPSTREAM_WATCH_MODE_RELEASES" || "$watch_mode" == "$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS" ]]; then
+		return 0
+	fi
+	return 1
+}
+
+#######################################
+# Seed missing runtime state from a committed review baseline.
+# Existing runtime state always wins so acknowledgements remain local.
+# Arguments:
+#   $1 - Repository slug
+#   $2 - Config entry JSON
+#######################################
+_initialize_github_repo_state() {
+	local slug="$1"
+	local entry_json="$2"
+
+	if printf '%s' "$_check_state" | jq -e --arg slug "$slug" '.repos[$slug] != null' >/dev/null 2>&1; then
+		return 0
+	fi
+
+	local baseline_release baseline_commit
+	baseline_release=$(printf '%s' "$entry_json" | jq -r '.baseline_release // ""')
+	baseline_commit=$(printf '%s' "$entry_json" | jq -r '.baseline_commit // ""')
+	_check_state=$(printf '%s' "$_check_state" | jq --arg slug "$slug" \
+		--arg release "$baseline_release" --arg commit "${baseline_commit:0:7}" \
+		'.repos[$slug] = {
+			last_release_seen: $release,
+			last_commit_seen: $commit,
+			last_checked: "",
+			updates_pending: 0
+		}') || return 1
+	return 0
+}
 
 #######################################
 # Probe GitHub API for the latest release of a repository.
@@ -293,7 +339,7 @@ _show_commit_diff() {
 # =============================================================================
 
 #######################################
-# Check a single GitHub repo for new releases and commits.
+# Check a single GitHub repo according to its configured watch mode.
 # Updates state in-place (passed by reference via global _check_state).
 # Arguments:
 #   $1 - Repository slug (owner/repo)
@@ -310,9 +356,22 @@ _check_single_github_repo() {
 	local now="$3"
 	local verbose="$4"
 
-	# Get relevance from config
-	local relevance
-	relevance=$(echo "$config" | jq -r --arg slug "$slug" '.repos[] | select(.slug == $slug) | .relevance // ""')
+	local entry_json relevance watch_mode
+	entry_json=$(printf '%s' "$config" | jq --arg slug "$slug" '.repos[] | select(.slug == $slug)')
+	relevance=$(printf '%s' "$entry_json" | jq -r '.relevance // ""')
+	watch_mode=$(printf '%s' "$entry_json" | jq -r --arg default_mode "$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS" '.watch_mode // $default_mode')
+	if ! _upstream_watch_mode_valid "$watch_mode"; then
+		_log_warn "Invalid watch_mode '${watch_mode}' for ${slug}"
+		echo -e "${RED}Error${NC}: Invalid watch_mode '${watch_mode}' for ${slug}; expected ${UPSTREAM_WATCH_MODE_RELEASES} or ${UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS}" >&2
+		_check_had_probe_failure=true
+		return 0
+	fi
+
+	if ! _initialize_github_repo_state "$slug" "$entry_json"; then
+		_log_warn "Failed to initialize runtime state for ${slug}"
+		_check_had_probe_failure=true
+		return 0
+	fi
 
 	# Get last-seen state
 	local last_release_seen last_commit_seen updates_pending_before
@@ -337,14 +396,18 @@ _check_single_github_repo() {
 		has_new_release=true
 	fi
 
-	# --- Check commits (even if no new release) ---
+	# --- Check commits when this entry opted into commit monitoring ---
 	local commit_json="" latest_commit="" latest_commit_date=""
-	if ! commit_json=$(_probe_github_commit "$slug"); then
-		probe_failed=true
-	fi
-	if [[ -n "$commit_json" ]]; then
-		latest_commit=$(echo "$commit_json" | jq -r '.sha // ""')
-		latest_commit_date=$(echo "$commit_json" | jq -r '.commit.committer.date // ""')
+	local watch_commits=false
+	if [[ "$watch_mode" == "$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS" ]]; then
+		watch_commits=true
+		if ! commit_json=$(_probe_github_commit "$slug"); then
+			probe_failed=true
+		fi
+		if [[ -n "$commit_json" ]]; then
+			latest_commit=$(echo "$commit_json" | jq -r '.sha // ""')
+			latest_commit_date=$(echo "$commit_json" | jq -r '.commit.committer.date // ""')
+		fi
 	fi
 
 	local has_new_commits=false
@@ -353,11 +416,13 @@ _check_single_github_repo() {
 	fi
 
 	# --- Report ---
+	local report_verbose="$verbose"
+	[[ "$watch_commits" == false ]] && report_verbose=false
 	_report_github_repo_update "$slug" "$relevance" \
 		"$has_new_release" "$has_new_commits" \
 		"$last_release_seen" "$last_commit_seen" \
 		"$latest_release_tag" "$latest_release_name" "$latest_release_date" \
-		"$latest_commit" "$latest_commit_date" "$verbose"
+		"$latest_commit" "$latest_commit_date" "$report_verbose"
 
 	# Update last_checked and updates_pending (not last_seen -- requires explicit ack)
 	# Skip state update if probes failed to avoid masking errors as "up to date"
@@ -378,9 +443,7 @@ _check_single_github_repo() {
 				update_old="$last_release_seen"
 				update_new="$latest_release_tag"
 			fi
-			local config_entry
-			config_entry=$(echo "$config" | jq --arg slug "$slug" '.repos[] | select(.slug == $slug)')
-			_queue_upstream_update_issue "$slug" "$update_kind" "$update_old" "$update_new" "$config_entry"
+			_queue_upstream_update_issue "$slug" "$update_kind" "$update_old" "$update_new" "$entry_json"
 		fi
 	else
 		_check_had_probe_failure=true

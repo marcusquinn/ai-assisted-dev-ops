@@ -13,7 +13,7 @@
 # for improvements relevant to our implementation.
 #
 # Usage:
-#   upstream-watch-helper.sh add <owner/repo> [--relevance "why we care"]
+#   upstream-watch-helper.sh add <owner/repo> [--relevance "why we care"] [--mode releases]
 #   upstream-watch-helper.sh remove <owner/repo>
 #   upstream-watch-helper.sh check [--verbose]     Check all watched repos for updates
 #   upstream-watch-helper.sh check <owner/repo>    Check a specific repo
@@ -62,6 +62,12 @@ CONFIG_FILE="${AGENTS_DIR}/configs/upstream-watch.json"
 STATE_FILE="${HOME}/.aidevops/cache/upstream-watch-state.json"
 LOGFILE="${HOME}/.aidevops/logs/upstream-watch.log"
 UPSTREAM_WATCH_LABEL="${UPSTREAM_WATCH_LABEL:-source:upstream-watch}"
+if [[ -z "${UPSTREAM_WATCH_STATUS_NONE+x}" ]]; then
+	readonly UPSTREAM_WATCH_STATUS_NONE="none"
+fi
+if [[ -z "${UPSTREAM_WATCH_STATUS_NEVER+x}" ]]; then
+	readonly UPSTREAM_WATCH_STATUS_NEVER="never"
+fi
 
 # Logging prefix for shared log_* functions
 # shellcheck disable=SC2034
@@ -88,16 +94,53 @@ source "${SCRIPT_DIR}/upstream-watch-helper-check.sh"
 # =============================================================================
 
 #######################################
+# Build a committed GitHub watch entry with its reviewed baseline.
+# Arguments: slug, description, relevance, mode, release, commit, branch, added-at
+#######################################
+_build_github_watch_entry() {
+	local slug="$1"
+	local description="$2"
+	local relevance="$3"
+	local watch_mode="$4"
+	local baseline_release="$5"
+	local baseline_commit="$6"
+	local default_branch="$7"
+	local added_at="$8"
+	jq -n \
+		--arg slug "$slug" \
+		--arg desc "$description" \
+		--arg relevance "$relevance" \
+		--arg watch_mode "$watch_mode" \
+		--arg baseline_release "$baseline_release" \
+		--arg baseline_commit "$baseline_commit" \
+		--arg branch "$default_branch" \
+		--arg added "$added_at" \
+		'{
+			slug: $slug,
+			description: $desc,
+			relevance: $relevance,
+			watch_mode: $watch_mode,
+			baseline_release: $baseline_release,
+			baseline_commit: $baseline_commit,
+			default_branch: $branch,
+			added_at: $added
+		}' || return 1
+	return 0
+}
+
+#######################################
 # Add a repository to the upstream watchlist
 # Verifies the repo exists, captures initial state (latest release/commit),
 # and stores config + state so the first check doesn't flag everything as new.
 # Arguments:
 #   $1 - Repository slug (owner/repo)
 #   $2 - Optional relevance description
+#   $3 - Watch mode (releases or releases-and-commits)
 #######################################
 cmd_add() {
 	local slug="$1"
 	local relevance="${2:-}"
+	local watch_mode="${3:-$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS}"
 
 	if [[ -z "$slug" ]]; then
 		echo -e "${RED}Error: Repository slug required (owner/repo)${NC}" >&2
@@ -107,6 +150,10 @@ cmd_add() {
 	# Validate slug format
 	if [[ ! "$slug" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
 		echo -e "${RED}Error: Invalid slug format. Expected: owner/repo${NC}" >&2
+		return 1
+	fi
+	if ! _upstream_watch_mode_valid "$watch_mode"; then
+		echo -e "${RED}Error: Invalid watch mode '${watch_mode}'. Expected ${UPSTREAM_WATCH_MODE_RELEASES} or ${UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS}.${NC}" >&2
 		return 1
 	fi
 
@@ -151,19 +198,8 @@ cmd_add() {
 	local now
 	now=$(_now_iso)
 	local new_entry
-	new_entry=$(jq -n \
-		--arg slug "$slug" \
-		--arg desc "$description" \
-		--arg relevance "$relevance" \
-		--arg branch "$default_branch" \
-		--arg added "$now" \
-		'{
-			slug: $slug,
-			description: $desc,
-			relevance: $relevance,
-			default_branch: $branch,
-			added_at: $added
-		}')
+	new_entry=$(_build_github_watch_entry "$slug" "$description" "$relevance" "$watch_mode" \
+		"$latest_tag" "$latest_commit" "$default_branch" "$now") || return 1
 
 	# Add to config
 	config=$(echo "$config" | jq --argjson entry "$new_entry" '.repos += [$entry]')
@@ -190,8 +226,9 @@ cmd_add() {
 	echo "  Description: ${description}"
 	[[ -n "$relevance" ]] && echo "  Relevance:   ${relevance}"
 	[[ -n "$latest_tag" ]] && echo "  Latest release: ${latest_tag}"
+	echo "  Watch mode: ${watch_mode}"
 	echo "  Default branch: ${default_branch}"
-	_log_info "Added watch: ${slug} (relevance: ${relevance:-none})"
+	_log_info "Added watch: ${slug} (mode: ${watch_mode}, relevance: ${relevance:-none})"
 	return 0
 }
 
@@ -341,7 +378,7 @@ cmd_status() {
 	fi
 
 	local last_check
-	last_check=$(echo "$state" | jq -r '.last_check // "never"')
+	last_check=$(echo "$state" | jq -r --arg fallback "$UPSTREAM_WATCH_STATUS_NEVER" '.last_check // $fallback')
 
 	echo -e "${BLUE}Upstream Watch Status${NC}"
 	echo "GitHub repos:          ${repo_count}"
@@ -355,12 +392,13 @@ cmd_status() {
 		echo "$config" | jq -r '.repos[] | .slug' | while IFS= read -r slug; do
 			[[ -z "$slug" ]] && continue
 
-			local relevance
+			local relevance watch_mode
 			relevance=$(echo "$config" | jq -r --arg slug "$slug" '.repos[] | select(.slug == $slug) | .relevance // ""')
+			watch_mode=$(echo "$config" | jq -r --arg slug "$slug" --arg default_mode "$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS" '.repos[] | select(.slug == $slug) | .watch_mode // $default_mode')
 			local last_release last_commit last_checked pending
-			last_release=$(echo "$state" | jq -r --arg slug "$slug" '.repos[$slug].last_release_seen // "none"')
-			last_commit=$(echo "$state" | jq -r --arg slug "$slug" '.repos[$slug].last_commit_seen // "none"')
-			last_checked=$(echo "$state" | jq -r --arg slug "$slug" '.repos[$slug].last_checked // "never"')
+			last_release=$(echo "$state" | jq -r --arg slug "$slug" --arg fallback "$UPSTREAM_WATCH_STATUS_NONE" '.repos[$slug].last_release_seen // $fallback')
+			last_commit=$(echo "$state" | jq -r --arg slug "$slug" --arg fallback "$UPSTREAM_WATCH_STATUS_NONE" '.repos[$slug].last_commit_seen // $fallback')
+			last_checked=$(echo "$state" | jq -r --arg slug "$slug" --arg fallback "$UPSTREAM_WATCH_STATUS_NEVER" '.repos[$slug].last_checked // $fallback')
 			pending=$(echo "$state" | jq -r --arg slug "$slug" '.repos[$slug].updates_pending // 0')
 
 			if [[ "$pending" -gt 0 ]]; then
@@ -369,7 +407,12 @@ cmd_status() {
 				echo -e "  ${GREEN}-${NC} ${slug}"
 			fi
 			echo "    Last release seen: ${last_release}"
-			echo "    Last commit seen:  ${last_commit}"
+			if [[ "$watch_mode" == "$UPSTREAM_WATCH_MODE_RELEASES" ]]; then
+				echo "    Last commit seen:  not tracked"
+			else
+				echo "    Last commit seen:  ${last_commit}"
+			fi
+			echo "    Watch mode:        ${watch_mode}"
 			echo "    Last checked:      ${last_checked:0:10}"
 			[[ -n "$relevance" ]] && echo "    Relevance:         ${relevance}"
 			echo ""
@@ -388,8 +431,8 @@ cmd_status() {
 			relevance=$(echo "$config" | jq -r --arg name "$entry_name" '.non_github_upstreams[] | select(.name == $name) | .relevance // ""')
 
 			local last_seen last_checked pending
-			last_seen=$(echo "$state" | jq -r --arg name "$entry_name" '.non_github[$name].last_seen // "none"')
-			last_checked=$(echo "$state" | jq -r --arg name "$entry_name" '.non_github[$name].last_checked // "never"')
+			last_seen=$(echo "$state" | jq -r --arg name "$entry_name" --arg fallback "$UPSTREAM_WATCH_STATUS_NONE" '.non_github[$name].last_seen // $fallback')
+			last_checked=$(echo "$state" | jq -r --arg name "$entry_name" --arg fallback "$UPSTREAM_WATCH_STATUS_NEVER" '.non_github[$name].last_checked // $fallback')
 			pending=$(echo "$state" | jq -r --arg name "$entry_name" '.non_github[$name].updates_pending // 0')
 
 			if [[ "$pending" -gt 0 ]]; then
@@ -419,7 +462,9 @@ USAGE:
     upstream-watch-helper.sh <command> [options]
 
 COMMANDS:
-    add <owner/repo> [--relevance "..."]   Add a repo to the watchlist
+    add <owner/repo> [--relevance "..."] [--mode MODE]
+                                             Add a repo to the watchlist
+    add <owner/repo> --releases-only         Shortcut for --mode releases
     remove <owner/repo>                     Remove a repo from the watchlist
     check [--verbose]                       Check all repos for new releases/commits
     check <owner/repo>                      Check a specific repo
@@ -431,6 +476,10 @@ EXAMPLES:
     # Watch a repo
     upstream-watch-helper.sh add vercel-labs/portless \
       --relevance "Local dev hosting -- compare against localdev-helper.sh"
+
+    # Watch stable releases without reacting to every commit
+    upstream-watch-helper.sh add vercel-labs/native --releases-only \
+      --relevance "Review desktop-shell and agent-native GUI improvements"
 
     # Check for updates
     upstream-watch-helper.sh check
@@ -447,6 +496,11 @@ CONFIG:
     Watchlist: ~/.aidevops/agents/configs/upstream-watch.json
     State:     ~/.aidevops/cache/upstream-watch-state.json
     Log:       ~/.aidevops/logs/upstream-watch.log
+
+    GitHub entries default to "releases-and-commits". Set watch_mode to
+    "releases" (or use --releases-only) for fast-moving inspiration repos.
+    Optional baseline_release and baseline_commit values seed a new install
+    at the last reviewed upstream state without generating a historical alert.
 
 NON-GITHUB UPSTREAMS:
     Repos on Docker Hub, GitLab, Forgejo, etc. are configured in
@@ -478,6 +532,52 @@ EOF
 # =============================================================================
 
 #######################################
+# Parse add-command options and dispatch to cmd_add.
+# Arguments:
+#   $@ - Repository slug and add options
+#######################################
+_dispatch_add() {
+	local slug=""
+	local relevance=""
+	local watch_mode="$UPSTREAM_WATCH_MODE_RELEASES_AND_COMMITS"
+	while [[ $# -gt 0 ]]; do
+		local arg="$1"
+		case "$arg" in
+		--relevance)
+			local relevance_value="${2:-}"
+			if [[ $# -ge 2 && -n "$relevance_value" && "${relevance_value:0:1}" != "-" ]]; then
+				relevance="$relevance_value"
+				shift 2
+			else
+				echo -e "${RED}Error: --relevance requires a value${NC}" >&2
+				return 1
+			fi
+			;;
+		--mode)
+			local mode_value="${2:-}"
+			if [[ $# -ge 2 && -n "$mode_value" && "${mode_value:0:1}" != "-" ]]; then
+				watch_mode="$mode_value"
+				shift 2
+			else
+				echo -e "${RED}Error: --mode requires a value${NC}" >&2
+				return 1
+			fi
+			;;
+		--releases-only)
+			watch_mode="$UPSTREAM_WATCH_MODE_RELEASES"
+			shift
+			;;
+		*)
+			[[ -n "$slug" ]] || slug="$arg"
+			shift
+			;;
+		esac
+	done
+	cmd_add "$slug" "$relevance" "$watch_mode"
+	return 0
+}
+
+#######################################
 # Main entry point -- parse command and dispatch to handler
 # Arguments:
 #   $1 - Command (add, remove, check, ack, status, help)
@@ -489,43 +589,24 @@ main() {
 
 	case "$cmd" in
 	add)
-		local slug=""
-		local relevance=""
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-			--relevance)
-				if [[ $# -ge 2 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-					relevance="$2"
-					shift 2
-				else
-					echo -e "${RED}Error: --relevance requires a value${NC}" >&2
-					return 1
-				fi
-				;;
-			*)
-				if [[ -z "$slug" ]]; then
-					slug="$1"
-				fi
-				shift
-				;;
-			esac
-		done
-		cmd_add "$slug" "$relevance"
+		_dispatch_add "$@"
 		;;
 	remove | rm)
-		cmd_remove "${1:-}"
+		local remove_slug="${1:-}"
+		cmd_remove "$remove_slug"
 		;;
 	check)
 		local target=""
 		local verbose=false
 		while [[ $# -gt 0 ]]; do
-			case "$1" in
+			local check_arg="$1"
+			case "$check_arg" in
 			--verbose | -v)
 				verbose=true
 				shift
 				;;
 			*)
-				target="$1"
+				target="$check_arg"
 				shift
 				;;
 			esac
@@ -568,6 +649,9 @@ main() {
 		return 1
 		;;
 	esac
+	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

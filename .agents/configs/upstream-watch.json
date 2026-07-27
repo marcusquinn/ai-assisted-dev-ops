@@ -1,5 +1,5 @@
 {
-  "$comment": "Upstream repos to watch for releases and significant changes. Managed by upstream-watch-helper.sh (t1426). Entry schema: {slug, description, relevance, default_branch, added_at}. State (last_release_seen, last_commit_seen, last_checked, updates_pending) stored in ~/.aidevops/cache/upstream-watch-state.json. Non-GitHub upstreams are tracked in the non_github_upstreams array for manual/scheduled checks.",
+  "$comment": "Upstream repos to watch for releases and significant changes. Managed by upstream-watch-helper.sh (t1426). Entry schema: {slug, description, relevance, watch_mode, baseline_release, baseline_commit, affects, default_branch, added_at}. watch_mode defaults to releases-and-commits; releases suppresses commit alerts. State (last_release_seen, last_commit_seen, last_checked, updates_pending) is stored in ~/.aidevops/cache/upstream-watch-state.json. Non-GitHub upstreams are tracked in the non_github_upstreams array for manual/scheduled checks.",
   "repos": [
     {
       "slug": "rtk-ai/rtk",
@@ -56,6 +56,23 @@
       "relevance": "DESIGN.md format spec at version alpha — aidevops design-md agent (.agents/tools/design/design-md.md) and template (.agents/templates/DESIGN.md.template) adopted v0.1.0 in t2807/PR #20749. New releases may change YAML schema, rename sections, add/remove linter rules, or alter component property set. CLI is @google/design.md on npm. Watch for v1 release (signals format stabilisation) and breaking schema changes.",
       "default_branch": "main",
       "added_at": "2026-04-24T17:24:54Z"
+    },
+    {
+      "slug": "vercel-labs/native",
+      "description": "Apache-2.0 toolkit for native desktop applications with declarative UI, Zig or compiled TypeScript logic, WebView shells, and agent-oriented automation",
+      "relevance": "Release-only inspiration source for the aidevops desktop shell and GUI verification. Review React/WebView integration, accessibility automation, record/replay, packaging, signing, updates, platform parity, security boundaries, and toolchain stability against todo/research/native-sdk-assessment.md. Do not import the SDK, bundled skill, eval workspace, platform binaries, or Vercel services automatically.",
+      "watch_mode": "releases",
+      "baseline_release": "v0.6.1",
+      "baseline_commit": "a7509a7fa6c467eaed021250538b482886f1c6bf",
+      "affects": [
+        "docs/gui/adr-0001-product-scope-stack-repo-layout.md",
+        "docs/gui/desktop-packaging.md",
+        "docs/gui/testing-ci-cd.md",
+        "packages/gui-desktop/",
+        "todo/research/native-sdk-assessment.md"
+      ],
+      "default_branch": "main",
+      "added_at": "2026-07-28"
     }
   ],
   "non_github_upstreams": [

@@ -34,6 +34,8 @@ Check current state: `aidevops auto-update status` shows a `Linger: yes|no` row 
 
 **Upstream watch**: `upstream-watch-helper.sh check` — monitors external repos for new releases. Config: `.agents/configs/upstream-watch.json`. State: `~/.aidevops/cache/upstream-watch-state.json`. Commands: `status`, `check`, `ack <slug>`.
 
+GitHub entries monitor releases and commits by default. Use `upstream-watch-helper.sh add <owner/repo> --releases-only` or set `watch_mode` to `releases` for fast-moving inspiration repos where commit-level alerts would create noise. Optional committed `baseline_release` and `baseline_commit` values seed missing local state at the last reviewed version; later acknowledgements remain in the local state file.
+
 **Update behavior**: Shared agents overwritten on update. Only `custom/` and `draft/` preserved.
 
 ## Related
