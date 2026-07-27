@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # =============================================================================
-# Test: t3068 — approve writes trigger file; pulse drains it.
+# Test: t3068 / GH#28717 — approval triggers target reconciliation and merge.
 # =============================================================================
 #
 # Covers two contracts that together collapse the up-to-120s window between
@@ -12,12 +12,12 @@
 #   1. approval-helper.sh::_kick_pulse_after_approval writes a TSV record
 #      to ~/.aidevops/cache/pulse-merge-trigger.txt on every approval.
 #   2. pulse-wrapper-bootstrap.sh::_drain_merge_trigger_file_if_present
-#      atomically rotates the marker, processes each record, and removes
-#      the rotated file — so the same record never executes twice.
+#      atomically rotates the marker, reconciles the exact approved target,
+#      then processes any linked PR. Exact duplicate records execute once.
 #
 # The test isolates the marker file via the PULSE_MERGE_TRIGGER_FILE env
-# var and mocks process_pr to a stub that records calls into a log. No
-# real GitHub state is touched.
+# var and mocks reconciliation/process_pr into logs. No real GitHub state is
+# touched.
 #
 # Bypass env vars exercised:
 #   AIDEVOPS_SKIP_APPROVE_KICK_PULSE=1   — disable the helper entirely
@@ -30,6 +30,8 @@
 #   - Drain is a no-op when marker is missing (cold start)
 #   - Atomic rotation: a stub `process_pr` that re-checks the marker sees
 #     it gone (no double-processing on race)
+#   - Issues without linked PRs still receive exact-target reconciliation
+#   - Exact duplicate records do not repeat reconciliation or merge attempts
 #   - Bypass flags neutralise both halves cleanly
 
 set -uo pipefail
@@ -44,6 +46,8 @@ FAIL=0
 TMPROOT=$(mktemp -d "${TMPDIR:-/tmp}/test-t3068-XXXXXX") || exit 1
 TRIGGER_FILE="${TMPROOT}/pulse-merge-trigger.txt"
 PROCESS_LOG="${TMPROOT}/process-pr.log"
+RECONCILE_LOG="${TMPROOT}/reconcile.log"
+EVENT_LOG="${TMPROOT}/events.log"
 
 cleanup() {
 	rm -rf "$TMPROOT" 2>/dev/null || true
@@ -58,13 +62,28 @@ trap cleanup EXIT
 load_drain_with_stubs() {
 	# Reset both files for this test case.
 	: >"$PROCESS_LOG"
+	: >"$RECONCILE_LOG"
+	: >"$EVENT_LOG"
 
 	# shellcheck disable=SC1091
 	source "${PARENT_DIR}/pulse-wrapper-bootstrap.sh" >/dev/null 2>&1
 
 	# Stub process_pr — record args, never call gh.
 	process_pr() {
-		printf 'process_pr %s %s\n' "${1:-}" "${2:-}" >>"$PROCESS_LOG"
+		local slug="${1:-}"
+		local pr_number="${2:-}"
+		printf 'process_pr %s %s\n' "$slug" "$pr_number" >>"$PROCESS_LOG"
+		printf 'process_pr %s %s\n' "$slug" "$pr_number" >>"$EVENT_LOG"
+		return 0
+	}
+
+	# Stub the trusted exact-target recovery owned by pulse-approval-reconcile.sh.
+	_pulse_reconcile_verified_approval_target() {
+		local target_type="${1:-}"
+		local target_number="${2:-}"
+		local slug="${3:-}"
+		printf 'reconcile %s %s %s\n' "$target_type" "$target_number" "$slug" >>"$RECONCILE_LOG"
+		printf 'reconcile %s %s %s\n' "$target_type" "$target_number" "$slug" >>"$EVENT_LOG"
 		return 0
 	}
 
@@ -233,6 +252,10 @@ else
 	assert_fail "process_pr called with slug + PR number" "process log empty"
 fi
 
+event_order=$(cat "$EVENT_LOG" 2>/dev/null || true)
+assert_eq "exact-target reconciliation runs before PR processing" \
+	$'reconcile pr 21806 marcusquinn/aidevops\nprocess_pr marcusquinn/aidevops 21806' "$event_order"
+
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -264,6 +287,8 @@ assert_file_absent "marker file removed after mixed-record drain" "$TRIGGER_FILE
 
 valid_calls=$(wc -l <"$PROCESS_LOG" 2>/dev/null | tr -d ' ' || echo "0")
 assert_eq "drain processed 2 valid records (skipped 4 malformed)" "2" "$valid_calls"
+reconcile_calls=$(wc -l <"$RECONCILE_LOG" 2>/dev/null | tr -d ' ' || echo "0")
+assert_eq "drain reconciled only the 2 valid records" "2" "$reconcile_calls"
 
 echo ""
 
@@ -341,10 +366,12 @@ echo "=================================================="
 	# proves _drain_merge_trigger_file_if_present rotated atomically before
 	# invoking process_pr (so a parallel drain would find an empty path).
 	process_pr() {
+		local slug="${1:-}"
+		local pr_number="${2:-}"
 		if [[ -f "$TRIGGER_FILE" ]]; then
-			printf 'STILL_PRESENT %s %s\n' "${1:-}" "${2:-}" >>"$PROCESS_LOG"
+			printf 'STILL_PRESENT %s %s\n' "$slug" "$pr_number" >>"$PROCESS_LOG"
 		else
-			printf 'ROTATED %s %s\n' "${1:-}" "${2:-}" >>"$PROCESS_LOG"
+			printf 'ROTATED %s %s\n' "$slug" "$pr_number" >>"$PROCESS_LOG"
 		fi
 		return 0
 	}
@@ -384,6 +411,15 @@ echo "=================================================="
 
 calls=$(wc -l <"$PROCESS_LOG" 2>/dev/null | tr -d ' ' || echo "0")
 assert_eq "drain processed 1 issue→PR record (skipped 1 unlinked)" "1" "$calls"
+
+reconcile_calls=$(wc -l <"$RECONCILE_LOG" 2>/dev/null | tr -d ' ' || echo "0")
+assert_eq "both linked and unlinked issues receive target reconciliation" "2" "$reconcile_calls"
+if grep -q '^reconcile issue 99998 marcusquinn/aidevops$' "$RECONCILE_LOG" 2>/dev/null; then
+	assert_pass "unlinked issue is reconciled without requiring a PR"
+else
+	assert_fail "unlinked issue is reconciled without requiring a PR" \
+		"reconcile log contained: $(cat "$RECONCILE_LOG")"
+fi
 
 logged_call=$(head -1 "$PROCESS_LOG" 2>/dev/null || echo "")
 assert_eq "issue 12345 resolved to PR 99999 by stub" \
@@ -474,6 +510,32 @@ if [[ -s "$raw_fallback_log" ]]; then
 else
 	assert_fail "resolver fallback called raw gh without wrapper" "raw gh log empty"
 fi
+
+echo ""
+
+# -----------------------------------------------------------------------------
+# Test 10: exact duplicate records reconcile and process only once.
+# -----------------------------------------------------------------------------
+echo "Test 10: duplicate target records are idempotent"
+echo "================================================"
+
+(
+	load_drain_with_stubs
+
+	{
+		printf 'marcusquinn/aidevops\t21806\tpr\t2026-04-30T12:00:00Z\n'
+		printf 'marcusquinn/aidevops\t21806\tpr\t2026-04-30T12:00:01Z\n'
+	} >"$TRIGGER_FILE"
+
+	_drain_merge_trigger_file_if_present || exit 1
+)
+drain_rc=$?
+
+assert_eq "duplicate drain returns 0" "0" "$drain_rc"
+reconcile_calls=$(wc -l <"$RECONCILE_LOG" 2>/dev/null | tr -d ' ' || echo "0")
+process_calls=$(wc -l <"$PROCESS_LOG" 2>/dev/null | tr -d ' ' || echo "0")
+assert_eq "duplicate target reconciles once" "1" "$reconcile_calls"
+assert_eq "duplicate target processes its PR once" "1" "$process_calls"
 
 echo ""
 

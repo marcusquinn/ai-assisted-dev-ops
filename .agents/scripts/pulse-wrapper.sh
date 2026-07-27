@@ -310,6 +310,10 @@ source "${SCRIPT_DIR}/pulse-pr-list-cache.sh"
 source "${SCRIPT_DIR}/pulse-queue-governor.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-nmr-approval.sh"
+# GH#28717: bounded exact-target recovery for cryptographically approved NMR
+# targets that Actions conservatively re-blocks after a transient API failure.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/pulse-approval-reconcile.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-dep-graph.sh"
 # shellcheck source=./dependency-event-reconciler.sh

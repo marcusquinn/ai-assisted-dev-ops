@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Tests for NMR approval notification helpers in pulse-nmr-approval.sh
-# (GH#21752 / t3049).
+# Tests for NMR approval notification and exact-target recovery helpers in
+# pulse-nmr-approval.sh (GH#21752 / t3049 / GH#28717).
 #
 # Verifies that the notification helper correctly:
 #   a. Posts a notification when stale-recovery NMR + OWNER-authored approved
@@ -16,11 +16,13 @@
 #   g. Does NOT post for cost-circuit-breaker:fired NMR
 #   h. Does NOT post a duplicate when the marker already exists
 #   i. Includes the repo slug in generated sudo approval commands
+#   j. Re-verifies exact approved targets through bounded, fail-closed retries
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 NMR_SCRIPT="${SCRIPT_DIR}/../pulse-nmr-approval.sh"
+RECONCILE_SCRIPT="${SCRIPT_DIR}/../pulse-approval-reconcile.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -226,8 +228,8 @@ define_helper_under_test() {
 	ever_notify_src=$(awk '
 		/^notify_ever_nmr_without_approval\(\) \{/,/^}$/ { print }
 	' "$NMR_SCRIPT")
-	if [[ -z "$finder_src" || -z "$notify_src" || -z "$ever_notify_src" ]]; then
-		printf 'ERROR: could not extract helpers from %s\n' "$NMR_SCRIPT" >&2
+	if [[ -z "$finder_src" || -z "$notify_src" || -z "$ever_notify_src" || ! -f "$RECONCILE_SCRIPT" ]]; then
+		printf 'ERROR: could not extract helpers from %s and %s\n' "$NMR_SCRIPT" "$RECONCILE_SCRIPT" >&2
 		return 1
 	fi
 	# shellcheck disable=SC1090
@@ -236,6 +238,8 @@ define_helper_under_test() {
 	eval "$notify_src"
 	# shellcheck disable=SC1090
 	eval "$ever_notify_src"
+	# shellcheck disable=SC1090
+	source "$RECONCILE_SCRIPT"
 	return 0
 }
 
@@ -530,6 +534,200 @@ test_k_graphql_cost_drift_no_candidate() {
 	return 0
 }
 
+# Case L: approval recovery watches the exact target through a bounded race
+# window. API uncertainty retries; untrusted evidence stops fail-closed; a
+# target that never regains NMR finishes as an idempotent no-op.
+setup_reconcile_helper_fixture() {
+	local agents_dir="$1"
+	local helper="${agents_dir}/scripts/approval-helper.sh"
+
+	mkdir -p "${agents_dir}/scripts"
+	cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >>"$STUB_RECONCILE_CALLS"
+count=$(cat "$STUB_RECONCILE_COUNT" 2>/dev/null || printf '0')
+count=$((count + 1))
+printf '%s\n' "$count" >"$STUB_RECONCILE_COUNT"
+case "${STUB_RECONCILE_SCENARIO:-}" in
+	race)
+		if [[ "$count" -lt 3 ]]; then printf 'NO_NMR\n'; exit 3; fi
+		if [[ "$count" -eq 3 ]]; then printf 'RECONCILED\n'; exit 0; fi
+		printf 'NO_NMR\n'
+		exit 3
+		;;
+	api-once)
+		if [[ "$count" -eq 1 ]]; then printf 'API_ERROR\n'; exit 6; fi
+		if [[ "$count" -eq 2 ]]; then printf 'RECONCILED\n'; exit 0; fi
+		printf 'NO_NMR\n'
+		exit 3
+		;;
+	no-nmr) printf 'NO_NMR\n'; exit 3 ;;
+	no-nmr-error) printf 'NO_NMR\n'; exit 6 ;;
+	untrusted) printf 'UNTRUSTED_APPROVAL\n'; exit 7 ;;
+	reapplied) printf 'RECONCILED\n'; exit 0 ;;
+	update-then-missing)
+		if [[ "$count" -eq 1 ]]; then printf 'UPDATE_FAILED\n'; exit 8; fi
+		printf 'NO_NMR\n'
+		exit 3
+		;;
+	reconciled-error-then-missing)
+		if [[ "$count" -eq 1 ]]; then printf 'RECONCILED\n'; exit 6; fi
+		printf 'NO_NMR\n'
+		exit 3
+		;;
+	pr-success)
+		if [[ "$count" -eq 1 ]]; then printf 'RECONCILED\n'; exit 0; fi
+		printf 'NO_NMR\n'
+		exit 3
+		;;
+	*) printf 'MALFORMED_APPROVAL\n'; exit 5 ;;
+esac
+EOF
+	chmod +x "$helper"
+	return 0
+}
+
+test_m_reconciliation_protocol_uncertainty_stays_fail_closed() {
+	local agents_dir="${TEST_ROOT}/agents-protocol"
+	local calls_file="${TEST_ROOT}/protocol-calls.log"
+	local count_file="${TEST_ROOT}/protocol-count"
+	local rc=0
+	local call_count="0"
+
+	setup_reconcile_helper_fixture "$agents_dir"
+	export AGENTS_DIR="$agents_dir"
+	export STUB_RECONCILE_CALLS="$calls_file"
+	export STUB_RECONCILE_COUNT="$count_file"
+	export AIDEVOPS_NMR_RECONCILE_DELAY_SECONDS=0
+	export AIDEVOPS_NMR_RECONCILE_ATTEMPTS=3
+	: >"$calls_file"
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=no-nmr-error
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 1 && "$call_count" == "3" ]]; then
+		print_result "Case M1: mismatched NO_NMR protocol status remains fail-closed" 0
+	else
+		print_result "Case M1: mismatched NO_NMR protocol status remains fail-closed" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=update-then-missing
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 1 && "$call_count" == "3" ]]; then
+		print_result "Case M2: partial update cannot become an absent-hold success" 0
+	else
+		print_result "Case M2: partial update cannot become an absent-hold success" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=reconciled-error-then-missing
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 1 && "$call_count" == "3" ]]; then
+		print_result "Case M3: mismatched mutation status cannot become no-op success" 0
+	else
+		print_result "Case M3: mismatched mutation status cannot become no-op success" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	unset AGENTS_DIR STUB_RECONCILE_CALLS STUB_RECONCILE_COUNT STUB_RECONCILE_SCENARIO
+	unset AIDEVOPS_NMR_RECONCILE_ATTEMPTS AIDEVOPS_NMR_RECONCILE_DELAY_SECONDS
+	return 0
+}
+
+test_l_exact_target_reconciliation_is_bounded_and_fail_closed() {
+	local agents_dir="${TEST_ROOT}/agents"
+	local calls_file="${TEST_ROOT}/reconcile-calls.log"
+	local count_file="${TEST_ROOT}/reconcile-count"
+	local rc=0
+	local call_count="0"
+
+	setup_reconcile_helper_fixture "$agents_dir"
+	export AGENTS_DIR="$agents_dir"
+	export STUB_RECONCILE_CALLS="$calls_file"
+	export STUB_RECONCILE_COUNT="$count_file"
+	export AIDEVOPS_NMR_RECONCILE_DELAY_SECONDS=0
+	: >"$calls_file"
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=race
+	export AIDEVOPS_NMR_RECONCILE_ATTEMPTS=4
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 0 && "$call_count" == "4" ]]; then
+		print_result "Case L1: restored NMR race reconciles within bounded retries" 0
+	else
+		print_result "Case L1: restored NMR race reconciles within bounded retries" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=api-once
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 0 && "$call_count" == "3" ]]; then
+		print_result "Case L2: transient API uncertainty retries exact target" 0
+	else
+		print_result "Case L2: transient API uncertainty retries exact target" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=no-nmr
+	export AIDEVOPS_NMR_RECONCILE_ATTEMPTS=3
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 0 && "$call_count" == "3" ]]; then
+		print_result "Case L3: unchanged approved target is bounded idempotent no-op" 0
+	else
+		print_result "Case L3: unchanged approved target is bounded idempotent no-op" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=untrusted
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 1 && "$call_count" == "1" ]]; then
+		print_result "Case L4: untrusted approval evidence stops fail-closed" 0
+	else
+		print_result "Case L4: untrusted approval evidence stops fail-closed" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	export STUB_RECONCILE_SCENARIO=reapplied
+	export AIDEVOPS_NMR_RECONCILE_ATTEMPTS=3
+	rc=0
+	_pulse_reconcile_verified_approval_target issue 28717 owner/repo || rc=$?
+	call_count=$(cat "$count_file")
+	if [[ "$rc" -eq 1 && "$call_count" == "3" ]]; then
+		print_result "Case L5: repeated conservative restoration stops at the retry bound" 0
+	else
+		print_result "Case L5: repeated conservative restoration stops at the retry bound" 1 "rc=${rc}, calls=${call_count}"
+	fi
+
+	printf '0\n' >"$count_file"
+	: >"$calls_file"
+	export STUB_RECONCILE_SCENARIO=pr-success
+	rc=0
+	_pulse_reconcile_verified_approval_target pr 28718 owner/repo || rc=$?
+	if [[ "$rc" -eq 0 ]] && grep -q '^reconcile pr 28718 owner/repo$' "$calls_file"; then
+		print_result "Case L6: PR recovery remains exact-target and type-specific" 0
+	else
+		print_result "Case L6: PR recovery remains exact-target and type-specific" 1 "rc=${rc}, calls=$(cat "$calls_file")"
+	fi
+
+	unset AGENTS_DIR STUB_RECONCILE_CALLS STUB_RECONCILE_COUNT STUB_RECONCILE_SCENARIO
+	unset AIDEVOPS_NMR_RECONCILE_ATTEMPTS AIDEVOPS_NMR_RECONCILE_DELAY_SECONDS
+	return 0
+}
+
 # ============================================================
 # Main
 # ============================================================
@@ -554,6 +752,8 @@ main() {
 	test_i_empty_nmr_timestamp_no_candidate
 	test_j_ever_nmr_remediation_includes_repo_slug
 	test_k_graphql_cost_drift_no_candidate
+	test_l_exact_target_reconciliation_is_bounded_and_fail_closed
+	test_m_reconciliation_protocol_uncertainty_stays_fail_closed
 
 	printf '\n%d tests run, %d failures\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

@@ -255,15 +255,16 @@ _pulse_run_merge_only() {
 #
 # Drains ~/.aidevops/cache/pulse-merge-trigger.txt — the marker file written
 # by approval-helper.sh::_kick_pulse_after_approval after each successful
-# crypto-approval — and processes each listed PR via pulse-merge.sh's
+# crypto-approval. Each valid record first runs bounded exact-target NMR
+# reconciliation, then processes any listed/linked PR via pulse-merge.sh's
 # existing process_pr() entry point.
 #
 # File format (one record per line, tab-separated):
 #   <slug>\t<num>\t<type>\t<iso8601_ts>
 #
 # - slug: owner/repo (validated via regex)
-# - num:  PR or issue number (digits only). Issue records resolve the linked
-#         PR via _resolve_linked_pr_for_issue (best-effort; skipped if none).
+# - num:  PR or issue number (digits only). Every issue is reconciled directly;
+#         issue records then resolve a linked PR for optional merge processing.
 # - type: "issue" or "pr" (other values rejected)
 # - ts:   UTC ISO-8601 timestamp (informational only, not parsed)
 #
@@ -275,13 +276,53 @@ _pulse_run_merge_only() {
 #
 # Robustness:
 #   - Malformed lines are logged and skipped — never abort the drain.
-#   - process_pr failures are logged and ignored — non-fatal, the next
-#     pulse cycle's full merge pass picks up anything that slipped through.
+#   - Exact duplicate targets are ignored after their first valid record.
+#   - Reconciliation/process_pr failures are logged and ignored — NMR remains
+#     fail-closed and the scheduled Pulse fallback can retry later.
 #
 # Bypass: AIDEVOPS_SKIP_TRIGGER_DRAIN=1 (used by tests for negative cases).
 #
 # Exit code: always 0 (drain is best-effort).
 # ---------------------------------------------------------------------------
+_process_approval_trigger_record() {
+	local slug="$1"
+	local target_number="$2"
+	local target_type="$3"
+	local pr_number=""
+	local record_rc=0
+
+	# GH#28717: observe the post-approval Actions race before merge routing.
+	# The target helper independently re-verifies current V2 authority/state.
+	if declare -F _pulse_reconcile_verified_approval_target >/dev/null 2>&1; then
+		_pulse_reconcile_verified_approval_target "$target_type" "$target_number" "$slug" || record_rc=1
+	else
+		printf '[%s] _drain_merge_trigger_file_if_present: target reconciliation unavailable for %s %s #%s — preserving fail-closed scheduled fallback\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$target_type" "$target_number" \
+			>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
+		record_rc=1
+	fi
+
+	# Issue recovery never requires a linked PR. Resolve one only for optional
+	# merge routing after the exact issue lifecycle has been reconciled.
+	if [[ "$target_type" == "issue" ]]; then
+		pr_number=$(_resolve_linked_pr_for_issue "$slug" "$target_number" 2>/dev/null || printf '')
+		if [[ -z "$pr_number" ]]; then
+			printf '[%s] _drain_merge_trigger_file_if_present: %s issue #%s has no linked open PR yet — merge routing skipped\n' \
+				"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$target_number" \
+				>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
+			return "$record_rc"
+		fi
+	else
+		pr_number="$target_number"
+	fi
+
+	printf '[%s] _drain_merge_trigger_file_if_present: process_pr %s #%s (from approve %s #%s)\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$pr_number" "$target_type" "$target_number" \
+		>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
+	process_pr "$slug" "$pr_number" || record_rc=1
+	return "$record_rc"
+}
+
 _drain_merge_trigger_file_if_present() {
 	if [[ "${AIDEVOPS_SKIP_TRIGGER_DRAIN:-0}" == "1" ]]; then
 		return 0
@@ -317,7 +358,8 @@ _drain_merge_trigger_file_if_present() {
 
 	local _drain_count=0
 	local _drain_failed=0
-	local slug="" num="" type="" ts="" pr_number=""
+	local slug="" num="" type="" ts="" target_key=""
+	local seen_targets="|"
 	while IFS=$'\t' read -r slug num type ts || [[ -n "$slug" ]]; do
 		# Skip blank lines and comment lines.
 		[[ -z "$slug" || "${slug:0:1}" == "#" ]] && continue
@@ -343,30 +385,15 @@ _drain_merge_trigger_file_if_present() {
 		fi
 		# ts is informational; use a sentinel so unused-variable lints stay quiet.
 		: "${ts:-unknown}"
-
-		# Resolve issue records to their linked PR. process_pr only operates
-		# on PRs, so an "issue" record needs PR resolution first. Fail-open:
-		# if no PR is linked, skip rather than blocking the rest of the drain.
-		if [[ "$type" == "issue" ]]; then
-			pr_number=$(_resolve_linked_pr_for_issue "$slug" "$num" 2>/dev/null || printf '')
-			if [[ -z "$pr_number" ]]; then
-				printf '[%s] _drain_merge_trigger_file_if_present: %s issue #%s has no linked open PR yet — skipping\n' \
-					"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$num" \
-					>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
-				continue
-			fi
-		else
-			pr_number="$num"
+		target_key="|${type}:${slug}#${num}|"
+		if [[ "$seen_targets" == *"$target_key"* ]]; then
+			printf '[%s] _drain_merge_trigger_file_if_present: skipping duplicate target %s %s #%s\n' \
+				"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$type" "$num" \
+				>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
+			continue
 		fi
-
-		printf '[%s] _drain_merge_trigger_file_if_present: process_pr %s #%s (from approve %s #%s)\n' \
-			"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$slug" "$pr_number" "$type" "$num" \
-			>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
-
-		# Call process_pr — it has its own internal logging and error
-		# handling. Non-zero return is informational (gate failure, not
-		# mergeable yet, conflict closed); not a drain failure.
-		if ! process_pr "$slug" "$pr_number"; then
+		seen_targets="${seen_targets}${type}:${slug}#${num}|"
+		if ! _process_approval_trigger_record "$slug" "$num" "$type"; then
 			_drain_failed=$((_drain_failed + 1))
 		fi
 		_drain_count=$((_drain_count + 1))
@@ -375,7 +402,7 @@ _drain_merge_trigger_file_if_present() {
 	rm -f "$processing_file" 2>/dev/null || true
 
 	if [[ "$_drain_count" -gt 0 ]]; then
-		printf '[%s] _drain_merge_trigger_file_if_present: drained %d record(s), %d non-merge outcomes\n' \
+		printf '[%s] _drain_merge_trigger_file_if_present: handled %d exact target(s), %d non-success outcomes\n' \
 			"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" "$_drain_count" "$_drain_failed" \
 			>>"${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" 2>/dev/null || true
 	fi

@@ -48,7 +48,9 @@ if [[ -n "${GH_FAIL_ENDPOINT:-}" && "$endpoint" == *"${GH_FAIL_ENDPOINT}"* ]]; t
 	exit 1
 fi
 case "$endpoint" in
-repos/owner/repo/issues/41) cat "${FIXTURES}/issue-41.json" ;;
+	user) printf '%s\n' "${GH_AUTH_USER:-maintainer}" ;;
+	repos/owner/repo/collaborators/trusted-collab/permission) printf '%s\n' "${GH_PERMISSION:-write}" ;;
+	repos/owner/repo/issues/41) cat "${FIXTURES}/issue-41.json" ;;
 repos/owner/repo/issues/41/comments*) cat "${FIXTURES}/comments-41.json" ;;
 repos/owner/repo/issues/41/timeline*) cat "${FIXTURES}/timeline-41.json" ;;
 repos/owner/repo/issues/42) cat "${FIXTURES}/issue-42.json" ;;
@@ -160,6 +162,16 @@ run_verify() {
 	return $?
 }
 
+run_verify_with_authority() {
+	local kind="$1"
+	local number="$2"
+	local auth_user="${3:-maintainer}"
+	HOME="$TEST_HOME" PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" \
+		GH_AUTH_USER="$auth_user" AIDEVOPS_APPROVAL_PUB="${TEST_ROOT}/approval.pub" \
+		"$APPROVAL_HELPER" verify "$kind" "$number" owner/repo --require-authority 2>/dev/null
+	return $?
+}
+
 assert_verify() {
 	local description="$1"
 	local kind="$2"
@@ -183,6 +195,71 @@ reset_and_sign() {
 	write_baseline_fixtures
 	append_signed_comment "$kind" "$number" "2026-01-01T00:05:00Z"
 	return $?
+}
+
+test_authority_bound_verification() {
+	local output=""
+	local rc=0
+	local updated=""
+
+	reset_and_sign issue 41
+	output=$(run_verify_with_authority issue 41) || rc=$?
+	if [[ "$output" == "VERIFIED" && "$rc" -eq 0 ]]; then
+		print_result "authority-bound issue verification accepts current OWNER signer" 0
+	else
+		print_result "authority-bound issue verification accepts current OWNER signer" 1 "output=${output}, rc=${rc}"
+	fi
+
+	reset_and_sign pr 42
+	rc=0
+	output=$(run_verify_with_authority pr 42) || rc=$?
+	if [[ "$output" == "VERIFIED" && "$rc" -eq 0 ]]; then
+		print_result "authority-bound PR verification accepts current OWNER signer" 0
+	else
+		print_result "authority-bound PR verification accepts current OWNER signer" 1 "output=${output}, rc=${rc}"
+	fi
+
+	reset_and_sign issue 41
+	updated=$(jq -c '.[0][-1].user.login = "other-maintainer"' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$updated" >"${FIXTURES}/comments-41.json"
+	rc=0
+	output=$(run_verify_with_authority issue 41) || rc=$?
+	if [[ "$output" == "UNTRUSTED_APPROVAL" && "$rc" -eq 7 ]]; then
+		print_result "authority-bound verification rejects a different actor" 0
+	else
+		print_result "authority-bound verification rejects a different actor" 1 "output=${output}, rc=${rc}"
+	fi
+
+	reset_and_sign issue 41
+	updated=$(jq -c '.[0][-1].user.type = "Bot"' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$updated" >"${FIXTURES}/comments-41.json"
+	rc=0
+	output=$(run_verify_with_authority issue 41) || rc=$?
+	if [[ "$output" == "UNTRUSTED_APPROVAL" && "$rc" -eq 7 ]]; then
+		print_result "authority-bound verification rejects bot-authored evidence" 0
+	else
+		print_result "authority-bound verification rejects bot-authored evidence" 1 "output=${output}, rc=${rc}"
+	fi
+
+	reset_and_sign issue 41
+	updated=$(jq -c '.[0][-1].user.login = "trusted-collab" | .[0][-1].author_association = "COLLABORATOR"' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$updated" >"${FIXTURES}/comments-41.json"
+	rc=0
+	output=$(run_verify_with_authority issue 41 trusted-collab) || rc=$?
+	if [[ "$output" == "VERIFIED" && "$rc" -eq 0 ]]; then
+		print_result "authority-bound verification accepts current write collaborator" 0
+	else
+		print_result "authority-bound verification accepts current write collaborator" 1 "output=${output}, rc=${rc}"
+	fi
+
+	rc=0
+	output=$(GH_FAIL_ENDPOINT="collaborators/trusted-collab/permission" run_verify_with_authority issue 41 trusted-collab) || rc=$?
+	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
+		print_result "authority-bound verification fails closed on permission uncertainty" 0
+	else
+		print_result "authority-bound verification fails closed on permission uncertainty" 1 "output=${output}, rc=${rc}"
+	fi
+	return 0
 }
 
 file_mode() {
@@ -303,6 +380,7 @@ main() {
 	test_large_snapshots_avoid_argv_limits
 	ssh-keygen -t ed25519 -N '' -f "${TEST_ROOT}/approval.key" -q
 	cp "${TEST_ROOT}/approval.key.pub" "${TEST_ROOT}/approval.pub"
+	test_authority_bound_verification
 
 	reset_and_sign issue 41
 	assert_verify "unchanged issue V2 snapshot verifies" issue 41 VERIFIED 0

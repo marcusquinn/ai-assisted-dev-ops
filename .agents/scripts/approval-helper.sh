@@ -83,6 +83,7 @@ readonly PERMISSION_JSON_ARRAY_TYPE="array"
 readonly PERMISSION_JSON_STRING_TYPE="string"
 readonly _APPROVAL_NMR_LABEL="needs-maintainer-review"
 readonly _APPROVAL_AUTO_DISPATCH_LABEL="auto-dispatch"
+readonly _APPROVAL_MISSING_FIELD="__missing__"
 readonly _PERMISSION_BLOCKER_STATUS="blocked"
 readonly _PERMISSION_BLOCKER_TRUE="true"
 readonly _PERMISSION_APPROVAL_REJECTED_EVENT="permission_approval_rejected"
@@ -770,6 +771,19 @@ _post_issue_approval_updates() {
 		return $?
 	fi
 	_approval_apply_pr_lifecycle_updates "$target_number" "$slug"
+	return $?
+}
+
+_approval_restore_nmr_hold() {
+	local target_type="$1"
+	local target_number="$2"
+	local slug="$3"
+
+	if [[ "$target_type" == "issue" ]]; then
+		gh_issue_edit_safe "$target_number" --repo "$slug" --add-label "$_APPROVAL_NMR_LABEL"
+		return $?
+	fi
+	gh_pr_edit_safe "$target_number" --repo "$slug" --add-label "$_APPROVAL_NMR_LABEL"
 	return $?
 }
 
@@ -1615,6 +1629,50 @@ cmd_pr_approved() {
 
 # ── Verify Approval ──────────────────────────────────────────────────────────
 
+#######################################
+# Verify that a signed approval comment belongs to the currently authenticated
+# actor and that GitHub reports maintainer-equivalent authority for that actor.
+# OWNER/MEMBER associations are authoritative repository-scoped API fields;
+# CONTRIBUTOR/COLLABORATOR associations require a current permission lookup.
+# Bot, mismatched, malformed, and permission-uncertain identities fail closed.
+#
+# Args: repo slug, required actor, commenter, user type, author association
+# Returns: 0 trusted, 1 untrusted, 2 authority lookup uncertainty
+#######################################
+_approval_comment_has_required_authority() {
+	local slug="$1"
+	local required_actor="$2"
+	local commenter="$3"
+	local user_type="$4"
+	local association="$5"
+	local normalized_required=""
+	local normalized_commenter=""
+	local permission=""
+
+	[[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+	[[ "$required_actor" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+	[[ "$commenter" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+	[[ "$user_type" == "User" ]] || return 1
+	normalized_required=$(printf '%s' "$required_actor" | tr '[:upper:]' '[:lower:]')
+	normalized_commenter=$(printf '%s' "$commenter" | tr '[:upper:]' '[:lower:]')
+	[[ "$normalized_required" == "$normalized_commenter" ]] || return 1
+
+	case "$association" in
+	OWNER | MEMBER)
+		return 0
+		;;
+	CONTRIBUTOR | COLLABORATOR)
+		permission=$(gh api "repos/${slug}/collaborators/${commenter}/permission" \
+			--jq '.permission // "none"' 2>/dev/null) || return 2
+		case "$permission" in
+		admin | maintain | write) return 0 ;;
+		esac
+		return 1
+		;;
+	esac
+	return 1
+}
+
 _approval_classify_marked_comments() {
 	local target_type="$1"
 	local target_number="$2"
@@ -1623,7 +1681,8 @@ _approval_classify_marked_comments() {
 	local pub_key="$5"
 	local expected_head_sha="${6:-}"
 	local comment_count="$7"
-	local saw_api_error=0 saw_stale=0 saw_legacy=0 saw_malformed=0
+	local required_actor="${8:-}"
+	local saw_api_error=0 saw_stale=0 saw_legacy=0 saw_untrusted=0 saw_malformed=0
 	local comment_rows=""
 	local base64_decode_flag="-d"
 	[[ "$(uname -s)" == "Darwin" ]] && base64_decode_flag="-D"
@@ -1632,17 +1691,23 @@ _approval_classify_marked_comments() {
 		printf 'MALFORMED_APPROVAL\n'
 		return 5
 	fi
-	comment_rows=$(jq -r '
+	comment_rows=$(jq -r --arg missing "$_APPROVAL_MISSING_FIELD" '
 		reverse[]
-		| [((.id // "") | tostring), ((.body // "") | @base64)]
+		| [
+			((.id // "") | tostring),
+			((.body // "") | @base64),
+			(.user.login // $missing),
+			(.user.type // $missing),
+			(.author_association // $missing)
+		]
 		| @tsv
 	' <<<"$comments_json") || {
 		printf 'MALFORMED_APPROVAL\n'
 		return 5
 	}
 
-	while IFS=$'\t' read -r comment_id encoded_body; do
-		local body="" classification
+	while IFS=$'\t' read -r comment_id encoded_body commenter user_type association; do
+		local body="" classification="" authority_rc=0
 		body=$(printf '%s' "$encoded_body" | base64 "$base64_decode_flag") || {
 			saw_malformed=1
 			continue
@@ -1650,6 +1715,18 @@ _approval_classify_marked_comments() {
 		if [[ ! "$comment_id" =~ ^[0-9]+$ ]]; then
 			saw_malformed=1
 			continue
+		fi
+		if [[ -n "$required_actor" ]]; then
+			_approval_comment_has_required_authority "$slug" "$required_actor" \
+				"$commenter" "$user_type" "$association" || authority_rc=$?
+			if [[ "$authority_rc" -eq 2 ]]; then
+				saw_api_error=1
+				continue
+			fi
+			if [[ "$authority_rc" -ne 0 ]]; then
+				saw_untrusted=1
+				continue
+			fi
 		fi
 		classification=$(_approval_classify_signed_comment "$target_type" "$target_number" "$slug" "$comment_id" "$body" "$pub_key" "$expected_head_sha")
 		case "$classification" in
@@ -1664,6 +1741,7 @@ _approval_classify_marked_comments() {
 	[[ "$saw_api_error" -eq 0 ]] || { printf 'API_ERROR\n'; return 6; }
 	[[ "$saw_stale" -eq 0 ]] || { printf 'STALE_APPROVAL\n'; return 4; }
 	[[ "$saw_legacy" -eq 0 ]] || { printf 'LEGACY_APPROVAL\n'; return 3; }
+	[[ "$saw_untrusted" -eq 0 ]] || { printf 'UNTRUSTED_APPROVAL\n'; return 7; }
 	[[ "$saw_malformed" -eq 1 ]] || saw_malformed=1
 	printf 'MALFORMED_APPROVAL\n'
 	return 5
@@ -1758,6 +1836,7 @@ cmd_verify() {
 	fi
 	local target_number="${1:-}"
 	local slug=""
+	local require_authority=0
 	shift 2>/dev/null || true
 	if [[ $# -gt 0 && "$1" != --* ]]; then
 		slug="$1"
@@ -1770,6 +1849,10 @@ cmd_verify() {
 			expected_head_sha="${2:-}"
 			shift 2
 			;;
+		--require-authority)
+			require_authority=1
+			shift
+			;;
 		*)
 			printf 'MALFORMED_APPROVAL\n'
 			return 5
@@ -1781,8 +1864,20 @@ cmd_verify() {
 		return 5
 	fi
 
-	_require_number_arg "$target_number" "$target_type" "Usage: aidevops approve verify [issue|pr] <number> [owner/repo] [--expect-head SHA]" || return 5
+	_require_number_arg "$target_number" "$target_type" "Usage: aidevops approve verify [issue|pr] <number> [owner/repo] [--expect-head SHA] [--require-authority]" || return 5
 	slug=$(_resolve_slug_or_fail "$slug" "Could not detect repo slug") || return 1
+
+	local required_actor=""
+	if [[ "$require_authority" -eq 1 ]]; then
+		required_actor=$(gh api user --jq '.login // empty' 2>/dev/null) || {
+			printf 'API_ERROR\n'
+			return 6
+		}
+		if ! [[ "$required_actor" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+			printf 'API_ERROR\n'
+			return 6
+		fi
+	fi
 
 	local comment_pages="" comments_json="" endpoint=""
 	endpoint=$(_permission_comments_endpoint "$slug" "$target_number")
@@ -1819,8 +1914,90 @@ cmd_verify() {
 		return 2
 	fi
 
-	_approval_classify_marked_comments "$target_type" "$target_number" "$slug" "$comments_json" "$pub_key" "$expected_head_sha" "$comment_count"
+	_approval_classify_marked_comments "$target_type" "$target_number" "$slug" "$comments_json" "$pub_key" "$expected_head_sha" "$comment_count" "$required_actor"
 	return $?
+}
+
+# Reconcile an approval that GitHub Actions conservatively re-blocked after the
+# original local lifecycle transition. This command never signs or posts a new
+# approval. It observes a live NMR hold, independently re-verifies the existing
+# V2 signature against current target state and the authenticated actor's
+# maintainer authority, then reuses the normal issue/PR lifecycle writers.
+cmd_reconcile() {
+	local target_type="${1:-}"
+	local target_number="${2:-}"
+	local slug="${3:-}"
+	local usage="Usage: aidevops approve reconcile issue|pr <number> [owner/repo]"
+	local issue_json=""
+	local actual_type=""
+	local target_state=""
+	local nmr_rc=0
+	local verification=""
+	local verify_rc=0
+
+	if [[ "$target_type" != "issue" && "$target_type" != "pr" ]]; then
+		printf 'MALFORMED_APPROVAL\n'
+		return 5
+	fi
+	_require_number_arg "$target_number" "$target_type" "$usage" >/dev/null 2>&1 || {
+		printf 'MALFORMED_APPROVAL\n'
+		return 5
+	}
+	slug=$(_resolve_slug_or_fail "$slug" "$usage") || {
+		printf 'API_ERROR\n'
+		return 6
+	}
+
+	issue_json=$(_approval_fetch_issue_json "$target_number" "$slug") || {
+		printf 'API_ERROR\n'
+		return 6
+	}
+	actual_type=$(printf '%s' "$issue_json" | jq -r 'if type != "object" then "invalid" elif .pull_request? != null then "pr" else "issue" end' 2>/dev/null) || actual_type="invalid"
+	if [[ "$actual_type" != "$target_type" ]]; then
+		printf 'TARGET_MISMATCH\n'
+		return 5
+	fi
+	target_state=$(printf '%s' "$issue_json" | jq -r '.state // "" | ascii_downcase' 2>/dev/null) || target_state=""
+	if [[ "$target_state" == "closed" ]]; then
+		printf 'TARGET_CLOSED\n'
+		return 0
+	fi
+	if [[ "$target_state" != "open" ]]; then
+		printf 'API_ERROR\n'
+		return 6
+	fi
+	printf '%s' "$issue_json" | jq -e --arg label "$_APPROVAL_NMR_LABEL" \
+		'(.labels // []) | any(.name == $label)' >/dev/null 2>&1 || nmr_rc=$?
+	if [[ "$nmr_rc" -eq 1 ]]; then
+		printf 'NO_NMR\n'
+		return 3
+	fi
+	if [[ "$nmr_rc" -ne 0 ]]; then
+		printf 'API_ERROR\n'
+		return 6
+	fi
+
+	# #aidevops:trust-boundary GH#28717 — current-state V2 verification and
+	# authenticated actor authority are mandatory immediately before mutation.
+	verification=$(cmd_verify "$target_type" "$target_number" "$slug" --require-authority 2>/dev/null) || verify_rc=$?
+	if [[ "$verification" != "VERIFIED" || "$verify_rc" -ne 0 ]]; then
+		printf '%s\n' "${verification:-API_ERROR}"
+		if [[ "$verify_rc" -ne 0 ]]; then
+			return "$verify_rc"
+		fi
+		return 6
+	fi
+
+	if ! _post_issue_approval_updates "$target_type" "$target_number" "$slug" >/dev/null 2>&1; then
+		# A lifecycle writer may fail after partially clearing NMR (for example,
+		# issue label mutation succeeds but its advisory lock fails). Reassert the
+		# conservative hold before reporting uncertainty to the bounded caller.
+		_approval_restore_nmr_hold "$target_type" "$target_number" "$slug" >/dev/null 2>&1 || true
+		printf 'UPDATE_FAILED\n'
+		return 8
+	fi
+	printf 'RECONCILED\n'
+	return 0
 }
 
 # ── Status ───────────────────────────────────────────────────────────────────
@@ -1872,8 +2049,9 @@ cmd_help() {
 	echo "  permissions issue|pr <number> [slug] --request perm-<id>"
 	echo ""
 	echo "Commands (no sudo needed):"
-	echo "  verify [issue|pr] <number> [slug] [--expect-head SHA]"
+	echo "  verify [issue|pr] <number> [slug] [--expect-head SHA] [--require-authority]"
 	echo "  verify-permissions issue|pr <number> [slug]"
+	echo "  reconcile issue|pr <number> [slug]"
 	echo "  status                     Show approval key setup status"
 	echo "  help                       Show this help"
 	echo ""
@@ -1902,6 +2080,7 @@ main() {
 	permissions) cmd_permissions "$@" ;;
 	verify-permissions) cmd_verify_permissions "$@" ;;
 	verify) cmd_verify "$@" ;;
+	reconcile) cmd_reconcile "$@" ;;
 	status) cmd_status "$@" ;;
 	help | --help | -h) cmd_help ;;
 	*)
@@ -1910,6 +2089,7 @@ main() {
 		return 1
 		;;
 	esac
+	return $?
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

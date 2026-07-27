@@ -286,6 +286,195 @@ assert_contains "post-approval failure suppresses final success" "$LAST_OUTPUT" 
 assert_not_contains "post-approval failure does not print success" "$LAST_OUTPUT" "Issue #123 approved and signed"
 assert_not_contains "post-approval failure does not kick pulse" "$LAST_OUTPUT" "SHOULD_NOT_KICK"
 
+# GH#28717: target reconciliation accepts only the current authenticated actor's
+# signed comment when that actor has maintainer-equivalent authority.
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "current OWNER approval author is trusted" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_comment_has_required_authority marcusquinn/aidevops marcusquinn marcusquinn User OWNER
+' 0
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "different approval author is rejected" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_comment_has_required_authority marcusquinn/aidevops marcusquinn another-maintainer User OWNER
+' 1
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "bot approval author is rejected" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_comment_has_required_authority marcusquinn/aidevops github-actions github-actions Bot OWNER
+' 1
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "write collaborator approval author is trusted" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	gh() {
+		local command="${1:-}"
+		local endpoint="${2:-}"
+		if [[ "$command" == "api" && "$endpoint" == "repos/marcusquinn/aidevops/collaborators/trusted-collab/permission" ]]; then
+			printf "write\n"
+			return 0
+		fi
+		return 1
+	}
+	_approval_comment_has_required_authority marcusquinn/aidevops trusted-collab trusted-collab User COLLABORATOR
+' 0
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "unverifiable collaborator approval author fails closed" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	gh() { return 1; }
+	_approval_comment_has_required_authority marcusquinn/aidevops trusted-collab trusted-collab User COLLABORATOR
+' 2
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "issue recovery reasserts NMR through the issue lifecycle writer" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	gh_issue_edit_safe() { printf "%s\n" "$*"; return 0; }
+	_approval_restore_nmr_hold issue 123 marcusquinn/aidevops
+' 0
+assert_contains "issue recovery reasserts the conservative label" "$LAST_OUTPUT" "--add-label needs-maintainer-review"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "PR recovery reasserts NMR through the PR lifecycle writer" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	gh_pr_edit_safe() { printf "%s\n" "$*"; return 0; }
+	_approval_restore_nmr_hold pr 456 marcusquinn/aidevops
+' 0
+assert_contains "PR recovery reasserts the conservative label" "$LAST_OUTPUT" "--add-label needs-maintainer-review"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "reconcile re-verifies authority immediately before issue lifecycle restore" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	trace=$(mktemp)
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		local target_number="${1:-}"
+		local slug="${2:-}"
+		: "$target_number" "$slug"
+		printf "%s" "{\"state\":\"open\",\"labels\":[{\"name\":\"needs-maintainer-review\"}]}"
+		return 0
+	}
+	cmd_verify() {
+		local target_type="${1:-}"
+		local target_number="${2:-}"
+		local slug="${3:-}"
+		local authority_flag="${4:-}"
+		printf "VERIFY %s %s %s %s\n" "$target_type" "$target_number" "$slug" "$authority_flag" >>"$trace"
+		printf "VERIFIED\n"
+		return 0
+	}
+	_post_issue_approval_updates() {
+		local target_type="${1:-}"
+		local target_number="${2:-}"
+		local slug="${3:-}"
+		printf "APPLY %s %s %s\n" "$target_type" "$target_number" "$slug" >>"$trace"
+		return 0
+	}
+	rc=0
+	cmd_reconcile issue 123 marcusquinn/aidevops || rc=$?
+	cat "$trace"
+	rm -f "$trace"
+	exit "$rc"
+' 0
+assert_contains "reconcile requires authenticated approval authority" "$LAST_OUTPUT" "VERIFY issue 123 marcusquinn/aidevops --require-authority"
+assert_contains "reconcile restores the issue-specific lifecycle" "$LAST_OUTPUT" "APPLY issue 123 marcusquinn/aidevops"
+assert_contains "reconcile reports success" "$LAST_OUTPUT" "RECONCILED"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "partial reconciliation failure reasserts NMR before returning" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	trace=$(mktemp)
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		local target_number="${1:-}"
+		local slug="${2:-}"
+		: "$target_number" "$slug"
+		printf "%s" "{\"state\":\"open\",\"labels\":[{\"name\":\"needs-maintainer-review\"}]}"
+		return 0
+	}
+	cmd_verify() { printf "VERIFIED\n"; return 0; }
+	_post_issue_approval_updates() { return 1; }
+	_approval_restore_nmr_hold() {
+		local target_type="${1:-}"
+		local target_number="${2:-}"
+		local slug="${3:-}"
+		printf "RESTORE %s %s %s\n" "$target_type" "$target_number" "$slug" >>"$trace"
+		return 0
+	}
+	rc=0
+	cmd_reconcile issue 123 marcusquinn/aidevops || rc=$?
+	cat "$trace"
+	rm -f "$trace"
+	exit "$rc"
+' 8
+assert_contains "partial reconciliation failure reasserts the exact issue hold" "$LAST_OUTPUT" "RESTORE issue 123 marcusquinn/aidevops"
+assert_contains "partial reconciliation failure remains explicit" "$LAST_OUTPUT" "UPDATE_FAILED"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "reconcile leaves an unchanged approved target as a no-op" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		local target_number="${1:-}"
+		local slug="${2:-}"
+		: "$target_number" "$slug"
+		printf "%s" "{\"state\":\"open\",\"labels\":[{\"name\":\"auto-dispatch\"}]}"
+		return 0
+	}
+	cmd_verify() { printf "SHOULD_NOT_VERIFY\n"; return 1; }
+	_post_issue_approval_updates() { printf "SHOULD_NOT_APPLY\n"; return 1; }
+	cmd_reconcile issue 123 marcusquinn/aidevops
+' 3
+assert_contains "no-op reconciliation reports absent restored hold" "$LAST_OUTPUT" "NO_NMR"
+assert_not_contains "no-op reconciliation skips signature work" "$LAST_OUTPUT" "SHOULD_NOT_VERIFY"
+assert_not_contains "no-op reconciliation skips lifecycle mutation" "$LAST_OUTPUT" "SHOULD_NOT_APPLY"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "reconcile preserves NMR when authority verification fails" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		local target_number="${1:-}"
+		local slug="${2:-}"
+		: "$target_number" "$slug"
+		printf "%s" "{\"state\":\"open\",\"pull_request\":{},\"labels\":[{\"name\":\"needs-maintainer-review\"}]}"
+		return 0
+	}
+	cmd_verify() { printf "UNTRUSTED_APPROVAL\n"; return 7; }
+	_post_issue_approval_updates() { printf "SHOULD_NOT_APPLY\n"; return 1; }
+	cmd_reconcile pr 456 marcusquinn/aidevops
+' 7
+assert_contains "failed authority remains explicit" "$LAST_OUTPUT" "UNTRUSTED_APPROVAL"
+assert_not_contains "failed authority never mutates PR lifecycle" "$LAST_OUTPUT" "SHOULD_NOT_APPLY"
+
 printf '\n==============================================\n'
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
 
