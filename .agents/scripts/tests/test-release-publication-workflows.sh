@@ -161,11 +161,11 @@ repos/test/repo/environments/release)
 	if [[ "$mode" == "bad-environment" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":null}'
 	elif [[ "$mode" == "bad-reviewer-team" ]]; then
-		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}},{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"releaser"}},{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	elif [[ "$mode" == "bad-self-review" ]]; then
-		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"releaser"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	else
-		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"releaser"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	fi
 	;;
 repos/test/repo/environments/release/deployment-branch-policies)
@@ -274,7 +274,7 @@ fi
 printf 'PASS settings snapshot output is atomic and private\n'
 
 verify_output=$(run_settings_helper valid verify-github --repo test/repo \
-	--release-author releaser --reviewer reviewer) || {
+	--release-author releaser --reviewer releaser) || {
 	printf 'FAIL valid GitHub release settings were rejected\n'
 	exit 1
 }
@@ -287,7 +287,7 @@ for expected_marker in \
 		exit 1
 	fi
 done
-printf 'PASS valid GitHub release settings are accepted\n'
+printf 'PASS valid GitHub release settings permit explicit maintainer self-approval\n'
 
 for invalid_mode in bad-author bad-actions bad-ruleset bad-ruleset-exclusion \
 	bad-bypass-actor bad-environment bad-reviewer-team bad-self-review \
@@ -309,7 +309,7 @@ for invalid_mode in bad-author bad-actions bad-ruleset bad-ruleset-exclusion \
 	esac
 	invalid_output=""
 	if invalid_output=$(run_settings_helper "$invalid_mode" verify-github --repo test/repo \
-		--release-author releaser --reviewer reviewer 2>&1); then
+		--release-author releaser --reviewer releaser 2>&1); then
 		printf 'FAIL invalid settings mode was accepted: %s\n' "$invalid_mode"
 		exit 1
 	fi

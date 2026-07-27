@@ -314,8 +314,7 @@ _release_settings_verify_ruleset() {
 
 _release_settings_verify_reviewers() {
 	local environment_detail="$1"
-	local release_author="$2"
-	shift 2
+	shift
 	local expected_count="$#"
 	local reviewer=""
 	local seen_reviewers=" "
@@ -324,7 +323,7 @@ _release_settings_verify_reviewers() {
 		--arg user_type "$USER_ACTOR_TYPE" --argjson count "$expected_count" '
 		[.protection_rules[]? | select(.type == $rule)] as $rules
 		| ($rules | length) == 1
-		and $rules[0].prevent_self_review == true
+		and $rules[0].prevent_self_review == false
 		and (($rules[0].reviewers // []) | length) == $count
 		and all($rules[0].reviewers[]?;
 		  .type == $user_type and (.reviewer.login | type == "string"))
@@ -339,10 +338,6 @@ _release_settings_verify_reviewers() {
 			return 1
 		fi
 		seen_reviewers+="${reviewer} "
-		if [[ "$reviewer" == "$release_author" ]]; then
-			_release_settings_error "release author cannot be an independent reviewer"
-			return 1
-		fi
 		if ! jq -e --arg login "$reviewer" --arg rule "$REQUIRED_REVIEWERS_RULE" \
 			--arg user_type "$USER_ACTOR_TYPE" \
 			'any(.protection_rules[]?; .type == $rule
@@ -357,8 +352,7 @@ _release_settings_verify_reviewers() {
 
 _release_settings_verify_environment() {
 	local repo_slug="$1"
-	local release_author="$2"
-	shift 2
+	shift
 	local environment_detail=""
 	local deployment_policies=""
 
@@ -370,7 +364,7 @@ _release_settings_verify_environment() {
 		_release_settings_error "release environment does not use custom ref policies"
 		return 1
 	fi
-	_release_settings_verify_reviewers "$environment_detail" "$release_author" "$@" || return 1
+	_release_settings_verify_reviewers "$environment_detail" "$@" || return 1
 
 	deployment_policies=$(_release_settings_api_read \
 		"repos/${repo_slug}/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies") || return 1
@@ -418,14 +412,13 @@ _release_settings_verify_command() {
 	_release_settings_validate_repo "$repo_slug" || return 1
 	_release_settings_validate_login "$release_author" || return 1
 	if [[ "${#reviewers[@]}" -eq 0 ]]; then
-		_release_settings_error "at least one independent --reviewer is required"
+		_release_settings_error "at least one designated --reviewer is required"
 		return 1
 	fi
 	_release_settings_verify_release_author "$repo_slug" "$release_author" || return 1
 	_release_settings_verify_actions "$repo_slug" || return 1
 	_release_settings_verify_ruleset "$repo_slug" "$release_author" || return 1
-	_release_settings_verify_environment \
-		"$repo_slug" "$release_author" "${reviewers[@]}" || return 1
+	_release_settings_verify_environment "$repo_slug" "${reviewers[@]}" || return 1
 
 	printf 'GITHUB_RELEASE_CONTROLS=verified\n'
 	printf 'MANUAL_CHECK_REQUIRED=environment_admin_bypass_disabled\n'

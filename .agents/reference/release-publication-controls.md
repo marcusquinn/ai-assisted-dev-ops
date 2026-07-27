@@ -70,22 +70,29 @@ summary if the live state has changed.
 | Actions policy | Actions enabled; all actions allowed | No change in this checkpoint | Preserve `actions.policy` unchanged. |
 | Workflow permissions | All 55 workflows declare `permissions`; the eight previous default-dependent callers are listed above | Keep every declaration explicit | Revert code normally; do not compensate by restoring broad defaults. |
 | Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`; exact `refs/tags/v*` include with no exclusions; creation, update, and deletion restrictions only; one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
-| Environments | No environments | Protected `release` environment; exact independent user reviewer set with no team reviewers, self-review prevented, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
+| Environments | No environments | Protected `release` environment; the approved release-author user as the sole reviewer, no team reviewers, self-review allowed, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
 | npm Trusted Publisher | Existing GitHub Actions publisher; environment binding must be checked in npmjs.com | `marcusquinn/aidevops`, `publish-packages.yml`, environment `release`, `npm publish` only | Restore the exact pre-change publisher fields captured in the npm UI; npm exposes no supported management API for this configuration. |
 
-The current release author and independent reviewer identities are consequential
-live-policy choices and are intentionally not guessed or committed here. The
-current GitHub REST schema explicitly supports a `User` repository-ruleset bypass
-actor on personal repositories, so the release author can be the single bypass
-principal rather than granting bypass to an entire repository role. At least one
-different repository collaborator must review the `release` environment, and
-GitHub's "Prevent self-review" and "Disallow admin bypass" controls must remain
-enabled.
+The release-author identity is a consequential live-policy choice and is not
+guessed here. The current GitHub REST schema explicitly supports a `User`
+repository-ruleset bypass actor on personal repositories, so the approved release
+author can be the single bypass principal rather than granting bypass to an entire
+repository role.
+
+This maintainer-operated repository uses the same aidevops/model process across
+its maintainer accounts, so selecting another account would not create a
+meaningfully independent review boundary. The approved release-author user is
+therefore also the sole `release` environment reviewer. Keep "Prevent self-review"
+disabled so that reviewer can authorize a deployment they initiated, but keep
+"Disallow admin bypass" enabled so every publication job still pauses for an
+explicit environment approval. This is a deliberate confirmation gate rather
+than separation of duties; a genuinely independent human reviewer can replace it
+later if the repository's operating model changes.
 
 Operationally, the GitHub release, npm publication, and Homebrew update jobs each
 reference `release` and can prompt for approval separately; the Homebrew job waits
-for npm first. GitHub treats the reviewer list as an allow-list rather than a
-quorum, so one listed reviewer can approve each pending deployment.
+for npm first. The designated release-author reviewer must explicitly approve each
+pending deployment.
 
 The GitHub snapshot and verifier are read-only:
 
@@ -98,7 +105,7 @@ snapshot_dir="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}"
 .agents/scripts/release-publication-settings-helper.sh verify-github \
   --repo marcusquinn/aidevops \
   --release-author '<approved-login>' \
-  --reviewer '<independent-reviewer-login>'
+  --reviewer '<approved-login>'
 ```
 
 `verify-github` deliberately reports two manual checks rather than claiming
@@ -115,10 +122,10 @@ the terminal non-publishing evidence.
 2. Capture the GitHub snapshot and npm publisher fields, record the ruleset and
    environment deletion rollback, and verify fresh operation approval.
 3. Create the protected `v*` tag ruleset with one specific release-author bypass.
-4. Create the `release` environment, independent reviewer policy, self-review
-   prevention, disabled admin bypass, and selected `v*` tag policy before merging
-   workflows that reference it. Otherwise a workflow run can implicitly create an
-   unprotected environment.
+4. Create the `release` environment with the approved release author as its sole
+   reviewer, self-review allowed, admin bypass disabled, and the selected `v*` tag
+   policy before merging workflows that reference it. Otherwise a workflow run
+   can implicitly create an unprotected environment.
 5. Bind npm Trusted Publisher to `publish-packages.yml`, environment `release`, and
    the `npm publish` action. Do not enable staged or broader actions in this scope.
 6. Set default Actions workflow permissions to read and disable workflow-authored
