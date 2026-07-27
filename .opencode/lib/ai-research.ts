@@ -716,15 +716,15 @@ export function createOpenCodeRuntimeAdapter(
 
       await mkdir(tempRoot, { recursive: true, mode: 0o700 })
       const requestDir = await mkdtemp(join(tempRoot, "ai-research-"))
-      await chmod(requestDir, 0o700)
       const requestFile = join(requestDir, "request.md")
-      await writeFile(requestFile, runtimeDocument(request), {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      })
 
       try {
+        await chmod(requestDir, 0o700)
+        await writeFile(requestFile, runtimeDocument(request), {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600,
+        })
         const sessionKey = `ai-research-${process.pid}-${randomUUID().replaceAll("-", "")}`
         const result = await runner({
           command: [
