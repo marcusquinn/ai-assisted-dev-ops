@@ -20,6 +20,7 @@ tools:
 | Input | Tool | Strengths | Limits |
 |-------|------|-----------|--------|
 | Screenshot / photo / sign | **PaddleOCR** (Baidu, 71k, Apache-2.0) | Best scene-text accuracy; bounding boxes; PP-StructureV3 tables; PaddleOCR-VL (0.9B); MCP server (v3.1.0+); 100+ languages | ~500MB dep; not for doc-to-markdown → use MinerU; invoices → Docling; PDF forms → LibPDF |
+| Mirrored / rotated PDF scan | **Document forensics** (`document-creation-helper.sh forensics`) | Page-level text-layer audit; conservative flip/rotation scoring; cited sidecar; versioned manifest; optional searchable readable copy; originals remain immutable | Poppler + jq + Python 3 required; transforms need ImageMagick; readable repaired PDFs need Tesseract; weak/sparse evidence remains `uncertain` |
 | Complex PDF (tables, columns, formulas) | **MinerU** (OpenDataLab, 53k, AGPL-3.0) | Layout-aware; multi-column, tables, formulas, LaTeX; strips headers/footers; 109 languages; JSON reading order; pipeline/hybrid/VLM backends | PDF-only; AGPL copyleft; screenshots → PaddleOCR; schema extraction → Docling; simple PDFs → Pandoc |
 | Invoice / receipt / form | **Docling + ExtractThinker** (IBM, 52.7k, MIT) | Schema-mapped Pydantic output; PDF/DOCX/PPTX/XLSX/HTML/images; PII redaction (Presidio); local/edge/cloud privacy; UK VAT + QuickFile; MCP server | Requires LLM; three-component setup; slower than pure OCR; screenshots → PaddleOCR/GLM-OCR |
 | Any image (quick, local) | **GLM-OCR** (THUDM/Ollama, MIT) | Zero-config (`ollama pull glm-ocr`); fully local; Peekaboo screen capture integration | No bounding boxes or structured JSON; weaker scene text; ~2GB model → PaddleOCR for accuracy |
@@ -49,6 +50,9 @@ ollama run glm-ocr "Extract all text" --images screenshot.png  # simplest, Ollam
 mineru -p document.pdf -o output_dir                      # complex layouts, tables, formulas
 pandoc document.pdf -o document.md                        # simple text PDFs, fastest
 
+# Audit damaged scans; add --write-readable for a separate searchable PDF
+document-creation-helper.sh forensics scans.pdf --output ./audit
+
 # Invoice to structured JSON
 document-extraction-helper.sh extract invoice.pdf --schema purchase-invoice --privacy local
 
@@ -56,6 +60,7 @@ document-extraction-helper.sh extract invoice.pdf --schema purchase-invoice --pr
 for img in ./images/*.png; do paddleocr-helper.sh ocr "$img"; done
 
 # Pipelines: image → PaddleOCR → raw text or ExtractThinker → structured JSON
+#            damaged PDF → local forensic candidates → sidecar + manifest + optional readable PDF
 #            PDF → MinerU → markdown → LLM
 #            PDF → Docling → ExtractThinker → structured JSON → QuickFile
 # PaddleOCR and Docling MCP servers plug into Claude Desktop / the agent framework.

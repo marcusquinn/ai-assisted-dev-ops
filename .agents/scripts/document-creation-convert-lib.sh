@@ -353,7 +353,7 @@ _convert_ocr_preprocess() {
 		ocr_scanned_pdf "${_input}" "$provider" "$ocr_text"
 		printf -v "${input_ref}" '%s' "$ocr_text"
 		printf -v "${from_ext_ref}" '%s' "txt"
-		log_info "Proceeding with OCR text as input"
+		log_info "Proceeding with page-cited OCR text as input"
 	elif [[ "${_from_ext}" =~ ^(png|jpg|jpeg|tiff|tif|bmp|webp)$ ]]; then
 		local ocr_text="${ocr_work}/ocr-text-$$.txt"
 		log_info "Running OCR on image with ${provider}..."

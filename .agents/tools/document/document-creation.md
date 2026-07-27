@@ -24,7 +24,7 @@ tools:
 
 - **Purpose**: Convert between document formats and create documents from templates
 - **Helper**: `scripts/document-creation-helper.sh`
-- **Commands**: `convert`, `create`, `template`, `install`, `formats`, `status`
+- **Commands**: `convert`, `forensics`, `create`, `template`, `install`, `formats`, `status`
 - **OCR**: Auto-detects scanned PDFs; supports Tesseract, EasyOCR, GLM-OCR, Vision LLM
 - **Formats**: ODT, DOCX, PDF, MD, HTML, EPUB, PPTX, ODP, XLSX, ODS, RTF, CSV, TSV
 - **Report rendering**: `scripts/report-render-helper.sh render report.md --output report.html` keeps Markdown canonical and creates browser/PDF-ready HTML with sticky TOC, print CSS, source cards, and evidence badges
@@ -35,6 +35,7 @@ document-creation-helper.sh install --minimal                         # pandoc +
 document-creation-helper.sh install --standard                        # + odfpy, python-docx, openpyxl
 document-creation-helper.sh install --full                            # + LibreOffice headless
 document-creation-helper.sh convert report.pdf --to odt               # convert
+document-creation-helper.sh forensics scans.pdf --output ./audit       # page-level OCR audit
 document-creation-helper.sh create template.odt --data fields.json --output letter.odt
 document-creation-helper.sh formats                                   # list supported conversions
 document-creation-helper.sh template list
@@ -173,6 +174,12 @@ Thread metadata in frontmatter: `thread_id`, `thread_position`, `thread_length`.
 
 For screenshot/image input: keep as image, extract text (OCR), or both (image + text caption).
 
+### PDF Forensics
+
+`document-creation-helper.sh forensics input.pdf --output ./audit [--write-readable]` audits every page's text layer, then compares bounded local OCR candidates (`original`, horizontal flip, and 90/180/270-degree rotations) only for suspect pages. A transform is selected only when text evidence is sufficient and its score clears the improvement threshold; sparse or ambiguous pages remain `uncertain` and retain the original representation.
+
+Outputs are deterministic paths under the explicit/default audit root: `<name>.txt`, `<name>.manifest.json`, and optional `readable/<name>.pdf`. The `aidevops.document-forensics/v1` manifest records source/derived hashes, page dimensions/order, classifications, candidate confidence/evidence, backend version, failures, and portable relative output paths. Publication is serialized per output set and uses a durable transaction so interrupted runs restore the last consistent sidecar, readable PDF, and manifest. Sources are never overwritten; partial results return exit 2 with a non-success manifest. Processing requires Poppler, jq, and Python 3 and stays local unless a caller separately chooses another approved OCR workflow.
+
 **Related OCR agents**: `tools/ocr/glm-ocr.md`, `tools/ocr/ocr-research.md`, `tools/document/document-extraction.md`, `tools/conversion/mineru.md`
 
 ## Document Creation from Templates
@@ -265,6 +272,7 @@ document-creation-helper.sh convert report.pdf --to odt --template company-templ
 # OCR
 document-creation-helper.sh convert scanned.pdf --to odt --ocr tesseract
 document-creation-helper.sh convert screenshot.png --to md --ocr auto
+document-creation-helper.sh forensics damaged-scans.pdf --output ./audit --write-readable
 ```
 
 ## Limitations

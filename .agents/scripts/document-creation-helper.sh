@@ -5,7 +5,7 @@
 # Part of aidevops framework: https://aidevops.sh
 #
 # Usage: document-creation-helper.sh <command> [options]
-# Commands: convert, create, template, normalise, pageindex, install, formats, status, help
+# Commands: convert, forensics, create, template, normalise, pageindex, install, formats, status, help
 
 set -euo pipefail
 
@@ -25,16 +25,21 @@ TEMPLATE_DIR="${HOME}/.aidevops/.agent-workspace/templates"
 LOG_DIR="${HOME}/.aidevops/logs"
 export LOG_DIR
 
-# Colour output (disable if not a terminal)
-if [[ -t 1 ]]; then
-	RED='\033[0;31m'
-	GREEN='\033[0;32m'
-	YELLOW='\033[1;33m'
-	BLUE='\033[0;34m'
-	BOLD='\033[1m'
-	NC='\033[0m'
-else
-	RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
+# Colour output fallback when shared-constants.sh is unavailable.
+if [[ -z "${RED+x}" ]]; then
+	if [[ -t 1 ]]; then
+		RED='\033[0;31m'
+		GREEN='\033[0;32m'
+		YELLOW='\033[1;33m'
+		BLUE='\033[0;34m'
+		BOLD='\033[1m'
+		NC='\033[0m'
+	else
+		RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
+	fi
+fi
+if [[ -z "${BOLD+x}" ]]; then
+	[[ -t 1 ]] && BOLD='\033[1m' || BOLD=''
 fi
 
 # ============================================================================
@@ -71,6 +76,29 @@ die() {
 has_cmd() {
 	local bin_name="$1"
 	command -v "$bin_name" &>/dev/null
+}
+
+replace_file_atomically() {
+	local source="$1"
+	local destination="$2"
+
+	if ! has_cmd python3 || [[ ! -f "$source" ]] || [[ -d "$destination" ]]; then
+		return 1
+	fi
+	if python3 -c '
+import os
+import sys
+
+source, destination = sys.argv[1:3]
+if not os.path.isfile(source) or os.path.isdir(destination):
+    raise SystemExit(1)
+os.replace(source, destination)
+if not os.path.isfile(destination):
+    raise SystemExit(1)
+' "$source" "$destination"; then
+		return 0
+	fi
+	return 1
 }
 
 # Get human-readable file size without using ls (SC2012)
@@ -176,6 +204,102 @@ is_scanned_pdf() {
 	return 1 # Has text content
 }
 
+# Return the number of pages in a PDF.
+pdf_page_count() {
+	local file="$1"
+	local count=""
+
+	if ! has_cmd pdfinfo; then
+		return 1
+	fi
+	count=$(pdfinfo "$file" 2>/dev/null | awk '$1 == "Pages:" { value = $2 } END { print value }')
+	if [[ ! "$count" =~ ^[0-9]+$ ]] || [[ "$count" -lt 1 ]]; then
+		return 1
+	fi
+	printf '%s' "$count"
+	return 0
+}
+
+# Return one PDF page's width and height in points as WIDTHxHEIGHT.
+pdf_page_dimensions() {
+	local file="$1"
+	local page="$2"
+	local dimensions=""
+
+	if ! has_cmd pdfinfo; then
+		return 1
+	fi
+	dimensions=$(pdfinfo -f "$page" -l "$page" "$file" 2>/dev/null | awk -v expected="$page" '
+		BEGIN { one = 1; two = 2; three = 3; four = 4; five = 5; six = 6 }
+		$one == "Page" && $two == expected && $three == "size:" { print $four "x" $six; exit }
+		$one == "Page" && $two == "size:" { print $three "x" $five; exit }
+	')
+	if [[ ! "$dimensions" =~ ^[0-9]+([.][0-9]+)?x[0-9]+([.][0-9]+)?$ ]]; then
+		return 1
+	fi
+	printf '%s' "$dimensions"
+	return 0
+}
+
+# Extract one PDF page's text layer to a file.
+extract_pdf_page_text() {
+	local file="$1"
+	local page="$2"
+	local output="$3"
+
+	if ! has_cmd pdftotext; then
+		return 1
+	fi
+	if pdftotext -f "$page" -l "$page" "$file" "$output" 2>/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
+# Render one complete PDF page rather than extracting its component images.
+render_pdf_page() {
+	local file="$1"
+	local page="$2"
+	local output_prefix="$3"
+	local dpi="${4:-300}"
+
+	if ! has_cmd pdftoppm; then
+		return 1
+	fi
+	if pdftoppm -f "$page" -l "$page" -singlefile -r "$dpi" -png \
+		"$file" "$output_prefix" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+# Report the local OCR backend version for provenance manifests.
+ocr_provider_version() {
+	local provider="$1"
+	local version="unknown"
+
+	case "$provider" in
+	tesseract)
+		if has_cmd tesseract; then
+			version=$(tesseract --version 2>&1 | awk 'NR == 1 { value = $0 } END { print value }')
+		fi
+		;;
+	easyocr)
+		if has_cmd python3; then
+			version=$(python3 -c 'import importlib.metadata; print(importlib.metadata.version("easyocr"))' 2>/dev/null || printf 'unknown')
+		fi
+		;;
+	glm-ocr)
+		if has_cmd ollama; then
+			version=$(ollama --version 2>/dev/null || printf 'unknown')
+		fi
+		;;
+	esac
+
+	printf '%s' "$version"
+	return 0
+}
+
 # Select the best available OCR provider
 select_ocr_provider() {
 	local preferred="${1:-auto}"
@@ -227,6 +351,7 @@ select_ocr_provider() {
 run_ocr() {
 	local image_file="$1"
 	local provider="$2"
+	local ocr_rc=0
 
 	case "${provider}" in
 	tesseract)
@@ -239,35 +364,51 @@ run_ocr() {
 			tess_input="${work_dir}/ocr-input-$$.$(get_ext "$image_file")"
 			cp "$image_file" "$tess_input"
 		fi
-		tesseract "$tess_input" stdout 2>/dev/null
+		if ! tesseract "$tess_input" stdout 2>/dev/null; then
+			ocr_rc=1
+		fi
 		# Clean up temp copy
 		if [[ "$tess_input" != "$image_file" ]]; then
 			rm -f "$tess_input"
 		fi
 		;;
 	easyocr)
-		activate_venv 2>/dev/null
-		python3 -c "
+		if ! activate_venv 2>/dev/null; then
+			return 1
+		fi
+		if ! python3 -c "
 import easyocr, sys
 reader = easyocr.Reader(['en'], verbose=False)
 results = reader.readtext(sys.argv[1], detail=0)
 print('\n'.join(results))
-" "$image_file" 2>/dev/null
+" "$image_file" 2>/dev/null; then
+			ocr_rc=1
+		fi
 		;;
 	glm-ocr)
 		# GLM-OCR via Ollama API
 		local b64
-		b64=$(base64 <"$image_file")
+		if ! b64=$(base64 <"$image_file"); then
+			return 1
+		fi
 		local response
-		response=$(curl -s http://localhost:11434/api/generate \
-			-d "{\"model\":\"glm-ocr\",\"prompt\":\"Extract all text from this image.\",\"images\":[\"${b64}\"],\"stream\":false}" 2>/dev/null)
-		printf '%s' "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('response',''))" 2>/dev/null
+		if ! response=$(curl -s http://localhost:11434/api/generate \
+			-d "{\"model\":\"glm-ocr\",\"prompt\":\"Extract all text from this image.\",\"images\":[\"${b64}\"],\"stream\":false}" 2>/dev/null); then
+			return 1
+		fi
+		if ! printf '%s' "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('response',''))" 2>/dev/null; then
+			ocr_rc=1
+		fi
 		;;
 	*)
 		die "Unknown OCR provider: ${provider}"
+		return 1
 		;;
 	esac
 
+	if [[ "$ocr_rc" -ne 0 ]]; then
+		return 1
+	fi
 	return 0
 }
 
@@ -276,37 +417,68 @@ ocr_scanned_pdf() {
 	local input="$1"
 	local provider="$2"
 	local output_text="$3"
-
-	# Use workspace dir instead of /tmp to avoid macOS Leptonica sandbox issues
-	local tmp_dir="${HOME}/.aidevops/.agent-workspace/tmp/ocr-$$"
-	mkdir -p "${tmp_dir}"
-	local img_dir="${tmp_dir}/pages"
-	mkdir -p "${img_dir}"
-
-	log_info "Extracting page images from scanned PDF..."
-	pdfimages -png "$input" "${img_dir}/page" 2>/dev/null
-
-	local img_count
-	img_count=$(find "${img_dir}" -name "*.png" -type f 2>/dev/null | wc -l | tr -d ' ')
-
-	if [[ "${img_count}" -eq 0 ]]; then
-		die "No images extracted from PDF. File may be empty."
+	if [[ -d "$output_text" ]]; then
+		die "OCR text output path is a directory."
+		return 1
 	fi
 
-	log_info "OCR processing ${img_count} page images with ${provider}..."
+	# Use workspace dir instead of /tmp to avoid macOS Leptonica sandbox issues
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local tmp_dir=""
+	mkdir -p "$temp_root"
+	tmp_dir=$(mktemp -d "${temp_root%/}/ocr.XXXXXX") || return 1
+	local img_dir="${tmp_dir}/pages"
+	mkdir -p "${img_dir}"
+	local staged_output="${tmp_dir}/ocr-output.txt"
+	local publish_tmp=""
 
-	# Process each image and combine
-	: >"$output_text"
-	local img_file
-	for img_file in "${img_dir}"/page-*.png; do
-		[[ -f "$img_file" ]] || continue
-		log_info "  OCR: $(basename "$img_file")"
-		run_ocr "$img_file" "$provider" >>"$output_text"
-		printf '\n\n' >>"$output_text"
+	local page_count=""
+	if ! page_count=$(pdf_page_count "$input"); then
+		rm -rf "${tmp_dir}"
+		die "Unable to determine PDF page count."
+		return 1
+	fi
+
+	log_info "OCR processing ${page_count} rendered PDF pages with ${provider}..."
+
+	# Process complete rendered pages so page boundaries and citations survive.
+	: >"$staged_output"
+	local page=1
+	while [[ "$page" -le "$page_count" ]]; do
+		local page_id=""
+		printf -v page_id '%04d' "$page"
+		local page_prefix="${img_dir}/page-${page_id}"
+		local img_file="${page_prefix}.png"
+		if ! render_pdf_page "$input" "$page" "$page_prefix" 300; then
+			rm -rf "${tmp_dir}"
+			die "Unable to render PDF page ${page}."
+			return 1
+		fi
+		log_info "  OCR: page ${page}"
+		printf '===== Page %s =====\n' "$page" >>"$staged_output"
+		if ! run_ocr "$img_file" "$provider" >>"$staged_output"; then
+			rm -rf "${tmp_dir}"
+			die "OCR failed on PDF page ${page}."
+			return 1
+		fi
+		printf '\n\n' >>"$staged_output"
+		page=$((page + 1))
 	done
 
 	local text_len
-	text_len=$(wc -c <"$output_text" | tr -d ' ')
+	text_len=$(wc -c <"$staged_output" | tr -d ' ')
+	publish_tmp=$(mktemp "${output_text}.tmp.XXXXXX") || {
+		rm -rf "${tmp_dir}"
+		die "Unable to stage OCR text output beside its destination."
+		return 1
+	}
+	if ! cp "$staged_output" "$publish_tmp" || \
+		! replace_file_atomically "$publish_tmp" "$output_text"; then
+		rm -f "$publish_tmp"
+		rm -rf "${tmp_dir}"
+		die "Unable to publish OCR text output."
+		return 1
+	fi
 	log_ok "OCR complete: ${text_len} bytes extracted"
 
 	# Clean up
@@ -643,6 +815,10 @@ source "${SCRIPT_DIR}/document-creation-convert-lib.sh"
 # shellcheck source=./document-creation-email-lib.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/document-creation-email-lib.sh"
+
+# shellcheck source=./document-forensics-lib.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/document-forensics-lib.sh"
 
 # NOTE: The conversion engine (EML/MIME helpers, tool selection, conversion
 # backends) and the email import pipeline (mbox splitting, contact extraction,
@@ -1827,6 +2003,7 @@ cmd_help() {
 	printf "Usage: %s <command> [options]\n\n" "${SCRIPT_NAME}"
 	printf '%b\n' "${BOLD}Commands:${NC}"
 	printf "  convert           Convert between document formats\n"
+	printf "  forensics         Audit/repair mirrored and rotated PDF scans\n"
 	printf "  import-emails     Batch import .eml directory or mbox file to markdown\n"
 	printf "  create            Create a document from a template + data\n"
 	printf "  template          Manage document templates (list, draft)\n"
@@ -1851,6 +2028,7 @@ cmd_help() {
 	printf "  %s import-emails archive.mbox --output ./imported\n" "${SCRIPT_NAME}"
 	printf "  %s generate-manifest ./imported\n" "${SCRIPT_NAME}"
 	printf "  %s convert scanned.pdf --to odt --ocr tesseract\n" "${SCRIPT_NAME}"
+	printf "  %s forensics scans.pdf --output ./audit --write-readable\n" "${SCRIPT_NAME}"
 	printf "  %s convert screenshot.png --to md --ocr auto\n" "${SCRIPT_NAME}"
 	printf "  %s convert report.pdf --to md --no-normalise\n" "${SCRIPT_NAME}"
 	printf "  %s normalise document.md --output clean.md\n" "${SCRIPT_NAME}"
@@ -1885,6 +2063,7 @@ main() {
 
 	case "${cmd}" in
 	convert) cmd_convert "$@" ;;
+	forensics | audit) cmd_document_forensics "$@" ;;
 	import-emails) cmd_import_emails "$@" ;;
 	generate-manifest) cmd_generate_manifest "$@" ;;
 	create) cmd_create "$@" ;;
