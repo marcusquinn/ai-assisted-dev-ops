@@ -7,7 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
-mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/repo/.agents/scripts" "$ROOT/worktrees"
+mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/repo/.agents/scripts" \
+	"$ROOT/repo/.git" "$ROOT/worktrees"
 : >"$ROOT/repo/aidevops.sh"
 : >"$ROOT/repo/.agents/scripts/version-manager.sh"
 
@@ -20,7 +21,12 @@ case "$*" in
 *rev-parse\ HEAD*) printf '%040d\n' 0 ;;
 *worktree\ add*)
 	for arg in "$@"; do
-		case "$arg" in */aidevops-release-*) mkdir -p "$arg" ;; esac
+		case "$arg" in
+		*/aidevops-release-*)
+			mkdir -p "$arg"
+			: >"$arg/.git"
+			;;
+		esac
 	done
 	;;
 *worktree\ remove*)
@@ -102,6 +108,17 @@ grep -qx 'intent=1' "$ROOT/vm.log"
 grep -qx 'priority=critical' "$ROOT/vm.log"
 grep -qx 'deploy=full' "$ROOT/vm.log"
 grep -qx 'published' "$ROOT/receipts/marcusquinn_aidevops-42.status"
+if grep -Fq -- "-C $ROOT/repo fetch " "$ROOT/git.log" ||
+	! grep -Eq -- "-C ${ROOT}/worktrees/aidevops-release-control-[0-9]+ fetch origin (main|--tags)" \
+		"$ROOT/git.log"; then
+	printf 'FAIL canonical release Git mutations did not move into a linked control worktree\n'
+	exit 1
+fi
+if compgen -G "$ROOT/worktrees/aidevops-release-control-*" >/dev/null; then
+	printf 'FAIL linked release control worktree was not removed\n'
+	exit 1
+fi
+printf 'PASS canonical release Git mutations use a temporary linked control worktree\n'
 if compgen -G "$ROOT/worktrees/aidevops-release-42-*" >/dev/null; then
 	printf 'FAIL detached release worktree was not removed\n'
 	exit 1
@@ -109,7 +126,7 @@ fi
 printf 'PASS detached release runner persists publication receipt after successful gates\n'
 
 cp "$ROOT/vm.log" "$ROOT/vm-after-publication.log"
-worktree_adds_before=$(grep -c 'worktree add --detach' "$ROOT/git.log")
+worktree_adds_before=$(grep -c 'worktree add --detach .*/aidevops-release-42-' "$ROOT/git.log")
 (
 	cd "$ROOT/repo/linked-branch"
 	PATH="$ROOT/bin:/usr/bin:/bin" \
@@ -124,7 +141,7 @@ worktree_adds_before=$(grep -c 'worktree add --detach' "$ROOT/git.log")
 		bash "$SCRIPT_DIR/full-loop-release-helper.sh" minor 42 full
 )
 cmp -s "$ROOT/vm.log" "$ROOT/vm-after-publication.log"
-worktree_adds_after=$(grep -c 'worktree add --detach' "$ROOT/git.log")
+worktree_adds_after=$(grep -c 'worktree add --detach .*/aidevops-release-42-' "$ROOT/git.log")
 [[ "$worktree_adds_after" -eq "$worktree_adds_before" ]]
 printf 'PASS repeated detached release reconciliation skips duplicate publication\n'
 

@@ -37,17 +37,50 @@ REPO_ROOT=$(_full_loop_release_resolve_repo_root) || {
 	exit 1
 }
 _FULL_LOOP_RELEASE_PATH=""
-source "${SCRIPT_DIR}/full-loop-helper-state.sh"
-# shellcheck source=./full-loop-release-reconcile.sh
-source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
+_FULL_LOOP_RELEASE_CONTROL_PATH=""
 
 cleanup_release_worktree() {
 	local release_path="${_FULL_LOOP_RELEASE_PATH:-}"
-	if [[ -n "$release_path" && -d "$release_path" ]]; then
+	local control_path="${_FULL_LOOP_RELEASE_CONTROL_PATH:-}"
+	if [[ -n "$release_path" && "$release_path" != "$control_path" && -d "$release_path" ]]; then
 		git -C "$REPO_ROOT" worktree remove "$release_path" >/dev/null 2>&1 || true
+	fi
+	if [[ -n "$control_path" && -d "$control_path" ]]; then
+		git -C "$control_path" worktree remove "$control_path" >/dev/null 2>&1 || true
 	fi
 	return 0
 }
+
+_full_loop_release_prepare_control_worktree() {
+	local repository_root="$1"
+	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
+	local control_path="${worktree_base}/aidevops-release-control-$$"
+	local source_commit=""
+	local checkout_commit=""
+
+	[[ -d "$repository_root/.git" && -d "$worktree_base" ]] || return 1
+	source_commit=$(git -C "$repository_root" rev-parse HEAD 2>/dev/null) || return 1
+	[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+	git -C "$repository_root" worktree add --detach "$control_path" "$source_commit" >/dev/null || return 1
+	checkout_commit=$(git -C "$control_path" rev-parse HEAD 2>/dev/null || true)
+	if [[ ! -f "$control_path/.git" || "$checkout_commit" != "$source_commit" ]]; then
+		git -C "$control_path" worktree remove "$control_path" >/dev/null 2>&1 || true
+		return 1
+	fi
+	_FULL_LOOP_RELEASE_CONTROL_PATH="$control_path"
+	REPO_ROOT="$control_path"
+	trap 'cleanup_release_worktree' EXIT
+	return 0
+}
+
+if [[ -d "$REPO_ROOT/.git" ]] && ! _full_loop_release_prepare_control_worktree "$REPO_ROOT"; then
+	printf 'Cannot prepare a linked release control worktree.\n' >&2
+	exit 1
+fi
+
+source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+# shellcheck source=./full-loop-release-reconcile.sh
+source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
 
 _FULL_LOOP_RESOLVED_SOURCE_JSON=""
 _FULL_LOOP_RESOLVED_SOURCE_PR=""
