@@ -35,7 +35,7 @@ on:
       - 'todo/PLANS.md'
       - 'todo/tasks/**'
   pull_request:
-    types: [opened, edited, closed, reopened]
+    types: [closed]
   issues:
     types: [opened, edited, assigned, closed, reopened]
   workflow_dispatch:
@@ -74,7 +74,8 @@ jobs:
     # Cross-account consumers (every downstream user) receive empty values for any
     # caller-repo secret when using `secrets: inherit` against a cross-account
     # reusable workflow. Explicit pass-through is required for secrets to resolve.
-    # If a new secret is added to issue-sync-reusable.yml, add it here too.
+    # Keep explicit cross-account forwarding limited to write paths. Read-only
+    # forge-event projection checkout uses the caller's GITHUB_TOKEN.
     secrets:
       SYNC_PAT: ${{ secrets.SYNC_PAT }}
     with:

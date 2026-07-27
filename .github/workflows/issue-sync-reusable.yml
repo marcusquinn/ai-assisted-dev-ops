@@ -73,6 +73,10 @@ jobs:
       - name: Checkout repository projection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Push events must project the immutable triggering revision. Other
+          # supported events read canonical TODO.md state and must not infer a
+          # synthetic refs/pull/*/merge checkout.
+          ref: ${{ github.event_name == 'push' && github.sha || github.event.repository.default_branch }}
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 

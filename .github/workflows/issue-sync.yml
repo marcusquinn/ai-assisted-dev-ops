@@ -17,7 +17,7 @@ on:
       - 'todo/tasks/**'
   pull_request_target:
     branches: [main]
-    types: [opened, edited, closed, reopened]
+    types: [closed]
   issues:
     types: [opened, edited, assigned, closed, reopened]
   workflow_dispatch:
