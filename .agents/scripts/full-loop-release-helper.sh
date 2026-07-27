@@ -5,9 +5,41 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
-REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+
+_full_loop_release_valid_repo_root() {
+	local candidate_root="$1"
+	[[ -f "$candidate_root/aidevops.sh" ]] || return 1
+	[[ -f "$candidate_root/.agents/scripts/version-manager.sh" ]] || return 1
+	return 0
+}
+
+_full_loop_release_resolve_repo_root() {
+	local current_root=""
+	local candidate=""
+	local candidate_root=""
+	current_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+	if [[ -n "$current_root" ]] && _full_loop_release_valid_repo_root "$current_root"; then
+		printf '%s\n' "$current_root"
+		return 0
+	fi
+	for candidate in "${AIDEVOPS_REPO_PATH:-}" "${HOME}/Git/aidevops"; do
+		[[ -n "$candidate" && -d "$candidate" ]] || continue
+		candidate_root=$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)
+		[[ -n "$candidate_root" ]] && _full_loop_release_valid_repo_root "$candidate_root" || continue
+		printf '%s\n' "$candidate_root"
+		return 0
+	done
+	return 1
+}
+
+REPO_ROOT=$(_full_loop_release_resolve_repo_root) || {
+	printf 'Cannot locate the canonical aidevops repository. Set AIDEVOPS_REPO_PATH.\n' >&2
+	exit 1
+}
 _FULL_LOOP_RELEASE_PATH=""
 source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+# shellcheck source=./full-loop-release-reconcile.sh
+source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
 
 cleanup_release_worktree() {
 	local release_path="${_FULL_LOOP_RELEASE_PATH:-}"
@@ -96,17 +128,13 @@ _full_loop_persist_release_success() {
 	return $?
 }
 
-main() {
-	local release_type="${1:-patch}"
-	local source_pr="${2:-}"
-	local deployment_scope="${3:-incremental}"
-	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
-	case "$deployment_scope" in incremental | full) ;; *) return 1 ;; esac
-	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
-	local repo=""
+_full_loop_release_guard_existing() {
+	local repo="$1"
+	local source_pr="$2"
 	local receipt_path=""
 	local release_status=""
-	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	local existing_tag_rc=0
+
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$source_pr") || return 1
 	if [[ -f "$receipt_path" ]]; then
 		IFS= read -r release_status <"$receipt_path" || return 1
@@ -131,6 +159,64 @@ main() {
 		return 1
 		;;
 	esac
+	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
+	case "$existing_tag_rc" in
+	0)
+		printf 'Existing signed release tag found for PR #%s; reconciling without another version bump\n' "$source_pr"
+		_full_loop_release_existing_command reconcile "$source_pr"
+		return $?
+		;;
+	1) return 1 ;;
+	2) return 2 ;;
+	*) return 1 ;;
+	esac
+}
+
+_full_loop_release_usage() {
+	cat <<'EOF'
+Usage:
+  aidevops release [patch|minor|major] SOURCE_PR [incremental|full]
+  aidevops release status SOURCE_PR
+  aidevops release reconcile SOURCE_PR
+
+Release publication is provenance-bound and normally unattended. `status` is
+read-only. `reconcile` verifies the newest matching signed tag, queues an
+idempotent recovery workflow when needed, and finalizes local release receipts
+only after GitHub, npm, and Homebrew all converge.
+EOF
+	return 0
+}
+
+main() {
+	local release_type="${1:-patch}"
+	local source_pr="${2:-}"
+	local deployment_scope="${3:-incremental}"
+	case "$release_type" in
+	help | --help | -h)
+		_full_loop_release_usage
+		return 0
+		;;
+	status | reconcile)
+		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
+			_full_loop_release_usage >&2
+			return 1
+		}
+		_full_loop_release_existing_command "$release_type" "$source_pr"
+		return $?
+		;;
+	esac
+	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
+	case "$deployment_scope" in incremental | full) ;; *) return 1 ;; esac
+	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	local repo=""
+	local existing_state_rc=0
+	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	_full_loop_release_guard_existing "$repo" "$source_pr" || existing_state_rc=$?
+	case "$existing_state_rc" in
+	0) return 0 ;;
+	2) ;;
+	*) return "$existing_state_rc" ;;
+	esac
 
 	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
 	local release_path="${worktree_base}/aidevops-release-${source_pr}-$$"
@@ -145,18 +231,28 @@ main() {
 	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
 
 	local version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
+	local release_rc=0
 	[[ "$version_manager" = /* ]] || version_manager="$PWD/$version_manager"
 	[[ -f "$version_manager" ]] || return 1
-	if ! (
+	(
 		trap - EXIT
 		cd "$release_path" || exit 1
 		AIDEVOPS_RELEASE_INTENT_TRUSTED=1 \
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
 			AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
 			bash "$version_manager" release "$release_type" --source-pr "$source_pr"
-	); then
+	) || release_rc=$?
+	if [[ "$release_rc" -eq 8 ]]; then
+		printf 'release:queued for PR #%s; publication continues remotely\n' "$source_pr"
+		printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
+		return 8
+	fi
+	if [[ "$release_rc" -ne 0 ]]; then
 		_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" \
 			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" || true
+		printf 'Publication may still be durable or queued. Reconcile without another version bump:\n' >&2
+		printf '  aidevops release status %s\n' "$source_pr" >&2
+		printf '  aidevops release reconcile %s\n' "$source_pr" >&2
 		return 1
 	fi
 	_full_loop_persist_release_success "$repo" "$release_path" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" \

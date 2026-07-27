@@ -96,18 +96,21 @@ Do not duplicate these scripts inline — they are the source of truth. Read the
 ### Rollback Commands
 
 ```bash
-# Option A: Revert commit
-git revert <release-commit-hash> && git push origin main
-# Option B: Delete tag+release (if not widely distributed)
-gh release delete v{VERSION} --yes && git tag -d v{VERSION} && git push origin --delete v{VERSION}
-# Option C: Hotfix release from a safe linked worktree
+# Signed release tags and published versions are immutable. Roll forward from a
+# reviewed revert or hotfix PR; never delete or retag a release.
+# Option A: Create a reviewed revert in a safe linked worktree
+${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add revert/v{NEW_VERSION} --base origin/main
+# After changing into the printed worktree: git revert <defective-commit-hash>,
+# verify, commit, open/merge the PR, then publish a new patch through `aidevops release`.
+# Option B: Hotfix release from a safe linked worktree
 ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add hotfix/v{VERSION}.1 --base v{VERSION}
 # Critical: cd into the linked worktree path printed by the helper before editing;
 # otherwise commits land in the canonical checkout, which can corrupt main state
 # or disrupt active agents that depend on their own linked worktrees.
 # Example after changing into that linked worktree: stage the intended files first,
 # because `git commit -m` without staging can create an empty or incomplete commit.
-# git add <changed-files> && git commit -m "fix: resolve critical issue" && ./.agents/scripts/version-manager.sh release patch
+# git add <changed-files> && git commit -m "fix: resolve critical issue"
+# Open and merge the reviewed PR, then run: aidevops release patch <merged-pr>
 ```
 
 Post-rollback: verify terminal CI and deployment health for the rollback SHA. A

@@ -5,7 +5,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 1
-RELEASE_WORKFLOW="${REPO_ROOT}/.github/workflows/release.yml"
 PACKAGE_WORKFLOW="${REPO_ROOT}/.github/workflows/publish-packages.yml"
 SETTINGS_HELPER="${REPO_ROOT}/.agents/scripts/release-publication-settings-helper.sh"
 readonly SNAPSHOT_MODE="snapshot-empty"
@@ -52,55 +51,58 @@ assert_order() {
 	return 0
 }
 
-assert_contains "package workflow exposes provenance-bound dispatch" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
-assert_contains "package dispatch requires an existing signed tag" \
-	"Existing signed aidevops release tag" "$PACKAGE_WORKFLOW"
-assert_contains "package dispatch requires a correlation identity" \
-	"Non-secret dispatch correlation identifier" "$PACKAGE_WORKFLOW"
+if [[ -e "${REPO_ROOT}/.github/workflows/release.yml" ]]; then
+	printf 'FAIL legacy GITHUB_TOKEN release workflow still exists\n'
+	exit 1
+fi
+printf 'PASS legacy GITHUB_TOKEN release workflow is removed\n'
+assert_contains "verified tags trigger the unified publication workflow" "tags:" "$PACKAGE_WORKFLOW"
+assert_contains "existing verified tags have an explicit recovery path" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
+assert_contains "recovery requires an existing tag" "Existing verified release tag to reconcile" "$PACKAGE_WORKFLOW"
+assert_absent "suppressed release-event chaining is removed" "types: [published]" "$PACKAGE_WORKFLOW"
 assert_absent "package metadata is not rewritten before publish" "--no-git-tag-version" "$PACKAGE_WORKFLOW"
-assert_contains "release workflow verifies provenance" "release-provenance-helper.sh verify" "$RELEASE_WORKFLOW"
-# shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
-assert_contains "package workflow checks out the resolved release tag" \
-	'ref: ${{ inputs.tag || github.event.release.tag_name }}' "$PACKAGE_WORKFLOW"
-assert_contains "package runs expose their immutable tag identity" \
-	"inputs.request_id && format('Publish packages for {0} ({1})'" "$PACKAGE_WORKFLOW"
-assert_contains "package jobs verify a published GitHub release" \
-	"releases/tags/\$RELEASE_TAG" "$PACKAGE_WORKFLOW"
-assert_contains "package input is bound to the event tag ref" \
-	"\"\$GITHUB_REF\" != \"refs/tags/\$RELEASE_TAG\"" "$PACKAGE_WORKFLOW"
-assert_contains "package input is bound to the event commit" \
-	"\"\$GITHUB_SHA\" != \"\$TAG_COMMIT\"" "$PACKAGE_WORKFLOW"
-assert_contains "existing exact npm versions are reused" \
-	"already-published=true" "$PACKAGE_WORKFLOW"
+assert_contains "unified workflow verifies provenance" "release-provenance-helper.sh verify" "$PACKAGE_WORKFLOW"
+assert_contains "recovery executes only from reviewed main" 'refs/heads/main' "$PACKAGE_WORKFLOW"
+assert_contains "workflow refuses stale release recovery" "Refusing stale release" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow expression.
+assert_contains "checkout resolves only the immutable tag namespace" \
+	'ref: refs/tags/${{ inputs.tag || github.ref_name }}' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_contains "checked-out commit is bound to the immutable tag" \
+	'[[ "$CHECKOUT_COMMIT" == "$TAG_COMMIT" ]]' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "release notes cross steps through a file" '--notes-file "$RUNNER_TEMP/release-notes.md"' "$PACKAGE_WORKFLOW"
+assert_absent "release notes cannot inject into generated workflow shell" 'steps.changelog.outputs.body' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow expression.
+assert_contains "recovery is idempotent for npm" 'npm view "aidevops@${RELEASE_VERSION}"' "$PACKAGE_WORKFLOW"
+assert_contains "npm registry uncertainty fails closed" \
+	"Unable to determine npm publication state" "$PACKAGE_WORKFLOW"
 assert_contains "npm publication skips an existing exact version" \
-	"if: steps.npm-state.outputs.already-published != 'true'" "$PACKAGE_WORKFLOW"
-assert_contains "duplicate dispatches never cancel in-flight publication" \
-	"cancel-in-progress: false" "$PACKAGE_WORKFLOW"
-assert_absent "in-flight package publication cannot be cancelled" \
-	"cancel-in-progress: true" "$PACKAGE_WORKFLOW"
-assert_contains "Homebrew job has read-only repository permission" "contents: read" "$PACKAGE_WORKFLOW"
+	"if: steps.npm-state.outputs.published != 'true'" "$PACKAGE_WORKFLOW"
+assert_contains "all versions serialize through one publication lock" "group: release-publication" "$PACKAGE_WORKFLOW"
+assert_contains "concurrency cannot cancel an in-flight publication" "cancel-in-progress: false" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
 assert_order "release provenance precedes release creation" \
-	"release-provenance-helper.sh verify" "github-release-helper.sh create" "$RELEASE_WORKFLOW"
+	"release-provenance-helper.sh verify" "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
+assert_order "GitHub release precedes npm publication" \
+	"github-release-helper.sh create" "npm publish --provenance" "$PACKAGE_WORKFLOW"
 assert_order "package provenance precedes npm publication" \
 	"release-provenance-helper.sh verify" "npm publish --provenance" "$PACKAGE_WORKFLOW"
 
-release_environment_count=$(grep -cE \
-	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$RELEASE_WORKFLOW" || true)
 package_environment_count=$(grep -cE \
 	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$PACKAGE_WORKFLOW" || true)
-if [[ "$release_environment_count" -ne 1 || "$package_environment_count" -ne 2 ]]; then
-	printf 'FAIL all release and publication jobs must use the release environment\n'
+if [[ "$package_environment_count" -ne 1 ]]; then
+	printf 'FAIL unified publication must use exactly one release environment job\n'
 	exit 1
 fi
-printf 'PASS all release and publication jobs use the release environment\n'
+printf 'PASS unified publication uses one release environment job\n'
 
 verification_count=$(grep -cF 'release-provenance-helper.sh verify' "$PACKAGE_WORKFLOW" || true)
-if [[ "$verification_count" -ne 2 ]]; then
-	printf 'FAIL npm and Homebrew jobs must each verify provenance\n'
+if [[ "$verification_count" -ne 1 ]]; then
+	printf 'FAIL unified publication must verify provenance exactly once before side effects\n'
 	exit 1
 fi
-printf 'PASS npm and Homebrew jobs each verify provenance\n'
+printf 'PASS unified publication verifies provenance once before all side effects\n'
 
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
@@ -182,6 +184,10 @@ repos/test/repo/environments)
 repos/test/repo/environments/release)
 	if [[ "$mode" == "bad-environment" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":null}'
+	elif [[ "$mode" == "valid-unattended" || "$mode" == "bad-unattended-policy" ]]; then
+		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+	elif [[ "$mode" == "bad-unattended-wait" ]]; then
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"wait_timer","wait_timer":30}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	elif [[ "$mode" == "bad-reviewer-team" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	elif [[ "$mode" == "bad-self-review" ]]; then
@@ -191,7 +197,8 @@ repos/test/repo/environments/release)
 	fi
 	;;
 repos/test/repo/environments/release/deployment-branch-policies)
-	if [[ "$mode" == "bad-deployment-policy" ]]; then
+	if [[ "$mode" == "valid-unattended" || "$mode" == "bad-unattended-wait" \
+		|| "$mode" == "bad-deployment-policy" ]]; then
 		printf '%s\n' '{"total_count":2,"branch_policies":[{"id":8,"name":"v*","type":"tag"},{"id":9,"name":"main","type":"branch"}]}'
 	else
 		printf '%s\n' '{"total_count":1,"branch_policies":[{"id":8,"name":"v*","type":"tag"}]}'
@@ -310,6 +317,43 @@ for expected_marker in \
 	fi
 done
 printf 'PASS valid GitHub release settings permit explicit maintainer self-approval\n'
+
+unattended_output=$(run_settings_helper valid-unattended verify-github --repo test/repo \
+	--release-author releaser --unattended) || {
+	printf 'FAIL valid unattended GitHub release settings were rejected\n'
+	exit 1
+}
+if ! grep -qxF 'GITHUB_RELEASE_CONTROLS=verified' <<<"$unattended_output"; then
+	printf 'FAIL unattended verification omitted the verified marker\n'
+	exit 1
+fi
+printf 'PASS unattended release settings require no manual reviewer or timer\n'
+
+unattended_invalid_output=""
+if unattended_invalid_output=$(run_settings_helper bad-unattended-wait verify-github --repo test/repo \
+	--release-author releaser --unattended 2>&1); then
+	printf 'FAIL unattended settings accepted a wait timer\n'
+	exit 1
+fi
+if ! grep -qF 'release environment still has a manual reviewer or wait-timer gate' \
+	<<<"$unattended_invalid_output"; then
+	printf 'FAIL unattended wait-timer rejection had the wrong reason\n'
+	exit 1
+fi
+printf 'PASS unattended release settings reject blocking protection rules\n'
+
+unattended_policy_output=""
+if unattended_policy_output=$(run_settings_helper bad-unattended-policy verify-github --repo test/repo \
+	--release-author releaser --unattended 2>&1); then
+	printf 'FAIL unattended settings accepted tag-only deployment policy\n'
+	exit 1
+fi
+if ! grep -qF 'release environment is not limited to v* tags and reviewed main recovery' \
+	<<<"$unattended_policy_output"; then
+	printf 'FAIL unattended recovery-policy rejection had the wrong reason\n'
+	exit 1
+fi
+printf 'PASS unattended release settings require reviewed main recovery policy\n'
 
 for invalid_mode in bad-author bad-actions bad-ruleset bad-ruleset-exclusion \
 	bad-bypass-actor bad-environment bad-reviewer-team bad-self-review \

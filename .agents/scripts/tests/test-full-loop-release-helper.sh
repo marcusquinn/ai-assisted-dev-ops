@@ -7,7 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
-mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/worktrees"
+mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/repo/.agents/scripts" "$ROOT/worktrees"
+: >"$ROOT/repo/aidevops.sh"
+: >"$ROOT/repo/.agents/scripts/version-manager.sh"
 
 cat >"$ROOT/bin/git" <<'STUB'
 #!/usr/bin/env bash
@@ -125,6 +127,29 @@ cmp -s "$ROOT/vm.log" "$ROOT/vm-after-publication.log"
 worktree_adds_after=$(grep -c 'worktree add --detach' "$ROOT/git.log")
 [[ "$worktree_adds_after" -eq "$worktree_adds_before" ]]
 printf 'PASS repeated detached release reconciliation skips duplicate publication\n'
+
+pending_rc=0
+(
+	cd "$ROOT/repo/linked-branch"
+	PATH="$ROOT/bin:/usr/bin:/bin" \
+		GIT_CALL_LOG="$ROOT/git.log" \
+		VM_CALL_LOG="$ROOT/pending-vm.log" \
+		VM_EXIT=8 \
+		FAKE_REPO_ROOT="$ROOT/repo" \
+		AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees" \
+		AIDEVOPS_FULL_LOOP_VERSION_MANAGER="../../version-manager.sh" \
+		AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER="$ROOT/source-resolver.sh" \
+		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
+		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
+		bash "$SCRIPT_DIR/full-loop-release-helper.sh" patch 46 incremental
+) >/dev/null 2>&1 || pending_rc=$?
+if [[ "$pending_rc" -ne 8 ||
+	-e "$ROOT/receipts/marcusquinn_aidevops-46.status" ||
+	-e "$ROOT/receipts/marcusquinn_aidevops-46.failure.json" ]]; then
+	printf 'FAIL durable queued release was recorded as terminal evidence\n'
+	exit 1
+fi
+printf 'PASS durable queued release returns pending without false terminal evidence\n'
 
 if (
 	cd "$ROOT/repo/linked-branch"

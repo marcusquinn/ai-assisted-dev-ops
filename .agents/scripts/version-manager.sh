@@ -303,6 +303,7 @@ _release_require_new_tag() {
 	local bump_type="$1"
 	local tag_name="$2"
 	local remote_exit=0
+	local source_pr="${VERSION_MANAGER_SOURCE_PR:-<SOURCE_PR>}"
 
 	git ls-remote -q --exit-code --tags origin "refs/tags/$tag_name" >/dev/null 2>&1 || remote_exit=$?
 	if ! git show-ref --tags "$tag_name" &>/dev/null && [[ "$remote_exit" -ne 0 ]]; then
@@ -315,13 +316,10 @@ _release_require_new_tag() {
 	print_info "  gh release view $tag_name             # check if GitHub release exists"
 	print_info "  git log $tag_name --oneline -5        # see what the tag points to"
 	print_info ""
-	print_info "Recovery options:"
-	print_info "  A) Tag exists + GitHub release exists → already released, nothing to do"
-	print_info "  B) Tag exists + no GitHub release    → run: $0 github-release"
-	print_info "  C) Tag is orphaned/wrong commit      → delete and retry:"
-	print_info "       git tag -d $tag_name"
-	print_info "       git push origin :refs/tags/$tag_name"
-	print_info "       $0 release $bump_type"
+	print_info "Recovery: never delete or recreate a signed release tag."
+	print_info "  aidevops release status $source_pr"
+	print_info "  aidevops release reconcile $source_pr"
+	print_info "If provenance is invalid, stop and review a corrected new version instead of mutating $tag_name."
 	exit 1
 }
 
@@ -334,8 +332,8 @@ _release_handle_push_failure() {
 		print_warning "Push failed but tag v$new_version already exists on remote (concurrent release?)"
 		print_info "Deleting local tag to avoid divergence. Check remote state:"
 		git tag -d "v$new_version" 2>/dev/null || true
-		print_info "  gh release view v$new_version   # check if GitHub release was created"
-		print_info "  git fetch --tags && git log v$new_version --oneline -3"
+		print_info "  aidevops release status ${VERSION_MANAGER_SOURCE_PR:-<SOURCE_PR>}"
+		print_info "  aidevops release reconcile ${VERSION_MANAGER_SOURCE_PR:-<SOURCE_PR>}"
 		exit 1
 	fi
 	print_warning "Rolling back local tag v$new_version due to push failure"
@@ -354,6 +352,7 @@ _release_execute() {
 	local new_version="$2"
 	local hotfix_flag="$3"
 	local tag_name="v$new_version"
+	local publication_rc=0
 
 	_release_require_new_tag "$bump_type" "$tag_name"
 
@@ -393,8 +392,16 @@ _release_execute() {
 		if ! push_changes "$new_version"; then
 			_release_handle_push_failure "$new_version"
 		fi
-		if ! _publish_github_release "$new_version"; then
-			print_error "GitHub release publication failed for v$new_version"
+		_publish_github_release "$new_version" || publication_rc=$?
+		if [[ "$publication_rc" -eq 8 ]]; then
+			_release_disable_failure_rollback
+			print_success "release:queued"
+			print_info "Publication is durable and can finish without this process"
+			print_info "Reconcile the source PR after the workflow completes: aidevops release reconcile <SOURCE_PR>"
+			return 8
+		fi
+		if [[ "$publication_rc" -ne 0 ]]; then
+			print_error "Release publication failed for v$new_version"
 			print_error "release:failed"
 			return 1
 		fi
@@ -595,7 +602,7 @@ _main_usage() {
 	echo "  get                           Get current version"
 	echo "  bump [major|minor|patch]      Bump version"
 	echo "  tag                           Create git tag for current version"
-	echo "  github-release                Create GitHub release for current version"
+	echo "  github-release                Create or observe publication for the current version"
 	echo "  post-release [--hotfix]       Retry post-publication propagation and deployment gates"
 	echo "  release [major|minor|patch] --source-pr N"
 	echo "                                 Bump version (default: patch), tag, publish, and deploy from a verified merged PR"

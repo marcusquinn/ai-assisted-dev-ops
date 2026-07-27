@@ -63,6 +63,6 @@ grep -Fq -- '--slurpfile release_run_documents' "${REPO_ROOT}/.github/workflows/
 grep -Fq 'non-required advisory check(s) remain non-terminal' "${REPO_ROOT}/.github/workflows/postflight.yml"
 grep -Fq 'load_release_owned_checks' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"
 grep -Fq 'unrelated issue/comment workflow run(s) excluded' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"
-grep -Fq -- '--reconcile-existing' "${REPO_ROOT}/.github/workflows/release.yml"
+grep -Fq -- '--reconcile-existing' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
 
 printf 'PASS: postflight keeps paginated exact-SHA classification and advisory warnings\n'

@@ -20,12 +20,27 @@ tools:
 **MANDATORY**: Use this single authorized full-loop entry point for ALL aidevops releases:
 
 ```bash
-./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full]
+aidevops release [patch|minor|major] <merged-pr-number> [incremental|full]
+# Before the new CLI is deployed, use the same helper from a current linked worktree:
+# ./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full]
 ```
 
-The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. Repeating it with existing `published` or `superseded` evidence reconciles success without another version bump or publication. A failed or skipped release cannot create or replace success evidence.
+The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. A tag push durably queues the unified GitHub/npm/Homebrew workflow; the local process observes the exact run but does not wait for terminal completion. Exit `8` means remotely queued work and creates no false terminal receipt. Repeating a completed command, or running `aidevops release reconcile <source-pr>`, reconciles success without another version bump or duplicate publication. A failed or skipped release cannot create or replace success evidence.
 
-The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → tags → pushes → creates the GitHub release → runs deploy sync. Publication or deployment failure is a failed release, not warning-only success. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
+The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → signs and pushes the tag. The tag workflow verifies immutable provenance before reconciling GitHub, npm OIDC, and Homebrew. A later trusted reconciliation verifies all three channels, runs local deploy sync from a detached tag worktree, and persists receipts. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
+
+```bash
+aidevops release status <merged-pr-number>     # read-only remote/channel state
+aidevops release reconcile <merged-pr-number> # recover/finalize newest signed tag
+```
+
+Recovery runs the reviewed workflow from `main` because older tags do not contain
+the recovery trigger. The workflow itself requires that default-branch ref,
+rejects every tag except the newest exact semantic version, and repeats the full
+signed-tag verifier before side effects. The `release` environment therefore
+allows exactly tag `v*` and branch `main`, with no reviewer or wait timer. See
+`reference/release-publication-controls.md` for the live-policy and rollback
+contract.
 
 If `main` advanced after authorization, create and review a dedicated aggregation
 PR whose squash-merge commit contains `Aidevops-Release-Aggregator-PR` and one
@@ -36,7 +51,7 @@ and marks included source receipts superseded with immutable release links.
 Arbitrary descendants and unreviewed direct commits remain blocked. Full contract:
 `reference/release-publication-controls.md` "Intervening-main recovery".
 
-**DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, clean synchronized canonical `main`, fresh detached release worktree, authenticated `gh`, and unreleased changelog content (or changelog-only `--force`).
+**DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, authenticated `gh`, an accessible aidevops repository, and unreleased changelog content (or changelog-only `--force`). The helper fetches `origin/main` and creates its own detached release worktree; it does not require or mutate a clean canonical checkout.
 
 **Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `.agents/scripts/validate-version-consistency.sh`
 
@@ -60,7 +75,7 @@ git push origin main && git push origin --tags
 
 ## Post-Release
 
-**Deploy** (aidevops only): the release command runs post-release deploy sync and fails if it cannot verify that step. Run postflight afterward; do not manually mutate the canonical checkout.
+**Deploy** (aidevops only): immediate workflow success runs post-release deploy sync in the initiating session. Otherwise `aidevops release reconcile` runs it from a detached tag worktree after all public channels converge. Run postflight afterward; do not manually mutate the canonical checkout.
 
 **Task completion** (automatic): Release script scans commits for task IDs and auto-marks them complete in TODO.md.
 
@@ -93,6 +108,7 @@ git commit -m "fix: resolve critical issue"
 
 | Issue | Solution |
 |-------|----------|
-| Tag already exists | `git tag -d v{VERSION} && git push origin --delete v{VERSION}` then re-tag |
+| Signed tag already exists | Do not delete or retag it. Run `aidevops release status <source-pr>` and then `aidevops release reconcile <source-pr>`. |
+| Publication queued/interrupted | Exit `8` is durable pending state. Reconcile the same source PR; never bump again for the same tag. |
 | GitHub CLI not authenticated | `gh auth login` (token needs `repo` scope) |
 | Version mismatch | `./.agents/scripts/version-manager.sh validate` — see `version-bump.md` |

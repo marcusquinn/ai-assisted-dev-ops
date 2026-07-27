@@ -13,6 +13,7 @@ readonly RELEASE_ENVIRONMENT="release"
 readonly RELEASE_RULESET_NAME="Protect aidevops release tags"
 readonly RELEASE_REF_PATTERN="refs/tags/v*"
 readonly RELEASE_DEPLOYMENT_PATTERN="v*"
+readonly RELEASE_RECOVERY_BRANCH="main"
 readonly SNAPSHOT_SCHEMA="aidevops.release-publication-settings/v1"
 readonly REQUIRED_REVIEWERS_RULE="required_reviewers"
 readonly USER_ACTOR_TYPE="User"
@@ -28,7 +29,7 @@ _release_settings_usage() {
 Usage:
   release-publication-settings-helper.sh snapshot --repo OWNER/REPO [--output FILE]
   release-publication-settings-helper.sh verify-github --repo OWNER/REPO \
-    --release-author LOGIN --reviewer LOGIN [--reviewer LOGIN ...]
+    --release-author LOGIN (--unattended | --reviewer LOGIN [--reviewer LOGIN ...])
 
 Commands are read-only. snapshot records rollback inputs before a live settings
 change. verify-github checks API-visible GitHub controls after an approved change.
@@ -350,8 +351,22 @@ _release_settings_verify_reviewers() {
 	return 0
 }
 
+_release_settings_verify_unattended() {
+	local environment_detail="$1"
+	if ! jq -e --arg reviewers_rule "$REQUIRED_REVIEWERS_RULE" '
+		([.protection_rules[]? | select(.type == $reviewers_rule)] | length) == 0
+		and ([.protection_rules[]? | select(.type == "wait_timer")] | length) == 0
+	' <<<"$environment_detail" >/dev/null; then
+		_release_settings_error "release environment still has a manual reviewer or wait-timer gate"
+		return 1
+	fi
+	return 0
+}
+
 _release_settings_verify_environment() {
 	local repo_slug="$1"
+	local approval_mode="$2"
+	shift
 	shift
 	local environment_detail=""
 	local deployment_policies=""
@@ -364,11 +379,25 @@ _release_settings_verify_environment() {
 		_release_settings_error "release environment does not use custom ref policies"
 		return 1
 	fi
-	_release_settings_verify_reviewers "$environment_detail" "$@" || return 1
+	if [[ "$approval_mode" == "unattended" ]]; then
+		_release_settings_verify_unattended "$environment_detail" || return 1
+	else
+		_release_settings_verify_reviewers "$environment_detail" "$@" || return 1
+	fi
 
 	deployment_policies=$(_release_settings_api_read \
 		"repos/${repo_slug}/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies") || return 1
-	if ! jq -e --arg pattern "$RELEASE_DEPLOYMENT_PATTERN" '
+	if [[ "$approval_mode" == "unattended" ]]; then
+		if ! jq -e --arg pattern "$RELEASE_DEPLOYMENT_PATTERN" \
+			--arg recovery_branch "$RELEASE_RECOVERY_BRANCH" '
+			(.branch_policies | length) == 2
+			and any(.branch_policies[]?; .name == $pattern and .type == "tag")
+			and any(.branch_policies[]?; .name == $recovery_branch and .type == "branch")
+		' <<<"$deployment_policies" >/dev/null; then
+			_release_settings_error "release environment is not limited to v* tags and reviewed main recovery"
+			return 1
+		fi
+	elif ! jq -e --arg pattern "$RELEASE_DEPLOYMENT_PATTERN" '
 		(.branch_policies | length) == 1
 		and any(.branch_policies[]?; .name == $pattern and .type == "tag")
 	' <<<"$deployment_policies" >/dev/null; then
@@ -382,6 +411,7 @@ _release_settings_verify_command() {
 	local repo_slug=""
 	local release_author=""
 	local -a reviewers=()
+	local unattended=0
 
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
@@ -402,6 +432,9 @@ _release_settings_verify_command() {
 			reviewers+=("$reviewer_arg")
 			shift || true
 			;;
+		--unattended)
+			unattended=1
+			;;
 		*)
 			_release_settings_error "unknown verify option: ${option}"
 			return 1
@@ -411,14 +444,22 @@ _release_settings_verify_command() {
 
 	_release_settings_validate_repo "$repo_slug" || return 1
 	_release_settings_validate_login "$release_author" || return 1
-	if [[ "${#reviewers[@]}" -eq 0 ]]; then
+	if [[ "$unattended" -eq 1 && "${#reviewers[@]}" -gt 0 ]]; then
+		_release_settings_error "--unattended and --reviewer are mutually exclusive"
+		return 1
+	fi
+	if [[ "$unattended" -eq 0 && "${#reviewers[@]}" -eq 0 ]]; then
 		_release_settings_error "at least one designated --reviewer is required"
 		return 1
 	fi
 	_release_settings_verify_release_author "$repo_slug" "$release_author" || return 1
 	_release_settings_verify_actions "$repo_slug" || return 1
 	_release_settings_verify_ruleset "$repo_slug" "$release_author" || return 1
-	_release_settings_verify_environment "$repo_slug" "${reviewers[@]}" || return 1
+	if [[ "$unattended" -eq 1 ]]; then
+		_release_settings_verify_environment "$repo_slug" unattended || return 1
+	else
+		_release_settings_verify_environment "$repo_slug" reviewers "${reviewers[@]}" || return 1
+	fi
 
 	printf 'GITHUB_RELEASE_CONTROLS=verified\n'
 	printf 'MANUAL_CHECK_REQUIRED=environment_admin_bypass_disabled\n'

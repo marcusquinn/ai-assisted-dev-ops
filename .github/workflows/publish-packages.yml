@@ -1,217 +1,199 @@
-name: Publish Packages
+name: Publish Release
+run-name: Publish ${{ inputs.tag || github.ref_name }}
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing signed aidevops release tag'
+        description: Existing verified release tag to reconcile
         required: true
         type: string
-      request_id:
-        description: 'Non-secret dispatch correlation identifier'
-        required: true
-        type: string
-
-run-name: ${{ inputs.request_id && format('Publish packages for {0} ({1})', inputs.tag, inputs.request_id) || format('Publish packages for {0}', github.event.release.tag_name) }}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name }}
+  group: release-publication
   cancel-in-progress: false
 
 jobs:
-  publish-npm:
-    name: Publish to npm
+  publish:
+    name: Publish GitHub, npm, and Homebrew
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      contents: read
+      contents: write
       id-token: write
-    
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_EVENT: ${{ github.event_name }}
+      RELEASE_REF: ${{ github.ref }}
+
     steps:
-      - name: Checkout code
+      - name: Checkout verified tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
-      - name: Verify published release and immutable provenance
+      - name: Verify immutable release provenance
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
-          DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::Invalid release tag: $RELEASE_TAG"
             exit 1
-          fi
-          if [[ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
-            echo "::error::Release input $RELEASE_TAG does not match event ref $GITHUB_REF"
-            exit 1
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ! "$DISPATCH_REQUEST_ID" =~ ^[A-Za-z0-9._-]{1,100}$ ]]; then
-            echo "::error::Invalid package dispatch request identity"
+          }
+          if [[ "$RELEASE_EVENT" == "push" ]]; then
+            [[ "$RELEASE_REF" == "refs/tags/${RELEASE_TAG}" ]] || {
+              echo "::error::Tag event ref does not match $RELEASE_TAG"
+              exit 1
+            }
+          elif [[ "$RELEASE_EVENT" == "workflow_dispatch" ]]; then
+            [[ "$RELEASE_REF" == "refs/heads/main" ]] || {
+              echo "::error::Recovery must use the reviewed default branch workflow"
+              exit 1
+            }
+          else
+            echo "::error::Unsupported publication event: $RELEASE_EVENT"
             exit 1
           fi
           TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
-          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" ]]; then
-            echo "::error::Release event SHA $GITHUB_SHA does not match tag commit $TAG_COMMIT"
+          CHECKOUT_COMMIT=$(git rev-parse HEAD)
+          [[ "$CHECKOUT_COMMIT" == "$TAG_COMMIT" ]] || {
+            echo "::error::Checkout $CHECKOUT_COMMIT does not match tag commit $TAG_COMMIT"
             exit 1
-          fi
-          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          jq -e --arg tag "$RELEASE_TAG" '
-            .tag_name == $tag
-            and .draft == false
-            and ((.published_at // "") | length > 0)
-          ' <<<"$RELEASE_JSON" >/dev/null
+          }
+          LATEST_TAG=""
+          while IFS= read -r CANDIDATE_TAG; do
+            [[ "$CANDIDATE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            LATEST_TAG="$CANDIDATE_TAG"
+            break
+          done < <(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname)
+          [[ -n "$LATEST_TAG" && "$RELEASE_TAG" == "$LATEST_TAG" ]] || {
+            echo "::error::Refusing stale release $RELEASE_TAG; newest tag is ${LATEST_TAG:-unknown}"
+            exit 1
+          }
           bash .agents/scripts/release-provenance-helper.sh verify \
             --tag "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY"
+
+      - name: Extract CHANGELOG section
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          BODY=$(awk "/^## \[$VERSION\]/,/^## \[/" CHANGELOG.md | sed '$d')
+          PREV_TAG=$(git describe --tags --abbrev=0 "$RELEASE_TAG^" 2>/dev/null || true)
+          if [[ -n "$PREV_TAG" ]]; then
+            EXTRA=$(git log --oneline "$PREV_TAG..$RELEASE_TAG" -- | grep -v 'chore: claim t' | head -10)
+            BODY="$BODY"$'\n\n### Commits since CHANGELOG generation\n'"$EXTRA"
+          fi
+          printf '%s\n' "$BODY" > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create or reconcile GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .agents/scripts/github-release-helper.sh create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --reconcile-existing
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Node 24 ships npm 11.5+ which natively supports OIDC Trusted Publishers.
-          # Do NOT downgrade to 22 + `npm install -g npm@latest` — that self-replaces
-          # the running npm process mid-install and dies with
-          # `Cannot find module 'promise-retry'` (broke 100+ releases between
-          # v3.5.896 and v3.8.1, fixed in t2043 / GH#18572).
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      # Verify npm version is sufficient for Trusted Publishers (≥11.5.1).
-      # Assertion-only: never self-update the running npm process.
       - name: Verify npm version supports Trusted Publishers
         run: |
           NPM_VERSION=$(npm --version)
-          echo "npm version: $NPM_VERSION"
           REQUIRED="11.5.1"
-          if [ "$(printf '%s\n' "$REQUIRED" "$NPM_VERSION" | sort -V | head -n1)" != "$REQUIRED" ]; then
-            echo "::error::npm $NPM_VERSION < $REQUIRED required for Trusted Publishers. Bump node-version in setup-node step."
+          echo "npm version: $NPM_VERSION"
+          if [[ "$(printf '%s\n' "$REQUIRED" "$NPM_VERSION" | sort -V | head -n1)" != "$REQUIRED" ]]; then
+            echo "::error::npm $NPM_VERSION < $REQUIRED required for Trusted Publishers"
             exit 1
           fi
-      
-      - name: Get version
+
+      - name: Resolve version
         id: version
         run: |
-          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          VERSION=$(cat VERSION)
+          [[ "$RELEASE_TAG" == "v${VERSION}" ]] || {
+            echo "::error::Tag $RELEASE_TAG does not match VERSION $VERSION"
+            exit 1
+          }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check npm publication state
         id: npm-state
         env:
-          PKG_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           VIEW_OUTPUT=""
-          if VIEW_OUTPUT=$(npm view "aidevops@$PKG_VERSION" version --json 2>&1); then
-            PUBLISHED_VERSION=$(jq -er 'if type == "array" then .[0] else . end' <<<"$VIEW_OUTPUT")
-            if [[ "$PUBLISHED_VERSION" != "$PKG_VERSION" ]]; then
-              echo "::error::Registry returned $PUBLISHED_VERSION for requested version $PKG_VERSION"
+          if VIEW_OUTPUT=$(npm view "aidevops@${RELEASE_VERSION}" version --json 2>&1); then
+            PUBLISHED=$(jq -er 'if type == "array" then .[0] else . end' <<<"$VIEW_OUTPUT")
+            [[ "$PUBLISHED" == "$RELEASE_VERSION" ]] || {
+              echo "::error::Registry returned $PUBLISHED for requested version $RELEASE_VERSION"
               exit 1
-            fi
-            echo "already-published=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            }
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          elif grep -qE 'E404|No match found' <<<"$VIEW_OUTPUT"; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unable to determine npm publication state"
+            printf '%s\n' "$VIEW_OUTPUT" >&2
+            exit 1
           fi
-          if grep -qE 'E404|No match found' <<<"$VIEW_OUTPUT"; then
-            echo "already-published=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "::error::Unable to determine npm publication state"
-          printf '%s\n' "$VIEW_OUTPUT" >&2
-          exit 1
-      
-      # No token needed - uses OIDC Trusted Publisher authentication
+
+      # No token needed: npm verifies this workflow and environment through OIDC.
       - name: Publish to npm
-        if: steps.npm-state.outputs.already-published != 'true'
+        if: steps.npm-state.outputs.published != 'true'
         run: npm publish --provenance --access public
-      
-      - name: Summary
+
+      - name: Verify npm publication
         env:
-          PKG_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "## npm Package Published" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** $PKG_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "**Auth:** Trusted Publisher (OIDC)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install with:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "npm install -g aidevops && aidevops update" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          for attempt in {1..12}; do
+            PUBLISHED=$(npm view "aidevops@${RELEASE_VERSION}" version --json 2>/dev/null \
+              | jq -r 'if type == "array" then .[0] // "" else . // "" end' || true)
+            [[ "$PUBLISHED" == "$RELEASE_VERSION" ]] && exit 0
+            sleep 5
+          done
+          echo "::error::npm did not converge to $RELEASE_VERSION"
+          exit 1
 
-  update-homebrew-tap:
-    name: Update Homebrew Tap
-    runs-on: ubuntu-latest
-    environment: release
-    needs: publish-npm
-    permissions:
-      contents: read
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.tag || github.event.release.tag_name }}
-
-      - name: Verify published release and immutable provenance
+      - name: Build Homebrew formula
+        id: homebrew
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
-          DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid release tag: $RELEASE_TAG"
-            exit 1
-          fi
-          if [[ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
-            echo "::error::Release input $RELEASE_TAG does not match event ref $GITHUB_REF"
-            exit 1
-          fi
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ! "$DISPATCH_REQUEST_ID" =~ ^[A-Za-z0-9._-]{1,100}$ ]]; then
-            echo "::error::Invalid package dispatch request identity"
-            exit 1
-          fi
-          TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
-          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" ]]; then
-            echo "::error::Release event SHA $GITHUB_SHA does not match tag commit $TAG_COMMIT"
-            exit 1
-          fi
-          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          jq -e --arg tag "$RELEASE_TAG" '
-            .tag_name == $tag
-            and .draft == false
-            and ((.published_at // "") | length > 0)
-          ' <<<"$RELEASE_JSON" >/dev/null
-          bash .agents/scripts/release-provenance-helper.sh verify \
-            --tag "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY"
+          TARBALL_URL="https://github.com/marcusquinn/aidevops/archive/refs/tags/v${RELEASE_VERSION}.tar.gz"
+          SHA256=$(curl -fsSL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)
+          sed -i "s|url \"https://github.com/marcusquinn/aidevops/archive/refs/tags/v.*\.tar\.gz\"|url \"$TARBALL_URL\"|" homebrew/aidevops.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" homebrew/aidevops.rb
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
-      - name: Get version and SHA
-        id: release
-        run: |
-          VERSION=$(cat VERSION)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          
-          # Get SHA256 of the release tarball (fail on HTTP errors)
-          TARBALL_URL="https://github.com/marcusquinn/aidevops/archive/refs/tags/v${VERSION}.tar.gz"
-          if ! SHA256=$(curl -fsSL "$TARBALL_URL" | sha256sum | cut -d' ' -f1); then
-            echo "::error::Failed to download tarball for SHA256 calculation"
-            exit 1
-          fi
-          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-      
-      - name: Update Homebrew formula
+      - name: Check Homebrew tap state
+        id: tap-state
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_SHA256: ${{ steps.release.outputs.sha256 }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          # Update the formula with new version and SHA
-          sed -i "s|url \"https://github.com/marcusquinn/aidevops/archive/refs/tags/v.*\.tar\.gz\"|url \"https://github.com/marcusquinn/aidevops/archive/refs/tags/v${RELEASE_VERSION}.tar.gz\"|" homebrew/aidevops.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${RELEASE_SHA256}\"|" homebrew/aidevops.rb
+          CURRENT="$RUNNER_TEMP/aidevops.rb"
+          if gh api repos/marcusquinn/homebrew-tap/contents/Formula/aidevops.rb \
+            --jq '.content' | base64 --decode > "$CURRENT" \
+            && cmp -s homebrew/aidevops.rb "$CURRENT"; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Push to homebrew-tap repo
-        # Pinned to commit SHA for security
+      - name: Push to Homebrew tap
+        if: steps.tap-state.outputs.current != 'true'
+        # Pinned to commit SHA for security.
         uses: dmnemec/copy_file_to_another_repo_action@bbebd3da22e4a37d04dca5f782edd5201cb97083
         env:
           API_TOKEN_GITHUB: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -221,24 +203,32 @@ jobs:
           destination_folder: 'Formula'
           user_email: 'github-actions[bot]@users.noreply.github.com'
           user_name: 'github-actions[bot]'
-          commit_message: 'Update aidevops to v${{ steps.release.outputs.version }}'
-      
-      - name: Summary
+          commit_message: 'Update aidevops to v${{ steps.version.outputs.version }}'
+
+      - name: Verify Homebrew tap
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_SHA256: ${{ steps.release.outputs.sha256 }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          echo "## Homebrew Tap Updated" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** $RELEASE_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "**SHA256:** $RELEASE_SHA256" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install with:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "brew install marcusquinn/tap/aidevops && aidevops update" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note:** If the tap repo doesn't exist yet, create it first:" >> $GITHUB_STEP_SUMMARY
-          echo "1. Create repo: marcusquinn/homebrew-tap" >> $GITHUB_STEP_SUMMARY
-          echo "2. Add Formula/ directory" >> $GITHUB_STEP_SUMMARY
-          echo "3. Set HOMEBREW_TAP_TOKEN secret with repo write access" >> $GITHUB_STEP_SUMMARY
+          CURRENT="$RUNNER_TEMP/aidevops-verified.rb"
+          for attempt in {1..12}; do
+            if gh api repos/marcusquinn/homebrew-tap/contents/Formula/aidevops.rb \
+              --jq '.content' | base64 --decode > "$CURRENT" \
+              && cmp -s homebrew/aidevops.rb "$CURRENT"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Homebrew tap did not converge to $RELEASE_TAG"
+          exit 1
+
+      - name: Publication summary
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_SHA256: ${{ steps.homebrew.outputs.sha256 }}
+        run: |
+          echo "## Release Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** $RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "**GitHub:** reconciled" >> "$GITHUB_STEP_SUMMARY"
+          echo "**npm:** verified through Trusted Publisher (OIDC)" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Homebrew SHA256:** $RELEASE_SHA256" >> "$GITHUB_STEP_SUMMARY"

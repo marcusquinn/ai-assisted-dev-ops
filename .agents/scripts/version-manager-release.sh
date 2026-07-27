@@ -170,18 +170,6 @@ _release_lookup_exact_workflow_run() {
 	return 0
 }
 
-_release_package_dispatch_supported_at_tag() {
-	local tag_name="$1"
-	local workflow_path=".github/workflows/publish-packages.yml"
-
-	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-	if git -C "$REPO_ROOT" show "refs/tags/${tag_name}:${workflow_path}" 2>/dev/null |
-		grep -qE '^[[:space:]]+workflow_dispatch:'; then
-		return 0
-	fi
-	return 1
-}
-
 _release_find_exact_workflow_run() {
 	local slug="$1"
 	local workflow_file="$2"
@@ -208,163 +196,53 @@ _release_find_exact_workflow_run() {
 	done
 }
 
-_release_wait_workflow_run() {
-	local slug="$1"
-	local run_json="$2"
-	local workflow_label="$3"
-	local deadline="$4"
-	local poll_seconds="$5"
-	local run_id=""
-	local run_url=""
-	local status=""
-	local conclusion=""
-	local now=""
-
-	run_id=$(jq -er '.id' <<<"$run_json") || return 1
-	run_url=$(jq -r '.html_url // ""' <<<"$run_json") || return 1
-	print_info "Protected ${workflow_label} workflow run ${run_id} is awaiting completion"
-	[[ -z "$run_url" ]] || print_info "Approve each pending release-environment deployment at ${run_url}"
-
-	while true; do
-		status=$(jq -r '.status // ""' <<<"$run_json") || return 1
-		conclusion=$(jq -r '.conclusion // ""' <<<"$run_json") || return 1
-		if [[ "$status" == "completed" ]]; then
-			if [[ "$conclusion" == "success" ]]; then
-				print_success "Protected ${workflow_label} workflow completed successfully"
-				return 0
-			fi
-			print_error "Protected ${workflow_label} workflow concluded ${conclusion:-unknown}"
-			return 1
-		fi
-		now=$(date +%s) || return 1
-		if [[ "$now" -ge "$deadline" ]]; then
-			print_error "Timed out waiting for protected ${workflow_label} workflow run ${run_id}"
-			return 1
-		fi
-		sleep "$poll_seconds"
-		run_json=$(gh api "repos/${slug}/actions/runs/${run_id}" 2>/dev/null) || continue
-	done
-}
-
-_release_wait_exact_workflow() {
+_wait_for_protected_github_release() {
 	local version="$1"
-	local workflow_file="$2"
-	local event_name="$3"
-	local workflow_label="$4"
-	local expected_title="${5:-}"
-	local timeout_seconds="${AIDEVOPS_RELEASE_WORKFLOW_TIMEOUT_SECONDS:-1800}"
-	local poll_seconds="${AIDEVOPS_RELEASE_WORKFLOW_POLL_SECONDS:-15}"
+	local tag_name="v${version}"
+	local timeout_seconds="${AIDEVOPS_RELEASE_WORKFLOW_DISCOVERY_TIMEOUT_SECONDS:-120}"
+	local poll_seconds="${AIDEVOPS_RELEASE_WORKFLOW_POLL_SECONDS:-5}"
 	local slug=""
 	local tag_commit=""
 	local started_at=""
 	local deadline=""
 	local run_json=""
+	local run_status=""
+	local run_conclusion=""
+	local run_url=""
 
 	if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
-		print_error "Release workflow wait settings must be positive integers"
+		print_error "Release workflow discovery settings must be positive integers"
 		return 1
 	fi
 	slug=$(_version_manager_repo_slug)
-	[[ -n "$slug" ]] || {
-		print_error "Cannot wait for ${workflow_label}: repository slug is unavailable"
-		return 1
-	}
-	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/v${version}^{commit}" 2>/dev/null) || {
-		print_error "Cannot wait for ${workflow_label}: release tag commit is unavailable"
-		return 1
-	}
+	[[ -n "$slug" ]] || return 1
+	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
 	started_at=$(date +%s) || return 1
 	deadline=$((started_at + timeout_seconds))
-	print_info "Waiting for protected ${workflow_label} workflow at ${tag_commit}"
-	run_json=$(_release_find_exact_workflow_run "$slug" "$workflow_file" "$event_name" \
-		"$tag_commit" "$deadline" "$poll_seconds" "$expected_title") || return 1
-	_release_wait_workflow_run "$slug" "$run_json" "$workflow_label" "$deadline" "$poll_seconds"
-	return $?
-}
-
-_wait_for_protected_github_release() {
-	local version="$1"
-	local tag_name="v${version}"
-	local slug=""
-
-	_release_wait_exact_workflow "$version" "release.yml" "push" "GitHub release" || return 1
+	print_info "Confirming durable publication workflow for ${tag_name}"
+	if ! run_json=$(_release_find_exact_workflow_run "$slug" "publish-packages.yml" "push" \
+		"$tag_commit" "$deadline" "$poll_seconds"); then
+		print_warning "Release tag ${tag_name} is durable; publication run is not visible yet"
+		return 8
+	fi
+	run_status=$(jq -r '.status // ""' <<<"$run_json") || return 1
+	run_conclusion=$(jq -r '.conclusion // ""' <<<"$run_json") || return 1
+	run_url=$(jq -r '.html_url // ""' <<<"$run_json") || return 1
+	[[ -z "$run_url" ]] || print_info "Publication progress: ${run_url}"
+	if [[ "$run_status" != "completed" ]]; then
+		print_success "release:queued tag=${tag_name}"
+		return 8
+	fi
+	if [[ "$run_conclusion" != "success" ]]; then
+		print_error "Publication workflow concluded ${run_conclusion:-unknown}"
+		return 1
+	fi
 	_verify_github_release_provenance "$version" || return 1
-	slug=$(_version_manager_repo_slug)
-	if ! _github_release_rest_view "$slug" "$tag_name"; then
-		print_error "Protected workflow succeeded but GitHub release ${tag_name} is unavailable"
+	if ! _github_release_rest_published "$slug" "$tag_name"; then
+		print_error "Publication workflow succeeded but GitHub release ${tag_name} is unavailable"
 		return 1
 	fi
 	return 0
-}
-
-_wait_for_protected_package_publication() {
-	local version="$1"
-	local tag_name=""
-	local workflow_file="publish-packages.yml"
-	local workflow_label="npm and Homebrew publication"
-	local dispatch_title=""
-	local slug=""
-	local tag_commit=""
-	local run_json=""
-	local event_name=""
-	local expected_title=""
-	local lookup_rc=0
-	local dispatch_request_id="${AIDEVOPS_RELEASE_DISPATCH_REQUEST_ID:-}"
-
-	printf -v tag_name 'v%s' "$version"
-	if [[ -z "$dispatch_request_id" ]]; then
-		printf -v dispatch_request_id '%s-%s-%s' "$tag_name" "$(date +%s)" "$$"
-	fi
-	[[ "$dispatch_request_id" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || {
-		print_error "Package dispatch request identity is malformed"
-		return 1
-	}
-	dispatch_title="Publish packages for ${tag_name} (${dispatch_request_id})"
-	_verify_github_release_provenance "$version" || return 1
-	slug=$(_version_manager_repo_slug)
-	[[ -n "$slug" ]] || {
-		print_error "Cannot dispatch package publication: repository slug is unavailable"
-		return 1
-	}
-	if ! _github_release_rest_published "$slug" "$tag_name"; then
-		print_error "Cannot dispatch package publication: GitHub release ${tag_name} is not published"
-		return 1
-	fi
-	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
-
-	for event_name in workflow_dispatch release; do
-		expected_title=""
-		[[ "$event_name" == "workflow_dispatch" ]] && expected_title="$dispatch_title"
-		lookup_rc=0
-		run_json=$(_release_lookup_exact_workflow_run "$slug" "$workflow_file" \
-			"$event_name" "$tag_commit" "$expected_title" 2>/dev/null) || lookup_rc=$?
-		if [[ "$lookup_rc" -eq 0 ]]; then
-			print_info "Reusing existing protected package workflow for ${tag_name}"
-			_release_wait_exact_workflow "$version" "$workflow_file" "$event_name" \
-				"$workflow_label" "$expected_title"
-			return $?
-		fi
-		if [[ "$lookup_rc" -ne 3 ]]; then
-			print_error "Cannot inspect existing package workflows for ${tag_name}; refusing duplicate dispatch"
-			return 1
-		fi
-	done
-
-	if ! _release_package_dispatch_supported_at_tag "$tag_name"; then
-		print_error "Release tag ${tag_name} predates explicit package dispatch"
-		print_error "Use the reviewed release-event recovery path without moving the signed tag"
-		return 1
-	fi
-	print_info "Dispatching protected package publication for ${tag_name}"
-	if ! gh api --method POST "repos/${slug}/actions/workflows/${workflow_file}/dispatches" \
-		-f "ref=${tag_name}" -f "inputs[tag]=${tag_name}" \
-		-f "inputs[request_id]=${dispatch_request_id}" >/dev/null; then
-		print_error "Failed to dispatch protected package publication for ${tag_name}"
-		return 1
-	fi
-	_release_wait_exact_workflow "$version" "$workflow_file" "workflow_dispatch" \
-		"$workflow_label" "$dispatch_title"
-	return $?
 }
 
 _publish_github_release() {
@@ -426,8 +304,8 @@ create_git_tag() {
 		print_info "This indicates a partial or concurrent release. Diagnose with:"
 		print_info "  git show $tag_name"
 		print_info "  gh release view $tag_name"
-		print_info "If the tag is orphaned (no matching GitHub release), delete it and retry:"
-		print_info "  git tag -d $tag_name && git push origin :refs/tags/$tag_name"
+		print_info "Never delete or recreate a signed release tag. Reconcile its source PR:"
+		print_info "  aidevops release reconcile ${VERSION_MANAGER_SOURCE_PR:-<SOURCE_PR>}"
 		return 1
 	fi
 
@@ -727,15 +605,6 @@ run_post_publication_gates() {
 	local hotfix_flag="$2"
 	local hotfix_exit=0
 	local deployment_exit=0
-	local package_exit=0
-
-	if release_source_pr_required; then
-		_wait_for_protected_package_publication "$version" || package_exit=$?
-	fi
-	if [[ "$package_exit" -ne 0 ]]; then
-		print_error "PARTIAL RELEASE SUCCESS: GitHub release v$version remains published; protected package publication failed"
-		return 1
-	fi
 
 	# Publication is already durable at this point. Hotfix propagation must run
 	# before machine-local convergence so a local PATH problem cannot prevent

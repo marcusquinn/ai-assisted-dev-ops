@@ -961,6 +961,7 @@ _help_commands() {
 	echo "  doctor             Detect duplicate installs and PATH conflicts (--fix to resolve)"
 	echo "  update             Update aidevops to the latest version (alias: upgrade)"
 	echo "  upgrade            Alias for update"
+	echo "  release <cmd>      Publish/status/reconcile a provenance-bound aidevops release"
 	echo "  pulse <cmd>        Session-based pulse control (start/stop/status)"
 	echo "  schedule <cmd>     Durable one-shot jobs (once/status/cancel)"
 	echo "  launch-worker      Manually launch headless workers for GitHub issues"
@@ -1654,6 +1655,7 @@ main() {
 	features | f) cmd_features ;;
 	status | s) cmd_status ;;
 	update | upgrade | u) cmd_update "$@" ;;
+	release) _dispatch_helper "full-loop-release-helper.sh" "full-loop-release-helper.sh" "$@" ;;
 	auto-update | autoupdate) _dispatch_helper "auto-update-helper.sh" "auto-update-helper.sh" "$@" ;;
 	repo-sync | reposync) _dispatch_helper "repo-sync-helper.sh" "repo-sync-helper.sh" "$@" ;;
 	update-tools | tools) cmd_update_tools "$@" ;;

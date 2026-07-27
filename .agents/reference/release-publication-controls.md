@@ -125,10 +125,10 @@ rollback source; do not reconstruct rollback values from this summary.
 | Actions policy | Actions enabled; all actions allowed | No change in this checkpoint | Preserve `actions.policy` unchanged. |
 | Workflow permissions | All 55 workflows declare `permissions`; the eight previous default-dependent callers are listed above | Keep every declaration explicit | Revert code normally; do not compensate by restoring broad defaults. |
 | Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`; exact `refs/tags/v*` include with no exclusions; creation, update, and deletion restrictions only; one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
-| Environments | No environments | Protected `release` environment; the approved release-author user as the sole reviewer, no team reviewers, self-review allowed, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
+| Environments | No environments | Protected `release` environment; initially one release-author reviewer and selected tag policy `v*`; the approved unattended successor has no reviewer/wait timer and exact deployment policies for tag `v*` plus branch `main` recovery | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
 | npm Trusted Publisher | Existing GitHub Actions publisher; environment binding must be checked in npmjs.com | `marcusquinn/aidevops`, `publish-packages.yml`, environment `release`, `npm publish` only | Restore the exact pre-change publisher fields captured in the npm UI; npm exposes no supported management API for this configuration. |
 
-### Activated state
+### Initial activated state
 
 The verified live state after the rollout is:
 
@@ -152,36 +152,53 @@ repository-ruleset bypass actor on personal repositories, so the approved releas
 author can be the single bypass principal rather than granting bypass to an entire
 repository role.
 
-This maintainer-operated repository uses the same aidevops/model process across
-its maintainer accounts, so selecting another account would not create a
-meaningfully independent review boundary. The approved release-author user is
-therefore also the sole `release` environment reviewer. Keep "Prevent self-review"
-disabled so that reviewer can authorize a deployment they initiated, but keep
-"Disallow admin bypass" enabled so every publication job still pauses for an
-explicit environment approval. This is a deliberate confirmation gate rather
-than separation of duties; a genuinely independent human reviewer can replace it
-later if the repository's operating model changes.
+### Unattended successor state
 
-Operationally, the GitHub release, npm publication, and Homebrew update jobs each
-reference `release` and can prompt for approval separately; the Homebrew job waits
-for npm first. The designated release-author reviewer must explicitly approve each
-pending deployment. The canonical release helper waits for the exact-commit
-GitHub release workflow, verifies the published release object, then explicitly
-dispatches `publish-packages.yml` at the same signed tag. It reuses an existing
-exact-tag package run instead of dispatching a duplicate, and API uncertainty
-fails closed before dispatch. A correlated dispatch binds its input tag, event
-ref, and event SHA before publication. Registry uncertainty also fails closed;
-an exact package version already present on npm is reused rather than published
-again.
+Issue #28737 replaces the initial per-run confirmation gate after production
+evidence showed that a protected workflow could outlive the 30-minute local
+waiter, leaving false `release:failed` evidence, and that a GitHub release created
+with `GITHUB_TOKEN` did not trigger the package workflow. Manual approval by the
+same release-author identity was confirmation, not independent review, and is not
+a durable authorization boundary.
 
-This handoff does not depend on a workflow-token-created release recursively
-starting another workflow. The retained `release: published` trigger supports
-external events and immutable tags that predate the dispatch trigger. In
-particular, v3.32.188 recovery re-publishes its existing verified release only
-after explicit maintainer approval; it does not delete or move the signed tag.
-Both trigger paths verify the published release and immutable tag provenance.
-Local maintainer credentials can request or recover the workflow but cannot
-bypass the environment approval.
+After the issue #28737 code checkpoint merges, the approved live target is:
+
+- keep the protected `v*` tag ruleset and its single release-author bypass;
+- keep npm Trusted Publisher bound to `publish-packages.yml` and `release`;
+- remove required reviewers and wait timers from `release`;
+- permit exactly `v*` tag deployments and `main` branch recovery deployments;
+- keep environment administrator bypass disabled and re-check it in the UI.
+
+The signed annotated tag becomes the durable publication authorization. Before
+any public side effect, one unified workflow verifies its exact source PR/merge
+trailers, GitHub-verified tag object, release commit, and `main` ancestry. A normal
+tag run must execute at the matching tag ref. Recovery must execute the reviewed
+workflow from `main`, accepts only the newest exact semantic-version tag, and
+repeats the same provenance verifier. GitHub release creation, npm publication,
+and Homebrew update are each check-before-write and verify-after-write operations,
+so retries converge without duplicate publication or channel downgrade.
+
+This unified path supersedes the interim separate package dispatch. Workflow-run
+discovery binds the event and exact tag commit, rejects unavailable or malformed
+API responses, and never treats uncertainty as successful correlation. npm
+registry uncertainty likewise fails closed before publication.
+
+The local initiator observes only that the exact tag workflow was queued; it does
+not have to remain alive until publication completes. Exit `8` means durable
+pending work, not failure. Resume from any trusted session with:
+
+```bash
+aidevops release status <source-pr>
+aidevops release reconcile <source-pr>
+```
+
+`status` is read-only. `reconcile` verifies the newest matching signed tag and
+channel state, dispatches recovery only when no successful run has converged, and
+finalizes release receipts/local deployment only after GitHub, npm, and Homebrew
+agree. Routine interactive publication does not use `sudo`. For a future
+headless worker release, `sudo aidevops approve issue <issue> <owner/repo>` may
+mint the existing root-signed issue authorization; it does not itself publish and
+does not relax the trusted high/critical-priority release gate.
 
 The GitHub snapshot and verifier are read-only:
 
@@ -194,10 +211,10 @@ snapshot_dir="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}"
 .agents/scripts/release-publication-settings-helper.sh verify-github \
   --repo marcusquinn/aidevops \
   --release-author '<approved-login>' \
-  --reviewer '<approved-login>'
+  --unattended
 ```
 
-`verify-github` deliberately reports two manual checks rather than claiming
+`verify-github` deliberately reports two UI checks rather than claiming
 unsupported API evidence: GitHub's documented environment REST API does not
 expose the admin-bypass toggle, and npm documents Trusted Publisher management
 only through package settings on npmjs.com. Capture those UI values before and
@@ -234,3 +251,10 @@ the terminal non-publishing evidence.
 
 Rollback restores only values captured in the pre-mutation matrix. Code changes
 are reverted normally; live settings are never guessed or broadly reset.
+
+For the unattended transition, capture a fresh snapshot after issue #28737 merges
+and before changing the environment. Add the exact `main` branch deployment
+policy, remove reviewer/wait rules, run `verify-github --unattended`, and compare
+the two UI-only controls above. On any mismatch, restore the fresh snapshot before
+dispatching recovery. The first authorized recovery is the existing newest tag;
+do not create a test tag or version bump solely to validate settings.
