@@ -21,22 +21,29 @@ function toolPath(tool, args) {
   return args.filePath || args.file_path || args.path || "";
 }
 
+function validatedChildDirectory(directory, entry, stagingRoot) {
+  if (CREDENTIAL_NAME.test(entry.name)) throw new Error("Research staging contains a credential-like path");
+
+  const child = join(directory, entry.name);
+  if (entry.isSymbolicLink()) throw new Error("Research staging symlinks are denied");
+  if (!isPathWithin(stagingRoot, realpathSync(child))) {
+    throw new Error("Research staging path resolves outside the staging root");
+  }
+  return entry.isDirectory() ? child : "";
+}
+
 function validateTree(root, stagingRoot) {
   const queue = [root];
   let entries = 0;
   while (queue.length > 0) {
     const directory = queue.pop();
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      entries++;
-      if (entries > MAX_STAGED_ENTRIES) throw new Error("Research staging tree exceeds the safe entry limit");
-      if (CREDENTIAL_NAME.test(entry.name)) throw new Error("Research staging contains a credential-like path");
+    const children = readdirSync(directory, { withFileTypes: true });
+    entries += children.length;
+    if (entries > MAX_STAGED_ENTRIES) throw new Error("Research staging tree exceeds the safe entry limit");
 
-      const child = join(directory, entry.name);
-      if (entry.isSymbolicLink()) throw new Error("Research staging symlinks are denied");
-      if (!isPathWithin(stagingRoot, realpathSync(child))) {
-        throw new Error("Research staging path resolves outside the staging root");
-      }
-      if (entry.isDirectory()) queue.push(child);
+    for (const entry of children) {
+      const childDirectory = validatedChildDirectory(directory, entry, stagingRoot);
+      if (childDirectory) queue.push(childDirectory);
     }
   }
 }
