@@ -472,7 +472,12 @@ merge_pr() {
 
 	if [[ $merge_exit -eq 0 ]]; then
 		print_success "$SUCCESS_PR_MERGED"
-		trigger_aidevops_post_merge_sync "$owner/$repo_name"
+		local merged_sha=""
+		if ! merged_sha=$(resolve_merged_pr_sha "$owner/$repo_name" "$pr_number"); then
+			print_warning "Merged PR #$pr_number, but exact merged-commit provenance could not be verified; post-merge deployment was skipped"
+			return 0
+		fi
+		trigger_aidevops_post_merge_sync "$owner/$repo_name" "$merged_sha" "$pr_number"
 		return 0
 	fi
 
@@ -487,21 +492,66 @@ merge_pr() {
 	return 1
 }
 
+resolve_merged_pr_sha() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local pr_json=""
+
+	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
+		--json state,mergedAt,mergeCommit 2>/dev/null) || return 1
+	printf '%s' "$pr_json" | jq -er '
+		select(.state == "MERGED")
+		| select((.mergedAt // "") | length > 0)
+		| .mergeCommit.oid
+		| select(test("^([0-9a-f]{40}|[0-9a-f]{64})$"))
+	'
+	return $?
+}
+
+is_canonical_aidevops_repo_dir() {
+	local candidate="$1"
+	local git_dir=""
+	local common_dir=""
+
+	[[ -d "$candidate/.agents" ]] || return 1
+	git_dir=$(git -C "$candidate" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+	common_dir=$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	[[ "$git_dir" == "$common_dir" ]] || return 1
+	return 0
+}
+
 resolve_aidevops_sync_repo_dir() {
-	if [[ -n "${AIDEVOPS_SYNC_REPO_PATH:-}" ]] && [[ -d "$AIDEVOPS_SYNC_REPO_PATH/.agents" ]]; then
+	if [[ -n "${AIDEVOPS_SYNC_REPO_PATH:-}" ]] && is_canonical_aidevops_repo_dir "$AIDEVOPS_SYNC_REPO_PATH"; then
 		printf '%s\n' "$AIDEVOPS_SYNC_REPO_PATH"
 		return 0
 	fi
 
-	local current_repo_root
+	local current_repo_root=""
+	local current_common_dir=""
+	local canonical_from_common=""
 	current_repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-	if [[ -n "$current_repo_root" ]] && [[ "$(basename "$current_repo_root")" == "aidevops" ]] && [[ -d "$current_repo_root/.agents" ]]; then
+	if [[ -n "$current_repo_root" ]] && [[ "$(basename "$current_repo_root")" == "aidevops" ]] &&
+		is_canonical_aidevops_repo_dir "$current_repo_root"; then
 		printf '%s\n' "$current_repo_root"
 		return 0
 	fi
+	if [[ -n "$current_repo_root" ]]; then
+		current_common_dir=$(git -C "$current_repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+		case "$current_common_dir" in
+		*/.git)
+			canonical_from_common="${current_common_dir%/.git}"
+			if [[ "$(basename "$canonical_from_common")" == "aidevops" ]] &&
+				is_canonical_aidevops_repo_dir "$canonical_from_common"; then
+				printf '%s\n' "$canonical_from_common"
+				return 0
+			fi
+			;;
+		esac
+	fi
 
 	local default_repo_path="$HOME/Git/aidevops"
-	if [[ -d "$default_repo_path/.agents" ]]; then
+	if is_canonical_aidevops_repo_dir "$default_repo_path"; then
 		printf '%s\n' "$default_repo_path"
 		return 0
 	fi
@@ -511,14 +561,60 @@ resolve_aidevops_sync_repo_dir() {
 
 trigger_aidevops_post_merge_sync() {
 	local repo_slug="$1"
+	local expected_sha="${2:-}"
+	local pr_number="${3:-}"
 
 	if [[ "$repo_slug" != "marcusquinn/aidevops" ]]; then
+		return 0
+	fi
+	if [[ ! "$expected_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+		print_warning "Post-merge aidevops sync requires an exact merged commit SHA and numeric PR reference; deployment was skipped"
 		return 0
 	fi
 
 	local repo_dir
 	if ! repo_dir=$(resolve_aidevops_sync_repo_dir); then
-		print_warning "Merged aidevops PR but could not locate local aidevops repo for sync"
+		print_warning "Merged aidevops PR but could not locate the canonical aidevops mirror for audited synchronization"
+		return 0
+	fi
+
+	local recovery_helper="${AIDEVOPS_SYNC_RECOVERY_HELPER:-$SCRIPT_DIR/canonical-recovery-helper.sh}"
+	if [[ ! -f "$recovery_helper" || ! -r "$recovery_helper" ]]; then
+		print_warning "Post-merge canonical recovery helper is unavailable; deployment was skipped: $recovery_helper"
+		return 0
+	fi
+	local canonical_branch=""
+	local pre_sync_status=""
+	canonical_branch=$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+	if ! pre_sync_status=$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=all 2>/dev/null); then
+		print_warning "Post-merge canonical mirror status could not be inspected safely; deployment was skipped"
+		return 0
+	fi
+	if [[ -z "$canonical_branch" || -n "$pre_sync_status" ]]; then
+		print_warning "Post-merge canonical mirror is detached or dirty; deployment was skipped. Preserve and review local state, then use audited sync-mirror recovery explicitly"
+		return 0
+	fi
+	local recovery_output=""
+	local recovery_exit=0
+	recovery_output=$(bash "$recovery_helper" fast-forward-current \
+		--repo "$repo_dir" \
+		--branch "$canonical_branch" \
+		--issue "$pr_number" \
+		--confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1) || recovery_exit=$?
+	if [[ "$recovery_exit" -ne 0 ]]; then
+		print_warning "Post-merge audited canonical fast-forward failed (non-blocking, active bundle preserved). Review local divergence and use sync-mirror recovery explicitly when preservation is required: $recovery_output"
+		return 0
+	fi
+
+	local synchronized_sha=""
+	local synchronized_status=""
+	synchronized_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)
+	if ! synchronized_status=$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=all 2>/dev/null); then
+		print_warning "Post-merge canonical mirror status could not be verified after synchronization; deployment was skipped"
+		return 0
+	fi
+	if [[ "$synchronized_sha" != "$expected_sha" || -n "$synchronized_status" ]]; then
+		print_warning "Post-merge canonical mirror did not converge cleanly to expected commit ${expected_sha:0:12}; deployment was skipped and the active bundle was preserved"
 		return 0
 	fi
 
@@ -527,17 +623,41 @@ trigger_aidevops_post_merge_sync() {
 		print_warning "Post-merge sync script not found: $deploy_script"
 		return 0
 	fi
-
-	local sync_output=""
-	local sync_exit=0
-	sync_output=$(bash "$deploy_script" --repo "$repo_dir" --quiet 2>&1) || sync_exit=$?
-
-	if [[ "$sync_exit" -eq 0 || "$sync_exit" -eq 2 ]]; then
-		print_success "Post-merge aidevops agent sync completed"
+	local runtime_verifier="${AIDEVOPS_SYNC_RUNTIME_VERIFIER:-$SCRIPT_DIR/runtime-bundle-verifier.sh}"
+	if [[ ! -f "$runtime_verifier" || ! -r "$runtime_verifier" ]]; then
+		print_warning "Post-merge runtime bundle verifier is unavailable; deployment was skipped: $runtime_verifier"
+		return 0
+	fi
+	# shellcheck source=./runtime-bundle-verifier.sh disable=SC1090
+	if ! source "$runtime_verifier"; then
+		print_warning "Post-merge runtime bundle verifier could not be loaded; deployment was skipped"
 		return 0
 	fi
 
-	print_warning "Post-merge aidevops agent sync failed (non-blocking): $sync_output"
+	local sync_output=""
+	local sync_exit=0
+	sync_output=$(env -u AIDEVOPS_AGENTS_DIR -u AGENTS_DIR \
+		AIDEVOPS_DEPLOY_TARGET="$HOME/.aidevops/agents" \
+		bash "$deploy_script" --repo "$repo_dir" --expected-sha "$expected_sha" --quiet 2>&1) || sync_exit=$?
+
+	if [[ "$sync_exit" -ne 0 && "$sync_exit" -ne 2 ]]; then
+		print_warning "Post-merge aidevops agent sync failed (non-blocking, active bundle preserved): $sync_output"
+		return 0
+	fi
+	if ! verify_aidevops_runtime_bundle_convergence \
+		"$repo_dir" \
+		"$expected_sha" \
+		"$HOME/.aidevops/agents" \
+		"$HOME/.aidevops/.deployed-sha"; then
+		print_warning "Post-merge deployment returned exit $sync_exit but exact runtime convergence was not verified"
+		return 0
+	fi
+	if [[ "$sync_exit" -eq 2 ]]; then
+		print_success "Post-merge aidevops runtime was already converged to ${expected_sha:0:12} (verified no-op)"
+	else
+		print_success "Post-merge aidevops agent sync completed at ${expected_sha:0:12} with verified runtime convergence"
+	fi
+
 	return 0
 }
 

@@ -20,8 +20,10 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$FIXTURE_REPO/.agents/scripts" "$OLD_BUNDLE/scripts"
-git -C "$FIXTURE_REPO" init -q
-printf '%s\n' 'ref: refs/heads/fixture' >"$FIXTURE_REPO/.git/HEAD"
+/usr/bin/git -C "$FIXTURE_REPO" init -q
+/usr/bin/git -C "$FIXTURE_REPO" config user.email test@example.invalid
+/usr/bin/git -C "$FIXTURE_REPO" config user.name Test
+/usr/bin/git -C "$FIXTURE_REPO" config commit.gpgsign false
 printf '%s\n' '3.32.107' >"$FIXTURE_REPO/VERSION"
 printf '%s\n' 'old immutable sentinel' >"$OLD_BUNDLE/scripts/example-helper.sh"
 ln -s "$OLD_BUNDLE" "$TEST_HOME/.aidevops/agents"
@@ -62,11 +64,14 @@ fi
 exit 0
 EOF_SETUP
 chmod +x "$FIXTURE_REPO/setup.sh"
+/usr/bin/git -C "$FIXTURE_REPO" add .
+/usr/bin/git -C "$FIXTURE_REPO" commit -qm fixture
+SOURCE_SHA=$(/usr/bin/git -C "$FIXTURE_REPO" rev-parse HEAD)
 
 HOME="$TEST_HOME" SETUP_CALLS="$SETUP_CALLS" \
 	AIDEVOPS_AGENTS_DIR="$OLD_BUNDLE" AGENTS_DIR="$OLD_BUNDLE" \
 	bash "$REPO_ROOT/.agents/scripts/deploy-agents-on-merge.sh" \
-	--repo "$FIXTURE_REPO" --scripts-only --quiet
+	--repo "$FIXTURE_REPO" --expected-sha "$SOURCE_SHA" --scripts-only --quiet
 grep -Fxq 'all' "$MARKER"
 grep -Fxq -- '--stage ai-session' "$SETUP_CALLS"
 grep -Fxq 'AIDEVOPS_AGENTS_DIR=unset' "$SETUP_CALLS"
@@ -91,9 +96,12 @@ cat >"$FIXTURE_REPO/.agents/scripts/generate-runtime-config.sh" <<'EOF_FAILURE'
 #!/usr/bin/env bash
 exit 9
 EOF_FAILURE
+/usr/bin/git -C "$FIXTURE_REPO" add .agents/scripts/generate-runtime-config.sh
+/usr/bin/git -C "$FIXTURE_REPO" commit -qm "break runtime config fixture"
+SOURCE_SHA=$(/usr/bin/git -C "$FIXTURE_REPO" rev-parse HEAD)
 if HOME="$TEST_HOME" SETUP_CALLS="$SETUP_CALLS" \
 	bash "$REPO_ROOT/.agents/scripts/deploy-agents-on-merge.sh" \
-	--repo "$FIXTURE_REPO" --scripts-only --quiet; then
+	--repo "$FIXTURE_REPO" --expected-sha "$SOURCE_SHA" --scripts-only --quiet; then
 	printf '%s\n' 'FAIL: incremental deploy ignored runtime config regeneration failure' >&2
 	exit 1
 fi

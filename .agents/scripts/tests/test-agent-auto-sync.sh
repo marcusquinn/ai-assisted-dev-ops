@@ -14,6 +14,7 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TEST_DIR=""
 TEST_HOME=""
+TEST_REPO_SHA=""
 
 print_result() {
 	local test_name="$1"
@@ -34,12 +35,10 @@ print_result() {
 	return 0
 }
 
-setup() {
-	TEST_DIR=$(mktemp -d)
-	TEST_HOME="$TEST_DIR/home"
-	trap teardown EXIT
-	mkdir -p "$TEST_DIR/repo/.agents/scripts" "$TEST_HOME/.aidevops"
-	cat >"$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh" <<'EOF'
+write_mock_deploy_helper() {
+	local deploy_path="$1"
+
+	cat >"$deploy_path" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'AIDEVOPS_AGENTS_DIR=%s\n' "${AIDEVOPS_AGENTS_DIR-unset}" >>"${SYNC_ENV_LOG_PATH:?SYNC_ENV_LOG_PATH must be set}"
@@ -53,17 +52,23 @@ if [[ "${MOCK_DEPLOY_SKIP_ACTIVATION:-0}" == "1" ]]; then
 fi
 
 repo_root=""
+expected_sha=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--repo)
 		repo_root="$2"
 		shift 2
 		;;
+	--expected-sha)
+		expected_sha="$2"
+		shift 2
+		;;
 	*) shift ;;
 	esac
 done
-[[ -n "$repo_root" ]]
+[[ -n "$repo_root" && -n "$expected_sha" ]]
 source_sha=$(git -C "$repo_root" rev-parse HEAD)
+[[ "$source_sha" == "$expected_sha" ]]
 bundle_sha="$source_sha"
 stamp_sha="$source_sha"
 if [[ "${MOCK_DEPLOY_MODE:-current}" == "stale-active" ]]; then
@@ -119,9 +124,90 @@ fi
 printf '%s\n' "$stamp_sha" >"$HOME/.aidevops/.deployed-sha"
 exit 0
 EOF
-	chmod +x "$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh"
+	chmod +x "$deploy_path"
+	return 0
+}
+
+create_sync_fixture_repo() {
+	local repo_root="$1"
+
+	mkdir -p "$repo_root/.agents/scripts/setup/modules"
+	write_mock_deploy_helper "$repo_root/.agents/scripts/deploy-agents-on-merge.sh"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_root/setup.sh"
+	printf '#!/usr/bin/env bash\nprintf \"fixture cli\\n\"\n' >"$repo_root/aidevops.sh"
+	printf '9.9.9\n' >"$repo_root/VERSION"
+	printf 'release fixture\n' >"$repo_root/.agents/scripts/version-manager-release.sh"
+	printf 'verifier fixture\n' >"$repo_root/.agents/scripts/runtime-bundle-verifier.sh"
+	printf 'agent deploy fixture\n' >"$repo_root/.agents/scripts/setup/modules/agent-deploy.sh"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git init -q "$repo_root"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" config user.email test@example.invalid
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" config user.name Test
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" config commit.gpgsign false
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" add .
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" commit -qm fixture
+	TEST_REPO_SHA=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_root" rev-parse HEAD)
+	return 0
+}
+
+write_mock_recovery_helper() {
+	local helper_path="$1"
+
+	cat >"$helper_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${SYNC_RECOVERY_LOG_PATH:?SYNC_RECOVERY_LOG_PATH must be set}"
+if [[ "${MOCK_RECOVERY_EXIT_CODE:-0}" -ne 0 ]]; then
+	exit "$MOCK_RECOVERY_EXIT_CODE"
+fi
+repo_root=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--repo)
+		repo_root="$2"
+		shift 2
+		;;
+	*) shift ;;
+	esac
+done
+[[ -n "$repo_root" ]]
+printf 'SYNCHRONIZED_CANONICAL_MIRROR=true\n'
+printf 'NEW_SHA=%s\n' "$(git -C "$repo_root" rev-parse HEAD)"
+exit 0
+EOF
+	chmod +x "$helper_path"
+	return 0
+}
+
+write_mock_git_wrapper() {
+	local git_path="$1"
+
+	cat >"$git_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root=""
+if [[ "${1:-}" == "-C" ]]; then
+	repo_root="${2:-}"
+fi
+if [[ "${MOCK_GIT_STATUS_FAIL:-0}" == "1" && "$repo_root" == "${SYNC_FIXTURE_REPO:-}" && "$*" == *" status "* ]]; then
+	exit 128
+fi
+exec /usr/bin/git "$@"
+EOF
+	chmod +x "$git_path"
+	return 0
+}
+
+setup() {
+	TEST_DIR=$(mktemp -d)
+	TEST_HOME="$TEST_DIR/home"
+	trap teardown EXIT
+	mkdir -p "$TEST_HOME/.aidevops" "$TEST_DIR/bin"
+	create_sync_fixture_repo "$TEST_DIR/repo"
+	write_mock_recovery_helper "$TEST_DIR/canonical-recovery-helper.sh"
+	write_mock_git_wrapper "$TEST_DIR/bin/git"
 	: >"$TEST_DIR/sync.log"
 	: >"$TEST_DIR/sync-env.log"
+	: >"$TEST_DIR/recovery.log"
 	return 0
 }
 
@@ -134,13 +220,22 @@ teardown() {
 
 invoke_github_sync() {
 	local repo_slug="$1"
+	local expected_sha="${2:-$TEST_REPO_SHA}"
+	local pr_number="${3:-28665}"
 	AIDEVOPS_SYNC_REPO_PATH="$TEST_DIR/repo" \
 		AIDEVOPS_SYNC_DEPLOY_SCRIPT="$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh" \
-		MOCK_DEPLOY_SKIP_ACTIVATION=1 \
+		AIDEVOPS_SYNC_RECOVERY_HELPER="$TEST_DIR/canonical-recovery-helper.sh" \
+		HOME="$TEST_HOME" \
+		PATH="$TEST_DIR/bin:$PATH" \
 		SYNC_LOG_PATH="$TEST_DIR/sync.log" \
 		SYNC_ENV_LOG_PATH="$TEST_DIR/sync-env.log" \
+		SYNC_RECOVERY_LOG_PATH="$TEST_DIR/recovery.log" \
+		SYNC_FIXTURE_REPO="$TEST_DIR/repo" \
+		MOCK_GIT_STATUS_FAIL="${MOCK_GIT_STATUS_FAIL:-0}" \
+		MOCK_RECOVERY_EXIT_CODE="${MOCK_RECOVERY_EXIT_CODE:-0}" \
 		MOCK_DEPLOY_EXIT_CODE="${MOCK_DEPLOY_EXIT_CODE:-0}" \
-		bash -c 'source "$1" && trigger_aidevops_post_merge_sync "$2"' _ "$GITHUB_HELPER" "$repo_slug"
+		bash -c 'source "$1" && trigger_aidevops_post_merge_sync "$2" "$3" "$4"' _ \
+		"$GITHUB_HELPER" "$repo_slug" "$expected_sha" "$pr_number"
 	return 0
 }
 
@@ -185,12 +280,159 @@ create_fake_repo() {
 
 test_merge_sync_triggers_for_aidevops() {
 	: >"$TEST_DIR/sync.log"
+	: >"$TEST_DIR/recovery.log"
 	invoke_github_sync "marcusquinn/aidevops"
 
-	if grep -q -- "--repo $TEST_DIR/repo --quiet" "$TEST_DIR/sync.log"; then
-		print_result "merge sync triggers for aidevops slug" 0
+	if grep -q -- "--repo $TEST_DIR/repo --expected-sha $TEST_REPO_SHA --quiet" "$TEST_DIR/sync.log" &&
+		grep -q -- "fast-forward-current --repo $TEST_DIR/repo --branch" "$TEST_DIR/recovery.log" &&
+		grep -q -- "--issue 28665 --confirm FAST_FORWARD_CANONICAL_BRANCH" "$TEST_DIR/recovery.log"; then
+		print_result "merge sync propagates exact SHA through audited canonical fast-forward and deployment" 0
 	else
-		print_result "merge sync triggers for aidevops slug" 1 "Sync command was not recorded"
+		print_result "merge sync propagates exact SHA through audited canonical fast-forward and deployment" 1 "Expected recovery or deployment arguments were not recorded"
+	fi
+	return 0
+}
+
+test_merge_pr_resolves_and_propagates_merge_sha() {
+	local propagation_log="$TEST_DIR/merge-propagation.log"
+	local output=""
+	: >"$propagation_log"
+	if ! output=$(MERGE_PROPAGATION_LOG="$propagation_log" MERGED_SHA="$TEST_REPO_SHA" \
+		bash -c '
+			source "$1"
+			get_account_config() {
+				local account_name="$1"
+				[[ -n "$account_name" ]] || return 1
+				printf "%s\n" "{\"owner\":\"marcusquinn\"}"
+				return 0
+			}
+			gh() {
+				local command_name="$1"
+				local subcommand_name="$2"
+				if [[ "$command_name" == "pr" && "$subcommand_name" == "merge" ]]; then
+					return 0
+				fi
+				if [[ "$command_name" == "pr" && "$subcommand_name" == "view" ]]; then
+					printf "{\"state\":\"MERGED\",\"mergedAt\":\"2026-07-27T00:00:00Z\",\"mergeCommit\":{\"oid\":\"%s\"}}\n" "$MERGED_SHA"
+					return 0
+				fi
+				return 1
+			}
+			trigger_aidevops_post_merge_sync() {
+				local repo_slug="$1"
+				local expected_sha="$2"
+				local pr_number="$3"
+				printf "%s|%s|%s\n" "$repo_slug" "$expected_sha" "$pr_number" >"$MERGE_PROPAGATION_LOG"
+				return 0
+			}
+			merge_pr fixture aidevops 77 squash
+		' _ "$GITHUB_HELPER" 2>&1); then
+		print_result "merge helper resolves the observed merge commit before post-merge sync" 1 "$output"
+		return 0
+	fi
+
+	local propagated=""
+	propagated=$(<"$propagation_log")
+	if [[ "$propagated" == "marcusquinn/aidevops|$TEST_REPO_SHA|77" ]]; then
+		print_result "merge helper resolves the observed merge commit before post-merge sync" 0
+	else
+		print_result "merge helper resolves the observed merge commit before post-merge sync" 1 "Propagated: $propagated"
+	fi
+	return 0
+}
+
+test_merge_sync_accepts_verified_noop() {
+	: >"$TEST_DIR/sync.log"
+	local output=""
+	output=$(MOCK_DEPLOY_EXIT_CODE=2 invoke_github_sync "marcusquinn/aidevops" 2>&1)
+
+	if [[ "$output" == *"verified no-op"* ]] &&
+		grep -q -- "--expected-sha $TEST_REPO_SHA" "$TEST_DIR/sync.log"; then
+		print_result "merge sync distinguishes a verified no-op from deployment failure" 0
+	else
+		print_result "merge sync distinguishes a verified no-op from deployment failure" 1 "$output"
+	fi
+	return 0
+}
+
+test_merge_sync_skips_after_failed_recovery() {
+	: >"$TEST_DIR/sync.log"
+	local active_before=""
+	local active_after=""
+	local output=""
+	active_before=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+	output=$(MOCK_RECOVERY_EXIT_CODE=1 invoke_github_sync "marcusquinn/aidevops" 2>&1)
+	active_after=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+
+	if [[ ! -s "$TEST_DIR/sync.log" && "$active_before" == "$active_after" &&
+		"$output" == *"canonical fast-forward failed"* ]]; then
+		print_result "failed audited synchronization preserves the active bundle and skips deployment" 0
+	else
+		print_result "failed audited synchronization preserves the active bundle and skips deployment" 1 "$output"
+	fi
+	return 0
+}
+
+test_merge_sync_skips_dirty_canonical_mirror() {
+	: >"$TEST_DIR/sync.log"
+	: >"$TEST_DIR/recovery.log"
+	local active_before=""
+	local active_after=""
+	local dirty_blob_before=""
+	local dirty_blob_after=""
+	local output=""
+	active_before=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+	printf '%s\n' '# unexpected canonical edit' >>"$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh"
+	dirty_blob_before=$(/usr/bin/git hash-object "$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh")
+	output=$(invoke_github_sync "marcusquinn/aidevops" 2>&1)
+	active_after=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+	dirty_blob_after=$(/usr/bin/git hash-object "$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh")
+	/usr/bin/git -C "$TEST_DIR/repo" checkout -- .agents/scripts/deploy-agents-on-merge.sh
+
+	if [[ ! -s "$TEST_DIR/sync.log" && ! -s "$TEST_DIR/recovery.log" &&
+		"$active_before" == "$active_after" && "$dirty_blob_before" == "$dirty_blob_after" &&
+		"$output" == *"detached or dirty"* ]]; then
+		print_result "dirty canonical mirror remains byte-preserved and never reaches synchronization or deployment" 0
+	else
+		print_result "dirty canonical mirror remains byte-preserved and never reaches synchronization or deployment" 1 "$output"
+	fi
+	return 0
+}
+
+test_merge_sync_fails_closed_when_status_is_unreadable() {
+	: >"$TEST_DIR/sync.log"
+	: >"$TEST_DIR/recovery.log"
+	local active_before=""
+	local active_after=""
+	local output=""
+	active_before=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+	output=$(MOCK_GIT_STATUS_FAIL=1 invoke_github_sync "marcusquinn/aidevops" 2>&1)
+	active_after=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+
+	if [[ ! -s "$TEST_DIR/sync.log" && ! -s "$TEST_DIR/recovery.log" &&
+		"$active_before" == "$active_after" && "$output" == *"status could not be inspected safely"* ]]; then
+		print_result "unreadable canonical status fails closed before synchronization or deployment" 0
+	else
+		print_result "unreadable canonical status fails closed before synchronization or deployment" 1 "$output"
+	fi
+	return 0
+}
+
+test_merge_sync_skips_concurrent_sha_mismatch() {
+	: >"$TEST_DIR/sync.log"
+	local active_before=""
+	local active_after=""
+	local output=""
+	local concurrent_sha="1111111111111111111111111111111111111111"
+	active_before=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+	output=$(invoke_github_sync "marcusquinn/aidevops" "$concurrent_sha" 28666 2>&1)
+	active_after=$(cd "$TEST_HOME/.aidevops/agents" && pwd -P)
+
+	if [[ ! -s "$TEST_DIR/sync.log" && "$active_before" == "$active_after" &&
+		"$output" == *"did not converge cleanly to expected commit"* ]]; then
+		print_result "post-sync SHA mismatch fails closed instead of deploying whichever commit is present" 0
+	else
+		print_result "post-sync SHA mismatch fails closed instead of deploying whichever commit is present" 1 "$output"
 	fi
 	return 0
 }
@@ -213,7 +455,7 @@ test_release_sync_triggers_for_aidevops_remote() {
 	repo_path=$(create_fake_repo "release-aidevops" "https://github.com/marcusquinn/aidevops.git")
 	invoke_release_sync "$repo_path"
 
-	if grep -q -- "--repo $repo_path --quiet" "$TEST_DIR/sync.log" && ! grep -q -- "--full" "$TEST_DIR/sync.log"; then
+	if grep -q -- "--repo $repo_path --quiet --expected-sha" "$TEST_DIR/sync.log" && ! grep -q -- "--full" "$TEST_DIR/sync.log"; then
 		print_result "release sync defaults to incremental for aidevops remote" 0
 	else
 		print_result "release sync triggers for aidevops remote" 1 "Release sync command was not recorded"
@@ -226,7 +468,7 @@ test_release_sync_explicit_full() {
 	local repo_path
 	repo_path=$(create_fake_repo "release-full" "https://github.com/marcusquinn/aidevops.git")
 	invoke_release_sync "$repo_path" full
-	if grep -q -- "--repo $repo_path --quiet --full" "$TEST_DIR/sync.log"; then
+	if grep -q -- "--repo $repo_path --quiet --full --expected-sha" "$TEST_DIR/sync.log"; then
 		print_result "release sync supports explicit full deployment" 0
 	else
 		print_result "release sync supports explicit full deployment" 1 "Full sync command was not recorded"
@@ -343,7 +585,13 @@ main() {
 	echo "Running agent auto-sync regression tests"
 	setup
 
+	test_merge_pr_resolves_and_propagates_merge_sha
 	test_merge_sync_triggers_for_aidevops
+	test_merge_sync_accepts_verified_noop
+	test_merge_sync_skips_after_failed_recovery
+	test_merge_sync_skips_dirty_canonical_mirror
+	test_merge_sync_fails_closed_when_status_is_unreadable
+	test_merge_sync_skips_concurrent_sha_mismatch
 	test_merge_sync_skips_other_repos
 	test_release_sync_triggers_for_aidevops_remote
 	test_release_sync_explicit_full

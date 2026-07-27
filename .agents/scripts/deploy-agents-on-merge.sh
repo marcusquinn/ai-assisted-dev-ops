@@ -18,6 +18,7 @@ set -euo pipefail
 #   --full              Run full setup.sh --non-interactive instead
 #   --dry-run           Show what would be deployed without doing it
 #   --diff <commit>     Validate/detect agent changes since <commit>
+#   --expected-sha <sha> Require the source checkout to match this exact commit
 #   --quiet             Suppress non-error output
 #   --help              Show this help
 #
@@ -65,6 +66,8 @@ SCRIPTS_ONLY=false
 FULL_DEPLOY=false
 DRY_RUN=false
 DIFF_COMMIT=""
+EXPECTED_SOURCE_SHA=""
+SOURCE_LOCK_DIR=""
 PLUGIN_NAMESPACES=()
 
 sanitize_plugin_namespace() {
@@ -101,14 +104,19 @@ collect_plugin_namespaces() {
 }
 
 parse_args() {
+	local arg=""
+	local option_value=""
+
 	while [[ $# -gt 0 ]]; do
-		case "$1" in
+		arg="$1"
+		case "$arg" in
 		--repo)
 			[[ $# -lt 2 ]] && {
 				log_error "--repo requires a path"
 				return 1
 			}
-			REPO_DIR="$2"
+			option_value="$2"
+			REPO_DIR="$option_value"
 			shift 2
 			;;
 		--scripts-only)
@@ -128,7 +136,17 @@ parse_args() {
 				log_error "--diff requires a commit"
 				return 1
 			}
-			DIFF_COMMIT="$2"
+			option_value="$2"
+			DIFF_COMMIT="$option_value"
+			shift 2
+			;;
+		--expected-sha)
+			[[ $# -lt 2 ]] && {
+				log_error "--expected-sha requires a full commit SHA"
+				return 1
+			}
+			option_value="$2"
+			EXPECTED_SOURCE_SHA="$option_value"
 			shift 2
 			;;
 		--quiet)
@@ -140,11 +158,122 @@ parse_args() {
 			exit 0
 			;;
 		*)
-			log_error "Unknown option: $1"
+			log_error "Unknown option: $arg"
 			return 1
 			;;
 		esac
 	done
+	return 0
+}
+
+release_source_lock() {
+	local lock_dir="${SOURCE_LOCK_DIR:-}"
+
+	if [[ -n "$lock_dir" && -d "$lock_dir" ]]; then
+		rmdir "$lock_dir" 2>/dev/null || true
+	fi
+	SOURCE_LOCK_DIR=""
+	return 0
+}
+
+acquire_source_lock() {
+	local git_dir=""
+	local common_dir=""
+
+	git_dir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || {
+		log_error "Cannot resolve source Git directory: $REPO_DIR"
+		return 1
+	}
+	common_dir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+		log_error "Cannot resolve source Git common directory: $REPO_DIR"
+		return 1
+	}
+
+	if [[ "$git_dir" == "$common_dir" ]]; then
+		# Share the audited canonical-recovery lock so a concurrent mirror sync
+		# cannot change the source between exact-SHA validation and activation.
+		SOURCE_LOCK_DIR="$common_dir/aidevops-canonical-recovery.lock"
+	else
+		SOURCE_LOCK_DIR="$git_dir/aidevops-source-deploy.lock"
+	fi
+	if ! mkdir "$SOURCE_LOCK_DIR" 2>/dev/null; then
+		log_error "Source checkout is changing or another deployment is active; active bundle was not changed"
+		SOURCE_LOCK_DIR=""
+		return 1
+	fi
+	return 0
+}
+
+validate_source_provenance() {
+	local expected_sha="$EXPECTED_SOURCE_SHA"
+	local resolved_sha=""
+	local head_sha=""
+	local source_status=""
+	local git_dir=""
+	local common_dir=""
+	local current_branch=""
+	local branch_sha=""
+	local upstream_ref=""
+	local upstream_sha=""
+
+	if [[ ! "$expected_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+		log_error "Exact source provenance is required: pass --expected-sha with a full commit SHA"
+		return 1
+	fi
+	resolved_sha=$(git -C "$REPO_DIR" rev-parse --verify "${expected_sha}^{commit}" 2>/dev/null) || {
+		log_error "Expected source commit cannot be resolved: $expected_sha"
+		return 1
+	}
+	if [[ "$resolved_sha" != "$expected_sha" ]]; then
+		log_error "Expected source SHA is not the exact resolved commit: $expected_sha"
+		return 1
+	fi
+	head_sha=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null) || {
+		log_error "Source checkout HEAD cannot be resolved"
+		return 1
+	}
+	if [[ "$head_sha" != "$expected_sha" ]]; then
+		log_error "Source checkout is stale: HEAD ${head_sha:0:12} does not match expected ${expected_sha:0:12}; active bundle was not changed"
+		return 1
+	fi
+	source_status=$(git -C "$REPO_DIR" status --porcelain=v1 --untracked-files=all 2>/dev/null) || {
+		log_error "Source checkout state cannot be inspected safely"
+		return 1
+	}
+	if [[ -n "$source_status" ]]; then
+		log_error "Source checkout is dirty; synchronize or use a clean immutable checkout before retrying. Active bundle was not changed"
+		return 1
+	fi
+
+	git_dir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+	common_dir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	if [[ "$git_dir" == "$common_dir" ]]; then
+		current_branch=$(git -C "$REPO_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+			log_error "Canonical deployment source is detached; active bundle was not changed"
+			return 1
+		}
+		branch_sha=$(git -C "$REPO_DIR" rev-parse --verify "refs/heads/${current_branch}^{commit}" 2>/dev/null) || {
+			log_error "Canonical deployment branch cannot be resolved: $current_branch"
+			return 1
+		}
+		if [[ "$branch_sha" != "$expected_sha" ]]; then
+			log_error "Canonical deployment branch changed during validation; active bundle was not changed"
+			return 1
+		fi
+		upstream_ref=$(git -C "$REPO_DIR" rev-parse --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+		if [[ -n "$upstream_ref" ]]; then
+			upstream_sha=$(git -C "$REPO_DIR" rev-parse --verify "${upstream_ref}^{commit}" 2>/dev/null) || {
+				log_error "Canonical deployment upstream cannot be resolved: $upstream_ref"
+				return 1
+			}
+			if [[ "$upstream_sha" != "$expected_sha" ]]; then
+				log_error "Canonical deployment source diverges from $upstream_ref; run audited mirror synchronization before retrying"
+				return 1
+			fi
+		fi
+	fi
+
+	log_info "Verified immutable source commit ${expected_sha:0:12} before bundle staging"
 	return 0
 }
 
@@ -175,25 +304,6 @@ validate_stable_target() {
 		log_error "Refusing deployment outside the stable agents target: $TARGET_DIR"
 		return 1
 	fi
-	return 0
-}
-
-# Pull latest main (fast-forward only)
-pull_latest() {
-	local current_branch
-	current_branch=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "")
-
-	if [[ "$current_branch" != "main" ]]; then
-		log_warn "Repo is on branch '$current_branch', not main — skipping pull"
-		return 0
-	fi
-
-	log_info "Pulling latest main..."
-	if ! git -C "$REPO_DIR" pull --ff-only origin main --quiet 2>/dev/null; then
-		log_warn "Fast-forward pull failed — trying regular pull"
-		git -C "$REPO_DIR" pull origin main --quiet 2>/dev/null || true
-	fi
-
 	return 0
 }
 
@@ -672,27 +782,39 @@ _run_dry_run_deploy() {
 
 main() {
 	local diff_exit=0
+	local deploy_exit=0
 
 	parse_args "$@" || return 1
 	validate_repo || return 1
 	validate_stable_target || return 1
 	collect_plugin_namespaces || return 1
+	acquire_source_lock || return 1
+	trap 'release_source_lock' EXIT
+	trap 'release_source_lock; exit 130' INT
+	trap 'release_source_lock; exit 143' TERM
+	if ! validate_source_provenance; then
+		release_source_lock
+		trap - EXIT INT TERM
+		return 1
+	fi
 	if [[ "$FULL_DEPLOY" == "true" ]]; then
-		_run_full_deploy
-		return $?
+		_run_full_deploy || deploy_exit=$?
+	elif [[ "$DRY_RUN" == "true" ]]; then
+		_run_dry_run_deploy || deploy_exit=$?
+	else
+		if [[ -n "$DIFF_COMMIT" ]]; then
+			_validate_transactional_diff || diff_exit=$?
+			if [[ "$diff_exit" -ne 0 ]]; then
+				deploy_exit="$diff_exit"
+			fi
+		fi
+		if [[ "$deploy_exit" -eq 0 ]]; then
+			run_transactional_incremental_deploy || deploy_exit=$?
+		fi
 	fi
-
-	pull_latest
-	if [[ "$DRY_RUN" == "true" ]]; then
-		_run_dry_run_deploy
-		return $?
-	fi
-	if [[ -n "$DIFF_COMMIT" ]]; then
-		_validate_transactional_diff || diff_exit=$?
-		[[ "$diff_exit" -eq 0 ]] || return "$diff_exit"
-	fi
-	run_transactional_incremental_deploy
-	return $?
+	release_source_lock
+	trap - EXIT INT TERM
+	return "$deploy_exit"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
