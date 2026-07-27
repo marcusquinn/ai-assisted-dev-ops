@@ -3,10 +3,18 @@ name: Publish Packages
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing signed aidevops release tag'
+        required: true
+        type: string
+
+run-name: Publish packages for ${{ inputs.tag || github.event.release.tag_name }}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.release.tag_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
 
 jobs:
   publish-npm:
@@ -22,13 +30,23 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
 
-      - name: Verify immutable release provenance
+      - name: Verify published release and immutable provenance
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          jq -e --arg tag "$RELEASE_TAG" '
+            .tag_name == $tag
+            and .draft == false
+            and ((.published_at // "") | length > 0)
+          ' <<<"$RELEASE_JSON" >/dev/null
           bash .agents/scripts/release-provenance-helper.sh verify \
             --tag "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY"
@@ -92,13 +110,23 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
 
-      - name: Verify immutable release provenance
+      - name: Verify published release and immutable provenance
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          jq -e --arg tag "$RELEASE_TAG" '
+            .tag_name == $tag
+            and .draft == false
+            and ((.published_at // "") | length > 0)
+          ' <<<"$RELEASE_JSON" >/dev/null
           bash .agents/scripts/release-provenance-helper.sh verify \
             --tag "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY"

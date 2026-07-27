@@ -166,8 +166,14 @@ Operationally, the GitHub release, npm publication, and Homebrew update jobs eac
 reference `release` and can prompt for approval separately; the Homebrew job waits
 for npm first. The designated release-author reviewer must explicitly approve each
 pending deployment. The canonical release helper waits for the exact-commit
-GitHub Actions runs to complete and never creates the GitHub release directly for
-this repository, so local maintainer credentials cannot bypass the environment.
+GitHub release workflow, verifies the published release object, then explicitly
+dispatches `publish-packages.yml` at the same signed tag. It reuses an existing
+exact-tag package run instead of dispatching a duplicate. This handoff does not
+depend on a workflow-token-created release recursively starting another workflow;
+the retained `release: published` trigger supports external and recovery events.
+Both trigger paths verify the published release and immutable tag provenance.
+Local maintainer credentials can request the workflow but cannot bypass the
+environment approval.
 
 The GitHub snapshot and verifier are read-only:
 

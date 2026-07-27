@@ -52,11 +52,22 @@ assert_order() {
 	return 0
 }
 
-assert_absent "manual arbitrary-version publication is removed" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
+assert_contains "package workflow exposes provenance-bound dispatch" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
+assert_contains "package dispatch requires an existing signed tag" \
+	"Existing signed aidevops release tag" "$PACKAGE_WORKFLOW"
 assert_absent "package metadata is not rewritten before publish" "--no-git-tag-version" "$PACKAGE_WORKFLOW"
 assert_contains "release workflow verifies provenance" "release-provenance-helper.sh verify" "$RELEASE_WORKFLOW"
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
-assert_contains "package workflow checks out release tag" 'ref: ${{ github.event.release.tag_name }}' "$PACKAGE_WORKFLOW"
+assert_contains "package workflow checks out the resolved release tag" \
+	'ref: ${{ inputs.tag || github.event.release.tag_name }}' "$PACKAGE_WORKFLOW"
+assert_contains "package runs expose their immutable tag identity" \
+	"run-name: Publish packages for \${{ inputs.tag || github.event.release.tag_name }}" "$PACKAGE_WORKFLOW"
+assert_contains "package jobs verify a published GitHub release" \
+	"releases/tags/\$RELEASE_TAG" "$PACKAGE_WORKFLOW"
+assert_contains "duplicate dispatches never cancel in-flight publication" \
+	"cancel-in-progress: false" "$PACKAGE_WORKFLOW"
+assert_absent "in-flight package publication cannot be cancelled" \
+	"cancel-in-progress: true" "$PACKAGE_WORKFLOW"
 assert_contains "Homebrew job has read-only repository permission" "contents: read" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
 assert_order "release provenance precedes release creation" \

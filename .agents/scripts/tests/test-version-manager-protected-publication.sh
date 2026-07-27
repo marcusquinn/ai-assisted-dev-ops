@@ -38,7 +38,15 @@ if [[ "$args" == *"actions/workflows/release.yml/runs"* ]]; then
 	exit 0
 fi
 if [[ "$args" == *"actions/workflows/publish-packages.yml/runs"* ]]; then
-	printf '%s\n' "${FAKE_PACKAGE_RUNS_JSON:?}"
+	if grep -q 'actions/workflows/publish-packages.yml/dispatches' "${FAKE_GH_LOG:?}" 2>/dev/null &&
+		[[ -n "${FAKE_PACKAGE_RUNS_AFTER_DISPATCH_JSON:-}" ]]; then
+		printf '%s\n' "$FAKE_PACKAGE_RUNS_AFTER_DISPATCH_JSON"
+	else
+		printf '%s\n' "${FAKE_PACKAGE_RUNS_JSON:?}"
+	fi
+	exit 0
+fi
+if [[ "$args" == *"actions/workflows/publish-packages.yml/dispatches"* ]]; then
 	exit 0
 fi
 if [[ "$args" == *"actions/runs/501"* ]]; then
@@ -50,7 +58,7 @@ if [[ "$args" == *"actions/runs/502"* ]]; then
 	exit 0
 fi
 if [[ "$args" == *"releases/tags/v1.2.4"* ]]; then
-	printf '%s\n' '{"tag_name":"v1.2.4"}'
+	printf '%s\n' "${FAKE_RELEASE_JSON:?}"
 	exit 0
 fi
 exit 1
@@ -81,6 +89,8 @@ export FAKE_RELEASE_RUNS_JSON="{\"workflow_runs\":[{\"id\":501,\"event\":\"push\
 export FAKE_RELEASE_RUN_JSON="{\"id\":501,\"event\":\"push\",\"head_sha\":\"${TAG_COMMIT}\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"\"}"
 export FAKE_PACKAGE_RUNS_JSON="{\"workflow_runs\":[{\"id\":502,\"event\":\"release\",\"head_sha\":\"${TAG_COMMIT}\",\"status\":\"waiting\",\"conclusion\":null,\"created_at\":\"2026-07-27T00:00:01Z\",\"html_url\":\"\"}]}"
 export FAKE_PACKAGE_RUN_JSON="{\"id\":502,\"event\":\"release\",\"head_sha\":\"${TAG_COMMIT}\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"\"}"
+export FAKE_PACKAGE_RUNS_AFTER_DISPATCH_JSON=""
+export FAKE_RELEASE_JSON='{"tag_name":"v1.2.4","draft":false,"published_at":"2026-07-27T00:00:00Z"}'
 
 rc=0
 _release_wait_exact_workflow '1.2.4' 'release.yml' 'push' 'GitHub release' >/dev/null 2>&1 || rc=$?
@@ -97,6 +107,49 @@ if [[ "$rc" -eq 0 ]] && grep -q 'actions/runs/502' "$FAKE_GH_LOG"; then
 else
 	print_result 'exact package workflow reaches terminal success' false "rc=${rc}"
 fi
+
+: >"$FAKE_GH_LOG"
+export FAKE_PACKAGE_RUNS_JSON='{"workflow_runs":[]}'
+export FAKE_PACKAGE_RUNS_AFTER_DISPATCH_JSON="{\"workflow_runs\":[{\"id\":502,\"event\":\"workflow_dispatch\",\"head_sha\":\"${TAG_COMMIT}\",\"display_title\":\"Publish packages for v1.2.4\",\"status\":\"waiting\",\"conclusion\":null,\"created_at\":\"2026-07-27T00:00:02Z\",\"html_url\":\"\"}]}"
+export FAKE_PACKAGE_RUN_JSON="{\"id\":502,\"event\":\"workflow_dispatch\",\"head_sha\":\"${TAG_COMMIT}\",\"display_title\":\"Publish packages for v1.2.4\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"\"}"
+_verify_github_release_provenance() { return 0; }
+rc=0
+# shellcheck disable=SC2218 # Loaded from version-manager.sh before the later route-test stub.
+_wait_for_protected_package_publication '1.2.4' >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 0 ]] &&
+	grep -q 'actions/workflows/publish-packages.yml/dispatches' "$FAKE_GH_LOG" &&
+	grep -q 'ref=v1.2.4' "$FAKE_GH_LOG" &&
+	grep -q 'inputs\[tag\]=v1.2.4' "$FAKE_GH_LOG"; then
+	print_result 'package publication explicitly dispatches the signed tag' true
+else
+	print_result 'package publication explicitly dispatches the signed tag' false "rc=${rc} log=$(tr '\n' ' ' <"$FAKE_GH_LOG")"
+fi
+
+: >"$FAKE_GH_LOG"
+export FAKE_PACKAGE_RUNS_JSON="{\"workflow_runs\":[{\"id\":502,\"event\":\"release\",\"head_sha\":\"${TAG_COMMIT}\",\"status\":\"waiting\",\"conclusion\":null,\"created_at\":\"2026-07-27T00:00:01Z\",\"html_url\":\"\"}]}"
+export FAKE_PACKAGE_RUNS_AFTER_DISPATCH_JSON=""
+export FAKE_PACKAGE_RUN_JSON="{\"id\":502,\"event\":\"release\",\"head_sha\":\"${TAG_COMMIT}\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"\"}"
+rc=0
+# shellcheck disable=SC2218 # Loaded from version-manager.sh before the later route-test stub.
+_wait_for_protected_package_publication '1.2.4' >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 0 ]] && ! grep -q '/dispatches' "$FAKE_GH_LOG"; then
+	print_result 'existing exact package run suppresses duplicate dispatch' true
+else
+	print_result 'existing exact package run suppresses duplicate dispatch' false "rc=${rc} log=$(tr '\n' ' ' <"$FAKE_GH_LOG")"
+fi
+
+: >"$FAKE_GH_LOG"
+export FAKE_RELEASE_JSON='{"tag_name":"v1.2.4","draft":true,"published_at":null}'
+export FAKE_PACKAGE_RUNS_JSON='{"workflow_runs":[]}'
+rc=0
+# shellcheck disable=SC2218 # Loaded from version-manager.sh before the later route-test stub.
+_wait_for_protected_package_publication '1.2.4' >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -ne 0 ]] && ! grep -q '/dispatches' "$FAKE_GH_LOG"; then
+	print_result 'unpublished GitHub release blocks package dispatch' true
+else
+	print_result 'unpublished GitHub release blocks package dispatch' false "rc=${rc} log=$(tr '\n' ' ' <"$FAKE_GH_LOG")"
+fi
+export FAKE_RELEASE_JSON='{"tag_name":"v1.2.4","draft":false,"published_at":"2026-07-27T00:00:00Z"}'
 
 route_log="${TEST_ROOT}/route.log"
 release_source_pr_required() { return 0; }

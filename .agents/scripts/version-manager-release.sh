@@ -78,6 +78,21 @@ _github_release_rest_view() {
 	return $?
 }
 
+_github_release_rest_published() {
+	local slug="$1"
+	local tag_name="$2"
+	local release_json=""
+
+	[[ -n "$slug" && "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	release_json=$(gh api "repos/${slug}/releases/tags/${tag_name}" 2>/dev/null) || return 1
+	jq -e --arg tag "$tag_name" '
+		.tag_name == $tag
+		and .draft == false
+		and ((.published_at // "") | length > 0)
+	' <<<"$release_json" >/dev/null
+	return $?
+}
+
 _github_release_rest_create() {
 	local slug="$1"
 	local tag_name="$2"
@@ -128,34 +143,51 @@ _github_release_recover_with_rest() {
 	return 1
 }
 
+_release_lookup_exact_workflow_run() {
+	local slug="$1"
+	local workflow_file="$2"
+	local event_name="$3"
+	local expected_commit="$4"
+	local expected_title="${5:-}"
+	local runs_json=""
+	local run_json=""
+
+	runs_json=$(gh api --method GET \
+		"repos/${slug}/actions/workflows/${workflow_file}/runs" \
+		-f "event=${event_name}" -F per_page=20 2>/dev/null) || return 1
+	run_json=$(jq -c --arg sha "$expected_commit" --arg event "$event_name" \
+		--arg title "$expected_title" '
+		[.workflow_runs[]?
+			| select(.head_sha == $sha and .event == $event)
+			| select($title == "" or (.display_title // "") == $title)]
+		| sort_by(.created_at // "") | last // empty
+	' <<<"$runs_json") || return 1
+	[[ -n "$run_json" && "$run_json" != "null" ]] || return 1
+	printf '%s\n' "$run_json"
+	return 0
+}
+
 _release_find_exact_workflow_run() {
 	local slug="$1"
 	local workflow_file="$2"
 	local event_name="$3"
-	local tag_commit="$4"
+	local expected_commit="$4"
 	local deadline="$5"
 	local poll_seconds="$6"
-	local runs_json=""
+	local expected_title="${7:-}"
 	local run_json=""
 	local now=""
 
 	while true; do
 		now=$(date +%s) || return 1
 		if [[ "$now" -ge "$deadline" ]]; then
-			print_error "Timed out waiting for ${workflow_file} to start at ${tag_commit}" >&2
+			print_error "Timed out waiting for ${workflow_file} to start at ${expected_commit}" >&2
 			return 1
 		fi
-		if runs_json=$(gh api --method GET \
-			"repos/${slug}/actions/workflows/${workflow_file}/runs" \
-			-f "event=${event_name}" -F per_page=20 2>/dev/null); then
-			run_json=$(jq -c --arg sha "$tag_commit" --arg event "$event_name" '
-				[.workflow_runs[]? | select(.head_sha == $sha and .event == $event)]
-				| sort_by(.created_at // "") | last // empty
-			' <<<"$runs_json") || return 1
-			if [[ -n "$run_json" && "$run_json" != "null" ]]; then
-				printf '%s\n' "$run_json"
-				return 0
-			fi
+		if run_json=$(_release_lookup_exact_workflow_run "$slug" "$workflow_file" \
+			"$event_name" "$expected_commit" "$expected_title"); then
+			printf '%s\n' "$run_json"
+			return 0
 		fi
 		sleep "$poll_seconds"
 	done
@@ -204,6 +236,7 @@ _release_wait_exact_workflow() {
 	local workflow_file="$2"
 	local event_name="$3"
 	local workflow_label="$4"
+	local expected_title="${5:-}"
 	local timeout_seconds="${AIDEVOPS_RELEASE_WORKFLOW_TIMEOUT_SECONDS:-1800}"
 	local poll_seconds="${AIDEVOPS_RELEASE_WORKFLOW_POLL_SECONDS:-15}"
 	local slug=""
@@ -229,7 +262,7 @@ _release_wait_exact_workflow() {
 	deadline=$((started_at + timeout_seconds))
 	print_info "Waiting for protected ${workflow_label} workflow at ${tag_commit}"
 	run_json=$(_release_find_exact_workflow_run "$slug" "$workflow_file" "$event_name" \
-		"$tag_commit" "$deadline" "$poll_seconds") || return 1
+		"$tag_commit" "$deadline" "$poll_seconds" "$expected_title") || return 1
 	_release_wait_workflow_run "$slug" "$run_json" "$workflow_label" "$deadline" "$poll_seconds"
 	return $?
 }
@@ -251,8 +284,51 @@ _wait_for_protected_github_release() {
 
 _wait_for_protected_package_publication() {
 	local version="$1"
-	_release_wait_exact_workflow "$version" "publish-packages.yml" "release" \
-		"npm and Homebrew publication"
+	local tag_name=""
+	local workflow_file="publish-packages.yml"
+	local workflow_label="npm and Homebrew publication"
+	local dispatch_title=""
+	local slug=""
+	local tag_commit=""
+	local run_json=""
+	local event_name=""
+	local expected_title=""
+
+	printf -v tag_name 'v%s' "$version"
+	dispatch_title="Publish packages for ${tag_name}"
+	_verify_github_release_provenance "$version" || return 1
+	slug=$(_version_manager_repo_slug)
+	[[ -n "$slug" ]] || {
+		print_error "Cannot dispatch package publication: repository slug is unavailable"
+		return 1
+	}
+	if ! _github_release_rest_published "$slug" "$tag_name"; then
+		print_error "Cannot dispatch package publication: GitHub release ${tag_name} is not published"
+		return 1
+	fi
+	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+
+	for event_name in workflow_dispatch release; do
+		expected_title=""
+		[[ "$event_name" == "workflow_dispatch" ]] && expected_title="$dispatch_title"
+		run_json=$(_release_lookup_exact_workflow_run "$slug" "$workflow_file" \
+			"$event_name" "$tag_commit" "$expected_title" 2>/dev/null || true)
+		if [[ -n "$run_json" ]]; then
+			print_info "Reusing existing protected package workflow for ${tag_name}"
+			_release_wait_exact_workflow "$version" "$workflow_file" "$event_name" \
+				"$workflow_label" "$expected_title"
+			return $?
+		fi
+	done
+
+	print_info "Dispatching protected package publication for ${tag_name}"
+	if ! gh api --method POST "repos/${slug}/actions/workflows/${workflow_file}/dispatches" \
+		-f "ref=${tag_name}" -f "inputs[tag]=${tag_name}" >/dev/null; then
+		print_error "Failed to dispatch protected package publication for ${tag_name}"
+		return 1
+	fi
+	_release_wait_exact_workflow "$version" "$workflow_file" "workflow_dispatch" \
+		"$workflow_label" "$dispatch_title"
 	return $?
 }
 
