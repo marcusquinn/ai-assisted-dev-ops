@@ -171,9 +171,7 @@ _install_scheduler_systemd() {
 	fi
 
 	local _service_extra=""
-	local _kill_mode="process"
 	if [[ "$service_name" == "aidevops-supervisor-pulse" ]]; then
-		_kill_mode="control-group"
 		_service_extra+="TimeoutStopSec=30"$'\n'
 		_service_extra+="SendSIGKILL=yes"$'\n'
 	fi
@@ -188,7 +186,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=${_kill_mode}
+KillMode=control-group
 ExecStart=/bin/bash -lc $(_systemd_escape "$exec_command")
 TimeoutStartSec=${timeout_sec}
 ${_service_extra}${_env_lines}StandardOutput=append:${log_file}

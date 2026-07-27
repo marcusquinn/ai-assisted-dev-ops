@@ -348,6 +348,18 @@ test_manual_issue_dispatch_and_scheduler_rendering() {
 	return 0
 }
 
+test_deferred_scheduler_preserves_child_survival_exception() {
+	reset_fixture scheduler-policy
+	local rendered=""
+	rendered=$(run_helper_at "$NOW_EPOCH" render-scheduler systemd)
+	if [[ "$rendered" == *"KillMode=process"* && "$rendered" != *"KillMode=control-group"* ]]; then
+		result "deferred scheduler preserves its explicit child-survival exception" 0
+	else
+		result "deferred scheduler preserves its explicit child-survival exception" 1 "$rendered"
+	fi
+	return 0
+}
+
 test_purge_removes_only_owned_state() {
 	reset_fixture purge
 	local job_id=""
@@ -377,6 +389,7 @@ main() {
 	test_claim_recovery_and_running_fuse
 	test_failed_preflight_is_durable
 	test_manual_issue_dispatch_and_scheduler_rendering
+	test_deferred_scheduler_preserves_child_survival_exception
 	test_purge_removes_only_owned_state
 	printf '\n%s/%s tests passed.\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN"
 	[[ "$TESTS_FAILED" -eq 0 ]]

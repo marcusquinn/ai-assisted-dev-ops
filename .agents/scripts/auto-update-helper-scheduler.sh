@@ -269,7 +269,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc '${script_path} check'
 WorkingDirectory=${agents_dir}
 TimeoutStartSec=120

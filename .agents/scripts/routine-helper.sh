@@ -459,7 +459,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc $(_systemd_escape "$command")
 Environment=HOME=${HOME}
 Environment=PATH=${PATH}

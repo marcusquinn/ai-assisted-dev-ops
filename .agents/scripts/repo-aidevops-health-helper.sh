@@ -1055,7 +1055,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc '\"${script_path}\" check'
 TimeoutStartSec=300
 Nice=10

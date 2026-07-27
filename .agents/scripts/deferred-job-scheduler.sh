@@ -101,6 +101,8 @@ After=network.target
 
 [Service]
 Type=oneshot
+# Intentional exception: manual dispatch can hand a worker off beyond run-due.
+# Killing this cgroup when the scheduler exits would terminate that worker.
 KillMode=process
 ExecStart=$(_dj_systemd_quote "/bin/bash") $(_dj_systemd_quote "$helper_path") run-due
 TimeoutStartSec=infinity

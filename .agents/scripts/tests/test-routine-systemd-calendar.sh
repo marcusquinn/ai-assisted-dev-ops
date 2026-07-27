@@ -125,6 +125,30 @@ test_execstart_uses_systemd_quoting() {
 	return 0
 }
 
+test_service_uses_control_group_cleanup() {
+	local tmp_home=""
+	local service_file=""
+	local kill_mode=""
+	tmp_home=$(mktemp -d)
+	service_file="${tmp_home}/.config/systemd/user/sh.aidevops.routine-test.service"
+
+	HOME="$tmp_home" "$ROUTINE_HELPER" install-systemd \
+		--name test \
+		--schedule '0 9 * * *' \
+		--dir "$tmp_home" \
+		--prompt 'test prompt' >/dev/null 2>&1
+	kill_mode=$(grep '^KillMode=' "$service_file" 2>/dev/null || true)
+
+	if [[ "$kill_mode" == "KillMode=control-group" ]]; then
+		print_result "routine service uses control-group cleanup" 0
+	else
+		print_result "routine service uses control-group cleanup" 1 \
+			"Expected KillMode=control-group, got: ${kill_mode:-missing}"
+	fi
+	rm -rf "$tmp_home"
+	return 0
+}
+
 test_daily_expression_supported() {
 	local output=""
 	output=$("${REPO_SCRIPTS_DIR}/routine-schedule-helper.sh" systemd-calendar 'daily(@03:30)')
@@ -172,6 +196,7 @@ main() {
 	test_numeric_weekday_keeps_prefix
 	test_step_minutes_supported
 	test_execstart_uses_systemd_quoting
+	test_service_uses_control_group_cleanup
 	test_daily_expression_supported
 	test_pulse_step_minutes_supported
 	test_empty_schedule_fails_cleanly

@@ -14,6 +14,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit
+REPO_SCRIPTS_DIR="${REPO_ROOT}/.agents/scripts"
+
+# shellcheck source=../setup/modules/schedulers-linux.sh
+source "${REPO_SCRIPTS_DIR}/setup/modules/schedulers-linux.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -41,10 +46,10 @@ print_result() {
 	return 0
 }
 
-skip_if_no_systemd_analyze() {
+systemd_analyze_available() {
 	if ! command -v systemd-analyze >/dev/null 2>&1; then
-		printf 'SKIP: systemd-analyze not available\n'
-		exit 0
+		printf 'SKIP: systemd-analyze not available; parse checks omitted\n'
+		return 1
 	fi
 	return 0
 }
@@ -60,7 +65,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc 'echo hello'
 TimeoutStartSec=60
 StandardOutput=append:${log_file}
@@ -81,7 +86,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc 'echo check'
 TimeoutStartSec=120
 Nice=10
@@ -104,7 +109,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-KillMode=process
+KillMode=control-group
 ExecStart=/bin/bash -lc 'echo sync'
 TimeoutStartSec=300
 Nice=10
@@ -138,6 +143,65 @@ StandardError=append:${log_file}
 [Install]
 WantedBy=multi-user.target
 " >"$service_file"
+	return 0
+}
+
+test_real_scheduler_unit_uses_control_group() {
+	local tmpdir=""
+	local service_name="aidevops-killmode-test-$$"
+	local service_file=""
+	local kill_mode=""
+	tmpdir=$(mktemp -d)
+	service_file="${tmpdir}/home/.config/systemd/user/${service_name}.service"
+	mkdir -p "${tmpdir}/bin" "${tmpdir}/home"
+	printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"${tmpdir}/bin/systemctl"
+	chmod +x "${tmpdir}/bin/systemctl"
+
+	(
+		export HOME="${tmpdir}/home"
+		export PATH="${tmpdir}/bin:${PATH}"
+		_install_scheduler_systemd "$service_name" "true" "60" \
+			"${tmpdir}/scheduler.log" "" "false" "false" "" "60" >/dev/null 2>&1 || true
+	)
+	kill_mode=$(grep -E '^KillMode=' "$service_file" 2>/dev/null || true)
+	rm -rf "$tmpdir"
+
+	if [[ "$kill_mode" == "KillMode=control-group" ]]; then
+		print_result "real shared scheduler unit uses control-group cleanup" 0
+	else
+		print_result "real shared scheduler unit uses control-group cleanup" 1 \
+			"Expected KillMode=control-group, got: ${kill_mode:-missing}"
+	fi
+	return 0
+}
+
+test_standalone_templates_use_control_group() {
+	local relative_path=""
+	local template_path=""
+	local failures=""
+	local -a templates=(
+		"auto-update-helper.sh"
+		"auto-update-helper-scheduler.sh"
+		"routine-helper.sh"
+		"repo-aidevops-health-helper.sh"
+		"repo-sync-helper.sh"
+		"worker-watchdog-cmd.sh"
+		"setup/modules/schedulers-linux.sh"
+	)
+
+	for relative_path in "${templates[@]}"; do
+		template_path="${REPO_SCRIPTS_DIR}/${relative_path}"
+		if ! grep -q '^KillMode=control-group$' "$template_path" || grep -q '^KillMode=process$' "$template_path"; then
+			failures+="${relative_path} "
+		fi
+	done
+
+	if [[ -z "$failures" ]]; then
+		print_result "synchronous systemd templates use control-group cleanup" 0
+	else
+		print_result "synchronous systemd templates use control-group cleanup" 1 \
+			"Unexpected KillMode policy in: ${failures% }"
+	fi
 	return 0
 }
 
@@ -369,21 +433,23 @@ test_no_literal_quotes_in_reposync_unit() {
 # --- Main ---
 
 main() {
-	skip_if_no_systemd_analyze
-
 	printf 'Running systemd unit generation tests...\n\n'
+	test_real_scheduler_unit_uses_control_group
+	test_standalone_templates_use_control_group
 
-	# Confirm the bug exists with quoted values (regression anchor)
-	test_quoted_stdout_fails_verify
+	if systemd_analyze_available; then
+		# Confirm the bug exists with quoted values (regression anchor)
+		test_quoted_stdout_fails_verify
 
-	# Confirm bare values work
-	test_bare_stdout_passes_verify
+		# Confirm bare values work
+		test_bare_stdout_passes_verify
 
-	# Test each generator produces valid units
-	test_scheduler_unit_passes_verify
-	test_autoupdate_unit_passes_verify
-	test_reposync_unit_passes_verify
-	test_supervisor_pulse_unit_uses_control_group_kill
+		# Test each generator produces valid units
+		test_scheduler_unit_passes_verify
+		test_autoupdate_unit_passes_verify
+		test_reposync_unit_passes_verify
+		test_supervisor_pulse_unit_uses_control_group_kill
+	fi
 
 	# Test no literal quotes appear in generated output
 	test_no_literal_quotes_in_scheduler_unit
