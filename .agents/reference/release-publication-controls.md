@@ -65,8 +65,12 @@ source resolver against the exact `origin/main` tip before publication.
 PR #28725 demonstrated the fail-closed duplicate-trailer case: its squash
 message retained an earlier separated trailer block plus the final contiguous
 block. No release was attempted from that ambiguous manifest; a new reviewed
-single-block aggregation supersedes it. PR #28727 reviews the corrected manifest
-for authorized source PRs #28701, #28720, and #28725 at their exact merge SHAs.
+single-block aggregation supersedes it. PR #28727 then demonstrated the
+terminal-receipt guard: publication was rejected because its manifest included
+PR #28720, which already recorded `release:not-requested`. Aggregation manifests
+must include only sources whose current receipts still permit publication; code
+from terminal non-publishing sources may remain in the release tree without
+rewriting those receipts.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
