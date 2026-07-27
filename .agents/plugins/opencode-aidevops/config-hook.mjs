@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { loadAgentIndex, applyAgentMcpTools } from "./agent-loader.mjs";
@@ -574,6 +574,11 @@ function registerAgents(config, agentsDir) {
 
 const RESEARCH_ONLY_AGENT_NAME = "research-only";
 const AI_RESEARCH_TOOL_CEILING_ENV = "AIDEVOPS_AI_RESEARCH_TOOL_CEILING";
+const RESEARCH_STAGING_DIRECTORY = "research-staging";
+const RESEARCH_STAGING_DENIED_NAMES = [
+  ".env", ".env.*", ".ssh", ".gnupg", ".aws", ".azure", ".kube",
+  ".netrc", ".npmrc", ".pypirc", ".git-credentials", "auth.json", "credential*",
+];
 const UNSAFE_FRONTMATTER_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RESEARCH_ONLY_FALLBACK_PROMPT = `# Research-only subagent
 
@@ -645,6 +650,44 @@ function researchOnlyProfile(agentsDir) {
   return { ...profile, prompt: parsed.prompt || RESEARCH_ONLY_FALLBACK_PROMPT };
 }
 
+function isPathWithin(base, candidate) {
+  const remainder = relative(base, candidate);
+  return remainder === ""
+    || (!isAbsolute(remainder) && remainder !== ".." && !remainder.startsWith(`..${sep}`));
+}
+
+function researchStagingDirectories(env) {
+  const tempBase = resolve(
+    env.AIDEVOPS_TEMP_DIR || join(homedir(), ".aidevops", ".agent-workspace", "tmp"),
+  );
+  const stagingRoot = join(tempBase, RESEARCH_STAGING_DIRECTORY);
+  if (!existsSync(stagingRoot)) return [stagingRoot];
+
+  try {
+    const resolvedBase = realpathSync(tempBase);
+    const resolvedRoot = realpathSync(stagingRoot);
+    if (!isPathWithin(resolvedBase, resolvedRoot)) return [];
+    return [...new Set([stagingRoot, resolvedRoot])];
+  } catch {
+    return [];
+  }
+}
+
+function addResearchStagingPermissions(profile, env) {
+  if (!profile.permission || typeof profile.permission !== "object") return;
+
+  const rules = { "*": "deny" };
+  for (const directory of researchStagingDirectories(env)) {
+    rules[directory] = "allow";
+    rules[`${directory}/**`] = "allow";
+    for (const name of RESEARCH_STAGING_DENIED_NAMES) {
+      rules[`${directory}/**/${name}`] = "deny";
+      rules[`${directory}/**/${name}/**`] = "deny";
+    }
+  }
+  profile.permission.external_directory = rules;
+}
+
 /**
  * Register a fail-closed research profile after all broad/global permission
  * transforms so managed-directory grants and MCP defaults cannot widen it.
@@ -661,6 +704,8 @@ export function registerResearchOnlyAgent(config, agentsDir, env = process.env) 
     // that the general research-only profile normally permits.
     profile.tools = { "*": false };
     profile.permission = "deny";
+  } else if (!profile.disable) {
+    addResearchStagingPermissions(profile, env);
   }
   config.agent[RESEARCH_ONLY_AGENT_NAME] = profile;
   return 1;

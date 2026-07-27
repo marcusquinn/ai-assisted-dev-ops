@@ -13,6 +13,7 @@ import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
 import { enrichActiveSpan, detectTaskId, detectSessionOrigin } from "./otel-enrichment.mjs";
 import { checkSecretReadGate, isReadTool } from "./quality-hooks-secret-read.mjs";
+import { checkResearchStagingAccess } from "./research-staging-guard.mjs";
 import {
   bindActiveScriptsDir,
   checkCanonicalGitSafetyGate,
@@ -310,6 +311,7 @@ function handleToolBefore(ctx, log, input, output) {
   }
 
   checkSecretReadGate(input.tool, output.args || {}, log);
+  checkResearchStagingAccess(input.tool, output.args || {});
 
   if (!isWriteOrEditTool(input.tool)) return;
 

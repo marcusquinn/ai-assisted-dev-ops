@@ -3,14 +3,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { registerResearchOnlyAgent } from "../config-hook.mjs";
 
 test("research-only profile overrides permissive config and fails closed", () => {
   const agentsDir = mkdtempSync(join(tmpdir(), "aidevops-research-only-"));
+  const tempRoot = mkdtempSync(join(tmpdir(), "aidevops-research-stage-"));
   const sourceDir = join(agentsDir, "tools", "ai-assistants");
   mkdirSync(sourceDir, { recursive: true });
   writeFileSync(join(sourceDir, "research-only.md"), `---
@@ -43,7 +45,7 @@ Canonical research prompt.
       },
     };
 
-    assert.equal(registerResearchOnlyAgent(config, agentsDir), 1);
+    assert.equal(registerResearchOnlyAgent(config, agentsDir, { AIDEVOPS_TEMP_DIR: tempRoot }), 1);
     const profile = config.agent["research-only"];
 
     assert.equal(profile.description, "Canonical research profile");
@@ -58,10 +60,19 @@ Canonical research prompt.
     assert.equal(profile.permission.bash, "deny");
     assert.equal(profile.permission.read["*"], "allow");
     assert.equal(profile.permission.read["*.env"], "deny");
+    const stagingRoot = join(tempRoot, "research-staging");
+    const externalRules = profile.permission.external_directory;
+    assert.equal(externalRules["*"], "deny");
+    assert.equal(externalRules[stagingRoot], "allow");
+    assert.equal(externalRules[`${stagingRoot}/**`], "allow");
+    assert.equal(externalRules[`${stagingRoot}/**/.ssh/**`], "deny");
+    assert.equal(externalRules[`${stagingRoot}/**/.netrc`], "deny");
+    assert.equal(externalRules[join(tempRoot, "research-staging-sibling", "**")], undefined);
     assert.equal(profile.name, undefined);
     assert.equal(config.tools["playwriter_*"], true);
   } finally {
     rmSync(agentsDir, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -117,5 +128,52 @@ Canonical research prompt.
     assert.equal(profile.prompt, "Canonical research prompt.");
   } finally {
     rmSync(agentsDir, { recursive: true, force: true });
+  }
+});
+
+test("research-only staging fails closed when its root is a symlink escape", () => {
+  const agentsDir = mkdtempSync(join(tmpdir(), "aidevops-research-only-"));
+  const tempRoot = mkdtempSync(join(tmpdir(), "aidevops-research-stage-"));
+  const outsideRoot = mkdtempSync(join(tmpdir(), "aidevops-research-outside-"));
+  const sourceDir = join(agentsDir, "tools", "ai-assistants");
+  mkdirSync(sourceDir, { recursive: true });
+  symlinkSync(outsideRoot, join(tempRoot, "research-staging"), "dir");
+  writeFileSync(join(sourceDir, "research-only.md"), `---
+description: Canonical research profile
+permission:
+  external_directory: deny
+---
+Canonical research prompt.
+`);
+
+  try {
+    const config = { agent: {} };
+    assert.equal(registerResearchOnlyAgent(config, agentsDir, { AIDEVOPS_TEMP_DIR: tempRoot }), 1);
+    assert.deepEqual(config.agent["research-only"].permission.external_directory, { "*": "deny" });
+  } finally {
+    rmSync(agentsDir, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("canonical research-only profile keeps credential and mutation guards", () => {
+  const agentsDir = fileURLToPath(new URL("../../..", import.meta.url));
+  const tempRoot = mkdtempSync(join(tmpdir(), "aidevops-research-stage-"));
+
+  try {
+    const config = { permission: "allow", agent: {} };
+    assert.equal(registerResearchOnlyAgent(config, agentsDir, { AIDEVOPS_TEMP_DIR: tempRoot }), 1);
+    const profile = config.agent["research-only"];
+
+    for (const tool of ["write", "edit", "apply_patch", "bash", "task"]) {
+      assert.equal(profile.tools[tool], false);
+      assert.equal(profile.permission[tool], "deny");
+    }
+    for (const pattern of ["**/.ssh/**", "**/.aws/**", "**/.netrc", "**/auth.json"]) {
+      assert.equal(profile.permission.read[pattern], "deny");
+    }
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
