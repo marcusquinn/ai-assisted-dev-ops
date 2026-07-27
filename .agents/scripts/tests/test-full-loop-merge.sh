@@ -13,6 +13,8 @@
 #      after PR readiness and maintainer-review gates pass
 #   7. Post-merge verification retries cache-disabled reads without replaying
 #      the irreversible merge mutation
+#   8. Squash merges use the validated PR title as an explicit subject and
+#      reject invalid titles before any merge mutation
 #
 # Strategy: stub gh, audit-log-helper.sh, and gh-signature-helper.sh in a temp
 # directory prepended to PATH, then source the merge sub-library.
@@ -146,6 +148,14 @@ write_gh_stub_pr_issue_views() {
 	cat >>"${TEST_ROOT}/bin/gh" <<GHSTUB
 
 	if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "view" ]]; then
+	if [[ "\$*" == *"--json title --jq .title"* ]]; then
+		if [[ "$mode" == "invalid-squash-title" ]]; then
+			echo 'Document recovery'
+		else
+			echo 'GH#28721: fix: preserve reviewed squash subject'
+		fi
+		exit 0
+	fi
 	if [[ "\$*" == *"--json state,isDraft,reviewDecision,headRefOid"* ]]; then
 		_review_decision=""
 		[[ "$mode" == "late-review-block" ]] && _review_decision="CHANGES_REQUESTED"
@@ -582,7 +592,8 @@ test_graphql_rate_limit_rest_fallback() {
 	if [[ -f "${TEST_ROOT}/logs/gh-api-calls.txt" ]] &&
 		grep -q "repos/testorg/testrepo/pulls/42/merge" "${TEST_ROOT}/logs/gh-api-calls.txt" &&
 		grep -q "sha=abc123headsha" "${TEST_ROOT}/logs/gh-api-calls.txt" &&
-		grep -q "merge_method=squash" "${TEST_ROOT}/logs/gh-api-calls.txt"; then
+		grep -q "merge_method=squash" "${TEST_ROOT}/logs/gh-api-calls.txt" &&
+		grep -q "commit_title=GH#28721: fix: preserve reviewed squash subject" "${TEST_ROOT}/logs/gh-api-calls.txt"; then
 		rest_called=1
 	fi
 	print_result "GraphQL rate-limit: REST pull merge endpoint called with verified SHA" "$((1 - rest_called))"
@@ -911,6 +922,49 @@ test_post_merge_api_indeterminate_fails_closed() {
 	return 0
 }
 
+test_wip_draft_takeover_uses_reviewed_pr_title() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	# The source branch's sole inherited commit is "wip: document recovery".
+	# The merge wrapper must ignore that GitHub default and bind the squash
+	# commit to the separately reviewed, compliant PR title from the stub.
+	create_gh_stub "explicit-admin"
+
+	local rc=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "1" "0" >/dev/null 2>&1 || rc=$?
+	local subject_present=0
+	if grep -q -- '--subject GH#28721: fix: preserve reviewed squash subject' "${TEST_ROOT}/logs/gh-calls.txt"; then
+		subject_present=1
+	fi
+	print_result "wip draft takeover: reviewed PR title is explicit" "$((rc == 0 && subject_present == 1 ? 0 : 1))"
+	return 0
+}
+
+test_invalid_squash_title_blocks_before_merge() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "invalid-squash-title"
+
+	local rc=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "0" "0" >/dev/null 2>&1 || rc=$?
+	local merge_calls=0
+	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "squash subject: invalid title fails closed" "$((rc == 0 ? 1 : 0))"
+	print_result "squash subject: invalid title blocks before mutation" "$((merge_calls == 0 ? 0 : 1))" "merge_calls=$merge_calls"
+	return 0
+}
+
+test_non_squash_skips_subject_override() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "explicit-admin"
+
+	local rc=0
+	run_merge_execute "42" "testorg/testrepo" "--merge" "1" "0" >/dev/null 2>&1 || rc=$?
+	local subject_present=0 title_reads=0
+	grep -q -- '--subject' "${TEST_ROOT}/logs/gh-calls.txt" && subject_present=1
+	title_reads=$(grep -c -- '--json title' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "non-squash: existing merge behavior is preserved" "$((rc == 0 && subject_present == 0 && title_reads == 0 ? 0 : 1))"
+	return 0
+}
+
 run_prospective_todo_guard() {
 	local fixture_dir="$1"
 	local base_sha="$2"
@@ -1015,6 +1069,9 @@ main() {
 	test_post_merge_stale_evidence_retries_fresh_read
 	test_post_merge_unmerged_evidence_fails_closed
 	test_post_merge_api_indeterminate_fails_closed
+	test_wip_draft_takeover_uses_reviewed_pr_title
+	test_invalid_squash_title_blocks_before_merge
+	test_non_squash_skips_subject_override
 	test_prospective_todo_merge_guard
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

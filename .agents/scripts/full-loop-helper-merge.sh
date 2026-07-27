@@ -27,6 +27,7 @@
 # Include guard
 [[ -n "${_FULL_LOOP_MERGE_LIB_LOADED:-}" ]] && return 0
 _FULL_LOOP_MERGE_LIB_LOADED=1
+FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -194,6 +195,7 @@ _merge_try_interactive_admin_auto_fallback() {
 	local merge_method="$3"
 	local merge_output="$4"
 	local expected_head_sha="$5"
+	local squash_subject="${6:-}"
 
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo" ]] || return 1
 	! _merge_is_headless_session || return 1
@@ -204,7 +206,9 @@ _merge_try_interactive_admin_auto_fallback() {
 	# authority immediately before bypassing review-count protection.
 	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$expected_head_sha" || return 2
 	print_info "Auto-merge is blocked only by review-required branch policy/self-approval; interactive maintainer session is using --admin merge after gates passed."
-	if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" 2>&1; then
+	local subject_flags=()
+	[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
+	if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 		print_success "PR #${pr_number} merged with interactive --admin fallback"
 		_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$merge_output"
 		return 0
@@ -597,13 +601,14 @@ _merge_guard_prospective_todo() {
 # limited. The REST endpoint still enforces branch protection and mergeability;
 # failures remain failures.
 #
-# Args: pr_number repo merge_method expected_head_sha
+# Args: pr_number repo merge_method expected_head_sha [squash_subject]
 # Returns: 0 = merged, 1 = REST merge failed
 _merge_rest_fallback() {
 	local pr_number="$1"
 	local repo="$2"
 	local merge_method="$3"
 	local expected_head_sha="$4"
+	local squash_subject="${5:-}"
 	local rest_method="${merge_method#--}"
 	local rest_out="" rest_rc=0
 
@@ -621,9 +626,10 @@ _merge_rest_fallback() {
 	esac
 
 	print_info "GraphQL rate limit blocked gh pr merge; retrying via REST pull merge endpoint with verified head SHA ${expected_head_sha}..."
+	local rest_args=(-f "sha=${expected_head_sha}" -f "merge_method=${rest_method}")
+	[[ -n "$squash_subject" ]] && rest_args+=(-f "commit_title=${squash_subject}")
 	if rest_out=$(gh api -X PUT "repos/${repo}/pulls/${pr_number}/merge" \
-		-f "sha=${expected_head_sha}" \
-		-f "merge_method=${rest_method}" 2>&1); then
+		${rest_args[@]+"${rest_args[@]}"} 2>&1); then
 		rest_rc=0
 	else
 		rest_rc=$?
@@ -699,17 +705,56 @@ _merge_review_state_still_clear() {
 	return 0
 }
 
-_merge_execute() {
+# Resolve the reviewed PR title used as the explicit squash-commit subject.
+# Accepted forms match this repository's PR/commit history: a task-prefixed
+# title (tNNN:/GH#NNN:) or a Conventional Commit type with optional scope and
+# breaking marker. Invalid titles fail before any merge mutation.
+_merge_resolve_squash_subject() {
+	local pr_number="$1"
+	local repo="$2"
+	local subject=""
+	local task_body=""
+	local conventional_ere='^(feat|fix|docs|refactor|perf|test|chore|style|build|ci)(\([^()[:cntrl:]]+\))?!?:[[:space:]]+[^[:space:]].*$'
+	local task_ere='^(t[0-9]+|GH#[0-9]+):[[:space:]]+[^[:space:]].*$'
+
+	subject=$(gh pr view "$pr_number" --repo "$repo" --json title --jq '.title' 2>/dev/null) || {
+		print_error "Could not retrieve PR #${pr_number} title for squash-subject validation"
+		return 1
+	}
+	if [[ "$subject" =~ $task_ere ]]; then
+		task_body="${subject#*: }"
+	fi
+	if [[ "$subject" == *$'\n'* || "$subject" == *$'\r'* ||
+		"$task_body" =~ ^[Ww][Ii][Pp][[:space:]:\(] ||
+		! "$subject" =~ $conventional_ere && ! "$subject" =~ $task_ere ]]; then
+		print_error "PR #${pr_number} title is not a valid squash subject; refusing merge"
+		print_error "Use a task-prefixed or conventional title before retrying."
+		return 1
+	fi
+
+	printf '%s\n' "$subject"
+	return 0
+}
+
+_merge_resolve_subject_for_method() {
 	local pr_number="$1"
 	local repo="$2"
 	local merge_method="$3"
-	local has_admin="$4"
-	local has_auto="$5"
+	[[ "$merge_method" == "--squash" ]] || return 0
+	_merge_resolve_squash_subject "$pr_number" "$repo"
+	return $?
+}
+
+_merge_execute() {
+	local pr_number="$1" repo="$2" merge_method="$3"
+	local has_admin="$4" has_auto="$5" squash_subject=""
+	squash_subject=$(_merge_resolve_subject_for_method "$pr_number" "$repo" "$merge_method") || return 1
 
 	# Reconstruct flags array from boolean sentinels (avoids passing arrays across function calls).
 	local merge_flags=()
 	[[ "$has_admin" -eq 1 ]] && merge_flags+=("--admin")
 	[[ "$has_auto" -eq 1 ]] && merge_flags+=("--auto")
+	[[ -n "$squash_subject" ]] && merge_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
 
 	local merge_desc="$merge_method"
 	[[ ${#merge_flags[@]} -gt 0 ]] && merge_desc+=" ${merge_flags[*]}"
@@ -758,11 +803,11 @@ ${_merge_retry_out}"
 		# caller reached the merge execution stage (cmd_merge runs review-bot-gate
 		# first). Do not turn --auto into an immediate REST merge.
 		if [[ $has_auto -eq 0 ]] && _merge_output_is_graphql_rate_limit "$_merge_out"; then
-			_merge_rest_fallback "$pr_number" "$repo" "$merge_method" "$match_head_sha" && return 0
+			_merge_rest_fallback "$pr_number" "$repo" "$merge_method" "$match_head_sha" "$squash_subject" && return 0
 			return 1
 		elif [[ $has_admin -eq 0 && $has_auto -eq 1 ]]; then
 			local auto_admin_rc=0
-			_merge_try_interactive_admin_auto_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out" "$match_head_sha" || auto_admin_rc=$?
+			_merge_try_interactive_admin_auto_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out" "$match_head_sha" "$squash_subject" || auto_admin_rc=$?
 			[[ "$auto_admin_rc" -eq 0 ]] && return 0
 			[[ "$auto_admin_rc" -eq 2 ]] && return 1
 			print_error "Merge failed for PR #${pr_number}"
@@ -772,7 +817,9 @@ ${_merge_retry_out}"
 			printf '%s' "$_merge_out" | grep -qE 'base branch policy prohibits|Required status checks? (is|are) expected|At least [0-9]+ approving review'; then
 			_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
 			print_info "Branch protection blocked plain merge; retrying with --admin (workers share the maintainer's gh auth per GH#18538)..."
-			if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" 2>&1; then
+			local subject_flags=()
+			[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
+			if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 				print_success "PR #${pr_number} merged with --admin fallback"
 				# t2247: Signal that admin-merge fallback was used — three artifacts:
 				# (a) PR comment with error context + remediation

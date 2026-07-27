@@ -55,6 +55,8 @@ load_functions() {
 	extract_function _merge_issue_requires_maintainer_review
 	extract_function _merge_author_has_write_authority
 	extract_function _merge_guard_admin_merge_maintainer_review
+	extract_function _merge_resolve_squash_subject
+	extract_function _merge_resolve_subject_for_method
 	extract_function _merge_execute
 	# shellcheck source=/dev/null
 	source "$EXTRACTED"
@@ -71,6 +73,7 @@ FIXTURE_ISSUE_APPROVED=0
 FIXTURE_PR_APPROVED=0
 FIXTURE_GH_MODE="guard"
 AUTHORITY_GUARD_PASS=1
+FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
 
 print_error() {
 	local message="$1"
@@ -100,6 +103,10 @@ gh() {
 	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
 		[[ "$FIXTURE_PR_LOOKUP_FAIL" -eq 0 ]] || return 1
+		if [[ "$*" == *"--json title"* ]]; then
+			printf 'GH#28622: preserve exact-head merge authority\n'
+			return 0
+		fi
 		printf '%s\n' "$FIXTURE_PR_JSON"
 		return 0
 	fi
@@ -315,6 +322,12 @@ test_all_merge_modes_use_guard() {
 		local repo="$2"
 		[[ -n "$pr_number" && -n "$repo" ]] || return 1
 		printf 'head-current\n'
+		return 0
+	}
+	_merge_review_state_still_clear() {
+		return 0
+	}
+	_merge_guard_prospective_todo() {
 		return 0
 	}
 	gh_merge_remediate_stale_auth_cache() {
