@@ -13,6 +13,7 @@
 #
 # Dependencies:
 #   - shared-constants.sh (logging primitives via worker-lifecycle-common.sh)
+#   - pulse-todo-sync-workspace.sh (owned isolated-clone lifecycle)
 #   - pulse-wrapper-config.sh (LOGFILE, WRAPPER_LOGFILE, PULSE_DIR, PIDFILE,
 #     LOCKDIR, STATE_FILE, HEADLESS_RUNTIME_HELPER, PULSE_MODEL,
 #     PULSE_COLD_START_TIMEOUT[_UNDERFILLED], _PULSE_REFRESHED_THIS_CYCLE
@@ -38,6 +39,11 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
 	SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
 	unset _lib_path
+fi
+
+if [[ -f "${SCRIPT_DIR}/pulse-todo-sync-workspace.sh" ]]; then
+	# shellcheck source=pulse-todo-sync-workspace.sh
+	source "${SCRIPT_DIR}/pulse-todo-sync-workspace.sh"
 fi
 
 #######################################
@@ -508,19 +514,34 @@ _pulse_reconcile_stale_blocked_if_due() {
 #######################################
 _pulse_create_todo_sync_workspace() {
 	local repo_path="$1"
+	local repo_slug="$2"
 	local remote_url=""
-	local temp_base="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
-	local workspace=""
+	: "$repo_slug"
 	remote_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null) || return 1
 	[[ -n "$remote_url" ]] || return 1
-	mkdir -p "$temp_base" || return 1
-	workspace=$(mktemp -d "${temp_base}/pulse-todo-sync.XXXXXX") || return 1
-	if ! git clone --quiet --no-tags "$remote_url" "${workspace}/repo" >/dev/null 2>&1; then
-		rm -rf "$workspace"
-		return 1
+	declare -F _ptsw_create_workspace >/dev/null 2>&1 || return 1
+	_ptsw_create_workspace "$remote_url"
+	return $?
+}
+
+_pulse_todo_sync_exit_cleanup() {
+	local original_rc="$1"
+	local workspace_root="$2"
+	local repo_slug="$3"
+	local lifecycle_stage="$4"
+	local owner_pid="$5"
+	local owner_start="$6"
+	local workspace_identity=""
+	[[ -n "$workspace_root" ]] || return "$original_rc"
+	workspace_identity=$(_ptsw_safe_identity "$workspace_root")
+	if _ptsw_remove_owned_workspace "$workspace_root" "$owner_pid" "$owner_start"; then
+		printf '[pulse-wrapper] TODO ref sync workspace cleanup outcome=removed stage=%s repo=%s workspace=%s\n' \
+			"$lifecycle_stage" "$repo_slug" "$workspace_identity" >>"$WRAPPER_LOGFILE"
+	else
+		printf '[pulse-wrapper] TODO ref sync workspace cleanup outcome=failure stage=%s repo=%s workspace=%s\n' \
+			"$lifecycle_stage" "$repo_slug" "$workspace_identity" >>"$WRAPPER_LOGFILE"
 	fi
-	printf '%s\n' "${workspace}/repo"
-	return 0
+	return "$original_rc"
 }
 
 _pulse_run_issue_sync_stage() {
@@ -542,31 +563,42 @@ _pulse_run_issue_sync_stage() {
 # are logged and returned so the caller can continue other repositories while
 # preserving retryable evidence.
 #######################################
-sync_todo_refs_for_repo() {
+sync_todo_refs_for_repo() (
 	local repo_slug="$1"
 	local repo_path="$2"
 	local script_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
-	local workspace="" workspace_root="" base_sha="" branch_name="" changed_paths=""
+	local workspace="" base_sha="" branch_name="" changed_paths=""
 	local stage="" sync_failed=0 publication_rc=0
+	local lifecycle_stage="workspace"
+	local _pulse_todo_sync_exit_rc=0
+	_PULSE_TODO_SYNC_WORKSPACE=""
+	_PULSE_TODO_SYNC_WORKSPACE_ROOT=""
+	_PULSE_TODO_SYNC_OWNER_PID=""
+	_PULSE_TODO_SYNC_OWNER_START=""
+	trap '_pulse_todo_sync_exit_cleanup "$?" "$_PULSE_TODO_SYNC_WORKSPACE_ROOT" "$repo_slug" "$lifecycle_stage" "$_PULSE_TODO_SYNC_OWNER_PID" "$_PULSE_TODO_SYNC_OWNER_START"; _pulse_todo_sync_exit_rc=$?; trap - EXIT; exit "$_pulse_todo_sync_exit_rc"' EXIT
+	trap 'exit 143' TERM
+	trap 'exit 130' INT
+	trap 'exit 129' HUP
 
-	workspace=$(_pulse_create_todo_sync_workspace "$repo_path") || {
+	lifecycle_stage="clone"
+	_pulse_create_todo_sync_workspace "$repo_path" "$repo_slug" || {
 		printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=workspace repo=%s\n' \
 			"$repo_slug" >>"$WRAPPER_LOGFILE"
 		return 1
 	}
-	workspace_root="${workspace%/repo}"
+	workspace="$_PULSE_TODO_SYNC_WORKSPACE"
+	lifecycle_stage="metadata"
 	base_sha=$(git -C "$workspace" rev-parse HEAD 2>/dev/null) || {
-		rm -rf "$workspace_root"
 		return 1
 	}
 	branch_name=$(git -C "$workspace" symbolic-ref --short HEAD 2>/dev/null) || {
-		rm -rf "$workspace_root"
 		return 1
 	}
 
 	printf '[pulse-wrapper] Syncing TODO refs: repo=%s root=automation base=%s\n' \
 		"$repo_slug" "${base_sha:0:12}" >>"$WRAPPER_LOGFILE"
 	for stage in pull close reopen; do
+		lifecycle_stage="$stage"
 		if ! _pulse_run_issue_sync_stage "$script_dir" "$stage" "$repo_slug" "$workspace"; then
 			printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=%s repo=%s\n' \
 				"$stage" "$repo_slug" >>"$WRAPPER_LOGFILE"
@@ -576,19 +608,18 @@ sync_todo_refs_for_repo() {
 	# Materialize TODO dependency edges before the graph and dispatch stages.
 	# Failures remain retryable and the relationship helper moves affected
 	# available issues to blocked rather than exposing an unverified ordering.
+	lifecycle_stage="relationships"
 	if ! _pulse_run_issue_sync_stage "$script_dir" relationships "$repo_slug" "$workspace"; then
 		printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=relationships repo=%s\n' \
 			"$repo_slug" >>"$WRAPPER_LOGFILE"
 		sync_failed=1
 	fi
 	if [[ "$sync_failed" -ne 0 ]]; then
-		rm -rf "$workspace_root"
 		return 1
 	fi
 
 	if ! declare -F planning_publish >/dev/null 2>&1; then
 		[[ -f "${script_dir}/planning-publisher.sh" ]] || {
-			rm -rf "$workspace_root"
 			return 1
 		}
 		# shellcheck source=planning-publisher.sh
@@ -598,6 +629,7 @@ sync_todo_refs_for_repo() {
 	PLANNING_PUBLISH_RESULT=""
 	PLANNING_PUBLICATION_ID=""
 	PLANNING_PUBLISHED_COMMIT=""
+	lifecycle_stage="publication"
 	TMPDIR="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}" \
 		AIDEVOPS_PLANNING_BASE_SHA="$base_sha" \
 		planning_publish "$workspace" "chore: sync GitHub issue refs to TODO.md [skip ci]" \
@@ -608,11 +640,13 @@ sync_todo_refs_for_repo() {
 	2) printf '[pulse-wrapper] TODO ref sync status=retryable_conflict repo=%s base=%s\n' \
 		"$repo_slug" "${base_sha:0:12}" >>"$WRAPPER_LOGFILE" ;;
 	*) printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=publication repo=%s rc=%s\n' \
-		"$repo_slug" "$publication_rc" >>"$WRAPPER_LOGFILE" ;;
+			"$repo_slug" "$publication_rc" >>"$WRAPPER_LOGFILE" ;;
 	esac
-	rm -rf "$workspace_root"
+	if [[ "$publication_rc" -eq 0 ]]; then
+		lifecycle_stage="complete"
+	fi
 	return "$publication_rc"
-}
+)
 
 #######################################
 # sync_todo_refs_all_repos

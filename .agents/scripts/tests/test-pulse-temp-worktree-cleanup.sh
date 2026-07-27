@@ -61,10 +61,15 @@ setup_subject() {
 	export AIDEVOPS_REPOS_JSON="${HOME}/.config/aidevops/repos.json"
 	export AIDEVOPS_CLEANUP_LOG="${TEST_ROOT}/cleanup.log"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/automation"
+	export AIDEVOPS_TODO_SYNC_TRASH_ROOT="${TEST_ROOT}/todo-sync-trash"
 	export TEMP_WORKTREE_GRACE_SECS=3600
 	export TEMP_WORKTREE_MAX_REMOVALS_PER_RUN=10
+	export PRE_RUN_STAGE_TIMEOUT=10
+	export PULSE_TODO_SYNC_WORKSPACE_GRACE_SECS=11
+	export PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN=5
 	unset TEMP_WORKTREE_LOCK_STALE_SECS 2>/dev/null || true
-	mkdir -p "$AIDEVOPS_LOG_DIR" "${HOME}/.config/aidevops" || return 1
+	mkdir -p "$AIDEVOPS_LOG_DIR" "${HOME}/.config/aidevops" "$AIDEVOPS_TEMP_DIR" || return 1
 
 	is_registered_canonical() { local wt_path="$1"; : "$wt_path"; return 1; }
 	is_worktree_owned_by_others() { local wt_path="$1"; : "$wt_path"; return 1; }
@@ -75,6 +80,7 @@ setup_subject() {
 
 	unset _PULSE_CLEANUP_LOADED 2>/dev/null || true
 	unset _PULSE_TEMP_WORKTREE_CLEANUP_LOADED 2>/dev/null || true
+	unset _PULSE_TODO_SYNC_WORKSPACE_LOADED 2>/dev/null || true
 	unset _AUDIT_WORKTREE_REMOVAL_HELPER_LOADED 2>/dev/null || true
 	# shellcheck source=../portable-stat.sh
 	source "${SCRIPT_DIR}/../portable-stat.sh"
@@ -99,6 +105,30 @@ create_repo_with_remote() {
 	git -C "$remote_path" symbolic-ref HEAD refs/heads/main || return 1
 	printf '{"initialized_repos":[{"path":"%s","slug":"example/repo"}]}\n' \
 		"$repo_path" >"$AIDEVOPS_REPOS_JSON" || return 1
+	return 0
+}
+
+create_todo_sync_candidate() {
+	local identity="$1"
+	local owner_pid="$2"
+	local owner_start="$3"
+	local owner_created="$4"
+	local workspace_root="${AIDEVOPS_TEMP_DIR}/${identity}"
+	mkdir -p "$workspace_root" || return 1
+	printf '%s\t%s\t%s\t%s\n' "$_PTSW_MARKER_VERSION" "$owner_pid" \
+		"$owner_created" "$owner_start" >"${workspace_root}/${_PTSW_OWNER_MARKER}" || return 1
+	printf '%s\n' "$workspace_root"
+	return 0
+}
+
+count_todo_sync_candidates() {
+	local workspace_root=""
+	local candidate_count=0
+	for workspace_root in "$AIDEVOPS_TEMP_DIR"/pulse-todo-sync.*; do
+		[[ -d "$workspace_root" ]] || continue
+		candidate_count=$((candidate_count + 1))
+	done
+	printf '%s\n' "$candidate_count"
 	return 0
 }
 
@@ -372,6 +402,98 @@ test_path_classifier_rejects_normal_linked_worktree() {
 	return 0
 }
 
+test_todo_sync_active_grace_and_visibility_guards() {
+	teardown
+	setup_subject || return 1
+	local now_epoch=0
+	local live_start=""
+	local active_workspace=""
+	local grace_workspace=""
+	local unknown_workspace=""
+	local visibility_definition=""
+	local removed=0
+	local rc=0
+	now_epoch=$(date +%s) || return 1
+	live_start=$(_ptsw_process_start_fingerprint "$$") || return 1
+	active_workspace=$(create_todo_sync_candidate "pulse-todo-sync.ACTIVE" "$$" "$live_start" "$((now_epoch - 20))") || return 1
+	grace_workspace=$(create_todo_sync_candidate "pulse-todo-sync.GRACE1" "99999991" "dead-owner" "$now_epoch") || return 1
+	unknown_workspace=$(create_todo_sync_candidate "pulse-todo-sync.UNKNWN" "99999992" "dead-owner" "$((now_epoch - 20))") || return 1
+	visibility_definition=$(declare -f _ptsw_process_visibility_available)
+	_ptsw_process_visibility_available() { return 1; }
+
+	removed=$(cleanup_stale_temp_worktrees) || rc=1
+	eval "$visibility_definition"
+	[[ "$removed" == "0" ]] || rc=1
+	[[ -d "$active_workspace" && -d "$grace_workspace" && -d "$unknown_workspace" ]] || rc=1
+	grep -q 'reason=active-owner workspace=pulse-todo-sync.ACTIVE' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=grace-period workspace=pulse-todo-sync.GRACE1' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=owner-visibility-unknown workspace=pulse-todo-sync.UNKNWN' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync cleanup preserves active, fresh, and visibility-unknown owners" "$rc" \
+		"removed=$removed"
+	return 0
+}
+
+test_todo_sync_stale_recovery_name_guard_and_cap() {
+	teardown
+	setup_subject || return 1
+	local now_epoch=0
+	local first_workspace=""
+	local second_workspace=""
+	local malformed_workspace=""
+	local remaining=0
+	local trash_count=0
+	local trash_path=""
+	local removed=0
+	local rc=0
+	now_epoch=$(date +%s) || return 1
+	export PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN=1
+	first_workspace=$(create_todo_sync_candidate "pulse-todo-sync.AAAAAA" "99999993" "dead-owner" "$((now_epoch - 20))") || return 1
+	second_workspace=$(create_todo_sync_candidate "pulse-todo-sync.BBBBBB" "99999994" "dead-owner" "$((now_epoch - 20))") || return 1
+	malformed_workspace=$(create_todo_sync_candidate "pulse-todo-sync.bad-name" "99999995" "dead-owner" "$((now_epoch - 20))") || return 1
+
+	removed=$(cleanup_stale_temp_worktrees) || rc=1
+	[[ "$removed" == "1" ]] || rc=1
+	remaining=$(count_todo_sync_candidates)
+	[[ "$remaining" == "2" ]] || rc=1
+	[[ -d "$malformed_workspace" ]] || rc=1
+	if [[ ! -d "$first_workspace" && ! -d "$second_workspace" ]]; then
+		rc=1
+	fi
+	for trash_path in "$AIDEVOPS_TODO_SYNC_TRASH_ROOT"/aidevops-pulse-todo-sync-*; do
+		[[ -d "$trash_path" ]] || continue
+		trash_count=$((trash_count + 1))
+	done
+	[[ "$trash_count" -eq 1 ]] || rc=1
+	grep -q 'outcome=removed reason=dead-owner workspace=pulse-todo-sync\.' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=recovery-cap workspace=pulse-todo-sync\.' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=malformed-name workspace=pulse-todo-sync.bad-name' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync cleanup trashes only valid stale candidates within its cap" "$rc" \
+		"removed=$removed remaining=$remaining trash_count=$trash_count"
+	return 0
+}
+
+test_todo_sync_trash_failure_is_audited() {
+	teardown
+	setup_subject || return 1
+	local now_epoch=0
+	local workspace_root=""
+	local blocked_trash="${TEST_ROOT}/blocked-trash"
+	local removed=0
+	local rc=0
+	now_epoch=$(date +%s) || return 1
+	workspace_root=$(create_todo_sync_candidate "pulse-todo-sync.FAIL01" "99999996" "dead-owner" "$((now_epoch - 20))") || return 1
+	printf 'not a directory\n' >"$blocked_trash" || return 1
+	export AIDEVOPS_TODO_SYNC_TRASH_ROOT="$blocked_trash"
+
+	removed=$(cleanup_stale_temp_worktrees) || rc=1
+	[[ "$removed" == "0" ]] || rc=1
+	[[ -d "$workspace_root" ]] || rc=1
+	grep -q 'outcome=failure reason=trash-move-failed workspace=pulse-todo-sync.FAIL01' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync trash failures remain recoverable and auditable" "$rc" \
+		"removed=$removed candidate_exists=$([[ -d "$workspace_root" ]] && printf y || printf n)"
+	return 0
+}
+
 run_test() {
 	local test_function="$1"
 	local tests_before="$TESTS_RUN"
@@ -394,6 +516,9 @@ run_test test_degraded_visibility_preserves_temp_candidate
 run_test test_cleanup_lock_race_guards
 run_test test_stale_local_main_uses_remote_default
 run_test test_path_classifier_rejects_normal_linked_worktree
+run_test test_todo_sync_active_grace_and_visibility_guards
+run_test test_todo_sync_stale_recovery_name_guard_and_cap
+run_test test_todo_sync_trash_failure_is_audited
 
 printf '\nResults: %s/%s passed, %s failed.\n' \
 	"$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"

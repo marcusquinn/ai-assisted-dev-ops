@@ -13,6 +13,12 @@ _PTWC_LOCK_OWNER_PID=""
 _PTWC_LOCK_OWNER_START=""
 _PTWC_RECLAIM_GUARD_TOKEN=""
 
+_PTWC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${_PTWC_SCRIPT_DIR}/pulse-todo-sync-workspace.sh" ]]; then
+	# shellcheck source=pulse-todo-sync-workspace.sh
+	source "${_PTWC_SCRIPT_DIR}/pulse-todo-sync-workspace.sh"
+fi
+
 _ptwc_is_temp_fixture_path() {
 	local wt_path="$1"
 	case "$wt_path" in
@@ -488,6 +494,8 @@ cleanup_stale_temp_worktrees() {
 	local repo_paths=""
 	local repo_path=""
 	local repo_removed=0
+	local todo_sync_removed=0
+	local worktree_removed=0
 	local total_removed=0
 	local remaining_removals=0
 
@@ -498,9 +506,14 @@ cleanup_stale_temp_worktrees() {
 		return 0
 	fi
 	lock_dir="$_PTWC_LOCK_DIR"
+	if declare -F _ptsw_sweep_stale_workspaces >/dev/null 2>&1; then
+		todo_sync_removed=$(_ptsw_sweep_stale_workspaces) || todo_sync_removed=0
+		[[ "$todo_sync_removed" =~ ^[0-9]+$ ]] || todo_sync_removed=0
+		total_removed=$((total_removed + todo_sync_removed))
+	fi
 	if [[ ! -f "$repos_json" ]] || ! command -v jq >/dev/null 2>&1; then
 		_ptwc_lock_release "$lock_dir"
-		printf '0\n'
+		printf '%s\n' "$total_removed"
 		return 0
 	fi
 	now_epoch=$(date +%s)
@@ -508,16 +521,17 @@ cleanup_stale_temp_worktrees() {
 		"$repos_json" 2>/dev/null) || repo_paths=""
 	while IFS= read -r repo_path; do
 		[[ -n "$repo_path" ]] || continue
-		[[ "$total_removed" -lt "$max_removals" ]] || break
+		[[ "$worktree_removed" -lt "$max_removals" ]] || break
 		git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1 || continue
-		remaining_removals=$((max_removals - total_removed))
+		remaining_removals=$((max_removals - worktree_removed))
 		repo_removed=$(_ptwc_cleanup_repo "$repo_path" "$now_epoch" "$grace_secs" "$remaining_removals")
 		[[ "$repo_removed" =~ ^[0-9]+$ ]] || repo_removed=0
+		worktree_removed=$((worktree_removed + repo_removed))
 		total_removed=$((total_removed + repo_removed))
 	done <<<"$repo_paths"
 	_ptwc_lock_release "$lock_dir"
-	if [[ "$total_removed" -gt 0 ]]; then
-		printf '%s\n' "[pulse-wrapper] Temp worktree cleanup total: ${total_removed} stale detached fixture(s) removed" >>"${LOGFILE:-/dev/null}"
+	if [[ "$worktree_removed" -gt 0 ]]; then
+		printf '%s\n' "[pulse-wrapper] Temp worktree cleanup total: ${worktree_removed} stale detached fixture(s) removed" >>"${LOGFILE:-/dev/null}"
 	fi
 	printf '%s\n' "$total_removed"
 	return 0

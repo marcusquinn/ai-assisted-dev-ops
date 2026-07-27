@@ -10,6 +10,15 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="${TEST_DIR}/.."
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+
+# Fixture repositories are intentionally isolated under TMP. Use native Git so
+# the production canonical-worktree shim does not classify them as service
+# mirrors during local verification.
+git() {
+	/usr/bin/git "$@"
+	return $?
+}
 
 fail() {
 	local message="$1"
@@ -73,6 +82,7 @@ fixture_scripts="${TMP}/scripts"
 mkdir -p "$fixture_scripts"
 cp "$SCRIPTS_DIR/pulse-wrapper-cycle.sh" "$fixture_scripts/pulse-wrapper-cycle.sh"
 cp "$SCRIPTS_DIR/planning-publisher.sh" "$fixture_scripts/planning-publisher.sh"
+cp "$SCRIPTS_DIR/pulse-todo-sync-workspace.sh" "$fixture_scripts/pulse-todo-sync-workspace.sh"
 cat >"${fixture_scripts}/issue-sync-helper.sh" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -97,6 +107,7 @@ chmod +x "${fixture_scripts}/issue-sync-helper.sh"
 
 export CALL_LOG="${TMP}/calls.log"
 export WRAPPER_LOGFILE="${TMP}/pulse.log"
+export LOGFILE="$WRAPPER_LOGFILE"
 export SCRIPT_DIR="$fixture_scripts"
 export AIDEVOPS_TEMP_DIR="${TMP}/automation"
 export AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true
@@ -106,6 +117,34 @@ export GIT_COMMITTER_NAME=Test
 export GIT_COMMITTER_EMAIL=test@example.com
 # shellcheck source=/dev/null
 source "$fixture_scripts/pulse-wrapper-cycle.sh"
+# Keep publication seams available in the parent test shell. Production loads
+# the same module inside the isolated sync scope when it is not already loaded.
+# shellcheck source=/dev/null
+source "$fixture_scripts/planning-publisher.sh"
+
+wait_for_file() {
+	local file_path="$1"
+	local max_attempts="${2:-100}"
+	local attempt=0
+	while [[ ! -e "$file_path" && "$attempt" -lt "$max_attempts" ]]; do
+		sleep 0.1
+		attempt=$((attempt + 1))
+	done
+	[[ -e "$file_path" ]]
+	return $?
+}
+
+only_todo_sync_workspace() {
+	local workspace_root=""
+	local match_count=0
+	for workspace_root in "$AIDEVOPS_TEMP_DIR"/pulse-todo-sync.*; do
+		[[ -d "$workspace_root" ]] || continue
+		match_count=$((match_count + 1))
+		printf '%s\n' "$workspace_root"
+	done
+	[[ "$match_count" -eq 1 ]]
+	return $?
+}
 
 canonical_snapshot() {
 	local root="$1"
@@ -122,6 +161,8 @@ printf '%s\n' 'human canonical dirt A' >>"$repo_a/TODO.md"
 printf '%s\n' 'human canonical dirt B' >>"$repo_b/TODO.md"
 snapshot_a=$(canonical_snapshot "$repo_a")
 snapshot_b=$(canonical_snapshot "$repo_b")
+parent_exit_trap_before=$(trap -p EXIT)
+parent_term_trap_before=$(trap -p TERM)
 sync_todo_refs_for_repo owner/repo-a "$repo_a"
 [[ $(canonical_snapshot "$repo_a") == "$snapshot_a" ]] || fail "repo A canonical checkout changed"
 [[ $(canonical_snapshot "$repo_b") == "$snapshot_b" ]] || fail "repo A invocation changed repo B"
@@ -131,6 +172,8 @@ sync_todo_refs_for_repo owner/repo-b "$repo_b"
 [[ $(canonical_snapshot "$repo_a") == "$snapshot_a" ]] || fail "repo B invocation changed repo A"
 [[ $(canonical_snapshot "$repo_b") == "$snapshot_b" ]] || fail "repo B canonical checkout changed"
 git --git-dir="$remote_b" show main:TODO.md | grep -q '^synced:owner/repo-b$' || fail "repo B remote was not synced"
+[[ $(trap -p EXIT) == "$parent_exit_trap_before" ]] || fail "sync scope replaced the caller EXIT trap"
+[[ $(trap -p TERM) == "$parent_term_trap_before" ]] || fail "sync scope replaced the caller TERM trap"
 
 [[ $(wc -l <"$CALL_LOG" | tr -d ' ') -eq 8 ]] || fail "pulse did not make four bound calls per repository"
 if grep -Fq "|${repo_a}" "$CALL_LOG" || grep -Fq "|${repo_b}" "$CALL_LOG"; then
@@ -157,5 +200,134 @@ AIDEVOPS_PLANNING_BEFORE_PUSH_HOOK=/usr/bin/false \
 [[ $(git --git-dir="$remote_c" rev-parse main) == "$remote_c_before" ]] || fail "failed publication changed remote"
 grep -q 'status=retryable_failure stage=publication repo=owner/repo-c rc=1' "$WRAPPER_LOGFILE" || \
 	fail "publication failure evidence was not logged"
+
+# Cleanup failure is observable without replacing the reconciliation result.
+# Use a retryable-conflict result (2) so a cleanup helper failure cannot be
+# mistaken for the original status.
+repo_cleanup_failure="${TMP}/repo-cleanup-failure"
+remote_cleanup_failure="${TMP}/remote-cleanup-failure.git"
+setup_sync_repo "$repo_cleanup_failure" "$remote_cleanup_failure"
+remove_owned_workspace_definition=$(declare -f _ptsw_remove_owned_workspace)
+planning_publish_definition=$(declare -f planning_publish)
+_ptsw_remove_owned_workspace() {
+	local workspace_root="$1"
+	local expected_pid="$2"
+	local expected_start="$3"
+	: "$workspace_root" "$expected_pid" "$expected_start"
+	return 73
+}
+planning_publish() {
+	local worktree="$1"
+	local commit_message="$2"
+	local remote_name="$3"
+	local branch_name="$4"
+	local changed_paths="$5"
+	: "$worktree" "$commit_message" "$remote_name" "$branch_name" "$changed_paths"
+	PLANNING_PUBLISH_RESULT="retryable_conflict"
+	return 2
+}
+cleanup_failure_rc=0
+sync_todo_refs_for_repo owner/repo-cleanup-failure "$repo_cleanup_failure" || cleanup_failure_rc=$?
+[[ "$cleanup_failure_rc" -eq 2 ]] || fail "cleanup failure replaced retryable reconciliation status"
+grep -q 'workspace cleanup outcome=failure stage=publication repo=owner/repo-cleanup-failure workspace=pulse-todo-sync\.' \
+	"$WRAPPER_LOGFILE" || fail "cleanup failure was not recorded with stage and workspace identity"
+eval "$remove_owned_workspace_definition"
+eval "$planning_publish_definition"
+for leaked_workspace in "$AIDEVOPS_TEMP_DIR"/pulse-todo-sync.*; do
+	[[ -d "$leaked_workspace" ]] || continue
+	rm -rf "$leaked_workspace"
+done
+
+# A watchdog timeout sends TERM through the process tree. The function-local
+# subshell owns its traps, removes the allocated workspace, and leaves caller
+# trap state unchanged while the watchdog preserves its timeout result.
+repo_timeout="${TMP}/repo-timeout"
+remote_timeout="${TMP}/remote-timeout.git"
+setup_sync_repo "$repo_timeout" "$remote_timeout"
+run_issue_sync_stage_definition=$(declare -f _pulse_run_issue_sync_stage)
+export SYNC_BLOCK_MARKER="${TMP}/sync-blocked"
+export SYNC_BLOCK_RELEASE="${TMP}/sync-release"
+rm -f "$SYNC_BLOCK_MARKER" "$SYNC_BLOCK_RELEASE"
+_pulse_run_issue_sync_stage() {
+	local script_dir="$1"
+	local stage="$2"
+	local repo_slug="$3"
+	local workspace="$4"
+	: "$script_dir" "$repo_slug" "$workspace"
+	printf '%s\n' "$stage" >"$SYNC_BLOCK_MARKER"
+	while [[ ! -e "$SYNC_BLOCK_RELEASE" ]]; do
+		sleep 0.1
+	done
+	return 0
+}
+_kill_tree() {
+	local process_pid="$1"
+	local child_pid=""
+	while IFS= read -r child_pid; do
+		[[ -n "$child_pid" ]] && _kill_tree "$child_pid"
+	done < <(pgrep -P "$process_pid" 2>/dev/null || true)
+	kill "$process_pid" 2>/dev/null || true
+	return 0
+}
+_force_kill_tree() {
+	local process_pid="$1"
+	local child_pid=""
+	while IFS= read -r child_pid; do
+		[[ -n "$child_pid" ]] && _force_kill_tree "$child_pid"
+	done < <(pgrep -P "$process_pid" 2>/dev/null || true)
+	kill -9 "$process_pid" 2>/dev/null || true
+	return 0
+}
+unset _PULSE_WATCHDOG_LOADED 2>/dev/null || true
+# shellcheck source=../pulse-watchdog.sh
+source "$SCRIPTS_DIR/pulse-watchdog.sh"
+export PRE_RUN_STAGE_TIMEOUT=1
+timeout_rc=0
+run_stage_with_timeout "sync_todo_refs_all_repos" 1 \
+	sync_todo_refs_for_repo owner/repo-timeout "$repo_timeout" || timeout_rc=$?
+[[ "$timeout_rc" -eq 124 ]] || fail "watchdog timeout status was not preserved"
+[[ -e "$SYNC_BLOCK_MARKER" ]] || fail "watchdog fixture did not reach the allocated workspace stage"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "TERM timeout left a TODO-sync workspace behind"
+fi
+grep -q 'workspace cleanup outcome=removed stage=pull repo=owner/repo-timeout workspace=pulse-todo-sync\.' \
+	"$WRAPPER_LOGFILE" || fail "TERM cleanup outcome was not recorded"
+[[ $(trap -p EXIT) == "$parent_exit_trap_before" ]] || fail "timeout scope replaced the caller EXIT trap"
+[[ $(trap -p TERM) == "$parent_term_trap_before" ]] || fail "timeout scope replaced the caller TERM trap"
+
+# SIGKILL cannot run EXIT cleanup. Preserve that orphan, age its immutable
+# owner marker, then prove the next bounded sweep moves it recoverably.
+repo_kill="${TMP}/repo-kill"
+remote_kill="${TMP}/remote-kill.git"
+setup_sync_repo "$repo_kill" "$remote_kill"
+export SYNC_BLOCK_MARKER="${TMP}/sync-kill-blocked"
+rm -f "$SYNC_BLOCK_MARKER" "$SYNC_BLOCK_RELEASE"
+sync_todo_refs_for_repo owner/repo-kill "$repo_kill" >/dev/null 2>&1 &
+kill_sync_pid=$!
+wait_for_file "$SYNC_BLOCK_MARKER" || fail "KILL fixture did not allocate a workspace"
+kill_workspace=$(only_todo_sync_workspace) || fail "KILL fixture did not expose exactly one workspace"
+_ptsw_read_owner_marker "$kill_workspace" || fail "KILL fixture owner marker was invalid"
+kill_owner_pid="$_PTSW_OWNER_PID"
+kill -0 "$kill_owner_pid" 2>/dev/null || fail "workspace marker did not identify a live sync owner"
+kill -9 "$kill_owner_pid" 2>/dev/null || fail "could not KILL sync owner"
+kill_wait_rc=0
+wait "$kill_sync_pid" 2>/dev/null || kill_wait_rc=$?
+[[ "$kill_wait_rc" -eq 137 ]] || fail "KILL fixture returned unexpected status"
+[[ -d "$kill_workspace" ]] || fail "KILL fixture did not preserve the orphan for recovery"
+_ptsw_read_owner_marker "$kill_workspace" || fail "orphan owner marker became invalid"
+old_owner_created=$(($(date +%s) - 10))
+printf '%s\t%s\t%s\t%s\n' "$_PTSW_MARKER_VERSION" "$_PTSW_OWNER_PID" \
+	"$old_owner_created" "$_PTSW_OWNER_START" >"${kill_workspace}/${_PTSW_OWNER_MARKER}"
+export PULSE_TODO_SYNC_WORKSPACE_GRACE_SECS=2
+export PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN=1
+export AIDEVOPS_TODO_SYNC_TRASH_ROOT="${TMP}/todo-sync-trash"
+kill_recovered=$(_ptsw_sweep_stale_workspaces)
+[[ "$kill_recovered" == "1" ]] || fail "later sweep did not recover the KILL orphan"
+[[ ! -e "$kill_workspace" ]] || fail "KILL orphan remained in the active temp root"
+grep -q 'stale cleanup outcome=removed reason=dead-owner workspace=pulse-todo-sync\.' \
+	"$WRAPPER_LOGFILE" || fail "KILL orphan recovery was not audited"
+eval "$run_issue_sync_stage_definition"
+unset PULSE_TODO_SYNC_WORKSPACE_GRACE_SECS PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN \
+	AIDEVOPS_TODO_SYNC_TRASH_ROOT SYNC_BLOCK_MARKER SYNC_BLOCK_RELEASE
 
 printf 'PASS: issue sync automation-workspace contract\n'
