@@ -494,9 +494,8 @@ test_queue_governor_reports_drain_rate_telemetry() {
 
 # ─── dispatch_triage_reviews tests (GH#15655) ────────────────────────────────
 #
-# These tests exercise the full parse → resolve → dispatch path of
-# dispatch_triage_reviews() without spawning real workers.  headless-runtime-
-# helper.sh is stubbed so no external processes are launched.
+# These tests exercise the parse → resolve → metadata → dispatch path of
+# dispatch_triage_reviews() without external reads or real worker processes.
 #
 # Key regressions guarded:
 #   #15614 — function never called (ordering bug, not tested here)
@@ -504,48 +503,37 @@ test_queue_governor_reports_drain_rate_telemetry() {
 #   #15631 — head -n -2 (GNU-only) in model-availability-helper.sh
 #   #15636 — ${model_args[@]} unbound variable under set -u
 
-# Stub headless-runtime-helper.sh so dispatch_triage_reviews does not launch
-# real workers.  Records each invocation in DISPATCH_LOG for assertion.
-DISPATCH_LOG=""
-
-headless_runtime_helper_stub() {
-	# Capture the --session-key value to confirm which issue was dispatched.
-	local session_key=""
-	while [[ $# -gt 0 ]]; do
-		if [[ "$1" == "--session-key" ]]; then
-			session_key="${2:-}"
-			shift 2
-		else
-			shift
-		fi
-	done
-	DISPATCH_LOG="${DISPATCH_LOG}${session_key}"$'\n'
-	return 0
-}
-
-# Redirect the helper path used inside dispatch_triage_reviews to our stub.
-# We override the function that pulse-wrapper.sh calls by shadowing the
-# absolute path with a shell function of the same basename, then patching
-# the call via PATH prepend.
+# Stub prompt construction and worker dispatch so these tests exercise the
+# candidate parse, repository resolution, metadata propagation, and slot
+# accounting path without GitHub reads, sensitive artifacts, or model launch.
+# Prompt security and runtime dispatch have dedicated regression suites.
 _setup_dispatch_stub() {
-	local stub_dir="${TEST_ROOT}/stubs"
-	mkdir -p "$stub_dir"
-	# Write a stub script that appends the session-key to DISPATCH_LOG.
-	printf '#!/usr/bin/env bash\n' >"${stub_dir}/headless-runtime-helper.sh"
-	printf 'session_key=""\n' >>"${stub_dir}/headless-runtime-helper.sh"
-	printf 'while [[ $# -gt 0 ]]; do\n' >>"${stub_dir}/headless-runtime-helper.sh"
-	# shellcheck disable=SC2016
-	printf '  if [[ "$1" == "--session-key" ]]; then session_key="${2:-}"; shift 2; else shift; fi\n' >>"${stub_dir}/headless-runtime-helper.sh"
-	printf 'done\n' >>"${stub_dir}/headless-runtime-helper.sh"
-	# shellcheck disable=SC2016
-	printf 'printf "%%s\\n" "$session_key" >> "${DISPATCH_LOG_FILE}"\n' >>"${stub_dir}/headless-runtime-helper.sh"
-	chmod +x "${stub_dir}/headless-runtime-helper.sh"
-	export PATH="${stub_dir}:${PATH}"
-	# Override HEADLESS_RUNTIME_HELPER so dispatch_triage_reviews uses the stub
-	# instead of the absolute path set when pulse-wrapper.sh was sourced.
-	export HEADLESS_RUNTIME_HELPER="${stub_dir}/headless-runtime-helper.sh"
 	export DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch.log"
 	: >"$DISPATCH_LOG_FILE"
+
+	_build_triage_review_prompt() {
+		local issue_num="$1"
+		local repo_slug="$2"
+		local repo_path="$3"
+		local snapshot_hash=""
+		local public_revision=""
+		printf -v snapshot_hash '%064d' 0
+		printf -v public_revision '%040d' 0
+		printf '%s|test-content-%s|issue||%s|%s\n' \
+			"${TEST_ROOT}/prompt-${repo_slug//\//-}-${issue_num}-${repo_path##*/}.md" \
+			"$issue_num" "$snapshot_hash" "$public_revision"
+		return 0
+	}
+
+	_dispatch_triage_review_worker() {
+		local issue_num="$1"
+		local repo_slug="$2"
+		local repo_path="$3"
+		printf '%s|%s|%s\n' "$issue_num" "$repo_slug" "$repo_path" \
+			>>"$DISPATCH_LOG_FILE"
+		return 0
+	}
+
 	return 0
 }
 
