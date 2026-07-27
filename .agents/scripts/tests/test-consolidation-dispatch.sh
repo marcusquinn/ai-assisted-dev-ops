@@ -414,6 +414,29 @@ Duplicate body should not post."
 	return 0
 }
 
+test_idempotent_pr_comment_uses_paginated_rest_comments() {
+	setup_gh_stub
+	GH_API_COMMENTS_JSON=$(jq -n '[[{"body":"older page"}],[{"body":"## PR Gate Marker\n\nA gate comment already exists."}]]')
+	export GH_API_COMMENTS_JSON
+
+	_gh_idempotent_comment 456 "owner/repo" \
+		"## PR Gate Marker" \
+		"## PR Gate Marker
+
+Duplicate body should not post." "pr"
+
+	if grep -qF 'api repos/owner/repo/issues/456/comments?per_page=100 --paginate --slurp' "$GH_LOG" 2>/dev/null &&
+		! grep -qE '^(pr view|pr comment)' "$GH_LOG" 2>/dev/null; then
+		print_result "_gh_idempotent_comment reads PR conversation comments through paginated REST" 0
+	else
+		print_result "_gh_idempotent_comment reads PR conversation comments through paginated REST" 1 \
+			"unexpected gh calls: $(cat "$GH_LOG")"
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
 test_needs_consolidation_skips_with_child() {
 	setup_gh_stub
 	GH_ISSUE_VIEW_LABELS="bug,tier:standard"
@@ -1003,6 +1026,7 @@ main() {
 	test_consolidation_child_exists_detects_parent_dispatch_comment_on_later_page
 	test_consolidation_child_exists_fails_closed_on_search_error
 	test_idempotent_comment_reads_paginated_issue_comments
+	test_idempotent_pr_comment_uses_paginated_rest_comments
 	test_needs_consolidation_skips_with_child
 
 	# t2144 regression suite

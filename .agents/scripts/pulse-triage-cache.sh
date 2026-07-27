@@ -284,22 +284,18 @@ _gh_idempotent_comment() {
 		return 2
 	fi
 
-	# Fetch existing comments and check for marker.
-	# Use the REST API for issues; gh pr view for PRs.
+	# Fetch existing issue comments and check for marker. Pull-request
+	# conversation comments use this same REST endpoint; native `gh pr view
+	# --json comments` is GraphQL-only and cannot expose response-owned cost.
 	local existing_comments=""
-	if [[ "$entity_type" == "pr" ]]; then
-		existing_comments=$(gh pr view "$entity_number" --repo "$repo_slug" \
-			--json comments --jq '.comments[].body')
-	else
-		# t3565: GitHub's issue-comments REST endpoint defaults to the oldest
-		# 30 comments. Long-running issues can have idempotency markers beyond
-		# page 1, so normalize paginated gh output before grepping for markers.
-		existing_comments=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${entity_number}/comments?per_page=100" \
-			--paginate --slurp | jq -r --arg array_type "$_PTC_JSON_ARRAY_TYPE" '
-				(if (type == $array_type and ((.[0]? | type) == $array_type)) then .[] else . end)[]
-				| .body // ""
-			')
-	fi
+	# t3565: GitHub's issue-comments REST endpoint defaults to the oldest
+	# 30 comments. Long-running issues and PRs can have idempotency markers
+	# beyond page 1, so normalize paginated gh output before grepping.
+	existing_comments=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${entity_number}/comments?per_page=100" \
+		--paginate --slurp | jq -r --arg array_type "$_PTC_JSON_ARRAY_TYPE" '
+			(if (type == $array_type and ((.[0]? | type) == $array_type)) then .[] else . end)[]
+			| .body // ""
+		')
 	local api_exit=$?
 
 	if [[ $api_exit -ne 0 ]]; then
