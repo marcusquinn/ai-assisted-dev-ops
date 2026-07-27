@@ -13,7 +13,8 @@
 #   6. `gh pr create --body` without marker gets sig appended
 #   7. `AIDEVOPS_GH_SHIM_DISABLE=1` bypasses the shim entirely
 #   8. Recursion guard: `_AIDEVOPS_GH_SHIM_ACTIVE=1` fails closed immediately
-#   9. Canonical aidevops framework-bug briefs are validated before transport
+#   9. Framework-bug validation advises without blocking issue publication
+#  10. Conflicting dispatch-intent labels are normalized before transport
 #
 # Strategy: run the shim against a stub `gh` binary that logs its args, and
 # a stub `gh-signature-helper.sh` that emits a predictable footer. Assert
@@ -251,6 +252,19 @@ _read_sig_argv() {
 	}
 	cat "${STUB_SIG_LOG:-}"
 	return 0
+}
+
+_argv_has_pair() {
+	local flag="$1"
+	local value="$2"
+	if awk -v flag="$flag" -v value="$value" '
+		previous == flag && $0 == value { found = 1 }
+		{ previous = $0 }
+		END { exit found ? 0 : 1 }
+	' "$STUB_GH_LOG"; then
+		return 0
+	fi
+	return 1
 }
 
 # =============================================================================
@@ -1126,10 +1140,10 @@ else
 fi
 
 # =============================================================================
-# Test 25: canonical aidevops framework-bug briefs are validated before writes
+# Test 25: framework-bug validation advises without blocking publication
 # =============================================================================
 echo ""
-echo "Test 25: executable framework-bug brief validation"
+echo "Test 25: advisory framework-bug brief validation"
 
 malformed_brief="$TMP/malformed-framework-bug.md"
 cat >"$malformed_brief" <<'EOF'
@@ -1147,13 +1161,15 @@ _reset_log
 if "$SHIM_RUN" issue create --repo marcusquinn/aidevops \
 	--title "bug(cleanup): malformed report" --label bug \
 	--body-file "$malformed_brief" 2>"$TMP/malformed-file.err"; then
-	_fail "malformed framework-bug body-file guard" "write unexpectedly passed"
-elif [[ ! -s "$STUB_GH_LOG" ]] && cmp -s "$malformed_brief" "$TMP/malformed-framework-bug.original" &&
-	grep -q '\[aidevops\]\[issue-brief\]\[BLOCK\]' "$TMP/malformed-file.err" &&
-	grep -q 'Reproducer requires' "$TMP/malformed-file.err"; then
-	_pass "malformed body-file is blocked before transport without source mutation"
+	if [[ -s "$STUB_GH_LOG" ]] && cmp -s "$malformed_brief" "$TMP/malformed-framework-bug.original" &&
+		grep -q '\[aidevops\]\[issue-brief\]\[WARN\]' "$TMP/malformed-file.err" &&
+		grep -q 'Reproducer requires' "$TMP/malformed-file.err"; then
+		_pass "malformed body-file warns and reaches transport without source mutation"
+	else
+		_fail "malformed framework-bug body-file advisory" "argv: $(_read_argv) err: $(cat "$TMP/malformed-file.err" 2>/dev/null || true)"
+	fi
 else
-	_fail "malformed framework-bug body-file guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-file.err" 2>/dev/null || true)"
+	_fail "malformed framework-bug body-file advisory" "write was blocked"
 fi
 
 _reset_log
@@ -1161,11 +1177,14 @@ malformed_inline=$(<"$malformed_brief")
 if "$SHIM_RUN" issue create --repo marcusquinn/aidevops \
 	--title "bug(shim): malformed inline report" --body "$malformed_inline" \
 	2>"$TMP/malformed-inline.err"; then
-	_fail "malformed inline framework-bug guard" "write unexpectedly passed"
-elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'Reproducer requires' "$TMP/malformed-inline.err"; then
-	_pass "malformed inline body is blocked before transport"
+	if [[ -s "$STUB_GH_LOG" ]] && grep -q '\[aidevops\]\[issue-brief\]\[WARN\]' "$TMP/malformed-inline.err" &&
+		grep -q 'Reproducer requires' "$TMP/malformed-inline.err"; then
+		_pass "malformed inline body warns and reaches transport"
+	else
+		_fail "malformed inline framework-bug advisory" "argv: $(_read_argv) err: $(cat "$TMP/malformed-inline.err" 2>/dev/null || true)"
+	fi
 else
-	_fail "malformed inline framework-bug guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-inline.err" 2>/dev/null || true)"
+	_fail "malformed inline framework-bug advisory" "write was blocked"
 fi
 
 valid_investigation="$TMP/valid-framework-investigation.md"
@@ -1207,17 +1226,17 @@ The issue-create guard accepts a proven bug report.
 
 **Symptom command**: `gh issue create --repo marcusquinn/aidevops`
 
-**Actual output**: `the malformed write reached the stub`
+**Actual output**: `the issue write reached the transport stub`
 
-**Expected output**: `the malformed write is rejected`
+**Expected output**: `validated reports and incomplete reports can both be published`
 
 **Causal status**: confirmed
 
 **Production entry point**: `.agents/scripts/gh` receives the issue-create command
 
-**Call chain**: issue creation enters the shim and validates before the native CLI
+**Call chain**: issue creation enters the shim and validates advisorially before the native CLI
 
-**Integrated verification**: this hermetic command reaches the transport stub only after validation
+**Integrated verification**: this hermetic command reaches the transport stub after advisory validation
 EOF
 valid_confirmed=$(<"$valid_confirmed_file")
 _reset_log
@@ -1289,11 +1308,14 @@ _reset_log
 if "$SHIM_RUN" api /repos/marcusquinn/aidevops/issues -X POST \
 	-f "title=bug(rest): malformed fallback report" -F "body=@$malformed_brief" \
 	-f 'labels[]=bug' 2>"$TMP/malformed-rest.err"; then
-	_fail "malformed REST fallback guard" "write unexpectedly passed"
-elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'Reproducer requires' "$TMP/malformed-rest.err"; then
-	_pass "malformed REST fallback body is blocked before transport"
+	if [[ -s "$STUB_GH_LOG" ]] && grep -q '\[aidevops\]\[issue-brief\]\[WARN\]' "$TMP/malformed-rest.err" &&
+		grep -q 'Reproducer requires' "$TMP/malformed-rest.err"; then
+		_pass "malformed REST fallback body warns and reaches transport"
+	else
+		_fail "malformed REST fallback advisory" "argv: $(_read_argv) err: $(cat "$TMP/malformed-rest.err" 2>/dev/null || true)"
+	fi
 else
-	_fail "malformed REST fallback guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-rest.err" 2>/dev/null || true)"
+	_fail "malformed REST fallback advisory" "write was blocked"
 fi
 
 _reset_log
@@ -1304,6 +1326,70 @@ if [[ "$resolved_output" == resolved_body_file=* ]] &&
 	_pass "valid SHIM_TEST_MODE path remains available and source-safe"
 else
 	_fail "SHIM_TEST_MODE compatibility" "output: $resolved_output"
+fi
+
+# =============================================================================
+# Test 26: dispatch-intent labels are mutually exclusive at transport
+# =============================================================================
+echo ""
+echo "Test 26: dispatch-intent label normalization"
+
+_reset_log
+"$SHIM_RUN" issue create --repo owner/repo --title "Dispatch intent conflict" \
+	--body "Capture the issue." --label "bug,auto-dispatch" --label no-auto-dispatch \
+	2>"$TMP/dispatch-create.err"
+if grep -Fxq 'no-auto-dispatch' "$STUB_GH_LOG" &&
+	! grep -Eq '(^|,)auto-dispatch(,|$)' "$STUB_GH_LOG" &&
+	grep -q '\[aidevops\]\[dispatch-labels\]\[NORMALIZE\]' "$TMP/dispatch-create.err"; then
+	_pass "issue creation keeps the manual hold when both dispatch labels are requested"
+else
+	_fail "issue-create dispatch conflict normalization" "argv: $(_read_argv) err: $(cat "$TMP/dispatch-create.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+"$SHIM_RUN" issue edit 42 --repo owner/repo --add-label no-auto-dispatch \
+	--remove-label no-auto-dispatch 2>/dev/null
+if _argv_has_pair "--add-label" "no-auto-dispatch" &&
+	_argv_has_pair "--remove-label" "auto-dispatch" &&
+	! _argv_has_pair "--remove-label" "no-auto-dispatch"; then
+	_pass "adding no-auto-dispatch removes auto-dispatch and preserves the requested hold"
+else
+	_fail "manual dispatch-intent issue edit" "argv: $(_read_argv)"
+fi
+
+_reset_log
+"$SHIM_RUN" issue edit 42 --repo owner/repo --add-label auto-dispatch \
+	--remove-label auto-dispatch 2>/dev/null
+if _argv_has_pair "--add-label" "auto-dispatch" &&
+	_argv_has_pair "--remove-label" "no-auto-dispatch" &&
+	! _argv_has_pair "--remove-label" "auto-dispatch"; then
+	_pass "adding auto-dispatch removes no-auto-dispatch and preserves automation intent"
+else
+	_fail "automatic dispatch-intent issue edit" "argv: $(_read_argv)"
+fi
+
+_reset_log
+"$SHIM_RUN" issue edit 42 --repo owner/repo --add-label auto-dispatch \
+	--add-label no-auto-dispatch 2>"$TMP/dispatch-edit.err"
+if _argv_has_pair "--add-label" "no-auto-dispatch" &&
+	! _argv_has_pair "--add-label" "auto-dispatch" &&
+	_argv_has_pair "--remove-label" "auto-dispatch" &&
+	grep -q '\[aidevops\]\[dispatch-labels\]\[NORMALIZE\]' "$TMP/dispatch-edit.err"; then
+	_pass "same-command issue-edit conflict fails safe to no-auto-dispatch"
+else
+	_fail "issue-edit dispatch conflict normalization" "argv: $(_read_argv) err: $(cat "$TMP/dispatch-edit.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+"$SHIM_RUN" api /repos/owner/repo/issues -f 'title=REST dispatch conflict' \
+	-f 'body=Capture the issue.' -f 'labels[]=auto-dispatch' -f 'labels[]=no-auto-dispatch' \
+	2>"$TMP/dispatch-rest.err"
+if _argv_has_pair "-f" "labels[]=no-auto-dispatch" &&
+	! _argv_has_pair "-f" "labels[]=auto-dispatch" &&
+	grep -q '\[aidevops\]\[dispatch-labels\]\[NORMALIZE\]' "$TMP/dispatch-rest.err"; then
+	_pass "REST issue creation cannot transport both dispatch-intent labels"
+else
+	_fail "REST dispatch conflict normalization" "argv: $(_read_argv) err: $(cat "$TMP/dispatch-rest.err" 2>/dev/null || true)"
 fi
 
 # =============================================================================

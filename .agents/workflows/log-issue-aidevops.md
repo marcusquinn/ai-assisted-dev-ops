@@ -325,14 +325,21 @@ Do not validate an earlier draft or inline copy:
 ```
 
 If validation fails, correct the evidence or explicitly reframe the report as an
-unconfirmed investigation. Do not run `gh issue create` until validation passes.
+unconfirmed investigation when practical. Do not suppress a useful issue solely
+because its report is incomplete: publish it without `auto-dispatch`, retain the
+validator output as enrichment guidance, and let later triage improve the body.
 
 The aidevops `gh` PATH shim repeats this final-body validation at exec time for
 non-tracking framework-bug reports targeting `marcusquinn/aidevops`. This is a
-deterministic backstop for raw and wrapped `gh issue create` calls, not a
-replacement for the workflow check above. A blocked write leaves the caller's
-body file unchanged; apply the validator's remediation and retry. Internal
-`tNNN:` / `GH#NNN:` tracking tasks and non-bug issue shapes are exempt.
+non-blocking quality advisory for raw and wrapped `gh issue create` calls, not a
+publication gate or a replacement for the workflow check above. The shim leaves
+the caller's body file unchanged. Internal `tNNN:` / `GH#NNN:` tracking tasks and
+non-bug issue shapes are exempt.
+
+The same shim deterministically normalizes mutually exclusive dispatch intent:
+`auto-dispatch` and `no-auto-dispatch` never reach issue transport together. An
+explicit `no-auto-dispatch` hold wins a same-command conflict; adding either
+label to an existing issue removes its opposite without blocking the edit.
 
 ```bash
 gh issue create -R marcusquinn/aidevops \

@@ -128,7 +128,7 @@ Do not end a save flow with only "start anytime" when the task is worker-ready; 
   - automatable verification; and
   - 2+ acceptance criteria beyond generic tests/lint.
 
-  If readiness is missing, finish the brief first or mark the work `#parent`/blocked instead of filing a non-dispatchable implementation issue. See `workflows/plans.md` "Auto-Dispatch Tagging".
+  If readiness is missing, improve the brief when practical, but do not suppress useful issue publication. Publish without `#auto-dispatch`, state the missing information, and leave the issue recorded for enrichment; use `#parent`/blocked only when those semantics are true. Do not add `#no-auto-dispatch` merely because readiness is incomplete—that label is reserved for durable manual intent. See `workflows/plans.md` "Auto-Dispatch Tagging".
 - **Exclusions**: Omit `#auto-dispatch` only for:
   - blocker labels;
   - credentials, accounts, or purchases;
@@ -141,6 +141,7 @@ Do not end a save flow with only "start anytime" when the task is worker-ready; 
   Dispatch-path files are **not** excluded post-t2920; they auto-dispatch with opus-4-7 elevation. Canonical blocker label set: `reference/dispatch-blockers.md`.
 - **Dispatch-path advisory (t2821, t2832, t2920)**: When a task's `### Files Scope` or `## How` section references a file in `.agents/configs/self-hosting-files.conf`, use `#auto-dispatch` as normal. The t2819 detector auto-elevates these workers to `tier:thinking`; runtime routing chooses the concrete model and reasoning level. Worker isolation, CI gates, watchdog kills, and the t2690 circuit breaker replace the historical `no-auto-dispatch` default. **Opt-out (rare):** use `#no-auto-dispatch #interactive` only when intentionally observing the running system. Full decision tree: `reference/auto-dispatch.md` "Dispatch-Path Default (t2821 / t2920)".
 - **Quality gate**: Same readiness definition as `#auto-dispatch` above; do not maintain a second criteria list.
+- **Dispatch-label mutual exclusion**: `#auto-dispatch` and `#no-auto-dispatch` must never coexist. Managed issue-create/edit paths normalize conflicts without suppressing publication: an explicit manual hold wins a same-command conflict, and adding either label removes its opposite.
 - **Interactive workflow**: Add `assignee:` before pushing if working interactively.
 - **Server-side safety net (t2798)**: `.github/workflows/apply-status-available-default.yml` applies `status:available` to issues that carry `auto-dispatch` but have no `status:*` label — catches bypass-path creations (bare `gh issue create`, web UI) that skip `claim-task-id.sh`.
 

@@ -26,9 +26,9 @@
 # Design principles
 # -----------------
 #   1. Fast path: non-write subcommands pay a single case-match then exec.
-#   2. Fail-open infrastructure: missing helpers and malformed internal state
-#      preserve native `gh` behaviour. Deterministic write-policy violations
-#      still fail closed when their validator is available.
+#   2. Fail-open infrastructure: missing helpers and report-quality findings
+#      preserve native `gh` behaviour. Deterministic security/write-policy
+#      violations still fail closed; conflicting metadata is normalized.
 #   3. Recursion guard: if the shim somehow re-enters (subprocess inherits
 #      PATH), the second invocation short-circuits to the real gh.
 #   4. Single source of truth: uses the same marker (`<!-- aidevops:sig -->`)
@@ -1536,7 +1536,7 @@ _shim_framework_bug_candidate() {
 	return 1
 }
 
-_shim_validate_framework_bug_body() {
+_shim_advise_framework_bug_body() {
 	local body="$1"
 	local body_file="$2"
 	local validator="${_SHIM_DIR}/log-issue-helper.sh"
@@ -1565,10 +1565,10 @@ _shim_validate_framework_bug_body() {
 	fi
 
 	[[ -z "$temporary_body" ]] || rm -f "$temporary_body"
-	printf '[aidevops][issue-brief][BLOCK] Canonical aidevops framework-bug report failed final-body validation.\n' >&2
+	printf '[aidevops][issue-brief][WARN] Canonical aidevops framework-bug report failed final-body validation; publishing it for later enrichment.\n' >&2
 	[[ -z "$validation_output" ]] || printf '%s\n' "$validation_output" >&2
-	printf '  Add substantive ## Reproducer evidence or explicitly frame the report as an unconfirmed investigation, then retry.\n' >&2
-	return 1
+	printf '  Add substantive ## Reproducer evidence or explicitly frame the report as an unconfirmed investigation when practical.\n' >&2
+	return 0
 }
 
 _SHIM_ISSUE_BODY=""
@@ -1605,7 +1605,7 @@ _shim_issue_create_collect_body() {
 	return 0
 }
 
-_shim_validate_cli_issue_create_if_needed() {
+_shim_advise_cli_issue_create_if_needed() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]] || return 0
 	local repo_slug=""
 	local normalized_repo=""
@@ -1619,7 +1619,7 @@ _shim_validate_cli_issue_create_if_needed() {
 	_shim_issue_create_collect_body
 	_shim_issue_create_has_label "bug" && has_bug_label=1
 	_shim_framework_bug_candidate "$title" "$_SHIM_ISSUE_BODY" "$has_bug_label" || return 0
-	_shim_validate_framework_bug_body "$_SHIM_ISSUE_BODY" "$_SHIM_ISSUE_BODY_FILE"
+	_shim_advise_framework_bug_body "$_SHIM_ISSUE_BODY" "$_SHIM_ISSUE_BODY_FILE"
 	return $?
 }
 
@@ -1675,7 +1675,7 @@ _shim_api_issue_create_collect_fields() {
 	return 0
 }
 
-_shim_validate_api_issue_create_if_needed() {
+_shim_advise_api_issue_create_if_needed() {
 	[[ "${_modified_args[0]:-}" == "api" ]] || return 0
 	_shim_api_issue_create_collect_fields
 	local normalized_path=""
@@ -1684,18 +1684,224 @@ _shim_validate_api_issue_create_if_needed() {
 	[[ "$normalized_path" == "repos/marcusquinn/aidevops/issues" ]] || return 0
 	_shim_title_is_internal_tracking_issue "$_SHIM_API_ISSUE_TITLE" && return 0
 	_shim_framework_bug_candidate "$_SHIM_API_ISSUE_TITLE" "$_SHIM_API_ISSUE_BODY" "$_SHIM_API_ISSUE_HAS_BUG_LABEL" || return 0
-	_shim_validate_framework_bug_body "$_SHIM_API_ISSUE_BODY" "$_SHIM_API_ISSUE_BODY_FILE"
+	_shim_advise_framework_bug_body "$_SHIM_API_ISSUE_BODY" "$_SHIM_API_ISSUE_BODY_FILE"
 	return $?
 }
 
-_shim_validate_framework_bug_issue_create_if_needed() {
+_shim_advise_framework_bug_issue_create_if_needed() {
 	if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]]; then
-		_shim_validate_cli_issue_create_if_needed
+		_shim_advise_cli_issue_create_if_needed
 		return $?
 	fi
 	if [[ "${_modified_args[0]:-}" == "api" ]]; then
-		_shim_validate_api_issue_create_if_needed
+		_shim_advise_api_issue_create_if_needed
 		return $?
+	fi
+	return 0
+}
+
+# Dispatch intent is mechanically mutually exclusive. Preserve issue
+# publication and fail safe to the explicit manual hold when one write requests
+# both labels. For issue edits, adding either intent also removes its opposite.
+_SHIM_DISPATCH_AUTO_LABEL="auto-dispatch"
+_SHIM_DISPATCH_MANUAL_LABEL="no-auto-dispatch"
+_SHIM_FILTERED_LABEL_CSV=""
+
+_shim_filter_label_csv() {
+	local labels="$1"
+	local unwanted="$2"
+	local label=""
+	local joined=""
+	local label_array=()
+	local IFS=,
+	_SHIM_FILTERED_LABEL_CSV=""
+	read -ra label_array <<< "$labels"
+	for label in "${label_array[@]}"; do
+		label="${label#"${label%%[![:space:]]*}"}"
+		label="${label%"${label##*[![:space:]]}"}"
+		[[ -n "$label" && "$label" != "$unwanted" ]] || continue
+		joined="${joined}${joined:+,}${label}"
+	done
+	_SHIM_FILTERED_LABEL_CSV="$joined"
+	return 0
+}
+
+_shim_cli_label_action_has() {
+	local action_flag="$1"
+	local wanted="$2"
+	local idx=0
+	local arg=""
+	local value=""
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		value=""
+		if [[ "$arg" == "$action_flag" ]] ||
+			[[ "$action_flag" == "--label" && "$arg" == "-l" ]]; then
+			value="${_modified_args[idx + 1]:-}"
+			idx=$((idx + 2))
+		elif [[ "$arg" == "${action_flag}="* ]]; then
+			value="${arg#*=}"
+			idx=$((idx + 1))
+		elif [[ "$action_flag" == "--label" && "$arg" == -l?* ]]; then
+			value="${arg#-l}"
+			idx=$((idx + 1))
+		else
+			idx=$((idx + 1))
+			continue
+		fi
+		_shim_arg_labels_contain "$value" "$wanted" && return 0
+	done
+	return 1
+}
+
+_shim_filter_cli_label_action() {
+	local action_flag="$1"
+	local unwanted="$2"
+	local idx=0
+	local arg=""
+	local value=""
+	local -a rebuilt=()
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		if [[ "$arg" == "$action_flag" ]] ||
+			[[ "$action_flag" == "--label" && "$arg" == "-l" ]]; then
+			value="${_modified_args[idx + 1]:-}"
+			_shim_filter_label_csv "$value" "$unwanted"
+			[[ -z "$_SHIM_FILTERED_LABEL_CSV" ]] || rebuilt+=("$arg" "$_SHIM_FILTERED_LABEL_CSV")
+			idx=$((idx + 2))
+			continue
+		fi
+		if [[ "$arg" == "${action_flag}="* ]]; then
+			value="${arg#*=}"
+			_shim_filter_label_csv "$value" "$unwanted"
+			[[ -z "$_SHIM_FILTERED_LABEL_CSV" ]] || rebuilt+=("${action_flag}=${_SHIM_FILTERED_LABEL_CSV}")
+			idx=$((idx + 1))
+			continue
+		fi
+		if [[ "$action_flag" == "--label" && "$arg" == -l?* ]]; then
+			value="${arg#-l}"
+			_shim_filter_label_csv "$value" "$unwanted"
+			[[ -z "$_SHIM_FILTERED_LABEL_CSV" ]] || rebuilt+=("-l${_SHIM_FILTERED_LABEL_CSV}")
+			idx=$((idx + 1))
+			continue
+		fi
+		rebuilt+=("$arg")
+		idx=$((idx + 1))
+	done
+	_modified_args=("${rebuilt[@]}")
+	return 0
+}
+
+_shim_api_has_label_field() {
+	local wanted="$1"
+	local idx=0
+	local arg=""
+	local field=""
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		field=""
+		case "$arg" in
+		-f | -F | --field | --raw-field)
+			field="${_modified_args[idx + 1]:-}"
+			idx=$((idx + 2))
+			;;
+		-f* | -F*) field="${arg:2}"; idx=$((idx + 1)) ;;
+		--field=* | --raw-field=*) field="${arg#*=}"; idx=$((idx + 1)) ;;
+		*) idx=$((idx + 1)); continue ;;
+		esac
+		if [[ "$field" == "labels[]=${wanted}" || "$field" == "labels=${wanted}" ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+_shim_filter_api_label_field() {
+	local unwanted="$1"
+	local idx=0
+	local arg=""
+	local field=""
+	local -a rebuilt=()
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		field=""
+		case "$arg" in
+		-f | -F | --field | --raw-field)
+			field="${_modified_args[idx + 1]:-}"
+			if [[ "$field" != "labels[]=${unwanted}" && "$field" != "labels=${unwanted}" ]]; then
+				rebuilt+=("$arg" "$field")
+			fi
+			idx=$((idx + 2))
+			;;
+		-f* | -F*)
+			field="${arg:2}"
+			[[ "$field" == "labels[]=${unwanted}" || "$field" == "labels=${unwanted}" ]] || rebuilt+=("$arg")
+			idx=$((idx + 1))
+			;;
+		--field=* | --raw-field=*)
+			field="${arg#*=}"
+			[[ "$field" == "labels[]=${unwanted}" || "$field" == "labels=${unwanted}" ]] || rebuilt+=("$arg")
+			idx=$((idx + 1))
+			;;
+		*) rebuilt+=("$arg"); idx=$((idx + 1)) ;;
+		esac
+	done
+	_modified_args=("${rebuilt[@]}")
+	return 0
+}
+
+_shim_warn_dispatch_label_conflict() {
+	printf '[aidevops][dispatch-labels][NORMALIZE] Removed %s because %s was requested in the same issue write; publication continues.\n' \
+		"$_SHIM_DISPATCH_AUTO_LABEL" "$_SHIM_DISPATCH_MANUAL_LABEL" >&2
+	return 0
+}
+
+_shim_normalize_dispatch_labels() {
+	local has_auto=0
+	local has_manual=0
+	case "${_modified_args[0]:-}:${_modified_args[1]:-}" in
+	issue:create)
+		_shim_cli_label_action_has "--label" "$_SHIM_DISPATCH_AUTO_LABEL" && has_auto=1
+		_shim_cli_label_action_has "--label" "$_SHIM_DISPATCH_MANUAL_LABEL" && has_manual=1
+		if [[ $has_auto -eq 1 && $has_manual -eq 1 ]]; then
+			_shim_filter_cli_label_action "--label" "$_SHIM_DISPATCH_AUTO_LABEL"
+			_shim_warn_dispatch_label_conflict
+		fi
+		return 0
+		;;
+	issue:edit)
+		_shim_cli_label_action_has "--add-label" "$_SHIM_DISPATCH_AUTO_LABEL" && has_auto=1
+		_shim_cli_label_action_has "--add-label" "$_SHIM_DISPATCH_MANUAL_LABEL" && has_manual=1
+		if [[ $has_manual -eq 1 ]]; then
+			_shim_filter_cli_label_action "--add-label" "$_SHIM_DISPATCH_AUTO_LABEL"
+			_shim_filter_cli_label_action "--remove-label" "$_SHIM_DISPATCH_MANUAL_LABEL"
+			_shim_cli_label_action_has "--remove-label" "$_SHIM_DISPATCH_AUTO_LABEL" ||
+				_modified_args+=(--remove-label "$_SHIM_DISPATCH_AUTO_LABEL")
+			[[ $has_auto -eq 0 ]] || _shim_warn_dispatch_label_conflict
+		elif [[ $has_auto -eq 1 ]]; then
+			_shim_filter_cli_label_action "--remove-label" "$_SHIM_DISPATCH_AUTO_LABEL"
+			_shim_cli_label_action_has "--remove-label" "$_SHIM_DISPATCH_MANUAL_LABEL" ||
+				_modified_args+=(--remove-label "$_SHIM_DISPATCH_MANUAL_LABEL")
+		fi
+		return 0
+		;;
+	esac
+
+	[[ "${_modified_args[0]:-}" == "api" ]] || return 0
+	_shim_api_issue_create_collect_fields
+	local normalized_path=""
+	local normalized_method=""
+	normalized_path=$(printf '%s' "${_SHIM_API_ISSUE_PATH#/}" | tr '[:upper:]' '[:lower:]')
+	normalized_method=$(printf '%s' "$_SHIM_API_ISSUE_METHOD" | tr '[:lower:]' '[:upper:]')
+	# gh api infers POST when fields are supplied and no method is explicit.
+	[[ -n "$normalized_method" ]] || normalized_method="POST"
+	[[ "$normalized_method" == "POST" || "$normalized_method" == "PATCH" ]] || return 0
+	[[ "$normalized_path" =~ ^repos/[^/]+/[^/]+/issues(/[0-9]+(/labels)?)?$ ]] || return 0
+	_shim_api_has_label_field "$_SHIM_DISPATCH_AUTO_LABEL" && has_auto=1
+	_shim_api_has_label_field "$_SHIM_DISPATCH_MANUAL_LABEL" && has_manual=1
+	if [[ $has_auto -eq 1 && $has_manual -eq 1 ]]; then
+		_shim_filter_api_label_field "$_SHIM_DISPATCH_AUTO_LABEL"
+		_shim_warn_dispatch_label_conflict
 	fi
 	return 0
 }
@@ -1715,6 +1921,7 @@ _shim_normalize_interactive_tracking_issue_create() {
 }
 
 _shim_normalize_interactive_tracking_issue_create
+_shim_normalize_dispatch_labels
 
 _shim_normalize_pr_create_origin() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "pr:create" ]] || return 0
@@ -1903,9 +2110,7 @@ if ! _shim_block_pr_create_without_linked_issue_if_needed; then
 	exit 1
 fi
 
-if ! _shim_validate_framework_bug_issue_create_if_needed; then
-	exit 1
-fi
+_shim_advise_framework_bug_issue_create_if_needed
 
 if _shim_is_content_write_command "${_modified_args[@]}"; then
 	if ! _shim_block_headless_external_write_if_needed "${_modified_args[@]}"; then
