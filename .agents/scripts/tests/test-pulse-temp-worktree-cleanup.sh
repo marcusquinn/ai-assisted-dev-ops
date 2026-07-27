@@ -433,6 +433,39 @@ test_todo_sync_active_grace_and_visibility_guards() {
 	return 0
 }
 
+test_todo_sync_live_pid_with_hidden_identity_is_preserved() {
+	teardown
+	setup_subject || return 1
+	local now_epoch=0
+	local live_start=""
+	local workspace_root=""
+	local visibility_definition=""
+	local ps_definition=""
+	local removed=0
+	local rc=0
+	now_epoch=$(date +%s) || return 1
+	live_start=$(_ptsw_process_start_fingerprint "$$") || return 1
+	workspace_root=$(create_todo_sync_candidate "pulse-todo-sync.LIVEID" "$$" "$live_start" "$((now_epoch - 20))") || return 1
+	visibility_definition=$(declare -f _ptsw_process_visibility_available)
+	ps_definition=$(declare -f ps 2>/dev/null || true)
+	_ptsw_process_visibility_available() { return 0; }
+	ps() { return 1; }
+
+	removed=$(_ptsw_sweep_stale_workspaces) || rc=1
+	eval "$visibility_definition"
+	if [[ -n "$ps_definition" ]]; then
+		eval "$ps_definition"
+	else
+		unset -f ps
+	fi
+	[[ "$removed" == "0" ]] || rc=1
+	[[ -d "$workspace_root" ]] || rc=1
+	grep -q 'reason=owner-visibility-unknown workspace=pulse-todo-sync.LIVEID' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync cleanup fails closed for a live PID with hidden identity" "$rc" \
+		"removed=$removed"
+	return 0
+}
+
 test_todo_sync_stale_recovery_name_guard_and_cap() {
 	teardown
 	setup_subject || return 1
@@ -517,6 +550,7 @@ run_test test_cleanup_lock_race_guards
 run_test test_stale_local_main_uses_remote_default
 run_test test_path_classifier_rejects_normal_linked_worktree
 run_test test_todo_sync_active_grace_and_visibility_guards
+run_test test_todo_sync_live_pid_with_hidden_identity_is_preserved
 run_test test_todo_sync_stale_recovery_name_guard_and_cap
 run_test test_todo_sync_trash_failure_is_audited
 

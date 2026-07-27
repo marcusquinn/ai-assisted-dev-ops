@@ -23,8 +23,16 @@ _PULSE_TODO_SYNC_OWNER_START=""
 _ptsw_process_start_fingerprint() {
 	local process_pid="$1"
 	local process_start=""
+	local stat_content=""
+	local stat_after_comm=""
 	[[ "$process_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-	process_start=$(LC_ALL=C ps -p "$process_pid" -o lstart= 2>/dev/null) || return 1
+	if [[ -r "/proc/${process_pid}/stat" ]]; then
+		stat_content=$(<"/proc/${process_pid}/stat") || return 1
+		stat_after_comm="${stat_content##*) }"
+		process_start=$(printf '%s\n' "$stat_after_comm" | awk '{print $20}') || return 1
+	else
+		process_start=$(LC_ALL=C ps -p "$process_pid" -o lstart= 2>/dev/null) || return 1
+	fi
 	process_start="${process_start#"${process_start%%[![:space:]]*}"}"
 	process_start="${process_start%"${process_start##*[![:space:]]}"}"
 	[[ -n "$process_start" ]] || return 1
@@ -34,7 +42,11 @@ _ptsw_process_start_fingerprint() {
 
 _ptsw_resolve_temp_root() {
 	local create_root="${1:-0}"
-	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME:-}/.aidevops/.agent-workspace/tmp}"
+	local temp_root="${AIDEVOPS_TEMP_DIR:-}"
+	if [[ -z "$temp_root" ]]; then
+		[[ -n "${HOME:-}" ]] || return 1
+		temp_root="${HOME}/.aidevops/.agent-workspace/tmp"
+	fi
 	[[ -n "$temp_root" && "$temp_root" == /* ]] || return 1
 	if [[ "$create_root" == "1" ]]; then
 		mkdir -p "$temp_root" 2>/dev/null || return 1
@@ -218,6 +230,7 @@ _ptsw_classify_owner() {
 	local observed_pid=""
 	local ps_rc=0
 	local kill_error=""
+	local kill_rc=0
 	_PTSW_OWNER_STATE="unknown"
 	if current_start=$(_ptsw_process_start_fingerprint "$owner_pid"); then
 		if [[ "$current_start" == "$owner_start" ]]; then
@@ -228,7 +241,11 @@ _ptsw_classify_owner() {
 		return 0
 	fi
 	_ptsw_process_visibility_available || return 0
-	kill_error=$(LC_ALL=C kill -0 "$owner_pid" 2>&1) || true
+	kill_error=$(LC_ALL=C kill -0 "$owner_pid" 2>&1) || kill_rc=$?
+	# A successful signal probe proves the PID is live. If its generation token
+	# cannot be observed, fail closed instead of treating degraded ps output as
+	# evidence that the owner disappeared.
+	[[ "$kill_rc" -eq 0 ]] && return 0
 	case "$kill_error" in
 	*"Operation not permitted"* | *"operation not permitted"*) return 0 ;;
 	esac
@@ -268,10 +285,14 @@ _ptsw_log_sweep_outcome() {
 _ptsw_move_to_recoverable_trash() {
 	local workspace_root="$1"
 	local identity="$2"
-	local trash_root="${AIDEVOPS_TODO_SYNC_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-${HOME:-}/.Trash}}"
+	local trash_root="${AIDEVOPS_TODO_SYNC_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}"
 	local resolved_trash_root=""
 	local destination=""
 	local move_epoch=""
+	if [[ -z "$trash_root" ]]; then
+		[[ -n "${HOME:-}" ]] || return 1
+		trash_root="${HOME}/.Trash"
+	fi
 	[[ -n "$trash_root" && "$trash_root" == /* ]] || return 1
 	mkdir -p "$trash_root" 2>/dev/null || return 1
 	resolved_trash_root=$(cd "$trash_root" 2>/dev/null && pwd -P) || return 1

@@ -172,6 +172,9 @@ sync_todo_refs_for_repo owner/repo-b "$repo_b"
 [[ $(canonical_snapshot "$repo_a") == "$snapshot_a" ]] || fail "repo B invocation changed repo A"
 [[ $(canonical_snapshot "$repo_b") == "$snapshot_b" ]] || fail "repo B canonical checkout changed"
 git --git-dir="$remote_b" show main:TODO.md | grep -q '^synced:owner/repo-b$' || fail "repo B remote was not synced"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "successful reconciliation left an automation workspace behind"
+fi
 [[ $(trap -p EXIT) == "$parent_exit_trap_before" ]] || fail "sync scope replaced the caller EXIT trap"
 [[ $(trap -p TERM) == "$parent_term_trap_before" ]] || fail "sync scope replaced the caller TERM trap"
 
@@ -200,6 +203,9 @@ AIDEVOPS_PLANNING_BEFORE_PUSH_HOOK=/usr/bin/false \
 [[ $(git --git-dir="$remote_c" rev-parse main) == "$remote_c_before" ]] || fail "failed publication changed remote"
 grep -q 'status=retryable_failure stage=publication repo=owner/repo-c rc=1' "$WRAPPER_LOGFILE" || \
 	fail "publication failure evidence was not logged"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "retryable publication failure left an automation workspace behind"
+fi
 
 # Cleanup failure is observable without replacing the reconciliation result.
 # Use a retryable-conflict result (2) so a cleanup helper failure cannot be
