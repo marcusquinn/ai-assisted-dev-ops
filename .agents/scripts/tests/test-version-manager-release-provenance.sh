@@ -97,6 +97,28 @@ if PROVENANCE_MODE=stale PATH="${BIN}:/opt/homebrew/bin:/usr/bin:/bin" verify_re
 fi
 printf 'PASS stale historical source PR is rejected\n'
 
+cat >"${BIN}/aggregate-resolver.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' '{"mode":"aggregate","requested_pr":42,"source_pr":99,"source_merge":"${MERGE_SHA}","aggregated_sources":[{"pr":42,"merge":"${HISTORICAL_MERGE}"}]}'
+exit 0
+STUB
+chmod +x "${BIN}/aggregate-resolver.sh"
+AIDEVOPS_RELEASE_SOURCE_RESOLVER="${BIN}/aggregate-resolver.sh" \
+	verify_release_source_pr 42 main testorg/aidevops || {
+	printf 'FAIL version manager rejected reviewed aggregate source metadata\n'
+	exit 1
+}
+[[ "$VERSION_MANAGER_SOURCE_PR" == "99" ]]
+[[ "$VERSION_MANAGER_SOURCE_MERGE_SHA" == "$MERGE_SHA" ]]
+[[ "$VERSION_MANAGER_AGGREGATED_SOURCES" == "42@${HISTORICAL_MERGE}" ]]
+aggregate_tag_message=$(_release_tag_message 1.2.3)
+[[ "$aggregate_tag_message" == *"Aidevops-Source-PR: 99"* ]]
+[[ "$aggregate_tag_message" == *"Aidevops-Aggregated-Source: 42@${HISTORICAL_MERGE}"* ]]
+printf 'PASS version manager carries aggregate source provenance into immutable tag trailers\n'
+VERSION_MANAGER_SOURCE_PR=42
+VERSION_MANAGER_SOURCE_MERGE_SHA="$MERGE_SHA"
+VERSION_MANAGER_AGGREGATED_SOURCES=""
+
 git -C "$REPO" switch -q -c safety/release-test
 printf 'canonical human work\n' >>"${REPO}/README.md"
 git -C "$REPO" add README.md

@@ -26,6 +26,8 @@
 _FULL_LOOP_STATE_LIB_LOADED=1
 _FULL_LOOP_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RELEASE_PUBLISHED="published"
+_FULL_LOOP_RELEASE_SUPERSEDED="superseded"
+_FULL_LOOP_SHA40_REGEX='^[0-9a-f]{40}$'
 _FULL_LOOP_EXECUTOR_INITIALIZED="initialized-only"
 _FULL_LOOP_EXECUTOR_IN_PROGRESS="in-progress"
 _FULL_LOOP_PHASE_FAILED="failed"
@@ -249,8 +251,8 @@ emit_postflight_phase() {
 		print_info "release:not-requested — publication was not explicitly authorized"
 		return 0
 	}
-	if [[ "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]]; then
-		print_info "release:published — publication gate already completed"
+	if [[ "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+		print_info "release:${RELEASE_STATUS} — publication gate already completed"
 		return 0
 	fi
 	if ! _full_loop_invoke_authorized_release; then
@@ -259,9 +261,13 @@ emit_postflight_phase() {
 		print_error "release:failed"
 		return 1
 	fi
-	RELEASE_STATUS="$_FULL_LOOP_RELEASE_PUBLISHED"
-	_full_loop_persist_release_status "$RELEASE_STATUS"
-	print_success "release:published"
+	if ! _full_loop_reconcile_detached_publication_receipt; then
+		RELEASE_STATUS="$_FULL_LOOP_PHASE_FAILED"
+		_full_loop_persist_release_status "$RELEASE_STATUS"
+		print_error "release:failed — terminal detached receipt is missing"
+		return 1
+	fi
+	print_success "release:${RELEASE_STATUS}"
 	[[ "${SKIP_POSTFLIGHT:-false}" == "true" ]] && {
 		print_warning "Postflight skipped"
 		echo "<promise>POSTFLIGHT_SKIPPED</promise>"
@@ -279,24 +285,116 @@ _full_loop_release_receipt_path() {
 	return 0
 }
 
+_full_loop_release_evidence_path() {
+	local repo="$1"
+	local pr_number="$2"
+	local evidence_type="$3"
+	local receipt_path=""
+	case "$evidence_type" in aggregate | failure) ;; *) return 1 ;; esac
+	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
+	printf '%s.%s.json\n' "${receipt_path%.status}" "$evidence_type"
+	return 0
+}
+
 _full_loop_write_release_receipt() {
 	local repo="$1"
 	local pr_number="$2"
 	local status="$3"
 	[[ -n "$repo" && "$pr_number" =~ ^[0-9]+$ ]] || return 1
-	[[ "$status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" || "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_PHASE_FAILED" ]] || return 1
+	[[ "$status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" || "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" || "$status" == "$_FULL_LOOP_PHASE_FAILED" ]] || return 1
 	local receipt_path=""
+	local current_status=""
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	mkdir -p "${receipt_path%/*}" || return 1
+	[[ -f "$receipt_path" ]] && IFS= read -r current_status <"$receipt_path" || true
+	case "$current_status" in
+	"$_FULL_LOOP_RELEASE_NOT_REQUESTED" | "$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED")
+		[[ "$current_status" == "$status" ]] || return 1
+		;;
+	esac
 	printf '%s\n' "$status" >"${receipt_path}.tmp.$$" || return 1
 	mv "${receipt_path}.tmp.$$" "$receipt_path" || return 1
+	if [[ "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+		local failure_path=""
+		failure_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" failure) || return 1
+		rm -f "$failure_path"
+	fi
 	return 0
+}
+
+_full_loop_write_release_failure_evidence() {
+	local repo="$1"
+	local requested_pr="$2"
+	local requested_merge="$3"
+	local current_head="$4"
+	local release_source_pr="${5:-}"
+	local evidence_path=""
+	local now=""
+	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ -z "$release_source_pr" || "$release_source_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$requested_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$current_head" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$requested_pr" failure) || return 1
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+	mkdir -p "${evidence_path%/*}" || return 1
+	jq -cn --arg repo "$repo" --argjson requested_pr "$requested_pr" --arg requested_merge "$requested_merge" \
+		--arg release_source_pr "$release_source_pr" --arg current_head "$current_head" --arg now "$now" \
+		'{schema_version:1,status:"failed",repository:$repo,requested_pr:$requested_pr,requested_merge:$requested_merge,
+		  release_source_pr:(if $release_source_pr == "" then null else ($release_source_pr | tonumber) end),current_head:$current_head,recorded_at:$now}' \
+		>"${evidence_path}.tmp.$$" || return 1
+	mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
+	_full_loop_write_release_receipt "$repo" "$requested_pr" "$_FULL_LOOP_PHASE_FAILED"
+	return $?
+}
+
+_full_loop_write_superseded_release_receipt() {
+	local repo="$1"
+	local pr_number="$2"
+	local source_merge="$3"
+	local aggregate_pr="$4"
+	local aggregate_merge="$5"
+	local tag_name="$6"
+	local tag_commit="$7"
+	local evidence_path=""
+	local now=""
+	[[ "$pr_number" =~ ^[0-9]+$ && "$aggregate_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$aggregate_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+	mkdir -p "${evidence_path%/*}" || return 1
+	jq -cn --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" --argjson pr_number "$pr_number" --arg source_merge "$source_merge" \
+		--argjson aggregate_pr "$aggregate_pr" --arg aggregate_merge "$aggregate_merge" \
+		--arg tag "$tag_name" --arg tag_commit "$tag_commit" --arg now "$now" \
+		'{schema_version:1,status:$status,repository:$repo,pr_number:$pr_number,source_merge:$source_merge,
+		  aggregate_pr:$aggregate_pr,aggregate_merge:$aggregate_merge,release_tag:$tag,release_commit:$tag_commit,recorded_at:$now}' \
+		>"${evidence_path}.tmp.$$" || return 1
+	mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
+	_full_loop_write_release_receipt "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
+	if declare -F full_loop_update_cleanup_release_status >/dev/null 2>&1; then
+		full_loop_update_cleanup_release_status "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
+	fi
+	return 0
+}
+
+_full_loop_verify_superseded_release_receipt() {
+	local repo="$1"
+	local pr_number="$2"
+	local evidence_path=""
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
+	[[ -f "$evidence_path" ]] || return 1
+	jq -e --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" --arg sha_regex "$_FULL_LOOP_SHA40_REGEX" --argjson pr "$pr_number" '
+		.schema_version == 1 and .status == $status and .repository == $repo and .pr_number == $pr
+		and (.source_merge | test($sha_regex)) and (.aggregate_pr | type == "number")
+		and (.aggregate_merge | test($sha_regex)) and (.release_tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+		and (.release_commit | test($sha_regex))
+	' "$evidence_path" >/dev/null 2>&1
+	return $?
 }
 
 _full_loop_persist_release_status() {
 	local status="$1"
 	local repo=""
-	[[ "$status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" || "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_PHASE_FAILED" ]] || return 1
+	[[ "$status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" || "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" || "$status" == "$_FULL_LOOP_PHASE_FAILED" ]] || return 1
 	if [[ -f "$STATE_FILE" ]]; then
 		save_state "${CURRENT_PHASE:-${PHASE:-postflight}}" "$SAVED_PROMPT" "${PR_NUMBER:-}" "${STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 	fi
@@ -336,8 +434,8 @@ emit_deploy_phase() {
 		print_info "release:not-requested — deployment skipped"
 		return 0
 	}
-	[[ "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] && {
-		print_info "release:published — deployment completed by the release runner"
+	[[ "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$RELEASE_STATUS" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]] && {
+		print_info "release:${RELEASE_STATUS} — deployment completed by the release runner"
 		return 0
 	}
 	! is_aidevops_repo && {
@@ -1186,8 +1284,11 @@ _full_loop_reconcile_published_release_receipt() {
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	[[ -f "$receipt_path" ]] || return 1
 	IFS= read -r receipt_status <"$receipt_path" || return 1
-	[[ "$receipt_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
-	RELEASE_STATUS="$_FULL_LOOP_RELEASE_PUBLISHED"
+	[[ "$receipt_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$receipt_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]] || return 1
+	if [[ "$receipt_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+		_full_loop_verify_superseded_release_receipt "$repo" "$pr_number" || return 1
+	fi
+	RELEASE_STATUS="$receipt_status"
 	if ! save_state "${CURRENT_PHASE:-${PHASE:-complete}}" "$SAVED_PROMPT" "$pr_number" \
 		"${STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"; then
 		RELEASE_STATUS="$previous_status"
@@ -1206,7 +1307,7 @@ _full_loop_reconcile_detached_publication_receipt() {
 	receipt_path=$(_full_loop_release_receipt_path "$receipt_repo" "$PR_NUMBER") || return 1
 	[[ -f "$receipt_path" ]] || return 1
 	IFS= read -r receipt_status <"$receipt_path" || return 1
-	[[ "$receipt_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
+	[[ "$receipt_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$receipt_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]] || return 1
 	_full_loop_reconcile_published_release_receipt "$receipt_repo" "$PR_NUMBER" || return 2
 	return 0
 }
@@ -1236,7 +1337,7 @@ cmd_complete() {
 		print_error "Cleanup blocked: release:${RELEASE_STATUS} is not terminal-success"
 		return 1
 		;;
-	"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_NOT_REQUESTED") ;;
+	"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED" | "$_FULL_LOOP_RELEASE_NOT_REQUESTED") ;;
 	*)
 		print_error "Cleanup blocked: unknown release status ${RELEASE_STATUS:-missing}"
 		return 1
@@ -1317,7 +1418,7 @@ cmd_record_no_release() {
 		print_info "release:not-requested already recorded for PR #${pr_number}"
 		return 0
 		;;
-	"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_PHASE_FAILED")
+	"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED" | "$_FULL_LOOP_PHASE_FAILED")
 		print_error "Cannot replace terminal release:${release_status} evidence for PR #${pr_number}"
 		return 1
 		;;
@@ -1343,7 +1444,10 @@ _full_loop_terminal_release_status() {
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	[[ -f "$receipt_path" ]] || return 1
 	IFS= read -r release_status <"$receipt_path" || return 1
-	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]] || return 1
+	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" || "$release_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]] || return 1
+	if [[ "$release_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+		_full_loop_verify_superseded_release_receipt "$repo" "$pr_number" || return 1
+	fi
 	printf '%s\n' "$release_status"
 	return 0
 }
@@ -1395,7 +1499,7 @@ cmd_migrate_repository_receipt() {
 	elif [[ -f "$destination_release" ]]; then
 		IFS= read -r release_status <"$destination_release" || true
 	fi
-	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]] || {
+	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" || "$release_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]] || {
 		print_error "Migration blocked: terminal release evidence is missing"
 		return 1
 	}
@@ -1417,19 +1521,32 @@ _full_loop_verify_aidevops_release_deploy() {
 	[[ -f "$receipt_path" ]] && IFS= read -r release_status <"$receipt_path"
 	[[ "$repo" == "marcusquinn/aidevops" ]] || return 0
 	[[ "$release_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]] && return 0
-	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
 	local repo_root=""
-	repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 	local version=""
-	[[ -n "$repo_root" && -f "${repo_root}/VERSION" ]] && IFS= read -r version <"${repo_root}/VERSION"
-	[[ -n "$version" ]] || return 1
+	local tag_name=""
+	local expected_release_sha=""
+	if [[ "$release_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+		_full_loop_verify_superseded_release_receipt "$repo" "$pr_number" || return 1
+		local aggregate_evidence=""
+		aggregate_evidence=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
+		tag_name=$(jq -er '.release_tag' "$aggregate_evidence") || return 1
+		expected_release_sha=$(jq -er '.release_commit' "$aggregate_evidence") || return 1
+		version="${tag_name#v}"
+	else
+		[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
+		repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+		[[ -n "$repo_root" && -f "${repo_root}/VERSION" ]] && IFS= read -r version <"${repo_root}/VERSION"
+		[[ -n "$version" ]] || return 1
+		tag_name="v${version}"
+	fi
 	local release_sha=""
-	release_sha=$(git ls-remote --exit-code --tags origin "refs/tags/v${version}^{}" | cut -f1 || true)
+	release_sha=$(git ls-remote --exit-code --tags origin "refs/tags/${tag_name}^{}" | cut -f1 || true)
 	if [[ -z "$release_sha" ]]; then
-		release_sha=$(git ls-remote --exit-code --tags origin "refs/tags/v${version}" | cut -f1 || true)
+		release_sha=$(git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" | cut -f1 || true)
 	fi
 	[[ -n "$release_sha" ]] || return 1
-	gh release view "v${version}" --repo "$repo" >/dev/null 2>&1 || return 1
+	[[ -z "$expected_release_sha" || "$release_sha" == "$expected_release_sha" ]] || return 1
+	gh release view "$tag_name" --repo "$repo" >/dev/null 2>&1 || return 1
 	local deployed_version=""
 	[[ -f "${HOME}/.aidevops/agents/VERSION" ]] && IFS= read -r deployed_version <"${HOME}/.aidevops/agents/VERSION"
 	[[ "$deployed_version" == "$version" ]] || return 1

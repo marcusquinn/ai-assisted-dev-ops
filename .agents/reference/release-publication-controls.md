@@ -15,6 +15,8 @@ The canonical release path records these trailers in a signed annotated tag:
 - `Aidevops-Version`
 - `Aidevops-Source-PR`
 - `Aidevops-Source-Merge`
+- repeated `Aidevops-Aggregated-Source` entries when a reviewed aggregation PR
+  replaces one or more earlier authorized sources
 
 `.agents/scripts/release-provenance-helper.sh` verifies the same evidence before
 GitHub release creation, npm OIDC publication, and Homebrew update work:
@@ -25,6 +27,30 @@ GitHub release creation, npm OIDC publication, and Homebrew update work:
 3. the tag commit is reachable from `origin/main`;
 4. the recorded source PR is merged into `main`, its merge SHA matches, and that
    merge is the direct parent of the release commit.
+
+### Intervening-main recovery
+
+An authorized source that is no longer the direct `main` tip cannot publish by
+ancestor reachability alone. Recovery requires a new reviewed aggregation PR at
+the exact release tip. Its immutable squash-merge message records:
+
+```text
+Aidevops-Release-Aggregator-PR: <aggregation-pr>
+Aidevops-Release-Aggregates: <authorized-pr>@<merge-sha>
+```
+
+Repeat `Aidevops-Release-Aggregates` for every authorized source settled by the
+release. The release helper verifies the aggregation PR and every listed PR
+against GitHub, requires their exact merge SHAs to be ancestors of the aggregate
+tip, and copies the complete manifest into the signed tag. An intervening direct
+commit without this reviewed attestation remains blocked.
+
+After all publication and deployment gates succeed, the aggregation PR receives
+`release:published`; each included PR receives `release:superseded` plus a JSON
+receipt linking its merge SHA to the aggregation PR, release tag, and release
+commit. A failed pre-publication attempt records both the requested and current
+source SHAs as actionable failure evidence, but creates no tag or publication.
+Retries reconcile terminal receipts and cannot publish twice.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.

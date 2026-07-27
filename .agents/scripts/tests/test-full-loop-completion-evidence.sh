@@ -45,6 +45,18 @@ chmod +x "${ROOT}/bin/gh"
 cat >"${ROOT}/release-runner.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${RELEASE_CALL_LOG:?}"
+if [[ "${RELEASE_RUNNER_EXIT:-0}" -eq 0 ]]; then
+	receipt_dir="${AIDEVOPS_FULL_LOOP_RECEIPT_DIR:?}"
+	repo="${AIDEVOPS_FULL_LOOP_REPO:?}"
+	pr_number="${2:?}"
+	mkdir -p "$receipt_dir"
+	status="${RELEASE_RUNNER_STATUS:-published}"
+	receipt_base="${receipt_dir}/${repo//\//_}-${pr_number}"
+	printf '%s\n' "$status" >"${receipt_base}.status"
+	if [[ "$status" == "superseded" ]]; then
+		printf '%s\n' '{"schema_version":1,"status":"superseded","repository":"marcusquinn/aidevops","pr_number":42,"source_merge":"0000000000000000000000000000000000000001","aggregate_pr":99,"aggregate_merge":"0000000000000000000000000000000000000002","release_tag":"v3.0.0","release_commit":"0000000000000000000000000000000000000003"}' >"${receipt_base}.aggregate.json"
+	fi
+fi
 exit "${RELEASE_RUNNER_EXIT:-0}"
 STUB
 chmod +x "${ROOT}/release-runner.sh"
@@ -147,6 +159,33 @@ jq -e '.executor_completion_state == "COMPLETE" and .release_status == "not-requ
 AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
 	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$finalize_runner" 42 marcusquinn/aidevops >/dev/null
 printf 'PASS direct merge-only receipt finalizes idempotently without local lifecycle state\n'
+
+superseded_worktree="${ROOT}/superseded-worktree"
+mkdir -p "$superseded_worktree"
+superseded_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops 46 "$superseded_worktree" feature/superseded \
+	"$$" superseded-session pending FINALIZATION_PENDING)
+supersede_runner="${ROOT}/supersede-runner.sh"
+cat >"$supersede_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
+_full_loop_write_superseded_release_receipt "\$@"
+RUNNER
+chmod +x "$supersede_runner"
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$supersede_runner" marcusquinn/aidevops 46 \
+	"$(printf '%040d' 1)" 99 "$(printf '%040d' 2)" v3.0.0 "$(printf '%040d' 3)"
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$finalize_runner" 46 marcusquinn/aidevops >/dev/null
+jq -e '.executor_completion_state == "COMPLETE" and .release_status == "superseded"' "$superseded_receipt" >/dev/null
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$record_runner" 46 marcusquinn/aidevops >/dev/null 2>&1; then
+	printf 'FAIL superseded aggregate evidence was downgraded to no-release\n'
+	exit 1
+fi
+printf 'PASS superseded source receipts finalize truthfully and cannot be downgraded\n'
 
 alias_canonical="${ROOT}/alias-canonical"
 alias_worktree="${ROOT}/alias-worktree"
@@ -374,6 +413,17 @@ status="${output##*$'\n'}"
 [[ "$status" == "published" && ! -s "${ROOT}/release-calls.log" ]]
 printf 'PASS published detached-release receipt prevents duplicate publication\n'
 
+rm -f "${receipt_dir}/marcusquinn_aidevops-42.status" "${receipt_dir}/marcusquinn_aidevops-42.aggregate.json"
+: >"${ROOT}/release-calls.log"
+output=$(env "${flow_env[@]}" RELEASE_RUNNER_STATUS=superseded bash "$state_runner")
+status="${output##*$'\n'}"
+[[ "$status" == "superseded" ]]
+grep -qx 'superseded' "${receipt_dir}/marcusquinn_aidevops-42.status"
+grep -q '^release_status: superseded$' "${ROOT}/state/full-loop.state"
+printf 'PASS authorized aggregate lifecycle reconciles superseded source state without fabricating publication\n'
+
+rm -f "${receipt_dir}/marcusquinn_aidevops-42.status" "${receipt_dir}/marcusquinn_aidevops-42.aggregate.json"
+
 : >"${ROOT}/release-calls.log"
 output=$(env "${flow_env[@]}" TEST_RELEASE_INTENT=false TEST_RELEASE_STATUS=not-requested bash "$state_runner")
 status="${output##*$'\n'}"
@@ -381,6 +431,7 @@ status="${output##*$'\n'}"
 grep -qx 'not-requested' "${receipt_dir}/marcusquinn_aidevops-42.status"
 printf 'PASS merge-only lifecycle persists skipped publication without invoking release\n'
 
+rm -f "${receipt_dir}/marcusquinn_aidevops-42.status"
 if env "${flow_env[@]}" RELEASE_RUNNER_EXIT=1 bash "$state_runner" >/dev/null 2>&1; then
 	printf 'FAIL failed release transition returned success\n'
 	exit 1

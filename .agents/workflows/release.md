@@ -23,9 +23,18 @@ tools:
 ./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full]
 ```
 
-The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and atomically persists the per-PR `release:published` receipt only after every publication and deployment gate succeeds. Repeating it with an existing published receipt reconciles success without another version bump or publication. A failed or skipped release cannot create or replace published evidence.
+The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. Repeating it with existing `published` or `superseded` evidence reconciles success without another version bump or publication. A failed or skipped release cannot create or replace success evidence.
 
 The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → tags → pushes → creates the GitHub release → runs deploy sync. Publication or deployment failure is a failed release, not warning-only success. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
+
+If `main` advanced after authorization, create and review a dedicated aggregation
+PR whose squash-merge commit contains `Aidevops-Release-Aggregator-PR` and one
+`Aidevops-Release-Aggregates: PR@MERGE_SHA` trailer per included source. Then
+rerun the original command. The helper accepts only an exact aggregate `main`
+tip, preserves the manifest in the signed tag, marks the aggregate PR published,
+and marks included source receipts superseded with immutable release links.
+Arbitrary descendants and unreviewed direct commits remain blocked. Full contract:
+`reference/release-publication-controls.md` "Intervening-main recovery".
 
 **DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, clean synchronized canonical `main`, fresh detached release worktree, authenticated `gh`, and unreleased changelog content (or changelog-only `--force`).
 

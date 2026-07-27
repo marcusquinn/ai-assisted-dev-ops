@@ -45,9 +45,9 @@ cat >"${BIN}/gh" <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "pr" ]]; then
 	case "\${PROVENANCE_MODE:-valid}" in
-	pr-mismatch) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","mergeCommit":{"oid":"0000000000000000000000000000000000000000"}}' ;;
-	stale-source) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","mergeCommit":{"oid":"${HISTORICAL_MERGE}"}}' ;;
-	*) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","mergeCommit":{"oid":"${SOURCE_MERGE}"}}' ;;
+	pr-mismatch) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","headRefOid":"head","mergeCommit":{"oid":"0000000000000000000000000000000000000000"}}' ;;
+	stale-source) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","headRefOid":"head","mergeCommit":{"oid":"${HISTORICAL_MERGE}"}}' ;;
+	*) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-25T00:00:00Z","baseRefName":"main","headRefOid":"head","mergeCommit":{"oid":"${SOURCE_MERGE}"}}' ;;
 	esac
 	exit 0
 fi
@@ -137,5 +137,107 @@ if (
 	exit 1
 fi
 printf 'PASS malformed tag is rejected\n'
+
+AGG_REMOTE="${TEST_ROOT}/aggregate-remote.git"
+AGG_REPO="${TEST_ROOT}/aggregate-repo"
+AGG_BIN="${TEST_ROOT}/aggregate-bin"
+mkdir -p "$AGG_BIN"
+git init -q --bare "$AGG_REMOTE"
+git clone -q "$AGG_REMOTE" "$AGG_REPO"
+git -C "$AGG_REPO" switch -q -c main
+git -C "$AGG_REPO" config user.name Test
+git -C "$AGG_REPO" config user.email test@example.invalid
+git -C "$AGG_REPO" commit -q --allow-empty -m seed
+git -C "$AGG_REPO" commit -q --allow-empty -m 'authorized source merge'
+AGG_ORIGINAL=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed automated synchronization'
+git -C "$AGG_REPO" commit -q --allow-empty -m "reviewed aggregate source
+
+Aidevops-Release-Aggregator-PR: 99
+Aidevops-Release-Aggregates: 42@${AGG_ORIGINAL}"
+AGGREGATE_MERGE=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" push -q -u origin main
+
+cat >"${AGG_BIN}/gh" <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "pr" ]]; then
+	case "\${3:-}" in
+	42) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T00:00:00Z","baseRefName":"main","headRefOid":"source-head","mergeCommit":{"oid":"${AGG_ORIGINAL}"}}' ;;
+	99) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","headRefOid":"aggregate-head","mergeCommit":{"oid":"${AGGREGATE_MERGE}"}}' ;;
+	*) exit 1 ;;
+	esac
+	exit 0
+fi
+case "\${2:-}" in
+repos/test/aggregate/git/ref/tags/v2.0.0)
+	printf '{"object":{"type":"tag","sha":"%s"}}\n' "\$(git -C "${AGG_REPO}" rev-parse refs/tags/v2.0.0)"
+	;;
+repos/test/aggregate/git/tags/*)
+	printf '{"tag":"v2.0.0","object":{"type":"commit","sha":"%s"},"verification":{"verified":true}}\n' "\${AGG_TAG_COMMIT:-pending}"
+	;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "${AGG_BIN}/gh"
+
+aggregate_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate
+)
+jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
+	.mode == "aggregate" and .source_pr == 99 and .source_merge == $merge
+	and .aggregated_sources == [{pr:42,merge:$original}]
+' <<<"$aggregate_json" >/dev/null
+printf 'PASS reviewed aggregation manifest recovers an authorized historical source\n'
+
+git -C "$AGG_REPO" switch -q --detach "$AGG_ORIGINAL"
+git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed direct commit'
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate
+) >/dev/null 2>&1; then
+	printf 'FAIL unreviewed direct commit was accepted as an aggregate source\n'
+	exit 1
+fi
+printf 'PASS unreviewed direct commit cannot aggregate release authority\n'
+git -C "$AGG_REPO" switch -q --detach "$AGGREGATE_MERGE"
+
+printf '2.0.0\n' >"${AGG_REPO}/VERSION"
+printf '{"name":"fixture","version":"2.0.0"}\n' >"${AGG_REPO}/package.json"
+git -C "$AGG_REPO" add VERSION package.json
+git -C "$AGG_REPO" commit -q -m 'chore(release): bump version to 2.0.0'
+AGG_TAG_COMMIT=$(git -C "$AGG_REPO" rev-parse HEAD)
+export AGG_TAG_COMMIT
+git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - aggregate fixture
+
+Aidevops-Version: 2.0.0
+Aidevops-Source-PR: 99
+Aidevops-Source-Merge: ${AGGREGATE_MERGE}
+Aidevops-Aggregated-Source: 42@${AGG_ORIGINAL}"
+git -C "$AGG_REPO" push -q origin HEAD:main --tags
+(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" verify --tag v2.0.0 --repo test/aggregate >/dev/null
+)
+printf 'PASS immutable tag provenance verifies the reviewed aggregate and every included source\n'
+
+git -C "$AGG_REPO" tag -d v2.0.0 >/dev/null
+git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - tampered aggregate fixture
+
+Aidevops-Version: 2.0.0
+Aidevops-Source-PR: 99
+Aidevops-Source-Merge: ${AGGREGATE_MERGE}"
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" verify --tag v2.0.0 --repo test/aggregate
+) >/dev/null 2>&1; then
+	printf 'FAIL tag omitted the reviewed aggregate sources\n'
+	exit 1
+fi
+printf 'PASS tag tampering cannot omit reviewed aggregate sources\n'
 
 exit 0

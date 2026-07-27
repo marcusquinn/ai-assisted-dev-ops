@@ -132,6 +132,8 @@ _release_tag_message() {
 	local version="$1"
 	local source_pr="${VERSION_MANAGER_SOURCE_PR:-}"
 	local source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
+	local aggregated_sources="${VERSION_MANAGER_AGGREGATED_SOURCES:-}"
+	local aggregated_source=""
 
 	if release_source_pr_required; then
 		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
@@ -149,6 +151,10 @@ _release_tag_message() {
 	if [[ -n "$source_pr" && -n "$source_merge" ]]; then
 		printf 'Aidevops-Source-PR: %s\n' "$source_pr"
 		printf 'Aidevops-Source-Merge: %s\n' "$source_merge"
+		while IFS= read -r aggregated_source; do
+			[[ -n "$aggregated_source" ]] || continue
+			printf 'Aidevops-Aggregated-Source: %s\n' "$aggregated_source"
+		done <<<"$aggregated_sources"
 	fi
 	return 0
 }

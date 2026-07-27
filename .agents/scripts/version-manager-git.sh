@@ -141,43 +141,19 @@ verify_release_source_pr() {
 		return 1
 	}
 
-	local pr_json=""
-	pr_json=$(gh pr view "$source_pr" --repo "$repo_slug" \
-		--json state,mergedAt,mergeCommit,baseRefName,headRefOid 2>/dev/null) || {
-		print_error "Cannot read source PR #${source_pr}"
+	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
+	local source_json=""
+	[[ -x "$resolver" ]] || {
+		print_error "Release source provenance resolver is unavailable"
 		return 1
 	}
-	if ! printf '%s' "$pr_json" | jq -e --arg branch "$branch" '
-		def present: ((. // "") | length > 0);
-		(.state == "MERGED")
-		and (.mergedAt | present)
-		and (.baseRefName == $branch)
-		and (.headRefOid | present)
-		and (.mergeCommit | type == "object" and (.oid | present))
-	' >/dev/null; then
-		print_error "Source PR #${source_pr} lacks verified MERGED provenance for ${branch}"
-		return 1
-	fi
-
-	local merge_sha=""
-	local release_head=""
-	merge_sha=$(printf '%s' "$pr_json" | jq -r '.mergeCommit.oid')
-	if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$merge_sha" "origin/${branch}" 2>/dev/null; then
-		print_error "Source PR #${source_pr} merge SHA is not reachable from origin/${branch}"
-		return 1
-	fi
-	release_head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) || {
-		print_error "Cannot resolve release checkout HEAD"
-		return 1
-	}
-	[[ "$merge_sha" == "$release_head" ]] || {
-		print_error "Source PR #${source_pr} must be the direct source of the release checkout"
-		return 1
-	}
-	VERSION_MANAGER_SOURCE_PR="$source_pr"
-	VERSION_MANAGER_SOURCE_MERGE_SHA="$merge_sha"
-	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA
-	print_success "Release provenance verified: PR #${source_pr}, merge ${merge_sha}"
+	source_json=$(cd "$REPO_ROOT" && bash "$resolver" resolve-source \
+		--source-pr "$source_pr" --repo "$repo_slug" --branch "$branch") || return 1
+	VERSION_MANAGER_SOURCE_PR=$(jq -er '.source_pr' <<<"$source_json") || return 1
+	VERSION_MANAGER_SOURCE_MERGE_SHA=$(jq -er '.source_merge' <<<"$source_json") || return 1
+	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr '.aggregated_sources // [] | .[] | "\(.pr)@\(.merge)"' <<<"$source_json") || return 1
+	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA VERSION_MANAGER_AGGREGATED_SOURCES
+	print_success "Release provenance verified: PR #${VERSION_MANAGER_SOURCE_PR}, merge ${VERSION_MANAGER_SOURCE_MERGE_SHA}"
 	return 0
 }
 

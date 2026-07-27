@@ -17,6 +17,85 @@ cleanup_release_worktree() {
 	return 0
 }
 
+_FULL_LOOP_RESOLVED_SOURCE_JSON=""
+_FULL_LOOP_RESOLVED_SOURCE_PR=""
+_FULL_LOOP_RESOLVED_SOURCE_MERGE=""
+_FULL_LOOP_RESOLVED_REQUESTED_MERGE=""
+
+_full_loop_resolve_requested_release_source() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_path="$3"
+	local resolver="$4"
+	local blocked_pr_json=""
+	local blocked_merge=""
+	local blocked_head=""
+	[[ -x "$resolver" ]] || return 1
+	if ! _FULL_LOOP_RESOLVED_SOURCE_JSON=$(cd "$release_path" && bash "$resolver" resolve-source \
+		--source-pr "$source_pr" --repo "$repo" --branch main); then
+		blocked_pr_json=$(gh pr view "$source_pr" --repo "$repo" --json state,mergedAt,mergeCommit,baseRefName 2>/dev/null || true)
+		blocked_merge=$(jq -er 'select(.state == "MERGED" and .baseRefName == "main" and ((.mergedAt // "") | length > 0)) | .mergeCommit.oid' \
+			<<<"$blocked_pr_json" 2>/dev/null || true)
+		blocked_head=$(git -C "$release_path" rev-parse HEAD 2>/dev/null || true)
+		if [[ "$blocked_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$blocked_head" =~ $_FULL_LOOP_SHA40_REGEX ]] &&
+			git -C "$release_path" merge-base --is-ancestor "$blocked_merge" "$blocked_head" 2>/dev/null; then
+			_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$blocked_merge" "$blocked_head" || true
+		fi
+		return 1
+	fi
+	_FULL_LOOP_RESOLVED_SOURCE_PR=$(jq -er '.source_pr' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	_FULL_LOOP_RESOLVED_SOURCE_MERGE=$(jq -er '.source_merge' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	_FULL_LOOP_RESOLVED_REQUESTED_MERGE=$(jq -er --argjson pr "$source_pr" '
+		if .source_pr == $pr then .source_merge else (.aggregated_sources[] | select(.pr == $pr) | .merge) end
+	' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	return 0
+}
+
+_full_loop_validate_release_candidates() {
+	local repo="$1"
+	local source_json="$2"
+	local candidate_pr=""
+	local candidate_status=""
+	local candidate_receipt=""
+	while IFS= read -r candidate_pr; do
+		[[ "$candidate_pr" =~ ^[0-9]+$ ]] || return 1
+		candidate_receipt=$(_full_loop_release_receipt_path "$repo" "$candidate_pr") || return 1
+		candidate_status=""
+		[[ -f "$candidate_receipt" ]] && IFS= read -r candidate_status <"$candidate_receipt" || true
+		case "$candidate_status" in
+		"" | "$_FULL_LOOP_PHASE_FAILED") ;;
+		*)
+			printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
+			return 1
+			;;
+		esac
+	done < <(jq -r '[.source_pr] + [.aggregated_sources[].pr] | unique[]' <<<"$source_json")
+	return 0
+}
+
+_full_loop_persist_release_success() {
+	local repo="$1"
+	local release_path="$2"
+	local source_json="$3"
+	local release_source_pr="$4"
+	local release_source_merge="$5"
+	local version=""
+	local tag_name=""
+	local tag_commit=""
+	local aggregated_pr=""
+	local aggregated_merge=""
+	IFS= read -r version <"$release_path/VERSION" || return 1
+	tag_name="v${version}"
+	tag_commit=$(git -C "$release_path" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	while IFS=$'\t' read -r aggregated_pr aggregated_merge; do
+		[[ -n "$aggregated_pr" ]] || continue
+		_full_loop_write_superseded_release_receipt "$repo" "$aggregated_pr" "$aggregated_merge" \
+			"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+	done < <(jq -r '.aggregated_sources[] | [.pr,.merge] | @tsv' <<<"$source_json")
+	_full_loop_write_release_receipt "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED"
+	return $?
+}
+
 main() {
 	local release_type="${1:-patch}"
 	local source_pr="${2:-}"
@@ -35,6 +114,11 @@ main() {
 	case "$release_status" in
 	"$_FULL_LOOP_RELEASE_PUBLISHED")
 		printf 'release:published already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
+		return 0
+		;;
+	"$_FULL_LOOP_RELEASE_SUPERSEDED")
+		_full_loop_verify_superseded_release_receipt "$repo" "$source_pr" || return 1
+		printf 'release:superseded already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
 		return 0
 		;;
 	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
@@ -56,6 +140,10 @@ main() {
 	_FULL_LOOP_RELEASE_PATH="$release_path"
 	trap 'cleanup_release_worktree' EXIT
 
+	local resolver="${AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER:-$release_path/.agents/scripts/release-provenance-helper.sh}"
+	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" || return 1
+	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
+
 	local version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
 	[[ "$version_manager" = /* ]] || version_manager="$PWD/$version_manager"
 	[[ -f "$version_manager" ]] || return 1
@@ -67,9 +155,12 @@ main() {
 			AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
 			bash "$version_manager" release "$release_type" --source-pr "$source_pr"
 	); then
+		_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" \
+			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" || true
 		return 1
 	fi
-	_full_loop_write_release_receipt "$repo" "$source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED"
+	_full_loop_persist_release_success "$repo" "$release_path" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" \
+		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE"
 	return $?
 }
 
