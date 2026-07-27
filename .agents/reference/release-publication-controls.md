@@ -55,19 +55,17 @@ Retries reconcile terminal receipts and cannot publish twice.
 The aggregation PR must expose a durable review record before merge. Create it
 as a draft from an initial documentation commit, then add the allocated PR
 number and every authorized `PR@MERGE_SHA` source in a follow-up commit without
-rewriting the published branch. The follow-up commit message carries the same
-trailers so the repository's squash-merge commit preserves the reviewed
-manifest consumed by the release verifier. Keep the trailer lines contiguous in
-one terminal commit-message block so `git interpret-trailers --parse` retains
-the aggregator identity and every repeated source.
+rewriting the published branch. No earlier branch commit may contain a
+recognized aggregation trailer. Only the final commit carries one contiguous
+trailer block so the repository's squash message and
+`git interpret-trailers --parse` expose exactly one aggregator identity and one
+entry per source. After merge, verify the parsed squash message and run the
+source resolver against the exact `origin/main` tip before publication.
 
-PR #28725 reviews this recovery manifest:
-
-```text
-Aidevops-Release-Aggregator-PR: 28725
-Aidevops-Release-Aggregates: 28701@a8f2cf28004aabdbd774cf3157d984eaafad7cee
-Aidevops-Release-Aggregates: 28720@00faf1c84be08457b27bd7ba64c8773b2837726c
-```
+PR #28725 demonstrated the fail-closed duplicate-trailer case: its squash
+message retained an earlier separated trailer block plus the final contiguous
+block. No release was attempted from that ambiguous manifest; a new reviewed
+single-block aggregation supersedes it.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
