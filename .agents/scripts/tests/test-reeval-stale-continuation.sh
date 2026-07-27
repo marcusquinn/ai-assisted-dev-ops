@@ -82,7 +82,7 @@ GH_CALLS_LOG="${TMP}/gh_calls.log"
 # Per-test state reset via reset_state()
 GH_LABEL_REMOVED=""
 GH_VIEW_JSON=""     # JSON for plain gh issue view (no --comments)
-GH_COMMENTS_JSON="" # JSON for gh issue view --comments ({"comments":[...]})
+GH_COMMENTS_JSON="" # gh-shaped comment fixture ({"comments":[...]})
 GH_EDIT_RC=0
 GH_EDIT_KEEP_LABEL="false"
 
@@ -177,7 +177,11 @@ gh() {
 	# gh label create — silent no-op
 	[[ "$1" == "label" && "$2" == "create" ]] && return 0
 
-	# gh api — return empty array (idempotent comment check)
+	# gh api issue comments — convert the gh-shaped fixture to paginated REST.
+	if [[ "$1" == "api" && "${2:-}" == repos/*/issues/*/comments\?per_page=100 ]]; then
+		printf '%s\n' "$GH_COMMENTS_JSON" | jq -c '[.comments // []]'
+		return 0
+	fi
 	[[ "$1" == "api" ]] && printf '[]' && return 0
 
 	# gh issue comment — no-op
@@ -357,6 +361,11 @@ assert_eq \
 assert_eq \
 	"no gate comment → label NOT removed" \
 	"" "${GH_LABEL_REMOVED}"
+rest_comment_reads=$(grep -cF 'gh api repos/owner/repo/issues/100/comments?per_page=100 --paginate --slurp' "$GH_CALLS_LOG" 2>/dev/null || true)
+native_comment_reads=$(grep -cE '^gh issue view 100 .*--comments' "$GH_CALLS_LOG" 2>/dev/null || true)
+assert_eq \
+	"gate comment lookup uses paginated REST" \
+	"1:0" "${rest_comment_reads}:${native_comment_reads}"
 
 # ---- Test 8: open continuation → label preserved ----
 reset_state
@@ -472,6 +481,10 @@ gh() {
 		return 0
 	fi
 	[[ "$1" == "label" && "$2" == "create" ]] && return 0
+	if [[ "$1" == "api" && "${2:-}" == repos/*/issues/*/comments\?per_page=100 ]]; then
+		printf '%s\n' "$GH_COMMENTS_JSON" | jq -c '[.comments // []]'
+		return 0
+	fi
 	[[ "$1" == "api" ]] && printf '[]' && return 0
 	[[ "$1" == "issue" && "$2" == "comment" ]] && return 0
 	[[ "$1" == "issue" && "$2" == "list" ]] && printf '%s\n' "$GH_VIEW_JSON" && return 0
@@ -547,6 +560,10 @@ gh() {
 		return 0
 	fi
 	[[ "$1" == "label" && "$2" == "create" ]] && return 0
+	if [[ "$1" == "api" && "${2:-}" == repos/*/issues/*/comments\?per_page=100 ]]; then
+		printf '%s\n' "$GH_COMMENTS_JSON" | jq -c '[.comments // []]'
+		return 0
+	fi
 	[[ "$1" == "api" ]] && printf '[]' && return 0
 	[[ "$1" == "issue" && "$2" == "comment" ]] && return 0
 	return 0

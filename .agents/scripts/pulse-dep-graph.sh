@@ -411,15 +411,20 @@ _should_defer_auto_unblock() {
 		return 0
 	fi
 
-	# (b) Non-dep BLOCKED markers in recent comments. Single API call per
-	# candidate; unblock candidates are rare (typical cycle: 0-5 across all
-	# repos), so the cost is well-bounded. Silently tolerate fetch failures
-	# (fail-open on API error → behave as before, preserving the t1935
+	# (b) Non-dep BLOCKED markers in recent comments. Use the paginated REST
+	# issue-comments endpoint because only comment bodies are needed; native
+	# `gh issue view --json comments` is GraphQL-only and cannot expose
+	# response-owned cost. Unblock candidates are rare (typical cycle: 0-5
+	# across all repos), so the cost is well-bounded. Silently tolerate fetch
+	# failures (fail-open on API error → behave as before, preserving the t1935
 	# auto-unblock path when network is flaky).
 	local recent_bodies=""
-	recent_bodies=$(gh issue view "$issue_num" --repo "$repo_slug" \
-		--json comments --jq '[.comments[-10:][] | .body] | join("\n---\n")' \
-		2>/dev/null) || recent_bodies=""
+	recent_bodies=$(set -o pipefail; gh api \
+		"repos/${repo_slug}/issues/${issue_num}/comments?per_page=100" --paginate --slurp 2>/dev/null |
+		jq -r '
+			(if (type == "array" and ((.[0]? | type) == "array")) then add else . end)
+			| .[-10:] | map(.body // "") | join("\n---\n")
+		') || recent_bodies=""
 
 	if [[ -n "$recent_bodies" ]]; then
 		if printf '%s' "$recent_bodies" | grep -qE "$_PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS"; then

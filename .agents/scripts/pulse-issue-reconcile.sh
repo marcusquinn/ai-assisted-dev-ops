@@ -1115,8 +1115,12 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 
 	# Idempotency guard — only suppresses duplicate comment; labels are still healed
 	local existing_comments
-	existing_comments=$(gh issue view "$issue_num" --repo "$slug" \
-		--json comments --jq '[.comments[].body] | join("\n")' 2>/dev/null || echo "")
+	existing_comments=$(set -o pipefail; gh api \
+		"repos/${slug}/issues/${issue_num}/comments?per_page=100" --paginate --slurp 2>/dev/null |
+		jq -r '
+			(if (type == "array" and ((.[0]? | type) == "array")) then add else . end)
+			| map(.body // "") | join("\n")
+		' || echo "")
 	local comment_already_posted="$_PIR_BOOL_FALSE"
 	[[ "$existing_comments" == *"$check_sentinel"* ]] && comment_already_posted="$_PIR_BOOL_TRUE"
 

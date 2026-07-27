@@ -178,13 +178,17 @@ _reevaluate_stale_continuations() {
 	local repo_slug="$2"
 	local repo_path="$3"
 
-	# Fetch gate sticky comment. map+.[0] preserves the full multi-line body
+	# Fetch the gate sticky comment through paginated REST because this operation
+	# needs only comment bodies. map+.[0] preserves the full multi-line body
 	# (.[]+head-1 would truncate to the heading line, losing the issue refs).
 	local gate_comment
-	gate_comment=$(gh issue view "$issue_number" --repo "$repo_slug" \
-		--comments --json comments \
-		--jq '.comments | map(select(.body | contains("## Large File Simplification Gate"))) | .[0].body // empty' \
-		2>/dev/null) || gate_comment=""
+	gate_comment=$(set -o pipefail; gh api \
+		"repos/${repo_slug}/issues/${issue_number}/comments?per_page=100" --paginate --slurp 2>/dev/null |
+		jq -r '
+			(if (type == "array" and ((.[0]? | type) == "array")) then add else . end)
+			| map(select((.body // "") | contains("## Large File Simplification Gate")))
+			| .[0].body // empty
+		') || gate_comment=""
 	[[ -n "$gate_comment" ]] || return 1
 
 	# Extract only the "recently-closed — continuation" issue numbers; open

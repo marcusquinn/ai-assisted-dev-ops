@@ -118,7 +118,13 @@ source "$RECONCILE_SRC"
 gh_issue_comment() { gh issue comment "$@" && return 0 || return 1; }
 # shellcheck disable=SC2317
 gh_pr_comment() { gh pr comment "$@" && return 0 || return 1; }
-export -f gh_issue_comment gh_pr_comment
+# Keep the test independent of any live pulse prefetch cache and route the
+# fallback list wrapper through the controlled gh function below.
+# shellcheck disable=SC2317
+_read_cache_issues_for_slug() { return 1; }
+# shellcheck disable=SC2317
+gh_issue_list() { gh issue list "$@"; return $?; }
+export -f gh_issue_comment gh_pr_comment _read_cache_issues_for_slug gh_issue_list
 
 # Override `gh` as a shell function AFTER sourcing.
 # shellcheck disable=SC2317
@@ -133,25 +139,24 @@ gh() {
 		return 0
 	fi
 
-	# gh issue view N --json comments --jq ...
-	if [[ "$cmd" == "issue" && "$sub" == "view" ]]; then
-		# Return empty comments — no sentinel present → backfill proceeds
-		printf '[]'
-		return 0
-	fi
-
-	# gh api repos/test/repo/issues/NNN --jq '.author_association // "NONE"'
+	# gh api repos/test/repo/issues/NNN — return the REST issue object fields
+	# consumed by the reconcile action.
 	# (t2450: reconcile_labelless_aidevops_issues fetches author_association
 	# per candidate because gh issue list --json doesn't expose it.)
 	if [[ "$cmd" == "api" ]]; then
 		case "$sub" in
+			*/issues/*/comments\?per_page=100)
+				# Empty paginated comments — no sentinel present, so backfill proceeds.
+				printf '%s' '[[]]'
+				return 0
+				;;
 			*/issues/*)
 				local num="${sub##*/}"
 				case "$num" in
-					500 | 501 | 502) printf '%s' "MEMBER" ;;
-					503) printf '%s' "CONTRIBUTOR" ;;
-					504) printf '%s' "NONE" ;;
-					*) printf '%s' "NONE" ;;
+					500 | 501 | 502) printf '%s' '{"author_association":"MEMBER"}' ;;
+					503) printf '%s' '{"author_association":"CONTRIBUTOR"}' ;;
+					504) printf '%s' '{"author_association":"NONE"}' ;;
+					*) printf '%s' '{"author_association":"NONE"}' ;;
 				esac
 				return 0
 				;;
@@ -212,6 +217,14 @@ edit_501=$(grep -c '^gh issue edit 501 --repo test/repo' "$TRACE_FILE" || true)
 edit_502=$(grep -c '^gh issue edit 502 --repo test/repo' "$TRACE_FILE" || true)
 comment_500=$(grep -c '^gh issue comment 500 --repo test/repo' "$TRACE_FILE" || true)
 comment_501=$(grep -c '^gh issue comment 501 --repo test/repo' "$TRACE_FILE" || true)
+rest_comment_reads=$(grep -cE '^gh api repos/test/repo/issues/(500|503|504)/comments\?per_page=100 --paginate --slurp$' "$TRACE_FILE" || true)
+native_comment_reads=$(grep -cE '^gh issue view .*--json comments' "$TRACE_FILE" || true)
+
+if [[ "$rest_comment_reads" -ne 3 || "$native_comment_reads" -ne 0 ]]; then
+	printf 'FAIL: expected 3 paginated REST comment reads and 0 native comment views; got REST=%d native=%d\n' \
+		"$rest_comment_reads" "$native_comment_reads"
+	failed=1
+fi
 
 # #500 MUST be edited at least once
 if [[ "$edit_500" -lt 1 ]]; then
