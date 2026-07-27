@@ -180,12 +180,16 @@ so retries converge without duplicate publication or channel downgrade.
 
 This unified path supersedes the interim separate package dispatch. Workflow-run
 discovery binds a push to the exact tag commit. Recovery names and verifies an
-exact `<tag-commit>.<main-workflow-commit>` correlation, rejects unavailable or
-malformed API responses, and never treats uncertainty as successful correlation.
+exact `<tag-commit>.<main-workflow-commit>` correlation: the dispatcher supplies
+the verified tag commit and the run identity appends GitHub's actual workflow
+commit. This avoids branch-advance races, rejects unavailable or malformed API
+responses, and never treats uncertainty as successful correlation.
 npm registry uncertainty likewise fails closed before publication. Existing and
 new npm versions must match the exact locally packed integrity and shasum; npm's
 signature audit must then verify one SLSA provenance statement binding that digest
-to this repository, workflow path, and triggering ref. Homebrew reconciliation
+to this repository and workflow path at either the exact tag ref or reviewed
+`main` recovery ref. This preserves recovery after npm succeeds in a tag run but a
+later channel fails. Homebrew reconciliation
 compares the complete expected formula from the signed tag rather than accepting
 matching URL or digest fragments in otherwise drifted content.
 

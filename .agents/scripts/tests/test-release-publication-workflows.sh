@@ -60,13 +60,16 @@ assert_contains "verified tags trigger the unified publication workflow" "tags:"
 assert_contains "existing verified tags have an explicit recovery path" "workflow_dispatch:" "$PACKAGE_WORKFLOW"
 assert_contains "recovery requires an existing tag" "Existing verified release tag to reconcile" "$PACKAGE_WORKFLOW"
 assert_contains "recovery requires exact commit correlation" \
-	"Exact tag-commit and workflow-commit correlation" "$PACKAGE_WORKFLOW"
+	"Exact verified tag commit; run identity appends the workflow commit" "$PACKAGE_WORKFLOW"
 assert_absent "suppressed release-event chaining is removed" "types: [published]" "$PACKAGE_WORKFLOW"
 assert_absent "package metadata is not rewritten before publish" "--no-git-tag-version" "$PACKAGE_WORKFLOW"
 assert_contains "unified workflow verifies provenance" "release-provenance-helper.sh verify" "$PACKAGE_WORKFLOW"
 assert_contains "recovery executes only from reviewed main" 'refs/heads/main' "$PACKAGE_WORKFLOW"
-assert_contains "recovery binds the tag and workflow commits" \
-	"Recovery correlation does not bind the tag and workflow commits" "$PACKAGE_WORKFLOW"
+assert_contains "recovery binds the exact tag commit" \
+	"Recovery correlation does not bind the exact tag commit" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow expression.
+assert_contains "recovery run identity records the actual workflow commit" \
+	'${{ inputs.correlation || github.sha }}.${{ github.sha }}' "$PACKAGE_WORKFLOW"
 assert_contains "workflow refuses stale release recovery" "Refusing stale release" "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow expression.
 assert_contains "checkout resolves only the immutable tag namespace" \
@@ -90,6 +93,9 @@ assert_contains "npm provenance signatures are cryptographically audited" \
 	"audit signatures --json --include-attestations" "$PACKAGE_WORKFLOW"
 assert_contains "npm provenance binds the canonical workflow path" \
 	'.github/workflows/publish-packages.yml' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal jq variable in the workflow.
+assert_contains "npm recovery accepts either canonical publishing ref" \
+	'.workflow.ref == $tag_ref' "$PACKAGE_WORKFLOW"
 assert_contains "all versions serialize through one publication lock" "group: release-publication" "$PACKAGE_WORKFLOW"
 assert_contains "concurrency cannot cancel an in-flight publication" "cancel-in-progress: false" "$PACKAGE_WORKFLOW"
 assert_contains "Homebrew API uncertainty fails closed before writing" \

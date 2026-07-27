@@ -169,7 +169,6 @@ _full_loop_release_verify_npm_provenance() {
 	local repo="$1"
 	local tag_name="$2"
 	local version="$3"
-	local run_event="$4"
 	local npm_metadata=""
 	local npm_version=""
 	local npm_integrity=""
@@ -178,8 +177,6 @@ _full_loop_release_verify_npm_provenance() {
 	local audit_json=""
 	local provenance_payload=""
 	local expected_digest=""
-	local expected_ref=""
-	local audit_rc=0
 
 	_FULL_LOOP_RELEASE_NPM_VERSION=""
 	_FULL_LOOP_RELEASE_NPM_INTEGRITY=""
@@ -204,22 +201,17 @@ _full_loop_release_verify_npm_provenance() {
 		'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("hex"))' \
 		"${npm_integrity#sha512-}") || return 1
 	[[ "$expected_digest" =~ ^[0-9a-f]{128}$ ]] || return 1
-	case "$run_event" in
-	"$_FULL_LOOP_RELEASE_EVENT_PUSH") expected_ref="refs/tags/${tag_name}" ;;
-	"$_FULL_LOOP_RELEASE_EVENT_RECOVERY") expected_ref="refs/heads/main" ;;
-	*) return 1 ;;
-	esac
 
 	audit_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-npm-provenance.XXXXXX") || return 1
-	if ! npm install --prefix "$audit_dir" --ignore-scripts --no-audit --no-fund --save-exact \
-		"aidevops@${version}" >/dev/null 2>&1; then
-		audit_rc=1
-	elif ! audit_json=$(npm --prefix "$audit_dir" audit signatures \
-		--json --include-attestations 2>/dev/null); then
-		audit_rc=1
-	elif ! jq -e --arg version "$version" \
-		--arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
-		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+	if ! (
+		trap 'command rm -rf -- "$audit_dir"' EXIT
+		npm install --prefix "$audit_dir" --ignore-scripts --no-audit --no-fund --save-exact \
+			"aidevops@${version}" >/dev/null 2>&1 || exit 1
+		audit_json=$(npm --prefix "$audit_dir" audit signatures \
+			--json --include-attestations 2>/dev/null) || exit 1
+		jq -e --arg version "$version" \
+			--arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+			--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
 		(.invalid | type == $array_type and length == 0)
 		and (.missing | type == $array_type and length == 0)
 		and ([.verified[]
@@ -228,22 +220,21 @@ _full_loop_release_verify_npm_provenance() {
 			| .attestationBundles[]
 			| select(.predicateType == $provenance_predicate)
 		] | length == 1)
-	' <<<"$audit_json" >/dev/null; then
-		audit_rc=1
-	elif ! provenance_payload=$(jq -er --arg version "$version" \
-		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+	' <<<"$audit_json" >/dev/null || exit 1
+		provenance_payload=$(jq -er --arg version "$version" \
+			--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
 		[.verified[]
 			| select(.name == "aidevops" and .version == $version)
 			| .attestationBundles[]
 			| select(.predicateType == $provenance_predicate)
 			| .bundle.dsseEnvelope.payload
 		] | if length == 1 then .[0] | @base64d else empty end
-	' <<<"$audit_json"); then
-		audit_rc=1
-	elif ! jq -e --arg subject "pkg:npm/aidevops@${version}" \
-		--arg digest "$expected_digest" --arg repository "https://github.com/${repo}" \
-		--arg ref "$expected_ref" --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
-		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+	' <<<"$audit_json") || exit 1
+		jq -e --arg subject "pkg:npm/aidevops@${version}" \
+			--arg digest "$expected_digest" --arg repository "https://github.com/${repo}" \
+			--arg tag_ref "refs/tags/${tag_name}" --arg recovery_ref "refs/heads/main" \
+			--arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+			--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
 		._type == "https://in-toto.io/Statement/v1"
 		and .predicateType == $provenance_predicate
 		and (.subject | type == $array_type and length == 1)
@@ -254,13 +245,14 @@ _full_loop_release_verify_npm_provenance() {
 		and .predicate.buildDefinition.externalParameters.workflow.repository == $repository
 		and .predicate.buildDefinition.externalParameters.workflow.path
 			== ".github/workflows/publish-packages.yml"
-		and .predicate.buildDefinition.externalParameters.workflow.ref == $ref
+		and (.predicate.buildDefinition.externalParameters.workflow.ref == $tag_ref
+			or .predicate.buildDefinition.externalParameters.workflow.ref == $recovery_ref)
 		and .predicate.runDetails.builder.id == "https://github.com/actions/runner/github-hosted"
-	' <<<"$provenance_payload" >/dev/null; then
-		audit_rc=1
+	' <<<"$provenance_payload" >/dev/null || exit 1
+		exit 0
+	); then
+		return 1
 	fi
-	command rm -rf -- "$audit_dir" || return 1
-	[[ "$audit_rc" -eq 0 ]] || return 1
 	_FULL_LOOP_RELEASE_NPM_VERSION="$npm_version"
 	_FULL_LOOP_RELEASE_NPM_INTEGRITY="$npm_integrity"
 	return 0
@@ -297,7 +289,6 @@ _full_loop_release_verify_channels() {
 	local release_json=""
 	local npm_version=""
 	local npm_integrity=""
-	local run_event=""
 	local tap_owner="${repo%%/*}"
 	local formula=""
 	local expected_formula=""
@@ -309,11 +300,7 @@ _full_loop_release_verify_channels() {
 	jq -e --arg tag "$tag_name" '
 		.tag_name == $tag and .draft == false and ((.published_at // "") | length > 0)
 	' <<<"$release_json" >/dev/null || return 1
-	run_event=$(jq -er --arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
-		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" \
-		'.event | select(. == $push_event or . == $recovery_event)' \
-		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
-	_full_loop_release_verify_npm_provenance "$repo" "$tag_name" "$version" "$run_event" || return 1
+	_full_loop_release_verify_npm_provenance "$repo" "$tag_name" "$version" || return 1
 	npm_version="$_FULL_LOOP_RELEASE_NPM_VERSION"
 	npm_integrity="$_FULL_LOOP_RELEASE_NPM_INTEGRITY"
 	formula=$(gh api "repos/${tap_owner}/homebrew-tap/contents/Formula/aidevops.rb" \
@@ -370,17 +357,11 @@ _full_loop_release_dispatch_recovery() {
 	local tag_name="$2"
 	local audit_helper="${SCRIPT_DIR}/audit-log-helper.sh"
 	local tag_commit=""
-	local main_json=""
-	local main_sha=""
 	local correlation=""
 
 	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
 	[[ "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	main_json=$(gh api "repos/${repo}/git/ref/heads/main" 2>/dev/null) || return 1
-	main_sha=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
-		'.object.sha | select(type == $string_type)' <<<"$main_json") || return 1
-	[[ "$main_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	correlation="${tag_commit}.${main_sha}"
+	correlation="$tag_commit"
 
 	if [[ -x "$audit_helper" ]]; then
 		AUDIT_QUIET=true "$audit_helper" log operation.verify \

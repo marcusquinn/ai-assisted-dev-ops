@@ -1,5 +1,5 @@
 name: Publish Release
-run-name: Publish ${{ inputs.tag || github.ref_name }} [${{ inputs.correlation || github.run_id }}]
+run-name: Publish ${{ inputs.tag || github.ref_name }} [${{ inputs.correlation || github.sha }}.${{ github.sha }}]
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       correlation:
-        description: Exact tag-commit and workflow-commit correlation
+        description: Exact verified tag commit; run identity appends the workflow commit
         required: true
         type: string
 
@@ -33,7 +33,6 @@ jobs:
       RELEASE_EVENT: ${{ github.event_name }}
       RELEASE_REF: ${{ github.ref }}
       RELEASE_CORRELATION: ${{ inputs.correlation || '' }}
-      RELEASE_WORKFLOW_SHA: ${{ github.sha }}
 
     steps:
       - name: Checkout verified tag
@@ -60,7 +59,7 @@ jobs:
               echo "::error::Recovery must use the reviewed default branch workflow"
               exit 1
             }
-            [[ "$RELEASE_CORRELATION" =~ ^[0-9a-f]{40}\.[0-9a-f]{40}$ ]] || {
+            [[ "$RELEASE_CORRELATION" =~ ^[0-9a-f]{40}$ ]] || {
               echo "::error::Recovery correlation is malformed"
               exit 1
             }
@@ -75,11 +74,8 @@ jobs:
             exit 1
           }
           if [[ "$RELEASE_EVENT" == "workflow_dispatch" ]]; then
-            CORRELATION_TAG_SHA="${RELEASE_CORRELATION%%.*}"
-            CORRELATION_WORKFLOW_SHA="${RELEASE_CORRELATION#*.}"
-            [[ "$CORRELATION_TAG_SHA" == "$TAG_COMMIT" \
-              && "$CORRELATION_WORKFLOW_SHA" == "$RELEASE_WORKFLOW_SHA" ]] || {
-              echo "::error::Recovery correlation does not bind the tag and workflow commits"
+            [[ "$RELEASE_CORRELATION" == "$TAG_COMMIT" ]] || {
+              echo "::error::Recovery correlation does not bind the exact tag commit"
               exit 1
             }
           fi
@@ -258,15 +254,10 @@ jobs:
           EXPECTED_SHA512_HEX=$(node -e \
             'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("hex"))' \
             "${EXPECTED_INTEGRITY#sha512-}")
-          if [[ "$RELEASE_EVENT" == "push" ]]; then
-            EXPECTED_WORKFLOW_REF="refs/tags/${RELEASE_TAG}"
-          else
-            EXPECTED_WORKFLOW_REF="refs/heads/main"
-          fi
           jq -e --arg subject "pkg:npm/aidevops@${RELEASE_VERSION}" \
             --arg digest "$EXPECTED_SHA512_HEX" \
             --arg repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --arg ref "$EXPECTED_WORKFLOW_REF" '
+            --arg tag_ref "refs/tags/${RELEASE_TAG}" --arg recovery_ref "refs/heads/main" '
               ._type == "https://in-toto.io/Statement/v1"
               and .predicateType == "https://slsa.dev/provenance/v1"
               and (.subject | type == "array" and length == 1)
@@ -277,7 +268,8 @@ jobs:
               and .predicate.buildDefinition.externalParameters.workflow.repository == $repository
               and .predicate.buildDefinition.externalParameters.workflow.path
                 == ".github/workflows/publish-packages.yml"
-              and .predicate.buildDefinition.externalParameters.workflow.ref == $ref
+              and (.predicate.buildDefinition.externalParameters.workflow.ref == $tag_ref
+                or .predicate.buildDefinition.externalParameters.workflow.ref == $recovery_ref)
               and .predicate.runDetails.builder.id == "https://github.com/actions/runner/github-hosted"
             ' <<<"$PROVENANCE_PAYLOAD" >/dev/null || {
             echo "::error::npm provenance does not bind the exact package, repository, workflow, and ref"

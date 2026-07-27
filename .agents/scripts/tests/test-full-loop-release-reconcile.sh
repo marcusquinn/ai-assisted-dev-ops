@@ -70,10 +70,6 @@ if [[ "$args" == *" workflow run publish-packages.yml "* ]]; then
 	printf '%s\n' "$args" >"${FAKE_DISPATCH_LOG:?}"
 	exit 0
 fi
-if [[ "$args" == *"repos/test/repo/git/ref/heads/main"* ]]; then
-	printf '%s\n' '{"object":{"sha":"4444444444444444444444444444444444444444"}}'
-	exit 0
-fi
 if [[ "$args" == *" -f event=push "* ]]; then
 	printf '%s\n' '{"workflow_runs":[{"id":10,"event":"push","head_sha":"3333333333333333333333333333333333333333","status":"completed","conclusion":"success","created_at":"2026-07-27T00:00:00Z","display_title":"push","html_url":"push-url"}]}'
 	exit 0
@@ -218,12 +214,12 @@ dispatch_rc=0
 _full_loop_release_dispatch_recovery test/repo v1.2.3 >/dev/null || dispatch_rc=$?
 SCRIPT_DIR="$saved_script_dir"
 if [[ "$dispatch_rc" -ne 8 ]] ||
-	! grep -qF ' -f tag=v1.2.3 -f correlation=3333333333333333333333333333333333333333.4444444444444444444444444444444444444444 ' \
+	! grep -qF ' -f tag=v1.2.3 -f correlation=3333333333333333333333333333333333333333 ' \
 		"$FAKE_DISPATCH_LOG"; then
-	printf 'FAIL recovery dispatch did not carry exact tag and workflow commit correlation\n'
+	printf 'FAIL recovery dispatch did not carry the exact verified tag commit\n'
 	exit 1
 fi
-printf 'PASS recovery dispatch carries exact tag and workflow commit correlation\n'
+printf 'PASS recovery dispatch carries the exact tag while run identity records the workflow commit\n'
 
 for schema_mode in empty object malformed malformed-run api-failure; do
 	export FAKE_RUN_SCHEMA_MODE="$schema_mode"
@@ -248,7 +244,7 @@ printf 'PASS workflow-run API and schema uncertainty fail closed\n'
 
 _full_loop_release_find_workflow_run test/repo v1.2.3 3333333333333333333333333333333333333333
 
-_full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch || {
+_full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 || {
 	printf 'FAIL valid npm provenance did not verify\n'
 	exit 1
 }
@@ -257,20 +253,27 @@ if [[ "$_FULL_LOOP_RELEASE_NPM_INTEGRITY" != "$FAKE_NPM_INTEGRITY" ]]; then
 	exit 1
 fi
 set_fake_provenance_payload "https://github.com/attacker/repo" "refs/heads/main"
-if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch; then
+if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3; then
 	printf 'FAIL foreign npm provenance repository was accepted\n'
 	exit 1
 fi
 set_fake_provenance_payload "https://github.com/test/repo" "refs/heads/main"
 FAKE_NPM_AUDIT_INVALID=1
 export FAKE_NPM_AUDIT_INVALID
-if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch; then
+if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3; then
 	printf 'FAIL invalid npm provenance signature was accepted\n'
 	exit 1
 fi
 FAKE_NPM_AUDIT_INVALID=0
 export FAKE_NPM_AUDIT_INVALID
+set_fake_provenance_payload "https://github.com/test/repo" "refs/tags/v1.2.3"
+if ! _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3; then
+	printf 'FAIL recovery rejected an exact package published by the original tag run\n'
+	exit 1
+fi
+set_fake_provenance_payload "https://github.com/test/repo" "refs/heads/main"
 printf 'PASS npm package integrity and signed workflow provenance are bound exactly\n'
+printf 'PASS recovery accepts immutable npm provenance from tag or main publication\n'
 
 channel_output=$(_full_loop_release_verify_channels test/repo v1.2.3) || {
 	printf 'FAIL exact published channels did not converge\n'
