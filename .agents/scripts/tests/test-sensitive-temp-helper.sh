@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2218  # Test command shims intentionally replace external commands below.
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # Regression coverage for managed sensitive artifacts and detached cleanup.
