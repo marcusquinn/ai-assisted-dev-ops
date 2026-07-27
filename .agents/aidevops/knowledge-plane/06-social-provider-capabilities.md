@@ -34,9 +34,9 @@ a claim that the route is enabled.
 | Reddit | **Live** submissions and comments | **Live** saved, votes, and hidden | **Live** mentions, replies, inbox, and sent | **Live** subreddit and account relationships | **Live** multireddits and membership | PRAW 8, bounded one-page reads, independent cursors, and provider-window coverage. |
 | YouTube | **Live** uploads; **Live/Partial** activity | **Live** likes; **No/Export** watch history and Watch Later | **Live/Gate** channel-related comments and replies; **No/Export** complete authored history | **Live** outbound subscriptions | **Live** owned playlists and membership; **No/Export** saved playlists | `youtube.readonly` user OAuth, identity recheck per page, bounded list quota, 30-day refresh/delete boundary, and explicit gap rows. |
 | LinkedIn | **Live/Gate/Export** posts and articles | **Live/Gate/Export** comments, reactions, and saved items | **Live/Gate/Export** messages | **Live/Gate/Export** follows, connections, company follows, and groups | **No** newsletter subscriptions | Ten GET-only Member Snapshot streams for eligible EEA/Swiss members; account download remains an unwired export fallback. |
-| Facebook | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | **Gate/Export** | Shared Meta authorization needs app-review and product-specific evidence. |
-| Instagram | **Gate/Export** media | **Gate/Export** | **Gate/Export** comments and mentions | **Gate/Export** | **Export/No** | Verify Professional versus personal-account coverage before implementation. |
-| Threads | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** replies | **Gate/Export** | **No** until verified | Keep authorization and gaps distinct from Facebook and Instagram despite shared Meta identity. |
+| Facebook | **Live/Gate/Export** managed Page posts; **No/Export** personal profile | **No/Export** curated activity and per-post comments | **No/Export** | **No/Export** personal relationships | **No** | One managed-Page `/posts` stream; app review and Page authority remain explicit, with all personal-account categories excluded. |
+| Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
+| Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Export/Gate** | **Export/No** | **Export/No** | **Export/No** | **Export/No** | Archive-first; legacy or restricted integration access is not sufficient evidence for live parity. |
 | Quora | **Export** | **Export/No** | **Export/No** | **Export/No** | **No** | No general live account API is accepted without new official evidence. |
 | Skool | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | Verify member versus community-admin access and provider terms before selecting any route. |
@@ -86,6 +86,17 @@ a claim that the route is enabled.
   `.agents/content/social-linkedin.md` records the official regional/product
   gates, `202312` endpoint version, 28-day changelog boundary, account export,
   storage terms, and explicit newsletter disposition checked on 2026-07-27.
+- **Live Meta products:** `.agents/scripts/knowledge_social_meta.py`,
+  `.agents/scripts/_knowledge_social_meta*.py`, and
+  `.agents/tests/test-knowledge-social-meta.sh` prove separately namespaced
+  Facebook, Instagram, and Threads identities, stream registries, OAuth token
+  filters, checkpoints, coverage gaps, GET-only transport, field allowlists,
+  cursor sanitization, and atomic fenced persistence. Facebook enables managed
+  Page posts, Instagram enables Page-connected Professional media, and Threads
+  enables posts, authored replies, and mentions. `.agents/content/social-meta.md`
+  records the official SDK/sample versions, account/app-review gates, scopes,
+  pagination, retention boundary, export dispositions, and unsupported
+  categories checked on 2026-07-27.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.
