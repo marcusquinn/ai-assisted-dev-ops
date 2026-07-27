@@ -51,6 +51,30 @@ function getSessionId(input) {
   return candidates.find((value) => value) || "";
 }
 
+function isBareModelId(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  return !model.includes("/");
+}
+
+function modelStringOrEmpty(model) {
+  if (typeof model !== "string") {
+    return "";
+  }
+  return model;
+}
+
+function getModelValue(input) {
+  const candidates = [
+    input?.model?.modelID,
+    input?.model?.id,
+    input?.modelID,
+    input?.model,
+  ];
+  return candidates.find((value) => value) || "";
+}
+
 /**
  * Extract the current model ID from hook input variants.
  * @param {object} input
@@ -58,12 +82,15 @@ function getSessionId(input) {
  */
 function getModelId(input) {
   const provider = input?.model?.providerID || input?.provider?.id || "";
-  const model = input?.model?.modelID || input?.model?.id || input?.modelID || input?.model || "";
+  const model = getModelValue(input);
 
-  if (provider && model && typeof model === "string" && !model.includes("/")) {
+  if (!provider) {
+    return modelStringOrEmpty(model);
+  }
+  if (isBareModelId(model)) {
     return `${provider}/${model}`;
   }
-  return typeof model === "string" ? model : "";
+  return modelStringOrEmpty(model);
 }
 
 /**

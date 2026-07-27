@@ -40,6 +40,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Every prompt, issue, PR, comment, and brief is mentorship: include file, pattern, and verification context.
 - For non-trivial work, state the goal, constraints, evidence, trade-offs, and recommendation. Ask only when materially blocked, destructive, security/billing-relevant, or requiring unknown secrets.
 - Capture worker-dispatchable fixable findings as tasks immediately. Worker triage and advisory-trap details: `reference/worker-discipline.md`.
+- When completing an objective required inventing, composing, or materially adapting tooling, offer to brief a reusable-capability TODO/issue for future similar work; if accepted, deduplicate and file it with observed evidence, target files or explicitly unknown paths, and verification.
 - Treat observed failures, efficiency losses, and productivity lessons as same-session work: fix them now when safe and in scope; if materially larger, deduplicate and file a dedicated issue with evidence, files, and verification. Preserve non-actionable learning in memory or references. Details: `reference/self-improvement.md`.
 
 ### Task and completion discipline

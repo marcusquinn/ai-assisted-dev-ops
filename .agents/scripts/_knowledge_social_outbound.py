@@ -62,6 +62,16 @@ class OperationIntent:
 
 
 @dataclass(frozen=True)
+class ConnectionValues:
+    """Validated connection values used to create an outbound operation."""
+
+    provider: str
+    connection_id: str
+    remote_account_id: str
+    auth_profile_ref: str | None
+
+
+@dataclass(frozen=True)
 class ApprovalDecision:
     """Normalized approval authority for one exact stored intent."""
 
@@ -232,7 +242,7 @@ def _verify_operation_row(row: sqlite3.Row) -> sqlite3.Row:
 
 def _connection_values(
     database: sqlite3.Connection, intent: OperationIntent
-) -> tuple[str, str, str, str | None]:
+) -> ConnectionValues:
     connection_id = validate_opaque(intent.connection_id, "connection_id")
     remote_account_id = validate_opaque(intent.remote_account_id, "remote_account_id")
     row = database.execute(
@@ -247,23 +257,30 @@ def _connection_values(
     provider = validate_opaque(str(row["provider"]), "provider")
     if provider not in OUTBOUND_PROVIDER_ACTIONS:
         raise SocialStoreError("outbound connection provider is unsupported")
-    return provider, connection_id, remote_account_id, row["auth_profile_ref"]
+    return ConnectionValues(
+        provider=provider,
+        connection_id=connection_id,
+        remote_account_id=remote_account_id,
+        auth_profile_ref=row["auth_profile_ref"],
+    )
 
 
 def _operation_values(
     intent: OperationIntent,
     operation_id: str,
-    provider: str,
-    connection_id: str,
-    remote_account_id: str,
-    auth_profile_ref: str | None,
+    connection: ConnectionValues,
 ) -> dict[str, Any]:
+    provider = connection.provider
     if intent.action not in OUTBOUND_PROVIDER_ACTIONS[provider]:
         raise SocialStoreError("unsupported outbound action")
     if intent.scheduled_at < 0:
         raise SocialStoreError("scheduled_at must be a non-negative epoch")
     payload = _validated_payload(intent.action, intent.payload)
-    profile = intent.app_profile if intent.app_profile is not None else auth_profile_ref
+    profile = (
+        intent.app_profile
+        if intent.app_profile is not None
+        else connection.auth_profile_ref
+    )
     app_profile = _optional_selector(profile, "app_profile")
     username = _optional_selector(intent.username, "username")
     if provider == "reddit":
@@ -279,8 +296,8 @@ def _operation_values(
     return {
         "operation_id": validate_opaque(operation_id, "operation_id"),
         "provider": provider,
-        "connection_id": connection_id,
-        "remote_account_id": remote_account_id,
+        "connection_id": connection.connection_id,
+        "remote_account_id": connection.remote_account_id,
         "action": intent.action,
         "target_remote_id": _validated_target(
             provider, intent.action, intent.target_remote_id
@@ -368,17 +385,8 @@ def create_operation(
     created_at = now_epoch() if intent.created_at is None else intent.created_at
     database.execute("BEGIN IMMEDIATE")
     try:
-        provider, connection_id, remote_account_id, auth_profile_ref = (
-            _connection_values(database, intent)
-        )
-        values = _operation_values(
-            intent,
-            operation_id,
-            provider,
-            connection_id,
-            remote_account_id,
-            auth_profile_ref,
-        )
+        connection = _connection_values(database, intent)
+        values = _operation_values(intent, operation_id, connection)
         values["intent_sha256"] = _intent_sha256(values)
         existing = _existing_public_operation(
             database, operation_id, str(values["intent_sha256"])
