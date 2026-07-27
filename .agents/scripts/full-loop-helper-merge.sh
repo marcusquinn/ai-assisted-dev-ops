@@ -823,7 +823,7 @@ _merge_unlock_resources() {
 	local pr_number="$1"
 	local repo="$2"
 
-	gh issue unlock "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
+	gh pr unlock "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
 
 	# Find and unlock the issue linked via "Resolves/Closes/Fixes #NNN" in the PR body.
 	local _linked_issue=""

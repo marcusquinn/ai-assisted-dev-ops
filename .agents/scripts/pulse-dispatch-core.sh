@@ -262,7 +262,7 @@ _lock_linked_prs() {
 	local pr_num
 	while IFS= read -r pr_num; do
 		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh issue lock "$pr_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1 || true
+		gh pr lock "$pr_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1 || true
 		echo "[pulse-wrapper] Locked PR #${pr_num} in ${slug} (linked to issue #${issue_num}) (t1934)" >>"$LOGFILE"
 	done <<<"$pr_numbers"
 
@@ -307,7 +307,7 @@ _unlock_linked_prs() {
 	local pr_num
 	while IFS= read -r pr_num; do
 		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh issue unlock "$pr_num" --repo "$slug" >/dev/null 2>&1 || true
+		gh pr unlock "$pr_num" --repo "$slug" >/dev/null 2>&1 || true
 		echo "[pulse-wrapper] Unlocked PR #${pr_num} in ${slug} (linked to issue #${issue_num}) (t1934)" >>"$LOGFILE"
 	done <<<"$pr_numbers"
 

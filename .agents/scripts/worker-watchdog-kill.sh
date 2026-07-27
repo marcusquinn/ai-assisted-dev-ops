@@ -220,7 +220,7 @@ _watchdog_unlock_issue_and_prs() {
 	local pr_num
 	while IFS= read -r pr_num; do
 		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh issue unlock "$pr_num" --repo "$repo_slug" >/dev/null 2>&1 || true
+		gh pr unlock "$pr_num" --repo "$repo_slug" >/dev/null 2>&1 || true
 		log_msg "Unlocked PR #${pr_num} in ${repo_slug} (linked to issue #${issue_number}) (t1934)"
 	done <<<"$pr_numbers"
 
