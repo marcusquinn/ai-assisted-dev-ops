@@ -157,7 +157,7 @@ _ptsw_create_workspace() {
 	local workspace_root=""
 	local marker_path=""
 	local marker_tmp=""
-	local owner_pid="${BASHPID:-$$}"
+	local owner_pid="${BASHPID:-}"
 	local owner_start=""
 	local owner_created=""
 	_PULSE_TODO_SYNC_WORKSPACE=""
@@ -165,6 +165,13 @@ _ptsw_create_workspace() {
 	_PULSE_TODO_SYNC_OWNER_PID=""
 	_PULSE_TODO_SYNC_OWNER_START=""
 	[[ -n "$remote_url" ]] || return 1
+	if [[ -z "$owner_pid" ]]; then
+		# Bash 3.2 has no BASHPID and $$ remains the ancestor shell PID inside
+		# a subshell. The command-substitution child sees this workspace owner
+		# as its PPID, so exec avoids reporting an intermediate shell instead.
+		owner_pid="$(exec sh -c 'printf "%s" "$PPID"')" || return 1
+	fi
+	[[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 1
 	owner_start=$(_ptsw_process_start_fingerprint "$owner_pid") || return 1
 	owner_created=$(date +%s 2>/dev/null) || return 1
 	[[ "$owner_created" =~ ^[1-9][0-9]*$ ]] || return 1

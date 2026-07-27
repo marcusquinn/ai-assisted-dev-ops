@@ -315,6 +315,11 @@ kill_workspace=$(only_todo_sync_workspace) || fail "KILL fixture did not expose 
 _ptsw_read_owner_marker "$kill_workspace" || fail "KILL fixture owner marker was invalid"
 kill_owner_pid="$_PTSW_OWNER_PID"
 kill -0 "$kill_owner_pid" 2>/dev/null || fail "workspace marker did not identify a live sync owner"
+if ! pgrep -P "$kill_sync_pid" 2>/dev/null | grep -qx "$kill_owner_pid"; then
+	_force_kill_tree "$kill_sync_pid"
+	wait "$kill_sync_pid" 2>/dev/null || true
+	fail "workspace marker did not identify the sync process child"
+fi
 kill -9 "$kill_owner_pid" 2>/dev/null || fail "could not KILL sync owner"
 kill_wait_rc=0
 wait "$kill_sync_pid" 2>/dev/null || kill_wait_rc=$?
