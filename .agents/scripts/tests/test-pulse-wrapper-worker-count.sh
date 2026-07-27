@@ -509,19 +509,33 @@ test_queue_governor_reports_drain_rate_telemetry() {
 # Prompt security and runtime dispatch have dedicated regression suites.
 _setup_dispatch_stub() {
 	export DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch.log"
+	export TRIAGE_CLEANUP_LOG_FILE="${TEST_ROOT}/triage-cleanup.log"
 	: >"$DISPATCH_LOG_FILE"
+	: >"$TRIAGE_CLEANUP_LOG_FILE"
+
+	local default_snapshot_hash=""
+	local default_public_revision=""
+	printf -v default_snapshot_hash '%064d' 0
+	printf -v default_public_revision '%040d' 0
+	TRIAGE_TEST_PROMPT_METADATA="issue||${default_snapshot_hash}|${default_public_revision}"
 
 	_build_triage_review_prompt() {
 		local issue_num="$1"
 		local repo_slug="$2"
 		local repo_path="$3"
-		local snapshot_hash=""
-		local public_revision=""
-		printf -v snapshot_hash '%064d' 0
-		printf -v public_revision '%040d' 0
-		printf '%s|test-content-%s|issue||%s|%s\n' \
-			"${TEST_ROOT}/prompt-${repo_slug//\//-}-${issue_num}-${repo_path##*/}.md" \
-			"$issue_num" "$snapshot_hash" "$public_revision"
+		local artifact_dir="${TEST_ROOT}/prompt-artifacts-${issue_num}"
+		local prompt_file="${artifact_dir}/prompt-${repo_slug//\//-}-${repo_path##*/}.md"
+		mkdir -p "$artifact_dir"
+		printf 'test prompt for %s\n' "$issue_num" >"$prompt_file"
+		printf '%s|test-content-%s|%s\n' \
+			"$prompt_file" "$issue_num" "$TRIAGE_TEST_PROMPT_METADATA"
+		return 0
+	}
+
+	_triage_cleanup_sensitive_artifact_dir() {
+		local artifact_dir="$1"
+		printf '%s\n' "$artifact_dir" >>"$TRIAGE_CLEANUP_LOG_FILE"
+		rm -rf "$artifact_dir"
 		return 0
 	}
 
@@ -764,6 +778,73 @@ test_dispatch_triage_reviews_returns_available_when_no_state_file() {
 	return 0
 }
 
+_assert_malformed_triage_metadata_rejected() {
+	local case_name="$1"
+	local issue_num="$2"
+	local metadata="$3"
+	local repos_json
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	local state_file
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #${issue_num}: Malformed metadata [status: **needs-review**] [created: 2026-01-01T00:00:00Z]
+")
+
+	TRIAGE_TEST_PROMPT_METADATA="$metadata"
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-malformed-${issue_num}.log"
+	: >"$DISPATCH_LOG_FILE"
+	: >"$TRIAGE_CLEANUP_LOG_FILE"
+	: >"$LOGFILE"
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+
+	local remaining
+	remaining=$(dispatch_triage_reviews 3 "$repos_json" 2>/dev/null)
+	local artifact_dir="${TEST_ROOT}/prompt-artifacts-${issue_num}"
+	local failure=""
+	[[ "$remaining" == "3" ]] || failure="${failure} remaining=${remaining};"
+	[[ ! -s "$DISPATCH_LOG_FILE" ]] || failure="${failure} worker-dispatched;"
+	[[ ! -d "$artifact_dir" ]] || failure="${failure} artifact-not-removed;"
+	grep -Fxq "$artifact_dir" "$TRIAGE_CLEANUP_LOG_FILE" 2>/dev/null || failure="${failure} cleanup-not-called;"
+	grep -q "reason=triage-item-kind-propagation-failed" "$LOGFILE" 2>/dev/null || failure="${failure} infrastructure-retry-not-recorded;"
+
+	if [[ -z "$failure" ]]; then
+		print_result "dispatch_triage_reviews rejects ${case_name}" 0
+		return 0
+	fi
+
+	print_result "dispatch_triage_reviews rejects ${case_name}" 1 "$failure"
+	return 0
+}
+
+# ── Test 8: malformed propagated metadata fails closed before dispatch ────────
+test_dispatch_triage_reviews_rejects_malformed_metadata() {
+	local snapshot_hash=""
+	local public_revision=""
+	local alternate_revision=""
+	local base_revision=""
+	printf -v snapshot_hash '%064d' 0
+	printf -v public_revision '%040d' 0
+	printf -v alternate_revision '%040d' 1
+	printf -v base_revision '%040d' 2
+
+	_assert_malformed_triage_metadata_rejected \
+		"unknown item kind" 701 "unknown||${snapshot_hash}|${public_revision}"
+	_assert_malformed_triage_metadata_rejected \
+		"issue metadata carrying a PR revision" 702 \
+		"issue|${base_revision}:${public_revision}|${snapshot_hash}|${public_revision}"
+	_assert_malformed_triage_metadata_rejected \
+		"malformed snapshot hash" 703 "issue||not-a-snapshot|${public_revision}"
+	_assert_malformed_triage_metadata_rejected \
+		"malformed public revision" 704 "issue||${snapshot_hash}|not-a-revision"
+	_assert_malformed_triage_metadata_rejected \
+		"malformed PR revision" 705 "pr|not-a-pr-revision|${snapshot_hash}|${public_revision}"
+	_assert_malformed_triage_metadata_rejected \
+		"PR head disagreeing with public revision" 706 \
+		"pr|${base_revision}:${alternate_revision}|${snapshot_hash}|${public_revision}"
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -792,6 +873,7 @@ main() {
 	test_dispatch_triage_reviews_returns_zero_when_no_slots
 	test_dispatch_triage_reviews_resolves_repo_path_via_initialized_repos
 	test_dispatch_triage_reviews_returns_available_when_no_state_file
+	test_dispatch_triage_reviews_rejects_malformed_metadata
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then
