@@ -12,6 +12,7 @@ jobs:
   publish-npm:
     name: Publish to npm
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
       id-token: write
@@ -81,6 +82,7 @@ jobs:
   update-homebrew-tap:
     name: Update Homebrew Tap
     runs-on: ubuntu-latest
+    environment: release
     needs: publish-npm
     permissions:
       contents: read

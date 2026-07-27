@@ -33,7 +33,8 @@ recovery operation must use an existing tag that passes the same verifier.
 
 Repository default permissions can move from `write` to `read` only after every
 workflow declares its needs. The repository audit found eight callers without an
-explicit `permissions` block; this code checkpoint makes all eight explicit.
+explicit `permissions` block; the merged code-hardening checkpoint made all eight
+explicit.
 
 | Workflow | Required permission | Reason |
 |---|---|---|
@@ -56,21 +57,70 @@ setting can be disabled after the read-default change is verified.
 Apply these operations only through an audited, explicitly approved settings
 session. Do not create a release, package, deployment, or test tag as validation.
 
+### Pre-mutation state and rollback matrix
+
+Read-only inventory on 2026-07-27 confirmed the original exposure remains live.
+Capture a fresh machine-readable snapshot immediately before mutation with
+`release-publication-settings-helper.sh snapshot`; do not rely on this dated
+summary if the live state has changed.
+
+| Control | Pre-mutation state | Approved target | Exact rollback input |
+|---|---|---|---|
+| Actions defaults | `default_workflow_permissions=write`; workflow PR approval enabled | `read`; PR approval disabled | Restore both values from `actions.workflow_permissions` in the snapshot. |
+| Actions policy | Actions enabled; all actions allowed | No change in this checkpoint | Preserve `actions.policy` unchanged. |
+| Workflow permissions | All 55 workflows declare `permissions`; the eight previous default-dependent callers are listed above | Keep every declaration explicit | Revert code normally; do not compensate by restoring broad defaults. |
+| Release tag rules | No repository rulesets | One active tag ruleset named `Protect aidevops release tags`, targeting `refs/tags/v*`, restricting creation, update, and deletion, with one specific release-author user as the only bypass | Delete only the created ruleset by its response ID; never delete or replace unrelated rulesets. |
+| Environments | No environments | Protected `release` environment; independent reviewer(s), self-review prevented, admin bypass disabled, and one selected tag policy `v*` | Delete only the created environment if the snapshot proves it did not exist; otherwise restore the captured detail and policies. |
+| npm Trusted Publisher | Existing GitHub Actions publisher; environment binding must be checked in npmjs.com | `marcusquinn/aidevops`, `publish-packages.yml`, environment `release`, `npm publish` only | Restore the exact pre-change publisher fields captured in the npm UI; npm exposes no supported management API for this configuration. |
+
+The current release author and independent reviewer identities are consequential
+live-policy choices and are intentionally not guessed or committed here. The
+release author must be the single ruleset bypass actor. At least one different
+repository collaborator must review the `release` environment, and GitHub's
+"Prevent self-review" and "Disallow admin bypass" controls must remain enabled.
+
+The GitHub snapshot and verifier are read-only:
+
+```bash
+snapshot_dir="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}"
+.agents/scripts/release-publication-settings-helper.sh snapshot \
+  --repo marcusquinn/aidevops \
+  --output "${snapshot_dir}/release-publication-settings-before.json"
+
+.agents/scripts/release-publication-settings-helper.sh verify-github \
+  --repo marcusquinn/aidevops \
+  --release-author '<approved-login>' \
+  --reviewer '<independent-reviewer-login>'
+```
+
+`verify-github` deliberately reports two manual checks rather than claiming
+unsupported API evidence: GitHub's documented environment REST API does not
+expose the admin-bypass toggle, and npm documents Trusted Publisher management
+only through package settings on npmjs.com. Capture those UI values before and
+after mutation. npm also states that saving a publisher does not validate it;
+this issue forbids using a real publication as a test, so exact field review is
+the terminal non-publishing evidence.
+
+### Mutation order
+
 1. Re-run actionlint and required CI after the explicit-permission changes merge.
-2. Set default Actions workflow permissions to read and disable workflow-authored
-   pull-request approval. Verify required workflows still receive their declared
-   permissions through completed non-release runs.
-3. Create a protected `v*` tag ruleset that blocks creation, update, and deletion
-   except for the narrowly documented maintainer release authority. Record the
-   prior ruleset response and the exact rollback operation before mutation.
-4. Create a `release` environment with required maintainer review and a deployment
-   ref policy limited to protected release tags.
-5. In a follow-up code checkpoint, bind GitHub release, npm, and Homebrew jobs to
-   the `release` environment. Configure npm Trusted Publisher to require the same
-   workflow and environment identity where the registry supports that binding.
-6. Verify Actions defaults, rulesets, environment protection, and Trusted Publisher
-   identity through read-only APIs. Negative verification must use fixture or
-   non-publishing paths.
+2. Capture the GitHub snapshot and npm publisher fields, record the ruleset and
+   environment deletion rollback, and verify fresh operation approval.
+3. Create the protected `v*` tag ruleset with one specific release-author bypass.
+4. Create the `release` environment, independent reviewer policy, self-review
+   prevention, disabled admin bypass, and selected `v*` tag policy before merging
+   workflows that reference it. Otherwise a workflow run can implicitly create an
+   unprotected environment.
+5. Bind npm Trusted Publisher to `publish-packages.yml`, environment `release`, and
+   the `npm publish` action. Do not enable staged or broader actions in this scope.
+6. Set default Actions workflow permissions to read and disable workflow-authored
+   pull-request approval. Verify required non-release workflows still receive
+   their declared permissions.
+7. Run the read-only GitHub verifier and compare npm UI fields to the recorded
+   values. Negative verification uses fixtures only; do not create a tag, release,
+   package, Homebrew update, or deployment.
+8. Merge the code checkpoint that binds the GitHub release, npm, and Homebrew jobs
+   to the already-protected environment.
 
 Rollback restores only values captured in the pre-mutation matrix. Code changes
 are reverted normally; live settings are never guessed or broadly reset.
