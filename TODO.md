@@ -4723,5 +4723,4 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [x] t18178 Unify review evidence and policy adapters #bug ref:GH#28632 pr:#28634 completed:2026-07-25
 
 - [x] t18179 Repair triage ownership isolation and harden public issue review #bug #framework #pulse #security #interactive #no-auto-dispatch ~5h tier:thinking ref:GH#28705 logged:2026-07-27 -> [todo/tasks/t18179-brief.md] pr:#28735 completed:2026-07-27
-
-- [ ] t18180 Add malformed triage prompt metadata propagation regression coverage #auto-dispatch #framework #pulse #security #test ref:GH#28754
+- [ ] t18180 Add malformed triage prompt metadata propagation regression coverage #test #framework #pulse #security #interactive #auto-dispatch ~1h tier:standard ref:GH#28754 logged:2026-07-27 -> [todo/tasks/t18180-brief.md]
