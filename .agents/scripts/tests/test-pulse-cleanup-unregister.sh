@@ -90,6 +90,53 @@ test_orphan_removal_unregisters() {
 	return 0
 }
 
+test_degraded_orphan_removal_is_recoverable() {
+	local repo_path="${TEST_ROOT}/repo-degraded"
+	local wt_path="${TEST_ROOT}/wt-degraded"
+	local trash_root="${TEST_ROOT}/recoverable-trash"
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/degraded"
+	mkdir -p "$trash_root"
+
+	worktree_removal_guard() {
+		local candidate_path="$1"
+		local caller="$2"
+		local reason="$3"
+		: "$candidate_path" "$caller" "$reason"
+		WORKTREE_REMOVAL_GUARD_REASON="cwd-visibility-degraded"
+		return 2
+	}
+	gh_pr_list() {
+		return 0
+	}
+	claim_worktree_ownership() {
+		return 0
+	}
+	unregister_worktree_if_owner_pid() {
+		return 0
+	}
+	is_worktree_owned_by_others_for_pid() {
+		return 1
+	}
+	_branch_has_active_interactive_claim() {
+		return 1
+	}
+
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_root" \
+		_cleanup_single_worktree "$repo_path" "$wt_path" "feature/degraded" \
+		"$(date +%s)" "owner/repo" "main" ||
+		fail "degraded eligible orphan was not removed recoverably"
+
+	[[ ! -e "$wt_path" ]] || fail "degraded orphan source path still exists"
+	if /usr/bin/git -C "$repo_path" worktree list --porcelain | grep -Fqx "worktree $wt_path"; then
+		fail "degraded orphan metadata remains registered"
+	fi
+	grep -Fxq "$wt_path" "$UNREGISTER_LOG" || fail "degraded orphan unregister was not called"
+	grep -q 'degraded-cwd-orphan-recoverable.*mode=recoverable-trash' "$AIDEVOPS_CLEANUP_LOG" ||
+		fail "recoverable degraded removal was not audited"
+	pass "pulse cleanup recoverably removes a degraded clean zero-ahead no-PR orphan"
+	return 0
+}
+
 write_kill_stub() {
 	local bin_dir="$1"
 	mkdir -p "$bin_dir"
@@ -366,5 +413,6 @@ test_zombie_reaper_requires_ledger_repo
 test_zombie_reaper_uses_ledger_repo_and_pid
 test_zombie_reaper_rejects_unverified_completion
 test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence
+test_degraded_orphan_removal_is_recoverable
 
 exit 0

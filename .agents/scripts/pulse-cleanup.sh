@@ -85,6 +85,10 @@ if [[ -n "$_PULSE_CLEANUP_SCRIPT_DIR" && -f "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-te
 	# shellcheck source=pulse-temp-worktree-cleanup.sh
 	source "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-temp-worktree-cleanup.sh"
 fi
+if [[ -n "$_PULSE_CLEANUP_SCRIPT_DIR" && -f "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cleanup-degraded-orphans.sh" ]]; then
+	# shellcheck source=pulse-cleanup-degraded-orphans.sh
+	source "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cleanup-degraded-orphans.sh"
+fi
 # GH#23677 / t3700: Do NOT `unset _PULSE_CLEANUP_SCRIPT_DIR`. The previous
 # version unset this immediately after sourcing the four sibling helpers,
 # but _cleanup_merged_prs_for_all_repos() (line ~251) reads it later to
@@ -1485,6 +1489,37 @@ _pc_skip_recent_worker_metric_cleanup() {
 	return 0
 }
 
+_pc_permanently_remove_eligible_orphan() {
+	local rp_age="$1"
+	local wt_path_age="$2"
+	local wt_branch_age="$3"
+	local reason="$4"
+	local dirty_count="$5"
+	local repo_slug_age="$6"
+	local repo_name_age="$7"
+	local audit_context="$8"
+
+	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing ${wt_branch_age:-detached} — $reason" >>"$LOGFILE"
+	if [[ "$reason" == *"crashed worker"* && -n "$wt_branch_age" && -n "$repo_slug_age" ]]; then
+		_record_orphan_crash_classification "$wt_branch_age" "$dirty_count" "$repo_slug_age"
+	fi
+	if ! remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE" "$audit_context"; then
+		if git -C "$rp_age" worktree remove --force "$wt_path_age" 2>/dev/null; then
+			log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" \
+				"$_PC_REASON_AGE_ELIGIBLE" "permanent" "$audit_context"
+		else
+			return 1
+		fi
+	fi
+	git -C "$rp_age" worktree prune 2>/dev/null || true
+	unregister_worktree "$wt_path_age" 2>/dev/null || true
+	if [[ -n "$wt_branch_age" ]]; then
+		git -C "$rp_age" branch -D "$wt_branch_age" 2>/dev/null || true
+		git -C "$rp_age" push origin --delete "$wt_branch_age" 2>/dev/null || true
+	fi
+	return 0
+}
+
 #######################################
 # Per-worktree age-based orphan cleanup decision and removal.
 #
@@ -1527,7 +1562,14 @@ _cleanup_single_worktree() {
 	commits_ahead=$(_pc_commits_ahead_from_default "$rp_age" "$wt_path_age" "$main_branch") || return 1
 	local dirty_count=0
 	dirty_count=$(git -C "$wt_path_age" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || return 1
-	if ! worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE"; then
+	local removal_guard_status=0
+	if worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE"; then
+		removal_guard_status=0
+	else
+		removal_guard_status=$?
+	fi
+	if [[ "$removal_guard_status" -ne 0 &&
+		"$removal_guard_status" -ne "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" ]]; then
 		return 1
 	fi
 
@@ -1575,37 +1617,16 @@ _cleanup_single_worktree() {
 	if ! _pc_assert_no_uncommitted_work "$wt_path_age" "$wt_branch_age" "$dirty_count" "$orphan_issue_num" "$wt_age_secs" "$repo_name_age" "$audit_context"; then
 		return 1
 	fi
-
-	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing ${wt_branch_age:-detached} — $reason" >>"$LOGFILE"
-
-	# Step 5a: crash classification for the fast-path "crashed worker" case
-	if [[ "$reason" == *"crashed worker"* && -n "$wt_branch_age" && -n "$repo_slug_age" ]]; then
-		_record_orphan_crash_classification "$wt_branch_age" "$dirty_count" "$repo_slug_age"
+	if [[ "$removal_guard_status" -eq "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" ]]; then
+		_pc_remove_degraded_orphan_recoverably "$rp_age" "$wt_path_age" "$wt_branch_age" \
+			"$now_epoch" "$repo_slug_age" "$main_branch" "$orphan_issue_num" \
+			"$repo_name_age" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$reason"
+		return $?
 	fi
 
-	# Step 5b: perform removal (guarded permanent delete + deregister + branch cleanup)
-	# Age/PR/dirty gates above prove this orphaned worktree is disposable; remove
-	# permanently to avoid growing system Trash.
-	if ! remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE" "$audit_context"; then
-		if git -C "$rp_age" worktree remove --force "$wt_path_age" 2>/dev/null; then
-			log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" "$_PC_REASON_AGE_ELIGIBLE" "permanent" "$audit_context"
-		else
-			return 1
-		fi
-	fi
-	# Prune git's worktree registry for the now-missing directory
-	git -C "$rp_age" worktree prune 2>/dev/null || true
-	# t2860: deregister from SQLite ownership registry to prevent stale entries.
-	# Without this call, pulse-cleanup destroys the worktree directory but leaves
-	# a row in worktree_owners pointing to a non-existent path with a recycled PID.
-	# Mirrors the pattern in worktree-helper.sh:1224 (cmd_remove path).
-	# Fail-open: registry deregistration must never block cleanup.
-	unregister_worktree "$wt_path_age" 2>/dev/null || true
-	if [[ -n "$wt_branch_age" ]]; then
-		git -C "$rp_age" branch -D "$wt_branch_age" 2>/dev/null || true
-		git -C "$rp_age" push origin --delete "$wt_branch_age" 2>/dev/null || true
-	fi
-	return 0
+	_pc_permanently_remove_eligible_orphan "$rp_age" "$wt_path_age" "$wt_branch_age" \
+		"$reason" "$dirty_count" "$repo_slug_age" "$repo_name_age" "$audit_context"
+	return $?
 }
 
 #######################################
