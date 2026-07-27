@@ -334,7 +334,7 @@ mutation($blocked:ID!,$blocking:ID!) {
 }' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
 	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
 	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
-		printf '%s' "$result" | grep -q '"number"'; then
+		printf '%s' "$result" | jq -e '.data.addBlockedBy.issue.number | numbers' >/dev/null 2>&1; then
 		_relationship_record_outcome "$_REL_OUTCOME_CREATED"
 		return 0
 	fi
@@ -370,7 +370,7 @@ mutation($blocked:ID!,$blocking:ID!) {
 }' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
 	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
 	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
-		printf '%s' "$result" | grep -q '"number"'; then
+		printf '%s' "$result" | jq -e '.data.removeBlockedBy.issue.number | numbers' >/dev/null 2>&1; then
 		return 0
 	fi
 	log_verbose "  removeBlockedBy error: ${result:0:200}"
@@ -576,7 +576,7 @@ mutation($parent:ID!,$child:ID!) {
 }' -f parent="$parent_id" -f child="$child_id" 2>&1) || mutation_rc=$?
 	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
 	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
-		printf '%s' "$result" | grep -q '"number"'; then
+		printf '%s' "$result" | jq -e '.data.addSubIssue.issue.number | numbers' >/dev/null 2>&1; then
 		_relationship_record_outcome "$_REL_OUTCOME_CREATED"
 		return 0
 	fi

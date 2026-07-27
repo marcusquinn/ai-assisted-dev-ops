@@ -44,6 +44,7 @@ PR_REVIEW_THREAD_RESPONSE_BOT_RE="${PR_REVIEW_THREAD_RESPONSE_BOT_RE:-coderabbit
 PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN="${PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN:-false}"
 PRRTS_BOOL_TRUE="true"
 PRRTS_BOOL_FALSE="false"
+PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
@@ -52,6 +53,7 @@ PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
 PRRTS_REASON_HEAD_FETCH_FAILED="pr_head_fetch_failed"
+PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED="pr_head_repository_unverified"
 PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED="review_worktree_ownership_unverified"
 PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_INFRASTRUCTURE"
 PRRTS_WORKTREE_FAILURE_REASON="review_worktree_preparation_failed"
@@ -182,8 +184,8 @@ _prrts_graphql_rate_limit_ok() {
 
 _prrts_graphql_remaining() {
 	local remaining=""
-	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="unknown"
-	[[ -n "$remaining" ]] || remaining="unknown"
+	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="$PRRTS_VALUE_UNKNOWN"
+	[[ -n "$remaining" ]] || remaining="$PRRTS_VALUE_UNKNOWN"
 	printf '%s\n' "$remaining"
 	return 0
 }
@@ -228,9 +230,9 @@ _prrts_thread_has_marker() {
 		'[.data.node.comments.nodes[]? | select((.body // "") | contains($marker))] | length' 2>/dev/null) || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	[[ "$count" -gt 0 ]] && return 0
-	has_next=$(printf '%s' "$response" | jq -r \
-		'.data.node.comments.pageInfo.hasNextPage | if type == "boolean" then tostring else "unknown" end' \
-		2>/dev/null) || has_next="unknown"
+	has_next=$(printf '%s' "$response" | jq -r --arg unknown "$PRRTS_VALUE_UNKNOWN" \
+		'.data.node.comments.pageInfo.hasNextPage | if type == "boolean" then tostring else $unknown end' \
+		2>/dev/null) || has_next="$PRRTS_VALUE_UNKNOWN"
 	[[ "$has_next" == "$PRRTS_BOOL_FALSE" ]] && return 1
 	_prrts_log "write: marker lookup incomplete for thread ${thread_id}"
 	return 2
@@ -1256,7 +1258,7 @@ _prrts_validate_worker_head() {
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-head-repository-rest" \
 		gh api "repos/${repo_slug}/pulls/${pr_number}" 2>/dev/null) || {
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not verify PR head repository"
-		PRRTS_WORKTREE_FAILURE_REASON="pr_head_repository_unverified"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
 	}
 	is_cross_repository=$(printf '%s' "$pr_repo_json" | jq -er '
@@ -1265,7 +1267,7 @@ _prrts_validate_worker_head() {
 		else error("missing PR repository identity")
 		end' 2>/dev/null) || {
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not verify PR head repository"
-		PRRTS_WORKTREE_FAILURE_REASON="pr_head_repository_unverified"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
 	}
 	if [[ "$is_cross_repository" == "$PRRTS_BOOL_TRUE" ]]; then
@@ -1276,7 +1278,7 @@ _prrts_validate_worker_head() {
 	fi
 	if [[ "$is_cross_repository" != "$PRRTS_BOOL_FALSE" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — PR head repository response was indeterminate"
-		PRRTS_WORKTREE_FAILURE_REASON="pr_head_repository_unverified"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
 	fi
 	return 0
