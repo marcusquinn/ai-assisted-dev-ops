@@ -42,6 +42,7 @@
 #   PROMPT_GUARD_YAML_PATTERNS   Path to YAML patterns file (Lasso-compatible; default: auto-detect)
 #   PROMPT_GUARD_CUSTOM_PATTERNS Path to custom patterns file (one per line: severity|category|pattern)
 #   PROMPT_GUARD_QUIET           Suppress stderr output when set to "true"
+#   PROMPT_GUARD_PERSIST_CONTENT Persist flagged message previews/quarantine content (default: true)
 #   PROMPT_GUARD_SESSION_ID      Session ID for session-scoped accumulation (t1428.3)
 
 set -euo pipefail
@@ -70,6 +71,7 @@ PROMPT_GUARD_LOG_DIR="${PROMPT_GUARD_LOG_DIR:-${HOME}/.aidevops/logs/prompt-guar
 
 # Quiet mode
 PROMPT_GUARD_QUIET="${PROMPT_GUARD_QUIET:-false}"
+PROMPT_GUARD_PERSIST_CONTENT="${PROMPT_GUARD_PERSIST_CONTENT:-true}"
 
 # YAML patterns file (auto-detect from script location or ~/.aidevops)
 PROMPT_GUARD_YAML_PATTERNS="${PROMPT_GUARD_YAML_PATTERNS:-}"
@@ -82,6 +84,8 @@ readonly SEVERITY_LOW=1
 readonly SEVERITY_MEDIUM=2
 readonly SEVERITY_HIGH=3
 readonly SEVERITY_CRITICAL=4
+readonly _PG_SCAN_FINDINGS=1
+readonly _PG_SCAN_ERROR=2
 
 # ============================================================
 # LOGGING
@@ -257,14 +261,20 @@ _pg_scan_patterns_from_stream() {
 		# Skip empty lines and comments
 		[[ -z "$severity" || "$severity" == "#"* ]] && continue
 
-		# Test pattern against message
-		if _pg_match "$pattern" "$message"; then
+		# Test pattern against message. Regex engine failures must not be
+		# indistinguishable from a clean no-match result.
+		local match_status=0
+		_pg_match "$pattern" "$message" || match_status=$?
+		if [[ "$match_status" -eq 0 ]]; then
 			local matched_text
 			matched_text=$(_pg_extract_match "$pattern" "$message") || matched_text="[match]"
 			# Sanitize matched_text to prevent pipe delimiter injection from untrusted content
 			matched_text=$(_pg_sanitize_delimited "$matched_text")
 			echo "${severity}|${category}|${description}|${matched_text}"
 			_pg_scan_found=1
+		elif [[ "$match_status" -ne 1 ]]; then
+			_pg_log_error "Pattern matcher failed for category ${category:-unknown} (exit $match_status)"
+			return "$_PG_SCAN_ERROR"
 		fi
 	done
 	return 0
@@ -272,31 +282,79 @@ _pg_scan_patterns_from_stream() {
 
 # Scan a message against all patterns
 # Output: one line per match: severity|category|description|matched_text
-# Returns: 0 if no matches, 1 if matches found
+# Returns: 0 if no matches, 1 if matches found, 2 if scanning failed
 _pg_scan_message() {
 	local message="$1"
 	_pg_scan_found=0
 
-	# Try YAML patterns first (comprehensive), fall back to inline (core set)
-	local yaml_patterns
-	yaml_patterns=$(_pg_load_yaml_patterns) || true
+	# Try YAML patterns first (comprehensive). Inline fallback is permitted only
+	# when no source exists; configured, unreadable, or malformed sources fail
+	# closed rather than silently reducing scan coverage.
+	local yaml_patterns=""
+	local yaml_status=0
+	yaml_patterns=$(_pg_load_yaml_patterns) || yaml_status=$?
+	if [[ "$yaml_status" -ne 0 && "$yaml_status" -ne 1 ]]; then
+		_pg_log_error "Prompt-injection YAML pattern loading failed"
+		return "$_PG_SCAN_ERROR"
+	fi
 
-	if [[ -n "$yaml_patterns" ]]; then
-		_pg_scan_patterns_from_stream "$message" <<<"$yaml_patterns"
-	else
+	local scan_status=0
+	if [[ "$yaml_status" -eq 0 && -n "$yaml_patterns" ]]; then
+		_pg_scan_patterns_from_stream "$message" <<<"$yaml_patterns" || scan_status=$?
+	elif [[ "$yaml_status" -eq 1 ]]; then
 		# Inline fallback — always available even without YAML file
-		_pg_scan_patterns_from_stream "$message" < <(_pg_get_patterns)
+		_pg_scan_patterns_from_stream "$message" < <(_pg_get_patterns) || scan_status=$?
+	else
+		_pg_log_error "Prompt-injection YAML pattern loading returned no patterns"
+		return "$_PG_SCAN_ERROR"
+	fi
+	if [[ "$scan_status" -ne 0 ]]; then
+		return "$_PG_SCAN_ERROR"
 	fi
 
 	# Load custom patterns if configured (always, regardless of YAML/inline)
 	local custom_file="${PROMPT_GUARD_CUSTOM_PATTERNS:-}"
-	if [[ -n "$custom_file" && -f "$custom_file" ]]; then
-		_pg_scan_patterns_from_stream "$message" <"$custom_file"
+	if [[ -n "$custom_file" ]]; then
+		if [[ ! -f "$custom_file" || ! -r "$custom_file" ]]; then
+			_pg_log_error "Configured custom prompt-injection patterns are unavailable"
+			return "$_PG_SCAN_ERROR"
+		fi
+		scan_status=0
+		_pg_scan_patterns_from_stream "$message" <"$custom_file" || scan_status=$?
+		if [[ "$scan_status" -ne 0 ]]; then
+			return "$_PG_SCAN_ERROR"
+		fi
 	fi
 
 	if [[ "$_pg_scan_found" -eq 1 ]]; then
-		return 1
+		return "$_PG_SCAN_FINDINGS"
 	fi
+	return 0
+}
+
+# Capture scan output without collapsing findings and engine errors together.
+# Args: $1=result variable name, $2=message
+# Returns the same status as _pg_scan_message.
+_pg_capture_scan_results() {
+	local result_var="$1"
+	local message="$2"
+	local captured=""
+	local scan_status=0
+	captured=$(_pg_scan_message "$message") || scan_status=$?
+	printf -v "$result_var" '%s' "$captured"
+	return "$scan_status"
+}
+
+_pg_scan_status_is_error() {
+	local scan_status="$1"
+	if [[ "$scan_status" -ne 0 && "$scan_status" -ne "$_PG_SCAN_FINDINGS" ]]; then
+		return 0
+	fi
+	return 1
+}
+
+_pg_log_scan_failure() {
+	_pg_log_error "Prompt-injection pattern scan failed; refusing to treat content as clean"
 	return 0
 }
 
@@ -390,7 +448,11 @@ _pg_log_attempt() {
 
 	# Truncate message for logging (max 500 chars)
 	local log_message
-	log_message=$(printf '%s' "$message" | head -c 500)
+	if [[ "$PROMPT_GUARD_PERSIST_CONTENT" == "true" ]]; then
+		log_message=$(printf '%s' "$message" | head -c 500)
+	else
+		log_message="[untrusted content omitted by caller policy]"
+	fi
 
 	# Count findings by severity
 	local critical_count=0 high_count=0 medium_count=0 low_count=0
@@ -451,6 +513,10 @@ _pg_quarantine_item() {
 	local results="$2"
 	local max_severity="$3"
 
+	# High-risk callers can request detection metadata without persisting the
+	# untrusted message itself to audit previews or quarantine storage.
+	[[ "$PROMPT_GUARD_PERSIST_CONTENT" == "true" ]] || return 0
+
 	# Only quarantine if the helper exists
 	if [[ ! -x "$_PG_QUARANTINE_HELPER" ]]; then
 		return 0
@@ -489,7 +555,12 @@ cmd_check() {
 	fi
 
 	local results
-	results=$(_pg_scan_message "$message") || true
+	local scan_status=0
+	_pg_capture_scan_results results "$message" || scan_status=$?
+	if _pg_scan_status_is_error "$scan_status"; then
+		_pg_log_scan_failure
+		return 1
+	fi
 
 	if [[ -z "$results" ]]; then
 		_pg_log_success "ALLOW — no injection patterns detected"
@@ -531,7 +602,12 @@ cmd_scan() {
 	fi
 
 	local results
-	results=$(_pg_scan_message "$message") || true
+	local scan_status=0
+	_pg_capture_scan_results results "$message" || scan_status=$?
+	if _pg_scan_status_is_error "$scan_status"; then
+		_pg_log_scan_failure
+		return 1
+	fi
 
 	if [[ -z "$results" ]]; then
 		_pg_log_success "No injection patterns detected"
@@ -580,7 +656,13 @@ cmd_score() {
 	done
 
 	local results
-	results=$(_pg_scan_message "$message") || true
+	local scan_status=0
+	_pg_capture_scan_results results "$message" || scan_status=$?
+	if _pg_scan_status_is_error "$scan_status"; then
+		_pg_log_scan_failure
+		echo "0|ERROR|0"
+		return 1
+	fi
 
 	if [[ -z "$results" ]]; then
 		_pg_log_success "No injection patterns detected (score: 0)"
@@ -732,7 +814,12 @@ cmd_scan_stdin() {
 	_pg_log_info "Scanning stdin content ($byte_count bytes)"
 
 	local results
-	results=$(_pg_scan_message "$content") || true
+	local scan_status=0
+	_pg_capture_scan_results results "$content" || scan_status=$?
+	if _pg_scan_status_is_error "$scan_status"; then
+		_pg_log_scan_failure
+		return 1
+	fi
 
 	if [[ -z "$results" ]]; then
 		if [[ "$truncated" == "true" ]]; then
@@ -779,7 +866,12 @@ cmd_sanitize() {
 
 		# Log the sanitization
 		local results
-		results=$(_pg_scan_message "$message") || true
+		local scan_status=0
+		_pg_capture_scan_results results "$message" || scan_status=$?
+		if _pg_scan_status_is_error "$scan_status"; then
+			_pg_log_scan_failure
+			return 1
+		fi
 		if [[ -n "$results" ]]; then
 			local max_num
 			max_num=$(_pg_max_severity "$results")
@@ -1053,12 +1145,18 @@ cmd_status() {
 # Arguments: $1=content
 # Outputs: "TIER1_BLOCK|<severity>" if blocked, "TIER1_ESCALATE" if below threshold,
 #          "TIER1_CLEAN" if no findings.
-# Returns: 0=clean/escalate, 1=blocked
+# Returns: 0=clean/escalate, 1=blocked, 2=scan error
 _pg_classify_tier1() {
 	local content="$1"
 
 	local tier1_results
-	tier1_results=$(_pg_scan_message "$content") || true
+	local scan_status=0
+	_pg_capture_scan_results tier1_results "$content" || scan_status=$?
+	if _pg_scan_status_is_error "$scan_status"; then
+		_pg_log_scan_failure
+		echo "TIER1_ERROR"
+		return 2
+	fi
 
 	if [[ -z "$tier1_results" ]]; then
 		echo "TIER1_CLEAN"
@@ -1133,10 +1231,15 @@ cmd_classify_deep() {
 
 	# Tier 1: Pattern scan
 	local tier1_output
-	tier1_output=$(_pg_classify_tier1 "$content") || {
+	local tier1_status=0
+	tier1_output=$(_pg_classify_tier1 "$content") || tier1_status=$?
+	if [[ "$tier1_status" -ne 0 ]]; then
 		echo "$tier1_output"
-		return 1
-	}
+		if [[ "$tier1_status" -eq 1 ]]; then
+			return 1
+		fi
+		return 2
+	fi
 
 	# Re-run scan to get raw results for Tier 2 context (only if escalating)
 	local tier1_results=""

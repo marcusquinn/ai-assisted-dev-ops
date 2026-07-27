@@ -45,9 +45,13 @@ _PG_YAML_PATTERNS_LOADED="false"
 # Auto-detect YAML patterns file location
 _pg_find_yaml_patterns() {
 	# Explicit env var takes priority
-	if [[ -n "$PROMPT_GUARD_YAML_PATTERNS" && -f "$PROMPT_GUARD_YAML_PATTERNS" ]]; then
-		echo "$PROMPT_GUARD_YAML_PATTERNS"
-		return 0
+	if [[ -n "$PROMPT_GUARD_YAML_PATTERNS" ]]; then
+		if [[ -f "$PROMPT_GUARD_YAML_PATTERNS" && -r "$PROMPT_GUARD_YAML_PATTERNS" ]]; then
+			echo "$PROMPT_GUARD_YAML_PATTERNS"
+			return 0
+		fi
+		_pg_log_warn "Configured YAML patterns are unavailable: $PROMPT_GUARD_YAML_PATTERNS"
+		return 2
 	fi
 
 	# Try relative to script (repo checkout / worktree)
@@ -68,87 +72,149 @@ _pg_find_yaml_patterns() {
 	return 1
 }
 
-# Parse YAML patterns file into pipe-delimited format: severity|category|description|pattern
-# Uses pure bash/awk — no YAML library dependency.
-# The YAML structure is simple and predictable (category blocks with list items).
+# Parse YAML patterns into pipe-delimited severity|category|description|pattern
+# records. The YAML structure is intentionally simple and predictable.
+_pg_yaml_entry_complete() {
+	local severity="$1"
+	local description="$2"
+	local pattern="$3"
+	local category="$4"
+	[[ -n "$severity" && -n "$description" && -n "$pattern" && -n "$category" ]]
+	return $?
+}
+
+_pg_parse_yaml_patterns_file() {
+	local yaml_file="$1"
+	local patterns=""
+	local current_category=""
+	local severity="" description="" pattern=""
+	local entry_started=0
+	local parse_error=0
+	local line=""
+	while IFS= read -r line; do
+		# Skip comments and empty lines
+		[[ "$line" =~ ^[[:space:]]*# ]] && continue
+		[[ "$line" =~ ^[[:space:]]*$ ]] && continue
+		# Category header (top-level key ending with colon, no leading whitespace)
+		if [[ "$line" =~ ^([a-z_]+):$ ]]; then
+			if [[ "$entry_started" -eq 1 ]]; then
+				if _pg_yaml_entry_complete "$severity" "$description" "$pattern" "$current_category"; then
+					patterns+="${severity}|${current_category}|$(_pg_sanitize_delimited "$description")|${pattern}"$'\n'
+				else
+					parse_error=1
+					break
+				fi
+			fi
+			current_category="${BASH_REMATCH[1]}"
+			severity=""
+			description=""
+			pattern=""
+			entry_started=0
+			continue
+		fi
+		# List item start (- severity: ...)
+		if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*severity:[[:space:]]*\"?([A-Z]+)\"?$ ]]; then
+			# Emit the previous complete entry. Any partial entry means the
+			# configured source is malformed and must not reduce scan coverage.
+			if [[ "$entry_started" -eq 1 ]] && \
+				_pg_yaml_entry_complete "$severity" "$description" "$pattern" "$current_category"; then
+				patterns+="${severity}|${current_category}|$(_pg_sanitize_delimited "$description")|${pattern}"$'\n'
+			elif [[ "$entry_started" -eq 1 || -z "$current_category" ]]; then
+				parse_error=1
+				break
+			fi
+			severity="${BASH_REMATCH[1]}"
+			case "$severity" in
+			CRITICAL | HIGH | MEDIUM | LOW) ;;
+			*) parse_error=1; break ;;
+			esac
+			description=""
+			pattern=""
+			entry_started=1
+			continue
+		fi
+		if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*severity: ]]; then
+			parse_error=1
+			break
+		fi
+		# Description field
+		if [[ "$line" =~ ^[[:space:]]*description:[[:space:]]*\"(.+)\"$ ]]; then
+			description="${BASH_REMATCH[1]}"
+			continue
+		fi
+		if [[ "$line" =~ ^[[:space:]]*description: ]]; then
+			parse_error=1
+			break
+		fi
+		# Pattern field (single-quoted — YAML standard for regex)
+		if [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\'(.+)\'$ ]]; then
+			pattern="${BASH_REMATCH[1]}"
+			continue
+		fi
+		# Pattern field (double-quoted)
+		if [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\"(.+)\"$ ]]; then
+			pattern="${BASH_REMATCH[1]}"
+			continue
+		fi
+		if [[ "$line" =~ ^[[:space:]]*pattern: ]]; then
+			parse_error=1
+			break
+		fi
+	done <"$yaml_file" || {
+		_pg_log_warn "YAML pattern source could not be read: $yaml_file"
+		return 2
+	}
+	# Emit last pattern
+	if [[ "$parse_error" -eq 0 && "$entry_started" -eq 1 ]] && \
+		_pg_yaml_entry_complete "$severity" "$description" "$pattern" "$current_category"; then
+		patterns+="${severity}|${current_category}|$(_pg_sanitize_delimited "$description")|${pattern}"$'\n'
+	elif [[ "$entry_started" -eq 1 ]]; then
+		parse_error=1
+	fi
+	if [[ "$parse_error" -ne 0 ]]; then
+		_pg_log_warn "YAML pattern source is malformed: $yaml_file"
+		return 2
+	fi
+	if [[ -z "$patterns" ]]; then
+		_pg_log_warn "YAML file parsed but no patterns extracted: $yaml_file"
+		return 2
+	fi
+
+	printf '%s' "${patterns%$'\n'}"
+	return 0
+}
+
 _pg_load_yaml_patterns() {
 	if [[ "$_PG_YAML_PATTERNS_LOADED" == "true" ]]; then
 		if [[ -n "$_PG_YAML_PATTERNS_CACHE" ]]; then
 			echo "$_PG_YAML_PATTERNS_CACHE"
 			return 0
 		fi
-		return 1
+		_pg_log_warn "YAML pattern cache is marked loaded but empty"
+		return 2
 	fi
 
-	local yaml_file
-	yaml_file=$(_pg_find_yaml_patterns) || {
+	local yaml_file=""
+	local find_status=0
+	yaml_file=$(_pg_find_yaml_patterns) || find_status=$?
+	if [[ "$find_status" -eq 1 ]]; then
 		_pg_log_info "YAML patterns not found, using inline fallback"
 		return 1
-	}
+	fi
+	if [[ "$find_status" -ne 0 || -z "$yaml_file" || ! -r "$yaml_file" ]]; then
+		_pg_log_warn "YAML pattern source could not be loaded"
+		return 2
+	fi
 
 	local patterns=""
-	local current_category=""
-	local severity="" description="" pattern=""
-
-	while IFS= read -r line; do
-		# Skip comments and empty lines
-		[[ "$line" =~ ^[[:space:]]*# ]] && continue
-		[[ "$line" =~ ^[[:space:]]*$ ]] && continue
-
-		# Category header (top-level key ending with colon, no leading whitespace)
-		if [[ "$line" =~ ^([a-z_]+):$ ]]; then
-			current_category="${BASH_REMATCH[1]}"
-			continue
-		fi
-
-		# List item start (- severity: ...)
-		if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*severity:[[:space:]]*\"?([A-Z]+)\"?$ ]]; then
-			# Emit previous pattern if complete
-			if [[ -n "$severity" && -n "$pattern" && -n "$current_category" ]]; then
-				patterns+="${severity}|${current_category}|$(_pg_sanitize_delimited "$description")|${pattern}"$'\n'
-			fi
-			severity="${BASH_REMATCH[1]}"
-			description=""
-			pattern=""
-			continue
-		fi
-
-		# Description field
-		if [[ "$line" =~ ^[[:space:]]*description:[[:space:]]*\"(.+)\"$ ]]; then
-			description="${BASH_REMATCH[1]}"
-			continue
-		fi
-
-		# Pattern field (single-quoted — YAML standard for regex)
-		if [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\'(.+)\'$ ]]; then
-			pattern="${BASH_REMATCH[1]}"
-			continue
-		fi
-
-		# Pattern field (double-quoted)
-		if [[ "$line" =~ ^[[:space:]]*pattern:[[:space:]]*\"(.+)\"$ ]]; then
-			pattern="${BASH_REMATCH[1]}"
-			continue
-		fi
-	done <"$yaml_file"
-
-	# Emit last pattern
-	if [[ -n "$severity" && -n "$pattern" && -n "$current_category" ]]; then
-		patterns+="${severity}|${current_category}|$(_pg_sanitize_delimited "$description")|${pattern}"$'\n'
-	fi
-
-	if [[ -z "$patterns" ]]; then
-		_pg_log_warn "YAML file parsed but no patterns extracted: $yaml_file"
-		return 1
-	fi
+	patterns=$(_pg_parse_yaml_patterns_file "$yaml_file") || return $?
 
 	# Cache for subsequent calls — mark loaded only after successful parse+cache
 	# so transient parse failures do not permanently disable YAML loading.
 	_PG_YAML_PATTERNS_CACHE="$patterns"
 	_PG_YAML_PATTERNS_LOADED="true"
 
-	# Remove trailing newline
-	echo "${patterns%$'\n'}"
+	echo "$patterns"
 	return 0
 }
 

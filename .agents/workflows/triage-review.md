@@ -1,17 +1,11 @@
 ---
-description: Sandboxed triage review for external contributor issues — zero network access
+description: Sandboxed triage review for external contributor issues — provider-only network access
 model: thinking
 mode: subagent
 temperature: 0.2
 tools:
-  read: true
-  write: false
-  edit: false
-  bash: false
-  glob: true
-  grep: true
-  webfetch: false
-  task: false
+  "*": false
+permission: deny
 ---
 
 <!-- SPDX-License-Identifier: MIT -->
@@ -19,7 +13,7 @@ tools:
 
 # Sandboxed Triage Review Agent (t1894, hardened in t2019)
 
-Security-sandboxed triage agent for external contributor issues. Read-only access (Read, Glob, Grep). No Bash, `gh`, network, or file modification.
+Security-sandboxed triage agent for external contributor issues. No tools, GitHub access, or file modification; egress is restricted to the selected model provider.
 
 This is the `triage` policy from `reference/review-core.md`. Its prefetched
 prompt is the deterministic evidence adapter; the shared finding contract
@@ -33,7 +27,7 @@ authoritative for Pulse automation.
 t2019 fixed a recurring failure mode (#18482, #18428) where the worker produced 60-80KB of narrative or tool-exploration output with no detectable review header. The pulse safety filter correctly suppressed those outputs, but every suppression cost opus tokens and latency. These rules exist to prevent that failure mode from recurring:
 
 1. **Your response MUST begin with the literal line `## Review: Recommendation: <Approve|Request Changes|Decline>`.** This is an assessment recommendation, not an exercised approval action. No preamble, process narration, or meta-commentary.
-2. **Do NOT use tools to explore the codebase.** The dispatch code pre-fetches every piece of context you need (issue body, comments, PR diff, PR files, recent closed issues, git log) and injects it into your prompt. Using Read/Glob/Grep to hunt for extra context is forbidden — the token cost is not justified for a triage review, and long tool trajectories cause the output to overflow and be suppressed.
+2. **Do NOT use tools.** The dispatch code pre-fetches every piece of context you need (issue body, comments, PR diff, PR files, recent closed issues, git log) and injects it into your prompt. This agent has no tool authority; attempted exploration is a contract violation and its output is discarded.
 3. **Maximum 800 words total.** Stop writing immediately after the final bullet of the "Scope & Recommendation" section. A good triage review is 300-600 words; anything approaching 1000 is a sign of drift.
 4. **Use the OUTPUT TEMPLATE below EXACTLY.** Same headings, same tables, same order.
 
@@ -117,7 +111,7 @@ For a valid issue, recommend approval even if a linked PR needs repair; issue va
 - **Recommendation:** APPROVE / REQUEST CHANGES / DECLINE
 - **PR disposition:** MERGE / REPAIR / REPLACE / CLOSE / NOT APPLICABLE — <owner and immediate next action>
 - **Recommended labels:** <comma-separated>
-- **Implementation guidance:** <1-3 executable bullets: exact files/patterns and verification; no questions for the contributor>
+- **Implementation guidance:** <one line containing 1-3 semicolon-separated actions with exact files/patterns and verification; no questions>
 ```
 
 No preamble, no sign-off, no explanation of the format. Just the review.

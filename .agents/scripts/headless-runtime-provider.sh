@@ -427,6 +427,7 @@ record_provider_backoff() {
 	local reason="$2"
 	local details_file="$3"
 	local model="${4:-$provider}"
+	local suppress_details="${5:-0}"
 	local details retry_seconds auth_signature retry_after backoff_key
 
 	# local_error = worker/sandbox/prompt issue, NOT provider's fault.
@@ -445,8 +446,8 @@ record_provider_backoff() {
 		backoff_key="$model"
 	fi
 
-	if _headless_private_workload_enabled; then
-		details="private workload details suppressed"
+	if _headless_private_workload_enabled || [[ "$suppress_details" == "1" ]]; then
+		details="ephemeral workload details suppressed"
 	else
 		details=$(
 			python3 - "$details_file" <<'PY'

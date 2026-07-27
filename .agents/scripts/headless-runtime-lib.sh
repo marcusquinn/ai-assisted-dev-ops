@@ -633,10 +633,27 @@ _headless_provider_env_allowed() {
 	return 1
 }
 
+# Public triage receives only the selected provider's minimal authentication
+# variables. Provider-prefixed endpoint, proxy, organization, and administrative
+# controls must not cross this untrusted-content boundary.
+_headless_triage_provider_env_allowed() {
+	local provider="$1"
+	local name="$2"
+
+	case "${provider}:${name}" in
+	openai:OPENAI_API_KEY) return 0 ;;
+	anthropic:ANTHROPIC_API_KEY | anthropic:CLAUDE_CODE_OAUTH_TOKEN) return 0 ;;
+	google:GOOGLE_API_KEY | google:GEMINI_API_KEY | google:GOOGLE_OAUTH_ACCESS_TOKEN) return 0 ;;
+	esac
+
+	return 1
+}
+
 copy_scoped_opencode_auth() {
 	local source_auth="$1"
 	local dest_auth="$2"
 	local provider="${3:-}"
+	local strict_scope="${4:-false}"
 	local dest_dir
 
 	[[ -f "$source_auth" ]] || return 0
@@ -652,6 +669,9 @@ copy_scoped_opencode_auth() {
 			return 0
 		fi
 		rm -f "$tmp_auth" 2>/dev/null || true
+	fi
+	if [[ "$strict_scope" == "true" ]]; then
+		return 1
 	fi
 
 	cp "$source_auth" "$dest_auth" 2>/dev/null || true
@@ -673,6 +693,7 @@ run_without_opencode_session_env() {
 
 build_sandbox_passthrough_csv() {
 	local provider="${1:-}"
+	local role="${2:-worker}"
 	local names=()
 	local seen_names=" "
 	local name
@@ -681,6 +702,18 @@ build_sandbox_passthrough_csv() {
 		if _headless_private_workload_enabled; then
 			case "$name" in
 			XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | XDG_STATE_HOME)
+				names+=("$name")
+				;;
+			esac
+			continue
+		fi
+		if [[ "$role" == "triage" ]]; then
+			if [[ -n "$provider" ]] && _headless_triage_provider_env_allowed "$provider" "$name"; then
+				names+=("$name")
+				continue
+			fi
+			case "$name" in
+			AIDEVOPS_HEADLESS | AIDEVOPS_HEADLESS_AUTH_ISOLATION | AIDEVOPS_SESSION_ORIGIN | OPENCODE_DISABLE_CLAUDE_CODE_SKILLS | OPENCODE_DISABLE_DEFAULT_PLUGINS | OPENCODE_DISABLE_EXTERNAL_SKILLS | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | XDG_STATE_HOME)
 				names+=("$name")
 				;;
 			esac

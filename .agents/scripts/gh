@@ -96,6 +96,11 @@ if [[ -n "${_AIDEVOPS_GH_SHIM_ACTIVE:-}" ]]; then
 	exit 126
 fi
 
+# Capture the opt-in body path in shim-local state, then remove it from the
+# environment before helper probes or native gh subprocesses can inherit it.
+_AIDEVOPS_GH_EPHEMERAL_BODY_FILE="${AIDEVOPS_GH_EPHEMERAL_BODY_FILE:-}"
+unset AIDEVOPS_GH_EPHEMERAL_BODY_FILE
+
 _shim_is_aidevops_gh() {
 	local candidate_real="$1"
 	case "$candidate_real" in
@@ -164,6 +169,10 @@ _find_real_gh() {
 # The documented emergency bypass must avoid instrumentation and all normal
 # shim policy while still rejecting every other aidevops-managed gh wrapper.
 if [[ "${AIDEVOPS_GH_SHIM_DISABLE:-0}" == "1" ]]; then
+	if [[ -n "$_AIDEVOPS_GH_EPHEMERAL_BODY_FILE" ]]; then
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Ephemeral transport cannot bypass the aidevops gh shim.\n' >&2
+		exit 1
+	fi
 	_real_gh="$(_find_real_gh)" || {
 		printf '[aidevops] gh shim: native gh binary not found on PATH\n' >&2
 		exit 127
@@ -2180,6 +2189,66 @@ while [[ $_i -lt ${#_modified_args[@]} ]]; do
 	_i=$((_i + 1))
 done
 
+# Open a pre-signed managed body on an inherited descriptor, then remove and
+# verify its only pathname before native gh starts the external write. This is
+# an explicit one-shot mode for public triage comments: callers must use the
+# exact aidevops shim and must not retry the consumed descriptor through REST.
+_shim_prepare_ephemeral_body_file() {
+	local requested_body_file="$_AIDEVOPS_GH_EPHEMERAL_BODY_FILE"
+	[[ -n "$requested_body_file" ]] || return 0
+
+	local current_body_file=""
+	if [[ $_body_file_idx -ge 0 ]]; then
+		if [[ $_body_file_eq -eq 1 ]]; then
+			current_body_file="${_modified_args[_body_file_idx]#--body-file=}"
+		else
+			current_body_file="${_modified_args[_body_file_idx + 1]:-}"
+		fi
+	fi
+	local body_parent="${requested_body_file%/*}"
+	local body_name="${requested_body_file##*/}"
+	local parent_name="${body_parent##*/}"
+	local managed_root="${AIDEVOPS_TEMP_DIR:-${HOME:?}/.aidevops/.agent-workspace/tmp}"
+	managed_root=$(cd "$managed_root" 2>/dev/null && pwd -L) || {
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Managed temporary root is unavailable.\n' >&2
+		return 1
+	}
+
+	if [[ "$requested_body_file" != /* || "$current_body_file" != "$requested_body_file" || \
+		"$body_name" != "comment.md" || \
+		! "$parent_name" =~ ^aidevops-triage-comment\.[A-Za-z0-9]+$ || \
+		"${body_parent%/*}" != "$managed_root" || \
+		! -d "$body_parent" || -L "$body_parent" || \
+		! -f "$requested_body_file" || -L "$requested_body_file" ]]; then
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Body is not a valid managed triage comment artifact.\n' >&2
+		return 1
+	fi
+	if ! grep -q '<!-- aidevops:sig -->' "$requested_body_file" 2>/dev/null; then
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Ephemeral body lacks the canonical signature marker.\n' >&2
+		return 1
+	fi
+	if ! exec 9<"$requested_body_file"; then
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Unable to open the validated body descriptor.\n' >&2
+		return 1
+	fi
+	if ! rm -f -- "$requested_body_file" || ! rmdir -- "$body_parent" || \
+		[[ -e "$requested_body_file" || -L "$requested_body_file" || \
+			-e "$body_parent" || -L "$body_parent" ]]; then
+		exec 9<&-
+		printf '[aidevops][gh-ephemeral-body][BLOCK] Managed body cleanup could not be verified before transport.\n' >&2
+		return 1
+	fi
+
+	if [[ $_body_file_eq -eq 1 ]]; then
+		_modified_args[_body_file_idx]="--body-file=/dev/fd/9"
+	else
+		_modified_args[_body_file_idx + 1]="/dev/fd/9"
+	fi
+	_body_file_val="/dev/fd/9"
+	_AIDEVOPS_GH_EPHEMERAL_BODY_FILE=""
+	return 0
+}
+
 # --- --body case -------------------------------------------------------------
 if [[ $_body_idx -ge 0 && -n "$_body_val" ]]; then
 	if [[ "$_body_val" != *"<!-- aidevops:sig -->"* ]]; then
@@ -2232,6 +2301,10 @@ fi
 
 # t2876: privacy scan runs after sig footer injection — fail-closed on hit.
 if ! _shim_privacy_scan; then
+	exit 1
+fi
+
+if ! _shim_prepare_ephemeral_body_file; then
 	exit 1
 fi
 

@@ -666,6 +666,52 @@ export function registerResearchOnlyAgent(config, agentsDir, env = process.env) 
   return 1;
 }
 
+const PUBLIC_TRIAGE_AGENT_NAME = "triage-review";
+const PUBLIC_TRIAGE_SESSION_ORIGIN = "triage";
+const PUBLIC_TRIAGE_BUILTIN_AGENTS = ["build", "plan", "general", "explore"];
+
+/**
+ * Re-assert the public-triage capability boundary after every broad config
+ * transform. The provider-auth plugin remains available, but no built-in,
+ * custom, or MCP tool can be exposed to the model.
+ * @param {object} config - OpenCode Config object (mutable)
+ * @param {string} sessionOrigin - trusted dispatcher-provided session origin
+ * @returns {number} 1 when isolation was enforced, otherwise 0
+ */
+export function enforcePublicTriageIsolation(
+  config,
+  sessionOrigin = process.env.AIDEVOPS_SESSION_ORIGIN,
+) {
+  if (sessionOrigin !== PUBLIC_TRIAGE_SESSION_ORIGIN) return 0;
+  if (!config.agent?.[PUBLIC_TRIAGE_AGENT_NAME] || config.agent[PUBLIC_TRIAGE_AGENT_NAME].disable) {
+    throw new Error("Public triage agent profile is unavailable");
+  }
+
+  config.tools = { "*": false };
+  config.permission = "deny";
+  config.mcp = {};
+  config.formatter = false;
+  config.lsp = false;
+  config.share = "disabled";
+  config.subagent_depth = 0;
+
+  const triageProfile = config.agent[PUBLIC_TRIAGE_AGENT_NAME];
+  config.agent[PUBLIC_TRIAGE_AGENT_NAME] = {
+    ...triageProfile,
+    tools: { "*": false },
+    permission: "deny",
+  };
+  const disabledAgentNames = new Set([
+    ...Object.keys(config.agent),
+    ...PUBLIC_TRIAGE_BUILTIN_AGENTS,
+  ]);
+  disabledAgentNames.delete(PUBLIC_TRIAGE_AGENT_NAME);
+  for (const agentName of disabledAgentNames) {
+    config.agent[agentName] = { ...(config.agent[agentName] || {}), disable: true };
+  }
+  return 1;
+}
+
 /**
  * Ensure at least one agent is enabled (prevents OpenCode crash).
  * @param {object} config - OpenCode Config object (mutable)
@@ -826,6 +872,7 @@ export function createConfigHook(deps) {
     }
 
     const claude = registerClaudeCliModels(config);
+    enforcePublicTriageIsolation(config);
 
     logConfigSummary(
       { agents, mcps, agentTools, directories, permissionGrants, poolCleaned, anthropic, openai, cursor, google, claude },

@@ -122,12 +122,14 @@ test_launch_helpers_tolerate_unset_state_under_nounset() {
 test_runtime_temp_files_use_managed_workspace() {
 	local AIDEVOPS_TEMP_DIR="${HOME}/.aidevops/.agent-workspace/tmp"
 	local temp_file=""
+	local expected_root=""
 	temp_file=$(_create_headless_runtime_temp_file) || {
 		print_result "runtime temp files use managed aidevops workspace" 1 "Could not create runtime temp file"
 		return 0
 	}
+	expected_root=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P) || return 1
 
-	if [[ "$temp_file" == "${HOME}/.aidevops/.agent-workspace/tmp/"* && -f "$temp_file" ]]; then
+	if [[ "$temp_file" == "${expected_root}/"* && -f "$temp_file" ]]; then
 		rm -f "$temp_file"
 		print_result "runtime temp files use managed aidevops workspace" 0
 		return 0
@@ -660,7 +662,7 @@ test_private_workload_skips_persistent_failure_output() {
 	clear_provider_backoff "openai/private-test"
 
 	if [[ -z "$candidate_path" && -z "$excerpt_path" && ! -f "$output_file" && \
-		"$stored_details" == "private workload details suppressed" && \
+		"$stored_details" == "ephemeral workload details suppressed" && \
 		! -d "${HOME}/.aidevops/logs/worker-failure-excerpts" && \
 		! -d "${HOME}/.aidevops/logs/worker-no-activity" ]]; then
 		print_result "private workloads do not persist transcript-derived diagnostics" 0
@@ -900,4 +902,3 @@ test_explicit_model_override_remains_pinned_on_rate_limit() {
 		"status=$status finish=${finished_status:-<empty>} action=${action:-<empty>}"
 	return 0
 }
-

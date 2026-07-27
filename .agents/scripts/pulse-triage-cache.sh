@@ -30,6 +30,7 @@
 # Include guard
 [[ -n "${_PULSE_TRIAGE_CACHE_LIB_LOADED:-}" ]] && return 0
 _PULSE_TRIAGE_CACHE_LIB_LOADED=1
+_PTC_JSON_ARRAY_TYPE="array"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -41,28 +42,90 @@ fi
 
 # --- Functions ---
 
-# Compute a content hash from issue body + human comments.
-# Excludes github-actions[bot] comments and our own triage reviews
-# (## Review: prefix) so that only author/contributor changes trigger
-# a re-triage.
+# Filter fetched comments through the single trust-boundary definition shared by
+# cache hashing and awaiting-contributor detection. Only GitHub-confirmed
+# collaborators' marked review comments and GitHub Actions comments are hidden.
+# Args: $1=comments JSON array, $2=trusted review marker
+# Outputs: filtered comments JSON array
+_triage_visible_human_comments_json() {
+	local comments_json="$1"
+	local review_marker="$2"
+
+	printf '%s' "$comments_json" | jq -c \
+		--arg marker "$review_marker" --arg array_type "$_PTC_JSON_ARRAY_TYPE" '
+		if type != $array_type then error("invalid comments payload") else
+			def trusted_author_association:
+				(.association // "") as $association
+				| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association) != null;
+			def automation_author:
+				(.author // "") as $author
+				| ["github-actions[bot]", "github-actions"] | index($author) != null;
+			[.[]
+				| select((automation_author | not))
+				| select((
+					trusted_author_association and
+					((.body // "") | contains($marker))
+				) | not)]
+		end' 2>/dev/null || return 1
+	return 0
+}
+
+# Compute a content hash from every public input that can affect triage.
+# Excludes github-actions[bot] comments and marked triage reviews posted by a
+# GitHub-confirmed collaborator. A public contributor can copy the heading or
+# hidden marker, so neither string alone is a trust boundary. The schema prefix
+# intentionally invalidates earlier GH#28705 decisions when snapshot identity
+# gains another security-relevant public input.
 #
-# Args: $1=issue_num, $2=repo_slug, $3=body (pre-fetched), $4=comments_json (pre-fetched)
+# Args: $1=issue_num, $2=repo_slug, $3=body, $4=comments_json,
+#       $5=item_kind, $6=PR base SHA, $7=PR head SHA, $8=PR diff,
+#       $9=PR files JSON, $10=GitHub-verified public evidence revision,
+#       $11=issue/PR title, $12=canonical label-name JSON
 # Outputs: sha256 hash to stdout
 _triage_content_hash() {
 	local issue_num="$1"
 	local repo_slug="$2"
 	local body="$3"
 	local comments_json="$4"
+	local item_kind="${5:-issue}"
+	local pr_base_sha="${6:-}"
+	local pr_head_sha="${7:-}"
+	local pr_diff="${8:-}"
+	local pr_files="${9:-}"
+	local public_revision="${10:-}"
+	local issue_title="${11:-}"
+	local issue_labels_json="${12:-[]}"
+	local cache_schema="${TRIAGE_CACHE_SCHEMA_VERSION:-6}"
+	local review_marker="${TRIAGE_REVIEW_COMMENT_MARKER:-<!-- aidevops:triage-review -->}"
+	: "$issue_num" "$repo_slug"
 
-	# Filter to human comments: exclude github-actions[bot] and triage reviews.
-	# GH#17873: Match broader review header pattern (## *Review*) to exclude
-	# reviews posted with variant headers, consistent with the extraction regex.
+	# #aidevops:trust-boundary — only a marked comment whose GitHub-provided
+	# author association is trusted can be omitted. Contributor-authored review
+	# headings and copied markers remain hash inputs and therefore retrigger
+	# triage. Malformed comment JSON is an infrastructure failure, not an empty
+	# comment list that could produce a false cache hit.
+	local visible_comments_json=""
+	visible_comments_json=$(_triage_visible_human_comments_json \
+		"$comments_json" "$review_marker") || return 1
 	local human_comments=""
-	human_comments=$(printf '%s' "$comments_json" | jq -r \
-		'[.[] | select(.author != "github-actions[bot]" and .author != "github-actions") | select(.body | test("^## .*[Rr]eview") | not) | .body] | join("\n---\n")' \
-		2>/dev/null) || human_comments=""
+	human_comments=$(printf '%s' "$visible_comments_json" | jq -cS '
+		[.[] | {
+			id: (.id // null),
+			author: (.author // ""),
+			association: (.association // ""),
+			body: (.body // ""),
+			created: (.created // ""),
+			updated: (.updated // .created // "")
+		}] | sort_by(.id)' 2>/dev/null) || return 1
+	local canonical_issue_labels=""
+	canonical_issue_labels=$(printf '%s' "$issue_labels_json" | jq -ceS '
+		if type == "array" and all(.[]; type == "string") then sort
+		else error("malformed issue labels") end' 2>/dev/null) || return 1
 
-	printf '%s\n%s' "$body" "$human_comments" | shasum -a 256 | cut -d' ' -f1
+	printf 'triage-cache-v%s\nkind:%s\nbase:%s\nhead:%s\npublic:%s\ntitle:\n%s\nlabels:\n%s\nbody:\n%s\ncomments:\n%s\ndiff:\n%s\nfiles:\n%s' \
+		"$cache_schema" "$item_kind" "$pr_base_sha" "$pr_head_sha" "$public_revision" \
+		"$issue_title" "$canonical_issue_labels" "$body" "$human_comments" "$pr_diff" "$pr_files" \
+		| shasum -a 256 | cut -d' ' -f1
 	return 0
 }
 
@@ -152,11 +215,16 @@ _triage_awaiting_contributor_reply() {
 	local issue_comments="$1"
 	local repo_slug="$2"
 
-	# Get the last human comment (exclude bots and triage reviews)
+	# Get the last human comment. As with cache hashing, a review heading or
+	# marker copied by a contributor is not trusted and must remain visible.
+	local review_marker="${TRIAGE_REVIEW_COMMENT_MARKER:-<!-- aidevops:triage-review -->}"
+	local visible_comments_json=""
+	visible_comments_json=$(_triage_visible_human_comments_json \
+		"$issue_comments" "$review_marker") || return 1
 	local last_human_author=""
-	last_human_author=$(printf '%s' "$issue_comments" | jq -r \
-		'[.[] | select(.author != "github-actions[bot]" and .author != "github-actions") | select(.body | test("^## .*[Rr]eview") | not)] | last | .author // ""' \
-		2>/dev/null) || last_human_author=""
+	last_human_author=$(printf '%s' "$visible_comments_json" | jq -r '
+		last
+		| .author // ""' 2>/dev/null) || return 1
 
 	[[ -n "$last_human_author" ]] || return 1
 
@@ -227,8 +295,8 @@ _gh_idempotent_comment() {
 		# 30 comments. Long-running issues can have idempotency markers beyond
 		# page 1, so normalize paginated gh output before grepping for markers.
 		existing_comments=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${entity_number}/comments?per_page=100" \
-			--paginate --slurp | jq -r '
-				(if (type == "array" and ((.[0]? | type) == "array")) then .[] else . end)[]
+			--paginate --slurp | jq -r --arg array_type "$_PTC_JSON_ARRAY_TYPE" '
+				(if (type == $array_type and ((.[0]? | type) == $array_type)) then .[] else . end)[]
 				| .body // ""
 			')
 	fi

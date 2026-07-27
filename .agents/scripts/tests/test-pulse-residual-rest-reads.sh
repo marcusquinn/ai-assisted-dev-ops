@@ -53,7 +53,11 @@ gh() {
 	local args="$*"
 	printf '%s|%s\n' "${AIDEVOPS_GH_ROUTE_DECISION:-}" "$args" >>"$GH_CALL_LOG"
 	case "$args" in
-	"api --paginate --slurp repos/owner/repo/pulls/123/files?per_page=100 --jq [.[][] | .filename]")
+	"api -H Accept: application/vnd.github.v3.diff repos/owner/repo/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+		printf '%s\n' 'diff --git a/README.md b/README.md'
+		return 0
+		;;
+	"api repos/owner/repo/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --jq if ((.files | type) == \"array\" and (.files | length) < 300) then [.files[].filename] else error(\"incomplete compare files\") end")
 		printf '%s\n' '["README.md",".github/workflows/ci.yml"]'
 		return 0
 		;;
@@ -109,12 +113,21 @@ main() {
 	# shellcheck source=../pulse-dirty-pr-sweep.sh
 	source "$DIRTY_SWEEP_SCRIPT"
 
+	local base_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local head_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	local diff=""
+	diff=$(_triage_pr_diff_for_revision_rest "owner/repo" "$base_sha" "$head_sha")
+	assert_eq "triage PR diff preserves its bounded text contract" \
+		'diff --git a/README.md b/README.md' "$diff"
+	assert_call "triage PR diff uses the immutable compare REST endpoint" \
+		"pulse-triage-pr-diff-rest|api -H Accept: application/vnd.github.v3.diff repos/owner/repo/compare/${base_sha}...${head_sha}"
+
 	local files=""
-	files=$(_triage_pr_file_paths_json_rest "123" "owner/repo")
+	files=$(_triage_pr_file_paths_json_rest "owner/repo" "$base_sha" "$head_sha")
 	assert_eq "triage PR file paths preserve their JSON-array contract" \
 		'["README.md",".github/workflows/ci.yml"]' "$files"
-	assert_call "triage PR files use bounded slurped REST pages" \
-		"pulse-triage-pr-files-rest|api --paginate --slurp repos/owner/repo/pulls/123/files?per_page=100 --jq [.[][] | .filename]"
+	assert_call "triage PR files use the immutable compare REST endpoint" \
+		"pulse-triage-pr-files-rest|api repos/owner/repo/compare/${base_sha}...${head_sha} --jq if ((.files | type) == \"array\" and (.files | length) < 300) then [.files[].filename] else error(\"incomplete compare files\") end"
 
 	local comments=""
 	comments=$(_dps_pr_comment_bodies_rest "123" "owner/repo")
@@ -123,9 +136,9 @@ main() {
 	assert_call "dirty-PR comment reads use bounded REST pages" \
 		"pulse-dirty-pr-comments-rest|api --paginate repos/owner/repo/issues/123/comments?per_page=100 --jq .[].body"
 
-	assert_source_contains "triage prompt calls the exact REST file helper" \
+	assert_source_contains "triage prompt binds REST file evidence to captured revisions" \
 		"$ANCILLARY_SCRIPT" \
-		"pr_files=\$(_triage_pr_file_paths_json_rest \"\$issue_num\" \"\$repo_slug\""
+		"\"\$repo_slug\" \"\$_ps_base_sha\" \"\$_ps_head_sha\""
 	assert_source_contains "dirty-PR idempotency calls the exact REST comment helper" \
 		"$DIRTY_SWEEP_SCRIPT" \
 		"existing=\$(_dps_pr_comment_bodies_rest \"\$pr_number\" \"\$repo_slug\""
@@ -134,6 +147,11 @@ main() {
 		print_result "ancillary dispatch avoids native GraphQL PR-file views" 1
 	else
 		print_result "ancillary dispatch avoids native GraphQL PR-file views" 0
+	fi
+	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr diff' "$ANCILLARY_SCRIPT"; then
+		print_result "triage evidence avoids mutable native PR diff reads" 1
+	else
+		print_result "triage evidence avoids mutable native PR diff reads" 0
 	fi
 	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr view.*--json comments' "$DIRTY_SWEEP_SCRIPT"; then
 		print_result "dirty-PR sweep avoids native GraphQL comment views" 1

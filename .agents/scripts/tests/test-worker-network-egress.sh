@@ -17,6 +17,7 @@ MARKER="${TEST_ROOT}/target-ran"
 CHILD_MARKER="${TEST_ROOT}/child-ran"
 INTERPRETER_MARKER="${TEST_ROOT}/interpreter-ran"
 BACKEND_LOG="${TEST_ROOT}/backend-argv"
+POLICY_LOG="${TEST_ROOT}/backend-policy.json"
 CUSTOM_POLICY="${TEST_ROOT}/network-tiers-custom.conf"
 TESTS=0
 FAILURES=0
@@ -61,6 +62,9 @@ probe)
 		exit 0
 	fi
 	policy_file="${3:?}"
+	if [[ -n "${FAKE_POLICY_LOG:-}" ]]; then
+		cp "$policy_file" "$FAKE_POLICY_LOG"
+	fi
 	policy_sha256="$(python3 - "$policy_file" <<'PY'
 import hashlib
 import sys
@@ -124,6 +128,34 @@ EOF
 		pass "normalized policy applies user overrides"
 	else
 		fail "normalized policy applies user overrides" "override missing"
+	fi
+	return 0
+}
+
+test_provider_policy_export_is_deny_by_default() {
+	local output=""
+	output="$(HOME="$TEST_HOME" "$NETWORK_HELPER" export-provider-policy openai)" || {
+		fail "exports provider-only deny-by-default policy" "export failed"
+		return 0
+	}
+	if printf '%s' "$output" | jq -e \
+		'.schema == "aidevops.worker-egress-policy.v1" and .default_tier == 5 and .default_action == "deny" and .raw_ip_action == "deny" and .private_network_action == "deny" and .loopback_action == "deny" and (.rules | length == 1) and .rules[0].match == "exact" and .rules[0].pattern == "api.openai.com" and (.rules[0].action | startswith("allow")) and ([.rules[] | select(.pattern == "github.com")] | length == 0)' \
+		>/dev/null 2>&1; then
+		pass "exports provider-only deny-by-default policy"
+	else
+		fail "exports provider-only deny-by-default policy" "invalid contract"
+	fi
+	return 0
+}
+
+test_provider_policy_rejects_non_https_provider() {
+	local status=0
+	HOME="$TEST_HOME" "$NETWORK_HELPER" export-provider-policy local \
+		>/dev/null 2>&1 || status=$?
+	if [[ "$status" -ne 0 ]]; then
+		pass "provider-only policy rejects local non-HTTPS endpoint"
+	else
+		fail "provider-only policy rejects local non-HTTPS endpoint" "export unexpectedly succeeded"
 	fi
 	return 0
 }
@@ -200,6 +232,25 @@ test_backend_denial_blocks_interpreter() {
 	return 0
 }
 
+test_provider_profile_binds_restricted_policy() {
+	rm -f "$MARKER" "$CHILD_MARKER" "$BACKEND_LOG" "$POLICY_LOG"
+	local status=0
+	HOME="$TEST_HOME" AIDEVOPS_WORKER_EGRESS_BACKEND="$BACKEND" \
+		FAKE_BACKEND_MODE=ready FAKE_BACKEND_LOG="$BACKEND_LOG" \
+		FAKE_POLICY_LOG="$POLICY_LOG" \
+		"$SANDBOX_HELPER" run --egress-mode required \
+		--egress-policy-profile provider:openai --worker-id triage-fixture -- \
+		"$TARGET" >/dev/null 2>&1 || status=$?
+	if [[ "$status" -eq 0 && -s "$POLICY_LOG" ]] && jq -e \
+		'.default_action == "deny" and (.rules | length == 1) and .rules[0].pattern == "api.openai.com" and ([.rules[] | select(.pattern == "github.com")] | length == 0)' \
+		"$POLICY_LOG" >/dev/null 2>&1; then
+		pass "provider profile binds restricted policy to backend"
+	else
+		fail "provider profile binds restricted policy to backend" "status=${status} policy_present=$([[ -s "$POLICY_LOG" ]] && printf yes || printf no)"
+	fi
+	return 0
+}
+
 test_auto_mode_reports_non_containment() {
 	rm -f "$MARKER" "$CHILD_MARKER"
 	local output=""
@@ -218,17 +269,21 @@ test_headless_runtime_binds_egress_contract() {
 	local opencode_egress_count=0
 	local claude_egress_count=0
 	local required_guard_count=0
+	local opencode_profile_count=0
 	# Literal source patterns intentionally retain the runtime variable names.
 	# shellcheck disable=SC2016
-	opencode_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --worker-id "$egress_worker_id"' "$HEADLESS_HELPER")"
+	opencode_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id"' "$HEADLESS_HELPER")"
 	# shellcheck disable=SC2016
 	claude_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --worker-id "$egress_worker_id"' "$HEADLESS_WORKER")"
 	# shellcheck disable=SC2016
 	required_guard_count="$(grep -h -cF -- '[[ "$egress_mode" == "required" ]]' "$HEADLESS_HELPER" "$HEADLESS_WORKER" | awk '{ total += $1 } END { print total + 0 }')"
-	if [[ "$opencode_egress_count" -eq 2 && "$claude_egress_count" -eq 4 && "$required_guard_count" -eq 2 ]]; then
+	# shellcheck disable=SC2016
+	opencode_profile_count="$(grep -cF -- 'egress_policy_profile="provider:${_invoke_provider}"' "$HEADLESS_HELPER")"
+	if [[ "$opencode_egress_count" -eq 4 && "$claude_egress_count" -eq 4 && \
+		"$required_guard_count" -eq 2 && "$opencode_profile_count" -eq 1 ]]; then
 		pass "all headless runtimes bind egress and guard required mode"
 	else
-		fail "all headless runtimes bind egress and guard required mode" "opencode=${opencode_egress_count} claude=${claude_egress_count} guards=${required_guard_count}"
+		fail "all headless runtimes bind egress and guard required mode" "opencode=${opencode_egress_count} claude=${claude_egress_count} guards=${required_guard_count} triage_profiles=${opencode_profile_count}"
 	fi
 	return 0
 }
@@ -237,11 +292,14 @@ main() {
 	write_fixtures
 	test_policy_export_is_normalized
 	test_policy_export_applies_user_override
+	test_provider_policy_export_is_deny_by_default
+	test_provider_policy_rejects_non_https_provider
 	test_required_mode_fails_closed_without_backend
 	test_required_mode_rejects_invalid_probe
 	test_backend_wraps_process_tree
 	test_backend_denial_blocks_arbitrary_binary
 	test_backend_denial_blocks_interpreter
+	test_provider_profile_binds_restricted_policy
 	test_auto_mode_reports_non_containment
 	test_headless_runtime_binds_egress_contract
 	printf '\nTests: %d, Failures: %d\n' "$TESTS" "$FAILURES"

@@ -869,6 +869,156 @@ test_large_opencode_prompt_uses_file_attachment() {
 	return 0
 }
 
+test_public_triage_prompt_forces_file_attachment() {
+	local prompt="small-public-triage-prompt"
+	local old_threshold="${HEADLESS_PROMPT_FILE_THRESHOLD_BYTES:-}"
+	local transport_status=0
+	local failure_status=0
+	HEADLESS_PROMPT_FILE_THRESHOLD_BYTES=999999
+
+	_prepare_runtime_prompt_transport "opencode" "$prompt" 1 || transport_status=$?
+	local prompt_arg="$_HEADLESS_RUN_PROMPT_ARG"
+	local prompt_file="$_HEADLESS_RUN_PROMPT_FILE"
+	(
+		_create_headless_runtime_temp_dir() {
+			local purpose="$1"
+			: "$purpose"
+			return 1
+		}
+		_prepare_runtime_prompt_transport "opencode" "$prompt" 1
+	) >/dev/null 2>&1 || failure_status=$?
+
+	local ok=0
+	[[ "$transport_status" -eq 0 ]] || ok=1
+	[[ "$prompt_arg" != *"$prompt"* ]] || ok=1
+	[[ -f "$prompt_file" && "$(<"$prompt_file")" == "$prompt" ]] || ok=1
+	[[ "$failure_status" -ne 0 ]] || ok=1
+	_cleanup_headless_runtime_temp_paths
+	if [[ -n "$old_threshold" ]]; then
+		HEADLESS_PROMPT_FILE_THRESHOLD_BYTES="$old_threshold"
+	else
+		unset HEADLESS_PROMPT_FILE_THRESHOLD_BYTES
+	fi
+	print_result "public triage prompts always use fail-closed file transport" "$ok" \
+		"transport=${transport_status} failure=${failure_status} arg=${prompt_arg} file=${prompt_file}"
+	return 0
+}
+
+test_public_triage_isolated_data_is_discarded() {
+	local triage_dir="${TEST_ROOT}/triage-isolated-data"
+	mkdir -p "$triage_dir"
+	local lifecycle_state=""
+	lifecycle_state=$(
+		local merge_count=0 replay_count=0 preserve_count=0
+		_replay_preserved_worker_dbs() { replay_count=$((replay_count + 1)); return 0; }
+		_merge_worker_db() {
+			local isolated_dir="$1"
+			: "$isolated_dir"
+			merge_count=$((merge_count + 1))
+			return 0
+		}
+		_preserve_failed_worker_db() {
+			local isolated_dir="$1"
+			: "$isolated_dir"
+			preserve_count=$((preserve_count + 1))
+			return 0
+		}
+		print_info() { return 0; }
+		print_warning() { return 0; }
+		_WORKER_ISOLATED_DB_PATH="${triage_dir}/opencode/opencode.db"
+		_finalize_isolated_runtime_data "$triage_dir" "triage"
+		printf '%s|%s|%s|%s|%s' "$merge_count" "$replay_count" "$preserve_count" \
+			"$([[ -e "$triage_dir" ]] && printf yes || printf no)" \
+			"${_WORKER_ISOLATED_DB_PATH:-}"
+	)
+
+	if [[ "$lifecycle_state" == "0|0|0|no|" ]]; then
+		print_result "public triage discards isolated session data without DB merge or recovery" 0
+		return 0
+	fi
+	print_result "public triage discards isolated session data without DB merge or recovery" 1 \
+		"state=${lifecycle_state:-<empty>}"
+	return 0
+}
+
+test_public_triage_cleanup_failure_is_reported() {
+	local triage_dir="${TEST_ROOT}/triage-cleanup-failure"
+	mkdir -p "$triage_dir"
+	local lifecycle_state=""
+	lifecycle_state=$(
+		rm() { return 1; }
+		print_info() { return 0; }
+		print_warning() {
+			local message="$1"
+			printf '%s\n' "$message"
+			return 0
+		}
+		_WORKER_ISOLATED_DB_PATH="${triage_dir}/opencode/opencode.db"
+		local finalize_status=0
+		_finalize_isolated_runtime_data "$triage_dir" "triage" || finalize_status=$?
+		printf 'state=%s|%s|%s\n' "$finalize_status" \
+			"$([[ -e "$triage_dir" ]] && printf yes || printf no)" \
+			"${_WORKER_ISOLATED_DB_PATH:-}"
+	)
+	command rm -rf "$triage_dir"
+
+	if [[ "$lifecycle_state" == *"db_cleanup_failed"* && \
+		"$lifecycle_state" == *"guardian=retained"* && \
+		"$lifecycle_state" == *"state=1|yes|"* ]]; then
+		print_result "public triage reports isolated-data cleanup failure" 0
+		return 0
+	fi
+	print_result "public triage reports isolated-data cleanup failure" 1 \
+		"state=${lifecycle_state:-<empty>}"
+	return 0
+}
+
+test_public_triage_does_not_persist_session_or_failure_output() {
+	local AIDEVOPS_PRIVATE_WORKLOAD=0
+	local session_state=""
+	session_state=$(
+		store_session_id() {
+			local provider="$1"
+			local session_key="$2"
+			local session_id="$3"
+			local selected_model="$4"
+			printf '%s|%s|%s|%s\n' "$provider" "$session_key" "$session_id" "$selected_model"
+			return 0
+		}
+		_store_headless_session_if_allowed "openai" "triage-42" "ses_triage" "openai/test" "triage"
+		_store_headless_session_if_allowed "openai" "issue-42" "ses_worker" "openai/test" "worker"
+	)
+
+	local marker="PUBLIC_TRIAGE_OUTPUT_MUST_NOT_PERSIST_28705"
+	local output_file="${TEST_ROOT}/public-triage-no-activity.log"
+	local details_file="${TEST_ROOT}/public-triage-provider-details.log"
+	printf '%s\n' "$marker" >"$output_file"
+	printf 'HTTP 503 service unavailable: %s\n' "$marker" >"$details_file"
+	local handle_status=0
+	_handle_run_result 0 "$output_file" "triage" "openai" "triage-42" "openai/test" \
+		>/dev/null 2>&1 || handle_status=$?
+	record_provider_backoff "openai" "provider_error" "$details_file" \
+		"openai/public-triage-test" 1
+	local stored_details=""
+	stored_details=$(db_query "SELECT details FROM provider_backoff WHERE provider = 'openai/public-triage-test';")
+	clear_provider_backoff "openai/public-triage-test"
+	local persisted_marker=0
+	if grep -R -Fq "$marker" "${HOME}/.aidevops/logs" 2>/dev/null; then
+		persisted_marker=1
+	fi
+
+	if [[ "$session_state" == "openai|issue-42|ses_worker|openai/test" && \
+		"$handle_status" -eq 75 && ! -f "$output_file" && \
+		"$stored_details" == "ephemeral workload details suppressed" && \
+		"$persisted_marker" -eq 0 ]]; then
+		print_result "public triage persists neither sessions nor transcript-derived failure output" 0
+		return 0
+	fi
+	print_result "public triage persists neither sessions nor transcript-derived failure output" 1 \
+		"session=${session_state:-<empty>} status=${handle_status} output=$([[ -f "$output_file" ]] && printf present || printf removed) details=${stored_details:-<empty>} marker=${persisted_marker}"
+	return 0
+}
+
 test_large_claude_prompt_uses_stdin_file() {
 	local prompt="large-claude-seed-prompt"
 	local old_threshold="${HEADLESS_PROMPT_FILE_THRESHOLD_BYTES:-}"
@@ -939,6 +1089,69 @@ test_registered_prompt_temp_cleanup_removes_dir() {
 	fi
 	print_result "registered prompt temp cleanup removes prompt dir" 1 \
 		"Prompt temp dir still exists: ${prompt_dir:-<empty>}"
+	return 0
+}
+
+test_registered_temp_cleanup_failure_is_reported_and_retained() {
+	local managed_root=""
+	managed_root=$(aidevops_sensitive_temp_root)
+	local temp_path="${managed_root}/aidevops-headless-cleanup-failure"
+	mkdir -p "$temp_path"
+	_HEADLESS_RUNTIME_TEMP_PATHS=""
+	_register_headless_runtime_temp_path "$temp_path"
+
+	local state=""
+	state=$(
+		rm() { return 0; }
+		print_warning() {
+			local message="$1"
+			printf '%s\n' "$message"
+			return 0
+		}
+		local cleanup_status=0
+		_cleanup_headless_runtime_temp_paths || cleanup_status=$?
+		printf 'status=%s retained=%s\n' "$cleanup_status" \
+			"${_HEADLESS_RUNTIME_TEMP_PATHS:-}"
+	)
+	_HEADLESS_RUNTIME_TEMP_PATHS=""
+	command rm -rf "$temp_path"
+
+	if [[ "$state" == *"headless_runtime_temp_cleanup_failed"* && \
+		"$state" == *"status=1 retained=${temp_path}"* ]]; then
+		print_result "registered temp cleanup reports and retains undeleted paths" 0
+		return 0
+	fi
+	print_result "registered temp cleanup reports and retains undeleted paths" 1 \
+		"state=${state:-<empty>}"
+	return 0
+}
+
+test_public_triage_output_temp_starts_cleanup_guardian() {
+	local managed_root=""
+	managed_root=$(aidevops_sensitive_temp_root)
+	local output_path="${managed_root}/aidevops-headless-runtime.guard-test"
+	: >"$output_path"
+	local state=""
+	state=$(
+		_HEADLESS_RUNTIME_TEMP_PATHS=""
+		_start_headless_runtime_temp_guardian() {
+			local guarded_path="$1"
+			local owner_pid="$2"
+			printf 'guardian=%s owner=%s\n' "$guarded_path" "$owner_pid"
+			return 0
+		}
+		_register_headless_runtime_output_temp_path "triage" "$output_path"
+		printf 'registered=%s\n' "${_HEADLESS_RUNTIME_TEMP_PATHS:-}"
+	)
+	command rm -f "$output_path"
+
+	if [[ "$state" == *"guardian=${output_path}"* && \
+		"$state" == *"registered=${output_path}"* ]]; then
+		print_result "public triage output temp starts a detached cleanup guardian" 0
+		return 0
+	fi
+	print_result "public triage output temp starts a detached cleanup guardian" 1 \
+		"state=${state:-<empty>}"
 	return 0
 }
 

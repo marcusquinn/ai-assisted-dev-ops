@@ -908,10 +908,12 @@ _sandbox_spawn_watchdog_bg() {
 # Arguments:
 #   $1 - exec_tmpdir path (used to set TMPDIR)
 #   $2 - extra_passthrough (comma-separated list of additional env var names)
+#   $3 - optional isolated HOME override
 # Caller must declare: local -a env_args=() before calling this function.
 _sandbox_build_env_args() {
 	local exec_tmpdir="$1"
 	local extra_passthrough="$2"
+	local home_override="${3:-}"
 
 	# Seed with env -i to clear the environment
 	env_args=("env" "-i")
@@ -919,7 +921,9 @@ _sandbox_build_env_args() {
 	# Add default passthrough vars (only if they exist in current env)
 	local var
 	for var in $DEFAULT_PASSTHROUGH; do
-		if [[ -n "${!var:-}" ]]; then
+		if [[ "$var" == "HOME" && -n "$home_override" ]]; then
+			env_args+=("HOME=${home_override}")
+		elif [[ -n "${!var:-}" ]]; then
 			env_args+=("${var}=${!var}")
 		fi
 	done
@@ -978,12 +982,14 @@ PY
 #            "private-network-deny"],"cleanup":"automatic"}
 #   run --policy FILE --worker-id ID -- COMMAND [ARG...]
 #     binds COMMAND and all descendants to the policy before exec.
-# Arguments: $1=mode (off|auto|required), $2=policy file, $3=worker ID.
+# Arguments: $1=mode (off|auto|required), $2=policy file, $3=worker ID,
+#            $4=policy profile (default or provider:NAME).
 # Sets caller-scoped: egress_state, egress_backend, egress_backend_id.
 _sandbox_prepare_worker_egress() {
 	local mode="$1"
 	local policy_file="$2"
 	local worker_id_value="$3"
+	local policy_profile="${4:-default}"
 	local candidate=""
 	local probe_output=""
 	local expected_policy_sha256=""
@@ -1013,12 +1019,24 @@ _sandbox_prepare_worker_egress() {
 		log_sandbox "WARN" "Network policy export unavailable; state=command-policy-only"
 		return 0
 	fi
-	if ! "$NETWORK_TIER_HELPER" export-policy >"$policy_file"; then
+	local policy_export_status=0
+	case "$policy_profile" in
+	default)
+		"$NETWORK_TIER_HELPER" export-policy >"$policy_file" || policy_export_status=$?
+		;;
+	provider:*)
+		local provider_name="${policy_profile#provider:}"
+		"$NETWORK_TIER_HELPER" export-provider-policy "$provider_name" \
+			>"$policy_file" || policy_export_status=$?
+		;;
+	*) policy_export_status=2 ;;
+	esac
+	if [[ "$policy_export_status" -ne 0 ]]; then
 		if [[ "$mode" == "required" ]]; then
-			log_sandbox "$SANDBOX_ERROR_LEVEL" "Required worker egress policy export failed"
+			log_sandbox "$SANDBOX_ERROR_LEVEL" "Required worker egress policy export failed (profile=${policy_profile})"
 			return 1
 		fi
-		log_sandbox "WARN" "Worker egress policy export failed; state=command-policy-only"
+		log_sandbox "WARN" "Worker egress policy export failed (profile=${policy_profile}); state=command-policy-only"
 		return 0
 	fi
 	expected_policy_sha256="$(_sandbox_file_sha256 "$policy_file")" || {
@@ -1234,7 +1252,8 @@ _sandbox_run_pre_exec() {
 # Parse sandbox_run flags into caller-scoped variables (bash dynamic scoping).
 # Caller must declare all target variables as local before calling this function:
 #   timeout_secs, block_network, network_tiering, allow_secret_io,
-#   worker_id, extra_passthrough, stream_stdout, egress_mode, cmd_args (array).
+#   worker_id, extra_passthrough, stream_stdout, egress_mode,
+#   egress_policy_profile, home_override, cmd_args (array).
 # Returns 0 on success, 1 if no command was provided after flag parsing.
 _sandbox_run_parse_args() {
 	while [[ $# -gt 0 ]]; do
@@ -1257,6 +1276,14 @@ _sandbox_run_parse_args() {
 			;;
 		--egress-mode)
 			egress_mode="$2"
+			shift 2
+			;;
+		--egress-policy-profile)
+			egress_policy_profile="$2"
+			shift 2
+			;;
+		--home-dir)
+			home_override="$2"
 			shift 2
 			;;
 		--allow-secret-io)
@@ -1303,6 +1330,33 @@ _sandbox_validate_private_output_mode() {
 	return 0
 }
 
+_sandbox_validate_run_options() {
+	local private_output_value="$1"
+	local egress_mode_value="$2"
+	local policy_profile="$3"
+	local home_override_value="$4"
+
+	_sandbox_validate_private_output_mode "$private_output_value" || return $?
+	case "$egress_mode_value" in
+	off | auto | required) ;;
+	*)
+		log_sandbox "$SANDBOX_ERROR_LEVEL" "Invalid worker egress mode '${egress_mode_value}' (expected off, auto, or required)"
+		return 2
+		;;
+	esac
+	if [[ "$policy_profile" != "default" && \
+		! "$policy_profile" =~ ^provider:[A-Za-z0-9._-]+$ ]]; then
+		log_sandbox "$SANDBOX_ERROR_LEVEL" "Invalid worker egress policy profile '${policy_profile}'"
+		return 2
+	fi
+	if [[ -n "$home_override_value" && \
+		("$home_override_value" != /* || ! -d "$home_override_value" || -L "$home_override_value") ]]; then
+		log_sandbox "$SANDBOX_ERROR_LEVEL" "Isolated HOME must be an existing absolute non-symlink directory"
+		return 2
+	fi
+	return 0
+}
+
 sandbox_run() {
 	local timeout_secs="$SANDBOX_DEFAULT_TIMEOUT"
 	local block_network=false
@@ -1314,6 +1368,8 @@ sandbox_run() {
 	local egress_state="command-policy-only"
 	local egress_backend=""
 	local egress_backend_id="none"
+	local egress_policy_profile="default"
+	local home_override=""
 	local secret_io_guard="${AIDEVOPS_BLOCK_SECRET_IO:-$SECRET_IO_GUARD_DEFAULT}"
 	# Stream stdout mode (GH#15180 bug #4): when true, child stdout flows to
 	# the caller's stdout in real-time instead of being captured to a file and
@@ -1334,14 +1390,8 @@ sandbox_run() {
 		log_sandbox "$SANDBOX_ERROR_LEVEL" "No command provided"
 		return 1
 	fi
-	_sandbox_validate_private_output_mode "$private_output" || return $?
-	case "$egress_mode" in
-	off | auto | required) ;;
-	*)
-		log_sandbox "$SANDBOX_ERROR_LEVEL" "Invalid worker egress mode '${egress_mode}' (expected off, auto, or required)"
-		return 2
-		;;
-	esac
+	_sandbox_validate_run_options \
+		"$private_output" "$egress_mode" "$egress_policy_profile" "$home_override" || return $?
 
 	local argv_json=""
 	argv_json="$(_sandbox_argv_json "${cmd_args[@]}")" || return 126
@@ -1369,9 +1419,9 @@ sandbox_run() {
 	mkdir -p "$exec_tmpdir"
 
 	local -a env_args=()
-	_sandbox_build_env_args "$exec_tmpdir" "$extra_passthrough"
+	_sandbox_build_env_args "$exec_tmpdir" "$extra_passthrough" "$home_override"
 	local egress_policy_file="${exec_tmpdir}/egress-policy.json"
-	if ! _sandbox_prepare_worker_egress "$egress_mode" "$egress_policy_file" "$worker_id"; then
+	if ! _sandbox_prepare_worker_egress "$egress_mode" "$egress_policy_file" "$worker_id" "$egress_policy_profile"; then
 		log_execution "$audit_cmd_str" 126 0 "$timeout_secs" "$block_network" "$extra_passthrough" "unavailable" "none"
 		rm -rf "$exec_tmpdir"
 		return 126
@@ -1492,6 +1542,8 @@ HELP
   --no-network               Block network access (macOS only, uses seatbelt)
   --network-tiering          Compatibility flag; enforcement is enabled by default
   --egress-mode MODE         Whole-process backend mode: off|auto|required
+  --egress-policy-profile P  Policy profile: default|provider:NAME
+  --home-dir PATH            Override HOME inside the clean environment
   --allow-secret-io          Bypass secret-output guard for this command only
   --worker-id ID             Worker identifier for network tier logs
   --passthrough "VAR1,VAR2"  Additional env vars to pass through

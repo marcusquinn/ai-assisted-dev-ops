@@ -594,18 +594,101 @@ MDEOF
 	return 0
 }
 
+test_triage_pr_content_hash_inputs() {
+	local body="$1"
+	local comments_json="$2"
+	local pr_base_sha="cccccccccccccccccccccccccccccccccccccccc"
+	local pr_head_sha="dddddddddddddddddddddddddddddddddddddddd"
+	local changed_head_sha="${pr_head_sha%?}e"
+	local pr_diff="diff --git a/src/app.sh b/src/app.sh"
+	local pr_files='["src/app.sh"]'
+	local pr_hash=""
+	local changed_hash=""
+
+	pr_hash=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"pr" "$pr_base_sha" "$pr_head_sha" "$pr_diff" "$pr_files")
+	changed_hash=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"pr" "$pr_base_sha" "$changed_head_sha" "$pr_diff" "$pr_files")
+	if [[ "$pr_hash" != "$changed_hash" ]]; then
+		print_result "_triage_content_hash sensitive to PR head revision" 0
+	else
+		print_result "_triage_content_hash sensitive to PR head revision" 1 "both hashes=${pr_hash}"
+	fi
+
+	changed_hash=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"pr" "$pr_base_sha" "$pr_head_sha" "${pr_diff} changed" "$pr_files")
+	if [[ "$pr_hash" != "$changed_hash" ]]; then
+		print_result "_triage_content_hash sensitive to PR diff" 0
+	else
+		print_result "_triage_content_hash sensitive to PR diff" 1 "both hashes=${pr_hash}"
+	fi
+
+	changed_hash=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"pr" "$pr_base_sha" "$pr_head_sha" "$pr_diff" '["src/other.sh"]')
+	if [[ "$pr_hash" != "$changed_hash" ]]; then
+		print_result "_triage_content_hash sensitive to PR file paths" 0
+	else
+		print_result "_triage_content_hash sensitive to PR file paths" 1 "both hashes=${pr_hash}"
+	fi
+	return 0
+}
+
+test_triage_mutable_content_hash_inputs() {
+	local body="$1"
+	local comments_json="$2"
+	local titled_hash_a="" titled_hash_b=""
+	local labels_a='["needs-maintainer-review"]'
+	local labels_b='["needs-maintainer-review","security"]'
+
+	titled_hash_a=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "" "Original title" "$labels_a")
+	titled_hash_b=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "" "Edited title" "$labels_a")
+	if [[ "$titled_hash_a" != "$titled_hash_b" ]]; then
+		print_result "_triage_content_hash sensitive to issue title" 0
+	else
+		print_result "_triage_content_hash sensitive to issue title" 1 \
+			"both hashes=${titled_hash_a}"
+	fi
+	local label_hash_a="" label_hash_b=""
+	label_hash_a=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "" "Original title" "$labels_a")
+	label_hash_b=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "" "Original title" "$labels_b")
+	if [[ "$label_hash_a" != "$label_hash_b" ]]; then
+		print_result "_triage_content_hash sensitive to issue labels" 0
+	else
+		print_result "_triage_content_hash sensitive to issue labels" 1 \
+			"both hashes=${label_hash_a}"
+	fi
+
+	local identity_comments_a='[{"id":7,"author":"alice","association":"CONTRIBUTOR","body":"Same text","created":"2026-07-27T00:00:00Z","updated":"2026-07-27T00:00:00Z"}]'
+	local identity_comments_b='[{"id":7,"author":"alice","association":"CONTRIBUTOR","body":"Same text","created":"2026-07-27T00:00:00Z","updated":"2026-07-27T00:01:00Z"}]'
+	local identity_hash_a="" identity_hash_b=""
+	identity_hash_a=$(_triage_content_hash "123" "owner/repo" "$body" "$identity_comments_a")
+	identity_hash_b=$(_triage_content_hash "123" "owner/repo" "$body" "$identity_comments_b")
+	if [[ "$identity_hash_a" != "$identity_hash_b" ]]; then
+		print_result "_triage_content_hash binds comment update identity" 0
+	else
+		print_result "_triage_content_hash binds comment update identity" 1 \
+			"both hashes=${identity_hash_a}"
+	fi
+	return 0
+}
+
 #######################################
 # Test 7: _triage_content_hash — computes a stable SHA-256 of an issue body
 # plus human-comment subset. Extraction of the triage cluster must preserve
-# the filter rules (exclude github-actions bot; exclude "## *Review*" bot
-# reviews) or cached hashes become invalid and triage loops run every pulse.
+# the filter rules: GitHub Actions comments and marked reviews from confirmed
+# collaborators are ignored, while contributor-authored headings or copied
+# markers remain hash inputs.
 #######################################
 test_triage_content_hash() {
 	local body="Issue body text"
 	local comments_json='[
-      {"author":"alice","body":"A human comment"},
-      {"author":"github-actions[bot]","body":"Automated comment"},
-      {"author":"bob","body":"## Automated Review\n- finding"}
+      {"author":"alice","association":"CONTRIBUTOR","body":"A human comment"},
+      {"author":"github-actions[bot]","association":"NONE","body":"Automated comment"},
+      {"author":"bob","association":"CONTRIBUTOR","body":"## Automated Review\n- finding"}
     ]'
 
 	local hash1 hash2
@@ -615,14 +698,39 @@ test_triage_content_hash() {
 	hash2=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json")
 	assert_equals "_triage_content_hash deterministic" "$hash1" "$hash2"
 
-	# Bot-only comments should not contribute -> same hash
+	# GitHub Actions comments should not contribute -> same hash.
 	local bot_only_json='[
-      {"author":"github-actions[bot]","body":"Different bot comment"},
-      {"author":"alice","body":"A human comment"},
-      {"author":"bob","body":"## Automated Review\n- different finding"}
-    ]'
+		{"author":"github-actions[bot]","association":"NONE","body":"Different bot comment"},
+		{"author":"alice","association":"CONTRIBUTOR","body":"A human comment"},
+		{"author":"bob","association":"CONTRIBUTOR","body":"## Automated Review\n- finding"}
+	]'
 	hash2=$(_triage_content_hash "123" "owner/repo" "$body" "$bot_only_json")
 	assert_equals "_triage_content_hash ignores bot comments" "$hash1" "$hash2"
+
+	# A marked automated review is ignored only when GitHub confirms that its
+	# author is a collaborator. Changing its generated text must not retrigger.
+	local trusted_review_json='[
+		{"author":"alice","association":"CONTRIBUTOR","body":"A human comment"},
+		{"author":"bob","association":"CONTRIBUTOR","body":"## Automated Review\n- finding"},
+		{"author":"maintainer","association":"OWNER","body":"## Review: Recommendation: Approve\n\n<!-- aidevops:triage-review -->"}
+	]'
+	hash2=$(_triage_content_hash "123" "owner/repo" "$body" "$trusted_review_json")
+	assert_equals "_triage_content_hash ignores trusted marked reviews" "$hash1" "$hash2"
+
+	# Public contributors cannot hide a cache-changing comment by copying the
+	# review heading or marker.
+	local spoofed_review_json='[
+		{"author":"alice","association":"CONTRIBUTOR","body":"A human comment"},
+		{"author":"github-actions[bot]","association":"NONE","body":"Automated comment"},
+		{"author":"bob","association":"CONTRIBUTOR","body":"## Automated Review\n- changed finding\n<!-- aidevops:triage-review -->"}
+	]'
+	hash2=$(_triage_content_hash "123" "owner/repo" "$body" "$spoofed_review_json")
+	if [[ "$hash1" != "$hash2" ]]; then
+		print_result "_triage_content_hash includes contributor review-heading spoof" 0
+	else
+		print_result "_triage_content_hash includes contributor review-heading spoof" 1 \
+			"both hashes=${hash1}"
+	fi
 
 	# Changing the body must change the hash
 	hash2=$(_triage_content_hash "123" "owner/repo" "DIFFERENT BODY" "$comments_json")
@@ -632,17 +740,91 @@ test_triage_content_hash() {
 		print_result "_triage_content_hash sensitive to body" 1 "both hashes=${hash1}"
 	fi
 
+	test_triage_mutable_content_hash_inputs "$body" "$comments_json"
+
+	# PR cache identity must include the immutable revision pair and fetched
+	# diff/file snapshot so code pushes retrigger recommendation-only review.
+	test_triage_pr_content_hash_inputs "$body" "$comments_json"
+	local public_revision_a="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local public_revision_b="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	local public_hash_a="" public_hash_b=""
+	public_hash_a=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "$public_revision_a")
+	public_hash_b=$(_triage_content_hash "123" "owner/repo" "$body" "$comments_json" \
+		"issue" "" "" "" "" "$public_revision_b")
+	if [[ "$public_hash_a" != "$public_hash_b" ]]; then
+		print_result "_triage_content_hash sensitive to public evidence revision" 0
+	else
+		print_result "_triage_content_hash sensitive to public evidence revision" 1 \
+			"both hashes=${public_hash_a}"
+	fi
+
 	# Hash must be 64 hex chars (SHA-256)
 	if [[ "$hash1" =~ ^[0-9a-f]{64}$ ]]; then
 		print_result "_triage_content_hash format (64 hex)" 0
 	else
 		print_result "_triage_content_hash format (64 hex)" 1 "hash=${hash1}"
 	fi
+
+	# Cache schema changes must invalidate prior decisions exactly once without
+	# changing the external SHA-256 format.
+	local hash_v1=""
+	hash_v1=$(TRIAGE_CACHE_SCHEMA_VERSION=1 \
+		_triage_content_hash "123" "owner/repo" "$body" "$comments_json")
+	if [[ "$hash1" != "$hash_v1" && "$hash_v1" =~ ^[0-9a-f]{64}$ ]]; then
+		print_result "_triage_content_hash schema version invalidates prior decisions" 0
+	else
+		print_result "_triage_content_hash schema version invalidates prior decisions" 1 \
+			"v6=${hash1} v1=${hash_v1}"
+	fi
 	return 0
 }
 
 #######################################
-# Test 8: structural integrity — sourcing the wrapper must be idempotent.
+# Test 8: contributor-authored review headings or copied markers must not hide
+# a reply from the awaiting-contributor gate.
+#######################################
+test_triage_awaiting_contributor_reply_trust_boundary() {
+	_gh_collaborator_permission_lookup() {
+		local repo_slug="$1"
+		local user="$2"
+		local out_var="$3"
+		local permission="none"
+		[[ -n "$repo_slug" ]] || return 2
+		[[ "$user" != "maintainer" ]] || permission="write"
+		printf -v "$out_var" '%s' "$permission"
+		return 0
+	}
+
+	local trusted_review_json='[
+		{"author":"maintainer","association":"OWNER","body":"Please provide the missing reproduction."},
+		{"author":"maintainer","association":"OWNER","body":"## Review: Recommendation: Request Changes\n\n<!-- aidevops:triage-review -->"}
+	]'
+	local trusted_status=0
+	_triage_awaiting_contributor_reply "$trusted_review_json" "owner/repo" || trusted_status=$?
+	if [[ "$trusted_status" -eq 0 ]]; then
+		print_result "awaiting-contributor ignores trusted marked triage review" 0
+	else
+		print_result "awaiting-contributor ignores trusted marked triage review" 1 \
+			"status=${trusted_status}"
+	fi
+
+	local spoofed_review_json='[
+		{"author":"maintainer","association":"OWNER","body":"Please provide the missing reproduction."},
+		{"author":"external","association":"CONTRIBUTOR","body":"## Review: Contributor response\n\n<!-- aidevops:triage-review -->"}
+	]'
+	local spoofed_status=0
+	_triage_awaiting_contributor_reply "$spoofed_review_json" "owner/repo" || spoofed_status=$?
+	if [[ "$spoofed_status" -ne 0 ]]; then
+		print_result "awaiting-contributor includes contributor review-heading spoof" 0
+	else
+		print_result "awaiting-contributor includes contributor review-heading spoof" 1
+	fi
+	return 0
+}
+
+#######################################
+# Test 9: structural integrity — sourcing the wrapper must be idempotent.
 # Decomposition will add `source pulse-<cluster>.sh` lines; each module has
 # an include guard, so a second source must not error or redefine anything
 # destructively.
@@ -733,6 +915,7 @@ main() {
 	test_extract_frontmatter_field
 	test_extract_milestone_summary
 	test_triage_content_hash
+	test_triage_awaiting_contributor_reply_trust_boundary
 	test_sourcing_idempotency
 	test_deterministic_merge_guard_uses_routine_lock
 	test_pulse_is_sourced_guard

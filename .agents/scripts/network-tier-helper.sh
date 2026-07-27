@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # network-tier-helper.sh — Network domain tiering for worker sandboxing (t1412.3)
-# Commands: classify | check | check-argv | check-command | export-policy | log-access | report | init | help
+# Commands: classify | check | check-argv | check-command | export-policy |
+#           export-provider-policy | log-access | report | init | help
 #
 # Implements a 4-tier graduated trust model for headless worker network access:
 #   Tier 1: Always allowed, no logging (core infrastructure: github.com)
@@ -33,6 +34,8 @@
 #   network-tier-helper.sh check-command 'curl https://example.com' --worker-id worker-123
 #   network-tier-helper.sh check-argv '["curl","https://example.com"]' --worker-id worker-123
 #   network-tier-helper.sh export-policy             # Normalized backend policy JSON
+#   network-tier-helper.sh export-provider-policy openai
+#                                                    # Provider-only deny-by-default policy
 #   network-tier-helper.sh log-access example.com worker-123 200
 #   network-tier-helper.sh report [--last N] [--flagged-only]
 #   network-tier-helper.sh init                     # Create log dirs and validate config
@@ -288,6 +291,100 @@ policy = {
     "private_network_action": DENY_ACTION,
     "loopback_action": DENY_ACTION,
     "rules": normalized_rules,
+}
+print(json.dumps(policy, sort_keys=True, separators=(",", ":")))
+PY
+	return $?
+}
+
+# Resolve a provider API hostname from the same routing table used for model
+# selection. Only HTTPS endpoints on the default TLS port are eligible for the
+# provider-only profile; local/custom transports fail closed.
+# Arguments: $1=provider name. Output: normalized hostname.
+_provider_policy_domain() {
+	local provider="$1"
+	local routing_table="${SCRIPT_DIR}/../custom/configs/model-routing-table.json"
+	if [[ ! -r "$routing_table" ]]; then
+		routing_table="${SCRIPT_DIR}/../configs/model-routing-table.json"
+	fi
+	[[ -r "$routing_table" ]] || {
+		log_error "Model routing table is unavailable for provider policy export"
+		return 1
+	}
+
+	python3 - "$routing_table" "$provider" <<'PY'
+import json
+import sys
+from urllib.parse import urlsplit
+
+routing_path, provider = sys.argv[1:]
+with open(routing_path, "r", encoding="utf-8") as handle:
+    config = json.load(handle)
+endpoint = config.get("providers", {}).get(provider, {}).get("endpoint", "")
+parsed = urlsplit(endpoint)
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.port not in (None, 443)
+):
+    raise SystemExit(1)
+print(parsed.hostname.lower())
+PY
+	return $?
+}
+
+# Export a deny-by-default process-tree policy for exactly one selected model
+# provider. The endpoint must also be explicitly allowed by the authoritative
+# network-tier policy; custom routing cannot silently widen egress.
+# Arguments: $1=provider name.
+# Output: aidevops.worker-egress-policy.v1 JSON on stdout.
+export_provider_backend_policy() {
+	local provider="$1"
+	local domain=""
+	local tier=""
+	local action=""
+
+	[[ "$provider" =~ ^[A-Za-z0-9._-]+$ ]] || {
+		log_error "Invalid provider name for provider policy export"
+		return 1
+	}
+	domain=$(_provider_policy_domain "$provider") || {
+		log_error "No eligible HTTPS endpoint is configured for provider '${provider}'"
+		return 1
+	}
+	[[ "$domain" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+	_load_tier_data || return 1
+	tier=$(_tier_lookup "exact:${domain}")
+	case "$tier" in
+	1) action="allow" ;;
+	2 | 3) action="allow-log" ;;
+	*)
+		log_error "Provider endpoint '${domain}' is not explicitly allowed by the network tier policy"
+		return 1
+		;;
+	esac
+
+	python3 - "$domain" "$tier" "$action" <<'PY'
+import json
+import sys
+
+domain, tier_text, action = sys.argv[1:]
+DENY_ACTION = "deny"
+policy = {
+    "schema": "aidevops.worker-egress-policy.v1",
+    "default_tier": 5,
+    "default_action": DENY_ACTION,
+    "raw_ip_action": DENY_ACTION,
+    "private_network_action": DENY_ACTION,
+    "loopback_action": DENY_ACTION,
+    "rules": [dict(
+        match="exact",
+        pattern=domain,
+        tier=int(tier_text),
+        action=action,
+    )],
 }
 print(json.dumps(policy, sort_keys=True, separators=(",", ":")))
 PY
@@ -981,6 +1078,8 @@ Commands:
   check-command <command> [--worker-id ID]
                              Compatibility shell-string entry point
   export-policy              Emit normalized process-backend policy JSON
+  export-provider-policy PROVIDER
+                             Emit deny-by-default policy for one model provider
   check-session <domain> [--session-id ID]
                              Session-aware check — elevates tier if session
                              is tainted (t1428.3). Falls back to check if
@@ -1025,6 +1124,9 @@ Examples:
 
   network-tier-helper.sh export-policy
   # Output schema: aidevops.worker-egress-policy.v1
+
+  network-tier-helper.sh export-provider-policy openai
+  # Output permits only the configured OpenAI API hostname
 
   network-tier-helper.sh log-access pypi.org worker-abc 200 /simple/requests/
   network-tier-helper.sh report --flagged-only --last 20
@@ -1099,6 +1201,14 @@ main() {
 		;;
 	export-policy)
 		export_backend_policy
+		return $?
+		;;
+	export-provider-policy)
+		if [[ -z "$first_arg" ]]; then
+			log_error "Provider required. Usage: network-tier-helper.sh export-provider-policy <provider>"
+			return 1
+		fi
+		export_provider_backend_policy "$first_arg"
 		return $?
 		;;
 	log-access | log)

@@ -624,6 +624,96 @@ test_sandbox_passthrough_scopes_provider_env() {
 	return 0
 }
 
+test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
+	local csv=""
+	csv=$(
+		OPENAI_API_KEY='openai-test' \
+		OPENAI_ADMIN_KEY='openai-admin-test' \
+		OPENAI_BASE_URL='https://openai-endpoint.example.invalid' \
+		ANTHROPIC_API_KEY='anthropic-test' \
+		CLAUDE_CODE_OAUTH_TOKEN='anthropic-oauth-test' \
+		GOOGLE_OAUTH_ACCESS_TOKEN='google-oauth-test' \
+		GH_TOKEN='github-test' \
+		GITHUB_TOKEN='github-test' \
+		WORKER_ISSUE_NUMBER='28705' \
+		AIDEVOPS_PERMISSION_GRANT_FILE='/tmp/grant.json' \
+		AIDEVOPS_HEADLESS='1' \
+		AIDEVOPS_HEADLESS_AUTH_ISOLATION='1' \
+		AIDEVOPS_SESSION_ORIGIN='triage' \
+		XDG_CACHE_HOME='/tmp/triage-cache' \
+		XDG_CONFIG_HOME='/tmp/triage-config' \
+		XDG_DATA_HOME='/tmp/triage-data' \
+		XDG_STATE_HOME='/tmp/triage-state' \
+		OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
+		OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
+		OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
+		OTEL_EXPORTER_OTLP_ENDPOINT='https://telemetry.example.invalid' \
+		build_sandbox_passthrough_csv "openai" "triage"
+	)
+
+	if [[ ",$csv," == *",OPENAI_API_KEY,"* && ",$csv," != *",OPENAI_ADMIN_KEY,"* && \
+		",$csv," != *",OPENAI_BASE_URL,"* && ",$csv," != *",ANTHROPIC_API_KEY,"* && \
+		",$csv," != *",CLAUDE_CODE_OAUTH_TOKEN,"* && \
+		",$csv," != *",GOOGLE_OAUTH_ACCESS_TOKEN,"* && \
+		",$csv," != *",GH_TOKEN,"* && ",$csv," != *",GITHUB_TOKEN,"* && \
+		",$csv," != *",WORKER_ISSUE_NUMBER,"* && ",$csv," != *",AIDEVOPS_PERMISSION_GRANT_FILE,"* && \
+		",$csv," != *",OTEL_EXPORTER_OTLP_ENDPOINT,"* && ",$csv," == *",AIDEVOPS_HEADLESS,"* && \
+		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* && \
+		",$csv," == *",OPENCODE_DISABLE_EXTERNAL_SKILLS,"* && \
+		",$csv," == *",OPENCODE_DISABLE_CLAUDE_CODE_SKILLS,"* ]]; then
+		print_result "triage sandbox passthrough excludes GitHub and worker authority" 0
+		return 0
+	fi
+
+	print_result "triage sandbox passthrough excludes GitHub and worker authority" 1 \
+		"Unexpected triage passthrough names: ${csv}"
+	return 0
+}
+
+test_strict_scoped_auth_rejects_malformed_source() {
+	local auth_root="${TEST_ROOT}/strict-scoped-auth"
+	local source_auth="${auth_root}/source.json"
+	local dest_auth="${auth_root}/dest/opencode/auth.json"
+	mkdir -p "$auth_root"
+	printf '%s\n' '{malformed' >"$source_auth"
+	local status=0
+	copy_scoped_opencode_auth "$source_auth" "$dest_auth" "openai" true || status=$?
+	if [[ "$status" -ne 0 && ! -e "$dest_auth" ]]; then
+		print_result "strict scoped auth fails closed on malformed source" 0
+		return 0
+	fi
+
+	print_result "strict scoped auth fails closed on malformed source" 1 \
+		"status=${status} destination_exists=$([[ -e "$dest_auth" ]] && printf yes || printf no)"
+	return 0
+}
+
+test_triage_runtime_directory_is_framework_owned_and_empty() {
+	local runtime_dir=""
+	local managed_root="${TEST_ROOT}/managed-triage-runtime"
+	if ! AIDEVOPS_TEMP_DIR="$managed_root" \
+		_prepare_triage_runtime_directory "runtime_dir"; then
+		print_result "triage runtime directory is isolated from target repository" 1 \
+			"runtime directory preparation failed"
+		return 0
+	fi
+	managed_root=$(cd "$managed_root" && pwd -P) || return 1
+
+	local runtime_config="${runtime_dir}/.opencode/opencode.json"
+	if [[ "$runtime_dir" == "$managed_root"/aidevops-headless-triage.* && \
+		-f "${runtime_dir}/.opencode/agent/triage-review.md" && \
+		-f "$runtime_config" && ! -e "${runtime_dir}/.git" && \
+		$(jq -r '(.permission == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]]; then
+		print_result "triage runtime directory is isolated from target repository" 0
+	else
+		print_result "triage runtime directory is isolated from target repository" 1 \
+			"Unexpected runtime directory: ${runtime_dir:-<empty>}"
+	fi
+	rm -rf "$runtime_dir" 2>/dev/null || true
+	_HEADLESS_RUNTIME_TEMP_PATHS=""
+	return 0
+}
+
 test_private_sandbox_passthrough_excludes_parent_credentials() {
 	local AIDEVOPS_PRIVATE_WORKLOAD=1
 	local csv=""
@@ -679,4 +769,3 @@ EOF
 		"Expected only openai auth entry in ${dest_auth}"
 	return 0
 }
-

@@ -122,6 +122,24 @@ test_issue_worker_env_contract_accepts_valid_precreated_worktree() {
 	return 0
 }
 
+test_triage_env_contract_does_not_require_worker_authority() {
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH 2>/dev/null || true
+	local output=""
+	local status=0
+	output=$(_validate_issue_worker_env_contract \
+		"triage" "triage-review-22438" "$TEST_ROOT" \
+		"Sandboxed triage review: Issue #22438" \
+		"Review issue #22438 from prefetched context" 2>&1) || status=$?
+
+	if [[ "$status" -eq 0 && -z "$output" ]]; then
+		print_result "triage correlation bypasses implementation-worker env contract" 0
+		return 0
+	fi
+	print_result "triage correlation bypasses implementation-worker env contract" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
 test_worker_worktree_claim_transfers_to_runtime_pid() {
 	local worktree_dir="${TEST_ROOT}/claim-worktree"
 	mkdir -p "$worktree_dir"
@@ -861,6 +879,91 @@ EOF
 	return 0
 }
 
+test_triage_prepare_drops_worker_authority_and_skips_ownership_fence() {
+	local worktree_dir="${TEST_ROOT}/triage-prepare"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="22438"
+		export WORKER_REPO_SLUG="owner/repo"
+		export WORKER_WORKTREE_PATH="$worktree_dir"
+		export WORKER_GITHUB_LOGIN="expected-runner"
+		export AIDEVOPS_WORKER_GITHUB_LOGIN="fallback-runner"
+		export AIDEVOPS_DISPATCH_LEASE_TOKEN="stale-lease"
+		export AIDEVOPS_WORKER_ID="stale-worker-id"
+		export AIDEVOPS_WORKTREE_OWNER_PID="999"
+		export _WORKER_WORKTREE_PATH="stale-internal-path"
+		export WORKER_TARGET_BRANCH="stale-worker-branch"
+		_headless_private_workload_enabled() { return 1; }
+		_hrw_permission_pending_path() { return 1; }
+		_acquire_session_lock() { return 0; }
+		_hrw_verify_dispatch_ownership() { printf 'ownership-called\n'; return 1; }
+		_hrw_claim_worker_worktree() { printf 'claim-called\n'; return 1; }
+		_register_dispatch_ledger() {
+			printf 'ledger-called\n'
+			return 0
+		}
+
+		local prepare_status=0
+		_cmd_run_prepare "triage-review-22438" "$worktree_dir" "triage" || prepare_status=$?
+		trap - EXIT
+		printf 'status=%s vars=%s|%s|%s|%s|%s|%s|%s dispatch=%s\n' "$prepare_status" \
+			"${WORKER_ISSUE_NUMBER:-}" "${WORKER_REPO_SLUG:-}" \
+			"${WORKER_WORKTREE_PATH:-}" "${WORKER_GITHUB_LOGIN:-}" \
+			"${AIDEVOPS_WORKER_GITHUB_LOGIN:-}" "${_WORKER_WORKTREE_PATH:-}" \
+			"${WORKER_TARGET_BRANCH:-}" "${DISPATCH_REPO_SLUG:-}"
+	)
+
+	if [[ "$output" == *"status=0 vars=|||||| dispatch="* && \
+		"$output" != *"ledger-called"* && \
+		"$output" != *"ownership-called"* && "$output" != *"claim-called"* ]]; then
+		print_result "triage preparation drops worker authority and worker ledger writes" 0
+		return 0
+	fi
+	print_result "triage preparation drops worker authority and worker ledger writes" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
+test_triage_prepare_arms_non_worker_exit_cleanup() {
+	local worktree_dir="${TEST_ROOT}/triage-exit-trap"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+
+	local output=""
+	local status=0
+	output=$(
+		_headless_private_workload_enabled() { return 1; }
+		_hrw_permission_pending_path() { return 1; }
+		_acquire_session_lock() { return 0; }
+		_register_dispatch_ledger() { return 0; }
+		_hrw_non_worker_exit_trap() {
+			local session_key="$1"
+			printf 'non-worker-exit=%s\n' "$session_key"
+			trap - EXIT
+			return 0
+		}
+		_exit_trap_handler() {
+			printf 'worker-exit-called\n'
+			trap - EXIT
+			return 0
+		}
+		_cmd_run_prepare "triage-review-22438" "$worktree_dir" "triage"
+		exit 9
+	) || status=$?
+
+	if [[ "$status" -eq 9 && "$output" == *"non-worker-exit=triage-review-22438"* && \
+		"$output" != *"worker-exit-called"* ]]; then
+		print_result "triage preparation arms non-worker abnormal-exit cleanup" 0
+		return 0
+	fi
+	print_result "triage preparation arms non-worker abnormal-exit cleanup" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
 test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
 	local ownership_helper="${TEST_ROOT}/linked-issue-ownership-helper.sh"
 	local calls_file="${TEST_ROOT}/linked-issue-ownership-calls"
@@ -898,6 +1001,116 @@ EOF
 	fi
 	print_result "linked-issue PR repair keeps strict issue ownership fence" 1 \
 		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	return 0
+}
+
+test_triage_finish_skips_worker_claim_and_worktree_release() {
+	local output=""
+	output=$(
+		local _CMD_RUN_ROLE="triage"
+		_headless_private_workload_enabled() { return 1; }
+		_update_dispatch_ledger() { printf 'ledger-called\n'; return 0; }
+		_release_session_lock() { printf 'session-lock-released\n'; return 0; }
+		_cleanup_headless_runtime_temp_paths() { printf 'temp-cleaned\n'; return 0; }
+		aidevops_runtime_bundle_lease_release() { printf 'bundle-released\n'; return 0; }
+		_hrw_release_worker_worktree() { printf 'worker-worktree-release-called\n'; return 0; }
+		_hrw_release_dispatch_claim() { printf 'worker-claim-release-called\n'; return 0; }
+		_worker_produced_output() { printf 'worker-output-classifier-called\n'; return 0; }
+		_cmd_run_finish "triage-review-22438" "complete" "${TEST_ROOT}/triage-finish"
+	)
+
+	if [[ "$output" == *"session-lock-released"* && "$output" == *"temp-cleaned"* && \
+		"$output" == *"bundle-released"* && "$output" != *"worker-"* && \
+		"$output" != *"ledger-called"* ]]; then
+		print_result "triage finish skips implementation-worker ledger, claim, and worktree writes" 0
+		return 0
+	fi
+	print_result "triage finish skips implementation-worker ledger, claim, and worktree writes" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
+test_triage_finish_propagates_temp_cleanup_failure() {
+	local output=""
+	local status=0
+	output=$(
+		local _CMD_RUN_ROLE="triage"
+		_headless_private_workload_enabled() { return 1; }
+		_release_session_lock() { printf 'session-lock-released\n'; return 0; }
+		_cleanup_headless_runtime_temp_paths() { printf 'temp-cleanup-failed\n'; return 1; }
+		aidevops_runtime_bundle_lease_release() { printf 'bundle-released\n'; return 0; }
+		_cmd_run_finish "triage-review-28705" "complete" "${TEST_ROOT}/triage-finish"
+	) || status=$?
+
+	if [[ "$status" -eq 1 && "$output" == *"temp-cleanup-failed"* && \
+		"$output" == *"bundle-released"* ]]; then
+		print_result "triage finish propagates temp cleanup failure" 0
+		return 0
+	fi
+	print_result "triage finish propagates temp cleanup failure" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
+test_triage_exit_trap_terminalizes_temp_cleanup_failure() {
+	local output=""
+	local status=0
+	output=$(
+		(
+			_release_session_lock() { return 0; }
+			_cleanup_headless_runtime_temp_paths() { return 1; }
+			aidevops_runtime_bundle_lease_release() { return 0; }
+			print_warning() {
+				local message="$1"
+				printf '%s\n' "$message"
+				return 0
+			}
+			trap "_hrw_non_worker_exit_trap 'triage-review-28705'" EXIT
+			exit 0
+		)
+	) || status=$?
+
+	if [[ "$status" -eq 86 && \
+		"$output" == *"non_worker_runtime_temp_cleanup_failed"* ]]; then
+		print_result "triage exit trap terminalizes temp cleanup failure" 0
+		return 0
+	fi
+	print_result "triage exit trap terminalizes temp cleanup failure" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
+test_worker_prepare_retains_ownership_fence() {
+	local worktree_dir="${TEST_ROOT}/worker-prepare-fence"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="22438"
+		export WORKER_REPO_SLUG="owner/repo"
+		export WORKER_WORKTREE_PATH="$worktree_dir"
+		export WORKER_GITHUB_LOGIN="expected-runner"
+		_headless_private_workload_enabled() { return 1; }
+		_hrw_permission_pending_path() { return 1; }
+		_acquire_session_lock() { return 0; }
+		_hrw_verify_dispatch_ownership() { printf 'ownership-called\n'; return 1; }
+		_register_dispatch_ledger() { return 0; }
+
+		local prepare_status=0
+		_cmd_run_prepare "issue-22438" "$worktree_dir" "worker" || prepare_status=$?
+		trap - EXIT
+		printf 'status=%s reason=%s issue=%s\n' "$prepare_status" \
+			"${_WORKER_PRELAUNCH_FAILURE_REASON:-}" "${WORKER_ISSUE_NUMBER:-}"
+	)
+
+	if [[ "$output" == *"ownership-called"* && \
+		"$output" == *"status=1 reason=${_HRW_REASON_OWNERSHIP_LOST} issue=22438"* ]]; then
+		print_result "worker preparation retains ownership fence" 0
+		return 0
+	fi
+	print_result "worker preparation retains ownership fence" 1 \
+		"output=${output:-<empty>}"
 	return 0
 }
 
@@ -1077,6 +1290,74 @@ test_cmd_run_preserves_worker_origin_overrides_before_canary() {
 
 	print_result "cmd_run preserves worker origin env overrides before canary" 1 \
 		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
+test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
+	local worktree_dir="${TEST_ROOT}/triage-authority-order"
+	local authority_log="${TEST_ROOT}/triage-authority-order.log"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	: >"$authority_log"
+	export WORKER_ISSUE_NUMBER="28705"
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_WORKTREE_PATH="$worktree_dir"
+	export WORKER_GITHUB_LOGIN="stale-runner"
+	export DISPATCH_REPO_SLUG="owner/repo"
+	export AIDEVOPS_DISPATCH_LEASE_TOKEN="stale-lease"
+	export AIDEVOPS_WORKER_ID="stale-worker"
+
+	choose_model() {
+		printf 'model=%s|%s|%s|%s|%s|%s|%s\n' \
+			"${WORKER_ISSUE_NUMBER:-}" "${WORKER_REPO_SLUG:-}" \
+			"${WORKER_WORKTREE_PATH:-}" "${WORKER_GITHUB_LOGIN:-}" \
+			"${DISPATCH_REPO_SLUG:-}" "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" \
+			"${AIDEVOPS_WORKER_ID:-}" >>"$authority_log"
+		printf '%s' 'openai/gpt-5.5'
+		return 0
+	}
+	_enforce_opencode_version_pin() { return 0; }
+	_run_canary_test() {
+		printf 'canary=%s|%s|%s|%s|%s|%s|%s\n' \
+			"${WORKER_ISSUE_NUMBER:-}" "${WORKER_REPO_SLUG:-}" \
+			"${WORKER_WORKTREE_PATH:-}" "${WORKER_GITHUB_LOGIN:-}" \
+			"${DISPATCH_REPO_SLUG:-}" "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" \
+			"${AIDEVOPS_WORKER_ID:-}" >>"$authority_log"
+		return 1
+	}
+	_prepare_triage_runtime_directory() {
+		local result_var="$1"
+		: "$result_var"
+		printf '%s\n' 'triage_runtime_prepare_called' >>"$authority_log"
+		return 1
+	}
+
+	local output=""
+	local status=0
+	output=$(cmd_run \
+		--role triage \
+		--session-key triage-review-28705 \
+		--dir "$worktree_dir" \
+		--title "Sandboxed triage review: Issue #28705" \
+		--prompt "Review prefetched issue context" 2>&1) || status=$?
+
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH \
+		WORKER_GITHUB_LOGIN DISPATCH_REPO_SLUG AIDEVOPS_DISPATCH_LEASE_TOKEN \
+		AIDEVOPS_WORKER_ID 2>/dev/null || true
+	unset -f choose_model _enforce_opencode_version_pin _run_canary_test \
+		_prepare_triage_runtime_directory 2>/dev/null || true
+	if [[ "$status" -eq 1 ]] && \
+		grep -qx 'model=||||||' "$authority_log" && \
+		! grep -q '^canary=' "$authority_log" && \
+		grep -qx 'triage_runtime_prepare_called' "$authority_log" && \
+		[[ "$output" == *"generic_canary_skipped"* ]] && \
+		[[ "$output" == *"Public triage runtime isolation setup failed"* ]]; then
+		print_result "cmd_run clears triage worker authority and skips generic canary" 0
+		return 0
+	fi
+
+	print_result "cmd_run clears triage worker authority and skips generic canary" 1 \
+		"status=$status observations=$(<"$authority_log") output=${output:-<empty>}"
 	return 0
 }
 

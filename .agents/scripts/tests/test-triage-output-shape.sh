@@ -13,12 +13,10 @@
 #   - _extract_review_text_from_json falls back to raw content when
 #     no JSON events parse (legacy/plain-text path).
 #   - The oversized-output ceiling suppresses >20KB extracted text.
-#   - The no-review-header path suppresses JSON output whose extracted
-#     text has no `## Review:` header (the #18428 failure mode).
-#   - A clean review embedded in JSON is accepted and passes through
-#     the safety filter.
-#   - The debug log is written for every suppression path.
-#   - _redact_infra_markers masks sandbox / runtime internals.
+#   - Exact first-line, required-field, recommendation-match, and word-limit
+#     validation rejects model format drift.
+#   - A clean, exact review embedded in JSON is posted through a body file.
+#   - Suppression diagnostics retain metadata but never model/runtime output.
 #
 # Harness style: mocked gh, isolated HOME, stub cache helpers.
 
@@ -36,6 +34,20 @@ GH_CALL_LOG=""
 LOGFILE=""
 HEADLESS_INVOCATION_LOG=""
 TRIAGE_CACHE_LOG=""
+TRIAGE_LIFECYCLE_LOG=""
+POSTED_BODY_LOG=""
+EPHEMERAL_BODY_LOG=""
+MOCK_COMMENT_WRITE_FAILURE=0
+MOCK_PR_REVISION_PAIR=""
+readonly EXPECTED_TEXT_SNAPSHOT_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
+readonly EXPECTED_PUBLIC_REVISION="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+MOCK_CURRENT_PUBLIC_REVISION="$EXPECTED_PUBLIC_REVISION"
+_PAD_JSON_ARRAY_TYPE="array"
+_PAD_JSON_STRING_TYPE="string"
+_PAD_TRIAGE_RUNTIME_TEMP_FAILURE_REASON="triage-runtime-temp-failed"
+_PAD_TRIAGE_MAX_COMMENTS=100
+_PAD_TRIAGE_MAX_COMMENT_BYTES=1048576
 
 print_result() {
 	local test_name="$1"
@@ -57,7 +69,11 @@ print_result() {
 setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
 	export HOME="${TEST_ROOT}/home"
-	mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/agents/scripts"
+	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/managed-temp"
+	mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/agents/scripts" \
+		"$AIDEVOPS_TEMP_DIR"
+	AIDEVOPS_TEMP_DIR=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P)
+	export AIDEVOPS_TEMP_DIR
 	LOGFILE="${HOME}/.aidevops/logs/pulse-wrapper.log"
 	: >"$LOGFILE"
 	GH_CALL_LOG="${TEST_ROOT}/gh-calls.log"
@@ -66,11 +82,34 @@ setup_test_env() {
 	: >"$HEADLESS_INVOCATION_LOG"
 	TRIAGE_CACHE_LOG="${TEST_ROOT}/triage-cache.log"
 	: >"$TRIAGE_CACHE_LOG"
+	TRIAGE_LIFECYCLE_LOG="${TEST_ROOT}/triage-lifecycle.log"
+	: >"$TRIAGE_LIFECYCLE_LOG"
+	POSTED_BODY_LOG="${TEST_ROOT}/posted-body.log"
+	: >"$POSTED_BODY_LOG"
+	EPHEMERAL_BODY_LOG="${TEST_ROOT}/ephemeral-body.log"
+	: >"$EPHEMERAL_BODY_LOG"
+	export TRIAGE_SIGNATURE_HELPER="${HOME}/.aidevops/agents/scripts/gh-signature-helper.sh"
+	cat >"$TRIAGE_SIGNATURE_HELPER" <<'SIG_STUB'
+#!/usr/bin/env bash
+if [[ "${TRIAGE_TEST_SIGNATURE_FAILURE:-0}" == "1" ]]; then
+	exit 1
+fi
+printf '\n<!-- aidevops:sig -->\n---\n[test signature]\n'
+exit 0
+SIG_STUB
+	chmod +x "$TRIAGE_SIGNATURE_HELPER"
+	MOCK_COMMENT_WRITE_FAILURE=0
+	MOCK_PR_REVISION_PAIR=""
+	MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
+	MOCK_CURRENT_PUBLIC_REVISION="$EXPECTED_PUBLIC_REVISION"
+	unset TRIAGE_TEST_RUNTIME_EXIT_STATUS TRIAGE_TEST_SIGNATURE_FAILURE 2>/dev/null || true
 	return 0
 }
 
 teardown_test_env() {
 	export HOME="${ORIGINAL_HOME}"
+	unset AIDEVOPS_TEMP_DIR TRIAGE_SIGNATURE_HELPER TRIAGE_TEST_RUNTIME_EXIT_STATUS \
+		TRIAGE_TEST_SIGNATURE_FAILURE 2>/dev/null || true
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
 	fi
@@ -89,9 +128,57 @@ export -f gh_issue_comment gh_pr_comment
 # Mock gh that records calls. Every call returns success so the
 # dispatch path can complete without real network access.
 gh() {
-	printf '%s\n' "$*" >>"$GH_CALL_LOG"
-	case "${1:-}" in
+	local command_name="${1:-}"
+	local action="${2:-}"
+	local call_args="$*"
+	local previous=""
+	local argument=""
+	printf '%s\n' "$call_args" >>"$GH_CALL_LOG"
+	if [[ "$command_name" == "issue" && "$action" == "comment" ]]; then
+		printf '%s\n' "${AIDEVOPS_GH_EPHEMERAL_BODY_FILE:-}" >>"$EPHEMERAL_BODY_LOG"
+	fi
+	for argument in "$@"; do
+		if [[ "$previous" == "--body-file" && -f "$argument" ]]; then
+			command cat "$argument" >"$POSTED_BODY_LOG"
+			break
+		fi
+		previous="$argument"
+	done
+	if [[ "$command_name" == "issue" && "$action" == "comment" && \
+		"$MOCK_COMMENT_WRITE_FAILURE" -eq 1 ]]; then
+		return 1
+	fi
+	case "$command_name" in
+	issue)
+		if [[ "$action" == "view" ]]; then
+			local viewed_number="${3:-0}"
+			jq -cn --argjson number "$viewed_number" '{
+				number: $number,
+				title: "Stable test title",
+				body: "Stable test body",
+				author: {login: "external"},
+				labels: [{name: "needs-maintainer-review"}],
+				createdAt: "2026-07-27T00:00:00Z",
+				updatedAt: "2026-07-27T00:01:00Z"
+			}'
+		fi
+		return 0
+		;;
 	api)
+		if [[ "$call_args" == *"/comments?per_page=100"* ]]; then
+			printf '%s\n' '[[{"id":1,"user":{"login":"external"},"author_association":"CONTRIBUTOR","body":"Stable test comment","created_at":"2026-07-27T00:01:00Z","updated_at":"2026-07-27T00:01:00Z"}]]'
+			return 0
+		fi
+		if [[ "$call_args" == *"/pulls/"* && "$call_args" == *"--jq"* && \
+			-n "$MOCK_PR_REVISION_PAIR" ]]; then
+			printf '%s\n' "$MOCK_PR_REVISION_PAIR"
+			return 0
+		fi
+		if [[ "$call_args" == *"repos/owner/repo/commits"* && \
+			"$call_args" == *"per_page=1"* ]]; then
+			printf '%s\n' "$MOCK_CURRENT_PUBLIC_REVISION"
+			return 0
+		fi
 		# Return empty JSON for any read, zero for count queries.
 		printf '0\n'
 		return 0
@@ -108,8 +195,18 @@ _triage_is_cached() { return 1; }
 _triage_update_cache() { printf 'update %s %s %s\n' "$1" "$2" "$3" >>"$TRIAGE_CACHE_LOG"; return 0; }
 _triage_increment_failure() { printf 'increment %s %s %s\n' "$1" "$2" "$3" >>"$TRIAGE_CACHE_LOG"; return 1; }
 _triage_awaiting_contributor_reply() { return 1; }
-lock_issue_for_worker() { return 0; }
-unlock_issue_after_worker() { return 0; }
+lock_issue_for_worker() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	printf 'lock %s %s\n' "$issue_num" "$repo_slug" >>"$TRIAGE_LIFECYCLE_LOG"
+	return 0
+}
+unlock_issue_after_worker() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	printf 'unlock %s %s\n' "$issue_num" "$repo_slug" >>"$TRIAGE_LIFECYCLE_LOG"
+	return 0
+}
 export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 	_triage_increment_failure _triage_awaiting_contributor_reply \
 	lock_issue_for_worker unlock_issue_after_worker
@@ -118,7 +215,6 @@ export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 # awk/sed extraction — same pattern as test-triage-failure-escalation.sh.
 # We load:
 #   - _extract_review_text_from_json
-#   - _redact_infra_markers
 #   - _log_suppressed_triage_output
 #   - _ensure_triage_failed_label
 #   - _post_triage_escalation_comment
@@ -143,9 +239,15 @@ load_helpers_under_test() {
 	/^dispatch_triage_reviews\(\) \{/{flag=0}
 	' "$src" |
 		sed '/^dispatch_triage_reviews()/,$d' >"$tmp"
+	# shellcheck source=../sensitive-temp-helper.sh
+	source "${here}/../sensitive-temp-helper.sh"
 	# shellcheck disable=SC1090
 	source "$tmp"
 	rm -f "$tmp"
+	_triage_current_text_snapshot_hash() {
+		printf '%s\n' "$MOCK_CURRENT_TEXT_SNAPSHOT_HASH"
+		return 0
+	}
 	return 0
 }
 
@@ -198,9 +300,22 @@ _install_headless_stub() {
 printf '%s\n' "\$*" >>"${HEADLESS_INVOCATION_LOG}"
 printf 'env HEADLESS=%s WORKER_ISSUE_NUMBER=%s WORKER_REPO_SLUG=%s WORKER_WORKTREE_PATH=%s\n' "\${HEADLESS:-}" "\${WORKER_ISSUE_NUMBER:-}" "\${WORKER_REPO_SLUG:-}" "\${WORKER_WORKTREE_PATH:-}" >>"${HEADLESS_INVOCATION_LOG}"
 cat "${payload_file}"
-exit 0
+exit "\${TRIAGE_TEST_RUNTIME_EXIT_STATUS:-0}"
 STUB_EOF
 	chmod +x "$HEADLESS_RUNTIME_HELPER"
+	return 0
+}
+
+_make_managed_prompt_file() {
+	local purpose="$1"
+	local prompt_dir=""
+	prompt_dir=$(_triage_create_sensitive_artifact_dir "$purpose") || return 1
+	local prompt_file="${prompt_dir}/prompt.txt"
+	if ! printf 'test prompt\n' >"$prompt_file"; then
+		_triage_cleanup_sensitive_artifact_dir "$prompt_dir" || true
+		return 1
+	fi
+	printf '%s\n' "$prompt_file"
 	return 0
 }
 
@@ -215,6 +330,69 @@ printf '%b\n' '\033[0;31m[ERROR]\033[0m [fatal] WORKER_ISSUE_NUMBER unset — is
 exit 1
 STUB_EOF
 	chmod +x "$HEADLESS_RUNTIME_HELPER"
+	return 0
+}
+
+_valid_review_text() {
+	cat <<'REVIEW_EOF'
+## Review: Recommendation: Approve
+
+### Issue Validation
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Reproducible | Yes | Documented |
+| Not duplicate | Yes | none found |
+| Actual bug | Yes | confirmed |
+| In scope | Yes | project goal |
+
+**Root Cause:** Off-by-one in loop bound.
+
+### Scope & Recommendation
+
+- **Scope creep:** Low
+- **Complexity tier:** `tier:simple`
+- **Recommendation:** APPROVE
+- **PR disposition:** NOT APPLICABLE — implement the issue directly.
+- **Recommended labels:** bug, tier:simple
+- **Implementation guidance:** Fix the loop bound at line 42.
+REVIEW_EOF
+	return 0
+}
+
+_valid_pr_review_text() {
+	cat <<'REVIEW_EOF'
+## Review: Recommendation: Request Changes
+
+### Issue Validation
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Reproducible | Yes | Documented |
+| Not duplicate | Yes | none found |
+| Actual bug | Yes | confirmed |
+| In scope | Yes | project goal |
+
+**Root Cause:** Off-by-one in loop bound.
+
+### Solution Evaluation (PR only — omit section for issues)
+
+| Criterion | Assessment | Notes |
+|-----------|------------|-------|
+| Simplicity | Good | focused change |
+| Correctness | Needs Work | wrong boundary |
+| Completeness | Good | edge cases covered |
+| Security | Good | no concern |
+
+### Scope & Recommendation
+
+- **Scope creep:** Low
+- **Complexity tier:** `tier:simple`
+- **Recommendation:** REQUEST CHANGES
+- **PR disposition:** REPAIR — update the loop boundary.
+- **Recommended labels:** bug, tier:simple
+- **Implementation guidance:** Fix the loop boundary; rerun the focused unit test.
+REVIEW_EOF
 	return 0
 }
 
@@ -296,34 +474,88 @@ test_extract_concats_multiple_text_events() {
 	teardown_test_env
 }
 
-test_redact_infra_markers_masks_sandbox_lines() {
+test_review_shape_enforces_exact_contract() {
 	setup_test_env
 	load_helpers_under_test
-	local sample="Normal line
-[SANDBOX] starting worker
-[INFO] Executing opencode run --agent build-plus
-timeout=300s network_blocked=true
-/opt/homebrew/bin/opencode
-/Users/alice/Git/secret-repo/file
-End of sample"
-	local redacted
-	redacted=$(_redact_infra_markers "$sample")
+	local valid_review=""
+	valid_review=$(_valid_review_text)
 	local ok=0
-	[[ "$redacted" == *"SANDBOX_REDACTED"* ]] || ok=1
-	[[ "$redacted" == *"INFO_REDACTED"* ]] || ok=1
-	[[ "$redacted" == *"timeout=REDACTED"* ]] || ok=1
-	[[ "$redacted" == *"network_blocked=REDACTED"* ]] || ok=1
-	[[ "$redacted" == *"/REDACTED_PATH"* ]] || ok=1
-	[[ "$redacted" == *"/REDACTED_USER_PATH"* ]] || ok=1
-	# And the infrastructure values themselves must NOT survive
-	[[ "$redacted" != *"Users/alice/Git/secret-repo"* ]] || ok=1
-	[[ "$redacted" != *"opt/homebrew"* ]] || ok=1
-	if [[ $ok -eq 0 ]]; then
-		print_result "_redact_infra_markers masks sandbox / runtime internals" 0
-	else
-		print_result "_redact_infra_markers masks sandbox / runtime internals" 1 \
-			"redacted='$redacted'"
+	local details=""
+	local reason=""
+
+	reason=$(_triage_review_shape_failure_reason "$valid_review" "issue")
+	if [[ -n "$reason" ]]; then
+		ok=1
+		details="valid=${reason}"
 	fi
+	local valid_pr_review=""
+	valid_pr_review=$(_valid_pr_review_text)
+	reason=$(_triage_review_shape_failure_reason "$valid_pr_review" "pr")
+	if [[ -n "$reason" ]]; then
+		ok=1
+		details="${details} valid_pr=${reason}"
+	fi
+
+	reason=$(_triage_review_shape_failure_reason "Analysis follows."$'\n'"${valid_review}" "issue")
+	if [[ "$reason" != "invalid-review-first-line" ]]; then
+		ok=1
+		details="${details} preamble=${reason:-<empty>}"
+	fi
+
+	reason=$(_triage_review_shape_failure_reason "${valid_review}"$'\n'"## Review: Recommendation: Approve" "issue")
+	if [[ "$reason" != "duplicate-review-header" ]]; then
+		ok=1
+		details="${details} duplicate=${reason:-<empty>}"
+	fi
+
+	local missing_field="${valid_review/- **PR disposition:** NOT APPLICABLE — implement the issue directly./}"
+	reason=$(_triage_review_shape_failure_reason "$missing_field" "issue")
+	if [[ "$reason" != "invalid-review-shape" ]]; then
+		ok=1
+		details="${details} missing=${reason:-<empty>}"
+	fi
+
+	local mismatched="${valid_review/APPROVE/DECLINE}"
+	reason=$(_triage_review_shape_failure_reason "$mismatched" "issue")
+	if [[ "$reason" != "recommendation-mismatch" ]]; then
+		ok=1
+		details="${details} mismatch=${reason:-<empty>}"
+	fi
+
+	local extra_heading="${valid_review}"$'\n\n'"### Unrequested Analysis"$'\n\n'"Unexpected heading content."
+	reason=$(_triage_review_shape_failure_reason "$extra_heading" "issue")
+	if [[ "$reason" != "invalid-review-shape" ]]; then
+		ok=1
+		details="${details} extra_heading=${reason:-<empty>}"
+	fi
+
+	reason=$(_triage_review_shape_failure_reason \
+		"${valid_review}"$'\n'"Unrequested trailing prose." "issue")
+	if [[ "$reason" != "invalid-review-shape" ]]; then
+		ok=1
+		details="${details} trailing_prose=${reason:-<empty>}"
+	fi
+
+	local over_limit=""
+	over_limit="${valid_review}"$'\n'"$(python3 -c 'print("word " * 801)')"
+	reason=$(_triage_review_shape_failure_reason "$over_limit" "issue")
+	if [[ "$reason" != "review-word-limit" ]]; then
+		ok=1
+		details="${details} word_limit=${reason:-<empty>}"
+	fi
+
+	reason=$(_triage_review_shape_failure_reason "$valid_pr_review" "issue")
+	if [[ "$reason" != "invalid-review-shape" ]]; then
+		ok=1
+		details="${details} pr_as_issue=${reason:-<empty>}"
+	fi
+	reason=$(_triage_review_shape_failure_reason "$valid_review" "pr")
+	if [[ "$reason" != "invalid-review-shape" ]]; then
+		ok=1
+		details="${details} issue_as_pr=${reason:-<empty>}"
+	fi
+
+	print_result "review shape enforces exact bounded recommendation contract" "$ok" "$details"
 	teardown_test_env
 }
 
@@ -333,41 +565,43 @@ test_dispatch_accepts_clean_review_in_json() {
 	# Synthesise the runtime output the stub will return: a clean review
 	# wrapped in OpenCode JSON.
 	local payload="${TEST_ROOT}/payload.json"
-	_make_opencode_json "$payload" "## Review: Approved
-
-### Issue Validation
-
-| Check | Status | Notes |
-|-------|--------|-------|
-| Reproducible | Yes | Documented |
-| Not duplicate | Yes | none found |
-| Actual bug | Yes | confirmed |
-| In scope | Yes | project goal |
-
-**Root Cause:** Off-by-one in loop bound.
-
-### Scope & Recommendation
-
-- **Scope creep:** Low
-- **Complexity tier:** \`tier:simple\`
-- **Decision:** APPROVE
-- **Recommended labels:** bug, tier:simple
-- **Implementation guidance:** Fix the loop bound at line 42."
+	_make_opencode_json "$payload" "$(_valid_review_text)"
 	_install_headless_stub "$payload"
 
-	# Ensure the prompt file exists (the dispatcher rm -f's it).
-	local prompt_file="${TEST_ROOT}/prompt.txt"
-	printf 'test prompt\n' >"$prompt_file"
+	# Use the production managed artifact path so prompt, output, and cleanup
+	# behavior are exercised together.
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "review-test")
+	local prompt_dir="${prompt_file%/*}"
 
 	_dispatch_triage_review_worker \
-		"18400" "owner/repo" "/tmp/repo" "$prompt_file" "hash123" "" \
+		"18400" "owner/repo" "/tmp/repo" "$prompt_file" "hash123" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
 		2>/dev/null
-	if grep -q 'issue comment 18400 --repo owner/repo --body ## Review: Approved' "$GH_CALL_LOG"; then
+	if grep -q '^issue comment 18400 --repo owner/repo --body-file ' "$GH_CALL_LOG"; then
 		print_result "dispatch accepts clean review embedded in OpenCode JSON" 0
 	else
 		print_result "dispatch accepts clean review embedded in OpenCode JSON" 1 \
 			"gh call log (last lines):
 $(tail -5 "$GH_CALL_LOG")"
+	fi
+	if grep -qF '<!-- aidevops:triage-review -->' "$POSTED_BODY_LOG"; then
+		print_result "posted triage review carries trusted cache marker" 0
+	else
+		print_result "posted triage review carries trusted cache marker" 1
+	fi
+	if grep -qF '<!-- aidevops:sig -->' "$POSTED_BODY_LOG" && \
+		grep -q "^${AIDEVOPS_TEMP_DIR}/aidevops-triage-comment\.[A-Za-z0-9]*/comment.md$" \
+			"$EPHEMERAL_BODY_LOG"; then
+		print_result "triage comment uses canonical signature and explicit ephemeral transport" 0
+	else
+		print_result "triage comment uses canonical signature and explicit ephemeral transport" 1
+	fi
+	if [[ ! -e "$prompt_dir" ]]; then
+		print_result "triage dispatch removes managed prompt and output directory" 0
+	else
+		print_result "triage dispatch removes managed prompt and output directory" 1 \
+			"retained=${prompt_dir}"
 	fi
 	if grep -q -- '--role triage' "$HEADLESS_INVOCATION_LOG"; then
 		print_result "triage dispatch uses distinct triage role" 0
@@ -375,11 +609,70 @@ $(tail -5 "$GH_CALL_LOG")"
 		print_result "triage dispatch uses distinct triage role" 1 \
 			"headless invocation log:\n$(cat "$HEADLESS_INVOCATION_LOG")"
 	fi
-	if grep -q 'env HEADLESS=1 WORKER_ISSUE_NUMBER=18400 WORKER_REPO_SLUG=owner/repo WORKER_WORKTREE_PATH=/tmp/repo' "$HEADLESS_INVOCATION_LOG"; then
-		print_result "triage dispatch exports standard worker environment" 0
+	if grep -q 'env HEADLESS=1 WORKER_ISSUE_NUMBER= WORKER_REPO_SLUG= WORKER_WORKTREE_PATH=' "$HEADLESS_INVOCATION_LOG"; then
+		print_result "triage dispatch excludes implementation-worker authority" 0
 	else
-		print_result "triage dispatch exports standard worker environment" 1 \
+		print_result "triage dispatch excludes implementation-worker authority" 1 \
 			"headless invocation log:\n$(cat "$HEADLESS_INVOCATION_LOG")"
+	fi
+	if [[ ! -s "$TRIAGE_LIFECYCLE_LOG" ]]; then
+		print_result "triage dispatch performs no implementation-worker lock lifecycle writes" 0
+	else
+		print_result "triage dispatch performs no implementation-worker lock lifecycle writes" 1 \
+			"lifecycle calls:\n$(cat "$TRIAGE_LIFECYCLE_LOG")"
+	fi
+	teardown_test_env
+}
+
+test_signature_failure_blocks_comment_transport() {
+	setup_test_env
+	load_helpers_under_test
+	export TRIAGE_TEST_SIGNATURE_FAILURE=1
+	local post_status=0
+	_post_triage_review_comment "28705" "owner/repo" "$(_valid_review_text)" \
+		|| post_status=$?
+	unset TRIAGE_TEST_SIGNATURE_FAILURE
+
+	local ok=0
+	local detail=""
+	if [[ "$post_status" -eq 0 ]]; then
+		ok=1
+		detail="signature failure returned success"
+	fi
+	if [[ -s "$GH_CALL_LOG" ]]; then
+		ok=1
+		detail="${detail} GitHub write attempted"
+	fi
+	if compgen -G "${AIDEVOPS_TEMP_DIR}/aidevops-triage-comment.*" >/dev/null; then
+		ok=1
+		detail="${detail} comment artifact retained"
+	fi
+	print_result "signature failure blocks ephemeral comment transport and cleans artifacts" \
+		"$ok" "$detail"
+	teardown_test_env
+}
+
+test_dispatch_rejects_issue_schema_for_pr() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "pr-shape")
+
+	_dispatch_triage_review_worker \
+		"18405" "owner/repo" "/tmp/repo" "$prompt_file" "hash-pr-shape" "" "pr" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
+		2>/dev/null
+
+	local debug_log="${HOME}/.aidevops/logs/triage-review-debug.log"
+	if ! grep -q 'issue comment 18405 --repo owner/repo --body' "$GH_CALL_LOG" && \
+		[[ -f "$debug_log" ]] && grep -q 'failure_reason: invalid-review-shape' "$debug_log"; then
+		print_result "PR dispatch rejects issue-only review schema" 0
+	else
+		print_result "PR dispatch rejects issue-only review schema" 1 \
+			"gh calls:\n$(cat "$GH_CALL_LOG")"
 	fi
 	teardown_test_env
 }
@@ -393,11 +686,24 @@ test_prelaunch_classifier_covers_runtime_guard_modes() {
 	local reason=""
 	for sample in \
 		'[fatal] WORKER_WORKTREE_PATH does not exist: /tmp/missing' \
+		'[ownership-fence] incomplete worker ownership contract for issue #42: repo=owner/repo runner=missing' \
+		'[fatal] worker ownership unavailable: worker_ownership_lost' \
+		'[fatal] runtime ownership fence stopped before model launch' \
 		'[WARN] OpenCode version drift: installed=1.2.3, pin=1.2.4 -- reinstalling' \
 		'[fatal] opencode version mismatch: expected pinned runtime' \
 		'[fatal] launch cwd is deleted and no valid fallback directory is available'; do
 		reason=$(_triage_runtime_infra_failure_reason "$sample")
 		[[ "$reason" == 'prelaunch-contract-failure' ]] || ok=1
+	done
+
+	for reason in github-comment-write-failed triage-runtime-failed \
+		triage-runtime-temp-failed github-current-snapshot-changed-before-post \
+		github-pr-revision-changed-before-post github-public-revision-changed-before-post \
+		triage-evidence-too-large triage-prompt-too-large; do
+		if ! _triage_failure_is_infrastructure "$reason"; then
+			ok=1
+			break
+		fi
 	done
 
 	if [[ "$ok" -eq 0 ]]; then
@@ -425,11 +731,12 @@ More content..."
 	_make_opencode_json "$payload" "$long_body"
 	_install_headless_stub "$payload"
 
-	local prompt_file="${TEST_ROOT}/prompt.txt"
-	printf 'test prompt\n' >"$prompt_file"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "oversized")
 
 	_dispatch_triage_review_worker \
-		"18401" "owner/repo" "/tmp/repo" "$prompt_file" "hash124" "" \
+		"18401" "owner/repo" "/tmp/repo" "$prompt_file" "hash124" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
 		2>/dev/null
 
 	# Must NOT have posted a review comment
@@ -466,11 +773,12 @@ test_dispatch_suppresses_headerless_json_output() {
 	_make_opencode_json "$payload" "I'll analyze this issue. Looking at the context, it seems reasonable. I recommend approving but I don't have a ## Review header here because the model drifted."
 	_install_headless_stub "$payload"
 
-	local prompt_file="${TEST_ROOT}/prompt.txt"
-	printf 'test prompt\n' >"$prompt_file"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "headerless")
 
 	_dispatch_triage_review_worker \
-		"18402" "owner/repo" "/tmp/repo" "$prompt_file" "hash125" "" \
+		"18402" "owner/repo" "/tmp/repo" "$prompt_file" "hash125" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
 		2>/dev/null
 
 	# Must NOT have posted a review comment
@@ -480,12 +788,12 @@ test_dispatch_suppresses_headerless_json_output() {
 		teardown_test_env
 		return 0
 	fi
-	# Debug log should have no-review-header tag
+	# Strict validation rejects a response whose first line is not exact.
 	local debug_log="${HOME}/.aidevops/logs/triage-review-debug.log"
-	if [[ -f "$debug_log" ]] && grep -q 'failure_reason: no-review-header' "$debug_log"; then
-		print_result "dispatch suppresses headerless JSON output with no-review-header tag" 0
+	if [[ -f "$debug_log" ]] && grep -q 'failure_reason: invalid-review-first-line' "$debug_log"; then
+		print_result "dispatch suppresses headerless JSON output with exact-first-line tag" 0
 	else
-		print_result "dispatch suppresses headerless JSON output with no-review-header tag" 1 \
+		print_result "dispatch suppresses headerless JSON output with exact-first-line tag" 1 \
 			"debug log content:
 $(cat "$debug_log" 2>/dev/null || echo "<missing>")"
 	fi
@@ -502,15 +810,17 @@ test_dispatch_suppresses_raw_sandbox_output() {
 [SANDBOX] starting worker with timeout=300s network_blocked=true
 [INFO] Executing opencode run --agent build-plus
 /opt/homebrew/bin/opencode: loading config
+UNTRUSTED_OUTPUT_SENTINEL_28705
 Model response: error reading file
 RAW_EOF
 	_install_headless_stub "$payload"
 
-	local prompt_file="${TEST_ROOT}/prompt.txt"
-	printf 'test prompt\n' >"$prompt_file"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "raw-output")
 
 	_dispatch_triage_review_worker \
-		"18403" "owner/repo" "/tmp/repo" "$prompt_file" "hash126" "" \
+		"18403" "owner/repo" "/tmp/repo" "$prompt_file" "hash126" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
 		2>/dev/null
 
 	# Must NOT have posted a review comment
@@ -528,12 +838,14 @@ RAW_EOF
 			"debug log content:
 $(cat "$debug_log" 2>/dev/null || echo "<missing>")"
 	fi
-	# Debug log sample must be REDACTED, not contain the literal path.
-	if [[ -f "$debug_log" ]] && ! grep -q '/opt/homebrew' "$debug_log"; then
-		print_result "debug log sample has infrastructure paths redacted" 0
+	# Suppression diagnostics retain metadata only; no raw or redacted sample is
+	# durable because arbitrary public output is not safe diagnostic content.
+	if [[ -f "$debug_log" ]] && \
+		! grep -qE '/opt/homebrew|UNTRUSTED_OUTPUT_SENTINEL_28705|\[SANDBOX\]|sample_' "$debug_log"; then
+		print_result "suppression debug log retains metadata without output content" 0
 	else
-		print_result "debug log sample has infrastructure paths redacted" 1 \
-			"debug log still contains /opt/homebrew"
+		print_result "suppression debug log retains metadata without output content" 1 \
+			"debug log retained raw or redacted output"
 	fi
 	teardown_test_env
 }
@@ -543,18 +855,19 @@ test_prelaunch_contract_failure_is_infrastructure() {
 	load_helpers_under_test
 	_install_headless_contract_failure_stub
 
-	local prompt_file="${TEST_ROOT}/prompt.txt"
-	printf 'test prompt\n' >"$prompt_file"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "contract")
 
 	_dispatch_triage_review_worker \
-		"23854" "owner/repo" "/tmp/repo" "$prompt_file" "hash-contract" "" \
+		"23854" "owner/repo" "/tmp/repo" "$prompt_file" "hash-contract" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
 		2>/dev/null
 
 	local debug_log="${HOME}/.aidevops/logs/triage-review-debug.log"
-	if [[ -f "$debug_log" ]] && grep -q 'failure_reason: no-review-header' "$debug_log"; then
-		print_result "prelaunch contract output is still suppressed by safety filter" 0
+	if [[ ! -s "$debug_log" ]] && ! grep -q 'issue comment 23854' "$GH_CALL_LOG"; then
+		print_result "prelaunch contract failure bypasses review parsing and posting" 0
 	else
-		print_result "prelaunch contract output is still suppressed by safety filter" 1 \
+		print_result "prelaunch contract failure bypasses review parsing and posting" 1 \
 			"debug log content:\n$(cat "$debug_log" 2>/dev/null || echo "<missing>")"
 	fi
 
@@ -578,6 +891,233 @@ test_prelaunch_contract_failure_is_infrastructure() {
 		print_result "prelaunch infrastructure failure does not add triage-failed" 1 \
 			"gh calls:\n$(cat "$GH_CALL_LOG")"
 	fi
+	teardown_test_env
+}
+
+test_nonzero_runtime_with_valid_json_blocks_post_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	export TRIAGE_TEST_RUNTIME_EXIT_STATUS=86
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "runtime-failure")
+	local prompt_dir="${prompt_file%/*}"
+
+	_dispatch_triage_review_worker \
+		"28705" "owner/repo" "/tmp/repo" "$prompt_file" \
+		"hash-runtime-failure" "" "issue" "" "$EXPECTED_TEXT_SNAPSHOT_HASH" \
+		"$EXPECTED_PUBLIC_REVISION" \
+		2>/dev/null
+	unset TRIAGE_TEST_RUNTIME_EXIT_STATUS
+
+	local ok=0
+	local detail=""
+	if grep -q 'issue comment 28705' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'triage-runtime-failed' "$LOGFILE"; then
+		ok=1
+		detail="${detail} runtime failure not classified"
+	fi
+	if [[ -e "$prompt_dir" ]]; then
+		ok=1
+		detail="${detail} runtime artifacts retained"
+	fi
+	print_result "non-zero runtime with valid JSON blocks post and cache" "$ok" "$detail"
+	teardown_test_env
+}
+
+test_review_artifact_cleanup_failure_blocks_post_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "cleanup-failure")
+	_triage_cleanup_sensitive_artifact_dir() {
+		local artifact_dir="$1"
+		: "$artifact_dir"
+		return 1
+	}
+
+	local dispatch_status=0
+	_dispatch_triage_review_worker \
+		"28706" "owner/repo" "/tmp/repo" "$prompt_file" \
+		"hash-cleanup-failure" "" "issue" "" "$EXPECTED_TEXT_SNAPSHOT_HASH" \
+		"$EXPECTED_PUBLIC_REVISION" \
+		2>/dev/null || dispatch_status=$?
+
+	local ok=0
+	local detail=""
+	if [[ "$dispatch_status" -ne 0 ]]; then
+		ok=1
+		detail="dispatch_status=${dispatch_status}"
+	fi
+	if grep -q 'issue comment 28706' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'triage-runtime-temp-failed' "$LOGFILE"; then
+		ok=1
+		detail="${detail} cleanup failure not classified"
+	fi
+	print_result "review artifact cleanup failure blocks post and cache" "$ok" "$detail"
+	teardown_test_env
+}
+
+test_pr_revision_change_before_post_blocks_comment_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_pr_review_text)"
+	_install_headless_stub "$payload"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "revision-change")
+	local base_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local reviewed_head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	local current_head="cccccccccccccccccccccccccccccccccccccccc"
+	MOCK_PR_REVISION_PAIR="${base_sha}:${current_head}"
+
+	_dispatch_triage_review_worker \
+		"28707" "owner/repo" "/tmp/repo" "$prompt_file" \
+		"hash-revision-change" "" "pr" "${base_sha}:${reviewed_head}" \
+		"$EXPECTED_TEXT_SNAPSHOT_HASH" "$reviewed_head" \
+		2>/dev/null
+
+	local ok=0
+	local detail=""
+	if grep -q 'issue comment 28707' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'github-pr-revision-changed-before-post' "$LOGFILE"; then
+		ok=1
+		detail="${detail} revision race not classified"
+	fi
+	print_result "PR revision change immediately before post blocks comment and cache" \
+		"$ok" "$detail"
+	teardown_test_env
+}
+
+test_issue_text_change_before_post_blocks_comment_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "text-snapshot-change")
+	MOCK_CURRENT_TEXT_SNAPSHOT_HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	_dispatch_triage_review_worker \
+		"28708" "owner/repo" "/tmp/repo" "$prompt_file" \
+		"hash-text-snapshot-change" "" "issue" "" \
+		"$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" 2>/dev/null
+
+	local ok=0
+	local detail=""
+	if grep -q 'issue comment 28708' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'github-current-snapshot-changed-before-post' "$LOGFILE"; then
+		ok=1
+		detail="${detail} text snapshot race not classified"
+	fi
+	print_result "issue or PR text change immediately before post blocks comment and cache" \
+		"$ok" "$detail"
+	teardown_test_env
+}
+
+test_issue_public_revision_change_before_post_blocks_comment_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "public-revision-change")
+	MOCK_CURRENT_PUBLIC_REVISION="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	_dispatch_triage_review_worker \
+		"28709" "owner/repo" "/tmp/repo" "$prompt_file" \
+		"hash-public-revision-change" "" "issue" "" \
+		"$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" 2>/dev/null
+
+	local ok=0
+	local detail=""
+	if grep -q 'issue comment 28709' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'github-public-revision-changed-before-post' "$LOGFILE"; then
+		ok=1
+		detail="${detail} public revision race not classified"
+	fi
+	print_result "issue evidence revision change immediately before post blocks comment and cache" \
+		"$ok" "$detail"
+	teardown_test_env
+	return 0
+}
+
+test_comment_write_failure_is_infrastructure() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	MOCK_COMMENT_WRITE_FAILURE=1
+
+	local prompt_file=""
+	prompt_file=$(_make_managed_prompt_file "comment-write")
+	_dispatch_triage_review_worker \
+		"28705" "owner/repo" "/tmp/repo" "$prompt_file" "hash-comment-write" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" \
+		2>/dev/null
+
+	local ok=0
+	local detail=""
+	if ! grep -q 'github-comment-write-failed' "$LOGFILE"; then
+		ok=1
+		detail="infrastructure classification missing"
+	fi
+	if ! grep -q -- '--remove-label triage-failed' "$GH_CALL_LOG"; then
+		ok=1
+		detail="${detail} stale triage-failed not removed"
+	fi
+	if grep -q -- '--add-label triage-failed' "$GH_CALL_LOG"; then
+		ok=1
+		detail="${detail} triage-failed added"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} retry/cache budget consumed"
+	fi
+	print_result "comment write failure is infrastructure and clears stale triage state" "$ok" "$detail"
 	teardown_test_env
 }
 
@@ -613,13 +1153,21 @@ main() {
 	test_extract_claude_stream_json_returns_text
 	test_extract_plain_text_fallback
 	test_extract_concats_multiple_text_events
-	test_redact_infra_markers_masks_sandbox_lines
+	test_review_shape_enforces_exact_contract
 	test_dispatch_accepts_clean_review_in_json
+	test_signature_failure_blocks_comment_transport
+	test_dispatch_rejects_issue_schema_for_pr
 	test_dispatch_suppresses_oversized_output
 	test_dispatch_suppresses_headerless_json_output
 	test_dispatch_suppresses_raw_sandbox_output
 	test_prelaunch_classifier_covers_runtime_guard_modes
 	test_prelaunch_contract_failure_is_infrastructure
+	test_nonzero_runtime_with_valid_json_blocks_post_and_cache
+	test_review_artifact_cleanup_failure_blocks_post_and_cache
+	test_pr_revision_change_before_post_blocks_comment_and_cache
+	test_issue_text_change_before_post_blocks_comment_and_cache
+	test_issue_public_revision_change_before_post_blocks_comment_and_cache
+	test_comment_write_failure_is_infrastructure
 	test_post_escalation_handles_oversized_reason
 
 	echo ""

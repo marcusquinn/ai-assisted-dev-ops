@@ -212,6 +212,39 @@ assert_signature_only_body_file_rejected_before_gh() {
 	return 0
 }
 
+assert_ephemeral_comment_uses_exact_shim_without_rest_retry() {
+	local body_dir="${TEST_ROOT}/aidevops-triage-comment.Ab12Cd"
+	local body_file="${body_dir}/comment.md"
+	mkdir -p "$body_dir"
+	printf 'Validated review\n\n<!-- aidevops:sig -->\n---\nexisting\n' >"$body_file"
+	local exact_command=""
+	local rest_calls=0
+	_gh_with_timeout() {
+		local op_class="$1"
+		shift
+		: "$op_class"
+		exact_command="${1:-}"
+		return 1
+	}
+	_rest_should_fallback() {
+		rest_calls=$((rest_calls + 1))
+		return 0
+	}
+
+	local call_status=0
+	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$body_file" \
+		gh_issue_comment 1 --repo o/r --body-file "$body_file" \
+		>/dev/null 2>&1 || call_status=$?
+	if [[ "$call_status" -ne 0 && "$rest_calls" -eq 0 && \
+		"$exact_command" == "${TEST_SCRIPTS_DIR}/gh" && -f "$body_file" ]]; then
+		print_result "ephemeral comment requires exact shim and disables REST retry" 0
+	else
+		print_result "ephemeral comment requires exact shim and disables REST retry" 1 \
+			"status=${call_status}, rest_calls=${rest_calls}, command=${exact_command}, body_exists=$([[ -f "$body_file" ]] && printf yes || printf no)"
+	fi
+	return 0
+}
+
 assert_body_file_signed "gh_create_pr --body-file signs temp body" "pr-create"
 assert_body_file_signed "gh_pr_comment --body-file signs temp body" "pr-comment"
 assert_existing_signature_not_duplicated
@@ -219,6 +252,7 @@ assert_signed_relative_body_file_normalized
 assert_missing_body_file_rejected_before_gh
 assert_signature_only_body_rejected_before_gh
 assert_signature_only_body_file_rejected_before_gh
+assert_ephemeral_comment_uses_exact_shim_without_rest_retry
 
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

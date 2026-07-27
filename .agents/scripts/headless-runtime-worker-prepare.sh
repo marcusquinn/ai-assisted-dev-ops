@@ -22,6 +22,7 @@
 # Include guard
 [[ -n "${_HEADLESS_RUNTIME_WORKER_PREPARE_LIB_LOADED:-}" ]] && return 0
 _HEADLESS_RUNTIME_WORKER_PREPARE_LIB_LOADED=1
+: "${_HRW_ROLE_WORKER:=worker}"
 
 # Defensive SCRIPT_DIR fallback (test harnesses may not set it)
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -146,9 +147,80 @@ _hrw_prepare_private_workload() {
 	return 0
 }
 
+#######################################
+# Finalize a non-worker runtime without touching implementation-worker claims
+# or worktree ownership. Used by both normal completion and the EXIT trap.
+#
+# Arguments:
+#   $1 - session key
+#######################################
+_hrw_cleanup_non_worker_run() {
+	local session_key="$1"
+	local cleanup_status=0
+
+	_release_session_lock "$session_key"
+	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
+		_cleanup_headless_runtime_temp_paths || cleanup_status=$?
+	fi
+	aidevops_runtime_bundle_lease_release || print_warning "Failed to release the runtime bundle lease"
+	unset _WORKER_WORKTREE_PATH WORKER_TARGET_BRANCH 2>/dev/null || true
+	trap - EXIT
+	return "$cleanup_status"
+}
+
+_hrw_non_worker_exit_trap() {
+	local session_key="$1"
+	local cleanup_status=0
+	_hrw_cleanup_non_worker_run "$session_key" || cleanup_status=$?
+	if [[ "$cleanup_status" -ne 0 ]]; then
+		print_warning "[lifecycle] non_worker_runtime_temp_cleanup_failed session=${session_key} guardian=retained"
+		trap - EXIT
+		exit 86
+	fi
+	return 0
+}
+
+#######################################
+# Remove implementation-worker authority from non-worker roles or load the
+# worker-only pending permission request for an implementation worker.
+#
+# Arguments:
+#   $1 - runtime role
+#   $2 - work directory
+#######################################
+_hrw_prepare_role_context() {
+	local role="$1"
+	local work_dir="$2"
+
+	if [[ "$role" != "$_HRW_ROLE_WORKER" ]]; then
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH \
+			WORKER_GITHUB_LOGIN WORKER_SESSION_KEY AIDEVOPS_WORKER_GITHUB_LOGIN \
+			DISPATCH_REPO_SLUG AIDEVOPS_DISPATCH_LEASE_TOKEN \
+			AIDEVOPS_DISPATCH_LEASE_DEVICE AIDEVOPS_ATTEMPT_ID \
+			AIDEVOPS_PARENT_WORKER_ID AIDEVOPS_ROOT_WORKER_ID AIDEVOPS_WORKER_ID \
+			AIDEVOPS_PERMISSION_GRANT_FILE AIDEVOPS_PERMISSION_REQUEST_ID \
+			AIDEVOPS_WORKTREE_OWNER_PID AIDEVOPS_WORKTREE_OWNER_SESSION \
+			AIDEVOPS_WORKTREE_OWNER_TASK AIDEVOPS_WORKTREE_OWNER_PATH \
+			AIDEVOPS_WORKER_PREWARM_DIR \
+			2>/dev/null || true
+		return 0
+	fi
+
+	local permission_pending_file=""
+	permission_pending_file=$(_hrw_permission_pending_path "$work_dir" || true)
+	if [[ -f "$permission_pending_file" ]]; then
+		export AIDEVOPS_PERMISSION_REQUEST_ID
+		AIDEVOPS_PERMISSION_REQUEST_ID=$(jq -r '.request_id // ""' "$permission_pending_file" 2>/dev/null || true)
+	else
+		unset AIDEVOPS_PERMISSION_REQUEST_ID
+	fi
+	return 0
+}
+
 _cmd_run_prepare() {
 	local session_key="$1"
 	local work_dir="$2"
+	local role="${3:-$_HRW_ROLE_WORKER}"
 	_WORKER_RUNTIME_LAUNCH_STARTED=0
 	unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 	if _headless_private_workload_enabled; then
@@ -159,39 +231,31 @@ _cmd_run_prepare() {
 		return "$private_prepare_status"
 	fi
 
+	_hrw_prepare_role_context "$role" "$work_dir"
+
 	# t2983 Fix C: Worker-role guard — WORKER_WORKTREE_PATH must be set.
 	# After GH#21353 (Fix A), the dispatcher never launches a worker when
 	# pre-creation fails. If WORKER_WORKTREE_PATH is somehow unset here despite
 	# WORKER_ISSUE_NUMBER being set, a dispatcher bug bypassed pre-creation.
 	# Abort immediately rather than proceeding in the canonical repo on main.
-	if [[ -n "${WORKER_ISSUE_NUMBER:-}" && -z "${WORKER_WORKTREE_PATH:-}" ]]; then
+	if [[ "$role" == "$_HRW_ROLE_WORKER" && -n "${WORKER_ISSUE_NUMBER:-}" && -z "${WORKER_WORKTREE_PATH:-}" ]]; then
 		printf '[fatal] WORKER_WORKTREE_PATH unset — pre-creation skipped or failed silently; aborting per t2983 Fix C\n' >&2
 		return 1
 	fi
-	local permission_pending_file=""
-	permission_pending_file=$(_hrw_permission_pending_path "$work_dir" || true)
-	if [[ -f "$permission_pending_file" ]]; then
-		export AIDEVOPS_PERMISSION_REQUEST_ID
-		AIDEVOPS_PERMISSION_REQUEST_ID=$(jq -r '.request_id // ""' "$permission_pending_file" 2>/dev/null || true)
-	else
-		unset AIDEVOPS_PERMISSION_REQUEST_ID
-	fi
-
-	# GH#20542: Export DISPATCH_REPO_SLUG BEFORE arming the EXIT trap so
-	# _release_dispatch_claim always has a non-empty slug, even when the
-	# process exits between prepare and _execute_run_attempt (e.g. under
-	# set -euo pipefail). Role-agnostic: the git extraction is cheap and
-	# _release_dispatch_claim silently no-ops when issue_number is absent.
-	local _prepare_repo_slug=""
-	_prepare_repo_slug=$(git -C "$work_dir" remote get-url origin 2>/dev/null |
-		sed -E 's|.*github\.com[:/]||; s|\.git$||' || true)
-	if [[ -n "$_prepare_repo_slug" ]]; then
-		export DISPATCH_REPO_SLUG="$_prepare_repo_slug"
-	fi
-	if [[ -n "${WORKER_ISSUE_NUMBER:-}" && -n "${DISPATCH_REPO_SLUG:-}" ]]; then
-		local permission_grant_slug=""
-		permission_grant_slug=$(printf '%s' "$DISPATCH_REPO_SLUG" | tr '/:' '__')
-		export AIDEVOPS_PERMISSION_GRANT_FILE="${HOME}/.aidevops/permission-grants/${permission_grant_slug}/${WORKER_ISSUE_NUMBER}.json"
+	if [[ "$role" == "$_HRW_ROLE_WORKER" ]]; then
+		# GH#20542: Export DISPATCH_REPO_SLUG before arming the worker EXIT
+		# trap so claim release always has the repository identity available.
+		local _prepare_repo_slug=""
+		_prepare_repo_slug=$(git -C "$work_dir" remote get-url origin 2>/dev/null |
+			sed -E 's|.*github\.com[:/]||; s|\.git$||' || true)
+		if [[ -n "$_prepare_repo_slug" ]]; then
+			export DISPATCH_REPO_SLUG="$_prepare_repo_slug"
+		fi
+		if [[ -n "${WORKER_ISSUE_NUMBER:-}" && -n "${DISPATCH_REPO_SLUG:-}" ]]; then
+			local permission_grant_slug=""
+			permission_grant_slug=$(printf '%s' "$DISPATCH_REPO_SLUG" | tr '/:' '__')
+			export AIDEVOPS_PERMISSION_GRANT_FILE="${HOME}/.aidevops/permission-grants/${permission_grant_slug}/${WORKER_ISSUE_NUMBER}.json"
+		fi
 	fi
 
 	# GH#6538: Acquire a session-key lock to prevent duplicate workers.
@@ -199,30 +263,40 @@ _cmd_run_prepare() {
 		return 2
 	fi
 	# shellcheck disable=SC2064
-	trap "_exit_trap_handler '$session_key'; aidevops_runtime_bundle_lease_release" EXIT
-	if ! _hrw_verify_dispatch_ownership; then
+	if [[ "$role" == "$_HRW_ROLE_WORKER" ]]; then
+		trap "_exit_trap_handler '$session_key'; aidevops_runtime_bundle_lease_release" EXIT
+	else
+		trap "_hrw_non_worker_exit_trap '$session_key'" EXIT
+	fi
+	if [[ "$role" == "$_HRW_ROLE_WORKER" ]] && ! _hrw_verify_dispatch_ownership; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
 		return 1
 	fi
 
 	_WORKER_START_EPOCH_MS=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
-	export _WORKER_WORKTREE_PATH="$work_dir"
-	WORKER_TARGET_BRANCH=$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-	export WORKER_TARGET_BRANCH
-	_hrw_claim_worker_worktree "$session_key" "$work_dir" || return 1
+	if [[ "$role" == "$_HRW_ROLE_WORKER" ]]; then
+		export _WORKER_WORKTREE_PATH="$work_dir"
+		WORKER_TARGET_BRANCH=$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+		export WORKER_TARGET_BRANCH
+		_hrw_claim_worker_worktree "$session_key" "$work_dir" || return 1
+	else
+		unset _WORKER_WORKTREE_PATH WORKER_TARGET_BRANCH 2>/dev/null || true
+	fi
 
-	_register_dispatch_ledger "$session_key" "$work_dir"
-	if [[ -n "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" && -n "${WORKER_ISSUE_NUMBER:-}" && -n "${DISPATCH_REPO_SLUG:-}" ]]; then
-		if ! "${SCRIPT_DIR}/dispatch-ledger-helper.sh" ready --session-key "$session_key" \
-			--lease-token "$AIDEVOPS_DISPATCH_LEASE_TOKEN" 2>/dev/null; then
-			_WORKER_PRELAUNCH_FAILURE_REASON="worker_ledger_ready_failed"
-			return 1
-		fi
-		if ! "${SCRIPT_DIR}/dispatch-claim-helper.sh" transition ready "$WORKER_ISSUE_NUMBER" \
-			"$DISPATCH_REPO_SLUG" "$AIDEVOPS_DISPATCH_LEASE_TOKEN" "$session_key" \
-			"${AIDEVOPS_DISPATCH_READY_LEASE_TTL:-7200}" 2>/dev/null; then
-			_WORKER_PRELAUNCH_FAILURE_REASON="worker_claim_ready_transition_failed"
-			return 1
+	if [[ "$role" == "$_HRW_ROLE_WORKER" ]]; then
+		_register_dispatch_ledger "$session_key" "$work_dir"
+		if [[ -n "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" && -n "${WORKER_ISSUE_NUMBER:-}" && -n "${DISPATCH_REPO_SLUG:-}" ]]; then
+			if ! "${SCRIPT_DIR}/dispatch-ledger-helper.sh" ready --session-key "$session_key" \
+				--lease-token "$AIDEVOPS_DISPATCH_LEASE_TOKEN" 2>/dev/null; then
+				_WORKER_PRELAUNCH_FAILURE_REASON="worker_ledger_ready_failed"
+				return 1
+			fi
+			if ! "${SCRIPT_DIR}/dispatch-claim-helper.sh" transition ready "$WORKER_ISSUE_NUMBER" \
+				"$DISPATCH_REPO_SLUG" "$AIDEVOPS_DISPATCH_LEASE_TOKEN" "$session_key" \
+				"${AIDEVOPS_DISPATCH_READY_LEASE_TTL:-7200}" 2>/dev/null; then
+				_WORKER_PRELAUNCH_FAILURE_REASON="worker_claim_ready_transition_failed"
+				return 1
+			fi
 		fi
 	fi
 	return 0

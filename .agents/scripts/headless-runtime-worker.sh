@@ -1830,10 +1830,16 @@ _cmd_run_finish() {
 	local external_terminal_confirmed="${4:-0}"
 	local finish_status=0
 	if _headless_private_workload_enabled; then
-		_private_workload_exit_trap "$session_key" "${_PRIVATE_WORKLOAD_LOCK_KEY:-}"
+		_private_workload_exit_trap "$session_key" "${_PRIVATE_WORKLOAD_LOCK_KEY:-}" \
+			|| finish_status=$?
 		_WORKER_WORKTREE_PATH=""
 		WORKER_TARGET_BRANCH=""
-		return 0
+		return "$finish_status"
+	fi
+	local runtime_role="${_CMD_RUN_ROLE:-worker}"
+	if [[ "$runtime_role" != "worker" ]]; then
+		_hrw_cleanup_non_worker_run "$session_key"
+		return $?
 	fi
 	_HRW_FINAL_RUNTIME_EVENT="worker.completed"
 	_HRW_FINAL_RUNTIME_STATUS="${_run_result_label:-$ledger_status}"

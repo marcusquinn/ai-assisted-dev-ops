@@ -70,6 +70,7 @@ readonly METRICS_FILE="${METRICS_DIR}/headless-runtime-metrics.jsonl"
 readonly RESOURCE_METRICS_HELPER="${SCRIPT_DIR}/resource-metrics-helper.sh"
 readonly RESOURCE_METRICS_FILE="${METRICS_DIR}/resource-metrics.jsonl"
 readonly PRIVATE_OUTPUT_FILTER="${SCRIPT_DIR}/headless-private-output-filter.py"
+readonly HEADLESS_ROLE_TRIAGE="triage"
 
 # Launch preparation helpers (prompt transport, argument parsing, worker-env
 # validation, deleted-cwd recovery, and recoverable OpenCode startup errors).
@@ -114,6 +115,49 @@ HEADLESS_ACTIVITY_TIMEOUT_SECONDS="${HEADLESS_ACTIVITY_TIMEOUT_SECONDS:-600}"
 # Runtime invocation — OpenCode and Claude CLI
 # =============================================================================
 
+# Finalize one isolated OpenCode data directory. Public triage and protected
+# private workloads discard the complete session graph; ordinary workers keep
+# the established verified merge/recovery lifecycle.
+_finalize_isolated_runtime_data() {
+	local isolated_data_dir="$1"
+	local runtime_role="$2"
+	local ephemeral_run=0
+	[[ -n "$isolated_data_dir" && -d "$isolated_data_dir" ]] || return 0
+	if _headless_run_is_ephemeral "$runtime_role"; then
+		ephemeral_run=1
+		print_info "[lifecycle] ephemeral_db_discarded role=$runtime_role pid=$$"
+	else
+		if ! _replay_preserved_worker_dbs; then
+			print_warning "[lifecycle] db_merge_recovery_replay_incomplete pid=$$"
+		fi
+		if _merge_worker_db "$isolated_data_dir"; then
+			print_info "[lifecycle] db_merged dir=$isolated_data_dir pid=$$"
+		else
+			print_warning "[lifecycle] db_merge_failed dir=$isolated_data_dir pid=$$"
+			if ! _preserve_failed_worker_db "$isolated_data_dir"; then
+				print_warning "[lifecycle] db_merge_recovery_failed dir=$isolated_data_dir pid=$$"
+			fi
+		fi
+	fi
+	local cleanup_failed=0
+	rm -rf "$isolated_data_dir" 2>/dev/null || cleanup_failed=1
+	[[ ! -e "$isolated_data_dir" ]] || cleanup_failed=1
+	unset XDG_DATA_HOME
+	if [[ "$ephemeral_run" -eq 1 ]]; then
+		unset XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME
+		unset OPENCODE_DISABLE_DEFAULT_PLUGINS
+		unset OPENCODE_DISABLE_EXTERNAL_SKILLS
+		unset OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
+	fi
+	_WORKER_ISOLATED_DB_PATH=""
+	if [[ "$cleanup_failed" -ne 0 ]]; then
+		print_warning "[lifecycle] db_cleanup_failed dir=$isolated_data_dir pid=$$ guardian=retained"
+		return 1
+	fi
+	print_info "[lifecycle] db_cleanup dir=$isolated_data_dir pid=$$"
+	return 0
+}
+
 # _invoke_opencode: run the opencode command (with or without sandbox) and capture output.
 # Args: output_file exit_code_file cmd_args (null-delimited, read from stdin via process sub)
 # Caller passes the cmd array elements as positional args after the two file args.
@@ -132,6 +176,8 @@ _invoke_opencode() {
 	shift 2
 	local -a cmd=("$@")
 	local private_workload=0
+	local runtime_role="${_invoke_role:-worker}"
+	local public_triage=0
 	if _headless_private_workload_enabled; then
 		private_workload=1
 		if [[ ! -f "$PRIVATE_OUTPUT_FILTER" ]] || ! command -v python3 >/dev/null 2>&1; then
@@ -145,7 +191,9 @@ _invoke_opencode() {
 			return 0
 		fi
 	fi
-
+	if [[ "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" && "$private_workload" -ne 1 ]]; then
+		public_triage=1
+	fi
 	# t3050: expose exit_code_file to the EXIT trap so it can read the
 	# .wait_status sentinel persisted below. Pattern matches the existing
 	# _WORKER_ISOLATED_DB_PATH global at line ~515. Cleared at function
@@ -163,25 +211,45 @@ _invoke_opencode() {
 	#
 	# IMPORTANT: XDG_DATA_HOME redirection moves the ENTIRE opencode data dir,
 	# including the session database. Normal workers merge their isolated session
-	# DB after exit. Private workloads discard it instead.
+	# DB after exit. Public triage and private workloads discard it instead.
 	#
 	# The isolated dir is per-PID and cleaned up after the worker exits.
 	local isolated_data_dir=""
+	local isolated_home_dir=""
+	local isolated_data_precreated=0
 	if [[ "${AIDEVOPS_HEADLESS_AUTH_ISOLATION:-1}" == "1" ]]; then
 		# t2758: Reuse pre-warmed isolated DB dir if the dispatcher already ran
 		# opencode --version against it to trigger migration + skill-dedup.
 		# Falls back to a fresh mktemp when pre-warming was skipped or failed.
 		if [[ -n "${AIDEVOPS_WORKER_PREWARM_DIR:-}" && -d "${AIDEVOPS_WORKER_PREWARM_DIR:-}" ]]; then
 			isolated_data_dir="$AIDEVOPS_WORKER_PREWARM_DIR"
+			isolated_data_precreated=1
 			print_info "[lifecycle] opencode_warm_done dir=$isolated_data_dir (reusing pre-warmed dir) pid=$$"
 		else
-			isolated_data_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-worker-auth.XXXXXX")
+			isolated_data_dir=$(_create_headless_runtime_temp_dir "auth")
 		fi
-		_register_headless_runtime_temp_path "$isolated_data_dir"
+		if [[ -z "$isolated_data_dir" ]]; then
+			print_error "Headless auth isolation could not create crash-resilient storage"
+			printf '%s' "86" >"$exit_code_file"
+			return 0
+		fi
+		if [[ "$isolated_data_precreated" -eq 1 ]]; then
+			_register_headless_runtime_temp_path "$isolated_data_dir"
+		elif ! _register_headless_runtime_sensitive_temp_path "$isolated_data_dir"; then
+			print_error "Headless auth isolation could not register crash-resilient cleanup"
+			printf '%s' "86" >"$exit_code_file"
+			return 0
+		fi
 		mkdir -p "${isolated_data_dir}/opencode"
 		# Copy the current auth.json so the worker has valid tokens at startup
 		if [[ -f "$OPENCODE_AUTH_FILE" ]]; then
-			copy_scoped_opencode_auth "$OPENCODE_AUTH_FILE" "${isolated_data_dir}/opencode/auth.json" "${_invoke_provider:-}"
+			if ! copy_scoped_opencode_auth "$OPENCODE_AUTH_FILE" \
+				"${isolated_data_dir}/opencode/auth.json" "${_invoke_provider:-}" \
+				"$([[ "$public_triage" -eq 1 ]] && printf true || printf false)"; then
+				print_error "Public triage could not isolate the selected provider credential"
+				printf '%s' "86" >"$exit_code_file"
+				return 0
+			fi
 		fi
 		# GH#17549: Each worker gets its OWN SQLite DB (no shared OPENCODE_DB).
 		# Previously we set OPENCODE_DB back to the shared DB for session stats,
@@ -189,6 +257,17 @@ _invoke_opencode() {
 		# silently kills streaming connections — workers stall at step_start
 		# with zero API errors. Session stats are sacrificed for reliability.
 		export XDG_DATA_HOME="$isolated_data_dir"
+		if [[ "$public_triage" -eq 1 ]]; then
+			isolated_home_dir="${isolated_data_dir}/home"
+			export XDG_CACHE_HOME="${isolated_data_dir}/cache"
+			export XDG_CONFIG_HOME="${isolated_data_dir}/config"
+			export XDG_STATE_HOME="${isolated_data_dir}/state"
+			export OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+			export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+			export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+			mkdir -p "$isolated_home_dir" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+			chmod 700 "$isolated_home_dir" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+		fi
 		if [[ "$private_workload" -eq 1 ]]; then
 			export XDG_CACHE_HOME="${isolated_data_dir}/cache"
 			export XDG_CONFIG_HOME="${isolated_data_dir}/config"
@@ -238,6 +317,18 @@ _invoke_opencode() {
 		set +e
 		local egress_mode="${AIDEVOPS_WORKER_EGRESS_MODE:-auto}"
 		local egress_worker_id="${AIDEVOPS_WORKER_ID:-${_invoke_session_key:-headless}}"
+		local egress_policy_profile="default"
+		local -a sandbox_home_args=()
+		if [[ "$public_triage" -eq 1 ]]; then
+			if [[ -z "${_invoke_provider:-}" || -z "$isolated_home_dir" ]]; then
+				print_error "Public triage requires a selected provider and isolated HOME"
+				printf '%s' "126" >"$exit_code_file"
+				exit 126
+			fi
+			egress_mode="required"
+			egress_policy_profile="provider:${_invoke_provider}"
+			sandbox_home_args=(--home-dir "$isolated_home_dir")
+		fi
 		# Inject --print-logs for headless workers so opencode's internal Go logs
 		# (API errors, model resolution, DB writes) appear in the worker log.
 		# This is critical for diagnosing silent exits — the JSON event stream
@@ -258,7 +349,7 @@ _invoke_opencode() {
 		fi
 		if [[ -x "$SANDBOX_EXEC_HELPER" && "${AIDEVOPS_HEADLESS_SANDBOX_DISABLED:-}" != "1" ]]; then
 			local passthrough_csv
-			passthrough_csv="$(build_sandbox_passthrough_csv "${_invoke_provider:-}")"
+			passthrough_csv="$(build_sandbox_passthrough_csv "${_invoke_provider:-}" "$runtime_role")"
 			# --stream-stdout: let child stdout flow through the capture pipeline
 			# so the activity watchdog can monitor output in real-time
 			# (GH#15180 bug #4). Without this, the sandbox captures stdout to
@@ -266,7 +357,7 @@ _invoke_opencode() {
 			# and kills every sandboxed worker at ~93s.
 			if [[ -n "$passthrough_csv" ]]; then
 				if [[ "$private_workload" -eq 1 ]]; then
-					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --private-output --egress-mode "$egress_mode" --worker-id "$egress_worker_id" --passthrough "$passthrough_csv" -- "${_oc_cmd[@]}" 2>&1 | python3 "$PRIVATE_OUTPUT_FILTER" >"$output_file" 2>/dev/null
+					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --private-output --egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id" "${sandbox_home_args[@]}" --passthrough "$passthrough_csv" -- "${_oc_cmd[@]}" 2>&1 | python3 "$PRIVATE_OUTPUT_FILTER" >"$output_file" 2>/dev/null
 					local -a private_pipeline_status=("${PIPESTATUS[@]}")
 					if [[ "${private_pipeline_status[1]:-1}" -ne 0 ]]; then
 						printf '%s' "86" >"$exit_code_file"
@@ -274,12 +365,12 @@ _invoke_opencode() {
 						printf '%s' "${private_pipeline_status[0]:-1}" >"$exit_code_file"
 					fi
 				else
-					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --stream-stdout --egress-mode "$egress_mode" --worker-id "$egress_worker_id" --passthrough "$passthrough_csv" -- "${_oc_cmd[@]}" 2>&1 | tee "$output_file"
+					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --stream-stdout --egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id" "${sandbox_home_args[@]}" --passthrough "$passthrough_csv" -- "${_oc_cmd[@]}" 2>&1 | tee "$output_file"
 					printf '%s' "${PIPESTATUS[0]}" >"$exit_code_file"
 				fi
 			else
 				if [[ "$private_workload" -eq 1 ]]; then
-					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --private-output --egress-mode "$egress_mode" --worker-id "$egress_worker_id" -- "${_oc_cmd[@]}" 2>&1 | python3 "$PRIVATE_OUTPUT_FILTER" >"$output_file" 2>/dev/null
+					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --private-output --egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id" "${sandbox_home_args[@]}" -- "${_oc_cmd[@]}" 2>&1 | python3 "$PRIVATE_OUTPUT_FILTER" >"$output_file" 2>/dev/null
 					local -a private_pipeline_status=("${PIPESTATUS[@]}")
 					if [[ "${private_pipeline_status[1]:-1}" -ne 0 ]]; then
 						printf '%s' "86" >"$exit_code_file"
@@ -287,7 +378,7 @@ _invoke_opencode() {
 						printf '%s' "${private_pipeline_status[0]:-1}" >"$exit_code_file"
 					fi
 				else
-					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --stream-stdout --egress-mode "$egress_mode" --worker-id "$egress_worker_id" -- "${_oc_cmd[@]}" 2>&1 | tee "$output_file"
+					run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io --stream-stdout --egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id" "${sandbox_home_args[@]}" -- "${_oc_cmd[@]}" 2>&1 | tee "$output_file"
 					printf '%s' "${PIPESTATUS[0]}" >"$exit_code_file"
 				fi
 			fi
@@ -410,35 +501,16 @@ _invoke_opencode() {
 		wait "$_rl_monitor_pid" 2>/dev/null || true
 	fi
 
-	# Merge worker session data back to shared DB, then clean up.
-	# Worker is done — no contention, single-writer merge is safe.
+	# Merge normal worker session data back to the shared DB, then clean up.
+	# Public triage and private workloads are ephemeral trust boundaries: discard
+	# their complete isolated session graph instead of retaining transcripts.
 	if [[ -n "$isolated_data_dir" && -d "$isolated_data_dir" ]]; then
-		if [[ "$private_workload" -eq 1 ]]; then
-			print_info "[lifecycle] private_db_discarded dir=$isolated_data_dir pid=$$"
-		else
-			if ! _replay_preserved_worker_dbs; then
-				print_warning "[lifecycle] db_merge_recovery_replay_incomplete pid=$$"
-			fi
-			if _merge_worker_db "$isolated_data_dir"; then
-				print_info "[lifecycle] db_merged dir=$isolated_data_dir pid=$$"
-			else
-				print_warning "[lifecycle] db_merge_failed dir=$isolated_data_dir pid=$$"
-				if ! _preserve_failed_worker_db "$isolated_data_dir"; then
-					print_warning "[lifecycle] db_merge_recovery_failed dir=$isolated_data_dir pid=$$"
-				fi
+		if ! _finalize_isolated_runtime_data "$isolated_data_dir" "$runtime_role"; then
+			print_error "Isolated runtime data cleanup failed for role=$runtime_role"
+			if _headless_run_is_ephemeral "$runtime_role"; then
+				printf '%s' "86" >"$exit_code_file"
 			fi
 		fi
-		rm -rf "$isolated_data_dir" 2>/dev/null || true
-		unset XDG_DATA_HOME
-		if [[ "$private_workload" -eq 1 ]]; then
-			unset XDG_CACHE_HOME
-			unset XDG_CONFIG_HOME
-			unset XDG_STATE_HOME
-		fi
-		# GH#20564: Clear isolated DB path after cleanup so exit trap
-		# classifier falls back to shared DB if EXIT fires post-cleanup.
-		_WORKER_ISOLATED_DB_PATH=""
-		print_info "[lifecycle] db_cleanup dir=$isolated_data_dir pid=$$"
 	fi
 
 	# t3050: Clear exit_code_file path so a post-cleanup EXIT trap firing
@@ -464,7 +536,8 @@ _store_headless_session_if_allowed() {
 	local session_key="$2"
 	local session_id="$3"
 	local selected_model="$4"
-	if _headless_private_workload_enabled; then
+	local role="$5"
+	if _headless_run_is_ephemeral "$role"; then
 		return 0
 	fi
 	store_session_id "$provider" "$session_key" "$session_id" "$selected_model"
@@ -482,8 +555,9 @@ _private_output_has_task_complete() {
 _private_workload_exit_trap() {
 	local session_key="$1"
 	local workload_lock_key="${2:-}"
+	local cleanup_status=0
 	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
-		_cleanup_headless_runtime_temp_paths || true
+		_cleanup_headless_runtime_temp_paths || cleanup_status=$?
 	fi
 	_release_session_lock "$session_key" || true
 	if [[ -n "$workload_lock_key" ]]; then
@@ -494,7 +568,7 @@ _private_workload_exit_trap() {
 		aidevops_runtime_bundle_lease_release || true
 	fi
 	trap - EXIT
-	return 0
+	return "$cleanup_status"
 }
 
 _handle_run_result() {
@@ -504,6 +578,10 @@ _handle_run_result() {
 	local provider="$4"
 	local session_key="$5"
 	local selected_model="$6"
+	local suppress_persistent_output=0
+	if _headless_run_is_ephemeral "$role"; then
+		suppress_persistent_output=1
+	fi
 	if [[ ! "${exit_code:-}" =~ ^[0-9]+$ ]]; then
 		exit_code=1
 	fi
@@ -526,7 +604,7 @@ _handle_run_result() {
 	if [[ "$role" == "worker" && -n "${_run_permission_request_file:-}" && \
 		-f "${_run_permission_request_file}" ]]; then
 		if [[ -n "$discovered_session" ]]; then
-			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model"
+			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
 		fi
 		_run_result_label="permission_required"
 		_run_failure_reason="$_run_result_label"
@@ -555,8 +633,13 @@ _handle_run_result() {
 			# retention-capped diagnostics dir lets operators actually diagnose
 			# the residual 30s no_activity failures that the t2116-session
 			# plist-reload fix didn't fully resolve.
-			_preserve_no_activity_output "$output_file" "$session_key" "$selected_model"
-			print_warning "$selected_model returned exit 0 without any model activity (no backoff recorded — forensic copy preserved via t2119)"
+			if [[ "$suppress_persistent_output" -eq 1 ]]; then
+				rm -f "$output_file" 2>/dev/null || true
+				print_warning "$selected_model returned exit 0 without any model activity (ephemeral output discarded)"
+			else
+				_preserve_no_activity_output "$output_file" "$session_key" "$selected_model"
+				print_warning "$selected_model returned exit 0 without any model activity (no backoff recorded — forensic copy preserved via t2119)"
+			fi
 			return 75
 		fi
 		if _headless_private_workload_enabled && ! _private_output_has_task_complete "$output_file"; then
@@ -568,7 +651,7 @@ _handle_run_result() {
 		fi
 		# Store session ID for potential continuation (before deleting output)
 		if [[ "$role" != "pulse" && -n "$discovered_session" ]]; then
-			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model"
+			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
 		fi
 
 		# GH#17436: Check for premature exit — worker produced activity (tool
@@ -648,7 +731,7 @@ _handle_run_result() {
 				local discovered_session_for_continue
 				discovered_session_for_continue=$(extract_session_id_from_output "$output_file")
 				if [[ "$role" != "pulse" && -n "$discovered_session_for_continue" ]]; then
-					_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session_for_continue" "$selected_model"
+					_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session_for_continue" "$selected_model" "$role"
 				fi
 				# t2956: Hard-kill path — proactive elapsed-time kill from the
 				# watchdog. Skip continuation, free the slot. The flag is set in
@@ -708,7 +791,7 @@ _handle_run_result() {
 			local discovered_session_for_signal_continue
 			discovered_session_for_signal_continue=$(extract_session_id_from_output "$output_file")
 			if [[ "$role" != "pulse" && -n "$discovered_session_for_signal_continue" ]]; then
-				_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session_for_signal_continue" "$selected_model"
+				_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session_for_signal_continue" "$selected_model" "$role"
 			fi
 			_run_result_label="signal_killed_continue"
 			_run_failure_reason="signal_killed_continue"
@@ -735,7 +818,7 @@ _handle_run_result() {
 	if [[ "$role" == "worker" && "$session_key" == issue-* ]] && \
 		runtime_signal_terminated_candidate "$output_file" "$exit_code" "$activity_detected"; then
 		if [[ -n "$discovered_session" ]]; then
-			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model"
+			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
 		fi
 		_run_result_label="signal_terminated_continue"
 		_run_failure_reason="signal_terminated_continue"
@@ -751,7 +834,7 @@ _handle_run_result() {
 			"$failure_reason" "$exit_code" "$activity_detected" "$discovered_session" \
 			"${_failure_provider_error_type:-}"; then
 		if [[ -n "$discovered_session" ]]; then
-			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model"
+			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
 		fi
 		local _sic_label="service_interruption_continue"
 		_run_result_label="$_sic_label"
@@ -775,9 +858,9 @@ _handle_run_result() {
 	# Record pulse backoffs under a role-scoped key so the pre-dispatch check
 	# (which queries the model key) doesn't see them.
 	if [[ "$role" == "pulse" ]]; then
-		record_provider_backoff "$provider" "$failure_reason" "$output_file" "pulse/${selected_model}"
+		record_provider_backoff "$provider" "$failure_reason" "$output_file" "pulse/${selected_model}" "$suppress_persistent_output"
 	else
-		record_provider_backoff "$provider" "$failure_reason" "$output_file" "$selected_model"
+		record_provider_backoff "$provider" "$failure_reason" "$output_file" "$selected_model" "$suppress_persistent_output"
 	fi
 	rm -f "$output_file"
 	_run_failure_reason="$failure_reason"
@@ -1113,12 +1196,19 @@ _execute_run_attempt() {
 
 	_recover_deleted_cwd_before_launch "$work_dir" "execute_run_attempt" || return 1
 
-	# Determine which runtime to use. Default is opencode unless explicitly overridden.
 	local runtime="${headless_runtime:-opencode}"
-	local prompt_arg="$prompt"
-	local prompt_file_arg=""
-	local claude_stdin_file=""
-	_prepare_runtime_prompt_transport "$runtime" "$prompt"
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" && "$runtime" != "opencode" ]] && ! _headless_private_workload_enabled; then
+		print_error "Public triage supports only the isolated OpenCode runtime"
+		return 126
+	fi
+	local prompt_arg="$prompt" prompt_file_arg="" claude_stdin_file="" force_file_transport=0
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
+		force_file_transport=1
+	fi
+	if ! _prepare_runtime_prompt_transport "$runtime" "$prompt" "$force_file_transport"; then
+		print_error "Public triage could not prepare protected prompt transport"
+		return 126
+	fi
 	prompt_arg="$_HEADLESS_RUN_PROMPT_ARG"
 	prompt_file_arg="$_HEADLESS_RUN_PROMPT_FILE"
 	claude_stdin_file="$_HEADLESS_CLAUDE_STDIN_FILE"
@@ -1130,7 +1220,7 @@ _execute_run_attempt() {
 	local provider persisted_session=""
 	provider=$(extract_provider "$selected_model")
 	local metric_work_dir="$work_dir"
-	if _headless_private_workload_enabled; then
+	if _headless_run_is_ephemeral "$role"; then
 		metric_work_dir=""
 		clear_session_id "$provider" "$session_key"
 	elif [[ "$role" == "pulse" ]]; then
@@ -1183,7 +1273,10 @@ _execute_run_attempt() {
 	local _metric_kill_reason=""
 	start_ms=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
 	output_file=$(_create_headless_runtime_temp_file) || return 1
-	_register_headless_runtime_temp_path "$output_file"
+	if ! _register_headless_runtime_output_temp_path "$role" "$output_file"; then
+		rm -f "$output_file" 2>/dev/null || true
+		return 1
+	fi
 	permission_request_file=$(_create_headless_runtime_temp_file) || {
 		rm -f "$output_file"
 		return 1
@@ -1221,6 +1314,9 @@ _execute_run_attempt() {
 	# dispatch rotation against their own pool entries. Same rationale as
 	# _invoke_session_key above: keep _invoke_opencode's arg list stable.
 	_invoke_provider="$provider"
+	# Public triage uses this role at the final process boundary to select the
+	# minimal environment, isolated HOME, and provider-only egress profile.
+	_invoke_role="$role"
 	# GH#23958: expose the persisted OpenCode session to _invoke_opencode so
 	# isolated worker DBs can be seeded before --session <id> --continue runs.
 	_invoke_persisted_session="$persisted_session"
@@ -1341,7 +1437,7 @@ _execute_run_attempt() {
 		unset AIDEVOPS_WORKER_PREWARM_DIR
 		rm -f "$output_file" 2>/dev/null || true
 		output_file=$(_create_headless_runtime_temp_file) || return 1
-		_register_headless_runtime_temp_path "$output_file"
+		_register_headless_runtime_output_temp_path "$role" "$output_file" || return 1
 		exit_code_file=$(_create_headless_runtime_temp_file) || {
 			rm -f "$output_file"
 			return 1
@@ -1378,7 +1474,7 @@ _execute_run_attempt() {
 			persisted_session=""
 			rm -f "$output_file"
 			output_file=$(_create_headless_runtime_temp_file) || return 1
-			_register_headless_runtime_temp_path "$output_file"
+			_register_headless_runtime_output_temp_path "$role" "$output_file" || return 1
 			exit_code_file=$(_create_headless_runtime_temp_file) || {
 				rm -f "$output_file"
 				return 1
@@ -1413,7 +1509,7 @@ _execute_run_attempt() {
 	# incrementing the fast-fail counter or triggering NMR backoff on the issue.
 	if [[ -f "$_rl_fast_sentinel" ]]; then
 		local _rl_metric_output_file="" _rl_metric_session_id=""
-		if [[ -f "$output_file" ]]; then
+		if [[ -f "$output_file" ]] && ! _headless_run_is_ephemeral "$role"; then
 			_rl_metric_session_id=$(extract_session_id_from_output "$output_file" 2>/dev/null || true)
 			_rl_metric_output_file=$(_metric_failure_excerpt_path "$output_file" "$session_key")
 		fi
@@ -1455,7 +1551,7 @@ _execute_run_attempt() {
 	# OpenCode exits silently on API errors; this is our only visibility.
 	# Extract session ID BEFORE the append block to avoid SC2094 (read+write same file).
 	local _diag_session_id="" _diag_incomplete_msgs="0" _metric_session_id="" _metric_output_file="" _metric_excerpt_candidate=""
-	if [[ -f "$output_file" ]]; then
+	if [[ -f "$output_file" ]] && ! _headless_run_is_ephemeral "$role"; then
 		_metric_session_id=$(extract_session_id_from_output "$output_file" 2>/dev/null || true)
 	fi
 	if [[ "${exit_code:-}" == "0" && -n "$_metric_session_id" ]]; then
@@ -1485,7 +1581,9 @@ _execute_run_attempt() {
 	} >>"$output_file" 2>/dev/null || true
 
 	print_info "[lifecycle] calling_handle_run_result session=$session_key exit_code=$exit_code output_size=$(wc -c <"$output_file" 2>/dev/null || echo 0)"
-	_metric_excerpt_candidate=$(_metric_failure_excerpt_candidate_path "$output_file" "$session_key")
+	if ! _headless_run_is_ephemeral "$role"; then
+		_metric_excerpt_candidate=$(_metric_failure_excerpt_candidate_path "$output_file" "$session_key")
+	fi
 	local handle_exit=0
 	if _handle_run_result "$exit_code" "$output_file" "$role" "$provider" "$session_key" "$selected_model"; then
 		handle_exit=0
@@ -1498,7 +1596,7 @@ _execute_run_attempt() {
 		_run_permission_request_file=""
 		unset AIDEVOPS_PERMISSION_REQUEST_FILE
 	fi
-	if _headless_private_workload_enabled; then
+	if _headless_run_is_ephemeral "$role"; then
 		rm -f "$output_file" "$permission_request_file" 2>/dev/null || true
 		_metric_output_file=""
 		_metric_session_id=""
@@ -1519,7 +1617,9 @@ _execute_run_attempt() {
 		rm -f "$resource_stop_file" "$resource_result_file" 2>/dev/null || true
 	fi
 	local _metric_result_label="${_run_result_label:-fail""ed}"
-	_metric_output_file=$(_metric_failure_excerpt_for_result "$_metric_result_label" "$_metric_excerpt_candidate" "$session_key")
+	if ! _headless_run_is_ephemeral "$role"; then
+		_metric_output_file=$(_metric_failure_excerpt_for_result "$_metric_result_label" "$_metric_excerpt_candidate" "$session_key")
+	fi
 	[[ -z "$_metric_excerpt_candidate" ]] || rm -f "$_metric_excerpt_candidate"
 	local _launch_failure_cause="" _next_action=""
 	local _evidence_fields
@@ -1585,42 +1685,53 @@ _discover_actual_worktree_dir() {
 # Main run orchestrator
 # =============================================================================
 
+_run_role_safe_canary() {
+	local role="$1"
+	local selected_model="$2"
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
+		print_info "[lifecycle] generic_canary_skipped role=$role boundary=public-triage pid=$$"
+		return 0
+	fi
+	_run_canary_test "$selected_model"
+	return $?
+}
+
 cmd_run() {
-	local role
-	role="worker"
-	local session_key
-	session_key=""
-	local work_dir
-	work_dir=""
-	local title
-	title=""
-	local prompt
-	prompt=""
-	local prompt_file
-	prompt_file=""
-	local model_override
-	model_override=""
-	local initial_model
-	initial_model=""
-	local tier_override
-	tier_override=""
-	local variant_override
-	variant_override=""
-	local agent_name
-	agent_name=""
-	local headless_runtime
-	headless_runtime=""
-	local detach
-	detach=0
-	local private_workload
-	private_workload="${AIDEVOPS_PRIVATE_WORKLOAD:-0}"
-	local private_profile_sha256
-	private_profile_sha256=""
+	local role="worker"
+	local session_key=""
+	local work_dir=""
+	local title=""
+	local prompt=""
+	local prompt_file=""
+	local model_override=""
+	local initial_model=""
+	local tier_override=""
+	local variant_override=""
+	local agent_name=""
+	local headless_runtime=""
+	local detach=0
+	local private_workload="${AIDEVOPS_PRIVATE_WORKLOAD:-0}"
+	local private_profile_sha256=""
 	local -a extra_args=()
 
 	_parse_run_args "$@" || return 1
 	_validate_run_args || return 1
 	_validate_private_workload_args || return 1
+	# Non-worker roles must shed inherited implementation-worker authority before
+	# model selection, policy checks, canary execution, or detached launch. The
+	# later prepare phase is intentionally after canary and is therefore too late
+	# to establish this trust boundary.
+	if [[ "$role" != "worker" ]]; then
+		_hrw_prepare_role_context "$role" "$work_dir" || return 1
+		if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]]; then
+			export AIDEVOPS_HEADLESS=1
+			export AIDEVOPS_SESSION_ORIGIN="$HEADLESS_ROLE_TRIAGE"
+			export AIDEVOPS_HEADLESS_AUTH_ISOLATION=1
+		fi
+	fi
+	# Dynamically scoped into _cmd_run_finish so every exit path uses role-safe
+	# cleanup without adding a role argument to the established finish contract.
+	local _CMD_RUN_ROLE="$role"
 	if [[ "$private_workload" -eq 1 ]]; then
 		export AIDEVOPS_PRIVATE_WORKLOAD=1
 		export AIDEVOPS_HEADLESS_AUTH_ISOLATION=1
@@ -1693,12 +1804,20 @@ cmd_run() {
 	# increments the fast-fail counter. Cached for CANARY_CACHE_TTL_SECONDS
 	# (default 30 min) so it runs at most once per pulse cycle.
 	print_info "[lifecycle] pre_canary session=$session_key model=$selected_model pid=$$"
-	if ! _run_canary_test "$selected_model"; then
+	if ! _run_role_safe_canary "$role" "$selected_model"; then
 		print_warning "Canary failed — aborting dispatch for session $session_key (no claim posted)"
 		_hrw_record_terminal_outcome "$session_key" "deferred" "canary_failed"
 		return 1
 	fi
 	print_info "[lifecycle] post_canary session=$session_key model=$selected_model pid=$$"
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
+		local triage_runtime_dir=""
+		if ! _prepare_triage_runtime_directory "triage_runtime_dir"; then
+			print_error "Public triage runtime isolation setup failed"
+			return 1
+		fi
+		work_dir="$triage_runtime_dir"
+	fi
 
 	if [[ "$role" == "worker" ]]; then
 		prompt=$(append_worker_headless_contract "$prompt")
@@ -1715,7 +1834,7 @@ cmd_run() {
 		lifecycle_work_dir="[private]"
 	fi
 	print_info "[lifecycle] pre_worker_prepare session=$session_key work_dir=$lifecycle_work_dir pid=$$"
-	_cmd_run_prepare "$session_key" "$work_dir" || prepare_exit=$?
+	_cmd_run_prepare "$session_key" "$work_dir" "$role" || prepare_exit=$?
 	if [[ "$prepare_exit" -eq 2 ]]; then
 		_hrw_record_terminal_outcome "$session_key" "deferred" "duplicate_session"
 		return 0
@@ -1749,7 +1868,7 @@ cmd_run() {
 	local service_interruption_continue_count=0
 	local max_brief_recovery_retries="${HEADLESS_BRIEF_RECOVERY_MAX_RETRIES:-1}"
 	local brief_recovery_count=0
-	if _headless_private_workload_enabled; then
+	if _headless_run_is_ephemeral "$role"; then
 		max_continuation_retries=0
 		max_watchdog_continue_retries=0
 		max_service_interruption_continue_retries=0
@@ -1771,7 +1890,7 @@ cmd_run() {
 
 	local attempt=1
 	local max_attempts=3
-	if _headless_private_workload_enabled; then
+	if _headless_run_is_ephemeral "$role"; then
 		max_attempts=1
 	fi
 	local cmd_run_action="retry"

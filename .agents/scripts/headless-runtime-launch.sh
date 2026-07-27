@@ -34,6 +34,9 @@ fi
 # shellcheck source=./shared-constants.sh
 # shellcheck disable=SC1091  # shared library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=./sensitive-temp-helper.sh
+# shellcheck disable=SC1091  # shared library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/sensitive-temp-helper.sh"
 
 # Runtime temp paths owned by this helper. The worker EXIT trap also calls the
 # cleanup function below so prompt/auth dirs are removed after normal exits,
@@ -49,10 +52,28 @@ _headless_private_workload_enabled() {
 	return $?
 }
 
+# Ephemeral runs may use isolated runtime state during one invocation, but must
+# never continue from or persist session/transcript-derived state afterward.
+_headless_run_is_ephemeral() {
+	local role="$1"
+	if _headless_private_workload_enabled || \
+		[[ "$role" == "${HEADLESS_ROLE_TRIAGE:-triage}" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 _create_headless_runtime_temp_file() {
-	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME:?}/.aidevops/.agent-workspace/tmp}"
-	mkdir -p "$temp_root" || return 1
+	local temp_root=""
+	temp_root=$(aidevops_sensitive_temp_root) || return 1
 	(umask 077 && mktemp "${temp_root}/aidevops-headless-runtime.XXXXXX") || return 1
+	return 0
+}
+
+_create_headless_runtime_temp_dir() {
+	local purpose="$1"
+	[[ "$purpose" =~ ^[a-z0-9-]+$ ]] || return 1
+	aidevops_sensitive_temp_create_dir "headless-${purpose}" || return 1
 	return 0
 }
 
@@ -64,45 +85,101 @@ _register_headless_runtime_temp_path() {
 	return 0
 }
 
+# Start a detached guardian for prompt/auth/runtime directories containing
+# sensitive or untrusted material. EXIT traps provide prompt cleanup for normal
+# failures; this process also removes the path when the owner is SIGKILLed and
+# enforces a maximum retention window. The generated path itself is the only
+# value passed to the guardian; file contents never enter argv or logs.
+_start_headless_runtime_temp_guardian() {
+	local guarded_path="$1"
+	local owner_pid="${2:-$$}"
+	local max_age_seconds="${HEADLESS_RUNTIME_TEMP_MAX_AGE_SECONDS:-25200}"
+	local poll_seconds="${HEADLESS_RUNTIME_TEMP_GUARD_POLL_SECONDS:-2}"
+	aidevops_sensitive_temp_start_guardian \
+		"$guarded_path" "$owner_pid" "$max_age_seconds" "$poll_seconds" || return 1
+	return 0
+}
+
+_register_headless_runtime_sensitive_temp_path() {
+	local path="$1"
+	_register_headless_runtime_temp_path "$path"
+	_start_headless_runtime_temp_guardian "$path" "$$" || return 1
+	return 0
+}
+
+_register_headless_runtime_output_temp_path() {
+	local role="$1"
+	local path="$2"
+	if _headless_run_is_ephemeral "$role"; then
+		_register_headless_runtime_sensitive_temp_path "$path" || return 1
+		return 0
+	fi
+	_register_headless_runtime_temp_path "$path"
+	return $?
+}
+
 _cleanup_headless_runtime_temp_paths() {
 	local path=""
 	local tmp_root="${TMPDIR:-/tmp}"
-	local managed_temp_root="${AIDEVOPS_TEMP_DIR:-${HOME:?}/.aidevops/.agent-workspace/tmp}"
+	local managed_temp_root=""
+	local cleanup_failed=0
+	local retained_paths=""
+	managed_temp_root=$(aidevops_sensitive_temp_root) || return 1
 	while IFS= read -r path; do
 		[[ -n "$path" ]] || continue
 		case "$path" in
-		"$managed_temp_root"/aidevops-headless-runtime.* | "$tmp_root"/aidevops-* | /tmp/aidevops-* | /var/folders/*/T/*/aidevops-*)
-			rm -rf "$path" 2>/dev/null || true
+		"$managed_temp_root"/aidevops-headless-* | "$tmp_root"/aidevops-* | /tmp/aidevops-* | /var/folders/*/T/*/aidevops-*)
+			rm -rf -- "$path" 2>/dev/null || cleanup_failed=1
+			if [[ -e "$path" || -L "$path" ]]; then
+				cleanup_failed=1
+				retained_paths="${retained_paths}${path}"$'\n'
+				print_warning "[lifecycle] headless_runtime_temp_cleanup_failed guardian=retained"
+			fi
 			;;
 		*)
 			print_warning "[lifecycle] refusing to cleanup unexpected temp path: $path"
+			cleanup_failed=1
+			retained_paths="${retained_paths}${path}"$'\n'
 			;;
 		esac
 	done <<EOF
 ${_HEADLESS_RUNTIME_TEMP_PATHS:-}
 EOF
-	_HEADLESS_RUNTIME_TEMP_PATHS=""
+	_HEADLESS_RUNTIME_TEMP_PATHS="$retained_paths"
+	[[ "$cleanup_failed" -eq 0 ]] || return 1
 	return 0
 }
 
 _prepare_runtime_prompt_transport() {
 	local runtime="$1"
 	local prompt_text="$2"
+	local force_file_transport="${3:-0}"
 	local threshold="${HEADLESS_PROMPT_FILE_THRESHOLD_BYTES:-8192}"
 	_HEADLESS_RUN_PROMPT_ARG="$prompt_text"
 	_HEADLESS_RUN_PROMPT_FILE=""
 	_HEADLESS_CLAUDE_STDIN_FILE=""
 
 	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=8192
-	[[ "${#prompt_text}" -ge "$threshold" ]] || return 0
+	[[ "$force_file_transport" =~ ^[01]$ ]] || force_file_transport=0
+	if [[ "$force_file_transport" -ne 1 && "${#prompt_text}" -lt "$threshold" ]]; then
+		return 0
+	fi
 
 	local prompt_dir=""
-	prompt_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-headless-prompt.XXXXXX") || return 0
-	_register_headless_runtime_temp_path "$prompt_dir"
+	prompt_dir=$(_create_headless_runtime_temp_dir "prompt") || {
+		[[ "$force_file_transport" -ne 1 ]] || return 1
+		return 0
+	}
+	if ! _register_headless_runtime_sensitive_temp_path "$prompt_dir"; then
+		rm -rf "$prompt_dir" 2>/dev/null || true
+		[[ "$force_file_transport" -ne 1 ]] || return 1
+		return 0
+	fi
 
 	local prompt_path="${prompt_dir}/seed-prompt.md"
 	if ! printf '%s' "$prompt_text" >"$prompt_path"; then
 		rm -rf "$prompt_dir" 2>/dev/null || true
+		[[ "$force_file_transport" -ne 1 ]] || return 1
 		return 0
 	fi
 
@@ -121,6 +198,66 @@ _prepare_runtime_prompt_transport() {
 		;;
 	esac
 
+	return 0
+}
+
+# Build an empty, trusted OpenCode project for public triage. The model receives
+# only the prefetched prompt attachment; it never starts in the target repository
+# or inherits that repository's OpenCode configuration. The restricted agent and
+# optional auth plugin are copied from framework-owned paths.
+# Arguments: $1=name of caller variable receiving the directory path.
+_prepare_triage_runtime_directory() {
+	local result_var="$1"
+	local prepared_dir=""
+	local agent_source="${SCRIPT_DIR}/../workflows/triage-review.md"
+	local config_dir=""
+	local plugin_path="${SCRIPT_DIR}/../plugins/opencode-aidevops/index.mjs"
+	local plugin_url=""
+
+	[[ "$result_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+	[[ -f "$agent_source" && ! -L "$agent_source" ]] || {
+		print_error "Trusted triage-review agent definition is unavailable"
+		return 1
+	}
+	prepared_dir=$(_create_headless_runtime_temp_dir "triage") || return 1
+	if ! _register_headless_runtime_sensitive_temp_path "$prepared_dir"; then
+		rm -rf "$prepared_dir" 2>/dev/null || true
+		return 1
+	fi
+	config_dir="${prepared_dir}/.opencode"
+	mkdir -p "${config_dir}/agent" || return 1
+	cp "$agent_source" "${config_dir}/agent/triage-review.md" || return 1
+	chmod 600 "${config_dir}/agent/triage-review.md" 2>/dev/null || true
+
+	local config_file="${config_dir}/opencode.json"
+	if [[ -f "$plugin_path" ]]; then
+		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' \
+			"$plugin_path" 2>/dev/null) || return 1
+		jq -n --arg plugin_url "$plugin_url" '{
+			"$schema": "https://opencode.ai/config.json",
+			plugin: [$plugin_url],
+			permission: "deny",
+			tools: {"*": false},
+			mcp: {},
+			formatter: false,
+			lsp: false,
+			share: "disabled",
+			subagent_depth: 0
+		}' >"$config_file" || return 1
+	else
+		jq -n '{
+			"$schema": "https://opencode.ai/config.json",
+			permission: "deny",
+			tools: {"*": false},
+			mcp: {},
+			formatter: false,
+			lsp: false,
+			share: "disabled",
+			subagent_depth: 0
+		}' >"$config_file" || return 1
+	fi
+	chmod 600 "$config_file" 2>/dev/null || true
+	printf -v "$result_var" '%s' "$prepared_dir"
 	return 0
 }
 
@@ -386,23 +523,17 @@ _ensure_valid_launch_cwd() {
 	return 1
 }
 
-# _run_requires_issue_env_contract: detect issue-scoped worker and triage
-# dispatches from independent caller-owned signals. The env contract is only
-# mandatory for issue-scoped runs; pulse/non-issue runs keep the historical path.
+# _run_requires_issue_env_contract: detect issue-scoped implementation workers
+# from independent caller-owned signals. Triage correlation deliberately uses
+# issue-shaped titles/session keys without carrying worker lifecycle authority.
 _run_requires_issue_env_contract() {
 	local role_value="$1"
 	local session_key_value="$2"
 	local title_value="$3"
 	local prompt_value="$4"
 
-	case "$role_value" in
-	worker | triage) ;;
-	*) return 1 ;;
-	esac
+	[[ "$role_value" == "worker" ]] || return 1
 	if [[ "$session_key_value" =~ ^issue-[0-9]+$ ]]; then
-		return 0
-	fi
-	if [[ "$session_key_value" =~ ^triage-review-[0-9]+$ ]]; then
 		return 0
 	fi
 	if [[ "$title_value" =~ ^Issue[[:space:]]+#[0-9]+ ]]; then

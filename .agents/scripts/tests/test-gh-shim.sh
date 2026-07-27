@@ -89,6 +89,34 @@ fi
 for arg in "$@"; do
 	printf '%s\n' "$arg" >>"$STUB_GH_LOG"
 done
+if [[ "${1:-}" == "issue" && "${2:-}" == "comment" && \
+	-n "${STUB_GH_EPHEMERAL_SOURCE:-}" ]]; then
+	printf 'called\n' >>"${STUB_GH_MAIN_CALL_LOG}"
+	if [[ -n "${AIDEVOPS_GH_EPHEMERAL_BODY_FILE:-}" ]]; then
+		printf 'removed ephemeral pathname leaked into native environment\n' >&2
+		exit 94
+	fi
+	if [[ -e "$STUB_GH_EPHEMERAL_SOURCE" || -L "$STUB_GH_EPHEMERAL_SOURCE" || \
+		-e "${STUB_GH_EPHEMERAL_PARENT:-}" || -L "${STUB_GH_EPHEMERAL_PARENT:-}" ]]; then
+		printf 'ephemeral source still exists at native transport\n' >&2
+		exit 91
+	fi
+	body_path=""
+	previous_arg=""
+	for candidate_arg in "$@"; do
+		if [[ "$previous_arg" == "--body-file" ]]; then
+			body_path="$candidate_arg"
+			break
+		fi
+		case "$candidate_arg" in
+		--body-file=*) body_path="${candidate_arg#--body-file=}"; break ;;
+		esac
+		previous_arg="$candidate_arg"
+	done
+	printf '%s\n' "$body_path" >"${STUB_GH_BODY_PATH_LOG}"
+	[[ "$body_path" == "/dev/fd/9" ]] || exit 92
+	cat "$body_path" >"${STUB_GH_BODY_LOG}" || exit 93
+fi
 if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 	if [[ "$*" == *'.resources.core.used'* ]]; then
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -205,6 +233,9 @@ cp "$REPO_DIR/.agents/scripts/lib/issue-fingerprint.sh" "$TMP/scripts/lib/issue-
 export PATH="$TMP/bin:$PATH"
 export STUB_GH_LOG="$TMP/gh-argv.log"
 export STUB_SIG_LOG="$TMP/sig-argv.log"
+export STUB_GH_BODY_LOG="$TMP/gh-body.log"
+export STUB_GH_BODY_PATH_LOG="$TMP/gh-body-path.log"
+export STUB_GH_MAIN_CALL_LOG="$TMP/gh-main-call.log"
 
 SHIM_RUN="$TMP/scripts/gh"
 
@@ -221,6 +252,9 @@ _read_argv() {
 _reset_log() {
 	: >"$STUB_GH_LOG"
 	[[ -n "${STUB_SIG_LOG:-}" ]] && : >"$STUB_SIG_LOG"
+	: >"$STUB_GH_BODY_LOG"
+	: >"$STUB_GH_BODY_PATH_LOG"
+	: >"$STUB_GH_MAIN_CALL_LOG"
 	return 0
 }
 
@@ -358,6 +392,80 @@ if [[ "$size_before" == "$size_after" ]]; then
 else
 	_fail "--body-file idempotency" "size changed $size_before -> $size_after"
 fi
+
+# =============================================================================
+# Test 5a: managed ephemeral body is unlinked before native transport
+# =============================================================================
+echo ""
+echo "Test 5a: managed ephemeral body is unlinked before native transport"
+managed_root="$TMP/managed-temp"
+ephemeral_parent="${managed_root}/aidevops-triage-comment.Ab12Cd"
+ephemeral_body="${ephemeral_parent}/comment.md"
+mkdir -p "$ephemeral_parent"
+printf 'validated review body\n\n<!-- aidevops:sig -->\n---\nfixture\n' >"$ephemeral_body"
+_reset_log
+STUB_GH_EPHEMERAL_SOURCE="$ephemeral_body" \
+	STUB_GH_EPHEMERAL_PARENT="$ephemeral_parent" \
+	AIDEVOPS_TEMP_DIR="$managed_root" \
+	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$ephemeral_body" \
+	"$SHIM_RUN" issue comment 790 --repo owner/repo --body-file "$ephemeral_body" \
+	2>"$TMP/ephemeral.err"
+argv=$(_read_argv)
+captured_body=$(<"$STUB_GH_BODY_LOG")
+if [[ "$argv" == *$'--body-file\n/dev/fd/9'* && \
+	"$captured_body" == *"validated review body"* && \
+	"$captured_body" == *"<!-- aidevops:sig -->"* && \
+	! -e "$ephemeral_body" && ! -L "$ephemeral_body" && \
+	! -e "$ephemeral_parent" && ! -L "$ephemeral_parent" ]]; then
+	_pass "ephemeral body reaches native gh only after verified unlink"
+else
+	_fail "ephemeral body transport" "argv=${argv}, captured=${captured_body}"
+fi
+if [[ "$argv" != *"validated review body"* ]]; then
+	_pass "ephemeral body content is absent from native gh argv"
+else
+	_fail "ephemeral body argv isolation" "argv contained review content"
+fi
+
+blocked_parent="${managed_root}/aidevops-triage-comment.Ef34Gh"
+blocked_body="${blocked_parent}/comment.md"
+mkdir -p "$blocked_parent"
+printf 'validated blocked body\n\n<!-- aidevops:sig -->\n---\nfixture\n' >"$blocked_body"
+printf 'unexpected\n' >"${blocked_parent}/unexpected"
+_reset_log
+if STUB_GH_EPHEMERAL_SOURCE="$blocked_body" \
+	STUB_GH_EPHEMERAL_PARENT="$blocked_parent" \
+	AIDEVOPS_TEMP_DIR="$managed_root" \
+	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$blocked_body" \
+	"$SHIM_RUN" issue comment 791 --repo owner/repo --body-file "$blocked_body" \
+	2>"$TMP/ephemeral-cleanup.err"; then
+	_fail "ephemeral cleanup failure gate" "shim returned success"
+elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" ]] && \
+	grep -q 'cleanup could not be verified before transport' "$TMP/ephemeral-cleanup.err"; then
+	_pass "ephemeral cleanup failure blocks native transport"
+else
+	_fail "ephemeral cleanup failure gate" "native call log or diagnostic mismatch"
+fi
+rm -rf "$blocked_parent"
+
+bypass_parent="${managed_root}/aidevops-triage-comment.Ij56Kl"
+bypass_body="${bypass_parent}/comment.md"
+mkdir -p "$bypass_parent"
+printf 'validated bypass body\n\n<!-- aidevops:sig -->\n---\nfixture\n' >"$bypass_body"
+_reset_log
+if AIDEVOPS_GH_SHIM_DISABLE=1 \
+	AIDEVOPS_TEMP_DIR="$managed_root" \
+	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$bypass_body" \
+	"$SHIM_RUN" issue comment 792 --repo owner/repo --body-file "$bypass_body" \
+	2>"$TMP/ephemeral-bypass.err"; then
+	_fail "ephemeral shim bypass gate" "shim returned success"
+elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" && -f "$bypass_body" ]] && \
+	grep -q 'cannot bypass the aidevops gh shim' "$TMP/ephemeral-bypass.err"; then
+	_pass "ephemeral transport blocks shim bypass before native gh"
+else
+	_fail "ephemeral shim bypass gate" "native call, artifact, or diagnostic mismatch"
+fi
+rm -rf "$bypass_parent"
 
 # =============================================================================
 # Test 6: gh pr create --body without marker gets sig appended

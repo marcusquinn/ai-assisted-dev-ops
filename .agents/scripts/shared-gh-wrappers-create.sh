@@ -677,12 +677,31 @@ _gh_recover_pr_if_exists() {
 # are not double-signed.
 gh_issue_comment() {
 	_gh_wrapper_enter_cleanup_scope
+	local ephemeral_body_file="${AIDEVOPS_GH_EPHEMERAL_BODY_FILE:-}"
+	local gh_command="gh"
+	if [[ -n "$ephemeral_body_file" ]]; then
+		# Ephemeral comments must already carry the canonical footer. Otherwise
+		# _gh_wrapper_auto_sig would create another pathname-backed temp copy.
+		if [[ "$ephemeral_body_file" != /* || ! -f "$ephemeral_body_file" || \
+			-L "$ephemeral_body_file" ]] || \
+			! grep -q '<!-- aidevops:sig -->' "$ephemeral_body_file" 2>/dev/null; then
+			printf '[aidevops][gh-wrapper][BLOCK] Invalid pre-signed ephemeral comment body.\n' >&2
+			return 1
+		fi
+		local wrapper_script_dir=""
+		wrapper_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
+		gh_command="${wrapper_script_dir}/gh"
+		if [[ ! -x "$gh_command" ]]; then
+			printf '[aidevops][gh-wrapper][BLOCK] Ephemeral comment transport requires the aidevops gh shim.\n' >&2
+			return 1
+		fi
+	fi
 	gh_record_call graphql gh_issue_comment 2>/dev/null || true
 	_gh_wrapper_auto_sig "$@"
 	set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
-	_gh_with_timeout write gh issue comment "$@"
+	_gh_with_timeout write "$gh_command" issue comment "$@"
 	local rc=$?
-	if [[ $rc -ne 0 ]] && _rest_should_fallback; then
+	if [[ $rc -ne 0 && -z "$ephemeral_body_file" ]] && _rest_should_fallback; then
 		print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to REST for issue comment"
 		_rest_issue_comment "$@"
 		rc=$?
