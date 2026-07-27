@@ -26,9 +26,9 @@
 # Design principles
 # -----------------
 #   1. Fast path: non-write subcommands pay a single case-match then exec.
-#   2. Fail-open: if anything goes wrong (missing helper, sourcing failure,
-#      malformed args), exec the real gh without modification. A broken
-#      shim must never break `gh` for the user.
+#   2. Fail-open infrastructure: missing helpers and malformed internal state
+#      preserve native `gh` behaviour. Deterministic write-policy violations
+#      still fail closed when their validator is available.
 #   3. Recursion guard: if the shim somehow re-enters (subprocess inherits
 #      PATH), the second invocation short-circuits to the real gh.
 #   4. Single source of truth: uses the same marker (`<!-- aidevops:sig -->`)
@@ -1519,6 +1519,187 @@ _shim_issue_create_has_type_label() {
 	return 1
 }
 
+_shim_title_is_internal_tracking_issue() {
+	local title="$1"
+	[[ "$title" =~ ^(t[0-9]+(\.[0-9]+)*|GH#[0-9]+):[[:space:]] ]]
+	return $?
+}
+
+_shim_framework_bug_candidate() {
+	local title="$1"
+	local body="$2"
+	local has_bug_label="$3"
+	_shim_title_is_internal_tracking_issue "$title" && return 1
+	[[ "$has_bug_label" == "1" ]] && return 0
+	[[ "$title" =~ ^[[:space:]]*[Bb][Uu][Gg]([^[:alnum:]_]|$) ]] && return 0
+	grep -Eqi '^## Reproducer[[:space:]]*$' <<<"$body" && return 0
+	return 1
+}
+
+_shim_validate_framework_bug_body() {
+	local body="$1"
+	local body_file="$2"
+	local validator="${_SHIM_DIR}/log-issue-helper.sh"
+	local validation_target=""
+	local temporary_body=""
+	local validation_output=""
+
+	# Keep the shim's infrastructure fail-open contract when the adjacent
+	# validator is unavailable. Installed framework bundles ship both files.
+	[[ -f "$validator" ]] || return 0
+
+	if [[ -n "$body_file" && -f "$body_file" ]]; then
+		validation_target="$body_file"
+	else
+		temporary_body=$(mktemp -t aidevops-gh-issue-brief.XXXXXX 2>/dev/null) || return 0
+		if ! printf '%s' "$body" >"$temporary_body"; then
+			rm -f "$temporary_body"
+			return 0
+		fi
+		validation_target="$temporary_body"
+	fi
+
+	if validation_output=$(bash "$validator" validate-brief "$validation_target" 2>&1); then
+		[[ -z "$temporary_body" ]] || rm -f "$temporary_body"
+		return 0
+	fi
+
+	[[ -z "$temporary_body" ]] || rm -f "$temporary_body"
+	printf '[aidevops][issue-brief][BLOCK] Canonical aidevops framework-bug report failed final-body validation.\n' >&2
+	[[ -z "$validation_output" ]] || printf '%s\n' "$validation_output" >&2
+	printf '  Add substantive ## Reproducer evidence or explicitly frame the report as an unconfirmed investigation, then retry.\n' >&2
+	return 1
+}
+
+_SHIM_ISSUE_BODY=""
+_SHIM_ISSUE_BODY_FILE=""
+
+_shim_issue_create_collect_body() {
+	local idx=0
+	local arg=""
+	_SHIM_ISSUE_BODY=""
+	_SHIM_ISSUE_BODY_FILE=""
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		case "$arg" in
+		--body)
+			_SHIM_ISSUE_BODY="${_modified_args[idx + 1]:-}"
+			_SHIM_ISSUE_BODY_FILE=""
+			idx=$((idx + 2))
+			continue
+			;;
+		--body=*) _SHIM_ISSUE_BODY="${arg#--body=}"; _SHIM_ISSUE_BODY_FILE="" ;;
+		--body-file)
+			_SHIM_ISSUE_BODY_FILE="${_modified_args[idx + 1]:-}"
+			_SHIM_ISSUE_BODY=""
+			idx=$((idx + 2))
+			continue
+			;;
+		--body-file=*) _SHIM_ISSUE_BODY_FILE="${arg#--body-file=}"; _SHIM_ISSUE_BODY="" ;;
+		esac
+		idx=$((idx + 1))
+	done
+	if [[ -n "$_SHIM_ISSUE_BODY_FILE" && -f "$_SHIM_ISSUE_BODY_FILE" ]]; then
+		_SHIM_ISSUE_BODY=$(<"$_SHIM_ISSUE_BODY_FILE") || _SHIM_ISSUE_BODY=""
+	fi
+	return 0
+}
+
+_shim_validate_cli_issue_create_if_needed() {
+	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]] || return 0
+	local repo_slug=""
+	local normalized_repo=""
+	local title=""
+	local has_bug_label=0
+	repo_slug=$(_shim_target_repo_slug "${_modified_args[@]}" 2>/dev/null || true)
+	normalized_repo=$(printf '%s' "$repo_slug" | tr '[:upper:]' '[:lower:]')
+	[[ "$normalized_repo" == "marcusquinn/aidevops" ]] || return 0
+	title=$(_shim_issue_create_get_title 2>/dev/null || true)
+	_shim_title_is_internal_tracking_issue "$title" && return 0
+	_shim_issue_create_collect_body
+	_shim_issue_create_has_label "bug" && has_bug_label=1
+	_shim_framework_bug_candidate "$title" "$_SHIM_ISSUE_BODY" "$has_bug_label" || return 0
+	_shim_validate_framework_bug_body "$_SHIM_ISSUE_BODY" "$_SHIM_ISSUE_BODY_FILE"
+	return $?
+}
+
+_SHIM_API_ISSUE_METHOD=""
+_SHIM_API_ISSUE_PATH=""
+_SHIM_API_ISSUE_TITLE=""
+_SHIM_API_ISSUE_BODY=""
+_SHIM_API_ISSUE_BODY_FILE=""
+_SHIM_API_ISSUE_HAS_BUG_LABEL=0
+
+_shim_api_issue_create_collect_fields() {
+	local idx=0
+	local arg=""
+	local field=""
+	_SHIM_API_ISSUE_METHOD=""
+	_SHIM_API_ISSUE_PATH=""
+	_SHIM_API_ISSUE_TITLE=""
+	_SHIM_API_ISSUE_BODY=""
+	_SHIM_API_ISSUE_BODY_FILE=""
+	_SHIM_API_ISSUE_HAS_BUG_LABEL=0
+	while [[ $idx -lt ${#_modified_args[@]} ]]; do
+		arg="${_modified_args[$idx]}"
+		field=""
+		case "$arg" in
+		-X | --method)
+			_SHIM_API_ISSUE_METHOD="${_modified_args[idx + 1]:-}"
+			idx=$((idx + 2))
+			continue
+			;;
+		-X*) _SHIM_API_ISSUE_METHOD="${arg#-X}" ;;
+		--method=*) _SHIM_API_ISSUE_METHOD="${arg#--method=}" ;;
+		/repos/* | repos/*) [[ -z "$_SHIM_API_ISSUE_PATH" ]] && _SHIM_API_ISSUE_PATH="$arg" ;;
+		-f | -F | --field | --raw-field)
+			field="${_modified_args[idx + 1]:-}"
+			idx=$((idx + 1))
+			;;
+		-f*) field="${arg#-f}" ;;
+		-F*) field="${arg#-F}" ;;
+		--field=*) field="${arg#--field=}" ;;
+		--raw-field=*) field="${arg#--raw-field=}" ;;
+		esac
+		case "$field" in
+		title=*) _SHIM_API_ISSUE_TITLE="${field#title=}" ;;
+		body=@*) _SHIM_API_ISSUE_BODY_FILE="${field#body=@}"; _SHIM_API_ISSUE_BODY="" ;;
+		body=*) _SHIM_API_ISSUE_BODY="${field#body=}"; _SHIM_API_ISSUE_BODY_FILE="" ;;
+		labels\[\]=bug) _SHIM_API_ISSUE_HAS_BUG_LABEL=1 ;;
+		esac
+		idx=$((idx + 1))
+	done
+	if [[ -n "$_SHIM_API_ISSUE_BODY_FILE" && -f "$_SHIM_API_ISSUE_BODY_FILE" ]]; then
+		_SHIM_API_ISSUE_BODY=$(<"$_SHIM_API_ISSUE_BODY_FILE") || _SHIM_API_ISSUE_BODY=""
+	fi
+	return 0
+}
+
+_shim_validate_api_issue_create_if_needed() {
+	[[ "${_modified_args[0]:-}" == "api" ]] || return 0
+	_shim_api_issue_create_collect_fields
+	local normalized_path=""
+	normalized_path=$(printf '%s' "${_SHIM_API_ISSUE_PATH#/}" | tr '[:upper:]' '[:lower:]')
+	[[ "$_SHIM_API_ISSUE_METHOD" == "POST" ]] || return 0
+	[[ "$normalized_path" == "repos/marcusquinn/aidevops/issues" ]] || return 0
+	_shim_title_is_internal_tracking_issue "$_SHIM_API_ISSUE_TITLE" && return 0
+	_shim_framework_bug_candidate "$_SHIM_API_ISSUE_TITLE" "$_SHIM_API_ISSUE_BODY" "$_SHIM_API_ISSUE_HAS_BUG_LABEL" || return 0
+	_shim_validate_framework_bug_body "$_SHIM_API_ISSUE_BODY" "$_SHIM_API_ISSUE_BODY_FILE"
+	return $?
+}
+
+_shim_validate_framework_bug_issue_create_if_needed() {
+	if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]]; then
+		_shim_validate_cli_issue_create_if_needed
+		return $?
+	fi
+	if [[ "${_modified_args[0]:-}" == "api" ]]; then
+		_shim_validate_api_issue_create_if_needed
+		return $?
+	fi
+	return 0
+}
+
 _shim_normalize_interactive_tracking_issue_create() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]] || return 0
 	[[ -z "${FULL_LOOP_HEADLESS:-}${AIDEVOPS_HEADLESS:-}${OPENCODE_HEADLESS:-}${GITHUB_ACTIONS:-}" ]] || return 0
@@ -1719,6 +1900,10 @@ _shim_block_pr_create_without_linked_issue_if_needed() {
 }
 
 if ! _shim_block_pr_create_without_linked_issue_if_needed; then
+	exit 1
+fi
+
+if ! _shim_validate_framework_bug_issue_create_if_needed; then
 	exit 1
 fi
 

@@ -13,6 +13,7 @@
 #   6. `gh pr create --body` without marker gets sig appended
 #   7. `AIDEVOPS_GH_SHIM_DISABLE=1` bypasses the shim entirely
 #   8. Recursion guard: `_AIDEVOPS_GH_SHIM_ACTIVE=1` fails closed immediately
+#   9. Canonical aidevops framework-bug briefs are validated before transport
 #
 # Strategy: run the shim against a stub `gh` binary that logs its args, and
 # a stub `gh-signature-helper.sh` that emits a predictable footer. Assert
@@ -193,6 +194,10 @@ cp "$REPO_DIR/.agents/scripts/gh-quota-attribution-lib.sh" "$TMP/scripts/gh-quot
 cp "$REPO_DIR/.agents/scripts/gh-quota-debug-filter.py" "$TMP/scripts/gh-quota-debug-filter.py"
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-fallback.sh" "$TMP/scripts/shared-gh-wrappers-rest-fallback.sh"
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-read-semantics.sh" "$TMP/scripts/shared-gh-wrappers-rest-read-semantics.sh"
+cp "$REPO_DIR/.agents/scripts/log-issue-helper.sh" "$TMP/scripts/log-issue-helper.sh"
+mkdir -p "$TMP/scripts/lib"
+cp "$REPO_DIR/.agents/scripts/lib/version.sh" "$TMP/scripts/lib/version.sh"
+cp "$REPO_DIR/.agents/scripts/lib/issue-fingerprint.sh" "$TMP/scripts/lib/issue-fingerprint.sh"
 
 # Put stub gh in PATH (for shim's REAL_GH discovery) and the shim in
 # $TMP/scripts (for direct invocation in tests).
@@ -1118,6 +1123,187 @@ if [[ "$(_read_attempt_quota "$response_missing_log")" == "unknown" ]]; then
 	_pass "missing GraphQL response cost remains unknown"
 else
 	_fail "missing response-cost fail-closed behavior" "log: $(cat "$response_missing_log" 2>/dev/null || true)"
+fi
+
+# =============================================================================
+# Test 25: canonical aidevops framework-bug briefs are validated before writes
+# =============================================================================
+echo ""
+echo "Test 25: executable framework-bug brief validation"
+
+malformed_brief="$TMP/malformed-framework-bug.md"
+cat >"$malformed_brief" <<'EOF'
+## Description
+
+The review reported a cleanup bug.
+
+## Reproducer
+
+The session inferred a cause but omitted exact evidence fields.
+EOF
+cp "$malformed_brief" "$TMP/malformed-framework-bug.original"
+
+_reset_log
+if "$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(cleanup): malformed report" --label bug \
+	--body-file "$malformed_brief" 2>"$TMP/malformed-file.err"; then
+	_fail "malformed framework-bug body-file guard" "write unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && cmp -s "$malformed_brief" "$TMP/malformed-framework-bug.original" &&
+	grep -q '\[aidevops\]\[issue-brief\]\[BLOCK\]' "$TMP/malformed-file.err" &&
+	grep -q 'Reproducer requires' "$TMP/malformed-file.err"; then
+	_pass "malformed body-file is blocked before transport without source mutation"
+else
+	_fail "malformed framework-bug body-file guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-file.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+malformed_inline=$(<"$malformed_brief")
+if "$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(shim): malformed inline report" --body "$malformed_inline" \
+	2>"$TMP/malformed-inline.err"; then
+	_fail "malformed inline framework-bug guard" "write unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'Reproducer requires' "$TMP/malformed-inline.err"; then
+	_pass "malformed inline body is blocked before transport"
+else
+	_fail "malformed inline framework-bug guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-inline.err" 2>/dev/null || true)"
+fi
+
+valid_investigation="$TMP/valid-framework-investigation.md"
+cat >"$valid_investigation" <<'EOF'
+## Description
+
+The issue-create guard accepts a substantive investigation.
+
+## Reproducer
+
+**Symptom command**: `aidevops status`
+
+**Actual output**: `status was inconsistent`
+
+**Expected output**: `status was consistent`
+
+**Causal status**: unconfirmed investigation
+EOF
+cp "$valid_investigation" "$TMP/valid-framework-investigation.original"
+
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(status): valid investigation" --label bug \
+	--body-file "$valid_investigation" 2>"$TMP/valid-investigation.err"
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]] && cmp -s "$valid_investigation" "$TMP/valid-framework-investigation.original"; then
+	_pass "valid unconfirmed body-file passes normal signing and transport unchanged"
+else
+	_fail "valid unconfirmed body-file pass-through" "argv: $argv err: $(cat "$TMP/valid-investigation.err" 2>/dev/null || true)"
+fi
+
+valid_confirmed_file="$TMP/valid-confirmed-framework-bug.md"
+cat >"$valid_confirmed_file" <<'EOF'
+## Description
+
+The issue-create guard accepts a proven bug report.
+
+## Reproducer
+
+**Symptom command**: `gh issue create --repo marcusquinn/aidevops`
+
+**Actual output**: `the malformed write reached the stub`
+
+**Expected output**: `the malformed write is rejected`
+
+**Causal status**: confirmed
+
+**Production entry point**: `.agents/scripts/gh` receives the issue-create command
+
+**Call chain**: issue creation enters the shim and validates before the native CLI
+
+**Integrated verification**: this hermetic command reaches the transport stub only after validation
+EOF
+valid_confirmed=$(<"$valid_confirmed_file")
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(guard): valid confirmed report" --label bug --body "$valid_confirmed" \
+	2>"$TMP/valid-confirmed.err"
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]] && [[ "$argv" == *"<!-- aidevops:sig -->"* ]]; then
+	_pass "valid confirmed inline report passes normal signing and transport"
+else
+	_fail "valid confirmed inline pass-through" "argv: $argv err: $(cat "$TMP/valid-confirmed.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "t28710: internal tracking brief" --label bug --body "$malformed_inline" 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]]; then
+	_pass "tNNN internal tracking issue remains exempt"
+else
+	_fail "tNNN internal tracking exemption" "argv: $argv"
+fi
+
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "GH#28710: internal follow-up" --label bug --body "$malformed_inline" 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]]; then
+	_pass "GH#NNN internal tracking issue remains exempt"
+else
+	_fail "GH#NNN internal tracking exemption" "argv: $argv"
+fi
+
+_reset_log
+"$SHIM_RUN" issue create --repo owner/repo \
+	--title "bug(external): malformed report" --label bug --body "$malformed_inline" 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]]; then
+	_pass "non-aidevops issue creation remains exempt"
+else
+	_fail "non-aidevops issue exemption" "argv: $argv"
+fi
+
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "Request a new capability" --label enhancement --body "## Description
+
+Add a supported capability." 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]]; then
+	_pass "canonical non-bug issue shape remains exempt"
+else
+	_fail "canonical non-bug issue exemption" "argv: $argv"
+fi
+
+mv "$TMP/scripts/log-issue-helper.sh" "$TMP/scripts/log-issue-helper.sh.disabled"
+_reset_log
+"$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(helper): unavailable validator" --label bug --body "$malformed_inline" 2>/dev/null
+mv "$TMP/scripts/log-issue-helper.sh.disabled" "$TMP/scripts/log-issue-helper.sh"
+argv=$(_read_argv)
+if [[ "$argv" == *$'issue\ncreate'* ]]; then
+	_pass "missing adjacent validator preserves fail-open shim behavior"
+else
+	_fail "missing validator fail-open behavior" "argv: $argv"
+fi
+
+_reset_log
+if "$SHIM_RUN" api /repos/marcusquinn/aidevops/issues -X POST \
+	-f "title=bug(rest): malformed fallback report" -F "body=@$malformed_brief" \
+	-f 'labels[]=bug' 2>"$TMP/malformed-rest.err"; then
+	_fail "malformed REST fallback guard" "write unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'Reproducer requires' "$TMP/malformed-rest.err"; then
+	_pass "malformed REST fallback body is blocked before transport"
+else
+	_fail "malformed REST fallback guard" "argv: $(_read_argv) err: $(cat "$TMP/malformed-rest.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+resolved_output=$(SHIM_TEST_MODE=1 "$SHIM_RUN" issue create --repo marcusquinn/aidevops \
+	--title "bug(test-mode): valid report" --label bug --body-file "$valid_investigation" 2>/dev/null)
+if [[ "$resolved_output" == resolved_body_file=* ]] &&
+	cmp -s "$valid_investigation" "$TMP/valid-framework-investigation.original"; then
+	_pass "valid SHIM_TEST_MODE path remains available and source-safe"
+else
+	_fail "SHIM_TEST_MODE compatibility" "output: $resolved_output"
 fi
 
 # =============================================================================

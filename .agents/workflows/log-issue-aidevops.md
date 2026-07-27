@@ -327,6 +327,13 @@ Do not validate an earlier draft or inline copy:
 If validation fails, correct the evidence or explicitly reframe the report as an
 unconfirmed investigation. Do not run `gh issue create` until validation passes.
 
+The aidevops `gh` PATH shim repeats this final-body validation at exec time for
+non-tracking framework-bug reports targeting `marcusquinn/aidevops`. This is a
+deterministic backstop for raw and wrapped `gh issue create` calls, not a
+replacement for the workflow check above. A blocked write leaves the caller's
+body file unchanged; apply the validator's remediation and retry. Internal
+`tNNN:` / `GH#NNN:` tracking tasks and non-bug issue shapes are exempt.
+
 ```bash
 gh issue create -R marcusquinn/aidevops \
   --title "TITLE" \
