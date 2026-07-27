@@ -82,6 +82,11 @@ different repository collaborator must review the `release` environment, and
 GitHub's "Prevent self-review" and "Disallow admin bypass" controls must remain
 enabled.
 
+Operationally, the GitHub release, npm publication, and Homebrew update jobs each
+reference `release` and can prompt for approval separately; the Homebrew job waits
+for npm first. GitHub treats the reviewer list as an allow-list rather than a
+quorum, so one listed reviewer can approve each pending deployment.
+
 The GitHub snapshot and verifier are read-only:
 
 ```bash
