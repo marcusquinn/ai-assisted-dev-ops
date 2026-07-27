@@ -65,7 +65,8 @@ source resolver against the exact `origin/main` tip before publication.
 PR #28725 demonstrated the fail-closed duplicate-trailer case: its squash
 message retained an earlier separated trailer block plus the final contiguous
 block. No release was attempted from that ambiguous manifest; a new reviewed
-single-block aggregation supersedes it.
+single-block aggregation supersedes it. PR #28727 reviews the corrected manifest
+for authorized source PRs #28701, #28720, and #28725 at their exact merge SHAs.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
