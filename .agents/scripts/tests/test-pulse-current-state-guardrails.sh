@@ -290,19 +290,146 @@ test_deterministic_block_reasons_are_benign() {
 test_benign_block_ledger_is_cycle_local_and_cleaned() {
 	reset_guardrail_env
 	local first_ledger second_ledger lingering_reason=""
+	local scratch_dir="${HOME}/.aidevops/logs/.pulse-dispatch-benign-blocks"
+	local first_basename=""
+	local scratch_mode=""
+	local ledger_mode=""
 	_dispatch_begin_benign_blocks_cycle >/dev/null
 	first_ledger="$_DISPATCH_BENIGN_BLOCKS_FILE"
+	first_basename="${first_ledger##*/}"
+	scratch_mode=$(_file_perms "$scratch_dir") || scratch_mode=""
+	ledger_mode=$(_file_perms "$first_ledger") || ledger_mode=""
 	_dispatch_mark_benign_blocked_candidate 23541 marcusquinn/aidevops dedup_active_claim
 	_dispatch_cleanup_benign_blocks_cycle
 	_dispatch_begin_benign_blocks_cycle >/dev/null
 	second_ledger="$_DISPATCH_BENIGN_BLOCKS_FILE"
 	lingering_reason=$(_dispatch_benign_blocked_candidate_reason 23541 marcusquinn/aidevops 2>/dev/null || true)
 	_dispatch_cleanup_benign_blocks_cycle
-	if [[ "$first_ledger" != "$second_ledger" && ! -e "$first_ledger" && ! -e "$second_ledger" && -z "$lingering_reason" ]]; then
+	if [[ "$first_ledger" != "$second_ledger" && ! -e "$first_ledger" && ! -e "$second_ledger" && -z "$lingering_reason" ]] &&
+		[[ "$first_ledger" == "$scratch_dir"/benign-blocks.*.* ]] &&
+		_dispatch_benign_blocks_owner_pid "$first_basename" >/dev/null &&
+		[[ "$scratch_mode" == "700" && "$ledger_mode" == "600" ]]; then
 		print_result "guardrail: benign block ledger is cycle-local and cleaned" 0
 	else
-		print_result "guardrail: benign block ledger is cycle-local and cleaned" 1 "first=${first_ledger} second=${second_ledger} lingering=${lingering_reason}"
+		print_result "guardrail: benign block ledger is cycle-local and cleaned" 1 "first=${first_ledger} second=${second_ledger} lingering=${lingering_reason} scratch_mode=${scratch_mode} ledger_mode=${ledger_mode}"
 	fi
+	return 0
+}
+
+test_stale_benign_block_ledgers_are_reaped_safely() {
+	reset_guardrail_env
+	local scratch_dir="${HOME}/.aidevops/logs/.pulse-dispatch-benign-blocks"
+	local logs_dir="${HOME}/.aidevops/logs"
+	local dead_pid=999999999
+	local live_pid="${BASHPID:-$$}"
+	local saved_min_age="$_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS"
+	while kill -0 "$dead_pid" 2>/dev/null; do
+		dead_pid=$((dead_pid - 1))
+	done
+	_dispatch_prepare_benign_blocks_scratch_dir || {
+		print_result "guardrail: stale benign block cleanup is exact and owner-aware" 1 "scratch setup failed"
+		return 0
+	}
+
+	local dead_file="${scratch_dir}/benign-blocks.${dead_pid}.ABC123"
+	local live_file="${scratch_dir}/benign-blocks.${live_pid}.LIVE12"
+	local invalid_file="${scratch_dir}/benign-blocks.${dead_pid}.ABC12_"
+	local unrelated_file="${scratch_dir}/unrelated.${dead_pid}.ABC123"
+	local symlink_target="${TEST_ROOT}/managed-symlink-target"
+	local managed_symlink="${scratch_dir}/benign-blocks.${dead_pid}.SYM123"
+	local legacy_mktemp="${logs_dir}/pulse-dispatch-benign-blocks.LEG123"
+	local legacy_fallback="${logs_dir}/pulse-dispatch-benign-blocks.${dead_pid}.12345"
+	local legacy_recent="${logs_dir}/pulse-dispatch-benign-blocks.NEW123"
+	local legacy_near_match="${logs_dir}/pulse-dispatch-benign-blocks.TOOLONG"
+	local legacy_symlink_target="${TEST_ROOT}/legacy-symlink-target"
+	local legacy_symlink="${logs_dir}/pulse-dispatch-benign-blocks.SYM123"
+
+	printf 'dead\n' >"$dead_file"
+	printf 'live\n' >"$live_file"
+	printf 'invalid\n' >"$invalid_file"
+	printf 'unrelated\n' >"$unrelated_file"
+	printf 'target\n' >"$symlink_target"
+	ln -s "$symlink_target" "$managed_symlink"
+	printf 'legacy mktemp\n' >"$legacy_mktemp"
+	printf 'legacy fallback\n' >"$legacy_fallback"
+	printf 'legacy recent\n' >"$legacy_recent"
+	printf 'legacy near match\n' >"$legacy_near_match"
+	printf 'legacy target\n' >"$legacy_symlink_target"
+	ln -s "$legacy_symlink_target" "$legacy_symlink"
+	touch -t 200001010000 "$legacy_mktemp" "$legacy_fallback" "$legacy_near_match"
+	_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS=3600
+	_dispatch_cleanup_stale_benign_blocks
+	_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS="$saved_min_age"
+
+	if [[ ! -e "$dead_file" && -f "$live_file" && -f "$invalid_file" && -f "$unrelated_file" ]] &&
+		[[ -L "$managed_symlink" && -f "$symlink_target" ]] &&
+		[[ ! -e "$legacy_mktemp" && ! -e "$legacy_fallback" && -f "$legacy_recent" && -f "$legacy_near_match" ]] &&
+		[[ -L "$legacy_symlink" && -f "$legacy_symlink_target" ]]; then
+		print_result "guardrail: stale benign block cleanup is exact and owner-aware" 0
+	else
+		print_result "guardrail: stale benign block cleanup is exact and owner-aware" 1 "dead=$([[ -e "$dead_file" ]] && printf yes || printf no) live=$([[ -f "$live_file" ]] && printf yes || printf no) legacy=$([[ -e "$legacy_mktemp" ]] && printf yes || printf no)"
+	fi
+	return 0
+}
+
+test_benign_block_ledger_crash_recovery() {
+	reset_guardrail_env
+	local lib_file="${SCRIPT_DIR}/pulse-dispatch-lib.sh"
+	local graceful_marker="${TEST_ROOT}/graceful-ledger-path"
+	local killed_marker="${TEST_ROOT}/killed-ledger-path"
+	local kill_runner="${TEST_ROOT}/run-benign-ledger-sigkill"
+	local graceful_status=0
+	local killed_status=0
+	local graceful_ledger=""
+	local killed_ledger=""
+	local killed_was_present=0
+
+	LEDGER_MARKER="$graceful_marker" bash -c '
+		source "$1"
+		trap "_dispatch_cleanup_benign_blocks_cycle" EXIT
+		_dispatch_begin_benign_blocks_cycle >/dev/null
+		printf "%s\n" "$_DISPATCH_BENIGN_BLOCKS_FILE" >"$LEDGER_MARKER"
+		exit 23
+	' _ "$lib_file" >/dev/null 2>&1 || graceful_status=$?
+	[[ -f "$graceful_marker" ]] && read -r graceful_ledger <"$graceful_marker"
+
+	cat >"$kill_runner" <<'EOF_KILL_RUNNER'
+#!/usr/bin/env bash
+bash -c '
+	source "$1"
+	_dispatch_begin_benign_blocks_cycle >/dev/null
+	printf "%s\n" "$_DISPATCH_BENIGN_BLOCKS_FILE" >"$LEDGER_MARKER"
+	kill -KILL "${BASHPID:-$$}"
+' _ "$1"
+child_status=$?
+exit "$child_status"
+EOF_KILL_RUNNER
+	chmod +x "$kill_runner"
+	LEDGER_MARKER="$killed_marker" "$kill_runner" "$lib_file" >/dev/null 2>&1 || killed_status=$?
+	[[ -f "$killed_marker" ]] && read -r killed_ledger <"$killed_marker"
+	[[ -n "$killed_ledger" && -f "$killed_ledger" ]] && killed_was_present=1
+	_dispatch_cleanup_stale_benign_blocks
+
+	if [[ "$graceful_status" -eq 23 && -n "$graceful_ledger" && ! -e "$graceful_ledger" ]] &&
+		[[ "$killed_status" -eq 137 && "$killed_was_present" -eq 1 && -n "$killed_ledger" && ! -e "$killed_ledger" ]]; then
+		print_result "guardrail: EXIT cleanup and next-start SIGKILL recovery remove managed ledgers" 0
+	else
+		print_result "guardrail: EXIT cleanup and next-start SIGKILL recovery remove managed ledgers" 1 "graceful_status=${graceful_status} killed_status=${killed_status} killed_present=${killed_was_present}"
+	fi
+	return 0
+}
+
+test_wrapper_registers_benign_block_cleanup() {
+	local wrapper_file="${SCRIPT_DIR}/pulse-wrapper.sh"
+	local cleanup_stack_count=""
+	cleanup_stack_count=$(grep -c "push_cleanup '_dispatch_cleanup_benign_blocks_cycle'" "$wrapper_file" 2>/dev/null || true)
+	if grep -Fq "trap '_dispatch_cleanup_benign_blocks_cycle;" "$wrapper_file" &&
+		grep -Fq $'\t_dispatch_cleanup_stale_benign_blocks || true' "$wrapper_file" &&
+		[[ "$cleanup_stack_count" == "2" ]]; then
+		print_result "guardrail: pulse wrapper registers graceful and startup benign-ledger cleanup" 0
+		return 0
+	fi
+	print_result "guardrail: pulse wrapper registers graceful and startup benign-ledger cleanup" 1 "cleanup_stack_count=${cleanup_stack_count}"
 	return 0
 }
 
@@ -506,6 +633,9 @@ test_interactive_hold_reason_is_classified
 test_pr_target_reason_is_classified_as_benign_block
 test_deterministic_block_reasons_are_benign
 test_benign_block_ledger_is_cycle_local_and_cleaned
+test_stale_benign_block_ledgers_are_reaped_safely
+test_benign_block_ledger_crash_recovery
+test_wrapper_registers_benign_block_cleanup
 test_external_benign_block_ledger_is_preserved_and_refreshed
 test_dispatch_max_exports_benign_ledger_for_direct_callers
 test_apply_dispatch_max_preserves_benign_ledger_across_refill

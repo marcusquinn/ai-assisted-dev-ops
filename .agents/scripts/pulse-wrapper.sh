@@ -1638,11 +1638,12 @@ main() {
 	# Register EXIT trap BEFORE acquiring the lock so the lock is always
 	# released on exit — including set -e aborts, SIGTERM, and return paths.
 	# SIGKILL cannot be trapped; stale-lock detection handles that case.
-	trap '_pulse_release_llm_lock; _pulse_cycle_state_finish_interrupted; _pulse_efficiency_cycle_finish; release_instance_lock; aidevops_runtime_bundle_lease_release' EXIT
+	trap '_dispatch_cleanup_benign_blocks_cycle; _pulse_release_llm_lock; _pulse_cycle_state_finish_interrupted; _pulse_efficiency_cycle_finish; release_instance_lock; aidevops_runtime_bundle_lease_release' EXIT
 
 	if ! acquire_instance_lock; then
 		return 0
 	fi
+	_dispatch_cleanup_stale_benign_blocks || true
 
 	# GH#22525: enable REST-first read routing before any post-lock pulse gate
 	# runs. GH#22507 originally flipped this after session/dedup gates, leaving
@@ -1684,6 +1685,7 @@ main() {
 		push_cleanup '_pulse_efficiency_cycle_finish'
 		push_cleanup '_pulse_cycle_state_finish_interrupted'
 		push_cleanup '_pulse_release_llm_lock'
+		push_cleanup '_dispatch_cleanup_benign_blocks_cycle'
 		# GH#23728: keep EXIT (not RETURN) for SIGTERM/set -e lock safety, but
 		# register release_instance_lock before replacing the direct EXIT trap.
 		trap '_run_cleanups' EXIT
@@ -1706,6 +1708,7 @@ main() {
 			push_cleanup '_pulse_efficiency_cycle_finish'
 			push_cleanup '_pulse_cycle_state_finish_interrupted'
 			push_cleanup '_pulse_release_llm_lock'
+			push_cleanup '_dispatch_cleanup_benign_blocks_cycle'
 			# GH#23728: keep EXIT (not RETURN) for SIGTERM/set -e lock safety, but
 			# register release_instance_lock before replacing the direct EXIT trap.
 			trap '_run_cleanups' EXIT

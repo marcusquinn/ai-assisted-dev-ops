@@ -20,6 +20,7 @@
 # Dependencies:
 #   - shared-constants.sh (LOGFILE, color/status helpers, gh wrappers)
 #   - worker-lifecycle-common.sh (capacity helpers, model resolution)
+#   - portable-stat.sh (legacy scratch age checks)
 #
 # Part of aidevops framework: https://aidevops.sh
 
@@ -34,6 +35,10 @@ _PULSE_DISPATCH_LIB_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$_PULSE_DISPATCH_LIB_DIR" == "${BASH_SOURCE[0]}" ]] && _PULSE_DISPATCH_LIB_DIR="."
 # shellcheck source=shared-runner-identity.sh
 source "${_PULSE_DISPATCH_LIB_DIR}/shared-runner-identity.sh"
+if ! command -v _file_mtime_epoch >/dev/null 2>&1; then
+	# shellcheck source=portable-stat.sh
+	source "${_PULSE_DISPATCH_LIB_DIR}/portable-stat.sh"
+fi
 
 # --- Helper functions and module-level round-state vars (extracted) ---
 
@@ -57,6 +62,9 @@ _DISPATCH_THROTTLE_FILE=""
 _DISPATCH_CANARY_CACHE=""
 _DISPATCH_BENIGN_BLOCKS_FILE=""
 _DISPATCH_BENIGN_BLOCKS_FILE_OWNED="0"
+_DISPATCH_BENIGN_BLOCKS_SCRATCH_DIR=""
+_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS="${AIDEVOPS_PULSE_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS:-3600}"
+[[ "$_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS" =~ ^[0-9]+$ ]] || _DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS=3600
 # Out-parameter set by _dispatch_process_candidate when a successful launch clears
 # the throttle file. The orchestrator loop reads this and restores
 # _effective_slots to the unthrottled available_slots value.
@@ -309,6 +317,122 @@ PY
 }
 
 #######################################
+# Parse the creator PID from an exact framework-managed benign-ledger name.
+#
+# Arguments:
+#   $1 - file basename
+# Stdout: creator PID
+# Returns: 0 for an exact managed name, 1 otherwise
+#######################################
+_dispatch_benign_blocks_owner_pid() {
+	local basename="$1"
+	if [[ "$basename" =~ ^benign-blocks\.([1-9][0-9]*)\.([[:alnum:]]{6}|[0-9]{1,5})$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	return 1
+}
+
+#######################################
+# Remove exact framework-managed ledgers whose creator PID is no longer alive.
+# Live-owner files, symlinks, foreign-owned files, and near-matches survive.
+#
+# Arguments:
+#   $1 - private managed scratch directory
+# Returns: 0 on a safe scan, 1 when the directory boundary is unsafe
+#######################################
+_dispatch_cleanup_managed_benign_blocks() {
+	local scratch_dir="$1"
+	local candidate=""
+	local basename=""
+	local owner_pid=""
+	[[ -d "$scratch_dir" && ! -L "$scratch_dir" && -O "$scratch_dir" ]] || return 1
+	for candidate in "$scratch_dir"/benign-blocks.*.*; do
+		[[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || continue
+		basename="${candidate##*/}"
+		owner_pid=$(_dispatch_benign_blocks_owner_pid "$basename") || continue
+		if ! kill -0 "$owner_pid" 2>/dev/null; then
+			rm -f "$candidate" 2>/dev/null || true
+		fi
+	done
+	return 0
+}
+
+#######################################
+# Remove age-qualified legacy ledgers whose old names carry no reliable owner.
+# The exact historical mktemp and numeric-fallback grammars are the only files
+# eligible for migration cleanup.
+#
+# Returns: 0 always; migration cleanup must never block pulse startup
+#######################################
+_dispatch_cleanup_legacy_benign_blocks() {
+	local logs_dir="${HOME}/.aidevops/logs"
+	local candidate=""
+	local basename=""
+	local modified=""
+	local now=""
+	local age=0
+	[[ -d "$logs_dir" ]] || return 0
+	command -v _file_mtime_epoch >/dev/null 2>&1 || return 0
+	now=$(date +%s 2>/dev/null) || return 0
+	[[ "$now" =~ ^[0-9]+$ ]] || return 0
+	for candidate in "$logs_dir"/pulse-dispatch-benign-blocks.*; do
+		[[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || continue
+		basename="${candidate##*/}"
+		if [[ "$basename" =~ ^pulse-dispatch-benign-blocks\.[[:alnum:]]{6}$ ]]; then
+			:
+		elif [[ "$basename" =~ ^pulse-dispatch-benign-blocks\.[1-9][0-9]*\.[0-9]{1,5}$ ]]; then
+			:
+		else
+			continue
+		fi
+		modified=$(_file_mtime_epoch "$candidate") || continue
+		[[ "$modified" =~ ^[0-9]+$ && "$now" -ge "$modified" ]] || continue
+		age=$((now - modified))
+		[[ "$age" -ge "$_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS" ]] || continue
+		rm -f "$candidate" 2>/dev/null || true
+	done
+	return 0
+}
+
+#######################################
+# Reap stale managed and legacy benign ledgers at the exclusive startup gate.
+#
+# Returns: 0 always; stale-file cleanup is best effort
+#######################################
+_dispatch_cleanup_stale_benign_blocks() {
+	local scratch_dir="${HOME}/.aidevops/logs/.pulse-dispatch-benign-blocks"
+	if [[ -d "$scratch_dir" && ! -L "$scratch_dir" && -O "$scratch_dir" ]]; then
+		_dispatch_cleanup_managed_benign_blocks "$scratch_dir" || true
+	fi
+	_dispatch_cleanup_legacy_benign_blocks || true
+	return 0
+}
+
+#######################################
+# Prepare the private scratch boundary used by framework-managed ledgers.
+#
+# Returns: 0 when the directory is safe, 1 otherwise
+#######################################
+_dispatch_prepare_benign_blocks_scratch_dir() {
+	local logs_dir="${HOME}/.aidevops/logs"
+	local scratch_dir="${logs_dir}/.pulse-dispatch-benign-blocks"
+	if ! mkdir -p "$logs_dir"; then
+		return 1
+	fi
+	if [[ ! -e "$scratch_dir" && ! -L "$scratch_dir" ]]; then
+		if ! (umask 077 && mkdir "$scratch_dir" 2>/dev/null); then
+			[[ -d "$scratch_dir" && ! -L "$scratch_dir" ]] || return 1
+		fi
+	fi
+	[[ -d "$scratch_dir" && ! -L "$scratch_dir" && -O "$scratch_dir" ]] || return 1
+	chmod 0700 "$scratch_dir" 2>/dev/null || return 1
+	_DISPATCH_BENIGN_BLOCKS_SCRATCH_DIR="$scratch_dir"
+	_dispatch_cleanup_managed_benign_blocks "$scratch_dir" || return 1
+	return 0
+}
+
+#######################################
 # Start a cycle-local benign block ledger. Reinitializing the ledger for every
 # dispatch_max cycle prevents stale active-claim blocks from a long-running
 # pulse-wrapper process from suppressing later cycles after the claim clears.
@@ -319,14 +443,17 @@ PY
 _dispatch_begin_benign_blocks_cycle() {
 	local ledger_file=""
 	local ledger_managed_by_dispatch="0"
+	local owner_pid="${BASHPID:-$$}"
 	if [[ -n "${AIDEVOPS_PULSE_BENIGN_BLOCKS_FILE:-}" ]]; then
 		ledger_file="$AIDEVOPS_PULSE_BENIGN_BLOCKS_FILE"
 	else
 		ledger_managed_by_dispatch="1"
-		if ! mkdir -p "${HOME}/.aidevops/logs"; then
-			printf 'Failed to create benign block ledger directory: %s\n' "${HOME}/.aidevops/logs" >&2
+		[[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || owner_pid="$$"
+		if ! _dispatch_prepare_benign_blocks_scratch_dir; then
+			printf 'Failed to prepare benign block ledger scratch directory: %s\n' "${HOME}/.aidevops/logs/.pulse-dispatch-benign-blocks" >&2
+		else
+			ledger_file=$(mktemp "${_DISPATCH_BENIGN_BLOCKS_SCRATCH_DIR}/benign-blocks.${owner_pid}.XXXXXX" 2>/dev/null || printf '%s\n' "${_DISPATCH_BENIGN_BLOCKS_SCRATCH_DIR}/benign-blocks.${owner_pid}.${RANDOM}")
 		fi
-		ledger_file=$(mktemp "${HOME}/.aidevops/logs/pulse-dispatch-benign-blocks.XXXXXX" || printf '%s\n' "${HOME}/.aidevops/logs/pulse-dispatch-benign-blocks.$$.$RANDOM")
 	fi
 	if [[ -z "$ledger_file" ]]; then
 		printf 'Failed to resolve benign block ledger file path\n' >&2
@@ -343,6 +470,9 @@ _dispatch_begin_benign_blocks_cycle() {
 	fi
 	if ! : >"$ledger_file"; then
 		printf 'Failed to initialize benign block ledger file: %s\n' "$ledger_file" >&2
+	fi
+	if [[ "$ledger_managed_by_dispatch" == "1" ]] && ! chmod 0600 "$ledger_file" 2>/dev/null; then
+		printf 'Failed to secure benign block ledger file: %s\n' "$ledger_file" >&2
 	fi
 	_DISPATCH_BENIGN_BLOCKS_FILE="$ledger_file"
 	_DISPATCH_BENIGN_BLOCKS_FILE_OWNED="$ledger_managed_by_dispatch"
