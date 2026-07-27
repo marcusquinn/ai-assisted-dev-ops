@@ -126,6 +126,10 @@ const OUTPUT_CHARACTERS_PER_TOKEN_CEILING = 8
 const DEFAULT_RUNTIME_TIMEOUT_MS = 120_000
 const MIN_TRANSPORT_OUTPUT_BYTES = 64 * 1024
 const MAX_TRANSPORT_OUTPUT_BYTES = 1024 * 1024
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`,
+  "g",
+)
 const NESTED_LIFECYCLE_ENV_KEYS = [
   "AIDEVOPS_ATTEMPT_ID",
   "AIDEVOPS_ATTEMPT_STARTED_AT",
@@ -554,7 +558,7 @@ function transportOutputLimit(maxTokens: number): number {
 }
 
 function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+  return value.replace(ANSI_ESCAPE_PATTERN, "")
 }
 
 type JsonRecord = Record<string, unknown>

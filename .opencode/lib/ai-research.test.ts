@@ -177,8 +177,10 @@ describe("OpenCode event parsing", () => {
   })
 
   test("reports unavailable usage honestly when events omit it", () => {
+    const ansiEscape = String.fromCharCode(27)
     const output = [
-      "[lifecycle] post_model_select session=test model=zai-coding-plan/glm-test pid=1",
+      `${ansiEscape}[32m[lifecycle] post_model_select ` +
+        `session=test model=zai-coding-plan/glm-test pid=1${ansiEscape}[0m`,
       JSON.stringify({ type: "text", part: { text: "Provider-neutral answer" } }),
     ].join("\n")
     const result = parseOpenCodeRuntimeOutput(output)
