@@ -14,6 +14,7 @@ readonly RELEASE_RULESET_NAME="Protect aidevops release tags"
 readonly RELEASE_REF_PATTERN="refs/tags/v*"
 readonly RELEASE_DEPLOYMENT_PATTERN="v*"
 readonly SNAPSHOT_SCHEMA="aidevops.release-publication-settings/v1"
+readonly REQUIRED_REVIEWERS_RULE="required_reviewers"
 
 _release_settings_error() {
 	local message="$1"
@@ -297,8 +298,8 @@ _release_settings_verify_reviewers() {
 	local actual_count=""
 	local reviewer=""
 
-	actual_count=$(jq '[.protection_rules[]?
-		| select(.type == "required_reviewers")
+	actual_count=$(jq --arg rule "$REQUIRED_REVIEWERS_RULE" '[.protection_rules[]?
+		| select(.type == $rule)
 		| .reviewers[]? | .reviewer.login] | unique | length' \
 		<<<"$environment_detail") || return 1
 	if [[ "$actual_count" -ne "$expected_count" ]]; then
@@ -311,16 +312,16 @@ _release_settings_verify_reviewers() {
 			_release_settings_error "release author cannot be an independent reviewer"
 			return 1
 		fi
-		if ! jq -e --arg login "$reviewer" 'any(.protection_rules[]?;
-			.type == "required_reviewers"
+		if ! jq -e --arg login "$reviewer" --arg rule "$REQUIRED_REVIEWERS_RULE" \
+			'any(.protection_rules[]?; .type == $rule
 			and any(.reviewers[]?; .reviewer.login == $login))' \
 			<<<"$environment_detail" >/dev/null; then
 			_release_settings_error "missing required reviewer: ${reviewer}"
 			return 1
 		fi
 	done
-	if ! jq -e 'any(.protection_rules[]?;
-		.type == "required_reviewers" and .prevent_self_review == true)' \
+	if ! jq -e --arg rule "$REQUIRED_REVIEWERS_RULE" \
+		'any(.protection_rules[]?; .type == $rule and .prevent_self_review == true)' \
 		<<<"$environment_detail" >/dev/null; then
 		_release_settings_error "release environment does not prevent self-review"
 		return 1
@@ -402,7 +403,7 @@ _release_settings_verify_command() {
 
 	printf 'GITHUB_RELEASE_CONTROLS=verified\n'
 	printf 'MANUAL_CHECK_REQUIRED=environment_admin_bypass_disabled\n'
-	printf 'MANUAL_CHECK_REQUIRED=npm_trusted_publisher_workflow_and_environment\n'
+	printf 'MANUAL_CHECK_REQUIRED=publisher_workflow_and_environment\n'
 	return 0
 }
 
