@@ -640,7 +640,7 @@ sync_todo_refs_for_repo() (
 	2) printf '[pulse-wrapper] TODO ref sync status=retryable_conflict repo=%s base=%s\n' \
 		"$repo_slug" "${base_sha:0:12}" >>"$WRAPPER_LOGFILE" ;;
 	*) printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=publication repo=%s rc=%s\n' \
-			"$repo_slug" "$publication_rc" >>"$WRAPPER_LOGFILE" ;;
+		"$repo_slug" "$publication_rc" >>"$WRAPPER_LOGFILE" ;;
 	esac
 	if [[ "$publication_rc" -eq 0 ]]; then
 		lifecycle_stage="complete"

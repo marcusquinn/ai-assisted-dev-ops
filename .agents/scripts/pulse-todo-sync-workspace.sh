@@ -354,9 +354,9 @@ _ptsw_sweep_stale_workspaces() {
 			continue
 		fi
 		# Recheck the mutable ownership record immediately before the move.
-		if ! _ptsw_validate_workspace_path "$workspace_root" 1 || \
-			! _ptsw_read_owner_marker "$workspace_root" || \
-			[[ "$_PTSW_OWNER_PID" != "$owner_pid" || "$_PTSW_OWNER_START" != "$owner_start" || \
+		if ! _ptsw_validate_workspace_path "$workspace_root" 1 ||
+			! _ptsw_read_owner_marker "$workspace_root" ||
+			[[ "$_PTSW_OWNER_PID" != "$owner_pid" || "$_PTSW_OWNER_START" != "$owner_start" ||
 				"$_PTSW_OWNER_CREATED" != "$owner_created" ]]; then
 			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-marker-changed" "$identity"
 			continue
