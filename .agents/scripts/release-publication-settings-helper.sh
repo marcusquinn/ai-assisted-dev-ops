@@ -74,6 +74,20 @@ _release_settings_api_read() {
 	return $?
 }
 
+_release_settings_api_array_list() {
+	local endpoint="$1"
+	gh api --method GET --paginate "$endpoint" | jq -cs 'add'
+	return $?
+}
+
+_release_settings_api_environment_list() {
+	local endpoint="$1"
+	gh api --method GET --paginate "$endpoint" | jq -cs '
+		{total_count: ([.[].environments[]?] | length),
+		 environments: [.[].environments[]?]}'
+	return $?
+}
+
 _release_settings_ruleset_details() {
 	local repo_slug="$1"
 	local ruleset_list="$2"
@@ -125,9 +139,10 @@ _release_settings_capture_snapshot() {
 	workflow_permissions=$(_release_settings_api_read \
 		"repos/${repo_slug}/actions/permissions/workflow") || return 1
 	actions_policy=$(_release_settings_api_read "repos/${repo_slug}/actions/permissions") || return 1
-	ruleset_list=$(_release_settings_api_read "repos/${repo_slug}/rulesets") || return 1
+	ruleset_list=$(_release_settings_api_array_list "repos/${repo_slug}/rulesets") || return 1
 	ruleset_details=$(_release_settings_ruleset_details "$repo_slug" "$ruleset_list") || return 1
-	environment_list=$(_release_settings_api_read "repos/${repo_slug}/environments") || return 1
+	environment_list=$(_release_settings_api_environment_list \
+		"repos/${repo_slug}/environments") || return 1
 	environment_state=$(_release_settings_environment_snapshot \
 		"$repo_slug" "$environment_list") || return 1
 
@@ -167,8 +182,14 @@ _release_settings_write_snapshot() {
 		_release_settings_error "refusing to overwrite snapshot: ${output_file}"
 		return 1
 	}
-	umask 077
-	printf '%s\n' "$snapshot" >"$output_file"
+	if ! (
+		umask 077
+		set -o noclobber
+		printf '%s\n' "$snapshot" >"$output_file"
+	); then
+		_release_settings_error "refusing to overwrite snapshot: ${output_file}"
+		return 1
+	fi
 	printf 'SNAPSHOT_FILE=%s\n' "$output_file"
 	return 0
 }
@@ -252,7 +273,7 @@ _release_settings_release_ruleset() {
 	local ruleset_list=""
 	local ruleset_id=""
 
-	ruleset_list=$(_release_settings_api_read "repos/${repo_slug}/rulesets") || return 1
+	ruleset_list=$(_release_settings_api_array_list "repos/${repo_slug}/rulesets") || return 1
 	ruleset_id=$(jq -er --arg name "$RELEASE_RULESET_NAME" '
 		map(select(.name == $name and .target == "tag" and .enforcement == "active"))
 		| if length == 1 then .[0].id else error("expected exactly one release ruleset") end

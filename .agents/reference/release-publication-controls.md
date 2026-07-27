@@ -127,6 +127,9 @@ the terminal non-publishing evidence.
 7. Run the read-only GitHub verifier and compare npm UI fields to the recorded
    values. Negative verification uses fixtures only; do not create a tag, release,
    package, Homebrew update, or deployment.
+   Any API assertion or UI comparison mismatch is a hard stop: do not merge, apply
+   the captured rollback inputs, and investigate before taking a new snapshot and
+   requesting approval again.
 8. Merge the code checkpoint that binds the GitHub release, npm, and Homebrew jobs
    to the already-protected environment.
 

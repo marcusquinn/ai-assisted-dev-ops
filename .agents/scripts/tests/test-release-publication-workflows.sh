@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 1
 RELEASE_WORKFLOW="${REPO_ROOT}/.github/workflows/release.yml"
 PACKAGE_WORKFLOW="${REPO_ROOT}/.github/workflows/publish-packages.yml"
 SETTINGS_HELPER="${REPO_ROOT}/.agents/scripts/release-publication-settings-helper.sh"
+readonly SNAPSHOT_MODE="snapshot-empty"
 
 assert_contains() {
 	local name="$1"
@@ -62,8 +63,10 @@ assert_order "release provenance precedes release creation" \
 assert_order "package provenance precedes npm publication" \
 	"release-provenance-helper.sh verify" "npm publish --provenance" "$PACKAGE_WORKFLOW"
 
-release_environment_count=$(grep -cF 'environment: release' "$RELEASE_WORKFLOW" || true)
-package_environment_count=$(grep -cF 'environment: release' "$PACKAGE_WORKFLOW" || true)
+release_environment_count=$(grep -cE \
+	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$RELEASE_WORKFLOW" || true)
+package_environment_count=$(grep -cE \
+	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$PACKAGE_WORKFLOW" || true)
 if [[ "$release_environment_count" -ne 1 || "$package_environment_count" -ne 2 ]]; then
 	printf 'FAIL all release and publication jobs must use the release environment\n'
 	exit 1
@@ -89,10 +92,23 @@ if [[ "${1:-}" != "api" ]]; then
 	exit 1
 fi
 shift
-if [[ "${1:-}" == "--method" ]]; then
-	shift 2
-fi
-endpoint="${1:-}"
+endpoint=""
+paginate="false"
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--method)
+		shift 2
+		;;
+	--paginate)
+		paginate="true"
+		shift
+		;;
+	*)
+		endpoint="$1"
+		shift
+		;;
+	esac
+done
 mode="${SETTINGS_TEST_MODE:-valid}"
 case "$endpoint" in
 repos/test/repo)
@@ -109,6 +125,10 @@ repos/test/repo/actions/permissions)
 	printf '%s\n' '{"enabled":true,"allowed_actions":"all"}'
 	;;
 repos/test/repo/rulesets)
+	if [[ "$paginate" != "true" ]]; then
+		printf 'rulesets endpoint was not paginated\n' >&2
+		exit 1
+	fi
 	if [[ "$mode" == "snapshot-empty" ]]; then
 		printf '%s\n' '[]'
 	else
@@ -120,11 +140,17 @@ repos/test/repo/rulesets/99)
 		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"deletion"}],"bypass_actors":[]}'
 	elif [[ "$mode" == "bad-ruleset-exclusion" ]]; then
 		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":["refs/tags/v*"]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"}]}'
+	elif [[ "$mode" == "bad-bypass-actor" ]]; then
+		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"},{"actor_id":8,"actor_type":"User","bypass_mode":"always"}]}'
 	else
 		printf '%s\n' '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"}],"bypass_actors":[{"actor_id":7,"actor_type":"User","bypass_mode":"always"}]}'
 	fi
 	;;
 repos/test/repo/environments)
+	if [[ "$paginate" != "true" ]]; then
+		printf 'environments endpoint was not paginated\n' >&2
+		exit 1
+	fi
 	if [[ "$mode" == "snapshot-empty" ]]; then
 		printf '%s\n' '{"total_count":0,"environments":[]}'
 	else
@@ -136,12 +162,18 @@ repos/test/repo/environments/release)
 		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":null}'
 	elif [[ "$mode" == "bad-reviewer-team" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}},{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+	elif [[ "$mode" == "bad-self-review" ]]; then
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	else
 		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	fi
 	;;
 repos/test/repo/environments/release/deployment-branch-policies)
-	printf '%s\n' '{"total_count":1,"branch_policies":[{"id":8,"name":"v*","type":"tag"}]}'
+	if [[ "$mode" == "bad-deployment-policy" ]]; then
+		printf '%s\n' '{"total_count":2,"branch_policies":[{"id":8,"name":"v*","type":"tag"},{"id":9,"name":"main","type":"branch"}]}'
+	else
+		printf '%s\n' '{"total_count":1,"branch_policies":[{"id":8,"name":"v*","type":"tag"}]}'
+	fi
 	;;
 users/releaser)
 	printf '%s\n' '{"id":7,"login":"releaser"}'
@@ -169,7 +201,7 @@ run_settings_helper() {
 	return $?
 }
 
-snapshot=$(run_settings_helper snapshot-empty snapshot --repo test/repo) || {
+snapshot=$(run_settings_helper "$SNAPSHOT_MODE" snapshot --repo test/repo) || {
 	printf 'FAIL settings snapshot rejected readable empty live state\n'
 	exit 1
 }
@@ -182,18 +214,108 @@ if ! jq -e '.schema == "aidevops.release-publication-settings/v1"
 fi
 printf 'PASS settings snapshot records rollback state\n'
 
-if ! run_settings_helper valid verify-github --repo test/repo \
-	--release-author releaser --reviewer reviewer >/dev/null; then
-	printf 'FAIL valid GitHub release settings were rejected\n'
+snapshot_file="${TEST_ROOT}/release-settings.json"
+snapshot_output=$(run_settings_helper "$SNAPSHOT_MODE" snapshot --repo test/repo \
+	--output "$snapshot_file") || {
+	printf 'FAIL settings snapshot output path was rejected\n'
+	exit 1
+}
+if [[ "$snapshot_output" != "SNAPSHOT_FILE=${snapshot_file}" ]] ||
+	! jq -e '.schema == "aidevops.release-publication-settings/v1"' "$snapshot_file" >/dev/null; then
+	printf 'FAIL settings snapshot output contract is invalid\n'
 	exit 1
 fi
+snapshot_mode=""
+if snapshot_mode=$(stat -f '%Lp' "$snapshot_file" 2>/dev/null); then
+	:
+elif snapshot_mode=$(stat -c '%a' "$snapshot_file" 2>/dev/null); then
+	:
+else
+	printf 'FAIL settings snapshot mode could not be read\n'
+	exit 1
+fi
+if [[ "$snapshot_mode" != "600" ]]; then
+	printf 'FAIL settings snapshot permissions are %s, expected 600\n' "$snapshot_mode"
+	exit 1
+fi
+overwrite_output=""
+if overwrite_output=$(run_settings_helper "$SNAPSHOT_MODE" snapshot --repo test/repo \
+	--output "$snapshot_file" 2>&1); then
+	printf 'FAIL settings snapshot overwrote an existing file\n'
+	exit 1
+fi
+if ! grep -qF 'release-settings: refusing to overwrite snapshot:' <<<"$overwrite_output"; then
+	printf 'FAIL settings snapshot overwrite failed for an unexpected reason\n'
+	exit 1
+fi
+missing_parent_output=""
+if missing_parent_output=$(run_settings_helper "$SNAPSHOT_MODE" snapshot --repo test/repo \
+	--output "${TEST_ROOT}/missing/release-settings.json" 2>&1); then
+	printf 'FAIL settings snapshot created a missing parent directory\n'
+	exit 1
+fi
+if ! grep -qF 'release-settings: snapshot parent directory does not exist:' \
+	<<<"$missing_parent_output"; then
+	printf 'FAIL settings snapshot parent check failed for an unexpected reason\n'
+	exit 1
+fi
+dangling_snapshot="${TEST_ROOT}/dangling-release-settings.json"
+ln -s "${TEST_ROOT}/missing-target.json" "$dangling_snapshot"
+dangling_output=""
+if dangling_output=$(run_settings_helper "$SNAPSHOT_MODE" snapshot --repo test/repo \
+	--output "$dangling_snapshot" 2>&1); then
+	printf 'FAIL settings snapshot followed a dangling symlink\n'
+	exit 1
+fi
+if ! grep -qF 'release-settings: refusing to overwrite snapshot:' <<<"$dangling_output"; then
+	printf 'FAIL dangling snapshot failed for an unexpected reason\n'
+	exit 1
+fi
+printf 'PASS settings snapshot output is atomic and private\n'
+
+verify_output=$(run_settings_helper valid verify-github --repo test/repo \
+	--release-author releaser --reviewer reviewer) || {
+	printf 'FAIL valid GitHub release settings were rejected\n'
+	exit 1
+}
+for expected_marker in \
+	'GITHUB_RELEASE_CONTROLS=verified' \
+	'MANUAL_CHECK_REQUIRED=environment_admin_bypass_disabled' \
+	'MANUAL_CHECK_REQUIRED=publisher_workflow_and_environment'; do
+	if ! grep -qxF "$expected_marker" <<<"$verify_output"; then
+		printf 'FAIL verify-github omitted marker: %s\n' "$expected_marker"
+		exit 1
+	fi
+done
 printf 'PASS valid GitHub release settings are accepted\n'
 
 for invalid_mode in bad-author bad-actions bad-ruleset bad-ruleset-exclusion \
-	bad-environment bad-reviewer-team; do
-	if run_settings_helper "$invalid_mode" verify-github --repo test/repo \
-		--release-author releaser --reviewer reviewer >/dev/null 2>&1; then
+	bad-bypass-actor bad-environment bad-reviewer-team bad-self-review \
+	bad-deployment-policy; do
+	expected_error=""
+	case "$invalid_mode" in
+	bad-author) expected_error="release author must retain repository admin authority" ;;
+	bad-actions) expected_error="Actions defaults are not read-only with PR approval disabled" ;;
+	bad-ruleset | bad-ruleset-exclusion | bad-bypass-actor)
+		expected_error="release tag ruleset does not match the fail-closed policy"
+		;;
+	bad-environment) expected_error="release environment does not use custom ref policies" ;;
+	bad-reviewer-team | bad-self-review)
+		expected_error="release environment reviewer set is not exact"
+		;;
+	bad-deployment-policy)
+		expected_error="release environment is not limited to the v* tag policy"
+		;;
+	esac
+	invalid_output=""
+	if invalid_output=$(run_settings_helper "$invalid_mode" verify-github --repo test/repo \
+		--release-author releaser --reviewer reviewer 2>&1); then
 		printf 'FAIL invalid settings mode was accepted: %s\n' "$invalid_mode"
+		exit 1
+	fi
+	if ! grep -qF "release-settings: ${expected_error}" <<<"$invalid_output"; then
+		printf 'FAIL mode %s failed for an unexpected reason: %s\n' \
+			"$invalid_mode" "$invalid_output"
 		exit 1
 	fi
 done
