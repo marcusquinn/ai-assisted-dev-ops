@@ -78,6 +78,17 @@ if [[ -d "$REPO_ROOT/.git" ]] && ! _full_loop_release_prepare_control_worktree "
 	exit 1
 fi
 
+_full_loop_release_bind_repo_context() {
+	local repo="${AIDEVOPS_FULL_LOOP_REPO:-}"
+	if [[ -z "$repo" ]]; then
+		repo=$(cd "$REPO_ROOT" && gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null) || return 1
+	fi
+	[[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || return 1
+	AIDEVOPS_FULL_LOOP_REPO="$repo"
+	export AIDEVOPS_FULL_LOOP_REPO
+	return 0
+}
+
 source "${SCRIPT_DIR}/full-loop-helper-state.sh"
 # shellcheck source=./full-loop-release-reconcile.sh
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
@@ -234,6 +245,7 @@ main() {
 			_full_loop_release_usage >&2
 			return 1
 		}
+		_full_loop_release_bind_repo_context || return 1
 		_full_loop_release_existing_command "$release_type" "$source_pr"
 		return $?
 		;;
@@ -241,6 +253,7 @@ main() {
 	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
 	case "$deployment_scope" in incremental | full) ;; *) return 1 ;; esac
 	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	_full_loop_release_bind_repo_context || return 1
 	local repo=""
 	local existing_state_rc=0
 	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1

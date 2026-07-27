@@ -41,6 +41,14 @@ chmod +x "$ROOT/bin/git"
 
 cat >"$ROOT/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
+	printf 'repo-view-cwd=%s\n' "$PWD" >>"${GH_CALL_LOG:?}"
+	case "$PWD" in
+	"${FAKE_CONTROL_PARENT:?}"/aidevops-release-control-*) printf 'marcusquinn/aidevops\n' ;;
+	*) printf 'wrong/caller-repo\n' ;;
+	esac
+	exit 0
+fi
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 	printf '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","mergeCommit":{"oid":"%040d"}}\n' 1
 	exit 0
@@ -89,13 +97,14 @@ chmod +x "$ROOT/source-resolver.sh"
 	cd "$ROOT/repo/linked-branch"
 	PATH="$ROOT/bin:/usr/bin:/bin" \
 		GIT_CALL_LOG="$ROOT/git.log" \
+		GH_CALL_LOG="$ROOT/gh.log" \
 		VM_CALL_LOG="$ROOT/vm.log" \
 		FAKE_REPO_ROOT="$ROOT/repo" \
+		FAKE_CONTROL_PARENT="$ROOT/worktrees" \
 		AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees" \
 		AIDEVOPS_FULL_LOOP_VERSION_MANAGER="../../version-manager.sh" \
 		AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER="$ROOT/source-resolver.sh" \
 		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
-		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
 		AIDEVOPS_TRUSTED_ISSUE_PRIORITY=critical \
 		bash "$SCRIPT_DIR/full-loop-release-helper.sh" minor 42 full
 )
@@ -108,6 +117,7 @@ grep -qx 'intent=1' "$ROOT/vm.log"
 grep -qx 'priority=critical' "$ROOT/vm.log"
 grep -qx 'deploy=full' "$ROOT/vm.log"
 grep -qx 'published' "$ROOT/receipts/marcusquinn_aidevops-42.status"
+grep -Eq "^repo-view-cwd=${ROOT}/worktrees/aidevops-release-control-[0-9]+$" "$ROOT/gh.log"
 if grep -Fq -- "-C $ROOT/repo fetch " "$ROOT/git.log" ||
 	! grep -Eq -- "-C ${ROOT}/worktrees/aidevops-release-control-[0-9]+ fetch origin (main|--tags)" \
 		"$ROOT/git.log"; then
