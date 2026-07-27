@@ -155,6 +155,9 @@ _release_lookup_exact_workflow_run() {
 	runs_json=$(gh api --method GET \
 		"repos/${slug}/actions/workflows/${workflow_file}/runs" \
 		-f "event=${event_name}" -F per_page=20 2>/dev/null) || return 1
+	[[ -n "$runs_json" ]] || return 1
+	jq -e 'type == "object" and (.workflow_runs | type == "array")' \
+		<<<"$runs_json" >/dev/null || return 1
 	run_json=$(jq -c --arg sha "$expected_commit" --arg event "$event_name" \
 		--arg title "$expected_title" '
 		[.workflow_runs[]?
@@ -331,6 +334,7 @@ _wait_for_protected_package_publication() {
 
 	for event_name in workflow_dispatch release; do
 		expected_title=""
+		[[ "$event_name" == "workflow_dispatch" ]] && expected_title="$dispatch_title"
 		lookup_rc=0
 		run_json=$(_release_lookup_exact_workflow_run "$slug" "$workflow_file" \
 			"$event_name" "$tag_commit" "$expected_title" 2>/dev/null) || lookup_rc=$?
