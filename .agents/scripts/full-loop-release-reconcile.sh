@@ -8,6 +8,13 @@ _FULL_LOOP_RELEASE_RECONCILE_LOADED=1
 
 _FULL_LOOP_RELEASE_FOUND_TAG=""
 _FULL_LOOP_RELEASE_RUN_JSON=""
+_FULL_LOOP_RELEASE_NPM_VERSION=""
+_FULL_LOOP_RELEASE_NPM_INTEGRITY=""
+_FULL_LOOP_RELEASE_EVENT_PUSH="push"
+_FULL_LOOP_RELEASE_EVENT_RECOVERY="workflow_dispatch"
+_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE="array"
+_FULL_LOOP_RELEASE_JSON_STRING_TYPE="string"
+_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
 
 _full_loop_release_tag_body() {
 	local tag_name="$1"
@@ -104,7 +111,6 @@ _full_loop_release_find_workflow_run() {
 	local push_runs=""
 	local recovery_runs=""
 	local display_title="Publish ${tag_name}"
-	local string_type="string"
 
 	_FULL_LOOP_RELEASE_RUN_JSON=""
 	push_runs=$(gh api --method GET "repos/${repo}/actions/workflows/publish-packages.yml/runs" \
@@ -114,17 +120,24 @@ _full_loop_release_find_workflow_run() {
 	_full_loop_release_runs_payload_valid "$push_runs" || return 1
 	_full_loop_release_runs_payload_valid "$recovery_runs" || return 1
 	_FULL_LOOP_RELEASE_RUN_JSON=$(jq -cn --arg sha "$tag_commit" --arg title "$display_title" \
+		--arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
+		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" \
+		--arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
 		--argjson push "$push_runs" --argjson recovery "$recovery_runs" '
-		([($push.workflow_runs[]? | select(.event == "push" and .head_sha == $sha))]
+		([($push.workflow_runs[]? | select(.event == $push_event and .head_sha == $sha))]
 		 + [($recovery.workflow_runs[]?
-			| select(.event == "workflow_dispatch" and .head_branch == "main"
-				and .display_title == $title))])
+			| select(.event == $recovery_event and .head_branch == "main"
+				and ((.head_sha | type) == $string_type)
+				and (.head_sha | test("^[0-9a-f]{40}$"))
+				and .display_title == ($title + " [" + $sha + "." + .head_sha + "]")))])
 		| sort_by(.created_at // "") | last // empty
 	') || return 1
 	[[ -n "$_FULL_LOOP_RELEASE_RUN_JSON" && "$_FULL_LOOP_RELEASE_RUN_JSON" != "null" ]] || return 3
-	jq -e --arg string_type "$string_type" '
+	jq -e --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		--arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
+		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" '
 		((.id | type) == "number")
-		and (.event == "push" or .event == "workflow_dispatch")
+		and (.event == $push_event or .event == $recovery_event)
 		and ((.head_sha | type) == $string_type)
 		and (.head_sha | test("^[0-9a-f]{40}$"))
 		and ((.status | type) == $string_type)
@@ -152,17 +165,143 @@ _full_loop_release_sha256_stream() {
 	return 0
 }
 
+_full_loop_release_verify_npm_provenance() {
+	local repo="$1"
+	local tag_name="$2"
+	local version="$3"
+	local run_event="$4"
+	local npm_metadata=""
+	local npm_version=""
+	local npm_integrity=""
+	local npm_shasum=""
+	local audit_dir=""
+	local audit_json=""
+	local provenance_payload=""
+	local expected_digest=""
+	local expected_ref=""
+	local audit_rc=0
+
+	_FULL_LOOP_RELEASE_NPM_VERSION=""
+	_FULL_LOOP_RELEASE_NPM_INTEGRITY=""
+	command -v npm >/dev/null 2>&1 || return 1
+	command -v node >/dev/null 2>&1 || return 1
+	npm_metadata=$(npm view "aidevops@${version}" version dist --json 2>/dev/null) || return 1
+	npm_version=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.version | select(type == $string_type)' <<<"$npm_metadata") || return 1
+	npm_integrity=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.dist.integrity | select(type == $string_type)' <<<"$npm_metadata") || return 1
+	npm_shasum=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.dist.shasum | select(type == $string_type)' <<<"$npm_metadata") || return 1
+	[[ "$npm_version" == "$version" ]] || return 1
+	[[ "$npm_integrity" =~ ^sha512-[A-Za-z0-9+/]+={0,2}$ ]] || return 1
+	[[ "$npm_shasum" =~ ^[0-9a-f]{40}$ ]] || return 1
+	jq -e --arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" \
+		--arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" '
+		.dist.attestations.provenance.predicateType == $provenance_predicate
+		and ((.dist.attestations.url // "") | type == $string_type and length > 0)
+	' <<<"$npm_metadata" >/dev/null || return 1
+	expected_digest=$(node -e \
+		'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("hex"))' \
+		"${npm_integrity#sha512-}") || return 1
+	[[ "$expected_digest" =~ ^[0-9a-f]{128}$ ]] || return 1
+	case "$run_event" in
+	"$_FULL_LOOP_RELEASE_EVENT_PUSH") expected_ref="refs/tags/${tag_name}" ;;
+	"$_FULL_LOOP_RELEASE_EVENT_RECOVERY") expected_ref="refs/heads/main" ;;
+	*) return 1 ;;
+	esac
+
+	audit_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-npm-provenance.XXXXXX") || return 1
+	if ! npm install --prefix "$audit_dir" --ignore-scripts --no-audit --no-fund --save-exact \
+		"aidevops@${version}" >/dev/null 2>&1; then
+		audit_rc=1
+	elif ! audit_json=$(npm --prefix "$audit_dir" audit signatures \
+		--json --include-attestations 2>/dev/null); then
+		audit_rc=1
+	elif ! jq -e --arg version "$version" \
+		--arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+		(.invalid | type == $array_type and length == 0)
+		and (.missing | type == $array_type and length == 0)
+		and ([.verified[]
+			| select(.name == "aidevops" and .version == $version)
+			| select(.attestations.provenance.predicateType == $provenance_predicate)
+			| .attestationBundles[]
+			| select(.predicateType == $provenance_predicate)
+		] | length == 1)
+	' <<<"$audit_json" >/dev/null; then
+		audit_rc=1
+	elif ! provenance_payload=$(jq -er --arg version "$version" \
+		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+		[.verified[]
+			| select(.name == "aidevops" and .version == $version)
+			| .attestationBundles[]
+			| select(.predicateType == $provenance_predicate)
+			| .bundle.dsseEnvelope.payload
+		] | if length == 1 then .[0] | @base64d else empty end
+	' <<<"$audit_json"); then
+		audit_rc=1
+	elif ! jq -e --arg subject "pkg:npm/aidevops@${version}" \
+		--arg digest "$expected_digest" --arg repository "https://github.com/${repo}" \
+		--arg ref "$expected_ref" --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+		--arg provenance_predicate "$_FULL_LOOP_RELEASE_PROVENANCE_PREDICATE" '
+		._type == "https://in-toto.io/Statement/v1"
+		and .predicateType == $provenance_predicate
+		and (.subject | type == $array_type and length == 1)
+		and .subject[0].name == $subject
+		and .subject[0].digest.sha512 == $digest
+		and .predicate.buildDefinition.buildType
+			== "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+		and .predicate.buildDefinition.externalParameters.workflow.repository == $repository
+		and .predicate.buildDefinition.externalParameters.workflow.path
+			== ".github/workflows/publish-packages.yml"
+		and .predicate.buildDefinition.externalParameters.workflow.ref == $ref
+		and .predicate.runDetails.builder.id == "https://github.com/actions/runner/github-hosted"
+	' <<<"$provenance_payload" >/dev/null; then
+		audit_rc=1
+	fi
+	command rm -rf -- "$audit_dir" || return 1
+	[[ "$audit_rc" -eq 0 ]] || return 1
+	_FULL_LOOP_RELEASE_NPM_VERSION="$npm_version"
+	_FULL_LOOP_RELEASE_NPM_INTEGRITY="$npm_integrity"
+	return 0
+}
+
+_full_loop_release_expected_homebrew_formula() {
+	local repo="$1"
+	local tag_name="$2"
+	local expected_sha="$3"
+	local tarball_url="https://github.com/${repo}/archive/refs/tags/${tag_name}.tar.gz"
+	local formula=""
+	local url_count=""
+	local sha_count=""
+
+	formula=$(git -C "$REPO_ROOT" show "${tag_name}:homebrew/aidevops.rb") || return 1
+	url_count=$(grep -cE '^[[:space:]]{2}url "https://github.com/.+/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz"$' \
+		<<<"$formula" || true)
+	sha_count=$(grep -cE '^[[:space:]]{2}sha256 "[0-9a-f]{64}"$' <<<"$formula" || true)
+	[[ "$url_count" -eq 1 && "$sha_count" -eq 1 ]] || return 1
+	formula=$(sed -E \
+		-e "s|^([[:space:]]{2})url \"https://github.com/.+/archive/refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\\.tar\\.gz\"$|\\1url \"${tarball_url}\"|" \
+		-e "s|^([[:space:]]{2})sha256 \"[0-9a-f]{64}\"$|\\1sha256 \"${expected_sha}\"|" \
+		<<<"$formula") || return 1
+	[[ "$formula" == *"  url \"${tarball_url}\""* &&
+		"$formula" == *"  sha256 \"${expected_sha}\""* ]] || return 1
+	printf '%s\n' "$formula"
+	return 0
+}
+
 _full_loop_release_verify_channels() {
 	local repo="$1"
 	local tag_name="$2"
 	local version="${tag_name#v}"
 	local release_json=""
-	local npm_output=""
 	local npm_version=""
+	local npm_integrity=""
+	local run_event=""
 	local tap_owner="${repo%%/*}"
 	local formula=""
+	local expected_formula=""
 	local formula_sha=""
-	local sha_pattern='sha256[[:space:]]+"([0-9a-f]{64})"'
 	local tarball_url="https://github.com/${repo}/archive/refs/tags/${tag_name}.tar.gz"
 	local expected_sha=""
 
@@ -170,22 +309,24 @@ _full_loop_release_verify_channels() {
 	jq -e --arg tag "$tag_name" '
 		.tag_name == $tag and .draft == false and ((.published_at // "") | length > 0)
 	' <<<"$release_json" >/dev/null || return 1
-	command -v npm >/dev/null 2>&1 || return 1
-	npm_output=$(npm view "aidevops@${version}" version --json 2>/dev/null) || return 1
-	npm_version=$(jq -er '
-		if type == "array" then .[0] else . end | select(type == "string")
-	' <<<"$npm_output") || return 1
-	[[ "$npm_version" == "$version" ]] || return 1
+	run_event=$(jq -er --arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
+		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" \
+		'.event | select(. == $push_event or . == $recovery_event)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	_full_loop_release_verify_npm_provenance "$repo" "$tag_name" "$version" "$run_event" || return 1
+	npm_version="$_FULL_LOOP_RELEASE_NPM_VERSION"
+	npm_integrity="$_FULL_LOOP_RELEASE_NPM_INTEGRITY"
 	formula=$(gh api "repos/${tap_owner}/homebrew-tap/contents/Formula/aidevops.rb" \
 		--jq '.content | @base64d' 2>/dev/null) || return 1
-	[[ "$formula" == *"/archive/refs/tags/${tag_name}.tar.gz"* ]] || return 1
-	[[ "$formula" =~ $sha_pattern ]] || return 1
-	formula_sha="${BASH_REMATCH[1]}"
 	command -v curl >/dev/null 2>&1 || return 1
 	expected_sha=$(curl -fsSL "$tarball_url" | _full_loop_release_sha256_stream) || return 1
-	[[ "$formula_sha" == "$expected_sha" ]] || return 1
+	expected_formula=$(_full_loop_release_expected_homebrew_formula \
+		"$repo" "$tag_name" "$expected_sha") || return 1
+	[[ "$formula" == "$expected_formula" ]] || return 1
+	formula_sha="$expected_sha"
 	printf 'GITHUB_RELEASE=%s\n' "$tag_name"
 	printf 'NPM_VERSION=%s\n' "$npm_version"
+	printf 'NPM_INTEGRITY=%s\n' "$npm_integrity"
 	printf 'HOMEBREW_VERSION=%s\n' "$version"
 	printf 'HOMEBREW_SHA256=%s\n' "$formula_sha"
 	return 0
@@ -228,14 +369,28 @@ _full_loop_release_dispatch_recovery() {
 	local repo="$1"
 	local tag_name="$2"
 	local audit_helper="${SCRIPT_DIR}/audit-log-helper.sh"
+	local tag_commit=""
+	local main_json=""
+	local main_sha=""
+	local correlation=""
+
+	tag_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	[[ "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	main_json=$(gh api "repos/${repo}/git/ref/heads/main" 2>/dev/null) || return 1
+	main_sha=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.object.sha | select(type == $string_type)' <<<"$main_json") || return 1
+	[[ "$main_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	correlation="${tag_commit}.${main_sha}"
 
 	if [[ -x "$audit_helper" ]]; then
 		AUDIT_QUIET=true "$audit_helper" log operation.verify \
 			"Dispatching verified release reconciliation" \
-			--detail "repo=${repo}" --detail "tag=${tag_name}" || return 1
+			--detail "repo=${repo}" --detail "tag=${tag_name}" \
+			--detail "correlation=${correlation}" || return 1
 	fi
-	gh workflow run publish-packages.yml --repo "$repo" --ref main -f "tag=${tag_name}" || return 1
-	printf 'release:queued tag=%s\n' "$tag_name"
+	gh workflow run publish-packages.yml --repo "$repo" --ref main \
+		-f "tag=${tag_name}" -f "correlation=${correlation}" || return 1
+	printf 'release:queued tag=%s correlation=%s\n' "$tag_name" "$correlation"
 	return 8
 }
 

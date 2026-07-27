@@ -58,7 +58,7 @@ malformed)
 	exit 0
 	;;
 malformed-run)
-	printf '%s\n' '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","conclusion":null,"created_at":"2026-07-27T00:01:00Z","display_title":"Publish v1.2.3"}]}'
+	printf '%s\n' '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","conclusion":null,"created_at":"2026-07-27T00:01:00Z","display_title":"Publish v1.2.3 [3333333333333333333333333333333333333333.4444444444444444444444444444444444444444]"}]}'
 	exit 0
 	;;
 no-runs)
@@ -66,12 +66,25 @@ no-runs)
 	exit 0
 	;;
 esac
+if [[ "$args" == *" workflow run publish-packages.yml "* ]]; then
+	printf '%s\n' "$args" >"${FAKE_DISPATCH_LOG:?}"
+	exit 0
+fi
+if [[ "$args" == *"repos/test/repo/git/ref/heads/main"* ]]; then
+	printf '%s\n' '{"object":{"sha":"4444444444444444444444444444444444444444"}}'
+	exit 0
+fi
 if [[ "$args" == *" -f event=push "* ]]; then
 	printf '%s\n' '{"workflow_runs":[{"id":10,"event":"push","head_sha":"3333333333333333333333333333333333333333","status":"completed","conclusion":"success","created_at":"2026-07-27T00:00:00Z","display_title":"push","html_url":"push-url"}]}'
 	exit 0
 fi
 if [[ "$args" == *" -f event=workflow_dispatch "* ]]; then
-	printf '%s\n' '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","status":"queued","conclusion":null,"created_at":"2026-07-27T00:01:00Z","display_title":"Publish v1.2.3","html_url":"recovery-url"}]}'
+	correlated_title='Publish v1.2.3 [3333333333333333333333333333333333333333.4444444444444444444444444444444444444444]'
+	if [[ "${FAKE_RECOVERY_CORRELATION_MODE:-valid}" == "mismatch" ]]; then
+		correlated_title='Publish v1.2.3 [3333333333333333333333333333333333333333.5555555555555555555555555555555555555555]'
+	fi
+	printf '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","status":"queued","conclusion":null,"created_at":"2026-07-27T00:01:00Z","display_title":"%s","html_url":"recovery-url"}]}\n' \
+		"$correlated_title"
 	exit 0
 fi
 if [[ "$args" == *"releases/tags/v1.2.3"* ]]; then
@@ -85,14 +98,46 @@ fi
 if [[ "$args" == *"homebrew-tap/contents/Formula/aidevops.rb"* ]]; then
 	printf 'class Aidevops\n  url "https://github.com/test/repo/archive/refs/tags/v1.2.3.tar.gz"\n  sha256 "%s"\nend\n' \
 		"${FAKE_FORMULA_SHA:?}"
+	if [[ "${FAKE_FORMULA_DRIFT:-0}" == "1" ]]; then
+		printf '# unexpected drift\n'
+	fi
+	exit 0
+fi
+exit 1
+STUB
+cat >"${TEST_ROOT}/bin/git" <<'STUB'
+#!/usr/bin/env bash
+if [[ " $* " == *" rev-parse refs/tags/v1.2.3^{commit} "* ]]; then
+	printf '%s\n' '3333333333333333333333333333333333333333'
 	exit 0
 fi
 exit 1
 STUB
 cat >"${TEST_ROOT}/bin/npm" <<'STUB'
 #!/usr/bin/env bash
-if [[ " $* " == *" view aidevops@1.2.3 version --json "* ]]; then
-	printf '"%s"\n' "${FAKE_NPM_VERSION:-1.2.3}"
+args=" $* "
+if [[ "$args" == *" view aidevops@1.2.3 version dist --json "* ]]; then
+	jq -cn --arg version "${FAKE_NPM_VERSION:-1.2.3}" \
+		--arg integrity "${FAKE_NPM_INTEGRITY:?}" \
+		--arg predicate "${FAKE_NPM_PREDICATE:-https://slsa.dev/provenance/v1}" '
+		{version:$version,dist:{integrity:$integrity,shasum:"1111111111111111111111111111111111111111",
+		attestations:{url:"registry-attestation",provenance:{predicateType:$predicate}}}}
+	'
+	exit 0
+fi
+if [[ "$args" == *" install "* ]]; then
+	exit 0
+fi
+if [[ "$args" == *" audit signatures "* ]]; then
+	invalid='[]'
+	[[ "${FAKE_NPM_AUDIT_INVALID:-0}" == "1" ]] && invalid='[{"code":"invalid"}]'
+	jq -cn --arg version "${FAKE_NPM_VERSION:-1.2.3}" \
+		--arg payload "${FAKE_PROVENANCE_PAYLOAD_B64:?}" --argjson invalid "$invalid" '
+		{invalid:$invalid,missing:[],verified:[{name:"aidevops",version:$version,
+		attestations:{provenance:{predicateType:"https://slsa.dev/provenance/v1"}},
+		attestationBundles:[{predicateType:"https://slsa.dev/provenance/v1",
+		bundle:{dsseEnvelope:{payload:$payload}}}]}]}
+	'
 	exit 0
 fi
 exit 1
@@ -102,13 +147,52 @@ cat >"${TEST_ROOT}/bin/curl" <<'STUB'
 printf 'tarball-fixture'
 STUB
 chmod +x "${TEST_ROOT}/bin/gh"
-chmod +x "${TEST_ROOT}/bin/npm" "${TEST_ROOT}/bin/curl"
+chmod +x "${TEST_ROOT}/bin/git" "${TEST_ROOT}/bin/npm" "${TEST_ROOT}/bin/curl"
 PATH="${TEST_ROOT}/bin:${PATH}"
 export FAKE_RUN_SCHEMA_MODE=valid
+export FAKE_RECOVERY_CORRELATION_MODE=valid
 export FAKE_RELEASE_DRAFT=0
 export FAKE_NPM_VERSION=1.2.3
+FAKE_NPM_DIGEST=$(printf '%0128d' 0)
+FAKE_NPM_INTEGRITY=$(node -e \
+	'process.stdout.write("sha512-" + Buffer.from(process.argv[1], "hex").toString("base64"))' \
+	"$FAKE_NPM_DIGEST")
+export FAKE_NPM_DIGEST FAKE_NPM_INTEGRITY
 FAKE_FORMULA_SHA=$(printf 'tarball-fixture' | _full_loop_release_sha256_stream)
 export FAKE_FORMULA_SHA
+
+set_fake_provenance_payload() {
+	local repository="$1"
+	local workflow_ref="$2"
+	local subject_digest="${3:-$FAKE_NPM_DIGEST}"
+	local payload=""
+
+	payload=$(jq -cn --arg repository "$repository" --arg ref "$workflow_ref" \
+		--arg digest "$subject_digest" '
+		{"_type":"https://in-toto.io/Statement/v1","predicateType":"https://slsa.dev/provenance/v1",
+		"subject":[{"name":"pkg:npm/aidevops@1.2.3","digest":{"sha512":$digest}}],
+		"predicate":{"buildDefinition":{
+		"buildType":"https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+		"externalParameters":{"workflow":{"repository":$repository,
+		"path":".github/workflows/publish-packages.yml","ref":$ref}}},
+		"runDetails":{"builder":{"id":"https://github.com/actions/runner/github-hosted"}}}}
+	') || return 1
+	FAKE_PROVENANCE_PAYLOAD_B64=$(node -e \
+		'process.stdout.write(Buffer.from(process.argv[1]).toString("base64"))' "$payload") || return 1
+	export FAKE_PROVENANCE_PAYLOAD_B64
+	return 0
+}
+
+_full_loop_release_expected_homebrew_formula() {
+	local repo="$1"
+	local tag_name="$2"
+	local expected_sha="$3"
+	printf 'class Aidevops\n  url "https://github.com/%s/archive/refs/tags/%s.tar.gz"\n  sha256 "%s"\nend\n' \
+		"$repo" "$tag_name" "$expected_sha"
+	return 0
+}
+
+set_fake_provenance_payload "https://github.com/test/repo" "refs/heads/main"
 
 _full_loop_release_find_workflow_run test/repo v1.2.3 3333333333333333333333333333333333333333
 if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "11" ]]; then
@@ -116,6 +200,30 @@ if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "11" ]]; then
 	exit 1
 fi
 printf 'PASS exact push and recovery workflow runs are correlated durably\n'
+
+export FAKE_RECOVERY_CORRELATION_MODE=mismatch
+_full_loop_release_find_workflow_run test/repo v1.2.3 3333333333333333333333333333333333333333
+if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "10" ]]; then
+	printf 'FAIL recovery workflow with mismatched commit correlation was accepted\n'
+	exit 1
+fi
+export FAKE_RECOVERY_CORRELATION_MODE=valid
+printf 'PASS recovery workflow correlation binds tag and workflow commits\n'
+
+saved_script_dir="$SCRIPT_DIR"
+SCRIPT_DIR="${TEST_ROOT}/no-audit-helper"
+FAKE_DISPATCH_LOG="${TEST_ROOT}/dispatch-command.log"
+export FAKE_DISPATCH_LOG
+dispatch_rc=0
+_full_loop_release_dispatch_recovery test/repo v1.2.3 >/dev/null || dispatch_rc=$?
+SCRIPT_DIR="$saved_script_dir"
+if [[ "$dispatch_rc" -ne 8 ]] ||
+	! grep -qF ' -f tag=v1.2.3 -f correlation=3333333333333333333333333333333333333333.4444444444444444444444444444444444444444 ' \
+		"$FAKE_DISPATCH_LOG"; then
+	printf 'FAIL recovery dispatch did not carry exact tag and workflow commit correlation\n'
+	exit 1
+fi
+printf 'PASS recovery dispatch carries exact tag and workflow commit correlation\n'
 
 for schema_mode in empty object malformed malformed-run api-failure; do
 	export FAKE_RUN_SCHEMA_MODE="$schema_mode"
@@ -137,6 +245,32 @@ if [[ "$absent_rc" -ne 3 ]]; then
 fi
 export FAKE_RUN_SCHEMA_MODE=valid
 printf 'PASS workflow-run API and schema uncertainty fail closed\n'
+
+_full_loop_release_find_workflow_run test/repo v1.2.3 3333333333333333333333333333333333333333
+
+_full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch || {
+	printf 'FAIL valid npm provenance did not verify\n'
+	exit 1
+}
+if [[ "$_FULL_LOOP_RELEASE_NPM_INTEGRITY" != "$FAKE_NPM_INTEGRITY" ]]; then
+	printf 'FAIL npm provenance verification omitted exact package integrity\n'
+	exit 1
+fi
+set_fake_provenance_payload "https://github.com/attacker/repo" "refs/heads/main"
+if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch; then
+	printf 'FAIL foreign npm provenance repository was accepted\n'
+	exit 1
+fi
+set_fake_provenance_payload "https://github.com/test/repo" "refs/heads/main"
+FAKE_NPM_AUDIT_INVALID=1
+export FAKE_NPM_AUDIT_INVALID
+if _full_loop_release_verify_npm_provenance test/repo v1.2.3 1.2.3 workflow_dispatch; then
+	printf 'FAIL invalid npm provenance signature was accepted\n'
+	exit 1
+fi
+FAKE_NPM_AUDIT_INVALID=0
+export FAKE_NPM_AUDIT_INVALID
+printf 'PASS npm package integrity and signed workflow provenance are bound exactly\n'
 
 channel_output=$(_full_loop_release_verify_channels test/repo v1.2.3) || {
 	printf 'FAIL exact published channels did not converge\n'
@@ -161,6 +295,14 @@ if _full_loop_release_verify_channels test/repo v1.2.3 >/dev/null 2>&1; then
 fi
 FAKE_FORMULA_SHA=$(printf 'tarball-fixture' | _full_loop_release_sha256_stream)
 export FAKE_FORMULA_SHA
+FAKE_FORMULA_DRIFT=1
+export FAKE_FORMULA_DRIFT
+if _full_loop_release_verify_channels test/repo v1.2.3 >/dev/null 2>&1; then
+	printf 'FAIL drifted Homebrew formula satisfied exact channel convergence\n'
+	exit 1
+fi
+FAKE_FORMULA_DRIFT=0
+export FAKE_FORMULA_DRIFT
 printf 'PASS published channel verification binds release, package, formula, and digest\n'
 
 _full_loop_resolve_repo() {

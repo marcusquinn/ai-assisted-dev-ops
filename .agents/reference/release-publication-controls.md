@@ -179,9 +179,15 @@ and Homebrew update are each check-before-write and verify-after-write operation
 so retries converge without duplicate publication or channel downgrade.
 
 This unified path supersedes the interim separate package dispatch. Workflow-run
-discovery binds the event and exact tag commit, rejects unavailable or malformed
-API responses, and never treats uncertainty as successful correlation. npm
-registry uncertainty likewise fails closed before publication.
+discovery binds a push to the exact tag commit. Recovery names and verifies an
+exact `<tag-commit>.<main-workflow-commit>` correlation, rejects unavailable or
+malformed API responses, and never treats uncertainty as successful correlation.
+npm registry uncertainty likewise fails closed before publication. Existing and
+new npm versions must match the exact locally packed integrity and shasum; npm's
+signature audit must then verify one SLSA provenance statement binding that digest
+to this repository, workflow path, and triggering ref. Homebrew reconciliation
+compares the complete expected formula from the signed tag rather than accepting
+matching URL or digest fragments in otherwise drifted content.
 
 The local initiator observes only that the exact tag workflow was queued; it does
 not have to remain alive until publication completes. Exit `8` means durable

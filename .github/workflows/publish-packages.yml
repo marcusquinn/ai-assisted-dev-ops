@@ -1,5 +1,5 @@
 name: Publish Release
-run-name: Publish ${{ inputs.tag || github.ref_name }}
+run-name: Publish ${{ inputs.tag || github.ref_name }} [${{ inputs.correlation || github.run_id }}]
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
     inputs:
       tag:
         description: Existing verified release tag to reconcile
+        required: true
+        type: string
+      correlation:
+        description: Exact tag-commit and workflow-commit correlation
         required: true
         type: string
 
@@ -28,6 +32,8 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       RELEASE_EVENT: ${{ github.event_name }}
       RELEASE_REF: ${{ github.ref }}
+      RELEASE_CORRELATION: ${{ inputs.correlation || '' }}
+      RELEASE_WORKFLOW_SHA: ${{ github.sha }}
 
     steps:
       - name: Checkout verified tag
@@ -54,6 +60,10 @@ jobs:
               echo "::error::Recovery must use the reviewed default branch workflow"
               exit 1
             }
+            [[ "$RELEASE_CORRELATION" =~ ^[0-9a-f]{40}\.[0-9a-f]{40}$ ]] || {
+              echo "::error::Recovery correlation is malformed"
+              exit 1
+            }
           else
             echo "::error::Unsupported publication event: $RELEASE_EVENT"
             exit 1
@@ -64,6 +74,15 @@ jobs:
             echo "::error::Checkout $CHECKOUT_COMMIT does not match tag commit $TAG_COMMIT"
             exit 1
           }
+          if [[ "$RELEASE_EVENT" == "workflow_dispatch" ]]; then
+            CORRELATION_TAG_SHA="${RELEASE_CORRELATION%%.*}"
+            CORRELATION_WORKFLOW_SHA="${RELEASE_CORRELATION#*.}"
+            [[ "$CORRELATION_TAG_SHA" == "$TAG_COMMIT" \
+              && "$CORRELATION_WORKFLOW_SHA" == "$RELEASE_WORKFLOW_SHA" ]] || {
+              echo "::error::Recovery correlation does not bind the tag and workflow commits"
+              exit 1
+            }
+          fi
           LATEST_TAG=""
           while IFS= read -r CANDIDATE_TAG; do
             [[ "$CANDIDATE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
@@ -128,16 +147,41 @@ jobs:
           }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Build expected npm package identity
+        id: npm-package
+        run: |
+          PACKAGE_JSON=$(npm pack --dry-run --json)
+          EXPECTED_VERSION=$(jq -er 'if type == "array" and length == 1 then .[0].version else empty end' \
+            <<<"$PACKAGE_JSON")
+          EXPECTED_INTEGRITY=$(jq -er 'if type == "array" and length == 1 then .[0].integrity else empty end' \
+            <<<"$PACKAGE_JSON")
+          EXPECTED_SHASUM=$(jq -er 'if type == "array" and length == 1 then .[0].shasum else empty end' \
+            <<<"$PACKAGE_JSON")
+          [[ "$EXPECTED_VERSION" == "${{ steps.version.outputs.version }}" \
+            && "$EXPECTED_INTEGRITY" =~ ^sha512-[A-Za-z0-9+/]+={0,2}$ \
+            && "$EXPECTED_SHASUM" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Unable to derive the exact npm package identity"
+            exit 1
+          }
+          echo "integrity=$EXPECTED_INTEGRITY" >> "$GITHUB_OUTPUT"
+          echo "shasum=$EXPECTED_SHASUM" >> "$GITHUB_OUTPUT"
+
       - name: Check npm publication state
         id: npm-state
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_INTEGRITY: ${{ steps.npm-package.outputs.integrity }}
+          EXPECTED_SHASUM: ${{ steps.npm-package.outputs.shasum }}
         run: |
           VIEW_OUTPUT=""
-          if VIEW_OUTPUT=$(npm view "aidevops@${RELEASE_VERSION}" version --json 2>&1); then
-            PUBLISHED=$(jq -er 'if type == "array" then .[0] else . end' <<<"$VIEW_OUTPUT")
-            [[ "$PUBLISHED" == "$RELEASE_VERSION" ]] || {
-              echo "::error::Registry returned $PUBLISHED for requested version $RELEASE_VERSION"
+          if VIEW_OUTPUT=$(npm view "aidevops@${RELEASE_VERSION}" version dist --json 2>&1); then
+            jq -e --arg version "$RELEASE_VERSION" --arg integrity "$EXPECTED_INTEGRITY" \
+              --arg shasum "$EXPECTED_SHASUM" '
+                .version == $version
+                and .dist.integrity == $integrity
+                and .dist.shasum == $shasum
+              ' <<<"$VIEW_OUTPUT" >/dev/null || {
+              echo "::error::Existing npm package does not match the verified tag artifact"
               exit 1
             }
             echo "published=true" >> "$GITHUB_OUTPUT"
@@ -157,15 +201,90 @@ jobs:
       - name: Verify npm publication
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_INTEGRITY: ${{ steps.npm-package.outputs.integrity }}
+          EXPECTED_SHASUM: ${{ steps.npm-package.outputs.shasum }}
         run: |
+          PUBLISHED_METADATA=""
           for attempt in {1..12}; do
-            PUBLISHED=$(npm view "aidevops@${RELEASE_VERSION}" version --json 2>/dev/null \
-              | jq -r 'if type == "array" then .[0] // "" else . // "" end' || true)
-            [[ "$PUBLISHED" == "$RELEASE_VERSION" ]] && exit 0
+            if PUBLISHED_METADATA=$(npm view "aidevops@${RELEASE_VERSION}" version dist --json 2>/dev/null) \
+              && jq -e --arg version "$RELEASE_VERSION" --arg integrity "$EXPECTED_INTEGRITY" \
+                --arg shasum "$EXPECTED_SHASUM" '
+                  .version == $version
+                  and .dist.integrity == $integrity
+                  and .dist.shasum == $shasum
+                  and .dist.attestations.provenance.predicateType == "https://slsa.dev/provenance/v1"
+                  and ((.dist.attestations.url // "") | type == "string" and length > 0)
+                ' <<<"$PUBLISHED_METADATA" >/dev/null; then
+              break
+            fi
+            PUBLISHED_METADATA=""
             sleep 5
           done
-          echo "::error::npm did not converge to $RELEASE_VERSION"
-          exit 1
+          [[ -n "$PUBLISHED_METADATA" ]] || {
+            echo "::error::npm did not converge to the exact package identity for $RELEASE_VERSION"
+            exit 1
+          }
+
+          AUDIT_DIR=$(mktemp -d "$RUNNER_TEMP/npm-provenance-audit.XXXXXX")
+          cleanup_audit() {
+            rm -rf "$AUDIT_DIR"
+            return 0
+          }
+          trap cleanup_audit EXIT
+          npm install --prefix "$AUDIT_DIR" --ignore-scripts --no-audit --no-fund --save-exact \
+            "aidevops@${RELEASE_VERSION}" >/dev/null
+          AUDIT_JSON=$(npm --prefix "$AUDIT_DIR" audit signatures --json --include-attestations)
+          jq -e --arg version "$RELEASE_VERSION" '
+            (.invalid | type == "array" and length == 0)
+            and (.missing | type == "array" and length == 0)
+            and ([.verified[]
+              | select(.name == "aidevops" and .version == $version)
+              | select(.attestations.provenance.predicateType == "https://slsa.dev/provenance/v1")
+              | .attestationBundles[]
+              | select(.predicateType == "https://slsa.dev/provenance/v1")
+            ] | length == 1)
+          ' <<<"$AUDIT_JSON" >/dev/null || {
+            echo "::error::npm provenance signature verification did not identify one exact package attestation"
+            exit 1
+          }
+          PROVENANCE_PAYLOAD=$(jq -er --arg version "$RELEASE_VERSION" '
+            [.verified[]
+              | select(.name == "aidevops" and .version == $version)
+              | .attestationBundles[]
+              | select(.predicateType == "https://slsa.dev/provenance/v1")
+              | .bundle.dsseEnvelope.payload
+            ] | if length == 1 then .[0] | @base64d else empty end
+          ' <<<"$AUDIT_JSON")
+          EXPECTED_SHA512_HEX=$(node -e \
+            'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("hex"))' \
+            "${EXPECTED_INTEGRITY#sha512-}")
+          if [[ "$RELEASE_EVENT" == "push" ]]; then
+            EXPECTED_WORKFLOW_REF="refs/tags/${RELEASE_TAG}"
+          else
+            EXPECTED_WORKFLOW_REF="refs/heads/main"
+          fi
+          jq -e --arg subject "pkg:npm/aidevops@${RELEASE_VERSION}" \
+            --arg digest "$EXPECTED_SHA512_HEX" \
+            --arg repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --arg ref "$EXPECTED_WORKFLOW_REF" '
+              ._type == "https://in-toto.io/Statement/v1"
+              and .predicateType == "https://slsa.dev/provenance/v1"
+              and (.subject | type == "array" and length == 1)
+              and .subject[0].name == $subject
+              and .subject[0].digest.sha512 == $digest
+              and .predicate.buildDefinition.buildType
+                == "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+              and .predicate.buildDefinition.externalParameters.workflow.repository == $repository
+              and .predicate.buildDefinition.externalParameters.workflow.path
+                == ".github/workflows/publish-packages.yml"
+              and .predicate.buildDefinition.externalParameters.workflow.ref == $ref
+              and .predicate.runDetails.builder.id == "https://github.com/actions/runner/github-hosted"
+            ' <<<"$PROVENANCE_PAYLOAD" >/dev/null || {
+            echo "::error::npm provenance does not bind the exact package, repository, workflow, and ref"
+            exit 1
+          }
+          trap - EXIT
+          cleanup_audit
 
       - name: Build Homebrew formula
         id: homebrew
