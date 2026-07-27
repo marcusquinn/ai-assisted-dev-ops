@@ -490,6 +490,16 @@ _release_dispatch_claim() {
 	local runner_name=""
 	local machine_readable_part=""
 	local comment_body=""
+	local repair_pr_number="${AIDEVOPS_PR_REPAIR_NUMBER:-}"
+
+	# Direct PR-remediation workers are dispatched against a pull request rather
+	# than an issue claim. The scanner owns their completion/blocked lifecycle;
+	# generic release writes would mutate the PR's issue facade and can unlock,
+	# relabel, or unassign state that this worker never owned.
+	if [[ -n "$repair_pr_number" && "$repair_pr_number" == "${WORKER_ISSUE_NUMBER:-}" ]]; then
+		print_info "Skipped generic issue claim release for direct PR repair #${repair_pr_number}; scanner owns lifecycle state"
+		return 0
+	fi
 
 	issue_number=$(_hrff_release_issue_number "$session_key")
 	if [[ -z "$issue_number" && -z "${WORKER_ISSUE_NUMBER:-}" ]]; then

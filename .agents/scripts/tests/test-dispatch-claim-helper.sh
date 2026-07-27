@@ -1049,6 +1049,80 @@ EOF
 }
 
 #######################################
+# Test: direct PR-repair verification accepts only the exact open head and
+# fails closed when the PR closes, its head drifts, or metadata is unavailable.
+#######################################
+test_pr_repair_target_verification() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	mkdir -p "${tmp_dir}/bin"
+	cat >"${tmp_dir}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MOCK_PR_GH_CALLS:?}"
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	[[ "${MOCK_PR_GH_RC:-0}" -eq 0 ]] || exit "$MOCK_PR_GH_RC"
+	printf '%s\n' "${MOCK_PR_JSON:?}"
+	exit 0
+fi
+exit 1
+EOF
+	chmod +x "${tmp_dir}/bin/gh"
+	local calls_file="${tmp_dir}/gh-calls"
+	local expected_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local drifted_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	local output=""
+	local status=0
+
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" \
+		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
+	if [[ "$status" -eq 0 && "$output" == *"PR_REPAIR_TARGET_VALID"* ]] && \
+		grep -Fxq 'pr view 77 --repo owner/repo --json state,headRefName,headRefOid' "$calls_file"; then
+		print_result "direct PR target accepts exact open head" 0
+	else
+		print_result "direct PR target accepts exact open head" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" \
+		MOCK_PR_JSON="{\"state\":\"CLOSED\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
+	if [[ "$status" -eq 1 && "$output" == *"PR_REPAIR_TARGET_LOST"* && "$output" == *'"state":"CLOSED"'* ]]; then
+		print_result "direct PR target rejects closed PR" 0
+	else
+		print_result "direct PR target rejects closed PR" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" \
+		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${drifted_sha}\"}" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
+	if [[ "$status" -eq 1 && "$output" == *"PR_REPAIR_TARGET_LOST"* && "$output" == *"${drifted_sha}"* ]]; then
+		print_result "direct PR target rejects head drift" 0
+	else
+		print_result "direct PR target rejects head drift" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" \
+		MOCK_PR_GH_RC=1 \
+		MOCK_PR_JSON='{}' \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
+	if [[ "$status" -eq 2 && "$output" == *"PR_REPAIR_TARGET_UNKNOWN"* && "$output" == *"metadata_unavailable"* ]]; then
+		print_result "direct PR target metadata failure fails closed" 0
+	else
+		print_result "direct PR target metadata failure fails closed" 1 "status=$status output=$output"
+	fi
+
+	rm -rf "$tmp_dir"
+	return 0
+}
+
+#######################################
 # Test: DISPATCH_CLAIM_WINDOW env var is respected
 #######################################
 test_env_var_defaults() {
@@ -1715,6 +1789,7 @@ main() {
 	test_dedup_claim_routing
 	test_claim_revoked_after_consensus_takeover
 	test_worker_runtime_ownership_verification
+	test_pr_repair_target_verification
 	test_env_var_defaults
 	test_check_releases_claim_only_orphan
 	test_check_preserves_fresh_claim_only_marker

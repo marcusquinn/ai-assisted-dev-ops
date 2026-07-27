@@ -48,17 +48,43 @@ _hrw_mark_runtime_launch_started() {
 }
 
 #######################################
-# Verify that an issue-scoped worker still has the exact GitHub ownership
-# granted at dispatch: open issue, queued/in-progress status, sole expected
-# assignee, and no interactive hold. This helper is read-only and fail-closed.
+# Verify that a worker still owns its exact dispatch target. Issue and linked-
+# issue PR-repair workers require the live issue assignment granted at dispatch.
+# Direct PR-remediation workers instead require the exact open PR head selected
+# by the scanner. This helper is read-only and fail-closed.
 #######################################
 _hrw_verify_dispatch_ownership() {
 	local issue_number="${WORKER_ISSUE_NUMBER:-}"
 	[[ -n "$issue_number" ]] || return 0
 	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
-	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
 	local ownership_helper="${HEADLESS_RUNTIME_OWNERSHIP_HELPER:-${SCRIPT_DIR}/dispatch-claim-helper.sh}"
-	if [[ -z "$repo_slug" || -z "$runner_login" || ! -x "$ownership_helper" ]]; then
+	if [[ -z "$repo_slug" || ! -x "$ownership_helper" ]]; then
+		print_error "[ownership-fence] incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} helper=$([[ -x "$ownership_helper" ]] && printf available || printf missing)"
+		return 1
+	fi
+
+	local repair_pr_number="${AIDEVOPS_PR_REPAIR_NUMBER:-}"
+	if [[ -n "$repair_pr_number" && "$repair_pr_number" == "$issue_number" ]]; then
+		local expected_head_sha="${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}"
+		local expected_head_ref="${AIDEVOPS_PR_REPAIR_HEAD_REF:-}"
+		if [[ -z "$expected_head_sha" || -z "$expected_head_ref" ]]; then
+			print_error "[ownership-fence] incomplete direct PR repair contract pr=${repair_pr_number} repo=${repo_slug} head_sha=${expected_head_sha:-missing} head_ref=${expected_head_ref:-missing}"
+			return 1
+		fi
+		local target_output=""
+		local target_rc=0
+		target_output=$("$ownership_helper" verify-pr-repair-target \
+			"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" 2>&1) || target_rc=$?
+		if [[ "$target_rc" -eq 0 ]]; then
+			print_info "[ownership-fence] ${target_output}"
+			return 0
+		fi
+		print_warning "[ownership-fence] direct PR repair target unavailable pr=${repair_pr_number} repo=${repo_slug} rc=${target_rc}: ${target_output}"
+		return 1
+	fi
+
+	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
+	if [[ -z "$runner_login" ]]; then
 		print_error "[ownership-fence] incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} runner=${runner_login:-missing}"
 		return 1
 	fi

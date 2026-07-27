@@ -786,6 +786,121 @@ EOF
 	return 0
 }
 
+test_direct_pr_runtime_target_fence_uses_exact_head_without_runner() {
+	local ownership_helper="${TEST_ROOT}/direct-pr-target-helper.sh"
+	local calls_file="${TEST_ROOT}/direct-pr-target-calls"
+	local expected_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${DIRECT_PR_TARGET_CALLS:?}"
+printf 'PR_REPAIR_TARGET_VALID: exact open head\n'
+exit 0
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export DIRECT_PR_TARGET_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="77"
+	export WORKER_REPO_SLUG="owner/repo"
+	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_HEAD_SHA="$expected_sha"
+	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+	unset DISPATCH_REPO_SLUG WORKER_GITHUB_LOGIN AIDEVOPS_WORKER_GITHUB_LOGIN 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	local calls=""
+	calls=$(<"$calls_file")
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER DIRECT_PR_TARGET_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG AIDEVOPS_PR_REPAIR_NUMBER \
+		AIDEVOPS_PR_REPAIR_HEAD_SHA AIDEVOPS_PR_REPAIR_HEAD_REF 2>/dev/null || true
+
+	if [[ "$status" -eq 0 && "$calls" == "verify-pr-repair-target 77 owner/repo ${expected_sha} feature/review" && \
+		"$output" == *"PR_REPAIR_TARGET_VALID"* ]]; then
+		print_result "direct PR runtime fence uses exact head without issue runner" 0
+		return 0
+	fi
+	print_result "direct PR runtime fence uses exact head without issue runner" 1 \
+		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	return 0
+}
+
+test_direct_pr_runtime_target_fence_fails_closed() {
+	local ownership_helper="${TEST_ROOT}/drifted-pr-target-helper.sh"
+	local calls_file="${TEST_ROOT}/drifted-pr-target-calls"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${DRIFTED_PR_TARGET_CALLS:?}"
+printf 'PR_REPAIR_TARGET_LOST: head drift\n'
+exit 1
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export DRIFTED_PR_TARGET_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="77"
+	export WORKER_REPO_SLUG="owner/repo"
+	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+	unset DISPATCH_REPO_SLUG WORKER_GITHUB_LOGIN AIDEVOPS_WORKER_GITHUB_LOGIN 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER DRIFTED_PR_TARGET_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG AIDEVOPS_PR_REPAIR_NUMBER \
+		AIDEVOPS_PR_REPAIR_HEAD_SHA AIDEVOPS_PR_REPAIR_HEAD_REF 2>/dev/null || true
+
+	if [[ "$status" -eq 1 && "$output" == *"direct PR repair target unavailable"* && \
+		"$output" == *"PR_REPAIR_TARGET_LOST"* ]]; then
+		print_result "direct PR runtime fence fails closed on target drift" 0
+		return 0
+	fi
+	print_result "direct PR runtime fence fails closed on target drift" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
+test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
+	local ownership_helper="${TEST_ROOT}/linked-issue-ownership-helper.sh"
+	local calls_file="${TEST_ROOT}/linked-issue-ownership-calls"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${LINKED_ISSUE_OWNERSHIP_CALLS:?}"
+printf 'WORKER_OWNERSHIP_VALID: linked issue assignment\n'
+exit 0
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export LINKED_ISSUE_OWNERSHIP_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="42"
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_GITHUB_LOGIN="expected-runner"
+	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	local calls=""
+	calls=$(<"$calls_file")
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER LINKED_ISSUE_OWNERSHIP_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_GITHUB_LOGIN \
+		AIDEVOPS_PR_REPAIR_NUMBER AIDEVOPS_PR_REPAIR_HEAD_SHA \
+		AIDEVOPS_PR_REPAIR_HEAD_REF 2>/dev/null || true
+
+	if [[ "$status" -eq 0 && "$calls" == "verify-worker-ownership 42 owner/repo expected-runner" && \
+		"$output" == *"WORKER_OWNERSHIP_VALID"* ]]; then
+		print_result "linked-issue PR repair keeps strict issue ownership fence" 0
+		return 0
+	fi
+	print_result "linked-issue PR repair keeps strict issue ownership fence" 1 \
+		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	return 0
+}
+
 test_worker_ownership_loss_terminalizes_without_recovery() {
 	local output=""
 	output=$(

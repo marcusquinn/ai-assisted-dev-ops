@@ -146,6 +146,37 @@ fi
 
 : >"$CALL_LOG"
 rm -f "${TMP_HOME}/comment-attempts"
+export WORKER_ISSUE_NUMBER="12345"
+export AIDEVOPS_PR_REPAIR_NUMBER="12345"
+export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+_release_dispatch_claim "pr-review-thread-response-owner-repo-12345" "worker_failed" "1" "0"
+if grep -q 'scanner owns lifecycle state' "$CALL_LOG" && \
+	! grep -q '^API ' "$CALL_LOG" && ! grep -q '^CLEAR ' "$CALL_LOG" && ! grep -q '^UNLOCK ' "$CALL_LOG"; then
+	printf 'PASS direct PR repair leaves release lifecycle to scanner without issue mutations\n'
+else
+	printf 'FAIL direct PR repair performed generic issue release mutations\n'
+	sed 's/^/  /' "$CALL_LOG"
+	exit 1
+fi
+
+: >"$CALL_LOG"
+rm -f "${TMP_HOME}/comment-attempts"
+export AIDEVOPS_PR_REPAIR_NUMBER="67890"
+_release_dispatch_claim "issue-12345" "worker_noop" "0" "0"
+if grep -q 'CLAIM_RELEASED reason=worker_noop' "$CALL_LOG" && \
+	grep -q 'CLEAR issue=12345 repo=owner/repo runner=assigned-bot' "$CALL_LOG" && \
+	grep -q 'UNLOCK issue=12345 repo=owner/repo' "$CALL_LOG"; then
+	printf 'PASS linked-issue PR repair preserves generic issue release lifecycle\n'
+else
+	printf 'FAIL linked-issue PR repair skipped strict issue release lifecycle\n'
+	sed 's/^/  /' "$CALL_LOG"
+	exit 1
+fi
+unset WORKER_ISSUE_NUMBER AIDEVOPS_PR_REPAIR_NUMBER AIDEVOPS_PR_REPAIR_HEAD_SHA AIDEVOPS_PR_REPAIR_HEAD_REF
+
+: >"$CALL_LOG"
+rm -f "${TMP_HOME}/comment-attempts"
 if GH_COMMENT_FAILURES_BEFORE_SUCCESS=2 AIDEVOPS_CLAIM_RELEASE_POST_ATTEMPTS=3 \
 	AIDEVOPS_CLAIM_RELEASE_POST_RETRY_DELAY=0 \
 	_release_dispatch_claim "issue-12345" "worker_noop" "0" "0" && \
