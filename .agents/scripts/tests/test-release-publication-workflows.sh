@@ -161,7 +161,7 @@ repos/test/repo/environments/release)
 	if [[ "$mode" == "bad-environment" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[],"deployment_branch_policy":null}'
 	elif [[ "$mode" == "bad-reviewer-team" ]]; then
-		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"releaser"}},{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"Team","reviewer":{"slug":"release-team"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	elif [[ "$mode" == "bad-self-review" ]]; then
 		printf '%s\n' '{"name":"release","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"releaser"}}]}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
 	else

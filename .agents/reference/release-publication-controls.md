@@ -118,7 +118,9 @@ the terminal non-publishing evidence.
 
 ### Mutation order
 
-1. Re-run actionlint and required CI after the explicit-permission changes merge.
+1. Confirm the code-hardening and explicit-permission checkpoint, PR #28642, is
+   merged. Re-run actionlint and required CI for the separate environment-binding
+   checkpoint, PR #28722, but keep PR #28722 unmerged until step 8.
 2. Capture the GitHub snapshot and npm publisher fields, record the ruleset and
    environment deletion rollback, and verify fresh operation approval.
 3. Create the protected `v*` tag ruleset with one specific release-author bypass.
@@ -137,8 +139,9 @@ the terminal non-publishing evidence.
    Any API assertion or UI comparison mismatch is a hard stop: do not merge, apply
    the captured rollback inputs, and investigate before taking a new snapshot and
    requesting approval again.
-8. Merge the code checkpoint that binds the GitHub release, npm, and Homebrew jobs
-   to the already-protected environment.
+8. Merge environment-binding checkpoint PR #28722 only after the live `release`
+   environment is protected and verification passes. That checkpoint binds the
+   GitHub release, npm, and Homebrew jobs to `environment: release`.
 
 Rollback restores only values captured in the pre-mutation matrix. Code changes
 are reverted normally; live settings are never guessed or broadly reset.
