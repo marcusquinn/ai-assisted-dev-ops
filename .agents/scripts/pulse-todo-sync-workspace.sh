@@ -8,6 +8,8 @@ _PULSE_TODO_SYNC_WORKSPACE_LOADED=1
 
 _PTSW_OWNER_MARKER=".aidevops-pulse-todo-sync-owner"
 _PTSW_MARKER_VERSION="v1"
+_PTSW_OUTCOME_SKIPPED="skipped"
+_PTSW_OWNER_STALE="stale"
 _PTSW_VALIDATION_REASON=""
 _PTSW_OWNER_PID=""
 _PTSW_OWNER_START=""
@@ -221,7 +223,7 @@ _ptsw_classify_owner() {
 		if [[ "$current_start" == "$owner_start" ]]; then
 			_PTSW_OWNER_STATE="active"
 		else
-			_PTSW_OWNER_STATE="stale"
+			_PTSW_OWNER_STATE="$_PTSW_OWNER_STALE"
 		fi
 		return 0
 	fi
@@ -233,7 +235,7 @@ _ptsw_classify_owner() {
 	observed_pid=$(LC_ALL=C ps -p "$owner_pid" -o pid= 2>/dev/null) || ps_rc=$?
 	observed_pid="${observed_pid//[[:space:]]/}"
 	if [[ "$ps_rc" -eq 1 && -z "$observed_pid" ]]; then
-		_PTSW_OWNER_STATE="stale"
+		_PTSW_OWNER_STATE="$_PTSW_OWNER_STALE"
 	fi
 	return 0
 }
@@ -297,6 +299,7 @@ _ptsw_sweep_stale_workspaces() {
 	local owner_pid=""
 	local owner_start=""
 	local owner_created=""
+	local owner_detail=""
 	[[ "$max_recoveries" =~ ^[1-9][0-9]*$ ]] || max_recoveries=5
 	temp_root=$(_ptsw_resolve_temp_root 0) || {
 		printf '0\n'
@@ -314,39 +317,40 @@ _ptsw_sweep_stale_workspaces() {
 		[[ -e "$workspace_root" || -L "$workspace_root" ]] || continue
 		safe_identity=$(_ptsw_safe_identity "$workspace_root")
 		if ! _ptsw_validate_workspace_path "$workspace_root" 1; then
-			_ptsw_log_sweep_outcome "skipped" "${_PTSW_VALIDATION_REASON:-invalid-candidate}" "$safe_identity"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "${_PTSW_VALIDATION_REASON:-invalid-candidate}" "$safe_identity"
 			continue
 		fi
 		identity="${workspace_root##*/}"
 		if ! _ptsw_read_owner_marker "$workspace_root"; then
-			_ptsw_log_sweep_outcome "skipped" "malformed-owner-marker" "$identity"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "malformed-owner-marker" "$identity"
 			continue
 		fi
 		owner_pid="$_PTSW_OWNER_PID"
 		owner_start="$_PTSW_OWNER_START"
 		owner_created="$_PTSW_OWNER_CREATED"
+		owner_detail="owner_pid=${owner_pid}"
 		age_secs=$((now_epoch - owner_created))
 		if [[ "$age_secs" -lt 0 ]]; then
-			_ptsw_log_sweep_outcome "skipped" "future-owner-marker" "$identity"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "future-owner-marker" "$identity"
 			continue
 		fi
 		if [[ "$age_secs" -lt "$grace_secs" ]]; then
-			_ptsw_log_sweep_outcome "skipped" "grace-period" "$identity" "age=${age_secs}s grace=${grace_secs}s"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "grace-period" "$identity" "age=${age_secs}s grace=${grace_secs}s"
 			continue
 		fi
 		_ptsw_classify_owner "$owner_pid" "$owner_start"
 		case "$_PTSW_OWNER_STATE" in
 		active)
-			_ptsw_log_sweep_outcome "skipped" "active-owner" "$identity" "owner_pid=${owner_pid}"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "active-owner" "$identity" "$owner_detail"
 			continue
 			;;
 		unknown)
-			_ptsw_log_sweep_outcome "skipped" "owner-visibility-unknown" "$identity" "owner_pid=${owner_pid}"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-visibility-unknown" "$identity" "$owner_detail"
 			continue
 			;;
 		esac
 		if [[ "$removed" -ge "$max_recoveries" ]]; then
-			_ptsw_log_sweep_outcome "skipped" "recovery-cap" "$identity" "cap=${max_recoveries}"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "recovery-cap" "$identity" "cap=${max_recoveries}"
 			continue
 		fi
 		# Recheck the mutable ownership record immediately before the move.
@@ -354,19 +358,19 @@ _ptsw_sweep_stale_workspaces() {
 			! _ptsw_read_owner_marker "$workspace_root" || \
 			[[ "$_PTSW_OWNER_PID" != "$owner_pid" || "$_PTSW_OWNER_START" != "$owner_start" || \
 				"$_PTSW_OWNER_CREATED" != "$owner_created" ]]; then
-			_ptsw_log_sweep_outcome "skipped" "owner-marker-changed" "$identity"
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-marker-changed" "$identity"
 			continue
 		fi
 		_ptsw_classify_owner "$owner_pid" "$owner_start"
-		if [[ "$_PTSW_OWNER_STATE" != "stale" ]]; then
-			_ptsw_log_sweep_outcome "skipped" "owner-state-changed" "$identity"
+		if [[ "$_PTSW_OWNER_STATE" != "$_PTSW_OWNER_STALE" ]]; then
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-state-changed" "$identity"
 			continue
 		fi
 		if _ptsw_move_to_recoverable_trash "$workspace_root" "$identity"; then
 			removed=$((removed + 1))
 			_ptsw_log_sweep_outcome "removed" "dead-owner" "$identity" "age=${age_secs}s owner_pid=${owner_pid} mode=trash"
 		else
-			_ptsw_log_sweep_outcome "failure" "trash-move-failed" "$identity" "owner_pid=${owner_pid}"
+			_ptsw_log_sweep_outcome "failure" "trash-move-failed" "$identity" "$owner_detail"
 		fi
 	done
 	printf '%s\n' "$removed"
