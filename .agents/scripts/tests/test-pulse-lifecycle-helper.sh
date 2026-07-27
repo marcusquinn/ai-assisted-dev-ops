@@ -29,6 +29,7 @@
 #   17. Reconciliation retires a detached stale merge routine
 #   18. Genuine unkillable snapshot PIDs fail closed with PID evidence
 #   19. Managed replacement requires a new active-bundle PID lease
+#   20. Launchd runtime proof handles prompt, delayed, wrong, and missing starts
 #
 # No real pulse is touched. We use a unique mock filename and match pattern
 # on pulse-wrapper.sh which we control inside TEST_ROOT.
@@ -656,6 +657,154 @@ test_managed_replacement_requires_new_active_bundle_lease() {
 	return 0
 }
 
+test_launchd_runtime_wait_accepts_prompt_start() {
+	local result=""
+	local rc=0
+	local sleep_calls=0
+	result=$(
+		# shellcheck source=../pulse-lifecycle-helper.sh
+		source "$HELPER"
+		_pulse_find_active_runtime_pid_since() {
+			local baseline_pids="$1"
+			: "$baseline_pids"
+			printf '202\n'
+			return 0
+		}
+		sleep() {
+			local seconds="$1"
+			: "$seconds"
+			sleep_calls=$((sleep_calls + 1))
+			return 0
+		}
+		_pulse_wait_for_launchd_runtime "101"
+		printf 'sleep-calls=%s\n' "$sleep_calls"
+	) || rc=$?
+	if [[ "$rc" -eq 0 && "$result" == $'202\nsleep-calls=0' ]]; then
+		_print_result "launchd runtime proof accepts a prompt start without polling delay" 1
+	else
+		_print_result "launchd prompt-start proof (rc=$rc result=$result)" 0
+	fi
+	return 0
+}
+
+test_launchd_runtime_wait_accepts_delayed_start() {
+	local probe_file="${TEST_ROOT}/launchd-delayed-probes"
+	local result=""
+	local rc=0
+	printf '0\n' >"$probe_file"
+	result=$(
+		# shellcheck source=../pulse-lifecycle-helper.sh
+		source "$HELPER"
+		local sleep_calls=0
+		_pulse_find_active_runtime_pid_since() {
+			local baseline_pids="$1"
+			local probe_count=0
+			: "$baseline_pids"
+			IFS= read -r probe_count <"$probe_file"
+			probe_count=$((probe_count + 1))
+			printf '%s\n' "$probe_count" >"$probe_file"
+			if [[ "$probe_count" -ge 7 ]]; then
+				printf '303\n'
+				return 0
+			fi
+			return 1
+		}
+		sleep() {
+			local seconds="$1"
+			: "$seconds"
+			sleep_calls=$((sleep_calls + 1))
+			return 0
+		}
+		_pulse_wait_for_launchd_runtime "101"
+		printf 'sleep-calls=%s\n' "$sleep_calls"
+	) || rc=$?
+	if [[ "$rc" -eq 0 && "$result" == $'303\nsleep-calls=6' ]]; then
+		_print_result "launchd runtime proof accepts a start after the former five-second window" 1
+	else
+		_print_result "launchd delayed-start proof (rc=$rc result=$result)" 0
+	fi
+	return 0
+}
+
+test_launchd_runtime_wait_rejects_wrong_runtime() {
+	local result=""
+	local rc=0
+	result=$(
+		# shellcheck source=../pulse-lifecycle-helper.sh
+		source "$HELPER"
+		_PULSE_LAUNCHD_START_WAIT=3
+		local sleep_calls=0
+		_pulse_pids() {
+			printf '202\n'
+			return 0
+		}
+		_pulse_pid_uses_active_runtime() {
+			local candidate_pid="$1"
+			: "$candidate_pid"
+			return 1
+		}
+		sleep() {
+			local seconds="$1"
+			: "$seconds"
+			sleep_calls=$((sleep_calls + 1))
+			return 0
+		}
+		if _pulse_wait_for_launchd_runtime "101"; then
+			printf 'unexpected-success\n'
+			return 0
+		fi
+		printf 'rejected sleeps=%s\n' "$sleep_calls"
+		return 1
+	) || rc=$?
+	if [[ "$rc" -eq 1 && "$result" == "rejected sleeps=3" ]]; then
+		_print_result "launchd runtime proof rejects a new wrong-runtime PID" 1
+	else
+		_print_result "launchd wrong-runtime proof (rc=$rc result=$result)" 0
+	fi
+	return 0
+}
+
+test_launchd_runtime_wait_is_bounded_when_process_never_starts() {
+	local probe_file="${TEST_ROOT}/launchd-never-starts-probes"
+	local result=""
+	local rc=0
+	printf '0\n' >"$probe_file"
+	result=$(
+		# shellcheck source=../pulse-lifecycle-helper.sh
+		source "$HELPER"
+		_PULSE_LAUNCHD_START_WAIT=3
+		local sleep_calls=0
+		_pulse_find_active_runtime_pid_since() {
+			local baseline_pids="$1"
+			local probe_count=0
+			: "$baseline_pids"
+			IFS= read -r probe_count <"$probe_file"
+			probe_count=$((probe_count + 1))
+			printf '%s\n' "$probe_count" >"$probe_file"
+			return 1
+		}
+		sleep() {
+			local seconds="$1"
+			: "$seconds"
+			sleep_calls=$((sleep_calls + 1))
+			return 0
+		}
+		if _pulse_wait_for_launchd_runtime "101"; then
+			printf 'unexpected-success\n'
+			return 0
+		fi
+		IFS= read -r probe_count <"$probe_file"
+		printf 'probes=%s sleeps=%s\n' "$probe_count" "$sleep_calls"
+		return 1
+	) || rc=$?
+	if [[ "$rc" -eq 1 && "$result" == "probes=4 sleeps=3" ]]; then
+		_print_result "launchd runtime proof exhausts its bounded window without wall-clock delay" 1
+	else
+		_print_result "launchd never-starts proof (rc=$rc result=$result)" 0
+	fi
+	return 0
+}
+
 test_active_runtime_proof_rejects_observer_argv() {
 	local observer_pid=""
 	local rc=0
@@ -1182,6 +1331,10 @@ main() {
 	test_reconciliation_fails_closed_on_unkillable_snapshot
 	test_reconciliation_skips_reused_snapshot_pid
 	test_managed_replacement_requires_new_active_bundle_lease
+	test_launchd_runtime_wait_accepts_prompt_start
+	test_launchd_runtime_wait_accepts_delayed_start
+	test_launchd_runtime_wait_rejects_wrong_runtime
+	test_launchd_runtime_wait_is_bounded_when_process_never_starts
 	test_active_runtime_proof_rejects_observer_argv
 	test_restart_if_running_noop_when_stopped
 	test_restart_if_running_replaces_pid

@@ -94,6 +94,9 @@ _PULSE_MERGE_PATTERN="${AIDEVOPS_PULSE_MERGE_PROCESS_PATTERN:-(^|/)pulse-merge-r
 # Timing
 _PULSE_RESTART_WAIT="${AIDEVOPS_PULSE_RESTART_WAIT:-3}"
 _PULSE_SIGTERM_WAIT="${AIDEVOPS_PULSE_SIGTERM_WAIT:-2}"
+# launchd may accept kickstart before scheduler load permits the process to run.
+# Keep this proof window bounded while tolerating starts beyond the former 5s.
+_PULSE_LAUNCHD_START_WAIT=15
 
 # Expected-max coexistence threshold (GH#21903).
 #
@@ -224,10 +227,24 @@ _pulse_launchd_supervisor_present() {
 	return 0
 }
 
+_pulse_wait_for_launchd_runtime() {
+	local baseline_pids="$1"
+	local waited_seconds=0
+	local active_pid=""
+	while true; do
+		if active_pid=$(_pulse_find_active_runtime_pid_since "$baseline_pids"); then
+			printf '%s\n' "$active_pid"
+			return 0
+		fi
+		[[ "$waited_seconds" -lt "$_PULSE_LAUNCHD_START_WAIT" ]] || return 1
+		sleep 1
+		waited_seconds=$((waited_seconds + 1))
+	done
+}
+
 _pulse_start_managed() {
 	local pulse_label="${AIDEVOPS_PULSE_LAUNCHD_LABEL:-com.aidevops.aidevops-supervisor-pulse}"
 	local launchd_target=""
-	local launchd_wait_count=0
 	local baseline_pids=""
 	local active_pid=""
 	launchd_target="gui/$(id -u)/${pulse_label}"
@@ -241,14 +258,10 @@ _pulse_start_managed() {
 			_pl_err "launchd could not restart Pulse; refusing an unmanaged fallback"
 			return 1
 		fi
-		while [[ "$launchd_wait_count" -lt 5 ]]; do
-			if active_pid=$(_pulse_find_active_runtime_pid_since "$baseline_pids"); then
-				_pl_ok "Pulse restarted by launchd from the activated bundle (PID ${active_pid})"
-				return 0
-			fi
-			sleep 1
-			launchd_wait_count=$((launchd_wait_count + 1))
-		done
+		if active_pid=$(_pulse_wait_for_launchd_runtime "$baseline_pids"); then
+			_pl_ok "Pulse restarted by launchd from the activated bundle (PID ${active_pid})"
+			return 0
+		fi
 		_pl_err "launchd accepted the Pulse restart but no new activated-bundle process appeared"
 		return 1
 	fi
@@ -591,7 +604,7 @@ _pulse_pids() {
 		_cmd=$(ps -p "$_pid" -o command= 2>/dev/null)
 		[[ "$_cmd" =~ $_PULSE_SIDECAR_FLAGS_RE ]] && continue
 		_pulse_emit_pid "$_pid" || break
-	done <<< "$_pids"
+	done <<<"$_pids"
 	_pulse_restore_pipe_trap "$_pipe_trap"
 	return 0
 }
@@ -619,7 +632,7 @@ _pulse_pids_sidecar() {
 		if [[ "$_cmd" =~ $_PULSE_SIDECAR_FLAGS_RE ]]; then
 			_pulse_emit_pid "$_pid" || break
 		fi
-	done <<< "$_pids"
+	done <<<"$_pids"
 	_pulse_restore_pipe_trap "$_pipe_trap"
 	return 0
 }
