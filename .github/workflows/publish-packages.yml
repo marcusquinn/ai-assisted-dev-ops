@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions:
+      # Dispatch the canonical exact-tag postflight after every verified channel succeeds.
+      actions: write
       contents: write
       id-token: write
     env:
@@ -340,6 +342,16 @@ jobs:
           done
           echo "::error::Homebrew tap did not converge to $RELEASE_TAG"
           exit 1
+
+      - name: Queue exact-tag postflight
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run postflight.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field "tag=$RELEASE_TAG"
+          echo "Queued Postflight Verification for $RELEASE_TAG"
 
       - name: Publication summary
         env:

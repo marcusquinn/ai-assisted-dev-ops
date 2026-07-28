@@ -64,5 +64,21 @@ grep -Fq 'non-required advisory check(s) remain non-terminal' "${REPO_ROOT}/.git
 grep -Fq 'load_release_owned_checks' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"
 grep -Fq 'unrelated issue/comment workflow run(s) excluded' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"
 grep -Fq -- '--reconcile-existing' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+grep -Fq 'actions: write' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+grep -Fq 'Queue exact-tag postflight' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+grep -Fq 'gh workflow run postflight.yml' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+grep -Fq -- '--ref main' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+grep -Fq -- '"tag=$RELEASE_TAG"' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+if grep -Fq 'release:' "${REPO_ROOT}/.github/workflows/postflight.yml"; then
+	printf 'FAIL: postflight retains an event trigger that can duplicate canonical dispatches\n' >&2
+	exit 1
+fi
 
-printf 'PASS: postflight keeps paginated exact-SHA classification and advisory warnings\n'
+QUEUE_LINE=$(grep -n 'Queue exact-tag postflight' "${REPO_ROOT}/.github/workflows/publish-packages.yml" | cut -d: -f1)
+VERIFY_LINE=$(grep -n 'Verify Homebrew tap' "${REPO_ROOT}/.github/workflows/publish-packages.yml" | cut -d: -f1)
+if [[ "$QUEUE_LINE" -le "$VERIFY_LINE" ]]; then
+	printf 'FAIL: postflight dispatch must follow final package verification\n' >&2
+	exit 1
+fi
+
+printf 'PASS: postflight dispatches one canonical exact-tag run after publication verification\n'

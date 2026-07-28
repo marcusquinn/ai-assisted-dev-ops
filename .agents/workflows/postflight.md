@@ -25,7 +25,7 @@ tools:
 - **Trigger**: After tag creation and GitHub release publication
 - **Timeouts**: CI/CD 10 min, code review tools 5 min
 - **Script**: `.agents/scripts/postflight-check.sh` (canonical implementation)
-- **GH Actions**: `.github/workflows/postflight.yml` (automated on release publish)
+- **GH Actions**: `.github/workflows/postflight.yml` (canonically dispatched by verified package publication)
 - **Rollback**: See [Rollback Procedures](#rollback-procedures)
 
 <!-- AI-CONTEXT-END -->
@@ -78,7 +78,7 @@ development and PR CI, while release preflight owns any evidence-triggered broad
 gate. Use `--security-only` only for explicit diagnostics, not routine release
 completion.
 
-**Automated**: `.github/workflows/postflight.yml` — triggers on `release: published` and `workflow_dispatch`. Reports terminal CI and external quality evidence without reinstalling scanners or duplicating source analysis.
+**Automated**: `.github/workflows/publish-packages.yml` dispatches `.github/workflows/postflight.yml` with its verified exact tag only after GitHub, npm, and Homebrew verification succeeds. `postflight.yml` accepts that canonical `workflow_dispatch` input and reports terminal CI and external quality evidence without reinstalling scanners or duplicating source analysis.
 
 Do not duplicate these scripts inline — they are the source of truth. Read them directly when implementation details are needed.
 

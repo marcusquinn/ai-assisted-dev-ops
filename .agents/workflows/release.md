@@ -84,10 +84,12 @@ git push origin main && git push origin --tags
 .agents/scripts/version-manager.sh auto-mark-tasks  # Run manually
 ```
 
-**Postflight**: `./.agents/scripts/postflight-check.sh` verifies terminal CI,
-external quality gates, publication, and deployment health. It does not rerun
-source lint/security scans already owned by development, CI, and release
-preflight. See `workflows/postflight.md`.
+**Postflight**: successful package publication canonically dispatches one
+exact-tag `postflight.yml` run after GitHub, npm, and Homebrew verification.
+`./.agents/scripts/postflight-check.sh` verifies terminal CI, external quality
+gates, publication, and deployment health. It does not rerun source lint/security
+scans already owned by development, CI, and release preflight. See
+`workflows/postflight.md`.
 
 **Follow-up**: Verify artifacts/download links, update docs site, notify stakeholders, close milestone.
 

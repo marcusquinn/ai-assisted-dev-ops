@@ -29,6 +29,17 @@ if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
 	fi
 	exit 0
 fi
+if [[ "${1:-}" == "api" && "$*" == *"/check-runs?per_page=100"* ]]; then
+	printf '[{"check_runs":[{"id":1,"name":"Stub CI","status":"completed","conclusion":"%s","check_suite":{"id":1},"app":{"slug":"github-actions"}}]}]\n' "${CI_STUB_CONCLUSION:-success}"
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "$*" == *"/actions/runs?head_sha="* ]]; then
+	request="$*"
+	release_sha="${request#*head_sha=}"
+	release_sha="${release_sha%%&*}"
+	printf '{"workflow_runs":[{"id":1,"name":"Stub CI","event":"push","head_sha":"%s","check_suite_id":1}]}\n' "$release_sha"
+	exit 0
+fi
 exit 1
 EOF
 
@@ -115,7 +126,7 @@ run_case "--quick" "UNAVAILABLE" 0 "SKIPPED Could not reach SonarCloud API" "POS
 
 (
 	export CI_STUB_CONCLUSION="failure"
-	run_case "--ci-only" "OK" 1 "CI/CD pipeline failed: Stub CI" "POSTFLIGHT VERIFICATION PASSED"
+	run_case "--ci-only" "OK" 1 "Stub CI: failure" "POSTFLIGHT VERIFICATION PASSED"
 )
 (
 	export GH_AUTH_STUB_RESULT="failure"
