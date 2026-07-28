@@ -55,6 +55,16 @@ class HtmlNode:
     children: list[HtmlNode | str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class HtmlSelector:
+    """The bounded selector subset understood by the export parser."""
+
+    tag: str | None = None
+    class_name: str | None = None
+    attr_name: str | None = None
+    attr_value: str | None = None
+
+
 class _TreeParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -148,42 +158,43 @@ def classes(node: HtmlNode) -> set[str]:
     return {value for value in node.attrs.get("class", "").split() if value}
 
 
+def _active_selector(
+    selector: HtmlSelector | None, criteria: dict[str, str | None]
+) -> HtmlSelector:
+    if selector is not None and criteria:
+        raise TypeError("pass either a Medium HTML selector or selector keywords")
+    return selector if selector is not None else HtmlSelector(**criteria)
+
+
+def _matches(candidate: HtmlNode, selector: HtmlSelector) -> bool:
+    if selector.tag is not None and candidate.tag != selector.tag:
+        return False
+    if selector.class_name is not None and selector.class_name not in classes(candidate):
+        return False
+    if selector.attr_name is not None and selector.attr_name not in candidate.attrs:
+        return False
+    if (
+        selector.attr_value is not None
+        and candidate.attrs.get(selector.attr_name or "") != selector.attr_value
+    ):
+        return False
+    return True
+
+
 def descendants(
     node: HtmlNode,
-    *,
-    tag: str | None = None,
-    class_name: str | None = None,
-    attr_name: str | None = None,
-    attr_value: str | None = None,
+    selector: HtmlSelector | None = None,
+    **criteria: str | None,
 ) -> list[HtmlNode]:
     """Return descendants matching the small selector subset export parsers use."""
-    matches: list[HtmlNode] = []
-    for candidate in walk(node):
-        if tag is not None and candidate.tag != tag:
-            continue
-        if class_name is not None and class_name not in classes(candidate):
-            continue
-        if attr_name is not None and attr_name not in candidate.attrs:
-            continue
-        if attr_value is not None and candidate.attrs.get(attr_name or "") != attr_value:
-            continue
-        matches.append(candidate)
-    return matches
+    active = _active_selector(selector, criteria)
+    return [candidate for candidate in walk(node) if _matches(candidate, active)]
 
 
 def first_descendant(
     node: HtmlNode,
-    *,
-    tag: str | None = None,
-    class_name: str | None = None,
-    attr_name: str | None = None,
-    attr_value: str | None = None,
+    selector: HtmlSelector | None = None,
+    **criteria: str | None,
 ) -> HtmlNode | None:
-    matches = descendants(
-        node,
-        tag=tag,
-        class_name=class_name,
-        attr_name=attr_name,
-        attr_value=attr_value,
-    )
+    matches = descendants(node, selector, **criteria)
     return matches[0] if matches else None
