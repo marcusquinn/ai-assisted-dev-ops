@@ -1013,7 +1013,10 @@ _clean_move_worktree_recoverably() {
 	_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL=""
 
 	[[ -n "$worktree_path" ]] || return 1
-	[[ -e "$worktree_path" ]] || return 1
+	if [[ ! -e "$worktree_path" && ! -L "$worktree_path" ]]; then
+		_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL="path-already-gone"
+		return 0
+	fi
 	if [[ -n "$trash_root" ]]; then
 		if _clean_move_worktree_to_trash_bucket "$worktree_path" "$trash_root"; then
 			return 0

@@ -12,6 +12,7 @@ REPO="${TEST_ROOT}/repo"
 LINKED="${TEST_ROOT}/linked"
 FAILED_LINKED="${TEST_ROOT}/failed-linked"
 RECOVERABLE_LINKED="${TEST_ROOT}/recoverable-linked"
+RECOVERABLE_MISSING_LINKED="${TEST_ROOT}/recoverable-missing-linked"
 MOVE_FAILED_LINKED="${TEST_ROOT}/move-failed-linked"
 PRUNE_FAILED_LINKED="${TEST_ROOT}/prune-failed-linked"
 DIRTY_LINKED="${TEST_ROOT}/dirty-linked"
@@ -50,6 +51,7 @@ printf 'seed\n' >"${REPO}/README.md"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/prune-test "$LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/prune-failure "$FAILED_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-success "$RECOVERABLE_LINKED"
+/usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-missing "$RECOVERABLE_MISSING_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-move-failure "$MOVE_FAILED_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-prune-failure "$PRUNE_FAILED_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-dirty "$DIRTY_LINKED"
@@ -245,6 +247,31 @@ _branch_exists_on_any_remote() {
 	: "$worktree_branch"
 	return 0
 }
+
+missing_move_target="${TEST_ROOT}/never-created-worktree"
+if ! _clean_move_worktree_recoverably "$missing_move_target" ||
+	[[ "$_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL" != "path-already-gone" ]]; then
+	printf 'FAIL absent recoverable source was not treated as idempotent success\n'
+	exit 1
+fi
+printf 'PASS absent recoverable source is an explicit idempotent success\n'
+
+rm -rf "$RECOVERABLE_MISSING_LINKED"
+missing_recovery_output=$(
+	cd "$REPO" || exit 1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$RECOVERABLE_TRASH" \
+		_clean_remove_classified_worktree "$RECOVERABLE_MISSING_LINKED" "feature/recoverable-missing" \
+		"false" "false" "visibility=degraded" "$REPO" "$_WT_CLEAN_MODE_RECOVERABLE" "true"
+)
+[[ "$(printf '%s\n' "$missing_recovery_output" | grep -cFx "$_WT_CLEAN_COMPLETED_EVENT")" -eq 1 ]] || {
+	printf 'FAIL absent recoverable source did not complete metadata cleanup: %s\n' "$missing_recovery_output"
+	exit 1
+}
+if /usr/bin/git -C "$REPO" worktree list --porcelain | grep -Fqx "worktree $RECOVERABLE_MISSING_LINKED"; then
+	printf 'FAIL absent recoverable source left exact Git worktree metadata registered\n'
+	exit 1
+fi
+printf 'PASS absent recoverable source continues through verified metadata pruning\n'
 
 recovery_output=$(
 	cd "$REPO" || exit 1
