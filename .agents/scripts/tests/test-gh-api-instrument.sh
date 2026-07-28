@@ -682,6 +682,11 @@ chmod +x "$SHIM_FIXTURE/gh"
 cat >"$NATIVE_FIXTURE/gh" <<'EOF_NATIVE_GH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$NATIVE_ATTEMPT_LOG"
+if [[ "${1:-}:${2:-}" == "auth:git-credential" ]]; then
+	command cat >"$NATIVE_CREDENTIAL_INPUT"
+	printf 'username=fixture\npassword=fixture\n\n'
+	exit "${NATIVE_CREDENTIAL_STATUS:-0}"
+fi
 page=1
 jq_requested=0
 expect_jq=0
@@ -750,6 +755,43 @@ EOF_NATIVE_GH
 chmod +x "$NATIVE_FIXTURE/gh"
 export AIDEVOPS_GH_API_LOG="$TMPDIR/shim-attempts.log"
 export NATIVE_ATTEMPT_LOG="$TMPDIR/native-attempts.log"
+export NATIVE_CREDENTIAL_INPUT="$TMPDIR/native-credential-input"
+rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
+
+# Git invokes `gh auth git-credential` as a local stdin/stdout credential
+# helper. It must remain byte-compatible without becoming a synthetic GraphQL
+# request or an unknown-quota attempt in transport evidence (GH#27777).
+credential_request="$TMPDIR/credential-request"
+credential_expected_output="$TMPDIR/credential-output.expected"
+credential_actual_output="$TMPDIR/credential-output.actual"
+printf 'protocol=https\nhost=github.com\n\n' >"$credential_request"
+printf 'username=fixture\npassword=fixture\n\n' >"$credential_expected_output"
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
+	"$SHIM_FIXTURE/gh" auth git-credential get \
+	<"$credential_request" >"$credential_actual_output"
+credential_input_status=0
+cmp -s "$credential_request" "$NATIVE_CREDENTIAL_INPUT" || credential_input_status=$?
+assert_eq "local credential helper preserves stdin bytes" "0" "$credential_input_status"
+credential_output_status=0
+cmp -s "$credential_expected_output" "$credential_actual_output" || credential_output_status=$?
+assert_eq "local credential helper preserves stdout bytes" "0" "$credential_output_status"
+assert_eq "local credential helper invokes native gh once" "1" "$(grep -c '^auth$' "$NATIVE_ATTEMPT_LOG")"
+assert_path_absent "local credential helper emits no API telemetry" "$AIDEVOPS_GH_API_LOG"
+credential_failure_status=0
+set +e
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" NATIVE_CREDENTIAL_STATUS=17 \
+	"$SHIM_FIXTURE/gh" auth git-credential get <"$credential_request" >/dev/null
+credential_failure_status=$?
+set -e
+assert_eq "local credential helper preserves native failure status" "17" "$credential_failure_status"
+
+rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
+	"$SHIM_FIXTURE/gh" auth git-credential-extra get >/dev/null
+assert_file_exists "near-match auth command retains API telemetry" "$AIDEVOPS_GH_API_LOG"
+assert_eq "near-match auth command retains one transport attempt" "1" \
+	"$(awk -F'\t' '$9 == "attempt" { count++ } END { print count + 0 }' "$AIDEVOPS_GH_API_LOG")"
+
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
 PATH="$NATIVE_FIXTURE:/usr/bin:/bin" AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
 	"$SHIM_FIXTURE/gh" api '/repos/private-owner/private-repo/issues?page=2&token=private-value' >/dev/null

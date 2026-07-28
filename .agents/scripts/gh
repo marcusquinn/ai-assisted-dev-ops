@@ -690,6 +690,16 @@ _shim_block_headless_external_write_if_needed() {
 # -----------------------------------------------------------------------------
 _SHIM_READ_REWRITE=""
 case "${1:-}:${2:-}" in
+	auth:git-credential)
+		# The Git credential-helper protocol only reads local auth storage and
+		# exchanges key/value records over stdin/stdout. Counting it as GraphQL
+		# creates false unknown-quota attempts (GH#27777); preserve it byte-for-byte.
+		_real_gh="$(_find_real_gh)" || {
+			printf '[aidevops] gh shim: real gh binary not found on PATH\n' >&2
+			exit 127
+		}
+		exec "$_real_gh" "$@"
+		;;
 	issue:comment | issue:create | issue:edit | issue:close | issue:reopen | issue:lock | issue:pin | issue:delete | \
 	pr:create | pr:comment | pr:edit | pr:review | pr:merge | pr:close | pr:reopen | pr:ready | pr:lock | \
 	label:create | label:edit | label:delete | release:create | release:delete | release:upload) ;;
