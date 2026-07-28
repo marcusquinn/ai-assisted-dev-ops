@@ -39,7 +39,7 @@ a claim that the route is enabled.
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
-| Skool | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | Verify member versus community-admin access and provider terms before selecting any route. |
+| Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Discourse | **API/Export** | **API/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Scope by installation and user/API-key authority; support hosted and self-hosted instances. |
 | NodeBB | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Verify core REST routes, enabled plugins, and forum privileges per installation. |
 
@@ -113,6 +113,12 @@ a claim that the route is enabled.
   2026-07-28. `.agents/tests/test-knowledge-social-quora.sh` proves that no
   provider module, helper command, or **Live** matrix claim is reachable until
   an identity-bearing private sample validates the companion archive contract.
+- **Skool gap disposition:** `.agents/content/social-skool.md` records the
+  official Pro-plan Zapier membership events, narrow admin answers export,
+  privacy-access rights, absent API/export contracts, and anti-automation terms
+  checked on 2026-07-28. `.agents/tests/test-knowledge-social-skool.sh` proves
+  that no provider module, helper command, browser selector, or **Live** matrix
+  claim is reachable until an identity-bearing official export is validated.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.
