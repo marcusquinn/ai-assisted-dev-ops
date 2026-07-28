@@ -185,11 +185,13 @@ _full_loop_release_guard_existing() {
 	fi
 	case "$release_status" in
 	"$_FULL_LOOP_RELEASE_PUBLISHED")
+		full_loop_update_cleanup_release_status "$repo" "$source_pr" "$release_status" || return 1
 		printf 'release:published already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
 		return 0
 		;;
 	"$_FULL_LOOP_RELEASE_SUPERSEDED")
 		_full_loop_verify_superseded_release_receipt "$repo" "$source_pr" || return 1
+		full_loop_update_cleanup_release_status "$repo" "$source_pr" "$release_status" || return 1
 		printf 'release:superseded already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
 		return 0
 		;;

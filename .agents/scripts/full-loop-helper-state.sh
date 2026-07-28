@@ -1288,6 +1288,9 @@ _full_loop_reconcile_published_release_receipt() {
 	if [[ "$receipt_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
 		_full_loop_verify_superseded_release_receipt "$repo" "$pr_number" || return 1
 	fi
+	if declare -F full_loop_update_cleanup_release_status >/dev/null 2>&1; then
+		full_loop_update_cleanup_release_status "$repo" "$pr_number" "$receipt_status" || return 1
+	fi
 	RELEASE_STATUS="$receipt_status"
 	if ! save_state "${CURRENT_PHASE:-${PHASE:-complete}}" "$SAVED_PROMPT" "$pr_number" \
 		"${STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"; then
@@ -1295,6 +1298,31 @@ _full_loop_reconcile_published_release_receipt() {
 		return 1
 	fi
 	return 0
+}
+
+_full_loop_reconcile_completion_release_receipt() {
+	local repo="$1"
+	local pr_number="$2"
+	local local_status="$3"
+	local receipt_path=""
+	local receipt_status=""
+	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
+	if [[ ! -f "$receipt_path" ]]; then
+		[[ "$local_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]
+		return $?
+	fi
+	IFS= read -r receipt_status <"$receipt_path" || return 1
+	case "$receipt_status" in
+	"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED")
+		_full_loop_reconcile_published_release_receipt "$repo" "$pr_number"
+		return $?
+		;;
+	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
+		[[ "$local_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]
+		return $?
+		;;
+	*) return 1 ;;
+	esac
 }
 
 _full_loop_reconcile_detached_publication_receipt() {
@@ -1326,8 +1354,8 @@ cmd_complete() {
 		print_error "Cannot resolve repository for deferred cleanup handoff"
 		return 1
 	}
-	if [[ "${RELEASE_STATUS:-}" == "authorized" ]]; then
-		_full_loop_reconcile_published_release_receipt "$repo" "$PR_NUMBER" || {
+	if [[ "${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" == "authorized" || "${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]; then
+		_full_loop_reconcile_completion_release_receipt "$repo" "$PR_NUMBER" "${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" || {
 			print_error "Cleanup blocked: release:${RELEASE_STATUS} is not terminal-success"
 			return 1
 		}

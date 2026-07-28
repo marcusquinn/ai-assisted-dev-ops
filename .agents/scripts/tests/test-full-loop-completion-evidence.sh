@@ -413,7 +413,8 @@ status="${output##*$'\n'}"
 [[ "$status" == "published" && ! -s "${ROOT}/release-calls.log" ]]
 printf 'PASS published detached-release receipt prevents duplicate publication\n'
 
-rm -f "${receipt_dir}/marcusquinn_aidevops-42.status" "${receipt_dir}/marcusquinn_aidevops-42.aggregate.json"
+rm -f "${receipt_dir}/marcusquinn_aidevops-42.status" "${receipt_dir}/marcusquinn_aidevops-42.aggregate.json" \
+	"${cleanup_receipt_dir}/marcusquinn_aidevops-42.json"
 : >"${ROOT}/release-calls.log"
 output=$(env "${flow_env[@]}" RELEASE_RUNNER_STATUS=superseded bash "$state_runner")
 status="${output##*$'\n'}"
@@ -502,6 +503,33 @@ grep -q '^release_status: published$' "${ROOT}/handoff-state/full-loop.state"
 jq -e '.executor_completion_state == "COMPLETE" and .release_status == "published"' \
 	"${cleanup_receipt_dir}/marcusquinn_aidevops-44.json" >/dev/null
 printf 'PASS matching published receipt atomically promotes stale authorized lifecycle state\n'
+
+printf '%s\n' superseded >"${receipt_dir}/marcusquinn_aidevops-47.status"
+jq -cn '{schema_version:1,status:"superseded",repository:"marcusquinn/aidevops",pr_number:47,
+	source_merge:("1" * 40),aggregate_pr:99,aggregate_merge:("2" * 40),release_tag:"v3.0.0",release_commit:("3" * 40)}' \
+	>"${receipt_dir}/marcusquinn_aidevops-47.aggregate.json"
+superseded_handoff_output=$(AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
+	AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	TEST_PR_NUMBER=47 TEST_RELEASE_STATUS=not-requested bash "$handoff_runner")
+printf '%s\n' "$superseded_handoff_output" | grep -q '<promise>FULL_LOOP_CLEANUP_DEFERRED</promise>'
+jq -e '.executor_completion_state == "COMPLETE" and .release_status == "superseded"' \
+	"${cleanup_receipt_dir}/marcusquinn_aidevops-47.json" >/dev/null
+AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+	AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" TEST_PR_NUMBER=47 TEST_RELEASE_STATUS=not-requested \
+	bash "$handoff_runner" >/dev/null
+printf 'PASS stale no-release completion converges verified superseded evidence idempotently\n'
+
+printf '%s\n' superseded >"${receipt_dir}/marcusquinn_aidevops-48.status"
+jq -cn '{schema_version:1,status:"superseded",repository:"wrong/repo",pr_number:48}' \
+	>"${receipt_dir}/marcusquinn_aidevops-48.aggregate.json"
+if AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+	AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" TEST_PR_NUMBER=48 TEST_RELEASE_STATUS=not-requested \
+	bash "$handoff_runner" >/dev/null 2>&1; then
+	printf 'FAIL malformed aggregate evidence allowed stale no-release completion\n'
+	exit 1
+fi
+[[ ! -e "${cleanup_receipt_dir}/marcusquinn_aidevops-48.json" ]]
+printf 'PASS malformed aggregate evidence cannot create converged cleanup state\n'
 
 for invalid_case in missing failed mismatched; do
 	invalid_pr=45

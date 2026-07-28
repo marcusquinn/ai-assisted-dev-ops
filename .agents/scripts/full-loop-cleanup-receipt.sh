@@ -439,11 +439,37 @@ full_loop_update_cleanup_release_status() {
 	local pr_number="$2"
 	local release_status="$3"
 	local receipt_path=""
+	local current_release=""
 	local now=""
 
+	[[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED" ]] || return 1
 	receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$pr_number") || return 1
 	[[ -f "$receipt_path" ]] || return 0
 	_full_loop_receipt_lock_acquire || return 1
+	if ! jq -e --arg repo "$repo" --argjson pr "$pr_number" \
+		'.repository == $repo and .pr_number == $pr' "$receipt_path" >/dev/null 2>&1; then
+		_full_loop_receipt_lock_release
+		return 1
+	fi
+	current_release=$(jq -r '.release_status // empty' "$receipt_path" 2>/dev/null || true)
+	case "${current_release}:${release_status}" in
+	"pending:${_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED}" | \
+		"pending:${_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED}" | \
+		"pending:${_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED}" | \
+		"authorized:${_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED}" | \
+		"authorized:${_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED}" | \
+		"${_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED}:${_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED}" | \
+		"${_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED}:${_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED}" | \
+		"${release_status}:${release_status}") ;;
+	*)
+		_full_loop_receipt_lock_release
+		return 1
+		;;
+	esac
+	if [[ "$current_release" == "$release_status" ]]; then
+		_full_loop_receipt_lock_release
+		return 0
+	fi
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
 		_full_loop_receipt_lock_release
 		return 1

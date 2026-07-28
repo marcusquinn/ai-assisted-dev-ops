@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/repo/.agents/scripts" \
-	"$ROOT/repo/.git" "$ROOT/worktrees"
+	"$ROOT/repo/.git" "$ROOT/worktrees" "$ROOT/cleanup"
 : >"$ROOT/repo/aidevops.sh"
 : >"$ROOT/repo/.agents/scripts/version-manager.sh"
 
@@ -136,6 +136,8 @@ fi
 printf 'PASS detached release runner persists publication receipt after successful gates\n'
 
 cp "$ROOT/vm.log" "$ROOT/vm-after-publication.log"
+printf '%s\n' '{"schema_version":1,"repository":"marcusquinn/aidevops","pr_number":42,"release_status":"not-requested"}' \
+	>"$ROOT/cleanup/marcusquinn_aidevops-42.json"
 worktree_adds_before=$(grep -c 'worktree add --detach .*/aidevops-release-42-' "$ROOT/git.log")
 (
 	cd "$ROOT/repo/linked-branch"
@@ -147,12 +149,14 @@ worktree_adds_before=$(grep -c 'worktree add --detach .*/aidevops-release-42-' "
 		AIDEVOPS_FULL_LOOP_VERSION_MANAGER="../../version-manager.sh" \
 		AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER="$ROOT/source-resolver.sh" \
 		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
+		AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$ROOT/cleanup" \
 		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
 		bash "$SCRIPT_DIR/full-loop-release-helper.sh" minor 42 full
 )
 cmp -s "$ROOT/vm.log" "$ROOT/vm-after-publication.log"
 worktree_adds_after=$(grep -c 'worktree add --detach .*/aidevops-release-42-' "$ROOT/git.log")
 [[ "$worktree_adds_after" -eq "$worktree_adds_before" ]]
+jq -e '.release_status == "published"' "$ROOT/cleanup/marcusquinn_aidevops-42.json" >/dev/null
 printf 'PASS repeated detached release reconciliation skips duplicate publication\n'
 
 pending_rc=0
@@ -259,15 +263,35 @@ grep -qx 'superseded' "$ROOT/receipts/marcusquinn_aidevops-45.status"
 jq -e '.status == "superseded" and .pr_number == 45 and .aggregate_pr == 99 and .release_tag == "v3.0.0"' \
 	"$ROOT/receipts/marcusquinn_aidevops-45.aggregate.json" >/dev/null
 cp "$ROOT/aggregate-vm.log" "$ROOT/aggregate-vm-before-retry.log"
+printf '%s\n' '{"schema_version":1,"repository":"marcusquinn/aidevops","pr_number":45,"release_status":"not-requested"}' \
+	>"$ROOT/cleanup/marcusquinn_aidevops-45.json"
 (
 	cd "$ROOT/repo/linked-branch"
 	PATH="$ROOT/bin:/usr/bin:/bin" \
 		GIT_CALL_LOG="$ROOT/git.log" VM_CALL_LOG="$ROOT/aggregate-vm.log" FAKE_REPO_ROOT="$ROOT/repo" \
 		AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees" AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
+		AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$ROOT/cleanup" \
 		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
 		bash "$SCRIPT_DIR/full-loop-release-helper.sh" patch 45 incremental
 )
 cmp -s "$ROOT/aggregate-vm.log" "$ROOT/aggregate-vm-before-retry.log"
+jq -e '.release_status == "superseded"' "$ROOT/cleanup/marcusquinn_aidevops-45.json" >/dev/null
+
+printf '%s\n' '{"schema_version":1,"repository":"wrong/repo","pr_number":45,"release_status":"not-requested"}' \
+	>"$ROOT/cleanup/marcusquinn_aidevops-45.json"
+if (
+	cd "$ROOT/repo/linked-branch"
+	PATH="$ROOT/bin:/usr/bin:/bin" GIT_CALL_LOG="$ROOT/git.log" VM_CALL_LOG="$ROOT/aggregate-vm.log" \
+		FAKE_REPO_ROOT="$ROOT/repo" AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees" \
+		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$ROOT/cleanup" \
+		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
+		bash "$SCRIPT_DIR/full-loop-release-helper.sh" patch 45 incremental
+); then
+	printf 'FAIL mismatched cleanup receipt accepted terminal release replay\n'
+	exit 1
+fi
+jq -e '.repository == "wrong/repo" and .release_status == "not-requested"' \
+	"$ROOT/cleanup/marcusquinn_aidevops-45.json" >/dev/null
 printf 'PASS reviewed aggregate source publishes once and truthfully supersedes included receipts\n'
 
 exit 0
