@@ -270,18 +270,11 @@ _routine_extract_section() {
 	local todo_file="$1"
 	[[ -f "$todo_file" ]] || return 1
 
-	local line=""
-	local active_line=""
-	local comment_prefix=""
-	local leading_spaces=""
-	local trimmed_line=""
-	local fence_char=""
-	local fence_length=0
-	local current_fence_length=0
-	local fence_remainder=""
-	local in_comment=0
-	local in_section=0
-	local section_count=0
+	local line="" active_line="" comment_prefix=""
+	local leading_spaces="" trimmed_line=""
+	local fence_char="" fence_remainder=""
+	local fence_length=0 current_fence_length=0
+	local in_comment=0 in_section=0 section_count=0
 	local section_content=""
 
 	while IFS= read -r line || [[ -n "$line" ]]; do
