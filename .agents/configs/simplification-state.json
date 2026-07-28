@@ -1634,9 +1634,9 @@
       "pr": 17331
     },
     ".agents/reference/auto-update.md": {
-      "at": "2026-04-20T00:51:19Z",
-      "hash": "65f264849d77aa148974c21451398a296b9f01ec",
-      "passes": 2,
+      "at": "2026-07-28T01:01:18Z",
+      "hash": "985c937caeaf2b21b491ad4375a4bcd57ca35f1f",
+      "passes": 3,
       "pr": 15301
     },
     ".agents/reference/bash-compat.md": {
@@ -2544,9 +2544,9 @@
       "pr": 15916
     },
     ".agents/scripts/shared-constants.sh": {
-      "at": "2026-07-27T02:02:21Z",
-      "hash": "9b1c75e0f4073b7c46b1a0e343e45ed1b434b38a",
-      "passes": 40,
+      "at": "2026-07-28T01:01:33Z",
+      "hash": "913d4d814be07fc4e4ec5df7cabf6ba813736e1b",
+      "passes": 41,
       "pr": 18847
     },
     ".agents/scripts/stats-functions.sh": {
@@ -7480,9 +7480,9 @@
       "pr": 16415
     },
     "TODO.md": {
-      "at": "2026-07-27T20:54:18Z",
-      "hash": "1d93e34f5a6fc68790fb311ab2467f95c0d8a042",
-      "passes": 209,
+      "at": "2026-07-28T01:02:28Z",
+      "hash": "b13671e3fd1fea5b378d99554d95205f37546edb",
+      "passes": 210,
       "pr": 15490
     },
     "aidevops.sh": {
@@ -7804,10 +7804,10 @@
       "passes": 5
     },
     ".agents/scripts/upstream-watch-helper.sh": {
-      "hash": "1b2034466ffc2433d1f95cb5fea8fbe1c71fcf85",
-      "at": "2026-05-01T21:35:09Z",
+      "hash": "93c97de1cf9dfe0992bad16fed56221009948427",
+      "at": "2026-07-28T01:01:35Z",
       "pr": 20874,
-      "passes": 4
+      "passes": 5
     },
     ".agents/scripts/pre-dispatch-validator-helper.sh": {
       "hash": "4701da587917c9c61dd511743f0f0559dd4e207d",
@@ -7918,10 +7918,10 @@
       "passes": 3
     },
     ".agents/scripts/repo-aidevops-health-helper.sh": {
-      "hash": "afda63f703eb1aad4225fbaeb3ff6b71e9c5810d",
-      "at": "2026-07-02T10:01:27Z",
+      "hash": "519c69ab3a212a0e81e918d0bc935de67a08895b",
+      "at": "2026-07-28T01:01:32Z",
       "pr": 26253,
-      "passes": 2
+      "passes": 3
     },
     ".agents/scripts/resource-metrics-helper.sh": {
       "hash": "1f660b3d1511c60b03b4e9c563964798b79fe7fd",
@@ -7960,10 +7960,10 @@
       "passes": 1
     },
     ".agents/scripts/tests/test-full-loop-merge.sh": {
-      "hash": "cee4ec3f9db3fa1190322ef4ad0d5a410e27fee3",
-      "at": "2026-07-26T19:49:31Z",
+      "hash": "526dda13d184d9ff379e8dd5a5e9615608fd0791",
+      "at": "2026-07-28T01:01:34Z",
       "pr": 25930,
-      "passes": 9
+      "passes": 10
     },
     ".agents/scripts/tests/test-gh-wrapper-rest-fallback.sh": {
       "hash": "252c99353010917804aa39104115a1b49e4fcf03",

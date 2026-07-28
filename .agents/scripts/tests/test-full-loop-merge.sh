@@ -1144,11 +1144,23 @@ run_prospective_todo_guard() {
 	local scripts_dir="${SCRIPT_DIR}/.."
 	local tmp_runner=""
 	local verification_tmp="${fixture_dir}/verification-tmp"
+	local attacker_home="${fixture_dir}/attacker-home"
+	local driver_script="${fixture_dir}/merge-driver.sh"
+	local driver_marker="${fixture_dir}/merge-driver-ran"
+	local hostile_objects="${fixture_dir}/hostile-objects"
+	local hostile_alternates="${fixture_dir}/hostile-alternates"
+	local hostile_index="${fixture_dir}/hostile-index"
 	local fetch_override=""
 	if [[ "$fetch_mode" == "stub" ]]; then
 		fetch_override='_merge_fetch_pinned_commit_objects() { return 0; }'
 	fi
-	mkdir -p "$verification_tmp"
+	mkdir -p "$verification_tmp" "$attacker_home" "$hostile_objects" "$hostile_alternates"
+	# shellcheck disable=SC2016  # The generated driver expands this at execution time.
+	printf '%s\n' '#!/usr/bin/env bash' ': >"${AIDEVOPS_TEST_MERGE_DRIVER_MARKER:?}"' 'exit 1' >"$driver_script"
+	chmod +x "$driver_script"
+	HOME="$attacker_home" /usr/bin/git config --global merge.aidevops-test.driver \
+		"${driver_script} %O %A %B"
+	rm -f "$driver_marker"
 	tmp_runner=$(mktemp)
 	cat >"$tmp_runner" <<RUNNER_EOF
 #!/usr/bin/env bash
@@ -1163,7 +1175,12 @@ _merge_guard_prospective_todo '42' 'testorg/testrepo'
 RUNNER_EOF
 	chmod +x "$tmp_runner"
 	local rc=0
-	env PATH="${TEST_ROOT}/bin:/usr/bin:/bin:${scripts_dir}:${PATH}" TMPDIR="$verification_tmp" \
+	env PATH="${TEST_ROOT}/bin:${scripts_dir}:/usr/bin:/bin:${PATH}" \
+		HOME="$attacker_home" AIDEVOPS_TEMP_DIR="$verification_tmp" \
+		AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_TEST_MERGE_DRIVER_MARKER="$driver_marker" \
+		GIT_ALTERNATE_OBJECT_DIRECTORIES="$hostile_alternates" \
+		GIT_ATTR_SOURCE=refs/heads/aidevops-hostile GIT_INDEX_FILE="$hostile_index" \
+		GIT_OBJECT_DIRECTORY="$hostile_objects" \
 		bash "$tmp_runner" 2>&1 || rc=$?
 	rm -f "$tmp_runner"
 	[[ "$rc" -eq 0 ]] && return 0
@@ -1176,6 +1193,14 @@ prospective_contexts_clean() {
 	leftovers=$(compgen -G "${fixture_dir}/verification-tmp/aidevops-prospective-todo.*" || true)
 	[[ -z "$leftovers" ]]
 	return $?
+}
+
+prospective_hostile_git_environment_clean() {
+	local fixture_dir="$1"
+	[[ ! -e "${fixture_dir}/hostile-index" ]] || return 1
+	rmdir "${fixture_dir}/hostile-objects" 2>/dev/null || return 1
+	rmdir "${fixture_dir}/hostile-alternates" 2>/dev/null || return 1
+	return 0
 }
 
 prospective_git_storage_digest() {
@@ -1197,8 +1222,9 @@ create_prospective_fixture() {
 		/usr/bin/git config user.email test@test.local
 		/usr/bin/git config user.name Test
 		/usr/bin/git config commit.gpgsign false
+		printf 'TODO.md merge=aidevops-test\n' >.gitattributes
 		printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n' >TODO.md
-		/usr/bin/git add TODO.md
+		/usr/bin/git add .gitattributes TODO.md
 		/usr/bin/git commit -q -m root
 		local root_sha=""
 		root_sha=$(/usr/bin/git rev-parse HEAD)
@@ -1256,7 +1282,7 @@ create_prospective_fetch_fixture() {
 
 test_prospective_todo_merge_guard() {
 	local fixture_dir="" fixture_root="" base_sha="" head_sha="" output="" rc=0 objects_before="" objects_after=""
-	local cleanup_rc=0 isolation_rc=0 storage_before="" storage_after="" absent_before=0 absent_after=0
+	local cleanup_rc=0 environment_rc=0 isolation_rc=0 storage_before="" storage_after="" absent_before=0 absent_after=0
 	fixture_dir=$(create_prospective_fixture collision)
 	base_sha=$(<"${fixture_dir}/base.sha")
 	head_sha=$(<"${fixture_dir}/head.sha")
@@ -1264,13 +1290,18 @@ test_prospective_todo_merge_guard() {
 	output=$(run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha") || rc=$?
 	objects_after=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
 	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	prospective_hostile_git_environment_clean "$fixture_dir" || environment_rc=$?
 	[[ "$cleanup_rc" -eq 0 && "$objects_before" == "$objects_after" ]] || isolation_rc=1
 	print_result "prospective TODO: merge-only collision is blocked" "$((rc == 0 ? 1 : 0))" "output=$output"
 	print_result "prospective TODO: task and issue duplicates are reported" "$([[ "$output" == *"Duplicate task ID: t2"* && "$output" == *"Duplicate issue mapping: ref:GH#2"* ]] && printf '0' || printf '1')" "output=$output"
+	print_result "prospective TODO: configured external merge driver is not executed" \
+		"$([[ ! -e "${fixture_dir}/merge-driver-ran" ]] && printf '0' || printf '1')"
+	print_result "prospective TODO: hostile repository environment writes no external state" "$environment_rc"
 	print_result "prospective TODO: collision writes only to cleaned isolated context" "$isolation_rc"
 
 	rc=0
 	cleanup_rc=0
+	environment_rc=0
 	isolation_rc=0
 	fixture_dir=$(create_prospective_fixture unique)
 	base_sha=$(<"${fixture_dir}/base.sha")
@@ -1279,19 +1310,24 @@ test_prospective_todo_merge_guard() {
 	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" >/dev/null || rc=$?
 	objects_after=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
 	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
-	[[ "$cleanup_rc" -eq 0 && "$objects_before" == "$objects_after" ]] || isolation_rc=1
+	prospective_hostile_git_environment_clean "$fixture_dir" || environment_rc=$?
+	[[ "$cleanup_rc" -eq 0 && "$environment_rc" -eq 0 && "$objects_before" == "$objects_after" ]] || isolation_rc=1
 	print_result "prospective TODO: unique stale branch passes" "$rc"
 	print_result "prospective TODO: success writes only to cleaned isolated context" "$isolation_rc"
 
 	rc=0
 	cleanup_rc=0
+	environment_rc=0
 	output=$(run_prospective_todo_guard "$fixture_dir" deadbeef deadbeef) || rc=$?
 	print_result "prospective TODO: indeterminate merge-tree fails closed" "$((rc == 0 ? 1 : 0))" "output=$output"
 	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	prospective_hostile_git_environment_clean "$fixture_dir" || environment_rc=$?
+	[[ "$environment_rc" -eq 0 ]] || cleanup_rc=1
 	print_result "prospective TODO: failure cleans isolated context" "$cleanup_rc"
 
 	rc=0
 	cleanup_rc=0
+	environment_rc=0
 	isolation_rc=0
 	fixture_dir=$(create_prospective_fetch_fixture) || return 0
 	fixture_root="${fixture_dir%/work}"
@@ -1303,7 +1339,9 @@ test_prospective_todo_merge_guard() {
 	storage_after=$(prospective_git_storage_digest "$fixture_dir")
 	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_after=1; fi
 	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
-	[[ "$rc" -eq 0 && "$cleanup_rc" -eq 0 && "$absent_before" -eq 0 && "$absent_after" -eq 0 && \
+	prospective_hostile_git_environment_clean "$fixture_dir" || environment_rc=$?
+	[[ "$rc" -eq 0 && "$cleanup_rc" -eq 0 && "$environment_rc" -eq 0 && \
+		"$absent_before" -eq 0 && "$absent_after" -eq 0 && \
 		"$storage_before" == "$storage_after" ]] || isolation_rc=1
 	print_result "prospective TODO: missing PR objects fetch only into cleaned isolated context" "$isolation_rc"
 	return 0

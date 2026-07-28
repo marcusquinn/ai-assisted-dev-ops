@@ -540,11 +540,6 @@ _finalize_wip_history() {
 		print_error "Cannot snapshot ${base_ref} before WIP history finalization."
 		return 1
 	}
-	if ! git merge-base --is-ancestor "$base_oid" HEAD 2>/dev/null; then
-		print_error "Refusing WIP finalization: current ${base_ref} is not an ancestor of HEAD."
-		print_error "Rebase onto ${base_ref}, resolve any conflicts, then retry commit-and-pr."
-		return 1
-	fi
 	printf -v branch_range '%s..HEAD' "$base_oid"
 	if ! branch_subjects=$(git log --format=%s "$branch_range" 2>/dev/null); then
 		print_error "Cannot inspect branch commit subjects relative to ${base_ref}."
@@ -560,6 +555,15 @@ _finalize_wip_history() {
 	done <<<"$branch_subjects"
 	if [[ "$has_wip" == "0" ]]; then
 		return 0
+	fi
+
+	# The exact-base ancestry proof protects the soft reset below. Non-WIP
+	# history does not need rewriting, so let the normal rebase stage integrate
+	# a concurrently advanced base instead of rejecting safe base drift here.
+	if ! git merge-base --is-ancestor "$base_oid" HEAD 2>/dev/null; then
+		print_error "Refusing WIP finalization: current ${base_ref} is not an ancestor of HEAD."
+		print_error "Rebase onto ${base_ref}, resolve any conflicts, then retry commit-and-pr."
+		return 1
 	fi
 
 	local worktree_status=""

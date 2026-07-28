@@ -49,22 +49,6 @@ fi
 if ! command -v print_warning >/dev/null 2>&1; then
 	print_warning() { printf '[WARN] %s\n' "$*" >&2; return 0; }
 fi
-if ! command -v _save_cleanup_scope >/dev/null 2>&1; then
-	_save_cleanup_scope() { return 0; }
-fi
-if ! command -v _run_cleanups >/dev/null 2>&1; then
-	_run_cleanups() { return 0; }
-fi
-
-_gh_wrapper_enter_cleanup_scope() {
-	_save_cleanup_scope
-	if [[ -n "${ZSH_VERSION:-}" ]]; then
-		return 0
-	fi
-	trap '_run_cleanups' RETURN
-	return 0
-}
-
 # Standalone-source cleanup compatibility.
 # shared-constants.sh provides the canonical cleanup stack before sourcing this
 # file in normal bash helper execution. OpenCode zsh recovery commands can
@@ -520,6 +504,66 @@ _gh_with_timeout() {
 
 # Internal: rejection reason for the most recent _gh_validate_edit_args call.
 _GH_EDIT_REJECTION_REASON=""
+
+# Normalized argv for wrappers that accept `--body-file -`. Stdin is consumed
+# once into a private file so validation, signing, and REST fallback all read the
+# same bytes. The public wrapper owns the cleanup scope before calling this.
+_GH_WRAPPER_BODY_FILE_ARGS=()
+_gh_wrapper_normalize_stdin_body_file() {
+	_GH_WRAPPER_BODY_FILE_ARGS=("$@")
+	local i=0 needs_stdin=0
+	while [[ $i -lt ${#_GH_WRAPPER_BODY_FILE_ARGS[@]} ]]; do
+		case "${_GH_WRAPPER_BODY_FILE_ARGS[i]}" in
+		--body-file)
+			[[ "${_GH_WRAPPER_BODY_FILE_ARGS[i + 1]:-}" == "-" ]] && needs_stdin=1
+			i=$((i + 1))
+			;;
+		--body-file=-) needs_stdin=1 ;;
+		esac
+		i=$((i + 1))
+	done
+	[[ "$needs_stdin" -eq 1 ]] || return 0
+
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${TMPDIR:-$HOME/.aidevops/.agent-workspace/tmp}}"
+	if [[ ! -d "$temp_root" ]]; then
+		_GH_EDIT_REJECTION_REASON="secure temporary directory is unavailable"
+		printf '[SAFETY] gh edit rejected: %s\n' "$_GH_EDIT_REJECTION_REASON" >&2
+		return 1
+	fi
+	local previous_umask stdin_body_file cleanup_cmd
+	previous_umask=$(umask)
+	umask 077
+	stdin_body_file=$(mktemp "${temp_root%/}/aidevops-gh-stdin.XXXXXX")
+	local mktemp_rc=$?
+	umask "$previous_umask"
+	if [[ $mktemp_rc -ne 0 || -z "$stdin_body_file" ]]; then
+		_GH_EDIT_REJECTION_REASON="could not create secure stdin body file"
+		printf '[SAFETY] gh edit rejected: %s\n' "$_GH_EDIT_REJECTION_REASON" >&2
+		return 1
+	fi
+	printf -v cleanup_cmd 'rm -f -- %q' "$stdin_body_file"
+	push_cleanup "$cleanup_cmd"
+	if ! cat >"$stdin_body_file"; then
+		_GH_EDIT_REJECTION_REASON="could not buffer stdin body"
+		printf '[SAFETY] gh edit rejected: %s\n' "$_GH_EDIT_REJECTION_REASON" >&2
+		return 1
+	fi
+
+	i=0
+	while [[ $i -lt ${#_GH_WRAPPER_BODY_FILE_ARGS[@]} ]]; do
+		case "${_GH_WRAPPER_BODY_FILE_ARGS[i]}" in
+		--body-file)
+			if [[ "${_GH_WRAPPER_BODY_FILE_ARGS[i + 1]:-}" == "-" ]]; then
+				_GH_WRAPPER_BODY_FILE_ARGS[i + 1]="$stdin_body_file"
+			fi
+			i=$((i + 1))
+			;;
+		--body-file=-) _GH_WRAPPER_BODY_FILE_ARGS[i]="--body-file=${stdin_body_file}" ;;
+		esac
+		i=$((i + 1))
+	done
+	return 0
+}
 
 _gh_body_has_substantive_content() {
 	local body_value="$1"

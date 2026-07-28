@@ -164,6 +164,42 @@ test_no_wip_preserves_history() {
 	return 0
 }
 
+test_non_wip_base_drift_reaches_normal_rebase() {
+	local repo_dir="${TEST_ROOT}/non-wip-base-drift"
+	make_repo "$repo_dir" || return 1
+	commit_change "$repo_dir" 'feature' 'fix: preserve feature change' || return 1
+	local original_head=""
+	original_head=$(git -C "$repo_dir" rev-parse HEAD)
+
+	(
+		cd "$repo_dir" || exit 1
+		git switch -q --detach origin/develop
+		printf 'upstream\n' >upstream.txt
+		git add upstream.txt
+		git commit -qm 'fix: concurrent upstream change'
+		git branch -f develop HEAD
+		git switch -q --detach "$original_head"
+		_finalize_wip_history 'fix: preserve feature change' &&
+			_rebase_for_push 'feature/test' 0
+	) >/dev/null 2>&1
+	local rc=$?
+	local count="" subject="" status="" content=""
+	count=$(git -C "$repo_dir" rev-list --count origin/develop..HEAD)
+	subject=$(git -C "$repo_dir" log -1 --format=%s)
+	status=$(git -C "$repo_dir" status --porcelain)
+	content=$(git -C "$repo_dir" show HEAD:tracked.txt)
+	if [[ "$rc" -eq 0 && "$count" == '1' && "$subject" == 'fix: preserve feature change' &&
+		-z "$status" && "$content" == $'base\nfeature' ]] &&
+		git -C "$repo_dir" merge-base --is-ancestor origin/develop HEAD &&
+		git -C "$repo_dir" show HEAD:upstream.txt >/dev/null 2>&1; then
+		print_result 'non-WIP base drift reaches normal rebase without upstream reversions' 0
+	else
+		print_result 'non-WIP base drift reaches normal rebase without upstream reversions' 1 \
+			"rc=${rc}, count=${count}, subject=${subject}, status=${status}"
+	fi
+	return 0
+}
+
 test_commit_hook_failure_restores_tip() {
 	local repo_dir="${TEST_ROOT}/hook-failure"
 	make_repo "$repo_dir" || return 1
@@ -262,14 +298,15 @@ test_orchestrator_finalizes_before_validation() {
 test_single_wip_is_finalized
 test_buried_wip_squashes_branch_range
 test_no_wip_preserves_history
+test_non_wip_base_drift_reaches_normal_rebase
 test_commit_hook_failure_restores_tip
 test_wip_final_message_is_rejected
 test_base_drift_fails_closed_without_reverting_upstream
 test_orchestrator_finalizes_before_validation
 
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
-if [[ "$TESTS_RUN" -ne 7 ]]; then
-	printf '%sFAIL%s expected 7 tests to execute\n' "$TEST_RED" "$TEST_RESET"
+if [[ "$TESTS_RUN" -ne 8 ]]; then
+	printf '%sFAIL%s expected 8 tests to execute\n' "$TEST_RED" "$TEST_RESET"
 	exit 1
 fi
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1
