@@ -37,7 +37,7 @@ a claim that the route is enabled.
 | Facebook | **Live/Gate/Export** managed Page posts; **No/Export** personal profile | **No/Export** curated activity and per-post comments | **No/Export** | **No/Export** personal relationships | **No** | One managed-Page `/posts` stream; app review and Page authority remain explicit, with all personal-account categories excluded. |
 | Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
-| Medium | **Export/Gate** | **Export/No** | **Export/No** | **Export/No** | **Export/No** | Archive-first; legacy or restricted integration access is not sufficient evidence for live parity. |
+| Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Quora | **Export** | **Export/No** | **Export/No** | **Export/No** | **No** | No general live account API is accepted without new official evidence. |
 | Skool | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | **Gate/Export/Gap** | Verify member versus community-admin access and provider terms before selecting any route. |
 | Discourse | **API/Export** | **API/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Scope by installation and user/API-key authority; support hosted and self-hosted instances. |
@@ -97,6 +97,16 @@ a claim that the route is enabled.
   records the official SDK/sample versions, account/app-review gates, scopes,
   pagination, retention boundary, export dispositions, and unsupported
   categories checked on 2026-07-27.
+- **Live Medium export:** `.agents/scripts/knowledge_social_medium.py`,
+  `.agents/scripts/_knowledge_social_medium*.py`, and
+  `.agents/tests/test-knowledge-social-medium.sh` prove selected-account
+  identity, safe ZIP handling, bounded item/byte costs, immutable original-ZIP
+  evidence, content-addressed replay, authored/curated separation, explicit
+  response and absent-category gaps, lease fencing, sanitized credential
+  rejection, and static isolation from network/browser/outbound mutation paths.
+  `.agents/content/social-medium.md` records the official HTML-ZIP export,
+  unsupported legacy API, terms, retention, historical community schema
+  evidence, and unverified categories checked on 2026-07-28.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.
