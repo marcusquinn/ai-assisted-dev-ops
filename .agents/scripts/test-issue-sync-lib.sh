@@ -434,6 +434,93 @@ else
 	pass "parse_task_line: multiple parent declarations fail closed"
 fi
 
+# -----------------------------------------------------------------------------
+# extract_task_block behavior and large-file process regression (GH#28791)
+# -----------------------------------------------------------------------------
+cat >"$TMP/todo-extract.md" <<EOF
+- [ ] t7 open parent
+  - [x] t7.1 completed child
+    - Notes: nested child evidence
+  - Notes: parent evidence
+- [x] ${NAMESPACED_ID} completed namespaced parent
+  - Notes: namespaced evidence
+- [-] t9 declined task
+## Boundary
+EOF
+
+expected_t7=$(cat <<'EOF'
+- [ ] t7 open parent
+  - [x] t7.1 completed child
+    - Notes: nested child evidence
+  - Notes: parent evidence
+EOF
+)
+actual_t7=$(extract_task_block "t7" "$TMP/todo-extract.md")
+if [[ "$actual_t7" == "$expected_t7" ]]; then
+	pass "extract_task_block: preserves nested subtasks and notes exactly"
+else
+	fail "extract_task_block: changed nested block output"
+fi
+
+expected_namespaced=$(cat <<EOF
+- [x] ${NAMESPACED_ID} completed namespaced parent
+  - Notes: namespaced evidence
+EOF
+)
+actual_namespaced=$(extract_task_block "$NAMESPACED_ID" "$TMP/todo-extract.md")
+if [[ "$actual_namespaced" == "$expected_namespaced" ]]; then
+	pass "extract_task_block: matches completed origin-namespaced IDs literally"
+else
+	fail "extract_task_block: failed origin-namespaced lookup"
+fi
+
+if [[ "$(extract_task_block "t9" "$TMP/todo-extract.md")" == "- [-] t9 declined task" ]]; then
+	pass "extract_task_block: preserves declined task status and heading boundary"
+else
+	fail "extract_task_block: changed declined task or heading boundary behavior"
+fi
+
+if [[ -z "$(extract_task_block "t8" "$TMP/todo-extract.md")" ]]; then
+	pass "extract_task_block: missing canonical ID returns an empty block"
+else
+	fail "extract_task_block: missing canonical ID returned content"
+fi
+
+if extract_task_block "t01" "$TMP/todo-extract.md" >/dev/null 2>&1; then
+	fail "extract_task_block: accepted malformed task ID"
+else
+	pass "extract_task_block: malformed task ID fails closed"
+fi
+
+large_todo="$TMP/todo-extract-large.md"
+{
+	i=1
+	while [[ $i -le 4500 ]]; do
+		printf -- '- [ ] t%d generated task %d\n' "$i" "$i"
+		i=$((i + 1))
+	done
+} >"$large_todo"
+
+GREP_CALL_LOG="$TMP/extract-task-block-grep-calls.log"
+export GREP_CALL_LOG
+grep() {
+	local grep_status=0
+	printf 'grep called\n' >>"$GREP_CALL_LOG"
+	command grep "$@" || grep_status=$?
+	return "$grep_status"
+}
+export -f grep
+extract_started=$SECONDS
+large_result=$(extract_task_block "t4500" "$large_todo")
+extract_elapsed=$((SECONDS - extract_started))
+unset -f grep
+
+if [[ "$large_result" == "- [ ] t4500 generated task 4500" && ! -s "$GREP_CALL_LOG" && $extract_elapsed -lt 5 ]]; then
+	pass "extract_task_block: late lookup avoids per-line grep processes"
+else
+	fail "extract_task_block: late lookup output/process/time regression (elapsed=${extract_elapsed}s)"
+fi
+
 mkdir -p "$TMP/project/todo"
 cat >"$TMP/project/todo/PLANS.md" <<'EOF'
 ### Root plan

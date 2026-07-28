@@ -355,22 +355,28 @@ parse_task_line() {
 extract_task_block() {
 	local task_id="$1"
 	local todo_file="$2"
-	local task_id_ere=""
-	task_id_ere=$(task_identity_escape_ere "$task_id") || return 1
+	local task_line_ere='^[[:space:]]*- \[.\] ([^[:space:]]+) '
+	local list_item_ere='^[[:space:]]*- '
+	local candidate_task_id=""
+	task_identity_validate "$task_id" || return 1
 
 	local in_block=false
 	local block=""
 	local task_indent=-1
 
 	while IFS= read -r line; do
-		# Check if this is the target task line
-		if [[ "$in_block" == "false" ]] && echo "$line" | grep -qE "^[[:space:]]*- \[.\] ${task_id_ere} "; then
-			in_block=true
-			block="$line"
-			# Calculate indent level using pure bash (avoids subshells in loop)
-			local prefix="${line%%[! ]*}"
-			task_indent=${#prefix}
-			continue
+		# Capture the checkbox-position token in pure Bash, then compare the
+		# validated canonical ID literally. Avoid external processes in this hot loop.
+		if [[ "$in_block" == "false" ]] && [[ "$line" =~ $task_line_ere ]]; then
+			candidate_task_id="${BASH_REMATCH[1]}"
+			if [[ "$candidate_task_id" == "$task_id" ]]; then
+				in_block=true
+				block="$line"
+				# Calculate indent level using pure bash (avoids subshells in loop)
+				local prefix="${line%%[! ]*}"
+				task_indent=${#prefix}
+				continue
+			fi
 		fi
 
 		if [[ "$in_block" == "true" ]]; then
@@ -390,7 +396,7 @@ extract_task_block() {
 			fi
 
 			# If indent is <= task indent and it's not a subtask/notes line, we're done
-			if [[ $current_indent -le $task_indent ]] && ! echo "$line" | grep -qE '^\s*- '; then
+			if [[ $current_indent -le $task_indent ]] && [[ ! "$line" =~ $list_item_ere ]]; then
 				break
 			fi
 
