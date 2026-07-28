@@ -1016,7 +1016,7 @@ _dlw_claim_unowned_reused_worktree() {
 		return 1
 	fi
 	if ! claim_worktree_ownership "$worktree_path" "$branch" \
-		--task "$issue_number" --session "$session_id" 2>/dev/null; then
+		--task "$issue_number" --session "$session_id" --owner-pid "$$" 2>/dev/null; then
 		echo "[dispatch_with_dedup] Atomic owner claim rejected for reused worktree #${issue_number}: ${worktree_path}" >>"$LOGFILE"
 		return 1
 	fi
@@ -1104,7 +1104,8 @@ _dlw_precreate_worktree() {
 		if declare -F register_worktree >/dev/null 2>&1; then
 			register_worktree "$_DLW_WORKTREE_PATH" "$_DLW_WORKTREE_BRANCH" \
 				--task "$issue_number" \
-				--session "$_precreate_session" 2>/dev/null || true
+				--session "$_precreate_session" \
+				--owner-pid "$$" 2>/dev/null || true
 		fi
 		# Restore gitignored deps (node_modules) that git doesn't track
 		_dlw_restore_worktree_deps "$_DLW_WORKTREE_PATH" "$repo_path"

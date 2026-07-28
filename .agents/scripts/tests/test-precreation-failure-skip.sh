@@ -174,7 +174,7 @@ register_worktree() {
 	local wt_path="$1"
 	local branch="$2"
 	shift 2
-	local task="" session=""
+	local task="" session="" owner_pid=""
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--task)
@@ -185,10 +185,14 @@ register_worktree() {
 			session="${2:-}"
 			shift 2
 			;;
+		--owner-pid)
+			owner_pid="${2:-}"
+			shift 2
+			;;
 		*) shift ;;
 		esac
 	done
-	REGISTERED_WORKTREE_ARGS="${wt_path}|${branch}|${task}|${session}"
+	REGISTERED_WORKTREE_ARGS="${wt_path}|${branch}|${task}|${session}|${owner_pid}"
 	return 0
 }
 STUB_OWNER_INFO=""
@@ -204,7 +208,7 @@ claim_worktree_ownership() {
 	local wt_path="$1"
 	local branch="$2"
 	shift 2
-	local task="" session=""
+	local task="" session="" owner_pid=""
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--task)
@@ -215,10 +219,14 @@ claim_worktree_ownership() {
 			session="${2:-}"
 			shift 2
 			;;
+		--owner-pid)
+			owner_pid="${2:-}"
+			shift 2
+			;;
 		*) shift ;;
 		esac
 	done
-	CLAIMED_WORKTREE_ARGS="${wt_path}|${branch}|${task}|${session}"
+	CLAIMED_WORKTREE_ARGS="${wt_path}|${branch}|${task}|${session}|${owner_pid}"
 	[[ "$STUB_CLAIM_WORKTREE_RC" -eq 0 ]] || return 1
 	return 0
 }
@@ -333,7 +341,7 @@ else
 	fail "freshly-created worktree is marked non-reused" "got: '${_DLW_WORKTREE_REUSED:-unset}', expected: '0'"
 fi
 
-if [[ "$REGISTERED_WORKTREE_ARGS" == "${STUB_WT_SUCCESS_PATH}|${_DLW_WORKTREE_BRANCH}|88888|dispatch-precreate-88888" ]]; then
+if [[ "$REGISTERED_WORKTREE_ARGS" == "${STUB_WT_SUCCESS_PATH}|${_DLW_WORKTREE_BRANCH}|88888|dispatch-precreate-88888|$$" ]]; then
 	pass "fresh precreated worktree is registered as transferable"
 else
 	fail "fresh precreated worktree is registered as transferable" "got: '$REGISTERED_WORKTREE_ARGS'"
@@ -434,7 +442,7 @@ STUB_CLAIM_WORKTREE_RC=0
 : >"$LOGFILE"
 _dlw_precreate_worktree "66666" "$FAKE_REPO"
 rc=$?
-expected_claim="${STUB_EXISTING_PATH}|${STUB_EXISTING_BRANCH}|66666|dispatch-precreate-66666"
+expected_claim="${STUB_EXISTING_PATH}|${STUB_EXISTING_BRANCH}|66666|dispatch-precreate-66666|$$"
 if [[ "$rc" -eq 0 && "$CLAIMED_WORKTREE_ARGS" == "$expected_claim" && -z "$REGISTERED_WORKTREE_ARGS" ]]; then
 	pass "unowned reused worktree uses an atomic ownership claim"
 else

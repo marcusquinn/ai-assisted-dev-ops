@@ -212,6 +212,83 @@ test_recent_live_pid_without_comm_still_blocks() {
 	return 0
 }
 
+test_expired_legacy_dispatch_precreate_systemd_owner_unregisters() {
+	local wt_path
+	wt_path=$(make_worktree_dir "legacy-dispatch-precreate-systemd")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/legacy-dispatch-precreate-systemd" \
+		--owner-pid "$owner_pid" --session "dispatch-precreate-28807" --task "28807"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
+
+	local rc=0
+	if is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_missing "$wt_path" || rc=1
+	print_result "expired legacy systemd precreate owner unregisters" "$rc"
+	return 0
+}
+
+test_recent_legacy_dispatch_precreate_systemd_owner_blocks() {
+	local wt_path
+	wt_path=$(make_worktree_dir "recent-dispatch-precreate-systemd")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/recent-dispatch-precreate-systemd" \
+		--owner-pid "$owner_pid" --session "dispatch-precreate-28808" --task "28808"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners SET owner_comm = 'systemd'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "recent legacy systemd precreate owner keeps launch grace" "$rc"
+	return 0
+}
+
+test_mismatched_legacy_dispatch_precreate_identity_blocks() {
+	local wt_path
+	wt_path=$(make_worktree_dir "mismatched-dispatch-precreate-systemd")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/mismatched-dispatch-precreate-systemd" \
+		--owner-pid "$owner_pid" --session "dispatch-precreate-99999" --task "28809"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "mismatched systemd precreate identity remains protected" "$rc"
+	return 0
+}
+
 test_explicit_cleanup_lease_identity() {
 	local wt_path
 	wt_path=$(make_worktree_dir "explicit-cleanup-lease")
@@ -313,6 +390,9 @@ main() {
 	test_owner_pid_override_rejects_sql_payload
 	test_stale_live_pid_comm_mismatch_unregisters
 	test_recent_live_pid_without_comm_still_blocks
+	test_expired_legacy_dispatch_precreate_systemd_owner_unregisters
+	test_recent_legacy_dispatch_precreate_systemd_owner_blocks
+	test_mismatched_legacy_dispatch_precreate_identity_blocks
 	test_explicit_cleanup_lease_identity
 	test_legacy_registry_schema_migrates_on_owner_check
 	test_should_skip_cleanup_branch_merged_within_grace

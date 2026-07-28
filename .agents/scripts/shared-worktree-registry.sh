@@ -948,6 +948,38 @@ _wt_owner_live_pid_reused_or_untrusted() {
 	return 1
 }
 
+_wt_legacy_dispatch_precreate_systemd_owner_expired() {
+	local wt_path="$1"
+	local owner_pid="$2"
+	local grace_minutes="${WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES:-15}"
+	local registered_comm=""
+	local current_comm=""
+	local expired=""
+
+	[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	if [[ ! "$grace_minutes" =~ ^[0-9]+$ || "$grace_minutes" -lt 1 ]]; then
+		grace_minutes=15
+	fi
+	current_comm=$(_get_proc_comm "$owner_pid")
+	registered_comm=$(_wt_owner_comm_for_path "$wt_path")
+	[[ "$current_comm" == "systemd" && "$registered_comm" == "systemd" ]] || return 1
+
+	expired=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+        SELECT CASE
+            WHEN owner_pid = ${owner_pid}
+             AND COALESCE(task_id, '') != ''
+             AND task_id NOT GLOB '*[^0-9]*'
+             AND owner_session = 'dispatch-precreate-' || task_id
+             AND COALESCE(created_at, '') != ''
+             AND datetime(replace(replace(created_at, 'T', ' '), 'Z', ''), '+${grace_minutes} minutes') <= datetime('now')
+            THEN 1 ELSE 0 END
+        FROM worktree_owners
+        WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
+    " 2>/dev/null || printf '0')
+	[[ "$expired" == "1" ]] || return 1
+	return 0
+}
+
 # Compare a registry owner against an already-resolved caller PID.
 _wt_is_worktree_owned_by_others_for_resolved_pid() {
 	local wt_path="$1"
@@ -977,6 +1009,14 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 			return 1
 		fi
 		return 0
+	fi
+	# Deployed versions before GH#28807 registered dispatch-precreate handoffs
+	# against the immortal systemd --user parent. That identity is never a valid
+	# specialized handoff owner. Preserve a bounded launch grace, then remove only
+	# exact numeric task/session pairs so legacy rows can no longer block cleanup.
+	if _wt_legacy_dispatch_precreate_systemd_owner_expired "$wt_path" "$owner_pid"; then
+		unregister_worktree "$wt_path"
+		return 1
 	fi
 
 	# Owner recovered or PID was reused while still registered; clear any stale
