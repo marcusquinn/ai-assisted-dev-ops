@@ -13,6 +13,7 @@ YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
 LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 META_HELPER="${SCRIPT_DIR}/knowledge_social_meta.py"
 MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
+DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -95,6 +96,12 @@ Meta synchronization:
   authored replies, and mentions. Every page revalidates the selected product
   identity. --budget is 3-1000 and --page-size is 1-50.
 
+Discourse synchronization:
+  sync-discourse verifies the current user and exact HTTPS installation before
+  every allowlisted GET page. Each profile must declare a User API key with the
+  exact read scope. Installation fingerprints namespace account and resource IDs
+  without exposing private hosts. --budget is 3-1000 and --page-size is 1-20.
+
 EOF
 	return 0
 }
@@ -133,6 +140,10 @@ Usage:
   knowledge-social-helper.sh sync-meta --product facebook|instagram|threads \
     [--base PATH] [--alias ALIAS] --connection-id ID --account-id GRAPH_ID \
     --stream STREAM --profile PROFILE [--budget UNITS] [--page-size 1-50] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-discourse [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-20] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
@@ -289,6 +300,19 @@ run_medium_import() {
 	return 0
 }
 
+run_provider_sync() {
+	local provider_name="$1"
+	local provider_helper="$2"
+	shift 2 || return 1
+	require_runtime || return 1
+	if [[ ! -r "$provider_helper" ]]; then
+		printf 'ERROR: %s social adapter missing: %s\n' "$provider_name" "$provider_helper" >&2
+		return 1
+	fi
+	python3 "$provider_helper" "$@" || return 1
+	return 0
+}
+
 main() {
 	local subcommand="${1:-help}"
 	if [[ $# -gt 0 ]]; then
@@ -335,12 +359,10 @@ main() {
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
 	sync-meta)
-		require_runtime || return 1
-		if [[ ! -r "$META_HELPER" ]]; then
-			printf 'ERROR: Meta social adapter missing: %s\n' "$META_HELPER" >&2
-			return 1
-		fi
-		python3 "$META_HELPER" "$@" || return 1
+		run_provider_sync Meta "$META_HELPER" "$@" || return 1
+		;;
+	sync-discourse)
+		run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1

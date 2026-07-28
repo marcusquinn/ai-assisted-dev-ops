@@ -40,7 +40,7 @@ a claim that the route is enabled.
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
-| Discourse | **API/Export** | **API/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Scope by installation and user/API-key authority; support hosted and self-hosted instances. |
+| Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
 | NodeBB | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Verify core REST routes, enabled plugins, and forum privileges per installation. |
 
 ## Recommended candidates
@@ -107,6 +107,17 @@ a claim that the route is enabled.
   `.agents/content/social-medium.md` records the official HTML-ZIP export,
   unsupported legacy API, terms, retention, historical community schema
   evidence, and unverified categories checked on 2026-07-28.
+- **Live Discourse:** `.agents/scripts/knowledge_social_discourse.py`,
+  `.agents/scripts/_knowledge_social_discourse*.py`, and
+  `.agents/tests/test-knowledge-social-discourse.sh` prove ten independently
+  checkpointed account streams, corpus-local keyed installation fingerprints,
+  current-user rebinding, bounded GET-only routes, redirect and write isolation,
+  credential rejection, scope-gated message metadata, terminal coverage,
+  content-addressed replay, and final lease fencing.
+  `.agents/content/social-discourse.md` records the current User API `read`
+  scope, core routes and pagination, hosted/self-hosted variability, optional
+  Follow plugin, archive mutation/retention boundary, installation terms, and
+  explicit unsupported categories checked on 2026-07-28.
 - **Quora export disposition:** `.agents/content/social-quora.md` records the
   official owner-request route, current public archive observations, absent
   schema and retention guarantees, and the identity-verification gap checked on
