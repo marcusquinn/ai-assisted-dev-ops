@@ -14,6 +14,7 @@ from functools import partial
 from typing import Any
 
 from _knowledge_social_nodebb import (
+    ACCOUNT_AUTH_MODE,
     NodeBBAdapterError,
     PageRequest,
     namespaced_id,
@@ -60,11 +61,18 @@ def _profile_value(prefix: str, suffix: str, field: str, limit: int) -> str:
 
 def _profile(profile: str) -> ProfileConfig:
     prefix = _profile_prefix(profile)
-    base_url = _canonical_base_url(_profile_value(prefix, "BASE_URL", "base URL", 4096))
-    token = _profile_value(prefix, "BEARER_TOKEN", "bearer token", 16 * 1024)
-    origin_key = _profile_value(prefix, "ORIGIN_KEY", "origin key", 16 * 1024)
-    token_type = _profile_value(prefix, "TOKEN_TYPE", "token type", 64)
-    if token_type != "user":
+    values = tuple(
+        _profile_value(prefix, suffix, field, limit)
+        for suffix, field, limit in (
+            ("BASE_URL", "base URL", 4096),
+            ("BEARER_TOKEN", "bearer token", 16 * 1024),
+            ("ORIGIN_KEY", "origin key", 16 * 1024),
+            ("TOKEN_TYPE", "token type", 64),
+        )
+    )
+    base_url, token, origin_key, token_type = values
+    base_url = _canonical_base_url(base_url)
+    if token_type != ACCOUNT_AUTH_MODE:
         raise NodeBBReadProviderError("NodeBB profile must declare a dedicated user token")
     return ProfileConfig(
         base_url,

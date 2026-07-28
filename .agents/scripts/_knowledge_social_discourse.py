@@ -19,6 +19,7 @@ from _knowledge_social_discourse_identity import (
     provider_account_id,
     username,
 )
+from _knowledge_social_oauth_request import OAuthPageRequest
 from knowledge_social_import import canonical_json, reject_credentials
 
 PROVIDER = "discourse"
@@ -102,34 +103,14 @@ STREAMS = {
 }
 
 
-@dataclass(frozen=True)
-class PageRequest:
+class PageRequest(OAuthPageRequest):
     """Allowlisted bounded request passed to the Discourse HTTP subprocess."""
 
-    stream: str
-    account_id: str
-    provider_account_id: str
-    username: str
-    instance_id: str
-    position: int
-    stop_at: str | None
-    limit: int
+    HANDLE_KEY = "username"
 
-    def payload(self) -> dict[str, Any]:
-        return {
-            "action": "page",
-            "stream": self.stream,
-            "account_id": self.account_id,
-            "provider_account_id": self.provider_account_id,
-            "username": self.username,
-            "instance_id": self.instance_id,
-            "position": self.position,
-            "stop_at": self.stop_at,
-            "limit": self.limit,
-        }
-
-    def evidence_key(self) -> str:
-        return canonical_json(self.payload())
+    @property
+    def username(self) -> str:
+        return self.handle
 
 
 PAGE_REQUEST_KEYS = {

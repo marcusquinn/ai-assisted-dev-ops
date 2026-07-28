@@ -62,14 +62,15 @@ def _parsed_url(value: str) -> tuple[SplitResult, int | None]:
 
 
 def _validate_origin(parsed: SplitResult) -> None:
-    if (
-        parsed.scheme.lower() != "https"
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or bool(parsed.query)
-        or bool(parsed.fragment)
-    ):
+    checks = (
+        parsed.scheme.lower() == "https",
+        parsed.hostname is not None,
+        parsed.username is None,
+        parsed.password is None,
+        not parsed.query,
+        not parsed.fragment,
+    )
+    if not all(checks):
         raise NodeBBReadProviderError("NodeBB profile base URL must be HTTPS")
 
 
@@ -124,15 +125,19 @@ def _retry_epoch(value: str | None) -> int | None:
     return int(time.time() + math.ceil(seconds))
 
 
-def _decode_response(payload: bytes) -> Any:
-    if len(payload) > MAX_RESPONSE_BYTES:
-        raise NodeBBReadProviderError("NodeBB read response exceeds the safety limit")
+def _parse_json(payload: bytes) -> Any:
     try:
-        decoded = json.loads(payload.decode("utf-8"))
+        return json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise NodeBBReadProviderError(
             "NodeBB read provider returned no valid JSON"
         ) from error
+
+
+def _decode_response(payload: bytes) -> Any:
+    if len(payload) > MAX_RESPONSE_BYTES:
+        raise NodeBBReadProviderError("NodeBB read response exceeds the safety limit")
+    decoded = _parse_json(payload)
     if not isinstance(decoded, (dict, list)):
         raise NodeBBReadProviderError(
             "NodeBB API response root must be an object or array"

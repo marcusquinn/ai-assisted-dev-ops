@@ -19,12 +19,14 @@ from _knowledge_social_nodebb_identity import (
     provider_account_id,
     userslug,
 )
+from _knowledge_social_oauth_request import OAuthPageRequest
 from knowledge_social_import import canonical_json, reject_credentials
 
 PROVIDER = "nodebb"
 CURSOR_PREFIX = "nodebb-v1:"
 RETENTION_LIMIT = "installation_policy_and_current_account_visibility"
 MAX_LEGACY_PAGE_ITEMS = 100
+ACCOUNT_AUTH_MODE = "user"
 
 ADAPTER_ERROR = NodeBBAdapterError
 PROVIDER_UNAVAILABLE_ERROR = NodeBBProviderUnavailableError
@@ -44,23 +46,29 @@ class StreamSpec:
     cost_units: int = 2
 
 
+@dataclass(frozen=True)
+class StreamOptions:
+    """Optional pagination and coverage policy for a NodeBB stream."""
+
+    incremental: bool = False
+    partial: str | None = None
+    cost_units: int = 2
+
+
 def _listing(
     resource_kind: str,
     activity_mode: str,
-    *,
-    incremental: bool = False,
-    partial: str | None = None,
-    cost_units: int = 2,
+    options: StreamOptions = StreamOptions(),
 ) -> StreamSpec:
     return StreamSpec(
         resource_kind,
         activity_mode,
-        "listing" if incremental else "snapshot",
-        incremental,
+        "listing" if options.incremental else "snapshot",
+        options.incremental,
         RETENTION_LIMIT,
-        "partial" if partial else None,
-        partial,
-        cost_units,
+        "partial" if options.partial else None,
+        options.partial,
+        options.cost_units,
     )
 
 
@@ -68,11 +76,14 @@ STREAMS = {
     "capabilities": _listing(
         "installation_capability",
         "selected_account",
-        partial="public_core_capabilities_only",
-        cost_units=3,
+        StreamOptions(partial="public_core_capabilities_only", cost_units=3),
     ),
-    "authored_topics": _listing("topic", "content_author", incremental=True),
-    "authored_posts": _listing("post", "content_author", incremental=True),
+    "authored_topics": _listing(
+        "topic", "content_author", StreamOptions(incremental=True)
+    ),
+    "authored_posts": _listing(
+        "post", "content_author", StreamOptions(incremental=True)
+    ),
     "upvoted": _listing("post", "selected_account"),
     "downvoted": _listing("post", "selected_account"),
     "bookmarks": _listing("post", "selected_account"),
@@ -83,39 +94,21 @@ STREAMS = {
     "groups": _listing("group", "selected_account"),
     "notifications": _listing("notification", "selected_account"),
     "chat_rooms": _listing(
-        "chat_room", "selected_account", partial="room_metadata_without_message_bodies"
+        "chat_room",
+        "selected_account",
+        StreamOptions(partial="room_metadata_without_message_bodies"),
     ),
 }
 
 
-@dataclass(frozen=True)
-class PageRequest:
+class PageRequest(OAuthPageRequest):
     """Allowlisted bounded request passed to the NodeBB HTTP subprocess."""
 
-    stream: str
-    account_id: str
-    provider_account_id: str
-    userslug: str
-    instance_id: str
-    position: int
-    stop_at: str | None
-    limit: int
+    HANDLE_KEY = "userslug"
 
-    def payload(self) -> dict[str, Any]:
-        return {
-            "action": "page",
-            "stream": self.stream,
-            "account_id": self.account_id,
-            "provider_account_id": self.provider_account_id,
-            "userslug": self.userslug,
-            "instance_id": self.instance_id,
-            "position": self.position,
-            "stop_at": self.stop_at,
-            "limit": self.limit,
-        }
-
-    def evidence_key(self) -> str:
-        return canonical_json(self.payload())
+    @property
+    def userslug(self) -> str:
+        return self.handle
 
 
 PAGE_REQUEST_KEYS = {

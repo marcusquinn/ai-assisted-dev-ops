@@ -6,12 +6,9 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_collect_cli import READER_ENVIRONMENT_KEYS, GuardedReaderProcess
 from _knowledge_social_fixture import FixtureSequence
 from _knowledge_social_nodebb import (
     NodeBBAdapterError,
@@ -22,11 +19,11 @@ from _knowledge_social_nodebb import (
     provider_account_id,
     userslug,
 )
+from _knowledge_social_oauth_reader import GuardedOAuthPolicy, GuardedOAuthReader
 from knowledge_social_import import reject_credentials
 
 READ_TIMEOUT_SECONDS = 120
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 SAFE_PROVIDER_FAILURES = (
     "Python urllib HTTP exports are unavailable",
     "NodeBB profile name is invalid",
@@ -67,50 +64,24 @@ def _provider_failure(stderr: str) -> NodeBBProviderUnavailableError:
     return NodeBBProviderUnavailableError("NodeBB read provider is unavailable")
 
 
-class GuardedNodeBB:
+NODEBB_READER_POLICY = GuardedOAuthPolicy(
+    "NodeBB",
+    "NODEBB",
+    "NODEBB_READ_LOG",
+    READ_TIMEOUT_SECONDS,
+    _decode_output,
+    _provider_failure,
+    NodeBBProviderUnavailableError,
+    ("BASE_URL", "BEARER_TOKEN", "ORIGIN_KEY", "TOKEN_TYPE"),
+    "",
+)
+
+
+class GuardedNodeBB(GuardedOAuthReader):
     """Execute only identity and allowlisted page reads in a bounded child."""
 
     def __init__(self, helper: Path, profile: str) -> None:
-        if PROFILE_NAME.fullmatch(profile) is None:
-            raise NodeBBProviderUnavailableError("NodeBB profile name is invalid")
-        if helper.is_symlink() or not helper.is_file():
-            raise NodeBBProviderUnavailableError("NodeBB read provider is unavailable")
-        self.profile = profile
-        self.process = GuardedReaderProcess(
-            helper=helper,
-            profile=profile,
-            environment=self._environment,
-            timeout_seconds=READ_TIMEOUT_SECONDS,
-            decode_output=_decode_output,
-            provider_failure=_provider_failure,
-            unavailable_error=NodeBBProviderUnavailableError,
-            provider_name="NodeBB",
-        )
-
-    def _environment(self) -> dict[str, str]:
-        prefix = f"NODEBB_{self.profile.upper()}"
-        profile_keys = {
-            f"{prefix}_BASE_URL",
-            f"{prefix}_BEARER_TOKEN",
-            f"{prefix}_ORIGIN_KEY",
-            f"{prefix}_TOKEN_TYPE",
-        }
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key in READER_ENVIRONMENT_KEYS or key in profile_keys
-        }
-        if os.environ.get("AIDEVOPS_TEST_MODE") == "1":
-            for key in ("AIDEVOPS_TEST_MODE", "PYTHONPATH", "NODEBB_READ_LOG"):
-                if key in os.environ:
-                    environment[key] = os.environ[key]
-        return environment
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        return self.process.run({"action": "identity", "account_id": expected_id})
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return self.process.run(request.payload())
+        super().__init__(helper, profile, NODEBB_READER_POLICY)
 
 
 def _fixture_object(value: Any, message: str) -> dict[str, Any]:

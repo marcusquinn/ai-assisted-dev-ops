@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from _knowledge_social_nodebb import (
+    ACCOUNT_AUTH_MODE,
     PROVIDER,
     RETENTION_LIMIT,
     NodeBBAdapterError,
@@ -40,21 +41,23 @@ OBJECT_TYPES = frozenset(
         "chat_room",
     }
 )
-ACTIVITY_TYPES = {
-    "capabilities": "installation_capability",
-    "authored_topics": "authored_topic",
-    "authored_posts": "authored_post",
-    "upvoted": "upvote",
-    "downvoted": "downvote",
-    "bookmarks": "bookmark",
-    "watched_topics": "watch",
-    "category_state": "category_state",
-    "following": "following",
-    "followers": "follower",
-    "groups": "group_membership",
-    "notifications": "notification",
-    "chat_rooms": "chat_participation",
-}
+ACTIVITY_TYPES = dict(
+    (
+        ("capabilities", "installation_capability"),
+        ("authored_topics", "authored_topic"),
+        ("authored_posts", "authored_post"),
+        ("upvoted", "upvote"),
+        ("downvoted", "downvote"),
+        ("bookmarks", "bookmark"),
+        ("watched_topics", "watch"),
+        ("category_state", "category_state"),
+        ("following", "following"),
+        ("followers", "follower"),
+        ("groups", "group_membership"),
+        ("notifications", "notification"),
+        ("chat_rooms", "chat_participation"),
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -186,7 +189,7 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
     policy = dict(context.policy)
     policy.update(
         {
-            "nodebb_token_type": "user",
+            "nodebb_token_type": ACCOUNT_AUTH_MODE,
             "nodebb_instance_id": installation,
             "nodebb_transport": "stdlib_urllib_get_only",
             "nodebb_redirects": "rejected",
