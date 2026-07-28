@@ -279,6 +279,11 @@ _gh_ci_prepare_parent_contract_and_signature() {
 gh_create_issue() {
 	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_create_issue 2>/dev/null || true
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh issue create" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
 	# GH#19857: validate title/body before creating (same invariant as edit wrappers)
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh issue create" "$_GH_EDIT_REJECTION_REASON" "$@"
@@ -594,6 +599,11 @@ _gh_create_pr_should_default_draft() {
 gh_create_pr() {
 	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_create_pr 2>/dev/null || true
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh pr create" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
 	# GH#19857: validate title/body before creating (same invariant as edit wrappers)
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh pr create" "$_GH_EDIT_REJECTION_REASON" "$@"
