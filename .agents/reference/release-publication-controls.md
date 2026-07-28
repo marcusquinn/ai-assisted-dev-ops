@@ -78,6 +78,11 @@ Aggregation PR #28736 reviews authorized PR #28735 at
 deterministic t18179 completion commit advanced `main` before its security
 release was published.
 
+PR #28798 at `bb9a332e2b03167e4ff6dad575d10db3bf986d9c` requires the same
+reviewed aggregation path because the deterministic simplification-state
+registry commit advanced `main` before its authorized worker-runtime release
+was published.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
