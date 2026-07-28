@@ -448,13 +448,7 @@ cat >"$TMP/todo-extract.md" <<EOF
 ## Boundary
 EOF
 
-expected_t7=$(cat <<'EOF'
-- [ ] t7 open parent
-  - [x] t7.1 completed child
-    - Notes: nested child evidence
-  - Notes: parent evidence
-EOF
-)
+expected_t7=$'- [ ] t7 open parent\n  - [x] t7.1 completed child\n    - Notes: nested child evidence\n  - Notes: parent evidence'
 actual_t7=$(extract_task_block "t7" "$TMP/todo-extract.md")
 if [[ "$actual_t7" == "$expected_t7" ]]; then
 	pass "extract_task_block: preserves nested subtasks and notes exactly"
@@ -462,11 +456,7 @@ else
 	fail "extract_task_block: changed nested block output"
 fi
 
-expected_namespaced=$(cat <<EOF
-- [x] ${NAMESPACED_ID} completed namespaced parent
-  - Notes: namespaced evidence
-EOF
-)
+expected_namespaced="- [x] ${NAMESPACED_ID} completed namespaced parent"$'\n'"  - Notes: namespaced evidence"
 actual_namespaced=$(extract_task_block "$NAMESPACED_ID" "$TMP/todo-extract.md")
 if [[ "$actual_namespaced" == "$expected_namespaced" ]]; then
 	pass "extract_task_block: matches completed origin-namespaced IDs literally"
