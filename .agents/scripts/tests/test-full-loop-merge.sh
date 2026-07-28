@@ -30,6 +30,12 @@ readonly TEST_RESET='\033[0m'
 TESTS_RUN=0
 TESTS_FAILED=0
 TEST_ROOT=""
+HANDOFF_ROOT=""
+HANDOFF_REPO=""
+HANDOFF_RECEIPT_DIR=""
+HANDOFF_RECEIPT=""
+HANDOFF_SOURCE_HEAD=""
+HANDOFF_PUBLISHED_COMMIT=""
 
 print_result() {
 	local test_name="$1"
@@ -965,12 +971,184 @@ test_non_squash_skips_subject_override() {
 	return 0
 }
 
+handoff_state_digest() {
+	local repo="$1"
+	{
+		/usr/bin/git -C "$repo" rev-parse HEAD
+		/usr/bin/git -C "$repo" ls-files -s
+		/usr/bin/git -C "$repo" diff --binary
+		/usr/bin/git -C "$repo" diff --cached --binary
+		/usr/bin/git -C "$repo" status --porcelain=v1 --untracked-files=all
+	} | /usr/bin/git -C "$repo" hash-object --stdin
+	return $?
+}
+
+create_planning_handoff_fixture() {
+	local fixture_name="$1"
+	local scripts_dir="${SCRIPT_DIR}/.."
+	local publication_output=""
+	HANDOFF_ROOT="${TEST_ROOT}/handoff-${fixture_name}"
+	HANDOFF_REPO="${HANDOFF_ROOT}/work"
+	HANDOFF_RECEIPT_DIR="${HANDOFF_ROOT}/receipts"
+	HANDOFF_RECEIPT=""
+	HANDOFF_SOURCE_HEAD=""
+	HANDOFF_PUBLISHED_COMMIT=""
+	mkdir -p "$HANDOFF_ROOT" || return 1
+	/usr/bin/git init --bare --initial-branch=main "${HANDOFF_ROOT}/remote.git" >/dev/null 2>&1 || return 1
+	/usr/bin/git clone "${HANDOFF_ROOT}/remote.git" "$HANDOFF_REPO" >/dev/null 2>&1 || return 1
+	/usr/bin/git -C "$HANDOFF_REPO" config user.email test@test.local || return 1
+	/usr/bin/git -C "$HANDOFF_REPO" config user.name Test || return 1
+	/usr/bin/git -C "$HANDOFF_REPO" config commit.gpgsign false || return 1
+	printf '# Tasks\n' >"${HANDOFF_REPO}/TODO.md"
+	printf 'base\n' >"${HANDOFF_REPO}/README.md"
+	/usr/bin/git -C "$HANDOFF_REPO" add TODO.md README.md || return 1
+	/usr/bin/git -C "$HANDOFF_REPO" commit -q -m seed || return 1
+	/usr/bin/git -C "$HANDOFF_REPO" push -q origin main || return 1
+	printf '%s\n' '- [ ] t900 checkout-free handoff ref:GH#900' >>"${HANDOFF_REPO}/TODO.md"
+	cp "${HANDOFF_REPO}/TODO.md" "${HANDOFF_ROOT}/expected-TODO.md" || return 1
+	publication_output=$(
+		SCRIPT_DIR="$scripts_dir"
+		# shellcheck source=../planning-publisher.sh
+		source "${scripts_dir}/planning-publisher.sh"
+		AIDEVOPS_PLANNING_GIT_BIN=/usr/bin/git \
+			AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true \
+			AIDEVOPS_PLANNING_RECEIPT_DIR="$HANDOFF_RECEIPT_DIR" \
+			AIDEVOPS_PLANNING_WRITE_RECEIPT=true \
+			planning_publish "$HANDOFF_REPO" "plan: checkout-free handoff" origin main || exit $?
+		printf '%s\t%s\t%s\n' "$PLANNING_PUBLICATION_RECEIPT" "$PLANNING_PUBLICATION_SOURCE_HEAD" "$PLANNING_PUBLISHED_COMMIT"
+	) || return 1
+	IFS=$'\t' read -r HANDOFF_RECEIPT HANDOFF_SOURCE_HEAD HANDOFF_PUBLISHED_COMMIT <<<"$publication_output"
+	[[ -f "$HANDOFF_RECEIPT" && -n "$HANDOFF_SOURCE_HEAD" && -n "$HANDOFF_PUBLISHED_COMMIT" ]]
+	return $?
+}
+
+write_handoff_gh_stub() {
+	cat >"${TEST_ROOT}/bin/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+	if [[ "$*" == *"--json state,isDraft,reviewDecision,headRefOid,headRefName"* ]]; then
+		printf '{"state":"OPEN","isDraft":false,"reviewDecision":"","headRefOid":"%s","headRefName":"main"}\n' "${HANDOFF_EXPECTED_HEAD:?}"
+		exit 0
+	fi
+	if [[ "$*" == *"--json headRefOid"* ]]; then
+		printf '%s\n' "${HANDOFF_EXPECTED_HEAD:?}"
+		exit 0
+	fi
+fi
+exit 1
+GHSTUB
+	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
+run_handoff_readiness() {
+	local repo="$1"
+	local receipt_dir="$2"
+	local expected_head="$3"
+	local scripts_dir="${SCRIPT_DIR}/.."
+	local tmp_runner=""
+	local rc=0
+	write_handoff_gh_stub || return 1
+	tmp_runner=$(mktemp) || return 1
+	cat >"$tmp_runner" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${scripts_dir}'
+HEADLESS=true
+source '${scripts_dir}/shared-constants.sh'
+source '${scripts_dir}/full-loop-helper-commit.sh'
+_full_loop_query_required_checks() {
+	local pr_number="\$1"
+	local repo="\$2"
+	local pr_head_ref="\$3"
+	: "\$pr_number" "\$repo" "\$pr_head_ref"
+	FULL_LOOP_REQUIRED_CHECKS_JSON='[]'
+	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE='no-required-checks'
+	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY='no required checks are configured'
+	return 0
+}
+_full_loop_persist_pr_check_evidence() {
+	local status="\$1"
+	local head_sha="\$2"
+	local evidence="\${3:-}"
+	: "\$status" "\$head_sha" "\$evidence"
+	return 0
+}
+cd '${repo}'
+_full_loop_verify_pr_readiness '42' 'testorg/testrepo'
+RUNNER_EOF
+	chmod +x "$tmp_runner"
+	env PATH="${TEST_ROOT}/bin:/usr/bin:/bin:/opt/homebrew/bin:${PATH}" \
+		HANDOFF_EXPECTED_HEAD="$expected_head" \
+		AIDEVOPS_PLANNING_GIT_BIN=/usr/bin/git \
+		AIDEVOPS_PLANNING_RECEIPT_DIR="$receipt_dir" \
+		bash "$tmp_runner" 2>&1 || rc=$?
+	rm -f "$tmp_runner"
+	return $rc
+}
+
+test_checkout_free_publication_readiness_handoff() {
+	local output="" before="" after="" valid_rc=0 changed_rc=0 added_rc=0 ordinary_rc=0 advanced_rc=0
+	local ordinary_repo="" ordinary_receipts="" ordinary_head=""
+	local advanced_repo="" advanced_receipts="" advanced_root="" advanced_head=""
+	create_planning_handoff_fixture valid || {
+		print_result "planning handoff: fixture setup succeeds" 1
+		return 0
+	}
+	before=$(handoff_state_digest "$HANDOFF_REPO")
+	output=$(run_handoff_readiness "$HANDOFF_REPO" "$HANDOFF_RECEIPT_DIR" "$HANDOFF_PUBLISHED_COMMIT") || valid_rc=$?
+	after=$(handoff_state_digest "$HANDOFF_REPO")
+	print_result "planning handoff: exact checkout-free receipt passes readiness" "$valid_rc" "output=$output"
+	print_result "planning handoff: readiness preserves local HEAD, index, and files" "$([[ "$before" == "$after" ]] && printf '0' || printf '1')"
+	printf '%s\n' '- [ ] t901 post-publication drift ref:GH#901' >>"${HANDOFF_REPO}/TODO.md"
+	run_handoff_readiness "$HANDOFF_REPO" "$HANDOFF_RECEIPT_DIR" "$HANDOFF_PUBLISHED_COMMIT" >/dev/null 2>&1 || changed_rc=$?
+	print_result "planning handoff: changed local planning snapshot is blocked" "$((changed_rc == 0 ? 1 : 0))"
+	cp "${HANDOFF_ROOT}/expected-TODO.md" "${HANDOFF_REPO}/TODO.md" || return 0
+	mkdir -p "${HANDOFF_REPO}/todo" || return 0
+	printf '%s\n' '# Added after publication' >"${HANDOFF_REPO}/todo/t902.md"
+	run_handoff_readiness "$HANDOFF_REPO" "$HANDOFF_RECEIPT_DIR" "$HANDOFF_PUBLISHED_COMMIT" >/dev/null 2>&1 || added_rc=$?
+	print_result "planning handoff: newly added planning path is blocked" "$((added_rc == 0 ? 1 : 0))"
+
+	create_planning_handoff_fixture ordinary || return 0
+	ordinary_repo="$HANDOFF_REPO"
+	ordinary_receipts="$HANDOFF_RECEIPT_DIR"
+	ordinary_head="$HANDOFF_PUBLISHED_COMMIT"
+	printf 'ordinary local commit\n' >>"${ordinary_repo}/README.md"
+	/usr/bin/git -C "$ordinary_repo" add README.md
+	/usr/bin/git -C "$ordinary_repo" commit -q -m 'ordinary local drift'
+	run_handoff_readiness "$ordinary_repo" "$ordinary_receipts" "$ordinary_head" >/dev/null 2>&1 || ordinary_rc=$?
+	print_result "planning handoff: ordinary unpushed local commit remains blocked" "$((ordinary_rc == 0 ? 1 : 0))"
+
+	create_planning_handoff_fixture advanced || return 0
+	advanced_repo="$HANDOFF_REPO"
+	advanced_receipts="$HANDOFF_RECEIPT_DIR"
+	advanced_root="$HANDOFF_ROOT"
+	/usr/bin/git clone "${advanced_root}/remote.git" "${advanced_root}/competitor" >/dev/null 2>&1 || return 0
+	/usr/bin/git -C "${advanced_root}/competitor" config user.email test@test.local
+	/usr/bin/git -C "${advanced_root}/competitor" config user.name Test
+	/usr/bin/git -C "${advanced_root}/competitor" config commit.gpgsign false
+	printf 'remote advancement\n' >>"${advanced_root}/competitor/README.md"
+	/usr/bin/git -C "${advanced_root}/competitor" commit -q -am 'advance remote head'
+	/usr/bin/git -C "${advanced_root}/competitor" push -q origin main
+	advanced_head=$(/usr/bin/git -C "${advanced_root}/competitor" rev-parse HEAD)
+	run_handoff_readiness "$advanced_repo" "$advanced_receipts" "$advanced_head" >/dev/null 2>&1 || advanced_rc=$?
+	print_result "planning handoff: advanced remote PR head makes receipt stale" "$((advanced_rc == 0 ? 1 : 0))"
+	return 0
+}
+
 run_prospective_todo_guard() {
 	local fixture_dir="$1"
 	local base_sha="$2"
 	local head_sha="$3"
+	local fetch_mode="${4:-stub}"
 	local scripts_dir="${SCRIPT_DIR}/.."
 	local tmp_runner=""
+	local verification_tmp="${fixture_dir}/verification-tmp"
+	local fetch_override=""
+	if [[ "$fetch_mode" == "stub" ]]; then
+		fetch_override='_merge_fetch_pinned_commit_objects() { return 0; }'
+	fi
+	mkdir -p "$verification_tmp"
 	tmp_runner=$(mktemp)
 	cat >"$tmp_runner" <<RUNNER_EOF
 #!/usr/bin/env bash
@@ -979,16 +1157,34 @@ SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
 _merge_fetch_pr_refs_rest() { printf 'main\t%s\t%s\n' '${base_sha}' '${head_sha}'; return 0; }
-_merge_fetch_pinned_commit_objects() { return 0; }
+${fetch_override}
 cd '${fixture_dir}'
 _merge_guard_prospective_todo '42' 'testorg/testrepo'
 RUNNER_EOF
 	chmod +x "$tmp_runner"
 	local rc=0
-	env PATH="${TEST_ROOT}/bin:/usr/bin:/bin:${scripts_dir}:${PATH}" bash "$tmp_runner" 2>&1 || rc=$?
+	env PATH="${TEST_ROOT}/bin:/usr/bin:/bin:${scripts_dir}:${PATH}" TMPDIR="$verification_tmp" \
+		bash "$tmp_runner" 2>&1 || rc=$?
 	rm -f "$tmp_runner"
 	[[ "$rc" -eq 0 ]] && return 0
 	return 1
+}
+
+prospective_contexts_clean() {
+	local fixture_dir="$1"
+	local leftovers=""
+	leftovers=$(compgen -G "${fixture_dir}/verification-tmp/aidevops-prospective-todo.*" || true)
+	[[ -z "$leftovers" ]]
+	return $?
+}
+
+prospective_git_storage_digest() {
+	local fixture_dir="$1"
+	{
+		/usr/bin/git -C "$fixture_dir" count-objects -v
+		/usr/bin/git -C "$fixture_dir" for-each-ref --format='%(refname) %(objectname)'
+	} | /usr/bin/git -C "$fixture_dir" hash-object --stdin
+	return $?
 }
 
 create_prospective_fixture() {
@@ -1000,6 +1196,7 @@ create_prospective_fixture() {
 		/usr/bin/git init -q
 		/usr/bin/git config user.email test@test.local
 		/usr/bin/git config user.name Test
+		/usr/bin/git config commit.gpgsign false
 		printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n' >TODO.md
 		/usr/bin/git add TODO.md
 		/usr/bin/git commit -q -m root
@@ -1021,25 +1218,94 @@ create_prospective_fixture() {
 	return 0
 }
 
+create_prospective_fetch_fixture() {
+	local fixture_root="${TEST_ROOT}/prospective-fetch"
+	local remote_repo="${fixture_root}/remote.git"
+	local fixture_dir="${fixture_root}/work"
+	local competitor="${fixture_root}/competitor"
+	local root_sha="" base_sha="" head_sha=""
+	mkdir -p "$fixture_root" || return 1
+	/usr/bin/git init --bare --initial-branch=main "$remote_repo" >/dev/null 2>&1 || return 1
+	/usr/bin/git clone "$remote_repo" "$fixture_dir" >/dev/null 2>&1 || return 1
+	/usr/bin/git -C "$fixture_dir" config user.email test@test.local || return 1
+	/usr/bin/git -C "$fixture_dir" config user.name Test || return 1
+	/usr/bin/git -C "$fixture_dir" config commit.gpgsign false || return 1
+	printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n' >"${fixture_dir}/TODO.md"
+	/usr/bin/git -C "$fixture_dir" add TODO.md || return 1
+	/usr/bin/git -C "$fixture_dir" commit -q -m root || return 1
+	root_sha=$(/usr/bin/git -C "$fixture_dir" rev-parse HEAD) || return 1
+	/usr/bin/git -C "$fixture_dir" push -q origin main || return 1
+	printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n- [ ] t2 Base addition ref:GH#2\n\n## Branch tasks\n' >"${fixture_dir}/TODO.md"
+	/usr/bin/git -C "$fixture_dir" commit -q -am base || return 1
+	base_sha=$(/usr/bin/git -C "$fixture_dir" rev-parse HEAD) || return 1
+	/usr/bin/git -C "$fixture_dir" push -q origin main || return 1
+	/usr/bin/git clone "$remote_repo" "$competitor" >/dev/null 2>&1 || return 1
+	/usr/bin/git -C "$competitor" config user.email test@test.local || return 1
+	/usr/bin/git -C "$competitor" config user.name Test || return 1
+	/usr/bin/git -C "$competitor" config commit.gpgsign false || return 1
+	/usr/bin/git -C "$competitor" checkout -q --detach "$root_sha" || return 1
+	printf '## Base tasks\n- [ ] t1 Root ref:GH#1\n\n## Branch tasks\n- [ ] t3 Unique head addition ref:GH#3\n' >"${competitor}/TODO.md"
+	/usr/bin/git -C "$competitor" commit -q -am head || return 1
+	head_sha=$(/usr/bin/git -C "$competitor" rev-parse HEAD) || return 1
+	/usr/bin/git -C "$competitor" push -q origin "${head_sha}:refs/pull/42/head" || return 1
+	printf '%s\n' "$base_sha" >"${fixture_root}/base.sha"
+	printf '%s\n' "$head_sha" >"${fixture_root}/head.sha"
+	printf '%s\n' "$fixture_dir"
+	return 0
+}
+
 test_prospective_todo_merge_guard() {
-	local fixture_dir="" base_sha="" head_sha="" output="" rc=0
+	local fixture_dir="" fixture_root="" base_sha="" head_sha="" output="" rc=0 objects_before="" objects_after=""
+	local cleanup_rc=0 isolation_rc=0 storage_before="" storage_after="" absent_before=0 absent_after=0
 	fixture_dir=$(create_prospective_fixture collision)
 	base_sha=$(<"${fixture_dir}/base.sha")
 	head_sha=$(<"${fixture_dir}/head.sha")
+	objects_before=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
 	output=$(run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha") || rc=$?
+	objects_after=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
+	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	[[ "$cleanup_rc" -eq 0 && "$objects_before" == "$objects_after" ]] || isolation_rc=1
 	print_result "prospective TODO: merge-only collision is blocked" "$((rc == 0 ? 1 : 0))" "output=$output"
 	print_result "prospective TODO: task and issue duplicates are reported" "$([[ "$output" == *"Duplicate task ID: t2"* && "$output" == *"Duplicate issue mapping: ref:GH#2"* ]] && printf '0' || printf '1')" "output=$output"
+	print_result "prospective TODO: collision writes only to cleaned isolated context" "$isolation_rc"
 
 	rc=0
+	cleanup_rc=0
+	isolation_rc=0
 	fixture_dir=$(create_prospective_fixture unique)
 	base_sha=$(<"${fixture_dir}/base.sha")
 	head_sha=$(<"${fixture_dir}/head.sha")
+	objects_before=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
 	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" >/dev/null || rc=$?
+	objects_after=$(/usr/bin/git -C "$fixture_dir" count-objects -v)
+	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	[[ "$cleanup_rc" -eq 0 && "$objects_before" == "$objects_after" ]] || isolation_rc=1
 	print_result "prospective TODO: unique stale branch passes" "$rc"
+	print_result "prospective TODO: success writes only to cleaned isolated context" "$isolation_rc"
 
 	rc=0
+	cleanup_rc=0
 	output=$(run_prospective_todo_guard "$fixture_dir" deadbeef deadbeef) || rc=$?
 	print_result "prospective TODO: indeterminate merge-tree fails closed" "$((rc == 0 ? 1 : 0))" "output=$output"
+	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	print_result "prospective TODO: failure cleans isolated context" "$cleanup_rc"
+
+	rc=0
+	cleanup_rc=0
+	isolation_rc=0
+	fixture_dir=$(create_prospective_fetch_fixture) || return 0
+	fixture_root="${fixture_dir%/work}"
+	base_sha=$(<"${fixture_root}/base.sha")
+	head_sha=$(<"${fixture_root}/head.sha")
+	storage_before=$(prospective_git_storage_digest "$fixture_dir")
+	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_before=1; fi
+	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" live >/dev/null || rc=$?
+	storage_after=$(prospective_git_storage_digest "$fixture_dir")
+	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_after=1; fi
+	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
+	[[ "$rc" -eq 0 && "$cleanup_rc" -eq 0 && "$absent_before" -eq 0 && "$absent_after" -eq 0 && \
+		"$storage_before" == "$storage_after" ]] || isolation_rc=1
+	print_result "prospective TODO: missing PR objects fetch only into cleaned isolated context" "$isolation_rc"
 	return 0
 }
 
@@ -1072,6 +1338,7 @@ main() {
 	test_wip_draft_takeover_uses_reviewed_pr_title
 	test_invalid_squash_title_blocks_before_merge
 	test_non_squash_skips_subject_override
+	test_checkout_free_publication_readiness_handoff
 	test_prospective_todo_merge_guard
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

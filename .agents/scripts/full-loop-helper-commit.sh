@@ -34,6 +34,12 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+# Checkout-free planning publication receipts provide the only narrow exception
+# to same-named local-branch head equality. The verifier revalidates all evidence.
+# shellcheck source=./planning-publisher.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/planning-publisher.sh"
+
 # --- Pre-Merge Gate ---
 
 # Pre-merge gate (GH#17541) — deterministic enforcement of review-bot-gate
@@ -230,8 +236,15 @@ _full_loop_verify_pr_readiness() {
 		local local_head=""
 		local_head=$(git rev-parse HEAD 2>/dev/null || true)
 		if [[ -z "$local_head" || "$local_head" != "$verified_head" ]]; then
-			print_error "PR #${pr_number} head drifted from the current worktree; push or refresh review evidence before merge"
-			return 1
+			local repo_root=""
+			repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+			if [[ -n "$repo_root" ]] && planning_verify_publication_receipt \
+				"$repo_root" origin "$pr_head_ref" "$verified_head"; then
+				print_info "Verified checkout-free planning publication receipt at PR head ${verified_head}; local Git state remains untouched"
+			else
+				print_error "PR #${pr_number} head drifted from the current worktree without a valid checkout-free planning publication receipt; push or refresh review evidence before merge"
+				return 1
+			fi
 		fi
 	fi
 	_full_loop_persist_pr_check_evidence "$FULL_LOOP_PR_CHECK_STATUS" "$verified_head" "$FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE" || true

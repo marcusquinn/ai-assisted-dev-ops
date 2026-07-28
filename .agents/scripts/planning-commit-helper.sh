@@ -583,10 +583,26 @@ commit_planning_files() {
 	fi
 	local changed_paths=""
 	changed_paths=$(_planning_publish_changed_paths "$repo_root")
-	if planning_publish "$repo_root" "$commit_msg" origin "$current_branch" "$changed_paths"; then
+	if AIDEVOPS_PLANNING_WRITE_RECEIPT=true \
+		planning_publish "$repo_root" "$commit_msg" origin "$current_branch" "$changed_paths"; then
+		if [[ "$PLANNING_PUBLISHED_COMMIT" != "$PLANNING_PUBLICATION_SOURCE_HEAD" &&
+			(-z "$PLANNING_PUBLICATION_RECEIPT" || -z "$PLANNING_PUBLICATION_HANDOFF_ID") ]]; then
+			log_error "Planning files reached the remote branch, but no verified checkout-free merge handoff receipt is available"
+			return 1
+		fi
 		log_success "Planning files published without changing local Git state"
+		if [[ -n "$PLANNING_PUBLICATION_RECEIPT" ]]; then
+			printf 'AIDEVOPS_PLANNING_PUBLICATION_RECEIPT=%s\n' "$PLANNING_PUBLICATION_RECEIPT"
+			printf 'AIDEVOPS_PLANNING_PUBLISHED_COMMIT=%s\n' "$PLANNING_PUBLISHED_COMMIT"
+			printf 'AIDEVOPS_PLANNING_PUBLICATION_SOURCE_HEAD=%s\n' "$PLANNING_PUBLICATION_SOURCE_HEAD"
+			printf 'AIDEVOPS_PLANNING_PUBLICATION_HANDOFF_ID=%s\n' "$PLANNING_PUBLICATION_HANDOFF_ID"
+		fi
 	else
-		log_error "Planning file publication failed; no successful direct push or planning PR was created"
+		if [[ "$PLANNING_PUBLISH_RESULT" == "published_receipt_failed" ]]; then
+			log_error "Planning files reached the remote branch, but receipt persistence failed; retry to reconstruct the safe handoff"
+		else
+			log_error "Planning file publication failed; no successful direct push or planning PR was created"
+		fi
 		return 1
 	fi
 

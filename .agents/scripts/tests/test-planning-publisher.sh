@@ -66,6 +66,42 @@ run_publish() {
 	return $?
 }
 
+run_publish_with_receipt() {
+	local repo="$1"
+	local receipt_dir="$2"
+	local branch="${3:-main}"
+	(
+		SCRIPT_DIR="$(dirname "$PUBLISHER")"
+		# shellcheck source=../planning-publisher.sh
+		source "$PUBLISHER"
+		AIDEVOPS_PLANNING_GIT_BIN=/usr/bin/git \
+			AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true \
+			AIDEVOPS_PLANNING_RECEIPT_DIR="$receipt_dir" \
+			AIDEVOPS_PLANNING_WRITE_RECEIPT=true \
+			planning_publish "$repo" "plan: test receipt" origin "$branch" || exit $?
+		printf 'receipt=%s\n' "$PLANNING_PUBLICATION_RECEIPT"
+		printf 'commit=%s\n' "$PLANNING_PUBLISHED_COMMIT"
+		printf 'source=%s\n' "$PLANNING_PUBLICATION_SOURCE_HEAD"
+	)
+	return $?
+}
+
+run_receipt_verify() {
+	local repo="$1"
+	local receipt_dir="$2"
+	local branch="$3"
+	local expected_commit="$4"
+	(
+		SCRIPT_DIR="$(dirname "$PUBLISHER")"
+		# shellcheck source=../planning-publisher.sh
+		source "$PUBLISHER"
+		AIDEVOPS_PLANNING_GIT_BIN=/usr/bin/git \
+			AIDEVOPS_PLANNING_RECEIPT_DIR="$receipt_dir" \
+			planning_verify_publication_receipt "$repo" origin "$branch" "$expected_commit"
+	)
+	return $?
+}
+
 run_simplification_publish() {
 	local repo="$1"
 	local hook="${2:-}"
@@ -126,6 +162,122 @@ test_state_allowlist_and_idempotence() {
 	if [[ "$before" == "$after" && "$first_remote" == "$second_remote" && "$count" -eq 1 ]] &&
 		git --git-dir="${root}/remote.git" show main:TODO.md | grep -q t001 &&
 		[[ "$(git --git-dir="${root}/remote.git" show main:README.md)" == "base" ]]; then pass "$name"; else fail "$name" invariant; fi
+	rm -rf "$root"
+	return 0
+}
+
+test_publication_receipt_revalidates_exact_handoff() {
+	local name="persists and revalidates exact checkout-free publication evidence"
+	local root="" repo="" receipt_dir="" output="" replay_output="" receipt="" published_commit="" replayed_commit="" source_head=""
+	local before="" after="" valid_rc=0 replay_rc=0 changed_rc=0 added_rc=0 forged_rc=0 remote_head="" forged_tmp="" line=""
+	root=$(mktemp -d) || return 0
+	setup_repo "$root" || {
+		fail "$name" setup
+		return 0
+	}
+	repo="${root}/work"
+	receipt_dir="${root}/receipts"
+	printf '%s\n' '- [ ] t009 receipt handoff ref:GH#9' >>"${repo}/TODO.md"
+	cp "${repo}/TODO.md" "${root}/expected-TODO.md" || return 0
+	before=$(state_digest "$repo")
+	output=$(run_publish_with_receipt "$repo" "$receipt_dir" main) || {
+		fail "$name" publish
+		rm -rf "$root"
+		return 0
+	}
+	while IFS= read -r line; do
+		case "$line" in
+		receipt=*) receipt="${line#receipt=}" ;;
+		commit=*) published_commit="${line#commit=}" ;;
+		source=*) source_head="${line#source=}" ;;
+		esac
+	done <<<"$output"
+	after=$(state_digest "$repo")
+	remote_head=$(/usr/bin/git --git-dir="${root}/remote.git" rev-parse main)
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" || valid_rc=$?
+	rm -f "$receipt"
+	replay_output=$(run_publish_with_receipt "$repo" "$receipt_dir" main) || replay_rc=$?
+	while IFS= read -r line; do
+		case "$line" in
+		receipt=*) receipt="${line#receipt=}" ;;
+		commit=*) replayed_commit="${line#commit=}" ;;
+		esac
+	done <<<"$replay_output"
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" || replay_rc=$?
+	printf '%s\n' '- [ ] t010 changed after publication ref:GH#10' >>"${repo}/TODO.md"
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" >/dev/null 2>&1 || changed_rc=$?
+	cp "${root}/expected-TODO.md" "${repo}/TODO.md" || return 0
+	printf '%s\n' '# Added after publication' >"${repo}/todo/tasks/t011.md"
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" >/dev/null 2>&1 || added_rc=$?
+	rm -f "${repo}/todo/tasks/t011.md"
+	forged_tmp="${receipt}.forged"
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" == source_head=* ]]; then
+			printf 'source_head=0000000000000000000000000000000000000000\n'
+		else
+			printf '%s\n' "$line"
+		fi
+	done <"$receipt" >"$forged_tmp"
+	mv "$forged_tmp" "$receipt"
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" >/dev/null 2>&1 || forged_rc=$?
+	if [[ -f "$receipt" && "$before" == "$after" && "$valid_rc" -eq 0 && "$replay_rc" -eq 0 && \
+		"$changed_rc" -ne 0 && "$added_rc" -ne 0 && "$forged_rc" -ne 0 && "$remote_head" == "$published_commit" && \
+		"$replayed_commit" == "$published_commit" && "$source_head" == "$(/usr/bin/git -C "$repo" rev-parse HEAD)" ]] && \
+		grep -q '^format=aidevops-planning-publication-v2$' "$receipt" &&
+		grep -q '^handoff_id=[0-9a-fA-F]\{40,64\}$' "$receipt"; then
+		pass "$name"
+	else
+		fail "$name" "receipt invariant failed (valid=$valid_rc replay=$replay_rc changed=$changed_rc added=$added_rc forged=$forged_rc)"
+	fi
+	rm -rf "$root"
+	return 0
+}
+
+test_publication_receipt_rejects_ancestor_source_forgery() {
+	local name="rejects a receipt that substitutes another ancestor for the published source HEAD"
+	local root="" repo="" receipt_dir="" output="" receipt="" published_commit="" source_head=""
+	local ancestor_head="" forged_tmp="" line="" forged_rc=0
+	root=$(mktemp -d) || return 0
+	setup_repo "$root" || {
+		fail "$name" setup
+		return 0
+	}
+	repo="${root}/work"
+	receipt_dir="${root}/receipts"
+	/usr/bin/git -C "$repo" commit --allow-empty -q -m 'source anchor' || return 0
+	/usr/bin/git -C "$repo" push -q origin main || return 0
+	ancestor_head=$(/usr/bin/git -C "$repo" rev-parse HEAD^) || return 0
+	printf '%s\n' '- [ ] t012 immutable source handoff ref:GH#12' >>"${repo}/TODO.md"
+	output=$(run_publish_with_receipt "$repo" "$receipt_dir" main) || {
+		fail "$name" publish
+		rm -rf "$root"
+		return 0
+	}
+	while IFS= read -r line; do
+		case "$line" in
+		receipt=*) receipt="${line#receipt=}" ;;
+		commit=*) published_commit="${line#commit=}" ;;
+		source=*) source_head="${line#source=}" ;;
+		esac
+	done <<<"$output"
+	forged_tmp="${receipt}.forged"
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" == source_head=* ]]; then
+			printf 'source_head=%s\n' "$ancestor_head"
+		else
+			printf '%s\n' "$line"
+		fi
+	done <"$receipt" >"$forged_tmp"
+	mv "$forged_tmp" "$receipt"
+	/usr/bin/git -C "$repo" update-ref refs/heads/main "$ancestor_head" "$source_head" || return 0
+	run_receipt_verify "$repo" "$receipt_dir" main "$published_commit" >/dev/null 2>&1 || forged_rc=$?
+	if [[ "$forged_rc" -ne 0 && "$(/usr/bin/git -C "$repo" rev-parse HEAD)" == "$ancestor_head" ]] &&
+		/usr/bin/git --git-dir="${root}/remote.git" show -s --format=%B "$published_commit" |
+		grep -q '^Planning-Publication-Handoff-ID: [0-9a-fA-F]\{40,64\}$'; then
+		pass "$name"
+	else
+		fail "$name" "forged ancestor source was accepted (rc=$forged_rc)"
+	fi
 	rm -rf "$root"
 	return 0
 }
@@ -510,7 +662,7 @@ HOOK
 
 test_explicit_git_capability_preserves_guarded_checkout() {
 	local name="explicit Git capability publishes planning paths while canonical guard remains active"
-	local root="" repo="" shim_dir="" before="" after="" guard_rc=0 count="" real_git="" real_true=""
+	local root="" repo="" shim_dir="" before="" after="" guard_rc=0 guard_output="" count="" real_git="" real_true=""
 	real_git=$(command -v git || true)
 	real_true=$(command -v true || true)
 	if [[ -z "$real_git" || -z "$real_true" ]]; then
@@ -530,7 +682,11 @@ test_explicit_git_capability_preserves_guarded_checkout() {
 	}
 	cp "${SCRIPT_DIR_TEST}/../git" \
 		"${SCRIPT_DIR_TEST}/../canonical-git-command-guard.py" \
+		"${SCRIPT_DIR_TEST}/../canonical_git_invocation.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_git_policy.py" \
+		"${SCRIPT_DIR_TEST}/../canonical_git_readonly.py" \
+		"${SCRIPT_DIR_TEST}/../canonical_git_ref_queries.py" \
+		"${SCRIPT_DIR_TEST}/../canonical_git_repository.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_shell_parser.py" \
 		"$shim_dir/" || {
 		fail "$name" guard-copy
@@ -557,13 +713,13 @@ test_explicit_git_capability_preserves_guarded_checkout() {
 		return 0
 	}
 	after=$(state_digest "$repo")
-	PATH="${shim_dir}:${PATH}" git -C "$repo" config user.name blocked-test >/dev/null 2>&1 || guard_rc=$?
+	guard_output=$(PATH="${shim_dir}:${PATH}" git -C "$repo" config user.name blocked-test 2>&1) || guard_rc=$?
 	count=$(git --git-dir="${root}/remote.git" show main:TODO.md | grep -c 'pr:#60 completed:2026-07-14' || true)
 	if [[ "$before" == "$after" && "$guard_rc" -eq 42 && "$count" -eq 1 ]] &&
 		git --git-dir="${root}/remote.git" show main:todo/PLANS.md | grep -q 'Status:\*\* Completed'; then
 		pass "$name"
 	else
-		fail "$name" "state or guard invariant failed (guard_rc=$guard_rc count=$count)"
+		fail "$name" "state or guard invariant failed (guard_rc=$guard_rc count=$count output=$guard_output)"
 	fi
 	rm -rf "$root"
 	return 0
@@ -572,6 +728,8 @@ test_explicit_git_capability_preserves_guarded_checkout() {
 main() {
 	test_git_binary_availability_is_validated
 	test_state_allowlist_and_idempotence
+	test_publication_receipt_revalidates_exact_handoff
+	test_publication_receipt_rejects_ancestor_source_forgery
 	test_simplification_state_scope_preserves_checkout
 	test_simplification_state_defaults_to_main_without_origin_head
 	test_simplification_state_conflict_is_retryable
