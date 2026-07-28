@@ -164,19 +164,24 @@ fi
 
 # gh api graphql -f query=...
 if [[ "$cmd1" == "api" && "$cmd2" == "graphql" ]]; then
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
 	# Check the mutation name in the query body
 	for arg in "$@"; do
 		if [[ "$arg" == *"addSubIssue"* ]]; then
-			printf '%s\n' '{"data":{"addSubIssue":{"issue":{"number":1}}}}'
+			printf '%s\n' '{"data":{"addSubIssue":{"issue":{"number":1}},"rateLimit":{"cost":1}}}'
+			exit 0
+		fi
+		if [[ "$arg" == *"subIssues(first:100)"* ]]; then
+			printf '%s\n' '{"data":{"node":{"subIssues":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
 			exit 0
 		fi
 		if [[ "$arg" == *"issue(number"* ]]; then
 			# resolve_gh_node_id query — fail when _GH_GRAPHQL_NODE_FAIL=1 is set
 			if [[ "${_GH_GRAPHQL_NODE_FAIL:-0}" == "1" ]]; then
-				printf '\n'
+				printf '%s\n' '{"data":{"repository":{"issue":null},"rateLimit":{"cost":1}}}'
 				exit 0
 			fi
-			printf '%s\n' 'NODE_STUB_ID'
+			printf '%s\n' '{"data":{"repository":{"issue":{"id":"NODE_STUB_ID"}},"rateLimit":{"cost":1}}}'
 			exit 0
 		fi
 	done
@@ -642,6 +647,7 @@ resolve_gh_node_id() {
 	local issue_number="$1" repo="$2"
 	local owner="${repo%%/*}" name="${repo##*/}"
 	local node_id
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
 	node_id=$(gh api graphql \
 		-f query='query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){issue(number:$num){id}}}' \
 		-f owner="$owner" -f name="$name" -F num="$issue_number" \

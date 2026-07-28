@@ -34,6 +34,8 @@
 # Include guard
 [[ -n "${_ISSUE_SYNC_LIB_REF_LOADED:-}" ]] && return 0
 _ISSUE_SYNC_LIB_REF_LOADED=1
+_ISLR_GRAPHQL_COST_FILTER='.data.rateLimit.cost // empty'
+_ISLR_JSON_TRUE="true"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -309,15 +311,78 @@ resolve_gh_node_id() {
 	local repo="$2"
 	local owner="${repo%%/*}"
 	local name="${repo##*/}"
-
-	local node_id
+	local response=""
+	local reported_cost=""
+	local node_id=""
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
-	node_id=$(_gh_with_timeout read gh api graphql \
-		-f query='query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){issue(number:$num){id}}}' \
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-node-id-exact-cost" \
+		_gh_with_timeout read gh api graphql \
+		-f query='query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){issue(number:$num){id}}rateLimit{cost}}' \
 		-f owner="$owner" -f name="$name" -F num="$issue_number" \
-		--jq '.data.repository.issue.id' 2>/dev/null || echo "")
-	echo "$node_id"
+		2>/dev/null) || response=""
+	reported_cost=$(printf '%s' "$response" | jq -r "$_ISLR_GRAPHQL_COST_FILTER" 2>/dev/null) || reported_cost=""
+	if [[ "$reported_cost" =~ ^[1-9][0-9]*$ ]]; then
+		node_id=$(printf '%s' "$response" | jq -r '.data.repository.issue.id // empty' 2>/dev/null) || node_id=""
+	fi
+	printf '%s\n' "$node_id"
 	return 0
+}
+
+# Check one bounded native blocked-by connection using response-owned cost.
+# Returns: 0=present, 1=absent, 2=lookup unavailable/incomplete.
+_gh_native_blocked_by_contains() {
+	local blocked_id="$1" blocking_id="$2"
+	local payload=""
+	local reported_cost=""
+	local has_next=""
+	local contains=""
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
+	payload=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-blocked-by-read-exact-cost" \
+		_gh_with_timeout read gh api graphql -f query='
+query($blocked:ID!) {
+  node(id:$blocked) { ... on Issue { blockedBy(first:100) { nodes { id } pageInfo { hasNextPage } } } }
+	rateLimit { cost }
+}' -f blocked="$blocked_id" 2>/dev/null) || return 2
+	reported_cost=$(printf '%s' "$payload" | jq -r "$_ISLR_GRAPHQL_COST_FILTER" 2>/dev/null) || reported_cost=""
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 2
+	contains=$(printf '%s' "$payload" | jq -r --arg id "$blocking_id" \
+		'any(.data.node.blockedBy.nodes[]?; .id == $id)' 2>/dev/null) || return 2
+	[[ "$contains" == "$_ISLR_JSON_TRUE" ]] && return 0
+	has_next=$(printf '%s' "$payload" | jq -r \
+		'.data.node.blockedBy.pageInfo.hasNextPage | if type == "boolean" then tostring else "unknown" end' \
+		2>/dev/null) || return 2
+	[[ "$has_next" == "false" ]] && return 1
+	return 2
+}
+
+# Check one bounded native sub-issue connection using response-owned cost.
+# Returns: 0=present, 1=absent, 2=lookup unavailable/incomplete.
+_gh_native_sub_issue_contains() {
+	local parent_id="$1" child_id="$2"
+	local payload=""
+	local reported_cost=""
+	local has_next=""
+	local contains=""
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
+	payload=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-sub-issue-read-exact-cost" \
+		_gh_with_timeout read gh api graphql -f query='
+query($parent:ID!) {
+  node(id:$parent) { ... on Issue { subIssues(first:100) { nodes { id } pageInfo { hasNextPage } } } }
+	rateLimit { cost }
+}' -f parent="$parent_id" 2>/dev/null) || return 2
+	reported_cost=$(printf '%s' "$payload" | jq -r "$_ISLR_GRAPHQL_COST_FILTER" 2>/dev/null) || reported_cost=""
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 2
+	contains=$(printf '%s' "$payload" | jq -r --arg id "$child_id" \
+		'any(.data.node.subIssues.nodes[]?; .id == $id)' 2>/dev/null) || return 2
+	[[ "$contains" == "$_ISLR_JSON_TRUE" ]] && return 0
+	has_next=$(printf '%s' "$payload" | jq -r \
+		'.data.node.subIssues.pageInfo.hasNextPage | if type == "boolean" then tostring else "unknown" end' \
+		2>/dev/null) || return 2
+	[[ "$has_next" == "false" ]] && return 1
+	return 2
 }
 
 # Extract the selected tier from a brief file.

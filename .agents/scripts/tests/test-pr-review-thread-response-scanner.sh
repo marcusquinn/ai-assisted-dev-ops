@@ -36,19 +36,29 @@ if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
 	printf '%s\n' "${STUB_GRAPHQL_REMAINING:-100}"
 	exit 0
 fi
+if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+$ ]]; then
+	[[ "${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}" == "1" ]] || exit 1
+	case "${STUB_PR_REPOSITORY_MODE:-same}" in
+	missing) printf '%s\n' '{"head":{"repo":null},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	cross) printf '%s\n' '{"head":{"repo":{"full_name":"contributor/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	*) printf '%s\n' '{"head":{"repo":{"full_name":"owner/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	esac
+	exit 0
+fi
 if [[ "$1" == "pr" && "${2:-}" == "list" ]]; then
 	printf '%s\n' "${STUB_PR_LIST:-1	Fix active PR	false	origin:worker	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
 	exit 0
 fi
 if [[ "$1" == "pr" && "${2:-}" == "view" ]]; then
 	if [[ "$*" == *"--json isCrossRepository"* ]]; then
-		printf '%s\n' "${STUB_CROSS_REPOSITORY:-false}"
+		exit 1
 	else
 		printf '%s\n' "${STUB_PR_VIEW:-Fix active PR	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
 	fi
 	exit 0
 fi
 if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
 	for arg in "$@"; do
 		if [[ "$arg" == "owner=" || "$arg" == "name=" ]]; then
 			printf 'empty repo GraphQL field: %s\n' "$arg" >&2
@@ -69,24 +79,28 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 			previous_arg="$arg"
 		done
 		printf 'reply\n' >>"${GRAPHQL_MUTATIONS_LOG:-/dev/null}"
-		printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1","url":"https://example.invalid/reply"}}}}\n'
+		printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1","url":"https://example.invalid/reply"}},"rateLimit":{"cost":1}}}\n'
 		exit 0
 	fi
 	if [[ "$*" == *"resolveReviewThread"* ]]; then
 		printf 'resolve\n' >>"${GRAPHQL_MUTATIONS_LOG:-/dev/null}"
-		printf '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1","isResolved":true}}}}\n'
+		printf '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1","isResolved":true}},"rateLimit":{"cost":1}}}\n'
 		exit 0
 	fi
 	if [[ "$*" == *"node(id:"* && "$*" == *"comments(first: 1)"* ]]; then
 		if [[ "${STUB_THREAD_AUTHOR_MODE:-ok}" == "missing" ]]; then
-			printf '{"data":{"node":{"comments":{"nodes":[{"author":null}]}}}}\n'
+			printf '{"data":{"node":{"comments":{"nodes":[{"author":null}]}},"rateLimit":{"cost":1}}}\n'
 		else
-			printf '{"data":{"node":{"comments":{"nodes":[{"author":{"login":"%s"}}]}}}}\n' "${STUB_THREAD_AUTHOR_LOGIN:-reviewer}"
+			printf '{"data":{"node":{"comments":{"nodes":[{"author":{"login":"%s"}}]}},"rateLimit":{"cost":1}}}\n' "${STUB_THREAD_AUTHOR_LOGIN:-reviewer}"
 		fi
 		exit 0
 	fi
 	if [[ "$*" == *"node(id:"* || "$*" == *"comments(first: 100)"* ]]; then
-		printf '{"data":{"node":{"comments":{"nodes":[]}}}}\n'
+		printf '{"data":{"node":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}\n'
+		exit 0
+	fi
+	if [[ "${STUB_GRAPHQL_COST_MODE:-exact}" == "missing" ]]; then
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
 		exit 0
 	fi
 	case "${STUB_THREADS_MODE:-unresolved}" in
@@ -95,16 +109,16 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 		exit 1
 		;;
 	none)
-		printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n'
+		printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}\n'
 		;;
 	human)
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_HUMAN","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"maintainer"},"path":"script.sh","line":12,"url":"https://example.invalid/human","updatedAt":"2026-06-03T00:00:00Z"}]}},{"id":"THREAD_BOT","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"bot.sh","line":3,"url":"https://example.invalid/bot","updatedAt":"2026-06-03T00:00:00Z"}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_HUMAN","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"maintainer"},"path":"script.sh","line":12,"url":"https://example.invalid/human","updatedAt":"2026-06-03T00:00:00Z"}]}},{"id":"THREAD_BOT","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"bot.sh","line":3,"url":"https://example.invalid/bot","updatedAt":"2026-06-03T00:00:00Z"}]} }],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		;;
 	outdated)
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_OLD","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"old.sh","line":7,"url":"https://example.invalid/outdated","updatedAt":"2026-06-03T00:00:00Z"}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_OLD","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"old.sh","line":7,"url":"https://example.invalid/outdated","updatedAt":"2026-06-03T00:00:00Z"}]}}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		;;
 	*)
-		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD1","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"},"path":".agents/scripts/example.sh","line":42,"url":"https://example.invalid/thread","updatedAt":"2026-06-03T00:00:00Z"}]}},{"id":"THREAD2","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"old.sh","line":1,"url":"https://example.invalid/resolved","updatedAt":"2026-06-03T00:00:00Z"}]}}]}}}}}'
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD1","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]"},"path":".agents/scripts/example.sh","line":42,"url":"https://example.invalid/thread","updatedAt":"2026-06-03T00:00:00Z"}]}},{"id":"THREAD2","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"old.sh","line":1,"url":"https://example.invalid/resolved","updatedAt":"2026-06-03T00:00:00Z"}]} }],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		;;
 	esac
 	exit 0
@@ -291,7 +305,7 @@ WORKTREE_STUB
 }
 
 setup_test_env() {
-	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_CROSS_REPOSITORY STUB_REMOTE_HEAD
+	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
 	unset STUB_WORKTREE_REGISTER_OWNER STUB_WORKTREE_OWNER_PID STUB_WORKTREE_OWNER_SESSION
@@ -559,7 +573,7 @@ test_dispatch_rejects_reused_unverified_owner() {
 
 test_dispatch_blocks_cross_repository_head() {
 	setup_test_env
-	export STUB_CROSS_REPOSITORY="true"
+	export STUB_PR_REPOSITORY_MODE="cross"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	local old_epoch=""
@@ -702,6 +716,20 @@ test_scan_includes_outdated_unresolved_threads() {
 		print_result "scan includes unresolved outdated bot thread" 0
 	else
 		print_result "scan includes unresolved outdated bot thread" 1 "output=${output}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_scan_fails_closed_without_graphql_cost() {
+	setup_test_env
+	export STUB_GRAPHQL_COST_MODE="missing"
+	local output=""
+	output="$($SCANNER scan owner/repo "${TEST_ROOT}/repo" || true)"
+	if [[ -z "$output" ]] && grep -q 'GraphQL cost unavailable' "$LOGFILE" 2>/dev/null; then
+		print_result "scan fails closed without response-owned GraphQL cost" 0
+	else
+		print_result "scan fails closed without response-owned GraphQL cost" 1 "output=${output}"
 	fi
 	teardown_test_env
 	return 0
@@ -1554,13 +1582,14 @@ if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
 	exit 0
 fi
 if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
 	if [[ "$*" == *"comments(first: 100)"* ]]; then
-		printf '{"data":{"node":{"comments":{"nodes":[{"body":"<!-- aidevops:review-thread-response:THREAD1 --> already"}]}}}}\n'
+		printf '{"data":{"node":{"comments":{"nodes":[{"body":"<!-- aidevops:review-thread-response:THREAD1 --> already"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}\n'
 		exit 0
 	fi
 	if [[ "$*" == *"addPullRequestReviewThreadReply"* ]]; then
 		printf 'reply\n' >>"${GRAPHQL_MUTATIONS_LOG:-/dev/null}"
-		printf '{}\n'
+		printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1"}},"rateLimit":{"cost":1}}}\n'
 		exit 0
 	fi
 fi
@@ -1584,6 +1613,7 @@ main() {
 	test_scan_finds_unresolved_bot_thread
 	test_scan_skips_draft_prs
 	test_scan_includes_outdated_unresolved_threads
+	test_scan_fails_closed_without_graphql_cost
 	test_scan_pr_excludes_human_threads_by_default
 	test_scan_pr_can_include_human_threads_with_opt_in
 	test_dispatch_launches_worker_and_writes_state

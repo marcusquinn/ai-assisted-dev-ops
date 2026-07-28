@@ -76,6 +76,10 @@ gh() {
 		printf '%s\n' R_example
 		return 0
 	fi
+	if [[ "$top_command" == "api" && "${1:-}" == repos/example/repo/issues/*/comments\?per_page=100 ]]; then
+		printf '%s\n' '[[]]'
+		return 0
+	fi
 	if [[ "$top_command" == "api" && "${1:-}" == repos/example/repo/issues/* ]]; then
 		local issue_num="${1##*/}"
 		printf '%s\tI_%s\n' "$issue_num" "$issue_num"

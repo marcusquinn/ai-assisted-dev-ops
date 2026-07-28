@@ -36,6 +36,7 @@
 # Include guard
 [[ -n "${_PULSE_TRIAGE_EVALUATION_LIB_LOADED:-}" ]] && return 0
 _PULSE_TRIAGE_EVALUATION_LIB_LOADED=1
+_PTE_JSON_ARRAY_TYPE="array"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -178,13 +179,17 @@ _reevaluate_stale_continuations() {
 	local repo_slug="$2"
 	local repo_path="$3"
 
-	# Fetch gate sticky comment. map+.[0] preserves the full multi-line body
+	# Fetch the gate sticky comment through paginated REST because this operation
+	# needs only comment bodies. map+.[0] preserves the full multi-line body
 	# (.[]+head-1 would truncate to the heading line, losing the issue refs).
 	local gate_comment
-	gate_comment=$(gh issue view "$issue_number" --repo "$repo_slug" \
-		--comments --json comments \
-		--jq '.comments | map(select(.body | contains("## Large File Simplification Gate"))) | .[0].body // empty' \
-		2>/dev/null) || gate_comment=""
+	gate_comment=$(set -o pipefail; gh api \
+		"repos/${repo_slug}/issues/${issue_number}/comments?per_page=100" --paginate --slurp 2>/dev/null |
+		jq -r --arg array_type "$_PTE_JSON_ARRAY_TYPE" '
+			(if (type == $array_type and ((.[0]? | type) == $array_type)) then add else . end)
+			| map(select((.body // "") | contains("## Large File Simplification Gate")))
+			| .[0].body // empty
+		') || gate_comment=""
 	[[ -n "$gate_comment" ]] || return 1
 
 	# Extract only the "recently-closed — continuation" issue numbers; open
@@ -433,8 +438,8 @@ _consolidation_dispatch_comment_exists() {
 
 	local marker_count
 	marker_count=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${parent_num}/comments?per_page=100" \
-		--paginate --slurp | jq -r '
-			[ (if (type == "array" and ((.[0]? | type) == "array")) then .[] else . end)[]
+		--paginate --slurp | jq -r --arg array_type "$_PTE_JSON_ARRAY_TYPE" '
+			[ (if (type == $array_type and ((.[0]? | type) == $array_type)) then .[] else . end)[]
 			| select((.body // "") | contains("## Issue Consolidation Dispatched")) ] | length
 	') || return 1
 	[[ "$marker_count" =~ ^[0-9]+$ ]] || marker_count=0

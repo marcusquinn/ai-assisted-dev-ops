@@ -19,6 +19,16 @@ _rest_args_have_author() {
 	return 1
 }
 
+_rest_pr_list_requires_search() {
+	local arg=""
+	for arg in "$@"; do
+		case "$arg" in
+		--author|--author=*|-A|--assignee|--assignee=*|-a|--label|--label=*|-l|--search|--search=*|-S|--draft|-d) return 0 ;;
+		esac
+	done
+	return 1
+}
+
 _rest_resolve_actor_filter() {
 	local actor="$1"
 	if [[ "$actor" == "@me" ]]; then
@@ -297,7 +307,7 @@ _rest_pr_list_can_preserve_args() {
 	local fields=""
 	local limit=30
 	local state="$_REST_READ_STATE_OPEN"
-	_rest_args_have_author "$@" && mode="$_REST_READ_MODE_SEARCH"
+	_rest_pr_list_requires_search "$@" && mode="$_REST_READ_MODE_SEARCH"
 	while [[ $# -gt 0 ]]; do
 		local arg="$1"
 		case "$arg" in
@@ -602,18 +612,18 @@ _rest_pr_search() {
 		*) printf '_rest_pr_search: unsupported argument: %s\n' "$arg" >&2; return 2 ;;
 		esac
 	done
-	[[ -n "$repo" && -n "$author" && "$limit" =~ ^[1-9][0-9]*$ && "$limit" -le 1000 ]] &&
+	[[ -n "$repo" && "$limit" =~ ^[1-9][0-9]*$ && "$limit" -le 1000 ]] &&
 		_rest_repo_slug_supported "$repo" || {
-		printf '_rest_pr_search: --repo, --author, and a limit <= 1000 are required\n' >&2
+		printf '_rest_pr_search: --repo and a limit <= 1000 are required\n' >&2
 		return 1
 	}
 	if [[ -n "$json_fields" ]] && ! _rest_pr_list_fields_supported search "$json_fields"; then
 		printf '_rest_pr_search: unsupported JSON field set: %s\n' "$json_fields" >&2
 		return 2
 	fi
-	author="$(_rest_resolve_actor_filter "$author")" || return 1
+	[[ -z "$author" ]] || author="$(_rest_resolve_actor_filter "$author")" || return 1
 	[[ -z "$assignee" ]] || assignee="$(_rest_resolve_actor_filter "$assignee")" || return 1
-	local query="${search}${search:+ }repo:${repo} is:pr author:${author}"
+	local query="${search}${search:+ }repo:${repo} is:pr"
 	case "$state" in
 	open) query="${query} is:open" ;;
 	closed) query="${query} is:closed is:unmerged" ;;
@@ -621,6 +631,7 @@ _rest_pr_search() {
 	all) ;;
 	*) printf '_rest_pr_search: unsupported state: %s\n' "$state" >&2; return 2 ;;
 	esac
+	[[ -z "$author" ]] || query="${query} author:${author}"
 	[[ -z "$assignee" ]] || query="${query} assignee:${assignee}"
 	local qualifier=""
 	if [[ -n "$base_branch" ]]; then
@@ -650,7 +661,7 @@ _rest_pr_search() {
 }
 
 _rest_pr_list_dispatch() {
-	if _rest_args_have_author "$@"; then
+	if _rest_pr_list_requires_search "$@"; then
 		_rest_pr_search "$@"
 	else
 		_rest_pr_list "$@"

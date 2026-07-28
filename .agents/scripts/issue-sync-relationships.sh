@@ -309,15 +309,32 @@ _cached_node_id() {
 # whether this call created, observed, failed, or deferred the edge.
 _gh_add_blocked_by() {
 	local blocked_id="$1" blocking_id="$2"
-	local result mutation_rc=0
-	result=$(_gh_with_timeout write gh api graphql -f query='
+	local result="" reported_cost="" contains_rc=0 mutation_rc=0
+	_gh_native_blocked_by_contains "$blocked_id" "$blocking_id" || contains_rc=$?
+	case "$contains_rc" in
+		0)
+			log_verbose "  blocked-by relationship already exists"
+			_relationship_record_outcome "$_REL_OUTCOME_ALREADY_PRESENT"
+			return 0
+			;;
+		1) ;;
+		*)
+			_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+			return 1
+			;;
+	esac
+	result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-add-blocked-by-exact-cost" \
+		_gh_with_timeout write gh api graphql -f query='
 mutation($blocked:ID!,$blocking:ID!) {
   addBlockedBy(input: {issueId:$blocked, blockingIssueId:$blocking}) {
     issue { number }
   }
+	rateLimit { cost }
 }' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
-
-	if echo "$result" | grep -q '"number"'; then
+	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
+		printf '%s' "$result" | jq -e '.data.addBlockedBy.issue.number | numbers' >/dev/null 2>&1; then
 		_relationship_record_outcome "$_REL_OUTCOME_CREATED"
 		return 0
 	fi
@@ -331,48 +348,29 @@ mutation($blocked:ID!,$blocking:ID!) {
 	return 1
 }
 
-# Check whether one native blocked-by edge currently exists. A paginated result
-# that does not contain the target is unknown rather than absent.
-# Returns: 0=present, 1=absent, 2=lookup unavailable/incomplete.
-_gh_native_blocked_by_contains() {
-	local blocked_id="$1"
-	local blocking_id="$2"
-	local payload="" has_next="" contains=""
-	payload=$(_gh_with_timeout read gh api graphql -f query='
-query($blocked:ID!) {
-  node(id:$blocked) {
-    ... on Issue {
-      blockedBy(first:100) { nodes { id } pageInfo { hasNextPage } }
-    }
-  }
-}' -f blocked="$blocked_id" 2>/dev/null) || return 2
-	contains=$(printf '%s' "$payload" | jq -r --arg id "$blocking_id" \
-		'any(.data.node.blockedBy.nodes[]?; .id == $id)' 2>/dev/null) || return 2
-	[[ "$contains" == "true" ]] && return 0
-	has_next=$(printf '%s' "$payload" | jq -r \
-		'.data.node.blockedBy.pageInfo.hasNextPage // true' 2>/dev/null) || return 2
-	[[ "$has_next" == "${REL_FALSE}" ]] && return 1
-	return 2
-}
-
 # Remove a deterministic break edge from an already-materialized native cycle.
 # Absence is idempotent success; lookup or mutation uncertainty remains retryable.
 _gh_remove_blocked_by() {
 	local blocked_id="$1"
 	local blocking_id="$2"
-	local contains_rc=0 result=""
+	local contains_rc=0 mutation_rc=0 result="" reported_cost=""
 	_gh_native_blocked_by_contains "$blocked_id" "$blocking_id" || contains_rc=$?
 	case "$contains_rc" in
 		1) return 0 ;;
 		2) return 1 ;;
 	esac
-	result=$(_gh_with_timeout write gh api graphql -f query='
+	result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-remove-blocked-by-exact-cost" \
+		_gh_with_timeout write gh api graphql -f query='
 mutation($blocked:ID!,$blocking:ID!) {
   removeBlockedBy(input: {issueId:$blocked, blockingIssueId:$blocking}) {
     issue { number }
   }
-}' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1)
-	if printf '%s' "$result" | grep -q '"number"'; then
+	rateLimit { cost }
+}' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
+	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
+		printf '%s' "$result" | jq -e '.data.removeBlockedBy.issue.number | numbers' >/dev/null 2>&1; then
 		return 0
 	fi
 	log_verbose "  removeBlockedBy error: ${result:0:200}"
@@ -549,21 +547,36 @@ _dependency_cycle_should_skip_edge() {
 	return 1
 }
 
-# Arguments:
-#   $1 - parent_node_id
-#   $2 - child_node_id
+# Arguments: $1=parent_node_id, $2=child_node_id
 # Returns: 0=success/already-exists, 1=error
 _gh_add_sub_issue() {
 	local parent_id="$1" child_id="$2"
-	local result mutation_rc=0
-	result=$(_gh_with_timeout write gh api graphql -f query='
+	local result="" reported_cost="" contains_rc=0 mutation_rc=0
+	_gh_native_sub_issue_contains "$parent_id" "$child_id" || contains_rc=$?
+	case "$contains_rc" in
+		0)
+			log_verbose "  sub-issue relationship already exists"
+			_relationship_record_outcome "$_REL_OUTCOME_ALREADY_PRESENT"
+			return 0
+			;;
+		1) ;;
+		*)
+			_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+			return 1
+			;;
+	esac
+	result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-add-sub-issue-exact-cost" \
+		_gh_with_timeout write gh api graphql -f query='
 mutation($parent:ID!,$child:ID!) {
   addSubIssue(input: {issueId:$parent, subIssueId:$child}) {
     issue { number }
   }
+	rateLimit { cost }
 }' -f parent="$parent_id" -f child="$child_id" 2>&1) || mutation_rc=$?
-
-	if echo "$result" | grep -q '"number"'; then
+	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	if [[ "$mutation_rc" -eq 0 && "$reported_cost" =~ ^[1-9][0-9]*$ ]] && \
+		printf '%s' "$result" | jq -e '.data.addSubIssue.issue.number | numbers' >/dev/null 2>&1; then
 		_relationship_record_outcome "$_REL_OUTCOME_CREATED"
 		return 0
 	fi

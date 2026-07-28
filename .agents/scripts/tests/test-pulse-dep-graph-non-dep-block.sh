@@ -139,7 +139,7 @@ assert_eq 'blocked-by line' 'false' \
 ###############################################################################
 # Part 3: _should_defer_auto_unblock integration via mocked gh
 #
-# Source the helper and stub `gh` on PATH to return controlled comment
+# Source the helper and stub `gh` on PATH to return controlled REST comment
 # JSON. This exercises both signals end-to-end without hitting GitHub.
 ###############################################################################
 
@@ -149,11 +149,10 @@ printf '\n== _should_defer_auto_unblock integration ==\n'
 STUB_DIR=$(mktemp -d)
 trap 'rm -rf "$STUB_DIR"' EXIT
 
-# Stub gh that reads a canned response file. The helper calls
-# `gh issue view $num --repo $slug --json comments --jq '...'` so the
-# stub inspects argv to decide which canned file to serve.
+# Stub gh that reads a canned paginated REST response file.
 cat >"$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_STUB_CALLS:-/dev/null}"
 # Canned response is whatever lives in $GH_STUB_COMMENTS.
 # If unset or file missing, return empty so the helper fail-opens.
 if [[ "${GH_STUB_COMMENTS:-}" && -f "${GH_STUB_COMMENTS}" ]]; then
@@ -164,6 +163,8 @@ fi
 STUB
 chmod +x "$STUB_DIR/gh"
 export PATH="$STUB_DIR:$PATH"
+export GH_STUB_CALLS="$STUB_DIR/gh-calls.log"
+: >"$GH_STUB_CALLS"
 
 # Shim the helper's dependencies: LOGFILE must exist so `echo >>` works.
 export LOGFILE="$STUB_DIR/test.log"
@@ -185,27 +186,30 @@ assert_eq 'clean body and empty comments → unblock' '__no_defer__' "$got"
 
 # Scenario 3: body defer flag false, comment contains **BLOCKED** → defer
 export GH_STUB_COMMENTS="$STUB_DIR/blocked-comment.json"
-printf '**BLOCKED** — cannot proceed autonomously. Evidence: ...' >"$GH_STUB_COMMENTS"
+jq -cn --arg body '**BLOCKED** — cannot proceed autonomously. Evidence: ...' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+: >"$GH_STUB_CALLS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'worker BLOCKED comment triggers defer' 'comment-marker' "$got"
+rest_comment_calls=$(grep -cF 'api repos/owner/repo/issues/123/comments?per_page=100 --paginate --slurp' "$GH_STUB_CALLS" 2>/dev/null || true)
+assert_eq 'comment marker read uses paginated REST' '1' "$rest_comment_calls"
 
 # Scenario 4: Worker Watchdog Kill comment → defer
-printf '## Worker Watchdog Kill\n\n**Reason:** idle' >"$GH_STUB_COMMENTS"
+jq -cn --arg body $'## Worker Watchdog Kill\n\n**Reason:** idle' '[{body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'watchdog kill comment triggers defer' 'comment-marker' "$got"
 
 # Scenario 5: Terminal blocker comment → defer
-printf '**Terminal blocker detected** (GH#5141) — skipping dispatch.' >"$GH_STUB_COMMENTS"
+jq -cn --arg body '**Terminal blocker detected** (GH#5141) — skipping dispatch.' '[{body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'terminal blocker comment triggers defer' 'comment-marker' "$got"
 
 # Scenario 6: clean comment (dispatch claim, merge summary) → unblock
-printf 'DISPATCH_CLAIM nonce=abc123 runner=marcusquinn\n---\nPR #1234 merged.' >"$GH_STUB_COMMENTS"
+jq -cn --arg body $'DISPATCH_CLAIM nonce=abc123 runner=maintainer\n---\nPR #1234 merged.' '[{body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'clean operational comments → unblock' '__no_defer__' "$got"
 
 # Scenario 7: body defer takes precedence even with clean comments
-printf 'DISPATCH_CLAIM nonce=abc123' >"$GH_STUB_COMMENTS"
+jq -cn --arg body 'DISPATCH_CLAIM nonce=abc123' '[{body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'true' || echo "__no_defer__")
 assert_eq 'body defer precedence over clean comments' 'body-defer' "$got"
 

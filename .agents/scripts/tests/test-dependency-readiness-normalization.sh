@@ -173,15 +173,18 @@ _gh_with_timeout() {
 	return 1
 }
 gh() {
-	printf 'GraphQL: Validation failed: already been taken\n'
-	return 1
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || return 1
+	printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[{"id":"I_blocker"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+	return 0
 }
 export -f gh log_verbose _gh_with_timeout
 # shellcheck disable=SC1090
 source "${SCRIPTS_DIR}/issue-sync-lib-parse.sh"
 # shellcheck disable=SC1090
+source "${SCRIPTS_DIR}/issue-sync-lib-ref.sh"
+# shellcheck disable=SC1090
 source "${SCRIPTS_DIR}/issue-sync-relationships.sh"
-assert_true "concurrent native relationship write is idempotent" _gh_add_blocked_by "I_blocked" "I_blocker"
+assert_true "existing native relationship pre-read is idempotent" _gh_add_blocked_by "I_blocked" "I_blocker"
 
 dependency_status="status:available,auto-dispatch"
 dependency_status_writes=""
@@ -290,9 +293,9 @@ assert_true "cross-phase sync normalizes the dependent issue" \
 
 gh() {
 	if [[ "$*" == *"query("* ]]; then
-		printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[{"id":"I_blocker"}],"pageInfo":{"hasNextPage":false}}}}}'
+		printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[{"id":"I_blocker"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
 	else
-		printf '%s\n' '{"data":{"removeBlockedBy":{"issue":{"number":10}}}}'
+		printf '%s\n' '{"data":{"removeBlockedBy":{"issue":{"number":10}},"rateLimit":{"cost":1}}}'
 	fi
 	return 0
 }

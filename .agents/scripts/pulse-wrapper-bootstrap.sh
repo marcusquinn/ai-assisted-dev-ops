@@ -432,8 +432,9 @@ _resolve_linked_pr_for_issue() {
 		return 0
 	}
 
-	# GitHub's GraphQL closingIssuesReferences is the authoritative way to
-	# find PRs that will close this issue. The REST search alternative
+	# GitHub's GraphQL closing relationship is the authoritative way to find
+	# PRs that will close this issue. Use a fixed query with response-owned cost;
+	# native `gh issue view` hides GraphQL cost. The REST search alternative
 	# (`gh search prs "linked:$issue_num"`) is rate-limited heavily and
 	# returns false positives via mention.
 	#
@@ -441,11 +442,34 @@ _resolve_linked_pr_for_issue() {
 	# extraction regex in pulse-merge.sh::_extract_linked_issue. Best-effort
 	# everywhere — empty stdout means "skip this record, full merge pass
 	# will catch it on next tick".
-	local pr_num=""
-	pr_num=$(gh issue view "$issue_num" --repo "$slug" \
-		--json closedByPullRequestsReferences \
-		--jq '.closedByPullRequestsReferences // [] | map(select(.state=="OPEN")) | .[0].number // empty' \
-		2>/dev/null) || pr_num=""
+	local owner="${slug%%/*}"
+	local name="${slug#*/}"
+	local pr_num="" response="" reported_cost=""
+	# shellcheck disable=SC2016
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-linked-pr-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_num" -f query='
+			query($owner: String!, $name: String!, $number: Int!) {
+				repository(owner: $owner, name: $name) {
+					issue(number: $number) {
+						closedByPullRequestsReferences(first: 100) {
+							nodes { number state }
+							pageInfo { hasNextPage }
+						}
+					}
+				}
+				rateLimit { cost }
+			}
+		' 2>/dev/null) || response=""
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	if [[ "$reported_cost" =~ ^[1-9][0-9]*$ ]]; then
+		pr_num=$(printf '%s' "$response" | jq -r '
+			.data.repository.issue.closedByPullRequestsReferences
+			| select(.pageInfo.hasNextPage == false)
+			| [.nodes[]? | select(.state == "OPEN")]
+			| .[0].number // empty
+		' 2>/dev/null) || pr_num=""
+	fi
 
 	if [[ -z "$pr_num" ]]; then
 		# Fallback: list recent open PRs in the repo and grep for the

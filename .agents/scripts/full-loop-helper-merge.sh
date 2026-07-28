@@ -503,44 +503,79 @@ _merge_fetch_pinned_commit_objects() {
 	local head_sha="$4"
 	local object_repo="${5:-}"
 	local remote_url="${6:-}"
+	local real_git="${7:-}"
 	local fetched_sha=""
-	local -a git_context=()
-	[[ -n "$object_repo" ]] && git_context=(-C "$object_repo")
-
-	if ! git "${git_context[@]}" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
-		if [[ -n "$object_repo" ]]; then
-			[[ -n "$remote_url" ]] || return 1
-			git -C "$object_repo" fetch --quiet --no-tags "$remote_url" "refs/heads/${base_ref}" || return 1
-			fetched_sha=$(git -C "$object_repo" rev-parse FETCH_HEAD 2>/dev/null) || return 1
-			[[ "$fetched_sha" == "$base_sha" ]] || return 1
-		else
+	if [[ -z "$object_repo" ]]; then
+		git cat-file -e "${base_sha}^{commit}" 2>/dev/null ||
 			git fetch --quiet --no-tags origin "refs/heads/${base_ref}" || return 1
-		fi
-	fi
-	if ! git "${git_context[@]}" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
-		if [[ -n "$object_repo" ]]; then
-			[[ -n "$remote_url" ]] || return 1
-			git -C "$object_repo" fetch --quiet --no-tags "$remote_url" "refs/pull/${pr_number}/head" || return 1
-			fetched_sha=$(git -C "$object_repo" rev-parse FETCH_HEAD 2>/dev/null) || return 1
-			[[ "$fetched_sha" == "$head_sha" ]] || return 1
-		else
+		git cat-file -e "${head_sha}^{commit}" 2>/dev/null ||
 			git fetch --quiet --no-tags origin "refs/pull/${pr_number}/head" || return 1
-		fi
+		git cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
+		git cat-file -e "${head_sha}^{commit}" 2>/dev/null || return 1
+		return 0
 	fi
-	git "${git_context[@]}" cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
-	git "${git_context[@]}" cat-file -e "${head_sha}^{commit}" 2>/dev/null || return 1
+
+	[[ -x "$real_git" ]] || return 1
+	if ! _merge_run_repository_isolated_git "$real_git" -C "$object_repo" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+		[[ -n "$remote_url" ]] || return 1
+		_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+			fetch --quiet --no-tags "$remote_url" "refs/heads/${base_ref}" || return 1
+		fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+			rev-parse FETCH_HEAD 2>/dev/null) || return 1
+		[[ "$fetched_sha" == "$base_sha" ]] || return 1
+	fi
+	if ! _merge_run_repository_isolated_git "$real_git" -C "$object_repo" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+		[[ -n "$remote_url" ]] || return 1
+		_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+			fetch --quiet --no-tags "$remote_url" "refs/pull/${pr_number}/head" || return 1
+		fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+			rev-parse FETCH_HEAD 2>/dev/null) || return 1
+		[[ "$fetched_sha" == "$head_sha" ]] || return 1
+	fi
+	_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+		cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
+	_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+		cat-file -e "${head_sha}^{commit}" 2>/dev/null || return 1
 	return 0
 }
 
+_merge_run_repository_isolated_git() (
+	local git_bin="$1"
+	shift
+	unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_SOURCE GIT_COMMON_DIR GIT_DIR
+	unset GIT_EXEC_PATH GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NAMESPACE
+	unset GIT_OBJECT_DIRECTORY GIT_QUARANTINE_PATH GIT_REPLACE_REF_BASE
+	unset GIT_SHALLOW_FILE GIT_WORK_TREE
+	"$git_bin" "$@"
+	return $?
+)
+
+_merge_run_config_isolated_git() (
+	local real_git="$1"
+	local config_root="$2"
+	shift 2
+	unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_PARAMETERS GIT_CONFIG_SYSTEM
+	export HOME="${config_root}/home" XDG_CONFIG_HOME="${config_root}/xdg"
+	export GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1
+	_merge_run_repository_isolated_git "$real_git" "$@"
+	return $?
+)
+
 _merge_create_prospective_object_context() {
 	local context_root="$1"
+	local real_git="$2"
 	local object_repo="${context_root}/repository.git"
 	local source_objects=""
 	local object_format=""
-	source_objects=$(git rev-parse --path-format=absolute --git-path objects 2>/dev/null) || return 1
-	object_format=$(git rev-parse --show-object-format 2>/dev/null || true)
+	[[ -x "$real_git" ]] || return 1
+	mkdir -p "${context_root}/home" "${context_root}/xdg" || return 1
+	source_objects=$(_merge_run_config_isolated_git git "$context_root" \
+		rev-parse --path-format=absolute --git-path objects 2>/dev/null) || return 1
+	object_format=$(_merge_run_config_isolated_git git "$context_root" \
+		rev-parse --show-object-format 2>/dev/null || true)
 	[[ -n "$source_objects" && -n "$object_format" ]] || return 1
-	git -C "$context_root" init --bare --quiet --object-format="$object_format" repository.git || return 1
+	_merge_run_config_isolated_git "$real_git" "$context_root" -c init.templateDir= \
+		-C "$context_root" init --bare --quiet --object-format="$object_format" repository.git || return 1
 	[[ -d "${object_repo}/objects/info" ]] || return 1
 	printf '%s\n' "$source_objects" >"${object_repo}/objects/info/alternates" || return 1
 	printf '%s\n' "$object_repo"
@@ -558,9 +593,11 @@ _merge_guard_prospective_todo() (
 	local head_sha=""
 	local merge_tree_output=""
 	local merge_tree_sha=""
+	local temp_root=""
 	local temp_dir=""
 	local object_repo=""
 	local remote_url=""
+	local real_git="${AIDEVOPS_REAL_GIT_BIN:-/usr/bin/git}"
 	local report=""
 	local report_rc="0"
 
@@ -577,43 +614,67 @@ _merge_guard_prospective_todo() (
 		print_error "Merge blocked: PR head changed before prospective TODO validation"
 		return 1
 	fi
-	temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-prospective-todo.XXXXXX") || {
+	if [[ -n "${AIDEVOPS_TEMP_DIR:-}" ]]; then
+		temp_root="$AIDEVOPS_TEMP_DIR"
+	elif [[ -n "${HOME:-}" ]]; then
+		temp_root="${HOME}/.aidevops/.agent-workspace/tmp"
+	else
+		print_error "Merge blocked: no approved temporary root is available"
+		return 1
+	fi
+	[[ -x "$real_git" ]] || {
+		print_error "Merge blocked: native Git executable is unavailable"
+		return 1
+	}
+	mkdir -p "$temp_root" || {
+		print_error "Merge blocked: unable to prepare approved temporary root"
+		return 1
+	}
+	temp_dir=$(mktemp -d "${temp_root%/}/aidevops-prospective-todo.XXXXXX") || {
 		print_error "Merge blocked: unable to create isolated prospective Git context"
 		return 1
 	}
 	trap 'rm -rf "$temp_dir"' EXIT HUP INT TERM
-	object_repo=$(_merge_create_prospective_object_context "$temp_dir") || {
+	object_repo=$(_merge_create_prospective_object_context "$temp_dir" "$real_git") || {
 		print_error "Merge blocked: unable to initialize isolated prospective Git context"
 		return 1
 	}
-	remote_url=$(git remote get-url origin 2>/dev/null || true)
-	_merge_fetch_pinned_commit_objects "$pr_number" "$base_ref" "$base_sha" "$head_sha" "$object_repo" "$remote_url" || {
+	remote_url=$(_merge_run_config_isolated_git git "$temp_dir" remote get-url origin 2>/dev/null || true)
+	_merge_fetch_pinned_commit_objects "$pr_number" "$base_ref" "$base_sha" "$head_sha" \
+		"$object_repo" "$remote_url" "$real_git" || {
 		print_error "Merge blocked: unable to materialize pinned PR commits for prospective TODO validation"
 		return 1
 	}
 
-	if ! merge_tree_output=$(git -C "$object_repo" merge-tree --write-tree "$base_sha" "$head_sha" 2>&1); then
+	if ! merge_tree_output=$(_merge_run_config_isolated_git "$real_git" "$temp_dir" \
+		-C "$object_repo" -c core.attributesFile=/dev/null \
+		merge-tree --write-tree "$base_sha" "$head_sha" 2>&1); then
 		print_error "Merge blocked: prospective merge-tree evidence is indeterminate"
 		printf '%s\n' "$merge_tree_output" >&2
 		return 1
 	fi
 	merge_tree_sha=$(printf '%s\n' "$merge_tree_output" | sed -n '1p')
-	if ! [[ "$merge_tree_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || \
-		! git -C "$object_repo" cat-file -e "${merge_tree_sha}^{tree}" 2>/dev/null; then
+	if ! [[ "$merge_tree_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] ||
+		! _merge_run_config_isolated_git "$real_git" "$temp_dir" -C "$object_repo" \
+			cat-file -e "${merge_tree_sha}^{tree}" 2>/dev/null; then
 		print_error "Merge blocked: prospective merge-tree did not produce a verifiable tree"
 		return 1
 	fi
 
 	# Repositories without TODO.md have no task mapping surface to validate.
-	if ! git -C "$object_repo" cat-file -e "${merge_tree_sha}:TODO.md" 2>/dev/null; then
+	if ! _merge_run_config_isolated_git "$real_git" "$temp_dir" -C "$object_repo" \
+		cat-file -e "${merge_tree_sha}:TODO.md" 2>/dev/null; then
 		return 0
 	fi
-	if ! git -C "$object_repo" show "${merge_tree_sha}:TODO.md" >"${temp_dir}/merged"; then
+	if ! _merge_run_config_isolated_git "$real_git" "$temp_dir" -C "$object_repo" \
+		show "${merge_tree_sha}:TODO.md" >"${temp_dir}/merged"; then
 		print_error "Merge blocked: unable to read prospective TODO evidence"
 		return 1
 	fi
-	if git -C "$object_repo" cat-file -e "${base_sha}:TODO.md" 2>/dev/null; then
-		if ! git -C "$object_repo" show "${base_sha}:TODO.md" >"${temp_dir}/base"; then
+	if _merge_run_config_isolated_git "$real_git" "$temp_dir" -C "$object_repo" \
+		cat-file -e "${base_sha}:TODO.md" 2>/dev/null; then
+		if ! _merge_run_config_isolated_git "$real_git" "$temp_dir" -C "$object_repo" \
+			show "${base_sha}:TODO.md" >"${temp_dir}/base"; then
 			print_error "Merge blocked: unable to read base TODO evidence"
 			return 1
 		fi

@@ -44,6 +44,7 @@ PR_REVIEW_THREAD_RESPONSE_BOT_RE="${PR_REVIEW_THREAD_RESPONSE_BOT_RE:-coderabbit
 PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN="${PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN:-false}"
 PRRTS_BOOL_TRUE="true"
 PRRTS_BOOL_FALSE="false"
+PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
@@ -52,6 +53,7 @@ PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
 PRRTS_REASON_HEAD_FETCH_FAILED="pr_head_fetch_failed"
+PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED="pr_head_repository_unverified"
 PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED="review_worktree_ownership_unverified"
 PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_INFRASTRUCTURE"
 PRRTS_WORKTREE_FAILURE_REASON="review_worktree_preparation_failed"
@@ -182,10 +184,18 @@ _prrts_graphql_rate_limit_ok() {
 
 _prrts_graphql_remaining() {
 	local remaining=""
-	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="unknown"
-	[[ -n "$remaining" ]] || remaining="unknown"
+	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="$PRRTS_VALUE_UNKNOWN"
+	[[ -n "$remaining" ]] || remaining="$PRRTS_VALUE_UNKNOWN"
 	printf '%s\n' "$remaining"
 	return 0
+}
+
+_prrts_graphql_response_has_positive_cost() {
+	local response="$1"
+	local reported_cost=""
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]]
+	return $?
 }
 
 _prrts_thread_has_marker() {
@@ -193,27 +203,39 @@ _prrts_thread_has_marker() {
 	local marker="$2"
 	[[ -n "$thread_id" && -n "$marker" ]] || return 1
 
-	local response="" count="0" rc=0
+	local response="" count="0" has_next="" rc=0
 	# shellcheck disable=SC2016
-	response=$(gh api graphql \
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-marker-exact-cost" \
+		gh api graphql \
 		-F thread="$thread_id" -f query='
 			query($thread: ID!) {
 				node(id: $thread) {
 					... on PullRequestReviewThread {
-						comments(first: 100) { nodes { body } }
+						comments(first: 100) { nodes { body } pageInfo { hasNextPage } }
 					}
 				}
+				rateLimit { cost }
 			}
 		' 2>/dev/null) || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		_prrts_log "write: marker lookup failed for thread ${thread_id} (rc=${rc})"
-		return 1
+		return 2
+	fi
+	if ! _prrts_graphql_response_has_positive_cost "$response"; then
+		_prrts_log "write: marker lookup returned no exact GraphQL cost for thread ${thread_id}"
+		return 2
 	fi
 	count=$(printf '%s' "$response" | jq -r --arg marker "$marker" \
 		'[.data.node.comments.nodes[]? | select((.body // "") | contains($marker))] | length' 2>/dev/null) || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
-	[[ "$count" -gt 0 ]]
-	return $?
+	[[ "$count" -gt 0 ]] && return 0
+	has_next=$(printf '%s' "$response" | jq -r --arg unknown "$PRRTS_VALUE_UNKNOWN" \
+		'.data.node.comments.pageInfo.hasNextPage | if type == "boolean" then tostring else $unknown end' \
+		2>/dev/null) || has_next="$PRRTS_VALUE_UNKNOWN"
+	[[ "$has_next" == "$PRRTS_BOOL_FALSE" ]] && return 1
+	_prrts_log "write: marker lookup incomplete for thread ${thread_id}"
+	return 2
 }
 
 _prrts_thread_author_login() {
@@ -222,7 +244,9 @@ _prrts_thread_author_login() {
 	[[ -n "$thread_id" ]] || return 1
 
 	# shellcheck disable=SC2016
-	response=$(gh api graphql \
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-author-exact-cost" \
+		gh api graphql \
 		-F thread="$thread_id" -f query='
 			query($thread: ID!) {
 				node(id: $thread) {
@@ -230,11 +254,16 @@ _prrts_thread_author_login() {
 						comments(first: 1) { nodes { author { login } } }
 					}
 				}
+				rateLimit { cost }
 			}
 		' 2>/dev/null) || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		_prrts_log "reply: author lookup failed for thread ${thread_id} (rc=${rc})"
-		return 1
+		return 2
+	fi
+	if ! _prrts_graphql_response_has_positive_cost "$response"; then
+		_prrts_log "reply: author lookup returned no exact GraphQL cost for thread ${thread_id}"
+		return 2
 	fi
 	login=$(printf '%s' "$response" | jq -r '.data.node.comments?.nodes[0]?.author?.login // ""') || login=""
 	if [[ -z "$login" ]]; then
@@ -288,7 +317,8 @@ cmd_reply() {
 	local thread_id="$2"
 	local body_file="$3"
 	local marker="${4:-}"
-	local body="" dry_run="${PR_REVIEW_THREAD_RESPONSE_DRY_RUN:-false}" author_login=""
+	local body="" dry_run="${PR_REVIEW_THREAD_RESPONSE_DRY_RUN:-false}" author_login="" response=""
+	local marker_rc=1 author_rc=0
 
 	[[ -n "$repo_slug" && -n "$thread_id" && -n "$body_file" && -f "$body_file" ]] || {
 		_prrts_usage >&2
@@ -297,31 +327,53 @@ cmd_reply() {
 	body=$(<"$body_file") || body=""
 	[[ -n "$body" ]] || return 2
 
-	if [[ -n "$marker" ]] && _prrts_thread_has_marker "$thread_id" "$marker"; then
-		_prrts_log "reply: skipped ${repo_slug} thread ${thread_id} — marker already present"
-		return 0
+	if [[ -n "$marker" ]]; then
+		marker_rc=0
+		_prrts_thread_has_marker "$thread_id" "$marker" || marker_rc=$?
+		case "$marker_rc" in
+			0)
+				_prrts_log "reply: skipped ${repo_slug} thread ${thread_id} — marker already present"
+				return 0
+				;;
+			1) ;;
+			*) return 1 ;;
+		esac
 	fi
 	if [[ "$dry_run" == "$PRRTS_BOOL_TRUE" ]]; then
 		printf 'DRY-RUN would reply to %s thread %s\n' "$repo_slug" "$thread_id"
 		return 0
 	fi
 	_prrts_graphql_rate_limit_ok || return 1
-	if author_login="$(_prrts_thread_author_login "$thread_id")"; then
+	author_login="$(_prrts_thread_author_login "$thread_id")" || author_rc=$?
+	if [[ "$author_rc" -eq 0 ]]; then
 		body="$(_prrts_body_with_author_mention "$body" "$author_login")"
-	else
+	elif [[ "$author_rc" -eq 1 ]]; then
 		_prrts_log "reply: posting without author mention for ${repo_slug} thread ${thread_id}"
+	else
+		return 1
 	fi
 
 	# shellcheck disable=SC2016
-	gh api graphql \
+	if ! response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-reply-exact-cost" \
+		gh api graphql \
 		-F thread="$thread_id" -f body="$body" \
 		-f query='
 			mutation($thread: ID!, $body: String!) {
 				addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
 					comment { id url }
 				}
+				rateLimit { cost }
 			}
-		' >/dev/null
+		'); then
+		_prrts_log "reply: GraphQL mutation failed for ${repo_slug} thread ${thread_id}"
+		return 1
+	fi
+	if ! _prrts_graphql_response_has_positive_cost "$response" ||
+		! printf '%s' "$response" | jq -e '(.data.addPullRequestReviewThreadReply.comment.id // "") | length > 0' >/dev/null 2>&1; then
+		_prrts_log "reply: GraphQL mutation response was unmetered or malformed for ${repo_slug} thread ${thread_id}"
+		return 1
+	fi
 	_prrts_log "reply: posted in-thread response for ${repo_slug} thread ${thread_id}"
 	return 0
 }
@@ -329,7 +381,7 @@ cmd_reply() {
 cmd_resolve() {
 	local repo_slug="$1"
 	local thread_id="$2"
-	local dry_run="${PR_REVIEW_THREAD_RESPONSE_DRY_RUN:-false}"
+	local dry_run="${PR_REVIEW_THREAD_RESPONSE_DRY_RUN:-false}" response=""
 	[[ -n "$repo_slug" && -n "$thread_id" ]] || {
 		_prrts_usage >&2
 		return 2
@@ -340,13 +392,24 @@ cmd_resolve() {
 	fi
 	_prrts_graphql_rate_limit_ok || return 1
 	# shellcheck disable=SC2016
-	gh api graphql \
+	if ! response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-resolve-exact-cost" \
+		gh api graphql \
 		-F thread="$thread_id" \
 		-f query='
 			mutation($thread: ID!) {
 				resolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } }
+				rateLimit { cost }
 			}
-		' >/dev/null
+		'); then
+		_prrts_log "resolve: GraphQL mutation failed for ${repo_slug} thread ${thread_id}"
+		return 1
+	fi
+	if ! _prrts_graphql_response_has_positive_cost "$response" ||
+		! printf '%s' "$response" | jq -e '.data.resolveReviewThread.thread.isResolved == true' >/dev/null 2>&1; then
+		_prrts_log "resolve: GraphQL mutation response was unmetered or malformed for ${repo_slug} thread ${thread_id}"
+		return 1
+	fi
 	_prrts_log "resolve: resolved ${repo_slug} thread ${thread_id}"
 	return 0
 }
@@ -367,7 +430,9 @@ _prrts_fetch_review_threads_json() {
 	local owner="" name="" response="" rc=0
 	_prrts_parse_repo_slug "$repo_slug" owner name
 	# shellcheck disable=SC2016
-	response=$(gh api graphql \
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-scan-exact-cost" \
+		gh api graphql \
 		-F owner="$owner" -F name="$name" -F pr="$pr_number" \
 		-f query='
 			query($owner: String!, $name: String!, $pr: Int!) {
@@ -390,9 +455,11 @@ _prrts_fetch_review_threads_json() {
 									}
 								}
 							}
+							pageInfo { hasNextPage }
 						}
 					}
 				}
+				rateLimit { cost }
 			}
 		' 2>/dev/null) || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
@@ -405,8 +472,17 @@ _prrts_fetch_review_threads_json() {
 		_prrts_log "fetch: gh graphql failed for ${repo_slug}#${pr_number} (rc=${rc}, graphql_remaining=${remaining})"
 		return 2
 	fi
+	if ! _prrts_graphql_response_has_positive_cost "$response"; then
+		_prrts_log "fetch: GraphQL cost unavailable for ${repo_slug}#${pr_number}"
+		return 2
+	fi
 	if ! printf '%s' "$response" | jq -e '.data.repository.pullRequest.reviewThreads' >/dev/null 2>&1; then
 		_prrts_log "fetch: malformed reviewThreads response for ${repo_slug}#${pr_number}"
+		return 2
+	fi
+	if ! printf '%s' "$response" | jq -e \
+		'.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false' >/dev/null 2>&1; then
+		_prrts_log "fetch: reviewThreads response incomplete for ${repo_slug}#${pr_number}"
 		return 2
 	fi
 	printf '%s' "$response"
@@ -1158,7 +1234,7 @@ _prrts_validate_worker_head() {
 	local pr_number="$3"
 	local head_ref="$4"
 	local head_oid="$5"
-	local is_cross_repository=""
+	local is_cross_repository="" pr_repo_json=""
 
 	[[ -n "$head_ref" ]] || {
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — PR head branch is unavailable"
@@ -1178,10 +1254,20 @@ _prrts_validate_worker_head() {
 		PRRTS_WORKTREE_FAILURE_REASON="pr_head_sha_invalid"
 		return 1
 	fi
-	is_cross_repository=$(gh pr view "$pr_number" --repo "$repo_slug" --json isCrossRepository \
-		--jq '.isCrossRepository | tostring' 2>/dev/null) || {
+	pr_repo_json=$(AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="review-thread-head-repository-rest" \
+		gh api "repos/${repo_slug}/pulls/${pr_number}" 2>/dev/null) || {
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not verify PR head repository"
-		PRRTS_WORKTREE_FAILURE_REASON="pr_head_repository_unverified"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
+		return 1
+	}
+	is_cross_repository=$(printf '%s' "$pr_repo_json" | jq -er '
+		if ((.head.repo.full_name // "") | length) > 0 and ((.base.repo.full_name // "") | length) > 0
+		then (.head.repo.full_name != .base.repo.full_name) | tostring
+		else error("missing PR repository identity")
+		end' 2>/dev/null) || {
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not verify PR head repository"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
 	}
 	if [[ "$is_cross_repository" == "$PRRTS_BOOL_TRUE" ]]; then
@@ -1192,7 +1278,7 @@ _prrts_validate_worker_head() {
 	fi
 	if [[ "$is_cross_repository" != "$PRRTS_BOOL_FALSE" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — PR head repository response was indeterminate"
-		PRRTS_WORKTREE_FAILURE_REASON="pr_head_repository_unverified"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
 	fi
 	return 0

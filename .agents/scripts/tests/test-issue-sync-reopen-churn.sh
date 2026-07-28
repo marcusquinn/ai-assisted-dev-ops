@@ -34,13 +34,18 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/204/comments" ]]
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
 	case "$*" in
 	*"number=205"*)
-		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[{"number":27347,"url":"https://github.com/owner/repo/pull/27347","state":"MERGED","mergedAt":"2026-07-12T14:55:46Z","repository":{"nameWithOwner":"owner/repo"}}],"pageInfo":{"hasNextPage":false}}}}}}'
+		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[{"number":27347,"url":"https://github.com/owner/repo/pull/27347","state":"MERGED","mergedAt":"2026-07-12T14:55:46Z","repository":{"nameWithOwner":"owner/repo"}}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		exit 0
 		;;
 	*"number=206"*)
-		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[],"pageInfo":{"hasNextPage":true}}}}}}'
+		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[],"pageInfo":{"hasNextPage":true}}}},"rateLimit":{"cost":1}}}'
+		exit 0
+		;;
+	*"number=207"*)
+		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
 		exit 0
 		;;
 	esac
@@ -134,6 +139,7 @@ check_output "structural closing PR prevents false reopen when title omits task 
 	"27347|https://github.com/owner/repo/pull/27347" \
 	_reopen_find_merged_pr "owner/repo" "t18109" "205"
 check_failure "truncated structural closing relationships fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "206"
+check_failure "unmetered structural closing relationships fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "207"
 check_failure "invalid issue coordinates fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "not-a-number"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"

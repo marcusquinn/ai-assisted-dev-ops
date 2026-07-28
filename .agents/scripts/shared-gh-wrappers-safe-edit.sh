@@ -235,7 +235,13 @@ _gh_audit_record_op() {
 # Returns 1 with stderr message on validation failure.
 #######################################
 gh_issue_edit_safe() {
+	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_issue_edit_safe 2>/dev/null || true
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh issue edit" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh issue edit" "$_GH_EDIT_REJECTION_REASON" "$@"
 		return 1
@@ -265,7 +271,13 @@ gh_issue_edit_safe() {
 # Returns 1 with stderr message on validation failure.
 #######################################
 gh_pr_edit_safe() {
+	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_pr_edit_safe 2>/dev/null || true
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh pr edit" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh pr edit" "$_GH_EDIT_REJECTION_REASON" "$@"
 		return 1
