@@ -9,6 +9,7 @@
 #   t2160 — cron schedule extraction truncated at first space (fixed Apr 17)
 #   t2175 — two false-match bugs (fixed Apr 18):
 #   t2423 — Phase C metachar guard + Phase D end-to-end test (this PR)
+#   GH#28808 — fenced examples outside canonical ## Routines dispatched
 #
 # Bug 1 (t2175) — t-prefix false match: the grep selector
 #   '^\s*-\s*\[x\].*repeat:' matched any completed task whose description text
@@ -24,32 +25,39 @@
 #   Observed error: ERROR: unrecognised schedule expression 'persistent'
 #
 # Fixes verified here:
-#   1. Tightened grep selector: '^\s*-\s*\[x\][[:space:]]+r[0-9]+[[:space:]].*repeat:'
-#   2. Anchored routine-ID regex: ^[[:space:]]*-[[:space:]]\[x\][[:space:]]+(r[0-9]+)
-#   3. persistent short-circuit in pulse-routines.sh evaluator loop
-#   4. persistent handling in routine-schedule-helper.sh (cmd_is_due returns 1)
-#   5. (t2423) Phase C metachar guard in routine-schedule-helper.sh _parse_expression
+#   1. Exactly one canonical ## Routines section is extracted before parsing
+#   2. Fenced, commented, indented, and out-of-section examples are ignored
+#   3. Anchored routine-ID parsing accepts numeric and descriptive r-prefixed IDs
+#   4. persistent short-circuit in pulse-routines.sh evaluator loop
+#   5. persistent handling in routine-schedule-helper.sh (cmd_is_due returns 1)
+#   6. (t2423) Phase C metachar guard in routine-schedule-helper.sh _parse_expression
 #
 # Cases:
-#   1. t-prefix with repeat: in description → selector finds 0 matches
-#   2. r-prefix with repeat:persistent → selector finds 1 match; is-due returns
-#      non-zero (not due) with no error output
-#   3. r-prefix with repeat:cron(*/2 * * * *) → selector finds 1 match; no parse error
-#   4. Mixed: t-prefix false-match line + two r-prefix routines → selector finds
-#      exactly 2 matches (only the r-prefixed entries)
+#   1. t-prefix with repeat: in description → parser finds 0 routines
+#   2. r-prefix with repeat:persistent → parser skips; is-due returns non-zero
+#      (not due) with no error output
+#   3. r-prefix with repeat:cron(*/2 * * * *) → parser accepts; no parse error
+#   4. Mixed: t-prefix false-match + cron + persistent → only cron is dispatchable
 #   5. (t2423 Phase C) regex metachars directly passed to schedule helper → exit 2
 #      with distinct error message, no "unrecognised schedule expression"
 #   6. (t2423 Phase D) Full discovery simulation: mixed TODO with t-prefix false-match
 #      lines produces zero "unrecognised schedule expression" errors on stderr
-#   7. (GH#28544) A stale cron-form r901 cannot invoke pulse-wrapper.sh and a
-#      later due routine still executes in the same evaluator pass
+#   7. (GH#28808) Only active content inside one canonical section is selected
+#   8. (GH#28808) Missing, duplicate, or malformed boundaries fail closed
+#   9. (GH#28544) A stale cron-form r901 cannot invoke pulse-wrapper.sh and a
+#      later due descriptive-ID routine still executes in the same evaluator pass
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)" || exit 1
 SCHEDULE_HELPER="${SCRIPT_DIR}/../routine-schedule-helper.sh"
 PULSE_ROUTINES="${SCRIPT_DIR}/../pulse-routines.sh"
 CORE_ROUTINES="${SCRIPT_DIR}/../routines/core-routines.sh"
+
+unset _PULSE_ROUTINES_LOADED
+# shellcheck source=../pulse-routines.sh
+source "$PULSE_ROUTINES"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -81,85 +89,83 @@ _make_todo() {
 	local dir="$1"
 	shift
 	{
-		printf '# Tasks\n\n'
+		printf '# Tasks\n\n## Routines\n\n'
 		for entry in "$@"; do
 			printf '%s\n' "$entry"
 		done
+		printf '\n## Ready\n'
 	} >"${dir}/TODO.md"
 	return 0
 }
 
-# The tightened selector from pulse-routines.sh (post-t2175).
-# Must match the grep -E pattern used in the production script.
-SELECTOR='^\s*-\s*\[x\][[:space:]]+r[0-9]+[[:space:]].*repeat:'
+# Collect dispatchable IDs through the production section extractor and parser.
+_collect_routine_ids() {
+	local todo_file="$1"
+	local section=""
+	local line=""
+	section=$(_routine_extract_section "$todo_file") || return 1
+	while IFS= read -r line; do
+		if _routine_parse_line "$line"; then
+			printf '%s\n' "$_RPL_ID"
+		fi
+	done <<<"$section"
+	return 0
+}
 
-# _test_selector_cases: cases 1-4 — grep selector correctness (t2175)
+# _test_selector_cases: cases 1-4 — anchored parser correctness (t2175)
 _test_selector_cases() {
 	local tmpdir="$1"
-	local count
+	local ids=""
 
 	# Case 1: t-prefix task with repeat: in description → 0 selector matches.
 	# Mirrors t2160 TODO entry. OLD selector matched; NEW must not.
 	_make_todo "$tmpdir" \
 		"- [x] t2160 fix: \`repeat:([^[:space:]]+)\` (r901, r902) ref:GH#19465"
-	# grep -c prints 0 even on no match; no || fallback needed.
-	count=$(
-		grep -cE "$SELECTOR" "${tmpdir}/TODO.md" 2>/dev/null
-		true
-	)
-	if [[ "$count" -eq 0 ]]; then
-		pass "Case 1: t-prefix false-match prevented by tightened selector"
+	ids=$(_collect_routine_ids "${tmpdir}/TODO.md")
+	if [[ -z "$ids" ]]; then
+		pass "Case 1: t-prefix false-match prevented by anchored parser"
 	else
-		fail "Case 1: t-prefix false-match prevented" "expected 0 matches, got $count"
+		fail "Case 1: t-prefix false-match prevented" "unexpected IDs: $ids"
 	fi
 
-	# Case 2: r-prefix with repeat:persistent — selector matches, is-due skips.
+	# Case 2: r-prefix with repeat:persistent — parser and is-due both skip.
 	# Mirrors r901, which is launched by launchd/systemd rather than by Pulse.
 	_make_todo "$tmpdir" \
 		"- [x] r901 Supervisor pulse repeat:persistent ~1m run:scripts/pulse-wrapper.sh"
-	count=$(
-		grep -cE "$SELECTOR" "${tmpdir}/TODO.md" 2>/dev/null
-		true
-	)
+	ids=$(_collect_routine_ids "${tmpdir}/TODO.md")
 	local is_due_exit is_due_output
 	is_due_output=$("$SCHEDULE_HELPER" is-due "persistent" "0" 2>&1)
 	is_due_exit=$?
-	if [[ "$count" -eq 1 ]] && [[ "$is_due_exit" -ne 0 ]] && [[ "$is_due_output" != *"ERROR"* ]]; then
-		pass "Case 2: r-prefix persistent matches selector; is-due returns not-due with no error"
+	if [[ -z "$ids" ]] && [[ "$is_due_exit" -ne 0 ]] && [[ "$is_due_output" != *"ERROR"* ]]; then
+		pass "Case 2: r-prefix persistent is skipped with no schedule error"
 	else
-		fail "Case 2: r-prefix persistent matches selector; is-due returns not-due with no error" \
-			"count=$count is_due_exit=$is_due_exit output='$is_due_output'"
+		fail "Case 2: r-prefix persistent is skipped with no schedule error" \
+			"ids=$ids is_due_exit=$is_due_exit output='$is_due_output'"
 	fi
 
-	# Case 3: r-prefix with cron schedule — selector matches, no parse error.
+	# Case 3: r-prefix with cron schedule — parser accepts, no parse error.
 	_make_todo "$tmpdir" \
 		"- [x] r904 Worker watchdog repeat:cron(*/2 * * * *) ~10s run:scripts/worker-watchdog.sh --check"
-	count=$(
-		grep -cE "$SELECTOR" "${tmpdir}/TODO.md" 2>/dev/null
-		true
-	)
+	ids=$(_collect_routine_ids "${tmpdir}/TODO.md")
 	local cron_output
 	cron_output=$("$SCHEDULE_HELPER" is-due "cron(*/2 * * * *)" "0" 2>&1 >/dev/null)
-	if [[ "$count" -eq 1 ]] && [[ "$cron_output" != *"ERROR"* ]]; then
-		pass "Case 3: r-prefix cron matches selector; schedule helper produces no parse error"
+	if [[ "$ids" == "r904" ]] && [[ "$cron_output" != *"ERROR"* ]]; then
+		pass "Case 3: r-prefix cron parses; schedule helper produces no error"
 	else
-		fail "Case 3: r-prefix cron matches selector; schedule helper produces no parse error" \
-			"count=$count cron_stderr='$cron_output'"
+		fail "Case 3: r-prefix cron parses; schedule helper produces no error" \
+			"ids=$ids cron_stderr='$cron_output'"
 	fi
 
-	# Case 4: Mixed TODO — selector finds exactly 2 r-prefix entries, excludes t-prefix.
+	# Case 4: Mixed TODO — only the non-persistent r-prefix entry dispatches.
 	_make_todo "$tmpdir" \
 		"- [x] t2160 fix: \`repeat:([^[:space:]]+)\` (r901, r902) ref:GH#19465" \
 		"- [x] r904 Worker watchdog repeat:cron(*/2 * * * *) ~10s run:scripts/worker-watchdog.sh --check" \
 		"- [x] r901 Supervisor pulse repeat:persistent ~1m run:scripts/pulse-wrapper.sh"
-	count=$(
-		grep -cE "$SELECTOR" "${tmpdir}/TODO.md" 2>/dev/null
-		true
-	)
-	if [[ "$count" -eq 2 ]]; then
-		pass "Case 4: mixed TODO — 2 r-prefix routines matched, t-prefix excluded"
+	ids=$(_collect_routine_ids "${tmpdir}/TODO.md")
+	if [[ "$ids" == "r904" ]]; then
+		pass "Case 4: mixed TODO — only the dispatchable r-prefix routine parses"
 	else
-		fail "Case 4: mixed TODO — 2 r-prefix routines matched" "expected 2 matches, got $count"
+		fail "Case 4: mixed TODO — only the dispatchable r-prefix routine parses" "ids=$ids"
 	fi
 	return 0
 }
@@ -190,35 +196,36 @@ _test_e2e_discovery() {
 	# Simulates the full pulse-routines discovery path. TODO.md contains:
 	#   - t-prefix tasks with repeat: in descriptions (t2175 false-match triggers)
 	#   - Two valid r-prefix routines (cron + persistent)
-	# All matched lines are piped through the extraction regex from pulse-routines.sh
-	# and sent to routine-schedule-helper.sh is-due. Zero "unrecognised schedule
-	# expression" errors must appear on stderr.
+	# All canonical-section lines are sent through the production parser and then
+	# routine-schedule-helper.sh is-due. Zero "unrecognised schedule expression"
+	# errors must appear on stderr.
 	_make_todo "$tmpdir" \
 		"- [x] t2160 fix: \`repeat:([^[:space:]]+)\` (r901, r902) ref:GH#19465" \
 		"- [x] t2423 guard: routine-schedule-helper.sh regex metachar guard" \
 		"- [x] r904 Worker watchdog repeat:cron(*/2 * * * *) ~10s run:scripts/worker-watchdog.sh --check" \
 		"- [x] r901 Supervisor pulse repeat:persistent ~1m run:scripts/pulse-wrapper.sh"
 
-	# Store regex in variable — avoids bash misparsing the literal ')' inline.
-	local re_repeat='repeat:(cron\([^)]*\)|[^[:space:]]+)'
 	local e2e_errors=0
 	local e2e_stderr=""
-	local line repeat_expr _ise_out
+	local section=""
+	local line=""
+	local repeat_expr=""
+	local _ise_out=""
+	section=$(_routine_extract_section "${tmpdir}/TODO.md") || {
+		fail "Case 6 (t2423 Phase D): full discovery path — canonical section extracts" "section extraction failed"
+		return 0
+	}
 	while IFS= read -r line; do
-		repeat_expr=""
-		if [[ "$line" =~ $re_repeat ]]; then
-			repeat_expr="${BASH_REMATCH[1]}"
-		else
+		if ! _routine_parse_line "$line"; then
 			continue
 		fi
-		# Skip persistent — pulse-routines.sh short-circuits before calling is-due.
-		if [[ "$repeat_expr" == "persistent" ]]; then continue; fi
+		repeat_expr="$_RPL_REPEAT"
 		_ise_out=$("$SCHEDULE_HELPER" is-due "$repeat_expr" "0" 2>&1 >/dev/null)
 		if [[ "$_ise_out" == *"unrecognised schedule expression"* ]]; then
 			e2e_errors=$((e2e_errors + 1))
 			e2e_stderr="${e2e_stderr}|${repeat_expr}: ${_ise_out}"
 		fi
-	done < <(grep -E "$SELECTOR" "${tmpdir}/TODO.md" 2>/dev/null || true)
+	done <<<"$section"
 
 	if [[ "$e2e_errors" -eq 0 ]]; then
 		pass "Case 6 (t2423 Phase D): full discovery path — zero unrecognised schedule errors"
@@ -229,7 +236,72 @@ _test_e2e_discovery() {
 	return 0
 }
 
-# _test_supervisor_self_recursion_guard: case 7 — production evaluator path.
+# _test_canonical_section_boundaries: cases 7-8 — structural Markdown filtering.
+_test_canonical_section_boundaries() {
+	local tmpdir="$1"
+	local fixture="${tmpdir}/canonical-TODO.md"
+	local ids=""
+	cat >"$fixture" <<'TODOEOF'
+# Tasks
+
+```markdown
+## Routines
+- [x] r-fenced-example Documentation only repeat:daily(@01:00) run:scripts/fake.sh
+```
+
+## Routines
+
+<!--
+- [x] r-commented-example Documentation only repeat:daily(@02:00) run:scripts/fake.sh
+-->
+- [x] r-real-routine Live descriptive ID repeat:daily(@03:00) run:scripts/real.sh
+    - [x] r-indented-example Markdown code repeat:daily(@04:00) run:scripts/fake.sh
+
+~~~text
+- [x] r-second-fence Documentation only repeat:daily(@05:00) run:scripts/fake.sh
+~~~
+
+## Ready
+
+- [x] r-outside-example Not a routine repeat:daily(@06:00) run:scripts/fake.sh
+TODOEOF
+
+	ids=$(_collect_routine_ids "$fixture")
+	if [[ "$ids" == "r-real-routine" ]]; then
+		pass "Case 7 (GH#28808): only active canonical-section content is selected"
+	else
+		fail "Case 7 (GH#28808): only active canonical-section content is selected" "ids=$ids"
+	fi
+
+	local repo_ids=""
+	repo_ids=$(_collect_routine_ids "$REPO_ROOT/TODO.md")
+	if [[ $'\n'"$repo_ids"$'\n' == *$'\nr-gh-audit-scan\n'* ]] &&
+		[[ $'\n'"$repo_ids"$'\n' == *$'\nr-pulse-check\n'* ]] &&
+		[[ $'\n'"$repo_ids"$'\n' != *$'\nr004\n'* ]]; then
+		pass "Case 7b (GH#28808): repository TODO ignores fenced r004 and keeps descriptive IDs"
+	else
+		fail "Case 7b (GH#28808): repository TODO ignores fenced r004 and keeps descriptive IDs" "ids=$repo_ids"
+	fi
+
+	local malformed_count=0
+	printf '# Tasks\n\n- [x] r-missing Missing heading repeat:daily(@01:00)\n' >"$fixture"
+	_routine_extract_section "$fixture" >/dev/null || malformed_count=$((malformed_count + 1))
+	printf '## Routines\n\n## Ready\n\n## Routines\n' >"$fixture"
+	_routine_extract_section "$fixture" >/dev/null || malformed_count=$((malformed_count + 1))
+	printf '```markdown\n## Routines\n- [x] r-fenced Unclosed repeat:daily(@01:00)\n' >"$fixture"
+	_routine_extract_section "$fixture" >/dev/null || malformed_count=$((malformed_count + 1))
+	printf '## Routines\n<!-- unclosed\n- [x] r-commented Hidden repeat:daily(@01:00)\n' >"$fixture"
+	_routine_extract_section "$fixture" >/dev/null || malformed_count=$((malformed_count + 1))
+	if [[ "$malformed_count" -eq 4 ]]; then
+		pass "Case 8 (GH#28808): missing, duplicate, and malformed boundaries fail closed"
+	else
+		fail "Case 8 (GH#28808): missing, duplicate, and malformed boundaries fail closed" \
+			"expected 4 failures, got $malformed_count"
+	fi
+	return 0
+}
+
+# _test_supervisor_self_recursion_guard: case 9 — production evaluator path.
 _test_supervisor_self_recursion_guard() {
 	local tmpdir="$1"
 	local guard_root="${tmpdir}/self-recursion"
@@ -263,7 +335,7 @@ SCHEDULE_SCRIPT
 
 	_make_todo "$repo_dir" \
 		"- [x] r901 Supervisor pulse repeat:cron(*/2 * * * *) ~1m run:scripts/pulse-wrapper.sh" \
-		"- [x] r916 Downstream monitor repeat:daily(@07:10) ~1m run:scripts/downstream.sh"
+		"- [x] r-downstream-monitor Downstream monitor repeat:daily(@07:10) ~1m run:scripts/downstream.sh"
 	printf '{"initialized_repos":[{"slug":"example/routines","path":"%s","pulse":true,"local_only":false}]}\n' \
 		"$repo_dir" >"$repos_json"
 
@@ -287,12 +359,12 @@ SCHEDULE_SCRIPT
 			evaluate_routines &&
 			[[ ! -e "$self_marker" ]] &&
 			[[ -e "$downstream_marker" ]] &&
-			jq -e '.r916.last_status == "success" and (.r901 | not)' "$state_file" >/dev/null &&
+			jq -e '."r-downstream-monitor".last_status == "success" and (.r901 | not)' "$state_file" >/dev/null &&
 			grep -q 'routine r901: skipping self-recursive supervisor target scripts/pulse-wrapper.sh (GH#28544)' "$log_file"
 	); then
-		pass "Case 7 (GH#28544): stale r901 self-invocation skipped; later routine executes"
+		pass "Case 9 (GH#28544): stale r901 skipped; descriptive-ID routine executes"
 	else
-		fail "Case 7 (GH#28544): stale r901 self-invocation skipped; later routine executes" \
+		fail "Case 9 (GH#28544): stale r901 skipped; descriptive-ID routine executes" \
 			"self_marker=$([[ -e "$self_marker" ]] && printf present || printf absent) downstream_marker=$([[ -e "$downstream_marker" ]] && printf present || printf absent)"
 	fi
 	return 0
@@ -310,6 +382,7 @@ main() {
 	_test_selector_cases "$tmpdir"
 	_test_metachar_guard
 	_test_e2e_discovery "$tmpdir"
+	_test_canonical_section_boundaries "$tmpdir"
 	_test_supervisor_self_recursion_guard "$tmpdir"
 
 	# === Summary ===

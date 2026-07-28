@@ -17,6 +17,7 @@
 #   - _routine_last_run_epoch
 #   - _routine_update_state
 #   - _routine_execute
+#   - _routine_extract_section
 #   - _routine_parse_line
 #   - evaluate_routines
 #
@@ -206,14 +207,21 @@ _routine_execute() {
 		local run_parts=()
 		IFS=' ' read -r -a run_parts <<<"$run_script"
 		local script_path="${agents_dir}/${run_parts[0]}"
-		local script_args=("${run_parts[@]:1}")
 		if [[ ! -x "$script_path" ]]; then
 			echo "[pulse-wrapper] routine ${routine_id}: script not found or not executable: ${script_path}" >>"$LOGFILE"
 			_routine_finalize_terminal "$routine_id" "$_ROUTINE_STATUS_FAILURE" "$started_epoch"
 			return 1
 		fi
-		echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path} ${script_args[*]}" >>"$LOGFILE"
-		"$script_path" "${script_args[@]}" >>"$LOGFILE" 2>&1 || exit_code=$?
+		# Bash 3.2 with nounset treats expansion of an empty array as an unbound
+		# variable. Keep the zero-argument path separate instead of expanding it.
+		if [[ "${#run_parts[@]}" -gt 1 ]]; then
+			local script_args=("${run_parts[@]:1}")
+			echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path} ${script_args[*]}" >>"$LOGFILE"
+			"$script_path" "${script_args[@]}" >>"$LOGFILE" 2>&1 || exit_code=$?
+		else
+			echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path}" >>"$LOGFILE"
+			"$script_path" >>"$LOGFILE" 2>&1 || exit_code=$?
+		fi
 		if [[ "$exit_code" -ne 0 ]]; then
 			status="$_ROUTINE_STATUS_FAILURE"
 			echo "[pulse-wrapper] routine ${routine_id}: script exited with code ${exit_code}" >>"$LOGFILE"
@@ -247,6 +255,124 @@ _RPL_AGENT=""
 _RPL_DESC=""
 
 #######################################
+# Extract active Markdown content from the one canonical `## Routines` section.
+#
+# Headings and routine-shaped lines inside fenced code blocks or HTML comments
+# are documentation, not scheduler input. The complete file is validated before
+# any output is returned so duplicate headings or unclosed structural blocks
+# cannot partially dispatch routines before the parser notices malformed input.
+#
+# Arguments: $1 - path to TODO.md
+# Output: active, non-indented lines inside the canonical section
+# Returns: 0 for one well-formed section, 1 for missing/duplicate/malformed input
+#######################################
+_routine_extract_section() {
+	local todo_file="$1"
+	[[ -f "$todo_file" ]] || return 1
+
+	local line=""
+	local active_line=""
+	local comment_prefix=""
+	local leading_spaces=""
+	local trimmed_line=""
+	local fence_char=""
+	local fence_length=0
+	local current_fence_length=0
+	local fence_remainder=""
+	local in_comment=0
+	local in_section=0
+	local section_count=0
+	local section_content=""
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		# Fenced content is opaque: only a matching closing fence is meaningful.
+		if [[ -n "$fence_char" ]]; then
+			leading_spaces="${line%%[! ]*}"
+			trimmed_line="${line#"$leading_spaces"}"
+			if [[ "${#leading_spaces}" -le 3 && "${trimmed_line:0:1}" == "$fence_char" ]]; then
+				current_fence_length=0
+				while [[ "${trimmed_line:${current_fence_length}:1}" == "$fence_char" ]]; do
+					current_fence_length=$((current_fence_length + 1))
+				done
+				fence_remainder="${trimmed_line:${current_fence_length}}"
+				if [[ "$current_fence_length" -ge "$fence_length" && "$fence_remainder" =~ ^[[:space:]]*$ ]]; then
+					fence_char=""
+					fence_length=0
+				fi
+			fi
+			continue
+		fi
+
+		# Strip HTML comments while retaining active text before/after inline
+		# comments. An unclosed block makes the document structurally ambiguous.
+		active_line="$line"
+		comment_prefix=""
+		while true; do
+			if [[ "$in_comment" -eq 1 ]]; then
+				if [[ "$active_line" == *"-->"* ]]; then
+					active_line="${active_line#*-->}"
+					in_comment=0
+					continue
+				fi
+				active_line="$comment_prefix"
+				break
+			fi
+			if [[ "$active_line" == *"<!--"* ]]; then
+				comment_prefix="${comment_prefix}${active_line%%<!--*}"
+				active_line="${active_line#*<!--}"
+				in_comment=1
+				continue
+			fi
+			active_line="${comment_prefix}${active_line}"
+			break
+		done
+
+		leading_spaces="${active_line%%[! ]*}"
+		trimmed_line="${active_line#"$leading_spaces"}"
+
+		# Four-space indentation is a Markdown code block, never a live routine.
+		if [[ "${#leading_spaces}" -gt 3 ]]; then
+			continue
+		fi
+
+		# Opening fenced code blocks may use backticks or tildes. Track the
+		# delimiter length so shorter runs cannot close the block.
+		if [[ "$trimmed_line" == '```'* || "$trimmed_line" == '~~~'* ]]; then
+			fence_char="${trimmed_line:0:1}"
+			fence_length=0
+			while [[ "${trimmed_line:${fence_length}:1}" == "$fence_char" ]]; do
+				fence_length=$((fence_length + 1))
+			done
+			continue
+		fi
+
+		if [[ "$trimmed_line" =~ ^##[[:space:]]+Routines[[:space:]]*$ ]]; then
+			section_count=$((section_count + 1))
+			in_section=1
+			continue
+		fi
+
+		# A level-one or level-two heading closes the canonical section. Level
+		# three and deeper headings remain part of it.
+		if [[ "$trimmed_line" =~ ^#[[:space:]]+ || "$trimmed_line" =~ ^##[[:space:]]+ ]]; then
+			in_section=0
+			continue
+		fi
+
+		if [[ "$in_section" -eq 1 ]]; then
+			section_content="${section_content}${active_line}"$'\n'
+		fi
+	done <"$todo_file"
+
+	if [[ "$section_count" -ne 1 || -n "$fence_char" || "$in_comment" -ne 0 ]]; then
+		return 1
+	fi
+
+	printf '%s' "$section_content"
+	return 0
+}
+
+#######################################
 # Return success when a routine run target would invoke the supervisor that is
 # currently evaluating routines. This protects existing generated TODO files
 # that still carry the pre-GH#28544 cron-form r901 entry.
@@ -278,12 +404,16 @@ _routine_parse_line() {
 	_RPL_AGENT=""
 	_RPL_DESC=""
 
-	# Skip disabled routines ([ ] prefix)
-	[[ "$line" =~ ^[[:space:]]*-[[:space:]]\[x\] ]] || return 1
+	# Live routine definitions are top-level Markdown list items. Four-space
+	# indentation is a code block and must not become scheduler input.
+	local leading_spaces="${line%%[! ]*}"
+	[[ "${#leading_spaces}" -le 3 ]] || return 1
 
-	# Extract routine ID (rNNN) — anchored to immediately after [x] so that
-	# r-prefixed IDs mentioned in task descriptions cannot produce a false match.
-	if [[ "$line" =~ ^[[:space:]]*-[[:space:]]\[x\][[:space:]]+(r[0-9]+) ]]; then
+	# Extract a stable r-prefixed routine ID immediately after [x]. IDs may be
+	# numeric (r040) or descriptive (r-gh-audit-scan), but must be a complete
+	# whitespace-delimited token so task prose cannot create a false match.
+	local _re_routine_id='^[ ]*-[[:space:]]*\[x\][[:space:]]+(r([[:alnum:]][[:alnum:]_-]*|-[[:alnum:]][[:alnum:]_-]*))[[:space:]]'
+	if [[ "$line" =~ $_re_routine_id ]]; then
 		_RPL_ID="${BASH_REMATCH[1]}"
 	else
 		return 1
@@ -331,8 +461,9 @@ _routine_parse_line() {
 		_RPL_AGENT="${BASH_REMATCH[1]}"
 	fi
 
-	# Extract description (text between ID and first field tag)
-	_RPL_DESC=$(printf '%s' "$line" | sed -E 's/^.*\[x\][[:space:]]*(r[0-9]+)[[:space:]]*//' | sed -E 's/[[:space:]]*(repeat:|run:|agent:|#|~|@|started:|blocked-by:).*//')
+	# Extract description (text between ID and first field tag).
+	local description_tail="${line#*"${_RPL_ID}"}"
+	_RPL_DESC=$(printf '%s' "$description_tail" | sed -E 's/^[[:space:]]*//' | sed -E 's/[[:space:]]*(repeat:|run:|agent:|#|~|@|started:|blocked-by:).*//')
 
 	return 0
 }
@@ -367,9 +498,15 @@ evaluate_routines() {
 		local todo_file="${repo_path}/TODO.md"
 		[[ -f "$todo_file" ]] || continue
 
-		# Extract enabled routine lines: [x] rNNN ... repeat:EXPR
-		# Selector requires r[0-9]+ immediately after [x] to prevent t-prefix task
-		# descriptions that mention repeat: from false-matching (bug t2175).
+		# Validate and buffer the complete canonical Markdown section before any
+		# routine dispatch. This prevents fenced examples, other TODO sections,
+		# and malformed/duplicate boundaries from becoming scheduler input.
+		local routine_section=""
+		if ! routine_section=$(_routine_extract_section "$todo_file"); then
+			echo "[pulse-wrapper] evaluate_routines: ${_routine_slug} TODO.md has missing, duplicate, or malformed canonical ## Routines boundaries — skipping" >>"$LOGFILE"
+			continue
+		fi
+
 		local line
 		while IFS= read -r line; do
 			if ! _routine_parse_line "$line"; then
@@ -399,7 +536,7 @@ evaluate_routines() {
 				_routine_execute "$_RPL_ID" "$_RPL_DESC" "$_RPL_RUN" "$_RPL_AGENT" "$repo_path"
 				routines_dispatched=$((routines_dispatched + 1))
 			fi
-		done < <(grep -E '^\s*-\s*\[x\][[:space:]]+r[0-9]+[[:space:]].*repeat:' "$todo_file" 2>/dev/null || true)
+		done <<<"$routine_section"
 
 	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || true)
 

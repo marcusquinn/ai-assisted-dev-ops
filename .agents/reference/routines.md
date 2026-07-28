@@ -30,12 +30,19 @@ material, dispatch paths, and logs remain private with restrictive modes.
 - [x] r004 Nightly repo triage repeat:cron(15 2 * * *) ~20m agent:Build+
 ```
 
+Pulse reads routine definitions from exactly one top-level `## Routines`
+section in each `TODO.md`. Fenced code, HTML comments, indented Markdown code,
+and all other sections are documentation only. A missing or duplicate canonical
+heading, or an unclosed fence/comment that makes the boundaries ambiguous,
+fails closed: Pulse dispatches no routines from that file and records a local
+diagnostic.
+
 ## Fields
 
 | Field | Meaning |
 |-------|---------|
 | `[x]` / `[ ]` | Enabled / disabled (keep disabled entries for auditability) |
-| `r001` | Stable ID — never reuse |
+| `r001` / `r-name` | Stable `r`-prefixed ID — never reuse |
 | `repeat:` | Recurrence expression (see below) |
 | `~30m` | Expected runtime estimate |
 | `run:` | Script path relative to `~/.aidevops/agents/` — deterministic, no LLM tokens |
