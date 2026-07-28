@@ -21,9 +21,8 @@
 #   - _routine_parse_line
 #   - evaluate_routines
 #
-# This is a pure move from pulse-wrapper.sh. The function bodies are
-# byte-identical to their pre-extraction form. Any change must go in a
-# separate follow-up PR after the full decomposition (Phase 12) lands.
+# Keep behavioral changes in this module covered by the focused selector and
+# lifecycle regression suites.
 
 # Include guard — prevent double-sourcing. pulse-wrapper.sh sources every
 # module unconditionally on start, and characterization tests re-source to
