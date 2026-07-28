@@ -78,7 +78,8 @@ def _usable_url_value(value: str | None) -> bool:
 def _normalized_url(value: str | None) -> str | None:
     if not _usable_url_value(value):
         return None
-    assert value is not None
+    if value is None:
+        return None
     try:
         parsed = urlsplit(value)
         hostname = parsed.hostname
