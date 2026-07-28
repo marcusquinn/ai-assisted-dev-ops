@@ -25,6 +25,31 @@ _aidevops_sensitive_temp_reject() {
 	return 1
 }
 
+_aidevops_sensitive_temp_stat_owner_uid() {
+	local path="$1"
+	local owner_uid=""
+	owner_uid=$(stat -c '%u' "$path" 2>/dev/null || true)
+	if [[ ! "$owner_uid" =~ ^[0-9]+$ ]]; then
+		owner_uid=$(stat -f '%u' "$path" 2>/dev/null || true)
+	fi
+	[[ "$owner_uid" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$owner_uid"
+	return 0
+}
+
+_aidevops_sensitive_temp_stat_mode() {
+	local path="$1"
+	local bsd_format="$2"
+	local mode=""
+	mode=$(stat -c '%a' "$path" 2>/dev/null || true)
+	if [[ ! "$mode" =~ ^[0-7]{3,6}$ ]]; then
+		mode=$(stat -f "$bsd_format" "$path" 2>/dev/null || true)
+	fi
+	[[ "$mode" =~ ^[0-7]{3,6}$ ]] || return 1
+	printf '%s\n' "$mode"
+	return 0
+}
+
 _aidevops_sensitive_temp_physical_path_is_safe() {
 	local candidate="$1"
 	local remainder="${candidate#/}"
@@ -64,14 +89,14 @@ _aidevops_sensitive_temp_physical_path_is_safe() {
 				"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "missing_non_directory_or_symlink_component"
 			return 1
 		fi
-		owner_uid=$(stat -f '%u' "$current" 2>/dev/null || stat -c '%u' "$current" 2>/dev/null) || {
+		owner_uid=$(_aidevops_sensitive_temp_stat_owner_uid "$current") || {
 			_aidevops_sensitive_temp_reject "$current" "$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" \
 				"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "owner_stat_failed"
 			return 1
 		}
 		# BSD %Lp omits special bits; %p retains the sticky bit (and file type).
 		# GNU %a returns permission bits only. The masks below work for either.
-		mode=$(stat -f '%p' "$current" 2>/dev/null || stat -c '%a' "$current" 2>/dev/null) || {
+		mode=$(_aidevops_sensitive_temp_stat_mode "$current" '%p') || {
 			_aidevops_sensitive_temp_reject "$current" "$owner_uid" \
 				"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "mode_stat_failed"
 			return 1
@@ -147,7 +172,7 @@ aidevops_sensitive_temp_root() {
 			"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "current_uid_unavailable"
 		return 1
 	}
-	owner_uid=$(stat -f '%u' "$temp_root" 2>/dev/null || stat -c '%u' "$temp_root" 2>/dev/null) || {
+	owner_uid=$(_aidevops_sensitive_temp_stat_owner_uid "$temp_root") || {
 		_aidevops_sensitive_temp_reject "$temp_root" "$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" \
 			"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "owner_stat_failed"
 		return 1
@@ -162,7 +187,7 @@ aidevops_sensitive_temp_root() {
 			"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "sensitive_root_chmod_failed"
 		return 1
 	}
-	mode=$(stat -f '%Lp' "$temp_root" 2>/dev/null || stat -c '%a' "$temp_root" 2>/dev/null) || {
+	mode=$(_aidevops_sensitive_temp_stat_mode "$temp_root" '%Lp') || {
 		_aidevops_sensitive_temp_reject "$temp_root" "$owner_uid" \
 			"$_AIDEVOPS_SENSITIVE_TEMP_UNKNOWN" "mode_stat_failed"
 		return 1

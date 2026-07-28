@@ -61,6 +61,59 @@ wait_for_absence() {
 	return 1
 }
 
+stat() {
+	local flag="${1:-}"
+	local format="${2:-}"
+	local path="${3:-}"
+	: "$path"
+	if [[ "$flag" == "-c" && "$format" == "%u" ]]; then
+		printf '4242\n'
+		return 0
+	fi
+	if [[ "$flag" == "-c" && "$format" == "%a" ]]; then
+		printf '1777\n'
+		return 0
+	fi
+	if [[ "$flag" == "-f" ]]; then
+		printf '  File: filesystem statistics\n0\n'
+		return 0
+	fi
+	return 1
+}
+[[ "$(_aidevops_sensitive_temp_stat_owner_uid /fixture)" == "4242" ]] || \
+	fail "GNU owner stat did not win over successful filesystem-mode output"
+[[ "$(_aidevops_sensitive_temp_stat_mode /fixture '%p')" == "1777" ]] || \
+	fail "GNU mode stat did not win over successful filesystem-mode output"
+unset -f stat
+
+stat() {
+	local flag="${1:-}"
+	local format="${2:-}"
+	local path="${3:-}"
+	: "$path"
+	[[ "$flag" == "-c" ]] && return 1
+	if [[ "$flag" == "-f" && "$format" == "%u" ]]; then
+		printf '501\n'
+		return 0
+	fi
+	if [[ "$flag" == "-f" && "$format" == "%p" ]]; then
+		printf '41777\n'
+		return 0
+	fi
+	if [[ "$flag" == "-f" && "$format" == "%Lp" ]]; then
+		printf '700\n'
+		return 0
+	fi
+	return 1
+}
+[[ "$(_aidevops_sensitive_temp_stat_owner_uid /fixture)" == "501" ]] || \
+	fail "BSD owner stat fallback failed"
+[[ "$(_aidevops_sensitive_temp_stat_mode /fixture '%p')" == "41777" ]] || \
+	fail "BSD ancestor mode fallback lost sticky-bit mode"
+[[ "$(_aidevops_sensitive_temp_stat_mode /fixture '%Lp')" == "700" ]] || \
+	fail "BSD final-root mode fallback failed"
+unset -f stat
+
 managed_dir=$(aidevops_sensitive_temp_create_dir "test-private") || \
 	fail "failed to create a managed sensitive directory"
 [[ "${managed_dir%/*}" == "$MANAGED_ROOT" && \
