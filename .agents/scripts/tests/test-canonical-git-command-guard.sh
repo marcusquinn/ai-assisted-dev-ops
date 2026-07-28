@@ -69,6 +69,18 @@ assert_allowed() {
 	return 0
 }
 
+assert_allowed_with_temp_root() {
+	local name="$1"
+	local cwd="$2"
+	local command="$3"
+	if TMPDIR="$TEST_ROOT" python3 "$GUARD" --cwd "$cwd" --command "$command" >/dev/null 2>&1; then
+		pass "$name"
+	else
+		fail "$name"
+	fi
+	return 0
+}
+
 assert_blocked "blocks canonical detached switch" "git switch --detach main"
 GUIDANCE_OUTPUT=$(python3 "$GUARD" --cwd "$REPO" --command "git pull --ff-only origin main" 2>&1)
 RECOVERY_HELPER="${SCRIPT_DIR}/canonical-recovery-helper.sh"
@@ -99,6 +111,8 @@ assert_blocked "blocks wrapped canonical switch" "env TEST=1 command git switch 
 assert_blocked "blocks nested absolute Git bypass" "bash -c '/usr/bin/git switch --detach main'"
 assert_blocked "blocks chained canonical mutation" "git status && git branch -M renamed"
 assert_blocked "blocks canonical update-ref plumbing" "/usr/bin/git update-ref refs/heads/main HEAD"
+assert_blocked "blocks merge-tree writes in a canonical checkout" \
+	"git merge-tree --write-tree '$INITIAL_HEAD' '$INITIAL_HEAD'"
 assert_blocked "blocks destructive clean with exclude containing n" "git clean --force --exclude=nope"
 assert_blocked "blocks interactive clean" "git clean --interactive"
 assert_blocked "blocks canonical symbolic-ref update" "git symbolic-ref HEAD refs/heads/safety/example"
@@ -134,6 +148,15 @@ assert_allowed "allows canonical short symbolic-ref query" "$REPO" "git symbolic
 assert_allowed "allows reordered canonical symbolic-ref query flags" "$REPO" "git symbolic-ref refs/remotes/origin/HEAD --quiet --short"
 assert_allowed "allows canonical non-recursive symbolic-ref query" "$REPO" "git symbolic-ref --no-recurse refs/remotes/origin/HEAD"
 assert_allowed "allows canonical worktree creation" "$REPO" "git worktree add '$LINKED' -b feature/example"
+
+PROSPECTIVE_CONTEXT=$(mktemp -d "${TEST_ROOT}/aidevops-prospective-todo.XXXXXX")
+PROSPECTIVE_REPO="${PROSPECTIVE_CONTEXT}/repository.git"
+git -C "$PROSPECTIVE_CONTEXT" init --bare -q repository.git
+assert_allowed_with_temp_root "allows the pinned merge-tree probe in its isolated bare temp repo" \
+	"$PROSPECTIVE_REPO" "git merge-tree --write-tree '$INITIAL_HEAD' '$INITIAL_HEAD'"
+assert_blocked "blocks unrelated writes in the isolated bare temp repo" \
+	"git -C '$PROSPECTIVE_REPO' update-ref refs/heads/main '$INITIAL_HEAD'"
+
 git -C "$REPO" worktree add -q -b feature/example "$LINKED"
 assert_allowed "allows normal Git mutation in linked worktree" "$LINKED" "git switch -c feature/linked-child"
 assert_allowed "allows rev-list query in linked worktree" "$LINKED" "git rev-list --count HEAD"
