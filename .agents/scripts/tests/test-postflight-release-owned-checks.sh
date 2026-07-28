@@ -68,8 +68,8 @@ grep -Fq 'actions: write' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
 grep -Fq 'Queue exact-tag postflight' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
 grep -Fq 'gh workflow run postflight.yml' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
 grep -Fq -- '--ref main' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
-grep -Fq -- '"tag=$RELEASE_TAG"' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
-if grep -Fq 'release:' "${REPO_ROOT}/.github/workflows/postflight.yml"; then
+grep -Fq -- "\"tag=\$RELEASE_TAG\"" "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+if grep -Fq "release:" "${REPO_ROOT}/.github/workflows/postflight.yml"; then
 	printf 'FAIL: postflight retains an event trigger that can duplicate canonical dispatches\n' >&2
 	exit 1
 fi
