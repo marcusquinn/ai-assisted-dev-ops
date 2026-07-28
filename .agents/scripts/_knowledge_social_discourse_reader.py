@@ -126,23 +126,27 @@ class GuardedDiscourse:
         return self.process.run(request.payload())
 
 
+def _fixture_object(value: Any, message: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise DiscourseAdapterError(message)
+    return value
+
+
 def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise DiscourseAdapterError(
-            "Discourse fixture request expectation must be an object"
-        )
+    expectation = _fixture_object(
+        entry.get("expect_request", {}),
+        "Discourse fixture request expectation must be an object",
+    )
     actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise DiscourseAdapterError(
-            "Discourse request did not resume at the expected checkpoint"
-        )
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise DiscourseAdapterError(
-            "Discourse fixture page response must be an object"
-        )
-    return response
+    for key, value in expectation.items():
+        if actual.get(key) != value:
+            raise DiscourseAdapterError(
+                "Discourse request did not resume at the expected checkpoint"
+            )
+    return _fixture_object(
+        entry.get("response", entry),
+        "Discourse fixture page response must be an object",
+    )
 
 
 class FixtureDiscourse:
@@ -157,6 +161,20 @@ class FixtureDiscourse:
 
     def page(self, request: PageRequest) -> dict[str, Any]:
         return _fixture_page(self.fixture.next_page(), request)
+
+
+def _display_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DiscourseAdapterError("Discourse account name must be text")
+    if not value:
+        raise DiscourseAdapterError("Discourse account name must be text")
+    if "\x00" in value:
+        raise DiscourseAdapterError("Discourse account name must be text")
+    if len(value.encode("utf-8")) > 256 * 1024:
+        raise DiscourseAdapterError("Discourse account name must be text")
+    return value
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:
@@ -174,14 +192,7 @@ def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, An
         raise DiscourseAdapterError(
             "selected Discourse account does not match the configured connection"
         )
-    display_name = data.get("name")
-    if display_name is not None and (
-        not isinstance(display_name, str)
-        or not display_name
-        or "\x00" in display_name
-        or len(display_name.encode("utf-8")) > 256 * 1024
-    ):
-        raise DiscourseAdapterError("Discourse account name must be text")
+    display_name = _display_name(data.get("name"))
     return {
         "id": namespaced_id(installation, "user", local_id),
         "provider_account_id": local_id,

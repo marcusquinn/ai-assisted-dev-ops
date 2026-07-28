@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -45,6 +46,33 @@ def exact_keys(request: dict[str, Any], expected: set[str]) -> None:
         raise DiscourseReadProviderError(
             "Discourse read request has an invalid action shape"
         )
+
+
+def _bounded_request(payload: bytes, limit: int) -> bytes:
+    if len(payload) > limit:
+        raise DiscourseReadProviderError(
+            "Discourse read request exceeds the safety limit"
+        )
+    return payload
+
+
+def _decoded_request(payload: bytes) -> Any:
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DiscourseReadProviderError(
+            "Discourse read request is not valid JSON"
+        ) from error
+
+
+def request_object(payload: bytes, limit: int) -> dict[str, Any]:
+    """Decode one bounded provider request without retaining raw input."""
+    request = _decoded_request(_bounded_request(payload, limit))
+    if not isinstance(request, dict):
+        raise DiscourseReadProviderError(
+            "Discourse read request root must be an object"
+        )
+    return request
 
 
 def object_value(value: Any, field: str) -> dict[str, Any]:

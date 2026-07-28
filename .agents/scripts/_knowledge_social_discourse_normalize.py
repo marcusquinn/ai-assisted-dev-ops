@@ -112,73 +112,121 @@ def _coverage(observed_at: str) -> list[dict[str, Any]]:
     ]
 
 
-def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
-    """Build provider-neutral rows and explicit installation-specific gaps."""
-    reject_credentials(payload)
-    observed_at = _observed_at(payload)
-    account_id = _required_text(context.account, "id")
-    installation = instance_id(context.account.get("instance_id"))
+@dataclass(frozen=True)
+class NormalizationState:
+    """Validated values shared by every row from one provider page."""
+
+    observed_at: str
+    account_id: str
+    installation: str
+    activity_type: str
+    authored: bool
+
+
+def _normalization_state(
+    payload: dict[str, Any], context: PageContext
+) -> NormalizationState:
+    return NormalizationState(
+        _observed_at(payload),
+        _required_text(context.account, "id"),
+        instance_id(context.account.get("instance_id")),
+        ACTIVITY_TYPES[context.stream],
+        context.stream in ("authored_topics", "authored_posts"),
+    )
+
+
+def _item_kind(item: dict[str, Any]) -> str:
+    kind = item.get("kind")
+    if not isinstance(kind, str):
+        raise DiscourseAdapterError("Discourse page contains an unsupported item kind")
+    if kind not in OBJECT_TYPES:
+        raise DiscourseAdapterError("Discourse page contains an unsupported item kind")
+    return kind
+
+
+def _created_at(item: dict[str, Any]) -> str | None:
+    return (
+        _optional_text(item, "created_at")
+        or _optional_text(item, "last_posted_at")
+        or _optional_text(item, "last_visited_at")
+    )
+
+
+def _object_row(
+    item: dict[str, Any], context: PageContext, state: NormalizationState
+) -> dict[str, Any]:
+    kind = _item_kind(item)
+    remote_id = _required_text(item, "remote_id")
+    provider_json = {
+        "source": PROVENANCE,
+        "instance_id": state.installation,
+        "stream": context.stream,
+        "record": item,
+    }
+    reject_credentials(provider_json)
+    return {
+        "object_type": kind,
+        "remote_id": remote_id,
+        "account_remote_id": state.account_id if state.authored else None,
+        "text": _text(item),
+        "created_at": _created_at(item),
+        "observed_at": state.observed_at,
+        "evidence_class": "authored" if state.authored else "observed",
+        "provider_json": provider_json,
+    }
+
+
+def _has_activity(item: dict[str, Any], stream: str) -> bool:
+    if stream != "category_preferences":
+        return True
+    levels = item.get("preference_levels")
+    if not isinstance(levels, list):
+        raise DiscourseAdapterError(
+            "Discourse category preference levels are invalid"
+        )
+    if any(not isinstance(level, str) for level in levels):
+        raise DiscourseAdapterError(
+            "Discourse category preference levels are invalid"
+        )
+    return bool(levels)
+
+
+def _activity_row(
+    item: dict[str, Any], context: PageContext, state: NormalizationState
+) -> dict[str, Any] | None:
+    if not _has_activity(item, context.stream):
+        return None
+    remote_id = _required_text(item, "remote_id")
+    return {
+        "activity_type": state.activity_type,
+        "remote_id": f"{state.account_id}_{state.activity_type}_{remote_id}",
+        "actor_remote_id": state.account_id,
+        "object_remote_id": remote_id,
+        "occurred_at": _created_at(item),
+        "observed_at": state.observed_at,
+        "state": "active",
+        "provider_json": {
+            "source": PROVENANCE,
+            "instance_id": state.installation,
+            "stream": context.stream,
+        },
+    }
+
+
+def _normalized_rows(
+    payload: dict[str, Any], context: PageContext, state: NormalizationState
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     objects: list[dict[str, Any]] = []
     activities: list[dict[str, Any]] = []
     for item in page_data(payload):
-        kind = item.get("kind")
-        if not isinstance(kind, str) or kind not in OBJECT_TYPES:
-            raise DiscourseAdapterError(
-                "Discourse page contains an unsupported item kind"
-            )
-        remote_id = _required_text(item, "remote_id")
-        provider_json = {
-            "source": PROVENANCE,
-            "instance_id": installation,
-            "stream": context.stream,
-            "record": item,
-        }
-        reject_credentials(provider_json)
-        authored = context.stream in ("authored_topics", "authored_posts")
-        created_at = (
-            _optional_text(item, "created_at")
-            or _optional_text(item, "last_posted_at")
-            or _optional_text(item, "last_visited_at")
-        )
-        objects.append(
-            {
-                "object_type": kind,
-                "remote_id": remote_id,
-                "account_remote_id": account_id if authored else None,
-                "text": _text(item),
-                "created_at": created_at,
-                "observed_at": observed_at,
-                "evidence_class": "authored" if authored else "observed",
-                "provider_json": provider_json,
-            }
-        )
-        activity_type = ACTIVITY_TYPES[context.stream]
-        if context.stream == "category_preferences":
-            levels = item.get("preference_levels")
-            if not isinstance(levels, list) or any(
-                not isinstance(level, str) for level in levels
-            ):
-                raise DiscourseAdapterError(
-                    "Discourse category preference levels are invalid"
-                )
-            if not levels:
-                continue
-        activities.append(
-            {
-                "activity_type": activity_type,
-                "remote_id": f"{account_id}_{activity_type}_{remote_id}",
-                "actor_remote_id": account_id,
-                "object_remote_id": remote_id,
-                "occurred_at": created_at,
-                "observed_at": observed_at,
-                "state": "active",
-                "provider_json": {
-                    "source": PROVENANCE,
-                    "instance_id": installation,
-                    "stream": context.stream,
-                },
-            }
-        )
+        objects.append(_object_row(item, context, state))
+        activity = _activity_row(item, context, state)
+        if activity is not None:
+            activities.append(activity)
+    return objects, activities
+
+
+def _archive_policy(context: PageContext, installation: str) -> dict[str, Any]:
     policy = dict(context.policy)
     policy.update(
         {
@@ -188,22 +236,30 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
             "discourse_redirects": "rejected",
         }
     )
+    return policy
+
+
+def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
+    """Build provider-neutral rows and explicit installation-specific gaps."""
+    reject_credentials(payload)
+    state = _normalization_state(payload, context)
+    objects, activities = _normalized_rows(payload, context, state)
     archive = {
         "provider": PROVIDER,
         "connection_id": context.connection_id,
-        "remote_account_id": account_id,
-        "exported_at": observed_at,
+        "remote_account_id": state.account_id,
+        "exported_at": state.observed_at,
         "enabled_streams": list(context.enabled_streams),
-        "policy": policy,
+        "policy": _archive_policy(context, state.installation),
         "accounts": [
             {
-                "remote_id": account_id,
+                "remote_id": state.account_id,
                 "handle": context.account.get("username"),
                 "display_name": context.account.get("name"),
-                "observed_at": observed_at,
+                "observed_at": state.observed_at,
                 "provider_json": {
                     "source": PROVENANCE,
-                    "instance_id": installation,
+                    "instance_id": state.installation,
                     "provider_account_id": context.account.get(
                         "provider_account_id"
                     ),
@@ -213,7 +269,7 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
         "objects": objects,
         "activities": activities,
         "media": [],
-        "coverage": _coverage(observed_at),
+        "coverage": _coverage(state.observed_at),
     }
     reject_credentials(archive)
     return archive

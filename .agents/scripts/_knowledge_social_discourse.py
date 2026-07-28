@@ -7,30 +7,25 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from _knowledge_social_collect import CursorState, PageCheckpoint
+from _knowledge_social_discourse_identity import (
+    DiscourseAdapterError,
+    DiscourseProviderUnavailableError,
+    instance_id,
+    namespaced_id,
+    provider_account_id,
+    username,
+)
 from knowledge_social_import import canonical_json, reject_credentials
-from knowledge_social_store import SocialStoreError
 
 PROVIDER = "discourse"
 CURSOR_PREFIX = "discourse-v1:"
 RETENTION_LIMIT = "installation_policy_and_current_user_visibility"
 MAX_MESSAGE_PAGE_ITEMS = 100
 MAX_SNAPSHOT_ITEMS = 1000
-INSTANCE_ID = re.compile(r"^[0-9a-f]{24}$")
-PROVIDER_ACCOUNT_ID = re.compile(r"^[1-9][0-9]{0,19}$")
-USERNAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
-
-
-class DiscourseAdapterError(SocialStoreError):
-    """Raised when guarded Discourse collection cannot continue safely."""
-
-
-class DiscourseProviderUnavailableError(DiscourseAdapterError):
-    """Raised when the bounded Discourse HTTP child cannot complete a read."""
 
 
 ADAPTER_ERROR = DiscourseAdapterError
@@ -107,42 +102,6 @@ STREAMS = {
 }
 
 
-def instance_id(value: Any) -> str:
-    """Validate a privacy-safe stable installation fingerprint."""
-    if not isinstance(value, str) or INSTANCE_ID.fullmatch(value) is None:
-        raise DiscourseAdapterError("Discourse installation identity is invalid")
-    return value
-
-
-def provider_account_id(value: Any) -> str:
-    """Normalize a CLI-safe selector or installation-local numeric user ID."""
-    text = str(value) if isinstance(value, int) and not isinstance(value, bool) else value
-    if isinstance(text, str) and text.startswith("user_"):
-        text = text.removeprefix("user_")
-    if not isinstance(text, str) or PROVIDER_ACCOUNT_ID.fullmatch(text) is None:
-        raise DiscourseAdapterError("Discourse account ID is invalid")
-    return text
-
-
-def username(value: Any) -> str:
-    """Validate a selected Discourse username before path interpolation."""
-    if not isinstance(value, str) or USERNAME.fullmatch(value) is None:
-        raise DiscourseAdapterError("Discourse account username is invalid")
-    return value
-
-
-def namespaced_id(installation: str, kind: str, value: str) -> str:
-    """Namespace an installation-local resource ID for shared storage."""
-    stable_instance = instance_id(installation)
-    if not re.fullmatch(r"[a-z][a-z_]{0,31}", kind):
-        raise DiscourseAdapterError("Discourse resource kind is invalid")
-    if not isinstance(value, str) or not value or not re.fullmatch(
-        r"[A-Za-z0-9_-]{1,128}", value
-    ):
-        raise DiscourseAdapterError("Discourse resource ID is invalid")
-    return f"dsc_{stable_instance}_{kind}_{value}"
-
-
 @dataclass(frozen=True)
 class PageRequest:
     """Allowlisted bounded request passed to the Discourse HTTP subprocess."""
@@ -171,6 +130,19 @@ class PageRequest:
 
     def evidence_key(self) -> str:
         return canonical_json(self.payload())
+
+
+PAGE_REQUEST_KEYS = {
+    "action",
+    "stream",
+    "account_id",
+    "provider_account_id",
+    "username",
+    "instance_id",
+    "position",
+    "stop_at",
+    "limit",
+}
 
 
 def _checkpoint_id(value: Any, field: str, *, optional: bool = False) -> str | None:
@@ -251,39 +223,44 @@ def page_request(
     )
 
 
-def parse_page_request(payload: dict[str, Any]) -> PageRequest:
-    """Validate the exact child-process page request shape."""
-    expected = {
-        "action",
-        "stream",
-        "account_id",
-        "provider_account_id",
-        "username",
-        "instance_id",
-        "position",
-        "stop_at",
-        "limit",
-    }
-    if set(payload) != expected or payload.get("action") != "page":
-        raise DiscourseAdapterError("Discourse read request has an invalid action shape")
+def _request_stream(payload: dict[str, Any]) -> str:
     stream = payload.get("stream")
-    if not isinstance(stream, str) or stream not in STREAMS:
+    if not isinstance(stream, str):
         raise DiscourseAdapterError("Discourse stream is unsupported")
+    if stream not in STREAMS:
+        raise DiscourseAdapterError("Discourse stream is unsupported")
+    return stream
+
+
+def _request_account_id(payload: dict[str, Any]) -> str:
     account_id = _checkpoint_id(payload.get("account_id"), "selected account ID")
     if account_id is None:
         raise DiscourseAdapterError("Discourse selected account ID is required")
+    return account_id
+
+
+def _request_limit(payload: dict[str, Any]) -> int:
     limit = payload.get("limit")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+    if isinstance(limit, bool) or not isinstance(limit, int):
         raise DiscourseAdapterError("Discourse page size is invalid")
+    if not 1 <= limit <= 20:
+        raise DiscourseAdapterError("Discourse page size is invalid")
+    return limit
+
+
+def parse_page_request(payload: dict[str, Any]) -> PageRequest:
+    """Validate the exact child-process page request shape."""
+    if set(payload) != PAGE_REQUEST_KEYS or payload.get("action") != "page":
+        raise DiscourseAdapterError("Discourse read request has an invalid action shape")
     return PageRequest(
-        stream,
-        account_id,
+        _request_stream(payload),
+        _request_account_id(payload),
         provider_account_id(payload.get("provider_account_id")),
         username(payload.get("username")),
         instance_id(payload.get("instance_id")),
         _position(payload.get("position"), "page position"),
         _checkpoint_id(payload.get("stop_at"), "request watermark", optional=True),
-        limit,
+        _request_limit(payload),
     )
 
 
@@ -303,60 +280,108 @@ def page_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return data
 
 
+@dataclass(frozen=True)
+class PageMetadata:
+    """Validated checkpoint metadata returned by the HTTP child."""
+
+    next_position: int | None
+    newest_id: str | None
+    reached_watermark: bool
+    complete: bool
+    snapshot: bool
+
+
+def _completion_flag(meta: dict[str, Any], field: str) -> bool:
+    value = meta.get(field)
+    if not isinstance(value, bool):
+        raise DiscourseAdapterError("Discourse page completion metadata is invalid")
+    return value
+
+
+def _page_metadata(payload: dict[str, Any], request: PageRequest) -> PageMetadata:
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        raise DiscourseAdapterError("Discourse page metadata must be an object")
+    reject_credentials(meta)
+    if meta.get("stream") != request.stream:
+        raise DiscourseAdapterError("Discourse page provenance is invalid")
+    if instance_id(meta.get("instance_id")) != request.instance_id:
+        raise DiscourseAdapterError("Discourse page provenance is invalid")
+    next_value = meta.get("next_position")
+    next_position = None
+    if next_value is not None:
+        next_position = _position(next_value, "next page position")
+    if next_position is not None and next_position <= request.position:
+        raise DiscourseAdapterError("Discourse next page position did not advance")
+    snapshot = meta.get("snapshot")
+    if not isinstance(snapshot, bool):
+        raise DiscourseAdapterError("Discourse page pagination metadata is invalid")
+    return PageMetadata(
+        next_position,
+        _checkpoint_id(meta.get("newest_id"), "newest ID", optional=True),
+        _completion_flag(meta, "reached_watermark"),
+        _completion_flag(meta, "complete"),
+        snapshot,
+    )
+
+
+def _page_item_limit(request: PageRequest) -> int:
+    if request.stream in ("private_messages", "sent_messages"):
+        return MAX_MESSAGE_PAGE_ITEMS
+    if request.stream in ("reading_state", "groups", "category_preferences"):
+        return MAX_SNAPSHOT_ITEMS
+    return request.limit
+
+
+def _validate_page_items(payload: dict[str, Any], request: PageRequest) -> None:
+    if len(page_data(payload)) > _page_item_limit(request):
+        raise DiscourseAdapterError("Discourse page exceeds the item safety limit")
+
+
+def _validate_page_mode(request: PageRequest, meta: PageMetadata) -> None:
+    spec = STREAMS[request.stream]
+    if not spec.incremental and request.stop_at is not None:
+        raise DiscourseAdapterError("Discourse snapshot cannot use a watermark")
+    if meta.snapshot != (spec.pagination == "snapshot"):
+        raise DiscourseAdapterError("Discourse page pagination metadata is invalid")
+
+
+def _page_complete(meta: PageMetadata) -> bool:
+    complete = meta.complete or meta.reached_watermark
+    if complete and meta.next_position is not None:
+        raise DiscourseAdapterError("complete Discourse page cannot have a next cursor")
+    if not complete and meta.next_position is None:
+        raise DiscourseAdapterError("partial Discourse page requires a next cursor")
+    return complete
+
+
+def _page_watermark(
+    state: CursorState, request: PageRequest, meta: PageMetadata
+) -> str | None:
+    spec = STREAMS[request.stream]
+    if not spec.incremental:
+        return state.watermark
+    if request.position != 0:
+        return state.watermark
+    if meta.newest_id is None:
+        return state.watermark
+    return meta.newest_id
+
+
 def page_checkpoint(
     payload: dict[str, Any],
     state: CursorState,
     request: PageRequest,
 ) -> tuple[PageCheckpoint, bool]:
     """Calculate one atomic per-installation, per-stream checkpoint."""
-    meta = payload.get("meta")
-    if not isinstance(meta, dict):
-        raise DiscourseAdapterError("Discourse page metadata must be an object")
-    reject_credentials(meta)
-    if meta.get("stream") != request.stream or instance_id(
-        meta.get("instance_id")
-    ) != request.instance_id:
-        raise DiscourseAdapterError("Discourse page provenance is invalid")
-    next_value = meta.get("next_position")
-    next_position = (
-        None if next_value is None else _position(next_value, "next page position")
-    )
-    if next_position is not None and next_position <= request.position:
-        raise DiscourseAdapterError("Discourse next page position did not advance")
-    newest = _checkpoint_id(meta.get("newest_id"), "newest ID", optional=True)
-    reached = meta.get("reached_watermark")
-    complete_value = meta.get("complete")
-    snapshot = meta.get("snapshot")
-    if not isinstance(reached, bool) or not isinstance(complete_value, bool):
-        raise DiscourseAdapterError("Discourse page completion metadata is invalid")
-    spec = STREAMS[request.stream]
-    item_limit = (
-        MAX_MESSAGE_PAGE_ITEMS
-        if request.stream in ("private_messages", "sent_messages")
-        else MAX_SNAPSHOT_ITEMS
-        if request.stream in ("reading_state", "groups", "category_preferences")
-        else request.limit
-    )
-    if len(page_data(payload)) > item_limit:
-        raise DiscourseAdapterError("Discourse page exceeds the item safety limit")
-    if not spec.incremental and request.stop_at is not None:
-        raise DiscourseAdapterError("Discourse snapshot cannot use a watermark")
-    if not isinstance(snapshot, bool) or snapshot != (spec.pagination == "snapshot"):
-        raise DiscourseAdapterError("Discourse page pagination metadata is invalid")
-    complete = complete_value or reached
-    if complete == (next_position is not None):
-        message = (
-            "complete Discourse page cannot have a next cursor"
-            if complete
-            else "partial Discourse page requires a next cursor"
-        )
-        raise DiscourseAdapterError(message)
-    watermark = state.watermark
-    if spec.incremental and request.position == 0 and newest is not None:
-        watermark = newest
-    next_cursor = (
-        _encode_cursor(next_position, request.stop_at)
-        if next_position is not None
-        else None
-    )
-    return PageCheckpoint(next_cursor, watermark), complete
+    meta = _page_metadata(payload, request)
+    _validate_page_items(payload, request)
+    _validate_page_mode(request, meta)
+    complete = _page_complete(meta)
+    next_cursor = None
+    if meta.next_position is not None:
+        next_cursor = _encode_cursor(meta.next_position, request.stop_at)
+    return PageCheckpoint(
+        next_cursor,
+        _page_watermark(state, request, meta),
+    ), complete

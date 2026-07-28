@@ -266,266 +266,100 @@ def _group_records(identity: dict[str, Any], request: PageRequest) -> list[dict[
     ]
 
 
-def _category_records(
-    payload: Any, identity: dict[str, Any], request: PageRequest
-) -> list[dict[str, Any]]:
+def _category_source(payload: Any) -> list[dict[str, Any]]:
     root = object_value(payload, "category response")
     category_list = object_value(root.get("category_list"), "category list")
-    categories = object_list(
+    return object_list(
         category_list.get("categories", []),
         "categories",
         limit=MAX_SNAPSHOT_ITEMS,
     )
+
+
+def _preference_values(level: Any, values: Any) -> tuple[str, list[str]]:
+    if not isinstance(level, str):
+        raise DiscourseReadProviderError("Discourse category preferences are invalid")
+    if not isinstance(values, list):
+        raise DiscourseReadProviderError("Discourse category preferences are invalid")
+    return level, [required_text(value, "category preference ID") for value in values]
+
+
+def _preference_map(identity: dict[str, Any]) -> dict[str, list[str]]:
     preferences = object_value(
         identity.get("category_preferences", {}), "category preferences"
     )
     by_id: dict[str, list[str]] = {}
     for level, values in preferences.items():
-        if not isinstance(level, str) or not isinstance(values, list):
-            raise DiscourseReadProviderError(
-                "Discourse category preferences are invalid"
-            )
-        for value in values:
-            local_id = required_text(value, "category preference ID")
-            by_id.setdefault(local_id, []).append(level)
-    records: list[dict[str, Any]] = []
-    observed_ids: set[str] = set()
-    for item in categories:
-        local_id = positive_id(item.get("id"), "category ID")
-        if local_id is None:
-            raise DiscourseReadProviderError("Discourse category has no stable ID")
-        observed_ids.add(local_id)
-        records.append(
-            {
-                "kind": "category",
-                "remote_id": resource_id(
-                    request.instance_id,
-                    "category",
-                    int(local_id),
-                    "category ID",
-                ),
-                "category_id": local_id,
-                "name": required_text(item.get("name"), "category name"),
-                "slug": optional_text(item.get("slug"), "category slug"),
-                "description": optional_text(
-                    item.get("description_text"), "category description"
-                ),
-                "preference_levels": sorted(by_id.get(local_id, [])),
-                "resolved": True,
-            }
-        )
-    for local_id, levels in sorted(by_id.items()):
-        if local_id in observed_ids:
-            continue
-        records.append(
-            {
-                "kind": "category",
-                "remote_id": resource_id(
-                    request.instance_id,
-                    "category",
-                    int(local_id),
-                    "category preference ID",
-                ),
-                "category_id": local_id,
-                "name": None,
-                "slug": None,
-                "description": None,
-                "preference_levels": sorted(levels),
-                "resolved": False,
-            }
-        )
-    return records
+        label, local_ids = _preference_values(level, values)
+        for local_id in local_ids:
+            by_id.setdefault(local_id, []).append(label)
+    return by_id
 
 
-def _listing_payload(
-    request: PageRequest,
-    records: list[dict[str, Any]],
-    next_position: int | None,
-    *,
-    snapshot: bool | None = None,
+def _resolved_category(
+    item: dict[str, Any], by_id: dict[str, list[str]], request: PageRequest
 ) -> dict[str, Any]:
-    expected_snapshot = STREAMS[request.stream].pagination == "snapshot"
-    if snapshot is not None and snapshot != expected_snapshot:
-        raise DiscourseReadProviderError(
-            "Discourse response snapshot mode is invalid"
-        )
-    is_snapshot = expected_snapshot if snapshot is None else snapshot
-    newest = records[0].get("remote_id") if records else None
-    accepted: list[dict[str, Any]] = []
-    reached = False
-    for record in records:
-        if request.stop_at is not None and record.get("remote_id") == request.stop_at:
-            reached = True
-            break
-        accepted.append(record)
-    if reached:
-        next_position = None
-    complete = reached or next_position is None
+    local_id = positive_id(item.get("id"), "category ID")
+    if local_id is None:
+        raise DiscourseReadProviderError("Discourse category has no stable ID")
     return {
-        "status": 200,
-        "observed_at": observed_at(),
-        "data": accepted,
-        "meta": {
-            "stream": request.stream,
-            "instance_id": request.instance_id,
-            "next_position": next_position,
-            "newest_id": newest,
-            "reached_watermark": reached,
-            "complete": complete,
-            "snapshot": is_snapshot,
-        },
+        "kind": "category",
+        "remote_id": resource_id(
+            request.instance_id,
+            "category",
+            int(local_id),
+            "category ID",
+        ),
+        "category_id": local_id,
+        "name": required_text(item.get("name"), "category name"),
+        "slug": optional_text(item.get("slug"), "category slug"),
+        "description": optional_text(
+            item.get("description_text"), "category description"
+        ),
+        "preference_levels": sorted(by_id.get(local_id, [])),
+        "resolved": True,
     }
 
 
-def _user_actions(api: Api, request: PageRequest) -> ApiResult | dict[str, Any]:
-    action_filter = {
-        "authored_topics": "4",
-        "authored_posts": "5",
-        "likes": "1",
-    }[request.stream]
-    result = api(
-        "/user_actions.json",
-        {
-            "username": request.username,
-            "filter": action_filter,
-            "offset": str(request.position),
-            "limit": str(request.limit),
-        },
-    )
-    if result.status != 200:
-        return result
-    root = object_value(result.payload, "user action response")
-    source = object_list(
-        root.get("user_actions", []), "user actions", limit=request.limit
-    )
-    kind = "topic" if request.stream == "authored_topics" else "post"
-    records = [_action_record(item, request, kind) for item in source]
-    next_position = (
-        request.position + len(source) if len(source) >= request.limit else None
-    )
-    return _listing_payload(request, records, next_position)
+def _unresolved_category(
+    local_id: str, levels: list[str], request: PageRequest
+) -> dict[str, Any]:
+    return {
+        "kind": "category",
+        "remote_id": resource_id(
+            request.instance_id,
+            "category",
+            int(local_id),
+            "category preference ID",
+        ),
+        "category_id": local_id,
+        "name": None,
+        "slug": None,
+        "description": None,
+        "preference_levels": sorted(levels),
+        "resolved": False,
+    }
 
 
-def _bookmarks(api: Api, request: PageRequest) -> ApiResult | dict[str, Any]:
-    result = api(
-        _user_path(request.username, "bookmarks"),
-        {"page": str(request.position), "limit": str(request.limit)},
+def _category_records(
+    payload: Any, identity: dict[str, Any], request: PageRequest
+) -> list[dict[str, Any]]:
+    by_id = _preference_map(identity)
+    records = [
+        _resolved_category(item, by_id, request) for item in _category_source(payload)
+    ]
+    observed_ids = {record["category_id"] for record in records}
+    records.extend(
+        _unresolved_category(local_id, by_id[local_id], request)
+        for local_id in sorted(set(by_id) - observed_ids)
     )
-    if result.status != 200:
-        return result
-    root = object_value(result.payload, "bookmark response")
-    listing = root.get("user_bookmark_list", root)
-    listing_object = object_value(listing, "bookmark list")
-    source = object_list(
-        listing_object.get("bookmarks", []), "bookmarks", limit=request.limit
-    )
-    records = [_bookmark_record(item, request) for item in source]
-    more = listing_object.get("more_bookmarks_url")
-    if more is not None and not isinstance(more, str):
-        raise DiscourseReadProviderError("Discourse bookmark pagination is invalid")
-    has_more = bool(more) if "more_bookmarks_url" in listing_object else len(source) >= request.limit
-    return _listing_payload(
-        request, records, request.position + 1 if has_more else None
-    )
-
-
-def _notifications(api: Api, request: PageRequest) -> ApiResult | dict[str, Any]:
-    result = api(
-        "/notifications.json",
-        {
-            "username": request.username,
-            "offset": str(request.position),
-            "limit": str(request.limit),
-        },
-    )
-    if result.status != 200:
-        return result
-    root = object_value(result.payload, "notification response")
-    source = object_list(
-        root.get("notifications", []), "notifications", limit=request.limit
-    )
-    records = [_notification_record(item, request) for item in source]
-    total = non_negative_integer(
-        root.get("total_rows_notifications"),
-        "notification total",
-        optional=False,
-    )
-    consumed = request.position + len(source)
-    if total is None or consumed > total or (not source and request.position < total):
-        raise DiscourseReadProviderError(
-            "Discourse notification pagination did not advance"
-        )
-    return _listing_payload(request, records, consumed if consumed < total else None)
-
-
-def _messages(
-    api: Api, request: PageRequest, *, sent: bool
-) -> ApiResult | dict[str, Any]:
-    result = api(
-        _message_path(request.username, sent), {"page": str(request.position)}
-    )
-    if result.status != 200:
-        return result
-    root = object_value(result.payload, "private-message response")
-    listing = object_value(root.get("topic_list"), "private-message topic list")
-    source = object_list(
-        listing.get("topics", []),
-        "private-message topics",
-        limit=MAX_MESSAGE_PAGE_ITEMS,
-    )
-    records = [_message_record(item, request) for item in source]
-    more = listing.get("more_topics_url")
-    if more is not None and not isinstance(more, str):
-        raise DiscourseReadProviderError(
-            "Discourse private-message pagination is invalid"
-        )
-    per_page = non_negative_integer(
-        listing.get("per_page"), "private-message page size", optional=True
-    )
-    has_more = bool(more) if "more_topics_url" in listing else len(source) >= (per_page or request.limit)
-    return _listing_payload(
-        request,
-        records,
-        request.position + 1 if has_more else None,
-        snapshot=True,
-    )
+    return records
 
 
 def page(
     api: Api, request: PageRequest, identity: dict[str, Any]
 ) -> ApiResult | dict[str, Any]:
     """Execute exactly one reviewed GET route for the selected stream."""
-    if request.stream not in STREAMS:
-        raise DiscourseReadProviderError("Discourse stream is unsupported")
-    if request.stream in ("authored_topics", "authored_posts", "likes"):
-        return _user_actions(api, request)
-    if request.stream == "bookmarks":
-        return _bookmarks(api, request)
-    if request.stream == "notifications":
-        return _notifications(api, request)
-    if request.stream == "private_messages":
-        return _messages(api, request, sent=False)
-    if request.stream == "sent_messages":
-        return _messages(api, request, sent=True)
-    if request.stream == "reading_state":
-        result = api(_user_path(request.username, "topic-tracking-state"), {})
-        if result.status != 200:
-            return result
-        return _listing_payload(
-            request, _tracking_records(result.payload, request), None, snapshot=True
-        )
-    if request.stream == "groups":
-        return _listing_payload(
-            request, _group_records(identity, request), None, snapshot=True
-        )
-    if request.stream == "category_preferences":
-        result = api("/categories.json", {})
-        if result.status != 200:
-            return result
-        return _listing_payload(
-            request,
-            _category_records(result.payload, identity, request),
-            None,
-            snapshot=True,
-        )
-    raise DiscourseReadProviderError("Discourse stream is unsupported")
+    from _knowledge_social_discourse_pages import page as execute_page
+
+    return execute_page(api, request, identity)
