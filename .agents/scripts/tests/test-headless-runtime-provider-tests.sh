@@ -691,7 +691,7 @@ test_strict_scoped_auth_rejects_malformed_source() {
 test_triage_runtime_directory_is_framework_owned_and_empty() {
 	local runtime_dir=""
 	local managed_root="${TEST_ROOT}/managed-triage-runtime"
-	if ! AIDEVOPS_TEMP_DIR="$managed_root" \
+	if ! AIDEVOPS_SENSITIVE_TEMP_DIR="$managed_root" \
 		_prepare_triage_runtime_directory "runtime_dir"; then
 		print_result "triage runtime directory is isolated from target repository" 1 \
 			"runtime directory preparation failed"

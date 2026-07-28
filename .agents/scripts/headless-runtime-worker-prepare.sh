@@ -268,6 +268,13 @@ _cmd_run_prepare() {
 	else
 		trap "_hrw_non_worker_exit_trap '$session_key'" EXIT
 	fi
+	if ! aidevops_sensitive_temp_root >/dev/null; then
+		if [[ "$role" == "$_HRW_ROLE_WORKER" ]]; then
+			_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_SENSITIVE_TEMP_PREFLIGHT"
+		fi
+		print_error "[lifecycle] sensitive_temp_preflight_failed role=${role} before runtime invocation"
+		return 86
+	fi
 	if [[ "$role" == "$_HRW_ROLE_WORKER" ]] && ! _hrw_verify_dispatch_ownership; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
 		return 1

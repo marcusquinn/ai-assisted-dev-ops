@@ -623,8 +623,8 @@ _attempt_orphan_recovery_pr() {
 #                          → worker reached implementation; escalate normally
 #   no_tool_calls        — tail is non-empty but lacks any tool-use markers
 #                          → worker spawned but stalled before implementation
-#   canary_post_spawn    — tail contains canary diagnostics or t2814 early-exit
-#                          marker → infra failure post-spawn, opus cannot help
+#   canary_post_spawn    — tail contains an explicit canary failure or t2814
+#                          early-exit marker → infra failure, opus cannot help
 #   unknown              — log file missing or empty → no signal available
 #
 # Side-effects (on success):
@@ -705,12 +705,13 @@ _read_worker_log_tail_classified() {
 	#
 	# Markers chosen for stability (not session-format details):
 	#   - `[t2814:early_exit]` — explicit marker emitted by Phase 3 Fix 2
-	#   - `canary` (case-insensitive) — appears in canary diagnostic output
+	#   - explicit canary failure language — successful pre_canary/post_canary
+	#     lifecycle markers are positive evidence and must not match
 	#   - `tool_use|tool-use|"tool":` — OpenCode tool-call frames in JSON
 	#   - `edit|Edit|Write|Bash` — tool names that imply real implementation
 	#   - `git commit|git push` — strongest evidence of implementation
 	if printf '%s' "$_WORKER_LOG_TAIL_CONTENT" \
-		| grep -qE '\[t2814:early_exit\]|[Cc]anary'; then
+		| grep -qE '\[t2814:early_exit\]|[Cc]anary[^[:cntrl:]]*(failed|failure|error|aborted|aborting|returned[[:space:]]+[1-9][0-9]*|exit(_code)?[=:[:space:]]*[1-9][0-9]*)'; then
 		_WORKER_LOG_TAIL_CLASS="canary_post_spawn"
 	elif printf '%s' "$_WORKER_LOG_TAIL_CONTENT" \
 		| grep -qE 'tool_use|tool-use|"tool":|"name":\s*"(Edit|Write|Bash|Read)"|git\s+(commit|push)'; then

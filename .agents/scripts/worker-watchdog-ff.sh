@@ -39,6 +39,13 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+_WWFF_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+if [[ -r "${_WWFF_SCRIPT_DIR}/lib/version.sh" ]]; then
+	# shellcheck source=lib/version.sh
+	source "${_WWFF_SCRIPT_DIR}/lib/version.sh"
+fi
+unset _WWFF_SCRIPT_DIR
+
 # =============================================================================
 # Fast-Fail State Helpers
 # =============================================================================
@@ -170,6 +177,7 @@ except Exception: print(-1)
 #   $8 - reason
 #   $9 - retry_after
 #   $10 - new_backoff
+#   $11 - crash_type
 # Returns: 0 on success, releases lock on failure
 #######################################
 _ff_write_state_entry() {
@@ -183,6 +191,11 @@ _ff_write_state_entry() {
 	local reason="$8"
 	local retry_after="$9"
 	local new_backoff="${10}"
+	local crash_type="${11:-}"
+	local aidevops_version="${AIDEVOPS_UNKNOWN_VERSION:-unknown}"
+	if declare -F aidevops_find_version >/dev/null 2>&1; then
+		aidevops_version=$(aidevops_find_version 2>/dev/null || printf '%s' "${AIDEVOPS_UNKNOWN_VERSION:-unknown}")
+	fi
 
 	local updated_state
 	updated_state=$(printf '%s' "$state" | jq \
@@ -192,7 +205,9 @@ _ff_write_state_entry() {
 		--arg reason "$reason" \
 		--argjson retry_after "$retry_after" \
 		--argjson backoff_secs "$new_backoff" \
-		'.[$k] = {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs}' 2>/dev/null) || {
+		--arg crash_type "$crash_type" \
+		--arg aidevops_version "$aidevops_version" \
+		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' 2>/dev/null) || {
 		rmdir "$lock_dir" 2>/dev/null || true
 		return 1
 	}
@@ -317,7 +332,7 @@ _watchdog_record_failure_and_escalate() {
 
 	# Write updated state and release lock
 	if ! _ff_write_state_entry "$state" "$state_file" "$state_dir" "$lock_dir" \
-		"$key" "$new_count" "$now" "$reason" "$retry_after" "$new_backoff"; then
+		"$key" "$new_count" "$now" "$reason" "$retry_after" "$new_backoff" "$crash_type"; then
 		log_msg "Fast-fail write failed for #${issue_number} (${repo_slug}); skipping escalation"
 		rmdir "$lock_dir" 2>/dev/null || true
 		return 0

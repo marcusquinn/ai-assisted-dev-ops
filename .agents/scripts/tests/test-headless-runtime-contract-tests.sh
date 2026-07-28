@@ -119,24 +119,83 @@ test_launch_helpers_tolerate_unset_state_under_nounset() {
 	return 0
 }
 
-test_runtime_temp_files_use_managed_workspace() {
-	local AIDEVOPS_TEMP_DIR="${HOME}/.aidevops/.agent-workspace/tmp"
-	local temp_file=""
-	local expected_root=""
-	temp_file=$(_create_headless_runtime_temp_file) || {
-		print_result "runtime temp files use managed aidevops workspace" 1 "Could not create runtime temp file"
+runtime_temp_test_mode() {
+	local path="$1"
+	if stat -f '%Lp' "$path" >/dev/null 2>&1; then
+		stat -f '%Lp' "$path"
 		return 0
-	}
-	expected_root=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P) || return 1
+	fi
+	stat -c '%a' "$path"
+	return 0
+}
 
-	if [[ "$temp_file" == "${expected_root}/"* && -f "$temp_file" ]]; then
+test_runtime_temp_files_bypass_group_writable_workspace() {
+	local workspace_root="${HOME}/.aidevops/.agent-workspace"
+	local detail=""
+	mkdir -p "${workspace_root}/tmp"
+	chmod 775 "$workspace_root"
+	chmod 700 "${workspace_root}/tmp"
+
+	if detail=$(
+		unset AIDEVOPS_SENSITIVE_TEMP_DIR
+		export AIDEVOPS_TEMP_DIR="${workspace_root}/tmp"
+		local temp_file="" sensitive_root=""
+		temp_file=$(_create_headless_runtime_temp_file) || exit 1
+		sensitive_root=$(aidevops_sensitive_temp_root) || exit 1
+		[[ "$temp_file" == "${sensitive_root}/"* && -f "$temp_file" ]] || exit 2
+		[[ "$sensitive_root" != "${workspace_root}/"* ]] || exit 3
+		[[ "$(runtime_temp_test_mode "$sensitive_root")" == "700" ]] || exit 4
+		[[ "$(runtime_temp_test_mode "$temp_file")" == "600" ]] || exit 5
 		rm -f "$temp_file"
-		print_result "runtime temp files use managed aidevops workspace" 0
+		printf 'root=%s workspace_mode=%s\n' "$sensitive_root" "$(runtime_temp_test_mode "$workspace_root")"
+	); then
+		print_result "runtime temp creation bypasses a group-writable aidevops workspace" 0
 		return 0
 	fi
 
-	rm -f "$temp_file"
-	print_result "runtime temp files use managed aidevops workspace" 1 "Unexpected path: $temp_file"
+	print_result "runtime temp creation bypasses a group-writable aidevops workspace" 1 \
+		"${detail:-Could not create a private runtime temp file}"
+	return 0
+}
+
+test_sensitive_temp_preflight_aborts_before_worker_ownership() {
+	local unsafe_parent="${TEST_ROOT}/unsafe-sensitive-parent"
+	local ownership_marker="${TEST_ROOT}/ownership-called"
+	local detail=""
+	mkdir -p "$unsafe_parent"
+	chmod 777 "$unsafe_parent"
+
+	detail=$(
+		exec 2>&1
+		export AIDEVOPS_SENSITIVE_TEMP_DIR="${unsafe_parent}/nested"
+		_acquire_session_lock() { return 0; }
+		_exit_trap_handler() { return 0; }
+		aidevops_runtime_bundle_lease_release() { return 0; }
+		_hrw_verify_dispatch_ownership() {
+			: >"$ownership_marker"
+			return 0
+		}
+		_hrw_claim_worker_worktree() {
+			: >"$ownership_marker"
+			return 0
+		}
+		local prepare_status=0
+		_cmd_run_prepare "issue-28796" "$TEST_ROOT" "worker" || prepare_status=$?
+		printf 'status=%s reason=%s launch_started=%s\n' \
+			"$prepare_status" "${_WORKER_PRELAUNCH_FAILURE_REASON:-}" \
+			"${_WORKER_RUNTIME_LAUNCH_STARTED:-}"
+	)
+
+	if [[ "$detail" == *"status=86 reason=worker_sensitive_temp_preflight_failed launch_started=0"* && \
+		"$detail" == *"[sensitive-temp] rejected component="* && \
+		"$detail" == *" owner_uid="* && "$detail" == *" mode="* && \
+		! -e "$ownership_marker" ]]; then
+		print_result "sensitive-temp preflight aborts before worker ownership or runtime launch" 0
+		return 0
+	fi
+
+	print_result "sensitive-temp preflight aborts before worker ownership or runtime launch" 1 \
+		"detail=${detail:-<empty>} ownership_called=$([[ -e "$ownership_marker" ]] && printf yes || printf no)"
 	return 0
 }
 

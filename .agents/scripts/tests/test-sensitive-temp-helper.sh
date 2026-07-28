@@ -9,8 +9,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SENSITIVE_TEMP_HELPER="${SCRIPT_DIR}/../sensitive-temp-helper.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/sensitive-temp-helper-XXXXXX")"
-AIDEVOPS_TEMP_DIR="${TEST_ROOT}/managed"
-export AIDEVOPS_TEMP_DIR
+AIDEVOPS_SENSITIVE_TEMP_DIR="${TEST_ROOT}/managed"
+export AIDEVOPS_SENSITIVE_TEMP_DIR
 
 # shellcheck source=../sensitive-temp-helper.sh
 source "$SENSITIVE_TEMP_HELPER"
@@ -70,7 +70,7 @@ managed_dir=$(aidevops_sensitive_temp_create_dir "test-private") || \
 	fail "managed root mode is not 700"
 [[ "$(file_owner_uid "$MANAGED_ROOT")" == "$(id -u)" ]] || \
 	fail "managed root is not owned by the current user"
-expected_physical_root=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P) || \
+expected_physical_root=$(cd "$AIDEVOPS_SENSITIVE_TEMP_DIR" && pwd -P) || \
 	fail "failed to resolve expected managed root"
 [[ "$MANAGED_ROOT" == "$expected_physical_root" ]] || \
 	fail "managed root was not canonicalized physically"
@@ -84,7 +84,7 @@ symlink_root="${TEST_ROOT}/symlink-root"
 mkdir -p "$symlink_target"
 chmod 700 "$symlink_target"
 ln -s "$symlink_target" "$symlink_root"
-if AIDEVOPS_TEMP_DIR="$symlink_root" aidevops_sensitive_temp_root >/dev/null 2>&1; then
+if AIDEVOPS_SENSITIVE_TEMP_DIR="$symlink_root" aidevops_sensitive_temp_root >/dev/null 2>&1; then
 	fail "sensitive root accepted an exact symlink"
 fi
 
@@ -92,7 +92,7 @@ physical_parent="${TEST_ROOT}/physical-parent"
 logical_parent="${TEST_ROOT}/logical-parent"
 mkdir -p "$physical_parent"
 ln -s "$physical_parent" "$logical_parent"
-resolved_nested_root=$(AIDEVOPS_TEMP_DIR="${logical_parent}/nested" aidevops_sensitive_temp_root) || \
+resolved_nested_root=$(AIDEVOPS_SENSITIVE_TEMP_DIR="${logical_parent}/nested" aidevops_sensitive_temp_root) || \
 	fail "sensitive root could not canonicalize a symlinked ancestor"
 expected_nested_root=$(cd "${physical_parent}/nested" && pwd -P) || \
 	fail "failed to resolve canonical nested root"
@@ -103,14 +103,22 @@ expected_nested_root=$(cd "${physical_parent}/nested" && pwd -P) || \
 unsafe_parent="${TEST_ROOT}/unsafe-parent"
 mkdir -p "$unsafe_parent"
 chmod 777 "$unsafe_parent"
-if AIDEVOPS_TEMP_DIR="${unsafe_parent}/nested" aidevops_sensitive_temp_root >/dev/null 2>&1; then
+unsafe_parent=$(cd "$unsafe_parent" && pwd -P) || \
+	fail "failed to canonicalize unsafe ancestor fixture"
+unsafe_output=""
+if unsafe_output=$(AIDEVOPS_SENSITIVE_TEMP_DIR="${unsafe_parent}/nested" aidevops_sensitive_temp_root 2>&1); then
 	fail "sensitive root accepted a non-sticky writable ancestor"
 fi
+[[ "$unsafe_output" == *"component=${unsafe_parent}"* && \
+	"$unsafe_output" == *"owner_uid=$(id -u)"* && \
+	"$unsafe_output" == *"mode="*"777"* && \
+	"$unsafe_output" == *"reason=writable_non_sticky_ancestor"* ]] || \
+	fail "unsafe ancestor diagnostic omitted component, owner, mode, or invariant: $unsafe_output"
 
 trusted_sticky_parent="${TEST_ROOT}/trusted-sticky-parent"
 mkdir -p "$trusted_sticky_parent"
 chmod 1777 "$trusted_sticky_parent"
-AIDEVOPS_TEMP_DIR="${trusted_sticky_parent}/nested" aidevops_sensitive_temp_root >/dev/null || \
+AIDEVOPS_SENSITIVE_TEMP_DIR="${trusted_sticky_parent}/nested" aidevops_sensitive_temp_root >/dev/null || \
 	fail "sensitive root rejected a current-user-owned sticky ancestor"
 
 foreign_sticky_parent="${TEST_ROOT}/foreign-sticky-parent"
@@ -131,7 +139,7 @@ stat() {
 	command stat "$@"
 	return $?
 }
-if AIDEVOPS_TEMP_DIR="${foreign_sticky_parent}/nested" aidevops_sensitive_temp_root >/dev/null 2>&1; then
+if AIDEVOPS_SENSITIVE_TEMP_DIR="${foreign_sticky_parent}/nested" aidevops_sensitive_temp_root >/dev/null 2>&1; then
 	unset -f stat
 	fail "sensitive root accepted an attacker-owned sticky ancestor"
 fi
@@ -141,7 +149,7 @@ chmod_failure_root="${TEST_ROOT}/chmod-failure"
 mkdir -p "$chmod_failure_root"
 chmod 755 "$chmod_failure_root"
 chmod() { return 1; }
-if AIDEVOPS_TEMP_DIR="$chmod_failure_root" aidevops_sensitive_temp_root >/dev/null 2>&1; then
+if AIDEVOPS_SENSITIVE_TEMP_DIR="$chmod_failure_root" aidevops_sensitive_temp_root >/dev/null 2>&1; then
 	unset -f chmod
 	fail "sensitive root ignored permission-hardening failure"
 fi

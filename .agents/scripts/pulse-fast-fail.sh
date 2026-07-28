@@ -643,7 +643,7 @@ _fast_fail_record_locked() {
 		--argjson backoff_secs "$new_backoff" \
 		--arg crash_type "${crash_type:-}" \
 		--arg aidevops_version "$aidevops_version" \
-		'.[$k] = {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version}' 2>/dev/null) || return 0
+		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' 2>/dev/null) || return 0
 
 	# Flag for enrichment on first non-rate-limit failure: a thinking-tier worker
 	# will analyze the issue and add implementation guidance before re-dispatch.

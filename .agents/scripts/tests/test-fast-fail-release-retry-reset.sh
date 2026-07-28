@@ -59,6 +59,21 @@ source "${SCRIPTS_DIR}/pulse-fast-fail.sh" >/dev/null 2>&1 || {
 	printf 'FATAL Could not source pulse-fast-fail.sh\n'
 	exit 1
 }
+# shellcheck source=../headless-runtime-failure.sh
+source "${SCRIPTS_DIR}/headless-runtime-failure.sh" >/dev/null 2>&1 || {
+	printf 'FATAL Could not source headless-runtime-failure.sh\n'
+	exit 1
+}
+# shellcheck source=../worker-watchdog-ff.sh
+source "${SCRIPTS_DIR}/worker-watchdog-ff.sh" >/dev/null 2>&1 || {
+	printf 'FATAL Could not source worker-watchdog-ff.sh\n'
+	exit 1
+}
+
+aidevops_find_version() {
+	printf '3.14.64\n'
+	return 0
+}
 
 write_entry() {
 	local issue="$1"
@@ -114,6 +129,45 @@ if [[ "$recorded_version" == "3.14.64" ]]; then
 	pass "fast_fail_record stores aidevops version metadata"
 else
 	fail "fast_fail_record stores aidevops version metadata" "version=${recorded_version}"
+fi
+
+now=$(date +%s)
+printf '{"owner/repo/126":{"count":1,"ts":%s,"reason":"old","retry_after":0,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63","release_retry_reset_version":"3.14.64","release_retry_reset_ts":42,"custom_field":"keep"}}\n' \
+	"$now" >"$FAST_FAIL_STATE_FILE"
+_fast_fail_record_locked 126 owner/repo worker_noop_zero_output anthropic no_work
+if jq -e '."owner/repo/126" | .count == 2 and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_ts == 42 and .custom_field == "keep"' \
+	"$FAST_FAIL_STATE_FILE" >/dev/null 2>&1; then
+	pass "pulse fast-fail writer preserves release-reset metadata"
+else
+	fail "pulse fast-fail writer preserves release-reset metadata" \
+		"entry=$(jq -c '.\"owner/repo/126\"' "$FAST_FAIL_STATE_FILE")"
+fi
+
+worker_state="${TMP}/worker-fast-fail.json"
+printf '{"owner/repo/127":{"count":1,"ts":1,"reason":"old","retry_after":0,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63","release_retry_reset_version":"3.14.64","release_retry_reset_from":"3.14.63","custom_field":"keep"}}\n' >"$worker_state"
+_fast_fail_write_state "$worker_state" "$TMP" "owner/repo/127" 2 "$now" worker_failed "$future" 1200 no_work
+if jq -e '."owner/repo/127" | .count == 2 and .crash_type == "no_work" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_from == "3.14.63" and .custom_field == "keep"' \
+	"$worker_state" >/dev/null 2>&1; then
+	pass "worker fast-fail writer preserves version and reset metadata"
+else
+	fail "worker fast-fail writer preserves version and reset metadata" \
+		"entry=$(jq -c '.\"owner/repo/127\"' "$worker_state")"
+fi
+
+watchdog_state="${TMP}/watchdog-fast-fail.json"
+watchdog_lock="${watchdog_state}.lockdir"
+mkdir "$watchdog_lock"
+printf '{"owner/repo/128":{"count":1,"ts":1,"reason":"old","retry_after":0,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63","release_retry_reset_version":"3.14.64","release_retry_reset_ts":84,"custom_field":"keep"}}\n' >"$watchdog_state"
+watchdog_json=$(<"$watchdog_state")
+_ff_write_state_entry "$watchdog_json" "$watchdog_state" "$TMP" "$watchdog_lock" \
+	"owner/repo/128" 2 "$now" stall "$future" 1200 overwhelmed
+rmdir "$watchdog_lock"
+if jq -e '."owner/repo/128" | .count == 2 and .crash_type == "overwhelmed" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_ts == 84 and .custom_field == "keep"' \
+	"$watchdog_state" >/dev/null 2>&1; then
+	pass "watchdog fast-fail writer preserves version and reset metadata"
+else
+	fail "watchdog fast-fail writer preserves version and reset metadata" \
+		"entry=$(jq -c '.\"owner/repo/128\"' "$watchdog_state")"
 fi
 
 printf '\n'

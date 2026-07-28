@@ -16,7 +16,7 @@
 #   2. Classification correctness across the 4 documented log shapes:
 #        a. real_coding         — tool-use frames present → no reclass
 #        b. no_tool_calls       — log content but no tool markers → reclass
-#        c. canary_post_spawn   — canary diagnostics OR t2814 marker → reclass
+#        c. canary_post_spawn   — explicit canary failure OR t2814 marker → reclass
 #        d. unknown             — missing log → fall-through (no reclass)
 #   3. _maybe_reclassify_worker_failed_as_no_work — fires on the expected
 #      reason buckets (worker_failed, premature_exit, worker_noop_zero_output)
@@ -202,7 +202,7 @@ test_classify_canary_post_spawn() {
 }
 
 test_classify_canary_text_marker() {
-	# Canary text marker variant (no t2814 marker, just canary in text)
+	# Explicit canary failure variant (no t2814 marker).
 	_run_classifier_with_log 90004 "test/repo-canary2" '[2026-04-25T00:00:00Z] running canary
 [2026-04-25T00:00:01Z] canary returned 1, aborting'
 	if [[ "$_WORKER_LOG_TAIL_CLASS" == "canary_post_spawn" ]]; then
@@ -210,6 +210,20 @@ test_classify_canary_text_marker() {
 	else
 		print_result "classify: canary_post_spawn (canary text marker)" 1 \
 			"Expected canary_post_spawn, got: $_WORKER_LOG_TAIL_CLASS"
+	fi
+	return 0
+}
+
+test_classify_successful_canary_lifecycle() {
+	_run_classifier_with_log 90006 "test/repo-canary-success" '[lifecycle] pre_canary session=issue-90006 model=openai/test
+[lifecycle] post_canary session=issue-90006 model=openai/test
+[lifecycle] pre_worker_prepare session=issue-90006
+[lifecycle] post_worker_prepare session=issue-90006'
+	if [[ "$_WORKER_LOG_TAIL_CLASS" == "no_tool_calls" ]]; then
+		print_result "classify: successful canary lifecycle is not a canary failure" 0
+	else
+		print_result "classify: successful canary lifecycle is not a canary failure" 1 \
+			"Expected no_tool_calls, got: $_WORKER_LOG_TAIL_CLASS"
 	fi
 	return 0
 }
@@ -402,6 +416,7 @@ test_classify_real_coding
 test_classify_no_tool_calls
 test_classify_canary_post_spawn
 test_classify_canary_text_marker
+test_classify_successful_canary_lifecycle
 test_classify_unknown_missing_log
 
 # Reclassification decision matrix

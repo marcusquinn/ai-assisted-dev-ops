@@ -21,7 +21,8 @@ TESTS_FAILED=0
 
 HOME="${TEST_ROOT}/home"
 AIDEVOPS_TEMP_DIR="${TEST_ROOT}/managed-temp"
-export AIDEVOPS_TEMP_DIR
+AIDEVOPS_SENSITIVE_TEMP_DIR="$AIDEVOPS_TEMP_DIR"
+export AIDEVOPS_TEMP_DIR AIDEVOPS_SENSITIVE_TEMP_DIR
 mkdir -p "${HOME}/.aidevops/logs" "$AIDEVOPS_TEMP_DIR" \
 	"${TEST_ROOT}/repo/src" "${TEST_ROOT}/stubs"
 printf '%s\n' 'Safe EVIDENCE_FILE_SENTINEL' >"${TEST_ROOT}/repo/src/evidence.sh"

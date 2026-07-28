@@ -1140,6 +1140,10 @@ _fast_fail_write_state() {
 	local retry_after="$7"
 	local new_backoff="$8"
 	local crash_type="$9"
+	local aidevops_version="${AIDEVOPS_UNKNOWN_VERSION:-unknown}"
+	if declare -F aidevops_find_version >/dev/null 2>&1; then
+		aidevops_version=$(aidevops_find_version 2>/dev/null || printf '%s' "${AIDEVOPS_UNKNOWN_VERSION:-unknown}")
+	fi
 	local updated_state=""
 	if [[ -f "$state_file" ]]; then
 		updated_state=$(jq --arg k "$key" \
@@ -1149,7 +1153,8 @@ _fast_fail_write_state() {
 			--argjson retry_after "$retry_after" \
 			--argjson backoff_secs "$new_backoff" \
 			--arg crash_type "${crash_type:-}" \
-			'.[$k] = {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type}' \
+			--arg aidevops_version "$aidevops_version" \
+			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' \
 			"$state_file") || {
 			echo "Error: Failed to update $state_file" >&2
 			updated_state=""
@@ -1162,7 +1167,8 @@ _fast_fail_write_state() {
 			--argjson retry_after "$retry_after" \
 			--argjson backoff_secs "$new_backoff" \
 			--arg crash_type "${crash_type:-}" \
-			'.[$k] = {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type}' \
+			--arg aidevops_version "$aidevops_version" \
+			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' \
 			2>/dev/null) || updated_state=""
 	fi
 	if [[ -z "$updated_state" ]]; then

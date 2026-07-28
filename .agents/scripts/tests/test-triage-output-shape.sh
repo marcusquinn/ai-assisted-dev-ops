@@ -70,6 +70,7 @@ setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
 	export HOME="${TEST_ROOT}/home"
 	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/managed-temp"
+	export AIDEVOPS_SENSITIVE_TEMP_DIR="$AIDEVOPS_TEMP_DIR"
 	mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/agents/scripts" \
 		"$AIDEVOPS_TEMP_DIR"
 	AIDEVOPS_TEMP_DIR=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P)
@@ -108,7 +109,7 @@ SIG_STUB
 
 teardown_test_env() {
 	export HOME="${ORIGINAL_HOME}"
-	unset AIDEVOPS_TEMP_DIR TRIAGE_SIGNATURE_HELPER TRIAGE_TEST_RUNTIME_EXIT_STATUS \
+	unset AIDEVOPS_TEMP_DIR AIDEVOPS_SENSITIVE_TEMP_DIR TRIAGE_SIGNATURE_HELPER TRIAGE_TEST_RUNTIME_EXIT_STATUS \
 		TRIAGE_TEST_SIGNATURE_FAILURE 2>/dev/null || true
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
