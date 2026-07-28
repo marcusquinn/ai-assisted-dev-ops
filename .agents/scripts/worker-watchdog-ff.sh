@@ -40,6 +40,7 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 fi
 
 _WWFF_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_WWFF_SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && _WWFF_SCRIPT_DIR="."
 if [[ -r "${_WWFF_SCRIPT_DIR}/lib/version.sh" ]]; then
 	# shellcheck source=lib/version.sh
 	source "${_WWFF_SCRIPT_DIR}/lib/version.sh"

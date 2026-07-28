@@ -149,11 +149,18 @@ test_sensitive_temp_preflight_skips_fast_fail_state() {
 
 	_fast_fail_record_locked "4004" "exampleorg/examplerepo" \
 		"worker_sensitive_temp_preflight_failed" "anthropic" "no_work"
+	_log_no_work_skip_escalation "4004" "exampleorg/examplerepo" "3" \
+		"worker_sensitive_temp_preflight_failed" >/dev/null 2>&1
 
 	local count=""
 	count=$(jq -r '."exampleorg/examplerepo/4004".count' "$FAST_FAIL_STATE_FILE" 2>/dev/null) || count=""
 	if [[ "$count" != "2" ]]; then
 		fail "sensitive-temp preflight skip preserves counter" "count: ${count:-unset}"
+		return 0
+	fi
+	if [[ "$BREAKER_CALLS" -ne 0 ]]; then
+		fail "sensitive-temp preflight skip avoids tier escalation" \
+			"breaker payload: ${LAST_BREAKER_PAYLOAD}"
 		return 0
 	fi
 	if ! grep -q 'skipped launch/preflight reason=worker_sensitive_temp_preflight_failed' "$LOGFILE" 2>/dev/null; then

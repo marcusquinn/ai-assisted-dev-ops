@@ -87,6 +87,21 @@ write_entry() {
 
 future=$(( $(date +%s) + 3600 ))
 
+if (
+	cd "$SCRIPTS_DIR"
+	export PATH="${SCRIPTS_DIR}:${PATH}"
+	unset SCRIPT_DIR _WORKER_WATCHDOG_FF_LOADED
+	unset -f aidevops_find_version
+	# shellcheck source=../worker-watchdog-ff.sh
+	source worker-watchdog-ff.sh
+	declare -F aidevops_find_version >/dev/null 2>&1 && \
+		[[ "$(aidevops_find_version)" != "unknown" ]]
+); then
+	pass "watchdog loads version metadata when sourced through PATH"
+else
+	fail "watchdog loads version metadata when sourced through PATH"
+fi
+
 if _ff_version_gt "v3.14.64" "3.14.63" && ! _ff_version_gt "3.14.64" "3.14.64" && ! _ff_version_gt "3.14.63" "v3.14.64"; then
 	pass "pure bash version comparison handles prefixed aidevops versions"
 else
