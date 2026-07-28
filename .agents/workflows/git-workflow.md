@@ -49,6 +49,9 @@ canonical-recovery-helper.sh fast-forward-current \
   --confirm FAST_FORWARD_CANONICAL_BRANCH
 ```
 
+The runtime adds the deployed framework scripts directory to `PATH`; invoking
+the helper by name keeps the command portable and parseable by command policy.
+
 The asserted branch must equal the branch resolved from registered config,
 committed project config, or `origin/HEAD`. The helper refuses arbitrary branch
 names, linked/detached checkouts, divergence, concurrent recovery, stale refs,
