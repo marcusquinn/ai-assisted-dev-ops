@@ -1692,7 +1692,7 @@ migrate_custom_model_routing_reasoning_defaults() {
 		.tiers.simple.reasoning.openai = "medium" |
 		.tiers.thinking = (.tiers.thinking // {}) |
 		.tiers.thinking.reasoning = (.tiers.thinking.reasoning // {}) |
-		.tiers.thinking.reasoning.openai = "max"
+		.tiers.thinking.reasoning.openai = "high"
 	' "$custom_table" >"$temp_file"; then
 		print_warning "Failed to update custom model routing table structure in $custom_table; t18137 migration will retry"
 		rm -f "$temp_file"

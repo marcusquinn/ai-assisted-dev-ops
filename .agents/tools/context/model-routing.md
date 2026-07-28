@@ -81,7 +81,8 @@ is always denied because secrets must flow through secret tooling, not prompts.
 - **Workers**: Round-robin across canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
 - **Current default mapping**: The active routing table currently maps `simple` to OpenAI Terra then Anthropic Haiku, `standard` to OpenAI Sol then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
-- **Reasoning mapping**: The same routing table currently maps OpenAI `simple`, `standard`, and `thinking` to `medium`, `medium`, and `max`. Other providers use their provider/runtime defaults unless configured explicitly.
+- **Reasoning mapping**: The same routing table currently maps OpenAI `simple`, `standard`, and `thinking` to `medium`, `medium`, and `high`. Other providers use their provider/runtime defaults unless configured explicitly.
+- **Thinking-tier balance**: `high` is the shared Sol default for complex work. Explicit `max` and `xhigh` overrides remain available when a task justifies higher effort.
 - **OpenAI tier rationale**: Terra costs $2.50/M input and $15/M output and is competitive with GPT-5.5, making it the conservative choice for prescriptive/simple work. Sol costs $5/M input and $30/M output and is OpenAI's recommended flagship coding model.
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
 - **GPT-5.5 standard workers**: aidevops omits env-derived standard-tier variants so OpenCode sends no explicit thinking override. Explicit CLI `--variant` still wins.
@@ -115,7 +116,8 @@ Example hard pin:
 export AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST="openai"
 ```
 
-Example reasoning effort override:
+Example reasoning effort override, including an explicit opt-in above the shared
+thinking default:
 
 ```bash
 export AIDEVOPS_HEADLESS_VARIANT_STANDARD="high"
