@@ -14,6 +14,7 @@ LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 META_HELPER="${SCRIPT_DIR}/knowledge_social_meta.py"
 MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
 DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
+NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -102,6 +103,12 @@ Discourse synchronization:
   exact read scope. Installation fingerprints namespace account and resource IDs
   without exposing private hosts. --budget is 3-1000 and --page-size is 1-20.
 
+NodeBB synchronization:
+  sync-nodebb binds a dedicated user bearer token to GET /api/self and one exact
+  HTTPS installation before every bounded core read. Master tokens, admin routes,
+  plugin routes, redirects, and mutations are unreachable. Installation-local
+  IDs are keyed and namespaced. --budget is 3-1000 and --page-size is 1-50.
+
 EOF
 	return 0
 }
@@ -144,6 +151,10 @@ Usage:
   knowledge-social-helper.sh sync-discourse [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-20] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-nodebb [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-50] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
@@ -363,6 +374,9 @@ main() {
 		;;
 	sync-discourse)
 		run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1
+		;;
+	sync-nodebb)
+		run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1
 		;;
 	query | annotate)
 		require_runtime || return 1
