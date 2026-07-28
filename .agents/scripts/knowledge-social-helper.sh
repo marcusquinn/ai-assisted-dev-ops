@@ -12,6 +12,7 @@ REDDIT_HELPER="${SCRIPT_DIR}/knowledge_social_reddit.py"
 YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
 LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 META_HELPER="${SCRIPT_DIR}/knowledge_social_meta.py"
+MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -103,6 +104,10 @@ usage_commands() {
 Usage:
   knowledge-social-helper.sh provision [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh import-archive [--base PATH] [--alias ALIAS] --archive FILE
+  knowledge-social-helper.sh import-medium-archive [--base PATH] [--alias ALIAS] \
+    --archive FILE --connection-id ID --account-id MEDIUM_USER_ID \
+    --exported-at ISO_TIME [--username HANDLE] [--max-items N] [--max-bytes N] \
+    [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh rebuild [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh coverage [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh query [--base PATH] [--alias ALIAS] \
@@ -180,6 +185,14 @@ Archive format:
   objects, activities, media, and coverage. IDs must be provider-stable IDs;
   connection_id must be an opaque local ID. Unknown provider fields belong in
   provider_json objects. The original canonical payload is stored immutably.
+
+Medium account export:
+  import-medium-archive accepts only a native HTML ZIP export with exactly one
+  profile/profile.html and a matching explicit Medium user ID. It performs no
+  provider requests, extracts no files, rejects unsafe ZIP members and
+  credential-shaped HTML attributes or URL queries, applies item/byte limits,
+  and stores the original ZIP content-addressed before committing normalized
+  rows and coverage.
 
 EOF
 	usage_sync
@@ -266,6 +279,16 @@ require_runtime() {
 	return 0
 }
 
+run_medium_import() {
+	require_runtime || return 1
+	if [[ ! -r "$MEDIUM_HELPER" ]]; then
+		printf 'ERROR: Medium archive adapter missing: %s\n' "$MEDIUM_HELPER" >&2
+		return 1
+	fi
+	python3 "$MEDIUM_HELPER" "$@" || return 1
+	return 0
+}
+
 main() {
 	local subcommand="${1:-help}"
 	if [[ $# -gt 0 ]]; then
@@ -275,6 +298,9 @@ main() {
 	provision | import-archive | rebuild | coverage)
 		require_runtime || return 1
 		python3 "$PYTHON_HELPER" "$subcommand" "$@" || return 1
+		;;
+	import-medium-archive)
+		run_medium_import "$@" || return 1
 		;;
 	sync-x)
 		require_runtime || return 1
