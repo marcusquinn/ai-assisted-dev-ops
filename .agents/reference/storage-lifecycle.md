@@ -72,6 +72,24 @@ Reference, lease, recovery, and audit checks remain hard vetoes.
 The inventory is intentionally conservative. A child implementation may split a
 row when one path contains artifacts with different owners or safety classes.
 
+### Runtime Bundle Retention Overrides
+
+The 30-day, 30-bundle, and 8 GiB runtime-bundle limits are project defaults, not
+universal recommendations. Operators can set integer environment overrides for
+the update or setup process without changing framework policy:
+
+```bash
+AIDEVOPS_RUNTIME_BUNDLE_RETENTION_SECONDS=604800 \
+AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT=5 \
+AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES=1073741824 \
+aidevops update
+```
+
+Invalid values fall back to the project defaults. These remain soft candidate
+limits: the active bundle, previous rollback bundle, Pulse-pinned bundle, and
+every live-leased bundle remain protected even when an override is lower than
+the protected bundle count or bytes.
+
 ### Runtime Bundle Dependency Decision
 
 Runtime activation continues to verify the OpenCode host's existing dependency
