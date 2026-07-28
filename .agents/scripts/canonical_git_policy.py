@@ -61,9 +61,12 @@ def _is_isolated_prospective_merge_tree(
     args: list[str],
 ) -> bool:
     """Allow the full-loop read probe only in its private temporary bare repo."""
-    if subcommand != "merge-tree" or len(args) != 3 or args[0] != "--write-tree":
-        return False
-    if not all(re.fullmatch(r"[0-9a-fA-F]{40,64}", value) for value in args[1:]):
+    if (
+        subcommand != "merge-tree"
+        or len(args) != 3
+        or args[0] != "--write-tree"
+        or not all(re.fullmatch(r"[0-9a-fA-F]{40,64}", value) for value in args[1:])
+    ):
         return False
     if (
         _git_output(
