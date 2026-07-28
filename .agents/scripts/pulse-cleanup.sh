@@ -393,10 +393,10 @@ _pc_recent_worker_metric_exists() {
 # see each fallback. Tested by test-pulse-cleanup-config-defaults.sh.
 
 #######################################
-# Move a path to system trash before permanent deletion (GH#19042).
+# Move a path to system trash without a permanent-delete fallback (GH#19042).
 # Mirrors worktree-helper.sh trash_path() so Pass 2 orphan cleanup gets
 # the same recoverability as Pass 1 (which calls worktree-helper.sh clean).
-# Prefers: trash CLI (macOS Homebrew), gio trash (Linux), rm -rf fallback.
+# Prefers: trash CLI (macOS Homebrew), then gio trash (Linux).
 # Args: $1=path to trash
 # Returns 0 on success, 1 on failure.
 #
@@ -424,7 +424,6 @@ _trash_or_remove() {
 	if command -v gio >/dev/null 2>&1; then
 		gio trash "$target" 2>/dev/null && return 0
 	fi
-	rm -rf "$target" 2>/dev/null && return 0
 	return 1
 }
 
@@ -1350,10 +1349,7 @@ _pc_handle_generated_clean_cruft_worktree() {
 		return $?
 	fi
 	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing detached generated worktree — clean auto/review cruft older than ${archive_secs}s" >>"$LOGFILE"
-	if ! remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$removal_reason" "$audit_context"; then
-		git -C "$rp_age" worktree remove --force "$wt_path_age" 2>/dev/null || return 1
-		log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" "$removal_reason" "permanent" "$audit_context"
-	fi
+	remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$removal_reason" "$audit_context" || return 1
 	git -C "$rp_age" worktree prune 2>/dev/null || true
 	unregister_worktree "$wt_path_age" 2>/dev/null || true
 	return 0
@@ -1503,14 +1499,7 @@ _pc_permanently_remove_eligible_orphan() {
 	if [[ "$reason" == *"crashed worker"* && -n "$wt_branch_age" && -n "$repo_slug_age" ]]; then
 		_record_orphan_crash_classification "$wt_branch_age" "$dirty_count" "$repo_slug_age"
 	fi
-	if ! remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE" "$audit_context"; then
-		if git -C "$rp_age" worktree remove --force "$wt_path_age" 2>/dev/null; then
-			log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-				"$_PC_REASON_AGE_ELIGIBLE" "permanent" "$audit_context"
-		else
-			return 1
-		fi
-	fi
+	remove_worktree_path_permanently "$wt_path_age" "$_WTAR_PC_CALLER" "$_PC_REASON_AGE_ELIGIBLE" "$audit_context" || return 1
 	git -C "$rp_age" worktree prune 2>/dev/null || true
 	unregister_worktree "$wt_path_age" 2>/dev/null || true
 	if [[ -n "$wt_branch_age" ]]; then

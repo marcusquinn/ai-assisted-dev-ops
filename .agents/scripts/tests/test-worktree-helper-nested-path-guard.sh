@@ -48,9 +48,17 @@
 set -uo pipefail
 
 TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 TEST_RED=$'\033[0;31m'
 TEST_GREEN=$'\033[0;32m'
 TEST_RESET=$'\033[0m'
+
+# Keep the temporary repository fixture on native Git. The helper's own
+# canonical guard is outside this path-validation regression's scope.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 TESTS_RUN=0
 TESTS_FAILED=0

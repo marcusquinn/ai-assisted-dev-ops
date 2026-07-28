@@ -18,7 +18,7 @@
 #   - audit-worktree-removal-helper.sh (log_worktree_removal_event, _WTAR_*)
 #     Must be sourced by the orchestrator before this library is loaded.
 #   - worktree-helper.sh helper functions (resolved at call time):
-#       worktree_has_changes, trash_path, branch_was_pushed,
+#       worktree_has_changes, branch_was_pushed,
 #       _branch_exists_on_any_remote, get_default_branch,
 #       localdev_auto_branch_rm, assert_git_available,
 #       assert_main_worktree_sane
@@ -654,9 +654,15 @@ _WT_CLEAN_MODE_SKIPPED="skipped"
 _WT_CLEAN_MODE_BRANCH_PRESERVED="branch-preserved"
 _WT_CLEAN_MODE_PERMANENT="permanent"
 _WT_CLEAN_MODE_RECOVERABLE="recoverable-trash"
+_WT_CLEAN_MODE_PARTIAL="partial-cleanup"
 _WT_CLEAN_COMPLETED_EVENT="AIDEVOPS_WORKTREE_REMOVAL_COMPLETED=1"
 _WT_CLEAN_BOOL_TRUE=true
 _WT_CLEAN_BOOL_FALSE=false
+_WT_CLEAN_OUTCOME_SKIPPED="skipped"
+_WT_CLEAN_OUTCOME_FAILED="failed"
+_WT_CLEAN_OUTCOME_REMOVED="removed"
+_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_SKIPPED"
+_WT_CLEAN_STASH_ARCHIVE_SEQUENCE=0
 _WT_CLEAN_LAST_PRESERVE_BRANCH="${_WT_CLEAN_LAST_PRESERVE_BRANCH:-$_WT_CLEAN_BOOL_FALSE}"
 
 _clean_protected_mark() {
@@ -727,11 +733,48 @@ _clean_issue_is_closed() {
 _clean_archive_dirty_worktree_stash() {
 	local wt_path="$1"
 	local wt_branch="$2"
+	local archive_token=""
+	local candidate_oid=""
+	local candidate_subject=""
+	local match_count=0
+	local stash_entries=""
+	local stash_oid=""
 	if ! worktree_has_changes "$wt_path"; then
 		return 0
 	fi
-	git -C "$wt_path" stash push -u -m "aidevops worktree cleanup archive: ${wt_branch:-detached}" >/dev/null 2>&1
-	return $?
+	_WT_CLEAN_STASH_ARCHIVE_SEQUENCE=$((_WT_CLEAN_STASH_ARCHIVE_SEQUENCE + 1))
+	archive_token="aidevops-stash-archive:$$:${_WT_CLEAN_STASH_ARCHIVE_SEQUENCE}:${RANDOM}"
+	git -C "$wt_path" stash push -u \
+		-m "aidevops worktree cleanup archive [${archive_token}]: ${wt_branch:-detached}" \
+		>/dev/null 2>&1 || return 1
+	stash_entries=$(git -C "$wt_path" stash list --format='%H%x09%gs' 2>/dev/null) || return 1
+	while IFS=$'\t' read -r candidate_oid candidate_subject; do
+		case "$candidate_subject" in
+		*"$archive_token"*)
+			stash_oid="$candidate_oid"
+			match_count=$((match_count + 1))
+			;;
+		esac
+	done <<<"$stash_entries"
+	[[ "$match_count" -eq 1 && -n "$stash_oid" ]] || return 1
+	git -C "$wt_path" cat-file -e "${stash_oid}^{commit}" 2>/dev/null || return 1
+	# Keep the immutable stash while restoring the exact dirty worktree before
+	# final native Git removal. If a preservation lock wins, the surviving
+	# worktree retains its tracked, staged, and untracked files.
+	git -C "$wt_path" stash apply --index "$stash_oid" >/dev/null 2>&1 || return 1
+	return 0
+}
+
+_clean_remove_preserving_branch() {
+	local wt_path="$1"
+	local wt_branch="$2"
+	local audit_context="$3"
+
+	_clean_archive_dirty_worktree_stash "$wt_path" "$wt_branch" || return 1
+	worktree_removal_guard "$wt_path" "$_WTAR_WH_CALLER" \
+		"$_WT_CLEAN_REASON_CLOSED_ISSUE_ARCHIVE" || return 1
+	_worktree_remove_with_native_git "$wt_path" "$_WTAR_WH_CALLER" "$audit_context" "true" || return 1
+	return 0
 }
 
 _clean_closed_issue_archive_allowed() {
@@ -988,63 +1031,27 @@ _clean_scan_merged() {
 	return 1
 }
 
-_clean_move_worktree_to_trash_bucket() {
+# Copy a worktree to recoverable trash before any source removal. This is the
+# only physical-removal preparation permitted when process-CWD visibility is
+# degraded, so interruption or a late lock always leaves a recoverable copy.
+_clean_archive_worktree_recoverably() {
 	local worktree_path="$1"
-	local trash_root="$2"
-	local trash_bucket=""
-	local worktree_basename=""
-
-	worktree_basename=$(basename "$worktree_path") || return 1
-	[[ -n "$worktree_basename" && "$worktree_basename" != "." && "$worktree_basename" != "/" ]] || return 1
-	trash_bucket="${trash_root}/aidevops-worktree-cleanup-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
-	mkdir -p "$trash_bucket" 2>/dev/null || return 1
-	mv "$worktree_path" "$trash_bucket/$worktree_basename" 2>/dev/null || return 1
-	[[ ! -e "$worktree_path" ]] || return 1
-	return 0
-}
-
-# Move a worktree to recoverable trash without any rm -rf fallback. This is the
-# only physical-removal primitive permitted when process-CWD visibility is
-# degraded, so a false absence inference remains recoverable.
-_clean_move_worktree_recoverably() {
-	local worktree_path="$1"
-	local trash_root="${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}"
-	local backend_failures=""
+	local caller="${2:-${_WTAR_WH_CALLER:-worktree-helper.sh}}"
 	_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL=""
+	_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH=""
 
 	[[ -n "$worktree_path" ]] || return 1
 	if [[ ! -e "$worktree_path" && ! -L "$worktree_path" ]]; then
 		_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL="path-already-gone"
 		return 0
 	fi
-	if [[ -n "$trash_root" ]]; then
-		if _clean_move_worktree_to_trash_bucket "$worktree_path" "$trash_root"; then
-			return 0
-		fi
-		_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL="configured-trash-root-failed"
+	if ! archive_worktree_path_recoverably "$worktree_path" "$caller" \
+		"recoverable-cleanup"; then
+		_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL="archive-copy-failed"
 		return 1
 	fi
-	if command -v trash >/dev/null 2>&1; then
-		if trash "$worktree_path" 2>/dev/null && [[ ! -e "$worktree_path" ]]; then
-			return 0
-		fi
-		backend_failures="trash-failed"
-	else
-		backend_failures="trash-unavailable"
-	fi
-	if command -v gio >/dev/null 2>&1; then
-		if gio trash "$worktree_path" 2>/dev/null && [[ ! -e "$worktree_path" ]]; then
-			return 0
-		fi
-		backend_failures="${backend_failures},gio-failed"
-	else
-		backend_failures="${backend_failures},gio-unavailable"
-	fi
-	if _clean_move_worktree_to_trash_bucket "$worktree_path" "${HOME}/.Trash"; then
-		return 0
-	fi
-	_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL="${backend_failures},home-trash-bucket-failed"
-	return 1
+	_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	return 0
 }
 
 _clean_merge_type_has_terminal_pr_state() {
@@ -1109,6 +1116,8 @@ _clean_remove_classified_worktree() {
 	local guard_status=0
 	local audit_reason="$_WT_CLEAN_REASON_BRANCH_MERGED"
 	local completed_mode="$_WT_CLEAN_MODE_PERMANENT"
+	local recoverable_archive=""
+	_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_SKIPPED"
 
 	if worktree_removal_guard "$worktree_path" "$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED"; then
 		guard_status=0
@@ -1131,38 +1140,53 @@ _clean_remove_classified_worktree() {
 		use_force="$_WT_CLEAN_BOOL_TRUE"
 	fi
 	if [[ "$removal_mode" == "$_WT_CLEAN_MODE_RECOVERABLE" ]]; then
-		if _clean_move_worktree_recoverably "$worktree_path"; then
-			removed="$_WT_CLEAN_BOOL_TRUE"
+		if _clean_archive_worktree_recoverably "$worktree_path"; then
+			recoverable_archive="$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH"
+			if [[ -z "$recoverable_archive" && ! -e "$worktree_path" && ! -L "$worktree_path" ]]; then
+				removed="$_WT_CLEAN_BOOL_TRUE"
+			elif ! remove_archived_worktree_path "$worktree_path" "$recoverable_archive" \
+				"$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED" "$audit_context" \
+				"true" "false"; then
+				log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
+					"recoverable-remove-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
+				_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
+				return 1
+			else
+				removed="$_WT_CLEAN_BOOL_TRUE"
+			fi
 			completed_mode="$_WT_CLEAN_MODE_RECOVERABLE"
 		else
-			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "recoverable-move-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context recoverable_backends=${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
+			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "recoverable-archive-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context recoverable_backends=${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
+			_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
 			return 1
 		fi
 	elif [[ "$preserve_branch" == "$_WT_CLEAN_BOOL_TRUE" ]]; then
-		_clean_archive_dirty_worktree_stash "$worktree_path" "$worktree_branch" || return 1
-		if git worktree remove --force "$worktree_path" 2>/dev/null; then
+		if _clean_remove_preserving_branch "$worktree_path" "$worktree_branch" "$audit_context"; then
 			removed="$_WT_CLEAN_BOOL_TRUE"
 			audit_reason="$_WT_CLEAN_REASON_CLOSED_ISSUE_ARCHIVE"
 			completed_mode="$_WT_CLEAN_MODE_BRANCH_PRESERVED"
 		fi
-	elif rm -rf "$worktree_path" 2>/dev/null; then
-		removed="$_WT_CLEAN_BOOL_TRUE"
 	else
-		local remove_flag
+		local remove_flag=""
 		if [[ "$use_force" == "$_WT_CLEAN_BOOL_TRUE" ]]; then
 			remove_flag="--force"
 		fi
+		# Git is the final physical-removal authority. A concurrent lock makes
+		# this command fail; cleanup never falls back to direct rm.
 		# shellcheck disable=SC2086
 		if git worktree remove $remove_flag "$worktree_path" 2>/dev/null; then
 			removed="$_WT_CLEAN_BOOL_TRUE"
 		fi
 	fi
 	if [[ "$removed" != "$_WT_CLEAN_BOOL_TRUE" ]]; then
+		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
 		echo -e "${RED}Failed to remove $worktree_branch - may have uncommitted changes${NC}" >&2
 		return 1
 	fi
 	if ! prune_missing_worktree_metadata "$repo_context" "$worktree_path"; then
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "metadata-prune-failed" "partial-cleanup" "$audit_context"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
+			"metadata-prune-failed" "$_WT_CLEAN_MODE_PARTIAL" "$audit_context"
+		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
 		return 1
 	fi
 	unregister_worktree "$worktree_path"
@@ -1175,6 +1199,7 @@ _clean_remove_classified_worktree() {
 		full_loop_mark_cleanup_cleaned_for_worktree "$worktree_path" || true
 	fi
 	printf '%s\n' "$_WT_CLEAN_COMPLETED_EVENT"
+	_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_REMOVED"
 	return 0
 }
 
@@ -1193,6 +1218,7 @@ _clean_remove_candidate_after_lease() {
 	local removal_status=0
 	local removal_mode="$_WT_CLEAN_MODE_PERMANENT"
 	local recovery_authorized="$_WT_CLEAN_BOOL_FALSE"
+	_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_SKIPPED"
 
 	if worktree_removal_guard "$worktree_path" "$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED"; then
 		guard_status=0
@@ -1238,6 +1264,7 @@ _clean_remove_merged() {
 
 	local worktree_path=""
 	local worktree_branch=""
+	local removal_failures=0
 
 	while IFS= read -r line; do
 		if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
@@ -1285,8 +1312,12 @@ _clean_remove_merged() {
 						worktree_branch=""
 						continue
 					fi
-					_clean_remove_candidate_after_lease "$worktree_path" "$worktree_branch" "$force_merged" "$preserve_branch" \
-						"$audit_context" "$main_wt_path" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" || true
+					if ! _clean_remove_candidate_after_lease "$worktree_path" "$worktree_branch" "$force_merged" "$preserve_branch" \
+						"$audit_context" "$main_wt_path" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs"; then
+						if [[ "$_WT_CLEAN_LAST_REMOVAL_OUTCOME" == "$_WT_CLEAN_OUTCOME_FAILED" ]]; then
+							removal_failures=$((removal_failures + 1))
+						fi
+					fi
 				fi
 			fi
 			worktree_path=""
@@ -1297,6 +1328,7 @@ _clean_remove_merged() {
 		echo ""
 	)
 
+	[[ "$removal_failures" -eq 0 ]] || return 1
 	return 0
 }
 
@@ -1433,9 +1465,14 @@ cmd_clean() {
 
 	if [[ "$response" =~ ^[Yy]$ ]]; then
 		# Second pass: remove merged worktrees
-		_clean_remove_merged "$default_branch" "$main_worktree_path" "$remote_state_unknown" "$merged_pr_branches" "$open_pr_branches" "$force_merged" "$closed_pr_branches"
+		local cleanup_status=0
+		_clean_remove_merged "$default_branch" "$main_worktree_path" "$remote_state_unknown" "$merged_pr_branches" "$open_pr_branches" "$force_merged" "$closed_pr_branches" || cleanup_status=$?
 		if declare -F full_loop_reconcile_cleanup_receipts >/dev/null 2>&1; then
 			full_loop_reconcile_cleanup_receipts
+		fi
+		if [[ "$cleanup_status" -ne 0 ]]; then
+			echo -e "${YELLOW}Cleanup completed with one or more removal failures${NC}" >&2
+			return 1
 		fi
 		echo -e "${GREEN}Cleanup complete${NC}" >&2
 	else

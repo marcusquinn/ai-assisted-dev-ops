@@ -15,6 +15,7 @@ RECOVERABLE_LINKED="${TEST_ROOT}/recoverable-linked"
 RECOVERABLE_MISSING_LINKED="${TEST_ROOT}/recoverable-missing-linked"
 MOVE_FAILED_LINKED="${TEST_ROOT}/move-failed-linked"
 PRUNE_FAILED_LINKED="${TEST_ROOT}/prune-failed-linked"
+REMOVE_FAILED_LINKED="${TEST_ROOT}/remove-failed-linked"
 DIRTY_LINKED="${TEST_ROOT}/dirty-linked"
 OWNERSHIP_LINKED="${TEST_ROOT}/ownership-linked"
 INTEGRATION_LINKED="${TEST_ROOT}/integration-linked"
@@ -26,8 +27,11 @@ SHIM_BIN="${TEST_ROOT}/bin"
 TEST_PATH="${SHIM_BIN}:/usr/bin:/bin:/usr/sbin:/sbin"
 FAILING_GIT="${TEST_ROOT}/failing-git"
 QUERY_FAILING_GIT="${TEST_ROOT}/query-failing-git"
+MALFORMED_QUERY_GIT="${TEST_ROOT}/malformed-query-git"
+ALIAS_QUERY_GIT="${TEST_ROOT}/alias-query-git"
 POST_PRUNE_QUERY_FAILING_GIT="${TEST_ROOT}/post-prune-query-failing-git"
 POST_PRUNE_QUERY_STATE="${TEST_ROOT}/post-prune-query-state"
+POST_PRUNE_MARKER="${TEST_ROOT}/post-prune-invoked"
 RUNTIME_PID=""
 
 teardown() {
@@ -54,9 +58,11 @@ printf 'seed\n' >"${REPO}/README.md"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-missing "$RECOVERABLE_MISSING_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-move-failure "$MOVE_FAILED_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-prune-failure "$PRUNE_FAILED_LINKED"
+/usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-remove-failure "$REMOVE_FAILED_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-dirty "$DIRTY_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-ownership "$OWNERSHIP_LINKED"
 /usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-integration "$INTEGRATION_LINKED"
+/usr/bin/git -C "$REPO" worktree add -q -b feature/recoverable-home-archive "$RECOVERABLE_FALLBACK_SOURCE"
 ln -s "$GIT_SHIM" "${SHIM_BIN}/git"
 
 if PATH="$TEST_PATH" git -C "$REPO" worktree prune >/dev/null 2>&1; then
@@ -86,7 +92,7 @@ cat >"$FAILING_GIT" <<'EOF'
 if [[ "$*" == *"worktree prune"* ]]; then
 	exit 1
 fi
-if [[ "$*" == *"worktree list --porcelain"* ]]; then
+if [[ "$*" == *"worktree list --porcelain -z"* ]]; then
 	/usr/bin/git "$@" || exit 1
 	printf 'worktree %s\n\n' "${FAILED_LINKED_FOR_TEST:?}"
 	exit 0
@@ -127,6 +133,61 @@ if AIDEVOPS_REAL_GIT_BIN="$QUERY_FAILING_GIT" \
 fi
 printf 'PASS metadata query failure cannot report cleanup success\n'
 
+cat >"$MALFORMED_QUERY_GIT" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree list --porcelain -z"* ]]; then
+	case "${MALFORMED_QUERY_MODE:?}" in
+	missing-identity) printf 'worktree %s\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	empty-head) printf 'worktree %s\0HEAD \0branch refs/heads/test\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	empty-branch) printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch \0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	whitespace-head) printf 'worktree %s\0HEAD \t\0branch refs/heads/test\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	invalid-head) printf 'worktree %s\0HEAD deadbeef\0branch refs/heads/test\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	whitespace-branch) printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch \t\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	invalid-branch) printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/bad..name\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	invalid-namespace) printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/tags/test\0\0' "${MALFORMED_QUERY_OTHER:?}" ;;
+	*) exit 1 ;;
+	esac
+	exit 0
+fi
+exec /usr/bin/git "$@"
+EOF
+chmod +x "$MALFORMED_QUERY_GIT"
+for malformed_query_mode in missing-identity empty-head empty-branch whitespace-head invalid-head \
+	whitespace-branch invalid-branch invalid-namespace; do
+	if AIDEVOPS_REAL_GIT_BIN="$MALFORMED_QUERY_GIT" \
+		MALFORMED_QUERY_MODE="$malformed_query_mode" \
+		MALFORMED_QUERY_OTHER="${TEST_ROOT}/different-malformed-target" \
+		prune_missing_worktree_metadata "$REPO" "${TEST_ROOT}/missing-malformed-query-target"; then
+		printf 'FAIL malformed status-zero metadata mode %s was treated as authoritative absence\n' \
+			"$malformed_query_mode"
+		exit 1
+	fi
+done
+printf 'PASS malformed status-zero metadata cannot prove exact target absence\n'
+
+alias_physical_parent="${TEST_ROOT}/metadata-physical-parent"
+alias_logical_parent="${TEST_ROOT}/metadata-logical-parent"
+alias_target="${alias_logical_parent}/missing-alias-target"
+mkdir -p "$alias_physical_parent"
+ln -s "$alias_physical_parent" "$alias_logical_parent"
+alias_physical_target="$(cd "$alias_physical_parent" && pwd -P)/missing-alias-target"
+cat >"$ALIAS_QUERY_GIT" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree list --porcelain -z"* ]]; then
+	printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/test\0\0' \
+		"${ALIAS_QUERY_PHYSICAL:?}"
+	exit 0
+fi
+exec /usr/bin/git "$@"
+EOF
+chmod +x "$ALIAS_QUERY_GIT"
+if ! ALIAS_QUERY_PHYSICAL="$alias_physical_target" \
+	_worktree_metadata_contains_path "$ALIAS_QUERY_GIT" "$REPO" "$alias_target"; then
+	printf 'FAIL physical parent alias did not match exact Git metadata\n'
+	exit 1
+fi
+printf 'PASS physical parent alias matches exact missing-worktree metadata\n'
+
 if (
 	_worktree_cleanup_real_git() {
 		return 0
@@ -148,12 +209,14 @@ if [[ "$*" == *"worktree list --porcelain"* ]]; then
 	query_count=$((query_count + 1))
 	printf '%s\n' "$query_count" >"$POST_PRUNE_QUERY_STATE_FOR_TEST"
 	if [[ "$query_count" -eq 1 ]]; then
-		printf 'worktree %s\n\n' "${POST_PRUNE_TARGET_FOR_TEST:?}"
+		printf 'worktree %s\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/test\0\0' \
+			"${POST_PRUNE_TARGET_FOR_TEST:?}"
 		exit 0
 	fi
 	exit 1
 fi
 if [[ "$*" == *"worktree prune"* ]]; then
+	: >"${POST_PRUNE_MARKER_FOR_TEST:?}"
 	exit 0
 fi
 exec /usr/bin/git "$@"
@@ -161,9 +224,16 @@ EOF
 chmod +x "$POST_PRUNE_QUERY_FAILING_GIT"
 if AIDEVOPS_REAL_GIT_BIN="$POST_PRUNE_QUERY_FAILING_GIT" \
 	POST_PRUNE_QUERY_STATE_FOR_TEST="$POST_PRUNE_QUERY_STATE" \
+	POST_PRUNE_MARKER_FOR_TEST="$POST_PRUNE_MARKER" \
 	POST_PRUNE_TARGET_FOR_TEST="${TEST_ROOT}/missing-post-prune-query-target" \
 	prune_missing_worktree_metadata "$REPO" "${TEST_ROOT}/missing-post-prune-query-target"; then
 	printf 'FAIL post-prune metadata query failure was treated as successful cleanup\n'
+	exit 1
+fi
+post_prune_query_count=""
+IFS= read -r post_prune_query_count <"$POST_PRUNE_QUERY_STATE" || post_prune_query_count=""
+if [[ "$post_prune_query_count" != "2" || ! -e "$POST_PRUNE_MARKER" ]]; then
+	printf 'FAIL post-prune query fixture did not reach prune and the second metadata query\n'
 	exit 1
 fi
 printf 'PASS post-prune metadata query failure cannot report cleanup success\n'
@@ -249,7 +319,7 @@ _branch_exists_on_any_remote() {
 }
 
 missing_move_target="${TEST_ROOT}/never-created-worktree"
-if ! _clean_move_worktree_recoverably "$missing_move_target" ||
+if ! _clean_archive_worktree_recoverably "$missing_move_target" ||
 	[[ "$_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL" != "path-already-gone" ]]; then
 	printf 'FAIL absent recoverable source was not treated as idempotent success\n'
 	exit 1
@@ -295,37 +365,29 @@ compgen -G "${RECOVERABLE_TRASH}/*/recoverable-linked" >/dev/null || {
 	printf 'FAIL recoverable cleanup did not preserve candidate files in trash\n'
 	exit 1
 }
-printf 'PASS degraded cleanup emits completion only after recoverable move and exact metadata absence\n'
+printf 'PASS degraded cleanup emits completion only after archive retention and exact metadata absence\n'
 
-mkdir -p "$RECOVERABLE_FALLBACK_SOURCE" "$RECOVERABLE_FALLBACK_HOME" "$RECOVERABLE_FALLBACK_BIN"
-printf 'recoverable fixture\n' >"${RECOVERABLE_FALLBACK_SOURCE}/fixture.txt"
-for backend in trash gio; do
-	cat >"${RECOVERABLE_FALLBACK_BIN}/${backend}" <<'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-	chmod +x "${RECOVERABLE_FALLBACK_BIN}/${backend}"
-done
+mkdir -p "$RECOVERABLE_FALLBACK_HOME" "$RECOVERABLE_FALLBACK_BIN"
 if ! HOME="$RECOVERABLE_FALLBACK_HOME" PATH="$RECOVERABLE_FALLBACK_BIN:/usr/bin:/bin" \
-	_clean_move_worktree_recoverably "$RECOVERABLE_FALLBACK_SOURCE"; then
-	printf 'FAIL recoverable cleanup stopped after trash and gio backend failures: %s\n' \
+	_clean_archive_worktree_recoverably "$RECOVERABLE_FALLBACK_SOURCE"; then
+	printf 'FAIL recoverable cleanup could not create its home trash archive: %s\n' \
 		"${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
 	exit 1
 fi
-[[ ! -e "$RECOVERABLE_FALLBACK_SOURCE" ]] || {
-	printf 'FAIL recoverable cleanup fallback left the source path in place\n'
+[[ -d "$RECOVERABLE_FALLBACK_SOURCE" ]] || {
+	printf 'FAIL recoverable archive preparation removed the registered source\n'
 	exit 1
 }
-compgen -G "${RECOVERABLE_FALLBACK_HOME}/.Trash/aidevops-worktree-cleanup-*/recoverable-fallback-source" >/dev/null || {
-	printf 'FAIL recoverable cleanup did not fall through to the home trash bucket\n'
+[[ -d "$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH" && -e "$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH/.git" ]] || {
+	printf 'FAIL recoverable cleanup did not create a complete home trash archive\n'
 	exit 1
 }
-printf 'PASS failed trash and gio backends fall through to the home trash bucket\n'
+printf 'PASS archive preparation retains the source and creates a home trash copy\n'
 
 move_failure_output=""
 if move_failure_output=$(
 	cd "$REPO" || exit 1
-	_clean_move_worktree_recoverably() {
+	_clean_archive_worktree_recoverably() {
 		local worktree_path="$1"
 		: "$worktree_path"
 		return 1
@@ -333,14 +395,14 @@ if move_failure_output=$(
 	_clean_remove_classified_worktree "$MOVE_FAILED_LINKED" "feature/recoverable-move-failure" \
 		"false" "false" "visibility=degraded" "$REPO" "$_WT_CLEAN_MODE_RECOVERABLE" "true"
 ); then
-	printf 'FAIL recoverable move failure reported cleanup success\n'
+	printf 'FAIL recoverable archive failure reported cleanup success\n'
 	exit 1
 fi
 [[ -d "$MOVE_FAILED_LINKED" && "$move_failure_output" != *"$_WT_CLEAN_COMPLETED_EVENT"* ]] || {
-	printf 'FAIL recoverable move failure removed candidate or emitted completion\n'
+	printf 'FAIL recoverable archive failure removed candidate or emitted completion\n'
 	exit 1
 }
-printf 'PASS recoverable move failure remains fail-closed with zero completion events\n'
+printf 'PASS recoverable archive failure remains fail-closed with zero completion events\n'
 
 prune_failure_output=""
 if prune_failure_output=$(
@@ -362,11 +424,43 @@ fi
 	printf 'FAIL metadata prune failure emitted completion or left an irreversible state\n'
 	exit 1
 }
-/usr/bin/git -C "$REPO" worktree list --porcelain | grep -Fqx "worktree $PRUNE_FAILED_LINKED" || {
-	printf 'FAIL metadata prune failure fixture did not preserve stale metadata for recovery\n'
+if /usr/bin/git -C "$REPO" worktree list --porcelain | grep -Fqx "worktree $PRUNE_FAILED_LINKED"; then
+	printf 'FAIL native Git removal left stale metadata before verification failed\n'
+	exit 1
+fi
+compgen -G "${RECOVERABLE_TRASH}/aidevops-worktree-cleanup-*/prune-failed-linked" >/dev/null || {
+	printf 'FAIL metadata verification failure lost the recoverable archive\n'
 	exit 1
 }
-printf 'PASS metadata prune failure remains recoverable and emits zero completion events\n'
+printf 'PASS metadata verification failure retains its archive and emits zero completion events\n'
+
+remove_failure_output=""
+if remove_failure_output=$(
+	cd "$REPO" || exit 1
+	remove_archived_worktree_path() {
+		return 1
+	}
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$RECOVERABLE_TRASH" \
+		_clean_remove_classified_worktree "$REMOVE_FAILED_LINKED" "feature/recoverable-remove-failure" \
+		"false" "false" "visibility=degraded" "$REPO" "$_WT_CLEAN_MODE_RECOVERABLE" "true"
+); then
+	printf 'FAIL native removal failure reported cleanup success\n'
+	exit 1
+fi
+[[ -d "$REMOVE_FAILED_LINKED" && "$remove_failure_output" != *"$_WT_CLEAN_COMPLETED_EVENT"* ]] || {
+	printf 'FAIL native removal failure lost its source or emitted completion\n'
+	exit 1
+}
+remove_failure_metadata=$(/usr/bin/git -C "$REPO" worktree list --porcelain) || exit 1
+printf '%s\n' "$remove_failure_metadata" | grep -Fqx "worktree $REMOVE_FAILED_LINKED" || {
+	printf 'FAIL native removal failure pruned exact metadata\n'
+	exit 1
+}
+compgen -G "${RECOVERABLE_TRASH}/aidevops-worktree-cleanup-*/remove-failed-linked" >/dev/null || {
+	printf 'FAIL native removal failure lost its completed archive\n'
+	exit 1
+}
+printf 'PASS native removal failure preserves source, metadata, archive, and zero completion events\n'
 
 printf 'dirty state\n' >"${DIRTY_LINKED}/dirty.txt"
 dirty_output=""

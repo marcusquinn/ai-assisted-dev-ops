@@ -122,6 +122,14 @@ _remove_show_guard_error() {
 		printf '%s\n' "Reason: canonical-skip — the target is a registered canonical checkout." >&2
 		printf '%s\n' "Recovery: preserve the canonical checkout and remove only an eligible linked worktree. --force cannot bypass this protection." >&2
 		;;
+	git-worktree-locked)
+		printf '%s\n' "Reason: git-worktree-locked — Git metadata marks this worktree as explicitly locked." >&2
+		printf '%s\n' "Recovery: preserve the worktree, or unlock it only after its owning observation or session has ended. --force cannot bypass this protection." >&2
+		;;
+	git-metadata-unreadable)
+		printf '%s\n' "Reason: git-metadata-unreadable — the guard could not prove the exact worktree registration is readable and unlocked." >&2
+		printf '%s\n' "Recovery: repair Git metadata access and verify the exact worktree block is unlocked before retrying. --force cannot bypass this protection." >&2
+		;;
 	*)
 		printf '%s\n' "Reason: ${guard_reason:-guard-refused} — the shared safety guard did not authorize removal." >&2
 		printf '%s\n' "Recovery: inspect the cleanup audit log, resolve the safety condition, then retry." >&2
@@ -138,9 +146,10 @@ _remove_validate_path() {
 	local path_to_remove="$1"
 	local guard_caller="${SCRIPT_NAME:-worktree-helper.sh}"
 
-	# The shared guard blocks canonical repos, this shell's cwd, and every live
-	# process whose cwd is inside the target. --force may override ownership or
-	# dirty-state policy, but it must never override a live process cwd.
+	# The shared guard blocks canonical repos, Git-locked or metadata-unreadable
+	# worktrees, this shell's cwd, and every live process whose cwd is inside the
+	# target. --force may override ownership or dirty-state policy, but it must
+	# never override these preservation boundaries.
 	if ! worktree_removal_guard "$path_to_remove" "$guard_caller" "$_WT_REMOVE_MODE_MANUAL"; then
 		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
 		return 1
@@ -187,14 +196,11 @@ _remove_validate_path() {
 _remove_cleanup_and_execute() {
 	local path_to_remove="$1"
 	local repo_context=""
+	local completed_mode="trash"
+	local recoverable_archive=""
+	local force_remove="false"
 	repo_context=$(get_repo_root) || return 1
-
-	# Clean up aidevops runtime files before removal (prevents "contains untracked files" error)
-	# Use trash_path for recoverable deletion; fall back to rm -rf if trash unavailable.
-	trash_path "$path_to_remove/.agents/loop-state" || true
-	trash_path "$path_to_remove/.agents/tmp" || true
-	rm -f "$path_to_remove/.agents/.DS_Store" 2>/dev/null || true
-	rmdir "$path_to_remove/.agent" 2>/dev/null || true # Only removes if empty
+	[[ "${WORKTREE_FORCE_REMOVE:-}" == "1" ]] && force_remove="true"
 
 	# Capture branch name before removal for localdev cleanup (t1224.8)
 	local removed_branch=""
@@ -206,21 +212,28 @@ _remove_cleanup_and_execute() {
 		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
 		return 1
 	fi
+	if ! archive_worktree_path_recoverably "$path_to_remove" "${SCRIPT_NAME:-worktree-helper.sh}" \
+		"manual-cleanup"; then
+		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
+		return 1
+	fi
+	recoverable_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 
 	echo -e "${BLUE}Removing worktree: $path_to_remove${NC}"
-	# Move the worktree directory to trash BEFORE git deregisters it.
-	# This makes accidental removal recoverable — the directory survives in trash.
-	# git worktree prune then cleans up the now-missing entry from .git/worktrees/.
-	if ! trash_path "$path_to_remove"; then
-		# trash unavailable or failed — fall back to git worktree remove
-		git worktree remove "$path_to_remove" || return 1
-	else
-		if ! prune_missing_worktree_metadata "$repo_context" "$path_to_remove"; then
-			printf '%b\n' "${YELLOW}Partial cleanup: worktree files moved to trash, but Git metadata remains.${NC}"
-			printf '%s\n' "Recovery: resolve Git metadata permissions or locks, then prune the missing worktree from a linked worktree and verify it is absent from 'git worktree list --porcelain'."
-			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$path_to_remove" "metadata-prune-failed" "partial-cleanup"
-			return 1
-		fi
+	# Copy first, then let native Git perform the final source removal. A lock
+	# acquired at any point before that command keeps the registered source
+	# intact, while an interruption after it still leaves the archive.
+	if ! remove_archived_worktree_path "$path_to_remove" "$recoverable_archive" \
+		"${SCRIPT_NAME:-worktree-helper.sh}" "$_WT_REMOVE_MODE_MANUAL" \
+		"recovery_path=archive-first" "false" "$force_remove"; then
+		printf '%b\n' "${YELLOW}Cleanup stopped: the source remains protected and its recoverable archive was retained.${NC}"
+		return 1
+	fi
+	if ! prune_missing_worktree_metadata "$repo_context" "$path_to_remove"; then
+		printf '%b\n' "${YELLOW}Partial cleanup: the worktree archive is retained, but Git metadata verification failed.${NC}"
+		printf '%s\n' "Recovery: preserve the archive, resolve Git metadata permissions, then verify the exact worktree is absent from 'git worktree list --porcelain'."
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$path_to_remove" "metadata-prune-failed" "partial-cleanup"
+		return 1
 	fi
 
 	# Unregister ownership (t189)
@@ -229,7 +242,7 @@ _remove_cleanup_and_execute() {
 	echo -e "${GREEN}Worktree removed successfully${NC}"
 
 	# t2976: audit log — manual removal completed
-	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_WH_CALLER" "$path_to_remove" "$_WT_REMOVE_MODE_MANUAL" "trash"
+	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_WH_CALLER" "$path_to_remove" "$_WT_REMOVE_MODE_MANUAL" "$completed_mode"
 
 	# Localdev integration (t1224.8): auto-remove branch subdomain route
 	if [[ -n "$removed_branch" ]]; then
