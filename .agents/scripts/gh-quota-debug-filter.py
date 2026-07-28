@@ -5,23 +5,15 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
+
+from gh_quota_debug_response import REQUEST_END, response_metadata
 
 
 REQUEST_START = re.compile(rb"^\* Request at ")
-REQUEST_END = re.compile(
-    rb"^\* Request took ([0-9]+(?:\.[0-9]+)?)(ms|s)\s*$"
-)
-RESPONSE_STATUS = re.compile(rb"^< HTTP/\S+\s+([0-9]{3})(?:\s+.*)?$", re.IGNORECASE)
-RATE_HEADER = re.compile(
-    rb"^< X-Ratelimit-(Resource|Used|Remaining|Reset):\s*([^\s]+)\s*$",
-    re.IGNORECASE,
-)
-RATE_FIELDS = frozenset({"resource", "used", "remaining", "reset"})
 
 
 def _frame_ranges(lines: List[bytes]) -> List[Tuple[int, int]]:
@@ -51,61 +43,6 @@ def _duration_ms(frame: List[bytes]) -> Optional[int]:
             value *= 1000
         return max(0, round(value))
     return None
-
-
-def _graphql_rate_cost(body: List[bytes]) -> Optional[int]:
-    try:
-        payload = json.loads(b"\n".join(body))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    data = payload.get("data")
-    rate_limit = data.get("rateLimit") if isinstance(data, dict) else None
-    cost = rate_limit.get("cost") if isinstance(rate_limit, dict) else None
-    if isinstance(cost, bool) or not isinstance(cost, int) or cost < 0:
-        return None
-    return cost
-
-
-def _response_metadata(
-    frame: List[bytes],
-) -> Tuple[int, Dict[str, str], Optional[int]]:
-    responses: List[Tuple[Dict[str, str], List[bytes]]] = []
-    current: Optional[Dict[str, str]] = None
-    current_body: Optional[List[bytes]] = None
-    in_headers = False
-    for line in frame:
-        stripped = line.rstrip(b"\r\n")
-        status_match = RESPONSE_STATUS.match(stripped)
-        if status_match:
-            current = {"status": status_match.group(1).decode("ascii")}
-            current_body = []
-            responses.append((current, current_body))
-            in_headers = True
-            continue
-        if in_headers and stripped == b"":
-            in_headers = False
-            continue
-        if current is not None and current_body is not None and not in_headers:
-            if not REQUEST_END.match(stripped):
-                current_body.append(stripped)
-            continue
-        if current is None:
-            continue
-        header_match = RATE_HEADER.match(stripped)
-        if not header_match:
-            continue
-        name = header_match.group(1).decode("ascii").lower()
-        value = header_match.group(2).decode("ascii", errors="ignore")
-        current[name] = value
-    rate_responses = [
-        response for response in responses if RATE_FIELDS <= response[0].keys()
-    ]
-    if not rate_responses:
-        return 0, {}, None
-    headers, body = rate_responses[-1]
-    return len(rate_responses), headers, _graphql_rate_cost(body)
 
 
 def _write_sanitized_stderr(
@@ -143,7 +80,7 @@ def main() -> int:
     print(f"v1\t{len(ranges)}")
     for frame_index, (start, end) in enumerate(ranges, start=1):
         frame = lines[start:end]
-        status_count, response, response_cost = _response_metadata(frame)
+        status_count, response, response_cost = response_metadata(frame)
         duration = _duration_ms(frame)
         values = [
             "frame",
