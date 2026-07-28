@@ -475,6 +475,50 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Test 7c: a zero GraphQL cost is not valid operation-owned evidence.
+# -----------------------------------------------------------------------------
+echo "Test 7c: resolver rejects zero GraphQL cost"
+echo "============================================"
+
+zero_cost_graphql_log="${TMPROOT}/test7c-graphql.log"
+: >"$zero_cost_graphql_log"
+resolver_result=$(
+(
+	# shellcheck disable=SC1091
+	source "${PARENT_DIR}/pulse-wrapper-bootstrap.sh" >/dev/null 2>&1
+
+	gh() {
+		local cmd="${1:-}"
+		local subcmd="${2:-}"
+		if [[ "$cmd" == "api" && "$subcmd" == "graphql" ]]; then
+			printf '%s\n' 'graphql-zero-cost' >>"$zero_cost_graphql_log"
+			printf '%s\n' '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":76543,"state":"OPEN"}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":0}}}'
+			return 0
+		fi
+		return 1
+	}
+
+	gh_pr_list() {
+		printf '%s\n' 'fallback-used' >>"$zero_cost_graphql_log"
+		printf '%s\n' '[{"number":87654,"body":"Fixes #12345"}]'
+		return 0
+	}
+
+	_resolve_linked_pr_for_issue "marcusquinn/aidevops" "12345"
+)
+)
+assert_eq "resolver rejects zero-cost GraphQL and uses its fallback" "87654" "$resolver_result"
+if grep -qF 'graphql-zero-cost' "$zero_cost_graphql_log" &&
+	grep -qF 'fallback-used' "$zero_cost_graphql_log"; then
+	assert_pass "zero GraphQL cost cannot authorize linked-PR resolution"
+else
+	assert_fail "zero GraphQL cost cannot authorize linked-PR resolution" \
+		"graphql log: $(cat "$zero_cost_graphql_log")"
+fi
+
+echo ""
+
+# -----------------------------------------------------------------------------
 # Test 8: issue→PR fallback resolver uses gh_pr_list wrapper when available.
 # -----------------------------------------------------------------------------
 echo "Test 8: resolver fallback uses gh_pr_list"

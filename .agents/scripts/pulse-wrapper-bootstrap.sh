@@ -462,7 +462,7 @@ _resolve_linked_pr_for_issue() {
 			}
 		' 2>/dev/null) || response=""
 	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
-	if [[ "$reported_cost" =~ ^[0-9]+$ ]]; then
+	if [[ "$reported_cost" =~ ^[1-9][0-9]*$ ]]; then
 		pr_num=$(printf '%s' "$response" | jq -r '
 			.data.repository.issue.closedByPullRequestsReferences
 			| select(.pageInfo.hasNextPage == false)
