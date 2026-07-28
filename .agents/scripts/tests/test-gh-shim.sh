@@ -131,12 +131,22 @@ fi
 if [[ "${GH_DEBUG:-}" == "api" && "${STUB_GH_DEBUG_RESPONSE:-0}" == "1" ]]; then
 	printf '* Request at 2026-07-24 00:00:00 +0000 UTC\n' >&2
 	printf '> Authorization: token private-fixture-token\n\n' >&2
-	printf '< HTTP/2.0 %s Fixture\n' "${STUB_GH_DEBUG_STATUS:-200}" >&2
-	printf '< X-Ratelimit-Resource: %s\n' "${STUB_GH_DEBUG_RESOURCE:-graphql}" >&2
-	printf '< X-Ratelimit-Used: %s\n' "${STUB_GH_DEBUG_USED:-201}" >&2
-	printf '< X-Ratelimit-Remaining: %s\n' "${STUB_GH_DEBUG_REMAINING:-4799}" >&2
-	printf '< X-Ratelimit-Reset: %s\n\n' "${STUB_GH_DEBUG_RESET:-2000}" >&2
-	printf '{"private":"response-body-fixture"}\n' >&2
+	if [[ "${STUB_GH_DEBUG_REQUEST_ONLY:-0}" != "1" ]]; then
+		printf '< HTTP/2.0 %s Fixture\n' "${STUB_GH_DEBUG_STATUS:-200}" >&2
+		printf '< X-Ratelimit-Resource: %s\n' "${STUB_GH_DEBUG_RESOURCE:-graphql}" >&2
+		printf '< X-Ratelimit-Used: %s\n' "${STUB_GH_DEBUG_USED:-201}" >&2
+		printf '< X-Ratelimit-Remaining: %s\n' "${STUB_GH_DEBUG_REMAINING:-4799}" >&2
+		printf '< X-Ratelimit-Reset: %s\n\n' "${STUB_GH_DEBUG_RESET:-2000}" >&2
+		if [[ -n "${STUB_GH_DEBUG_BODY:-}" ]]; then
+			printf '%s\n' "$STUB_GH_DEBUG_BODY" >&2
+		else
+			printf '{"private":"response-body-fixture"}\n' >&2
+		fi
+		if [[ "${STUB_GH_DEBUG_TRAILING_RESPONSE:-0}" == "1" ]]; then
+			printf '< HTTP/2.0 200 Redirected\n\n' >&2
+			printf '{"private":"redirected-response-fixture"}\n' >&2
+		fi
+	fi
 	printf '* Request took 12.5ms\n' >&2
 	[[ -z "${STUB_GH_DIAGNOSTIC:-}" ]] || printf '%s\n' "$STUB_GH_DIAGNOSTIC" >&2
 elif [[ -n "${STUB_GH_UNFRAMED_PRIVATE_STDERR:-}" ]]; then
@@ -1158,6 +1168,77 @@ else
 	_fail "failed REST exact quota capture" "log: $(cat "$failed_log" 2>/dev/null || true)"
 fi
 
+zero_cost_log="$TMP/exact-zero-cost-rest.log"
+zero_cost_state="$TMP/exact-zero-cost-rest-state"
+: >"$zero_cost_log"
+if GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$zero_cost_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$zero_cost_log" STUB_GH_DEBUG_RESPONSE=1 STUB_GH_EXIT_CODE=1 \
+	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core \
+	STUB_GH_DEBUG_STATUS=403 STUB_GH_DEBUG_USED=100 STUB_GH_DEBUG_REMAINING=4900 \
+	STUB_GH_DEBUG_RESET=2000 "$SHIM_RUN" api /repos/owner/repo >/dev/null 2>/dev/null; then
+	_fail "zero-cost REST response status" "stub failure unexpectedly succeeded"
+fi
+if [[ "$(_read_attempt_quota "$zero_cost_log")" == "0" \
+	&& "$(_read_last_attempt_field "$zero_cost_log" 14)" == "error" \
+	&& "$(_read_last_attempt_field "$zero_cost_log" 15)" == "403" ]]; then
+	_pass "counter-proven zero-cost REST failure records exact zero quota"
+else
+	_fail "zero-cost REST response attribution" "log: $(cat "$zero_cost_log" 2>/dev/null || true)"
+fi
+
+successful_zero_log="$TMP/exact-successful-zero-delta.log"
+successful_zero_state="$TMP/exact-successful-zero-delta-state"
+: >"$successful_zero_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$successful_zero_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$successful_zero_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=100 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_STATUS=200 STUB_GH_DEBUG_USED=100 STUB_GH_DEBUG_REMAINING=4900 \
+	STUB_GH_DEBUG_RESET=2000 "$SHIM_RUN" pr view 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(_read_attempt_quota "$successful_zero_log")" == "unknown" \
+	&& "$(_read_last_attempt_field "$successful_zero_log" 15)" == "200" ]]; then
+	_pass "successful zero-delta response remains unknown instead of shifting quota cost"
+else
+	_fail "successful zero-delta fail-closed behavior" "log: $(cat "$successful_zero_log" 2>/dev/null || true)"
+fi
+
+redirect_log="$TMP/exact-redirect-rest.log"
+redirect_state="$TMP/exact-redirect-rest-state"
+: >"$redirect_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$redirect_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$redirect_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_TRAILING_RESPONSE=1 STUB_BOOTSTRAP_CORE_USED=100 \
+	STUB_GH_DEBUG_RESOURCE=core STUB_GH_DEBUG_STATUS=302 STUB_GH_DEBUG_USED=101 \
+	STUB_GH_DEBUG_REMAINING=4899 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" api /repos/owner/repo/actions/jobs/1/logs >/dev/null 2>/dev/null
+if [[ "$(_read_attempt_quota "$redirect_log")" == "1" \
+	&& "$(_read_last_attempt_field "$redirect_log" 12)" == "1" \
+	&& "$(_read_last_attempt_field "$redirect_log" 15)" == "302" ]]; then
+	_pass "redirect frames select the single complete GitHub quota response"
+else
+	_fail "redirect response attribution" "log: $(cat "$redirect_log" 2>/dev/null || true)"
+fi
+
+incomplete_log="$TMP/exact-incomplete-rest.log"
+incomplete_state="$TMP/exact-incomplete-rest-state"
+: >"$incomplete_log"
+if GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$incomplete_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$incomplete_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_REQUEST_ONLY=1 STUB_GH_EXIT_CODE=1 \
+	"$SHIM_RUN" api /repos/owner/repo >/dev/null 2>/dev/null; then
+	_fail "incomplete REST response status" "stub failure unexpectedly succeeded"
+fi
+if [[ "$(_read_attempt_quota "$incomplete_log")" == "unknown" \
+	&& "$(_read_last_attempt_field "$incomplete_log" 12)" == "1" \
+	&& "$(_read_last_attempt_field "$incomplete_log" 14)" == "error" ]]; then
+	_pass "one incomplete request frame preserves exact caller-owned page"
+else
+	_fail "incomplete request page attribution" "log: $(cat "$incomplete_log" 2>/dev/null || true)"
+fi
+
 gap_log="$TMP/exact-counter-gap.log"
 gap_state="$TMP/exact-counter-gap-state"
 : >"$gap_log"
@@ -1222,9 +1303,11 @@ echo ""
 echo "Test 24: response-metered GraphQL quota attribution"
 response_cost_log="$TMP/response-cost-graphql.log"
 response_cost_out="$TMP/response-cost-graphql.out"
+response_cost_state="$TMP/response-cost-graphql-state"
 : >"$response_cost_log"
-STUB_GRAPHQL_RESPONSE_JSON='{"data":{"rateLimit":{"cost":2},"viewer":{"login":"fixture"}}}' \
-	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_TEMP_DIR="$exact_temp" \
+GH_TOKEN=fixture-token STUB_GRAPHQL_RESPONSE_JSON='{"data":{"rateLimit":{"cost":2},"viewer":{"login":"fixture"}}}' \
+	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$response_cost_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
 	AIDEVOPS_GH_API_LOG="$response_cost_log" "$SHIM_RUN" api graphql \
 	-f 'query={viewer{login} rateLimit{cost}}' >"$response_cost_out"
 if [[ "$(_read_attempt_quota "$response_cost_log")" == "2" \
@@ -1235,16 +1318,72 @@ else
 	_fail "response-metered GraphQL attribution" "log: $(cat "$response_cost_log" 2>/dev/null || true) output: $(cat "$response_cost_out" 2>/dev/null || true)"
 fi
 
-response_missing_log="$TMP/response-cost-missing.log"
-: >"$response_missing_log"
-STUB_GRAPHQL_RESPONSE_JSON='{"data":{"viewer":{"login":"fixture"}}}' \
-	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_TEMP_DIR="$exact_temp" \
-	AIDEVOPS_GH_API_LOG="$response_missing_log" "$SHIM_RUN" api graphql \
-	-f 'query={viewer{login}}' >/dev/null
-if [[ "$(_read_attempt_quota "$response_missing_log")" == "unknown" ]]; then
-	_pass "missing GraphQL response cost remains unknown"
+response_followup_log="$TMP/response-cost-followup.log"
+: >"$response_followup_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$response_cost_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$response_followup_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=300 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=301 STUB_GH_DEBUG_REMAINING=4699 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" pr view 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(_read_attempt_quota "$response_followup_log")" == "1" ]]; then
+	_pass "response-metered GraphQL invalidates cumulative state before exact follow-up"
 else
-	_fail "missing response-cost fail-closed behavior" "log: $(cat "$response_missing_log" 2>/dev/null || true)"
+	_fail "response-metered state invalidation" "log: $(cat "$response_followup_log" 2>/dev/null || true)"
+fi
+
+transformed_cost_log="$TMP/response-cost-transformed.log"
+transformed_cost_state="$TMP/response-cost-transformed-state"
+: >"$transformed_cost_log"
+GH_TOKEN=fixture-token STUB_GRAPHQL_RESPONSE_JSON='{"data":{"rateLimit":{"cost":1}}}' \
+	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$transformed_cost_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$transformed_cost_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_BODY='{"data":{"rateLimit":{"cost":1}}}' \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=200 STUB_GH_DEBUG_REMAINING=4800 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" api graphql -f 'query={rateLimit{cost}}' --jq '.data.rateLimit.cost' >/dev/null 2>/dev/null
+if [[ "$(_read_attempt_quota "$transformed_cost_log")" == "1" \
+	&& "$(_read_last_attempt_field "$transformed_cost_log" 6)" != "graphql-response-metered" ]]; then
+	_pass "output-transformed GraphQL queries use response-owned exact transport cost"
+else
+	_fail "transformed GraphQL response-meter guard" "log: $(cat "$transformed_cost_log" 2>/dev/null || true)"
+fi
+
+response_missing_log="$TMP/response-cost-missing.log"
+response_missing_out="$TMP/response-cost-missing.out"
+response_missing_state="$TMP/response-cost-missing-state"
+: >"$response_missing_log"
+GH_TOKEN=fixture-token STUB_GRAPHQL_RESPONSE_JSON='{"data":{"viewer":{"login":"fixture"}}}' \
+	AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$response_missing_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$response_missing_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" api graphql -f 'query={viewer{login}}' >"$response_missing_out" 2>/dev/null
+if [[ "$(_read_attempt_quota "$response_missing_log")" == "1" \
+	&& "$(_read_last_attempt_field "$response_missing_log" 6)" != "graphql-response-metered" \
+	&& "$(jq -r '.data.viewer.login' "$response_missing_out")" == "fixture" ]]; then
+	_pass "GraphQL queries without rateLimit.cost use exact transport capture"
+else
+	_fail "missing response-cost transport fallback" "log: $(cat "$response_missing_log" 2>/dev/null || true) output: $(cat "$response_missing_out" 2>/dev/null || true)"
+fi
+
+native_meter_log="$TMP/response-cost-native-command.log"
+native_meter_state="$TMP/response-cost-native-command-state"
+: >"$native_meter_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+	AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 AIDEVOPS_GH_QUOTA_STATE_DIR="$native_meter_state" \
+	AIDEVOPS_TEMP_DIR="$exact_temp" AIDEVOPS_GH_API_LOG="$native_meter_log" \
+	STUB_GH_DEBUG_RESPONSE=1 STUB_BOOTSTRAP_GRAPHQL_USED=200 \
+	STUB_GH_DEBUG_RESOURCE=graphql STUB_GH_DEBUG_USED=201 \
+	STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" pr view 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(_read_attempt_quota "$native_meter_log")" == "1" \
+	&& "$(_read_last_attempt_field "$native_meter_log" 6)" != "graphql-response-metered" ]]; then
+	_pass "global response-meter flag cannot intercept native GraphQL commands"
+else
+	_fail "native GraphQL response-meter guard" "log: $(cat "$native_meter_log" 2>/dev/null || true)"
 fi
 
 # =============================================================================

@@ -394,6 +394,26 @@ _shim_transport_page() {
 	return 0
 }
 
+_shim_graphql_query_requests_rate_limit_cost() {
+	local -a arguments=("$@")
+	local command_name="${arguments[0]:-}"
+	local subcommand="${arguments[1]:-}"
+	local arg=""
+	local query=""
+	local cost_pattern='rateLimit[[:space:]]*(\([^)]*\)[[:space:]]*)?\{[^}]*cost([[:space:]}(]|$)'
+	[[ "$command_name" == "api" && "$subcommand" == "graphql" ]] || return 1
+	for arg in "${arguments[@]:2}"; do
+		case "$arg" in
+		--include | --paginate | --silent | --slurp | -i | -q | --jq | -t | --template) return 1 ;;
+		--jq=* | --template=* | -q?* | -t?*) return 1 ;;
+		query=*) query="${arg#query=}" ;;
+		-fquery=* | -Fquery=* | --field=query=* | --raw-field=query=*) query="${arg#*=}" ;;
+		esac
+	done
+	[[ -n "$query" && "$query" =~ $cost_pattern ]] || return 1
+	return 0
+}
+
 #######################################
 # Execute one fixed-shape GraphQL query whose response includes
 # data.rateLimit.cost. Capture stdout privately, record the returned operation-
@@ -409,15 +429,22 @@ _shim_run_response_metered_graphql() {
 		local retry="$1"; shift
 		local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 		local output_file="" start_ms="" end_ms="" elapsed_ms="" quota_cost=""
+		local quota_state_file="" quota_lock_dir=""
 		local rc=0 replay_rc=0 outcome="success"
 
 		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-0}" == "1" && "$path" == "graphql" ]] || return 125
+		_shim_graphql_query_requests_rate_limit_cost "$@" || return 125
 		declare -F gh_record_attempt >/dev/null 2>&1 || return 125
 		declare -F _ghqa_prepare_private_dir >/dev/null 2>&1 || return 125
+		declare -F _ghqa_response_meter_lock_acquire >/dev/null 2>&1 || return 125
+		declare -F _ghqa_response_meter_lock_invalidate_release >/dev/null 2>&1 || return 125
 		command -v jq >/dev/null 2>&1 || return 125
+		_ghqa_response_meter_lock_acquire "$executable" "$@" || return 125
+		quota_state_file="$_GHQA_RESPONSE_METER_STATE_FILE"
+		quota_lock_dir="$_GHQA_RESPONSE_METER_LOCK_DIR"
+		trap '_ghqa_response_meter_lock_invalidate_release "$quota_state_file" "$quota_lock_dir"; [[ -z "$output_file" ]] || rm -f -- "$output_file" 2>/dev/null || true' EXIT
 		_ghqa_prepare_private_dir "$temp_dir" || return 125
 		output_file=$(mktemp "${temp_dir}/gh-graphql-cost-response.XXXXXX" 2>/dev/null) || return 125
-		trap 'rm -f -- "$output_file" 2>/dev/null || true' EXIT
 		trap 'exit 129' HUP
 		trap 'exit 130' INT
 		trap 'exit 143' TERM

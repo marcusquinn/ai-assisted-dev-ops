@@ -21,6 +21,8 @@ _GHQA_METHOD=""
 _GHQA_FIELDS_REQUESTED=0
 _GHQA_INPUT_REQUESTED=0
 _GHQA_AMBIGUOUS=0
+_GHQA_RESPONSE_METER_STATE_FILE=""
+_GHQA_RESPONSE_METER_LOCK_DIR=""
 
 _ghqa_lower() {
 	local value="$1"
@@ -271,6 +273,39 @@ _ghqa_lock_release() {
 	return 0
 }
 
+_ghqa_response_meter_lock_acquire() {
+	local executable="$1"
+	shift
+	local host=""
+	local fingerprint=""
+	local state_dir=""
+	local state_file=""
+	local lock_dir=""
+	_GHQA_RESPONSE_METER_STATE_FILE=""
+	_GHQA_RESPONSE_METER_LOCK_DIR=""
+	[[ "${AIDEVOPS_GH_EXACT_QUOTA_CAPTURE:-0}" == 1 ]] || return 0
+	host=$(_ghqa_target_host "$@" 2>/dev/null || true)
+	[[ "$host" == github.com ]] || return 1
+	fingerprint=$(_ghqa_auth_fingerprint "$executable" "$host" 2>/dev/null || true)
+	[[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || return 1
+	state_dir="${AIDEVOPS_GH_QUOTA_STATE_DIR:-${HOME}/.aidevops/state/gh-quota-attribution}"
+	_ghqa_prepare_private_dir "$state_dir" || return 1
+	state_file="${state_dir}/${fingerprint}.state"
+	lock_dir="${state_file}.lock.d"
+	_ghqa_lock_acquire "$lock_dir" || return 1
+	_GHQA_RESPONSE_METER_STATE_FILE="$state_file"
+	_GHQA_RESPONSE_METER_LOCK_DIR="$lock_dir"
+	return 0
+}
+
+_ghqa_response_meter_lock_invalidate_release() {
+	local state_file="$1"
+	local lock_dir="$2"
+	[[ -z "$state_file" ]] || rm -f -- "$state_file" 2>/dev/null || true
+	[[ -z "$lock_dir" ]] || _ghqa_lock_release "$lock_dir"
+	return 0
+}
+
 _ghqa_state_get() {
 	local state_file="$1"
 	local requested_resource="$2"
@@ -500,9 +535,9 @@ _ghqa_capture_cleanup() {
 _ghqa_capture_frames_valid() {
 	local parsed="$1"
 	local expected_frames="$2"
-	local kind frame_index status_count status resource used remaining reset elapsed
+	local kind frame_index status_count status resource used remaining reset elapsed response_cost
 	local rows=0
-	while IFS=$'\t' read -r kind frame_index status_count status resource used remaining reset elapsed; do
+	while IFS=$'\t' read -r kind frame_index status_count status resource used remaining reset elapsed response_cost; do
 		[[ "$kind" == frame ]] || continue
 		rows=$((rows + 1))
 		[[ "$frame_index" =~ ^[1-9][0-9]*$ && "$status_count" == 1 ]] || return 1
@@ -511,6 +546,7 @@ _ghqa_capture_frames_valid() {
 		for value in "$used" "$remaining" "$reset" "$elapsed"; do
 			[[ "$value" =~ ^[0-9]+$ ]] || return 1
 		done
+		[[ -z "$response_cost" || "$response_cost" =~ ^[0-9]+$ ]] || return 1
 	done <<<"$parsed"
 	[[ "$rows" -eq "$expected_frames" && "$rows" -gt 0 ]]
 	return $?
@@ -532,6 +568,7 @@ _ghqa_response_cost() {
 	local resource="$2"
 	local used="$3"
 	local reset="$4"
+	local status="$5"
 	local previous="" previous_used="" previous_reset="" delta=""
 	previous=$(_ghqa_state_get "$state_file" "$resource" 2>/dev/null || true)
 	IFS=$'\t' read -r previous_used previous_reset <<<"$previous"
@@ -545,6 +582,11 @@ _ghqa_response_cost() {
 		printf '1'
 		return 0
 	fi
+	if [[ "$delta" == 0 && "$status" =~ ^[0-9]{3}$ ]] \
+		&& ((status == 304 || status >= 400)); then
+		printf '0'
+		return 0
+	fi
 	return 1
 }
 
@@ -556,14 +598,15 @@ _ghqa_write_complete_frames() {
 	local command_rc="$5"
 	local parsed="$6"
 	shift 6
-	local kind="" frame_index="" status_count="" status="" resource="" used="" remaining="" reset="" elapsed=""
+	local kind="" frame_index="" status_count="" status="" resource="" used="" remaining="" reset="" elapsed="" response_cost=""
 	local frame_total=0 path="" pool="" page="" outcome="" quota_cost="" exact_success_cost="" decision=""
+	local invalidate_state=0
 	local success_quota_cost="${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}"
 	frame_total=$(printf '%s\n' "$parsed" | awk -F '\t' '$1 == "frame" { count++ } END { print count + 0 }')
 	if [[ "$command_rc" -eq 0 && "$frame_total" -eq 1 ]]; then
 		exact_success_cost=$(_ghqa_exact_success_cost "$original_path" "${@:2}" 2>/dev/null || true)
 	fi
-	while IFS=$'\t' read -r kind frame_index status_count status resource used remaining reset elapsed; do
+	while IFS=$'\t' read -r kind frame_index status_count status resource used remaining reset elapsed response_cost; do
 		[[ "$kind" == frame ]] || continue
 		path=$(_ghqa_path_for_resource "$original_path" "$resource")
 		pool=$(_ghqa_pool_for_resource "$resource")
@@ -580,8 +623,11 @@ _ghqa_write_complete_frames() {
 			quota_cost="$success_quota_cost"
 		elif [[ -n "$exact_success_cost" ]]; then
 			quota_cost="$exact_success_cost"
+		elif [[ "$resource" == graphql && "$response_cost" =~ ^[0-9]+$ ]]; then
+			quota_cost="$response_cost"
+			invalidate_state=1
 		else
-			quota_cost=$(_ghqa_response_cost "$state_file" "$resource" "$used" "$reset" 2>/dev/null || true)
+			quota_cost=$(_ghqa_response_cost "$state_file" "$resource" "$used" "$reset" "$status" 2>/dev/null || true)
 		fi
 		[[ -n "$quota_cost" ]] || quota_cost=x
 		# Always advance the observed counter state, including operation-owned
@@ -592,6 +638,7 @@ _ghqa_write_complete_frames() {
 			"$path" "$page" "$outcome" "$status" "$elapsed" "$quota_cost" \
 			"$pool" "$decision" "$remaining" >>"$result_file"
 	done <<<"$parsed"
+	[[ "$invalidate_state" -eq 0 ]] || rm -f -- "$state_file" 2>/dev/null || true
 	return 0
 }
 
@@ -649,6 +696,11 @@ _ghqa_capture_locked() {
 	if [[ "$version" == v1 && "$frame_count" =~ ^[1-9][0-9]*$ ]] \
 		&& _ghqa_capture_frames_valid "$parsed" "$frame_count"; then
 		_ghqa_write_complete_frames "$result_file" "$state_file" "$path" "$page" "$rc" "$parsed" "$@"
+	elif [[ "$version" == v1 && "$frame_count" == 1 ]]; then
+		# One recognized request frame proves the attempt and caller-owned page,
+		# even when no complete response metadata arrived. Quota remains unknown.
+		_ghqa_write_fallback_attempt "$result_file" "$path" "$page" \
+			"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""
 	else
 		_ghqa_write_fallback_attempt "$result_file" "$path" 0 \
 			"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""
