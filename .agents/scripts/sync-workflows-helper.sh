@@ -1299,8 +1299,7 @@ _sync_one_repo() {
 		return 0
 	fi
 
-	_PREFLIGHT_DEFAULT_BRANCH=""
-	_PREFLIGHT_REMOTE=""
+	_PREFLIGHT_DEFAULT_BRANCH="" _PREFLIGHT_REMOTE=""
 	local _pf_rc
 	_sync_preflight "$_slug" "$_path" "$_status"
 	_pf_rc=$?
@@ -1309,9 +1308,7 @@ _sync_one_repo() {
 		[[ "$_pf_rc" -eq 2 ]] && return 0
 		return 1
 	fi
-	local _default_branch="$_PREFLIGHT_DEFAULT_BRANCH"
-	local _remote="$_PREFLIGHT_REMOTE"
-	local _refresh_output
+	local _default_branch="$_PREFLIGHT_DEFAULT_BRANCH" _remote="$_PREFLIGHT_REMOTE" _refresh_output
 	if ! _refresh_output=$(_sync_refresh_checkout \
 		"$_slug" "$_path" "$_status" "$_remote" "$_default_branch" "$_branch_name"); then
 		printf '%s\n' "$_refresh_output"
