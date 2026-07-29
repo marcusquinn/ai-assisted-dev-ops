@@ -978,7 +978,10 @@ test_dispatch_pr_launches_targeted_worker_with_human_opt_in() {
 	PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN=true $SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
 	wait_for_headless_log || true
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
-	if [[ -s "$HEADLESS_LOG" && -f "$state_file" ]] && grep -q 'Target: PR #1 in owner/repo' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+	if [[ -s "$HEADLESS_LOG" && -f "$state_file" ]] &&
+		grep -q 'Target: PR #1 in owner/repo' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -q 'For each unresolved review thread' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		! grep -q 'For each unresolved bot finding' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
 		print_result "dispatch-pr launches bounded targeted worker with human opt-in" 0
 	else
 		print_result "dispatch-pr launches bounded targeted worker with human opt-in" 1 "headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=${state_file}"
