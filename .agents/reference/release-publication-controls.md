@@ -83,6 +83,10 @@ Aggregation PR #28799 reviews authorized PR #28798 at
 deterministic simplification-state registry commit advanced `main` before its
 worker-runtime release was published.
 
+A pending aggregation reviews authorized release checkpoint PR #28841 at
+`0c4744706c2beea41e3c56170f2e0b66746c8813` because the deterministic
+simplification-state registry commit advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
