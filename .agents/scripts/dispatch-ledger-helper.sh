@@ -87,6 +87,15 @@ _lease_latest_entry() {
 	return $?
 }
 
+_lease_latest_entry_for_token() {
+	local session_key="$1"
+	local lease_token="$2"
+	jq -sc --arg sk "$session_key" --arg token "$lease_token" \
+		'[.[] | select(.session_key == $sk and (.lease_token // "") == $token)] | last // empty' \
+		"$LEDGER_FILE" 2>/dev/null
+	return $?
+}
+
 _lease_entry_is_active() {
 	local entry="$1"
 	local now_epoch="" expires_at="" phase="" status=""
@@ -330,7 +339,11 @@ _lease_registration_exists() {
 	local lease_token="$2"
 	[[ -s "$LEDGER_FILE" ]] || return 1
 	local existing="" existing_token="" existing_status=""
-	existing=$(_lease_latest_entry "$session_key") || return 1
+	if [[ -n "$lease_token" ]]; then
+		existing=$(_lease_latest_entry_for_token "$session_key" "$lease_token") || return 1
+	else
+		existing=$(_lease_latest_entry "$session_key") || return 1
+	fi
 	existing_token=$(printf '%s' "$existing" | jq -r '.lease_token // ""' 2>/dev/null) || return 1
 	existing_status=$(printf '%s' "$existing" | jq -r '.status // ""' 2>/dev/null) || return 1
 	if [[ -n "$lease_token" ]]; then
@@ -346,7 +359,7 @@ _lease_terminal_registration_exists() {
 	local lease_token="$2"
 	[[ -n "$lease_token" && -s "$LEDGER_FILE" ]] || return 1
 	local existing="" existing_token=""
-	existing=$(_lease_latest_entry "$session_key") || return 1
+	existing=$(_lease_latest_entry_for_token "$session_key" "$lease_token") || return 1
 	existing_token=$(printf '%s' "$existing" | jq -r '.lease_token // ""' 2>/dev/null) || return 1
 	[[ "$existing_token" == "$lease_token" ]] || return 1
 	if _lease_entry_is_active "$existing"; then
@@ -495,7 +508,7 @@ _lease_append_transition() {
 	_ensure_ledger
 	_acquire_lock || return 1
 	local current=""
-	current=$(_lease_latest_entry "$session_key") || current=""
+	current=$(_lease_latest_entry_for_token "$session_key" "$lease_token") || current=""
 	if [[ -z "$current" || "$(printf '%s' "$current" | jq -r '.lease_token // ""')" != "$lease_token" ]]; then
 		_release_lock
 		return 1
