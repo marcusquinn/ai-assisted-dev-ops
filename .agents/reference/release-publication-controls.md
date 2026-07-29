@@ -91,7 +91,7 @@ Aggregation PR #28875 reviews authorized PR #28871 at
 `4b1ef7ef1d0e5fdd27b4961b47e278063c47ae55` because deterministic task-state
 updates and PR #28870 advanced `main` before publication.
 
-A follow-up aggregation reviews authorized PR #28871 at
+Aggregation PR #28879 reviews authorized PR #28871 at
 `4b1ef7ef1d0e5fdd27b4961b47e278063c47ae55` and prior aggregation PR #28875 at
 `a039ed430bc97bd0327ddfc1d0d2a1b4f790277d` because PR #28876 advanced `main`
 before publication.
