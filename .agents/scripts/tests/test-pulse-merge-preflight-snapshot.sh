@@ -132,7 +132,7 @@ stub_inline_comments() {
 stub_commit_status() {
 	local gate_at="2026-01-01T00:01:10Z"
 	[[ "$SNAPSHOT_MODE" == "stale_gate" ]] && gate_at="2026-01-01T00:00:20Z"
-	if [[ "$SNAPSHOT_MODE" == "no_status_gate" ]]; then
+	if [[ "$SNAPSHOT_MODE" == "no_status_gate" || "$SNAPSHOT_MODE" == "review_alias_skipped" || "$SNAPSHOT_MODE" == "review_alias_neutral" ]]; then
 		printf '%s\n' '{"statuses":[]}'
 	elif [[ "$SNAPSHOT_MODE" == "review_stable_fail" ]]; then
 		printf '{"statuses":[{"context":"review-bot-gate","state":"failure","updated_at":"%s"}]}\n' "$gate_at"
@@ -202,6 +202,10 @@ gh() {
 			extra_check=',{"name":"CodeFactor","status":"completed","conclusion":"failure","completed_at":"2026-01-01T00:01:00Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "review_alias_cancelled" ]]; then
 			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"cancelled","completed_at":"2026-01-01T00:01:02Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_alias_skipped" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"skipped","completed_at":"2026-01-01T00:01:02Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_alias_neutral" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"neutral","completed_at":"2026-01-01T00:01:02Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "review_stable_fail" ]]; then
 			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"success","completed_at":"2026-01-01T00:01:02Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "maintainer_alias_fail" ]]; then
@@ -428,6 +432,10 @@ assert_review_and_head_snapshot_cases() {
 	assert_gate "stable review-bot status supersedes a cancelled caller alias" review_alias_cancelled 0
 	assert_gate_blocker "failed stable review-bot status overrides a successful caller alias" \
 		review_stable_fail 1 "$PMRC_BLOCKER_REVIEW_GATE"
+	assert_gate_blocker "alias-only skipped review gate fails closed" \
+		review_alias_skipped 1 "$PMRC_BLOCKER_REVIEW_GATE"
+	assert_gate_blocker "alias-only neutral review gate fails closed" \
+		review_alias_neutral 1 "$PMRC_BLOCKER_REVIEW_GATE"
 	assert_gate "stable maintainer-gate success supersedes stale alias failures" maintainer_alias_fail 0
 	assert_gate "stable maintainer-gate failure remains one logical blocker" maintainer_stable_fail 1
 	if [[ "$(grep -c "maintainer-gate family is terminal-failure" "$LOGFILE" || true)" -eq 1 ]]; then

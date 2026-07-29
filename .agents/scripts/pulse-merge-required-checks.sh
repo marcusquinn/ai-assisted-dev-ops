@@ -385,7 +385,8 @@ _pmrc_normalize_snapshot_checks_json() {
 					status: (if any($effective[]; .status != $completed) then $in_progress else $completed end),
 					conclusion: (
 						if any($effective[]; (.conclusion == $failure or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure")) then $failure
-						elif all($effective[]; (.conclusion == $success or .conclusion == "neutral" or .conclusion == $skipped)) then $success
+						elif ($family == $review_gate and all($effective[]; .conclusion == $success)) then $success
+						elif ($family == $maintainer and all($effective[]; (.conclusion == $success or .conclusion == "neutral" or .conclusion == $skipped))) then $success
 						else "" end
 					),
 					observed_at: ([$effective[]?.observed_at | select(. != "")] | max // ""),
