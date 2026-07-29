@@ -67,10 +67,12 @@ _footprint_extract_paths() {
 	# EDIT:/NEW:/File: prefixed paths (brief template format). Keep this
 	# intent-aware: backticked paths on ordinary list items are often reference
 	# context and must not create false dispatch-overlap deferrals (GH#27787).
+	# File requires its explicit colon so prose such as "File refs verified"
+	# cannot become a synthetic path claim (GH#28861).
 	local prefixed
-	# shellcheck disable=SC2016 # `\s` is a grep regex escape, not shell expansion.
-	prefixed=$(printf '%s' "$issue_body" | grep -oE '(EDIT|NEW|File):?\s+[`"]?[^`"[:space:],]+' 2>/dev/null |
-		sed 's/^[A-Z]*:*[[:space:]]*//' | sed 's/^[`"]//' | sed 's/[`"]*$//' | sort -u) || prefixed=""
+	# shellcheck disable=SC2016 # Backticks are literal regex characters, not shell expansion.
+	prefixed=$(printf '%s' "$issue_body" | grep -oE '((EDIT|NEW):?|File:)[[:space:]]+[`"]?[^`"[:space:],]+' 2>/dev/null |
+		sed -E 's/^((EDIT|NEW):?|File:)[[:space:]]*//' | sed 's/^[`"]//' | sed 's/[`"]*$//' | sort -u) || prefixed=""
 
 	# Strip line-number qualifiers — we only care about file-level overlap
 	# Handles: file.sh:45, file.sh:45-60, file.sh:1477

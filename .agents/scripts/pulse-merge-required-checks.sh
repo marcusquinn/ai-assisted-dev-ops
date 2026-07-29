@@ -13,6 +13,8 @@ PMRC_JSON_ARRAY="array"
 PMRC_MAINTAINER_GATE="maintainer-gate"
 PMRC_MAINTAINER_GATE_DISPLAY="Maintainer Review & Assignee Gate"
 PMRC_MAINTAINER_GATE_WORKFLOW="gate / Maintainer Review & Assignee Gate"
+PMRC_REVIEW_BOT_GATE="review-bot-gate"
+PMRC_REVIEW_BOT_GATE_WORKFLOW="gate / review-bot-gate"
 PMRC_SUBJECT_HEAD_PREFIX="head "
 PMRC_SUBJECT_PR_PREFIX="PR #"
 PMRC_BLOCKER_REVIEW_BOT_THREADS="review-bot-threads"
@@ -303,27 +305,17 @@ _pmrc_record_preflight_check_mismatch() {
 	return 0
 }
 
-_pmrc_snapshot_checks_json() {
+_pmrc_normalize_snapshot_checks_json() {
 	local repo_slug="$1"
 	local head_sha="$2"
-	local runs_pages="" statuses_json="" checks_json=""
+	local checks_json=""
 
-	runs_pages=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/check-runs?per_page=100" \
-		--paginate --slurp 2>/dev/null) || {
-		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-runs fetch"
-		return 1
-	}
-	statuses_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/status" 2>/dev/null) || {
-		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "commit-status fetch"
-		return 1
-	}
-	# Stream API documents over stdin instead of passing large check-run payloads
-	# through --argjson, which can exceed the OS per-argument limit (GH#28164).
-	checks_json=$(printf '%s\n%s\n' "$runs_pages" "$statuses_json" | jq -s \
+	checks_json=$(jq -s \
 		--arg completed "$PMRC_CHECK_COMPLETED" --arg success "$PMRC_CHECK_SUCCESS" --arg failure "$PMRC_CHECK_FAILURE" \
 		--arg array_type "$PMRC_JSON_ARRAY" \
 		--arg skipped "skipped" --arg maintainer "$PMRC_MAINTAINER_GATE" --arg maintainer_display "$PMRC_MAINTAINER_GATE_DISPLAY" \
-		--arg maintainer_workflow "$PMRC_MAINTAINER_GATE_WORKFLOW" '
+		--arg maintainer_workflow "$PMRC_MAINTAINER_GATE_WORKFLOW" \
+		--arg review_gate "$PMRC_REVIEW_BOT_GATE" --arg review_gate_workflow "$PMRC_REVIEW_BOT_GATE_WORKFLOW" '
 		if length != 2 or (.[0] | type) != $array_type or (.[1] | type) != "object"
 		then error("invalid check-runs or commit-status response")
 		else . end |
@@ -360,22 +352,35 @@ _pmrc_snapshot_checks_json() {
 			| $executed // last
 		)
 		| map(. + {
-			family: (if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer else .name end),
-			family_key: (if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer else (.source + "\u0000" + .name) end)
+			family: (
+				if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer
+				elif (.name == $review_gate or .name == $review_gate_workflow) then $review_gate
+				else .name end
+			),
+			family_key: (
+				if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer
+				elif (.name == $review_gate or .name == $review_gate_workflow) then $review_gate
+				else (.source + "\u0000" + .name) end
+			)
 		})
 		| sort_by(.family_key, .name, .source)
 		| group_by(.family_key)
 		| map(
 			. as $members
-			| if .[0].family == $maintainer then
+			| .[0].family as $family
+			| if ($family == $maintainer or $family == $review_gate) then
 				# The stable branch-protection context is authoritative when present.
-				# Legacy workflow aliases remain fallback evidence only; otherwise a
-				# stale failed alias can override a newer successful stable status.
-				([$members[] | select(.name == $maintainer)] | sort_by(.observed_at)) as $stable
+				# The explicit review-gate commit status is its stable context; legacy
+				# workflow aliases remain fallback evidence only. This prevents a stale
+				# failed or cancelled caller from overriding a newer stable result.
+				([$members[] | select(
+					($family == $maintainer and .name == $maintainer)
+					or ($family == $review_gate and .source == "commit_status" and .name == $review_gate)
+				)] | sort_by(.observed_at)) as $stable
 				| (if ($stable | length) > 0 then $stable else ($members | sort_by(.observed_at)) end) as $effective
 				| {
-					name: $maintainer,
-					family: $maintainer,
+					name: $family,
+					family: $family,
 					source: "logical_family",
 					status: (if any($effective[]; .status != $completed) then $in_progress else $completed end),
 					conclusion: (
@@ -395,6 +400,28 @@ _pmrc_snapshot_checks_json() {
 		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-set parse"
 		return 1
 	}
+	printf '%s\n' "$checks_json"
+	return 0
+}
+
+_pmrc_snapshot_checks_json() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	local runs_pages="" statuses_json="" checks_json=""
+
+	runs_pages=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/check-runs?per_page=100" \
+		--paginate --slurp 2>/dev/null) || {
+		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-runs fetch"
+		return 1
+	}
+	statuses_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/status" 2>/dev/null) || {
+		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "commit-status fetch"
+		return 1
+	}
+	# Stream API documents over stdin instead of passing large check-run payloads
+	# through --argjson, which can exceed the OS per-argument limit (GH#28164).
+	checks_json=$(printf '%s\n%s\n' "$runs_pages" "$statuses_json" |
+		_pmrc_normalize_snapshot_checks_json "$repo_slug" "$head_sha") || return 1
 	printf '%s\n' "$checks_json"
 	return 0
 }
@@ -894,14 +921,14 @@ _pulse_merge_preflight_snapshot_gate() {
 		return 1
 	fi
 	if ! _pmrc_snapshot_review_threads_clear "$repo_slug" "$pr_number" "$base_branch"; then
-		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] || \
+		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] ||
 			_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_SNAPSHOT_UNAVAILABLE"
 		return 1
 	fi
 	if ! _pmrc_snapshot_checks_acceptable \
 		"$repo_slug" "$pr_number" "$checks_json" "$required_contexts" \
 		"$live_gate_evidence" "$current_head_sha"; then
-		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] || \
+		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] ||
 			_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_CHECKS_FAILED"
 		_pmrc_record_preflight_check_mismatch
 		return 1

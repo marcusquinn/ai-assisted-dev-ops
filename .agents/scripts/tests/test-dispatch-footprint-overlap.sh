@@ -8,11 +8,12 @@
 #
 #   1. _footprint_extract_paths parses explicit EDIT:/NEW:/File: declarations
 #      from issue bodies, ignores context references, and strips line qualifiers.
-#   2. _footprint_check_overlap detects overlap between a candidate and
+#   2. Ordinary prose beginning with "File" is not treated as a declaration.
+#   3. _footprint_check_overlap detects overlap between a candidate and
 #      in-flight issues (via mock data).
-#   3. _footprint_check_overlap allows dispatch when file sets are disjoint.
-#   4. _footprint_extract_paths returns empty for issues with no file paths.
-#   5. Overlap detection handles normalisation (stripping .agents/ prefix).
+#   4. _footprint_check_overlap allows dispatch when file sets are disjoint.
+#   5. _footprint_extract_paths returns empty for issues with no file paths.
+#   6. Overlap detection handles normalisation (stripping .agents/ prefix).
 #
 # Failure history motivating this test: GH#19106 (CONFLICTING cascades
 # from overlapping file edits by parallel workers).
@@ -61,11 +62,11 @@ body_with_edits='## Files to Modify
 - File: `docs/dispatch.md` — update behavior documentation'
 
 result=$(_footprint_extract_paths "$body_with_edits")
-# Should contain all four files, stripped of line qualifiers
-if printf '%s' "$result" | grep -q "pulse-wrapper.sh" &&
-	printf '%s' "$result" | grep -q "dispatch-dedup-footprint.sh" &&
-	printf '%s' "$result" | grep -q "complexity-thresholds.conf" &&
-	printf '%s' "$result" | grep -q "docs/dispatch.md"; then
+expected='.agents/configs/complexity-thresholds.conf
+.agents/scripts/dispatch-dedup-footprint.sh
+.agents/scripts/pulse-wrapper.sh
+docs/dispatch.md'
+if [[ "$result" == "$expected" ]]; then
 	print_result "extract_paths: parses EDIT/NEW/File prefixed paths" 0
 else
 	print_result "extract_paths: parses EDIT/NEW/File prefixed paths" 1 "(got: ${result})"
@@ -105,7 +106,22 @@ else
 fi
 
 # =============================================================================
-# Test 4 — _footprint_extract_paths returns only declared paths in mixed briefs
+# Test 4 — _footprint_extract_paths ignores non-declaration "File" prose
+# =============================================================================
+body_file_refs='## Pre-flight
+
+File refs verified against the current implementation.
+No files are declared for modification in this section.'
+
+result=$(_footprint_extract_paths "$body_file_refs")
+if [[ -z "$result" ]]; then
+	print_result "extract_paths: ignores File prose without an explicit colon" 0
+else
+	print_result "extract_paths: ignores File prose without an explicit colon" 1 "(got: ${result})"
+fi
+
+# =============================================================================
+# Test 5 — _footprint_extract_paths returns only declared paths in mixed briefs
 # =============================================================================
 # shellcheck disable=SC2016 # Markdown backticks are literal fixture content.
 body_mixed='## Files to Modify
@@ -128,7 +144,7 @@ else
 fi
 
 # =============================================================================
-# Test 5 — _footprint_extract_paths returns empty for no-path body
+# Test 6 — _footprint_extract_paths returns empty for no-path body
 # =============================================================================
 body_no_paths='This issue is about improving performance.
 No specific files mentioned here, just a general discussion.'
@@ -141,7 +157,7 @@ else
 fi
 
 # =============================================================================
-# Test 6 — _footprint_check_overlap detects overlap via mock cache
+# Test 7 — _footprint_check_overlap detects overlap via mock cache
 # =============================================================================
 # Simulate an in-flight issue #100 modifying pulse-wrapper.sh
 _FOOTPRINT_CACHE_REPO="test/repo"
@@ -163,7 +179,7 @@ else
 fi
 
 # =============================================================================
-# Test 7 — _footprint_check_overlap allows disjoint file sets
+# Test 8 — _footprint_check_overlap allows disjoint file sets
 # =============================================================================
 # In-flight #100 modifies pulse-wrapper.sh, candidate #201 modifies a different file
 _FOOTPRINT_CACHE_REPO="test/repo"
@@ -184,7 +200,7 @@ else
 fi
 
 # =============================================================================
-# Test 8 — _footprint_check_overlap handles .agents/ prefix normalisation
+# Test 9 — _footprint_check_overlap handles .agents/ prefix normalisation
 # =============================================================================
 # In-flight #100 has path without .agents/ prefix
 _FOOTPRINT_CACHE_REPO="test/repo"
@@ -206,7 +222,7 @@ else
 fi
 
 # =============================================================================
-# Test 9 — _footprint_check_overlap excludes self from in-flight check
+# Test 10 — _footprint_check_overlap excludes self from in-flight check
 # =============================================================================
 # In-flight includes issue #300 itself
 _FOOTPRINT_CACHE_REPO="test/repo"
@@ -227,7 +243,7 @@ else
 fi
 
 # =============================================================================
-# Test 10 — _footprint_get_inflight excludes parent-task coordination footprints
+# Test 11 — _footprint_get_inflight excludes parent-task coordination footprints
 # =============================================================================
 TEST_BIN="${TEST_ROOT}/bin"
 mkdir -p "$TEST_BIN"
