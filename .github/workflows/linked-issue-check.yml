@@ -1,24 +1,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Linked Issue Check
-#
-# Requires every PR to reference a linked issue before it can be merged.
-# Accepts closing keywords (Closes, Fixes, Resolves) and reference keywords
-# (For, Ref) to support parent-task PRs that must not auto-close their issue.
-#
-# Exemptions:
-# - Bot accounts (github-actions[bot], dependabot[bot], etc.)
-# - PRs from OWNER, MEMBER, or COLLABORATOR authors with a task-ID prefix
-#   in the title (tNNN: or GH#NNN:)
-#
-# Title text alone is untrusted and never establishes issue linkage.
-#
-# This check is intentionally separate from maintainer-gate.yml (which checks
-# the *status* of linked issues). This check is earlier — it gates on whether
-# a link exists at all, regardless of issue status.
-#
-# Required status check: add "linked-issue-check" to branch protection rules.
+# Thin self-caller. Policy logic lives in linked-issue-check-reusable.yml so
+# managed repositories can consume the same gate without copied-workflow drift.
 
 name: Linked Issue Check
 
@@ -32,100 +16,4 @@ permissions:
 
 jobs:
   check:
-    name: Linked Issue Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    concurrency:
-      group: linked-issue-check-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-
-    steps:
-      - name: Check for linked issue reference
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const pr = context.payload.pull_request;
-            const body = pr.body || '';
-            const title = pr.title || '';
-            const headSha = pr.head.sha;
-            const repo = context.repo;
-
-            // A positive policy result must not become a failed workflow just
-            // because the installation's shared REST quota was exhausted while
-            // publishing the compatibility StatusContext. The workflow check is
-            // itself authoritative; negative policy results still fail closed.
-            const publishStatus = async (state, description) => {
-              try {
-                await github.rest.repos.createCommitStatus({
-                  owner: repo.owner,
-                  repo: repo.repo,
-                  sha: headSha,
-                  state,
-                  context: 'linked-issue-check',
-                  description
-                });
-              } catch (error) {
-                const remaining = error.response?.headers?.['x-ratelimit-remaining'];
-                const exhausted = error.status === 403 && remaining === '0';
-                if (state === 'success' && exhausted) {
-                  core.warning('Linked-issue policy passed, but the compatibility status could not be posted because GitHub API quota is exhausted.');
-                  return;
-                }
-                throw error;
-              }
-            };
-
-            // Safety guard: skip if this is an external bot PR from a fork
-            // pull_request_target runs in base repo context, but we should not
-            // process PRs from non-User accounts in forks
-            const isFork = Boolean(pr.head.repo) && pr.head.repo.full_name !== pr.base.repo.full_name;
-            if (isFork && pr.user.type === 'Bot') {
-              console.log(`External bot PR from fork — skipping linked-issue check`);
-              await publishStatus('success', 'External bot PR — skipped');
-              return;
-            }
-
-            // Bot accounts are exempt
-            if (pr.user.type === 'Bot') {
-              console.log(`Author ${pr.user.login} is a bot — exempt from linked-issue check`);
-              await publishStatus('success', 'Bot PR — exempt from linked-issue requirement');
-              return;
-            }
-
-            // Internal task prefixes are meaningful only when immutable GitHub
-            // author metadata independently establishes maintainer trust.
-            // CONTRIBUTOR remains untrusted even after prior contributions.
-            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-            const hasTaskPrefix = /^(t\d+(\.\d+)*|GH#\d+)[:\s]/.test(title);
-            // #aidevops:trust-boundary GH#17671/GH#28567
-            if (trustedRoles.includes(pr.author_association) && hasTaskPrefix) {
-              console.log(`Trusted ${pr.author_association} author has task-ID prefix — exempt from linked-issue check`);
-              await publishStatus('success', 'Trusted task-ID prefix — issue linkage via task system');
-              return;
-            }
-
-            // Check PR body for issue references (closing and reference keywords)
-            // Closing: Closes, Fixes, Resolves (also plural/past forms)
-            // Reference: For, Ref (for parent-task PRs)
-            const issueRefPattern = /(closes?|fixes?|resolves?|for|ref)[:\s]+#\d+/i;
-            const hasLinkedIssue = issueRefPattern.test(body);
-
-            if (hasLinkedIssue) {
-              const match = body.match(/(closes?|fixes?|resolves?|for|ref)[:\s]+#(\d+)/i);
-              const issueNum = match ? match[2] : 'unknown';
-              console.log(`Found linked issue reference — #${issueNum}`);
-              await publishStatus('success', `Linked issue found — #${issueNum}`);
-              return;
-            }
-
-            // No linked issue found — block through the explicit commit status.
-            // Keep the workflow job green so CI-failure mining does not treat
-            // an intentional policy gate as a systemic workflow failure.
-            console.log(`No linked issue reference found in PR body`);
-            await publishStatus('failure', 'No linked issue — add Closes/Fixes/Resolves/For #NNN to PR body');
-
-            core.warning(
-              'PR body must reference a linked issue.\n' +
-              'Add one of: `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, `For #NNN`, or `Ref #NNN`\n' +
-              'If no issue exists for this change, please create one first.'
-            );
+    uses: ./.github/workflows/linked-issue-check-reusable.yml

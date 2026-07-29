@@ -1,0 +1,25 @@
+name: Linked Issue Check
+
+# Managed by aidevops framework.
+# Upstream policy lives in:
+# marcusquinn/aidevops/.github/workflows/linked-issue-check-reusable.yml
+# This metadata-only pull_request_target caller never checks out PR-head code.
+#
+# Manage with:
+#   aidevops check-workflows --workflow linked-issue-check
+#   aidevops sync-workflows --workflow linked-issue-check --install-missing
+#
+# Enforce by requiring the "linked-issue-check" status in branch protection or
+# a repository ruleset.
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check:
+    uses: marcusquinn/aidevops/.github/workflows/linked-issue-check-reusable.yml@main

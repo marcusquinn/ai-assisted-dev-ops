@@ -1,0 +1,133 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+#
+# Reusable linked-issue policy gate. The caller owns pull_request_target
+# triggers and grants the permissions ceiling; this workflow consumes event
+# metadata only and never checks out or executes pull-request head code.
+
+name: Linked Issue Check (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label override. Defaults to ubuntu-latest.'
+        required: false
+        default: 'ubuntu-latest'
+        type: string
+
+jobs:
+  check:
+    name: Linked Issue Check
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 2
+    concurrency:
+      group: linked-issue-check-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      issues: read
+      pull-requests: read
+      statuses: write
+
+    steps:
+      - name: Check for linked issue reference
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || '';
+            const title = pr.title || '';
+            const headSha = pr.head.sha;
+            const repo = context.repo;
+
+            // A positive policy result must not become a failed workflow just
+            // because the installation's shared REST quota was exhausted while
+            // publishing the compatibility StatusContext. The workflow check is
+            // itself authoritative; negative policy results still fail closed.
+            const publishStatus = async (state, description) => {
+              try {
+                await github.rest.repos.createCommitStatus({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  sha: headSha,
+                  state,
+                  context: 'linked-issue-check',
+                  description
+                });
+              } catch (error) {
+                const remaining = error.response?.headers?.['x-ratelimit-remaining'];
+                const exhausted = error.status === 403 && remaining === '0';
+                if (state === 'success' && exhausted) {
+                  core.warning('Linked-issue policy passed, but the compatibility status could not be posted because GitHub API quota is exhausted.');
+                  return;
+                }
+                throw error;
+              }
+            };
+
+            // pull_request_target runs with base-repository authority. Trust
+            // immutable actor metadata only; never inspect or execute fork code.
+            const isFork = Boolean(pr.head.repo) && pr.head.repo.full_name !== pr.base.repo.full_name;
+            if (isFork && pr.user.type === 'Bot') {
+              console.log('External bot PR from fork — skipping linked-issue check');
+              await publishStatus('success', 'External bot PR — skipped');
+              return;
+            }
+
+            if (pr.user.type === 'Bot') {
+              console.log(`Author ${pr.user.login} is a bot — exempt from linked-issue check`);
+              await publishStatus('success', 'Bot PR — exempt from linked-issue requirement');
+              return;
+            }
+
+            // CONTRIBUTOR is intentionally external even after prior merges.
+            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            const hasTaskPrefix = /^(t\d+(\.\d+)*|GH#\d+)[:\s]/.test(title);
+            // #aidevops:trust-boundary GH#17671/GH#28567
+            if (trustedRoles.includes(pr.author_association)) {
+              const reason = hasTaskPrefix
+                ? 'Trusted task-ID prefix — issue linkage via task system'
+                : 'Trusted repository author — external policy not applicable';
+              console.log(`Trusted ${pr.author_association} author — exempt from external linked-issue policy`);
+              await publishStatus('success', reason);
+              return;
+            }
+
+            const issueRefPattern = /(closes?|fixes?|resolves?|for|ref)[:\s]+#(\d+)/gi;
+            const issueNumbers = [...body.matchAll(issueRefPattern)].map((match) => Number(match[2]));
+            for (const issueNum of [...new Set(issueNumbers)]) {
+              try {
+                const response = await github.rest.issues.get({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNum
+                });
+                const issue = response.data;
+                if (!issue.pull_request) {
+                  console.log(`Verified local issue reference — #${issueNum}`);
+                  await publishStatus('success', `Linked issue found — #${issueNum}`);
+                  return;
+                }
+                console.log(`Reference #${issueNum} resolves to a pull request, not an issue`);
+              } catch (error) {
+                if (error.status === 404) {
+                  console.log(`Referenced local issue does not exist — #${issueNum}`);
+                  continue;
+                }
+                throw error;
+              }
+            }
+
+            // The explicit StatusContext is the branch-protection contract.
+            // Keep the workflow job green so CI diagnostics do not mistake an
+            // intentional contributor-policy hold for workflow breakage.
+            const failureDescription = issueNumbers.length > 0
+              ? 'Referenced number is not a local issue — add a valid issue reference'
+              : 'No linked issue — add Closes/Fixes/Resolves/For #NNN to PR body';
+            console.log('No valid local issue reference found in PR body');
+            await publishStatus('failure', failureDescription);
+            core.warning(
+              'PR body must reference a linked issue.\n' +
+              'Add one of: `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, `For #NNN`, or `Ref #NNN`\n' +
+              'If no issue exists for this change, please create one first.'
+            );

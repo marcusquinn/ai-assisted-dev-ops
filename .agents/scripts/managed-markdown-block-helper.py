@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+"""Idempotently render a framework-managed block into a Markdown file."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+
+
+class ManagedBlockError(ValueError):
+    """Raised when a template or target has unsafe marker structure."""
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ManagedBlockError(f"{path} is not valid UTF-8") from exc
+
+
+def _template_parts(template_path: Path) -> tuple[str, str, str]:
+    if not template_path.is_file():
+        raise ManagedBlockError(f"template not found: {template_path}")
+
+    block = _read_text(template_path).strip()
+    lines = block.splitlines()
+    if len(lines) < 2:
+        raise ManagedBlockError("template must contain start and end markers")
+
+    start_marker = lines[0].strip()
+    end_marker = lines[-1].strip()
+    for marker, label in ((start_marker, "start"), (end_marker, "end")):
+        if not marker.startswith("<!-- aidevops:") or not marker.endswith(" -->"):
+            raise ManagedBlockError(
+                f"template {label} marker must be an aidevops HTML comment"
+            )
+    if start_marker == end_marker:
+        raise ManagedBlockError("template markers must be distinct")
+    return block, start_marker, end_marker
+
+
+def render_managed_markdown(
+    current: str,
+    block: str,
+    start_marker: str,
+    end_marker: str,
+    default_heading: str,
+) -> str:
+    """Return current Markdown with exactly one canonical managed block."""
+    start_count = current.count(start_marker)
+    end_count = current.count(end_marker)
+    if start_count != end_count or start_count > 1:
+        raise ManagedBlockError(
+            "target must contain either zero markers or one ordered marker pair"
+        )
+
+    if start_count == 1:
+        start_index = current.index(start_marker)
+        end_index = current.index(end_marker, start_index) + len(end_marker)
+        prefix = current[:start_index].rstrip()
+        suffix = current[end_index:].strip()
+        parts = [part for part in (prefix, block, suffix) if part]
+        return "\n\n".join(parts) + "\n"
+
+    prefix = current.rstrip()
+    if not prefix:
+        prefix = default_heading.strip()
+    parts = [part for part in (prefix, block) if part]
+    return "\n\n".join(parts) + "\n"
+
+
+def _render_target(file_path: Path, template_path: Path, default_heading: str) -> str:
+    block, start_marker, end_marker = _template_parts(template_path)
+    current = _read_text(file_path) if file_path.exists() else ""
+    return render_managed_markdown(
+        current, block, start_marker, end_marker, default_heading
+    )
+
+
+def _atomic_write(file_path: Path, content: str) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = (
+        stat.S_IMODE(file_path.stat().st_mode) if file_path.exists() else 0o644
+    )
+    temp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=file_path.parent,
+            prefix=f".{file_path.name}.",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(content)
+            temp_name = temp_file.name
+        os.chmod(temp_name, original_mode)
+        os.replace(temp_name, file_path)
+    finally:
+        if temp_name and os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Check or apply an aidevops-managed Markdown block"
+    )
+    parser.add_argument("command", choices=("check", "apply", "render"))
+    parser.add_argument("--file", required=True, type=Path)
+    parser.add_argument("--template", required=True, type=Path)
+    parser.add_argument("--default-heading", default="# Contributing")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        rendered = _render_target(args.file, args.template, args.default_heading)
+        current = _read_text(args.file) if args.file.exists() else ""
+    except (ManagedBlockError, OSError) as exc:
+        print(f"managed-markdown-block-helper: {exc}", file=sys.stderr)
+        return 2
+
+    if args.command == "render":
+        sys.stdout.write(rendered)
+        return 0
+    if args.command == "check":
+        return 0 if current == rendered else 1
+    if current == rendered:
+        print("CURRENT")
+        return 0
+
+    try:
+        _atomic_write(args.file, rendered)
+    except OSError as exc:
+        print(f"managed-markdown-block-helper: {exc}", file=sys.stderr)
+        return 2
+    print("UPDATED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

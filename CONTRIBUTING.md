@@ -27,15 +27,22 @@ If you cannot use the CLI command, use the issue templates on GitHub. Blank issu
 7. Commit with conventional commits: `git commit -m "feat: add new feature"`
 8. Push and open a PR with the linked issue reference in the PR body
 
-## Issue-first PRs
+<!-- aidevops:issue-first-pr:start -->
+## Issue-first pull requests
 
-Every human-authored PR must have an accompanying GitHub issue before merge. In
-the PR body, include one of the linked-issue keywords accepted by
-`linked-issue-check`: `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, `For #NNN`,
-or `Ref #NNN`.
+If you are not a repository owner, member, or collaborator, create or find a
+GitHub issue for your change **before** opening a pull request. Maintainers
+monitor the issue queue more frequently than unsolicited pull requests, so the
+issue is what puts an external contribution into the review queue.
 
-Use `Resolves #NNN` for leaf fixes that close the issue. Use `For #NNN` or
-`Ref #NNN` for parent, research, or non-closing work.
+Include one accepted local issue reference in the PR body: `Closes #NNN`,
+`Fixes #NNN`, `Resolves #NNN`, `For #NNN`, or `Ref #NNN`. Use a closing keyword
+for a leaf change that should close the issue on merge; use `For` or `Ref` for
+parent, research, or non-closing work.
+
+External human-authored PRs without an issue reference are blocked until the
+reference is added. Bot PRs and trusted maintainer task workflows are exempt.
+<!-- aidevops:issue-first-pr:end -->
 
 ## Documentation-only changes
 
