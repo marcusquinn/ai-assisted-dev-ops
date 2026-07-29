@@ -12,6 +12,8 @@
 #   knowledge-helper.sh init [off|repo|personal] [path]                Set mode and provision
 #   knowledge-helper.sh add <file|url> [--id <id>] [--sensitivity <tier>] [--allow-large]
 #                                                                       Ingest a file or URL into sources/
+#   knowledge-helper.sh folder [import] <directory> [--dry-run] [bounded options]
+#   knowledge-helper.sh folder status <directory> [--json]              Import or inspect a folder snapshot
 #   knowledge-helper.sh list [--state inbox|staging|sources|all] [--kind <type>]
 #                                                                       List known sources
 #   knowledge-helper.sh search <query> [--sensitivity <tier>] [--case <case-id>]
@@ -99,7 +101,10 @@ CONFIG_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-config.json"
 SENSITIVITY_DETECTOR="${SCRIPT_DIR}/sensitivity-detector-helper.sh"
 CORPUS_HELPER="${SCRIPT_DIR}/knowledge-corpus-helper.sh"
 SOURCE_CONTRACT_HELPER="${SCRIPT_DIR}/knowledge_source_contract.py"
+FOLDER_IMPORT_HELPER="${SCRIPT_DIR}/knowledge_folder_import.py"
 PERSONAL_CORPUS_ALIAS="personal:default"
+KNOWLEDGE_MODE_PERSONAL="personal"
+KNOWLEDGE_CAPABILITY_READ="knowledge.read"
 BLOB_THRESHOLD_BYTES=31457280
 META_DEFAULT_SENSITIVITY="internal"
 META_DEFAULT_TRUST="unverified"
@@ -627,7 +632,7 @@ _cmd_add_commit_source() {
 	fi
 	local meta_path="${staging_dir}/meta.json"
 	local corpus_id="repo:default"
-	[[ "$(_get_knowledge_mode "$repo_path")" == "personal" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
+	[[ "$(_get_knowledge_mode "$repo_path")" == "$KNOWLEDGE_MODE_PERSONAL" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
 	if ! _write_meta_json "$meta_path" "$source_id" "$source_uri" "$sha256" "$size_bytes" "$META_DEFAULT_SENSITIVITY" "$blob_path" "$corpus_id"; then
 		rm -rf "$staging_dir"
 		return 1
@@ -746,6 +751,57 @@ cmd_add() {
 	return $?
 }
 
+# cmd_folder: recursively inventory/import a bounded folder or show its latest manifest.
+# Arguments: [import|status] <directory> [folder options] [--repo-path <path>]
+cmd_folder() {
+	local action="import"
+	local first_arg="${1:-}"
+	if [[ "$first_arg" == "import" || "$first_arg" == "status" ]]; then
+		action="$first_arg"
+		shift
+	fi
+	local repo_path
+	repo_path="$(pwd)"
+	local forwarded=()
+	while [[ $# -gt 0 ]]; do
+		local key="$1"
+		shift
+		if [[ "$key" == "--repo-path" ]]; then
+			if [[ $# -eq 0 ]]; then
+				print_error "--repo-path requires a path"
+				return 1
+			fi
+			local requested_repo="$1"
+			repo_path="$requested_repo"
+			shift
+		else
+			forwarded+=("$key")
+		fi
+	done
+	if [[ ${#forwarded[@]} -eq 0 ]]; then
+		print_error "folder ${action} requires <directory>"
+		return 1
+	fi
+	if [[ ! -r "$FOLDER_IMPORT_HELPER" ]]; then
+		print_error "Folder import helper is unavailable"
+		return 1
+	fi
+	repo_path="$(cd "$repo_path" && pwd)"
+	local capability="knowledge.write"
+	[[ "$action" == "status" ]] && capability="$KNOWLEDGE_CAPABILITY_READ"
+	local knowledge_root
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "$capability") || return 1
+	if [[ ! -d "${knowledge_root}/sources" ]]; then
+		print_error "Knowledge plane not provisioned. Run: knowledge-helper.sh provision"
+		return 1
+	fi
+	local corpus_id="repo:default"
+	[[ "$(_get_knowledge_mode "$repo_path")" == "$KNOWLEDGE_MODE_PERSONAL" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
+	python3 "$FOLDER_IMPORT_HELPER" "$action" "${forwarded[@]}" \
+		--knowledge-root "$knowledge_root" --scripts-dir "$SCRIPT_DIR" --corpus-id "$corpus_id"
+	return $?
+}
+
 # ---------------------------------------------------------------------------
 # list: show sources across inbox/staging/sources with state column
 # ---------------------------------------------------------------------------
@@ -814,7 +870,7 @@ cmd_list() {
 	repo_path="$(cd "$repo_path" && pwd)"
 	_require_jq || return 1
 	local knowledge_root
-	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "$KNOWLEDGE_CAPABILITY_READ") || return 1
 	# Print header
 	printf "%-36s %-10s %-12s %-12s %-8s  %s\n" \
 		"SOURCE-ID" "STATE" "KIND" "SENSITIVITY" "SHA256" "SIZE"
@@ -891,7 +947,7 @@ cmd_enrich() {
 }
 
 cmd_help() {
-	sed -n '4,31p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '4,34p' "$0" | sed 's/^# \{0,1\}//'
 	return 0
 }
 
@@ -1083,7 +1139,7 @@ _cmd_search_resolve_knowledge_root() {
 	mode=$(_get_knowledge_mode "$repo_path")
 	case "$mode" in
 	repo) printf '%s\n' "${repo_path}/${KNOWLEDGE_ROOT}" ;;
-	personal) _cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read" || return 1 ;;
+	personal) _cmd_add_resolve_knowledge_root "$repo_path" "$KNOWLEDGE_CAPABILITY_READ" || return 1 ;;
 	off) print_warning "search: knowledge plane is disabled for $repo_path" >&2 ;;
 	*)
 		print_error "search: unknown knowledge mode '$mode' for $repo_path" >&2
@@ -1205,6 +1261,7 @@ main() {
 	provision) cmd_provision "$@" ;;
 	init) cmd_init "$@" ;;
 	add) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_add "$@" ;;
+	folder) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_folder "$@" ;;
 	list) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_list "$@" ;;
 	sensitivity) cmd_sensitivity "$@" ;;
 	enrich) cmd_enrich "$@" ;;

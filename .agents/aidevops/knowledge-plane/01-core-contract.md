@@ -268,6 +268,40 @@ by raw SHA-256 before creating a source directory. `source_uri` removes local
 operator paths, URL credentials, query strings, and fragments. Large-file
 `blob_path` values are opaque digest references rather than host paths.
 
+## Recursive folder snapshots
+
+`knowledge-helper.sh folder import <directory>` inventories one explicitly
+allowed root without following symlinks. Defaults bound depth, visited node count,
+file count, total bytes, item size, and elapsed time; `--exclude`, `--max-depth`,
+`--max-nodes`, `--max-files`, `--max-bytes`, `--max-item-bytes`, and
+`--max-seconds` can tighten those limits.
+Use `--dry-run` to produce planned and coverage counts without writing evidence.
+
+Folder identity derives from the root filesystem object and does not expose the
+operator's absolute path. Private, versioned manifests live under
+`_knowledge/index/folder-imports/<root-id>/manifest.json`. Each item records its
+relative-path observation, digest, canonical source/evidence pointer, aliases,
+processor disposition, and a sanitized terminal state: `imported`, `unchanged`,
+`skipped`, `unsupported`, `failed`, or `budget-stopped`. The index is a disposable
+projection; canonical raw bytes remain in `sources/` or the blob store.
+
+One fenced lease serializes scans of a root. Evidence is committed before the
+item checkpoint, and the manifest is atomically replaced after every item. A
+replay after interruption therefore resolves already committed bytes and resumes
+without duplicate authority. Renames add aliases. Only a complete, unexcluded
+inventory can infer disappearance; it adds a deletion observation and never
+purges canonical evidence.
+
+Supported inputs include UTF-8 text and structured documents, validated document
+containers, images, audio, video, `.eml`/`.emlx`, and mbox exports. Email bodies,
+mailbox messages, and exactly decoded attachments become canonical child evidence
+with explicit relationships. Nested `message/rfc822` parts that the parser can
+only reserialize remain unsupported projections rather than claiming raw
+authority. Media enrichment is a projection: local metadata completes
+immediately while OCR, transcription, document extraction, and keyframes are
+queued or marked unavailable according to local capability. Unsupported and
+malformed inputs remain visible coverage instead of being reported as success.
+
 ## 30MB Blob Threshold
 
 Files ≥30MB are NOT stored in-repo. Instead:
@@ -319,6 +353,11 @@ Override per-repo by editing `_knowledge/_config/knowledge.json` after provision
 # Provisioning
 aidevops knowledge init repo           # Provision _knowledge/ in current repo
 aidevops knowledge init personal       # Provision at ~/.aidevops/.agent-workspace/knowledge/
+
+# Bounded mixed-media folder snapshots
+aidevops knowledge folder import path/to/folder --dry-run
+aidevops knowledge folder import path/to/folder --max-nodes 5000 --max-files 1000 --max-bytes 1073741824
+aidevops knowledge folder status path/to/folder --json
 aidevops knowledge init off            # Disable knowledge plane for current repo
 aidevops knowledge status              # Show provisioning state + item counts
 aidevops knowledge provision [path]    # Re-provision / repair (idempotent)

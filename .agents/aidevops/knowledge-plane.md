@@ -24,6 +24,8 @@ and retrieval surfaces.
   or idempotently repair with `aidevops knowledge provision`.
 - Files ≥30MB are routed to the local blob store and represented by committed
   `meta.json` stubs.
+- Bounded folder imports recursively inventory mixed media, deduplicate immutable
+  bytes, and retain replay/deletion coverage in private index manifests.
 - LLM, email, review, indexing, and enrichment behaviour is detailed in the
   chapter files below.
 
@@ -44,6 +46,9 @@ aidevops knowledge init personal
 aidevops knowledge provision
 aidevops knowledge status
 aidevops knowledge add path/to/file.pdf
+aidevops knowledge folder import path/to/folder --dry-run
+aidevops knowledge folder import path/to/folder
+aidevops knowledge folder status path/to/folder
 aidevops knowledge search "invoice 2026"
 ```
 
@@ -52,6 +57,7 @@ aidevops knowledge search "invoice 2026"
 | Surface | Location |
 |---------|----------|
 | Knowledge helper | `.agents/scripts/knowledge-helper.sh` |
+| Folder import helper | `.agents/scripts/knowledge_folder_import.py` |
 | Review gate helper | `.agents/scripts/knowledge-review-helper.sh` |
 | Corpus index helper | `.agents/scripts/knowledge-index-helper.sh` |
 | Enrichment helper | `.agents/scripts/document-enrich-helper.sh` |
