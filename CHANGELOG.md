@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- exclude Pulse stage subshells from runtime audit false positives (#28827)
+- bind terminal dispatch evidence to exact worker attempts (#28830)
+- share authoritative required-check configuration across full-loop and Pulse (#28831)
+
 ## [3.32.192] - 2026-07-28
 
 ### Changed
