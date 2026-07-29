@@ -392,10 +392,6 @@ define_function_under_test() {
 		return 1
 	}
 
-	eval_function_from_file _ruleset_ref_matches_default_branch "$MERGE_SCRIPT" || return 1
-	eval_function_from_file _required_contexts_from_rulesets_for_default_branch "$MERGE_SCRIPT" || return 1
-	eval_function_from_file _required_contexts_for_default_branch_uncached "$MERGE_SCRIPT" || return 1
-	eval_function_from_file _required_contexts_for_default_branch "$MERGE_SCRIPT" || return 1
 	eval_function_from_file _check_required_checks_passing "$MERGE_SCRIPT" || return 1
 	eval_function_from_file _pr_required_checks_pass "$MERGE_SCRIPT" || return 1
 	eval_function_from_file _pmrc_gh_read "$REQUIRED_CHECKS_SCRIPT" || return 1

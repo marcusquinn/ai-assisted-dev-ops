@@ -37,6 +37,239 @@ _pmrc_gh_read() {
 	return "$rc"
 }
 
+_pmrc_cache_key() {
+	local raw_key="$1"
+	local safe_key=""
+	safe_key=$(printf '%s' "$raw_key" | tr -c '[:alnum:]._-' '_')
+	[[ -n "$safe_key" ]] || safe_key="empty"
+	printf '%s\n' "$safe_key"
+	return 0
+}
+
+#######################################
+# Return whether a repository-ruleset ref pattern applies to the default branch.
+# Rulesets may use exact refs, GitHub tokens, or simple branch globs.
+#
+# Args: $1=pattern, $2=default_branch
+# Returns: 0=matches default branch, 1=does not match
+#######################################
+_ruleset_ref_matches_default_branch() {
+	local pattern="$1"
+	local default_branch="$2"
+	local default_ref="refs/heads/${default_branch}"
+	local branch_pattern="${pattern}"
+
+	case "$pattern" in
+	"~ALL" | "~DEFAULT_BRANCH" | "$default_ref" | "$default_branch")
+		return 0
+		;;
+	esac
+	case "$pattern" in
+	refs/heads/*)
+		branch_pattern="${pattern#refs/heads/}"
+		;;
+	esac
+
+	case "$pattern" in
+	*"*"*)
+		# shellcheck disable=SC2254 # Intentionally treat ruleset branch globs as patterns.
+		case "$default_ref" in
+		$pattern)
+			return 0
+			;;
+		esac
+		# shellcheck disable=SC2254 # Intentionally treat ruleset branch globs as patterns.
+		case "$default_branch" in
+		$branch_pattern)
+			return 0
+			;;
+		esac
+		;;
+	esac
+
+	return 1
+}
+
+#######################################
+# Resolve required status check contexts from active repository rulesets that
+# match the default branch.
+#
+# Args: $1=repo_slug, $2=default_branch
+# Stdout: newline-delimited contexts
+# Returns: 0=resolved, 1=API/parse error
+#######################################
+_required_contexts_from_rulesets_for_default_branch() {
+	local repo_slug="$1"
+	local default_branch="$2"
+	local log_target="${LOGFILE:-/dev/stderr}"
+	local rulesets_json=""
+
+	rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+	[[ -n "$rulesets_json" && "$rulesets_json" != "[]" && "$rulesets_json" != "null" ]] || return 0
+
+	local active_ids=""
+	active_ids=$(printf '%s' "$rulesets_json" | jq -r '.[]? | select(.enforcement == "active") | .id // empty' 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+	[[ -n "$active_ids" ]] || return 0
+
+	local contexts_tmp=""
+	contexts_tmp=$(mktemp) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: mktemp failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+
+	local id="" detail="" include_patterns="" exclude_patterns="" pattern=""
+	local matches_default=0 excluded_default=0 contexts=""
+	while IFS= read -r id; do
+		[[ -n "$id" ]] || continue
+		detail=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets/${id}" 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+
+		include_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.include // [] | .[]' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+		exclude_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.exclude // [] | .[]' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} exclude parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+
+		matches_default=0
+		while IFS= read -r pattern; do
+			[[ -n "$pattern" ]] || continue
+			if _ruleset_ref_matches_default_branch "$pattern" "$default_branch"; then
+				matches_default=1
+				break
+			fi
+		done <<<"$include_patterns"
+		[[ "$matches_default" -eq 1 ]] || continue
+
+		excluded_default=0
+		while IFS= read -r pattern; do
+			[[ -n "$pattern" ]] || continue
+			if _ruleset_ref_matches_default_branch "$pattern" "$default_branch"; then
+				excluded_default=1
+				break
+			fi
+		done <<<"$exclude_patterns"
+		[[ "$excluded_default" -eq 0 ]] || continue
+
+		contexts=$(printf '%s' "$detail" | jq -r '.rules[]? | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[]? | (.context // .name // empty)' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: required-check parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+		[[ -n "$contexts" ]] && printf '%s\n' "$contexts" >>"$contexts_tmp"
+	done <<<"$active_ids"
+
+	if [[ -s "$contexts_tmp" ]]; then
+		sort -u "$contexts_tmp"
+	fi
+	rm -f "$contexts_tmp"
+	return 0
+}
+
+#######################################
+# Resolve required status check contexts for a repository's default branch from
+# classic branch protection plus active matching repository rulesets.
+#
+# Args: $1=repo_slug
+# Stdout: newline-delimited contexts; empty means no configured required checks
+# Returns: 0=resolved, 1=API/parse error
+#######################################
+_required_contexts_for_default_branch_uncached() {
+	local repo_slug="$1"
+	local log_target="${LOGFILE:-/dev/stderr}"
+	local default_branch="" default_branch_rc=0
+	default_branch=$(_pmrc_gh_read gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null) || default_branch_rc=$?
+	if [[ "$default_branch_rc" -ne 0 || -z "$default_branch" ]]; then
+		echo "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	fi
+
+	local protection_resp="" protection_rc=0
+	protection_resp=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-branch-protection-required-contexts-rest" \
+		_pmrc_gh_read gh api \
+		"repos/${repo_slug}/branches/${default_branch}/protection/required_status_checks" \
+		2>&1) || protection_rc=$?
+	if [[ "$protection_rc" -ne 0 ]]; then
+		if grep -qi 'HTTP 404\|Not Found' <<<"$protection_resp"; then
+			local ruleset_contexts_404=""
+			ruleset_contexts_404=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
+			if [[ -n "$ruleset_contexts_404" ]]; then
+				echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (HTTP 404), but active rulesets require contexts (GH#23019)" >>"$log_target"
+				printf '%s\n' "$ruleset_contexts_404"
+				return 0
+			fi
+			echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (HTTP 404) — empty contexts (t3193, GH#23019)" >>"$log_target"
+			return 0
+		fi
+		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection API failed for ${repo_slug} (exit ${protection_rc}) — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	fi
+
+	local classic_contexts="" ruleset_contexts=""
+	classic_contexts=$(printf '%s' "$protection_resp" | jq -r '(.contexts // [])[], (.checks // [])[].context? // empty' 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection parse failed for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	}
+	ruleset_contexts=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
+	if [[ -n "$ruleset_contexts" ]]; then
+		echo "[pulse-merge] _required_contexts_for_default_branch: active rulesets add required contexts for ${repo_slug} (GH#23019)" >>"$log_target"
+	fi
+
+	printf '%s\n%s\n' "$classic_contexts" "$ruleset_contexts" | awk 'NF && !seen[$0]++'
+	return 0
+}
+
+_required_contexts_for_default_branch() {
+	local repo_slug="$1"
+	local cache_dir="${AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR:-}"
+	local cache_key="" cache_body_file="" cache_rc_file="" cache_rc=""
+	local contexts="" rc=0
+
+	if [[ -n "$cache_dir" && -d "$cache_dir" ]]; then
+		cache_key=$(_pmrc_cache_key "$repo_slug")
+		cache_body_file="${cache_dir}/${cache_key}.body"
+		cache_rc_file="${cache_dir}/${cache_key}.rc"
+		if [[ -f "$cache_rc_file" && -f "$cache_body_file" ]]; then
+			cache_rc=$(<"$cache_rc_file")
+			[[ "$cache_rc" =~ ^[0-9]+$ ]] || cache_rc=1
+			if [[ "$cache_rc" -eq 0 && -s "$cache_body_file" ]]; then
+				while IFS= read -r contexts; do
+					printf '%s\n' "$contexts"
+				done <"$cache_body_file"
+			fi
+			return "$cache_rc"
+		fi
+	fi
+
+	contexts=$(_required_contexts_for_default_branch_uncached "$repo_slug") || rc=$?
+	if [[ -n "$cache_body_file" && -n "$cache_rc_file" ]]; then
+		printf '%s\n' "$rc" >"$cache_rc_file"
+		if [[ -n "$contexts" ]]; then
+			printf '%s\n' "$contexts" >"$cache_body_file"
+		else
+			: >"$cache_body_file"
+		fi
+	fi
+	if [[ "$rc" -eq 0 && -n "$contexts" ]]; then
+		printf '%s\n' "$contexts"
+	fi
+	return "$rc"
+}
+
 _pmrc_iso_to_epoch() {
 	local iso="$1"
 	local epoch=""

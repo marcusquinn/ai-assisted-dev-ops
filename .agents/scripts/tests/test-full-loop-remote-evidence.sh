@@ -19,6 +19,26 @@ chmod +x "${ROOT}/helpers/review-bot-gate-helper.sh"
 
 cat >"${ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/testrepo" ]]; then
+	if [[ "${GH_TEST_MODE:-pass}" == "api-error" ]]; then
+		printf '%s\n' 'HTTP 503: service unavailable' >&2
+		exit 1
+	fi
+	printf '%s\n' 'main'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == *"/protection/required_status_checks" ]]; then
+	if [[ "${GH_TEST_MODE:-pass}" == "no-required" ]]; then
+		printf '%s\n' 'gh: HTTP 404: Not Found' >&2
+		exit 1
+	fi
+	printf '%s\n' '{"contexts":["required-ci"]}'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/testrepo/rulesets" ]]; then
+	printf '%s\n' '[]'
+	exit 0
+fi
 if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
 	case "${GH_TEST_MODE:-pass}" in
 		pending)
@@ -26,8 +46,8 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
 			exit 8
 			;;
 		no-required)
-			printf "%s\n" "no required checks reported on the 'remote-branch' branch" >&2
-			exit 1
+			printf '%s\n' 'required-check CLI must not run when configuration has no contexts' >&2
+			exit 99
 			;;
 		api-error)
 			printf '%s\n' 'HTTP 503: service unavailable' >&2

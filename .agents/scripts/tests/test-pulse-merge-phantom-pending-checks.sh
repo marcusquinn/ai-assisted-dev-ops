@@ -328,8 +328,8 @@ teardown_test_env() {
 	return 0
 }
 
-# Extract the required-context helpers and _check_required_checks_passing from
-# pulse-merge-process.sh and eval them.
+# Source the shared required-context helpers and extract only the Pulse-specific
+# pass/fail classifier from pulse-merge-process.sh.
 define_function_under_test() {
 	# Source the REST check-runs helper so the extracted function can call
 	# `gh_pr_check_runs_rest` (GH#21799 migration). Sub-library only — avoids
@@ -350,54 +350,6 @@ define_function_under_test() {
 		fi
 		return 1
 	}
-
-	local ref_match_src
-	ref_match_src=$(awk '
-		/^_ruleset_ref_matches_default_branch\(\) \{/,/^}$/ { print }
-	' "$MERGE_SCRIPT")
-	if [[ -z "$ref_match_src" ]]; then
-		printf 'ERROR: could not extract _ruleset_ref_matches_default_branch from %s\n' \
-			"$MERGE_SCRIPT" >&2
-		return 1
-	fi
-	# shellcheck disable=SC1090  # dynamic source from extracted helper
-	eval "$ref_match_src"
-
-	local rulesets_src
-	rulesets_src=$(awk '
-		/^_required_contexts_from_rulesets_for_default_branch\(\) \{/,/^}$/ { print }
-	' "$MERGE_SCRIPT")
-	if [[ -z "$rulesets_src" ]]; then
-		printf 'ERROR: could not extract _required_contexts_from_rulesets_for_default_branch from %s\n' \
-			"$MERGE_SCRIPT" >&2
-		return 1
-	fi
-	# shellcheck disable=SC1090  # dynamic source from extracted helper
-	eval "$rulesets_src"
-
-	local uncached_src
-	uncached_src=$(awk '
-		/^_required_contexts_for_default_branch_uncached\(\) \{/,/^}$/ { print }
-	' "$MERGE_SCRIPT")
-	if [[ -z "$uncached_src" ]]; then
-		printf 'ERROR: could not extract _required_contexts_for_default_branch_uncached from %s\n' \
-			"$MERGE_SCRIPT" >&2
-		return 1
-	fi
-	# shellcheck disable=SC1090  # dynamic source from extracted helper
-	eval "$uncached_src"
-
-	local helper_src
-	helper_src=$(awk '
-		/^_required_contexts_for_default_branch\(\) \{/,/^}$/ { print }
-	' "$MERGE_SCRIPT")
-	if [[ -z "$helper_src" ]]; then
-		printf 'ERROR: could not extract _required_contexts_for_default_branch from %s\n' \
-			"$MERGE_SCRIPT" >&2
-		return 1
-	fi
-	# shellcheck disable=SC1090  # dynamic source from extracted helper
-	eval "$helper_src"
 
 	local fn_src
 	fn_src=$(awk '

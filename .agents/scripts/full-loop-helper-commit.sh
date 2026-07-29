@@ -27,18 +27,20 @@ _FULL_LOOP_CHECK_PENDING="pending"
 _FULL_LOOP_CHECK_INDETERMINATE="indeterminate"
 
 # Defensive SCRIPT_DIR fallback
+_FULL_LOOP_COMMIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
-	_lib_path="${BASH_SOURCE[0]%/*}"
-	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
-	SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
-	unset _lib_path
+	SCRIPT_DIR="$_FULL_LOOP_COMMIT_DIR"
 fi
 
 # Checkout-free planning publication receipts provide the only narrow exception
 # to same-named local-branch head equality. The verifier revalidates all evidence.
 # shellcheck source=./planning-publisher.sh
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/planning-publisher.sh"
+source "${_FULL_LOOP_COMMIT_DIR}/planning-publisher.sh"
+# Reuse Pulse's authoritative classic-branch-protection and ruleset resolver.
+# shellcheck source=./pulse-merge-required-checks.sh
+# shellcheck disable=SC1091
+source "${_FULL_LOOP_COMMIT_DIR}/pulse-merge-required-checks.sh"
 
 # --- Pre-Merge Gate ---
 
@@ -75,19 +77,25 @@ _full_loop_persist_pr_check_evidence() {
 _full_loop_query_required_checks() {
 	local pr_number="$1"
 	local repo="$2"
-	local pr_head_ref="$3"
+	local required_contexts=""
 	local required_checks=""
 	local required_rc=0
 	local required_checks_stderr=""
 	local required_checks_stderr_file=""
-	local minimum_check_count=1
-	local expected_no_required_checks="no required checks reported on the '${pr_head_ref}' branch"
 
 	FULL_LOOP_REQUIRED_CHECKS_JSON=""
 	FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="unavailable"
-	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="gh exit ${required_rc}"
+	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="required-context resolution failed"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="required-checks-pass"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="required checks are terminal-success"
+
+	required_contexts=$(_required_contexts_for_default_branch "$repo") || return 1
+	if [[ -z "$required_contexts" ]]; then
+		FULL_LOOP_REQUIRED_CHECKS_JSON="[]"
+		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="no-required-checks"
+		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="no required checks are configured"
+		return 0
+	fi
 
 	required_checks_stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-full-loop-required-checks.XXXXXX") || {
 		FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="stderr-capture-unavailable"
@@ -100,16 +108,11 @@ _full_loop_query_required_checks() {
 	rm -f "$required_checks_stderr_file"
 	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="gh exit ${required_rc}"
 
-	if [[ "$required_rc" -eq 1 && -z "$required_checks" && -n "$pr_head_ref" && "$required_checks_stderr" == "$expected_no_required_checks" ]]; then
-		required_checks="[]"
-		minimum_check_count=0
-		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="no-required-checks"
-		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="no required checks are configured"
-	elif [[ -n "$required_checks_stderr" || ("$required_rc" -ne 0 && "$required_rc" -ne 1 && "$required_rc" -ne 8) ]]; then
+	if [[ -n "$required_checks_stderr" || ("$required_rc" -ne 0 && "$required_rc" -ne 1 && "$required_rc" -ne 8) ]]; then
 		return 1
 	fi
-	if [[ -z "$required_checks" ]] || ! printf '%s' "$required_checks" | jq -e --argjson minimum "$minimum_check_count" \
-		'type == "array" and length >= $minimum' >/dev/null 2>&1; then
+	if [[ -z "$required_checks" ]] || ! printf '%s' "$required_checks" | jq -e \
+		'type == "array" and length > 0' >/dev/null 2>&1; then
 		return 1
 	fi
 	FULL_LOOP_REQUIRED_CHECKS_JSON="$required_checks"
@@ -191,7 +194,7 @@ _full_loop_verify_pr_readiness() {
 	pr_head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // empty')
 
 	local required_checks=""
-	_full_loop_query_required_checks "$pr_number" "$repo" "$pr_head_ref" || {
+	_full_loop_query_required_checks "$pr_number" "$repo" || {
 		FULL_LOOP_PR_CHECK_STATUS="$_FULL_LOOP_CHECK_INDETERMINATE"
 		export FULL_LOOP_PR_CHECK_STATUS
 		_full_loop_persist_pr_check_evidence "$FULL_LOOP_PR_CHECK_STATUS" "$verified_head" "$FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE" || true
