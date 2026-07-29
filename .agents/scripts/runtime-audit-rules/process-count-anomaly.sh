@@ -39,6 +39,19 @@ runtime_audit_check() {
 	# Count lines that contain the pattern but exclude greps of itself
 	local matches
 	matches=$(printf '%s\n' "$ps_out" | grep -F "$pattern" | grep -vE 'grep|runtime-audit|runtime-health-audit')
+	if [[ -z "${PS_OUTPUT_OVERRIDE:-}" && -n "$matches" ]]; then
+		local filtered_matches="" match_line pid ppid ppid_cmd
+		while IFS= read -r match_line; do
+			read -r pid _ <<<"$match_line"
+			ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
+			if [[ -n "$ppid" ]]; then
+				ppid_cmd=$(ps -p "$ppid" -o command= 2>/dev/null)
+				[[ "$ppid_cmd" == *"$pattern"* ]] && continue
+			fi
+			filtered_matches+="${filtered_matches:+$'\n'}${match_line}"
+		done <<<"$matches"
+		matches="$filtered_matches"
+	fi
 	local count
 	count=$(printf '%s\n' "$matches" | grep -cE '\S' 2>/dev/null || true)
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0

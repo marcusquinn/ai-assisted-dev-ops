@@ -198,6 +198,49 @@ out=$(_run_detector "$RULES_DIR/process-count-anomaly.sh" \
 assert_rc "2.5 below-threshold fixture returns 0" "0" "$rc"
 assert_empty "2.6 below-threshold emits no output" "$out"
 
+# Live mode: background stage subshells inherit the pulse-wrapper argv but
+# have the root pulse process as their parent, so they must not count as
+# duplicate top-level instances.
+FAKE_PS_DIR="$TMPDIR_TEST/fake-ps-bin"
+mkdir -p "$FAKE_PS_DIR"
+cat >"$FAKE_PS_DIR/ps" <<'FAKE_PS'
+#!/usr/bin/env bash
+if [[ "$*" == "-ax -o pid=,command=" ]]; then
+	printf '%s\n' \
+		"  101 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh" \
+		"  102 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh" \
+		"  103 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh" \
+		"  104 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh" \
+		"  105 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh" \
+		"  106 /bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh"
+	exit 0
+fi
+if [[ "$4" == "ppid=" ]]; then
+	if [[ "$2" == "101" ]]; then
+		printf '1\n'
+	else
+		printf '101\n'
+	fi
+	exit 0
+fi
+if [[ "$4" == "command=" ]]; then
+	if [[ "$2" == "101" ]]; then
+		printf '/bin/bash /Users/x/.aidevops/agents/scripts/pulse-wrapper.sh\n'
+	else
+		printf '/sbin/init\n'
+	fi
+	exit 0
+fi
+exit 1
+FAKE_PS
+chmod +x "$FAKE_PS_DIR/ps"
+out=$(_run_detector "$RULES_DIR/process-count-anomaly.sh" \
+	"PATH=$FAKE_PS_DIR:/usr/bin:/bin" \
+	"LEAK_THRESHOLD=3" \
+	"PROC_PATTERN=pulse-wrapper.sh") && rc=0 || rc=$?
+assert_rc "2.7 live mode excludes pulse-wrapper child subshells" "0" "$rc"
+assert_empty "2.8 filtered live mode emits no output" "$out"
+
 # ---------------------------------------------------------------------------
 # Test 3: deployed-vs-source-mtime-drift
 # ---------------------------------------------------------------------------
