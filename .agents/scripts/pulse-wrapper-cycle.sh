@@ -648,6 +648,43 @@ sync_todo_refs_for_repo() (
 	return "$publication_rc"
 )
 
+_pulse_todo_sync_parallelism() {
+	local parallelism="${PULSE_TODO_SYNC_PARALLELISM:-4}"
+	[[ "$parallelism" =~ ^[1-9][0-9]*$ ]] || parallelism=4
+	if [[ "$parallelism" -gt 8 ]]; then
+		parallelism=8
+	fi
+	printf '%s\n' "$parallelism"
+	return 0
+}
+
+_pulse_todo_sync_repo_timeout() {
+	local stage_timeout="${PRE_RUN_STAGE_TIMEOUT:-600}"
+	local repo_timeout="${PULSE_TODO_SYNC_REPO_TIMEOUT:-180}"
+	[[ "$stage_timeout" =~ ^[1-9][0-9]*$ ]] || stage_timeout=600
+	[[ "$repo_timeout" =~ ^[1-9][0-9]*$ ]] || repo_timeout=180
+	if [[ "$repo_timeout" -gt "$stage_timeout" ]]; then
+		repo_timeout="$stage_timeout"
+	fi
+	printf '%s\n' "$repo_timeout"
+	return 0
+}
+
+_pulse_sync_todo_repo_bounded() {
+	local repo_slug="$1"
+	local repo_path="$2"
+	local repo_timeout="$3"
+	local job_index="$4"
+	_pulse_refresh_repo "$repo_path" || true
+	if declare -F run_stage_with_timeout >/dev/null 2>&1; then
+		run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$repo_timeout" \
+			sync_todo_refs_for_repo "$repo_slug" "$repo_path"
+		return $?
+	fi
+	sync_todo_refs_for_repo "$repo_slug" "$repo_path"
+	return $?
+}
+
 #######################################
 # sync_todo_refs_all_repos
 #
@@ -657,17 +694,36 @@ sync_todo_refs_for_repo() (
 #######################################
 sync_todo_refs_all_repos() {
 	local repos_json="${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
-	local repo_slug="" repo_path="" sync_failed=0
+	local repo_slug="" repo_path="" pid="" job_rc=0
+	local parallelism="" repo_timeout="" scheduled=0 sync_failures=0
+	local -a active_pids=()
 
 	[[ -f "$repos_json" ]] || return 0
+	parallelism=$(_pulse_todo_sync_parallelism)
+	repo_timeout=$(_pulse_todo_sync_repo_timeout)
 	while IFS='|' read -r repo_slug repo_path; do
 		[[ -n "$repo_slug" && -n "$repo_path" ]] || continue
 		repo_path="${repo_path/#\~/$HOME}"
 		[[ -d "$repo_path" ]] || continue
-		_pulse_refresh_repo "$repo_path" || true
-		sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_failed=1
+		scheduled=$((scheduled + 1))
+		_pulse_sync_todo_repo_bounded "$repo_slug" "$repo_path" "$repo_timeout" "$scheduled" &
+		active_pids+=("$!")
+		if [[ "${#active_pids[@]}" -ge "$parallelism" ]]; then
+			pid="${active_pids[0]}"
+			job_rc=0
+			wait "$pid" || job_rc=$?
+			[[ "$job_rc" -eq 0 ]] || sync_failures=$((sync_failures + 1))
+			active_pids=("${active_pids[@]:1}")
+		fi
 	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | [.slug, .path] | join("|")' "$repos_json" 2>/dev/null || true)
-	return "$sync_failed"
+	for pid in "${active_pids[@]}"; do
+		job_rc=0
+		wait "$pid" || job_rc=$?
+		[[ "$job_rc" -eq 0 ]] || sync_failures=$((sync_failures + 1))
+	done
+	echo "[pulse-wrapper] TODO ref sync batch completed scheduled=${scheduled} failures=${sync_failures} parallelism=${parallelism} per_repo_timeout=${repo_timeout}s" >>"$WRAPPER_LOGFILE"
+	[[ "$sync_failures" -eq 0 ]]
+	return $?
 }
 
 # Only run main when executed directly, not when sourced.

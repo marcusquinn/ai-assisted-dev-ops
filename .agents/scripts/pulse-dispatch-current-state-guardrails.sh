@@ -53,7 +53,7 @@ _dispatch_filter_repo_pr_backlog_candidates() {
 }
 
 #######################################
-# Count recent current-state signals that should shape launch capacity.
+# Count recent terminal worker-role signals that should shape launch capacity.
 #
 # Stdout: "<successes> <failures> <rate_limits> <no_dispatchable>".
 #######################################
@@ -87,11 +87,15 @@ try:
             ts = float(item.get("ts") or 0)
             if ts < since:
                 continue
+            if str(item.get("role") or "") != "worker":
+                continue
             result = str(item.get("result") or "")
             failure_reason = str(item.get("failure_reason") or "")
             provider_error_type = str(item.get("provider_error_type") or "")
             provider_status = str(item.get("provider_status") or "")
             exit_code = item.get("exit_code")
+            if result.endswith("_continue") or result == "brief_recovery":
+                continue
             if result == "success" and exit_code == 0:
                 successes += 1
             elif result not in {"worker_noop", "no_work", "noop"}:
@@ -156,6 +160,7 @@ _dispatch_apply_current_state_guardrails() {
 	[[ "$no_dispatchable" =~ ^[0-9]+$ ]] || no_dispatchable=0
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_successes" "$successes"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_failures" "$failures"
+	_dispatch_stats_gauge "pulse_dispatch_guardrail_worker_terminal_failures" "$failures"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_rate_limits" "$rate_limits"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_no_dispatchable" "$no_dispatchable"
 
@@ -195,11 +200,11 @@ _dispatch_apply_current_state_guardrails() {
 
 	if ((capped_slots < available_slots)); then
 		max_workers=$((active_workers + capped_slots))
-		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capped_available=${capped_slots}/${available_slots} successes=${successes} failures=${failures} rate_limits=${rate_limits} no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
+		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capacity_unit=simultaneous_workers capped_available=${capped_slots}/${available_slots} worker_terminal_successes=${successes} worker_terminal_failures=${failures} worker_rate_limits=${rate_limits} failure_observation_window_seconds=${PULSE_DISPATCH_CURRENT_STATE_WINDOW_SECONDS:-900} task_duration_limit=none no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
 		_dispatch_stats_increment "pulse_dispatch_current_state_guardrail_applied"
 		_dispatch_stats_increment_candidate_failed "$reason"
 	elif [[ "$reason" == "no_dispatchable_floor_bypass" ]]; then
-		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} preserved_available=${available_slots} successes=${successes} failures=${failures} rate_limits=${rate_limits} no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
+		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capacity_unit=simultaneous_workers preserved_available=${available_slots} worker_terminal_successes=${successes} worker_terminal_failures=${failures} worker_rate_limits=${rate_limits} failure_observation_window_seconds=${PULSE_DISPATCH_CURRENT_STATE_WINDOW_SECONDS:-900} task_duration_limit=none no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
 	fi
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_available_slots" "$capped_slots"
 

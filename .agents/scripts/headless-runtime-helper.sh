@@ -1797,7 +1797,11 @@ cmd_run() {
 
 	# GH#17549: Version guard — runs on EVERY dispatch (not cached).
 	# Something keeps upgrading opencode to 1.3.17 between canary checks.
-	_enforce_opencode_version_pin
+	if ! _enforce_opencode_version_pin; then
+		print_error "OpenCode version pin enforcement failed — aborting dispatch for session $session_key"
+		_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_DEFERRED" "opencode_version_pin_failed"
+		return 1
+	fi
 	# GH#17549: Canary smoke test — verify OpenCode can start and complete
 	# an API call before committing to a full worker dispatch. Runs BEFORE
 	# _cmd_run_prepare so a canary failure never posts a dispatch claim or
@@ -2152,7 +2156,7 @@ cmd_canary() {
 
 	local selected_model
 	selected_model=$(choose_model "$role" "$model_override") || return $?
-	_enforce_opencode_version_pin
+	_enforce_opencode_version_pin || return $?
 	_run_canary_test "$selected_model"
 	return $?
 }

@@ -10,11 +10,20 @@ _PTSW_OWNER_MARKER=".aidevops-pulse-todo-sync-owner"
 _PTSW_MARKER_VERSION="v1"
 _PTSW_OUTCOME_SKIPPED="skipped"
 _PTSW_OWNER_STALE="stale"
+_PTSW_STATE_UNKNOWN="unknown"
+_PTSW_REASON_MISSING_OWNER_MARKER="missing-owner-marker"
 _PTSW_VALIDATION_REASON=""
 _PTSW_OWNER_PID=""
 _PTSW_OWNER_START=""
 _PTSW_OWNER_CREATED=""
 _PTSW_OWNER_STATE=""
+_PTSW_LEGACY_ACTIVITY_STATE="$_PTSW_STATE_UNKNOWN"
+_PTSW_LEGACY_CWD_SNAPSHOT=""
+_PTSW_LEGACY_CWD_STATUS=1
+_PTSW_LEGACY_COMMAND_SNAPSHOT=""
+_PTSW_LEGACY_COMMAND_STATUS=1
+_PTSW_LEGACY_SNAPSHOTS_READY=0
+_PTSW_LEGACY_CAP_LOGGED=0
 _PULSE_TODO_SYNC_WORKSPACE=""
 _PULSE_TODO_SYNC_WORKSPACE_ROOT=""
 _PULSE_TODO_SYNC_OWNER_PID=""
@@ -117,7 +126,7 @@ _ptsw_validate_workspace_path() {
 			return 1
 		fi
 		if [[ ! -f "$marker_path" ]]; then
-			_PTSW_VALIDATION_REASON="missing-owner-marker"
+			_PTSW_VALIDATION_REASON="$_PTSW_REASON_MISSING_OWNER_MARKER"
 			return 1
 		fi
 	fi
@@ -238,7 +247,7 @@ _ptsw_classify_owner() {
 	local ps_rc=0
 	local kill_error=""
 	local kill_rc=0
-	_PTSW_OWNER_STATE="unknown"
+	_PTSW_OWNER_STATE="$_PTSW_STATE_UNKNOWN"
 	if current_start=$(_ptsw_process_start_fingerprint "$owner_pid"); then
 		if [[ "$current_start" == "$owner_start" ]]; then
 			_PTSW_OWNER_STATE="active"
@@ -314,6 +323,175 @@ _ptsw_move_to_recoverable_trash() {
 	return 0
 }
 
+_ptsw_workspace_mtime_epoch() {
+	local workspace_root="$1"
+	local mtime_epoch=""
+	if declare -F _file_mtime_epoch >/dev/null 2>&1; then
+		mtime_epoch=$(_file_mtime_epoch "$workspace_root" 2>/dev/null) || mtime_epoch=""
+	else
+		mtime_epoch=$(stat -f '%m' "$workspace_root" 2>/dev/null \
+			|| stat -c '%Y' "$workspace_root" 2>/dev/null) || mtime_epoch=""
+	fi
+	[[ "$mtime_epoch" =~ ^[1-9][0-9]*$ ]] || return 1
+	printf '%s\n' "$mtime_epoch"
+	return 0
+}
+
+_ptsw_legacy_min_age_secs() {
+	local min_age="${PULSE_TODO_SYNC_LEGACY_MIN_AGE_SECS:-86400}"
+	local grace_secs=""
+	[[ "$min_age" =~ ^[1-9][0-9]*$ ]] || min_age=86400
+	grace_secs=$(_ptsw_workspace_grace_secs) || grace_secs=900
+	[[ "$grace_secs" =~ ^[1-9][0-9]*$ ]] || grace_secs=900
+	if [[ "$min_age" -le "$grace_secs" ]]; then
+		min_age=$((grace_secs + 1))
+	fi
+	printf '%s\n' "$min_age"
+	return 0
+}
+
+_ptsw_legacy_workspace_shape_is_valid() {
+	local workspace_root="$1"
+	local repo_dir="${workspace_root}/repo"
+	local marker_path="${workspace_root}/${_PTSW_OWNER_MARKER}"
+	local entry="" git_state=""
+	_ptsw_validate_workspace_path "$workspace_root" 0 || return 1
+	[[ ! -e "$marker_path" && ! -L "$marker_path" ]] || return 1
+	[[ -d "$repo_dir" && ! -L "$repo_dir" ]] || return 1
+	[[ -d "${repo_dir}/.git" && ! -L "${repo_dir}/.git" ]] || return 1
+	for entry in "$workspace_root"/* "$workspace_root"/.[!.]* "$workspace_root"/..?*; do
+		[[ -e "$entry" || -L "$entry" ]] || continue
+		[[ "$entry" == "$repo_dir" ]] || return 1
+	done
+	git_state=$(git -C "$repo_dir" rev-parse --is-inside-work-tree 2>/dev/null) || return 1
+	[[ "$git_state" == "true" ]] || return 1
+	return 0
+}
+
+_ptsw_process_command_snapshot() {
+	LC_ALL=C ps ax -o command= 2>/dev/null
+	return $?
+}
+
+_ptsw_capture_legacy_process_snapshots() {
+	_PTSW_LEGACY_CWD_SNAPSHOT=""
+	_PTSW_LEGACY_CWD_STATUS=1
+	_PTSW_LEGACY_COMMAND_SNAPSHOT=""
+	_PTSW_LEGACY_COMMAND_STATUS=1
+	if declare -F capture_worktree_process_cwds >/dev/null 2>&1; then
+		if _PTSW_LEGACY_CWD_SNAPSHOT=$(capture_worktree_process_cwds); then
+			_PTSW_LEGACY_CWD_STATUS=0
+		else
+			_PTSW_LEGACY_CWD_STATUS=$?
+		fi
+	fi
+	if _PTSW_LEGACY_COMMAND_SNAPSHOT=$(_ptsw_process_command_snapshot); then
+		_PTSW_LEGACY_COMMAND_STATUS=0
+	else
+		_PTSW_LEGACY_COMMAND_STATUS=$?
+	fi
+	_PTSW_LEGACY_SNAPSHOTS_READY=1
+	return 0
+}
+
+_ptsw_cwd_snapshot_contains_workspace() {
+	local workspace_root="$1"
+	local cwd_target=""
+	while IFS= read -r cwd_target; do
+		case "$cwd_target" in
+		"$workspace_root" | "$workspace_root"/*) return 0 ;;
+		esac
+	done <<<"$_PTSW_LEGACY_CWD_SNAPSHOT"
+	return 1
+}
+
+_ptsw_command_snapshot_contains_workspace() {
+	local workspace_root="$1"
+	local command_line=""
+	while IFS= read -r command_line; do
+		case "$command_line" in
+		*"$workspace_root"*) return 0 ;;
+		esac
+	done <<<"$_PTSW_LEGACY_COMMAND_SNAPSHOT"
+	return 1
+}
+
+_ptsw_classify_legacy_workspace_activity() {
+	local workspace_root="$1"
+	_PTSW_LEGACY_ACTIVITY_STATE="$_PTSW_STATE_UNKNOWN"
+	[[ "$_PTSW_LEGACY_SNAPSHOTS_READY" == "1" ]] || _ptsw_capture_legacy_process_snapshots
+	if _ptsw_cwd_snapshot_contains_workspace "$workspace_root" \
+		|| _ptsw_command_snapshot_contains_workspace "$workspace_root"; then
+		_PTSW_LEGACY_ACTIVITY_STATE="active"
+		return 0
+	fi
+	if [[ "$_PTSW_LEGACY_CWD_STATUS" -eq 0 && "$_PTSW_LEGACY_COMMAND_STATUS" -eq 0 ]]; then
+		_PTSW_LEGACY_ACTIVITY_STATE="idle"
+	fi
+	return 0
+}
+
+_ptsw_migrate_legacy_workspace() {
+	local workspace_root="$1"
+	local identity="$2"
+	local now_epoch="$3"
+	local migrated_count="$4"
+	local migration_cap="${PULSE_TODO_SYNC_MAX_LEGACY_MIGRATIONS_PER_RUN:-10}"
+	local min_age="" original_mtime="" current_mtime="" age_secs=0
+	[[ "$migration_cap" =~ ^[1-9][0-9]*$ ]] || migration_cap=10
+	if [[ "$migrated_count" -ge "$migration_cap" ]]; then
+		if [[ "$_PTSW_LEGACY_CAP_LOGGED" != "1" ]]; then
+			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-recovery-cap" "legacy-batch" "cap=${migration_cap}"
+			_PTSW_LEGACY_CAP_LOGGED=1
+		fi
+		return 1
+	fi
+	if ! _ptsw_legacy_workspace_shape_is_valid "$workspace_root"; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-shape-mismatch" "$identity"
+		return 1
+	fi
+	original_mtime=$(_ptsw_workspace_mtime_epoch "$workspace_root") || {
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-mtime-unavailable" "$identity"
+		return 1
+	}
+	age_secs=$((now_epoch - original_mtime))
+	min_age=$(_ptsw_legacy_min_age_secs) || min_age=86400
+	if [[ "$age_secs" -lt 0 ]]; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-future-mtime" "$identity"
+		return 1
+	fi
+	if [[ "$age_secs" -lt "$min_age" ]]; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-age-guard" "$identity" "age=${age_secs}s minimum=${min_age}s"
+		return 1
+	fi
+	_ptsw_classify_legacy_workspace_activity "$workspace_root"
+	case "$_PTSW_LEGACY_ACTIVITY_STATE" in
+	active)
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-active-process" "$identity"
+		return 1
+		;;
+	"$_PTSW_STATE_UNKNOWN")
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-process-visibility-unknown" "$identity"
+		return 1
+		;;
+	esac
+	if ! _ptsw_legacy_workspace_shape_is_valid "$workspace_root"; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-state-changed" "$identity"
+		return 1
+	fi
+	current_mtime=$(_ptsw_workspace_mtime_epoch "$workspace_root") || current_mtime=""
+	if [[ "$current_mtime" != "$original_mtime" ]]; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "legacy-mtime-changed" "$identity"
+		return 1
+	fi
+	if _ptsw_move_to_recoverable_trash "$workspace_root" "$identity"; then
+		_ptsw_log_sweep_outcome "removed" "legacy-markerless" "$identity" "age=${age_secs}s mode=trash"
+		return 0
+	fi
+	_ptsw_log_sweep_outcome "failure" "legacy-trash-move-failed" "$identity"
+	return 1
+}
+
 _ptsw_sweep_stale_workspaces() {
 	local temp_root=""
 	local now_epoch=""
@@ -323,7 +501,7 @@ _ptsw_sweep_stale_workspaces() {
 	local identity=""
 	local safe_identity=""
 	local age_secs=0
-	local removed=0
+	local removed=0 marked_removed=0 legacy_migrated=0
 	local owner_pid=""
 	local owner_start=""
 	local owner_created=""
@@ -341,10 +519,19 @@ _ptsw_sweep_stale_workspaces() {
 		printf '0\n'
 		return 0
 	}
+	_PTSW_LEGACY_SNAPSHOTS_READY=0
+	_PTSW_LEGACY_CAP_LOGGED=0
 	for workspace_root in "$temp_root"/pulse-todo-sync.*; do
 		[[ -e "$workspace_root" || -L "$workspace_root" ]] || continue
 		safe_identity=$(_ptsw_safe_identity "$workspace_root")
 		if ! _ptsw_validate_workspace_path "$workspace_root" 1; then
+			if [[ "$_PTSW_VALIDATION_REASON" == "$_PTSW_REASON_MISSING_OWNER_MARKER" ]] \
+				&& _ptsw_migrate_legacy_workspace "$workspace_root" "$safe_identity" "$now_epoch" "$legacy_migrated"; then
+				legacy_migrated=$((legacy_migrated + 1))
+				removed=$((removed + 1))
+				continue
+			fi
+			[[ "$_PTSW_VALIDATION_REASON" == "$_PTSW_REASON_MISSING_OWNER_MARKER" ]] && continue
 			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "${_PTSW_VALIDATION_REASON:-invalid-candidate}" "$safe_identity"
 			continue
 		fi
@@ -377,7 +564,7 @@ _ptsw_sweep_stale_workspaces() {
 			continue
 			;;
 		esac
-		if [[ "$removed" -ge "$max_recoveries" ]]; then
+		if [[ "$marked_removed" -ge "$max_recoveries" ]]; then
 			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "recovery-cap" "$identity" "cap=${max_recoveries}"
 			continue
 		fi
@@ -395,6 +582,7 @@ _ptsw_sweep_stale_workspaces() {
 			continue
 		fi
 		if _ptsw_move_to_recoverable_trash "$workspace_root" "$identity"; then
+			marked_removed=$((marked_removed + 1))
 			removed=$((removed + 1))
 			_ptsw_log_sweep_outcome "removed" "dead-owner" "$identity" "age=${age_secs}s owner_pid=${owner_pid} mode=trash"
 		else
