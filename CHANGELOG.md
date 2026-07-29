@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.194] - 2026-07-29
+
+### Changed
+
+- Refactor: split worker launch helpers (#28845)
+
+### Fixed
+
+- refresh workflow rollouts from linked worktrees (#28848)
+
 ## [3.32.193] - 2026-07-29
 
 ### Changed
