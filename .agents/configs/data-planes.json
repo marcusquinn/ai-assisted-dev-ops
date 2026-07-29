@@ -1,6 +1,18 @@
 {
-  "version": 1,
+  "version": 2,
   "description": "Canonical aidevops registry for underscore-prefixed data planes and cross-plane routing surfaces.",
+  "evidence_contract": {
+    "version": 1,
+    "canonical_plane": "_knowledge",
+    "identity": "ev1:<corpus-id>:<connector-id>:sha256:<raw-content-sha256>",
+    "projection_identity": "pr1:<digest-or-canonical-pointer>",
+    "rules": [
+      "Raw evidence is immutable and authoritative within exactly one corpus.",
+      "Transit, case, project, index, normalized, and workflow records are non-authoritative projections or pointers.",
+      "Cross-corpus resolution requires an explicit active grant; aliases and physical paths are not authority.",
+      "Checkpoints advance only with committed evidence and a current connector lease fence."
+    ]
+  },
   "planes": {
     "_knowledge": {
       "purpose": "Curated source material, references, extracted facts, and reusable knowledge for AI-assisted retrieval.",
@@ -15,7 +27,8 @@
       "ingress": ["_inbox routed general references", "knowledge-helper add", "campaign learnings promotion", "case source attachments by reference"],
       "egress": ["retrieval for agents", "case sources.toon attachments", "campaign RAG grounding", "document enrichment outputs"],
       "index_retrieval_surface": ["_knowledge/index/", "knowledge-helper list", "knowledge-helper search", "document-enrich-helper extracted fields"],
-      "routing_notes": "Use for durable reference material after sensitivity classification and promotion."
+      "authority": "canonical-evidence",
+      "routing_notes": "Use for durable reference material after sensitivity classification and promotion. One corpus-scoped raw evidence object is authoritative; normalized rows and indexes are projections."
     },
     "_cases": {
       "purpose": "Audit-trail-driven matter management for legal, compliance, dispute, and operational case work.",
@@ -30,7 +43,8 @@
       "ingress": ["_inbox routed case-specific files", "case-helper open", "case-helper attach from _knowledge/sources", "case comm logs"],
       "egress": ["case alarms", "case chasers", "case timeline audit", "knowledge source references"],
       "index_retrieval_surface": ["case-helper list", "case-helper show", "case dossier fields", "case timeline events"],
-      "routing_notes": "Use for matter-specific work where chronology, parties, deadlines, or privileged handling matter."
+      "authority": "projection-and-pointer",
+      "routing_notes": "Use for matter-specific work where chronology, parties, deadlines, or privileged handling matter. Attach validated _knowledge evidence IDs; never copy authoritative evidence."
     },
     "_inbox": {
       "purpose": "Transit zone for unclassified captures before sensitivity detection, triage, and routing to durable planes.",
@@ -45,7 +59,8 @@
       "ingress": ["inbox-helper add", "inbox-helper add --url", "watch-folder drops", "workspace inbox captures"],
       "egress": ["_knowledge", "_cases", "_campaigns", "_projects", "_feedback", "_needs-review"],
       "index_retrieval_surface": ["_inbox/triage.log", "_inbox/triage-examples.jsonl", "inbox-helper find", "inbox-helper status", "inbox-helper digest"],
-      "routing_notes": "Never treat as authoritative; classify sensitivity before cloud routing."
+      "authority": "transit-only",
+      "routing_notes": "Never treat as authoritative; classify sensitivity before cloud routing. Routing receipts may point to the promoted evidence ID but cannot become evidence."
     },
     "_campaigns": {
       "purpose": "Marketing, advertising, outreach, brand assets, campaign creative, and post-launch learnings.",
@@ -75,7 +90,8 @@
       "ingress": ["_inbox routed project artefacts", "agent-created project plans", "user-provided project files"],
       "egress": ["implementation tasks", "project-specific knowledge promotion", "deliverable handoff"],
       "index_retrieval_surface": ["project README/contracts", "agent search over versioned project files"],
-      "routing_notes": "Use for bounded project execution context when another specialised plane is not a better fit."
+      "authority": "projection-and-pointer",
+      "routing_notes": "Use for bounded project execution context when another specialised plane is not a better fit. Evidence links are validated _knowledge pointers plus purpose-specific derived state."
     },
     "_performance": {
       "purpose": "Metrics, analytics snapshots, experiment results, and operational performance evidence.",

@@ -18,8 +18,8 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 4
-SCHEMA_VERSION_SQL = "PRAGMA user_version=4"
+SCHEMA_VERSION = 5
+SCHEMA_VERSION_SQL = "PRAGMA user_version=5"
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
@@ -112,6 +112,15 @@ def _tables() -> tuple[str, ...]:
             connection_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
             remote_account_id TEXT NOT NULL, auth_profile_ref TEXT,
             enabled_streams TEXT NOT NULL DEFAULT '[]', policy_json TEXT NOT NULL DEFAULT '{}')""",
+        """CREATE TABLE IF NOT EXISTS corpus_contract (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            corpus_id TEXT NOT NULL UNIQUE, contract_version INTEGER NOT NULL CHECK(contract_version=1))""",
+        """CREATE TABLE IF NOT EXISTS evidence_sources (
+            evidence_id TEXT PRIMARY KEY, corpus_id TEXT NOT NULL,
+            connector_id TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+            authority TEXT NOT NULL CHECK(authority='raw'), raw_ref TEXT NOT NULL,
+            observed_at TEXT NOT NULL, provenance_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(corpus_id,connector_id,content_sha256))""",
         """CREATE TABLE IF NOT EXISTS accounts (
             provider TEXT NOT NULL, remote_id TEXT NOT NULL, handle TEXT,
             display_name TEXT, observed_at TEXT NOT NULL, provider_json TEXT NOT NULL DEFAULT '{}',
@@ -136,7 +145,8 @@ def _tables() -> tuple[str, ...]:
             batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL, connection_id TEXT NOT NULL,
             stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL UNIQUE,
             blob_ref TEXT NOT NULL, resource_count INTEGER NOT NULL, budget_units INTEGER NOT NULL DEFAULT 0,
-            started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL)""",
+            started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL,
+            evidence_id TEXT REFERENCES evidence_sources(evidence_id))""",
         """CREATE TABLE IF NOT EXISTS sync_cursors (
             connection_id TEXT NOT NULL, stream TEXT NOT NULL, cursor TEXT, watermark TEXT,
             last_success_at TEXT, backfill_complete INTEGER NOT NULL DEFAULT 0,
@@ -297,18 +307,98 @@ def _add_outbound_v4_columns(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _add_source_v5_columns(connection: sqlite3.Connection) -> None:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fetch_batches'"
+    ).fetchone()
+    if table is None:
+        return
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(fetch_batches)").fetchall()
+    }
+    if "evidence_id" not in columns:
+        connection.execute(
+            "ALTER TABLE fetch_batches ADD COLUMN evidence_id TEXT "
+            "REFERENCES evidence_sources(evidence_id)"
+        )
+
+
+def _migrate_source_contract(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "INSERT OR IGNORE INTO corpus_contract(singleton,corpus_id,contract_version) "
+        "VALUES(1,'cor_' || lower(hex(randomblob(16))),1)"
+    )
+    connection.execute(
+        """INSERT OR IGNORE INTO evidence_sources(
+               evidence_id,corpus_id,connector_id,content_sha256,authority,
+               raw_ref,observed_at,provenance_json)
+           SELECT 'ev1:' || c.corpus_id || ':' || f.connection_id || ':sha256:' ||
+                  f.response_hash,
+                  c.corpus_id,f.connection_id,f.response_hash,'raw',f.blob_ref,
+                  f.completed_at,json_object('provider',f.provider,'stream',f.stream)
+             FROM fetch_batches f CROSS JOIN corpus_contract c"""
+    )
+    connection.execute(
+        """UPDATE fetch_batches
+              SET evidence_id='ev1:' || (SELECT corpus_id FROM corpus_contract WHERE singleton=1)
+                              || ':' || connection_id || ':sha256:' || response_hash
+            WHERE evidence_id IS NULL"""
+    )
+    connection.execute(
+        """CREATE TRIGGER IF NOT EXISTS fetch_batch_evidence_ai
+           AFTER INSERT ON fetch_batches WHEN NEW.evidence_id IS NULL
+           BEGIN
+             INSERT OR IGNORE INTO evidence_sources(
+               evidence_id,corpus_id,connector_id,content_sha256,authority,
+               raw_ref,observed_at,provenance_json)
+             SELECT 'ev1:' || corpus_id || ':' || NEW.connection_id || ':sha256:' ||
+                    NEW.response_hash,
+                    corpus_id,NEW.connection_id,NEW.response_hash,'raw',NEW.blob_ref,
+                    NEW.completed_at,json_object('provider',NEW.provider,'stream',NEW.stream)
+               FROM corpus_contract WHERE singleton=1;
+             UPDATE fetch_batches
+                SET evidence_id='ev1:' ||
+                    (SELECT corpus_id FROM corpus_contract WHERE singleton=1) || ':' ||
+                    NEW.connection_id || ':sha256:' || NEW.response_hash
+              WHERE batch_id=NEW.batch_id;
+           END"""
+    )
+    connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
+    connection.execute(
+        """CREATE VIEW canonical_evidence_projections AS
+           SELECT 'object' AS projection_kind,
+                  'pr1:' || f.evidence_id || ':object:' || o.object_type || ':' || o.remote_id
+                    AS projection_id,
+                  f.evidence_id,o.batch_id,o.provider,o.remote_id
+             FROM objects o JOIN fetch_batches f ON f.batch_id=o.batch_id
+           UNION ALL
+           SELECT 'activity',
+                  'pr1:' || f.evidence_id || ':activity:' || a.activity_type || ':' || a.remote_id,
+                  f.evidence_id,a.batch_id,a.provider,a.remote_id
+             FROM activities a JOIN fetch_batches f ON f.batch_id=a.batch_id
+           UNION ALL
+           SELECT 'media','pr1:' || f.evidence_id || ':media:' || m.remote_id,
+                  f.evidence_id,m.batch_id,m.provider,m.remote_id
+             FROM media m JOIN fetch_batches f ON f.batch_id=m.batch_id"""
+    )
+
+
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current < 0 or current > SCHEMA_VERSION:
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        if current < 5:
+            _add_source_v5_columns(connection)
         for statement in _tables():
             connection.execute(statement)
         if current < 2:
             _add_sync_run_v2_columns(connection)
         if current < 4:
             _add_outbound_v4_columns(connection)
+        _migrate_source_contract(connection)
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "
             "ON sync_runs(connection_id,stream,run_kind,started_at)"

@@ -17,6 +17,9 @@ and retrieval surfaces.
   `~/.aidevops/.agent-workspace/knowledge/`.
 - Versioned knowledge lives in `sources/` and `collections/`; raw `inbox/`,
   curated `staging/`, and generated `index/` are gitignored by default.
+- Contract v1 gives each immutable raw item one corpus-scoped `ev1:` identity.
+  `_knowledge` owns that evidence; indexes and cross-plane records retain
+  validated `pr1:` projections or pointers rather than copying authority.
 - Provision with `aidevops knowledge init repo`, `aidevops knowledge init personal`,
   or idempotently repair with `aidevops knowledge provision`.
 - Files ≥30MB are routed to the local blob store and represented by committed
@@ -28,7 +31,7 @@ and retrieval surfaces.
 
 | Chapter | Contents |
 |---------|----------|
-| [`knowledge-plane/01-core-contract.md`](knowledge-plane/01-core-contract.md) | Modes, directory layout, gitignore rules, source `meta.json`, blob threshold, defaults, personal vs repo mode, CLI |
+| [`knowledge-plane/01-core-contract.md`](knowledge-plane/01-core-contract.md) | Modes, canonical evidence/source identity, directory layout, gitignore rules, source `meta.json`, blob threshold, defaults, personal vs repo mode, CLI |
 | [`knowledge-plane/02-email-sources.md`](knowledge-plane/02-email-sources.md) | `kind=email` ingestion (t2854), IMAP polling (t2855), thread reconstruction and case filters (t2856) |
 | [`knowledge-plane/03-platform-and-policy.md`](knowledge-plane/03-platform-and-policy.md) | Platform abstraction (t2843), sensitivity classification (t2846), LLM routing, Ollama integration (t2848) |
 | [`knowledge-plane/04-enrichment-index-review.md`](knowledge-plane/04-enrichment-index-review.md) | Structured enrichment (t2849), corpus index (t2850), review gate (t2845) |

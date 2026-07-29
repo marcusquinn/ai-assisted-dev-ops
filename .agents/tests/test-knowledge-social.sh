@@ -94,7 +94,7 @@ mkdir -p "$CORPUS_ROOT"
 chmod 0700 "$BASE" "$CORPUS_ROOT"
 "$CORPUS_HELPER" provision --base "$BASE" >/dev/null
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
-assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "4"
+assert_eq "schema is versioned" "$(sql_value 'PRAGMA user_version')" "5"
 assert_eq "all provider-neutral and local-operation tables exist" "$(sql_value "SELECT count(*) FROM sqlite_master WHERE name IN ('connections','accounts','objects','activities','media','fetch_batches','sync_cursors','sync_runs','tombstones','annotations','coverage_records','objects_fts','outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" "16"
 
 first_result=$("$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$ARCHIVE")
@@ -104,6 +104,8 @@ assert_eq "archive imports one activity" "$(sql_value 'SELECT count(*) FROM acti
 assert_eq "coverage records completeness" "$(sql_value "SELECT status || ':' || cursor_exhausted FROM coverage_records WHERE stream='authored'")" "complete:1"
 assert_eq "FTS projection is searchable" "$(sql_value "SELECT count(*) FROM objects_fts WHERE objects_fts MATCH 'searchable'")" "1"
 assert_eq "raw evidence hash names immutable batch" "$(sql_value 'SELECT response_hash FROM fetch_batches')" "$first_hash"
+assert_eq "raw batch has one corpus-scoped canonical source" "$(sql_value 'SELECT count(*) FROM evidence_sources WHERE evidence_id=(SELECT evidence_id FROM fetch_batches)')" "1"
+assert_eq "normalized rows remain projections of canonical evidence" "$(sql_value 'SELECT count(*) FROM canonical_evidence_projections')" "2"
 
 "$HELPER" import-archive --base "$BASE" --alias personal:default --archive "$ARCHIVE" >/dev/null
 assert_eq "re-import is idempotent" "$(sql_value "SELECT (SELECT count(*) FROM fetch_batches) || ':' || (SELECT count(*) FROM objects) || ':' || (SELECT count(*) FROM activities)")" "1:1:1"
@@ -219,7 +221,7 @@ python3 - "$CORPUS_ROOT/index/social.db" <<'PY'
 import sqlite3
 import sys
 connection = sqlite3.connect(sys.argv[1])
-connection.execute("PRAGMA user_version=4")
+connection.execute("PRAGMA user_version=5")
 connection.close()
 PY
 

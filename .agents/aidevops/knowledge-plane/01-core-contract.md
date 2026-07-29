@@ -72,6 +72,37 @@ The implementation keeps command dispatch, catalog transactions, and private
 filesystem/authentication-context checks in separate Python modules so each
 security boundary remains independently reviewable.
 
+### Canonical evidence and source identity
+
+Source contract v1 separates logical authority from physical storage. Every raw
+item has exactly one canonical identity within its corpus:
+
+```text
+ev1:<corpus-id>:<connector-id>:sha256:<canonical-raw-sha256>
+```
+
+The corpus ID is the isolation boundary, the connector ID is stable across
+restarts and credential rotation, and the digest binds immutable canonical raw
+bytes. Replaying the same bytes through the same connector resolves the same ID.
+Provider-native IDs remain provenance and projection identity inputs; they never
+replace the raw integrity boundary. Rebinding a connector to another account or
+corpus fails before persistence.
+
+`_inbox` is disposable transit. `_knowledge` owns raw evidence. Normalized rows,
+Markdown, indexes, embeddings, coverage summaries, notification state, case
+timelines, and project views are derived projections. A projection carries its
+canonical `evidence_id`, `corpus_id`, `canonical_plane:"_knowledge"`, and
+`authority:"projection"`; it cannot be promoted into a second authoritative
+copy. `_cases` and `_projects` may retain purpose-specific state around that
+pointer. Cross-corpus resolution requires the authenticated catalog graph and an
+explicit active grant; aliases and filesystem paths are not authority.
+
+Connector checkpoints are projections too. A cursor advances only in the same
+transaction as raw evidence, normalized rows, coverage, and the current lease
+fence. Malformed pages, credential-shaped fields, identity rebinding, stale
+fences, or interrupted writes preserve the previous checkpoint and evidence.
+Coverage gaps are sanitized durable facts, never inferred completeness.
+
 Personal add operations require `knowledge.write`; list and search require
 `knowledge.read`. The resolver derives an opaque principal ID from the current
 filesystem owner's non-symlink `principal.json`, then requires an active
@@ -93,7 +124,7 @@ local projection without changing repo-mode knowledge:
 ```
 
 `knowledge-social-helper.sh` resolves a logical corpus alias through the
-authenticated catalog before it provisions schema v1, imports a provider-neutral
+authenticated catalog before it provisions schema v5, imports a provider-neutral
 archive, reports per-stream coverage, or rebuilds the FTS5 projection. Mutating
 operations require `knowledge.write`; coverage requires `knowledge.read`.
 Coverage opens only an existing, checkpointed database through SQLite immutable
@@ -108,7 +139,14 @@ Canonical JSON bytes are SHA-256 addressed before deterministic compression.
 The raw batch is authoritative and immutable. Normalized rows, coverage, and
 `objects_fts` are projections: repeat import is idempotent, and `rebuild`
 recreates FTS5 from canonical object rows without changing raw evidence. The
-database is mode `0600`, containing directories are `0700`, unsafe IDs and
+schema-v5 `corpus_contract` and `evidence_sources` tables bind every fetch batch
+to one corpus-scoped source. `canonical_evidence_projections` exposes stable
+object, activity, and media projection IDs while preserving each raw pointer. The
+v4-to-v5 migration is additive, transactional, replay-safe, and retains all raw
+files, rows, checkpoints, coverage, and old query columns. A failed migration
+rolls back without advancing `user_version`; prior readers remain usable until a
+successful write-side migration.
+The database is mode `0600`, containing directories are `0700`, unsafe IDs and
 symlinks fail closed, and unsupported schema versions reject writes.
 
 `knowledge-social-helper.sh query` derives the authenticated principal and
@@ -199,30 +237,44 @@ Each ingested source should have a `meta.json` alongside its content in `sources
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "contract_version": 1,
   "id": "unique-kebab-id",
+  "corpus_id": "repo:default",
+  "evidence_id": "ev1:repo:default:local-file:sha256:<digest>",
+  "authority": "raw",
+  "plane": "_knowledge",
+  "projection": false,
   "kind": "document|dataset|export|reference|email|attachment",
-  "source_uri": "https://original.url.or/local/path",
+  "source_uri": "https://source.example/path-or-local:filename",
   "sha256": "hex-hash-of-original-file",
   "ingested_at": "2026-04-25T00:00:00Z",
-  "ingested_by": "agent-or-username",
+  "ingested_by": "local-operator",
   "sensitivity": "public|internal|pii|sensitive|privileged",
   "trust": "unverified|reviewed|trusted|authoritative",
   "blob_path": null,
-  "size_bytes": 12345
+  "size_bytes": 12345,
+  "connector": {"id": "local-file", "native_id": "unique-kebab-id"},
+  "provenance": {
+    "captured_at": "2026-04-25T00:00:00Z",
+    "source_uri": "https://source.example/path-or-local:filename",
+    "content_sha256": "hex-hash-of-original-file"
+  }
 }
 ```
 
-Fields: `id` (unique within repo), `kind` (broad category), `source_uri` (original
-location for re-verification), `sha256` (integrity check), `sensitivity`/`trust` (policy
-enforcement), `blob_path` (set when file ≥30MB — see below), `size_bytes` (raw byte count).
+Version-1 manifests remain readable. New ingestion writes version 2 and deduplicates
+by raw SHA-256 before creating a source directory. `source_uri` removes local
+operator paths, URL credentials, query strings, and fragments. Large-file
+`blob_path` values are opaque digest references rather than host paths.
 
 ## 30MB Blob Threshold
 
 Files ≥30MB are NOT stored in-repo. Instead:
 
 1. The original is moved to `~/.aidevops/.agent-workspace/knowledge-blobs/<repo>/<source-id>/`.
-2. `meta.json` sets `"blob_path": "~/.aidevops/.agent-workspace/knowledge-blobs/<repo>/<source-id>/<filename>"`.
+2. `meta.json` stores only `"blob_path": "knowledge-blobs:sha256:<digest>"`; the
+   standard blob layout resolves that opaque reference locally.
 3. Only the `meta.json` is committed.
 
 **Rationale:** git performance degrades with large binaries; LFS is optional and

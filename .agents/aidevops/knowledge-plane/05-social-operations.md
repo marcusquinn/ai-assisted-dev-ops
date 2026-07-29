@@ -30,6 +30,14 @@ credential-shaped fields, use independent stream checkpoints, expose hard cost
 budgets, and add pagination, terminal-failure, replay, and write-reachability
 tests. No provider may add engagement or other platform mutations.
 
+Schema v5 applies the shared source contract without merging physically
+specialized stores. Each private social database owns one opaque corpus identity;
+every `fetch_batches` row points to one `evidence_sources` raw record, and the
+normalized object, activity, and media rows are exposed only as
+`canonical_evidence_projections`. Migration from v4 backfills these links in one
+transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
+rows. Replay preserves both evidence and projection IDs.
+
 The maintained planning and gap inventory is
 `06-social-provider-capabilities.md`. A matrix entry is not implementation
 authority: every provider child must revalidate current official API/export

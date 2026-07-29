@@ -9,6 +9,10 @@ Items here are unclassified: they have not yet been routed to a plane,
 assigned a sensitivity level, or deduplicated. Nothing in `_inbox/` is
 authoritative until triaged.
 
+Routing promotes canonical raw bytes into `_knowledge/` and records the resulting
+corpus-scoped `evidence_id`. Inbox paths, filenames, triage rows, and temporary
+copies never become authority and may be removed after a verified promotion.
+
 ## Tracked seed surface
 
 - `README.md` — this policy.
