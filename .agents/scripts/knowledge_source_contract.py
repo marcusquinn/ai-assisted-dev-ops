@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -33,6 +34,23 @@ FORBIDDEN_CREDENTIAL_SUFFIXES = (
 
 class SourceContractError(ValueError):
     """Raised when evidence would violate the canonical source contract."""
+
+
+@dataclass(frozen=True)
+class SourceMetaInput:
+    """Validated inputs for one canonical document source manifest."""
+
+    source_id: str
+    corpus_id: str
+    connector_id: str
+    source_uri: str
+    content_sha256: str
+    size_bytes: int
+    kind: str
+    sensitivity: str
+    trust: str
+    ingested_at: str
+    blob_ref: str | None
 
 
 def canonical_json(value: Any) -> str:
@@ -102,49 +120,38 @@ def sanitize_source_uri(source_uri: str, source_name: str) -> str:
     return f"local:{Path(source_name).name}"
 
 
-def build_source_meta(
-    *,
-    source_id: str,
-    corpus_id: str,
-    connector_id: str,
-    source_uri: str,
-    content_sha256: str,
-    size_bytes: int,
-    kind: str,
-    sensitivity: str,
-    trust: str,
-    ingested_at: str,
-    blob_ref: str | None,
-) -> dict[str, Any]:
+def build_source_meta(source: SourceMetaInput) -> dict[str, Any]:
     """Build a version-2 document source manifest with version-1 compatibility fields."""
-    validate_identifier(source_id, "source_id")
-    evidence_id = canonical_evidence_id(corpus_id, connector_id, content_sha256)
-    if not isinstance(size_bytes, int) or size_bytes < 0:
+    validate_identifier(source.source_id, "source_id")
+    evidence_id = canonical_evidence_id(
+        source.corpus_id, source.connector_id, source.content_sha256
+    )
+    if not isinstance(source.size_bytes, int) or source.size_bytes < 0:
         raise SourceContractError("size_bytes must be a non-negative integer")
     manifest = {
         "version": 2,
         "contract_version": CONTRACT_VERSION,
-        "id": source_id,
-        "corpus_id": corpus_id,
+        "id": source.source_id,
+        "corpus_id": source.corpus_id,
         "evidence_id": evidence_id,
         "authority": "raw",
         "plane": "_knowledge",
         "projection": False,
-        "kind": kind,
-        "source_uri": sanitize_source_uri(source_uri, source_id),
-        "sha256": content_sha256,
-        "content_sha256": content_sha256,
-        "ingested_at": ingested_at,
+        "kind": source.kind,
+        "source_uri": sanitize_source_uri(source.source_uri, source.source_id),
+        "sha256": source.content_sha256,
+        "content_sha256": source.content_sha256,
+        "ingested_at": source.ingested_at,
         "ingested_by": "local-operator",
-        "sensitivity": sensitivity,
-        "trust": trust,
-        "blob_path": blob_ref,
-        "size_bytes": size_bytes,
-        "connector": {"id": connector_id, "native_id": source_id},
+        "sensitivity": source.sensitivity,
+        "trust": source.trust,
+        "blob_path": source.blob_ref,
+        "size_bytes": source.size_bytes,
+        "connector": {"id": source.connector_id, "native_id": source.source_id},
         "provenance": {
-            "captured_at": ingested_at,
-            "source_uri": sanitize_source_uri(source_uri, source_id),
-            "content_sha256": content_sha256,
+            "captured_at": source.ingested_at,
+            "source_uri": sanitize_source_uri(source.source_uri, source.source_id),
+            "content_sha256": source.content_sha256,
         },
     }
     reject_credentials(manifest)
@@ -222,17 +229,19 @@ def validate_checkpoint_transition(
 def _source_meta_command(args: argparse.Namespace) -> int:
     blob_ref = None if args.blob_ref == "null" else args.blob_ref
     result = build_source_meta(
-        source_id=args.source_id,
-        corpus_id=args.corpus_id,
-        connector_id=args.connector_id,
-        source_uri=args.source_uri,
-        content_sha256=args.sha256,
-        size_bytes=args.size_bytes,
-        kind=args.kind,
-        sensitivity=args.sensitivity,
-        trust=args.trust,
-        ingested_at=args.ingested_at,
-        blob_ref=blob_ref,
+        SourceMetaInput(
+            source_id=args.source_id,
+            corpus_id=args.corpus_id,
+            connector_id=args.connector_id,
+            source_uri=args.source_uri,
+            content_sha256=args.sha256,
+            size_bytes=args.size_bytes,
+            kind=args.kind,
+            sensitivity=args.sensitivity,
+            trust=args.trust,
+            ingested_at=args.ingested_at,
+            blob_ref=blob_ref,
+        )
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

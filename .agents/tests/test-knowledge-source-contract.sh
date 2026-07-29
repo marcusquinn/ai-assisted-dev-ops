@@ -26,6 +26,7 @@ from pathlib import Path
 
 from knowledge_source_contract import (
     SourceContractError,
+    SourceMetaInput,
     build_source_meta,
     canonical_evidence_id,
     validate_checkpoint_transition,
@@ -40,17 +41,19 @@ assert first == canonical_evidence_id("repo:alpha", "local-file", digest)
 assert first != canonical_evidence_id("repo:beta", "local-file", digest)
 
 meta = build_source_meta(
-    source_id="example-source",
-    corpus_id="repo:alpha",
-    connector_id="local-file",
-    source_uri="file:///private/operator/path/example.txt",
-    content_sha256=digest,
-    size_bytes=12,
-    kind="document",
-    sensitivity="internal",
-    trust="reviewed",
-    ingested_at="2026-07-29T00:00:00Z",
-    blob_ref=None,
+    SourceMetaInput(
+        source_id="example-source",
+        corpus_id="repo:alpha",
+        connector_id="local-file",
+        source_uri="file:///private/operator/path/example.txt",
+        content_sha256=digest,
+        size_bytes=12,
+        kind="document",
+        sensitivity="internal",
+        trust="reviewed",
+        ingested_at="2026-07-29T00:00:00Z",
+        blob_ref=None,
+    )
 )
 assert meta["evidence_id"] == first
 assert meta["source_uri"] == "local:example-source"
