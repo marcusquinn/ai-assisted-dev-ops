@@ -15,6 +15,7 @@ test_appends_escalation_contract() {
 
 	if [[ "$output" == *'HEADLESS_CONTINUATION_CONTRACT_V9'* ]] &&
 		[[ "$output" == *'Read the issue body FIRST'* ]] &&
+		[[ "$output" == *"gh issue view \"\$WORKER_ISSUE_NUMBER\" --repo \"\$WORKER_REPO_SLUG\" --json body --jq"* ]] &&
 		[[ "$output" == *'Look for a "Worker Guidance" or "How" section'* ]] &&
 		[[ "$output" == *'do bounded discovery instead of stopping'* ]] &&
 		[[ "$output" == *'Auto-generated "Unactioned Review Feedback" / quality-debt issues are not missing context solely because they lack file paths'* ]] &&

@@ -1323,6 +1323,24 @@ else
 	_fail "native multi-frame REST quota attribution" "summary: $native_multi_summary log: $(cat "$native_multi_log" 2>/dev/null || true)"
 fi
 
+native_single_log="$TMP/exact-native-single-rest.log"
+native_single_state="$TMP/exact-native-single-rest-state"
+: >"$native_single_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$native_single_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$native_single_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core \
+	STUB_GH_DEBUG_STATUS=200 STUB_GH_DEBUG_USED=107 STUB_GH_DEBUG_REMAINING=4893 \
+	STUB_GH_DEBUG_RESET=2000 "$SHIM_RUN" auth status >/dev/null 2>/dev/null
+if [[ "$(_read_last_attempt_field "$native_single_log" 2)" == "gh_auth_status" \
+	&& "$(_read_last_attempt_field "$native_single_log" 3)" == "rest" \
+	&& "$(_read_last_attempt_field "$native_single_log" 15)" == "200" \
+	&& "$(_read_attempt_quota "$native_single_log")" == "1" ]]; then
+	_pass "native single-frame auth REST response records exact cost"
+else
+	_fail "native single-frame auth REST quota attribution" "log: $(cat "$native_single_log" 2>/dev/null || true)"
+fi
+
 incomplete_log="$TMP/exact-incomplete-rest.log"
 incomplete_state="$TMP/exact-incomplete-rest-state"
 : >"$incomplete_log"

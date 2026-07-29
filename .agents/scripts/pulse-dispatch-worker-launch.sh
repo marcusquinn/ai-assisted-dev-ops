@@ -595,7 +595,7 @@ You are assigned to work on issue #${issue_number} in ${repo_slug}.
 Previous dispatch attempts for this issue launched a worker but produced zero session output. Do not rely on embedded issue content from the dispatcher.
 
 First actions:
-1. Read the issue directly with: gh issue view ${issue_number} --repo ${repo_slug}
+1. Read the issue body directly with: gh issue view ${issue_number} --repo ${repo_slug} --json body --jq '.body // ""'
 ${snapshot_instruction}
 3. Ignore ops/provenance/audit comments as implementation context.
 4. Summarize the actionable task, files, and verification before editing.

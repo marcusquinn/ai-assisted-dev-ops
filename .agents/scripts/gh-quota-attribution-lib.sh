@@ -623,13 +623,18 @@ _ghqa_write_complete_frames() {
 			quota_cost="$success_quota_cost"
 		elif [[ -n "$exact_success_cost" ]]; then
 			quota_cost="$exact_success_cost"
-		# Native non-api commands can fan out into multiple complete REST
-		# responses. Each successful core/search frame is one exact primary-rate
-		# request. Keep direct `gh api` calls on the endpoint-aware parser above so
+		# Native non-api commands can emit one complete REST response or fan out
+		# into several. Each successful core/search frame owns one exact primary-
+		# rate unit, except an authenticated conditional 304 response, which owns
+		# zero. Keep direct `gh api` calls on the endpoint-aware parser above so
 		# GET /rate_limit and ambiguous API argument shapes remain fail-closed.
-		elif [[ "$frame_total" -gt 1 && "$outcome" == success && "${2:-}" != api &&
+		elif [[ "$frame_total" -gt 0 && "$outcome" == success && "${2:-}" != api &&
 			"$resource" =~ ^(core|search)$ ]]; then
-			quota_cost=1
+			if [[ "$status" == 304 ]]; then
+				quota_cost=0
+			else
+				quota_cost=1
+			fi
 		elif [[ "$resource" == graphql && "$response_cost" =~ ^[0-9]+$ ]]; then
 			quota_cost="$response_cost"
 			invalidate_state=1

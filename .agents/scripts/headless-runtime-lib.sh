@@ -787,7 +787,7 @@ Key framework file paths (use these directly, do NOT search for them):
 - Aidevops source repo only: the same files are edited at .agents/scripts/commands/full-loop.md and under .agents/scripts/
 
 Implementation approach:
-1. Read the issue body FIRST (gh issue view $WORKER_ISSUE_NUMBER). Look for a "Worker Guidance" or "How" section -- it contains the files to modify, reference patterns, and verification commands. Follow these directly when present.
+1. Read the issue body FIRST (gh issue view "$WORKER_ISSUE_NUMBER" --repo "$WORKER_REPO_SLUG" --json body --jq '.body // ""'). Look for a "Worker Guidance" or "How" section -- it contains the files to modify, reference patterns, and verification commands. Follow these directly when present.
 2. If Worker Guidance/How is missing or incomplete, do bounded discovery instead of stopping: use the issue title/body, exact error text, nearby helper names, tests, and git history to identify likely target files. Proceed when expected behavior, target area, and safe verification are clear.
 3. Auto-generated "Unactioned Review Feedback" / quality-debt issues are not missing context solely because they lack file paths. Treat Source PR + captured review text as reproduction context; first verify whether the review is actionable, already fixed, or positive-only scanner noise, then implement a scanner/test fix or record a no-code resolution with evidence as the repo policy allows.
 4. Budget discipline: spend at most 25% of your effort on reading/exploring. After reading the issue body + 2-3 likely reference files, start writing code. Do not read entire helper scripts -- read only the sections you will modify.
