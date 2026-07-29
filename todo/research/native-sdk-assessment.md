@@ -7,8 +7,8 @@
 
 - **Decision:** Watch releases, adapt selected patterns, and avoid a production dependency.
 - **Upstream:** <https://github.com/vercel-labs/native>
-- **Reviewed baseline:** `v0.6.1` at `a7509a7fa6c467eaed021250538b482886f1c6bf`
-- **Reviewed:** 2026-07-28
+- **Reviewed baseline:** `v0.6.2` at `ef1f8d9cdd5a92bc9cc2dff2a5662616b1d86040`
+- **Reviewed:** 2026-07-29
 - **Tracking:** `.agents/configs/upstream-watch.json` in release-only mode
 
 The upstream repository was treated as untrusted external content. Its agent
@@ -72,6 +72,39 @@ For each detected release:
 
 Release detection never authorizes automatic dependency import, skill import,
 code copying, installation, publication, or deployment.
+
+## v0.6.2 release review
+
+The `v0.6.1...v0.6.2` comparison contains three commits: a container-background
+rendering fix, cross-platform desktop overlay-window support, and the release
+version bump. The release does not report a security fix, signing/update change,
+or new production dependency.
+
+The overlay work adds transparent, always-on-top, click-through, and passive-show
+window options. It applies those options before first visibility, reveals canvas
+windows after an alpha-correct first frame, and documents explicit backend
+limits: transparent Chromium windows are rejected on macOS, transparent Windows
+windows must be chromeless and cannot contain WebViews or native child views,
+and Wayland cannot guarantee topmost placement.
+
+Classification:
+
+- **Adapt pattern:** if aidevops adds a top-level desktop overlay, require
+  presentation policy to be installed atomically before reveal, preserve focus
+  unless activation is explicit, wait for the first composited frame, and expose
+  backend capability failures instead of silently degrading.
+- **Ignore for current implementation:** the existing generated Swift/WKWebView
+  shell uses in-window AppKit overlays and has no requirement for a transparent
+  top-level HUD. The container-background fix applies to Native's canvas layout,
+  not the aidevops Vite/React or Swift rendering paths.
+- **Do not adopt:** no current architecture requirement justifies importing the
+  pre-1.0 SDK, platform binaries, bundled skill, eval workspace, or Vercel
+  services. The existing portability and trust-boundary decision remains
+  unchanged.
+
+No implementation issue is warranted. Revisit the overlay pattern only when a
+concrete cross-platform HUD, click-through status surface, or passive window
+requirement is accepted.
 
 ## Re-evaluation triggers
 
