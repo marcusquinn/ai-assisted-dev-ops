@@ -295,7 +295,8 @@ gh() {
 	if [[ "$*" == *"query("* ]]; then
 		printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[{"id":"I_blocker"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
 	else
-		printf '%s\n' '{"data":{"removeBlockedBy":{"issue":{"number":10}},"rateLimit":{"cost":1}}}'
+		[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "1" && "$*" != *"rateLimit"* ]] || return 1
+		printf '%s\n' '{"data":{"removeBlockedBy":{"issue":{"number":10}}}}'
 	fi
 	return 0
 }

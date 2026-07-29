@@ -164,11 +164,15 @@ fi
 
 # gh api graphql -f query=...
 if [[ "$cmd1" == "api" && "$cmd2" == "graphql" ]]; then
-	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
 	# Check the mutation name in the query body
+	if [[ "$*" == *"addSubIssue"* ]]; then
+		[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "1" && "$*" != *"rateLimit"* ]] || exit 1
+	else
+		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
+	fi
 	for arg in "$@"; do
 		if [[ "$arg" == *"addSubIssue"* ]]; then
-			printf '%s\n' '{"data":{"addSubIssue":{"issue":{"number":1}},"rateLimit":{"cost":1}}}'
+			printf '%s\n' '{"data":{"addSubIssue":{"issue":{"number":1}}}}'
 			exit 0
 		fi
 		if [[ "$arg" == *"subIssues(first:100)"* ]]; then
