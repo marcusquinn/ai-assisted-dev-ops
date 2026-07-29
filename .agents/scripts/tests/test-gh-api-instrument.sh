@@ -477,6 +477,38 @@ assert_eq "exact successful frame records inferred quota" "1" \
 assert_eq "exact failed frame leaves inferred quota unknown" "x" \
 	"$(awk -F '\t' 'NR == 1 { print $7 }' "$exact_failure_result")"
 
+# --- Test 11d: successful native multi-frame REST costs are exact -----------
+native_multi_result="$TMPDIR/native-multi.result"
+native_multi_state="$TMPDIR/native-multi.state"
+native_multi_frames=$'frame\t1\t1\t200\tcore\t500\t4500\t1800000000\t10\nframe\t2\t1\t200\tcore\t501\t4499\t1800000000\t11\nframe\t3\t1\t200\tcore\t502\t4498\t1800000000\t12'
+: >"$native_multi_result"
+_ghqa_state_write_all "$native_multi_state" 500 1800000000 20 1800000000 0 1800000000
+_ghqa_write_complete_frames "$native_multi_result" "$native_multi_state" graphql 1 0 \
+	"$native_multi_frames" gh run view 123 --log
+assert_eq "native multi-frame REST pages retain separate exact attempts" \
+	"rest:1:success:1,rest:2:success:1,rest:3:success:1" \
+	"$(awk -F '\t' '{ value = value (value ? "," : "") $2 ":" $3 ":" $4 ":" $7 } END { print value }' "$native_multi_result")"
+
+native_mixed_result="$TMPDIR/native-mixed.result"
+native_mixed_state="$TMPDIR/native-mixed.state"
+native_mixed_frames=$'frame\t1\t1\t200\tcore\t10\t4990\t1800000000\t10\nframe\t2\t1\t200\tgraphql\t20\t4980\t1800000000\t11'
+: >"$native_mixed_result"
+_ghqa_state_write_all "$native_mixed_state" 10 1800000000 20 1800000000 0 1800000000
+_ghqa_write_complete_frames "$native_mixed_result" "$native_mixed_state" graphql 1 0 \
+	"$native_mixed_frames" gh run view 123
+assert_eq "native multi-frame inference leaves GraphQL without proof unknown" "1,x" \
+	"$(awk -F '\t' '{ value = value (value ? "," : "") $7 } END { print value }' "$native_mixed_result")"
+
+native_failed_result="$TMPDIR/native-failed.result"
+native_failed_state="$TMPDIR/native-failed.state"
+native_failed_frames=$'frame\t1\t1\t200\tcore\t10\t4990\t1800000000\t10\nframe\t2\t1\t500\tcore\t12\t4988\t1800000000\t11'
+: >"$native_failed_result"
+_ghqa_state_write_all "$native_failed_state" 10 1800000000 20 1800000000 0 1800000000
+_ghqa_write_complete_frames "$native_failed_result" "$native_failed_state" graphql 1 1 \
+	"$native_failed_frames" gh run view 123
+assert_eq "failed native REST frame remains unknown without counter proof" "1,x" \
+	"$(awk -F '\t' '{ value = value (value ? "," : "") $7 } END { print value }' "$native_failed_result")"
+
 # --- Test 12: effective window comes from retained attempt timestamps -----
 gh_clear_log
 first_ts=$((now - 30))

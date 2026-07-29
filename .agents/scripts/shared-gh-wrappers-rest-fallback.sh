@@ -944,8 +944,9 @@ _rest_pr_create() {
 # The --json FIELDS flag maps common gh field names onto REST fields so
 # proactive REST-first routing can preserve compact gh-shaped output. Field
 # names align with `gh issue view --json` for common fields (state, title,
-# body, labels, assignees, createdAt).
-# Fields without an exact projection, including GraphQL `id`, remain native.
+# body, labels, assignees, createdAt). GitHub's REST `node_id` is the exact
+# global node identifier returned by the GraphQL-backed gh `id` field.
+# Fields without an exact projection remain native.
 #
 # Returns the underlying gh api exit code.
 #######################################
@@ -1014,6 +1015,7 @@ _rest_issue_object_json_jq() {
 	local user_jq="$2"
 	local projection=""
 	local field=""
+	local id_projection='id: (if (.node_id | type) == "string" and .node_id != "" then .node_id else error("REST issue node_id must be a non-empty string") end)'
 	local actor_projection=""
 	local assignees_projection=""
 	local labels_projection=""
@@ -1023,6 +1025,7 @@ _rest_issue_object_json_jq() {
 	while IFS= read -r field; do
 		[[ -z "$field" ]] && continue
 		case "$field" in
+		id) projection="${projection}${projection:+,}${id_projection}" ;;
 		number) projection="${projection}${projection:+,}number: .number" ;;
 		state) projection="${projection}${projection:+,}state: (.state | ascii_upcase)" ;;
 		url) projection="${projection}${projection:+,}url: .html_url" ;;

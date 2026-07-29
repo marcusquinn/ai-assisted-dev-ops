@@ -129,25 +129,37 @@ if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 	exit 0
 fi
 if [[ "${GH_DEBUG:-}" == "api" && "${STUB_GH_DEBUG_RESPONSE:-0}" == "1" ]]; then
-	printf '* Request at 2026-07-24 00:00:00 +0000 UTC\n' >&2
-	printf '> Authorization: token private-fixture-token\n\n' >&2
-	if [[ "${STUB_GH_DEBUG_REQUEST_ONLY:-0}" != "1" ]]; then
-		printf '< HTTP/2.0 %s Fixture\n' "${STUB_GH_DEBUG_STATUS:-200}" >&2
-		printf '< X-Ratelimit-Resource: %s\n' "${STUB_GH_DEBUG_RESOURCE:-graphql}" >&2
-		printf '< X-Ratelimit-Used: %s\n' "${STUB_GH_DEBUG_USED:-201}" >&2
-		printf '< X-Ratelimit-Remaining: %s\n' "${STUB_GH_DEBUG_REMAINING:-4799}" >&2
-		printf '< X-Ratelimit-Reset: %s\n\n' "${STUB_GH_DEBUG_RESET:-2000}" >&2
-		if [[ -n "${STUB_GH_DEBUG_BODY:-}" ]]; then
-			printf '%s\n' "$STUB_GH_DEBUG_BODY" >&2
-		else
-			printf '{"private":"response-body-fixture"}\n' >&2
+	_stub_frame=1
+	_stub_frame_total=1
+	[[ "${STUB_GH_DEBUG_MULTI_FRAME:-0}" == "1" ]] && _stub_frame_total=3
+	while [[ "$_stub_frame" -le "$_stub_frame_total" ]]; do
+		_stub_used="${STUB_GH_DEBUG_USED:-201}"
+		_stub_remaining="${STUB_GH_DEBUG_REMAINING:-4799}"
+		if [[ "$_stub_frame_total" -gt 1 ]]; then
+			_stub_used=$((${STUB_GH_DEBUG_MULTI_USED_BASE:-100} + _stub_frame - 1))
+			_stub_remaining=$((${STUB_GH_DEBUG_MULTI_REMAINING_BASE:-4900} - _stub_frame + 1))
 		fi
-		if [[ "${STUB_GH_DEBUG_TRAILING_RESPONSE:-0}" == "1" ]]; then
-			printf '< HTTP/2.0 200 Redirected\n\n' >&2
-			printf '{"private":"redirected-response-fixture"}\n' >&2
+		printf '* Request at 2026-07-24 00:00:00 +0000 UTC\n' >&2
+		printf '> Authorization: token private-fixture-token\n\n' >&2
+		if [[ "${STUB_GH_DEBUG_REQUEST_ONLY:-0}" != "1" ]]; then
+			printf '< HTTP/2.0 %s Fixture\n' "${STUB_GH_DEBUG_STATUS:-200}" >&2
+			printf '< X-Ratelimit-Resource: %s\n' "${STUB_GH_DEBUG_RESOURCE:-graphql}" >&2
+			printf '< X-Ratelimit-Used: %s\n' "$_stub_used" >&2
+			printf '< X-Ratelimit-Remaining: %s\n' "$_stub_remaining" >&2
+			printf '< X-Ratelimit-Reset: %s\n\n' "${STUB_GH_DEBUG_RESET:-2000}" >&2
+			if [[ -n "${STUB_GH_DEBUG_BODY:-}" ]]; then
+				printf '%s\n' "$STUB_GH_DEBUG_BODY" >&2
+			else
+				printf '{"private":"response-body-fixture"}\n' >&2
+			fi
+			if [[ "${STUB_GH_DEBUG_TRAILING_RESPONSE:-0}" == "1" ]]; then
+				printf '< HTTP/2.0 200 Redirected\n\n' >&2
+				printf '{"private":"redirected-response-fixture"}\n' >&2
+			fi
 		fi
-	fi
-	printf '* Request took 12.5ms\n' >&2
+		printf '* Request took 12.5ms\n' >&2
+		_stub_frame=$((_stub_frame + 1))
+	done
 	[[ -z "${STUB_GH_DIAGNOSTIC:-}" ]] || printf '%s\n' "$STUB_GH_DIAGNOSTIC" >&2
 elif [[ -n "${STUB_GH_UNFRAMED_PRIVATE_STDERR:-}" ]]; then
 	printf '%s\n' "$STUB_GH_UNFRAMED_PRIVATE_STDERR" >&2
@@ -203,6 +215,32 @@ if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/issues\? ]]; then
 	else
 		printf '%s\n' "$fixture"
 	fi
+	exit 0
+fi
+if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/issues/[0-9]+$ ]]; then
+	jq_filter=""
+	i=3
+	while [[ $i -le $# ]]; do
+		if [[ "${!i}" == "--jq" ]]; then
+			next=$((i + 1))
+			jq_filter="${!next:-}"
+			break
+		fi
+		i=$((i + 1))
+	done
+	fixture="${STUB_REST_ISSUE_VIEW_JSON:-}"
+	if [[ -z "$fixture" ]]; then
+		fixture='{"node_id":"I_kwDOFixture42","number":42,"state":"open","updated_at":"2026-07-28T19:38:58Z"}'
+	fi
+	if [[ -n "$jq_filter" ]]; then
+		printf '%s\n' "$fixture" | jq -r -c "$jq_filter" || exit 1
+	else
+		printf '%s\n' "$fixture"
+	fi
+	exit 0
+fi
+if [[ "$1" == "issue" && "$2" == "view" && -n "${STUB_NATIVE_ISSUE_VIEW_JSON:-}" ]]; then
+	printf '%s\n' "$STUB_NATIVE_ISSUE_VIEW_JSON"
 	exit 0
 fi
 EOF
@@ -777,6 +815,51 @@ else
 	_fail "unsupported issue view GraphQL preservation" "argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
 fi
 
+echo ""
+echo "Test 15e: issue view node IDs preserve exact REST output"
+_reset_log
+export AIDEVOPS_GH_API_LOG="$TMP/gh-api-calls-issue-view-id.log"
+rm -f "$AIDEVOPS_GH_API_LOG"
+output=$(AIDEVOPS_GH_FORCE_REST_READS=1 "$SHIM_RUN" issue view 42 --repo owner/repo \
+	--json id,number,state,updatedAt 2>/dev/null || true)
+argv=$(_read_argv)
+if jq -e '.id == "I_kwDOFixture42" and .number == 42 and .state == "OPEN" and .updatedAt == "2026-07-28T19:38:58Z"' \
+	>/dev/null 2>&1 <<<"$output" &&
+	[[ "$argv" == *$'api\n/repos/owner/repo/issues/42'* ]] &&
+	grep -q $'\tgh_issue_view\trest' "$AIDEVOPS_GH_API_LOG" &&
+	! grep -q $'\tgh_issue_view\tgraphql' "$AIDEVOPS_GH_API_LOG"; then
+	_pass "issue view id maps exactly from REST node_id"
+else
+	_fail "issue view id REST projection" "output: $output argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
+_reset_log
+export AIDEVOPS_GH_API_LOG="$TMP/gh-api-calls-issue-view-id-scalar.log"
+rm -f "$AIDEVOPS_GH_API_LOG"
+output=$(AIDEVOPS_GH_FORCE_REST_READS=1 "$SHIM_RUN" issue view 42 --repo owner/repo \
+	--json id --jq '.id' 2>/dev/null || true)
+if [[ "$output" == "I_kwDOFixture42" ]] && grep -q $'\tgh_issue_view\trest' "$AIDEVOPS_GH_API_LOG"; then
+	_pass "issue view id preserves scalar jq output"
+else
+	_fail "issue view id scalar REST projection" "output: $output log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
+_reset_log
+export AIDEVOPS_GH_API_LOG="$TMP/gh-api-calls-issue-view-id-malformed.log"
+rm -f "$AIDEVOPS_GH_API_LOG"
+output=$(STUB_REST_ISSUE_VIEW_JSON='{"node_id":null,"number":42,"state":"open"}' \
+	STUB_NATIVE_ISSUE_VIEW_JSON='{"id":"I_nativeFallback","number":42,"state":"OPEN"}' \
+	AIDEVOPS_GH_FORCE_REST_READS=1 "$SHIM_RUN" issue view 42 --repo owner/repo \
+	--json id,number,state 2>/dev/null || true)
+argv=$(_read_argv)
+if [[ "$output" == '{"id":"I_nativeFallback","number":42,"state":"OPEN"}' ]] &&
+	[[ "$argv" == $'issue\nview\n42\n--repo\nowner/repo\n--json\nid,number,state' ]] &&
+	grep -q $'\tgh_issue_view\tgraphql' "$AIDEVOPS_GH_API_LOG"; then
+	_pass "malformed REST node_id fails open to unchanged native issue view"
+else
+	_fail "malformed issue node_id native fallback" "output: $output argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
 # =============================================================================
 # Test 16: raw interactive aidevops tracking issue creation is normalized
 # =============================================================================
@@ -1220,6 +1303,24 @@ if [[ "$(_read_attempt_quota "$redirect_log")" == "1" \
 	_pass "redirect frames select the single complete GitHub quota response"
 else
 	_fail "redirect response attribution" "log: $(cat "$redirect_log" 2>/dev/null || true)"
+fi
+
+native_multi_log="$TMP/exact-native-multi-rest.log"
+native_multi_state="$TMP/exact-native-multi-rest-state"
+: >"$native_multi_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$native_multi_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$native_multi_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_MULTI_FRAME=1 STUB_BOOTSTRAP_CORE_USED=100 \
+	STUB_GH_DEBUG_RESOURCE=core STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" run view 123 --log >/dev/null 2>/dev/null
+native_multi_summary=$(awk -F '\t' '$2 == "gh_run_view" && $9 == "attempt" {
+	value = value (value ? "," : "") $3 ":" $12 ":" $14 ":" $17
+} END { print value }' "$native_multi_log")
+if [[ "$native_multi_summary" == "rest:1:success:1,rest:2:success:1,rest:3:success:1" ]]; then
+	_pass "native multi-frame REST responses record exact per-frame costs"
+else
+	_fail "native multi-frame REST quota attribution" "summary: $native_multi_summary log: $(cat "$native_multi_log" 2>/dev/null || true)"
 fi
 
 incomplete_log="$TMP/exact-incomplete-rest.log"

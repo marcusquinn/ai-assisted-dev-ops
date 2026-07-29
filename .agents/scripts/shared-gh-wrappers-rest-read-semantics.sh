@@ -177,7 +177,7 @@ _rest_issue_view_fields_supported() {
 	local field=""
 	while IFS= read -r field; do
 		case "$field" in
-		number|state|url|title|body|createdAt|updatedAt|closedAt|labels|assignees|author|stateReason|closed|locked) ;;
+		id|number|state|url|title|body|createdAt|updatedAt|closedAt|labels|assignees|author|stateReason|closed|locked) ;;
 		*) return 1 ;;
 		esac
 	done < <(_rest_split_csv "$fields")
