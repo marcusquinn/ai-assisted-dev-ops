@@ -332,14 +332,43 @@ output=$(
 assert_exit_code "mixed legacy and extended timing rows exit 0" 0 "$rc"
 assert_contains "multiple executors under one owner still produce four cycles" "cycles_started=4" "$output"
 
-# --- Test 17: executor lookup failure does not suppress a timing row ---
-printf '\nTest 17: executor lookup failure remains non-blocking\n'
+# --- Test 17: substage timing records the background executor ---
+printf '\nTest 17: substage timing records its background executor\n'
+EXECUTOR_TIMINGS="${TMPDIR_TEST}/executor-timings.log"
+(
+	# shellcheck source=../pulse-watchdog.sh
+	source "$WATCHDOG_LIB"
+	LOGFILE="${TMPDIR_TEST}/executor-wrapper.log"
+	PULSE_STAGE_TIMINGS_LOG="$EXECUTOR_TIMINGS"
+	_log_substage_timing "substage:test/executor" "$SECONDS" 0
+) &
+executor_pid=$!
+wait "$executor_pid"
+output=$(<"$EXECUTOR_TIMINGS")
+assert_contains "sixth field identifies the background executor" $'\t'"${executor_pid}" "$output"
+
+# --- Test 18: Bash 3.2 fallback resolves the calling background process ---
+printf '\nTest 18: executor fallback resolves its background caller\n'
+FALLBACK_EXECUTOR="${TMPDIR_TEST}/fallback-executor-pid"
+(
+	# shellcheck source=../pulse-watchdog.sh
+	source "$WATCHDOG_LIB"
+	_pulse_resolve_executor_pid ""
+	printf '%s' "$_PULSE_EXECUTOR_PID" >"$FALLBACK_EXECUTOR"
+) &
+executor_pid=$!
+wait "$executor_pid"
+output=$(<"$FALLBACK_EXECUTOR")
+assert_contains "PPID fallback identifies the background caller" "$executor_pid" "$output"
+
+# --- Test 19: executor lookup failure does not suppress a timing row ---
+printf '\nTest 19: executor lookup failure remains non-blocking\n'
 FAILURE_TIMINGS="${TMPDIR_TEST}/executor-failure-timings.log"
 rc=0
 (
 	# shellcheck source=../pulse-watchdog.sh
 	source "$WATCHDOG_LIB"
-	_pulse_executor_pid() { return 1; }
+	_pulse_resolve_executor_pid() { return 1; }
 	LOGFILE="${TMPDIR_TEST}/executor-failure-wrapper.log"
 	PULSE_STAGE_TIMINGS_LOG="$FAILURE_TIMINGS"
 	_log_substage_timing "substage:test/fallback" "$SECONDS" 0

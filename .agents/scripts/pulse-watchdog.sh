@@ -301,15 +301,15 @@ run_stage_with_timeout() {
 #
 # Returns: 0 (always — never fails the caller)
 #######################################
-_pulse_executor_pid() {
-	local executor_pid="${BASHPID:-}"
+_pulse_resolve_executor_pid() {
+	local executor_pid="$1"
 	if [[ -z "$executor_pid" ]]; then
 		# Bash 3.2 has no BASHPID and $$ remains the cycle-owner PID inside a
 		# subshell. The command-substitution child sees the caller as its PPID.
 		executor_pid="$(exec sh -c 'printf "%s" "$PPID"')" || return 1
 	fi
 	[[ "$executor_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-	printf '%s' "$executor_pid"
+	_PULSE_EXECUTOR_PID="$executor_pid"
 	return 0
 }
 
@@ -322,7 +322,11 @@ _log_substage_timing() {
 	[[ "$duration" =~ ^[0-9]+$ ]] || duration=0
 	echo "[pulse-wrapper] Substage: ${substage_name} (${exit_code}, ${duration}s)" >>"${LOGFILE:-/dev/null}"
 	if [[ -n "${PULSE_STAGE_TIMINGS_LOG:-}" ]]; then
-		executor_pid=$(_pulse_executor_pid) || executor_pid="unavailable"
+		if _pulse_resolve_executor_pid "${BASHPID:-}"; then
+			executor_pid="$_PULSE_EXECUTOR_PID"
+		else
+			executor_pid="unavailable"
+		fi
 		printf '%s\t%s\t%d\t%d\t%d\t%s\n' \
 			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			"$substage_name" \
