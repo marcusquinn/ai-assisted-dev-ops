@@ -169,9 +169,77 @@ _is_linked_worktree() {
 	return 0
 }
 
+_github_slug_from_remote_url() {
+	local _url="$1"
+	local _slug=""
+	case "$_url" in
+	git@github.com:*) _slug="${_url#git@github.com:}" ;;
+	ssh://git@github.com/*) _slug="${_url#ssh://git@github.com/}" ;;
+	https://github.com/*) _slug="${_url#https://github.com/}" ;;
+	http://github.com/*) _slug="${_url#http://github.com/}" ;;
+	git://github.com/*) _slug="${_url#git://github.com/}" ;;
+	*) return 1 ;;
+	esac
+	_slug="${_slug%%\?*}"
+	_slug="${_slug%%#*}"
+	_slug="${_slug%/}"
+	_slug="${_slug%.git}"
+	[[ -n "$_slug" && "$_slug" == */* && "${_slug#*/}" != */* ]] || return 1
+	printf '%s\n' "$_slug"
+	return 0
+}
+
+# Resolve the remote that represents the registry's GitHub repository. Prefer
+# an exact fetch+push URL identity match; retain origin only for local mirrors
+# where no configured remote is parseable as GitHub at all.
+_resolve_github_remote() {
+	local _repo_path="$1"
+	local _expected_slug="$2"
+	local _expected_lower
+	_expected_lower=$(printf '%s' "$_expected_slug" | tr '[:upper:]' '[:lower:]') || return 1
+	local _remote_names
+	_remote_names=$(git -C "$_repo_path" remote 2>/dev/null) || return 1
+	local _remote=""
+	local _fetch_url="" _push_url=""
+	local _fetch_slug="" _push_slug=""
+	local _fetch_lower="" _push_lower=""
+	local _candidate=""
+	local _github_seen=0
+	while IFS= read -r _remote; do
+		[[ -n "$_remote" ]] || continue
+		_fetch_url=$(git -C "$_repo_path" config --get "remote.${_remote}.url" 2>/dev/null || true)
+		_push_url=$(git -C "$_repo_path" config --get "remote.${_remote}.pushurl" 2>/dev/null || true)
+		[[ -n "$_push_url" ]] || _push_url="$_fetch_url"
+		_fetch_slug=$(_github_slug_from_remote_url "$_fetch_url" 2>/dev/null || true)
+		_push_slug=$(_github_slug_from_remote_url "$_push_url" 2>/dev/null || true)
+		if [[ -n "$_fetch_slug" || -n "$_push_slug" ]]; then
+			_github_seen=1
+		fi
+		[[ -n "$_fetch_slug" && -n "$_push_slug" ]] || continue
+		_fetch_lower=$(printf '%s' "$_fetch_slug" | tr '[:upper:]' '[:lower:]') || return 1
+		_push_lower=$(printf '%s' "$_push_slug" | tr '[:upper:]' '[:lower:]') || return 1
+		[[ "$_fetch_lower" == "$_expected_lower" && "$_push_lower" == "$_expected_lower" ]] || continue
+		if [[ "$_remote" == "origin" ]]; then
+			printf '%s\n' "$_remote"
+			return 0
+		fi
+		[[ -n "$_candidate" ]] || _candidate="$_remote"
+	done <<<"$_remote_names"
+	if [[ -n "$_candidate" ]]; then
+		printf '%s\n' "$_candidate"
+		return 0
+	fi
+	if [[ "$_github_seen" -eq 0 ]] && git -C "$_repo_path" remote get-url origin >/dev/null 2>&1; then
+		printf 'origin\n'
+		return 0
+	fi
+	return 1
+}
+
 _remote_default_ref() {
-	local _default_branch="$1"
-	printf 'origin/%s\n' "$_default_branch"
+	local _remote="$1"
+	local _default_branch="$2"
+	printf '%s/%s\n' "$_remote" "$_default_branch"
 	return 0
 }
 
@@ -194,11 +262,12 @@ _worktree_for_branch() {
 # Refresh a canonical repository's remote-tracking branch from linked-worktree
 # context so the canonical Git guard remains intact. Bootstrap a short-lived
 # detached worktree when the repository has no linked worktree yet.
-_refresh_origin_from_linked_context() {
+_refresh_remote_from_linked_context() {
 	local _repo_path="$1"
-	local _default_branch="$2"
-	local _base_dir="$3"
-	local _slug="$4"
+	local _remote="$2"
+	local _default_branch="$3"
+	local _base_dir="$4"
+	local _slug="$5"
 	local _fetch_path=""
 	local _line _candidate
 	while IFS= read -r _line; do
@@ -227,8 +296,8 @@ _refresh_origin_from_linked_context() {
 
 	local _fetch_rc=0
 	local _cleanup_rc=0
-	git -C "$_fetch_path" fetch --no-tags --quiet origin \
-		"+refs/heads/${_default_branch}:refs/remotes/origin/${_default_branch}" \
+	git -C "$_fetch_path" fetch --no-tags --quiet "$_remote" \
+		"+refs/heads/${_default_branch}:refs/remotes/${_remote}/${_default_branch}" \
 		>/dev/null 2>&1 || _fetch_rc=$?
 	if [[ -n "$_bootstrap_path" ]]; then
 		git -C "$_fetch_path" worktree remove --force "$_bootstrap_path" \
@@ -254,8 +323,11 @@ _prepare_apply_worktree() {
 	fi
 	git -C "$_classified_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
 
+	local _remote
+	_remote=$(_resolve_github_remote "$_classified_path" "$_slug") || return 1
 	local _default_branch
-	_default_branch=$(git -C "$_classified_path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+	_default_branch=$(git -C "$_classified_path" symbolic-ref --short "refs/remotes/${_remote}/HEAD" 2>/dev/null || true)
+	_default_branch="${_default_branch#"${_remote}"/}"
 	[[ -z "$_default_branch" ]] && _default_branch="$_BRANCH_DEFAULT_NAME"
 
 	local _existing
@@ -276,11 +348,11 @@ _prepare_apply_worktree() {
 	_safe_name=$(printf '%s-%s' "$_slug" "$_branch" | sed 's|[^A-Za-z0-9._-]|-|g')
 	local _worktree_path="${_base_dir}/${_safe_name}"
 	local _default_ref
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	mkdir -p "$_base_dir" || return 1
 	[[ ! -e "$_worktree_path" ]] || return 1
-	_refresh_origin_from_linked_context \
-		"$_classified_path" "$_default_branch" "$_base_dir" "$_slug" || return 1
+	_refresh_remote_from_linked_context \
+		"$_classified_path" "$_remote" "$_default_branch" "$_base_dir" "$_slug" || return 1
 	git -C "$_classified_path" worktree add -q -B "$_branch" \
 		"$_worktree_path" "$_default_ref" >/dev/null 2>&1 || return 1
 	if command -v register_worktree >/dev/null 2>&1; then
@@ -906,9 +978,10 @@ _sync_dryrun_emit() {
 	return 0
 }
 
-# _sync_preflight <slug> <path> <status> <default_branch_out>
+# _sync_preflight <slug> <path> <status>
 # Validates linked-worktree identity and clean state.
-# Returns 0 proceed; 1 fail; 2 skip. Sets _PREFLIGHT_DEFAULT_BRANCH on proceed.
+# Returns 0 proceed; 1 fail; 2 skip. Sets _PREFLIGHT_DEFAULT_BRANCH and
+# _PREFLIGHT_REMOTE on proceed.
 _sync_preflight() {
 	local _slug="$1"
 	local _path="$2"
@@ -927,27 +1000,36 @@ _sync_preflight() {
 			"$_slug" "$_status" "$_STATUS_FAILED" "$_path"
 		return 1
 	fi
+	local _remote
+	if ! _remote=$(_resolve_github_remote "$_path" "$_slug"); then
+		printf '%s\t%s\t%s\tmatching GitHub remote unavailable\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	fi
 	local _default_branch
-	_default_branch=$(git -C "$_path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+	_default_branch=$(git -C "$_path" symbolic-ref --short "refs/remotes/${_remote}/HEAD" 2>/dev/null || true)
+	_default_branch="${_default_branch#"${_remote}"/}"
 	[[ -z "$_default_branch" ]] && _default_branch="$_BRANCH_DEFAULT_NAME"
 	if [[ -n "$(git -C "$_path" status --porcelain 2>/dev/null)" ]]; then
 		printf '%s\t%s\t%s\tworking tree not clean; skipping\n' "$_slug" "$_status" "$_STATUS_SKIPPED"
 		return 2
 	fi
 	_PREFLIGHT_DEFAULT_BRANCH="$_default_branch"
+	_PREFLIGHT_REMOTE="$_remote"
 	return 0
 }
 
-# _sync_refresh_checkout <slug> <path> <status> <default_branch> <sync-branch>
+# _sync_refresh_checkout <slug> <path> <status> <remote> <default_branch> <sync-branch>
 # Apply must classify and mutate the same refreshed snapshot. Fail closed when
 # refresh is unavailable rather than continuing with stale local evidence.
 _sync_refresh_checkout() {
 	local _slug="$1"
 	local _path="$2"
 	local _status="$3"
-	local _default_branch="$4"
-	local _branch_name="$5"
-	if ! git -C "$_path" fetch -q origin "$_default_branch" >/dev/null 2>&1; then
+	local _remote="$4"
+	local _default_branch="$5"
+	local _branch_name="$6"
+	if ! git -C "$_path" fetch -q "$_remote" "$_default_branch" >/dev/null 2>&1; then
 		printf '%s\t%s\t%s\tfetch failed; refusing stale classification\n' \
 			"$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
@@ -955,7 +1037,7 @@ _sync_refresh_checkout() {
 	local _current_branch
 	local _default_ref
 	_current_branch=$(git -C "$_path" symbolic-ref --short HEAD 2>/dev/null || printf 'DETACHED')
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	if [[ "$_current_branch" != "$_branch_name" ]] && \
 		! git -C "$_path" checkout -q -B "$_branch_name" "$_default_ref"; then
 		printf '%s\t%s\t%s\tfailed to prepare sync branch\n' \
@@ -965,19 +1047,21 @@ _sync_refresh_checkout() {
 	return 0
 }
 
-# _sync_write_commit_push <slug> <path> <status> <branch> <default_branch>
-#   <effective_ref> <content> <workflow-relpath> <sync-contributing>
+# _sync_write_commit_push <slug> <path> <status> <branch> <remote>
+#   <default_branch> <effective_ref> <content> <workflow-relpath>
+#   <sync-contributing>
 # Returns 2 for an explicit successful no-op; the caller must not open a PR.
 _sync_write_commit_push() {
 	local _slug="$1"
 	local _path="$2"
 	local _status="$3"
 	local _branch_name="$4"
-	local _default_branch="$5"
-	local _effective_ref="$6"
-	local _target_content="$7"
-	local _workflow_relpath="${8:-.github/workflows/issue-sync.yml}"
-	local _sync_contributing="${9:-0}"
+	local _remote="$5"
+	local _default_branch="$6"
+	local _effective_ref="$7"
+	local _target_content="$8"
+	local _workflow_relpath="${9:-.github/workflows/issue-sync.yml}"
+	local _sync_contributing="${10:-0}"
 	local _workflow="$_path/$_workflow_relpath"
 
 	local _workflow_current=0
@@ -1014,7 +1098,7 @@ _sync_write_commit_push() {
 	local _current_branch
 	local _default_ref
 	_current_branch=$(git -C "$_path" symbolic-ref --short HEAD 2>/dev/null || printf 'DETACHED')
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	if [[ "$_current_branch" != "$_branch_name" ]] && \
 		! git -C "$_path" checkout -q -B "$_branch_name" "$_default_ref"; then
 		printf '%s\t%s\t%s\tbranch create/reset failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
@@ -1058,7 +1142,7 @@ _sync_write_commit_push() {
 		git -C "$_path" checkout -q "$_default_branch" || true
 		return 1
 	fi
-	if ! git -C "$_path" push -u origin "$_branch_name" >/dev/null 2>&1; then
+	if ! git -C "$_path" push -u "$_remote" "$_branch_name" >/dev/null 2>&1; then
 		printf '%s\t%s\t%s\tgit push failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	fi
@@ -1216,6 +1300,7 @@ _sync_one_repo() {
 	fi
 
 	_PREFLIGHT_DEFAULT_BRANCH=""
+	_PREFLIGHT_REMOTE=""
 	local _pf_rc
 	_sync_preflight "$_slug" "$_path" "$_status"
 	_pf_rc=$?
@@ -1225,8 +1310,10 @@ _sync_one_repo() {
 		return 1
 	fi
 	local _default_branch="$_PREFLIGHT_DEFAULT_BRANCH"
+	local _remote="$_PREFLIGHT_REMOTE"
 	local _refresh_output
-	if ! _refresh_output=$(_sync_refresh_checkout "$_slug" "$_path" "$_status" "$_default_branch" "$_branch_name"); then
+	if ! _refresh_output=$(_sync_refresh_checkout \
+		"$_slug" "$_path" "$_status" "$_remote" "$_default_branch" "$_branch_name"); then
 		printf '%s\n' "$_refresh_output"
 		return 1
 	fi
@@ -1274,7 +1361,7 @@ _sync_one_repo() {
 	local _write_output _write_rc
 	_write_output=$(_sync_write_commit_push \
 		"$_slug" "$_path" "$_status" "$_branch_name" \
-		"$_default_branch" "$_effective_ref" "$_target_content" \
+		"$_remote" "$_default_branch" "$_effective_ref" "$_target_content" \
 		"$_workflow_relpath" "$_sync_contributing")
 	_write_rc=$?
 	if [[ "$_write_rc" -eq 2 ]]; then

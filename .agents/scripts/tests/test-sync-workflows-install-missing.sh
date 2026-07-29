@@ -195,10 +195,12 @@ Preserve this repository-specific guidance.
 EOF
 "$real_git" -C "$apply_repo" add CONTRIBUTING.md
 "$real_git" -C "$apply_repo" commit -q -m initial
-"$real_git" -C "$apply_repo" remote add origin "$apply_bare"
-"$real_git" -C "$apply_repo" push -q -u origin main
+apply_github_url="https://github.com/fake/apply.git"
+"$real_git" -C "$apply_repo" config "url.${apply_bare}.insteadOf" "$apply_github_url"
+"$real_git" -C "$apply_repo" remote add github "$apply_github_url"
+"$real_git" -C "$apply_repo" push -q -u github main
 "$real_git" --git-dir="$apply_bare" symbolic-ref HEAD refs/heads/main
-"$real_git" -C "$apply_repo" remote set-head origin main
+"$real_git" -C "$apply_repo" remote set-head github main
 cat >"$test_root/.config/aidevops/repos.json" <<EOF
 {"initialized_repos":[{"path":"$apply_repo","slug":"fake/apply"}]}
 EOF
@@ -222,7 +224,7 @@ if [[ "${args[$command_index]:-}" == "fetch" ]]; then
 		printf 'blocked-canonical-fetch\n' >>"$guard_log"
 		exit 97
 	fi
-	printf 'linked-fetch\n' >>"$guard_log"
+	printf 'linked-fetch %s\n' "${args[*]}" >>"$guard_log"
 fi
 exec "$real_git" "$@"
 EOF
@@ -253,6 +255,7 @@ assert_contains "apply-mode installs managed policy block" "$applied_contributin
 
 guard_calls=$(<"$test_root/canonical-git-guard.log")
 assert_contains "apply refreshes from linked-worktree context" "$guard_calls" 'linked-fetch'
+assert_contains "apply resolves renamed GitHub remote" "$guard_calls" ' github '
 assert_not_contains "apply avoids canonical fetch" "$guard_calls" 'blocked-canonical-fetch'
 
 apply_gh_calls=$(<"$test_root/gh.log")
