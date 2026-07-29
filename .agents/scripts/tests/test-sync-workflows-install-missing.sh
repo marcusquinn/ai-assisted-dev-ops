@@ -203,10 +203,37 @@ cat >"$test_root/.config/aidevops/repos.json" <<EOF
 {"initialized_repos":[{"path":"$apply_repo","slug":"fake/apply"}]}
 EOF
 : >"$test_root/gh.log"
-safe_path="$test_root/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+mkdir -p "$test_root/guard-bin"
+cat >"$test_root/guard-bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+real_git="${AIDEVOPS_TEST_GIT_BIN:?}"
+canonical_repo="${CANONICAL_GIT_REPO:?}"
+guard_log="${CANONICAL_GIT_GUARD_LOG:?}"
+args=("$@")
+git_cwd="$PWD"
+command_index=0
+if [[ "${args[0]:-}" == "-C" ]]; then
+	git_cwd="${args[1]:-}"
+	command_index=2
+fi
+if [[ "${args[$command_index]:-}" == "fetch" ]]; then
+	if [[ "$git_cwd" == "$canonical_repo" ]]; then
+		printf 'blocked-canonical-fetch\n' >>"$guard_log"
+		exit 97
+	fi
+	printf 'linked-fetch\n' >>"$guard_log"
+fi
+exec "$real_git" "$@"
+EOF
+chmod +x "$test_root/guard-bin/git"
+: >"$test_root/canonical-git-guard.log"
+safe_path="$test_root/guard-bin:$test_root/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 apply_output=$(HOME="$test_root" PATH="$safe_path" \
 	GH_CALL_LOG="$test_root/gh.log" AIDEVOPS_TEMP_DIR="$test_root/agent-tmp" \
-	AIDEVOPS_WORKTREE_BASE_DIR="$test_root/worktrees" bash "$HELPER" \
+	AIDEVOPS_WORKTREE_BASE_DIR="$test_root/worktrees" \
+	AIDEVOPS_TEST_GIT_BIN="$real_git" CANONICAL_GIT_REPO="$apply_repo" \
+	CANONICAL_GIT_GUARD_LOG="$test_root/canonical-git-guard.log" bash "$HELPER" \
 	--apply --repo fake/apply --workflow linked-issue-check --install-missing \
 	--issue 28844 --branch chore/test-issue-first 2>&1)
 apply_rc=$?
@@ -224,13 +251,19 @@ assert_contains "apply-mode preserves repository guidance" "$applied_contributin
 assert_contains "apply-mode installs managed policy block" "$applied_contributing" \
 	'<!-- aidevops:issue-first-pr:start -->'
 
+guard_calls=$(<"$test_root/canonical-git-guard.log")
+assert_contains "apply refreshes from linked-worktree context" "$guard_calls" 'linked-fetch'
+assert_not_contains "apply avoids canonical fetch" "$guard_calls" 'blocked-canonical-fetch'
+
 apply_gh_calls=$(<"$test_root/gh.log")
 assert_contains "PR creation uses body-file discipline" "$apply_gh_calls" '--body-file'
 assert_not_contains "PR creation does not use inline body" "$apply_gh_calls" '--body '
 
 second_apply=$(HOME="$test_root" PATH="$safe_path" \
 	GH_CALL_LOG="$test_root/gh.log" AIDEVOPS_TEMP_DIR="$test_root/agent-tmp" \
-	AIDEVOPS_WORKTREE_BASE_DIR="$test_root/worktrees" bash "$HELPER" \
+	AIDEVOPS_WORKTREE_BASE_DIR="$test_root/worktrees" \
+	AIDEVOPS_TEST_GIT_BIN="$real_git" CANONICAL_GIT_REPO="$apply_repo" \
+	CANONICAL_GIT_GUARD_LOG="$test_root/canonical-git-guard.log" bash "$HELPER" \
 	--apply --repo fake/apply --workflow linked-issue-check --install-missing \
 	--issue 28844 --branch chore/test-issue-first 2>&1)
 second_rc=$?

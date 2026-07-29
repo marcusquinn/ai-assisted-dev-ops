@@ -191,6 +191,53 @@ _worktree_for_branch() {
 	return 1
 }
 
+# Refresh a canonical repository's remote-tracking branch from linked-worktree
+# context so the canonical Git guard remains intact. Bootstrap a short-lived
+# detached worktree when the repository has no linked worktree yet.
+_refresh_origin_from_linked_context() {
+	local _repo_path="$1"
+	local _default_branch="$2"
+	local _base_dir="$3"
+	local _slug="$4"
+	local _fetch_path=""
+	local _line _candidate
+	while IFS= read -r _line; do
+		case "$_line" in
+		worktree\ *)
+			_candidate="${_line#worktree }"
+			if [[ -d "$_candidate" ]] && _is_linked_worktree "$_candidate"; then
+				_fetch_path="$_candidate"
+				break
+			fi
+			;;
+		esac
+	done < <(git -C "$_repo_path" worktree list --porcelain 2>/dev/null)
+
+	local _bootstrap_path=""
+	if [[ -z "$_fetch_path" ]]; then
+		local _safe_slug
+		_safe_slug=$(printf '%s' "$_slug" | sed 's|[^A-Za-z0-9._-]|-|g')
+		mkdir -p "$_base_dir" || return 1
+		_bootstrap_path="${_base_dir}/.${_safe_slug}-workflow-sync-fetch-$$"
+		[[ ! -e "$_bootstrap_path" ]] || return 1
+		git -C "$_repo_path" worktree add -q --detach \
+			"$_bootstrap_path" HEAD >/dev/null 2>&1 || return 1
+		_fetch_path="$_bootstrap_path"
+	fi
+
+	local _fetch_rc=0
+	local _cleanup_rc=0
+	git -C "$_fetch_path" fetch --no-tags --quiet origin \
+		"+refs/heads/${_default_branch}:refs/remotes/origin/${_default_branch}" \
+		>/dev/null 2>&1 || _fetch_rc=$?
+	if [[ -n "$_bootstrap_path" ]]; then
+		git -C "$_fetch_path" worktree remove --force "$_bootstrap_path" \
+			>/dev/null 2>&1 || _cleanup_rc=$?
+	fi
+	[[ "$_fetch_rc" -eq 0 && "$_cleanup_rc" -eq 0 ]] || return 1
+	return 0
+}
+
 # _prepare_apply_worktree <slug> <classified-path> <branch>
 # Emits the safe linked worktree path used for mutation.
 _prepare_apply_worktree() {
@@ -210,7 +257,6 @@ _prepare_apply_worktree() {
 	local _default_branch
 	_default_branch=$(git -C "$_classified_path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
 	[[ -z "$_default_branch" ]] && _default_branch="$_BRANCH_DEFAULT_NAME"
-	git -C "$_classified_path" fetch -q origin "$_default_branch" >/dev/null 2>&1 || return 1
 
 	local _existing
 	_existing=$(_worktree_for_branch "$_classified_path" "$_branch") || _existing=""
@@ -233,6 +279,8 @@ _prepare_apply_worktree() {
 	_default_ref=$(_remote_default_ref "$_default_branch")
 	mkdir -p "$_base_dir" || return 1
 	[[ ! -e "$_worktree_path" ]] || return 1
+	_refresh_origin_from_linked_context \
+		"$_classified_path" "$_default_branch" "$_base_dir" "$_slug" || return 1
 	git -C "$_classified_path" worktree add -q -B "$_branch" \
 		"$_worktree_path" "$_default_ref" >/dev/null 2>&1 || return 1
 	if command -v register_worktree >/dev/null 2>&1; then
