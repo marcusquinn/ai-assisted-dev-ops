@@ -180,7 +180,7 @@ if [[ " $* " == *" api graphql "* ]]; then
   printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
   exit 0
 fi
-if [[ " $* " == *" label list "* ]]; then
+if [[ " $* " == *" api "*"/labels?per_page=100"* ]]; then
   printf '%s\n' "${PULSE_CHECK_EXISTING_LABELS_JSON:-[]}"
   exit "${PULSE_CHECK_LABEL_LIST_EXIT:-0}"
 fi

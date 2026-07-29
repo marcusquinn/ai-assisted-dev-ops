@@ -397,6 +397,17 @@ _pulse_check_label_present() {
 	return 1
 }
 
+_list_pulse_check_labels() {
+	local repo_slug="$1"
+	local labels_json=""
+	if ! labels_json=$(gh api --paginate "repos/${repo_slug}/labels?per_page=100" 2>/dev/null |
+		jq -s '[.[][]? | {name: .name}]'); then
+		return 1
+	fi
+	printf '%s\n' "$labels_json"
+	return 0
+}
+
 _ensure_pulse_check_labels() {
 	local repo_slug="$1"
 	[[ -n "$repo_slug" ]] || return 1
@@ -405,7 +416,7 @@ _ensure_pulse_check_labels() {
 	esac
 
 	local existing_labels_json=""
-	if ! existing_labels_json=$(gh label list --repo "$repo_slug" --limit 1000 --json name 2>/dev/null) ||
+	if ! existing_labels_json=$(_list_pulse_check_labels "$repo_slug") ||
 		! printf '%s' "$existing_labels_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
 		print_error "pulse-check: failed to list labels for ${repo_slug}"
 		return 1
@@ -426,7 +437,7 @@ _ensure_pulse_check_labels() {
 		# Treat a concurrent creator as success, but fail closed when the
 		# required label still cannot be verified after the write attempt.
 		local refreshed_labels_json=""
-		refreshed_labels_json=$(gh label list --repo "$repo_slug" --limit 1000 --json name 2>/dev/null) || refreshed_labels_json="[]"
+		refreshed_labels_json=$(_list_pulse_check_labels "$repo_slug") || refreshed_labels_json="[]"
 		if _pulse_check_label_present "$refreshed_labels_json" "$label_name"; then
 			continue
 		fi
