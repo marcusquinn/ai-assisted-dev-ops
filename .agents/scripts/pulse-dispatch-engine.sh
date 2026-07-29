@@ -1405,11 +1405,11 @@ _run_preflight_stages() {
 	_preflight_start_merge_first || true
 	run_stage_with_timeout "preflight_cleanup_and_ledger" "$_pflt_timeout" \
 		_preflight_cleanup_and_ledger || true
-	run_stage_with_timeout "preflight_capacity_and_labels" "$_pflt_timeout" \
-		_preflight_capacity_and_labels || true
-	# t3054: preflight_early_dispatch does NOT use run_stage_with_timeout.
-	# Unlike other preflight stages (single-step operations), this stage
-	# wraps apply_dispatch_max which iterates N candidates, each
+	run_stage_with_timeout "preflight_capacity" "$_pflt_timeout" \
+		_preflight_capacity || true
+	# t3054: dispatch passes do NOT use run_stage_with_timeout. Unlike other
+	# preflight stages (single-step operations), each wraps apply_dispatch_max,
+	# which iterates N candidates that are each
 	# independently protected by run_stage_with_timeout "dispatch_candidate_*"
 	# (600s per candidate). A 600s GROUP timeout killed in-progress candidates
 	# that were still within their individual budgets (92 timeouts in 1079 runs =
@@ -1419,6 +1419,15 @@ _run_preflight_stages() {
 	local _pflt_ed_rc=0
 	_preflight_early_dispatch || _pflt_ed_rc=$?
 	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc"
+	# GH#28880: cross-repository label maintenance can take 3-5 minutes. Run it
+	# after the initial fill so already-eligible workers boot in parallel, then
+	# refill once so newly unblocked candidates remain dispatchable this cycle.
+	run_stage_with_timeout "preflight_label_maintenance" "$_pflt_timeout" \
+		_preflight_label_maintenance || true
+	local _pflt_refill_start=$SECONDS
+	local _pflt_refill_rc=0
+	_preflight_post_label_refill || _pflt_refill_rc=$?
+	_log_substage_timing "preflight_post_label_refill" "$_pflt_refill_start" "$_pflt_refill_rc"
 	# t3055: Post-dispatch housekeeping runs under a separate async lock by
 	# default. These stages do not protect the immediate worker claim/ledger
 	# safety boundary, so blocking the dispatch lock on them lets a 24-worker

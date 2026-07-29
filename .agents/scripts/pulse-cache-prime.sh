@@ -4,14 +4,14 @@
 #
 # pulse-cache-prime.sh (t2992) — pre-warm pulse caches before restart.
 #
-# When `aidevops update` deploys new code, the pulse restarts and its
-# first cycle pays the full cold-cache cost: ~210s prefetch_state +
-# ~144s preflight_capacity_and_labels + ~50s preflight_cleanup_and_ledger
-# ≈ 8-10 minutes before any productive work. This script pre-warms the
-# L3 per-owner JSON caches via pulse-batch-prefetch-helper.sh refresh,
-# so the next pulse cycle's prefetch_state finds warm state and runs
-# the delta path (t1975 architecture — only fetches items with
-# updatedAt > last_prefetch).
+# When `aidevops update` deploys new code, the pulse restarts and its first
+# cycle pays the full cold-cache cost, including ~210s prefetch_state. Before
+# GH#28880, cross-repository label maintenance also held the first worker fill
+# for ~144s; the initial fill now runs before that maintenance. This script
+# still pre-warms the L3 per-owner JSON caches via
+# pulse-batch-prefetch-helper.sh refresh, so the remaining cycle's
+# prefetch_state finds warm state and runs the delta path (t1975 architecture —
+# only fetches items with updatedAt > last_prefetch).
 #
 # Wired into pulse-lifecycle-helper.sh::_start so every restart path
 # (aidevops update, setup.sh, manual restart, t2914 ensure-running)
