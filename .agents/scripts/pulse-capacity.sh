@@ -186,63 +186,17 @@ _pulse_capacity_recent_health_counts() {
 	fi
 
 	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
+	local evidence_file="${AIDEVOPS_OBJECTIVE_EVIDENCE_FILE:-${HOME}/.aidevops/state/objective-evidence.jsonl}"
+	local evidence_limit="${AIDEVOPS_OBJECTIVE_EVIDENCE_LIMIT:-2000}"
 	local ttl_seconds="${PULSE_DISPATCH_CAPACITY_HEALTH_WINDOW_SECONDS:-900}"
+	local health_helper="${BASH_SOURCE[0]%/*}/worker-terminal-health.py"
 	[[ "$ttl_seconds" =~ ^[0-9]+$ ]] || ttl_seconds=900
+	[[ "$evidence_limit" =~ ^[1-9][0-9]*$ ]] || evidence_limit=2000
 	[[ -f "$metrics_file" ]] || { printf '0 0 0 0 0\n'; return 0; }
-	python3 - "$metrics_file" "$ttl_seconds" <<'PY'
-import json
-import sys
-import time
-
-path, ttl = sys.argv[1], int(sys.argv[2])
-since = time.time() - ttl
-failures = rate_limits = service_interruptions = provider_5xx = progress = 0
-try:
-    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
-        rows = handle.readlines()[-1000:]
-    for raw in rows:
-        try:
-            item = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        try:
-            ts = float(item.get("ts") or 0)
-        except (TypeError, ValueError):
-            ts = 0
-        if ts < since:
-            continue
-        if str(item.get('role') or '') != 'worker':
-            continue
-        result = str(item.get('result') or '')
-        failure_reason = str(item.get('failure_reason') or '')
-        provider_type = str(item.get('provider_error_type') or '')
-        provider_status = str(item.get('provider_status') or '')
-        exit_code = item.get('exit_code')
-        is_nonterminal = result.endswith('_continue') or result == 'brief_recovery'
-        if result in {'watchdog_stall_continue', 'service_interruption_continue'} or str(item.get('activity_detected') or '0') == '1':
-            progress += 1
-        if is_nonterminal:
-            continue
-        is_rate_limited = (
-            result in {'rate_limit', 'rate_limit_fast'}
-            or provider_type == 'rate_limit'
-            or provider_status == '429'
-            or 'rate_limit' in failure_reason
-        )
-        is_service_interruption = result == 'service_interruption_exhausted'
-        is_provider_5xx = provider_type == 'server_error' or provider_status in {'500', '502', '503', '504'}
-        if is_rate_limited:
-            rate_limits += 1
-        if is_service_interruption:
-            service_interruptions += 1
-        if is_provider_5xx:
-            provider_5xx += 1
-        if not (result == 'success' and exit_code == 0) and result not in {'worker_noop', 'no_work', 'noop'}:
-            failures += 1
-except (OSError, ValueError):
-    pass
-print(f"{failures} {rate_limits} {service_interruptions} {provider_5xx} {progress}")
-PY
+	local health_counts="" successes="" failures="" rate_limits="" service_interruptions="" provider_5xx="" progress=""
+	health_counts=$(python3 "$health_helper" "$metrics_file" "$evidence_file" "$ttl_seconds" "$evidence_limit") || health_counts="0 3 0 0 0 0"
+	read -r successes failures rate_limits service_interruptions provider_5xx progress <<<"$health_counts"
+	printf '%s %s %s %s %s\n' "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress"
 	return 0
 }
 
