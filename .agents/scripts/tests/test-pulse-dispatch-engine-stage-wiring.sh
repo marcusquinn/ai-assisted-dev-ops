@@ -94,6 +94,53 @@ assert_match_count() {
 	return 0
 }
 
+assert_refill_runtime_contract() {
+	local label="$1"
+	local actual_events="" expected_events="dispatch;routine;invalidate:label_maintenance_complete;dispatch;"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_events=$(
+		(
+			unset _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED
+			# shellcheck source=../pulse-dispatch-preflight-lib.sh
+			source "$PREFLIGHT_LIB"
+			REFILL_EVENTS=""
+			STOP_FLAG=""
+			LOGFILE="/dev/null"
+
+			_dispatch_invalidate_candidate_snapshot() {
+				local reason="$1"
+				REFILL_EVENTS="${REFILL_EVENTS}invalidate:${reason};"
+				return 0
+			}
+
+			apply_dispatch_max() {
+				REFILL_EVENTS="${REFILL_EVENTS}dispatch;"
+				return 0
+			}
+
+			dispatch_routine_comment_responses() {
+				REFILL_EVENTS="${REFILL_EVENTS}routine;"
+				return 0
+			}
+
+			_preflight_early_dispatch
+			_preflight_post_label_refill
+			STOP_FLAG="$PREFLIGHT_LIB"
+			_preflight_post_label_refill
+			printf '%s\n' "$REFILL_EVENTS"
+		)
+	)
+	if [[ "$actual_events" == "$expected_events" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected events: $expected_events"
+		echo "  actual events:   ${actual_events:-none}"
+	fi
+	return 0
+}
+
 # Resolve paths relative to this test file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$SCRIPT_DIR/pulse-dispatch-engine.sh"
@@ -249,6 +296,8 @@ assert_match_count \
 	'^[[:space:]]*dispatch_routine_comment_responses[[:space:]]*\|\|[[:space:]]*true' \
 	1 \
 	"$PREFLIGHT_LIB"
+assert_refill_runtime_contract \
+	"9l: refill invalidates candidates before dispatch and does not repeat routine responses"
 
 # --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
 

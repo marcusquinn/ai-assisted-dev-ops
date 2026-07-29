@@ -244,13 +244,18 @@ _preflight_early_dispatch() {
 
 #######################################
 # Refill after label maintenance without repeating routine-comment responses.
-# apply_dispatch_max re-enumerates candidates and preserves the existing claim,
+# Invalidate the cycle-scoped candidate snapshot first so apply_dispatch_max
+# sees labels changed by maintenance while preserving the existing claim,
 # ledger, trust, and per-candidate timeout gates across multiple fill passes.
 #######################################
 _preflight_post_label_refill() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag present — skipping post-label dispatch_max" >>"$LOGFILE"
 	else
+		if ! _dispatch_invalidate_candidate_snapshot "label_maintenance_complete"; then
+			echo "[pulse-wrapper] Post-label dispatch_max skipped: unable to invalidate candidate snapshot" >>"$LOGFILE"
+			return 0
+		fi
 		echo "[pulse-wrapper] Post-label dispatch_max: refilling after label maintenance" >>"$LOGFILE"
 		apply_dispatch_max
 	fi
