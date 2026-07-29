@@ -1,4 +1,5 @@
 <!-- aidevops:issue-first-pr:start -->
+
 ## Issue-first pull requests
 
 If you are not a repository owner, member, or collaborator, create or find a
@@ -13,4 +14,5 @@ parent, research, or non-closing work.
 
 External human-authored PRs without an issue reference are blocked until the
 reference is added. Bot PRs and trusted maintainer task workflows are exempt.
+
 <!-- aidevops:issue-first-pr:end -->
