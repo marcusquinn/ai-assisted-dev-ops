@@ -264,7 +264,7 @@ main() {
 			_process_inbox "$slug" "$repo_path" "$age_days" "$dry_run" || true
 			processed=$(( processed + 1 ))
 		done < <(jq -r \
-			'.initialized_repos[]? | select(.pulse == true and .local_only != true) | "\(.path)|\(.slug)"' \
+			'.initialized_repos[]? | select(.maintenance != false and .pulse == true and .local_only != true) | "\(.path)|\(.slug)"' \
 			"$REPOS_JSON" 2>/dev/null)
 	else
 		print_warning "repos.json not found at ${REPOS_JSON}. Skipping repo scan."

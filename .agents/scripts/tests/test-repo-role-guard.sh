@@ -52,6 +52,11 @@ cat >"$TEST_REPOS_JSON" <<'JSON'
       "role": "contributor"
     },
     {
+      "slug": "bob/write-capable-contributor",
+      "pulse": true,
+      "role": "contributor"
+    },
+    {
       "slug": "alice/auto-detect-repo",
       "pulse": true
     },
@@ -92,7 +97,7 @@ _CACHED_GH_USER="alice"
 _gh_current_user_allows_repo_write() {
 	local repo_slug="$1"
 	case "$repo_slug" in
-	alice/owned-repo | alice/auto-detect-repo | alice/unknown-repo)
+	alice/owned-repo | alice/auto-detect-repo | alice/unknown-repo | bob/write-capable-contributor)
 		return 0
 		;;
 	*)
@@ -157,8 +162,16 @@ else
 fi
 assert_eq "write actions blocked without repo write permission" "no" "$write_allowed"
 
+# Test 9b: Explicit contributor role remains blocked even with live write permission.
+if repo_allows_pulse_write_actions "bob/write-capable-contributor"; then
+	write_allowed="yes"
+else
+	write_allowed="no"
+fi
+assert_eq "write actions blocked for explicit contributor role" "no" "$write_allowed"
+
 # Test 10: Deterministic merge pass uses the write-action role guard.
-if grep -q "repo_allows_pulse_write_actions \"\$repo_slug\"" "${PARENT_DIR}/pulse-merge-process.sh"; then
+if grep -q "repo_allows_pulse_write_actions \"\$repo_slug\"" "${PARENT_DIR}/pulse-merge-pass.sh"; then
 	guard_present="yes"
 else
 	guard_present="no"
@@ -182,8 +195,8 @@ fi
 assert_eq "dirty PR sweep loads repo-role guard for standalone execution" "yes" "$guard_present"
 
 # Test 13: Write sweeps fail closed when the guard helper is unavailable.
-if grep -q '! declare -F repo_allows_pulse_write_actions' "${PARENT_DIR}/pulse-merge-process.sh" \
-	&& grep -q "|| ! repo_allows_pulse_write_actions \"\$repo_slug\"" "${PARENT_DIR}/pulse-merge-process.sh" \
+if grep -q '! declare -F repo_allows_pulse_write_actions' "${PARENT_DIR}/pulse-merge-pass.sh" \
+	&& grep -q "|| ! repo_allows_pulse_write_actions \"\$repo_slug\"" "${PARENT_DIR}/pulse-merge-pass.sh" \
 	&& grep -q '! declare -F repo_allows_pulse_write_actions' "${PARENT_DIR}/pulse-dirty-pr-sweep.sh" \
 	&& grep -q "|| ! repo_allows_pulse_write_actions \"\$repo_slug\"" "${PARENT_DIR}/pulse-dirty-pr-sweep.sh"; then
 	guard_present="yes"

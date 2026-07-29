@@ -342,7 +342,7 @@ load_pulse_repo_allowlist() {
 		printf '%s' ""
 		return 0
 	fi
-	jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and (.slug // "") != "") | .slug' "$repos_json_path" 2>/dev/null | paste -sd ',' -
+	jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and (.slug // "") != "") | .slug' "$repos_json_path" 2>/dev/null | paste -sd ',' -
 	return 0
 }
 

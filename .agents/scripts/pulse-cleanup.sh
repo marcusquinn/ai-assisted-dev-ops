@@ -2612,7 +2612,7 @@ cleanup_stalled_workers() {
 		[[ -n "$issue_num" ]] || continue
 
 		local log_file="" log_size=""
-		# Check all pulse-enabled repos for matching log
+		# Check all registered repos for matching logs, including dormant scope.
 		local found_log=""
 		local repo_slug=""
 		while IFS= read -r repo_slug; do
@@ -2622,7 +2622,7 @@ cleanup_stalled_workers() {
 				found_log="$log_file"
 				break
 			fi
-		done < <(jq -r '.initialized_repos[] | select(.pulse == true) | .slug // ""' "$REPOS_JSON")
+		done < <(jq -r '.initialized_repos[] | .slug // ""' "$REPOS_JSON")
 		# Fallback log path
 		if [[ -z "$found_log" ]]; then
 			log_file=$(aidevops_pulse_worker_log_fallback_path "$issue_num" 2>/dev/null || true)

@@ -180,6 +180,9 @@ get_repo_role_by_slug() {
 #######################################
 repo_allows_pulse_write_actions() {
 	local repo_slug="$1"
+	local repo_role=""
+	repo_role=$(get_repo_role_by_slug "$repo_slug") || return 1
+	[[ "$repo_role" == "$_PULSE_REPO_ROLE_MAINTAINER" ]] || return 1
 
 	# #aidevops:trust-boundary — never rely on repos.json role or successful
 	# public comments as authority. Require the authenticated runner to be an

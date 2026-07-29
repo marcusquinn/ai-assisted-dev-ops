@@ -11,6 +11,7 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
+  issues: read
   pull-requests: read
   statuses: write
 

@@ -214,7 +214,7 @@ _scan_pr_salvage() {
 			salvage_found=true
 			echo "$salvage_output"
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
 
 	if [[ "$salvage_found" == "false" ]]; then
 		echo "- No salvageable closed-unmerged PRs detected"
@@ -386,7 +386,7 @@ _count_priority_repos() {
 
 	read -r product_repos tooling_repos < <(jq -r '
 		.initialized_repos |
-		map(select(.pulse == true and (.local_only // false) == false and .slug != "")) |
+		map(select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "")) |
 		[
 			(map(select(.priority == "product")) | length),
 			(map(select(.priority == "tooling")) | length)
@@ -437,7 +437,7 @@ _count_dispatchable_product_repos() {
 			if [[ "$daily_pr_count" -lt "$DAILY_PR_CAP" ]]; then
 				dispatchable=$((dispatchable + 1))
 			fi
-		done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "" and .priority == "product") | .slug' "$repos_json" 2>/dev/null)
+		done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .priority == "product") | .slug' "$repos_json" 2>/dev/null)
 	else
 		dispatchable="$product_repos"
 	fi

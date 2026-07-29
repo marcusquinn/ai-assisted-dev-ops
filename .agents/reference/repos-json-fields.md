@@ -10,6 +10,7 @@ Config file: `~/.config/aidevops/repos.json`. Structure: `{"initialized_repos": 
 |-------|------|-------------|
 | `slug` | string | `owner/repo` — ALWAYS use this for `gh` commands, never guess org names |
 | `pulse` | bool | `true` = active development, tasks, issues. `false` = no task management |
+| `maintenance` | bool | Missing/`true` = include in recurring cross-repo maintenance. `false` = keep registered but omit from routine API scans, workflow/badge rollout, and Pulse. |
 | `local_only` | bool | No remote; skip all `gh` operations |
 | `priority` | string | `"tooling"` (infrastructure), `"product"` (user-facing), `"profile"` (docs-only) |
 | `maintainer` | string | GitHub username. Auto-detected from `gh api user`; falls back to slug owner |
@@ -55,6 +56,28 @@ Agent-source repos receive non-destructive template management:
 - Public TODO entries, issue text, logs, and comments must not include private repo slugs; use generic wording such as "a managed private agent source repo".
 
 ## Scheduling and Lifecycle Fields
+
+Registration, maintenance, and Pulse are separate scopes:
+
+- Registration retains canonical path resolution, history, privacy guards, and
+  explicit one-repository commands.
+- `maintenance: false` marks a repository dormant. Recurring all-repository
+  scans omit it, while an explicit `--repo owner/repo` check or repair may still
+  target it without bypassing `local_only`, contributor, or permission gates.
+- `pulse: true` additionally enables active task/issue automation. Dormant
+  repositories are never Pulse-eligible; the CLI disables Pulse when pausing
+  maintenance and does not silently re-enable it on resume.
+- Safety hygiene remains registration-scoped: privacy inventory, stale claim and
+  dispatch-label cleanup, dirty-PR recovery, and local worktree cleanup continue
+  to see dormant repositories but never use dormancy to authorize new work.
+- Missing `maintenance` defaults to `true` for backward compatibility.
+
+Manage the state without hand-editing JSON:
+
+```bash
+aidevops repos maintenance off owner/repo
+aidevops repos maintenance on owner/repo
+```
 
 | Field | Type | Example | Description |
 |-------|------|---------|-------------|

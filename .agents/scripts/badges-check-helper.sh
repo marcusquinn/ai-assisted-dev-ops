@@ -17,7 +17,8 @@
 #   LOCAL-ONLY  — repo has `local_only: true`, skip
 #   EXTERNAL    — repo is in a non-owned org or contributed: true (read-only info)
 #
-# Check (drift detection) enumerates ALL non-local-only repos for visibility.
+# Check (drift detection) enumerates maintained non-local-only repos by default.
+# An explicit --repo check may inspect a dormant registration.
 # The owned-org filter applies only to sync/install (write) operations.
 #
 # Usage:
@@ -142,7 +143,7 @@ _usage() {
 
 # ─── Repo iteration ─────────────────────────────────────────────────────────
 
-# Emit one "path|local_only|contributed|slug" TSV line per registered repo.
+# Emit one "path|local_only|contributed|role|maintenance|slug" TSV line per registered repo.
 _iterate_repos() {
 	if [[ ! -f "$REPOS_JSON" ]]; then
 		_die "repos.json not found at $REPOS_JSON — aidevops may not be initialised"
@@ -157,6 +158,8 @@ _iterate_repos() {
 			(.path // ""),
 			(.local_only // false | tostring),
 			(.contributed // false | tostring),
+			(.role // "maintainer"),
+			((if .maintenance == false then false else true end) | tostring),
 			(.slug // "")
 		]
 		| @tsv
@@ -166,14 +169,15 @@ _iterate_repos() {
 
 # ─── Classification ─────────────────────────────────────────────────────────
 
-# _classify_badges_repo <path> <local_only> <contributed> <slug> <badges_helper>
+# _classify_badges_repo <path> <local_only> <contributed> <role> <slug> <badges_helper>
 # Emits: class\tnote
 _classify_badges_repo() {
 	local _path="$1"
 	local _local_only="$2"
 	local _contributed="$3"
-	local _slug="$4"
-	local _badges_helper="$5"
+	local _role="$4"
+	local _slug="$5"
+	local _badges_helper="$6"
 
 	if [[ "$_local_only" == "true" ]]; then
 		printf 'LOCAL-ONLY\t\n'
@@ -183,7 +187,7 @@ _classify_badges_repo() {
 	# Classify scope: EXTERNAL if contributed or org not in owned list
 	local _org="${_slug%%/*}"
 	local _is_external=0
-	if [[ "$_contributed" == "true" ]]; then
+	if [[ "$_contributed" == "true" || "$_role" == "contributor" ]]; then
 		_is_external=1
 	elif [[ -n "$_org" ]] && ! _is_owned_org "$_org"; then
 		_is_external=1
@@ -348,18 +352,19 @@ _process_repos() {
 	local _rows
 	_rows=$(_iterate_repos) || exit $?
 
-	local _path _local_only_flag _contributed_flag _slug
-	while IFS=$'\t' read -r _path _local_only_flag _contributed_flag _slug; do
+	local _path _local_only_flag _contributed_flag _role _maintenance_flag _slug
+	while IFS=$'\t' read -r _path _local_only_flag _contributed_flag _role _maintenance_flag _slug; do
 		[[ -z "$_slug" && -z "$_path" ]] && continue
 		local _label="${_slug:-$(basename "$_path")}"
 		[[ -n "$_filter_slug" && "$_slug" != "$_filter_slug" ]] && continue
+		[[ -z "$_filter_slug" && "$_maintenance_flag" == "false" ]] && continue
 
 		_total=$((_total + 1))
 		_path="${_path/#\~/$HOME}"
 
 		local _class _note
 		IFS=$'\t' read -r _class _note < <(_classify_badges_repo \
-			"$_path" "$_local_only_flag" "$_contributed_flag" "$_slug" "$_badges_helper")
+			"$_path" "$_local_only_flag" "$_contributed_flag" "$_role" "$_slug" "$_badges_helper")
 
 		case "$_class" in
 		LOCAL-ONLY) _local_only=$((_local_only + 1)) ;;

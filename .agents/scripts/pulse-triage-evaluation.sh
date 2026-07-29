@@ -92,7 +92,7 @@ _reevaluate_consolidation_labels() {
 				total_cleared=$((total_cleared + 1))
 			fi
 		done < <(printf '%s' "$issues_json" | jq -r '.[]?.number // ""')
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_cleared" -gt 0 ]]; then
 		echo "[pulse-wrapper] Consolidation re-evaluation: cleared ${total_cleared} stale needs-consolidation label(s)" >>"$LOGFILE"
@@ -383,7 +383,7 @@ _reevaluate_simplification_labels() {
 				fi
 			fi
 		done < <(printf '%s' "$issues_json" | jq -r '.[]?.number // ""')
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_cleared" -gt 0 ]]; then
 		echo "[pulse-wrapper] Simplification re-evaluation: cleared ${total_cleared} stale needs-simplification label(s)" >>"$LOGFILE"

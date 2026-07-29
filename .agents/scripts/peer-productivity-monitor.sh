@@ -132,6 +132,7 @@ _list_pulse_repos() {
 		return 0
 	fi
 	jq -r '.initialized_repos[]
+		| select(.maintenance != false)
 		| select(.pulse == true)
 		| select(.local_only != true)
 		| select(.slug != null and .slug != "")

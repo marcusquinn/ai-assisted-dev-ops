@@ -298,7 +298,7 @@ build_dependency_graph_cache() {
 	build_start=$(date +%s)
 
 	local repos_json
-	repos_json=$(jq -c '.initialized_repos[] | select(.pulse == true and (.local_only != true))' \
+	repos_json=$(jq -c '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only != true))' \
 		"${HOME}/.config/aidevops/repos.json" 2>/dev/null) || repos_json=""
 	if [[ -z "$repos_json" ]]; then
 		echo "[pulse-wrapper] dep-graph-cache: no pulse repos found, skipping" >>"$LOGFILE"

@@ -13,6 +13,7 @@ name: Linked Issue Check
 # a repository ruleset.
 
 permissions:
+  issues: read
   pull-requests: read
   statuses: write
 

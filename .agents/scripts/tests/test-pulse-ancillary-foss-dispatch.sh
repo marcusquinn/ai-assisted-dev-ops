@@ -55,6 +55,13 @@ write_repos_json() {
         "labels_filter": ["help wanted", "needs, triage", "bug"],
         "disclosure": false
       }
+    },
+    {
+      "slug": "owner/local-project",
+      "path": "~/Git/local-project",
+      "maintenance": true,
+      "local_only": true,
+      "foss": true
     }
   ]
 }
@@ -262,4 +269,5 @@ printf 'PASS: FOSS recent local runtime failures are backed off\n'
 printf 'PASS: FOSS duplicate session keys are deduplicated per cycle\n'
 printf 'PASS: FOSS dispatch falls back across configured labels\n'
 printf 'PASS: FOSS repo paths expand leading tilde before worker launch\n'
+printf 'PASS: FOSS dispatch excludes local-only repositories\n'
 exit 0

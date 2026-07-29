@@ -500,7 +500,7 @@ _pulse_reconcile_stale_blocked_if_due() {
 	while IFS= read -r repo_slug; do
 		[[ -n "$repo_slug" ]] || continue
 		reconcile_stale_blocked_issues "$repo_slug" 2>>"$LOGFILE" || failures=$((failures + 1))
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null || true)
 	touch "$sentinel" 2>/dev/null || true
 	echo "[pulse-wrapper] stale-blocked reconciliation completed failures=${failures} cadence=${interval}s" >>"$LOGFILE"
 	return 0
@@ -715,7 +715,7 @@ sync_todo_refs_all_repos() {
 			[[ "$job_rc" -eq 0 ]] || sync_failures=$((sync_failures + 1))
 			active_pids=("${active_pids[@]:1}")
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | [.slug, .path] | join("|")' "$repos_json" 2>/dev/null || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | [.slug, .path] | join("|")' "$repos_json" 2>/dev/null || true)
 	for pid in "${active_pids[@]}"; do
 		job_rc=0
 		wait "$pid" || job_rc=$?

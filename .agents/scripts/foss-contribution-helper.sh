@@ -222,7 +222,7 @@ _get_daily_tokens_used() {
 # =============================================================================
 
 _get_foss_repos() {
-	jq -r '.initialized_repos[] | select(.foss == true) | .slug' "$REPOS_JSON" 2>/dev/null || true
+	jq -r '.initialized_repos[] | select(.maintenance != false and (.local_only // false) == false and .foss == true) | .slug' "$REPOS_JSON" 2>/dev/null || true
 	return 0
 }
 

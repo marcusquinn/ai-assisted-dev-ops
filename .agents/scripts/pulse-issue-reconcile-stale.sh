@@ -278,6 +278,10 @@ _normalize_unassign_stale() {
 
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
+		if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
+			|| ! repo_allows_pulse_write_actions "$slug"; then
+			continue
+		fi
 
 		# Find issues assigned to runner_user with active-dispatch labels
 		local stale_json
@@ -309,7 +313,7 @@ _normalize_unassign_stale() {
 			_normalize_clear_status_labels "$stale_num" "$slug" "$runner_user" || true
 			total_reset=$((total_reset + 1))
 		done <<<"$stale_issues"
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
+	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
 
 	# t2372: always log scan summary so silent runs are visible in pulse log
 	# and operators can confirm the sweep is firing per-cycle.

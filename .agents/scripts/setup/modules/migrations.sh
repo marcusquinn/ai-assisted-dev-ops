@@ -1794,7 +1794,7 @@ backfill_issue_relationships() {
 			print_warning "  $(basename "$expanded_path"): relationships sync had errors"
 			failed_repos=$((failed_repos + 1))
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true) | [.path, .slug, (.local_only // false | tostring)] | @tsv' "$repos_file" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true) | [.path, .slug, (.local_only // false | tostring)] | @tsv' "$repos_file" 2>/dev/null)
 
 	# Create marker directory and file
 	mkdir -p "$marker_dir"

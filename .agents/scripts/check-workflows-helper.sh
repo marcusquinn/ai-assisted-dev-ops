@@ -534,7 +534,7 @@ _resolve_caller_worktree_root() {
 	return 0
 }
 
-# _iterate_repos — emit one "slug|path|local_only" line per registered repo
+# _iterate_repos — emit one "path|local_only|maintenance|slug" line per registered repo
 _iterate_repos() {
 	if [[ ! -f "$REPOS_JSON" ]]; then
 		_die "repos.json not found at $REPOS_JSON — aidevops may not be initialised"
@@ -543,7 +543,7 @@ _iterate_repos() {
 		_die "jq required — install via Homebrew/apt or equivalent"
 	fi
 
-	# Order: path, local_only, slug — path is never empty, so it occupies the
+	# Order: path, local_only, maintenance, slug — path is never empty, so it occupies the
 	# leading field. Slug (which CAN be empty for local_only repos) goes last
 	# so bash's `read` with IFS=$'\t' doesn't collapse the empty-slug case
 	# (tab is treated as whitespace IFS; leading empties collapse, trailing
@@ -553,6 +553,7 @@ _iterate_repos() {
 		| [
 			(.path // ""),
 			(.local_only // false | tostring),
+			((if .maintenance == false then false else true end) | tostring),
 			(.slug // "")
 		]
 		| @tsv
@@ -951,11 +952,11 @@ _process_rows() {
 		# each slug, so it cannot be safely hoisted per workflow type.
 		local _canon_norm=""
 
-		local _path _local_only_flag _slug
-		while IFS=$'\t' read -r _path _local_only_flag _slug; do
+		local _path _local_only_flag _maintenance_flag _slug
+		while IFS=$'\t' read -r _path _local_only_flag _maintenance_flag _slug; do
 			[[ -z "$_slug" && -z "$_path" ]] && continue
 			local _label="${_slug:-$(basename "$_path")}"
-			[[ -n "$_filter_slug" && "$_slug" != "$_filter_slug" ]] && continue
+			[[ (-n "$_filter_slug" && "$_slug" != "$_filter_slug") || (-z "$_filter_slug" && "$_maintenance_flag" == "false") ]] && continue
 
 			_total=$((_total + 1))
 			local _row_evidence_source

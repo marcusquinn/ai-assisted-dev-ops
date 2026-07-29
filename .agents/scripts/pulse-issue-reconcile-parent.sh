@@ -392,7 +392,7 @@ reconcile_completed_parent_tasks() {
 			[[ "$_SP_CPT_ESCALATED" -eq 1 ]] && total_escalated=$((total_escalated + 1))
 			[[ "$_SP_CPT_REOPENED" -eq 1 ]] && total_reopened=$((total_reopened + 1))
 		done
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
 
 	if [[ "$total_closed" -gt 0 || "$total_nudged" -gt 0 || "$total_escalated" -gt 0 || "$total_reopened" -gt 0 ]]; then
 		echo "[pulse-wrapper] Reconcile completed parent tasks: closed=${total_closed} reopened=${total_reopened} nudged=${total_nudged} escalated=${total_escalated}" >>"$LOGFILE"

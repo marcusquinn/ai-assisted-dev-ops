@@ -929,7 +929,7 @@ file_contributor_insights() {
 			# shellcheck disable=SC2086
 			"$insight_helper" file $dr_flag "${scoped_compressed_file}" "$slug" 2>&1 || true
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
 
 	return 0
 }

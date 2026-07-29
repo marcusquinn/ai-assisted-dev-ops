@@ -530,7 +530,7 @@ evaluate_routines() {
 			fi
 		done <<<"$routine_section"
 
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || true)
 
 	if [[ "$routines_dispatched" -gt 0 ]]; then
 		echo "[pulse-wrapper] evaluate_routines: dispatched ${routines_dispatched} routine(s)" >>"$LOGFILE"

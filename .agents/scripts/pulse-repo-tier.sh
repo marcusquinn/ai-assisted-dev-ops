@@ -268,7 +268,7 @@ cmd_classify() {
 
 	local slugs
 	slugs=$(jq -r '.initialized_repos[] |
-		select(.pulse == true and (.local_only // false) == false and .slug != "") |
+		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") |
 		.slug
 	' "$REPOS_JSON" 2>/dev/null) || slugs=""
 

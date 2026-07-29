@@ -2647,7 +2647,7 @@ dispatch_routine_comment_responses() {
 			bash "$responder" dispatch "$slug" "$repo_path" "$issue_number" "$comment_id" 2>>"$LOGFILE" || true
 			dispatched=$((dispatched + 1))
 		done <<<"$scan_output"
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true) | select(.local_only != true) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false) | select(.pulse == true) | select(.local_only != true) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
 
 	if [[ "$dispatched" -gt 0 ]]; then
 		echo "[pulse-wrapper] Routine comment responses: dispatched ${dispatched} workers" >>"$LOGFILE"
@@ -2744,7 +2744,7 @@ dispatch_foss_workers() {
 		foss_count=$((foss_count + 1))
 		available=$((available - 1))
 	done < <(jq -r '.initialized_repos[]
-		| select(.foss == true and (.foss_config.blocklist // false) == false)
+		| select(.maintenance != false and (.local_only // false) == false and .foss == true and (.foss_config.blocklist // false) == false)
 		| [
 			.slug,
 			.path,

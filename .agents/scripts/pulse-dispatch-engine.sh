@@ -417,7 +417,7 @@ build_ranked_dispatch_candidates_json() {
 			else .pulse_hours.end
 			end;
 		.initialized_repos[] |
-		select(.pulse == true and (.local_only // false) == false and .slug != "" and .path != "") |
+		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .path != "") |
 		[
 			.slug,
 			.path,
@@ -773,7 +773,7 @@ _should_run_llm_supervisor() {
 		[[ "$pc" =~ ^[0-9]+$ ]] || pc=0
 		current_issues=$((current_issues + ic))
 		current_prs=$((current_prs + pc))
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$REPOS_JSON" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$REPOS_JSON" 2>/dev/null)
 
 	local snap_age=$((now_epoch - snap_epoch))
 	local total_before=$((snap_issues + snap_prs))

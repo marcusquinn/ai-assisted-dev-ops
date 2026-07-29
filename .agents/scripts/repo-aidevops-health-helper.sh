@@ -776,6 +776,7 @@ _check_version_bumps() {
 	local entries_raw
 	entries_raw=$(jq -r '
 		.initialized_repos[]? |
+		select(.maintenance != false) |
 		[.slug, (.path // ""), (.local_only // false)] |
 		@tsv
 	' "$CONFIG_FILE" 2>/dev/null || true)

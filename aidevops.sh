@@ -690,7 +690,7 @@ _repos_list() {
 	fi
 	local current_ver
 	current_ver=$(get_version)
-	jq -r '.initialized_repos[] | "\(.path)|\(.version)|\(.features | join(","))"' "$REPOS_FILE" 2>/dev/null | while IFS='|' read -r path version features; do
+	jq -r '.initialized_repos[] | "\(.path)|\(.version)|\((.features // []) | join(","))|\(if .maintenance == false then false else true end)|\(.pulse // false)"' "$REPOS_FILE" 2>/dev/null | while IFS='|' read -r path version features maintenance pulse; do
 		local name
 		name=$(basename "$path")
 		local status="✓" status_color="$GREEN"
@@ -706,6 +706,11 @@ _repos_list() {
 		echo "    Path: $path"
 		echo "    Version: $version"
 		echo "    Features: $features"
+		if [[ "$maintenance" == "true" ]]; then
+			echo "    Automation: maintained (Pulse: $pulse)"
+		else
+			echo "    Automation: dormant (Pulse: off)"
+		fi
 		echo ""
 	done
 	echo "Legend: ✓ up-to-date  ↑ update available  ✗ not found"
@@ -775,6 +780,40 @@ _repos_clean() {
 	return 0
 }
 
+_repos_maintenance() {
+	local state="${1:-}"
+	local selector="${2:-}"
+	case "$state" in
+	on | true | maintained) state="true" ;;
+	off | false | dormant | paused) state="false" ;;
+	*)
+		print_error "Usage: aidevops repos maintenance <on|off> [slug-or-path]"
+		return 2
+		;;
+	esac
+
+	if [[ -z "$selector" ]]; then
+		if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+			print_error "Specify a repo slug/path or run from within a registered repo"
+			return 1
+		fi
+		selector=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+	fi
+
+	set_repo_maintenance "$selector" "$state" || return $?
+	local result
+	result=$(get_repo_maintenance_state "$selector") || return 1
+	local maintenance pulse slug path
+	IFS=$'\t' read -r maintenance pulse slug path <<<"$result"
+	local label="${slug:-$path}"
+	if [[ "$maintenance" == "true" ]]; then
+		print_success "Maintenance enabled for $label (Pulse remains $pulse)"
+	else
+		print_success "Maintenance paused for $label (registration retained; Pulse disabled)"
+	fi
+	return 0
+}
+
 # Repos management command
 cmd_repos() {
 	local action="${1:-list}"
@@ -783,6 +822,10 @@ cmd_repos() {
 	add) _repos_add ;;
 	remove | rm) _repos_remove "${2:-}" ;;
 	clean) _repos_clean ;;
+	maintenance | maintain)
+		shift
+		_repos_maintenance "$@"
+		;;
 	*)
 		echo "Usage: aidevops repos <command>"
 		echo ""
@@ -791,6 +834,8 @@ cmd_repos() {
 		echo "  add      Register current project"
 		echo "  remove   Remove project from registry"
 		echo "  clean    Remove entries for non-existent projects"
+		echo "  maintenance <on|off> [repo]"
+		echo "           Include/exclude a registered repo from recurring automation"
 		;;
 	esac
 }

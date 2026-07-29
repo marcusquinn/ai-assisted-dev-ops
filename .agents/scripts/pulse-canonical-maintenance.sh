@@ -259,7 +259,8 @@ _canonical_ff_single_repo() {
 # ---------------------------------------------------------------------------
 # _canonical_fast_forward
 #
-# For each pulse-enabled, non-local_only repo in repos.json, run pre-flight
+# For each maintained repository, run the remote diagnostic pass. Safety
+# worktree cleanup below deliberately keeps a broader all-registered scope.
 # checks and fast-forward if behind origin.
 # Arguments: $1 - dry_run ("1" for dry run, "0" for real)
 # Returns: 0 always (fail-open per repo)
@@ -270,7 +271,7 @@ _canonical_fast_forward() {
 	[[ -f "$repos_json" ]] && command -v jq &>/dev/null || return 0
 
 	local -a _repo_list=()
-	mapfile -t _repo_list < <(jq -r '.initialized_repos[] | select((.pulse // false) == true) | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null)
+	mapfile -t _repo_list < <(jq -r '.initialized_repos[] | select(.maintenance != false) | select((.pulse // false) == true) | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null)
 
 	local repo_path ff_count=0 skip_count=0
 	for repo_path in "${_repo_list[@]}"; do
@@ -361,7 +362,7 @@ _stale_worktree_sweep_single_repo() {
 # ---------------------------------------------------------------------------
 # _stale_worktree_sweep
 #
-# For each pulse-enabled, non-local_only repo: invoke worktree-helper.sh
+# For each registered, non-local_only repo: invoke worktree-helper.sh
 # clean --auto --force-merged with a per-repo hard timeout.
 # Arguments: $1 - dry_run ("1" for dry run, "0" for real)
 # Returns: 0 always (fail-open per repo)
@@ -390,7 +391,7 @@ _stale_worktree_sweep() {
 	fi
 
 	local -a _repo_list=()
-	mapfile -t _repo_list < <(jq -r '.initialized_repos[] | select((.pulse // false) == true) | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null)
+	mapfile -t _repo_list < <(jq -r '.initialized_repos[] | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null)
 
 	local repo_path sweep_count=0
 	for repo_path in "${_repo_list[@]}"; do

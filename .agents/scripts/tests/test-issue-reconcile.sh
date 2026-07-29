@@ -107,6 +107,11 @@ gh_issue_list() {
 	gh issue list "$@"
 	return $?
 }
+repo_allows_pulse_write_actions() {
+	local repo_slug="$1"
+	[[ "$repo_slug" == "owner/testrepo" ]]
+	return $?
+}
 
 # =============================================================================
 # Part 1 — _normalize_reassign_self: self-assigns orphaned active issues
@@ -258,6 +263,10 @@ chmod +x "${STUB_DIR}/gh"
 STAMP_DIR="${HOME}/.aidevops/.agent-workspace/interactive-claims"
 mkdir -p "$STAMP_DIR"
 rm -f "${STAMP_DIR}/owner-testrepo-555.json"
+
+# The pause operation sets both fields false; cleanup must remain registered-scope.
+jq '(.initialized_repos[0].maintenance, .initialized_repos[0].pulse) = (false, false)' \
+	"$REPOS_JSON" >"${REPOS_JSON}.tmp" && mv "${REPOS_JSON}.tmp" "$REPOS_JSON"
 
 rm -f "$GH_EDIT_ARGS_FILE"
 NOW_EPOCH_P5=$(date +%s)

@@ -657,7 +657,7 @@ _normalize_reassign_self() {
 				total_assigned=$((total_assigned + 1))
 			fi
 		done <<<"$all_rows"
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
 
 	if [[ "$total_checked" -gt 0 ]]; then
 		echo "[pulse-wrapper] Assignment normalization: assigned ${total_assigned}/${total_checked} active unassigned issues to ${runner_user} (skipped_claimed=${total_skipped_claimed})" >>"$LOGFILE"
@@ -749,6 +749,10 @@ _normalize_unassign_stampless_interactive() {
 
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
+		if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
+			|| ! repo_allows_pulse_write_actions "$slug"; then
+			continue
+		fi
 
 		# t2773: route through gh_issue_list wrapper (REST fallback on rate-limit exhaustion).
 		# This fetch is assignee-filtered, so it cannot use the prefetch cache
@@ -812,7 +816,7 @@ _normalize_unassign_stampless_interactive() {
 				total_released=$((total_released + 1))
 			fi
 		done <<<"$rows"
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" 2>/dev/null || true)
+	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" 2>/dev/null || true)
 
 	if [[ "$total_released" -gt 0 ]]; then
 		echo "[pulse-wrapper] Stampless interactive cleanup: released ${total_released} issues for dispatch" >>"$LOGFILE"
@@ -1038,7 +1042,7 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 				total_fixed=$((total_fixed + 1))
 			fi
 		done
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
 
 	if [[ "$((total_fixed + total_skipped))" -gt 0 ]]; then
 		echo "[pulse-wrapper] Labelless backfill: fixed=${total_fixed}, skipped=${total_skipped}" >>"$LOGFILE"
@@ -1545,7 +1549,7 @@ reconcile_issues_single_pass() {
 		# Slash in slug would break log parsing; replace with underscore.
 		local _slug_safe="${slug//\//_}"
 		_log_substage_timing "substage:reconcile_sp/repo:${_slug_safe}" "$_slug_start" 0
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""' "$repos_json" || true)
 
 	# t2838: persist last-run epoch when backfill actually ran this cycle.
 	# Skip on dry runs (pbf_total_run == 0) so we retry next cycle.

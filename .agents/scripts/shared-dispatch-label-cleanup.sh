@@ -163,7 +163,6 @@ _dispatch_label_sweep_repos() {
 	[[ -f "$repos_json" ]] || return 1
 	jq -r '
 		.initialized_repos[]? |
-		select((.pulse // false) == true) |
 		select((.local_only // false) == false) |
 		.slug // empty
 	' "$repos_json" 2>/dev/null
@@ -184,6 +183,10 @@ sweep_closed_auto_dispatch_issues() {
 	local repo_slug issue_number issue_rows snapshot state state_reason labels_csv reason
 	while IFS= read -r repo_slug; do
 		[[ -n "$repo_slug" ]] || continue
+		if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
+			|| ! repo_allows_pulse_write_actions "$repo_slug"; then
+			continue
+		fi
 		issue_rows=$(_dispatch_blocker_active_issue_candidates "$repo_slug" "$limit") || {
 			logger_failed=$((logger_failed + 1))
 			continue

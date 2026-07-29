@@ -235,7 +235,7 @@ _cloudron_monitor_run() {
 		else
 			_cloudron_monitor_compatibility_entry "$entry" "$apply" || failures=$((failures + 1))
 		fi
-	done < <(jq -c '.initialized_repos[] | select(.app_type == "cloudron-package")' "$REPOS_FILE")
+	done < <(jq -c '.initialized_repos[] | select(.maintenance != false and .app_type == "cloudron-package")' "$REPOS_FILE")
 	[[ "$failures" -eq 0 ]] || return 1
 	return 0
 }

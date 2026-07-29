@@ -1248,8 +1248,8 @@ _dirty_pr_sweep_for_repo() {
 # Public entry points
 # -----------------------------------------------------------------------------
 
-# Sweep all pulse-enabled repos. Respects the interval gate — early-returns
-# 0 when not due. Safe to call every pulse cycle.
+# Sweep all registered non-local repos, including dormant dirty-state recovery.
+# Respects the interval gate — early-returns 0 when not due.
 dirty_pr_sweep_all_repos() {
 	# Honour pulse stop flag when running as module.
 	if [[ -n "${STOP_FLAG:-}" && -f "$STOP_FLAG" ]]; then
@@ -1291,7 +1291,7 @@ dirty_pr_sweep_all_repos() {
 			_dps_log "stop flag appeared mid-run — breaking"
 			break
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$repos_json" 2>/dev/null)
 
 	_dirty_pr_sweep_mark_run
 	_dps_log "sweep complete: rebased=${total_rebased} closed=${total_closed} notified=${total_notified}"
