@@ -117,31 +117,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    try:
-        rendered = _render_target(args.file, args.template, args.default_heading)
-        current = _read_text(args.file) if args.file.exists() else ""
-    except (ManagedBlockError, OSError) as exc:
-        print(f"managed-markdown-block-helper: {exc}", file=sys.stderr)
-        return 2
+def _run_command(args: argparse.Namespace) -> int:
+    rendered = _render_target(args.file, args.template, args.default_heading)
+    current = _read_text(args.file) if args.file.exists() else ""
 
     if args.command == "render":
         sys.stdout.write(rendered)
-        return 0
-    if args.command == "check":
+    elif args.command == "check":
         return 0 if current == rendered else 1
-    if current == rendered:
+    elif current == rendered:
         print("CURRENT")
-        return 0
-
-    try:
+    else:
         _atomic_write(args.file, rendered)
-    except OSError as exc:
+        print("UPDATED")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        return _run_command(args)
+    except (ManagedBlockError, OSError) as exc:
         print(f"managed-markdown-block-helper: {exc}", file=sys.stderr)
         return 2
-    print("UPDATED")
-    return 0
 
 
 if __name__ == "__main__":
