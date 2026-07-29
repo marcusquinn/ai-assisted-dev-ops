@@ -165,7 +165,8 @@ _pulse_capacity_load_pressure_points() {
 }
 
 #######################################
-# Count recent provider/load health signals from worker metrics.
+# Count recent terminal worker-role provider/load health signals. Continuation
+# events remain progress evidence but never become failure/capacity pressure.
 # Stdout: "<failures> <rate_limits> <service_interruptions> <provider_5xx> <progress_heartbeats>".
 #######################################
 _pulse_capacity_recent_health_counts() {
@@ -210,18 +211,25 @@ try:
             ts = 0
         if ts < since:
             continue
+        if str(item.get('role') or '') != 'worker':
+            continue
         result = str(item.get('result') or '')
         failure_reason = str(item.get('failure_reason') or '')
         provider_type = str(item.get('provider_error_type') or '')
         provider_status = str(item.get('provider_status') or '')
         exit_code = item.get('exit_code')
+        is_nonterminal = result.endswith('_continue') or result == 'brief_recovery'
+        if result in {'watchdog_stall_continue', 'service_interruption_continue'} or str(item.get('activity_detected') or '0') == '1':
+            progress += 1
+        if is_nonterminal:
+            continue
         is_rate_limited = (
             result in {'rate_limit', 'rate_limit_fast'}
             or provider_type == 'rate_limit'
             or provider_status == '429'
             or 'rate_limit' in failure_reason
         )
-        is_service_interruption = result == 'service_interruption_continue'
+        is_service_interruption = result == 'service_interruption_exhausted'
         is_provider_5xx = provider_type == 'server_error' or provider_status in {'500', '502', '503', '504'}
         if is_rate_limited:
             rate_limits += 1
@@ -229,9 +237,7 @@ try:
             service_interruptions += 1
         if is_provider_5xx:
             provider_5xx += 1
-        if result in {'watchdog_stall_continue', 'service_interruption_continue'} or str(item.get('activity_detected') or '0') == '1':
-            progress += 1
-        if not (result == 'success' and exit_code == 0) and result not in {'worker_noop', 'no_work', 'noop', 'watchdog_stall_continue', 'service_interruption_continue'}:
+        if not (result == 'success' and exit_code == 0) and result not in {'worker_noop', 'no_work', 'noop'}:
             failures += 1
 except (OSError, ValueError):
     pass
@@ -336,10 +342,13 @@ pulse_apply_provider_load_capacity_cap() {
 		_dispatch_stats_gauge "dispatch_capacity_provider_accounts_available" "$((account_available < 0 ? 0 : account_available))"
 		_dispatch_stats_gauge "dispatch_capacity_load_pressure_points" "$load_points"
 		_dispatch_stats_gauge "dispatch_capacity_recent_failures" "$failures"
+		_dispatch_stats_gauge "dispatch_capacity_recent_worker_terminal_failures" "$failures"
 		_dispatch_stats_gauge "dispatch_capacity_final_max_workers" "$final_max"
 	fi
-	printf '[pulse-wrapper] Dispatch_capacity: raw_max=%s final_max=%s active=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s load_points=%s failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s progress_heartbeats=%s min_floor=%s floor_allowed=%s floor_active=%s\n' \
-		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$load_points" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
+	local health_window_seconds="${PULSE_DISPATCH_CAPACITY_HEALTH_WINDOW_SECONDS:-900}"
+	[[ "$health_window_seconds" =~ ^[0-9]+$ ]] || health_window_seconds=900
+	printf '[pulse-wrapper] Dispatch_capacity: capacity_unit=simultaneous_workers simultaneous_target_raw=%s simultaneous_target_final=%s active_workers=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s load_points=%s worker_terminal_failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s worker_progress_heartbeats=%s failure_observation_window_seconds=%s task_duration_limit=none min_floor=%s floor_allowed=%s floor_active=%s\n' \
+		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$load_points" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$health_window_seconds" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
 	printf '%s %s\n' "$final_max" "$floor_active"
 	return 0
 }

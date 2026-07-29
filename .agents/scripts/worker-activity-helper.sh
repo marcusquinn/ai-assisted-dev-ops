@@ -56,6 +56,7 @@ WAH_RESULT_LOCAL_KILL="local_kill"
 WAH_RESULT_RATE_LIMIT="rate_limit"
 WAH_DELIVERY_FAILED="failed"
 WAH_JSON_NULL="null"
+WAH_RUNTIME_ROLE="worker"
 WAH_FAILURE_FAMILY_FILTER="${SCRIPT_DIR}/worker-activity-failure-families.jq"
 
 # Shared jq definitions keep terminal-session semantics identical in the scalar
@@ -193,7 +194,7 @@ _wah_aggregate_metrics() {
 	local jq_program
 	# shellcheck disable=SC2016 # jq variables are evaluated by jq, not the shell
 	jq_program=$WAH_SESSION_OUTCOME_JQ'
-		[inputs | select((.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $events
+		[inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $events
 		| ($events | _wah_session_outcomes) as $w | {
 			total:  ($events | length),
 			terminal: ($w | length),
@@ -211,7 +212,7 @@ _wah_aggregate_metrics() {
 			)] | length)
 		} | "\(.total) \(.terminal) \(.succ) \(.wk) \(.wc) \(.sic) \(.rl) \(.of)"
 	'
-	result=$(jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg service_result "$service_result" --arg watchdog_killed_result "$watchdog_killed_result" --arg rate_limit_result "$rate_limit_result" "$jq_program" <"$metrics" 2>/dev/null) || result="0 0 0 0 0 0 0 0"
+	result=$(jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg service_result "$service_result" --arg watchdog_killed_result "$watchdog_killed_result" --arg rate_limit_result "$rate_limit_result" "$jq_program" <"$metrics" 2>/dev/null) || result="0 0 0 0 0 0 0 0"
 
 	[[ -n "$result" ]] || result="0 0 0 0 0 0 0 0"
 	printf '%s\n' "$result"
@@ -240,7 +241,7 @@ _wah_metric_details_json() {
 	objective_outcomes=$(_wah_objective_outcomes_json)
 	# shellcheck disable=SC2016 # jq variables are evaluated by jq, not the shell
 	jq_program=$WAH_SESSION_OUTCOME_JQ$WAH_FAILURE_FAMILY_JQ'
-		[inputs | select((.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $events
+		[inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $events
 		| ($events | _wah_session_outcomes) as $w
 		| ($w | map(.duration_ms // 0)) as $durations
 		| ($w | map(select(_wah_effective_failure))) as $failures
@@ -315,7 +316,7 @@ _wah_metric_details_json() {
 				| sort_by(.count) | reverse | .[0:10]),
 			failure_families: ($failures | _wah_failure_family_summary)
 		}'
-	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" "$jq_program" <"$metrics" 2>/dev/null || \
+	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" "$jq_program" <"$metrics" 2>/dev/null || \
 		printf '{"result_counts":{},"diagnostic_focus":{},"timing_ms":{"avg":0,"max":0,"samples":0},"recent_examples":[],"failure_groups":[],"failure_families":[]}'
 	return 0
 }
@@ -443,7 +444,7 @@ _wah_provider_usage_json() {
 	((account_multiplier < 1)) && account_multiplier=1
 
 	if [[ -f "$pool" ]]; then
-		jq -rn --slurpfile pool "$pool" --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson account_multiplier "$account_multiplier" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg status_empty '' --arg status_auth_error 'auth-error' --arg status_rate_limited 'rate-limited' --arg status_active 'active' --arg status_idle 'idle' '
+		jq -rn --slurpfile pool "$pool" --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson account_multiplier "$account_multiplier" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" --arg status_empty '' --arg status_auth_error 'auth-error' --arg status_rate_limited 'rate-limited' --arg status_active 'active' --arg status_idle 'idle' '
 			def account_status: .status // $status_empty;
 			def available_account:
 				(account_status) as $status
@@ -453,7 +454,7 @@ _wah_provider_usage_json() {
 				(.status // $status_idle) as $status
 				| $status == $status_active or $status == $status_idle;
 			($pool[0] // {}) as $pool_data
-			| [inputs | select((.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
+			| [inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
 			| {
 				provider_model_usage: (
 					$w
@@ -491,8 +492,8 @@ _wah_provider_usage_json() {
 				)
 			}' <"$input_file" 2>/dev/null || printf '{"provider_model_usage":[],"recent_events":[],"account_pool":[]}'
 	else
-		jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" '
-			[inputs | select((.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
+		jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" '
+			[inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
 			| {
 				provider_model_usage: ($w | group_by([.provider // "unknown", .model // "unknown"]) | map({provider: (.[0].provider // "unknown"), model: (.[0].model // "unknown"), count: length, runtime_handoffs: (map(select(.result == "success" and (.exit_code // 1) == 0)) | length), rate_limited: (map(select(.result == $rate_limit_result or .provider_error_type == $rate_limit_result or .provider_status == "429")) | length), other_failure: (map(select((.result != "success" or (.exit_code // 1) != 0) and .result != $rate_limit_result and .provider_error_type != $rate_limit_result and .provider_status != "429")) | length), latest_ts: (map(.ts // 0) | max)}) | sort_by(.count, .latest_ts) | reverse | .[0:12]),
 				recent_events: ($w | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, provider, model, result, exit_code, issue_number, session_key})),
@@ -662,7 +663,7 @@ _wah_emit_human() {
 	delivered_successes=$(printf '%s' "$delivery_json" | jq -r '.delivered_successes // "?"' 2>/dev/null || printf '?')
 
 	printf '%s\n' "$divider"
-	printf 'Worker activity since %s (cutoff: %s)\n' "$since_label" "$cutoff_iso"
+	printf 'Worker activity reporting window: previous %s (cutoff: %s; observation only, not a worker runtime limit)\n' "$since_label" "$cutoff_iso"
 	[[ -n "$repo_label" ]] && printf 'Repo: %s\n' "$repo_label"
 	printf '%s\n' "$divider"
 	printf '\n'
@@ -780,7 +781,7 @@ _wah_emit_json() {
 		--argjson blockers "$blocker_json" \
 		--arg repo "$repo_label" \
 		'{
-			window: { since: $since, cutoff_iso: $cutoff_iso, cutoff_epoch: $cutoff_epoch },
+			window: { since: $since, cutoff_iso: $cutoff_iso, cutoff_epoch: $cutoff_epoch, semantics: "historical_observation_only", worker_runtime_limit: null },
 			repo: (if $repo == "" then null else $repo end),
 			metrics: {
 				total: $total,

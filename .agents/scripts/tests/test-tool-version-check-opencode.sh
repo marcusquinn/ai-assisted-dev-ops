@@ -18,7 +18,9 @@ if [[ ! -f "$TOOL_VERSION_CHECK" || ! -f "$SHARED_CONSTANTS" || ! -f "$HEADLESS_
 	exit 1
 fi
 
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/t24107-XXXXXX")"
+TEST_TMP_PARENT="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+mkdir -p "$TEST_TMP_PARENT"
+SANDBOX="$(mktemp -d "${TEST_TMP_PARENT}/t24107-XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SYSTEM_PATH="$PATH"
 
@@ -161,19 +163,78 @@ assert_eq "npm OpenCode upgrade command" "npm install -g opencode-ai@1.15.10" "$
 
 printf 'Test 4: headless version guard restores the pinned release\n'
 mkdir -p "$SANDBOX/version-guard"
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-guard/opencode" '#!/usr/bin/env bash
-printf "1.18.7\n"'
+version=$(<"'"$SANDBOX"'/version-guard/version")
+printf "%s\n" "$version"'
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-guard/npm" '#!/usr/bin/env bash
-printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"'
+printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"
+printf "1.18.5\n" >"'"$SANDBOX"'/version-guard/version"'
+printf '1.18.7\n' >"$SANDBOX/version-guard/version"
+guard_rc=0
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/opencode"
 	print_warning() { return 0; }
 	print_info() { return 0; }
+	print_error() { return 0; }
 	PATH="$SANDBOX/version-guard:$SYSTEM_PATH" _enforce_opencode_version_pin
-)
+) || guard_rc=$?
+assert_eq "headless pin repair status" "0" "$guard_rc"
 assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.5" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
+
+printf 'Test 5: headless version guard fails closed when reinstall fails\n'
+mkdir -p "$SANDBOX/version-install-failure"
+write_executable "$SANDBOX/version-install-failure/opencode" '#!/usr/bin/env bash
+printf "1.18.7\n"'
+write_executable "$SANDBOX/version-install-failure/npm" '#!/usr/bin/env bash
+exit 42'
+guard_rc=0
+(
+	source_extracted
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-install-failure/opencode"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	PATH="$SANDBOX/version-install-failure:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || guard_rc=$?
+assert_eq "headless failed reinstall status" "1" "$guard_rc"
+
+printf 'Test 6: headless version guard verifies the repaired binary\n'
+mkdir -p "$SANDBOX/version-mismatch"
+write_executable "$SANDBOX/version-mismatch/opencode" '#!/usr/bin/env bash
+printf "1.18.7\n"'
+write_executable "$SANDBOX/version-mismatch/npm" '#!/usr/bin/env bash
+exit 0'
+guard_rc=0
+(
+	source_extracted
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-mismatch/opencode"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	PATH="$SANDBOX/version-mismatch:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || guard_rc=$?
+assert_eq "headless post-repair mismatch status" "1" "$guard_rc"
+
+printf 'Test 7: headless version guard rejects a failed version probe\n'
+mkdir -p "$SANDBOX/version-probe-failure"
+write_executable "$SANDBOX/version-probe-failure/opencode" '#!/usr/bin/env bash
+printf "1.18.5\n"
+exit 3'
+write_executable "$SANDBOX/version-probe-failure/npm" '#!/usr/bin/env bash
+exit 0'
+guard_rc=0
+(
+	source_extracted
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-probe-failure/opencode"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	PATH="$SANDBOX/version-probe-failure:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || guard_rc=$?
+assert_eq "headless failed version probe status" "1" "$guard_rc"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

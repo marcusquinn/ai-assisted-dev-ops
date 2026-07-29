@@ -69,6 +69,113 @@ _DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS="${AIDEVOPS_PULSE_BENIGN_BLOCKS_L
 # the throttle file. The orchestrator loop reads this and restores
 # _effective_slots to the unthrottled available_slots value.
 _DISPATCH_THROTTLE_CLEARED=0
+_DISPATCH_TRIAGE_OUTCOME_SCHEMA="aidevops.pulse-triage-outcome/v1"
+
+_dispatch_cycle_cache_path() {
+	local kind="$1"
+	local suffix="${2:-}"
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local cycle_key="${_PULSE_CYCLE_ID:-pid-$$}"
+	[[ "$temp_root" == /* ]] || return 1
+	if [[ ! -d "$temp_root" ]]; then
+		(umask 077 && mkdir -p "$temp_root") 2>/dev/null || return 1
+	fi
+	[[ -d "$temp_root" && ! -L "$temp_root" ]] || return 1
+	cycle_key=$(printf '%s' "$cycle_key" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')
+	[[ -n "$cycle_key" ]] || return 1
+	printf '%s/%s.%s%s\n' "$temp_root" "$kind" "$cycle_key" "$suffix"
+	return 0
+}
+
+_dispatch_candidate_snapshot_path() {
+	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit=1000
+	_dispatch_cycle_cache_path "pulse-dispatch-candidates" ".${per_repo_limit}.json"
+	return $?
+}
+
+_dispatch_cleanup_cycle_cache() {
+	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	local candidate_file="" triage_file="" cache_file=""
+	candidate_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit" 2>/dev/null || true)
+	triage_file=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done" 2>/dev/null || true)
+	for cache_file in "$candidate_file" "$triage_file"; do
+		[[ -n "$cache_file" && ( -f "$cache_file" || -L "$cache_file" ) ]] || continue
+		rm -f "$cache_file" 2>/dev/null || true
+	done
+	return 0
+}
+
+_dispatch_invalidate_candidate_snapshot() {
+	local reason="${1:-state_mutation}"
+	local per_repo_limit="${2:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	local snapshot_file=""
+	snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit") || return 0
+	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]]; then
+		rm -f "$snapshot_file" 2>/dev/null || return 1
+		echo "[pulse-wrapper] Dispatch candidate snapshot invalidated: reason=${reason}" >>"$LOGFILE"
+	fi
+	return 0
+}
+
+_dispatch_ranked_candidates_json() {
+	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	local snapshot_file="" snapshot_tmp="" candidates_json="[]"
+	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit=1000
+	if [[ "${PULSE_DISPATCH_CANDIDATE_SNAPSHOT_ENABLED:-1}" == "0" ]]; then
+		build_ranked_dispatch_candidates_json "$per_repo_limit"
+		return $?
+	fi
+	snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit") || {
+		build_ranked_dispatch_candidates_json "$per_repo_limit"
+		return $?
+	}
+	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]] && jq -e 'type == "array"' "$snapshot_file" >/dev/null 2>&1; then
+		printf '%s\n' "$(<"$snapshot_file")"
+		_dispatch_stats_increment "dispatch_candidate_snapshot_hit"
+		return 0
+	fi
+	if [[ -L "$snapshot_file" ]]; then
+		rm -f "$snapshot_file" 2>/dev/null || {
+			build_ranked_dispatch_candidates_json "$per_repo_limit"
+			return $?
+		}
+	fi
+	candidates_json=$(build_ranked_dispatch_candidates_json "$per_repo_limit") || candidates_json='[]'
+	if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates_json"; then
+		candidates_json='[]'
+	fi
+	snapshot_tmp=$(mktemp "${snapshot_file}.tmp.XXXXXX" 2>/dev/null || true)
+	if [[ -n "$snapshot_tmp" ]] && (umask 077 && printf '%s\n' "$candidates_json" >"$snapshot_tmp") 2>/dev/null; then
+		mv "$snapshot_tmp" "$snapshot_file" 2>/dev/null || rm -f "$snapshot_tmp" 2>/dev/null || true
+	elif [[ -n "$snapshot_tmp" ]]; then
+		rm -f "$snapshot_tmp" 2>/dev/null || true
+	fi
+	_dispatch_stats_increment "dispatch_candidate_snapshot_miss"
+	printf '%s\n' "$candidates_json"
+	return 0
+}
+
+_dispatch_triage_outcome_is_valid() {
+	local outcome_json="$1"
+	jq -e --arg schema "$_DISPATCH_TRIAGE_OUTCOME_SCHEMA" '
+		type == "object"
+		and .schema == $schema
+		and ([.attempted, .posted, .review_failed, .infrastructure_failed, .preparation_failed]
+			| all(type == "number" and floor == . and . >= 0))
+		and .attempted == (.posted + .review_failed + .infrastructure_failed)
+	' >/dev/null 2>&1 <<<"$outcome_json"
+	return $?
+}
+
+_dispatch_triage_fallback_outcome() {
+	local infrastructure_failed="$1"
+	jq -cn \
+		--arg schema "$_DISPATCH_TRIAGE_OUTCOME_SCHEMA" \
+		--argjson infrastructure_failed "$infrastructure_failed" \
+		'{schema:$schema, attempted:0, posted:0, review_failed:0, infrastructure_failed:$infrastructure_failed, preparation_failed:0}'
+	return $?
+}
 
 #######################################
 # Emit per-candidate debug output for the dispatch_max (GH#18804).
@@ -676,9 +783,13 @@ try:
             ts = float(item.get("ts") or 0)
             if ts < since:
                 continue
+            if str(item.get("role") or "") != "worker":
+                continue
             result = str(item.get("result") or "")
             failure_reason = str(item.get("failure_reason") or "")
             exit_code = item.get("exit_code")
+            if result.endswith("_continue") or result == "brief_recovery":
+                continue
             if result in {"rate_limit", "rate_limit_fast"} or "rate_limit" in failure_reason:
                 rate_limits += 1
             if not (result == "success" and exit_code == 0) and result not in {"worker_noop", "no_work", "noop"}:
@@ -1080,26 +1191,55 @@ _dispatch_compute_capacity() {
 }
 
 #######################################
-# Run the triage + enrichment pre-passes, subtracting their dispatches from the
-# implementation slot budget. Triage runs first (community responsiveness) and
-# enrichment runs second (so enriched issues get better context on the next
-# attempt).
+# Run triage once per Pulse cycle under its own budget, then enrichment under
+# the implementation slot budget. Typed triage outcomes never reduce worker
+# slots or count as live implementation launches.
 #
 # Arguments:
 #   $1 - available slots before pre-passes
-# Stdout: "<remaining_slots> <triage_dispatched>"
+# Stdout: "<remaining_slots> <triage_attempted> <triage_infrastructure_failed>"
 #######################################
 _dispatch_run_prepasses() {
 	local available_slots="$1"
 
-	local triage_remaining
-	triage_remaining=$(dispatch_triage_reviews "$available_slots" 2>>"$LOGFILE") || triage_remaining="$available_slots"
-	[[ "$triage_remaining" =~ ^[0-9]+$ ]] || triage_remaining="$available_slots"
-	local triage_dispatched=$((available_slots - triage_remaining))
-	if [[ "$triage_dispatched" -gt 0 ]]; then
-		echo "[pulse-wrapper] Dispatch_max: dispatched ${triage_dispatched} triage review(s), ${triage_remaining} slots remaining for implementation" >>"$LOGFILE"
+	local triage_outcome=""
+	local triage_attempted=0 triage_posted=0 triage_infrastructure_failed=0
+	local triage_budget="${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}" triage_marker="" triage_marker_tmp=""
+	triage_outcome=$(_dispatch_triage_fallback_outcome 0)
+	[[ "$triage_budget" =~ ^[0-9]+$ ]] || triage_budget=2
+	triage_marker=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done" 2>/dev/null || true)
+	if [[ -z "$triage_marker" || ! -f "$triage_marker" || -L "$triage_marker" ]]; then
+		if [[ -L "$triage_marker" ]] && ! rm -f "$triage_marker" 2>/dev/null; then
+			triage_marker=""
+		fi
+		triage_outcome=$(dispatch_triage_reviews "$triage_budget" 2>>"$LOGFILE") || triage_outcome=$(_dispatch_triage_fallback_outcome 1)
+		if ! _dispatch_triage_outcome_is_valid "$triage_outcome"; then
+			echo "[pulse-wrapper] Dispatch_max: invalid triage outcome envelope — recording one infrastructure failure" >>"$LOGFILE"
+			triage_outcome=$(_dispatch_triage_fallback_outcome 1)
+		fi
+		if [[ -n "$triage_marker" ]]; then
+			triage_marker_tmp=$(mktemp "${triage_marker}.tmp.XXXXXX" 2>/dev/null || true)
+			if [[ -n "$triage_marker_tmp" ]] && (umask 077 && printf '%s\n' "$triage_outcome" >"$triage_marker_tmp") 2>/dev/null; then
+				mv "$triage_marker_tmp" "$triage_marker" 2>/dev/null || rm -f "$triage_marker_tmp" 2>/dev/null || true
+			elif [[ -n "$triage_marker_tmp" ]]; then
+				rm -f "$triage_marker_tmp" 2>/dev/null || true
+			fi
+		fi
+	else
+		echo "[pulse-wrapper] Dispatch_max: triage prepass already consumed this cycle's independent budget" >>"$LOGFILE"
 	fi
-	available_slots="$triage_remaining"
+	triage_attempted=$(printf '%s' "$triage_outcome" | jq -r '.attempted // 0' 2>/dev/null || printf '0')
+	triage_posted=$(printf '%s' "$triage_outcome" | jq -r '.posted // 0' 2>/dev/null || printf '0')
+	triage_infrastructure_failed=$(printf '%s' "$triage_outcome" | jq -r '.infrastructure_failed // 0' 2>/dev/null || printf '0')
+	[[ "$triage_attempted" =~ ^[0-9]+$ ]] || triage_attempted=0
+	[[ "$triage_posted" =~ ^[0-9]+$ ]] || triage_posted=0
+	[[ "$triage_infrastructure_failed" =~ ^[0-9]+$ ]] || triage_infrastructure_failed=0
+	if [[ "$triage_attempted" -gt 0 || "$triage_infrastructure_failed" -gt 0 ]]; then
+		echo "[pulse-wrapper] Dispatch_max: triage attempted=${triage_attempted} posted=${triage_posted} infrastructure_failed=${triage_infrastructure_failed} implementation_slots_consumed=0 implementation_slots_available=${available_slots}" >>"$LOGFILE"
+	fi
+	if [[ "$triage_posted" -gt 0 ]]; then
+		_dispatch_invalidate_candidate_snapshot "triage_state_changed" || true
+	fi
 
 	local enrichment_remaining
 	enrichment_remaining=$(dispatch_enrichment_workers "$available_slots" 2>>"$LOGFILE") || enrichment_remaining="$available_slots"
@@ -1110,7 +1250,7 @@ _dispatch_run_prepasses() {
 	fi
 	available_slots="$enrichment_remaining"
 
-	printf '%s %s\n' "$available_slots" "$triage_dispatched"
+	printf '%s %s %s\n' "$available_slots" "$triage_attempted" "$triage_infrastructure_failed"
 	return 0
 }
 

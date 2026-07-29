@@ -44,7 +44,8 @@ print_result() {
 setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
 	export HOME="${TEST_ROOT}/home"
-	mkdir -p "${HOME}/.aidevops/logs"
+	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp"
+	mkdir -p "${HOME}/.aidevops/logs" "$AIDEVOPS_TEMP_DIR"
 	# shellcheck source=/dev/null
 	source "$WRAPPER_SCRIPT"
 
@@ -545,6 +546,7 @@ _setup_dispatch_stub() {
 		local repo_path="$3"
 		printf '%s|%s|%s\n' "$issue_num" "$repo_slug" "$repo_path" \
 			>>"$DISPATCH_LOG_FILE"
+		_PAD_TRIAGE_LAST_OUTCOME="${TRIAGE_TEST_OUTCOME:-posted}"
 		return 0
 	}
 
@@ -569,8 +571,8 @@ _make_state_file() {
 	return 0
 }
 
-# ── Test 1: slot count decremented for each dispatched triage review ──────────
-test_dispatch_triage_reviews_decrements_slot_count() {
+# ── Test 1: typed triage outcomes do not consume implementation slots ─────────
+test_dispatch_triage_reviews_returns_typed_outcome() {
 	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-t1.log"
 	: >"$DISPATCH_LOG_FILE"
 
@@ -590,17 +592,18 @@ test_dispatch_triage_reviews_decrements_slot_count() {
 	# model-availability-helper.sh is not available in test env; resolved_model
 	# will be empty, which exercises the no-model branch (same as production
 	# when all models are rate-limited).
-	local remaining
-	remaining=$(dispatch_triage_reviews 5 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 5 "$repos_json" 2>/dev/null)
 
-	# 2 needs-review issues dispatched → 5 - 2 = 3 remaining
-	if [[ "$remaining" == "3" ]]; then
-		print_result "dispatch_triage_reviews decrements slot count for each dispatch" 0
+	if [[ "$(printf '%s' "$outcome" | jq -r '.schema')" == "aidevops.pulse-triage-outcome/v1" && \
+		"$(printf '%s' "$outcome" | jq -r '.attempted')" == "2" && \
+		"$(printf '%s' "$outcome" | jq -r '.posted')" == "2" ]]; then
+		print_result "dispatch_triage_reviews returns typed outcomes without implementation slot accounting" 0
 		return 0
 	fi
 
-	print_result "dispatch_triage_reviews decrements slot count for each dispatch" 1 \
-		"Expected remaining=3, got '${remaining}'"
+	print_result "dispatch_triage_reviews returns typed outcomes without implementation slot accounting" 1 \
+		"Unexpected outcome '${outcome}'"
 	return 0
 }
 
@@ -645,7 +648,7 @@ test_dispatch_triage_reviews_no_stderr_errors() {
 }
 
 # ── Test 3: returns available unchanged when no needs-review entries ──────────
-test_dispatch_triage_reviews_returns_available_when_no_candidates() {
+test_dispatch_triage_reviews_returns_zero_when_no_candidates() {
 	local repos_json
 	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
 
@@ -657,16 +660,16 @@ test_dispatch_triage_reviews_returns_available_when_no_candidates() {
 
 	STATE_FILE="$state_file"
 	TRIAGE_STATE_FILE="$state_file"
-	local remaining
-	remaining=$(dispatch_triage_reviews 4 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 4 "$repos_json" 2>/dev/null)
 
-	if [[ "$remaining" == "4" ]]; then
-		print_result "dispatch_triage_reviews returns available unchanged when no candidates" 0
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "0" ]]; then
+		print_result "dispatch_triage_reviews returns a zero typed outcome when no candidates exist" 0
 		return 0
 	fi
 
-	print_result "dispatch_triage_reviews returns available unchanged when no candidates" 1 \
-		"Expected remaining=4, got '${remaining}'"
+	print_result "dispatch_triage_reviews returns a zero typed outcome when no candidates exist" 1 \
+		"Unexpected outcome '${outcome}'"
 	return 0
 }
 
@@ -685,22 +688,21 @@ test_dispatch_triage_reviews_caps_at_triage_max() {
 
 	STATE_FILE="$state_file"
 	TRIAGE_STATE_FILE="$state_file"
-	local remaining
-	remaining=$(dispatch_triage_reviews 10 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 10 "$repos_json" 2>/dev/null)
 
-	# triage_max=2, so only 2 dispatched → 10 - 2 = 8
-	if [[ "$remaining" == "8" ]]; then
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "2" ]]; then
 		print_result "dispatch_triage_reviews caps dispatches at triage_max=2" 0
 		return 0
 	fi
 
 	print_result "dispatch_triage_reviews caps dispatches at triage_max=2" 1 \
-		"Expected remaining=8 (capped at 2 dispatches), got '${remaining}'"
+		"Unexpected outcome '${outcome}'"
 	return 0
 }
 
 # ── Test 5: returns available=0 unchanged when no slots ──────────────────────
-test_dispatch_triage_reviews_returns_zero_when_no_slots() {
+test_dispatch_triage_reviews_honours_zero_budget() {
 	local repos_json
 	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
 
@@ -712,16 +714,16 @@ test_dispatch_triage_reviews_returns_zero_when_no_slots() {
 
 	STATE_FILE="$state_file"
 	TRIAGE_STATE_FILE="$state_file"
-	local remaining
-	remaining=$(dispatch_triage_reviews 0 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 0 "$repos_json" 2>/dev/null)
 
-	if [[ "$remaining" == "0" ]]; then
-		print_result "dispatch_triage_reviews returns 0 when no slots available" 0
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "0" ]]; then
+		print_result "dispatch_triage_reviews honours a zero independent triage budget" 0
 		return 0
 	fi
 
-	print_result "dispatch_triage_reviews returns 0 when no slots available" 1 \
-		"Expected remaining=0, got '${remaining}'"
+	print_result "dispatch_triage_reviews honours a zero independent triage budget" 1 \
+		"Unexpected outcome '${outcome}'"
 	return 0
 }
 
@@ -743,38 +745,37 @@ test_dispatch_triage_reviews_resolves_repo_path_via_initialized_repos() {
 
 	STATE_FILE="$state_file"
 	TRIAGE_STATE_FILE="$state_file"
-	local remaining
-	remaining=$(dispatch_triage_reviews 3 "$repos_json_path" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 3 "$repos_json_path" 2>/dev/null)
 
-	# Path resolved correctly → 1 dispatch → 3 - 1 = 2
-	if [[ "$remaining" == "2" ]]; then
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "1" ]]; then
 		print_result "dispatch_triage_reviews resolves repo path via .initialized_repos[] (not .[])" 0
 		return 0
 	fi
 
 	print_result "dispatch_triage_reviews resolves repo path via .initialized_repos[] (not .[])" 1 \
-		"Expected remaining=2 (1 dispatch), got '${remaining}' — likely jq path bug"
+		"Unexpected outcome '${outcome}' — likely jq path bug"
 	return 0
 }
 
 # ── Test 7: returns available unchanged when state file is missing ────────────
-test_dispatch_triage_reviews_returns_available_when_no_state_file() {
+test_dispatch_triage_reviews_returns_zero_when_no_state_file() {
 	local repos_json
 	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
 
 	# Clear TRIAGE_STATE_FILE so the function falls back to deriving from STATE_FILE.
 	TRIAGE_STATE_FILE=""
 	STATE_FILE="/nonexistent/state-file-that-does-not-exist.txt"
-	local remaining
-	remaining=$(dispatch_triage_reviews 7 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 7 "$repos_json" 2>/dev/null)
 
-	if [[ "$remaining" == "7" ]]; then
-		print_result "dispatch_triage_reviews returns available unchanged when state file missing" 0
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "0" ]]; then
+		print_result "dispatch_triage_reviews returns a zero typed outcome when state is missing" 0
 		return 0
 	fi
 
-	print_result "dispatch_triage_reviews returns available unchanged when state file missing" 1 \
-		"Expected remaining=7, got '${remaining}'"
+	print_result "dispatch_triage_reviews returns a zero typed outcome when state is missing" 1 \
+		"Unexpected outcome '${outcome}'"
 	return 0
 }
 
@@ -798,11 +799,12 @@ _assert_malformed_triage_metadata_rejected() {
 	STATE_FILE="$state_file"
 	TRIAGE_STATE_FILE="$state_file"
 
-	local remaining
-	remaining=$(dispatch_triage_reviews 3 "$repos_json" 2>/dev/null)
+	local outcome
+	outcome=$(dispatch_triage_reviews 3 "$repos_json" 2>/dev/null)
 	local artifact_dir="${TEST_ROOT}/prompt-artifacts-${issue_num}"
 	local failure=""
-	[[ "$remaining" == "3" ]] || failure="${failure} remaining=${remaining};"
+	[[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "0" ]] || failure="${failure} attempted-nonzero;"
+	[[ "$(printf '%s' "$outcome" | jq -r '.preparation_failed')" == "1" ]] || failure="${failure} missing-preparation-failure;"
 	[[ ! -s "$DISPATCH_LOG_FILE" ]] || failure="${failure} worker-dispatched;"
 	[[ ! -d "$artifact_dir" ]] || failure="${failure} artifact-not-removed;"
 	grep -Fxq "$artifact_dir" "$TRIAGE_CLEANUP_LOG_FILE" 2>/dev/null || failure="${failure} cleanup-not-called;"
@@ -814,6 +816,73 @@ _assert_malformed_triage_metadata_rejected() {
 	fi
 
 	print_result "dispatch_triage_reviews rejects ${case_name}" 1 "$failure"
+	return 0
+}
+
+_set_valid_triage_test_metadata() {
+	local snapshot_hash="" public_revision=""
+	printf -v snapshot_hash '%064d' 0
+	printf -v public_revision '%040d' 0
+	TRIAGE_TEST_PROMPT_METADATA="issue||${snapshot_hash}|${public_revision}"
+	return 0
+}
+
+test_dispatch_triage_reviews_types_infrastructure_failures() {
+	local repos_json="" state_file="" outcome=""
+	_set_valid_triage_test_metadata
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #800: Runtime fails [status: **needs-review**] [created: 2026-01-01T00:00:00Z]
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+	TRIAGE_TEST_OUTCOME="infrastructure_failed"
+	outcome=$(dispatch_triage_reviews 1 "$repos_json" 2>/dev/null)
+	TRIAGE_TEST_OUTCOME="posted"
+	if [[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "1" && \
+		"$(printf '%s' "$outcome" | jq -r '.infrastructure_failed')" == "1" && \
+		"$(printf '%s' "$outcome" | jq -r '.posted')" == "0" ]]; then
+		print_result "dispatch_triage_reviews exposes infrastructure failures as typed outcomes" 0
+		return 0
+	fi
+	print_result "dispatch_triage_reviews exposes infrastructure failures as typed outcomes" 1 \
+		"Unexpected outcome '${outcome}'"
+	return 0
+}
+
+test_triage_prepass_has_independent_once_per_cycle_budget() {
+	local repos_json="" state_file="" first="" second="" dispatch_count=""
+	local enrichment_definition=""
+	_set_valid_triage_test_metadata
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #810: First [status: **needs-review**] [created: 2026-01-01T00:00:00Z]
+- Issue #811: Second [status: **needs-review**] [created: 2026-01-02T00:00:00Z]
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-prepass.log"
+	: >"$DISPATCH_LOG_FILE"
+	_PULSE_CYCLE_ID="triage-prepass-once"
+	PULSE_TRIAGE_BUDGET_PER_CYCLE=2
+	enrichment_definition=$(declare -f dispatch_enrichment_workers)
+	dispatch_enrichment_workers() {
+		local available_slots="$1"
+		printf '%s\n' "$available_slots"
+		return 0
+	}
+	first=$(_dispatch_run_prepasses 5)
+	second=$(_dispatch_run_prepasses 5)
+	eval "$enrichment_definition"
+	dispatch_count=$(wc -l <"$DISPATCH_LOG_FILE" | tr -d ' ')
+	if [[ "$first" == "5 2 0" && "$second" == "5 0 0" && "$dispatch_count" == "2" ]]; then
+		print_result "triage prepass uses an independent once-per-cycle budget without consuming worker slots" 0
+		return 0
+	fi
+	print_result "triage prepass uses an independent once-per-cycle budget without consuming worker slots" 1 \
+		"first=${first} second=${second} dispatch_count=${dispatch_count}"
 	return 0
 }
 
@@ -866,14 +935,16 @@ main() {
 	test_queue_governor_enters_merge_heavy_at_critical_backlog
 	test_queue_governor_enters_pr_heavy_at_heavy_backlog
 	test_queue_governor_reports_drain_rate_telemetry
-	test_dispatch_triage_reviews_decrements_slot_count
+	test_dispatch_triage_reviews_returns_typed_outcome
 	test_dispatch_triage_reviews_no_stderr_errors
-	test_dispatch_triage_reviews_returns_available_when_no_candidates
+	test_dispatch_triage_reviews_returns_zero_when_no_candidates
 	test_dispatch_triage_reviews_caps_at_triage_max
-	test_dispatch_triage_reviews_returns_zero_when_no_slots
+	test_dispatch_triage_reviews_honours_zero_budget
 	test_dispatch_triage_reviews_resolves_repo_path_via_initialized_repos
-	test_dispatch_triage_reviews_returns_available_when_no_state_file
+	test_dispatch_triage_reviews_returns_zero_when_no_state_file
 	test_dispatch_triage_reviews_rejects_malformed_metadata
+	test_dispatch_triage_reviews_types_infrastructure_failures
+	test_triage_prepass_has_independent_once_per_cycle_budget
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

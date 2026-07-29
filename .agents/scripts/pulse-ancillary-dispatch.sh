@@ -44,6 +44,11 @@ source "${_pad_script_dir}/sensitive-temp-helper.sh"
 _PAD_JSON_ARRAY_TYPE="array"
 _PAD_JSON_STRING_TYPE="string"
 _PAD_TRIAGE_RUNTIME_TEMP_FAILURE_REASON="triage-runtime-temp-failed"
+_PAD_TRIAGE_OUTCOME_SCHEMA="aidevops.pulse-triage-outcome/v1"
+_PAD_TRIAGE_OUTCOME_POSTED="posted"
+_PAD_TRIAGE_OUTCOME_REVIEW_FAILED="review_failed"
+_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED="infrastructure_failed"
+_PAD_TRIAGE_LAST_OUTCOME=""
 _PAD_GITHUB_COMMENTS_READ_MALFORMED_REASON="github-comments-read-malformed"
 _PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON="github-comments-snapshot-too-large"
 _PAD_TRIAGE_MAX_COMMENTS=100
@@ -2268,6 +2273,22 @@ _run_triage_review_worker() {
 	return "$runtime_status"
 }
 
+_triage_review_result_fields() {
+	local post_result="$1"
+	local infrastructure_failure_reason="$2"
+	local failure_reason="${post_result#FAILED:}"
+	local outcome="$_PAD_TRIAGE_OUTCOME_REVIEW_FAILED"
+	if [[ "$post_result" == "POSTED" ]]; then
+		printf 'true||%s\n' "$_PAD_TRIAGE_OUTCOME_POSTED"
+		return 0
+	fi
+	if [[ -n "$infrastructure_failure_reason" ]]; then
+		outcome="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
+	fi
+	printf 'false|%s|%s\n' "$failure_reason" "$outcome"
+	return 0
+}
+
 #######################################
 # Dispatch a sandboxed triage review worker and post its output
 #
@@ -2300,6 +2321,7 @@ _dispatch_triage_review_worker() {
 	local expected_pr_revision="${8:-}"
 	local expected_text_snapshot="${9:-}"
 	local expected_public_revision="${10:-}"
+	_PAD_TRIAGE_LAST_OUTCOME="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
 
 	local model_flag=""
 	[[ -n "$resolved_model" ]] && model_flag="--model $resolved_model"
@@ -2371,19 +2393,32 @@ _dispatch_triage_review_worker() {
 			"$expected_text_snapshot" "$expected_public_revision")
 	fi
 
-	local triage_posted="false"
-	local failure_reason=""
-	if [[ "$post_result" == "POSTED" ]]; then
-		triage_posted="true"
-	else
-		failure_reason="${post_result#FAILED:}"
-	fi
+	local triage_posted="false" failure_reason="" outcome_fields=""
+	outcome_fields=$(_triage_review_result_fields "$post_result" "$infra_failure_reason")
+	IFS='|' read -r triage_posted failure_reason _PAD_TRIAGE_LAST_OUTCOME <<<"$outcome_fields"
 
 	# Update labels and content-hash cache.
 	_finalize_triage_state \
 		"$issue_num" "$repo_slug" "$content_hash" \
 		"$triage_posted" "$failure_reason" "$output_chars"
 
+	return 0
+}
+
+_triage_outcome_json() {
+	local attempted="$1"
+	local posted="$2"
+	local review_failed="$3"
+	local infrastructure_failed="$4"
+	local preparation_failed="$5"
+	jq -cn \
+		--arg schema "$_PAD_TRIAGE_OUTCOME_SCHEMA" \
+		--argjson attempted "$attempted" \
+		--argjson posted "$posted" \
+		--argjson review_failed "$review_failed" \
+		--argjson infrastructure_failed "$infrastructure_failed" \
+		--argjson preparation_failed "$preparation_failed" \
+		'{schema:$schema, attempted:$attempted, posted:$posted, review_failed:$review_failed, infrastructure_failed:$infrastructure_failed, preparation_failed:$preparation_failed}'
 	return 0
 }
 
@@ -2412,29 +2447,58 @@ _triage_prompt_metadata_is_valid() {
 	return 0
 }
 
+_triage_review_candidates() {
+	local triage_file="$1"
+	local repos_json="$2"
+	local line="" current_slug="" current_path="" issue_num=""
+	local candidates="" candidate_count=0
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^##[[:space:]]+([^[:space:]]+/[^[:space:]]+) ]]; then
+			current_slug="${BASH_REMATCH[1]}"
+			current_path=$(jq -r --arg s "$current_slug" '.initialized_repos[]? | select(.slug == $s) | .path' "$repos_json" 2>/dev/null || printf '')
+			current_path="${current_path/#\~/$HOME}"
+			continue
+		fi
+		if [[ "$line" == *"**needs-review**"* && "$line" =~ Issue\ #([0-9]+) ]]; then
+			issue_num="${BASH_REMATCH[1]}"
+			if [[ -n "$current_slug" && -n "$current_path" ]]; then
+				candidates="${candidates}${issue_num}|${current_slug}|${current_path}"$'\n'
+				candidate_count=$((candidate_count + 1))
+			fi
+		fi
+	done <"$triage_file"
+	echo "[pulse-wrapper] dispatch_triage_reviews: parsed ${candidate_count} candidates from state file" >>"$LOGFILE"
+	printf '%s' "$candidates"
+	return 0
+}
+
 #######################################
 # Dispatch triage review workers for needs-maintainer-review issues
 #
 # Reads the pre-fetched triage status from the triage state file and
 # dispatches thinking-tier review workers for issues marked needs-review.
-# Respects the 2-per-cycle cap and available worker slots.
+# Respects an independent per-cycle triage budget. Triage outcomes never consume
+# implementation-worker slots and are returned as typed JSON.
 #
 # Arguments:
-#   $1 - available worker slots (AVAILABLE)
+#   $1 - requested triage budget (clamped to PULSE_TRIAGE_BUDGET_PER_CYCLE)
 #   $2 - repos JSON path (default: REPOS_JSON)
 #
-# Outputs: updated available count to stdout (one integer)
+# Outputs: aidevops.pulse-triage-outcome/v1 JSON
 # Exit code: always 0
 #######################################
 dispatch_triage_reviews() {
-	local available="$1"
+	local requested_budget="${1:-${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}}"
 	local repos_json="${2:-${REPOS_JSON:-~/.config/aidevops/repos.json}}"
 	local triage_count=0
-	local triage_max=2
+	local triage_max="${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}"
+	local posted=0 review_failed=0 infrastructure_failed=0 preparation_failed=0
 
-	[[ "$available" =~ ^[0-9]+$ ]] || available=0
-	[[ "$available" -gt 0 ]] || {
-		printf '%d\n' "$available"
+	[[ "$requested_budget" =~ ^[0-9]+$ ]] || requested_budget=0
+	[[ "$triage_max" =~ ^[0-9]+$ ]] || triage_max=2
+	((requested_budget < triage_max)) && triage_max="$requested_budget"
+	[[ "$triage_max" -gt 0 ]] || {
+		_triage_outcome_json 0 0 0 0 0
 		return 0
 	}
 
@@ -2442,7 +2506,7 @@ dispatch_triage_reviews() {
 	local triage_file="${TRIAGE_STATE_FILE:-${STATE_FILE%.txt}-triage.txt}"
 	[[ -f "$triage_file" ]] || {
 		echo "[pulse-wrapper] dispatch_triage_reviews: no triage state file" >>"$LOGFILE"
-		printf '%d\n' "$available"
+		_triage_outcome_json 0 0 0 0 0
 		return 0
 	}
 
@@ -2455,34 +2519,19 @@ dispatch_triage_reviews() {
 	[[ -n "$resolved_model" ]] || echo "[pulse-wrapper] dispatch_triage_reviews: model resolution failed (opus and sonnet unavailable)" >>"$LOGFILE"
 
 	# Parse "## owner/repo" headers and "- Issue #N: ... [status: **needs-review**]" lines.
-	local current_slug="" current_path="" candidates=""
-	while IFS= read -r line; do
-		if [[ "$line" =~ ^##[[:space:]]+([^[:space:]]+/[^[:space:]]+) ]]; then
-			current_slug="${BASH_REMATCH[1]}"
-			current_path=$(jq -r --arg s "$current_slug" '.initialized_repos[]? | select(.slug == $s) | .path' "$repos_json" 2>/dev/null || echo "")
-			current_path="${current_path/#\~/$HOME}"
-			continue
-		fi
-		if [[ "$line" == *"**needs-review**"* && "$line" =~ Issue\ #([0-9]+) ]]; then
-			local issue_num="${BASH_REMATCH[1]}"
-			[[ -n "$current_slug" && -n "$current_path" ]] && candidates="${candidates}${issue_num}|${current_slug}|${current_path}"$'\n'
-		fi
-	done <"$triage_file"
-
-	local candidate_count=0
-	[[ -n "$candidates" ]] && candidate_count=$(printf '%s' "$candidates" | grep -c '|' 2>/dev/null || echo 0)
-	echo "[pulse-wrapper] dispatch_triage_reviews: parsed ${candidate_count} candidates from state file" >>"$LOGFILE"
+	local candidates=""
+	candidates=$(_triage_review_candidates "$triage_file" "$repos_json")
 
 	[[ -n "$candidates" ]] || {
 		echo "[pulse-wrapper] dispatch_triage_reviews: 0 candidates found in state file" >>"$LOGFILE"
-		printf '%d\n' "$available"
+		_triage_outcome_json 0 0 0 0 0
 		return 0
 	}
 
 	# t1916: Triage is exempt from the cryptographic approval gate.
 	while IFS='|' read -r issue_num repo_slug repo_path; do
 		[[ -n "$issue_num" && -n "$repo_slug" ]] || continue
-		[[ "$available" -gt 0 && "$triage_count" -lt "$triage_max" ]] || break
+		[[ "$triage_count" -lt "$triage_max" ]] || break
 
 		local prompt_result=""
 		prompt_result=$(_build_triage_review_prompt "$issue_num" "$repo_slug" "$repo_path") || continue
@@ -2505,8 +2554,10 @@ dispatch_triage_reviews() {
 			fi
 			_triage_mark_infrastructure_retry \
 				"$issue_num" "$repo_slug" "$propagation_reason"
+			preparation_failed=$((preparation_failed + 1))
 			continue
 		fi
+		_PAD_TRIAGE_LAST_OUTCOME=""
 		_dispatch_triage_review_worker \
 			"$issue_num" "$repo_slug" "$repo_path" \
 			"$prompt_file" "$content_hash" "$resolved_model" "$item_kind" \
@@ -2515,11 +2566,15 @@ dispatch_triage_reviews() {
 
 		sleep 2
 		triage_count=$((triage_count + 1))
-		available=$((available - 1))
+		case "$_PAD_TRIAGE_LAST_OUTCOME" in
+		"$_PAD_TRIAGE_OUTCOME_POSTED") posted=$((posted + 1)) ;;
+		"$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED") infrastructure_failed=$((infrastructure_failed + 1)) ;;
+		*) review_failed=$((review_failed + 1)) ;;
+		esac
 	done <<<"$candidates"
 
-	echo "[pulse-wrapper] dispatch_triage_reviews: dispatched ${triage_count} triage workers (${available} slots remaining)" >>"$LOGFILE"
-	printf '%d\n' "$available"
+	echo "[pulse-wrapper] dispatch_triage_reviews: budget=${triage_max} attempted=${triage_count} posted=${posted} review_failed=${review_failed} infrastructure_failed=${infrastructure_failed} preparation_failed=${preparation_failed} implementation_slots_consumed=0" >>"$LOGFILE"
+	_triage_outcome_json "$triage_count" "$posted" "$review_failed" "$infrastructure_failed" "$preparation_failed"
 	return 0
 }
 

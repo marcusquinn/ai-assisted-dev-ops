@@ -37,6 +37,8 @@ export AIDEVOPS_HEADLESS_METRICS_FILE="${HOME}/.aidevops/logs/headless-runtime-m
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 # shellcheck source=../pulse-dispatch-engine.sh
 source "${SCRIPT_DIR}/pulse-dispatch-engine.sh"
+# shellcheck source=../pulse-capacity.sh
+source "${SCRIPT_DIR}/pulse-capacity.sh"
 
 STATS_COUNTER_FILE="${TEST_ROOT}/stats-counter.log"
 STATS_GAUGE_FILE="${TEST_ROOT}/stats-gauge.log"
@@ -116,6 +118,35 @@ test_repeated_failures_pause_without_success() {
 		print_result "guardrail: repeated failures pause raw concurrency without success evidence" 0
 	else
 		print_result "guardrail: repeated failures pause raw concurrency without success evidence" 1 "slots=${slots}"
+	fi
+	return 0
+}
+
+test_mixed_runtime_roles_do_not_reduce_worker_capacity() {
+	reset_guardrail_env
+	unset PULSE_DISPATCH_STAGGER_RECENT_FAILURES PULSE_DISPATCH_STAGGER_RECENT_RATE_LIMITS \
+		PULSE_DISPATCH_CAPACITY_RECENT_FAILURES PULSE_DISPATCH_CAPACITY_RECENT_RATE_LIMITS \
+		PULSE_DISPATCH_CURRENT_STATE_COUNTS 2>/dev/null || true
+	local now=""
+	now=$(date +%s)
+	{
+		printf '{"ts":%s,"role":"worker","result":"success","exit_code":0}\n' "$now"
+		printf '{"ts":%s,"role":"worker","result":"watchdog_stall_continue","exit_code":124,"duration_ms":14400000}\n' "$now"
+		printf '{"ts":%s,"role":"worker","result":"provider_error","provider_error_type":"server_error","provider_status":"500","exit_code":2}\n' "$now"
+		printf '{"ts":%s,"role":"worker","result":"rate_limit","failure_reason":"rate_limit","provider_error_type":"rate_limit","provider_status":"429","exit_code":1}\n' "$now"
+		printf '{"ts":%s,"role":"triage","result":"provider_error","failure_reason":"local_error","exit_code":126}\n' "$now"
+		printf '{"ts":%s,"role":"triage","result":"rate_limit","failure_reason":"rate_limit","provider_status":"429","exit_code":1}\n' "$now"
+	} >"$AIDEVOPS_HEADLESS_METRICS_FILE"
+
+	local guardrail_counts="" pacing_counts="" capacity_counts=""
+	guardrail_counts=$(_dispatch_recent_current_state_counts)
+	pacing_counts=$(_dispatch_recent_worker_pressure_counts)
+	capacity_counts=$(_pulse_capacity_recent_health_counts)
+	if [[ "$guardrail_counts" == "1 2 1 0" && "$pacing_counts" == "2 1" && "$capacity_counts" == "2 1 0 1 1" ]]; then
+		print_result "guardrail: mixed roles and multi-hour continuation do not reduce worker capacity" 0
+	else
+		print_result "guardrail: mixed roles and multi-hour continuation do not reduce worker capacity" 1 \
+			"guardrail=${guardrail_counts} pacing=${pacing_counts} capacity=${capacity_counts}"
 	fi
 	return 0
 }
@@ -623,6 +654,7 @@ JSON
 test_provider_rate_limits_pause_without_success
 test_provider_rate_limits_keep_probe_slot_with_success
 test_repeated_failures_pause_without_success
+test_mixed_runtime_roles_do_not_reduce_worker_capacity
 test_open_pr_backlog_is_repo_scoped_with_debt_exemption
 test_historical_pr_events_cannot_throttle
 test_no_dispatchable_evidence_keeps_probe_slot

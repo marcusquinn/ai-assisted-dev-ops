@@ -68,7 +68,8 @@ setup_subject() {
 	export PRE_RUN_STAGE_TIMEOUT=10
 	export PULSE_TODO_SYNC_WORKSPACE_GRACE_SECS=11
 	export PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN=5
-	unset TEMP_WORKTREE_LOCK_STALE_SECS 2>/dev/null || true
+	unset TEMP_WORKTREE_LOCK_STALE_SECS PULSE_TODO_SYNC_LEGACY_MIN_AGE_SECS \
+		PULSE_TODO_SYNC_MAX_LEGACY_MIGRATIONS_PER_RUN 2>/dev/null || true
 	mkdir -p "$AIDEVOPS_LOG_DIR" "${HOME}/.config/aidevops" "$AIDEVOPS_TEMP_DIR" || return 1
 
 	is_registered_canonical() { local wt_path="$1"; : "$wt_path"; return 1; }
@@ -117,6 +118,15 @@ create_todo_sync_candidate() {
 	mkdir -p "$workspace_root" || return 1
 	printf '%s\t%s\t%s\t%s\n' "$_PTSW_MARKER_VERSION" "$owner_pid" \
 		"$owner_created" "$owner_start" >"${workspace_root}/${_PTSW_OWNER_MARKER}" || return 1
+	printf '%s\n' "$workspace_root"
+	return 0
+}
+
+create_legacy_todo_sync_candidate() {
+	local identity="$1"
+	local workspace_root="${AIDEVOPS_TEMP_DIR}/${identity}"
+	mkdir -p "${workspace_root}/repo" || return 1
+	git init -q "${workspace_root}/repo" || return 1
 	printf '%s\n' "$workspace_root"
 	return 0
 }
@@ -527,6 +537,119 @@ test_todo_sync_trash_failure_is_audited() {
 	return 0
 }
 
+test_todo_sync_legacy_markerless_migration_is_guarded() {
+	teardown
+	setup_subject || return 1
+	local old_workspace="" fresh_workspace="" active_workspace="" malformed_workspace=""
+	local cwd_capture_definition="" command_snapshot_definition=""
+	local trash_path="" trash_count=0 removed=0 rc=0
+	old_workspace=$(create_legacy_todo_sync_candidate "pulse-todo-sync.LEGACY") || return 1
+	fresh_workspace=$(create_legacy_todo_sync_candidate "pulse-todo-sync.FRESH1") || return 1
+	active_workspace=$(create_legacy_todo_sync_candidate "pulse-todo-sync.ACTIVE") || return 1
+	malformed_workspace="${AIDEVOPS_TEMP_DIR}/pulse-todo-sync.BAD001"
+	mkdir -p "${malformed_workspace}/unexpected" || return 1
+	age_gitfile "$old_workspace" 2 || return 1
+	age_gitfile "$active_workspace" 2 || return 1
+	age_gitfile "$malformed_workspace" 2 || return 1
+	export PULSE_TODO_SYNC_LEGACY_MIN_AGE_SECS=12
+	export PULSE_TODO_SYNC_MAX_LEGACY_MIGRATIONS_PER_RUN=10
+	cwd_capture_definition=$(declare -f capture_worktree_process_cwds)
+	command_snapshot_definition=$(declare -f _ptsw_process_command_snapshot)
+	capture_worktree_process_cwds() {
+		printf '%s\n' "$active_workspace"
+		return 0
+	}
+	_ptsw_process_command_snapshot() {
+		printf '/safe/process\n'
+		return 0
+	}
+
+	removed=$(_ptsw_sweep_stale_workspaces) || rc=1
+	eval "$cwd_capture_definition"
+	eval "$command_snapshot_definition"
+	[[ "$removed" == "1" ]] || rc=1
+	[[ ! -e "$old_workspace" ]] || rc=1
+	[[ -d "$fresh_workspace" && -d "$active_workspace" && -d "$malformed_workspace" ]] || rc=1
+	for trash_path in "$AIDEVOPS_TODO_SYNC_TRASH_ROOT"/aidevops-pulse-todo-sync-*; do
+		[[ -d "$trash_path" ]] || continue
+		trash_count=$((trash_count + 1))
+	done
+	[[ "$trash_count" -eq 1 ]] || rc=1
+	grep -q 'outcome=removed reason=legacy-markerless workspace=pulse-todo-sync.LEGACY' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=legacy-age-guard workspace=pulse-todo-sync.FRESH1' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=legacy-active-process workspace=pulse-todo-sync.ACTIVE' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'reason=legacy-shape-mismatch workspace=pulse-todo-sync.BAD001' "$LOGFILE" 2>/dev/null || rc=1
+	if grep -q "$TEST_ROOT" "$LOGFILE" 2>/dev/null; then
+		rc=1
+	fi
+	print_result "TODO-sync cleanup migrates only old, idle, clone-shaped markerless workspaces" "$rc" \
+		"removed=$removed trash_count=$trash_count"
+	return 0
+}
+
+test_todo_sync_legacy_markerless_migration_fails_closed() {
+	teardown
+	setup_subject || return 1
+	local workspace_root="" cwd_capture_definition="" command_snapshot_definition=""
+	local removed=0 rc=0
+	workspace_root=$(create_legacy_todo_sync_candidate "pulse-todo-sync.UNKNWN") || return 1
+	age_gitfile "$workspace_root" 2 || return 1
+	export PULSE_TODO_SYNC_LEGACY_MIN_AGE_SECS=12
+	cwd_capture_definition=$(declare -f capture_worktree_process_cwds)
+	command_snapshot_definition=$(declare -f _ptsw_process_command_snapshot)
+	capture_worktree_process_cwds() {
+		printf '/safe/process\n'
+		return 2
+	}
+	_ptsw_process_command_snapshot() {
+		printf '/safe/process\n'
+		return 0
+	}
+
+	removed=$(_ptsw_sweep_stale_workspaces) || rc=1
+	eval "$cwd_capture_definition"
+	eval "$command_snapshot_definition"
+	[[ "$removed" == "0" && -d "$workspace_root" ]] || rc=1
+	grep -q 'reason=legacy-process-visibility-unknown workspace=pulse-todo-sync.UNKNWN' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync markerless migration fails closed on degraded process visibility" "$rc" \
+		"removed=$removed candidate_exists=$([[ -d "$workspace_root" ]] && printf y || printf n)"
+	return 0
+}
+
+test_todo_sync_legacy_markerless_migration_is_capped() {
+	teardown
+	setup_subject || return 1
+	local first_workspace="" second_workspace=""
+	local cwd_capture_definition="" command_snapshot_definition=""
+	local remaining=0 removed=0 rc=0
+	first_workspace=$(create_legacy_todo_sync_candidate "pulse-todo-sync.AAAAAA") || return 1
+	second_workspace=$(create_legacy_todo_sync_candidate "pulse-todo-sync.BBBBBB") || return 1
+	age_gitfile "$first_workspace" 2 || return 1
+	age_gitfile "$second_workspace" 2 || return 1
+	export PULSE_TODO_SYNC_LEGACY_MIN_AGE_SECS=12
+	export PULSE_TODO_SYNC_MAX_LEGACY_MIGRATIONS_PER_RUN=1
+	cwd_capture_definition=$(declare -f capture_worktree_process_cwds)
+	command_snapshot_definition=$(declare -f _ptsw_process_command_snapshot)
+	capture_worktree_process_cwds() {
+		printf '/safe/process\n'
+		return 0
+	}
+	_ptsw_process_command_snapshot() {
+		printf '/safe/process\n'
+		return 0
+	}
+
+	removed=$(_ptsw_sweep_stale_workspaces) || rc=1
+	eval "$cwd_capture_definition"
+	eval "$command_snapshot_definition"
+	remaining=$(count_todo_sync_candidates)
+	[[ "$removed" == "1" && "$remaining" == "1" ]] || rc=1
+	grep -q 'reason=legacy-recovery-cap workspace=legacy-batch cap=1' "$LOGFILE" 2>/dev/null || rc=1
+	print_result "TODO-sync markerless migration obeys its per-run recovery cap" "$rc" \
+		"removed=$removed remaining=$remaining"
+	return 0
+}
+
 run_test() {
 	local test_function="$1"
 	local tests_before="$TESTS_RUN"
@@ -553,6 +676,9 @@ run_test test_todo_sync_active_grace_and_visibility_guards
 run_test test_todo_sync_live_pid_with_hidden_identity_is_preserved
 run_test test_todo_sync_stale_recovery_name_guard_and_cap
 run_test test_todo_sync_trash_failure_is_audited
+run_test test_todo_sync_legacy_markerless_migration_is_guarded
+run_test test_todo_sync_legacy_markerless_migration_fails_closed
+run_test test_todo_sync_legacy_markerless_migration_is_capped
 
 printf '\nResults: %s/%s passed, %s failed.\n' \
 	"$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"

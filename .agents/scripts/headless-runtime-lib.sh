@@ -1522,7 +1522,9 @@ _find_alternative_opencode_binary() {
 # Something outside our control (unknown process, worker side-effect)
 # periodically upgrades opencode to @latest. This guard runs on every
 # canary check and reinstalls the pinned version if it drifted.
-# Cheap: one `opencode --version` + optional npm install.
+# Cheap: one `opencode --version` + optional npm install and verification.
+# Returns non-zero when repair fails or the installed runtime remains drifted,
+# allowing every headless launch path to fail closed before starting a worker.
 #######################################
 _enforce_opencode_version_pin() {
 	local pin="${OPENCODE_PINNED_VERSION:-}"
@@ -1531,21 +1533,36 @@ _enforce_opencode_version_pin() {
 		return 0
 	fi
 
-	local installed
-	installed=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null || echo "unknown")
+	local installed=""
+	if ! installed=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
+		installed="unknown"
+	fi
 	installed="${installed#v}"
 	installed="${installed%%[[:space:]]*}"
+	[[ "$installed" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || installed="unknown"
 
 	if [[ "$installed" == "$pin" ]]; then
 		return 0
 	fi
 
 	print_warning "OpenCode version drift: installed=$installed, pin=$pin -- reinstalling"
-	if npm install -g "opencode-ai@${pin}" >/dev/null 2>&1; then
-		print_info "OpenCode restored to ${pin}"
-	else
-		print_warning "Failed to restore OpenCode to ${pin} -- canary will catch if broken"
+	if ! npm install -g "opencode-ai@${pin}" >/dev/null 2>&1; then
+		print_error "Failed to restore OpenCode to ${pin} -- refusing headless launch"
+		return 1
 	fi
+
+	local restored=""
+	if ! restored=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
+		restored="unknown"
+	fi
+	restored="${restored#v}"
+	restored="${restored%%[[:space:]]*}"
+	[[ "$restored" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || restored="unknown"
+	if [[ "$restored" != "$pin" ]]; then
+		print_error "OpenCode version mismatch after repair: installed=$restored, pin=$pin -- refusing headless launch"
+		return 1
+	fi
+	print_info "OpenCode restored to ${pin}"
 	return 0
 }
 

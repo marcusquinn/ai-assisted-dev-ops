@@ -1642,7 +1642,7 @@ main() {
 	# Register EXIT trap BEFORE acquiring the lock so the lock is always
 	# released on exit — including set -e aborts, SIGTERM, and return paths.
 	# SIGKILL cannot be trapped; stale-lock detection handles that case.
-	trap '_dispatch_cleanup_benign_blocks_cycle; _pulse_release_llm_lock; _pulse_cycle_state_finish_interrupted; _pulse_efficiency_cycle_finish; release_instance_lock; aidevops_runtime_bundle_lease_release' EXIT
+	trap '_dispatch_cleanup_benign_blocks_cycle; _dispatch_cleanup_cycle_cache; _pulse_release_llm_lock; _pulse_cycle_state_finish_interrupted; _pulse_efficiency_cycle_finish; release_instance_lock; aidevops_runtime_bundle_lease_release' EXIT
 
 	if ! acquire_instance_lock; then
 		return 0

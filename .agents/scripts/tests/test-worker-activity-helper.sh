@@ -183,6 +183,10 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 	# remain distinct from a scoped event with the same session key.
 	printf '{"ts":%d,"role":"worker","session_key":"issue-18","issue_number":18,"model":"openai/gpt-5.5","result":"success","exit_code":0}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-c","session_key":"issue-18","result":"provider_error","exit_code":2}\n' "$((T_2H_AGO + 1))"
+	# Non-worker runtime roles remain available in canonical metrics but must not
+	# affect worker activity, provider, or failure summaries.
+	printf '{"ts":%d,"role":"triage","session_key":"triage-1","model":"openai/gpt-5.5","provider":"openai","result":"provider_error","failure_reason":"local_error","exit_code":126}\n' "$T_5MIN_AGO"
+	printf '{"ts":%d,"role":"triage","session_key":"triage-2","model":"openai/gpt-5.5","provider":"openai","result":"success","exit_code":0}\n' "$T_5MIN_AGO"
 } >"$METRICS"
 
 {
@@ -301,6 +305,8 @@ fi
 # issue-8 (watchdog_stall_continue with exit_code=124) tests the t3215
 # regression case — must count as wc, not of, despite non-zero exit.
 assert_eq "2c: raw event total remains backward compatible" "18" "$(printf '%s' "$JSON" | jq -r '.metrics.total')"
+assert_eq "2c1: reporting window is observation-only" "historical_observation_only" \
+	"$(printf '%s' "$JSON" | jq -r '.window.semantics')"
 assert_eq "2c2: terminal session outcomes = 13" "13" "$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
 assert_eq "2c2b: event_total aliases raw total" "18" "$(printf '%s' "$JSON" | jq -r '.metrics.event_total')"
 assert_eq "2c3: continuation events = 4" "4" "$(printf '%s' "$JSON" | jq -r '.metrics.continuation_events')"
@@ -480,6 +486,8 @@ assert_contains "5i: human output shows failure families" "Failure families" "$O
 assert_contains "5j: human output shows bounded blocker evidence" "worker-progress-blockers.jsonl" "$OUT"
 assert_contains "5k: human output shows proven current blocker count" "Proven current:              3" "$OUT"
 assert_contains "5l: human output separates retained blocker count" "Retained/unverified:         3" "$OUT"
+assert_contains "5m: human output says reporting window is not a runtime limit" \
+	"observation only, not a worker runtime limit" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Section 6: provider/account diagnostics expose redacted capacity slots.
