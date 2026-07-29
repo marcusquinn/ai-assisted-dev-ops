@@ -45,6 +45,10 @@ def _template_parts(template_path: Path) -> tuple[str, str, str]:
     return block, start_marker, end_marker
 
 
+def _join_markdown_sections(*sections: str) -> str:
+    return "\n\n".join(filter(None, sections)) + "\n"
+
+
 def render_managed_markdown(
     current: str,
     block: str,
@@ -65,14 +69,12 @@ def render_managed_markdown(
         end_index = current.index(end_marker, start_index) + len(end_marker)
         prefix = current[:start_index].rstrip()
         suffix = current[end_index:].strip()
-        parts = [part for part in (prefix, block, suffix) if part]
-        return "\n\n".join(parts) + "\n"
+        return _join_markdown_sections(prefix, block, suffix)
 
     prefix = current.rstrip()
     if not prefix:
         prefix = default_heading.strip()
-    parts = [part for part in (prefix, block) if part]
-    return "\n\n".join(parts) + "\n"
+    return _join_markdown_sections(prefix, block)
 
 
 def _render_target(file_path: Path, template_path: Path, default_heading: str) -> str:
@@ -98,6 +100,7 @@ def _atomic_write(file_path: Path, content: str) -> None:
             delete=False,
         ) as temp_file:
             temp_file.write(content)
+            temp_file.flush()
             temp_name = temp_file.name
         os.chmod(temp_name, original_mode)
         os.replace(temp_name, file_path)
