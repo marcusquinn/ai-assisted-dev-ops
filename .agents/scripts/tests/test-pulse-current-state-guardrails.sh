@@ -168,6 +168,12 @@ test_reconciled_outcomes_shape_all_worker_pressure_consumers() {
 		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":3,"attempt_id":"attempt-c","result":"provider_error","exit_code":2,"provider_error_type":"server_error","provider_status":"500"}\n' "$now"
 		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":4,"attempt_id":"attempt-d","result":"rate_limit","exit_code":1,"failure_reason":"rate_limit","provider_error_type":"rate_limit","provider_status":"429"}\n' "$now"
 		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":5,"attempt_id":"attempt-e","result":"local_error","exit_code":1}\n' "$now"
+		printf '{"ts":%s,"role":"worker","issue_number":6,"attempt_id":"attempt-f","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","attempt_id":"attempt-g","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":8,"attempt_id":"attempt-h","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":9,"attempt_id":"attempt-i","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":10,"attempt_id":"attempt-j","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":11,"attempt_id":"attempt-k","result":"permission_required","exit_code":84}\n' "$now"
 	} >"$AIDEVOPS_HEADLESS_METRICS_FILE"
 	{
 		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":1,"attempt_id":"attempt-a","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
@@ -176,13 +182,19 @@ test_reconciled_outcomes_shape_all_worker_pressure_consumers() {
 		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":3,"attempt_id":"attempt-c","effective_outcome":"failed","evidence_timestamp":%s}\n' "$now"
 		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":4,"attempt_id":"attempt-d","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
 		printf '{"record_type":"attempt_outcome","repo":"owner/other","issue_number":5,"attempt_id":"attempt-e","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":6,"attempt_id":"attempt-f","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":7,"attempt_id":"attempt-g","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":8,"attempt_id":"attempt-h","effective_outcome":"success"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":9,"attempt_id":"attempt-i","effective_outcome":"success","evidence_timestamp":"invalid"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":10,"attempt_id":"attempt-j","effective_outcome":"success","evidence_timestamp":"NaN"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":11,"attempt_id":"attempt-k","effective_outcome":"success","evidence_timestamp":"Infinity"}'
 	} >"$AIDEVOPS_OBJECTIVE_EVIDENCE_FILE"
 
 	local guardrail_counts="" pacing_counts="" capacity_counts=""
 	guardrail_counts=$(_dispatch_recent_current_state_counts)
 	pacing_counts=$(_dispatch_recent_worker_pressure_counts)
 	capacity_counts=$(_pulse_capacity_recent_health_counts)
-	if [[ "$guardrail_counts" == "3 2 1 0" && "$pacing_counts" == "2 1" && "$capacity_counts" == "2 1 0 1 0" ]]; then
+	if [[ "$guardrail_counts" == "3 8 1 0" && "$pacing_counts" == "8 1" && "$capacity_counts" == "8 1 0 1 0" ]]; then
 		print_result "guardrail: reconciled outcomes shape capacity, guardrails, and launch pacing" 0
 	else
 		print_result "guardrail: reconciled outcomes shape capacity, guardrails, and launch pacing" 1 \
