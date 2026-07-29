@@ -92,6 +92,36 @@ else
 	FAIL=$((FAIL + 1))
 fi
 
+python3 - "$target" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+content = content.replace(
+    "<!-- aidevops:issue-first-pr:start -->\n",
+    "<!-- aidevops:issue-first-pr:start -->\n\n",
+)
+content = content.replace(
+    "\n<!-- aidevops:issue-first-pr:end -->",
+    "\n\n<!-- aidevops:issue-first-pr:end -->",
+)
+path.write_text(content, encoding="utf-8")
+PY
+formatter_before=$(<"$target")
+python3 "$HELPER" check --file "$target" --template "$template"
+assert_exit "formatter-added marker spacing is current" 0 "$?"
+formatter_result=$(python3 "$HELPER" apply --file "$target" --template "$template")
+formatter_after=$(<"$target")
+assert_contains "formatter-spaced apply reports current" "$formatter_result" "CURRENT"
+if [[ "$formatter_before" == "$formatter_after" ]]; then
+	printf 'PASS formatter spacing is byte-preserved\n'
+	PASS=$((PASS + 1))
+else
+	printf 'FAIL formatter spacing changed\n' >&2
+	FAIL=$((FAIL + 1))
+fi
+
 cat >"$target" <<'EOF'
 # Contributing
 

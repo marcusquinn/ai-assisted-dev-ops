@@ -28,7 +28,6 @@ If you cannot use the CLI command, use the issue templates on GitHub. Blank issu
 8. Push and open a PR with the linked issue reference in the PR body
 
 <!-- aidevops:issue-first-pr:start -->
-
 ## Issue-first pull requests
 
 If you are not a repository owner, member, or collaborator, create or find a
@@ -43,7 +42,6 @@ parent, research, or non-closing work.
 
 External human-authored PRs without an issue reference are blocked until the
 reference is added. Bot PRs and trusted maintainer task workflows are exempt.
-
 <!-- aidevops:issue-first-pr:end -->
 
 ## Documentation-only changes

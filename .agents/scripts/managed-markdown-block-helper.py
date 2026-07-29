@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -47,6 +48,22 @@ def _template_parts(template_path: Path) -> tuple[str, str, str]:
 
 def _join_markdown_sections(*sections: str) -> str:
     return "\n\n".join(filter(None, sections)) + "\n"
+
+
+def _normalise_formatter_spacing(
+    content: str, start_marker: str, end_marker: str
+) -> str:
+    """Ignore formatter-added blank lines immediately inside block markers."""
+    content = re.sub(
+        rf"{re.escape(start_marker)}\n(?:[ \t]*\n)+",
+        f"{start_marker}\n",
+        content,
+    )
+    return re.sub(
+        rf"\n(?:[ \t]*\n)+{re.escape(end_marker)}",
+        f"\n{end_marker}",
+        content,
+    )
 
 
 def render_managed_markdown(
@@ -123,12 +140,16 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_command(args: argparse.Namespace) -> int:
     rendered = _render_target(args.file, args.template, args.default_heading)
     current = _read_text(args.file) if args.file.exists() else ""
+    _, start_marker, end_marker = _template_parts(args.template)
+    is_current = current == rendered or _normalise_formatter_spacing(
+        current, start_marker, end_marker
+    ) == _normalise_formatter_spacing(rendered, start_marker, end_marker)
 
     if args.command == "render":
         sys.stdout.write(rendered)
     elif args.command == "check":
-        return 0 if current == rendered else 1
-    elif current == rendered:
+        return 0 if is_current else 1
+    elif is_current:
         print("CURRENT")
     else:
         _atomic_write(args.file, rendered)
