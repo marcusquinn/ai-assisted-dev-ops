@@ -2027,8 +2027,9 @@ _dlw_mark_worker_in_progress() {
 # Stagger (GH#17549): reduces SQLite write contention on opencode.db
 # (busy_timeout=0). Without it, batches of 8+ workers all hit the DB
 # simultaneously, causing SQLITE_BUSY → silent mid-turn death. The stagger
-# happens after the dispatch comment is posted so a fast worker failure cannot
-# publish CLAIM_RELEASED before the public "Dispatching worker" audit event.
+# happens after the dispatch comment is posted. A fast worker can publish its
+# terminal lease before this parent reaches the audit write, so the marker
+# carries the exact dispatch identity for order-independent reconciliation.
 #
 # Dispatch comment (GH#15317): posted from the dispatcher, NOT from the
 # worker LLM session. Previously, the worker was responsible for posting
@@ -2094,6 +2095,7 @@ _dlw_post_launch_hooks() {
 	fi
 	dispatch_comment_body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 Dispatching worker (deterministic).
+<!-- aidevops:dispatch lease_token=${_claim_lease_token:-legacy} device=${_claim_lease_device:-legacy} session=${session_key} attempt_id=${attempt_id:-unknown} claim_id=${_claim_comment_id:-0} -->
 - **Worker PID**: ${worker_pid}
 - **Model**: ${display_model}
 - **Tier**: ${dispatch_tier}

@@ -334,11 +334,25 @@ _lease_registration_exists() {
 	existing_token=$(printf '%s' "$existing" | jq -r '.lease_token // ""' 2>/dev/null) || return 1
 	existing_status=$(printf '%s' "$existing" | jq -r '.status // ""' 2>/dev/null) || return 1
 	if [[ -n "$lease_token" ]]; then
-		[[ -n "$existing" && "$existing_token" == "$lease_token" ]]
+		[[ -n "$existing" && "$existing_token" == "$lease_token" ]] && _lease_entry_is_active "$existing"
 		return $?
 	fi
 	[[ -n "$existing" && -z "$existing_token" && "$existing_status" == "$LEDGER_STATUS_ACTIVE" ]]
 	return $?
+}
+
+_lease_terminal_registration_exists() {
+	local session_key="$1"
+	local lease_token="$2"
+	[[ -n "$lease_token" && -s "$LEDGER_FILE" ]] || return 1
+	local existing="" existing_token=""
+	existing=$(_lease_latest_entry "$session_key") || return 1
+	existing_token=$(printf '%s' "$existing" | jq -r '.lease_token // ""' 2>/dev/null) || return 1
+	[[ "$existing_token" == "$lease_token" ]] || return 1
+	if _lease_entry_is_active "$existing"; then
+		return 1
+	fi
+	return 0
 }
 
 #######################################
@@ -419,6 +433,11 @@ cmd_register() {
 		return 1
 	fi
 	if _lease_registration_exists "$session_key" "$lease_token"; then _release_lock; return 0; fi
+	if _lease_terminal_registration_exists "$session_key" "$lease_token"; then
+		_release_lock
+		echo "Error: register refused terminal dispatch lease" >&2
+		return 1
+	fi
 	local now
 	now=$(_now_utc)
 	owner_process_start=$(_process_start_token "$dispatch_pid" 2>/dev/null || true)
@@ -1335,7 +1354,13 @@ cmd_count() {
 	# pid. On a 1200-entry synthetic ledger that made `count` take ~2.4s.
 	# A single jq pass emits just the PIDs; bash keeps the kill -0 liveness
 	# checks because jq cannot query process state.
-	inflight_pids=$(jq -r --arg active "$LEDGER_STATUS_ACTIVE" 'select(.status == $active) | (.pid // 0)' "$LEDGER_FILE" 2>/dev/null) || inflight_pids=""
+	inflight_pids=$(jq -sr --arg active "$LEDGER_STATUS_ACTIVE" '
+		group_by([.session_key, (.lease_token // ""), (.attempt_id // "")])
+		| map(last)
+		| .[]
+		| select(.status == $active and (.lease_phase // "prelaunch") != "terminal")
+		| (.pid // 0)
+	' "$LEDGER_FILE" 2>/dev/null) || inflight_pids=""
 
 	if [[ -z "$inflight_pids" ]]; then
 		printf '%s\n' "0"
