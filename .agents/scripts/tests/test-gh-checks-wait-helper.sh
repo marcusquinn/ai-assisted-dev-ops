@@ -75,6 +75,38 @@ write_fixture "$empty_dir" 1 '[]'
 empty_output=$(run_fixture_wait "$empty_dir")
 assert_contains "no required checks is terminal success" "PASS: required checks completed" "$empty_output"
 
+live_bin="${TMPDIR_TEST}/live-bin"
+mkdir -p "$live_bin"
+cat >"${live_bin}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
+	if [[ "${GH_TEST_MODE:-no-required}" == "api-error" ]]; then
+		printf '%s\n' 'HTTP 503: service unavailable' >&2
+		exit 1
+	fi
+	printf "%s\n" "no required checks reported on the 'feature/test' branch" >&2
+	exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	printf '%s\n' 'live-head'
+	exit 0
+fi
+exit 1
+STUB
+chmod +x "${live_bin}/gh"
+
+live_no_required_output=$(PATH="${live_bin}:$PATH" AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \
+	"$HELPER" wait 123 --repo example/repo --timeout 0 2>&1)
+assert_contains "canonical CLI no-required message is terminal success" "PASS: required checks completed" "$live_no_required_output"
+
+set +e
+live_api_error_output=$(PATH="${live_bin}:$PATH" GH_TEST_MODE=api-error AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \
+	"$HELPER" wait 123 --repo example/repo --timeout 0 2>&1)
+live_api_error_rc=$?
+set -e
+[[ "$live_api_error_rc" -eq 2 ]] && pass "CLI API error remains indeterminate" || fail "CLI API error remains indeterminate" "got ${live_api_error_rc}"
+assert_contains "CLI API error is diagnosed" "state unavailable" "$live_api_error_output"
+
 mixed_skipping_dir="${TMPDIR_TEST}/mixed-skipping"
 write_fixture "$mixed_skipping_dir" 1 '[{"name":"Required","workflow":"CI","state":"SUCCESS","bucket":"pass","link":""},{"name":"Optional","workflow":"CI","state":"SKIPPED","bucket":"skipping","link":""}]'
 mixed_skipping_output=$(run_fixture_wait "$mixed_skipping_dir")

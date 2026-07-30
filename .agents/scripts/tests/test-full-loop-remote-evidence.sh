@@ -28,6 +28,10 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/testrepo" ]]; then
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == *"/protection/required_status_checks" ]]; then
+	if [[ "${GH_TEST_MODE:-pass}" == "cli-no-required" ]]; then
+		printf '%s\n' 'gh: HTTP 403: branch protection unavailable' >&2
+		exit 1
+	fi
 	if [[ "${GH_TEST_MODE:-pass}" == "no-required" ]]; then
 		printf '%s\n' 'gh: HTTP 404: Not Found' >&2
 		exit 1
@@ -48,6 +52,10 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
 		no-required)
 			printf '%s\n' 'required-check CLI must not run when configuration has no contexts' >&2
 			exit 99
+			;;
+		cli-no-required)
+			printf "%s\n" "no required checks reported on the 'remote-branch' branch" >&2
+			exit 1
 			;;
 		api-error)
 			printf '%s\n' 'HTTP 503: service unavailable' >&2
@@ -129,6 +137,12 @@ run_gate no-required || {
 	exit 1
 }
 printf 'PASS explicit no-required-checks evidence reaches the review-bot gate\n'
+
+run_gate cli-no-required || {
+	printf 'FAIL canonical CLI no-required-checks evidence was rejected after API failure\n'
+	exit 1
+}
+printf 'PASS canonical CLI no-required-checks evidence survives unavailable branch protection\n'
 
 for mode in draft pending changes closed api-error changed-wording malformed empty-array; do
 	if run_gate "$mode"; then

@@ -86,6 +86,7 @@ if [[ "${1:-} ${2:-}" == "pr list" ]]; then
 fi
 if [[ "${1:-} ${2:-}" == "pr create" ]]; then
 	printf 'mock-pr\n'
+	printf 'mock benign PR diagnostic\n' >&2
 	exit 0
 fi
 if [[ "${1:-}" != "api" ]]; then
@@ -241,6 +242,10 @@ apply_output=$(HOME="$test_root" PATH="$safe_path" \
 apply_rc=$?
 assert_exit "apply-mode missing install succeeds" 0 "$apply_rc"
 assert_contains "apply-mode reports repository PR" "$apply_output" 'PR: mock-pr'
+assert_contains "apply-mode retains benign PR diagnostics" "$apply_output" \
+	'mock benign PR diagnostic'
+assert_not_contains "apply-mode keeps diagnostics out of PR detail" "$apply_output" \
+	$'PR: mock-pr\nmock benign PR diagnostic'
 
 applied_workflow=$("$real_git" --git-dir="$apply_bare" show \
 	'chore/test-issue-first:.github/workflows/linked-issue-check.yml')
