@@ -1125,8 +1125,8 @@ _dsi_parse_dispatch_args() {
 			shift
 			;;
 		--no-ceremony)
-			# Skip the pre-launch dispatch ceremony (status:queued + origin:worker
-			# + assignee normalize). Default: ceremony is ON. Use only when
+			# Skip the pre-launch dispatch ceremony (status:queued + assignee
+			# normalization). Default: ceremony is ON. Use only when
 			# you intentionally want to bypass dedup-visibility — e.g., when
 			# debugging a stuck worker by re-launching without disturbing
 			# the existing label/assignee state.
@@ -1201,7 +1201,7 @@ _dsi_print_dryrun() {
 	if [[ "$_DSI_ARG_NO_CEREMONY" -eq 1 ]]; then
 		_dsi_info "  Ceremony:     SKIPPED (--no-ceremony) — labels and assignee unchanged"
 	else
-		_dsi_info "  Ceremony:     would set status:queued + origin:worker + assignee=self (pulse-parity)"
+		_dsi_info "  Ceremony:     would set status:queued + assignee=self (pulse-parity)"
 	fi
 	case "$dedup_state" in
 	blocked) _dsi_warn "  Dedup:        WOULD BLOCK — ${dedup_result}" ;;
@@ -1692,8 +1692,8 @@ Options:
   --base <ref>    Worktree base branch/ref. Default: repo dispatch/PR base
                   policy from config, falling back to origin/HEAD.
   --dry-run       Print planned dispatch without launching.
-  --no-ceremony   Skip the pre-launch ceremony (status:queued + origin:worker
-                  + assignee normalize). Default: ceremony is ON. Use only
+  --no-ceremony   Skip the pre-launch ceremony (status:queued + assignee
+                  normalization). Default: ceremony is ON. Use only
                   when you intentionally want to bypass dedup-visibility.
   -h, --help      Show this help.
 
