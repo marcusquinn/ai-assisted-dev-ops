@@ -635,6 +635,124 @@ test_issue_permission_handoff_skips_post_persistence_reconciliation() {
 	return 0
 }
 
+test_post_merge_permission_uses_cleanup_receipt_without_blocking_issue() {
+	local work_dir="${TEST_ROOT}/repo-post-merge-permission"
+	local cleanup_dir="${TEST_ROOT}/post-merge-cleanup-receipts"
+	local output_file="${TEST_ROOT}/post-merge-permission.output"
+	local permission_file="${TEST_ROOT}/post-merge-permission.request"
+	local handle_output_file="${TEST_ROOT}/post-merge-permission.handle-output"
+	_setup_test_git_repo "$work_dir" 1
+	local expected_head=""
+	local resolved_work_dir=""
+	expected_head=$(git -C "$work_dir" rev-parse HEAD)
+	resolved_work_dir=$(cd "$work_dir" && pwd -P)
+	printf '%s\n' '{"type":"text","sessionID":"ses_post_merge","text":"post-merge synchronization"}' >"$output_file"
+	printf '%s\n' '{"type":"external_directory","request_id":"perm-post-merge"}' >"$permission_file"
+
+	local result=""
+	result=$(
+		(
+			export AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_dir"
+			export DISPATCH_REPO_SLUG="owner/repo"
+			export WORKER_ISSUE_NUMBER="99999"
+			_run_permission_request_file="$permission_file"
+			full_loop_write_cleanup_deferred "owner/repo" 123 "$resolved_work_dir" \
+				"feature/auto-test-issue-99999" "$$" "ses_post_merge" "pending" "FINALIZATION_PENDING" >/dev/null
+			gh_pr_list() {
+				printf '[{"number":123,"state":"MERGED","isDraft":false,"mergedAt":"2026-07-30T20:00:00Z","headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]\n' "$expected_head"
+				return 0
+			}
+			gh() {
+				if [[ "${*}" == *"issue view 99999"* ]]; then
+					printf 'CLOSED\n'
+				elif [[ "${*}" == *"api --paginate"* && "${*}" == *"/issues/123/comments"* ]]; then
+					printf '%s\n' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
+				elif [[ "${*}" == *"pr view 123"* ]]; then
+					printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-30T20:00:00Z","mergeCommit":{"oid":"merge-123"}}'
+				else
+					return 1
+				fi
+				return 0
+			}
+			_store_headless_session_if_allowed() { return 0; }
+			local permission_finish_called=0
+			local success_finish_called=0
+			local reconciled=0
+			_hrw_finish_permission_required_run() { permission_finish_called=1; return 0; }
+			_hrw_finish_success_run() {
+				success_finish_called=1
+				_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_SUCCESS"
+				return 0
+			}
+			_hrw_reconcile_session_permission_blockers() { reconciled=$((reconciled + 1)); return 0; }
+			_hrw_record_terminal_outcome() { return 0; }
+			_emit_worker_runtime_event() { return 0; }
+			_hrw_record_reconciled_outcome() { return 0; }
+			_hrw_finish_cleanup() { return 0; }
+
+			local handle_status=0
+			local handle_output=""
+			_handle_run_result 1 "$output_file" "worker" "openai" \
+				"issue-99999" "openai/test" "$work_dir" >"$handle_output_file" 2>&1 || handle_status=$?
+			handle_output=$(<"$handle_output_file")
+			if [[ "$handle_status" -ne 84 ]]; then
+				_hrw_reconcile_session_permission_blockers "issue-99999" "$_run_result_label"
+				rm -f "$permission_file"
+			fi
+			_cmd_run_finish "issue-99999" "complete" "$work_dir"
+			local receipt_state=""
+			receipt_state=$(jq -r '.resource_cleanup_state' "${cleanup_dir}/owner_repo-123.json")
+			printf 'handle=%s|result=%s|permission=%s|success=%s|reconciled=%s|request=%s|receipt=%s|diagnostic=%s\n' \
+				"$handle_status" "$_run_result_label" "$permission_finish_called" "$success_finish_called" \
+				"$reconciled" "$([[ -e "$permission_file" ]] && printf present || printf cleared)" \
+				"$receipt_state" "$([[ "$handle_output" == *"cleanup_authority=guarded-supervisor"* ]] && printf present || printf missing)"
+		)
+	)
+	if [[ "$result" == "handle=0|result=post_merge_cleanup_deferred|permission=0|success=1|reconciled=1|request=cleared|receipt=CLEANUP_DEFERRED|diagnostic=present" ]]; then
+		print_result "post-merge permission retains cleanup ownership without blocking implementation" 0
+	else
+		print_result "post-merge permission retains cleanup ownership without blocking implementation" 1 "$result"
+	fi
+	return 0
+}
+
+test_pre_merge_permission_remains_blocking() {
+	local work_dir="${TEST_ROOT}/repo-pre-merge-permission"
+	local output_file="${TEST_ROOT}/pre-merge-permission.output"
+	local permission_file="${TEST_ROOT}/pre-merge-permission.request"
+	_setup_test_git_repo "$work_dir" 1
+	printf '%s\n' '{"type":"text","sessionID":"ses_pre_merge","text":"implementation in progress"}' >"$output_file"
+	printf '%s\n' '{"type":"external_directory","request_id":"perm-pre-merge"}' >"$permission_file"
+
+	local result=""
+	result=$(
+		(
+			export DISPATCH_REPO_SLUG="owner/repo"
+			export WORKER_ISSUE_NUMBER="99999"
+			_run_permission_request_file="$permission_file"
+			gh() {
+				if [[ "${*}" == *"issue view 99999"* ]]; then
+					printf 'OPEN\n'
+					return 0
+				fi
+				return 1
+			}
+			_store_headless_session_if_allowed() { return 0; }
+			local status=0
+			_handle_run_result 1 "$output_file" "worker" "openai" \
+				"issue-99999" "openai/test" "$work_dir" >/dev/null 2>&1 || status=$?
+			printf 'status=%s|result=%s|request=%s\n' "$status" "$_run_result_label" \
+				"$([[ -e "$permission_file" ]] && printf present || printf missing)"
+		)
+	)
+	if [[ "$result" == "status=84|result=permission_required|request=present" ]]; then
+		print_result "pre-merge permission remains blocking" 0
+	else
+		print_result "pre-merge permission remains blocking" 1 "$result"
+	fi
+	return 0
+}
+
 test_begin_worker_runtime_run_refreshes_run_id() {
 	local first_run_id="" second_run_id=""
 	AIDEVOPS_RUN_ID="run:stale"

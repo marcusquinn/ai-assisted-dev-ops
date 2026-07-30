@@ -267,6 +267,16 @@ merge API and never infers publication intent.
 
 **4.10 Worktree Cleanup (GH#6740/GH#28440 — MANDATORY):** Immediate merges persist an external `CLEANUP_DEFERRED` receipt before deferring current-worktree removal until the parent runtime exits. Before merge, the helper refreshes the PR head identity and requires local `HEAD` to equal its exact `headRefOid`. Branch equality remains the normal path; a differently named repair branch is accepted only when its linked-worktree metadata is complete and the local repository resolves unambiguously to the current PR head repository. The receipt records the actual local repair branch, while its unrelated same-named remote ref remains untouched. Detached or canonical checkouts, missing worktree metadata, head drift, and same-content branches from a different or ambiguous repository produce no cleanup plan. The receipt records PR/release state, worktree, branch, PID plus process identity, session owner, and pending cleanup lease. `status --json` exposes executor completion separately from resource-cleanup state. The interactive executor may terminate after `<promise>FULL_LOOP_CLEANUP_DEFERRED</promise>`; this is an auditable ownership transfer, not a claim that the worktree is gone. Pulse or another guarded supervisor may acquire the lease only after owner identity is no longer live, remove the worktree, preserve removal-audit evidence, and idempotently transition the receipt to `CLEANED`. Never force-remove an actively owned worktree. Emit `<promise>FULL_LOOP_COMPLETE</promise>` only after absent-worktree, removal-audit, merged-PR, release, and durable `CLEANED` evidence are all observed.
 
+Post-merge permission events use two independent lifecycle axes:
+
+| Evidence | Implementation outcome | Cleanup outcome | Authority/action |
+|---|---|---|---|
+| No exact merged PR, open objective, or mismatched receipt/session | `permission_required` | Unproven | Worker stops with exit 84 and the normal maintainer-permission handoff remains blocking. |
+| Exact-head merged PR, closed objective, and matching `CLEANUP_DEFERRED`/`CLEANUP_LEASED` receipt | Completed | Deferred and retryable | The guarded cleanup supervisor owns the receipt; reconcile only the ended session's permission blocker and do not apply an implementation-blocking issue label. |
+| Matching receipt reaches `CLEANED` | Completed | Completed | Verify with `full-loop-helper.sh status --json` and the durable receipt before emitting `FULL_LOOP_COMPLETE`. |
+
+The completion-aware path never grants `external_directory` access. It accepts only a receipt matching the repository, PR, worktree, branch, and runtime session, plus fresh remote merge and closed-objective evidence. Any unknown or mismatched evidence fails closed through the existing permission-required path.
+
 ---
 
 ## Options

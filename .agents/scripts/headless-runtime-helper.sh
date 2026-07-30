@@ -578,6 +578,7 @@ _handle_run_result() {
 	local provider="$4"
 	local session_key="$5"
 	local selected_model="$6"
+	local work_dir="${7:-${_WORKER_WORKTREE_PATH:-}}"
 	local suppress_persistent_output=0
 	if _headless_run_is_ephemeral "$role"; then
 		suppress_persistent_output=1
@@ -605,6 +606,22 @@ _handle_run_result() {
 		-f "${_run_permission_request_file}" ]]; then
 		if [[ -n "$discovered_session" ]]; then
 			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
+		fi
+		local completion_evidence=""
+		if completion_evidence=$(_hrw_post_merge_permission_completion_evidence \
+			"$session_key" "$discovered_session" "$work_dir"); then
+			local completed_pr=""
+			local cleanup_receipt=""
+			local cleanup_state=""
+			local executor_state=""
+			local cleanup_owner_session=""
+			IFS=$'\t' read -r completed_pr cleanup_receipt cleanup_state executor_state cleanup_owner_session <<<"$completion_evidence"
+			_run_result_label="$_HRW_STATUS_POST_MERGE_CLEANUP"
+			_run_failure_reason=""
+			_run_classification_source="merged_pr_cleanup_receipt"
+			_run_classification_pattern="permission.asked_after_merged_objective"
+			print_info "[lifecycle] post_merge_permission_reconciled session=${session_key} pr=${completed_pr} implementation=completed cleanup=${cleanup_state} executor=${executor_state} cleanup_authority=guarded-supervisor owner_session=${cleanup_owner_session} receipt=${cleanup_receipt} verify='full-loop-helper.sh status --json'"
+			return 0
 		fi
 		_run_result_label="permission_required"
 		_run_failure_reason="$_run_result_label"
@@ -1585,7 +1602,7 @@ _execute_run_attempt() {
 		_metric_excerpt_candidate=$(_metric_failure_excerpt_candidate_path "$output_file" "$session_key")
 	fi
 	local handle_exit=0
-	if _handle_run_result "$exit_code" "$output_file" "$role" "$provider" "$session_key" "$selected_model"; then
+	if _handle_run_result "$exit_code" "$output_file" "$role" "$provider" "$session_key" "$selected_model" "$work_dir"; then
 		handle_exit=0
 	else
 		handle_exit=$?

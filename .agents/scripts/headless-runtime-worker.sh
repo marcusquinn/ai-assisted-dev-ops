@@ -30,6 +30,7 @@ _HRW_STATUS_FAILED="failed"
 _HRW_STATUS_ESCALATED="escalated"
 _HRW_STATUS_UNKNOWN="unknown"
 _HRW_STATUS_PERMISSION_REQUIRED="permission_required"
+_HRW_STATUS_POST_MERGE_CLEANUP="post_merge_cleanup_deferred"
 _HRW_GIT_HEAD="HEAD"
 _HRW_CRASH_NO_WORK="no_work"
 _HRW_CRASH_OVERWHELMED="overwhelmed"
@@ -63,6 +64,13 @@ fi
 
 # shellcheck source=shared-runner-identity.sh
 source "${SCRIPT_DIR}/shared-runner-identity.sh"
+
+# Post-merge permission classification reuses the same exact merge and durable
+# cleanup evidence as full-loop finalization instead of inventing weaker proof.
+# shellcheck source=./full-loop-helper-evidence.sh
+source "${SCRIPT_DIR}/full-loop-helper-evidence.sh"
+# shellcheck source=./full-loop-cleanup-receipt.sh
+source "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh"
 
 # shellcheck source=./headless-runtime-worker-prepare.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
@@ -1138,6 +1146,77 @@ _worker_external_terminal_complete() {
 	return 1
 }
 
+#######################################
+# Prove that a permission request happened after this exact worker objective
+# merged and transferred cleanup ownership to the guarded supervisor.
+#
+# Args: $1=session_key, $2=runtime session ID, $3=worker worktree
+# Stdout: PR number, receipt path, cleanup state, executor state, owner session
+# Returns: 0 only for exact merged/closed/receipt evidence; otherwise 1
+#######################################
+_hrw_post_merge_permission_completion_evidence() {
+	local session_key="$1"
+	local runtime_session="$2"
+	local work_dir="$3"
+	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
+	local issue_number=""
+
+	[[ "$session_key" == issue-* && -n "$runtime_session" && -n "$repo_slug" ]] || return 1
+	[[ -n "$work_dir" && -d "$work_dir" ]] || return 1
+	if [[ "$session_key" =~ ([0-9]+)$ ]]; then
+		issue_number="${BASH_REMATCH[1]}"
+	fi
+	[[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || return 1
+	if [[ -n "${WORKER_ISSUE_NUMBER:-}" && "${WORKER_ISSUE_NUMBER}" != "$issue_number" ]]; then
+		return 1
+	fi
+
+	local issue_state=""
+	issue_state=$(gh issue view "$issue_number" --repo "$repo_slug" --json state --jq '.state // empty' 2>/dev/null || true)
+	[[ "$issue_state" == "CLOSED" ]] || return 1
+
+	local resolved_worktree=""
+	local branch_name=""
+	local local_head=""
+	resolved_worktree=$(cd "$work_dir" 2>/dev/null && pwd -P) || return 1
+	branch_name=$(git -C "$resolved_worktree" branch --show-current 2>/dev/null || true)
+	local_head=$(git -C "$resolved_worktree" rev-parse HEAD 2>/dev/null || true)
+	[[ -n "$branch_name" && -n "$local_head" ]] || return 1
+
+	local handoff_state=""
+	local pr_number=""
+	handoff_state=$(_pr_handoff_state_for_branch_or_issue "$branch_name" "$issue_number" \
+		"$repo_slug" "head-only" "$local_head" 1)
+	[[ "${handoff_state%%|*}" == "merged" ]] || return 1
+	pr_number="${handoff_state#*|}"
+	[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
+	_full_loop_read_fresh_merged_pr_json "$pr_number" "$repo_slug" >/dev/null || return 1
+
+	local receipt_path=""
+	receipt_path=$(_full_loop_cleanup_receipt_path "$repo_slug" "$pr_number") || return 1
+	[[ -f "$receipt_path" ]] || return 1
+	local receipt_fields=""
+	receipt_fields=$(jq -er \
+		--arg repo "$repo_slug" --argjson pr "$pr_number" \
+		--arg worktree "$resolved_worktree" --arg branch "$branch_name" \
+		--arg session "$runtime_session" \
+		--arg deferred "$_FULL_LOOP_CLEANUP_DEFERRED" \
+		--arg leased "$_FULL_LOOP_CLEANUP_LEASED" '
+		select(
+			.schema_version == 1
+			and .repository == $repo and .pr_number == $pr
+			and .worktree == $worktree and .branch == $branch
+			and .owner.session == $session
+			and (.executor_completion_state == "FINALIZATION_PENDING" or .executor_completion_state == "COMPLETE")
+			and (.resource_cleanup_state == $deferred or .resource_cleanup_state == $leased)
+		)
+		| [.resource_cleanup_state, .executor_completion_state, .owner.session] | @tsv
+	' "$receipt_path" 2>/dev/null) || return 1
+
+	printf '%s\t%s\t%s\n' "$pr_number" "$receipt_path" "$receipt_fields"
+	return 0
+}
+
 # =============================================================================
 # Run lifecycle — prepare, finish, retry, detach
 # =============================================================================
@@ -1673,7 +1752,13 @@ _hrw_record_reconciled_outcome() {
 	[[ "$max_write_attempts" =~ ^[1-5]$ ]] || max_write_attempts=3
 
 	case "$outcome" in
-	success) next_action="monitor_pr" ;;
+	success)
+		if [[ "$status" == "$_HRW_STATUS_POST_MERGE_CLEANUP" ]]; then
+			next_action="monitor_cleanup_receipt"
+		else
+			next_action="monitor_pr"
+		fi
+		;;
 	deferred)
 		if [[ "$status" == "$_HRW_STATUS_PERMISSION_REQUIRED" ]]; then
 			next_action="await_maintainer_permission"
