@@ -92,11 +92,13 @@ _compose_consolidation_worker_instructions() {
 \`\`\`bash
 gh issue create --repo "${repo_slug}" \\
   --title "consolidated: <concise description derived from the merged spec>" \\
-  --label "consolidated,origin:worker,<copy relevant labels from parent, excluding needs-consolidation, consolidation-task, and origin:interactive>" \\
+  --label "consolidated,origin:worker,auto-dispatch,<copy relevant labels from parent, excluding needs-consolidation, consolidation-task, and origin:interactive>" \\
   --body "<merged body from step 2>"
 \`\`\`
 
 **Note (GH#18670):** \`origin:worker\` is mandatory on this label list — consolidated issues are pulse-generated artifacts, not interactive maintainer work. Without it, the issue is born \`origin:interactive\` (raw \`gh issue create\` has no origin auto-detection), which triggers the GH#18352 dispatch-dedup block and drains the queue.
+
+**Dispatch handoff:** \`auto-dispatch\` is also mandatory. The consolidated successor marker and this explicit handoff must both be present before \`_has_consolidated_label\` permits implementation dispatch.
 
    Capture the new issue number as \$NEW_NUM.
 

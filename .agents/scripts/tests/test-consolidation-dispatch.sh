@@ -296,6 +296,10 @@ test_child_body_contains_parent_content_and_authors() {
 		failures=$((failures + 1))
 		failmsg="${failmsg} | missing self-contained warning"
 	fi
+	if ! printf '%s' "$body" | grep -qF -- '--label "consolidated,origin:worker,auto-dispatch,<copy relevant labels from parent, excluding needs-consolidation, consolidation-task, and origin:interactive>"'; then
+		failures=$((failures + 1))
+		failmsg="${failmsg} | consolidated successor instructions omit auto-dispatch handoff"
+	fi
 	if printf '%s' "$body" | grep -q 'github-actions'; then
 		failures=$((failures + 1))
 		failmsg="${failmsg} | bot comment leaked into child body"
