@@ -590,6 +590,19 @@ _ghqa_response_cost() {
 	return 1
 }
 
+_ghqa_frame_page() {
+	local original_page="$1"
+	local frame_index="$2"
+	local frame_total="$3"
+	[[ "$frame_index" =~ ^[1-9][0-9]*$ ]] || return 1
+	if [[ ! "$original_page" =~ ^[1-9][0-9]*$ || "$frame_total" -gt 1 ]]; then
+		printf '%s' "$frame_index"
+		return 0
+	fi
+	printf '%s' "$original_page"
+	return 0
+}
+
 _ghqa_write_complete_frames() {
 	local result_file="$1"
 	local state_file="$2"
@@ -610,8 +623,7 @@ _ghqa_write_complete_frames() {
 		[[ "$kind" == frame ]] || continue
 		path=$(_ghqa_path_for_resource "$original_path" "$resource")
 		pool=$(_ghqa_pool_for_resource "$resource")
-		page="$original_page"
-		[[ "$frame_total" -eq 1 ]] || page="$frame_index"
+		page=$(_ghqa_frame_page "$original_page" "$frame_index" "$frame_total") || page=0
 		outcome=success
 		if [[ "$status" -ge 400 || ( "$frame_index" -eq "$frame_total" && "$command_rc" -ne 0 ) ]]; then
 			outcome=error
@@ -652,6 +664,32 @@ _ghqa_write_complete_frames() {
 	done <<<"$parsed"
 	[[ "$invalidate_state" -eq 0 ]] || rm -f -- "$state_file" 2>/dev/null || true
 	return 0
+}
+
+_ghqa_write_incomplete_frames() {
+	local result_file="$1"
+	local original_path="$2"
+	local original_page="$3"
+	local command_rc="$4"
+	local parsed="$5"
+	local elapsed_ms="$6"
+	local kind="" frame_index="" ignored="" page="" frame_elapsed=""
+	local frame_total=0 rows=0 outcome=success
+	[[ "$command_rc" -eq 0 ]] || outcome=error
+	frame_total=$(printf '%s\n' "$parsed" | awk -F '\t' '$1 == "frame" { count++ } END { print count + 0 }')
+	while IFS=$'\t' read -r kind frame_index ignored; do
+		[[ "$kind" == frame && "$frame_index" =~ ^[1-9][0-9]*$ ]] || continue
+		page=$(_ghqa_frame_page "$original_page" "$frame_index" "$frame_total") || continue
+		# Only aggregate process latency is available for incomplete frames. Own it
+		# on the final frame and use zero for preceding frames so totals stay exact.
+		frame_elapsed=0
+		[[ "$frame_index" -ne "$frame_total" ]] || frame_elapsed="$elapsed_ms"
+		_ghqa_write_fallback_attempt "$result_file" "$original_path" "$page" \
+			"$outcome" "$frame_elapsed" ""
+		rows=$((rows + 1))
+	done <<<"$parsed"
+	[[ "$rows" -gt 0 ]]
+	return $?
 }
 
 _ghqa_capture_locked() {
@@ -708,11 +746,14 @@ _ghqa_capture_locked() {
 	if [[ "$version" == v1 && "$frame_count" =~ ^[1-9][0-9]*$ ]] \
 		&& _ghqa_capture_frames_valid "$parsed" "$frame_count"; then
 		_ghqa_write_complete_frames "$result_file" "$state_file" "$path" "$page" "$rc" "$parsed" "$@"
-	elif [[ "$version" == v1 && "$frame_count" == 1 ]]; then
-		# One recognized request frame proves the attempt and caller-owned page,
-		# even when no complete response metadata arrived. Quota remains unknown.
-		_ghqa_write_fallback_attempt "$result_file" "$path" "$page" \
-			"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""
+	elif [[ "$version" == v1 && "$frame_count" =~ ^[1-9][0-9]*$ ]]; then
+		# Every parser-emitted request frame proves one attempt even when response
+		# metadata is incomplete. Frame indexes make native pagination page-exact;
+		# quota remains unknown until response-owned evidence exists.
+		_ghqa_write_incomplete_frames "$result_file" "$path" "$page" "$rc" \
+			"$parsed" "$elapsed_ms" || \
+			_ghqa_write_fallback_attempt "$result_file" "$path" 0 \
+				"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""
 	else
 		_ghqa_write_fallback_attempt "$result_file" "$path" 0 \
 			"$([[ "$rc" -eq 0 ]] && printf success || printf error)" "$elapsed_ms" ""

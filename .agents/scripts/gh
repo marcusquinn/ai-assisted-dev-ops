@@ -852,8 +852,9 @@ fi
 # workers to source shared-gh-wrappers.sh.
 #
 # Bypass: AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1
-# Fail-open: any error in sourcing, budget check, or REST call falls
-# through to the real gh binary.
+# Fail-open before REST dispatch and after local projection failures. An HTTP
+# failure from an attempted REST transport remains authoritative so the shim
+# does not duplicate it through GraphQL.
 # -----------------------------------------------------------------------------
 if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 	# Bypass — explicit override.
@@ -916,7 +917,20 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		return 1
 	}
 
+	_SHIM_REST_REWRITE_ATTEMPTED=0
+	_shim_rest_rewrite_has_http_failure() {
+		local log_file="${AIDEVOPS_GH_API_LOG:-${GH_API_LOG:-}}"
+		[[ -n "$log_file" && -r "$log_file" ]] || return 1
+		awk -F '\t' -v logical_id="$AIDEVOPS_GH_LOGICAL_ID" '
+			$8 == "v2" && $9 == "attempt" && $10 == logical_id &&
+			$15 ~ /^[45][0-9][0-9]$/ { found = 1 }
+			END { exit found ? 0 : 1 }
+		' "$log_file"
+		return $?
+	}
+
 	_shim_rest_rewrite_read() {
+		_SHIM_REST_REWRITE_ATTEMPTED=0
 		# Source the REST fallback helper (contains _rest_should_fallback
 		# and the _rest_* translator functions).
 		local _rest_helper=""
@@ -974,6 +988,7 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		gh_record_call "$_route_path" "$(_shim_caller_label "${1:-}" "${2:-}")" 2>/dev/null || true
 
 		# Dispatch to the appropriate REST translator.
+		_SHIM_REST_REWRITE_ATTEMPTED=1
 		case "$_SHIM_READ_REWRITE" in
 		pr:view)    _rest_pr_view "${_SHIM_REST_ARGS[@]}" --repo "$_SHIM_REPO" ;;
 		issue:view) _rest_issue_view "${_SHIM_REST_ARGS[@]}" --repo "$_SHIM_REPO" ;;
@@ -984,26 +999,27 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		return $?
 	}
 
-	# Attempt REST rewrite. On success, exit with the translator's status.
-	# On failure (helper missing, budget OK, REST error), fall through to
-	# the real gh binary — fail-open.
+	# Attempt REST rewrite. A response-backed HTTP failure is authoritative:
+	# retrying through GraphQL duplicates traffic and can turn a clear REST error
+	# into an ambiguous second failure. Local projection failures retain native
+	# fallback because the REST response may not reproduce the requested output.
 	if _shim_rest_rewrite_read "$@"; then
 		exit 0
 	else
 		_rest_rc=$?
-		# If the REST translator ran but returned non-zero (actual API error
-		# vs. budget-OK/missing-helper), propagate the error rather than
-		# retrying via GraphQL (which would also fail if budget is exhausted).
-		# Budget-OK returns rc=1 from _rest_should_fallback; we only
-		# get here when rc=1 from the function wrapper. The translator errors
-		# are already printed to stderr by the _rest_* functions.
-		# Conservative: always fall through to real gh.
-		# GH#21857/t3448: record the graphql call — the real gh will use GraphQL.
+		if [[ "$_SHIM_REST_REWRITE_ATTEMPTED" -eq 1 ]] && _shim_rest_rewrite_has_http_failure; then
+			exit "$_rest_rc"
+		fi
+		# Preserve native fallback for projection/local failures because REST may
+		# have returned data that cannot safely reproduce gh output. Routes that
+		# never attempted REST are plain GraphQL selection.
 		_transport_caller=$(_shim_caller_label "${1:-}" "${2:-}")
 		_transport_retry=$(gh_attempt_count_for_logical "$AIDEVOPS_GH_LOGICAL_ID")
 		[[ "$_transport_retry" =~ ^[0-9]+$ ]] || _transport_retry=0
-		gh_record_call graphql "$_transport_caller" "" "" rest-fallback-graphql 2>/dev/null || true
-		AIDEVOPS_GH_ROUTE_DECISION=rest-fallback-graphql \
+		_transport_decision=graphql-selected
+		[[ "$_SHIM_REST_REWRITE_ATTEMPTED" -eq 0 ]] || _transport_decision=rest-fallback-graphql
+		gh_record_call graphql "$_transport_caller" "" "" "$_transport_decision" 2>/dev/null || true
+		AIDEVOPS_GH_ROUTE_DECISION="$_transport_decision" \
 			_shim_run_transport "$REAL_GH" graphql "$_transport_caller" "$_transport_retry" "$@"
 		exit $?
 	fi

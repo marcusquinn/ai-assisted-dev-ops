@@ -85,6 +85,9 @@ if [[ "$1" == "auth" && "$2" == "token" ]]; then
 	printf '%s\n' 'fixture-token'
 	exit 0
 fi
+if [[ -n "${STUB_GH_CALL_LOG:-}" ]]; then
+	printf '%s\t%s\n' "${1:-}" "${2:-}" >>"$STUB_GH_CALL_LOG"
+fi
 : >"$STUB_GH_LOG"
 for arg in "$@"; do
 	printf '%s\n' "$arg" >>"$STUB_GH_LOG"
@@ -175,6 +178,10 @@ if [[ "$1" == "api" && "$2" == "-i" && "$3" =~ ^/search/issues\? ]]; then
 	fixture='{"items":[{"number":22350,"state":"open","title":"Authored PR","html_url":"https://github.com/owner/repo/pull/22350","user":{"login":"managed"},"pull_request":{"merged_at":null}}]}'
 	printf 'HTTP/2 200\r\nX-RateLimit-Resource: search\r\n\r\n%s\n' "$fixture"
 	exit 0
+fi
+if [[ "${STUB_REST_READ_FAIL:-0}" == "1" && "$1" == "api" && \
+	"$2" =~ ^/repos/[^/]+/[^/]+/(issues|pulls)(\?|/|$) ]]; then
+	exit "${STUB_REST_READ_EXIT_CODE:-42}"
 fi
 if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/pulls\? ]]; then
 	jq_filter=""
@@ -285,6 +292,7 @@ export STUB_SIG_LOG="$TMP/sig-argv.log"
 export STUB_GH_BODY_LOG="$TMP/gh-body.log"
 export STUB_GH_BODY_PATH_LOG="$TMP/gh-body-path.log"
 export STUB_GH_MAIN_CALL_LOG="$TMP/gh-main-call.log"
+export STUB_GH_CALL_LOG="$TMP/gh-call.log"
 
 SHIM_RUN="$TMP/scripts/gh"
 
@@ -304,6 +312,7 @@ _reset_log() {
 	: >"$STUB_GH_BODY_LOG"
 	: >"$STUB_GH_BODY_PATH_LOG"
 	: >"$STUB_GH_MAIN_CALL_LOG"
+	: >"$STUB_GH_CALL_LOG"
 	return 0
 }
 
@@ -749,10 +758,40 @@ AIDEVOPS_GH_REST_FIRST_READS=1 "$SHIM_RUN" pr list --repo owner/repo \
 	--state open --json number,reviewDecision,headRefOid 2>/dev/null || true
 argv=$(_read_argv)
 if [[ "$argv" == $'pr\nlist\n--repo\nowner/repo\n--state\nopen\n--json\nnumber,reviewDecision,headRefOid' ]] &&
-	grep -q $'\tgh_pr_list\tgraphql' "$AIDEVOPS_GH_API_LOG"; then
+	awk -F '\t' '$2 == "gh_pr_list" && $3 == "graphql" && $6 == "graphql-selected" { found = 1 } END { exit found ? 0 : 1 }' \
+		"$AIDEVOPS_GH_API_LOG"; then
 	_pass "REST-first leaves GraphQL-only pr list fields on GraphQL"
 else
 	_fail "REST-first GraphQL-only pr list preservation" "argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
+echo ""
+echo "Test 15f: failed REST rewrite uses default telemetry and does not retry through GraphQL"
+_reset_log
+default_log_home="$TMP/default-log-home"
+default_api_log="$default_log_home/.aidevops/logs/gh-api-calls.log"
+mkdir -p "$default_log_home/.aidevops/logs"
+rm -f "$default_api_log"
+rest_failure_rc=0
+env -u AIDEVOPS_GH_API_LOG HOME="$default_log_home" GH_TOKEN=fixture-token \
+	AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$TMP/rest-rewrite-failure-state" AIDEVOPS_TEMP_DIR="$TMP" \
+	STUB_REST_READ_FAIL=1 STUB_REST_READ_EXIT_CODE=42 STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core STUB_GH_DEBUG_STATUS=403 \
+	STUB_GH_DEBUG_USED=101 STUB_GH_DEBUG_REMAINING=4899 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" issue list --repo owner/repo --state open --json number,title \
+	>/dev/null 2>/dev/null || rest_failure_rc=$?
+rest_api_calls=$(awk -F '\t' '$1 == "api" && $2 ~ /^\/repos\// { count++ } END { print count + 0 }' "$STUB_GH_CALL_LOG")
+native_issue_calls=$(awk -F '\t' '$1 == "issue" && $2 == "list" { count++ } END { print count + 0 }' "$STUB_GH_CALL_LOG")
+if [[ "$rest_failure_rc" -ne 0 && "$rest_api_calls" -eq 1 && "$native_issue_calls" -eq 0 ]] &&
+	awk -F '\t' '$9 == "attempt" && $15 == "403" { found = 1 } END { exit found ? 0 : 1 }' \
+		"$default_api_log" &&
+	! awk -F '\t' '$2 == "gh_issue_list" && $3 == "graphql" { found = 1 } END { exit found ? 0 : 1 }' \
+		"$default_api_log"; then
+	_pass "attempted REST failure propagates without duplicate GraphQL request"
+else
+	_fail "failed REST rewrite propagation" \
+		"rc: $rest_failure_rc REST calls: $rest_api_calls native calls: $native_issue_calls log: $(cat "$default_api_log" 2>/dev/null || true)"
 fi
 
 echo ""
@@ -1341,6 +1380,23 @@ else
 	_fail "native single-frame auth REST quota attribution" "log: $(cat "$native_single_log" 2>/dev/null || true)"
 fi
 
+opaque_single_log="$TMP/exact-native-opaque-single-rest.log"
+opaque_single_state="$TMP/exact-native-opaque-single-rest-state"
+: >"$opaque_single_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_EXPLICIT_PAGINATION_DISABLE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$opaque_single_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$opaque_single_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core \
+	STUB_GH_DEBUG_STATUS=200 STUB_GH_DEBUG_USED=101 STUB_GH_DEBUG_REMAINING=4899 \
+	STUB_GH_DEBUG_RESET=2000 "$SHIM_RUN" api /repos/owner/repo --paginate >/dev/null 2>/dev/null
+if [[ "$(_read_last_attempt_field "$opaque_single_log" 12)" == "1" \
+	&& "$(_read_attempt_quota "$opaque_single_log")" == "1" ]]; then
+	_pass "single complete native-pagination frame resolves to page one"
+else
+	_fail "single complete native-pagination page attribution" "log: $(cat "$opaque_single_log" 2>/dev/null || true)"
+fi
+
 incomplete_log="$TMP/exact-incomplete-rest.log"
 incomplete_state="$TMP/exact-incomplete-rest-state"
 : >"$incomplete_log"
@@ -1357,6 +1413,30 @@ if [[ "$(_read_attempt_quota "$incomplete_log")" == "unknown" \
 	_pass "one incomplete request frame preserves exact caller-owned page"
 else
 	_fail "incomplete request page attribution" "log: $(cat "$incomplete_log" 2>/dev/null || true)"
+fi
+
+incomplete_multi_log="$TMP/exact-incomplete-multi-rest.log"
+incomplete_multi_state="$TMP/exact-incomplete-multi-rest-state"
+: >"$incomplete_multi_log"
+if GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_EXPLICIT_PAGINATION_DISABLE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$incomplete_multi_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$incomplete_multi_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_MULTI_FRAME=1 STUB_GH_DEBUG_REQUEST_ONLY=1 STUB_GH_EXIT_CODE=1 \
+	"$SHIM_RUN" api /repos/owner/repo --paginate >/dev/null 2>/dev/null; then
+	_fail "incomplete multi-frame response status" "stub failure unexpectedly succeeded"
+fi
+incomplete_multi_summary=$(awk -F '\t' '$2 == "gh_api_rest" && $9 == "attempt" {
+	count++
+	pages = pages (pages ? "," : "") $12
+	unknown_quota += ($17 == "")
+	known_elapsed += ($16 ~ /^[0-9]+$/)
+} END { print count "|" pages "|" unknown_quota "|" known_elapsed }' "$incomplete_multi_log")
+if [[ "$incomplete_multi_summary" == "3|1,2,3|3|3" ]]; then
+	_pass "incomplete native pagination preserves every recognized frame and page"
+else
+	_fail "incomplete multi-frame page attribution" \
+		"summary: $incomplete_multi_summary log: $(cat "$incomplete_multi_log" 2>/dev/null || true)"
 fi
 
 gap_log="$TMP/exact-counter-gap.log"
