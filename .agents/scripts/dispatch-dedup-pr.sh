@@ -89,10 +89,14 @@ _has_open_pr_check_healthy_sibling() {
 	local issue_number="$1"
 	local repo_slug="$2"
 
-	local pr_json match_pr draft_pr
+	local pr_json match_pr draft_pr draft_pr_number draft_pr_kind
 	pr_json=$(gh pr list --repo "$repo_slug" --state open \
 		--search "#${issue_number}" --limit 20 \
-		--json number,title,body,isDraft,reviewDecision,mergeStateStatus,mergeable,changedFiles,files 2>/dev/null) || pr_json="[]"
+		--json number,title,body,isDraft,reviewDecision,mergeStateStatus,mergeable,changedFiles,files,labels 2>/dev/null) || {
+		printf 'PR_LOOKUP_UNCERTAIN: open PR lookup failed for issue #%s in %s; dispatch is blocked\n' \
+			"$issue_number" "$repo_slug"
+		return 0
+	}
 
 	local issue_ref_pattern healthy_state_pattern blocked_state_pattern
 	issue_ref_pattern="([^[:alnum:]_]|^)((close[sd]?|fix(e[sd])?|resolve[sd]?|for|refs?):?[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}|GH#${issue_number}|#${issue_number})([^[:alnum:]_]|$)"
@@ -101,14 +105,30 @@ _has_open_pr_check_healthy_sibling() {
 
 	draft_pr=$(printf '%s' "$pr_json" | jq -r \
 		--arg issue_pattern "$issue_ref_pattern" '
+		def names: [.labels[]?.name];
+		def protected: names | any(
+			. == "origin:interactive" or . == "hold-for-review" or
+			. == "no-auto-dispatch" or . == "needs-maintainer-review"
+		);
+		def worker_owned: names | any(. == "origin:worker" or . == "origin:worker-takeover");
 		[
 			.[] | select(
 				(.isDraft == true) and
 				([.title?, .body?] | map(strings) | any(test($issue_pattern; "i")))
 			)
-		] | .[0].number // empty' 2>/dev/null) || draft_pr=""
+		] | .[0] |
+		if . then "\(.number)|\(if worker_owned and (protected | not) then "worker" else "protected" end)"
+		else "" end' 2>/dev/null) || draft_pr=""
 	if [[ -n "$draft_pr" ]]; then
-		printf 'draft PR #%s is a durable checkpoint for issue #%s; ordinary redispatch is blocked\n' "$draft_pr" "$issue_number"
+		draft_pr_number="${draft_pr%%|*}"
+		draft_pr_kind="${draft_pr#*|}"
+		if [[ "$draft_pr_kind" == "worker" ]]; then
+			printf 'WORKER_DRAFT_CHECKPOINT: draft PR #%s is a durable checkpoint for issue #%s; ordinary redispatch is blocked\n' \
+				"$draft_pr_number" "$issue_number"
+			return 0
+		fi
+		printf 'draft PR #%s is a durable checkpoint for issue #%s; ordinary redispatch is blocked\n' \
+			"$draft_pr_number" "$issue_number"
 		return 0
 	fi
 

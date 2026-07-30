@@ -1206,7 +1206,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18177 Add approval-bound shared X scheduling and notification operations #feat #framework #knowledge #security ~8h tier:thinking ref:GH#28627 -> [todo/tasks/t18177-brief.md] pr:#28630 completed:2026-07-25
 
-- [ ] t18182 fix(simplification-state): preserve a clean canonical checkout across refresh publication #bug #framework #pulse #reliability #interactive #auto-dispatch #priority:high ~4h tier:thinking ref:GH#28872 logged:2026-07-29 -> [todo/tasks/t18182-brief.md]
+- [x] t18182 fix(simplification-state): preserve a clean canonical checkout across refresh publication #bug #framework #pulse #reliability #interactive #auto-dispatch #priority:high ~4h tier:thinking ref:GH#28872 logged:2026-07-29 -> [todo/tasks/t18182-brief.md] pr:#28905 completed:2026-07-30
 
 ## In Progress
 

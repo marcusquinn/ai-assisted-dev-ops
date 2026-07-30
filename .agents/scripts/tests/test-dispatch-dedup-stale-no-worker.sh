@@ -94,6 +94,11 @@ chmod +x "$HELPER_PATH"
 
 # shellcheck source=../pulse-dispatch-dedup-layers.sh
 source "${SCRIPTS_DIR}/pulse-dispatch-dedup-layers.sh"
+# shellcheck source=../pulse-dispatch-core.sh
+source "${SCRIPTS_DIR}/pulse-dispatch-core.sh"
+# Sourced modules use SCRIPT_DIR for their own bootstrap; restore the fixture
+# helper directory used by the Layer 6 tests below.
+SCRIPT_DIR="$TMP_DIR"
 
 FAST_FAIL_CALLS=0
 LAST_FAST_FAIL=""
@@ -279,12 +284,66 @@ test_terminal_pr_checkpoint_routes_existing_consolidation_guard() {
 	return 0
 }
 
+test_worker_draft_checkpoint_reaches_stale_guard_and_stays_blocked() {
+	local result=""
+	result=$(
+		(
+			local calls=""
+			_dedup_layer1_ledger_check() { return 1; }
+			_dedup_layer2_process_match() { return 1; }
+			_dedup_layer3_title_match() { return 1; }
+			_dedup_layer4_pr_evidence() { calls="${calls}4,"; return 2; }
+			_dedup_layer5_dispatch_comment() { calls="${calls}5,"; return 1; }
+			_dedup_layer6_assignee_and_stale() { calls="${calls}6,"; return 1; }
+
+			local rc=0
+			check_dispatch_dedup "2905" "exampleorg/examplerepo" "Issue #2905" "stale draft" "runner" || rc=$?
+			printf '%s|%s' "$rc" "$calls"
+		)
+	)
+
+	if [[ "$result" == "0|4,5,6," ]]; then
+		pass "worker draft checkpoint reaches stale guard and cannot redispatch"
+	else
+		fail "worker draft checkpoint reaches stale guard and cannot redispatch" "result=${result}"
+	fi
+	return 0
+}
+
+test_protected_draft_remains_immediate_pr_block() {
+	local result=""
+	result=$(
+		(
+			local calls=""
+			_dedup_layer1_ledger_check() { return 1; }
+			_dedup_layer2_process_match() { return 1; }
+			_dedup_layer3_title_match() { return 1; }
+			_dedup_layer4_pr_evidence() { calls="${calls}4,"; return 0; }
+			_dedup_layer5_dispatch_comment() { calls="${calls}5,"; return 1; }
+			_dedup_layer6_assignee_and_stale() { calls="${calls}6,"; return 1; }
+
+			local rc=0
+			check_dispatch_dedup "2905" "exampleorg/examplerepo" "Issue #2905" "protected draft" "runner" || rc=$?
+			printf '%s|%s' "$rc" "$calls"
+		)
+	)
+
+	if [[ "$result" == "0|4," ]]; then
+		pass "protected draft remains an immediate PR evidence block"
+	else
+		fail "protected draft remains an immediate PR evidence block" "result=${result}"
+	fi
+	return 0
+}
+
 test_stale_recovery_without_claim_skips_fast_fail
 test_prelaunch_canary_stale_recovery_skips_fast_fail
 test_stale_recovery_with_dispatch_claim_records_fast_fail
 test_stale_recovery_blocked_by_dependency_blocks_redispatch
 test_terminal_stale_recovery_routes_consolidation_and_blocks
 test_terminal_pr_checkpoint_routes_existing_consolidation_guard
+test_worker_draft_checkpoint_reaches_stale_guard_and_stays_blocked
+test_protected_draft_remains_immediate_pr_block
 
 printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1

@@ -47,6 +47,7 @@ COMMENTS_JSON='[]'
 ESCALATED=0
 RECOVERED=0
 OPEN_PR_STATE=""
+OPEN_PR_LOOKUP_FAIL=0
 ESCALATION_REASON=""
 COMMENT_BODIES="${TMP_HOME}/comments.log"
 : >"$COMMENT_BODIES"
@@ -85,6 +86,9 @@ set_issue_status() {
 }
 
 _stale_recovery_find_open_pr() {
+	if [[ "$OPEN_PR_LOOKUP_FAIL" -eq 1 ]]; then
+		return 1
+	fi
 	printf '%s' "$OPEN_PR_STATE"
 	return 0
 }
@@ -157,6 +161,24 @@ else
 	fail "stale draft checkpoint escalates without competing redispatch" \
 		"ESCALATED=${ESCALATED} RECOVERED=${RECOVERED} REASON=${ESCALATION_REASON}"
 fi
+
+ESCALATED=0
+RECOVERED=0
+OPEN_PR_STATE=""
+OPEN_PR_LOOKUP_FAIL=1
+
+lookup_output=""
+lookup_rc=0
+lookup_output=$(_recover_stale_assignment 3978 owner/repo runner "worker lease expired") || lookup_rc=$?
+
+if [[ "$lookup_rc" -ne 0 && "$ESCALATED" -eq 0 && "$RECOVERED" -eq 0 && "$lookup_output" == *"STALE_RECOVERY_UNCERTAIN"* ]]; then
+	pass "open PR lookup uncertainty retains stale checkpoint ownership"
+else
+	fail "open PR lookup uncertainty retains stale checkpoint ownership" \
+		"rc=${lookup_rc} ESCALATED=${ESCALATED} RECOVERED=${RECOVERED} output=${lookup_output}"
+fi
+
+OPEN_PR_LOOKUP_FAIL=0
 
 ESCALATED=0
 RECOVERED=0

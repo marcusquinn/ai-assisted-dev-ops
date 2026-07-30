@@ -87,6 +87,7 @@ FIXTURE_GH_COOLDOWN="${TMPDIR_TEST}/gh-secondary-cooldown.json"
 FIXTURE_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/gh-cooldown-events.jsonl"
 FIXTURE_BLOCKERS="${TMPDIR_TEST}/worker-progress-blockers.jsonl"
 export PULSE_DIAGNOSE_BLOCKER_LOG="$FIXTURE_BLOCKERS"
+unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
 
 # Create fixture pulse.log with 3+ distinct rule outcomes:
 # 1. PR #20329: escalated by dirty-pr-sweep (notify), then admin-bypass merge
@@ -109,6 +110,9 @@ cat > "$FIXTURE_LOGFILE" <<'FIXTURE'
 2026-04-21T19:10:05Z [pulse-wrapper] Per-cycle PR view cache enabled for duplicate repo#PR reads ttl=3600s (GH#23433/GH#23604)
 2026-04-21T19:30:00Z [pulse-dirty-pr-sweep] sweep complete: rebased=1 closed=0 notified=2
 2026-04-21T20:00:00Z [pulse-wrapper] Deterministic merge pass complete: merged=3, closed_conflicting=0, failed=0
+2026-04-21T20:01:00Z [pulse-wrapper] Review bot gate: PASS for PR #28869 in marcusquinn/aidevops
+2026-04-21T20:01:01Z [pulse-mystery] first unknown observation for PR #28869
+2026-04-21T20:01:02Z [pulse-mystery] second unknown observation for PR #28869
 FIXTURE
 
 cat >"$FIXTURE_BLOCKERS" <<'BLOCKERS'
@@ -206,6 +210,12 @@ if [[ "$*" == *"pr view"*"21876"* ]]; then
 JSON
   exit 0
 fi
+if [[ "$*" == *"pr view"*"28869"* ]]; then
+  cat <<'JSON'
+{"number":28869,"title":"fix pulse diagnostics","state":"OPEN","author":{"login":"worker"},"mergedAt":null,"closedAt":null,"createdAt":"2026-07-29T19:21:19Z","labels":[{"name":"origin:worker"}],"reviewDecision":"","mergeStateStatus":"BLOCKED","headRefName":"feature/auto-20260729-192119-gh28780","baseRefName":"main","isDraft":true}
+JSON
+  exit 0
+fi
 if [[ "$*" == *"issue view"*"21860"* ]]; then
   cat <<'JSON'
 {"number":21860,"title":"t3206: worker re-dispatch loops on same branch","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-04-26T08:00:00Z","closedAt":null,"labels":[{"name":"auto-dispatch"},{"name":"status:queued"}],"assignees":[]}
@@ -216,6 +226,14 @@ if [[ "$*" == *"issue view"*"99998"* ]]; then
   cat <<'JSON'
 {"number":99998,"title":"ghost issue","state":"CLOSED","author":{"login":"marcusquinn"},"createdAt":"2026-04-01T00:00:00Z","closedAt":"2026-04-02T00:00:00Z","labels":[],"assignees":[]}
 JSON
+  exit 0
+fi
+if [[ "$*" == *"issue view"*"28780"* ]]; then
+  echo '{"number":28780,"title":"draft discovery fixture","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-07-29T00:00:00Z","closedAt":null,"labels":[],"assignees":[]}'
+  exit 0
+fi
+if [[ "$*" == *"issue view"*"2878"* ]]; then
+  echo '{"number":2878,"title":"near match fixture","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-07-29T00:00:00Z","closedAt":null,"labels":[],"assignees":[]}'
   exit 0
 fi
 if [[ "$*" == *"api"*"issues/21860/timeline"* ]]; then
@@ -246,12 +264,8 @@ if [[ "$*" == *"api"*"comments"* ]]; then
   echo '[]'
   exit 0
 fi
-if [[ "$*" == *"pr list"*"gh21860"* ]]; then
-  echo '[]'
-  exit 0
-fi
 if [[ "$*" == *"pr list"* ]]; then
-  echo '[]'
+  echo '[{"number":28869,"headRefName":"feature/auto-20260729-192119-gh28780"},{"number":28870,"headRefName":"feature/auto-20260729-192120-gh287800"}]'
   exit 0
 fi
 echo '{}' >&2
@@ -364,6 +378,24 @@ output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
 
 assert_contains "verbose shows RAW:" "RAW:" "$output"
 
+# --- Test 8b: default PR output compacts unclassified events ---
+printf '\nTest 8b: default PR output compacts unclassified events\n'
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 28869 --repo marcusquinn/aidevops 2>&1) || true
+assert_contains "default output summarizes unclassified events" "Unclassified pulse events: 2" "$output"
+unclassified_rows=$(printf '%s' "$output" | grep -c 'Unclassified pulse log entry' 2>/dev/null || true)
+assert_eq "default output omits repeated unclassified rows" "0" "$unclassified_rows"
+
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 28869 --repo marcusquinn/aidevops --verbose 2>&1) || true
+unclassified_rows=$(printf '%s' "$output" | grep -c 'Unclassified pulse log entry' 2>/dev/null || true)
+assert_eq "verbose output retains every unclassified event" "2" "$unclassified_rows"
+assert_contains "verbose output retains unknown raw evidence" "second unknown observation" "$output"
+
 # --- Test 9: --json output ---
 printf '\nTest 9: --json output for PR\n'
 output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
@@ -376,6 +408,12 @@ if command -v jq >/dev/null 2>&1; then
 	assert_eq "JSON event_count for PR #20336" "4" "$json_event_count"
 	json_merged=$(echo "$output" | jq '.merged' 2>/dev/null || echo "false")
 	assert_eq "JSON merged=true for PR #20336" "true" "$json_merged"
+	output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+		PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+		PATH="${TMPDIR_TEST}:${PATH}" \
+		"$HELPER" pr 28869 --repo marcusquinn/aidevops --json 2>&1) || true
+	assert_eq "JSON preserves total event count" "3" "$(printf '%s' "$output" | jq '.event_count')"
+	assert_eq "JSON preserves both unclassified events" "2" "$(printf '%s' "$output" | jq '[.events[] | select(.rule_id == "unclassified")] | length')"
 fi
 
 # --- Test 10: missing pulse.log ---
@@ -531,6 +569,28 @@ output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
 	"$HELPER" issue 21860 --repo marcusquinn/aidevops --verbose 2>&1) || true
 
 assert_contains "verbose shows RAW: lines" "RAW:" "$output"
+
+# --- Test 17b: empty timeline discovers exact draft branch and rejects near matches ---
+printf '\nTest 17b: linked draft branch discovery and near-match rejection\n'
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" issue 28780 --repo marcusquinn/aidevops 2>&1) || true
+assert_contains "matching draft branch is linked" "PR #28869" "$output"
+assert_contains "issue output compacts unclassified events" "Unclassified pulse events: 2" "$output"
+
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" issue 2878 --repo marcusquinn/aidevops 2>&1) || true
+assert_contains "near-match issue has no linked PR" "no linked or worker PRs found" "$output"
+
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" issue 28780 --repo marcusquinn/aidevops --json 2>&1) || true
+assert_eq "JSON includes branch-discovered draft PR" "28869" "$(printf '%s' "$output" | jq '.linked_prs[0].number')"
+assert_eq "issue JSON preserves pulse event count" "3" "$(printf '%s' "$output" | jq '.linked_prs[0].pulse_event_count')"
 
 # --- Test 18: issue gh offline mode ---
 printf '\nTest 18: issue gh offline mode graceful degradation\n'

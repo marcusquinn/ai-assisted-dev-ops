@@ -190,7 +190,8 @@ has_worker_for_repo_issue() {
 #######################################
 # Thin orchestrator — runs read-only dedup layers in order.
 # Byte-for-byte behavioural equivalent of the pre-GH#18654 single-function
-# implementation. Each layer returns 0 to block dispatch or 1 to continue.
+# implementation. Layers return 0 to block or 1 to continue; Layer 4 returns 2
+# only for a worker draft that must reach stale-assignment recovery first.
 # The optimistic GitHub claim lock runs after the worker canary preflight in
 # _dispatch_launch_worker so a broken local runtime does not publish noisy
 # DISPATCH_CLAIM comments when no worker can start.
@@ -205,7 +206,17 @@ check_dispatch_dedup() {
 	_dedup_layer1_ledger_check "$issue_number" "$repo_slug" && return 0
 	_dedup_layer2_process_match "$issue_number" "$repo_slug" && return 0
 	_dedup_layer3_title_match "$title" && return 0
-	_dedup_layer4_pr_evidence "$issue_number" "$repo_slug" "$issue_title" && return 0
+	local _pr_evidence_rc=0
+	_dedup_layer4_pr_evidence "$issue_number" "$repo_slug" "$issue_title" || _pr_evidence_rc=$?
+	if [[ "$_pr_evidence_rc" -eq 0 ]]; then
+		return 0
+	fi
+	# A verified worker-owned draft is still a hard duplicate-dispatch block,
+	# but its assignment may need the existing stale-checkpoint transition.
+	# Unknown Layer 4 outcomes fail closed rather than weakening PR protection.
+	if [[ "$_pr_evidence_rc" -ne 1 && "$_pr_evidence_rc" -ne 2 ]]; then
+		return 0
+	fi
 	# Active dispatch comments and assignment/claim guards are expected
 	# cross-runner locks, not launch failures. Preserve the block while giving
 	# dispatch_max a distinct benign rc so the stage wrapper suppresses generic
@@ -213,6 +224,7 @@ check_dispatch_dedup() {
 	# current pulse cycle (GH#23541).
 	_dedup_layer5_dispatch_comment "$issue_number" "$repo_slug" "$self_login" && return 3
 	_dedup_layer6_assignee_and_stale "$issue_number" "$repo_slug" "$self_login" && return 3
+	[[ "$_pr_evidence_rc" -eq 2 ]] && return 0
 
 	return 1
 }
