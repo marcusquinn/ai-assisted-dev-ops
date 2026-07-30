@@ -1182,18 +1182,42 @@ _sync_open_pr() {
 			"$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	}
-	local _pr_url
+	local _stderr_file
+	_stderr_file=$(mktemp "${_body_file%/*}/sync-workflows-pr-stderr.XXXXXX") || {
+		rm -f "$_body_file"
+		printf '%s\t%s\t%s\tPR diagnostic-file creation failed\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	}
+	local _pr_url _pr_stderr _failure_detail
 	if ! _pr_url=$(gh_create_pr \
 		--repo "$_slug" \
 		--title "$_pr_title" \
 		--body-file "$_body_file" \
 		--head "$_branch_name" \
-		--base "$_default_branch" 2>&1); then
-		rm -f "$_body_file"
-		printf '%s\t%s\t%s\tgh_create_pr failed: %s\n' "$_slug" "$_status" "$_STATUS_FAILED" "$_pr_url"
+		--base "$_default_branch" 2>"$_stderr_file"); then
+		_pr_stderr=$(<"$_stderr_file")
+		[[ -s "$_stderr_file" ]] && command cat "$_stderr_file" >&2
+		_failure_detail=$(printf '%s %s' "$_pr_url" "$_pr_stderr" |
+			tr '\t\r\n' '   ' |
+			sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' |
+			cut -c1-500)
+		[[ -n "$_failure_detail" ]] || _failure_detail="no diagnostic output"
+		rm -f "$_body_file" "$_stderr_file"
+		printf '%s\t%s\t%s\tgh_create_pr failed: %s\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED" "$_failure_detail"
 		return 1
 	fi
-	rm -f "$_body_file"
+	[[ -s "$_stderr_file" ]] && command cat "$_stderr_file" >&2
+	_pr_url=$(printf '%s' "$_pr_url" |
+		tr '\t\r\n' '   ' |
+		sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+	rm -f "$_body_file" "$_stderr_file"
+	if [[ -z "$_pr_url" ]]; then
+		printf '%s\t%s\t%s\tgh_create_pr returned empty stdout\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	fi
 	printf '%s\t%s\t%s\tPR: %s\n' "$_slug" "$_status" "$_STATUS_APPLIED" "$_pr_url"
 	return 0
 }
