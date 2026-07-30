@@ -16,8 +16,10 @@ _AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE="unknown"
 # OWNER and MEMBER are authoritative webhook associations. COLLABORATOR is
 # ambiguous because GitHub also emits it for read/triage collaborators, so it
 # must be backed by the authenticated per-repository permission endpoint.
-# Other associations are confirmed non-maintainer inputs and do not spend an
-# additional API request.
+# Installation-authenticated REST may report a user-repository owner as
+# COLLABORATOR with permission=none; that anomaly receives a second, canonical
+# repository-identity check. Other associations are confirmed non-maintainer
+# inputs and do not spend an additional API request.
 #
 # Globals written:
 #   AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL
@@ -31,6 +33,7 @@ _gh_actor_has_repo_write_authority() {
 	local user="$2"
 	local association="${3:-NONE}"
 	local permission_value=""
+	local repo_owner="${repo_slug%%/*}"
 
 	AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
 	AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
@@ -64,6 +67,27 @@ _gh_actor_has_repo_write_authority() {
 			return 0
 			;;
 		*)
+			#aidevops:trust-boundary -- login/slug text alone is not authority.
+			# Require canonical repository metadata before repairing the known
+			# installation-auth owner anomaly.
+			local user_lower="" repo_owner_lower=""
+			user_lower=$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')
+			repo_owner_lower=$(printf '%s' "$repo_owner" | tr '[:upper:]' '[:lower:]')
+			if [[ "$user_lower" == "$repo_owner_lower" ]]; then
+				local repository_owner_rc=0
+				_gh_repository_owner_matches_actor "$repo_slug" "$user" || repository_owner_rc=$?
+				if [[ "$repository_owner_rc" -eq 0 ]]; then
+					AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL="OWNER"
+					AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="trusted-repository-owner"
+					export AIDEVOPS_GH_ACTOR_AUTHORITY_LEVEL AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+					return 0
+				fi
+				if [[ "$repository_owner_rc" -eq 2 ]]; then
+					AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="repository-owner-lookup-failed:${AIDEVOPS_GH_REPO_OWNER_REASON:-$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE}"
+					export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
+					return 2
+				fi
+			fi
 			AIDEVOPS_GH_ACTOR_AUTHORITY_REASON="insufficient-permission:${permission_value:-none}"
 			export AIDEVOPS_GH_ACTOR_AUTHORITY_REASON
 			return 1
@@ -77,6 +101,79 @@ _gh_actor_has_repo_write_authority() {
 		;;
 	esac
 
+	return 1
+}
+
+#######################################
+# Verify that an actor is the current owner of a canonical user repository.
+#
+# A matching slug prefix is only a candidate signal: repositories can be
+# transferred or renamed and old REST paths may redirect. This check requires
+# the response's canonical full_name to equal the requested slug and its owner
+# to be a User whose current login exactly matches the issue actor.
+#
+# Globals written:
+#   AIDEVOPS_GH_REPO_OWNER_REASON
+#
+# Args: $1=repo_slug owner/repo, $2=actor login
+# Returns: 0=owner match, 1=canonical non-match, 2=lookup/argument failure.
+#######################################
+_gh_repository_owner_matches_actor() {
+	local repo_slug="$1"
+	local user="$2"
+	local repository_json=""
+	local repository_identity=""
+	local canonical_slug=""
+	local owner_login=""
+	local owner_type=""
+	local requested_slug_lower=""
+	local canonical_slug_lower=""
+	local user_lower=""
+	local owner_login_lower=""
+
+	AIDEVOPS_GH_REPO_OWNER_REASON="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
+	export AIDEVOPS_GH_REPO_OWNER_REASON
+
+	if [[ ! "$repo_slug" =~ ^[^/]+/[^/]+$ || -z "$user" ]]; then
+		AIDEVOPS_GH_REPO_OWNER_REASON="invalid-repository-identity"
+		export AIDEVOPS_GH_REPO_OWNER_REASON
+		return 2
+	fi
+	if ! declare -F _rest_api_call >/dev/null 2>&1; then
+		AIDEVOPS_GH_REPO_OWNER_REASON="rest-helper-unavailable"
+		export AIDEVOPS_GH_REPO_OWNER_REASON
+		return 2
+	fi
+
+	repository_json=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="repository-owner-identity-rest" \
+		_rest_api_call read gh api "/repos/${repo_slug}" 2>/dev/null) || repository_json=""
+	if [[ -z "$repository_json" ]]; then
+		AIDEVOPS_GH_REPO_OWNER_REASON="api-failure"
+		export AIDEVOPS_GH_REPO_OWNER_REASON
+		return 2
+	fi
+
+	repository_identity=$(printf '%s' "$repository_json" | jq -r \
+		'[.full_name // "", .owner.login // "", .owner.type // ""] | @tsv' 2>/dev/null) || repository_identity=""
+	IFS=$'\t' read -r canonical_slug owner_login owner_type <<<"$repository_identity"
+	if [[ -z "$canonical_slug" || -z "$owner_login" || -z "$owner_type" ]]; then
+		AIDEVOPS_GH_REPO_OWNER_REASON="malformed-response"
+		export AIDEVOPS_GH_REPO_OWNER_REASON
+		return 2
+	fi
+	requested_slug_lower=$(printf '%s' "$repo_slug" | tr '[:upper:]' '[:lower:]')
+	canonical_slug_lower=$(printf '%s' "$canonical_slug" | tr '[:upper:]' '[:lower:]')
+	user_lower=$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')
+	owner_login_lower=$(printf '%s' "$owner_login" | tr '[:upper:]' '[:lower:]')
+	if [[ "$canonical_slug_lower" == "$requested_slug_lower" && "$owner_login_lower" == "$user_lower" && "$owner_type" == "User" ]]; then
+		AIDEVOPS_GH_REPO_OWNER_REASON="matched"
+		export AIDEVOPS_GH_REPO_OWNER_REASON
+		return 0
+	fi
+
+	AIDEVOPS_GH_REPO_OWNER_REASON="canonical-owner-mismatch"
+	export AIDEVOPS_GH_REPO_OWNER_REASON
 	return 1
 }
 
@@ -133,7 +230,7 @@ _gh_collaborator_permission_lookup() {
 		"")
 			in_body=1
 			;;
-		\{* | \[* )
+		\{* | \[*)
 			in_body=1
 			body="${body}${line}"$'\n'
 			;;

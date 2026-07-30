@@ -13,6 +13,19 @@ TESTS_FAILED=0
 MOCK_PERMISSION="write"
 MOCK_PERMISSION_RC=0
 MOCK_LOOKUPS=0
+MOCK_REPOSITORY_JSON='{"full_name":"owner/repo","owner":{"login":"owner","type":"User"}}'
+MOCK_REPOSITORY_RC=0
+
+_rest_api_call() {
+	local operation="$1"
+	local cli="$2"
+	local command="$3"
+	local endpoint="$4"
+	[[ "$operation" == "read" && "$cli" == "gh" && "$command" == "api" && "$endpoint" == /repos/* ]] || return 2
+	[[ "$MOCK_REPOSITORY_RC" -eq 0 ]] || return "$MOCK_REPOSITORY_RC"
+	printf '%s\n' "$MOCK_REPOSITORY_JSON"
+	return 0
+}
 
 _gh_collaborator_permission_lookup() {
 	local repo_slug="$1"
@@ -49,6 +62,28 @@ main() {
 	check_result "OWNER association is authoritative without a lookup" 0 "trusted-association" \
 		_gh_actor_has_repo_write_authority "" "" OWNER
 	[[ "$MOCK_LOOKUPS" -eq 0 ]] || TESTS_FAILED=$((TESTS_FAILED + 1))
+
+	MOCK_PERMISSION="none"
+	MOCK_PERMISSION_RC=0
+	check_result "repository owner login is authoritative despite collaborator metadata" 0 "trusted-repository-owner" \
+		_gh_actor_has_repo_write_authority owner/repo owner COLLABORATOR
+	[[ "$MOCK_LOOKUPS" -eq 1 && "$AIDEVOPS_GH_REPO_OWNER_REASON" == "matched" ]] || TESTS_FAILED=$((TESTS_FAILED + 1))
+
+	check_result "repository owner identity comparison is case-insensitive" 0 "trusted-repository-owner" \
+		_gh_actor_has_repo_write_authority Owner/Repo owner COLLABORATOR
+
+	MOCK_REPOSITORY_JSON='{"full_name":"new-owner/repo","owner":{"login":"new-owner","type":"User"}}'
+	check_result "redirected stale owner slug is not authoritative" 1 "insufficient-permission:none" \
+		_gh_actor_has_repo_write_authority owner/repo owner COLLABORATOR
+
+	MOCK_REPOSITORY_JSON='{"full_name":"owner/repo","owner":{"login":"owner","type":"Organization"}}'
+	check_result "organization owner text does not authorize a user" 1 "insufficient-permission:none" \
+		_gh_actor_has_repo_write_authority owner/repo owner COLLABORATOR
+
+	check_result "malformed repository slug fails closed" 2 "repository-owner-lookup-failed:invalid-repository-identity" \
+		_gh_actor_has_repo_write_authority owner/repo/extra owner COLLABORATOR
+
+	MOCK_REPOSITORY_JSON='{"full_name":"owner/repo","owner":{"login":"owner","type":"User"}}'
 
 	MOCK_PERMISSION="write"
 	MOCK_PERMISSION_RC=0
