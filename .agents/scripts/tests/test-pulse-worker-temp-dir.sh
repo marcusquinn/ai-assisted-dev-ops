@@ -105,6 +105,18 @@ PY
 	return 0
 }
 
+test_cleanup_sweeps_stale_todo_sync_workspace() {
+	local workspace="${HOME}/.aidevops/.agent-workspace/tmp/pulse-todo-sync.STALE1"
+	local marker="${workspace}/.aidevops-pulse-todo-sync-owner"
+	local old_epoch=0
+	old_epoch=$(($(date +%s) - 7200))
+	mkdir -p "${workspace}/repo/.git"
+	printf '%s\t%s\t%s\t%s\n' "v1" "999999" "$old_epoch" "dead-owner" >"$marker"
+	aidevops_pulse_tmp_cleanup 60
+	[[ ! -e "$workspace" && ! -L "$workspace" ]] || return 1
+	return 0
+}
+
 main() {
 	setup
 	if test_fallback_home_workspace; then record "fallback home pulse tmp" 0; else record "fallback home pulse tmp" 1; fi
@@ -112,6 +124,7 @@ main() {
 	if test_override_wins; then record "override wins" 0; else record "override wins" 1; fi
 	if test_worker_log_setup_uses_per_user_dir; then record "worker log setup avoids global tmp" 0; else record "worker log setup avoids global tmp" 1; fi
 	if test_cleanup_removes_only_old_pulse_logs; then record "cleanup removes old pulse logs" 0; else record "cleanup removes old pulse logs" 1; fi
+	if test_cleanup_sweeps_stale_todo_sync_workspace; then record "cleanup sweeps stale TODO-sync workspaces" 0; else record "cleanup sweeps stale TODO-sync workspaces" 1; fi
 	teardown
 	printf '\nPassed: %s, Failed: %s\n' "$PASS" "$FAIL"
 	[[ "$FAIL" -eq 0 ]] || return 1

@@ -28,6 +28,12 @@ _PULSE_TODO_SYNC_WORKSPACE=""
 _PULSE_TODO_SYNC_WORKSPACE_ROOT=""
 _PULSE_TODO_SYNC_OWNER_PID=""
 _PULSE_TODO_SYNC_OWNER_START=""
+_PTSW_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || _PTSW_SCRIPT_DIR=""
+
+if ! declare -F _file_mtime_epoch >/dev/null 2>&1 && [[ -f "${_PTSW_SCRIPT_DIR}/portable-stat.sh" ]]; then
+	# shellcheck source=portable-stat.sh
+	source "${_PTSW_SCRIPT_DIR}/portable-stat.sh"
+fi
 
 _ptsw_process_start_fingerprint() {
 	local process_pid="$1"
@@ -323,15 +329,78 @@ _ptsw_move_to_recoverable_trash() {
 	return 0
 }
 
+_ptsw_remove_stale_workspace() {
+	local workspace_root="$1"
+	local identity="$2"
+	local mode="${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-delete}"
+	case "$mode" in
+	delete | direct)
+		_ptsw_validate_workspace_path "$workspace_root" 1 || return 1
+		rm -rf "$workspace_root" 2>/dev/null || return 1
+		[[ ! -e "$workspace_root" && ! -L "$workspace_root" ]] || return 1
+		_PTSW_REMOVE_MODE="delete"
+		return 0
+		;;
+	trash | recoverable)
+		_ptsw_move_to_recoverable_trash "$workspace_root" "$identity" || return 1
+		_PTSW_REMOVE_MODE="trash"
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_ptsw_count_workspace_candidates() {
+	local temp_root="$1"
+	local count=0
+	local workspace_root=""
+	for workspace_root in "$temp_root"/pulse-todo-sync.*; do
+		[[ -e "$workspace_root" || -L "$workspace_root" ]] || continue
+		count=$((count + 1))
+	done
+	printf '%s\n' "$count"
+	return 0
+}
+
+_ptsw_temp_root_usage_kib() {
+	local temp_root="$1"
+	local usage=""
+	usage=$(du -sk "$temp_root" 2>/dev/null | awk '{print $1}') || return 1
+	[[ "$usage" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$usage"
+	return 0
+}
+
+_ptsw_effective_recovery_cap() {
+	local temp_root="$1"
+	local configured_cap="$2"
+	local count_threshold="${PULSE_TODO_SYNC_PRESSURE_COUNT_THRESHOLD:-50}"
+	local size_threshold_mib="${PULSE_TODO_SYNC_PRESSURE_MIB_THRESHOLD:-10240}"
+	local candidate_count=0
+	local usage_kib=0
+	local size_threshold_kib=0
+	[[ "$configured_cap" =~ ^[1-9][0-9]*$ ]] || configured_cap=50
+	[[ "$count_threshold" =~ ^[1-9][0-9]*$ ]] || count_threshold=50
+	[[ "$size_threshold_mib" =~ ^[1-9][0-9]*$ ]] || size_threshold_mib=10240
+	candidate_count=$(_ptsw_count_workspace_candidates "$temp_root") || candidate_count=0
+	usage_kib=$(_ptsw_temp_root_usage_kib "$temp_root") || usage_kib=0
+	size_threshold_kib=$((size_threshold_mib * 1024))
+	if [[ "$candidate_count" -gt "$configured_cap" && "$candidate_count" -ge "$count_threshold" ]]; then
+		configured_cap="$candidate_count"
+	elif [[ "$usage_kib" -ge "$size_threshold_kib" && "$candidate_count" -gt "$configured_cap" ]]; then
+		configured_cap="$candidate_count"
+	fi
+	printf '%s\n' "$configured_cap"
+	return 0
+}
+
 _ptsw_workspace_mtime_epoch() {
 	local workspace_root="$1"
 	local mtime_epoch=""
-	if declare -F _file_mtime_epoch >/dev/null 2>&1; then
-		mtime_epoch=$(_file_mtime_epoch "$workspace_root" 2>/dev/null) || mtime_epoch=""
-	else
-		mtime_epoch=$(stat -f '%m' "$workspace_root" 2>/dev/null \
-			|| stat -c '%Y' "$workspace_root" 2>/dev/null) || mtime_epoch=""
-	fi
+	declare -F _file_mtime_epoch >/dev/null 2>&1 || return 1
+	mtime_epoch=$(_file_mtime_epoch "$workspace_root" 2>/dev/null) || mtime_epoch=""
 	[[ "$mtime_epoch" =~ ^[1-9][0-9]*$ ]] || return 1
 	printf '%s\n' "$mtime_epoch"
 	return 0
@@ -420,8 +489,8 @@ _ptsw_classify_legacy_workspace_activity() {
 	local workspace_root="$1"
 	_PTSW_LEGACY_ACTIVITY_STATE="$_PTSW_STATE_UNKNOWN"
 	[[ "$_PTSW_LEGACY_SNAPSHOTS_READY" == "1" ]] || _ptsw_capture_legacy_process_snapshots
-	if _ptsw_cwd_snapshot_contains_workspace "$workspace_root" \
-		|| _ptsw_command_snapshot_contains_workspace "$workspace_root"; then
+	if _ptsw_cwd_snapshot_contains_workspace "$workspace_root" ||
+		_ptsw_command_snapshot_contains_workspace "$workspace_root"; then
 		_PTSW_LEGACY_ACTIVITY_STATE="active"
 		return 0
 	fi
@@ -492,11 +561,47 @@ _ptsw_migrate_legacy_workspace() {
 	return 1
 }
 
+_ptsw_sweep_zero() {
+	printf '0\n'
+	return 0
+}
+
+_ptsw_remove_dead_owner_workspace() {
+	local workspace_root="$1"
+	local identity="$2"
+	local age_secs="$3"
+	local owner_pid="$4"
+	local owner_start="$5"
+	local owner_created="$6"
+	local owner_detail="owner_pid=${owner_pid}"
+	local remove_mode=""
+	# Recheck the mutable ownership record immediately before removal.
+	if ! _ptsw_validate_workspace_path "$workspace_root" 1 ||
+		! _ptsw_read_owner_marker "$workspace_root" ||
+		[[ "$_PTSW_OWNER_PID" != "$owner_pid" || "$_PTSW_OWNER_START" != "$owner_start" ||
+			"$_PTSW_OWNER_CREATED" != "$owner_created" ]]; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-marker-changed" "$identity"
+		return 1
+	fi
+	_ptsw_classify_owner "$owner_pid" "$owner_start"
+	if [[ "$_PTSW_OWNER_STATE" != "$_PTSW_OWNER_STALE" ]]; then
+		_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-state-changed" "$identity"
+		return 1
+	fi
+	if _ptsw_remove_stale_workspace "$workspace_root" "$identity"; then
+		remove_mode="${_PTSW_REMOVE_MODE:-unknown}"
+		_ptsw_log_sweep_outcome "removed" "dead-owner" "$identity" "age=${age_secs}s owner_pid=${owner_pid} mode=${remove_mode}"
+		return 0
+	fi
+	_ptsw_log_sweep_outcome "failure" "stale-remove-failed" "$identity" "$owner_detail"
+	return 1
+}
+
 _ptsw_sweep_stale_workspaces() {
 	local temp_root=""
 	local now_epoch=""
 	local grace_secs=""
-	local max_recoveries="${PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN:-5}"
+	local max_recoveries="${PULSE_TODO_SYNC_MAX_RECOVERIES_PER_RUN:-50}"
 	local workspace_root=""
 	local identity=""
 	local safe_identity=""
@@ -506,17 +611,19 @@ _ptsw_sweep_stale_workspaces() {
 	local owner_start=""
 	local owner_created=""
 	local owner_detail=""
-	[[ "$max_recoveries" =~ ^[1-9][0-9]*$ ]] || max_recoveries=5
+	_PTSW_REMOVE_MODE=""
+	[[ "$max_recoveries" =~ ^[1-9][0-9]*$ ]] || max_recoveries=50
 	temp_root=$(_ptsw_resolve_temp_root 0) || {
-		printf '0\n'
+		_ptsw_sweep_zero
 		return 0
 	}
+	max_recoveries=$(_ptsw_effective_recovery_cap "$temp_root" "$max_recoveries") || max_recoveries=50
 	now_epoch=$(date +%s 2>/dev/null) || {
-		printf '0\n'
+		_ptsw_sweep_zero
 		return 0
 	}
 	grace_secs=$(_ptsw_workspace_grace_secs) || {
-		printf '0\n'
+		_ptsw_sweep_zero
 		return 0
 	}
 	_PTSW_LEGACY_SNAPSHOTS_READY=0
@@ -525,8 +632,8 @@ _ptsw_sweep_stale_workspaces() {
 		[[ -e "$workspace_root" || -L "$workspace_root" ]] || continue
 		safe_identity=$(_ptsw_safe_identity "$workspace_root")
 		if ! _ptsw_validate_workspace_path "$workspace_root" 1; then
-			if [[ "$_PTSW_VALIDATION_REASON" == "$_PTSW_REASON_MISSING_OWNER_MARKER" ]] \
-				&& _ptsw_migrate_legacy_workspace "$workspace_root" "$safe_identity" "$now_epoch" "$legacy_migrated"; then
+			if [[ "$_PTSW_VALIDATION_REASON" == "$_PTSW_REASON_MISSING_OWNER_MARKER" ]] &&
+				_ptsw_migrate_legacy_workspace "$workspace_root" "$safe_identity" "$now_epoch" "$legacy_migrated"; then
 				legacy_migrated=$((legacy_migrated + 1))
 				removed=$((removed + 1))
 				continue
@@ -568,25 +675,9 @@ _ptsw_sweep_stale_workspaces() {
 			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "recovery-cap" "$identity" "cap=${max_recoveries}"
 			continue
 		fi
-		# Recheck the mutable ownership record immediately before the move.
-		if ! _ptsw_validate_workspace_path "$workspace_root" 1 ||
-			! _ptsw_read_owner_marker "$workspace_root" ||
-			[[ "$_PTSW_OWNER_PID" != "$owner_pid" || "$_PTSW_OWNER_START" != "$owner_start" ||
-				"$_PTSW_OWNER_CREATED" != "$owner_created" ]]; then
-			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-marker-changed" "$identity"
-			continue
-		fi
-		_ptsw_classify_owner "$owner_pid" "$owner_start"
-		if [[ "$_PTSW_OWNER_STATE" != "$_PTSW_OWNER_STALE" ]]; then
-			_ptsw_log_sweep_outcome "$_PTSW_OUTCOME_SKIPPED" "owner-state-changed" "$identity"
-			continue
-		fi
-		if _ptsw_move_to_recoverable_trash "$workspace_root" "$identity"; then
+		if _ptsw_remove_dead_owner_workspace "$workspace_root" "$identity" "$age_secs" "$owner_pid" "$owner_start" "$owner_created"; then
 			marked_removed=$((marked_removed + 1))
 			removed=$((removed + 1))
-			_ptsw_log_sweep_outcome "removed" "dead-owner" "$identity" "age=${age_secs}s owner_pid=${owner_pid} mode=trash"
-		else
-			_ptsw_log_sweep_outcome "failure" "trash-move-failed" "$identity" "$owner_detail"
 		fi
 	done
 	printf '%s\n' "$removed"

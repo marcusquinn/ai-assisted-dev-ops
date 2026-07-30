@@ -57,6 +57,8 @@ aidevops_pulse_worker_log_candidates() {
 aidevops_pulse_tmp_cleanup() {
 	local max_age_minutes="${1:-2880}"
 	local root=""
+	local helper=""
+	local temp_root=""
 	[[ "$max_age_minutes" =~ ^[0-9]+$ ]] || max_age_minutes=2880
 	root=$(aidevops_pulse_tmp_root) || return 0
 	# Best-effort cleanup with exact minutes on macOS/Linux. Files currently open
@@ -85,6 +87,15 @@ for name in os.listdir(root):
     except OSError:
         pass
 PY
+	fi
+	helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pulse-todo-sync-workspace.sh"
+	if [[ -f "$helper" ]]; then
+		# shellcheck source=pulse-todo-sync-workspace.sh
+		source "$helper"
+		temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+		AIDEVOPS_TEMP_DIR="$temp_root" \
+			PULSE_TODO_SYNC_STALE_CLEANUP_MODE="${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-delete}" \
+			_ptsw_sweep_stale_workspaces >/dev/null || true
 	fi
 	return 0
 }
