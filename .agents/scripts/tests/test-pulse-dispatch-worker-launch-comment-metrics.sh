@@ -146,6 +146,16 @@ set_issue_status() {
 	return 0
 }
 
+transition_owned_issue_status() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local owner_login="$3"
+	local source_status="$4"
+	local target_status="$5"
+	STATUS_MUTATIONS="${issue_number}|${repo_slug}|${owner_login}|${source_status}|${target_status}"
+	return 0
+}
+
 original_script_dir="$SCRIPT_DIR"
 SCRIPT_DIR="$TEST_TMP"
 _claim_comment_id="77"
@@ -155,7 +165,7 @@ PULSE_DISPATCH_STAGGER_SECONDS=0
 export TEST_LEDGER_RC=0
 LOGFILE="${TEST_TMP}/pulse.log" _dlw_post_launch_hooks \
 	"123" "owner/repo" "runner-a" "$$" "issue-123" "standard" "test-model" "${TEST_TMP}/worktree" "attempt-123"
-if [[ "$STATUS_MUTATIONS" != "123|owner/repo|in-progress|--add-assignee runner-a" ]]; then
+if [[ "$STATUS_MUTATIONS" != "123|owner/repo|runner-a|queued|in-progress" ]]; then
 	fail "successful worker registration did not transition queued issue to in-progress: ${STATUS_MUTATIONS:-none}"
 fi
 if ! grep -Fq 'aidevops:dispatch lease_token=lease-123 device=device-a session=issue-123 attempt_id=attempt-123 claim_id=77' "$GH_CALLS_FILE"; then

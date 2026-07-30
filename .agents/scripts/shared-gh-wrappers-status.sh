@@ -702,6 +702,84 @@ set_issue_status() {
 }
 
 #######################################
+# Transition an owned issue between accepted worker states without ever
+# removing the source state before the target state has been accepted.
+#
+# The source label and owner are checked against the same REST snapshot used to
+# plan targeted mutations. The target is added before sibling statuses are
+# removed. There is deliberately no native fallback: if REST preflight or a
+# mutation fails, retaining the source label (or a temporary source+target
+# overlap) is safer than creating an unowned gap or overwriting a takeover.
+#
+# Args:
+#   $1 — issue number
+#   $2 — repo slug (owner/repo)
+#   $3 — required assignee login
+#   $4 — required source status
+#   $5 — target status
+# Returns: 0 on complete transition, 1 on precondition/mutation failure,
+#          2 on invalid arguments
+#######################################
+transition_owned_issue_status() {
+	gh_record_call rest transition_owned_issue_status 2>/dev/null || true
+	local issue_num="$1"
+	local repo_slug="$2"
+	local owner_login="$3"
+	local source_status="$4"
+	local target_status="$5"
+
+	if [[ -z "$issue_num" || -z "$repo_slug" || -z "$owner_login" || -z "$source_status" || -z "$target_status" ]]; then
+		printf 'transition_owned_issue_status: all arguments are required\n' >&2
+		return 2
+	fi
+	if [[ "$source_status" == "$target_status" ]]; then
+		printf 'transition_owned_issue_status: source and target statuses must differ\n' >&2
+		return 2
+	fi
+
+	local _candidate=""
+	local _status=""
+	local _valid=0
+	for _candidate in "$source_status" "$target_status"; do
+		_valid=0
+		for _status in "${ISSUE_STATUS_LABELS[@]}"; do
+			if [[ "$_status" == "$_candidate" ]]; then
+				_valid=1
+				break
+			fi
+		done
+		if [[ "$_valid" -eq 0 ]]; then
+			printf 'transition_owned_issue_status: invalid status "%s" (valid: %s)\n' \
+				"$_candidate" "${ISSUE_STATUS_LABELS[*]}" >&2
+			return 2
+		fi
+	done
+
+	if ! ensure_status_labels_exist "$repo_slug"; then
+		print_warning "gh-wrapper: unable to verify status-label contract for ${repo_slug}"
+		return 1
+	fi
+
+	local -a _status_flags=()
+	local _label=""
+	local _status_label=""
+	for _label in "${ISSUE_STATUS_LABELS[@]}"; do
+		printf -v _status_label 'status:%s' "$_label"
+		if [[ "$_label" == "$target_status" ]]; then
+			_status_flags+=(--add-label "$_status_label")
+		else
+			_status_flags+=(--remove-label "$_status_label")
+		fi
+	done
+
+	AIDEVOPS_GH_ROUTE_DECISION="owned-status-transition-rest-deltas" \
+		_rest_issue_edit_preserving_deltas "$issue_num" --repo "$repo_slug" \
+		--require-label "status:${source_status}" --require-assignee "$owner_login" \
+		--delta-order add-first "${_status_flags[@]}"
+	return $?
+}
+
+#######################################
 # gh_issue_view — drop-in replacement for gh issue view.  (t2689)
 # Routes directly to REST (`gh api GET /repos/{owner}/{repo}/issues/{N}`) when
 # GraphQL remaining is below the fallback threshold, and still falls back to

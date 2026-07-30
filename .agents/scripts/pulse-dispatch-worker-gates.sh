@@ -39,12 +39,12 @@ _dlw_mark_worker_in_progress() {
 		echo "[dispatch_with_dedup] Worker registration for #${issue_number} has non-live PID ${worker_pid}; retaining status:queued for recovery" >>"$LOGFILE"
 		return 1
 	fi
-	if ! declare -F set_issue_status >/dev/null 2>&1; then
-		echo "[dispatch_with_dedup] Cannot transition #${issue_number} to status:in-progress: status helper unavailable" >>"$LOGFILE"
+	if ! declare -F transition_owned_issue_status >/dev/null 2>&1; then
+		echo "[dispatch_with_dedup] Cannot transition #${issue_number} to status:in-progress: ownership-transition helper unavailable" >>"$LOGFILE"
 		return 1
 	fi
-	if ! set_issue_status "$issue_number" "$repo_slug" "in-progress" \
-		--add-assignee "$self_login" >/dev/null 2>&1; then
+	if ! transition_owned_issue_status "$issue_number" "$repo_slug" "$self_login" \
+		"queued" "in-progress" >/dev/null 2>&1; then
 		echo "[dispatch_with_dedup] Failed to transition registered worker #${issue_number} to status:in-progress; retaining queued recovery signal" >>"$LOGFILE"
 		return 1
 	fi

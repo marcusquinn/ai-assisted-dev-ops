@@ -688,9 +688,10 @@ _rest_issue_remove_label_deltas() {
 
 #######################################
 # Apply filtered deltas in the phase-specific safe order. Passthrough metadata
-# adds first so a rejected replacement leaves existing values intact. Managed
+# adds first so a rejected replacement leaves existing values intact. General
 # status transitions remove first so a failed target add cannot create a dual
-# status state.
+# status state. Ownership handoffs may explicitly use add-first when continuous
+# acceptance is more important than avoiding a temporary dual-status overlap.
 _rest_issue_apply_delta_plan() {
 	local issue_path="$1"
 	local adds_l="$2"
@@ -724,6 +725,8 @@ _rest_issue_edit_preserving_deltas() {
 	shift || true
 	local repo=""
 	local delta_order="add-first"
+	local required_label=""
+	local required_assignee=""
 	local -a delta_add_labels=() delta_rm_labels=() delta_add_assignees=() delta_rm_assignees=()
 	local arg="" value="" token=""
 	while [[ $# -gt 0 ]]; do
@@ -731,6 +734,8 @@ _rest_issue_edit_preserving_deltas() {
 		[[ "$arg" == *=* ]] && { value="${arg#*=}"; arg="${arg%%=*}"; shift; } || { value="${2:-}"; shift 2; }
 		case "$arg" in
 		--repo) repo="$value" ;;
+		--require-label) required_label="$value" ;;
+		--require-assignee) required_assignee="$value" ;;
 		--delta-order)
 			[[ "$value" == "add-first" || "$value" == "remove-first" ]] || return 1
 			delta_order="$value"
@@ -754,6 +759,13 @@ _rest_issue_edit_preserving_deltas() {
 	_rest_issue_delta_snapshot_valid "$current_json" || return 1
 	current_labels=$(printf '%s' "$current_json" | jq -r '.labels[].name') || return 1
 	current_assignees=$(printf '%s' "$current_json" | jq -r '.assignees[].login') || return 1
+	_REST_ISSUE_DELTA_FAILURE_STAGE="precondition"
+	if [[ -n "$required_label" ]] && ! _rest_lines_contain "$current_labels" "$required_label"; then
+		return 1
+	fi
+	if [[ -n "$required_assignee" ]] && ! _rest_lines_contain "$current_assignees" "$required_assignee"; then
+		return 1
+	fi
 
 	local adds_l="" rms_l="" adds_a="" rms_a=""
 	adds_l=$(_rest_filter_issue_deltas "$current_labels" "$(printf '%s\n' "${delta_add_labels[@]}")" "" add) || return 1

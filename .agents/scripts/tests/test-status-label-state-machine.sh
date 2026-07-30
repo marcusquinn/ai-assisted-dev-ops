@@ -790,6 +790,109 @@ test_failed_extra_add_preserves_existing_label() {
 	return 0
 }
 
+#######################################
+# TEST 20: Owned worker transitions add the accepted target before removing the
+# queued recovery signal, then converge to one status.
+#######################################
+test_owned_transition_adds_target_before_source_removal() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:queued"}],"assignees":[{"login":"runner-a"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	transition_owned_issue_status 1623 "owner/repo" "runner-a" "queued" "in-progress"
+	local rc=$?
+	local final_statuses=""
+	local add_line=""
+	local remove_line=""
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	add_line=$(grep -n '^api -X POST /repos/owner/repo/issues/1623/labels -f labels\[\]=status:in-progress$' \
+		"$GH_CALLS_FILE" | cut -d: -f1 || true)
+	remove_line=$(grep -n '^api -X DELETE /repos/owner/repo/issues/1623/labels/status%3Aqueued$' \
+		"$GH_CALLS_FILE" | cut -d: -f1 || true)
+	if [[ "$rc" -eq 0 && "$final_statuses" == "status:in-progress" && -n "$add_line" && -n "$remove_line" && "$add_line" -lt "$remove_line" ]]; then
+		print_result "owned transition adds target before removing source" 0
+	else
+		print_result "owned transition adds target before removing source" 1 \
+			"(rc=${rc}; statuses=${final_statuses}; add=${add_line}; remove=${remove_line}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 21: A rejected target add leaves the queued recovery signal intact and
+# never falls back to an ordering-unknown native mutation.
+#######################################
+test_owned_transition_failed_add_preserves_source() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:queued"}],"assignees":[{"login":"runner-a"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL_METHOD=POST
+	transition_owned_issue_status 1624 "owner/repo" "runner-a" "queued" "in-progress" >/dev/null 2>&1
+	local rc=$?
+	local final_statuses=""
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -ne 0 && "$final_statuses" == "status:queued" ]] &&
+		! grep -q '^issue edit 1624 ' "$GH_CALLS_FILE"; then
+		print_result "failed owned target add preserves queued source" 0
+	else
+		print_result "failed owned target add preserves queued source" 1 \
+			"(rc=${rc}; statuses=${final_statuses}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 22: A failed source removal leaves an accepted overlap rather than a
+# zero-status ownership gap.
+#######################################
+test_owned_transition_failed_remove_preserves_overlap() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:queued"}],"assignees":[{"login":"runner-a"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL_METHOD=DELETE
+	transition_owned_issue_status 1625 "owner/repo" "runner-a" "queued" "in-progress" >/dev/null 2>&1
+	local rc=$?
+	local accepted_count=0
+	accepted_count=$(jq '[.labels[].name | select(. == "status:queued" or . == "status:in-progress")] | length' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -ne 0 && "$accepted_count" -eq 2 ]] &&
+		! grep -q '^issue edit 1625 ' "$GH_CALLS_FILE"; then
+		print_result "failed owned source removal preserves accepted overlap" 0
+	else
+		print_result "failed owned source removal preserves accepted overlap" 1 \
+			"(rc=${rc}; accepted=${accepted_count}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 23: The transition snapshot must still contain both the expected source
+# status and expected owner before any mutation starts.
+#######################################
+test_owned_transition_preconditions_fail_closed() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:in-review"}],"assignees":[{"login":"runner-a"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	transition_owned_issue_status 1626 "owner/repo" "runner-a" "queued" "in-progress" >/dev/null 2>&1
+	local source_rc=$?
+	local source_writes=0
+	source_writes=$(grep -Ec '^api -X (POST|DELETE) /repos/owner/repo/issues/1626/' "$GH_CALLS_FILE" || true)
+
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:queued"}],"assignees":[{"login":"runner-b"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	transition_owned_issue_status 1627 "owner/repo" "runner-a" "queued" "in-progress" >/dev/null 2>&1
+	local owner_rc=$?
+	local owner_writes=0
+	owner_writes=$(grep -Ec '^api -X (POST|DELETE) /repos/owner/repo/issues/1627/' "$GH_CALLS_FILE" || true)
+
+	if [[ "$source_rc" -ne 0 && "$owner_rc" -ne 0 && "$source_writes" -eq 0 && "$owner_writes" -eq 0 ]]; then
+		print_result "owned transition preconditions fail closed" 0
+	else
+		print_result "owned transition preconditions fail closed" 1 \
+			"(source_rc=${source_rc}; owner_rc=${owner_rc}; source_writes=${source_writes}; owner_writes=${owner_writes}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -814,6 +917,10 @@ main() {
 	test_failed_target_add_never_strands_dual_statuses
 	test_failed_extra_add_preserves_existing_assignee
 	test_failed_extra_add_preserves_existing_label
+	test_owned_transition_adds_target_before_source_removal
+	test_owned_transition_failed_add_preserves_source
+	test_owned_transition_failed_remove_preserves_overlap
+	test_owned_transition_preconditions_fail_closed
 
 	printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then
