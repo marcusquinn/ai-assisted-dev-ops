@@ -63,6 +63,22 @@ assert_eq() {
 	return 0
 }
 
+assert_precedes() {
+	local label="$1"
+	local first="$2"
+	local second="$3"
+	local haystack="$4"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$haystack" == *"$first"*"$second"* ]]; then
+		printf '%sPASS%s: %s\n' "$TEST_GREEN" "$TEST_NC" "$label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		printf '%sFAIL%s: %s\n' "$TEST_RED" "$TEST_NC" "$label"
+		printf '  expected %s before %s\n' "$first" "$second"
+	fi
+	return 0
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="${SCRIPT_DIR}/pulse-check-helper.sh"
 CORE_ROUTINES="${SCRIPT_DIR}/routines/core-routines.sh"
@@ -162,6 +178,19 @@ if [[ " $* " == *" repo view "* ]]; then
 fi
 if [[ " $* " == *" api graphql "* ]]; then
   printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
+  exit 0
+fi
+if [[ " $* " == *" api "*"/labels?per_page=100"* ]]; then
+  printf '%s\n' "${PULSE_CHECK_EXISTING_LABELS_JSON:-[]}"
+  exit "${PULSE_CHECK_LABEL_LIST_EXIT:-0}"
+fi
+if [[ " $* " == *" label create "* ]]; then
+  label_name="${3:-}"
+  printf 'label-create=%s\n' "$label_name" >>"${PULSE_CHECK_CAPTURE}"
+  if [[ "$label_name" == "${PULSE_CHECK_FAIL_LABEL:-}" ]]; then
+    printf 'simulated label creation failure\n' >&2
+    exit 1
+  fi
   exit 0
 fi
 if [[ " $* " == *" --search "* ]]; then
@@ -290,11 +319,30 @@ assert_eq "classified launch failures suppress launch accounting gap" "auto-disp
 
 APPLY_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" apply --repo owner/aidevops 2>&1)
 assert_contains "apply reports issue filing" "pulse-check: filed" "$APPLY_OUT"
-BODY=$(cat "${TEST_ROOT}/capture.txt.body")
+CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+for required_label in auto-dispatch tier:standard bug framework pulse self-improvement source:pulse-check; do
+	assert_contains "apply provisions ${required_label}" "label-create=${required_label}" "$CAPTURE"
+done
+assert_precedes "apply provisions labels before issue creation" "label-create=source:pulse-check" "repo=owner/aidevops" "$CAPTURE"
+assert_contains "apply passes complete label contract" "labels=auto-dispatch,tier:standard,bug,framework,pulse,self-improvement,source:pulse-check" "$CAPTURE"
+BODY=$(<"${TEST_ROOT}/capture.txt.body")
 assert_contains "apply body carries marker" "aidevops:generator=pulse-check finding=" "$BODY"
 assert_contains "apply body carries verification" ".agents/scripts/tests/test-pulse-check-helper.sh" "$BODY"
 assert_not_contains "apply body omits private slug" "private/repo-one" "$BODY"
 assert_not_contains "apply body omits issue title" "secret one" "$BODY"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+EXISTING_LABELS='[{"name":"auto-dispatch"},{"name":"tier:standard"},{"name":"bug"},{"name":"framework"},{"name":"pulse"},{"name":"self-improvement"},{"name":"source:pulse-check"}]'
+EXISTING_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_EXISTING_LABELS_JSON=${EXISTING_LABELS}" "$HELPER" apply --repo owner/aidevops 2>&1)
+EXISTING_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "existing labels still allow issue filing" "pulse-check: filed" "$EXISTING_OUT"
+assert_not_contains "existing label metadata is not overwritten" "label-create=" "$EXISTING_CAPTURE"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+FAILED_LABEL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_FAIL_LABEL=source:pulse-check" "$HELPER" apply --repo owner/aidevops 2>&1)
+FAILED_LABEL_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "required label failure is reported" "failed to ensure label source:pulse-check" "$FAILED_LABEL_OUT"
+assert_not_contains "required label failure prevents issue creation" "repo=owner/aidevops" "$FAILED_LABEL_CAPTURE"
 
 # shellcheck source=../routines/core-routines.sh
 CORE_OUTPUT=$(source "$CORE_ROUTINES" && get_core_routine_entries)

@@ -87,6 +87,15 @@ Aggregation PR #28843 reviews authorized release checkpoint PR #28841 at
 `0c4744706c2beea41e3c56170f2e0b66746c8813` because the deterministic
 simplification-state registry commit advanced `main` before publication.
 
+Aggregation PR #28875 reviews authorized PR #28871 at
+`4b1ef7ef1d0e5fdd27b4961b47e278063c47ae55` because deterministic task-state
+updates and PR #28870 advanced `main` before publication.
+
+Aggregation PR #28879 reviews authorized PR #28871 at
+`4b1ef7ef1d0e5fdd27b4961b47e278063c47ae55` and prior aggregation PR #28875 at
+`a039ed430bc97bd0327ddfc1d0d2a1b4f790277d` because PR #28876 advanced `main`
+before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 

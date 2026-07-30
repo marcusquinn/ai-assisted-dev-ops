@@ -760,44 +760,17 @@ _dispatch_recent_worker_pressure_counts() {
 	fi
 
 	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
+	local evidence_file="${AIDEVOPS_OBJECTIVE_EVIDENCE_FILE:-${HOME}/.aidevops/state/objective-evidence.jsonl}"
+	local evidence_limit="${AIDEVOPS_OBJECTIVE_EVIDENCE_LIMIT:-2000}"
 	local ttl_seconds="${PULSE_DISPATCH_STAGGER_FAILURE_WINDOW_SECONDS:-900}"
+	local health_helper="${_PULSE_DISPATCH_LIB_DIR}/worker-terminal-health.py"
 	[[ "$ttl_seconds" =~ ^[0-9]+$ ]] || ttl_seconds=900
+	[[ "$evidence_limit" =~ ^[1-9][0-9]*$ ]] || evidence_limit=2000
 	[[ -f "$metrics_file" ]] || { printf '0 0\n'; return 0; }
-	python3 - "$metrics_file" "$ttl_seconds" <<'PY'
-import json
-import sys
-import time
-from collections import deque
-
-path, ttl = sys.argv[1], int(sys.argv[2])
-since = time.time() - ttl
-failures = 0
-rate_limits = 0
-try:
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
-        for raw in deque(handle, 1000):
-            try:
-                item = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            ts = float(item.get("ts") or 0)
-            if ts < since:
-                continue
-            if str(item.get("role") or "") != "worker":
-                continue
-            result = str(item.get("result") or "")
-            failure_reason = str(item.get("failure_reason") or "")
-            exit_code = item.get("exit_code")
-            if result.endswith("_continue") or result == "brief_recovery":
-                continue
-            if result in {"rate_limit", "rate_limit_fast"} or "rate_limit" in failure_reason:
-                rate_limits += 1
-            if not (result == "success" and exit_code == 0) and result not in {"worker_noop", "no_work", "noop"}:
-                failures += 1
-except (OSError, ValueError):
-    pass
-print(f"{failures} {rate_limits}")
-PY
+	local health_counts="" successes="" failures="" rate_limits="" service_interruptions="" provider_5xx="" progress=""
+	health_counts=$(python3 "$health_helper" "$metrics_file" "$evidence_file" "$ttl_seconds" "$evidence_limit") || health_counts="0 3 0 0 0 0"
+	read -r successes failures rate_limits service_interruptions provider_5xx progress <<<"$health_counts"
+	printf '%s %s\n' "$failures" "$rate_limits"
 	return 0
 }
 

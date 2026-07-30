@@ -69,8 +69,9 @@ _clear_needs_consolidation_label() {
 # exclusion) never reach dispatch_with_dedup, so the auto-clear logic in
 # _issue_needs_consolidation can't fire. This pass runs them through the
 # current filter and removes the label if they no longer trigger.
-# Lightweight: one gh issue list per repo + one _issue_needs_consolidation
-# call per labeled issue. Runs every cycle before the early fill floor.
+# One gh issue list per repo + one _issue_needs_consolidation call per labeled
+# issue. Runs between the initial fill and the post-maintenance refill so this
+# cross-repository sweep cannot delay already-eligible work (GH#28880).
 #######################################
 _reevaluate_consolidation_labels() {
 	local repos_json="$REPOS_JSON"

@@ -10,6 +10,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.197] - 2026-07-30
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- dispatch before label maintenance
+- preserve colon-qualified TODO labels (#28881)
+
+## [3.32.196] - 2026-07-29
+
+### Added
+
+- define canonical omnichannel evidence contract
+
+### Changed
+
+- Maintenance: re-aggregate authorized repository-maintenance release
+- Maintenance: aggregate authorized repository-maintenance release
+- Maintenance: sync ref:GH#28872 to TODO.md [skip ci]
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- restore native relationship mutations (#28870)
+
 ## [3.32.195] - 2026-07-29
 
 ### Changed

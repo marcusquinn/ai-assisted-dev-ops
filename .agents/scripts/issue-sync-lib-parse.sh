@@ -278,7 +278,7 @@ parse_task_line() {
 
 	# Extract tags
 	local tags
-	tags=$(echo "$line" | grep -oE '#[a-z][a-z0-9-]*' | tr '\n' ',' | sed 's/,$//' || echo "")
+	tags=$(echo "$line" | grep -oE '#[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9-]*)?' | tr '\n' ',' | sed 's/,$//' || echo "")
 
 	# Extract estimate (with optional breakdown)
 	local estimate

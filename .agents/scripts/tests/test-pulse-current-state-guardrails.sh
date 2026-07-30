@@ -27,12 +27,14 @@ print_result() {
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 export HOME="${TEST_ROOT}/home"
-mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/.agent-workspace/headless-runtime"
+mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/state" "${HOME}/.aidevops/.agent-workspace/headless-runtime"
 export LOGFILE="${HOME}/.aidevops/logs/pulse.log"
 export STOP_FLAG="${HOME}/.aidevops/logs/stop"
 export AIDEVOPS_HEADLESS_METRICS_FILE="${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl"
+export AIDEVOPS_OBJECTIVE_EVIDENCE_FILE="${HOME}/.aidevops/state/objective-evidence.jsonl"
 : >"$LOGFILE"
 : >"$AIDEVOPS_HEADLESS_METRICS_FILE"
+: >"$AIDEVOPS_OBJECTIVE_EVIDENCE_FILE"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 # shellcheck source=../pulse-dispatch-engine.sh
@@ -66,9 +68,14 @@ get_max_workers_target() {
 reset_guardrail_env() {
 	: >"$LOGFILE"
 	: >"$AIDEVOPS_HEADLESS_METRICS_FILE"
+	: >"$AIDEVOPS_OBJECTIVE_EVIDENCE_FILE"
 	: >"$STATS_COUNTER_FILE"
 	: >"$STATS_GAUGE_FILE"
-	unset PULSE_DISPATCH_CURRENT_STATE_COUNTS 2>/dev/null || true
+	unset PULSE_DISPATCH_CURRENT_STATE_COUNTS \
+		PULSE_DISPATCH_STAGGER_RECENT_FAILURES PULSE_DISPATCH_STAGGER_RECENT_RATE_LIMITS \
+		PULSE_DISPATCH_CAPACITY_RECENT_FAILURES PULSE_DISPATCH_CAPACITY_RECENT_RATE_LIMITS \
+		PULSE_DISPATCH_CAPACITY_RECENT_SERVICE_INTERRUPTS PULSE_DISPATCH_CAPACITY_RECENT_PROVIDER_5XX \
+		PULSE_DISPATCH_CAPACITY_RECENT_PROGRESS_HEARTBEATS 2>/dev/null || true
 	unset AIDEVOPS_SKIP_PULSE_CURRENT_STATE_GUARDRAILS 2>/dev/null || true
 	export PULSE_DISPATCH_GUARDRAIL_RATE_LIMIT_THRESHOLD=4
 	export PULSE_DISPATCH_GUARDRAIL_FAILURE_THRESHOLD=6
@@ -146,6 +153,51 @@ test_mixed_runtime_roles_do_not_reduce_worker_capacity() {
 		print_result "guardrail: mixed roles and multi-hour continuation do not reduce worker capacity" 0
 	else
 		print_result "guardrail: mixed roles and multi-hour continuation do not reduce worker capacity" 1 \
+			"guardrail=${guardrail_counts} pacing=${pacing_counts} capacity=${capacity_counts}"
+	fi
+	return 0
+}
+
+test_reconciled_outcomes_shape_all_worker_pressure_consumers() {
+	reset_guardrail_env
+	local now=""
+	now=$(date +%s)
+	{
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":1,"attempt_id":"attempt-a","result":"permission_required","exit_code":84,"failure_reason":"permission_required"}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":2,"attempt_id":"attempt-b","result":"post_pr_handoff","exit_code":0}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":3,"attempt_id":"attempt-c","result":"provider_error","exit_code":2,"provider_error_type":"server_error","provider_status":"500"}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":4,"attempt_id":"attempt-d","result":"rate_limit","exit_code":1,"failure_reason":"rate_limit","provider_error_type":"rate_limit","provider_status":"429"}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":5,"attempt_id":"attempt-e","result":"local_error","exit_code":1}\n' "$now"
+		printf '{"ts":%s,"role":"worker","issue_number":6,"attempt_id":"attempt-f","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","attempt_id":"attempt-g","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":8,"attempt_id":"attempt-h","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":9,"attempt_id":"attempt-i","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":10,"attempt_id":"attempt-j","result":"permission_required","exit_code":84}\n' "$now"
+		printf '{"ts":%s,"role":"worker","repo_slug":"owner/repo","issue_number":11,"attempt_id":"attempt-k","result":"permission_required","exit_code":84}\n' "$now"
+	} >"$AIDEVOPS_HEADLESS_METRICS_FILE"
+	{
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":1,"attempt_id":"attempt-a","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":2,"attempt_id":"attempt-b","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":3,"attempt_id":"attempt-c","effective_outcome":"success","evidence_timestamp":%s}\n' "$((now - 1))"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":3,"attempt_id":"attempt-c","effective_outcome":"failed","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":4,"attempt_id":"attempt-d","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/other","issue_number":5,"attempt_id":"attempt-e","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":6,"attempt_id":"attempt-f","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":7,"attempt_id":"attempt-g","effective_outcome":"success","evidence_timestamp":%s}\n' "$now"
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":8,"attempt_id":"attempt-h","effective_outcome":"success"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":9,"attempt_id":"attempt-i","effective_outcome":"success","evidence_timestamp":"invalid"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":10,"attempt_id":"attempt-j","effective_outcome":"success","evidence_timestamp":"NaN"}'
+		printf '%s\n' '{"record_type":"attempt_outcome","repo":"owner/repo","issue_number":11,"attempt_id":"attempt-k","effective_outcome":"success","evidence_timestamp":"Infinity"}'
+	} >"$AIDEVOPS_OBJECTIVE_EVIDENCE_FILE"
+
+	local guardrail_counts="" pacing_counts="" capacity_counts=""
+	guardrail_counts=$(_dispatch_recent_current_state_counts)
+	pacing_counts=$(_dispatch_recent_worker_pressure_counts)
+	capacity_counts=$(_pulse_capacity_recent_health_counts)
+	if [[ "$guardrail_counts" == "3 8 1 0" && "$pacing_counts" == "8 1" && "$capacity_counts" == "8 1 0 1 0" ]]; then
+		print_result "guardrail: reconciled outcomes shape capacity, guardrails, and launch pacing" 0
+	else
+		print_result "guardrail: reconciled outcomes shape capacity, guardrails, and launch pacing" 1 \
 			"guardrail=${guardrail_counts} pacing=${pacing_counts} capacity=${capacity_counts}"
 	fi
 	return 0
@@ -655,6 +707,7 @@ test_provider_rate_limits_pause_without_success
 test_provider_rate_limits_keep_probe_slot_with_success
 test_repeated_failures_pause_without_success
 test_mixed_runtime_roles_do_not_reduce_worker_capacity
+test_reconciled_outcomes_shape_all_worker_pressure_consumers
 test_open_pr_backlog_is_repo_scoped_with_debt_exemption
 test_historical_pr_events_cannot_throttle
 test_no_dispatchable_evidence_keeps_probe_slot

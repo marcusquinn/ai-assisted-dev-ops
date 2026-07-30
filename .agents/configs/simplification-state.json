@@ -2394,21 +2394,21 @@
       "pr": 17590
     },
     ".agents/scripts/pulse-ancillary-dispatch.sh": {
-      "at": "2026-07-29T05:38:36Z",
-      "hash": "d11b86ea006194982fb69c3d4046130bda8e8d65",
-      "passes": 28,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "83df66917d5ffce1377ff9f8b7809a41bb58095b",
+      "passes": 29,
       "pr": 18657
     },
     ".agents/scripts/pulse-cleanup.sh": {
-      "at": "2026-07-29T02:26:03Z",
-      "hash": "71dacb4bb3142a8215875e05b2d986cb1b03c99d",
-      "passes": 41,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "e0f8fe0bedcfc47cce845d3b64fb6dbac029bc41",
+      "passes": 42,
       "pr": 18704
     },
     ".agents/scripts/pulse-dep-graph.sh": {
-      "at": "2026-07-28T04:46:47Z",
-      "hash": "792713f74cdd32204577540cf33f9ff1f44e116f",
-      "passes": 25,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "a99b0869a0cc5058640e910ce527a9ee911572d9",
+      "passes": 26,
       "pr": 18796
     },
     ".agents/scripts/pulse-dispatch-core.sh": {
@@ -2418,9 +2418,9 @@
       "pr": 18832
     },
     ".agents/scripts/pulse-dispatch-engine.sh": {
-      "at": "2026-07-29T05:38:37Z",
-      "hash": "99b458b46dceb84608c67b86c95b84f0c63d28b8",
-      "passes": 44,
+      "at": "2026-07-30T00:23:36Z",
+      "hash": "f815956d5507faf0bd6acab2cd6630c2bfb365c6",
+      "passes": 46,
       "pr": 18799
     },
     ".agents/scripts/pulse-fast-fail.sh": {
@@ -2436,9 +2436,9 @@
       "pr": 18691
     },
     ".agents/scripts/pulse-issue-reconcile.sh": {
-      "at": "2026-07-28T04:46:48Z",
-      "hash": "79a1ae340a50465e25f33a7c46433bb060ca876b",
-      "passes": 49,
+      "at": "2026-07-29T22:17:52Z",
+      "hash": "b6047b9032f0911c02e85205d171a90bab1daef4",
+      "passes": 50,
       "pr": 18690
     },
     ".agents/scripts/pulse-merge.sh": {
@@ -2448,9 +2448,9 @@
       "pr": 18829
     },
     ".agents/scripts/pulse-prefetch.sh": {
-      "at": "2026-07-19T02:53:21Z",
-      "hash": "41093bd3d5902a62ac13e8c2411b609a8395daaa",
-      "passes": 16,
+      "at": "2026-07-29T22:17:52Z",
+      "hash": "32a5fa7b46e70c73f1adec3cd9418e4163eb74f2",
+      "passes": 17,
       "pr": 18995
     },
     ".agents/scripts/pulse-quality-debt.sh": {
@@ -2532,9 +2532,9 @@
       "pr": 15917
     },
     ".agents/scripts/session-miner-pulse.sh": {
-      "at": "2026-05-03T12:51:58Z",
-      "hash": "d50294b381d2cb160dcb5009a3afe473ccb261e7",
-      "passes": 5,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "d08c93d98066192154ec2011342381431a994069",
+      "passes": 6,
       "pr": 16950
     },
     ".agents/scripts/settings-helper.sh": {
@@ -2556,9 +2556,9 @@
       "pr": 18808
     },
     ".agents/scripts/stats-quality-sweep.sh": {
-      "at": "2026-07-12T05:41:23Z",
-      "hash": "9eed8976d20d6256757346a6c0fa8c60fb703cf6",
-      "passes": 16,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "e7dfc6b545ed175adbb62102472b49ddc51e8370",
+      "passes": 17,
       "pr": 18810
     },
     ".agents/scripts/tabby-helper.sh": {
@@ -2568,9 +2568,9 @@
       "pr": 17549
     },
     ".agents/scripts/tests/test-consolidation-dispatch.sh": {
-      "at": "2026-07-28T04:46:52Z",
-      "hash": "6005cc70b581ce129f4f6f2e2254f2f1f0cb3e0e",
-      "passes": 11,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "c765cb51b872988ac5e3e3b68bf7cc34f89cfe39",
+      "passes": 12,
       "pr": 18679
     },
     ".agents/scripts/tests/test-gh-signature-helper.sh": {
@@ -7480,21 +7480,21 @@
       "pr": 16415
     },
     "TODO.md": {
-      "at": "2026-07-28T01:02:28Z",
-      "hash": "b13671e3fd1fea5b378d99554d95205f37546edb",
-      "passes": 210,
+      "at": "2026-07-29T22:18:41Z",
+      "hash": "848ee0c01d50aa6150256cd4f10740ec3f4c4083",
+      "passes": 211,
       "pr": 15490
     },
     "aidevops.sh": {
-      "at": "2026-07-29T18:48:02Z",
-      "hash": "e3d929cb6b24d5fc3ac9aa1cbeb6d9b070c1612b",
-      "passes": 310,
+      "at": "2026-07-30T00:24:34Z",
+      "hash": "0043fc7a710e1fed864485fd1c48ca8d287bedea",
+      "passes": 312,
       "pr": 19029
     },
     "setup.sh": {
-      "at": "2026-07-29T18:48:02Z",
-      "hash": "986a28754b92a8665c8ccca54c7b235b77be85e1",
-      "passes": 309,
+      "at": "2026-07-30T00:24:34Z",
+      "hash": "ac493378e1aa10217191764e10f536b2668141dc",
+      "passes": 311,
       "pr": 15470
     },
     "todo/tasks/GH#15363-brief.md": {
@@ -7702,10 +7702,10 @@
       "passes": 19
     },
     ".agents/scripts/pulse-routines.sh": {
-      "hash": "3b5a402831f9fffdd7f18b358c2ab982218fc072",
-      "at": "2026-07-28T19:05:51Z",
+      "hash": "5f9c1536a4fb08e47ae4a643dd9d3592826b0e69",
+      "at": "2026-07-29T22:17:52Z",
       "pr": 20413,
-      "passes": 8
+      "passes": 9
     },
     ".agents/reference/parent-task-lifecycle.md": {
       "hash": "ff5714e088204a0ade863884d48ef8a19a2c012a",
@@ -7726,10 +7726,10 @@
       "passes": 8
     },
     ".agents/reference/repos-json-fields.md": {
-      "hash": "b898b61decf86a0e3e53359e7d96bbdb08312bdb",
-      "at": "2026-07-22T20:56:41Z",
+      "hash": "664913b0d06de880e938072ab0a0737826da486c",
+      "at": "2026-07-29T22:17:44Z",
       "pr": 20440,
-      "passes": 14
+      "passes": 15
     },
     ".agents/reference/progressive-disclosure.md": {
       "hash": "222cc0b8477a4947c750e5a735585efb2b1dd546",
@@ -7750,10 +7750,10 @@
       "passes": 8
     },
     ".agents/scripts/issue-sync-relationships.sh": {
-      "hash": "4cfe0736400ef42c522e7a181c959bfb6c7d2f25",
-      "at": "2026-07-28T04:46:45Z",
+      "hash": "6ba73a6d78c758408956bfe061d7c1247354ffd1",
+      "at": "2026-07-29T22:17:50Z",
       "pr": 20524,
-      "passes": 11
+      "passes": 12
     },
     ".agents/scripts/shared-gh-wrappers-rest-fallback.sh": {
       "hash": "65d1f9c668c897f27b9a16298d8c9eefd72c185a",
@@ -7762,10 +7762,10 @@
       "passes": 30
     },
     ".agents/scripts/pulse-dirty-pr-sweep.sh": {
-      "hash": "9ad9a956f7f686a458b3b86667cd5d0e11a94780",
-      "at": "2026-07-26T15:18:09Z",
+      "hash": "96a786c79fef00879d9b57783fc53317b3a7c863",
+      "at": "2026-07-29T22:17:51Z",
       "pr": 20618,
-      "passes": 9
+      "passes": 10
     },
     ".agents/scripts/pulse-dispatch-worker-launch.sh": {
       "hash": "954d5a51e7b71b72f4239111abb6e3e4ddb95dac",
@@ -7864,10 +7864,10 @@
       "passes": 9
     },
     ".agents/scripts/pulse-dispatch-lib.sh": {
-      "hash": "a78f06a2bb4cd02fcaa72fd2e6cb33d4df333797",
-      "at": "2026-07-29T05:38:37Z",
+      "hash": "3875559a819c3dac5107a6e0733bb38e612ed1ac",
+      "at": "2026-07-29T22:17:51Z",
       "pr": 26041,
-      "passes": 7
+      "passes": 8
     },
     ".agents/aidevops/cases-plane.md": {
       "hash": "c04dd9d087d38be91374d25310943c94ae664f63",
@@ -7918,10 +7918,10 @@
       "passes": 3
     },
     ".agents/scripts/repo-aidevops-health-helper.sh": {
-      "hash": "519c69ab3a212a0e81e918d0bc935de67a08895b",
-      "at": "2026-07-28T01:01:32Z",
+      "hash": "dcf8a6fbee889016c51b3ad989cab3243114233f",
+      "at": "2026-07-29T22:17:52Z",
       "pr": 26253,
-      "passes": 3
+      "passes": 4
     },
     ".agents/scripts/resource-metrics-helper.sh": {
       "hash": "1f660b3d1511c60b03b4e9c563964798b79fe7fd",
@@ -7936,10 +7936,10 @@
       "passes": 3
     },
     ".agents/scripts/stats-health-dashboard.sh": {
-      "hash": "65f487c487c0e2af0f276c0f2e01b16f32304a15",
-      "at": "2026-07-02T10:01:30Z",
+      "hash": "de98059f4a930611642fa7acf8dbd461018ed4df",
+      "at": "2026-07-29T22:17:53Z",
       "pr": 26248,
-      "passes": 2
+      "passes": 3
     },
     ".agents/aidevops/knowledge-plane.md": {
       "hash": "dd83a9ebe3aa6ba1f1895a3bc206f9223cba1799",
@@ -8092,10 +8092,10 @@
       "passes": 12
     },
     ".agents/scripts/gh-failure-miner-helper.sh": {
-      "hash": "a4ed111ba2630eff5f153d2f353ea5e727dcf819",
-      "at": "2026-07-18T15:45:17Z",
+      "hash": "7f2647c867753da6656a6273633277ca64ec02d4",
+      "at": "2026-07-29T22:17:49Z",
       "pr": 26821,
-      "passes": 2
+      "passes": 3
     },
     ".agents/scripts/tests/test-quality-feedback-main-verification-scan.sh": {
       "hash": "a7845f78f225407c2a6c31b8ecaefcf37f956c3b",

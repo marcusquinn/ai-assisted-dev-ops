@@ -145,10 +145,39 @@ aidevops_ensure_pulse_start_epoch() {
 # Set to "latest" to resume tracking upstream. Grep for the variable name to
 # find all consumers that need updating when unpinning.
 
-# GH#28766: OpenCode 1.18.7 stalls Linux headless workers while bootstrapping
-# location services with an isolated XDG_DATA_HOME. Keep the last verified
-# working release until a newer version passes that same headless smoke test.
-readonly OPENCODE_PINNED_VERSION="1.18.5"
+# GH#28766: OpenCode 1.18.7 stalled Linux headless workers while bootstrapping
+# location services with an isolated XDG_DATA_HOME. GH#28892 advances the pin
+# after 1.18.9 passed the current isolated headless canary.
+readonly OPENCODE_PINNED_VERSION="1.18.9"
+
+# Build the package-manager-aware OpenCode repair command used by both routine
+# tool updates and the fail-closed headless version guard. The optional
+# AIDEVOPS_OPENCODE_BIN environment variable lets callers preserve an already
+# resolved binary path that is not present on PATH.
+aidevops_opencode_upgrade_command() {
+	local pkg_version="$1"
+
+	# shellcheck disable=SC2016  # Single quotes intentional: bash -c payload
+	printf '%s' \
+		'r="${AIDEVOPS_OPENCODE_BIN:-}"; [[ -n "$r" ]] || r=$(command -v opencode 2>/dev/null || printf ""); ' \
+		'if [[ -n "$r" ]]; then ' \
+		'if command -v brew >/dev/null 2>&1; then ' \
+		'r_dir=$(cd "$(dirname "$r")" 2>/dev/null && pwd -P || printf ""); ' \
+		'r_link=$(readlink "$r" 2>/dev/null || printf ""); r_real="$r"; ' \
+		'if [[ -n "$r_link" ]]; then case "$r_link" in /*) r_real="$r_link" ;; *) r_real="$r_dir/$r_link" ;; esac; fi; ' \
+		'r_real_dir=$(cd "$(dirname "$r_real")" 2>/dev/null && pwd -P || printf ""); ' \
+		'brew_formula_real=""; ' \
+		'if brew list --versions opencode >/dev/null 2>&1; then ' \
+		'brew_formula=$(brew --prefix opencode 2>/dev/null || printf ""); ' \
+		'[[ -d "$brew_formula" ]] && brew_formula_real=$(cd "$brew_formula" && pwd -P || printf ""); ' \
+		'fi; ' \
+		'if [[ -n "$brew_formula_real" ]] && { [[ "$r_dir" == "$brew_formula_real"/* ]] || [[ "$r_real_dir" == "$brew_formula_real"/* ]]; }; then ' \
+		'brew upgrade opencode || brew reinstall opencode; exit $?; ' \
+		'fi; fi; ' \
+		'if [[ "$r" == *bun* ]]; then bun install -g opencode-ai@'"${pkg_version}"'; else npm install -g opencode-ai@'"${pkg_version}"'; fi; ' \
+		'else printf "OpenCode binary not found for repair\\n" >&2; exit 1; fi'
+	return 0
+}
 
 # Minimum GitHub CLI version required for `gh api --paginate --slurp`.
 # Older distro packages can parse `gh` as installed while dispatch paths fail
