@@ -53,6 +53,9 @@ mkdir -p "$STUB_DIR"
 # Exported so the gh stub subprocess can reach it at runtime — the heredoc
 # below is quoted ('STUBEOF') to avoid substitution at stub-write time.
 export GH_CALLS_FILE="${TEST_ROOT}/gh_calls.log"
+export STATUS_LABEL_STATE_FILE="${TEST_ROOT}/status-labels-converged"
+export ISSUE_STATE_FILE="${TEST_ROOT}/issue-state.json"
+export ISSUE_CONCURRENT_MARKER="${TEST_ROOT}/issue-concurrent-injected"
 
 #######################################
 # Write a gh stub that records every invocation's argv to GH_CALLS_FILE,
@@ -62,15 +65,148 @@ export GH_CALLS_FILE="${TEST_ROOT}/gh_calls.log"
 # The stub always exits 0 so the helper's "$?" reflects argument validation
 # and label-set construction logic, not simulated gh failures.
 #######################################
+append_stub_gh_mutations() {
+	cat >>"${STUB_DIR}/gh" <<'STUBEOF'
+if [[ "${1:-}" == "api" && "${2:-}" == "-X" ]]; then
+	[[ "${STUB_REST_MUTATION_FAIL:-0}" == "1" ]] && exit 1
+	[[ -n "${STUB_REST_MUTATION_FAIL_METHOD:-}" && "${3:-}" == "${STUB_REST_MUTATION_FAIL_METHOD}" ]] && exit 1
+	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && "${3:-}" == "POST" && "${4:-}" == */labels ]]; then
+		for arg in "$@"; do
+			case "$arg" in
+			labels\[\]=*)
+				label="${arg#labels[]=}"
+				jq --arg label "$label" \
+					'if any(.labels[]; .name == $label) then . else .labels += [{"name": $label}] end' \
+					"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+				;;
+			esac
+		done
+	elif [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && "${3:-}" == "DELETE" && "${4:-}" == */labels/* ]]; then
+		encoded_label="${4##*/}"
+		label="${encoded_label//%3A/:}"
+		jq --arg label "$label" '.labels |= map(select(.name != $label))' \
+			"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+		mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+	elif [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && ( "${3:-}" == "POST" || "${3:-}" == "DELETE" ) && "${4:-}" == */assignees ]]; then
+		for arg in "$@"; do
+			case "$arg" in
+			assignees\[\]=*)
+				login="${arg#assignees[]=}"
+				if [[ "${3:-}" == "POST" ]]; then
+					jq --arg login "$login" \
+						'if any(.assignees[]; .login == $login) then . else .assignees += [{"login": $login}] end' \
+						"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				else
+					jq --arg login "$login" '.assignees |= map(select(.login != $login))' \
+						"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				fi
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+				;;
+			esac
+		done
+	fi
+	exit 0
+fi
+STUBEOF
+	return 0
+}
+
 write_stub_gh() {
 	: >"$GH_CALLS_FILE"
 	cat >"${STUB_DIR}/gh" <<'STUBEOF'
 #!/usr/bin/env bash
 # Stub gh for test-status-label-state-machine.sh — records all calls.
 printf '%s\n' "$*" >>"${GH_CALLS_FILE}"
+
+if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/labels\?per_page=100 ]]; then
+	[[ "${STUB_LABEL_LIST_FAIL:-0}" == "1" ]] && exit 1
+	printf '%s\t%s\t%s\n' \
+		"status:available" "0e8a16" "Task is available for claiming" \
+		"status:queued" "fbca04" "Worker dispatched, not yet started" \
+		"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+		"status:in-progress" "1d76db" "Worker actively running" \
+		"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+		"status:done" "6f42c1" "Task is complete"
+	if [[ -f "${STATUS_LABEL_STATE_FILE}" || "${STUB_LABEL_MODE:-exact}" == "exact" ]]; then
+		printf '%s\t%s\t%s\n' "status:blocked" "d93f0b" "Waiting on blocker task"
+	elif [[ "${STUB_LABEL_MODE:-exact}" == "drifted" ]]; then
+		printf '%s\t%s\t%s\n' "status:blocked" "ffffff" "Drifted definition"
+	fi
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/issues/[0-9]* ]]; then
+	[[ "${STUB_ISSUE_GET_FAIL:-0}" == "1" ]] && exit 1
+	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && -f "${ISSUE_STATE_FILE}" ]]; then
+		cat "${ISSUE_STATE_FILE}"
+		if [[ ( -n "${STUB_CONCURRENT_LABEL_AFTER_GET:-}" || -n "${STUB_CONCURRENT_ASSIGNEE_AFTER_GET:-}" ) && ! -f "${ISSUE_CONCURRENT_MARKER}" ]]; then
+			if [[ -n "${STUB_CONCURRENT_LABEL_AFTER_GET:-}" ]]; then
+				jq --arg label "${STUB_CONCURRENT_LABEL_AFTER_GET}" \
+					'if any(.labels[]; .name == $label) then . else .labels += [{"name": $label}] end' \
+					"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+			fi
+			if [[ -n "${STUB_CONCURRENT_ASSIGNEE_AFTER_GET:-}" ]]; then
+				jq --arg login "${STUB_CONCURRENT_ASSIGNEE_AFTER_GET}" \
+					'if any(.assignees[]; .login == $login) then . else .assignees += [{"login": $login}] end' \
+					"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+			fi
+			: >"${ISSUE_CONCURRENT_MARKER}"
+		fi
+	elif [[ -n "${STUB_ISSUE_JSON:-}" ]]; then
+		printf '%s\n' "$STUB_ISSUE_JSON"
+	else
+		exit 1
+	fi
+	exit 0
+fi
+STUBEOF
+	append_stub_gh_mutations
+	cat >>"${STUB_DIR}/gh" <<'STUBEOF'
+
+if [[ "${1:-}" == "label" ]]; then
+	if [[ "${2:-}" == "create" && "${STUB_LABEL_CREATE_CONFLICT:-0}" == "1" ]]; then
+		: >"${STATUS_LABEL_STATE_FILE}"
+		exit 1
+	fi
+	[[ "${STUB_LABEL_WRITE_FAIL:-0}" == "1" ]] && exit 1
+	: >"${STATUS_LABEL_STATE_FILE}"
+	exit 0
+fi
+
+if [[ "${1:-}" == "issue" && "${2:-}" == "edit" ]]; then
+	[[ "${STUB_NATIVE_EDIT_FAIL:-0}" == "1" ]] && exit 1
+	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" ]]; then
+		shift 2
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--add-label)
+				label="${2:-}"
+				jq --arg label "$label" \
+					'if any(.labels[]; .name == $label) then . else .labels += [{"name": $label}] end' \
+					"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+				shift 2
+				;;
+			--remove-label)
+				label="${2:-}"
+				jq --arg label "$label" '.labels |= map(select(.name != $label))' \
+					"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+				mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+				shift 2
+				;;
+			*) shift ;;
+			esac
+		done
+	fi
+	exit 0
+fi
 exit 0
 STUBEOF
 	chmod +x "${STUB_DIR}/gh"
+	return 0
 }
 
 # Source the helper. Prepending STUB_DIR to PATH ensures the stub is picked up.
@@ -84,6 +220,12 @@ source "${TEST_SCRIPTS_DIR}/shared-constants.sh"
 _reset_state() {
 	_STATUS_LABELS_ENSURED=""
 	: >"$GH_CALLS_FILE"
+	rm -f "$STATUS_LABEL_STATE_FILE" "$ISSUE_STATE_FILE" "$ISSUE_STATE_FILE.next" "$ISSUE_CONCURRENT_MARKER"
+	unset STUB_ISSUE_JSON STUB_ISSUE_GET_FAIL STUB_REST_MUTATION_FAIL STUB_REST_MUTATION_FAIL_METHOD
+	unset STUB_NATIVE_EDIT_FAIL
+	unset STUB_STATEFUL_ISSUE STUB_CONCURRENT_LABEL_AFTER_GET STUB_CONCURRENT_ASSIGNEE_AFTER_GET
+	unset STUB_LABEL_LIST_FAIL STUB_LABEL_MODE STUB_LABEL_CREATE_CONFLICT STUB_LABEL_WRITE_FAIL
+	return 0
 }
 
 #######################################
@@ -145,6 +287,29 @@ assert_last_edit_lacks() {
 }
 
 #######################################
+# Verify at least one native edit phase contains every required substring.
+#######################################
+assert_any_edit_has() {
+	local name="$1"
+	shift
+	local edit_calls=""
+	edit_calls=$(grep 'issue edit' "$GH_CALLS_FILE" || true)
+	local needle=""
+	local missing=()
+	for needle in "$@"; do
+		if ! printf '%s' "$edit_calls" | grep -qF -- "$needle"; then
+			missing+=("$needle")
+		fi
+	done
+	if [[ ${#missing[@]} -eq 0 ]]; then
+		print_result "$name" 0
+	else
+		print_result "$name" 1 "(missing: ${missing[*]} | got: ${edit_calls})"
+	fi
+	return 0
+}
+
+#######################################
 # TEST 1: Transition to status:queued produces 1 add + 6 removes
 #######################################
 test_queued_transition() {
@@ -180,7 +345,7 @@ test_available_with_extra_flags() {
 	print_result "available+extra returns 0" 0
 	assert_last_edit_has "available+extra: adds status:available" \
 		"--add-label status:available"
-	assert_last_edit_has "available+extra: passes through --remove-assignee" \
+	assert_any_edit_has "available+extra: passes through --remove-assignee" \
 		"--remove-assignee stale-worker"
 	assert_last_edit_has "available+extra: removes sibling status:queued" \
 		"--remove-label status:queued"
@@ -198,7 +363,7 @@ test_empty_status_clear_only() {
 		return 0
 	}
 	print_result "empty status returns 0" 0
-	assert_last_edit_has "clear-only: passes through --add-label" \
+	assert_any_edit_has "clear-only: passes through --add-label" \
 		"--add-label needs-maintainer-review"
 	assert_last_edit_has "clear-only: removes status:available" \
 		"--remove-label status:available"
@@ -316,12 +481,313 @@ test_dispatch_realistic_pattern() {
 		"--add-label status:queued"
 	assert_last_edit_has "dispatch: removes status:available (the t2033 bug fix)" \
 		"--remove-label status:available"
-	assert_last_edit_has "dispatch: passes through --add-assignee" \
+	assert_any_edit_has "dispatch: passes through --add-assignee" \
 		"--add-assignee runner-a"
-	assert_last_edit_has "dispatch: passes through --add-label origin:worker" \
+	assert_any_edit_has "dispatch: passes through --add-label origin:worker" \
 		"--add-label origin:worker"
-	assert_last_edit_has "dispatch: passes through --remove-assignee" \
+	assert_any_edit_has "dispatch: passes through --remove-assignee" \
 		"--remove-assignee runner-b"
+	return 0
+}
+
+#######################################
+# TEST 9: A normal transition uses targeted REST delta endpoints, preserving
+# unrelated labels instead of submitting a stale full-array replacement.
+#######################################
+test_rest_first_transition() {
+	_reset_state
+	export STUB_ISSUE_JSON='{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[{"login":"stale-worker"}]}'
+	set_issue_status 314 "owner/repo" "queued" --remove-assignee "stale-worker"
+	local rc=$?
+	if [[ "$rc" -eq 0 ]] &&
+		grep -q '^api -X POST /repos/owner/repo/issues/314/labels -f labels\[\]=status:queued$' "$GH_CALLS_FILE" &&
+		grep -q '^api -X DELETE /repos/owner/repo/issues/314/labels/status%3Aavailable$' "$GH_CALLS_FILE" &&
+		grep -q '^api -X DELETE /repos/owner/repo/issues/314/assignees -f assignees\[\]=stale-worker$' "$GH_CALLS_FILE" &&
+		! grep -qE '^(api -X PATCH /repos/owner/repo/issues/314|issue edit 314)' "$GH_CALLS_FILE"; then
+		print_result "REST-first transition uses targeted delta endpoints" 0
+	else
+		print_result "REST-first transition uses targeted delta endpoints" 1 \
+			"(rc=${rc}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	if ! grep -q 'labels\[\]=bug' "$GH_CALLS_FILE"; then
+		print_result "REST-first transition never replaces unrelated labels" 0
+	else
+		print_result "REST-first transition never replaces unrelated labels" 1 \
+			"(calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 10: An unrelated label added after the snapshot survives the transition.
+#######################################
+test_concurrent_unrelated_label_is_preserved() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_LABEL_AFTER_GET="external-update"
+	set_issue_status 315 "owner/repo" "queued"
+	local rc=$?
+	local final_labels=""
+	final_labels=$(jq -r '.labels[].name' "$ISSUE_STATE_FILE" | sort)
+	if [[ "$rc" -eq 0 && "$final_labels" == $'bug\nexternal-update\nstatus:queued' ]]; then
+		print_result "concurrent unrelated label survives REST status transition" 0
+	else
+		print_result "concurrent unrelated label survives REST status transition" 1 \
+			"(rc=${rc}; labels=${final_labels}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 11: An unrelated assignee added after the snapshot also survives.
+#######################################
+test_concurrent_unrelated_assignee_is_preserved() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:queued"}],"assignees":[{"login":"old-worker"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_ASSIGNEE_AFTER_GET="observer"
+	set_issue_status 316 "owner/repo" "queued" \
+		--add-assignee "new-worker" --remove-assignee "old-worker"
+	local rc=$?
+	local final_assignees=""
+	final_assignees=$(jq -r '.assignees[].login' "$ISSUE_STATE_FILE" | sort)
+	if [[ "$rc" -eq 0 && "$final_assignees" == $'new-worker\nobserver' ]]; then
+		print_result "concurrent unrelated assignee survives REST status transition" 0
+	else
+		print_result "concurrent unrelated assignee survives REST status transition" 1 \
+			"(rc=${rc}; assignees=${final_assignees}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 10: A converged status-label contract is one read and zero writes.
+#######################################
+test_converged_label_contract_is_read_only() {
+	_reset_state
+	ensure_status_labels_exist "owner/repo"
+	local rc=$?
+	local reads=0
+	local writes=0
+	reads=$(grep -c '^api /repos/owner/repo/labels?per_page=100 ' "$GH_CALLS_FILE" 2>/dev/null || true)
+	writes=$(grep -Ec '^label (create|edit) ' "$GH_CALLS_FILE" 2>/dev/null || true)
+	if [[ "$rc" -eq 0 && "$reads" -eq 1 && "$writes" -eq 0 ]]; then
+		print_result "converged label contract uses one read and zero writes" 0
+	else
+		print_result "converged label contract uses one read and zero writes" 1 \
+			"(rc=${rc}; reads=${reads}; writes=${writes}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 11: Missing and drifted definitions use create/edit respectively, then
+# re-read the full contract before populating the process cache.
+#######################################
+test_label_contract_reconciliation() {
+	_reset_state
+	export STUB_LABEL_MODE="missing"
+	ensure_status_labels_exist "owner/repo"
+	local missing_rc=$?
+	if [[ "$missing_rc" -eq 0 ]] &&
+		grep -q '^label create status:blocked ' "$GH_CALLS_FILE" &&
+		! grep -q -- '--force' "$GH_CALLS_FILE"; then
+		print_result "missing status label is created without --force" 0
+	else
+		print_result "missing status label is created without --force" 1 \
+			"(rc=${missing_rc}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+
+	_reset_state
+	export STUB_LABEL_MODE="drifted"
+	ensure_status_labels_exist "owner/repo"
+	local drifted_rc=$?
+	if [[ "$drifted_rc" -eq 0 ]] &&
+		grep -q '^label edit status:blocked ' "$GH_CALLS_FILE" &&
+		! grep -q '^label create status:blocked ' "$GH_CALLS_FILE"; then
+		print_result "drifted status label is edited without create churn" 0
+	else
+		print_result "drifted status label is edited without create churn" 1 \
+			"(rc=${drifted_rc}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 12: A concurrent create conflict is re-read and accepted only after the
+# resulting repository definition exactly matches the contract.
+#######################################
+test_label_create_conflict_is_verified() {
+	_reset_state
+	export STUB_LABEL_MODE="missing"
+	export STUB_LABEL_CREATE_CONFLICT=1
+	ensure_status_labels_exist "owner/repo"
+	local rc=$?
+	local reads=0
+	reads=$(grep -c '^api /repos/owner/repo/labels?per_page=100 ' "$GH_CALLS_FILE" 2>/dev/null || true)
+	if [[ "$rc" -eq 0 && "$reads" -ge 3 ]] &&
+		grep -q '^label create status:blocked ' "$GH_CALLS_FILE"; then
+		print_result "concurrent label create conflict is re-read and verified" 0
+	else
+		print_result "concurrent label create conflict is re-read and verified" 1 \
+			"(rc=${rc}; reads=${reads}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 13: Unknown label state blocks every issue mutation.
+#######################################
+test_label_contract_read_failure_is_fail_closed() {
+	_reset_state
+	export STUB_LABEL_LIST_FAIL=1
+	set_issue_status 2718 "owner/repo" "queued" >/dev/null 2>&1
+	local rc=$?
+	if [[ "$rc" -ne 0 ]] &&
+		! grep -qE '^(api -X (PATCH|POST|DELETE)|issue edit|label (create|edit))' "$GH_CALLS_FILE"; then
+		print_result "failed label-contract read performs no mutation" 0
+	else
+		print_result "failed label-contract read performs no mutation" 1 \
+			"(rc=${rc}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 15: Extras that fail in both routes leave status labels untouched.
+#######################################
+test_failed_extra_does_not_start_status_transition() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL=1
+	export STUB_NATIVE_EDIT_FAIL=1
+	set_issue_status 1618 "owner/repo" "in-review" --add-assignee "invalid-worker" >/dev/null 2>&1
+	local rc=$?
+	local final_statuses=""
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -ne 0 && "$final_statuses" == "status:available" ]] &&
+		! grep -qE 'labels\[\]=status:in-review|/labels/status%3Aavailable|--add-label status:in-review' "$GH_CALLS_FILE"; then
+		print_result "failed passthrough extra leaves existing status untouched" 0
+	else
+		print_result "failed passthrough extra leaves existing status untouched" 1 \
+			"(rc=${rc}; statuses=${final_statuses}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 16: A failed REST status phase falls back with status-only flags and
+# converges without replaying unrelated extras.
+#######################################
+test_rest_status_failure_uses_status_only_native_fallback() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL=1
+	set_issue_status 1619 "owner/repo" "in-review" >/dev/null 2>&1
+	local rc=$?
+	local final_labels=""
+	final_labels=$(jq -r '.labels[].name' "$ISSUE_STATE_FILE" | sort)
+	local native_call=""
+	native_call=$(grep '^issue edit 1619 ' "$GH_CALLS_FILE" | tail -1 || true)
+	if [[ "$rc" -eq 0 && "$final_labels" == $'bug\nstatus:in-review' &&
+		"$native_call" == *"--add-label status:in-review"* && "$native_call" != *"assignee"* ]]; then
+		print_result "failed REST status phase uses status-only native fallback" 0
+	else
+		print_result "failed REST status phase uses status-only native fallback" 1 \
+			"(rc=${rc}; labels=${final_labels}; native=${native_call}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 17: If the target-label add and native fallback both fail, the REST
+# phase has already removed the old status and therefore cannot strand a dual
+# status-label state.
+#######################################
+test_failed_target_add_never_strands_dual_statuses() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL_METHOD=POST
+	export STUB_NATIVE_EDIT_FAIL=1
+	set_issue_status 1620 "owner/repo" "queued" >/dev/null 2>&1
+	local rc=$?
+	local final_statuses=""
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	local remove_line=""
+	local add_line=""
+	remove_line=$(grep -n '^api -X DELETE /repos/owner/repo/issues/1620/labels/status%3Aavailable$' \
+		"$GH_CALLS_FILE" | cut -d: -f1 || true)
+	add_line=$(grep -n '^api -X POST /repos/owner/repo/issues/1620/labels -f labels\[\]=status:queued$' \
+		"$GH_CALLS_FILE" | cut -d: -f1 || true)
+	if [[ "$rc" -ne 0 && -z "$final_statuses" && -n "$remove_line" && -n "$add_line" && "$remove_line" -lt "$add_line" ]]; then
+		print_result "failed target add cannot strand dual statuses" 0
+	else
+		print_result "failed target add cannot strand dual statuses" 1 \
+			"(rc=${rc}; statuses=${final_statuses}; remove=${remove_line}; add=${add_line}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 18: Passthrough assignee replacements add first. A rejected replacement
+# and failed native fallback therefore leave the existing assignee intact and
+# never begin the status phase.
+#######################################
+test_failed_extra_add_preserves_existing_assignee() {
+	_reset_state
+	local existing_assignee="old-worker"
+	jq -n --arg login "$existing_assignee" \
+		'{labels:[{name:"status:available"}],assignees:[{login:$login}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL_METHOD=POST
+	export STUB_NATIVE_EDIT_FAIL=1
+	set_issue_status 1621 "owner/repo" "in-review" \
+		--add-assignee "invalid-worker" --remove-assignee "$existing_assignee" >/dev/null 2>&1
+	local rc=$?
+	local final_assignees=""
+	local final_statuses=""
+	final_assignees=$(jq -r '.assignees[].login' "$ISSUE_STATE_FILE")
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -ne 0 && "$final_assignees" == "$existing_assignee" && "$final_statuses" == "status:available" ]] &&
+		! grep -q '^api -X DELETE /repos/owner/repo/issues/1621/assignees ' "$GH_CALLS_FILE"; then
+		print_result "failed extra add preserves existing assignee" 0
+	else
+		print_result "failed extra add preserves existing assignee" 1 \
+			"(rc=${rc}; assignees=${final_assignees}; statuses=${final_statuses}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 19: The same add-first protection applies to passthrough label
+# replacements, including labels unrelated to the managed status state.
+#######################################
+test_failed_extra_add_preserves_existing_label() {
+	_reset_state
+	local existing_label="origin:legacy"
+	jq -n --arg label "$existing_label" \
+		'{labels:[{name:"status:available"},{name:$label}],assignees:[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_REST_MUTATION_FAIL_METHOD=POST
+	export STUB_NATIVE_EDIT_FAIL=1
+	set_issue_status 1622 "owner/repo" "in-review" \
+		--add-label "missing-label" --remove-label "$existing_label" >/dev/null 2>&1
+	local rc=$?
+	local final_statuses=""
+	final_statuses=$(jq -r '.labels[].name | select(startswith("status:"))' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -ne 0 && "$final_statuses" == "status:available" ]] &&
+		jq -e --arg label "$existing_label" 'any(.labels[]; .name == $label)' "$ISSUE_STATE_FILE" >/dev/null &&
+		! grep -q '^api -X DELETE /repos/owner/repo/issues/1622/labels/' "$GH_CALLS_FILE"; then
+		print_result "failed extra add preserves existing label" 0
+	else
+		print_result "failed extra add preserves existing label" 1 \
+			"(rc=${rc}; statuses=${final_statuses}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
 }
 
 # =============================================================================
@@ -336,6 +802,18 @@ main() {
 	test_missing_args_rejected
 	test_canonical_label_list
 	test_dispatch_realistic_pattern
+	test_rest_first_transition
+	test_concurrent_unrelated_label_is_preserved
+	test_concurrent_unrelated_assignee_is_preserved
+	test_converged_label_contract_is_read_only
+	test_label_contract_reconciliation
+	test_label_create_conflict_is_verified
+	test_label_contract_read_failure_is_fail_closed
+	test_failed_extra_does_not_start_status_transition
+	test_rest_status_failure_uses_status_only_native_fallback
+	test_failed_target_add_never_strands_dual_statuses
+	test_failed_extra_add_preserves_existing_assignee
+	test_failed_extra_add_preserves_existing_label
 
 	printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

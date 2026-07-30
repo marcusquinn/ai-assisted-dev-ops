@@ -249,14 +249,13 @@ _stub_gh_api() {
 		return $?
 	fi
 	if [[ "$subcommand" =~ ^/repos/.+/issues/[0-9]+$ ]]; then
-		if [[ -n "${STUB_ISSUE_VIEW_FIXTURE:-}" ]]; then
-			local jq_filter=""
-			jq_filter="$(_stub_jq_filter_arg 3 api "$@")"
-			_stub_print_fixture_with_jq "$STUB_ISSUE_VIEW_FIXTURE" "$jq_filter" -r
-			return $?
-		fi
-		printf '%s\n' "${STUB_CURRENT_LABELS:-bug}"
-		return 0
+		[[ "${STUB_ISSUE_GET_FAIL:-0}" == "1" ]] && return 1
+		local jq_filter=""
+		local fixture='{"number":42,"state":"open","locked":false,"labels":[{"name":"bug"}],"assignees":[]}'
+		fixture="${STUB_ISSUE_VIEW_FIXTURE:-$fixture}"
+		jq_filter="$(_stub_jq_filter_arg 3 api "$@")"
+		_stub_print_fixture_with_jq "$fixture" "$jq_filter" -r
+		return $?
 	fi
 	if [[ "$subcommand" =~ ^/repos/[^/]+/[^/]+/issues\? ]]; then
 		_stub_gh_api_issues_list api "$@"
@@ -490,11 +489,11 @@ fi
 
 # =============================================================================
 # Test 8: _rest_issue_edit computes full labels array from add/remove deltas
-# Current labels stub returns "bug" (single label). We add "auto-dispatch",
+# Current issue stub returns "bug" (single label). We add "auto-dispatch",
 # remove "bug" — target set should be ["auto-dispatch"] only.
 # =============================================================================
 : >"$GH_CALLS"
-export STUB_CURRENT_LABELS="bug"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[]}'
 _rest_issue_edit 42 \
 	--repo "owner/repo" \
 	--add-label "auto-dispatch" \
@@ -508,7 +507,74 @@ else
 		"GH_CALLS=$(cat "$GH_CALLS")"
 fi
 
-unset STUB_CURRENT_LABELS
+unset STUB_ISSUE_VIEW_FIXTURE
+
+# =============================================================================
+# Test 8a: current-state GET failure is fail-closed and emits no PATCH.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_GET_FAIL=1
+_rest_issue_edit 43 --repo "owner/repo" --remove-label "bug" >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -ne 0 ]] &&
+	! grep -qE '^api -X PATCH.*/repos/owner/repo/issues/43' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit fails closed when current-state GET fails"
+else
+	fail "_rest_issue_edit fails closed when current-state GET fails" \
+		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_GET_FAIL
+
+# =============================================================================
+# Test 8b: malformed full-array state is fail-closed and emits no PATCH.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":"malformed","assignees":[]}'
+_rest_issue_edit 44 --repo "owner/repo" --remove-label "bug" >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -ne 0 ]] &&
+	! grep -qE '^api -X PATCH.*/repos/owner/repo/issues/44' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit fails closed on malformed current arrays"
+else
+	fail "_rest_issue_edit fails closed on malformed current arrays" \
+		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_VIEW_FIXTURE
+
+# =============================================================================
+# Test 8c: removing the final value emits an explicit empty array field.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[]}'
+_rest_issue_edit 45 --repo "owner/repo" --remove-label "bug" >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -eq 0 ]] &&
+	grep -qE '^api -X PATCH.*/repos/owner/repo/issues/45.*-F labels\[\]' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE 'labels\[\]=bug' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit encodes an explicit empty final labels array"
+else
+	fail "_rest_issue_edit encodes an explicit empty final labels array" \
+		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_VIEW_FIXTURE
+
+# =============================================================================
+# Test 8d: label and assignee deltas share one current-state GET.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[{"login":"old-worker"}]}'
+_rest_issue_edit 46 --repo "owner/repo" \
+	--add-label "auto-dispatch" --remove-assignee "old-worker" >/dev/null 2>&1
+rest_edit_rc=$?
+issue_get_count=$(grep -c '^api /repos/owner/repo/issues/46$' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$rest_edit_rc" -eq 0 && "$issue_get_count" -eq 1 ]] &&
+	grep -qE '^api -X PATCH.*/repos/owner/repo/issues/46.*labels\[\]=bug.*labels\[\]=auto-dispatch.*-F assignees\[\]' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit shares one validated GET across label and assignee arrays"
+else
+	fail "_rest_issue_edit shares one validated GET across label and assignee arrays" \
+		"rc=${rest_edit_rc}; gets=${issue_get_count}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_VIEW_FIXTURE
 
 # =============================================================================
 # Test 9: gh_issue_comment → falls back to REST when primary fails AND exhausted

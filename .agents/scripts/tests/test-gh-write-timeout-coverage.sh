@@ -19,7 +19,7 @@ expected_calls=(
 	'_gh_with_timeout write gh label create "solved:worker"'
 	'_gh_with_timeout write gh label create "solved:interactive"'
 	'_gh_with_timeout write gh api graphql -f query='
-	'_gh_with_timeout write gh issue comment "$@"'
+	'_gh_with_timeout write "$gh_command" issue comment "$@"'
 	'_gh_with_timeout write gh pr comment "$@"'
 	'_gh_with_timeout write gh label create "origin:worker"'
 	'_gh_with_timeout write gh label create "origin:interactive"'

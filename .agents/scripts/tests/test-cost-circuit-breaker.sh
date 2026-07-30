@@ -86,6 +86,22 @@ if [[ "\$1" == "api" ]]; then
 		echo '{"login":"test-runner"}'
 		exit 0
 	fi
+	if [[ "\$2" == "/repos/"*"/labels?per_page=100" ]]; then
+		printf '%s\n' \\
+			\$'status:available\t0e8a16\tTask is available for claiming' \\
+			\$'status:queued\tfbca04\tWorker dispatched, not yet started' \\
+			\$'status:claimed\tf9d0c4\tInteractive session claimed this task' \\
+			\$'status:in-progress\t1d76db\tWorker actively running' \\
+			\$'status:in-review\t5319e7\tPR open, awaiting review/merge' \\
+			\$'status:done\t6f42c1\tTask is complete' \\
+			\$'status:blocked\td93f0b\tWaiting on blocker task'
+		exit 0
+	fi
+	# Keep this circuit-breaker test focused on its historical native mutation
+	# assertions; dedicated REST wrapper tests cover the REST-first path.
+	if [[ "\$2" == "/repos/"*"/issues/"* ]]; then
+		exit 1
+	fi
 	echo '{}'
 	exit 0
 fi

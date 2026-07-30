@@ -193,6 +193,20 @@ case "$1" in
 			echo '{"login":"test-user"}'
 			exit 0
 		fi
+		if [[ "$2" == /repos/*/labels\?per_page=100 ]]; then
+			printf '%s\t%s\t%s\n' \
+				"status:available" "0e8a16" "Task is available for claiming" \
+				"status:queued" "fbca04" "Worker dispatched, not yet started" \
+				"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+				"status:in-progress" "1d76db" "Worker actively running" \
+				"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+				"status:done" "6f42c1" "Task is complete" \
+				"status:blocked" "d93f0b" "Waiting on blocker task"
+			exit 0
+		fi
+		# Force the compatibility path; REST-first behavior has a dedicated
+		# production-wrapper test in test-status-label-state-machine.sh.
+		[[ "$2" == /repos/*/issues/[0-9]* ]] && exit 1
 		;;
 	label)
 		# gh label create (used by ensure_status_labels_exist)
@@ -323,6 +337,18 @@ case "$1" in
 			echo "test-user"
 			exit 0
 		fi
+		if [[ "$2" == /repos/*/labels\?per_page=100 ]]; then
+			printf '%s\t%s\t%s\n' \
+				"status:available" "0e8a16" "Task is available for claiming" \
+				"status:queued" "fbca04" "Worker dispatched, not yet started" \
+				"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+				"status:in-progress" "1d76db" "Worker actively running" \
+				"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+				"status:done" "6f42c1" "Task is complete" \
+				"status:blocked" "d93f0b" "Waiting on blocker task"
+			exit 0
+		fi
+		[[ "$2" == /repos/*/issues/[0-9]* ]] && exit 1
 		;;
 	issue)
 		case "$2" in

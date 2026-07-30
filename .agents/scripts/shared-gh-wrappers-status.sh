@@ -459,11 +459,87 @@ _gh_pr_view_try_mixed_split() {
 	return 0
 }
 
+# Print the managed status-label contract as name/color/description TSV rows.
+_status_label_contract() {
+	printf '%s\t%s\t%s\n' \
+		"status:available" "0e8a16" "Task is available for claiming" \
+		"status:queued" "fbca04" "Worker dispatched, not yet started" \
+		"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+		"status:in-progress" "1d76db" "Worker actively running" \
+		"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+		"status:done" "6f42c1" "Task is complete" \
+		"status:blocked" "d93f0b" "Waiting on blocker task"
+	return 0
+}
+
+# Fetch every repository label once so steady-state verification is read-only.
+_status_labels_snapshot() {
+	local repo="$1"
+	AIDEVOPS_GH_ROUTE_DECISION="status-label-contract-list-rest" \
+		_gh_with_timeout read gh api "/repos/${repo}/labels?per_page=100" --paginate \
+		--jq '.[] | [.name, ((.color // "") | ascii_downcase), (.description // "")] | @tsv'
+	return $?
+}
+
+# Print color/description for one exact label name from a snapshot.
+_status_label_snapshot_definition() {
+	local snapshot="$1"
+	local expected_name="$2"
+	local name=""
+	local color=""
+	local description=""
+	while IFS=$'\t' read -r name color description; do
+		if [[ "$name" == "$expected_name" ]]; then
+			printf '%s\t%s' "$color" "$description"
+			return 0
+		fi
+	done <<<"$snapshot"
+	return 1
+}
+
+# Return success only when a snapshot exactly satisfies the full contract.
+_status_label_snapshot_matches_contract() {
+	local snapshot="$1"
+	local name=""
+	local color=""
+	local description=""
+	local actual=""
+	while IFS=$'\t' read -r name color description; do
+		actual=$(_status_label_snapshot_definition "$snapshot" "$name") || return 1
+		[[ "$actual" == "${color}"$'\t'"${description}" ]] || return 1
+	done < <(_status_label_contract)
+	return 0
+}
+
+# Create a missing definition or reconcile a concurrent create deterministically.
+_status_label_create_or_reconcile() {
+	local repo="$1"
+	local name="$2"
+	local color="$3"
+	local description="$4"
+	if AIDEVOPS_GH_ROUTE_DECISION="status-label-contract-create-rest" \
+		_gh_with_timeout write gh label create "$name" --repo "$repo" \
+		--description "$description" --color "$color" 2>/dev/null; then
+		return 0
+	fi
+
+	local refreshed=""
+	local actual=""
+	refreshed=$(_status_labels_snapshot "$repo") || return 1
+	actual=$(_status_label_snapshot_definition "$refreshed" "$name") || return 1
+	if [[ "$actual" == "${color}"$'\t'"${description}" ]]; then
+		return 0
+	fi
+	AIDEVOPS_GH_ROUTE_DECISION="status-label-contract-edit-rest" \
+		_gh_with_timeout write gh label edit "$name" --repo "$repo" \
+		--description "$description" --color "$color"
+	return $?
+}
+
 # Ensure all core status:* labels exist on a repo (idempotent, cached per-process).
-# The helper relies on --remove-label being idempotent for *unset* labels (gh
-# returns exit 0 when a label exists in the repo but isn't applied to the issue),
-# but fails hard when a label doesn't exist in the repo at all. Pre-creating
-# them once per repo per process closes that gap.
+# A converged repository costs one paginated read and zero writes. Missing or
+# drifted definitions are reconciled, then the complete contract is re-verified
+# before the process-local cache is populated.
 #
 # Usage: ensure_status_labels_exist "owner/repo"
 _STATUS_LABELS_ENSURED=""
@@ -475,33 +551,41 @@ ensure_status_labels_exist() {
 	*",${repo},"*) return 0 ;;
 	esac
 
-	# Colors roughly follow GitHub's default palette for lifecycle states.
-	gh label create "status:available" --repo "$repo" \
-		--description "Task is available for claiming" --color "0E8A16" --force 2>/dev/null || true
-	gh label create "status:queued" --repo "$repo" \
-		--description "Worker dispatched, not yet started" --color "FBCA04" --force 2>/dev/null || true
-	gh label create "status:claimed" --repo "$repo" \
-		--description "Interactive session claimed this task" --color "F9D0C4" --force 2>/dev/null || true
-	gh label create "status:in-progress" --repo "$repo" \
-		--description "Worker actively running" --color "1D76DB" --force 2>/dev/null || true
-	gh label create "status:in-review" --repo "$repo" \
-		--description "PR open, awaiting review/merge" --color "5319E7" --force 2>/dev/null || true
-	gh label create "status:done" --repo "$repo" \
-		--description "Task is complete" --color "6F42C1" --force 2>/dev/null || true
-	gh label create "status:blocked" --repo "$repo" \
-		--description "Waiting on blocker task" --color "D93F0B" --force 2>/dev/null || true
+	local snapshot=""
+	snapshot=$(_status_labels_snapshot "$repo") || return 1
+	if ! _status_label_snapshot_matches_contract "$snapshot"; then
+		local name=""
+		local color=""
+		local description=""
+		local actual=""
+		while IFS=$'\t' read -r name color description; do
+			actual=$(_status_label_snapshot_definition "$snapshot" "$name") || actual=""
+			[[ "$actual" == "${color}"$'\t'"${description}" ]] && continue
+			if [[ -n "$actual" ]]; then
+				AIDEVOPS_GH_ROUTE_DECISION="status-label-contract-edit-rest" \
+					_gh_with_timeout write gh label edit "$name" --repo "$repo" \
+					--description "$description" --color "$color" || return 1
+			else
+				_status_label_create_or_reconcile "$repo" "$name" "$color" "$description" || return 1
+			fi
+		done < <(_status_label_contract)
+		snapshot=$(_status_labels_snapshot "$repo") || return 1
+		_status_label_snapshot_matches_contract "$snapshot" || return 1
+	fi
 
 	_STATUS_LABELS_ENSURED="${_STATUS_LABELS_ENSURED:+${_STATUS_LABELS_ENSURED},}${repo}"
 	return 0
 }
 
 #######################################
-# Transition an issue to a status:* label atomically (t2033).
+# Transition an issue to one status:* label (t2033).
 #
-# Removes every sibling core status:* label in a single `gh issue edit` call,
-# then adds the target. This is the ONLY sanctioned way to change an issue's
-# status label — ad-hoc --add-label/--remove-label calls must go through
-# this helper so the status state machine is enforced centrally.
+# The REST-first path uses targeted label and assignee subresource mutations so
+# a stale read cannot replace concurrent unrelated values. Passthrough deltas
+# complete before status reconciliation, so an invalid assignee or unrelated
+# label cannot strand a partially applied status transition. Each phase retains
+# native `gh issue edit` as a compatibility fallback. This is the ONLY sanctioned
+# way to change an issue's status label so the state machine remains central.
 #
 # Args:
 #   $1 — issue number
@@ -528,7 +612,7 @@ ensure_status_labels_exist() {
 #       --add-label "needs-maintainer-review"
 #######################################
 set_issue_status() {
-	gh_record_call graphql set_issue_status 2>/dev/null || true
+	gh_record_call rest set_issue_status 2>/dev/null || true
 	local issue_num="$1"
 	local repo_slug="$2"
 	local new_status="$3"
@@ -557,28 +641,61 @@ set_issue_status() {
 		fi
 	fi
 
-	# Ensure labels exist (cached per-process per-repo so this is cheap)
-	ensure_status_labels_exist "$repo_slug" || true
+	# Ensure labels exist (cached per-process per-repo so this is cheap).
+	# Fail closed: an unknown repository-label contract makes sibling removals
+	# unsafe and must not proceed to either edit path.
+	if ! ensure_status_labels_exist "$repo_slug"; then
+		print_warning "gh-wrapper: unable to verify status-label contract for ${repo_slug}"
+		return 1
+	fi
 
-	# Build flag list: remove all core status labels, add target if non-empty.
-	local -a _flags=()
+	# Build status-only flags: remove all core labels, add target if non-empty.
+	local -a _status_flags=()
 	local _label
 	for _label in "${ISSUE_STATUS_LABELS[@]}"; do
 		if [[ "$_label" == "$new_status" ]]; then
-			_flags+=(--add-label "status:${_label}")
+			_status_flags+=(--add-label "status:${_label}")
 		else
-			_flags+=(--remove-label "status:${_label}")
+			_status_flags+=(--remove-label "status:${_label}")
 		fi
 	done
 
-	# Pass through any extra flags the caller wants to apply in the same edit
-	_flags+=("$@")
+	# Complete passthrough deltas before touching status labels. If both REST and
+	# native handling reject an extra (for example, an invalid assignee), the
+	# existing status remains unchanged rather than becoming a dual-label state.
+	local -a _extra_flags=("$@")
+	local _rc=0
+	if [[ ${#_extra_flags[@]} -gt 0 ]]; then
+		AIDEVOPS_GH_ROUTE_DECISION="status-extra-edit-rest-deltas" \
+			_rest_issue_edit_preserving_deltas "$issue_num" --repo "$repo_slug" "${_extra_flags[@]}"
+		_rc=$?
+		if [[ $_rc -ne 0 ]]; then
+			if [[ "${_REST_ISSUE_DELTA_FAILURE_STAGE:-}" != "mutation" ]]; then
+				print_info "[INFO] gh-wrapper: REST status preflight unavailable, using combined native edit"
+				gh_record_call graphql set_issue_status_combined_native_fallback 2>/dev/null || true
+				AIDEVOPS_GH_ROUTE_DECISION="status-combined-native-fallback" \
+					_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" \
+					"${_status_flags[@]}" "${_extra_flags[@]}" 2>/dev/null
+				return $?
+			fi
+			print_info "[INFO] gh-wrapper: REST status extras failed, falling back to native gh issue edit"
+			gh_record_call graphql set_issue_status_extra_native_fallback 2>/dev/null || true
+			AIDEVOPS_GH_ROUTE_DECISION="status-extra-edit-native-fallback" \
+				_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" "${_extra_flags[@]}" 2>/dev/null
+			_rc=$?
+		fi
+		[[ $_rc -eq 0 ]] || return $_rc
+	fi
 
-	_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" "${_flags[@]}" 2>/dev/null
-	local _rc=$?
-	if [[ $_rc -ne 0 ]] && _rest_should_fallback; then
-		print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to REST for set_issue_status"
-		_rest_issue_edit "$issue_num" --repo "$repo_slug" "${_flags[@]}"
+	AIDEVOPS_GH_ROUTE_DECISION="status-issue-edit-rest-deltas" \
+		_rest_issue_edit_preserving_deltas "$issue_num" --repo "$repo_slug" \
+		--delta-order remove-first "${_status_flags[@]}"
+	_rc=$?
+	if [[ $_rc -ne 0 ]]; then
+		print_info "[INFO] gh-wrapper: REST status delta edit failed, falling back to native gh issue edit"
+		gh_record_call graphql set_issue_status_native_fallback 2>/dev/null || true
+		AIDEVOPS_GH_ROUTE_DECISION="status-issue-edit-native-fallback" \
+			_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" "${_status_flags[@]}" 2>/dev/null
 		_rc=$?
 	fi
 	return $_rc

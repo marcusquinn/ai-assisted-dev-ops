@@ -594,6 +594,207 @@ _rest_pr_comment() {
 }
 
 #######################################
+# Return success when one exact value occurs in a newline-separated set.
+_rest_lines_contain() {
+	local values="$1"
+	local expected="$2"
+	local value=""
+	while IFS= read -r value; do
+		[[ -n "$value" && "$value" == "$expected" ]] && return 0
+	done <<<"$values"
+	return 1
+}
+
+#######################################
+# Filter requested issue-edit deltas against a validated current set. Adds emit
+# only absent values. Removes emit only present values and exclude requested
+# adds so add wins, matching the existing full-array computation.
+_rest_filter_issue_deltas() {
+	local current="$1"
+	local candidates="$2"
+	local excluded="$3"
+	local mode="$4"
+	local candidate=""
+	local emitted=""
+	while IFS= read -r candidate; do
+		[[ -n "$candidate" ]] || continue
+		_rest_lines_contain "$emitted" "$candidate" && continue
+		if [[ "$mode" == "add" ]]; then
+			_rest_lines_contain "$current" "$candidate" && continue
+		else
+			_rest_lines_contain "$current" "$candidate" || continue
+			_rest_lines_contain "$excluded" "$candidate" && continue
+		fi
+		printf '%s\n' "$candidate"
+		emitted="${emitted}${emitted:+$'\n'}${candidate}"
+	done <<<"$candidates"
+	return 0
+}
+
+#######################################
+# Return success only when the issue snapshot has structurally valid label and
+# assignee arrays. Delta mutations must never start from unknown current state.
+_REST_ISSUE_JSON_STRING_TYPE=string
+_rest_issue_delta_snapshot_valid() {
+	local current_json="$1"
+	local array_type="array"
+	local object_type="object"
+	printf '%s' "$current_json" | jq -e \
+		--arg array_type "$array_type" --arg object_type "$object_type" \
+		--arg string_type "$_REST_ISSUE_JSON_STRING_TYPE" '
+		((.labels | type) == $array_type) and
+		(all(.labels[]; (type == $object_type) and ((.name | type) == $string_type) and ((.name | length) > 0))) and
+		((.assignees | type) == $array_type) and
+		(all(.assignees[]; (type == $object_type) and ((.login | type) == $string_type) and ((.login | length) > 0)))
+	' >/dev/null 2>&1
+	return $?
+}
+
+#######################################
+# Apply one add/remove array operation through a targeted GitHub REST endpoint.
+_rest_issue_apply_array_delta() {
+	local method="$1"
+	local path="$2"
+	local field="$3"
+	local values="$4"
+	[[ -n "$values" ]] || return 0
+	local -a api_args=(-X "$method" "$path")
+	local value=""
+	while IFS= read -r value; do
+		[[ -n "$value" ]] && api_args+=(-f "${field}[]=${value}")
+	done <<<"$values"
+	_rest_api_call write gh api "${api_args[@]}" >/dev/null 2>&1
+	local rc=$?
+	[[ $rc -eq 0 ]] && _REST_ISSUE_DELTA_MUTATED=1
+	return $rc
+}
+
+#######################################
+# Remove exact labels through per-label REST endpoints so concurrent unrelated
+# additions are never submitted in a stale replacement array.
+_rest_issue_remove_label_deltas() {
+	local issue_path="$1"
+	local label_values="$2"
+	local label=""
+	local encoded=""
+	while IFS= read -r label; do
+		[[ -n "$label" ]] || continue
+		encoded=$(printf '%s' "$label" | jq -sRr '@uri') || return 1
+		_rest_api_call write gh api -X DELETE "${issue_path}/labels/${encoded}" >/dev/null 2>&1 || return 1
+		_REST_ISSUE_DELTA_MUTATED=1
+	done <<<"$label_values"
+	return 0
+}
+
+#######################################
+# Apply filtered deltas in the phase-specific safe order. Passthrough metadata
+# adds first so a rejected replacement leaves existing values intact. Managed
+# status transitions remove first so a failed target add cannot create a dual
+# status state.
+_rest_issue_apply_delta_plan() {
+	local issue_path="$1"
+	local adds_l="$2"
+	local rms_l="$3"
+	local adds_a="$4"
+	local rms_a="$5"
+	local delta_order="$6"
+	if [[ "$delta_order" == "remove-first" ]]; then
+		_rest_issue_remove_label_deltas "$issue_path" "$rms_l" || return 1
+		_rest_issue_apply_array_delta DELETE "${issue_path}/assignees" assignees "$rms_a" || return 1
+		_rest_issue_apply_array_delta POST "${issue_path}/labels" labels "$adds_l" || return 1
+		_rest_issue_apply_array_delta POST "${issue_path}/assignees" assignees "$adds_a" || return 1
+		return 0
+	fi
+	_rest_issue_apply_array_delta POST "${issue_path}/labels" labels "$adds_l" || return 1
+	_rest_issue_apply_array_delta POST "${issue_path}/assignees" assignees "$adds_a" || return 1
+	_rest_issue_remove_label_deltas "$issue_path" "$rms_l" || return 1
+	_rest_issue_apply_array_delta DELETE "${issue_path}/assignees" assignees "$rms_a" || return 1
+	return 0
+}
+
+#######################################
+# Apply label and assignee deltas without full-array replacement. One validated
+# GET filters no-op requests; targeted subresource writes then preserve any
+# unrelated value added concurrently after that snapshot.
+_rest_issue_edit_preserving_deltas() {
+	gh_record_call rest _rest_issue_edit_preserving_deltas 2>/dev/null || true
+	_REST_ISSUE_DELTA_FAILURE_STAGE="parse"
+	_REST_ISSUE_DELTA_MUTATED=0
+	local num_or_url="${1:-}"
+	shift || true
+	local repo=""
+	local delta_order="add-first"
+	local -a delta_add_labels=() delta_rm_labels=() delta_add_assignees=() delta_rm_assignees=()
+	local arg="" value="" token=""
+	while [[ $# -gt 0 ]]; do
+		arg="$1"
+		[[ "$arg" == *=* ]] && { value="${arg#*=}"; arg="${arg%%=*}"; shift; } || { value="${2:-}"; shift 2; }
+		case "$arg" in
+		--repo) repo="$value" ;;
+		--delta-order)
+			[[ "$value" == "add-first" || "$value" == "remove-first" ]] || return 1
+			delta_order="$value"
+			;;
+		--add-label) while IFS= read -r token; do [[ -n "$token" ]] && delta_add_labels+=("$token"); done < <(_rest_split_csv "$value") ;;
+		--remove-label) while IFS= read -r token; do [[ -n "$token" ]] && delta_rm_labels+=("$token"); done < <(_rest_split_csv "$value") ;;
+		--add-assignee) while IFS= read -r token; do [[ -n "$token" ]] && delta_add_assignees+=("$token"); done < <(_rest_split_csv "$value") ;;
+		--remove-assignee) while IFS= read -r token; do [[ -n "$token" ]] && delta_rm_assignees+=("$token"); done < <(_rest_split_csv "$value") ;;
+		*) return 1 ;;
+		esac
+	done
+	local num=""
+	{ read -r repo; read -r num; } < <(_rest_normalize_issue_ref "$num_or_url" "$repo")
+	[[ -n "$repo" && "$num" =~ ^[0-9]+$ ]] || return 1
+
+	_REST_ISSUE_DELTA_FAILURE_STAGE="snapshot"
+	local issue_path="/repos/${repo}/issues"
+	issue_path="${issue_path}/${num}"
+	local current_json="" current_labels="" current_assignees=""
+	current_json=$(_rest_api_call read gh api "$issue_path" 2>/dev/null) || return 1
+	_rest_issue_delta_snapshot_valid "$current_json" || return 1
+	current_labels=$(printf '%s' "$current_json" | jq -r '.labels[].name') || return 1
+	current_assignees=$(printf '%s' "$current_json" | jq -r '.assignees[].login') || return 1
+
+	local adds_l="" rms_l="" adds_a="" rms_a=""
+	adds_l=$(_rest_filter_issue_deltas "$current_labels" "$(printf '%s\n' "${delta_add_labels[@]}")" "" add) || return 1
+	rms_l=$(_rest_filter_issue_deltas "$current_labels" "$(printf '%s\n' "${delta_rm_labels[@]}")" "$(printf '%s\n' "${delta_add_labels[@]}")" remove) || return 1
+	adds_a=$(_rest_filter_issue_deltas "$current_assignees" "$(printf '%s\n' "${delta_add_assignees[@]}")" "" add) || return 1
+	rms_a=$(_rest_filter_issue_deltas "$current_assignees" "$(printf '%s\n' "${delta_rm_assignees[@]}")" "$(printf '%s\n' "${delta_add_assignees[@]}")" remove) || return 1
+
+	_REST_ISSUE_DELTA_FAILURE_STAGE="mutation"
+	_rest_issue_apply_delta_plan "$issue_path" "$adds_l" "$rms_l" "$adds_a" "$rms_a" "$delta_order" || return 1
+	_REST_ISSUE_DELTA_FAILURE_STAGE=""
+	return 0
+}
+
+#######################################
+# Build full-array PATCH flags from one validated current-issue snapshot.
+# Args: $1=issue_path, then newline-separated add/remove sets for labels and
+# assignees. Prints tab-separated flag/value pairs.
+_rest_issue_edit_array_flags() {
+	local issue_path="$1"
+	local add_labels="$2"
+	local rm_labels="$3"
+	local add_assignees="$4"
+	local rm_assignees="$5"
+	local current_json=""
+	current_json=$(_rest_api_call read gh api "$issue_path" 2>/dev/null) || return 1
+
+	local flags=""
+	if [[ -n "${add_labels}${rm_labels}" ]]; then
+		flags=$(_rest_print_patch_array_flags "$current_json" "labels" "name" \
+			"$add_labels" "$rm_labels") || return 1
+		printf '%s\n' "$flags"
+	fi
+	if [[ -n "${add_assignees}${rm_assignees}" ]]; then
+		flags=$(_rest_print_patch_array_flags "$current_json" "assignees" "login" \
+			"$add_assignees" "$rm_assignees") || return 1
+		printf '%s\n' "$flags"
+	fi
+	return 0
+}
+
+#######################################
 # _rest_issue_edit: PATCH /repos/{owner}/{repo}/issues/{N}.
 # Handles --title, --body, --body-file, --add-label, --remove-label,
 # --add-assignee, --remove-assignee, --milestone, --state. REST PATCH
@@ -621,7 +822,6 @@ _rest_issue_edit() {
 	rm_labels=()
 	add_assignees=()
 	rm_assignees=()
-
 	local _first="${1:-}"
 	if [[ $# -gt 0 && "$_first" != --* ]]; then
 		num_or_url="$_first"
@@ -645,7 +845,6 @@ _rest_issue_edit() {
 		*) : ;;
 		esac
 	done
-
 	local num=""
 	{ read -r repo; read -r num; } < <(_rest_normalize_issue_ref "$num_or_url" "$repo")
 
@@ -664,6 +863,27 @@ _rest_issue_edit() {
 	[[ $has_milestone -eq 1 ]] && api_args+=(-F "milestone=${milestone:-null}")
 	[[ $has_state -eq 1 ]] && api_args+=(-f "state=${state}")
 
+	# Labels and assignees: fetch current issue state once, validate both arrays,
+	# and translate deltas into the complete arrays REST PATCH requires.
+	local _array_flags=""
+	if [[ ${#add_labels[@]} -gt 0 || ${#rm_labels[@]} -gt 0 ]]; then
+		_array_flags="labels"
+	fi
+	if [[ ${#add_assignees[@]} -gt 0 || ${#rm_assignees[@]} -gt 0 ]]; then
+		_array_flags="${_array_flags}assignees"
+	fi
+	if [[ -n "$_array_flags" ]]; then
+		_array_flags=$(_rest_issue_edit_array_flags "$_issue_path" \
+			"$(printf '%s\n' "${add_labels[@]}")" "$(printf '%s\n' "${rm_labels[@]}")" \
+			"$(printf '%s\n' "${add_assignees[@]}")" "$(printf '%s\n' "${rm_assignees[@]}")") || return 1
+		local _flag=""
+		local _val=""
+		while IFS=$'\t' read -r _flag _val; do
+			[[ -n "$_flag" && -n "$_val" ]] || return 1
+			api_args+=("$_flag" "$_val")
+		done <<<"$_array_flags"
+	fi
+
 	local tmp_body=""
 	local tmp_body_owned=0
 	if [[ $has_body -eq 1 ]]; then
@@ -677,24 +897,7 @@ _rest_issue_edit() {
 		api_args+=(-F "$(_rest_body_file_arg "$tmp_body")")
 	fi
 
-	# Labels and assignees: REST requires full arrays. Delegated to
-	# _rest_print_patch_array_flags; see that helper for the state-fetch
-	# and delta-application logic.
-	local _flag _val
-	if [[ ${#add_labels[@]} -gt 0 || ${#rm_labels[@]} -gt 0 ]]; then
-		while IFS=$'\t' read -r _flag _val; do
-			api_args+=("$_flag" "$_val")
-		done < <(_rest_print_patch_array_flags "$_issue_path" "labels" ".labels[].name" \
-			"$(printf '%s\n' "${add_labels[@]}")" "$(printf '%s\n' "${rm_labels[@]}")")
-	fi
-	if [[ ${#add_assignees[@]} -gt 0 || ${#rm_assignees[@]} -gt 0 ]]; then
-		while IFS=$'\t' read -r _flag _val; do
-			api_args+=("$_flag" "$_val")
-		done < <(_rest_print_patch_array_flags "$_issue_path" "assignees" ".assignees[].login" \
-			"$(printf '%s\n' "${add_assignees[@]}")" "$(printf '%s\n' "${rm_assignees[@]}")")
-	fi
-
-	gh api "${api_args[@]}" >/dev/null 2>&1
+	_rest_api_call write gh api "${api_args[@]}" >/dev/null 2>&1
 	local rc=$?
 
 	[[ $tmp_body_owned -eq 1 && -f "$tmp_body" ]] && rm -f "$tmp_body"
@@ -703,24 +906,38 @@ _rest_issue_edit() {
 }
 
 #######################################
-# Print -f flags for a PATCH array field (labels or assignees) given the
-# current state (fetched via REST) and add/remove deltas. Output is one
-# tab-separated `-f\tfield[]=value` pair per line; caller reads with
-# `IFS=$'\t' read -r k v` and appends both to the api_args array.
+# Print flags for a PATCH array field (labels or assignees) given validated
+# current issue JSON and add/remove deltas. Output is one tab-separated
+# flag/value pair per line. An empty target emits `-F\tfield[]`, which gh 2.96+
+# serializes as an explicit empty array.
 # Factored out of _rest_issue_edit so that function stays under the
 # 100-line complexity gate.
 #
-# Args: $1=issue_path  $2=field_name  $3=jq_expr  $4=adds_nl  $5=rms_nl
+# Args: $1=current_json $2=field_name $3=value_key $4=adds_nl $5=rms_nl
 #######################################
 _rest_print_patch_array_flags() {
-	local issue_path="$1"
+	local current_json="$1"
 	local field="$2"
-	local jq_expr="$3"
+	local value_key="$3"
 	local adds="$4"
 	local rms="$5"
-	local _current _target _elem
-	_current=$(gh api "$issue_path" --jq "$jq_expr" 2>/dev/null) || _current=""
-	_target=$(_rest_compute_target_set "$_current" "$adds" "$rms")
+	local _current=""
+	local _target=""
+	local _elem=""
+	if ! printf '%s' "$current_json" | jq -e --arg field "$field" --arg key "$value_key" \
+		--arg string_type "$_REST_ISSUE_JSON_STRING_TYPE" '
+		if (.[$field] | type) != "array" then false
+		else all(.[$field][]; (type == "object") and ((.[$key] | type) == $string_type) and ((.[$key] | length) > 0))
+		end' >/dev/null 2>&1; then
+		return 1
+	fi
+	_current=$(printf '%s' "$current_json" | jq -r --arg field "$field" --arg key "$value_key" \
+		'.[$field][] | .[$key]' 2>/dev/null) || return 1
+	_target=$(_rest_compute_target_set "$_current" "$adds" "$rms") || return 1
+	if [[ -z "$_target" ]]; then
+		printf -- '-F\t%s[]\n' "$field"
+		return 0
+	fi
 	while IFS= read -r _elem; do
 		[[ -n "$_elem" ]] && printf -- '-f\t%s[]=%s\n' "$field" "$_elem"
 	done <<<"$_target"
