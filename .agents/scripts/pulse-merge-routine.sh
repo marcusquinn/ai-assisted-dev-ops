@@ -151,9 +151,30 @@ source "${SCRIPT_DIR}/pulse-merge-stuck.sh"
 # Env-var defaults (belt-and-suspenders — also guarded inside the function)
 # =============================================================================
 
-# PULSE_MERGE_BATCH_LIMIT is normally set by pulse-wrapper.sh:727. Set a
-# safe default here so standalone invocation doesn't hit an unbound variable.
+# PULSE_MERGE_BATCH_LIMIT is normally set by pulse-wrapper.sh:727. Keep the
+# standalone routine's per-repository enrichment set bounded even when an
+# inherited environment requests a full-repository scan.
 PULSE_MERGE_BATCH_LIMIT="${PULSE_MERGE_BATCH_LIMIT:-50}"
+PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX="${PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX:-50}"
+[[ "$PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX" =~ ^[1-9][0-9]*$ ]] || PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX=50
+[[ "$PULSE_MERGE_BATCH_LIMIT" =~ ^[1-9][0-9]*$ ]] || PULSE_MERGE_BATCH_LIMIT="$PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX"
+if [[ "$PULSE_MERGE_BATCH_LIMIT" -gt "$PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX" ]]; then
+	PULSE_MERGE_BATCH_LIMIT="$PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX"
+fi
+export PULSE_MERGE_BATCH_LIMIT PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX
+
+# Match the normal pulse bootstrap's durable REST PR-view cache. Standalone
+# scheduler launches are separate processes, so the wrapper's PID-scoped
+# fallback would otherwise start cold on every cycle. Mutation-sensitive reads
+# continue to bypass this cache at their existing call sites.
+AIDEVOPS_GH_PR_VIEW_CACHE="${AIDEVOPS_GH_PR_VIEW_CACHE:-1}"
+AIDEVOPS_GH_PR_VIEW_CACHE_DIR="${AIDEVOPS_GH_PR_VIEW_CACHE_DIR:-${AIDEVOPS_PULSE_PR_VIEW_CACHE_DIR:-${HOME}/.aidevops/cache/pulse-pr-view-cache}}"
+AIDEVOPS_GH_PR_VIEW_CACHE_TTL="${AIDEVOPS_GH_PR_VIEW_CACHE_TTL:-${AIDEVOPS_PULSE_PR_VIEW_CACHE_TTL:-3600}}"
+if [[ "$AIDEVOPS_GH_PR_VIEW_CACHE" == "1" ]] && ! mkdir -p "$AIDEVOPS_GH_PR_VIEW_CACHE_DIR"; then
+	printf 'pulse-merge-routine: failed to create persistent PR view cache: %s\n' "$AIDEVOPS_GH_PR_VIEW_CACHE_DIR" >&2
+	AIDEVOPS_GH_PR_VIEW_CACHE=0
+fi
+export AIDEVOPS_GH_PR_VIEW_CACHE AIDEVOPS_GH_PR_VIEW_CACHE_DIR AIDEVOPS_GH_PR_VIEW_CACHE_TTL
 
 # PULSE_START_EPOCH is normally set by pulse-wrapper.sh. Shared bootstrap keeps
 # standalone runners safe under `set -u` and exports the value for helpers that
@@ -479,7 +500,10 @@ pulse-enabled repos from REPOS_JSON (${REPOS_JSON}). The in-cycle merge call
 in pulse-wrapper.sh short-circuits when this routine ran within the last 60s.
 
 Env overrides:
-  PULSE_MERGE_BATCH_LIMIT=50              Max PRs fetched per repo per run.
+  PULSE_MERGE_BATCH_LIMIT=${PULSE_MERGE_BATCH_LIMIT}              Max PRs fetched per repo per run.
+  PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX=${PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX}  Standalone hard ceiling.
+  AIDEVOPS_GH_PR_VIEW_CACHE=1             Reuse non-mutation PR views across runs.
+  AIDEVOPS_GH_PR_VIEW_CACHE_TTL=3600      Persistent PR-view cache TTL in seconds.
   PULSE_MERGE_ROUTINE_TIMEOUT_SECONDS=600 Hard ceiling on routine runtime (t3041).
                                           Process tree killed on overrun. Min 1s.
   DRY_RUN=1                               Same as --dry-run.

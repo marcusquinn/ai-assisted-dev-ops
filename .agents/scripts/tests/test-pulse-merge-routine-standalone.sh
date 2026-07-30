@@ -57,6 +57,8 @@
 #   19. stuck escalation invokes the idempotent comment provider
 #   20. both paths run without missing-function diagnostics
 #   21. missing gh authentication aborts before the first API request
+#   22. standalone runs initialise a durable cross-process PR-view cache
+#   23. inherited oversized PR batches are clamped for standalone runs
 
 set -uo pipefail
 
@@ -216,6 +218,35 @@ if [[ "$auth_exit" -ne 0 ]] && printf '%s\n' "$auth_output" | grep -qF 'refusing
 else
 	fail "6c: missing gh authentication aborts before API access" \
 		"exit=$auth_exit, output=$auth_output"
+fi
+
+# =============================================================================
+# Test 6d: standalone bootstrap creates the persistent PR-view cache
+# =============================================================================
+cache_test_home=$(mktemp -d)
+cache_output=""
+cache_exit=0
+cache_output=$(HOME="$cache_test_home" "$ROUTINE_FILE" help 2>&1) || cache_exit=$?
+if [[ "$cache_exit" -eq 0 && -d "$cache_test_home/.aidevops/cache/pulse-pr-view-cache" ]]; then
+	pass "6d: standalone bootstrap initialises persistent PR-view cache"
+else
+	fail "6d: standalone bootstrap initialises persistent PR-view cache" \
+		"exit=$cache_exit, output=$cache_output"
+fi
+rm -rf "$cache_test_home"
+
+# =============================================================================
+# Test 6e: standalone bootstrap clamps inherited oversized PR batches
+# =============================================================================
+bounded_output=""
+bounded_exit=0
+bounded_output=$(PULSE_MERGE_BATCH_LIMIT=310 PULSE_MERGE_ROUTINE_BATCH_LIMIT_MAX=50 \
+	"$ROUTINE_FILE" help 2>&1) || bounded_exit=$?
+if [[ "$bounded_exit" -eq 0 ]] && printf '%s\n' "$bounded_output" | grep -qF 'PULSE_MERGE_BATCH_LIMIT=50'; then
+	pass "6e: standalone bootstrap clamps oversized PR batches"
+else
+	fail "6e: standalone bootstrap clamps oversized PR batches" \
+		"exit=$bounded_exit, output=$bounded_output"
 fi
 
 # =============================================================================
