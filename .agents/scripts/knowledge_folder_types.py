@@ -169,14 +169,10 @@ def _valid_signature(extension: str, prefix: bytes) -> bool:
     return True
 
 
-def classify_fd(name: str, descriptor: int) -> FileClassification:
-    """Classify one already-open file without another path resolution."""
+def classify_bytes(name: str, prefix: bytes) -> FileClassification:
+    """Classify a named payload from a bounded byte prefix."""
     extension = Path(name).suffix.lower()
     guessed_mime = mimetypes.guess_type(name, strict=False)[0] or "application/octet-stream"
-    try:
-        prefix = os.pread(descriptor, 8192, 0)
-    except OSError as error:
-        return FileClassification("unknown", guessed_mime, (), False, False, sanitize_reason(error))
     if extension in TEXT_EXTENSIONS:
         try:
             prefix.decode("utf-8")
@@ -202,3 +198,13 @@ def classify_fd(name: str, descriptor: int) -> FileClassification:
         valid = _valid_signature(extension, prefix)
         return FileClassification("export", "application/mbox", ("mailbox-expand",), True, valid, None if valid else "mailbox structure is malformed")
     return FileClassification("unknown", guessed_mime, (), False, True, "unsupported format")
+
+
+def classify_fd(name: str, descriptor: int) -> FileClassification:
+    """Classify one already-open file without another path resolution."""
+    try:
+        prefix = os.pread(descriptor, 8192, 0)
+    except OSError as error:
+        guessed_mime = mimetypes.guess_type(name, strict=False)[0] or "application/octet-stream"
+        return FileClassification("unknown", guessed_mime, (), False, False, sanitize_reason(error))
+    return classify_bytes(name, prefix)

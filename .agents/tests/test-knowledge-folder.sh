@@ -125,6 +125,13 @@ if jq -e 'select(.kind == "attachment") | .parent_sources | length == 1' "${KNOW
 else
 	fail "attachment points to its parent" "parent relation missing"
 fi
+attachment_source=$(jq -r 'select(.kind == "attachment") | .id' "${KNOWLEDGE_ROOT}"/sources/*/meta.json)
+if jq -e '.jobs[] | select(.processor == "text-extraction" and .status == "queued")' \
+	"${KNOWLEDGE_ROOT}/sources/${attachment_source}/enrichment.json" >/dev/null 2>&1; then
+	pass "supported attachments schedule type-specific enrichment"
+else
+	fail "supported attachments schedule type-specific enrichment" "attachment projection missing"
+fi
 
 source_count_before=$(printf '%s\n' "${KNOWLEDGE_ROOT}"/sources/*/meta.json | wc -l | tr -d ' ')
 replay_output=$(bash "$HELPER" folder "$TREE" --repo-path "$REPO_PATH" --json)
@@ -241,6 +248,297 @@ PY
 poison_output=$(bash "$HELPER" folder import "$POISON_TREE" --repo-path "$REPO_PATH" --json)
 assert_json "canonical digest reuse verifies stored bytes" "$poison_output" '.counts.imported == 1'
 
+store_regression_output=$(
+	HOME="${TMP_DIR}/store-home" python3 - "${SCRIPT_DIR}/../scripts" "${TMP_DIR}/store-regressions" <<'PY'
+import hashlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import knowledge_folder_store as store_module
+from knowledge_folder_store import ExpansionBudget, SourceStore
+from knowledge_source_contract import SourceMetaInput, build_source_meta
+
+base = Path(sys.argv[2])
+home = Path.home()
+home.mkdir(parents=True)
+
+
+def knowledge_root(name: str) -> Path:
+    root = base / name / "_knowledge"
+    (root / "sources").mkdir(parents=True)
+    (root / "index").mkdir()
+    return root
+
+
+def import_bytes(
+    store: SourceStore,
+    path: Path,
+    data: bytes,
+    kind: str = "document",
+    mime_type: str = "text/plain",
+    processors: tuple[str, ...] = (),
+):
+    path.write_bytes(data)
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        return store.import_file(
+            path.name,
+            descriptor,
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            kind,
+            mime_type,
+            processors,
+            ExpansionBudget(10, 1024, time.monotonic() + 10),
+        )
+    finally:
+        os.close(descriptor)
+
+
+legacy_root = knowledge_root("legacy-repo")
+legacy_data = b"legacy blob bytes\n"
+legacy_digest = hashlib.sha256(legacy_data).hexdigest()
+legacy_id = "legacy-large-source"
+legacy_source = legacy_root / "sources" / legacy_id
+legacy_source.mkdir()
+legacy_blob = (
+    home / ".aidevops" / ".agent-workspace" / "knowledge-blobs"
+    / "legacy-repo" / legacy_id / "original.txt"
+)
+legacy_blob.parent.mkdir(parents=True)
+legacy_blob.write_bytes(legacy_data)
+legacy_meta = build_source_meta(
+    SourceMetaInput(
+        source_id=legacy_id,
+        corpus_id="repo:default",
+        connector_id="local-file",
+        source_uri=f"local:{legacy_id}",
+        content_sha256=legacy_digest,
+        size_bytes=len(legacy_data),
+        kind="document",
+        sensitivity="internal",
+        trust="unverified",
+        ingested_at="2026-07-30T00:00:00Z",
+        blob_ref=f"knowledge-blobs:sha256:{legacy_digest}",
+    )
+)
+(legacy_source / "meta.json").write_text(json.dumps(legacy_meta), encoding="utf-8")
+legacy_store = SourceStore(legacy_root, "repo:default", Path(sys.argv[1]), blob_threshold=1)
+legacy_result = import_bytes(legacy_store, base / "legacy-copy.txt", legacy_data)
+legacy_count = len([path for path in (legacy_root / "sources").iterdir() if not path.name.startswith(".")])
+
+orphan_root = knowledge_root("orphan-repo")
+orphan_store = SourceStore(orphan_root, "repo:default", Path(sys.argv[1]), blob_threshold=1)
+orphan_data = b"orphan candidate\n"
+orphan_digest = hashlib.sha256(orphan_data).hexdigest()
+orphan_id = f"folder-{orphan_digest[:24]}"
+original_atomic_write = store_module.atomic_write_json
+
+
+def reject_manifest(*_args, **_kwargs):
+    raise OSError("injected manifest failure")
+
+
+store_module.atomic_write_json = reject_manifest
+try:
+    try:
+        import_bytes(orphan_store, base / "orphan.txt", orphan_data)
+    except OSError:
+        pass
+finally:
+    store_module.atomic_write_json = original_atomic_write
+orphan_blob = (
+    home / ".aidevops" / ".agent-workspace" / "knowledge-blobs"
+    / orphan_store._blob_namespace() / orphan_id / "raw.bin"
+)
+
+refresh_root = knowledge_root("refresh-repo")
+refresh_store = SourceStore(refresh_root, "repo:default", Path(sys.argv[1]))
+refresh_calls = 0
+original_source_index = refresh_store._source_index
+
+
+def counted_source_index():
+    global refresh_calls
+    refresh_calls += 1
+    return original_source_index()
+
+
+refresh_store._source_index = counted_source_index
+import_bytes(refresh_store, base / "refresh-one.txt", b"refresh one\n")
+import_bytes(refresh_store, base / "refresh-two.txt", b"refresh two\n")
+
+concurrent_root = knowledge_root("concurrent-repo")
+first_store = SourceStore(concurrent_root, "repo:default", Path(sys.argv[1]))
+second_store = SourceStore(concurrent_root, "repo:default", Path(sys.argv[1]))
+concurrent_data = b"cross-store convergence\n"
+import_bytes(first_store, base / "concurrent-one.txt", concurrent_data)
+concurrent_result = import_bytes(second_store, base / "concurrent-two.txt", concurrent_data)
+
+blob_a_root = knowledge_root("blob-a-repo")
+blob_b_root = knowledge_root("blob-b-repo")
+blob_a_store = SourceStore(blob_a_root, "repo:default", Path(sys.argv[1]), blob_threshold=1)
+blob_b_store = SourceStore(blob_b_root, "repo:default", Path(sys.argv[1]), blob_threshold=1)
+shared_blob_data = b"cross-repository blob isolation\n"
+blob_a_result = import_bytes(blob_a_store, base / "blob-a.txt", shared_blob_data)
+blob_b_result = import_bytes(blob_b_store, base / "blob-b.txt", shared_blob_data)
+blob_root = home / ".aidevops" / ".agent-workspace" / "knowledge-blobs"
+blob_a_path = blob_root / blob_a_store._blob_namespace() / blob_a_result.source_id / "raw.bin"
+blob_b_path = blob_root / blob_b_store._blob_namespace() / blob_b_result.source_id / "raw.bin"
+
+stale_root = knowledge_root("stale-repo")
+stale_writer = SourceStore(stale_root, "repo:default", Path(sys.argv[1]))
+stale_data = b"stale cache fixture\n"
+stale_result = import_bytes(stale_writer, base / "stale-first.txt", stale_data)
+stale_observer = SourceStore(stale_root, "repo:default", Path(sys.argv[1]))
+(stale_root / "sources" / stale_result.source_id / "raw.bin").write_bytes(b"tampered cache bytes\n")
+stale_replacement = import_bytes(stale_observer, base / "stale-second.txt", stale_data)
+
+attachment_root = knowledge_root("attachment-repo")
+attachment_store = SourceStore(attachment_root, "repo:default", Path(sys.argv[1]))
+attachment_data = b"%PDF-1.4\nattachment projection\n"
+attachment_result = import_bytes(
+    attachment_store,
+    base / "report.pdf",
+    attachment_data,
+    "attachment",
+    "application/pdf",
+    ("text-extraction",),
+)
+import_bytes(
+    attachment_store,
+    base / "report.bin",
+    attachment_data,
+    "attachment",
+    "application/octet-stream",
+    (),
+)
+attachment_projection = json.loads(
+    (attachment_root / "sources" / attachment_result.source_id / "enrichment.json").read_text()
+)
+
+credential_root = knowledge_root("credential-repo")
+credential_data = b"credential-shaped metadata fixture\n"
+credential_digest = hashlib.sha256(credential_data).hexdigest()
+credential_id = "credential-shaped-source"
+credential_source = credential_root / "sources" / credential_id
+credential_source.mkdir()
+(credential_source / "raw.bin").write_bytes(credential_data)
+credential_meta = build_source_meta(
+    SourceMetaInput(
+        source_id=credential_id,
+        corpus_id="repo:default",
+        connector_id="local-file",
+        source_uri=f"local:{credential_id}",
+        content_sha256=credential_digest,
+        size_bytes=len(credential_data),
+        kind="document",
+        sensitivity="internal",
+        trust="unverified",
+        ingested_at="2026-07-30T00:00:00Z",
+        blob_ref=None,
+    )
+)
+credential_meta["raw_path"] = "raw.bin"
+credential_meta["api_key"] = "placeholder"
+(credential_source / "meta.json").write_text(json.dumps(credential_meta), encoding="utf-8")
+credential_store = SourceStore(credential_root, "repo:default", Path(sys.argv[1]))
+credential_result = import_bytes(credential_store, base / "credential-copy.txt", credential_data)
+
+unavailable_root = knowledge_root("unavailable-repo")
+unavailable_store = SourceStore(unavailable_root, "repo:default", base / "missing-scripts")
+png_data = b"\x89PNG\r\n\x1a\n" + b"bounded fixture"
+unavailable_result = import_bytes(
+    unavailable_store,
+    base / "unavailable.png",
+    png_data,
+    "image",
+    "image/png",
+    ("metadata", "ocr"),
+)
+unavailable_jobs = json.loads(
+    (unavailable_root / "sources" / unavailable_result.source_id / "enrichment.json").read_text()
+)["jobs"]
+
+projection_root = knowledge_root("projection-repo")
+projection_data = b"projection symlink fixture\n"
+projection_digest = hashlib.sha256(projection_data).hexdigest()
+projection_id = "projection-safe-source"
+projection_source = projection_root / "sources" / projection_id
+projection_source.mkdir()
+(projection_source / "raw.bin").write_bytes(projection_data)
+projection_meta = build_source_meta(
+    SourceMetaInput(
+        source_id=projection_id,
+        corpus_id="repo:default",
+        connector_id="local-file",
+        source_uri=f"local:{projection_id}",
+        content_sha256=projection_digest,
+        size_bytes=len(projection_data),
+        kind="document",
+        sensitivity="internal",
+        trust="unverified",
+        ingested_at="2026-07-30T00:00:00Z",
+        blob_ref=None,
+    )
+)
+projection_meta["raw_path"] = "raw.bin"
+(projection_source / "meta.json").write_text(json.dumps(projection_meta), encoding="utf-8")
+projection_sentinel = base / "projection-sentinel"
+projection_sentinel.write_text("unchanged\n", encoding="utf-8")
+(projection_source / "text.txt").symlink_to(projection_sentinel)
+projection_store = SourceStore(projection_root, "repo:default", Path(sys.argv[1]))
+projection_failed_closed = False
+try:
+    import_bytes(projection_store, base / "projection-copy.txt", projection_data)
+except store_module.EvidenceProcessingError:
+    projection_failed_closed = True
+
+print(json.dumps({
+    "legacy_reused": legacy_result.reused and legacy_count == 1,
+    "orphan_removed": not orphan_blob.exists(),
+    "refresh_calls": refresh_calls,
+    "concurrent_reused": concurrent_result.reused,
+    "blob_namespaces_isolated": (
+        blob_a_store._blob_namespace() != blob_b_store._blob_namespace()
+        and blob_a_path.is_file()
+        and blob_b_path.is_file()
+    ),
+    "stale_cache_rejected": not stale_replacement.reused,
+    "attachment_projection_preserved": (
+        attachment_projection["kind"] == "attachment"
+        and attachment_projection["media_type"] == "application/pdf"
+        and attachment_projection["jobs"] == [
+            {"processor": "text-extraction", "status": "queued"}
+        ]
+    ),
+    "credential_metadata_rejected": not credential_result.reused,
+    "optional_processor_unavailable": unavailable_jobs == [
+        {"processor": "metadata", "status": "completed"},
+        {"processor": "ocr", "status": "unavailable"},
+    ],
+    "projection_symlink_rejected": (
+        projection_failed_closed
+        and projection_sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    ),
+}))
+PY
+)
+assert_json "folder import reuses legacy opaque blobs" "$store_regression_output" '.legacy_reused == true'
+assert_json "failed source publication removes a newly written blob" "$store_regression_output" '.orphan_removed == true'
+assert_json "local imports do not rehash the corpus per item" "$store_regression_output" '.refresh_calls == 0'
+assert_json "stale store instances discover concurrent publications" "$store_regression_output" '.concurrent_reused == true'
+assert_json "large blobs are isolated across knowledge roots" "$store_regression_output" '.blob_namespaces_isolated == true'
+assert_json "cached sources are revalidated before reuse" "$store_regression_output" '.stale_cache_rejected == true'
+assert_json "attachment aliases cannot erase enrichment jobs" "$store_regression_output" '.attachment_projection_preserved == true'
+assert_json "credential-shaped source metadata is never trusted" "$store_regression_output" '.credential_metadata_rejected == true'
+assert_json "missing optional processors remain explicit" "$store_regression_output" '.optional_processor_unavailable == true'
+assert_json "symlinked text projections fail closed" "$store_regression_output" '.projection_symlink_rejected == true'
+
 EMAIL_TREE="${TMP_DIR}/email-edge-tree"
 mkdir -p "$EMAIL_TREE"
 python3 - "$EMAIL_TREE" <<'PY'
@@ -306,6 +604,12 @@ if [[ ! -e "${KNOWLEDGE_ROOT}/sources/${html_source}/body.html" ]]; then
 else
 	fail "HTML email stores no active markup projection" "body.html exists"
 fi
+if [[ -f "${KNOWLEDGE_ROOT}/sources/${html_source}/text.txt" ]] &&
+	! grep -q 'tracker.example.test' "${KNOWLEDGE_ROOT}/sources/${html_source}/text.txt"; then
+	pass "HTML-only email produces a private text projection"
+else
+	fail "HTML-only email produces a private text projection" "safe text fallback missing"
+fi
 mbox_source=$(jq -r 'select(.media_type == "application/mbox" and ((.children // []) | length == 2)) | .id' "${KNOWLEDGE_ROOT}"/sources/*/meta.json)
 if jq -e '.children | map(select(.relationship == "mailbox-message")) | length == 2' \
 	"${KNOWLEDGE_ROOT}/sources/${mbox_source}/meta.json" >/dev/null; then
@@ -335,6 +639,21 @@ if [[ "$parse_status" -eq 2 ]] && jq -e \
 else
 	fail "projection failure retains canonical evidence pointers" "preserved source pointer missing"
 fi
+parse_source=$(jq -r '.entries["truncated.emlx"].source_id' "$parse_manifest")
+if jq -e '.jobs[] | select(.processor == "email-parse" and .status == "failed")' \
+	"${KNOWLEDGE_ROOT}/sources/${parse_source}/enrichment.json" >/dev/null 2>&1; then
+	pass "failed parsing is not recorded as completed enrichment"
+else
+	fail "failed parsing is not recorded as completed enrichment" "email-parse disposition is false"
+fi
+parse_replay_status=0
+parse_replay_output=$(bash "$HELPER" folder import "$PARSE_TREE" --repo-path "$REPO_PATH" --json) || parse_replay_status=$?
+if [[ "$parse_replay_status" -eq 2 ]]; then
+	pass "failed projection is retried on replay"
+else
+	fail "failed projection is retried on replay" "exit=$parse_replay_status"
+fi
+assert_json "failed projection never becomes unchanged" "$parse_replay_output" '.status == "partial" and .counts.failed == 1 and .counts.unchanged == 0'
 
 lease_result=$(
 	python3 - "$MANIFEST" "$HELPER" "$TREE" "$REPO_PATH" <<'PY'
@@ -439,18 +758,22 @@ RELATION_A="${TMP_DIR}/relation-a"
 RELATION_B="${TMP_DIR}/relation-b"
 mkdir -p "$RELATION_A" "$RELATION_B"
 python3 - "$RELATION_A" "$RELATION_B" <<'PY'
+import base64
 import sys
 from pathlib import Path
 
+payload = base64.b64encode(b"%PDF-1.4\nshared relation bytes\n").decode()
 for index, target in enumerate((Path(sys.argv[1]), Path(sys.argv[2])), 1):
+    filename = "shared.pdf" if index == 1 else "shared.bin"
+    content_type = "application/pdf" if index == 1 else "application/octet-stream"
     message = (
         f"From: sender{index}@example.test\nTo: receiver@example.test\nSubject: Relation {index}\n"
         "MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=relation\n\n"
         "--relation\nContent-Type: text/plain\n\nbody\n"
-        "--relation\nContent-Type: application/octet-stream\n"
-        "Content-Disposition: attachment; filename=shared.bin\n"
+        f"--relation\nContent-Type: {content_type}\n"
+        f"Content-Disposition: attachment; filename={filename}\n"
         "Content-Transfer-Encoding: base64\n\n"
-        "c2hhcmVkIHJlbGF0aW9uIGJ5dGVzCg==\n--relation--\n"
+        f"{payload}\n--relation--\n"
     ).encode()
     (target / "message.eml").write_bytes(message)
 PY
@@ -460,13 +783,21 @@ bash "$HELPER" folder import "$RELATION_B" --repo-path "$REPO_PATH" --json >"${T
 relation_b_pid=$!
 wait "$relation_a_pid"
 wait "$relation_b_pid"
-relation_digest=$(printf 'shared relation bytes\n' | shasum -a 256 | awk '{print $1}')
+relation_digest=$(printf '%s\n' '%PDF-1.4' 'shared relation bytes' | shasum -a 256 | awk '{print $1}')
 if jq -e --arg digest "$relation_digest" \
 	'select(.sha256 == $digest) | (.parent_sources | length) == 2' \
 	"${KNOWLEDGE_ROOT}"/sources/*/meta.json >/dev/null; then
 	pass "concurrent relation updates preserve every parent"
 else
 	fail "concurrent relation updates preserve every parent" "parent relation was lost"
+fi
+relation_source=$(jq -r --arg digest "$relation_digest" 'select(.sha256 == $digest) | .id' \
+	"${KNOWLEDGE_ROOT}"/sources/*/meta.json)
+if jq -e '.jobs[] | select(.processor == "text-extraction" and .status == "queued")' \
+	"${KNOWLEDGE_ROOT}/sources/${relation_source}/enrichment.json" >/dev/null 2>&1; then
+	pass "concurrent attachment aliases preserve every enrichment job"
+else
+	fail "concurrent attachment aliases preserve every enrichment job" "text extraction job was lost"
 fi
 
 SAFETY_TREE="${TMP_DIR}/safety-tree"

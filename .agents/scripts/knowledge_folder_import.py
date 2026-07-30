@@ -197,7 +197,7 @@ def _process_file(
     aliases = _aliases_for_digest(previous_entries, item.relative, digest)
     previous = previous_entries.get(item.relative, {})
     previous_source = previous.get("source_id") if isinstance(previous, dict) else None
-    existing = store.by_digest.get(digest)
+    existing = store.source_for_digest(digest)
     if dry_run:
         status_name = "unchanged" if existing is not None else "planned"
         _record(
@@ -205,7 +205,12 @@ def _process_file(
             kind=classification.kind, source_id=existing[0] if existing else None, aliases=aliases,
         )
         return 0, 0
-    if existing is not None and previous.get("sha256") == digest and previous_source == existing[0]:
+    if (
+        existing is not None
+        and previous.get("status") in {"imported", "unchanged"}
+        and previous.get("sha256") == digest
+        and previous_source == existing[0]
+    ):
         _record(
             manifest, item.relative, "unchanged", digest=digest, size=item.info.st_size,
             kind=classification.kind, source_id=existing[0], evidence_id=existing[1],
