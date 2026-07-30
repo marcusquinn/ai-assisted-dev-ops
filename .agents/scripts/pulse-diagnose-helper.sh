@@ -53,7 +53,7 @@ readonly DEFAULT_GH_API_LOG="${HOME}/.aidevops/logs/gh-api-calls.log"
 readonly DEFAULT_BLOCKER_LOG="${HOME}/.aidevops/logs/worker-progress-blockers.jsonl"
 readonly DEFAULT_SYSTEMD_TIMER_FILE="${HOME}/.config/systemd/user/aidevops-supervisor-pulse.timer"
 readonly _UNKNOWN="unknown"
-
+readonly _UNCLASSIFIED="unclassified"
 # =============================================================================
 # Rule Inventory (Phase A)
 #
@@ -347,7 +347,7 @@ _classify_log_line() {
 		fi
 	done <<< "$inventory"
 
-	echo "unclassified|||Unclassified pulse log entry"
+	printf '%s|||Unclassified pulse log entry\n' "$_UNCLASSIFIED"
 	return 0
 }
 
@@ -559,9 +559,9 @@ _render_pr_text() {
 
 		local ts rule_id script line_range description
 		IFS='|' read -r ts rule_id script line_range description <<< "$entry"
-		[[ "$rule_id" == "unclassified" && "$_CMD_PR_VERBOSE" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
+		[[ "$rule_id" == "$_UNCLASSIFIED" && "$_CMD_PR_VERBOSE" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
 		printf '  %s  %b%-30s%b  %s\n' \
-			"$ts" "$YELLOW" "${script:-unknown}" "$NC" "${rule_id:-unclassified}"
+			"$ts" "$YELLOW" "${script:-unknown}" "$NC" "${rule_id:-$_UNCLASSIFIED}"
 		printf '              %s\n' "$description"
 		if [[ -n "$line_range" ]]; then
 			printf '              source: %s:%s\n' "${script}" "${line_range}"
@@ -573,7 +573,7 @@ _render_pr_text() {
 	printf 'Summary:\n'
 	printf '  Total pulse events: %d\n' "$event_count"
 
-	if [[ -n "$last_rule_id" && "$last_rule_id" != "unclassified" ]]; then
+	if [[ -n "$last_rule_id" && "$last_rule_id" != "$_UNCLASSIFIED" ]]; then
 		printf '  Last pulse decision: %s\n' "$last_rule_id"
 	fi
 
@@ -1164,9 +1164,9 @@ _render_issue_linked_prs() {
 				ts=$(_extract_timestamp "$log_line")
 				classification=$(_classify_log_line "$log_line")
 				IFS='|' read -r rule_id script_name line_range description <<< "$classification"
-				[[ "$rule_id" == "unclassified" && "$verbose" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
+				[[ "$rule_id" == "$_UNCLASSIFIED" && "$verbose" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
 				printf '    %s  %b%-25s%b  %s\n' \
-					"$ts" "$CYAN" "${rule_id:-unclassified}" "$NC" "$description"
+					"$ts" "$CYAN" "${rule_id:-$_UNCLASSIFIED}" "$NC" "$description"
 				[[ "$verbose" -eq 1 ]] && printf '      RAW: %s\n' "$log_line"
 			done <<< "$pr_log_lines"
 			[[ "$unclassified_count" -gt 0 ]] && printf '    Unclassified pulse events: %d (use --verbose for raw evidence)\n' "$unclassified_count"
