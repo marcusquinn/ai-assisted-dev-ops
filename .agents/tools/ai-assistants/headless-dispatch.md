@@ -33,7 +33,7 @@ tools:
 **Draft agents**: Share domain instructions across workers via `~/.aidevops/agents/draft/`. See `tools/build-agent/build-agent.md`.
 **Remote dispatch**: `tools/containers/remote-dispatch.md` (SSH/Tailscale with credential forwarding).
 
-> **Never use bare `opencode run` for dispatch** — skips lifecycle reinforcement, workers stop after PR creation (GH#5096). Always use `headless-runtime-helper.sh run`.
+> **Issue-backed workers:** use `dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO`. It keeps ownership ceremony and runner identity transport coupled. Use `headless-runtime-helper.sh run` directly only for non-issue jobs; never use bare `opencode run` for managed dispatch (GH#5096).
 
 <!-- AI-CONTEXT-END -->
 
@@ -67,10 +67,9 @@ opencode run -c "Continue" | -s ses_abc123 "Add handling"   # resume session
 **Stagger manual launches by 30-60s** to avoid thundering herd (RAM exhaustion, API rate limiting, MCP cold boot storms). Pulse supervisor handles staggering automatically (`RAM_PER_WORKER_MB`, `RAM_RESERVE_MB`, `MAX_WORKERS_CAP`).
 
 ```bash
-HELPER="$(aidevops config get paths.agents_dir | sed "s|^~|$HOME|")/scripts/headless-runtime-helper.sh"
+HELPER="$(aidevops config get paths.agents_dir | sed "s|^~|$HOME|")/scripts/dispatch-single-issue-helper.sh"
 for issue in 42 43 44; do
-  $HELPER run --role worker --session-key "issue-${issue}" --dir ~/Git/myproject \
-    --title "Issue #${issue}" --prompt "/full-loop Implement issue #${issue}" &
+	$HELPER dispatch "$issue" owner/repo
   sleep 30
 done
 ```
