@@ -1522,7 +1522,8 @@ _find_alternative_opencode_binary() {
 # Something outside our control (unknown process, worker side-effect)
 # periodically upgrades opencode to @latest. This guard runs on every
 # canary check and reinstalls the pinned version if it drifted.
-# Cheap: one `opencode --version` + optional npm install and verification.
+# Cheap: one `opencode --version` + optional package-managed repair and
+# verification.
 # Returns non-zero when repair fails or the installed runtime remains drifted,
 # allowing every headless launch path to fail closed before starting a worker.
 #######################################
@@ -1546,7 +1547,12 @@ _enforce_opencode_version_pin() {
 	fi
 
 	print_warning "OpenCode version drift: installed=$installed, pin=$pin -- reinstalling"
-	if ! npm install -g "opencode-ai@${pin}" >/dev/null 2>&1; then
+	local repair_cmd=""
+	if ! repair_cmd=$(aidevops_opencode_upgrade_command "$pin"); then
+		print_error "Cannot build OpenCode ${pin} repair command -- refusing headless launch"
+		return 1
+	fi
+	if ! AIDEVOPS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT" bash -c "$repair_cmd" >/dev/null 2>&1; then
 		print_error "Failed to restore OpenCode to ${pin} -- refusing headless launch"
 		return 1
 	fi

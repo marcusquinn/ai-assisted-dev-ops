@@ -78,25 +78,9 @@ done
 # $1 = OpenCode package version to install with bun/npm when not Homebrew-owned.
 _opencode_upgrade_cmd() {
 	local pkg_version="$1"
-
-	# shellcheck disable=SC2016  # Single quotes intentional: bash -c payload
-	printf '%s' \
-		'if r=$(command -v opencode 2>/dev/null); then ' \
-		'if command -v brew >/dev/null 2>&1; then ' \
-		'r_dir=$(cd "$(dirname "$r")" 2>/dev/null && pwd -P || printf ""); ' \
-		'r_link=$(readlink "$r" 2>/dev/null || printf ""); r_real="$r"; ' \
-		'if [[ -n "$r_link" ]]; then case "$r_link" in /*) r_real="$r_link" ;; *) r_real="$r_dir/$r_link" ;; esac; fi; ' \
-		'r_real_dir=$(cd "$(dirname "$r_real")" 2>/dev/null && pwd -P || printf ""); ' \
-		'brew_formula_real=""; ' \
-		'if brew list --versions opencode >/dev/null 2>&1; then ' \
-		'brew_formula=$(brew --prefix opencode 2>/dev/null || printf ""); ' \
-		'[[ -d "$brew_formula" ]] && brew_formula_real=$(cd "$brew_formula" && pwd -P || printf ""); ' \
-		'fi; ' \
-		'if [[ -n "$brew_formula_real" ]] && { [[ "$r_dir" == "$brew_formula_real"/* ]] || [[ "$r_real_dir" == "$brew_formula_real"/* ]]; }; then ' \
-		'brew upgrade opencode || brew reinstall opencode; exit $?; ' \
-		'fi; fi; ' \
-		'if [[ "$r" == *bun* ]]; then bun install -g opencode-ai@'"${pkg_version}"'; else npm install -g opencode-ai@'"${pkg_version}"'; fi; ' \
-		'fi'
+	if ! aidevops_opencode_upgrade_command "$pkg_version"; then
+		return 1
+	fi
 	return 0
 }
 
