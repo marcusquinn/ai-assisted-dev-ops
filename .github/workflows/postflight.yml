@@ -43,6 +43,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
+        RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
       run: |
         echo "Waiting for release-owned check runs to complete..."
         echo "Note: Excluding issue/comment workflows and this workflow to avoid unrelated waits"
@@ -56,10 +57,14 @@ jobs:
             | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
           RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
             "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
+          RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
+            "repos/${REPO}/actions/workflows/publish-packages.yml/runs?event=workflow_dispatch&branch=main&per_page=100")
           RELEASE_CHECK_RUNS=$(jq -c \
             --arg release_sha "$COMMIT_SHA" \
+            --arg release_tag "$RELEASE_TAG" \
             --arg self_name "$SELF_NAME" \
             --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
+            --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
             -f .agents/scripts/jq/release-owned-check-runs.jq \
             <<<"$CHECK_RUNS_RESPONSE")
           PENDING=$(jq --arg self_name "$SELF_NAME" \
@@ -84,10 +89,14 @@ jobs:
           | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
         RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
+        RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
+          "repos/${REPO}/actions/workflows/publish-packages.yml/runs?event=workflow_dispatch&branch=main&per_page=100")
         RELEASE_CHECK_RUNS=$(jq -c \
           --arg release_sha "$COMMIT_SHA" \
+          --arg release_tag "$RELEASE_TAG" \
           --arg self_name "$SELF_NAME" \
           --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
+          --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
           -f .agents/scripts/jq/release-owned-check-runs.jq \
           <<<"$CHECK_RUNS_RESPONSE")
         REMAINING=$(jq '[.check_runs[] | select(.status != "completed")] | length' \
@@ -112,6 +121,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
+        RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
       run: |
         echo "## CI/CD Pipeline Status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -125,10 +135,14 @@ jobs:
           | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
         RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
+        RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
+          "repos/${REPO}/actions/workflows/publish-packages.yml/runs?event=workflow_dispatch&branch=main&per_page=100")
         RELEASE_CHECK_RUNS=$(jq -c \
           --arg release_sha "$COMMIT_SHA" \
+          --arg release_tag "$RELEASE_TAG" \
           --arg self_name "$SELF_NAME" \
           --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
+          --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
           -f .agents/scripts/jq/release-owned-check-runs.jq \
           <<<"$CHECK_RUNS_RESPONSE")
         EFFECTIVE_CHECK_RUNS=$(echo "$RELEASE_CHECK_RUNS" \
@@ -258,7 +272,7 @@ jobs:
       env:
         CICD_STATUS: ${{ steps.cicd.outputs.cicd_status }}
         SONAR_STATUS: ${{ steps.sonarcloud.outputs.sonar_status }}
-        RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        RELEASE_TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
       run: |
         echo "" >> $GITHUB_STEP_SUMMARY

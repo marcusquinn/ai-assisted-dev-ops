@@ -134,16 +134,26 @@ get_repo_info() {
 load_release_owned_checks() {
 	local repo="$1"
 	local release_sha="$2"
-	local check_runs_response release_runs_response
+	local release_tag="${POSTFLIGHT_RELEASE_TAG:-}"
+	local check_runs_response release_runs_response recovery_runs_response
 	check_runs_response=$(gh api --paginate --slurp \
 		"repos/${repo}/commits/${release_sha}/check-runs?per_page=100" 2>/dev/null |
 		jq -c -f "$SCRIPT_DIR/jq/flatten-check-run-pages.jq") || return 1
 	release_runs_response=$(gh api --paginate --slurp \
 		"repos/${repo}/actions/runs?head_sha=${release_sha}&per_page=100" 2>/dev/null) || return 1
+	if [[ -n "$release_tag" ]]; then
+		recovery_runs_response=$(gh api --paginate --slurp \
+			"repos/${repo}/actions/workflows/publish-packages.yml/runs?event=workflow_dispatch&per_page=100" \
+			2>/dev/null) || return 1
+	else
+		recovery_runs_response='{"workflow_runs":[]}'
+	fi
 	jq -c \
 		--arg release_sha "$release_sha" \
+		--arg release_tag "$release_tag" \
 		--arg self_name "Verify Release Health" \
 		--slurpfile release_run_documents <(printf '%s\n' "$release_runs_response") \
+		--slurpfile recovery_run_documents <(printf '%s\n' "$recovery_runs_response") \
 		-f "$SCRIPT_DIR/jq/release-owned-check-runs.jq" \
 		<<<"$check_runs_response"
 	return $?

@@ -1,0 +1,50 @@
+{
+  "workflow_runs": [
+    {
+      "id": 1101,
+      "name": "Publish v1.2.3 [release-sha.1111111111111111111111111111111111111111]",
+      "event": "workflow_dispatch",
+      "path": ".github/workflows/publish-packages.yml",
+      "head_sha": "1111111111111111111111111111111111111111",
+      "check_suite_id": 601,
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-07-13T20:04:00Z",
+      "run_started_at": "2026-07-13T20:04:10Z",
+      "updated_at": "2026-07-13T20:05:00Z"
+    },
+    {
+      "id": 1102,
+      "name": "Publish v9.9.9 [release-sha.2222222222222222222222222222222222222222]",
+      "event": "workflow_dispatch",
+      "path": ".github/workflows/publish-packages.yml",
+      "head_sha": "2222222222222222222222222222222222222222",
+      "check_suite_id": 602,
+      "status": "completed",
+      "conclusion": "failure",
+      "updated_at": "2026-07-13T20:06:00Z"
+    },
+    {
+      "id": 1103,
+      "name": "Publish v1.2.3 [release-sha.3333333333333333333333333333333333333333]",
+      "event": "workflow_dispatch",
+      "path": ".github/workflows/publish-packages.yml",
+      "head_sha": "4444444444444444444444444444444444444444",
+      "check_suite_id": 603,
+      "status": "completed",
+      "conclusion": "failure",
+      "updated_at": "2026-07-13T20:07:00Z"
+    },
+    {
+      "id": 1104,
+      "name": "Publish v1.2.3 [release-sha.5555555555555555555555555555555555555555]",
+      "event": "workflow_dispatch",
+      "path": ".github/workflows/untrusted.yml",
+      "head_sha": "5555555555555555555555555555555555555555",
+      "check_suite_id": 604,
+      "status": "completed",
+      "conclusion": "failure",
+      "updated_at": "2026-07-13T20:08:00Z"
+    }
+  ]
+}

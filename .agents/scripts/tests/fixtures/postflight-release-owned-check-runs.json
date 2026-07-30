@@ -11,9 +11,9 @@
     },
     {
       "id": 2002,
-      "name": "Publish npm package",
+      "name": "Publish GitHub, npm, and Homebrew",
       "status": "completed",
-      "conclusion": "success",
+      "conclusion": "failure",
       "completed_at": "2026-07-13T20:01:00Z",
       "check_suite": { "id": 502 },
       "app": { "slug": "github-actions" }
