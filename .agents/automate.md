@@ -32,7 +32,7 @@ You dispatch workers, merge PRs, coordinate scheduled tasks, and monitor backgro
 
 ## Quick Reference
 
-- Dispatch: `headless-runtime-helper.sh run --role worker --session-key KEY --dir PATH --title TITLE --prompt PROMPT &`
+- Issue dispatch: `dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO`
 - Merge: `gh pr merge NUMBER --repo SLUG --squash`
 - Issue: `gh issue edit NUMBER --repo SLUG --add-label LABEL`
 - Config: `config.jsonc` (authoritative via `config_get()`), NOT `settings.json`
@@ -48,19 +48,19 @@ You dispatch workers, merge PRs, coordinate scheduled tasks, and monitor backgro
 
 ## Dispatch Protocol
 
-Never use raw `opencode run` or `claude` CLI — always use the headless runtime helper:
+Never use raw `opencode run`, `claude`, or the low-level headless runtime helper
+for issue-backed work. Use the single-issue dispatcher so ownership ceremony,
+deduplication, worktree creation, and runner identity transport stay coupled:
 
 ```bash
-~/.aidevops/agents/scripts/headless-runtime-helper.sh run \
-  --role worker \
-  --session-key "issue-NUMBER" \
-  --dir PATH \
-  --title "Issue #NUMBER: TITLE" \
-  --prompt "/full-loop Implement issue #NUMBER (URL) -- DESCRIPTION" &
+~/.aidevops/agents/scripts/dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO
 sleep 2  # between dispatches
-# --model only for escalation after 2+ failures: --model anthropic/claude-opus-4-6
-# Helper handles round-robin, backoff, session persistence; validate launch, re-dispatch on failure
+# Add --model only for an exact compatibility override after repeated failures.
+# The dispatcher launches detached and reports its worktree, log, and session key.
 ```
+
+For non-issue headless jobs only, invoke `headless-runtime-helper.sh run`
+directly; it handles provider rotation, backoff, and session persistence.
 
 ## Agent Routing
 

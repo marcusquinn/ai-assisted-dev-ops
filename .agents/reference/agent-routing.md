@@ -5,7 +5,7 @@
 
 ## Core rule
 
-Dispatch workers with `headless-runtime-helper.sh run`, not bare runtime CLIs. The helper provides provider rotation, session persistence, backoff, and lifecycle reinforcement. Bare `claude run`, `claude`, `claude -p`, or similar commands can skip lifecycle reinforcement and stop after PR creation (GH#5096).
+Dispatch issue-backed workers with `dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO`. It performs deduplication and ownership ceremony, creates the worktree, and forwards the verified runner identity to `headless-runtime-helper.sh`. Use `headless-runtime-helper.sh run` directly only for non-issue headless jobs. Never use bare runtime CLIs: they skip lifecycle reinforcement and can stop after PR creation (GH#5096).
 
 Capability cataloguing is not evidence of live usability. Before routing work that depends on an external tool or service, run `scripts/capability-readiness-helper.py route <capability> --runtime <opencode|claude-code>`. Mandatory dimensions that are false **or unknown** force the declared fallback; the structured response reports the reason and coverage impact. The canonical contract is `configs/capability-registry.json`; generated inventory: `reference/capability-registry.md`.
 
