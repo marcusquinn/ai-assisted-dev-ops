@@ -6,345 +6,168 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from knowledge_folder_store import (
-    EvidenceProcessingError,
-    ExpansionBudget,
-    SourceStore,
+from knowledge_folder_manifest import (
+    FolderImportError,
+    ManifestEntry,
+    checkpoint,
+    emit,
+    final_status,
+    load_manifest,
+    new_manifest,
+    record,
+    summary,
+    utc_now,
 )
-from knowledge_folder_types import (
-    atomic_write_json,
-    classify_fd,
-    excluded,
-    sanitize_reason,
-    sha256_fd,
-)
-from knowledge_folder_walk import (
-    InventoryItem,
-    Lease,
-    RootHandle,
-    open_root,
-    secure_child_directory,
-    validate_limits,
-    walk,
-)
+from knowledge_folder_model import EvidenceProcessingError, ExpansionBudget
+from knowledge_folder_processor import FileProcessor
+from knowledge_folder_state import Lease, RootHandle, open_root, secure_child_directory, validate_limits
+from knowledge_folder_store import SourceStore
+from knowledge_folder_types import sanitize_reason
+from knowledge_folder_walk import InventoryItem, walk
 
 
-SCHEMA = "aidevops.knowledge-folder/v1"
-COUNT_KEYS = ("planned", "imported", "unchanged", "skipped", "unsupported", "failed", "budget-stopped")
+@dataclass
+class SnapshotRunner:
+    """Own one manifest transaction and its bounded inventory counters."""
 
+    args: argparse.Namespace
+    root: RootHandle
+    manifest_path: Path
+    previous: dict[str, Any] | None
+    token: int
+    persist: bool
+    lease: Lease | None = None
+    manifest: dict[str, Any] = field(init=False)
+    previous_entries: dict[str, Any] = field(init=False)
+    store: SourceStore = field(init=False)
+    deadline: float = field(init=False)
+    seen: set[str] = field(init=False, default_factory=set)
+    unobserved_prefixes: set[str] = field(init=False, default_factory=set)
+    coverage_complete: bool = field(init=False, default=True)
+    file_count: int = field(init=False, default=0)
+    byte_count: int = field(init=False, default=0)
 
-class FolderImportError(RuntimeError):
-    """Raised when traversal cannot preserve the folder import contract."""
+    def __post_init__(self) -> None:
+        self.previous_entries = dict((self.previous or {}).get("entries", {}))
+        self.manifest = new_manifest(self.root.root_id, self.previous, self.token, self.args)
+        self.store = SourceStore(self.args.knowledge_root, self.args.corpus_id, self.args.scripts_dir)
+        self.deadline = time.monotonic() + self.args.max_seconds
 
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _load_manifest(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    if path.is_symlink() or not path.is_file():
-        raise FolderImportError("folder manifest is not a regular private file")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise FolderImportError("folder manifest is not valid UTF-8 JSON") from error
-    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
-        raise FolderImportError("folder manifest schema is unsupported")
-    return value
-
-
-def _new_manifest(root_id: str, previous: dict[str, Any] | None, token: int, args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        "schema": SCHEMA,
-        "root_id": root_id,
-        "connector_id": "local-folder",
-        "fencing_token": token,
-        "commit_state": "running",
-        "status": "running",
-        "started_at": _utc_now(),
-        "updated_at": _utc_now(),
-        "limits": {
-            "max_depth": args.max_depth,
-            "max_files": args.max_files,
-            "max_nodes": args.max_nodes,
-            "max_bytes": args.max_bytes,
-            "max_item_bytes": args.max_item_bytes,
-            "max_seconds": args.max_seconds,
-        },
-        "counts": {key: 0 for key in COUNT_KEYS},
-        "entries": dict((previous or {}).get("entries", {})),
-        "observations": [],
-    }
-
-
-def _record(
-    manifest: dict[str, Any],
-    relative: str,
-    status_name: str,
-    *,
-    digest: str | None = None,
-    size: int = 0,
-    kind: str = "unknown",
-    reason: str | None = None,
-    source_id: str | None = None,
-    evidence_id: str | None = None,
-    aliases: list[str] | None = None,
-    relations: tuple[dict[str, str], ...] = (),
-) -> None:
-    entry: dict[str, Any] = {
-        "status": status_name,
-        "size_bytes": size,
-        "kind": kind,
-        "observed_at": _utc_now(),
-    }
-    if digest:
-        entry["sha256"] = digest
-    if reason:
-        entry["reason"] = sanitize_reason(reason)
-    if source_id:
-        entry["source_id"] = source_id
-    if evidence_id:
-        entry["evidence_id"] = evidence_id
-    if aliases:
-        entry["aliases"] = sorted(set(aliases))
-    if relations:
-        entry["relations"] = list(relations)
-    manifest["entries"][relative] = entry
-    manifest["counts"][status_name] += 1
-    manifest["updated_at"] = _utc_now()
-
-
-def _aliases_for_digest(entries: dict[str, Any], relative: str, digest: str) -> list[str]:
-    aliases = [relative]
-    for prior_path, prior in entries.items():
-        if isinstance(prior, dict) and prior.get("sha256") == digest:
-            aliases.extend(prior.get("aliases", []))
-            aliases.append(prior_path)
-    return sorted(set(aliases))
-
-
-def _final_status(counts: dict[str, int]) -> str:
-    if counts["budget-stopped"]:
-        return "budget-stopped"
-    if counts["failed"]:
-        return "partial"
-    return "complete"
-
-
-def _summary(manifest: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "root_id": manifest["root_id"],
-        "status": manifest["status"],
-        "fencing_token": manifest["fencing_token"],
-        "counts": manifest["counts"],
-    }
-
-
-def _emit(summary: dict[str, Any], as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(summary, sort_keys=True))
-        return
-    counts = summary["counts"]
-    rendered = ", ".join(f"{key}={counts[key]}" for key in COUNT_KEYS)
-    print(f"folder {summary['root_id']}: {summary['status']} ({rendered})")
-
-
-def _checkpoint(path: Path, manifest: dict[str, Any], lease: Lease) -> None:
-    lease.assert_owned()
-    atomic_write_json(path, manifest)
-
-
-def _process_file(
-    item: InventoryItem,
-    manifest: dict[str, Any],
-    previous_entries: dict[str, Any],
-    store: SourceStore,
-    dry_run: bool,
-    expansion_budget: ExpansionBudget,
-) -> tuple[int, int]:
-    if item.descriptor is None:
-        raise FolderImportError("regular file descriptor is unavailable")
-    classification = classify_fd(item.name, item.descriptor)
-    if not classification.supported:
-        _record(manifest, item.relative, "unsupported", size=item.info.st_size, reason=classification.reason)
-        return 0, 0
-    if not classification.valid:
-        _record(
-            manifest, item.relative, "failed", size=item.info.st_size,
-            kind=classification.kind, reason=classification.reason,
+    def run(self) -> tuple[dict[str, Any], int]:
+        self._checkpoint()
+        inventory = walk(
+            self.root, self.args.exclude, self.args.max_depth, self.deadline, self.args.max_nodes
         )
-        return 0, 0
-    digest = sha256_fd(item.descriptor)
-    current = os.fstat(item.descriptor)
-    before = (item.info.st_ino, item.info.st_size, item.info.st_mtime_ns)
-    after = (current.st_ino, current.st_size, current.st_mtime_ns)
-    if before != after:
-        _record(
-            manifest, item.relative, "failed", size=item.info.st_size,
-            kind=classification.kind, reason="file changed during scan",
-        )
-        return 0, 0
-    aliases = _aliases_for_digest(previous_entries, item.relative, digest)
-    previous = previous_entries.get(item.relative, {})
-    previous_source = previous.get("source_id") if isinstance(previous, dict) else None
-    existing = store.source_for_digest(digest)
-    if dry_run:
-        status_name = "unchanged" if existing is not None else "planned"
-        _record(
-            manifest, item.relative, status_name, digest=digest, size=item.info.st_size,
-            kind=classification.kind, source_id=existing[0] if existing else None, aliases=aliases,
-        )
-        return 0, 0
-    if (
-        existing is not None
-        and previous.get("status") in {"imported", "unchanged"}
-        and previous.get("sha256") == digest
-        and previous_source == existing[0]
-    ):
-        _record(
-            manifest, item.relative, "unchanged", digest=digest, size=item.info.st_size,
-            kind=classification.kind, source_id=existing[0], evidence_id=existing[1],
-            aliases=aliases, relations=tuple(previous.get("relations", [])),
-        )
-        return 0, 0
-    try:
-        result = store.import_file(
-            item.name, item.descriptor, item.info.st_size, digest, classification.kind,
-            classification.mime_type, classification.processors, expansion_budget,
-        )
-    except EvidenceProcessingError as error:
-        preserved = store.by_digest.get(digest)
-        _record(
-            manifest, item.relative, "failed", digest=digest, size=item.info.st_size,
-            kind=classification.kind, reason=error,
-            source_id=preserved[0] if preserved else None,
-            evidence_id=preserved[1] if preserved else None,
-            aliases=aliases,
-        )
-        return expansion_budget.consumed_items, expansion_budget.consumed_bytes
-    current = os.fstat(item.descriptor)
-    if (current.st_ino, current.st_size, current.st_mtime_ns) != after:
-        _record(
-            manifest, item.relative, "failed", digest=digest, size=item.info.st_size,
-            kind=classification.kind, reason="file changed while evidence was copied",
-            source_id=result.source_id, evidence_id=result.evidence_id, aliases=aliases,
-        )
-        return expansion_budget.consumed_items, expansion_budget.consumed_bytes
-    status_name = "budget-stopped" if result.budget_stopped else ("unchanged" if result.reused else "imported")
-    _record(
-        manifest, item.relative, status_name, digest=digest, size=item.info.st_size,
-        kind=classification.kind, source_id=result.source_id, evidence_id=result.evidence_id,
-        aliases=aliases, relations=result.relations,
-    )
-    return expansion_budget.consumed_items, expansion_budget.consumed_bytes
-
-
-def _run_snapshot(
-    args: argparse.Namespace,
-    root: RootHandle,
-    root_id: str,
-    manifest_path: Path,
-    previous: dict[str, Any] | None,
-    token: int,
-    persist: bool,
-    lease: Lease | None = None,
-) -> tuple[dict[str, Any], int]:
-    previous_entries = dict((previous or {}).get("entries", {}))
-    manifest = _new_manifest(root_id, previous, token, args)
-    store = SourceStore(args.knowledge_root, args.corpus_id, args.scripts_dir)
-    started = time.monotonic()
-    deadline = started + args.max_seconds
-    seen: set[str] = set()
-    unobserved_prefixes: set[str] = set()
-    coverage_complete = True
-    file_count = 0
-    byte_count = 0
-    if persist:
-        if lease is None:
-            raise FolderImportError("folder lease is required for persistent checkpoints")
-        _checkpoint(manifest_path, manifest, lease)
-    for item in walk(root, args.exclude, args.max_depth, deadline, args.max_nodes):
-        seen.add(item.relative)
-        if item.disposition is not None:
-            if item.disposition.startswith("unobserved:"):
-                coverage_complete = False
-                unobserved_prefixes.add(item.relative)
-                manifest["observations"].append(
-                    {"path": item.relative, "observation": "coverage-incomplete", "reason": item.disposition[11:]}
-                )
-                _record(manifest, item.relative, "failed", size=item.info.st_size, reason=item.disposition)
-            elif item.disposition == "depth-limit":
-                coverage_complete = False
-                _record(manifest, item.relative, "budget-stopped", size=item.info.st_size, reason=item.disposition)
-            elif item.disposition == "global-budget":
-                coverage_complete = False
-                _record(manifest, item.relative, "budget-stopped", size=item.info.st_size, reason=item.disposition)
-                if persist:
-                    _checkpoint(manifest_path, manifest, lease)
+        for item in inventory:
+            keep_scanning = self._process_item(item)
+            self._checkpoint()
+            if not keep_scanning:
                 break
-            else:
-                if item.disposition == "excluded":
-                    coverage_complete = False
-                _record(manifest, item.relative, "skipped", size=item.info.st_size, reason=item.disposition)
-        elif file_count >= args.max_files or time.monotonic() >= deadline:
-            coverage_complete = False
-            _record(manifest, item.relative, "budget-stopped", size=item.info.st_size, reason="scan budget reached")
-            if persist:
-                _checkpoint(manifest_path, manifest, lease)
-            break
-        elif item.info.st_size > args.max_item_bytes:
-            _record(manifest, item.relative, "skipped", size=item.info.st_size, reason="item size limit exceeded")
-        elif byte_count + item.info.st_size > args.max_bytes:
-            coverage_complete = False
-            _record(manifest, item.relative, "budget-stopped", size=item.info.st_size, reason="byte budget reached")
-            if persist:
-                _checkpoint(manifest_path, manifest, lease)
-            break
-        else:
-            file_count += 1
-            byte_count += item.info.st_size
-            expansion_budget = ExpansionBudget(
-                args.max_files - file_count,
-                args.max_bytes - byte_count,
-                deadline,
+        self._observe_deletions()
+        self.manifest["status"] = final_status(self.manifest["counts"])
+        self.manifest["commit_state"] = "committed" if self.persist else "planned"
+        self.manifest["updated_at"] = utc_now()
+        self._checkpoint()
+        result_code = 2 if self.manifest["status"] in {"partial", "budget-stopped"} else 0
+        return self.manifest, result_code
+
+    def _process_item(self, item: InventoryItem) -> bool:
+        self.seen.add(item.relative)
+        if item.disposition is not None:
+            return self._record_disposition(item)
+        decision = self._budget_decision(item)
+        if decision is not None:
+            return self._record_budget(item, decision)
+        self._import_file(item)
+        return True
+
+    def _record_disposition(self, item: InventoryItem) -> bool:
+        disposition = item.disposition or "unknown"
+        status = "skipped"
+        stop = False
+        if disposition.startswith("unobserved:"):
+            self.coverage_complete = False
+            self.unobserved_prefixes.add(item.relative)
+            self.manifest["observations"].append(
+                {"path": item.relative, "observation": "coverage-incomplete", "reason": disposition[11:]}
             )
-            try:
-                child_items, child_bytes = _process_file(
-                    item, manifest, previous_entries, store, args.dry_run, expansion_budget
-                )
-                file_count += child_items
-                byte_count += child_bytes
-            except (EvidenceProcessingError, OSError, UnicodeError, ValueError, TypeError) as error:
-                _record(manifest, item.relative, "failed", size=item.info.st_size, reason=error)
-        if persist:
-            _checkpoint(manifest_path, manifest, lease)
-    if persist and coverage_complete:
-        for relative, prior in previous_entries.items():
+            status = "failed"
+        elif disposition in {"depth-limit", "global-budget"}:
+            self.coverage_complete = False
+            status = "budget-stopped"
+            stop = disposition == "global-budget"
+        elif disposition == "excluded":
+            self.coverage_complete = False
+        record(
+            self.manifest, item.relative,
+            ManifestEntry(status, item.info.st_size, reason=disposition),
+        )
+        return not stop
+
+    def _budget_decision(self, item: InventoryItem) -> tuple[str, str, bool] | None:
+        if self.file_count >= self.args.max_files or time.monotonic() >= self.deadline:
+            return "budget-stopped", "scan budget reached", True
+        if item.info.st_size > self.args.max_item_bytes:
+            return "skipped", "item size limit exceeded", False
+        if self.byte_count + item.info.st_size > self.args.max_bytes:
+            return "budget-stopped", "byte budget reached", True
+        return None
+
+    def _record_budget(self, item: InventoryItem, decision: tuple[str, str, bool]) -> bool:
+        status, reason, stop = decision
+        if status == "budget-stopped":
+            self.coverage_complete = False
+        record(
+            self.manifest, item.relative,
+            ManifestEntry(status, item.info.st_size, reason=reason),
+        )
+        return not stop
+
+    def _import_file(self, item: InventoryItem) -> None:
+        self.file_count += 1
+        self.byte_count += item.info.st_size
+        budget = ExpansionBudget(
+            self.args.max_files - self.file_count,
+            self.args.max_bytes - self.byte_count,
+            self.deadline,
+        )
+        try:
+            FileProcessor(
+                self.manifest, self.previous_entries, self.store, self.args.dry_run, budget
+            ).process(item)
+        except (EvidenceProcessingError, OSError, UnicodeError, ValueError, TypeError) as error:
+            record(
+                self.manifest, item.relative,
+                ManifestEntry("failed", item.info.st_size, reason=error),
+            )
+        self.file_count += budget.consumed_items
+        self.byte_count += budget.consumed_bytes
+
+    def _checkpoint(self) -> None:
+        if not self.persist:
+            return
+        if self.lease is None:
+            raise FolderImportError("folder lease is required for persistent checkpoints")
+        checkpoint(self.manifest_path, self.manifest, self.lease)
+
+    def _observe_deletions(self) -> None:
+        if not self.persist or not self.coverage_complete:
+            return
+        for relative, prior in self.previous_entries.items():
             covered_by_error = any(
                 relative == prefix or relative.startswith(f"{prefix}/")
-                for prefix in unobserved_prefixes
+                for prefix in self.unobserved_prefixes
             )
-            if relative not in seen and not covered_by_error and isinstance(prior, dict):
-                manifest["observations"].append(
+            if relative not in self.seen and not covered_by_error and isinstance(prior, dict):
+                self.manifest["observations"].append(
                     {"path": relative, "observation": "source-deleted", "source_id": prior.get("source_id")}
                 )
-    manifest["status"] = _final_status(manifest["counts"])
-    manifest["commit_state"] = "committed" if persist else "planned"
-    manifest["updated_at"] = _utc_now()
-    if persist:
-        _checkpoint(manifest_path, manifest, lease)
-    result_code = 2 if manifest["status"] in {"partial", "budget-stopped"} else 0
-    return manifest, result_code
 
 
 def run_import(args: argparse.Namespace) -> int:
@@ -354,20 +177,16 @@ def run_import(args: argparse.Namespace) -> int:
             args.knowledge_root, "index", "folder-imports", root.root_id, create=not args.dry_run
         )
         manifest_path = state_dir / "manifest.json"
+        previous = load_manifest(manifest_path)
+        token = int((previous or {}).get("fencing_token", 0)) + 1
         if args.dry_run:
-            previous = _load_manifest(manifest_path)
-            token = int((previous or {}).get("fencing_token", 0)) + 1
-            manifest, result_code = _run_snapshot(
-                args, root, root.root_id, manifest_path, previous, token, False
-            )
+            runner = SnapshotRunner(args, root, manifest_path, previous, token, False)
+            manifest, result_code = runner.run()
         else:
             with Lease(state_dir / "lease.json") as lease:
-                previous = _load_manifest(manifest_path)
-                token = int((previous or {}).get("fencing_token", 0)) + 1
-                manifest, result_code = _run_snapshot(
-                    args, root, root.root_id, manifest_path, previous, token, True, lease
-                )
-    _emit(_summary(manifest), args.json)
+                runner = SnapshotRunner(args, root, manifest_path, previous, token, True, lease)
+                manifest, result_code = runner.run()
+    emit(summary(manifest), args.json)
     return result_code
 
 
@@ -377,10 +196,10 @@ def run_status(args: argparse.Namespace) -> int:
             args.knowledge_root, "index", "folder-imports", root.root_id, create=False
         )
         manifest_path = state_dir / "manifest.json"
-    manifest = _load_manifest(manifest_path)
+    manifest = load_manifest(manifest_path)
     if manifest is None:
         raise FolderImportError("no folder import manifest exists")
-    _emit(_summary(manifest), args.json)
+    emit(summary(manifest), args.json)
     return 0
 
 
