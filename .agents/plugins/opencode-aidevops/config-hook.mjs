@@ -52,6 +52,8 @@ const MANAGED_EXTERNAL_DIRECTORIES = [
   "~/.config/aidevops/**",
   "~/.config/opencode/command",
   "~/.config/opencode/command/**",
+  "~/.config/opencode/skills",
+  "~/.config/opencode/skills/**",
   "~/Git/_worktrees",
   "~/Git/_worktrees/**",
   ...[...tempDirectories].sort().flatMap((path) => [path, `${path}/**`]),

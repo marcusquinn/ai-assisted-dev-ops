@@ -27,6 +27,8 @@ const managedRules = {
   "~/.config/aidevops/**": "allow",
   "~/.config/opencode/command": "allow",
   "~/.config/opencode/command/**": "allow",
+  "~/.config/opencode/skills": "allow",
+  "~/.config/opencode/skills/**": "allow",
   "~/Git/_worktrees": "allow",
   "~/Git/_worktrees/**": "allow",
   ...Object.fromEntries([...tempDirectories].sort().flatMap((path) => [
@@ -52,6 +54,8 @@ test("adds narrow managed-directory exceptions after a broad ask rule", () => {
     "~/Documents/**": "deny",
     ...managedRules,
   });
+  assert.equal(config.permission.external_directory["~/.config/opencode/agent"], undefined);
+  assert.equal(config.permission.external_directory["~/.config/opencode/agent/**"], undefined);
 });
 
 test("converts a top-level default without allowing unrelated directories", () => {
