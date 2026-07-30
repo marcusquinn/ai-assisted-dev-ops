@@ -63,10 +63,16 @@ assert_contains "recovery requires exact commit correlation" \
 	"Exact verified tag commit; run identity appends the workflow commit" "$PACKAGE_WORKFLOW"
 assert_absent "suppressed release-event chaining is removed" "types: [published]" "$PACKAGE_WORKFLOW"
 assert_absent "package metadata is not rewritten before publish" "--no-git-tag-version" "$PACKAGE_WORKFLOW"
-assert_contains "unified workflow verifies provenance" "release-provenance-helper.sh verify" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_contains "unified workflow verifies provenance" 'bash "$VERIFIER" verify' "$PACKAGE_WORKFLOW"
 assert_contains "recovery executes only from reviewed main" 'refs/heads/main' "$PACKAGE_WORKFLOW"
 assert_contains "recovery binds the exact tag commit" \
 	"Recovery correlation does not bind the exact tag commit" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_contains "recovery verifier is pinned to the reviewed workflow commit" \
+	'git worktree add --detach "$VERIFIER_WORKTREE" "$GITHUB_SHA"' "$PACKAGE_WORKFLOW"
+assert_contains "tag pushes retain the immutable tag verifier" \
+	'VERIFIER=".agents/scripts/release-provenance-helper.sh"' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow expression.
 assert_contains "recovery run identity records the actual workflow commit" \
 	'${{ inputs.correlation || github.sha }}.${{ github.sha }}' "$PACKAGE_WORKFLOW"
@@ -111,12 +117,14 @@ assert_contains "Homebrew verification keeps its executable test selector" \
 assert_contains "Homebrew convergence compares the complete generated formula" \
 	"cmp -s homebrew/aidevops.rb" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal verifier command.
 assert_order "release provenance precedes release creation" \
-	"release-provenance-helper.sh verify" "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
+	'bash "$VERIFIER" verify' "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
 assert_order "GitHub release precedes npm publication" \
 	"github-release-helper.sh create" "npm publish --provenance" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal verifier command.
 assert_order "package provenance precedes npm publication" \
-	"release-provenance-helper.sh verify" "npm publish --provenance" "$PACKAGE_WORKFLOW"
+	'bash "$VERIFIER" verify' "npm publish --provenance" "$PACKAGE_WORKFLOW"
 
 package_environment_count=$(grep -cE \
 	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$PACKAGE_WORKFLOW" || true)
@@ -126,7 +134,8 @@ if [[ "$package_environment_count" -ne 1 ]]; then
 fi
 printf 'PASS unified publication uses one release environment job\n'
 
-verification_count=$(grep -cF 'release-provenance-helper.sh verify' "$PACKAGE_WORKFLOW" || true)
+# shellcheck disable=SC2016 # Match the literal verifier command.
+verification_count=$(grep -cF 'bash "$VERIFIER" verify' "$PACKAGE_WORKFLOW" || true)
 if [[ "$verification_count" -ne 1 ]]; then
 	printf 'FAIL unified publication must verify provenance exactly once before side effects\n'
 	exit 1

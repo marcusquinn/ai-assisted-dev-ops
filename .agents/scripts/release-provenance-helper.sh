@@ -119,23 +119,29 @@ _release_provenance_resolve_source() {
 	requested_merge=$(jq -er '.mergeCommit.oid // empty' <<<"$requested_json" 2>/dev/null) || return 1
 	_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$requested_pr" "$requested_merge" "$release_head" || return 1
 
-	if [[ "$requested_merge" == "$release_head" ]]; then
-		jq -cn --argjson requested_pr "$requested_pr" --arg source_merge "$requested_merge" \
-			'{mode:"direct",requested_pr:$requested_pr,source_pr:$requested_pr,source_merge:$source_merge,aggregated_sources:[]}'
-		return 0
-	fi
-
 	aggregate_pr=$(_release_provenance_trailer_values_at_commit "$release_head" "Aidevops-Release-Aggregator-PR") || return 1
-	[[ "$aggregate_pr" =~ ^[0-9]+$ ]] || {
+	aggregate_entries=$(_release_provenance_trailer_values_at_commit "$release_head" "Aidevops-Release-Aggregates") || return 1
+	if [[ -z "$aggregate_pr" && -z "$aggregate_entries" ]]; then
+		if [[ "$requested_merge" == "$release_head" ]]; then
+			jq -cn --argjson requested_pr "$requested_pr" --arg source_merge "$requested_merge" \
+				'{mode:"direct",requested_pr:$requested_pr,source_pr:$requested_pr,source_merge:$source_merge,aggregated_sources:[]}'
+			return 0
+		fi
 		_release_provenance_error "current main tip is not an explicit release-aggregation PR"
 		return 1
+	fi
+	[[ "$aggregate_pr" =~ ^[0-9]+$ ]] || {
+		_release_provenance_error "release-aggregation PR has no immutable aggregator identity"
+		return 1
 	}
-	_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$aggregate_pr" "$release_head" "$release_head" || return 1
-	aggregate_entries=$(_release_provenance_trailer_values_at_commit "$release_head" "Aidevops-Release-Aggregates") || return 1
 	[[ -n "$aggregate_entries" ]] || {
 		_release_provenance_error "release-aggregation PR has no immutable source manifest"
 		return 1
 	}
+	_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$aggregate_pr" "$release_head" "$release_head" || return 1
+	if [[ "$requested_pr" == "$aggregate_pr" && "$requested_merge" == "$release_head" ]]; then
+		found_requested=true
+	fi
 	while IFS= read -r entry; do
 		[[ -n "$entry" ]] || continue
 		entry_pr="${entry%%@*}"
@@ -414,6 +420,13 @@ _release_provenance_verify_aggregate_manifest() {
 		_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$entry_pr" "$entry_merge" "$source_merge" || return 1
 		manifest_json=$(jq -c --argjson pr "$entry_pr" --arg merge "$entry_merge" '. + [{pr:$pr,merge:$merge}]' <<<"$manifest_json") || return 1
 	done <<<"$manifest_entries"
+	if [[ "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" == '[]' ]]; then
+		# A signed source-merge SHA transitively binds this reviewed manifest.
+		# Recover only a completely omitted redundant tag list; any explicit
+		# partial or conflicting list remains a hard failure below.
+		_RELEASE_PROVENANCE_AGGREGATED_SOURCES="$manifest_json"
+		return 0
+	fi
 	if [[ "$(jq -cS . <<<"$manifest_json")" != "$(jq -cS . <<<"$_RELEASE_PROVENANCE_AGGREGATED_SOURCES")" ]]; then
 		_release_provenance_error "tag aggregated sources differ from the reviewed aggregation manifest"
 		return 1

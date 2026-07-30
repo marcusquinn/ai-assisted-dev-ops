@@ -15,6 +15,7 @@ _FULL_LOOP_RELEASE_EVENT_RECOVERY="workflow_dispatch"
 _FULL_LOOP_RELEASE_JSON_ARRAY_TYPE="array"
 _FULL_LOOP_RELEASE_JSON_STRING_TYPE="string"
 _FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
+_FULL_LOOP_RELEASE_TRUE="true"
 
 _full_loop_release_tag_body() {
 	local tag_name="$1"
@@ -42,23 +43,34 @@ _full_loop_release_find_tag_for_pr() {
 	local candidate_tag=""
 	local tag_body=""
 	local trailer=""
-	local matched=0
+	local source_json=""
+	local requested_present="false"
+	local textually_matched=0
 
 	_FULL_LOOP_RELEASE_FOUND_TAG=""
 	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
 	while IFS= read -r candidate_tag; do
 		[[ -n "$candidate_tag" ]] || continue
 		tag_body=$(_full_loop_release_tag_body "$candidate_tag") || return 1
-		matched=0
+		textually_matched=0
 		while IFS= read -r trailer; do
 			case "$trailer" in
 			"Aidevops-Source-PR: ${requested_pr}" | "Aidevops-Aggregated-Source: ${requested_pr}@"*)
-				matched=1
+				textually_matched=1
 				break
 				;;
 			esac
 		done <<<"$tag_body"
-		[[ "$matched" -eq 1 ]] || continue
+		if ! source_json=$(_full_loop_release_source_json_from_tag "$candidate_tag"); then
+			[[ "$textually_matched" -eq 0 ]] || return 1
+			continue
+		fi
+		requested_present=$(jq -r --argjson requested "$requested_pr" \
+			'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || return 1
+		if [[ "$textually_matched" -eq 1 && "$requested_present" != "$_FULL_LOOP_RELEASE_TRUE" ]]; then
+			return 1
+		fi
+		[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || continue
 		_full_loop_release_verify_tag_provenance "$repo" "$candidate_tag" || return 1
 		_FULL_LOOP_RELEASE_FOUND_TAG="$candidate_tag"
 		return 0
@@ -74,6 +86,55 @@ _full_loop_release_latest_tag() {
 		return 0
 	done < <(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname)
 	return 1
+}
+
+_full_loop_release_source_merge_trailer_values() {
+	local source_merge="$1"
+	local trailer_key="$2"
+	local commit_message=""
+	local parsed_trailers=""
+
+	commit_message=$(git -C "$REPO_ROOT" log -1 --format='%B' "$source_merge" 2>/dev/null) || return 1
+	parsed_trailers=$(git -C "$REPO_ROOT" interpret-trailers --parse <<<"$commit_message") || return 1
+	awk -v prefix="${trailer_key}: " \
+		'index($0, prefix) == 1 { print substr($0, length(prefix) + 1) }' \
+		<<<"$parsed_trailers"
+	return $?
+}
+
+_full_loop_release_manifest_json_from_source_merge() {
+	local source_pr="$1"
+	local source_merge="$2"
+	local manifest_pr=""
+	local manifest_entries=""
+	local aggregate_payload=""
+	local aggregate_pr=""
+	local aggregate_merge=""
+	local aggregates_json="[]"
+
+	manifest_pr=$(_full_loop_release_source_merge_trailer_values \
+		"$source_merge" "Aidevops-Release-Aggregator-PR") || return 1
+	manifest_entries=$(_full_loop_release_source_merge_trailer_values \
+		"$source_merge" "Aidevops-Release-Aggregates") || return 1
+	if [[ -z "$manifest_pr" && -z "$manifest_entries" ]]; then
+		printf '[]\n'
+		return 0
+	fi
+	[[ "$manifest_pr" == "$source_pr" && -n "$manifest_entries" ]] || return 1
+	while IFS= read -r aggregate_payload; do
+		[[ -n "$aggregate_payload" ]] || continue
+		aggregate_pr="${aggregate_payload%%@*}"
+		aggregate_merge="${aggregate_payload#*@}"
+		[[ "$aggregate_payload" == *@* && "$aggregate_pr" =~ ^[0-9]+$ && "$aggregate_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+		[[ "$aggregate_pr" != "$source_pr" ]] || return 1
+		if jq -e --argjson pr "$aggregate_pr" 'any(.[]; .pr == $pr)' <<<"$aggregates_json" >/dev/null; then
+			return 1
+		fi
+		aggregates_json=$(jq -cn --argjson pr "$aggregate_pr" --arg merge "$aggregate_merge" \
+			--argjson existing "$aggregates_json" '$existing + [{pr:$pr,merge:$merge}]') || return 1
+	done <<<"$manifest_entries"
+	printf '%s\n' "$aggregates_json"
+	return 0
 }
 
 _full_loop_release_source_json_from_tag() {
@@ -97,12 +158,22 @@ _full_loop_release_source_json_from_tag() {
 			aggregate_pr="${aggregate_payload%%@*}"
 			aggregate_merge="${aggregate_payload#*@}"
 			[[ "$aggregate_pr" =~ ^[0-9]+$ && "$aggregate_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+			if jq -e --argjson pr "$aggregate_pr" 'any(.[]; .pr == $pr)' <<<"$aggregates_json" >/dev/null; then
+				return 1
+			fi
 			aggregates_json=$(jq -cn --argjson pr "$aggregate_pr" --arg merge "$aggregate_merge" \
 				--argjson existing "$aggregates_json" '$existing + [{pr:$pr,merge:$merge}]') || return 1
 			;;
 		esac
 	done <<<"$tag_body"
 	[[ "$source_pr" =~ ^[0-9]+$ && "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	if jq -e --argjson source_pr "$source_pr" 'any(.[]; .pr == $source_pr)' <<<"$aggregates_json" >/dev/null; then
+		return 1
+	fi
+	if [[ "$aggregates_json" == "[]" ]]; then
+		aggregates_json=$(_full_loop_release_manifest_json_from_source_merge \
+			"$source_pr" "$source_merge") || return 1
+	fi
 	jq -cn --argjson source_pr "$source_pr" --arg source_merge "$source_merge" \
 		--argjson aggregated_sources "$aggregates_json" \
 		'{source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$aggregated_sources}'
@@ -443,7 +514,7 @@ _full_loop_release_finalize_reconciliation() {
 	source_merge=$(jq -er '.source_merge' <<<"$source_json") || return 1
 	requested_present=$(jq -r --argjson requested "$requested_pr" \
 		'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || return 1
-	[[ "$requested_present" == "true" ]] || return 1
+	[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || return 1
 	_full_loop_validate_release_candidates "$repo" "$source_json" || return 1
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
 	version_manager="${SCRIPT_DIR}/version-manager.sh"

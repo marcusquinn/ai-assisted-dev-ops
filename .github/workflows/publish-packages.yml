@@ -47,6 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERIFIER=".agents/scripts/release-provenance-helper.sh"
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::Invalid release tag: $RELEASE_TAG"
             exit 1
@@ -65,6 +66,17 @@ jobs:
               echo "::error::Recovery correlation is malformed"
               exit 1
             }
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::Recovery workflow commit is malformed"
+              exit 1
+            }
+            VERIFIER_WORKTREE="$RUNNER_TEMP/release-provenance-verifier"
+            git cat-file -e "${GITHUB_SHA}^{commit}" || {
+              echo "::error::Recovery workflow commit is unavailable"
+              exit 1
+            }
+            git worktree add --detach "$VERIFIER_WORKTREE" "$GITHUB_SHA"
+            VERIFIER="$VERIFIER_WORKTREE/.agents/scripts/release-provenance-helper.sh"
           else
             echo "::error::Unsupported publication event: $RELEASE_EVENT"
             exit 1
@@ -91,7 +103,7 @@ jobs:
             echo "::error::Refusing stale release $RELEASE_TAG; newest tag is ${LATEST_TAG:-unknown}"
             exit 1
           }
-          bash .agents/scripts/release-provenance-helper.sh verify \
+          bash "$VERIFIER" verify \
             --tag "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY"
 

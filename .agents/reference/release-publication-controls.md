@@ -45,6 +45,17 @@ against GitHub, requires their exact merge SHAs to be ancestors of the aggregate
 tip, and copies the complete manifest into the signed tag. An intervening direct
 commit without this reviewed attestation remains blocked.
 
+The source resolver classifies an exact-tip aggregation PR as aggregate even
+when the caller names that aggregation PR rather than one of its included
+sources. This prevents the direct-source fast path from omitting the tag copy.
+For an already-signed tag whose redundant aggregate entries are wholly absent,
+recovery may reconstruct them only from the signed `Aidevops-Source-Merge` SHA
+after validating the aggregator identity, complete commit manifest, and every
+included PR. Any explicit partial, duplicate, malformed, or conflicting tag
+manifest remains fail-closed. A recovery workflow executes this verifier from
+its exact reviewed `main` workflow commit while all release artifacts remain
+pinned to the immutable tag checkout.
+
 After all publication and deployment gates succeed, the aggregation PR receives
 `release:published`; each included PR receives `release:superseded` plus a JSON
 receipt linking its merge SHA to the aggregation PR, release tag, and release
@@ -99,6 +110,12 @@ before publication.
 Aggregation PR #28916 reviews authorized PR #28914 at
 `d522f4df38fc17dddc1cc1feed72e7dfa9279088` because the deterministic t18185
 completion commit advanced `main` before publication.
+
+Release `v3.32.198` exposed the exact-tip classification gap when publication
+named aggregation PR #28916: the signed tag bound its reviewed merge SHA but
+omitted the redundant `Aidevops-Aggregated-Source` copy. Publication correctly
+failed before side effects. Issue #28917 records the no-retag recovery and the
+resolver regression coverage.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.

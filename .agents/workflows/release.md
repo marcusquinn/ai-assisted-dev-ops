@@ -45,11 +45,21 @@ contract.
 If `main` advanced after authorization, create and review a dedicated aggregation
 PR whose squash-merge commit contains `Aidevops-Release-Aggregator-PR` and one
 `Aidevops-Release-Aggregates: PR@MERGE_SHA` trailer per included source. Then
-rerun the original command. The helper accepts only an exact aggregate `main`
-tip, preserves the manifest in the signed tag, marks the aggregate PR published,
-and marks included source receipts superseded with immutable release links.
-Arbitrary descendants and unreviewed direct commits remain blocked. Full contract:
-`reference/release-publication-controls.md` "Intervening-main recovery".
+rerun the original source-PR command. If recovery instead names the aggregation
+PR itself, the resolver must still classify that exact tip as an aggregate and
+copy every reviewed source into the signed tag; it cannot fall through to direct
+mode. The helper accepts only an exact aggregate `main` tip, marks the aggregate
+PR published, and marks included source receipts superseded with immutable
+release links. Arbitrary descendants and unreviewed direct commits remain
+blocked.
+
+An already-signed tag whose aggregate list was completely omitted may recover
+the redundant list only from its signed `Aidevops-Source-Merge` commit after the
+same reviewed manifest and every included PR verify. Any explicit partial or
+conflicting tag list remains a hard failure. Recovery runs the verifier from the
+exact reviewed `main` workflow commit while package contents stay pinned to the
+immutable tag. Full contract: `reference/release-publication-controls.md`
+"Intervening-main recovery".
 
 **DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, authenticated `gh`, an accessible aidevops repository, and unreleased changelog content (or changelog-only `--force`). The helper fetches `origin/main` and creates its own detached release worktree; it does not require or mutate a clean canonical checkout.
 

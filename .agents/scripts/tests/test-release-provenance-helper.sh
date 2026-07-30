@@ -191,6 +191,18 @@ jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
 ' <<<"$aggregate_json" >/dev/null
 printf 'PASS reviewed aggregation manifest recovers an authorized historical source\n'
 
+aggregate_self_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 99 --repo test/aggregate
+)
+jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
+	.mode == "aggregate" and .requested_pr == 99 and .source_pr == 99
+	and .source_merge == $merge
+	and .aggregated_sources == [{pr:42,merge:$original}]
+' <<<"$aggregate_self_json" >/dev/null
+printf 'PASS exact-tip aggregation PR preserves its reviewed source manifest\n'
+
 git -C "$AGG_REPO" switch -q --detach "$AGG_ORIGINAL"
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed direct commit'
 if (
@@ -230,14 +242,29 @@ git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - tampered aggregate fixture
 Aidevops-Version: 2.0.0
 Aidevops-Source-PR: 99
 Aidevops-Source-Merge: ${AGGREGATE_MERGE}"
+
+(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" verify --tag v2.0.0 --repo test/aggregate >/dev/null
+)
+printf 'PASS signed source merge recovers a completely omitted redundant tag manifest\n'
+
+git -C "$AGG_REPO" tag -d v2.0.0 >/dev/null
+git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - conflicting aggregate fixture
+
+Aidevops-Version: 2.0.0
+Aidevops-Source-PR: 99
+Aidevops-Source-Merge: ${AGGREGATE_MERGE}
+Aidevops-Aggregated-Source: 42@0000000000000000000000000000000000000000"
 if (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
 		bash "$HELPER" verify --tag v2.0.0 --repo test/aggregate
 ) >/dev/null 2>&1; then
-	printf 'FAIL tag omitted the reviewed aggregate sources\n'
+	printf 'FAIL tag with an explicit conflicting aggregate source was accepted\n'
 	exit 1
 fi
-printf 'PASS tag tampering cannot omit reviewed aggregate sources\n'
+printf 'PASS explicit aggregate-source conflicts remain fail-closed\n'
 
 exit 0
