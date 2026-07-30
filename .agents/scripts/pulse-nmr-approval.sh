@@ -1044,6 +1044,50 @@ _nmr_evaluate_reason_metadata() {
 }
 
 #######################################
+# Classify the latest NMR label event as a manual maintainer hold.
+#
+# Arguments:
+#   $1 - issue_num : GitHub issue number
+#   $2 - slug      : repo slug (owner/repo)
+#   $3 - nmr_actor : actor from the latest NMR label event
+#   $4 - nmr_at    : timestamp of the latest NMR label event
+#
+# Returns 0 when NMR must be preserved, 1 when auto-clear is allowed.
+#######################################
+_nmr_actor_event_is_manual_hold() {
+	local issue_num="$1"
+	local slug="$2"
+	local nmr_actor="$3"
+	local nmr_at="$4"
+
+	[[ -n "$nmr_actor" ]] || return 1
+
+	local nmr_actor_authority_rc=0
+	#aidevops:trust-boundary -- a transient authority lookup must preserve an
+	# identified actor's NMR hold rather than silently treating it as automation.
+	_gh_actor_has_repo_write_authority "$slug" "$nmr_actor" "COLLABORATOR" || nmr_actor_authority_rc=$?
+	case "$nmr_actor_authority_rc" in
+	0) ;;
+	1) return 1 ;;
+	*)
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — authority lookup failed for actor=${nmr_actor}; preserving NMR" >>"$LOGFILE"
+		return 0
+		;;
+	esac
+
+	if [[ -n "$nmr_at" ]] && _nmr_application_has_automation_signature "$issue_num" "$slug" "$nmr_at"; then
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — write-authorized actor=${nmr_actor} but creation-default signature detected — classifying as automation-applied (GH#18671)" >>"$LOGFILE"
+		return 1
+	fi
+
+	local authority_metadata=""
+	authority_metadata=$(_nmr_metadata_json "$NMR_REASON_AUTHORITY" "$NMR_CLASS_GENUINE_AUTHORITY" "manual-hold" true)
+	_nmr_record_revalidation_state "$issue_num" "$slug" "$authority_metadata" "$nmr_at" "$NMR_STATUS_HUMAN_AUTHORITY" || true
+	_nmr_emit_decision_packet "$issue_num" "$slug" "$NMR_REASON_AUTHORITY" || true
+	return 0
+}
+
+#######################################
 # Check if the needs-maintainer-review label was most recently applied
 # by a write-authorized maintainer (indicating a manual hold), OR by a
 # circuit breaker trip (which must be treated as a hold even though
@@ -1150,38 +1194,10 @@ _nmr_applied_by_maintainer() {
 		return 0
 	fi
 
-	if [[ -z "$nmr_actor" ]]; then
-		return 1
-	fi
-	local nmr_actor_authority_rc=0
-	#aidevops:trust-boundary -- a transient authority lookup must preserve an
-	# identified actor's NMR hold rather than silently treating it as automation.
-	_gh_actor_has_repo_write_authority "$slug" "$nmr_actor" "COLLABORATOR" || nmr_actor_authority_rc=$?
-	case "$nmr_actor_authority_rc" in
-	0) ;;
-	1) return 1 ;;
-	*)
-		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — authority lookup failed for actor=${nmr_actor}; preserving NMR" >>"$LOGFILE"
+	if _nmr_actor_event_is_manual_hold "$issue_num" "$slug" "$nmr_actor" "$nmr_at"; then
 		return 0
-		;;
-	esac
-
-	# Actor has maintainer-equivalent write authority. Two possibilities remain:
-	#   1. Creation-default signature (scanner applied NMR at creation
-	#      time) → auto-approve OK, return 1.
-	#   2. No signature → genuine manual hold, return 0.
-	if [[ -n "$nmr_at" ]]; then
-		if _nmr_application_has_automation_signature "$issue_num" "$slug" "$nmr_at"; then
-			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — write-authorized actor=${nmr_actor} but creation-default signature detected — classifying as automation-applied (GH#18671)" >>"$LOGFILE"
-			return 1
-		fi
 	fi
-
-	local authority_metadata=""
-	authority_metadata=$(_nmr_metadata_json "$NMR_REASON_AUTHORITY" "$NMR_CLASS_GENUINE_AUTHORITY" "manual-hold" true)
-	_nmr_record_revalidation_state "$issue_num" "$slug" "$authority_metadata" "$nmr_at" "$NMR_STATUS_HUMAN_AUTHORITY" || true
-	_nmr_emit_decision_packet "$issue_num" "$slug" "$NMR_REASON_AUTHORITY" || true
-	return 0
+	return 1
 }
 
 #######################################
