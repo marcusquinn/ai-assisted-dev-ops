@@ -98,8 +98,22 @@ PY
 		args+=(--required)
 	fi
 	local rc=0
-	gh "${args[@]}" 2>/dev/null || rc=$?
+	local checks=""
+	local checks_stderr=""
+	local checks_stderr_file=""
+	checks_stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-gh-checks-wait.XXXXXX") || return 1
+	checks=$(gh "${args[@]}" 2>"$checks_stderr_file") || rc=$?
+	checks_stderr=$(<"$checks_stderr_file")
+	rm -f "$checks_stderr_file"
+	if [[ "$required_only" -eq 1 && "$rc" -eq 1 && -z "$checks" && "$checks_stderr" =~ ^no\ required\ checks\ reported\ on\ the\ \'[^\']+\'\ branch$ ]]; then
+		printf '[]\n'
+		return 0
+	fi
+	if [[ -n "$checks_stderr" ]]; then
+		return 1
+	fi
 	if [[ "$rc" -eq 0 || "$rc" -eq 1 || "$rc" -eq 8 ]]; then
+		printf '%s' "$checks"
 		return 0
 	fi
 	return "$rc"
