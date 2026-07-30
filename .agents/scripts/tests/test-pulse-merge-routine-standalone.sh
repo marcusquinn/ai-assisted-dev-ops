@@ -56,6 +56,7 @@
 #   18. linked-issue closure invokes dependency reconciliation
 #   19. stuck escalation invokes the idempotent comment provider
 #   20. both paths run without missing-function diagnostics
+#   21. missing gh authentication aborts before the first API request
 
 set -uo pipefail
 
@@ -198,6 +199,23 @@ if grep -qF "export PATH=\"\${SCRIPT_DIR}:\${PATH}\"" "$ROUTINE_FILE"; then
 else
 	fail "6b: routine re-prioritises framework scripts in PATH" \
 		"missing SCRIPT_DIR PATH prepend after script-dir resolution"
+fi
+
+# =============================================================================
+# Test 6c: merge runs fail closed when gh has no authentication context
+# =============================================================================
+auth_test_home=$(mktemp -d)
+auth_output=""
+auth_exit=0
+auth_output=$(HOME="$auth_test_home" GH_TOKEN="" GITHUB_TOKEN="" \
+	LC_ALL=C timeout 30 "$ROUTINE_FILE" --repo example/repo 2>&1) || auth_exit=$?
+rm -rf "$auth_test_home"
+
+if [[ "$auth_exit" -ne 0 ]] && printf '%s\n' "$auth_output" | grep -qF 'refusing unauthenticated API access'; then
+	pass "6c: missing gh authentication aborts before API access"
+else
+	fail "6c: missing gh authentication aborts before API access" \
+		"exit=$auth_exit, output=$auth_output"
 fi
 
 # =============================================================================

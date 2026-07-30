@@ -252,6 +252,17 @@ _pmr_graphql_budget_allows_run() {
 	return 0
 }
 
+_pmr_require_gh_auth() {
+	local token=""
+	if ! token=$(gh auth token 2>/dev/null) || [[ -z "$token" ]]; then
+		_pmr_log ERROR "GitHub authentication unavailable; aborting merge routine before API access to prevent unauthenticated requests"
+		printf '%s\n' 'pulse-merge-routine: GitHub authentication unavailable; refusing unauthenticated API access' >&2
+		return 1
+	fi
+	unset token
+	return 0
+}
+
 # =============================================================================
 # File-based lock (mkdir-based for bash 3.2 + macOS portability)
 # =============================================================================
@@ -415,6 +426,9 @@ cmd_run() {
 	if ! _pmr_acquire_lock; then
 		exit 0
 	fi
+	if ! _pmr_require_gh_auth; then
+		return 1
+	fi
 	if ! _pmr_graphql_budget_allows_run; then
 		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
 		return 0
@@ -481,6 +495,9 @@ cmd_dry_run() {
 	_pmr_log INFO "DRY-RUN mode: merge routine (pid=$$, timeout=${PULSE_MERGE_ROUTINE_TIMEOUT_SECONDS}s)"
 	if ! _pmr_acquire_lock; then
 		exit 0
+	fi
+	if ! _pmr_require_gh_auth; then
+		return 1
 	fi
 	if ! _pmr_graphql_budget_allows_run; then
 		return 0
