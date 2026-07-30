@@ -549,7 +549,7 @@ _render_pr_text() {
 		return 0
 	fi
 
-	local last_rule_id=""
+	local last_rule_id="" unclassified_count=0
 	local entry
 	for entry in "$@"; do
 		if [[ "$entry" == "  RAW: "* ]]; then
@@ -559,7 +559,7 @@ _render_pr_text() {
 
 		local ts rule_id script line_range description
 		IFS='|' read -r ts rule_id script line_range description <<< "$entry"
-
+		[[ "$rule_id" == "unclassified" && "$_CMD_PR_VERBOSE" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
 		printf '  %s  %b%-30s%b  %s\n' \
 			"$ts" "$YELLOW" "${script:-unknown}" "$NC" "${rule_id:-unclassified}"
 		printf '              %s\n' "$description"
@@ -569,7 +569,7 @@ _render_pr_text() {
 		printf '\n'
 		last_rule_id="$rule_id"
 	done
-
+	[[ "$unclassified_count" -gt 0 ]] && printf '  Unclassified pulse events: %d (use --verbose for raw evidence)\n\n' "$unclassified_count"
 	printf 'Summary:\n'
 	printf '  Total pulse events: %d\n' "$event_count"
 
@@ -998,7 +998,6 @@ _cmd_issue_parse_args() {
 _fetch_issue_metadata() {
 	local issue_number="$1"
 	local repo_slug="$2"
-
 	if [[ "${PULSE_DIAGNOSE_GH_OFFLINE:-0}" == "1" ]]; then
 		echo "{}"
 		return 0
@@ -1040,7 +1039,7 @@ _fetch_issue_comments() {
 }
 
 # Fetch linked PR numbers for an issue via timeline cross-references and
-# worker branch pattern search.
+# bounded open-PR metadata filtering.
 # Args: $1 = issue number, $2 = repo slug
 # Outputs newline-separated PR numbers to stdout.
 _fetch_issue_linked_prs() {
@@ -1056,7 +1055,6 @@ _fetch_issue_linked_prs() {
 	local owner="" repo=""
 	owner="${repo_slug%%/*}"
 	repo="${repo_slug##*/}"
-
 	# Strategy 1: timeline cross-references from PRs that reference this issue
 	# (pipe through jq so the gh stub in tests sees raw JSON)
 	local xref_nums=""
@@ -1064,13 +1062,13 @@ _fetch_issue_linked_prs() {
 		--paginate 2>/dev/null \
 		| jq -r '[.[] | select(.event == "cross-referenced") | select(.source.issue.pull_request != null) | .source.issue.number] | unique | .[]' \
 		2>/dev/null) || xref_nums=""
-
-	# Strategy 2: worker branch naming pattern (feature/auto-*-gh<N>)
+	# Strategy 2: locally filter one bounded open-PR snapshot (including drafts).
 	local branch_prs=""
-	branch_prs=$(gh pr list --repo "$repo_slug" --state all \
-		--search "gh${issue_number} in:head" \
-		--json number --limit 10 2>/dev/null \
-		| jq -r '.[].number' 2>/dev/null) || branch_prs=""
+	branch_prs=$(gh pr list --repo "$repo_slug" --state open \
+		--json number,headRefName --limit 100 2>/dev/null \
+		| jq -r --arg token "gh${issue_number}" \
+			'.[] | select((.headRefName // "") | test("(^|[^[:alnum:]])" + $token + "([^0-9]|$)")) | .number' \
+			2>/dev/null) || branch_prs=""
 
 	{ printf '%s\n' "$xref_nums"; printf '%s\n' "$branch_prs"; } \
 		| grep -E '^[0-9]+$' 2>/dev/null | sort -n | uniq
@@ -1155,7 +1153,7 @@ _render_issue_linked_prs() {
 		printf '  PR #%s  %s  %s\n' "$pr_num" "$pr_state" "${pr_title:-(no title)}"
 		[[ -n "$pr_head" ]] && printf '    Branch: %s\n' "$pr_head"
 		[[ -n "$pr_merged_at" ]] && printf '    Merged: %s\n' "$pr_merged_at"
-		local pr_log_lines="" event_count=0
+		local pr_log_lines="" event_count=0 unclassified_count=0
 		pr_log_lines=$(_collect_pr_log_lines "$pr_num" "$logfile" "$logdir")
 		event_count=0
 		if [[ -n "$pr_log_lines" ]]; then
@@ -1166,10 +1164,12 @@ _render_issue_linked_prs() {
 				ts=$(_extract_timestamp "$log_line")
 				classification=$(_classify_log_line "$log_line")
 				IFS='|' read -r rule_id script_name line_range description <<< "$classification"
+				[[ "$rule_id" == "unclassified" && "$verbose" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
 				printf '    %s  %b%-25s%b  %s\n' \
 					"$ts" "$CYAN" "${rule_id:-unclassified}" "$NC" "$description"
 				[[ "$verbose" -eq 1 ]] && printf '      RAW: %s\n' "$log_line"
 			done <<< "$pr_log_lines"
+			[[ "$unclassified_count" -gt 0 ]] && printf '    Unclassified pulse events: %d (use --verbose for raw evidence)\n' "$unclassified_count"
 			printf '    (%d pulse events)\n' "$event_count"
 		else
 			printf '    (no pulse log entries for this PR)\n'
