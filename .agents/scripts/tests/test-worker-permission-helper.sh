@@ -123,6 +123,11 @@ if [[ ! -f "${git_dir}/aidevops-permission-pending" ]]; then
 	printf 'permission pending marker was not written to the target repository git directory\n' >&2
 	exit 1
 fi
+if ! jq -e 'select(.issue == 123 and .session == "issue-123" and (.request_id | test("^perm-[0-9a-f]{16}$")))' \
+	"${git_dir}/aidevops-permission-pending" >/dev/null; then
+	printf 'permission pending marker omitted its issue or worker session owner\n' >&2
+	exit 1
+fi
 jq -e 'select(.event == "permission_awaiting_approval" and .reason == "needs_maintainer_permissions" and .blocking == true
   and .issue_number == 123 and .repo_slug == "owner/repo" and .session_key == "issue-123")' \
 	"$AIDEVOPS_WORKER_BLOCKER_LOG_FILE" >/dev/null

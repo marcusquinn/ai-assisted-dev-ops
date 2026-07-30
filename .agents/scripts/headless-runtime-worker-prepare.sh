@@ -207,13 +207,33 @@ _hrw_prepare_role_context() {
 	fi
 
 	local permission_pending_file=""
+	local permission_request_id=""
+	# A pending marker carries scoped worker authority. Resume it only for the
+	# exact issue and session that created it; retain mismatched markers on disk.
+	unset AIDEVOPS_PERMISSION_GRANT_FILE AIDEVOPS_PERMISSION_REQUEST_ID 2>/dev/null || true
 	permission_pending_file=$(_hrw_permission_pending_path "$work_dir" || true)
-	if [[ -f "$permission_pending_file" ]]; then
+	if [[ -f "$permission_pending_file" ]] && permission_request_id=$(jq -er \
+		--arg issue "${WORKER_ISSUE_NUMBER:-}" \
+		--arg session "${WORKER_SESSION_KEY:-}" '
+			select(($issue | test("^[1-9][0-9]*$")) and ($session | length > 0))
+			| select(.issue == ($issue | tonumber) and .session == $session)
+			| .request_id
+			| select(type == "string" and length > 0)
+		' "$permission_pending_file" 2>/dev/null); then
 		export AIDEVOPS_PERMISSION_REQUEST_ID
-		AIDEVOPS_PERMISSION_REQUEST_ID=$(jq -r '.request_id // ""' "$permission_pending_file" 2>/dev/null || true)
-	else
-		unset AIDEVOPS_PERMISSION_REQUEST_ID
+		AIDEVOPS_PERMISSION_REQUEST_ID="$permission_request_id"
 	fi
+	return 0
+}
+
+_hrw_prepare_permission_grant_path() {
+	local repo_slug="$1"
+	local issue_number="${WORKER_ISSUE_NUMBER:-}"
+	local permission_grant_slug=""
+	unset AIDEVOPS_PERMISSION_GRANT_FILE 2>/dev/null || true
+	[[ -n "${AIDEVOPS_PERMISSION_REQUEST_ID:-}" && -n "$issue_number" && -n "$repo_slug" ]] || return 0
+	permission_grant_slug=$(printf '%s' "$repo_slug" | tr '/:' '__')
+	export AIDEVOPS_PERMISSION_GRANT_FILE="${HOME}/.aidevops/permission-grants/${permission_grant_slug}/${issue_number}.json"
 	return 0
 }
 
@@ -251,11 +271,7 @@ _cmd_run_prepare() {
 		if [[ -n "$_prepare_repo_slug" ]]; then
 			export DISPATCH_REPO_SLUG="$_prepare_repo_slug"
 		fi
-		if [[ -n "${WORKER_ISSUE_NUMBER:-}" && -n "${DISPATCH_REPO_SLUG:-}" ]]; then
-			local permission_grant_slug=""
-			permission_grant_slug=$(printf '%s' "$DISPATCH_REPO_SLUG" | tr '/:' '__')
-			export AIDEVOPS_PERMISSION_GRANT_FILE="${HOME}/.aidevops/permission-grants/${permission_grant_slug}/${WORKER_ISSUE_NUMBER}.json"
-		fi
+		_hrw_prepare_permission_grant_path "${DISPATCH_REPO_SLUG:-}"
 	fi
 
 	# GH#6538: Acquire a session-key lock to prevent duplicate workers.

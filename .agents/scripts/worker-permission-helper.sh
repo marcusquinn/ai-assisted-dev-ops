@@ -317,8 +317,8 @@ cmd_request() {
 			return 1
 		fi
 		pending_file="${git_dir}/aidevops-permission-pending"
-		if ! jq -cn --arg request "$request_id" --arg issue "$issue_number" \
-			'{request_id: $request, issue: ($issue | tonumber)}' >"$pending_file"; then
+		if ! jq -cn --arg request "$request_id" --arg issue "$issue_number" --arg session "$session_key" \
+			'{request_id: $request, issue: ($issue | tonumber), session: $session}' >"$pending_file"; then
 			permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
 				"pending_marker_write_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
 				"Permission pending marker could not be persisted"

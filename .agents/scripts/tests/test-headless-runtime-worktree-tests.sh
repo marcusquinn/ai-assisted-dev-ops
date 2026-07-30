@@ -1004,6 +1004,136 @@ EOF
 	return 0
 }
 
+write_permission_pending_marker() {
+	local worktree_dir="$1"
+	local marker_json="$2"
+	local git_dir=""
+	git_dir=$(git -C "$worktree_dir" rev-parse --absolute-git-dir) || return 1
+	printf '%s\n' "$marker_json" >"${git_dir}/aidevops-permission-pending"
+	return 0
+}
+
+test_worker_role_context_inherits_matching_pending_permission() {
+	local worktree_dir="${TEST_ROOT}/matching-permission-marker"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	write_permission_pending_marker "$worktree_dir" \
+		'{"request_id":"perm-matching","issue":22438,"session":"issue-22438"}'
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="22438"
+		export WORKER_SESSION_KEY="issue-22438"
+		export AIDEVOPS_PERMISSION_GRANT_FILE="/stale/grant.json"
+		export AIDEVOPS_PERMISSION_REQUEST_ID="perm-stale"
+		_hrw_prepare_role_context "worker" "$worktree_dir"
+		printf 'request=%s grant=%s\n' \
+			"${AIDEVOPS_PERMISSION_REQUEST_ID:-}" "${AIDEVOPS_PERMISSION_GRANT_FILE:-}"
+	)
+
+	if [[ "$output" == "request=perm-matching grant=" ]]; then
+		print_result "worker role inherits only its matching pending permission request" 0
+		return 0
+	fi
+	print_result "worker role inherits only its matching pending permission request" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
+test_worker_prepare_clears_cross_issue_pending_permission() {
+	local worktree_dir="${TEST_ROOT}/cross-issue-permission-marker"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	write_permission_pending_marker "$worktree_dir" \
+		'{"request_id":"perm-old-issue","issue":3203,"session":"issue-3203"}'
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="3277"
+		export WORKER_SESSION_KEY="pr-review-thread-response-owner-repo-3277"
+		export WORKER_WORKTREE_PATH="$worktree_dir"
+		export DISPATCH_REPO_SLUG="owner/repo"
+		export AIDEVOPS_PERMISSION_GRANT_FILE="/stale/grant.json"
+		export AIDEVOPS_PERMISSION_REQUEST_ID="perm-stale"
+		_headless_private_workload_enabled() { return 1; }
+		_acquire_session_lock() { return 0; }
+		aidevops_sensitive_temp_root() { return 0; }
+		_hrw_verify_dispatch_ownership() { return 0; }
+		_hrw_claim_worker_worktree() { return 0; }
+		_register_dispatch_ledger() { return 0; }
+		_cmd_run_prepare "$WORKER_SESSION_KEY" "$worktree_dir" "worker"
+		trap - EXIT
+		local marker_state="missing"
+		local git_dir=""
+		git_dir=$(git -C "$worktree_dir" rev-parse --absolute-git-dir)
+		[[ -f "${git_dir}/aidevops-permission-pending" ]] && marker_state="retained"
+		printf 'request=%s grant=%s marker=%s\n' \
+			"${AIDEVOPS_PERMISSION_REQUEST_ID:-}" "${AIDEVOPS_PERMISSION_GRANT_FILE:-}" "$marker_state"
+	)
+
+	if [[ "$output" == "request= grant= marker=retained" ]]; then
+		print_result "worker preparation rejects a pending permission owned by another issue" 0
+		return 0
+	fi
+	print_result "worker preparation rejects a pending permission owned by another issue" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
+test_worker_role_context_clears_cross_session_pending_permission() {
+	local worktree_dir="${TEST_ROOT}/cross-session-permission-marker"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	write_permission_pending_marker "$worktree_dir" \
+		'{"request_id":"perm-old-session","issue":22438,"session":"issue-22438-attempt-1"}'
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="22438"
+		export WORKER_SESSION_KEY="issue-22438-attempt-2"
+		export AIDEVOPS_PERMISSION_GRANT_FILE="/stale/grant.json"
+		export AIDEVOPS_PERMISSION_REQUEST_ID="perm-stale"
+		_hrw_prepare_role_context "worker" "$worktree_dir"
+		printf 'request=%s grant=%s\n' \
+			"${AIDEVOPS_PERMISSION_REQUEST_ID:-}" "${AIDEVOPS_PERMISSION_GRANT_FILE:-}"
+	)
+
+	if [[ "$output" == "request= grant=" ]]; then
+		print_result "worker role rejects a pending permission owned by another session" 0
+		return 0
+	fi
+	print_result "worker role rejects a pending permission owned by another session" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
+test_worker_role_context_rejects_legacy_pending_permission() {
+	local worktree_dir="${TEST_ROOT}/legacy-permission-marker"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	write_permission_pending_marker "$worktree_dir" \
+		'{"request_id":"perm-legacy","issue":22438}'
+
+	local output=""
+	output=$(
+		export WORKER_ISSUE_NUMBER="22438"
+		export WORKER_SESSION_KEY="issue-22438"
+		export AIDEVOPS_PERMISSION_GRANT_FILE="/stale/grant.json"
+		export AIDEVOPS_PERMISSION_REQUEST_ID="perm-stale"
+		_hrw_prepare_role_context "worker" "$worktree_dir"
+		printf 'request=%s grant=%s\n' \
+			"${AIDEVOPS_PERMISSION_REQUEST_ID:-}" "${AIDEVOPS_PERMISSION_GRANT_FILE:-}"
+	)
+
+	if [[ "$output" == "request= grant=" ]]; then
+		print_result "worker role fails closed for a legacy unowned pending permission" 0
+		return 0
+	fi
+	print_result "worker role fails closed for a legacy unowned pending permission" 1 \
+		"output=${output:-<empty>}"
+	return 0
+}
+
 test_triage_finish_skips_worker_claim_and_worktree_release() {
 	local output=""
 	output=$(
