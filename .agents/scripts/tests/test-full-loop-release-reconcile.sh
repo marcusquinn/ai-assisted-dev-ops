@@ -43,34 +43,33 @@ if ! jq -e '.source_pr == 90
 fi
 printf 'PASS signed tag trailers reconstruct release provenance\n'
 
-legacy_source_json=$(
-	(
-		_full_loop_release_tag_body() {
-			local tag_name="$1"
-			[[ "$tag_name" == "v1.2.4" ]] || return 1
-			cat <<'BODY'
-Release v1.2.4
-
-Aidevops-Version: 1.2.4
-Aidevops-Source-PR: 90
-Aidevops-Source-Merge: 1111111111111111111111111111111111111111
-BODY
-			return 0
-		}
-		_full_loop_release_source_merge_trailer_values() {
-			local source_merge="$1"
-			local trailer_key="$2"
-			[[ "$source_merge" == "1111111111111111111111111111111111111111" ]] || return 1
-			case "$trailer_key" in
-			Aidevops-Release-Aggregator-PR) printf '90\n' ;;
-			Aidevops-Release-Aggregates) printf '89@2222222222222222222222222222222222222222\n' ;;
-			*) return 1 ;;
-			esac
-			return 0
-		}
-		_full_loop_release_source_json_from_tag v1.2.4
-	)
-)
+legacy_source_json_file="${TEST_ROOT}/legacy-source.json"
+(
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.4" ]] || return 1
+		printf '%s\n' \
+			'Release v1.2.4' \
+			'' \
+			'Aidevops-Version: 1.2.4' \
+			'Aidevops-Source-PR: 90' \
+			'Aidevops-Source-Merge: 1111111111111111111111111111111111111111'
+		return 0
+	}
+	_full_loop_release_source_merge_trailer_values() {
+		local source_merge="$1"
+		local trailer_key="$2"
+		[[ "$source_merge" == "1111111111111111111111111111111111111111" ]] || return 1
+		case "$trailer_key" in
+		Aidevops-Release-Aggregator-PR) printf '90\n' ;;
+		Aidevops-Release-Aggregates) printf '89@2222222222222222222222222222222222222222\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_source_json_from_tag v1.2.4
+) >"$legacy_source_json_file"
+legacy_source_json=$(<"$legacy_source_json_file")
 if ! jq -e '.source_pr == 90
 	and .source_merge == "1111111111111111111111111111111111111111"
 	and .aggregated_sources == [{"pr":89,"merge":"2222222222222222222222222222222222222222"}]' \
@@ -80,48 +79,48 @@ if ! jq -e '.source_pr == 90
 fi
 printf 'PASS signed source merge reconstructs an omitted redundant tag manifest\n'
 
-legacy_found_tag=$(
-	(
-		git() {
-			local args="$*"
-			case "$args" in
-			*" fetch origin --tags --quiet"*) return 0 ;;
-			*" tag --list "*) printf 'v1.2.4\n' ;;
-			*) return 1 ;;
-			esac
-			return 0
-		}
-		_full_loop_release_tag_body() {
-			local tag_name="$1"
-			[[ "$tag_name" == "v1.2.4" ]] || return 1
-			printf '%s\n' \
-				'Release v1.2.4' \
-				'Aidevops-Version: 1.2.4' \
-				'Aidevops-Source-PR: 90' \
-				'Aidevops-Source-Merge: 1111111111111111111111111111111111111111'
-			return 0
-		}
-		_full_loop_release_source_merge_trailer_values() {
-			local source_merge="$1"
-			local trailer_key="$2"
-			[[ "$source_merge" == "1111111111111111111111111111111111111111" ]] || return 1
-			case "$trailer_key" in
-			Aidevops-Release-Aggregator-PR) printf '90\n' ;;
-			Aidevops-Release-Aggregates) printf '89@2222222222222222222222222222222222222222\n' ;;
-			*) return 1 ;;
-			esac
-			return 0
-		}
-		_full_loop_release_verify_tag_provenance() {
-			local repo="$1"
-			local tag_name="$2"
-			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]]
-			return $?
-		}
-		_full_loop_release_find_tag_for_pr test/repo 89 || exit 1
-		printf '%s\n' "$_FULL_LOOP_RELEASE_FOUND_TAG"
-	)
-)
+legacy_found_tag_file="${TEST_ROOT}/legacy-found-tag.txt"
+(
+	git() {
+		local args="$*"
+		case "$args" in
+		*" fetch origin --tags --quiet"*) return 0 ;;
+		*" tag --list "*) printf 'v1.2.4\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.4" ]] || return 1
+		printf '%s\n' \
+			'Release v1.2.4' \
+			'Aidevops-Version: 1.2.4' \
+			'Aidevops-Source-PR: 90' \
+			'Aidevops-Source-Merge: 1111111111111111111111111111111111111111'
+		return 0
+	}
+	_full_loop_release_source_merge_trailer_values() {
+		local source_merge="$1"
+		local trailer_key="$2"
+		[[ "$source_merge" == "1111111111111111111111111111111111111111" ]] || return 1
+		case "$trailer_key" in
+		Aidevops-Release-Aggregator-PR) printf '90\n' ;;
+		Aidevops-Release-Aggregates) printf '89@2222222222222222222222222222222222222222\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_verify_tag_provenance() {
+		local repo="$1"
+		local tag_name="$2"
+		[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]]
+		return $?
+	}
+	_full_loop_release_find_tag_for_pr test/repo 89 || exit 1
+	printf '%s\n' "$_FULL_LOOP_RELEASE_FOUND_TAG"
+) >"$legacy_found_tag_file"
+legacy_found_tag=$(<"$legacy_found_tag_file")
 if [[ "$legacy_found_tag" != "v1.2.4" ]]; then
 	printf 'FAIL included source PR could not discover its transitively bound tag\n'
 	exit 1
