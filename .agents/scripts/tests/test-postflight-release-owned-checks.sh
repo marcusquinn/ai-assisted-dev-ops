@@ -91,6 +91,18 @@ grep -Fq -- '--slurpfile release_run_documents' "${REPO_ROOT}/.github/workflows/
 grep -Fq -- '--slurpfile recovery_run_documents' "${REPO_ROOT}/.github/workflows/postflight.yml"
 grep -Fq -- '--arg release_tag "$RELEASE_TAG"' "${REPO_ROOT}/.github/workflows/postflight.yml"
 grep -Fq 'RELEASE_TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq 'Prepare reviewed postflight runtime' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq 'git cat-file -e "${GITHUB_SHA}^{commit}"' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq 'git worktree add --detach "$RUNTIME_PATH" "$GITHUB_SHA"' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq 'POSTFLIGHT_RUNTIME: ${{ steps.postflight_runtime.outputs.path }}' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq -- '-f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/release-owned-check-runs.jq"' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq -- '-f "$POSTFLIGHT_RUNTIME/.github/scripts/effective-check-runs.jq"' "${REPO_ROOT}/.github/workflows/postflight.yml"
+grep -Fq -- '-f "$POSTFLIGHT_RUNTIME/.github/scripts/reconcile-superseded-cancellations.jq"' "${REPO_ROOT}/.github/workflows/postflight.yml"
+if grep -Fq -- '-f .agents/scripts/jq/' "${REPO_ROOT}/.github/workflows/postflight.yml" ||
+	grep -Fq -- '-f .github/scripts/' "${REPO_ROOT}/.github/workflows/postflight.yml"; then
+	printf 'FAIL: exact-tag postflight executes filters from immutable tag content\n' >&2
+	exit 1
+fi
 grep -Fq 'non-required advisory check(s) remain non-terminal' "${REPO_ROOT}/.github/workflows/postflight.yml"
 grep -Fq 'load_release_owned_checks' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"
 grep -Fq 'unrelated issue/comment workflow run(s) excluded' "${REPO_ROOT}/.agents/scripts/postflight-check.sh"

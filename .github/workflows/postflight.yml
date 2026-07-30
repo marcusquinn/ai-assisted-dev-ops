@@ -32,6 +32,21 @@ jobs:
     - name: Resolve release commit
       id: release_commit
       run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare reviewed postflight runtime
+      id: postflight_runtime
+      run: |
+        [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+          echo "::error::Postflight workflow commit is malformed"
+          exit 1
+        }
+        RUNTIME_PATH="$RUNNER_TEMP/postflight-runtime"
+        git cat-file -e "${GITHUB_SHA}^{commit}" || {
+          echo "::error::Postflight workflow commit is unavailable"
+          exit 1
+        }
+        git worktree add --detach "$RUNTIME_PATH" "$GITHUB_SHA"
+        echo "path=$RUNTIME_PATH" >> "$GITHUB_OUTPUT"
     
     - name: Setup Bun
       uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -44,6 +59,7 @@ jobs:
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
         RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
+        POSTFLIGHT_RUNTIME: ${{ steps.postflight_runtime.outputs.path }}
       run: |
         echo "Waiting for release-owned check runs to complete..."
         echo "Note: Excluding issue/comment workflows and this workflow to avoid unrelated waits"
@@ -54,7 +70,7 @@ jobs:
         for i in {1..20}; do
           CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
             "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
-            | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
+            | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq")
           RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
             "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
           RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
@@ -65,7 +81,7 @@ jobs:
             --arg self_name "$SELF_NAME" \
             --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
             --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
-            -f .agents/scripts/jq/release-owned-check-runs.jq \
+            -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/release-owned-check-runs.jq" \
             <<<"$CHECK_RUNS_RESPONSE")
           PENDING=$(jq --arg self_name "$SELF_NAME" \
             '[.check_runs[] | select(.status != "completed")] | length' \
@@ -86,7 +102,7 @@ jobs:
 
         CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
-          | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
+          | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq")
         RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
         RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
@@ -97,7 +113,7 @@ jobs:
           --arg self_name "$SELF_NAME" \
           --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
           --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
-          -f .agents/scripts/jq/release-owned-check-runs.jq \
+          -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/release-owned-check-runs.jq" \
           <<<"$CHECK_RUNS_RESPONSE")
         REMAINING=$(jq '[.check_runs[] | select(.status != "completed")] | length' \
           <<<"$RELEASE_CHECK_RUNS")
@@ -122,6 +138,7 @@ jobs:
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
         RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
+        POSTFLIGHT_RUNTIME: ${{ steps.postflight_runtime.outputs.path }}
       run: |
         echo "## CI/CD Pipeline Status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -132,7 +149,7 @@ jobs:
         SELF_NAME="Verify Release Health"
         CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
-          | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq)
+          | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq")
         RELEASE_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/actions/runs?head_sha=${COMMIT_SHA}&per_page=100")
         RECOVERY_RUNS_RESPONSE=$(gh api --paginate --slurp \
@@ -143,10 +160,11 @@ jobs:
           --arg self_name "$SELF_NAME" \
           --slurpfile release_run_documents <(printf '%s\n' "$RELEASE_RUNS_RESPONSE") \
           --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
-          -f .agents/scripts/jq/release-owned-check-runs.jq \
+          -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/release-owned-check-runs.jq" \
           <<<"$CHECK_RUNS_RESPONSE")
         EFFECTIVE_CHECK_RUNS=$(echo "$RELEASE_CHECK_RUNS" \
-          | jq -c --arg self_name "$SELF_NAME" -f .github/scripts/effective-check-runs.jq)
+          | jq -c --arg self_name "$SELF_NAME" \
+            -f "$POSTFLIGHT_RUNTIME/.github/scripts/effective-check-runs.jq")
 
         # A later push to the default branch can cancel checks on the release
         # commit via cancel-in-progress. Accept only a successful check with the
@@ -160,10 +178,11 @@ jobs:
           if [[ "$COMPARE_STATUS" == "ahead" || "$COMPARE_STATUS" == "identical" ]]; then
             DESCENDANT_RESPONSE=$(gh api --paginate --slurp \
               "repos/${REPO}/commits/${DEFAULT_SHA}/check-runs?per_page=100" 2>/dev/null \
-              | jq -c -f .agents/scripts/jq/flatten-check-run-pages.jq || true)
+              | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq" || true)
             if [[ -n "$DESCENDANT_RESPONSE" ]]; then
               DESCENDANT_CHECK_RUNS=$(echo "$DESCENDANT_RESPONSE" \
-                | jq -c --arg self_name "$SELF_NAME" -f .github/scripts/effective-check-runs.jq)
+                | jq -c --arg self_name "$SELF_NAME" \
+                  -f "$POSTFLIGHT_RUNTIME/.github/scripts/effective-check-runs.jq")
             fi
           fi
         fi
@@ -172,7 +191,7 @@ jobs:
         CHECK_RUNS=$(jq -cn \
           --slurpfile current_run_documents <(printf '%s\n' "$EFFECTIVE_CHECK_RUNS") \
           --slurpfile descendant_run_documents <(printf '%s\n' "$DESCENDANT_CHECK_RUNS") \
-          -f .github/scripts/reconcile-superseded-cancellations.jq \
+          -f "$POSTFLIGHT_RUNTIME/.github/scripts/reconcile-superseded-cancellations.jq" \
           | jq -c '.[] | {name, status, conclusion, app: (.app.slug // .app.name // "unknown"), superseded_by_check_run_id}')
         
         # Count results (excluding self)
