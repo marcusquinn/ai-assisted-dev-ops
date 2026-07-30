@@ -177,13 +177,15 @@ def run_import(args: argparse.Namespace) -> int:
             args.knowledge_root, "index", "folder-imports", root.root_id, create=not args.dry_run
         )
         manifest_path = state_dir / "manifest.json"
-        previous = load_manifest(manifest_path)
-        token = int((previous or {}).get("fencing_token", 0)) + 1
         if args.dry_run:
+            previous = load_manifest(manifest_path)
+            token = int((previous or {}).get("fencing_token", 0)) + 1
             runner = SnapshotRunner(args, root, manifest_path, previous, token, False)
             manifest, result_code = runner.run()
         else:
             with Lease(state_dir / "lease.json") as lease:
+                previous = load_manifest(manifest_path)
+                token = int((previous or {}).get("fencing_token", 0)) + 1
                 runner = SnapshotRunner(args, root, manifest_path, previous, token, True, lease)
                 manifest, result_code = runner.run()
     emit(summary(manifest), args.json)

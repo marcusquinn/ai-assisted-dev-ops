@@ -75,17 +75,25 @@ class SourceStore(SourceIndexMixin, StorageMixin, ProjectionMixin, EmailMixin):
         synchronous = SYNCHRONOUS_PROCESSORS.get(prepared.kind, ())
         try:
             relations, completed = self._run_synchronous(prepared, result, budget)
-        except (LookupError, OSError, UnicodeError, ValueError, TypeError) as error:
-            failed = {processor: "failed" for processor in synchronous}
+            dispositions = {processor: "completed" for processor in completed}
             self._ensure_enrichment(
-                result.source_id, prepared.kind, prepared.mime_type, prepared.processors, failed
+                result.source_id, prepared.kind, prepared.mime_type, prepared.processors, dispositions
             )
+        except (LookupError, OSError, UnicodeError, ValueError, TypeError) as error:
+            self._mark_projection_failure(prepared, result, synchronous)
             raise EvidenceProcessingError("content projection failed") from error
-        dispositions = {processor: "completed" for processor in completed}
-        self._ensure_enrichment(
-            result.source_id, prepared.kind, prepared.mime_type, prepared.processors, dispositions
-        )
         return replace(result, relations=tuple(relations), budget_stopped=budget.stopped)
+
+    def _mark_projection_failure(
+        self, evidence: EvidenceInput, result: StoredEvidence, processors: tuple[str, ...]
+    ) -> None:
+        failed = {processor: "failed" for processor in processors}
+        try:
+            self._ensure_enrichment(
+                result.source_id, evidence.kind, evidence.mime_type, evidence.processors, failed
+            )
+        except (LookupError, OSError, UnicodeError, ValueError, TypeError) as error:
+            raise EvidenceProcessingError("failed enrichment status could not be persisted") from error
 
     def _run_synchronous(
         self, evidence: EvidenceInput, result: StoredEvidence, budget: ExpansionBudget

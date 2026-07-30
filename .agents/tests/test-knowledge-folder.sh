@@ -260,6 +260,9 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import knowledge_folder_store as store_module
 from knowledge_folder_store import ExpansionBudget, SourceStore
+from knowledge_folder_manifest import COUNT_KEYS
+from knowledge_folder_processor import FileProcessor
+from knowledge_folder_walk import InventoryItem
 from knowledge_source_contract import SourceMetaInput, build_source_meta
 
 base = Path(sys.argv[2])
@@ -498,6 +501,48 @@ try:
 except store_module.EvidenceProcessingError:
     projection_failed_closed = True
 
+enrichment_failure_root = knowledge_root("enrichment-failure-repo")
+enrichment_failure_store = SourceStore(enrichment_failure_root, "repo:default", Path(sys.argv[1]))
+enrichment_failure_path = base / "enrichment-failure.eml"
+enrichment_failure_data = b"From: sender@example.test\nSubject: Failure\n\nPreserved body.\n"
+enrichment_failure_path.write_bytes(enrichment_failure_data)
+enrichment_failure_manifest = {
+    "entries": {},
+    "counts": {key: 0 for key in COUNT_KEYS},
+    "updated_at": "",
+}
+original_ensure_enrichment = enrichment_failure_store._ensure_enrichment
+enrichment_calls = 0
+
+
+def fail_first_enrichment(*args, **kwargs):
+    global enrichment_calls
+    enrichment_calls += 1
+    if enrichment_calls == 1:
+        raise OSError("injected final enrichment failure")
+    return original_ensure_enrichment(*args, **kwargs)
+
+
+enrichment_failure_store._ensure_enrichment = fail_first_enrichment
+descriptor = os.open(enrichment_failure_path, os.O_RDONLY)
+try:
+    item = InventoryItem(
+        enrichment_failure_path.name,
+        enrichment_failure_path.name,
+        descriptor,
+        os.fstat(descriptor),
+    )
+    FileProcessor(
+        enrichment_failure_manifest,
+        {},
+        enrichment_failure_store,
+        False,
+        ExpansionBudget(10, 1024, time.monotonic() + 10),
+    ).process(item)
+finally:
+    os.close(descriptor)
+enrichment_failure_entry = enrichment_failure_manifest["entries"][enrichment_failure_path.name]
+
 print(json.dumps({
     "legacy_reused": legacy_result.reused and legacy_count == 1,
     "orphan_removed": not orphan_blob.exists(),
@@ -525,6 +570,12 @@ print(json.dumps({
         projection_failed_closed
         and projection_sentinel.read_text(encoding="utf-8") == "unchanged\n"
     ),
+    "enrichment_failure_preserves_pointer": (
+        enrichment_failure_entry["status"] == "failed"
+        and enrichment_failure_entry.get("sha256") == hashlib.sha256(enrichment_failure_data).hexdigest()
+        and bool(enrichment_failure_entry.get("source_id"))
+        and bool(enrichment_failure_entry.get("evidence_id"))
+    ),
 }))
 PY
 )
@@ -538,6 +589,7 @@ assert_json "attachment aliases cannot erase enrichment jobs" "$store_regression
 assert_json "credential-shaped source metadata is never trusted" "$store_regression_output" '.credential_metadata_rejected == true'
 assert_json "missing optional processors remain explicit" "$store_regression_output" '.optional_processor_unavailable == true'
 assert_json "symlinked text projections fail closed" "$store_regression_output" '.projection_symlink_rejected == true'
+assert_json "enrichment write failure retains canonical evidence pointers" "$store_regression_output" '.enrichment_failure_preserves_pointer == true'
 
 EMAIL_TREE="${TMP_DIR}/email-edge-tree"
 mkdir -p "$EMAIL_TREE"
@@ -706,6 +758,85 @@ if [[ "$lease_replace_result" -eq 0 ]]; then
 	pass "replaced lease cannot authorize another checkpoint"
 else
 	fail "replaced lease cannot authorize another checkpoint" "replacement was not detected"
+fi
+
+lease_load_order_result=$(
+	python3 - "${SCRIPT_DIR}/../scripts" "${TMP_DIR}/lease-load-order" <<'PY'
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import knowledge_folder_import as folder_import
+
+base = Path(sys.argv[2])
+folder = base / "folder"
+knowledge_root = base / "_knowledge"
+folder.mkdir(parents=True)
+(knowledge_root / "index").mkdir(parents=True)
+(knowledge_root / "sources").mkdir()
+state = {"held": False, "loaded_under_lease": False, "token": 0}
+
+
+class ProbeLease:
+    def __init__(self, _path):
+        pass
+
+    def __enter__(self):
+        state["held"] = True
+        return self
+
+    def __exit__(self, _kind, _value, _traceback):
+        state["held"] = False
+
+
+class ProbeRunner:
+    def __init__(self, _args, root, _path, _previous, token, _persist, _lease):
+        state["token"] = token
+        self.root_id = root.root_id
+
+    def run(self):
+        return {
+            "root_id": self.root_id,
+            "status": "complete",
+            "fencing_token": state["token"],
+            "counts": {},
+        }, 0
+
+
+def checked_load(_path):
+    state["loaded_under_lease"] = state["held"]
+    return {"fencing_token": 4, "entries": {}}
+
+
+folder_import.Lease = ProbeLease
+folder_import.SnapshotRunner = ProbeRunner
+folder_import.load_manifest = checked_load
+folder_import.emit = lambda _summary, _as_json: None
+args = argparse.Namespace(
+    folder=folder,
+    allow_root=[base],
+    knowledge_root=knowledge_root,
+    scripts_dir=Path(sys.argv[1]),
+    corpus_id="repo:default",
+    dry_run=False,
+    json=True,
+    exclude=[],
+    max_depth=4,
+    max_files=10,
+    max_nodes=20,
+    max_bytes=1024,
+    max_item_bytes=512,
+    max_seconds=10,
+)
+result = folder_import.run_import(args)
+print(0 if result == 0 and state["loaded_under_lease"] and state["token"] == 5 else 1)
+PY
+)
+if [[ "$lease_load_order_result" -eq 0 ]]; then
+	pass "persistent manifest state loads under the folder lease"
+else
+	fail "persistent manifest state loads under the folder lease" "stale state could be loaded before locking"
 fi
 
 root_replace_result=$(
