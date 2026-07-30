@@ -14,7 +14,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 TEXT_EXTENSIONS = {
@@ -46,6 +46,93 @@ class FileClassification:
     supported: bool
     valid: bool
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ClassificationRule:
+    """Classification data shared by extension groups."""
+
+    kind: str
+    processors: tuple[str, ...]
+    invalid_reason: str
+    mime_override: str | None = None
+    requires_utf8: bool = False
+
+
+SignatureValidator = Callable[[bytes], bool]
+
+
+def _prefix_validator(*markers: bytes) -> SignatureValidator:
+    return lambda prefix: prefix.startswith(markers)
+
+
+def _riff_validator(marker: bytes) -> SignatureValidator:
+    return lambda prefix: prefix.startswith(b"RIFF") and prefix[8:12] == marker
+
+
+def _iso_media(prefix: bytes) -> bool:
+    return len(prefix) >= 12 and prefix[4:8] == b"ftyp"
+
+
+def _mp3(prefix: bytes) -> bool:
+    if prefix.startswith(b"ID3"):
+        return True
+    return len(prefix) > 1 and prefix[0] == 0xFF and prefix[1] & 0xE0 == 0xE0
+
+
+def _eml(prefix: bytes) -> bool:
+    first_line = prefix.partition(b"\n")[0]
+    return any(marker in prefix for marker in (b"\nFrom:", b"\nSubject:")) or b":" in first_line
+
+
+def _emlx(prefix: bytes) -> bool:
+    first_line, separator, remainder = prefix.partition(b"\n")
+    return bool(separator and first_line.isdigit() and b":" in remainder)
+
+
+_SIGNATURE_VALIDATORS: dict[str, SignatureValidator] = {
+    ".pdf": _prefix_validator(b"%PDF-"),
+    **{extension: _prefix_validator(b"PK\x03\x04") for extension in ARCHIVE_DOCUMENT_EXTENSIONS},
+    ".png": _prefix_validator(b"\x89PNG\r\n\x1a\n"),
+    ".jpg": _prefix_validator(b"\xff\xd8\xff"),
+    ".jpeg": _prefix_validator(b"\xff\xd8\xff"),
+    ".gif": _prefix_validator(b"GIF87a", b"GIF89a"),
+    ".webp": _riff_validator(b"WEBP"),
+    ".tif": _prefix_validator(b"II*\x00", b"MM\x00*"),
+    ".tiff": _prefix_validator(b"II*\x00", b"MM\x00*"),
+    ".bmp": _prefix_validator(b"BM"),
+    ".wav": _riff_validator(b"WAVE"),
+    ".flac": _prefix_validator(b"fLaC"),
+    ".ogg": _prefix_validator(b"OggS"),
+    ".oga": _prefix_validator(b"OggS"),
+    ".mp3": _mp3,
+    ".m4a": _iso_media,
+    ".m4v": _iso_media,
+    ".mov": _iso_media,
+    ".mp4": _iso_media,
+    ".avi": _riff_validator(b"AVI "),
+    ".mkv": _prefix_validator(b"\x1aE\xdf\xa3"),
+    ".webm": _prefix_validator(b"\x1aE\xdf\xa3"),
+    ".eml": _eml,
+    ".emlx": _emlx,
+    ".mbox": _prefix_validator(b"From "),
+}
+
+
+_RULE_GROUPS = (
+    (TEXT_EXTENSIONS, ClassificationRule("document", ("text-extraction",), "text is not valid UTF-8", requires_utf8=True)),
+    (DOCUMENT_EXTENSIONS, ClassificationRule("document", ("text-extraction",), "document signature does not match extension")),
+    (IMAGE_EXTENSIONS, ClassificationRule("image", ("metadata", "ocr"), "image signature does not match extension")),
+    (AUDIO_EXTENSIONS, ClassificationRule("audio", ("metadata", "transcription"), "audio signature does not match extension")),
+    (VIDEO_EXTENSIONS, ClassificationRule("video", ("metadata", "transcription", "keyframes"), "video signature does not match extension")),
+    (EMAIL_EXTENSIONS, ClassificationRule("email", ("email-parse",), "email structure is malformed", "message/rfc822")),
+    (MAILBOX_EXTENSIONS, ClassificationRule("export", ("mailbox-expand",), "mailbox structure is malformed", "application/mbox")),
+)
+_CLASSIFICATION_RULES = {
+    extension: rule
+    for extensions, rule in _RULE_GROUPS
+    for extension in extensions
+}
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -129,43 +216,15 @@ def sanitize_reason(reason: object) -> str:
 
 
 def _valid_signature(extension: str, prefix: bytes) -> bool:
-    if extension == ".pdf":
-        return prefix.startswith(b"%PDF-")
-    if extension in ARCHIVE_DOCUMENT_EXTENSIONS:
-        return prefix.startswith(b"PK\x03\x04")
-    if extension in {".png"}:
-        return prefix.startswith(b"\x89PNG\r\n\x1a\n")
-    if extension in {".jpg", ".jpeg"}:
-        return prefix.startswith(b"\xff\xd8\xff")
-    if extension == ".gif":
-        return prefix.startswith((b"GIF87a", b"GIF89a"))
-    if extension == ".webp":
-        return prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
-    if extension in {".tif", ".tiff"}:
-        return prefix.startswith((b"II*\x00", b"MM\x00*"))
-    if extension == ".bmp":
-        return prefix.startswith(b"BM")
-    if extension == ".wav":
-        return prefix.startswith(b"RIFF") and prefix[8:12] == b"WAVE"
-    if extension == ".flac":
-        return prefix.startswith(b"fLaC")
-    if extension in {".ogg", ".oga"}:
-        return prefix.startswith(b"OggS")
-    if extension == ".mp3":
-        return prefix.startswith(b"ID3") or (len(prefix) > 1 and prefix[0] == 0xFF and prefix[1] & 0xE0 == 0xE0)
-    if extension in {".m4a", ".m4v", ".mov", ".mp4"}:
-        return len(prefix) >= 12 and prefix[4:8] == b"ftyp"
-    if extension == ".avi":
-        return prefix.startswith(b"RIFF") and prefix[8:12] == b"AVI "
-    if extension in {".mkv", ".webm"}:
-        return prefix.startswith(b"\x1aE\xdf\xa3")
-    if extension == ".eml":
-        return b":" in prefix.partition(b"\n")[0] or b"\nFrom:" in prefix or b"\nSubject:" in prefix
-    if extension == ".emlx":
-        first_line, separator, remainder = prefix.partition(b"\n")
-        return bool(separator and first_line.isdigit() and b":" in remainder)
-    if extension == ".mbox":
-        return prefix.startswith(b"From ")
+    validator = _SIGNATURE_VALIDATORS.get(extension)
+    return validator(prefix) if validator is not None else True
+
+
+def _valid_utf8(prefix: bytes) -> bool:
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
     return True
 
 
@@ -173,31 +232,13 @@ def classify_bytes(name: str, prefix: bytes) -> FileClassification:
     """Classify a named payload from a bounded byte prefix."""
     extension = Path(name).suffix.lower()
     guessed_mime = mimetypes.guess_type(name, strict=False)[0] or "application/octet-stream"
-    if extension in TEXT_EXTENSIONS:
-        try:
-            prefix.decode("utf-8")
-        except UnicodeDecodeError:
-            return FileClassification("document", guessed_mime, ("text-extraction",), True, False, "text is not valid UTF-8")
-        return FileClassification("document", guessed_mime, ("text-extraction",), True, True)
-    if extension in DOCUMENT_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("document", guessed_mime, ("text-extraction",), True, valid, None if valid else "document signature does not match extension")
-    if extension in IMAGE_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("image", guessed_mime, ("metadata", "ocr"), True, valid, None if valid else "image signature does not match extension")
-    if extension in AUDIO_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("audio", guessed_mime, ("metadata", "transcription"), True, valid, None if valid else "audio signature does not match extension")
-    if extension in VIDEO_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("video", guessed_mime, ("metadata", "transcription", "keyframes"), True, valid, None if valid else "video signature does not match extension")
-    if extension in EMAIL_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("email", "message/rfc822", ("email-parse",), True, valid, None if valid else "email structure is malformed")
-    if extension in MAILBOX_EXTENSIONS:
-        valid = _valid_signature(extension, prefix)
-        return FileClassification("export", "application/mbox", ("mailbox-expand",), True, valid, None if valid else "mailbox structure is malformed")
-    return FileClassification("unknown", guessed_mime, (), False, True, "unsupported format")
+    rule = _CLASSIFICATION_RULES.get(extension)
+    if rule is None:
+        return FileClassification("unknown", guessed_mime, (), False, True, "unsupported format")
+    valid = _valid_utf8(prefix) if rule.requires_utf8 else _valid_signature(extension, prefix)
+    mime_type = rule.mime_override or guessed_mime
+    reason = None if valid else rule.invalid_reason
+    return FileClassification(rule.kind, mime_type, rule.processors, True, valid, reason)
 
 
 def classify_fd(name: str, descriptor: int) -> FileClassification:
