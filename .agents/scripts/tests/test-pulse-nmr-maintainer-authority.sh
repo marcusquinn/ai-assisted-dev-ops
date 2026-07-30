@@ -40,6 +40,8 @@ setup_test_env() {
 	export ISSUE_API_AUTHOR="maintainer"
 	export ISSUE_LIST_AUTHOR="maintainer"
 	export ACTOR_PERMISSION="write"
+	export AUTHOR_PERMISSION="write"
+	export NMR_TIMELINE_JSON='[]'
 	: >"$LOGFILE"
 	: >"$POSTED_COMMENT"
 	: >"$STATUS_CALLS_FILE"
@@ -53,6 +55,10 @@ if [[ "${1:-}" == "api" ]]; then
 		path="${3:-}"
 		if [[ "$path" == */collaborators/runner/permission ]]; then
 			printf 'HTTP/2.0 200 OK\n\n{"permission":"%s"}\n' "${ACTOR_PERMISSION:-none}"
+			exit 0
+		fi
+		if [[ "$path" == */collaborators/trusted-author/permission ]]; then
+			printf 'HTTP/2.0 200 OK\n\n{"permission":"%s"}\n' "${AUTHOR_PERMISSION:-none}"
 			exit 0
 		fi
 	fi
@@ -73,12 +79,16 @@ if [[ "${1:-}" == "api" ]]; then
 		printf '{"permission":"%s"}\n' "${ACTOR_PERMISSION:-none}" | jq -r "${jq_filter:-.}"
 		exit 0
 	fi
+	if [[ "$path" == */collaborators/trusted-author/permission ]]; then
+		printf '{"permission":"%s"}\n' "${AUTHOR_PERMISSION:-none}" | jq -r "${jq_filter:-.}"
+		exit 0
+	fi
 	if [[ "$path" == */issues/24479 ]]; then
 		printf '{"user":{"login":"%s"},"author_association":"%s","labels":[]}\n' "${ISSUE_API_AUTHOR:-maintainer}" "${ISSUE_ASSOC:-NONE}"
 		exit 0
 	fi
 	if [[ "$path" == */timeline ]]; then
-		printf '[]\n'
+		printf '%s\n' "${NMR_TIMELINE_JSON:-[]}"
 		exit 0
 	fi
 	if [[ "$path" == */comments ]]; then
@@ -137,6 +147,10 @@ export -f set_issue_status
 run_auto_approve() {
 	# shellcheck disable=SC1090
 	source "$NMR_SCRIPT"
+	# Keep reason-classification tests from writing the user's persistent cache.
+	_nmr_record_revalidation_state() {
+		return 0
+	}
 	auto_approve_maintainer_issues
 	return 0
 }
@@ -202,11 +216,63 @@ test_allows_owner_author_with_write_permission() {
 	return 0
 }
 
+test_allows_write_authorized_collaborator() {
+	setup_test_env
+	export ISSUE_LIST_AUTHOR="trusted-author"
+	export ISSUE_API_AUTHOR="trusted-author"
+	export ISSUE_ASSOC="COLLABORATOR"
+	export AUTHOR_PERMISSION="write"
+	run_auto_approve
+	if grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null; then
+		print_result "auto-approval allows write-authorized collaborator issues" 0
+	else
+		print_result "auto-approval allows write-authorized collaborator issues" 1 "approval comment missing"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_blocks_read_only_collaborator() {
+	setup_test_env
+	export ISSUE_LIST_AUTHOR="trusted-author"
+	export ISSUE_API_AUTHOR="trusted-author"
+	export ISSUE_ASSOC="COLLABORATOR"
+	export AUTHOR_PERMISSION="read"
+	run_auto_approve
+	if [[ ! -s "$POSTED_COMMENT" ]]; then
+		print_result "auto-approval blocks read-only collaborator issues" 0
+	else
+		print_result "auto-approval blocks read-only collaborator issues" 1 "unexpected approval comment"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_preserves_peer_maintainer_manual_hold() {
+	setup_test_env
+	export ISSUE_LIST_AUTHOR="trusted-author"
+	export ISSUE_API_AUTHOR="trusted-author"
+	export ISSUE_ASSOC="COLLABORATOR"
+	export AUTHOR_PERMISSION="write"
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"trusted-author"},"created_at":"2026-07-30T20:00:00Z"}]'
+	run_auto_approve
+	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null && [[ ! -s "$STATUS_CALLS_FILE" ]]; then
+		print_result "auto-approval preserves peer maintainer manual NMR hold" 0
+	else
+		print_result "auto-approval preserves peer maintainer manual NMR hold" 1 "unexpected approval or status transition"
+	fi
+	teardown_test_env
+	return 0
+}
+
 main() {
 	test_blocks_none_author_association
 	test_blocks_external_author_even_with_nmr_automation
 	test_blocks_actor_without_write_permission
 	test_allows_owner_author_with_write_permission
+	test_allows_write_authorized_collaborator
+	test_blocks_read_only_collaborator
+	test_preserves_peer_maintainer_manual_hold
 	printf '\nTests run: %d\n' "$TESTS_RUN"
 	printf 'Tests failed: %d\n' "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

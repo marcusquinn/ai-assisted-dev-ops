@@ -204,7 +204,10 @@ _gh_collaborator_permission_lookup() {
 	local line=""
 	local body=""
 	local in_body=0
-	local permission_value=""
+	# Keep the internal value distinct from caller-selected output names. Bash
+	# uses dynamic scope, so a local named permission_value would shadow the
+	# common caller output variable and silently return an empty permission.
+	local resolved_permission=""
 
 	AIDEVOPS_GH_COLLAB_PERMISSION_HTTP="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
 	AIDEVOPS_GH_COLLAB_PERMISSION_REASON="$_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE"
@@ -268,18 +271,18 @@ _gh_collaborator_permission_lookup() {
 		return 2
 	fi
 
-	permission_value=$(printf '%s' "$body" | jq -r '.permission // .role_name // ""' 2>/dev/null) || permission_value=""
-	if [[ -z "$permission_value" ]]; then
-		permission_value=$(printf '%s' "$api_response" | sed -nE 's/^[[:space:]]*\{?[[:space:]]*"(permission|role_name)"[[:space:]]*:[[:space:]]*"(admin|maintain|write|triage|read|none)".*/\2/p' | tail -1) || permission_value=""
+	resolved_permission=$(printf '%s' "$body" | jq -r '.permission // .role_name // ""' 2>/dev/null) || resolved_permission=""
+	if [[ -z "$resolved_permission" ]]; then
+		resolved_permission=$(printf '%s' "$api_response" | sed -nE 's/^[[:space:]]*\{?[[:space:]]*"(permission|role_name)"[[:space:]]*:[[:space:]]*"(admin|maintain|write|triage|read|none)".*/\2/p' | tail -1) || resolved_permission=""
 	fi
-	case "$permission_value" in
+	case "$resolved_permission" in
 	admin | maintain | write | triage | read | none)
 		AIDEVOPS_GH_COLLAB_PERMISSION_REASON="ok"
 		export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
 		if [[ -n "$out_var" ]]; then
-			printf -v "$out_var" '%s' "$permission_value"
+			printf -v "$out_var" '%s' "$resolved_permission"
 		else
-			printf '%s\n' "$permission_value"
+			printf '%s\n' "$resolved_permission"
 		fi
 		return 0
 		;;

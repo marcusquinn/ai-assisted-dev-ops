@@ -1045,12 +1045,12 @@ _nmr_evaluate_reason_metadata() {
 
 #######################################
 # Check if the needs-maintainer-review label was most recently applied
-# by the maintainer themselves (indicating a manual hold), OR by a
+# by a write-authorized maintainer (indicating a manual hold), OR by a
 # circuit breaker trip (which must be treated as a hold even though
 # the token actor is the maintainer).
 #
-# GH#18671 / t2386: the pulse runs as the maintainer's GitHub token,
-# so `actor.login == maintainer` matches all three cases:
+# GH#18671 / t2386: the pulse runs as a write-authorized GitHub token,
+# so a maintainer-equivalent label actor matches all three cases:
 #   1. Human maintainer clicks the label (manual hold)
 #   2. Pulse scanner applies default NMR at creation (auto-clear OK)
 #   3. Circuit breaker trips (t2007 cost / t2008 stale) — MUST preserve
@@ -1150,17 +1150,29 @@ _nmr_applied_by_maintainer() {
 		return 0
 	fi
 
-	if [[ "$nmr_actor" != "$maintainer" ]]; then
+	if [[ -z "$nmr_actor" ]]; then
 		return 1
 	fi
+	local nmr_actor_authority_rc=0
+	#aidevops:trust-boundary -- a transient authority lookup must preserve an
+	# identified actor's NMR hold rather than silently treating it as automation.
+	_gh_actor_has_repo_write_authority "$slug" "$nmr_actor" "COLLABORATOR" || nmr_actor_authority_rc=$?
+	case "$nmr_actor_authority_rc" in
+	0) ;;
+	1) return 1 ;;
+	*)
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — authority lookup failed for actor=${nmr_actor}; preserving NMR" >>"$LOGFILE"
+		return 0
+		;;
+	esac
 
-	# Actor matches the maintainer. Two remaining possibilities:
+	# Actor has maintainer-equivalent write authority. Two possibilities remain:
 	#   1. Creation-default signature (scanner applied NMR at creation
 	#      time) → auto-approve OK, return 1.
 	#   2. No signature → genuine manual hold, return 0.
 	if [[ -n "$nmr_at" ]]; then
 		if _nmr_application_has_automation_signature "$issue_num" "$slug" "$nmr_at"; then
-			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — actor=${maintainer} but creation-default signature detected — classifying as automation-applied (GH#18671)" >>"$LOGFILE"
+			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — write-authorized actor=${nmr_actor} but creation-default signature detected — classifying as automation-applied (GH#18671)" >>"$LOGFILE"
 			return 1
 		fi
 	fi
@@ -1267,12 +1279,13 @@ notify_ever_nmr_without_approval() {
 # Before automation posts `aidevops-signed-approval` or says "maintainer is
 # author", self-validate against GitHub: the current token actor must have
 # write/maintain/admin permission on the target repo, and the issue author must
-# be an upstream OWNER/MEMBER with the expected maintainer login.
+# independently have write/maintain/admin authority. This includes account-pool
+# collaborators that create trusted scanner issues in a user-owned repository.
 #
 # Arguments:
 #   $1 - issue number
 #   $2 - repo slug (owner/repo)
-#   $3 - expected maintainer login from repos.json
+#   $3 - configured maintainer login from repos.json
 #   $4 - issue author login from the list response
 # Returns: 0 when approval comments may be posted, 1 otherwise.
 #######################################
@@ -1283,7 +1296,6 @@ _nmr_current_actor_can_post_maintainer_approval() {
 	local listed_author="$4"
 
 	[[ -n "$issue_num" && -n "$slug" && -n "$maintainer" && -n "$listed_author" ]] || return 1
-	[[ "$listed_author" == "$maintainer" ]] || return 1
 
 	local issue_meta
 	local issue_api_path
@@ -1295,11 +1307,11 @@ _nmr_current_actor_can_post_maintainer_approval() {
 	local issue_assoc
 	issue_author=$(printf '%s' "$issue_meta" | jq -r '.user.login // empty' 2>/dev/null) || issue_author=""
 	issue_assoc=$(printf '%s' "$issue_meta" | jq -r '.author_association // "NONE"' 2>/dev/null) || issue_assoc="NONE"
-	[[ "$issue_author" == "$maintainer" ]] || return 1
-	case "$issue_assoc" in
-	OWNER | MEMBER) ;;
-	*) return 1 ;;
-	esac
+	[[ "$issue_author" == "$listed_author" ]] || return 1
+
+	# #aidevops:trust-boundary — never infer author authority from the mutable
+	# configured maintainer field or author_association alone.
+	_gh_actor_has_repo_write_authority "$slug" "$issue_author" "$issue_assoc" || return 1
 
 	local actor
 	actor=$(gh api user --jq '.login // empty' 2>/dev/null) || actor=""
@@ -1658,9 +1670,9 @@ _nmr_restore_dispatchable_state() {
 # issue <number>`. This ensures only a human with the system password
 # (and root access to the approval signing key) can approve issues.
 #
-# Fallback: maintainer-authored issues are still auto-approved (the
-# maintainer wouldn't gate their own issues), UNLESS the maintainer
-# manually applied NMR themselves — that signals an intentional hold
+# Fallback: maintainer-equivalent authored issues are still auto-approved (a
+# trusted scanner account should not gate its own issues), UNLESS a write-
+# authorized maintainer manually applied NMR — that signals an intentional hold
 # and must be preserved. Comment-based approval is removed — workers
 # share the same GitHub account so any comment from the account is
 # indistinguishable from a human comment.
@@ -1697,16 +1709,14 @@ auto_approve_maintainer_issues() {
 			local approval_reason=""
 			_NMR_AUTO_APPROVAL_REASON_OVERRIDE=""
 
-			# Case 1: maintainer created the issue — auto-approve unless NMR
-			# was manually applied by the maintainer (intentional hold).
-			if [[ "$issue_author" == "$maintainer" ]]; then
-				if ! _nmr_current_actor_can_post_maintainer_approval "$issue_num" "$slug" "$maintainer" "$issue_author"; then
-					echo "[pulse-wrapper] Skipping auto-approve for #${issue_num} in ${slug} — maintainer-authority trust-boundary check failed" >>"$LOGFILE"
-				elif _nmr_applied_by_maintainer "$issue_num" "$slug" "$maintainer"; then
+			# Case 1: a maintainer-equivalent actor created the issue — auto-approve
+			# unless a write-authorized maintainer applied an intentional hold.
+			if _nmr_current_actor_can_post_maintainer_approval "$issue_num" "$slug" "$maintainer" "$issue_author"; then
+				if _nmr_applied_by_maintainer "$issue_num" "$slug" "$maintainer"; then
 					echo "[pulse-wrapper] Skipping auto-approve for #${issue_num} in ${slug} — NMR manually applied by maintainer" >>"$LOGFILE"
 				else
 					should_approve=true
-					approval_reason="${_NMR_AUTO_APPROVAL_REASON_OVERRIDE:-maintainer is author, NMR applied by automation}"
+					approval_reason="${_NMR_AUTO_APPROVAL_REASON_OVERRIDE:-write-authorized maintainer is author, NMR applied by automation}"
 				fi
 			fi
 
