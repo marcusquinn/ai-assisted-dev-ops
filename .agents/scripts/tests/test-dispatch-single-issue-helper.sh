@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
 # Tests for dispatch-single-issue-helper.sh — focused on the t3000
-# `_dsi_apply_dispatch_ceremony` function which mirrors the canonical pulse
+# fail-closed dispatch ceremony which mirrors the canonical pulse
 # `_dlw_assign_and_label` ownership-claim sequence.
 #
 # Background: the manual single-issue dispatch CLI was previously launching
@@ -446,12 +446,56 @@ test_ceremony_handles_set_issue_status_failure() {
 	local rc=0
 	_dsi_apply_dispatch_ceremony 1 owner/repo runner-self "$issue_meta" >/dev/null 2>&1 || rc=$?
 
-	# When set_issue_status fails (e.g. gh API error), ceremony returns 1
-	# but does NOT propagate set -e — caller treats it as best-effort.
+	# When set_issue_status fails (e.g. gh API error), ceremony returns 1 so
+	# the caller can stop before creating a worktree or launching a worker.
 	local rc_check=1
 	[[ "$rc" -eq 1 ]] && rc_check=0
 	print_result "ceremony returns 1 when set_issue_status fails" "$rc_check"
 
+	return 0
+}
+
+test_ceremony_failure_blocks_launch_and_releases_claim() {
+	reset_test_state
+	_install_mock_set_issue_status success
+	local test_dir=""
+	test_dir=$(mktemp -d)
+	local release_log="${test_dir}/release.log"
+	local worktree_log="${test_dir}/worktree.log"
+	local launch_log="${test_dir}/launch.log"
+	local rc=0
+
+	(
+		_DSI_ARG_NO_CEREMONY=0
+		_DSI_ISSUE_META_JSON='{"assignees":[]}'
+		_dsi_apply_dispatch_ceremony() { return 1; }
+		_dsi_release_consensus_claim() {
+			printf 'released\n' >"$release_log"
+			return 0
+		}
+		_dsi_create_worktree() {
+			printf 'created\n' >"$worktree_log"
+			return 0
+		}
+		_dsi_launch_and_report() {
+			printf 'launched\n' >"$launch_log"
+			return 0
+		}
+		_dsi_dispatch_after_dedup_clear 1 owner/repo runner-self session-key >/dev/null 2>&1
+	) || rc=$?
+
+	local blocked=1
+	[[ "$rc" -eq 1 && -f "$release_log" && ! -e "$worktree_log" && ! -e "$launch_log" ]] && blocked=0
+	print_result "ceremony failure releases claim before worktree creation or worker launch" "$blocked" \
+		"rc=$rc release=$([[ -f "$release_log" ]] && printf yes || printf no) worktree=$([[ -e "$worktree_log" ]] && printf yes || printf no) launch=$([[ -e "$launch_log" ]] && printf yes || printf no)"
+
+	local reset_logged=""
+	reset_logged=$(<"$SET_ISSUE_STATUS_LOG")
+	local reset_ok=1
+	[[ "$reset_logged" == *"set_issue_status 1 owner/repo available --remove-assignee runner-self"* ]] && reset_ok=0
+	print_result "ceremony failure restores available status and removes dispatcher assignee" "$reset_ok" "$reset_logged"
+
+	rm -rf "$test_dir"
 	return 0
 }
 
@@ -1379,6 +1423,7 @@ _run_tests() {
 	test_ceremony_handles_empty_assignees
 	test_ceremony_handles_empty_self_login
 	test_ceremony_handles_set_issue_status_failure
+	test_ceremony_failure_blocks_launch_and_releases_claim
 	test_no_ceremony_flag_parses_correctly
 	test_model_override_guidance_is_provider_neutral
 	test_load_issue_meta_accepts_lowercase_open

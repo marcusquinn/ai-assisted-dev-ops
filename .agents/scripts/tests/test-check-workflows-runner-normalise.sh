@@ -71,7 +71,8 @@ _setup_fake_home() {
 	# Copy all canonical templates so the helper resolves any workflow type.
 	local _tpl
 	for _tpl in issue-sync-caller.yml review-bot-gate-caller.yml \
-	            maintainer-gate-caller.yml loc-badge-caller.yml; do
+	            maintainer-gate-caller.yml loc-badge-caller.yml \
+	            linked-issue-check-caller.yml; do
 		local _src="$REPO_ROOT/.agents/templates/workflows/${_tpl}"
 		[[ -f "$_src" ]] && cp "$_src" "$_root/.aidevops/agents/templates/workflows/${_tpl}"
 	done
@@ -130,6 +131,7 @@ readonly -a _WF_TUPLES=(
 	"maintainer-gate.yml:maintainer-gate-caller.yml"
 	"review-bot-gate.yml:review-bot-gate-caller.yml"
 	"loc-badge.yml:loc-badge-caller.yml"
+	"linked-issue-check.yml:linked-issue-check-caller.yml"
 )
 
 for _wf_tuple in "${_WF_TUPLES[@]}"; do

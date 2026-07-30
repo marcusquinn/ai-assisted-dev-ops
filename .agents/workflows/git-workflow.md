@@ -44,10 +44,13 @@ Inside an existing linked worktree, refresh and rebase before editing. From the 
 **Canonical synchronization after a merge (explicit authorization only):** direct `git pull`, `fetch`, reset, clean, and merge remain blocked in canonical checkouts. A full-loop request for a maintained non-aidevops repository authorizes synchronization of the merged PR base; a standalone request to update a canonical checkout has the same narrow scope. For a clean, non-diverged mirror, use:
 
 ```bash
-${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/canonical-recovery-helper.sh fast-forward-current \
+canonical-recovery-helper.sh fast-forward-current \
   --repo /path/to/canonical-checkout --branch develop --issue 123 \
   --confirm FAST_FORWARD_CANONICAL_BRANCH
 ```
+
+The runtime adds the deployed framework scripts directory to `PATH`; invoking
+the helper by name keeps the command portable and parseable by command policy.
 
 The asserted branch must equal the branch resolved from registered config,
 committed project config, or `origin/HEAD`. The helper refuses arbitrary branch
@@ -58,7 +61,7 @@ If unexpected tracked, staged, untracked, or local-commit state exists, use the
 lossless route instead of waiting, stashing, resetting, or cleaning:
 
 ```bash
-${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/canonical-recovery-helper.sh sync-mirror \
+canonical-recovery-helper.sh sync-mirror \
   --repo /path/to/canonical-checkout --issue 123 \
   --confirm SYNCHRONIZE_CANONICAL_MIRROR
 ```

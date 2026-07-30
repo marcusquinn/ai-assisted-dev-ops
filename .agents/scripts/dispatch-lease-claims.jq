@@ -25,24 +25,27 @@ map(. as $claim |
        | select((.body // "") | contains("DISPATCH_LEASE"))
        | select(($claim.claim_author != "") and ((.author // .user.login // "") == $claim.claim_author))
        | . + ((.body | capture("phase=(?<phase>[^ ]+) lease_token=[^ ]+ device=(?<device>[^ ]+) session=(?<session>[^ ]+) expires_at=(?<expires>[0-9]+)")) as $t
+               | ((.body | [capture("attempt_id=(?<attempt_id>\\S+)")?][0] // {})) as $attempt
                | {transition_phase:$t.phase, transition_device:$t.device, transition_session:$t.session,
                   transition_expires:($t.expires|tonumber), transition_epoch:(.created_at | fromdateiso8601? // 0),
-                  transition_at:(.created_at // ""), transition_id:(.id | tonumber? // 0)})
+                  transition_at:(.created_at // ""), transition_id:(.id | tonumber? // 0),
+                  transition_attempt_id:($attempt.attempt_id // "unknown")})
        | select(.transition_device == $claim.device and .transition_session == $claim.session)
        | select([.transition_epoch, .transition_id] >= [$claim.created_epoch, ($claim.id | tonumber? // 0)])
       ] | sort_by(.created_at, .id)) as $transitions |
     (reduce $transitions[] as $event
-      ({phase:"prelaunch", expires:$claim.lease_expires_at, terminal_at:"", terminal_id:0};
+      ({phase:"prelaunch", expires:$claim.lease_expires_at, terminal_at:"", terminal_id:0, terminal_attempt_id:""};
        if .phase == "terminal" or .expires < $event.transition_epoch then .
        elif $event.transition_phase == "prelaunch" and .phase == "prelaunch" and $event.transition_expires >= $event.transition_epoch
          then .phase="prelaunch" | .expires=$event.transition_expires
        elif $event.transition_phase == "ready" and .phase == "prelaunch" and $event.transition_expires >= $event.transition_epoch
          then .phase="ready" | .expires=$event.transition_expires
        elif $event.transition_phase == "terminal" and (.phase == "prelaunch" or .phase == "ready")
-         then .phase="terminal" | .expires=0 | .terminal_at=$event.transition_at | .terminal_id=$event.transition_id
+         then .phase="terminal" | .expires=0 | .terminal_at=$event.transition_at | .terminal_id=$event.transition_id | .terminal_attempt_id=$event.transition_attempt_id
        else . end)) as $state |
     $claim + {lease_phase:$state.phase, lease_expires_at:$state.expires,
-              lease_terminal_at:$state.terminal_at, lease_terminal_id:$state.terminal_id}) |
+              lease_terminal_at:$state.terminal_at, lease_terminal_id:$state.terminal_id,
+              lease_terminal_attempt_id:$state.terminal_attempt_id}) |
 map(select(.age_seconds >= 0 and (.age_seconds <= $max_age or (.lease_phase == "ready" and .lease_expires_at >= $now)))) |
 (if $include_terminal then . else
     map(select(.lease_phase != "terminal" and ((.lease_expires_at // 0) == 0 or .lease_expires_at >= $now)))

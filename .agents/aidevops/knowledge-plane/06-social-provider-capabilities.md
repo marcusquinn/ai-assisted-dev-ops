@@ -41,7 +41,7 @@ a claim that the route is enabled.
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
-| NodeBB | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | **API/Gate/Export** | Verify core REST routes, enabled plugins, and forum privileges per installation. |
+| NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
 
 ## Recommended candidates
 
@@ -118,6 +118,17 @@ a claim that the route is enabled.
   scope, core routes and pagination, hosted/self-hosted variability, optional
   Follow plugin, archive mutation/retention boundary, installation terms, and
   explicit unsupported categories checked on 2026-07-28.
+- **Live NodeBB:** `.agents/scripts/knowledge_social_nodebb.py`,
+  `.agents/scripts/_knowledge_social_nodebb*.py`, and
+  `.agents/tests/test-knowledge-social-nodebb.sh` prove thirteen independently
+  checkpointed core streams, keyed installation namespaces, repeated `/api/self`
+  identity checks, dedicated-user bearer-token policy, bounded page/start
+  cursors, exact GET routes, redirect and mutation isolation, sanitized terminal
+  coverage, credential rejection, replay, and lease-fenced atomic persistence.
+  `.agents/content/social-nodebb.md` records NodeBB v4.14.2 core Read/v3 API
+  evidence, public capability limits, admin-only version/plugin discovery,
+  account-visible permissions, exports, retention, terms, and explicit plugin,
+  message-body, and history gaps checked on 2026-07-28.
 - **Quora export disposition:** `.agents/content/social-quora.md` records the
   official owner-request route, current public archive observations, absent
   schema and retention guarantees, and the identity-verification gap checked on

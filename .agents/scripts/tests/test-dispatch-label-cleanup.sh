@@ -42,7 +42,7 @@ setup_env() {
 	: >"$LOGFILE"
 	: >"${TEST_ROOT}/gh.log"
 	cat >"$REPOS_JSON" <<'JSON'
-{"initialized_repos":[{"slug":"owner/repo","pulse":true,"local_only":false},{"slug":"owner/local","pulse":true,"local_only":true},{"slug":"owner/off","pulse":false,"local_only":false}]}
+{"initialized_repos":[{"slug":"owner/repo","pulse":true,"local_only":false},{"slug":"owner/local","pulse":true,"local_only":true},{"slug":"owner/off","pulse":false,"local_only":false},{"slug":"owner/contributor","pulse":false,"local_only":false,"role":"contributor"}]}
 JSON
 	return 0
 }
@@ -82,6 +82,14 @@ install_gh_stub() {
 		return 0
 	}
 	return 0
+}
+
+repo_allows_pulse_write_actions() {
+	local repo_slug="$1"
+	case "$repo_slug" in
+	owner/repo | owner/off) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 append_blocker() {
@@ -188,10 +196,13 @@ test_sweep_preserves_blockers_on_logger_failure() {
 	append_blocker 101 issue-101 request-logger-failure
 	local failing_logger="${TEST_ROOT}/failing-worker-blocker-log.mjs"
 	cat >"$failing_logger" <<'JS'
-if (process.argv[2] === "list-active-issues") {
+const slugIndex = process.argv.indexOf("--repo-slug");
+const slug = slugIndex >= 0 ? process.argv[slugIndex + 1] : "";
+if (process.argv[2] === "list-active-issues" && slug === "owner/repo") {
   process.stdout.write("101\n");
   process.exit(0);
 }
+if (process.argv[2] === "list-active-issues") process.exit(0);
 process.exit(1);
 JS
 	DISPATCH_LABEL_CLEANUP_BLOCKER_LOGGER="$failing_logger"

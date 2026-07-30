@@ -546,7 +546,7 @@ cmd_run() {
 	elif [[ -f "$REPOS_JSON" ]]; then
 		# Iterate pulse-enabled, non-local-only repos.
 		local repos_str
-		repos_str=$(jq -r '.initialized_repos[]? | select(.pulse == true) | select((.local_only // false) == false) | .slug' "$REPOS_JSON" 2>/dev/null) || repos_str=""
+		repos_str=$(jq -r '.initialized_repos[]? | select(.maintenance != false) | select(.pulse == true) | select((.local_only // false) == false) | .slug' "$REPOS_JSON" 2>/dev/null) || repos_str=""
 		while IFS= read -r r; do
 			[[ -n "$r" ]] && target_repos+=("$r")
 		done <<<"$repos_str"

@@ -12,6 +12,8 @@
 #   knowledge-helper.sh init [off|repo|personal] [path]                Set mode and provision
 #   knowledge-helper.sh add <file|url> [--id <id>] [--sensitivity <tier>] [--allow-large]
 #                                                                       Ingest a file or URL into sources/
+#   knowledge-helper.sh folder [import] <directory> [--dry-run] [bounded options]
+#   knowledge-helper.sh folder status <directory> [--json]              Import or inspect a folder snapshot
 #   knowledge-helper.sh list [--state inbox|staging|sources|all] [--kind <type>]
 #                                                                       List known sources
 #   knowledge-helper.sh search <query> [--sensitivity <tier>] [--case <case-id>]
@@ -98,7 +100,11 @@ GITIGNORE_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-gitignore.txt"
 CONFIG_TEMPLATE="${SCRIPT_TEMPLATES_DIR}/knowledge-config.json"
 SENSITIVITY_DETECTOR="${SCRIPT_DIR}/sensitivity-detector-helper.sh"
 CORPUS_HELPER="${SCRIPT_DIR}/knowledge-corpus-helper.sh"
+SOURCE_CONTRACT_HELPER="${SCRIPT_DIR}/knowledge_source_contract.py"
+FOLDER_IMPORT_HELPER="${SCRIPT_DIR}/knowledge_folder_import.py"
 PERSONAL_CORPUS_ALIAS="personal:default"
+KNOWLEDGE_MODE_PERSONAL="personal"
+KNOWLEDGE_CAPABILITY_READ="knowledge.read"
 BLOB_THRESHOLD_BYTES=31457280
 META_DEFAULT_SENSITIVITY="internal"
 META_DEFAULT_TRUST="unverified"
@@ -415,39 +421,41 @@ _write_meta_json() {
 	local size_bytes="$5"
 	local sensitivity="$6"
 	local blob_path="${7:-null}"
-	_require_jq || return 1
-	local ts actor
-	ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
-	actor="${USER:-unknown}"
-	if [[ "$blob_path" == "null" ]]; then
-		jq -n \
-			--arg id "$source_id" \
-			--arg kind "$META_DEFAULT_KIND" \
-			--arg uri "$source_uri" \
-			--arg sha "$sha256" \
-			--arg ts "$ts" \
-			--arg by "$actor" \
-			--arg sens "$sensitivity" \
-			--arg trust "$META_DEFAULT_TRUST" \
-			--argjson sz "$size_bytes" \
-			'{version:1,id:$id,kind:$kind,source_uri:$uri,sha256:$sha,ingested_at:$ts,ingested_by:$by,sensitivity:$sens,trust:$trust,blob_path:null,size_bytes:$sz}' \
-			>"$meta_path"
-	else
-		jq -n \
-			--arg id "$source_id" \
-			--arg kind "$META_DEFAULT_KIND" \
-			--arg uri "$source_uri" \
-			--arg sha "$sha256" \
-			--arg ts "$ts" \
-			--arg by "$actor" \
-			--arg sens "$sensitivity" \
-			--arg trust "$META_DEFAULT_TRUST" \
-			--arg bp "$blob_path" \
-			--argjson sz "$size_bytes" \
-			'{version:1,id:$id,kind:$kind,source_uri:$uri,sha256:$sha,ingested_at:$ts,ingested_by:$by,sensitivity:$sens,trust:$trust,blob_path:$bp,size_bytes:$sz}' \
-			>"$meta_path"
+	local corpus_id="${8:-repo:default}"
+	if [[ ! -r "$SOURCE_CONTRACT_HELPER" ]]; then
+		print_error "Knowledge source contract helper is unavailable"
+		return 1
 	fi
+	local ts blob_ref
+	ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
+	blob_ref="$blob_path"
+	[[ "$blob_path" != "null" ]] && blob_ref="knowledge-blobs:sha256:${sha256}"
+	python3 "$SOURCE_CONTRACT_HELPER" source-meta \
+		--source-id "$source_id" \
+		--corpus-id "$corpus_id" \
+		--source-uri "$source_uri" \
+		--sha256 "$sha256" \
+		--size-bytes "$size_bytes" \
+		--kind "$META_DEFAULT_KIND" \
+		--sensitivity "$sensitivity" \
+		--trust "$META_DEFAULT_TRUST" \
+		--ingested-at "$ts" \
+		--blob-ref "$blob_ref" >"$meta_path" || return 1
 	return 0
+}
+
+_find_source_by_sha256() {
+	local knowledge_root="$1"
+	local sha256="$2"
+	local meta_path=""
+	for meta_path in "$knowledge_root"/sources/*/meta.json; do
+		[[ -f "$meta_path" && ! -L "$meta_path" ]] || continue
+		if jq -e --arg sha "$sha256" '.sha256 == $sha' "$meta_path" >/dev/null 2>&1; then
+			jq -r '.id' "$meta_path"
+			return 0
+		fi
+	done
+	return 1
 }
 
 # _cmd_add_resolve_knowledge_root: resolve knowledge_root from mode, echoes root path
@@ -600,6 +608,48 @@ _cmd_add_route_email() {
 	return 1
 }
 
+_cmd_add_commit_source() {
+	local file_path="$1"
+	local source_id="$2"
+	local knowledge_root="$3"
+	local size_bytes="$4"
+	local repo_path="$5"
+	local source_uri="$6"
+	local sha256="$7"
+	local tmp_inbox_file="$8"
+	local sensitivity_override="${9:-}"
+	local source_dir="${knowledge_root}/sources/${source_id}"
+	if [[ -d "$source_dir" ]]; then
+		source_id="${source_id}-$(date +%s)"
+		source_dir="${knowledge_root}/sources/${source_id}"
+	fi
+	local staging_dir="${knowledge_root}/sources/.${source_id}.staging.$$"
+	mkdir "$staging_dir" || return 1
+	local blob_path
+	if ! blob_path=$(_cmd_add_store_file "$file_path" "$source_id" "$staging_dir" "$size_bytes" "$repo_path"); then
+		rm -rf "$staging_dir"
+		return 1
+	fi
+	local meta_path="${staging_dir}/meta.json"
+	local corpus_id="repo:default"
+	[[ "$(_get_knowledge_mode "$repo_path")" == "$KNOWLEDGE_MODE_PERSONAL" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
+	if ! _write_meta_json "$meta_path" "$source_id" "$source_uri" "$sha256" "$size_bytes" "$META_DEFAULT_SENSITIVITY" "$blob_path" "$corpus_id"; then
+		rm -rf "$staging_dir"
+		return 1
+	fi
+	if ! mv "$staging_dir" "$source_dir"; then
+		rm -rf "$staging_dir"
+		return 1
+	fi
+	# Clean up inbox transit only after the canonical directory commit succeeds.
+	[[ -n "$tmp_inbox_file" && -f "$tmp_inbox_file" ]] && rm -f "$tmp_inbox_file"
+	meta_path="${source_dir}/meta.json"
+	local final_tier
+	final_tier=$(_cmd_add_apply_sensitivity "$source_id" "$knowledge_root" "$meta_path" "$sensitivity_override") || true
+	print_success "Added source: $source_id (sensitivity=${final_tier})"
+	return 0
+}
+
 # cmd_add: ingest a file or URL into the knowledge plane sources/ directory
 # Arguments: <file|url> [--id <id>] [--sensitivity <tier>] [--allow-large] [--repo-path <path>]
 cmd_add() {
@@ -680,27 +730,76 @@ cmd_add() {
 		basename_no_ext="$(basename "$file_path")"
 		basename_no_ext="${basename_no_ext%.*}"
 		source_id=$(_slugify "$basename_no_ext")
-		[[ -z "$source_id" ]] && source_id="source-$(date +%s)"
+		[[ ${#source_id} -lt 3 ]] && source_id="source-$(date +%s)"
 	fi
-	local source_dir="${knowledge_root}/sources/${source_id}"
-	if [[ -d "$source_dir" ]]; then
-		source_id="${source_id}-$(date +%s)"
-		source_dir="${knowledge_root}/sources/${source_id}"
+	if [[ ! "$source_id" =~ ^[a-z0-9][a-z0-9-]{2,79}$ ]]; then
+		[[ -n "$tmp_inbox_file" && -f "$tmp_inbox_file" ]] && rm -f "$tmp_inbox_file"
+		print_error "Source ID must be a 3-80 character lowercase kebab identifier"
+		return 1
 	fi
-	mkdir -p "$source_dir"
-	local sha256 size_bytes
+	local sha256 size_bytes existing_source_id=""
 	sha256=$(_sha256sum_file "$file_path") || return 1
 	size_bytes=$(wc -c <"$file_path" | tr -d ' ')
-	local blob_path
-	blob_path=$(_cmd_add_store_file "$file_path" "$source_id" "$source_dir" "$size_bytes" "$repo_path") || return 1
-	# Clean up inbox temp file if it was copied/moved to sources or blob store
-	[[ -n "$tmp_inbox_file" && -f "$tmp_inbox_file" ]] && rm -f "$tmp_inbox_file"
-	local meta_path="${source_dir}/meta.json"
-	_write_meta_json "$meta_path" "$source_id" "$source_uri" "$sha256" "$size_bytes" "$META_DEFAULT_SENSITIVITY" "$blob_path" || return 1
-	local final_tier
-	final_tier=$(_cmd_add_apply_sensitivity "$source_id" "$knowledge_root" "$meta_path" "$sensitivity_override") || true
-	print_success "Added source: $source_id (sensitivity=${final_tier})"
-	return 0
+	existing_source_id=$(_find_source_by_sha256 "$knowledge_root" "$sha256") || true
+	if [[ -n "$existing_source_id" ]]; then
+		[[ -n "$tmp_inbox_file" && -f "$tmp_inbox_file" ]] && rm -f "$tmp_inbox_file"
+		print_success "Source already canonical: $existing_source_id"
+		return 0
+	fi
+	_cmd_add_commit_source "$file_path" "$source_id" "$knowledge_root" "$size_bytes" \
+		"$repo_path" "$source_uri" "$sha256" "$tmp_inbox_file" "$sensitivity_override"
+	return $?
+}
+
+# cmd_folder: recursively inventory/import a bounded folder or show its latest manifest.
+# Arguments: [import|status] <directory> [folder options] [--repo-path <path>]
+cmd_folder() {
+	local action="import"
+	local first_arg="${1:-}"
+	if [[ "$first_arg" == "import" || "$first_arg" == "status" ]]; then
+		action="$first_arg"
+		shift
+	fi
+	local repo_path
+	repo_path="$(pwd)"
+	local forwarded=()
+	while [[ $# -gt 0 ]]; do
+		local key="$1"
+		shift
+		if [[ "$key" == "--repo-path" ]]; then
+			if [[ $# -eq 0 ]]; then
+				print_error "--repo-path requires a path"
+				return 1
+			fi
+			local requested_repo="$1"
+			repo_path="$requested_repo"
+			shift
+		else
+			forwarded+=("$key")
+		fi
+	done
+	if [[ ${#forwarded[@]} -eq 0 ]]; then
+		print_error "folder ${action} requires <directory>"
+		return 1
+	fi
+	if [[ ! -r "$FOLDER_IMPORT_HELPER" ]]; then
+		print_error "Folder import helper is unavailable"
+		return 1
+	fi
+	repo_path="$(cd "$repo_path" && pwd)"
+	local capability="knowledge.write"
+	[[ "$action" == "status" ]] && capability="$KNOWLEDGE_CAPABILITY_READ"
+	local knowledge_root
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "$capability") || return 1
+	if [[ ! -d "${knowledge_root}/sources" ]]; then
+		print_error "Knowledge plane not provisioned. Run: knowledge-helper.sh provision"
+		return 1
+	fi
+	local corpus_id="repo:default"
+	[[ "$(_get_knowledge_mode "$repo_path")" == "$KNOWLEDGE_MODE_PERSONAL" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
+	python3 "$FOLDER_IMPORT_HELPER" "$action" "${forwarded[@]}" \
+		--knowledge-root "$knowledge_root" --scripts-dir "$SCRIPT_DIR" --corpus-id "$corpus_id"
+	return $?
 }
 
 # ---------------------------------------------------------------------------
@@ -771,7 +870,7 @@ cmd_list() {
 	repo_path="$(cd "$repo_path" && pwd)"
 	_require_jq || return 1
 	local knowledge_root
-	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read") || return 1
+	knowledge_root=$(_cmd_add_resolve_knowledge_root "$repo_path" "$KNOWLEDGE_CAPABILITY_READ") || return 1
 	# Print header
 	printf "%-36s %-10s %-12s %-12s %-8s  %s\n" \
 		"SOURCE-ID" "STATE" "KIND" "SENSITIVITY" "SHA256" "SIZE"
@@ -848,7 +947,7 @@ cmd_enrich() {
 }
 
 cmd_help() {
-	sed -n '4,31p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '4,34p' "$0" | sed 's/^# \{0,1\}//'
 	return 0
 }
 
@@ -1040,7 +1139,7 @@ _cmd_search_resolve_knowledge_root() {
 	mode=$(_get_knowledge_mode "$repo_path")
 	case "$mode" in
 	repo) printf '%s\n' "${repo_path}/${KNOWLEDGE_ROOT}" ;;
-	personal) _cmd_add_resolve_knowledge_root "$repo_path" "knowledge.read" || return 1 ;;
+	personal) _cmd_add_resolve_knowledge_root "$repo_path" "$KNOWLEDGE_CAPABILITY_READ" || return 1 ;;
 	off) print_warning "search: knowledge plane is disabled for $repo_path" >&2 ;;
 	*)
 		print_error "search: unknown knowledge mode '$mode' for $repo_path" >&2
@@ -1162,6 +1261,7 @@ main() {
 	provision) cmd_provision "$@" ;;
 	init) cmd_init "$@" ;;
 	add) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_add "$@" ;;
+	folder) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_folder "$@" ;;
 	list) vault_storage_require_unlocked "$VAULT_COLLECTION_KNOWLEDGE" && cmd_list "$@" ;;
 	sensitivity) cmd_sensitivity "$@" ;;
 	enrich) cmd_enrich "$@" ;;

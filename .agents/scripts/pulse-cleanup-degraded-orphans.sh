@@ -7,10 +7,11 @@
 
 [[ -n "${_PULSE_CLEANUP_DEGRADED_ORPHANS_LOADED:-}" ]] && return 0
 _PULSE_CLEANUP_DEGRADED_ORPHANS_LOADED=1
+_PCDO_REASON_RECOVERABLE="degraded-cwd-orphan-recoverable"
 
 _PCDO_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${_PCDO_SCRIPT_DIR}/worktree-clean-lib.sh" ]]; then
-	# Reuse the cleanup lease and recoverable-move primitives. Their remaining
+	# Reuse the cleanup lease and recoverable-archive primitives. Their remaining
 	# dependencies are resolved only when the corresponding functions are called.
 	# shellcheck source=worktree-clean-lib.sh
 	source "${_PCDO_SCRIPT_DIR}/worktree-clean-lib.sh"
@@ -85,7 +86,7 @@ _pcdo_fresh_cwd_state_allows_recovery() {
 	local wt_path_age="$1"
 	local guard_status=0
 
-	if worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "degraded-cwd-orphan-recoverable"; then
+	if worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "$_PCDO_REASON_RECOVERABLE"; then
 		guard_status=0
 	else
 		guard_status=$?
@@ -110,13 +111,14 @@ _pc_remove_degraded_orphan_recoverably() {
 	local wt_age_secs="${11}"
 	local reason="${12}"
 	local audit_context=""
+	local recoverable_archive=""
 
 	[[ "$commits_ahead" -eq 0 && "$dirty_count" -eq 0 ]] || return 1
 	[[ "$reason" == *"crashed worker"* ]] || return 1
 	_pcdo_open_pr_absent_verified "$repo_slug_age" "$wt_branch_age" || return 1
 	if ! _clean_acquire_removal_lease "$wt_path_age" "$wt_branch_age"; then
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-			"cleanup-lease-skip" "skipped"
+			"cleanup-lease-skip" "$_WTAR_MODE_SKIPPED"
 		return 1
 	fi
 
@@ -132,10 +134,19 @@ _pc_remove_degraded_orphan_recoverably() {
 		return 1
 	fi
 
-	if ! _clean_move_worktree_recoverably "$wt_path_age"; then
+	if ! _clean_archive_worktree_recoverably "$wt_path_age" "$_WTAR_PC_CALLER"; then
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-			"recoverable-move-failed" "skipped" \
+			"recoverable-archive-failed" "$_WTAR_MODE_SKIPPED" \
 			"$audit_context recoverable_backends=${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
+		_pcdo_release_removal_lease "$wt_path_age"
+		return 1
+	fi
+	recoverable_archive="$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH"
+	if ! remove_archived_worktree_path "$wt_path_age" "$recoverable_archive" \
+		"$_WTAR_PC_CALLER" "$_PCDO_REASON_RECOVERABLE" "$audit_context" \
+		"true" "false"; then
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
+			"recoverable-remove-failed" "$_WTAR_MODE_SKIPPED" "$audit_context"
 		_pcdo_release_removal_lease "$wt_path_age"
 		return 1
 	fi
@@ -148,7 +159,7 @@ _pc_remove_degraded_orphan_recoverably() {
 
 	unregister_worktree "$wt_path_age" 2>/dev/null || true
 	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-		"degraded-cwd-orphan-recoverable" "recoverable-trash" "$audit_context"
+		"$_PCDO_REASON_RECOVERABLE" "recoverable-trash" "$audit_context"
 	if declare -F full_loop_mark_cleanup_cleaned_for_worktree >/dev/null 2>&1; then
 		full_loop_mark_cleanup_cleaned_for_worktree "$wt_path_age" || true
 	fi

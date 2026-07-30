@@ -9,12 +9,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 LOGFILE="${TEST_ROOT}/pulse.log"
 export AIDEVOPS_CLEANUP_LOG="${TEST_ROOT}/cleanup_worktrees.log"
 UNREGISTER_LOG="${TEST_ROOT}/unregister.log"
+
+# Production functions under test invoke `git` by name. Pin fixture operations
+# to native Git so the canonical mutation guard for the real repository cannot
+# misclassify isolated test repositories.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 # shellcheck source=../shared-constants.sh
 source "${SCRIPT_DIR}/shared-constants.sh"
@@ -90,6 +99,68 @@ test_orphan_removal_unregisters() {
 	return 0
 }
 
+test_locked_orphan_is_preserved() {
+	local repo_path="${TEST_ROOT}/repo-locked"
+	local wt_path="${TEST_ROOT}/wt-locked"
+	local wt_root=""
+	local metadata=""
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/locked"
+	"$GIT_BIN" -C "$repo_path" worktree lock --reason "observation-provenance" "$wt_path"
+
+	if _cleanup_single_worktree "$repo_path" "$wt_path" "feature/locked" "$(date +%s)" "" "main"; then
+		fail "locked orphan was reported as removed"
+	fi
+
+	[[ -d "$wt_path" ]] || fail "locked orphan physical path was removed"
+	wt_root=$("$GIT_BIN" -C "$wt_path" rev-parse --show-toplevel) || fail "locked orphan root became unreadable"
+	metadata=$("$GIT_BIN" -C "$repo_path" worktree list --porcelain) || fail "locked orphan metadata became unreadable"
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || fail "locked orphan registration was removed"
+	printf '%s\n' "$metadata" | grep -Eq '^locked([[:space:]]|$)' || fail "locked orphan lock marker was removed"
+	if [[ -f "$UNREGISTER_LOG" ]] && grep -Fxq "$wt_path" "$UNREGISTER_LOG"; then
+		fail "locked orphan was unregistered"
+	fi
+	grep -q 'git-worktree-locked.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" || fail "locked orphan skip was not audited"
+	pass "pulse cleanup preserves Git-locked eligible orphan"
+	return 0
+}
+
+test_late_write_before_permanent_remove_is_preserved() {
+	local repo_path="${TEST_ROOT}/repo-late-write"
+	local wt_path="${TEST_ROOT}/wt-late-write"
+	local wrapper_path="${TEST_ROOT}/late-write-git"
+	local marker_path="${TEST_ROOT}/late-write-injected"
+	local metadata=""
+	local wt_root=""
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/late-write"
+	wt_root=$(/usr/bin/git -C "$wt_path" rev-parse --show-toplevel) || fail "late-write root became unreadable"
+	cat >"$wrapper_path" <<'LATE_WRITE_GIT'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree remove"* && ! -e "${LATE_WRITE_MARKER:?}" ]]; then
+	printf 'late state\n' >"${LATE_WRITE_WORKTREE:?}/late-write.txt" || exit 1
+	: >"$LATE_WRITE_MARKER"
+fi
+exec "${REAL_GIT:?}" "$@"
+LATE_WRITE_GIT
+	chmod +x "$wrapper_path"
+
+	if REAL_GIT="$GIT_BIN" LATE_WRITE_MARKER="$marker_path" \
+		LATE_WRITE_WORKTREE="$wt_path" AIDEVOPS_REAL_GIT_BIN="$wrapper_path" \
+		_cleanup_single_worktree "$repo_path" "$wt_path" "feature/late-write" \
+		"$(date +%s)" "" "main"; then
+		fail "late-write permanent cleanup was reported as complete"
+	fi
+	[[ -f "$wt_path/late-write.txt" && -e "$marker_path" ]] || fail "late write or source was removed"
+	metadata=$(/usr/bin/git -C "$repo_path" worktree list --porcelain) || fail "late-write metadata became unreadable"
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || fail "late-write registration was removed"
+	printf '%s\n' "$metadata" | grep -Fqx "branch refs/heads/feature/late-write" || fail "late-write branch identity was removed"
+	if [[ -f "$UNREGISTER_LOG" ]] && grep -Fxq "$wt_path" "$UNREGISTER_LOG"; then
+		fail "late-write worktree was unregistered"
+	fi
+	grep -q 'git-worktree-remove-failed.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" || fail "late-write refusal was not audited"
+	pass "pulse permanent cleanup preserves a write acquired after clean classification"
+	return 0
+}
+
 test_degraded_orphan_removal_is_recoverable() {
 	local repo_path="${TEST_ROOT}/repo-degraded"
 	local wt_path="${TEST_ROOT}/wt-degraded"
@@ -127,6 +198,8 @@ test_degraded_orphan_removal_is_recoverable() {
 		fail "degraded eligible orphan was not removed recoverably"
 
 	[[ ! -e "$wt_path" ]] || fail "degraded orphan source path still exists"
+	compgen -G "${trash_root}/aidevops-worktree-cleanup-*/wt-degraded" >/dev/null ||
+		fail "degraded orphan archive was not retained"
 	if /usr/bin/git -C "$repo_path" worktree list --porcelain | grep -Fqx "worktree $wt_path"; then
 		fail "degraded orphan metadata remains registered"
 	fi
@@ -134,6 +207,85 @@ test_degraded_orphan_removal_is_recoverable() {
 	grep -q 'degraded-cwd-orphan-recoverable.*mode=recoverable-trash' "$AIDEVOPS_CLEANUP_LOG" ||
 		fail "recoverable degraded removal was not audited"
 	pass "pulse cleanup recoverably removes a degraded clean zero-ahead no-PR orphan"
+	return 0
+}
+
+# A foreign Git lock acquired after archive completion but before native source
+# removal must preserve the source, exact metadata, and completed archive.
+test_degraded_orphan_lock_race_is_preserved() {
+	local repo_path="${TEST_ROOT}/repo-degraded-race"
+	local wt_path="${TEST_ROOT}/wt-degraded-race"
+	local trash_root="${TEST_ROOT}/recoverable-race-trash"
+	local wrapper_path="${TEST_ROOT}/degraded-race-git"
+	local marker_path="${TEST_ROOT}/degraded-race-lock-injected"
+	local metadata=""
+	local wt_root=""
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/degraded-race"
+	wt_root=$(/usr/bin/git -C "$wt_path" rev-parse --show-toplevel) || fail "degraded race root became unreadable"
+	mkdir -p "$trash_root"
+	cat >"$wrapper_path" <<'RACE_GIT'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree remove"* && ! -e "${RACE_MARKER:?}" ]]; then
+	: >"$RACE_MARKER"
+	"${REAL_GIT:?}" -C "${RACE_REPO:?}" worktree lock --reason "foreign-degraded-race" "${RACE_WORKTREE:?}" || exit 1
+fi
+exec "${REAL_GIT:?}" "$@"
+RACE_GIT
+	chmod +x "$wrapper_path"
+
+	if AIDEVOPS_REAL_GIT_BIN="$wrapper_path" REAL_GIT="$GIT_BIN" \
+		RACE_MARKER="$marker_path" RACE_REPO="$repo_path" RACE_WORKTREE="$wt_path" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_root" \
+		_cleanup_single_worktree "$repo_path" "$wt_path" "feature/degraded-race" \
+		"$(date +%s)" "owner/repo" "main"; then
+		fail "degraded lock race was reported as removed"
+	fi
+
+	[[ -e "$marker_path" && -d "$wt_path" ]] || fail "degraded lock race removed the physical path"
+	compgen -G "${trash_root}/aidevops-worktree-cleanup-*/wt-degraded-race" >/dev/null ||
+		fail "degraded lock race lost the completed archive"
+	metadata=$(/usr/bin/git -C "$repo_path" worktree list --porcelain) || fail "degraded race metadata became unreadable"
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || fail "degraded race registration was removed"
+	printf '%s\n' "$metadata" | grep -Fqx "locked foreign-degraded-race" || fail "foreign degraded race lock was not retained"
+	if [[ -f "$UNREGISTER_LOG" ]] && grep -Fxq "$wt_path" "$UNREGISTER_LOG"; then
+		fail "degraded race worktree was unregistered"
+	fi
+	grep -q 'git-worktree-locked.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" || fail "degraded race lock refusal was not audited"
+	pass "pulse degraded cleanup preserves a lock acquired after its guard"
+	return 0
+}
+
+test_degraded_orphan_remove_failure_preserves_source_and_archive() {
+	local repo_path="${TEST_ROOT}/repo-degraded-remove-failure"
+	local wt_path="${TEST_ROOT}/wt-degraded-remove-failure"
+	local trash_root="${TEST_ROOT}/recoverable-remove-failure-trash"
+	local metadata=""
+	local wt_root=""
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/degraded-remove-failure"
+	wt_root=$(/usr/bin/git -C "$wt_path" rev-parse --show-toplevel) || fail "remove failure root became unreadable"
+	mkdir -p "$trash_root"
+
+	if (
+		remove_archived_worktree_path() {
+			return 1
+		}
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_root" \
+			_cleanup_single_worktree "$repo_path" "$wt_path" \
+			"feature/degraded-remove-failure" "$(date +%s)" "owner/repo" "main"
+	); then
+		fail "degraded native removal failure was reported as complete"
+	fi
+
+	[[ -d "$wt_path" ]] || fail "native removal failure lost the registered source"
+	compgen -G "${trash_root}/aidevops-worktree-cleanup-*/wt-degraded-remove-failure" >/dev/null ||
+		fail "native removal failure lost the completed archive"
+	metadata=$(/usr/bin/git -C "$repo_path" worktree list --porcelain) || fail "remove failure metadata became unreadable"
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || fail "remove failure pruned exact metadata"
+	if [[ -f "$UNREGISTER_LOG" ]] && grep -Fxq "$wt_path" "$UNREGISTER_LOG"; then
+		fail "native removal failure unregistered partial cleanup"
+	fi
+	grep -q 'recoverable-remove-failed.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" || fail "remove failure was not audited as skipped"
+	pass "pulse degraded cleanup preserves source and archive when native removal fails"
 	return 0
 }
 
@@ -405,14 +557,52 @@ test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence() {
 	return 0
 }
 
+test_permanent_removal_failure_has_no_git_fallback() {
+	local repo_path="${TEST_ROOT}/repo-no-fallback"
+	local wt_path="${TEST_ROOT}/wt-no-fallback"
+	local fallback_log="${TEST_ROOT}/git-remove-fallback.log"
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/no-fallback"
+
+	if ! (
+		remove_worktree_path_permanently() {
+			return 1
+		}
+		git() {
+			local all_args="$*"
+			if [[ "$all_args" == *"worktree remove"* ]]; then
+				printf '%s\n' "$all_args" >>"$fallback_log"
+				return 0
+			fi
+			"$GIT_BIN" "$@"
+			return $?
+		}
+		if _pc_permanently_remove_eligible_orphan "$repo_path" "$wt_path" \
+			"feature/no-fallback" "verified stale orphan" 0 "" "repo-no-fallback" "test=context"; then
+			exit 1
+		fi
+		exit 0
+	); then
+		fail "permanent helper refusal triggered a Git removal fallback"
+	fi
+	[[ -d "$wt_path" ]] || fail "failed permanent helper did not preserve the worktree"
+	[[ ! -s "$fallback_log" ]] || fail "failed permanent helper invoked git worktree remove"
+	pass "pulse cleanup never bypasses a failed permanent removal helper"
+	return 0
+}
+
 test_current_cwd_skip
 test_orphan_removal_unregisters
+test_locked_orphan_is_preserved
+test_late_write_before_permanent_remove_is_preserved
 test_orphan_crash_skips_closed_issue_comment
 test_orphan_crash_keeps_open_issue_recovery
 test_zombie_reaper_requires_ledger_repo
 test_zombie_reaper_uses_ledger_repo_and_pid
 test_zombie_reaper_rejects_unverified_completion
 test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence
+test_permanent_removal_failure_has_no_git_fallback
 test_degraded_orphan_removal_is_recoverable
+test_degraded_orphan_lock_race_is_preserved
+test_degraded_orphan_remove_failure_preserves_source_and_archive
 
 exit 0

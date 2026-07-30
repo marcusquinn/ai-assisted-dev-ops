@@ -247,7 +247,7 @@ _get_managed_repo_slugs() {
 		return 0
 	fi
 
-	jq -r '.initialized_repos[] | select(.pulse == true and .slug != null and .slug != "") | .slug' "$REPOS_JSON" 2>/dev/null || true
+	jq -r '.initialized_repos[] | select(.slug != null and .slug != "") | .slug' "$REPOS_JSON" 2>/dev/null || true
 	return 0
 }
 
@@ -519,10 +519,10 @@ cmd_seed() {
 	echo -e "${BLUE}Discovering external contributions for @${username}...${NC}"
 	_log_info "Seed started for @${username} (dry_run=${dry_run})"
 
-	# Get list of our own repos to exclude
+	# Get all registered repos to exclude, including dormant safety scope.
 	local own_repos=""
 	if [[ -f "$REPOS_JSON" ]]; then
-		own_repos=$(jq -r '.initialized_repos[] | select(.pulse == true) | .slug' "$REPOS_JSON" 2>/dev/null | tr '\n' '|')
+		own_repos=$(jq -r '.initialized_repos[] | .slug // empty' "$REPOS_JSON" 2>/dev/null | tr '\n' '|')
 	fi
 
 	local state

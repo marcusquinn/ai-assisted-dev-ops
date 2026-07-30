@@ -118,6 +118,8 @@ _ch_stage_stats() {
 	{
 		nf=split($0, f, "\t")
 		if (nf < 5 || f[1] < cutoff) next
+		# Fields 1-5 are the legacy schema. Field 6 optionally identifies the
+		# executor, but field 5 remains the cycle-owner aggregation key.
 		ts=f[1]; stage=f[2]; dur=f[3]+0; rc=f[4]+0
 		cnt[stage]++
 		if (rc==124) to[stage]++
@@ -153,20 +155,20 @@ _ch_cycle_stats() {
 	{
 		nf=split($0, f, "\t")
 		if (nf < 5 || f[1] < cutoff) next
-		ts=f[1]; stage=f[2]; rc=f[4]+0; pid=f[5]
-		pids[pid]=1
-		if (!pid_first[pid] || ts < pid_first[pid]) pid_first[pid]=ts
+		ts=f[1]; stage=f[2]; rc=f[4]+0; owner_pid=f[5]
+		owners[owner_pid]=1
+		if (!owner_first[owner_pid] || ts < owner_first[owner_pid]) owner_first[owner_pid]=ts
 		if (stage=="preflight_early_dispatch" && rc==0) {
-			ff[pid]=1
-			if (ts > last_ff_ts) { last_ff_ts=ts; last_ff_pid=pid }
+			ff[owner_pid]=1
+			if (ts > last_ff_ts) { last_ff_ts=ts; last_ff_owner=owner_pid }
 		}
 	}
 	END {
 		total=0; ff_count=0; since_ff=0
-		for (pid in pids) total++
-		for (pid in ff) ff_count++
+		for (owner_pid in owners) total++
+		for (owner_pid in ff) ff_count++
 		if (last_ff_ts) {
-			for (pid in pids) if (!(pid in ff) && pid_first[pid]>last_ff_ts) since_ff++
+			for (owner_pid in owners) if (!(owner_pid in ff) && owner_first[owner_pid]>last_ff_ts) since_ff++
 		} else since_ff=total
 		printf "cycles_started=%d\nfill_floor_cycles=%d\ncycles_since_ff=%d\nlast_ff_ts=%s\n", total, ff_count, since_ff, last_ff_ts
 	}' "$timings_file" 2>/dev/null

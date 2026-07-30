@@ -11,6 +11,14 @@ set -uo pipefail
 TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLEAN_LIB_PATH="${TEST_SCRIPTS_DIR}/worktree-clean-lib.sh"
 AUDIT_HELPER_PATH="${TEST_SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+
+# Keep isolated fixture mutations on native Git. The repository-level canonical
+# guard is tested separately and must not classify temporary main worktrees.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
@@ -301,6 +309,36 @@ test_cleanup_lease_released_when_removal_guard_blocks() {
 	[[ -f "$release_marker" ]] || rc=1
 	print_result "cleanup lease releases when removal guard blocks" "$rc" \
 		"Expected guarded skip to conditionally release cleanup PID ownership"
+	return 0
+}
+
+test_remove_merged_reports_metadata_verification_failure() {
+	local repo_path="${TEST_ROOT}/repo-removal-failure-status"
+	local wt_path="${TEST_ROOT}/wt-removal-failure-status"
+	local log_file="${TEST_ROOT}/removal-failure-status.log"
+	local branch="feature/gh-99037-removal-failure-status"
+	local rc=0
+	export AIDEVOPS_CLEANUP_LOG="$log_file"
+	setup_repo "$repo_path" || rc=1
+	git -C "$repo_path" checkout -q -b "$branch" || rc=1
+	printf 'removal failure status\n' >"$repo_path/removal-failure-status.txt" || rc=1
+	git -C "$repo_path" add removal-failure-status.txt || rc=1
+	git -C "$repo_path" commit -q -m "removal failure status branch" || rc=1
+	git -C "$repo_path" checkout -q main || rc=1
+	git -C "$repo_path" worktree add -q "$wt_path" "$branch" || rc=1
+
+	if (
+		cd "$repo_path" || exit 1
+		source_clean_lib_with_stubs || exit 1
+		prune_missing_worktree_metadata() { return 1; }
+		_clean_remove_merged "main" "$repo_path" "false" "$branch" "" "true" "" >/dev/null
+	); then
+		rc=1
+	fi
+	[[ ! -d "$wt_path" ]] || rc=1
+	assert_file_contains "$log_file" "worktree-skipped.*metadata-prune-failed.*mode=partial-cleanup" || rc=1
+	print_result "remove merged reports metadata verification failure" "$rc" \
+		"Expected aggregate cleanup status to retain a destructive-path failure"
 	return 0
 }
 
@@ -703,6 +741,101 @@ test_closed_issue_dirty_unproven_branch_stashes_and_preserves_branch() {
 	return 0
 }
 
+test_closed_issue_dirty_lock_race_preserves_files() {
+	local repo_path="${TEST_ROOT}/repo-closed-issue-dirty-race"
+	local wt_path="${TEST_ROOT}/wt-closed-issue-dirty-race"
+	local log_file="${TEST_ROOT}/closed-issue-dirty-race-cleanup.log"
+	local wrapper_path="${TEST_ROOT}/closed-issue-dirty-race-git"
+	local concurrent_stash_marker="${TEST_ROOT}/closed-issue-dirty-race-concurrent-stash"
+	local final_race_marker="${TEST_ROOT}/closed-issue-dirty-race-final"
+	local branch="feature/auto-20260520-gh99033"
+	local foreign_branch="feature/foreign-concurrent-stash"
+	local foreign_wt_path="${TEST_ROOT}/wt-foreign-concurrent-stash"
+	local expected_status=""
+	local actual_status=""
+	local expected_tracked=""
+	local expected_untracked=""
+	local metadata=""
+	local wt_root=""
+	local stash_count=0
+	local rc=0
+	export AIDEVOPS_CLEANUP_LOG="$log_file"
+	setup_repo "$repo_path" || rc=1
+	git -C "$repo_path" checkout -q -b "$branch" || rc=1
+	printf 'closed issue dirty race\n' >"$repo_path/closed-issue-dirty-race.txt" || rc=1
+	git -C "$repo_path" add closed-issue-dirty-race.txt || rc=1
+	git -C "$repo_path" commit -q -m "closed issue dirty race branch" || rc=1
+	git -C "$repo_path" checkout -q main || rc=1
+	git -C "$repo_path" worktree add -q "$wt_path" "$branch" || rc=1
+	git -C "$repo_path" worktree add -q -b "$foreign_branch" "$foreign_wt_path" main || rc=1
+	wt_root=$(git -C "$wt_path" rev-parse --show-toplevel) || rc=1
+	printf 'dirty tracked state\n' >>"$wt_path/closed-issue-dirty-race.txt" || rc=1
+	printf 'dirty untracked state\n' >"$wt_path/untracked-race.txt" || rc=1
+	printf 'foreign concurrent state\n' >"$foreign_wt_path/foreign-stash.txt" || rc=1
+	expected_status=$(git -C "$wt_path" status --porcelain --untracked-files=all) || rc=1
+	expected_tracked=$(<"$wt_path/closed-issue-dirty-race.txt")
+	expected_untracked=$(<"$wt_path/untracked-race.txt")
+	cat >"$wrapper_path" <<'RACE_GIT'
+#!/usr/bin/env bash
+if [[ "$*" == *"worktree remove"* && ! -e "${RACE_MARKER:?}" ]]; then
+	: >"$RACE_MARKER"
+	"${REAL_GIT:?}" -C "${RACE_REPO:?}" worktree lock --reason \
+		"foreign-after-stash-archive" "${RACE_WORKTREE:?}" || exit 1
+fi
+exec "${REAL_GIT:?}" "$@"
+RACE_GIT
+	chmod +x "$wrapper_path" || rc=1
+
+	if (
+		cd "$repo_path" || exit 1
+		export AIDEVOPS_REAL_GIT_BIN="$wrapper_path"
+		export REAL_GIT="$GIT_BIN"
+		export RACE_MARKER="$final_race_marker"
+		export RACE_REPO="$repo_path"
+		export RACE_WORKTREE="$wt_path"
+		source_clean_lib_with_stubs || exit 1
+		capture_worktree_process_cwds() {
+			printf '/unrelated-cwd\n'
+			return 0
+		}
+		worktree_has_changes() {
+			local candidate_path="$1"
+			git -C "$candidate_path" status --porcelain 2>/dev/null | grep -q .
+			return $?
+		}
+		git() {
+			local all_args="$*"
+			if [[ "$all_args" == *"-C $wt_path stash push"* && ! -e "$concurrent_stash_marker" ]]; then
+				"$GIT_BIN" "$@" || return $?
+				: >"$concurrent_stash_marker"
+				"$GIT_BIN" -C "$foreign_wt_path" stash push -u \
+					-m "foreign concurrent stash" >/dev/null 2>&1 || return 1
+				return 0
+			fi
+			"$GIT_BIN" "$@"
+			return $?
+		}
+		_clean_remove_classified_worktree "$wt_path" "$branch" "true" "true" \
+			"test=dirty-lock-race" "$repo_path"
+	); then
+		rc=1
+	fi
+
+	actual_status=$(git -C "$wt_path" status --porcelain --untracked-files=all 2>/dev/null) || rc=1
+	metadata=$(git -C "$repo_path" worktree list --porcelain 2>/dev/null) || rc=1
+	stash_count=$(git -C "$repo_path" stash list 2>/dev/null | wc -l | tr -d ' ') || stash_count=0
+	[[ -e "$concurrent_stash_marker" && -e "$final_race_marker" && -d "$wt_path" ]] || rc=1
+	[[ "$(<"$wt_path/closed-issue-dirty-race.txt")" == "$expected_tracked" ]] || rc=1
+	[[ "$(<"$wt_path/untracked-race.txt")" == "$expected_untracked" ]] || rc=1
+	[[ "$actual_status" == "$expected_status" ]] || rc=1
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || rc=1
+	printf '%s\n' "$metadata" | grep -Fqx "locked foreign-after-stash-archive" || rc=1
+	[[ "$stash_count" -ge 2 ]] || rc=1
+	print_result "closed issue dirty lock race preserves files" "$rc" \
+		"Expected exact concurrent stash recovery, restored dirty files, and foreign lock authority"
+	return 0
+}
+
 echo "=== test-worktree-cleanup-branch-merged-owned-skip.sh ==="
 test_protected_pass_set_blocks_branch_merged_removal
 test_terminal_pr_proof_bypasses_protected_pass_skip
@@ -710,6 +843,7 @@ test_terminal_pr_cleanup_waits_for_deferred_parent_exit
 test_dead_marker_preserves_replacement_owner
 test_terminal_cleanup_requires_removal_lease
 test_cleanup_lease_released_when_removal_guard_blocks
+test_remove_merged_reports_metadata_verification_failure
 test_squash_merged_pr_without_ancestor_proof_classifies
 test_prefetched_merged_pr_metadata_skips_exact_head_lookup
 test_merged_pr_list_passes_explicit_repo_slug
@@ -721,6 +855,7 @@ test_remote_deleted_without_ancestor_proof_skips
 test_closed_issue_unproven_branch_removes_worktree_preserves_branch
 test_fix_numeric_closed_issue_branch_removes_worktree_preserves_branch
 test_closed_issue_dirty_unproven_branch_stashes_and_preserves_branch
+test_closed_issue_dirty_lock_race_preserves_files
 
 printf '\nResults: %d/%d passed, %d failed.\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 if [[ "$TESTS_FAILED" -gt 0 ]]; then

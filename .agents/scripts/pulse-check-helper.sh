@@ -40,6 +40,7 @@ FAILURE_FAMILY_THRESHOLD="${PULSE_CHECK_FAILURE_FAMILY_THRESHOLD:-3}"
 FAILURE_FAMILY_RECOVERY_SECONDS="${PULSE_CHECK_FAILURE_FAMILY_RECOVERY_SECONDS:-86400}"
 FAILURE_FAMILY_STATE_FILE="${PULSE_CHECK_FAILURE_FAMILY_STATE_FILE:-${HOME}/.aidevops/cache/failure-family-remediation.json}"
 FAILURE_FAMILY_STATUS_RECURRING="recurring"
+PULSE_CHECK_LABELS_ENSURED=""
 
 _usage() {
 	cat <<EOF
@@ -374,6 +375,80 @@ _record_failure_family_state() {
 	return 0
 }
 
+_pulse_check_label_contract() {
+	printf '%s\n' \
+		'auto-dispatch|0E8A16|Eligible for autonomous worker dispatch' \
+		'tier:standard|1D76DB|Standard-tier implementation requiring contextual judgment' \
+		'bug|D73A4A|Something is not working' \
+		'framework|5319E7|AI DevOps framework maintenance' \
+		'pulse|0052CC|Pulse dispatch and worker automation' \
+		'self-improvement|7057FF|Automated framework self-improvement' \
+		'source:pulse-check|C2E0C6|Auto-created by the Pulse check routine'
+	return 0
+}
+
+_pulse_check_label_present() {
+	local labels_json="$1"
+	local label_name="$2"
+	if printf '%s' "$labels_json" | jq -e --arg label "$label_name" \
+		'any(.[]?; .name == $label)' >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+_list_pulse_check_labels() {
+	local repo_slug="$1"
+	local labels_json=""
+	if ! labels_json=$(gh api --paginate "repos/${repo_slug}/labels?per_page=100" 2>/dev/null |
+		jq -s '[.[][]? | {name: .name}]'); then
+		return 1
+	fi
+	printf '%s\n' "$labels_json"
+	return 0
+}
+
+_ensure_pulse_check_labels() {
+	local repo_slug="$1"
+	[[ -n "$repo_slug" ]] || return 1
+	case ",${PULSE_CHECK_LABELS_ENSURED}," in
+	*",${repo_slug},"*) return 0 ;;
+	esac
+
+	local existing_labels_json=""
+	if ! existing_labels_json=$(_list_pulse_check_labels "$repo_slug") ||
+		! printf '%s' "$existing_labels_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		print_error "pulse-check: failed to list labels for ${repo_slug}"
+		return 1
+	fi
+
+	while IFS='|' read -r label_name color description; do
+		[[ -n "$label_name" ]] || continue
+		if _pulse_check_label_present "$existing_labels_json" "$label_name"; then
+			continue
+		fi
+
+		local create_output=""
+		if create_output=$(gh label create "$label_name" --repo "$repo_slug" \
+			--color "$color" --description "$description" 2>&1); then
+			continue
+		fi
+
+		# Treat a concurrent creator as success, but fail closed when the
+		# required label still cannot be verified after the write attempt.
+		local refreshed_labels_json=""
+		refreshed_labels_json=$(_list_pulse_check_labels "$repo_slug") || refreshed_labels_json="[]"
+		if _pulse_check_label_present "$refreshed_labels_json" "$label_name"; then
+			continue
+		fi
+		print_error "pulse-check: failed to ensure label ${label_name} on ${repo_slug}: ${create_output}"
+		return 1
+	done < <(_pulse_check_label_contract)
+
+	PULSE_CHECK_LABELS_ENSURED="${PULSE_CHECK_LABELS_ENSURED:+${PULSE_CHECK_LABELS_ENSURED},}${repo_slug}"
+	return 0
+}
+
 _apply_finding() {
 	local slug="$1"
 	local finding_json="$2"
@@ -401,6 +476,7 @@ _apply_finding() {
 	fi
 
 	_load_gh_wrappers || return 1
+	_ensure_pulse_check_labels "$slug" || return 1
 
 	local body_file=""
 	body_file=$(mktemp "${TMPDIR:-/tmp}/pulse-check-issue.XXXXXX") || return 1

@@ -511,6 +511,27 @@ test("rejects ambiguous shell syntax before execution", () => {
   );
 });
 
+test("authorizes documented canonical recovery commands without dynamic expansion", () => {
+  assert.doesNotThrow(() => checkCommandSafetyGate(
+    "canonical-recovery-helper.sh fast-forward-current --repo /path/to/canonical-checkout --branch develop --issue 123 --confirm FAST_FORWARD_CANONICAL_BRANCH",
+    scriptsDir,
+    process.cwd(),
+  ));
+  assert.doesNotThrow(() => checkCommandSafetyGate(
+    "canonical-recovery-helper.sh sync-mirror --repo /path/to/canonical-checkout --issue 123 --confirm SYNCHRONIZE_CANONICAL_MIRROR",
+    scriptsDir,
+    process.cwd(),
+  ));
+  assert.throws(
+    () => checkCommandSafetyGate(
+      "${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/canonical-recovery-helper.sh sync-mirror --repo /path/to/canonical-checkout --issue 123 --confirm SYNCHRONIZE_CANONICAL_MIRROR",
+      scriptsDir,
+      process.cwd(),
+    ),
+    /command\.parse-error.*dynamic shell expansion/,
+  );
+});
+
 test("enforces network policy in OpenCode worker tool adapter", () => {
   assert.throws(
     () => checkCommandSafetyGate(

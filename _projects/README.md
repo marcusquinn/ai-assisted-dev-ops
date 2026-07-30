@@ -8,3 +8,7 @@ that do not belong in software task tracking or campaign/case planes.
 
 Until the contract is implemented, keep project-specific private data out of
 git and use this file only as a discoverable marker for the planned plane.
+
+Future project evidence fields must use validated `_knowledge` corpus/evidence
+pointers and purpose-specific derived state. Project files cannot become a second
+authoritative copy, and aliases or local paths cannot grant cross-corpus access.

@@ -109,7 +109,12 @@ def _load_repos(repos_json: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
     for repo in initialized:
         if not isinstance(repo, dict):
             continue
-        if repo.get("pulse") is True and not repo.get("local_only") and repo.get("slug"):
+        if (
+            repo.get("maintenance", True) is not False
+            and repo.get("pulse") is True
+            and not repo.get("local_only")
+            and repo.get("slug")
+        ):
             repos.append(repo)
     return repos, ""
 

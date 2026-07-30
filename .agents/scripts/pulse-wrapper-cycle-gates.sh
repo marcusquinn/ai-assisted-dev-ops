@@ -184,7 +184,7 @@ _pulse_scope_repos_for_available_work_gate() {
 		read -r _scope <"${SCOPE_FILE:-}" || [[ -n "$_scope" ]] || _scope=""
 	fi
 	if [[ -z "$_scope" && -f "${REPOS_JSON:-}" ]]; then
-		_scope=$(jq -r '[.initialized_repos[]? | select(.pulse == true and (.local_only // false) == false and (.slug // "") != "") | .slug] | join(",")' "${REPOS_JSON:-}") || _scope=""
+		_scope=$(jq -r '[.initialized_repos[]? | select(.maintenance != false and .pulse == true and (.local_only // false) == false and (.slug // "") != "") | .slug] | join(",")' "${REPOS_JSON:-}") || _scope=""
 	fi
 	local _slug=""
 	while IFS= read -r _slug; do

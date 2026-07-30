@@ -247,6 +247,18 @@ receipt's executor finalization fields. After an explicit repository rename, use
 new identity and migrates cleanup plus release receipts while preserving owner,
 lease, worktree, branch, creation time, and irreversible cleanup state.
 
+If a maintainer or merge queue merges the PR before the merge wrapper records its
+cleanup receipt, first establish terminal release evidence, then run
+`full-loop-helper.sh adopt-merged-receipt <PR> [REPO]` from the still-registered
+linked worktree, followed by `finalize-receipt`. Adoption performs a fresh merged
+PR read, requires the current local `HEAD` and managed GitHub repository identity
+plus branch to match the immutable PR head, binds a live PID and process-generation identity,
+and atomically creates only the missing `CLEANUP_DEFERRED` receipt. An identical
+replay is idempotent; conflicting, leased, cleaned, dead-owner, nonterminal-release,
+canonical-checkout, detached-checkout, or mismatched repository/head evidence
+fails closed without replacing the existing receipt. Adoption never calls the
+merge API and never infers publication intent.
+
 **4.7 Maintained-App Local Base Synchronization (MANDATORY):** After a maintained non-aidevops merge, read the merged PR's verified `baseRefName`, resolve the registered canonical checkout, and use the clean `fast-forward-current` or lossless `sync-mirror` operation documented in `workflows/git-workflow.md`. Full-loop consent authorizes this guarded synchronization. Verify local `HEAD` equals `origin/<baseRefName>` before recording `LOCAL_BASE_SYNCED`.
 
 **4.8 Closing Comments:** Managed repos receive structured issue and PR closing comments with the normal pre-close verification. External sessions do not close the upstream issue; follow upstream conventions and leave at most one concise issue comment linking the PR when useful.

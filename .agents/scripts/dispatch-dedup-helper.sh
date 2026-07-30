@@ -2266,11 +2266,12 @@ _dd_fetch_trusted_issue_comments() {
 #######################################
 # Check for a cryptographically-unpredictable lease token whose terminal
 # transition matches the trusted dispatch author, original claim author,
-# device, and session. Both the claim and transition ordering must surround the
-# deterministic dispatch comment, so unrelated or forged terminal text cannot
-# retire its dedup lock.
+# device, and session. Correlated markers bind directly to the exact claim and
+# may be retired by terminal state on either side of the delayed audit write.
+# Legacy markers retain strict claim-before/terminal-after ordering.
 #
-# Args: comments JSON, dispatch timestamp, dispatch comment ID, dispatch author
+# Args: comments JSON, dispatch timestamp, dispatch comment ID, dispatch author,
+#       dispatch comment body
 # Returns: 0 when a matching terminal lease supersedes dispatch; 1 otherwise
 #######################################
 _dd_has_matching_terminal_lease() {
@@ -2278,6 +2279,7 @@ _dd_has_matching_terminal_lease() {
 	local dispatch_created_at="$2"
 	local dispatch_id="$3"
 	local dispatch_author="$4"
+	local dispatch_body="${5:-}"
 	local lease_filter="${SCRIPT_DIR}/dispatch-lease-claims.jq"
 	local claims_json="[]"
 	local parsed_claims="[]"
@@ -2294,6 +2296,25 @@ _dd_has_matching_terminal_lease() {
 		--argjson now "$now_epoch" --argjson max_age 2147483647 \
 		--argjson include_terminal true \
 		-f "$lease_filter" 2>/dev/null) || return 1
+
+	local marker_json=""
+	marker_json=$(printf '%s' "$dispatch_body" | jq -Rrc '
+		try capture("aidevops:dispatch lease_token=(?<lease_token>[^ ]+) device=(?<device>[^ ]+) session=(?<session>[^ ]+) attempt_id=(?<attempt_id>[^ ]+) claim_id=(?<claim_id>[0-9]+)")
+		catch empty
+	' 2>/dev/null) || marker_json=""
+	if [[ -n "$marker_json" ]] && printf '%s' "$parsed_claims" | jq -e \
+		--argjson marker "$marker_json" --arg dispatch_author "$dispatch_author" '
+		any(.[];
+			.lease_phase == "terminal" and
+			.claim_author == $dispatch_author and
+			.lease_token == $marker.lease_token and
+			.device == $marker.device and
+			.session == $marker.session and
+			.lease_terminal_attempt_id == $marker.attempt_id and
+			((.id // 0) | tostring) == $marker.claim_id
+		)' >/dev/null 2>&1; then
+		return 0
+	fi
 
 	if printf '%s' "$parsed_claims" | jq -e \
 		--arg dispatch_ts "$dispatch_created_at" --argjson dispatch_id "$dispatch_id" \
@@ -2389,10 +2410,11 @@ has_dispatch_comment() {
 		return 1
 	fi
 
-	local dispatch_created_at dispatch_author dispatch_id
+	local dispatch_created_at dispatch_author dispatch_id dispatch_body
 	dispatch_created_at=$(printf '%s' "$last_dispatch_json" | jq -r '.created_at // ""' 2>/dev/null) || dispatch_created_at=""
 	dispatch_author=$(printf '%s' "$last_dispatch_json" | jq -r '.author // ""' 2>/dev/null) || dispatch_author=""
 	dispatch_id=$(printf '%s' "$last_dispatch_json" | jq -r '.id // 0' 2>/dev/null) || dispatch_id=0
+	dispatch_body=$(printf '%s' "$last_dispatch_json" | jq -r '.body // ""' 2>/dev/null) || dispatch_body=""
 	[[ "$dispatch_id" =~ ^[0-9]+$ ]] || dispatch_id=0
 
 	# Check if the dispatch comment is within TTL
@@ -2403,7 +2425,7 @@ has_dispatch_comment() {
 	# A CLAIM_RELEASED write can fail after the worker has already emitted its
 	# structured terminal lease transition. Reconcile that authenticated
 	# transition as equivalent durable completion evidence (GH#28437).
-	if _dd_has_matching_terminal_lease "$comments_json" "$dispatch_created_at" "$dispatch_id" "$dispatch_author"; then
+	if _dd_has_matching_terminal_lease "$comments_json" "$dispatch_created_at" "$dispatch_id" "$dispatch_author" "$dispatch_body"; then
 		return 1
 	fi
 

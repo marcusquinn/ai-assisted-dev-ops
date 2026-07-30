@@ -36,6 +36,14 @@ TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER_PATH="${TEST_SCRIPTS_DIR}/interactive-session-helper.sh"
 STAMP_LIB_PATH="${TEST_SCRIPTS_DIR}/interactive-session-helper-stamp.sh"
 CLEAN_LIB_PATH="${TEST_SCRIPTS_DIR}/worktree-clean-lib.sh"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+
+# Keep isolated fixture mutations on native Git. Canonical mutation-guard
+# behavior is covered independently and is not part of this claim test.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 # NOT readonly — shared-constants.sh declares readonly RED/GREEN/RESET
 # and the collision under `set -e` silently kills the test shell.

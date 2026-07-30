@@ -10,6 +10,7 @@
 #   - issue-sync.yml         (template: issue-sync-caller.yml)
 #   - review-bot-gate.yml    (template: review-bot-gate-caller.yml, GH#20727)
 #   - maintainer-gate.yml    (template: maintainer-gate-caller.yml, GH#21154)
+#   - linked-issue-check.yml (template: linked-issue-check-caller.yml, GH#28844)
 #
 # Classifies each (repo × workflow) as:
 #
@@ -28,7 +29,7 @@
 #
 # Options:
 #   --repo OWNER/REPO   Check only the named slug (default: all registered)
-#   --workflow NAME     Check only the named workflow (issue-sync or review-bot-gate)
+#   --workflow NAME     Check only the named managed workflow.
 #   --json              Machine-readable output (one JSON object per repo × workflow)
 #   --verbose           Show diff summary for DRIFTED/CALLER entries
 #   -h, --help          Show usage and exit 0
@@ -80,11 +81,13 @@ fi
 #
 # GH#20727: review-bot-gate added.
 # GH#21154: maintainer-gate added (layer-1 defense-in-depth propagation).
+# GH#28844: linked-issue-check added (external contribution visibility).
 readonly _KNOWN_WORKFLOWS=(
 	"issue-sync.yml:issue-sync-reusable.yml:issue-sync-caller.yml"
 	"review-bot-gate.yml:review-bot-gate-reusable.yml:review-bot-gate-caller.yml"
 	"maintainer-gate.yml:maintainer-gate-reusable.yml:maintainer-gate-caller.yml"
 	"loc-badge.yml:loc-badge-reusable.yml:loc-badge-caller.yml"
+	"linked-issue-check.yml:linked-issue-check-reusable.yml:linked-issue-check-caller.yml"
 )
 
 # Versioned inventory of framework-owned paths superseded by reusable callers.
@@ -531,7 +534,7 @@ _resolve_caller_worktree_root() {
 	return 0
 }
 
-# _iterate_repos — emit one "slug|path|local_only" line per registered repo
+# _iterate_repos — emit one "path|local_only|maintenance|slug" line per registered repo
 _iterate_repos() {
 	if [[ ! -f "$REPOS_JSON" ]]; then
 		_die "repos.json not found at $REPOS_JSON — aidevops may not be initialised"
@@ -540,7 +543,7 @@ _iterate_repos() {
 		_die "jq required — install via Homebrew/apt or equivalent"
 	fi
 
-	# Order: path, local_only, slug — path is never empty, so it occupies the
+	# Order: path, local_only, maintenance, slug — path is never empty, so it occupies the
 	# leading field. Slug (which CAN be empty for local_only repos) goes last
 	# so bash's `read` with IFS=$'\t' doesn't collapse the empty-slug case
 	# (tab is treated as whitespace IFS; leading empties collapse, trailing
@@ -550,6 +553,7 @@ _iterate_repos() {
 		| [
 			(.path // ""),
 			(.local_only // false | tostring),
+			((if .maintenance == false then false else true end) | tostring),
 			(.slug // "")
 		]
 		| @tsv
@@ -702,7 +706,8 @@ _diff_summary() {
 readonly _MODE_HUMAN="human"
 readonly _MODE_JSON="json"
 
-# Parse command-line flags. Emits TSV: mode\tverbose\tfilter_slug\tfilter_workflow.
+# Parse command-line flags. Emits form-feed-delimited fields so an empty
+# --repo slot is preserved when --workflow is supplied on its own.
 # Exits 0 on --help. Exits 2 via _die on unknown option.
 _parse_args() {
 	local _filter_slug=""
@@ -739,7 +744,8 @@ _parse_args() {
 		esac
 	done
 
-	printf '%s\t%d\t%s\t%s\n' "$_mode" "$_verbose" "$_filter_slug" "$_filter_workflow"
+	printf '%s\034%d\034%s\034%s\n' \
+		"$_mode" "$_verbose" "$_filter_slug" "$_filter_workflow"
 	return 0
 }
 
@@ -946,11 +952,11 @@ _process_rows() {
 		# each slug, so it cannot be safely hoisted per workflow type.
 		local _canon_norm=""
 
-		local _path _local_only_flag _slug
-		while IFS=$'\t' read -r _path _local_only_flag _slug; do
+		local _path _local_only_flag _maintenance_flag _slug
+		while IFS=$'\t' read -r _path _local_only_flag _maintenance_flag _slug; do
 			[[ -z "$_slug" && -z "$_path" ]] && continue
 			local _label="${_slug:-$(basename "$_path")}"
-			[[ -n "$_filter_slug" && "$_slug" != "$_filter_slug" ]] && continue
+			[[ (-n "$_filter_slug" && "$_slug" != "$_filter_slug") || (-z "$_filter_slug" && "$_maintenance_flag" == "false") ]] && continue
 
 			_total=$((_total + 1))
 			local _row_evidence_source
@@ -1025,7 +1031,7 @@ main() {
 	fi
 
 	local _mode _verbose _filter_slug _filter_workflow
-	IFS=$'\t' read -r _mode _verbose _filter_slug _filter_workflow < <(_parse_args "$@")
+	IFS=$'\034' read -r _mode _verbose _filter_slug _filter_workflow < <(_parse_args "$@")
 	_CALLER_WORKTREE_ROOT=""
 	if [[ -n "$_filter_slug" ]]; then
 		_CALLER_WORKTREE_ROOT=$(_resolve_caller_worktree_root "$_filter_slug") || _CALLER_WORKTREE_ROOT=""

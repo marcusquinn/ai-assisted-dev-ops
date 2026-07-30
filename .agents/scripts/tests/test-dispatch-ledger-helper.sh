@@ -126,6 +126,29 @@ test_register_separates_attempt_identity_from_lease() {
 	return 0
 }
 
+test_register_refuses_terminal_lease_resurrection() {
+	setup_test_env
+	run_helper "$LEDGER_HELPER" register --session-key "issue-42" --issue 42 \
+		--repo "owner/repo" --pid $$ --lease-token "lease-terminal" --attempt-id "attempt-terminal"
+	run_helper "$LEDGER_HELPER" complete --session-key "issue-42" --lease-token "lease-terminal" \
+		--attempt-id "attempt-terminal"
+	run_helper "$LEDGER_HELPER" register --session-key "issue-42" --issue 42 \
+		--repo "owner/repo" --pid $$ --lease-token "lease-new" --attempt-id "attempt-new"
+	run_helper "$LEDGER_HELPER" register --session-key "issue-42" --issue 42 \
+		--repo "owner/repo" --pid $$ --lease-token "lease-terminal" --attempt-id "attempt-terminal"
+
+	local result=0 active_count="" entry_count="" terminal_count=""
+	active_count=$("$LEDGER_HELPER" count)
+	entry_count=$(wc -l <"${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl" | tr -d ' ')
+	terminal_count=$(jq -s '[.[] | select(.lease_token == "lease-terminal")] | length' \
+		"${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl")
+	[[ "$LAST_EXIT" -ne 0 && "$active_count" -eq 1 && "$entry_count" -eq 3 && "$terminal_count" -eq 2 ]] || result=1
+	print_result "register cannot resurrect a terminal dispatch lease" "$result" \
+		"register_exit=${LAST_EXIT}, active=${active_count}, entries=${entry_count}, terminal_entries=${terminal_count}"
+	teardown_test_env
+	return 0
+}
+
 test_terminal_updates_target_exact_attempt() {
 	setup_test_env
 	run_helper "$LEDGER_HELPER" register --session-key "issue-42" --issue 42 \
@@ -933,6 +956,7 @@ main() {
 
 	test_register_creates_entry
 	test_register_separates_attempt_identity_from_lease
+	test_register_refuses_terminal_lease_resurrection
 	test_terminal_updates_target_exact_attempt
 	test_record_recovery_is_idempotent
 	test_record_recovery_rejects_missing_option_values

@@ -35,6 +35,8 @@ class GuardedOAuthPolicy:
     decode_output: Callable[[str], dict[str, Any]]
     provider_failure: Callable[[str], Exception]
     unavailable_error: type[Exception]
+    credential_suffixes: tuple[str, ...] = ("ACCESS_TOKEN",)
+    profile_kind: str = "OAuth"
 
 
 class GuardedOAuthReader:
@@ -42,8 +44,9 @@ class GuardedOAuthReader:
 
     def __init__(self, helper: Path, profile: str, policy: GuardedOAuthPolicy) -> None:
         if PROFILE_NAME.fullmatch(profile) is None:
+            kind = f" {policy.profile_kind}" if policy.profile_kind else ""
             raise policy.unavailable_error(
-                f"{policy.display_name} OAuth profile name is invalid"
+                f"{policy.display_name}{kind} profile name is invalid"
             )
         if helper.is_symlink() or not helper.is_file():
             raise policy.unavailable_error(
@@ -63,10 +66,16 @@ class GuardedOAuthReader:
         )
 
     def _environment(self) -> dict[str, str]:
-        token_name = (
-            f"{self.policy.environment_prefix}_{self.profile.upper()}_ACCESS_TOKEN"
+        profile_prefix = (
+            f"{self.policy.environment_prefix}_{self.profile.upper()}"
         )
-        return guarded_reader_environment(token_name, (self.policy.test_log_key,))
+        credential_names = tuple(
+            f"{profile_prefix}_{suffix}"
+            for suffix in self.policy.credential_suffixes
+        )
+        return guarded_reader_environment(
+            credential_names, (self.policy.test_log_key,)
+        )
 
     def identity(self, expected_id: str) -> dict[str, Any]:
         return self.process.run({"action": "identity", "account_id": expected_id})

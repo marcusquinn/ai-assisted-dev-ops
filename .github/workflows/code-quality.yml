@@ -342,6 +342,16 @@ jobs:
         echo ""
         echo "All shell scripts passed ShellCheck"
 
+    - name: Reusable Workflow and Maintenance Scope Contracts (GH#28862)
+      run: |
+        python3 -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
+        bash .agents/scripts/tests/test-loc-badge-reusable-install.sh
+        bash .agents/scripts/tests/test-reusable-workflow-caller.sh
+        bash .agents/scripts/tests/test-reusable-workflow-permission-contracts.sh
+        bash .agents/scripts/tests/test-repo-maintenance-state.sh
+        bash .agents/scripts/tests/test-maintenance-repo-selection.sh
+        bash .agents/scripts/tests/test-maintenance-selector-contract.sh
+
     - name: MCP Inspector Health Identity Regression (GH#27967)
       run: |
         echo "Running MCP inspector health identity regression test..."

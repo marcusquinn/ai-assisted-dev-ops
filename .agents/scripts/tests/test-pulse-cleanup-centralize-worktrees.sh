@@ -6,10 +6,18 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PULSE_CLEANUP="${SCRIPT_DIR}/../pulse-cleanup.sh"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 
 TEST_ROOT=""
 TESTS_RUN=0
 TESTS_FAILED=0
+
+# Keep isolated fixture mutations on native Git. The repository-level canonical
+# guard is under separate test and must not classify temporary main worktrees.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 print_result() {
 	local name="$1"

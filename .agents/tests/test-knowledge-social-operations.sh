@@ -431,7 +431,7 @@ PY
 "$HELPER" provision --base "$MIGRATION_BASE" >/dev/null
 assert_eq "schema v2 migrates additively to all local operation tables" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT (SELECT user_version FROM pragma_user_version) || ':' || count(*) FROM sqlite_master WHERE name IN ('outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" \
-	"4:4"
+	"5:4"
 assert_eq "schema v4 adds provider-neutral subject and destination fields" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT count(*) FROM pragma_table_info('outbound_operations') WHERE name IN ('destination_remote_id','subject','subject_sha256','intent_version')")" \
 	"4"

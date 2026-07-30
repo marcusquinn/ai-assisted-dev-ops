@@ -417,7 +417,7 @@ build_ranked_dispatch_candidates_json() {
 			else .pulse_hours.end
 			end;
 		.initialized_repos[] |
-		select(.pulse == true and (.local_only // false) == false and .slug != "" and .path != "") |
+		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .path != "") |
 		[
 			.slug,
 			.path,
@@ -524,7 +524,7 @@ dispatch_max() {
 	fi
 
 	local candidates_json candidate_count
-	candidates_json=$(build_ranked_dispatch_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT") || candidates_json='[]'
+	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT") || candidates_json='[]'
 	candidate_count=$(printf '%s' "$candidates_json" | jq 'length' 2>/dev/null) || candidate_count=0
 	[[ "$candidate_count" =~ ^[0-9]+$ ]] || candidate_count=0
 	if [[ "$candidate_count" -eq 0 ]]; then
@@ -536,15 +536,16 @@ dispatch_max() {
 	echo "[pulse-wrapper] Dispatch_max: available=${available_slots}, runnable=${runnable_count}, queued_without_worker=${queued_without_worker}, candidates=${candidate_count}" >>"$LOGFILE"
 
 	local prepass_line=""
-	local triage_dispatched=0
+	local triage_attempted=0 triage_infrastructure_failed=0
 	if ! prepass_line=$(_dispatch_run_prepasses "$available_slots" 2>>"$LOGFILE"); then
 		echo "[pulse-wrapper] Dispatch_max: _dispatch_run_prepasses returned non-zero — assuming 0 triage/enrichment, full slot budget" >>"$LOGFILE"
-		prepass_line="${available_slots} 0"
+		prepass_line="${available_slots} 0 1"
 	fi
-	read -r available_slots triage_dispatched <<<"$prepass_line"
+	read -r available_slots triage_attempted triage_infrastructure_failed <<<"$prepass_line"
 	[[ "$available_slots" =~ ^[0-9]+$ ]] || available_slots=0
-	[[ "$triage_dispatched" =~ ^[0-9]+$ ]] || triage_dispatched=0
-	pulse_dispatch_debug_log "post-prepasses available_slots=${available_slots} triage_dispatched=${triage_dispatched}"
+	[[ "$triage_attempted" =~ ^[0-9]+$ ]] || triage_attempted=0
+	[[ "$triage_infrastructure_failed" =~ ^[0-9]+$ ]] || triage_infrastructure_failed=0
+	pulse_dispatch_debug_log "post-prepasses available_slots=${available_slots} triage_attempted=${triage_attempted} triage_infrastructure_failed=${triage_infrastructure_failed}"
 	candidates_json=$(_dispatch_order_idle_borrowing_candidates "$candidates_json" "$available_slots")
 
 	# Reset module-level round state before the dispatch loop (t1959).
@@ -600,8 +601,8 @@ dispatch_max() {
 			_dispatch_cleanup_benign_blocks_cycle
 		fi
 		_dispatch_maybe_engage_throttle
-		echo "[pulse-wrapper] Dispatch_max complete: dispatched=${triage_dispatched} (${triage_dispatched} triage + 0 implementation), processed=0/${candidate_count}, target_available=${available_slots}" >>"$LOGFILE"
-		echo "$triage_dispatched"
+		echo "[pulse-wrapper] Dispatch_max complete: implementation_dispatched=0 triage_attempted=${triage_attempted} triage_infrastructure_failed=${triage_infrastructure_failed} processed=0/${candidate_count} simultaneous_worker_slots_targeted=${available_slots}" >>"$LOGFILE"
+		echo 0
 		return 0
 	fi
 	local _dispatch_line_count
@@ -633,9 +634,8 @@ dispatch_max() {
 	echo "[pulse-wrapper] Dispatch path=${_dispatch_path}: loop body finished — processed=${processed_count} dispatched=${dispatched_count} mode=$( ((_dispatch_max_parallel <= 1)) && echo serial || echo "parallel(${_dispatch_max_parallel})")" >>"$LOGFILE"
 	_dispatch_maybe_engage_throttle
 
-	local total_dispatched=$((dispatched_count + triage_dispatched))
-	echo "[pulse-wrapper] Dispatch path=${_dispatch_path} complete: dispatched=${total_dispatched} (${triage_dispatched} triage + ${dispatched_count} implementation), processed=${processed_count}/${candidate_count}, target_available=${available_slots}" >>"$LOGFILE"
-	echo "$total_dispatched"
+	echo "[pulse-wrapper] Dispatch path=${_dispatch_path} complete: implementation_dispatched=${dispatched_count} triage_attempted=${triage_attempted} triage_infrastructure_failed=${triage_infrastructure_failed} processed=${processed_count}/${candidate_count} simultaneous_worker_slots_targeted=${available_slots}" >>"$LOGFILE"
+	echo "$dispatched_count"
 	return 0
 }
 
@@ -773,7 +773,7 @@ _should_run_llm_supervisor() {
 		[[ "$pc" =~ ^[0-9]+$ ]] || pc=0
 		current_issues=$((current_issues + ic))
 		current_prs=$((current_prs + pc))
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$REPOS_JSON" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$REPOS_JSON" 2>/dev/null)
 
 	local snap_age=$((now_epoch - snap_epoch))
 	local total_before=$((snap_issues + snap_prs))
@@ -1029,6 +1029,7 @@ apply_dispatch_max() {
 		[[ "$_p2_max" =~ ^[0-9]+$ ]] || _p2_max=1
 		if [[ "$_p2_active" -lt "$_p2_max" ]]; then
 			echo "[pulse-wrapper] Dispatch_max Phase 2: consolidation child created during Phase 1 (active=${_p2_active}, max=${_p2_max}) — re-enumerating candidates (t2749)" >>"$LOGFILE"
+			_dispatch_invalidate_candidate_snapshot "consolidation_child_created" || true
 			local fill_dispatched_p2
 			fill_dispatched_p2=$(dispatch_max) || fill_dispatched_p2=0
 			[[ "$fill_dispatched_p2" =~ ^[0-9]+$ ]] || fill_dispatched_p2=0
@@ -1404,11 +1405,11 @@ _run_preflight_stages() {
 	_preflight_start_merge_first || true
 	run_stage_with_timeout "preflight_cleanup_and_ledger" "$_pflt_timeout" \
 		_preflight_cleanup_and_ledger || true
-	run_stage_with_timeout "preflight_capacity_and_labels" "$_pflt_timeout" \
-		_preflight_capacity_and_labels || true
-	# t3054: preflight_early_dispatch does NOT use run_stage_with_timeout.
-	# Unlike other preflight stages (single-step operations), this stage
-	# wraps apply_dispatch_max which iterates N candidates, each
+	run_stage_with_timeout "preflight_capacity" "$_pflt_timeout" \
+		_preflight_capacity || true
+	# t3054: dispatch passes do NOT use run_stage_with_timeout. Unlike other
+	# preflight stages (single-step operations), each wraps apply_dispatch_max,
+	# which iterates N candidates that are each
 	# independently protected by run_stage_with_timeout "dispatch_candidate_*"
 	# (600s per candidate). A 600s GROUP timeout killed in-progress candidates
 	# that were still within their individual budgets (92 timeouts in 1079 runs =
@@ -1418,6 +1419,15 @@ _run_preflight_stages() {
 	local _pflt_ed_rc=0
 	_preflight_early_dispatch || _pflt_ed_rc=$?
 	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc"
+	# GH#28880: cross-repository label maintenance can take 3-5 minutes. Run it
+	# after the initial fill so already-eligible workers boot in parallel, then
+	# refill once so newly unblocked candidates remain dispatchable this cycle.
+	run_stage_with_timeout "preflight_label_maintenance" "$_pflt_timeout" \
+		_preflight_label_maintenance || true
+	local _pflt_refill_start=$SECONDS
+	local _pflt_refill_rc=0
+	_preflight_post_label_refill || _pflt_refill_rc=$?
+	_log_substage_timing "preflight_post_label_refill" "$_pflt_refill_start" "$_pflt_refill_rc"
 	# t3055: Post-dispatch housekeeping runs under a separate async lock by
 	# default. These stages do not protect the immediate worker claim/ledger
 	# safety boundary, so blocking the dispatch lock on them lets a 24-worker

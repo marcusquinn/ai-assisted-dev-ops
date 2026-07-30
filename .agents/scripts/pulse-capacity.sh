@@ -165,7 +165,8 @@ _pulse_capacity_load_pressure_points() {
 }
 
 #######################################
-# Count recent provider/load health signals from worker metrics.
+# Count recent terminal worker-role provider/load health signals. Continuation
+# events remain progress evidence but never become failure/capacity pressure.
 # Stdout: "<failures> <rate_limits> <service_interruptions> <provider_5xx> <progress_heartbeats>".
 #######################################
 _pulse_capacity_recent_health_counts() {
@@ -185,58 +186,17 @@ _pulse_capacity_recent_health_counts() {
 	fi
 
 	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
+	local evidence_file="${AIDEVOPS_OBJECTIVE_EVIDENCE_FILE:-${HOME}/.aidevops/state/objective-evidence.jsonl}"
+	local evidence_limit="${AIDEVOPS_OBJECTIVE_EVIDENCE_LIMIT:-2000}"
 	local ttl_seconds="${PULSE_DISPATCH_CAPACITY_HEALTH_WINDOW_SECONDS:-900}"
+	local health_helper="${BASH_SOURCE[0]%/*}/worker-terminal-health.py"
 	[[ "$ttl_seconds" =~ ^[0-9]+$ ]] || ttl_seconds=900
+	[[ "$evidence_limit" =~ ^[1-9][0-9]*$ ]] || evidence_limit=2000
 	[[ -f "$metrics_file" ]] || { printf '0 0 0 0 0\n'; return 0; }
-	python3 - "$metrics_file" "$ttl_seconds" <<'PY'
-import json
-import sys
-import time
-
-path, ttl = sys.argv[1], int(sys.argv[2])
-since = time.time() - ttl
-failures = rate_limits = service_interruptions = provider_5xx = progress = 0
-try:
-    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
-        rows = handle.readlines()[-1000:]
-    for raw in rows:
-        try:
-            item = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        try:
-            ts = float(item.get("ts") or 0)
-        except (TypeError, ValueError):
-            ts = 0
-        if ts < since:
-            continue
-        result = str(item.get('result') or '')
-        failure_reason = str(item.get('failure_reason') or '')
-        provider_type = str(item.get('provider_error_type') or '')
-        provider_status = str(item.get('provider_status') or '')
-        exit_code = item.get('exit_code')
-        is_rate_limited = (
-            result in {'rate_limit', 'rate_limit_fast'}
-            or provider_type == 'rate_limit'
-            or provider_status == '429'
-            or 'rate_limit' in failure_reason
-        )
-        is_service_interruption = result == 'service_interruption_continue'
-        is_provider_5xx = provider_type == 'server_error' or provider_status in {'500', '502', '503', '504'}
-        if is_rate_limited:
-            rate_limits += 1
-        if is_service_interruption:
-            service_interruptions += 1
-        if is_provider_5xx:
-            provider_5xx += 1
-        if result in {'watchdog_stall_continue', 'service_interruption_continue'} or str(item.get('activity_detected') or '0') == '1':
-            progress += 1
-        if not (result == 'success' and exit_code == 0) and result not in {'worker_noop', 'no_work', 'noop', 'watchdog_stall_continue', 'service_interruption_continue'}:
-            failures += 1
-except (OSError, ValueError):
-    pass
-print(f"{failures} {rate_limits} {service_interruptions} {provider_5xx} {progress}")
-PY
+	local health_counts="" successes="" failures="" rate_limits="" service_interruptions="" provider_5xx="" progress=""
+	health_counts=$(python3 "$health_helper" "$metrics_file" "$evidence_file" "$ttl_seconds" "$evidence_limit") || health_counts="0 3 0 0 0 0"
+	read -r successes failures rate_limits service_interruptions provider_5xx progress <<<"$health_counts"
+	printf '%s %s %s %s %s\n' "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress"
 	return 0
 }
 
@@ -336,10 +296,13 @@ pulse_apply_provider_load_capacity_cap() {
 		_dispatch_stats_gauge "dispatch_capacity_provider_accounts_available" "$((account_available < 0 ? 0 : account_available))"
 		_dispatch_stats_gauge "dispatch_capacity_load_pressure_points" "$load_points"
 		_dispatch_stats_gauge "dispatch_capacity_recent_failures" "$failures"
+		_dispatch_stats_gauge "dispatch_capacity_recent_worker_terminal_failures" "$failures"
 		_dispatch_stats_gauge "dispatch_capacity_final_max_workers" "$final_max"
 	fi
-	printf '[pulse-wrapper] Dispatch_capacity: raw_max=%s final_max=%s active=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s load_points=%s failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s progress_heartbeats=%s min_floor=%s floor_allowed=%s floor_active=%s\n' \
-		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$load_points" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
+	local health_window_seconds="${PULSE_DISPATCH_CAPACITY_HEALTH_WINDOW_SECONDS:-900}"
+	[[ "$health_window_seconds" =~ ^[0-9]+$ ]] || health_window_seconds=900
+	printf '[pulse-wrapper] Dispatch_capacity: capacity_unit=simultaneous_workers simultaneous_target_raw=%s simultaneous_target_final=%s active_workers=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s load_points=%s worker_terminal_failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s worker_progress_heartbeats=%s failure_observation_window_seconds=%s task_duration_limit=none min_floor=%s floor_allowed=%s floor_active=%s\n' \
+		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$load_points" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$health_window_seconds" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
 	printf '%s %s\n' "$final_max" "$floor_active"
 	return 0
 }
@@ -399,7 +362,7 @@ count_runnable_candidates() {
 		pulse_count_debug_log "count_runnable_candidates repo=${slug} issues=${issue_count} prs=${pr_count} total=$((issue_count + pr_count))"
 
 		total=$((total + issue_count + pr_count))
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
 
 	echo "$total"
 	return 0
@@ -458,7 +421,7 @@ count_queued_without_worker() {
 				pulse_count_debug_log "count_queued_without_worker repo=${slug} issue=${issue_num} missing_worker=true"
 			fi
 		done < <(echo "$queued_json" | jq -r --arg self "$self_login" '.[] | .number as $n | ((.assignees | length) > 0 and (([.assignees[].login] | index($self)) == null)) as $assigned_other | "\($n)|\($assigned_other)"' 2>/dev/null)
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
 
 	echo "$total"
 	return 0

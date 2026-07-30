@@ -204,7 +204,7 @@ _stale_recovery_find_open_pr() {
 	local _open_pr _open_pr_json
 	_open_pr_json=$(gh pr list --repo "$repo_slug" --state open \
 		--search "#${issue_number} in:body" --limit 20 \
-		--json number,isDraft,labels,statusCheckRollup 2>/dev/null) || _open_pr_json="[]"
+		--json number,isDraft,labels,statusCheckRollup 2>/dev/null) || return 1
 	_open_pr=$(printf '%s' "$_open_pr_json" | jq -r \
 		--arg ready_failed "$_DDS_KIND_READY_FAILED" \
 		--arg ready "$_DDS_KIND_READY" \
@@ -240,7 +240,7 @@ _stale_recovery_find_open_pr() {
 				elif .lifecycle_kind == $ready then 1
 				elif .lifecycle_kind == $draft then 2 else 3 end) |
 			.[0] | if . then "\(.number)|\(.lifecycle_kind)" else "" end' \
-		2>/dev/null) || _open_pr=""
+		2>/dev/null) || return 1
 	printf '%s' "$_open_pr"
 	return 0
 }
@@ -652,7 +652,11 @@ _recover_stale_assignment() {
 	_comments_pages=$(_stale_recovery_fetch_comments_pages "$issue_number" "$repo_slug")
 	_prior_ticks=$(_stale_recovery_count_ticks_from_pages "$_comments_pages")
 	_latest_dispatch_ts=$(_stale_recovery_latest_dispatch_ts_from_pages "$_comments_pages")
-	_open_pr=$(_stale_recovery_find_open_pr "$issue_number" "$repo_slug")
+	if ! _open_pr=$(_stale_recovery_find_open_pr "$issue_number" "$repo_slug"); then
+		printf 'STALE_RECOVERY_UNCERTAIN: issue #%s in %s — open PR lookup failed; preserving assignment\n' \
+			"$issue_number" "$repo_slug"
+		return 1
+	fi
 	if [[ -n "$_open_pr" ]]; then
 		_open_pr_number="${_open_pr%%|*}"
 		_open_pr_kind="${_open_pr#*|}"
@@ -956,7 +960,6 @@ _is_stale_assignment() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local blocking_assignees="$3"
-
 	local now_epoch
 	now_epoch=$(date +%s)
 
@@ -1015,7 +1018,8 @@ _is_stale_assignment() {
 			return 1
 		fi
 		# No dispatch comment AND no recent activity — stale
-		_recover_stale_assignment "$issue_number" "$repo_slug" "$blocking_assignees" "no dispatch claim comment found, no recent activity (threshold=${effective_threshold}s, interactive=${is_interactive})"
+		_recover_stale_assignment "$issue_number" "$repo_slug" "$blocking_assignees" \
+			"no dispatch claim comment found, no recent activity (threshold=${effective_threshold}s, interactive=${is_interactive})" || return 1
 		return 0
 	fi
 
@@ -1050,6 +1054,6 @@ _is_stale_assignment() {
 
 	# Both dispatch claim and last activity are older than threshold — stale
 	_recover_stale_assignment "$issue_number" "$repo_slug" "$blocking_assignees" \
-		"dispatch claim ${dispatch_age}s old, last activity ${activity_age_msg} old (threshold=${effective_threshold}s, interactive=${is_interactive})"
+		"dispatch claim ${dispatch_age}s old, last activity ${activity_age_msg} old (threshold=${effective_threshold}s, interactive=${is_interactive})" || return 1
 	return 0
 }

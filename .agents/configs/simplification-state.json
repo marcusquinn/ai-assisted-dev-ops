@@ -252,9 +252,9 @@
       "pr": 11982
     },
     ".agents/automate.md": {
-      "at": "2026-07-11T14:30:05Z",
-      "hash": "88f07e77c3ce384aa0e8dc52ec3b1330f7974326",
-      "passes": 11,
+      "at": "2026-07-30T02:30:50Z",
+      "hash": "60b2ba47500441718a09baf163cb8f01b21e5767",
+      "passes": 12,
       "pr": 15804
     },
     ".agents/build-plus.md": {
@@ -294,9 +294,9 @@
       "pr": 18117
     },
     ".agents/commands/aidevops-automate.md": {
-      "at": "2026-07-11T14:30:30Z",
-      "hash": "88f07e77c3ce384aa0e8dc52ec3b1330f7974326",
-      "passes": 7,
+      "at": "2026-07-30T02:30:50Z",
+      "hash": "60b2ba47500441718a09baf163cb8f01b21e5767",
+      "passes": 8,
       "pr": 18162
     },
     ".agents/commands/aidevops-build-plus.md": {
@@ -354,9 +354,9 @@
       "pr": 18223
     },
     ".agents/commands/automate.md": {
-      "at": "2026-07-11T14:31:09Z",
-      "hash": "88f07e77c3ce384aa0e8dc52ec3b1330f7974326",
-      "passes": 8,
+      "at": "2026-07-30T02:30:52Z",
+      "hash": "60b2ba47500441718a09baf163cb8f01b21e5767",
+      "passes": 9,
       "pr": 18160
     },
     ".agents/commands/build-plus.md": {
@@ -1622,9 +1622,9 @@
       "pr": 14943
     },
     ".agents/reference/agent-routing.md": {
-      "at": "2026-07-13T02:35:39Z",
-      "hash": "c875010785d4e645d3d310855b17b2f3fdd3b7d3",
-      "passes": 12,
+      "at": "2026-07-30T02:31:05Z",
+      "hash": "85572cc80f92dd331b3c1e21c550db09f741e469",
+      "passes": 13,
       "pr": 14650
     },
     ".agents/reference/attribution-monitoring.md": {
@@ -1766,9 +1766,9 @@
       "pr": 15301
     },
     ".agents/reference/routines.md": {
-      "at": "2026-07-23T21:30:33Z",
-      "hash": "d107d719de99aceb3781af9583e4bf44d1cbfed9",
-      "passes": 5,
+      "at": "2026-07-28T19:05:42Z",
+      "hash": "31a19b5484f78dce04320b543280be34020cb220",
+      "passes": 6,
       "pr": 17783
     },
     ".agents/reference/secret-handling.md": {
@@ -2238,9 +2238,9 @@
       "pr": 16879
     },
     ".agents/scripts/dispatch-dedup-helper.sh": {
-      "at": "2026-07-27T02:01:57Z",
-      "hash": "0add6efdd6ca3fd235a8cb4125fd9e26b47e6920",
-      "passes": 50,
+      "at": "2026-07-29T02:25:56Z",
+      "hash": "ca3c2ef9c1fc9242452fc102c7f1a1c93c0b7657",
+      "passes": 51,
       "pr": 18917
     },
     ".agents/scripts/email-agent-helper.sh": {
@@ -2298,15 +2298,15 @@
       "pr": 13021
     },
     ".agents/scripts/headless-runtime-helper.sh": {
-      "at": "2026-07-27T18:37:22Z",
-      "hash": "f5f5431cbb502f927e41261b1acf5b48c166d584",
-      "passes": 77,
+      "at": "2026-07-29T05:38:35Z",
+      "hash": "8dd58906746b5e7f2871bcbb17e3c08008216d8c",
+      "passes": 78,
       "pr": 15086
     },
     ".agents/scripts/headless-runtime-lib.sh": {
-      "at": "2026-07-27T18:37:22Z",
-      "hash": "5f3916163ff6d899231b7ed7a968e5de9fea92bd",
-      "passes": 61,
+      "at": "2026-07-30T02:31:13Z",
+      "hash": "a5da6dd3172de9fca8b8e9302f4aa01434515730",
+      "passes": 64,
       "pr": 18707
     },
     ".agents/scripts/interactive-session-helper.sh": {
@@ -2394,33 +2394,33 @@
       "pr": 17590
     },
     ".agents/scripts/pulse-ancillary-dispatch.sh": {
-      "at": "2026-07-27T18:37:24Z",
-      "hash": "46cdbb2330e36505618b5f8b9ac344e2a8b34be0",
-      "passes": 27,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "83df66917d5ffce1377ff9f8b7809a41bb58095b",
+      "passes": 29,
       "pr": 18657
     },
     ".agents/scripts/pulse-cleanup.sh": {
-      "at": "2026-07-27T19:45:21Z",
-      "hash": "d04582246cb212e9df97db860ee857ba14359f3d",
-      "passes": 40,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "e0f8fe0bedcfc47cce845d3b64fb6dbac029bc41",
+      "passes": 42,
       "pr": 18704
     },
     ".agents/scripts/pulse-dep-graph.sh": {
-      "at": "2026-07-28T04:46:47Z",
-      "hash": "792713f74cdd32204577540cf33f9ff1f44e116f",
-      "passes": 25,
+      "at": "2026-07-29T22:17:51Z",
+      "hash": "a99b0869a0cc5058640e910ce527a9ee911572d9",
+      "passes": 26,
       "pr": 18796
     },
     ".agents/scripts/pulse-dispatch-core.sh": {
-      "at": "2026-07-27T02:02:15Z",
-      "hash": "acde8378aae38a83e2e76320d50009beb3bad740",
-      "passes": 54,
+      "at": "2026-07-30T02:31:15Z",
+      "hash": "7ca68c167c8f1383733fe81e29fbfad7aebb1a3a",
+      "passes": 55,
       "pr": 18832
     },
     ".agents/scripts/pulse-dispatch-engine.sh": {
-      "at": "2026-07-20T04:18:18Z",
-      "hash": "00af17f2854491629f4ad804f6d11863426af7da",
-      "passes": 43,
+      "at": "2026-07-30T00:23:36Z",
+      "hash": "f815956d5507faf0bd6acab2cd6630c2bfb365c6",
+      "passes": 46,
       "pr": 18799
     },
     ".agents/scripts/pulse-fast-fail.sh": {
@@ -2436,9 +2436,9 @@
       "pr": 18691
     },
     ".agents/scripts/pulse-issue-reconcile.sh": {
-      "at": "2026-07-28T04:46:48Z",
-      "hash": "79a1ae340a50465e25f33a7c46433bb060ca876b",
-      "passes": 49,
+      "at": "2026-07-29T22:17:52Z",
+      "hash": "b6047b9032f0911c02e85205d171a90bab1daef4",
+      "passes": 50,
       "pr": 18690
     },
     ".agents/scripts/pulse-merge.sh": {
@@ -2448,9 +2448,9 @@
       "pr": 18829
     },
     ".agents/scripts/pulse-prefetch.sh": {
-      "at": "2026-07-19T02:53:21Z",
-      "hash": "41093bd3d5902a62ac13e8c2411b609a8395daaa",
-      "passes": 16,
+      "at": "2026-07-29T22:17:52Z",
+      "hash": "32a5fa7b46e70c73f1adec3cd9418e4163eb74f2",
+      "passes": 17,
       "pr": 18995
     },
     ".agents/scripts/pulse-quality-debt.sh": {
@@ -2460,9 +2460,9 @@
       "pr": 18681
     },
     ".agents/scripts/pulse-simplification-state.sh": {
-      "at": "2026-07-19T17:10:04Z",
-      "hash": "5e39a9c2597a9b29a2876337b5f493219e33ca64",
-      "passes": 13,
+      "at": "2026-07-30T02:31:16Z",
+      "hash": "9d6959bfbc4fe3efdd97f028a0df4dde698f1c5b",
+      "passes": 14,
       "pr": 18680
     },
     ".agents/scripts/pulse-simplification.sh": {
@@ -2478,9 +2478,9 @@
       "pr": 18655
     },
     ".agents/scripts/pulse-wrapper.sh": {
-      "at": "2026-07-27T03:11:25Z",
-      "hash": "1d213b2b18e8cbc608c1abad5e9c2b4c47e1ebc4",
-      "passes": 64,
+      "at": "2026-07-29T05:38:38Z",
+      "hash": "dbd77848855c33827e5706f5c8c770e2df2a3384",
+      "passes": 65,
       "pr": 18689
     },
     ".agents/scripts/quality-feedback-findings-lib.sh": {
@@ -2532,9 +2532,9 @@
       "pr": 15917
     },
     ".agents/scripts/session-miner-pulse.sh": {
-      "at": "2026-05-03T12:51:58Z",
-      "hash": "d50294b381d2cb160dcb5009a3afe473ccb261e7",
-      "passes": 5,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "d08c93d98066192154ec2011342381431a994069",
+      "passes": 6,
       "pr": 16950
     },
     ".agents/scripts/settings-helper.sh": {
@@ -2544,9 +2544,9 @@
       "pr": 15916
     },
     ".agents/scripts/shared-constants.sh": {
-      "at": "2026-07-28T01:01:33Z",
-      "hash": "913d4d814be07fc4e4ec5df7cabf6ba813736e1b",
-      "passes": 41,
+      "at": "2026-07-30T02:31:17Z",
+      "hash": "dff1fa1e9171ec6a7fb54d261c1cbc0c825fed6a",
+      "passes": 42,
       "pr": 18847
     },
     ".agents/scripts/stats-functions.sh": {
@@ -2556,9 +2556,9 @@
       "pr": 18808
     },
     ".agents/scripts/stats-quality-sweep.sh": {
-      "at": "2026-07-12T05:41:23Z",
-      "hash": "9eed8976d20d6256757346a6c0fa8c60fb703cf6",
-      "passes": 16,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "e7dfc6b545ed175adbb62102472b49ddc51e8370",
+      "passes": 17,
       "pr": 18810
     },
     ".agents/scripts/tabby-helper.sh": {
@@ -2568,9 +2568,9 @@
       "pr": 17549
     },
     ".agents/scripts/tests/test-consolidation-dispatch.sh": {
-      "at": "2026-07-28T04:46:52Z",
-      "hash": "6005cc70b581ce129f4f6f2e2254f2f1f0cb3e0e",
-      "passes": 11,
+      "at": "2026-07-29T22:17:53Z",
+      "hash": "c765cb51b872988ac5e3e3b68bf7cc34f89cfe39",
+      "passes": 12,
       "pr": 18679
     },
     ".agents/scripts/tests/test-gh-signature-helper.sh": {
@@ -4224,9 +4224,9 @@
       "pr": 15534
     },
     ".agents/tools/ai-assistants/headless-dispatch.md": {
-      "at": "2026-07-11T14:34:23Z",
-      "hash": "4457243e36a3f5b01df8d42bcd9afe695b780a82",
-      "passes": 3,
+      "at": "2026-07-30T02:31:35Z",
+      "hash": "fb94e5cf424b4393d3a8343ae560cb23fa053c7e",
+      "passes": 4,
       "pr": 12352
     },
     ".agents/tools/ai-assistants/models-README.md": {
@@ -5001,9 +5001,9 @@
       "pr": 11338
     },
     ".agents/tools/context/model-routing.md": {
-      "at": "2026-07-18T16:11:02Z",
-      "hash": "9146b2f440de5da00c5a01837ec93e2788d83127",
-      "passes": 11,
+      "at": "2026-07-28T20:12:29Z",
+      "hash": "aa0b135e8dd03992492c978bb4d2329176672d67",
+      "passes": 12,
       "pr": 13255
     },
     ".agents/tools/context/openapi-search.md": {
@@ -7199,9 +7199,9 @@
       "pr": 19047
     },
     ".agents/workflows/git-workflow.md": {
-      "at": "2026-07-18T16:12:37Z",
-      "hash": "23ad166301cf8a755b022801238ea96b243a0d64",
-      "passes": 17,
+      "at": "2026-07-28T22:19:14Z",
+      "hash": "015c85c9abea6f6e8ec59ae352020f95dca9759b",
+      "passes": 18,
       "pr": 12777
     },
     ".agents/workflows/init-routines.md": {
@@ -7480,21 +7480,21 @@
       "pr": 16415
     },
     "TODO.md": {
-      "at": "2026-07-28T01:02:28Z",
-      "hash": "b13671e3fd1fea5b378d99554d95205f37546edb",
-      "passes": 210,
+      "at": "2026-07-30T02:32:13Z",
+      "hash": "b86f505d939aa891e1772d49d3bb789c226cd070",
+      "passes": 212,
       "pr": 15490
     },
     "aidevops.sh": {
-      "at": "2026-07-28T17:00:36Z",
-      "hash": "b9bedf061d23f9252096919585031a11e1ad1c65",
-      "passes": 305,
+      "at": "2026-07-30T00:24:34Z",
+      "hash": "0043fc7a710e1fed864485fd1c48ca8d287bedea",
+      "passes": 312,
       "pr": 19029
     },
     "setup.sh": {
-      "at": "2026-07-28T17:00:36Z",
-      "hash": "d870404868f46f3ab11c3b73559286a8f91b750f",
-      "passes": 304,
+      "at": "2026-07-30T00:24:34Z",
+      "hash": "ac493378e1aa10217191764e10f536b2668141dc",
+      "passes": 311,
       "pr": 15470
     },
     "todo/tasks/GH#15363-brief.md": {
@@ -7696,16 +7696,16 @@
       "passes": 6
     },
     ".agents/scripts/pulse-diagnose-helper.sh": {
-      "hash": "58e45b171aee160857dca492db6801c6cf51bc59",
-      "at": "2026-07-21T03:05:28Z",
+      "hash": "5ffb66f41487273f5c786512572d4b74db5ea3fd",
+      "at": "2026-07-30T02:31:15Z",
       "pr": 20414,
-      "passes": 19
+      "passes": 20
     },
     ".agents/scripts/pulse-routines.sh": {
-      "hash": "e0a2ff8349081fa6a0a51764a9e888cb0402a0ef",
-      "at": "2026-07-23T23:46:07Z",
+      "hash": "5f9c1536a4fb08e47ae4a643dd9d3592826b0e69",
+      "at": "2026-07-29T22:17:52Z",
       "pr": 20413,
-      "passes": 7
+      "passes": 9
     },
     ".agents/reference/parent-task-lifecycle.md": {
       "hash": "ff5714e088204a0ade863884d48ef8a19a2c012a",
@@ -7726,10 +7726,10 @@
       "passes": 8
     },
     ".agents/reference/repos-json-fields.md": {
-      "hash": "b898b61decf86a0e3e53359e7d96bbdb08312bdb",
-      "at": "2026-07-22T20:56:41Z",
+      "hash": "664913b0d06de880e938072ab0a0737826da486c",
+      "at": "2026-07-29T22:17:44Z",
       "pr": 20440,
-      "passes": 14
+      "passes": 15
     },
     ".agents/reference/progressive-disclosure.md": {
       "hash": "222cc0b8477a4947c750e5a735585efb2b1dd546",
@@ -7750,28 +7750,28 @@
       "passes": 8
     },
     ".agents/scripts/issue-sync-relationships.sh": {
-      "hash": "4cfe0736400ef42c522e7a181c959bfb6c7d2f25",
-      "at": "2026-07-28T04:46:45Z",
+      "hash": "6ba73a6d78c758408956bfe061d7c1247354ffd1",
+      "at": "2026-07-29T22:17:50Z",
       "pr": 20524,
-      "passes": 11
+      "passes": 12
     },
     ".agents/scripts/shared-gh-wrappers-rest-fallback.sh": {
-      "hash": "9038c3e36cee82922604697698f0e6127523e1ed",
-      "at": "2026-07-26T05:05:42Z",
+      "hash": "65d1f9c668c897f27b9a16298d8c9eefd72c185a",
+      "at": "2026-07-29T02:26:22Z",
       "pr": 20552,
-      "passes": 29
+      "passes": 30
     },
     ".agents/scripts/pulse-dirty-pr-sweep.sh": {
-      "hash": "9ad9a956f7f686a458b3b86667cd5d0e11a94780",
-      "at": "2026-07-26T15:18:09Z",
+      "hash": "96a786c79fef00879d9b57783fc53317b3a7c863",
+      "at": "2026-07-29T22:17:51Z",
       "pr": 20618,
-      "passes": 9
+      "passes": 10
     },
     ".agents/scripts/pulse-dispatch-worker-launch.sh": {
-      "hash": "a1fef785b323b5f3843db6c19bfe4708e6ee9d51",
-      "at": "2026-07-28T16:59:44Z",
+      "hash": "954d5a51e7b71b72f4239111abb6e3e4ddb95dac",
+      "at": "2026-07-29T05:38:37Z",
       "pr": 20617,
-      "passes": 48
+      "passes": 50
     },
     ".agents/reference/dispatch-blockers.md": {
       "hash": "a474d553d1a257317c034d9071bf0b1ae4358725",
@@ -7858,16 +7858,16 @@
       "passes": 4
     },
     ".agents/scripts/worktree-clean-lib.sh": {
-      "hash": "c66e32b5abcfbf31c921e1aa2b8381658f5998e8",
-      "at": "2026-07-28T16:59:47Z",
+      "hash": "37187398ed9a7b13743dfe0c5c4af976cb85b531",
+      "at": "2026-07-29T02:26:31Z",
       "pr": 26042,
-      "passes": 8
+      "passes": 9
     },
     ".agents/scripts/pulse-dispatch-lib.sh": {
-      "hash": "f51ae6c062ece2d2873b3eba7807cb46df8f2f03",
-      "at": "2026-07-27T02:02:17Z",
+      "hash": "3875559a819c3dac5107a6e0733bb38e612ed1ac",
+      "at": "2026-07-29T22:17:51Z",
       "pr": 26041,
-      "passes": 6
+      "passes": 8
     },
     ".agents/aidevops/cases-plane.md": {
       "hash": "c04dd9d087d38be91374d25310943c94ae664f63",
@@ -7906,10 +7906,10 @@
       "passes": 1
     },
     ".agents/scripts/tool-version-check.sh": {
-      "hash": "c84483f6aa977a37c25a70c274e1189ca6d7b4a7",
-      "at": "2026-07-13T01:30:00Z",
+      "hash": "7032a3bffd0709b235a509c48a27ac2cdd754930",
+      "at": "2026-07-30T02:31:18Z",
       "pr": 25882,
-      "passes": 2
+      "passes": 3
     },
     ".agents/scripts/worker-activity-watchdog.sh": {
       "hash": "93e51e909a696902bdf9e68a030ef274148f52e0",
@@ -7918,10 +7918,10 @@
       "passes": 3
     },
     ".agents/scripts/repo-aidevops-health-helper.sh": {
-      "hash": "519c69ab3a212a0e81e918d0bc935de67a08895b",
-      "at": "2026-07-28T01:01:32Z",
+      "hash": "dcf8a6fbee889016c51b3ad989cab3243114233f",
+      "at": "2026-07-29T22:17:52Z",
       "pr": 26253,
-      "passes": 3
+      "passes": 4
     },
     ".agents/scripts/resource-metrics-helper.sh": {
       "hash": "1f660b3d1511c60b03b4e9c563964798b79fe7fd",
@@ -7936,16 +7936,16 @@
       "passes": 3
     },
     ".agents/scripts/stats-health-dashboard.sh": {
-      "hash": "65f487c487c0e2af0f276c0f2e01b16f32304a15",
-      "at": "2026-07-02T10:01:30Z",
+      "hash": "de98059f4a930611642fa7acf8dbd461018ed4df",
+      "at": "2026-07-29T22:17:53Z",
       "pr": 26248,
-      "passes": 2
+      "passes": 3
     },
     ".agents/aidevops/knowledge-plane.md": {
-      "hash": "11b3cfa38ef305155117041182b0e6456b554de3",
-      "at": "2026-07-02T17:50:50Z",
+      "hash": "fb1a290e8e2dd50f6492808bc43ebda331bc66bb",
+      "at": "2026-07-30T02:30:48Z",
       "pr": 25993,
-      "passes": 2
+      "passes": 4
     },
     ".agents/scripts/task-complete-helper.sh": {
       "hash": "4e079911f6e44adf60b1496417c965b1eb71aaba",
@@ -8038,10 +8038,10 @@
       "passes": 2
     },
     ".agents/scripts/dispatch-ledger-helper.sh": {
-      "hash": "f4a66408cd64b22809982c85f7b9660287998ce6",
-      "at": "2026-07-27T02:02:00Z",
+      "hash": "ebe2e659454047e01d3316291dad94578593c3f1",
+      "at": "2026-07-29T02:25:56Z",
       "pr": 26526,
-      "passes": 5
+      "passes": 6
     },
     ".agents/scripts/file-size-regression-helper.sh": {
       "hash": "a2dcae61063d5f8b6fad85f158e0eb05a5b55c88",
@@ -8080,10 +8080,10 @@
       "passes": 2
     },
     ".agents/scripts/dispatch-dedup-stale.sh": {
-      "hash": "07eda85d58bb8fca37ea3d7c67670d490e5f3b7b",
-      "at": "2026-07-27T02:01:59Z",
+      "hash": "1ac6f2faca1a24ef77defe7ab985ff152d62f058",
+      "at": "2026-07-30T02:31:12Z",
       "pr": 26555,
-      "passes": 9
+      "passes": 10
     },
     ".agents/scripts/headless-runtime-failure.sh": {
       "hash": "6b3c3396b91e4c020b3aec1872a9534e45391339",
@@ -8092,10 +8092,10 @@
       "passes": 12
     },
     ".agents/scripts/gh-failure-miner-helper.sh": {
-      "hash": "a4ed111ba2630eff5f153d2f353ea5e727dcf819",
-      "at": "2026-07-18T15:45:17Z",
+      "hash": "7f2647c867753da6656a6273633277ca64ec02d4",
+      "at": "2026-07-29T22:17:49Z",
       "pr": 26821,
-      "passes": 2
+      "passes": 3
     },
     ".agents/scripts/tests/test-quality-feedback-main-verification-scan.sh": {
       "hash": "a7845f78f225407c2a6c31b8ecaefcf37f956c3b",
@@ -8104,10 +8104,10 @@
       "passes": 3
     },
     ".agents/scripts/aidevops-cli/aidevops-init-lib.sh": {
-      "hash": "6abd839a0b3f4d945257f33cca01b4a9c43585fe",
-      "at": "2026-07-23T15:09:55Z",
+      "hash": "a550baf11b6a689e14f2b0c87364994e19d5166c",
+      "at": "2026-07-29T05:38:29Z",
       "pr": 27277,
-      "passes": 6
+      "passes": 7
     }
   },
   "setup-modules/agent-deploy.sh": {

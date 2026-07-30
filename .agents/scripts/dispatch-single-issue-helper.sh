@@ -563,14 +563,15 @@ _dsi_repo_path_for_slug() {
 # one. This was the canonical failure mode observed during the 2026-04-27
 # GitHub-search degradation incident on #21406/#21407/#21408.
 #
-# Best-effort — non-fatal if the gh edit fails. The worker still launches;
-# the operator can manually fix labels via `set_issue_status` after the
-# fact. The race-window risk is preferred over refusing to launch.
+# Required for normal issue-backed dispatch. If the ownership mutation fails,
+# dispatch stops before worktree creation or worker launch and releases its
+# consensus claim. Launching without a verifiable owner would make the worker's
+# fail-closed ownership fence reject the same dispatch later.
 #
 # Args:
 #   $1 - issue_number, $2 - repo_slug, $3 - self_login (runner GH login),
 #   $4 - issue_meta_json (.assignees[].login parsed for normalization)
-# Returns: 0 success, 1 gh edit failed (warning emitted)
+# Returns: 0 success, 1 gh edit failed (error emitted)
 #######################################
 _dsi_apply_dispatch_ceremony() {
 	local issue_number="$1"
@@ -593,7 +594,7 @@ _dsi_apply_dispatch_ceremony() {
 	done < <(printf '%s' "$issue_meta_json" | jq -r '.assignees[].login // ""')
 
 	if ! set_issue_status "$issue_number" "$repo_slug" "queued" "${_extra_flags[@]}" >/dev/null 2>&1; then
-		_dsi_warn "Dispatch ceremony failed (non-fatal — worker will still launch; fix labels manually if needed)"
+		_dsi_err "Dispatch ceremony failed — refusing to launch without a verified issue owner"
 		return 1
 	fi
 
@@ -1124,8 +1125,8 @@ _dsi_parse_dispatch_args() {
 			shift
 			;;
 		--no-ceremony)
-			# Skip the pre-launch dispatch ceremony (status:queued + origin:worker
-			# + assignee normalize). Default: ceremony is ON. Use only when
+			# Skip the pre-launch dispatch ceremony (status:queued + assignee
+			# normalization). Default: ceremony is ON. Use only when
 			# you intentionally want to bypass dedup-visibility — e.g., when
 			# debugging a stuck worker by re-launching without disturbing
 			# the existing label/assignee state.
@@ -1200,7 +1201,7 @@ _dsi_print_dryrun() {
 	if [[ "$_DSI_ARG_NO_CEREMONY" -eq 1 ]]; then
 		_dsi_info "  Ceremony:     SKIPPED (--no-ceremony) — labels and assignee unchanged"
 	else
-		_dsi_info "  Ceremony:     would set status:queued + origin:worker + assignee=self (pulse-parity)"
+		_dsi_info "  Ceremony:     would set status:queued + assignee=self (pulse-parity)"
 	fi
 	case "$dedup_state" in
 	blocked) _dsi_warn "  Dedup:        WOULD BLOCK — ${dedup_result}" ;;
@@ -1533,7 +1534,10 @@ _dsi_dispatch_after_dedup_clear() {
 	local self_login="$3"
 	local session_key="$4"
 
-	_dsi_apply_prelaunch_ceremony_if_enabled "$issue_number" "$repo_slug" "$self_login"
+	if ! _dsi_apply_prelaunch_ceremony_if_enabled "$issue_number" "$repo_slug" "$self_login"; then
+		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "dispatch_ceremony_failed"
+		return 1
+	fi
 
 	# Step 7: pre-create worktree
 	if ! _dsi_create_worktree "$issue_number" "$repo_slug"; then
@@ -1565,11 +1569,14 @@ _dsi_apply_prelaunch_ceremony_if_enabled() {
 
 	# Step 5.5: pre-launch dispatch ceremony (t3000) — pulse-parity ownership
 	# claim. Closes the race window between worker launch and the next pulse
-	# cycle by transitioning status:queued + origin:worker + assignee=self
-	# atomically before the worker spawns. Bypassed via --no-ceremony.
-	if [[ "$_DSI_ARG_NO_CEREMONY" -ne 1 ]]; then
-		_dsi_apply_dispatch_ceremony "$issue_number" "$repo_slug" \
-			"$self_login" "$_DSI_ISSUE_META_JSON" || true
+	# cycle by transitioning status:queued + assignee=self atomically before
+	# the worker spawns. Bypassed only via explicit --no-ceremony.
+	if [[ "$_DSI_ARG_NO_CEREMONY" -eq 1 ]]; then
+		return 0
+	fi
+	if ! _dsi_apply_dispatch_ceremony "$issue_number" "$repo_slug" \
+		"$self_login" "$_DSI_ISSUE_META_JSON"; then
+		return 1
 	fi
 	return 0
 }
@@ -1685,8 +1692,8 @@ Options:
   --base <ref>    Worktree base branch/ref. Default: repo dispatch/PR base
                   policy from config, falling back to origin/HEAD.
   --dry-run       Print planned dispatch without launching.
-  --no-ceremony   Skip the pre-launch ceremony (status:queued + origin:worker
-                  + assignee normalize). Default: ceremony is ON. Use only
+  --no-ceremony   Skip the pre-launch ceremony (status:queued + assignee
+                  normalization). Default: ceremony is ON. Use only
                   when you intentionally want to bypass dedup-visibility.
   -h, --help      Show this help.
 

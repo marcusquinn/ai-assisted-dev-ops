@@ -434,6 +434,31 @@ else
 	pass "parse_task_line: multiple parent declarations fail closed"
 fi
 
+parsed_tags=$(parse_task_line '- [ ] t7 preserve labels #bug #release-blocker #priority:high tier:standard')
+if printf '%s\n' "$parsed_tags" | grep -qx 'tags=#bug,#release-blocker,#priority:high'; then
+	pass "parse_task_line: preserves simple, hyphenated, and colon-qualified tags"
+else
+	fail "parse_task_line: truncated a colon-qualified tag or changed existing tags"
+fi
+
+mapped_labels=$(map_tags_to_labels "$(printf '%s\n' "$parsed_tags" | sed -n 's/^tags=//p')")
+if [[ "$mapped_labels" == "bug,priority:high,release-blocker" ]] &&
+	! printf '%s\n' "$mapped_labels" | tr ',' '\n' | grep -qx 'priority'; then
+	pass "map_tags_to_labels: preserves priority:high without a bare priority label"
+else
+	fail "map_tags_to_labels: changed or truncated priority:high"
+fi
+
+for priority in critical high medium low; do
+	parsed_priority=$(parse_task_line "- [ ] t7 preserve priority #priority:${priority} tier:standard")
+	if printf '%s\n' "$parsed_priority" | grep -qx "tags=#priority:${priority}" &&
+		[[ "$(map_tags_to_labels "#priority:${priority}")" == "priority:${priority}" ]]; then
+		pass "priority tags: preserves priority:${priority} exactly"
+	else
+		fail "priority tags: changed or truncated priority:${priority}"
+	fi
+done
+
 # -----------------------------------------------------------------------------
 # extract_task_block behavior and large-file process regression (GH#28791)
 # -----------------------------------------------------------------------------

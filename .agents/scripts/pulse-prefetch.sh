@@ -68,7 +68,7 @@ prefetch_state() {
 			else .pulse_hours.end
 			end;
 		.initialized_repos[] |
-		select(.pulse == true and (.local_only // false) == false and .slug != "") |
+		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") |
 		[
 			.slug,
 			.path,

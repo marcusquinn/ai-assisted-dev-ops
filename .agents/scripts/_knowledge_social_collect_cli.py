@@ -95,13 +95,16 @@ class GuardedReaderProcess:
 
 
 def guarded_reader_environment(
-    token_name: str, test_keys: tuple[str, ...] = ()
+    credential_names: str | tuple[str, ...], test_keys: tuple[str, ...] = ()
 ) -> dict[str, str]:
-    """Expose only one provider token and bounded runtime support variables."""
+    """Expose only provider credentials and bounded runtime support variables."""
+    allowed_names = (
+        (credential_names,) if isinstance(credential_names, str) else credential_names
+    )
     environment = {
         key: value
         for key, value in os.environ.items()
-        if key in READER_ENVIRONMENT_KEYS or key == token_name
+        if key in READER_ENVIRONMENT_KEYS or key in allowed_names
     }
     if os.environ.get("AIDEVOPS_TEST_MODE") == "1":
         for key in ("AIDEVOPS_TEST_MODE", "PYTHONPATH", *test_keys):

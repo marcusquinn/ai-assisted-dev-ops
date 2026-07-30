@@ -167,7 +167,7 @@ _mark_seen() {
 _get_pulse_repos() {
     [[ -n "${STUB_SCAN_REPOS:-}" ]] && { echo "$STUB_SCAN_REPOS" | tr ',' '\n'; return 0; }
     [[ -f "$REPOS_JSON" ]] || { _log "ERROR" "repos.json not found at ${REPOS_JSON}"; return 1; }
-    jq -r '.initialized_repos[]? | select(.pulse == true) | select(.local_only != true) | .slug' \
+    jq -r '.initialized_repos[]? | select(.maintenance != false and .pulse == true) | select(.local_only != true) | .slug' \
         "$REPOS_JSON" || true
     return 0
 }

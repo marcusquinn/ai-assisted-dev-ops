@@ -186,7 +186,7 @@ prefetch_foss_scan() {
 	local foss_repo_count=0
 	local repos_json_path="${REPOS_JSON:-}"
 	if [[ -n "$repos_json_path" && -f "$repos_json_path" ]] && command -v jq &>/dev/null; then
-		foss_repo_count=$(jq '[.initialized_repos[] | select(.foss == true)] | length' "$repos_json_path" || echo 0)
+		foss_repo_count=$(jq '[.initialized_repos[] | select(.maintenance != false and (.local_only // false) == false and .foss == true)] | length' "$repos_json_path" || echo 0)
 	fi
 	if [[ "${foss_repo_count:-0}" -eq 0 ]]; then
 		return 0

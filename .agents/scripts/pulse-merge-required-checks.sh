@@ -13,6 +13,8 @@ PMRC_JSON_ARRAY="array"
 PMRC_MAINTAINER_GATE="maintainer-gate"
 PMRC_MAINTAINER_GATE_DISPLAY="Maintainer Review & Assignee Gate"
 PMRC_MAINTAINER_GATE_WORKFLOW="gate / Maintainer Review & Assignee Gate"
+PMRC_REVIEW_BOT_GATE="review-bot-gate"
+PMRC_REVIEW_BOT_GATE_WORKFLOW="gate / review-bot-gate"
 PMRC_SUBJECT_HEAD_PREFIX="head "
 PMRC_SUBJECT_PR_PREFIX="PR #"
 PMRC_BLOCKER_REVIEW_BOT_THREADS="review-bot-threads"
@@ -33,6 +35,239 @@ _pmrc_gh_read() {
 		_gh_with_timeout read "$@" || rc=$?
 	else
 		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
+_pmrc_cache_key() {
+	local raw_key="$1"
+	local safe_key=""
+	safe_key=$(printf '%s' "$raw_key" | tr -c '[:alnum:]._-' '_')
+	[[ -n "$safe_key" ]] || safe_key="empty"
+	printf '%s\n' "$safe_key"
+	return 0
+}
+
+#######################################
+# Return whether a repository-ruleset ref pattern applies to the default branch.
+# Rulesets may use exact refs, GitHub tokens, or simple branch globs.
+#
+# Args: $1=pattern, $2=default_branch
+# Returns: 0=matches default branch, 1=does not match
+#######################################
+_ruleset_ref_matches_default_branch() {
+	local pattern="$1"
+	local default_branch="$2"
+	local default_ref="refs/heads/${default_branch}"
+	local branch_pattern="${pattern}"
+
+	case "$pattern" in
+	"~ALL" | "~DEFAULT_BRANCH" | "$default_ref" | "$default_branch")
+		return 0
+		;;
+	esac
+	case "$pattern" in
+	refs/heads/*)
+		branch_pattern="${pattern#refs/heads/}"
+		;;
+	esac
+
+	case "$pattern" in
+	*"*"*)
+		# shellcheck disable=SC2254 # Intentionally treat ruleset branch globs as patterns.
+		case "$default_ref" in
+		$pattern)
+			return 0
+			;;
+		esac
+		# shellcheck disable=SC2254 # Intentionally treat ruleset branch globs as patterns.
+		case "$default_branch" in
+		$branch_pattern)
+			return 0
+			;;
+		esac
+		;;
+	esac
+
+	return 1
+}
+
+#######################################
+# Resolve required status check contexts from active repository rulesets that
+# match the default branch.
+#
+# Args: $1=repo_slug, $2=default_branch
+# Stdout: newline-delimited contexts
+# Returns: 0=resolved, 1=API/parse error
+#######################################
+_required_contexts_from_rulesets_for_default_branch() {
+	local repo_slug="$1"
+	local default_branch="$2"
+	local log_target="${LOGFILE:-/dev/stderr}"
+	local rulesets_json=""
+
+	rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+	[[ -n "$rulesets_json" && "$rulesets_json" != "[]" && "$rulesets_json" != "null" ]] || return 0
+
+	local active_ids=""
+	active_ids=$(printf '%s' "$rulesets_json" | jq -r '.[]? | select(.enforcement == "active") | .id // empty' 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+	[[ -n "$active_ids" ]] || return 0
+
+	local contexts_tmp=""
+	contexts_tmp=$(mktemp) || {
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: mktemp failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		return 1
+	}
+
+	local id="" detail="" include_patterns="" exclude_patterns="" pattern=""
+	local matches_default=0 excluded_default=0 contexts=""
+	while IFS= read -r id; do
+		[[ -n "$id" ]] || continue
+		detail=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets/${id}" 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+
+		include_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.include // [] | .[]' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+		exclude_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.exclude // [] | .[]' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} exclude parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+
+		matches_default=0
+		while IFS= read -r pattern; do
+			[[ -n "$pattern" ]] || continue
+			if _ruleset_ref_matches_default_branch "$pattern" "$default_branch"; then
+				matches_default=1
+				break
+			fi
+		done <<<"$include_patterns"
+		[[ "$matches_default" -eq 1 ]] || continue
+
+		excluded_default=0
+		while IFS= read -r pattern; do
+			[[ -n "$pattern" ]] || continue
+			if _ruleset_ref_matches_default_branch "$pattern" "$default_branch"; then
+				excluded_default=1
+				break
+			fi
+		done <<<"$exclude_patterns"
+		[[ "$excluded_default" -eq 0 ]] || continue
+
+		contexts=$(printf '%s' "$detail" | jq -r '.rules[]? | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[]? | (.context // .name // empty)' 2>/dev/null) || {
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: required-check parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		}
+		[[ -n "$contexts" ]] && printf '%s\n' "$contexts" >>"$contexts_tmp"
+	done <<<"$active_ids"
+
+	if [[ -s "$contexts_tmp" ]]; then
+		sort -u "$contexts_tmp"
+	fi
+	rm -f "$contexts_tmp"
+	return 0
+}
+
+#######################################
+# Resolve required status check contexts for a repository's default branch from
+# classic branch protection plus active matching repository rulesets.
+#
+# Args: $1=repo_slug
+# Stdout: newline-delimited contexts; empty means no configured required checks
+# Returns: 0=resolved, 1=API/parse error
+#######################################
+_required_contexts_for_default_branch_uncached() {
+	local repo_slug="$1"
+	local log_target="${LOGFILE:-/dev/stderr}"
+	local default_branch="" default_branch_rc=0
+	default_branch=$(_pmrc_gh_read gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null) || default_branch_rc=$?
+	if [[ "$default_branch_rc" -ne 0 || -z "$default_branch" ]]; then
+		echo "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	fi
+
+	local protection_resp="" protection_rc=0
+	protection_resp=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-branch-protection-required-contexts-rest" \
+		_pmrc_gh_read gh api \
+		"repos/${repo_slug}/branches/${default_branch}/protection/required_status_checks" \
+		2>&1) || protection_rc=$?
+	if [[ "$protection_rc" -ne 0 ]]; then
+		if grep -qi 'HTTP 404\|Not Found' <<<"$protection_resp"; then
+			local ruleset_contexts_404=""
+			ruleset_contexts_404=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
+			if [[ -n "$ruleset_contexts_404" ]]; then
+				echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (HTTP 404), but active rulesets require contexts (GH#23019)" >>"$log_target"
+				printf '%s\n' "$ruleset_contexts_404"
+				return 0
+			fi
+			echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (HTTP 404) — empty contexts (t3193, GH#23019)" >>"$log_target"
+			return 0
+		fi
+		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection API failed for ${repo_slug} (exit ${protection_rc}) — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	fi
+
+	local classic_contexts="" ruleset_contexts=""
+	classic_contexts=$(printf '%s' "$protection_resp" | jq -r '(.contexts // [])[], (.checks // [])[].context? // empty' 2>/dev/null) || {
+		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection parse failed for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		return 1
+	}
+	ruleset_contexts=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
+	if [[ -n "$ruleset_contexts" ]]; then
+		echo "[pulse-merge] _required_contexts_for_default_branch: active rulesets add required contexts for ${repo_slug} (GH#23019)" >>"$log_target"
+	fi
+
+	printf '%s\n%s\n' "$classic_contexts" "$ruleset_contexts" | awk 'NF && !seen[$0]++'
+	return 0
+}
+
+_required_contexts_for_default_branch() {
+	local repo_slug="$1"
+	local cache_dir="${AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR:-}"
+	local cache_key="" cache_body_file="" cache_rc_file="" cache_rc=""
+	local contexts="" rc=0
+
+	if [[ -n "$cache_dir" && -d "$cache_dir" ]]; then
+		cache_key=$(_pmrc_cache_key "$repo_slug")
+		cache_body_file="${cache_dir}/${cache_key}.body"
+		cache_rc_file="${cache_dir}/${cache_key}.rc"
+		if [[ -f "$cache_rc_file" && -f "$cache_body_file" ]]; then
+			cache_rc=$(<"$cache_rc_file")
+			[[ "$cache_rc" =~ ^[0-9]+$ ]] || cache_rc=1
+			if [[ "$cache_rc" -eq 0 && -s "$cache_body_file" ]]; then
+				while IFS= read -r contexts; do
+					printf '%s\n' "$contexts"
+				done <"$cache_body_file"
+			fi
+			return "$cache_rc"
+		fi
+	fi
+
+	contexts=$(_required_contexts_for_default_branch_uncached "$repo_slug") || rc=$?
+	if [[ -n "$cache_body_file" && -n "$cache_rc_file" ]]; then
+		printf '%s\n' "$rc" >"$cache_rc_file"
+		if [[ -n "$contexts" ]]; then
+			printf '%s\n' "$contexts" >"$cache_body_file"
+		else
+			: >"$cache_body_file"
+		fi
+	fi
+	if [[ "$rc" -eq 0 && -n "$contexts" ]]; then
+		printf '%s\n' "$contexts"
 	fi
 	return "$rc"
 }
@@ -70,27 +305,17 @@ _pmrc_record_preflight_check_mismatch() {
 	return 0
 }
 
-_pmrc_snapshot_checks_json() {
+_pmrc_normalize_snapshot_checks_json() {
 	local repo_slug="$1"
 	local head_sha="$2"
-	local runs_pages="" statuses_json="" checks_json=""
+	local checks_json=""
 
-	runs_pages=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/check-runs?per_page=100" \
-		--paginate --slurp 2>/dev/null) || {
-		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-runs fetch"
-		return 1
-	}
-	statuses_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/status" 2>/dev/null) || {
-		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "commit-status fetch"
-		return 1
-	}
-	# Stream API documents over stdin instead of passing large check-run payloads
-	# through --argjson, which can exceed the OS per-argument limit (GH#28164).
-	checks_json=$(printf '%s\n%s\n' "$runs_pages" "$statuses_json" | jq -s \
+	checks_json=$(jq -s \
 		--arg completed "$PMRC_CHECK_COMPLETED" --arg success "$PMRC_CHECK_SUCCESS" --arg failure "$PMRC_CHECK_FAILURE" \
 		--arg array_type "$PMRC_JSON_ARRAY" \
 		--arg skipped "skipped" --arg maintainer "$PMRC_MAINTAINER_GATE" --arg maintainer_display "$PMRC_MAINTAINER_GATE_DISPLAY" \
-		--arg maintainer_workflow "$PMRC_MAINTAINER_GATE_WORKFLOW" '
+		--arg maintainer_workflow "$PMRC_MAINTAINER_GATE_WORKFLOW" \
+		--arg review_gate "$PMRC_REVIEW_BOT_GATE" --arg review_gate_workflow "$PMRC_REVIEW_BOT_GATE_WORKFLOW" '
 		if length != 2 or (.[0] | type) != $array_type or (.[1] | type) != "object"
 		then error("invalid check-runs or commit-status response")
 		else . end |
@@ -127,27 +352,41 @@ _pmrc_snapshot_checks_json() {
 			| $executed // last
 		)
 		| map(. + {
-			family: (if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer else .name end),
-			family_key: (if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer else (.source + "\u0000" + .name) end)
+			family: (
+				if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer
+				elif (.name == $review_gate or .name == $review_gate_workflow) then $review_gate
+				else .name end
+			),
+			family_key: (
+				if (.name == $maintainer or .name == $maintainer_display or .name == $maintainer_workflow) then $maintainer
+				elif (.name == $review_gate or .name == $review_gate_workflow) then $review_gate
+				else (.source + "\u0000" + .name) end
+			)
 		})
 		| sort_by(.family_key, .name, .source)
 		| group_by(.family_key)
 		| map(
 			. as $members
-			| if .[0].family == $maintainer then
+			| .[0].family as $family
+			| if ($family == $maintainer or $family == $review_gate) then
 				# The stable branch-protection context is authoritative when present.
-				# Legacy workflow aliases remain fallback evidence only; otherwise a
-				# stale failed alias can override a newer successful stable status.
-				([$members[] | select(.name == $maintainer)] | sort_by(.observed_at)) as $stable
+				# The explicit review-gate commit status is its stable context; legacy
+				# workflow aliases remain fallback evidence only. This prevents a stale
+				# failed or cancelled caller from overriding a newer stable result.
+				([$members[] | select(
+					($family == $maintainer and .name == $maintainer)
+					or ($family == $review_gate and .source == "commit_status" and .name == $review_gate)
+				)] | sort_by(.observed_at)) as $stable
 				| (if ($stable | length) > 0 then $stable else ($members | sort_by(.observed_at)) end) as $effective
 				| {
-					name: $maintainer,
-					family: $maintainer,
+					name: $family,
+					family: $family,
 					source: "logical_family",
 					status: (if any($effective[]; .status != $completed) then $in_progress else $completed end),
 					conclusion: (
 						if any($effective[]; (.conclusion == $failure or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure")) then $failure
-						elif all($effective[]; (.conclusion == $success or .conclusion == "neutral" or .conclusion == $skipped)) then $success
+						elif ($family == $review_gate and all($effective[]; .conclusion == $success)) then $success
+						elif ($family == $maintainer and all($effective[]; (.conclusion == $success or .conclusion == "neutral" or .conclusion == $skipped))) then $success
 						else "" end
 					),
 					observed_at: ([$effective[]?.observed_at | select(. != "")] | max // ""),
@@ -162,6 +401,28 @@ _pmrc_snapshot_checks_json() {
 		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-set parse"
 		return 1
 	}
+	printf '%s\n' "$checks_json"
+	return 0
+}
+
+_pmrc_snapshot_checks_json() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	local runs_pages="" statuses_json="" checks_json=""
+
+	runs_pages=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/check-runs?per_page=100" \
+		--paginate --slurp 2>/dev/null) || {
+		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "check-runs fetch"
+		return 1
+	}
+	statuses_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/commits/${head_sha}/status" 2>/dev/null) || {
+		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_HEAD_PREFIX}${head_sha:0:12}" "commit-status fetch"
+		return 1
+	}
+	# Stream API documents over stdin instead of passing large check-run payloads
+	# through --argjson, which can exceed the OS per-argument limit (GH#28164).
+	checks_json=$(printf '%s\n%s\n' "$runs_pages" "$statuses_json" |
+		_pmrc_normalize_snapshot_checks_json "$repo_slug" "$head_sha") || return 1
 	printf '%s\n' "$checks_json"
 	return 0
 }
@@ -661,14 +922,14 @@ _pulse_merge_preflight_snapshot_gate() {
 		return 1
 	fi
 	if ! _pmrc_snapshot_review_threads_clear "$repo_slug" "$pr_number" "$base_branch"; then
-		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] || \
+		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] ||
 			_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_SNAPSHOT_UNAVAILABLE"
 		return 1
 	fi
 	if ! _pmrc_snapshot_checks_acceptable \
 		"$repo_slug" "$pr_number" "$checks_json" "$required_contexts" \
 		"$live_gate_evidence" "$current_head_sha"; then
-		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] || \
+		[[ -n "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] ||
 			_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_CHECKS_FAILED"
 		_pmrc_record_preflight_check_mismatch
 		return 1

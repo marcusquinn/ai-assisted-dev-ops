@@ -86,7 +86,7 @@ cat >"$custom_table" <<'JSON'
 JSON
 migrate_custom_model_routing_reasoning_defaults
 assert_eq "medium" "$(jq -r '.tiers.simple.reasoning.openai' "$custom_table")" "simple custom reasoning migrates to medium" || true
-assert_eq "max" "$(jq -r '.tiers.thinking.reasoning.openai' "$custom_table")" "thinking custom reasoning migrates to max" || true
+assert_eq "high" "$(jq -r '.tiers.thinking.reasoning.openai' "$custom_table")" "thinking custom reasoning migrates to high" || true
 assert_eq "custom/simple" "$(jq -r '.tiers.simple.models[0]' "$custom_table")" "custom model order is preserved" || true
 assert_eq "keep" "$(jq -r '.tiers.simple.reasoning.other' "$custom_table")" "unrelated reasoning settings are preserved" || true
 assert_eq "preserve" "$(jq -r '.user_setting' "$custom_table")" "unrelated custom configuration is preserved" || true

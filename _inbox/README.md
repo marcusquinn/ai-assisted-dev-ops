@@ -9,6 +9,10 @@ Items here are unclassified: they have not yet been routed to a plane,
 assigned a sensitivity level, or deduplicated. Nothing in `_inbox/` is
 authoritative until triaged.
 
+Routing promotes canonical raw bytes into `_knowledge/` and records the resulting
+corpus-scoped `evidence_id`. Inbox paths, filenames, triage rows, and temporary
+copies never become authority and may be removed after a verified promotion.
+
 ## Tracked seed surface
 
 - `README.md` — this policy.
@@ -29,3 +33,15 @@ authoritative until triaged.
 
 All raw capture sub-folders are gitignored. Promote reviewed material into the
 appropriate destination plane.
+
+For an existing directory tree, do not copy it into `_inbox`. Run a bounded plan
+and import in place instead:
+
+```bash
+aidevops knowledge folder import path/to/folder --dry-run
+aidevops knowledge folder import path/to/folder
+```
+
+The importer never moves, edits, or deletes source files. `_inbox` remains
+disposable transit while the folder manifest records unsupported, failed,
+budget-stopped, renamed, and subsequently deleted observations.

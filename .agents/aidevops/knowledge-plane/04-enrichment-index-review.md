@@ -70,6 +70,24 @@ document-enrich-helper.sh status
 Tracks a 12-char schema hash in `extracted.json::schema_hash`. Same hash → skip
 (no LLM calls, no file write). Schema changed → re-extract. `--force-refresh` → always.
 
+### Mixed-media folder scheduling
+
+Folder ingestion writes a source-local `enrichment.json` projection for each
+supported item. It records the validated media type and deterministic processor
+dispositions without making generated output authoritative:
+
+| Input | Immediate projection | Optional queued projection |
+|-------|----------------------|----------------------------|
+| UTF-8/structured document | raw metadata, `text.txt` when directly decodable | document extraction |
+| Image | media metadata | OCR |
+| Audio | media metadata | transcription |
+| Video | media metadata | transcription and bounded keyframes |
+| Email/mailbox | parsed body, message, and attachment relationships | attachment-specific extraction |
+
+Missing helpers or local binaries produce `unavailable`, not false completion.
+Processor failures do not roll back committed raw evidence or successful sibling
+items; their coverage remains replayable from the folder manifest.
+
 ### Routine r041
 
 ```text

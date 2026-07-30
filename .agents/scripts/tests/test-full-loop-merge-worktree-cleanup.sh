@@ -12,6 +12,7 @@ FIXTURE_GIT_BIN=""
 GH_PR_HEAD_REF=""
 GH_PR_HEAD_OID=""
 GH_PR_HEAD_REPO=""
+GH_RELEASE_STATUS="not-requested"
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -57,6 +58,13 @@ gh() {
 	local subcommand="${2:-}"
 	local args="$*"
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
+		if [[ "$args" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+			jq -cn --arg head_ref "$GH_PR_HEAD_REF" --arg head_oid "$GH_PR_HEAD_OID" \
+				--arg head_repo "$GH_PR_HEAD_REPO" \
+				'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:"merge123"},
+				  headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
+			return 0
+		fi
 		if [[ "$args" == *"state,mergedAt,mergeCommit"* ]]; then
 			printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-11T00:00:00Z","mergeCommit":{"oid":"merge123"}}'
 			return 0
@@ -72,6 +80,17 @@ gh() {
 			return 0
 		fi
 	fi
+	return 0
+}
+
+_full_loop_terminal_release_status() {
+	local repo="$1"
+	local pr_number="$2"
+	[[ -n "$repo" && "$pr_number" =~ ^[0-9]+$ ]] || return 1
+	case "$GH_RELEASE_STATUS" in
+	published | superseded | not-requested) printf '%s\n' "$GH_RELEASE_STATUS" ;;
+	*) return 1 ;;
+	esac
 	return 0
 }
 
@@ -217,6 +236,7 @@ TRASH
 	GH_PR_HEAD_REF="feature/full-loop-cleanup"
 	GH_PR_HEAD_OID=$(git -C "$worktree_path" rev-parse HEAD)
 	GH_PR_HEAD_REPO="example/repo"
+	GH_RELEASE_STATUS="not-requested"
 	git -C "$canonical_repo" checkout -q -b feature/active
 	git clone -q "$origin_repo" "$updater_repo"
 	git -C "$updater_repo" config user.email test@example.invalid
@@ -241,6 +261,12 @@ configure_alias_repo_identity() {
 	local alias_branch="$1"
 	git -C "$worktree_path" branch -m "$alias_branch"
 	git -C "$worktree_path" remote add pr-head "https://github.com/${GH_PR_HEAD_REPO}.git"
+	return 0
+}
+
+configure_managed_repo_identity() {
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	git -C "$worktree_path" remote add managed "https://github.com/${GH_PR_HEAD_REPO}.git"
 	return 0
 }
 
@@ -313,6 +339,106 @@ test_cmd_merge_defers_exact_head_alias_worktree() {
 		and .worktree == $worktree and .branch == $branch
 	' "$receipt_path" >/dev/null || rc=1
 	print_result "exact-head repair alias persists its actual local cleanup target" "$rc"
+	return 0
+}
+
+test_cmd_adopt_merged_receipt_is_idempotent() {
+	setup_subject
+	configure_managed_repo_identity
+	local receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	local receipt_worktree=""
+	local rc=0
+	receipt_worktree=$(git -C "$worktree_path" rev-parse --show-toplevel)
+
+	cmd_adopt_merged_receipt "123" "example/repo" || rc=1
+	[[ -f "$receipt_path" ]] || rc=1
+	jq -e --arg worktree "$receipt_worktree" '
+		.repository == "example/repo" and .pr_number == 123
+		and .worktree == $worktree and .branch == "feature/full-loop-cleanup"
+		and .executor_completion_state == "FINALIZATION_PENDING"
+		and .resource_cleanup_state == "CLEANUP_DEFERRED"
+		and .release_status == "not-requested"
+		and .cleanup_lease.state == "pending"
+		and (.owner.pid | type == "number") and (.owner.process_identity | length > 0)
+	' "$receipt_path" >/dev/null || rc=1
+	cp "$receipt_path" "${TEST_ROOT}/adopted-before.json"
+	cmd_adopt_merged_receipt "123" "example/repo" || rc=1
+	cmp -s "$receipt_path" "${TEST_ROOT}/adopted-before.json" || rc=1
+	print_result "externally merged PR adoption is exact-head and idempotent" "$rc"
+	return 0
+}
+
+test_cmd_adopt_merged_receipt_rejects_unsafe_evidence() {
+	local rc=0
+	local receipt_path=""
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	GH_RELEASE_STATUS="pending"
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	[[ ! -e "$receipt_path" ]] || rc=1
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	GH_PR_HEAD_OID="0000000000000000000000000000000000000000"
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	[[ ! -e "$receipt_path" ]] || rc=1
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	git branch -m "feature/different-branch"
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	[[ ! -e "$receipt_path" ]] || rc=1
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	if cmd_adopt_merged_receipt "123" "wrong/repo" >/dev/null 2>&1; then rc=1; fi
+	[[ ! -e "$receipt_path" ]] || rc=1
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	_resolve_worktree_owner_pid() {
+		printf '%s\n' 99999999
+		return 0
+	}
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	[[ ! -e "$receipt_path" ]] || rc=1
+	unset -f _resolve_worktree_owner_pid
+
+	print_result "merged-receipt adoption rejects nonterminal, head, branch, repository, and dead-owner evidence" "$rc"
+	return 0
+}
+
+test_cmd_adopt_merged_receipt_rejects_receipt_conflicts() {
+	local rc=0
+	local receipt_path=""
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	cmd_adopt_merged_receipt "123" "example/repo" >/dev/null || rc=1
+	jq '.owner.process_identity = "reused process generation"' "$receipt_path" >"${receipt_path}.tmp"
+	mv "${receipt_path}.tmp" "$receipt_path"
+	cp "$receipt_path" "${TEST_ROOT}/conflict-before.json"
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	cmp -s "$receipt_path" "${TEST_ROOT}/conflict-before.json" || rc=1
+
+	setup_subject
+	configure_managed_repo_identity
+	receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	cmd_adopt_merged_receipt "123" "example/repo" >/dev/null || rc=1
+	full_loop_transition_cleanup_receipt "$receipt_path" "$_FULL_LOOP_CLEANUP_LEASED" "$$" || rc=1
+	cp "$receipt_path" "${TEST_ROOT}/leased-before.json"
+	if cmd_adopt_merged_receipt "123" "example/repo" >/dev/null 2>&1; then rc=1; fi
+	cmp -s "$receipt_path" "${TEST_ROOT}/leased-before.json" || rc=1
+
+	print_result "merged-receipt adoption preserves conflicting and leased receipts" "$rc"
 	return 0
 }
 
@@ -462,6 +588,9 @@ main() {
 	test_cmd_merge_defers_current_linked_worktree
 	test_cmd_merge_defers_cleanup_for_live_process_cwd
 	test_cmd_merge_defers_exact_head_alias_worktree
+	test_cmd_adopt_merged_receipt_is_idempotent
+	test_cmd_adopt_merged_receipt_rejects_unsafe_evidence
+	test_cmd_adopt_merged_receipt_rejects_receipt_conflicts
 	test_cleanup_plan_rejects_head_drift
 	test_cleanup_plan_rejects_detached_checkout
 	test_cleanup_plan_rejects_canonical_checkout

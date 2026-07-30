@@ -105,13 +105,15 @@ run_receipt_verify() {
 run_simplification_publish() {
 	local repo="$1"
 	local hook="${2:-}"
+	local source_file="${3:-}"
+	local validator="${4:-/usr/bin/true}"
 	(
 		LOGFILE="/dev/null"
 		# shellcheck source=../pulse-simplification-state.sh
 		source "$STATE_SCRIPT"
-		AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true \
+		AIDEVOPS_PLANNING_VALIDATOR="$validator" \
 			AIDEVOPS_PLANNING_BEFORE_PUSH_HOOK="$hook" \
-			_simplification_state_push "$repo"
+			_simplification_state_push "$repo" "$source_file"
 	)
 	return $?
 }
@@ -327,6 +329,99 @@ test_simplification_state_scope_preserves_checkout() {
 	return 0
 }
 
+test_external_simplification_source_contract() {
+	local name="accepts only valid isolated simplification-state sources"
+	local root="" repo="" source_file="" before="" after="" first_remote="" second_remote=""
+	local receipt_dir="" receipt="" invalid="" source_path_leaked=0 validator_rc=0 reject_rc=0
+	root=$(mktemp -d) || return 0
+	setup_repo "$root" || {
+		fail "$name" setup
+		return 0
+	}
+	repo="${root}/work"
+	mkdir -p "${repo}/.agents/configs" || return 0
+	printf '%s\n' '{"files":{}}' >"${repo}/.agents/configs/simplification-state.json"
+	git -C "$repo" add .agents/configs/simplification-state.json
+	GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid \
+		git -C "$repo" commit -qm "seed simplification state"
+	git -C "$repo" push -q origin main
+	source_file="${root}/isolated-state.json"
+	printf '%s\n' '{"files":{"external.sh":{"passes":3}}}' >"$source_file"
+	receipt_dir="${root}/receipts"
+	before=$(state_digest "$repo")
+	AIDEVOPS_PLANNING_RECEIPT_DIR="$receipt_dir" AIDEVOPS_PLANNING_WRITE_RECEIPT=true \
+		run_simplification_publish "$repo" "" "$source_file" || {
+		fail "$name" publish
+		rm -rf "$root"
+		return 0
+	}
+	after=$(state_digest "$repo")
+	first_remote=$(git --git-dir="${root}/remote.git" rev-parse main)
+	AIDEVOPS_PLANNING_RECEIPT_DIR="$receipt_dir" AIDEVOPS_PLANNING_WRITE_RECEIPT=true \
+		run_simplification_publish "$repo" "" "$source_file" || reject_rc=$?
+	second_remote=$(git --git-dir="${root}/remote.git" rev-parse main)
+	receipt=$(printf '%s\n' "$receipt_dir"/*.receipt)
+	grep -Fq "$source_file" "$receipt" 2>/dev/null && source_path_leaked=1
+	invalid="${root}/invalid.json"
+	printf '%s\n' '{not-json' >"$invalid"
+	run_simplification_publish "$repo" "" "$invalid" || validator_rc=$?
+	if [[ "$before" == "$after" && "$first_remote" == "$second_remote" && "$reject_rc" -eq 0 && \
+		"$validator_rc" -ne 0 && "$source_path_leaked" -eq 0 ]] &&
+		git --git-dir="${root}/remote.git" show main:.agents/configs/simplification-state.json | grep -q 'external.sh'; then
+		pass "$name"
+	else
+		fail "$name" "external source invariant failed (replay=$reject_rc invalid=$validator_rc leaked=$source_path_leaked)"
+	fi
+	rm -rf "$root"
+	return 0
+}
+
+test_external_simplification_source_rejections() {
+	local name="rejects symlink directory unauthorized and validation-failing external sources"
+	local root="" repo="" valid="" invalid="" source_dir="" source_link="" remote_before="" before="" after=""
+	local symlink_rc=0 directory_rc=0 scope_rc=0 validation_rc=0
+	root=$(mktemp -d) || return 0
+	setup_repo "$root" || {
+		fail "$name" setup
+		return 0
+	}
+	repo="${root}/work"
+	mkdir -p "${repo}/.agents/configs" || return 0
+	printf '%s\n' '{"files":{}}' >"${repo}/.agents/configs/simplification-state.json"
+	git -C "$repo" add .agents/configs/simplification-state.json
+	GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid \
+		git -C "$repo" commit -qm "seed simplification state"
+	git -C "$repo" push -q origin main
+	valid="${root}/valid.json"
+	invalid="${root}/invalid-shape.json"
+	source_dir="${root}/source-dir"
+	source_link="${root}/source-link.json"
+	printf '%s\n' '{"files":{"valid.sh":{"passes":1}}}' >"$valid"
+	printf '%s\n' '{"entries":{}}' >"$invalid"
+	mkdir -p "$source_dir"
+	ln -s "$valid" "$source_link"
+	remote_before=$(git --git-dir="${root}/remote.git" rev-parse main)
+	before=$(state_digest "$repo")
+	run_simplification_publish "$repo" "" "$source_link" || symlink_rc=$?
+	run_simplification_publish "$repo" "" "$source_dir" || directory_rc=$?
+	(
+		# shellcheck source=../planning-publisher.sh
+		source "$PUBLISHER"
+		AIDEVOPS_PLANNING_PUBLISH_SCOPE=planning AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true \
+			planning_publish "$repo" "reject external planning source" origin main TODO.md "$valid"
+	) >/dev/null 2>&1 || scope_rc=$?
+	run_simplification_publish "$repo" "" "$valid" /usr/bin/false || validation_rc=$?
+	after=$(state_digest "$repo")
+	if [[ "$symlink_rc" -ne 0 && "$directory_rc" -ne 0 && "$scope_rc" -ne 0 && "$validation_rc" -ne 0 && \
+		"$before" == "$after" && "$remote_before" == "$(git --git-dir="${root}/remote.git" rev-parse main)" ]]; then
+		pass "$name"
+	else
+		fail "$name" "rejection invariant failed (symlink=$symlink_rc dir=$directory_rc scope=$scope_rc validation=$validation_rc)"
+	fi
+	rm -rf "$root"
+	return 0
+}
+
 test_simplification_state_defaults_to_main_without_origin_head() {
 	local name="defaults simplification-state publication to main when origin/HEAD is unavailable"
 	local root="" repo="" remote_state="" publish_rc=0
@@ -360,7 +455,7 @@ test_simplification_state_defaults_to_main_without_origin_head() {
 
 test_simplification_state_conflict_is_retryable() {
 	local name="simplification-state contention fails retryably without overwriting remote state"
-	local root="" repo="" hook="" before="" after="" rc=0 remote_state=""
+	local root="" repo="" hook="" source_file="" before="" after="" rc=0 remote_state=""
 	root=$(mktemp -d) || return 0
 	setup_repo "$root" || {
 		fail "$name" setup
@@ -368,7 +463,13 @@ test_simplification_state_conflict_is_retryable() {
 	}
 	repo="${root}/work"
 	mkdir -p "${repo}/.agents/configs" || return 0
-	printf '%s\n' '{"files":{"local.sh":{"passes":1}}}' >"${repo}/.agents/configs/simplification-state.json"
+	printf '%s\n' '{"files":{}}' >"${repo}/.agents/configs/simplification-state.json"
+	git -C "$repo" add .agents/configs/simplification-state.json
+	GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid \
+		git -C "$repo" commit -qm "seed simplification state"
+	git -C "$repo" push -q origin main
+	source_file="${root}/isolated-state.json"
+	printf '%s\n' '{"files":{"local.sh":{"passes":1}}}' >"$source_file"
 	hook="${root}/state-rival.sh"
 	cat >"$hook" <<'HOOK'
 #!/usr/bin/env bash
@@ -386,7 +487,7 @@ exit 0
 HOOK
 	chmod +x "$hook"
 	before=$(state_digest "$repo")
-	run_simplification_publish "$repo" "$hook" || rc=$?
+	run_simplification_publish "$repo" "$hook" "$source_file" || rc=$?
 	after=$(state_digest "$repo")
 	remote_state=$(git --git-dir="${root}/remote.git" show main:.agents/configs/simplification-state.json)
 	if [[ "$rc" -eq 2 && "$before" == "$after" && "$remote_state" == *"rival.sh"* && "$remote_state" != *"local.sh"* ]]; then
@@ -731,6 +832,8 @@ main() {
 	test_publication_receipt_revalidates_exact_handoff
 	test_publication_receipt_rejects_ancestor_source_forgery
 	test_simplification_state_scope_preserves_checkout
+	test_external_simplification_source_contract
+	test_external_simplification_source_rejections
 	test_simplification_state_defaults_to_main_without_origin_head
 	test_simplification_state_conflict_is_retryable
 	test_validation_failure_pushes_nothing

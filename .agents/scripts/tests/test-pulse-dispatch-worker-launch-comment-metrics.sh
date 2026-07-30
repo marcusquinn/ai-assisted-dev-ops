@@ -148,13 +148,18 @@ set_issue_status() {
 
 original_script_dir="$SCRIPT_DIR"
 SCRIPT_DIR="$TEST_TMP"
-_claim_comment_id=""
+_claim_comment_id="77"
+_claim_lease_token="lease-123"
+_claim_lease_device="device-a"
 PULSE_DISPATCH_STAGGER_SECONDS=0
 export TEST_LEDGER_RC=0
 LOGFILE="${TEST_TMP}/pulse.log" _dlw_post_launch_hooks \
 	"123" "owner/repo" "runner-a" "$$" "issue-123" "standard" "test-model" "${TEST_TMP}/worktree" "attempt-123"
 if [[ "$STATUS_MUTATIONS" != "123|owner/repo|in-progress|--add-assignee runner-a" ]]; then
 	fail "successful worker registration did not transition queued issue to in-progress: ${STATUS_MUTATIONS:-none}"
+fi
+if ! grep -Fq 'aidevops:dispatch lease_token=lease-123 device=device-a session=issue-123 attempt_id=attempt-123 claim_id=77' "$GH_CALLS_FILE"; then
+	fail "dispatch comment did not publish its exact lease and attempt identity"
 fi
 
 STATUS_MUTATIONS=""

@@ -135,6 +135,8 @@ fi
 
 assert_allowed "allows canonical status" "$REPO" "git status --short"
 assert_allowed "allows canonical diff-files query" "$REPO" "git diff-files --name-only"
+assert_allowed "allows canonical diff-tree query" "$REPO" \
+	"git diff-tree --root --no-commit-id --name-only -r '$INITIAL_HEAD'"
 assert_allowed "allows canonical branch listing" "$REPO" "git branch -vv --no-abbrev"
 assert_allowed "allows canonical branch pattern listing" "$REPO" "git branch --list 'feature/*'"
 assert_allowed "allows canonical branch containment query" "$REPO" "git branch --contains main"

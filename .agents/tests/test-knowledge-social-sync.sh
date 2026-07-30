@@ -64,7 +64,7 @@ chmod 0700 "$BASE" "$ROOT"
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
 
 printf 'Social sync routine tests\n'
-assert_eq "current schema is active" "$(sql_value 'PRAGMA user_version')" "4"
+assert_eq "current schema is active" "$(sql_value 'PRAGMA user_version')" "5"
 assert_eq "lease and reconciliation tables are provisioned" \
 	"$(sql_value "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('collector_lease_generations','collector_leases','reconciliation_items')")" \
 	"3"
@@ -620,7 +620,7 @@ from knowledge_social_store import connect, migrate
 database = connect(root)
 migrate(database)
 columns = {row[1] for row in database.execute("PRAGMA table_info(sync_runs)")}
-if database.execute("PRAGMA user_version").fetchone()[0] != 4:
+if database.execute("PRAGMA user_version").fetchone()[0] != 5:
     raise SystemExit("v1 database did not migrate to the current schema")
 required = {
     "stream",
@@ -644,7 +644,7 @@ print(connection.execute("PRAGMA user_version").fetchone()[0])
 connection.close()
 PY
 )
-assert_eq "existing v1 stores migrate without replacement" "$migration_version" "4"
+assert_eq "existing v1 stores migrate without replacement" "$migration_version" "5"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

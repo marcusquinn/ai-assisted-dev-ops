@@ -148,6 +148,23 @@ assert_file_exists "add: meta.json created" "$META"
 assert_json_field "add: meta id field" "$META" '.id' "sample"
 assert_json_field "add: meta kind default" "$META" '.kind' "document"
 assert_json_field "add: meta trust default" "$META" '.trust' "unverified"
+assert_json_field "add: canonical contract version" "$META" '.contract_version' "1"
+assert_json_field "add: knowledge owns raw authority" "$META" '.authority' "raw"
+assert_json_field "add: repo corpus is explicit" "$META" '.corpus_id' "repo:default"
+assert_json_field "add: operator path is removed" "$META" '.source_uri' "local:sample"
+evidence_id=$(jq -r '.evidence_id' "$META")
+assert_contains "add: evidence identity is corpus scoped" "$evidence_id" "ev1:repo:default:local-file:sha256:"
+
+replay_out=$(bash "$HELPER" add "$TEST_FILE_1" --id duplicate-copy --repo-path "$REPO_PATH" 2>&1)
+assert_contains "add: replay resolves canonical source" "$replay_out" "Source already canonical: sample"
+if [[ ! -e "${KNOWLEDGE_ROOT}/sources/duplicate-copy" ]]; then
+	_pass "add: replay creates no second authoritative copy"
+else
+	_fail "add: replay creates no second authoritative copy" "duplicate source directory exists"
+fi
+
+malformed_out=$(bash "$HELPER" add "$TEST_FILE_1" --id ../escape --repo-path "$REPO_PATH" 2>&1 || true)
+assert_contains "add: malformed source identity is rejected" "$malformed_out" "Source ID must be"
 
 # ---------------------------------------------------------------------------
 # Test 2: add with --id override
@@ -182,10 +199,10 @@ assert_contains "add large: success message" "$add_big_out" "Added source"
 META_BIG="${KNOWLEDGE_ROOT}/sources/big-blob/meta.json"
 assert_file_exists "add large: meta.json exists" "$META_BIG"
 BLOB_PATH_VAL=$(jq -r '.blob_path // "null"' "$META_BIG" 2>/dev/null || echo "null")
-if [[ "$BLOB_PATH_VAL" != "null" && -n "$BLOB_PATH_VAL" ]]; then
-	_pass "add large: blob_path set in meta.json"
+if [[ "$BLOB_PATH_VAL" == knowledge-blobs:sha256:* ]]; then
+	_pass "add large: blob_path is an opaque digest reference"
 else
-	_fail "add large: blob_path set in meta.json" "blob_path is null but file is >30MB"
+	_fail "add large: blob_path is an opaque digest reference" "blob_path exposes or omits the blob reference"
 fi
 
 # ---------------------------------------------------------------------------

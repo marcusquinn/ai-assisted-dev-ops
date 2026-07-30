@@ -14,6 +14,15 @@ cleanup_receipt_dir="${ROOT}/cleanup-receipts"
 
 cat >"${ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$*" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+	jq -cn \
+		--arg head_ref "${COMPLETION_PR_HEAD_REF:-}" \
+		--arg head_oid "${COMPLETION_PR_HEAD_OID:-}" \
+		--arg head_repo "${COMPLETION_PR_HEAD_REPO:-}" \
+		'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:"merge123"},
+		  headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
+	exit 0
+fi
 if [[ "$*" == *"headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
 	jq -cn \
 		--arg head_ref "${COMPLETION_PR_HEAD_REF:-}" \
@@ -190,7 +199,7 @@ printf 'PASS superseded source receipts finalize truthfully and cannot be downgr
 alias_canonical="${ROOT}/alias-canonical"
 alias_worktree="${ROOT}/alias-worktree"
 alias_branch="bugfix/repair-pr-head"
-alias_pr_head="feature/original-pr-head"
+alias_pr_head="$alias_branch"
 alias_repo="marcusquinn/aidevops"
 fixture_git="${AIDEVOPS_TEST_GIT_BIN:-$(command -p -v git)}"
 mkdir -p "$alias_canonical"
@@ -205,35 +214,46 @@ printf 'alias fixture\n' >"${alias_canonical}/README.md"
 alias_head=$("$fixture_git" -C "$alias_worktree" rev-parse HEAD)
 "$fixture_git" -C "$alias_worktree" remote add pr-head "https://github.com/${alias_repo}.git"
 
-alias_receipt_runner="${ROOT}/alias-receipt-runner.sh"
-cat >"$alias_receipt_runner" <<RUNNER
+adopt_receipt_runner="${ROOT}/adopt-receipt-runner.sh"
+cat >"$adopt_receipt_runner" <<RUNNER
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR='${SCRIPTS_DIR}'
 source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
 source '${SCRIPTS_DIR}/full-loop-helper-merge.sh'
 cd "\$1"
-cleanup_plan=\$(_merge_fresh_worktree_cleanup_plan "\$2" "\$3")
-[[ -n "\$cleanup_plan" ]]
-_merge_record_deferred_cleanup_owner "\$2" "\$3" "\$cleanup_plan"
+cmd_adopt_merged_receipt "\$2" "\$3"
 RUNNER
-chmod +x "$alias_receipt_runner"
+chmod +x "$adopt_receipt_runner"
 
 COMPLETION_PR_HEAD_REF="$alias_pr_head" \
 	COMPLETION_PR_HEAD_OID="$alias_head" \
 	COMPLETION_PR_HEAD_REPO="$alias_repo" \
+	AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$record_runner" 43 "$alias_repo" >/dev/null
+COMPLETION_PR_HEAD_REF="$alias_pr_head" \
+	COMPLETION_PR_HEAD_OID="$alias_head" \
+	COMPLETION_PR_HEAD_REPO="$alias_repo" \
 	AIDEVOPS_SESSION_ID=completion-alias \
+	AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
 	AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
 	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
-	bash "$alias_receipt_runner" "$alias_worktree" 43 "$alias_repo" >/dev/null
+	bash "$adopt_receipt_runner" "$alias_worktree" 43 "$alias_repo" >/dev/null
 alias_receipt="${cleanup_receipt_dir}/marcusquinn_aidevops-43.json"
 jq -e --arg branch "$alias_branch" '
 	.executor_completion_state == "FINALIZATION_PENDING"
 	and .resource_cleanup_state == "CLEANUP_DEFERRED"
+	and .release_status == "not-requested"
 	and .branch == $branch
 ' "$alias_receipt" >/dev/null
-AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
-	bash "$record_runner" 43 "$alias_repo" >/dev/null
+cp "$alias_receipt" "${ROOT}/adopted-receipt-before.json"
+COMPLETION_PR_HEAD_REF="$alias_pr_head" COMPLETION_PR_HEAD_OID="$alias_head" COMPLETION_PR_HEAD_REPO="$alias_repo" \
+	AIDEVOPS_SESSION_ID=completion-alias AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+	AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$adopt_receipt_runner" "$alias_worktree" 43 "$alias_repo" >/dev/null
+cmp -s "$alias_receipt" "${ROOT}/adopted-receipt-before.json"
 AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
 	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
 	bash "$finalize_runner" 43 "$alias_repo" >/dev/null
@@ -243,7 +263,7 @@ jq -e --arg branch "$alias_branch" '
 	and .release_status == "not-requested"
 	and .branch == $branch
 ' "$alias_receipt" >/dev/null
-printf 'PASS exact-head alias receipt flows through record-no-release and finalize-receipt without reconstruction\n'
+printf 'PASS public merged-receipt adoption is idempotent and flows through finalization\n'
 
 cp "$direct_receipt" "${ROOT}/direct-receipt-before.json"
 if COMPLETION_PR_STATE=OPEN AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \

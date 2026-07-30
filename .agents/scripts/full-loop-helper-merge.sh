@@ -1187,6 +1187,41 @@ _merge_fresh_worktree_cleanup_plan() {
 	return 0
 }
 
+_merge_fresh_adopted_worktree_cleanup_plan() {
+	local pr_number="$1"
+	local repo="$2"
+	local pr_json=""
+	local pr_head_ref=""
+	local pr_head_oid=""
+	local pr_head_repo=""
+	local cleanup_plan=""
+	local worktree_path=""
+	local branch_name=""
+	local current_repo=""
+
+	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
+		--json state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 1
+	printf '%s' "$pr_json" | jq -e --arg repo "$repo" '
+		.state == "MERGED"
+		and (.mergedAt | strings | length > 0)
+		and (.mergeCommit.oid | strings | length > 0)
+		and (.headRefName | strings | length > 0)
+		and (.headRefOid | strings | length > 0)
+		and .headRepository.nameWithOwner == $repo
+		and (.isCrossRepository == true or .isCrossRepository == false)
+	' >/dev/null 2>&1 || return 1
+	IFS=$'\t' read -r pr_head_ref pr_head_oid pr_head_repo < <(
+		printf '%s' "$pr_json" | jq -r '[.headRefName, .headRefOid, .headRepository.nameWithOwner] | @tsv'
+	)
+	cleanup_plan=$(_merge_current_worktree_cleanup_plan "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo") || return 1
+	IFS=$'\t' read -r worktree_path branch_name _ <<<"$cleanup_plan"
+	[[ "$branch_name" == "$pr_head_ref" ]] || return 1
+	current_repo=$(_merge_current_github_repo_identity "$worktree_path" 2>/dev/null || true)
+	[[ -n "$current_repo" && "$current_repo" == "$repo" ]] || return 1
+	printf '%s\n' "$cleanup_plan"
+	return 0
+}
+
 _merge_default_branch_for_cleanup() {
 	local canonical_dir="$1"
 	local default_ref=""
@@ -1300,6 +1335,8 @@ _merge_record_deferred_cleanup_owner() {
 	local pr_number="$1"
 	local repo="$2"
 	local cleanup_plan="$3"
+	local release_status="${4:-pending}"
+	local executor_completion_state="${5:-FINALIZATION_PENDING}"
 	local worktree_path="" branch_name="" canonical_dir="" delete_remote_branch=""
 	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
 	: "$canonical_dir" "$delete_remote_branch"
@@ -1313,20 +1350,21 @@ _merge_record_deferred_cleanup_owner() {
 	[[ "$owner_pid" =~ ^[0-9]+$ ]] || owner_pid="$PPID"
 	[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
 
-	local marker_dir="${worktree_path}/.agents"
-	local marker_path="${marker_dir}/.full-loop-cleanup-deferred"
-	mkdir -p "$marker_dir" || return 1
-	# Keep the legacy marker during rollout so an older deployed cleanup
-	# supervisor still preserves the live owner. The external receipt below is
-	# the durable source of lifecycle truth and survives worktree removal.
-	printf '%s\n' "$owner_pid" >"${marker_path}.tmp.$$" || return 1
-	mv "${marker_path}.tmp.$$" "$marker_path" || return 1
 	local owner_session="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-full-loop-merge}}}"
 	if ! declare -F full_loop_write_cleanup_deferred >/dev/null 2>&1; then
 		return 1
 	fi
 	full_loop_write_cleanup_deferred "$repo" "$pr_number" "$worktree_path" "$branch_name" \
-		"$owner_pid" "$owner_session" "pending" "FINALIZATION_PENDING" >/dev/null || return 1
+		"$owner_pid" "$owner_session" "$release_status" "$executor_completion_state" >/dev/null || return 1
+
+	local marker_dir="${worktree_path}/.agents"
+	local marker_path="${marker_dir}/.full-loop-cleanup-deferred"
+	mkdir -p "$marker_dir" || return 1
+	# Keep the legacy marker during rollout so an older deployed cleanup
+	# supervisor still preserves the live owner. The external receipt above is
+	# the durable source of lifecycle truth and survives worktree removal.
+	printf '%s\n' "$owner_pid" >"${marker_path}.tmp.$$" || return 1
+	mv "${marker_path}.tmp.$$" "$marker_path" || return 1
 
 	if declare -F claim_worktree_ownership >/dev/null 2>&1; then
 		claim_worktree_ownership "$worktree_path" "$branch_name" \
@@ -1334,6 +1372,41 @@ _merge_record_deferred_cleanup_owner() {
 			--session "${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-full-loop-merge}}" \
 			--task "post-merge-cleanup" >/dev/null 2>&1 || true
 	fi
+	return 0
+}
+
+cmd_adopt_merged_receipt() {
+	local pr_number="${1:-}"
+	local repo=""
+	local cleanup_plan=""
+	local release_status=""
+
+	if [[ $# -lt 1 || $# -gt 2 || ! "$pr_number" =~ ^[0-9]+$ ]]; then
+		print_error "Usage: full-loop-helper.sh adopt-merged-receipt <PR> [REPO]"
+		return 1
+	fi
+	repo=$(_merge_resolve_repo "${2:-}") || {
+		print_error "Adoption blocked: repository identity is unavailable"
+		return 1
+	}
+	cleanup_plan=$(_merge_fresh_adopted_worktree_cleanup_plan "$pr_number" "$repo") || {
+		print_error "Adoption blocked: merged PR head does not match this registered linked worktree and repository"
+		return 1
+	}
+	if ! declare -F _full_loop_terminal_release_status >/dev/null 2>&1; then
+		print_error "Adoption blocked: terminal release verifier is unavailable"
+		return 1
+	fi
+	release_status=$(_full_loop_terminal_release_status "$repo" "$pr_number") || {
+		print_error "Adoption blocked: terminal release evidence is missing or invalid"
+		return 1
+	}
+	_merge_record_deferred_cleanup_owner "$pr_number" "$repo" "$cleanup_plan" \
+		"$release_status" "FINALIZATION_PENDING" || {
+		print_error "Adoption blocked: cleanup receipt conflicts with existing owner, lease, or lifecycle evidence"
+		return 1
+	}
+	print_success "Adopted merged PR #${pr_number} into deferred cleanup (release:${release_status})"
 	return 0
 }
 

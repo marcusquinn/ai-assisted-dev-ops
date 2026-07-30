@@ -171,7 +171,7 @@ Headless worker failures/stalls/loops: `reference/worker-diagnostics.md`. Start 
 
 ## Memory and Sessions
 
-Memory recall details: `reference/memory-lookup.md`, `reference/memory.md`. User past-work references: search memory → TODO.md → git log → transcripts → GitHub API. Context compaction checkpoint: `~/.aidevops/.agent-workspace/tmp/session-checkpoint.md`; preserve task IDs/states, batch, worktree/branch, PRs, next actions, blockers, key paths. Observability: `reference/observability.md`.
+Memory: `reference/memory-lookup.md`, `reference/memory.md`. Past work: memory → TODO.md → git log → transcripts → GitHub API. Compaction checkpoints: repo-scoped under `~/.aidevops/.agent-workspace/tmp/session-checkpoints/`; preserve task IDs/states, batch, worktree/branch, PRs, next actions, blockers, key paths; contract: `reference/session.md`. Observability: `reference/observability.md`.
 
 ## Vault and Security
 

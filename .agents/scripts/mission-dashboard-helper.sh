@@ -484,7 +484,7 @@ _status_print_blockers() {
 				echo -e "  ${YELLOW}${slug}:${NC}"
 				echo "$blocked_issues"
 			fi
-		done < <(jq -r '.[] | select(.pulse == true) | .slug // empty' "$repos_json" 2>/dev/null)
+		done < <(jq -r '.initialized_repos[]? | select(.maintenance != false and .pulse == true) | .slug // empty' "$repos_json" 2>/dev/null)
 		if [[ "$found_blockers" == "false" ]]; then
 			echo "  None"
 		fi

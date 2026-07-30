@@ -737,7 +737,7 @@ merge_ready_prs_all_repos() {
 		echo "[pulse-wrapper] Same-pass merge outcome cache unavailable; zero-progress aggregate will fail closed" >>"$_mr_logfile"
 	fi
 
-	_mr_repo_rows=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$_mr_repos_json" 2>/dev/null) || _mr_repo_rows=""
+	_mr_repo_rows=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | [.slug, .path] | join("|")' "$_mr_repos_json" 2>/dev/null) || _mr_repo_rows=""
 	_pmp_prepare_merge_checkpoint_resume "$_mr_repo_rows" "$_mr_checkpoint_file" "$_mr_logfile" \
 		_mr_checkpoint _mr_resume_pending _mr_resumed_from_checkpoint || true
 

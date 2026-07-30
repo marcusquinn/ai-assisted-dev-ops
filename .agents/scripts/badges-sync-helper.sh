@@ -13,7 +13,8 @@
 #
 # Sync/install operations are restricted to owned-org repos
 # (marcusquinn, essentials-com, wpallstars, or ~/.config/aidevops/badge-orgs.conf).
-# contributed:true repos and non-owned orgs are skipped with a SKIPPED/EXTERNAL note.
+# contributor-role/contributed repos and non-owned orgs are skipped with a
+# SKIPPED/EXTERNAL note.
 #
 # Default mode is --dry-run. Pass --apply to actually write, commit, push,
 # and open a PR per repo.
@@ -441,6 +442,15 @@ _open_pr() {
 
 # ─── Iteration ──────────────────────────────────────────────────────────────
 
+_repo_is_contributor() {
+	local _slug="$1"
+	[[ -f "$REPOS_JSON" ]] || return 1
+	jq -e --arg slug "$_slug" \
+		'first(.initialized_repos[]? | select(.slug == $slug)) | .role == "contributor"' \
+		"$REPOS_JSON" >/dev/null 2>&1
+	return $?
+}
+
 # _list_actionable_repos <filter_slug>
 # Emits TSV: slug\tpath\tstatus for repos needing sync.
 _list_actionable_repos() {
@@ -476,6 +486,12 @@ _process_rows() {
 		[[ -z "$_slug" ]] && continue
 		# Never touch aidevops itself
 		[[ "$_slug" == "marcusquinn/aidevops" ]] && continue
+		if _repo_is_contributor "$_slug"; then
+			local _result="${_slug}	${_STATUS_SKIPPED}	contributor role — sync is read-only"
+			_print_result_row "$_json_out" "$_result"
+			_COUNT_SKIPPED=$((_COUNT_SKIPPED + 1))
+			continue
+		fi
 
 		# Enforce owned-org filter at write time
 		local _org="${_slug%%/*}"

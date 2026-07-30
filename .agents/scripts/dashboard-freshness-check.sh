@@ -285,7 +285,7 @@ _repo_slugs_for_dashboard_scan() {
 	fi
 	jq -r '
 		.initialized_repos[]?
-		| select(.pulse == true and (.local_only // false) == false and .slug != null and .slug != "")
+		| select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != null and .slug != "")
 		| .slug
 	' "$REPOS_JSON" || true
 	return 0

@@ -11,6 +11,14 @@ if [[ -d "$ROOT_DIR/.agents/scripts" ]]; then
 else
 	AGENTS_SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+
+# Keep temporary fixture repositories on native Git; canonical mutation-guard
+# behavior is covered by its dedicated tests.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 TEST_ROOT=""
 TESTS_RUN=0

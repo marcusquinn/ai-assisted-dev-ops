@@ -129,6 +129,21 @@ stub_inline_comments() {
 	return 0
 }
 
+stub_commit_status() {
+	local gate_at="2026-01-01T00:01:10Z"
+	[[ "$SNAPSHOT_MODE" == "stale_gate" ]] && gate_at="2026-01-01T00:00:20Z"
+	if [[ "$SNAPSHOT_MODE" == "no_status_gate" || "$SNAPSHOT_MODE" == "review_alias_skipped" || "$SNAPSHOT_MODE" == "review_alias_neutral" ]]; then
+		printf '%s\n' '{"statuses":[]}'
+	elif [[ "$SNAPSHOT_MODE" == "review_stable_fail" ]]; then
+		printf '{"statuses":[{"context":"review-bot-gate","state":"failure","updated_at":"%s"}]}\n' "$gate_at"
+	elif [[ "$SNAPSHOT_MODE" == "same_name_source_conflict" ]]; then
+		printf '{"statuses":[{"context":"review-bot-gate","state":"success","updated_at":"%s"},{"context":"ProviderMirror","state":"failure","updated_at":"2026-01-01T00:01:03Z"}]}\n' "$gate_at"
+	else
+		printf '{"statuses":[{"context":"review-bot-gate","state":"success","updated_at":"%s"}]}\n' "$gate_at"
+	fi
+	return 0
+}
+
 gh() {
 	local command="$1"
 	local endpoint="${2:-}"
@@ -185,6 +200,14 @@ gh() {
 			extra_check=',{"name":"sync / Record ordered forge event","status":"completed","conclusion":"failure","details_url":"https://github.com/owner/repo/actions/runs/101/job/202","completed_at":"2026-01-01T00:01:00Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "configured_fail" ]]; then
 			extra_check=',{"name":"CodeFactor","status":"completed","conclusion":"failure","completed_at":"2026-01-01T00:01:00Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_alias_cancelled" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"cancelled","completed_at":"2026-01-01T00:01:02Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_alias_skipped" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"skipped","completed_at":"2026-01-01T00:01:02Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_alias_neutral" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"neutral","completed_at":"2026-01-01T00:01:02Z"}'
+		elif [[ "$SNAPSHOT_MODE" == "review_stable_fail" ]]; then
+			extra_check=',{"name":"gate / review-bot-gate","status":"completed","conclusion":"success","completed_at":"2026-01-01T00:01:02Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "maintainer_alias_fail" ]]; then
 			extra_check=',{"name":"maintainer-gate","status":"completed","conclusion":"success","completed_at":"2026-01-01T00:01:00Z"},{"name":"Maintainer Review & Assignee Gate","status":"completed","conclusion":"failure","completed_at":"2026-01-01T00:01:01Z"},{"name":"gate / Maintainer Review & Assignee Gate","status":"completed","conclusion":"success","completed_at":"2026-01-01T00:01:02Z"}'
 		elif [[ "$SNAPSHOT_MODE" == "maintainer_infra_fail" ]]; then
@@ -202,15 +225,8 @@ gh() {
 			"$required_conclusion" "$required_url" "$broad_status" "$([[ "$broad_conclusion" == "null" ]] && printf 'null' || printf '"%s"' "$broad_conclusion")" "$broad_completed_at" "$extra_check"
 		;;
 	*commits/sha-reviewed/status*)
-		local gate_at="2026-01-01T00:01:10Z"
-		[[ "$SNAPSHOT_MODE" == "stale_gate" ]] && gate_at="2026-01-01T00:00:20Z"
-		if [[ "$SNAPSHOT_MODE" == "no_status_gate" ]]; then
-			printf '%s\n' '{"statuses":[]}'
-		elif [[ "$SNAPSHOT_MODE" == "same_name_source_conflict" ]]; then
-			printf '{"statuses":[{"context":"review-bot-gate","state":"success","updated_at":"%s"},{"context":"ProviderMirror","state":"failure","updated_at":"2026-01-01T00:01:03Z"}]}\n' "$gate_at"
-		else
-			printf '{"statuses":[{"context":"review-bot-gate","state":"success","updated_at":"%s"}]}\n' "$gate_at"
-		fi
+		stub_commit_status
+		return $?
 		;;
 	*pulls/7/reviews*)
 		printf '%s\n' '[[{"user":{"login":"gemini-code-assist[bot]"},"submitted_at":"2026-01-01T00:00:30Z"}]]'
@@ -343,8 +359,8 @@ assert_effective_rules_have_exact_rest_cost() {
 	: >"$RULES_ATTRIBUTION_LOG"
 	_pmrc_review_thread_resolution_required "owner/repo" "main" >/dev/null 2>&1 || rc=$?
 	TESTS_RUN=$((TESTS_RUN + 1))
-	if [[ "$rc" -eq 1 ]] \
-		&& grep -qF '1|pulse-effective-rules-rest|repos/owner/repo/rules/branches/main' \
+	if [[ "$rc" -eq 1 ]] &&
+		grep -qF '1|pulse-effective-rules-rest|repos/owner/repo/rules/branches/main' \
 			"$RULES_ATTRIBUTION_LOG"; then
 		printf 'PASS failed effective-rules reads retain exact REST cost\n'
 		return 0
@@ -413,6 +429,13 @@ assert_review_and_head_snapshot_cases() {
 	set_live_evidence PASS_RATE_LIMITED sha-reviewed external false
 	assert_gate "configured provider failure blocks external rate-limit evidence" configured_fail 1
 	_PULSE_REVIEW_GATE_EVIDENCE=""
+	assert_gate "stable review-bot status supersedes a cancelled caller alias" review_alias_cancelled 0
+	assert_gate_blocker "failed stable review-bot status overrides a successful caller alias" \
+		review_stable_fail 1 "$PMRC_BLOCKER_REVIEW_GATE"
+	assert_gate_blocker "alias-only skipped review gate fails closed" \
+		review_alias_skipped 1 "$PMRC_BLOCKER_REVIEW_GATE"
+	assert_gate_blocker "alias-only neutral review gate fails closed" \
+		review_alias_neutral 1 "$PMRC_BLOCKER_REVIEW_GATE"
 	assert_gate "stable maintainer-gate success supersedes stale alias failures" maintainer_alias_fail 0
 	assert_gate "stable maintainer-gate failure remains one logical blocker" maintainer_stable_fail 1
 	if [[ "$(grep -c "maintainer-gate family is terminal-failure" "$LOGFILE" || true)" -eq 1 ]]; then
@@ -477,8 +500,8 @@ main() {
 	: >"$EVIDENCE_LOG"
 	assert_gate "active broad check blocks merge" pending 1
 	TESTS_RUN=$((TESTS_RUN + 1))
-	if [[ "$(grep -c '^guardrails.required_check_merge_preflight_mismatches=1$' "$EVIDENCE_LOG")" == "1" \
-		&& "$(grep -c '^guardrails.stale_positive_decisions=1$' "$EVIDENCE_LOG")" == "1" ]]; then
+	if [[ "$(grep -c '^guardrails.required_check_merge_preflight_mismatches=1$' "$EVIDENCE_LOG")" == "1" &&
+	"$(grep -c '^guardrails.stale_positive_decisions=1$' "$EVIDENCE_LOG")" == "1" ]]; then
 		printf 'PASS live preflight mismatch emits typed guardrail and stale-positive evidence\n'
 	else
 		printf 'FAIL live preflight mismatch did not emit both guardrail events\n'

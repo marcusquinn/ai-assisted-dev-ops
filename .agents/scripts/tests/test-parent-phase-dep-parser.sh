@@ -188,10 +188,14 @@ fi
 
 # gh api graphql -f query=...
 if [[ "$cmd1" == "api" && "$cmd2" == "graphql" ]]; then
-	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
+	if [[ "$*" == *"addBlockedBy"* ]]; then
+		[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "1" && "$*" != *"rateLimit"* ]] || exit 1
+	else
+		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
+	fi
 	for arg in "$@"; do
 		if [[ "$arg" == *"addBlockedBy"* ]]; then
-			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":99}},"rateLimit":{"cost":1}}}'
+			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":99}}}}'
 			exit 0
 		fi
 		if [[ "$arg" == *"blockedBy(first:100)"* ]]; then

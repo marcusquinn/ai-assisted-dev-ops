@@ -1293,6 +1293,74 @@ test_cmd_run_preserves_worker_origin_overrides_before_canary() {
 	return 0
 }
 
+test_cmd_run_aborts_before_canary_when_opencode_pin_repair_fails() {
+	local worktree_dir="${TEST_ROOT}/pin-repair-failure-worktree"
+	local canary_marker="${TEST_ROOT}/pin-repair-failure-canary"
+	local AIDEVOPS_DISPATCH_LEASE_TOKEN=""
+	local output=""
+	local status=0
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	export WORKER_ISSUE_NUMBER=28847
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_WORKTREE_PATH="$worktree_dir"
+
+	choose_model() { printf '%s' 'openai/gpt-5.5'; return 0; }
+	_enforce_opencode_version_pin() {
+		printf '%s\n' 'pin_repair_failed'
+		return 1
+	}
+	_run_canary_test() {
+		: >"$canary_marker"
+		return 0
+	}
+
+	output=$(cmd_run \
+		--role worker \
+		--session-key issue-28847 \
+		--dir "$worktree_dir" \
+		--title "Issue #28847: OpenCode pin repair" \
+		--prompt "/full-loop Implement issue #28847" 2>&1) || status=$?
+
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH 2>/dev/null || true
+	unset -f choose_model _enforce_opencode_version_pin _run_canary_test 2>/dev/null || true
+	if [[ "$status" -eq 1 && "$output" == *"pin_repair_failed"* && \
+		"$output" == *"version pin enforcement failed"* && ! -e "$canary_marker" ]]; then
+		print_result "cmd_run fails closed before canary when OpenCode pin repair fails" 0
+		return 0
+	fi
+
+	print_result "cmd_run fails closed before canary when OpenCode pin repair fails" 1 \
+		"status=$status canary_called=$([[ -e "$canary_marker" ]] && printf y || printf n) output=${output:-<empty>}"
+	return 0
+}
+
+test_cmd_canary_propagates_opencode_pin_repair_failure() {
+	local canary_marker="${TEST_ROOT}/pin-repair-failure-direct-canary"
+	local output=""
+	local status=0
+	choose_model() { printf '%s' 'openai/gpt-5.5'; return 0; }
+	_enforce_opencode_version_pin() {
+		printf '%s\n' 'direct_pin_repair_failed'
+		return 7
+	}
+	_run_canary_test() {
+		: >"$canary_marker"
+		return 0
+	}
+
+	output=$(cmd_canary --role worker --model openai/gpt-5.5 2>&1) || status=$?
+	unset -f choose_model _enforce_opencode_version_pin _run_canary_test 2>/dev/null || true
+	if [[ "$status" -eq 7 && "$output" == *"direct_pin_repair_failed"* && ! -e "$canary_marker" ]]; then
+		print_result "cmd_canary propagates OpenCode pin repair failure" 0
+		return 0
+	fi
+
+	print_result "cmd_canary propagates OpenCode pin repair failure" 1 \
+		"status=$status canary_called=$([[ -e "$canary_marker" ]] && printf y || printf n) output=${output:-<empty>}"
+	return 0
+}
+
 test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
 	local worktree_dir="${TEST_ROOT}/triage-authority-order"
 	local authority_log="${TEST_ROOT}/triage-authority-order.log"

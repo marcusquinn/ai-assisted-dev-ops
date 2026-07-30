@@ -1692,7 +1692,7 @@ migrate_custom_model_routing_reasoning_defaults() {
 		.tiers.simple.reasoning.openai = "medium" |
 		.tiers.thinking = (.tiers.thinking // {}) |
 		.tiers.thinking.reasoning = (.tiers.thinking.reasoning // {}) |
-		.tiers.thinking.reasoning.openai = "max"
+		.tiers.thinking.reasoning.openai = "high"
 	' "$custom_table" >"$temp_file"; then
 		print_warning "Failed to update custom model routing table structure in $custom_table; t18137 migration will retry"
 		rm -f "$temp_file"
@@ -1794,7 +1794,7 @@ backfill_issue_relationships() {
 			print_warning "  $(basename "$expanded_path"): relationships sync had errors"
 			failed_repos=$((failed_repos + 1))
 		fi
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true) | [.path, .slug, (.local_only // false | tostring)] | @tsv' "$repos_file" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true) | [.path, .slug, (.local_only // false | tostring)] | @tsv' "$repos_file" 2>/dev/null)
 
 	# Create marker directory and file
 	mkdir -p "$marker_dir"

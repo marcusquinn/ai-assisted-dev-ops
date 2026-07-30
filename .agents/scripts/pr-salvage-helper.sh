@@ -468,7 +468,7 @@ scan_all_repos() {
 	fi
 
 	local repo_slugs
-	repo_slugs=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$REPOS_JSON")
+	repo_slugs=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$REPOS_JSON")
 
 	while IFS= read -r slug; do
 		[[ -z "$slug" ]] && continue

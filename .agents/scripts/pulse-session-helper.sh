@@ -148,7 +148,7 @@ is_config_consent_enabled() {
 #######################################
 get_pulse_repo_count() {
 	if [[ -f "$REPOS_JSON" ]] && command -v jq &>/dev/null; then
-		jq '[.initialized_repos[] | select(.pulse == true)] | length' "$REPOS_JSON" || echo "0"
+		jq '[.initialized_repos[] | select(.maintenance != false and .pulse == true)] | length' "$REPOS_JSON" || echo "0"
 	else
 		echo "?"
 	fi

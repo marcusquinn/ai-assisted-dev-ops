@@ -27,18 +27,20 @@ _FULL_LOOP_CHECK_PENDING="pending"
 _FULL_LOOP_CHECK_INDETERMINATE="indeterminate"
 
 # Defensive SCRIPT_DIR fallback
+_FULL_LOOP_COMMIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
-	_lib_path="${BASH_SOURCE[0]%/*}"
-	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
-	SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
-	unset _lib_path
+	SCRIPT_DIR="$_FULL_LOOP_COMMIT_DIR"
 fi
 
 # Checkout-free planning publication receipts provide the only narrow exception
 # to same-named local-branch head equality. The verifier revalidates all evidence.
 # shellcheck source=./planning-publisher.sh
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/planning-publisher.sh"
+source "${_FULL_LOOP_COMMIT_DIR}/planning-publisher.sh"
+# Reuse Pulse's authoritative classic-branch-protection and ruleset resolver.
+# shellcheck source=./pulse-merge-required-checks.sh
+# shellcheck disable=SC1091
+source "${_FULL_LOOP_COMMIT_DIR}/pulse-merge-required-checks.sh"
 
 # --- Pre-Merge Gate ---
 
@@ -76,6 +78,8 @@ _full_loop_query_required_checks() {
 	local pr_number="$1"
 	local repo="$2"
 	local pr_head_ref="$3"
+	local required_contexts=""
+	local required_contexts_rc=0
 	local required_checks=""
 	local required_rc=0
 	local required_checks_stderr=""
@@ -85,9 +89,17 @@ _full_loop_query_required_checks() {
 
 	FULL_LOOP_REQUIRED_CHECKS_JSON=""
 	FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="unavailable"
-	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="gh exit ${required_rc}"
+	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="required-context resolution failed"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="required-checks-pass"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="required checks are terminal-success"
+
+	required_contexts=$(_required_contexts_for_default_branch "$repo") || required_contexts_rc=$?
+	if [[ "$required_contexts_rc" -eq 0 && -z "$required_contexts" ]]; then
+		FULL_LOOP_REQUIRED_CHECKS_JSON="[]"
+		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="no-required-checks"
+		FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="no required checks are configured"
+		return 0
+	fi
 
 	required_checks_stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-full-loop-required-checks.XXXXXX") || {
 		FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="stderr-capture-unavailable"

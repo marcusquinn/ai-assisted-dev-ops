@@ -4,13 +4,15 @@
 # Regression tests for pulse-diagnose-helper.sh cycle-health subcommand (t2752)
 #
 # Uses fixture log files — no live network or real pulse logs required.
-# Log format: timestamp \t stage_name \t duration_secs \t exit_code \t pid
+# Log format: timestamp \t stage_name \t duration_secs \t exit_code
+#             \t cycle_owner_pid [\t executor_pid]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${SCRIPT_DIR}/../pulse-diagnose-helper.sh"
 CYCLE_HEALTH_LIB="${SCRIPT_DIR}/../pulse-diagnose-cycle-health.sh"
+WATCHDOG_LIB="${SCRIPT_DIR}/../pulse-watchdog.sh"
 PASS=0
 FAIL=0
 TOTAL=0
@@ -73,7 +75,7 @@ export PULSE_DIAGNOSE_NOW_EPOCH="$TEST_NOW_EPOCH"
 
 # Build a fixture with two complete and two incomplete cycles.
 #
-# Cycle 1 (PID 11111) — complete: reaches preflight_early_dispatch exit 0
+# Cycle 1 (owner PID 11111, executor PIDs 51111/51112) — complete
 # Cycle 2 (PID 22222) — degraded: cleanup_worktrees exits 124 (timeout), stops early
 # Cycle 3 (PID 33333) — complete: reaches preflight_early_dispatch exit 0
 # Cycle 4 (PID 44444) — incomplete: cleanup_worktrees exits 124, stops (after last dispatch)
@@ -81,8 +83,8 @@ export PULSE_DIAGNOSE_NOW_EPOCH="$TEST_NOW_EPOCH"
 # The test-only clock override makes the fixed fixture recent in the 24h window.
 
 cat > "$FIXTURE_TIMINGS" <<'TIMINGS'
-2026-06-24T00:00:01Z	cleanup_orphans	2	0	11111
-2026-06-24T00:00:03Z	cleanup_stale_opencode	2	0	11111
+2026-06-24T00:00:01Z	cleanup_orphans	2	0	11111	51111
+2026-06-24T00:00:03Z	cleanup_stale_opencode	2	0	11111	51112
 2026-06-24T00:00:05Z	cleanup_stalled_workers	2	0	11111
 2026-06-24T00:01:10Z	cleanup_worktrees	5	0	11111
 2026-06-24T00:01:20Z	cleanup_stashes	3	0	11111
@@ -317,6 +319,63 @@ output=$(
 ) || rc=$?
 assert_exit_code "leading-dash wrapper filename exits 0" 0 "$rc"
 assert_contains "leading-dash wrapper filename is counted" "acquired=4" "$output"
+
+# --- Test 16: extended rows preserve owner aggregation across executors ---
+printf '\nTest 16: multiple executors remain one owner cycle\n'
+rc=0
+output=$(
+	unset SCRIPT_DIR
+	# shellcheck source=../pulse-diagnose-cycle-health.sh
+	source "$CYCLE_HEALTH_LIB"
+	_ch_cycle_stats "$FIXTURE_TIMINGS" "2026-06-24T00:00:00Z"
+) || rc=$?
+assert_exit_code "mixed legacy and extended timing rows exit 0" 0 "$rc"
+assert_contains "multiple executors under one owner still produce four cycles" "cycles_started=4" "$output"
+
+# --- Test 17: substage timing records the background executor ---
+printf '\nTest 17: substage timing records its background executor\n'
+EXECUTOR_TIMINGS="${TMPDIR_TEST}/executor-timings.log"
+(
+	# shellcheck source=../pulse-watchdog.sh
+	source "$WATCHDOG_LIB"
+	LOGFILE="${TMPDIR_TEST}/executor-wrapper.log"
+	PULSE_STAGE_TIMINGS_LOG="$EXECUTOR_TIMINGS"
+	_log_substage_timing "substage:test/executor" "$SECONDS" 0
+) &
+executor_pid=$!
+wait "$executor_pid"
+output=$(<"$EXECUTOR_TIMINGS")
+assert_contains "sixth field identifies the background executor" $'\t'"${executor_pid}" "$output"
+
+# --- Test 18: Bash 3.2 fallback resolves the calling background process ---
+printf '\nTest 18: executor fallback resolves its background caller\n'
+FALLBACK_EXECUTOR="${TMPDIR_TEST}/fallback-executor-pid"
+(
+	# shellcheck source=../pulse-watchdog.sh
+	source "$WATCHDOG_LIB"
+	_pulse_resolve_executor_pid ""
+	printf '%s' "$_PULSE_EXECUTOR_PID" >"$FALLBACK_EXECUTOR"
+) &
+executor_pid=$!
+wait "$executor_pid"
+output=$(<"$FALLBACK_EXECUTOR")
+assert_contains "PPID fallback identifies the background caller" "$executor_pid" "$output"
+
+# --- Test 19: executor lookup failure does not suppress a timing row ---
+printf '\nTest 19: executor lookup failure remains non-blocking\n'
+FAILURE_TIMINGS="${TMPDIR_TEST}/executor-failure-timings.log"
+rc=0
+(
+	# shellcheck source=../pulse-watchdog.sh
+	source "$WATCHDOG_LIB"
+	_pulse_resolve_executor_pid() { return 1; }
+	LOGFILE="${TMPDIR_TEST}/executor-failure-wrapper.log"
+	PULSE_STAGE_TIMINGS_LOG="$FAILURE_TIMINGS"
+	_log_substage_timing "substage:test/fallback" "$SECONDS" 0
+) || rc=$?
+assert_exit_code "failed executor lookup does not fail the caller" 0 "$rc"
+output=$(<"$FAILURE_TIMINGS")
+assert_contains "failed executor lookup writes explicit unavailable identity" $'\tunavailable' "$output"
 
 # =============================================================================
 # Summary

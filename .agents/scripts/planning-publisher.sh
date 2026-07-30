@@ -81,11 +81,38 @@ _planning_publish_changed_paths() {
 	return 0
 }
 
+_planning_publish_source_file() {
+	local repo_path="$1"
+	local path="$2"
+	local external_source="$3"
+	local scope="${AIDEVOPS_PLANNING_PUBLISH_SCOPE:-planning}"
+	if [[ -z "$external_source" ]]; then
+		printf '%s\n' "${repo_path}/${path}"
+		return 0
+	fi
+	if [[ "$scope" != "simplification-state" || "$path" != ".agents/configs/simplification-state.json" ]]; then
+		_planning_publish_log error "External publication sources are not allowed for scope/path: ${scope}:${path}"
+		return 1
+	fi
+	if [[ ! -f "$external_source" || -L "$external_source" ]]; then
+		_planning_publish_log error "External publication source must be a regular non-symlink file"
+		return 1
+	fi
+	if ! jq -e 'type == "object" and (.files | type == "object")' "$external_source" >/dev/null 2>&1; then
+		_planning_publish_log error "External simplification-state source is malformed"
+		return 1
+	fi
+	printf '%s\n' "$external_source"
+	return 0
+}
+
 _planning_publish_snapshot() {
 	local repo_path="$1"
 	local paths="$2"
 	local snapshot_file="$3"
+	local external_source="${4:-}"
 	local path=""
+	local source_file=""
 	: >"$snapshot_file" || return 1
 	while IFS= read -r path; do
 		[[ -n "$path" ]] || continue
@@ -93,13 +120,14 @@ _planning_publish_snapshot() {
 			_planning_publish_log error "Unauthorized publication path: $path"
 			return 1
 		}
-		if [[ -L "${repo_path}/${path}" ]] || [[ -d "${repo_path}/${path}" ]]; then
+		source_file=$(_planning_publish_source_file "$repo_path" "$path" "$external_source") || return 1
+		if [[ -L "$source_file" ]] || [[ -d "$source_file" ]]; then
 			_planning_publish_log error "Publication paths must be regular files: $path"
 			return 1
 		fi
-		if [[ -f "${repo_path}/${path}" ]]; then
+		if [[ -f "$source_file" ]]; then
 			local blob_sha=""
-			blob_sha=$(_planning_git -C "$repo_path" hash-object -w -- "${repo_path}/${path}") || return 1
+			blob_sha=$(_planning_git -C "$repo_path" hash-object -w -- "$source_file") || return 1
 			printf '%s\t%s\t%s\n' "$PLANNING_SNAPSHOT_FILE_OPERATION" "$blob_sha" "$path" >>"$snapshot_file" || return 1
 		else
 			printf 'delete\t-\t%s\n' "$path" >>"$snapshot_file" || return 1
@@ -649,11 +677,12 @@ _planning_publish_record_pushed_receipt() {
 _planning_publish_prepare_snapshot() {
 	local repo_path="$1"
 	local paths="$2"
+	local external_source="${3:-}"
 	local publication_id=""
 	_PLANNING_PUBLISH_TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/planning-publisher.XXXXXX") || return 1
 	_PLANNING_PUBLISH_SNAPSHOT_FILE="${_PLANNING_PUBLISH_TEMP_DIR}/snapshot"
 	_PLANNING_PUBLISH_INDEX_FILE="${_PLANNING_PUBLISH_TEMP_DIR}/index"
-	_planning_publish_snapshot "$repo_path" "$paths" "$_PLANNING_PUBLISH_SNAPSHOT_FILE" || {
+	_planning_publish_snapshot "$repo_path" "$paths" "$_PLANNING_PUBLISH_SNAPSHOT_FILE" "$external_source" || {
 		rm -rf "$_PLANNING_PUBLISH_TEMP_DIR"
 		return 1
 	}
@@ -716,6 +745,7 @@ planning_publish() {
 	local remote_name="${3:-origin}"
 	local branch_name="${4:-}"
 	local paths="${5:-}"
+	local external_source="${6:-}"
 	local temp_dir="" snapshot_file="" index_file="" parent_sha="" tree_sha="" candidate_sha=""
 	local publication_id="" handoff_id="" attempt=0 push_rc=0 latest_sha="" expected_sha="" parent_resolution="" base_sha="${AIDEVOPS_PLANNING_BASE_SHA:-}"
 	local guard_rc=0 source_head=""
@@ -729,7 +759,7 @@ planning_publish() {
 		PLANNING_PUBLISH_RESULT="noop"
 		return 0
 	fi
-	_planning_publish_prepare_snapshot "$repo_path" "$paths" || return 1
+	_planning_publish_prepare_snapshot "$repo_path" "$paths" "$external_source" || return 1
 	temp_dir="$_PLANNING_PUBLISH_TEMP_DIR"
 	snapshot_file="$_PLANNING_PUBLISH_SNAPSHOT_FILE"
 	index_file="$_PLANNING_PUBLISH_INDEX_FILE"

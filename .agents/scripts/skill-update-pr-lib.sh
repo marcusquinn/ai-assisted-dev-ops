@@ -685,9 +685,8 @@ _cleanup_worktree() {
 		fi
 		log_info "Cleaning up empty worktree: $wt_path"
 		if ! remove_worktree_path_permanently "$wt_path" "$_WTAR_SU_CALLER" "manual"; then
-			if git worktree remove "$wt_path" --force 2>/dev/null; then
-				log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_SU_CALLER" "$wt_path" "manual" "permanent"
-			fi
+			log_warning "Skipping branch cleanup because guarded worktree removal failed: $wt_path"
+			return 0
 		fi
 		git branch -D "$branch" 2>/dev/null || true
 		unregister_worktree "$wt_path"

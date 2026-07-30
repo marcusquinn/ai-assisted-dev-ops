@@ -106,6 +106,25 @@ POST_CHECK_HEAD="abc123"
 PR_VIEW_CACHE_CONTROL_FILE="${TMP_DIR}/pr-view-cache-control.log"
 : >"$PR_VIEW_CACHE_CONTROL_FILE"
 gh() {
+	if [[ "$1" == "api" && "$2" == "repos/owner/repo" ]]; then
+		if [[ "$CHECK_MODE" == "api-error" ]]; then
+			return 1
+		fi
+		printf '%s\n' 'main'
+		return 0
+	fi
+	if [[ "$1" == "api" && "$2" == *"/protection/required_status_checks" ]]; then
+		if [[ "$CHECK_MODE" == "no-required" ]]; then
+			printf '%s\n' 'gh: HTTP 404: Not Found' >&2
+			return 1
+		fi
+		printf '%s\n' '{"contexts":["required"]}'
+		return 0
+	fi
+	if [[ "$1" == "api" && "$2" == "repos/owner/repo/rulesets" ]]; then
+		printf '%s\n' '[]'
+		return 0
+	fi
 	if [[ "$1 $2" == "pr view" ]]; then
 		printf '%s\n' "${AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE:-0}" >>"$PR_VIEW_CACHE_CONTROL_FILE"
 		if printf '%s\n' "$*" | grep -q -- '--jq'; then
@@ -130,8 +149,8 @@ gh() {
 			return 0
 			;;
 		no-required)
-			printf "no required checks reported on the 'fixture-remote' branch\n" >&2
-			return 1
+			printf 'required-check CLI must not run when configuration has no contexts\n' >&2
+			return 99
 			;;
 		api-error)
 			printf 'HTTP 503: service unavailable\n' >&2

@@ -60,7 +60,7 @@ _complexity_scan_check_interval() {
 _pulse_enabled_repo_slugs() {
 	local repos_json="$1"
 	[[ -f "$repos_json" ]] || return 0
-	jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null || true
+	jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null || true
 	return 0
 }
 

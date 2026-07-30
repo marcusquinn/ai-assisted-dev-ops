@@ -52,6 +52,7 @@ readonly CASE_NOTES_FILE="notes.md"
 
 CASES_SCHEMA_FILE="${SCRIPT_DIR}/../templates/case-dossier-schema.json"
 CASES_GITIGNORE_TEMPLATE="${SCRIPT_DIR}/../templates/cases-gitignore.txt"
+KNOWLEDGE_SOURCE_CONTRACT="${SCRIPT_DIR}/knowledge_source_contract.py"
 
 # =============================================================================
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -462,10 +463,28 @@ cmd_attach() {
 	actor="$(_current_actor)"
 	ts="$(_iso_ts_full)"
 
-	# Append to sources.toon
-	local entry
-	entry="$(jq -n --arg id "$source_id" --arg ts "$ts" --arg by "$actor" --arg role "$role" \
-		'{id:$id, attached_at:$ts, attached_by:$by, role:$role}')"
+	# Append a projection pointer for contract-v2 sources; retain the legacy shape
+	# for existing source directories that have not been migrated yet.
+	local entry meta_path corpus_id evidence_id
+	meta_path="${knowledge_src}/meta.json"
+	corpus_id="$(jq -r '.corpus_id // empty' "$meta_path" 2>/dev/null || true)"
+	evidence_id="$(jq -r '.evidence_id // empty' "$meta_path" 2>/dev/null || true)"
+	if [[ -n "$corpus_id" && "$evidence_id" == "ev1:${corpus_id}:"* ]]; then
+		if [[ ! -r "$KNOWLEDGE_SOURCE_CONTRACT" ]] || \
+			! python3 "$KNOWLEDGE_SOURCE_CONTRACT" validate-meta --meta "$meta_path" >/dev/null; then
+			print_error "Source manifest failed canonical evidence validation: ${source_id}"
+			return 1
+		fi
+		entry="$(jq -n --arg id "$source_id" --arg ts "$ts" --arg by "$actor" \
+			--arg role "$role" --arg corpus "$corpus_id" --arg evidence "$evidence_id" \
+			'{id:$id, contract_version:1, corpus_id:$corpus, evidence_id:$evidence,
+			  canonical_plane:"_knowledge", authority:"projection",
+			  projection_kind:"case-source-pointer", attached_at:$ts,
+			  attached_by:$by, role:$role}')"
+	else
+		entry="$(jq -n --arg id "$source_id" --arg ts "$ts" --arg by "$actor" --arg role "$role" \
+			'{id:$id, attached_at:$ts, attached_by:$by, role:$role}')"
+	fi
 	local updated
 	updated="$(jq --argjson e "$entry" '. + [$e]' "$sources_file")"
 	echo "$updated" >"$sources_file"

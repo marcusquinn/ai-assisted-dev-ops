@@ -4,7 +4,7 @@
 #
 # shellcheck disable=SC2016  # single-quoted regex patterns are literal by design
 #
-# test-pulse-dispatch-engine-stage-wiring.sh — regression guard for t2443
+# test-pulse-dispatch-engine-stage-wiring.sh — regression guard for t2443/GH#28880
 #
 # Verifies that post-dispatch housekeeping stages remain independently timed
 # and are wired through the async housekeeping launcher, not wrapped in a
@@ -15,7 +15,9 @@
 # before auto_decomposer_scanner could run. t2443 promoted each scanner to
 # an independent stage so each gets its own timeout budget; t3055 then moved
 # those independent stages behind an async post-dispatch lock so housekeeping
-# cannot hold the dispatch cycle open while worker slots drain.
+# cannot hold the dispatch cycle open while worker slots drain. GH#28880 also
+# keeps cross-repository label maintenance between two unwrapped fill passes so
+# already-eligible work launches before those sweeps.
 
 set -u
 
@@ -58,11 +60,93 @@ assert_not_grep() {
 	return 0
 }
 
+assert_order() {
+	local label="$1" first_pattern="$2" second_pattern="$3" file="$4"
+	local first_line="" second_line=""
+	TESTS_RUN=$((TESTS_RUN + 1))
+	first_line=$(grep -nEm1 "$first_pattern" "$file" 2>/dev/null | cut -d: -f1 || true)
+	second_line=$(grep -nEm1 "$second_pattern" "$file" 2>/dev/null | cut -d: -f1 || true)
+	if [[ "$first_line" =~ ^[0-9]+$ && "$second_line" =~ ^[0-9]+$ && "$first_line" -lt "$second_line" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  first pattern/line:  $first_pattern / ${first_line:-missing}"
+		echo "  second pattern/line: $second_pattern / ${second_line:-missing}"
+	fi
+	return 0
+}
+
+assert_match_count() {
+	local label="$1" pattern="$2" expected_count="$3" file="$4"
+	local actual_count=0
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_count=$(grep -cE "$pattern" "$file" 2>/dev/null || true)
+	[[ "$actual_count" =~ ^[0-9]+$ ]] || actual_count=0
+	if [[ "$actual_count" -eq "$expected_count" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected/actual count: $expected_count / $actual_count"
+		echo "  pattern:               $pattern"
+	fi
+	return 0
+}
+
+assert_refill_runtime_contract() {
+	local label="$1"
+	local actual_events="" expected_events="dispatch;routine;invalidate:label_maintenance_complete;dispatch;"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_events=$(
+		(
+			unset _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED
+			# shellcheck source=../pulse-dispatch-preflight-lib.sh
+			source "$PREFLIGHT_LIB"
+			REFILL_EVENTS=""
+			STOP_FLAG=""
+			LOGFILE="/dev/null"
+
+			_dispatch_invalidate_candidate_snapshot() {
+				local reason="$1"
+				REFILL_EVENTS="${REFILL_EVENTS}invalidate:${reason};"
+				return 0
+			}
+
+			apply_dispatch_max() {
+				REFILL_EVENTS="${REFILL_EVENTS}dispatch;"
+				return 0
+			}
+
+			dispatch_routine_comment_responses() {
+				REFILL_EVENTS="${REFILL_EVENTS}routine;"
+				return 0
+			}
+
+			_preflight_early_dispatch
+			_preflight_post_label_refill
+			STOP_FLAG="$PREFLIGHT_LIB"
+			_preflight_post_label_refill
+			printf '%s\n' "$REFILL_EVENTS"
+		)
+	)
+	if [[ "$actual_events" == "$expected_events" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected events: $expected_events"
+		echo "  actual events:   ${actual_events:-none}"
+	fi
+	return 0
+}
+
 # Resolve paths relative to this test file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$SCRIPT_DIR/pulse-dispatch-engine.sh"
 CORE="$SCRIPT_DIR/pulse-dispatch-core.sh"
 DISPATCH_LIB="$SCRIPT_DIR/pulse-dispatch-lib.sh"
+PREFLIGHT_LIB="$SCRIPT_DIR/pulse-dispatch-preflight-lib.sh"
 
 echo "=== t2443 + t2903: pulse-dispatch-engine stage wiring regression tests ==="
 echo "Engine: $ENGINE"
@@ -160,6 +244,60 @@ assert_grep \
 	"9: async post-dispatch housekeeping uses _pflt_timeout" \
 	'_pulse_start_post_dispatch_housekeeping "\$_pflt_timeout"' \
 	"$ENGINE"
+
+# --- Already-eligible work launches before cross-repository label maintenance ---
+
+assert_grep \
+	"9a: capacity calculation is an independently timed preflight stage" \
+	'run_stage_with_timeout "preflight_capacity"' \
+	"$ENGINE"
+assert_grep \
+	"9b: label maintenance is an independently timed preflight stage" \
+	'run_stage_with_timeout "preflight_label_maintenance"' \
+	"$ENGINE"
+assert_grep \
+	"9c: capacity and label maintenance use separate helper functions" \
+	'^_preflight_label_maintenance\(\)' \
+	"$PREFLIGHT_LIB"
+assert_grep \
+	"9d: post-label refill has a dedicated helper" \
+	'^_preflight_post_label_refill\(\)' \
+	"$PREFLIGHT_LIB"
+assert_order \
+	"9e: capacity completes before the initial fill" \
+	'^[[:space:]]*run_stage_with_timeout "preflight_capacity"' \
+	'^[[:space:]]*_preflight_early_dispatch([[:space:]]|$)' \
+	"$ENGINE"
+assert_order \
+	"9f: initial fill precedes label maintenance" \
+	'^[[:space:]]*_preflight_early_dispatch([[:space:]]|$)' \
+	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
+	"$ENGINE"
+assert_order \
+	"9g: label maintenance precedes the same-cycle refill" \
+	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
+	'^[[:space:]]*_preflight_post_label_refill([[:space:]]|$)' \
+	"$ENGINE"
+assert_order \
+	"9h: post-label refill precedes async housekeeping" \
+	'^[[:space:]]*_preflight_post_label_refill([[:space:]]|$)' \
+	'^[[:space:]]*_pulse_start_post_dispatch_housekeeping([[:space:]]|$)' \
+	"$ENGINE"
+assert_not_grep \
+	"9i: initial fill is not wrapped by the group timeout" \
+	'run_stage_with_timeout "preflight_early_dispatch"' \
+	"$ENGINE"
+assert_not_grep \
+	"9j: post-label refill is not wrapped by the group timeout" \
+	'run_stage_with_timeout "preflight_post_label_refill"' \
+	"$ENGINE"
+assert_match_count \
+	"9k: routine comment responses run only during the initial fill" \
+	'^[[:space:]]*dispatch_routine_comment_responses[[:space:]]*\|\|[[:space:]]*true' \
+	1 \
+	"$PREFLIGHT_LIB"
+assert_refill_runtime_contract \
+	"9l: refill invalidates candidates before dispatch and does not repeat routine responses"
 
 # --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
 

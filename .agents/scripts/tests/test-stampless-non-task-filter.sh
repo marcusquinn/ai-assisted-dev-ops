@@ -278,6 +278,11 @@ chmod +x "${STUB_BIN}/gh"
 
 # Set required globals for _normalize_unassign_stampless_interactive
 export PULSE_QUEUED_SCAN_LIMIT=200
+repo_allows_pulse_write_actions() {
+	local repo_slug="$1"
+	[[ "$repo_slug" == "owner/repo" ]]
+	return $?
+}
 
 # Source pulse-issue-reconcile.sh (sub-library of pulse-wrapper.sh)
 # shellcheck source=/dev/null

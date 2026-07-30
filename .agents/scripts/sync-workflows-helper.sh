@@ -13,6 +13,7 @@
 #   - issue-sync.yml         (template: issue-sync-caller.yml)
 #   - review-bot-gate.yml    (template: review-bot-gate-caller.yml, GH#20727)
 #   - maintainer-gate.yml    (template: maintainer-gate-caller.yml, GH#21154)
+#   - linked-issue-check.yml (template: linked-issue-check-caller.yml, GH#28844)
 #
 # Default mode is --dry-run. Pass --apply to actually write, commit, push, and
 # open a PR in each target repo.
@@ -67,17 +68,22 @@ _C_NC=$'\033[0m'
 
 readonly REPOS_JSON="$HOME/.config/aidevops/repos.json"
 readonly CHECK_HELPER="$SELF_DIR/check-workflows-helper.sh"
+readonly MANAGED_BLOCK_HELPER="$SELF_DIR/managed-markdown-block-helper.py"
+readonly CONTRIBUTING_POLICY_TEMPLATE_NAME="issue-first-pr-contributing.md"
+readonly LINKED_ISSUE_WORKFLOW_NAME="linked-issue-check"
 
 # Known managed workflows — each entry is workflow_file:template_file.
 # Mirrors _KNOWN_WORKFLOWS in check-workflows-helper.sh.
 # GH#20727: review-bot-gate added.
 # GH#21154: maintainer-gate added (layer-1 defense-in-depth propagation).
 # GH#21877: loc-badge added (runner input parity).
+# GH#28844: linked-issue-check added (external contribution visibility).
 readonly _SYNC_KNOWN_WORKFLOWS=(
 	"issue-sync.yml:issue-sync-caller.yml"
 	"review-bot-gate.yml:review-bot-gate-caller.yml"
 	"maintainer-gate.yml:maintainer-gate-caller.yml"
 	"loc-badge.yml:loc-badge-caller.yml"
+	"linked-issue-check.yml:linked-issue-check-caller.yml"
 )
 
 # Output mode constants.
@@ -91,6 +97,8 @@ readonly _CLASS_DRIFTED='DRIFTED/CALLER'
 readonly _CLASS_NEEDS_MIGRATION='NEEDS-MIGRATION'
 readonly _CLASS_CURRENT_CALLER='CURRENT/CALLER'
 readonly _CLASS_DRIFTED_REUSABLE='DRIFTED/REUSABLE'
+readonly _CLASS_NO_WORKFLOW='NO-WORKFLOW'
+readonly _CLASS_LOCAL_ONLY='LOCAL-ONLY'
 
 readonly _DEFAULT_WORKFLOW_REUSABLE_REPO="marcusquinn/aidevops"
 readonly _DEFAULT_WORKFLOW_REUSABLE_REF="main"
@@ -161,9 +169,77 @@ _is_linked_worktree() {
 	return 0
 }
 
+_github_slug_from_remote_url() {
+	local _url="$1"
+	local _slug=""
+	case "$_url" in
+	git@github.com:*) _slug="${_url#git@github.com:}" ;;
+	ssh://git@github.com/*) _slug="${_url#ssh://git@github.com/}" ;;
+	https://github.com/*) _slug="${_url#https://github.com/}" ;;
+	http://github.com/*) _slug="${_url#http://github.com/}" ;;
+	git://github.com/*) _slug="${_url#git://github.com/}" ;;
+	*) return 1 ;;
+	esac
+	_slug="${_slug%%\?*}"
+	_slug="${_slug%%#*}"
+	_slug="${_slug%/}"
+	_slug="${_slug%.git}"
+	[[ -n "$_slug" && "$_slug" == */* && "${_slug#*/}" != */* ]] || return 1
+	printf '%s\n' "$_slug"
+	return 0
+}
+
+# Resolve the remote that represents the registry's GitHub repository. Prefer
+# an exact fetch+push URL identity match; retain origin only for local mirrors
+# where no configured remote is parseable as GitHub at all.
+_resolve_github_remote() {
+	local _repo_path="$1"
+	local _expected_slug="$2"
+	local _expected_lower
+	_expected_lower=$(printf '%s' "$_expected_slug" | tr '[:upper:]' '[:lower:]') || return 1
+	local _remote_names
+	_remote_names=$(git -C "$_repo_path" remote 2>/dev/null) || return 1
+	local _remote=""
+	local _fetch_url="" _push_url=""
+	local _fetch_slug="" _push_slug=""
+	local _fetch_lower="" _push_lower=""
+	local _candidate=""
+	local _github_seen=0
+	while IFS= read -r _remote; do
+		[[ -n "$_remote" ]] || continue
+		_fetch_url=$(git -C "$_repo_path" config --get "remote.${_remote}.url" 2>/dev/null || true)
+		_push_url=$(git -C "$_repo_path" config --get "remote.${_remote}.pushurl" 2>/dev/null || true)
+		[[ -n "$_push_url" ]] || _push_url="$_fetch_url"
+		_fetch_slug=$(_github_slug_from_remote_url "$_fetch_url" 2>/dev/null || true)
+		_push_slug=$(_github_slug_from_remote_url "$_push_url" 2>/dev/null || true)
+		if [[ -n "$_fetch_slug" || -n "$_push_slug" ]]; then
+			_github_seen=1
+		fi
+		[[ -n "$_fetch_slug" && -n "$_push_slug" ]] || continue
+		_fetch_lower=$(printf '%s' "$_fetch_slug" | tr '[:upper:]' '[:lower:]') || return 1
+		_push_lower=$(printf '%s' "$_push_slug" | tr '[:upper:]' '[:lower:]') || return 1
+		[[ "$_fetch_lower" == "$_expected_lower" && "$_push_lower" == "$_expected_lower" ]] || continue
+		if [[ "$_remote" == "origin" ]]; then
+			printf '%s\n' "$_remote"
+			return 0
+		fi
+		[[ -n "$_candidate" ]] || _candidate="$_remote"
+	done <<<"$_remote_names"
+	if [[ -n "$_candidate" ]]; then
+		printf '%s\n' "$_candidate"
+		return 0
+	fi
+	if [[ "$_github_seen" -eq 0 ]] && git -C "$_repo_path" remote get-url origin >/dev/null 2>&1; then
+		printf 'origin\n'
+		return 0
+	fi
+	return 1
+}
+
 _remote_default_ref() {
-	local _default_branch="$1"
-	printf 'origin/%s\n' "$_default_branch"
+	local _remote="$1"
+	local _default_branch="$2"
+	printf '%s/%s\n' "$_remote" "$_default_branch"
 	return 0
 }
 
@@ -183,6 +259,54 @@ _worktree_for_branch() {
 	return 1
 }
 
+# Refresh a canonical repository's remote-tracking branch from linked-worktree
+# context so the canonical Git guard remains intact. Bootstrap a short-lived
+# detached worktree when the repository has no linked worktree yet.
+_refresh_remote_from_linked_context() {
+	local _repo_path="$1"
+	local _remote="$2"
+	local _default_branch="$3"
+	local _base_dir="$4"
+	local _slug="$5"
+	local _fetch_path=""
+	local _line _candidate
+	while IFS= read -r _line; do
+		case "$_line" in
+		worktree\ *)
+			_candidate="${_line#worktree }"
+			if [[ -d "$_candidate" ]] && _is_linked_worktree "$_candidate"; then
+				_fetch_path="$_candidate"
+				break
+			fi
+			;;
+		esac
+	done < <(git -C "$_repo_path" worktree list --porcelain 2>/dev/null)
+
+	local _bootstrap_path=""
+	if [[ -z "$_fetch_path" ]]; then
+		local _safe_slug
+		_safe_slug=$(printf '%s' "$_slug" | sed 's|[^A-Za-z0-9._-]|-|g')
+		mkdir -p "$_base_dir" || return 1
+		_bootstrap_path="${_base_dir}/.${_safe_slug}-workflow-sync-fetch-$$"
+		[[ ! -e "$_bootstrap_path" ]] || return 1
+		git -C "$_repo_path" worktree add -q --detach \
+			"$_bootstrap_path" HEAD >/dev/null 2>&1 || return 1
+		_fetch_path="$_bootstrap_path"
+	fi
+
+	local _fetch_rc=0
+	local _cleanup_rc=0
+	git -C "$_fetch_path" fetch --no-tags --quiet "$_remote" \
+		"+refs/heads/${_default_branch}:refs/remotes/${_remote}/${_default_branch}" \
+		>/dev/null 2>&1 || _fetch_rc=$?
+	if [[ -n "$_bootstrap_path" ]]; then
+		git -C "$_fetch_path" worktree remove --force "$_bootstrap_path" \
+			>/dev/null 2>&1 || _cleanup_rc=$?
+	fi
+	[[ "$_fetch_rc" -eq 0 && "$_cleanup_rc" -eq 0 ]] || return 1
+	return 0
+}
+
 # _prepare_apply_worktree <slug> <classified-path> <branch>
 # Emits the safe linked worktree path used for mutation.
 _prepare_apply_worktree() {
@@ -199,10 +323,12 @@ _prepare_apply_worktree() {
 	fi
 	git -C "$_classified_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
 
+	local _remote
+	_remote=$(_resolve_github_remote "$_classified_path" "$_slug") || return 1
 	local _default_branch
-	_default_branch=$(git -C "$_classified_path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+	_default_branch=$(git -C "$_classified_path" symbolic-ref --short "refs/remotes/${_remote}/HEAD" 2>/dev/null || true)
+	_default_branch="${_default_branch#"${_remote}"/}"
 	[[ -z "$_default_branch" ]] && _default_branch="$_BRANCH_DEFAULT_NAME"
-	git -C "$_classified_path" fetch -q origin "$_default_branch" >/dev/null 2>&1 || return 1
 
 	local _existing
 	_existing=$(_worktree_for_branch "$_classified_path" "$_branch") || _existing=""
@@ -222,9 +348,11 @@ _prepare_apply_worktree() {
 	_safe_name=$(printf '%s-%s' "$_slug" "$_branch" | sed 's|[^A-Za-z0-9._-]|-|g')
 	local _worktree_path="${_base_dir}/${_safe_name}"
 	local _default_ref
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	mkdir -p "$_base_dir" || return 1
 	[[ ! -e "$_worktree_path" ]] || return 1
+	_refresh_remote_from_linked_context \
+		"$_classified_path" "$_remote" "$_default_branch" "$_base_dir" "$_slug" || return 1
 	git -C "$_classified_path" worktree add -q -B "$_branch" \
 		"$_worktree_path" "$_default_ref" >/dev/null 2>&1 || return 1
 	if command -v register_worktree >/dev/null 2>&1; then
@@ -240,14 +368,15 @@ _usage() {
 sync-workflows-helper.sh — resync drifted framework workflows (t2779, GH#20649)
 
 Reads classifications from check-workflows-helper.sh and, per repo × workflow,
-installs (NEEDS-MIGRATION) or refreshes (DRIFTED/CALLER) the canonical caller
-template. Managed workflows: issue-sync.yml, review-bot-gate.yml (GH#20727),
-maintainer-gate.yml (GH#21154).
+installs or refreshes the canonical caller template. Managed workflows include
+issue-sync.yml, review-bot-gate.yml, maintainer-gate.yml, loc-badge.yml, and
+linked-issue-check.yml.
 
 Default is --dry-run. Pass --apply to write, commit, push, and open PRs.
 
 Usage:
   sync-workflows-helper.sh [--apply] [--repo OWNER/REPO] [--workflow NAME]
+                           [--install-missing] [--issue NUMBER]
                            [--force-ref] [--ref REF] [--branch NAME] [--json]
   sync-workflows-helper.sh --help
 
@@ -255,7 +384,11 @@ Options:
   --apply           Actually perform the migration. Without this, only prints
                     what would happen (dry-run is the default for safety).
   --repo SLUG       Limit to a single repo. Example: --repo owner/repo.
-  --workflow NAME   Limit to a single workflow (issue-sync or review-bot-gate).
+  --workflow NAME   Limit to a single managed workflow.
+  --install-missing Include NO-WORKFLOW rows. Requires --workflow and filters
+                    out local-only, external-upstream, archived, inaccessible,
+                    and non-ADMIN/non-MAINTAIN repositories.
+  --issue NUMBER    Rollout task number for commit/PR traceability.
   --force-ref       Overwrite existing @ref pinning with the template's default.
                     Without this, existing pins (@v3.9.0, @<sha>) are preserved.
   --ref REF         Explicit @ref for new installs (default: @main).
@@ -275,6 +408,9 @@ Examples:
   # Migrate review-bot-gate only for one repo:
   sync-workflows-helper.sh --apply --repo exampleorg/examplerepo --workflow review-bot-gate
 
+  # Safely install one missing workflow across eligible managed repositories:
+  sync-workflows-helper.sh --workflow linked-issue-check --install-missing
+
   # Migrate all drifted/needs-migration repos, pin to v3.9.0:
   sync-workflows-helper.sh --apply --ref @v3.9.0
 
@@ -291,6 +427,21 @@ _resolve_canonical_template() {
 	local _candidates=(
 		"$HOME/.aidevops/agents/templates/workflows/${_template_filename}"
 		"$SELF_DIR/../templates/workflows/${_template_filename}"
+	)
+	local _path
+	for _path in "${_candidates[@]}"; do
+		if [[ -f "$_path" ]]; then
+			printf '%s\n' "$_path"
+			return 0
+		fi
+	done
+	return 1
+}
+
+_resolve_contributing_policy_template() {
+	local _candidates=(
+		"$HOME/.aidevops/agents/templates/${CONTRIBUTING_POLICY_TEMPLATE_NAME}"
+		"$SELF_DIR/../templates/${CONTRIBUTING_POLICY_TEMPLATE_NAME}"
 	)
 	local _path
 	for _path in "${_candidates[@]}"; do
@@ -494,10 +645,99 @@ _needs_runner_sync() {
 	[[ "$_expected" != "$_actual" ]]
 }
 
+# Returns 0 when the issue-first managed block needs an update, 1 when current,
+# and 2 when the target/template is malformed or unavailable.
+_contributing_policy_needs_sync() {
+	local _repo_path="$1"
+	local _template
+	_template=$(_resolve_contributing_policy_template) || return 2
+	[[ -f "$MANAGED_BLOCK_HELPER" ]] || return 2
+	command -v python3 >/dev/null 2>&1 || return 2
+	python3 "$MANAGED_BLOCK_HELPER" check \
+		--file "$_repo_path/CONTRIBUTING.md" \
+		--template "$_template" >/dev/null 2>&1
+	local _check_rc=$?
+	case "$_check_rc" in
+	0) return 1 ;;
+	1) return 0 ;;
+	*) return 2 ;;
+	esac
+}
+
+# Emits an empty line for eligible repositories or a stable skip reason.
+_installation_skip_reason() {
+	local _slug="$1"
+	local _registry_flags
+	_registry_flags=$(jq -r --arg slug "$_slug" '
+		.initialized_repos[]?
+		| select(.slug == $slug)
+		| [(.local_only // false), (.contributed // false), (.role // "")]
+		| @tsv
+	' "$REPOS_JSON" 2>/dev/null | head -n 1)
+	if [[ -z "$_registry_flags" ]]; then
+		printf 'registry-entry-missing\n'
+		return 0
+	fi
+
+	local _local_only _contributed _role
+	IFS=$'\t' read -r _local_only _contributed _role <<<"$_registry_flags"
+	if [[ "$_local_only" == "true" ]]; then
+		printf 'local-only\n'
+		return 0
+	fi
+	if [[ "$_contributed" == "true" || "$_role" == "contributor" ]]; then
+		printf 'external-upstream\n'
+		return 0
+	fi
+	if ! command -v gh >/dev/null 2>&1; then
+		printf 'inaccessible\n'
+		return 0
+	fi
+
+	local _repo_json
+	_repo_json=$(gh api "repos/${_slug}" 2>/dev/null) || {
+		printf 'inaccessible\n'
+		return 0
+	}
+	if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$_repo_json"; then
+		printf 'inaccessible\n'
+		return 0
+	fi
+	if jq -e '.archived == true' >/dev/null 2>&1 <<<"$_repo_json"; then
+		printf 'archived\n'
+		return 0
+	fi
+	if jq -e '(.permissions.admin == true) or (.permissions.maintain == true)' \
+		>/dev/null 2>&1 <<<"$_repo_json"; then
+		printf '\n'
+		return 0
+	fi
+	printf 'insufficient-permission\n'
+	return 0
+}
+
+_emit_actionable_row() {
+	local _slug="$1"
+	local _path="$2"
+	local _class="$3"
+	local _workflow="$4"
+	local _skip_reason=""
+	if [[ "${_OPT_INSTALL_MISSING:-0}" -eq 1 ]]; then
+		if [[ "$_class" == "$_CLASS_LOCAL_ONLY" ]]; then
+			_skip_reason="local-only"
+		else
+			_skip_reason=$(_installation_skip_reason "$_slug")
+		fi
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\n' \
+		"$_slug" "$_path" "$_class" "$_workflow" "$_skip_reason"
+	return 0
+}
+
 # ─── Classification Ingestion ───────────────────────────────────────────────
 
 # Invoke check-workflows-helper.sh --json and filter to actionable rows.
-# Emits TSV: slug\tpath\tstatus\tworkflow
+# Emits TSV: slug\tpath\tstatus\tworkflow\tinstall-skip-reason
 # _list_actionable_repos <filter_slug> [filter_workflow]
 _list_actionable_repos() {
 	local _filter_slug="$1"
@@ -514,14 +754,28 @@ _list_actionable_repos() {
 		return 1
 	fi
 
-	# Step 1 — DRIFTED/CALLER and NEEDS-MIGRATION rows always need a sync,
-	# regardless of runner state. Emit them directly.
-	# --arg makes the bash constants visible to jq without interpolation hacks.
-	printf '%s\n' "$_json" | jq -r \
+	# Step 1 — drift and migration rows are always actionable. NO-WORKFLOW and
+	# LOCAL-ONLY rows enter only through the narrow --install-missing path.
+	local _candidate_rows
+	_candidate_rows=$(printf '%s\n' "$_json" | jq -r \
 		--arg drifted "$_CLASS_DRIFTED" \
 		--arg needs "$_CLASS_NEEDS_MIGRATION" \
-		'select((.classification == $drifted) or (.classification == $needs))
-			| [.slug, .path, .classification, (.workflow // "")] | @tsv' 2>/dev/null
+		--arg missing "$_CLASS_NO_WORKFLOW" \
+		--arg local "$_CLASS_LOCAL_ONLY" \
+		--argjson install "${_OPT_INSTALL_MISSING:-0}" \
+		'select(
+			(.classification == $drifted)
+			or (.classification == $needs)
+			or (($install == 1) and (
+				(.classification == $missing) or (.classification == $local)
+			))
+		)
+		| [.slug, .path, .classification, (.workflow // "")] | @tsv' 2>/dev/null)
+	local _row_slug _row_path _row_class _row_workflow
+	while IFS=$'\t' read -r _row_slug _row_path _row_class _row_workflow; do
+		[[ -z "$_row_slug" ]] && continue
+		_emit_actionable_row "$_row_slug" "$_row_path" "$_row_class" "$_row_workflow"
+	done <<<"$_candidate_rows"
 
 	# Step 2 — CURRENT/CALLER rows whose `runner:` value drifted from
 	# `repos.json` (GH#21897). The comparator strips `runner:` before byte-
@@ -529,14 +783,19 @@ _list_actionable_repos() {
 	# Step 1 filter would skip these repos forever. Post-filter through
 	# `_needs_runner_sync` against the on-disk file and emit only the
 	# subset where the runner actually needs to change.
-	local _row_slug _row_path _row_class _row_workflow _wf_file
+	local _wf_file _needs_sync
 	while IFS=$'\t' read -r _row_slug _row_path _row_class _row_workflow; do
 		[[ -z "$_row_slug" ]] && continue
 		# `.workflow` is the short name (e.g. "issue-sync"); reconstruct path.
 		_wf_file="$_row_path/.github/workflows/${_row_workflow}.yml"
-		if _needs_runner_sync "$_row_slug" "$_wf_file"; then
-			printf '%s\t%s\t%s\t%s\n' \
-				"$_row_slug" "$_row_path" "$_row_class" "$_row_workflow"
+		_needs_sync=0
+		_needs_runner_sync "$_row_slug" "$_wf_file" && _needs_sync=1
+		if [[ "$_row_workflow" == "$LINKED_ISSUE_WORKFLOW_NAME" ]]; then
+			_contributing_policy_needs_sync "$_row_path" && _needs_sync=1
+			[[ "$?" -eq 2 ]] && _needs_sync=1
+		fi
+		if [[ "$_needs_sync" -eq 1 ]]; then
+			_emit_actionable_row "$_row_slug" "$_row_path" "$_row_class" "$_row_workflow"
 		fi
 	done < <(printf '%s\n' "$_json" | jq -r \
 		--arg current "$_CLASS_CURRENT_CALLER" \
@@ -566,12 +825,23 @@ _classify_after_refresh() {
 # ─── Message Formatters ─────────────────────────────────────────────────────
 # Bash 3.2-safe multi-line body builders (no heredoc inside $()).
 
-# _format_commit_body <status> <ref> <workflow_path>
+# _format_commit_body <status> <ref> <workflow_path> <sync-contributing>
 # shellcheck disable=SC2016  # backticks are intentional markdown literals
 _format_commit_body() {
 	local _status="$1"
 	local _ref="$2"
 	local _workflow_path="$3"
+	local _sync_contributing="$4"
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		printf 'Install the issue-first external contribution policy.\n\n'
+		printf 'Files managed:\n'
+		printf -- '- `%s`\n' "$_workflow_path"
+		printf -- '- `CONTRIBUTING.md` issue-first pull request block\n\n'
+		printf 'Classification before: %s\n' "$_status"
+		printf 'Ref: %s\n' "$_ref"
+		[[ -n "${_OPT_ISSUE:-}" ]] && printf 'Rollout task: GH#%s\n' "$_OPT_ISSUE"
+		return 0
+	fi
 	printf 'Resync `%s` to the canonical aidevops caller template.\n\n' "$_workflow_path"
 	printf 'Classification before: %s\n' "$_status"
 	printf 'Ref: %s\n\n' "$_ref"
@@ -582,12 +852,32 @@ _format_commit_body() {
 	return 0
 }
 
-# _format_pr_body <status> <ref> <workflow_path>
+# _format_pr_body <status> <ref> <workflow_path> <sync-contributing>
 # shellcheck disable=SC2016  # backticks are intentional markdown literals
 _format_pr_body() {
 	local _status="$1"
 	local _ref="$2"
 	local _workflow_path="$3"
+	local _sync_contributing="$4"
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		printf '## Summary\n\n'
+		printf -- '- Install `%s` to validate local issue references on external pull requests.\n' "$_workflow_path"
+		printf -- '- Add or refresh the managed issue-first policy in `CONTRIBUTING.md`.\n\n'
+		printf '## Why\n\n'
+		printf 'Maintainers monitor the issue queue more consistently than unsolicited pull requests.\n'
+		printf 'External contributors should create or find a local issue before opening a PR.\n\n'
+		printf '## Security\n\n'
+		printf 'The workflow consumes immutable event metadata only. It does not check out, source,\n'
+		printf 'or execute pull-request head content.\n\n'
+		printf '## Verification\n\n'
+		printf -- '- External human PR without an accepted local issue reference: check fails.\n'
+		printf -- '- Owner, member, collaborator, and bot PRs: documented exemptions apply.\n'
+		printf -- '- Re-running the rollout produces no file changes.\n\n'
+		printf '**Classification before**: `%s`  \n' "$_status"
+		printf '**Ref**: `%s`\n' "$_ref"
+		[[ -n "${_OPT_ISSUE:-}" ]] && printf '**Rollout task**: `GH#%s`\n' "$_OPT_ISSUE"
+		return 0
+	fi
 	printf '## Summary\n\n'
 	printf 'Resync `%s` to the canonical aidevops caller template\n' "$_workflow_path"
 	printf '(reusable-workflow pattern, GH#20649 + GH#20727).\n\n'
@@ -607,6 +897,38 @@ _format_pr_body() {
 	printf 'If the workflow breaks, revert this PR. The previous workflow is preserved\n'
 	printf 'in git history at the parent commit.\n\n'
 	printf 'Generated by: `aidevops sync-workflows --apply` (see marcusquinn/aidevops#20649).\n'
+	return 0
+}
+
+_format_pr_title() {
+	local _sync_contributing="$1"
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		if [[ -n "${_OPT_ISSUE:-}" ]]; then
+			printf 'GH#%s: enforce issue-first external pull requests\n' "$_OPT_ISSUE"
+		else
+			printf 'chore: enforce issue-first external pull requests\n'
+		fi
+		return 0
+	fi
+	printf 'chore: resync framework workflow to aidevops canonical caller\n'
+	return 0
+}
+
+_create_pr_body_file() {
+	local _status="$1"
+	local _ref="$2"
+	local _workflow_path="$3"
+	local _sync_contributing="$4"
+	local _temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	mkdir -p "$_temp_root" || return 1
+	local _body_file
+	_body_file=$(mktemp "${_temp_root%/}/sync-workflows-pr.XXXXXX") || return 1
+	if ! _format_pr_body "$_status" "$_ref" "$_workflow_path" \
+		"$_sync_contributing" >"$_body_file"; then
+		rm -f "$_body_file"
+		return 1
+	fi
+	printf '%s\n' "$_body_file"
 	return 0
 }
 
@@ -631,26 +953,35 @@ _resolve_effective_ref() {
 	return 0
 }
 
-# _sync_dryrun_emit <slug> <status> <effective_ref> [workflow_relpath]
+# _sync_dryrun_emit <slug> <status> <effective_ref> <workflow-relpath> <sync-contributing>
 _sync_dryrun_emit() {
 	local _slug="$1"
 	local _status="$2"
 	local _effective_ref="$3"
 	local _workflow_relpath="${4:-.github/workflows/issue-sync.yml}"
+	local _sync_contributing="${5:-0}"
 	local _action
-	case "$_status" in
-	"$_CLASS_DRIFTED") _action="refresh" ;;
-	"$_CLASS_CURRENT_CALLER") _action="update runner" ;;
-	*) _action="install" ;;
-	esac
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		_action="install policy"
+	else
+		case "$_status" in
+		"$_CLASS_DRIFTED") _action="refresh" ;;
+		"$_CLASS_CURRENT_CALLER") _action="update runner" ;;
+		*) _action="install" ;;
+		esac
+	fi
+	local _targets="$_workflow_relpath"
+	[[ "$_sync_contributing" -eq 1 ]] && _targets="${_targets} + CONTRIBUTING.md"
 	printf '%s\t%s\t%s\t%s → %s at ref %s\n' \
-		"$_slug" "$_status" "$_STATUS_PLANNED" "$_action" "$_workflow_relpath" "$_effective_ref"
+		"$_slug" "$_status" "$_STATUS_PLANNED" "$_action" \
+		"$_targets" "$_effective_ref"
 	return 0
 }
 
-# _sync_preflight <slug> <path> <status> <default_branch_out>
+# _sync_preflight <slug> <path> <status>
 # Validates linked-worktree identity and clean state.
-# Returns 0 proceed; 1 fail; 2 skip. Sets _PREFLIGHT_DEFAULT_BRANCH on proceed.
+# Returns 0 proceed; 1 fail; 2 skip. Sets _PREFLIGHT_DEFAULT_BRANCH and
+# _PREFLIGHT_REMOTE on proceed.
 _sync_preflight() {
 	local _slug="$1"
 	local _path="$2"
@@ -669,27 +1000,36 @@ _sync_preflight() {
 			"$_slug" "$_status" "$_STATUS_FAILED" "$_path"
 		return 1
 	fi
+	local _remote
+	if ! _remote=$(_resolve_github_remote "$_path" "$_slug"); then
+		printf '%s\t%s\t%s\tmatching GitHub remote unavailable\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	fi
 	local _default_branch
-	_default_branch=$(git -C "$_path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+	_default_branch=$(git -C "$_path" symbolic-ref --short "refs/remotes/${_remote}/HEAD" 2>/dev/null || true)
+	_default_branch="${_default_branch#"${_remote}"/}"
 	[[ -z "$_default_branch" ]] && _default_branch="$_BRANCH_DEFAULT_NAME"
 	if [[ -n "$(git -C "$_path" status --porcelain 2>/dev/null)" ]]; then
 		printf '%s\t%s\t%s\tworking tree not clean; skipping\n' "$_slug" "$_status" "$_STATUS_SKIPPED"
 		return 2
 	fi
 	_PREFLIGHT_DEFAULT_BRANCH="$_default_branch"
+	_PREFLIGHT_REMOTE="$_remote"
 	return 0
 }
 
-# _sync_refresh_checkout <slug> <path> <status> <default_branch> <sync-branch>
+# _sync_refresh_checkout <slug> <path> <status> <remote> <default_branch> <sync-branch>
 # Apply must classify and mutate the same refreshed snapshot. Fail closed when
 # refresh is unavailable rather than continuing with stale local evidence.
 _sync_refresh_checkout() {
 	local _slug="$1"
 	local _path="$2"
 	local _status="$3"
-	local _default_branch="$4"
-	local _branch_name="$5"
-	if ! git -C "$_path" fetch -q origin "$_default_branch" >/dev/null 2>&1; then
+	local _remote="$4"
+	local _default_branch="$5"
+	local _branch_name="$6"
+	if ! git -C "$_path" fetch -q "$_remote" "$_default_branch" >/dev/null 2>&1; then
 		printf '%s\t%s\t%s\tfetch failed; refusing stale classification\n' \
 			"$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
@@ -697,7 +1037,7 @@ _sync_refresh_checkout() {
 	local _current_branch
 	local _default_ref
 	_current_branch=$(git -C "$_path" symbolic-ref --short HEAD 2>/dev/null || printf 'DETACHED')
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	if [[ "$_current_branch" != "$_branch_name" ]] && \
 		! git -C "$_path" checkout -q -B "$_branch_name" "$_default_ref"; then
 		printf '%s\t%s\t%s\tfailed to prepare sync branch\n' \
@@ -707,41 +1047,89 @@ _sync_refresh_checkout() {
 	return 0
 }
 
-# _sync_write_commit_push <slug> <path> <status> <branch> <default_branch> <effective_ref> <content> [workflow_relpath]
+# _sync_write_commit_push <slug> <path> <status> <branch> <remote>
+#   <default_branch> <effective_ref> <content> <workflow-relpath>
+#   <sync-contributing>
 # Returns 2 for an explicit successful no-op; the caller must not open a PR.
 _sync_write_commit_push() {
 	local _slug="$1"
 	local _path="$2"
 	local _status="$3"
 	local _branch_name="$4"
-	local _default_branch="$5"
-	local _effective_ref="$6"
-	local _target_content="$7"
-	local _workflow_relpath="${8:-.github/workflows/issue-sync.yml}"
+	local _remote="$5"
+	local _default_branch="$6"
+	local _effective_ref="$7"
+	local _target_content="$8"
+	local _workflow_relpath="${9:-.github/workflows/issue-sync.yml}"
+	local _sync_contributing="${10:-0}"
 	local _workflow="$_path/$_workflow_relpath"
 
-	# Avoid even creating a local sync branch when rendering is byte-identical to
-	# the refreshed default branch.
-	if [[ -f "$_workflow" ]] && diff -q <(printf '%s\n' "$_target_content") "$_workflow" >/dev/null 2>&1; then
-		printf '%s\t%s\t%s\trendered workflow already current after refresh\n' \
+	local _workflow_current=0
+	if [[ -f "$_workflow" ]] && \
+		diff -q <(printf '%s\n' "$_target_content") "$_workflow" >/dev/null 2>&1; then
+		_workflow_current=1
+	fi
+	local _policy_current=1
+	local _policy_template=""
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		_policy_template=$(_resolve_contributing_policy_template) || {
+			printf '%s\t%s\t%s\tcontributing policy template unavailable\n' \
+				"$_slug" "$_status" "$_STATUS_FAILED"
+			return 1
+		}
+		python3 "$MANAGED_BLOCK_HELPER" check \
+			--file "$_path/CONTRIBUTING.md" --template "$_policy_template" >/dev/null 2>&1
+		local _policy_rc=$?
+		case "$_policy_rc" in
+		0) _policy_current=1 ;;
+		1) _policy_current=0 ;;
+		*)
+			printf '%s\t%s\t%s\tCONTRIBUTING.md managed markers are malformed\n' \
+				"$_slug" "$_status" "$_STATUS_FAILED"
+			return 1
+			;;
+		esac
+	fi
+	if [[ "$_workflow_current" -eq 1 && "$_policy_current" -eq 1 ]]; then
+		printf '%s\t%s\t%s\tworkflow and contributing policy already current after refresh\n' \
 			"$_slug" "$_status" "$_STATUS_SKIPPED"
 		return 2
 	fi
 	local _current_branch
 	local _default_ref
 	_current_branch=$(git -C "$_path" symbolic-ref --short HEAD 2>/dev/null || printf 'DETACHED')
-	_default_ref=$(_remote_default_ref "$_default_branch")
+	_default_ref=$(_remote_default_ref "$_remote" "$_default_branch")
 	if [[ "$_current_branch" != "$_branch_name" ]] && \
 		! git -C "$_path" checkout -q -B "$_branch_name" "$_default_ref"; then
 		printf '%s\t%s\t%s\tbranch create/reset failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	fi
-	mkdir -p "$_path/.github/workflows"
-	printf '%s\n' "$_target_content" >"$_workflow"
-	git -C "$_path" add "$_workflow_relpath" >/dev/null 2>&1
+	mkdir -p "$_path/.github/workflows" || return 1
+	if [[ "$_sync_contributing" -eq 1 && "$_policy_current" -eq 0 ]]; then
+		if ! python3 "$MANAGED_BLOCK_HELPER" apply \
+			--file "$_path/CONTRIBUTING.md" --template "$_policy_template" >/dev/null 2>&1; then
+			printf '%s\t%s\t%s\tCONTRIBUTING.md managed block update failed\n' \
+				"$_slug" "$_status" "$_STATUS_FAILED"
+			return 1
+		fi
+	fi
+	if [[ "$_workflow_current" -eq 0 ]]; then
+		printf '%s\n' "$_target_content" >"$_workflow"
+	fi
+	local _stage_paths=("$_workflow_relpath")
+	[[ "$_sync_contributing" -eq 1 ]] && _stage_paths+=("CONTRIBUTING.md")
+	if ! git -C "$_path" add -- "${_stage_paths[@]}" >/dev/null 2>&1; then
+		printf '%s\t%s\t%s\tgit staging failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	fi
 	local _commit_subject="chore: resync framework workflow ($_status → CURRENT/CALLER)"
+	if [[ "$_sync_contributing" -eq 1 ]]; then
+		_commit_subject="chore: enforce issue-first external pull requests"
+		[[ -n "${_OPT_ISSUE:-}" ]] && _commit_subject="GH#${_OPT_ISSUE}: enforce issue-first external pull requests"
+	fi
 	local _commit_body
-	_commit_body=$(_format_commit_body "$_status" "$_effective_ref" "$_workflow_relpath")
+	_commit_body=$(_format_commit_body \
+		"$_status" "$_effective_ref" "$_workflow_relpath" "$_sync_contributing")
 	if git -C "$_path" diff --cached --quiet; then
 		git -C "$_path" checkout -q "$_default_branch" || true
 		printf '%s\t%s\t%s\tno staged diff after render; push and PR skipped\n' \
@@ -754,14 +1142,15 @@ _sync_write_commit_push() {
 		git -C "$_path" checkout -q "$_default_branch" || true
 		return 1
 	fi
-	if ! git -C "$_path" push -u origin "$_branch_name" >/dev/null 2>&1; then
+	if ! git -C "$_path" push -u "$_remote" "$_branch_name" >/dev/null 2>&1; then
 		printf '%s\t%s\t%s\tgit push failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	fi
 	return 0
 }
 
-# _sync_open_pr <slug> <path> <status> <branch> <default_branch> <effective_ref> [workflow_relpath]
+# _sync_open_pr <slug> <path> <status> <branch> <default_branch>
+#   <effective_ref> <workflow-relpath> <sync-contributing>
 _sync_open_pr() {
 	local _slug="$1"
 	local _path="$2"
@@ -770,26 +1159,65 @@ _sync_open_pr() {
 	local _default_branch="$5"
 	local _effective_ref="$6"
 	local _workflow_relpath="${7:-.github/workflows/issue-sync.yml}"
+	local _sync_contributing="${8:-0}"
 
 	if ! command -v gh_create_pr >/dev/null 2>&1; then
 		printf '%s\t%s\t%s\tgh_create_pr unavailable — source shared-gh-wrappers.sh\n' \
 			"$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	fi
-	local _pr_title="chore: resync framework workflow to aidevops canonical caller"
-	local _pr_body
-	_pr_body=$(_format_pr_body "$_status" "$_effective_ref" "$_workflow_relpath")
-	local _pr_url
+	local _existing_pr
+	_existing_pr=$(gh pr list --repo "$_slug" --head "$_branch_name" --state open \
+		--json url --jq '.[0].url // empty' 2>/dev/null || true)
+	if [[ -n "$_existing_pr" ]]; then
+		printf '%s\t%s\t%s\tPR: %s\n' "$_slug" "$_status" "$_STATUS_APPLIED" "$_existing_pr"
+		return 0
+	fi
+	local _pr_title
+	_pr_title=$(_format_pr_title "$_sync_contributing")
+	local _body_file
+	_body_file=$(_create_pr_body_file \
+		"$_status" "$_effective_ref" "$_workflow_relpath" "$_sync_contributing") || {
+		printf '%s\t%s\t%s\tPR body-file creation failed\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	}
+	local _stderr_file
+	_stderr_file=$(mktemp "${_body_file%/*}/sync-workflows-pr-stderr.XXXXXX") || {
+		rm -f "$_body_file"
+		printf '%s\t%s\t%s\tPR diagnostic-file creation failed\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	}
+	local _pr_url _pr_stderr _failure_detail
 	if ! _pr_url=$(gh_create_pr \
 		--repo "$_slug" \
 		--title "$_pr_title" \
-		--body "$_pr_body" \
+		--body-file "$_body_file" \
 		--head "$_branch_name" \
-		--base "$_default_branch" 2>&1); then
-		printf '%s\t%s\t%s\tgh_create_pr failed: %s\n' "$_slug" "$_status" "$_STATUS_FAILED" "$_pr_url"
+		--base "$_default_branch" 2>"$_stderr_file"); then
+		_pr_stderr=$(<"$_stderr_file")
+		[[ -s "$_stderr_file" ]] && command cat "$_stderr_file" >&2
+		_failure_detail=$(printf '%s %s' "$_pr_url" "$_pr_stderr" |
+			tr '\t\r\n' '   ' |
+			sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' |
+			cut -c1-500)
+		[[ -n "$_failure_detail" ]] || _failure_detail="no diagnostic output"
+		rm -f "$_body_file" "$_stderr_file"
+		printf '%s\t%s\t%s\tgh_create_pr failed: %s\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED" "$_failure_detail"
 		return 1
 	fi
-	git -C "$_path" checkout "$_default_branch" >/dev/null 2>&1 || true
+	[[ -s "$_stderr_file" ]] && command cat "$_stderr_file" >&2
+	_pr_url=$(printf '%s' "$_pr_url" |
+		tr '\t\r\n' '   ' |
+		sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+	rm -f "$_body_file" "$_stderr_file"
+	if [[ -z "$_pr_url" ]]; then
+		printf '%s\t%s\t%s\tgh_create_pr returned empty stdout\n' \
+			"$_slug" "$_status" "$_STATUS_FAILED"
+		return 1
+	fi
 	printf '%s\t%s\t%s\tPR: %s\n' "$_slug" "$_status" "$_STATUS_APPLIED" "$_pr_url"
 	return 0
 }
@@ -811,6 +1239,62 @@ _render_sync_target() {
 	return 0
 }
 
+# Resolve whether the refreshed checkout still needs a write. Emits the
+# effective pre-write classification on success, or a complete result row when
+# returning 1 (failure) or 2 (successful skip).
+_resolve_refreshed_sync_status() {
+	local _slug="$1"
+	local _path="$2"
+	local _prior_status="$3"
+	local _workflow="$4"
+	local _refreshed_status="$5"
+	local _sync_contributing="$6"
+	case "$_refreshed_status" in
+	"$_CLASS_DRIFTED" | "$_CLASS_NEEDS_MIGRATION")
+		printf '%s\n' "$_refreshed_status"
+		return 0
+		;;
+	"$_CLASS_NO_WORKFLOW")
+		if [[ "${_OPT_INSTALL_MISSING:-0}" -eq 1 ]]; then
+			printf '%s\n' "$_refreshed_status"
+			return 0
+		fi
+		printf '%s\t%s\t%s\tmissing workflow requires --install-missing\n' \
+			"$_slug" "$_prior_status" "$_STATUS_SKIPPED"
+		return 2
+		;;
+	"$_CLASS_CURRENT_CALLER")
+		local _needs_sync=0
+		_needs_runner_sync "$_slug" "$_workflow" && _needs_sync=1
+		if [[ "$_sync_contributing" -eq 1 ]]; then
+			_contributing_policy_needs_sync "$_path"
+			local _policy_check_rc=$?
+			case "$_policy_check_rc" in
+			0) _needs_sync=1 ;;
+			1) ;;
+			*)
+				printf '%s\t%s\t%s\tCONTRIBUTING.md managed markers are malformed\n' \
+					"$_slug" "$_prior_status" "$_STATUS_FAILED"
+				return 1
+				;;
+			esac
+		fi
+		if [[ "$_needs_sync" -eq 1 ]]; then
+			printf '%s\n' "$_refreshed_status"
+			return 0
+		fi
+		printf '%s\t%s\t%s\trefreshed checkout is CURRENT/CALLER; no changes\n' \
+			"$_slug" "$_prior_status" "$_STATUS_SKIPPED"
+		return 2
+		;;
+	*)
+		printf '%s\t%s\t%s\tpost-refresh classification is %s; no workflow write attempted\n' \
+			"$_slug" "$_prior_status" "$_STATUS_SKIPPED" "$_refreshed_status"
+		return 2
+		;;
+	esac
+}
+
 # _sync_one_repo <slug> <path> <status> <template_path> <target_repo> <target_ref> <force_ref> <branch_name> <apply> <workflow_relpath>
 # Emits a single-line summary; returns 0 on success, 1 on failure.
 # workflow_relpath — path relative to repo root e.g. .github/workflows/review-bot-gate.yml
@@ -827,14 +1311,19 @@ _sync_one_repo() {
 	local _workflow_relpath="${10:-.github/workflows/issue-sync.yml}"
 
 	local _workflow="$_path/$_workflow_relpath"
+	local _workflow_name
+	_workflow_name=$(basename "$_workflow_relpath" .yml)
+	local _sync_contributing=0
+	[[ "$_workflow_name" == "$LINKED_ISSUE_WORKFLOW_NAME" ]] && _sync_contributing=1
 	if [[ "$_apply" -eq 0 ]]; then
 		local _effective_ref
 		_effective_ref=$(_resolve_effective_ref "$_status" "$_workflow" "$_target_ref" "$_force_ref")
-		_sync_dryrun_emit "$_slug" "$_status" "$_effective_ref" "$_workflow_relpath"
+		_sync_dryrun_emit \
+			"$_slug" "$_status" "$_effective_ref" "$_workflow_relpath" "$_sync_contributing"
 		return 0
 	fi
 
-	_PREFLIGHT_DEFAULT_BRANCH=""
+	_PREFLIGHT_DEFAULT_BRANCH="" _PREFLIGHT_REMOTE=""
 	local _pf_rc
 	_sync_preflight "$_slug" "$_path" "$_status"
 	_pf_rc=$?
@@ -843,15 +1332,13 @@ _sync_one_repo() {
 		[[ "$_pf_rc" -eq 2 ]] && return 0
 		return 1
 	fi
-	local _default_branch="$_PREFLIGHT_DEFAULT_BRANCH"
-	local _refresh_output
-	if ! _refresh_output=$(_sync_refresh_checkout "$_slug" "$_path" "$_status" "$_default_branch" "$_branch_name"); then
+	local _default_branch="$_PREFLIGHT_DEFAULT_BRANCH" _remote="$_PREFLIGHT_REMOTE" _refresh_output
+	if ! _refresh_output=$(_sync_refresh_checkout \
+		"$_slug" "$_path" "$_status" "$_remote" "$_default_branch" "$_branch_name"); then
 		printf '%s\n' "$_refresh_output"
 		return 1
 	fi
 
-	local _workflow_name
-	_workflow_name=$(basename "$_workflow_relpath" .yml)
 	local _refreshed_status
 	if ! _refreshed_status=$(_classify_after_refresh "$_slug" "$_workflow_name" "$_path"); then
 		printf '%s\t%s\t%s\tpost-refresh classification failed\n' \
@@ -864,24 +1351,20 @@ _sync_one_repo() {
 		return 1
 	fi
 
-	case "$_refreshed_status" in
-	"$_CLASS_DRIFTED" | "$_CLASS_NEEDS_MIGRATION")
-		_status="$_refreshed_status"
-		;;
-	"$_CLASS_CURRENT_CALLER")
-		if ! _needs_runner_sync "$_slug" "$_workflow"; then
-			printf '%s\t%s\t%s\trefreshed checkout is CURRENT/CALLER; no changes\n' \
-				"$_slug" "$_status" "$_STATUS_SKIPPED"
-			return 0
-		fi
-		_status="$_refreshed_status"
-		;;
-	*)
-		printf '%s\t%s\t%s\tpost-refresh classification is %s; no workflow write attempted\n' \
-			"$_slug" "$_status" "$_STATUS_SKIPPED" "$_refreshed_status"
+	local _status_resolution _status_rc
+	_status_resolution=$(_resolve_refreshed_sync_status \
+		"$_slug" "$_path" "$_status" "$_workflow" \
+		"$_refreshed_status" "$_sync_contributing")
+	_status_rc=$?
+	if [[ "$_status_rc" -eq 2 ]]; then
+		printf '%s\n' "$_status_resolution"
 		return 0
-		;;
-	esac
+	fi
+	if [[ "$_status_rc" -ne 0 ]]; then
+		printf '%s\n' "$_status_resolution"
+		return 1
+	fi
+	_status="$_status_resolution"
 
 	local _effective_ref
 	_effective_ref=$(_resolve_effective_ref "$_status" "$_workflow" "$_target_ref" "$_force_ref")
@@ -899,7 +1382,8 @@ _sync_one_repo() {
 	local _write_output _write_rc
 	_write_output=$(_sync_write_commit_push \
 		"$_slug" "$_path" "$_status" "$_branch_name" \
-		"$_default_branch" "$_effective_ref" "$_target_content" "$_workflow_relpath")
+		"$_remote" "$_default_branch" "$_effective_ref" "$_target_content" \
+		"$_workflow_relpath" "$_sync_contributing")
 	_write_rc=$?
 	if [[ "$_write_rc" -eq 2 ]]; then
 		printf '%s\n' "$_write_output"
@@ -912,7 +1396,7 @@ _sync_one_repo() {
 
 	_sync_open_pr \
 		"$_slug" "$_path" "$_status" "$_branch_name" \
-		"$_default_branch" "$_effective_ref" "$_workflow_relpath"
+		"$_default_branch" "$_effective_ref" "$_workflow_relpath" "$_sync_contributing"
 	return $?
 }
 
@@ -925,6 +1409,8 @@ _parse_args() {
 	_OPT_APPLY=0
 	_OPT_FILTER_SLUG=""
 	_OPT_FILTER_WORKFLOW=""
+	_OPT_INSTALL_MISSING=0
+	_OPT_ISSUE=""
 	_OPT_FORCE_REF=0
 	_OPT_TARGET_REF=""
 	_OPT_BRANCH_NAME=""
@@ -935,6 +1421,11 @@ _parse_args() {
 		--apply) _OPT_APPLY=1; shift ;;
 		--repo) _OPT_FILTER_SLUG="${2:-}"; shift 2 || _die "--repo requires an argument" ;;
 		--workflow) _OPT_FILTER_WORKFLOW="${2:-}"; shift 2 || _die "--workflow requires an argument" ;;
+		--install-missing) _OPT_INSTALL_MISSING=1; shift ;;
+		--issue)
+			_OPT_ISSUE="${2:-}"
+			[[ "$_OPT_ISSUE" =~ ^[0-9]+$ ]] || _die "--issue requires a numeric issue number"
+			shift 2 ;;
 		--force-ref) _OPT_FORCE_REF=1; shift ;;
 		--ref)
 			_OPT_TARGET_REF="${2:-}"
@@ -947,6 +1438,9 @@ _parse_args() {
 		*) _die "unknown option: $_opt" ;;
 		esac
 	done
+	if [[ "$_OPT_INSTALL_MISSING" -eq 1 && -z "$_OPT_FILTER_WORKFLOW" ]]; then
+		_die "--install-missing requires an explicit --workflow filter"
+	fi
 	return 0
 }
 
@@ -977,17 +1471,31 @@ _print_result_row() {
 }
 
 # _process_rows <tsv> → iterates, resolves per-workflow template, calls _sync_one_repo.
-# TSV columns: slug\tpath\tstatus\tworkflow_name
+# TSV columns: slug\tpath\tstatus\tworkflow_name\tinstall_skip_reason
 # Returns the number of failures (0 if all ok).
 _process_rows() {
 	local _tsv="$1"
 	local _any_failed=0
-	local _slug _path _status _workflow_name
-	while IFS=$'\t' read -r _slug _path _status _workflow_name; do
+	local _slug _path _status _workflow_name _install_skip_reason
+	while IFS=$'\t' read -r _slug _path _status _workflow_name _install_skip_reason; do
 		[[ -z "$_slug" ]] && continue
 		# Never touch aidevops itself (defence in depth; Phase 1 also emits
 		# CURRENT/SELF-CALLER).
 		[[ "$_slug" == "marcusquinn/aidevops" ]] && continue
+		if [[ -n "$_install_skip_reason" ]]; then
+			local _skip_result="${_slug}"$'\t'"${_status}"$'\t'"${_STATUS_SKIPPED}"$'\t'"eligibility: ${_install_skip_reason}"
+			_COUNT_SKIPPED=$((_COUNT_SKIPPED + 1))
+			case "$_install_skip_reason" in
+			local-only) _COUNT_SKIP_LOCAL=$((_COUNT_SKIP_LOCAL + 1)) ;;
+			external-upstream) _COUNT_SKIP_UPSTREAM=$((_COUNT_SKIP_UPSTREAM + 1)) ;;
+			archived) _COUNT_SKIP_ARCHIVED=$((_COUNT_SKIP_ARCHIVED + 1)) ;;
+			inaccessible | registry-entry-missing) _COUNT_SKIP_INACCESSIBLE=$((_COUNT_SKIP_INACCESSIBLE + 1)) ;;
+			insufficient-permission) _COUNT_SKIP_PERMISSION=$((_COUNT_SKIP_PERMISSION + 1)) ;;
+			esac
+			_print_result_row "$_OPT_JSON" "${_OPT_TARGET_REF:-@${_DEFAULT_WORKFLOW_REUSABLE_REF}}" \
+				"$_OPT_BRANCH_NAME" "$_skip_result"
+			continue
+		fi
 		if [[ "$_OPT_APPLY" -eq 1 ]]; then
 			local _safe_path
 			if ! _safe_path=$(_prepare_apply_worktree "$_slug" "$_path" "$_OPT_BRANCH_NAME"); then
@@ -1069,6 +1577,9 @@ _print_header_footer() {
 	else
 		_info "applied: $_COUNT_APPLIED; skipped: $_COUNT_SKIPPED."
 	fi
+	if [[ "$_OPT_INSTALL_MISSING" -eq 1 ]]; then
+		_info "eligibility skips: local-only=$_COUNT_SKIP_LOCAL, external-upstream=$_COUNT_SKIP_UPSTREAM, archived=$_COUNT_SKIP_ARCHIVED, inaccessible=$_COUNT_SKIP_INACCESSIBLE, insufficient-permission=$_COUNT_SKIP_PERMISSION."
+	fi
 	printf '\n'
 	return 0
 }
@@ -1080,6 +1591,10 @@ main() {
 	[[ -f "$REPOS_JSON" ]] || _die "repos.json not found at $REPOS_JSON — aidevops may not be initialised"
 	command -v jq >/dev/null 2>&1 || _die "jq required — install via Homebrew/apt"
 	[[ -x "$CHECK_HELPER" ]] || _die "check-workflows-helper.sh not found or not executable at $CHECK_HELPER"
+	command -v python3 >/dev/null 2>&1 || _die "python3 required for managed CONTRIBUTING.md blocks"
+	[[ -f "$MANAGED_BLOCK_HELPER" ]] || _die "managed Markdown block helper missing at $MANAGED_BLOCK_HELPER"
+	_resolve_contributing_policy_template >/dev/null || \
+		_die "issue-first CONTRIBUTING.md policy template is unavailable"
 
 	if [[ -z "$_OPT_BRANCH_NAME" ]]; then
 		_OPT_BRANCH_NAME="chore/workflow-sync-$(date +%Y%m%d)"
@@ -1097,6 +1612,11 @@ main() {
 	_COUNT_APPLIED=0
 	_COUNT_PLANNED=0
 	_COUNT_SKIPPED=0
+	_COUNT_SKIP_LOCAL=0
+	_COUNT_SKIP_UPSTREAM=0
+	_COUNT_SKIP_ARCHIVED=0
+	_COUNT_SKIP_INACCESSIBLE=0
+	_COUNT_SKIP_PERMISSION=0
 
 	_print_header_footer "header" "$_OPT_APPLY"
 	local _any_failed=0

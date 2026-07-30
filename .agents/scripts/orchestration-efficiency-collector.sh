@@ -662,7 +662,7 @@ collect_audit_trails() {
 		repos_json="${HOME}/.config/aidevops/repos.json"
 		if [[ -f "$repos_json" ]] && command -v jq &>/dev/null; then
 			local pulse_repos
-			pulse_repos=$(jq -r '.[] | select(.pulse == true and .local_only != true) | .slug' "$repos_json" 2>/dev/null || echo "")
+			pulse_repos=$(jq -r '.initialized_repos[]? | select(.maintenance != false and .pulse == true and .local_only != true) | .slug' "$repos_json" 2>/dev/null || echo "")
 			while IFS= read -r repo_slug; do
 				[[ -z "$repo_slug" ]] && continue
 				# Issues closed today

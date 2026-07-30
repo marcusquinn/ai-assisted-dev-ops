@@ -202,7 +202,7 @@ _dedup_layer3_title_match() {
 # If a worker already produced a PR (open or merged), do not dispatch another.
 # Previously only checked --state merged, missing open PRs entirely.
 # Arguments: issue_number, repo_slug, issue_title
-# Exit: 0 = blocked, 1 = continue
+# Exit: 0 = blocked, 1 = continue, 2 = worker draft needs stale-assignment routing
 #######################################
 _dedup_layer4_pr_evidence() {
 	local issue_number="$1"
@@ -216,6 +216,9 @@ _dedup_layer4_pr_evidence() {
 				echo "[pulse-wrapper] Dedup: ${dedup_helper_output}" >>"$LOGFILE"
 			else
 				echo "[pulse-wrapper] Dedup: PR evidence already exists for #${issue_number} in ${repo_slug}" >>"$LOGFILE"
+			fi
+			if [[ "$dedup_helper_output" == WORKER_DRAFT_CHECKPOINT:* ]]; then
+				return 2
 			fi
 			return 0
 		fi

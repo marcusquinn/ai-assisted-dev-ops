@@ -496,7 +496,7 @@ _compute_worker_success_rates() {
 				--jq '[.[] | select(.mergedAt == null)] | length' \
 				--limit 500 2>/dev/null || echo "0")
 			closed_unmerged_count=$(( closed_unmerged_count + ${cu:-0} ))
-		done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only != true)) | .slug' "$repos_file" 2>/dev/null)
+		done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only != true)) | .slug' "$repos_file" 2>/dev/null)
 	fi
 	local metrics_file="${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl"
 	if [[ -f "$metrics_file" ]]; then
@@ -904,7 +904,7 @@ _refresh_person_stats_cache() {
 	search_remaining=$(_stats_health_person_stats_search_remaining)
 
 	local repo_entries
-	repo_entries=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || echo "")
+	repo_entries=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || echo "")
 
 	local repo_count=0
 	local search_api_cost_per_contributor=4
@@ -946,7 +946,7 @@ _refresh_person_stats_cache() {
 	# Cross-repo person-stats
 	search_remaining=$(_stats_health_person_stats_search_remaining)
 	local all_repo_paths
-	all_repo_paths=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false) | .path' "$repos_json" 2>/dev/null || echo "")
+	all_repo_paths=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false) | .path' "$repos_json" 2>/dev/null || echo "")
 	if [[ -n "$all_repo_paths" && "$search_remaining" -ge "$search_api_cost_per_contributor" ]]; then
 		local -a cross_args=()
 		while IFS= read -r rp; do

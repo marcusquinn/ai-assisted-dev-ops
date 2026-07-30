@@ -10,6 +10,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.197] - 2026-07-30
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- dispatch before label maintenance
+- preserve colon-qualified TODO labels (#28881)
+
+## [3.32.196] - 2026-07-29
+
+### Added
+
+- define canonical omnichannel evidence contract
+
+### Changed
+
+- Maintenance: re-aggregate authorized repository-maintenance release
+- Maintenance: aggregate authorized repository-maintenance release
+- Maintenance: sync ref:GH#28872 to TODO.md [skip ci]
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- restore native relationship mutations (#28870)
+
+## [3.32.195] - 2026-07-29
+
+### Changed
+
+- Documentation: review Native SDK v0.6.2 (#28854)
+- Maintenance: update simplification state registry
+
+## [3.32.194] - 2026-07-29
+
+### Changed
+
+- Refactor: split worker launch helpers (#28845)
+
+### Fixed
+
+- refresh workflow rollouts from linked worktrees (#28848)
+
+## [3.32.193] - 2026-07-29
+
+### Changed
+
+- Maintenance: aggregate authorized dispatch-fix release
+- Refactor: split headless runtime database lifecycle (#28842)
+- Maintenance: update simplification state registry
+- Documentation: prepare release notes for dispatch fixes
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- correlate terminal dispatch evidence
+- exclude pulse stage subshells from runtime audit (#28834)
+
+## [3.32.192] - 2026-07-28
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+## [3.32.191] - 2026-07-28
+
+### Changed
+
+- Maintenance: update simplification state registry
+
 ## [3.32.190] - 2026-07-28
 
 ### Changed

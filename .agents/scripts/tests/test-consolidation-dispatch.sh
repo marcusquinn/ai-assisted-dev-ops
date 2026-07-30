@@ -176,6 +176,13 @@ _setup_gh_stub_globals() {
 		gh pr list "$@"
 		return $?
 	}
+	repo_allows_pulse_write_actions() {
+		local repo_slug="$1"
+		case "$repo_slug" in
+		owner/repo | marcusquinn/aidevops) return 0 ;;
+		*) return 1 ;;
+		esac
+	}
 	return 0
 }
 

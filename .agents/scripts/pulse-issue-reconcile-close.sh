@@ -56,7 +56,7 @@ fi
 # Module-level slug iteration filter (string-literal ratchet: avoids repeating
 # the jq filter 3x across close_issues_with_merged_prs, reconcile_stale_done_issues,
 # and reconcile_open_issues_with_merged_prs).
-_pir_close_slug_filter='.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""'
+_pir_close_slug_filter='.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug // ""'
 
 #######################################
 # Close open issues whose work is already done — a merged PR exists

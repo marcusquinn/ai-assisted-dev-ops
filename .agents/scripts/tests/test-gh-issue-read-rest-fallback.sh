@@ -165,9 +165,12 @@ gh() {
 			fi
 			_i=$((_i + 1))
 		done
-		local _result="${STUB_REST_VIEW_RESULT:-{\"state\":\"OPEN\",\"number\":42,\"title\":\"Test issue\",\"body\":\"body text\",\"labels\":[{\"name\":\"bug\"}],\"assignees\":[]}}"
+		local _result="${STUB_REST_VIEW_RESULT:-}"
+		if [[ -z "$_result" ]]; then
+			_result='{"state":"OPEN","number":42,"title":"Test issue","body":"body text","labels":[{"name":"bug"}],"assignees":[]}'
+		fi
 		if [[ -n "$_jq_expr" ]]; then
-			printf '%s\n' "$_result" | jq -r "$_jq_expr" 2>/dev/null
+			printf '%s\n' "$_result" | jq -r "$_jq_expr" 2>/dev/null || return 1
 		else
 			printf '%s\n' "$_result"
 		fi
@@ -268,9 +271,10 @@ fi
 unset STUB_REST_VIEW_RESULT
 
 # =============================================================================
-# Test 3: _rest_issue_view accepts --json flag without error (compat, ignored)
+# Test 3: _rest_issue_view projects supported --json fields exactly
 # =============================================================================
 : >"$GH_CALLS"
+export STUB_REST_VIEW_RESULT='{"state":"open"}'
 
 _result=$(_rest_issue_view 42 --repo "owner/repo" --json state 2>&1)
 _rc=$?
@@ -281,6 +285,32 @@ else
 	fail "_rest_issue_view accepts --json flag without error" \
 		"rc=${_rc} output=${_result}"
 fi
+
+export STUB_REST_VIEW_RESULT='{"node_id":"I_kwDOFixture42","number":42,"state":"open","updated_at":"2026-07-28T19:38:58Z"}'
+_result=$(_rest_issue_view 42 --repo "owner/repo" --json id,number,state,updatedAt 2>/dev/null)
+if jq -e '.id == "I_kwDOFixture42" and .number == 42 and .state == "OPEN" and .updatedAt == "2026-07-28T19:38:58Z"' \
+	>/dev/null 2>&1 <<<"$_result"; then
+	pass "_rest_issue_view maps GraphQL id exactly from REST node_id"
+else
+	fail "_rest_issue_view maps GraphQL id exactly from REST node_id" "output=${_result}"
+fi
+
+_result=$(_rest_issue_view 42 --repo "owner/repo" --json id --jq '.id' 2>/dev/null)
+if [[ "$_result" == "I_kwDOFixture42" ]]; then
+	pass "_rest_issue_view preserves scalar jq output for id"
+else
+	fail "_rest_issue_view preserves scalar jq output for id" "output=${_result}"
+fi
+
+export STUB_REST_VIEW_RESULT='{"node_id":null,"number":42,"state":"open"}'
+_result=$(_rest_issue_view 42 --repo "owner/repo" --json id,number 2>&1)
+_rc=$?
+if [[ "$_rc" -ne 0 ]]; then
+	pass "_rest_issue_view rejects a missing REST node_id"
+else
+	fail "_rest_issue_view rejects a missing REST node_id" "output=${_result}"
+fi
+unset STUB_REST_VIEW_RESULT
 
 # =============================================================================
 # Test 4: _rest_issue_view returns error when issue number or repo missing

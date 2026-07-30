@@ -325,6 +325,48 @@ test_untrusted_dispatch_identity_cannot_replace_active_lock() {
 	return 0
 }
 
+test_correlated_terminal_before_dispatch_releases_exact_attempt() {
+	local root="${TMP_DIR}/terminal-before-dispatch" expires_at=""
+	local claim_a="" claim_b="" claim_a_id="" claim_b_id=""
+	create_mock_gh "$root"
+	expires_at=$(($(date -u '+%s') + 600))
+	claim_a="DISPATCH_CLAIM nonce=token-a runner=shared-login ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) max_age_s=600 version=test lease_token=token-a device=device-a session=issue-50 phase=prelaunch expires_at=${expires_at}"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/50/comments --method POST --field body="$claim_a" >/dev/null
+	claim_a_id=$(jq -sr 'last.id' "$root/state/comments.jsonl")
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a AIDEVOPS_ATTEMPT_ID=attempt-a \
+		"$CLAIM" transition terminal 50 owner/repo token-a issue-50 0 >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/50/comments --method POST \
+		--field body="Dispatching worker (deterministic).
+<!-- aidevops:dispatch lease_token=token-a device=device-a session=issue-50 attempt_id=attempt-wrong claim_id=${claim_a_id} -->" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 50 owner/repo shared-login >/dev/null \
+		|| fail "wrong attempt ID released a correlated dispatch marker"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/50/comments --method POST \
+		--field body="Dispatching worker (deterministic).
+<!-- aidevops:dispatch lease_token=token-a device=device-a session=issue-50 attempt_id=attempt-a claim_id=${claim_a_id} -->" >/dev/null
+	if PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 50 owner/repo shared-login >/dev/null 2>&1; then
+		fail "correlated terminal-before-dispatch evidence retained the exact attempt lock"
+	fi
+
+	claim_b="DISPATCH_CLAIM nonce=token-b runner=shared-login ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) max_age_s=600 version=test lease_token=token-b device=device-b session=issue-50 phase=prelaunch expires_at=${expires_at}"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/50/comments --method POST --field body="$claim_b" >/dev/null
+	claim_b_id=$(jq -sr 'last.id' "$root/state/comments.jsonl")
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/50/comments --method POST \
+		--field body="Dispatching worker (deterministic).
+<!-- aidevops:dispatch lease_token=token-b device=device-b session=issue-50 attempt_id=attempt-b claim_id=${claim_b_id} -->" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 50 owner/repo shared-login >/dev/null \
+		|| fail "older terminal attempt released a newer correlated dispatch marker"
+	pass "correlated terminal-before-dispatch only releases its exact attempt"
+	return 0
+}
+
 test_large_comment_history_avoids_argv_limits() {
 	local root="${TMP_DIR}/large-history" output="" exit_code=0 dispatch_ts=""
 	create_mock_gh "$root"
@@ -413,6 +455,7 @@ test_local_ledger_guards
 test_concurrent_same_login_devices
 test_launch_crash_ready_terminal_race
 test_untrusted_dispatch_identity_cannot_replace_active_lock
+test_correlated_terminal_before_dispatch_releases_exact_attempt
 test_large_comment_history_avoids_argv_limits
 test_prelaunch_renewal_covers_slow_startup
 test_invalid_device_not_public

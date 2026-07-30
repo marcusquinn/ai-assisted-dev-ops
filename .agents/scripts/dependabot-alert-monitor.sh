@@ -64,6 +64,7 @@ _dam_list_repos() {
   [[ -f "$repos_json" ]] || return 1
   jq -r '
     .initialized_repos[]?
+    | select(.maintenance != false)
     | select((.pulse // false) == true)
     | select((.local_only // false) == false)
     | select(.dependabot_alert_monitor != false)

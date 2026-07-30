@@ -1164,7 +1164,7 @@ Thread preview: ${safe_preview}
    Review-thread read/reply/resolve operations are GraphQL-only in this helper;
    use the scanner commands above or 'gh api graphql'. The resolveReviewThread
    mutation has no REST endpoint, so do not try 'gh api repos/...' for resolve.
-4. For each unresolved bot finding, classify it as actionable or praise-only:
+4. For each unresolved review thread, classify it as actionable or praise-only:
    - Actionable means the thread requests a code, documentation, configuration,
      or follow-up change. Verify the premise in the cited file and context.
    - Praise-only means positive feedback or an observation with no requested

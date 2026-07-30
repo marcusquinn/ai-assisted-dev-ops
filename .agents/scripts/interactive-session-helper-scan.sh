@@ -144,7 +144,7 @@ _isc_print_orphan_pr_entry() {
 # -----------------------------------------------------------------------------
 # Internal: scan closed-not-merged PRs whose linked issue is still open
 # -----------------------------------------------------------------------------
-# For each pulse-enabled repo in repos.json:
+# For each registered non-local repo, including dormant safety scope:
 #   1. List PRs closed (not merged) in the last 14 days via gh pr list.
 #   2. Extract linked issue numbers from the PR body keywords:
 #      Resolves/Closes/Fixes/For #N.
@@ -217,7 +217,7 @@ _isc_scan_closed_pr_orphans() {
 
 		done <<<"$pr_entries"
 
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' \
+	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | .slug' \
 		"$repos_json" 2>/dev/null || true)
 
 	printf '%d' "$orphan_count"
@@ -307,7 +307,7 @@ _isc_cmd_release_if_dead() {
 
 # scan-stale Phase 1a helper (t2148) — stampless interactive claims.
 # -----------------------------------------------------------------------------
-# Iterates pulse-enabled repos from repos.json, calls
+# Iterates registered non-local repos from repos.json, calls
 # _isc_list_stampless_interactive_claims per slug, prints findings to stdout.
 # Extracted from _isc_cmd_scan_stale to keep the coordinator under the
 # 100-line function cap enforced by the Complexity Analysis CI gate.
@@ -353,7 +353,7 @@ _isc_scan_stampless_phase() {
 			printf '\n'
 			stampless_count=$((stampless_count + 1))
 		done < <(_isc_list_stampless_interactive_claims "$runner_user_1a" "$slug_1a" 2>/dev/null || true)
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' \
+	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | .slug' \
 		"$repos_json_1a" 2>/dev/null || true)
 
 	if [[ $stampless_count -eq 0 ]]; then

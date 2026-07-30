@@ -1402,11 +1402,12 @@ cmd_transition() {
 	if [[ ("$phase" == "$LEASE_PHASE_PRELAUNCH" || "$phase" == "ready") && "$current_phase" != "$LEASE_PHASE_PRELAUNCH" ]]; then
 		return 1
 	fi
-	local expires_at="0" now_epoch="" body=""
+	local expires_at="0" now_epoch="" body="" attempt_id="${AIDEVOPS_ATTEMPT_ID:-unknown}"
+	[[ "$attempt_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$ ]] || attempt_id="unknown"
 	now_epoch=$(_now_epoch)
 	[[ "$phase" == "terminal" ]] || expires_at="$((now_epoch + ttl))"
 	body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
-DISPATCH_LEASE phase=${phase} lease_token=${lease_token} device=$(_resolve_device_id) session=${session_key:-issue-${issue_number}} expires_at=${expires_at} ts=$(_now_utc)
+DISPATCH_LEASE phase=${phase} lease_token=${lease_token} device=$(_resolve_device_id) session=${session_key:-issue-${issue_number}} expires_at=${expires_at} ts=$(_now_utc) attempt_id=${attempt_id}
 <!-- ops:end -->"
 	gh api "$(_issue_comments_endpoint "$repo_slug" "$issue_number")" --method POST --field body="$body" >/dev/null 2>&1 || return 1
 	return 0

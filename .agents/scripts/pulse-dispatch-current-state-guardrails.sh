@@ -53,7 +53,7 @@ _dispatch_filter_repo_pr_backlog_candidates() {
 }
 
 #######################################
-# Count recent current-state signals that should shape launch capacity.
+# Count recent terminal worker-role signals that should shape launch capacity.
 #
 # Stdout: "<successes> <failures> <rate_limits> <no_dispatchable>".
 #######################################
@@ -65,45 +65,24 @@ _dispatch_recent_current_state_counts() {
 	fi
 
 	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
+	local evidence_file="${AIDEVOPS_OBJECTIVE_EVIDENCE_FILE:-${HOME}/.aidevops/state/objective-evidence.jsonl}"
+	local evidence_limit="${AIDEVOPS_OBJECTIVE_EVIDENCE_LIMIT:-2000}"
 	local window_seconds="${PULSE_DISPATCH_CURRENT_STATE_WINDOW_SECONDS:-900}"
+	local health_helper="${BASH_SOURCE[0]%/*}/worker-terminal-health.py"
 	[[ "$window_seconds" =~ ^[0-9]+$ ]] || window_seconds=900
-	local metrics_counts=""
-	metrics_counts=$(python3 - "$metrics_file" "${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" "$window_seconds" <<'PY'
-import json
-import sys
-import time
-from collections import deque
+	[[ "$evidence_limit" =~ ^[1-9][0-9]*$ ]] || evidence_limit=2000
+	local health_counts="" successes="" failures="" rate_limits="" service_interruptions="" provider_5xx="" progress=""
+	health_counts=$(python3 "$health_helper" "$metrics_file" "$evidence_file" "$window_seconds" "$evidence_limit") || health_counts="0 6 0 0 0 0"
+	read -r successes failures rate_limits service_interruptions provider_5xx progress <<<"$health_counts"
 
-metrics_path, log_path, window = sys.argv[1], sys.argv[2], int(sys.argv[3])
-since = time.time() - window
-successes = failures = rate_limits = 0
-try:
-    with open(metrics_path, "r", encoding="utf-8", errors="replace") as handle:
-        for raw in deque(handle, 2000):
-            try:
-                item = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            ts = float(item.get("ts") or 0)
-            if ts < since:
-                continue
-            result = str(item.get("result") or "")
-            failure_reason = str(item.get("failure_reason") or "")
-            provider_error_type = str(item.get("provider_error_type") or "")
-            provider_status = str(item.get("provider_status") or "")
-            exit_code = item.get("exit_code")
-            if result == "success" and exit_code == 0:
-                successes += 1
-            elif result not in {"worker_noop", "no_work", "noop"}:
-                failures += 1
-            if result in {"rate_limit", "rate_limit_fast"} or "rate_limit" in failure_reason or provider_error_type == "rate_limit" or provider_status == "429":
-                rate_limits += 1
-except (OSError, ValueError):
-    pass
+	local no_dispatchable=""
+	no_dispatchable=$(python3 - "${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}" <<'PY'
+import sys
+from collections import deque
 
 no_dispatchable = 0
 try:
-    with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+    with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as handle:
         lines = deque(handle, 2000)
     for raw in lines:
         line = raw.lower()
@@ -112,11 +91,9 @@ try:
 except OSError:
     pass
 
-print(f"{successes} {failures} {rate_limits} {no_dispatchable}")
+print(no_dispatchable)
 PY
-	) || metrics_counts="0 0 0 0"
-	local successes="" failures="" rate_limits="" no_dispatchable=""
-	read -r successes failures rate_limits no_dispatchable <<<"$metrics_counts"
+	) || no_dispatchable=0
 	printf '%s %s %s %s\n' "$successes" "$failures" "$rate_limits" "$no_dispatchable"
 	return 0
 }
@@ -156,6 +133,7 @@ _dispatch_apply_current_state_guardrails() {
 	[[ "$no_dispatchable" =~ ^[0-9]+$ ]] || no_dispatchable=0
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_successes" "$successes"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_failures" "$failures"
+	_dispatch_stats_gauge "pulse_dispatch_guardrail_worker_terminal_failures" "$failures"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_rate_limits" "$rate_limits"
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_no_dispatchable" "$no_dispatchable"
 
@@ -195,11 +173,11 @@ _dispatch_apply_current_state_guardrails() {
 
 	if ((capped_slots < available_slots)); then
 		max_workers=$((active_workers + capped_slots))
-		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capped_available=${capped_slots}/${available_slots} successes=${successes} failures=${failures} rate_limits=${rate_limits} no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
+		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capacity_unit=simultaneous_workers capped_available=${capped_slots}/${available_slots} worker_terminal_successes=${successes} worker_terminal_failures=${failures} worker_rate_limits=${rate_limits} failure_observation_window_seconds=${PULSE_DISPATCH_CURRENT_STATE_WINDOW_SECONDS:-900} task_duration_limit=none no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
 		_dispatch_stats_increment "pulse_dispatch_current_state_guardrail_applied"
 		_dispatch_stats_increment_candidate_failed "$reason"
 	elif [[ "$reason" == "no_dispatchable_floor_bypass" ]]; then
-		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} preserved_available=${available_slots} successes=${successes} failures=${failures} rate_limits=${rate_limits} no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
+		echo "[pulse-wrapper] Dispatch current-state guardrail: reason=${reason} capacity_unit=simultaneous_workers preserved_available=${available_slots} worker_terminal_successes=${successes} worker_terminal_failures=${failures} worker_rate_limits=${rate_limits} failure_observation_window_seconds=${PULSE_DISPATCH_CURRENT_STATE_WINDOW_SECONDS:-900} task_duration_limit=none no_dispatchable=${no_dispatchable} min_worker_floor_active=${min_worker_floor_active}" >>"$LOGFILE"
 	fi
 	_dispatch_stats_gauge "pulse_dispatch_guardrail_available_slots" "$capped_slots"
 

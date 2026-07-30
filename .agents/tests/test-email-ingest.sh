@@ -24,8 +24,18 @@ FIXTURES="${SCRIPT_DIR}/fixtures/sample-emails"
 _PASS=0
 _FAIL=0
 
-_pass() { local name="$1"; printf "[PASS] %s\n" "$name"; _PASS=$((_PASS + 1)); return 0; }
-_fail() { local name="$1" msg="$2"; printf "[FAIL] %s — %s\n" "$name" "$msg"; _FAIL=$((_FAIL + 1)); return 0; }
+_pass() {
+	local name="$1"
+	printf "[PASS] %s\n" "$name"
+	_PASS=$((_PASS + 1))
+	return 0
+}
+_fail() {
+	local name="$1" msg="$2"
+	printf "[FAIL] %s — %s\n" "$name" "$msg"
+	_FAIL=$((_FAIL + 1))
+	return 0
+}
 
 assert_eq() {
 	local name="$1" got="$2" want="$3"
@@ -116,6 +126,7 @@ EOF
 
 export REPOS_FILE="$MOCK_REPOS_JSON"
 export PERSONAL_PLANE_BASE="${TMP_DIR}/personal-plane"
+export AIDEVOPS_VAULT_DIR="${TMP_DIR}/vault-disabled"
 
 # Provision the knowledge tree
 bash "$KNOWLEDGE_HELPER" provision "$REPO_PATH" >/dev/null 2>&1

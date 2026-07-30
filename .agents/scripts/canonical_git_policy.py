@@ -21,6 +21,7 @@ READ_ONLY = frozenset(
         "status",
         "diff",
         "diff-files",
+        "diff-tree",
         "log",
         "show",
         "rev-parse",

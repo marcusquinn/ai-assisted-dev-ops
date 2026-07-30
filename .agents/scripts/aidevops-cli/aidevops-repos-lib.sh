@@ -601,6 +601,81 @@ get_registered_repos() {
 	return 0
 }
 
+# Set whether a registered repository participates in recurring maintenance.
+# Usage: set_repo_maintenance <slug-or-path> <true|false>
+# Disabling maintenance also disables Pulse so all existing pulse selectors
+# converge even before they learn the maintenance field directly.
+set_repo_maintenance() {
+	local selector="$1"
+	local desired="$2"
+	init_repos_file
+
+	if ! command -v jq &>/dev/null; then
+		print_error "jq required for repo management"
+		return 1
+	fi
+	case "$desired" in
+	true | false) ;;
+	*)
+		print_error "Maintenance state must be 'true' or 'false'"
+		return 2
+		;;
+	esac
+
+	if [[ -d "$selector" ]]; then
+		selector=$(cd "$selector" 2>/dev/null && pwd -P) || return 1
+		selector=$(resolve_canonical_repo_path "$selector")
+	fi
+
+	local matches
+	matches=$(jq -r --arg selector "$selector" \
+		'[.initialized_repos[]? | select(.slug == $selector or .path == $selector)] | length' \
+		"$REPOS_FILE" 2>/dev/null) || return 1
+	if [[ "$matches" != "1" ]]; then
+		print_error "Expected one registered repo matching '$selector'; found $matches"
+		return 1
+	fi
+
+	local temp_file
+	temp_file=$(mktemp "${REPOS_FILE}.tmp.XXXXXX") || return 1
+	if ! jq --arg selector "$selector" --argjson desired "$desired" '
+		(.initialized_repos[] | select(.slug == $selector or .path == $selector)) |=
+			(if $desired then .maintenance = true
+			 else .maintenance = false | .pulse = false
+			 end)
+	' "$REPOS_FILE" >"$temp_file"; then
+		rm -f "$temp_file"
+		return 1
+	fi
+	if ! jq -e '.initialized_repos | type == "array"' "$temp_file" >/dev/null 2>&1; then
+		rm -f "$temp_file"
+		print_error "Refusing to write an invalid repos.json"
+		return 1
+	fi
+	if ! mv "$temp_file" "$REPOS_FILE"; then
+		rm -f "$temp_file"
+		return 1
+	fi
+	return 0
+}
+
+# Print effective maintenance state for a registered repository.
+# Output: maintenance<TAB>pulse<TAB>slug<TAB>path
+get_repo_maintenance_state() {
+	local selector="$1"
+	if [[ -d "$selector" ]]; then
+		selector=$(cd "$selector" 2>/dev/null && pwd -P) || return 1
+		selector=$(resolve_canonical_repo_path "$selector")
+	fi
+	jq -r --arg selector "$selector" '
+		.initialized_repos[]?
+		| select(.slug == $selector or .path == $selector)
+		| [(if .maintenance == false then false else true end), (.pulse // false), (.slug // ""), (.path // "")]
+		| @tsv
+	' "$REPOS_FILE" 2>/dev/null
+	return 0
+}
+
 # Get the maintainer GitHub username for a repo
 # Fallback chain: maintainer field > slug owner > empty string
 # Usage: get_repo_maintainer <slug>

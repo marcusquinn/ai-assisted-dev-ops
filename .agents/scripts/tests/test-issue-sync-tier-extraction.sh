@@ -66,8 +66,8 @@ fail() {
 	return 0
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
-SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)" || exit 1
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+SCRIPTS_DIR="$(cd "${TEST_DIR}/.." && pwd)" || exit 1
 REPO_ROOT="$(cd "${SCRIPTS_DIR}/../.." && pwd)" || exit 1
 LIB="${SCRIPTS_DIR}/issue-sync-lib.sh"
 HELPER="${SCRIPTS_DIR}/issue-sync-helper.sh"

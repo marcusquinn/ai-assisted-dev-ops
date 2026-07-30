@@ -27,6 +27,14 @@ TEST_ROOT=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PULSE_CLEANUP="${SCRIPT_DIR}/../pulse-cleanup.sh"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+
+# Keep temporary fixture repositories on native Git; canonical mutation-guard
+# behavior is covered by its dedicated tests.
+git() {
+	"$GIT_BIN" "$@"
+	return $?
+}
 
 print_result() {
 	local name="$1"

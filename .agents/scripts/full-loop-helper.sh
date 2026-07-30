@@ -245,6 +245,8 @@ Commands:
                                  gh CLI level; if both are given, --admin wins and
                                   --auto is dropped (GH#19310).
   record-no-release <PR> [REPO]  Verify merged evidence and record release:not-requested.
+  adopt-merged-receipt <PR> [REPO]
+                                 Adopt an externally merged exact-head worktree into cleanup.
   finalize-receipt <PR> [REPO]   Finalize a direct-merge cleanup receipt without local state.
   migrate-repository-receipt <PR> <OLD_REPO> <NEW_REPO>
                                  Migrate cleanup and release identity after a repo rename.
@@ -282,6 +284,7 @@ main() {
 	wait-checks) cmd_wait_checks "$@" ;;
 	merge) cmd_merge "$@" ;;
 	record-no-release) cmd_record_no_release "$@" ;;
+	adopt-merged-receipt) cmd_adopt_merged_receipt "$@" ;;
 	finalize-receipt) cmd_finalize_receipt "$@" ;;
 	migrate-repository-receipt) cmd_migrate_repository_receipt "$@" ;;
 	complete) cmd_complete "$@" ;;

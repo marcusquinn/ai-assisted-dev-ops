@@ -119,13 +119,17 @@ pass "edge loop stops with retryable state after aggregate exhaustion"
 MUTATION_FIXTURE=""
 _gh_with_timeout() {
 	local operation="$1"
-	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || return 1
+	if [[ "$operation" == "read" ]]; then
+		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || return 1
+	else
+		[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "1" && "$*" != *"rateLimit"* ]] || return 1
+	fi
 	case "$MUTATION_FIXTURE" in
 	created)
 		if [[ "$operation" == "read" ]]; then
 			printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
 		else
-			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":101}},"rateLimit":{"cost":1}}}'
+			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":101}}}}'
 		fi
 		return 0
 		;;
@@ -141,6 +145,14 @@ _gh_with_timeout() {
 		printf '%s\n' '{"errors":[{"message":"SECRET_PAYLOAD"}]}'
 		return 1
 		;;
+	partial-error)
+		if [[ "$operation" == "read" ]]; then
+			printf '%s\n' '{"data":{"node":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+		else
+			printf '%s\n' '{"data":{"addBlockedBy":{"issue":{"number":101}}},"errors":[{"message":"UNCERTAIN_WRITE"}]}'
+		fi
+		return 0
+		;;
 	esac
 	return 1
 }
@@ -153,12 +165,17 @@ MUTATION_FIXTURE="failed"
 mutation_rc=0
 _gh_add_blocked_by NODE_101 NODE_104 || mutation_rc=$?
 [[ "$mutation_rc" -eq 1 ]] || fail "failed mutation fixture did not fail"
+MUTATION_FIXTURE="partial-error"
+mutation_rc=0
+_gh_add_blocked_by NODE_101 NODE_105 || mutation_rc=$?
+[[ "$mutation_rc" -eq 1 ]] || fail "partial GraphQL error was treated as mutation success"
 _relationship_record_outcome "deferred:deadline"
 mixed_summary=$(_relationship_print_summary 1 0 1 2 true)
-[[ "$mixed_summary" == *"Edges: created=1 already-present=1 failed=1 deferred=1"* ]] || fail "mixed outcomes were not distinguished: $mixed_summary"
+[[ "$mixed_summary" == *"Edges: created=1 already-present=1 failed=2 deferred=1"* ]] || fail "mixed outcomes were not distinguished: $mixed_summary"
 [[ "$mixed_summary" == *"Tasks: attempted=1 complete=0/1"* ]] || fail "partial task was presented as complete: $mixed_summary"
 [[ "$mixed_summary" == *"Failure: failed:graphql"* ]] || fail "sanitized failure class was not retained: $mixed_summary"
 [[ "$mixed_summary" != *"SECRET_PAYLOAD"* ]] || fail "raw GraphQL payload leaked into summary"
+[[ "$mixed_summary" != *"UNCERTAIN_WRITE"* ]] || fail "partial GraphQL error leaked into summary"
 [[ "$mixed_summary" == *"Recovery: rerun"* ]] || fail "partial summary omitted recovery command"
 pass "mixed relationship outcomes remain actionable and sanitized"
 

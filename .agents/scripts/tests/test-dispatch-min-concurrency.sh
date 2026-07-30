@@ -546,6 +546,51 @@ test_min_worker_floor_refill_uses_precomputed_counts() {
 	return 0
 }
 
+test_min_worker_floor_refill_stops_after_triage_only_round() {
+	(
+		AIDEVOPS_MIN_WORKER_CONCURRENCY=6
+		AIDEVOPS_SKIP_PULSE_CURRENT_STATE_GUARDRAILS=1
+		STOP_FLAG="${HOME}/.aidevops/logs/stop"
+		TEST_DISPATCH_CALLS_FILE="${TEST_ROOT}/triage-only-refill-dispatch-calls.txt"
+		printf '%s\n' 0 >"$TEST_DISPATCH_CALLS_FILE"
+		: >"$LOGFILE"
+		pulse_apply_provider_load_capacity_cap() {
+			printf '6 1\n'
+			return 0
+		}
+		dispatch_max() {
+			local calls
+			calls=$(<"$TEST_DISPATCH_CALLS_FILE")
+			[[ "$calls" =~ ^[0-9]+$ ]] || calls=0
+			printf '%s\n' "$((calls + 1))" >"$TEST_DISPATCH_CALLS_FILE"
+			echo "[pulse-wrapper] Dispatch_max complete: implementation_dispatched=0 triage_attempted=2" >>"$LOGFILE"
+			printf '0\n'
+			return 0
+		}
+
+		_dispatch_min_worker_floor_refill 6 2
+
+		local dispatch_calls
+		dispatch_calls=$(<"$TEST_DISPATCH_CALLS_FILE")
+		if [[ "$dispatch_calls" -eq 1 ]] \
+			&& grep -q 'Minimum worker floor refill stopped: dispatch_max returned 0' "$LOGFILE" 2>/dev/null; then
+			return 0
+		fi
+		printf 'dispatch_calls=%s log=%s\n' "$dispatch_calls" "$(<"$LOGFILE")" \
+			>"${TEST_ROOT}/triage-only-refill-failure.txt"
+		return 1
+	)
+	local rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "refill: triage-only outcomes do not keep implementation refill alive" 0
+	else
+		print_result "refill: triage-only outcomes do not keep implementation refill alive" 1 \
+			"$(<"${TEST_ROOT}/triage-only-refill-failure.txt")"
+	fi
+	unset TEST_DISPATCH_CALLS_FILE AIDEVOPS_SKIP_PULSE_CURRENT_STATE_GUARDRAILS
+	return 0
+}
+
 test_apply_dispatch_refill_reuses_initial_worker_counts() {
 	(
 		AIDEVOPS_MIN_WORKER_CONCURRENCY=6
@@ -783,6 +828,7 @@ test_canary_preflight_marks_floor_without_cpu_bypass
 test_apply_dispatch_refills_until_active_floor_after_partial_launch
 test_apply_dispatch_skips_refill_when_capacity_cap_disables_floor
 test_min_worker_floor_refill_uses_precomputed_counts
+test_min_worker_floor_refill_stops_after_triage_only_round
 test_apply_dispatch_refill_reuses_initial_worker_counts
 test_early_exit_refill_reuses_precomputed_active_count
 test_active_pulse_refill_uses_min_floor_above_raw_max

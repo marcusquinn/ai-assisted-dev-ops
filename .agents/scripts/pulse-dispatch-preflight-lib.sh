@@ -11,8 +11,8 @@
 # re-register as a new function-complexity violation if moved).
 #
 # Each helper groups one phase of preflight work: asynchronous merge-first,
-# cleanup/reap, capacity/labels, early dispatch, ownership reconcile, and
-# prefetch+scope.
+# cleanup/reap, capacity, early dispatch, label maintenance/refill, ownership
+# reconcile, and prefetch+scope.
 #
 # Usage: source "${SCRIPT_DIR}/pulse-dispatch-preflight-lib.sh"
 #
@@ -36,9 +36,9 @@ _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED=1
 # Helpers for _run_preflight_stages (GH#18656)
 # -----------------------------------------------------------------------------
 # The helpers below group related preflight work so _run_preflight_stages
-# stays under 100 lines and each group (merge-first, cleanup/reap,
-# capacity/labels, early dispatch, daily scans, ownership reconcile, and
-# prefetch/scope) can be read independently.
+# stays under 100 lines and each group (merge-first, cleanup/reap, capacity,
+# early dispatch, label maintenance/refill, daily scans, ownership reconcile,
+# and prefetch/scope) can be read independently.
 
 #######################################
 # Give the existing standalone merge routine a non-blocking head start before
@@ -154,21 +154,20 @@ _preflight_cleanup_and_ledger() {
 }
 
 #######################################
-# Capacity calculation + session count warning + needs-* label
-# re-evaluation. Must run before the early dispatch pass so max workers
-# and priority allocations are current.
+# Capacity calculation + session count warning. Must run before the first
+# dispatch pass so max workers and priority allocations are current.
 #######################################
-_preflight_capacity_and_labels() {
+_preflight_capacity() {
 	# GH#21470: per-substage timing so slow callers are identifiable in
 	# pulse-stage-timings.log. Each _log_substage_timing call writes one TSV
 	# record with the same format as run_stage_with_timeout outer records.
 	local _ss0=$SECONDS
 	calculate_max_workers
-	_log_substage_timing "substage:cap_labels/calculate_max_workers" "$_ss0" 0
+	_log_substage_timing "substage:capacity/calculate_max_workers" "$_ss0" 0
 
 	local _ss1=$SECONDS
 	calculate_priority_allocations
-	_log_substage_timing "substage:cap_labels/calculate_priority_allocations" "$_ss1" 0
+	_log_substage_timing "substage:capacity/calculate_priority_allocations" "$_ss1" 0
 
 	local _ss2=$SECONDS
 	local _session_ct
@@ -176,28 +175,40 @@ _preflight_capacity_and_labels() {
 	if [[ "${_session_ct:-0}" -gt "$SESSION_COUNT_WARN" ]]; then
 		echo "[pulse-wrapper] Session warning: $_session_ct interactive sessions open (threshold: $SESSION_COUNT_WARN). Each consumes 100-440MB + language servers. Consider closing unused tabs." >>"$LOGFILE"
 	fi
-	_log_substage_timing "substage:cap_labels/check_session_count" "$_ss2" 0
+	_log_substage_timing "substage:capacity/check_session_count" "$_ss2" 0
 
-	# Re-evaluate needs-consolidation labels before dispatch. Issues labeled
+	return 0
+}
+
+#######################################
+# Cross-repository needs-* label maintenance. Runs after the first dispatch so
+# already-eligible work can boot while these idempotent sweeps expose additional
+# candidates for the post-maintenance refill.
+#######################################
+_preflight_label_maintenance() {
+	# GH#21470: preserve per-substage timing while separating these potentially
+	# slow GitHub/repository sweeps from the capacity-critical dispatch path.
+
+	# Re-evaluate needs-consolidation labels before the refill. Issues labeled
 	# by an earlier (less precise) filter may no longer trigger under the
-	# current filter. Auto-clearing here makes them dispatchable immediately
+	# current filter. Auto-clearing here makes them dispatchable in this cycle
 	# instead of stuck forever behind a label that list_dispatchable_issue_candidates_json
 	# filters out (needs-* exclusion at line 6703).
-	local _ss3=$SECONDS
+	local _ss0=$SECONDS
 	_reevaluate_consolidation_labels
-	_log_substage_timing "substage:cap_labels/reevaluate_consolidation_labels" "$_ss3" 0
+	_log_substage_timing "substage:label_maintenance/reevaluate_consolidation_labels" "$_ss0" 0
 
 	# t1982: Backfill pass for stuck needs-consolidation issues that never
 	# got a consolidation-task child created (pre-t1982 dispatches just
 	# labelled and returned). Dispatches a child retroactively so the
 	# parent can actually be consolidated instead of sitting forever.
-	local _ss4=$SECONDS
+	local _ss1=$SECONDS
 	_backfill_stale_consolidation_labels
-	_log_substage_timing "substage:cap_labels/backfill_consolidation_labels" "$_ss4" 0
+	_log_substage_timing "substage:label_maintenance/backfill_consolidation_labels" "$_ss1" 0
 
-	local _ss5=$SECONDS
+	local _ss2=$SECONDS
 	_reevaluate_simplification_labels
-	_log_substage_timing "substage:cap_labels/reevaluate_simplification_labels" "$_ss5" 0
+	_log_substage_timing "substage:label_maintenance/reevaluate_simplification_labels" "$_ss2" 0
 
 	return 0
 }
@@ -228,6 +239,26 @@ _preflight_early_dispatch() {
 	# user comments and dispatch lightweight Haiku workers to respond.
 	# Runs before heavy housekeeping so responses are fast.
 	dispatch_routine_comment_responses || true
+	return 0
+}
+
+#######################################
+# Refill after label maintenance without repeating routine-comment responses.
+# Invalidate the cycle-scoped candidate snapshot first so apply_dispatch_max
+# sees labels changed by maintenance while preserving the existing claim,
+# ledger, trust, and per-candidate timeout gates across multiple fill passes.
+#######################################
+_preflight_post_label_refill() {
+	if [[ -f "$STOP_FLAG" ]]; then
+		echo "[pulse-wrapper] Stop flag present — skipping post-label dispatch_max" >>"$LOGFILE"
+	else
+		if ! _dispatch_invalidate_candidate_snapshot "label_maintenance_complete"; then
+			echo "[pulse-wrapper] Post-label dispatch_max skipped: unable to invalidate candidate snapshot" >>"$LOGFILE"
+			return 0
+		fi
+		echo "[pulse-wrapper] Post-label dispatch_max: refilling after label maintenance" >>"$LOGFILE"
+		apply_dispatch_max
+	fi
 	return 0
 }
 

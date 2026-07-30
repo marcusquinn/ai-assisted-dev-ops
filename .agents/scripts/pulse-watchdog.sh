@@ -241,12 +241,13 @@ run_stage_with_timeout() {
 			wait "$stage_pid" 2>/dev/null || true
 			# GH#20025: Log timeout to structured timing log
 			if [[ -n "${PULSE_STAGE_TIMINGS_LOG:-}" ]]; then
-				printf '%s\t%s\t%d\t%d\t%d\n' \
+				printf '%s\t%s\t%d\t%d\t%d\t%d\n' \
 					"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 					"$stage_name" \
 					"$elapsed" \
 					124 \
-					"$$" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
+					"$$" \
+					"$stage_pid" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
 			fi
 			return 124
 		fi
@@ -260,14 +261,16 @@ run_stage_with_timeout() {
 	local stage_duration=$((stage_end - stage_start))
 
 	# GH#20025: Append structured timing record to dedicated log for analysis.
-	# Format: ISO-timestamp \t stage_name \t duration_seconds \t exit_code \t pid
+	# Format: ISO-timestamp \t stage_name \t duration_seconds \t exit_code
+	#         \t cycle_owner_pid \t executor_pid
 	if [[ -n "${PULSE_STAGE_TIMINGS_LOG:-}" ]]; then
-		printf '%s\t%s\t%d\t%d\t%d\n' \
+		printf '%s\t%s\t%d\t%d\t%d\t%d\n' \
 			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			"$stage_name" \
 			"$stage_duration" \
 			"$stage_status" \
-			"$$" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
+			"$$" \
+			"$stage_pid" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
 	fi
 
 	if [[ "$stage_status" -ne 0 ]]; then
@@ -293,24 +296,44 @@ run_stage_with_timeout() {
 #
 # Writes the same TSV format as run_stage_with_timeout so both outer stage
 # and substage records land in one log and can be analysed uniformly:
-#   ISO-timestamp <TAB> stage_name <TAB> duration_s <TAB> exit_code <TAB> pid
+#   ISO-timestamp <TAB> stage_name <TAB> duration_s <TAB> exit_code
+#     <TAB> cycle_owner_pid <TAB> executor_pid
 #
 # Returns: 0 (always — never fails the caller)
 #######################################
+_pulse_resolve_executor_pid() {
+	local executor_pid="$1"
+	if [[ -z "$executor_pid" ]]; then
+		# Bash 3.2 has no BASHPID and $$ remains the cycle-owner PID inside a
+		# subshell. The command-substitution child sees the caller as its PPID.
+		executor_pid="$(exec sh -c 'printf "%s" "$PPID"')" || return 1
+	fi
+	[[ "$executor_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	_PULSE_EXECUTOR_PID="$executor_pid"
+	return 0
+}
+
 _log_substage_timing() {
 	local substage_name="$1"
 	local start_secs="${2:-0}"
 	local exit_code="${3:-0}"
 	local duration=$(( SECONDS - start_secs ))
+	local executor_pid=""
 	[[ "$duration" =~ ^[0-9]+$ ]] || duration=0
 	echo "[pulse-wrapper] Substage: ${substage_name} (${exit_code}, ${duration}s)" >>"${LOGFILE:-/dev/null}"
 	if [[ -n "${PULSE_STAGE_TIMINGS_LOG:-}" ]]; then
-		printf '%s\t%s\t%d\t%d\t%d\n' \
+		if _pulse_resolve_executor_pid "${BASHPID:-}"; then
+			executor_pid="$_PULSE_EXECUTOR_PID"
+		else
+			executor_pid="unavailable"
+		fi
+		printf '%s\t%s\t%d\t%d\t%d\t%s\n' \
 			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			"$substage_name" \
 			"$duration" \
 			"$exit_code" \
-			"$$" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
+			"$$" \
+			"$executor_pid" >>"$PULSE_STAGE_TIMINGS_LOG" 2>/dev/null || true
 	fi
 	return 0
 }

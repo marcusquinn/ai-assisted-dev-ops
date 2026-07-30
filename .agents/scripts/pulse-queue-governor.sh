@@ -108,7 +108,7 @@ _fetch_queue_metrics() {
 		total_issues=$((total_issues + repo_issue_total))
 		ready_prs=$((ready_prs + repo_ready))
 		failing_prs=$((failing_prs + repo_failing))
-	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$REPOS_JSON" 2>/dev/null)
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$REPOS_JSON" 2>/dev/null)
 
 	echo "$total_prs"
 	echo "$total_issues"

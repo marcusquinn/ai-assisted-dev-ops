@@ -75,7 +75,7 @@ GH_COMMENT_METRICS=""
 ISSUE_BODY_SNAPSHOT_HELPER="/usr/bin/true"
 export ISSUE_BODY_SNAPSHOT_HELPER
 fallback_prompt=$(_dlw_prepare_prompt_for_launch 123 owner/repo "Test issue" "FULL EMBEDDED BRIEF")
-if printf '%s' "$fallback_prompt" | grep -q 'gh issue view 123 --repo owner/repo' \
+if printf '%s' "$fallback_prompt" | grep -q 'gh issue view 123 --repo owner/repo --json body --jq' \
 	&& printf '%s' "$fallback_prompt" | grep -q 'issue-body-snapshot-helper.sh fetch owner/repo 123' \
 	&& ! printf '%s' "$fallback_prompt" | grep -q 'FULL EMBEDDED BRIEF'; then
 	pass "repeated zero-output launches switch to URL-only bootstrap prompt"
@@ -111,7 +111,7 @@ write_state 1
 GH_COMMENT_ZERO_COUNT=2
 GH_COMMENT_METRICS=$'0\t0\t2\t0'
 comment_fallback_prompt=$(_dlw_prepare_prompt_for_launch 123 owner/repo "Test issue" "FULL EMBEDDED BRIEF")
-if printf '%s' "$comment_fallback_prompt" | grep -q 'gh issue view 123 --repo owner/repo' \
+if printf '%s' "$comment_fallback_prompt" | grep -q 'gh issue view 123 --repo owner/repo --json body --jq' \
 	&& ! printf '%s' "$comment_fallback_prompt" | grep -q 'FULL EMBEDDED BRIEF'; then
 	pass "comment evidence triggers URL-only fallback when state count is low"
 else
@@ -124,7 +124,7 @@ GH_COMMENT_ZERO_COUNT=0
 GH_COMMENT_METRICS=$'50\t0\t2\t1000'
 shared_metrics_prompt=$(_dlw_prepare_prompt_for_launch 123 owner/repo "Test issue" "FULL EMBEDDED BRIEF")
 prepare_api_calls=$(wc -l <"${TMP}/gh-api-calls.log" | tr -d '[:space:]')
-if printf '%s' "$shared_metrics_prompt" | grep -q 'gh issue view 123 --repo owner/repo' \
+if printf '%s' "$shared_metrics_prompt" | grep -q 'gh issue view 123 --repo owner/repo --json body --jq' \
 	&& [[ "$prepare_api_calls" == "1" ]]; then
 	pass "prepare prompt reuses comment bloat metrics for zero-output evidence"
 else
