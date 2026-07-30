@@ -740,7 +740,7 @@ _enable_launchd() {
 	local bin_dir="$HOME/.aidevops/bin"
 	mkdir -p "$bin_dir"
 	local display_link="$bin_dir/aidevops-repo-sync"
-	ln -sf "$script_path" "$display_link"
+	aidevops_ensure_symlink_target "$script_path" "$display_link" || return 1
 
 	# Generate plist content and compare to existing (t1265)
 	local new_content

@@ -17,6 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)" || exit 1
 SCHEDULERS_SH="$REPO_ROOT/.agents/scripts/setup/modules/schedulers.sh"
 SCHEDULERS_PLATFORM_SH="$REPO_ROOT/.agents/scripts/setup/modules/schedulers-platform.sh"
+SHARED_CONSTANTS_SH="$REPO_ROOT/.agents/scripts/shared-constants.sh"
+AUTO_UPDATE_SH="$REPO_ROOT/.agents/scripts/auto-update-helper.sh"
+REPO_SYNC_SH="$REPO_ROOT/.agents/scripts/repo-sync-helper.sh"
+
+# shellcheck source=../shared-constants.sh
+source "$SHARED_CONSTANTS_SH"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -464,7 +470,47 @@ test_empty_content_rejected() {
 }
 
 # ---------------------------------------------------------------------------
-# (d) Loaded-but-stuck xpcproxy agents are recovered without content changes
+# (d) Background-item display links are unchanged when already correct
+# ---------------------------------------------------------------------------
+
+test_display_link_install_is_idempotent() {
+	local link_dir="$TEST_DIR/display-link"
+	local first_target="$link_dir/first-target"
+	local second_target="$link_dir/second-target"
+	local display_link="$link_dir/aidevops-background-job"
+	local inode_before inode_after
+	local expected_call="aidevops_ensure_symlink_target \"\$script_path\" \"\$display_link\""
+	mkdir -p "$link_dir"
+	printf 'first\n' >"$first_target"
+	printf 'second\n' >"$second_target"
+	ln -s "$first_target" "$display_link"
+	inode_before=$(stat -f '%i' "$display_link")
+
+	aidevops_ensure_symlink_target "$first_target" "$display_link"
+	inode_after=$(stat -f '%i' "$display_link")
+	if [[ "$inode_before" != "$inode_after" ]]; then
+		print_result "display_link_install_is_idempotent" 1 "unchanged symlink inode was replaced"
+		return 0
+	fi
+
+	aidevops_ensure_symlink_target "$second_target" "$display_link"
+	if [[ "$(readlink "$display_link")" != "$second_target" ]]; then
+		print_result "display_link_install_is_idempotent" 1 "changed target was not installed"
+		return 0
+	fi
+
+	if ! grep -qF "$expected_call" "$AUTO_UPDATE_SH" ||
+		! grep -qF "$expected_call" "$REPO_SYNC_SH"; then
+		print_result "display_link_install_is_idempotent" 1 "one or more LaunchAgent installers bypass the idempotent helper"
+		return 0
+	fi
+
+	print_result "display_link_install_is_idempotent" 0
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# (e) Loaded-but-stuck xpcproxy agents are recovered without content changes
 # ---------------------------------------------------------------------------
 
 test_xpcproxy_recovered_when_content_unchanged() {
@@ -1135,6 +1181,7 @@ main() {
 
 	test_mv_failure_returns_1
 	test_empty_content_rejected
+	test_display_link_install_is_idempotent
 	test_xpcproxy_recovered_when_content_unchanged
 	test_xpcproxy_successful_recovery_does_not_warn
 	test_xpcproxy_recovery_waits_for_transient_state

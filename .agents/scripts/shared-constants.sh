@@ -138,6 +138,40 @@ aidevops_ensure_pulse_start_epoch() {
 	return 0
 }
 
+# Keep a symlink pointed at the requested target without replacing an already
+# correct link. Recreating an unchanged executable symlink can make macOS treat
+# a recurring LaunchAgent as a newly added background item.
+aidevops_ensure_symlink_target() {
+	local target="$1"
+	local link_path="$2"
+	local current_target=""
+	local link_tmp="${link_path}.tmp.$$"
+	local darwin_platform=""
+	darwin_platform="$(printf '\104\141\162\167\151\156')"
+
+	if [[ -L "$link_path" ]]; then
+		current_target=$(readlink "$link_path" 2>/dev/null) || current_target=""
+		if [[ "$current_target" == "$target" ]]; then
+			return 0
+		fi
+	fi
+
+	rm -f "$link_tmp" || return 1
+	ln -s "$target" "$link_tmp" || return 1
+	if [[ "$(uname -s 2>/dev/null || true)" == "$darwin_platform" ]]; then
+		mv -f -h "$link_tmp" "$link_path" || {
+			rm -f "$link_tmp"
+			return 1
+		}
+	else
+		mv -Tf "$link_tmp" "$link_path" || {
+			rm -f "$link_tmp"
+			return 1
+		}
+	fi
+	return 0
+}
+
 # =============================================================================
 # Tool Version Pins
 # =============================================================================
