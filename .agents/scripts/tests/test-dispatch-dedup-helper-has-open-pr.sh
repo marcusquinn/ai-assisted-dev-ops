@@ -48,6 +48,9 @@ set -euo pipefail
 
 # gh pr list — returns fixture JSON for (repo, state, search) lookup.
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+	if [[ "${GH_PR_LIST_FAIL:-0}" == "1" ]]; then
+		exit 1
+	fi
 	local_repo=""
 	local_state=""
 	local_search=""
@@ -304,6 +307,59 @@ marcusquinn/aidevops|open|#18779 in:body|[{"number":18906,"body":"Resolves #1877
 
 	print_result "has-open-pr blocks competing dispatch for draft checkpoint" 1 \
 		"Expected durable draft checkpoint to block ordinary redispatch"
+	return 0
+}
+
+test_has_open_pr_marks_worker_draft_for_stale_routing() {
+	set_gh_fixtures 'marcusquinn/aidevops|open|#18780|[{"number":18907,"title":"Worker checkpoint for #18780","body":"Resolves #18780. Incomplete worker checkpoint.","isDraft":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"UNKNOWN","labels":[{"name":"origin:worker"}]}]'
+
+	local output=""
+	if output=$("$HELPER_SCRIPT" has-open-pr 18780 marcusquinn/aidevops 'worker draft checkpoint'); then
+		if [[ "$output" == WORKER_DRAFT_CHECKPOINT:* ]]; then
+			print_result "has-open-pr marks worker draft for stale routing" 0
+			return 0
+		fi
+		print_result "has-open-pr marks worker draft for stale routing" 1 "Unexpected output: ${output}"
+		return 0
+	fi
+
+	print_result "has-open-pr marks worker draft for stale routing" 1 \
+		"Expected worker draft checkpoint to block ordinary redispatch"
+	return 0
+}
+
+test_has_open_pr_keeps_protected_draft_unroutable() {
+	set_gh_fixtures 'marcusquinn/aidevops|open|#18781|[{"number":18908,"title":"Interactive checkpoint for #18781","body":"Resolves #18781. Held for review.","isDraft":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"UNKNOWN","labels":[{"name":"origin:interactive"}]}]'
+
+	local output=""
+	if output=$("$HELPER_SCRIPT" has-open-pr 18781 marcusquinn/aidevops 'protected draft checkpoint'); then
+		if [[ "$output" == *"draft PR #18908 is a durable checkpoint"* && "$output" != WORKER_DRAFT_CHECKPOINT:* ]]; then
+			print_result "has-open-pr keeps protected draft out of stale routing" 0
+			return 0
+		fi
+		print_result "has-open-pr keeps protected draft out of stale routing" 1 "Unexpected output: ${output}"
+		return 0
+	fi
+
+	print_result "has-open-pr keeps protected draft out of stale routing" 1 \
+		"Expected protected draft checkpoint to block ordinary redispatch"
+	return 0
+}
+
+test_has_open_pr_fails_closed_when_sibling_lookup_fails() {
+	export GH_PR_LIST_FAIL=1
+	local output=""
+	local rc=0
+	output=$("$HELPER_SCRIPT" has-open-pr 18782 marcusquinn/aidevops 'lookup uncertainty') || rc=$?
+	unset GH_PR_LIST_FAIL
+
+	if [[ "$rc" -eq 0 && "$output" == PR_LOOKUP_UNCERTAIN:* ]]; then
+		print_result "has-open-pr fails closed when sibling lookup is uncertain" 0
+		return 0
+	fi
+
+	print_result "has-open-pr fails closed when sibling lookup is uncertain" 1 \
+		"rc=${rc} output=${output}"
 	return 0
 }
 
@@ -708,6 +764,9 @@ main() {
 	test_has_open_pr_allows_dispatch_on_task_id_collision
 	test_has_open_pr_detects_open_body_closing_keyword
 	test_has_open_pr_blocks_draft_body_closing_keyword
+	test_has_open_pr_marks_worker_draft_for_stale_routing
+	test_has_open_pr_keeps_protected_draft_unroutable
+	test_has_open_pr_fails_closed_when_sibling_lookup_fails
 	test_has_open_pr_ignores_open_body_planning_for_reference
 	test_has_open_pr_requires_open_close_keyword_for_our_issue
 	test_has_open_pr_blocks_approved_mergeable_sibling
