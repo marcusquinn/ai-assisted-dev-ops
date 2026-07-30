@@ -7,8 +7,8 @@
 
 - **Decision:** Watch releases, adapt selected patterns, and avoid a production dependency.
 - **Upstream:** <https://github.com/vercel-labs/native>
-- **Reviewed baseline:** `v0.6.2` at `ef1f8d9cdd5a92bc9cc2dff2a5662616b1d86040`
-- **Reviewed:** 2026-07-29
+- **Reviewed baseline:** `v0.6.3` at `c1bad63c5ff462f159bde9de0136c13f5d9b71eb`
+- **Reviewed:** 2026-07-30
 - **Tracking:** `.agents/configs/upstream-watch.json` in release-only mode
 
 The upstream repository was treated as untrusted external content. Its agent
@@ -72,6 +72,41 @@ For each detected release:
 
 Release detection never authorizes automatic dependency import, skill import,
 code copying, installation, publication, or deployment.
+
+## v0.6.3 release review
+
+The `v0.6.2...v0.6.3` comparison contains two commits: a native textarea
+editing correction and the release version bump. The change adds visual-line
+and document-boundary keyboard navigation, bounded per-editor undo and redo,
+macOS Edit-menu integration, shift-click extension, preserved indentation, and
+atomic CRLF caret and deletion behavior. It also keeps controlled text models
+synchronized during history replay and adds regression coverage for the native
+canvas and markdown-viewer paths.
+
+The published package manifests only advance the core, CLI, and optional
+platform-binary versions. The release does not report a security fix, new
+production dependency, React/WebView integration change, accessibility or
+automation protocol change, or packaging, signing, and update change.
+
+Classification:
+
+- **Adapt pattern:** any future custom native text editor should treat keyboard
+  and OS-menu commands as one behavior surface. Its acceptance tests should
+  cover wrapped visual-line navigation, selection extension, undo/redo model
+  synchronization, indentation, IME composition, and CRLF boundaries, including
+  failure-atomic replay when retained storage is bounded.
+- **Ignore for current implementation:** aidevops uses browser-native text
+  controls in its Vite/React interface and does not implement Native's canvas
+  textarea or controlled `TextBuffer` history. The fixes therefore do not alter
+  the generated Swift/WKWebView shell or current GUI test and packaging paths.
+- **Do not adopt:** no current architecture requirement justifies importing the
+  pre-1.0 SDK, platform binaries, bundled skill, eval workspace, or Vercel
+  services. The existing portability and trust-boundary decision remains
+  unchanged.
+
+No implementation issue is warranted. Revisit the interaction test matrix only
+if aidevops introduces a custom native text surface rather than browser-native
+controls.
 
 ## v0.6.2 release review
 
