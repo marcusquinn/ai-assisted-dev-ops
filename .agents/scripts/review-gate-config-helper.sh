@@ -44,10 +44,13 @@ readonly REPOS_JSON="${AIDEVOPS_REPOS_JSON:-${HOME:+$HOME/.config/aidevops/repos
 readonly RATE_LIMIT_BEHAVIOR_FIELD="rate_limit_behavior"
 readonly COMPLETION_BEHAVIOR_FIELD="completion_behavior"
 readonly ADVISORY_CONTEXTS_FIELD="advisory_check_contexts"
+readonly UNSET_VALUE="unset"
 
-# Known bot logins for --tool validation. New bots warn but are not rejected
-# (forward-compat: new bots should work without a helper update).
-readonly KNOWN_BOT_LOGINS="coderabbitai gemini-code-assist augment-code augmentcode copilot"
+# Current bot logins for --tool validation. New bots warn but are not rejected
+# (forward-compat: new bots should work without a helper update). Retired logins
+# remain accepted only with `unset` so stale policy can be removed safely.
+readonly KNOWN_BOT_LOGINS="coderabbitai augment-code augmentcode copilot"
+readonly RETIRED_BOT_LOGINS="gemini-code-assist"
 
 _print_ok() {
 	local msg="$1"
@@ -130,7 +133,7 @@ _validate_advisory_context() {
 _warn_if_unknown_bot() {
 	local bot="$1"
 	local known
-	known="$KNOWN_BOT_LOGINS"
+	known="$KNOWN_BOT_LOGINS $RETIRED_BOT_LOGINS"
 	local found=0
 	local b
 	for b in $known; do
@@ -143,6 +146,23 @@ _warn_if_unknown_bot() {
 		_print_warn "Unknown bot login '${bot}'. Known bots: ${KNOWN_BOT_LOGINS}"
 		_print_warn "Proceeding anyway — new bots will work if the name is correct."
 	fi
+	return 0
+}
+
+_validate_retired_bot_policy() {
+	local bot="$1"
+	local value="$2"
+	local retired
+	for retired in $RETIRED_BOT_LOGINS; do
+		if [[ "$retired" == "$bot" ]]; then
+			if [[ "$value" != "$UNSET_VALUE" ]]; then
+				_print_error "Bot login '${bot}' is retired; only 'unset' is accepted for legacy configuration cleanup."
+				return 1
+			fi
+			_print_warn "Removing legacy configuration for retired bot '${bot}'."
+			return 0
+		fi
+	done
 	return 0
 }
 
@@ -417,6 +437,7 @@ cmd_set() {
 
 	# Warn if bot login is unknown (but proceed)
 	if [[ -n "$tool_login" ]]; then
+		_validate_retired_bot_policy "$tool_login" "$value" || return 1
 		_warn_if_unknown_bot "$tool_login"
 	fi
 
@@ -424,7 +445,7 @@ cmd_set() {
 	current_json=$(<"$REPOS_JSON")
 
 	local new_json
-	if [[ "$value" == "unset" ]]; then
+	if [[ "$value" == "$UNSET_VALUE" ]]; then
 		# Remove the field
 		if [[ -n "$tool_login" ]]; then
 			new_json=$(printf '%s' "$current_json" | jq \
@@ -433,10 +454,13 @@ cmd_set() {
 				--arg field "$field" \
 				'(.initialized_repos[] | select(.slug == $slug) | .review_gate.tools[$bot]) |= del(.[$field])' \
 				2>/dev/null) || { _jq_mutation_failed; return 1; }
-			# Clean up empty tools entries
+			# Clean up the empty bot object, then the tools object if it is empty.
 			new_json=$(printf '%s' "$new_json" | jq \
 				--arg slug "$resolved_slug" \
-				'(.initialized_repos[] | select(.slug == $slug) | .review_gate.tools) |= if . == {} then del(.) else . end' \
+				--arg bot "$tool_login" \
+				'(.initialized_repos[] | select(.slug == $slug) | .review_gate) |=
+					(if (.tools[$bot] // null) == {} then del(.tools[$bot]) else . end
+					| if (.tools // {}) == {} then del(.tools) else . end)' \
 				2>/dev/null) || true
 		else
 			new_json=$(printf '%s' "$current_json" | jq \
@@ -468,7 +492,7 @@ cmd_set() {
 	_safe_write_repos_json "$new_json" || return 1
 
 	# Report what changed
-	if [[ "$value" == "unset" ]]; then
+	if [[ "$value" == "$UNSET_VALUE" ]]; then
 		if [[ -n "$tool_login" ]]; then
 			_print_ok "Removed per-tool ${field} override for '${tool_login}' on ${resolved_slug}"
 			_print_info "Effective value now: $(_resolve_effective_behavior "$resolved_slug" "$tool_login" "$field")"
@@ -512,7 +536,8 @@ cmd_help() {
 	echo ""
 	echo "Arguments:"
 	echo "  <slug>   owner/repo slug or local path (must be registered in repos.json)"
-	echo "  <bot>    Bot login: coderabbitai, gemini-code-assist, augment-code, copilot"
+	echo "  <bot>    Active bot login: coderabbitai, augment-code, augmentcode, copilot"
+	echo "           Retired login gemini-code-assist is accepted only with unset"
 	echo "           Unknown bot logins produce a warning but are accepted (forward-compat)"
 	echo ""
 	echo "Examples:"

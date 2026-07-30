@@ -147,7 +147,7 @@ _prefilter_reviews() {
 		 end) as $reviewer |
 
 		# Skip summary-only bot reviews: state=COMMENTED with no inline comments.
-		# Gemini Code Assist (and similar bots) post a high-level PR walkthrough as
+		# Legacy Gemini Code Assist (and similar bots) may post a high-level PR walkthrough as
 		# a COMMENTED review with zero inline file comments. These are descriptive
 		# summaries, not actionable findings — capturing them creates false-positive
 		# quality-debt issues (see GH#4528, incident: issue #3744 / PR #1121).

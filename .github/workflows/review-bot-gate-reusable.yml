@@ -66,7 +66,8 @@ jobs:
     # GH#27137: bot review submissions and inline comments must re-evaluate the
     # gate. Human replies cannot change AI-review evidence and must not replace
     # a successful exact-head check with an API-quota failure. Keep this matrix
-    # identical to both callers; tests enforce parity (GH#28316).
+    # identical to both callers; tests enforce parity (GH#28316). Retired Gemini
+    # actors remain event-compatible so historical/reinstalled activity rechecks.
     if: >
       (
         github.event_name == 'pull_request' ||
@@ -279,8 +280,8 @@ jobs:
             echo "Re-run after the GitHub API reset; do not retry-loop before then."
             exit 1
           fi
-          echo "Explicit strict review policy requires at least one AI code review bot"
-          echo "(CodeRabbit, Gemini Code Assist, etc.) to post a real review before merge."
+          echo "Explicit strict review policy requires at least one active AI code review bot"
+          echo "(for example, CodeRabbit) to post a real review before merge."
           echo ""
           echo "What to do:"
           echo "  1. Wait a few minutes for bots to complete their analysis"

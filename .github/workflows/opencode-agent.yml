@@ -33,7 +33,7 @@ jobs:
     name: Security Validation
     runs-on: ubuntu-latest
     # GH#4002: Skip when triggered by known review bots. Bot review comments
-    # (from CodeRabbit, Gemini, etc.) never contain /oc or /opencode triggers,
+    # (including legacy Gemini activity) never contain /oc or /opencode triggers,
     # but GitHub requires manual approval for workflow runs triggered by bot
     # accounts, causing permanent action_required status on PRs.
     if: >

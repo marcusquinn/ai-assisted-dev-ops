@@ -800,7 +800,7 @@ cmd_watch() {
 # Scan merged PRs for unactioned review feedback
 #
 # Fetches recently merged PRs, extracts review comments and review
-# bodies from bots (CodeRabbit, Gemini Code Assist) and humans,
+# bodies from active bots, legacy Gemini Code Assist reviews, and humans,
 # filters by severity, checks if affected files still exist on HEAD,
 # and optionally creates GitHub issues with label "quality-debt".
 #

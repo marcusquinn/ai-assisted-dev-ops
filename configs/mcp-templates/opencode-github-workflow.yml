@@ -23,8 +23,8 @@ on:
 jobs:
   opencode:
     # Only run if comment contains /oc or /opencode.
-    # GH#4002: Also skip known review bots — their comments never contain
-    # trigger commands, and bot-triggered runs require manual approval,
+    # GH#4002: Also skip known review bots (including legacy Gemini activity) —
+    # their comments never contain trigger commands, and bot runs require approval,
     # causing permanent action_required status on PRs.
     if: >
       (

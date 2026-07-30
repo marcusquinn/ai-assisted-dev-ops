@@ -4,9 +4,16 @@
 # Review Bot Add-on Policy (t1382, GH#3827, GH#17541)
 
 **Permanent default:** required project CI controls merge readiness. Code-quality
-add-ons such as CodeRabbit and Gemini are advisory: absent, pending, unavailable,
+add-ons such as CodeRabbit are advisory: absent, pending, unavailable,
 rate-limited, or late results never delay a trusted maintainer-controlled PR.
 Late feedback is swept after merge and filed as worker-ready follow-up issues.
+
+Gemini Code Assist's retired GitHub review integration is legacy-only. The
+framework still recognizes its historical comments, reviews, and threads, but
+does not advertise it as active, accept new per-tool policy, or let stale
+`gemini-code-assist` wait/strict overrides block current merges. Use
+`aidevops review-gate <repo> --tool gemini-code-assist unset` to remove each
+legacy field. The retained identity filters make a future restoration reversible.
 
 Repositories with an exceptional sensitivity requirement may explicitly opt into
 review-before-merge with `review_gate.completion_behavior: strict`. Strict is

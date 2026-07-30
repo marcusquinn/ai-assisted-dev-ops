@@ -54,6 +54,7 @@ jobs:
     # Apply the complete event matrix before concurrency admission. GitHub keeps
     # only one pending run per group, so a skipped inline reply must never replace
     # the sole queued evaluator. The reusable job repeats this as defence-in-depth.
+    # Retired Gemini actors remain only for historical/reinstall compatibility.
     if: >
       (
         github.event_name == 'pull_request' ||

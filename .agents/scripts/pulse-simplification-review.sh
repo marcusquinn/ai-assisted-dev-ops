@@ -132,7 +132,7 @@ run_daily_codebase_review() {
 # Daily post-merge review scanner (t1993).
 #
 # Scans recently merged PRs in pulse-enabled repos for actionable AI bot
-# review comments (CodeRabbit, Gemini Code Assist, claude-review, gpt-review)
+# review comments (active providers plus legacy Gemini Code Assist history)
 # and creates review-followup issues. Idempotent via existing dedup in
 # post-merge-review-scanner.sh's issue_exists() guard.
 #

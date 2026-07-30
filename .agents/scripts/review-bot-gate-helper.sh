@@ -75,14 +75,19 @@ _RBG_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=/dev/null
 [[ -r "${_RBG_SCRIPT_DIR}/shared-constants.sh" ]] && source "${_RBG_SCRIPT_DIR}/shared-constants.sh" || true
 
-# Known review bot login patterns (lowercase, without [bot] suffix for matching)
-KNOWN_BOTS=(
+# Current review bot login patterns (lowercase, without [bot] suffix).
+ACTIVE_BOTS=(
 	"coderabbitai"
-	"gemini-code-assist"
 	"augment-code"
 	"augmentcode"
 	"copilot"
 )
+# Retired providers remain recognizable so historical reviews, comments, and
+# unresolved threads are not reclassified as human activity. They are excluded
+# from per-tool strict/wait policy so stale config cannot block new merges.
+RBG_RETIRED_GEMINI_LOGIN="gemini-code-assist"
+RETIRED_BOTS=("$RBG_RETIRED_GEMINI_LOGIN")
+KNOWN_BOTS=("${ACTIVE_BOTS[@]}" "${RETIRED_BOTS[@]}")
 REVIEW_GATE_STATUS_PASS="$(printf 'P%s' 'ASS')"
 RBG_PASS_ADVISORY="PASS_ADVISORY"
 RBG_PASS_RATE_LIMITED="PASS_RATE_LIMITED"
@@ -218,9 +223,10 @@ classify_infra_rate_limit() {
 	completion_behavior=$(_get_completion_behavior "$repo_slug" "")
 	repos_json="${HOME}/.config/aidevops/repos.json"
 	if [[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1; then
-		strict_tool_override=$(jq -r --arg slug "$repo_slug" --arg strict "$RBG_COMPLETION_STRICT" '
-			[first(.initialized_repos[]? | select(.slug == $slug)).review_gate.tools[]?
-			| select(.rate_limit_behavior == "wait" or .completion_behavior == $strict)]
+		strict_tool_override=$(jq -r --arg slug "$repo_slug" --arg strict "$RBG_COMPLETION_STRICT" --arg retired "$RBG_RETIRED_GEMINI_LOGIN" '
+			[first(.initialized_repos[]? | select(.slug == $slug)).review_gate.tools // {} | to_entries[]?
+			| select(.key != $retired)
+			| select(.value.rate_limit_behavior == "wait" or .value.completion_behavior == $strict)]
 			| if length > 0 then "true" else (false | tostring) end
 		' "$repos_json" 2>/dev/null) || strict_tool_override="true"
 	fi
@@ -268,8 +274,8 @@ _get_rate_limit_behavior() {
 		# first() guards against duplicate slug entries in repos.json.
 		# stderr is not suppressed so JSON syntax errors surface during debugging.
 		local behavior=""
-		behavior=$(jq -r --arg slug "$repo_slug" --arg bot "$bot_login" \
-			'first(.initialized_repos[]? | select(.slug == $slug)) | (.review_gate.tools[$bot].rate_limit_behavior // .review_gate.rate_limit_behavior // empty)' \
+		behavior=$(jq -r --arg slug "$repo_slug" --arg bot "$bot_login" --arg retired "$RBG_RETIRED_GEMINI_LOGIN" \
+			'first(.initialized_repos[]? | select(.slug == $slug)) | (if $bot == $retired then .review_gate.rate_limit_behavior // empty else .review_gate.tools[$bot].rate_limit_behavior // .review_gate.rate_limit_behavior // empty end)' \
 			"$repos_json") || behavior=""
 		if [[ -n "$behavior" ]]; then
 			printf '%s' "$behavior"
@@ -299,8 +305,8 @@ _get_completion_behavior() {
 
 	if [[ -f "$repos_json" ]] && command -v jq &>/dev/null; then
 		local behavior=""
-		behavior=$(jq -r --arg slug "$repo_slug" --arg bot "$bot_login" \
-			'first(.initialized_repos[]? | select(.slug == $slug)) | (.review_gate.tools[$bot].completion_behavior // .review_gate.completion_behavior // empty)' \
+		behavior=$(jq -r --arg slug "$repo_slug" --arg bot "$bot_login" --arg retired "$RBG_RETIRED_GEMINI_LOGIN" \
+			'first(.initialized_repos[]? | select(.slug == $slug)) | (if $bot == $retired then .review_gate.completion_behavior // empty else .review_gate.tools[$bot].completion_behavior // .review_gate.completion_behavior // empty end)' \
 			"$repos_json" 2>/dev/null) || behavior=""
 		if [[ -n "$behavior" ]]; then
 			printf '%s' "$behavior"
@@ -333,9 +339,10 @@ _review_gate_requires_completed_review() {
 	[[ "$behavior" == "$RBG_COMPLETION_STRICT" ]] && return 0
 
 	if [[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1; then
-		strict_tool_override=$(jq -r --arg slug "$repo_slug" --arg strict "$RBG_COMPLETION_STRICT" '
-			[first(.initialized_repos[]? | select(.slug == $slug)).review_gate.tools[]?
-			| select(.completion_behavior == $strict)]
+		strict_tool_override=$(jq -r --arg slug "$repo_slug" --arg strict "$RBG_COMPLETION_STRICT" --arg retired "$RBG_RETIRED_GEMINI_LOGIN" '
+			[first(.initialized_repos[]? | select(.slug == $slug)).review_gate.tools // {} | to_entries[]?
+			| select(.key != $retired)
+			| select(.value.completion_behavior == $strict)]
 			| if length > 0 then "true" else (false | tostring) end
 		' "$repos_json" 2>/dev/null) || strict_tool_override="true"
 	fi

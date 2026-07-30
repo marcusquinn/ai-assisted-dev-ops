@@ -431,6 +431,7 @@ _pmrc_snapshot_bot_activity_json() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	local reviews="" issue_comments="" inline_comments="" activity=""
+	# Retain gemini-code-assist only for historical review evidence.
 	local bot_re="coderabbitai|gemini-code-assist|augment-code|augmentcode|copilot"
 
 	reviews=$(_pmrc_gh_read gh api "repos/${repo_slug}/pulls/${pr_number}/reviews?per_page=100" \
@@ -521,6 +522,7 @@ _pmrc_snapshot_review_threads_clear() {
 	local base_branch="$3"
 	local owner="${repo_slug%%/*}" name="${repo_slug##*/}" response="" counts="" has_next=""
 	local total_count="" bot_count="" resolution_required="" reported_cost="" log_target="${LOGFILE:-/dev/stderr}"
+	# Retain gemini-code-assist so unresolved historical bot threads stay typed.
 	local bot_re="coderabbitai|gemini-code-assist|augment-code|augmentcode|copilot"
 
 	# This fixed query has a documented/calibrated GraphQL cost of one point.

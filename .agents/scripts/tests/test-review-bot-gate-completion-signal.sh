@@ -105,6 +105,19 @@ setup_test_env() {
       }
     },
     {
+      "path": "/tmp/retiredtoolstrictrepo",
+      "slug": "testorg/retiredtoolstrictrepo",
+      "pulse": true,
+      "review_gate": {
+        "tools": {
+          "gemini-code-assist": {
+            "rate_limit_behavior": "wait",
+            "completion_behavior": "strict"
+          }
+        }
+      }
+    },
+    {
       "path": "/tmp/otherrepo",
       "slug": "testorg/otherrepo",
       "pulse": true
@@ -348,6 +361,17 @@ test_infra_rate_limit_blocks_explicit_wait_or_strict_policy() {
 	else
 		print_result "API exhaustion honors explicit wait and strict policies" 1 \
 			"wait=${wait_output} strict=${strict_output} tool_strict=${tool_strict_output}"
+	fi
+	return 0
+}
+
+test_infra_rate_limit_ignores_retired_tool_policy() {
+	local output
+	output=$(classify_infra_rate_limit "OWNER" "testorg/retiredtoolstrictrepo")
+	if [[ "$output" == "PASS_ADVISORY" ]]; then
+		print_result "API exhaustion ignores retired per-tool wait/strict policy" 0
+	else
+		print_result "API exhaustion ignores retired per-tool wait/strict policy" 1 "output=${output}"
 	fi
 	return 0
 }
@@ -729,6 +753,15 @@ test_trusted_strict_repo_requires_completed_review() {
 		print_result "trusted strict repo requires completed add-on review" 0
 	else
 		print_result "trusted strict repo requires completed add-on review" 1
+	fi
+	return 0
+}
+
+test_trusted_retired_tool_policy_does_not_require_completed_review() {
+	if REVIEW_GATE_AUTHOR_ASSOCIATION=MEMBER _review_gate_requires_completed_review 'testorg/retiredtoolstrictrepo'; then
+		print_result "trusted retired per-tool policy remains advisory" 1
+	else
+		print_result "trusted retired per-tool policy remains advisory" 0
 	fi
 	return 0
 }
@@ -1466,6 +1499,7 @@ run_completion_requirement_tests() {
 	test_trusted_default_does_not_require_completed_review
 	test_owner_rest_association_does_not_require_completed_review
 	test_trusted_strict_repo_requires_completed_review
+	test_trusted_retired_tool_policy_does_not_require_completed_review
 	test_external_default_requires_completed_review
 	test_untrusted_association_matrix_requires_completed_review
 	test_malformed_metadata_and_rest_failure_fail_closed
@@ -1509,6 +1543,7 @@ main() {
 	test_infra_rate_limit_passes_trusted_default_policy
 	test_infra_rate_limit_blocks_external_author
 	test_infra_rate_limit_blocks_explicit_wait_or_strict_policy
+	test_infra_rate_limit_ignores_retired_tool_policy
 	test_is_rate_limit_only_matches_rate_limit
 	test_is_rate_limit_only_rejects_review_failed
 	test_is_rate_limit_only_rejects_review_skipped

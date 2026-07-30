@@ -707,7 +707,7 @@ See `.agents/tools/terminal/terminal-title.md` for customization options.
 
 **Quality Control & Monitoring:**
 
-- **Multi-Platform Analysis**: SonarCloud, CodeFactor, Codacy, CodeRabbit, Qlty, Gemini Code Assist, Snyk
+- **Multi-Platform Analysis**: SonarCloud, CodeFactor, Codacy, CodeRabbit, Qlty, Snyk
 - **Review gate preferences**: choose whether true review-bot rate limits block merges (`aidevops review-gate owner/repo wait`) or allow merge with follow-up quality coverage (`aidevops review-gate owner/repo pass`, the default). Per-tool overrides are supported, for example `aidevops review-gate owner/repo --tool coderabbitai wait`. Failed, skipped, or placeholder bot states are not treated as rate limits and continue to block until a real review/status appears or a human resolves them.
 - **Performance Auditing**: PageSpeed Insights, Lighthouse, WebPageTest, Core Web Vitals (`/performance` command)
 - **SEO Toolchain**: 40+ SEO subagents including Semrush, Ahrefs, ContentKing, Screaming Frog, Bing Webmaster Tools, Rich Results Test, programmatic SEO, analytics tracking, schema validation, content analysis, keyword mapping, and AI readiness
@@ -1317,7 +1317,7 @@ The setup script offers to install these tools automatically.
 - **[Secretlint](https://github.com/secretlint/secretlint)**: Detect exposed secrets in code
 - **[OSV Scanner](https://google.github.io/osv-scanner/)**: Google's vulnerability database scanner
 - **[Qlty](https://qlty.sh/)**: Universal code quality platform (70+ linters, auto-fixes)
-- **[Gemini Code Assist](https://cloud.google.com/gemini/docs/codeassist/overview)**: Google's AI-powered code completion and review
+- **Retired review compatibility**: Historical Gemini Code Assist GitHub reviews remain readable, but the sunset integration is no longer advertised or configurable
 
 ### **AI Prompt Optimization**
 
@@ -2848,7 +2848,7 @@ See `.agents/tools/credentials/multi-tenant.md` for complete documentation.
 
 **Quality Assurance:**
 
-- Multi-platform analysis (SonarCloud, CodeFactor, Codacy, CodeRabbit, Qlty, Snyk, Gemini Code Assist)
+- Multi-platform analysis (SonarCloud, CodeFactor, Codacy, CodeRabbit, Qlty, Snyk)
 - Automated security monitoring and vulnerability detection
 
 ## **Contributing & License**

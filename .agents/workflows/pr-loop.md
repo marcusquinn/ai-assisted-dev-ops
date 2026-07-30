@@ -30,7 +30,7 @@ Invocation is explicit finalisation consent. Classify permission against the PR'
 
 **On issues:** CI failures → report and wait. Changes requested → verify, address valid feedback. Stale review → auto-trigger re-review (unless `--no-auto-trigger`).
 
-**COMMENTED reviews:** Some bots (e.g., Gemini Code Assist) post as `COMMENTED` not `CHANGES_REQUESTED`, so `reviewDecision` stays `NONE`. The loop detects unresolved review threads and surfaces them.
+**COMMENTED reviews:** Some review add-ons post as `COMMENTED` rather than `CHANGES_REQUESTED`, so `reviewDecision` stays `NONE`. The loop detects unresolved review threads and surfaces them, including historical Gemini Code Assist threads.
 
 ### Review Add-on Policy (t1382)
 

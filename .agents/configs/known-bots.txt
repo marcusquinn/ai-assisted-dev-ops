@@ -6,6 +6,7 @@ coderabbitai[bot]
 sonarqubecloud[bot]
 codacy-production[bot]
 github-actions[bot]
+# Retired review provider retained to classify historical activity as bot noise.
 gemini-code-assist[bot]
 augmentcode[bot]
 codefactor-io[bot]

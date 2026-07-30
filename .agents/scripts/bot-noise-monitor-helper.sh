@@ -26,6 +26,7 @@ if [[ -f "$_KNOWN_BOTS_FILE" ]]; then
 	done <"$_KNOWN_BOTS_FILE"
 else
 	# Fallback if deployed config not available
+	# gemini-code-assist is retained only to classify historical bot activity.
 	KNOWN_BOTS=(
 		"coderabbitai[bot]" "sonarqubecloud[bot]" "codacy-production[bot]"
 		"github-actions[bot]" "gemini-code-assist[bot]" "augmentcode[bot]" "codefactor-io[bot]"

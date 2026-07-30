@@ -175,7 +175,7 @@ mutate package source. See `tools/deployment/cloudron-app-packaging.md`.
 | `completion_behavior` | `"fast"` | `"fast"` is the permanent advisory default: absent, pending, unavailable, or late add-on review does not delay a merge after required CI passes. `"strict"` explicitly opts into review-before-merge and terminal completion evidence. |
 | `min_edit_lag_seconds` | 30 | Seconds a bot comment must be "settled" before it counts. Defeats CodeRabbit's two-phase placeholder (stub at ~14s, final edit at ~90-120s). |
 | `advisory_check_contexts` | `[]` | Exact non-required review-provider check names that may be advisory only when typed live evidence permits the outcome for the current PR head and review threads are resolved. Required, maintainer-gate, unknown, malformed-evidence, and external rate-limit failures always block. |
-| `tools` | — | Per-tool overrides keyed by bot login (`coderabbitai`, `gemini-code-assist`, `augment-code`, `augmentcode`, `copilot`) |
+| `tools` | — | Per-tool overrides keyed by active bot login (`coderabbitai`, `augment-code`, `augmentcode`, `copilot`). The retired `gemini-code-assist` key is ignored by gate policy and accepted by the CLI only with `unset` for cleanup. |
 
 Resolution order (per field independently): per-tool > per-repo > env var (`REVIEW_GATE_RATE_LIMIT_BEHAVIOR`, `REVIEW_GATE_COMPLETION_BEHAVIOR`, or `REVIEW_BOT_MIN_EDIT_LAG_SECONDS`) > hard default.
 

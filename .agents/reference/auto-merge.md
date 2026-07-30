@@ -42,7 +42,7 @@ Interactive PRs default to human-controlled merge. `pulse-merge.sh` only merges 
 
 Preference precedence: `hold-for-review` and draft state block first; `allow-auto-merge` is the PR-specific opt-in; an explicit env value overrides repo/global preferences; per-repo `repos.json` overrides global config; global default is `false`.
 
-Merge typically happens within one pulse cycle (4-10 minutes) after all checks go green and the PR is ready/non-draft. Review bots (gemini-code-assist, coderabbitai) post within ~1-3 minutes. Audit log line: `[pulse-merge] auto-merged origin:interactive PR #N (author=<login>, role=<role>)`.
+Merge typically happens within one pulse cycle (4-10 minutes) after all checks go green and the PR is ready/non-draft. Installed review add-ons may respond during that window, but their timing is provider-dependent. Audit log line: `[pulse-merge] auto-merged origin:interactive PR #N (author=<login>, role=<role>)`.
 
 **To keep manual control:** leave the PR as draft, apply `hold-for-review`, or keep `interactive_pr_auto_merge` disabled.
 

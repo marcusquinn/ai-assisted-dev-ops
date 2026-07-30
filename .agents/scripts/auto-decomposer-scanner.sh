@@ -88,7 +88,7 @@ log() { echo "[auto-decomposer] $*" >&2; }
 
 # Known review-bot logins — these accounts post mechanical review comments
 # (not a human-engagement signal). Extend as needed when new review bots
-# are adopted.
+# are adopted. Retired Gemini remains to classify historical comments correctly.
 readonly REVIEW_BOT_LOGINS_JQ_FILTER='["coderabbitai", "coderabbitai[bot]", "sonarcloud[bot]", "sonarqubecloud[bot]", "codacy-production[bot]", "github-actions[bot]", "gemini-code-assist[bot]", "qodo-merge-pro[bot]", "codefactor-io", "socket-security[bot]"]'
 
 # Build the GitHub REST API path for an issue's comments. Centralised so the

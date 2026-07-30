@@ -104,7 +104,7 @@ Run `~/.aidevops/agents/scripts/linters-local.sh` — ShellCheck, secretlint, pa
 
 ### 2. Remote Auditing (`/code-audit-remote`)
 
-Run `~/.aidevops/agents/scripts/code-audit-helper.sh audit [repo]` — CodeRabbit (AI review), Codacy (quality), SonarCloud (security/maintainability). Monitored AI reviewers: `coderabbit*`, `gemini-code-assist[bot]`, `augment-code[bot]`/`augmentcode[bot]`, `copilot[bot]`.
+Run `~/.aidevops/agents/scripts/code-audit-helper.sh audit [repo]` — CodeRabbit (AI review), Codacy (quality), SonarCloud (security/maintainability). Active monitored AI reviewers: `coderabbit*`, `augment-code[bot]`/`augmentcode[bot]`, `copilot[bot]`. Historical `gemini-code-assist[bot]` activity remains readable as legacy compatibility.
 
 ### 3. Standards Compliance (`/code-standards`)
 

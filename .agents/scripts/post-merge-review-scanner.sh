@@ -115,6 +115,7 @@ if [[ -z "${SCANNER_CURSOR_DIR:-}" ]]; then
 		SCANNER_CURSOR_DIR="/tmp/.aidevops-${SCANNER_TMP_USER}/logs/post-merge-review-scanner"
 	fi
 fi
+# gemini-code-assist is legacy compatibility for findings on historical PRs.
 BOT_RE="coderabbitai|gemini-code-assist|claude-review|gpt-review"
 # ACT_RE is retained ONLY for top-level review summary filtering. For inline
 # comments the thread-resolution filter is the canonical signal — every
