@@ -96,6 +96,10 @@ Aggregation PR #28879 reviews authorized PR #28871 at
 `a039ed430bc97bd0327ddfc1d0d2a1b4f790277d` because PR #28876 advanced `main`
 before publication.
 
+A pending aggregation reviews authorized PR #28914 at
+`d522f4df38fc17dddc1cc1feed72e7dfa9279088` because the deterministic t18185
+completion commit advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
