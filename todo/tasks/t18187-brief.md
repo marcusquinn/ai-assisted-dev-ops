@@ -9,12 +9,20 @@
 
 ## What
 
-<!-- TODO: Describe the deliverable clearly — what it must produce, not just "implement X". -->
-Fix Pulse scheduler regression rejecting generated routines repositories
+Restore recurring Pulse execution for framework-generated `aidevops-routines`
+repositories without weakening the fenced/commented example protection added by
+GH#28808. Support the dedicated routines-repository document shape and add a
+generator-to-scheduler contract test so future format drift fails in CI.
 
 ## Why
 
-<!-- TODO: Problem being solved, user need, business value, or dependency. -->
+GH#28808 restricted discovery to one exact `## Routines` section, but
+`init-routines-helper.sh` generates a dedicated `# Routines` document containing
+`## Core Routines (framework-managed)` and `## User Routines`. Since deployment,
+Pulse has rejected that generated file every cycle as malformed. Routine r916
+last ran at `2026-07-28T08:26:33Z`, so it missed Buzz v0.5.2 after the upstream
+release on 2026-07-29. The direct monitor still reports the release, proving the
+failure is scheduler discovery rather than release detection.
 
 ## Tier
 
@@ -24,27 +32,48 @@ Fix Pulse scheduler regression rejecting generated routines repositories
 
 ### Files to Modify
 
-<!-- TODO: List files to modify with NEW:/EDIT: prefixes and line ranges. -->
+- EDIT: `.agents/scripts/pulse-routines.sh` — accept exactly one supported
+  routines registry shape while retaining fail-closed fence, comment,
+  indentation, and out-of-section handling.
+- EDIT: `.agents/scripts/tests/test-pulse-routines-selector.sh` — generate a
+  real routines-repository fixture via `init-routines-helper.sh`, prove r916 is
+  selected, and prove task-section lookalikes remain excluded.
 
 ### Implementation Steps
 
-<!-- TODO: Numbered, concrete steps. Workers follow these directly. -->
-
-1. (fill in)
+1. Extend `_routine_extract_section` to recognize both the general-project
+   `## Routines` section and the dedicated generated `# Routines` document with
+   its controlled core/user subsections.
+2. Reject duplicate, mixed, malformed, fenced, commented, and unsupported
+   boundaries before returning any routine lines.
+3. Add an integration regression that calls the production scaffold generator,
+   then passes its `TODO.md` through the production scheduler parser.
+4. Run focused scheduler tests, ShellCheck, changed-file quality gates, and a
+   deployed dry-run against the registered routines repository.
 
 ### Verification
 
 ```bash
-# TODO: commands to verify the implementation is correct
+bash .agents/scripts/tests/test-pulse-routines-selector.sh
+bash .agents/scripts/tests/test-init-routines-readonly-guard.sh
+shellcheck .agents/scripts/pulse-routines.sh .agents/scripts/tests/test-pulse-routines-selector.sh
+.agents/scripts/linters-local.sh --files .agents/scripts/pulse-routines.sh,.agents/scripts/tests/test-pulse-routines-selector.sh
 ```
 
 ## Acceptance Criteria
 
-- [ ] Implementation matches the What section
-- [ ] Tests pass
-- [ ] Lint clean (shellcheck for shell scripts)
+- [ ] A generated `aidevops-routines/TODO.md` exposes r916 to the scheduler.
+- [ ] General-project `## Routines` registries continue to work unchanged.
+- [ ] Fenced, commented, indented, out-of-section, duplicate, mixed, and
+      malformed routine definitions do not dispatch.
+- [ ] Focused tests and ShellCheck pass.
+- [ ] The deployed monitor can detect the current Buzz release through r916's
+      configured command.
 
 ## Context
 
-<!-- TODO: Key decisions, constraints, things ruled out. -->
-Created via `/new-task --batch`. Fill in How section before dispatching.
+The fix belongs in the scheduler compatibility boundary rather than only
+rewriting one generated repository: existing installations must recover without
+a coordinated migration. Keep Bash 3.2 compatibility and explicit function
+returns. Do not relax parsing to whole-file matching, which would reintroduce
+GH#28808.

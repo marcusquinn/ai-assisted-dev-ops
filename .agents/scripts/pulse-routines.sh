@@ -254,112 +254,159 @@ _RPL_AGENT=""
 _RPL_DESC=""
 
 #######################################
-# Extract active Markdown content from the one canonical `## Routines` section.
+# Normalize one Markdown line before registry parsing.
 #
-# Headings and routine-shaped lines inside fenced code blocks or HTML comments
-# are documentation, not scheduler input. The complete file is validated before
-# any output is returned so duplicate headings or unclosed structural blocks
-# cannot partially dispatch routines before the parser notices malformed input.
+# Fenced content is opaque, HTML comments are removed, and indented code is
+# excluded. Parser state is held in _RML_* globals so updates survive the call.
+#
+# Arguments: $1 - raw Markdown line
+# Output: none; _RML_ACTIVE_LINE and _RML_TRIMMED_LINE contain active content
+# Returns: 0 for active content, 1 when the line must be ignored
+#######################################
+_routine_normalize_markdown_line() {
+	local line="$1"
+	local comment_prefix="" leading_spaces="" fence_remainder=""
+	local current_fence_length=0
+	_RML_ACTIVE_LINE=""
+	_RML_TRIMMED_LINE=""
+
+	if [[ -n "$_RML_FENCE_CHAR" ]]; then
+		leading_spaces="${line%%[! ]*}"
+		_RML_TRIMMED_LINE="${line#"$leading_spaces"}"
+		if [[ "${#leading_spaces}" -le 3 && "${_RML_TRIMMED_LINE:0:1}" == "$_RML_FENCE_CHAR" ]]; then
+			while [[ "${_RML_TRIMMED_LINE:${current_fence_length}:1}" == "$_RML_FENCE_CHAR" ]]; do
+				current_fence_length=$((current_fence_length + 1))
+			done
+			fence_remainder="${_RML_TRIMMED_LINE:${current_fence_length}}"
+			if [[ "$current_fence_length" -ge "$_RML_FENCE_LENGTH" && "$fence_remainder" =~ ^[[:space:]]*$ ]]; then
+				_RML_FENCE_CHAR=""
+				_RML_FENCE_LENGTH=0
+			fi
+		fi
+		return 1
+	fi
+
+	_RML_ACTIVE_LINE="$line"
+	while true; do
+		if [[ "$_RML_IN_COMMENT" -eq 1 ]]; then
+			if [[ "$_RML_ACTIVE_LINE" == *"-->"* ]]; then
+				_RML_ACTIVE_LINE="${_RML_ACTIVE_LINE#*-->}"
+				_RML_IN_COMMENT=0
+				continue
+			fi
+			_RML_ACTIVE_LINE="$comment_prefix"
+			break
+		fi
+		if [[ "$_RML_ACTIVE_LINE" == *"<!--"* ]]; then
+			comment_prefix="${comment_prefix}${_RML_ACTIVE_LINE%%<!--*}"
+			_RML_ACTIVE_LINE="${_RML_ACTIVE_LINE#*<!--}"
+			_RML_IN_COMMENT=1
+			continue
+		fi
+		_RML_ACTIVE_LINE="${comment_prefix}${_RML_ACTIVE_LINE}"
+		break
+	done
+
+	leading_spaces="${_RML_ACTIVE_LINE%%[! ]*}"
+	_RML_TRIMMED_LINE="${_RML_ACTIVE_LINE#"$leading_spaces"}"
+	[[ "${#leading_spaces}" -le 3 ]] || return 1
+	if [[ "$_RML_TRIMMED_LINE" == '```'* || "$_RML_TRIMMED_LINE" == '~~~'* ]]; then
+		_RML_FENCE_CHAR="${_RML_TRIMMED_LINE:0:1}"
+		while [[ "${_RML_TRIMMED_LINE:${_RML_FENCE_LENGTH}:1}" == "$_RML_FENCE_CHAR" ]]; do
+			_RML_FENCE_LENGTH=$((_RML_FENCE_LENGTH + 1))
+		done
+		return 1
+	fi
+	return 0
+}
+
+#######################################
+# Validate and advance a dedicated routines-repository subsection heading.
+#
+# Arguments: $1 - current phase, $2 - active heading
+# Output: next phase and section-open flag, separated by a colon
+# Returns: 0 for the next expected heading, 1 otherwise
+#######################################
+_routine_dedicated_heading_transition() {
+	local current_phase="$1"
+	local heading="$2"
+	case "${current_phase}:${heading}" in
+	"0:## Core Routines (framework-managed)") printf '1:1' ;;
+	"1:## User Routines") printf '2:1' ;;
+	"2:## Tasks") printf '3:0' ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+#######################################
+# Extract active Markdown content from one supported routine registry shape.
+#
+# The complete file is validated before output so duplicate headings, unclosed
+# structures, or malformed dedicated layouts cannot partially dispatch. General
+# TODO files use `## Routines`; the generated routines repository uses its
+# controlled `# Routines` document and ordered core/user/tasks subsections.
 #
 # Arguments: $1 - path to TODO.md
-# Output: active, non-indented lines inside the canonical section
-# Returns: 0 for one well-formed section, 1 for missing/duplicate/malformed input
+# Output: active, non-indented lines inside the routine registry
+# Returns: 0 for one supported registry, 1 for missing/duplicate/malformed input
 #######################################
 _routine_extract_section() {
 	local todo_file="$1"
 	[[ -f "$todo_file" ]] || return 1
-
-	local line="" active_line="" comment_prefix=""
-	local leading_spaces="" trimmed_line=""
-	local fence_char="" fence_remainder=""
-	local fence_length=0 current_fence_length=0
-	local in_comment=0 in_section=0 section_count=0
-	local section_content=""
+	local line="" section_content="" section_style="" heading_transition=""
+	local dedicated_style="dedicated" project_style="project"
+	local in_section=0 section_count=0 structure_error=0 dedicated_phase=0
+	_RML_ACTIVE_LINE="" _RML_TRIMMED_LINE="" _RML_FENCE_CHAR="" _RML_FENCE_LENGTH=0 _RML_IN_COMMENT=0
 
 	while IFS= read -r line || [[ -n "$line" ]]; do
-		# Fenced content is opaque: only a matching closing fence is meaningful.
-		if [[ -n "$fence_char" ]]; then
-			leading_spaces="${line%%[! ]*}"
-			trimmed_line="${line#"$leading_spaces"}"
-			if [[ "${#leading_spaces}" -le 3 && "${trimmed_line:0:1}" == "$fence_char" ]]; then
-				current_fence_length=0
-				while [[ "${trimmed_line:${current_fence_length}:1}" == "$fence_char" ]]; do
-					current_fence_length=$((current_fence_length + 1))
-				done
-				fence_remainder="${trimmed_line:${current_fence_length}}"
-				if [[ "$current_fence_length" -ge "$fence_length" && "$fence_remainder" =~ ^[[:space:]]*$ ]]; then
-					fence_char=""
-					fence_length=0
-				fi
-			fi
+		if ! _routine_normalize_markdown_line "$line"; then
 			continue
 		fi
 
-		# Strip HTML comments while retaining active text before/after inline
-		# comments. An unclosed block makes the document structurally ambiguous.
-		active_line="$line"
-		comment_prefix=""
-		while true; do
-			if [[ "$in_comment" -eq 1 ]]; then
-				if [[ "$active_line" == *"-->"* ]]; then
-					active_line="${active_line#*-->}"
-					in_comment=0
-					continue
-				fi
-				active_line="$comment_prefix"
-				break
-			fi
-			if [[ "$active_line" == *"<!--"* ]]; then
-				comment_prefix="${comment_prefix}${active_line%%<!--*}"
-				active_line="${active_line#*<!--}"
-				in_comment=1
-				continue
-			fi
-			active_line="${comment_prefix}${active_line}"
-			break
-		done
-
-		leading_spaces="${active_line%%[! ]*}"
-		trimmed_line="${active_line#"$leading_spaces"}"
-
-		# Four-space indentation is a Markdown code block, never a live routine.
-		if [[ "${#leading_spaces}" -gt 3 ]]; then
-			continue
-		fi
-
-		# Opening fenced code blocks may use backticks or tildes. Track the
-		# delimiter length so shorter runs cannot close the block.
-		if [[ "$trimmed_line" == '```'* || "$trimmed_line" == '~~~'* ]]; then
-			fence_char="${trimmed_line:0:1}"
-			fence_length=0
-			while [[ "${trimmed_line:${fence_length}:1}" == "$fence_char" ]]; do
-				fence_length=$((fence_length + 1))
-			done
-			continue
-		fi
-
-		if [[ "$trimmed_line" =~ ^##[[:space:]]+Routines[[:space:]]*$ ]]; then
+		if [[ "$_RML_TRIMMED_LINE" =~ ^(##|#)[[:space:]]+Routines[[:space:]]*$ ]]; then
 			section_count=$((section_count + 1))
-			in_section=1
+			if [[ -n "$section_style" ]]; then
+				structure_error=1
+			elif [[ "${BASH_REMATCH[1]}" == "##" ]]; then
+				section_style="$project_style"
+				in_section=1
+			else
+				section_style="$dedicated_style"
+				in_section=0
+			fi
 			continue
 		fi
 
-		# A level-one or level-two heading closes the canonical section. Level
-		# three and deeper headings remain part of it.
-		if [[ "$trimmed_line" =~ ^#[[:space:]]+ || "$trimmed_line" =~ ^##[[:space:]]+ ]]; then
+		if [[ "$section_style" == "$dedicated_style" ]] &&
+			[[ "$_RML_TRIMMED_LINE" =~ ^#[[:space:]]+ || "$_RML_TRIMMED_LINE" =~ ^##[[:space:]]+ ]]; then
+			if heading_transition=$(_routine_dedicated_heading_transition "$dedicated_phase" "$_RML_TRIMMED_LINE"); then
+				dedicated_phase="${heading_transition%%:*}"
+				in_section="${heading_transition#*:}"
+			else
+				structure_error=1
+				in_section=0
+			fi
+			continue
+		fi
+
+		# Level-one and level-two headings close a general-project registry.
+		if [[ "$section_style" == "$project_style" ]] &&
+			[[ "$_RML_TRIMMED_LINE" =~ ^#[[:space:]]+ || "$_RML_TRIMMED_LINE" =~ ^##[[:space:]]+ ]]; then
 			in_section=0
 			continue
 		fi
-
 		if [[ "$in_section" -eq 1 ]]; then
-			section_content="${section_content}${active_line}"$'\n'
+			section_content="${section_content}${_RML_ACTIVE_LINE}"$'\n'
 		fi
 	done <"$todo_file"
 
-	if [[ "$section_count" -ne 1 || -n "$fence_char" || "$in_comment" -ne 0 ]]; then
+	if [[ "$section_style" == "$dedicated_style" && "$dedicated_phase" -ne 3 ]]; then
+		structure_error=1
+	fi
+	if [[ "$section_count" -ne 1 || "$structure_error" -ne 0 || -n "$_RML_FENCE_CHAR" || "$_RML_IN_COMMENT" -ne 0 ]]; then
 		return 1
 	fi
-
 	printf '%s' "$section_content"
 	return 0
 }
@@ -495,7 +542,7 @@ evaluate_routines() {
 		# and malformed/duplicate boundaries from becoming scheduler input.
 		local routine_section=""
 		if ! routine_section=$(_routine_extract_section "$todo_file"); then
-			echo "[pulse-wrapper] evaluate_routines: ${_routine_slug} TODO.md has missing, duplicate, or malformed canonical ## Routines boundaries — skipping" >>"$LOGFILE"
+			echo "[pulse-wrapper] evaluate_routines: ${_routine_slug} TODO.md has a missing, duplicate, or malformed routines registry — skipping" >>"$LOGFILE"
 			continue
 		fi
 
