@@ -960,7 +960,6 @@ _is_stale_assignment() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local blocking_assignees="$3"
-
 	local now_epoch
 	now_epoch=$(date +%s)
 
