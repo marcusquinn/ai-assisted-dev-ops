@@ -270,6 +270,18 @@ cp "$SANDBOX/bin/opencode-qwen" "$HOME/.local/bin/opencode"
 cp "$SANDBOX/bin/opencode-real" "$HOME/.bun/bin/opencode"
 (
 	source_lib
+	# Test 5d covers invalid-shim healing; temporary-path classification has
+	# dedicated coverage in tests/test-opencode-stable-shim.sh.
+	# shellcheck disable=SC2329  # Called through setup_opencode_cli from the sourced library.
+	_setup_opencode_binary_is_ephemeral() {
+		local bin="$1"
+
+		if [[ "$bin" == "$HOME/.bun/bin/opencode" ]]; then
+			return 1
+		fi
+
+		return 0
+	}
 	export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
 	export OPENCODE_BIN=""
 	rc=0
@@ -291,9 +303,14 @@ fi
 echo "Test 6: setup_opencode_cli fail-open when no bun/npm + invalid current"
 # Wipe persisted file from previous test so we can confirm it stays absent.
 rm -f "$HOME/.aidevops/.opencode-bin-resolved"
-rm -f "$HOME/.bun/bin/opencode"
+rm -f "$HOME/.bun/bin/opencode" "$HOME/.local/bin/opencode"
 (
 	source_lib
+	# Keep the fail-open fixture independent of host-level OpenCode installs.
+	# shellcheck disable=SC2329  # Called through setup_opencode_cli from the sourced library.
+	_setup_opencode_binary_is_ephemeral() {
+		return 0
+	}
 	# Force minimal PATH so neither bun nor npm resolves; supply only the
 	# claude shim under the name 'opencode'.
 	rm -f "$SANDBOX/bin/opencode"
