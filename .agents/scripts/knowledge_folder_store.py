@@ -5,97 +5,48 @@
 
 from __future__ import annotations
 
-import email.policy
-import fcntl
-import json
-import os
-import re
 import shutil
 import tempfile
-import time
-from contextlib import contextmanager
-from dataclasses import dataclass
-from email.message import Message
-from email.parser import BytesParser
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from email_parse import html_to_text
+from knowledge_folder_email import EmailMixin
+from knowledge_folder_model import (
+    EvidenceInput,
+    EvidenceProcessingError,
+    ExpansionBudget,
+    StoredBlob,
+    StoredEvidence,
+)
+from knowledge_folder_projection import ProjectionMixin
+from knowledge_folder_source_index import SourceIndexMixin
+from knowledge_folder_storage import (
+    StorageMixin,
+    _read_descriptor,
+    _remove_blob,
+    _secure_directory,
+    _utc_now,
+    _write_payload,
+)
 from knowledge_folder_types import (
+    TEXT_EXTENSIONS,
     atomic_write_json,
-    classify_bytes,
     fsync_directory,
-    sha256_bytes,
     sha256_file,
     source_id_for_digest,
 )
-from knowledge_source_contract import SourceMetaInput, build_source_meta, validate_source_meta
+from knowledge_source_contract import SourceMetaInput, build_source_meta
 
 
-SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
-MBOX_SEPARATOR = re.compile(
-    rb"^From \S+ (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
-    rb"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
-    rb"[ 0-3]\d \d{2}:\d{2}(?::\d{2})?(?: [^\r\n ]+)? \d{4}\r?$"
-)
-TEXT_EXTENSIONS = {
-    ".csv", ".htm", ".html", ".json", ".jsonl", ".log", ".md", ".rst",
-    ".tex", ".tsv", ".txt", ".xml", ".yaml", ".yml",
+SYNCHRONOUS_PROCESSORS = {
+    "document": ("text-extraction",),
+    "email": ("email-parse",),
+    "export": ("mailbox-expand",),
 }
 
 
-class EvidenceProcessingError(ValueError):
-    """A single item's projection failed after its raw evidence was preserved."""
-
-
-@dataclass
-class ExpansionBudget:
-    """Remaining child evidence budget shared by mailbox and attachment expansion."""
-
-    remaining_items: int
-    remaining_bytes: int
-    deadline: float
-    consumed_items: int = 0
-    consumed_bytes: int = 0
-    stopped: bool = False
-
-    def consume(self, size_bytes: int) -> bool:
-        if (
-            self.remaining_items <= 0
-            or size_bytes > self.remaining_bytes
-            or time.monotonic() >= self.deadline
-        ):
-            self.stopped = True
-            return False
-        self.remaining_items -= 1
-        self.remaining_bytes -= size_bytes
-        self.consumed_items += 1
-        self.consumed_bytes += size_bytes
-        return True
-
-
-@dataclass(frozen=True)
-class StoredEvidence:
-    """Result of resolving raw bytes to one canonical source."""
-
-    source_id: str
-    evidence_id: str
-    digest: str
-    reused: bool
-    relations: tuple[dict[str, str], ...] = ()
-    budget_stopped: bool = False
-
-
-@dataclass(frozen=True)
-class StoredBlob:
-    """A blob reference plus whether this transaction created its payload."""
-
-    reference: str
-    path: Path
-    created: bool
-
-
-class SourceStore:
+class SourceStore(SourceIndexMixin, StorageMixin, ProjectionMixin, EmailMixin):
     """Persist immutable evidence before advancing a folder checkpoint."""
 
     def __init__(
@@ -116,239 +67,53 @@ class SourceStore:
                 raise ValueError("canonical knowledge directory is unavailable or unsafe")
         self.by_digest = self._source_index()
 
-    def _source_index(self) -> dict[str, tuple[str, str]]:
-        index: dict[str, tuple[str, str]] = {}
-        for source_dir in self.sources_dir.iterdir():
-            record = self._source_record(source_dir)
-            if record is not None:
-                digest, source = record
-                index.setdefault(digest, source)
-        return index
-
-    def _source_record(
-        self, source_dir: Path, expected_digest: str | None = None
-    ) -> tuple[str, tuple[str, str]] | None:
-        if source_dir.name.startswith("."):
-            return None
-        meta_path = source_dir / "meta.json"
-        if source_dir.is_symlink() or not source_dir.is_dir() or meta_path.is_symlink() or not meta_path.is_file():
-            return None
+    def import_file(self, request: EvidenceInput | str, *legacy: Any) -> StoredEvidence:
+        """Import a request, accepting the original positional API for compatibility."""
+        evidence, budget = _coerce_import(request, legacy)
+        prepared = _prepare_evidence(evidence)
+        result = self._store(prepared)
+        synchronous = SYNCHRONOUS_PROCESSORS.get(prepared.kind, ())
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            validate_source_meta(meta)
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
-            return None
-        digest = meta.get("content_sha256") or meta.get("sha256")
-        source_id = source_dir.name
-        evidence_id = meta.get("evidence_id", "")
-        provenance = meta.get("provenance")
-        if not (
-            SOURCE_ID.fullmatch(source_id)
-            and meta.get("id") == source_id
-            and isinstance(digest, str)
-            and re.fullmatch(r"[0-9a-f]{64}", digest)
-            and (expected_digest is None or digest == expected_digest)
-            and isinstance(evidence_id, str)
-            and meta.get("corpus_id") == self.corpus_id
-            and isinstance(provenance, dict)
-            and provenance.get("content_sha256") == digest
-            and self._canonical_payload(source_dir, meta, digest) is not None
-        ):
-            return None
-        return digest, (source_id, evidence_id)
-
-    def _canonical_payload(self, source_dir: Path, meta: dict[str, Any], digest: str) -> Path | None:
-        blob_ref = meta.get("blob_path")
-        if blob_ref is not None:
-            if blob_ref != f"knowledge-blobs:sha256:{digest}":
-                return None
-            candidates = self._blob_payload_candidates(source_dir.name, meta.get("raw_path"))
-        else:
-            candidates = _payload_candidates(source_dir, meta.get("raw_path"))
-        size_bytes = meta.get("size_bytes")
-        if not isinstance(size_bytes, int):
-            return None
-        for payload in candidates:
-            try:
-                if payload.stat(follow_symlinks=False).st_size == size_bytes and sha256_file(payload) == digest:
-                    return payload
-            except OSError:
-                continue
-        return None
-
-    def _blob_payload_candidates(self, source_id: str, raw_hint: object) -> list[Path]:
-        try:
-            blob_root = _secure_directory(
-                Path.home(), ".aidevops", ".agent-workspace", "knowledge-blobs", create=False
-            )
-        except EvidenceProcessingError:
-            return []
-        candidates: list[Path] = []
-        try:
-            namespaces = sorted(blob_root.iterdir(), key=lambda path: path.name)
-        except OSError:
-            return []
-        for namespace in namespaces:
-            if namespace.is_symlink() or not namespace.is_dir():
-                continue
-            candidates.extend(_payload_candidates(namespace / source_id, raw_hint))
-        return candidates
-
-    def _existing_source(self, digest: str) -> tuple[str, str] | None:
-        existing = self.by_digest.get(digest)
-        if existing is not None:
-            record = self._source_record(self.sources_dir / existing[0], digest)
-            if record is not None:
-                self.by_digest[digest] = record[1]
-                return record[1]
-            self.by_digest.pop(digest, None)
-        suffix = digest[24:32]
-        for prefix in ("folder", "attachment"):
-            for source_id in (f"{prefix}-{digest[:24]}", f"{prefix}-{digest[:24]}-{suffix}"):
-                record = self._source_record(self.sources_dir / source_id, digest)
-                if record is not None:
-                    self.by_digest[digest] = record[1]
-                    return record[1]
-        return None
-
-    def source_for_digest(self, digest: str) -> tuple[str, str] | None:
-        """Resolve a digest only after revalidating its canonical payload."""
-        return self._existing_source(digest)
-
-    def import_file(
-        self,
-        name: str,
-        descriptor: int,
-        size_bytes: int,
-        digest: str,
-        kind: str,
-        mime_type: str,
-        processors: tuple[str, ...],
-        budget: ExpansionBudget,
-    ) -> StoredEvidence:
-        """Import from the exact descriptor that was classified and hashed."""
-        data: bytes | None = None
-        if kind in {"email", "export"} or Path(name).suffix.lower() in TEXT_EXTENSIONS:
-            data = _read_descriptor(descriptor)
-        result = self._store(name, digest, size_bytes, kind, mime_type, descriptor, data)
-        completed: set[str] = set()
-        synchronous: set[str] = set()
-        try:
-            if kind == "email" and data is not None:
-                synchronous.add("email-parse")
-                message_bytes = self._email_bytes(Path(name).suffix.lower(), data)
-                relations = self._enrich_email(result.source_id, message_bytes, budget)
-                completed.add("email-parse")
-                self._ensure_enrichment(
-                    result.source_id,
-                    kind,
-                    mime_type,
-                    processors,
-                    {processor: "completed" for processor in completed},
-                )
-                return StoredEvidence(
-                    result.source_id, result.evidence_id, digest, result.reused,
-                    tuple(relations), budget.stopped,
-                )
-            if kind == "export" and data is not None:
-                synchronous.add("mailbox-expand")
-                relations = self._expand_mailbox(data, result.source_id, budget)
-                completed.add("mailbox-expand")
-                self._ensure_enrichment(
-                    result.source_id,
-                    kind,
-                    mime_type,
-                    processors,
-                    {processor: "completed" for processor in completed},
-                )
-                return StoredEvidence(
-                    result.source_id, result.evidence_id, digest, result.reused,
-                    tuple(relations), budget.stopped,
-                )
-            if kind == "document" and data is not None:
-                synchronous.add("text-extraction")
-                self._ensure_text_projection(result.source_id, data.decode("utf-8"))
-                completed.add("text-extraction")
+            relations, completed = self._run_synchronous(prepared, result, budget)
         except (LookupError, OSError, UnicodeError, ValueError, TypeError) as error:
+            failed = {processor: "failed" for processor in synchronous}
             self._ensure_enrichment(
-                result.source_id,
-                kind,
-                mime_type,
-                processors,
-                {processor: "failed" for processor in synchronous},
+                result.source_id, prepared.kind, prepared.mime_type, prepared.processors, failed
             )
             raise EvidenceProcessingError("content projection failed") from error
+        dispositions = {processor: "completed" for processor in completed}
         self._ensure_enrichment(
-            result.source_id,
-            kind,
-            mime_type,
-            processors,
-            {processor: "completed" for processor in completed},
+            result.source_id, prepared.kind, prepared.mime_type, prepared.processors, dispositions
         )
-        return result
+        return replace(result, relations=tuple(relations), budget_stopped=budget.stopped)
 
-    @contextmanager
-    def _digest_lock(self, digest: str) -> Iterator[None]:
-        lock_dir = _secure_directory(self.index_dir, "folder-imports", "digest-locks")
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_dir / f"{digest}.lock", flags, 0o600)
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
+    def _run_synchronous(
+        self, evidence: EvidenceInput, result: StoredEvidence, budget: ExpansionBudget
+    ) -> tuple[list[dict[str, str]], set[str]]:
+        if evidence.kind == "email" and evidence.data is not None:
+            message_bytes = self._email_bytes(Path(evidence.name).suffix.lower(), evidence.data)
+            return self._enrich_email(result.source_id, message_bytes, budget), {"email-parse"}
+        if evidence.kind == "export" and evidence.data is not None:
+            return self._expand_mailbox(evidence.data, result.source_id, budget), {"mailbox-expand"}
+        if evidence.kind == "document" and evidence.data is not None:
+            self._ensure_text_projection(result.source_id, evidence.data.decode("utf-8"))
+            return [], {"text-extraction"}
+        return [], set()
 
-    def _store(
-        self,
-        name: str,
-        digest: str,
-        size_bytes: int,
-        kind: str,
-        mime_type: str,
-        source_descriptor: int | None,
-        data: bytes | None,
-    ) -> StoredEvidence:
-        with self._digest_lock(digest):
-            existing = self._existing_source(digest)
+    def _store(self, evidence: EvidenceInput) -> StoredEvidence:
+        with self._digest_lock(evidence.digest):
+            existing = self._existing_source(evidence.digest)
             if existing is not None:
-                return StoredEvidence(existing[0], existing[1], digest, True)
-            source_id = source_id_for_digest(kind, digest)
-            source_dir = self.sources_dir / source_id
-            if source_dir.exists():
-                source_id = f"{source_id}-{digest[24:32]}"
-                source_dir = self.sources_dir / source_id
+                return StoredEvidence(existing[0], existing[1], evidence.digest, True)
+            source_id, source_dir = self._source_target(evidence)
             staging = Path(tempfile.mkdtemp(prefix=f".{source_id}.staging-", dir=self.sources_dir))
-            os.chmod(staging, 0o700)
+            os_mode_private(staging)
             blob: StoredBlob | None = None
             source_published = False
             try:
-                blob_ref = None
-                if size_bytes >= self.blob_threshold:
-                    blob = self._store_blob(source_id, digest, source_descriptor, data)
-                    blob_ref = blob.reference
-                else:
-                    destination = staging / "raw.bin"
-                    _write_payload(destination, source_descriptor, data)
-                    if sha256_file(destination) != digest:
-                        raise EvidenceProcessingError("stored evidence digest does not match inventory")
-                meta = build_source_meta(
-                    SourceMetaInput(
-                        source_id=source_id,
-                        corpus_id=self.corpus_id,
-                        connector_id="local-folder",
-                        source_uri=f"local:{source_id}",
-                        content_sha256=digest,
-                        size_bytes=size_bytes,
-                        kind=kind,
-                        sensitivity="internal",
-                        trust="unverified",
-                        ingested_at=_utc_now(),
-                        blob_ref=blob_ref,
-                    )
-                )
-                meta["media_type"] = mime_type
-                meta["raw_path"] = "raw.bin"
+                blob = self._stage_evidence(staging, source_id, evidence)
+                blob_ref = blob.reference if blob is not None else None
+                meta = self._source_meta(source_id, evidence, blob_ref)
                 atomic_write_json(staging / "meta.json", meta)
                 fsync_directory(staging)
                 staging.replace(source_dir)
@@ -359,443 +124,76 @@ class SourceStore:
                 if blob is not None and blob.created and not source_published:
                     _remove_blob(blob.path)
                 raise
-            self.by_digest[digest] = (source_id, str(meta["evidence_id"]))
-            return StoredEvidence(source_id, str(meta["evidence_id"]), digest, False)
+            evidence_id = str(meta["evidence_id"])
+            self.by_digest[evidence.digest] = (source_id, evidence_id)
+            return StoredEvidence(source_id, evidence_id, evidence.digest, False)
 
-    def _store_blob(
-        self,
-        source_id: str,
-        digest: str,
-        source_descriptor: int | None,
-        data: bytes | None,
-    ) -> StoredBlob:
-        blob_root = _secure_directory(
-            Path.home(), ".aidevops", ".agent-workspace", "knowledge-blobs",
-            self._blob_namespace(),
-        )
-        blob_dir = _secure_directory(blob_root, source_id)
-        destination = blob_dir / "raw.bin"
-        if destination.exists() or destination.is_symlink():
-            if destination.is_symlink() or not destination.is_file() or sha256_file(destination) != digest:
-                raise EvidenceProcessingError("existing blob payload is unsafe or inconsistent")
-            return StoredBlob(f"knowledge-blobs:sha256:{digest}", destination, False)
-        _write_payload(destination, source_descriptor, data)
-        if sha256_file(destination) != digest:
-            destination.unlink(missing_ok=True)
-            raise EvidenceProcessingError("stored blob digest does not match inventory")
-        fsync_directory(blob_dir)
-        return StoredBlob(f"knowledge-blobs:sha256:{digest}", destination, True)
-
-    def _blob_namespace(self) -> str:
-        root_digest = sha256_bytes(str(self.knowledge_root.resolve()).encode("utf-8"))
-        return f"folder-imports-{root_digest[:16]}"
-
-    def _ensure_text_projection(self, source_id: str, content: str) -> None:
-        path = self.sources_dir / source_id / "text.txt"
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise EvidenceProcessingError("text projection path is unsafe")
-        if path.exists():
-            return
-        _write_payload(path, None, content.encode("utf-8"))
-
-    def _ensure_enrichment(
-        self,
-        source_id: str,
-        kind: str,
-        mime_type: str,
-        processors: tuple[str, ...],
-        dispositions: dict[str, str] | None = None,
-    ) -> None:
-        dispositions = dispositions or {}
-        path = self.sources_dir / source_id / "enrichment.json"
-        with self._meta_lock(source_id):
-            existing = _read_enrichment(path, source_id)
-            jobs = {
-                job["processor"]: job["status"]
-                for job in existing.get("jobs", [])
-            }
-            for processor in processors:
-                default_status = "completed" if processor == "metadata" else "queued"
-                status = dispositions.get(processor, default_status)
-                helper = {
-                    "ocr": "paddleocr-helper.sh",
-                    "text-extraction": "document-extraction-helper.sh",
-                    "transcription": "transcription-helper.sh",
-                }.get(processor)
-                if helper and not (self.scripts_dir / helper).is_file():
-                    status = "unavailable"
-                if processor == "keyframes" and shutil.which("ffmpeg") is None:
-                    status = "unavailable"
-                if jobs.get(processor) != "completed":
-                    jobs[processor] = status
-            atomic_write_json(
-                path,
-                {
-                    "version": 1,
-                    "authority": "projection",
-                    "source_id": source_id,
-                    "kind": existing.get("kind", kind),
-                    "media_type": existing.get("media_type", mime_type),
-                    "jobs": [
-                        {"processor": processor, "status": status}
-                        for processor, status in jobs.items()
-                    ],
-                },
-            )
-
-    def _email_bytes(self, extension: str, data: bytes) -> bytes:
-        if extension != ".emlx":
-            return data
-        length_line, separator, payload = data.partition(b"\n")
-        if not separator or not length_line.isdigit():
-            raise EvidenceProcessingError("emlx length header is malformed")
-        message_length = int(length_line)
-        if message_length > len(payload):
-            raise EvidenceProcessingError("emlx message is truncated")
-        return payload[:message_length]
-
-    def _enrich_email(
-        self, parent_id: str, raw_message: bytes, budget: ExpansionBudget
-    ) -> list[dict[str, str]]:
-        message = BytesParser(policy=email.policy.default).parsebytes(raw_message)
-        relations = self._store_attachments(parent_id, message, budget)
-        text_body = _message_text(message)
-        if text_body:
-            self._ensure_text_projection(parent_id, text_body)
-        self._extend_meta(
-            parent_id,
-            {
-                "from": str(message.get("From", "")),
-                "to": str(message.get("To", "")),
-                "cc": str(message.get("Cc", "")),
-                "date": str(message.get("Date", "")),
-                "subject": str(message.get("Subject", "")),
-                "message_id": str(message.get("Message-ID", "")),
-                "attachments": relations,
-            },
-        )
-        return relations
-
-    def _store_attachments(
-        self, parent_id: str, message: Message, budget: ExpansionBudget
-    ) -> list[dict[str, str]]:
-        relations: list[dict[str, str]] = []
-        for index, part in enumerate(message.iter_attachments()):
-            filename = part.get_filename() or f"attachment-{index + 1}.bin"
-            payload = _attachment_bytes(part)
-            if payload is None:
-                relations.append({
-                    "relationship": "attachment",
-                    "status": "unsupported",
-                    "filename": Path(filename).name,
-                    "content_type": part.get_content_type(),
-                })
-                continue
-            if not budget.consume(len(payload)):
-                relations.append({"relationship": "attachment", "status": "budget-stopped"})
-                break
-            digest = sha256_bytes(payload)
-            result = self._store(
-                filename, digest, len(payload), "attachment",
-                part.get_content_type() or "application/octet-stream", None, payload,
-            )
-            self._extend_meta(
-                result.source_id,
-                {
-                    "parent_sources": [parent_id],
-                    "attachment_filename": Path(filename).name,
-                    "content_type": part.get_content_type(),
-                },
-            )
-            classification = classify_bytes(filename, payload[:8192])
-            processors = classification.processors if classification.supported else ()
-            failed = set(processors) if not classification.valid else set()
-            self._ensure_enrichment(
-                result.source_id,
-                "attachment",
-                part.get_content_type() or "application/octet-stream",
-                processors,
-                {processor: "failed" for processor in failed},
-            )
-            relations.append({"source_id": result.source_id, "relationship": "attachment"})
-        return relations
-
-    def _expand_mailbox(
-        self, data: bytes, parent_id: str, budget: ExpansionBudget
-    ) -> list[dict[str, str]]:
-        relations: list[dict[str, str]] = []
-        for index, raw_message in enumerate(_mbox_messages(data)):
-            if not budget.consume(len(raw_message)):
-                relations.append({"relationship": "mailbox-message", "status": "budget-stopped"})
-                break
-            digest = sha256_bytes(raw_message)
-            result = self._store(
-                f"message-{index + 1}.eml", digest, len(raw_message), "email",
-                "message/rfc822", None, raw_message,
-            )
-            try:
-                children = self._enrich_email(result.source_id, raw_message, budget)
-            except (LookupError, OSError, UnicodeError, ValueError, TypeError):
-                self._ensure_enrichment(
-                    result.source_id, "email", "message/rfc822", ("email-parse",),
-                    {"email-parse": "failed"},
-                )
-                raise
-            self._ensure_enrichment(
-                result.source_id, "email", "message/rfc822", ("email-parse",),
-                {"email-parse": "completed"},
-            )
-            self._extend_meta(result.source_id, {"parent_sources": [parent_id]})
-            relations.append({"source_id": result.source_id, "relationship": "mailbox-message"})
-            relations.extend(children)
-        self._extend_meta(parent_id, {"children": relations})
-        return relations
-
-    def _extend_meta(self, source_id: str, fields: dict[str, Any]) -> None:
-        if not SOURCE_ID.fullmatch(source_id):
-            raise EvidenceProcessingError("source identity is invalid")
-        with self._meta_lock(source_id):
+    def _source_target(self, evidence: EvidenceInput) -> tuple[str, Path]:
+        source_id = source_id_for_digest(evidence.kind, evidence.digest)
+        source_dir = self.sources_dir / source_id
+        if source_dir.exists():
+            source_id = f"{source_id}-{evidence.digest[24:32]}"
             source_dir = self.sources_dir / source_id
-            meta_path = source_dir / "meta.json"
-            if source_dir.is_symlink() or meta_path.is_symlink():
-                raise EvidenceProcessingError("source metadata path is unsafe")
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta.get("id") != source_id:
-                raise EvidenceProcessingError("source metadata identity conflicts")
-            merged = dict(fields)
-            for key in ("attachments", "children", "parent_sources"):
-                if key not in fields:
-                    continue
-                existing = meta.get(key, [])
-                requested = fields.get(key, [])
-                if not isinstance(existing, list) or not isinstance(requested, list):
-                    raise EvidenceProcessingError("source relationship metadata is invalid")
-                values = {json.dumps(value, sort_keys=True): value for value in (*existing, *requested)}
-                merged[key] = [values[value] for value in sorted(values)]
-            meta.update(merged)
-            atomic_write_json(meta_path, meta)
+        return source_id, source_dir
 
-    @contextmanager
-    def _meta_lock(self, source_id: str) -> Iterator[None]:
-        lock_dir = _secure_directory(self.index_dir, "folder-imports", "meta-locks")
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_dir / f"{source_id}.lock", flags, 0o600)
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
-
-
-def _read_descriptor(descriptor: int) -> bytes:
-    duplicate = os.dup(descriptor)
-    try:
-        os.lseek(duplicate, 0, os.SEEK_SET)
-        with os.fdopen(duplicate, "rb", closefd=True) as handle:
-            duplicate = -1
-            return handle.read()
-    finally:
-        if duplicate >= 0:
-            os.close(duplicate)
-
-
-def _write_payload(path: Path, source_descriptor: int | None, data: bytes | None) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=True) as target:
-            descriptor = -1
-            if source_descriptor is not None:
-                duplicate = os.dup(source_descriptor)
-                try:
-                    os.lseek(duplicate, 0, os.SEEK_SET)
-                    with os.fdopen(duplicate, "rb", closefd=True) as source:
-                        duplicate = -1
-                        shutil.copyfileobj(source, target, 1024 * 1024)
-                finally:
-                    if duplicate >= 0:
-                        os.close(duplicate)
-            else:
-                target.write(data or b"")
-            target.flush()
-            os.fsync(target.fileno())
-        temporary.replace(path)
-        fsync_directory(path.parent)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-
-
-def _attachment_bytes(part: Message) -> bytes | None:
-    if part.get_content_type() == "message/rfc822":
+    def _stage_evidence(
+        self, staging: Path, source_id: str, evidence: EvidenceInput
+    ) -> StoredBlob | None:
+        if evidence.size_bytes >= self.blob_threshold:
+            return self._store_blob(source_id, evidence)
+        destination = staging / "raw.bin"
+        _write_payload(destination, evidence.descriptor, evidence.data)
+        if sha256_file(destination) != evidence.digest:
+            raise EvidenceProcessingError("stored evidence digest does not match inventory")
         return None
-    payload = part.get_payload(decode=True)
-    if payload is not None:
-        return payload
-    return None
+
+    def _source_meta(
+        self, source_id: str, evidence: EvidenceInput, blob_ref: str | None
+    ) -> dict[str, Any]:
+        meta = build_source_meta(
+            SourceMetaInput(
+                source_id=source_id,
+                corpus_id=self.corpus_id,
+                connector_id="local-folder",
+                source_uri=f"local:{source_id}",
+                content_sha256=evidence.digest,
+                size_bytes=evidence.size_bytes,
+                kind=evidence.kind,
+                sensitivity="internal",
+                trust="unverified",
+                ingested_at=_utc_now(),
+                blob_ref=blob_ref,
+            )
+        )
+        meta["media_type"] = evidence.mime_type
+        meta["raw_path"] = "raw.bin"
+        return meta
 
 
-def _message_text(message: Message) -> str:
-    plain = message.get_body(preferencelist=("plain",))
-    if plain is not None:
-        content = plain.get_content()
-        if isinstance(content, str):
-            return content
-    html = message.get_body(preferencelist=("html",))
-    if html is None:
-        return ""
-    content = html.get_content()
-    return html_to_text(content) if isinstance(content, str) else ""
+def _coerce_import(
+    request: EvidenceInput | str, legacy: tuple[Any, ...]
+) -> tuple[EvidenceInput, ExpansionBudget]:
+    if isinstance(request, EvidenceInput):
+        if len(legacy) != 1 or not isinstance(legacy[0], ExpansionBudget):
+            raise TypeError("EvidenceInput imports require one ExpansionBudget")
+        return request, legacy[0]
+    if len(legacy) != 7 or not isinstance(legacy[-1], ExpansionBudget):
+        raise TypeError("legacy imports require descriptor, metadata, processors, and budget")
+    descriptor, size_bytes, digest, kind, mime_type, processors, budget = legacy
+    evidence = EvidenceInput(
+        request, digest, size_bytes, kind, mime_type, tuple(processors), descriptor=descriptor
+    )
+    return evidence, budget
 
 
-def _mbox_messages(data: bytes) -> Iterator[bytes]:
-    position = 0
-    while position < len(data):
-        envelope_end = data.find(b"\n", position)
-        if envelope_end < 0:
-            raise EvidenceProcessingError("mailbox envelope is truncated")
-        envelope = data[position:envelope_end]
-        if MBOX_SEPARATOR.fullmatch(envelope) is None:
-            raise EvidenceProcessingError("mailbox envelope is malformed")
-        message_start = envelope_end + 1
-        header_end, body_start = _message_header_boundary(data, message_start)
-        content_length = _content_length(data[message_start:header_end])
-        if content_length is not None:
-            message_end = body_start + content_length
-            if message_end > len(data):
-                raise EvidenceProcessingError("mailbox content length exceeds available bytes")
-            next_position = _separator_after_content(data, message_end)
-        else:
-            next_position = _next_mbox_separator(data, message_start)
-            message_end = next_position if next_position is not None else len(data)
-        yield data[message_start:message_end]
-        if next_position is None:
-            return
-        position = next_position
+def _prepare_evidence(evidence: EvidenceInput) -> EvidenceInput:
+    needs_data = evidence.kind in {"email", "export"} or Path(evidence.name).suffix.lower() in TEXT_EXTENSIONS
+    if evidence.data is None and needs_data:
+        if evidence.descriptor is None:
+            raise EvidenceProcessingError("evidence descriptor is unavailable")
+        return replace(evidence, data=_read_descriptor(evidence.descriptor))
+    return evidence
 
 
-def _message_header_boundary(data: bytes, start: int) -> tuple[int, int]:
-    crlf = data.find(b"\r\n\r\n", start)
-    lf = data.find(b"\n\n", start)
-    candidates = [(crlf, 4), (lf, 2)]
-    present = [(offset, width) for offset, width in candidates if offset >= 0]
-    if not present:
-        return start, start
-    offset, width = min(present)
-    return offset, offset + width
-
-
-def _content_length(headers: bytes) -> int | None:
-    matches = re.findall(rb"(?im)^Content-Length:[ \t]*(\d+)[ \t]*\r?$", headers)
-    if not matches:
-        return None
-    if len(matches) != 1:
-        raise EvidenceProcessingError("mailbox content length is ambiguous")
-    return int(matches[0])
-
-
-def _separator_after_content(data: bytes, position: int) -> int | None:
-    if position >= len(data):
-        return None
-    if data[position:] in {b"\n", b"\r\n"}:
-        return None
-    candidates = (position, position + 1, position + 2)
-    for candidate in candidates:
-        if candidate >= len(data):
-            continue
-        if candidate > position and data[position:candidate] not in {b"\n", b"\r\n"}:
-            continue
-        line_end = data.find(b"\n", candidate)
-        if line_end >= 0 and MBOX_SEPARATOR.fullmatch(data[candidate:line_end]) is not None:
-            return candidate
-    raise EvidenceProcessingError("mailbox content length does not end at an envelope")
-
-
-def _next_mbox_separator(data: bytes, start: int) -> int | None:
-    position = start
-    while position < len(data):
-        line_end = data.find(b"\n", position)
-        if line_end < 0:
-            return None
-        if MBOX_SEPARATOR.fullmatch(data[position:line_end]) is not None:
-            return position
-        position = line_end + 1
-    return None
-
-
-def _payload_candidates(directory: Path, raw_hint: object) -> list[Path]:
-    if directory.is_symlink() or not directory.is_dir():
-        return []
-    if isinstance(raw_hint, str) and raw_hint == Path(raw_hint).name:
-        candidate = directory / raw_hint
-        if not candidate.is_symlink() and candidate.is_file():
-            return [candidate]
-        return []
-    projections = {"body.html", "enrichment.json", "meta.json", "source.md", "text.txt"}
-    return [
-        candidate for candidate in directory.iterdir()
-        if candidate.name not in projections and not candidate.is_symlink() and candidate.is_file()
-    ]
-
-
-def _read_enrichment(path: Path, source_id: str) -> dict[str, Any]:
-    if not path.exists() and not path.is_symlink():
-        return {}
-    if path.is_symlink() or not path.is_file():
-        raise EvidenceProcessingError("enrichment projection path is unsafe")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise EvidenceProcessingError("enrichment projection is invalid") from error
-    jobs = value.get("jobs")
-    if value.get("source_id") != source_id or not isinstance(jobs, list):
-        raise EvidenceProcessingError("enrichment projection identity conflicts")
-    if any(
-        not isinstance(job, dict)
-        or not isinstance(job.get("processor"), str)
-        or job.get("status") not in {"completed", "failed", "queued", "unavailable"}
-        for job in jobs
-    ):
-        raise EvidenceProcessingError("enrichment projection jobs are invalid")
-    return value
-
-
-def _remove_blob(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-        path.parent.rmdir()
-    except OSError:
-        pass
-    try:
-        if path.parent.parent.is_dir():
-            fsync_directory(path.parent.parent)
-    except OSError:
-        pass
-
-
-def _secure_directory(base: Path, *components: str, create: bool = True) -> Path:
-    if base.is_symlink() or not base.is_dir():
-        raise EvidenceProcessingError("storage root is unsafe")
-    current = base
-    missing = False
-    for component in components:
-        current = current / component
-        if missing:
-            continue
-        if not current.exists():
-            if not create:
-                missing = True
-                continue
-            current.mkdir(mode=0o700)
-        if current.is_symlink() or not current.is_dir():
-            raise EvidenceProcessingError("storage directory is unsafe")
-    return current
-
-
-def _utc_now() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def os_mode_private(path: Path) -> None:
+    path.chmod(0o700)
