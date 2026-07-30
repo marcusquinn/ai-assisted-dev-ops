@@ -47,6 +47,13 @@ jq -e --argjson owner_pid "$OWNER_PID" '
 full_loop_cleanup_owner_alive "$receipt_one"
 printf 'PASS deferred receipt persists external owner identity and pending lease\n'
 
+cp "$receipt_one" "${TEST_ROOT}/receipt-idempotent.json"
+replayed_receipt=$(full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROOT}/worktree-one" feature/one \
+	"$OWNER_PID" session-one not-requested)
+[[ "$replayed_receipt" == "$receipt_one" ]]
+cmp -s "$receipt_one" "${TEST_ROOT}/receipt-idempotent.json"
+printf 'PASS identical deferred receipt replay is idempotent\n'
+
 _WTAR_SKIPPED="skipped"
 _WTAR_WH_CALLER="test"
 _WT_CLEAN_MODE_SKIPPED="skipped"
@@ -70,6 +77,16 @@ _clean_deferred_parent_alive "${TEST_ROOT}/worktree-one" || deferred_state=$?
 [[ "$deferred_state" -eq 2 ]]
 printf 'PASS guarded cleanup treats PID reuse as an expired owner generation\n'
 
+cp "$receipt_one" "${TEST_ROOT}/receipt-conflict.json"
+if full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROOT}/worktree-one" feature/one \
+	"$OWNER_PID" session-one not-requested >/dev/null; then
+	printf 'FAIL conflicting owner generation was overwritten by receipt replay\n'
+	exit 1
+fi
+cmp -s "$receipt_one" "${TEST_ROOT}/receipt-conflict.json"
+printf 'PASS conflicting owner generation fails closed without mutation\n'
+
+rm -f "$receipt_one"
 receipt_one=$(full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROOT}/worktree-one" feature/one \
 	"$OWNER_PID" session-one not-requested)
 export OPENCODE_PID="$OWNER_PID"
@@ -111,6 +128,14 @@ printf 'PASS reused worktree paths select the newest lifecycle receipt\n'
 receipt_two=$(full_loop_write_cleanup_deferred example/repo 102 "${TEST_ROOT}/worktree-two" feature/two \
 	"$OWNER_PID" session-two not-requested)
 full_loop_transition_cleanup_receipt "$receipt_two" "$_FULL_LOOP_CLEANUP_LEASED" "$$"
+cp "$receipt_two" "${TEST_ROOT}/receipt-leased.json"
+if full_loop_write_cleanup_deferred example/repo 102 "${TEST_ROOT}/worktree-two" feature/two \
+	"$OWNER_PID" session-two not-requested >/dev/null; then
+	printf 'FAIL leased receipt was overwritten by receipt replay\n'
+	exit 1
+fi
+cmp -s "$receipt_two" "${TEST_ROOT}/receipt-leased.json"
+printf 'PASS leased receipt rejects replay without mutation\n'
 printf '[2026-07-21T00:00:01Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
 	"${TEST_ROOT}/worktree-two" >>"$AIDEVOPS_CLEANUP_LOG"
 rm -rf "${TEST_ROOT}/worktree-two"

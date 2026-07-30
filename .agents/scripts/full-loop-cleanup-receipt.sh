@@ -145,6 +145,39 @@ _full_loop_receipt_lock_release() {
 	return 0
 }
 
+_full_loop_cleanup_deferred_matches() {
+	local receipt_path="$1"
+	local repo="$2"
+	local pr_number="$3"
+	local worktree="$4"
+	local branch="$5"
+	local owner_pid="$6"
+	local owner_identity="$7"
+	local owner_session="$8"
+	local release_status="$9"
+	local executor_completion_state="${10}"
+
+	jq -e \
+		--arg repo "$repo" --argjson pr_number "$pr_number" \
+		--arg worktree "$worktree" --arg branch "$branch" \
+		--argjson owner_pid "$owner_pid" --arg owner_identity "$owner_identity" \
+		--arg owner_session "$owner_session" --arg release_status "$release_status" \
+		--arg executor_completion_state "$executor_completion_state" \
+		--arg cleanup_deferred "$_FULL_LOOP_CLEANUP_DEFERRED" '
+		.schema_version == 1
+		and .repository == $repo and .pr_number == $pr_number
+		and .worktree == $worktree and .branch == $branch
+		and .executor_completion_state == $executor_completion_state
+		and .resource_cleanup_state == $cleanup_deferred
+		and .release_status == $release_status
+		and .owner.pid == $owner_pid
+		and .owner.process_identity == $owner_identity
+		and .owner.session == $owner_session
+		and .cleanup_lease == {state:"pending",pid:null,acquired_at:null}
+	' "$receipt_path" >/dev/null 2>&1
+	return $?
+}
+
 full_loop_write_cleanup_deferred() {
 	local repo="$1"
 	local pr_number="$2"
@@ -157,14 +190,36 @@ full_loop_write_cleanup_deferred() {
 	local receipt_path=""
 	local owner_identity=""
 	local now=""
+	local temp_path=""
 
 	[[ -n "$worktree" && -n "$branch" && "$owner_pid" =~ ^[0-9]+$ ]] || return 1
 	[[ "$executor_completion_state" == "FINALIZATION_PENDING" || "$executor_completion_state" == "$_FULL_LOOP_EXECUTOR_COMPLETE" ]] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
 	receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$pr_number") || return 1
-	owner_identity=$(_full_loop_process_identity "$owner_pid") || return 1
-	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-	mkdir -p "${receipt_path%/*}" || return 1
+	_full_loop_receipt_lock_acquire || return 1
+	kill -0 "$owner_pid" 2>/dev/null || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	owner_identity=$(_full_loop_process_identity "$owner_pid") || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	if [[ -f "$receipt_path" ]]; then
+		if _full_loop_cleanup_deferred_matches "$receipt_path" "$repo" "$pr_number" "$worktree" "$branch" \
+			"$owner_pid" "$owner_identity" "$owner_session" "$release_status" "$executor_completion_state"; then
+			_full_loop_receipt_lock_release
+			printf '%s\n' "$receipt_path"
+			return 0
+		fi
+		_full_loop_receipt_lock_release
+		return 1
+	fi
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	temp_path="${receipt_path}.tmp.$$"
 	jq -cn \
 		--arg repo "$repo" --argjson pr_number "$pr_number" \
 		--arg worktree "$worktree" --arg branch "$branch" \
@@ -176,8 +231,16 @@ full_loop_write_cleanup_deferred() {
 		  executor_completion_state:$executor_completion_state,resource_cleanup_state:$state,release_status:$release_status,
 		  owner:{pid:$owner_pid,process_identity:$owner_identity,session:$owner_session},
 		  cleanup_lease:{state:"pending",pid:null,acquired_at:null},created_at:$now,updated_at:$now,cleaned_at:null}' \
-		>"${receipt_path}.tmp.$$" || return 1
-	mv "${receipt_path}.tmp.$$" "$receipt_path" || return 1
+		>"$temp_path" || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	mv "$temp_path" "$receipt_path" || {
+		rm -f "$temp_path"
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	_full_loop_receipt_lock_release
 	printf '%s\n' "$receipt_path"
 	return 0
 }
