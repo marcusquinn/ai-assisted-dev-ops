@@ -321,9 +321,10 @@ _simplification_state_prune() {
 }
 
 # Publish simplification state without mutating the source checkout.
-# Arguments: $1 - repo_path
+# Arguments: $1 - repo_path, $2 - optional isolated state source
 _simplification_state_push() {
 	local repo_path="$1"
+	local state_source="${2:-}"
 	local state_rel=".agents/configs/simplification-state.json"
 	local module_dir="${BASH_SOURCE[0]%/*}"
 	local main_branch="" base_sha="" publication_rc=0
@@ -342,7 +343,7 @@ _simplification_state_push() {
 	AIDEVOPS_PLANNING_BASE_SHA="$base_sha" \
 		AIDEVOPS_PLANNING_PUBLISH_SCOPE="simplification-state" \
 		planning_publish "$repo_path" "chore: update simplification state registry" \
-			origin "$main_branch" "$state_rel" || publication_rc=$?
+			origin "$main_branch" "$state_rel" "$state_source" || publication_rc=$?
 	case "$publication_rc" in
 	0) echo "[pulse-wrapper] simplification-state: ${PLANNING_PUBLISH_RESULT:-published} on $main_branch" >>"${LOGFILE:-/dev/null}" ;;
 	2) echo "[pulse-wrapper] simplification-state: retryable publication conflict on $main_branch" >>"${LOGFILE:-/dev/null}" ;;

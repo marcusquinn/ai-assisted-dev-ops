@@ -330,9 +330,52 @@ _complexity_scan_state_refresh() {
 
 	# Publish state without staging or committing in the canonical checkout.
 	if [[ "$state_updated" == true ]]; then
-		_simplification_state_push "$aidevops_path"
+		_simplification_state_push "$aidevops_path" "$state_file"
 	fi
 	return 0
+}
+
+# Create one private registry snapshot for refresh, publication, and same-cycle scans.
+_complexity_scan_state_snapshot_create() {
+	local aidevops_path="$1"
+	local source_file="${aidevops_path}/.agents/configs/simplification-state.json"
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local temp_dir=""
+	[[ -f "$source_file" && ! -L "$source_file" ]] || return 1
+	mkdir -p "$temp_root" || return 1
+	temp_dir=$(umask 077 && mktemp -d "${temp_root%/}/simplification-state.XXXXXX") || return 1
+	cp "$source_file" "${temp_dir}/simplification-state.json" || {
+		rmdir "$temp_dir" 2>/dev/null || true
+		return 1
+	}
+	printf '%s\n' "${temp_dir}/simplification-state.json"
+	return 0
+}
+
+_complexity_scan_state_snapshot_cleanup() {
+	local state_file="$1"
+	local state_dir="${state_file%/*}"
+	[[ "${state_file##*/}" == "simplification-state.json" ]] || return 1
+	rm -f "$state_file" || return 1
+	rmdir "$state_dir" 2>/dev/null || return 1
+	return 0
+}
+
+_complexity_scan_run_isolated_state_cycle() {
+	local scan_helper="$1"
+	local aidevops_path="$2"
+	local repos_json="$3"
+	local aidevops_slug="$4"
+	local state_file=""
+	local cycle_rc=0
+	state_file=$(_complexity_scan_state_snapshot_create "$aidevops_path") || return 1
+	_complexity_scan_state_refresh "$aidevops_path" "$state_file" "$aidevops_slug" || cycle_rc=$?
+	if [[ -x "$scan_helper" ]]; then
+		_complexity_scan_lang_shell "$scan_helper" "$aidevops_path" "$state_file" "$repos_json" "$aidevops_slug" || cycle_rc=$?
+		_complexity_scan_lang_md "$scan_helper" "$aidevops_path" "$state_file" "$repos_json" "$aidevops_slug" || cycle_rc=$?
+	fi
+	_complexity_scan_state_snapshot_cleanup "$state_file" || cycle_rc=1
+	return "$cycle_rc"
 }
 
 # _complexity_scan_lang_shell — shell-file complexity scan via helper (Phase 2, t2001)
@@ -527,13 +570,9 @@ run_weekly_complexity_scan() {
 	gh label create "recheck-simplicity" --repo "$aidevops_slug" --color "D4C5F9" \
 		--description "File changed since last simplification and needs recheck" --force 2>/dev/null || true
 
-	local state_file="${aidevops_path}/.agents/configs/simplification-state.json"
-	_complexity_scan_state_refresh "$aidevops_path" "$state_file" "$aidevops_slug"
-
 	local scan_helper="${SCRIPT_DIR}/complexity-scan-helper.sh"
+	_complexity_scan_run_isolated_state_cycle "$scan_helper" "$aidevops_path" "$repos_json" "$aidevops_slug" || true
 	if [[ -x "$scan_helper" ]]; then
-		_complexity_scan_lang_shell "$scan_helper" "$aidevops_path" "$state_file" "$repos_json" "$aidevops_slug"
-		_complexity_scan_lang_md "$scan_helper" "$aidevops_path" "$state_file" "$repos_json" "$aidevops_slug"
 		_complexity_scan_sweep_check "$scan_helper" "$aidevops_slug"
 		_complexity_scan_ratchet_check "$scan_helper" "$aidevops_path" "$aidevops_slug"
 	else
