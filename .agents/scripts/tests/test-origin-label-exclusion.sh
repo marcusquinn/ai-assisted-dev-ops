@@ -248,22 +248,20 @@ fi
 unset GH_FAIL_ISSUE_EDIT GH_FAIL_REST_LABEL_POST
 
 # =============================================================================
-# Part 11 — Structural check: pulse-dispatch-worker-launch.sh includes sibling
-#           removal flags inline (t2200 compliance)
+# Part 11 — Structural check: dispatch preserves immutable origin provenance.
+# Worker ownership is represented by status + assignee, not origin relabeling.
 # =============================================================================
 launch_file="${TEST_SCRIPTS_DIR}/pulse-dispatch-worker-launch.sh"
 if [[ -f "$launch_file" ]]; then
-	# Check that the file contains --remove-label for sibling origins
-	# near the --add-label "origin:worker" line
-	if grep -q 'remove-label.*origin:interactive' "$launch_file" &&
-		grep -q 'remove-label.*origin:worker-takeover' "$launch_file"; then
-		print_result "pulse-dispatch-worker-launch.sh has sibling origin removal" 0
+	if grep -q 'Preserve origin:\* labels as immutable creation provenance' "$launch_file" &&
+		! grep -qE '(add|remove)-label.*origin:(interactive|worker|worker-takeover)' "$launch_file"; then
+		print_result "pulse-dispatch-worker-launch.sh preserves origin provenance" 0
 	else
-		print_result "pulse-dispatch-worker-launch.sh has sibling origin removal" 1 \
-			"(missing --remove-label for origin siblings)"
+		print_result "pulse-dispatch-worker-launch.sh preserves origin provenance" 1 \
+			"(dispatch must not mutate origin labels)"
 	fi
 else
-	print_result "pulse-dispatch-worker-launch.sh has sibling origin removal" 1 \
+	print_result "pulse-dispatch-worker-launch.sh preserves origin provenance" 1 \
 		"(file not found)"
 fi
 
@@ -286,7 +284,7 @@ raw_origin_sites=$(rg --line-number -g '*.sh' \
 
 # Exclude creation-path sites (gh_create_issue/gh_create_pr use --label not --add-label)
 # and prompt templates (string literals in heredocs)
-# Allow: pulse-dispatch-worker-launch.sh (inline flags with corresponding remove-labels)
+# pulse-dispatch-worker-launch.sh must not mutate immutable origin provenance.
 # Allow: pulse-issue-reconcile.sh (inline flags with corresponding remove-labels)
 # Allow: pulse-triage.sh (creation-path gh_create_issue calls)
 # Allow: pulse-dispatch-large-file-gate.sh (creation-path)
