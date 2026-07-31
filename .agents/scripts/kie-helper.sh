@@ -14,6 +14,12 @@ if [[ ! -f "${SCRIPT_DIR}/shared-constants.sh" ]]; then
 fi
 source "${SCRIPT_DIR}/shared-constants.sh"
 
+# A caller may supply the key as an environment variable. Retain its shell
+# value, but stop forwarding it before any jq, date, curl, or other child runs.
+if [[ -n "${KIE_API_KEY:-}" ]]; then
+	export -n KIE_API_KEY 2>/dev/null || true
+fi
+
 readonly KIE_API_BASE="${KIE_API_BASE:-https://api.kie.ai}"
 readonly KIE_UPLOAD_BASE="${KIE_UPLOAD_BASE:-https://kieai.redpandaai.co}"
 readonly KIE_DEFAULT_UPLOAD_PATH="aidevops/uploads"
@@ -22,6 +28,9 @@ readonly KIE_DEFAULT_TIMEOUT=900
 readonly KIE_MAX_POLL_INTERVAL=15
 readonly KIE_CONNECT_TIMEOUT=30
 readonly KIE_REQUEST_TIMEOUT=120
+readonly KIE_POLL_INTERVAL_LABEL="Poll interval"
+readonly KIE_TIMEOUT_LABEL="Timeout"
+readonly KIE_PROMPT_FIELD="prompt"
 
 _kie_require_dependencies() {
 	local dependency=""
@@ -35,14 +44,12 @@ _kie_require_dependencies() {
 }
 
 _kie_load_api_key() {
-	if [[ -n "${KIE_API_KEY:-}" ]]; then
-		return 0
-	fi
-
-	local credentials_file="${HOME}/.config/aidevops/credentials.sh"
-	if [[ -f "$credentials_file" ]]; then
-		# shellcheck disable=SC1090
-		source "$credentials_file"
+	if [[ -z "${KIE_API_KEY:-}" ]]; then
+		local credentials_file="${HOME}/.config/aidevops/credentials.sh"
+		if [[ -f "$credentials_file" ]]; then
+			# shellcheck disable=SC1090
+			source "$credentials_file"
+		fi
 	fi
 
 	if [[ -z "${KIE_API_KEY:-}" ]] && command -v gopass >/dev/null 2>&1; then
@@ -54,9 +61,25 @@ _kie_load_api_key() {
 		print_info "Store it with: aidevops secret set KIE_API_KEY"
 		return 1
 	fi
+	case "$KIE_API_KEY" in
+	*$'\r'* | *$'\n'*)
+		print_error "KIE_API_KEY must be a single line"
+		return 1
+		;;
+	esac
 
-	export KIE_API_KEY
+	# Do not forward the key through the environment to curl or other children.
+	export -n KIE_API_KEY 2>/dev/null || true
 	return 0
+}
+
+_kie_authenticated_curl() {
+	# curl 7.55+ accepts headers from stdin via @-. This keeps the API key out
+	# of both the child environment and the process argument vector.
+	if printf 'Authorization: Bearer %s\n' "$KIE_API_KEY" | curl --header @- "$@"; then
+		return 0
+	fi
+	return 1
 }
 
 _kie_validate_positive_integer() {
@@ -79,6 +102,12 @@ _kie_validate_http_url() {
 		return 1
 		;;
 	esac
+}
+
+_kie_report_unexpected_argument() {
+	local argument="$1"
+	print_error "Unexpected argument: ${argument}"
+	return 0
 }
 
 _kie_read_input_json() {
@@ -110,17 +139,27 @@ _kie_read_input_json() {
 	return 0
 }
 
+_kie_api_request_with_timeout() {
+	local method="$1"
+	local endpoint="$2"
+	local request_timeout="$3"
+	shift 3
+	if _kie_authenticated_curl --silent --show-error --request "$method" \
+		--connect-timeout "$KIE_CONNECT_TIMEOUT" \
+		--max-time "$request_timeout" \
+		"${KIE_API_BASE}${endpoint}" \
+		--header "Content-Type: application/json" \
+		"$@"; then
+		return 0
+	fi
+	return 1
+}
+
 _kie_api_request() {
 	local method="$1"
 	local endpoint="$2"
 	shift 2
-	if curl --silent --show-error --request "$method" \
-		--connect-timeout "$KIE_CONNECT_TIMEOUT" \
-		--max-time "$KIE_REQUEST_TIMEOUT" \
-		"${KIE_API_BASE}${endpoint}" \
-		--header "Authorization: Bearer ${KIE_API_KEY}" \
-		--header "Content-Type: application/json" \
-		"$@"; then
+	if _kie_api_request_with_timeout "$method" "$endpoint" "$KIE_REQUEST_TIMEOUT" "$@"; then
 		return 0
 	fi
 	return 1
@@ -146,14 +185,54 @@ _kie_api_response_ok() {
 	return 1
 }
 
+_kie_print_download_url() {
+	local response="$1"
+	local download_url=""
+	if ! download_url=$(printf '%s' "$response" |
+		jq -er '.data.downloadUrl | select(type == "string" and length > 0)' 2>/dev/null); then
+		print_error "Kie.ai upload response did not include a download URL"
+		return 1
+	fi
+	printf '%s\n' "$download_url"
+	return 0
+}
+
 _kie_fetch_task_response() {
 	local task_id="$1"
+	local request_timeout="${2:-$KIE_REQUEST_TIMEOUT}"
 	local encoded_task_id=""
 	encoded_task_id=$(jq -rn --arg value "$task_id" '$value | @uri')
-	if _kie_api_request GET "/api/v1/jobs/recordInfo?taskId=${encoded_task_id}"; then
+	if _kie_api_request_with_timeout GET "/api/v1/jobs/recordInfo?taskId=${encoded_task_id}" "$request_timeout"; then
 		return 0
 	fi
 	return 1
+}
+
+_kie_now_seconds() {
+	local now=""
+	if ! now=$(date +%s) || [[ ! "$now" =~ ^[0-9]+$ ]]; then
+		print_error "Unable to read the system clock"
+		return 1
+	fi
+	printf '%s\n' "$now"
+	return 0
+}
+
+_kie_elapsed_seconds() {
+	local started_at="$1"
+	local minimum_elapsed="$2"
+	local now=""
+	local wall_elapsed=0
+	now=$(_kie_now_seconds) || return 1
+	wall_elapsed=$((now - started_at))
+	if [[ "$wall_elapsed" -lt 0 ]]; then
+		wall_elapsed=0
+	fi
+	if [[ "$minimum_elapsed" -gt "$wall_elapsed" ]]; then
+		wall_elapsed="$minimum_elapsed"
+	fi
+	printf '%s\n' "$wall_elapsed"
+	return 0
 }
 
 _kie_print_task_result() {
@@ -203,14 +282,32 @@ _kie_run_wait() {
 	local state=""
 	local fail_code=""
 	local fail_message=""
+	local started_at=""
+	local logical_elapsed=0
 	local remaining=0
+	local request_timeout=0
 	local sleep_interval=0
 
-	while [[ "$elapsed" -le "$timeout" ]]; do
-		if ! response=$(_kie_fetch_task_response "$task_id"); then
+	started_at=$(_kie_now_seconds) || return 1
+	while true; do
+		elapsed=$(_kie_elapsed_seconds "$started_at" "$logical_elapsed") || return 1
+		if [[ "$elapsed" -ge "$timeout" ]]; then
+			break
+		fi
+		remaining=$((timeout - elapsed))
+		request_timeout="$remaining"
+		if [[ "$request_timeout" -gt "$KIE_REQUEST_TIMEOUT" ]]; then
+			request_timeout="$KIE_REQUEST_TIMEOUT"
+		fi
+		if ! response=$(_kie_fetch_task_response "$task_id" "$request_timeout"); then
+			elapsed=$(_kie_elapsed_seconds "$started_at" "$logical_elapsed") || return 1
+			if [[ "$elapsed" -ge "$timeout" ]]; then
+				break
+			fi
 			print_error "Unable to query task ${task_id}"
 			return 1
 		fi
+		elapsed=$(_kie_elapsed_seconds "$started_at" "$logical_elapsed") || return 1
 		_kie_api_response_ok "$response" || return 1
 		state=$(printf '%s' "$response" | jq -r '.data.state // empty')
 
@@ -243,7 +340,7 @@ _kie_run_wait() {
 				sleep_interval="$remaining"
 			fi
 			sleep "$sleep_interval"
-			elapsed=$((elapsed + sleep_interval))
+			logical_elapsed=$((elapsed + sleep_interval))
 			current_interval=$((current_interval * 2))
 			if [[ "$current_interval" -gt "$KIE_MAX_POLL_INTERVAL" ]]; then
 				current_interval="$KIE_MAX_POLL_INTERVAL"
@@ -296,8 +393,8 @@ _kie_run_create() {
 
 	if [[ "$wait_for_result" -eq 1 ]]; then
 		printf 'Kie.ai task submitted: %s\n' "$task_id" >&2
-		_kie_run_wait "$task_id" "$interval" "$timeout" 0
-		return $?
+		_kie_run_wait "$task_id" "$interval" "$timeout" 0 || return 1
+		return 0
 	fi
 	printf '%s\n' "$task_id"
 	return 0
@@ -387,12 +484,12 @@ _kie_cmd_create() {
 		print_error "--model is required"
 		return 1
 	fi
-	_kie_validate_positive_integer "Poll interval" "$interval" || return 1
-	_kie_validate_positive_integer "Timeout" "$timeout" || return 1
+	_kie_validate_positive_integer "$KIE_POLL_INTERVAL_LABEL" "$interval" || return 1
+	_kie_validate_positive_integer "$KIE_TIMEOUT_LABEL" "$timeout" || return 1
 	_kie_require_dependencies || return 1
 	input_json=$(_kie_read_input_json "$inline_input" "$input_file") || return 1
-	_kie_run_create "$model" "$input_json" "$callback_url" "$wait_for_result" "$interval" "$timeout"
-	return $?
+	_kie_run_create "$model" "$input_json" "$callback_url" "$wait_for_result" "$interval" "$timeout" || return 1
+	return 0
 }
 
 _KIE_MEDIA_MODEL=""
@@ -460,7 +557,7 @@ _kie_parse_media_options() {
 			;;
 		*)
 			if [[ -n "$_KIE_MEDIA_CONTENT" ]]; then
-				print_error "Unexpected argument: ${argument}"
+				_kie_report_unexpected_argument "$argument"
 				return 1
 			fi
 			_KIE_MEDIA_CONTENT="$argument"
@@ -491,8 +588,8 @@ _kie_cmd_media() {
 		print_error "${content_field} is required"
 		return 1
 	fi
-	_kie_validate_positive_integer "Poll interval" "$_KIE_MEDIA_INTERVAL" || return 1
-	_kie_validate_positive_integer "Timeout" "$_KIE_MEDIA_TIMEOUT" || return 1
+	_kie_validate_positive_integer "$KIE_POLL_INTERVAL_LABEL" "$_KIE_MEDIA_INTERVAL" || return 1
+	_kie_validate_positive_integer "$KIE_TIMEOUT_LABEL" "$_KIE_MEDIA_TIMEOUT" || return 1
 	_kie_require_dependencies || return 1
 	local base_input=""
 	base_input=$(_kie_read_input_json "$_KIE_MEDIA_INLINE_INPUT" "$_KIE_MEDIA_INPUT_FILE") || return 1
@@ -500,8 +597,8 @@ _kie_cmd_media() {
 	merged_input=$(printf '%s' "$base_input" |
 		jq -ce --arg field "$content_field" --arg value "$_KIE_MEDIA_CONTENT" '. + {($field): $value}')
 	_kie_run_create "$_KIE_MEDIA_MODEL" "$merged_input" "$_KIE_MEDIA_CALLBACK" \
-		"$_KIE_MEDIA_WAIT" "$_KIE_MEDIA_INTERVAL" "$_KIE_MEDIA_TIMEOUT"
-	return $?
+		"$_KIE_MEDIA_WAIT" "$_KIE_MEDIA_INTERVAL" "$_KIE_MEDIA_TIMEOUT" || return 1
+	return 0
 }
 
 _kie_cmd_status() {
@@ -566,7 +663,7 @@ _kie_cmd_wait() {
 			;;
 		*)
 			if [[ -n "$task_id" ]]; then
-				print_error "Unexpected argument: ${argument}"
+				_kie_report_unexpected_argument "$argument"
 				return 1
 			fi
 			task_id="$argument"
@@ -578,12 +675,12 @@ _kie_cmd_wait() {
 		print_error "Task ID is required"
 		return 1
 	fi
-	_kie_validate_positive_integer "Poll interval" "$interval" || return 1
-	_kie_validate_positive_integer "Timeout" "$timeout" || return 1
+	_kie_validate_positive_integer "$KIE_POLL_INTERVAL_LABEL" "$interval" || return 1
+	_kie_validate_positive_integer "$KIE_TIMEOUT_LABEL" "$timeout" || return 1
 	_kie_require_dependencies || return 1
 	_kie_load_api_key || return 1
-	_kie_run_wait "$task_id" "$interval" "$timeout" "$raw_output"
-	return $?
+	_kie_run_wait "$task_id" "$interval" "$timeout" "$raw_output" || return 1
+	return 0
 }
 
 _kie_cmd_credits() {
@@ -640,7 +737,7 @@ _kie_cmd_upload() {
 			;;
 		*)
 			if [[ -n "$file_path" ]]; then
-				print_error "Unexpected argument: ${argument}"
+				_kie_report_unexpected_argument "$argument"
 				return 1
 			fi
 			file_path="$argument"
@@ -668,20 +765,19 @@ _kie_cmd_upload() {
 		--connect-timeout "$KIE_CONNECT_TIMEOUT"
 		--max-time "$KIE_REQUEST_TIMEOUT"
 		"${KIE_UPLOAD_BASE}/api/file-stream-upload"
-		--header "Authorization: Bearer ${KIE_API_KEY}"
 		--form "file=@${file_path}"
-		--form "uploadPath=${upload_path}"
+		--form-string "uploadPath=${upload_path}"
 	)
 	if [[ -n "$file_name" ]]; then
-		curl_args+=(--form "fileName=${file_name}")
+		curl_args+=(--form-string "fileName=${file_name}")
 	fi
 	local response=""
-	if ! response=$(curl "${curl_args[@]}"); then
+	if ! response=$(_kie_authenticated_curl "${curl_args[@]}"); then
 		print_error "Unable to upload file to Kie.ai"
 		return 1
 	fi
 	_kie_api_response_ok "$response" || return 1
-	printf '%s' "$response" | jq -r '.data.downloadUrl'
+	_kie_print_download_url "$response" || return 1
 	return 0
 }
 
@@ -722,7 +818,7 @@ _kie_cmd_upload_url() {
 			;;
 		*)
 			if [[ -n "$file_url" ]]; then
-				print_error "Unexpected argument: ${argument}"
+				_kie_report_unexpected_argument "$argument"
 				return 1
 			fi
 			file_url="$argument"
@@ -751,18 +847,17 @@ _kie_cmd_upload_url() {
 			'{fileUrl: $url, uploadPath: $path}')
 	fi
 	local response=""
-	if ! response=$(curl --silent --show-error --request POST \
+	if ! response=$(_kie_authenticated_curl --silent --show-error --request POST \
 		--connect-timeout "$KIE_CONNECT_TIMEOUT" \
 		--max-time "$KIE_REQUEST_TIMEOUT" \
 		"${KIE_UPLOAD_BASE}/api/file-url-upload" \
-		--header "Authorization: Bearer ${KIE_API_KEY}" \
 		--header "Content-Type: application/json" \
 		--data "$body"); then
 		print_error "Unable to upload URL to Kie.ai"
 		return 1
 	fi
 	_kie_api_response_ok "$response" || return 1
-	printf '%s' "$response" | jq -r '.data.downloadUrl'
+	_kie_print_download_url "$response" || return 1
 	return 0
 }
 
@@ -865,17 +960,17 @@ main() {
 	fi
 
 	case "$command" in
-	create | generate) _kie_cmd_create "$@" || return $? ;;
-	image) _kie_cmd_media "image" "prompt" "$@" || return $? ;;
-	video) _kie_cmd_media "video" "prompt" "$@" || return $? ;;
-	audio) _kie_cmd_media "audio" "text" "$@" || return $? ;;
-	status) _kie_cmd_status "$@" || return $? ;;
-	wait) _kie_cmd_wait "$@" || return $? ;;
-	credits | balance) _kie_cmd_credits "$@" || return $? ;;
-	upload) _kie_cmd_upload "$@" || return $? ;;
-	upload-url) _kie_cmd_upload_url "$@" || return $? ;;
-	catalog | models) _kie_cmd_catalog "$@" || return $? ;;
-	help | --help | -h) _kie_show_help || return $? ;;
+	create | generate) _kie_cmd_create "$@" || return 1 ;;
+	image) _kie_cmd_media "image" "$KIE_PROMPT_FIELD" "$@" || return 1 ;;
+	video) _kie_cmd_media "video" "$KIE_PROMPT_FIELD" "$@" || return 1 ;;
+	audio) _kie_cmd_media "audio" "text" "$@" || return 1 ;;
+	status) _kie_cmd_status "$@" || return 1 ;;
+	wait) _kie_cmd_wait "$@" || return 1 ;;
+	credits | balance) _kie_cmd_credits "$@" || return 1 ;;
+	upload) _kie_cmd_upload "$@" || return 1 ;;
+	upload-url) _kie_cmd_upload_url "$@" || return 1 ;;
+	catalog | models) _kie_cmd_catalog "$@" || return 1 ;;
+	help | --help | -h) _kie_show_help || return 1 ;;
 	*)
 		print_error "Unknown command: ${command}"
 		_kie_show_help
