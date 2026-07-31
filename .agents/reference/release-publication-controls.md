@@ -146,6 +146,11 @@ Aggregation PR #29042 re-reviews authorized Pulse triage PR #29033 at
 `11f3a9fa04af659b69b94cd19b86b642bf8303f7` because PR #29038 advanced `main`
 before publication.
 
+A pending multi-source aggregation reviews corrective OpenCode aggregation
+PR #29039 at `dd22bd011b2ff0970ff240ab832b1147370320ff` and Pulse aggregation
+PR #29042 at `998eeef0885e7db14ff753992d1f2cfe208de481` so one exact tip preserves
+both authorized release chains.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
