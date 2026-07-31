@@ -37,10 +37,50 @@ _full_loop_release_verify_tag_provenance() {
 	return $?
 }
 
+_full_loop_release_candidate_tags_for_pr() {
+	local requested_pr="$1"
+	local ref_format='%(refname:short)%1f'
+	local trailer_index=""
+	local legacy_source_merges=""
+	local legacy_source_lookup=""
+	local candidate_tag=""
+	local source_prs=""
+	local source_merge=""
+	local aggregated_sources=""
+	local direct_marker=",${requested_pr},"
+	local aggregate_marker=",${requested_pr}@"
+	local legacy_source_marker=""
+
+	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	ref_format+='%(trailers:key=Aidevops-Source-PR,valueonly,separator=%x2C)%1f'
+	ref_format+='%(trailers:key=Aidevops-Source-Merge,valueonly,separator=%x2C)%1f'
+	ref_format+='%(trailers:key=Aidevops-Aggregated-Source,valueonly,separator=%x2C)'
+	trailer_index=$(git -C "$REPO_ROOT" for-each-ref --sort=-version:refname \
+		--format="$ref_format" 'refs/tags/v[0-9]*.[0-9]*.[0-9]*') || return 1
+	legacy_source_merges=$(git -C "$REPO_ROOT" log --all --fixed-strings \
+		--grep="Aidevops-Release-Aggregates: ${requested_pr}@" --format='%H') || return 1
+	legacy_source_lookup=",${legacy_source_merges//$'\n'/,},"
+
+	while IFS=$'\x1f' read -r candidate_tag source_prs source_merge aggregated_sources; do
+		[[ -n "$candidate_tag" ]] || continue
+		if [[ ",${source_prs}," == *"$direct_marker"* ]] ||
+			[[ ",${aggregated_sources}," == *"$aggregate_marker"* ]]; then
+			printf '%s\n' "$candidate_tag"
+			continue
+		fi
+		legacy_source_marker=",${source_merge},"
+		if [[ -n "$source_merge" && "$legacy_source_lookup" == *"$legacy_source_marker"* ]]; then
+			printf '%s\n' "$candidate_tag"
+		fi
+	done <<<"$trailer_index"
+	return 0
+}
+
 _full_loop_release_find_tag_for_pr() {
 	local repo="$1"
 	local requested_pr="$2"
 	local candidate_tag=""
+	local candidate_tags=""
 	local tag_body=""
 	local trailer=""
 	local source_json=""
@@ -49,6 +89,7 @@ _full_loop_release_find_tag_for_pr() {
 
 	_FULL_LOOP_RELEASE_FOUND_TAG=""
 	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
+	candidate_tags=$(_full_loop_release_candidate_tags_for_pr "$requested_pr") || return 1
 	while IFS= read -r candidate_tag; do
 		[[ -n "$candidate_tag" ]] || continue
 		tag_body=$(_full_loop_release_tag_body "$candidate_tag") || return 1
@@ -74,7 +115,7 @@ _full_loop_release_find_tag_for_pr() {
 		_full_loop_release_verify_tag_provenance "$repo" "$candidate_tag" || return 1
 		_FULL_LOOP_RELEASE_FOUND_TAG="$candidate_tag"
 		return 0
-	done < <(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname)
+	done <<<"$candidate_tags"
 	return 2
 }
 
@@ -287,7 +328,8 @@ _full_loop_release_verify_npm_provenance() {
 
 	audit_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-npm-provenance.XXXXXX") || return 1
 	if ! (
-		trap 'command rm -rf -- "$audit_dir"' EXIT
+		_FULL_LOOP_RELEASE_AUDIT_DIR="$audit_dir"
+		trap 'command rm -rf -- "$_FULL_LOOP_RELEASE_AUDIT_DIR"' EXIT
 		npm install --prefix "$audit_dir" --ignore-scripts --no-audit --no-fund --save-exact \
 			"aidevops@${version}" >/dev/null 2>&1 || exit 1
 		audit_json=$(npm --prefix "$audit_dir" audit signatures \
