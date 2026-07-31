@@ -73,11 +73,40 @@ _classic_required_checks_count() {
 	return 0
 }
 
+# _collaborator_access_json <slug>
+# Emits one compact object per collaborator from the paginated endpoint.
+_collaborator_access_json() {
+	local slug="$1"
+
+	gh api --paginate "repos/$slug/collaborators?per_page=100" \
+		--jq '.[] | {login: .login, type: .type, role: .role_name, permissions: .permissions}' 2>/dev/null
+	return $?
+}
+
+# _review_eligible_human_count <slug>
+# Returns unknown via a non-zero status when collaborator topology cannot be
+# verified. Bots and apps cannot provide an independent approving review.
+_review_eligible_human_count() {
+	local slug="$1"
+	local collab_json
+
+	if ! collab_json=$(_collaborator_access_json "$slug"); then
+		return 1
+	fi
+
+	jq -s -r '[.[] | select(
+		.type == "User" and
+		(.role == "push" or .role == "write" or .role == "maintain" or .role == "admin" or
+		 .permissions.push == true or .permissions.maintain == true or .permissions.admin == true)
+	)] | length' <<<"$collab_json"
+	return $?
+}
+
 # _rulesets_pr_gating_state <slug> <default-branch>
-# Emits tab-separated: protected reviews checks bypass. A public ADMIN repo is
-# considered ruleset-backed only when active default-branch rulesets enforce a
-# PR approval and at least one required status check. Bypass actors are surfaced
-# as admin-bypass risk because they weaken the repository-level invariant.
+# Emits tab-separated: protected pull_requests reviews checks bypass. A public
+# ADMIN repo is considered ruleset-backed only when active default-branch
+# rulesets enforce pull requests and at least one required status check. Bypass
+# actors are surfaced as admin-bypass risk because they weaken the invariant.
 _rulesets_pr_gating_state() {
 	local slug="$1"
 	local default_branch="$2"
@@ -89,6 +118,7 @@ _rulesets_pr_gating_state() {
 	[[ -z "$ruleset_details" ]] && return 1
 
 	local protected=0
+	local pull_requests=0
 	local reviews=0
 	local checks=0
 	local bypass=0
@@ -97,21 +127,24 @@ _rulesets_pr_gating_state() {
 		[[ -z "$detail" ]] && continue
 		protected=1
 
-		local approval_count status_count bypass_count
+		local pull_request_count approval_count status_count bypass_count
+		pull_request_count=$(jq -r '[.rules[]? | select(.type == "pull_request")] | length' <<<"$detail" 2>/dev/null) || pull_request_count="0"
 		approval_count=$(jq -r '[.rules[]? | select(.type == "pull_request") | (.parameters.required_approving_review_count // 0)] | max // 0' <<<"$detail" 2>/dev/null) || approval_count="0"
 		status_count=$(jq -r '[.rules[]? | select(.type == "required_status_checks") | (.parameters.required_status_checks // []) | length] | add // 0' <<<"$detail" 2>/dev/null) || status_count="0"
 		bypass_count=$(jq -r '(.bypass_actors // []) | length' <<<"$detail" 2>/dev/null) || bypass_count="0"
 
+		[[ "$pull_request_count" =~ ^[0-9]+$ ]] || pull_request_count="0"
 		[[ "$approval_count" =~ ^[0-9]+$ ]] || approval_count="0"
 		[[ "$status_count" =~ ^[0-9]+$ ]] || status_count="0"
 		[[ "$bypass_count" =~ ^[0-9]+$ ]] || bypass_count="0"
 
+		[[ "$pull_request_count" -gt 0 ]] && pull_requests=1
 		[[ "$approval_count" -gt 0 ]] && reviews=1
 		[[ "$status_count" -gt 0 ]] && checks=1
 		[[ "$bypass_count" -gt 0 ]] && bypass=1
 	done <<<"$ruleset_details"
 
-	printf '%s\t%s\t%s\t%s\n' "$protected" "$reviews" "$checks" "$bypass"
+	printf '%s\t%s\t%s\t%s\t%s\n' "$protected" "$pull_requests" "$reviews" "$checks" "$bypass"
 	return 0
 }
 
@@ -220,17 +253,19 @@ _report_rulesets_branch_protection() {
 	local default_branch="$2"
 	local public_admin="$3"
 	local ruleset_details="${4:-}"
+	local review_eligible_humans="${5:-unknown}"
 
-	local rulesets_state protected_by_rulesets rulesets_reviews rulesets_checks rulesets_bypass
-	if [[ "$#" -ge 4 ]]; then
+	local rulesets_state protected_by_rulesets rulesets_pull_requests rulesets_reviews rulesets_checks rulesets_bypass
+	if [[ -n "$ruleset_details" ]]; then
 		rulesets_state=$(_rulesets_pr_gating_state "$slug" "$default_branch" "$ruleset_details") || true
 	else
 		rulesets_state=$(_rulesets_pr_gating_state "$slug" "$default_branch") || true
 	fi
 	if [[ -n "$rulesets_state" ]]; then
-		IFS=$'\t' read -r protected_by_rulesets rulesets_reviews rulesets_checks rulesets_bypass <<<"$rulesets_state"
+		IFS=$'\t' read -r protected_by_rulesets rulesets_pull_requests rulesets_reviews rulesets_checks rulesets_bypass <<<"$rulesets_state"
 	else
 		protected_by_rulesets=0
+		rulesets_pull_requests=0
 		rulesets_reviews=0
 		rulesets_checks=0
 		rulesets_bypass=0
@@ -244,7 +279,7 @@ _report_rulesets_branch_protection() {
 
 	print_pass "Default branch '$default_branch' protected by active repository ruleset(s)"
 	add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Rulesets protect $default_branch"
-	_report_rulesets_review_requirement "$default_branch" "$public_admin" "$rulesets_reviews"
+	_report_rulesets_review_requirement "$default_branch" "$public_admin" "$rulesets_reviews" "$review_eligible_humans" "$rulesets_pull_requests"
 	_report_rulesets_check_requirement "$default_branch" "$public_admin" "$rulesets_checks"
 	_report_rulesets_bypass_requirement "$public_admin" "$rulesets_bypass"
 	return 0
@@ -254,10 +289,15 @@ _report_rulesets_review_requirement() {
 	local default_branch="$1"
 	local public_admin="$2"
 	local rulesets_reviews="$3"
+	local review_eligible_humans="${4:-unknown}"
+	local pull_requests_required="${5:-0}"
 
 	if [[ "$rulesets_reviews" -eq 1 ]]; then
 		print_pass "Rulesets require pull request approval"
 		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Rulesets require PR approval"
+	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 && "$review_eligible_humans" =~ ^[0-9]+$ && "$review_eligible_humans" -le 1 ]]; then
+		print_pass "Rulesets allow zero approvals for verified solo-maintainer repository"
+		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR approval optional for solo maintainer"
 	elif [[ "$public_admin" -eq 1 ]]; then
 		print_crit "Rulesets do not require pull request approval on public ADMIN repo"
 		add_finding "$SEVERITY_CRITICAL" "$CAT_BRANCH_PROTECTION" "Rulesets missing PR approval requirement"
@@ -307,13 +347,15 @@ _report_classic_branch_protection() {
 	local protection_json="$1"
 	local default_branch="$2"
 	local public_admin="$3"
+	local review_eligible_humans="${4:-unknown}"
 
-	local required_reviews required_checks enforce_admins
+	local pull_requests_required required_reviews required_checks enforce_admins
+	pull_requests_required=$(echo "$protection_json" | jq -r 'if .required_pull_request_reviews == null then 0 else 1 end' 2>/dev/null) || pull_requests_required="0"
 	required_reviews=$(echo "$protection_json" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null) || required_reviews="0"
 	required_checks=$(_classic_required_checks_count "$protection_json")
 	enforce_admins=$(echo "$protection_json" | jq -r '.enforce_admins.enabled // false' 2>/dev/null) || enforce_admins=false
 
-	_report_classic_review_requirement "$default_branch" "$public_admin" "$required_reviews"
+	_report_classic_review_requirement "$default_branch" "$public_admin" "$required_reviews" "$review_eligible_humans" "$pull_requests_required"
 	_report_classic_check_requirement "$default_branch" "$public_admin" "$required_checks"
 	_report_classic_admin_enforcement "$public_admin" "$enforce_admins"
 	return 0
@@ -323,10 +365,15 @@ _report_classic_review_requirement() {
 	local default_branch="$1"
 	local public_admin="$2"
 	local required_reviews="$3"
+	local review_eligible_humans="${4:-unknown}"
+	local pull_requests_required="${5:-0}"
 
 	if [[ "$required_reviews" -gt 0 ]]; then
 		print_pass "PR reviews required ($required_reviews approving review(s))"
 		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR reviews required: $required_reviews"
+	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 && "$review_eligible_humans" =~ ^[0-9]+$ && "$review_eligible_humans" -le 1 ]]; then
+		print_pass "Zero required approvals accepted for verified solo-maintainer repository"
+		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR approval optional for solo maintainer"
 	elif [[ "$public_admin" -eq 1 ]]; then
 		print_crit "PR reviews not required on public ADMIN repo default branch '$default_branch'"
 		add_finding "$SEVERITY_CRITICAL" "$CAT_BRANCH_PROTECTION" "PR reviews not required"
@@ -392,26 +439,28 @@ check_branch_protection() {
 		return 0
 	fi
 
-	local default_branch public_admin protection_json
+	local default_branch public_admin protection_json review_eligible_humans
 	default_branch=$(git -C "$repo_path" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||') || true
 	default_branch="${default_branch:-main}"
 	public_admin=0
+	review_eligible_humans="unknown"
 	if _repo_is_public_admin "$slug"; then
 		public_admin=1
 		print_info "Repository is public and current token has admin access — PR merge gating is required"
+		review_eligible_humans=$(_review_eligible_human_count "$slug") || review_eligible_humans="unknown"
 	fi
 
 	protection_json=$(gh api "repos/$slug/branches/$default_branch/protection" 2>/dev/null) || true
 	if [[ -z "$protection_json" || "$protection_json" == *"Not Found"* || "$protection_json" == *"Branch not protected"* ]]; then
 		if [[ "$#" -ge 2 ]]; then
-			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "$ruleset_details"
+			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "$ruleset_details" "$review_eligible_humans"
 		else
-			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin"
+			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "" "$review_eligible_humans"
 		fi
 		return 0
 	fi
 
-	_report_classic_branch_protection "$protection_json" "$default_branch" "$public_admin"
+	_report_classic_branch_protection "$protection_json" "$default_branch" "$public_admin" "$review_eligible_humans"
 	return 0
 }
 
@@ -767,7 +816,7 @@ check_collaborators() {
 
 	# Per-repo collaborator check — never use a global cache (t1412.11: must paginate)
 	local collab_json
-	collab_json=$(gh api --paginate "repos/$slug/collaborators?per_page=100" --jq '.[] | {login: .login, role: .role_name}' 2>/dev/null) || true
+	collab_json=$(_collaborator_access_json "$slug") || true
 
 	if [[ -z "$collab_json" ]]; then
 		print_skip "Cannot access collaborator list (may require admin permissions)"

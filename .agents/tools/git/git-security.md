@@ -35,13 +35,13 @@ gh auth login -s workflow   # -s workflow for CI PR support
 
 ### Branch Protection
 
-Require PR reviews, dismiss stale approvals, enforce admins, require CI checks, CODEOWNERS where available. Signed commits recommended.
+Require pull requests, enforce admins, require CI checks, and use CODEOWNERS where available. Require one approving review and dismiss stale approvals when at least two review-eligible humans have push, write, maintain, or admin access. A verified solo-maintainer repository defaults to zero required approvals unless its maintainer explicitly requests review; unknown collaborator topology retains the stricter one-review default. Signed commits recommended.
 
 ```bash
 gh api repos/{owner}/{repo}/branches/main/protection -X PUT \
   -f required_status_checks='{"strict":true,"contexts":[]}' \
   -f enforce_admins=true \
-  -f required_pull_request_reviews='{"required_approving_review_count":1}'
+  -f required_pull_request_reviews='{"required_approving_review_count":0}' # verified solo only; otherwise use 1
 ```
 
 ### Commit Signing

@@ -60,11 +60,14 @@ FINDINGS_JSON="[]"
 
 readonly CLASSIC_GOOD='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
 readonly CLASSIC_NO_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":0},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
+readonly CLASSIC_NO_PR='{"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
 readonly CLASSIC_NO_CHECKS='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]},"enforce_admins":{"enabled":true}}'
 readonly CLASSIC_ADMIN_BYPASS='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":false}}'
 readonly REPO_PUBLIC_ADMIN='{"private":false,"permissions":{"admin":true}}'
 readonly RULESETS_LIST_ACTIVE='[{"id":1000,"enforcement":"active"}]'
 readonly RULESET_GOOD='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_NO_REVIEWS='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_NO_PR='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
 readonly RULESET_NO_CHECKS='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}],"bypass_actors":[]}'
 readonly CLASSIC_LINKED_ISSUE='{"required_status_checks":{"contexts":["linked-issue-check"]}}'
 readonly RULESET_LINKED_ISSUE='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"linked-issue-check"}]}}],"bypass_actors":[]}'
@@ -73,12 +76,20 @@ STUB_REPO_JSON="$REPO_PUBLIC_ADMIN"
 STUB_PROTECTION_RESPONSE="$CLASSIC_GOOD"
 STUB_RULESETS_LIST=""
 STUB_RULESET_DETAIL=""
+STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin","permissions":{"admin":true,"push":true}}]'
+STUB_COLLABORATORS_AVAILABLE=true
 
 gh() {
 	local cmd="$1"
 	case "$cmd" in
 	api)
-		local url="${2:-}"
+		local url=""
+		local arg
+		for arg in "$@"; do
+			case "$arg" in
+			repos/*) url="$arg" ;;
+			esac
+		done
 		case "$url" in
 		"repos/testowner/testrepo")
 			printf '%s\n' "$STUB_REPO_JSON"
@@ -102,6 +113,13 @@ gh() {
 		*"/rulesets")
 			if [[ -n "$STUB_RULESETS_LIST" ]]; then
 				printf '%s\n' "$STUB_RULESETS_LIST"
+				return 0
+			fi
+			return 1
+			;;
+		*"/collaborators?per_page=100")
+			if [[ "$STUB_COLLABORATORS_AVAILABLE" == true ]]; then
+				printf '%s\n' "$STUB_COLLABORATORS_RESPONSE" | command jq -c '.[] | {login: .login, type: .type, role: .role_name, permissions: .permissions}'
 				return 0
 			fi
 			return 1
@@ -174,6 +192,8 @@ reset_state() {
 	STUB_PROTECTION_RESPONSE="$CLASSIC_GOOD"
 	STUB_RULESETS_LIST=""
 	STUB_RULESET_DETAIL=""
+	STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin","permissions":{"admin":true,"push":true}}]'
+	STUB_COLLABORATORS_AVAILABLE=true
 	return 0
 }
 
@@ -197,7 +217,24 @@ assert_counts "public ADMIN without classic protection or rulesets is critical" 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
 check_branch_protection "$FAKE_REPO"
-assert_counts "public ADMIN classic protection without reviews is critical" 1 0
+assert_counts "verified solo-maintainer classic protection allows zero approvals" 0 0
+
+reset_state
+STUB_PROTECTION_RESPONSE="$CLASSIC_NO_PR"
+check_branch_protection "$FAKE_REPO"
+assert_counts "verified solo-maintainer classic protection still requires pull requests" 1 0
+
+reset_state
+STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
+STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin"},{"login":"maintainer","type":"User","role_name":"write"}]'
+check_branch_protection "$FAKE_REPO"
+assert_counts "multi-maintainer classic protection without reviews is critical" 1 0
+
+reset_state
+STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
+STUB_COLLABORATORS_AVAILABLE=false
+check_branch_protection "$FAKE_REPO"
+assert_counts "unknown collaborator topology retains strict classic review finding" 1 0
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_CHECKS"
@@ -215,6 +252,28 @@ STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_GOOD"
 check_branch_protection "$FAKE_REPO"
 assert_counts "public ADMIN rulesets with reviews and checks pass" 0 0
+
+reset_state
+STUB_PROTECTION_RESPONSE=""
+STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
+STUB_RULESET_DETAIL="$RULESET_NO_REVIEWS"
+check_branch_protection "$FAKE_REPO"
+assert_counts "verified solo-maintainer rulesets allow zero approvals" 0 0
+
+reset_state
+STUB_PROTECTION_RESPONSE=""
+STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
+STUB_RULESET_DETAIL="$RULESET_NO_PR"
+check_branch_protection "$FAKE_REPO"
+assert_counts "verified solo-maintainer rulesets still require pull requests" 1 0
+
+reset_state
+STUB_PROTECTION_RESPONSE=""
+STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
+STUB_RULESET_DETAIL="$RULESET_NO_REVIEWS"
+STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin"},{"login":"maintainer","type":"User","role_name":"maintain"},{"login":"ci-bot","type":"Bot","role_name":"write"}]'
+check_branch_protection "$FAKE_REPO"
+assert_counts "multi-maintainer rulesets without reviews remain critical while bots are excluded" 1 0
 
 reset_state
 STUB_PROTECTION_RESPONSE=""
