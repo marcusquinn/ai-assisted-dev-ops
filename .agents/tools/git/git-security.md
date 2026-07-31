@@ -38,10 +38,20 @@ gh auth login -s workflow   # -s workflow for CI PR support
 Require pull requests, enforce admins, require CI checks, and use CODEOWNERS where available. Aidevops-managed repositories default to zero native required approvals regardless of collaborator topology so trusted maintainers can progress independently; maintainers may explicitly request human review when useful. Require `review-bot-gate` and `maintainer-gate` as status checks: external contributions carrying `needs-maintainer-review` remain blocked until cryptographically verified maintainer approval. Signed commits recommended.
 
 ```bash
-gh api repos/{owner}/{repo}/branches/main/protection -X PUT \
-	-f required_status_checks='{"strict":true,"contexts":["review-bot-gate","maintainer-gate"]}' \
-	-f enforce_admins=true \
-	-f required_pull_request_reviews='{"required_approving_review_count":0}' # external authority is enforced by maintainer-gate
+# External authority is enforced by maintainer-gate.
+gh api repos/{owner}/{repo}/branches/main/protection -X PUT --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["review-bot-gate", "maintainer-gate"]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+JSON
 ```
 
 ### Commit Signing
