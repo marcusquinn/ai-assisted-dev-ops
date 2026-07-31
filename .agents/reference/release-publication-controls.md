@@ -137,7 +137,7 @@ Aggregation PR #29037 reviews authorized Pulse triage PR #29033 at
 `fb4feba9216c643d7a61838877eedeb99bcef6e1` because PRs #29032 and #29029
 advanced `main` before publication.
 
-An exact-tip re-aggregation is pending for authorized Pulse triage PR #29033 at
+Aggregation PR #29042 re-reviews authorized Pulse triage PR #29033 at
 `fb4feba9216c643d7a61838877eedeb99bcef6e1` and prior aggregation PR #29037 at
 `11f3a9fa04af659b69b94cd19b86b642bf8303f7` because PR #29038 advanced `main`
 before publication.
