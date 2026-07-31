@@ -50,7 +50,8 @@ if [[ "${1:-}" != "resolve" ]]; then
 fi
 case "${2:-}" in
 simple) printf '%s' "openai/gpt-5.6-terra" ;;
-standard | thinking) printf '%s' "openai/gpt-5.6-sol" ;;
+standard) printf '%s' "openai/gpt-5.6-luna" ;;
+thinking) printf '%s' "openai/gpt-5.6-sol" ;;
 *) exit 1 ;;
 esac
 exit 0
@@ -65,7 +66,7 @@ source "$AGENTS_SCRIPTS/pulse-model-routing.sh"
 assert_equals "openai/gpt-5.6-terra" \
 	"$(resolve_dispatch_model_for_labels 'tier:simple')" \
 	"simple tier resolves through runtime mapping"
-assert_equals "openai/gpt-5.6-sol" \
+assert_equals "openai/gpt-5.6-luna" \
 	"$(resolve_dispatch_model_for_labels 'tier:standard')" \
 	"standard tier resolves through runtime mapping"
 assert_equals "openai/gpt-5.6-sol" \

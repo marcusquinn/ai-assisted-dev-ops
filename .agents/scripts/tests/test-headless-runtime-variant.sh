@@ -68,8 +68,8 @@ actual=$(resolve_headless_variant "worker" "thinking" "openai/gpt-5.6-sol-fast")
 assert_equals "high" "$actual" "GPT-5.6 Sol Fast thinking worker uses high provider mapping" || true
 
 with_clean_variant_env
-actual=$(resolve_headless_variant "worker" "standard" "openai/gpt-5.6-sol")
-assert_equals "medium" "$actual" "GPT-5.6 Sol standard worker uses routed effort" || true
+actual=$(resolve_headless_variant "worker" "standard" "openai/gpt-5.6-luna")
+assert_equals "max" "$actual" "GPT-5.6 Luna standard worker uses max routed effort" || true
 
 with_clean_variant_env
 AIDEVOPS_HEADLESS_VARIANT_THINKING="high"

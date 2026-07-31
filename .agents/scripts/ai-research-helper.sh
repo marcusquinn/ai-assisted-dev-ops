@@ -44,9 +44,21 @@ resolve_opencode_model_id() {
 	case "$name" in
 	simple) echo "openai/gpt-5.6-terra" ;;
 	local) echo "openai/gpt-5.4-mini" ;;
-	standard | thinking) echo "openai/gpt-5.6-sol" ;;
+	standard) echo "openai/gpt-5.6-luna" ;;
+	thinking) echo "openai/gpt-5.6-sol" ;;
 	openai/* | anthropic/* | google/*) echo "$name" ;;
 	*) echo "$name" ;;
+	esac
+	return 0
+}
+
+resolve_opencode_variant() {
+	local name="${1:-simple}"
+	case "$name" in
+	simple) echo "medium" ;;
+	standard) echo "max" ;;
+	thinking) echo "high" ;;
+	*) echo "" ;;
 	esac
 	return 0
 }
@@ -281,11 +293,16 @@ call_opencode() {
 		return 2
 	fi
 
-	local model_id raw text timeout_cmd wrapped_prompt
+	local model_id variant_id raw text timeout_cmd wrapped_prompt
+	local -a variant_args=()
 	local run_dir="${AIDEVOPS_AI_RESEARCH_OPENCODE_DIR:-/tmp/opencode}"
 	model_id="${AIDEVOPS_AI_RESEARCH_OPENCODE_MODEL:-}"
 	if [[ -z "$model_id" ]]; then
 		model_id=$(resolve_opencode_model_id "$model_name")
+	fi
+	variant_id=$(resolve_opencode_variant "$model_name")
+	if [[ -n "$variant_id" ]]; then
+		variant_args=(--variant "$variant_id")
 	fi
 	timeout_cmd=""
 	if command -v timeout &>/dev/null; then
@@ -297,12 +314,12 @@ call_opencode() {
 	wrapped_prompt="You are a non-interactive AI research helper. Do not use tools. Do not ask follow-up questions. Do not greet. Return only the requested answer text, with no preamble or markdown. Task:\n${prompt}"
 
 	if [[ -n "$timeout_cmd" ]]; then
-		raw=$(cd "$run_dir" && AIDEVOPS_HEADLESS=1 $timeout_cmd opencode run --format json -m "$model_id" "$wrapped_prompt" 2>&1) || {
+		raw=$(cd "$run_dir" && AIDEVOPS_HEADLESS=1 $timeout_cmd opencode run --format json -m "$model_id" "${variant_args[@]}" "$wrapped_prompt" 2>&1) || {
 			log_error "OpenCode AI research call failed"
 			return 1
 		}
 	else
-		raw=$(cd "$run_dir" && AIDEVOPS_HEADLESS=1 opencode run --format json -m "$model_id" "$wrapped_prompt" 2>&1) || {
+		raw=$(cd "$run_dir" && AIDEVOPS_HEADLESS=1 opencode run --format json -m "$model_id" "${variant_args[@]}" "$wrapped_prompt" 2>&1) || {
 			log_error "OpenCode AI research call failed"
 			return 1
 		}

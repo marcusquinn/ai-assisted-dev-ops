@@ -169,6 +169,24 @@ STUB
 	return 0
 }
 
+test_opencode_tier_models() {
+	local standard_model=""
+	local standard_variant=""
+	local thinking_model=""
+	# shellcheck source=/dev/null
+	source "${REPO_ROOT}/.agents/scripts/ai-research-helper.sh"
+	standard_model=$(resolve_opencode_model_id standard)
+	standard_variant=$(resolve_opencode_variant standard)
+	thinking_model=$(resolve_opencode_model_id thinking)
+	if [[ "$standard_model" == "openai/gpt-5.6-luna" && "$standard_variant" == "max" && "$thinking_model" == "openai/gpt-5.6-sol" ]]; then
+		record_result "OpenCode research tiers follow canonical Luna and Sol defaults" 0
+		return 0
+	fi
+	record_result "OpenCode research tiers follow canonical Luna and Sol defaults" 1 \
+		"standard=${standard_model:-<empty>} variant=${standard_variant:-<empty>} thinking=${thinking_model:-<empty>}"
+	return 0
+}
+
 write_detector_stubs() {
 	cat >"${TEST_ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -223,6 +241,7 @@ main() {
 	trap teardown_sandbox EXIT
 	test_oauth_pool_fallbacks
 	test_auto_provider_prefers_opencode
+	test_opencode_tier_models
 	test_detector_rc2_records_cooldown
 	printf '\nTests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
