@@ -65,11 +65,11 @@ select_model() {
 test_openai_allowlist_selects_standard_tier_model() {
 	local selected=""
 	selected=$(select_model standard)
-	if [[ "$selected" == "openai/gpt-5.6-sol" ]]; then
+	if [[ "$selected" == "openai/gpt-5.6-luna" ]]; then
 		print_result "OpenAI allowlist selects standard tier from routing table" 0
 		return 0
 	fi
-	print_result "OpenAI allowlist selects standard tier from routing table" 1 "Expected openai/gpt-5.6-sol, got ${selected:-<empty>}"
+	print_result "OpenAI allowlist selects standard tier from routing table" 1 "Expected openai/gpt-5.6-luna, got ${selected:-<empty>}"
 	return 0
 }
 
@@ -111,7 +111,7 @@ test_standard_alternatives_are_scoped() {
 	local routing_table="${SCRIPT_DIR}/../../configs/model-routing-table.json"
 	local models=""
 	models=$(jq -r '.tiers.standard.models[]' "$routing_table")
-	if printf '%s\n' "$models" | grep -qx 'zai-coding-plan/glm-5.2' && \
+	if printf '%s\n' "$models" | grep -qx 'zai-coding-plan/glm-5.2' &&
 		! printf '%s\n' "$models" | grep -qx 'zai/glm-5.2'; then
 		print_result "Standard tier includes coding-plan GLM-5.2 but excludes direct Z.AI" 0
 		return 0

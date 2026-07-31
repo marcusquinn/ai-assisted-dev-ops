@@ -183,7 +183,7 @@ get_tier_models() {
 	# deliberately fails closed rather than sending local-only work to cloud.
 	case "$tier" in
 	simple) current_model=$'openai/gpt-5.6-terra\nanthropic/claude-haiku-4-5' ;;
-	standard) current_model=$'openai/gpt-5.6-sol\nzai-coding-plan/glm-5.2\nanthropic/claude-sonnet-4-6' ;;
+	standard) current_model=$'openai/gpt-5.6-luna\nzai-coding-plan/glm-5.2\nanthropic/claude-sonnet-4-6' ;;
 	thinking) current_model=$'openai/gpt-5.6-sol\nanthropic/claude-opus-4-6' ;;
 	*) return 1 ;;
 	esac
@@ -545,7 +545,6 @@ invalidate_cache() {
 	fi
 	return 0
 }
-
 
 # =============================================================================
 # Sub-libraries

@@ -112,7 +112,10 @@ resolve_model_tier() {
 
 	# Static fallback: map tier names to concrete models
 	case "$tier" in
-	standard | thinking)
+	standard)
+		echo "openai/gpt-5.6-luna"
+		;;
+	thinking)
 		echo "openai/gpt-5.6-sol"
 		;;
 	simple)
