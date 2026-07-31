@@ -46,6 +46,7 @@ print_result() {
 define_helpers_under_test() {
 	local helper_src
 	helper_src=$(awk '
+		/^_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION=/ { print }
 		/^_issue_thread_is_trusted_maintainer_only\(\) \{/,/^}$/ { print }
 		/^_issue_actor_has_repo_write_permission\(\) \{/,/^}$/ { print }
 		/^_check_nmr_approval_gate\(\) \{/,/^}$/ { print }
