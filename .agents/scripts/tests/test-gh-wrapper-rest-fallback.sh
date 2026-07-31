@@ -278,6 +278,10 @@ _stub_gh_api() {
 		return 0
 	fi
 	if [[ "$subcommand" == "-X" || "$subcommand" =~ ^-X ]]; then
+		if [[ -n "${STUB_REST_FAIL_MATCH:-}" && "$*" == *"${STUB_REST_FAIL_MATCH}"* ]]; then
+			printf 'REST stub matched phase failure\n' >&2
+			return 1
+		fi
 		if [[ "${STUB_REST_FAIL:-0}" == "1" ]]; then
 			printf 'REST stub forced failure\n' >&2
 			return 1
@@ -488,23 +492,29 @@ else
 fi
 
 # =============================================================================
-# Test 8: _rest_issue_edit computes full labels array from add/remove deltas
-# Current issue stub returns "bug" (single label). We add "auto-dispatch",
-# remove "bug" — target set should be ["auto-dispatch"] only.
+# Test 8: mixed edits use an array-free scalar PATCH and targeted deltas.
+# Unrelated metadata in the snapshot models values that concurrent writers may
+# retain or add because generic edit never submits replacement arrays.
 # =============================================================================
 : >"$GH_CALLS"
-export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[]}'
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"},{"name":"external-label"}],"assignees":[{"login":"old-worker"},{"login":"second-worker"}]}'
 _rest_issue_edit 42 \
 	--repo "owner/repo" \
+	--title "Updated title" \
 	--add-label "auto-dispatch" \
-	--remove-label "bug" >/dev/null 2>&1 || true
+	--remove-assignee "old-worker" >/dev/null 2>&1
+rest_edit_rc=$?
 
-if grep -qE 'labels\[\]=auto-dispatch' "$GH_CALLS" 2>/dev/null &&
-	! grep -qE 'labels\[\]=bug' "$GH_CALLS" 2>/dev/null; then
-	pass "_rest_issue_edit computes target label set (add auto-dispatch, remove bug)"
+if [[ "$rest_edit_rc" -eq 0 ]] &&
+	grep -qE '^api -X PATCH.*/issues/42.*title=Updated title' "$GH_CALLS" 2>/dev/null &&
+	grep -qE '^api -X POST.*/issues/42/labels.*labels\[\]=auto-dispatch' "$GH_CALLS" 2>/dev/null &&
+	grep -qE '^api -X DELETE.*/issues/42/assignees.*assignees\[\]=old-worker' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^api -X PATCH.*(labels|assignees)\[\]' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^api -X (POST|DELETE).*external-label|^api -X (POST|DELETE).*second-worker' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit preserves unrelated metadata through targeted deltas"
 else
-	fail "_rest_issue_edit computes target label set (add auto-dispatch, remove bug)" \
-		"GH_CALLS=$(cat "$GH_CALLS")"
+	fail "_rest_issue_edit preserves unrelated metadata through targeted deltas" \
+		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
 fi
 
 unset STUB_ISSUE_VIEW_FIXTURE
@@ -542,37 +552,105 @@ fi
 unset STUB_ISSUE_VIEW_FIXTURE
 
 # =============================================================================
-# Test 8c: removing the final value emits an explicit empty array field.
+# Test 8c: removing the final value uses the exact label endpoint and no PATCH.
 # =============================================================================
 : >"$GH_CALLS"
 export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[]}'
 _rest_issue_edit 45 --repo "owner/repo" --remove-label "bug" >/dev/null 2>&1
 rest_edit_rc=$?
 if [[ "$rest_edit_rc" -eq 0 ]] &&
-	grep -qE '^api -X PATCH.*/repos/owner/repo/issues/45.*-F labels\[\]' "$GH_CALLS" 2>/dev/null &&
-	! grep -qE 'labels\[\]=bug' "$GH_CALLS" 2>/dev/null; then
-	pass "_rest_issue_edit encodes an explicit empty final labels array"
+	grep -qE '^api -X DELETE.*/repos/owner/repo/issues/45/labels/bug' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^api -X PATCH.*/repos/owner/repo/issues/45' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit removes the final label without array replacement"
 else
-	fail "_rest_issue_edit encodes an explicit empty final labels array" \
+	fail "_rest_issue_edit removes the final label without array replacement" \
 		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
 fi
 unset STUB_ISSUE_VIEW_FIXTURE
 
 # =============================================================================
-# Test 8d: label and assignee deltas share one current-state GET.
+# Test 8d: array-only no-op deltas share one GET and emit no write.
 # =============================================================================
 : >"$GH_CALLS"
 export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"bug"}],"assignees":[{"login":"old-worker"}]}'
 _rest_issue_edit 46 --repo "owner/repo" \
-	--add-label "auto-dispatch" --remove-assignee "old-worker" >/dev/null 2>&1
+	--add-label "bug,bug" --remove-assignee "absent-worker" >/dev/null 2>&1
 rest_edit_rc=$?
 issue_get_count=$(grep -c '^api /repos/owner/repo/issues/46$' "$GH_CALLS" 2>/dev/null || true)
 if [[ "$rest_edit_rc" -eq 0 && "$issue_get_count" -eq 1 ]] &&
-	grep -qE '^api -X PATCH.*/repos/owner/repo/issues/46.*labels\[\]=bug.*labels\[\]=auto-dispatch.*-F assignees\[\]' "$GH_CALLS" 2>/dev/null; then
-	pass "_rest_issue_edit shares one validated GET across label and assignee arrays"
+	! grep -qE '^api -X (PATCH|POST|DELETE).*/repos/owner/repo/issues/46' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit skips all writes for no-op array deltas"
 else
-	fail "_rest_issue_edit shares one validated GET across label and assignee arrays" \
+	fail "_rest_issue_edit skips all writes for no-op array deltas" \
 		"rc=${rest_edit_rc}; gets=${issue_get_count}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_ISSUE_VIEW_FIXTURE
+
+# =============================================================================
+# Test 8e: scalar-only edits remain one PATCH and skip the snapshot GET.
+# =============================================================================
+: >"$GH_CALLS"
+_rest_issue_edit 47 --repo "owner/repo" --title "Scalar only" --state open >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -eq 0 ]] &&
+	[[ "$(grep -c '^api -X PATCH.*/repos/owner/repo/issues/47' "$GH_CALLS" 2>/dev/null || true)" -eq 1 ]] &&
+	! grep -qE '^api /repos/owner/repo/issues/47$' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit keeps scalar-only edits to one PATCH"
+else
+	fail "_rest_issue_edit keeps scalar-only edits to one PATCH" \
+		"rc=${rest_edit_rc}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+
+# =============================================================================
+# Test 8f: scalar failure prevents all planned deltas and reports the phase.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[],"assignees":[]}'
+export STUB_REST_FAIL_MATCH='PATCH /repos/owner/repo/issues/48'
+_rest_issue_edit 48 --repo "owner/repo" --title "Fails" --add-label "planned" >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -ne 0 && "$_REST_ISSUE_EDIT_FAILURE_STAGE" == "scalar" ]] &&
+	! grep -qE '^api -X POST.*/repos/owner/repo/issues/48/labels' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit scalar failure emits no deltas"
+else
+	fail "_rest_issue_edit scalar failure emits no deltas" \
+		"rc=${rest_edit_rc}; stage=${_REST_ISSUE_EDIT_FAILURE_STAGE}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_REST_FAIL_MATCH
+
+# =============================================================================
+# Test 8g: a targeted failure after scalar success is attributable and bounded.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_REST_FAIL_MATCH='POST /repos/owner/repo/issues/49/labels'
+_rest_issue_edit 49 --repo "owner/repo" --title "Persists" \
+	--add-label "fails" --add-assignee "must-not-run" >/dev/null 2>&1
+rest_edit_rc=$?
+if [[ "$rest_edit_rc" -ne 0 && "$_REST_ISSUE_EDIT_FAILURE_STAGE" == "delta" ]] &&
+	grep -qE '^api -X PATCH.*/repos/owner/repo/issues/49.*title=Persists' "$GH_CALLS" 2>/dev/null &&
+	grep -qE '^api -X POST.*/repos/owner/repo/issues/49/labels' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE '^api -X POST.*/repos/owner/repo/issues/49/assignees' "$GH_CALLS" 2>/dev/null; then
+	pass "_rest_issue_edit reports bounded partial delta failure"
+else
+	fail "_rest_issue_edit reports bounded partial delta failure" \
+		"rc=${rest_edit_rc}; stage=${_REST_ISSUE_EDIT_FAILURE_STAGE}; GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_REST_FAIL_MATCH
+
+# =============================================================================
+# Test 8h: retrying an already-applied add converges without another mutation.
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[],"assignees":[]}'
+_rest_issue_edit 50 --repo "owner/repo" --add-label "converged,converged" >/dev/null 2>&1
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"converged"}],"assignees":[]}'
+_rest_issue_edit 50 --repo "owner/repo" --add-label "converged" >/dev/null 2>&1
+mutation_count=$(grep -c '^api -X POST.*/repos/owner/repo/issues/50/labels.*labels\[\]=converged' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$mutation_count" -eq 1 ]]; then
+	pass "_rest_issue_edit retries converge without duplicate mutations"
+else
+	fail "_rest_issue_edit retries converge without duplicate mutations" \
+		"mutations=${mutation_count}; GH_CALLS=$(cat "$GH_CALLS")"
 fi
 unset STUB_ISSUE_VIEW_FIXTURE
 
