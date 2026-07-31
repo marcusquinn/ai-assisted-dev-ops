@@ -553,6 +553,62 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# GH#28944: first-match task selection must consume the complete parser stream.
+# -----------------------------------------------------------------------------
+selector_todo="$TMP/todo-first-selector.md"
+{
+	printf '%s\n' '- [ ] t1 early selector target ref:GH#1'
+	selector_i=2
+	while [[ "$selector_i" -le 12000 ]]; do
+		printf -- '- [ ] t%s selector filler ref:GH#%s\n' "$selector_i" "$selector_i"
+		selector_i=$((selector_i + 1))
+	done
+} >"$selector_todo"
+
+selector_status=0
+selector_output=$(_first_todo_task_line "t1" "$selector_todo" 2>"$TMP/selector-early.err") || selector_status=$?
+if [[ "$selector_status" -eq 0 && "$selector_output" == '- [ ] t1 early selector target ref:GH#1' && ! -s "$TMP/selector-early.err" ]]; then
+	pass "first TODO task selector: large early match avoids SIGPIPE diagnostics"
+else
+	fail "first TODO task selector: large early match failed (status=$selector_status output=$selector_output)"
+fi
+
+selector_status=0
+selector_output=$(_first_todo_task_line "t99999" "$selector_todo" 2>"$TMP/selector-missing.err") || selector_status=$?
+if [[ "$selector_status" -eq 1 && -z "$selector_output" && ! -s "$TMP/selector-missing.err" ]]; then
+	pass "first TODO task selector: no match remains distinct and quiet"
+else
+	fail "first TODO task selector: no-match contract failed (status=$selector_status output=$selector_output)"
+fi
+
+selector_status=0
+selector_output=$(_first_todo_task_line "t1" "$TMP/missing-selector.md" 2>"$TMP/selector-read.err") || selector_status=$?
+if [[ "$selector_status" -eq 2 && -z "$selector_output" && -s "$TMP/selector-read.err" ]]; then
+	pass "first TODO task selector: read failure remains detectable"
+else
+	fail "first TODO task selector: read failure contract failed (status=$selector_status output=$selector_output)"
+fi
+
+selector_status=0
+selector_output=$(_first_todo_task_line_or_empty "t1" "$TMP/missing-selector.md" 2>"$TMP/selector-wrapper.err") || selector_status=$?
+if [[ "$selector_status" -eq 1 && -z "$selector_output" && -s "$TMP/selector-wrapper.err" ]]; then
+	pass "first TODO task selector: caller wrapper propagates parser failure"
+else
+	fail "first TODO task selector: caller wrapper hid parser failure (status=$selector_status output=$selector_output)"
+fi
+
+selector_calls=$(grep -c '_first_todo_task_line' \
+	"$SCRIPT_DIR/issue-sync-helper.sh" "$SCRIPT_DIR/issue-sync-helper-close.sh" | \
+	awk -F: '{ total += $2 } END { print total + 0 }')
+if [[ "$selector_calls" -eq 5 ]] &&
+	! grep -E 'strip_code_fences .*head -1' \
+		"$SCRIPT_DIR/issue-sync-helper.sh" "$SCRIPT_DIR/issue-sync-helper-close.sh" >/dev/null; then
+	pass "first TODO task selector: all enumerated issue-sync call sites migrated"
+else
+	fail "first TODO task selector: enumerated call-site migration incomplete (calls=$selector_calls)"
+fi
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 printf '\n'

@@ -65,6 +65,52 @@ strip_code_fences() {
 	return 0
 }
 
+# Select the first live TODO task row without asking a downstream consumer to
+# terminate strip_code_fences early. The selector consumes the complete parser
+# stream, so an expected first match cannot surface as an upstream SIGPIPE.
+# Returns: 0=match, 1=no match, 2=input/parser/selector failure.
+_first_todo_task_line() {
+	local task_id="$1"
+	local todo_file="$2"
+	local pipeline_status=()
+
+	strip_code_fences <"$todo_file" | awk -v wanted="$task_id" '
+		!found && match($0, /^[[:space:]]*-[[:space:]]+\[.\][[:space:]]+/) {
+			remaining = substr($0, RLENGTH + 1)
+			split(remaining, fields, /[[:space:]]+/)
+			if (fields[1] == wanted) {
+				print
+				found = 1
+			}
+		}
+		END { if (!found) { exit 1 } }
+	'
+	pipeline_status=("${PIPESTATUS[@]}")
+	[[ "${pipeline_status[0]}" -eq 0 ]] || return 2
+	case "${pipeline_status[1]}" in
+	0) return 0 ;;
+	1) return 1 ;;
+	*) return 2 ;;
+	esac
+}
+
+# Preserve existing empty-on-no-match caller semantics while surfacing genuine
+# input/parser failures as a nonzero command result.
+_first_todo_task_line_or_empty() {
+	local task_id="$1"
+	local todo_file="$2"
+	local task_line=""
+	local selector_status=0
+
+	task_line=$(_first_todo_task_line "$task_id" "$todo_file") || selector_status=$?
+	if [[ "$selector_status" -gt 1 ]]; then
+		print_error "Failed to parse TODO.md while selecting $task_id"
+		return 1
+	fi
+	[[ "$selector_status" -eq 0 ]] && printf '%s\n' "$task_line"
+	return 0
+}
+
 # Strip only HTML comment regions (<!-- ... -->) from stdin, including
 # multi-line comments. Leaves code fences and everything else untouched.
 # Useful for callers that need comment stripping without fence removal.

@@ -348,11 +348,9 @@ _reopen_mark_if_completed() {
 _do_close() {
 	local task_id="$1" issue_number="$2" todo_file="$3" repo="$4"
 	require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$issue_number" || return 1
-	local task_id_ere
-	task_id_ere=$(_escape_ere "$task_id")
 	local task_with_notes task_line pr_info pr_num="" pr_url=""
 	task_with_notes=$(extract_task_block "$task_id" "$todo_file")
-	task_line=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 || echo "")
+	task_line=$(_first_todo_task_line_or_empty "$task_id" "$todo_file") || return 1
 	[[ -z "$task_with_notes" ]] && task_with_notes="$task_line"
 
 	# GH#20828: probe parent-task label before closing. The workflow path's
@@ -379,7 +377,7 @@ _do_close() {
 		pr_num="${pr_info%%|*}"
 		pr_url="${pr_info#*|}"
 		[[ "$DRY_RUN" != "true" && -n "$pr_num" ]] && add_pr_ref_to_todo "$task_id" "$pr_num" "$todo_file"
-		task_line=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 || echo "")
+		task_line=$(_first_todo_task_line_or_empty "$task_id" "$todo_file") || return 1
 		task_with_notes=$(extract_task_block "$task_id" "$todo_file")
 		[[ -z "$task_with_notes" ]] && task_with_notes="$task_line"
 	fi
@@ -432,10 +430,8 @@ cmd_close() {
 
 	# Single-task mode
 	if [[ -n "$target_task" ]]; then
-		local target_ere
-		target_ere=$(_escape_ere "$target_task")
 		local task_line
-		task_line=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${target_ere} " | head -1 || echo "")
+		task_line=$(_first_todo_task_line_or_empty "$target_task" "$todo_file") || return 1
 		local num
 		num=$(echo "$task_line" | grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || echo "")
 		if [[ -z "$num" ]]; then
