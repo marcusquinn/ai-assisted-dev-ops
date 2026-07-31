@@ -58,6 +58,18 @@ PY
 	return 0
 }
 
+raw_count() {
+	local connection_id="$1"
+	python3 - "$ROOT" "$connection_id" <<'PY'
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1]) / "sources" / "social" / "raw" / "telegram" / sys.argv[2]
+print(len(list(directory.glob("*.json.gz"))) if directory.exists() else 0)
+PY
+	return 0
+}
+
 expect_failure() {
 	local description="$1"
 	shift
@@ -134,7 +146,7 @@ assert_eq "selected export identity is bound" \
 assert_eq "topic, reply, edit, reaction, and poll evidence stays attached to the message" \
 	"$(sql_value "SELECT count(*) FROM objects WHERE provider='telegram' AND remote_id='chat:-200:message:10' AND provider_json LIKE '%message_thread_id%' AND provider_json LIKE '%reply_to_message_id%' AND provider_json LIKE '%reactions%' AND provider_json LIKE '%poll%'")" 1
 assert_eq "export media bytes are copied into private immutable storage" \
-	"$(sql_value "SELECT hydration_state || ':' || coalesce(byte_size,0) FROM media WHERE provider='telegram' AND remote_id LIKE 'export:%'")" \
+	"$(sql_value "SELECT hydration_state || ':' || coalesce(byte_size,0) FROM media WHERE provider='telegram' AND remote_id LIKE 'attachment:chat:-200:message:10:sha256:%'")" \
 	local:41
 assert_eq "Secret Chats remain explicit unavailable coverage" \
 	"$(sql_value "SELECT status FROM coverage_records WHERE provider='telegram' AND connection_id='conn_export' AND stream='secret_chats'")" \
@@ -151,17 +163,24 @@ update_result=$(python3 "$COLLECTOR" import-updates --base "$BASE" \
 	--allow-chat=-200 --observed-at 2026-07-30T10:20:00Z)
 assert_eq "existing-owner bot event fan-out imports" \
 	"$(json_field "$update_result" status)" complete
-assert_eq "out-of-order updates advance to the maximum durable offset" \
+assert_eq "out-of-order Telegram IDs advance the independent fan-out sequence" \
 	"$(sql_value "SELECT cursor FROM sync_cursors WHERE connection_id='conn_updates' AND stream='bot_updates'")" \
-	504
+	4
 assert_eq "export/live overlap converges on one stable chat-message identity" \
 	"$(sql_value "SELECT count(*) || ':' || max(text_content) FROM objects WHERE provider='telegram' AND remote_id='chat:-200:message:10'")" \
 	"1:Synthetic message edited by event fan-out"
 assert_eq "Bot API file IDs are not projected into searchable provider data" \
 	"$(sql_value "SELECT count(*) FROM objects WHERE provider_json LIKE '%private-transport-value%'")" 0
 assert_eq "fan-out media remains explicit remote-only evidence" \
-	"$(sql_value "SELECT hydration_state FROM media WHERE provider='telegram' AND remote_id='bot-file:fixture-unique-document'")" \
+	"$(sql_value "SELECT hydration_state FROM media WHERE provider='telegram' AND remote_id='attachment:chat:-200:message:10:bot-file:fixture-unique-document'")" \
 	remote_only
+assert_eq "membership transition details survive normalization" \
+	"$(sql_value "SELECT count(*) FROM activities WHERE activity_type='chat_member' AND provider_json LIKE '%administrator%' AND provider_json LIKE '%user2002%'")" 1
+assert_eq "anonymous reactions retain canonical actor-chat identity" \
+	"$(sql_value "SELECT actor_remote_id FROM activities WHERE activity_type='message_reaction'")" \
+	actor_chat:-200
+assert_eq "privacy, installation time, and per-chat authority are durably recorded" \
+	"$(sql_value "SELECT count(*) FROM connections WHERE connection_id='conn_updates' AND policy_json LIKE '%2026-07-30T09:00:00Z%' AND policy_json LIKE '%administrator%'")" 1
 
 python3 - "$FIXTURES/updates.json" "$TMP_DIR/competing.json" <<'PY'
 import json
@@ -177,6 +196,8 @@ expect_failure "a competing Bot API update owner cannot rebind the stream" \
 	--input "$TMP_DIR/competing.json" --connection-id conn_updates \
 	--expected-id 9001 --owner-id fixture_competing_owner --allow-chat=-200 \
 	--observed-at 2026-07-30T10:21:00Z
+assert_eq "rejected competing ownership writes no raw evidence" \
+	"$(raw_count conn_updates)" 1
 expect_failure "wrong bot identity fails before persistence" \
 	python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
 	--input "$FIXTURES/updates.json" --connection-id conn_wrong_bot \
@@ -187,6 +208,170 @@ expect_failure "non-allowlisted chats fail closed" \
 	--input "$FIXTURES/updates.json" --connection-id conn_wrong_chat \
 	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-999 \
 	--observed-at 2026-07-30T10:20:00Z
+
+python3 - "$FIXTURES/export.json" "$FIXTURES/updates.json" "$TMP_DIR" <<'PY'
+import copy
+import json
+import os
+import sys
+from pathlib import Path
+
+export = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+updates = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+target = Path(sys.argv[3])
+
+extra_chat = copy.deepcopy(export)
+extra_chat["chats"]["list"].append(
+    {"name": "Outside Scope", "type": "personal_chat", "id": 999, "messages": []}
+)
+(target / "extra-chat.json").write_text(json.dumps(extra_chat), encoding="utf-8")
+
+credential_export = copy.deepcopy(export)
+credential_export["api_token"] = "synthetic-forbidden-value"
+(target / "credential-export.json").write_text(
+    json.dumps(credential_export), encoding="utf-8"
+)
+
+credential_updates = copy.deepcopy(updates)
+credential_updates["bot"]["token"] = "synthetic-forbidden-value"
+(target / "credential-updates.json").write_text(
+    json.dumps(credential_updates), encoding="utf-8"
+)
+
+scoped = target / "symlink-export"
+scoped.mkdir()
+(scoped / "result.json").write_text(json.dumps(export), encoding="utf-8")
+os.symlink(Path(sys.argv[1]).parent / "media", scoped / "media")
+
+message = copy.deepcopy(updates["updates"][1]["edited_message"])
+message["text"] = "Newest contiguous event"
+stale_message = copy.deepcopy(message)
+stale_message["text"] = "Stale event must not roll state back"
+deletion = {
+    "business_connection_id": "fixture-business",
+    "chat": {"id": -200, "type": "private", "first_name": "Fixture"},
+    "message_ids": [70, 71],
+}
+future = copy.deepcopy(updates)
+future["observed_at"] = "2026-07-30T10:30:00Z"
+future["updates"] = [
+    {"update_id": 503, "fanout_sequence": 3, "edited_message": stale_message},
+    {"update_id": 900, "fanout_sequence": 4, "edited_message": message},
+    {"update_id": 1200, "fanout_sequence": 5, "deleted_business_messages": deletion},
+    {"update_id": 900, "fanout_sequence": 4, "edited_message": message},
+]
+(target / "future.json").write_text(json.dumps(future), encoding="utf-8")
+
+conflicting_update_id = copy.deepcopy(updates)
+conflicting_message = copy.deepcopy(message)
+conflicting_message["text"] = "Conflicting duplicate Telegram update ID"
+conflicting_update_id["updates"] = [
+    {"update_id": 9001, "fanout_sequence": 6, "edited_message": message},
+    {
+        "update_id": 9001,
+        "fanout_sequence": 7,
+        "edited_message": conflicting_message,
+    },
+]
+(target / "conflicting-update-id.json").write_text(
+    json.dumps(conflicting_update_id), encoding="utf-8"
+)
+
+stale = copy.deepcopy(updates)
+stale["observed_at"] = "2026-07-30T10:31:00Z"
+stale["bot"]["first_name"] = "Stale bot identity"
+stale["chat_authority"]["-200"]["member_status"] = "member"
+stale["updates"] = [
+    {"update_id": 503, "fanout_sequence": 3, "edited_message": stale_message}
+]
+(target / "stale.json").write_text(json.dumps(stale), encoding="utf-8")
+
+gap = copy.deepcopy(updates)
+gap["observed_at"] = "2026-07-30T10:32:00Z"
+gap["updates"] = [
+    {"update_id": 5000, "fanout_sequence": 8, "edited_message": message}
+]
+(target / "gap.json").write_text(json.dumps(gap), encoding="utf-8")
+
+poll = copy.deepcopy(updates)
+poll["updates"] = [
+    {
+        "update_id": 1,
+        "fanout_sequence": 1,
+        "poll": {"id": "poll-1", "question": "Unscoped?"},
+    }
+]
+(target / "unscoped-poll.json").write_text(json.dumps(poll), encoding="utf-8")
+PY
+
+expect_failure "raw exports must exactly match the explicit chat scope" \
+	python3 "$COLLECTOR" import-export --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/extra-chat.json" --connection-id conn_extra_chat \
+	--expected-id 1001 --allow-chat=-200 --observed-at 2026-07-30T10:10:00Z
+expect_failure "credential-shaped export keys fail before raw persistence" \
+	python3 "$COLLECTOR" import-export --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/credential-export.json" --connection-id conn_credential_export \
+	--expected-id 1001 --allow-chat=-200 --observed-at 2026-07-30T10:10:00Z
+expect_failure "credential-shaped update keys fail before raw persistence" \
+	python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/credential-updates.json" --connection-id conn_credential_updates \
+	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-200 \
+	--observed-at 2026-07-30T10:20:00Z
+expect_failure "symlinked media path components cannot escape the export root" \
+	python3 "$COLLECTOR" import-export --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/symlink-export/result.json" --connection-id conn_symlink \
+	--expected-id 1001 --allow-chat=-200 --observed-at 2026-07-30T10:10:00Z
+expect_failure "chatless poll updates are not accepted into scoped raw evidence" \
+	python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/unscoped-poll.json" --connection-id conn_poll \
+	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-200 \
+	--observed-at 2026-07-30T10:20:00Z
+
+future=$(python3 "$COLLECTOR" import-updates --base "$BASE" \
+	--alias personal:default --input "$TMP_DIR/future.json" \
+	--connection-id conn_updates --expected-id 9001 --owner-id fixture_primary_owner \
+	--allow-chat=-200 --observed-at 2026-07-30T10:30:00Z)
+assert_eq "exact duplicate and stale update deliveries converge" \
+	"$(json_field "$future" next_offset)" 6
+assert_eq "newest contiguous update wins stable message projection" \
+	"$(sql_value "SELECT text_content FROM objects WHERE provider='telegram' AND remote_id='chat:-200:message:10'")" \
+	"Newest contiguous event"
+assert_eq "business deletion observations retain every deleted message identity" \
+	"$(sql_value "SELECT count(*) FROM activities WHERE activity_type='deleted_business_messages' AND state='deleted'")" 2
+
+expect_failure "conflicting duplicate Telegram update IDs fail atomically" \
+	python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/conflicting-update-id.json" --connection-id conn_updates \
+	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-200 \
+	--observed-at 2026-07-30T10:30:30Z
+assert_eq "rejected duplicate update IDs leave the cursor unchanged" \
+	"$(sql_value "SELECT cursor FROM sync_cursors WHERE connection_id='conn_updates' AND stream='bot_updates'")" 6
+
+policy_before=$(sql_value "SELECT policy_json FROM connections WHERE connection_id='conn_updates'")
+account_before=$(sql_value "SELECT display_name FROM accounts WHERE provider='telegram' AND remote_id='bot9001'")
+coverage_before=$(sql_value "SELECT observed_at FROM coverage_records WHERE provider='telegram' AND connection_id='conn_updates' AND stream='bot_updates'")
+raw_before=$(raw_count conn_updates)
+python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/stale.json" --connection-id conn_updates \
+	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-200 \
+	--observed-at 2026-07-30T10:31:00Z >/dev/null
+assert_eq "stale event batches cannot roll projections backward" \
+	"$(sql_value "SELECT text_content FROM objects WHERE provider='telegram' AND remote_id='chat:-200:message:10'")" \
+	"Newest contiguous event"
+assert_eq "stale batches retain immutable raw evidence" "$(raw_count conn_updates)" "$((raw_before + 1))"
+assert_eq "stale batches cannot overwrite connection policy" \
+	"$(sql_value "SELECT policy_json FROM connections WHERE connection_id='conn_updates'")" "$policy_before"
+assert_eq "stale batches cannot overwrite bot identity" \
+	"$(sql_value "SELECT display_name FROM accounts WHERE provider='telegram' AND remote_id='bot9001'")" "$account_before"
+assert_eq "stale batches cannot overwrite coverage timestamps" \
+	"$(sql_value "SELECT observed_at FROM coverage_records WHERE provider='telegram' AND connection_id='conn_updates' AND stream='bot_updates'")" "$coverage_before"
+expect_failure "update gaps preserve the prior durable cursor" \
+	python3 "$COLLECTOR" import-updates --base "$BASE" --alias personal:default \
+	--input "$TMP_DIR/gap.json" --connection-id conn_updates \
+	--expected-id 9001 --owner-id fixture_primary_owner --allow-chat=-200 \
+	--observed-at 2026-07-30T10:32:00Z
+assert_eq "failed gap batch leaves cursor unchanged" \
+	"$(sql_value "SELECT cursor FROM sync_cursors WHERE connection_id='conn_updates' AND stream='bot_updates'")" 6
 
 status=$(python3 "$COLLECTOR" status --base "$BASE" --alias personal:default \
 	--connection-id conn_updates)

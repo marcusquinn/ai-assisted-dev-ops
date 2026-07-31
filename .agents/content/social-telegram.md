@@ -44,7 +44,9 @@ names, and checkpoint state.
 
 - The JSON root must carry the Telegram Desktop provenance marker and one
   `personal_information.user_id` matching `--expected-id`.
-- Every selected chat must be present. Message identity is
+- The raw export must contain exactly the explicitly allowlisted chat set; a
+  full-account export cannot be partially projected while its unselected raw
+  chats are still retained. Message identity is
   `chat:<chat-id>:message:<message-id>`, so an authorized later Bot API event can
   update the same projection without creating a second truth.
 - Locale-dependent timestamps require Telegram's Unix timestamp. Otherwise the
@@ -60,8 +62,13 @@ names, and checkpoint state.
 The collector accepts `telegram-bot-api-update-fanout-v1` envelopes only. The
 upstream owner must attest `delivery: append_only_fanout` and
 `authenticity_verified: true`, include a verified bot identity, explicit
-`allowed_updates`, privacy mode, owner ID, and raw `Update` objects. The owner ID
-is durably bound on first commit; a competing owner fails before cursor advance.
+`allowed_updates`, privacy mode, installation time, per-chat membership/admin
+authority, owner ID, and raw `Update` objects. The owner ID is durably bound on
+first commit; a competing owner fails before cursor advance.
+Every accepted update must be attributable to an allowlisted chat. Standalone
+poll answers, unsupported update types, business/guest messages, and ephemeral
+message contexts remain explicit gaps rather than risking unscoped evidence or
+colliding identities.
 
 Telegram's official Bot API 10.2 documentation states that `getUpdates` and
 webhooks are mutually exclusive, unconsumed updates are retained for no longer
@@ -82,6 +89,14 @@ Bot file identifiers and token-bearing download URLs are transport data. The
 fan-out route stores only `file_unique_id`, MIME type, size, and `remote_only`
 coverage. A separately authorized private owner may attach bytes in a future
 version without giving this collector Bot API access.
+
+The durable owner assigns a chat-scoped, contiguous `fanout_sequence` independent
+of Telegram's global `update_id`. Fan-out sequences are deduplicated, sorted, and
+required to be contiguous from the durable cursor, so omitted updates for other
+chats cannot deadlock an authorized stream. A sequence gap fails without
+advancing the cursor. Replayed sequences below that cursor remain immutable raw
+observations but cannot overwrite newer message, account, activity, or media
+projections.
 
 ## Coverage and official evidence
 

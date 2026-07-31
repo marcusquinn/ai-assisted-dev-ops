@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +50,7 @@ class ParsedTelegramBatch:
     raw_sha256: str
     stream: str
     next_offset: int | None
+    update_ids: tuple[int, ...]
     media_payloads: tuple[TelegramMediaPayload, ...]
     normalized_items: int
 
@@ -55,6 +58,33 @@ class ParsedTelegramBatch:
 def canonical_json(value: Any) -> str:
     """Serialize selected provider data deterministically."""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def read_bounded_path(path: Path, max_bytes: int, field: str) -> bytes:
+    """Read one regular file descriptor with no symlink or size-check race."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise SocialStoreError(f"Telegram {field} must be a regular non-symlink file") from error
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise SocialStoreError(f"Telegram {field} must be a regular non-symlink file")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > max_bytes or os.read(descriptor, 1):
+            raise SocialStoreError(f"Telegram {field} exceeds the byte budget")
+        return payload
+    finally:
+        os.close(descriptor)
 
 
 def require_object(value: Any, field: str) -> dict[str, Any]:

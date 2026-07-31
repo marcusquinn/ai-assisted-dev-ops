@@ -8,6 +8,9 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
+import stat
+from errno import ENOENT
 from pathlib import Path
 from typing import Any
 
@@ -26,24 +29,53 @@ from _knowledge_social_telegram_contract import (
     require_object,
     stable_id,
 )
+from knowledge_social_import import reject_credentials
 from knowledge_social_store import SocialStoreError
 
 
-def _read_export(path: Path, max_bytes: int) -> tuple[dict[str, Any], bytes]:
-    if path.is_symlink() or not path.is_file():
-        raise SocialStoreError("Telegram export must be a regular non-symlink JSON file")
-    if path.stat().st_size > max_bytes:
-        raise SocialStoreError("Telegram export exceeds the byte budget")
-    payload = path.read_bytes()
+def _read_descriptor(descriptor: int, max_bytes: int, field: str) -> bytes:
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise SocialStoreError(f"Telegram {field} must be a regular file")
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
+    if len(payload) > max_bytes or os.read(descriptor, 1):
+        raise SocialStoreError(f"Telegram {field} exceeds the byte budget")
+    return payload
+
+
+def _read_export(path: Path, max_bytes: int) -> tuple[dict[str, Any], bytes, int]:
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        parsed = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise SocialStoreError("Telegram export is not valid UTF-8 JSON") from error
-    root = require_object(parsed, "export root")
-    about = root.get("about")
-    if not isinstance(about, str) or "Telegram Desktop" not in about:
-        raise SocialStoreError("Telegram export provenance marker is missing")
-    return root, payload
+        directory = os.open(path.parent, directory_flags | nofollow)
+    except OSError as error:
+        raise SocialStoreError("Telegram export directory is unsafe") from error
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | nofollow, dir_fd=directory)
+        try:
+            payload = _read_descriptor(descriptor, max_bytes, "export")
+        finally:
+            os.close(descriptor)
+        try:
+            parsed = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise SocialStoreError("Telegram export is not valid UTF-8 JSON") from error
+        root = require_object(parsed, "export root")
+        reject_credentials(root)
+        about = root.get("about")
+        if not isinstance(about, str) or "Telegram Desktop" not in about:
+            raise SocialStoreError("Telegram export provenance marker is missing")
+        return root, payload, directory
+    except Exception:
+        os.close(directory)
+        raise
 
 
 def _display_name(record: dict[str, Any]) -> str | None:
@@ -64,20 +96,44 @@ def _account(record: dict[str, Any], observed_at: str) -> dict[str, Any]:
     }
 
 
-def _safe_media_path(export_path: Path, value: Any) -> Path | None:
+def _read_relative_media(
+    export_directory: int, value: Any, max_bytes: int
+) -> tuple[bytes, str] | None:
     if not isinstance(value, str) or not value or value.startswith("("):
         return None
     relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts:
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise SocialStoreError("Telegram export media path escapes the export directory")
-    candidate = export_path.parent / relative
-    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
-        raise SocialStoreError("Telegram export media path is unsafe")
-    return candidate if candidate.is_file() else None
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.dup(export_directory)
+        descriptors.append(current)
+        for component in relative.parts[:-1]:
+            current = os.open(
+                component,
+                directory_flags | nofollow,
+                dir_fd=current,
+            )
+            descriptors.append(current)
+        descriptor = os.open(
+            relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=current
+        )
+        descriptors.append(descriptor)
+        payload = _read_descriptor(descriptor, max_bytes, "export media")
+        return payload, relative.name
+    except OSError as error:
+        if error.errno == ENOENT:
+            return None
+        raise SocialStoreError("Telegram export media path is unsafe") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _message_media(
-    export_path: Path,
+    export_directory: int,
     message: dict[str, Any],
     object_id: str,
     used_bytes: int,
@@ -87,22 +143,22 @@ def _message_media(
     payloads: list[TelegramMediaPayload] = []
     missing = False
     candidates = (("file", message.get("file")), ("photo", message.get("photo")))
-    for kind, raw_path in candidates:
+    for _kind, raw_path in candidates:
         if raw_path is None:
             continue
-        path = _safe_media_path(export_path, raw_path)
-        if path is None:
+        result = _read_relative_media(
+            export_directory, raw_path, max_media_bytes - used_bytes
+        )
+        if result is None:
             missing = True
             continue
-        payload = path.read_bytes()
+        payload, filename = result
         used_bytes += len(payload)
-        if used_bytes > max_media_bytes:
-            raise SocialStoreError("Telegram export media exceeds the byte budget")
         digest = hashlib.sha256(payload).hexdigest()
-        remote_id = f"export:{digest}"
+        remote_id = f"attachment:{object_id}:sha256:{digest}"
         mime_type = message.get("mime_type")
         if not isinstance(mime_type, str):
-            mime_type = mimetypes.guess_type(path.name)[0]
+            mime_type = mimetypes.guess_type(filename)[0]
         records.append(
             {
                 "remote_id": remote_id,
@@ -142,6 +198,7 @@ def _selected_fields(message: dict[str, Any], chat_type: str) -> dict[str, Any]:
 
 def _parse_chat(
     request: TelegramRequest,
+    export_directory: int,
     chat: dict[str, Any],
     observed_at: str,
     accounts: dict[str, dict[str, Any]],
@@ -204,7 +261,7 @@ def _parse_chat(
                 }
             )
         found, payloads, used_media_bytes, missing = _message_media(
-            request.path,
+            export_directory,
             message,
             object_id,
             used_media_bytes,
@@ -216,9 +273,12 @@ def _parse_chat(
     return objects, activities, media, media_payloads, used_media_bytes, missing_media
 
 
-def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
-    """Validate and normalize one Telegram Desktop JSON export without writes."""
-    root, payload = _read_export(request.path, request.max_bytes)
+def _parse_telegram_export(
+    request: TelegramRequest,
+    root: dict[str, Any],
+    payload: bytes,
+    export_directory: int,
+) -> ParsedTelegramBatch:
     observed_at = normalized_time(request.observed_at, None, "observation time")
     personal = require_object(root.get("personal_information"), "personal information")
     raw_account_id = stable_id(personal.get("user_id"), "selected account ID")
@@ -234,6 +294,17 @@ def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
                 normalized = _account(contact, observed_at)
                 accounts[normalized["remote_id"]] = normalized
     chats_root = require_object(root.get("chats"), "chats")
+    if not request.allowed_chats:
+        raise SocialStoreError("Telegram export requires an explicit chat allowlist")
+    raw_chats = require_list(chats_root.get("list"), "chat list")
+    exported_chat_ids = {
+        stable_id(require_object(raw_chat, "chat").get("id"), "chat ID")
+        for raw_chat in raw_chats
+    }
+    if exported_chat_ids != request.allowed_chats:
+        raise SocialStoreError(
+            "Telegram raw export chat scope must exactly match the allowlist"
+        )
     objects: list[dict[str, Any]] = []
     activities: list[dict[str, Any]] = []
     media: list[dict[str, Any]] = []
@@ -241,20 +312,27 @@ def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
     used_media_bytes = 0
     missing_media = False
     selected_chats = 0
-    for raw_chat in require_list(chats_root.get("list"), "chat list"):
+    for raw_chat in raw_chats:
         chat = require_object(raw_chat, "chat")
-        if request.allowed_chats and stable_id(chat.get("id"), "chat ID") not in request.allowed_chats:
-            continue
         selected_chats += 1
-        parsed = _parse_chat(request, chat, observed_at, accounts, used_media_bytes)
+        parsed = _parse_chat(
+            request,
+            export_directory,
+            chat,
+            observed_at,
+            accounts,
+            used_media_bytes,
+        )
         chat_objects, chat_activities, chat_media, chat_payloads, used_media_bytes, missing = parsed
         objects.extend(chat_objects)
         activities.extend(chat_activities)
         media.extend(chat_media)
         media_payloads.extend(chat_payloads)
         missing_media = missing_media or missing
-    if request.allowed_chats and selected_chats != len(request.allowed_chats):
-        raise SocialStoreError("Telegram export is missing an allowlisted chat")
+    chat_types = {
+        str(require_object(raw_chat, "chat").get("type", "unknown"))
+        for raw_chat in raw_chats
+    }
     coverage = [
         coverage_record("messages", "complete", observed_at, exhausted=True),
         coverage_record("chats", "complete", observed_at, exhausted=True),
@@ -265,6 +343,17 @@ def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
                         exhausted=not missing_media),
         coverage_record("normal_message_deletions", "unavailable", observed_at,
                         "telegram_export_does_not_preserve_deleted_messages"),
+        coverage_record("saved_messages", "complete" if "saved_messages" in chat_types else "unavailable",
+                        observed_at, None if "saved_messages" in chat_types else "saved_messages_not_in_scoped_export",
+                        exhausted="saved_messages" in chat_types),
+        coverage_record("channel_subscriptions", "partial" if any("channel" in value for value in chat_types) else "unavailable",
+                        observed_at, "scoped_export_is_not_an_account_wide_subscription_inventory"),
+        coverage_record("participants", "partial", observed_at,
+                        "message_senders_and_service_events_are_not_a_complete_member_roster"),
+        coverage_record("stories", "unavailable", observed_at,
+                        "telegram_desktop_story_schema_not_versioned_by_this_parser"),
+        coverage_record("topics_replies_quotes_edits_reactions_polls_service_events", "partial", observed_at,
+                        "normalized_only_when_present_in_scoped_export_messages"),
         coverage_record("secret_chats", "unavailable", observed_at,
                         "secret_chats_are_device_bound_and_not_in_standard_desktop_exports"),
         coverage_record("html_exports", "unavailable", observed_at,
@@ -297,6 +386,16 @@ def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
         hashlib.sha256(payload).hexdigest(),
         "archive",
         None,
+        (),
         tuple(media_payloads),
         count,
     )
+
+
+def parse_telegram_export(request: TelegramRequest) -> ParsedTelegramBatch:
+    """Validate and normalize one Telegram Desktop JSON export without writes."""
+    root, payload, export_directory = _read_export(request.path, request.max_bytes)
+    try:
+        return _parse_telegram_export(request, root, payload, export_directory)
+    finally:
+        os.close(export_directory)
