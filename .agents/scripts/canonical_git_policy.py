@@ -96,6 +96,43 @@ def _is_isolated_prospective_merge_tree(
     return os.path.dirname(context_dir) == os.path.realpath(tempfile.gettempdir())
 
 
+def _is_isolated_routines_publisher(
+    real_git_path: str,
+    effective_cwd: str,
+    prefix: list[str],
+    subcommand: str,
+) -> bool:
+    """Allow bounded mutations only in the routines publisher's private clone."""
+    if subcommand not in {"add", "commit", "fetch", "push"}:
+        return False
+    git_dir = _git_output(
+        real_git_path,
+        effective_cwd,
+        *prefix,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+    )
+    repo_dir = _git_output(
+        real_git_path,
+        effective_cwd,
+        *prefix,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+    )
+    if not git_dir or not repo_dir:
+        return False
+    repo_dir = os.path.realpath(repo_dir)
+    context_dir = os.path.dirname(repo_dir)
+    return bool(
+        os.path.basename(repo_dir) == "repo"
+        and re.fullmatch(r"routines-publisher\.[A-Za-z0-9]+", os.path.basename(context_dir))
+        and os.path.dirname(context_dir) == os.path.realpath(tempfile.gettempdir())
+        and os.path.realpath(git_dir) == os.path.join(repo_dir, ".git")
+    )
+
+
 def classify_git_argv(
     argv: list[str], cwd: str, real_git_path: str, check_unresolved: bool = False
 ) -> tuple[bool, str]:
@@ -120,6 +157,10 @@ def classify_git_argv(
             real_git_path, effective_cwd, prefix, subcommand, args
         ):
             result = True, "isolated prospective merge-tree probe"
+        elif _is_isolated_routines_publisher(
+            real_git_path, effective_cwd, prefix, subcommand
+        ):
+            result = True, "isolated routines publisher mutation"
         elif _is_allowed_canonical(subcommand, args):
             result = True, "read-only canonical operation or linked-worktree creation"
         else:
