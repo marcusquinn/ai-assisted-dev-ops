@@ -218,6 +218,8 @@ enhancor-helper.sh batch --command enhance --input photoshoot.txt \
 
 | Topic | File |
 |-------|------|
+| Provider selection / hosted vs local generation | `content/media-generation-providers.md` |
+| Kie.ai image generation and editing | `content/video-kie.md` |
 | Brand identity / imagery style | `tools/design/brand-identity.md`, `context/brand-identity.toon` |
 | Design catalogue (96 palettes, 67 UI styles) | `tools/design/ui-ux-catalogue.toon` |
 | Model comparison (DALL-E 3, MJ, FLUX, SD XL) | `tools/vision/image-generation.md` |

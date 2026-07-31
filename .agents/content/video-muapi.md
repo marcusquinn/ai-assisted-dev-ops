@@ -214,15 +214,13 @@ muapi-helper.sh status <request-id>
 | Video | Wan 2.1/2.2, Runway Gen-3/Act-Two, Kling v2.1, Luma Dream Machine | Wan: speech-to-video/LoRA; Runway: cinematic; Kling: realism; Luma: reframing |
 | Audio | Suno, MMAudio-v2, Sync-Lipsync/LatentSync | Music create/remix/extend, text-to-audio, video-to-audio sync, lip-sync |
 
-## MuAPI vs WaveSpeed vs Runway
+## Provider Selection
 
-| Feature | MuAPI | WaveSpeed | Runway |
-|---------|-------|-----------|--------|
-| Image | Flux, Midjourney, HiDream | Flux, DALL-E, Imagen, Z-Image | Gen-4 Image, Gemini |
-| Video | Wan, Runway, Kling, Luma | Wan, Kling, Sora, Veo | Gen-4, Veo 3, Act Two |
-| Audio | Suno, MMAudio, lipsync | Ace Step, TTS | ElevenLabs TTS/STS/SFX |
-| Unique | VFX/effects, specialized apps, storyboarding, workflows, agents | Unified model access | Full media pipeline |
-| Auth | `x-api-key` header | Bearer token | Bearer token |
+Use `content/media-generation-providers.md` for the canonical gateway and
+direct-provider comparison. Choose MuAPI when VFX, specialized apps,
+storyboarding, workflows, agents, music, or lipsync orchestration matters;
+do not select it solely because an upstream model name overlaps another
+gateway.
 
 ## Troubleshooting
 
@@ -233,6 +231,8 @@ muapi-helper.sh status <request-id>
 ## Related
 
 - [MuAPI Documentation](https://muapi.ai/docs/introduction) | [Playground](https://muapi.ai/playground)
+- `content/media-generation-providers.md` — Canonical provider routing
+- `content/video-kie.md` — Kie.ai generic Market task API
 - `content/video-wavespeed.md` — WaveSpeed AI (alternative unified API)
 - `content/video-runway.md` — Runway API (alternative media pipeline)
 - `tools/video/video-prompt-design.md` — Prompt engineering for video models

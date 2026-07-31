@@ -125,6 +125,8 @@ voice-helper.sh benchmark                   # Test component speeds
 
 ## See Also
 
+- `content/media-generation-providers.md` — Hosted/local media provider routing
+- `content/video-kie.md` — Kie.ai audio models through the generic Market task API
 - `tools/voice/speech-to-speech.md` — Advanced voice pipeline (VAD, STT, LLM, TTS)
 - `tools/voice/cloud-voice-agents.md` — Cloud voice agents (GPT-4o Realtime, MiniCPM-o)
 - `tools/voice/voice-ai-models.md` — Complete model comparison (TTS, STT, S2S)
