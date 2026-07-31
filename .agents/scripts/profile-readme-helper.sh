@@ -651,6 +651,48 @@ _build_readme_connect() {
 	return 0
 }
 
+# --- Build the commit-history chart for a user ---
+# Usage: _build_commit_history_chart <gh_user>
+# Outputs a centered light/dark picture without a clickable provider backlink.
+_build_commit_history_chart() {
+	local gh_user="$1"
+	gh_user="${gh_user//[^a-zA-Z0-9-]/}"
+	if [[ -z "$gh_user" ]]; then
+		return 0
+	fi
+
+	cat <<EOF
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://commit-history.com/embed/${gh_user}?theme=dark" />
+    <img alt="${gh_user}'s commit history" src="https://commit-history.com/embed/${gh_user}" />
+  </picture>
+</div>
+EOF
+	return 0
+}
+
+# --- Append the commit-history chart to an older aidevops-generated README ---
+# Usage: _ensure_commit_history_chart <readme_path> <gh_user>
+_ensure_commit_history_chart() {
+	local readme_path="$1"
+	local gh_user="$2"
+	if ! grep -Fq '> Stats auto-updated by [aidevops]' "$readme_path" 2>/dev/null; then
+		return 0
+	fi
+	if grep -Fq 'https://commit-history.com/embed/' "$readme_path" 2>/dev/null; then
+		return 0
+	fi
+
+	local commit_history_chart
+	commit_history_chart=$(_build_commit_history_chart "$gh_user")
+	if [[ -z "$commit_history_chart" ]]; then
+		return 0
+	fi
+	printf '\n%s\n' "$commit_history_chart" >>"$readme_path"
+	return 0
+}
+
 # --- Generate rich profile README from GitHub data ---
 _generate_rich_readme() {
 	local gh_user="$1"
@@ -700,6 +742,8 @@ _generate_rich_readme() {
 	# Build connect section
 	local connect
 	connect=$(_build_readme_connect "$gh_user" "$blog" "$twitter")
+	local commit_history_chart
+	commit_history_chart=$(_build_commit_history_chart "$gh_user")
 
 	# Compose the README
 	{
@@ -745,6 +789,8 @@ _generate_rich_readme() {
 		echo ""
 		echo "<!-- UPDATED-START -->"
 		echo "<!-- UPDATED-END -->"
+		echo ""
+		printf '%s\n' "$commit_history_chart"
 	} >"$readme_path"
 
 	return 0
@@ -1163,6 +1209,9 @@ cmd_update() {
 		}
 		!skip { print }
 	' "$readme_path" >"$tmp_file"
+	local gh_user
+	gh_user=$(_resolve_profile_user "$profile_repo")
+	_ensure_commit_history_chart "$tmp_file" "$gh_user"
 
 	# Check if content changed, ignoring UPDATED marker block
 	local old_normalized new_normalized

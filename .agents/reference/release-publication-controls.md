@@ -134,8 +134,12 @@ Aggregation PR #29031 re-reviews authorized aggregation PR #29026 at
 before publication.
 
 Aggregation PR #29039 re-reviews authorized aggregation PR #29031 at
-`c77eaecf9f8b20139a2d5164c49bdd7d75f928b6` because PR #29029 advanced `main`
-before publication.
+`c77eaecf9f8b20139a2d5164c49bdd7d75f928b6` because
+PRs #29029, #29037, and #29038 advanced `main` before publication.
+
+Aggregation PR #29037 reviews authorized Pulse triage PR #29033 at
+`fb4feba9216c643d7a61838877eedeb99bcef6e1` because PRs #29032 and #29029
+advanced `main` before publication.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
