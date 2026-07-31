@@ -436,6 +436,11 @@ _gh_with_timeout() {
 		[[ "$remaining_secs" -gt 0 ]] || return 124
 		[[ "$remaining_secs" -ge "$secs" ]] || secs="$remaining_secs"
 	fi
+	# Invocation-scoped diagnostics may provide a pre-created counter file.
+	# File-backed counting survives the command substitutions used by callers.
+	if [[ -n "${_AIDEVOPS_GH_CALL_COUNT_FILE:-}" && -f "$_AIDEVOPS_GH_CALL_COUNT_FILE" ]]; then
+		printf '.\n' >>"$_AIDEVOPS_GH_CALL_COUNT_FILE" 2>/dev/null || true
+	fi
 	local cmd="${1:-}"
 	local err_file=""
 	local out_file=""

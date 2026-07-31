@@ -57,9 +57,17 @@ _NODE_ID_RATE_LIMITED_FILE=""
 # survive those subshell boundaries while Bash variables do not.
 _RELATIONSHIP_EDGE_SEEN_FILE=""
 _RELATIONSHIP_RESULT_FILE=""
+_RELATIONSHIP_BACKEND_CALL_FILE=""
 _RELATIONSHIP_RETRY_RESULT="RELS:0 RETRYABLE:1"
 _RELATIONSHIP_SYNC_SCOPE_ACTIVE=0
 _RELATIONSHIP_SYNC_DEADLINE_EPOCH=
+_RELATIONSHIP_RESUME_TASKS=()
+_RELATIONSHIP_RESUME_FRESH="fresh"
+_RELATIONSHIP_RESUME_STATUS="$_RELATIONSHIP_RESUME_FRESH"
+_RELATIONSHIP_WORK_TASKS=()
+_RELATIONSHIP_CANDIDATE_TOTAL=0
+_RELATIONSHIP_INPUT_REVISION=""
+_RELATIONSHIP_STATE_FILE=""
 _REL_OUTCOME_CREATED="created"
 _REL_OUTCOME_ALREADY_PRESENT="already-present"
 _REL_OUTCOME_FAILED_RESOLUTION="failed:resolution"
@@ -74,8 +82,13 @@ _init_relationship_sync_state() {
 	if [[ -z "$_RELATIONSHIP_RESULT_FILE" ]]; then
 		_RELATIONSHIP_RESULT_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-results.XXXXXX") || return 1
 	fi
+	if [[ -z "$_RELATIONSHIP_BACKEND_CALL_FILE" ]]; then
+		_RELATIONSHIP_BACKEND_CALL_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-calls.XXXXXX") || return 1
+	fi
 	: >"$_RELATIONSHIP_EDGE_SEEN_FILE"
 	: >"$_RELATIONSHIP_RESULT_FILE"
+	: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
+	_AIDEVOPS_GH_CALL_COUNT_FILE="$_RELATIONSHIP_BACKEND_CALL_FILE"
 	return 0
 }
 
@@ -88,6 +101,11 @@ _cleanup_relationship_sync_state() {
 		rm -f "$_RELATIONSHIP_RESULT_FILE"
 		_RELATIONSHIP_RESULT_FILE=""
 	fi
+	if [[ -n "$_RELATIONSHIP_BACKEND_CALL_FILE" ]]; then
+		rm -f "$_RELATIONSHIP_BACKEND_CALL_FILE"
+		_RELATIONSHIP_BACKEND_CALL_FILE=""
+	fi
+	_AIDEVOPS_GH_CALL_COUNT_FILE=""
 	return 0
 }
 
@@ -116,6 +134,7 @@ _end_relationship_sync_scope() {
 _register_relationship_sync_cleanup() {
 	push_cleanup "rm -f '${_RELATIONSHIP_EDGE_SEEN_FILE}'"
 	push_cleanup "rm -f '${_RELATIONSHIP_RESULT_FILE}'"
+	push_cleanup "rm -f '${_RELATIONSHIP_BACKEND_CALL_FILE}'"
 	return 0
 }
 
@@ -167,8 +186,100 @@ _relationship_first_incomplete_outcome() {
 	return 0
 }
 
+_relationship_backend_call_count() {
+	local count="0"
+	[[ -f "${_RELATIONSHIP_BACKEND_CALL_FILE:-}" ]] || { printf '0\n'; return 0; }
+	count=$(wc -l <"$_RELATIONSHIP_BACKEND_CALL_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+	[[ "$count" =~ ^[0-9]+$ ]] || count=0
+	printf '%s\n' "$count"
+	return 0
+}
+
+_relationship_hash_stdin() {
+	if command -v git >/dev/null 2>&1; then
+		git hash-object --stdin 2>/dev/null
+		return $?
+	fi
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 2>/dev/null | cut -d' ' -f1
+		return $?
+	fi
+	cksum | tr ' ' ':'
+	return $?
+}
+
+_relationship_resume_state_file() {
+	local repo="$1"
+	local state_dir="${AIDEVOPS_RELATIONSHIP_STATE_DIR:-${HOME}/.aidevops/state/issue-sync-relationships}"
+	local safe_repo=""
+	safe_repo=$(printf '%s' "$repo" | tr -c '[:alnum:]._-' '_') || return 1
+	printf '%s/%s.state\n' "$state_dir" "$safe_repo"
+	return 0
+}
+
+_relationship_load_resume_state() {
+	local state_file="$1"
+	local expected_revision="$2"
+	local line="" state_revision="" state_version="" valid=1 pending_task=""
+	_RELATIONSHIP_RESUME_TASKS=()
+	_RELATIONSHIP_RESUME_STATUS="$_RELATIONSHIP_RESUME_FRESH"
+	[[ -f "$state_file" ]] || return 0
+	while IFS= read -r line; do
+		case "$line" in
+		version=*) state_version="${line#version=}" ;;
+		revision=*) state_revision="${line#revision=}" ;;
+		pending=*)
+			pending_task="${line#pending=}"
+			if [[ "$pending_task" =~ ^t[0-9]+(\.[0-9]+)*$ ]]; then
+				_RELATIONSHIP_RESUME_TASKS+=("$pending_task")
+			else
+				valid=0
+			fi
+			;;
+		*) valid=0 ;;
+		esac
+	done <"$state_file"
+	if [[ "$valid" -ne 1 || "$state_version" != "1" || "$state_revision" != "$expected_revision" ]]; then
+		_RELATIONSHIP_RESUME_TASKS=()
+		_RELATIONSHIP_RESUME_STATUS="invalidated"
+		rm -f "$state_file"
+		return 0
+	fi
+	if [[ ${#_RELATIONSHIP_RESUME_TASKS[@]} -gt 0 ]]; then
+		_RELATIONSHIP_RESUME_STATUS="resumed"
+	else
+		rm -f "$state_file"
+	fi
+	return 0
+}
+
+_relationship_write_resume_state() {
+	local state_file="$1"
+	local revision="$2"
+	shift 2
+	local state_dir="" temp_file="" task_id="" previous_umask=""
+	state_dir=$(dirname "$state_file") || return 1
+	mkdir -p "$state_dir" || return 1
+	previous_umask=$(umask)
+	umask 077
+	temp_file=$(mktemp "${state_dir}/.relationships.XXXXXX")
+	local mktemp_rc=$?
+	umask "$previous_umask"
+	[[ "$mktemp_rc" -eq 0 && -n "$temp_file" ]] || return 1
+	{
+		printf 'version=1\nrevision=%s\n' "$revision"
+		for task_id in "$@"; do
+			printf 'pending=%s\n' "$task_id"
+		done
+	} >"$temp_file" || { rm -f "$temp_file"; return 1; }
+	mv "$temp_file" "$state_file" || { rm -f "$temp_file"; return 1; }
+	return 0
+}
+
 _relationship_print_summary() {
 	local attempted="$1" complete="$2" total="$3" retryable_total="$4" deadline_exhausted="$5"
+	local candidate_total="${6:-$total}" remaining="${7:-0}" resume_status="${8:-fresh}"
+	local parse_seconds="${9:-0}" mutation_seconds="${10:-0}" backend_calls="${11:-0}"
 	local created already_present failed deferred first_incomplete
 	created=$(_relationship_outcome_count "$_REL_OUTCOME_CREATED")
 	already_present=$(_relationship_outcome_count "$_REL_OUTCOME_ALREADY_PRESENT")
@@ -179,6 +290,10 @@ _relationship_print_summary() {
 		"$created" "$already_present" "$failed" "$deferred"
 	printf 'Tasks: attempted=%d complete=%d/%d | Retryable: %d | Deadline exhausted: %s\n' \
 		"$attempted" "$complete" "$total" "$retryable_total" "$deadline_exhausted"
+	printf 'Workset: candidates=%d resume=%s pending_before=%d remaining=%d\n' \
+		"$candidate_total" "$resume_status" "$total" "$remaining"
+	printf 'Timing: parse=%ss mutation=%ss | Backend calls: %d\n' \
+		"$parse_seconds" "$mutation_seconds" "$backend_calls"
 	printf 'Failure: %s\n' "$first_incomplete"
 	[[ "$retryable_total" -eq 0 ]] || printf 'Recovery: rerun .agents/scripts/issue-sync-helper.sh relationships\n'
 	return 0
@@ -978,6 +1093,58 @@ sync_relationships_for_task() {
 	return 0
 }
 
+_relationship_prepare_workset() {
+	local target_task="$1"
+	local todo_file="$2"
+	local repo="$3"
+	local revision_input="" seen_list=$'\n' line="" tid="" dominated=false task=""
+	local todo_line_re='^[[:space:]]*-[[:space:]]+\[[[:space:]x>-]\][[:space:]]+(t[0-9]+(\.[0-9]+)*)[[:space:]]'
+	local tasks=() unique_tasks=()
+	_RELATIONSHIP_WORK_TASKS=()
+	_RELATIONSHIP_CANDIDATE_TOTAL=0
+	_RELATIONSHIP_INPUT_REVISION=""
+	_RELATIONSHIP_STATE_FILE=""
+	_RELATIONSHIP_RESUME_STATUS="$_RELATIONSHIP_RESUME_FRESH"
+	if [[ -n "$target_task" ]]; then
+		tasks=("$target_task")
+	else
+		while IFS= read -r line; do
+			[[ "$line" =~ $todo_line_re ]] || continue
+			tid="${BASH_REMATCH[1]}"
+			dominated=false
+			[[ "$line" =~ blocked-by:|blocks:|parent: ]] && dominated=true
+			[[ "$tid" == *"."* ]] && dominated=true
+			if [[ "$dominated" == "true" ]]; then
+				tasks+=("$tid")
+				revision_input="${revision_input}${line}"$'\n'
+			fi
+		done < <(strip_code_fences <"$todo_file" | grep -E '^\s*- \[.\] t[0-9]+.*ref:GH#[0-9]+' || true)
+	fi
+	if [[ ${#tasks[@]} -eq 0 ]]; then
+		if [[ -z "$target_task" ]]; then
+			_RELATIONSHIP_STATE_FILE=$(_relationship_resume_state_file "$repo") || _RELATIONSHIP_STATE_FILE=""
+			[[ -z "$_RELATIONSHIP_STATE_FILE" ]] || rm -f "$_RELATIONSHIP_STATE_FILE"
+		fi
+		return 2
+	fi
+	for task in "${tasks[@]}"; do
+		if [[ "$seen_list" != *$'\n'"$task"$'\n'* ]]; then
+			unique_tasks+=("$task")
+			seen_list="${seen_list}${task}"$'\n'
+		fi
+	done
+	_RELATIONSHIP_CANDIDATE_TOTAL="${#unique_tasks[@]}"
+	_RELATIONSHIP_WORK_TASKS=("${unique_tasks[@]}")
+	[[ -n "$target_task" ]] && return 0
+	_RELATIONSHIP_INPUT_REVISION=$(printf '%s' "$revision_input" | _relationship_hash_stdin) || return 1
+	_RELATIONSHIP_STATE_FILE=$(_relationship_resume_state_file "$repo") || return 1
+	_relationship_load_resume_state "$_RELATIONSHIP_STATE_FILE" "$_RELATIONSHIP_INPUT_REVISION"
+	if [[ ${#_RELATIONSHIP_RESUME_TASKS[@]} -gt 0 ]]; then
+		_RELATIONSHIP_WORK_TASKS=("${_RELATIONSHIP_RESUME_TASKS[@]}")
+	fi
+	return 0
+}
+
 # Bulk relationship sync command.
 # Scans TODO.md for tasks with relationship metadata or subtask patterns,
 # resolves to GitHub node IDs, and sets relationships via GraphQL.
@@ -987,29 +1154,12 @@ cmd_relationships() {
 	local target_task="${1:-}"
 	_init_cmd || return 1
 	local repo="$_CMD_REPO" todo_file="$_CMD_TODO"
-
-	local tasks=()
-	if [[ -n "$target_task" ]]; then
-		tasks=("$target_task")
-	else
-		# Collect tasks with relationship metadata or subtask IDs (contain a dot)
-		while IFS= read -r line; do
-			local tid
-			tid=$(_task_id_from_todo_line "$line" 2>/dev/null || true)
-			[[ -z "$tid" ]] && continue
-			# Include if it has dependencies, an explicit parent, or is a subtask
-			local dominated=false
-			echo "$line" | grep -qE 'blocked-by:|blocks:|parent:' && dominated=true
-			[[ "$tid" == *"."* ]] && dominated=true
-			[[ "$dominated" == "true" ]] && tasks+=("$tid")
-		done < <(strip_code_fences <"$todo_file" | grep -E '^\s*- \[.\] t[0-9]+.*ref:GH#[0-9]+' || true)
-	fi
-
-	[[ ${#tasks[@]} -eq 0 ]] && {
-		print_info "No tasks with relationships to sync"
-		return 0
-	}
-	local owns_scope=0
+	local owns_scope=0 parse_started=0 parse_finished=0 mutation_started=0 mutation_finished=0
+	local current_task="" result="" n="" prepare_rc=0
+	local total=0 candidate_total=0 pending_before=0 index=0 remaining_index=0
+	local blocked_set=0 sub_set=0 attempted=0 complete=0 retryable_total=0 task_retryable=0
+	local deadline_exhausted=false backend_calls=0
+	local pending_tasks=()
 	if [[ "$_RELATIONSHIP_SYNC_SCOPE_ACTIVE" -ne 1 ]]; then
 		_save_cleanup_scope
 		trap '_run_cleanups' RETURN
@@ -1022,38 +1172,40 @@ cmd_relationships() {
 		return 1
 	}
 	local AIDEVOPS_GH_DEADLINE_EPOCH="$_RELATIONSHIP_SYNC_DEADLINE_EPOCH"
-
-	# Deduplicate (bash 3.2 compatible — no associative arrays)
-	local seen_list=""
-	local unique_tasks=()
-	local t
-	for t in "${tasks[@]}"; do
-		if ! printf '%s' "$seen_list" | grep -Fxq -- "$t"; then
-			unique_tasks+=("$t")
-			seen_list="${seen_list}${t}"$'\n'
-		fi
-	done
-
-	local total="${#unique_tasks[@]}"
-	print_info "Syncing relationships for $total task(s) in $repo"
-
-	local blocked_set=0 sub_set=0 attempted=0 complete=0 retryable_total=0 deadline_exhausted=false
-	for task_id in "${unique_tasks[@]}"; do
+	parse_started=$(date +%s 2>/dev/null || printf '0')
+	_relationship_prepare_workset "$target_task" "$todo_file" "$repo" || prepare_rc=$?
+	if [[ "$prepare_rc" -eq 2 ]]; then
+		print_info "No tasks with relationships to sync"
+		[[ "$owns_scope" -eq 0 ]] || _end_relationship_sync_scope
+		return 0
+	fi
+	if [[ "$prepare_rc" -ne 0 ]]; then
+		[[ "$owns_scope" -eq 0 ]] || _end_relationship_sync_scope
+		return 1
+	fi
+	candidate_total="$_RELATIONSHIP_CANDIDATE_TOTAL"
+	total="${#_RELATIONSHIP_WORK_TASKS[@]}"
+	pending_before="$total"
+	parse_finished=$(date +%s 2>/dev/null || printf '%s' "$parse_started")
+	print_info "Syncing relationships for $candidate_total task(s) in $repo (pending: $total, resume: $_RELATIONSHIP_RESUME_STATUS)"
+	mutation_started="$parse_finished"
+	for ((index = 0; index < total; index++)); do
+		current_task="${_RELATIONSHIP_WORK_TASKS[index]}"
 		if _relationship_deadline_expired; then
 			deadline_exhausted=true
 			_relationship_record_outcome "$_REL_OUTCOME_DEFERRED_DEADLINE"
 			retryable_total=$((retryable_total + 1))
+			for ((remaining_index = index; remaining_index < total; remaining_index++)); do
+				pending_tasks+=("${_RELATIONSHIP_WORK_TASKS[remaining_index]}")
+			done
 			break
 		fi
 		attempted=$((attempted + 1))
-		local task_retryable=0
+		task_retryable=0
 		_relationship_print_progress "$attempted" "$total"
 
-		local result
-
 		# Blocked-by / blocks
-		result=$(_sync_blocked_by_for_task "$task_id" "$todo_file" "$repo" 2>/dev/null || echo "RELS:0")
-		local n
+		result=$(_sync_blocked_by_for_task "$current_task" "$todo_file" "$repo" 2>/dev/null || echo "RELS:0")
 		n=$(echo "$result" | grep -oE 'RELS:[0-9]+' | head -1 | sed 's/RELS://' || echo "0")
 		blocked_set=$((blocked_set + n))
 		n=$(echo "$result" | grep -oE 'RETRYABLE:[0-9]+' | head -1 | sed 's/RETRYABLE://' || echo "0")
@@ -1067,18 +1219,33 @@ cmd_relationships() {
 			retryable_total=$((retryable_total + 1))
 			task_retryable=$((task_retryable + 1))
 		else
-			result=$(_sync_subtask_hierarchy_for_task "$task_id" "$todo_file" "$repo" 2>/dev/null || echo "$_RELATIONSHIP_RETRY_RESULT")
+			result=$(_sync_subtask_hierarchy_for_task "$current_task" "$todo_file" "$repo" 2>/dev/null || echo "$_RELATIONSHIP_RETRY_RESULT")
 			n=$(echo "$result" | grep -oE 'RELS:[0-9]+' | head -1 | sed 's/RELS://' || echo "0")
 			sub_set=$((sub_set + n))
 			n=$(echo "$result" | grep -oE 'RETRYABLE:[0-9]+' | head -1 | sed 's/RETRYABLE://' || echo "0")
 			retryable_total=$((retryable_total + n))
 			task_retryable=$((task_retryable + n))
 		fi
-		[[ "$task_retryable" -ne 0 ]] || complete=$((complete + 1))
+		if [[ "$task_retryable" -eq 0 ]]; then
+			complete=$((complete + 1))
+		else
+			pending_tasks+=("$current_task")
+		fi
 	done
 	[[ $total -gt 25 ]] && printf "\n" >&2
-
-	_relationship_print_summary "$attempted" "$complete" "${#unique_tasks[@]}" "$retryable_total" "$deadline_exhausted"
+	mutation_finished=$(date +%s 2>/dev/null || printf '%s' "$mutation_started")
+	backend_calls=$(_relationship_backend_call_count)
+	if [[ -z "$target_task" ]]; then
+		if [[ ${#pending_tasks[@]} -gt 0 ]]; then
+			_relationship_write_resume_state "$_RELATIONSHIP_STATE_FILE" "$_RELATIONSHIP_INPUT_REVISION" "${pending_tasks[@]}" || \
+				print_warning "Relationship progress could not be persisted; the next run will restart safely"
+		else
+			rm -f "$_RELATIONSHIP_STATE_FILE"
+		fi
+	fi
+	_relationship_print_summary "$attempted" "$complete" "$pending_before" "$retryable_total" "$deadline_exhausted" \
+		"$candidate_total" "${#pending_tasks[@]}" "$_RELATIONSHIP_RESUME_STATUS" \
+		"$((parse_finished - parse_started))" "$((mutation_finished - mutation_started))" "$backend_calls"
 	[[ "$owns_scope" -eq 0 ]] || _end_relationship_sync_scope
 	[[ "$retryable_total" -eq 0 ]] || return 1
 	return 0
