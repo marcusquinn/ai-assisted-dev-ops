@@ -129,14 +129,14 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
         true
       )
     else empty end,
-    if ($queue_scan_complete and $available_issues >= $threshold and $active_workers == 0) then
+    if ($queue_scan_complete and $eligible_issues >= $threshold and $active_workers == 0) then
       finding(
         "pulse-underfilled-auto-dispatch-queue";
         "high";
         "Auto-dispatch queue is visible while worker capacity is empty";
         [
           ("active_workers=" + ($active_workers | tostring) + "/" + ($max_workers | tostring)),
-          ("available_unassigned_auto_dispatch=" + ($available_issues | tostring)),
+          ("eligible_available_unassigned_auto_dispatch=" + ($eligible_issues | tostring)),
           ("available_older_than_threshold=" + ($old_available | tostring)),
           ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring))
         ];
@@ -144,7 +144,7 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
         true
       )
     else empty end,
-    if ($queue_scan_complete and $effective_available_slots >= $threshold and $eligible_issues < ([$threshold, $effective_available_slots] | min)) then
+    if ($queue_scan_complete and $effective_available_slots >= $threshold and $eligible_issues < $threshold) then
       finding(
         "pulse-eligible-queue-under-target";
         "high";
@@ -152,7 +152,7 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
         [
           ("available_slots=" + ($effective_available_slots | tostring)),
           ("eligible_available_unassigned=" + ($eligible_issues | tostring)),
-          ("eligible_depth_target=" + (([$threshold, $effective_available_slots] | min) | tostring)),
+          ("eligible_depth_target=" + ($threshold | tostring)),
           ("auto_dispatch_open=" + (($queue.aggregate.auto_dispatch_open // 0) | tostring)),
           ("assigned_in_flight=" + (($queue.aggregate.assigned_in_flight // $queue.aggregate.assigned // 0) | tostring)),
           ("blocked_explicit_hold=" + (($queue.aggregate.blocked_explicit_hold // $queue.aggregate.blocked_labels // 0) | tostring)),

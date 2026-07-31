@@ -201,6 +201,20 @@ if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" && " $* " == *"public/rep
   printf 'simulated queue scan failure\n' >&2
   exit 1
 fi
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "malformed" ]]; then
+  if [[ " $* " == *"private/repo-one"* ]]; then
+    cat <<'JSON'
+[
+  {"number":21,"title":"private malformed one","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]},
+  {"number":22,"title":"private malformed two","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]},
+  {"number":23,"title":"private malformed three","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]}
+]
+JSON
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
 if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "truncation" ]]; then
   if [[ " $* " == *"private/repo-one"* ]]; then
     cat <<'JSON'
@@ -292,6 +306,11 @@ HANDOFF_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_runtime_hand
 assert_eq "json runtime handoff rate uses terminal session denominator" "90" "$HANDOFF_RATE"
 SUCCESS_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_success_rate')
 assert_eq "json delivered success rate is unknown without GitHub delivery check" "null" "$SUCCESS_RATE"
+
+MALFORMED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=malformed" "$HELPER" json 2>&1)
+assert_contains "malformed queue emits normalization shortfall" "pulse-eligible-queue-under-target" "$MALFORMED_OUT"
+assert_contains "malformed queue reports missing tiers" "auto-dispatch-missing-tier-labels" "$MALFORMED_OUT"
+assert_not_contains "malformed queue cannot trigger worker-retention underfill" "pulse-underfilled-auto-dispatch-queue" "$MALFORMED_OUT"
 
 cat >"${TEST_ROOT}/current-state-active.sh" <<'SH'
 #!/usr/bin/env bash
