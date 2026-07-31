@@ -237,7 +237,7 @@ _remove_show_owner_error() {
 _interactive_session_auto_claim() {
 	local branch="$1"
 	local worktree_path="$2"
-	local explicit_issue="${3:-}"  # t2260: --issue NNN takes highest precedence
+	local explicit_issue="${3:-}" # t2260: --issue NNN takes highest precedence
 
 	# Only engage for interactive sessions — workers handle their own
 	# claim flow via dispatch-dedup-helper.sh at dispatch time.
@@ -286,10 +286,10 @@ _interactive_session_auto_claim() {
 				# Match ONLY the structured ref:GH#NNN field on the task's TODO line
 				local task_id_ere=""
 				task_id_ere=$(task_identity_escape_ere "$task_id") || return 0
-				issue_num=$(grep -E "^- \[.\] ${task_id_ere}([[:space:]]|$)" "$repo_root/TODO.md" \
-					| grep -oE 'ref:GH#[0-9]+' \
-					| grep -oE '[0-9]+' \
-					| head -1 || true)
+				issue_num=$(grep -E "^- \[.\] ${task_id_ere}([[:space:]]|$)" "$repo_root/TODO.md" |
+					grep -oE 'ref:GH#[0-9]+' |
+					grep -oE '[0-9]+' |
+					head -1 || true)
 			fi
 		fi
 	fi
@@ -470,8 +470,8 @@ _worktree_resolve_abs_path() {
 	else
 		# Parent does not exist — naive join (best-effort absolute form)
 		case "$input" in
-			/*) printf '%s\n' "$input" ;;
-			*)  printf '%s/%s\n' "$(pwd -P)" "$input" ;;
+		/*) printf '%s\n' "$input" ;;
+		*) printf '%s/%s\n' "$(pwd -P)" "$input" ;;
 		esac
 	fi
 	return 0
@@ -618,7 +618,8 @@ _cmd_add_assert_path_outside_repo() {
 }
 
 # Parse cmd_add arguments: positional (branch, path) + optional flags.
-# Sets global _ADD_BRANCH, _ADD_PATH, _ADD_ISSUE, _ADD_BASE. Returns 1 on parse error.
+# Sets global _ADD_BRANCH, _ADD_PATH, _ADD_ISSUE, _ADD_BASE, and
+# _ADD_FRESH_ON_COLLISION. Returns 1 on parse error.
 # Extracted from cmd_add (t2260) to keep function bodies under 100 lines.
 # --base <ref> (t2802): explicit base for new branch creation. Default is
 # origin/<default_branch> — prevents scope-leak PRs when canonical HEAD is stale.
@@ -627,56 +628,182 @@ _parse_cmd_add_args() {
 	_ADD_PATH=""
 	_ADD_ISSUE=""
 	_ADD_BASE=""
+	_ADD_FRESH_ON_COLLISION=0
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-			--issue)
-				local _next="${2:-}"
-				if [[ -z "$_next" ]]; then
-					echo -e "${RED}Error: --issue requires a number${NC}"
-					return 1
-				fi
-				_ADD_ISSUE="$_next"
-				shift 2
-				;;
-			--issue=*)
-				_ADD_ISSUE="${_arg#--issue=}"
-				shift
-				;;
-			--base)
-				local _next_base="${2:-}"
-				if [[ -z "$_next_base" ]]; then
-					echo -e "${RED}Error: --base requires a ref (e.g. origin/main, develop, <sha>)${NC}"
-					return 1
-				fi
-				_ADD_BASE="$_next_base"
-				shift 2
-				;;
-			--base=*)
-				_ADD_BASE="${_arg#--base=}"
-				shift
-				;;
-			-*)
-				echo -e "${RED}Error: Unknown option: $_arg${NC}"
-				echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF]"
+		--issue)
+			local _next="${2:-}"
+			if [[ -z "$_next" ]]; then
+				echo -e "${RED}Error: --issue requires a number${NC}"
 				return 1
-				;;
-			*)
-				if [[ -z "$_ADD_BRANCH" ]]; then
-					_ADD_BRANCH="$_arg"
-				elif [[ -z "$_ADD_PATH" ]]; then
-					_ADD_PATH="$_arg"
-				fi
-				shift
-				;;
+			fi
+			_ADD_ISSUE="$_next"
+			shift 2
+			;;
+		--issue=*)
+			_ADD_ISSUE="${_arg#--issue=}"
+			shift
+			;;
+		--base)
+			local _next_base="${2:-}"
+			if [[ -z "$_next_base" ]]; then
+				echo -e "${RED}Error: --base requires a ref (e.g. origin/main, develop, <sha>)${NC}"
+				return 1
+			fi
+			_ADD_BASE="$_next_base"
+			shift 2
+			;;
+		--base=*)
+			_ADD_BASE="${_arg#--base=}"
+			shift
+			;;
+		--fresh-on-collision)
+			_ADD_FRESH_ON_COLLISION=1
+			shift
+			;;
+		-*)
+			echo -e "${RED}Error: Unknown option: $_arg${NC}"
+			echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF] [--fresh-on-collision]"
+			return 1
+			;;
+		*)
+			if [[ -z "$_ADD_BRANCH" ]]; then
+				_ADD_BRANCH="$_arg"
+			elif [[ -z "$_ADD_PATH" ]]; then
+				_ADD_PATH="$_arg"
+			fi
+			shift
+			;;
 		esac
 	done
 	if [[ -z "$_ADD_BRANCH" ]]; then
 		echo -e "${RED}Error: Branch name required${NC}"
-		echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF]"
+		echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF] [--fresh-on-collision]"
 		return 1
 	fi
 	return 0
+}
+
+# Emit additive machine-readable provenance for callers that opt into safe
+# task-branch collision handling.
+_cmd_add_print_collision_provenance() {
+	[[ "${_ADD_FRESH_ON_COLLISION:-0}" -eq 1 ]] || return 0
+	printf 'WORKTREE_PATH=%s\n' "${_ADD_COLLISION_PATH:-}"
+	printf 'WORKTREE_BRANCH=%s\n' "${_ADD_COLLISION_BRANCH:-}"
+	printf 'WORKTREE_PROVENANCE=%s\n' "${_ADD_COLLISION_PROVENANCE:-unknown}"
+	printf 'WORKTREE_TARGET=%s\n' "${_ADD_COLLISION_TARGET_SHA:-}"
+	printf 'WORKTREE_AHEAD=%s\n' "${_ADD_COLLISION_AHEAD:-0}"
+	printf 'WORKTREE_BEHIND=%s\n' "${_ADD_COLLISION_BEHIND:-0}"
+	return 0
+}
+
+_cmd_add_emit_collision() {
+	local collision="$1"
+	local branch="$2"
+	local action="$3"
+	local path="${4:-}"
+	printf 'WORKTREE_COLLISION=%s\n' "$collision" >&2
+	printf 'WORKTREE_BRANCH=%s\n' "$branch" >&2
+	[[ -z "$path" ]] || printf 'WORKTREE_PATH=%s\n' "$path" >&2
+	printf 'WORKTREE_TARGET=%s\n' "${_ADD_COLLISION_TARGET_SHA:-}" >&2
+	printf 'WORKTREE_AHEAD=%s\n' "${_ADD_COLLISION_AHEAD:-0}" >&2
+	printf 'WORKTREE_BEHIND=%s\n' "${_ADD_COLLISION_BEHIND:-0}" >&2
+	printf 'ACTION_REQUIRED=%s\n' "$action" >&2
+	return 1
+}
+
+_cmd_add_measure_collision_branch() {
+	local branch="$1"
+	_ADD_COLLISION_AHEAD=$(git rev-list --count "${_ADD_COLLISION_TARGET_SHA}..refs/heads/${branch}" 2>/dev/null) || return 1
+	_ADD_COLLISION_BEHIND=$(git rev-list --count "refs/heads/${branch}..${_ADD_COLLISION_TARGET_SHA}" 2>/dev/null) || return 1
+	_ADD_COLLISION_PATH=$(get_worktree_path_for_branch "$branch" 2>/dev/null || true)
+	return 0
+}
+
+_cmd_add_accept_owned_active_collision() {
+	local branch="$1"
+	local explicit_issue="$2"
+	local owner_info=""
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created=""
+	local current_session="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+	owner_info=$(check_worktree_owner "$_ADD_COLLISION_PATH" 2>/dev/null || true)
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created <<<"$owner_info"
+	if [[ -z "$explicit_issue" || -z "$current_session" ||
+		"$owner_task" != "$explicit_issue" || "$owner_session" != "$current_session" ]]; then
+		_cmd_add_emit_collision active_ownership_unverified "$branch" \
+			inspect_existing_task_worktree "$_ADD_COLLISION_PATH"
+		return 1
+	fi
+	_ADD_COLLISION_PROVENANCE="continuation_active"
+	_ADD_COLLISION_REUSED_ACTIVE=1
+	return 0
+}
+
+_cmd_add_classify_fresh_collision_branch() {
+	local branch="$1"
+	local explicit_issue="$2"
+	_ADD_COLLISION_BRANCH="$branch"
+	_ADD_COLLISION_PROVENANCE="fresh_collision"
+	_ADD_COLLISION_AHEAD=0
+	_ADD_COLLISION_BEHIND=0
+	_ADD_COLLISION_PATH=""
+	branch_exists "$branch" || return 0
+	_cmd_add_measure_collision_branch "$branch" || return 1
+	if [[ -n "$_ADD_COLLISION_PATH" ]]; then
+		_cmd_add_accept_owned_active_collision "$branch" "$explicit_issue"
+		return $?
+	fi
+	if [[ "$_ADD_COLLISION_AHEAD" -eq 0 && "$_ADD_COLLISION_BEHIND" -eq 0 ]]; then
+		_ADD_COLLISION_PROVENANCE="fresh_existing"
+		return 0
+	fi
+	_cmd_add_emit_collision fresh_branch_changed "$branch" inspect_existing_task_branch
+	return 1
+}
+
+# Classify an existing task-derived branch against a freshly resolved target.
+# The opt-in policy is lossless: unique commits are never rewritten, and one
+# deterministic "-fresh" branch bounds retries after a stale empty collision.
+_cmd_add_classify_collision_branch() {
+	local requested_branch="$1"
+	local explicit_base="$2"
+	local explicit_issue="$3"
+	local target_ref=""
+	if ! target_ref=$(_resolve_worktree_base_ref "$explicit_base"); then
+		_cmd_add_emit_collision target_refresh_failed "$requested_branch" refresh_target
+		return 1
+	fi
+	[[ -n "$target_ref" ]] || {
+		_cmd_add_emit_collision target_unresolved "$requested_branch" refresh_target
+		return 1
+	}
+
+	_ADD_COLLISION_TARGET_SHA=$(git rev-parse --verify "${target_ref}^{commit}" 2>/dev/null) || return 1
+	_ADD_COLLISION_EXPECTED_SHA="$_ADD_COLLISION_TARGET_SHA"
+	_ADD_COLLISION_BRANCH="$requested_branch"
+	_ADD_COLLISION_PROVENANCE="fresh"
+	_ADD_COLLISION_AHEAD=0
+	_ADD_COLLISION_BEHIND=0
+	_ADD_COLLISION_PATH=""
+	_ADD_COLLISION_REUSED_ACTIVE=0
+	branch_exists "$requested_branch" || return 0
+
+	_cmd_add_measure_collision_branch "$requested_branch" || return 1
+	if [[ -n "$_ADD_COLLISION_PATH" ]]; then
+		_cmd_add_accept_owned_active_collision "$requested_branch" "$explicit_issue"
+		return $?
+	fi
+	if [[ "$_ADD_COLLISION_AHEAD" -gt 0 ]]; then
+		_cmd_add_emit_collision unique_commits "$requested_branch" inspect_existing_task_branch
+		return 1
+	fi
+	if [[ "$_ADD_COLLISION_BEHIND" -eq 0 ]]; then
+		_ADD_COLLISION_PROVENANCE="fresh_existing"
+		return 0
+	fi
+	_cmd_add_classify_fresh_collision_branch "${requested_branch}-fresh" "$explicit_issue"
+	return $?
 }
 
 # Refresh an origin branch from linked-worktree context so the canonical Git
@@ -840,26 +967,89 @@ _cmd_add_create_worktree() {
 	return 1
 }
 
+_cmd_add_warn_task_id_variant() {
+	local branch="$1"
+	if [[ ! "$branch" =~ t[0-9]+[a-z]($|[-_/]) && ! "$branch" =~ t[0-9]+[-._][0-9]+($|[-_/]) ]]; then
+		return 0
+	fi
+	print_warning "Branch name contains a non-claimed task ID variant ($branch)."
+	print_warning "Task IDs come ONLY from claim-task-id.sh. For follow-ups, claim a fresh ID."
+	if [[ -t 0 ]]; then
+		local confirm=""
+		read -rp "Continue with this branch name anyway? [y/N] " confirm
+		[[ "$confirm" =~ ^[Yy]$ ]] || return 1
+	fi
+	return 0
+}
+
+_cmd_add_use_existing_worktree() {
+	local branch="$1"
+	local existing_path=""
+	existing_path=$(get_worktree_path_for_branch "$branch") || return 1
+	if [[ "${_ADD_FRESH_ON_COLLISION:-0}" -eq 1 ]]; then
+		_ADD_COLLISION_PATH="$existing_path"
+		_cmd_add_emit_collision concurrent_worktree "$branch" inspect_existing_task_worktree "$existing_path"
+		return 2
+	fi
+	echo -e "${YELLOW}Worktree already exists for branch '$branch'${NC}"
+	echo -e "Path: ${BOLD}$existing_path${NC}"
+	echo ""
+	echo "To use it:"
+	echo "  cd $existing_path" || exit
+	return 0
+}
+
+_cmd_add_assert_collision_ref_unchanged() {
+	local branch="$1"
+	[[ "${_ADD_FRESH_ON_COLLISION:-0}" -eq 1 ]] || return 0
+	branch_exists "$branch" || return 0
+	local current_sha=""
+	current_sha=$(git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null) || return 1
+	if [[ "$current_sha" != "$_ADD_COLLISION_EXPECTED_SHA" ]]; then
+		_cmd_add_emit_collision branch_changed_during_creation "$branch" inspect_existing_task_branch
+		return 1
+	fi
+	return 0
+}
+
+_cmd_add_verify_collision_tip() {
+	local branch="$1"
+	local path="$2"
+	[[ "${_ADD_FRESH_ON_COLLISION:-0}" -eq 1 ]] || return 0
+	local actual_sha=""
+	actual_sha=$(git -C "$path" rev-parse HEAD 2>/dev/null || true)
+	if [[ "$actual_sha" == "$_ADD_COLLISION_EXPECTED_SHA" ]]; then
+		return 0
+	fi
+	git worktree remove --force "$path" >/dev/null 2>&1 || true
+	_ADD_COLLISION_PATH=""
+	_cmd_add_emit_collision branch_changed_during_creation "$branch" inspect_existing_task_branch
+	return 1
+}
+
+_cmd_add_prepare_collision_mode() {
+	local branch="$1"
+	local explicit_base="$2"
+	local explicit_issue="$3"
+	_cmd_add_classify_collision_branch "$branch" "$explicit_base" "$explicit_issue" || return 1
+	if [[ "$_ADD_COLLISION_REUSED_ACTIVE" -eq 1 ]]; then
+		_cmd_add_print_collision_provenance
+		return 2
+	fi
+	return 0
+}
+
 # --- cmd_add ---
 
 cmd_add() {
 	_parse_cmd_add_args "$@" || return 1
 	local branch="$_ADD_BRANCH"
 	local path="$_ADD_PATH"
-	local explicit_issue="$_ADD_ISSUE"  # t2260: --issue NNN for unambiguous claim
-	local explicit_base="$_ADD_BASE"    # t2802: --base REF for explicit base
+	local explicit_issue="$_ADD_ISSUE" # t2260: --issue NNN for unambiguous claim
+	local explicit_base="$_ADD_BASE"   # t2802: --base REF for explicit base
 
-	# t2235: Detect self-invented task ID variants (e.g. t2213b, t2213-2, t2213.fix)
-	# Task IDs come ONLY from claim-task-id.sh. For follow-ups, claim a fresh ID.
-	if [[ "$branch" =~ t[0-9]+[a-z]($|[-_/]) ]] || [[ "$branch" =~ t[0-9]+[-._][0-9]+($|[-_/]) ]]; then
-		print_warning "Branch name contains a non-claimed task ID variant ($branch)."
-		print_warning "Task IDs come ONLY from claim-task-id.sh. For follow-ups, claim a fresh ID."
-		if [[ -t 0 ]]; then # interactive
-			read -rp "Continue with this branch name anyway? [y/N] " confirm
-			[[ "$confirm" =~ ^[Yy]$ ]] || return 1
-		fi
-		# headless: warn only, don't block (could be legitimate in rare cases)
-	fi
+	# t2235: warn about self-invented task ID variants; headless callers continue.
+	_cmd_add_warn_task_id_variant "$branch" || return 1
 
 	# Check if we're in a git repo
 	if [[ -z "$(get_repo_root)" ]]; then
@@ -867,15 +1057,23 @@ cmd_add() {
 		return 1
 	fi
 
-	# Check if worktree already exists for this branch
-	local existing_path
-	if existing_path=$(get_worktree_path_for_branch "$branch"); then
-		echo -e "${YELLOW}Worktree already exists for branch '$branch'${NC}"
-		echo -e "Path: ${BOLD}$existing_path${NC}"
-		echo ""
-		echo "To use it:"
-		echo "  cd $existing_path" || exit
+	if [[ "$_ADD_FRESH_ON_COLLISION" -eq 1 ]]; then
+		local collision_rc=0
+		_cmd_add_prepare_collision_mode "$branch" "$explicit_base" "$explicit_issue" || collision_rc=$?
+		[[ "$collision_rc" -eq 1 ]] && return 1
+		[[ "$collision_rc" -eq 2 ]] && return 0
+		branch="$_ADD_COLLISION_BRANCH"
+		explicit_base="$_ADD_COLLISION_TARGET_SHA"
+	fi
+
+	# Recheck both the ref and active-worktree state at mutation time.
+	_cmd_add_assert_collision_ref_unchanged "$branch" || return 1
+	local existing_rc=0
+	_cmd_add_use_existing_worktree "$branch" || existing_rc=$?
+	if [[ "$existing_rc" -eq 0 ]]; then
 		return 0
+	elif [[ "$existing_rc" -eq 2 ]]; then
+		return 1
 	fi
 
 	# Generate path if not provided
@@ -906,6 +1104,7 @@ cmd_add() {
 
 	# Create worktree (existing branch → simple checkout; new branch → base-ref dance).
 	_cmd_add_create_worktree "$branch" "$path" "$explicit_base" || return 1
+	_cmd_add_verify_collision_tip "$branch" "$path" || return 1
 
 	# Register ownership (t189). Preserve the explicit issue identity so a
 	# same-task headless continuation can safely reclaim this worktree.
@@ -932,6 +1131,8 @@ cmd_add() {
 	_interactive_session_auto_claim "$branch" "$path" "$explicit_issue" || true
 
 	_print_worktree_add_success "$path" "$branch"
+	_ADD_COLLISION_PATH="$path"
+	_cmd_add_print_collision_provenance
 
 	# Localdev integration (t1224.8): auto-create branch subdomain route
 	localdev_auto_branch "$branch"

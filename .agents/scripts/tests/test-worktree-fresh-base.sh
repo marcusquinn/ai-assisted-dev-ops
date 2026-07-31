@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 HELPER="${SCRIPT_DIR}/../worktree-helper.sh"
+ADD_HELPER="${SCRIPT_DIR}/../worktree-helper-add.sh"
 REAL_GIT=$(command -v git)
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
@@ -99,5 +100,72 @@ ISSUE_OWNER=$(sqlite3 -separator '|' "$REGISTRY_DB" \
 	exit 1
 }
 printf 'PASS explicit --issue propagates into the registry task ID\n'
+
+git -C "$CANONICAL" branch test/race-guard "$PINNED_SHA"
+RACE_OUTPUT=""
+RACE_RC=0
+RACE_OUTPUT=$(
+	cd "$CANONICAL" || exit 1
+	SCRIPT_DIR="$(cd "$(dirname "$ADD_HELPER")" && pwd)"
+	# shellcheck source=../worktree-helper-add.sh
+	source "$ADD_HELPER"
+	_ADD_FRESH_ON_COLLISION=1
+	_ADD_COLLISION_EXPECTED_SHA="$REMOTE_SHA"
+	_ADD_COLLISION_TARGET_SHA="$REMOTE_SHA"
+	_ADD_COLLISION_AHEAD=0
+	_ADD_COLLISION_BEHIND=1
+	_cmd_add_assert_collision_ref_unchanged test/race-guard 2>&1
+) || RACE_RC=$?
+if [[ "$RACE_RC" -eq 1 && "$RACE_OUTPUT" == *"WORKTREE_COLLISION=branch_changed_during_creation"* ]]; then
+	printf 'PASS collision ref changes are rejected at mutation time\n'
+else
+	printf 'FAIL collision ref change was not rejected: rc=%s output=%s\n' "$RACE_RC" "$RACE_OUTPUT"
+	exit 1
+fi
+
+RACE_BRANCH=test/race-e2e
+RACE_PATH="${WORKTREES}/canonical-test-race-e2e"
+RACE_MUTATED_SHA=$(printf 'race mutation\n' | git -C "$CANONICAL" commit-tree \
+	"$(git -C "$CANONICAL" rev-parse "${REMOTE_SHA}^{tree}")" -p "$REMOTE_SHA")
+git -C "$CANONICAL" branch "$RACE_BRANCH" "$REMOTE_SHA"
+RACE_OUTPUT=""
+RACE_RC=0
+RACE_OUTPUT=$(
+	cd "$CANONICAL" || exit 1
+	SCRIPT_DIR="$(cd "$(dirname "$ADD_HELPER")" && pwd)"
+	# shellcheck source=../worktree-helper-add.sh
+	source "$ADD_HELPER"
+	RED=""
+	NC=""
+	BLUE=""
+	GREEN=""
+	YELLOW=""
+	BOLD=""
+	get_repo_root() {
+		git rev-parse --show-toplevel 2>/dev/null
+		return $?
+	}
+	aidevops_worktree_capacity_check() { return 0; }
+	eval "$(declare -f _cmd_add_create_worktree | sed '1s/_cmd_add_create_worktree/_cmd_add_create_worktree_original/')"
+	_cmd_add_create_worktree() {
+		local branch="$1"
+		local path="$2"
+		local explicit_base="$3"
+		git update-ref "refs/heads/${branch}" "$RACE_MUTATED_SHA" || return 1
+		_cmd_add_create_worktree_original "$branch" "$path" "$explicit_base"
+		return $?
+	}
+	AIDEVOPS_SKIP_AUTO_CLAIM=1 cmd_add "$RACE_BRANCH" "$RACE_PATH" \
+		--issue 456 --base "$REMOTE_SHA" --fresh-on-collision 2>&1
+) || RACE_RC=$?
+RACE_BRANCH_AFTER=$(git -C "$CANONICAL" rev-parse "refs/heads/${RACE_BRANCH}")
+if [[ "$RACE_RC" -eq 1 && "$RACE_BRANCH_AFTER" == "$RACE_MUTATED_SHA" && ! -d "$RACE_PATH" &&
+	"$RACE_OUTPUT" == *"WORKTREE_COLLISION=branch_changed_during_creation"* ]]; then
+	printf 'PASS post-creation race guard preserves ref and removes wrong-tip worktree\n'
+else
+	printf 'FAIL post-creation race guard: rc=%s branch=%s path=%s output=%s\n' \
+		"$RACE_RC" "$RACE_BRANCH_AFTER" "$RACE_PATH" "$RACE_OUTPUT"
+	exit 1
+fi
 
 exit 0

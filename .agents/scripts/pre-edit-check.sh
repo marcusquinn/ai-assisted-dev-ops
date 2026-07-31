@@ -418,6 +418,60 @@ _is_explicit_headless_flow() {
 	esac
 }
 
+_loop_worktree_output_value() {
+	local output="$1"
+	local key="$2"
+	printf '%s\n' "$output" | awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}'
+	return 0
+}
+
+_create_loop_task_worktree() {
+	local requested_branch="$1"
+	local issue_num="$2"
+	local helper="${SCRIPT_DIR}/worktree-helper.sh"
+	_LOOP_WT_PATH=""
+	_LOOP_WT_BRANCH=""
+	_LOOP_WT_PROVENANCE=""
+	_LOOP_WT_TARGET=""
+	_LOOP_WT_AHEAD=""
+	_LOOP_WT_BEHIND=""
+	_LOOP_WT_COLLISION=""
+	_LOOP_WT_ACTION=""
+	_LOOP_WT_RC=1
+	[[ -x "$helper" ]] || return 1
+
+	local output=""
+	local -a args=(add "$requested_branch" --fresh-on-collision)
+	[[ -z "$issue_num" ]] || args+=(--issue "$issue_num")
+	if output=$("$helper" "${args[@]}" 2>&1); then
+		_LOOP_WT_RC=0
+	fi
+	output=$(printf '%s' "$output" | perl -pe 's/\e\[[0-9;]*[[:alpha:]]//g') || true
+	_LOOP_WT_PATH=$(_loop_worktree_output_value "$output" WORKTREE_PATH)
+	_LOOP_WT_BRANCH=$(_loop_worktree_output_value "$output" WORKTREE_BRANCH)
+	_LOOP_WT_PROVENANCE=$(_loop_worktree_output_value "$output" WORKTREE_PROVENANCE)
+	_LOOP_WT_TARGET=$(_loop_worktree_output_value "$output" WORKTREE_TARGET)
+	_LOOP_WT_AHEAD=$(_loop_worktree_output_value "$output" WORKTREE_AHEAD)
+	_LOOP_WT_BEHIND=$(_loop_worktree_output_value "$output" WORKTREE_BEHIND)
+	_LOOP_WT_COLLISION=$(_loop_worktree_output_value "$output" WORKTREE_COLLISION)
+	_LOOP_WT_ACTION=$(_loop_worktree_output_value "$output" ACTION_REQUIRED)
+	if [[ "$_LOOP_WT_RC" -ne 0 ]]; then
+		printf '%s\n' "$output" | awk '!/^[A-Z_]+=/'
+		return 1
+	fi
+	return 0
+}
+
+_print_loop_worktree_failure_next_step() {
+	local action="$1"
+	if [[ "$action" == "refresh_target" ]]; then
+		echo "NEXT_STEP: Restore remote access, refresh the target branch, and retry without changing local task branches."
+		return 0
+	fi
+	echo "NEXT_STEP: Inspect the reported branch collision, then choose an explicit continuation or a new branch."
+	return 0
+}
+
 _handle_loop_mode_on_protected() {
 	local branch="$1"
 
@@ -443,9 +497,9 @@ _handle_loop_mode_on_protected() {
 	# Derive branch name from --task description or fall back to generic
 	local _wt_branch_name=""
 	local _wt_task_desc="${TASK_DESC:-}"
+	local _wt_issue_num=""
 	if [[ -n "$_wt_task_desc" ]]; then
 		# Extract issue number if present (e.g., "Implement issue #17642")
-		local _wt_issue_num=""
 		_wt_issue_num=$(printf '%s' "$_wt_task_desc" | grep -oE '#[0-9]+|issue[/ ]*([0-9]+)' | grep -oE '[0-9]+' | head -1) || _wt_issue_num=""
 		if [[ -n "$_wt_issue_num" ]]; then
 			# Slugify the task title for the branch name
@@ -459,30 +513,31 @@ _handle_loop_mode_on_protected() {
 		_wt_branch_name="feature/auto-$(date +%Y%m%d-%H%M%S)"
 	fi
 
-	# Try to create the worktree using the helper
-	local _wt_helper="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/worktree-helper.sh"
-	local _wt_path=""
-	if [[ -x "$_wt_helper" ]]; then
-		local _wt_output=""
-		_wt_output=$("$_wt_helper" add "$_wt_branch_name" 2>&1) || true
-		local _wt_clean_output=""
-		_wt_clean_output=$(printf '%s' "$_wt_output" | perl -pe 's/\e\[[0-9;]*[[:alpha:]]//g') || _wt_clean_output="$_wt_output"
-		# Extract the worktree path from helper output
-		_wt_path=$(printf '%s' "$_wt_clean_output" | grep -oE '/[^ ]*Git/[^ ]*' | head -1) || _wt_path=""
-		if [[ -z "$_wt_path" ]]; then
-			# Fallback: construct expected path from repo name + branch
-			local _wt_repo_name=""
-			_wt_repo_name=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
-			local _wt_safe_branch=""
-			_wt_safe_branch=$(printf '%s' "$_wt_branch_name" | tr '/' '-')
-			_wt_path="$(dirname "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")/${_wt_repo_name}-${_wt_safe_branch}"
-		fi
-	fi
+	_create_loop_task_worktree "$_wt_branch_name" "$_wt_issue_num" || true
+	local _wt_path="$_LOOP_WT_PATH"
+	local _wt_actual_branch="$_LOOP_WT_BRANCH"
+	local _wt_provenance="$_LOOP_WT_PROVENANCE"
+	local _wt_target="$_LOOP_WT_TARGET"
+	local _wt_ahead="$_LOOP_WT_AHEAD"
+	local _wt_behind="$_LOOP_WT_BEHIND"
+	local _wt_collision="$_LOOP_WT_COLLISION"
+	local _wt_failure_action="$_LOOP_WT_ACTION"
+	local _wt_helper_rc="$_LOOP_WT_RC"
 
+	local _wt_checked_branch=""
 	if [[ -n "$_wt_path" && -d "$_wt_path" ]]; then
+		_wt_checked_branch=$(git -C "$_wt_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+	fi
+	if [[ "$_wt_helper_rc" -eq 0 && -n "$_wt_path" && -d "$_wt_path" &&
+		-n "$_wt_actual_branch" && "$_wt_checked_branch" == "$_wt_actual_branch" &&
+		-n "$_wt_provenance" && -n "$_wt_target" ]]; then
 		echo "LOOP_DECISION=worktree_created"
 		echo "WORKTREE_PATH=$_wt_path"
-		echo "WORKTREE_BRANCH=$_wt_branch_name"
+		echo "WORKTREE_BRANCH=$_wt_actual_branch"
+		echo "WORKTREE_PROVENANCE=$_wt_provenance"
+		echo "WORKTREE_TARGET=$_wt_target"
+		echo "WORKTREE_AHEAD=${_wt_ahead:-0}"
+		echo "WORKTREE_BEHIND=${_wt_behind:-0}"
 		echo -e "${GREEN}LOOP-AUTO${NC}: Worktree created at $_wt_path"
 		echo ""
 		echo "NEXT_STEP: cd to the worktree path and continue implementation there."
@@ -492,8 +547,14 @@ _handle_loop_mode_on_protected() {
 		# Worktree creation failed — fall back to signalling exit 2
 		echo -e "${RED}LOOP-AUTO${NC}: Failed to auto-create worktree '$_wt_branch_name'"
 		echo "LOOP_DECISION=worktree"
-		echo "WORKTREE_BRANCH=$_wt_branch_name"
-		echo "NEXT_STEP: Run worktree-helper.sh add '$_wt_branch_name' manually, then cd to the new path."
+		echo "WORKTREE_BRANCH=${_wt_actual_branch:-$_wt_branch_name}"
+		[[ -z "$_wt_path" ]] || echo "WORKTREE_PATH=$_wt_path"
+		echo "WORKTREE_COLLISION=${_wt_collision:-creation_failed}"
+		[[ -z "$_wt_target" ]] || echo "WORKTREE_TARGET=$_wt_target"
+		[[ -z "$_wt_ahead" ]] || echo "WORKTREE_AHEAD=$_wt_ahead"
+		[[ -z "$_wt_behind" ]] || echo "WORKTREE_BEHIND=$_wt_behind"
+		echo "ACTION_REQUIRED=${_wt_failure_action:-inspect_existing_task_branch}"
+		_print_loop_worktree_failure_next_step "$_wt_failure_action"
 		exit 2 # Special exit code for "create worktree"
 	fi
 }
