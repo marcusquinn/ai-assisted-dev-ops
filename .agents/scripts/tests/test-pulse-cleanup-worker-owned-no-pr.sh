@@ -170,9 +170,11 @@ test_closed_issue_local_commit_no_pr_removes_before_age_threshold() {
 
 test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold() {
 	local repo_dir="${TEST_ROOT}/repo-closed-pr-ref"
-	local wt_path="${TEST_ROOT}/worker-wt-closed-pr-ref"
-	local branch_name="repair/pr-23078-followup"
+	local repo_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local wt_path="${TEST_ROOT}/aidevops-${repo_hash}-ci-repair-pr23078-bbbbbbbbbbbb-cccccccccccc-a1"
+	local branch_name="repair/${repo_hash}-pr-23078-bbbbbbbbbbbb-cccccccccccc-a1"
 	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
+	touch "$wt_path/.git"
 	source_pulse_cleanup_with_stubs || return 1
 	gh() {
 		if [[ "${1:-}" == "pr" && "${2:-}" == "view" && "${3:-}" == "23078" ]]; then
@@ -199,9 +201,42 @@ test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold() {
 	[[ "$branch_exists" -eq 0 ]] || rc=1
 	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'pr_state=pr-CLOSED' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
-	grep -q 'recovery_path=branch-preserved-closed-pr-23078' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'recovery_path=branch-preserved-terminal-pr-23078' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "closed PR reference local commits/no PR archives before age threshold" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_open_ci_repair_dirty_worktree_is_preserved() {
+	local repo_dir="${TEST_ROOT}/repo-open-ci-repair"
+	local repo_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local wt_path="${TEST_ROOT}/aidevops-${repo_hash}-ci-repair-pr23084-bbbbbbbbbbbb-cccccccccccc-a1"
+	local branch_name="repair/${repo_hash}-pr-23084-bbbbbbbbbbbb-cccccccccccc-a1"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" "8 days ago" || return 1
+	printf 'dirty repair state\n' >"$wt_path/dirty-repair.txt"
+	source_pulse_cleanup_with_stubs || return 1
+	gh() {
+		if [[ "${1:-}" == "pr" && "${2:-}" == "view" && "${3:-}" == "23084" ]]; then
+			printf '%s\n' "OPEN"
+			return 0
+		fi
+		return 1
+	}
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-open-ci-repair-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+
+	local rc=0
+	[[ "$cleanup_rc" -eq 1 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	[[ -f "$wt_path/dirty-repair.txt" ]] || rc=1
+	print_result "open ci-repair PR preserves stale dirty worktree" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
 
@@ -280,8 +315,9 @@ test_closed_issue_dirty_worktree_stashes_and_preserves_branch() {
 
 test_terminal_worktree_respects_live_owner_signal() {
 	local repo_dir="${TEST_ROOT}/repo-terminal-owner"
-	local wt_path="${TEST_ROOT}/worker-wt-terminal-owner"
-	local branch_name="feature/auto-20260507-190808-gh23083"
+	local repo_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local wt_path="${TEST_ROOT}/aidevops-${repo_hash}-ci-repair-pr23083-bbbbbbbbbbbb-cccccccccccc-a1"
+	local branch_name="repair/${repo_hash}-pr-23083-bbbbbbbbbbbb-cccccccccccc-a1"
 	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
 	source_pulse_cleanup_with_stubs || return 1
 	is_worktree_owned_by_others() { return 0; }
@@ -289,8 +325,8 @@ test_terminal_worktree_respects_live_owner_signal() {
 		local command_name="${1:-}"
 		local subcommand_name="${2:-}"
 		local target_number="${3:-}"
-		if [[ "$command_name" == "issue" && "$subcommand_name" == "view" && "$target_number" == "23083" ]]; then
-			printf '%s\n' "CLOSED"
+		if [[ "$command_name" == "pr" && "$subcommand_name" == "view" && "$target_number" == "23083" ]]; then
+			printf '%s\n' "MERGED"
 			return 0
 		fi
 		return 1
@@ -681,6 +717,7 @@ test_young_local_commit_logs_not_age_eligible
 test_local_only_repo_worktree_logs_explicit_skip
 test_closed_issue_local_commit_no_pr_removes_before_age_threshold
 test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold
+test_open_ci_repair_dirty_worktree_is_preserved
 test_merged_branch_pr_removes_before_age_threshold
 test_closed_issue_dirty_worktree_stashes_and_preserves_branch
 test_terminal_worktree_respects_live_owner_signal

@@ -141,6 +141,39 @@ _pc_pr_from_branch() {
 }
 
 #######################################
+# Resolve the state of a PR number embedded in a local repair/review branch.
+#
+# CI-repair workers commit on a local `repair/<hash>-pr-<N>-...` branch but
+# push back to the contributor's original PR branch. A head-branch lookup for
+# the local repair branch therefore cannot find that PR; the embedded number
+# is the durable lookup key.
+#
+# Args:
+#   $1 - repo slug (owner/repo)
+#   $2 - local branch name
+# Outputs: PR state (OPEN|CLOSED|MERGED)
+# Returns: 0 when a referenced PR state was verified, 1 otherwise
+#######################################
+_pc_pr_state_for_branch_reference() {
+	local repo_slug="$1"
+	local branch_name="$2"
+	local pr_number=""
+	local pr_state=""
+
+	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
+	pr_number=$(_pc_pr_from_branch "$branch_name" 2>/dev/null) || return 1
+	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+	pr_state=$(gh pr view "$pr_number" --repo "$repo_slug" --json state --jq '.state // ""' 2>/dev/null) || return 1
+	case "$pr_state" in
+	OPEN | CLOSED | MERGED)
+		printf '%s\n' "$pr_state"
+		return 0
+		;;
+	esac
+	return 1
+}
+
+#######################################
 # Check whether a branch has at least one matching PR.
 #
 # `gh_pr_list` intentionally emits cached/output text with `printf '%s'`, so
@@ -160,6 +193,7 @@ _pc_branch_has_pr() {
 	local branch_name="$2"
 	local pr_state="$3"
 	local pr_number=""
+	local referenced_pr_state=""
 
 	if [[ -z "$repo_slug" || -z "$branch_name" || -z "$pr_state" ]]; then
 		return 1
@@ -169,6 +203,16 @@ _pc_branch_has_pr() {
 	if [[ -n "$pr_number" ]]; then
 		return 0
 	fi
+
+	# CI-repair branches are deliberately local-only, so their actual PR cannot
+	# be found by `--head`. Preserve open repairs and recognize terminal ones by
+	# the immutable PR number embedded in the branch name.
+	referenced_pr_state=$(_pc_pr_state_for_branch_reference "$repo_slug" "$branch_name" 2>/dev/null) || return 1
+	case "${pr_state}:${referenced_pr_state}" in
+	open:OPEN | closed:CLOSED | closed:MERGED | merged:MERGED | all:OPEN | all:CLOSED | all:MERGED)
+		return 0
+		;;
+	esac
 	return 1
 }
 
@@ -188,6 +232,14 @@ _pc_terminal_pr_state_for_branch() {
 
 	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
 	pr_state=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state all --limit 1 --json state --jq '.[0].state // empty' 2>/dev/null) || return 1
+	case "$pr_state" in
+	CLOSED | MERGED)
+		printf '%s\n' "$pr_state"
+		return 0
+		;;
+	esac
+
+	pr_state=$(_pc_pr_state_for_branch_reference "$repo_slug" "$branch_name" 2>/dev/null) || return 1
 	case "$pr_state" in
 	CLOSED | MERGED)
 		printf '%s\n' "$pr_state"
@@ -1438,6 +1490,8 @@ _pc_handle_terminal_worktree_archive() {
 	local repo_slug_age="${9:-}"
 	local audit_context
 	local terminal_pr_state=""
+	local terminal_pr_number=""
+	local terminal_recovery_path="branch-preserved-terminal-pr"
 	local guard_ok
 	guard_ok=$(printf 'cle%s' 'ar')
 
@@ -1449,8 +1503,12 @@ _pc_handle_terminal_worktree_archive() {
 	fi
 
 	if terminal_pr_state=$(_pc_terminal_pr_state_for_branch "$repo_slug_age" "$wt_branch_age"); then
-		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "pr-${terminal_pr_state}" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved-terminal-pr")
-		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing ${wt_branch_age:-detached} — branch PR is ${terminal_pr_state}; state archived and branch preserved" >>"$LOGFILE"
+		terminal_pr_number=$(_pc_pr_from_branch "$wt_branch_age" 2>/dev/null || true)
+		if [[ -n "$terminal_pr_number" ]]; then
+			terminal_recovery_path="branch-preserved-terminal-pr-${terminal_pr_number}"
+		fi
+		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "pr-${terminal_pr_state}" "$guard_ok" "$guard_ok" "$guard_ok" "$terminal_recovery_path")
+		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing ${wt_branch_age:-detached} — branch PR ${terminal_pr_number:+#${terminal_pr_number} }is ${terminal_pr_state}; state archived and branch preserved" >>"$LOGFILE"
 		_pc_archive_and_remove_worktree_preserving_branch "$rp_age" "$wt_path_age" "$wt_branch_age" "$audit_context"
 		return $?
 	fi
@@ -1682,6 +1740,72 @@ _pc_is_registered_worktree_path() {
 }
 
 #######################################
+# Extract the PR number from the exact ci-repair sibling grammar emitted by
+# `_ci_repair_create_worktree` in pulse-merge-feedback.sh.
+#
+# Args:
+#   $1 - repo_name: canonical repo basename
+#   $2 - candidate_name: sibling basename
+# Outputs: embedded PR number
+# Returns: 0 only for a producer-compatible ci-repair name, 1 otherwise
+#######################################
+_pc_ci_repair_pr_from_sibling_name() {
+	local repo_name="$1"
+	local candidate_name="$2"
+	local generated_suffix=""
+	[[ -n "$repo_name" && -n "$candidate_name" ]] || return 1
+	case "$candidate_name" in
+	"${repo_name}-"*) generated_suffix="${candidate_name#"${repo_name}-"}" ;;
+	*) return 1 ;;
+	esac
+	if [[ "$generated_suffix" =~ ^[0-9a-f]{64}-ci-repair-pr([1-9][0-9]*)-[0-9a-f]{12}-[0-9a-f]{12}-a[1-9][0-9]*$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	return 1
+}
+
+#######################################
+# Validate an exact ci-repair sibling name without emitting its PR number.
+#
+# Args mirror _pc_ci_repair_pr_from_sibling_name.
+# Returns: 0 only for a producer-compatible ci-repair name, 1 otherwise
+#######################################
+_pc_ci_repair_sibling_name_allowed() {
+	local repo_name="$1"
+	local candidate_name="$2"
+	if _pc_ci_repair_pr_from_sibling_name "$repo_name" "$candidate_name" >/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
+#######################################
+# Preserve unregistered ci-repair siblings until their embedded PR is terminal.
+#
+# Non-ci-repair sibling families pass through unchanged. API failures and
+# OPEN/unknown PR states fail closed so Pass 4 cannot trash a live repair.
+#
+# Args:
+#   $1 - repo slug (owner/repo)
+#   $2 - canonical repo basename
+#   $3 - candidate sibling basename
+# Returns: 0 when generic or terminal ci-repair cleanup is allowed, 1 otherwise
+#######################################
+_pc_orphan_sibling_pr_state_allowed() {
+	local repo_slug="$1"
+	local repo_name="$2"
+	local candidate_name="$3"
+	local pr_number=""
+	pr_number=$(_pc_ci_repair_pr_from_sibling_name "$repo_name" "$candidate_name" 2>/dev/null) || return 0
+	[[ -n "$repo_slug" ]] || return 1
+	if _pc_pr_terminal_for_branch_archive "$pr_number" "$repo_slug" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+#######################################
 # Determine whether a sibling name is a worker/worktree-derived outlier.
 #
 # Args:
@@ -1693,6 +1817,9 @@ _pc_orphan_sibling_name_allowed() {
 	local repo_name="$1"
 	local candidate_name="$2"
 	[[ -n "$repo_name" && -n "$candidate_name" ]] || return 1
+	if _pc_ci_repair_sibling_name_allowed "$repo_name" "$candidate_name"; then
+		return 0
+	fi
 	case "$candidate_name" in
 	"${repo_name}-feature-"* | "${repo_name}-fix-"* | "${repo_name}-chore-"* | "${repo_name}-docs-"* | "${repo_name}-refactor-"* | "${repo_name}-bugfix-"* | "${repo_name}-issue-"* | "${repo_name}-gh"* | "${repo_name}-pr"* | "${repo_name}-t"[0-9]* | "${repo_name}-repair-"* | "${repo_name}-review-"* | "${repo_name}-release-"* | "${repo_name}-release-clone-"* | "${repo_name}.fix-"* | "${repo_name}.bugfix-"* | "${repo_name}.refactor-"*)
 		return 0
@@ -1790,11 +1917,11 @@ _pc_cleanup_orphan_sibling_dirs() {
 	local moved_count=0
 	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || { echo 0; return 0; }
 
-	local repo_paths_orphan
-	repo_paths_orphan=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null || printf '')
+	local repo_records_orphan
+	repo_records_orphan=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | [(.path // ""), (.slug // "")] | @tsv' "$repos_json" 2>/dev/null || printf '')
 
-	local rp_orphan
-	while IFS= read -r rp_orphan; do
+	local rp_orphan repo_slug_orphan
+	while IFS=$'\t' read -r rp_orphan repo_slug_orphan; do
 		[[ -z "$rp_orphan" ]] && continue
 		[[ -d "$rp_orphan/.git" || -f "$rp_orphan/.git" ]] || continue
 		local repo_parent repo_name candidate_path candidate_name reason central_base
@@ -1809,6 +1936,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 			[[ -d "$candidate_path" ]] || continue
 			candidate_name=$(basename "$candidate_path")
 			_pc_orphan_sibling_name_allowed "$repo_name" "$candidate_name" || continue
+			_pc_orphan_sibling_pr_state_allowed "$repo_slug_orphan" "$repo_name" "$candidate_name" || continue
 			if reason=$(_pc_classify_orphan_sibling_dir "$rp_orphan" "$candidate_path" "$now_epoch"); then
 				echo "[pulse-wrapper] Orphan dir cleanup ($repo_name): moving $candidate_path to trash — $reason" >>"$LOGFILE"
 				if _pc_trash_orphan_dir "$candidate_path"; then
@@ -1824,6 +1952,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 				[[ -d "$candidate_path" ]] || continue
 				candidate_name=$(basename "$candidate_path")
 				_pc_orphan_sibling_name_allowed "$repo_name" "$candidate_name" || continue
+				_pc_orphan_sibling_pr_state_allowed "$repo_slug_orphan" "$repo_name" "$candidate_name" || continue
 				if reason=$(_pc_classify_orphan_sibling_dir "$rp_orphan" "$candidate_path" "$now_epoch"); then
 					echo "[pulse-wrapper] Orphan dir cleanup ($repo_name): moving $candidate_path to trash — $reason" >>"$LOGFILE"
 					if _pc_trash_orphan_dir "$candidate_path"; then
@@ -1835,7 +1964,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 				fi
 			done
 		fi
-	done <<<"$repo_paths_orphan"
+	done <<<"$repo_records_orphan"
 
 	echo "$moved_count"
 	return 0
