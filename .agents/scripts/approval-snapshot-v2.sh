@@ -93,8 +93,10 @@ _approval_snapshot_v2_comments_json() {
 _approval_snapshot_v2_linked_references_json() {
 	local pages_json="$1"
 	local issued_at_cutoff="${2:-}"
+	local source_timestamp_profile="${3:-stable}"
 	local empty_string=""
 	local timestamp_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+	[[ "$source_timestamp_profile" == "stable" || "$source_timestamp_profile" == "legacy" ]] || return 1
 
 	# GitHub timeline cross-reference events are the authoritative read-only
 	# projection of issue/PR links. Keep external text and URLs as opaque bytes;
@@ -102,7 +104,12 @@ _approval_snapshot_v2_linked_references_json() {
 	# #aidevops:trust-boundary — approval authority covers references visible at
 	# signing time. A later reference cannot extend that signed authority and must
 	# not revoke it when GitHub exposes the timeline event asynchronously.
-	jq -cS --arg empty "$empty_string" --arg cutoff "$issued_at_cutoff" --arg timestamp_pattern "$timestamp_pattern" '
+	# Linked-source updated_at is intentionally excluded: any source comment
+	# mutates it, so reciprocal issue/PR approval comments would make the two
+	# signatures mutually stale. Source identity and scope-bearing content remain
+	# bound below.
+	jq -cS --arg empty "$empty_string" --arg cutoff "$issued_at_cutoff" --arg timestamp_pattern "$timestamp_pattern" \
+		--arg source_timestamp_profile "$source_timestamp_profile" '
 		def is_linked_reference:
 			(.event // $empty) == "cross-referenced"
 			or (.event // $empty) == "connected"
@@ -135,7 +142,7 @@ _approval_snapshot_v2_linked_references_json() {
 			},
 			commit_id: (.commit_id // $empty),
 			commit_url: (.commit_url // $empty),
-			source: (if (.source.issue // null) == null then null else {
+			source: (if (.source.issue // null) == null then null else ({
 				kind: (if (.source.issue.pull_request // null) == null then "issue" else "pr" end),
 				repository: ((.source.issue.repository.full_name // $empty) | ascii_downcase),
 				number: (.source.issue.number // null),
@@ -144,14 +151,15 @@ _approval_snapshot_v2_linked_references_json() {
 				title: (.source.issue.title // $empty),
 				body: (.source.issue.body // $empty),
 				state: (.source.issue.state // $empty),
-				updated_at: (.source.issue.updated_at // $empty),
 				author: {
 					id: (.source.issue.user.id // null),
 					node_id: (.source.issue.user.node_id // $empty),
 					login: (.source.issue.user.login // $empty),
 					type: (.source.issue.user.type // $empty)
 				}
-			} end)
+			} + (if $source_timestamp_profile == "legacy" then {
+				updated_at: (.source.issue.updated_at // $empty)
+			} else {} end)) end)
 		}
 		] | sort_by(.created_at, .event, .id)
 		end
@@ -192,6 +200,7 @@ approval_snapshot_v2_build() (
 	local slug="$3"
 	local excluded_comment_id="${4:-}"
 	local issued_at_cutoff="${5:-}"
+	local source_timestamp_profile="${6:-stable}"
 	local issue_json="" comments_pages="" comments_json="" timeline_pages="" linked_references_json="" normalized_slug=""
 	local empty_string=""
 	local temp_dir=""
@@ -211,7 +220,7 @@ approval_snapshot_v2_build() (
 	comments_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/comments?per_page=100") || return 1
 	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation") || return 1
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 1
-	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff") || return 1
+	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff" "$source_timestamp_profile") || return 1
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1
 	trap 'rm -rf "$temp_dir"' EXIT
 	_approval_snapshot_v2_write_json_file "$temp_dir/issue.json" "$issue_json" || return 1
@@ -307,10 +316,11 @@ approval_snapshot_v2_payload() (
 	local slug="$3"
 	local issued_at="$4"
 	local excluded_comment_id="${5:-}"
+	local source_timestamp_profile="${6:-stable}"
 	local snapshot_json="" digest="" normalized_slug=""
 	local temp_dir=""
 
-	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$excluded_comment_id" "$issued_at") || return 1
+	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$excluded_comment_id" "$issued_at" "$source_timestamp_profile") || return 1
 	digest=$(approval_snapshot_v2_digest "$snapshot_json") || return 1
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1

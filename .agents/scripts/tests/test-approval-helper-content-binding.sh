@@ -108,9 +108,10 @@ append_signed_comment() {
 	local number="$2"
 	local issued_at="$3"
 	local comment_id="${4:-$((number * 100 + 99))}"
+	local source_timestamp_profile="${5:-stable}"
 	local comments_file="${FIXTURES}/comments-${number}.json"
 	local payload="" signature_file="" signature="" body="" updated=""
-	payload=$(PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" approval_snapshot_v2_payload "$kind" "$number" owner/repo "$issued_at") || return 1
+	payload=$(PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" approval_snapshot_v2_payload "$kind" "$number" owner/repo "$issued_at" "" "$source_timestamp_profile") || return 1
 	signature_file="${TEST_ROOT}/signature-${number}.txt"
 	sign_payload "$payload" "$signature_file" || return 1
 	signature=$(<"$signature_file")
@@ -402,6 +403,23 @@ test_post_approval_linked_references() {
 	return 0
 }
 
+test_linked_source_timestamp_profiles() {
+	write_baseline_fixtures
+	append_signed_comment pr 42 "2026-01-01T00:05:00Z" 4298 legacy
+	assert_verify "legacy linked-source V2 snapshot remains verifiable" pr 42 VERIFIED 0 "$PR_HEAD"
+	jq '.[0][0].source.issue.updated_at = "2026-01-01T00:07:00Z"' "${FIXTURES}/timeline-42.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-42.json"
+	assert_verify "legacy linked-source timestamp drift remains stale" pr 42 STALE_APPROVAL 4 "$PR_HEAD"
+
+	reset_and_sign issue 41
+	jq '.[0][0].source.issue.updated_at = "2026-01-01T00:07:00Z"' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	assert_verify "linked-source timestamp drift does not stale issue approval" issue 41 VERIFIED 0
+
+	reset_and_sign pr 42
+	jq '.[0][0].source.issue.updated_at = "2026-01-01T00:07:00Z"' "${FIXTURES}/timeline-42.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-42.json"
+	assert_verify "linked-source timestamp drift does not stale PR approval" pr 42 VERIFIED 0 "$PR_HEAD"
+	return 0
+}
+
 main() {
 	install_gh_stub
 	write_baseline_fixtures
@@ -421,6 +439,7 @@ main() {
 
 	reset_and_sign pr 42
 	assert_verify "unchanged PR V2 snapshot verifies exact head" pr 42 VERIFIED 0 "$PR_HEAD"
+	test_linked_source_timestamp_profiles
 	local original_digest="" repeated_payload="" repeated_digest=""
 	original_digest=$(jq -r '.snapshot_sha256' "${TEST_ROOT}/payload-42.json")
 	repeated_payload=$(PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" approval_snapshot_v2_payload pr 42 owner/repo "2026-01-01T00:06:00Z")
