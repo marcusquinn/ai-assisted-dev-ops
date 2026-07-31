@@ -29,23 +29,29 @@ tools: { read: true, write: false, edit: false, bash: true, glob: false, grep: f
 
 1. [discord.com/developers/applications](https://discord.com/developers/applications) → "New Application" → note **Application ID**
 2. **Bot** tab → "Add Bot" → copy token: `aidevops secret set DISCORD_BOT_TOKEN`
-3. Settings: **Public Bot**: Off | **Message Content Intent**: On (if reading non-slash messages)
+3. Settings: **Public Bot**: Off | **Message Content Intent**: On only when the bot must receive message fields outside Discord's documented privileged-intent exceptions
 
 ### 2. Gateway Intents
 
 | Intent | Privileged | Required for |
 |--------|-----------|--------------|
 | `Guilds` | No | Guild/channel structure, roles |
-| `GuildMessages` | No | Message events in guild channels |
+| `GuildMessages` | No | Message and reaction Gateway events in guild channels |
 | `GuildMembers` | Yes | Member join/leave, role changes |
 | `MessageContent` | Yes | Reading message text (non-slash) |
-| `DirectMessages` | No | DM events |
+| `DirectMessages` | No | Events for DMs in which the bot participates; not arbitrary user DM history |
 
 Privileged intents require manual approval for bots in 100+ guilds (Developer Portal > Bot > Privileged Gateway Intents). **Recommendation**: Use slash commands as primary interaction — avoids `MessageContent` privileged intent.
 
 ### 3. OAuth2 Bot Invite
 
 **OAuth2** > **URL Generator** → scopes: `bot`, `applications.commands` → permissions: Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Use Slash Commands, Add Reactions, Manage Threads.
+
+Those permissions are for the interactive bot described in this guide. A
+read-only knowledge collector should use a separate application/credential with
+only View Channel and Read Message History on explicit allowlisted surfaces. See
+`content/social-discord.md`; never reuse its credential for sends, reactions,
+moderation, role changes, webhooks, or channel/thread management.
 
 ```text
 https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=326417591296&scope=bot+applications.commands
