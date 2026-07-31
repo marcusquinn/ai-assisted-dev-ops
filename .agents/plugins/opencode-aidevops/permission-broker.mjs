@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { createHash } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { homedir } from "os";
 import { appendWorkerBlockerEvent } from "../../scripts/worker-blocker-log.mjs";
+import { isManagedToolOutputRead } from "./permission-broker-tool-output.mjs";
 
 const REQUEST_SCHEMA = "aidevops-permission-capture/v1";
 const MAX_PATTERN_LENGTH = 500;
@@ -101,61 +102,6 @@ function normalizePatterns(input, options) {
   return [...new Set(source
     .map((value) => sanitizePermissionText(String(value), options))
     .filter(Boolean))].slice(0, 20);
-}
-
-function normalizePathPattern(value) {
-  return typeof value === "string" ? value.replaceAll("\\", "/") : "";
-}
-
-function pathHasSymlinkComponent(target) {
-  let current = resolve(target);
-  try {
-    while (true) {
-      if (lstatSync(current).isSymbolicLink()) return true;
-      const parent = dirname(current);
-      if (parent === current) return false;
-      current = parent;
-    }
-  } catch {
-    return true;
-  }
-}
-
-function hasExactToolOutputPattern(raw, directory) {
-  const expected = `${normalizePathPattern(directory)}/*`;
-  const input = raw?.patterns ?? raw?.pattern;
-  const patterns = Array.isArray(input) ? input : input == null ? [] : [input];
-  return patterns.length === 1 && normalizePathPattern(patterns[0]) === expected;
-}
-
-function managedToolOutputPath(raw, directory) {
-  const filepath = raw?.metadata?.filepath || "";
-  const parentDir = raw?.metadata?.parentDir || "";
-  if (!filepath || !parentDir || resolve(parentDir) !== directory || dirname(resolve(filepath)) !== directory) return "";
-  return basename(filepath).startsWith("tool_") ? filepath : "";
-}
-
-function isSafeManagedToolOutputFile(filepath, directory) {
-  try {
-    const info = lstatSync(filepath);
-    return info.isFile()
-      && !info.isSymbolicLink()
-      && !pathHasSymlinkComponent(directory)
-      && dirname(realpathSync(filepath)) === realpathSync(directory);
-  } catch {
-    return false;
-  }
-}
-
-function isManagedToolOutputRead(toolCalls, raw, dataHome) {
-  const permission = raw?.permission || raw?.type || "";
-  const callID = raw?.tool?.callID || raw?.callID || "";
-  if (permission !== "external_directory" || toolCalls.get(callID)?.tool !== "read") return false;
-
-  const directory = resolve(dataHome, "opencode", "tool-output");
-  if (!hasExactToolOutputPattern(raw, directory)) return false;
-  const filepath = managedToolOutputPath(raw, directory);
-  return Boolean(filepath) && isSafeManagedToolOutputFile(filepath, directory);
 }
 
 function recordPermissionToolCall(toolCalls, isHeadless, home, input, output) {
