@@ -1923,7 +1923,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 	local repo_records_orphan
 	repo_records_orphan=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | [(.path // ""), (.slug // "")] | @tsv' "$repos_json" 2>/dev/null || printf '')
 
-	local rp_orphan repo_slug_orphan
+	local rp_orphan="" repo_slug_orphan=""
 	while IFS=$'\t' read -r rp_orphan repo_slug_orphan; do
 		[[ -z "$rp_orphan" ]] && continue
 		[[ -d "$rp_orphan/.git" || -f "$rp_orphan/.git" ]] || continue
