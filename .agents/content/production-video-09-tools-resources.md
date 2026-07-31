@@ -5,6 +5,8 @@
 
 ## Internal References
 
+- `.agents/content/media-generation-providers.md` — Canonical hosted/local provider routing
+- `.agents/content/video-kie.md` — Kie.ai image/video/audio Market API
 - `.agents/tools/video/video-prompt-design.md` — Veo 3 Meta Framework (7-component prompting)
 - `.agents/content/video-higgsfield.md` — Higgsfield API integration
 - `.agents/content/heygen-skill.md` — HeyGen Avatar API (talking-head generation)
@@ -34,6 +36,11 @@ video-gen-helper.sh character /path/to/face.jpg
 video-gen-helper.sh bracket "Product demo" https://example.com/product.jpg 4000 4010 dop-turbo
 video-gen-helper.sh status sora vid_abc123 && video-gen-helper.sh download sora vid_abc123 ./output
 video-gen-helper.sh models
+
+# Kie.ai generic Market tasks (model-specific JSON remains pass-through)
+kie-helper.sh video --model kling-3.0/video --prompt "A cat reading a book" \
+  --params '{"duration":"5","aspect_ratio":"16:9","mode":"pro","sound":true,"multi_shots":false,"multi_prompt":[]}'
+kie-helper.sh wait TASK_ID --timeout 900
 ```
 
 ## External Resources
@@ -42,4 +49,5 @@ video-gen-helper.sh models
 - [Veo 3.1 Documentation](https://deepmind.google/technologies/veo/)
 - [Higgsfield Platform](https://platform.higgsfield.ai)
 - [HeyGen Platform](https://www.heygen.com/)
+- [Kie.ai Market](https://kie.ai/market)
 - [Topaz Video AI](https://www.topazlabs.com/topaz-video-ai)

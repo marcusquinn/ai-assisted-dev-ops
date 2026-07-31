@@ -11,7 +11,9 @@ subagents:
   - production-video
   - production-audio
   - production-characters
+  - media-generation-providers
   - video-higgsfield
+  - video-kie
   - video-runway
   - video-wavespeed
   - video-enhancor
@@ -79,7 +81,7 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
 | Story | `story.md` | Narrative design, hooks, angles, frameworks |
 | Writing | `production-writing.md` | Scripts, copy, captions |
 | Image | `production-image.md` | AI image gen, thumbnails, style libraries |
-| Video | `production-video.md` | Sora 2, Veo 3.1, Higgsfield, seed bracketing |
+| Video | `production-video.md` | Model strategy, provider routing, prompting, seed bracketing |
 | Audio | `production-audio.md` | Voice pipeline, sound design, emotional cues |
 | Characters | `production-characters.md` | Facial engineering, character bibles, personas |
 | Humanise | `humanise.md` (`/humanise`) | Remove AI patterns, add natural voice |
@@ -95,6 +97,7 @@ All subagent paths relative to `content/`.
 
 ## Model Routing (production tasks)
 
+- **Provider selection**: `media-generation-providers.md` is the canonical route for direct APIs, gateways, local generation, avatars, and enhancement
 - **Image**: Nanobanana Pro (JSON), Midjourney (objects/environments), Freepik (characters), Seedream 4 (4K refinement)
 - **Video**: Sora 2 Pro (UGC/<10k production value), Veo 3.1 (cinematic/>100k production value)
 - **Voice**: CapCut AI cleanup -> ElevenLabs transformation (NEVER direct from AI output)
@@ -141,7 +144,7 @@ content-fanout-helper.sh run <plan-file>    # Execute (also: channels, status, e
 | Domain | References |
 |--------|-----------|
 | Research | `tools/context/context7.md`, `tools/browser/crawl4ai.md`, `seo/google-search-console.md`, `seo/dataforseo.md` |
-| Video | `content/video-higgsfield.md`, `tools/video/video-prompt-design.md`, t200 Veo Meta Framework |
+| Video | `content/media-generation-providers.md`, `content/video-kie.md`, `content/video-higgsfield.md`, `tools/video/video-prompt-design.md` |
 | Voice | `tools/voice/speech-to-speech.md`, `voice-helper.sh` |
 | SEO/Blog | `seo/`, `content/seo-writer.md`, `content/editor.md`, `content/meta-creator.md`, `content/internal-linker.md` |
 | Social | `content/social-bird.md` (X), `content/social-linkedin.md`, `content/social-reddit.md` |

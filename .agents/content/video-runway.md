@@ -278,21 +278,17 @@ runway-helper.sh cancel {task-id}
 runway-helper.sh usage --start 2026-01-01 --end 2026-02-01
 ```
 
-## Runway vs Higgsfield
+## Provider Selection
 
-| Feature | Runway | Higgsfield |
-|---------|--------|------------|
-| Video | Gen-4, Veo 3/3.1, Aleph, Act Two | DOP, Kling, Seedance |
-| Image | Gen-4 Image, Gemini 2.5 Flash | Soul, Popcorn, Seedream |
-| Audio | ElevenLabs TTS/STS/SFX/dubbing/isolation | None |
-| Auth | Bearer token (single key) | API key + secret (dual) |
-| SDKs | Node.js + Python (official) | Python |
-| Task polling | `.waitForTaskOutput()` built-in | Manual |
-| Character | Act Two (performance transfer) | Reference ID consistency |
-| Best for | Full media pipeline (video+image+audio) | Multi-model access, budget |
+Use `content/media-generation-providers.md` for the canonical provider
+comparison. Choose Runway when its direct media pipeline, account, official
+Node.js/Python SDKs, or provider-specific task behaviour is required. Use a
+gateway only when broader model access outweighs direct-provider semantics.
 
 ## Related
 
+- `content/media-generation-providers.md` - Canonical provider routing
+- `content/video-kie.md` - Kie.ai generic Market task API
 - `content/video-higgsfield.md` - Higgsfield API (alternative multi-model platform)
 - `tools/video/video-prompt-design.md` - Video prompt engineering
 - `content/production-video.md` - Video production pipeline

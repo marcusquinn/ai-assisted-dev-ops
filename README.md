@@ -1287,6 +1287,7 @@ The setup script offers to install these tools automatically.
 
 - **[Remotion](https://remotion.dev/)**: Programmatic video creation with React - animations, compositions, media handling, captions
 - **[Video Prompt Design](https://github.com/snubroot/Veo-3-Meta-Framework)**: AI video prompt engineering using the 7-component meta prompt framework for Veo 3 and similar models
+- **[Kie.ai](https://kie.ai/)**: Unified asynchronous Market API and `kie-helper.sh` workflow for image, video, audio, uploads, callbacks, and credit checks with model-specific JSON pass-through
 - **[MuAPI](https://muapi.ai/)**: Multimodal AI API for image/video/audio/VFX generation, workflows, agents, music (Suno), and lip-sync - unified creative orchestration platform
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**: YouTube video/audio/playlist/channel downloads, transcript extraction, and local file audio conversion via ffmpeg
 
