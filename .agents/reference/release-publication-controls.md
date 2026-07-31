@@ -117,6 +117,10 @@ omitted the redundant `Aidevops-Aggregated-Source` copy. Publication correctly
 failed before side effects. Issue #28917 records the no-retag recovery and the
 resolver regression coverage.
 
+A pending aggregation reviews authorized maintainer-gating PR #28983 at
+`e5f19918e375f13a6deaab916d53538c8641872f` because PR #28986 and deterministic
+quality and simplification-state updates advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
