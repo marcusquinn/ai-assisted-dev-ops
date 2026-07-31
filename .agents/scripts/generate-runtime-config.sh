@@ -151,6 +151,9 @@ try:
 except Exception:
     sys.exit(1)
 
+if config.get("autoupdate") is not False:
+    sys.exit(1)
+
 configured = config.get("agent", {})
 if not isinstance(configured, dict):
     sys.exit(1)

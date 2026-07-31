@@ -29,6 +29,10 @@ except (OSError, json.JSONDecodeError) as e:
     print(f"Error: Failed to load {config_path}: {e}", file=sys.stderr)
     sys.exit(1)
 
+# Prevent OpenCode's built-in updater from bypassing the framework-controlled
+# runtime version pin and breaking fail-closed headless launches.
+config['autoupdate'] = False
+
 # =============================================================================
 # DISCOVER PRIMARY AGENTS
 # =============================================================================

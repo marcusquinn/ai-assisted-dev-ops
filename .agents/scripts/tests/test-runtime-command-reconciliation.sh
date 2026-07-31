@@ -19,12 +19,42 @@ mkdir -p \
 	"$TEST_HOME/.aidevops/agents/commands" \
 	"$TEST_HOME/.aidevops/agents/scripts/commands" \
 	"$TEST_HOME/.config/opencode/command"
+ln -s "$REPO_ROOT/.agents/scripts/lib" "$TEST_HOME/.aidevops/agents/scripts/lib"
 printf '%s\n' '# build command' >"$TEST_HOME/.aidevops/agents/commands/aidevops-build-plus.md"
 printf '%s\n' '# session command' >"$TEST_HOME/.aidevops/agents/scripts/commands/session-analysis.md"
 
 HOME="$TEST_HOME"
 # shellcheck source=../generate-runtime-config.sh
 source "$REPO_ROOT/.agents/scripts/generate-runtime-config.sh"
+
+printf '%s\n' '{"autoupdate":false,"agent":{}}' >"$TEST_HOME/.config/opencode/opencode.json"
+if ! _opencode_agent_output_matches_source; then
+	printf '%s\n' 'FAIL: managed autoupdate=false failed parity verification' >&2
+	exit 1
+fi
+
+printf '%s\n' '{"agent":{}}' >"$TEST_HOME/.config/opencode/opencode.json"
+if _opencode_agent_output_matches_source; then
+	printf '%s\n' 'FAIL: missing managed autoupdate setting passed parity verification' >&2
+	exit 1
+fi
+
+printf '%s\n' '{"autoupdate":true,"agent":{},"custom":"preserve"}' >"$TEST_HOME/.config/opencode/opencode.json"
+if _opencode_agent_output_matches_source; then
+	printf '%s\n' 'FAIL: enabled OpenCode autoupdate passed parity verification' >&2
+	exit 1
+fi
+
+HOME="$TEST_HOME" python3 "$REPO_ROOT/.agents/scripts/opencode-agent-discovery.py" >/dev/null
+if ! jq -e '.autoupdate == false and .custom == "preserve"' "$TEST_HOME/.config/opencode/opencode.json" >/dev/null; then
+	printf '%s\n' 'FAIL: OpenCode config generation did not disable autoupdate while preserving unrelated keys' >&2
+	exit 1
+fi
+HOME="$TEST_HOME" python3 "$REPO_ROOT/.agents/scripts/opencode-agent-discovery.py" >/dev/null
+if ! jq -e '.autoupdate == false and .custom == "preserve"' "$TEST_HOME/.config/opencode/opencode.json" >/dev/null; then
+	printf '%s\n' 'FAIL: repeated OpenCode config generation did not preserve managed autoupdate state' >&2
+	exit 1
+fi
 
 if _opencode_command_output_matches_source; then
 	printf '%s\n' 'FAIL: missing generated commands passed parity verification' >&2
