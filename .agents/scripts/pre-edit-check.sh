@@ -443,9 +443,9 @@ _handle_loop_mode_on_protected() {
 	# Derive branch name from --task description or fall back to generic
 	local _wt_branch_name=""
 	local _wt_task_desc="${TASK_DESC:-}"
+	local _wt_issue_num=""
 	if [[ -n "$_wt_task_desc" ]]; then
 		# Extract issue number if present (e.g., "Implement issue #17642")
-		local _wt_issue_num=""
 		_wt_issue_num=$(printf '%s' "$_wt_task_desc" | grep -oE '#[0-9]+|issue[/ ]*([0-9]+)' | grep -oE '[0-9]+' | head -1) || _wt_issue_num=""
 		if [[ -n "$_wt_issue_num" ]]; then
 			# Slugify the task title for the branch name
@@ -462,27 +462,48 @@ _handle_loop_mode_on_protected() {
 	# Try to create the worktree using the helper
 	local _wt_helper="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/worktree-helper.sh"
 	local _wt_path=""
+	local _wt_actual_branch=""
+	local _wt_provenance=""
+	local _wt_target=""
+	local _wt_ahead=""
+	local _wt_behind=""
+	local _wt_helper_rc=1
 	if [[ -x "$_wt_helper" ]]; then
 		local _wt_output=""
-		_wt_output=$("$_wt_helper" add "$_wt_branch_name" 2>&1) || true
+		local -a _wt_args=(add "$_wt_branch_name" --fresh-on-collision)
+		if [[ -n "$_wt_issue_num" ]]; then
+			_wt_args+=(--issue "$_wt_issue_num")
+		fi
+		if _wt_output=$("$_wt_helper" "${_wt_args[@]}" 2>&1); then
+			_wt_helper_rc=0
+		fi
 		local _wt_clean_output=""
 		_wt_clean_output=$(printf '%s' "$_wt_output" | perl -pe 's/\e\[[0-9;]*[[:alpha:]]//g') || _wt_clean_output="$_wt_output"
-		# Extract the worktree path from helper output
-		_wt_path=$(printf '%s' "$_wt_clean_output" | grep -oE '/[^ ]*Git/[^ ]*' | head -1) || _wt_path=""
-		if [[ -z "$_wt_path" ]]; then
-			# Fallback: construct expected path from repo name + branch
-			local _wt_repo_name=""
-			_wt_repo_name=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
-			local _wt_safe_branch=""
-			_wt_safe_branch=$(printf '%s' "$_wt_branch_name" | tr '/' '-')
-			_wt_path="$(dirname "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")/${_wt_repo_name}-${_wt_safe_branch}"
+		_wt_path=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_PATH=/{print substr($0, index($0, "=") + 1); exit}') || _wt_path=""
+		_wt_actual_branch=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_BRANCH=/{print substr($0, index($0, "=") + 1); exit}') || _wt_actual_branch=""
+		_wt_provenance=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_PROVENANCE=/{print $2; exit}') || _wt_provenance=""
+		_wt_target=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_TARGET=/{print $2; exit}') || _wt_target=""
+		_wt_ahead=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_AHEAD=/{print $2; exit}') || _wt_ahead=""
+		_wt_behind=$(printf '%s\n' "$_wt_clean_output" | awk -F= '/^WORKTREE_BEHIND=/{print $2; exit}') || _wt_behind=""
+		if [[ "$_wt_helper_rc" -ne 0 ]]; then
+			printf '%s\n' "$_wt_clean_output"
 		fi
 	fi
 
+	local _wt_checked_branch=""
 	if [[ -n "$_wt_path" && -d "$_wt_path" ]]; then
+		_wt_checked_branch=$(git -C "$_wt_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+	fi
+	if [[ "$_wt_helper_rc" -eq 0 && -n "$_wt_path" && -d "$_wt_path" &&
+		-n "$_wt_actual_branch" && "$_wt_checked_branch" == "$_wt_actual_branch" &&
+		-n "$_wt_provenance" && -n "$_wt_target" ]]; then
 		echo "LOOP_DECISION=worktree_created"
 		echo "WORKTREE_PATH=$_wt_path"
-		echo "WORKTREE_BRANCH=$_wt_branch_name"
+		echo "WORKTREE_BRANCH=$_wt_actual_branch"
+		echo "WORKTREE_PROVENANCE=$_wt_provenance"
+		echo "WORKTREE_TARGET=$_wt_target"
+		echo "WORKTREE_AHEAD=${_wt_ahead:-0}"
+		echo "WORKTREE_BEHIND=${_wt_behind:-0}"
 		echo -e "${GREEN}LOOP-AUTO${NC}: Worktree created at $_wt_path"
 		echo ""
 		echo "NEXT_STEP: cd to the worktree path and continue implementation there."
@@ -493,7 +514,8 @@ _handle_loop_mode_on_protected() {
 		echo -e "${RED}LOOP-AUTO${NC}: Failed to auto-create worktree '$_wt_branch_name'"
 		echo "LOOP_DECISION=worktree"
 		echo "WORKTREE_BRANCH=$_wt_branch_name"
-		echo "NEXT_STEP: Run worktree-helper.sh add '$_wt_branch_name' manually, then cd to the new path."
+		echo "ACTION_REQUIRED=inspect_existing_task_branch"
+		echo "NEXT_STEP: Inspect the reported branch collision, then choose an explicit continuation or a new branch."
 		exit 2 # Special exit code for "create worktree"
 	fi
 }

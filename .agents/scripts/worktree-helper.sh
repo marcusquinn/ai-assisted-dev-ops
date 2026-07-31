@@ -14,7 +14,8 @@
 #   worktree-helper.sh <command> [options]
 #
 # Commands:
-#   add <branch> [path] [--issue NNN] [--base REF]  Create worktree for branch (auto-names path)
+#   add <branch> [path] [--issue NNN] [--base REF] [--fresh-on-collision]
+#                          Create worktree for branch (auto-names path)
 #   list                   List all worktrees with status
 #   remove <path|branch>   Remove a worktree
 #   status                 Show current worktree info

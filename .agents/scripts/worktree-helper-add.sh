@@ -618,7 +618,8 @@ _cmd_add_assert_path_outside_repo() {
 }
 
 # Parse cmd_add arguments: positional (branch, path) + optional flags.
-# Sets global _ADD_BRANCH, _ADD_PATH, _ADD_ISSUE, _ADD_BASE. Returns 1 on parse error.
+# Sets global _ADD_BRANCH, _ADD_PATH, _ADD_ISSUE, _ADD_BASE, and
+# _ADD_FRESH_ON_COLLISION. Returns 1 on parse error.
 # Extracted from cmd_add (t2260) to keep function bodies under 100 lines.
 # --base <ref> (t2802): explicit base for new branch creation. Default is
 # origin/<default_branch> — prevents scope-leak PRs when canonical HEAD is stale.
@@ -627,6 +628,7 @@ _parse_cmd_add_args() {
 	_ADD_PATH=""
 	_ADD_ISSUE=""
 	_ADD_BASE=""
+	_ADD_FRESH_ON_COLLISION=0
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
@@ -656,9 +658,13 @@ _parse_cmd_add_args() {
 				_ADD_BASE="${_arg#--base=}"
 				shift
 				;;
+			--fresh-on-collision)
+				_ADD_FRESH_ON_COLLISION=1
+				shift
+				;;
 			-*)
 				echo -e "${RED}Error: Unknown option: $_arg${NC}"
-				echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF]"
+				echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF] [--fresh-on-collision]"
 				return 1
 				;;
 			*)
@@ -673,10 +679,132 @@ _parse_cmd_add_args() {
 	done
 	if [[ -z "$_ADD_BRANCH" ]]; then
 		echo -e "${RED}Error: Branch name required${NC}"
-		echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF]"
+		echo "Usage: worktree-helper.sh add <branch> [path] [--issue NNN] [--base REF] [--fresh-on-collision]"
 		return 1
 	fi
 	return 0
+}
+
+# Emit additive machine-readable provenance for callers that opt into safe
+# task-branch collision handling.
+_cmd_add_print_collision_provenance() {
+	[[ "${_ADD_FRESH_ON_COLLISION:-0}" -eq 1 ]] || return 0
+	printf 'WORKTREE_PATH=%s\n' "${_ADD_COLLISION_PATH:-}"
+	printf 'WORKTREE_BRANCH=%s\n' "${_ADD_COLLISION_BRANCH:-}"
+	printf 'WORKTREE_PROVENANCE=%s\n' "${_ADD_COLLISION_PROVENANCE:-unknown}"
+	printf 'WORKTREE_TARGET=%s\n' "${_ADD_COLLISION_TARGET_SHA:-}"
+	printf 'WORKTREE_AHEAD=%s\n' "${_ADD_COLLISION_AHEAD:-0}"
+	printf 'WORKTREE_BEHIND=%s\n' "${_ADD_COLLISION_BEHIND:-0}"
+	return 0
+}
+
+# Classify an existing task-derived branch against a freshly resolved target.
+# The opt-in policy is lossless: unique commits are never rewritten, and one
+# deterministic "-fresh" branch bounds retries after a stale empty collision.
+_cmd_add_classify_collision_branch() {
+	local requested_branch="$1"
+	local explicit_base="$2"
+	local explicit_issue="$3"
+	local target_ref=""
+	target_ref=$(_resolve_worktree_base_ref "$explicit_base") || return 1
+	[[ -n "$target_ref" ]] || {
+		echo "WORKTREE_COLLISION=target_unresolved" >&2
+		return 1
+	}
+
+	_ADD_COLLISION_TARGET_SHA=$(git rev-parse --verify "${target_ref}^{commit}" 2>/dev/null) || return 1
+	_ADD_COLLISION_BRANCH="$requested_branch"
+	_ADD_COLLISION_PROVENANCE="fresh"
+	_ADD_COLLISION_AHEAD=0
+	_ADD_COLLISION_BEHIND=0
+	_ADD_COLLISION_PATH=""
+	_ADD_COLLISION_REUSED_ACTIVE=0
+
+	branch_exists "$requested_branch" || return 0
+
+	local candidate_branch="$requested_branch"
+	local candidate_path=""
+	local ahead=0
+	local behind=0
+	ahead=$(git rev-list --count "${_ADD_COLLISION_TARGET_SHA}..refs/heads/${candidate_branch}" 2>/dev/null) || return 1
+	behind=$(git rev-list --count "refs/heads/${candidate_branch}..${_ADD_COLLISION_TARGET_SHA}" 2>/dev/null) || return 1
+
+	if candidate_path=$(get_worktree_path_for_branch "$candidate_branch"); then
+		local owner_info=""
+		local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created=""
+		owner_info=$(check_worktree_owner "$candidate_path" 2>/dev/null || true)
+		IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created <<<"$owner_info"
+		if [[ -z "$explicit_issue" || "$owner_task" != "$explicit_issue" ]]; then
+			printf 'WORKTREE_COLLISION=active_ownership_unverified\n' >&2
+			printf 'WORKTREE_BRANCH=%s\n' "$candidate_branch" >&2
+			printf 'WORKTREE_PATH=%s\n' "$candidate_path" >&2
+			printf 'ACTION_REQUIRED=inspect_existing_task_worktree\n' >&2
+			return 1
+		fi
+		_ADD_COLLISION_PATH="$candidate_path"
+		_ADD_COLLISION_PROVENANCE="continuation_active"
+		_ADD_COLLISION_AHEAD="$ahead"
+		_ADD_COLLISION_BEHIND="$behind"
+		_ADD_COLLISION_REUSED_ACTIVE=1
+		return 0
+	fi
+
+	if [[ "$ahead" -gt 0 ]]; then
+		printf 'WORKTREE_COLLISION=unique_commits\n' >&2
+		printf 'WORKTREE_BRANCH=%s\n' "$candidate_branch" >&2
+		printf 'WORKTREE_TARGET=%s\n' "$_ADD_COLLISION_TARGET_SHA" >&2
+		printf 'WORKTREE_AHEAD=%s\n' "$ahead" >&2
+		printf 'WORKTREE_BEHIND=%s\n' "$behind" >&2
+		printf 'ACTION_REQUIRED=inspect_existing_task_branch\n' >&2
+		return 1
+	fi
+
+	if [[ "$behind" -eq 0 ]]; then
+		_ADD_COLLISION_PROVENANCE="fresh_existing"
+		return 0
+	fi
+
+	candidate_branch="${requested_branch}-fresh"
+	_ADD_COLLISION_BRANCH="$candidate_branch"
+	_ADD_COLLISION_PROVENANCE="fresh_collision"
+	_ADD_COLLISION_AHEAD=0
+	_ADD_COLLISION_BEHIND=0
+	branch_exists "$candidate_branch" || return 0
+
+	ahead=$(git rev-list --count "${_ADD_COLLISION_TARGET_SHA}..refs/heads/${candidate_branch}" 2>/dev/null) || return 1
+	behind=$(git rev-list --count "refs/heads/${candidate_branch}..${_ADD_COLLISION_TARGET_SHA}" 2>/dev/null) || return 1
+	if candidate_path=$(get_worktree_path_for_branch "$candidate_branch"); then
+		local fresh_owner_info=""
+		local fresh_owner_pid="" fresh_owner_session="" fresh_owner_batch="" fresh_owner_task="" fresh_owner_created=""
+		fresh_owner_info=$(check_worktree_owner "$candidate_path" 2>/dev/null || true)
+		IFS='|' read -r fresh_owner_pid fresh_owner_session fresh_owner_batch fresh_owner_task fresh_owner_created <<<"$fresh_owner_info"
+		if [[ -z "$explicit_issue" || "$fresh_owner_task" != "$explicit_issue" ]]; then
+			printf 'WORKTREE_COLLISION=active_ownership_unverified\n' >&2
+			printf 'WORKTREE_BRANCH=%s\n' "$candidate_branch" >&2
+			printf 'WORKTREE_PATH=%s\n' "$candidate_path" >&2
+			printf 'ACTION_REQUIRED=inspect_existing_task_worktree\n' >&2
+			return 1
+		fi
+		_ADD_COLLISION_PATH="$candidate_path"
+		_ADD_COLLISION_PROVENANCE="continuation_active"
+		_ADD_COLLISION_AHEAD="$ahead"
+		_ADD_COLLISION_BEHIND="$behind"
+		_ADD_COLLISION_REUSED_ACTIVE=1
+		return 0
+	fi
+
+	if [[ "$ahead" -eq 0 && "$behind" -eq 0 ]]; then
+		_ADD_COLLISION_PROVENANCE="fresh_existing"
+		return 0
+	fi
+
+	printf 'WORKTREE_COLLISION=fresh_branch_changed\n' >&2
+	printf 'WORKTREE_BRANCH=%s\n' "$candidate_branch" >&2
+	printf 'WORKTREE_TARGET=%s\n' "$_ADD_COLLISION_TARGET_SHA" >&2
+	printf 'WORKTREE_AHEAD=%s\n' "$ahead" >&2
+	printf 'WORKTREE_BEHIND=%s\n' "$behind" >&2
+	printf 'ACTION_REQUIRED=inspect_existing_task_branch\n' >&2
+	return 1
 }
 
 # Refresh an origin branch from linked-worktree context so the canonical Git
@@ -848,6 +976,7 @@ cmd_add() {
 	local path="$_ADD_PATH"
 	local explicit_issue="$_ADD_ISSUE"  # t2260: --issue NNN for unambiguous claim
 	local explicit_base="$_ADD_BASE"    # t2802: --base REF for explicit base
+	local fresh_on_collision="$_ADD_FRESH_ON_COLLISION"
 
 	# t2235: Detect self-invented task ID variants (e.g. t2213b, t2213-2, t2213.fix)
 	# Task IDs come ONLY from claim-task-id.sh. For follow-ups, claim a fresh ID.
@@ -867,6 +996,16 @@ cmd_add() {
 		return 1
 	fi
 
+	if [[ "$fresh_on_collision" -eq 1 ]]; then
+		_cmd_add_classify_collision_branch "$branch" "$explicit_base" "$explicit_issue" || return 1
+		branch="$_ADD_COLLISION_BRANCH"
+		explicit_base="$_ADD_COLLISION_TARGET_SHA"
+		if [[ "$_ADD_COLLISION_REUSED_ACTIVE" -eq 1 ]]; then
+			_cmd_add_print_collision_provenance
+			return 0
+		fi
+	fi
+
 	# Check if worktree already exists for this branch
 	local existing_path
 	if existing_path=$(get_worktree_path_for_branch "$branch"); then
@@ -875,6 +1014,8 @@ cmd_add() {
 		echo ""
 		echo "To use it:"
 		echo "  cd $existing_path" || exit
+		_ADD_COLLISION_PATH="$existing_path"
+		_cmd_add_print_collision_provenance
 		return 0
 	fi
 
@@ -932,6 +1073,8 @@ cmd_add() {
 	_interactive_session_auto_claim "$branch" "$path" "$explicit_issue" || true
 
 	_print_worktree_add_success "$path" "$branch"
+	_ADD_COLLISION_PATH="$path"
+	_cmd_add_print_collision_provenance
 
 	# Localdev integration (t1224.8): auto-create branch subdomain route
 	localdev_auto_branch "$branch"

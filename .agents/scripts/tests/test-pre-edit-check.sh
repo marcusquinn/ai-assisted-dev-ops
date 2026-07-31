@@ -17,6 +17,7 @@ TESTS_FAILED=0
 TEST_ROOT=""
 TEST_REGISTRY_DIR=""
 TEST_REGISTRY_DB=""
+TEST_WORKTREE_BASE=""
 
 print_result() {
 	local test_name="$1"
@@ -39,6 +40,7 @@ print_result() {
 
 setup_test_repo() {
 	TEST_ROOT=$(mktemp -d)
+	TEST_WORKTREE_BASE="$(dirname "$TEST_ROOT")/$(basename "$TEST_ROOT")-worktrees"
 	TEST_REGISTRY_DIR="${TEST_ROOT}/.registry"
 	TEST_REGISTRY_DB="${TEST_REGISTRY_DIR}/worktree-registry.db"
 	"$GIT_BIN" -C "$TEST_ROOT" init -b main >/dev/null 2>&1 || {
@@ -58,6 +60,9 @@ setup_test_repo() {
 teardown_test_repo() {
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
+	fi
+	if [[ -n "$TEST_WORKTREE_BASE" && -d "$TEST_WORKTREE_BASE" ]]; then
+		rm -rf "$TEST_WORKTREE_BASE"
 	fi
 	return 0
 }
@@ -491,6 +496,119 @@ test_auto_creates_git_path_worktree_from_ansi_helper_output() {
 	return 0
 }
 
+test_task_branch_collisions_are_lossless_and_fresh() {
+	local remote_path="${TEST_ROOT}/fixture-remote.git"
+	local worktree_base="$TEST_WORKTREE_BASE"
+	"$GIT_BIN" init -q --bare "$remote_path"
+	"$GIT_BIN" -C "$TEST_ROOT" remote add origin "$remote_path"
+	"$GIT_BIN" -C "$TEST_ROOT" push -q -u origin main
+	"$GIT_BIN" -C "$TEST_ROOT" remote set-head origin main
+
+	local task="Implement issue #28956 stale collision"
+	local output=""
+	local exit_code=0
+	output=$(AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" FULL_LOOP_HEADLESS=true \
+		run_helper "$TEST_ROOT" --loop-mode --task "$task" 2>&1) || exit_code=$?
+	local original_branch=""
+	local original_path=""
+	original_branch=$(printf '%s\n' "$output" | awk -F= '/^WORKTREE_BRANCH=/{print $2; exit}')
+	original_path=$(printf '%s\n' "$output" | awk -F= '/^WORKTREE_PATH=/{print substr($0, index($0, "=") + 1); exit}')
+	local original_sha=""
+	original_sha=$("$GIT_BIN" -C "$original_path" rev-parse HEAD 2>/dev/null || true)
+	if [[ "$exit_code" -ne 0 || "$output" != *"WORKTREE_PROVENANCE=fresh"* || -z "$original_sha" ]]; then
+		print_result "creates first task worktree with fresh provenance" 1 "exit=${exit_code} output=${output}"
+		return 0
+	fi
+	print_result "creates first task worktree with fresh provenance" 0
+
+	"$GIT_BIN" -C "$TEST_ROOT" worktree remove --force "$original_path"
+	ensure_registry_schema
+	sqlite3 "$TEST_REGISTRY_DB" "DELETE FROM worktree_owners WHERE worktree_path = '$original_path';"
+
+	local target_tree=""
+	local advanced_sha=""
+	target_tree=$("$GIT_BIN" -C "$TEST_ROOT" rev-parse "${original_sha}^{tree}")
+	advanced_sha=$(printf 'remote advance\n' | "$GIT_BIN" -C "$TEST_ROOT" commit-tree "$target_tree" -p "$original_sha")
+	"$GIT_BIN" -C "$TEST_ROOT" push -q origin "${advanced_sha}:refs/heads/main"
+
+	output=""
+	exit_code=0
+	output=$(AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" FULL_LOOP_HEADLESS=true \
+		run_helper "$TEST_ROOT" --loop-mode --task "$task" 2>&1) || exit_code=$?
+	local fresh_branch=""
+	local fresh_path=""
+	fresh_branch=$(printf '%s\n' "$output" | awk -F= '/^WORKTREE_BRANCH=/{print $2; exit}')
+	fresh_path=$(printf '%s\n' "$output" | awk -F= '/^WORKTREE_PATH=/{print substr($0, index($0, "=") + 1); exit}')
+	local fresh_sha=""
+	fresh_sha=$("$GIT_BIN" -C "$fresh_path" rev-parse HEAD 2>/dev/null || true)
+	local preserved_sha=""
+	preserved_sha=$("$GIT_BIN" -C "$TEST_ROOT" rev-parse "refs/heads/${original_branch}" 2>/dev/null || true)
+	if [[ "$exit_code" -eq 0 && "$fresh_branch" == "${original_branch}-fresh" &&
+		"$fresh_sha" == "$advanced_sha" && "$preserved_sha" == "$original_sha" &&
+		"$output" == *"WORKTREE_PROVENANCE=fresh_collision"* ]]; then
+		print_result "stale inactive task branch creates one fresh collision branch" 0
+	else
+		print_result "stale inactive task branch creates one fresh collision branch" 1 \
+			"exit=${exit_code} original=${preserved_sha} fresh=${fresh_sha} target=${advanced_sha} output=${output}"
+	fi
+
+	output=""
+	exit_code=0
+	output=$(AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" FULL_LOOP_HEADLESS=true \
+		run_helper "$TEST_ROOT" --loop-mode --task "$task" 2>&1) || exit_code=$?
+	local repeated_path=""
+	repeated_path=$(printf '%s\n' "$output" | awk -F= '/^WORKTREE_PATH=/{print substr($0, index($0, "=") + 1); exit}')
+	local fresh_root=""
+	local repeated_root=""
+	fresh_root=$("$GIT_BIN" -C "$fresh_path" rev-parse --show-toplevel 2>/dev/null || true)
+	repeated_root=$("$GIT_BIN" -C "$repeated_path" rev-parse --show-toplevel 2>/dev/null || true)
+	if [[ "$exit_code" -eq 0 && "$repeated_root" == "$fresh_root" &&
+		"$output" == *"WORKTREE_PROVENANCE=continuation_active"* ]]; then
+		print_result "repeated task resumes its correctly owned active worktree" 0
+	else
+		print_result "repeated task resumes its correctly owned active worktree" 1 "exit=${exit_code} output=${output}"
+	fi
+
+	local unique_task="Issue #29999 unique collision"
+	local unique_branch="bugfix/gh29999-issue-29999-unique-collision"
+	local unique_sha=""
+	unique_sha=$(printf 'unique task commit\n' | "$GIT_BIN" -C "$TEST_ROOT" commit-tree "$target_tree" -p "$advanced_sha")
+	"$GIT_BIN" -C "$TEST_ROOT" branch "$unique_branch" "$unique_sha"
+	output=""
+	exit_code=0
+	output=$(AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" FULL_LOOP_HEADLESS=true \
+		run_helper "$TEST_ROOT" --loop-mode --task "$unique_task" 2>&1) || exit_code=$?
+	local unique_after=""
+	unique_after=$("$GIT_BIN" -C "$TEST_ROOT" rev-parse "refs/heads/${unique_branch}")
+	if [[ "$exit_code" -eq 2 && "$unique_after" == "$unique_sha" &&
+		"$output" == *"WORKTREE_COLLISION=unique_commits"* &&
+		"$output" == *"ACTION_REQUIRED=inspect_existing_task_branch"* ]]; then
+		print_result "inactive task branch with unique commits fails closed unchanged" 0
+	else
+		print_result "inactive task branch with unique commits fails closed unchanged" 1 "exit=${exit_code} output=${output}"
+	fi
+
+	local origin_url=""
+	origin_url=$("$GIT_BIN" -C "$TEST_ROOT" remote get-url origin)
+	"$GIT_BIN" -C "$TEST_ROOT" remote set-url origin "${TEST_ROOT}/missing-remote.git"
+	output=""
+	exit_code=0
+	output=$(AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" FULL_LOOP_HEADLESS=true \
+		run_helper "$TEST_ROOT" --loop-mode --task "Issue #30000 refresh failure" 2>&1) || exit_code=$?
+	"$GIT_BIN" -C "$TEST_ROOT" remote set-url origin "$origin_url"
+	local refresh_branch_created=0
+	if "$GIT_BIN" -C "$TEST_ROOT" show-ref --verify --quiet refs/heads/bugfix/gh30000-issue-30000-refresh-failure; then
+		refresh_branch_created=1
+	fi
+	if [[ "$exit_code" -eq 2 && "$output" == *"could not refresh origin/main"* &&
+		"$refresh_branch_created" -eq 0 ]]; then
+		print_result "remote refresh failure does not create a task branch" 0
+	else
+		print_result "remote refresh failure does not create a task branch" 1 "exit=${exit_code} output=${output}"
+	fi
+	return 0
+}
+
 main() {
 	trap teardown_test_repo EXIT
 	setup_test_repo
@@ -512,6 +630,7 @@ main() {
 	test_absolute_path_outside_repo_blocked_on_main
 	test_todo_subdir_path_requires_worktree
 	test_auto_creates_git_path_worktree_from_ansi_helper_output
+	test_task_branch_collisions_are_lossless_and_fresh
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then
