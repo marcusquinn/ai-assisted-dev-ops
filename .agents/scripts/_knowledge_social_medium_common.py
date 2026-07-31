@@ -21,7 +21,7 @@ from _knowledge_social_medium_html import (
     walk,
 )
 from _knowledge_social_medium_types import MediumIdentity, PROVENANCE
-from knowledge_social_import import (
+from knowledge_source_contract import (
     FORBIDDEN_CREDENTIAL_KEYS,
     FORBIDDEN_CREDENTIAL_SUFFIXES,
 )

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Iterator
 
-from knowledge_social_import import (
+from knowledge_source_contract import (
     FORBIDDEN_CREDENTIAL_KEYS,
     FORBIDDEN_CREDENTIAL_SUFFIXES,
 )
