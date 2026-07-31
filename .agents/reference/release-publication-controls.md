@@ -133,6 +133,10 @@ Aggregation PR #29031 re-reviews authorized aggregation PR #29026 at
 `351c820f5db214ddf7a069d57f3db9b74e2b6321` because PR #28910 advanced `main`
 before publication.
 
+An exact-tip aggregation is pending for authorized Pulse triage PR #29033 at
+`fb4feba9216c643d7a61838877eedeb99bcef6e1` because PRs #29032 and #29029
+advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
