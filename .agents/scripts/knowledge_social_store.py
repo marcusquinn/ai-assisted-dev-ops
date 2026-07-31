@@ -22,8 +22,22 @@ from knowledge_corpus_context import (
 SCHEMA_VERSION = 6
 SCHEMA_VERSION_SQL = "PRAGMA user_version=6"
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
+SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 MAX_RAW_BATCH_BYTES = 64 * 1024 * 1024
+COLLECTOR_ENVELOPE_FIELDS = frozenset(
+    {
+        "provider",
+        "connection_id",
+        "stream",
+        "observed_at",
+        "request_hash",
+        "response_sha256",
+        "response",
+    }
+)
+INVALID_RAW_PATH = "legacy social raw evidence path is invalid"
+INVALID_RAW_METADATA = "legacy social raw evidence metadata is invalid"
 
 
 class SocialStoreError(RuntimeError):
@@ -336,26 +350,30 @@ def _store_root(connection: sqlite3.Connection) -> Path:
     return Path(database_file).resolve(strict=True).parent.parent
 
 
-def _read_raw_payload(
-    connection: sqlite3.Connection, blob_ref: str
-) -> tuple[bytes, str, str, str]:
-    root = _store_root(connection)
+def _validated_raw_ref(blob_ref: str) -> tuple[Path, str, str, str]:
     relative = Path(blob_ref)
-    if relative.is_absolute() or len(relative.parts) != 6:
-        raise SocialStoreError("legacy social raw evidence path is invalid")
+    if relative.is_absolute():
+        raise SocialStoreError(INVALID_RAW_PATH)
+    if len(relative.parts) != 6:
+        raise SocialStoreError(INVALID_RAW_PATH)
     prefix, provider, connection_id, filename = (
         relative.parts[:3],
         relative.parts[3],
         relative.parts[4],
         relative.parts[5],
     )
-    if (
-        prefix != ("sources", "social", "raw")
-        or OPAQUE_ID.fullmatch(provider) is None
-        or OPAQUE_ID.fullmatch(connection_id) is None
-        or re.fullmatch(r"[0-9a-f]{64}\.json\.gz", filename) is None
-    ):
-        raise SocialStoreError("legacy social raw evidence path is invalid")
+    if prefix != ("sources", "social", "raw"):
+        raise SocialStoreError(INVALID_RAW_PATH)
+    if OPAQUE_ID.fullmatch(provider) is None:
+        raise SocialStoreError(INVALID_RAW_PATH)
+    if OPAQUE_ID.fullmatch(connection_id) is None:
+        raise SocialStoreError(INVALID_RAW_PATH)
+    if re.fullmatch(r"[0-9a-f]{64}\.json\.gz", filename) is None:
+        raise SocialStoreError(INVALID_RAW_PATH)
+    return relative, provider, connection_id, filename
+
+
+def _read_private_raw_file(root: Path, relative: Path) -> bytes:
     raw_root = root / "sources" / "social" / "raw"
     path = root / relative
     try:
@@ -372,58 +390,83 @@ def _read_raw_payload(
         raise SocialStoreError("legacy social raw evidence is unsafe") from error
     if len(payload) > MAX_RAW_BATCH_BYTES:
         raise SocialStoreError("legacy social raw evidence exceeds the size limit")
+    return payload
+
+
+def _read_raw_payload(
+    connection: sqlite3.Connection, blob_ref: str
+) -> tuple[bytes, str, str, str]:
+    relative, provider, connection_id, filename = _validated_raw_ref(blob_ref)
+    payload = _read_private_raw_file(_store_root(connection), relative)
     digest = hashlib.sha256(payload).hexdigest()
     if filename != f"{digest}.json.gz":
         raise SocialStoreError("legacy social raw evidence hash does not match")
     return payload, digest, provider, connection_id
 
 
-def _collector_envelope(
-    payload: bytes, provider: str, connection_id: str, *, required: bool
-) -> dict[str, object] | None:
+def _decoded_collector_envelope(payload: bytes) -> dict[str, object] | None:
     try:
         envelope = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        if not required:
-            return None
-        raise SocialStoreError("legacy social raw evidence is invalid JSON") from error
-    expected_fields = {
-        "provider",
-        "connection_id",
-        "stream",
-        "observed_at",
-        "request_hash",
-        "response_sha256",
-        "response",
-    }
-    if not isinstance(envelope, dict) or set(envelope) != expected_fields:
-        if not required:
-            return None
-        raise SocialStoreError("legacy social raw evidence envelope is invalid")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    if set(envelope) != COLLECTOR_ENVELOPE_FIELDS:
+        return None
+    return envelope
+
+
+def _validate_collector_scope(
+    envelope: dict[str, object], payload: bytes, provider: str, connection_id: str
+) -> None:
     canonical = json.dumps(
         envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    request_hash = envelope["request_hash"]
-    response_hash = envelope["response_sha256"]
-    if (
-        canonical != payload
-        or envelope["provider"] != provider
-        or envelope["connection_id"] != connection_id
-        or not isinstance(envelope["stream"], str)
-        or not envelope["stream"]
-        or not isinstance(envelope["observed_at"], str)
-        or not envelope["observed_at"]
-        or not isinstance(request_hash, str)
-        or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None
-        or not isinstance(response_hash, str)
-        or re.fullmatch(r"[0-9a-f]{64}", response_hash) is None
-    ):
-        raise SocialStoreError("legacy social raw evidence metadata is invalid")
+    if canonical != payload:
+        raise SocialStoreError(INVALID_RAW_METADATA)
+    if envelope["provider"] != provider:
+        raise SocialStoreError(INVALID_RAW_METADATA)
+    if envelope["connection_id"] != connection_id:
+        raise SocialStoreError(INVALID_RAW_METADATA)
+
+
+def _validate_collector_fields(envelope: dict[str, object]) -> None:
+    for field in ("stream", "observed_at"):
+        value = envelope[field]
+        if not isinstance(value, str) or not value:
+            raise SocialStoreError(INVALID_RAW_METADATA)
+    for field in ("request_hash", "response_sha256"):
+        value = envelope[field]
+        if not isinstance(value, str) or SHA256_HEX.fullmatch(value) is None:
+            raise SocialStoreError(INVALID_RAW_METADATA)
+
+
+def _validate_collector_response(envelope: dict[str, object]) -> None:
+    response_hash = str(envelope["response_sha256"])
     response = json.dumps(
         envelope["response"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     if hashlib.sha256(response).hexdigest() != response_hash:
         raise SocialStoreError("legacy social response hash does not match")
+
+
+def _validate_collector_envelope(
+    envelope: dict[str, object], payload: bytes, provider: str, connection_id: str
+) -> None:
+    _validate_collector_scope(envelope, payload, provider, connection_id)
+    _validate_collector_fields(envelope)
+    _validate_collector_response(envelope)
+
+
+def _collector_envelope(
+    payload: bytes, provider: str, connection_id: str, *, required: bool
+) -> dict[str, object] | None:
+    envelope = _decoded_collector_envelope(payload)
+    if envelope is None:
+        if not required:
+            return None
+        raise SocialStoreError(INVALID_RAW_METADATA)
+    _validate_collector_envelope(envelope, payload, provider, connection_id)
     return envelope
 
 
@@ -451,14 +494,18 @@ def _canonical_fetch_identity_v6(
     return digest, str(envelope["response_sha256"])
 
 
-def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
-    """Make raw-envelope hashes canonical batch IDs without body-hash uniqueness."""
-    connection.execute("DROP TRIGGER IF EXISTS fetch_batch_evidence_ai")
-    connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
+def _canonical_fetch_rows_v6(
+    connection: sqlite3.Connection,
+) -> list[tuple[sqlite3.Row, str, str]]:
     rows = connection.execute("SELECT * FROM fetch_batches ORDER BY batch_id").fetchall()
-    migrated = [
+    return [
         (row, *_canonical_fetch_identity_v6(connection, row)) for row in rows
     ]
+
+
+def _deduplicate_fetch_rows_v6(
+    migrated: list[tuple[sqlite3.Row, str, str]],
+) -> dict[str, tuple[sqlite3.Row, str]]:
     metadata_fields = (
         "provider",
         "connection_id",
@@ -471,14 +518,22 @@ def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
         "completed_at",
         "terminal_status",
     )
-    canonical: dict[str, tuple[sqlite3.Row, str, tuple[object, ...]]] = {}
+    canonical: dict[str, tuple[sqlite3.Row, str]] = {}
+    signatures: dict[str, tuple[object, ...]] = {}
     for row, batch_id, response_hash in migrated:
         metadata = tuple(row[field] for field in metadata_fields) + (response_hash,)
-        existing = canonical.get(batch_id)
-        if existing is not None and existing[2] != metadata:
+        if batch_id in signatures and signatures[batch_id] != metadata:
             raise SocialStoreError("legacy fetch batch aliases have conflicting metadata")
-        if existing is None:
-            canonical[batch_id] = (row, response_hash, metadata)
+        if batch_id not in canonical:
+            canonical[batch_id] = (row, response_hash)
+            signatures[batch_id] = metadata
+    return canonical
+
+
+def _create_fetch_batches_v6(
+    connection: sqlite3.Connection,
+    canonical: dict[str, tuple[sqlite3.Row, str]],
+) -> None:
     connection.execute(
         """CREATE TABLE fetch_batches_v6 (
              batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
@@ -508,11 +563,15 @@ def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
                 row["completed_at"],
                 row["terminal_status"],
             )
-            for batch_id, (row, response_hash, _) in sorted(canonical.items())
+            for batch_id, (row, response_hash) in sorted(canonical.items())
         ],
     )
-    connection.execute("DROP TABLE fetch_batches")
-    connection.execute("ALTER TABLE fetch_batches_v6 RENAME TO fetch_batches")
+
+
+def _rewrite_projection_aliases_v6(
+    connection: sqlite3.Connection,
+    migrated: list[tuple[sqlite3.Row, str, str]],
+) -> None:
     aliases = [
         (batch_id, row["batch_id"])
         for row, batch_id, _ in migrated
@@ -526,6 +585,17 @@ def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
         "UPDATE tombstones SET batch_id=? WHERE batch_id=?",
     ):
         connection.executemany(statement, aliases)
+
+
+def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
+    """Make raw-envelope hashes canonical batch IDs without body-hash uniqueness."""
+    connection.execute("DROP TRIGGER IF EXISTS fetch_batch_evidence_ai")
+    connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
+    migrated = _canonical_fetch_rows_v6(connection)
+    _create_fetch_batches_v6(connection, _deduplicate_fetch_rows_v6(migrated))
+    connection.execute("DROP TABLE fetch_batches")
+    connection.execute("ALTER TABLE fetch_batches_v6 RENAME TO fetch_batches")
+    _rewrite_projection_aliases_v6(connection, migrated)
 
 
 def _orphan_projection_batch_ids(connection: sqlite3.Connection) -> list[str]:
