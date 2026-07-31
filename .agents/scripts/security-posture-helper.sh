@@ -191,12 +191,15 @@ User-level commands:
 
 Per-repo checks (check/audit/store):
   1. GitHub Actions workflows for unsafe AI patterns
-  2. Branch protection (PR reviews required)
+  2. Branch protection (pull requests and required status checks)
   3. Review-bot-gate as required status check
-  4. Dependency vulnerabilities (npm/pip/cargo audit)
-  5. Collaborator access levels (per-repo, never cached)
-  6. Repository security basics (SECURITY.md, .gitignore, secrets)
-  7. SYNC_PAT detection for repos using issue-sync.yml (t2374)
+  4. Maintainer-gate as required NMR authority check
+  5. Linked-issue-check as required status check
+  6. Dependency vulnerabilities (npm/pip/cargo audit)
+  7. Collaborator access levels (per-repo, never cached)
+  8. Repository security basics (SECURITY.md, .gitignore, secrets)
+  9. SYNC_PAT detection for repos using issue-sync.yml (t2374)
+  10. Cross-account secrets:inherit detection
 
 User-level checks (startup-check/setup/status):
   1. Prompt injection patterns (YAML file present and <30d old)
