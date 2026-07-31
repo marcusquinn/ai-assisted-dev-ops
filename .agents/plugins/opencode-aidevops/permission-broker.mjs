@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { appendWorkerBlockerEvent } from "../../scripts/worker-blocker-log.mjs";
 
@@ -103,6 +103,51 @@ function normalizePatterns(input, options) {
     .filter(Boolean))].slice(0, 20);
 }
 
+function normalizePathPattern(value) {
+  return typeof value === "string" ? value.replaceAll("\\", "/") : "";
+}
+
+function pathHasSymlinkComponent(target) {
+  let current = resolve(target);
+  try {
+    while (true) {
+      if (lstatSync(current).isSymbolicLink()) return true;
+      const parent = dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
+  } catch {
+    return true;
+  }
+}
+
+function isManagedToolOutputRead(toolCalls, raw, dataHome) {
+  const permission = raw?.permission || raw?.type || "";
+  const callID = raw?.tool?.callID || raw?.callID || "";
+  if (permission !== "external_directory" || toolCalls.get(callID)?.tool !== "read") return false;
+
+  const directory = resolve(dataHome, "opencode", "tool-output");
+  const expectedPattern = `${normalizePathPattern(directory)}/*`;
+  const patternInput = raw?.patterns ?? raw?.pattern;
+  const patterns = Array.isArray(patternInput) ? patternInput : patternInput == null ? [] : [patternInput];
+  if (patterns.length !== 1 || normalizePathPattern(patterns[0]) !== expectedPattern) return false;
+
+  const filepath = raw?.metadata?.filepath || "";
+  const parentDir = raw?.metadata?.parentDir || "";
+  if (!filepath || !parentDir || resolve(parentDir) !== directory || dirname(resolve(filepath)) !== directory) return false;
+  if (!basename(filepath).startsWith("tool_")) return false;
+
+  try {
+    const info = lstatSync(filepath);
+    return info.isFile()
+      && !info.isSymbolicLink()
+      && !pathHasSymlinkComponent(directory)
+      && dirname(realpathSync(filepath)) === realpathSync(directory);
+  } catch {
+    return false;
+  }
+}
+
 function recordPermissionToolCall(toolCalls, isHeadless, home, input, output) {
   if (!isHeadless()) return;
   const callID = input?.callID || input?.callId;
@@ -200,38 +245,60 @@ function capturePermissionRequest(toolCalls, loggedEvents, home, blockerLogPath,
   return request;
 }
 
-async function rejectPermissionRequest(client, request) {
-  if (!request?.id || !request?.sessionID) return;
+async function replyPermissionRequest(client, request, response) {
+  if (!request?.id || !request?.sessionID || !client?.postSessionIdPermissionsPermissionId) return false;
   try {
-    await client.postSessionIdPermissionsPermissionId({
+    const result = await client.postSessionIdPermissionsPermissionId({
       path: { id: request.sessionID, permissionID: request.id },
-      body: { response: "reject" },
+      body: { response },
+      throwOnError: true,
     });
+    return !result?.error && (!result?.response || result.response.ok !== false);
   } catch {
-    // `opencode run` may have already rejected the same request.
+    return false;
   }
 }
 
 async function handlePermissionEvent(context, input) {
-  const { client, isHeadless, toolCalls, loggedEvents, home, blockerLogPath } = context;
+  const { client, isHeadless, toolCalls, loggedEvents, home, dataHome, blockerLogPath } = context;
   const event = input?.event;
   if (!isHeadless() || event?.type !== "permission.asked") return;
   const request = event.properties || {};
+  if (isManagedToolOutputRead(toolCalls, request, dataHome)
+    && await replyPermissionRequest(client, request, "once")) return;
   capturePermissionRequest(toolCalls, loggedEvents, home, blockerLogPath, request);
-  await rejectPermissionRequest(client, request);
+  await replyPermissionRequest(client, request, "reject");
 }
 
 function handlePermissionAsk(context, input, output) {
-  const { isHeadless, toolCalls, loggedEvents, home, blockerLogPath } = context;
+  const { isHeadless, toolCalls, loggedEvents, home, dataHome, blockerLogPath } = context;
   if (!isHeadless()) return;
+  if (isManagedToolOutputRead(toolCalls, input, dataHome)) {
+    output.status = "allow";
+    return;
+  }
   capturePermissionRequest(toolCalls, loggedEvents, home, blockerLogPath, input || {});
   output.status = "deny";
 }
 
-export function createPermissionBroker({ client, isHeadless, home = homedir(), blockerLogPath = undefined }) {
+export function createPermissionBroker({
+  client,
+  isHeadless,
+  home = homedir(),
+  dataHome = process.env.XDG_DATA_HOME || "",
+  blockerLogPath = undefined,
+}) {
   const toolCalls = new Map();
   const loggedEvents = new Set();
-  const context = { client, isHeadless, toolCalls, loggedEvents, home, blockerLogPath };
+  const context = {
+    client,
+    isHeadless,
+    toolCalls,
+    loggedEvents,
+    home,
+    dataHome: dataHome || join(home, ".local", "share"),
+    blockerLogPath,
+  };
   return {
     recordToolCall: (input, output) => recordPermissionToolCall(toolCalls, isHeadless, home, input, output),
     handleEvent: (input) => handlePermissionEvent(context, input),
