@@ -232,7 +232,11 @@ _preflight_early_dispatch() {
 		# worker launch. Keep that trust-boundary check in the dispatch path rather
 		# than depending on the asynchronous issue-triage GitHub Actions workflow.
 		echo "[pulse-wrapper] Early dispatch_max: dispatching workers before housekeeping" >>"$LOGFILE"
-		apply_dispatch_max
+		# GH#28971: the first fill is a latency-sensitive fast path. Keep blocked
+		# children filtered from its fetched snapshot, but defer dependency graph
+		# normalization/refetch to the post-label refill below. Pass the mode as an
+		# internal argument so it cannot leak into launched worker environments.
+		apply_dispatch_max "skip"
 	fi
 
 	# Routine comment responses: scan routine-tracking issues for unanswered

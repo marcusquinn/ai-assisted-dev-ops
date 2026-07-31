@@ -96,7 +96,7 @@ assert_match_count() {
 
 assert_refill_runtime_contract() {
 	local label="$1"
-	local actual_events="" expected_events="dispatch;routine;invalidate:label_maintenance_complete;dispatch;"
+	local actual_events="" expected_events="dispatch:skip;routine;invalidate:label_maintenance_complete;dispatch:normalize;"
 	TESTS_RUN=$((TESTS_RUN + 1))
 	actual_events=$(
 		(
@@ -114,7 +114,8 @@ assert_refill_runtime_contract() {
 			}
 
 			apply_dispatch_max() {
-				REFILL_EVENTS="${REFILL_EVENTS}dispatch;"
+				local dependency_normalization_mode="${1:-normalize}"
+				REFILL_EVENTS="${REFILL_EVENTS}dispatch:${dependency_normalization_mode};"
 				return 0
 			}
 
@@ -297,7 +298,7 @@ assert_match_count \
 	1 \
 	"$PREFLIGHT_LIB"
 assert_refill_runtime_contract \
-	"9l: refill invalidates candidates before dispatch and does not repeat routine responses"
+	"9l: initial fill skips dependency normalization and refill restores the default"
 
 # --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
 

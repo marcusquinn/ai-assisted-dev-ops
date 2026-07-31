@@ -387,7 +387,16 @@ normalize_repo_dependency_readiness_if_due() {
 	return 0
 }
 export -f gh_issue_list normalize_repo_dependency_readiness_if_due
+fast_candidates=$(list_dispatchable_issue_candidates_json "owner/repo" 100 "" "" "skip")
+assert_eq "fast candidate mode fetches once" "1" "$(<"$candidate_fetch_file")"
+assert_eq "fast candidate mode skips dependency normalization" "0" "$(<"$normalization_file")"
+assert_eq "fast candidate mode keeps blocked child out" "0" \
+	"$(printf '%s' "$fast_candidates" | jq 'map(select(.number == 20)) | length')"
+
+printf '0\n' >"$candidate_fetch_file"
+printf '0\n' >"$normalization_file"
 recovered_candidates=$(list_dispatchable_issue_candidates_json "owner/repo" 100)
+assert_eq "default candidate mode fetches again after normalization" "2" "$(<"$candidate_fetch_file")"
 assert_eq "all-blocked roadmap triggers dependency normalization" "1" "$(<"$normalization_file")"
 assert_eq "next dependency-ready child reaches shared candidate stream" "20" \
 	"$(printf '%s' "$recovered_candidates" | jq -r 'map(select(.number == 20))[0].number')"

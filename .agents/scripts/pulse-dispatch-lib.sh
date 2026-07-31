@@ -65,6 +65,7 @@ _DISPATCH_BENIGN_BLOCKS_FILE_OWNED="0"
 _DISPATCH_BENIGN_BLOCKS_SCRATCH_DIR=""
 _DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS="${AIDEVOPS_PULSE_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS:-3600}"
 [[ "$_DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS" =~ ^[0-9]+$ ]] || _DISPATCH_BENIGN_BLOCKS_LEGACY_MIN_AGE_SECONDS=3600
+_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP="skip"
 # Out-parameter set by _dispatch_process_candidate when a successful launch clears
 # the throttle file. The orchestrator loop reads this and restores
 # _effective_slots to the unthrottled available_slots value.
@@ -89,17 +90,22 @@ _dispatch_cycle_cache_path() {
 
 _dispatch_candidate_snapshot_path() {
 	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	local dependency_normalization_mode="${2:-normalize}"
+	local mode_suffix=""
 	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit=1000
-	_dispatch_cycle_cache_path "pulse-dispatch-candidates" ".${per_repo_limit}.json"
+	[[ "$dependency_normalization_mode" == "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP" ]] || dependency_normalization_mode="normalize"
+	[[ "$dependency_normalization_mode" == "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP" ]] && mode_suffix=".skip"
+	_dispatch_cycle_cache_path "pulse-dispatch-candidates" ".${per_repo_limit}${mode_suffix}.json"
 	return $?
 }
 
 _dispatch_cleanup_cycle_cache() {
 	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
-	local candidate_file="" triage_file="" cache_file=""
+	local candidate_file="" skip_candidate_file="" triage_file="" cache_file=""
 	candidate_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit" 2>/dev/null || true)
+	skip_candidate_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit" "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP" 2>/dev/null || true)
 	triage_file=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done" 2>/dev/null || true)
-	for cache_file in "$candidate_file" "$triage_file"; do
+	for cache_file in "$candidate_file" "$skip_candidate_file" "$triage_file"; do
 		[[ -n "$cache_file" && ( -f "$cache_file" || -L "$cache_file" ) ]] || continue
 		rm -f "$cache_file" 2>/dev/null || true
 	done
@@ -109,10 +115,15 @@ _dispatch_cleanup_cycle_cache() {
 _dispatch_invalidate_candidate_snapshot() {
 	local reason="${1:-state_mutation}"
 	local per_repo_limit="${2:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
-	local snapshot_file=""
-	snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit") || return 0
-	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]]; then
-		rm -f "$snapshot_file" 2>/dev/null || return 1
+	local snapshot_file="" dependency_normalization_mode="" removed_snapshot=0
+	for dependency_normalization_mode in normalize "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP"; do
+		snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit" "$dependency_normalization_mode") || continue
+		if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]]; then
+			rm -f "$snapshot_file" 2>/dev/null || return 1
+			removed_snapshot=1
+		fi
+	done
+	if [[ "$removed_snapshot" -eq 1 ]]; then
 		echo "[pulse-wrapper] Dispatch candidate snapshot invalidated: reason=${reason}" >>"$LOGFILE"
 	fi
 	return 0
@@ -120,14 +131,16 @@ _dispatch_invalidate_candidate_snapshot() {
 
 _dispatch_ranked_candidates_json() {
 	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
+	local dependency_normalization_mode="${2:-normalize}"
 	local snapshot_file="" snapshot_tmp="" candidates_json="[]"
 	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit=1000
+	[[ "$dependency_normalization_mode" == "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP" ]] || dependency_normalization_mode="normalize"
 	if [[ "${PULSE_DISPATCH_CANDIDATE_SNAPSHOT_ENABLED:-1}" == "0" ]]; then
-		build_ranked_dispatch_candidates_json "$per_repo_limit"
+		build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode"
 		return $?
 	fi
-	snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit") || {
-		build_ranked_dispatch_candidates_json "$per_repo_limit"
+	snapshot_file=$(_dispatch_candidate_snapshot_path "$per_repo_limit" "$dependency_normalization_mode") || {
+		build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode"
 		return $?
 	}
 	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]] && jq -e 'type == "array"' "$snapshot_file" >/dev/null 2>&1; then
@@ -137,11 +150,11 @@ _dispatch_ranked_candidates_json() {
 	fi
 	if [[ -L "$snapshot_file" ]]; then
 		rm -f "$snapshot_file" 2>/dev/null || {
-			build_ranked_dispatch_candidates_json "$per_repo_limit"
+			build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode"
 			return $?
 		}
 	fi
-	candidates_json=$(build_ranked_dispatch_candidates_json "$per_repo_limit") || candidates_json='[]'
+	candidates_json=$(build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode") || candidates_json='[]'
 	if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates_json"; then
 		candidates_json='[]'
 	fi

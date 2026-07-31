@@ -236,6 +236,7 @@ repo_allows_pulse_write_actions() {
 #   $2 - max issues to fetch (optional, default 100)
 #   $3 - optional private file for the exact raw open-issue snapshot
 #   $4 - optional private file receiving 1 when the snapshot fetch succeeded
+#   $5 - dependency normalization mode (optional: normalize or skip; default normalize)
 # Returns: JSON array of issue objects (number, title, url, createdAt, updatedAt, labels, assignees)
 #######################################
 _pulse_issue_snapshot_is_valid() {
@@ -262,6 +263,7 @@ list_dispatchable_issue_candidates_json() {
 	local limit="${2:-100}"
 	local raw_snapshot_file="${3:-}"
 	local snapshot_status_file="${4:-}"
+	local dependency_normalization_mode="${5:-normalize}"
 	local snapshot_succeeded=1
 
 	if [[ -z "$repo_slug" ]]; then
@@ -296,7 +298,8 @@ list_dispatchable_issue_candidates_json() {
 	# reach the dispatch-time readiness guard. Normalize once per bounded TTL
 	# whenever the fetched snapshot contains blocked work; this also covers a
 	# roadmap alongside unrelated runnable candidates.
-	if printf '%s' "$issue_json" | jq -e 'any(.[]; any(.labels[]?; .name == "status:blocked"))' >/dev/null 2>&1 &&
+	if [[ "$dependency_normalization_mode" != "skip" ]] &&
+		printf '%s' "$issue_json" | jq -e 'any(.[]; any(.labels[]?; .name == "status:blocked"))' >/dev/null 2>&1 &&
 		declare -F normalize_repo_dependency_readiness_if_due >/dev/null 2>&1; then
 		normalize_repo_dependency_readiness_if_due "$repo_slug" >/dev/null 2>&1 || true
 		local refreshed_issue_json=""

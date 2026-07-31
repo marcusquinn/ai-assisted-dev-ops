@@ -33,7 +33,8 @@ list_dispatchable_issue_candidates_json() {
 	local source_limit="$2"
 	local raw_snapshot_file="${3:-}"
 	local snapshot_status_file="${4:-}"
-	printf '%s|%s\n' "$repo_slug" "$source_limit" >>"$FETCH_LOG"
+	local dependency_normalization_mode="${5:-normalize}"
+	printf '%s|%s|%s\n' "$repo_slug" "$source_limit" "$dependency_normalization_mode" >>"$FETCH_LOG"
 	if [[ -n "$raw_snapshot_file" ]]; then
 		printf '%s\n' "$LEGACY_JSON" >"$raw_snapshot_file"
 	fi
@@ -84,9 +85,10 @@ assert_equal() {
 }
 
 export AIDEVOPS_PULSE_CAMPAIGN_SHADOW_ENABLED=0
-disabled_output=$(pulse_campaign_shadow_candidates_json "example/repository" "$TEST_ROOT" 100)
+disabled_output=$(pulse_campaign_shadow_candidates_json "example/repository" "$TEST_ROOT" 100 "skip")
 assert_equal "$FILTERED_JSON" "$disabled_output" "disabled shadow preserves legacy output"
 assert_equal "1" "$(wc -l <"$FETCH_LOG" | tr -d ' ')" "disabled shadow performs one issue fetch"
+assert_equal "example/repository|100|skip" "$(<"$FETCH_LOG")" "disabled shadow forwards normalization mode"
 if [[ -e "$CAPTURE_RAW" || -e "$CAPTURE_READY" || -e "$CAPTURE_SUCCEEDED" ]]; then
 	printf 'FAIL: disabled shadow invoked the campaign planner\n' >&2
 	exit 1
@@ -97,6 +99,7 @@ export AIDEVOPS_PULSE_CAMPAIGN_SHADOW_ENABLED=1
 enabled_output=$(pulse_campaign_shadow_candidates_json "example/repository" "$TEST_ROOT" 100)
 assert_equal "$FILTERED_JSON" "$enabled_output" "enabled shadow preserves legacy output"
 assert_equal "1" "$(wc -l <"$FETCH_LOG" | tr -d ' ')" "enabled shadow reuses one issue fetch"
+assert_equal "example/repository|100|normalize" "$(<"$FETCH_LOG")" "enabled shadow defaults normalization mode"
 assert_equal "$LEGACY_JSON" "$(<"$CAPTURE_RAW")" "planner receives the exact raw snapshot"
 assert_equal "$FILTERED_JSON" "$(<"$CAPTURE_READY")" "planner receives the exact filtered-ready set"
 assert_equal "1" "$(<"$CAPTURE_SUCCEEDED")" "planner receives successful snapshot provenance"

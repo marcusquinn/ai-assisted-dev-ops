@@ -148,9 +148,10 @@ else
 		local repo_slug="$1"
 		local repo_path="$2"
 		local source_limit="${3:-1000}"
+		local dependency_normalization_mode="${4:-normalize}"
 		local candidates_json="[]"
 		: "$repo_path"
-		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit") || candidates_json='[]'
+		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "" "" "$dependency_normalization_mode") || candidates_json='[]'
 		_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json"
 		return 0
 	}
@@ -366,10 +367,12 @@ _append_ranked_repo_candidates() {
 # Build ranked deterministic dispatch candidates across all pulse repos.
 # Arguments:
 #   $1 - max issues to fetch per repo (optional)
+#   $2 - dependency normalization mode (optional: normalize or skip)
 # Returns: JSON array sorted by score desc, createdAt asc, updatedAt asc
 #######################################
 build_ranked_dispatch_candidates_json() {
 	local per_repo_limit="${1:-$PULSE_RUNNABLE_ISSUE_LIMIT}"
+	local dependency_normalization_mode="${2:-normalize}"
 	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit="$PULSE_RUNNABLE_ISSUE_LIMIT"
 	local age_bonus_per_day="${PULSE_DISPATCH_AGE_BONUS_PER_DAY:-25}"
 	local age_bonus_cap="${PULSE_DISPATCH_AGE_BONUS_CAP:-900}"
@@ -400,7 +403,7 @@ build_ranked_dispatch_candidates_json() {
 		# Record that we are polling this repo now (atomic write, non-fatal)
 		update_repo_pulse_timestamp "$repo_slug"
 		local repo_candidates_json
-		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit") || repo_candidates_json='[]'
+		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit" "$dependency_normalization_mode") || repo_candidates_json='[]'
 		if [[ -z "$repo_candidates_json" || "$repo_candidates_json" == "[]" ]]; then
 			continue
 		fi
@@ -492,9 +495,13 @@ _dispatch_order_idle_borrowing_candidates() {
 # round) to preserve the existing "test the waters" recovery semantics;
 # otherwise parallel is preferred so the 24-slot pool fills in 1 cycle.
 #
+# Arguments:
+#   $1 - dependency normalization mode (optional: normalize or skip)
+#
 # Returns: dispatched worker count via stdout
 #######################################
 dispatch_max() {
+	local dependency_normalization_mode="${1:-normalize}"
 	local capacity_line
 	capacity_line=$(_dispatch_compute_capacity) || {
 		echo 0
@@ -524,7 +531,7 @@ dispatch_max() {
 	fi
 
 	local candidates_json candidate_count
-	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT") || candidates_json='[]'
+	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT" "$dependency_normalization_mode") || candidates_json='[]'
 	candidate_count=$(printf '%s' "$candidates_json" | jq 'length' 2>/dev/null) || candidate_count=0
 	[[ "$candidate_count" =~ ^[0-9]+$ ]] || candidate_count=0
 	if [[ "$candidate_count" -eq 0 ]]; then
@@ -991,8 +998,12 @@ _pulse_start_post_dispatch_housekeeping() {
 # Phase 2 re-enumerates and dispatches it in the same cycle. Without
 # Phase 2, the child waits a minimum of one additional pulse cycle
 # (3–7 min stable; 10–20 min when wrapper cycles are unstable).
+#
+# Arguments:
+#   $1 - dependency normalization mode (optional: normalize or skip)
 #######################################
 apply_dispatch_max() {
+	local dependency_normalization_mode="${1:-normalize}"
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Dispatch_max skipped: stop flag present" >>"$LOGFILE"
 		return 0
@@ -1007,11 +1018,11 @@ apply_dispatch_max() {
 	[[ "$apply_max_workers" =~ ^[0-9]+$ ]] || apply_max_workers=1
 
 	local fill_dispatched
-	fill_dispatched=$(dispatch_max) || fill_dispatched=0
+	fill_dispatched=$(dispatch_max "$dependency_normalization_mode") || fill_dispatched=0
 	[[ "$fill_dispatched" =~ ^[0-9]+$ ]] || fill_dispatched=0
 
 	_adaptive_launch_settle_wait "$fill_dispatched" "dispatch_max"
-	_dispatch_min_worker_floor_refill "$apply_max_workers" "$((apply_active_workers + fill_dispatched))"
+	_dispatch_min_worker_floor_refill "$apply_max_workers" "$((apply_active_workers + fill_dispatched))" "$dependency_normalization_mode"
 
 	# t2749: Phase 2 — re-enumerate when consolidation created a child during
 	# Phase 1. The sentinel is written by _dispatch_issue_consolidation in
@@ -1031,10 +1042,10 @@ apply_dispatch_max() {
 			echo "[pulse-wrapper] Dispatch_max Phase 2: consolidation child created during Phase 1 (active=${_p2_active}, max=${_p2_max}) — re-enumerating candidates (t2749)" >>"$LOGFILE"
 			_dispatch_invalidate_candidate_snapshot "consolidation_child_created" || true
 			local fill_dispatched_p2
-			fill_dispatched_p2=$(dispatch_max) || fill_dispatched_p2=0
+			fill_dispatched_p2=$(dispatch_max "$dependency_normalization_mode") || fill_dispatched_p2=0
 			[[ "$fill_dispatched_p2" =~ ^[0-9]+$ ]] || fill_dispatched_p2=0
 			_adaptive_launch_settle_wait "$fill_dispatched_p2" "dispatch_max phase 2"
-			_dispatch_min_worker_floor_refill "$_p2_max" "$((_p2_active + fill_dispatched_p2))"
+			_dispatch_min_worker_floor_refill "$_p2_max" "$((_p2_active + fill_dispatched_p2))" "$dependency_normalization_mode"
 		else
 			echo "[pulse-wrapper] Dispatch_max Phase 2: consolidation child created but slots full (active=${_p2_active}, max=${_p2_max}) — skipping (t2749)" >>"$LOGFILE"
 		fi
@@ -1058,8 +1069,10 @@ apply_dispatch_max() {
 # Args:
 #   $1 - optional capped max-worker target
 #   $2 - optional capped active-worker count
+#   $3 - dependency normalization mode (optional: normalize or skip)
 #######################################
 _dispatch_min_worker_floor_refill() {
+	local dependency_normalization_mode="${3:-normalize}"
 	local min_worker_floor="${AIDEVOPS_MIN_WORKER_CONCURRENCY:-}"
 	if [[ -z "$min_worker_floor" ]] && declare -F config_get >/dev/null 2>&1; then
 		min_worker_floor=$(config_get "orchestration.min_worker_concurrency" "6")
@@ -1121,7 +1134,7 @@ _dispatch_min_worker_floor_refill() {
 
 		refill_attempt=$((refill_attempt + 1))
 		echo "[pulse-wrapper] Minimum worker floor refill: active=${active_workers}/${min_worker_floor}, attempt=${refill_attempt}/${max_refill_attempts} — re-enumerating candidates" >>"$LOGFILE"
-		fill_dispatched=$(dispatch_max) || fill_dispatched=0
+		fill_dispatched=$(dispatch_max "$dependency_normalization_mode") || fill_dispatched=0
 		[[ "$fill_dispatched" =~ ^[0-9]+$ ]] || fill_dispatched=0
 		if ((fill_dispatched <= 0)); then
 			echo "[pulse-wrapper] Minimum worker floor refill stopped: dispatch_max returned ${fill_dispatched} (no eligible candidates or hard gate exhausted)" >>"$LOGFILE"

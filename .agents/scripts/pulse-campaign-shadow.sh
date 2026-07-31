@@ -124,10 +124,11 @@ pulse_campaign_shadow_candidates_json() {
 	local repo_slug="$1"
 	local repo_path="$2"
 	local source_limit="${3:-1000}"
+	local dependency_normalization_mode="${4:-normalize}"
 	local candidates_json="[]"
 
 	if ! _pulse_campaign_shadow_enabled; then
-		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit") || candidates_json='[]'
+		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "" "" "$dependency_normalization_mode") || candidates_json='[]'
 		_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json"
 		return 0
 	fi
@@ -140,12 +141,12 @@ pulse_campaign_shadow_candidates_json() {
 	if [[ -z "$raw_snapshot_file" || -z "$ready_file" || -z "$plan_file" || -z "$snapshot_status_file" ]]; then
 		rm -f "$raw_snapshot_file" "$ready_file" "$plan_file" "$snapshot_status_file"
 		_pulse_campaign_log "temporary workspace unavailable repo=${repo_slug}; legacy candidates retained"
-		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit") || candidates_json='[]'
+		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "" "" "$dependency_normalization_mode") || candidates_json='[]'
 		_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json"
 		return 0
 	fi
 
-	candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "$raw_snapshot_file" "$snapshot_status_file") || candidates_json='[]'
+	candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "$raw_snapshot_file" "$snapshot_status_file" "$dependency_normalization_mode") || candidates_json='[]'
 	candidates_json=$(_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json")
 	(
 		umask 077
