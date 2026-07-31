@@ -16,11 +16,17 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
 (if $active_worker_processes == null then $inferred_active_workers else $active_worker_processes end) as $active_workers |
 (if $active_worker_processes == null then $available_slots else ([$max_workers - $active_worker_processes, 0] | max) end) as $effective_available_slots |
 ($queue.aggregate.available_unassigned // 0 | number_or_zero) as $available_issues |
+($queue.aggregate.eligible_available_unassigned // $queue.aggregate.available_unassigned // 0 | number_or_zero) as $eligible_issues |
 ($queue.aggregate.available_old // 0 | number_or_zero) as $old_available |
 ($queue.aggregate.dependency_inconsistent_available // 0 | number_or_zero) as $dependency_inconsistent |
 ($queue.aggregate.needs_tier // 0 | number_or_zero) as $needs_tier |
+($queue.aggregate.needs_status // 0 | number_or_zero) as $needs_status |
+($queue.aggregate.nmr_inactive // 0 | number_or_zero) as $nmr_inactive |
+($queue.aggregate.oldest_nmr_inactivity_age_min // 0 | number_or_zero) as $oldest_nmr_inactivity_age_min |
+($queue.aggregate.nmr_inactivity_threshold_min // 0 | number_or_zero) as $nmr_inactivity_threshold_min |
 ($queue.aggregate.gh_errors // 0 | number_or_zero) as $gh_errors |
 ($queue.error // "") as $queue_error |
+($queue_error == "" and $gh_errors == 0) as $queue_scan_complete |
 ($current.worker_outcomes.spawned // 0 | number_or_zero) as $spawned |
 ($current.worker_outcomes.launch_validation_failed // $current.pulse_counter_hits.dispatch_worker_launch_failed // 0 | number_or_zero) as $launch_validation_failed |
 ($current.worker_terminal_events // 0 | number_or_zero) as $current_terminal_events |
@@ -57,6 +63,7 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
     historical_success_rate: (if $hist_terminal_total > 0 and $hist_delivered != null then (($hist_delivered / $hist_terminal_total) * 100 | floor) else null end),
     auto_dispatch_open: ($queue.aggregate.auto_dispatch_open // 0),
     auto_dispatch_available_unassigned: $available_issues,
+    auto_dispatch_eligible_available_unassigned: $eligible_issues,
     auto_dispatch_available_old: $old_available,
     auto_dispatch_dependency_inconsistent_available: $dependency_inconsistent,
     auto_dispatch_repos_with_available: ($queue.aggregate.repos_with_available // 0),
@@ -122,18 +129,54 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
         true
       )
     else empty end,
-    if ($available_issues >= $threshold and $active_workers == 0) then
+    if ($queue_scan_complete and $eligible_issues >= $threshold and $active_workers == 0) then
       finding(
         "pulse-underfilled-auto-dispatch-queue";
         "high";
         "Auto-dispatch queue is visible while worker capacity is empty";
         [
           ("active_workers=" + ($active_workers | tostring) + "/" + ($max_workers | tostring)),
-          ("available_unassigned_auto_dispatch=" + ($available_issues | tostring)),
+          ("eligible_available_unassigned_auto_dispatch=" + ($eligible_issues | tostring)),
           ("available_older_than_threshold=" + ($old_available | tostring)),
           ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring))
         ];
         "Inspect why the pulse did not retain active workers for visible status:available auto-dispatch issues; start with pulse-current-state-helper, worker-activity-helper, and pulse-diagnose-helper cycle-health.";
+        true
+      )
+    else empty end,
+    if ($queue_scan_complete and $effective_available_slots >= $threshold and $eligible_issues < $threshold) then
+      finding(
+        "pulse-eligible-queue-under-target";
+        "high";
+        "Dispatch-eligible queue depth is below the bounded capacity target";
+        [
+          ("available_slots=" + ($effective_available_slots | tostring)),
+          ("eligible_available_unassigned=" + ($eligible_issues | tostring)),
+          ("eligible_depth_target=" + ($threshold | tostring)),
+          ("auto_dispatch_open=" + (($queue.aggregate.auto_dispatch_open // 0) | tostring)),
+          ("assigned_in_flight=" + (($queue.aggregate.assigned_in_flight // $queue.aggregate.assigned // 0) | tostring)),
+          ("blocked_explicit_hold=" + (($queue.aggregate.blocked_explicit_hold // $queue.aggregate.blocked_labels // 0) | tostring)),
+          ("needs_maintainer_review=" + (($queue.aggregate.nmr // 0) | tostring)),
+          ("missing_tier=" + ($needs_tier | tostring)),
+          ("missing_status=" + ($needs_status | tostring))
+        ];
+        "Run existing task generators and metadata normalisers for already-authorized work; if no eligible issues remain, request maintainer authorization decisions. Do not add auto-dispatch, clear needs-maintainer-review, or infer dispatch consent from status/origin labels.";
+        true
+      )
+    else empty end,
+    if ($queue_scan_complete and $nmr_inactive > 0) then
+      finding(
+        "pulse-inactive-nmr-holds";
+        "medium";
+        "Needs-maintainer-review holds have aged aggregate inactivity";
+        [
+          ("needs_maintainer_review=" + (($queue.aggregate.nmr // 0) | tostring)),
+          ("nmr_inactive_at_threshold=" + ($nmr_inactive | tostring)),
+          ("nmr_inactivity_threshold_minutes=" + ($nmr_inactivity_threshold_min | tostring)),
+          ("oldest_nmr_inactivity_minutes=" + ($oldest_nmr_inactivity_age_min | tostring)),
+          "nmr_inactivity_basis=issue_updatedAt_not_label_application_time"
+        ];
+        "Request authority-aware maintainer review of inactive NMR holds without removing needs-maintainer-review, adding auto-dispatch, posting approval markers, or commenting on individual held issues.";
         true
       )
     else empty end,

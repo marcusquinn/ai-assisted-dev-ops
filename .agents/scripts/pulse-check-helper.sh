@@ -36,6 +36,7 @@ APPLY_MODE=0
 MAX_ISSUES_PER_REPO="${PULSE_CHECK_MAX_ISSUES_PER_REPO:-100}"
 AVAILABLE_THRESHOLD="${PULSE_CHECK_AVAILABLE_THRESHOLD:-3}"
 OLD_AVAILABLE_MINUTES="${PULSE_CHECK_OLD_AVAILABLE_MINUTES:-30}"
+NMR_INACTIVE_MINUTES="${PULSE_CHECK_NMR_INACTIVE_MINUTES:-10080}"
 FAILURE_FAMILY_THRESHOLD="${PULSE_CHECK_FAILURE_FAMILY_THRESHOLD:-3}"
 FAILURE_FAMILY_RECOVERY_SECONDS="${PULSE_CHECK_FAILURE_FAMILY_RECOVERY_SECONDS:-86400}"
 FAILURE_FAMILY_STATE_FILE="${PULSE_CHECK_FAILURE_FAMILY_STATE_FILE:-${HOME}/.aidevops/cache/failure-family-remediation.json}"
@@ -54,6 +55,7 @@ Options:
   --max-issues <N>           Per-repo auto-dispatch issue scan limit (default: ${MAX_ISSUES_PER_REPO})
   --available-threshold <N>  Queue depth threshold for underfill findings (default: ${AVAILABLE_THRESHOLD})
   --old-available-minutes <N> Age threshold for stale available queue counts (default: ${OLD_AVAILABLE_MINUTES})
+  --nmr-inactive-minutes <N> Issue inactivity threshold for aggregate NMR advisories (default: ${NMR_INACTIVE_MINUTES})
   --failure-family-threshold <N> Distinct recurrent family threshold (default: ${FAILURE_FAMILY_THRESHOLD})
   --json                     Emit JSON report
   --apply                    File deduplicated self-improvement issues for autofile findings
@@ -82,6 +84,7 @@ _parse_args() {
 		--max-issues) MAX_ISSUES_PER_REPO="$next"; shift 2 ;;
 		--available-threshold) AVAILABLE_THRESHOLD="$next"; shift 2 ;;
 		--old-available-minutes) OLD_AVAILABLE_MINUTES="$next"; shift 2 ;;
+		--nmr-inactive-minutes) NMR_INACTIVE_MINUTES="$next"; shift 2 ;;
 		--failure-family-threshold) FAILURE_FAMILY_THRESHOLD="$next"; shift 2 ;;
 		--json) JSON_OUTPUT=1; shift ;;
 		--apply) APPLY_MODE=1; shift ;;
@@ -96,6 +99,7 @@ _validate_numeric_options() {
 	[[ "$MAX_ISSUES_PER_REPO" =~ ^[0-9]+$ ]] || MAX_ISSUES_PER_REPO=100
 	[[ "$AVAILABLE_THRESHOLD" =~ ^[0-9]+$ ]] || AVAILABLE_THRESHOLD=3
 	[[ "$OLD_AVAILABLE_MINUTES" =~ ^[0-9]+$ ]] || OLD_AVAILABLE_MINUTES=30
+	[[ "$NMR_INACTIVE_MINUTES" =~ ^[0-9]+$ ]] || NMR_INACTIVE_MINUTES=10080
 	[[ "$FAILURE_FAMILY_THRESHOLD" =~ ^[0-9]+$ ]] || FAILURE_FAMILY_THRESHOLD=3
 	[[ "$FAILURE_FAMILY_RECOVERY_SECONDS" =~ ^[0-9]+$ ]] || FAILURE_FAMILY_RECOVERY_SECONDS=86400
 	return 0
@@ -119,13 +123,14 @@ _run_json_helper() {
 _scan_auto_dispatch_queue() {
 	if [[ ! -f "$QUEUE_SCANNER" ]]; then
 		print_error "pulse-check: queue scanner not found: ${QUEUE_SCANNER}"
-		printf '{"aggregate":{"repos":0,"auto_dispatch_open":0,"available_unassigned":0,"available_old":0,"oldest_available_age_min":0,"repos_with_available":0,"queued":0,"assigned":0,"blocked_labels":0,"dependency_inconsistent_available":0,"needs_tier":0,"needs_status":0,"parent_task":0,"nmr":0,"no_auto_dispatch":0,"gh_errors":0},"error":"queue_scanner_missing"}\n'
+		printf '{"aggregate":{"repos":0,"auto_dispatch_open":0,"available_unassigned":0,"eligible_available_unassigned":0,"available_old":0,"oldest_available_age_min":0,"repos_with_available":0,"queued":0,"assigned":0,"assigned_in_flight":0,"blocked_labels":0,"blocked_explicit_hold":0,"dependency_inconsistent_available":0,"needs_tier":0,"needs_status":0,"malformed_metadata":0,"parent_task":0,"nmr":0,"nmr_inactive":0,"oldest_nmr_inactivity_age_min":0,"nmr_inactivity_threshold_min":0,"no_auto_dispatch":0,"gh_errors":0},"error":"queue_scanner_missing"}\n'
 		return 0
 	fi
 
 	PULSE_CHECK_REPOS_JSON="$REPOS_JSON" \
 		PULSE_CHECK_MAX_ISSUES_PER_REPO="$MAX_ISSUES_PER_REPO" \
 		PULSE_CHECK_OLD_AVAILABLE_MINUTES="$OLD_AVAILABLE_MINUTES" \
+		PULSE_CHECK_NMR_INACTIVE_MINUTES="$NMR_INACTIVE_MINUTES" \
 		python3 "$QUEUE_SCANNER"
 	return 0
 }
@@ -185,7 +190,7 @@ _render_text_report() {
 		"",
 		"## Current utilisation",
 		"- Active workers: " + (.summary.active_workers | tostring) + " / " + (.summary.max_workers | tostring) + " (available slots: " + (.summary.available_slots | tostring) + ")",
-		"- Auto-dispatch queue: " + (.summary.auto_dispatch_available_unassigned | tostring) + " available / " + (.summary.auto_dispatch_open | tostring) + " open across " + (.queue.repos | tostring) + " pulse repos",
+		"- Auto-dispatch queue: " + (.summary.auto_dispatch_available_unassigned | tostring) + " available (" + (.summary.auto_dispatch_eligible_available_unassigned | tostring) + " eligible) / " + (.summary.auto_dispatch_open | tostring) + " open across " + (.queue.repos | tostring) + " pulse repos",
 		"- Queue scan state: " + (.summary.auto_dispatch_scan_state // "scanned"),
 		"- Current window launches: " + (.summary.worker_launches_in_window | tostring) + "; terminal worker events: " + (.summary.worker_terminal_events_in_window | tostring),
 		"- Recent worker metric events: " + (.summary.recent_worker_events | tostring) + "; " + .inputs.historical_window + " runtime handoff rate: " + (.summary.historical_runtime_handoff_rate | percent_text) + "; delivered success rate: " + (.summary.historical_delivery_success_rate | percent_text),
@@ -261,7 +266,7 @@ ${recommendation}
 
 ## Implementation context
 
-- Primary files: \`.agents/scripts/pulse-check-helper.sh\`, \`.agents/scripts/pulse-current-state-helper.sh\`, \`.agents/scripts/worker-activity-helper.sh\`, \`.agents/scripts/pulse-diagnose-helper.sh\`, \`.agents/scripts/pulse-dispatch-worker-launch.sh\`, \`.agents/scripts/headless-runtime-helper.sh\`.
+- Primary files: \`.agents/scripts/pulse-check-queue-scan.py\`, \`.agents/scripts/pulse-check-report.jq\`, \`.agents/scripts/pulse-check-helper.sh\`, and \`.agents/scripts/tests/test-pulse-check-helper.sh\`; follow related diagnostics into current-state or worker helpers only when evidence requires it.
 - Reference patterns: \`.agents/reference/diagnostics-discipline.md\` and \`.agents/reference/worker-diagnostics.md\`.
 - If the exact broken path differs, keep the fix in the pulse/worker diagnostics layer and update this issue with the verified file path before implementation.
 

@@ -49,17 +49,24 @@ def _empty_aggregate() -> dict[str, int]:
         "repos": 0,
         "auto_dispatch_open": 0,
         "available_unassigned": 0,
+        "eligible_available_unassigned": 0,
         "available_old": 0,
         "oldest_available_age_min": 0,
         "repos_with_available": 0,
         "queued": 0,
         "assigned": 0,
+        "assigned_in_flight": 0,
         "blocked_labels": 0,
+        "blocked_explicit_hold": 0,
         "dependency_inconsistent_available": 0,
         "needs_tier": 0,
         "needs_status": 0,
+        "malformed_metadata": 0,
         "parent_task": 0,
         "nmr": 0,
+        "nmr_inactive": 0,
+        "oldest_nmr_inactivity_age_min": 0,
+        "nmr_inactivity_threshold_min": 0,
         "no_auto_dispatch": 0,
         "infrastructure": 0,
         GH_ERRORS_KEY: 0,
@@ -104,7 +111,7 @@ def _load_repos(repos_json: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
         return [], "repos_json_unreadable:TypeError"
     initialized = data.get("initialized_repos", [])
     if not isinstance(initialized, list):
-        return [], ""
+        return [], "repos_json_invalid:initialized_repos_type"
     repos = []
     for repo in initialized:
         if not isinstance(repo, dict):
@@ -126,7 +133,7 @@ def _fetch_repo_issues(slug: str, max_issues: int) -> Optional[list[dict[str, An
         "--repo", slug,
         "--state", "open",
         "--label", "auto-dispatch",
-        "--limit", str(max_issues),
+        "--limit", str(max_issues + 1),
         "--json", "number,title,body,labels,assignees,updatedAt",
     ]
     if _valid_repo_slug(slug):
@@ -177,21 +184,35 @@ def _count_issue(
     assigned = bool(issue.get("assignees"))
     blocked = bool(labels & BLOCKING_LABELS)
     dependency_inconsistent = bool(issue.get("dependency_inconsistent"))
+    has_tier = any(label.startswith("tier:") for label in labels)
+    has_status = any(label.startswith("status:") for label in labels)
+    age_min = _issue_age_minutes(issue, now)
+    is_nmr = "needs-maintainer-review" in labels
     aggregate["auto_dispatch_open"] += 1
     aggregate["assigned"] += int(assigned)
+    aggregate["assigned_in_flight"] += int(assigned)
     aggregate["queued"] += int("status:queued" in labels)
-    aggregate["needs_tier"] += int(not any(label.startswith("tier:") for label in labels))
-    aggregate["needs_status"] += int(not any(label.startswith("status:") for label in labels))
+    aggregate["needs_tier"] += int(not has_tier)
+    aggregate["needs_status"] += int(not has_status)
+    aggregate["malformed_metadata"] += int(not has_tier or not has_status)
     aggregate["blocked_labels"] += int(blocked)
+    aggregate["blocked_explicit_hold"] += int(blocked)
     aggregate["dependency_inconsistent_available"] += int(dependency_inconsistent)
     aggregate["parent_task"] += int("parent-task" in labels)
-    aggregate["nmr"] += int("needs-maintainer-review" in labels)
+    aggregate["nmr"] += int(is_nmr)
+    if is_nmr:
+        aggregate["nmr_inactive"] += int(
+            age_min >= aggregate["nmr_inactivity_threshold_min"]
+        )
+        aggregate["oldest_nmr_inactivity_age_min"] = max(
+            aggregate["oldest_nmr_inactivity_age_min"], age_min
+        )
     aggregate["no_auto_dispatch"] += int("no-auto-dispatch" in labels)
     aggregate["infrastructure"] += int("infrastructure" in labels)
     available = "status:available" in labels and not assigned and not blocked and not dependency_inconsistent
     if available:
         aggregate["available_unassigned"] += 1
-        age_min = _issue_age_minutes(issue, now)
+        aggregate["eligible_available_unassigned"] += int(has_tier and has_status)
         aggregate["available_old"] += int(age_min >= old_minutes)
         aggregate["oldest_available_age_min"] = max(aggregate["oldest_available_age_min"], age_min)
     return available
@@ -209,11 +230,17 @@ def _scan_repo(
     if issues is None:
         aggregate[GH_ERRORS_KEY] += 1
         return
+    if len(issues) > max_issues:
+        aggregate[GH_ERRORS_KEY] += 1
+        issues = issues[:max_issues]
     for issue in issues:
         inconsistent, scan_error = _dependency_diagnostic(slug, issue)
         issue["dependency_inconsistent"] = inconsistent
         aggregate[GH_ERRORS_KEY] += int(scan_error)
-    repo_available = sum(int(_count_issue(aggregate, issue, now, old_minutes)) for issue in issues)
+    repo_available = sum(
+        int(_count_issue(aggregate, issue, now, old_minutes))
+        for issue in issues
+    )
     aggregate["repos_with_available"] += int(repo_available > 0)
 
 
@@ -222,7 +249,9 @@ def main() -> int:
     skip_gh = os.environ.get("PULSE_CHECK_SKIP_GH", "") in {"1", "true", "TRUE", "yes", "YES"}
     max_issues = _int_from_env("PULSE_CHECK_MAX_ISSUES_PER_REPO", 100)
     old_minutes = _int_from_env("PULSE_CHECK_OLD_AVAILABLE_MINUTES", 30)
+    nmr_inactive_minutes = _int_from_env("PULSE_CHECK_NMR_INACTIVE_MINUTES", 10080)
     aggregate = _empty_aggregate()
+    aggregate["nmr_inactivity_threshold_min"] = nmr_inactive_minutes
 
     repos, load_error = _load_repos(repos_json)
     if load_error:

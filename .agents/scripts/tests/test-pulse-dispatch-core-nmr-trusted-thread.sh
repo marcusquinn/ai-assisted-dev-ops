@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 CORE_SCRIPT="${SCRIPT_DIR}/../pulse-dispatch-core.sh"
+AUTHORITY_SCRIPT="${SCRIPT_DIR}/../shared-gh-collaborator-permission.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -21,6 +22,7 @@ ISSUE_LOGIN="maintainer"
 COMMENTS_JSON="[]"
 APPROVAL_KNOWN_STATUS=""
 COLLAB_PERMISSION="write"
+_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE="unknown"
 
 print_result() {
 	local test_name="$1"
@@ -44,10 +46,12 @@ print_result() {
 define_helpers_under_test() {
 	local helper_src
 	helper_src=$(awk '
+		/^_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION=/ { print }
 		/^_issue_thread_is_trusted_maintainer_only\(\) \{/,/^}$/ { print }
 		/^_issue_actor_has_repo_write_permission\(\) \{/,/^}$/ { print }
 		/^_check_nmr_approval_gate\(\) \{/,/^}$/ { print }
-	' "$CORE_SCRIPT")
+		/^_gh_actor_has_repo_write_authority\(\) \{/,/^}$/ { print }
+	' "$CORE_SCRIPT" "$AUTHORITY_SCRIPT")
 	if [[ -z "$helper_src" ]]; then
 		printf 'ERROR: could not extract helpers from %s\n' "$CORE_SCRIPT" >&2
 		return 1
@@ -282,6 +286,39 @@ test_write_collaborator_comments_bypass_historical_nmr() {
 	return 0
 }
 
+test_collaborator_comment_without_login_preserves_historical_nmr() {
+	setup_case "OWNER" '[{"author_association":"COLLABORATOR","body":"missing identity"}]'
+	if _check_nmr_approval_gate 110 "owner/repo" '{"labels":[{"name":"auto-dispatch"}]}'; then
+		if [[ "$APPROVAL_KNOWN_STATUS" == "unknown" ]]; then
+			print_result "COLLABORATOR comment without login preserves historical NMR" 0
+		else
+			print_result "COLLABORATOR comment without login preserves historical NMR" 1 "expected known_status=unknown, got ${APPROVAL_KNOWN_STATUS}"
+		fi
+		cleanup_case
+		return 0
+	fi
+	print_result "COLLABORATOR comment without login preserves historical NMR" 1 "gate unexpectedly allowed dispatch"
+	cleanup_case
+	return 0
+}
+
+test_collaborator_permission_failure_preserves_historical_nmr() {
+	setup_case "OWNER" '[{"author_association":"COLLABORATOR","user":{"login":"coadmin"},"body":"lookup fails"}]'
+	COLLAB_PERMISSION="fail"
+	if _check_nmr_approval_gate 111 "owner/repo" '{"labels":[{"name":"auto-dispatch"}]}'; then
+		if [[ "$APPROVAL_KNOWN_STATUS" == "unknown" ]]; then
+			print_result "COLLABORATOR permission failure preserves historical NMR" 0
+		else
+			print_result "COLLABORATOR permission failure preserves historical NMR" 1 "expected known_status=unknown, got ${APPROVAL_KNOWN_STATUS}"
+		fi
+		cleanup_case
+		return 0
+	fi
+	print_result "COLLABORATOR permission failure preserves historical NMR" 1 "gate unexpectedly allowed dispatch"
+	cleanup_case
+	return 0
+}
+
 test_comment_jq_parse_errors_remain_visible() {
 	setup_case "OWNER" '{not-json'
 	local stderr_file="${TEST_ROOT}/jq-stderr.log"
@@ -338,6 +375,8 @@ main() {
 	test_active_nmr_label_preserves_gate
 	test_collaborator_author_does_not_bypass_historical_nmr
 	test_write_collaborator_comments_bypass_historical_nmr
+	test_collaborator_comment_without_login_preserves_historical_nmr
+	test_collaborator_permission_failure_preserves_historical_nmr
 	test_comment_jq_parse_errors_remain_visible
 	test_comment_jq_error_matcher_handles_jq_versions
 
