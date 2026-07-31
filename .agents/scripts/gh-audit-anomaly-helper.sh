@@ -180,13 +180,29 @@ _cmd_scan_collect_anomalies() {
 	_sc_anomaly_entries=()
 
 	if command -v jq &>/dev/null; then
-		# Single jq pass: skip counted lines, emit only lines whose .suspicious array is non-empty.
+		# Single jq pass: skip counted lines, emit only actionable anomalies.
 		# Gemini feedback (GH#20145 PR #20153): avoid one-jq-per-line in while read loops.
+		# The approval helper intentionally removes needs-maintainer-review only after
+		# its signed approval checks pass. Keep that transition in the immutable log,
+		# but do not file a daily alert when its complete provenance and delta match.
 		local line
 		while IFS= read -r line; do
 			_sc_anomaly_entries+=("$line")
 		done < <(tail -n +"$((skip_count + 1))" "$log_file" \
-			| jq -c 'select(.suspicious | length > 0)' 2>/dev/null || true)
+			| jq -c '
+				select(.suspicious | length > 0)
+				# aidevops:trust-boundary — fail closed unless every approval transition field matches.
+				| select((
+					.op == "issue_edit"
+					and .caller_function == "_approval_apply_issue_lifecycle_updates"
+					and ((.caller_script // "") | endswith("/agents/scripts/approval-helper.sh")
+						or endswith("/.agents/scripts/approval-helper.sh"))
+					and .suspicious == ["protected_label_removed:needs-maintainer-review"]
+					and (.delta.labels_removed // []) == ["needs-maintainer-review"]
+					and (((.delta.labels_added // []) - ["auto-dispatch"]) | length == 0)
+					and ((.before.labels // []) | index("needs-maintainer-review") != null)
+					and ((.after.labels // []) | index("needs-maintainer-review") == null)
+				) | not)' 2>/dev/null || true)
 		return 0
 	fi
 
