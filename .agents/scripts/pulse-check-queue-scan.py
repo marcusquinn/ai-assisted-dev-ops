@@ -111,7 +111,7 @@ def _load_repos(repos_json: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
         return [], "repos_json_unreadable:TypeError"
     initialized = data.get("initialized_repos", [])
     if not isinstance(initialized, list):
-        return [], ""
+        return [], "repos_json_invalid:initialized_repos_type"
     repos = []
     for repo in initialized:
         if not isinstance(repo, dict):
@@ -133,7 +133,7 @@ def _fetch_repo_issues(slug: str, max_issues: int) -> Optional[list[dict[str, An
         "--repo", slug,
         "--state", "open",
         "--label", "auto-dispatch",
-        "--limit", str(max_issues),
+        "--limit", str(max_issues + 1),
         "--json", "number,title,body,labels,assignees,updatedAt",
     ]
     if _valid_repo_slug(slug):
@@ -230,6 +230,9 @@ def _scan_repo(
     if issues is None:
         aggregate[GH_ERRORS_KEY] += 1
         return
+    if len(issues) > max_issues:
+        aggregate[GH_ERRORS_KEY] += 1
+        issues = issues[:max_issues]
     for issue in issues:
         inconsistent, scan_error = _dependency_diagnostic(slug, issue)
         issue["dependency_inconsistent"] = inconsistent

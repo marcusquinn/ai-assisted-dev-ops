@@ -637,6 +637,20 @@ _issue_thread_is_trusted_maintainer_only() {
 	[[ "$untrusted_comment_count" =~ ^[0-9]+$ ]] || return 1
 	[[ "$untrusted_comment_count" -eq 0 ]] || return 1
 
+	local missing_collaborator_login_count
+	missing_collaborator_login_count=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" '
+		(if type == $array_type and (.[0]? | type) == $array_type then [.[][]]
+		elif type == $array_type then .
+		else [] end)
+		| [ .[] | select(
+			(.author_association // "NONE") == "COLLABORATOR"
+			and ((.user.login // .author.login // "") == "")
+		) ]
+		| length
+	') || return 1
+	[[ "$missing_collaborator_login_count" =~ ^[0-9]+$ ]] || return 1
+	[[ "$missing_collaborator_login_count" -eq 0 ]] || return 1
+
 	local collaborator_comment_logins
 	collaborator_comment_logins=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" '
 		(if type == $array_type and (.[0]? | type) == $array_type then [.[][]]

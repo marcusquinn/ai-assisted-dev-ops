@@ -201,7 +201,7 @@ if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" && " $* " == *"public/rep
   printf 'simulated queue scan failure\n' >&2
   exit 1
 fi
-if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" ]]; then
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "truncation" ]]; then
   if [[ " $* " == *"private/repo-one"* ]]; then
     cat <<'JSON'
 [
@@ -348,6 +348,22 @@ SCAN_ERROR_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=scan-error" \
 assert_contains "partial scan reports GitHub error" "pulse-check-gh-scan-errors" "$SCAN_ERROR_OUT"
 assert_not_contains "partial scan suppresses queue shortfall" "pulse-eligible-queue-under-target" "$SCAN_ERROR_OUT"
 assert_not_contains "partial scan suppresses NMR inactivity" "pulse-inactive-nmr-holds" "$SCAN_ERROR_OUT"
+
+TRUNCATED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=truncation" \
+	"PULSE_CHECK_MAX_ISSUES_PER_REPO=3" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
+assert_contains "saturated scan reports bounded incompleteness" "pulse-check-gh-scan-errors" "$TRUNCATED_OUT"
+assert_not_contains "saturated scan suppresses queue shortfall" "pulse-eligible-queue-under-target" "$TRUNCATED_OUT"
+assert_not_contains "saturated scan suppresses NMR inactivity" "pulse-inactive-nmr-holds" "$TRUNCATED_OUT"
+
+cat >"${TEST_ROOT}/repos-invalid.json" <<'JSON'
+{"initialized_repos":"not-an-array"}
+JSON
+INVALID_REPOS_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_REPOS_JSON=${TEST_ROOT}/repos-invalid.json" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
+assert_contains "malformed repos schema reports incomplete scan" "pulse-check-queue-scan-skipped" "$INVALID_REPOS_OUT"
+assert_not_contains "malformed repos schema suppresses queue shortfall" "pulse-eligible-queue-under-target" "$INVALID_REPOS_OUT"
+assert_not_contains "malformed repos schema suppresses NMR inactivity" "pulse-inactive-nmr-holds" "$INVALID_REPOS_OUT"
 
 cat >"${TEST_ROOT}/current-state.sh" <<'SH'
 #!/usr/bin/env bash
