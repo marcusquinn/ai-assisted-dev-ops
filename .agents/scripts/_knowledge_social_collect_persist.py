@@ -42,10 +42,11 @@ from knowledge_social_store import SocialStoreError, connect, migrate, write_raw
 class RawBatch:
     """Immutable response-envelope metadata used by fetch_batches."""
 
-    batch_id: str
+    evidence_hash: str
     blob_ref: str
     request_hash: str
     response_hash: str
+    fetch_batch_id: str
     observed_at: str
 
 
@@ -105,6 +106,18 @@ def _raw_batch(
     response = canonical_json(payload).encode("utf-8")
     request_hash = hashlib.sha256(request.encode("utf-8")).hexdigest()
     response_hash = hashlib.sha256(response).hexdigest()
+    fetch_identity = canonical_json(
+        {
+            "contract": "social-fetch-v1",
+            "provider": provider,
+            "connection_id": context.connection_id,
+            "stream": context.stream,
+            "observed_at": observed_at,
+            "request_hash": request_hash,
+            "response_sha256": response_hash,
+        }
+    ).encode("utf-8")
+    fetch_batch_id = hashlib.sha256(fetch_identity).hexdigest()
     envelope = canonical_json(
         {
             "provider": provider,
@@ -116,10 +129,17 @@ def _raw_batch(
             "response": payload,
         }
     ).encode("utf-8")
-    batch_id, blob_ref = write_raw_batch(
+    evidence_hash, blob_ref = write_raw_batch(
         context.root, provider, context.connection_id, envelope
     )
-    return RawBatch(batch_id, blob_ref, request_hash, response_hash, observed_at)
+    return RawBatch(
+        evidence_hash,
+        blob_ref,
+        request_hash,
+        response_hash,
+        fetch_batch_id,
+        observed_at,
+    )
 
 
 def _insert_fetch_batch(
@@ -133,12 +153,12 @@ def _insert_fetch_batch(
            resource_count,budget_units,started_at,completed_at,terminal_status)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
         (
-            record.raw.batch_id,
+            record.raw.fetch_batch_id,
             _provider(context),
             context.connection_id,
             context.stream,
             record.raw.request_hash,
-            record.raw.response_hash,
+            record.raw.evidence_hash,
             record.raw.blob_ref,
             record.resource_count,
             record.budget_units,
@@ -267,11 +287,15 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         )
         upsert_connection(database, page.archive, provider, context.connection_id)
         import_accounts(database, page.archive, provider)
-        import_objects(database, page.archive, provider, raw.batch_id)
-        import_activities(database, page.archive, provider, raw.batch_id)
-        import_media(database, page.archive, provider, raw.batch_id)
+        import_objects(database, page.archive, provider, raw.fetch_batch_id)
+        import_activities(database, page.archive, provider, raw.fetch_batch_id)
+        import_media(database, page.archive, provider, raw.fetch_batch_id)
         import_coverage(
-            database, page.archive, provider, context.connection_id, raw.batch_id
+            database,
+            page.archive,
+            provider,
+            context.connection_id,
+            raw.fetch_batch_id,
         )
         _refresh_fts(database, provider, page.archive)
         resource_count = sum(
@@ -284,7 +308,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
             FetchRecord(raw, "success", resource_count, page.budget_units),
         )
         _update_cursor(database, context, page)
-        _upsert_success_coverage(database, context, page, raw.batch_id)
+        _upsert_success_coverage(database, context, page, raw.fetch_batch_id)
         _update_run_receipt_at(
             database,
             lease,
@@ -354,7 +378,7 @@ def _upsert_terminal_coverage(
             retention_limit,
             decision.failure_class,
             _terminal_coverage_status(decision),
-            raw.batch_id,
+            raw.fetch_batch_id,
             raw.observed_at,
         ),
     )
