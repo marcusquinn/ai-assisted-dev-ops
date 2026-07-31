@@ -39,6 +39,21 @@ tools:
 
 <!-- AI-CONTEXT-END -->
 
+## Knowledge-ingestion safety boundary
+
+This page documents an unofficial messaging bot. It is not an approved knowledge
+collector. Do not use Baileys, linked WhatsApp Web sessions, browser automation,
+reverse-engineered databases, or backup decryption to ingest chats. The account
+ban and Terms-of-Service risks documented below are disqualifying for knowledge
+collection, including private history mining.
+
+Knowledge ingestion is limited to user-authorized chat exports and identity- plus
+signature-verified official WhatsApp Business Platform webhooks. See
+`content/social-whatsapp.md` for the read-only routes, explicit coverage gaps,
+privacy rules, and current official references. No code in that collector can
+send messages, mutate templates or groups, link a personal session, or contact
+an unofficial endpoint.
+
 ## Minimal Setup
 
 ```typescript
