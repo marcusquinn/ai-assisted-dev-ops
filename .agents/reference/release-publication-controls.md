@@ -161,6 +161,12 @@ Aggregation PR #29052 re-reviews authorized Pulse triage PR #29033 at
 terminalized PR #29042 without recursively terminalizing those sources, then
 the release and simplification-state commits advanced `main`.
 
+A pending exact-tip aggregation re-reviews the same unresolved PR #29033 and
+PR #29037 sources because subsequent merges through PR #29071 advanced `main`
+before publication from PR #29052 could complete. Its branch is based at
+`9ee52e20b8c5ffecd4672f8784e78993acb7f70f`; the allocated aggregation PR and
+immutable source manifest are bound only by the follow-up commit.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
