@@ -481,7 +481,7 @@ _invoke_opencode() {
 		local _watchdog_wait_start _watchdog_wait_elapsed
 		_watchdog_wait_start=$(date +%s)
 		while kill -0 "$watchdog_pid" 2>/dev/null; do
-			_watchdog_wait_elapsed=$(( $(date +%s) - _watchdog_wait_start ))
+			_watchdog_wait_elapsed=$(($(date +%s) - _watchdog_wait_start))
 			if [[ "$_watchdog_wait_elapsed" -gt 30 ]]; then
 				print_warning "[lifecycle] watchdog_wait_timeout pid=$watchdog_pid elapsed=${_watchdog_wait_elapsed}s — sending SIGKILL"
 				kill -9 "$watchdog_pid" 2>/dev/null || true
@@ -576,7 +576,7 @@ _should_retry_sol_at_max() {
 	local selected_model="$2"
 	local variant="$3"
 	local retry_count="$4"
-	if [[ "$role" == "worker" && "$selected_model" == "openai/gpt-5.6-sol" && \
+	if [[ "$role" == "worker" && "$selected_model" == "openai/gpt-5.6-sol" &&
 		"$variant" == "high" && "$retry_count" -eq 0 ]]; then
 		return 0
 	fi
@@ -614,7 +614,7 @@ _handle_run_result() {
 	# immediately so no worker slot waits for an interactive answer. Preserve the
 	# session and route the attempt to the maintainer-permission lifecycle unless
 	# the worker subsequently proved the full objective completed without it.
-	if [[ "$role" == "worker" && -n "${_run_permission_request_file:-}" && \
+	if [[ "$role" == "worker" && -n "${_run_permission_request_file:-}" &&
 		-f "${_run_permission_request_file}" ]]; then
 		if [[ -n "$discovered_session" ]]; then
 			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
@@ -800,8 +800,8 @@ _handle_run_result() {
 		local local_kill_reason="${_metric_kill_reason:-}"
 		local natural_kill_reason=natural
 		local unknown_kill_reason=unknown
-		if [[ "$role" == "worker" && "$session_key" == issue-* ]] && \
-			[[ "${exit_code:-}" == "137" || "${exit_code:-}" == "143" ]] && \
+		if [[ "$role" == "worker" && "$session_key" == issue-* ]] &&
+			[[ "${exit_code:-}" == "137" || "${exit_code:-}" == "143" ]] &&
 			[[ -n "$local_kill_reason" && "$local_kill_reason" != "$natural_kill_reason" && "$local_kill_reason" != "$unknown_kill_reason" ]]; then
 			_run_result_label="local_kill"
 			_run_failure_reason="$local_kill_reason"
@@ -844,7 +844,7 @@ _handle_run_result() {
 	# should resume the existing session from disk instead of consuming the
 	# premature-exit or watchdog-stall continuation budgets. Require activity or
 	# session evidence so startup failures still follow normal backoff paths.
-	if [[ "$role" == "worker" && "$session_key" == issue-* ]] && \
+	if [[ "$role" == "worker" && "$session_key" == issue-* ]] &&
 		runtime_signal_terminated_candidate "$output_file" "$exit_code" "$activity_detected"; then
 		if [[ -n "$discovered_session" ]]; then
 			_store_headless_session_if_allowed "$provider" "$session_key" "$discovered_session" "$selected_model" "$role"
@@ -858,7 +858,7 @@ _handle_run_result() {
 		print_warning "$selected_model worker received SIGTERM after activity — will attempt session continuation"
 		return 78
 	fi
-	if [[ "$role" == "worker" && "$session_key" == issue-* ]] && \
+	if [[ "$role" == "worker" && "$session_key" == issue-* ]] &&
 		service_interruption_continue_candidate \
 			"$failure_reason" "$exit_code" "$activity_detected" "$discovered_session" \
 			"${_failure_provider_error_type:-}"; then
@@ -1024,7 +1024,7 @@ _derive_worker_failure_evidence() {
 	local launch_failure_cause=""
 	local next_action="inspect_failure_excerpt"
 
-	if declare -F _worker_failure_reason_is_completion_infrastructure >/dev/null 2>&1 && \
+	if declare -F _worker_failure_reason_is_completion_infrastructure >/dev/null 2>&1 &&
 		_worker_failure_reason_is_completion_infrastructure "$failure_reason"; then
 		launch_failure_cause="$failure_reason"
 		next_action="resume_session_with_completion_contract"
@@ -1657,7 +1657,7 @@ _execute_run_attempt() {
 		"${_metric_kill_reason:-}" "${_run_failure_reason:-}")
 	_launch_failure_cause="${_evidence_fields%%$'\t'*}"
 	_next_action="${_evidence_fields#*$'\t'}"
-	if [[ "$_metric_result_label" == "watchdog_stall_killed" ]] && \
+	if [[ "$_metric_result_label" == "watchdog_stall_killed" ]] &&
 		_worker_post_pr_handoff_confirmed "$session_key" "$work_dir"; then
 		_launch_failure_cause="post_pr_pending_ci_handoff"
 		_next_action="monitor_open_pr"
@@ -1698,8 +1698,8 @@ _discover_actual_worktree_dir() {
 	# Single-line awk keeps $2 refs inside the single-quote on the same line,
 	# preventing the positional-param ratchet from flagging awk field refs.
 	# shellcheck disable=SC2016
-	found_path=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null \
-		| awk -v n="$issue_n" '/^worktree / { p=$2 } /^branch / && $2 ~ "gh-?" n { print p; exit }')
+	found_path=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null |
+		awk -v n="$issue_n" '/^worktree / { p=$2 } /^branch / && $2 ~ "gh-?" n { print p; exit }')
 	if [[ -n "$found_path" && -d "$found_path" ]]; then
 		printf '%s' "$found_path"
 	fi
@@ -1776,7 +1776,10 @@ cmd_run() {
 	_ensure_valid_launch_cwd "$work_dir" || return 1
 	_validate_issue_worker_env_contract "$role" "$session_key" "$work_dir" "$title" "$prompt" || return 1
 	_recover_deleted_cwd_before_launch "$work_dir" "cmd_run" || return 1
-	aidevops_init_temp_workspace || { print_error "Could not initialize aidevops temporary workspace"; return 1; }
+	aidevops_init_temp_workspace || {
+		print_error "Could not initialize aidevops temporary workspace"
+		return 1
+	}
 
 	if [[ "$detach" -eq 1 ]]; then
 		_detach_worker "$session_key" "$@"
@@ -1935,6 +1938,7 @@ cmd_run() {
 	local _run_activity_detected="0"
 	local _run_metric_output_file=""
 	local _run_metric_session_id=""
+	local completion_state="complete"
 	while [[ "$attempt" -le "$max_attempts" ]]; do
 		_run_failure_reason=""
 		_run_should_retry=0
@@ -1953,7 +1957,7 @@ cmd_run() {
 		if [[ "$attempt_exit" -eq 0 ]]; then
 			clear_startup_no_model_feedback "$selected_model"
 			# GH#20721: Pass work_dir so _cmd_run_finish can detect no-op exits.
-			_cmd_run_finish "$session_key" "complete" "$work_dir"
+			_cmd_run_finish "$session_key" "$completion_state" "$work_dir"
 			return $?
 		fi
 		if [[ "$attempt_exit" -eq 85 ]]; then
@@ -2001,7 +2005,7 @@ cmd_run() {
 				continue
 			fi
 
-			_cmd_run_finish "$session_key" "complete" "$work_dir"
+			_cmd_run_finish "$session_key" "$completion_state" "$work_dir"
 			return $?
 		fi
 
@@ -2070,7 +2074,7 @@ cmd_run() {
 			_run_classification_source="model_blocked""_signal"
 			_run_classification_pattern="missing_implementation_context_recovery_exhausted"
 			print_warning "Missing implementation context persisted after brief-recovery continuation — recording blocked"
-			_cmd_run_finish "$session_key" "complete" "$work_dir"
+			_cmd_run_finish "$session_key" "$completion_state" "$work_dir"
 			return 0
 		fi
 
