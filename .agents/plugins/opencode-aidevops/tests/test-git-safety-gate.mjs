@@ -28,7 +28,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = join(here, "..", "..", "..", "scripts");
 const realGit = "/usr/bin/git";
 
-function setupRepo() {
+function setupRepo({ managed = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "aidevops-git-gate-"));
   const repo = join(root, "repo");
   const linked = join(root, "linked");
@@ -37,6 +37,9 @@ function setupRepo() {
   execFileSync(realGit, ["config", "user.name", "Test"], { cwd: repo });
   execFileSync(realGit, ["config", "user.email", "test@example.invalid"], { cwd: repo });
   execFileSync(realGit, ["config", "commit.gpgsign", "false"], { cwd: repo });
+  if (managed) {
+    writeFileSync(join(repo, ".aidevops.json"), "{}\n");
+  }
   writeFileSync(join(repo, "README.md"), "seed\n");
   execFileSync(realGit, ["add", "README.md"], { cwd: repo });
   execFileSync(realGit, ["commit", "-q", "-m", "seed"], { cwd: repo });
@@ -180,13 +183,16 @@ test("blocks canonical branch mutation before execution", () => {
   }
 });
 
-test("allows read-only canonical commands and linked-worktree mutation", () => {
+test("allows read-only canonical commands, linked-worktree mutation, and unmanaged repositories", () => {
   const { root, repo, linked } = setupRepo();
+  const { root: unmanagedRoot, repo: unmanagedRepo } = setupRepo({ managed: false });
   try {
     assert.doesNotThrow(() => checkCommandSafetyGate("git status --short", scriptsDir, repo));
     assert.doesNotThrow(() => checkCommandSafetyGate("git switch -c feature/child", scriptsDir, linked));
+    assert.doesNotThrow(() => checkCommandSafetyGate("git branch -m main external/example", scriptsDir, unmanagedRepo));
   } finally {
     rmSync(root, { recursive: true, force: true });
+    rmSync(unmanagedRoot, { recursive: true, force: true });
   }
 });
 
