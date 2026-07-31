@@ -173,7 +173,10 @@ def _api(
 ) -> ApiResult:
     if base not in API_BASES or not path.startswith("/") or ".." in path:
         raise ProviderError("Google Business Profile API route is not allowlisted")
-    query = urlencode(params or {}, doseq=True)
+    filtered = {
+        key: value for key, value in (params or {}).items() if value is not None
+    }
+    query = urlencode(filtered, doseq=True)
     url = f"{base}{path}{'?' + query if query else ''}"
     request = Request(
         url,
@@ -285,6 +288,28 @@ def _copy(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: payload[key] for key in keys if payload.get(key) is not None}
 
 
+def _derived_name(stream: str, item: dict[str, Any]) -> str:
+    """Build stable projection identity without metric values or observation time."""
+    candidates: tuple[Any, ...]
+    if stream == "performance":
+        candidates = (item.get("dailyMetric"), item.get("dailySubEntityType"))
+    elif stream == "search_keywords":
+        candidates = (item.get("searchKeyword"),)
+    elif stream == "attributes":
+        candidates = (item.get("attributeId"),)
+    else:
+        candidates = (item.get("name"), item.get("reviewId"), item.get("mediaKey"))
+    identity = [candidate for candidate in candidates if candidate is not None]
+    if not identity:
+        raise ProviderError(
+            f"Google Business Profile {stream} record has no stable identity"
+        )
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:24]
+    return f"{stream}-{digest}"
+
+
 def _records(stream: str, payload: dict[str, Any], location_id: str) -> list[dict[str, Any]]:
     if stream == "location_profile":
         profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
@@ -325,10 +350,7 @@ def _records(stream: str, payload: dict[str, Any], location_id: str) -> list[dic
     for position, item in enumerate(items):
         name = item.get("name") or item.get("reviewId") or item.get("mediaKey")
         if not isinstance(name, str) or not name:
-            digest = hashlib.sha256(
-                json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()[:24]
-            name = f"{stream}-{digest}"
+            name = _derived_name(stream, item)
         if stream == "reviews":
             comment = item.get("comment") if isinstance(item.get("comment"), str) else None
             records.append({
@@ -408,6 +430,8 @@ def _route(
         raise ProviderError(
             "selected Google identity or Business Profile hierarchy does not match the configured connection"
         )
+    if request.get("stop_at") is not None:
+        raise ProviderError("Google Business Profile snapshot watermark must be empty")
     token = _page_token(request.get("cursor"))
     common = {"pageSize": limit, "pageToken": token}
     account_location = f"accounts/{identity.account_id}/locations/{identity.location_id}"

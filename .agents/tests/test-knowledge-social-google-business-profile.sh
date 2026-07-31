@@ -123,13 +123,31 @@ responses = {
     "local_posts": {"localPosts": [{"name": "post-one", "summary": "Update"}]},
     "reviews": {"reviews": [{"reviewId": "review-one", "comment": "Feedback", "reviewReply": {"comment": "Reply"}}]},
     "verification_state": {"hasVoiceOfMerchant": True},
-    "performance": {"multiDailyMetricTimeSeries": [{"name": "metric-one", "dailyMetric": "CALL_CLICKS", "timeSeries": {"datedValues": []}}]},
-    "search_keywords": {"searchKeywordsCounts": [{"name": "keyword-one", "searchKeyword": "synthetic query", "insightsValue": {"value": "2"}}]},
+    "performance": {"multiDailyMetricTimeSeries": [{"dailyMetric": "CALL_CLICKS", "timeSeries": {"datedValues": []}}]},
+    "search_keywords": {"searchKeywordsCounts": [{"searchKeyword": "synthetic query", "insightsValue": {"value": "2"}}]},
 }
 for stream, payload in responses.items():
     records = provider._records(stream, payload, identity.location_id)
     assert records, stream
 assert len(provider._records("reviews", responses["reviews"], identity.location_id)) == 2
+performance_id = provider._records(
+    "performance", responses["performance"], identity.location_id
+)[0]["remote_id"]
+responses["performance"]["multiDailyMetricTimeSeries"][0]["timeSeries"] = {
+    "datedValues": [{"date": {"year": 2026, "month": 7, "day": 30}, "value": "9"}]
+}
+assert provider._records(
+    "performance", responses["performance"], identity.location_id
+)[0]["remote_id"] == performance_id
+keyword_id = provider._records(
+    "search_keywords", responses["search_keywords"], identity.location_id
+)[0]["remote_id"]
+responses["search_keywords"]["searchKeywordsCounts"][0]["insightsValue"] = {
+    "value": "99"
+}
+assert provider._records(
+    "search_keywords", responses["search_keywords"], identity.location_id
+)[0]["remote_id"] == keyword_id
 
 sources = [
     path.read_text(encoding="utf-8")
