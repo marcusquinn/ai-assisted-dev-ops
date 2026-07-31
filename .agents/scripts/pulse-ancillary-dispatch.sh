@@ -209,6 +209,74 @@ _ensure_triage_failed_label() {
 	return 0
 }
 
+_PAD_TRIAGE_REVIEW_APPROVE_LABEL="${_PAD_TRIAGE_REVIEW_APPROVE_LABEL:-review:approve}"
+_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL="${_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL:-review:feedback}"
+_PAD_TRIAGE_REVIEW_DECLINE_LABEL="${_PAD_TRIAGE_REVIEW_DECLINE_LABEL:-review:decline}"
+_PAD_TRIAGE_REVIEW_APPROVE_COLOR="${_PAD_TRIAGE_REVIEW_APPROVE_COLOR:-0E8A16}"
+_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR="${_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR:-FBCA04}"
+_PAD_TRIAGE_REVIEW_DECLINE_COLOR="${_PAD_TRIAGE_REVIEW_DECLINE_COLOR:-D73A4A}"
+
+#######################################
+# Provision the three canonical, mutually exclusive advisory recommendation
+# labels. Failure is propagated so no review comment can be posted without its
+# matching label state.
+#######################################
+_ensure_triage_recommendation_labels() {
+	local repo_slug="$1"
+	[[ -n "$repo_slug" ]] || return 1
+	gh label create "$_PAD_TRIAGE_REVIEW_APPROVE_LABEL" --repo "$repo_slug" \
+		--color "$_PAD_TRIAGE_REVIEW_APPROVE_COLOR" \
+		--description "Advisory automated triage recommendation: approve" \
+		--force >/dev/null 2>&1 || return 1
+	gh label create "$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL" --repo "$repo_slug" \
+		--color "$_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR" \
+		--description "Advisory automated triage recommendation: request changes" \
+		--force >/dev/null 2>&1 || return 1
+	gh label create "$_PAD_TRIAGE_REVIEW_DECLINE_LABEL" --repo "$repo_slug" \
+		--color "$_PAD_TRIAGE_REVIEW_DECLINE_COLOR" \
+		--description "Advisory automated triage recommendation: decline" \
+		--force >/dev/null 2>&1 || return 1
+	return 0
+}
+
+#######################################
+# Apply the advisory label matching a validated review's first-line decision.
+# #aidevops:trust-boundary — these labels never clear needs-maintainer-review
+# and never grant claim, approval, implementation, merge, or release authority.
+#######################################
+_set_triage_recommendation_label() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local review_text="$3"
+	local first_line="${review_text%%$'\n'*}"
+	local target_label="" remove_label_one="" remove_label_two=""
+	case "$first_line" in
+	"## Review: Recommendation: Approve")
+		target_label="$_PAD_TRIAGE_REVIEW_APPROVE_LABEL"
+		remove_label_one="$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL"
+		remove_label_two="$_PAD_TRIAGE_REVIEW_DECLINE_LABEL"
+		;;
+	"## Review: Recommendation: Request Changes")
+		target_label="$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL"
+		remove_label_one="$_PAD_TRIAGE_REVIEW_APPROVE_LABEL"
+		remove_label_two="$_PAD_TRIAGE_REVIEW_DECLINE_LABEL"
+		;;
+	"## Review: Recommendation: Decline")
+		target_label="$_PAD_TRIAGE_REVIEW_DECLINE_LABEL"
+		remove_label_one="$_PAD_TRIAGE_REVIEW_APPROVE_LABEL"
+		remove_label_two="$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL"
+		;;
+	*) return 1 ;;
+	esac
+
+	_ensure_triage_recommendation_labels "$repo_slug" || return 1
+	gh issue edit "$issue_num" --repo "$repo_slug" \
+		--remove-label "$remove_label_one" \
+		--remove-label "$remove_label_two" \
+		--add-label "$target_label" >/dev/null 2>&1 || return 1
+	return 0
+}
+
 #######################################
 # Post a maintainer-visible escalation comment when automated triage
 # has exhausted its retry budget.
@@ -461,7 +529,7 @@ _triage_failure_is_infrastructure() {
 	local failure_reason="$1"
 
 	case "$failure_reason" in
-	canary-unavailable | prelaunch-contract-failure | github-comment-write-failed | triage-runtime-failed | triage-runtime-temp-failed | github-current-snapshot-* | github-pr-revision-* | github-public-revision-* | triage-current-snapshot-hash-failed | triage-evidence-* | triage-prompt-* | scanner-unavailable-* | scanner-tempfile-* | scanner-input-* | scanner-error-*) return 0 ;;
+	canary-unavailable | prelaunch-contract-failure | github-comment-write-failed | github-review-label-write-failed | triage-runtime-failed | triage-runtime-temp-failed | github-current-snapshot-* | github-pr-revision-* | github-public-revision-* | triage-current-snapshot-hash-failed | triage-evidence-* | triage-prompt-* | scanner-unavailable-* | scanner-tempfile-* | scanner-input-* | scanner-error-*) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -2137,6 +2205,12 @@ _extract_and_post_triage_review() {
 		return 0
 	fi
 
+	if ! _set_triage_recommendation_label "$issue_num" "$repo_slug" "$review_text"; then
+		echo "[pulse-wrapper] Triage advisory label write failed for #${issue_num} in ${repo_slug} — comment suppressed, will retry" >>"$LOGFILE"
+		printf 'FAILED:github-review-label-write-failed\n'
+		return 0
+	fi
+
 	if ! _post_triage_review_comment "$issue_num" "$repo_slug" "$review_text"; then
 		echo "[pulse-wrapper] Triage review comment write failed for #${issue_num} in ${repo_slug} — infrastructure failure, will retry" >>"$LOGFILE"
 		printf 'FAILED:github-comment-write-failed\n'
@@ -2454,8 +2528,10 @@ _triage_prompt_metadata_is_valid() {
 _triage_review_candidates() {
 	local triage_file="$1"
 	local repos_json="$2"
-	local line="" current_slug="" current_path="" issue_num=""
-	local candidates="" candidate_count=0
+	local line="" current_slug="" current_path="" issue_num="" author="" metadata_line=""
+	local priority_candidates="" regular_candidates="" candidate_count=0
+	local author_suffix_regex='\[author: @([A-Za-z0-9-]+)\]$'
+	local review_suffix_regex='\[status: \*\*needs-review\*\*\] \[created: [^]]+\]$'
 	while IFS= read -r line; do
 		if [[ "$line" =~ ^##[[:space:]]+([^[:space:]]+/[^[:space:]]+) ]]; then
 			current_slug="${BASH_REMATCH[1]}"
@@ -2463,17 +2539,41 @@ _triage_review_candidates() {
 			current_path="${current_path/#\~/$HOME}"
 			continue
 		fi
-		if [[ "$line" == *"**needs-review**"* && "$line" =~ Issue\ #([0-9]+) ]]; then
+		author=""
+		metadata_line="$line"
+		if [[ "$line" =~ $author_suffix_regex ]]; then
+			author="${BASH_REMATCH[1]}"
+			metadata_line="${line% \[author: @"${author}"\]}"
+		fi
+		if [[ "$metadata_line" =~ $review_suffix_regex && "$metadata_line" =~ Issue\ #([0-9]+) ]]; then
 			issue_num="${BASH_REMATCH[1]}"
 			if [[ -n "$current_slug" && -n "$current_path" ]]; then
-				candidates="${candidates}${issue_num}|${current_slug}|${current_path}"$'\n'
+				local candidate="${issue_num}|${current_slug}|${current_path}|${author}"
+				if _triage_author_is_known_contributor "$author"; then
+					priority_candidates="${priority_candidates}${candidate}"$'\n'
+				else
+					regular_candidates="${regular_candidates}${candidate}"$'\n'
+				fi
 				candidate_count=$((candidate_count + 1))
 			fi
 		fi
 	done <"$triage_file"
 	echo "[pulse-wrapper] dispatch_triage_reviews: parsed ${candidate_count} candidates from state file" >>"$LOGFILE"
-	printf '%s' "$candidates"
+	printf '%s%s' "$priority_candidates" "$regular_candidates"
 	return 0
+}
+
+_triage_author_is_known_contributor() {
+	local author="$1"
+	local known_contributors="${PULSE_TRIAGE_KNOWN_CONTRIBUTORS:-}"
+	local author_normalized="" known_normalized=""
+	[[ "$author" =~ ^[A-Za-z0-9-]+$ && -n "$known_contributors" ]] || return 1
+	author_normalized=$(printf '%s' "$author" | tr '[:upper:]' '[:lower:]')
+	known_normalized=$(printf ',%s,' "$known_contributors" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$known_normalized" in
+	*,"$author_normalized",*) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 #######################################
@@ -2533,7 +2633,8 @@ dispatch_triage_reviews() {
 	}
 
 	# t1916: Triage is exempt from the cryptographic approval gate.
-	while IFS='|' read -r issue_num repo_slug repo_path; do
+	while IFS='|' read -r issue_num repo_slug repo_path candidate_author; do
+		: "$candidate_author"
 		[[ -n "$issue_num" && -n "$repo_slug" ]] || continue
 		[[ "$triage_count" -lt "$triage_max" ]] || break
 

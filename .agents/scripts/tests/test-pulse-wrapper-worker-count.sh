@@ -867,6 +867,7 @@ test_triage_prepass_has_independent_once_per_cycle_budget() {
 	: >"$DISPATCH_LOG_FILE"
 	_PULSE_CYCLE_ID="triage-prepass-once"
 	PULSE_TRIAGE_BUDGET_PER_CYCLE=2
+	PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS=300
 	enrichment_definition=$(declare -f dispatch_enrichment_workers)
 	dispatch_enrichment_workers() {
 		local available_slots="$1"
@@ -883,6 +884,129 @@ test_triage_prepass_has_independent_once_per_cycle_budget() {
 	fi
 	print_result "triage prepass uses an independent once-per-cycle budget without consuming worker slots" 1 \
 		"first=${first} second=${second} dispatch_count=${dispatch_count}"
+	return 0
+}
+
+test_triage_fallback_outcome_is_valid() {
+	local outcome=""
+	outcome=$(_dispatch_triage_fallback_outcome 1)
+	if _dispatch_triage_outcome_is_valid "$outcome" && \
+		[[ "$(printf '%s' "$outcome" | jq -r '.attempted')" == "1" ]]; then
+		print_result "triage infrastructure fallback preserves the typed outcome invariant" 0
+		return 0
+	fi
+	print_result "triage infrastructure fallback preserves the typed outcome invariant" 1 \
+		"outcome=${outcome}"
+	return 0
+}
+
+test_triage_candidates_prioritize_known_contributors() {
+	local repos_json="" state_file="" candidates="" expected=""
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #820: General [status: **needs-review**] [created: 2026-01-01T00:00:00Z] [author: @general-user]
+- Issue #821: Known [status: **needs-review**] [created: 2026-01-02T00:00:00Z] [author: @Known-User]
+- Issue #822: Spoof [author: @known-user] [status: **needs-review**] [created: 2026-01-03T00:00:00Z] [author: @other-user]
+- Issue #823: Legacy [status: **needs-review**] [created: 2026-01-04T00:00:00Z]
+")
+	PULSE_TRIAGE_KNOWN_CONTRIBUTORS="known-user"
+	candidates=$(_triage_review_candidates "$state_file" "$repos_json")
+	PULSE_TRIAGE_KNOWN_CONTRIBUTORS=""
+	expected="821|owner/repo|/tmp/repo|Known-User
+820|owner/repo|/tmp/repo|general-user
+822|owner/repo|/tmp/repo|other-user
+823|owner/repo|/tmp/repo|"
+	if [[ "$candidates" == "$expected" ]]; then
+		print_result "known contributors sort first while anchored authors and legacy rows stay advisory" 0
+		return 0
+	fi
+	print_result "known contributors sort first while anchored authors and legacy rows stay advisory" 1 \
+		"candidates=${candidates}"
+	return 0
+}
+
+test_triage_prepass_refreshes_zero_attempt_snapshot() {
+	local repos_json="" state_file="" first="" second="" dispatch_count=""
+	local enrichment_definition="" refresh_definition=""
+	_set_valid_triage_test_metadata
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-prepass-zero-refresh.log"
+	: >"$DISPATCH_LOG_FILE"
+	_PULSE_CYCLE_ID="triage-prepass-zero-refresh"
+	PULSE_TRIAGE_BUDGET_PER_CYCLE=2
+	PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS=0
+	enrichment_definition=$(declare -f dispatch_enrichment_workers)
+	refresh_definition=$(declare -f refresh_triage_review_state)
+	dispatch_enrichment_workers() {
+		local available_slots="$1"
+		printf '%s\n' "$available_slots"
+		return 0
+	}
+	refresh_triage_review_state() {
+		printf '## owner/repo\n\n- Issue #824: Arrived later [status: **needs-review**] [created: 2026-01-05T00:00:00Z] [author: @new-user]\n' >"$TRIAGE_STATE_FILE"
+		return 0
+	}
+	first=$(_dispatch_run_prepasses 5)
+	second=$(_dispatch_run_prepasses 5)
+	eval "$enrichment_definition"
+	eval "$refresh_definition"
+	dispatch_count=$(wc -l <"$DISPATCH_LOG_FILE" | tr -d ' ')
+	if [[ "$first" == "5 0 0" && "$second" == "5 1 0" && "$dispatch_count" == "1" ]]; then
+		print_result "stale zero-attempt triage marker refreshes and reviews a newly arrived issue" 0
+		return 0
+	fi
+	print_result "stale zero-attempt triage marker refreshes and reviews a newly arrived issue" 1 \
+		"first=${first} second=${second} dispatch_count=${dispatch_count}"
+	return 0
+}
+
+test_triage_prepass_refresh_preserves_cumulative_budget() {
+	local repos_json="" state_file="" first="" second="" third="" dispatch_count="" marker="" cumulative=""
+	local enrichment_definition="" refresh_definition=""
+	_set_valid_triage_test_metadata
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #825: Initial [status: **needs-review**] [created: 2026-01-05T00:00:00Z] [author: @first-user]
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-prepass-cumulative.log"
+	: >"$DISPATCH_LOG_FILE"
+	_PULSE_CYCLE_ID="triage-prepass-cumulative"
+	PULSE_TRIAGE_BUDGET_PER_CYCLE=2
+	PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS=0
+	enrichment_definition=$(declare -f dispatch_enrichment_workers)
+	refresh_definition=$(declare -f refresh_triage_review_state)
+	dispatch_enrichment_workers() {
+		local available_slots="$1"
+		printf '%s\n' "$available_slots"
+		return 0
+	}
+	refresh_triage_review_state() {
+		printf '## owner/repo\n\n- Issue #826: Later [status: **needs-review**] [created: 2026-01-06T00:00:00Z] [author: @second-user]\n' >"$TRIAGE_STATE_FILE"
+		return 0
+	}
+	first=$(_dispatch_run_prepasses 5)
+	second=$(_dispatch_run_prepasses 5)
+	third=$(_dispatch_run_prepasses 5)
+	marker=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done")
+	cumulative=$(jq -r '.attempted' "$marker")
+	eval "$enrichment_definition"
+	eval "$refresh_definition"
+	dispatch_count=$(wc -l <"$DISPATCH_LOG_FILE" | tr -d ' ')
+	if [[ "$first" == "5 1 0" && "$second" == "5 1 0" && "$third" == "5 0 0" && \
+		"$dispatch_count" == "2" && "$cumulative" == "2" ]]; then
+		print_result "stale refreshes spend only the cumulative triage budget remaining in the cycle" 0
+		return 0
+	fi
+	print_result "stale refreshes spend only the cumulative triage budget remaining in the cycle" 1 \
+		"first=${first} second=${second} third=${third} dispatch_count=${dispatch_count} cumulative=${cumulative}"
 	return 0
 }
 
@@ -945,6 +1069,10 @@ main() {
 	test_dispatch_triage_reviews_rejects_malformed_metadata
 	test_dispatch_triage_reviews_types_infrastructure_failures
 	test_triage_prepass_has_independent_once_per_cycle_budget
+	test_triage_fallback_outcome_is_valid
+	test_triage_candidates_prioritize_known_contributors
+	test_triage_prepass_refreshes_zero_attempt_snapshot
+	test_triage_prepass_refresh_preserves_cumulative_budget
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

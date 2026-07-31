@@ -38,6 +38,7 @@ TRIAGE_LIFECYCLE_LOG=""
 POSTED_BODY_LOG=""
 EPHEMERAL_BODY_LOG=""
 MOCK_COMMENT_WRITE_FAILURE=0
+MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 MOCK_PR_REVISION_PAIR=""
 readonly EXPECTED_TEXT_SNAPSHOT_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
@@ -104,6 +105,7 @@ exit 0
 SIG_STUB
 	chmod +x "$TRIAGE_SIGNATURE_HELPER"
 	MOCK_COMMENT_WRITE_FAILURE=0
+	MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 	MOCK_PR_REVISION_PAIR=""
 	MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
 	MOCK_CURRENT_PUBLIC_REVISION="$EXPECTED_PUBLIC_REVISION"
@@ -151,6 +153,11 @@ gh() {
 	done
 	if [[ "$command_name" == "issue" && "$action" == "comment" && \
 		"$MOCK_COMMENT_WRITE_FAILURE" -eq 1 ]]; then
+		return 1
+	fi
+	if [[ "$command_name" == "issue" && "$action" == "edit" && \
+		"$call_args" == *"--add-label review:"* && \
+		"$MOCK_REVIEW_LABEL_WRITE_FAILURE" -eq 1 ]]; then
 		return 1
 	fi
 	case "$command_name" in
@@ -590,6 +597,15 @@ test_dispatch_accepts_clean_review_in_json() {
 			"gh call log (last lines):
 $(tail -5 "$GH_CALL_LOG")"
 	fi
+	local label_line="" comment_line=""
+	label_line=$(grep -n -- '--add-label review:approve' "$GH_CALL_LOG" | cut -d: -f1 | head -n 1)
+	comment_line=$(grep -n '^issue comment 18400 ' "$GH_CALL_LOG" | cut -d: -f1 | head -n 1)
+	if [[ -n "$label_line" && -n "$comment_line" && "$label_line" -lt "$comment_line" ]] && \
+		grep -q -- '--remove-label review:feedback --remove-label review:decline --add-label review:approve' "$GH_CALL_LOG"; then
+		print_result "advisory approve label is made mutually exclusive before comment transport" 0
+	else
+		print_result "advisory approve label is made mutually exclusive before comment transport" 1
+	fi
 	if grep -qF '<!-- aidevops:triage-review -->' "$POSTED_BODY_LOG"; then
 		print_result "posted triage review carries trusted cache marker" 0
 	else
@@ -626,6 +642,60 @@ $(tail -5 "$GH_CALL_LOG")"
 		print_result "triage dispatch performs no implementation-worker lock lifecycle writes" 1 \
 			"lifecycle calls:\n$(cat "$TRIAGE_LIFECYCLE_LOG")"
 	fi
+	teardown_test_env
+}
+
+test_recommendation_labels_map_exact_decisions() {
+	setup_test_env
+	load_helpers_under_test
+	local approve_review="" feedback_review="" decline_review="" ok=0 detail=""
+	approve_review=$(_valid_review_text)
+	feedback_review=$(_valid_pr_review_text)
+	decline_review="## Review: Recommendation: Decline"$'\n'"${approve_review#*$'\n'}"
+	_set_triage_recommendation_label "29001" "owner/repo" "$approve_review" || ok=1
+	_set_triage_recommendation_label "29002" "owner/repo" "$feedback_review" || ok=1
+	_set_triage_recommendation_label "29003" "owner/repo" "$decline_review" || ok=1
+	grep -q 'issue edit 29001 .*--add-label review:approve' "$GH_CALL_LOG" || {
+		ok=1
+		detail="${detail} approve-missing"
+	}
+	grep -q 'issue edit 29002 .*--add-label review:feedback' "$GH_CALL_LOG" || {
+		ok=1
+		detail="${detail} feedback-missing"
+	}
+	grep -q 'issue edit 29003 .*--add-label review:decline' "$GH_CALL_LOG" || {
+		ok=1
+		detail="${detail} decline-missing"
+	}
+	print_result "exact triage decisions map to canonical advisory labels" "$ok" "$detail"
+	teardown_test_env
+}
+
+test_review_label_write_failure_blocks_comment_and_cache() {
+	setup_test_env
+	load_helpers_under_test
+	local payload="${TEST_ROOT}/payload.json"
+	_make_opencode_json "$payload" "$(_valid_review_text)"
+	_install_headless_stub "$payload"
+	MOCK_REVIEW_LABEL_WRITE_FAILURE=1
+	local prompt_file="" ok=0 detail=""
+	prompt_file=$(_make_managed_prompt_file "review-label-write")
+	_dispatch_triage_review_worker \
+		"29004" "owner/repo" "/tmp/repo" "$prompt_file" "hash-label-write" "" "issue" \
+		"" "$EXPECTED_TEXT_SNAPSHOT_HASH" "$EXPECTED_PUBLIC_REVISION" 2>/dev/null
+	if grep -q 'issue comment 29004' "$GH_CALL_LOG"; then
+		ok=1
+		detail="comment posted"
+	fi
+	if [[ -s "$TRIAGE_CACHE_LOG" ]]; then
+		ok=1
+		detail="${detail} cache/retry mutated"
+	fi
+	if ! grep -q 'github-review-label-write-failed' "$LOGFILE"; then
+		ok=1
+		detail="${detail} infrastructure classification missing"
+	fi
+	print_result "advisory label write failure suppresses comment and remains retryable" "$ok" "$detail"
 	teardown_test_env
 }
 
@@ -701,7 +771,7 @@ test_prelaunch_classifier_covers_runtime_guard_modes() {
 		[[ "$reason" == 'prelaunch-contract-failure' ]] || ok=1
 	done
 
-	for reason in github-comment-write-failed triage-runtime-failed \
+	for reason in github-comment-write-failed github-review-label-write-failed triage-runtime-failed \
 		triage-runtime-temp-failed github-current-snapshot-changed-before-post \
 		github-pr-revision-changed-before-post github-public-revision-changed-before-post \
 		triage-evidence-too-large triage-prompt-too-large; do
@@ -1160,6 +1230,8 @@ main() {
 	test_extract_concats_multiple_text_events
 	test_review_shape_enforces_exact_contract
 	test_dispatch_accepts_clean_review_in_json
+	test_recommendation_labels_map_exact_decisions
+	test_review_label_write_failure_blocks_comment_and_cache
 	test_signature_failure_blocks_comment_transport
 	test_dispatch_rejects_issue_schema_for_pr
 	test_dispatch_suppresses_oversized_output

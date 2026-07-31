@@ -165,6 +165,23 @@ for origin_name in "${origin_labels[@]}"; do
 	fi
 done
 
+review_labels=(
+	"review:approve|0E8A16"
+	"review:feedback|FBCA04"
+	"review:decline|D73A4A"
+)
+for review_spec in "${review_labels[@]}"; do
+	review_name="${review_spec%%|*}"
+	review_expected_color="${review_spec#*|}"
+	review_color=$(find_label_color "SYSTEM_LABELS" "$review_name" 2>/dev/null || true)
+	if [[ "$review_color" == "$review_expected_color" ]]; then
+		print_result "canonical advisory label $review_name has expected color" 0
+	else
+		print_result "canonical advisory label $review_name has expected color" 1 \
+			"(got: '${review_color:-missing}')"
+	fi
+done
+
 security_tag_color=$(color_for_tag "security-adjacent")
 if [[ "$security_tag_color" == "D73A4A" ]]; then
 	print_result "security-adjacent TODO tag maps to red" 0

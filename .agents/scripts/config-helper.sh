@@ -357,6 +357,8 @@ _config_env_map() {
 	orchestration.min_worker_concurrency) echo "AIDEVOPS_MIN_WORKER_CONCURRENCY" ;;
 	orchestration.quality_debt_cap_pct) echo "AIDEVOPS_QUALITY_DEBT_CAP_PCT" ;;
 	orchestration.provider_account_slot_multiplier) echo "PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER" ;;
+	orchestration.triage_known_contributors) echo "AIDEVOPS_TRIAGE_KNOWN_CONTRIBUTORS" ;;
+	orchestration.triage_refresh_interval_seconds) echo "AIDEVOPS_TRIAGE_REFRESH_INTERVAL_SECONDS" ;;
 	*) echo "" ;;
 	esac
 	return 0

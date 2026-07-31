@@ -259,10 +259,40 @@ prefetch_foss_scan() {
 	return 0
 }
 
+_prefetch_triage_nmr_json() {
+	local slug="$1"
+	local nmr_json="" nmr_err="" nmr_read_ok=$_PREFETCH_BOOL_TRUE
+	local nmr_err_msg=""
+	nmr_err=$(mktemp) || return 1
+	if ! nmr_json=$(gh_issue_list --repo "$slug" --label "needs-maintainer-review" \
+		--state open --json number,title,author,createdAt,updatedAt \
+		--limit 50 2>"$nmr_err"); then
+		nmr_read_ok=$_PREFETCH_BOOL_FALSE
+	fi
+	if [[ -z "$nmr_json" || "$nmr_json" == "null" ]] || \
+		! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$nmr_json"; then
+		nmr_read_ok=$_PREFETCH_BOOL_FALSE
+	fi
+	if [[ "$nmr_read_ok" != "$_PREFETCH_BOOL_TRUE" ]]; then
+		nmr_err_msg=$(<"$nmr_err")
+		[[ -n "$nmr_err_msg" ]] || nmr_err_msg="unknown error"
+		if _pulse_gh_err_is_rate_limit "$nmr_err"; then
+			_pulse_mark_rate_limited "prefetch_triage_review_status:${slug}"
+		fi
+		echo "[pulse-wrapper] prefetch_triage_review_status: gh_issue_list FAILED for ${slug}: ${nmr_err_msg}" >>"$LOGFILE"
+		rm -f "$nmr_err"
+		return 1
+	fi
+	rm -f "$nmr_err"
+	printf '%s\n' "$nmr_json"
+	return 0
+}
+
 prefetch_triage_review_status() {
 	local repo_entries="$1"
 	local found_any=$_PREFETCH_BOOL_FALSE
 	local total_pending=0
+	local refresh_failed=$_PREFETCH_BOOL_FALSE
 
 	while IFS='|' read -r slug path; do
 		[[ -n "$slug" ]] || continue
@@ -273,23 +303,13 @@ prefetch_triage_review_status() {
 			continue
 		fi
 
-		# Get needs-maintainer-review issues for this repo
-	local nmr_json="" nmr_err=""
-		nmr_err=$(mktemp)
-		nmr_json=$(gh_issue_list --repo "$slug" --label "needs-maintainer-review" \
-			--state open --json number,title,createdAt,updatedAt \
-			--limit 50 2>"$nmr_err") || nmr_json="[]"
-		if [[ -z "$nmr_json" || "$nmr_json" == "null" ]]; then
-			local _nmr_err_msg
-			_nmr_err_msg=$(cat "$nmr_err" 2>/dev/null || echo "unknown error")
-			# GH#18979 (t2097): detect rate-limit exhaustion
-			if _pulse_gh_err_is_rate_limit "$nmr_err"; then
-				_pulse_mark_rate_limited "prefetch_triage_review_status:${slug}"
-			fi
-			echo "[pulse-wrapper] prefetch_triage_review_status: gh_issue_list FAILED for ${slug}: ${_nmr_err_msg}" >>"$LOGFILE"
-			nmr_json="[]"
+		# A failed or malformed read invalidates the complete snapshot so callers
+		# preserve the prior atomic state instead of trusting false emptiness.
+		local nmr_json=""
+		if ! nmr_json=$(_prefetch_triage_nmr_json "$slug"); then
+			refresh_failed=$_PREFETCH_BOOL_TRUE
+			continue
 		fi
-		rm -f "$nmr_err"
 
 		local nmr_count
 		nmr_count=$(echo "$nmr_json" | jq 'length')
@@ -301,7 +321,7 @@ prefetch_triage_review_status() {
 			echo ""
 			echo "Issues with \`needs-maintainer-review\` label and their automated triage review status."
 			echo "Dispatch a thinking-tier \`/review-issue-pr\` worker for items marked **needs-review**."
-			echo "Max 2 triage review dispatches per pulse cycle."
+			echo "Max ${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2} triage review dispatches per pulse cycle."
 			echo ""
 			found_any=$_PREFETCH_BOOL_TRUE
 		fi
@@ -312,9 +332,11 @@ prefetch_triage_review_status() {
 		# Check each issue for an existing agent review comment
 		local i=0
 		while [[ "$i" -lt "$nmr_count" ]]; do
-		local number="" title="" created_at=""
+			local number="" title="" author="" created_at=""
 			number=$(echo "$nmr_json" | jq -r ".[$i].number")
-			title=$(echo "$nmr_json" | jq -r ".[$i].title")
+			title=$(echo "$nmr_json" | jq -r ".[$i].title" | tr '\r\n' '  ')
+			author=$(echo "$nmr_json" | jq -r ".[$i].author.login // \"unknown\"")
+			[[ "$author" =~ ^[A-Za-z0-9-]+$ ]] || author="unknown"
 			created_at=$(echo "$nmr_json" | jq -r ".[$i].createdAt")
 
 			# Check for agent review comment (contains "## Review:" or "## Issue/PR Review:")
@@ -334,6 +356,7 @@ prefetch_triage_review_status() {
 			local status_label
 			if [[ "$api_ok" != true ]]; then
 				status_label="unknown"
+				refresh_failed=$_PREFETCH_BOOL_TRUE
 				echo "[pulse-wrapper] API error checking review status for ${slug}#${number}" >>"$LOGFILE"
 			elif [[ "$review_exists" -gt 0 ]]; then
 				status_label="reviewed"
@@ -342,7 +365,7 @@ prefetch_triage_review_status() {
 				total_pending=$((total_pending + 1))
 			fi
 
-			echo "- Issue #${number}: ${title} [status: **${status_label}**] [created: ${created_at}]"
+			echo "- Issue #${number}: ${title} [status: **${status_label}**] [created: ${created_at}] [author: @${author}]"
 
 			i=$((i + 1))
 		done
@@ -356,5 +379,6 @@ prefetch_triage_review_status() {
 		echo "[pulse-wrapper] Triage review status: ${total_pending} issues pending review" >>"$LOGFILE"
 	fi
 
+	[[ "$refresh_failed" != "$_PREFETCH_BOOL_TRUE" ]] || return 1
 	return 0
 }

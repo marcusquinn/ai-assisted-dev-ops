@@ -187,6 +187,18 @@
           "minimum": 1,
           "description": "Hard ceiling in seconds for a single pulse cycle. Env: PULSE_STALE_THRESHOLD"
         },
+        "triage_known_contributors": {
+          "type": "string",
+          "default": "",
+          "description": "Private CSV of GitHub logins whose needs-maintainer-review items receive advisory review priority only. Grants no claim, approval, implementation, merge, or release authority. Env: AIDEVOPS_TRIAGE_KNOWN_CONTRIBUTORS"
+        },
+        "triage_refresh_interval_seconds": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 30,
+          "maximum": 3600,
+          "description": "Seconds before Pulse refreshes its dedicated triage snapshot within a long cycle when independent triage budget remains. Env: AIDEVOPS_TRIAGE_REFRESH_INTERVAL_SECONDS"
+        },
         "peak_hours_enabled": {
           "type": "boolean",
           "default": false,

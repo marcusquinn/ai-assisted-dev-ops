@@ -138,6 +138,68 @@ _run_prefetch_step() {
 	return 0
 }
 
+#######################################
+# Atomically replace the dedicated triage snapshot after a complete successful
+# refresh. Partial, timed-out, malformed, or symlink-target writes preserve the
+# prior snapshot so deterministic review dispatch never trusts false emptiness.
+#
+# Arguments:
+#   $1 - newline-delimited slug|path repo entries
+#   $2 - target triage state file
+#######################################
+_write_triage_review_state() {
+	local repo_entries="$1"
+	local target_file="$2"
+	local target_dir="${target_file%/*}"
+	local triage_tmp=""
+	[[ -n "$target_file" && "$target_dir" != "$target_file" ]] || return 1
+	[[ -d "$target_dir" && ! -L "$target_file" ]] || return 1
+
+	triage_tmp=$(mktemp "${target_file}.tmp.XXXXXX") || return 1
+	if ! run_cmd_with_timeout 30 prefetch_triage_review_status "$repo_entries" \
+		>"$triage_tmp" 2>/dev/null; then
+		echo "[pulse-wrapper] prefetch_triage_review_status failed or timed out after 30s — preserving prior triage state" >>"$LOGFILE"
+		rm -f "$triage_tmp"
+		return 1
+	fi
+	if ! mv "$triage_tmp" "$target_file" 2>/dev/null; then
+		rm -f "$triage_tmp"
+		return 1
+	fi
+	return 0
+}
+
+#######################################
+# Refresh the dedicated triage snapshot during a long Pulse cycle. The exported
+# PULSE_SCOPE_REPOS list preserves the schedule-filtered repo scope established
+# by the cycle's primary prefetch; an absent scope falls back to all enabled,
+# non-local managed repos.
+#######################################
+refresh_triage_review_state() {
+	local repos_json="${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
+	local state_file="${STATE_FILE:-}"
+	local triage_file="${TRIAGE_STATE_FILE:-}"
+	local repo_entries=""
+	[[ -n "$triage_file" ]] || {
+		[[ -n "$state_file" ]] || return 1
+		triage_file="${state_file%.txt}-triage.txt"
+	}
+	[[ -f "$repos_json" ]] || return 1
+
+	repo_entries=$(jq -r --arg scope "${PULSE_SCOPE_REPOS:-}" '
+		.initialized_repos[]? as $repo
+		| select($repo.maintenance != false and $repo.pulse == true
+			and ($repo.local_only // false) == false
+			and ($repo.slug // "") != "" and ($repo.path // "") != "")
+		| select($scope == "" or (($scope | split(",")) | index($repo.slug)) != null)
+		| "\($repo.slug)|\($repo.path)"
+	' "$repos_json" 2>/dev/null) || return 1
+	[[ -n "$repo_entries" ]] || return 1
+	_write_triage_review_state "$repo_entries" "$triage_file" || return 1
+	echo "[pulse-wrapper] Refreshed dedicated triage state during active cycle" >>"$LOGFILE"
+	return 0
+}
+
 _append_prefetch_sub_helpers() {
 	local repo_entries="$1"
 
@@ -176,15 +238,9 @@ _append_prefetch_sub_helpers() {
 	# This data is used only by the deterministic dispatch_triage_reviews()
 	# function — it must NOT appear in the LLM's STATE_FILE. NMR issues are
 	# a security gate; the LLM should never see or act on them.
-	# Uses overwrite (>) not append (>>) — triage file is written once per cycle.
+	# The atomic writer preserves any previous complete snapshot on failure.
 	TRIAGE_STATE_FILE="${STATE_FILE%.txt}-triage.txt"
-	local triage_tmp
-	triage_tmp=$(mktemp)
-	run_cmd_with_timeout 30 prefetch_triage_review_status "$repo_entries" >"$triage_tmp" 2>/dev/null || {
-		echo "[pulse-wrapper] prefetch_triage_review_status timed out after 30s (non-fatal)" >>"$LOGFILE"
-	}
-	cat "$triage_tmp" >"$TRIAGE_STATE_FILE"
-	rm -f "$triage_tmp"
+	_write_triage_review_state "$repo_entries" "$TRIAGE_STATE_FILE" || true
 
 	# Append status:needs-info contributor reply status
 	_run_prefetch_step 30 "$STATE_FILE" "prefetch_needs_info_replies" prefetch_needs_info_replies "$repo_entries"

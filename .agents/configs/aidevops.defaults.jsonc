@@ -164,7 +164,18 @@
     // The LLM supervisor should complete within 15 minutes — longer runs block
     // the deterministic fill floor from dispatching new workers.
     // Env override: PULSE_STALE_THRESHOLD
-    "pulse_stale_threshold": 900
+    "pulse_stale_threshold": 900,
+
+    // Private CSV of GitHub logins whose needs-maintainer-review items should
+    // be reviewed before the general queue. This is advisory priority only and
+    // grants no claim, approval, implementation, merge, or release authority.
+    // Env override: AIDEVOPS_TRIAGE_KNOWN_CONTRIBUTORS
+    "triage_known_contributors": "",
+
+    // Refresh the dedicated triage snapshot during a long Pulse cycle after
+    // this many seconds when the independent cycle budget remains.
+    // Env override: AIDEVOPS_TRIAGE_REFRESH_INTERVAL_SECONDS
+    "triage_refresh_interval_seconds": 300
   },
 
   // ---------------------------------------------------------------------------

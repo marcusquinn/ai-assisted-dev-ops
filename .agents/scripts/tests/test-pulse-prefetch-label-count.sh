@@ -11,6 +11,7 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_FIXTURE=""
 CACHE_GET_MODE="value"
 NMR_LIVE_JSON="[]"
+NMR_LIVE_EXIT=0
 NI_LIVE_JSON="[]"
 LIVE_CALLS_FILE=""
 
@@ -54,6 +55,8 @@ source "$SCRIPTS_DIR/pulse-prefetch-infra.sh"
 source "$SCRIPTS_DIR/pulse-prefetch-workers.sh"
 # shellcheck source=../pulse-prefetch-secondary.sh
 source "$SCRIPTS_DIR/pulse-prefetch-secondary.sh"
+# shellcheck source=../pulse-prefetch-orchestration.sh
+source "$SCRIPTS_DIR/pulse-prefetch-orchestration.sh"
 
 _prefetch_cache_get() {
 	local slug="$1"
@@ -65,8 +68,20 @@ _prefetch_cache_get() {
 
 gh_issue_list() {
 	printf 'nmr\n' >>"$LIVE_CALLS_FILE"
+	[[ "$NMR_LIVE_EXIT" -eq 0 ]] || {
+		printf 'simulated GitHub read failure\n' >&2
+		return "$NMR_LIVE_EXIT"
+	}
 	printf '%s\n' "$NMR_LIVE_JSON"
 	return 0
+}
+
+run_cmd_with_timeout() {
+	local timeout_seconds="$1"
+	shift
+	: "$timeout_seconds"
+	"$@"
+	return $?
 }
 
 gh() {
@@ -173,15 +188,69 @@ test_nmr_consumer() {
 
 	passed=0
 	CACHE_FIXTURE='{"snapshot_complete":true,"issues":[{"labels":[{"name":"needs-maintainer-review"}]}]}'
-	NMR_LIVE_JSON='[{"number":42,"title":"Review me","createdAt":"2026-07-20T00:00:00Z","updatedAt":"2026-07-20T00:00:00Z"}]'
+	NMR_LIVE_JSON='[{"number":42,"title":"Review me","author":{"login":"known-user"},"createdAt":"2026-07-20T00:00:00Z","updatedAt":"2026-07-20T00:00:00Z"}]'
 	: >"$LIVE_CALLS_FILE"
 	: >"$LOGFILE"
 	output=$(prefetch_triage_review_status 'owner/repo|/repo')
-	if [[ ! -s "$LIVE_CALLS_FILE" || "$output" != *"Issue #42: Review me"* ]] ||
+	if [[ ! -s "$LIVE_CALLS_FILE" || "$output" != *"Issue #42: Review me"* || \
+		"$output" != *"[author: @known-user]"* ]] ||
 		grep -q '0 NMR issues in cache' "$LOGFILE"; then
 		passed=1
 	fi
 	print_result "positive NMR cache reaches generated triage output" "$passed"
+	return 0
+}
+
+test_atomic_triage_state_refresh() {
+	local target_file="$TEST_ROOT/triage-state.txt"
+	local original_prefetch_definition=""
+	local write_status=0
+	original_prefetch_definition=$(declare -f prefetch_triage_review_status)
+	printf 'previous complete state\n' >"$target_file"
+
+	prefetch_triage_review_status() {
+		local repo_entries="$1"
+		: "$repo_entries"
+		printf 'partial state\n'
+		return 1
+	}
+	_write_triage_review_state 'owner/repo|/repo' "$target_file" || write_status=$?
+	if [[ "$write_status" -ne 0 && "$(<"$target_file")" == "previous complete state" ]] && \
+		! compgen -G "${target_file}.tmp.*" >/dev/null; then
+		print_result "failed triage refresh preserves the prior atomic snapshot" 0
+	else
+		print_result "failed triage refresh preserves the prior atomic snapshot" 1
+	fi
+
+	prefetch_triage_review_status() {
+		local repo_entries="$1"
+		: "$repo_entries"
+		printf 'new complete state\n'
+		return 0
+	}
+	write_status=0
+	_write_triage_review_state 'owner/repo|/repo' "$target_file" || write_status=$?
+	if [[ "$write_status" -eq 0 && "$(<"$target_file")" == "new complete state" ]]; then
+		print_result "successful triage refresh atomically replaces the snapshot" 0
+	else
+		print_result "successful triage refresh atomically replaces the snapshot" 1
+	fi
+	eval "$original_prefetch_definition"
+	return 0
+}
+
+test_failed_live_nmr_read_is_not_false_empty() {
+	local status=0
+	CACHE_GET_MODE="value"
+	CACHE_FIXTURE='{"snapshot_complete":true,"issues":[{"labels":[{"name":"needs-maintainer-review"}]}]}'
+	NMR_LIVE_EXIT=1
+	prefetch_triage_review_status 'owner/repo|/repo' >/dev/null || status=$?
+	NMR_LIVE_EXIT=0
+	if [[ "$status" -ne 0 ]] && grep -q 'gh_issue_list FAILED' "$LOGFILE"; then
+		print_result "failed live NMR read invalidates the refresh instead of reporting empty" 0
+	else
+		print_result "failed live NMR read invalidates the refresh instead of reporting empty" 1
+	fi
 	return 0
 }
 
@@ -238,6 +307,8 @@ test_predicate_contract
 test_nmr_consumer
 test_untrusted_cache_falls_through_live_query
 test_needs_info_consumer
+test_atomic_triage_state_refresh
+test_failed_live_nmr_read_is_not_false_empty
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1
 exit 0

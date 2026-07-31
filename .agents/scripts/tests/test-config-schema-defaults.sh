@@ -71,6 +71,11 @@ console.log("PASS: complete shipped defaults satisfy the shipped config schema")
 const validOverride = {
   ...defaults,
   foss: { enabled: true, max_daily_tokens: 0, max_concurrent_contributions: 1 },
+  orchestration: {
+    ...defaults.orchestration,
+    triage_known_contributors: "known-user,another-user",
+    triage_refresh_interval_seconds: 600,
+  },
 };
 assertValid(validOverride, "valid override");
 console.log("PASS: valid FOSS overrides satisfy the shipped config schema");
@@ -87,4 +92,16 @@ for (const invalidFoss of [
   }
 }
 console.log("PASS: malformed and unknown FOSS settings are rejected");
+
+for (const invalidOrchestration of [
+  { ...defaults.orchestration, triage_known_contributors: ["known-user"] },
+  { ...defaults.orchestration, triage_refresh_interval_seconds: 29 },
+  { ...defaults.orchestration, unknown_triage_setting: true },
+]) {
+  if (validate({ ...defaults, orchestration: invalidOrchestration })) {
+    console.error(`invalid orchestration config unexpectedly passed: ${JSON.stringify(invalidOrchestration)}`);
+    process.exit(1);
+  }
+}
+console.log("PASS: malformed and unknown triage orchestration settings are rejected");
 JS

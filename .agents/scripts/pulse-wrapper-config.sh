@@ -195,6 +195,8 @@ GH_FAILURE_MAX_RUN_LOGS="${GH_FAILURE_MAX_RUN_LOGS:-6}"                         
 FOSS_SCAN_TIMEOUT="${FOSS_SCAN_TIMEOUT:-30}"                                                               # Timeout for FOSS contribution scan prefetch (t1702)
 FOSS_MAX_DISPATCH_PER_CYCLE="${FOSS_MAX_DISPATCH_PER_CYCLE:-2}"                                            # Max FOSS contribution workers per pulse cycle (t1702)
 PULSE_TRIAGE_BUDGET_PER_CYCLE="${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}"                                        # Independent synchronous triage attempts per cycle; never consumes implementation slots
+PULSE_TRIAGE_KNOWN_CONTRIBUTORS="${PULSE_TRIAGE_KNOWN_CONTRIBUTORS:-$(config_get "orchestration.triage_known_contributors" "")}" # Private CSV; review priority only, never authority
+PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS="${PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS:-$(config_get "orchestration.triage_refresh_interval_seconds" "300")}" # Refresh stale triage state within long cycles while budget remains
 PULSE_BATCH_PREFETCH_ENABLED="${PULSE_BATCH_PREFETCH_ENABLED:-1}"                                          # GH#19963: Enable batch prefetch via org-level gh search (L3 cache layer). Set to 0 for safe rollback.
 PULSE_BATCH_PREFETCH_CACHE_DIR="${PULSE_BATCH_PREFETCH_CACHE_DIR:-${HOME}/.aidevops/logs/batch-prefetch}"  # GH#19963: Directory for batch prefetch per-slug cache files
 PULSE_BATCH_SEARCH_LIMIT="${PULSE_BATCH_SEARCH_LIMIT:-200}"                                                # GH#19963: Max results per gh search call (Search API --limit cap)
@@ -331,6 +333,14 @@ GH_FAILURE_MAX_RUN_LOGS=$(_validate_int GH_FAILURE_MAX_RUN_LOGS "$GH_FAILURE_MAX
 FOSS_SCAN_TIMEOUT=$(_validate_int FOSS_SCAN_TIMEOUT "$FOSS_SCAN_TIMEOUT" 30 5)
 FOSS_MAX_DISPATCH_PER_CYCLE=$(_validate_int FOSS_MAX_DISPATCH_PER_CYCLE "$FOSS_MAX_DISPATCH_PER_CYCLE" 2 0)
 PULSE_TRIAGE_BUDGET_PER_CYCLE=$(_validate_int PULSE_TRIAGE_BUDGET_PER_CYCLE "$PULSE_TRIAGE_BUDGET_PER_CYCLE" 2 0)
+PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS=$(_validate_int PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS "$PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS" 300 30)
+PULSE_TRIAGE_KNOWN_CONTRIBUTORS=$(printf '%s' "$PULSE_TRIAGE_KNOWN_CONTRIBUTORS" | tr -d '[:space:]')
+case "$PULSE_TRIAGE_KNOWN_CONTRIBUTORS" in
+*[!A-Za-z0-9,-]*)
+	echo "[pulse-wrapper] Invalid private triage contributor priority configuration — ignoring value" >>"$LOGFILE"
+	PULSE_TRIAGE_KNOWN_CONTRIBUTORS=""
+	;;
+esac
 PULSE_PREFETCH_FULL_SWEEP_INTERVAL=$(_validate_int PULSE_PREFETCH_FULL_SWEEP_INTERVAL "$PULSE_PREFETCH_FULL_SWEEP_INTERVAL" 86400 60)
 CHILD_RSS_LIMIT_KB=$(_validate_int CHILD_RSS_LIMIT_KB "$CHILD_RSS_LIMIT_KB" 2097152 1)
 CHILD_RUNTIME_LIMIT=$(_validate_int CHILD_RUNTIME_LIMIT "$CHILD_RUNTIME_LIMIT" 1800 1)

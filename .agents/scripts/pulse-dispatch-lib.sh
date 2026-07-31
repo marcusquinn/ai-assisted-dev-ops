@@ -186,8 +186,52 @@ _dispatch_triage_fallback_outcome() {
 	jq -cn \
 		--arg schema "$_DISPATCH_TRIAGE_OUTCOME_SCHEMA" \
 		--argjson infrastructure_failed "$infrastructure_failed" \
-		'{schema:$schema, attempted:0, posted:0, review_failed:0, infrastructure_failed:$infrastructure_failed, preparation_failed:0}'
+		'{schema:$schema, attempted:$infrastructure_failed, posted:0, review_failed:0, infrastructure_failed:$infrastructure_failed, preparation_failed:0}'
 	return $?
+}
+
+_dispatch_triage_outcomes_sum() {
+	local prior_outcome="$1"
+	local current_outcome="$2"
+	jq -cn \
+		--arg schema "$_DISPATCH_TRIAGE_OUTCOME_SCHEMA" \
+		--argjson prior "$prior_outcome" \
+		--argjson current "$current_outcome" \
+		'{schema:$schema,
+		attempted:($prior.attempted + $current.attempted),
+		posted:($prior.posted + $current.posted),
+		review_failed:($prior.review_failed + $current.review_failed),
+		infrastructure_failed:($prior.infrastructure_failed + $current.infrastructure_failed),
+		preparation_failed:($prior.preparation_failed + $current.preparation_failed)}'
+	return $?
+}
+
+_dispatch_triage_marker_refresh_is_due() {
+	local triage_marker="$1"
+	local refresh_interval="${PULSE_TRIAGE_REFRESH_INTERVAL_SECONDS:-300}"
+	local marker_mtime=0 now_epoch=0 marker_age=0
+	[[ "$refresh_interval" =~ ^[0-9]+$ ]] || refresh_interval=300
+	[[ -f "$triage_marker" && ! -L "$triage_marker" ]] || return 0
+	marker_mtime=$(_file_mtime_epoch "$triage_marker" 2>/dev/null) || return 0
+	now_epoch=$(date +%s 2>/dev/null) || return 1
+	[[ "$marker_mtime" =~ ^[0-9]+$ ]] || return 0
+	marker_age=$((now_epoch - marker_mtime))
+	[[ "$marker_age" -ge "$refresh_interval" ]]
+	return $?
+}
+
+_dispatch_write_triage_marker() {
+	local triage_marker="$1"
+	local triage_outcome="$2"
+	local triage_marker_tmp=""
+	[[ -n "$triage_marker" && ! -L "$triage_marker" ]] || return 1
+	triage_marker_tmp=$(mktemp "${triage_marker}.tmp.XXXXXX" 2>/dev/null) || return 1
+	if (umask 077 && printf '%s\n' "$triage_outcome" >"$triage_marker_tmp") 2>/dev/null && \
+		mv "$triage_marker_tmp" "$triage_marker" 2>/dev/null; then
+		return 0
+	fi
+	rm -f "$triage_marker_tmp" 2>/dev/null || true
+	return 1
 }
 
 #######################################
@@ -1177,9 +1221,9 @@ _dispatch_compute_capacity() {
 }
 
 #######################################
-# Run triage once per Pulse cycle under its own budget, then enrichment under
-# the implementation slot budget. Typed triage outcomes never reduce worker
-# slots or count as live implementation launches.
+# Run triage under one cumulative Pulse-cycle budget, refreshing stale triage
+# state at bounded intervals while unspent attempts remain. Typed outcomes never
+# reduce worker slots or count as live implementation launches.
 #
 # Arguments:
 #   $1 - available slots before pre-passes
@@ -1188,31 +1232,55 @@ _dispatch_compute_capacity() {
 _dispatch_run_prepasses() {
 	local available_slots="$1"
 
-	local triage_outcome=""
+	local triage_outcome="" prior_outcome="" cumulative_outcome=""
 	local triage_attempted=0 triage_posted=0 triage_infrastructure_failed=0
-	local triage_budget="${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}" triage_marker="" triage_marker_tmp=""
+	local prior_attempted=0 remaining_budget=0 marker_exists=0 run_triage=0 refresh_state=0
+	local triage_budget="${PULSE_TRIAGE_BUDGET_PER_CYCLE:-2}" triage_marker=""
 	triage_outcome=$(_dispatch_triage_fallback_outcome 0)
+	prior_outcome=$(_dispatch_triage_fallback_outcome 0)
 	[[ "$triage_budget" =~ ^[0-9]+$ ]] || triage_budget=2
 	triage_marker=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done" 2>/dev/null || true)
-	if [[ -z "$triage_marker" || ! -f "$triage_marker" || -L "$triage_marker" ]]; then
-		if [[ -L "$triage_marker" ]] && ! rm -f "$triage_marker" 2>/dev/null; then
-			triage_marker=""
+	if [[ -n "$triage_marker" && -L "$triage_marker" ]]; then
+		rm -f "$triage_marker" 2>/dev/null || triage_marker=""
+	elif [[ -n "$triage_marker" && -f "$triage_marker" ]]; then
+		marker_exists=1
+		prior_outcome=$(<"$triage_marker")
+		if ! _dispatch_triage_outcome_is_valid "$prior_outcome"; then
+			echo "[pulse-wrapper] Dispatch_max: invalid cumulative triage marker — rebuilding it" >>"$LOGFILE"
+			prior_outcome=$(_dispatch_triage_fallback_outcome 0)
+			marker_exists=0
 		fi
-		triage_outcome=$(dispatch_triage_reviews "$triage_budget" 2>>"$LOGFILE") || triage_outcome=$(_dispatch_triage_fallback_outcome 1)
+	fi
+	prior_attempted=$(printf '%s' "$prior_outcome" | jq -r '.attempted // 0' 2>/dev/null || printf '0')
+	[[ "$prior_attempted" =~ ^[0-9]+$ ]] || prior_attempted=0
+	remaining_budget=$((triage_budget - prior_attempted))
+	((remaining_budget < 0)) && remaining_budget=0
+
+	if [[ "$marker_exists" -eq 0 ]]; then
+		run_triage=1
+	elif [[ "$remaining_budget" -gt 0 ]] && _dispatch_triage_marker_refresh_is_due "$triage_marker"; then
+		run_triage=1
+		refresh_state=1
+	elif [[ "$remaining_budget" -le 0 ]]; then
+		echo "[pulse-wrapper] Dispatch_max: triage prepass already consumed this cycle's independent budget" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] Dispatch_max: triage prepass snapshot is still fresh" >>"$LOGFILE"
+	fi
+
+	if [[ "$run_triage" -eq 1 ]]; then
+		if [[ "$refresh_state" -eq 1 ]] && \
+			{ ! command -v refresh_triage_review_state >/dev/null 2>&1 || ! refresh_triage_review_state; }; then
+			echo "[pulse-wrapper] Dispatch_max: triage state refresh failed — preserving prior snapshot and recording one infrastructure failure" >>"$LOGFILE"
+			triage_outcome=$(_dispatch_triage_fallback_outcome 1)
+		else
+			triage_outcome=$(dispatch_triage_reviews "$remaining_budget" 2>>"$LOGFILE") || triage_outcome=$(_dispatch_triage_fallback_outcome 1)
+		fi
 		if ! _dispatch_triage_outcome_is_valid "$triage_outcome"; then
 			echo "[pulse-wrapper] Dispatch_max: invalid triage outcome envelope — recording one infrastructure failure" >>"$LOGFILE"
 			triage_outcome=$(_dispatch_triage_fallback_outcome 1)
 		fi
-		if [[ -n "$triage_marker" ]]; then
-			triage_marker_tmp=$(mktemp "${triage_marker}.tmp.XXXXXX" 2>/dev/null || true)
-			if [[ -n "$triage_marker_tmp" ]] && (umask 077 && printf '%s\n' "$triage_outcome" >"$triage_marker_tmp") 2>/dev/null; then
-				mv "$triage_marker_tmp" "$triage_marker" 2>/dev/null || rm -f "$triage_marker_tmp" 2>/dev/null || true
-			elif [[ -n "$triage_marker_tmp" ]]; then
-				rm -f "$triage_marker_tmp" 2>/dev/null || true
-			fi
-		fi
-	else
-		echo "[pulse-wrapper] Dispatch_max: triage prepass already consumed this cycle's independent budget" >>"$LOGFILE"
+		cumulative_outcome=$(_dispatch_triage_outcomes_sum "$prior_outcome" "$triage_outcome") || cumulative_outcome="$triage_outcome"
+		[[ -z "$triage_marker" ]] || _dispatch_write_triage_marker "$triage_marker" "$cumulative_outcome" || true
 	fi
 	triage_attempted=$(printf '%s' "$triage_outcome" | jq -r '.attempted // 0' 2>/dev/null || printf '0')
 	triage_posted=$(printf '%s' "$triage_outcome" | jq -r '.posted // 0' 2>/dev/null || printf '0')
