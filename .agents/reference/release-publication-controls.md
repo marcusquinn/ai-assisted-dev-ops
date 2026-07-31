@@ -125,6 +125,10 @@ Aggregation PR #29014 reviews authorized OpenCode version-control PR #29010 at
 `4745adde8faa4a92aa4e27763c52e2c1a02a5e76` because PR #29013 advanced `main`
 before publication.
 
+A pending aggregation reviews corrective OpenCode unified-generator PR #29023
+at `623e6aeedd77dbf4b1b69b6f411ae71ceb66515d` because the simplification-state
+update advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
