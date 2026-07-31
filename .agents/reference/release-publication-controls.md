@@ -121,7 +121,7 @@ Aggregation PR #28987 reviews authorized maintainer-gating PR #28983 at
 `e5f19918e375f13a6deaab916d53538c8641872f` because PR #28986 and deterministic
 quality and simplification-state updates advanced `main` before publication.
 
-A pending aggregation reviews authorized OpenCode version-control PR #29010 at
+Aggregation PR #29014 reviews authorized OpenCode version-control PR #29010 at
 `4745adde8faa4a92aa4e27763c52e2c1a02a5e76` because PR #29013 advanced `main`
 before publication.
 
