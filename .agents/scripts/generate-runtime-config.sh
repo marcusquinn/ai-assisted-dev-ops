@@ -123,6 +123,25 @@ compute_runtime_source_hash() {
 	return 0
 }
 
+_opencode_managed_config_matches_source() {
+	python3 - <<'PY'
+import json
+import os
+import sys
+
+config_path = os.path.expanduser("~/.config/opencode/opencode.json")
+
+try:
+    with open(config_path, "r", encoding="utf-8") as handle:
+        config = json.load(handle)
+except Exception:
+    sys.exit(1)
+
+sys.exit(0 if config.get("autoupdate") is False else 1)
+PY
+	return $?
+}
+
 _opencode_agent_output_matches_source() {
 	python3 - <<'PY'
 import json
@@ -149,9 +168,6 @@ try:
     with open(config_path, "r", encoding="utf-8") as handle:
         config = json.load(handle)
 except Exception:
-    sys.exit(1)
-
-if config.get("autoupdate") is not False:
     sys.exit(1)
 
 configured = config.get("agent", {})
@@ -202,6 +218,7 @@ _runtime_output_matches_source() {
 	local runtime_id="$1"
 	case "$runtime_id" in
 	opencode)
+		_opencode_managed_config_matches_source || return 1
 		if [[ "$(rt_feature_agents "$runtime_id" 2>/dev/null || echo yes)" == "yes" ]]; then
 			_opencode_agent_output_matches_source || return 1
 		fi

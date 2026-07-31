@@ -28,19 +28,19 @@ HOME="$TEST_HOME"
 source "$REPO_ROOT/.agents/scripts/generate-runtime-config.sh"
 
 printf '%s\n' '{"autoupdate":false,"agent":{}}' >"$TEST_HOME/.config/opencode/opencode.json"
-if ! _opencode_agent_output_matches_source; then
+if ! _opencode_managed_config_matches_source || ! _opencode_agent_output_matches_source; then
 	printf '%s\n' 'FAIL: managed autoupdate=false failed parity verification' >&2
 	exit 1
 fi
 
 printf '%s\n' '{"agent":{}}' >"$TEST_HOME/.config/opencode/opencode.json"
-if _opencode_agent_output_matches_source; then
+if _opencode_managed_config_matches_source; then
 	printf '%s\n' 'FAIL: missing managed autoupdate setting passed parity verification' >&2
 	exit 1
 fi
 
 printf '%s\n' '{"autoupdate":true,"agent":{},"custom":"preserve"}' >"$TEST_HOME/.config/opencode/opencode.json"
-if _opencode_agent_output_matches_source; then
+if _opencode_managed_config_matches_source; then
 	printf '%s\n' 'FAIL: enabled OpenCode autoupdate passed parity verification' >&2
 	exit 1
 fi
