@@ -146,11 +146,17 @@ _gh_audit_fetch_issue_state_json() {
 
 	[[ -z "$issue_num" || -z "$repo" ]] && echo "$empty" && return 0
 	[[ ! "$issue_num" =~ ^[0-9]+$ ]] && echo "$empty" && return 0
-	command -v jq &>/dev/null || { echo "$empty"; return 0; }
+	command -v jq &>/dev/null || {
+		echo "$empty"
+		return 0
+	}
 
 	local data
 	data=$(gh issue view "$issue_num" --repo "$repo" \
-		--json title,body,labels 2>/dev/null) || { echo "$empty"; return 0; }
+		--json title,body,labels 2>/dev/null) || {
+		echo "$empty"
+		return 0
+	}
 
 	jq -c '{
 		title_len: ((.title // "") | length),
@@ -173,11 +179,17 @@ _gh_audit_fetch_pr_state_json() {
 
 	[[ -z "$pr_num" || -z "$repo" ]] && echo "$empty" && return 0
 	[[ ! "$pr_num" =~ ^[0-9]+$ ]] && echo "$empty" && return 0
-	command -v jq &>/dev/null || { echo "$empty"; return 0; }
+	command -v jq &>/dev/null || {
+		echo "$empty"
+		return 0
+	}
 
 	local data
 	data=$(gh pr view "$pr_num" --repo "$repo" \
-		--json title,body,labels 2>/dev/null) || { echo "$empty"; return 0; }
+		--json title,body,labels 2>/dev/null) || {
+		echo "$empty"
+		return 0
+	}
 
 	jq -c '{
 		title_len: ((.title // "") | length),
@@ -204,6 +216,7 @@ _gh_audit_record_op() {
 	local op="$1" repo="$2" number="$3"
 	local before_json="$4" after_json="$5"
 	local caller_script="$6" caller_function="$7" caller_line="$8"
+	local flags_json="{}"
 
 	# Skip audit when number is unavailable or not an integer
 	[[ -z "$number" || ! "$number" =~ ^[0-9]+$ ]] && return 0
@@ -212,6 +225,17 @@ _gh_audit_record_op() {
 	local audit_helper
 	audit_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-audit-log-helper.sh"
 	[[ ! -x "$audit_helper" ]] && return 0
+	# aidevops:trust-boundary — caller provenance alone is spoofable. Record the
+	# exemption proof only after independently re-verifying the signed approval
+	# and authenticated actor authority against current GitHub state.
+	if [[ "$op" == "issue_edit" && "$caller_function" == "_approval_apply_issue_lifecycle_updates" ]] &&
+		command -v cmd_verify &>/dev/null; then
+		local approval_verification=""
+		approval_verification=$(cmd_verify issue "$number" "$repo" --require-authority 2>/dev/null) || approval_verification=""
+		if [[ "$approval_verification" == "VERIFIED" ]]; then
+			flags_json='{"approval_verified":"v2-current-state"}'
+		fi
+	fi
 
 	GH_AUDIT_QUIET=true "$audit_helper" record \
 		--op "$op" \
@@ -222,6 +246,7 @@ _gh_audit_record_op() {
 		--caller-script "${caller_script:-unknown}" \
 		--caller-function "${caller_function:-unknown}" \
 		--caller-line "${caller_line:-0}" \
+		--flags-json "$flags_json" \
 		2>/dev/null || true
 
 	return 0

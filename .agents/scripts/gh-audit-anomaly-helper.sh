@@ -38,6 +38,7 @@ readonly GH_ANOMALY_STATE_FILE_DEFAULT="${HOME}/.aidevops/logs/gh-audit-scanner.
 readonly GH_ANOMALY_LOG_DIR_DEFAULT="${HOME}/.aidevops/logs"
 readonly GH_ANOMALY_LOG_FILENAME="gh-audit.log"
 readonly GH_ANOMALY_DEFAULT_REPO="marcusquinn/aidevops"
+readonly GH_ANOMALY_NMR_LABEL="needs-maintainer-review"
 # Maximum anomaly entries to include in an issue (prevents overly large issues)
 readonly GH_ANOMALY_MAX_ISSUE_ENTRIES=20
 
@@ -156,8 +157,14 @@ _cmd_scan_parse_args() {
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-		--all) _sc_scan_all=1; shift ;;
-		--dry-run) _sc_dry_run=1; shift ;;
+		--all)
+			_sc_scan_all=1
+			shift
+			;;
+		--dry-run)
+			_sc_dry_run=1
+			shift
+			;;
 		--repo)
 			_sc_issue_repo="${2:-${GH_ANOMALY_DEFAULT_REPO}}"
 			shift 2
@@ -174,7 +181,7 @@ _cmd_scan_parse_args() {
 # Collect NDJSON entries with non-empty suspicious[] arrays into the
 # caller-scoped array _sc_anomaly_entries.
 # Args: log_file skip_count
-# Returns 0 always.
+# Returns 1 when jq cannot parse the scan window so the checkpoint is preserved.
 _cmd_scan_collect_anomalies() {
 	local log_file="$1" skip_count="$2"
 	_sc_anomaly_entries=()
@@ -185,31 +192,42 @@ _cmd_scan_collect_anomalies() {
 		# The approval helper intentionally removes needs-maintainer-review only after
 		# its signed approval checks pass. Keep that transition in the immutable log,
 		# but do not file a daily alert when its complete provenance and delta match.
-		local line
-		while IFS= read -r line; do
-			_sc_anomaly_entries+=("$line")
-		done < <(tail -n +"$((skip_count + 1))" "$log_file" \
-			| jq -c '
-				select(.suspicious | length > 0)
+		local line filtered_file
+		filtered_file="$(mktemp -t gh-audit-anomaly-filter.XXXXXX)" || {
+			_ga_warn "Could not create anomaly scan buffer"
+			return 1
+		}
+		if ! tail -n +"$((skip_count + 1))" "$log_file" |
+			jq -c --arg nmr "$GH_ANOMALY_NMR_LABEL" '
+				select(try ((.suspicious | length) > 0) catch true)
 				# aidevops:trust-boundary — fail closed unless every approval transition field matches.
-				| select((
+				| select((try (
 					.op == "issue_edit"
 					and .caller_function == "_approval_apply_issue_lifecycle_updates"
 					and ((.caller_script // "") | endswith("/agents/scripts/approval-helper.sh")
 						or endswith("/.agents/scripts/approval-helper.sh"))
-					and .suspicious == ["protected_label_removed:needs-maintainer-review"]
-					and (.delta.labels_removed // []) == ["needs-maintainer-review"]
+					and .flags.approval_verified == "v2-current-state"
+					and .suspicious == [("protected_label_removed:" + $nmr)]
+					and (.delta.labels_removed // []) == [$nmr]
 					and (((.delta.labels_added // []) - ["auto-dispatch"]) | length == 0)
-					and ((.before.labels // []) | index("needs-maintainer-review") != null)
-					and ((.after.labels // []) | index("needs-maintainer-review") == null)
-				) | not)' 2>/dev/null || true)
+					and ((.before.labels // []) | index($nmr) != null)
+					and ((.after.labels // []) | index($nmr) == null)
+				) catch false) | not)' >"$filtered_file" 2>/dev/null; then
+			rm -f "$filtered_file"
+			_ga_warn "Malformed audit NDJSON detected — checkpoint not advanced"
+			return 1
+		fi
+		while IFS= read -r line; do
+			_sc_anomaly_entries+=("$line")
+		done <"$filtered_file"
+		rm -f "$filtered_file"
 		return 0
 	fi
 
 	# Fallback without jq: substring-match the suspicious field.
 	local line line_num=0
 	while IFS= read -r line; do
-		line_num=$(( line_num + 1 ))
+		line_num=$((line_num + 1))
 		[[ -z "$line" ]] && continue
 		[[ "$line_num" -le "$skip_count" ]] && continue
 		if [[ "$line" == *'"suspicious":['* ]] && [[ "$line" != *'"suspicious":[]'* ]]; then
@@ -248,7 +266,7 @@ BODY
 			break
 		fi
 		_ga_format_anomaly_row "$entry"
-		included=$(( included + 1 ))
+		included=$((included + 1))
 	done
 
 	cat <<FOOTER
@@ -341,7 +359,7 @@ cmd_scan() {
 	start_line=0
 	[[ "$_sc_scan_all" -eq 0 ]] && start_line="$(_ga_read_last_line)"
 	skip_count="$start_line"
-	lines_to_scan=$(( total_lines - skip_count ))
+	lines_to_scan=$((total_lines - skip_count))
 
 	if [[ "$lines_to_scan" -le 0 ]]; then
 		_ga_info "No new entries since last scan (last_line=${start_line}, total=${total_lines})"
@@ -351,7 +369,10 @@ cmd_scan() {
 	_ga_info "Scanning ${lines_to_scan} entries (lines ${start_line}+1..${total_lines})"
 
 	local -a _sc_anomaly_entries=()
-	_cmd_scan_collect_anomalies "$log_file" "$skip_count"
+	if ! _cmd_scan_collect_anomalies "$log_file" "$skip_count"; then
+		_ga_warn "Audit scan aborted without updating state"
+		return 1
+	fi
 
 	local anomaly_count="${#_sc_anomaly_entries[@]}"
 	_ga_info "Found ${anomaly_count} anomalous entries"

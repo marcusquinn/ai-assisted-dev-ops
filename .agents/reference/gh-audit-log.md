@@ -221,7 +221,7 @@ gh-audit-log-helper.sh status
 
 The daily routine `r-gh-audit-scan` runs `gh-audit-anomaly-helper.sh scan`:
 
-```
+```text
 - [x] r-gh-audit-scan Scan gh-audit.log for anomalies repeat:daily(@09:00) run:scripts/gh-audit-anomaly-helper.sh scan
 ```
 
@@ -229,7 +229,8 @@ The scanner:
 1. Reads entries since the last scan (tracked in `~/.aidevops/logs/gh-audit-scanner.state`)
 2. Filters entries with `suspicious[] | length > 0`, excluding the exact
    `approval-helper.sh` transition that removes `needs-maintainer-review` after
-   signed approval (the original audit entry remains unchanged)
+   current-state V2 approval verification (the original audit entry remains
+   unchanged)
 3. Files a GitHub issue on `marcusquinn/aidevops` with a summary table when anomalies are found
 
 To run the scanner manually:

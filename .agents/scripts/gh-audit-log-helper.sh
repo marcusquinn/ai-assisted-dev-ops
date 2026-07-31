@@ -60,8 +60,8 @@ readonly GH_AUDIT_MAX_SIZE_MB_DEFAULT=10
 readonly GH_AUDIT_MAX_ROTATIONS_DEFAULT=10
 
 # Anomaly thresholds
-readonly GH_AUDIT_TITLE_SHRINK_PCT_THRESHOLD=50  # flag if title shrinks >50%
-readonly GH_AUDIT_BODY_WIPE_THRESHOLD=100          # flag if body goes to 0
+readonly GH_AUDIT_TITLE_SHRINK_PCT_THRESHOLD=50 # flag if title shrinks >50%
+readonly GH_AUDIT_BODY_WIPE_THRESHOLD=100       # flag if body goes to 0
 
 # Labels whose removal is always suspicious
 readonly GH_AUDIT_PROTECTED_LABELS=(
@@ -222,7 +222,7 @@ _gh_audit_delta_pct() {
 		echo "0"
 		return 0
 	fi
-	local delta=$(( (after - before) * 100 / before ))
+	local delta=$(((after - before) * 100 / before))
 	echo "$delta"
 	return 0
 }
@@ -369,9 +369,9 @@ _gh_audit_prune_rotations() {
 		return 0
 	fi
 
-	local to_delete=$(( count - max_rotations ))
+	local to_delete=$((count - max_rotations))
 	local i
-	for (( i = 0; i < to_delete; i++ )); do
+	for ((i = 0; i < to_delete; i++)); do
 		rm -f "${rotation_files[i]}" 2>/dev/null || true
 	done
 
@@ -395,15 +395,42 @@ _cmd_record_parse_args() {
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-		--op) _rr_op="${2:-}"; shift 2 ;;
-		--repo) _rr_repo="${2:-}"; shift 2 ;;
-		--number) _rr_number="${2:-}"; shift 2 ;;
-		--before-json) _rr_before_json="${2:-}"; shift 2 ;;
-		--after-json) _rr_after_json="${2:-}"; shift 2 ;;
-		--caller-script) _rr_caller_script="${2:-}"; shift 2 ;;
-		--caller-function) _rr_caller_function="${2:-}"; shift 2 ;;
-		--caller-line) _rr_caller_line="${2:-0}"; shift 2 ;;
-		--flags-json) _rr_flags_json="${2:-{}}"; shift 2 ;;
+		--op)
+			_rr_op="${2:-}"
+			shift 2
+			;;
+		--repo)
+			_rr_repo="${2:-}"
+			shift 2
+			;;
+		--number)
+			_rr_number="${2:-}"
+			shift 2
+			;;
+		--before-json)
+			_rr_before_json="${2:-}"
+			shift 2
+			;;
+		--after-json)
+			_rr_after_json="${2:-}"
+			shift 2
+			;;
+		--caller-script)
+			_rr_caller_script="${2:-}"
+			shift 2
+			;;
+		--caller-function)
+			_rr_caller_function="${2:-}"
+			shift 2
+			;;
+		--caller-line)
+			_rr_caller_line="${2:-0}"
+			shift 2
+			;;
+		--flags-json)
+			_rr_flags_json="${2:-}"
+			shift 2
+			;;
 		*)
 			_gh_audit_warn "Unknown argument to record: ${_arg} (ignored)"
 			shift
@@ -645,7 +672,7 @@ cmd_rotate() {
 
 	local size_bytes
 	size_bytes="$(_gh_audit_byte_count "$log_file")"
-	local max_size_bytes=$(( max_size_mb * 1048576 ))
+	local max_size_bytes=$((max_size_mb * 1048576))
 
 	if [[ "$size_bytes" -lt "$max_size_bytes" ]]; then
 		return 0
