@@ -7,7 +7,7 @@
 # Verifies that complete_task() in task-complete-helper.sh moves completed entries
 # to the ## Done section instead of doing in-place [x] marking.
 #
-# Tests (7 edge cases):
+# Tests (8 edge cases):
 #   1. Single-line task (no subtasks) moves from Ready to Done
 #   2. Task with explicit subtask IDs (t123.1) — guard prevents completion
 #   3. Task with indented subtasks (all complete) — block moves to Done
@@ -15,6 +15,7 @@
 #   5. Task in ## In Progress — also moved to Done
 #   6. ## Done header missing — errors out clearly, no data loss
 #   7. Multiple consecutive tasks — block boundary doesn't bleed into next entry
+#   8. Completion commit keeps task proof in TODO.md and uses a guard-safe footer
 #
 # Strategy:
 #   - Create a real git repo in a temp dir (script does git add/commit).
@@ -23,6 +24,11 @@
 #   - Assert section membership and proof-log presence.
 
 set -u
+
+# Fixture repositories are disposable; use native Git rather than the runtime
+# canonical-worktree guard shim that protects the actual source checkout.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
 
 if [[ -t 1 ]]; then
 	TEST_GREEN=$'\033[0;32m'
@@ -77,9 +83,30 @@ setup_repo() {
 	git -C "$repo_dir" init -q
 	git -C "$repo_dir" config user.email "test@test.com"
 	git -C "$repo_dir" config user.name "Test"
+	git -C "$repo_dir" config commit.gpgsign false
+	git -C "$repo_dir" config tag.gpgsign false
 	git -C "$repo_dir" add TODO.md
 	git -C "$repo_dir" commit -q -m "initial"
 	REPO_PATH="$repo_dir"
+	return 0
+}
+
+# Install a minimal commit-msg guard matching the production constraint: task
+# IDs in generated completion messages must be rejected unless explicitly
+# mapped. The helper must succeed without --no-verify.
+install_task_id_guard_stub() {
+	local repo_path="$1"
+	local hooks_dir="$repo_path/test-hooks"
+	mkdir -p "$hooks_dir"
+	cat >"$hooks_dir/commit-msg" <<'HOOK'
+#!/usr/bin/env bash
+if grep -qE 't[0-9]+' "$1"; then
+	exit 1
+fi
+exit 0
+HOOK
+	chmod +x "$hooks_dir/commit-msg"
+	git -C "$repo_path" config core.hooksPath "$hooks_dir"
 	return 0
 }
 
@@ -369,6 +396,44 @@ if ! task_in_done "t701" "$REPO_PATH/TODO.md"; then
 	pass "t701 NOT in Done"
 else
 	fail "t701 NOT in Done" "t701 was incorrectly moved to Done"
+fi
+
+# =============================================================================
+# Test 8: Completion commits use a guard-safe subject and mapped issue footer
+# =============================================================================
+printf '\nTest 8: completion commit uses mapped issue footer\n'
+
+FIXTURE="${FIXTURE_HEADER}- [ ] t800 completion commit metadata #tag ~1h ref:GH#800 logged:2026-01-01
+${FIXTURE_SECTIONS}"
+
+setup_repo "$FIXTURE" "repo8"
+install_task_id_guard_stub "$REPO_PATH"
+
+if "$HELPER" t800 --verified 2026-01-15 --testing-level runtime-verified --no-push --skip-merge-check \
+	--repo-path "$REPO_PATH" >/dev/null 2>&1; then
+	pass "helper completes task with task-ID guard enabled"
+else
+	fail "helper completes task with task-ID guard enabled" "helper unexpectedly failed"
+fi
+
+commit_subject=$(git -C "$REPO_PATH" log -1 --format=%s)
+commit_body=$(git -C "$REPO_PATH" log -1 --format=%b)
+if [[ "$commit_subject" == "chore: mark task complete" ]]; then
+	pass "completion commit subject contains no task ID"
+else
+	fail "completion commit subject contains no task ID" "got: $commit_subject"
+fi
+
+if [[ "$commit_body" == "For #800" ]]; then
+	pass "completion commit has mapped issue footer"
+else
+	fail "completion commit has mapped issue footer" "got: $commit_body"
+fi
+
+if grep -qE "verified:2026-01-15 testing:runtime-verified" "$REPO_PATH/TODO.md"; then
+	pass "proof metadata remains in TODO.md"
+else
+	fail "proof metadata remains in TODO.md" "proof metadata missing from TODO.md"
 fi
 
 # =============================================================================

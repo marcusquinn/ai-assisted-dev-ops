@@ -30,6 +30,11 @@
 
 set -u
 
+# Fixture repositories are disposable; use native Git rather than the runtime
+# canonical-worktree guard shim that protects the actual source checkout.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+
 if [[ -t 1 ]]; then
 	TEST_GREEN=$'\033[0;32m'
 	TEST_RED=$'\033[0;31m'
@@ -106,6 +111,8 @@ setup_repo() {
 	git -C "$repo_dir" init -q
 	git -C "$repo_dir" config user.email "test@test.com"
 	git -C "$repo_dir" config user.name "Test"
+	git -C "$repo_dir" config commit.gpgsign false
+	git -C "$repo_dir" config tag.gpgsign false
 	git -C "$repo_dir" add TODO.md
 	git -C "$repo_dir" commit -q -m "initial"
 	REPO_PATH="$repo_dir"

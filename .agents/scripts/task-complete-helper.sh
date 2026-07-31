@@ -791,10 +791,9 @@ sync_plans_status() {
 
 # Commit and push TODO.md (and PLANS.md if changed)
 commit_and_push() {
-	local task_id="$1"
-	local proof_log="$2"
-	local repo_path="$3"
-	local no_push="$4"
+	local repo_path="$1"
+	local no_push="$2"
+	local issue_number="$3"
 
 	cd "$repo_path" || {
 		log_error "Failed to cd to $repo_path"
@@ -819,14 +818,16 @@ commit_and_push() {
 		return 0
 	fi
 
-	# Commit
-	local commit_msg="chore: mark $task_id complete ($proof_log)"
-	if ! git commit -m "$commit_msg"; then
+	# Keep task IDs and proof metadata in TODO.md rather than the commit message:
+	# task-id-collision-guard validates every tNNN-like token in the message.
+	local commit_subject="chore: mark task complete"
+	local commit_footer="For #${issue_number}"
+	if ! git commit -m "$commit_subject" -m "$commit_footer"; then
 		log_error "Failed to commit TODO.md"
 		return 1
 	fi
 
-	log_success "Committed: $commit_msg"
+	log_success "Committed: $commit_subject ($commit_footer)"
 
 	# Push (unless --no-push)
 	if [[ "$no_push" == "false" ]]; then
@@ -840,6 +841,36 @@ commit_and_push() {
 		log_info "Skipped push (--no-push flag)"
 	fi
 
+	return 0
+}
+
+# Resolve the mapped GitHub issue from the task before modifying TODO.md.
+# A task-completion commit must retain a guard-compatible issue footer, so fail
+# before mutation when the task has no canonical ref:GH#NNN mapping.
+task_issue_number() {
+	local task_id="$1"
+	local todo_file="$2"
+	local task_line=""
+	local issue_number=""
+
+	task_line=$(grep -E "^- \[[ x]\] ${task_id}${TASK_COMPLETE_ID_BOUNDARY}" "$todo_file" | head -1 || true)
+	if [[ -z "$task_line" ]]; then
+		log_error "Task $task_id not found in an open TODO.md entry"
+		return 1
+	fi
+	# An already-completed task is an idempotent no-op, so it does not need a
+	# footer for a commit that will not be created.
+	if [[ "$task_line" == "- [x]"* ]]; then
+		return 0
+	fi
+
+	issue_number=$(printf '%s\n' "$task_line" | grep -oE 'ref:GH#[0-9]+' | head -1 | tr -cd '0-9')
+	if [[ -z "$issue_number" ]]; then
+		log_error "Task $task_id has no ref:GH#NNN mapping; refusing to mutate TODO.md without a compliant commit footer"
+		return 1
+	fi
+
+	printf '%s\n' "$issue_number"
 	return 0
 }
 
@@ -902,6 +933,14 @@ main() {
 		log_info "Testing level: ${TESTING_LEVEL}"
 	fi
 
+	# Derive the guard-compatible commit footer before changing task state. This
+	# prevents a staged-but-uncommittable TODO.md mutation when task metadata is
+	# incomplete.
+	local issue_number=""
+	if ! issue_number=$(task_issue_number "$TASK_ID" "${REPO_PATH}/TODO.md"); then
+		return 1
+	fi
+
 	# Mark task complete
 	if ! complete_task "$TASK_ID" "$proof_log" "$REPO_PATH"; then
 		return 1
@@ -911,7 +950,7 @@ main() {
 	sync_plans_status "$TASK_ID" "$proof_log" "$REPO_PATH" || true
 
 	# Commit and push (includes PLANS.md if modified)
-	if ! commit_and_push "$TASK_ID" "$proof_log" "$REPO_PATH" "$NO_PUSH"; then
+	if ! commit_and_push "$REPO_PATH" "$NO_PUSH" "$issue_number"; then
 		return 1
 	fi
 
