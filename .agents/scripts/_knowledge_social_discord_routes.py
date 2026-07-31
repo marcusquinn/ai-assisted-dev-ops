@@ -42,6 +42,13 @@ class ProviderPageRequest:
     limit: int
 
 
+@dataclass(frozen=True)
+class SuccessMeta:
+    watermark: dict[str, Any] | None
+    snapshot: bool
+    gaps: list[str] | None = None
+
+
 def page_request(request: dict[str, Any]) -> ProviderPageRequest:
     exact_keys(
         request,
@@ -107,10 +114,7 @@ def page_request(request: dict[str, Any]) -> ProviderPageRequest:
 def _success(
     data: list[dict[str, Any]],
     next_cursor: dict[str, Any] | None,
-    watermark: dict[str, Any] | None,
-    *,
-    snapshot: bool,
-    gaps: list[str] | None = None,
+    meta: SuccessMeta,
 ) -> dict[str, Any]:
     return {
         "status": 200,
@@ -118,10 +122,10 @@ def _success(
         "data": data,
         "meta": {
             "next_cursor": next_cursor,
-            "watermark": watermark,
+            "watermark": meta.watermark,
             "complete": next_cursor is None,
-            "snapshot": snapshot,
-            "gaps": gaps or [],
+            "snapshot": meta.snapshot,
+            "gaps": meta.gaps or [],
         },
     }
 
@@ -214,7 +218,7 @@ def _messages(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
     channels = _message_channels(request)
     index, before, newest, prior = _message_state(request, channels)
     if index >= len(channels):
-        return _success([], None, {**prior, **newest}, snapshot=False)
+        return _success([], None, SuccessMeta({**prior, **newest}, False))
     channel_id = channels[index]
     failure, items, records = _message_response(
         api, channel_id, request.limit, before
@@ -230,8 +234,10 @@ def _messages(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
     return _success(
         accepted,
         next_cursor,
-        {**prior, **newest} if next_cursor is None else None,
-        snapshot=False,
+        SuccessMeta(
+            {**prior, **newest} if next_cursor is None else None,
+            False,
+        ),
     )
 
 
@@ -280,7 +286,7 @@ def _metadata(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
         for item in array_value(roles.payload, "guild roles")
     )
     data.append({"kind": "guild", "remote_id": guild_id})
-    return _success(data, None, None, snapshot=True)
+    return _success(data, None, SuccessMeta(None, True))
 
 
 def _members(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
@@ -288,9 +294,7 @@ def _members(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
         return _success(
             [],
             None,
-            None,
-            snapshot=True,
-            gaps=["guild_members_intent_not_enabled"],
+            SuccessMeta(None, True, ["guild_members_intent_not_enabled"]),
         )
     cursor = request.cursor or {"after": None}
     if set(cursor) != {"after"}:
@@ -305,7 +309,7 @@ def _members(api: ApiCall, request: ProviderPageRequest) -> dict[str, Any]:
     items = array_value(result.payload, "guild members")
     data = [serialize_member(item, request.config["guild_id"]) for item in items]
     next_cursor = {"after": data[-1]["remote_id"]} if len(items) == request.limit else None
-    return _success(data, next_cursor, None, snapshot=True)
+    return _success(data, next_cursor, SuccessMeta(None, True))
 
 
 def page(
@@ -316,23 +320,29 @@ def page(
     gateway_path: str | None,
 ) -> dict[str, Any]:
     """Dispatch one request through an explicit read-only route."""
-    if request.stream == "messages":
-        return _messages(api, request)
-    if request.stream == "metadata":
-        return _metadata(api, request)
-    if request.stream == "members":
-        return _members(api, request)
-    if request.stream == "gateway_events":
+    def gateway_events() -> dict[str, Any]:
         data, next_cursor, watermark = page_gateway_events(
             gateway_path,
             request.config,
             request.cursor or request.watermark,
             request.limit,
         )
-        return _success(data, next_cursor, watermark, snapshot=False)
-    if request.stream == "account_export":
+        return _success(data, next_cursor, SuccessMeta(watermark, False))
+
+    def account_export() -> dict[str, Any]:
         data, next_cursor = page_account_export(
             export_path, request.config, request.cursor, request.limit
         )
-        return _success(data, next_cursor, None, snapshot=True)
-    raise DiscordReadProviderError("Discord read stream is unsupported")
+        return _success(data, next_cursor, SuccessMeta(None, True))
+
+    handlers: dict[str, Callable[[], dict[str, Any]]] = {
+        "messages": lambda: _messages(api, request),
+        "metadata": lambda: _metadata(api, request),
+        "members": lambda: _members(api, request),
+        "gateway_events": gateway_events,
+        "account_export": account_export,
+    }
+    handler = handlers.get(request.stream)
+    if handler is None:
+        raise DiscordReadProviderError("Discord read stream is unsupported")
+    return handler()

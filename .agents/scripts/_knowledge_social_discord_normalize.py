@@ -36,6 +36,30 @@ class Rows:
     media: dict[str, dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class AccountDetails:
+    handle: str | None = None
+    display_name: str | None = None
+    provider_json: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ObjectDetails:
+    account_id: str | None = None
+    text: str | None = None
+    created_at: str | None = None
+    evidence_class: str = "observed"
+    provider_json: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ActivityDetails:
+    object_id: str | None = None
+    occurred_at: str | None = None
+    state: str = "active"
+    provider_json: dict[str, Any] | None = None
+
+
 def _required(record: dict[str, Any], field: str) -> str:
     value = record.get(field)
     if not isinstance(value, str) or not value:
@@ -53,17 +77,15 @@ def _optional(record: dict[str, Any], field: str) -> str | None:
 def _account(
     remote_id: str,
     observed_at: str,
-    *,
-    handle: str | None = None,
-    display_name: str | None = None,
-    provider_json: dict[str, Any] | None = None,
+    details: AccountDetails | None = None,
 ) -> dict[str, Any]:
+    details = details or AccountDetails()
     return {
         "remote_id": remote_id,
-        "handle": handle,
-        "display_name": display_name,
+        "handle": details.handle,
+        "display_name": details.display_name,
         "observed_at": observed_at,
-        "provider_json": provider_json or {},
+        "provider_json": details.provider_json or {},
     }
 
 
@@ -71,23 +93,19 @@ def _object(
     kind: str,
     remote_id: str,
     observed_at: str,
-    *,
-    account_id: str | None = None,
-    text: str | None = None,
-    created_at: str | None = None,
-    evidence_class: str = "observed",
-    provider_json: dict[str, Any] | None = None,
+    details: ObjectDetails | None = None,
 ) -> dict[str, Any]:
-    metadata = provider_json or {}
+    details = details or ObjectDetails()
+    metadata = details.provider_json or {}
     reject_credentials(metadata)
     return {
         "object_type": kind,
         "remote_id": remote_id,
-        "account_remote_id": account_id,
-        "text": text,
-        "created_at": created_at,
+        "account_remote_id": details.account_id,
+        "text": details.text,
+        "created_at": details.created_at,
         "observed_at": observed_at,
-        "evidence_class": evidence_class,
+        "evidence_class": details.evidence_class,
         "provider_json": metadata,
     }
 
@@ -97,21 +115,18 @@ def _activity(
     remote_id: str,
     actor_id: str,
     observed_at: str,
-    *,
-    object_id: str | None = None,
-    occurred_at: str | None = None,
-    state: str = "active",
-    provider_json: dict[str, Any] | None = None,
+    details: ActivityDetails | None = None,
 ) -> dict[str, Any]:
+    details = details or ActivityDetails()
     return {
         "activity_type": kind,
         "remote_id": remote_id,
         "actor_remote_id": actor_id,
-        "object_remote_id": object_id,
-        "occurred_at": occurred_at,
+        "object_remote_id": details.object_id,
+        "occurred_at": details.occurred_at,
         "observed_at": observed_at,
-        "state": state,
-        "provider_json": provider_json or {},
+        "state": details.state,
+        "provider_json": details.provider_json or {},
     }
 
 
@@ -120,9 +135,11 @@ def _user(user: dict[str, Any], observed_at: str, rows: Rows) -> str:
     rows.accounts[remote_id] = _account(
         remote_id,
         observed_at,
-        handle=_optional(user, "username"),
-        display_name=_optional(user, "global_name"),
-        provider_json={"bot": bool(user.get("bot", False))},
+        AccountDetails(
+            handle=_optional(user, "username"),
+            display_name=_optional(user, "global_name"),
+            provider_json={"bot": bool(user.get("bot", False))},
+        ),
     )
     return remote_id
 
@@ -176,19 +193,23 @@ def _message(record: dict[str, Any], observed_at: str, rows: Rows) -> None:
         "message",
         remote_id,
         observed_at,
-        account_id=author_id,
-        text=_optional(record, "content"),
-        created_at=_optional(record, "timestamp"),
-        evidence_class="authored" if author.get("bot") else "observed",
-        provider_json=metadata,
+        ObjectDetails(
+            account_id=author_id,
+            text=_optional(record, "content"),
+            created_at=_optional(record, "timestamp"),
+            evidence_class="authored" if author.get("bot") else "observed",
+            provider_json=metadata,
+        ),
     )
     rows.activities[("message_authored", remote_id)] = _activity(
         "message_authored",
         remote_id,
         author_id,
         observed_at,
-        object_id=remote_id,
-        occurred_at=_optional(record, "timestamp"),
+        ActivityDetails(
+            object_id=remote_id,
+            occurred_at=_optional(record, "timestamp"),
+        ),
     )
     for attachment in record.get("attachments", []):
         _attachment(attachment, remote_id, rows)
@@ -199,7 +220,10 @@ def _metadata(record: dict[str, Any], observed_at: str, rows: Rows) -> None:
     remote_id = _required(record, "remote_id")
     if kind == "guild":
         rows.objects[(kind, remote_id)] = _object(
-            kind, remote_id, observed_at, provider_json={"identity_verified": True}
+            kind,
+            remote_id,
+            observed_at,
+            ObjectDetails(provider_json={"identity_verified": True}),
         )
         return
     if kind == "member":
@@ -211,25 +235,29 @@ def _metadata(record: dict[str, Any], observed_at: str, rows: Rows) -> None:
             kind,
             f"{record['guild_id']}:{user_id}",
             observed_at,
-            account_id=user_id,
-            created_at=_optional(record, "joined_at"),
-            provider_json={
-                "guild_id": record["guild_id"],
-                "roles": record.get("roles", []),
-                "nick": record.get("nick"),
-            },
+            ObjectDetails(
+                account_id=user_id,
+                created_at=_optional(record, "joined_at"),
+                provider_json={
+                    "guild_id": record["guild_id"],
+                    "roles": record.get("roles", []),
+                    "nick": record.get("nick"),
+                },
+            ),
         )
         return
     rows.objects[(kind, remote_id)] = _object(
         kind,
         remote_id,
         observed_at,
-        text=_optional(record, "topic") or _optional(record, "name"),
-        provider_json={
-            key: value
-            for key, value in record.items()
-            if key not in {"kind", "remote_id", "name", "topic"}
-        },
+        ObjectDetails(
+            text=_optional(record, "topic") or _optional(record, "name"),
+            provider_json={
+                key: value
+                for key, value in record.items()
+                if key not in {"kind", "remote_id", "name", "topic"}
+            },
+        ),
     )
 
 
@@ -249,16 +277,24 @@ def _gateway(
         "gateway_event",
         remote_id,
         observed_at,
-        provider_json={"event_name": event_name, "sequence": record.get("sequence"), "data": data},
+        ObjectDetails(
+            provider_json={
+                "event_name": event_name,
+                "sequence": record.get("sequence"),
+                "data": data,
+            }
+        ),
     )
     rows.activities[(event_name.lower(), remote_id)] = _activity(
         event_name.lower(),
         remote_id,
         context.account["id"],
         observed_at,
-        object_id=object_id,
-        state="deleted" if "DELETE" in event_name else "active",
-        provider_json={"observation": True},
+        ActivityDetails(
+            object_id=object_id,
+            state="deleted" if "DELETE" in event_name else "active",
+            provider_json={"observation": True},
+        ),
     )
 
 
@@ -270,15 +306,17 @@ def _export_message(record: dict[str, Any], observed_at: str, rows: Rows) -> Non
         "message",
         remote_id,
         observed_at,
-        account_id=author_id,
-        text=_optional(record, "content"),
-        created_at=_optional(record, "timestamp"),
-        evidence_class="authored",
-        provider_json={
-            "channel_id": _required(record, "channel_id"),
-            "source": "official_account_export",
-            "attachment_references": _optional(record, "attachments"),
-        },
+        ObjectDetails(
+            account_id=author_id,
+            text=_optional(record, "content"),
+            created_at=_optional(record, "timestamp"),
+            evidence_class="authored",
+            provider_json={
+                "channel_id": _required(record, "channel_id"),
+                "source": "official_account_export",
+                "attachment_references": _optional(record, "attachments"),
+            },
+        ),
     )
 
 
@@ -364,10 +402,12 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
     rows.accounts[context.account["id"]] = _account(
         context.account["id"],
         observed_at,
-        provider_json={
-            "application_id": context.account["application_id"],
-            "bot": True,
-        },
+        AccountDetails(
+            provider_json={
+                "application_id": context.account["application_id"],
+                "bot": True,
+            }
+        ),
     )
     for record in page_data(payload):
         _normalize_record(record, context, observed_at, rows)
