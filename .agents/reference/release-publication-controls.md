@@ -148,13 +148,18 @@ before publication.
 
 Aggregation PR #29045 reviews corrective OpenCode aggregation
 PR #29039 at `dd22bd011b2ff0970ff240ab832b1147370320ff` and Pulse aggregation
-PR #29042 at `998eeef0885e7db14ff753992d1f2cfe208de481`, plus profile aggregation
-PR #29044 at `4831ff72d24c9c524b939a8622447c0db0d3a411`, so one exact tip preserves
-all authorized release chains.
+PR #29042 at `998eeef0885e7db14ff753992d1f2cfe208de481`, so one exact tip preserves
+those authorized release chains.
 
 Aggregation PR #29044 reviews authorized profile README PR #29038 at
 `dfb6bc4a5b76af8697a299b3a17fc74b7c7fecdb` because aggregation PR #29042
 advanced `main` before publication.
+
+An exact-tip re-aggregation is pending for authorized Pulse triage PR #29033 at
+`fb4feba9216c643d7a61838877eedeb99bcef6e1` and prior aggregation PR #29037 at
+`11f3a9fa04af659b69b94cd19b86b642bf8303f7` because release `v3.32.201`
+terminalized PR #29042 without recursively terminalizing those sources, then
+the release and simplification-state commits advanced `main`.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
