@@ -780,10 +780,10 @@ _rest_issue_edit_preserving_deltas() {
 }
 
 #######################################
-# Build full-array PATCH flags from one validated current-issue snapshot.
-# Args: $1=issue_path, then newline-separated add/remove sets for labels and
-# assignees. Prints tab-separated flag/value pairs.
-_rest_issue_edit_array_flags() {
+# Prepare a generic issue-edit delta plan without writing. The validated
+# snapshot is used only to filter no-op operations; targeted mutations remain
+# safe when unrelated metadata changes after this preflight.
+_rest_issue_prepare_delta_plan() {
 	local issue_path="$1"
 	local add_labels="$2"
 	local rm_labels="$3"
@@ -791,32 +791,76 @@ _rest_issue_edit_array_flags() {
 	local rm_assignees="$5"
 	local current_json=""
 	current_json=$(_rest_api_call read gh api "$issue_path" 2>/dev/null) || return 1
+	_rest_issue_delta_snapshot_valid "$current_json" || return 1
+	local current_labels="" current_assignees=""
+	current_labels=$(printf '%s' "$current_json" | jq -r '.labels[].name') || return 1
+	current_assignees=$(printf '%s' "$current_json" | jq -r '.assignees[].login') || return 1
+	_REST_ISSUE_EDIT_ADDS_L=$(_rest_filter_issue_deltas "$current_labels" "$add_labels" "" add) || return 1
+	_REST_ISSUE_EDIT_RMS_L=$(_rest_filter_issue_deltas "$current_labels" "$rm_labels" "$add_labels" remove) || return 1
+	_REST_ISSUE_EDIT_ADDS_A=$(_rest_filter_issue_deltas "$current_assignees" "$add_assignees" "" add) || return 1
+	_REST_ISSUE_EDIT_RMS_A=$(_rest_filter_issue_deltas "$current_assignees" "$rm_assignees" "$add_assignees" remove) || return 1
+	return 0
+}
 
-	local flags=""
-	if [[ -n "${add_labels}${rm_labels}" ]]; then
-		flags=$(_rest_print_patch_array_flags "$current_json" "labels" "name" \
-			"$add_labels" "$rm_labels") || return 1
-		printf '%s\n' "$flags"
+#######################################
+# Execute the write phases of a fully parsed and preflighted generic edit.
+_rest_issue_execute_edit_plan() {
+	local issue_path="$1"
+	local has_deltas="$2"
+	local has_title="$3"
+	local title="$4"
+	local has_body="$5"
+	local body="$6"
+	local body_file="$7"
+	local has_milestone="$8"
+	local milestone="$9"
+	shift 9
+	local has_state="$1"
+	local state="$2"
+	local -a api_args=(-X PATCH "$issue_path")
+	[[ $has_title -eq 1 ]] && api_args+=(-f "title=${title}")
+	[[ $has_milestone -eq 1 ]] && api_args+=(-F "milestone=${milestone:-null}")
+	[[ $has_state -eq 1 ]] && api_args+=(-f "state=${state}")
+	local tmp_body="" tmp_body_owned=0
+	if [[ $has_body -eq 1 ]]; then
+		if [[ -n "$body_file" ]]; then
+			tmp_body="$body_file"
+		else
+			tmp_body=$(mktemp -t aidevops-gh-rest-body.XXXXXX) || return 1
+			tmp_body_owned=1
+			printf '%s' "$body" >"$tmp_body" || { rm -f "$tmp_body"; return 1; }
+		fi
+		api_args+=(-F "$(_rest_body_file_arg "$tmp_body")")
 	fi
-	if [[ -n "${add_assignees}${rm_assignees}" ]]; then
-		flags=$(_rest_print_patch_array_flags "$current_json" "assignees" "login" \
-			"$add_assignees" "$rm_assignees") || return 1
-		printf '%s\n' "$flags"
+	local rc=0
+	if [[ $has_title -eq 1 || $has_body -eq 1 || $has_milestone -eq 1 || $has_state -eq 1 ]]; then
+		_REST_ISSUE_EDIT_FAILURE_STAGE="scalar"
+		_rest_api_call write gh api "${api_args[@]}" >/dev/null 2>&1
+		rc=$?
 	fi
+	[[ $tmp_body_owned -eq 1 && -f "$tmp_body" ]] && rm -f "$tmp_body"
+	[[ $rc -eq 0 ]] || return "$rc"
+	if [[ $has_deltas -eq 1 ]]; then
+		_REST_ISSUE_EDIT_FAILURE_STAGE="delta"
+		_rest_issue_apply_delta_plan "$issue_path" \
+			"$_REST_ISSUE_EDIT_ADDS_L" "$_REST_ISSUE_EDIT_RMS_L" \
+			"$_REST_ISSUE_EDIT_ADDS_A" "$_REST_ISSUE_EDIT_RMS_A" add-first || return 1
+	fi
+	_REST_ISSUE_EDIT_FAILURE_STAGE=""
 	return 0
 }
 
 #######################################
 # _rest_issue_edit: PATCH /repos/{owner}/{repo}/issues/{N}.
 # Handles --title, --body, --body-file, --add-label, --remove-label,
-# --add-assignee, --remove-assignee, --milestone, --state. REST PATCH
-# requires the FULL labels/assignees arrays (not deltas), so we fetch
-# current state and compute the target set when label/assignee flags
-# are present. Current-state fetch uses REST (`gh api /repos/...`) which
-# is not affected by GraphQL exhaustion.
+# --add-assignee, --remove-assignee, --milestone, --state. Scalar fields use
+# an array-free PATCH; labels and assignees use targeted REST subresources.
+# The ordered phases are preflight, scalar PATCH, then add-first deltas. A
+# later failure is explicitly partial: completed earlier phases are retained.
 #######################################
 _rest_issue_edit() {
 	gh_record_call rest _rest_issue_edit 2>/dev/null || true
+	_REST_ISSUE_EDIT_FAILURE_STAGE="parse"
 	local num_or_url=""
 	local repo=""
 	local title=""
@@ -854,7 +898,7 @@ _rest_issue_edit() {
 		--remove-assignee) while IFS= read -r _tok; do [[ -n "$_tok" ]] && rm_assignees+=("$_tok"); done < <(_rest_split_csv "$_v") ;;
 		--milestone)       milestone="$_v"; has_milestone=1 ;;
 		--state)           state="$_v"; has_state=1 ;;
-		*) : ;;
+		*) return 1 ;;
 		esac
 	done
 	local num=""
@@ -870,131 +914,24 @@ _rest_issue_edit() {
 	fi
 
 	local _issue_path="/repos/${repo}/issues/${num}"
-	local -a api_args=(-X PATCH "$_issue_path")
-	[[ $has_title -eq 1 ]] && api_args+=(-f "title=${title}")
-	[[ $has_milestone -eq 1 ]] && api_args+=(-F "milestone=${milestone:-null}")
-	[[ $has_state -eq 1 ]] && api_args+=(-f "state=${state}")
-
-	# Labels and assignees: fetch current issue state once, validate both arrays,
-	# and translate deltas into the complete arrays REST PATCH requires.
-	local _array_flags=""
-	if [[ ${#add_labels[@]} -gt 0 || ${#rm_labels[@]} -gt 0 ]]; then
-		_array_flags="labels"
+	local has_deltas=0
+	if [[ ${#add_labels[@]} -gt 0 || ${#rm_labels[@]} -gt 0 ||
+		${#add_assignees[@]} -gt 0 || ${#rm_assignees[@]} -gt 0 ]]; then
+		has_deltas=1
 	fi
-	if [[ ${#add_assignees[@]} -gt 0 || ${#rm_assignees[@]} -gt 0 ]]; then
-		_array_flags="${_array_flags}assignees"
-	fi
-	if [[ -n "$_array_flags" ]]; then
-		_array_flags=$(_rest_issue_edit_array_flags "$_issue_path" \
+	_REST_ISSUE_EDIT_ADDS_L="" _REST_ISSUE_EDIT_RMS_L=""
+	_REST_ISSUE_EDIT_ADDS_A="" _REST_ISSUE_EDIT_RMS_A=""
+	if [[ $has_deltas -eq 1 ]]; then
+		_REST_ISSUE_EDIT_FAILURE_STAGE="snapshot"
+		_rest_issue_prepare_delta_plan "$_issue_path" \
 			"$(printf '%s\n' "${add_labels[@]}")" "$(printf '%s\n' "${rm_labels[@]}")" \
-			"$(printf '%s\n' "${add_assignees[@]}")" "$(printf '%s\n' "${rm_assignees[@]}")") || return 1
-		local _flag=""
-		local _val=""
-		while IFS=$'\t' read -r _flag _val; do
-			[[ -n "$_flag" && -n "$_val" ]] || return 1
-			api_args+=("$_flag" "$_val")
-		done <<<"$_array_flags"
+			"$(printf '%s\n' "${add_assignees[@]}")" "$(printf '%s\n' "${rm_assignees[@]}")" || return 1
 	fi
 
-	local tmp_body=""
-	local tmp_body_owned=0
-	if [[ $has_body -eq 1 ]]; then
-		if [[ -n "$body_file" ]]; then
-			tmp_body="$body_file"
-		else
-			tmp_body=$(mktemp -t aidevops-gh-rest-body.XXXXXX) || return 1
-			tmp_body_owned=1
-			printf '%s' "$body" >"$tmp_body"
-		fi
-		api_args+=(-F "$(_rest_body_file_arg "$tmp_body")")
-	fi
-
-	_rest_api_call write gh api "${api_args[@]}" >/dev/null 2>&1
-	local rc=$?
-
-	[[ $tmp_body_owned -eq 1 && -f "$tmp_body" ]] && rm -f "$tmp_body"
-
-	return $rc
-}
-
-#######################################
-# Print flags for a PATCH array field (labels or assignees) given validated
-# current issue JSON and add/remove deltas. Output is one tab-separated
-# flag/value pair per line. An empty target emits `-F\tfield[]`, which gh 2.96+
-# serializes as an explicit empty array.
-# Factored out of _rest_issue_edit so that function stays under the
-# 100-line complexity gate.
-#
-# Args: $1=current_json $2=field_name $3=value_key $4=adds_nl $5=rms_nl
-#######################################
-_rest_print_patch_array_flags() {
-	local current_json="$1"
-	local field="$2"
-	local value_key="$3"
-	local adds="$4"
-	local rms="$5"
-	local _current=""
-	local _target=""
-	local _elem=""
-	if ! printf '%s' "$current_json" | jq -e --arg field "$field" --arg key "$value_key" \
-		--arg string_type "$_REST_ISSUE_JSON_STRING_TYPE" '
-		if (.[$field] | type) != "array" then false
-		else all(.[$field][]; (type == "object") and ((.[$key] | type) == $string_type) and ((.[$key] | length) > 0))
-		end' >/dev/null 2>&1; then
-		return 1
-	fi
-	_current=$(printf '%s' "$current_json" | jq -r --arg field "$field" --arg key "$value_key" \
-		'.[$field][] | .[$key]' 2>/dev/null) || return 1
-	_target=$(_rest_compute_target_set "$_current" "$adds" "$rms") || return 1
-	if [[ -z "$_target" ]]; then
-		printf -- '-F\t%s[]\n' "$field"
-		return 0
-	fi
-	while IFS= read -r _elem; do
-		[[ -n "$_elem" ]] && printf -- '-f\t%s[]=%s\n' "$field" "$_elem"
-	done <<<"$_target"
-	return 0
-}
-
-#######################################
-# _rest_compute_target_set: given the current values of a list field
-# (newline-separated), an add set (newline-separated), and a remove set
-# (newline-separated), emit the target set (removes subtracted first, then
-# adds unioned, deduped) one value per line on stdout.
-#
-# Used by _rest_issue_edit to translate --add-label/--remove-label and
-# --add-assignee/--remove-assignee flags into the full array that REST PATCH
-# requires.
-#######################################
-_rest_compute_target_set() {
-	local current="$1" adds="$2" rms="$3"
-	local -a target=()
-	local v to_rm existing to_add skip dup
-
-	while IFS= read -r v; do
-		[[ -z "$v" ]] && continue
-		skip=0
-		while IFS= read -r to_rm; do
-			[[ -n "$to_rm" && "$v" == "$to_rm" ]] && { skip=1; break; }
-		done <<<"$rms"
-		[[ $skip -eq 0 ]] && target+=("$v")
-	done <<<"$current"
-
-	while IFS= read -r to_add; do
-		[[ -z "$to_add" ]] && continue
-		dup=0
-		for existing in "${target[@]}"; do
-			[[ "$existing" == "$to_add" ]] && {
-				dup=1
-				break
-			}
-		done
-		[[ $dup -eq 0 ]] && target+=("$to_add")
-	done <<<"$adds"
-
-	local elem
-	for elem in "${target[@]}"; do printf '%s\n' "$elem"; done
-	return 0
+	_rest_issue_execute_edit_plan "$_issue_path" "$has_deltas" \
+		"$has_title" "$title" "$has_body" "$body" "$body_file" \
+		"$has_milestone" "$milestone" "$has_state" "$state"
+	return $?
 }
 
 #######################################
