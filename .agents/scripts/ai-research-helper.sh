@@ -42,7 +42,7 @@ resolve_model_id() {
 resolve_opencode_model_id() {
 	local name="${1:-simple}"
 	case "$name" in
-	simple) echo "openai/gpt-5.6-terra" ;;
+	simple) echo "openai/gpt-5.6-luna" ;;
 	local) echo "openai/gpt-5.4-mini" ;;
 	standard) echo "openai/gpt-5.6-luna" ;;
 	thinking) echo "openai/gpt-5.6-sol" ;;

@@ -571,6 +571,18 @@ _private_workload_exit_trap() {
 	return "$cleanup_status"
 }
 
+_should_retry_sol_at_max() {
+	local role="$1"
+	local selected_model="$2"
+	local variant="$3"
+	local retry_count="$4"
+	if [[ "$role" == "worker" && "$selected_model" == "openai/gpt-5.6-sol" && \
+		"$variant" == "high" && "$retry_count" -eq 0 ]]; then
+		return 0
+	fi
+	return 1
+}
+
 _handle_run_result() {
 	local exit_code="$1"
 	local output_file="$2"
@@ -709,8 +721,8 @@ _handle_run_result() {
 				_run_failure_reason="blocked"
 				_run_classification_source="model_blocked_signal"
 				rm -f "$output_file"
-				print_warning "$selected_model worker reported BLOCKED terminal state — recording blocked instead of success"
-				return 0
+				print_warning "$selected_model worker reported BLOCKED terminal state — evaluating bounded capability escalation"
+				return 83
 			fi
 		fi
 
@@ -1889,6 +1901,7 @@ cmd_run() {
 	local service_interruption_continue_count=0
 	local max_brief_recovery_retries="${HEADLESS_BRIEF_RECOVERY_MAX_RETRIES:-1}"
 	local brief_recovery_count=0
+	local max_reasoning_retry_count=0
 	if _headless_run_is_ephemeral "$role"; then
 		max_continuation_retries=0
 		max_watchdog_continue_retries=0
@@ -1971,6 +1984,24 @@ cmd_run() {
 
 		if [[ "$attempt_exit" -eq 84 ]]; then
 			_cmd_run_finish "$session_key" "$_run_result_label" "$work_dir"
+			return $?
+		fi
+
+		# Issue #29088: a Sol high worker that reports a capability blocker gets
+		# one direct retry at max reasoning. This is an internal terminal retry,
+		# not a fourth authored workload tier. Other providers, variants, roles,
+		# and non-capability failures keep their existing terminal behaviour.
+		if [[ "$attempt_exit" -eq 83 ]]; then
+			if _should_retry_sol_at_max \
+				"$role" "$selected_model" "$variant_override" "$max_reasoning_retry_count"; then
+				max_reasoning_retry_count=1
+				variant_override="max"
+				prompt="The previous Sol high attempt reported BLOCKED after working on the task. Retry the same objective once at maximum reasoning. Resume the existing session and worktree, challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Stop only at FULL_LOOP_COMPLETE or BLOCKED with concrete evidence that persists at max reasoning."
+				print_warning "Sol high reported BLOCKED — retrying once at Sol max before accepting the blocker"
+				continue
+			fi
+
+			_cmd_run_finish "$session_key" "complete" "$work_dir"
 			return $?
 		fi
 

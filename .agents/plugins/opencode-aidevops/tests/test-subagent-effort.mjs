@@ -14,7 +14,7 @@ import {
 
 const TIER_REASONING = {
   simple: { openai: "low" },
-  standard: { openai: "medium" },
+  standard: { openai: "max" },
   thinking: { openai: "xhigh" },
 };
 
@@ -27,7 +27,7 @@ test("only provider-neutral workload tiers are recognized", () => {
 
 test("routing policy chooses provider reasoning independently of tier names", () => {
   assert.equal(resolveTierReasoning("simple", "openai", "gpt-5.6-sol", TIER_REASONING), "low");
-  assert.equal(resolveTierReasoning("standard", "openai", "gpt-5.6-sol", TIER_REASONING), "medium");
+  assert.equal(resolveTierReasoning("standard", "openai", "gpt-5.6-sol", TIER_REASONING), "max");
   assert.equal(resolveTierReasoning("thinking", "openai", "gpt-5.6-sol", TIER_REASONING), "xhigh");
   assert.equal(resolveTierReasoning("thinking", "anthropic", "claude-opus-4-6", TIER_REASONING), "");
 });
@@ -37,6 +37,9 @@ test("child reasoning never exceeds the parent variant", () => {
   assert.equal(clampReasoningVariant("medium", "xhigh"), "medium");
   assert.equal(clampReasoningVariant("low", "medium"), "low");
   assert.equal(clampReasoningVariant("high", "low"), "low");
+  assert.equal(clampReasoningVariant("max", "max"), "max");
+  assert.equal(clampReasoningVariant("max", "xhigh"), "xhigh");
+  assert.equal(clampReasoningVariant("xhigh", "max"), "xhigh");
 });
 
 test("explicit effort marker overrides agent fallback", () => {

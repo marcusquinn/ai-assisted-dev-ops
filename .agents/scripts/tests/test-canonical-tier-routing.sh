@@ -49,7 +49,7 @@ if [[ "${1:-}" != "resolve" ]]; then
 	exit 1
 fi
 case "${2:-}" in
-simple) printf '%s' "openai/gpt-5.6-terra" ;;
+simple) printf '%s' "openai/gpt-5.6-luna" ;;
 standard) printf '%s' "openai/gpt-5.6-luna" ;;
 thinking) printf '%s' "openai/gpt-5.6-sol" ;;
 *) exit 1 ;;
@@ -63,7 +63,7 @@ export MODEL_AVAILABILITY_HELPER="$sandbox/model-availability-helper.sh"
 # shellcheck source=/dev/null
 source "$AGENTS_SCRIPTS/pulse-model-routing.sh"
 
-assert_equals "openai/gpt-5.6-terra" \
+assert_equals "openai/gpt-5.6-luna" \
 	"$(resolve_dispatch_model_for_labels 'tier:simple')" \
 	"simple tier resolves through runtime mapping"
 assert_equals "openai/gpt-5.6-luna" \

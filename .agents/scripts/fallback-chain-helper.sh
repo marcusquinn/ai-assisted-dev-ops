@@ -59,7 +59,7 @@ get_tier_models_from_table() {
 	if [[ -z "$models" || "$models" == "null" ]]; then
 		# Hardcoded minimal fallback for missing tier definitions.
 		case "$tier" in
-		simple) echo '["openai/gpt-5.6-terra","anthropic/claude-haiku-4-5"]' ;;
+		simple) echo '["openai/gpt-5.6-luna","anthropic/claude-haiku-4-5"]' ;;
 		standard) echo '["openai/gpt-5.6-luna","zai-coding-plan/glm-5.2","anthropic/claude-sonnet-4-6"]' ;;
 		thinking) echo '["openai/gpt-5.6-sol","anthropic/claude-opus-4-6"]' ;;
 		*)

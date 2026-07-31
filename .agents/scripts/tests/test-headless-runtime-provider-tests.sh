@@ -104,9 +104,22 @@ test_blocked_completion_records_blocked_label() {
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing dependency credentials"}' >"$output_file"
 	local rc=0
 	_handle_run_result 0 "$output_file" "worker" "openai" "issue-456" "openai/gpt-5.5" || rc=$?
-	[[ "$rc" -eq 0 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" ]] && { print_result "BLOCKED terminal signal records blocked label" 0; return 0; }
-	print_result "BLOCKED terminal signal records blocked label" 1 \
+	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" ]] && { print_result "BLOCKED signal requests terminal escalation evaluation" 0; return 0; }
+	print_result "BLOCKED signal requests terminal escalation evaluation" 1 \
 		"rc=$rc label=${_run_result_label:-<unset>} reason=${_run_failure_reason:-<unset>} source=${_run_classification_source:-<unset>}"
+	return 0
+}
+
+test_sol_max_terminal_retry_is_bounded_and_exact() {
+	local result=0
+	_should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "high" 0 || result=1
+	if _should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "max" 0 ||
+		_should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "high" 1 ||
+		_should_retry_sol_at_max "worker" "openai/gpt-5.6-luna" "high" 0 ||
+		_should_retry_sol_at_max "pulse" "openai/gpt-5.6-sol" "high" 0; then
+		result=1
+	fi
+	print_result "Sol max terminal retry is bounded to one high-reasoning worker attempt" "$result"
 	return 0
 }
 

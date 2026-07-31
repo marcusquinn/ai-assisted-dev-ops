@@ -182,7 +182,7 @@ get_tier_models() {
 	# Current smoke-tested models are the headless defaults. An empty local value
 	# deliberately fails closed rather than sending local-only work to cloud.
 	case "$tier" in
-	simple) current_model=$'openai/gpt-5.6-terra\nanthropic/claude-haiku-4-5' ;;
+	simple) current_model=$'openai/gpt-5.6-luna\nanthropic/claude-haiku-4-5' ;;
 	standard) current_model=$'openai/gpt-5.6-luna\nzai-coding-plan/glm-5.2\nanthropic/claude-sonnet-4-6' ;;
 	thinking) current_model=$'openai/gpt-5.6-sol\nanthropic/claude-opus-4-6' ;;
 	*) return 1 ;;

@@ -6,7 +6,7 @@
   "_tier_names": "Canonical workload tiers are simple, standard, and thinking. Provider names, model families, and reasoning variants must not be used as tier names.",
   "tiers": {
     "simple": {
-      "models": ["openai/gpt-5.6-terra", "anthropic/claude-haiku-4-5"],
+      "models": ["openai/gpt-5.6-luna", "anthropic/claude-haiku-4-5"],
       "reasoning": { "openai": "medium" }
     },
     "standard": {

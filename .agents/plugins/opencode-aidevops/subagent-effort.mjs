@@ -10,6 +10,7 @@ const VARIANT_RANK = {
   medium: 3,
   high: 4,
   xhigh: 5,
+  max: 6,
 };
 
 const SIMPLE_AGENTS = new Set([

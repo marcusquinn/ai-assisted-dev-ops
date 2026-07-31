@@ -242,10 +242,10 @@ test_fallback_chain_helper() {
 	# Set a fake API key so the lightweight availability check passes
 	export OPENAI_API_KEY="test-key-for-testing"
 	output=$("$helper" resolve simple --quiet 2>&1) || true
-	if echo "$output" | grep -q "gpt-5.6-terra"; then
-		print_result "fallback: resolve simple -> gpt-5.6-terra" 0
+	if echo "$output" | grep -q "gpt-5.6-luna"; then
+		print_result "fallback: resolve simple -> gpt-5.6-luna" 0
 	else
-		print_result "fallback: resolve simple -> gpt-5.6-terra" 1 "Got: $output"
+		print_result "fallback: resolve simple -> gpt-5.6-luna" 1 "Got: $output"
 	fi
 
 	# Test: resolve standard tier

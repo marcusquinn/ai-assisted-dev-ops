@@ -141,7 +141,9 @@ tier:standard (general implementation route)
 
 tier:thinking (deep-reasoning route)
   ✓ Success → done (had full diagnostic context from both prior attempts)
-  ✗ Failure → human review with complete attempt history
+  ✗ Sol high capability blocker → retry same session once at Sol max
+      ✓ Success → done
+      ✗ Persistent blocker → human review with complete attempt history
 ```
 
 Each escalation report captures: what was attempted, where it got stuck, what was unclear in the brief, and what was discovered. The next tier starts with this context instead of exploring from zero. See `templates/escalation-report-template.md` for the structured format.
