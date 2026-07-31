@@ -743,7 +743,7 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
 
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
-    if current < 0 or current > SCHEMA_VERSION:
+    if current not in range(SCHEMA_VERSION + 1):
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -755,7 +755,7 @@ def migrate(connection: sqlite3.Connection) -> None:
             _add_sync_run_v2_columns(connection)
         if current < 4:
             _add_outbound_v4_columns(connection)
-        if 0 < current < 6:
+        if current in range(1, SCHEMA_VERSION):
             _migrate_fetch_batches_v6(connection)
             _recover_orphaned_fetch_batches_v6(connection)
         _migrate_source_contract(connection)
