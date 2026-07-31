@@ -15,6 +15,199 @@ ABANDONED_REBASE_KIND="abandoned"
 HEAD_COMMIT_EXPR='HEAD^{commit}'
 NULL_SHA1="0000000000000000000000000000000000000000"
 
+github_slug_from_remote_url() {
+	local url="$1"
+	local slug=""
+	local remainder=""
+	local authority=""
+	local port=""
+	case "$url" in
+	git@github.com:*) slug="${url#git@github.com:}" ;;
+	ssh://* | https://* | http://* | git://*)
+		remainder="${url#*://}"
+		[[ "$remainder" == */* ]] || return 1
+		authority="${remainder%%/*}"
+		slug="${remainder#*/}"
+		case "$url" in
+		ssh://*)
+			case "$authority" in
+			git@github.com) ;;
+			git@github.com:*) port="${authority#git@github.com:}" ;;
+			*) return 1 ;;
+			esac
+			;;
+		*)
+			case "$authority" in
+			github.com) ;;
+			github.com:*) port="${authority#github.com:}" ;;
+			*) return 1 ;;
+			esac
+			;;
+		esac
+		[[ -z "$port" || "$port" =~ ^[0-9]+$ ]] || return 1
+		;;
+	*) return 1 ;;
+	esac
+	slug="${slug%%\?*}"
+	slug="${slug%%#*}"
+	slug="${slug%/}"
+	slug="${slug%.git}"
+	[[ -n "$slug" && "$slug" == */* && "${slug#*/}" != */* ]] || return 1
+	printf '%s\n' "$slug"
+	return 0
+}
+
+is_github_remote_url() {
+	local url="$1"
+	case "$url" in
+	git@github.com:* | ssh://git@github.com/* | ssh://git@github.com:*/* | \
+		https://github.com/* | https://github.com:*/* | http://github.com/* | \
+		http://github.com:*/* | git://github.com/* | git://github.com:*/*)
+		return 0
+		;;
+	*) return 1 ;;
+	esac
+}
+
+origin_is_local_mirror() {
+	local repo="$1"
+	local fetch_urls=""
+	local push_urls=""
+	local url=""
+	local fetch_count=0
+	local push_count=0
+	fetch_urls=$("$REAL_GIT" -C "$repo" config --get-all remote.origin.url 2>/dev/null || true)
+	push_urls=$("$REAL_GIT" -C "$repo" config --get-all remote.origin.pushurl 2>/dev/null || true)
+	[[ -n "$push_urls" ]] || push_urls="$fetch_urls"
+	while IFS= read -r url; do
+		[[ -n "$url" ]] || continue
+		fetch_count=$((fetch_count + 1))
+		case "$url" in
+		file://* | /* | ./* | ../*) ;;
+		*) return 1 ;;
+		esac
+	done <<<"$fetch_urls"
+	while IFS= read -r url; do
+		[[ -n "$url" ]] || continue
+		push_count=$((push_count + 1))
+		case "$url" in
+		file://* | /* | ./* | ../*) ;;
+		*) return 1 ;;
+		esac
+	done <<<"$push_urls"
+	[[ "$fetch_count" -gt 0 && "$push_count" -gt 0 ]] || return 1
+	return 0
+}
+
+registered_repo_slug() {
+	local repo="$1"
+	local config_path="${AIDEVOPS_REPOS_CONFIG:-${HOME}/.config/aidevops/repos.json}"
+	local rows=""
+	local entry_path=""
+	local entry_slug=""
+	local entry_real=""
+	local matched_slug=""
+	[[ -f "$config_path" ]] || {
+		printf '\n'
+		return 0
+	}
+	rows=$(jq -r '.initialized_repos[]? | [(.path // .repo_path // ""), (.slug // "")] | @tsv' \
+		"$config_path" 2>/dev/null) || return 1
+	while IFS=$'\t' read -r entry_path entry_slug; do
+		[[ -n "$entry_path" ]] || continue
+		case "$entry_path" in
+		~/*) entry_path="${HOME}/${entry_path#~/}" ;;
+		esac
+		entry_real=$(cd "$entry_path" 2>/dev/null && pwd -P) || continue
+		[[ "$entry_real" == "$repo" ]] || continue
+		[[ -n "$entry_slug" ]] || continue
+		[[ "$entry_slug" == */* && "${entry_slug#*/}" != */* ]] || return 1
+		if [[ -n "$matched_slug" && "$matched_slug" != "$entry_slug" ]]; then
+			return 1
+		fi
+		matched_slug="$entry_slug"
+	done <<<"$rows"
+	printf '%s\n' "$matched_slug"
+	return 0
+}
+
+# Resolve the remote that represents the registered GitHub repository. Exact
+# fetch+push identity is required. The origin fallback is limited to local
+# mirrors where no configured remote can be parsed as GitHub at all.
+resolve_github_remote() {
+	local repo="$1"
+	local expected_slug="$2"
+	local expected_lower=""
+	local remote_names=""
+	local remote=""
+	local fetch_urls=""
+	local push_urls=""
+	local remote_url=""
+	local fetch_slug=""
+	local push_slug=""
+	local remote_lower=""
+	local remote_matches=0
+	local fetch_count=0
+	local push_count=0
+	local candidate=""
+	local candidate_count=0
+	local github_seen=0
+	expected_lower=$(printf '%s' "$expected_slug" | tr '[:upper:]' '[:lower:]') || return 1
+	remote_names=$("$REAL_GIT" -C "$repo" remote 2>/dev/null) || return 1
+	while IFS= read -r remote; do
+		[[ -n "$remote" ]] || continue
+		fetch_urls=$("$REAL_GIT" -C "$repo" config --get-all "remote.${remote}.url" 2>/dev/null || true)
+		push_urls=$("$REAL_GIT" -C "$repo" config --get-all "remote.${remote}.pushurl" 2>/dev/null || true)
+		[[ -n "$push_urls" ]] || push_urls="$fetch_urls"
+		remote_matches=1
+		fetch_count=0
+		while IFS= read -r remote_url; do
+			[[ -n "$remote_url" ]] || continue
+			fetch_count=$((fetch_count + 1))
+			if is_github_remote_url "$remote_url"; then
+				github_seen=1
+			fi
+			fetch_slug=$(github_slug_from_remote_url "$remote_url" 2>/dev/null || true)
+			if [[ -z "$fetch_slug" ]]; then
+				remote_matches=0
+				continue
+			fi
+			github_seen=1
+			remote_lower=$(printf '%s' "$fetch_slug" | tr '[:upper:]' '[:lower:]') || return 1
+			[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || remote_matches=0
+		done <<<"$fetch_urls"
+		push_count=0
+		while IFS= read -r remote_url; do
+			[[ -n "$remote_url" ]] || continue
+			push_count=$((push_count + 1))
+			if is_github_remote_url "$remote_url"; then
+				github_seen=1
+			fi
+			push_slug=$(github_slug_from_remote_url "$remote_url" 2>/dev/null || true)
+			if [[ -z "$push_slug" ]]; then
+				remote_matches=0
+				continue
+			fi
+			github_seen=1
+			remote_lower=$(printf '%s' "$push_slug" | tr '[:upper:]' '[:lower:]') || return 1
+			[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || remote_matches=0
+		done <<<"$push_urls"
+		[[ "$remote_matches" -eq 1 && "$fetch_count" -gt 0 && "$push_count" -gt 0 ]] || continue
+		candidate="$remote"
+		candidate_count=$((candidate_count + 1))
+	done <<<"$remote_names"
+	if [[ "$candidate_count" -eq 1 ]]; then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	if [[ "$candidate_count" -eq 0 && "$github_seen" -eq 0 ]] &&
+		origin_is_local_mirror "$repo"; then
+		printf 'origin\n'
+		return 0
+	fi
+	return 1
+}
+
 rebase_state_fingerprint() {
 	local state_dir="$1"
 	local fingerprint=""
@@ -386,8 +579,18 @@ policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
 	printf 'BLOCKED: canonical branch policy helper is unavailable\n' >&2
 	exit 1
 }
-target_branch=$(python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field branch) || exit 1
-target_branch_source=$(python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field source) || exit 1
+registered_slug=$(registered_repo_slug "$repo_path") || {
+	printf 'BLOCKED: registered canonical repository identity is invalid or ambiguous\n' >&2
+	exit 1
+}
+canonical_remote=$(resolve_github_remote "$repo_path" "$registered_slug") || {
+	printf 'BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous\n' >&2
+	exit 1
+}
+target_branch=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
+	python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field branch) || exit 1
+target_branch_source=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
+	python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field source) || exit 1
 "$REAL_GIT" check-ref-format --branch "$target_branch" >/dev/null 2>&1 || {
 	printf 'BLOCKED: resolved canonical branch is invalid\n' >&2
 	exit 1
@@ -432,15 +635,15 @@ mkdir "$lock_dir" 2>/dev/null || {
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
 local_ref="refs/heads/${target_branch}"
-remote_ref="refs/remotes/origin/${target_branch}"
-"$REAL_GIT" -C "$repo_path" fetch --no-tags origin \
+remote_ref="refs/remotes/${canonical_remote}/${target_branch}"
+"$REAL_GIT" -C "$repo_path" fetch --no-tags "$canonical_remote" \
 	"+refs/heads/${target_branch}:${remote_ref}" >/dev/null 2>&1 || {
-	printf 'BLOCKED: origin/%s tip could not be fetched\n' "$target_branch" >&2
+	printf 'BLOCKED: %s/%s tip could not be fetched\n' "$canonical_remote" "$target_branch" >&2
 	exit 1
 }
 target_sha=$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${remote_ref}^{commit}" 2>/dev/null || true)
 [[ -n "$target_sha" ]] || {
-	printf 'BLOCKED: origin/%s tip cannot be resolved\n' "$target_branch" >&2
+	printf 'BLOCKED: %s/%s tip cannot be resolved\n' "$canonical_remote" "$target_branch" >&2
 	exit 1
 }
 local_sha=$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${local_ref}^{commit}" 2>/dev/null || true)
@@ -524,7 +727,7 @@ if [[ "$cmd" == "$CLEAR_STALE_REBASE_CMD" || "$cmd" == "$CLEAR_ABANDONED_REBASE_
 			exit 1
 		}
 		[[ "$stale_head_sha" == "$local_sha" && "$local_sha" == "$target_sha" ]] || {
-			printf 'BLOCKED: HEAD, local default, and pinned origin default have not converged\n' >&2
+			printf 'BLOCKED: HEAD, local default, and pinned %s default have not converged\n' "$canonical_remote" >&2
 			exit 1
 		}
 		stale_rebase_cleanup_kind="converged"
@@ -559,7 +762,7 @@ if [[ "$cmd" == "$CLEAR_STALE_REBASE_CMD" || "$cmd" == "$CLEAR_ABANDONED_REBASE_
 			exit 1
 		}
 		"$REAL_GIT" -C "$repo_path" merge-base --is-ancestor "$local_sha" "$target_sha" || {
-			printf 'BLOCKED: local default branch has diverged from the pinned origin default\n' >&2
+			printf 'BLOCKED: local default branch has diverged from the pinned %s default\n' "$canonical_remote" >&2
 			exit 1
 		}
 		rebase_latest_mtime=$(rebase_state_latest_mtime "$stale_rebase_dir" "$rebase_head_path") || {
@@ -654,7 +857,8 @@ fi
 
 preservation_ref=""
 if [[ "$cmd" == "$FAST_FORWARD_CMD" ]] && ! "$REAL_GIT" -C "$repo_path" merge-base --is-ancestor "$local_ref" "$target_sha"; then
-	printf 'BLOCKED: local %s has diverged from origin/%s\n' "$target_branch" "$target_branch" >&2
+	printf 'BLOCKED: local %s has diverged from %s/%s\n' \
+		"$target_branch" "$canonical_remote" "$target_branch" >&2
 	exit 1
 fi
 if [[ "$cmd" != "$FAST_FORWARD_CMD" ]] && ! "$REAL_GIT" -C "$repo_path" merge-base --is-ancestor "$local_ref" "$target_sha"; then
@@ -683,6 +887,7 @@ audit_message="Canonical default-branch recovery authorized"
 AUDIT_LOG_FILE="$recovery_audit_file" AUDIT_QUIET=true "$audit_helper" log operation.verify "$audit_message" \
 	--detail "issue=${issue_number:-none}" --detail "reason=${maintenance_reason:-none}" --detail "repo=${repo_path}" \
 	--detail "operation=${cmd}" --detail "target=${target_branch}" --detail "target_source=${target_branch_source}" \
+	--detail "remote=${canonical_remote}" --detail "registered_slug=${registered_slug:-none}" \
 	--detail "target_sha=${target_sha}" --detail "local_sha=${local_sha}" \
 	--detail "preservation_ref=${preservation_ref:-none}" --detail "backup_id=${sync_backup_id:-none}" \
 	--detail "stale_rebase_fingerprint=${stale_rebase_fingerprint:-none}" \
@@ -692,7 +897,7 @@ AUDIT_LOG_FILE="$recovery_audit_file" AUDIT_QUIET=true "$audit_helper" log opera
 }
 
 [[ "$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${remote_ref}^{commit}")" == "$target_sha" ]] || {
-	printf 'BLOCKED: origin/%s tip changed during recovery\n' "$target_branch" >&2
+	printf 'BLOCKED: %s/%s tip changed during recovery\n' "$canonical_remote" "$target_branch" >&2
 	exit 1
 }
 [[ "$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${local_ref}^{commit}")" == "$local_sha" ]] || {
@@ -946,7 +1151,7 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 		'prepare' \
 		'commit' | "$REAL_GIT" -C "$repo_path" update-ref \
 		-m "${fast_forward_reflog} for ${audit_reference}" --stdin >/dev/null; then
-		printf 'BLOCKED: canonical local or origin ref changed during fast-forward\n' >&2
+		printf 'BLOCKED: canonical local or %s ref changed during fast-forward\n' "$canonical_remote" >&2
 		exit 1
 	fi
 	current_branch=$("$REAL_GIT" -C "$repo_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -958,7 +1163,8 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 			printf 'CRITICAL: canonical branch changed after compare-and-swap and the local ref rollback failed\n' >&2
 			exit 1
 		fi
-		printf 'BLOCKED: canonical branch or origin ref changed during fast-forward; local ref rolled back\n' >&2
+		printf 'BLOCKED: canonical branch or %s ref changed during fast-forward; local ref rolled back\n' \
+			"$canonical_remote" >&2
 		exit 1
 	fi
 	if [[ -n "${AIDEVOPS_CANONICAL_BEFORE_WORKTREE_UPDATE_HOOK:-}" ]]; then
@@ -1009,7 +1215,8 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 			printf 'CRITICAL: canonical ref was rolled back but the concurrent branch remains inconsistent\n' >&2
 			exit 1
 		fi
-		printf 'BLOCKED: canonical branch or origin ref changed during worktree update; ref and worktree restored\n' >&2
+		printf 'BLOCKED: canonical branch or %s ref changed during worktree update; ref and worktree restored\n' \
+			"$canonical_remote" >&2
 		exit 1
 	fi
 	[[ "$("$REAL_GIT" -C "$repo_path" rev-parse HEAD)" == "$target_sha" ]] || exit 1
@@ -1036,7 +1243,8 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 		printf 'BRANCH_SOURCE=%s\n' "$target_branch_source"
 		printf 'PRESERVATION_REF=%s\n' "${preservation_ref:-none}"
 	else
-		printf 'Fast-forwarded canonical %s to origin/%s\n' "$target_branch" "$target_branch"
+		printf 'Fast-forwarded canonical %s to %s/%s\n' \
+			"$target_branch" "$canonical_remote" "$target_branch"
 	fi
 	exit 0
 fi

@@ -63,6 +63,151 @@ else
 	exit 1
 fi
 
+RENAMED_REPO="${ROOT}/renamed-repo"
+RENAMED_REMOTE="${ROOT}/renamed-remote.git"
+RENAMED_UPDATER="${ROOT}/renamed-updater"
+RENAMED_CONFIG="${ROOT}/renamed-repos.json"
+RENAMED_URL="https://github.com/Example/Canonical-Remote.git"
+mkdir -p "$RENAMED_REPO"
+/usr/bin/git init -q --bare "$RENAMED_REMOTE"
+/usr/bin/git -C "$RENAMED_REPO" init -q -b main
+/usr/bin/git -C "$RENAMED_REPO" config user.name Test
+/usr/bin/git -C "$RENAMED_REPO" config user.email test@example.invalid
+/usr/bin/git -C "$RENAMED_REPO" config commit.gpgsign false
+/usr/bin/git -C "$RENAMED_REPO" config "url.${RENAMED_REMOTE}.insteadOf" "$RENAMED_URL"
+printf 'renamed seed\n' >"${RENAMED_REPO}/README.md"
+/usr/bin/git -C "$RENAMED_REPO" add README.md
+/usr/bin/git -C "$RENAMED_REPO" commit -q -m seed
+/usr/bin/git -C "$RENAMED_REPO" remote add github "$RENAMED_URL"
+/usr/bin/git -C "$RENAMED_REPO" push -q github main
+/usr/bin/git -C "$RENAMED_REPO" remote set-url --push github \
+	ssh://git@github.com/example/canonical-remote.git
+/usr/bin/git -C "$RENAMED_REMOTE" symbolic-ref HEAD refs/heads/main
+/usr/bin/git -C "$RENAMED_REPO" remote set-head github main
+/usr/bin/git clone -q "$RENAMED_REMOTE" "$RENAMED_UPDATER"
+/usr/bin/git -C "$RENAMED_UPDATER" config user.name Test
+/usr/bin/git -C "$RENAMED_UPDATER" config user.email test@example.invalid
+printf 'renamed remote ahead\n' >>"${RENAMED_UPDATER}/README.md"
+/usr/bin/git -C "$RENAMED_UPDATER" commit -q -am 'renamed remote ahead'
+/usr/bin/git -C "$RENAMED_UPDATER" push -q origin main
+renamed_remote_tip=$(/usr/bin/git -C "$RENAMED_REMOTE" rev-parse refs/heads/main)
+printf '{"initialized_repos":[{"slug":"example/canonical-remote","path":"%s"}]}\n' \
+	"$RENAMED_REPO" >"$RENAMED_CONFIG"
+if AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH >/dev/null &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_remote_tip" ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse refs/remotes/github/main)" == "$renamed_remote_tip" ]] &&
+	! /usr/bin/git -C "$RENAMED_REPO" remote get-url origin >/dev/null 2>&1; then
+	printf 'PASS matching renamed GitHub remote drives default-branch fast-forward\n'
+else
+	printf 'FAIL matching renamed GitHub remote did not drive default-branch fast-forward\n'
+	exit 1
+fi
+
+/usr/bin/git -C "$RENAMED_REPO" remote add origin git://github.com/Other/Repository.git
+printf 'renamed remote ahead again\n' >>"${RENAMED_UPDATER}/README.md"
+/usr/bin/git -C "$RENAMED_UPDATER" commit -q -am 'renamed remote ahead again'
+/usr/bin/git -C "$RENAMED_UPDATER" push -q origin main
+renamed_remote_tip=$(/usr/bin/git -C "$RENAMED_REMOTE" rev-parse refs/heads/main)
+if AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH >/dev/null &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_remote_tip" ]] &&
+	! /usr/bin/git -C "$RENAMED_REPO" show-ref --verify --quiet refs/remotes/origin/main; then
+	printf 'PASS matching alternate remote wins over mismatched origin\n'
+else
+	printf 'FAIL mismatched origin displaced the matching alternate remote\n'
+	exit 1
+fi
+
+renamed_before=$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.url \
+	https://github.com/Other/Repository.git
+multi_url_output=""
+if multi_url_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL mixed matching and mismatched fetch URLs were accepted\n'
+	exit 1
+elif [[ "$multi_url_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS mixed matching and mismatched fetch URLs fail before canonical mutation\n'
+else
+	printf 'FAIL mixed fetch URL rejection did not prove remote identity failure\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.url
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.url "$RENAMED_URL"
+/usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.pushurl
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl \
+	git@github.com:Other/Repository.git
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl \
+	ssh://git@github.com/example/canonical-remote.git
+multi_url_output=""
+if multi_url_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL mixed mismatched and matching push URLs were accepted\n'
+	exit 1
+elif [[ "$multi_url_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS mixed mismatched and matching push URLs fail before canonical mutation\n'
+else
+	printf 'FAIL mixed push URL rejection did not prove remote identity failure\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.pushurl
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl \
+	ssh://git@github.com:22/example/canonical-remote.git
+/usr/bin/git -C "$RENAMED_REPO" remote add duplicate \
+	ssh://git@github.com:22/EXAMPLE/CANONICAL-REMOTE.git
+remote_rejection_output=""
+if remote_rejection_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL ambiguous matching GitHub remotes were accepted\n'
+	exit 1
+elif [[ "$remote_rejection_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS ambiguous matching GitHub remotes fail before canonical mutation\n'
+else
+	printf 'FAIL ambiguous remote rejection did not prove identity failure before mutation\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" remote remove duplicate
+/usr/bin/git -C "$RENAMED_REPO" remote remove github
+/usr/bin/git -C "$RENAMED_REPO" remote set-url origin \
+	ssh://git@github.com:22/Other/Repository.git
+remote_rejection_output=""
+if remote_rejection_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL mismatched-only GitHub remote was accepted\n'
+	exit 1
+elif [[ "$remote_rejection_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS mismatched-only GitHub remote fails before canonical mutation\n'
+else
+	printf 'FAIL mismatched remote rejection did not prove identity failure before mutation\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" remote set-url origin \
+	https://github.com:443@evil.example/example/canonical-remote.git
+remote_rejection_output=""
+if remote_rejection_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL userinfo-confused GitHub authority was accepted\n'
+	exit 1
+elif [[ "$remote_rejection_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS userinfo-confused GitHub authority cannot activate origin fallback\n'
+else
+	printf 'FAIL userinfo-confused authority rejection did not prove identity failure\n'
+	exit 1
+fi
+
 /usr/bin/git -C "$REPO" switch -q -c develop
 /usr/bin/git -C "$REPO" push -q -u origin develop
 /usr/bin/git -C "$UPDATER" fetch -q origin develop
@@ -701,13 +846,18 @@ mkdir -p "$SYNC_REPO" "$SYNC_REGISTRY_DIR"
 printf 'sync seed\n' >"${SYNC_REPO}/README.md"
 /usr/bin/git -C "$SYNC_REPO" add README.md
 /usr/bin/git -C "$SYNC_REPO" commit -q -m seed
-/usr/bin/git -C "$SYNC_REPO" remote add origin "$SYNC_REMOTE"
-/usr/bin/git -C "$SYNC_REPO" push -q -u origin develop
+SYNC_URL="ssh://git@github.com:22/Example/Sync-Mirror.git"
+/usr/bin/git -C "$SYNC_REPO" config "url.${SYNC_REMOTE}.insteadOf" "$SYNC_URL"
+/usr/bin/git -C "$SYNC_REPO" remote add github "$SYNC_URL"
+/usr/bin/git -C "$SYNC_REPO" push -q -u github develop
 /usr/bin/git -C "$SYNC_REMOTE" symbolic-ref HEAD refs/heads/develop
-/usr/bin/git -C "$SYNC_REPO" remote set-head origin develop
+/usr/bin/git -C "$SYNC_REPO" remote set-head github develop
 /usr/bin/git clone -q "$SYNC_REMOTE" "$SYNC_UPDATER"
 /usr/bin/git -C "$SYNC_UPDATER" config user.name Test
 /usr/bin/git -C "$SYNC_UPDATER" config user.email test@example.invalid
+export AIDEVOPS_REPOS_CONFIG="${ROOT}/sync-repos.json"
+printf '{"initialized_repos":[{"slug":"example/sync-mirror","path":"%s","pr_base_branch":"develop"}]}\n' \
+	"$SYNC_REPO" >"$AIDEVOPS_REPOS_CONFIG"
 
 printf 'accidental local commit\n' >"${SYNC_REPO}/local-only.txt"
 /usr/bin/git -C "$SYNC_REPO" add local-only.txt

@@ -63,7 +63,8 @@ def _load_json(path: Path) -> Any:
 
 
 def _origin_slug(repo_root: str, git_output: GitOutput) -> str:
-    remote = git_output(Path(repo_root), "remote", "get-url", "origin")
+    remote_name = os.environ.get("AIDEVOPS_CANONICAL_REMOTE", "origin")
+    remote = git_output(Path(repo_root), "remote", "get-url", remote_name)
     match = re.search(r"github\.com[/:]([^/\s]+/[^/\s]+?)(?:\.git)?$", remote)
     return match.group(1) if match else ""
 
@@ -113,16 +114,20 @@ def _registered_branch(repo_root: str, git_output: GitOutput) -> tuple[str, str]
 def _origin_default_branch(
     repo_root: str, git_output: GitOutput
 ) -> tuple[str, str]:
+    remote_name = os.environ.get("AIDEVOPS_CANONICAL_REMOTE", "origin")
     branch = _normalise_branch(
         git_output(
             Path(repo_root),
             "symbolic-ref",
             "--quiet",
             "--short",
-            "refs/remotes/origin/HEAD",
+            f"refs/remotes/{remote_name}/HEAD",
         )
     )
-    return (branch, "origin-head") if branch else ("", "")
+    remote_prefix = f"{remote_name}/"
+    if branch.startswith(remote_prefix):
+        branch = branch[len(remote_prefix) :]
+    return (branch, f"{remote_name}-head") if branch else ("", "")
 
 
 def _valid_branch(repo_root: str, branch: str, git_output: GitOutput) -> bool:
@@ -147,5 +152,5 @@ def resolve_branch(
             "repo_root": repo_root,
         }
     raise RuntimeError(
-        "origin default or configured canonical branch cannot be resolved"
+        "canonical remote default or configured canonical branch cannot be resolved"
     )
