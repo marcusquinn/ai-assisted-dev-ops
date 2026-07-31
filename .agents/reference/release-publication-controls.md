@@ -155,7 +155,7 @@ Aggregation PR #29044 reviews authorized profile README PR #29038 at
 `dfb6bc4a5b76af8697a299b3a17fc74b7c7fecdb` because aggregation PR #29042
 advanced `main` before publication.
 
-An exact-tip re-aggregation is pending for authorized Pulse triage PR #29033 at
+Aggregation PR #29052 re-reviews authorized Pulse triage PR #29033 at
 `fb4feba9216c643d7a61838877eedeb99bcef6e1` and prior aggregation PR #29037 at
 `11f3a9fa04af659b69b94cd19b86b642bf8303f7` because release `v3.32.201`
 terminalized PR #29042 without recursively terminalizing those sources, then
