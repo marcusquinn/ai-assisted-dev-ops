@@ -129,6 +129,7 @@ verify_release_source_pr() {
 	local source_pr="$1"
 	local branch="${2:-main}"
 	local repo_slug="${3:-}"
+	local expected_sources="${4:-}"
 	[[ "$source_pr" =~ ^[0-9]+$ ]] || {
 		print_error "Release source PR must be a numeric GitHub pull request"
 		return 1
@@ -143,16 +144,21 @@ verify_release_source_pr() {
 
 	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
 	local source_json=""
+	local resolver_args=(resolve-source --source-pr "$source_pr" --repo "$repo_slug" --branch "$branch")
 	[[ -x "$resolver" ]] || {
 		print_error "Release source provenance resolver is unavailable"
 		return 1
 	}
-	source_json=$(cd "$REPO_ROOT" && bash "$resolver" resolve-source \
-		--source-pr "$source_pr" --repo "$repo_slug" --branch "$branch") || return 1
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	source_json=$(cd "$REPO_ROOT" && bash "$resolver" "${resolver_args[@]}") || return 1
 	VERSION_MANAGER_SOURCE_PR=$(jq -er '.source_pr' <<<"$source_json") || return 1
 	VERSION_MANAGER_SOURCE_MERGE_SHA=$(jq -er '.source_merge' <<<"$source_json") || return 1
 	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr '.aggregated_sources // [] | .[] | "\(.pr)@\(.merge)"' <<<"$source_json") || return 1
-	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA VERSION_MANAGER_AGGREGATED_SOURCES
+	VERSION_MANAGER_EXPECTED_SOURCES=$(jq -er '
+		(.expected_sources // (if .mode == "direct" then [{pr:.source_pr,merge:.source_merge}] else .aggregated_sources end))
+		| sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
+	' <<<"$source_json") || return 1
+	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA VERSION_MANAGER_AGGREGATED_SOURCES VERSION_MANAGER_EXPECTED_SOURCES
 	print_success "Release provenance verified: PR #${VERSION_MANAGER_SOURCE_PR}, merge ${VERSION_MANAGER_SOURCE_MERGE_SHA}"
 	return 0
 }

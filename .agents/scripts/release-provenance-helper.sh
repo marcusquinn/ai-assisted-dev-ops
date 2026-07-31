@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=shared-constants.sh
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=release-authorization-manifest-helper.sh
+source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 _RELEASE_PROVENANCE_TAG_REF_PREFIX="refs/tags/"
 
 _release_provenance_error() {
@@ -19,7 +21,7 @@ _release_provenance_usage() {
 	cat <<'USAGE'
 Usage:
   release-provenance-helper.sh verify --tag TAG --repo OWNER/REPO [--branch BRANCH]
-  release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH]
+  release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
 
 Verifies that a release tag is signed, version-consistent, reachable from the
 canonical branch, and bound to a merged source PR through immutable tag trailers.
@@ -87,10 +89,50 @@ _release_provenance_verify_pr_record() {
 	return 0
 }
 
+_release_provenance_expected_sources() {
+	local requested_pr="$1"
+	local raw_sources="$2"
+	local repo_slug="$3"
+	local branch_name="$4"
+	local release_head="$5"
+	local intent_json=""
+	local expected_json='[]'
+	local entry=""
+	local entry_pr=""
+	local entry_merge=""
+	[[ -n "$raw_sources" ]] || raw_sources="$requested_pr"
+	intent_json=$(release_authorization_intent_json "$raw_sources") || {
+		_release_provenance_error "expected source set is malformed or contains duplicate PRs"
+		return 1
+	}
+	while IFS=$'\t' read -r entry_pr entry_merge; do
+		[[ "$entry_pr" =~ ^[0-9]+$ ]] || return 1
+		if [[ -z "$entry_merge" || "$entry_merge" == "null" ]]; then
+			entry=$(_release_provenance_pr_json "$repo_slug" "$entry_pr") || return 1
+			entry_merge=$(jq -er '.mergeCommit.oid // empty' <<<"$entry" 2>/dev/null) || return 1
+		fi
+		_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$entry_pr" "$entry_merge" "$release_head" || return 1
+		expected_json=$(jq -c --argjson pr "$entry_pr" --arg merge "$entry_merge" '. + [{pr:$pr,merge:$merge}]' <<<"$expected_json") || return 1
+	done < <(jq -r '.[] | [.pr, (.merge // "")] | @tsv' <<<"$intent_json")
+	jq -c 'sort_by(.pr)' <<<"$expected_json"
+	return $?
+}
+
+_release_provenance_assert_expected_sources() {
+	local expected_json="$1"
+	local observed_json="$2"
+	if [[ "$(jq -c 'sort_by(.pr)' <<<"$expected_json")" != "$(jq -c 'sort_by(.pr)' <<<"$observed_json")" ]]; then
+		_release_provenance_error "observed release source manifest does not exactly match the trusted expected source set"
+		return 1
+	fi
+	return 0
+}
+
 _release_provenance_resolve_source() {
 	local requested_pr="$1"
 	local repo_slug="$2"
 	local branch_name="$3"
+	local expected_sources_raw="${4:-}"
 	local release_head=""
 	local requested_json=""
 	local requested_merge=""
@@ -101,6 +143,7 @@ _release_provenance_resolve_source() {
 	local entry_merge=""
 	local found_requested=false
 	local sources_json='[]'
+	local expected_sources_json='[]'
 
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || {
 		_release_provenance_error "source PR is not numeric"
@@ -115,6 +158,8 @@ _release_provenance_resolve_source() {
 		_release_provenance_error "release checkout is not the exact origin/${branch_name} tip"
 		return 1
 	}
+	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$expected_sources_raw" \
+		"$repo_slug" "$branch_name" "$release_head") || return 1
 	requested_json=$(_release_provenance_pr_json "$repo_slug" "$requested_pr") || return 1
 	requested_merge=$(jq -er '.mergeCommit.oid // empty' <<<"$requested_json" 2>/dev/null) || return 1
 	_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$requested_pr" "$requested_merge" "$release_head" || return 1
@@ -123,8 +168,10 @@ _release_provenance_resolve_source() {
 	aggregate_entries=$(_release_provenance_trailer_values_at_commit "$release_head" "Aidevops-Release-Aggregates") || return 1
 	if [[ -z "$aggregate_pr" && -z "$aggregate_entries" ]]; then
 		if [[ "$requested_merge" == "$release_head" ]]; then
-			jq -cn --argjson requested_pr "$requested_pr" --arg source_merge "$requested_merge" \
-				'{mode:"direct",requested_pr:$requested_pr,source_pr:$requested_pr,source_merge:$source_merge,aggregated_sources:[]}'
+			sources_json=$(jq -cn --argjson pr "$requested_pr" --arg merge "$requested_merge" '[{pr:$pr,merge:$merge}]') || return 1
+			_release_provenance_assert_expected_sources "$expected_sources_json" "$sources_json" || return 1
+			jq -cn --argjson requested_pr "$requested_pr" --arg source_merge "$requested_merge" --argjson expected "$expected_sources_json" \
+				'{mode:"direct",requested_pr:$requested_pr,source_pr:$requested_pr,source_merge:$source_merge,aggregated_sources:[],expected_sources:$expected}'
 			return 0
 		fi
 		_release_provenance_error "current main tip is not an explicit release-aggregation PR"
@@ -168,9 +215,11 @@ _release_provenance_resolve_source() {
 		_release_provenance_error "release-aggregation manifest does not authorize requested PR #${requested_pr}"
 		return 1
 	}
+	sources_json=$(jq -c 'sort_by(.pr)' <<<"$sources_json") || return 1
+	_release_provenance_assert_expected_sources "$expected_sources_json" "$sources_json" || return 1
 	jq -cn --argjson requested_pr "$requested_pr" --argjson source_pr "$aggregate_pr" \
-		--arg source_merge "$release_head" --argjson sources "$sources_json" \
-		'{mode:"aggregate",requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$sources}'
+		--arg source_merge "$release_head" --argjson sources "$sources_json" --argjson expected "$expected_sources_json" \
+		'{mode:"aggregate",requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$sources,expected_sources:$expected}'
 	return 0
 }
 
@@ -483,6 +532,7 @@ main() {
 	local repo_slug=""
 	local branch_name="main"
 	local source_pr=""
+	local expected_sources=""
 
 	case "$command" in
 	verify | resolve-source) ;;
@@ -516,6 +566,10 @@ main() {
 			source_pr="${1:-}"
 			shift || true
 			;;
+		--expected-sources)
+			expected_sources="${1:-}"
+			shift || true
+			;;
 		*) return 1 ;;
 		esac
 	done
@@ -523,7 +577,7 @@ main() {
 	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
 	if [[ "$command" == "resolve-source" ]]; then
 		[[ -n "$source_pr" ]] || return 1
-		_release_provenance_resolve_source "$source_pr" "$repo_slug" "$branch_name"
+		_release_provenance_resolve_source "$source_pr" "$repo_slug" "$branch_name" "$expected_sources"
 		return $?
 	fi
 	[[ -n "$tag_name" ]] || return 1
