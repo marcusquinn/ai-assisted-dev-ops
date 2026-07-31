@@ -373,6 +373,24 @@ extra trusted commentary" '.[0] += [{id:4305,node_id:"IC_4305",user:{id:1,node_i
 	return 0
 }
 
+test_post_approval_linked_references() {
+	reset_and_sign issue 41
+	jq '.[0] += [(.[0][0] | .id = 420 | .node_id = "EV_420" | .created_at = "2026-01-01T00:06:00Z" | .source.issue.number = 10)]' \
+		"${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	assert_verify "post-approval issue reference does not extend signed scope" issue 41 VERIFIED 0
+
+	reset_and_sign pr 42
+	jq '.[0] += [(.[0][0] | .id = 421 | .node_id = "EV_421" | .created_at = "2026-01-01T00:06:00Z" | .source.issue.number = 11)]' \
+		"${FIXTURES}/timeline-42.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-42.json"
+	assert_verify "post-approval PR reference does not extend signed scope" pr 42 VERIFIED 0 "$PR_HEAD"
+
+	reset_and_sign issue 41
+	jq '.[0] += [(.[0][0] | .id = 422 | .node_id = "EV_422" | .created_at = null | .source.issue.number = 12)]' \
+		"${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	assert_verify "missing linked-reference timestamp fails closed" issue 41 API_ERROR 6
+	return 0
+}
+
 main() {
 	install_gh_stub
 	write_baseline_fixtures
@@ -404,6 +422,7 @@ main() {
 	append_signed_comment pr 42 "2026-01-01T00:06:00Z" 4300
 	assert_verify "repeat approval verifies against the newest exact snapshot" pr 42 VERIFIED 0 "$PR_HEAD"
 	test_trusted_lifecycle_comments
+	test_post_approval_linked_references
 
 	reset_and_sign pr 42
 	local marker_drift="<!-- aidevops-signed-approval --> unsigned external drift"

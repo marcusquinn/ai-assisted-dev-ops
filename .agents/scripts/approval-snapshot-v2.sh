@@ -92,14 +92,29 @@ _approval_snapshot_v2_comments_json() {
 
 _approval_snapshot_v2_linked_references_json() {
 	local pages_json="$1"
+	local issued_at_cutoff="${2:-}"
 	local empty_string=""
+	local timestamp_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+	[[ -z "$issued_at_cutoff" || "$issued_at_cutoff" =~ $timestamp_pattern ]] || return 1
 
 	# GitHub timeline cross-reference events are the authoritative read-only
 	# projection of issue/PR links. Keep external text and URLs as opaque bytes;
 	# this helper never follows or executes them.
-	jq -cS --arg empty "$empty_string" '
+	# #aidevops:trust-boundary — approval authority covers references visible at
+	# signing time. A later reference cannot extend that signed authority and must
+	# not revoke it when GitHub exposes the timeline event asynchronously.
+	jq -cS --arg empty "$empty_string" --arg cutoff "$issued_at_cutoff" --arg timestamp_pattern "$timestamp_pattern" '
+		def is_linked_reference:
+			(.event // $empty) == "cross-referenced"
+			or (.event // $empty) == "connected"
+			or (.event // $empty) == "disconnected"
+			or (.event // $empty) == "referenced";
+		if $cutoff != $empty and any(.[][]?; is_linked_reference and (((.created_at // $empty) | test($timestamp_pattern)) | not)) then
+			error("linked reference has no authoritative created_at")
+		else
 		[.[][]?
-		| select((.event // $empty) == "cross-referenced" or (.event // $empty) == "connected" or (.event // $empty) == "disconnected" or (.event // $empty) == "referenced")
+		| select(is_linked_reference)
+		| select($cutoff == $empty or .created_at <= $cutoff)
 		| {
 			event: (.event // $empty),
 			id: (.id // null),
@@ -133,6 +148,7 @@ _approval_snapshot_v2_linked_references_json() {
 			} end)
 		}
 		] | sort_by(.created_at, .event, .id)
+		end
 	' <<<"$pages_json"
 	return $?
 }
@@ -169,6 +185,7 @@ approval_snapshot_v2_build() (
 	local target_number="$2"
 	local slug="$3"
 	local excluded_comment_id="${4:-}"
+	local issued_at_cutoff="${5:-}"
 	local issue_json="" comments_pages="" comments_json="" timeline_pages="" linked_references_json="" normalized_slug=""
 	local empty_string=""
 	local temp_dir=""
@@ -188,7 +205,7 @@ approval_snapshot_v2_build() (
 	comments_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/comments?per_page=100") || return 1
 	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation") || return 1
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 1
-	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages") || return 1
+	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff") || return 1
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1
 	trap 'rm -rf "$temp_dir"' EXIT
 	_approval_snapshot_v2_write_json_file "$temp_dir/issue.json" "$issue_json" || return 1
@@ -287,7 +304,7 @@ approval_snapshot_v2_payload() (
 	local snapshot_json="" digest="" normalized_slug=""
 	local temp_dir=""
 
-	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$excluded_comment_id") || return 1
+	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$excluded_comment_id" "$issued_at") || return 1
 	digest=$(approval_snapshot_v2_digest "$snapshot_json") || return 1
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1

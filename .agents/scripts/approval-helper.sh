@@ -1462,7 +1462,7 @@ _approval_classify_signed_comment() {
 	local body="$5"
 	local pub_key="$6"
 	local expected_head_sha="${7:-}"
-	local payload="" snapshot_json="" current_digest="" signed_digest="" normalized_slug=""
+	local payload="" snapshot_json="" current_digest="" signed_digest="" normalized_slug="" issued_at=""
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 
 	payload=$(_extract_fenced_block "$body" 1)
@@ -1505,7 +1505,11 @@ _approval_classify_signed_comment() {
 		fi
 	fi
 
-	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id") || {
+	issued_at=$(jq -r '.issued_at' <<<"$payload") || {
+		printf 'MALFORMED_APPROVAL\n'
+		return 0
+	}
+	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at") || {
 		printf 'API_ERROR\n'
 		return 0
 	}
