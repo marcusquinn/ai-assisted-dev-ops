@@ -514,22 +514,22 @@ def _canonical_fetch_rows_v6(
 def _deduplicate_fetch_rows_v6(
     migrated: list[tuple[sqlite3.Row, str, str]],
 ) -> dict[str, tuple[sqlite3.Row, str]]:
-    metadata_fields = (
-        "provider",
-        "connection_id",
-        "stream",
-        "request_hash",
-        "blob_ref",
-        "resource_count",
-        "budget_units",
-        "started_at",
-        "completed_at",
-        "terminal_status",
-    )
     canonical: dict[str, tuple[sqlite3.Row, str]] = {}
     signatures: dict[str, tuple[object, ...]] = {}
     for row, batch_id, response_hash in migrated:
-        metadata = tuple(row[field] for field in metadata_fields) + (response_hash,)
+        metadata = (
+            row["provider"],
+            row["connection_id"],
+            row["stream"],
+            row["request_hash"],
+            row["blob_ref"],
+            row["resource_count"],
+            row["budget_units"],
+            row["started_at"],
+            row["completed_at"],
+            row["terminal_status"],
+            response_hash,
+        )
         existing = signatures.setdefault(batch_id, metadata)
         if existing != metadata:
             raise SocialStoreError("legacy fetch batch aliases have conflicting metadata")
