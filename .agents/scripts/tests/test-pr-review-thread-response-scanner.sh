@@ -58,7 +58,7 @@ if [[ "$1" == "pr" && "${2:-}" == "view" ]]; then
 	exit 0
 fi
 if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
-	[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1
+	if [[ "$*" == *"addPullRequestReviewThreadReply"* || "$*" == *"resolveReviewThread"* ]]; then [[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "1" && "$*" != *"rateLimit"* ]] || exit 1; else [[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || exit 1; fi
 	for arg in "$@"; do
 		if [[ "$arg" == "owner=" || "$arg" == "name=" ]]; then
 			printf 'empty repo GraphQL field: %s\n' "$arg" >&2
@@ -79,12 +79,12 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 			previous_arg="$arg"
 		done
 		printf 'reply\n' >>"${GRAPHQL_MUTATIONS_LOG:-/dev/null}"
-		printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1","url":"https://example.invalid/reply"}},"rateLimit":{"cost":1}}}\n'
+		case "${STUB_REPLY_RESPONSE_MODE:-valid}" in missing-id) printf '%s\n' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://example.invalid/reply"}}}}' ;; partial-error) printf '%s\n' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1"}}},"errors":[{"message":"UNCERTAIN_WRITE"}]}' ;; *) printf '%s\n' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"COMMENT1","url":"https://example.invalid/reply"}}}}' ;; esac
 		exit 0
 	fi
 	if [[ "$*" == *"resolveReviewThread"* ]]; then
 		printf 'resolve\n' >>"${GRAPHQL_MUTATIONS_LOG:-/dev/null}"
-		printf '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1","isResolved":true}},"rateLimit":{"cost":1}}}\n'
+		case "${STUB_RESOLVE_RESPONSE_MODE:-valid}" in wrong-thread) printf '%s\n' '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD_OTHER","isResolved":true}}}}' ;; partial-error) printf '%s\n' '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1","isResolved":true}}},"errors":[{"message":"UNCERTAIN_WRITE"}]}' ;; *) printf '%s\n' '{"data":{"resolveReviewThread":{"thread":{"id":"THREAD1","isResolved":true}}}}' ;; esac
 		exit 0
 	fi
 	if [[ "$*" == *"node(id:"* && "$*" == *"comments(first: 1)"* ]]; then
@@ -1509,6 +1509,36 @@ test_reply_and_resolve_use_graphql_mutations() {
 	return 0
 }
 
+test_reply_rejects_impossible_mutation_responses() {
+	setup_test_env
+	local body_file="${TEST_ROOT}/reply.md"
+	local missing_id_rc=0 partial_error_rc=0
+	printf '<!-- aidevops:review-thread-response:THREAD1 -->\n@reviewer fixed at file.sh:1; verified with test.sh\n' >"$body_file"
+	STUB_REPLY_RESPONSE_MODE="missing-id" $SCANNER reply owner/repo THREAD1 "$body_file" || missing_id_rc=$?
+	STUB_REPLY_RESPONSE_MODE="partial-error" $SCANNER reply owner/repo THREAD1 "$body_file" || partial_error_rc=$?
+	if [[ "$missing_id_rc" -ne 0 && "$partial_error_rc" -ne 0 ]]; then
+		print_result "reply rejects impossible mutation response shapes" 0
+	else
+		print_result "reply rejects impossible mutation response shapes" 1 "missing_id_rc=${missing_id_rc}, partial_error_rc=${partial_error_rc}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_resolve_rejects_impossible_mutation_responses() {
+	setup_test_env
+	local wrong_thread_rc=0 partial_error_rc=0
+	STUB_RESOLVE_RESPONSE_MODE="wrong-thread" $SCANNER resolve owner/repo THREAD1 || wrong_thread_rc=$?
+	STUB_RESOLVE_RESPONSE_MODE="partial-error" $SCANNER resolve owner/repo THREAD1 || partial_error_rc=$?
+	if [[ "$wrong_thread_rc" -ne 0 && "$partial_error_rc" -ne 0 ]]; then
+		print_result "resolve rejects impossible mutation response shapes" 0
+	else
+		print_result "resolve rejects impossible mutation response shapes" 1 "wrong_thread_rc=${wrong_thread_rc}, partial_error_rc=${partial_error_rc}"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_reply_auto_prepends_thread_author() {
 	setup_test_env
 	local body_file="${TEST_ROOT}/reply.md"
@@ -1612,6 +1642,23 @@ GH_STUB_MARKER
 	return 0
 }
 
+main_mutations() {
+	test_reply_and_resolve_use_graphql_mutations
+	test_reply_rejects_impossible_mutation_responses
+	test_resolve_rejects_impossible_mutation_responses
+	test_reply_auto_prepends_thread_author
+	test_reply_sends_author_mention_body_as_raw_field
+	test_reply_does_not_double_prepend_thread_author
+	test_reply_falls_back_when_thread_author_missing
+	test_reply_skips_duplicate_marker
+	printf '\nTests run: %d\n' "$TESTS_RUN"
+	printf 'Tests failed: %d\n' "$TESTS_FAILED"
+	if [[ "$TESTS_FAILED" -gt 0 ]]; then
+		return 1
+	fi
+	return 0
+}
+
 main() {
 	test_scan_finds_unresolved_bot_thread
 	test_scan_skips_draft_prs
@@ -1666,6 +1713,8 @@ main() {
 	test_dispatch_rotates_candidates_with_repo_cursor
 	test_dispatch_stale_cursor_falls_back_to_original_order
 	test_reply_and_resolve_use_graphql_mutations
+	test_reply_rejects_impossible_mutation_responses
+	test_resolve_rejects_impossible_mutation_responses
 	test_reply_auto_prepends_thread_author
 	test_reply_sends_author_mention_body_as_raw_field
 	test_reply_does_not_double_prepend_thread_author
@@ -1680,4 +1729,8 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${PRRTS_TEST_MUTATIONS_ONLY:-0}" == "1" ]]; then
+	main_mutations "$@"
+else
+	main "$@"
+fi

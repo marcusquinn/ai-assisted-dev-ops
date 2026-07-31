@@ -354,8 +354,10 @@ cmd_reply() {
 		return 1
 	fi
 
+	# GitHub exposes rateLimit on Query, not Mutation. This fixed mutation has
+	# no connections and consumes one GraphQL point, accounted at transport.
 	# shellcheck disable=SC2016
-	if ! response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+	if ! response=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-reply-exact-cost" \
 		gh api graphql \
 		-F thread="$thread_id" -f body="$body" \
@@ -364,15 +366,16 @@ cmd_reply() {
 				addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
 					comment { id url }
 				}
-				rateLimit { cost }
 			}
 		'); then
 		_prrts_log "reply: GraphQL mutation failed for ${repo_slug} thread ${thread_id}"
 		return 1
 	fi
-	if ! _prrts_graphql_response_has_positive_cost "$response" ||
-		! printf '%s' "$response" | jq -e '(.data.addPullRequestReviewThreadReply.comment.id // "") | length > 0' >/dev/null 2>&1; then
-		_prrts_log "reply: GraphQL mutation response was unmetered or malformed for ${repo_slug} thread ${thread_id}"
+	if ! printf '%s' "$response" | jq -e \
+		'((.errors // []) | length) == 0 and
+		((.data.addPullRequestReviewThreadReply.comment.id // "") | type == "string" and length > 0)' \
+		>/dev/null 2>&1; then
+		_prrts_log "reply: GraphQL mutation response was malformed for ${repo_slug} thread ${thread_id}"
 		return 1
 	fi
 	_prrts_log "reply: posted in-thread response for ${repo_slug} thread ${thread_id}"
@@ -392,23 +395,26 @@ cmd_resolve() {
 		return 0
 	fi
 	_prrts_graphql_rate_limit_ok || return 1
+	# GitHub exposes rateLimit on Query, not Mutation. Account this fixed-cost
+	# mutation at transport and validate the returned thread state fail-closed.
 	# shellcheck disable=SC2016
-	if ! response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+	if ! response=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-resolve-exact-cost" \
 		gh api graphql \
 		-F thread="$thread_id" \
 		-f query='
 			mutation($thread: ID!) {
 				resolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } }
-				rateLimit { cost }
 			}
 		'); then
 		_prrts_log "resolve: GraphQL mutation failed for ${repo_slug} thread ${thread_id}"
 		return 1
 	fi
-	if ! _prrts_graphql_response_has_positive_cost "$response" ||
-		! printf '%s' "$response" | jq -e '.data.resolveReviewThread.thread.isResolved == true' >/dev/null 2>&1; then
-		_prrts_log "resolve: GraphQL mutation response was unmetered or malformed for ${repo_slug} thread ${thread_id}"
+	if ! printf '%s' "$response" | jq -e --arg thread "$thread_id" \
+		'((.errors // []) | length) == 0 and
+		.data.resolveReviewThread.thread.id == $thread and
+		.data.resolveReviewThread.thread.isResolved == true' >/dev/null 2>&1; then
+		_prrts_log "resolve: GraphQL mutation response was malformed for ${repo_slug} thread ${thread_id}"
 		return 1
 	fi
 	_prrts_log "resolve: resolved ${repo_slug} thread ${thread_id}"
