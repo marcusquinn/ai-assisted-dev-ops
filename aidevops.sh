@@ -1680,6 +1680,23 @@ _cmd_client_format() {
 # Main entry point
 main() {
 	local command="${1:-help}"
+	local check_workflows_helper="check-workflows-helper.sh"
+	shift || true
+
+	# Help for inventory commands must bypass repository auto-detection and
+	# version checks. Those startup checks may read the repository registry,
+	# while help must remain bounded and side-effect-free.
+	if [[ "$command" == "check-workflows" || "$command" == "workflows" ]]; then
+		local arg
+		for arg in "$@"; do
+			case "$arg" in
+			-h | --help)
+				_dispatch_helper "$check_workflows_helper" "$check_workflows_helper" "$@"
+				return $?
+				;;
+			esac
+		done
+	fi
 
 	# Auto-detect unregistered repo on any command (silent check)
 	_main_check_unregistered "$command"
@@ -1689,7 +1706,6 @@ main() {
 		_main_check_version
 	fi
 
-	shift || true
 	case "$command" in
 	init | i) cmd_init "$@" ;;
 	setup) cmd_setup "$@" ;;
@@ -1711,7 +1727,7 @@ main() {
 	pulse) _dispatch_helper "pulse-session-helper.sh" "pulse-session-helper.sh" "$@" ;;
 	schedule) _dispatch_helper "deferred-job-helper.sh" "deferred-job-helper.sh" "$@" ;;
 	launch-worker | launch_worker) cmd_launch_worker "$@" ;;
-	check-workflows | workflows) _dispatch_helper "check-workflows-helper.sh" "check-workflows-helper.sh" "$@" ;;
+	check-workflows | workflows) _dispatch_helper "$check_workflows_helper" "$check_workflows_helper" "$@" ;;
 	sync-workflows) _dispatch_helper "sync-workflows-helper.sh" "sync-workflows-helper.sh" "$@" ;;
 	metrics) _dispatch_helper "repo-metrics-helper.sh" "repo-metrics-helper.sh" "$@" ;;
 	badges)

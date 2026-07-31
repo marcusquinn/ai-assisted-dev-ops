@@ -1021,6 +1021,19 @@ _process_rows() {
 }
 
 main() {
+	# Handle help before validating dependencies or touching repos.json. Argument
+	# parsing normally runs in a process substitution below, where `exit 0` only
+	# exits the subshell and would otherwise allow inventory processing to begin.
+	local _arg
+	for _arg in "$@"; do
+		case "$_arg" in
+		-h | --help)
+			_usage
+			return 0
+			;;
+		esac
+	done
+
 	# Fail fast on missing repos.json — _die inside command substitution only
 	# exits the subshell, not the parent.
 	if [[ ! -f "$REPOS_JSON" ]]; then
