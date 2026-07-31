@@ -560,7 +560,7 @@ _publish_routines_scaffold() {
 		local changed_paths=""
 		temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/routines-publisher.XXXXXX") || return 1
 		staging_repo="${temp_dir}/repo"
-		if ! git clone -q --single-branch --branch "$branch" "$origin_url" "$staging_repo"; then
+		if ! git -C "$temp_dir" clone -q --single-branch --branch "$branch" "$origin_url" "$staging_repo"; then
 			rm -rf "$temp_dir"
 			return 1
 		fi

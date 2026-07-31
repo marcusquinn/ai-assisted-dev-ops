@@ -206,6 +206,41 @@ test_isolated_publication_preserves_canonical_checkout() {
 	return 0
 }
 
+test_isolated_publication_uses_guard_aware_clone_context() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local remote_repo="${tmp_dir}/remote.git"
+	local canonical_repo="${tmp_dir}/mirror"
+	create_remote_fixture "$remote_repo" "$canonical_repo"
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	local before=""
+	before=$(canonical_fingerprint "$canonical_repo")
+
+	# Keep the production Git shim active and enter a canonical checkout. The
+	# publisher must move clone execution into its disposable directory rather
+	# than bypassing the guard.
+	local rc=0
+	local output=""
+	output=$(
+		cd "$canonical_repo" || exit 1
+		PATH="${REPO_SCRIPTS}:/usr/bin:/bin:/usr/sbin:/sbin" _publish_routines_scaffold "$canonical_repo"
+	) 2>&1 || rc=$?
+	local after=""
+	after=$(canonical_fingerprint "$canonical_repo")
+	local remote_todo=""
+	remote_todo=$(git --git-dir="$remote_repo" show main:TODO.md 2>/dev/null || true)
+	rm -rf "$tmp_dir"
+
+	if [[ "$rc" -eq 0 && "$before" == "$after" && "$remote_todo" == "# Routines"* ]]; then
+		print_result "isolated publication succeeds through canonical Git guard (GH#28935)" 0
+		return 0
+	fi
+	print_result "isolated publication succeeds through canonical Git guard (GH#28935)" 1 \
+		"rc=${rc} canonical_unchanged=$([[ "$before" == "$after" ]] && printf yes || printf no) remote_todo_present=$([[ -n "$remote_todo" ]] && printf yes || printf no) output=${output}"
+	return 0
+}
+
 test_isolated_publication_uses_remote_ahead_tip() {
 	local tmp_dir=""
 	tmp_dir=$(mktemp -d)
@@ -402,6 +437,7 @@ main() {
 	test_common_tolerates_readonly_colors
 	test_routines_loader_isolates_errors
 	test_isolated_publication_preserves_canonical_checkout
+	test_isolated_publication_uses_guard_aware_clone_context
 	test_isolated_publication_uses_remote_ahead_tip
 	test_isolated_publication_fails_closed_on_validation
 	test_isolated_publication_retries_nonconflicting_race
