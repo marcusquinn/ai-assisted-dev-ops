@@ -81,8 +81,8 @@ STREAMS = {
     "subscribed_subreddits": _listing(
         "subreddit", "selected_account", incremental=False
     ),
-    "moderated_subreddits": _listing(
-        "subreddit", "selected_account", incremental=False
+    "moderated_subreddits": StreamSpec(
+        "subreddit", "selected_account", "snapshot", False, None
     ),
     "contributor_subreddits": _listing(
         "subreddit", "selected_account", incremental=False

@@ -33,10 +33,15 @@ LISTING_STREAMS = {
     "downvoted",
     "hidden",
     "subscribed_subreddits",
-    "moderated_subreddits",
     "contributor_subreddits",
 }
-SNAPSHOT_STREAMS = {"multireddits", "friends", "blocked", "trusted"}
+SNAPSHOT_STREAMS = {
+    "multireddits",
+    "friends",
+    "blocked",
+    "trusted",
+    "moderated_subreddits",
+}
 
 
 @dataclass(frozen=True)
@@ -135,12 +140,6 @@ def _subscribed_subreddits(
     return client.user.subreddits(**kwargs)
 
 
-def _moderated_subreddits(
-    client: Any, _selected_user: Any, kwargs: dict[str, Any]
-) -> Iterable[Any]:
-    return client.user.moderator_subreddits(**kwargs)
-
-
 def _contributor_subreddits(
     client: Any, _selected_user: Any, kwargs: dict[str, Any]
 ) -> Iterable[Any]:
@@ -160,7 +159,6 @@ LISTING_ROUTES: dict[str, ListingRoute] = {
     "downvoted": _downvoted,
     "hidden": _hidden,
     "subscribed_subreddits": _subscribed_subreddits,
-    "moderated_subreddits": _moderated_subreddits,
     "contributor_subreddits": _contributor_subreddits,
 }
 
@@ -261,11 +259,16 @@ def _trusted(client: Any) -> list[Any]:
     return client.user.trusted()
 
 
+def _moderated_subreddits(client: Any) -> list[Any]:
+    return client.user.me().moderated()
+
+
 SNAPSHOT_ROUTES: dict[str, SnapshotRoute] = {
     "multireddits": _multireddits,
     "friends": _friends,
     "blocked": _blocked,
     "trusted": _trusted,
+    "moderated_subreddits": _moderated_subreddits,
 }
 
 

@@ -45,6 +45,7 @@ class RawBatch:
     batch_id: str
     blob_ref: str
     request_hash: str
+    response_hash: str
     observed_at: str
 
 
@@ -103,6 +104,7 @@ def _raw_batch(
     provider = _provider(context)
     response = canonical_json(payload).encode("utf-8")
     request_hash = hashlib.sha256(request.encode("utf-8")).hexdigest()
+    response_hash = hashlib.sha256(response).hexdigest()
     envelope = canonical_json(
         {
             "provider": provider,
@@ -110,14 +112,14 @@ def _raw_batch(
             "stream": context.stream,
             "observed_at": observed_at,
             "request_hash": request_hash,
-            "response_sha256": hashlib.sha256(response).hexdigest(),
+            "response_sha256": response_hash,
             "response": payload,
         }
     ).encode("utf-8")
     batch_id, blob_ref = write_raw_batch(
         context.root, provider, context.connection_id, envelope
     )
-    return RawBatch(batch_id, blob_ref, request_hash, observed_at)
+    return RawBatch(batch_id, blob_ref, request_hash, response_hash, observed_at)
 
 
 def _insert_fetch_batch(
@@ -131,7 +133,7 @@ def _insert_fetch_batch(
            resource_count,budget_units,started_at,completed_at,terminal_status)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
         (
-            record.raw.batch_id,
+            record.raw.response_hash,
             _provider(context),
             context.connection_id,
             context.stream,
@@ -178,7 +180,8 @@ def _update_cursor(
            VALUES(?,?,?,?,?,?) ON CONFLICT(connection_id,stream) DO UPDATE SET
            cursor=excluded.cursor,watermark=excluded.watermark,
            last_success_at=excluded.last_success_at,
-           backfill_complete=excluded.backfill_complete""",
+           backfill_complete=MAX(
+             sync_cursors.backfill_complete,excluded.backfill_complete)""",
         (
             context.connection_id,
             context.stream,

@@ -190,7 +190,6 @@ expected_listing_routes = {
     "downvoted": "selected.downvoted",
     "hidden": "selected.hidden",
     "subscribed_subreddits": "client.user.subreddits",
-    "moderated_subreddits": "client.user.moderator_subreddits",
     "contributor_subreddits": "client.user.contributor_subreddits",
 }
 expected_snapshot_routes = {
@@ -213,6 +212,25 @@ for stream, expected_route in expected_snapshot_routes.items():
     client = RecordingNode("client", route_calls)
     assert _snapshot_values(client, stream) == []
     assert route_calls == [(expected_route, {})]
+
+
+class ModeratedIdentity:
+    def moderated(self):
+        return []
+
+
+class ModeratedUser:
+    def me(self):
+        return ModeratedIdentity()
+
+
+class ModeratedClient:
+    user = ModeratedUser()
+
+
+assert _snapshot_values(ModeratedClient(), "moderated_subreddits") == []
+assert STREAMS["moderated_subreddits"].pagination == "snapshot"
+assert STREAMS["moderated_subreddits"].retention_limit is None
 
 missing = "PRAW is unavailable; install it outside the agent session"
 assert str(_provider_failure(f"ERROR: {missing}")) == missing
@@ -288,6 +306,8 @@ assert_eq "backfill exhaustion preserves the first page watermark" \
 	"done:t3_new:1"
 assert_eq "both immutable backfill pages remain durable" \
 	"$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_authored' AND stream='authored_submissions' AND terminal_status='success'")" 2
+assert_eq "fetch batches store response-body hashes rather than envelope IDs" \
+	"$(sql_value "SELECT count(*) FROM fetch_batches WHERE connection_id='conn_authored' AND response_hash != batch_id")" 2
 
 cat >"$TMP_DIR/incremental.json" <<'JSON'
 {
@@ -349,6 +369,8 @@ JSON
 	--connection-id conn_authored --account-id reddit42 \
 	--stream authored_comments --profile fixture --budget 1 \
 	--fixture "$TMP_DIR/comments-partial.json" >/dev/null
+assert_eq "partial incremental pages preserve completed backfill state" \
+	"$(sql_value "SELECT backfill_complete FROM sync_cursors WHERE connection_id='conn_authored' AND stream='authored_comments'")" 1
 
 cat >"$TMP_DIR/comments-resume.json" <<'JSON'
 {
