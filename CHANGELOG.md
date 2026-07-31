@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.200] - 2026-07-31
+
+### Changed
+
+- Tests: align managed Git safety fixture (#29005)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: ratchet QLTY_SMELL_THRESHOLD 51→49 (-2) [skip ci]
+- Refactor: split ai research runtime (#28996)
+- Maintenance: update simplification state registry
+- Tests: restore Pulse worker-detection isolation (#28994)
+- Refactor: reduce OAuth pool auth complexity (#28988)
+- Maintenance: ratchet QLTY_SMELL_THRESHOLD 52→51 (-1) [skip ci]
+- Refactor: split OAuth callback server (#28989)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- scope canonical Git guard to managed repositories (#29001)
+- filter expected approval audit transitions (#28998)
+- bind cross-repository merge evidence (#28992)
+
 ## [3.32.199] - 2026-07-31
 
 ### Changed

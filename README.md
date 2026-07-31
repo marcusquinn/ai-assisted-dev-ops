@@ -60,7 +60,7 @@ The result: an AI operations platform that manages projects across every busines
 [![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025--2026-blue.svg)](https://github.com/marcusquinn)
 
 <!-- Release & Version Info -->
-[![Version](https://img.shields.io/badge/Version-3.32.199-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
+[![Version](https://img.shields.io/badge/Version-3.32.200-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
 [![npm version](https://img.shields.io/npm/v/aidevops)](https://www.npmjs.com/package/aidevops)
 [![Homebrew](https://img.shields.io/badge/homebrew-marcusquinn%2Ftap-orange)](https://github.com/marcusquinn/homebrew-tap)
 [![GitHub repository](https://img.shields.io/badge/github-repository-181717.svg?logo=github)](https://github.com/marcusquinn/aidevops)
