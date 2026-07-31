@@ -75,11 +75,14 @@ entrypoint instead of calling `full-loop-helper.sh start` directly:
 
 ```bash
 ~/.aidevops/agents/scripts/interactive-start-helper.sh \
-  --issue "$ISSUE_NUMBER" --repo "$REPO" --task "$ARGUMENTS"
+  --issue "$ISSUE_NUMBER" --repo "$REPO" --task "$ARGUMENTS" --auto-dispatch
 ```
 
-This route preserves `no-auto-dispatch` so unattended pickup stays blocked while
-exporting interactive implementation authority to the local full-loop child.
+This route keeps worker-ready issues eligible for `auto-dispatch` while the
+temporary `status:in-review` + assignee claim blocks concurrent pickup. Release
+with unassignment restores automatic continuation when unfinished work remains.
+Do not add `no-auto-dispatch` merely because implementation starts interactively;
+reserve `lockdown` for an explicit durable hold or whole-pulse insulation.
 Never translate interactive authority into a blanket non-headless exemption.
 The direct pre-edit/start sequence below is for non-issue work.
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # test-dispatch-path-parent-default.sh — Regression tests for the dispatch-path
-# parent default (t2821).
+# auto-dispatch advisory default (t2821/t2920).
 #
 # Tests cover:
 #   _append_dispatch_path_notice in task-brief-helper.sh:
@@ -116,8 +116,9 @@ _load_notice_func() {
 	return 0
 }
 
-# Stub for log_warn used by _append_dispatch_path_notice
-log_warn() { echo "[WARN] $*" >&2; return 0; }
+# Logging stubs used by _append_dispatch_path_notice
+log_info() { printf '[INFO] %s\n' "$*" >&2; return 0; }
+log_warn() { printf '[WARN] %s\n' "$*" >&2; return 0; }
 
 test_brief_positive_detection() {
 	local brief_file="${TEST_ROOT}/t9901-brief.md"
@@ -141,11 +142,19 @@ BRIEF
 
 	_append_dispatch_path_notice "$brief_file" "t9901"
 
-	if grep -q "Dispatch-Path Classification" "$brief_file"; then
-		print_result "brief_positive_detection" 0
-	else
+	if ! grep -q "Dispatch-Path Classification" "$brief_file"; then
 		print_result "brief_positive_detection" 1 "Expected '## Dispatch-Path Classification' appended to brief"
+		return 0
 	fi
+	if ! grep -q "routine interactive work keeps \`#auto-dispatch\`" "$brief_file"; then
+		print_result "brief_positive_detection" 1 "Expected advisory to preserve auto-dispatch for interactive work"
+		return 0
+	fi
+	if grep -q 'no-auto-dispatch' "$brief_file"; then
+		print_result "brief_positive_detection" 1 "Advisory must not recommend no-auto-dispatch for routine interactive work"
+		return 0
+	fi
+	print_result "brief_positive_detection" 0
 	return 0
 }
 

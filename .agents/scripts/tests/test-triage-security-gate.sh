@@ -391,7 +391,7 @@ assert_infrastructure_block() {
 		ok=1
 		detail="${detail} stale triage-failed not removed"
 	fi
-	if grep -q -- '--add-label triage-failed\|--add-label security-review' "$GH_CALL_LOG"; then
+	if grep -qE -- '--add-label (triage-failed|security-review|hold-for-review)' "$GH_CALL_LOG"; then
 		ok=1
 		detail="${detail} content/security failure label added"
 	fi
@@ -765,7 +765,7 @@ test_retrieval_failures_are_infrastructure() {
 	return 0
 }
 
-test_warning_and_scanner_error_fail_closed() {
+test_warning_is_security_and_scanner_error_is_infrastructure() {
 	reset_case
 	TRIAGE_CONTENT_SCANNER="$SCANNER_STUB"
 	TRIAGE_PROMPT_GUARD="$DUMMY_PROMPT_GUARD"
@@ -781,30 +781,30 @@ test_warning_and_scanner_error_fail_closed() {
 	TRIAGE_CONTENT_SCANNER="$SCANNER_STUB"
 	TRIAGE_PROMPT_GUARD="$DUMMY_PROMPT_GUARD"
 	export SECURITY_GATE_SCANNER_RESULT="ERROR"
-	export SECURITY_GATE_SCANNER_STATUS="3"
+	export SECURITY_GATE_SCANNER_STATUS="1"
 	local error_status=0
 	attempt_build_and_launch || error_status=$?
-	assert_security_block \
-		"scanner error fails closed before model invocation" \
+	assert_infrastructure_block \
+		"scanner error retries without a manual security hold" \
 		"$error_status" "scanner-error-current-item"
 	return 0
 }
 
-test_missing_scanner_or_guard_fails_closed() {
+test_missing_scanner_or_guard_retries_as_infrastructure() {
 	reset_case
 	TRIAGE_CONTENT_SCANNER="${TEST_ROOT}/missing-content-scanner.sh"
 	local scanner_status=0
 	attempt_build_and_launch || scanner_status=$?
-	assert_security_block \
-		"missing content scanner fails closed before model invocation" \
+	assert_infrastructure_block \
+		"missing content scanner retries without a manual security hold" \
 		"$scanner_status" "scanner-unavailable-current-item"
 
 	reset_case
 	TRIAGE_PROMPT_GUARD="${TEST_ROOT}/missing-prompt-guard.sh"
 	local guard_status=0
 	attempt_build_and_launch || guard_status=$?
-	assert_security_block \
-		"missing prompt guard fails closed before model invocation" \
+	assert_infrastructure_block \
+		"missing prompt guard retries without a manual security hold" \
 		"$guard_status" "scanner-unavailable-current-item"
 	return 0
 }
@@ -822,8 +822,8 @@ main() {
 	test_oversized_cited_file_evidence_fails_closed
 	test_aggregate_public_evidence_bounds_fail_closed
 	test_retrieval_failures_are_infrastructure
-	test_warning_and_scanner_error_fail_closed
-	test_missing_scanner_or_guard_fails_closed
+	test_warning_is_security_and_scanner_error_is_infrastructure
+	test_missing_scanner_or_guard_retries_as_infrastructure
 
 	printf '\nResults: %d tests, %d passed, %d failed\n' \
 		"$TESTS_RUN" "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_FAILED"

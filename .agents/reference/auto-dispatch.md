@@ -112,8 +112,9 @@ The task's brief `## How` section or `### Files Scope` references any file in th
 ### Decision tree (post-t2920)
 
 1. Brief references a dispatch-path file → use `#auto-dispatch` as normal. The t2819 detector applies `tier:thinking` before dispatch. The advisory tooling below emits non-blocking informational messages.
-2. Author wants to implement interactively (rare — e.g. observing the running system mid-fix) → use `#no-auto-dispatch #interactive` and run `interactive-session-helper.sh claim <N> <slug>`.
-3. No dispatch-path files in brief → normal dispatch rules apply.
+2. Author implements the issue interactively → keep `#auto-dispatch` and start through `interactive-start-helper.sh ... --auto-dispatch`. The temporary `status:in-review` + assignee claim blocks concurrent dispatch; release and unassign restore automatic continuation.
+3. A durable manual stop is explicitly required → use `#no-auto-dispatch` (or `interactive-session-helper.sh lockdown` when all pulse mutation must stop) and record the unresolved human decision or safety reason.
+4. No dispatch-path files in brief → normal dispatch rules apply.
 
 `#dispatch-path-ok` is now redundant. Existing issues that carry it document explicit author intent — leave them alone.
 
@@ -125,13 +126,13 @@ The task's brief `## How` section or `### Files Scope` references any file in th
 
 ### When to opt out (post-t2920)
 
-The opt-out (`#no-auto-dispatch #interactive`) is the exception, not the default. Use it when:
+The opt-out (`#no-auto-dispatch`) is a durable exception, not an interactive-session default. Use it when:
 
-1. You want to observe the running system mid-fix (e.g. canary/FD/session-lock logic that benefits from live visibility).
-2. The fix requires judgment calls about dispatch-path design trade-offs that haven't been resolved in the brief.
-3. You're investigating a pulse incident and need full insulation from automated dispatch interference.
+1. The user explicitly requests manual-only handling or a backlog freeze with no unattended continuation.
+2. An unresolved security, product-safety, billing, or authority decision makes unattended execution unsafe.
+3. An incident investigation requires insulation from every pulse mutation; use `lockdown`, then `unlock` when the incident boundary ends.
 
-For routine bug fixes, refactors, and well-specified work in dispatch-path files, just use `#auto-dispatch`. Workers handle these reliably with opus-4-7.
+Routine interactive implementation is not an opt-out: keep `#auto-dispatch`, rely on the active claim for temporary deduplication, and release with unassignment if work remains. Parent/roadmap trackers use `parent-task`, not `no-auto-dispatch`. For routine bug fixes, refactors, and well-specified work in dispatch-path files, use `#auto-dispatch`.
 
 ### Environment overrides
 
@@ -146,8 +147,8 @@ For routine bug fixes, refactors, and well-specified work in dispatch-path files
 |---|---|
 | `dispatch-path-ok` | (Legacy / redundant since t2920) Author explicitly requested auto-dispatch on a dispatch-path task. New tasks don't need this label. |
 | `parent-task` | Unconditional dispatch block — `dispatch-dedup-helper.sh` `_is_assigned_check_parent_task` short-circuits with `PARENT_TASK_BLOCKED` |
-| `no-auto-dispatch` | Canonical unconditional issue dispatch block (t2832) — `dispatch-dedup-helper.sh` `_is_assigned_check_no_auto_dispatch` short-circuits with `NO_AUTO_DISPATCH_BLOCKED`. Use when you want to keep an issue in the backlog but prevent pulse workers from picking it up. |
-| `hold-for-review` | Review-hold label. On issues, blocks dispatch with the same intent as `no-auto-dispatch` (`HOLD_FOR_REVIEW_BLOCKED`). On PRs, blocks auto-merge until explicit maintainer review. |
+| `no-auto-dispatch` | Canonical unconditional issue dispatch block (t2832) — `dispatch-dedup-helper.sh` `_is_assigned_check_no_auto_dispatch` short-circuits with `NO_AUTO_DISPATCH_BLOCKED`. Reserve it for explicit durable manual intent or a recorded unresolved safety/authority decision, never routine interactive ownership. |
+| `hold-for-review` | Confirmed unresolved review hold. On issues, blocks dispatch with the same intent as `no-auto-dispatch` (`HOLD_FOR_REVIEW_BLOCKED`). On PRs, blocks auto-merge until explicit maintainer review. Scanner infrastructure failures retry without applying this label. |
 
 Companion fixes: t2819 (self-hosting pre-dispatch tier override), t2820 (no_work reclassification), t2832 (no-auto-dispatch unconditional block), t2920 (default reversed to auto-dispatch + advisory). Derived from #20765 / GH#20827 / GH#21086 dispatch-history analysis.
 

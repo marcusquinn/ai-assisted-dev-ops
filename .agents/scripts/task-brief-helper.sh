@@ -784,7 +784,7 @@ generate_brief() {
 
 	# t2821: After writing the brief, scan its content for dispatch-path patterns.
 	# If any are found, append a Dispatch-Path Classification notice so the author
-	# knows to use #parent + no-auto-dispatch rather than #auto-dispatch.
+	# keeps the normal auto-dispatch default and uses claims for temporary ownership.
 	_append_dispatch_path_notice "$output_file" "$task_id"
 
 	return 0
@@ -794,8 +794,8 @@ generate_brief() {
 # Dispatch-path classification notice (t2821)
 #
 # Scans a just-written brief file for references to dispatch-path scripts.
-# When found, appends a ## Dispatch-Path Classification section recommending
-# #parent + no-auto-dispatch + origin:interactive.
+# When found, appends a ## Dispatch-Path Classification section preserving
+# auto-dispatch through temporary interactive claims.
 #
 # The canonical pattern list is loaded from self-hosting-files.conf (shared
 # with pre-dispatch-validator-helper.sh). Falls back to hardcoded defaults
@@ -869,9 +869,13 @@ _append_dispatch_path_notice() {
 > run in their own worktrees, so a buggy in-flight fix doesn't break the live pulse;
 > CI gates and the pulse circuit breaker (t2690) catch regressions before merge.
 >
-> **Opt out only when needed:** if you specifically want to implement this
-> interactively (e.g. to observe the running system mid-fix), add `#no-auto-dispatch
-> #interactive` to the TODO entry — but this is the exception, not the default.
+> **Interactive work keeps automatic continuation:** the active `status:in-review`
+> + assignee claim blocks concurrent pickup temporarily. Release with unassignment
+> so unfinished work returns to the automatic queue.
+>
+> Use a durable manual hold only when the user explicitly requests one or an
+> unresolved safety/authority decision makes unattended work unsafe. Parent and
+> roadmap trackers use `#parent`; routine interactive work keeps `#auto-dispatch`.
 >
 > Reference: `reference/auto-dispatch.md` "Dispatch-Path Default (t2821 / t2920)"
 

@@ -39,8 +39,11 @@ assert_log_line() {
 for workflow_path in "$command_workflow" "$canonical_workflow"; do
 	grep -Fq "interactive-start-helper.sh \\" "$workflow_path" ||
 		fail "issue-started workflow does not route through interactive-start-helper: $workflow_path"
-	grep -Fq "This route preserves" "$workflow_path" ||
-		fail "issue-started workflow does not preserve no-auto-dispatch: $workflow_path"
+	grep -Fq "keeps worker-ready issues eligible for \`auto-dispatch\`" "$workflow_path" ||
+		fail "issue-started workflow does not preserve automatic continuation: $workflow_path"
+	if grep -Fq "preserves \`no-auto-dispatch\`" "$workflow_path"; then
+		fail "issue-started workflow still recommends a durable hold: $workflow_path"
+	fi
 done
 
 git init -q -b main "$canonical_root" || fail "could not initialize canonical fixture"

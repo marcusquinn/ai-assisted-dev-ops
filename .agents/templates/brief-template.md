@@ -58,7 +58,7 @@ Answer each question for `tier:simple`. If **any** answer is "no", use `tier:sta
 - [ ] **No cross-package or cross-module changes?** (no `packages/a/` + `packages/b/`, no changes spanning unrelated subsystems)
 - [ ] **Estimate 1h or less?**
 - [ ] **4 or fewer acceptance criteria?**
-- [ ] **Dispatch-path classification (t2821/t2920):** Does the `### Files Scope` or `## How` section reference a file in `.agents/configs/self-hosting-files.conf`? If yes, keep the normal `#auto-dispatch` default and use `tier:thinking`; runtime routing chooses the model and reasoning level. Opt out only with `#no-auto-dispatch #interactive` when intentionally implementing interactively. See `.agents/reference/task-taxonomy.md` and `.agents/reference/auto-dispatch.md`.
+- [ ] **Dispatch-path classification (t2821/t2920):** Does the `### Files Scope` or `## How` section reference a file in `.agents/configs/self-hosting-files.conf`? If yes, keep the normal `#auto-dispatch` default and use `tier:thinking`; runtime routing chooses the model and reasoning level. Interactive implementation keeps `#auto-dispatch` because its active claim prevents concurrent pickup. Use `#no-auto-dispatch` only for explicit durable manual intent or a recorded unresolved safety/authority decision. See `.agents/reference/task-taxonomy.md` and `.agents/reference/auto-dispatch.md`.
 
 All checked = `tier:simple`. Any unchecked = `tier:standard` (default) or `tier:thinking` (no existing pattern to follow).
 

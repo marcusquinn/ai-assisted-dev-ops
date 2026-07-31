@@ -461,7 +461,7 @@ _triage_failure_is_infrastructure() {
 	local failure_reason="$1"
 
 	case "$failure_reason" in
-	canary-unavailable | prelaunch-contract-failure | github-comment-write-failed | triage-runtime-failed | triage-runtime-temp-failed | github-current-snapshot-* | github-pr-revision-* | github-public-revision-* | triage-current-snapshot-hash-failed | triage-evidence-* | triage-prompt-*) return 0 ;;
+	canary-unavailable | prelaunch-contract-failure | github-comment-write-failed | triage-runtime-failed | triage-runtime-temp-failed | github-current-snapshot-* | github-pr-revision-* | github-public-revision-* | triage-current-snapshot-hash-failed | triage-evidence-* | triage-prompt-* | scanner-unavailable-* | scanner-tempfile-* | scanner-input-* | scanner-error-*) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -554,8 +554,9 @@ _triage_mark_security_hold() {
 
 #######################################
 # Scan untrusted prompt segments before they can reach a model. Normalization
-# and full scanning are mandatory. Missing helpers, WARN, BLOCK, malformed
-# output, and scanner errors all fail closed.
+# and full scanning are mandatory. Every non-clean result blocks the model;
+# confirmed WARN/BLOCK findings create a security hold, while scanner
+# infrastructure failures remain unlabeled retries.
 #
 # Arguments:
 #   $1 - issue number
@@ -573,13 +574,13 @@ _triage_untrusted_content_is_safe() {
 	shift 3
 
 	if [[ ! -x "$TRIAGE_CONTENT_SCANNER" || ! -x "$TRIAGE_PROMPT_GUARD" ]]; then
-		_triage_mark_security_hold "$issue_num" "$repo_slug" "scanner-unavailable-${scan_stage}"
+		_triage_mark_infrastructure_retry "$issue_num" "$repo_slug" "scanner-unavailable-${scan_stage}"
 		return 1
 	fi
 
 	local scan_dir=""
 	scan_dir=$(_triage_create_sensitive_artifact_dir "scan") || {
-		_triage_mark_security_hold "$issue_num" "$repo_slug" "scanner-tempfile-failed-${scan_stage}"
+		_triage_mark_infrastructure_retry "$issue_num" "$repo_slug" "scanner-tempfile-failed-${scan_stage}"
 		return 1
 	}
 	local scan_file="${scan_dir}/untrusted-content.txt"
@@ -587,7 +588,7 @@ _triage_untrusted_content_is_safe() {
 		if ! _triage_cleanup_sensitive_artifact_dir "$scan_dir"; then
 			echo "$cleanup_failure_log" >>"$LOGFILE"
 		fi
-		_triage_mark_security_hold "$issue_num" "$repo_slug" "scanner-tempfile-failed-${scan_stage}"
+		_triage_mark_infrastructure_retry "$issue_num" "$repo_slug" "scanner-tempfile-failed-${scan_stage}"
 		return 1
 	fi
 	local segment=""
@@ -596,7 +597,7 @@ _triage_untrusted_content_is_safe() {
 			if ! _triage_cleanup_sensitive_artifact_dir "$scan_dir"; then
 				echo "$cleanup_failure_log" >>"$LOGFILE"
 			fi
-			_triage_mark_security_hold "$issue_num" "$repo_slug" "scanner-input-failed-${scan_stage}"
+			_triage_mark_infrastructure_retry "$issue_num" "$repo_slug" "scanner-input-failed-${scan_stage}"
 			return 1
 		}
 	done
@@ -618,16 +619,19 @@ _triage_untrusted_content_is_safe() {
 		fi
 		return 0
 	fi
-	local failure_reason="scanner-error-${scan_stage}"
-	if [[ "$scan_status" -eq 1 && "$scan_output" == *"FLAGGED"* ]]; then
-		failure_reason="prompt-injection-detected-${scan_stage}"
-	elif [[ "$scan_status" -eq 2 || "$scan_output" == *"WARN"* ]]; then
-		failure_reason="prompt-injection-warning-${scan_stage}"
-	fi
 	if [[ "$cleanup_status" -ne 0 ]]; then
 		echo "$cleanup_failure_log" >>"$LOGFILE"
 	fi
-	_triage_mark_security_hold "$issue_num" "$repo_slug" "$failure_reason"
+	if [[ "$scan_status" -eq 1 && "$scan_output" == "FLAGGED" ]]; then
+		_triage_mark_security_hold \
+			"$issue_num" "$repo_slug" "prompt-injection-detected-${scan_stage}"
+	elif [[ "$scan_status" -eq 2 && "$scan_output" == "WARN" ]]; then
+		_triage_mark_security_hold \
+			"$issue_num" "$repo_slug" "prompt-injection-warning-${scan_stage}"
+	else
+		_triage_mark_infrastructure_retry \
+			"$issue_num" "$repo_slug" "scanner-error-${scan_stage}"
+	fi
 	return 1
 }
 
