@@ -427,7 +427,7 @@ _merge_guard_admin_merge_maintainer_review() {
 		print_error "Merge blocked: unable to verify live repository permission for PR author ${pr_author}"
 		return 1
 	fi
-	if [[ "$labels_padded" == *",external-contributor,"* ]] || \
+	if [[ "$labels_padded" == *",external-contributor,"* ]] ||
 		[[ "$is_fork" == "true" ]] || [[ "$author_rc" -ne 0 ]]; then
 		treat_as_external=1
 	fi
@@ -448,7 +448,7 @@ _merge_guard_admin_merge_maintainer_review() {
 			print_error "Merge blocked: unable to verify maintainer-review labels on issue #${issue_number}"
 			return 1
 		fi
-		if [[ "$treat_as_external" -eq 1 ]] && \
+		if [[ "$treat_as_external" -eq 1 ]] &&
 			! _merge_target_crypto_approved issue "$issue_number" "$repo"; then
 			print_error "Merge blocked: external/fork PR linked issue #${issue_number} lacks current cryptographic development authority"
 			return 1
@@ -482,17 +482,34 @@ _merge_fetch_head_sha_rest() {
 	return 0
 }
 
-# Return the fresh base ref, base SHA, and head SHA that GitHub currently binds
-# to the PR. The three fields form the pinned evidence boundary for a local
-# prospective merge-tree check.
+# Return the fresh base ref, base SHA, head SHA, base repository, and clone URL
+# that GitHub currently binds to the PR. These fields form the pinned evidence
+# boundary for a local prospective merge-tree check and keep explicit-repository
+# merges independent of the caller's current Git remote.
 _merge_fetch_pr_refs_rest() {
 	local pr_number="$1"
 	local repo="$2"
 	local refs=""
 	refs=$(gh api "repos/${repo}/pulls/${pr_number}" \
-		--jq '[.base.ref // empty, .base.sha // empty, .head.sha // empty] | @tsv' 2>/dev/null) || return 1
-	[[ "$refs" == *$'\t'*$'\t'* ]] || return 1
+		--jq '[.base.ref // empty, .base.sha // empty, .head.sha // empty, .base.repo.full_name // empty, .base.repo.clone_url // empty] | @tsv' 2>/dev/null) || return 1
+	[[ "$refs" == *$'\t'*$'\t'*$'\t'*$'\t'* ]] || return 1
 	printf '%s\n' "$refs"
+	return 0
+}
+
+_merge_validate_target_remote_url() {
+	local target_repo="$1"
+	local remote_url="$2"
+	local git_host="${GH_HOST:-github.com}"
+	local expected_url=""
+	local normalized_remote_url=""
+	local normalized_expected_url=""
+	[[ "$git_host" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+	[[ "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+	expected_url="https://${git_host}/${target_repo}.git"
+	normalized_remote_url=$(printf '%s' "$remote_url" | tr '[:upper:]' '[:lower:]')
+	normalized_expected_url=$(printf '%s' "$expected_url" | tr '[:upper:]' '[:lower:]')
+	[[ "$normalized_remote_url" == "$normalized_expected_url" ]] || return 1
 	return 0
 }
 
@@ -519,7 +536,7 @@ _merge_fetch_pinned_commit_objects() {
 	if ! _merge_run_repository_isolated_git "$real_git" -C "$object_repo" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
 		[[ -n "$remote_url" ]] || return 1
 		_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
-			fetch --quiet --no-tags "$remote_url" "refs/heads/${base_ref}" || return 1
+			fetch --quiet --no-tags -- "$remote_url" "refs/heads/${base_ref}" || return 1
 		fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
 			rev-parse FETCH_HEAD 2>/dev/null) || return 1
 		[[ "$fetched_sha" == "$base_sha" ]] || return 1
@@ -527,7 +544,7 @@ _merge_fetch_pinned_commit_objects() {
 	if ! _merge_run_repository_isolated_git "$real_git" -C "$object_repo" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
 		[[ -n "$remote_url" ]] || return 1
 		_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
-			fetch --quiet --no-tags "$remote_url" "refs/pull/${pr_number}/head" || return 1
+			fetch --quiet --no-tags -- "$remote_url" "refs/pull/${pr_number}/head" || return 1
 		fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
 			rev-parse FETCH_HEAD 2>/dev/null) || return 1
 		[[ "$fetched_sha" == "$head_sha" ]] || return 1
@@ -591,6 +608,9 @@ _merge_guard_prospective_todo() (
 	local base_ref=""
 	local base_sha=""
 	local head_sha=""
+	local target_repo=""
+	local normalized_repo=""
+	local normalized_target_repo=""
 	local merge_tree_output=""
 	local merge_tree_sha=""
 	local temp_root=""
@@ -605,9 +625,19 @@ _merge_guard_prospective_todo() (
 		print_error "Merge blocked: unable to pin fresh PR base/head evidence for prospective TODO validation"
 		return 1
 	}
-	IFS=$'\t' read -r base_ref base_sha head_sha <<<"$refs"
-	if [[ -z "$base_ref" || -z "$base_sha" || -z "$head_sha" ]]; then
+	IFS=$'\t' read -r base_ref base_sha head_sha target_repo remote_url <<<"$refs"
+	if [[ -z "$base_ref" || -z "$base_sha" || -z "$head_sha" || -z "$target_repo" || -z "$remote_url" ]]; then
 		print_error "Merge blocked: incomplete PR base/head evidence for prospective TODO validation"
+		return 1
+	fi
+	normalized_repo=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+	normalized_target_repo=$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]')
+	if [[ "$normalized_repo" != "$normalized_target_repo" ]]; then
+		print_error "Merge blocked: prospective TODO repository evidence does not match the explicit target"
+		return 1
+	fi
+	if ! _merge_validate_target_remote_url "$target_repo" "$remote_url"; then
+		print_error "Merge blocked: prospective TODO remote URL does not match the explicit target"
 		return 1
 	fi
 	if [[ -n "${FULL_LOOP_VERIFIED_PR_HEAD_SHA:-}" && "$head_sha" != "$FULL_LOOP_VERIFIED_PR_HEAD_SHA" ]]; then
@@ -639,7 +669,6 @@ _merge_guard_prospective_todo() (
 		print_error "Merge blocked: unable to initialize isolated prospective Git context"
 		return 1
 	}
-	remote_url=$(_merge_run_config_isolated_git git "$temp_dir" remote get-url origin 2>/dev/null || true)
 	_merge_fetch_pinned_commit_objects "$pr_number" "$base_ref" "$base_sha" "$head_sha" \
 		"$object_repo" "$remote_url" "$real_git" || {
 		print_error "Merge blocked: unable to materialize pinned PR commits for prospective TODO validation"

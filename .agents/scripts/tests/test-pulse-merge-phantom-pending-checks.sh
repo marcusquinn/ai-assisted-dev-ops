@@ -30,7 +30,10 @@
 #   11. rulesets_non_matching_branch — non-default ruleset ignored → return 0
 #   12. default_branch_api_error — can't get default branch → return 1 (fail-closed)
 #   13. branch_protection_api_error — can't get branch protection → return 1 (fail-closed)
-#   14. checks_api_error — can't get REST check-runs → return 1 (fail-closed)
+#   14. private_plan_unavailable — known private-plan response plus no active
+#       required rulesets resolves to no configured checks
+#   15. private_plan_ruleset_error — ruleset lookup still fails closed
+#   16. checks_api_error — can't get REST check-runs → return 1 (fail-closed)
 #
 # Strategy: source shared-gh-wrappers-checks.sh for `gh_pr_check_runs_rest`,
 # extract _check_required_checks_passing from pulse-merge-process.sh, eval it,
@@ -114,7 +117,8 @@ setup_test_env() {
 #
 # Mode env vars:
 #   MOCK_REPO_MODE     — ok | error
-#   MOCK_BP_MODE       — three_required | no_required | not_found | error
+#   MOCK_BP_MODE       — three_required | no_required | not_found |
+#                        private_plan_unavailable | error
 #   MOCK_RULESETS_MODE — none | active_required | active_required_star |
 #                        active_required_plain_branch |
 #                        active_required_excluded_default |
@@ -146,33 +150,42 @@ apply_jq() {
 
 # Match: gh api repos/SLUG/rulesets/ID (repository ruleset detail)
 if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets/"* ]]; then
+	branch_identity='"id":101,"target":"branch","enforcement":"active"'
 	case "${MOCK_RULESETS_MODE:-none}" in
 	active_required)
-		apply_jq '{"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"~DEFAULT_BRANCH\"]}},\"rules\":[{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"review-bot-gate\"}]}}]}" "$@"
 		exit 0
 		;;
 	active_required_star)
-		apply_jq '{"conditions":{"ref_name":{"include":["*"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"*\"]}},\"rules\":[{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"review-bot-gate\"}]}}]}" "$@"
 		exit 0
 		;;
 	active_required_plain_branch)
-		apply_jq '{"conditions":{"ref_name":{"include":["main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"main\"]}},\"rules\":[{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"review-bot-gate\"}]}}]}" "$@"
 		exit 0
 		;;
 	active_required_excluded_default)
-		apply_jq '{"conditions":{"ref_name":{"include":["*"],"exclude":["main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"*\"],\"exclude\":[\"main\"]}},\"rules\":[{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"review-bot-gate\"}]}}]}" "$@"
 		exit 0
 		;;
 	active_required_other_branch)
-		apply_jq '{"conditions":{"ref_name":{"include":["refs/heads/release"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/release\"]}},\"rules\":[{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"review-bot-gate\"}]}}]}" "$@"
 		exit 0
 		;;
 	detail_error)
 		printf 'gh: mock ruleset detail API error\n' >&2
 		exit 1
 		;;
+	detail_malformed)
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":null},\"rules\":\"invalid\"}" "$@"
+		exit 0
+		;;
+	detail_mismatch)
+		apply_jq '{"id":202,"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[]}' "$@"
+		exit 0
+		;;
 	*)
-		apply_jq '{"conditions":{"ref_name":{"include":[]}},"rules":[]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[]}},\"rules\":[]}" "$@"
 		exit 0
 		;;
 	esac
@@ -186,8 +199,20 @@ if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets"* ]]; then
 		exit 0
 		;;
 	active_required | active_required_star | active_required_plain_branch | \
-		active_required_excluded_default | active_required_other_branch | detail_error)
-		apply_jq '[{"id":101,"enforcement":"active"}]' "$@"
+	active_required_excluded_default | active_required_other_branch | detail_error | detail_malformed | detail_mismatch)
+		apply_jq '[{"id":101,"enforcement":"active","target":"branch"}]' "$@"
+		exit 0
+		;;
+	malformed)
+		apply_jq 'null' "$@"
+		exit 0
+		;;
+	malformed_entry)
+		apply_jq '[{"id":"","enforcement":"active","target":"branch"}]' "$@"
+		exit 0
+		;;
+	active_tag)
+		apply_jq '[{"id":101,"enforcement":"active","target":"tag"}]' "$@"
 		exit 0
 		;;
 	error)
@@ -230,6 +255,10 @@ if [[ "$1" == "api" && "$*" == *"protection/required_status_checks"* ]]; then
 		;;
 	not_found)
 		printf 'gh: HTTP 404: Not Found\n' >&2
+		exit 1
+		;;
+	private_plan_unavailable)
+		printf 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)\n' >&2
 		exit 1
 		;;
 	error)
@@ -574,6 +603,55 @@ test_branch_protection_api_error() {
 	return 0
 }
 
+test_private_plan_unavailable_without_required_rulesets() {
+	reset_logs
+	export MOCK_BP_MODE="private_plan_unavailable"
+	export MOCK_RULESETS_MODE="none"
+	assert_returns 0 "private-plan classic protection unavailable + no required rulesets → allowed"
+	assert_log_contains "private-plan unavailable (HTTP 403)" \
+		"private-plan unavailable: classified narrowly"
+	assert_log_contains "empty contexts" \
+		"private-plan unavailable: successful ruleset lookup proves no configured checks"
+	return 0
+}
+
+test_private_plan_unavailable_ruleset_error() {
+	reset_logs
+	export MOCK_BP_MODE="private_plan_unavailable"
+	export MOCK_RULESETS_MODE="error"
+	assert_returns 1 "private-plan classic protection unavailable + ruleset API error → blocked"
+	assert_log_contains "rulesets list failed" \
+		"private-plan unavailable: ruleset API error remains fail-closed"
+	return 0
+}
+
+test_private_plan_unavailable_malformed_rulesets() {
+	local mode=""
+	for mode in malformed malformed_entry detail_malformed detail_mismatch; do
+		reset_logs
+		export MOCK_BP_MODE="private_plan_unavailable"
+		export MOCK_RULESETS_MODE="$mode"
+		assert_returns 1 "private-plan classic protection unavailable + ${mode} rulesets → blocked"
+		assert_log_contains "parse failed" \
+			"private-plan unavailable: ${mode} ruleset response remains fail-closed"
+	done
+	return 0
+}
+
+test_private_plan_unavailable_ignores_non_branch_rulesets() {
+	reset_logs
+	export MOCK_BP_MODE="private_plan_unavailable"
+	export MOCK_RULESETS_MODE="active_tag"
+	assert_returns 0 "private-plan classic protection unavailable + active tag ruleset → allowed"
+	if grep -Fq '/rulesets/101' "$GH_CALL_LOG"; then
+		print_result "private-plan unavailable: non-branch ruleset detail is not queried" 1 \
+			"gh calls: $(cat "$GH_CALL_LOG")"
+	else
+		print_result "private-plan unavailable: non-branch ruleset detail is not queried" 0
+	fi
+	return 0
+}
+
 test_rollup_api_error() {
 	reset_logs
 	export MOCK_REPO_MODE="ok"
@@ -609,6 +687,10 @@ main() {
 	test_rulesets_non_matching_branch_ignored
 	test_default_branch_api_error
 	test_branch_protection_api_error
+	test_private_plan_unavailable_without_required_rulesets
+	test_private_plan_unavailable_ruleset_error
+	test_private_plan_unavailable_malformed_rulesets
+	test_private_plan_unavailable_ignores_non_branch_rulesets
 	test_rollup_api_error
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

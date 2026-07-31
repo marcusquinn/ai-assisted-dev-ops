@@ -10,6 +10,15 @@ PMRC_CHECK_SUCCESS="success"
 PMRC_CHECK_FAILURE="failure"
 PMRC_BOOL_TRUE="true"
 PMRC_JSON_ARRAY="array"
+PMRC_JSON_NUMBER="number"
+PMRC_JSON_OBJECT="object"
+PMRC_JSON_STRING="string"
+PMRC_RULESET_ACTIVE="active"
+PMRC_RULESET_BRANCH="branch"
+PMRC_RULESET_DISABLED="disabled"
+PMRC_RULESET_EVALUATE="evaluate"
+PMRC_RULESET_PUSH="push"
+PMRC_RULESET_TAG="tag"
 PMRC_MAINTAINER_GATE="maintainer-gate"
 PMRC_MAINTAINER_GATE_DISPLAY="Maintainer Review & Assignee Gate"
 PMRC_MAINTAINER_GATE_WORKFLOW="gate / Maintainer Review & Assignee Gate"
@@ -46,6 +55,73 @@ _pmrc_cache_key() {
 	[[ -n "$safe_key" ]] || safe_key="empty"
 	printf '%s\n' "$safe_key"
 	return 0
+}
+
+_pmrc_classic_protection_unavailable_for_private_repo() {
+	local response="$1"
+	[[ "$response" == *"Upgrade to GitHub Pro or make this repository public to enable this feature."* ]] || return 1
+	[[ "$response" == *"HTTP 403"* ]] || return 1
+	return 0
+}
+
+_pmrc_rulesets_list_schema_valid() {
+	local rulesets_json="$1"
+	printf '%s' "$rulesets_json" | jq -e \
+		--arg active "$PMRC_RULESET_ACTIVE" \
+		--arg array "$PMRC_JSON_ARRAY" \
+		--arg branch "$PMRC_RULESET_BRANCH" \
+		--arg disabled "$PMRC_RULESET_DISABLED" \
+		--arg evaluate "$PMRC_RULESET_EVALUATE" \
+		--arg number "$PMRC_JSON_NUMBER" \
+		--arg obj "$PMRC_JSON_OBJECT" \
+		--arg push "$PMRC_RULESET_PUSH" \
+		--arg string "$PMRC_JSON_STRING" \
+		--arg tag "$PMRC_RULESET_TAG" '
+		type == $array and
+		all(.[];
+			type == $obj and
+			(.id | type == $number and . > 0) and
+			(.enforcement as $value |
+				($value | type == $string) and
+				([$active, $disabled, $evaluate] | index($value) != null)) and
+			(.target as $value |
+				($value | type == $string) and
+				([$branch, $push, $tag] | index($value) != null)))
+	' >/dev/null 2>&1
+	return $?
+}
+
+_pmrc_branch_ruleset_detail_schema_valid() {
+	local detail="$1"
+	local expected_id="$2"
+	printf '%s' "$detail" | jq -e \
+		--arg active "$PMRC_RULESET_ACTIVE" \
+		--arg array "$PMRC_JSON_ARRAY" \
+		--arg branch "$PMRC_RULESET_BRANCH" \
+		--argjson expected_id "$expected_id" \
+		--arg obj "$PMRC_JSON_OBJECT" \
+		--arg number "$PMRC_JSON_NUMBER" \
+		--arg required_status_checks "required_status_checks" \
+		--arg string "$PMRC_JSON_STRING" '
+		type == $obj and
+		(.id | type == $number and . == $expected_id) and
+		.enforcement == $active and
+		.target == $branch and
+		(.conditions.ref_name.include | type == $array) and
+		all(.conditions.ref_name.include[]; type == $string) and
+		((.conditions.ref_name.exclude // []) | type == $array) and
+		all((.conditions.ref_name.exclude // [])[]; type == $string) and
+		(.rules | type == $array) and
+		all(.rules[];
+			type == $obj and (.type | type == $string) and
+			(if .type == $required_status_checks then
+				(.parameters.required_status_checks | type == $array) and
+				all(.parameters.required_status_checks[];
+					type == $obj and
+					((.context // .name // "") | type == $string and length > 0))
+			else true end))
+	' >/dev/null 2>&1
+	return $?
 }
 
 #######################################
@@ -110,10 +186,16 @@ _required_contexts_from_rulesets_for_default_branch() {
 		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
 		return 1
 	}
-	[[ -n "$rulesets_json" && "$rulesets_json" != "[]" && "$rulesets_json" != "null" ]] || return 0
+	if ! _pmrc_rulesets_list_schema_valid "$rulesets_json"; then
+		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)" >>"$log_target"
+		return 1
+	fi
+	[[ "$rulesets_json" != "[]" ]] || return 0
 
 	local active_ids=""
-	active_ids=$(printf '%s' "$rulesets_json" | jq -r '.[]? | select(.enforcement == "active") | .id // empty' 2>/dev/null) || {
+	active_ids=$(printf '%s' "$rulesets_json" | jq -r \
+		--arg active "$PMRC_RULESET_ACTIVE" --arg branch "$PMRC_RULESET_BRANCH" \
+		'.[] | select(.enforcement == $active and .target == $branch) | .id' 2>/dev/null) || {
 		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
 		return 1
 	}
@@ -134,6 +216,11 @@ _required_contexts_from_rulesets_for_default_branch() {
 			rm -f "$contexts_tmp"
 			return 1
 		}
+		if ! _pmrc_branch_ruleset_detail_schema_valid "$detail" "$id"; then
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)" >>"$log_target"
+			rm -f "$contexts_tmp"
+			return 1
+		fi
 
 		include_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.include // [] | .[]' 2>/dev/null) || {
 			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
@@ -206,15 +293,21 @@ _required_contexts_for_default_branch_uncached() {
 		"repos/${repo_slug}/branches/${default_branch}/protection/required_status_checks" \
 		2>&1) || protection_rc=$?
 	if [[ "$protection_rc" -ne 0 ]]; then
+		local classic_unavailable_reason=""
 		if grep -qi 'HTTP 404\|Not Found' <<<"$protection_resp"; then
-			local ruleset_contexts_404=""
-			ruleset_contexts_404=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
-			if [[ -n "$ruleset_contexts_404" ]]; then
-				echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (HTTP 404), but active rulesets require contexts (GH#23019)" >>"$log_target"
-				printf '%s\n' "$ruleset_contexts_404"
+			classic_unavailable_reason="HTTP 404"
+		elif _pmrc_classic_protection_unavailable_for_private_repo "$protection_resp"; then
+			classic_unavailable_reason="private-plan unavailable (HTTP 403)"
+		fi
+		if [[ -n "$classic_unavailable_reason" ]]; then
+			local ruleset_contexts_unavailable=""
+			ruleset_contexts_unavailable=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
+			if [[ -n "$ruleset_contexts_unavailable" ]]; then
+				echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (${classic_unavailable_reason}), but active rulesets require contexts (GH#23019, GH#28864)" >>"$log_target"
+				printf '%s\n' "$ruleset_contexts_unavailable"
 				return 0
 			fi
-			echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (HTTP 404) — empty contexts (t3193, GH#23019)" >>"$log_target"
+			echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (${classic_unavailable_reason}) — empty contexts (t3193, GH#23019, GH#28864)" >>"$log_target"
 			return 0
 		fi
 		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection API failed for ${repo_slug} (exit ${protection_rc}) — caller will fail closed (t2922)" >>"$log_target"
@@ -312,11 +405,11 @@ _pmrc_normalize_snapshot_checks_json() {
 
 	checks_json=$(jq -s \
 		--arg completed "$PMRC_CHECK_COMPLETED" --arg success "$PMRC_CHECK_SUCCESS" --arg failure "$PMRC_CHECK_FAILURE" \
-		--arg array_type "$PMRC_JSON_ARRAY" \
+		--arg array_type "$PMRC_JSON_ARRAY" --arg object_type "$PMRC_JSON_OBJECT" \
 		--arg skipped "skipped" --arg maintainer "$PMRC_MAINTAINER_GATE" --arg maintainer_display "$PMRC_MAINTAINER_GATE_DISPLAY" \
 		--arg maintainer_workflow "$PMRC_MAINTAINER_GATE_WORKFLOW" \
 		--arg review_gate "$PMRC_REVIEW_BOT_GATE" --arg review_gate_workflow "$PMRC_REVIEW_BOT_GATE_WORKFLOW" '
-		if length != 2 or (.[0] | type) != $array_type or (.[1] | type) != "object"
+		if length != 2 or (.[0] | type) != $array_type or (.[1] | type) != $object_type
 		then error("invalid check-runs or commit-status response")
 		else . end |
 		.[0] as $pages | .[1] as $statuses |
@@ -1156,8 +1249,9 @@ _check_ruleset_required_reviews_passing() {
 		echo "[pulse-merge] _check_ruleset_required_reviews_passing: review fetch failed for PR #${pr_number} in ${repo_slug} with ruleset requiring ${required_count} approval(s) — failing closed (GH#24577)" >>"$LOGFILE"
 		return 1
 	fi
-	approved_count=$(jq -er --arg author "$pr_author" --arg empty "$empty_string" --arg array_type "$PMRC_JSON_ARRAY" '
-		if type != $array_type or any(.[]; type != $array_type) or any(.[][]?; type != "object") then
+	approved_count=$(jq -er --arg author "$pr_author" --arg empty "$empty_string" \
+		--arg array_type "$PMRC_JSON_ARRAY" --arg object_type "$PMRC_JSON_OBJECT" '
+		if type != $array_type or any(.[]; type != $array_type) or any(.[][]?; type != $object_type) then
 			error("invalid paginated reviews response")
 		else
 			[.[][]? | {

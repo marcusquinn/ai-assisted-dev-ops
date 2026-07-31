@@ -124,21 +124,22 @@ apply_jq() {
 }
 
 if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets/"* ]]; then
+	branch_identity='"id":101,"target":"branch","enforcement":"active"'
 	case "${MOCK_GH_MODE:-all_pass}" in
 	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error)
-		apply_jq '{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1}}]}" "$@"
 		;;
 	ruleset_mixed_review_status)
-		apply_jq '{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"required-a"}]}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1}},{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"required-a\"}]}}]}" "$@"
 		;;
 	ruleset_review_zero)
-		apply_jq '{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":0}}]}" "$@"
 		;;
 	ruleset_review_malformed_optional)
-		apply_jq '{"conditions":{"ref_name":"unexpected"},"rules":[{"type":"pull_request","parameters":"unexpected"}]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":\"unexpected\"},\"rules\":[{\"type\":\"pull_request\",\"parameters\":\"unexpected\"}]}" "$@"
 		;;
 	*)
-		apply_jq '{"conditions":{"ref_name":{"include":[]}},"rules":[]}' "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[]}},\"rules\":[]}" "$@"
 		;;
 	esac
 	exit 0
@@ -147,7 +148,7 @@ fi
 if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets"* ]]; then
 	case "${MOCK_GH_MODE:-all_pass}" in
 	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_mixed_review_status | ruleset_review_zero | ruleset_review_malformed_optional | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error)
-		apply_jq '[{"id":101,"enforcement":"active"}]' "$@"
+		apply_jq '[{"id":101,"enforcement":"active","target":"branch"}]' "$@"
 		;;
 	*)
 		apply_jq '[]' "$@"
@@ -719,7 +720,7 @@ test_ruleset_review_count_accepts_prefetched_rulesets_json() {
 	export MOCK_GH_MODE="ruleset_review_only_missing"
 	assert_ruleset_review_count_output "1" \
 		"pre-fetched rulesets JSON skips rulesets list fetch" \
-		'[{"id":101,"enforcement":"active"}]'
+		'[{"id":101,"enforcement":"active","target":"branch"}]'
 	assert_gh_call_absent "api repos/marcusquinn/aidevops/rulesets" \
 		"pre-fetched rulesets JSON avoids redundant rulesets list API call"
 	return 0

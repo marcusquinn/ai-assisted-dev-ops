@@ -747,16 +747,16 @@ CACHE
 	print_result "stale gh cache 401: gh pr merge called exactly twice" "$((merge_count == 2 ? 0 : 1))" "merge_count=${merge_count}"
 
 	local stale_quarantined=0
-	if [[ ! -f "${TEST_ROOT}/home/.cache/gh/graphql-401.cache" ]] && \
+	if [[ ! -f "${TEST_ROOT}/home/.cache/gh/graphql-401.cache" ]] &&
 		find "${TEST_ROOT}/home/.cache/gh" -path '*/aidevops-quarantine-*/graphql-401.cache' -type f | grep -q .; then
 		stale_quarantined=1
 	fi
 	print_result "stale gh cache 401: top-level 401 cache quarantined" "$((1 - stale_quarantined))"
 
 	local collision_paths_preserved=0
-	if [[ ! -f "${TEST_ROOT}/home/.cache/gh/api/shared.cache" ]] && \
-		[[ ! -f "${TEST_ROOT}/home/.cache/gh/graphql/shared.cache" ]] && \
-		find "${TEST_ROOT}/home/.cache/gh" -path '*/aidevops-quarantine-*/api/shared.cache' -type f | grep -q . && \
+	if [[ ! -f "${TEST_ROOT}/home/.cache/gh/api/shared.cache" ]] &&
+		[[ ! -f "${TEST_ROOT}/home/.cache/gh/graphql/shared.cache" ]] &&
+		find "${TEST_ROOT}/home/.cache/gh" -path '*/aidevops-quarantine-*/api/shared.cache' -type f | grep -q . &&
 		find "${TEST_ROOT}/home/.cache/gh" -path '*/aidevops-quarantine-*/graphql/shared.cache' -type f | grep -q .; then
 		collision_paths_preserved=1
 	fi
@@ -1141,6 +1141,8 @@ run_prospective_todo_guard() {
 	local base_sha="$2"
 	local head_sha="$3"
 	local fetch_mode="${4:-stub}"
+	local remote_url="${5:-https://github.com/testorg/testrepo.git}"
+	local reported_repo="${6:-testorg/testrepo}"
 	local scripts_dir="${SCRIPT_DIR}/.."
 	local tmp_runner=""
 	local verification_tmp="${fixture_dir}/verification-tmp"
@@ -1151,8 +1153,11 @@ run_prospective_todo_guard() {
 	local hostile_alternates="${fixture_dir}/hostile-alternates"
 	local hostile_index="${fixture_dir}/hostile-index"
 	local fetch_override=""
+	local validation_override=""
 	if [[ "$fetch_mode" == "stub" ]]; then
 		fetch_override='_merge_fetch_pinned_commit_objects() { return 0; }'
+	else
+		validation_override='_merge_validate_target_remote_url() { return 0; }'
 	fi
 	mkdir -p "$verification_tmp" "$attacker_home" "$hostile_objects" "$hostile_alternates"
 	# shellcheck disable=SC2016  # The generated driver expands this at execution time.
@@ -1168,8 +1173,9 @@ set -euo pipefail
 SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
-_merge_fetch_pr_refs_rest() { printf 'main\t%s\t%s\n' '${base_sha}' '${head_sha}'; return 0; }
+_merge_fetch_pr_refs_rest() { printf 'main\t%s\t%s\t%s\t%s\n' '${base_sha}' '${head_sha}' '${reported_repo}' '${remote_url}'; return 0; }
 ${fetch_override}
+${validation_override}
 cd '${fixture_dir}'
 _merge_guard_prospective_todo '42' 'testorg/testrepo'
 RUNNER_EOF
@@ -1249,6 +1255,8 @@ create_prospective_fetch_fixture() {
 	local remote_repo="${fixture_root}/remote.git"
 	local fixture_dir="${fixture_root}/work"
 	local competitor="${fixture_root}/competitor"
+	local caller_remote="${fixture_root}/caller-remote.git"
+	local caller="${fixture_root}/caller"
 	local root_sha="" base_sha="" head_sha=""
 	mkdir -p "$fixture_root" || return 1
 	/usr/bin/git init --bare --initial-branch=main "$remote_repo" >/dev/null 2>&1 || return 1
@@ -1274,14 +1282,24 @@ create_prospective_fetch_fixture() {
 	/usr/bin/git -C "$competitor" commit -q -am head || return 1
 	head_sha=$(/usr/bin/git -C "$competitor" rev-parse HEAD) || return 1
 	/usr/bin/git -C "$competitor" push -q origin "${head_sha}:refs/pull/42/head" || return 1
+	/usr/bin/git init --bare --initial-branch=main "$caller_remote" >/dev/null 2>&1 || return 1
+	/usr/bin/git clone "$caller_remote" "$caller" >/dev/null 2>&1 || return 1
+	/usr/bin/git -C "$caller" config user.email test@test.local || return 1
+	/usr/bin/git -C "$caller" config user.name Test || return 1
+	/usr/bin/git -C "$caller" config commit.gpgsign false || return 1
+	printf 'unrelated caller repository\n' >"${caller}/README.md"
+	/usr/bin/git -C "$caller" add README.md || return 1
+	/usr/bin/git -C "$caller" commit -q -m root || return 1
+	/usr/bin/git -C "$caller" push -q origin main || return 1
 	printf '%s\n' "$base_sha" >"${fixture_root}/base.sha"
 	printf '%s\n' "$head_sha" >"${fixture_root}/head.sha"
-	printf '%s\n' "$fixture_dir"
+	printf '%s\n' "$remote_repo" >"${fixture_root}/remote.url"
+	printf '%s\n' "$caller"
 	return 0
 }
 
 test_prospective_todo_merge_guard() {
-	local fixture_dir="" fixture_root="" base_sha="" head_sha="" output="" rc=0 objects_before="" objects_after=""
+	local fixture_dir="" fixture_root="" base_sha="" head_sha="" remote_url="" output="" rc=0 objects_before="" objects_after=""
 	local cleanup_rc=0 environment_rc=0 isolation_rc=0 storage_before="" storage_after="" absent_before=0 absent_after=0
 	fixture_dir=$(create_prospective_fixture collision)
 	base_sha=$(<"${fixture_dir}/base.sha")
@@ -1330,20 +1348,33 @@ test_prospective_todo_merge_guard() {
 	environment_rc=0
 	isolation_rc=0
 	fixture_dir=$(create_prospective_fetch_fixture) || return 0
-	fixture_root="${fixture_dir%/work}"
+	fixture_root="${fixture_dir%/caller}"
 	base_sha=$(<"${fixture_root}/base.sha")
 	head_sha=$(<"${fixture_root}/head.sha")
+	remote_url=$(<"${fixture_root}/remote.url")
 	storage_before=$(prospective_git_storage_digest "$fixture_dir")
 	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_before=1; fi
-	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" live >/dev/null || rc=$?
+	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" live "$remote_url" >/dev/null || rc=$?
 	storage_after=$(prospective_git_storage_digest "$fixture_dir")
 	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_after=1; fi
 	prospective_contexts_clean "$fixture_dir" || cleanup_rc=$?
 	prospective_hostile_git_environment_clean "$fixture_dir" || environment_rc=$?
-	[[ "$rc" -eq 0 && "$cleanup_rc" -eq 0 && "$environment_rc" -eq 0 && \
-		"$absent_before" -eq 0 && "$absent_after" -eq 0 && \
+	[[ "$rc" -eq 0 && "$cleanup_rc" -eq 0 && "$environment_rc" -eq 0 &&
+		"$absent_before" -eq 0 && "$absent_after" -eq 0 &&
 		"$storage_before" == "$storage_after" ]] || isolation_rc=1
-	print_result "prospective TODO: missing PR objects fetch only into cleaned isolated context" "$isolation_rc"
+	print_result "prospective TODO: explicit target objects fetch from an unrelated caller repository" "$isolation_rc"
+
+	rc=0
+	output=$(run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" live "$remote_url" 'otherorg/otherrepo') || rc=$?
+	print_result "prospective TODO: target repository mismatch fails closed" \
+		"$([[ "$rc" -ne 0 && "$output" == *"does not match the explicit target"* ]] && printf '0' || printf '1')" \
+		"output=$output"
+
+	rc=0
+	output=$(run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" stub 'https://attacker.invalid/testorg/testrepo.git') || rc=$?
+	print_result "prospective TODO: target remote URL mismatch fails closed" \
+		"$([[ "$rc" -ne 0 && "$output" == *"remote URL does not match the explicit target"* ]] && printf '0' || printf '1')" \
+		"output=$output"
 	return 0
 }
 
