@@ -747,14 +747,11 @@ def migrate(connection: sqlite3.Connection) -> None:
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
-        if current < 5:
-            _add_source_v5_columns(connection)
+        _add_source_v5_columns(connection)
         for statement in _tables():
             connection.execute(statement)
-        if current < 2:
-            _add_sync_run_v2_columns(connection)
-        if current < 4:
-            _add_outbound_v4_columns(connection)
+        _add_sync_run_v2_columns(connection)
+        _add_outbound_v4_columns(connection)
         if current in range(1, SCHEMA_VERSION):
             _migrate_fetch_batches_v6(connection)
             _recover_orphaned_fetch_batches_v6(connection)
