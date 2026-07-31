@@ -10,12 +10,32 @@
  * files and never calls a provider endpoint directly.
  */
 
-import { randomUUID } from "node:crypto"
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
+import { createOpenCodeRuntimeAdapter } from "./ai-research-runtime"
+import {
+  ResearchRuntimeError,
+  type CanonicalResearchTier,
+  type OpenCodeRuntimeOptions,
+  type ResearchRuntimeAdapter,
+} from "./ai-research-runtime-types"
 
-export type CanonicalResearchTier = "simple" | "standard" | "thinking"
+export { runCommand } from "./ai-research-command"
+export { parseOpenCodeRuntimeOutput } from "./ai-research-output"
+export { createOpenCodeRuntimeAdapter } from "./ai-research-runtime"
+export {
+  ResearchRuntimeError,
+  type CanonicalResearchTier,
+  type CommandInvocation,
+  type CommandResult,
+  type CommandRunner,
+  type OpenCodeRuntimeOptions,
+  type ResearchRuntimeAdapter,
+  type ResearchRuntimeErrorCode,
+  type ResearchRuntimeRequest,
+  type ResearchRuntimeResult,
+} from "./ai-research-runtime-types"
+
 export type LegacyResearchModel = "haiku" | "sonnet" | "opus"
 export type ResearchModel = CanonicalResearchTier | LegacyResearchModel
 
@@ -38,56 +58,6 @@ export interface ResearchResult {
   calls_remaining: number
 }
 
-export interface ResearchRuntimeRequest {
-  prompt: string
-  systemPrompt: string
-  tier: CanonicalResearchTier
-  maxTokens: number
-  cwd: string
-  signal?: AbortSignal
-}
-
-export interface ResearchRuntimeResult {
-  content: string
-  model: string
-  input_tokens: number
-  output_tokens: number
-  usage_available: boolean
-}
-
-export interface ResearchRuntimeAdapter {
-  run(request: ResearchRuntimeRequest): Promise<ResearchRuntimeResult>
-}
-
-export interface CommandInvocation {
-  command: string[]
-  cwd: string
-  env: Record<string, string>
-  timeoutMs: number
-  maxOutputBytes: number
-  signal?: AbortSignal
-}
-
-export interface CommandResult {
-  stdout: string
-  stderr: string
-  exitCode: number
-  timedOut: boolean
-  aborted: boolean
-  outputLimitExceeded: boolean
-  spawnFailed: boolean
-}
-
-export type CommandRunner = (invocation: CommandInvocation) => Promise<CommandResult>
-
-export interface OpenCodeRuntimeOptions {
-  commandRunner?: CommandRunner
-  env?: Record<string, string | undefined>
-  helperPath?: string
-  tempRoot?: string
-  timeoutMs?: number
-}
-
 export interface ResearchOptions {
   runtime?: ResearchRuntimeAdapter
   cwd?: string
@@ -96,68 +66,11 @@ export interface ResearchOptions {
   runtimeOptions?: OpenCodeRuntimeOptions
 }
 
-export type ResearchRuntimeErrorCode =
-  | "RUNTIME_UNAVAILABLE"
-  | "MODEL_RESOLUTION_FAILED"
-  | "AUTH_FAILED"
-  | "PROVIDER_FAILED"
-  | "MODEL_FAILED"
-  | "RUNTIME_FAILED"
-  | "RUNTIME_TIMEOUT"
-  | "RUNTIME_CANCELLED"
-  | "RUNTIME_PARSE_FAILED"
-  | "OUTPUT_LIMIT"
-
-export class ResearchRuntimeError extends Error {
-  readonly code: ResearchRuntimeErrorCode
-
-  constructor(code: ResearchRuntimeErrorCode, message: string) {
-    super(message)
-    this.name = "ResearchRuntimeError"
-    this.code = code
-  }
-}
-
 const MAX_CALLS_PER_SESSION = 10
 const DEFAULT_MAX_TOKENS = 500
 const MIN_MAX_TOKENS = 50
 const MAX_MAX_TOKENS = 4096
 const OUTPUT_CHARACTERS_PER_TOKEN_CEILING = 8
-const DEFAULT_RUNTIME_TIMEOUT_MS = 120_000
-const MIN_TRANSPORT_OUTPUT_BYTES = 64 * 1024
-const MAX_TRANSPORT_OUTPUT_BYTES = 1024 * 1024
-const ANSI_ESCAPE_PATTERN = new RegExp(
-  `${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`,
-  "g",
-)
-const NESTED_LIFECYCLE_ENV_KEYS = [
-  "AIDEVOPS_ATTEMPT_ID",
-  "AIDEVOPS_ATTEMPT_STARTED_AT",
-  "AIDEVOPS_CORRELATION_ID",
-  "AIDEVOPS_DISPATCH_LEASE_DEVICE",
-  "AIDEVOPS_DISPATCH_LEASE_TOKEN",
-  "AIDEVOPS_PARENT_WORKER_ID",
-  "AIDEVOPS_PERMISSION_GRANT_FILE",
-  "AIDEVOPS_PERMISSION_REQUEST_ID",
-  "AIDEVOPS_ROOT_WORKER_ID",
-  "AIDEVOPS_RUN_ID",
-  "AIDEVOPS_VERBOSE_LIFECYCLE",
-  "AIDEVOPS_WORKER_ID",
-  "AIDEVOPS_WORKER_PREFLIGHT_SENTINEL",
-  "AIDEVOPS_WORKER_PREWARM_DIR",
-  "AIDEVOPS_WORKTREE_OWNER_PATH",
-  "AIDEVOPS_WORKTREE_OWNER_PID",
-  "AIDEVOPS_WORKTREE_OWNER_SESSION",
-  "AIDEVOPS_WORKTREE_OWNER_TASK",
-  "AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE",
-  "DISPATCH_REPO_SLUG",
-  "WORKER_ISSUE_NUMBER",
-  "WORKER_NO_EXIT_PUSH",
-  "WORKER_REPO_SLUG",
-  "WORKER_TARGET_BRANCH",
-  "WORKER_WORKTREE_PATH",
-  "_WORKER_WORKTREE_PATH",
-] as const
 
 const MODEL_ALIASES: Record<ResearchModel, CanonicalResearchTier> = {
   simple: "simple",
@@ -168,9 +81,7 @@ const MODEL_ALIASES: Record<ResearchModel, CanonicalResearchTier> = {
   opus: "thinking",
 }
 
-/**
- * Compact domain -> agent file mapping derived from subagent-index.toon.
- */
+/** Compact domain -> agent file mapping derived from subagent-index.toon. */
 export const DOMAIN_AGENTS: Record<string, string[]> = {
   git: [
     "workflows/git-workflow.md",
@@ -378,426 +289,6 @@ export async function buildSystemPrompt(
   }
   if (request.files?.length) parts.push(...await buildFilesSection(request.files, cwd))
   return parts.join("\n\n")
-}
-
-function createEnvironment(
-  overrides: Record<string, string | undefined> = {},
-): Record<string, string> {
-  const environment: Record<string, string> = {}
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined) environment[name] = value
-  }
-  for (const [name, value] of Object.entries(overrides)) {
-    if (value === undefined) delete environment[name]
-    else environment[name] = value
-  }
-  return environment
-}
-
-function nestedRuntimeEnvironment(
-  overrides: Record<string, string | undefined>,
-): Record<string, string> {
-  const environment = createEnvironment(overrides)
-  for (const name of NESTED_LIFECYCLE_ENV_KEYS) delete environment[name]
-  return environment
-}
-
-async function readLimitedStream(
-  stream: ReadableStream<Uint8Array>,
-  limit: number,
-  onLimit: () => void,
-): Promise<string> {
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let storedBytes = 0
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    const remaining = limit - storedBytes
-    if (value.byteLength > remaining) {
-      if (remaining > 0) {
-        chunks.push(value.slice(0, remaining))
-        storedBytes += remaining
-      }
-      onLimit()
-      await reader.cancel()
-      break
-    }
-    chunks.push(value)
-    storedBytes += value.byteLength
-  }
-
-  const merged = new Uint8Array(storedBytes)
-  let offset = 0
-  for (const chunk of chunks) {
-    merged.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return new TextDecoder().decode(merged)
-}
-
-export const runCommand: CommandRunner = async invocation => {
-  if (invocation.signal?.aborted) {
-    return {
-      stdout: "",
-      stderr: "",
-      exitCode: 130,
-      timedOut: false,
-      aborted: true,
-      outputLimitExceeded: false,
-      spawnFailed: false,
-    }
-  }
-
-  let child: ReturnType<typeof Bun.spawn>
-  try {
-    child = Bun.spawn(invocation.command, {
-      cwd: invocation.cwd,
-      env: invocation.env,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-  } catch {
-    return {
-      stdout: "",
-      stderr: "",
-      exitCode: 127,
-      timedOut: false,
-      aborted: false,
-      outputLimitExceeded: false,
-      spawnFailed: true,
-    }
-  }
-
-  let timedOut = false
-  let aborted = false
-  let outputLimitExceeded = false
-  const stop = () => {
-    if (child.exitCode === null) child.kill()
-  }
-  const timeout = setTimeout(() => {
-    timedOut = true
-    stop()
-  }, invocation.timeoutMs)
-  const abort = () => {
-    aborted = true
-    stop()
-  }
-  invocation.signal?.addEventListener("abort", abort, { once: true })
-  const markOutputLimit = () => {
-    outputLimitExceeded = true
-    stop()
-  }
-
-  try {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      readLimitedStream(
-        child.stdout as ReadableStream<Uint8Array>,
-        invocation.maxOutputBytes,
-        markOutputLimit,
-      ),
-      readLimitedStream(
-        child.stderr as ReadableStream<Uint8Array>,
-        invocation.maxOutputBytes,
-        markOutputLimit,
-      ),
-      child.exited,
-    ])
-    return {
-      stdout,
-      stderr,
-      exitCode,
-      timedOut,
-      aborted,
-      outputLimitExceeded,
-      spawnFailed: false,
-    }
-  } finally {
-    clearTimeout(timeout)
-    invocation.signal?.removeEventListener("abort", abort)
-  }
-}
-
-function runtimeDocument(request: ResearchRuntimeRequest): string {
-  return [
-    "# Focused AI research request",
-    "",
-    "The child runtime has no tools. Use only this attached request and model knowledge.",
-    "This is a headless nested inference call, not an interactive conversation. " +
-      "Do not emit a session greeting, version or status banner, progress update, " +
-      "or invitation for follow-up.",
-    `Keep the answer within approximately ${request.maxTokens} tokens. ` +
-      "The provider-neutral OpenCode adapter treats this as an instruction and " +
-      "applies a conservative transport ceiling because exact provider output-token " +
-      "controls are not exposed consistently.",
-    "",
-    "## System context",
-    request.systemPrompt,
-    "",
-    "## Query",
-    request.prompt,
-  ].join("\n")
-}
-
-function defaultRuntimeHelperPath(env: Record<string, string>): string {
-  const aidevopsDir = env.AIDEVOPS_DIR || join(env.HOME || homedir(), ".aidevops")
-  return join(aidevopsDir, "agents", "scripts", "headless-runtime-helper.sh")
-}
-
-function defaultTempRoot(env: Record<string, string>): string {
-  return env.AIDEVOPS_TEMP_DIR ||
-    join(env.HOME || homedir(), ".aidevops", ".agent-workspace", "tmp")
-}
-
-function transportOutputLimit(maxTokens: number): number {
-  return Math.min(
-    MAX_TRANSPORT_OUTPUT_BYTES,
-    Math.max(MIN_TRANSPORT_OUTPUT_BYTES, maxTokens * 64),
-  )
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(ANSI_ESCAPE_PATTERN, "")
-}
-
-type JsonRecord = Record<string, unknown>
-
-function asRecord(value: unknown): JsonRecord | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonRecord
-    : null
-}
-
-function stringValue(record: JsonRecord, ...keys: string[]): string {
-  for (const key of keys) {
-    if (typeof record[key] === "string" && record[key]) return record[key] as string
-  }
-  return ""
-}
-
-function numberValue(record: JsonRecord, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "number" && Number.isFinite(value)) return value
-  }
-  return undefined
-}
-
-function modelFromRecord(record: JsonRecord): string {
-  const nested = asRecord(record.model)
-  const provider = stringValue(record, "providerID", "provider") ||
-    (nested ? stringValue(nested, "providerID", "provider") : "")
-  const model = stringValue(record, "modelID") ||
-    (nested ? stringValue(nested, "modelID", "id") : "")
-  if (!model) return ""
-  return model.includes("/") || !provider ? model : `${provider}/${model}`
-}
-
-function usageFromRecord(record: JsonRecord): {
-  input: number
-  output: number
-} | null {
-  const tokens = asRecord(record.tokens)
-  const usage = asRecord(record.usage)
-  const source = tokens || usage
-  if (!source) return null
-  const input = numberValue(source, "input", "input_tokens", "prompt_tokens")
-  const output = numberValue(source, "output", "output_tokens", "completion_tokens")
-  if (input === undefined && output === undefined) return null
-  return { input: Math.max(0, input || 0), output: Math.max(0, output || 0) }
-}
-
-export function parseOpenCodeRuntimeOutput(rawOutput: string): ResearchRuntimeResult {
-  const cleanOutput = stripAnsi(rawOutput)
-  const texts: string[] = []
-  let model = ""
-  let inputTokens = 0
-  let outputTokens = 0
-  let usageAvailable = false
-
-  for (const line of cleanOutput.split("\n")) {
-    const selectedModel = line.match(/post_model_select\b[^\n]*\bmodel=([^\s]+)/)?.[1]
-    if (selectedModel) model = selectedModel
-
-    const trimmed = line.trim()
-    if (!trimmed.startsWith("{")) continue
-    let event: JsonRecord
-    try {
-      const parsed = asRecord(JSON.parse(trimmed))
-      if (!parsed) continue
-      event = parsed
-    } catch {
-      continue
-    }
-
-    const part = asRecord(event.part)
-    const eventType = stringValue(event, "type")
-    const partType = part ? stringValue(part, "type") : ""
-    const text = part ? stringValue(part, "text") : stringValue(event, "text")
-    if (text && (eventType === "text" || partType === "text")) texts.push(text)
-
-    const records = [part, asRecord(event.info), asRecord(event.message), event]
-      .filter((record): record is JsonRecord => record !== null)
-    for (const record of records) {
-      const discoveredModel = modelFromRecord(record)
-      if (discoveredModel) model = discoveredModel
-      const usage = usageFromRecord(record)
-      if (usage) {
-        inputTokens = usage.input
-        outputTokens = usage.output
-        usageAvailable = true
-      }
-    }
-  }
-
-  const content = texts.join("\n").trim()
-  if (!content) {
-    throw new ResearchRuntimeError(
-      "RUNTIME_PARSE_FAILED",
-      "OpenCode completed without a parseable research response. Retry the query " +
-        "or inspect the OpenCode runtime logs.",
-    )
-  }
-
-  return {
-    content,
-    model: model || "runtime-selected",
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    usage_available: usageAvailable,
-  }
-}
-
-function runtimeFailure(result: CommandResult, tier: CanonicalResearchTier): ResearchRuntimeError {
-  const diagnostic = `${result.stdout}\n${result.stderr}`.toLowerCase()
-  if (/no (configured |available )?model|failed to resolve[^\n]*model/.test(diagnostic)) {
-    return new ResearchRuntimeError(
-      "MODEL_RESOLUTION_FAILED",
-      `No configured OpenCode model is available for the ${tier} tier. ` +
-        "Authenticate a supported provider or update the canonical routing table.",
-    )
-  }
-  if (/unauthori[sz]ed|authentication|credential|no auth|sign in|http 401|http 403/.test(diagnostic)) {
-    return new ResearchRuntimeError(
-      "AUTH_FAILED",
-      `OpenCode could not authenticate an available provider for the ${tier} tier. ` +
-        "Run `opencode auth` for a supported provider and retry.",
-    )
-  }
-  if (/provider[^\n]*(not found|unsupported|unavailable|disabled)|no available provider/.test(diagnostic)) {
-    return new ResearchRuntimeError(
-      "PROVIDER_FAILED",
-      `OpenCode could not run an available provider for the ${tier} tier. ` +
-        "Check provider availability and canonical routing, then retry.",
-    )
-  }
-  if (/model[^\n]*(not found|unsupported|unavailable)/.test(diagnostic)) {
-    return new ResearchRuntimeError(
-      "MODEL_FAILED",
-      `OpenCode could not run an available model for the ${tier} tier. ` +
-        "Check the canonical routing table and configured provider models.",
-    )
-  }
-  return new ResearchRuntimeError(
-    "RUNTIME_FAILED",
-    `OpenCode research failed for the ${tier} tier. Retry the query or inspect ` +
-      "credential-free OpenCode runtime diagnostics.",
-  )
-}
-
-export function createOpenCodeRuntimeAdapter(
-  options: OpenCodeRuntimeOptions = {},
-): ResearchRuntimeAdapter {
-  const runner = options.commandRunner || runCommand
-
-  return {
-    async run(request): Promise<ResearchRuntimeResult> {
-      const environment = createEnvironment(options.env)
-      const helperPath = options.helperPath || defaultRuntimeHelperPath(environment)
-      const tempRoot = options.tempRoot || defaultTempRoot(environment)
-      const timeoutMs = options.timeoutMs || DEFAULT_RUNTIME_TIMEOUT_MS
-
-      await mkdir(tempRoot, { recursive: true, mode: 0o700 })
-      const requestDir = await mkdtemp(join(tempRoot, "ai-research-"))
-      const requestFile = join(requestDir, "request.md")
-
-      try {
-        await chmod(requestDir, 0o700)
-        await writeFile(requestFile, runtimeDocument(request), {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        })
-        const sessionKey = `ai-research-${process.pid}-${randomUUID().replaceAll("-", "")}`
-        const result = await runner({
-          command: [
-            helperPath,
-            "run",
-            "--role",
-            "triage",
-            "--session-key",
-            sessionKey,
-            "--dir",
-            requestDir,
-            "--title",
-            `AI research (${request.tier})`,
-            "--prompt-file",
-            requestFile,
-            "--tier",
-            request.tier,
-            "--agent",
-            "research-only",
-            "--runtime",
-            "opencode",
-          ],
-          cwd: requestDir,
-          env: nestedRuntimeEnvironment({
-            ...options.env,
-            AIDEVOPS_AI_RESEARCH_TOOL_CEILING: "1",
-            AIDEVOPS_HEADLESS: "1",
-            AIDEVOPS_HEADLESS_AUTH_ISOLATION: "1",
-            AIDEVOPS_SESSION_ORIGIN: "ai-research",
-          }),
-          timeoutMs,
-          maxOutputBytes: transportOutputLimit(request.maxTokens),
-          signal: request.signal,
-        })
-
-        if (result.spawnFailed) {
-          throw new ResearchRuntimeError(
-            "RUNTIME_UNAVAILABLE",
-            "The canonical OpenCode headless runtime helper is unavailable. " +
-              "Deploy aidevops and confirm OpenCode is installed, then retry.",
-          )
-        }
-        if (result.aborted) {
-          throw new ResearchRuntimeError(
-            "RUNTIME_CANCELLED",
-            "The OpenCode research request was cancelled before completion.",
-          )
-        }
-        if (result.timedOut) {
-          throw new ResearchRuntimeError(
-            "RUNTIME_TIMEOUT",
-            `OpenCode research exceeded ${Math.round(timeoutMs / 1000)} seconds. ` +
-              "Narrow the query or retry with a lower workload tier.",
-          )
-        }
-        if (result.outputLimitExceeded) {
-          throw new ResearchRuntimeError(
-            "OUTPUT_LIMIT",
-            "OpenCode research exceeded the bounded transport output. Narrow the " +
-              "query or raise max_tokens within the 4096-token limit.",
-          )
-        }
-        if (result.exitCode !== 0) throw runtimeFailure(result, request.tier)
-        return parseOpenCodeRuntimeOutput(`${result.stderr}\n${result.stdout}`)
-      } finally {
-        await rm(requestDir, { recursive: true, force: true })
-      }
-    },
-  }
 }
 
 function enforceOutputCeiling(content: string, maxTokens: number): void {
