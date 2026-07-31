@@ -1,0 +1,121 @@
+{
+  "identity": {
+    "data": {
+      "id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_111111111111111111111111",
+      "provider_account_id": "111111111111111111111111",
+      "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+      "room_ids": [
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333"
+      ],
+      "server_version": "32.0.8",
+      "talk_version": "22.0.4",
+      "features": ["chat-v2", "conversation-v4", "edit-messages", "federation-v1", "reactions", "talk-polls"]
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {
+        "stream": "messages",
+        "room_index": 0,
+        "position": 90,
+        "stop_at": null
+      },
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:01:00Z",
+        "data": [
+          {
+            "kind": "message",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_777777777777777777777777",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+            "actor_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_888888888888888888888888",
+            "text": "Message deleted before the next observation",
+            "created_at": "2026-07-30T11:00:00Z",
+            "message_type": "comment_deleted",
+            "system_message": "message_deleted",
+            "parent_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_999999999999999999999999",
+            "deleted": true,
+            "edited_at": null,
+            "expiration_at": null,
+            "reactions": {},
+            "mentions": [],
+            "attachments": [],
+            "markdown": false
+          }
+        ],
+        "meta": {
+          "stream": "messages",
+          "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+          "next_room_index": 1,
+          "next_position": 0,
+          "newest_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_777777777777777777777777",
+          "reached_watermark": false,
+          "complete": false
+        }
+      }
+    },
+    {
+      "expect_request": {
+        "stream": "messages",
+        "room_index": 1,
+        "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+        "position": 0,
+        "stop_at": null
+      },
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:02:00Z",
+        "data": [
+          {
+            "kind": "message",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_aaaaaaaaaaaaaaaaaaaaaaab",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+            "actor_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_federated_user_bbbbbbbbbbbbbbbbbbbbbbbb",
+            "text": "Call ended with a retained summary",
+            "created_at": "2026-07-31T11:00:00Z",
+            "message_type": "system",
+            "system_message": "call_ended",
+            "parent_id": null,
+            "deleted": false,
+            "edited_at": null,
+            "expiration_at": null,
+            "reactions": {},
+            "mentions": [],
+            "attachments": [],
+            "markdown": false
+          },
+          {
+            "kind": "message",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_cccccccccccccccccccccccc",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+            "actor_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_guest_dddddddddddddddddddddddd",
+            "text": "Poll object shared",
+            "created_at": "2026-07-31T10:00:00Z",
+            "message_type": "system",
+            "system_message": "object_shared",
+            "parent_id": null,
+            "deleted": false,
+            "edited_at": null,
+            "expiration_at": null,
+            "reactions": {},
+            "mentions": [{"kind": "call", "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_call_eeeeeeeeeeeeeeeeeeeeeeee"}],
+            "attachments": [],
+            "markdown": false
+          }
+        ],
+        "meta": {
+          "stream": "messages",
+          "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+          "next_room_index": 2,
+          "next_position": 0,
+          "newest_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_aaaaaaaaaaaaaaaaaaaaaaab",
+          "reached_watermark": false,
+          "complete": true
+        }
+      }
+    }
+  ]
+}
