@@ -21,7 +21,8 @@ from knowledge_social_import import reject_credentials
 
 READ_TIMEOUT_SECONDS = 180
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-SAFE_PROVIDER_FAILURES = (
+SAFE_PROVIDER_FAILURES = frozenset(
+    {
     "Python urllib HTTP exports are unavailable",
     "Nextcloud Talk profile name is invalid",
     "Nextcloud Talk profile base URL is missing",
@@ -38,6 +39,7 @@ SAFE_PROVIDER_FAILURES = (
     "configured Nextcloud Talk room is unavailable to the selected account",
     "Nextcloud Talk server or app version changed from the configured profile",
     "Nextcloud Talk required read APIs are unavailable",
+    }
 )
 
 

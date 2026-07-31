@@ -39,6 +39,13 @@ class PageContext:
     policy: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ActivityContext:
+    page: PageContext
+    observed_at: str
+    installation: str
+
+
 def _required_text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value or "\x00" in value:
         raise NextcloudTalkAdapterError(f"Nextcloud Talk record requires {field}")
@@ -111,31 +118,29 @@ def _base_activity(
     activity_type: str,
     suffix: str,
     item: dict[str, Any],
-    context: PageContext,
-    observed_at: str,
-    installation: str,
+    context: ActivityContext,
 ) -> dict[str, Any]:
     remote_id = _required_text(item.get("remote_id"), "remote_id")
-    actor = item.get("actor_id") or context.account.get("id")
+    actor = item.get("actor_id") or context.page.account.get("id")
     return {
         "activity_type": activity_type,
         "remote_id": f"{remote_id}_{suffix}",
         "actor_remote_id": _required_text(actor, "activity actor"),
         "object_remote_id": remote_id,
         "occurred_at": _optional_text(item.get("created_at"), "created_at"),
-        "observed_at": observed_at,
+        "observed_at": context.observed_at,
         "state": "deleted" if item.get("deleted") else "active",
         "provider_json": {
             "source": PROVENANCE,
-            "instance_id": installation,
-            "stream": context.stream,
+            "instance_id": context.installation,
+            "stream": context.page.stream,
             "room_id": item.get("room_id"),
         },
     }
 
 
 def _activities(
-    item: dict[str, Any], context: PageContext, observed_at: str, installation: str
+    item: dict[str, Any], context: ActivityContext
 ) -> list[dict[str, Any]]:
     kind = _required_text(item.get("kind"), "kind")
     base_type = {
@@ -144,20 +149,20 @@ def _activities(
         "participant": "participant_membership",
         "message": "message_observed",
     }[kind]
-    activities = [_base_activity(base_type, base_type, item, context, observed_at, installation)]
+    activities = [_base_activity(base_type, base_type, item, context)]
     if item.get("edited_at"):
         activities.append(
-            _base_activity("message_edited", "edited", item, context, observed_at, installation)
+            _base_activity("message_edited", "edited", item, context)
         )
     if item.get("deleted"):
         activities.append(
-            _base_activity("message_deleted", "deleted", item, context, observed_at, installation)
+            _base_activity("message_deleted", "deleted", item, context)
         )
     reactions = item.get("reactions", {})
     if isinstance(reactions, dict):
         for index, (reaction, count) in enumerate(sorted(reactions.items())):
             activity = _base_activity(
-                "reaction_summary", f"reaction_{index}", item, context, observed_at, installation
+                "reaction_summary", f"reaction_{index}", item, context
             )
             activity["provider_json"]["reaction"] = reaction
             activity["provider_json"]["count"] = count
@@ -192,12 +197,13 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
     reject_credentials(payload)
     observed_at = _observed_at(payload)
     installation = instance_id(context.account.get("instance_id"))
+    activity_context = ActivityContext(context, observed_at, installation)
     items = page_data(payload)
     objects = [_object(item, context, observed_at, installation) for item in items]
     activities = [
         activity
         for item in items
-        for activity in _activities(item, context, observed_at, installation)
+        for activity in _activities(item, activity_context)
     ]
     media = [entry for item in items for entry in _media(item)]
     policy = dict(context.policy)

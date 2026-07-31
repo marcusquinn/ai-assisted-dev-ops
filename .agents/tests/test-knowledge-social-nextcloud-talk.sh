@@ -119,7 +119,7 @@ from _knowledge_social_nextcloud_talk import (
     page_request,
     private_fingerprint,
 )
-from _knowledge_social_nextcloud_talk_files import validate_attachment_bytes
+from _knowledge_social_nextcloud_talk_files import AttachmentPolicy, validate_attachment_bytes
 from _knowledge_social_nextcloud_talk_http import (
     HTTP_TIMEOUT_SECONDS,
     ProfileConfig,
@@ -128,7 +128,7 @@ from _knowledge_social_nextcloud_talk_http import (
     installation_fingerprint,
 )
 from _knowledge_social_nextcloud_talk_provider import _profile
-from _knowledge_social_nextcloud_talk_webhook import verify_and_normalize_webhook
+from _knowledge_social_nextcloud_talk_webhook import WebhookPolicy, verify_and_normalize_webhook
 
 assert set(STREAMS) == {"capabilities", "rooms", "participants", "messages"}
 origin = "o" * 32
@@ -218,11 +218,7 @@ content = b"fixture bytes"
 digest = hashlib.sha256(content).hexdigest()
 verified = validate_attachment_bytes(
     content,
-    expected_sha256=digest,
-    expected_size=len(content),
-    mime_type="text/plain",
-    max_bytes=1024,
-    allowed_mime_types=frozenset({"text/plain"}),
+    AttachmentPolicy(digest, len(content), "text/plain", 1024, frozenset({"text/plain"})),
 )
 assert verified.content_sha256 == digest
 
@@ -250,11 +246,7 @@ event = verify_and_normalize_webhook(
         "X-Nextcloud-Talk-Signature": signature,
         "X-Nextcloud-Talk-Backend": base_a,
     },
-    secret=secret,
-    expected_backend=base_a,
-    origin_key=origin,
-    installation=instance_a,
-    allowed_rooms={token: room},
+    WebhookPolicy(secret, base_a, origin, instance_a, {token: room}),
 )
 assert event["room_id"] == room and event["requires_ocs_reconciliation"] is True
 try:
@@ -265,11 +257,7 @@ try:
             "X-Nextcloud-Talk-Signature": "0" * 64,
             "X-Nextcloud-Talk-Backend": base_a,
         },
-        secret=secret,
-        expected_backend=base_a,
-        origin_key=origin,
-        installation=instance_a,
-        allowed_rooms={token: room},
+        WebhookPolicy(secret, base_a, origin, instance_a, {token: room}),
     )
 except RuntimeError:
     pass

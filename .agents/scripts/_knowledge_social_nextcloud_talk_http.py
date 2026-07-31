@@ -83,14 +83,15 @@ def _canonical_path(path: str) -> str:
 def canonical_base_url(value: str) -> str:
     """Canonicalize one HTTPS installation without exposing it in errors."""
     parsed, port = _parsed_url(value)
-    if (
-        parsed.scheme.lower() != "https"
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
+    safe_origin = (
+        parsed.scheme.lower() == "https",
+        parsed.hostname is not None,
+        parsed.username is None,
+        parsed.password is None,
+        not parsed.query,
+        not parsed.fragment,
+    )
+    if not all(safe_origin):
         raise NextcloudTalkReadProviderError(
             "Nextcloud Talk profile base URL must be exact HTTPS"
         )

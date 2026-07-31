@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from _knowledge_social_nextcloud_talk import (
@@ -22,6 +23,15 @@ from _knowledge_social_nextcloud_talk_http import canonical_base_url
 SIGNATURE = re.compile(r"^[0-9a-f]{64}$")
 RANDOM = re.compile(r"^[A-Za-z0-9+/=_-]{32,128}$")
 MAX_WEBHOOK_BYTES = 2 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class WebhookPolicy:
+    secret: str
+    expected_backend: str
+    origin_key: str
+    installation: str
+    allowed_rooms: Mapping[str, str]
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
@@ -127,17 +137,17 @@ def normalize_webhook(
 def verify_and_normalize_webhook(
     body: bytes,
     headers: Mapping[str, str],
-    *,
-    secret: str,
-    expected_backend: str,
-    origin_key: str,
-    installation: str,
-    allowed_rooms: Mapping[str, str],
+    policy: WebhookPolicy,
 ) -> dict[str, Any]:
-    verify_webhook(body, headers, secret=secret, expected_backend=expected_backend)
+    verify_webhook(
+        body,
+        headers,
+        secret=policy.secret,
+        expected_backend=policy.expected_backend,
+    )
     return normalize_webhook(
         body,
-        origin_key=origin_key,
-        installation=installation,
-        allowed_rooms=allowed_rooms,
+        origin_key=policy.origin_key,
+        installation=policy.installation,
+        allowed_rooms=policy.allowed_rooms,
     )

@@ -33,7 +33,8 @@ from _knowledge_social_nextcloud_talk_http import (
     http_opener,
     installation_fingerprint,
 )
-from _knowledge_social_nextcloud_talk_routes import identity, page
+from _knowledge_social_nextcloud_talk_identity import identity
+from _knowledge_social_nextcloud_talk_routes import page
 
 MAX_REQUEST_BYTES = 64 * 1024
 PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
@@ -130,13 +131,14 @@ def _verify_page(request: PageRequest, data: dict[str, Any], config: ProfileConf
         if request.stream in ("capabilities", "rooms")
         else rooms[request.room_index]
     )
-    if (
-        request.instance_id != config.instance_id
-        or request.instance_id != data.get("instance_id")
-        or request.account_id != data.get("id")
-        or request.provider_account_id != data.get("provider_account_id")
-        or request.room_id != expected_room
-    ):
+    bindings_match = (
+        request.instance_id == config.instance_id,
+        request.instance_id == data.get("instance_id"),
+        request.account_id == data.get("id"),
+        request.provider_account_id == data.get("provider_account_id"),
+        request.room_id == expected_room,
+    )
+    if not all(bindings_match):
         raise NextcloudTalkReadProviderError(
             "selected Nextcloud Talk account or room does not match the profile"
         )
