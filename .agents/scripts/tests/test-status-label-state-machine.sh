@@ -70,6 +70,7 @@ append_stub_gh_mutations() {
 if [[ "${1:-}" == "api" && "${2:-}" == "-X" ]]; then
 	[[ "${STUB_REST_MUTATION_FAIL:-0}" == "1" ]] && exit 1
 	[[ -n "${STUB_REST_MUTATION_FAIL_METHOD:-}" && "${3:-}" == "${STUB_REST_MUTATION_FAIL_METHOD}" ]] && exit 1
+	[[ -n "${STUB_REST_MUTATION_FAIL_LABEL:-}" && "${3:-}" == "DELETE" && "${4:-}" == */labels/"${STUB_REST_MUTATION_FAIL_LABEL}" ]] && exit 1
 	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && "${3:-}" == "POST" && "${4:-}" == */labels ]]; then
 		for arg in "$@"; do
 			case "$arg" in
@@ -85,6 +86,11 @@ if [[ "${1:-}" == "api" && "${2:-}" == "-X" ]]; then
 	elif [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && "${3:-}" == "DELETE" && "${4:-}" == */labels/* ]]; then
 		encoded_label="${4##*/}"
 		label="${encoded_label//%3A/:}"
+		if [[ "$encoded_label" == "${STUB_CONCURRENT_REMOVE_TRIGGER:-}" && -n "${STUB_CONCURRENT_REMOVE_BEFORE_DELETE:-}" ]]; then
+			jq --arg label "${STUB_CONCURRENT_REMOVE_BEFORE_DELETE}" '.labels |= map(select(.name != $label))' \
+				"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
+			mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
+		fi
 		jq --arg label "$label" '.labels |= map(select(.name != $label))' \
 			"${ISSUE_STATE_FILE}" >"${ISSUE_STATE_FILE}.next" || exit 1
 		mv "${ISSUE_STATE_FILE}.next" "${ISSUE_STATE_FILE}"
@@ -118,7 +124,6 @@ write_stub_gh() {
 #!/usr/bin/env bash
 # Stub gh for test-status-label-state-machine.sh — records all calls.
 printf '%s\n' "$*" >>"${GH_CALLS_FILE}"
-
 if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/labels\?per_page=100 ]]; then
 	[[ "${STUB_LABEL_LIST_FAIL:-0}" == "1" ]] && exit 1
 	printf '%s\t%s\t%s\n' \
@@ -135,7 +140,6 @@ if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/labels\?per_page=100 ]]; then
 	fi
 	exit 0
 fi
-
 if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/issues/[0-9]* ]]; then
 	[[ "${STUB_ISSUE_GET_FAIL:-0}" == "1" ]] && exit 1
 	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" && -f "${ISSUE_STATE_FILE}" ]]; then
@@ -157,6 +161,13 @@ if [[ "${1:-}" == "api" && "${2:-}" == /repos/*/issues/[0-9]* ]]; then
 		fi
 	elif [[ -n "${STUB_ISSUE_JSON:-}" ]]; then
 		printf '%s\n' "$STUB_ISSUE_JSON"
+	elif issue_num="${2##*/}" && edit_call=$(grep "^issue edit ${issue_num} " "${GH_CALLS_FILE}" | tail -1) && [[ -n "$edit_call" ]]; then
+		status=$(printf '%s\n' "$edit_call" | sed -n 's/.*--add-label status:\([^ ]*\).*/\1/p')
+		if [[ -n "$status" ]]; then
+			printf '{"labels":[{"name":"status:%s"}],"assignees":[]}\n' "$status"
+		else
+			printf '%s\n' '{"labels":[],"assignees":[]}'
+		fi
 	else
 		exit 1
 	fi
@@ -165,7 +176,6 @@ fi
 STUBEOF
 	append_stub_gh_mutations
 	cat >>"${STUB_DIR}/gh" <<'STUBEOF'
-
 if [[ "${1:-}" == "label" ]]; then
 	if [[ "${2:-}" == "create" && "${STUB_LABEL_CREATE_CONFLICT:-0}" == "1" ]]; then
 		: >"${STATUS_LABEL_STATE_FILE}"
@@ -175,7 +185,6 @@ if [[ "${1:-}" == "label" ]]; then
 	: >"${STATUS_LABEL_STATE_FILE}"
 	exit 0
 fi
-
 if [[ "${1:-}" == "issue" && "${2:-}" == "edit" ]]; then
 	[[ "${STUB_NATIVE_EDIT_FAIL:-0}" == "1" ]] && exit 1
 	if [[ "${STUB_STATEFUL_ISSUE:-0}" == "1" ]]; then
@@ -222,8 +231,10 @@ _reset_state() {
 	: >"$GH_CALLS_FILE"
 	rm -f "$STATUS_LABEL_STATE_FILE" "$ISSUE_STATE_FILE" "$ISSUE_STATE_FILE.next" "$ISSUE_CONCURRENT_MARKER"
 	unset STUB_ISSUE_JSON STUB_ISSUE_GET_FAIL STUB_REST_MUTATION_FAIL STUB_REST_MUTATION_FAIL_METHOD
+	unset STUB_REST_MUTATION_FAIL_LABEL
 	unset STUB_NATIVE_EDIT_FAIL
 	unset STUB_STATEFUL_ISSUE STUB_CONCURRENT_LABEL_AFTER_GET STUB_CONCURRENT_ASSIGNEE_AFTER_GET
+	unset STUB_CONCURRENT_REMOVE_TRIGGER STUB_CONCURRENT_REMOVE_BEFORE_DELETE
 	unset STUB_LABEL_LIST_FAIL STUB_LABEL_MODE STUB_LABEL_CREATE_CONFLICT STUB_LABEL_WRITE_FAIL
 	return 0
 }
@@ -496,7 +507,8 @@ test_dispatch_realistic_pattern() {
 #######################################
 test_rest_first_transition() {
 	_reset_state
-	export STUB_ISSUE_JSON='{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[{"login":"stale-worker"}]}'
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[{"login":"stale-worker"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
 	set_issue_status 314 "owner/repo" "queued" --remove-assignee "stale-worker"
 	local rc=$?
 	if [[ "$rc" -eq 0 ]] &&
@@ -893,6 +905,107 @@ test_owned_transition_preconditions_fail_closed() {
 	return 0
 }
 
+#######################################
+# TEST 24: A competing writer adds a different target after the first writer's
+# snapshot. Post-write verification chooses the canonical precedence winner,
+# removes only the loser, and preserves unrelated metadata.
+#######################################
+test_competing_status_writers_converge_by_precedence() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:needs-info"},{"name":"status:available"}],"assignees":[{"login":"observer"}]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_LABEL_AFTER_GET="status:done"
+	set_issue_status 1628 "owner/repo" "queued" >/dev/null 2>&1
+	local rc=$?
+	local final_labels=""
+	local reads=0
+	local writes=0
+	final_labels=$(jq -r '.labels[].name' "$ISSUE_STATE_FILE" | sort)
+	reads=$(grep -c '^api /repos/owner/repo/issues/1628$' "$GH_CALLS_FILE" || true)
+	writes=$(grep -Ec '^api -X (POST|DELETE) /repos/owner/repo/issues/1628/' "$GH_CALLS_FILE" || true)
+	if [[ "$rc" -eq 0 && "$final_labels" == $'bug\nstatus:done\nstatus:needs-info' && "$reads" -eq 4 && "$writes" -eq 3 ]] &&
+		jq -e '.assignees == [{"login":"observer"}]' "$ISSUE_STATE_FILE" >/dev/null; then
+		print_result "competing writers converge (4 reads, 3 writes) and preserve exception labels" 0
+	else
+		print_result "competing writers converge (4 reads, 3 writes) and preserve exception labels" 1 \
+			"(rc=${rc}; labels=${final_labels}; reads=${reads}; writes=${writes}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 25: A failed loser removal is visible and bounded: one repair attempt is
+# made, no native full-array fallback runs, and unrelated metadata survives.
+#######################################
+test_competing_status_repair_failure_is_bounded() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"bug"},{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_LABEL_AFTER_GET="status:done"
+	export STUB_REST_MUTATION_FAIL_LABEL="status%3Aqueued"
+	set_issue_status 1629 "owner/repo" "queued" >/dev/null 2>&1
+	local rc=$?
+	local repair_attempts=0
+	repair_attempts=$(grep -c '^api -X DELETE /repos/owner/repo/issues/1629/labels/status%3Aqueued$' "$GH_CALLS_FILE" || true)
+	if [[ "$rc" -ne 0 && "$repair_attempts" -eq 1 ]] &&
+		! grep -q '^issue edit 1629 ' "$GH_CALLS_FILE" &&
+		jq -e 'any(.labels[]; .name == "bug")' "$ISSUE_STATE_FILE" >/dev/null; then
+		print_result "failed competing-writer repair is bounded and visible" 0
+	else
+		print_result "failed competing-writer repair is bounded and visible" 1 \
+			"(rc=${rc}; repairs=${repair_attempts}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 26: The canonical blocked/available safety exception keeps blocked even
+# though ordinary lifecycle precedence ranks available first.
+#######################################
+test_blocked_available_conflict_fails_closed() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_LABEL_AFTER_GET="status:blocked"
+	set_issue_status 1630 "owner/repo" "available" >/dev/null 2>&1
+	local rc=$?
+	local final_status=""
+	final_status=$(jq -r '.labels[].name' "$ISSUE_STATE_FILE")
+	if [[ "$rc" -eq 0 && "$final_status" == "status:blocked" ]]; then
+		print_result "blocked/available conflict keeps blocked" 0
+	else
+		print_result "blocked/available conflict keeps blocked" 1 \
+			"(rc=${rc}; status=${final_status}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
+#######################################
+# TEST 27: If a competing writer removes the selected winner after the repair
+# snapshot, terminal verification observes the zero-status gap and restores the
+# winner once rather than returning apparent success with no managed status.
+#######################################
+test_stale_loser_deletion_is_compensated() {
+	_reset_state
+	printf '%s\n' '{"labels":[{"name":"status:available"}],"assignees":[]}' >"$ISSUE_STATE_FILE"
+	export STUB_STATEFUL_ISSUE=1
+	export STUB_CONCURRENT_LABEL_AFTER_GET="status:done"
+	export STUB_CONCURRENT_REMOVE_TRIGGER="status%3Aqueued"
+	export STUB_CONCURRENT_REMOVE_BEFORE_DELETE="status:done"
+	set_issue_status 1631 "owner/repo" "queued" >/dev/null 2>&1
+	local rc=$?
+	local compensation_adds=0
+	compensation_adds=$(grep -c '^api -X POST /repos/owner/repo/issues/1631/labels -f labels\[\]=status:done$' "$GH_CALLS_FILE" || true)
+	if [[ "$rc" -eq 0 && "$compensation_adds" -eq 1 ]] &&
+		jq -e '.labels == [{"name":"status:done"}]' "$ISSUE_STATE_FILE" >/dev/null; then
+		print_result "stale loser deletion receives bounded compensation" 0
+	else
+		print_result "stale loser deletion receives bounded compensation" 1 \
+			"(rc=${rc}; compensation_adds=${compensation_adds}; calls=$(cat "$GH_CALLS_FILE"))"
+	fi
+	return 0
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -921,6 +1034,10 @@ main() {
 	test_owned_transition_failed_add_preserves_source
 	test_owned_transition_failed_remove_preserves_overlap
 	test_owned_transition_preconditions_fail_closed
+	test_competing_status_writers_converge_by_precedence
+	test_competing_status_repair_failure_is_bounded
+	test_blocked_available_conflict_fails_closed
+	test_stale_loser_deletion_is_compensated
 
 	printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

@@ -578,6 +578,162 @@ ensure_status_labels_exist() {
 }
 
 #######################################
+# Pick the deterministic survivor from newline-separated managed status names.
+# The canonical precedence is shared with the issue invariant reconciler.
+_status_convergence_survivor() {
+	local statuses="$1"
+	local precedent=""
+	local current=""
+	local has_available=0
+	local has_blocked=0
+	local has_active=0
+	local blocked_status="blocked"
+	while IFS= read -r current; do
+		[[ "$current" == "available" ]] && has_available=1
+		[[ "$current" == "$blocked_status" ]] && has_blocked=1
+		[[ "$current" != "available" && "$current" != "$blocked_status" ]] && has_active=1
+	done <<<"$statuses"
+	if [[ "$has_available" -eq 1 && "$has_blocked" -eq 1 && "$has_active" -eq 0 ]]; then
+		printf '%s\n' "$blocked_status"
+		return 0
+	fi
+	for precedent in "${ISSUE_STATUS_LABEL_PRECEDENCE[@]}"; do
+		while IFS= read -r current; do
+			[[ "$current" == "$precedent" ]] && {
+				printf '%s\n' "$precedent"
+				return 0
+			}
+		done <<<"$statuses"
+	done
+	return 1
+}
+
+#######################################
+# Print only canonical managed statuses from a validated issue snapshot.
+# Other status-prefixed workflow labels are unrelated metadata.
+_managed_statuses_from_snapshot() {
+	local current_json="$1"
+	local label=""
+	local managed=""
+	_rest_issue_delta_snapshot_valid "$current_json" || return 1
+	while IFS= read -r label; do
+		for managed in "${ISSUE_STATUS_LABELS[@]}"; do
+			[[ "$label" == "status:${managed}" ]] && {
+				printf '%s\n' "$managed"
+				break
+			}
+		done
+	done < <(printf '%s' "$current_json" | jq -r '.labels[].name')
+	return 0
+}
+
+#######################################
+# Count non-empty newline-separated statuses without external tooling.
+_managed_status_count() {
+	local statuses="$1"
+	local current=""
+	local count=0
+	while IFS= read -r current; do
+		[[ -n "$current" ]] && count=$((count + 1))
+	done <<<"$statuses"
+	printf '%s\n' "$count"
+	return 0
+}
+
+#######################################
+# Read and validate the current canonical managed statuses.
+_read_managed_issue_statuses() {
+	local issue_path="$1"
+	local route="$2"
+	local current_json=""
+	AIDEVOPS_GH_ROUTE_DECISION="$route" \
+		current_json=$(_rest_api_call read gh api "$issue_path" 2>/dev/null) || return 1
+	_managed_statuses_from_snapshot "$current_json"
+	return $?
+}
+
+#######################################
+# Re-read immediately before destructive repair, then remove only losers from
+# that fresh snapshot. Prints the winner used by the repair.
+_repair_issue_status_conflict() {
+	local issue_num="$1"
+	local issue_path="$2"
+	local statuses=""
+	local status_count=0
+	local winner=""
+	local current=""
+	statuses=$(_read_managed_issue_statuses "$issue_path" "status-convergence-repair-snapshot-rest") || return 1
+	status_count=$(_managed_status_count "$statuses") || return 1
+	[[ "$status_count" -gt 0 ]] || return 1
+	if [[ "$status_count" -eq 1 ]]; then
+		printf '%s\n' "$statuses"
+		return 0
+	fi
+	winner=$(_status_convergence_survivor "$statuses") || return 1
+	gh_record_call rest status_convergence_conflict unknown rest-core status-convergence-conflict 2>/dev/null || true
+	print_warning "gh-wrapper: reconciling competing managed statuses on issue ${issue_num} to status:${winner}"
+	while IFS= read -r current; do
+		[[ -n "$current" && "$current" != "$winner" ]] || continue
+		gh_record_call rest status_convergence_repair unknown rest-core status-convergence-repair 2>/dev/null || true
+		AIDEVOPS_GH_ROUTE_DECISION="status-convergence-repair-rest" \
+			_rest_issue_remove_label_deltas "$issue_path" "status:${current}" || return 1
+	done <<<"$statuses"
+	printf '%s\n' "$winner"
+	return 0
+}
+
+#######################################
+# Restore a precedence winner only when a terminal read observed no managed
+# status. A different surviving status is never overwritten. The add and final
+# read are each attempted once, bounding recovery from a stale loser deletion.
+_compensate_missing_issue_status() {
+	local issue_path="$1"
+	local winner="$2"
+	local statuses=""
+	gh_record_call rest status_convergence_compensate unknown rest-core status-convergence-compensate 2>/dev/null || true
+	AIDEVOPS_GH_ROUTE_DECISION="status-convergence-compensate-rest" \
+		_rest_issue_apply_array_delta POST "${issue_path}/labels" labels "status:${winner}" || return 1
+	statuses=$(_read_managed_issue_statuses "$issue_path" "status-convergence-compensate-verify-rest") || return 1
+	[[ "$statuses" == "$winner" ]]
+	return $?
+}
+
+#######################################
+# Verify one completed status mutation and repair one observed conflict.
+# This is bounded eventual convergence, not an atomic compare-and-swap: one
+# verification read is typical; conflicts get one fresh repair snapshot, one
+# loser-removal pass, and one terminal read.
+_verify_issue_status_convergence() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local cleared_status="$3"
+	local issue_path="/repos/${repo_slug}/issues/${issue_num}"
+	local statuses=""
+	local status_count=0
+	local winner=""
+
+	gh_record_call rest status_convergence_verify unknown rest-core status-convergence-verify 2>/dev/null || true
+	statuses=$(_read_managed_issue_statuses "$issue_path" "status-convergence-verify-rest") || return 1
+	status_count=$(_managed_status_count "$statuses") || return 1
+	if [[ "$status_count" -eq 0 ]]; then
+		[[ -z "$cleared_status" ]] && return 0
+		return 1
+	fi
+	[[ "$status_count" -eq 1 ]] && return 0
+	winner=$(_repair_issue_status_conflict "$issue_num" "$issue_path") || return 1
+
+	gh_record_call rest status_convergence_terminal_verify unknown rest-core status-convergence-terminal-verify 2>/dev/null || true
+	statuses=$(_read_managed_issue_statuses "$issue_path" "status-convergence-terminal-verify-rest") || return 1
+	if [[ "$statuses" != "$winner" ]]; then
+		status_count=$(_managed_status_count "$statuses") || return 1
+		[[ "$status_count" -eq 0 ]] || return 1
+		_compensate_missing_issue_status "$issue_path" "$winner" || return 1
+	fi
+	gh_record_call rest status_convergence_complete unknown rest-core status-convergence-complete 2>/dev/null || true
+	return 0
+}
+
+#######################################
 # Transition an issue to one status:* label (t2033).
 #
 # The REST-first path uses targeted label and assignee subresource mutations so
@@ -676,6 +832,9 @@ set_issue_status() {
 				AIDEVOPS_GH_ROUTE_DECISION="status-combined-native-fallback" \
 					_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" \
 					"${_status_flags[@]}" "${_extra_flags[@]}" 2>/dev/null
+				_rc=$?
+				[[ $_rc -eq 0 ]] || return $_rc
+				_verify_issue_status_convergence "$issue_num" "$repo_slug" "$new_status"
 				return $?
 			fi
 			print_info "[INFO] gh-wrapper: REST status extras failed, falling back to native gh issue edit"
@@ -698,7 +857,9 @@ set_issue_status() {
 			_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo_slug" "${_status_flags[@]}" 2>/dev/null
 		_rc=$?
 	fi
-	return $_rc
+	[[ $_rc -eq 0 ]] || return $_rc
+	_verify_issue_status_convergence "$issue_num" "$repo_slug" "$new_status"
+	return $?
 }
 
 #######################################
