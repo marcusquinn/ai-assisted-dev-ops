@@ -61,6 +61,7 @@ _PULSE_DISPATCH_CORE_LOADED=1
 _PULSE_DISPATCH_FALSE="false"
 _PULSE_DISPATCH_ELIGIBILITY_STAGE="eligibility_gate"
 _PULSE_DISPATCH_NMR_LABEL="needs-maintainer-review"
+_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION="COLLABORATOR"
 
 # t2863: Module-level variable defaults (set -u guards).
 # Ensures LOGFILE is safe to dereference in all functions when this module
@@ -622,12 +623,13 @@ _issue_thread_is_trusted_maintainer_only() {
 	[[ -n "$comments_json" && "$comments_json" != "null" ]] || comments_json="[]"
 
 	local untrusted_comment_count
-	untrusted_comment_count=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" '
+	untrusted_comment_count=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" \
+		--arg collaborator_association "$_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION" '
 		(if type == $array_type and (.[0]? | type) == $array_type then [.[][]]
 		elif type == $array_type then .
 		else [] end)
 		| [ .[] | select(
-			((.author_association // "NONE") as $a | ($a != "OWNER" and $a != "MEMBER" and $a != "COLLABORATOR"))
+			((.author_association // "NONE") as $a | ($a != "OWNER" and $a != "MEMBER" and $a != $collaborator_association))
 			and (((.user.login // .author.login // "") as $login
 				| ((($login == "github-actions[bot]") or ($login == "github-actions"))
 					and ((.body // "") | test("^<!-- (nmr-hold-guidance|ever-nmr-remediation) -->")))) | not)
@@ -637,12 +639,28 @@ _issue_thread_is_trusted_maintainer_only() {
 	[[ "$untrusted_comment_count" =~ ^[0-9]+$ ]] || return 1
 	[[ "$untrusted_comment_count" -eq 0 ]] || return 1
 
-	local collaborator_comment_logins
-	collaborator_comment_logins=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" '
+	local missing_collaborator_login_count
+	missing_collaborator_login_count=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" \
+		--arg collaborator_association "$_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION" '
 		(if type == $array_type and (.[0]? | type) == $array_type then [.[][]]
 		elif type == $array_type then .
 		else [] end)
-		| [ .[] | select((.author_association // "NONE") == "COLLABORATOR") | (.user.login // .author.login // "") ]
+		| [ .[] | select(
+			(.author_association // "NONE") == $collaborator_association
+			and ((.user.login // .author.login // "") == "")
+		) ]
+		| length
+	') || return 1
+	[[ "$missing_collaborator_login_count" =~ ^[0-9]+$ ]] || return 1
+	[[ "$missing_collaborator_login_count" -eq 0 ]] || return 1
+
+	local collaborator_comment_logins
+	collaborator_comment_logins=$(printf '%s' "$comments_json" | jq -r --arg array_type "array" \
+		--arg collaborator_association "$_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION" '
+		(if type == $array_type and (.[0]? | type) == $array_type then [.[][]]
+		elif type == $array_type then .
+		else [] end)
+		| [ .[] | select((.author_association // "NONE") == $collaborator_association) | (.user.login // .author.login // "") ]
 		| unique | .[]
 	') || return 1
 	local comment_login
@@ -662,7 +680,7 @@ _issue_actor_has_repo_write_permission() {
 	# #aidevops:trust-boundary — never trust bare COLLABORATOR association for
 	# ever-NMR bypass. GitHub can use COLLABORATOR for ambiguous private-org
 	# events; require an authenticated per-repo permission lookup.
-	_gh_actor_has_repo_write_authority "$repo_slug" "$login" "COLLABORATOR"
+	_gh_actor_has_repo_write_authority "$repo_slug" "$login" "$_PULSE_DISPATCH_COLLABORATOR_ASSOCIATION"
 	return $?
 }
 
