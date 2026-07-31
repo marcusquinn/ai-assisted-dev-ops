@@ -23,22 +23,22 @@ READ_TIMEOUT_SECONDS = 180
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 SAFE_PROVIDER_FAILURES = frozenset(
     {
-    "Python urllib HTTP exports are unavailable",
-    "Nextcloud Talk profile name is invalid",
-    "Nextcloud Talk profile base URL is missing",
-    "Nextcloud Talk profile base URL must be exact HTTPS",
-    "Nextcloud Talk profile username is missing",
-    "Nextcloud Talk profile app password is missing",
-    "Nextcloud Talk profile origin key is missing",
-    "Nextcloud Talk profile origin key must be at least 32 bytes",
-    "Nextcloud Talk profile room allowlist is invalid",
-    "Nextcloud Talk profile server major is invalid",
-    "Nextcloud Talk profile Talk major is invalid",
-    "selected Nextcloud Talk account does not match the profile",
-    "selected Nextcloud Talk account or room does not match the profile",
-    "configured Nextcloud Talk room is unavailable to the selected account",
-    "Nextcloud Talk server or app version changed from the configured profile",
-    "Nextcloud Talk required read APIs are unavailable",
+        "Python urllib HTTP exports are unavailable",
+        "Nextcloud Talk profile name is invalid",
+        "Nextcloud Talk profile base URL is missing",
+        "Nextcloud Talk profile base URL must be exact HTTPS",
+        "Nextcloud Talk profile username is missing",
+        "Nextcloud Talk profile app password is missing",
+        "Nextcloud Talk profile origin key is missing",
+        "Nextcloud Talk profile origin key must be at least 32 bytes",
+        "Nextcloud Talk profile room allowlist is invalid",
+        "Nextcloud Talk profile server major is invalid",
+        "Nextcloud Talk profile Talk major is invalid",
+        "selected Nextcloud Talk account does not match the profile",
+        "selected Nextcloud Talk account or room does not match the profile",
+        "configured Nextcloud Talk room is unavailable to the selected account",
+        "Nextcloud Talk server or app version changed from the configured profile",
+        "Nextcloud Talk required read APIs are unavailable",
     }
 )
 
@@ -98,6 +98,29 @@ class GuardedNextcloudTalk(GuardedOAuthReader):
         super().__init__(helper, profile, NEXTCLOUD_TALK_READER_POLICY)
 
 
+def _fixture_object(value: Any, description: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise NextcloudTalkAdapterError(
+            f"Nextcloud Talk fixture {description} must be an object"
+        )
+    return value
+
+
+def _fixture_response(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
+    expected = _fixture_object(entry.get("expect_request", {}), "request expectation")
+    actual = request.payload()
+    mismatches = {
+        key: (value, actual.get(key))
+        for key, value in expected.items()
+        if actual.get(key) != value
+    }
+    if mismatches:
+        raise NextcloudTalkAdapterError(
+            "Nextcloud Talk request did not resume at the expected checkpoint"
+        )
+    return _fixture_object(entry.get("response", entry), "page response")
+
+
 class FixtureNextcloudTalk:
     """Deterministic OCS substitute for version, pagination, and failure fixtures."""
 
@@ -109,23 +132,7 @@ class FixtureNextcloudTalk:
         return self.fixture.identity()
 
     def page(self, request: PageRequest) -> dict[str, Any]:
-        entry = self.fixture.next_page()
-        expectation = entry.get("expect_request", {})
-        if not isinstance(expectation, dict):
-            raise NextcloudTalkAdapterError(
-                "Nextcloud Talk fixture request expectation must be an object"
-            )
-        actual = request.payload()
-        if any(actual.get(key) != value for key, value in expectation.items()):
-            raise NextcloudTalkAdapterError(
-                "Nextcloud Talk request did not resume at the expected checkpoint"
-            )
-        response = entry.get("response", entry)
-        if not isinstance(response, dict):
-            raise NextcloudTalkAdapterError(
-                "Nextcloud Talk fixture page response must be an object"
-            )
-        return response
+        return _fixture_response(self.fixture.next_page(), request)
 
 
 def _bounded_text(value: Any, field: str, *, optional: bool = False) -> str | None:
