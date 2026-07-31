@@ -987,11 +987,12 @@ _enable_launchd() {
 
 	mkdir -p "$LAUNCHD_DIR"
 
-	# Create named symlink so macOS System Settings shows "aidevops-repo-aidevops-health"
+	# Create named symlink so macOS System Settings shows "aidevops-repo-aidevops-health".
+	# Preserve an already-correct link to avoid repeat background-item notices.
 	local bin_dir="$HOME/.aidevops/bin"
 	mkdir -p "$bin_dir"
 	local display_link="$bin_dir/aidevops-repo-aidevops-health"
-	ln -sf "$script_path" "$display_link"
+	aidevops_ensure_symlink_target "$script_path" "$display_link" || return 1
 
 	# Generate plist content and compare to existing (t1265)
 	local new_content

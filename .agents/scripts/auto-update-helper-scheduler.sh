@@ -196,11 +196,12 @@ _cmd_enable_launchd() {
 	mkdir -p "$LAUNCHD_DIR"
 
 	# Create named symlink so macOS System Settings shows "aidevops-auto-update"
-	# instead of the raw script name (t1260)
+	# instead of the raw script name (t1260). Preserve an already-correct link
+	# so recurring enable checks do not register a new background item.
 	local bin_dir="$HOME/.aidevops/bin"
 	mkdir -p "$bin_dir"
 	local display_link="$bin_dir/aidevops-auto-update"
-	ln -sf "$script_path" "$display_link"
+	aidevops_ensure_symlink_target "$script_path" "$display_link" || return 1
 
 	# Generate plist content and compare to existing (t1265)
 	local new_content

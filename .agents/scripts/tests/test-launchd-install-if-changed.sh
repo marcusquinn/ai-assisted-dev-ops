@@ -19,7 +19,9 @@ SCHEDULERS_SH="$REPO_ROOT/.agents/scripts/setup/modules/schedulers.sh"
 SCHEDULERS_PLATFORM_SH="$REPO_ROOT/.agents/scripts/setup/modules/schedulers-platform.sh"
 SHARED_CONSTANTS_SH="$REPO_ROOT/.agents/scripts/shared-constants.sh"
 AUTO_UPDATE_SH="$REPO_ROOT/.agents/scripts/auto-update-helper.sh"
+AUTO_UPDATE_SCHEDULER_SH="$REPO_ROOT/.agents/scripts/auto-update-helper-scheduler.sh"
 REPO_SYNC_SH="$REPO_ROOT/.agents/scripts/repo-sync-helper.sh"
+REPO_HEALTH_SH="$REPO_ROOT/.agents/scripts/repo-aidevops-health-helper.sh"
 
 # shellcheck source=../shared-constants.sh
 source "$SHARED_CONSTANTS_SH"
@@ -500,7 +502,9 @@ test_display_link_install_is_idempotent() {
 	fi
 
 	if ! grep -qF "$expected_call" "$AUTO_UPDATE_SH" ||
-		! grep -qF "$expected_call" "$REPO_SYNC_SH"; then
+		! grep -qF "$expected_call" "$AUTO_UPDATE_SCHEDULER_SH" ||
+		! grep -qF "$expected_call" "$REPO_SYNC_SH" ||
+		! grep -qF "$expected_call" "$REPO_HEALTH_SH"; then
 		print_result "display_link_install_is_idempotent" 1 "one or more LaunchAgent installers bypass the idempotent helper"
 		return 0
 	fi
