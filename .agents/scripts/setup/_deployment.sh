@@ -39,6 +39,12 @@ _sync_agent_bin_shims() {
 		for shim in "${target_dir}/bin/"*; do
 			[[ -f "$shim" ]] || continue
 			shim_name="$(basename "$shim")"
+			# These names are owned by the launchd installers. Replacing them
+			# with routine wrappers makes setup and scheduler enablement alternate
+			# the targets, which triggers repeat macOS background-item notices.
+			case "$shim_name" in
+			aidevops-auto-update | aidevops-repo-sync) continue ;;
+			esac
 			ln -sf "$shim" "${user_bin_dir}/${shim_name}"
 		done
 	fi

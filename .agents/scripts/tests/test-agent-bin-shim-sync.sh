@@ -85,13 +85,21 @@ tmp_home="$(mktemp -d)"
 tmp_target="${tmp_home}/.aidevops/agents"
 trap 'rm -rf "$tmp_home"' EXIT
 
-mkdir -p "${tmp_target}/bin" "${tmp_home}/.aidevops/bin" "${tmp_home}/elsewhere"
+mkdir -p "${tmp_target}/bin" "${tmp_target}/scripts" "${tmp_home}/.aidevops/bin" "${tmp_home}/elsewhere"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/gh_create_pr"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/gh_create_issue"
-chmod +x "${tmp_target}/bin/gh_create_pr" "${tmp_target}/bin/gh_create_issue"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-auto-update"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-repo-sync"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/scripts/auto-update-helper.sh"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/scripts/repo-sync-helper.sh"
+chmod +x "${tmp_target}/bin/gh_create_pr" "${tmp_target}/bin/gh_create_issue" \
+	"${tmp_target}/bin/aidevops-auto-update" "${tmp_target}/bin/aidevops-repo-sync" \
+	"${tmp_target}/scripts/auto-update-helper.sh" "${tmp_target}/scripts/repo-sync-helper.sh"
 
 ln -sf "${tmp_target}/bin/retired_shim" "${tmp_home}/.aidevops/bin/retired_shim"
 ln -sf "${tmp_home}/elsewhere/external" "${tmp_home}/.aidevops/bin/external_link"
+ln -sf "${tmp_target}/scripts/auto-update-helper.sh" "${tmp_home}/.aidevops/bin/aidevops-auto-update"
+ln -sf "${tmp_target}/scripts/repo-sync-helper.sh" "${tmp_home}/.aidevops/bin/aidevops-repo-sync"
 printf 'user file\n' >"${tmp_home}/.aidevops/bin/user_tool"
 
 # shellcheck disable=SC1090
@@ -107,6 +115,10 @@ assert_symlink_target "gh_create_pr shim is linked into user PATH bin" \
 	"${tmp_home}/.aidevops/bin/gh_create_pr" "${tmp_target}/bin/gh_create_pr"
 assert_symlink_target "gh_create_issue shim is linked into user PATH bin" \
 	"${tmp_home}/.aidevops/bin/gh_create_issue" "${tmp_target}/bin/gh_create_issue"
+assert_symlink_target "auto-update launchd display link is preserved" \
+	"${tmp_home}/.aidevops/bin/aidevops-auto-update" "${tmp_target}/scripts/auto-update-helper.sh"
+assert_symlink_target "repo-sync launchd display link is preserved" \
+	"${tmp_home}/.aidevops/bin/aidevops-repo-sync" "${tmp_target}/scripts/repo-sync-helper.sh"
 assert_missing "stale aidevops-owned shim symlink is removed" \
 	"${tmp_home}/.aidevops/bin/retired_shim"
 assert_exists "external symlink is preserved" \
