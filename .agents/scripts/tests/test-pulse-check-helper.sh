@@ -197,6 +197,25 @@ if [[ " $* " == *" --search "* ]]; then
   printf '[]\n'
   exit 0
 fi
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" && " $* " == *"public/repo-two"* ]]; then
+  printf 'simulated queue scan failure\n' >&2
+  exit 1
+fi
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" ]]; then
+  if [[ " $* " == *"private/repo-one"* ]]; then
+    cat <<'JSON'
+[
+  {"number":11,"title":"private eligible","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:standard"}]},
+  {"number":12,"title":"private assigned","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"worker"}],"labels":[{"name":"auto-dispatch"},{"name":"status:queued"},{"name":"tier:standard"}]},
+  {"number":13,"title":"private nmr","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:thinking"},{"name":"needs-maintainer-review"}]},
+  {"number":14,"title":"private malformed","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]}
+]
+JSON
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
 if [[ " $* " == *"private/repo-one"* ]]; then
   cat <<'JSON'
 [
@@ -256,7 +275,7 @@ printf '%s=== pulse-check-helper.sh tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
 
 OUT=$(env "${COMMON_ENV[@]}" "$HELPER" report 2>&1)
 assert_contains "text report shows empty active capacity" "Active workers: 0 / 6" "$OUT"
-assert_contains "text report excludes infrastructure advisories from available work" "Auto-dispatch queue: 5 available / 6 open" "$OUT"
+assert_contains "text report distinguishes eligible work" "Auto-dispatch queue: 5 available (4 eligible) / 6 open" "$OUT"
 assert_contains "underfilled finding appears" "pulse-underfilled-auto-dispatch-queue" "$OUT"
 assert_contains "launch accounting finding appears" "pulse-launch-accounting-gap" "$OUT"
 assert_not_contains "text report omits private slug" "private/repo-one" "$OUT"
@@ -297,6 +316,38 @@ ACTIVE_IDS=$(printf '%s' "$JSON_ACTIVE_OUT" | jq -r '[.findings[].id] | sort | j
 assert_eq "json reports process-scan active workers" "2" "$ACTIVE_COUNT"
 assert_eq "json recomputes available slots from process count" "4" "$ACTIVE_AVAILABLE"
 assert_eq "process-scan active workers suppress underfill finding" "auto-dispatch-missing-tier-labels" "$ACTIVE_IDS"
+
+cat >"${TEST_ROOT}/current-state-shortfall.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": true,
+  "dispatch_stage_events": 2,
+  "active_worker_processes": 2,
+  "current_state_guardrails": {"available_slots_last": 22},
+  "pulse_gauges": {"dispatch_capacity_final_max_workers": 24},
+  "worker_outcomes": {"spawned": 0},
+  "worker_terminal_events": 0,
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-shortfall.sh"
+SHORTFALL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=shortfall" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
+SHORTFALL_IDS=$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[].id] | sort | join(",")')
+assert_eq "active workers do not hide eligible queue shortfall" "auto-dispatch-missing-tier-labels,pulse-eligible-queue-under-target,pulse-inactive-nmr-holds" "$SHORTFALL_IDS"
+assert_eq "shortfall fixture has one eligible issue" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.eligible_available_unassigned')"
+assert_eq "shortfall fixture distinguishes assigned work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
+assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_explicit_hold')"
+assert_contains "NMR advisory names updatedAt inactivity basis" "issue_updatedAt_not_label_application_time" "$SHORTFALL_OUT"
+assert_not_contains "shortfall JSON omits private issue title" "private nmr" "$SHORTFALL_OUT"
+
+SCAN_ERROR_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=scan-error" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
+assert_contains "partial scan reports GitHub error" "pulse-check-gh-scan-errors" "$SCAN_ERROR_OUT"
+assert_not_contains "partial scan suppresses queue shortfall" "pulse-eligible-queue-under-target" "$SCAN_ERROR_OUT"
+assert_not_contains "partial scan suppresses NMR inactivity" "pulse-inactive-nmr-holds" "$SCAN_ERROR_OUT"
 
 cat >"${TEST_ROOT}/current-state.sh" <<'SH'
 #!/usr/bin/env bash
