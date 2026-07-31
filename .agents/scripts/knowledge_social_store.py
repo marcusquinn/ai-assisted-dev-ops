@@ -513,13 +513,19 @@ def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
     )
     connection.execute("DROP TABLE fetch_batches")
     connection.execute("ALTER TABLE fetch_batches_v6 RENAME TO fetch_batches")
-    for table in ("objects", "activities", "media", "coverage_records", "tombstones"):
-        for row, batch_id, _ in migrated:
-            if row["batch_id"] != batch_id:
-                connection.execute(
-                    f"UPDATE {table} SET batch_id=? WHERE batch_id=?",
-                    (batch_id, row["batch_id"]),
-                )
+    aliases = [
+        (batch_id, row["batch_id"])
+        for row, batch_id, _ in migrated
+        if row["batch_id"] != batch_id
+    ]
+    for statement in (
+        "UPDATE objects SET batch_id=? WHERE batch_id=?",
+        "UPDATE activities SET batch_id=? WHERE batch_id=?",
+        "UPDATE media SET batch_id=? WHERE batch_id=?",
+        "UPDATE coverage_records SET batch_id=? WHERE batch_id=?",
+        "UPDATE tombstones SET batch_id=? WHERE batch_id=?",
+    ):
+        connection.executemany(statement, aliases)
 
 
 def _orphan_projection_batch_ids(connection: sqlite3.Connection) -> list[str]:
@@ -563,12 +569,12 @@ def _raw_envelope_for_batch(
 def _recover_orphaned_fetch_batches_v6(connection: sqlite3.Connection) -> None:
     for batch_id in _orphan_projection_batch_ids(connection):
         envelope, blob_ref = _raw_envelope_for_batch(connection, batch_id)
-        resource_count = sum(
-            connection.execute(
-                f"SELECT count(*) FROM {table} WHERE batch_id=?", (batch_id,)
-            ).fetchone()[0]
-            for table in ("objects", "activities", "media")
-        )
+        resource_count = connection.execute(
+            """SELECT (SELECT count(*) FROM objects WHERE batch_id=?) +
+                      (SELECT count(*) FROM activities WHERE batch_id=?) +
+                      (SELECT count(*) FROM media WHERE batch_id=?)""",
+            (batch_id, batch_id, batch_id),
+        ).fetchone()[0]
         connection.execute(
             """INSERT INTO fetch_batches(
                  batch_id,provider,connection_id,stream,request_hash,response_hash,
