@@ -16,6 +16,7 @@ import urllib.request
 from collections import namedtuple
 from datetime import datetime, timezone
 
+from email_jmap_collection import run_filtered_sync
 from email_jmap_index import (
     _SYNC_STATE_UPSERT,
     _init_index_db,
@@ -247,7 +248,7 @@ def cmd_index_sync(args):
 
     Uses JMAP state strings for efficient delta sync when available.
     """
-    _, account_id, api_url = _session_context(args)
+    session, account_id, api_url = _session_context(args)
 
     mailbox_name = args.mailbox or "INBOX"
     mailbox_id = _resolve_mailbox_id(
@@ -259,6 +260,21 @@ def cmd_index_sync(args):
             file=sys.stderr,
         )
         return 1
+
+    if getattr(args, "filter_config", ""):
+        filtered_result = run_filtered_sync(
+            args,
+            (session, account_id, api_url),
+            (mailbox_name, mailbox_id),
+        )
+        if filtered_result is not None:
+            return filtered_result
+    if getattr(args, "dry_run", False):
+        print(
+            "ERROR: --dry-run requires --filter-config for JMAP sync",
+            file=sys.stderr,
+        )
+        return 2
 
     account_key = f"{args.user}@jmap"
     db_conn = _init_index_db()

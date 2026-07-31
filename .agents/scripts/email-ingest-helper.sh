@@ -23,20 +23,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -z "${NC+x}" ]] && NC='\033[0m'
 
 if ! declare -f print_info >/dev/null 2>&1; then
-	print_info() { local _m="$1"; printf "${BLUE}[INFO]${NC} %s\n" "$_m"; }
+	print_info() {
+		local _m="$1"
+		printf "${BLUE}[INFO]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_success >/dev/null 2>&1; then
-	print_success() { local _m="$1"; printf "${GREEN}[OK]${NC} %s\n" "$_m"; }
+	print_success() {
+		local _m="$1"
+		printf "${GREEN}[OK]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_warning >/dev/null 2>&1; then
-	print_warning() { local _m="$1"; printf "${YELLOW}[WARN]${NC} %s\n" "$_m"; }
+	print_warning() {
+		local _m="$1"
+		printf "${YELLOW}[WARN]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 if ! declare -f print_error >/dev/null 2>&1; then
-	print_error() { local _m="$1"; printf "${RED}[ERROR]${NC} %s\n" "$_m"; }
+	print_error() {
+		local _m="$1"
+		printf "${RED}[ERROR]${NC} %s\n" "$_m"
+		return 0
+	}
 fi
 
 KNOWLEDGE_HELPER="${SCRIPT_DIR}/knowledge-helper.sh"
 EMAIL_PARSER="${SCRIPT_DIR}/email_parse.py"
+COLLECTION_RECEIPTS="${SCRIPT_DIR}/email_collection_receipts.py"
 SENSITIVITY_DETECTOR="${SCRIPT_DIR}/sensitivity-detector-helper.sh"
 DOC_EXTRACTOR="${SCRIPT_DIR}/document-extraction-helper.sh"
 META_DEFAULT_SENSITIVITY="internal"
@@ -97,6 +114,26 @@ _allocate_source_id() {
 	return 0
 }
 
+_existing_email_source() {
+	local sources_dir="$1"
+	local content_sha="$2"
+	local message_id="$3"
+	local meta_path existing_sha existing_message_id existing_kind
+	for meta_path in "${sources_dir}"/*/meta.json; do
+		[[ -f "$meta_path" ]] || continue
+		existing_kind=$(jq -r '.kind // ""' "$meta_path" 2>/dev/null || true)
+		[[ "$existing_kind" == "email" ]] || continue
+		existing_sha=$(jq -r '.sha256 // ""' "$meta_path" 2>/dev/null || true)
+		existing_message_id=$(jq -r '.message_id // ""' "$meta_path" 2>/dev/null || true)
+		if [[ -n "$content_sha" && "$content_sha" != "$_UNKNOWN_STR" && "$existing_sha" == "$content_sha" ]] ||
+			[[ -n "$message_id" && "$existing_message_id" == "$message_id" ]]; then
+			jq -r '.id // ""' "$meta_path" 2>/dev/null
+			return 0
+		fi
+	done
+	return 1
+}
+
 # _sanitise_html: strip tracking pixels and remote beacon images
 # Args: <html-content>  (reads from stdin if no arg)
 _sanitise_html() {
@@ -118,6 +155,7 @@ _sanitise_html() {
 # _write_email_meta: write meta.json with email-specific fields
 # Args: <meta_path> <source_id> <source_uri> <sha256> <size_bytes>
 #        <parsed_json_file> <body_text_sha> <body_html_sha> <child_ids_json>
+#        <collection_receipt_file>
 _write_email_meta() {
 	local meta_path="$1"
 	local source_id="$2"
@@ -128,6 +166,7 @@ _write_email_meta() {
 	local body_text_sha="$7"
 	local body_html_sha="$8"
 	local child_ids_json="$9"
+	local collection_receipt_file="${10}"
 	_require_jq || return 1
 	local ts actor
 	ts=$(date -u +"$_TS_FMT" 2>/dev/null || date +"$_TS_FMT")
@@ -146,6 +185,7 @@ _write_email_meta() {
 		--arg bh_sha "${body_html_sha:-$_NULL_STR}" \
 		--arg nil "$_NULL_STR" \
 		--argjson children "$child_ids_json" \
+		--argjson collection "$(cat "$collection_receipt_file")" \
 		'{
 			version: 1,
 			id: $id,
@@ -169,7 +209,8 @@ _write_email_meta() {
 			references: ($parsed.references // ""),
 			body_text_sha: (if $bt_sha == $nil then null else $bt_sha end),
 			body_html_sha: (if $bh_sha == $nil then null else $bh_sha end),
-			attachments: $children
+			attachments: $children,
+			collection_refs: $collection
 		}' >"$meta_path"
 	return 0
 }
@@ -310,9 +351,20 @@ cmd_ingest() {
 		local _key="$1"
 		shift
 		case "$_key" in
-		--repo-path) local _rp="$1"; repo_path="$_rp"; shift ;;
-		--sensitivity) local _s="$1"; sensitivity_override="$_s"; shift ;;
-		-*) print_error "Unknown option: $_key"; return 1 ;;
+		--repo-path)
+			local _rp="$1"
+			repo_path="$_rp"
+			shift
+			;;
+		--sensitivity)
+			local _s="$1"
+			sensitivity_override="$_s"
+			shift
+			;;
+		-*)
+			print_error "Unknown option: $_key"
+			return 1
+			;;
 		*) [[ -z "$eml_path" ]] && eml_path="$_key" ;;
 		esac
 	done
@@ -329,8 +381,8 @@ cmd_ingest() {
 	repo_path="$(cd "$repo_path" && pwd)"
 	# Resolve knowledge root via knowledge-helper.sh
 	local knowledge_root
-	knowledge_root=$(bash "$KNOWLEDGE_HELPER" status "$repo_path" 2>/dev/null \
-		| grep -oE '/[^ ]*_knowledge' | head -1 || true)
+	knowledge_root=$(bash "$KNOWLEDGE_HELPER" status "$repo_path" 2>/dev/null |
+		grep -oE '/[^ ]*_knowledge' | head -1 || true)
 	if [[ -z "$knowledge_root" ]]; then
 		# Fallback: construct from repo_path
 		knowledge_root="${repo_path}/_knowledge"
@@ -360,6 +412,27 @@ _do_ingest() {
 		rm -rf "$parse_dir"
 		return 1
 	fi
+	local collection_receipt_file="${parse_dir}/collection-receipt.json"
+	if ! python3 "$COLLECTION_RECEIPTS" extract --eml "$eml_path" >"$collection_receipt_file"; then
+		print_error "Invalid email collection receipt: $eml_path"
+		rm -rf "$parse_dir"
+		return 1
+	fi
+	local eml_sha256 parsed_message_id existing_source_id
+	eml_sha256=$(_sha256_file "$eml_path") || eml_sha256="$_UNKNOWN_STR"
+	parsed_message_id=$(jq -r '.message_id // ""' "$parsed_json_file")
+	if existing_source_id=$(_existing_email_source "$sources_dir" "$eml_sha256" "$parsed_message_id"); then
+		if ! python3 "$COLLECTION_RECEIPTS" merge-meta \
+			--eml "$eml_path" \
+			--meta "${sources_dir}/${existing_source_id}/meta.json"; then
+			print_error "Failed to merge collection references: $existing_source_id"
+			rm -rf "$parse_dir"
+			return 1
+		fi
+		rm -rf "$parse_dir"
+		print_success "Ingested email (existing canonical): $existing_source_id"
+		return 0
+	fi
 	# Allocate parent source ID
 	local basename_no_ext
 	basename_no_ext="$(basename "$eml_path")"
@@ -371,8 +444,7 @@ _do_ingest() {
 	# Store body files
 	_store_body_files "$parsed_json_file" "$source_dir" "$parse_dir"
 	# Compute hashes
-	local eml_sha256 eml_size body_text_sha body_html_sha
-	eml_sha256=$(_sha256_file "$eml_path") || eml_sha256="$_UNKNOWN_STR"
+	local eml_size body_text_sha body_html_sha
 	eml_size=$(wc -c <"$eml_path" | tr -d ' ')
 	body_text_sha=$(_compute_body_sha "${source_dir}/text.txt")
 	body_html_sha=$(_compute_body_sha "${source_dir}/body.html")
@@ -386,7 +458,8 @@ _do_ingest() {
 	source_uri="file://${abs_path}"
 	_write_email_meta "${source_dir}/meta.json" "$source_id" "$source_uri" \
 		"$eml_sha256" "$eml_size" "$parsed_json_file" \
-		"$body_text_sha" "$body_html_sha" "$children_json"
+		"$body_text_sha" "$body_html_sha" "$children_json" \
+		"$collection_receipt_file"
 	# Run sensitivity on parent
 	_run_sensitivity "$source_id" "$knowledge_root"
 	# Apply sensitivity override if provided
@@ -484,7 +557,7 @@ main() {
 	local subcommand="${1:-help}"
 	shift || true
 	case "$subcommand" in
-	ingest)  cmd_ingest "$@" ;;
+	ingest) cmd_ingest "$@" ;;
 	help | -h | --help) cmd_help ;;
 	*)
 		print_error "Unknown subcommand: $subcommand"

@@ -33,8 +33,12 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 init_log_file
 
 readonly CASE_HELPER="${SCRIPT_DIR}/case-helper.sh"
+readonly MATCH_RULES_PY="${SCRIPT_DIR}/email_match_rules.py"
+readonly COLLECTION_RECEIPTS_PY="${SCRIPT_DIR}/email_collection_receipts.py"
 readonly DEFAULT_FILTER_CONFIG_NAME="_config/email-filters.json"
 readonly FILTER_STATE_FILENAME=".email-filter-state.json"
+readonly _RULE_OPERATOR_KEY="operator"
+readonly _RULE_VALUE_KEY="value"
 
 # =============================================================================
 # Root resolution
@@ -82,6 +86,36 @@ _resolve_filter_state() {
 	echo "${knowledge_root}/${FILTER_STATE_FILENAME}"
 }
 
+_resolve_mailbox_config() {
+	local knowledge_root="$1"
+	local repo_config
+	repo_config="$(dirname "$knowledge_root")/_config/mailboxes.json"
+	if [[ -f "$repo_config" ]]; then
+		printf '%s\n' "$repo_config"
+		return 0
+	fi
+	local global_config="${HOME}/.config/aidevops/mailboxes.json"
+	[[ -f "$global_config" ]] && printf '%s\n' "$global_config"
+	return 0
+}
+
+_rule_account_identities() {
+	local rule_json="$1" knowledge_root="$2"
+	local mailbox_config
+	mailbox_config="$(_resolve_mailbox_config "$knowledge_root")"
+	[[ -n "$mailbox_config" ]] || return 0
+	local mailbox_ids
+	mailbox_ids="$(_jq_c "$rule_json" '.mailboxes // []')"
+	jq -r --argjson ids "$mailbox_ids" '
+        [.mailboxes[]
+         | .id as $id
+         | select(($ids | length) == 0 or ($ids | index($id)) != null)
+         | ((.identities // []) + [(.user // empty)])[]]
+        | unique[]
+    ' "$mailbox_config" 2>/dev/null || true
+	return 0
+}
+
 _resolve_cases_dir() {
 	local knowledge_root="$1"
 	local parent
@@ -101,6 +135,14 @@ _check_deps() {
 	fi
 	if ! command -v python3 &>/dev/null; then
 		print_error "python3 is required for regex matching."
+		ok=0
+	fi
+	if [[ ! -f "$MATCH_RULES_PY" ]]; then
+		print_error "email_match_rules.py is required for version 2 filters."
+		ok=0
+	fi
+	if [[ ! -f "$COLLECTION_RECEIPTS_PY" ]]; then
+		print_error "email_collection_receipts.py is required for collection rules."
 		ok=0
 	fi
 	[[ "$ok" -eq 1 ]] && return 0 || return 1
@@ -155,12 +197,49 @@ _load_filter_state() {
 	fi
 }
 
+_load_filter_state_digest() {
+	local state_file="$1"
+	if [[ -f "$state_file" ]]; then
+		jq -r '.rules_digest // ""' "$state_file" 2>/dev/null || true
+	else
+		echo ""
+	fi
+	return 0
+}
+
+_load_filter_source_digests() {
+	local state_file="$1"
+	if [[ -f "$state_file" ]]; then
+		jq -c '.source_collection_digests // {}' "$state_file" 2>/dev/null || echo '{}'
+	else
+		echo '{}'
+	fi
+	return 0
+}
+
+_filter_rules_digest() {
+	local filter_json="$1"
+	printf '%s' "$filter_json" |
+		jq -cS '[.rules[] | select(if has("enabled") then .enabled else true end)]' |
+		python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'
+	return 0
+}
+
+_source_collection_digest() {
+	local meta_path="$1"
+	jq -cS '.collection_refs // []' "$meta_path" |
+		python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'
+	return 0
+}
+
 _save_filter_state() {
-	local state_file="$1" last_id="$2"
+	local state_file="$1" last_id="$2" rules_digest="$3" source_digests="$4"
 	local ts
 	ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
-	printf '{"last_processed_source_id": "%s", "updated_at": "%s"}\n' \
-		"$last_id" "$ts" >"$state_file"
+	jq -n --arg last_id "$last_id" --arg ts "$ts" --arg digest "$rules_digest" \
+		--argjson source_digests "$source_digests" \
+		'{last_processed_source_id: $last_id, updated_at: $ts, rules_digest: $digest, source_collection_digests: $source_digests}' >"$state_file"
+	return 0
 }
 
 # =============================================================================
@@ -188,6 +267,25 @@ _list_email_sources() {
 _get_meta_field() {
 	local meta_path="$1" field="$2"
 	jq -r --arg f "$field" '.[$f] // ""' "$meta_path" 2>/dev/null || true
+}
+
+_rule_is_eligible_for_source() {
+	local rule_json="$1"
+	local meta_path="$2"
+	printf '%s' "$rule_json" |
+		python3 "$COLLECTION_RECEIPTS_PY" eligible --meta "$meta_path" >/dev/null
+	return $?
+}
+
+_rule_collection_mode() {
+	local rule_json="$1"
+	_jq_r "$rule_json" '
+        if has("collection") then .collection
+        elif ((.match // {}) | (has("all") or has("any"))) then true
+        else false
+        end
+    '
+	return 0
 }
 
 # =============================================================================
@@ -262,7 +360,21 @@ _read_two_fields() {
 
 # Returns 0 (match) or 1 (no match)
 _evaluate_rule_match() {
-	local match_json="$1" meta_path="$2"
+	local match_json="$1" meta_path="$2" identities="${3:-}" collection="${4:-false}"
+	local schema_v2
+	schema_v2="$(_jq_r "$match_json" 'if (has("all") or has("any")) then "1" else "0" end')"
+	if [[ "$schema_v2" == "1" ]]; then
+		local identity_args=() identity rule_payload
+		while IFS= read -r identity; do
+			[[ -n "$identity" ]] && identity_args+=(--account-identity "$identity")
+		done <<<"$identities"
+		rule_payload="$(jq -cn --argjson match "$match_json" --argjson collection "$collection" \
+			'{"id":"post-ingest-rule","collection":$collection,"match":$match}')"
+		if printf '%s' "$rule_payload" | python3 "$MATCH_RULES_PY" match-meta --meta "$meta_path" "${identity_args[@]}" >/dev/null; then
+			return 0
+		fi
+		return 1
+	fi
 
 	local from subject body
 	from="$(_read_two_fields "$meta_path" "from" "sender")"
@@ -312,6 +424,21 @@ _evaluate_rule_match() {
 	fi
 
 	return 0
+}
+
+_rule_matches_source() {
+	local collection="$1"
+	local match_json="$2"
+	local meta_path="$3"
+	local identities="$4"
+	# Exact collection provenance already certifies the private transport match.
+	if [[ "$collection" == "true" ]]; then
+		return 0
+	fi
+	if _evaluate_rule_match "$match_json" "$meta_path" "$identities" "$collection"; then
+		return 0
+	fi
+	return 1
 }
 
 # =============================================================================
@@ -391,6 +518,40 @@ _execute_rule_actions() {
 	return 0
 }
 
+_process_source_rules() {
+	local source_id="$1"
+	local meta_path="$2"
+	local filter_json="$3"
+	local rule_count="$4"
+	local knowledge_root="$5"
+	local cases_dir="$6"
+	local dry_run="$7"
+	local matched=1 i=0
+	while [[ "$i" -lt "$rule_count" ]]; do
+		local rule enabled collection
+		rule="$(_jq_c "$filter_json" ".rules[$i]")"
+		enabled="$(_jq_r "$rule" 'if has("enabled") then .enabled else true end')"
+		collection="$(_rule_collection_mode "$rule")"
+		if [[ "$enabled" != "true" ]] || ! _rule_is_eligible_for_source "$rule" "$meta_path"; then
+			i=$((i + 1))
+			continue
+		fi
+		local rule_name match_json actions_json identities
+		rule_name="$(_jq_r "$rule" '.name // "unnamed"')"
+		match_json="$(_jq_c "$rule" '.match // {}')"
+		actions_json="$(_jq_c "$rule" '.actions // []')"
+		identities="$(_rule_account_identities "$rule" "$knowledge_root")"
+		if _rule_matches_source "$collection" "$match_json" "$meta_path" "$identities"; then
+			print_info "Match: ${rule_name} → ${source_id}"
+			_execute_rule_actions "$actions_json" "$source_id" "$meta_path" \
+				"$cases_dir" "$rule_name" "$dry_run"
+			matched=0
+		fi
+		i=$((i + 1))
+	done
+	return "$matched"
+}
+
 # =============================================================================
 # tick: main pulse routine — evaluate all rules against unprocessed sources
 # =============================================================================
@@ -401,7 +562,10 @@ cmd_tick() {
 		local _cur="${1:-}"
 		case "$_cur" in
 		--dry-run) dry_run=1 ;;
-		-*) print_error "Unknown option: ${_cur}"; return 1 ;;
+		-*)
+			print_error "Unknown option: ${_cur}"
+			return 1
+			;;
 		*) knowledge_root="$_cur" ;;
 		esac
 		shift
@@ -428,13 +592,30 @@ cmd_tick() {
 	fi
 
 	# Load state: last processed source_id
-	local last_id
+	local last_id saved_digest rules_digest saved_source_digests
 	last_id="$(_load_filter_state "$state_file")"
+	saved_digest="$(_load_filter_state_digest "$state_file")"
+	saved_source_digests="$(_load_filter_source_digests "$state_file")"
+	rules_digest="$(_filter_rules_digest "$filter_json")"
+	if [[ -n "$last_id" && "$saved_digest" != "$rules_digest" ]]; then
+		last_id=""
+		saved_source_digests='{}'
+	fi
 
 	# Enumerate email sources, filter to those after last_id
-	local sources_list matched_any=0 saw_last=0 last_seen_id=""
+	local matched_any=0 saw_last=0 last_seen_id="" current_source_digests='{}'
 	while IFS=$'\t' read -r source_id meta_path _ingested_at; do
 		[[ -z "$source_id" || -z "$meta_path" ]] && continue
+		local current_source_digest saved_source_digest source_changed=0
+		current_source_digest="$(_source_collection_digest "$meta_path")"
+		saved_source_digest=$(printf '%s' "$saved_source_digests" |
+			jq -r --arg source_id "$source_id" '.[$source_id] // ""')
+		current_source_digests=$(printf '%s' "$current_source_digests" |
+			jq -c --arg source_id "$source_id" --arg digest "$current_source_digest" \
+				'. + {($source_id): $digest}')
+		if [[ -n "$saved_source_digest" && "$saved_source_digest" != "$current_source_digest" ]]; then
+			source_changed=1
+		fi
 
 		# State gate: skip until we've passed last_id
 		if [[ -n "$last_id" && "$saw_last" -eq 0 ]]; then
@@ -442,35 +623,22 @@ cmd_tick() {
 				saw_last=1
 			fi
 			last_seen_id="$source_id"
-			continue
+			if [[ "$source_changed" -eq 0 ]]; then
+				continue
+			fi
 		fi
 
 		last_seen_id="$source_id"
 
-		# Evaluate each rule
-		local i=0
-		while [[ "$i" -lt "$rule_count" ]]; do
-			local rule
-			rule="$(_jq_c "$filter_json" ".rules[$i]")"
-			local rule_name match_json actions_json
-			rule_name="$(_jq_r "$rule" '.name // "unnamed"')"
-			match_json="$(_jq_c "$rule" '.match // {}')"
-			actions_json="$(_jq_c "$rule" '.actions // []')"
-
-			if _evaluate_rule_match "$match_json" "$meta_path"; then
-				print_info "Match: ${rule_name} → ${source_id}"
-				_execute_rule_actions "$actions_json" "$source_id" "$meta_path" \
-					"$cases_dir" "$rule_name" "$dry_run"
-				matched_any=1
-			fi
-
-			i=$((i + 1))
-		done
+		if _process_source_rules "$source_id" "$meta_path" "$filter_json" "$rule_count" \
+			"$knowledge_root" "$cases_dir" "$dry_run"; then
+			matched_any=1
+		fi
 	done < <(_list_email_sources "$sources_dir")
 
 	# Persist state: record last processed source_id
 	if [[ "$dry_run" -eq 0 && -n "$last_seen_id" ]]; then
-		_save_filter_state "$state_file" "$last_seen_id"
+		_save_filter_state "$state_file" "$last_seen_id" "$rules_digest" "$current_source_digests"
 	fi
 
 	if [[ "$matched_any" -eq 0 ]]; then
@@ -485,7 +653,11 @@ cmd_tick() {
 
 cmd_add() {
 	local knowledge_root=""
-	if [[ $# -gt 0 ]]; then local _kr="${1:-}"; knowledge_root="$_kr"; shift; fi
+	if [[ $# -gt 0 ]]; then
+		local _kr="${1:-}"
+		knowledge_root="$_kr"
+		shift
+	fi
 	knowledge_root="$(_resolve_root "$knowledge_root")" || return 1
 	_check_deps || return 1
 
@@ -507,10 +679,11 @@ cmd_add() {
 	[[ -z "$role" ]] && role="evidence"
 	printf 'set_sensitivity (public|internal|confidential|restricted|privileged, leave blank to skip): ' && read -r set_sensitivity
 
-	# Build match object
-	local match_json="{}"
-	[[ -n "$from_contains" ]] && match_json="$(echo "$match_json" | jq --arg v "$from_contains" '.from_contains = $v')"
-	[[ -n "$from_equals" ]] && match_json="$(echo "$match_json" | jq --arg v "$from_equals" '.from_equals = $v')"
+	# Build a version 2 shared matcher block. Interactive rules remain
+	# post-ingest routing rules unless collection selectors are added manually.
+	local match_json='{"all":[],"any":[]}'
+	[[ -n "$from_contains" ]] && match_json="$(echo "$match_json" | jq --arg v "$from_contains" --arg op "$_RULE_OPERATOR_KEY" --arg val "$_RULE_VALUE_KEY" '.all += [{"field":"from",($op):"contains",($val):$v}]')"
+	[[ -n "$from_equals" ]] && match_json="$(echo "$match_json" | jq --arg v "$from_equals" --arg op "$_RULE_OPERATOR_KEY" --arg val "$_RULE_VALUE_KEY" '.all += [{"field":"from",($op):"exact_address",($val):$v}]')"
 	if [[ -n "$subject_contains_any" ]]; then
 		local phrases_json
 		phrases_json="$(echo "$subject_contains_any" | python3 -c "
@@ -519,7 +692,11 @@ raw = sys.stdin.read().strip()
 parts = [p.strip() for p in raw.split(',') if p.strip()]
 print(json.dumps(parts))
 " 2>/dev/null || echo '[]')"
-		match_json="$(echo "$match_json" | jq --argjson a "$phrases_json" '.subject_contains_any = $a')"
+		match_json="$(echo "$match_json" | jq --argjson a "$phrases_json" --arg op "$_RULE_OPERATOR_KEY" --arg val "$_RULE_VALUE_KEY" '.any += [$a[] | {"field":"subject",($op):"phrase",($val):.}]')"
+	fi
+	if [[ "$(echo "$match_json" | jq '[.all[], .any[]] | length')" -eq 0 ]]; then
+		print_error "At least one match condition is required."
+		return 1
 	fi
 
 	# Build actions array
@@ -534,15 +711,16 @@ print(json.dumps(parts))
 	fi
 
 	# Build new rule
-	local new_rule
-	new_rule="$(jq -n --arg n "$rule_name" --argjson m "$match_json" --argjson a "$actions_json" \
-		'{"name": $n, "match": $m, "actions": $a}')"
+	local new_rule rule_id
+	rule_id="$(printf '%s' "$rule_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+	new_rule="$(jq -n --arg id "$rule_id" --arg n "$rule_name" --argjson m "$match_json" --argjson a "$actions_json" \
+		'{"id": $id, "name": $n, "collection": false, "match": $m, "actions": $a}')"
 
 	# Load existing config and append
 	local existing_config
 	existing_config="$(_load_filter_config "$config_file")"
 	local updated
-	updated="$(echo "$existing_config" | jq --argjson r "$new_rule" '.rules += [$r]')"
+	updated="$(echo "$existing_config" | jq --argjson r "$new_rule" '.version = 2 | .rules += [$r]')"
 	echo "$updated" >"$config_file"
 
 	print_success "Rule '${rule_name}' added to ${config_file}"
@@ -559,8 +737,14 @@ cmd_test() {
 		print_error "Usage: email-filter-helper.sh test <rule-name> [knowledge-root]"
 		return 1
 	fi
-	local _rn="${1:-}"; rule_name="$_rn"; shift
-	if [[ $# -gt 0 ]]; then local _kr="${1:-}"; knowledge_root="$_kr"; shift; fi
+	local _rn="${1:-}"
+	rule_name="$_rn"
+	shift
+	if [[ $# -gt 0 ]]; then
+		local _kr="${1:-}"
+		knowledge_root="$_kr"
+		shift
+	fi
 	knowledge_root="$(_resolve_root "$knowledge_root")" || return 1
 	_check_deps || return 1
 
@@ -580,9 +764,11 @@ cmd_test() {
 		return 1
 	fi
 
-	local match_json actions_json
+	local match_json actions_json identities collection
 	match_json="$(_jq_c "$rule" '.match // {}')"
 	actions_json="$(_jq_c "$rule" '.actions // []')"
+	identities="$(_rule_account_identities "$rule" "$knowledge_root")"
+	collection="$(_rule_collection_mode "$rule")"
 
 	print_info "Testing rule '${rule_name}' against last 50 email sources (dry-run)…"
 
@@ -598,7 +784,10 @@ cmd_test() {
 	while IFS=$'\t' read -r source_id meta_path _ingested_at; do
 		[[ -z "$source_id" || -z "$meta_path" ]] && continue
 		tested=$((tested + 1))
-		if _evaluate_rule_match "$match_json" "$meta_path"; then
+		if ! _rule_is_eligible_for_source "$rule" "$meta_path"; then
+			continue
+		fi
+		if _rule_matches_source "$collection" "$match_json" "$meta_path" "$identities"; then
 			matched=$((matched + 1))
 			print_info "  WOULD MATCH: ${source_id}"
 			_execute_rule_actions "$actions_json" "$source_id" "$meta_path" "" "$rule_name" 1
@@ -615,7 +804,11 @@ cmd_test() {
 
 cmd_list() {
 	local knowledge_root=""
-	if [[ $# -gt 0 ]]; then local _kr="${1:-}"; knowledge_root="$_kr"; shift; fi
+	if [[ $# -gt 0 ]]; then
+		local _kr="${1:-}"
+		knowledge_root="$_kr"
+		shift
+	fi
 	knowledge_root="$(_resolve_root "$knowledge_root")" || return 1
 	_check_deps || return 1
 

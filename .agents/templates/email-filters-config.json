@@ -1,29 +1,56 @@
 {
-  "_comment": "Email filter ruleset template. Copy to <repo>/_config/email-filters.json and customise.",
-  "_doc": "Rules are evaluated in order with AND semantics (all match predicates must match). First match wins per source per tick run.",
+  "version": 2,
+  "_comment": "Private email filter rules. Copy to <repo>/_config/email-filters.json; never commit real addresses, references, or phrases.",
+  "_doc": "The transport may narrow candidates, but these all/any conditions are always checked locally before persistence.",
   "rules": [
     {
-      "name": "Dispute counsel correspondence",
-      "_comment": "Example: attach emails from dispute counsel to the dispute case as privileged evidence",
+      "id": "case-correspondence",
+      "name": "Selected case correspondence",
+      "enabled": true,
+      "collection": true,
+      "mailboxes": ["work-mailbox"],
+      "folders": ["INBOX", "Sent"],
+      "backfill": {
+        "since": "2026-01-01",
+        "limit": 500
+      },
       "match": {
-        "from_contains": "dispute-counsel@example.com",
-        "subject_contains_any": ["Re: Dispute", "Dispute Notice"]
+        "all": [
+          {
+            "field": "from",
+            "operator": "exact_domain",
+            "value": "example.com"
+          },
+          {
+            "field": "direction",
+            "operator": "equals",
+            "value": "received"
+          }
+        ],
+        "any": [
+          {
+            "field": "subject",
+            "operator": "reference",
+            "value": "CASE-123"
+          },
+          {
+            "field": "body",
+            "operator": "phrase",
+            "value": "signed agreement",
+            "case_sensitive": false
+          },
+          {
+            "field": "attachment_name",
+            "operator": "keyword",
+            "value": "contract"
+          }
+        ]
       },
       "actions": [
-        { "attach_to_case": "case-2026-0001-dispute-acme", "role": "evidence" },
-        { "set_sensitivity": "privileged" }
-      ]
-    },
-    {
-      "name": "Contract review emails",
-      "_comment": "Example: emails with 'contract' in subject from legal team → attach to contract case",
-      "match": {
-        "from_contains": "legal@example.com",
-        "subject_matches_regex": "contract|agreement|NDA"
-      },
-      "actions": [
-        { "attach_to_case": "case-2026-0002-contract-review", "role": "reference" },
-        { "set_sensitivity": "confidential" }
+        {
+          "attach_to_case": "case-example",
+          "role": "reference"
+        }
       ]
     }
   ]

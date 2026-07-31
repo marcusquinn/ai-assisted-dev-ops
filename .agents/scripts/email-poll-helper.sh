@@ -37,10 +37,12 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 readonly POLL_PY="${SCRIPT_DIR}/email_poll.py"
 readonly _ERR_NO_CONFIG="No mailboxes.json config found"
+readonly COLLECTION_LINEAGE_FILTERED="filtered"
 
 # Config resolution order (first-found wins)
 _REPO_CONFIG="_config/mailboxes.json"
 _GLOBAL_CONFIG="${HOME}/.config/aidevops/mailboxes.json"
+_FILTER_CONFIG="_config/email-filters.json"
 
 # State and inbox paths (relative to CWD = repo root)
 _STATE_FILE="_knowledge/.imap-state.json"
@@ -83,6 +85,67 @@ _require_poll_py() {
 	return 0
 }
 
+_collection_state_lineage_status() {
+	local state_path="$1"
+	local lineage_marker="$2"
+	if [[ ! -f "$state_path" ]]; then
+		printf '%s\n' "none"
+		return 0
+	fi
+	if ! command -v jq >/dev/null 2>&1; then
+		log_error "jq is required to inspect ${state_path}; refusing unfiltered mailbox collection"
+		return 1
+	fi
+	if ! jq -e 'type == "object"' "$state_path" >/dev/null 2>&1; then
+		log_error "Invalid ${state_path}; refusing unfiltered mailbox collection"
+		return 1
+	fi
+	if jq -e --arg marker "$lineage_marker" '[keys[] | select(contains($marker))] | length > 0' "$state_path" >/dev/null 2>&1; then
+		printf '%s\n' "$COLLECTION_LINEAGE_FILTERED"
+	else
+		printf '%s\n' "none"
+	fi
+	return 0
+}
+
+_resolve_collection_filter_config() {
+	# Versionless legacy filters remain post-ingest-only until a mailbox has
+	# filtered lineage state. After migration, only an explicit v2 ruleset may
+	# restore unfiltered reads (for example, collection:false on every rule).
+	local lineage_status
+	lineage_status=$(_collection_state_lineage_status "$_STATE_FILE" "/imap/filter/") || return 1
+	if [[ ! -f "$_FILTER_CONFIG" ]]; then
+		if [[ "$lineage_status" == "$COLLECTION_LINEAGE_FILTERED" ]]; then
+			log_error "Missing ${_FILTER_CONFIG} after filtered collection; refusing unfiltered mailbox collection"
+			return 1
+		fi
+		return 0
+	fi
+	if ! command -v jq >/dev/null 2>&1; then
+		log_error "jq is required to validate ${_FILTER_CONFIG}; refusing unfiltered mailbox collection"
+		return 1
+	fi
+	if ! jq -e 'type == "object"' "$_FILTER_CONFIG" >/dev/null 2>&1; then
+		log_error "Invalid ${_FILTER_CONFIG}; refusing unfiltered mailbox collection"
+		return 1
+	fi
+	local version
+	version=$(jq -r 'if has("version") then (.version | tostring) else "" end' "$_FILTER_CONFIG")
+	if [[ -z "$version" ]]; then
+		if [[ "$lineage_status" == "$COLLECTION_LINEAGE_FILTERED" ]]; then
+			log_error "Versionless ${_FILTER_CONFIG} cannot replace prior filtered collection; use an explicit version 2 config"
+			return 1
+		fi
+		return 0
+	fi
+	if [[ "$version" != "2" ]]; then
+		log_error "Unsupported email filter version ${version}; refusing unfiltered mailbox collection"
+		return 1
+	fi
+	printf '%s\n' "$_FILTER_CONFIG"
+	return 0
+}
+
 _acquire_lock() {
 	mkdir -p "$_LOCK_DIR"
 	if ! mkdir "${_LOCK_FILE}" 2>/dev/null; then
@@ -119,6 +182,8 @@ cmd_tick() {
 
 	_require_python3 || return 1
 	_require_poll_py || return 1
+	local filter_config
+	filter_config=$(_resolve_collection_filter_config) || return 1
 
 	if ! _acquire_lock; then
 		return 0
@@ -131,11 +196,14 @@ cmd_tick() {
 	local result
 	local py_exit=0
 	local _stderr_tmp
+	local filter_args=()
+	[[ -n "$filter_config" ]] && filter_args=(--filters "$filter_config")
 	_stderr_tmp=$(mktemp)
 	result=$(python3 "$POLL_PY" tick \
 		--config "$config_path" \
 		--state "$_STATE_FILE" \
-		--inbox "$_INBOX_DIR" 2>"$_stderr_tmp") || py_exit=$?
+		--inbox "$_INBOX_DIR" \
+		"${filter_args[@]}" 2>"$_stderr_tmp") || py_exit=$?
 	local _py_stderr
 	_py_stderr=$(cat "$_stderr_tmp" 2>/dev/null || true)
 	rm -f "$_stderr_tmp"
@@ -159,17 +227,21 @@ total = sum(r.get('fetched_count', 0) for r in d.get('results', []))
 print(total)
 " 2>/dev/null || echo "0")
 
+	local command_rc=0
 	if [[ "$overall_status" == "ok" ]]; then
 		log_info "Tick complete: $fetched_count new message(s)"
 	else
 		log_warn "Tick complete with errors: $fetched_count message(s) fetched"
-		# Log full result for debugging but don't crash pulse
+		# Preserve legacy pulse behavior; filtered collection fails below.
 		echo "$result" >&2
+		if [[ -n "$filter_config" ]]; then
+			command_rc=1
+		fi
 	fi
 
 	_release_lock
 	trap - EXIT
-	return 0
+	return "$command_rc"
 }
 
 cmd_backfill() {
@@ -186,8 +258,14 @@ cmd_backfill() {
 		local flag="$1"
 		local val="${2:-}"
 		case "$flag" in
-		--since) since="$val"; shift 2 ;;
-		--rate-limit) rate_limit="$val"; shift 2 ;;
+		--since)
+			since="$val"
+			shift 2
+			;;
+		--rate-limit)
+			rate_limit="$val"
+			shift 2
+			;;
 		*) shift ;;
 		esac
 	done
@@ -205,17 +283,22 @@ cmd_backfill() {
 
 	_require_python3 || return 1
 	_require_poll_py || return 1
+	local filter_config
+	filter_config=$(_resolve_collection_filter_config) || return 1
 
 	mkdir -p "$_INBOX_DIR"
 
 	log_info "Backfilling mailbox '$mailbox_id' from $since (rate: ${rate_limit}/min)"
+	local filter_args=()
+	[[ -n "$filter_config" ]] && filter_args=(--filters "$filter_config")
 	python3 "$POLL_PY" backfill \
 		--config "$config_path" \
 		--state "$_STATE_FILE" \
 		--inbox "$_INBOX_DIR" \
 		--mailbox-id "$mailbox_id" \
 		--since "$since" \
-		--rate-limit "$rate_limit"
+		--rate-limit "$rate_limit" \
+		"${filter_args[@]}"
 
 	return 0
 }
@@ -297,6 +380,10 @@ Config locations (first-found wins):
   _config/mailboxes.json                       Per-repo (git-trackable)
   ~/.config/aidevops/mailboxes.json            Personal / global
 
+Version 2 rules in _config/email-filters.json are applied before persistence.
+Only locally confirmed matches enter _knowledge/inbox; unmatched candidates
+leave content-free per-rule coverage in _knowledge/.imap-state.json.
+
 State:  _knowledge/.imap-state.json
 Inbox:  _knowledge/inbox/
 
@@ -322,10 +409,10 @@ main() {
 	shift || true
 
 	case "$cmd" in
-	tick)        cmd_tick "$@" ;;
-	backfill)    cmd_backfill "$@" ;;
-	test)        cmd_test "$@" ;;
-	list)        cmd_list "$@" ;;
+	tick) cmd_tick "$@" ;;
+	backfill) cmd_backfill "$@" ;;
+	test) cmd_test "$@" ;;
+	list) cmd_list "$@" ;;
 	help | -h | --help) cmd_help ;;
 	*)
 		log_error "Unknown command: $cmd"

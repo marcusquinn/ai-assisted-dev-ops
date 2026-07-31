@@ -163,6 +163,40 @@ _find_source_last() {
 	return 0
 }
 
+_write_collection_sidecar() {
+	local eml_path="$1"
+	local transport="$2"
+	local message_key="$3"
+	python3 - "$SCRIPT_DIR/../scripts" "$eml_path" "$transport" "$message_key" <<'PYEOF'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from email_collection_receipts import ReceiptContext, write_collection_receipt  # noqa: E402
+
+rules = [{
+    "id": "case-rule",
+    "collection": True,
+    "match": {"all": [{
+        "field": "subject", "operator": "reference", "value": "PRIVATE-123",
+    }]},
+}]
+if sys.argv[3] == "imap":
+    rules.append({
+        "id": "overlap-rule",
+        "collection": True,
+        "match": {"all": [{
+            "field": "from", "operator": "exact_address", "value": "private@example.test",
+        }]},
+    })
+write_collection_receipt(
+    sys.argv[2],
+    ReceiptContext(sys.argv[3], "work", "INBOX", sys.argv[4]),
+    rules,
+)
+PYEOF
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Section 1: Python parser tests (email_parse.py)
 # ---------------------------------------------------------------------------
@@ -346,17 +380,18 @@ echo ""
 echo "=== Section 3: Sanitisation tests ==="
 echo ""
 
-# Test 9: Sanitisation idempotency — re-ingesting should produce same sanitised result
+# Test 9: Sanitisation idempotency and canonical message deduplication
 if [[ -n "${SRC_HTML:-}" ]]; then
 	first_html=$(cat "${SOURCES}/${SRC_HTML}/body.html")
-	# Re-ingest same file to a new path (will get deduped ID)
+	# Re-ingest the same message; canonical identity must be reused.
 	bash "$HELPER" ingest "$FIXTURES/html-only.eml" --repo-path "$REPO_PATH" >/dev/null 2>&1
 	SRC_HTML2=$(_find_source_last "html")
-	if [[ -n "$SRC_HTML2" && "$SRC_HTML2" != "$SRC_HTML" ]]; then
+	if [[ -n "$SRC_HTML2" && "$SRC_HTML2" == "$SRC_HTML" ]]; then
 		second_html=$(cat "${SOURCES}/${SRC_HTML2}/body.html")
-		assert_eq "sanitisation:idempotent: same output" "$first_html" "$second_html"
+		assert_eq "sanitisation:idempotent: same canonical output" "$first_html" "$second_html"
+		_pass "ingest:duplicate: reuses canonical email source"
 	else
-		_pass "sanitisation:idempotent: dedup ID different (acceptable)"
+		_fail "ingest:duplicate: reuses canonical email source" "first=$SRC_HTML second=$SRC_HTML2"
 	fi
 else
 	_pass "sanitisation:idempotent: skipped (no html source)"
@@ -365,6 +400,45 @@ fi
 # Test 10: Verify meta.json version field
 if [[ -n "${SRC_PLAIN:-}" ]]; then
 	assert_json_field "meta:version: version=1" "${SOURCES}/${SRC_PLAIN}/meta.json" '.version' "1"
+fi
+
+# Test 11: Duplicate transports merge collection provenance into one canonical source
+if [[ -n "${SRC_PLAIN:-}" ]]; then
+	COLLECTED_IMAP="${TMP_DIR}/collected-imap.eml"
+	cp "$FIXTURES/plaintext.eml" "$COLLECTED_IMAP"
+	_write_collection_sidecar "$COLLECTED_IMAP" "imap" "uid-101"
+	imap_ingest=$(bash "$HELPER" ingest "$COLLECTED_IMAP" --repo-path "$REPO_PATH" 2>&1)
+	assert_contains "ingest:collection: pre-existing canonical reused" "$imap_ingest" "existing canonical"
+	assert_json_field "ingest:collection: first transport reference merged" \
+		"${SOURCES}/${SRC_PLAIN}/meta.json" '.collection_refs | length' "1"
+	assert_json_field "ingest:collection: overlapping rules preserved" \
+		"${SOURCES}/${SRC_PLAIN}/meta.json" '.collection_refs[0].rules | length' "2"
+
+	COLLECTED_JMAP="${TMP_DIR}/collected-jmap.eml"
+	cp "$FIXTURES/plaintext.eml" "$COLLECTED_JMAP"
+	_write_collection_sidecar "$COLLECTED_JMAP" "jmap" "email-101"
+	jmap_ingest=$(bash "$HELPER" ingest "$COLLECTED_JMAP" --repo-path "$REPO_PATH" 2>&1)
+	assert_contains "ingest:collection: second duplicate reused" "$jmap_ingest" "existing canonical"
+	assert_json_field "ingest:collection: multiple transport references merged" \
+		"${SOURCES}/${SRC_PLAIN}/meta.json" '.collection_refs | length' "2"
+	collection_refs=$(jq -c '.collection_refs' "${SOURCES}/${SRC_PLAIN}/meta.json")
+	assert_not_contains "ingest:collection: references redact filter literals" \
+		"$collection_refs" "PRIVATE-123"
+
+	MALFORMED_EML="${TMP_DIR}/malformed-receipt.eml"
+	cp "$FIXTURES/plaintext.eml" "$MALFORMED_EML"
+	cat >"${MALFORMED_EML}.collection.json" <<'EOF'
+{"version":1,"transport":"imap","mailbox_id":"work","folder":"INBOX","message_key":"uid-102","rules":[{"id":"case-rule","digest":"0000000000000000","literal":"PRIVATE-123"}]}
+EOF
+	if bash "$HELPER" ingest "$MALFORMED_EML" --repo-path "$REPO_PATH" >/dev/null 2>&1; then
+		_fail "ingest:collection: malformed receipt fails closed" "ingestion unexpectedly succeeded"
+	else
+		_pass "ingest:collection: malformed receipt fails closed"
+	fi
+	assert_json_field "ingest:collection: malformed receipt leaves canonical references unchanged" \
+		"${SOURCES}/${SRC_PLAIN}/meta.json" '.collection_refs | length' "2"
+else
+	_fail "ingest:collection: provenance fixtures" "plaintext canonical source unavailable"
 fi
 
 # ---------------------------------------------------------------------------

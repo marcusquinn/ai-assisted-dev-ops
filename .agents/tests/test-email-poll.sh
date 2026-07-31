@@ -133,6 +133,40 @@ PYEOF
 	return 0
 }
 
+create_mock_imap_filtered() {
+	local mock_dir="$1"
+	python3 - "$mock_dir" <<'PYEOF'
+import sys
+
+mock_dir = sys.argv[1]
+code = '''class IMAP4_SSL:
+    def __init__(self, host, port=993):
+        pass
+    def login(self, user, password):
+        return ("OK", [b"Logged in"])
+    def select(self, folder, readonly=False):
+        assert readonly is True
+        return ("OK", [b"2"])
+    def uid(self, command, *args):
+        if command == "SEARCH":
+            return ("OK", [b"4001 4002"])
+        if command == "FETCH":
+            assert any("BODY.PEEK[]" in str(arg) for arg in args)
+            matching = b"From: counsel@example.com\\r\\nTo: user@filtered-mb.example\\r\\nSubject: CASE-123\\r\\n\\r\\nPrivate matching content"
+            unrelated = b"From: news@unrelated.test\\r\\nTo: user@filtered-mb.example\\r\\nSubject: Newsletter\\r\\n\\r\\nPrivate unmatched content"
+            h1 = b"4001 (BODY[] {%d} UID 4001)" % len(matching)
+            h2 = b"4002 (BODY[] {%d} UID 4002)" % len(unrelated)
+            return ("OK", [(h1, matching), b")", (h2, unrelated), b")"])
+        return ("OK", [b""])
+    def logout(self):
+        return ("BYE", [b"x"])
+'''
+with open(f"{mock_dir}/imaplib.py", "w") as handle:
+    handle.write(code)
+PYEOF
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Shared config factory
 # ---------------------------------------------------------------------------
@@ -169,6 +203,79 @@ test_tick_missing_config_skips() {
 		pass "$name"
 	else
 		fail "$name" "exit=$exit_rc output=$output"
+	fi
+	return 0
+}
+
+test_filter_config_validation_fails_closed() {
+	local name="tick: collection config fails closed after filtered migration"
+	local tmpdir="${TEST_TMPDIR}/filter-config-validation"
+	mkdir -p "${tmpdir}/mock" "${tmpdir}/_config" "${tmpdir}/_knowledge/inbox"
+	create_mock_imap_happy "${tmpdir}/mock" "9001"
+	make_mailbox_config "${tmpdir}/_config/mailboxes.json" "validation-mb" "TEST_EMAIL_PASSWORD"
+	printf '%s\n' '{invalid-json' >"${tmpdir}/_config/email-filters.json"
+
+	local invalid_output invalid_rc=0
+	invalid_output=$(cd "$tmpdir" && TEST_EMAIL_PASSWORD="testpass" \
+		PYTHONPATH="${tmpdir}/mock" bash "$POLL_HELPER" tick 2>&1) || invalid_rc=$?
+	local invalid_count
+	invalid_count=$(find "${tmpdir}/_knowledge/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+
+	printf '%s\n' '{"rules":[]}' >"${tmpdir}/_config/email-filters.json"
+	local legacy_rc=0
+	(cd "$tmpdir" && TEST_EMAIL_PASSWORD="testpass" \
+		PYTHONPATH="${tmpdir}/mock" bash "$POLL_HELPER" tick >/dev/null 2>&1) || legacy_rc=$?
+	local legacy_count
+	legacy_count=$(find "${tmpdir}/_knowledge/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+
+	printf '%s\n' '{"validation-mb/INBOX/imap/filter/case-rule/digest":{"last_uid_seen":1}}' >"${tmpdir}/_knowledge/.imap-state.json"
+	rm -f "${tmpdir}/_knowledge/inbox/"*.eml "${tmpdir}/_config/email-filters.json"
+	local missing_output missing_rc=0
+	missing_output=$(cd "$tmpdir" && TEST_EMAIL_PASSWORD="testpass" \
+		PYTHONPATH="${tmpdir}/mock" bash "$POLL_HELPER" tick 2>&1) || missing_rc=$?
+
+	printf '%s\n' '{"rules":[]}' >"${tmpdir}/_config/email-filters.json"
+	local downgrade_rc=0
+	(cd "$tmpdir" && TEST_EMAIL_PASSWORD="testpass" \
+		PYTHONPATH="${tmpdir}/mock" bash "$POLL_HELPER" tick >/dev/null 2>&1) || downgrade_rc=$?
+	local post_migration_count
+	post_migration_count=$(find "${tmpdir}/_knowledge/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+
+	if [[ "$invalid_rc" -ne 0 && "$invalid_count" -eq 0 && "$invalid_output" == *"refusing unfiltered"* &&
+		"$legacy_rc" -eq 0 && "$legacy_count" -eq 1 && "$missing_rc" -ne 0 &&
+		"$missing_output" == *"refusing unfiltered"* && "$downgrade_rc" -ne 0 && "$post_migration_count" -eq 0 ]]; then
+		pass "$name"
+	else
+		fail "$name" "invalid_rc=$invalid_rc invalid_count=$invalid_count legacy_rc=$legacy_rc legacy_count=$legacy_count missing_rc=$missing_rc downgrade_rc=$downgrade_rc post_migration_count=$post_migration_count"
+	fi
+	return 0
+}
+
+test_filtered_helper_surfaces_poll_failure() {
+	local name="filtered tick: provider failure is nonzero and preserves its checkpoint"
+	local tmpdir="${TEST_TMPDIR}/filtered-provider-failure"
+	mkdir -p "${tmpdir}/mock" "${tmpdir}/_config" "${tmpdir}/_knowledge/inbox"
+	create_mock_imap_connfail "${tmpdir}/mock"
+	make_mailbox_config "${tmpdir}/_config/mailboxes.json" "failure-mb" "TEST_EMAIL_PASSWORD"
+	cat >"${tmpdir}/_config/email-filters.json" <<'EOF'
+{"version":2,"rules":[{"id":"failure-rule","mailboxes":["failure-mb"],"match":{"all":[{"field":"subject","operator":"phrase","value":"case"}]}}]}
+EOF
+	printf '%s\n' '{"failure-mb/INBOX/imap/filter/failure-rule/prior":{"last_uid_seen":77}}' \
+		>"${tmpdir}/_knowledge/.imap-state.json"
+
+	local exit_rc=0
+	(cd "$tmpdir" && TEST_EMAIL_PASSWORD="testpass" \
+		PYTHONPATH="${tmpdir}/mock" bash "$POLL_HELPER" tick >/dev/null 2>&1) || exit_rc=$?
+	local prior_cursor
+	prior_cursor=$(jq -r '.["failure-mb/INBOX/imap/filter/failure-rule/prior"].last_uid_seen' \
+		"${tmpdir}/_knowledge/.imap-state.json")
+	local eml_count
+	eml_count=$(find "${tmpdir}/_knowledge/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+
+	if [[ "$exit_rc" -ne 0 && "$prior_cursor" -eq 77 && "$eml_count" -eq 0 ]]; then
+		pass "$name"
+	else
+		fail "$name" "exit=$exit_rc prior_cursor=$prior_cursor eml_count=$eml_count"
 	fi
 	return 0
 }
@@ -430,6 +537,221 @@ print(ids[0] if ids else '')
 	return 0
 }
 
+test_filtered_collection() {
+	local name="filtered tick: persists matches only with content-free lineage state"
+	local tmpdir="${TEST_TMPDIR}/filtered"
+	mkdir -p "${tmpdir}/mock" "${tmpdir}/inbox"
+	create_mock_imap_filtered "${tmpdir}/mock"
+	make_mailbox_config "${tmpdir}/mailboxes.json" "filtered-mb" "TEST_EMAIL_PASSWORD"
+	jq '.mailboxes[0].folders = ["INBOX", "Archive"]' "${tmpdir}/mailboxes.json" \
+		>"${tmpdir}/mailboxes.next.json"
+	mv "${tmpdir}/mailboxes.next.json" "${tmpdir}/mailboxes.json"
+	cat >"${tmpdir}/filters.json" <<'EOF'
+{
+  "version": 2,
+  "rules": [
+    {
+      "id": "case-rule",
+      "mailboxes": ["filtered-mb"],
+      "folders": ["INBOX"],
+      "backfill": {"limit": 25},
+      "match": {"all": [
+        {"field": "from", "operator": "exact_domain", "value": "example.com"},
+        {"field": "direction", "operator": "equals", "value": "received"},
+        {"field": "subject", "operator": "reference", "value": "CASE-123"}
+      ]}
+    },
+    {
+      "id": "overlap-rule",
+      "mailboxes": ["filtered-mb"],
+      "folders": ["INBOX"],
+      "backfill": {"limit": 25},
+      "match": {"all": [
+        {"field": "from", "operator": "exact_address", "value": "counsel@example.com"},
+        {"field": "subject", "operator": "reference", "value": "CASE-123"}
+      ]}
+    }
+  ]
+}
+EOF
+
+	local exit_rc=0
+	TEST_EMAIL_PASSWORD="testpass" PYTHONPATH="${tmpdir}/mock" \
+		python3 "$POLL_PY" tick \
+		--config "${tmpdir}/mailboxes.json" \
+		--state "${tmpdir}/state.json" \
+		--inbox "${tmpdir}/inbox" \
+		--filters "${tmpdir}/filters.json" >"${tmpdir}/result.json" 2>&1 || exit_rc=$?
+
+	local eml_count state_safe=0 result_safe=0 receipt_safe=0 receipt_path=""
+	eml_count=$(find "${tmpdir}/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+	local candidate
+	for candidate in "${tmpdir}/inbox/"*.eml.collection.json; do
+		[[ -f "$candidate" ]] && receipt_path="$candidate"
+	done
+	if [[ -n "$receipt_path" ]] &&
+		jq -e '.transport == "imap" and .mailbox_id == "filtered-mb" and .folder == "INBOX" and (.rules | length) == 2' "$receipt_path" >/dev/null &&
+		! grep -q 'example.com\|CASE-123\|Private' "$receipt_path"; then
+		receipt_safe=1
+	fi
+	if [[ -f "${tmpdir}/state.json" ]] && grep -q '/imap/filter/case-rule/' "${tmpdir}/state.json" &&
+		grep -q '/imap/filter/overlap-rule/' "${tmpdir}/state.json" &&
+		! grep -q 'example.com\|CASE-123\|Private' "${tmpdir}/state.json"; then
+		state_safe=1
+	fi
+	if [[ -f "${tmpdir}/result.json" ]] && grep -q '"scanned": 4' "${tmpdir}/result.json" &&
+		grep -q '"fetched_count": 1' "${tmpdir}/result.json"; then
+		result_safe=1
+	fi
+
+	jq '.rules[1].match.all[1].value = "CASE-999"' "${tmpdir}/filters.json" >"${tmpdir}/filters.next.json"
+	mv "${tmpdir}/filters.next.json" "${tmpdir}/filters.json"
+	TEST_EMAIL_PASSWORD="testpass" PYTHONPATH="${tmpdir}/mock" \
+		python3 "$POLL_PY" tick \
+		--config "${tmpdir}/mailboxes.json" \
+		--state "${tmpdir}/state.json" \
+		--inbox "${tmpdir}/inbox" \
+		--filters "${tmpdir}/filters.json" >"${tmpdir}/result-second.json" 2>&1 || exit_rc=$?
+	jq '(.rules[].enabled) = false' "${tmpdir}/filters.json" >"${tmpdir}/filters.disabled.json"
+	mv "${tmpdir}/filters.disabled.json" "${tmpdir}/filters.json"
+	TEST_EMAIL_PASSWORD="testpass" PYTHONPATH="${tmpdir}/mock" \
+		python3 "$POLL_PY" tick \
+		--config "${tmpdir}/mailboxes.json" \
+		--state "${tmpdir}/state.json" \
+		--inbox "${tmpdir}/inbox" \
+		--filters "${tmpdir}/filters.json" >"${tmpdir}/result-disabled.json" 2>&1 || exit_rc=$?
+	local lineage_count
+	lineage_count=$(jq '[keys[] | select(contains("/filter/"))] | length' "${tmpdir}/state.json")
+	local final_eml_count
+	final_eml_count=$(find "${tmpdir}/inbox" -name "*.eml" 2>/dev/null | wc -l | tr -d ' ')
+	if [[ "$exit_rc" -eq 0 && "$eml_count" -eq 1 && "$state_safe" -eq 1 && "$result_safe" -eq 1 && "$receipt_safe" -eq 1 ]] &&
+		[[ "$lineage_count" -eq 3 ]] && grep -q '"fetched_count": 0' "${tmpdir}/result-second.json" &&
+		grep -q '"fetched_count": 0' "${tmpdir}/result-disabled.json" && [[ "$final_eml_count" -eq 1 ]] &&
+		grep -q 'Private matching content' "${tmpdir}/inbox/"*.eml &&
+		! grep -q 'Private unmatched content' "${tmpdir}/inbox/"*.eml &&
+		[[ ! -e "${tmpdir}/inbox/email-filtered-mb-Archive-4001.eml" ]]; then
+		pass "$name"
+	else
+		fail "$name" "exit=$exit_rc eml=$eml_count state_safe=$state_safe result_safe=$result_safe receipt_safe=$receipt_safe lineages=$lineage_count"
+	fi
+	return 0
+}
+
+test_per_rule_candidate_windows() {
+	local name="filtered tick: preserves independent rule limits, dates, and cursors"
+	if python3 - "$SCRIPTS_DIR" <<'PYEOF'; then
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(sys.argv[1])))
+from email_poll import (  # noqa: E402
+    BackfillConfig,
+    BackfillContext,
+    RuleScanContext,
+    _backfill_messages,
+    _backfill_state_key,
+    _filter_state_key,
+    _rule_candidate_uids,
+    _scan_poll_message,
+)
+
+
+class FakeConnection:
+    def __init__(self):
+        self.criteria = []
+
+    def select(self, _folder, readonly=False):
+        assert readonly is True
+        return "OK", [b"1000"]
+
+    def uid(self, command, *_args):
+        assert command == "SEARCH"
+        criteria = str(_args[-1])
+        self.criteria.append(criteria)
+        start = 101 if "UID 101:*" in criteria else 1
+        return "OK", [" ".join(str(uid) for uid in range(start, 1001)).encode()]
+
+
+conn = FakeConnection()
+entries = {
+    "existing": ({"id": "existing", "backfill": {"limit": 500}}, 100),
+    "new": ({"id": "new", "backfill": {"limit": 25, "since": "2026-07-01"}}, 0),
+}
+selected, evidence = _rule_candidate_uids(conn, "INBOX", entries)
+assert selected["existing"] == set(range(101, 601))
+assert selected["new"] == set(range(976, 1001))
+assert evidence["existing"] == {
+    "candidate_total": 900,
+    "has_more": True,
+    "backfill_truncated": False,
+    "mode": "incremental",
+}
+assert evidence["new"] == {
+    "candidate_total": 1000,
+    "has_more": True,
+    "backfill_truncated": True,
+    "mode": "initial",
+}
+assert any("SINCE 01-Jul-2026" in item for item in conn.criteria)
+rule = entries["new"][0]
+assert _backfill_state_key("mb", "INBOX", rule, "2026-07-01") != _backfill_state_key(
+    "mb", "INBOX", rule, "2026-01-01"
+)
+backfill_context = BackfillContext(
+    mailbox_id="mb",
+    folder="INBOX",
+    state={},
+    config=BackfillConfig(inbox_dir="unused", since_date="2026-01-01"),
+    active_rules=[rule],
+    account_identities=(),
+    filtering_enabled=True,
+)
+with patch("email_poll._uid_fetch_selected", return_value=[]):
+    assert _backfill_messages(conn, backfill_context) == []
+backfill_key = _backfill_state_key("mb", "INBOX", rule, "2026-07-01")
+assert backfill_context.candidate_uids[backfill_key] == set(range(976, 1001))
+assert backfill_context.candidate_evidence[backfill_key]["candidate_total"] == 1000
+
+coverage_rule = {"id": "coverage", "match": {"all": [
+    {"field": "bcc", "operator": "exact_address", "value": "hidden@example.test"}
+]}}
+coverage_key = _filter_state_key("mb", "INBOX", coverage_rule)
+assert "/imap/filter/" in coverage_key
+scan_context = RuleScanContext(
+    rule_keys={coverage_key: coverage_rule},
+    rule_cursors={coverage_key: 0},
+    pending_states={coverage_key: {
+        "last_uid_seen": 0,
+        "scanned": 1,
+        "matched": 0,
+        "coverage_gaps": ["body"],
+    }},
+    account_identities=(),
+    filtering_enabled=True,
+    candidate_uids={coverage_key: {1}},
+)
+folder_result = {
+    "scanned": 0,
+    "matched_rules": {},
+    "coverage_gaps": [],
+    "last_polled_at": "2026-07-31T00:00:00Z",
+}
+assert not _scan_poll_message(
+    1,
+    b"From: sender@example.test\r\nSubject: no bcc\r\n\r\nbody",
+    scan_context,
+    folder_result,
+)
+assert scan_context.pending_states[coverage_key]["coverage_gaps"] == ["bcc", "body"]
+PYEOF
+		pass "$name"
+	else
+		fail "$name" "candidate planning assertions failed"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Test: shellcheck
 # ---------------------------------------------------------------------------
@@ -455,6 +777,8 @@ main() {
 
 	test_python_syntax
 	test_tick_missing_config_skips
+	test_filter_config_validation_fails_closed
+	test_filtered_helper_surfaces_poll_failure
 	test_tick_happy_path
 	test_missing_credentials
 	test_connection_failure
@@ -462,6 +786,8 @@ main() {
 	test_backfill_date_filter
 	test_dry_run
 	test_list_command
+	test_filtered_collection
+	test_per_rule_candidate_windows
 	test_shellcheck
 
 	teardown

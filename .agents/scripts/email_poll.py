@@ -32,9 +32,19 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+from email_collection_receipts import ReceiptContext, write_collection_receipt
+from email_match_rules import (
+    MatchResult,
+    fields_from_bytes,
+    load_rule_config,
+    match_rule,
+    rule_digest,
+    select_rules,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +63,58 @@ class PollConfig:
     dry_run: bool = False
     rate_limit_per_min: int = 0
     max_messages: int = 0
+    rules: list[dict] = field(default_factory=list)
+    account_identities: tuple[str, ...] = ()
+
+
+@dataclass
+class BackfillConfig:
+    """Options for one bounded mailbox backfill."""
+
+    inbox_dir: str
+    since_date: str
+    rate_limit_per_min: int = 100
+    rules: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class EmlWriteTarget:
+    """Private inbox destination for one staged IMAP message."""
+
+    inbox_dir: str
+    mailbox_id: str
+    folder: str
+    uid: int
+
+
+@dataclass
+class RuleScanContext:
+    """Prepared rule state for one folder poll."""
+
+    rule_keys: dict[str, dict]
+    rule_cursors: dict[str, int]
+    pending_states: dict[str, dict]
+    account_identities: tuple[str, ...]
+    filtering_enabled: bool = False
+    candidate_uids: dict[str, set[int]] = field(default_factory=dict)
+    candidate_evidence: dict[str, dict[str, object]] = field(default_factory=dict)
+    matched_rules_by_uid: dict[int, list[dict]] = field(default_factory=dict)
+
+
+@dataclass
+class BackfillContext:
+    """Mailbox and rule state shared while scanning one backfill folder."""
+
+    mailbox_id: str
+    folder: str
+    state: dict
+    config: BackfillConfig
+    active_rules: list[dict]
+    account_identities: tuple[str, ...]
+    filtering_enabled: bool = False
+    candidate_uids: dict[str, set[int]] = field(default_factory=dict)
+    candidate_evidence: dict[str, dict[str, object]] = field(default_factory=dict)
+    matched_rules_by_uid: dict[int, list[dict]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +215,29 @@ def _state_key(mailbox_id: str, folder: str) -> str:
     return f"{mailbox_id}/{safe_folder}"
 
 
+def _filter_state_key(mailbox_id: str, folder: str, rule: dict) -> str:
+    """Content-free checkpoint key for one mailbox/folder/rule lineage."""
+    rule_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(rule.get("id") or rule.get("name")))
+    return f"{_state_key(mailbox_id, folder)}/imap/filter/{rule_id}/{rule_digest(rule)}"
+
+
+def _mailbox_filtering_enabled(rules: list[dict], mailbox_id: str) -> bool:
+    """Return whether collection-rule configuration makes a mailbox fail closed."""
+    return any(
+        rule.get("collection", True) is not False
+        and (not rule.get("mailboxes") or mailbox_id in rule["mailboxes"])
+        for rule in rules
+    )
+
+
+def _backfill_state_key(
+    mailbox_id: str, folder: str, rule: dict, since_date: str = ""
+) -> str:
+    """Keep bounded replay receipts separate from the live high watermark."""
+    lineage_date = since_date or str((rule.get("backfill") or {}).get("since") or "all")
+    return f"{_filter_state_key(mailbox_id, folder, rule)}/backfill/{lineage_date}"
+
+
 # ---------------------------------------------------------------------------
 # IMAP connection helpers
 # ---------------------------------------------------------------------------
@@ -165,38 +250,62 @@ def _connect_imap(host: str, port: int, user: str, password: str) -> imaplib.IMA
 
 
 def _search_uids_since(
-    conn: imaplib.IMAP4_SSL, folder: str, last_uid: int, max_uids: int = 0
-) -> list[int]:
+    conn: imaplib.IMAP4_SSL,
+    folder: str,
+    last_uid: int,
+    max_uids: int = 0,
+    since_date: str = "",
+) -> tuple[list[int], dict[str, object]]:
     """SELECT folder and return UIDs > last_uid, optionally capped at max_uids.
 
-    Returns a plain list[int]. Raises RuntimeError on IMAP errors.
+    Returns selected UIDs and content-free scan evidence. Raises RuntimeError on
+    IMAP errors.
     """
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
         raise RuntimeError(f"SELECT '{folder}' failed: {status}")
 
     start_uid = last_uid + 1
-    status, data = conn.uid("SEARCH", None, f"UID {start_uid}:*")  # type: ignore[arg-type]
+    criteria = f"UID {start_uid}:*"
+    if since_date:
+        imap_date = datetime.strptime(since_date, "%Y-%m-%d").strftime("%d-%b-%Y")
+        criteria = f"{criteria} SINCE {imap_date}"
+    status, data = conn.uid("SEARCH", None, criteria)  # type: ignore[arg-type]
     if status != "OK":
         raise RuntimeError(f"UID SEARCH failed: {status}")
 
-    uid_list_raw = data[0]
-    if not uid_list_raw:
-        return []
-
-    uid_strings = uid_list_raw.decode().split()
-    if not uid_strings:
-        return []
-
+    uid_list_raw = data[0] if data else b""
+    uid_strings = uid_list_raw.decode().split() if uid_list_raw else []
     # Filter: server may return * = UIDNEXT-1 when the range is empty
     valid_uids = [int(u) for u in uid_strings if int(u) > last_uid]
-    if not valid_uids:
-        return []
+    candidate_total = len(valid_uids)
+    has_more = max_uids > 0 and candidate_total > max_uids
+    evidence: dict[str, object] = {
+        "candidate_total": candidate_total,
+        "has_more": has_more,
+        "backfill_truncated": last_uid == 0 and has_more,
+        "mode": "initial" if last_uid == 0 else "incremental",
+    }
 
     if max_uids > 0:
-        valid_uids = valid_uids[:max_uids]
+        # A new rule lineage performs one bounded recent-history replay, then
+        # checkpoints the high UID so later ticks collect only new mail.
+        valid_uids = valid_uids[-max_uids:] if last_uid == 0 else valid_uids[:max_uids]
 
-    return valid_uids
+    return valid_uids, evidence
+
+
+def _uid_fetch_selected(
+    conn: imaplib.IMAP4_SSL, valid_uids: list[int]
+) -> list[tuple[int, bytes]]:
+    """Fetch one sorted union of already-selected candidate UIDs."""
+    if not valid_uids:
+        return []
+    uid_set = ",".join(str(uid) for uid in valid_uids)
+    status, fetch_data = conn.uid("FETCH", uid_set, "(BODY.PEEK[])")  # type: ignore[arg-type]
+    if status != "OK":
+        raise RuntimeError(f"UID FETCH failed: {status}")
+    return _parse_fetch_response(fetch_data, valid_uids)
 
 
 def _parse_fetch_response(
@@ -239,20 +348,15 @@ def _uid_fetch_since(
 
     Returns a list of (uid, raw_rfc822_bytes) tuples sorted by UID ascending.
     """
-    valid_uids = _search_uids_since(conn, folder, last_uid, max_uids)
+    valid_uids, _evidence = _search_uids_since(conn, folder, last_uid, max_uids)
     if not valid_uids:
         return []
 
-    uid_set = ",".join(str(u) for u in valid_uids)
-    status, fetch_data = conn.uid("FETCH", uid_set, "(RFC822)")  # type: ignore[arg-type]
-    if status != "OK":
-        raise RuntimeError(f"UID FETCH failed: {status}")
-
-    return _parse_fetch_response(fetch_data, valid_uids, last_uid)
+    return _uid_fetch_selected(conn, valid_uids)
 
 
 def _uid_fetch_since_date(
-    conn: imaplib.IMAP4_SSL, folder: str, since_date: str
+    conn: imaplib.IMAP4_SSL, folder: str, since_date: str, max_uids: int = 0
 ) -> list[tuple[int, bytes]]:
     """Fetch all messages in folder with INTERNALDATE >= since_date.
 
@@ -282,9 +386,11 @@ def _uid_fetch_since_date(
     valid_uids = [int(u) for u in uid_strings]
     if not valid_uids:
         return []
+    if max_uids > 0:
+        valid_uids = valid_uids[-max_uids:]
 
     uid_set = ",".join(str(u) for u in valid_uids)
-    status, fetch_data = conn.uid("FETCH", uid_set, "(RFC822)")  # type: ignore[arg-type]
+    status, fetch_data = conn.uid("FETCH", uid_set, "(BODY.PEEK[])")  # type: ignore[arg-type]
     if status != "OK":
         raise RuntimeError(f"UID FETCH failed: {status}")
 
@@ -296,24 +402,150 @@ def _uid_fetch_since_date(
 # .eml file output
 # ---------------------------------------------------------------------------
 
-def _write_eml(inbox_dir: str, mailbox_id: str, folder: str, uid: int, raw_msg: bytes) -> Path:
+def _write_eml(
+    target: EmlWriteTarget,
+    raw_msg: bytes,
+    receipt: tuple[ReceiptContext, list[dict]] | None = None,
+) -> Path:
     """Write raw RFC-822 bytes to inbox_dir/email-<mailbox_id>-<folder>-<uid>.eml.
 
     Folder is included to prevent UID collisions across folders (UIDs are
     per-folder on IMAP servers, so the same UID can exist in multiple folders).
     """
-    Path(inbox_dir).mkdir(parents=True, exist_ok=True)
-    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", mailbox_id)
-    safe_folder = re.sub(r"[^a-zA-Z0-9_-]", "_", folder)
-    filename = f"email-{safe_id}-{safe_folder}-{uid}.eml"
-    out_path = Path(inbox_dir) / filename
-    out_path.write_bytes(raw_msg)
+    Path(target.inbox_dir).mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", target.mailbox_id)
+    safe_folder = re.sub(r"[^a-zA-Z0-9_-]", "_", target.folder)
+    filename = f"email-{safe_id}-{safe_folder}-{target.uid}.eml"
+    out_path = Path(target.inbox_dir) / filename
+    staging_path = out_path.with_suffix(".eml.tmp")
+    try:
+        staging_path.write_bytes(raw_msg)
+        if receipt is not None:
+            context, rules = receipt
+            write_collection_receipt(out_path, context, rules)
+        staging_path.replace(out_path)
+    finally:
+        staging_path.unlink(missing_ok=True)
     return out_path
 
 
 # ---------------------------------------------------------------------------
 # Folder-level polling helper
 # ---------------------------------------------------------------------------
+
+def _prepare_rule_scan(
+    mb_id: str, folder: str, state: dict, config: PollConfig
+) -> tuple[RuleScanContext, int]:
+    """Prepare independent rule cursors and the bounded fetch window."""
+    rules = select_rules({"rules": config.rules}, mb_id, folder) if config.rules else []
+    rule_keys = {_filter_state_key(mb_id, folder, rule): rule for rule in rules}
+    rule_cursors = {
+        rule_key: state.get(rule_key, {}).get("last_uid_seen", 0)
+        for rule_key in rule_keys
+    }
+    last_uid = min(rule_cursors.values()) if rule_cursors else state.get(_state_key(mb_id, folder), {}).get("last_uid_seen", 0)
+    context = RuleScanContext(
+        rule_keys=rule_keys,
+        rule_cursors=rule_cursors,
+        pending_states={rule_key: dict(state.get(rule_key, {})) for rule_key in rule_keys},
+        account_identities=config.account_identities,
+        filtering_enabled=_mailbox_filtering_enabled(config.rules, mb_id),
+    )
+    return context, last_uid
+
+
+def _rule_candidate_uids(
+    conn: imaplib.IMAP4_SSL,
+    folder: str,
+    entries: dict[str, tuple[dict, int]],
+    minimum_since: str = "",
+    max_uids: int = 0,
+) -> tuple[dict[str, set[int]], dict[str, dict[str, object]]]:
+    """Select a bounded candidate window independently for each rule lineage."""
+    selected: dict[str, set[int]] = {}
+    evidence: dict[str, dict[str, object]] = {}
+    for rule_key, (rule, cursor) in entries.items():
+        backfill = rule.get("backfill") or {}
+        limit = int(backfill.get("limit", 500))
+        if max_uids > 0:
+            limit = min(limit, max_uids)
+        since_date = max(minimum_since, str(backfill.get("since") or ""))
+        candidate_uids, evidence[rule_key] = _search_uids_since(
+            conn,
+            folder,
+            cursor,
+            max_uids=limit,
+            since_date=since_date,
+        )
+        selected[rule_key] = set(candidate_uids)
+    return selected, evidence
+
+
+def _fetch_poll_candidates(
+    conn: imaplib.IMAP4_SSL,
+    folder: str,
+    context: RuleScanContext,
+    last_uid: int,
+    max_uids: int,
+) -> list[tuple[int, bytes]]:
+    if not context.rule_keys:
+        if context.filtering_enabled:
+            return []
+        return _uid_fetch_since(conn, folder, last_uid, max_uids=max_uids)
+    entries = {
+        rule_key: (rule, context.rule_cursors[rule_key])
+        for rule_key, rule in context.rule_keys.items()
+    }
+    context.candidate_uids, context.candidate_evidence = _rule_candidate_uids(
+        conn,
+        folder,
+        entries,
+        max_uids=max_uids,
+    )
+    union = sorted(set().union(*context.candidate_uids.values()))
+    return _uid_fetch_selected(conn, union)
+
+
+def _scan_poll_message(
+    uid: int, raw_msg: bytes, context: RuleScanContext, folder_result: dict
+) -> bool:
+    """Apply each unseen rule and update only content-free pending receipts."""
+    if not context.rule_keys:
+        if context.filtering_enabled:
+            return False
+        folder_result["scanned"] += 1
+        return True
+    fields = fields_from_bytes(raw_msg)
+    should_write = False
+    for rule_key, rule in context.rule_keys.items():
+        if uid not in context.candidate_uids[rule_key]:
+            continue
+        match = match_rule(rule, fields, context.account_identities)
+        folder_result["scanned"] += 1
+        folder_result["coverage_gaps"].extend(match.unavailable_fields)
+        if match.matched:
+            should_write = True
+            context.matched_rules_by_uid.setdefault(uid, []).append(rule)
+            current = folder_result["matched_rules"].get(match.rule_id, 0)
+            folder_result["matched_rules"][match.rule_id] = current + 1
+        prior = context.pending_states[rule_key]
+        candidate_evidence = context.candidate_evidence.get(rule_key, {})
+        context.pending_states[rule_key] = {
+            "last_uid_seen": uid,
+            "last_polled_at": folder_result["last_polled_at"],
+            "scanned": prior.get("scanned", 0) + 1,
+            "matched": prior.get("matched", 0) + int(match.matched),
+            "coverage_gaps": sorted(
+                set(prior.get("coverage_gaps", [])) | set(match.unavailable_fields)
+            ),
+            "candidate_total": candidate_evidence.get("candidate_total", 0),
+            "has_more": bool(candidate_evidence.get("has_more")),
+            "backfill_truncated": bool(prior.get("backfill_truncated"))
+            or bool(candidate_evidence.get("backfill_truncated")),
+            "mode": candidate_evidence.get("mode", "incremental"),
+        }
+    return should_write
+
 
 def _poll_folder(
     conn: imaplib.IMAP4_SSL,
@@ -330,12 +562,33 @@ def _poll_folder(
     import time  # noqa: PLC0415
 
     key = _state_key(mb_id, folder)
-    last_uid = state.get(key, {}).get("last_uid_seen", 0)
+    scan_context, last_uid = _prepare_rule_scan(mb_id, folder, state, config)
     now_iso = datetime.now(timezone.utc).isoformat()
-    folder_result: dict = {"folder": folder, "fetched": 0, "error": None}
+    folder_result: dict = {
+        "folder": folder,
+        "fetched": 0,
+        "scanned": 0,
+        "matched_rules": {},
+        "coverage_gaps": [],
+        "candidate_total": 0,
+        "has_more": False,
+        "backfill_truncated": False,
+        "error": None,
+        "last_polled_at": now_iso,
+    }
 
     try:
-        messages = _uid_fetch_since(conn, folder, last_uid, max_uids=config.max_messages)
+        messages = _fetch_poll_candidates(
+            conn, folder, scan_context, last_uid, config.max_messages
+        )
+        evidence = list(scan_context.candidate_evidence.values())
+        folder_result["candidate_total"] = sum(
+            int(item.get("candidate_total", 0)) for item in evidence
+        )
+        folder_result["has_more"] = any(item.get("has_more") for item in evidence)
+        folder_result["backfill_truncated"] = any(
+            item.get("backfill_truncated") for item in evidence
+        )
     except Exception as exc:
         folder_result["error"] = str(exc)
         folder_result["new_high_uid"] = last_uid
@@ -343,19 +596,41 @@ def _poll_folder(
 
     new_high_uid = last_uid
     delay = (60.0 / config.rate_limit_per_min) if config.rate_limit_per_min > 0 else 0
+    pending_writes: list[tuple[int, bytes]] = []
 
-    for uid, raw_msg in messages:
+    try:
+        for uid, raw_msg in messages:
+            should_write = _scan_poll_message(uid, raw_msg, scan_context, folder_result)
+            if should_write:
+                pending_writes.append((uid, raw_msg))
+            new_high_uid = max(new_high_uid, uid)
+            folder_result["fetched"] += int(should_write)
+            if delay > 0:
+                time.sleep(delay)
+
         if not config.dry_run:
-            _write_eml(config.inbox_dir, mb_id, folder, uid, raw_msg)
-        if uid > new_high_uid:
-            new_high_uid = uid
-        folder_result["fetched"] += 1
-        if delay > 0:
-            time.sleep(delay)
+            for uid, raw_msg in pending_writes:
+                rules = scan_context.matched_rules_by_uid.get(uid, [])
+                collection_receipt = None
+                if rules:
+                    receipt_context = ReceiptContext("imap", mb_id, folder, str(uid))
+                    collection_receipt = (receipt_context, rules)
+                _write_eml(
+                    EmlWriteTarget(config.inbox_dir, mb_id, folder, uid),
+                    raw_msg,
+                    collection_receipt,
+                )
+            if scan_context.rule_keys:
+                state.update(scan_context.pending_states)
+            elif new_high_uid > last_uid:
+                state[key] = {"last_uid_seen": new_high_uid, "last_polled_at": now_iso}
+    except Exception as exc:
+        folder_result["error"] = type(exc).__name__
+        folder_result["new_high_uid"] = last_uid
+        return folder_result
 
-    if not config.dry_run and new_high_uid > last_uid:
-        state[key] = {"last_uid_seen": new_high_uid, "last_polled_at": now_iso}
-
+    folder_result["coverage_gaps"] = sorted(set(folder_result["coverage_gaps"]))
+    folder_result.pop("last_polled_at")
     folder_result["new_high_uid"] = new_high_uid
     return folder_result
 
@@ -414,9 +689,11 @@ def poll_mailbox(mb_config: dict, state: dict, config: "PollConfig | None" = Non
         return result
 
     total_fetched = 0
+    identities = tuple(mb_config.get("identities") or ()) + (user,)
+    folder_config = replace(config, account_identities=identities)
     try:
         for folder in folders:
-            folder_result = _poll_folder(conn, mb_id, folder, state, config)
+            folder_result = _poll_folder(conn, mb_id, folder, state, folder_config)
             if folder_result.get("error"):
                 result["status"] = "partial_error"
             total_fetched += folder_result["fetched"]
@@ -435,32 +712,189 @@ def poll_mailbox(mb_config: dict, state: dict, config: "PollConfig | None" = Non
     return result
 
 
-def backfill_mailbox(
+def _record_backfill_match(
+    context: BackfillContext, rule: dict, uid: int, match: MatchResult
+) -> None:
+    """Record one sanitized rule receipt without persisting message content."""
+    receipt_key = _backfill_receipt_key(context, rule)
+    prior = context.state.get(receipt_key, {})
+    candidate_evidence = context.candidate_evidence.get(receipt_key, {})
+    context.state[receipt_key] = {
+        "last_uid_seen": uid,
+        "last_scanned_at": datetime.now(timezone.utc).isoformat(),
+        "since": context.config.since_date,
+        "scanned": prior.get("scanned", 0) + 1,
+        "matched": prior.get("matched", 0) + int(match.matched),
+        "coverage_gaps": sorted(
+            set(prior.get("coverage_gaps", [])) | set(match.unavailable_fields)
+        ),
+        "candidate_total": candidate_evidence.get("candidate_total", 0),
+        "has_more": bool(candidate_evidence.get("has_more")),
+        "backfill_truncated": bool(prior.get("backfill_truncated"))
+        or bool(candidate_evidence.get("backfill_truncated")),
+        "mode": candidate_evidence.get("mode", "initial"),
+    }
+    if match.matched:
+        context.matched_rules_by_uid.setdefault(uid, []).append(rule)
+
+
+def _backfill_receipt_key(context: BackfillContext, rule: dict) -> str:
+    rule_since = str((rule.get("backfill") or {}).get("since") or "")
+    effective_since = max(context.config.since_date, rule_since)
+    return _backfill_state_key(
+        context.mailbox_id, context.folder, rule, effective_since
+    )
+
+
+def _scan_backfill_message(context: BackfillContext, uid: int, raw_msg: bytes) -> bool:
+    if not context.active_rules:
+        return not context.filtering_enabled
+    fields = fields_from_bytes(raw_msg)
+    should_write = False
+    for rule in context.active_rules:
+        receipt_key = _backfill_receipt_key(context, rule)
+        if uid not in context.candidate_uids[receipt_key]:
+            continue
+        match = match_rule(rule, fields, context.account_identities)
+        _record_backfill_match(context, rule, uid, match)
+        should_write = should_write or match.matched
+    return should_write
+
+
+def _backfill_messages(
+    conn: imaplib.IMAP4_SSL, context: BackfillContext
+) -> list[tuple[int, bytes]]:
+    if not context.active_rules:
+        if context.filtering_enabled:
+            return []
+        return _uid_fetch_since_date(conn, context.folder, context.config.since_date)
+    entries = {
+        key: (rule, context.state.get(key, {}).get("last_uid_seen", 0))
+        for rule in context.active_rules
+        for key in [_backfill_receipt_key(context, rule)]
+    }
+    context.candidate_uids, context.candidate_evidence = _rule_candidate_uids(
+        conn,
+        context.folder,
+        entries,
+        minimum_since=context.config.since_date,
+    )
+    union = sorted(set().union(*context.candidate_uids.values()))
+    return _uid_fetch_selected(conn, union)
+
+
+def _process_backfill_messages(
+    context: BackfillContext, messages: list[tuple[int, bytes]], result: dict
+) -> None:
+    import time  # noqa: PLC0415
+
+    delay = 60.0 / context.config.rate_limit_per_min if context.config.rate_limit_per_min > 0 else 0
+    for uid, raw_msg in messages:
+        should_write = _scan_backfill_message(context, uid, raw_msg)
+        if should_write:
+            rules = context.matched_rules_by_uid.get(uid, [])
+            collection_receipt = None
+            if rules:
+                receipt_context = ReceiptContext(
+                    "imap", context.mailbox_id, context.folder, str(uid)
+                )
+                collection_receipt = (receipt_context, rules)
+            _write_eml(
+                EmlWriteTarget(
+                    context.config.inbox_dir,
+                    context.mailbox_id,
+                    context.folder,
+                    uid,
+                ),
+                raw_msg,
+                collection_receipt,
+            )
+            result["fetched"] += 1
+        result["scanned"] += 1
+        if delay > 0:
+            time.sleep(delay)
+    result["message_count"] = len(messages)
+
+
+def _backfill_folder(conn: imaplib.IMAP4_SSL, context: BackfillContext) -> dict:
+    result = {
+        "folder": context.folder,
+        "fetched": 0,
+        "scanned": 0,
+        "candidate_total": 0,
+        "has_more": False,
+        "backfill_truncated": False,
+        "error": None,
+    }
+    try:
+        messages = _backfill_messages(conn, context)
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+    evidence = list(context.candidate_evidence.values())
+    result["candidate_total"] = sum(
+        int(item.get("candidate_total", 0)) for item in evidence
+    )
+    result["has_more"] = any(item.get("has_more") for item in evidence)
+    result["backfill_truncated"] = any(
+        item.get("backfill_truncated") for item in evidence
+    )
+    _process_backfill_messages(context, messages, result)
+    return result
+
+
+def _backfill_mailbox_folders(
+    conn: imaplib.IMAP4_SSL,
     mb_config: dict,
     state: dict,
-    inbox_dir: str,
-    since_date: str,
-    rate_limit_per_min: int = 100,
-) -> dict:
+    config: BackfillConfig,
+    result: dict,
+) -> int:
+    mailbox_id = mb_config["id"]
+    identities = tuple(mb_config.get("identities") or ()) + (mb_config["user"],)
+    total_fetched = 0
+    for folder in mb_config.get("folders", ["INBOX"]):
+        active_rules = select_rules({"rules": config.rules}, mailbox_id, folder) if config.rules else []
+        context = BackfillContext(
+            mailbox_id,
+            folder,
+            state,
+            config,
+            active_rules,
+            identities,
+            _mailbox_filtering_enabled(config.rules, mailbox_id),
+        )
+        folder_result = _backfill_folder(conn, context)
+        if folder_result["error"]:
+            result["status"] = "partial_error"
+        total_fetched += folder_result["fetched"]
+        result["folders"][folder] = folder_result
+    return total_fetched
+
+
+def _safe_logout(conn: imaplib.IMAP4_SSL) -> None:
+    try:
+        conn.logout()
+    except Exception:
+        pass
+
+
+def backfill_mailbox(mb_config: dict, state: dict, config: BackfillConfig) -> dict:
     """Back-fill a single mailbox from since_date (bypasses last-seen UID).
 
     Rate-limited to avoid IMAP-server abuse (default: 100 msgs/min).
     Does NOT update the high-watermark UID (backfill is additive, not a tick).
     """
-    import time  # noqa: PLC0415
-
     mb_id = mb_config["id"]
     host = mb_config["host"]
     port = int(mb_config.get("port", 993))
     user = mb_config["user"]
     password_ref = mb_config.get("password_ref", "")
-    folders = mb_config.get("folders", ["INBOX"])
-
     result: dict = {
         "mailbox_id": mb_id,
         "status": "ok",
         "fetched_count": 0,
-        "since_date": since_date,
+        "since_date": config.since_date,
         "folders": {},
     }
 
@@ -478,34 +912,10 @@ def backfill_mailbox(
         result["error"] = str(exc)
         return result
 
-    total_fetched = 0
-    delay = (60.0 / rate_limit_per_min) if rate_limit_per_min > 0 else 0
-
     try:
-        for folder in folders:
-            folder_result = {"folder": folder, "fetched": 0, "error": None}
-            try:
-                messages = _uid_fetch_since_date(conn, folder, since_date)
-            except Exception as exc:
-                folder_result["error"] = str(exc)
-                result["folders"][folder] = folder_result
-                result["status"] = "partial_error"
-                continue
-
-            for uid, raw_msg in messages:
-                _write_eml(inbox_dir, mb_id, folder, uid, raw_msg)
-                total_fetched += 1
-                folder_result["fetched"] += 1
-                if delay > 0:
-                    time.sleep(delay)
-
-            folder_result["message_count"] = len(messages)
-            result["folders"][folder] = folder_result
+        total_fetched = _backfill_mailbox_folders(conn, mb_config, state, config, result)
     finally:
-        try:
-            conn.logout()
-        except Exception:
-            pass
+        _safe_logout(conn)
 
     result["fetched_count"] = total_fetched
     return result
@@ -519,7 +929,8 @@ def cmd_tick(args: argparse.Namespace) -> int:
     """Tick: poll all mailboxes, write new messages to inbox."""
     config = load_mailboxes_config(args.config)
     state = load_state(args.state)
-    poll_cfg = PollConfig(inbox_dir=args.inbox)
+    rules = load_rule_config(args.filters).get("rules", []) if args.filters else []
+    poll_cfg = PollConfig(inbox_dir=args.inbox, rules=rules)
     results = []
     overall_ok = True
 
@@ -553,14 +964,16 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     config = load_mailboxes_config(args.config)
     mb_config = get_mailbox_config(config, args.mailbox_id)
     state = load_state(args.state)
+    rules = load_rule_config(args.filters).get("rules", []) if args.filters else []
 
-    res = backfill_mailbox(
-        mb_config,
-        state,
-        args.inbox,
-        args.since,
+    backfill_config = BackfillConfig(
+        inbox_dir=args.inbox,
+        since_date=args.since,
         rate_limit_per_min=args.rate_limit,
+        rules=rules,
     )
+    res = backfill_mailbox(mb_config, state, backfill_config)
+    save_state(args.state, state)
     print(json.dumps(res, indent=2))
     return 0 if res["status"] == "ok" else 1
 
@@ -627,6 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_tick.add_argument("--config", required=True, help="Path to mailboxes.json")
     p_tick.add_argument("--state", required=True, help="Path to .imap-state.json")
     p_tick.add_argument("--inbox", required=True, help="Directory to write .eml files")
+    p_tick.add_argument("--filters", help="Optional version 2 email filter config")
 
     # backfill
     p_bf = sub.add_parser("backfill", help="Backfill a mailbox from a given date")
@@ -634,6 +1048,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bf.add_argument("--state", required=True)
     p_bf.add_argument("--inbox", required=True)
     p_bf.add_argument("--mailbox-id", required=True, help="Mailbox ID to backfill")
+    p_bf.add_argument("--filters", help="Optional version 2 email filter config")
     p_bf.add_argument("--since", required=True, help="ISO date, e.g. 2026-01-01")
     p_bf.add_argument(
         "--rate-limit", type=int, default=100,

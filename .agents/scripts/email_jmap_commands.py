@@ -13,6 +13,7 @@ import sys
 
 from email_jmap_index import _init_index_db, _upsert_jmap_email, _first_or_empty
 from email_jmap_transport import _jmap_request, _session_context
+from email_match_rules import fields_from_mapping, load_rule_config, match_rule
 from email_jmap_helpers import (
     _find_response,
     _resolve_mailbox_id,
@@ -180,14 +181,14 @@ def _extract_text_body(em, body_values):
     return text_body
 
 
-def _extract_html_body_length(em, body_values):
-    """Return total byte length of HTML body parts."""
-    length = 0
+def _extract_html_body(em, body_values):
+    """Extract concatenated HTML body from email parts."""
+    html_body = ""
     for part in em.get("htmlBody") or []:
         part_id = part.get("partId", "")
         if part_id in body_values:
-            length += len(body_values[part_id].get("value", ""))
-    return length
+            html_body += body_values[part_id].get("value", "")
+    return html_body
 
 
 def _extract_attachments(em):
@@ -249,10 +250,12 @@ def cmd_fetch_body(args):
 
     em = emails[0]
     body_values = em.get("bodyValues", {})
+    html_body = _extract_html_body(em, body_values)
 
     from_addrs = em.get("from") or []
     to_addrs = em.get("to") or []
     cc_addrs = em.get("cc") or []
+    bcc_addrs = em.get("bcc") or []
 
     result = {
         "email_id": em.get("id", ""),
@@ -265,16 +268,35 @@ def cmd_fetch_body(args):
         "from": _format_addresses(from_addrs),
         "to": _format_addresses(to_addrs),
         "cc": _format_addresses(cc_addrs),
+        "bcc": _format_addresses(bcc_addrs),
         "subject": em.get("subject", ""),
         "in_reply_to": _first_or_empty(em.get("inReplyTo")),
         "references": em.get("references") or [],
         "keywords": list((em.get("keywords") or {}).keys()),
         "text_body": _extract_text_body(em, body_values),
-        "html_body_length": _extract_html_body_length(em, body_values),
+        "html_body_length": len(html_body),
         "has_attachment": em.get("hasAttachment", False),
         "attachments": _extract_attachments(em),
         "preview": em.get("preview", ""),
     }
+    if args.filter_config:
+        config = load_rule_config(args.filter_config)
+        selected = [
+            rule for rule in config["rules"]
+            if str(rule.get("id") or rule.get("name")) == args.rule_id
+        ]
+        if not selected:
+            print(json.dumps({"error": "rule_not_found", "rule_id": args.rule_id}), file=sys.stderr)
+            return 2
+        identities = args.account_identity or [args.user]
+        match_candidate = dict(em)
+        match_candidate["text_body"] = result["text_body"]
+        match_candidate["html_body"] = html_body
+        local_match = match_rule(selected[0], fields_from_mapping(match_candidate), identities)
+        if not local_match.matched:
+            print(json.dumps(local_match.explanation(), sort_keys=True))
+            return 3
+        result["local_match"] = local_match.explanation()
     print(json.dumps(result, indent=2))
     return 0
 

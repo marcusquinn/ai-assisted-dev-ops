@@ -226,58 +226,99 @@ aidevops email thread  <message-id> [knowledge-root]     # Look up thread by mes
 Helper: `.agents/scripts/email-thread-helper.sh`.
 Python module: `.agents/scripts/email_thread.py`.
 
-## Email Filter → Case-Attach (t2856)
+## Filtered Mailbox Collection and Case Routing
 
-Sieve-style rules in `_config/email-filters.json` auto-attach matched email
-sources to cases when the filter tick runs (routine `r045`, every 15 min).
+Version 2 rules in `_config/email-filters.json` are shared by mailbox collection
+and post-ingest case routing. Copy the sanitized template from
+`.agents/templates/email-filters-config.json`; keep real addresses, domains,
+references, and phrases in the private working configuration.
 
-**Filter config:** `<repo>/_config/email-filters.json` (template at `.agents/templates/email-filters-config.json`):
+### Deterministic match grammar
 
-```json
-{
-  "rules": [
-    {
-      "name": "Dispute counsel correspondence",
-      "match": {
-        "from_contains": "counsel@example.com",
-        "subject_contains_any": ["Re: Dispute"]
-      },
-      "actions": [
-        { "attach_to_case": "case-2026-0001-dispute-acme", "role": "evidence" },
-        { "set_sensitivity": "privileged" }
-      ]
-    }
-  ]
-}
-```
+Each rule has a stable `id`, optional `mailboxes` and `folders` selectors, and a
+`match` object containing `all` and/or `any` condition arrays. Every `all`
+condition must match and at least one `any` condition must match when `any` is
+present.
 
-**Match predicates (AND semantics — all must match):**
+| Field | Operators | Behavior |
+|-------|-----------|----------|
+| `from`, `to`, `cc`, available `bcc` | `exact_address`, `exact_domain` | Parsed addr-spec or complete IDNA-normalized domain equality; never suffix matching |
+| `direction` | `equals` | `sent`, `received`, or `either`, relative to verified mailbox identities |
+| `subject`, `body`, `header`, `attachment_name` | `exact`, `phrase`, `keyword`, `reference` | NFKC Unicode normalization; configurable case sensitivity; deterministic whitespace |
+| `reference`, `keyword`, `phrase` | same text operators | Shorthand fields with `target` set to `subject`, `body`, `attachment_name`, or the default subject+body corpus |
 
-| Predicate | Type | Description |
-|-----------|------|-------------|
-| `from_contains` | string | Partial match on From/Sender (case-insensitive) |
-| `from_equals` | string | Exact match on From/Sender |
-| `subject_contains_any` | string[] | Any element present in Subject (case-insensitive) |
-| `subject_matches_regex` | string | Python regex matched against Subject |
-| `body_contains` | string | Partial match on body_preview/body |
-| `has_attachment_kind` | string | Attachment kind present in `attachments[]` |
+`keyword` uses Unicode word boundaries. `reference` additionally treats hyphens
+as identifier characters, so `CASE-12` cannot match `CASE-123`. A missing BCC
+field is a coverage gap, not a successful negative assertion.
 
-**Actions:**
+### Collection authority and privacy
 
-| Action | Description |
-|--------|-------------|
-| `attach_to_case` + `role` | Calls `case-helper.sh attach <case-id> <source-id> --role <role>` |
-| `set_sensitivity` | Updates `sensitivity` field in meta.json |
+- IMAP selects folders read-only and fetches with `BODY.PEEK[]`; JMAP uses read
+  methods. Filtered collection never marks, moves, labels, flags, deletes,
+  replies to, or sends mail.
+- Server search predicates are optional candidate optimizations only.
+  `email_match_rules.py` always performs the final local check.
+- Only locally confirmed matches enter `_knowledge/inbox/`. Unmatched content
+  is not written; state records only counts, field names, timestamps, and rule
+  IDs/digests.
+- A mailbox keeps legacy unfiltered polling until a collection rule targets it.
+  Once targeted, collection is fail-closed across that mailbox: folders without
+  a selected rule persist nothing, and disabling every selected rule pauses
+  collection rather than reverting to unfiltered reads. Rules with
+  `collection: false` remain routing-only and do not enable this gate.
+- An unreadable or explicitly unsupported filter-config version stops polling;
+  it never silently falls back to unfiltered persistence. Versionless legacy
+  routing configs remain post-ingest-only before collection migration. After
+  filtered lineage state exists, a missing or versionless config also stops
+  polling; an explicit v2 config is required to opt back into unfiltered reads.
+- Each mailbox/folder/transport/rule digest has an independent checkpoint in
+  `_knowledge/.imap-state.json`. A rule edit creates a new lineage and runs the
+  configured bounded `backfill.limit` (default 500, maximum 5000). IMAP and JMAP
+  checkpoints record content-free candidate totals, continuation state, and a
+  `backfill_truncated` marker when more history existed than the configured bound.
+- Overlapping rules write one deterministic staging file plus an adjacent,
+  content-free `.collection.json` receipt containing transport, mailbox, folder,
+  opaque message key, and matching rule IDs/digests. Canonical ingest merges
+  those receipts into `meta.json.collection_refs`, including when the message
+  already exists, while preserving one message/attachment graph.
 
-**Filter state:** `_knowledge/.email-filter-state.json` — last-processed source ID, prevents double-processing.
+For JMAP provider accounts, `email-mailbox-helper.sh sync <account> --folder
+<folder>` auto-detects `_config/email-filters.json`. It gives the provider
+account slug to the rule's `mailboxes` selector, downloads raw RFC-822 blobs only
+after local matches, and stages those blobs in `_knowledge/inbox/`. The JMAP
+collector uses only `Mailbox/get`, `Email/query`, `Email/queryChanges`,
+`Email/get`, and authenticated blob downloads; terminal failures retain the
+prior checkpoint and remove incomplete staging. Malformed downloaded MIME is a
+terminal failure and never enters the inbox.
 
-**Audit log:** `_cases/<case-id>/comms/email-attach.jsonl` — one line per attachment action.
+JMAP callers can also pass `--filter-config`, `--rule-id`, and repeatable
+`--account-identity` to `email_jmap_adapter.py fetch_body`. A non-match returns
+only a content-free explanation and exit status 3, so callers cannot persist an
+unconfirmed body accidentally.
+
+### Case actions and compatibility
+
+`email-filter-helper.sh` uses the same v2 matcher for already-ingested messages.
+`attach_to_case` creates a source reference; `set_sensitivity` updates source
+metadata. Interactive `filter add` rules default to `collection: false` so a
+new routing rule cannot unexpectedly suppress mailbox ingestion. Existing
+versionless legacy predicates remain post-ingest compatible but never become
+collection authorities. An explicit `collection: true` rule runs actions only
+when canonical metadata contains its exact rule ID/digest receipt; routing-only
+rules remain global. Routing state includes an enabled-ruleset digest and
+per-source collection-reference digests. Match/action edits replay canonical
+sources, and a receipt merged into pre-existing evidence replays that source
+without reprocessing unchanged evidence.
 
 ```bash
-aidevops email filter tick   [knowledge-root]             # Run filter pass (called by r045)
-aidevops email filter list   [knowledge-root]             # List rules with match summaries
-aidevops email filter add    [knowledge-root]             # Interactive rule builder
-aidevops email filter test   <rule-name> [knowledge-root] # Dry-run against last 50 sources
+aidevops email filter tick   [knowledge-root]
+aidevops email filter list   [knowledge-root]
+aidevops email filter add    [knowledge-root]
+aidevops email filter test   <rule-name> [knowledge-root]
 ```
 
-Helper: `.agents/scripts/email-filter-helper.sh`.
+Dry-run explanations include only the rule ID, matched field names, and missing
+field names. Helpers: `.agents/scripts/email_match_rules.py`,
+`.agents/scripts/email-poll-helper.sh`, `.agents/scripts/email_jmap_collection.py`,
+`.agents/scripts/email-mailbox-helper.sh`, and
+`.agents/scripts/email-filter-helper.sh`.

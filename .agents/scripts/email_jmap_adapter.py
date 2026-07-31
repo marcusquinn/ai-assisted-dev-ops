@@ -125,6 +125,9 @@ def build_parser():
     # fetch_body
     fb = subparsers.add_parser("fetch_body", help="Fetch an email body by ID")
     fb.add_argument("--email-id", required=True, help="JMAP email ID")
+    fb.add_argument("--filter-config", help="Version 2 rules checked locally before output")
+    fb.add_argument("--rule-id", help="Rule ID required with --filter-config")
+    fb.add_argument("--account-identity", action="append", default=[])
 
     # search
     sr = subparsers.add_parser("search", help="Search emails")
@@ -179,6 +182,22 @@ def build_parser():
     )
     ix.add_argument(
         "--full", action="store_true", help="Full sync (not incremental)"
+    )
+    ix.add_argument(
+        "--filter-config",
+        help="Version 2 rules for locally-authoritative knowledge collection",
+    )
+    ix.add_argument(
+        "--collection-mailbox-id",
+        help="Private rule mailbox selector (defaults to --user)",
+    )
+    ix.add_argument("--state", help="Content-free collection checkpoint file")
+    ix.add_argument("--inbox", help="Knowledge inbox for matched .eml files")
+    ix.add_argument("--account-identity", action="append", default=[])
+    ix.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Match candidates without writing evidence or checkpoints",
     )
 
     # push

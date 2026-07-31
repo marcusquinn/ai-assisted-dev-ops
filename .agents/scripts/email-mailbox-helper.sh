@@ -23,7 +23,7 @@ set -euo pipefail
 #   email-mailbox-helper.sh flag [account] --email-id ID --flag NAME [--clear]  (JMAP)
 #   email-mailbox-helper.sh search [account] --query "SEARCH" [--folder FOLDER] [--limit N]
 #   email-mailbox-helper.sh smart-mailbox [account] --name NAME --criteria "SEARCH"
-#   email-mailbox-helper.sh sync [account] [--folder FOLDER] [--full]
+#   email-mailbox-helper.sh sync [account] [--folder FOLDER] [--full] [--dry-run]
 #   email-mailbox-helper.sh push [account] [--types mail] [--timeout 300]  (JMAP only)
 #   email-mailbox-helper.sh help
 #
@@ -46,6 +46,7 @@ readonly PROVIDERS_CONFIG="${CONFIG_DIR}/email-providers.json"
 readonly IMAP_ADAPTER="${SCRIPT_DIR}/email_imap_adapter.py"
 readonly JMAP_ADAPTER="${SCRIPT_DIR}/email_jmap_adapter.py"
 readonly MAILBOX_WORKSPACE="${HOME}/.aidevops/.agent-workspace/email-mailbox"
+readonly COLLECTION_LINEAGE_FILTERED="filtered"
 
 # ============================================================================
 # Dependency checks
@@ -355,6 +356,58 @@ get_preferred_protocol() {
 	else
 		echo "imap"
 	fi
+	return 0
+}
+
+_collection_state_lineage_status() {
+	local state_path="$1"
+	local lineage_marker="$2"
+	if [[ ! -f "$state_path" ]]; then
+		printf '%s\n' "none"
+		return 0
+	fi
+	if ! jq -e 'type == "object"' "$state_path" >/dev/null 2>&1; then
+		print_error "Invalid ${state_path}; refusing unfiltered JMAP collection"
+		return 1
+	fi
+	if jq -e --arg marker "$lineage_marker" '[keys[] | select(contains($marker))] | length > 0' "$state_path" >/dev/null 2>&1; then
+		printf '%s\n' "$COLLECTION_LINEAGE_FILTERED"
+	else
+		printf '%s\n' "none"
+	fi
+	return 0
+}
+
+_resolve_auto_collection_filter_config() {
+	local config_path="$1"
+	local state_path="$2"
+	local lineage_status
+	lineage_status=$(_collection_state_lineage_status "$state_path" "/jmap/filter/") || return 1
+	if [[ ! -f "$config_path" ]]; then
+		if [[ "$lineage_status" == "$COLLECTION_LINEAGE_FILTERED" ]]; then
+			print_error "Missing ${config_path} after filtered collection; refusing unfiltered JMAP collection"
+			return 1
+		fi
+		return 0
+	fi
+	if ! jq -e 'type == "object"' "$config_path" >/dev/null 2>&1; then
+		print_error "Invalid ${config_path}; refusing unfiltered JMAP collection"
+		return 1
+	fi
+	local version
+	version=$(jq -r 'if has("version") then (.version | tostring) else "" end' "$config_path")
+	if [[ -z "$version" ]]; then
+		if [[ "$lineage_status" == "$COLLECTION_LINEAGE_FILTERED" ]]; then
+			print_error "Versionless ${config_path} cannot replace prior filtered collection; use an explicit version 2 config"
+			return 1
+		fi
+		return 0
+	fi
+	if [[ "$version" != "2" ]]; then
+		print_error "Unsupported email filter version ${version}; refusing unfiltered JMAP collection"
+		return 1
+	fi
+	printf '%s\n' "$config_path"
 	return 0
 }
 
@@ -953,7 +1006,8 @@ cmd_smart_mailbox() {
 }
 
 cmd_sync() {
-	local account="${1:-}"
+	local account_arg="${1:-}"
+	local account="$account_arg"
 	shift || true
 
 	if [[ -z "$account" ]]; then
@@ -961,20 +1015,55 @@ cmd_sync() {
 		return 1
 	fi
 
-	local folder="INBOX" full_sync=false
+	local folder="INBOX" full_sync=false dry_run=false
+	local filter_config="" filter_config_explicit=false
+	local state_path="_knowledge/.imap-state.json"
+	local inbox_dir="_knowledge/inbox"
 	while [[ $# -gt 0 ]]; do
-		case "$1" in
+		local flag="${1:-}"
+		case "$flag" in
 		--folder)
-			folder="$2"
+			local folder_arg="${2:-}"
+			folder="$folder_arg"
 			shift 2
 			;;
 		--full)
 			full_sync=true
 			shift
 			;;
-		*) shift ;;
+		--filter-config)
+			if [[ $# -lt 2 || -z "${2:-}" ]]; then
+				print_error "--filter-config requires a non-empty path"
+				return 1
+			fi
+			local filter_arg="$2"
+			filter_config="$filter_arg"
+			filter_config_explicit=true
+			shift 2
+			;;
+		--state)
+			local state_arg="${2:-}"
+			state_path="$state_arg"
+			shift 2
+			;;
+		--inbox)
+			local inbox_arg="${2:-}"
+			inbox_dir="$inbox_arg"
+			shift 2
+			;;
+		--dry-run)
+			dry_run=true
+			shift
+			;;
+		*)
+			print_error "Unknown sync option: $flag"
+			return 1
+			;;
 		esac
 	done
+	if [[ "$filter_config_explicit" == "false" ]]; then
+		filter_config=$(_resolve_auto_collection_filter_config "_config/email-filters.json" "$state_path") || return 1
+	fi
 
 	local extra_args=(--folder "$folder")
 	if [[ "$full_sync" == "true" ]]; then
@@ -988,6 +1077,17 @@ cmd_sync() {
 		local jmap_args=(--mailbox "$folder")
 		if [[ "$full_sync" == "true" ]]; then
 			jmap_args+=(--full)
+		fi
+		if [[ -n "$filter_config" ]]; then
+			jmap_args+=(
+				--filter-config "$filter_config"
+				--collection-mailbox-id "$account"
+				--state "$state_path"
+				--inbox "$inbox_dir"
+			)
+		fi
+		if [[ "$dry_run" == "true" ]]; then
+			jmap_args+=(--dry-run)
 		fi
 		run_jmap_adapter "$account" "index_sync" "${jmap_args[@]}"
 	else
@@ -1057,7 +1157,7 @@ Commands:
   flag <account> --email-id --flag  Set/clear a keyword (JMAP)
   search <account> --query       Search messages
   smart-mailbox <account> --name --criteria  Create a saved search
-  sync <account> [--folder] [--full]  Sync folder headers to local index
+  sync <account> [--folder] [--full]  Sync headers or collect matched JMAP mail
   push <account> [--types] [--timeout]  Push notifications (JMAP only)
   help                           Show this help
 
@@ -1072,6 +1172,10 @@ Options:
   --clear         Clear a flag instead of setting it
   --query SEARCH  Search criteria (IMAP SEARCH string or JMAP filter JSON)
   --full          Full sync (not incremental)
+  --filter-config Version 2 private rules (auto-detected in _config/)
+  --state PATH    Content-free JMAP collection state
+  --inbox PATH    Knowledge inbox for matched JMAP .eml files
+  --dry-run       Match JMAP candidates without evidence or state writes
   --test          Test connectivity when listing accounts
   --types TYPES   Push event types, comma-separated (default: mail)
   --timeout SECS  Push listen timeout in seconds (default: 300)
