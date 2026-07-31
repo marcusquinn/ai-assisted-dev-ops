@@ -32,7 +32,6 @@ from _knowledge_social_whatsapp_export_archive import (
     ExportContents,
     _check_deadline,
     _read_contents,
-    _read_regular,
 )
 from knowledge_social_store import SocialStoreError
 
@@ -77,6 +76,35 @@ def _timestamp(date_value: str, time_value: str, format_name: str, zone: Any) ->
     return parsed.replace(tzinfo=zone).isoformat()
 
 
+def _decode_transcript(transcript: bytes) -> str:
+    try:
+        return transcript.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise SocialStoreError("WhatsApp transcript must be UTF-8") from error
+
+
+def _new_message(
+    raw_line: str, pattern: re.Pattern[str], format_name: str, zone: Any
+) -> tuple[str, str] | None:
+    if len(raw_line) > MAX_LINE_CHARS:
+        raise SocialStoreError("WhatsApp transcript line exceeds the character budget")
+    normalized = raw_line.replace("\u202f", " ").replace("\u00a0", " ").lstrip("\u200e")
+    match = pattern.match(normalized)
+    if match:
+        return _timestamp(match["date"], match["time"], format_name, zone), match["body"]
+    if TIMESTAMP_LIKE.match(normalized):
+        raise SocialStoreError("WhatsApp transcript mixes timestamp or locale formats")
+    return None
+
+
+def _append_continuation(current: tuple[str, str] | None, raw_line: str) -> tuple[str, str] | None:
+    if current is not None:
+        return current[0], f"{current[1]}\n{raw_line}"
+    if raw_line.strip():
+        raise SocialStoreError("WhatsApp transcript starts with an unrecognized line")
+    return None
+
+
 def _message_rows(
     transcript: bytes,
     format_name: str,
@@ -84,30 +112,19 @@ def _message_rows(
     max_items: int,
     deadline: float,
 ) -> list[tuple[str, str]]:
-    try:
-        text = transcript.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        raise SocialStoreError("WhatsApp transcript must be UTF-8") from error
     pattern = FORMAT_SPECS[format_name][0]
     rows: list[tuple[str, str]] = []
     current: tuple[str, str] | None = None
-    for raw_line in io.StringIO(text):
+    for raw_line in io.StringIO(_decode_transcript(transcript)):
         _check_deadline(deadline)
         raw_line = raw_line.rstrip("\r\n")
-        if len(raw_line) > MAX_LINE_CHARS:
-            raise SocialStoreError("WhatsApp transcript line exceeds the character budget")
-        normalized = raw_line.replace("\u202f", " ").replace("\u00a0", " ").lstrip("\u200e")
-        match = pattern.match(normalized)
-        if match:
+        candidate = _new_message(raw_line, pattern, format_name, zone)
+        if candidate is not None:
             if current is not None:
                 rows.append(current)
-            current = (_timestamp(match["date"], match["time"], format_name, zone), match["body"])
-        elif TIMESTAMP_LIKE.match(normalized):
-            raise SocialStoreError("WhatsApp transcript mixes timestamp or locale formats")
-        elif current is not None:
-            current = (current[0], f"{current[1]}\n{raw_line}")
-        elif raw_line.strip():
-            raise SocialStoreError("WhatsApp transcript starts with an unrecognized line")
+            current = candidate
+        else:
+            current = _append_continuation(current, raw_line)
         if len(rows) >= max_items:
             raise SocialStoreError("WhatsApp transcript exceeds the item budget")
     if current is not None:

@@ -10,7 +10,9 @@ import io
 import os
 import stat
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import BinaryIO, Iterator
 from pathlib import Path, PurePosixPath
 
 from _knowledge_social_whatsapp_zip_guard import (
@@ -33,9 +35,8 @@ class ExportContents:
     raw_sha256: str
 
 
-def _read_regular_digest(
-    path: Path, max_bytes: int, deadline: float | None = None
-) -> tuple[bytes, str]:
+@contextmanager
+def _opened_regular(path: Path) -> Iterator[BinaryIO]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
@@ -44,22 +45,7 @@ def _read_regular_digest(
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as source:
             descriptor = -1
-            before = os.fstat(source.fileno())
-            if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= max_bytes:
-                raise SocialStoreError("WhatsApp export exceeds the byte budget")
-            digest = hashlib.sha256()
-            chunks: list[bytes] = []
-            total = 0
-            while chunk := source.read(READ_CHUNK_BYTES):
-                if deadline is not None:
-                    _check_deadline(deadline)
-                total += len(chunk)
-                if total > max_bytes:
-                    raise SocialStoreError("WhatsApp export exceeds the byte budget")
-                digest.update(chunk)
-                chunks.append(chunk)
-            payload = b"".join(chunks)
-            after = os.fstat(source.fileno())
+            yield source
     except SocialStoreError:
         raise
     except OSError as error:
@@ -67,11 +53,43 @@ def _read_regular_digest(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_regular_stream(
+    source: BinaryIO, max_bytes: int, deadline: float | None
+) -> tuple[bytes, str]:
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := source.read(READ_CHUNK_BYTES):
+        if deadline is not None:
+            _check_deadline(deadline)
+        total += len(chunk)
+        if total > max_bytes:
+            raise SocialStoreError("WhatsApp export exceeds the byte budget")
+        digest.update(chunk)
+        chunks.append(chunk)
+    return b"".join(chunks), digest.hexdigest()
+
+
+def _validate_unchanged(before: os.stat_result, after: os.stat_result, payload_size: int) -> None:
     before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    if len(payload) != before.st_size or before_identity != after_identity:
+    if payload_size != before.st_size or before_identity != after_identity:
         raise SocialStoreError("WhatsApp export changed while it was being read")
-    return payload, digest.hexdigest()
+
+
+def _read_regular_digest(
+    path: Path, max_bytes: int, deadline: float | None = None
+) -> tuple[bytes, str]:
+    with _opened_regular(path) as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= max_bytes:
+            raise SocialStoreError("WhatsApp export exceeds the byte budget")
+        payload, digest = _read_regular_stream(source, max_bytes, deadline)
+        after = os.fstat(source.fileno())
+    _validate_unchanged(before, after, len(payload))
+    return payload, digest
 
 
 def _read_regular(path: Path, max_bytes: int) -> bytes:
@@ -103,6 +121,53 @@ def _read_zip_member(
     return (b"".join(chunks) if capture else None), digest.hexdigest(), total
 
 
+def _transcript_member(members: list[zipfile.ZipInfo]) -> zipfile.ZipInfo:
+    transcripts = [info for info in members if info.filename.casefold().endswith(".txt")]
+    if len(transcripts) != 1:
+        raise SocialStoreError("WhatsApp ZIP export requires exactly one transcript")
+    transcript = transcripts[0]
+    if transcript.file_size > MAX_TRANSCRIPT_BYTES:
+        raise SocialStoreError("WhatsApp transcript exceeds the byte budget")
+    return transcript
+
+
+def _media_manifest(
+    archive: zipfile.ZipFile,
+    members: list[zipfile.ZipInfo],
+    transcript: zipfile.ZipInfo,
+    deadline: float,
+) -> dict[str, tuple[str, str, int]]:
+    media: dict[str, tuple[str, str, int]] = {}
+    for info in members:
+        _check_deadline(deadline)
+        if info == transcript:
+            continue
+        key = PurePosixPath(info.filename).name.casefold()
+        if key in media:
+            raise SocialStoreError("WhatsApp media basenames must be unique")
+        _unused, media_digest, media_size = _read_zip_member(
+            archive, info, deadline, capture=False
+        )
+        media[key] = (info.filename, media_digest, media_size)
+    return media
+
+
+def _read_zip_contents(
+    raw: bytes, raw_sha256: str, max_bytes: int, max_items: int, deadline: float
+) -> ExportContents:
+    _preflight_zip(raw, max_items)
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:
+        members = _safe_zip_members(archive, max_bytes, max_items, deadline)
+        transcript_info = _transcript_member(members)
+        transcript, _digest, _size = _read_zip_member(
+            archive, transcript_info, deadline, capture=True
+        )
+        if transcript is None:
+            raise SocialStoreError("WhatsApp transcript could not be retained")
+        media = _media_manifest(archive, members, transcript_info, deadline)
+    return ExportContents(transcript, media, raw, raw_sha256)
+
+
 def _read_contents(
     path: Path, max_bytes: int, max_items: int, deadline: float
 ) -> ExportContents:
@@ -112,30 +177,7 @@ def _read_contents(
             raise SocialStoreError("WhatsApp transcript exceeds the byte budget")
         return ExportContents(raw, {}, raw, raw_sha256)
     try:
-        _preflight_zip(raw, max_items)
-        with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:
-            members = _safe_zip_members(archive, max_bytes, max_items, deadline)
-            transcripts = [info for info in members if info.filename.casefold().endswith(".txt")]
-            if len(transcripts) != 1:
-                raise SocialStoreError("WhatsApp ZIP export requires exactly one transcript")
-            transcript_info = transcripts[0]
-            if transcript_info.file_size > MAX_TRANSCRIPT_BYTES:
-                raise SocialStoreError("WhatsApp transcript exceeds the byte budget")
-            transcript, _digest, _size = _read_zip_member(archive, transcript_info, deadline, capture=True)
-            if transcript is None:
-                raise SocialStoreError("WhatsApp transcript could not be retained")
-            media: dict[str, tuple[str, str, int]] = {}
-            for info in members:
-                _check_deadline(deadline)
-                if info == transcript_info:
-                    continue
-                basename = PurePosixPath(info.filename).name
-                key = basename.casefold()
-                if key in media:
-                    raise SocialStoreError("WhatsApp media basenames must be unique")
-                _unused, media_digest, media_size = _read_zip_member(archive, info, deadline, capture=False)
-                media[key] = (info.filename, media_digest, media_size)
-            return ExportContents(transcript, media, raw, raw_sha256)
+        return _read_zip_contents(raw, raw_sha256, max_bytes, max_items, deadline)
     except SocialStoreError:
         raise
     except (RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:

@@ -13,14 +13,14 @@ import io
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from dataclasses import replace
-from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Iterator
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
@@ -78,6 +78,95 @@ def export_request(path: Path, connection: str = "conn_export") -> ExportRequest
         100,
         30,
     )
+
+
+def assert_isolated_imports(test: unittest.TestCase, target: Path) -> None:
+    tree = ast.parse(target.read_text(encoding="utf-8"))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports.update(node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    test.assertNotIn("subprocess", imports)
+    test.assertNotIn("socket", imports)
+    test.assertFalse(any(name.startswith(("urllib", "requests", "httpx")) for name in imports))
+    test.assertNotIn("knowledge_social_browser", imports)
+    test.assertNotIn("_knowledge_social_outbound", imports)
+
+
+def blocked_api(*_args, **_kwargs):
+    raise AssertionError("network or subprocess execution attempted")
+
+
+@contextmanager
+def blocked_runtime_apis() -> Iterator[None]:
+    targets = (
+        "socket.socket", "subprocess.Popen", "subprocess.call", "subprocess.run",
+        "subprocess.check_call", "subprocess.check_output", "os.system", "os.popen",
+        "os.spawnv", "os.spawnve",
+    )
+    with ExitStack() as stack:
+        for target in targets:
+            stack.enter_context(mock.patch(target, side_effect=blocked_api))
+        yield
+
+
+def runtime_paths(temporary: str) -> tuple[Path, Path, bytes, str, Path]:
+    transcript = Path(temporary) / "chat.txt"
+    transcript.write_text("7/28/26, 8:01 AM - Alpha: Runtime isolated\n", encoding="utf-8")
+    payload_path = Path(temporary) / "webhook.json"
+    payload = webhook_payload()
+    payload_path.write_bytes(payload)
+    signature = "sha256=" + hmac.new(APP_SECRET, payload, hashlib.sha256).hexdigest()
+    corpus = Path(temporary) / "corpus"
+    corpus.mkdir(mode=0o700)
+    return transcript, payload_path, payload, signature, corpus
+
+
+def persist_runtime_export(corpus: Path, transcript: Path):
+    parsed, raw = parse_export(export_request(transcript))
+    lease = acquire_run_lease(
+        corpus,
+        RunLeaseRequest(
+            "conn_export", "export", "runtime_persist", "sync", 300, parsed.manifest_sha256
+        ),
+    )
+    persisted = persist_batch(corpus, parsed, raw, lease)
+    release_run_lease(corpus, lease)
+    return parsed, persisted
+
+
+def run_export_cli(transcript: Path) -> None:
+    arguments = [
+        "knowledge_social_whatsapp.py", "export", "--archive", str(transcript),
+        "--connection-id", "conn_cli_export", "--conversation-id", "conversation_cli_export",
+        "--format", "android-us-12h", "--timezone", "+01:00", "--observed-at", OBSERVED_AT,
+        "--dry-run",
+    ]
+    with mock.patch.object(sys, "argv", arguments), redirect_stdout(io.StringIO()):
+        if whatsapp_main() != 0:
+            raise AssertionError("export CLI failed")
+
+
+def run_webhook_cli(payload_path: Path, signature: str) -> None:
+    arguments = [
+        "knowledge_social_whatsapp.py", "webhook", "--payload", str(payload_path),
+        "--connection-id", "conn_cli_webhook", "--waba-id", "waba_fixture",
+        "--phone-number-id", "phone_fixture", "--observed-at", OBSERVED_AT, "--dry-run",
+    ]
+    environment = {
+        "WHATSAPP_APP_SECRET": APP_SECRET.decode(),
+        "WHATSAPP_WEBHOOK_SIGNATURE": signature,
+    }
+    with (
+        mock.patch.object(sys, "argv", arguments),
+        mock.patch.dict(os.environ, environment),
+        redirect_stdout(io.StringIO()),
+    ):
+        if whatsapp_main() != 0:
+            raise AssertionError("webhook CLI failed")
 
 
 def webhook_payload(waba: str = "waba_fixture", phone: str = "phone_fixture") -> bytes:
@@ -405,107 +494,16 @@ class WhatsAppIsolationTests(unittest.TestCase):
         targets = list(SCRIPTS.glob("*knowledge_social_whatsapp*.py"))
         self.assertGreaterEqual(len(targets), 5)
         for target in targets:
-            source = target.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            imports = {
-                alias.name
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Import)
-                for alias in node.names
-            }
-            imports.update(node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
-            self.assertNotIn("subprocess", imports)
-            self.assertNotIn("socket", imports)
-            self.assertFalse(any(name.startswith(("urllib", "requests", "httpx")) for name in imports))
-            self.assertNotIn("knowledge_social_browser", imports)
-            self.assertNotIn("_knowledge_social_outbound", imports)
+            assert_isolated_imports(self, target)
 
     def test_runtime_collector_cannot_reach_network_or_process_apis(self) -> None:
-        def blocked(*_args, **_kwargs):
-            raise AssertionError("network or subprocess execution attempted")
-
         with tempfile.TemporaryDirectory() as temporary:
-            transcript = Path(temporary) / "chat.txt"
-            transcript.write_text(
-                "7/28/26, 8:01 AM - Alpha: Runtime isolated\n", encoding="utf-8"
-            )
-            payload_path = Path(temporary) / "webhook.json"
-            payload = webhook_payload()
-            payload_path.write_bytes(payload)
-            signature = "sha256=" + hmac.new(APP_SECRET, payload, hashlib.sha256).hexdigest()
-            corpus = Path(temporary) / "corpus"
-            corpus.mkdir(mode=0o700)
-            with (
-                mock.patch("socket.socket", side_effect=blocked),
-                mock.patch("subprocess.Popen", side_effect=blocked),
-                mock.patch("subprocess.call", side_effect=blocked),
-                mock.patch("subprocess.run", side_effect=blocked),
-                mock.patch("subprocess.check_call", side_effect=blocked),
-                mock.patch("subprocess.check_output", side_effect=blocked),
-                mock.patch("os.system", side_effect=blocked),
-                mock.patch("os.popen", side_effect=blocked),
-                mock.patch("os.spawnv", side_effect=blocked),
-                mock.patch("os.spawnve", side_effect=blocked),
-            ):
-                parsed, raw = parse_export(export_request(transcript))
+            transcript, payload_path, _payload, signature, corpus = runtime_paths(temporary)
+            with blocked_runtime_apis():
                 webhook = signed_webhook(webhook_payload(), "conn_runtime")
-                lease = acquire_run_lease(
-                    corpus,
-                    RunLeaseRequest(
-                        "conn_export",
-                        "export",
-                        "runtime_persist",
-                        "sync",
-                        300,
-                        parsed.manifest_sha256,
-                    ),
-                )
-                persisted = persist_batch(corpus, parsed, raw, lease)
-                release_run_lease(corpus, lease)
-                export_args = [
-                    "knowledge_social_whatsapp.py",
-                    "export",
-                    "--archive",
-                    str(transcript),
-                    "--connection-id",
-                    "conn_cli_export",
-                    "--conversation-id",
-                    "conversation_cli_export",
-                    "--format",
-                    "android-us-12h",
-                    "--timezone",
-                    "+01:00",
-                    "--observed-at",
-                    OBSERVED_AT,
-                    "--dry-run",
-                ]
-                with mock.patch.object(sys, "argv", export_args), redirect_stdout(io.StringIO()):
-                    self.assertEqual(0, whatsapp_main())
-                webhook_args = [
-                    "knowledge_social_whatsapp.py",
-                    "webhook",
-                    "--payload",
-                    str(payload_path),
-                    "--connection-id",
-                    "conn_cli_webhook",
-                    "--waba-id",
-                    "waba_fixture",
-                    "--phone-number-id",
-                    "phone_fixture",
-                    "--observed-at",
-                    OBSERVED_AT,
-                    "--dry-run",
-                ]
-                environment = {
-                    "WHATSAPP_APP_SECRET": APP_SECRET.decode(),
-                    "WHATSAPP_WEBHOOK_SIGNATURE": signature,
-                }
-                with (
-                    mock.patch.object(sys, "argv", webhook_args),
-                    mock.patch.dict(os.environ, environment),
-                    redirect_stdout(io.StringIO()),
-                ):
-                    self.assertEqual(0, whatsapp_main())
+                parsed, persisted = persist_runtime_export(corpus, transcript)
+                run_export_cli(transcript)
+                run_webhook_cli(payload_path, signature)
         self.assertEqual((1, 4), (len(parsed.archive["objects"]), len(webhook.archive["objects"])))
         self.assertEqual("complete", persisted["status"])
 

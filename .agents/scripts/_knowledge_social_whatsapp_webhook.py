@@ -61,6 +61,21 @@ def _records(value: Any, field_name: str) -> list[dict[str, Any]]:
     return value
 
 
+def _verify_change_value(change: dict[str, Any], expected_phone: str) -> dict[str, Any]:
+    if change.get("field") != "messages" or not isinstance(change.get("value"), dict):
+        raise SocialStoreError("WhatsApp webhook contains an unsupported change field")
+    value = change["value"]
+    if value.get("messaging_product") != "whatsapp":
+        raise SocialStoreError("WhatsApp webhook messaging product is invalid")
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict):
+        raise SocialStoreError("WhatsApp webhook phone identity does not match the connection")
+    phone_id = identity(metadata.get("phone_number_id"), "phone identity")
+    if phone_id != expected_phone:
+        raise SocialStoreError("WhatsApp webhook phone identity does not match the connection")
+    return value
+
+
 def _verified_values(
     root: dict[str, Any], expected_waba: str, expected_phone: str
 ) -> list[dict[str, Any]]:
@@ -69,15 +84,7 @@ def _verified_values(
         if identity(entry.get("id"), "WABA identity") != expected_waba:
             raise SocialStoreError("WhatsApp webhook WABA identity does not match the connection")
         for change in _records(entry.get("changes"), "changes"):
-            if change.get("field") != "messages" or not isinstance(change.get("value"), dict):
-                raise SocialStoreError("WhatsApp webhook contains an unsupported change field")
-            value = change["value"]
-            if value.get("messaging_product") != "whatsapp":
-                raise SocialStoreError("WhatsApp webhook messaging product is invalid")
-            metadata = value.get("metadata")
-            if not isinstance(metadata, dict) or identity(metadata.get("phone_number_id"), "phone identity") != expected_phone:
-                raise SocialStoreError("WhatsApp webhook phone identity does not match the connection")
-            values.append(value)
+            values.append(_verify_change_value(change, expected_phone))
     if not values:
         raise SocialStoreError("WhatsApp webhook contains no authorized message changes")
     return values

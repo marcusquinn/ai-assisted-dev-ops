@@ -19,7 +19,8 @@ from _knowledge_social_lease import (
     release_run_lease,
 )
 from _knowledge_social_whatsapp import persist_batch
-from _knowledge_social_whatsapp_export import ExportRequest, FORMAT_SPECS, _read_regular, parse_export
+from _knowledge_social_whatsapp_export import ExportRequest, FORMAT_SPECS, parse_export
+from _knowledge_social_whatsapp_export_archive import _read_regular
 from _knowledge_social_whatsapp_webhook import (
     MAX_WEBHOOK_BYTES,
     WebhookRequest,

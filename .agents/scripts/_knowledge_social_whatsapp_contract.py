@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -18,6 +19,7 @@ EXPORT_SCHEMA = "whatsapp-chat-export-v1"
 WEBHOOK_SCHEMA = "whatsapp-business-webhook-v1"
 EXPORT_RETENTION = "manual_export_may_contain_only_the_latest_40000_messages_or_10000_with_media"
 WEBHOOK_RETENTION = "prospective_events_only_no_general_message_history_endpoint"
+TIMEZONE_OFFSET = re.compile(r"^(?P<sign>[+-])(?P<hours>\d{2}):(?P<minutes>\d{2})$")
 
 
 @dataclass(frozen=True)
@@ -56,17 +58,16 @@ def normalized_observed_at(value: str) -> str:
 def fixed_timezone(value: str) -> timezone:
     if value in {"UTC", "Z", "+00:00", "-00:00"}:
         return timezone.utc
-    if len(value) != 6 or value[0] not in "+-" or value[3] != ":":
+    match = TIMEZONE_OFFSET.fullmatch(value)
+    if match is None:
         raise SocialStoreError("WhatsApp timezone must be UTC or an explicit +/-HH:MM offset")
-    try:
-        hours = int(value[1:3])
-        minutes = int(value[4:6])
-    except ValueError as error:
-        raise SocialStoreError("WhatsApp timezone offset is invalid") from error
-    if hours > 14 or minutes > 59 or (hours == 14 and minutes != 0):
+    hours = int(match["hours"])
+    minutes = int(match["minutes"])
+    offset_minutes = hours * 60 + minutes
+    if minutes > 59 or offset_minutes > 14 * 60:
         raise SocialStoreError("WhatsApp timezone offset is out of range")
-    delta = timedelta(hours=hours, minutes=minutes)
-    return timezone(delta if value[0] == "+" else -delta)
+    delta = timedelta(minutes=offset_minutes)
+    return timezone(delta if match["sign"] == "+" else -delta)
 
 
 def account_record(remote_id: str, alias: str | None, observed_at: str, role: str) -> dict[str, Any]:

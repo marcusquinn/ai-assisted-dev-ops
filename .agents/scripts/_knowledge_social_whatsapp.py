@@ -8,6 +8,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,22 @@ def _replay_result(parsed: ParsedWhatsAppBatch, blob_ref: str) -> dict[str, Any]
     }
 
 
+def _replay_metadata_matches(
+    existing: sqlite3.Row,
+    parsed: ParsedWhatsAppBatch,
+    connection_id: str,
+    expected_ref: str,
+) -> bool:
+    return all((
+        existing["provider"] == PROVIDER,
+        existing["connection_id"] == connection_id,
+        existing["stream"] == parsed.stream,
+        existing["request_hash"] == parsed.manifest_sha256,
+        existing["response_hash"] == parsed.manifest_sha256,
+        existing["blob_ref"] == expected_ref,
+    ))
+
+
 def _existing_replay(
     database: sqlite3.Connection,
     root: Path,
@@ -80,11 +97,9 @@ def _existing_replay(
     if existing is None:
         return None
     expected_ref = raw_path.relative_to(root).as_posix()
-    valid = existing["provider"] == PROVIDER and existing["connection_id"] == connection_id
-    valid = valid and existing["stream"] == parsed.stream and existing["response_hash"] == parsed.manifest_sha256
-    valid = valid and existing["request_hash"] == parsed.manifest_sha256
-    valid = valid and existing["blob_ref"] == expected_ref and _raw_digest(raw_path) == parsed.raw_sha256
-    if not valid:
+    if not _replay_metadata_matches(existing, parsed, connection_id, expected_ref):
+        raise SocialStoreError("WhatsApp replay metadata conflicts with stored evidence")
+    if _raw_digest(raw_path) != parsed.raw_sha256:
         raise SocialStoreError("WhatsApp replay metadata conflicts with stored evidence")
     return str(existing["blob_ref"])
 
@@ -127,7 +142,17 @@ def _remove_uncommitted_raw(raw_path: Path, parsed: ParsedWhatsAppBatch) -> None
         return
 
 
-def persist_batch(root: Path, parsed: ParsedWhatsAppBatch, payload: bytes, lease: RunLease) -> dict[str, Any]:
+@dataclass
+class _PersistState:
+    raw_path: Path
+    raw_existed: bool
+    created_raw: bool = False
+    committed: bool = False
+
+
+def _validate_persist_request(
+    parsed: ParsedWhatsAppBatch, payload: bytes, lease: RunLease
+) -> tuple[dict[str, Any], str]:
     archive = parsed.archive
     reject_credentials(archive)
     if hashlib.sha256(payload).hexdigest() != parsed.raw_sha256:
@@ -135,36 +160,56 @@ def persist_batch(root: Path, parsed: ParsedWhatsAppBatch, payload: bytes, lease
     connection_id = archive["connection_id"]
     if lease.connection_id != connection_id or lease.stream != parsed.stream:
         raise SocialStoreError("WhatsApp lease does not authorize this source stream")
+    return archive, connection_id
+
+
+def _commit_batch(
+    database: sqlite3.Connection,
+    root: Path,
+    archive: dict[str, Any],
+    parsed: ParsedWhatsAppBatch,
+    payload: bytes,
+    lease: RunLease,
+    state: _PersistState,
+) -> dict[str, Any]:
+    connection_id = archive["connection_id"]
+    migrate(database)
+    database.execute("BEGIN IMMEDIATE")
+    assert_run_lease(database, lease)
+    _assert_binding(database, connection_id, archive["remote_account_id"])
+    existing_ref = _existing_replay(database, root, parsed, connection_id, state.raw_path)
+    if existing_ref is not None:
+        update_run_receipt(database, lease, RunReceiptUpdate("complete", terminal=True))
+        database.execute("COMMIT")
+        state.committed = True
+        return _replay_result(parsed, existing_ref)
+    raw_digest, blob_ref = write_raw_batch(root, PROVIDER, connection_id, payload)
+    state.created_raw = not state.raw_existed
+    if raw_digest != parsed.raw_sha256:
+        raise SocialStoreError("WhatsApp raw evidence hash changed")
+    _import_new_batch(database, archive, parsed, connection_id, blob_ref)
+    update_run_receipt(
+        database,
+        lease,
+        RunReceiptUpdate("complete", resource_delta=parsed.normalized_items, terminal=True),
+    )
+    database.execute("COMMIT")
+    state.committed = True
+    return {**_replay_result(parsed, blob_ref), "replayed": False}
+
+
+def persist_batch(root: Path, parsed: ParsedWhatsAppBatch, payload: bytes, lease: RunLease) -> dict[str, Any]:
+    archive, connection_id = _validate_persist_request(parsed, payload, lease)
     raw_path = _raw_path(root, connection_id, parsed.raw_sha256)
-    raw_existed = raw_path.exists() or raw_path.is_symlink()
-    created_raw = False
-    committed = False
+    state = _PersistState(raw_path, raw_path.exists() or raw_path.is_symlink())
     database = connect(root)
     try:
-        migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        assert_run_lease(database, lease)
-        _assert_binding(database, connection_id, archive["remote_account_id"])
-        existing_ref = _existing_replay(database, root, parsed, connection_id, raw_path)
-        if existing_ref is not None:
-            update_run_receipt(database, lease, RunReceiptUpdate("complete", terminal=True))
-            database.execute("COMMIT")
-            committed = True
-            return _replay_result(parsed, existing_ref)
-        raw_digest, blob_ref = write_raw_batch(root, PROVIDER, connection_id, payload)
-        created_raw = not raw_existed
-        if raw_digest != parsed.raw_sha256:
-            raise SocialStoreError("WhatsApp raw evidence hash changed")
-        _import_new_batch(database, archive, parsed, connection_id, blob_ref)
-        update_run_receipt(database, lease, RunReceiptUpdate("complete", resource_delta=parsed.normalized_items, terminal=True))
-        database.execute("COMMIT")
-        committed = True
-        return {**_replay_result(parsed, blob_ref), "replayed": False}
+        return _commit_batch(database, root, archive, parsed, payload, lease, state)
     except Exception:
         if database.in_transaction:
             database.execute("ROLLBACK")
-        if created_raw and not committed:
-            _remove_uncommitted_raw(raw_path, parsed)
+        if state.created_raw and not state.committed:
+            _remove_uncommitted_raw(state.raw_path, parsed)
         raise
     finally:
         database.close()
