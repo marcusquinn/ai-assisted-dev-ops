@@ -245,7 +245,28 @@ JSON
 	--connection-id conn_empty --account-id acct42 --stream mentions \
 	--fixture "$TMP_DIR/empty-mentions.json" >/dev/null
 assert_eq "identical provider responses remain distinct per request stream" \
-	"$(sql_value "SELECT count(*) || ':' || count(DISTINCT response_hash) FROM fetch_batches WHERE connection_id='conn_empty'")" "2:2"
+	"$(sql_value "SELECT count(*) || ':' || count(DISTINCT response_hash) FROM fetch_batches WHERE connection_id='conn_empty'")" "2:1"
+raw_batch_binding=$(
+	python3 - "$ROOT" <<'PY'
+import gzip
+import hashlib
+import sqlite3
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+with sqlite3.connect(root / "index" / "social.db") as database:
+    batch_id, blob_ref = database.execute(
+        "SELECT batch_id,blob_ref FROM fetch_batches "
+        "WHERE connection_id='conn_empty' ORDER BY stream LIMIT 1"
+    ).fetchone()
+with gzip.open(root / blob_ref, "rb") as source:
+    digest = hashlib.sha256(source.read()).hexdigest()
+print("bound" if digest == batch_id else "mismatch")
+PY
+)
+assert_eq "collector batch IDs remain bound to shareable raw evidence" \
+	"$raw_batch_binding" "bound"
 
 cat >"$TMP_DIR/followers.json" <<'JSON'
 {

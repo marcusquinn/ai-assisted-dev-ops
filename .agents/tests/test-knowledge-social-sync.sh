@@ -64,7 +64,7 @@ chmod 0700 "$BASE" "$ROOT"
 "$HELPER" provision --base "$BASE" --alias personal:default >/dev/null
 
 printf 'Social sync routine tests\n'
-assert_eq "current schema is active" "$(sql_value 'PRAGMA user_version')" "5"
+assert_eq "current schema is active" "$(sql_value 'PRAGMA user_version')" "6"
 assert_eq "lease and reconciliation tables are provisioned" \
 	"$(sql_value "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('collector_lease_generations','collector_leases','reconciliation_items')")" \
 	"3"
@@ -81,6 +81,112 @@ if AIDEVOPS_TEST_MODE='' AIDEVOPS_SOCIAL_NOW_EPOCH=1000 \
 else
 	assert_eq "environment clock override is unavailable outside tests" rejected rejected
 fi
+
+production_clock_summary=$(
+	python3 - "$TMP_DIR" "$SCRIPT_DIR/../scripts" <<'PY'
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+os.environ.pop("AIDEVOPS_TEST_MODE", None)
+os.environ.pop("AIDEVOPS_SOCIAL_NOW_EPOCH", None)
+sys.path.insert(0, sys.argv[2])
+
+from _knowledge_social_collect import (
+    CollectionContext,
+    ConnectionConfig,
+    CursorState,
+    PageCheckpoint,
+    SuccessfulPage,
+)
+from _knowledge_social_collect_persist import persist_page
+from _knowledge_social_lease import (
+    RunLeaseRequest,
+    acquire_run_lease,
+    release_run_lease,
+    renew_run_lease,
+)
+from _knowledge_social_x import STREAMS
+
+root = Path(sys.argv[1]) / "production-clock"
+root.mkdir(mode=0o700)
+lease = acquire_run_lease(
+    root,
+    RunLeaseRequest("conn_real", "authored", "runner_real", "sync", 60),
+)
+lease = renew_run_lease(root, lease, 60)
+context = CollectionContext(
+    root,
+    "conn_real",
+    {"id": "acct_real"},
+    "authored",
+    "none",
+    ConnectionConfig(("authored",), {"media_hydration": "none"}),
+    CursorState(None, None, False),
+    STREAMS["authored"],
+    lease,
+    "xapi",
+)
+observed_at = "2026-07-31T12:00:00Z"
+archive = {
+    "remote_account_id": "acct_real",
+    "enabled_streams": ["authored"],
+    "policy": {"media_hydration": "none"},
+    "accounts": [],
+    "objects": [
+        {
+            "object_type": "post",
+            "remote_id": "post_real",
+            "account_remote_id": "acct_real",
+            "text": "production clock regression",
+            "created_at": observed_at,
+            "observed_at": observed_at,
+            "evidence_class": "account-visible",
+            "provider_json": {},
+        }
+    ],
+    "activities": [
+        {
+            "activity_type": "authored",
+            "remote_id": "acct_real-authored-post_real",
+            "actor_remote_id": "acct_real",
+            "object_remote_id": "post_real",
+            "occurred_at": observed_at,
+            "observed_at": observed_at,
+            "state": "active",
+            "provider_json": {},
+        }
+    ],
+    "media": [],
+    "exported_at": observed_at,
+}
+resources = persist_page(
+    context,
+    SuccessfulPage(
+        {"status": 200, "observed_at": observed_at, "data": []},
+        "/2/users/acct_real/tweets?max_results=100",
+        archive,
+        PageCheckpoint(None, "post_real"),
+        True,
+        1,
+    ),
+)
+with sqlite3.connect(root / "index" / "social.db") as database:
+    status = database.execute(
+        "SELECT status FROM sync_runs WHERE run_id=?", (lease.run_id,)
+    ).fetchone()[0]
+    joined = database.execute(
+        "SELECT count(*) FROM objects o "
+        "JOIN fetch_batches b ON b.batch_id=o.batch_id "
+        "WHERE o.remote_id='post_real' AND b.response_hash != b.batch_id"
+    ).fetchone()[0]
+released = int(release_run_lease(root, lease))
+print(f"{status}:{resources}:{joined}:{released}")
+PY
+)
+assert_eq "real-clock renewal and persistence succeed without test overrides" \
+	"$production_clock_summary" "complete:2:1:1"
 
 cat >"$TMP_DIR/initial.json" <<'JSON'
 {
@@ -112,6 +218,9 @@ assert_eq "successful receipt carries the collector fence" \
 assert_eq "completed invocation releases its live lease" \
 	"$(sql_value "SELECT count(*) FROM collector_leases WHERE connection_id='conn_sync'")" \
 	"0"
+assert_eq "normalized rows retain canonical fetch-batch provenance" \
+	"$(sql_value "SELECT (SELECT count(*) FROM objects o JOIN fetch_batches b ON b.batch_id=o.batch_id WHERE o.remote_id='post101') || ':' || (SELECT count(*) FROM activities a JOIN fetch_batches b ON b.batch_id=a.batch_id WHERE a.remote_id='acct42-authored-post101') || ':' || (SELECT count(*) FROM objects o JOIN fetch_batches b ON b.batch_id=o.batch_id WHERE o.remote_id='post101' AND b.response_hash != b.batch_id)")" \
+	"1:1:1"
 
 not_due=$("$HELPER" sync-due --base "$BASE" \
 	--now-epoch 1000 --interval-seconds 60)
@@ -312,10 +421,13 @@ expiry_summary=$(
 	python3 - "$ROOT" "$SCRIPT_DIR/../scripts" <<'PY'
 import sqlite3
 import sys
+import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[2])
 import _knowledge_social_collect_persist as persistence
+import _knowledge_social_reconcile as reconciliation
 from _knowledge_social_collect import (
     CollectionContext,
     ConnectionConfig,
@@ -331,7 +443,9 @@ from _knowledge_social_lease import (
     fail_active_run,
     release_run_lease,
 )
+from _knowledge_social_reconcile import ReconciliationSnapshot
 from _knowledge_social_x import STREAMS
+from knowledge_social_import import canonical_json
 
 root = Path(sys.argv[1])
 
@@ -441,17 +555,102 @@ def persist_stop(context):
     persistence.record_bounded_stop(context, "paused", "budget")
 
 
+def reject_reconciliation_after_expiry(start):
+    connection_id = "conn_reconcile_expiry"
+    with sqlite3.connect(root / "index" / "social.db") as database:
+        database.execute(
+            "INSERT INTO connections(connection_id,provider,remote_account_id,"
+            "enabled_streams,policy_json) VALUES(?,?,?,?,?)",
+            (connection_id, "xapi", "acct_reconcile", '["authored"]', "{}"),
+        )
+    lease = acquire_run_lease(
+        root,
+        RunLeaseRequest(
+            connection_id, "authored", "expiry_reconcile", "reconcile", 2
+        ),
+        now_epoch=start,
+    )
+    body = {
+        "provider": "xapi",
+        "observed_at": "2026-07-25T06:30:00Z",
+        "complete": True,
+        "objects": [],
+        "activities": [],
+    }
+    payload = canonical_json(body).encode("utf-8")
+    snapshot = ReconciliationSnapshot(
+        "xapi",
+        body["observed_at"],
+        True,
+        frozenset(),
+        frozenset(),
+        payload,
+        hashlib.sha256(payload).hexdigest(),
+        datetime.fromisoformat(
+            body["observed_at"].replace("Z", "+00:00")
+        ).astimezone(UTC).timestamp(),
+    )
+    with sqlite3.connect(root / "index" / "social.db") as database:
+        before = (
+            database.execute(
+                "SELECT count(*) FROM fetch_batches "
+                "WHERE connection_id=? AND terminal_status='reconciliation'",
+                (connection_id,),
+            ).fetchone()[0],
+            database.execute(
+                "SELECT count(*) FROM reconciliation_items WHERE connection_id=?",
+                (connection_id,),
+            ).fetchone()[0],
+        )
+    clock = iter((start + 1, start + 2))
+    original_clock = reconciliation.social_now
+    reconciliation.social_now = lambda explicit=None: next(clock)
+    try:
+        try:
+            reconciliation.reconcile_snapshot(root, lease, snapshot)
+        except SocialLeaseLostError:
+            pass
+        else:
+            raise SystemExit("expired reconciliation committed social state")
+    finally:
+        reconciliation.social_now = original_clock
+    with sqlite3.connect(root / "index" / "social.db") as database:
+        after = (
+            database.execute(
+                "SELECT count(*) FROM fetch_batches "
+                "WHERE connection_id=? AND terminal_status='reconciliation'",
+                (connection_id,),
+            ).fetchone()[0],
+            database.execute(
+                "SELECT count(*) FROM reconciliation_items WHERE connection_id=?",
+                (connection_id,),
+            ).fetchone()[0],
+        )
+    if after != before:
+        raise SystemExit("expired reconciliation changed durable social state")
+    successor = acquire_run_lease(
+        root,
+        RunLeaseRequest(
+            connection_id, "authored", "successor_reconcile", "reconcile", 10
+        ),
+        now_epoch=start + 2,
+    )
+    fail_active_run(root, successor, "test_cleanup", now_epoch=start + 2)
+    release_run_lease(root, successor)
+
+
 before = durable_state()
 reject_after_expiry(6000, persist_success)
 reject_after_expiry(7000, persist_terminal)
 reject_after_expiry(8000, persist_stop)
+reject_reconciliation_after_expiry(9000)
 if durable_state() != before:
     raise SystemExit("expired persistence changed durable social state")
-print("page:terminal:stop:rolled-back")
+print("page:terminal:stop:reconcile:rolled-back")
 PY
 )
 assert_eq "leases expiring during persistence roll back every durable path" \
-	"$expiry_summary" "page:terminal:stop:rolled-back"
+	"$expiry_summary" "page:terminal:stop:reconcile:rolled-back"
 
 cat >"$TMP_DIR/missing.json" <<'JSON'
 {
@@ -594,9 +793,11 @@ MIGRATION_ROOT="${TMP_DIR}/migration"
 mkdir -p "$MIGRATION_ROOT/index"
 chmod 0700 "$MIGRATION_ROOT" "$MIGRATION_ROOT/index"
 python3 - "$MIGRATION_ROOT" "$SCRIPT_DIR/../scripts" <<'PY'
+import hashlib
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 root = Path(sys.argv[1])
 path = root / "index" / "social.db"
@@ -615,12 +816,14 @@ database.commit()
 database.close()
 
 sys.path.insert(0, sys.argv[2])
-from knowledge_social_store import connect, migrate
+from _knowledge_social_collect_persist import FetchRecord, RawBatch, _insert_fetch_batch
+from knowledge_social_import import canonical_json
+from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
 
 database = connect(root)
 migrate(database)
 columns = {row[1] for row in database.execute("PRAGMA table_info(sync_runs)")}
-if database.execute("PRAGMA user_version").fetchone()[0] != 5:
+if database.execute("PRAGMA user_version").fetchone()[0] != 6:
     raise SystemExit("v1 database did not migrate to the current schema")
 required = {
     "stream",
@@ -631,7 +834,319 @@ required = {
     "request_hash",
 }
 if not required <= columns:
-    raise SystemExit("v1 receipt table did not gain Phase 5 columns")
+    raise SystemExit("v1 receipt table did not gain current receipt columns")
+response = {
+    "status": 200,
+    "observed_at": "2026-07-25T00:00:00Z",
+    "data": [],
+    "meta": {},
+}
+response_hash = hashlib.sha256(canonical_json(response).encode("utf-8")).hexdigest()
+
+
+def raw_envelope(stream, response_value=response):
+    request_hash = hashlib.sha256(stream.encode("utf-8")).hexdigest()
+    body_hash = hashlib.sha256(
+        canonical_json(response_value).encode("utf-8")
+    ).hexdigest()
+    payload = canonical_json(
+        {
+            "provider": "xapi",
+            "connection_id": "conn_legacy",
+            "stream": stream,
+            "observed_at": "2026-07-25T00:00:00Z",
+            "request_hash": request_hash,
+            "response_sha256": body_hash,
+            "response": response_value,
+        }
+    ).encode("utf-8")
+    batch_id, blob_ref = write_raw_batch(root, "xapi", "conn_legacy", payload)
+    return batch_id, blob_ref, request_hash, body_hash
+
+
+first_batch, first_blob, first_request, _ = raw_envelope("authored")
+collision_batch, collision_blob, collision_request, _ = raw_envelope("mentions")
+intermediate_batch, intermediate_blob, intermediate_request, _ = raw_envelope(
+    "following"
+)
+request_scoped_batch = hashlib.sha256(
+    canonical_json(
+        {
+            "contract": "social-fetch-v1",
+            "provider": "xapi",
+            "connection_id": "conn_legacy",
+            "stream": "following",
+            "observed_at": "2026-07-25T00:00:00Z",
+            "request_hash": intermediate_request,
+            "response_sha256": response_hash,
+        }
+    ).encode("utf-8")
+).hexdigest()
+e556_response = {
+    "status": 200,
+    "observed_at": "2026-07-25T00:00:00Z",
+    "data": [{"id": "e556"}],
+    "meta": {},
+}
+e556_batch, e556_blob, e556_request, e556_response_hash = raw_envelope(
+    "followers", e556_response
+)
+database.execute("DROP TRIGGER IF EXISTS fetch_batch_evidence_ai")
+database.execute(
+    "INSERT INTO connections(connection_id,provider,remote_account_id,"
+    "enabled_streams,policy_json) VALUES('conn_legacy','xapi','acct_legacy',"
+    "'[\"authored\",\"mentions\",\"following\",\"followers\"]','{}')"
+)
+database.execute(
+    "INSERT INTO fetch_batches(batch_id,provider,connection_id,stream,"
+    "request_hash,response_hash,blob_ref,resource_count,budget_units,"
+    "started_at,completed_at,terminal_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    (
+        request_scoped_batch,
+        "xapi",
+        "conn_legacy",
+        "following",
+        intermediate_request,
+        intermediate_batch,
+        intermediate_blob,
+        1,
+        1,
+        "2026-07-25T00:00:00Z",
+        "2026-07-25T00:00:00Z",
+        "success",
+    ),
+)
+corpus_id = database.execute(
+    "SELECT corpus_id FROM corpus_contract WHERE singleton=1"
+).fetchone()[0]
+stale_evidence_id = (
+    f"ev1:{corpus_id}:conn_legacy:sha256:{e556_response_hash}"
+)
+database.execute(
+    "INSERT INTO evidence_sources(evidence_id,corpus_id,connector_id,"
+    "content_sha256,authority,raw_ref,observed_at,provenance_json) "
+    "VALUES(?,?,?,?,?,?,?,?)",
+    (
+        stale_evidence_id,
+        corpus_id,
+        "conn_legacy",
+        e556_response_hash,
+        "raw",
+        e556_blob,
+        "2026-07-25T00:00:00Z",
+        '{}',
+    ),
+)
+database.execute(
+    "INSERT INTO fetch_batches(batch_id,provider,connection_id,stream,"
+    "request_hash,response_hash,blob_ref,resource_count,budget_units,"
+    "started_at,completed_at,terminal_status,evidence_id) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    (
+        e556_batch,
+        "xapi",
+        "conn_legacy",
+        "followers",
+        e556_request,
+        e556_response_hash,
+        e556_blob,
+        1,
+        1,
+        "2026-07-25T00:00:00Z",
+        "2026-07-25T00:00:00Z",
+        "success",
+        stale_evidence_id,
+    ),
+)
+database.execute(
+    "INSERT INTO fetch_batches(batch_id,provider,connection_id,stream,"
+    "request_hash,response_hash,blob_ref,resource_count,budget_units,"
+    "started_at,completed_at,terminal_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    (
+        response_hash,
+        "xapi",
+        "conn_legacy",
+        "authored",
+        first_request,
+        first_batch,
+        first_blob,
+        3,
+        1,
+        "2026-07-25T00:00:00Z",
+        "2026-07-25T00:00:00Z",
+        "success",
+    ),
+)
+database.execute(
+    "INSERT INTO fetch_batches(batch_id,provider,connection_id,stream,"
+    "request_hash,response_hash,blob_ref,resource_count,budget_units,"
+    "started_at,completed_at,terminal_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    (
+        first_batch,
+        "xapi",
+        "conn_legacy",
+        "authored",
+        first_request,
+        response_hash,
+        first_blob,
+        3,
+        1,
+        "2026-07-25T00:00:00Z",
+        "2026-07-25T00:00:00Z",
+        "success",
+    ),
+)
+database.execute(
+    "INSERT INTO objects(provider,object_type,remote_id,observed_at,"
+    "evidence_class,provider_json,batch_id) "
+    "VALUES('xapi','post','legacy_post','2026-07-25T00:00:00Z',"
+    "'account-visible','{}',?)",
+    (first_batch,),
+)
+database.execute(
+    "INSERT INTO objects(provider,object_type,remote_id,observed_at,"
+    "evidence_class,provider_json,batch_id) "
+    "VALUES('xapi','post','legacy_collision','2026-07-25T00:00:00Z',"
+    "'account-visible','{}',?)",
+    (collision_batch,),
+)
+database.execute(
+    "INSERT INTO objects(provider,object_type,remote_id,observed_at,"
+    "evidence_class,provider_json,batch_id) "
+    "VALUES('xapi','post','legacy_request_scoped','2026-07-25T00:00:00Z',"
+    "'account-visible','{}',?)",
+    (request_scoped_batch,),
+)
+database.execute(
+    "INSERT INTO objects(provider,object_type,remote_id,observed_at,"
+    "evidence_class,provider_json,batch_id) "
+    "VALUES('xapi','post','legacy_e556','2026-07-25T00:00:00Z',"
+    "'account-visible','{}',?)",
+    (e556_batch,),
+)
+database.execute(
+    "INSERT INTO activities(provider,activity_type,remote_id,actor_remote_id,"
+    "object_remote_id,observed_at,state,provider_json,batch_id) "
+    "VALUES('xapi','authored','legacy_activity','acct_legacy','legacy_post',"
+    "'2026-07-25T00:00:00Z','active','{}',?)",
+    (first_batch,),
+)
+database.execute(
+    "INSERT INTO media(provider,remote_id,object_remote_id,hydration_state,batch_id) "
+    "VALUES('xapi','legacy_media','legacy_post','metadata_only',?)",
+    (first_batch,),
+)
+database.execute(
+    "INSERT INTO coverage_records(provider,connection_id,stream,"
+    "cursor_exhausted,status,batch_id,observed_at) "
+    "VALUES('xapi','conn_legacy','authored',1,'complete',?,"
+    "'2026-07-25T00:00:00Z')",
+    (first_batch,),
+)
+database.execute(
+    "INSERT INTO coverage_records(provider,connection_id,stream,"
+    "cursor_exhausted,status,batch_id,observed_at) "
+    "VALUES('xapi','conn_legacy','mentions',1,'complete',?,"
+    "'2026-07-25T00:00:00Z')",
+    (collision_batch,),
+)
+database.execute(
+    "INSERT INTO tombstones(provider,object_type,remote_id,observed_at,reason,"
+    "retention_action,batch_id) VALUES('xapi','post','legacy_deleted',"
+    "'2026-07-25T00:00:00Z','provider_deleted','retain_metadata',?)",
+    (first_batch,),
+)
+database.execute("DELETE FROM schema_meta WHERE version=6")
+database.execute("PRAGMA user_version=5")
+database.close()
+
+database = connect(root)
+migrate(database)
+orphan_count = database.execute(
+    """SELECT count(*) FROM (
+         SELECT batch_id FROM objects UNION SELECT batch_id FROM activities
+         UNION SELECT batch_id FROM media UNION SELECT batch_id FROM coverage_records
+         UNION SELECT batch_id FROM tombstones
+       ) p LEFT JOIN fetch_batches f ON f.batch_id=p.batch_id
+       WHERE f.batch_id IS NULL"""
+).fetchone()[0]
+if orphan_count:
+    raise SystemExit("v5 migration left orphaned projection provenance")
+batch_summary = database.execute(
+    "SELECT count(*),count(DISTINCT batch_id),count(DISTINCT response_hash) "
+    "FROM fetch_batches"
+).fetchone()
+if tuple(batch_summary) != (4, 4, 2):
+    raise SystemExit("v5 migration did not preserve colliding response evidence")
+first_status = database.execute(
+    "SELECT terminal_status FROM fetch_batches WHERE batch_id=?", (first_batch,)
+).fetchone()[0]
+collision_status = database.execute(
+    "SELECT terminal_status FROM fetch_batches WHERE batch_id=?", (collision_batch,)
+).fetchone()[0]
+if first_status != "success" or collision_status != "legacy_recovered":
+    raise SystemExit("v5 migration did not distinguish recovered batch metadata")
+intermediate_projection = database.execute(
+    "SELECT batch_id FROM objects WHERE remote_id='legacy_request_scoped'"
+).fetchone()[0]
+if intermediate_projection != intermediate_batch:
+    raise SystemExit("v5 migration did not repair request-scoped batch identity")
+invalid_sources = database.execute(
+    "SELECT count(*) FROM fetch_batches f JOIN evidence_sources e "
+    "ON e.evidence_id=f.evidence_id WHERE e.content_sha256<>f.batch_id"
+).fetchone()[0]
+stale_sources = database.execute(
+    "SELECT count(*) FROM evidence_sources WHERE evidence_id=?",
+    (stale_evidence_id,),
+).fetchone()[0]
+if invalid_sources or stale_sources:
+    raise SystemExit("v5 migration retained stale canonical evidence bindings")
+if database.execute(
+    "SELECT count(*) FROM canonical_evidence_projections"
+).fetchone()[0] != 6:
+    raise SystemExit("v5 migration did not restore canonical projections")
+first_context = SimpleNamespace(
+    provider="xapi", connection_id="conn_legacy", stream="authored"
+)
+first_raw = RawBatch(
+    first_batch,
+    first_blob,
+    first_request,
+    response_hash,
+    "2026-07-25T00:00:00Z",
+)
+if _insert_fetch_batch(
+    database, first_context, FetchRecord(first_raw, "success", 3, 1)
+) != first_batch:
+    raise SystemExit("exact legacy batch replay changed canonical identity")
+try:
+    _insert_fetch_batch(
+        database, first_context, FetchRecord(first_raw, "success", 4, 1)
+    )
+except SocialStoreError:
+    pass
+else:
+    raise SystemExit("conflicting fetch replay metadata was accepted")
+collision_context = SimpleNamespace(
+    provider="xapi", connection_id="conn_legacy", stream="mentions"
+)
+collision_raw = RawBatch(
+    collision_batch,
+    collision_blob,
+    collision_request,
+    response_hash,
+    "2026-07-25T00:00:00Z",
+)
+_insert_fetch_batch(
+    database, collision_context, FetchRecord(collision_raw, "success", 1, 1)
+)
+recovered = database.execute(
+    "SELECT resource_count,budget_units,terminal_status FROM fetch_batches "
+    "WHERE batch_id=?",
+    (collision_batch,),
+).fetchone()
+if tuple(recovered) != (1, 1, "success"):
+    raise SystemExit("exact replay did not complete recovered batch metadata")
 database.close()
 PY
 migration_version=$(
@@ -644,7 +1159,8 @@ print(connection.execute("PRAGMA user_version").fetchone()[0])
 connection.close()
 PY
 )
-assert_eq "existing v1 stores migrate without replacement" "$migration_version" "5"
+assert_eq "existing stores migrate and repair projection provenance" \
+	"$migration_version" "6"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

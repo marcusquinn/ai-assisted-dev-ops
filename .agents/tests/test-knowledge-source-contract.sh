@@ -18,8 +18,9 @@ cleanup() {
 trap cleanup EXIT
 
 run_contract_tests() {
-	PYTHONPATH="$SCRIPTS_DIR" python3 - "$TMP_DIR" <<'PY'
+	if ! PYTHONPATH="$SCRIPTS_DIR" python3 - "$TMP_DIR" <<'PY'; then
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ from knowledge_source_contract import (
     validate_pointer,
     validate_source_meta,
 )
-from knowledge_social_store import migrate
+from knowledge_social_store import migrate, write_raw_batch
 
 digest = "a" * 64
 first = canonical_evidence_id("repo:alpha", "local-file", digest)
@@ -107,7 +108,14 @@ for mutation in (
         continue
     raise AssertionError(f"unsafe checkpoint accepted: {mutation}")
 
-database_path = Path(sys.argv[1]) / "legacy-social.db"
+root = Path(sys.argv[1]) / "corpus"
+(root / "index").mkdir(parents=True, mode=0o700)
+os.chmod(root, 0o700)
+os.chmod(root / "index", 0o700)
+raw_digest, blob_ref = write_raw_batch(
+    root, "provider-1", "connector-1", b'{"fixture":"source-contract"}'
+)
+database_path = root / "index" / "social.db"
 database = sqlite3.connect(database_path, isolation_level=None)
 database.row_factory = sqlite3.Row
 database.execute("PRAGMA foreign_keys=ON")
@@ -130,22 +138,22 @@ database.execute(
 database.execute(
     "INSERT INTO fetch_batches VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     (
-        digest, "provider-1", "connector-1", "authored", None, digest,
-        "sources/raw.json.gz", 1, 0, None, "2026-07-29T00:00:00Z", "success",
+        raw_digest, "provider-1", "connector-1", "authored", None, raw_digest,
+        blob_ref, 1, 0, None, "2026-07-29T00:00:00Z", "success",
     ),
 )
 database.execute(
     "INSERT INTO objects VALUES(NULL,?,?,?,?,?,?,?,?,?,?)",
     (
         "provider-1", "post", "remote-1", None, "evidence", None,
-        "2026-07-29T00:00:00Z", "authored", "{}", digest,
+        "2026-07-29T00:00:00Z", "authored", "{}", raw_digest,
     ),
 )
 database.execute("PRAGMA user_version=4")
 migrate(database)
 corpus_id = database.execute("SELECT corpus_id FROM corpus_contract").fetchone()[0]
 evidence_id = database.execute("SELECT evidence_id FROM fetch_batches").fetchone()[0]
-assert evidence_id == f"ev1:{corpus_id}:connector-1:sha256:{digest}"
+assert evidence_id == f"ev1:{corpus_id}:connector-1:sha256:{raw_digest}"
 assert database.execute("SELECT count(*) FROM evidence_sources").fetchone()[0] == 1
 assert database.execute(
     "SELECT count(*) FROM canonical_evidence_projections"
@@ -154,6 +162,8 @@ migrate(database)
 assert database.execute("SELECT corpus_id FROM corpus_contract").fetchone()[0] == corpus_id
 database.close()
 PY
+		return 1
+	fi
 	return 0
 }
 

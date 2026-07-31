@@ -251,14 +251,10 @@ def acquire_run_lease(
         database.close()
 
 
-def assert_run_lease(
-    database: sqlite3.Connection,
-    lease: RunLease,
-    *,
-    now_epoch: int | None = None,
+def _assert_run_lease_at(
+    database: sqlite3.Connection, lease: RunLease, now: int
 ) -> None:
-    """Fence a write against the current lease inside its transaction."""
-    now = social_now(now_epoch)
+    """Fence one write at an already validated clock value."""
     row = database.execute(
         "SELECT collector_id,fencing_token,run_id,acquired_at,expires_at "
         "FROM collector_leases WHERE connection_id=?",
@@ -276,6 +272,16 @@ def assert_run_lease(
         raise SocialLeaseLostError("social collector lease is stale or expired")
     if int(row["acquired_at"]) > now or now >= int(row["expires_at"]):
         raise SocialLeaseLostError("social collector lease is stale or expired")
+
+
+def assert_run_lease(
+    database: sqlite3.Connection,
+    lease: RunLease,
+    *,
+    now_epoch: int | None = None,
+) -> None:
+    """Fence a write against the current lease inside its transaction."""
+    _assert_run_lease_at(database, lease, social_now(now_epoch))
 
 
 def renew_run_lease(
@@ -300,7 +306,7 @@ def renew_run_lease(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
-        assert_run_lease(database, lease, now_epoch=now)
+        _assert_run_lease_at(database, lease, now)
         expires_at = now + lease_seconds
         database.execute(
             "UPDATE collector_leases SET expires_at=? WHERE connection_id=? "
@@ -323,20 +329,18 @@ def renew_run_lease(
         database.close()
 
 
-def update_run_receipt(
+def _update_run_receipt_at(
     database: sqlite3.Connection,
     lease: RunLease,
     update: RunReceiptUpdate,
-    *,
-    now_epoch: int | None = None,
+    now: int,
 ) -> None:
-    """Update the receipt in the caller's content/cursor transaction."""
+    """Update one receipt at an already validated clock value."""
     if update.resource_delta < 0:
         raise SocialStoreError("receipt resource delta cannot be negative")
     if update.terminal and update.status not in TERMINAL_RUN_STATES:
         raise SocialStoreError("terminal receipt has an invalid status")
-    now = social_now(now_epoch)
-    assert_run_lease(database, lease, now_epoch=now)
+    _assert_run_lease_at(database, lease, now)
     updated = database.execute(
         "UPDATE sync_runs SET status=?,resource_count=resource_count+?,"
         "failure_class=?,retry_after=?,completed_at=? WHERE run_id=? "
@@ -354,6 +358,17 @@ def update_run_receipt(
     ).rowcount
     if updated != 1:
         raise SocialLeaseLostError("social run receipt is missing or stale")
+
+
+def update_run_receipt(
+    database: sqlite3.Connection,
+    lease: RunLease,
+    update: RunReceiptUpdate,
+    *,
+    now_epoch: int | None = None,
+) -> None:
+    """Update the receipt in the caller's content/cursor transaction."""
+    _update_run_receipt_at(database, lease, update, social_now(now_epoch))
 
 
 def finish_active_run(

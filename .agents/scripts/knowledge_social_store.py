@@ -7,25 +7,34 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
-import re
 import sqlite3
 from pathlib import Path
 
+from _knowledge_social_store_migration import (
+    migrate_fetch_batches_v6 as _migrate_fetch_batches_v6,
+    recover_orphaned_fetch_batches_v6 as _recover_orphaned_fetch_batches_v6,
+)
+from _knowledge_social_store_schema import (
+    add_outbound_v4_columns as _add_outbound_v4_columns,
+    add_source_v5_columns as _add_source_v5_columns,
+    add_sync_run_v2_columns as _add_sync_run_v2_columns,
+)
+from _knowledge_social_store_support import (
+    MAX_RAW_BATCH_BYTES,
+    OPAQUE_ID,
+    SocialStoreError,
+)
 from knowledge_corpus_context import (
     CatalogError,
     validate_directory,
     validate_private_file,
 )
 
-SCHEMA_VERSION = 5
-SCHEMA_VERSION_SQL = "PRAGMA user_version=5"
-OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
+SCHEMA_VERSION = 6
+SCHEMA_VERSION_SQL = "PRAGMA user_version=6"
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
-
-
-class SocialStoreError(RuntimeError):
-    """Raised when private social storage cannot be used safely."""
 
 
 def private_directory(root: Path, relative: Path) -> Path:
@@ -143,7 +152,7 @@ def _tables() -> tuple[str, ...]:
             PRIMARY KEY(provider, remote_id))""",
         """CREATE TABLE IF NOT EXISTS fetch_batches (
             batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL, connection_id TEXT NOT NULL,
-            stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL UNIQUE,
+            stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL,
             blob_ref TEXT NOT NULL, resource_count INTEGER NOT NULL, budget_units INTEGER NOT NULL DEFAULT 0,
             started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL,
             evidence_id TEXT REFERENCES evidence_sources(evidence_id))""",
@@ -258,72 +267,6 @@ def create_fts(connection: sqlite3.Connection) -> None:
         raise SocialStoreError("SQLite runtime does not provide required FTS5") from error
 
 
-def _add_sync_run_v2_columns(connection: sqlite3.Connection) -> None:
-    columns = {
-        str(row["name"])
-        for row in connection.execute("PRAGMA table_info(sync_runs)").fetchall()
-    }
-    if "stream" not in columns:
-        connection.execute(
-            "ALTER TABLE sync_runs ADD COLUMN stream TEXT NOT NULL DEFAULT ''"
-        )
-    if "run_kind" not in columns:
-        connection.execute(
-            "ALTER TABLE sync_runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'sync'"
-        )
-    if "collector_id" not in columns:
-        connection.execute("ALTER TABLE sync_runs ADD COLUMN collector_id TEXT")
-    if "started_at" not in columns:
-        connection.execute("ALTER TABLE sync_runs ADD COLUMN started_at INTEGER")
-    if "completed_at" not in columns:
-        connection.execute("ALTER TABLE sync_runs ADD COLUMN completed_at INTEGER")
-    if "request_hash" not in columns:
-        connection.execute("ALTER TABLE sync_runs ADD COLUMN request_hash TEXT")
-
-
-def _add_outbound_v4_columns(connection: sqlite3.Connection) -> None:
-    columns = {
-        str(row["name"])
-        for row in connection.execute("PRAGMA table_info(outbound_operations)").fetchall()
-    }
-    additions = (
-        (
-            "destination_remote_id",
-            "ALTER TABLE outbound_operations ADD COLUMN destination_remote_id TEXT",
-        ),
-        ("subject", "ALTER TABLE outbound_operations ADD COLUMN subject TEXT"),
-        (
-            "subject_sha256",
-            "ALTER TABLE outbound_operations ADD COLUMN subject_sha256 TEXT",
-        ),
-        (
-            "intent_version",
-            "ALTER TABLE outbound_operations ADD COLUMN "
-            "intent_version INTEGER NOT NULL DEFAULT 1",
-        ),
-    )
-    for column, statement in additions:
-        if column not in columns:
-            connection.execute(statement)
-
-
-def _add_source_v5_columns(connection: sqlite3.Connection) -> None:
-    table = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fetch_batches'"
-    ).fetchone()
-    if table is None:
-        return
-    columns = {
-        str(row["name"])
-        for row in connection.execute("PRAGMA table_info(fetch_batches)").fetchall()
-    }
-    if "evidence_id" not in columns:
-        connection.execute(
-            "ALTER TABLE fetch_batches ADD COLUMN evidence_id TEXT "
-            "REFERENCES evidence_sources(evidence_id)"
-        )
-
-
 def _migrate_source_contract(connection: sqlite3.Connection) -> None:
     connection.execute(
         "INSERT OR IGNORE INTO corpus_contract(singleton,corpus_id,contract_version) "
@@ -334,16 +277,22 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
                evidence_id,corpus_id,connector_id,content_sha256,authority,
                raw_ref,observed_at,provenance_json)
            SELECT 'ev1:' || c.corpus_id || ':' || f.connection_id || ':sha256:' ||
-                  f.response_hash,
-                  c.corpus_id,f.connection_id,f.response_hash,'raw',f.blob_ref,
-                  f.completed_at,json_object('provider',f.provider,'stream',f.stream)
-             FROM fetch_batches f CROSS JOIN corpus_contract c"""
+                   f.batch_id,
+                   c.corpus_id,f.connection_id,f.batch_id,'raw',f.blob_ref,
+                   f.completed_at,json_object('provider',f.provider,'stream',f.stream)
+              FROM fetch_batches f CROSS JOIN corpus_contract c"""
     )
     connection.execute(
         """UPDATE fetch_batches
               SET evidence_id='ev1:' || (SELECT corpus_id FROM corpus_contract WHERE singleton=1)
-                              || ':' || connection_id || ':sha256:' || response_hash
+                              || ':' || connection_id || ':sha256:' || batch_id
             WHERE evidence_id IS NULL"""
+    )
+    connection.execute(
+        """DELETE FROM evidence_sources
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM fetch_batches f
+                    WHERE f.evidence_id=evidence_sources.evidence_id)"""
     )
     connection.execute(
         """CREATE TRIGGER IF NOT EXISTS fetch_batch_evidence_ai
@@ -352,16 +301,16 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
              INSERT OR IGNORE INTO evidence_sources(
                evidence_id,corpus_id,connector_id,content_sha256,authority,
                raw_ref,observed_at,provenance_json)
-             SELECT 'ev1:' || corpus_id || ':' || NEW.connection_id || ':sha256:' ||
-                    NEW.response_hash,
-                    corpus_id,NEW.connection_id,NEW.response_hash,'raw',NEW.blob_ref,
-                    NEW.completed_at,json_object('provider',NEW.provider,'stream',NEW.stream)
+              SELECT 'ev1:' || corpus_id || ':' || NEW.connection_id || ':sha256:' ||
+                     NEW.batch_id,
+                     corpus_id,NEW.connection_id,NEW.batch_id,'raw',NEW.blob_ref,
+                     NEW.completed_at,json_object('provider',NEW.provider,'stream',NEW.stream)
                FROM corpus_contract WHERE singleton=1;
              UPDATE fetch_batches
                 SET evidence_id='ev1:' ||
-                    (SELECT corpus_id FROM corpus_contract WHERE singleton=1) || ':' ||
-                    NEW.connection_id || ':sha256:' || NEW.response_hash
-              WHERE batch_id=NEW.batch_id;
+                     (SELECT corpus_id FROM corpus_contract WHERE singleton=1) || ':' ||
+                     NEW.connection_id || ':sha256:' || NEW.batch_id
+               WHERE batch_id=NEW.batch_id;
            END"""
     )
     connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
@@ -386,18 +335,18 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
 
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
-    if current < 0 or current > SCHEMA_VERSION:
+    if current not in range(SCHEMA_VERSION + 1):
         raise SocialStoreError(f"unsupported social schema version: {current}")
     connection.execute("BEGIN IMMEDIATE")
     try:
-        if current < 5:
-            _add_source_v5_columns(connection)
+        _add_source_v5_columns(connection)
         for statement in _tables():
             connection.execute(statement)
-        if current < 2:
-            _add_sync_run_v2_columns(connection)
-        if current < 4:
-            _add_outbound_v4_columns(connection)
+        _add_sync_run_v2_columns(connection)
+        _add_outbound_v4_columns(connection)
+        if current in range(1, SCHEMA_VERSION):
+            _migrate_fetch_batches_v6(connection)
+            _recover_orphaned_fetch_batches_v6(connection)
         _migrate_source_contract(connection)
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "

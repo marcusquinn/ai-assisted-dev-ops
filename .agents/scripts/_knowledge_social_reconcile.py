@@ -18,9 +18,9 @@ from typing import Any
 from _knowledge_social_lease import (
     RunLease,
     RunReceiptUpdate,
-    assert_run_lease,
+    _assert_run_lease_at,
+    _update_run_receipt_at,
     social_now,
-    update_run_receipt,
 )
 from knowledge_social_import import canonical_json, reject_credentials, required_text
 from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
@@ -358,7 +358,7 @@ def reconcile_snapshot(
     try:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
-        assert_run_lease(database, lease, now_epoch=now)
+        _assert_run_lease_at(database, lease, now)
         provider = _connection_provider(
             database, lease.connection_id, lease.stream
         )
@@ -370,13 +370,13 @@ def reconcile_snapshot(
         present_count, missing_count, unknown_count = _apply_states(
             database, lease, snapshot, inventory
         )
-        update_run_receipt(
+        _update_run_receipt_at(
             database,
             lease,
             RunReceiptUpdate(
                 "complete", resource_delta=len(inventory), terminal=True
             ),
-            now_epoch=now,
+            social_now(now_epoch),
         )
         database.execute("COMMIT")
         return {

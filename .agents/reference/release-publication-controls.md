@@ -166,6 +166,10 @@ sources because subsequent merges through PR #29071 advanced `main` before
 publication from PR #29052 could complete. Its exact branch base is
 `9ee52e20b8c5ffecd4672f8784e78993acb7f70f`.
 
+Aggregation PR #29082 reviews authorized Luna standard-routing PR #29072 at
+`d222f326dbdfb705352087e6695ce8bda0d4d0a0` because subsequent merges advanced
+`main` before its explicitly authorized patch release could begin.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 

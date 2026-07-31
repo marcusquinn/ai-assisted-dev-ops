@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.203] - 2026-07-31
+
+### Added
+
+- add read-only Bluesky account ingestion (#29061)
+
+### Changed
+
+- Maintenance: update simplification state registry
+
 ## [3.32.202] - 2026-07-31
 
 ### Changed
