@@ -42,6 +42,8 @@ if [[ -r "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh" ]]; then
 	# shellcheck source=shared-repo-state-guard.sh
 	source "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh"
 fi
+# shellcheck source=fast-fail-release-policy.sh
+source "${_HRFF_SCRIPT_DIR}/fast-fail-release-policy.sh"
 unset _HRFF_SCRIPT_DIR
 : "${AIDEVOPS_UNKNOWN_VERSION:=unknown}"
 
@@ -1141,9 +1143,11 @@ _fast_fail_write_state() {
 	local new_backoff="$8"
 	local crash_type="$9"
 	local aidevops_version="${AIDEVOPS_UNKNOWN_VERSION:-unknown}"
+	local release_reset_policy=""
 	if declare -F aidevops_find_version >/dev/null 2>&1; then
 		aidevops_version=$(aidevops_find_version 2>/dev/null || printf '%s' "${AIDEVOPS_UNKNOWN_VERSION:-unknown}")
 	fi
+	release_reset_policy=$(_fast_fail_release_reset_policy "$reason" "${crash_type:-}")
 	local updated_state=""
 	if [[ -f "$state_file" ]]; then
 		updated_state=$(jq --arg k "$key" \
@@ -1154,7 +1158,8 @@ _fast_fail_write_state() {
 			--argjson backoff_secs "$new_backoff" \
 			--arg crash_type "${crash_type:-}" \
 			--arg aidevops_version "$aidevops_version" \
-			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' \
+			--arg release_reset_policy "$release_reset_policy" \
+			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version, "release_reset_policy": $release_reset_policy})' \
 			"$state_file") || {
 			echo "Error: Failed to update $state_file" >&2
 			updated_state=""
@@ -1168,7 +1173,8 @@ _fast_fail_write_state() {
 			--argjson backoff_secs "$new_backoff" \
 			--arg crash_type "${crash_type:-}" \
 			--arg aidevops_version "$aidevops_version" \
-			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' \
+			--arg release_reset_policy "$release_reset_policy" \
+			'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version, "release_reset_policy": $release_reset_policy})' \
 			2>/dev/null) || updated_state=""
 	fi
 	if [[ -z "$updated_state" ]]; then

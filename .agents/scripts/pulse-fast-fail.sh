@@ -42,6 +42,12 @@
 # Originally a pure move from pulse-wrapper.sh (byte-identical to pre-extraction
 # form). GH#18692 decomposed _fast_fail_record_locked (115 lines) into focused
 # helpers to satisfy the 100-line complexity gate.
+
+_PFF_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_PFF_SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && _PFF_SCRIPT_DIR="."
+# shellcheck source=fast-fail-release-policy.sh
+source "${_PFF_SCRIPT_DIR}/fast-fail-release-policy.sh"
+unset _PFF_SCRIPT_DIR
 #
 # Configurable environment variables (all optional):
 #   FAST_FAIL_LOCK_ORPHAN_AGE_SECONDS — seconds before an empty lockdir (no owner.pid
@@ -54,6 +60,7 @@
 [[ -n "${_PULSE_FAST_FAIL_LOADED:-}" ]] && return 0
 _PULSE_FAST_FAIL_LOADED=1
 _FF_BOOL_FALSE="false"
+_FF_RELEASE_RESET_POLICY_SOURCE_STATE_REQUIRED="source-state-required"
 
 #######################################
 # Return the fast-fail state key for an issue.
@@ -487,14 +494,18 @@ _ff_release_retry_reset_if_newer() {
 	[[ -n "$repo_slug" ]] || return 1
 
 	if [[ -n "$precomputed_state" ]]; then
-		local precheck_key="" precheck_current_version="" precheck_failure_version="" precheck_reset_version=""
+		local precheck_key="" precheck_current_version="" precheck_failure_version="" precheck_reset_version="" precheck_policy="" precheck_reset_count=""
 		precheck_key=$(_ff_key "$issue_number" "$repo_slug")
 		precheck_current_version="$precomputed_current_version"
 		[[ -n "$precheck_current_version" ]] || precheck_current_version=$(_ff_current_aidevops_version)
 		precheck_failure_version=$(printf '%s' "$precomputed_state" | jq -r --arg k "$precheck_key" '.[$k].aidevops_version // ""' 2>/dev/null) || precheck_failure_version=""
 		precheck_reset_version=$(printf '%s' "$precomputed_state" | jq -r --arg k "$precheck_key" '.[$k].release_retry_reset_version // ""' 2>/dev/null) || precheck_reset_version=""
+		precheck_policy=$(printf '%s' "$precomputed_state" | jq -r --arg k "$precheck_key" --arg default_policy "$_FF_RELEASE_RESET_POLICY_SOURCE_STATE_REQUIRED" '.[$k].release_reset_policy // $default_policy' 2>/dev/null) || precheck_policy="$_FF_RELEASE_RESET_POLICY_SOURCE_STATE_REQUIRED"
+		precheck_reset_count=$(printf '%s' "$precomputed_state" | jq -r --arg k "$precheck_key" '.[$k].release_retry_reset_count // 0' 2>/dev/null) || precheck_reset_count=0
 		[[ -n "$precheck_failure_version" ]] || precheck_failure_version="0.0.0"
 		[[ -n "$precheck_current_version" ]] || return 1
+		[[ "$precheck_policy" == "release-sensitive" ]] || return 1
+		[[ "$precheck_reset_count" -lt "${FAST_FAIL_RELEASE_RETRY_MAX_RESETS:-1}" ]] || return 1
 		[[ "$precheck_reset_version" != "$precheck_current_version" ]] || return 1
 		_ff_version_gt "$precheck_current_version" "$precheck_failure_version" || return 1
 	fi
@@ -508,16 +519,20 @@ _ff_release_retry_reset_if_newer_locked() {
 	local repo_slug="$2"
 	local precomputed_current_version="${3:-}"
 
-	local key="" state="" current_version="" failure_version="" reset_version=""
+	local key="" state="" current_version="" failure_version="" reset_version="" reset_policy="" reset_count=""
 	key=$(_ff_key "$issue_number" "$repo_slug")
 	state=$(_ff_load)
 	current_version="$precomputed_current_version"
 	[[ -n "$current_version" ]] || current_version=$(_ff_current_aidevops_version)
 	failure_version=$(printf '%s' "$state" | jq -r --arg k "$key" '.[$k].aidevops_version // ""' 2>/dev/null) || failure_version=""
 	reset_version=$(printf '%s' "$state" | jq -r --arg k "$key" '.[$k].release_retry_reset_version // ""' 2>/dev/null) || reset_version=""
+	reset_policy=$(printf '%s' "$state" | jq -r --arg k "$key" --arg default_policy "$_FF_RELEASE_RESET_POLICY_SOURCE_STATE_REQUIRED" '.[$k].release_reset_policy // $default_policy' 2>/dev/null) || reset_policy="$_FF_RELEASE_RESET_POLICY_SOURCE_STATE_REQUIRED"
+	reset_count=$(printf '%s' "$state" | jq -r --arg k "$key" '.[$k].release_retry_reset_count // 0' 2>/dev/null) || reset_count=0
 
 	[[ -n "$failure_version" ]] || failure_version="0.0.0"
 	[[ -n "$current_version" ]] || return 1
+	[[ "$reset_policy" == "release-sensitive" ]] || return 1
+	[[ "$reset_count" -lt "${FAST_FAIL_RELEASE_RETRY_MAX_RESETS:-1}" ]] || return 1
 	[[ "$reset_version" != "$current_version" ]] || return 1
 	_ff_version_gt "$current_version" "$failure_version" || return 1
 
@@ -528,7 +543,7 @@ _ff_release_retry_reset_if_newer_locked() {
 		--arg current "$current_version" \
 		--arg previous "$failure_version" \
 		--argjson ts "$now" \
-		'.[$k].count = 0 | .[$k].retry_after = 0 | .[$k].release_retry_reset_version = $current | .[$k].release_retry_reset_from = $previous | .[$k].release_retry_reset_ts = $ts' \
+		'.[$k].count = 0 | .[$k].retry_after = 0 | .[$k].release_retry_reset_version = $current | .[$k].release_retry_reset_from = $previous | .[$k].release_retry_reset_ts = $ts | .[$k].release_retry_reset_count = ((.[$k].release_retry_reset_count // 0) + 1)' \
 		2>/dev/null) || return 1
 	_ff_save "$updated_state"
 	echo "[pulse-wrapper] fast_fail_release_retry_reset: #${issue_number} (${repo_slug}) reset stale failure from aidevops ${failure_version} under current ${current_version}" >>"$LOGFILE"
@@ -632,8 +647,9 @@ _fast_fail_record_locked() {
 	fi
 
 	# Write updated state (include crash_type for diagnostics).
-	local updated_state="" aidevops_version=""
+	local updated_state="" aidevops_version="" release_reset_policy=""
 	aidevops_version=$(_ff_current_aidevops_version)
+	release_reset_policy=$(_fast_fail_release_reset_policy "$reason" "${crash_type:-}")
 	updated_state=$(printf '%s' "$state" | jq \
 		--arg k "$key" \
 		--argjson count "$new_count" \
@@ -643,7 +659,8 @@ _fast_fail_record_locked() {
 		--argjson backoff_secs "$new_backoff" \
 		--arg crash_type "${crash_type:-}" \
 		--arg aidevops_version "$aidevops_version" \
-		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' 2>/dev/null) || return 0
+		--arg release_reset_policy "$release_reset_policy" \
+		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version, "release_reset_policy": $release_reset_policy})' 2>/dev/null) || return 0
 
 	# Flag for enrichment on first non-rate-limit failure: a thinking-tier worker
 	# will analyze the issue and add implementation guidance before re-dispatch.

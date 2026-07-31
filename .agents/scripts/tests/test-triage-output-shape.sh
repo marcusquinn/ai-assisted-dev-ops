@@ -240,17 +240,23 @@ load_helpers_under_test() {
 		printf 'ERROR: cannot locate pulse-ancillary-dispatch.sh (tried %s)\n' "$src" >&2
 		exit 2
 	fi
-	# Extract from _ensure_triage_failed_label down to (but not
-	# including) dispatch_triage_reviews — this includes every helper
-	# we need plus _dispatch_triage_review_worker itself.
+	# Extract the pre-post snapshot fence, then the posting/dispatch helper block.
+	# The fence now lives before _ensure_triage_failed_label in production, so the
+	# historical single-range extraction silently omitted it.
 	local tmp
 	tmp=$(mktemp)
+	awk '
+	/^_triage_post_snapshot_failure_reason\(\) \{/{flag=1}
+	flag{print}
+	/^_triage_fetch_pr_snapshot\(\) \{/{flag=0}
+	' "$src" |
+		sed '/^_triage_fetch_pr_snapshot()/,$d' >"$tmp"
 	awk '
 	/^_ensure_triage_failed_label\(\) \{/{flag=1}
 	flag{print}
 	/^dispatch_triage_reviews\(\) \{/{flag=0}
 	' "$src" |
-		sed '/^dispatch_triage_reviews()/,$d' >"$tmp"
+		sed '/^dispatch_triage_reviews()/,$d' >>"$tmp"
 	# shellcheck source=../sensitive-temp-helper.sh
 	source "${here}/../sensitive-temp-helper.sh"
 	# shellcheck disable=SC1090
@@ -258,6 +264,23 @@ load_helpers_under_test() {
 	rm -f "$tmp"
 	_triage_current_text_snapshot_hash() {
 		printf '%s\n' "$MOCK_CURRENT_TEXT_SNAPSHOT_HASH"
+		return 0
+	}
+	_triage_prefetch_issue() {
+		local issue_json_var="$3"
+		local issue_comments_var="$4"
+		local issue_body_var="$5"
+		printf -v "$issue_json_var" '%s' '{}'
+		printf -v "$issue_comments_var" '%s' '[]'
+		printf -v "$issue_body_var" '%s' ''
+		return 0
+	}
+	_triage_default_branch_revision_rest() {
+		printf '%s\n' "$MOCK_CURRENT_PUBLIC_REVISION"
+		return 0
+	}
+	_triage_pr_revision_pair_rest() {
+		printf '%s\n' "$MOCK_PR_REVISION_PAIR"
 		return 0
 	}
 	return 0

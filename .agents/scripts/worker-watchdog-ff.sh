@@ -45,6 +45,8 @@ if [[ -r "${_WWFF_SCRIPT_DIR}/lib/version.sh" ]]; then
 	# shellcheck source=lib/version.sh
 	source "${_WWFF_SCRIPT_DIR}/lib/version.sh"
 fi
+# shellcheck source=fast-fail-release-policy.sh
+source "${_WWFF_SCRIPT_DIR}/fast-fail-release-policy.sh"
 unset _WWFF_SCRIPT_DIR
 
 # =============================================================================
@@ -194,9 +196,11 @@ _ff_write_state_entry() {
 	local new_backoff="${10}"
 	local crash_type="${11:-}"
 	local aidevops_version="${AIDEVOPS_UNKNOWN_VERSION:-unknown}"
+	local release_reset_policy=""
 	if declare -F aidevops_find_version >/dev/null 2>&1; then
 		aidevops_version=$(aidevops_find_version 2>/dev/null || printf '%s' "${AIDEVOPS_UNKNOWN_VERSION:-unknown}")
 	fi
+	release_reset_policy=$(_fast_fail_release_reset_policy "$reason" "$crash_type")
 
 	local updated_state
 	updated_state=$(printf '%s' "$state" | jq \
@@ -208,7 +212,8 @@ _ff_write_state_entry() {
 		--argjson backoff_secs "$new_backoff" \
 		--arg crash_type "$crash_type" \
 		--arg aidevops_version "$aidevops_version" \
-		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version})' 2>/dev/null) || {
+		--arg release_reset_policy "$release_reset_policy" \
+		'.[$k] = ((.[$k] // {}) + {"count": $count, "ts": $ts, "reason": $reason, "retry_after": $retry_after, "backoff_secs": $backoff_secs, "crash_type": $crash_type, "aidevops_version": $aidevops_version, "release_reset_policy": $release_reset_policy})' 2>/dev/null) || {
 		rmdir "$lock_dir" 2>/dev/null || true
 		return 1
 	}

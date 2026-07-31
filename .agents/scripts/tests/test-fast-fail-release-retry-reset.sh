@@ -80,7 +80,7 @@ write_entry() {
 	local count="$2"
 	local retry_after="$3"
 	local version="$4"
-	printf '{"owner/repo/%s":{"count":%s,"ts":1,"reason":"rate_limit","retry_after":%s,"backoff_secs":600,"crash_type":"","aidevops_version":"%s"}}\n' \
+	printf '{"owner/repo/%s":{"count":%s,"ts":1,"reason":"worker_launch_failed","retry_after":%s,"backoff_secs":600,"crash_type":"","aidevops_version":"%s","release_reset_policy":"release-sensitive"}}\n' \
 		"$issue" "$count" "$retry_after" "$version" >"$FAST_FAIL_STATE_FILE"
 	return 0
 }
@@ -102,6 +102,22 @@ else
 	fail "watchdog loads version metadata when sourced through PATH"
 fi
 
+printf '{"owner/repo/129":{"count":1,"ts":1,"reason":"permission_grant_unverified","retry_after":%s,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63","release_reset_policy":"source-state-required"}}\n' \
+	"$future" >"$FAST_FAIL_STATE_FILE"
+if fast_fail_is_skipped 129 owner/repo && [[ "$(jq -r '."owner/repo/129".count' "$FAST_FAIL_STATE_FILE")" == "1" ]]; then
+	pass "source-state failure survives aidevops version upgrades"
+else
+	fail "source-state failure survives aidevops version upgrades"
+fi
+
+printf '{"owner/repo/130":{"count":1,"ts":1,"reason":"unknown","retry_after":%s,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63"}}\n' \
+	"$future" >"$FAST_FAIL_STATE_FILE"
+if fast_fail_is_skipped 130 owner/repo && [[ "$(jq -r '."owner/repo/130".count' "$FAST_FAIL_STATE_FILE")" == "1" ]]; then
+	pass "legacy entries without reset policy fail closed"
+else
+	fail "legacy entries without reset policy fail closed"
+fi
+
 if _ff_version_gt "v3.14.64" "3.14.63" && ! _ff_version_gt "3.14.64" "3.14.64" && ! _ff_version_gt "3.14.63" "v3.14.64"; then
 	pass "pure bash version comparison handles prefixed aidevops versions"
 else
@@ -114,11 +130,19 @@ fast_fail_is_skipped 123 owner/repo || reset_rc=$?
 reset_count=$(jq -r '."owner/repo/123".count' "$FAST_FAIL_STATE_FILE")
 reset_retry=$(jq -r '."owner/repo/123".retry_after' "$FAST_FAIL_STATE_FILE")
 reset_version=$(jq -r '."owner/repo/123".release_retry_reset_version' "$FAST_FAIL_STATE_FILE")
-if [[ "$reset_rc" -eq 1 && "$reset_count" == "0" && "$reset_retry" == "0" && "$reset_version" == "3.14.64" && ! -d "${FAST_FAIL_STATE_FILE}.lockdir" ]]; then
+release_reset_count=$(jq -r '."owner/repo/123".release_retry_reset_count' "$FAST_FAIL_STATE_FILE")
+if [[ "$reset_rc" -eq 1 && "$reset_count" == "0" && "$reset_retry" == "0" && "$reset_version" == "3.14.64" && "$release_reset_count" == "1" && ! -d "${FAST_FAIL_STATE_FILE}.lockdir" ]]; then
 	pass "new aidevops version clears old-version backoff once"
 else
 	fail "new aidevops version clears old-version backoff once" \
 		"rc=${reset_rc}; count=${reset_count}; retry=${reset_retry}; reset_version=${reset_version}; lockdir=$([[ -d "${FAST_FAIL_STATE_FILE}.lockdir" ]] && printf present || printf absent)"
+fi
+
+if ! _ff_release_retry_reset_if_newer 123 owner/repo "$(<"$FAST_FAIL_STATE_FILE")" "3.14.65" && \
+	[[ "$(jq -r '."owner/repo/123".release_retry_reset_count' "$FAST_FAIL_STATE_FILE")" == "1" ]]; then
+	pass "cumulative release reset ceiling survives later versions"
+else
+	fail "cumulative release reset ceiling survives later versions"
 fi
 
 skip_rc=0
@@ -140,10 +164,12 @@ fi
 
 fast_fail_record 125 owner/repo worker_noop_zero_output anthropic no_work
 recorded_version=$(jq -r '."owner/repo/125".aidevops_version' "$FAST_FAIL_STATE_FILE")
-if [[ "$recorded_version" == "3.14.64" ]]; then
-	pass "fast_fail_record stores aidevops version metadata"
+recorded_policy=$(jq -r '."owner/repo/125".release_reset_policy' "$FAST_FAIL_STATE_FILE")
+if [[ "$recorded_version" == "3.14.64" && "$recorded_policy" == "source-state-required" ]]; then
+	pass "fast_fail_record stores version and explicit reset policy"
 else
-	fail "fast_fail_record stores aidevops version metadata" "version=${recorded_version}"
+	fail "fast_fail_record stores version and explicit reset policy" \
+		"version=${recorded_version}; policy=${recorded_policy}"
 fi
 
 now=$(date +%s)
@@ -161,7 +187,7 @@ fi
 worker_state="${TMP}/worker-fast-fail.json"
 printf '{"owner/repo/127":{"count":1,"ts":1,"reason":"old","retry_after":0,"backoff_secs":600,"crash_type":"","aidevops_version":"3.14.63","release_retry_reset_version":"3.14.64","release_retry_reset_from":"3.14.63","custom_field":"keep"}}\n' >"$worker_state"
 _fast_fail_write_state "$worker_state" "$TMP" "owner/repo/127" 2 "$now" worker_failed "$future" 1200 no_work
-if jq -e '."owner/repo/127" | .count == 2 and .crash_type == "no_work" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_from == "3.14.63" and .custom_field == "keep"' \
+if jq -e '."owner/repo/127" | .count == 2 and .crash_type == "no_work" and .release_reset_policy == "source-state-required" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_from == "3.14.63" and .custom_field == "keep"' \
 	"$worker_state" >/dev/null 2>&1; then
 	pass "worker fast-fail writer preserves version and reset metadata"
 else
@@ -177,7 +203,7 @@ watchdog_json=$(<"$watchdog_state")
 _ff_write_state_entry "$watchdog_json" "$watchdog_state" "$TMP" "$watchdog_lock" \
 	"owner/repo/128" 2 "$now" stall "$future" 1200 overwhelmed
 rmdir "$watchdog_lock"
-if jq -e '."owner/repo/128" | .count == 2 and .crash_type == "overwhelmed" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_ts == 84 and .custom_field == "keep"' \
+if jq -e '."owner/repo/128" | .count == 2 and .crash_type == "overwhelmed" and .release_reset_policy == "source-state-required" and .aidevops_version == "3.14.64" and .release_retry_reset_version == "3.14.64" and .release_retry_reset_ts == 84 and .custom_field == "keep"' \
 	"$watchdog_state" >/dev/null 2>&1; then
 	pass "watchdog fast-fail writer preserves version and reset metadata"
 else

@@ -809,6 +809,23 @@ test_missing_scanner_or_guard_retries_as_infrastructure() {
 	return 0
 }
 
+test_terminal_oversize_snapshot_invalidates_on_change() {
+	reset_case
+	set_mock_item "safe body" "safe comment" "safe title"
+	local reason="github-comments-snapshot-too-large"
+	local result=0
+	_triage_mark_terminal_snapshot 42 owner/repo "$reason" "$MOCK_ISSUE_JSON" || result=1
+	_triage_terminal_snapshot_active 42 owner/repo "$reason" "$MOCK_ISSUE_JSON" || result=1
+	local changed_json=""
+	changed_json=$(printf '%s' "$MOCK_ISSUE_JSON" | jq -c '.updatedAt = "2026-07-27T00:02:00Z"')
+	if _triage_terminal_snapshot_active 42 owner/repo "$reason" "$changed_json"; then
+		result=1
+	fi
+	print_result "terminal oversize snapshot skips unchanged input and invalidates on change" \
+		"$result"
+	return 0
+}
+
 main() {
 	test_clean_current_and_history_content_reach_model
 	test_paginated_comments_reach_scanner_and_prompt
@@ -824,6 +841,7 @@ main() {
 	test_retrieval_failures_are_infrastructure
 	test_warning_is_security_and_scanner_error_is_infrastructure
 	test_missing_scanner_or_guard_retries_as_infrastructure
+	test_terminal_oversize_snapshot_invalidates_on_change
 
 	printf '\nResults: %d tests, %d passed, %d failed\n' \
 		"$TESTS_RUN" "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_FAILED"

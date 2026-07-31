@@ -827,6 +827,7 @@ _dlw_renew_prelaunch_lease() {
 	local worker_log="$4"
 	local prewarm_timeout="${OPENCODE_PREWARM_TIMEOUT_SECONDS:-90}"
 	local lease_ttl="${AIDEVOPS_DISPATCH_PREWARM_LEASE_TTL:-}"
+	local claim_rc=0
 
 	if [[ -z "${_claim_lease_token:-}" ]]; then
 		return 0
@@ -836,12 +837,15 @@ _dlw_renew_prelaunch_lease() {
 
 	printf '[lifecycle] dispatcher_prelaunch_lease_renew_start session=%s pid=%s\n' \
 		"$session_key" "$$" >>"$worker_log"
-	if ! AIDEVOPS_DEVICE_ID="${_claim_lease_device:-${AIDEVOPS_DEVICE_ID:-}}" \
+	AIDEVOPS_DEVICE_ID="${_claim_lease_device:-${AIDEVOPS_DEVICE_ID:-}}" \
 		"${SCRIPT_DIR}/dispatch-claim-helper.sh" transition prelaunch "$issue_number" \
 		"$repo_slug" "$_claim_lease_token" "$session_key" "$lease_ttl" \
-		>/dev/null 2>&1; then
-		printf '[lifecycle] WARN dispatcher prelaunch lease renewal failed before OpenCode warm-up session=%s pid=%s\n' \
-			"$session_key" "$$" >>"$worker_log"
+		>/dev/null 2>&1 || claim_rc=$?
+	if [[ "$claim_rc" -ne 0 ]]; then
+		printf '[lifecycle] WARN dispatcher prelaunch lease renewal failed before OpenCode warm-up issue=%s repo=%s session=%s helper_rc=%s pid=%s\n' \
+			"$issue_number" "$repo_slug" "$session_key" "$claim_rc" "$$" >>"$worker_log"
+		printf '[dispatch_worker_launch] WARN prelaunch lease renewal failed issue=%s repo=%s session=%s helper_rc=%s\n' \
+			"$issue_number" "$repo_slug" "$session_key" "$claim_rc" >>"${LOGFILE:-/dev/stderr}"
 		return 1
 	fi
 	printf '[lifecycle] dispatcher_prelaunch_lease_renew_done session=%s pid=%s\n' \

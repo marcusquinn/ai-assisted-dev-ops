@@ -206,6 +206,65 @@ test_expired_marker_does_not_block() {
 	return 0
 }
 
+test_large_comment_payload_uses_stream_transport() {
+	local padding=""
+	padding=$(python3 -c 'print("x" * 150000)')
+	TEST_GH_COMMENTS_JSON="[{\"created_at\":\"2026-07-05T22:22:12Z\",\"body\":\"WORKER_DIRTY_WORKTREE runner_key=runner-large ${padding}\"}]"
+	set +e
+	AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH="1783291032" \
+		DISPATCH_DIRTY_WORKTREE_HOLD_SECONDS="21600" \
+		_dispatch_recent_dirty_worktree_marker_active "26635" "marcusquinn/aidevops"
+	local rc=$?
+	set -e
+	TEST_GH_COMMENTS_JSON="[]"
+	if [[ "$rc" -eq 0 && "$_DISPATCH_DIRTY_MARKER_STATE" == *"runner_key=runner-large" ]]; then
+		print_result "large comment payload avoids exec environment limits" 0
+		return 0
+	fi
+	print_result "large comment payload avoids exec environment limits" 1 \
+		"state=${_DISPATCH_DIRTY_MARKER_STATE} rc=${rc}"
+	return 0
+}
+
+test_prelaunch_lease_failure_logs_durable_reason() {
+	local fixture_dir=""
+	fixture_dir=$(mktemp -d)
+	local worker_log="${fixture_dir}/worker.log"
+	local pulse_log="${fixture_dir}/pulse.log"
+	local original_logfile="$LOGFILE"
+	cat >"${fixture_dir}/dispatch-claim-helper.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 7
+STUB
+	chmod +x "${fixture_dir}/dispatch-claim-helper.sh"
+	local original_script_dir="$SCRIPT_DIR"
+	SCRIPT_DIR="$fixture_dir"
+	LOGFILE="$pulse_log"
+	_claim_lease_token="secret-token-must-not-appear"
+	_claim_lease_device="test-device"
+	set +e
+	_dlw_renew_prelaunch_lease "26635" "marcusquinn/aidevops" \
+		"session-test" "$worker_log"
+	local rc=$?
+	set -e
+	SCRIPT_DIR="$original_script_dir"
+	LOGFILE="$original_logfile"
+	unset _claim_lease_token _claim_lease_device
+	local result=0
+	[[ "$rc" -eq 1 ]] || result=1
+	grep -q 'issue=26635 repo=marcusquinn/aidevops session=session-test helper_rc=7' \
+		"$worker_log" || result=1
+	grep -q 'issue=26635 repo=marcusquinn/aidevops session=session-test helper_rc=7' \
+		"$pulse_log" || result=1
+	if grep -q 'secret-token-must-not-appear' "$worker_log" "$pulse_log"; then
+		result=1
+	fi
+	print_result "prelaunch lease failure is durable without token disclosure" \
+		"$result" "rc=${rc}"
+	rm -rf "$fixture_dir"
+	return 0
+}
+
 test_expired_marker_clears_once_with_audit() {
 	local marker='{"created_at":"2026-07-05T22:22:12Z","body":"WORKER_DIRTY_WORKTREE branch=feature/auto-20260706-000537-gh26635 runner_key=runner-other"}'
 	TEST_GH_POST_COUNT=0
@@ -240,6 +299,8 @@ main() {
 	test_dirty_worktree_reuse_preserves_edits
 	test_later_resolution_clears_marker
 	test_expired_marker_does_not_block
+	test_large_comment_payload_uses_stream_transport
+	test_prelaunch_lease_failure_logs_durable_reason
 	test_expired_marker_clears_once_with_audit
 	test_marker_without_runner_key_stays_blocked
 

@@ -405,75 +405,9 @@ _dispatch_recent_dirty_worktree_marker_active() {
 	[[ -n "$comments_json" ]] || return 1
 
 	local marker_state=""
-	marker_state=$(AIDEVOPS_DIRTY_WORKTREE_COMMENTS_JSON="$comments_json" python3 - "$hold_seconds" "${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}" <<'PY'
-import datetime
-import json
-import os
-import sys
-
-hold_seconds = int(sys.argv[1])
-now_override = sys.argv[2] if len(sys.argv) > 2 else ""
-clear_state = "clear"
-
-try:
-    comments = json.loads(os.environ.get("AIDEVOPS_DIRTY_WORKTREE_COMMENTS_JSON", ""))
-except json.JSONDecodeError:
-    print(clear_state)
-    sys.exit(0)
-
-def parse_ts(value):
-    if not value:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-try:
-    now_epoch = float(now_override) if now_override else datetime.datetime.now(datetime.timezone.utc).timestamp()
-except ValueError:
-    now_epoch = datetime.datetime.now(datetime.timezone.utc).timestamp()
-
-latest_marker_ts = None
-latest_resolution_ts = None
-latest_marker_body = ""
-resolution_tokens = (
-    "worker-dirty-worktree:resolved",
-    "WORKER_DIRTY_WORKTREE_RESOLVED",
-    "DIRTY_WORKTREE_RECOVERED",
-    "worker_dirty_worktree_recovered",
-)
-
-for comment in comments:
-    body = str(comment.get("body") or "")
-    created = parse_ts(comment.get("created_at") or comment.get("createdAt"))
-    if created is None:
-        continue
-    if any(token in body for token in resolution_tokens):
-        latest_resolution_ts = created
-    elif "WORKER_DIRTY_WORKTREE" in body:
-        latest_marker_ts = created
-        latest_marker_body = body
-
-if latest_marker_ts is None:
-    print(clear_state)
-    sys.exit(0)
-if latest_resolution_ts is not None and latest_resolution_ts >= latest_marker_ts:
-    print(clear_state)
-    sys.exit(0)
-
-age = max(0, int(now_epoch - latest_marker_ts))
-runner_key = ""
-for token in latest_marker_body.split():
-    if token.startswith("runner_key="):
-        runner_key = token.split("=", 1)[1]
-        break
-if age <= hold_seconds:
-    print(f"block:age={age}:runner_key={runner_key}")
-else:
-    print(f"expired:age={age}:runner_key={runner_key}")
-PY
-) || marker_state=""
+	marker_state=$(printf '%s' "$comments_json" | \
+		python3 "${_PULSE_DISPATCH_LIB_DIR}/pulse-dirty-worktree-marker.py" \
+			"$hold_seconds" "${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}") || marker_state=""
 	_DISPATCH_DIRTY_MARKER_STATE="${marker_state:-clear}"
 
 	[[ "$marker_state" == block:* ]] || return 1

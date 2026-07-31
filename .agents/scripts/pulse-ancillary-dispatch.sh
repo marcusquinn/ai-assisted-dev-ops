@@ -554,6 +554,61 @@ _triage_mark_infrastructure_retry() {
 	return 0
 }
 
+_triage_terminal_snapshot_fingerprint() {
+	local issue_json="$1"
+	printf '%s' "$issue_json" | jq -cS \
+		'{number,title,body,updatedAt,labels:([.labels[].name] | sort)}' 2>/dev/null | \
+		python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+	local statuses=("${PIPESTATUS[@]}")
+	[[ "${statuses[0]}" -eq 0 && "${statuses[1]}" -eq 0 ]] || return 1
+	return 0
+}
+
+_triage_terminal_snapshot_file() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local slug_safe="${repo_slug//\//_}"
+	printf '%s/%s-%s.%s.terminal\n' \
+		"${TRIAGE_CACHE_DIR:-${HOME}/.aidevops/.agent-workspace/tmp/triage-cache}" \
+		"$slug_safe" "$issue_num" "$reason"
+	return 0
+}
+
+_triage_terminal_snapshot_active() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local issue_json="$4"
+	local state_file="" fingerprint="" recorded=""
+	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
+	[[ -f "$state_file" ]] || return 1
+	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
+	recorded=$(<"$state_file")
+	[[ "$recorded" == "$fingerprint" ]] || return 1
+	return 0
+}
+
+_triage_mark_terminal_snapshot() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local issue_json="$4"
+	local state_file="" state_dir="" fingerprint="" tmp_file=""
+	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
+	state_dir="${state_file%/*}"
+	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
+	mkdir -p "$state_dir" || return 1
+	tmp_file=$(mktemp "${state_file}.XXXXXX") || return 1
+	if ! printf '%s\n' "$fingerprint" >"$tmp_file" || ! mv "$tmp_file" "$state_file"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
+	printf '[pulse-wrapper] Triage prefetch terminal for #%s in %s (reason=%s) — unchanged snapshot requires manual review\n' \
+		"$issue_num" "$repo_slug" "$reason" >>"$LOGFILE"
+	return 0
+}
+
 #######################################
 # Create a private managed directory for untrusted triage artifacts and start
 # a detached cleanup guardian. Normal paths remove the directory immediately;
@@ -805,6 +860,10 @@ _triage_prefetch_issue() {
 			"$issue_num" "$repo_slug" "github-issue-read-malformed"
 		return 1
 	fi
+	if _triage_terminal_snapshot_active "$issue_num" "$repo_slug" \
+		"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json"; then
+		return 1
+	fi
 
 	local issue_comment_pages=""
 	if ! issue_comment_pages=$(gh api \
@@ -831,8 +890,8 @@ _triage_prefetch_issue() {
 		return 1
 	fi
 	if [[ "$issue_comment_count" -gt "$_PAD_TRIAGE_MAX_COMMENTS" ]]; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON"
+		_triage_mark_terminal_snapshot "$issue_num" "$repo_slug" \
+			"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json" || true
 		return 1
 	fi
 
@@ -861,8 +920,8 @@ _triage_prefetch_issue() {
 	local issue_comment_bytes=""
 	issue_comment_bytes=$(_triage_text_byte_count "$issue_comments") || return 1
 	if [[ "$issue_comment_bytes" -gt "$_PAD_TRIAGE_MAX_COMMENT_BYTES" ]]; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON"
+		_triage_mark_terminal_snapshot "$issue_num" "$repo_slug" \
+			"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json" || true
 		return 1
 	fi
 
