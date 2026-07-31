@@ -133,7 +133,7 @@ Aggregation PR #29031 re-reviews authorized aggregation PR #29026 at
 `351c820f5db214ddf7a069d57f3db9b74e2b6321` because PR #28910 advanced `main`
 before publication.
 
-A pending aggregation re-reviews authorized aggregation PR #29031 at
+Aggregation PR #29039 re-reviews authorized aggregation PR #29031 at
 `c77eaecf9f8b20139a2d5164c49bdd7d75f928b6` because PR #29029 advanced `main`
 before publication.
 
