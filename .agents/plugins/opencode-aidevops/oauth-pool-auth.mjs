@@ -1,8 +1,9 @@
 /**
  * OAuth Pool — Auth Hooks & Handlers (t2128 refactor)
  *
- * Contains: provider auth hooks (anthropic, openai, cursor, google),
- * token exchange handlers, and provider registration.
+ * Contains: provider auth hooks (anthropic, openai, cursor, google)
+ * and token exchange handlers. Provider registration is re-exported
+ * from oauth-pool-auth-provider.mjs.
  *
  * Depends on: oauth-pool-constants, oauth-pool-token-endpoint,
  * oauth-pool-storage, oauth-pool-refresh, oauth-pool-callback,
@@ -20,7 +21,6 @@ import {
   OPENAI_REDIRECT_URI, OPENAI_OAUTH_SCOPES,
   GOOGLE_CLIENT_ID, GOOGLE_OAUTH_AUTHORIZE_URL,
   GOOGLE_REDIRECT_URI, GOOGLE_OAUTH_SCOPES,
-  CURSOR_PROXY_BASE_URL,
 } from "./oauth-pool-constants.mjs";
 
 import {
@@ -351,38 +351,4 @@ export function createGooglePoolAuthHook(client) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Provider registration
-// ---------------------------------------------------------------------------
-
-export function registerPoolProvider(config) {
-  if (!config.provider) config.provider = {};
-  let registered = 0;
-  const defs = [
-    { id: "anthropic-pool", name: "Anthropic Pool (Account Management)", npm: "@ai-sdk/anthropic", api: "https://api.anthropic.com/v1", mn: "[Account Setup Only] Use Anthropic provider for models" },
-    { id: "openai-pool", name: "OpenAI Pool (Account Management)", npm: "@ai-sdk/openai", api: "https://api.openai.com/v1", mn: "[Account Setup Only] Use OpenAI provider for models" },
-    { id: "cursor-pool", name: "Cursor Pool (Account Management)", npm: "@ai-sdk/openai-compatible", api: CURSOR_PROXY_BASE_URL, mn: "[Account Setup Only] Use Cursor provider for models" },
-    { id: "google-pool", name: "Google Pool (Account Management)", npm: "@ai-sdk/google", api: "https://generativelanguage.googleapis.com/v1beta", mn: "[Account Setup Only] Token injected as GOOGLE_OAUTH_ACCESS_TOKEN" },
-  ];
-  for (const def of defs) {
-    const models = {
-      "pool-account-management": {
-        name: def.mn, attachment: false, tool_call: false, temperature: false,
-        modalities: { input: ["text"], output: ["text"] },
-        cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-        limit: { context: 1000, output: 100 }, family: "pool",
-      },
-    };
-    if (!config.provider[def.id]) {
-      config.provider[def.id] = { name: def.name, npm: def.npm, api: def.api, models };
-      registered++;
-    } else {
-      const e = config.provider[def.id];
-      if (e.name !== def.name || e.npm !== def.npm || e.api !== def.api || JSON.stringify(e.models) !== JSON.stringify(models)) {
-        Object.assign(e, { name: def.name, npm: def.npm, api: def.api, models });
-        registered++;
-      }
-    }
-  }
-  return registered;
-}
+export { registerPoolProvider } from "./oauth-pool-auth-provider.mjs";

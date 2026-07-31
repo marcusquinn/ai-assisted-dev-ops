@@ -87,7 +87,7 @@ test("hook status rejects symlinked hook files without reading their targets", a
   try {
     writeFileSync(target, "# aidevops-pre-commit-hook\nprivate target content\n");
     symlinkSync(target, join(repo, ".git", "hooks", "pre-commit"));
-    const hookTool = createTools(root, () => "").aidevops_hook_status;
+    const hookTool = createTools(root, () => "", { workerWorktree: repo }).aidevops_hook_status;
     const result = await hookTool.execute({ workdir: repo });
     const status = JSON.parse(result);
 
