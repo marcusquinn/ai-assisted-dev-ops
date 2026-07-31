@@ -546,6 +546,7 @@ python3 - "$ROOT" "$SCRIPT_DIR/../scripts" <<'PY'
 import os
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[2])
@@ -556,6 +557,7 @@ from _knowledge_social_collect import (
     PageCheckpoint,
     SuccessfulPage,
 )
+import _knowledge_social_collect_persist as persist_module
 from _knowledge_social_collect_persist import persist_page
 from _knowledge_social_lease import (
     RunLeaseRequest,
@@ -609,6 +611,31 @@ page = SuccessfulPage(
     True,
     1,
 )
+expiring = acquire_run_lease(
+    root,
+    RunLeaseRequest("conn_reddit_expiry", "friends", "same_runner", "sync", 1),
+    now_epoch=9000,
+)
+expiry_archive = dict(archive, connection_id="conn_reddit_expiry")
+expiry_context = replace(context, connection_id="conn_reddit_expiry", lease=expiring)
+expiry_page = replace(page, archive=expiry_archive)
+clock = iter((9000, 9001))
+original_social_now = persist_module.social_now
+persist_module.social_now = lambda: next(clock)
+try:
+    persist_page(expiry_context, expiry_page)
+except SocialLeaseLostError:
+    pass
+else:
+    raise SystemExit("Reddit collector committed after its lease expired")
+finally:
+    persist_module.social_now = original_social_now
+with sqlite3.connect(root / "index" / "social.db") as database:
+    expiry_cursor = database.execute(
+        "SELECT count(*) FROM sync_cursors WHERE connection_id='conn_reddit_expiry'"
+    ).fetchone()[0]
+assert expiry_cursor == 0
+release_run_lease(root, expiring)
 os.environ["AIDEVOPS_SOCIAL_NOW_EPOCH"] = "9001"
 try:
     persist_page(context, page)

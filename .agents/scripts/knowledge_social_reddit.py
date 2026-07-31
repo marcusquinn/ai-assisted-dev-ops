@@ -145,8 +145,7 @@ def collect_pages(
                 progress,
                 run_id=context.lease.run_id if context.lease else None,
             )
-    if progress.pages:
-        record_bounded_stop(context, "paused", "budget")
+    record_bounded_stop(context, "paused", "budget")
     return collection_result(
         "budget_exhausted",
         progress,
