@@ -335,7 +335,10 @@ cmd_set() {
 	if has_gopass; then
 		local gopass_output
 		if ! gopass_output=$(printf '%s' "$value" | gopass insert --force "${GOPASS_PREFIX}/${name}" 2>&1); then
-			if [[ "$gopass_output" == *"GPG"* || "$gopass_output" == *"gpg"* ]]; then
+			if [[ "$gopass_output" == *"BLOCKED by canonical Git guard"* ]]; then
+				print_error "Failed to store $name in gopass because the canonical Git guard blocked the password-store update"
+				printf '  %s\n' "$gopass_output" >&2
+			elif [[ "$gopass_output" == *"GPG"* || "$gopass_output" == *"gpg"* ]]; then
 				print_error "Failed to store $name in gopass (GPG error)"
 			elif [[ "$gopass_output" == *"not initialized"* ]]; then
 				print_error "Failed to store $name in gopass (store not initialized)"
