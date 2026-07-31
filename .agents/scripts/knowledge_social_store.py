@@ -483,13 +483,21 @@ def _canonical_fetch_identity_v6(
         if str(row["batch_id"]) != digest:
             raise SocialStoreError("legacy fetch batch raw identity cannot be migrated")
         return digest, str(row["response_hash"])
-    if (
-        row["provider"] != provider
-        or row["connection_id"] != connection_id
-        or row["stream"] != envelope["stream"]
-        or row["request_hash"] != envelope["request_hash"]
-        or row["completed_at"] != envelope["observed_at"]
-    ):
+    stored_scope = (
+        row["provider"],
+        row["connection_id"],
+        row["stream"],
+        row["request_hash"],
+        row["completed_at"],
+    )
+    raw_scope = (
+        provider,
+        connection_id,
+        envelope["stream"],
+        envelope["request_hash"],
+        envelope["observed_at"],
+    )
+    if stored_scope != raw_scope:
         raise SocialStoreError("legacy fetch batch metadata conflicts with raw evidence")
     return digest, str(envelope["response_sha256"])
 
@@ -522,11 +530,10 @@ def _deduplicate_fetch_rows_v6(
     signatures: dict[str, tuple[object, ...]] = {}
     for row, batch_id, response_hash in migrated:
         metadata = tuple(row[field] for field in metadata_fields) + (response_hash,)
-        if batch_id in signatures and signatures[batch_id] != metadata:
+        existing = signatures.setdefault(batch_id, metadata)
+        if existing != metadata:
             raise SocialStoreError("legacy fetch batch aliases have conflicting metadata")
-        if batch_id not in canonical:
-            canonical[batch_id] = (row, response_hash)
-            signatures[batch_id] = metadata
+        canonical.setdefault(batch_id, (row, response_hash))
     return canonical
 
 
