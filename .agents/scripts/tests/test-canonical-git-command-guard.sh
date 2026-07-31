@@ -11,6 +11,10 @@ TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 REPO="${TEST_ROOT}/repo"
 LINKED="${TEST_ROOT}/linked"
+PASSWORD_REPO="${TEST_ROOT}/password-store"
+MARKED_REPO="${TEST_ROOT}/marked-repo"
+SEPARATE_REPO="${TEST_ROOT}/separate-repo"
+SEPARATE_GIT_DIR="${TEST_ROOT}/separate-repo-git"
 TESTS=0
 FAILURES=0
 
@@ -42,6 +46,23 @@ printf 'seed\n' >"${REPO}/README.md"
 git -C "$REPO" add README.md
 git -C "$REPO" commit -q -m seed
 INITIAL_HEAD=$(git -C "$REPO" rev-parse HEAD)
+REPOS_FILE="${TEST_ROOT}/repos.json"
+printf '{"initialized_repos":[{"path":"%s"},{"path":"%s"}]}\n' \
+	"$REPO" "$SEPARATE_REPO" >"$REPOS_FILE"
+export AIDEVOPS_REPOS_FILE="$REPOS_FILE"
+
+mkdir -p "$PASSWORD_REPO"
+git -C "$PASSWORD_REPO" init -q -b main
+printf 'encrypted fixture\n' >"${PASSWORD_REPO}/test-secret.gpg"
+
+mkdir -p "$MARKED_REPO"
+git -C "$MARKED_REPO" init -q -b main
+printf '{}\n' >"${MARKED_REPO}/.aidevops.json"
+printf 'managed fixture\n' >"${MARKED_REPO}/managed.txt"
+
+mkdir -p "$SEPARATE_REPO"
+git init -q -b main --separate-git-dir "$SEPARATE_GIT_DIR" "$SEPARATE_REPO"
+printf '{}\n' >"${SEPARATE_REPO}/.aidevops.json"
 
 assert_blocked() {
 	local name="$1"
@@ -124,6 +145,33 @@ assert_blocked "blocks canonical symbolic-ref unknown options" "git symbolic-ref
 assert_blocked "blocks canonical symbolic-ref without a ref" "git symbolic-ref --short"
 assert_blocked "blocks canonical symbolic-ref option terminator" "git symbolic-ref -- refs/remotes/origin/HEAD"
 assert_blocked "blocks canonical symbolic-ref second ref after option terminator" "git symbolic-ref -- HEAD refs/heads/safety/example"
+assert_blocked "blocks mutation in a repository with an aidevops project marker" \
+	"git -C '$MARKED_REPO' add managed.txt"
+assert_blocked "blocks git-dir-only mutation targeting a managed canonical repository" \
+	"git -C '$PASSWORD_REPO' --git-dir='$REPO/.git' update-ref refs/heads/blocked '$INITIAL_HEAD'"
+assert_blocked "blocks git-dir-only mutation targeting a registered separate Git directory" \
+	"git -C '$PASSWORD_REPO' --git-dir='$SEPARATE_GIT_DIR' update-ref refs/heads/blocked '$INITIAL_HEAD'"
+assert_blocked "blocks an unrelated Git directory from mutating a managed worktree" \
+	"git --git-dir='$PASSWORD_REPO/.git' --work-tree='$MARKED_REPO' reset --hard"
+assert_allowed "allows gopass-style Git mutation in an unrelated password store" "$REPO" \
+	"git -C '$PASSWORD_REPO' add test-secret.gpg"
+if (cd "$REPO" && env PATH="${SCRIPT_DIR}:/usr/bin:/bin" "$SHIM" -C "$PASSWORD_REPO" add test-secret.gpg); then
+	if git -C "$PASSWORD_REPO" diff --cached --quiet -- test-secret.gpg; then
+		fail "PATH shim permits unrelated password-store mutation"
+	else
+		pass "PATH shim permits unrelated password-store mutation"
+	fi
+else
+	fail "PATH shim permits unrelated password-store mutation"
+fi
+printf '{"initialized_repos":null}\n' >"$REPOS_FILE"
+assert_allowed "malformed managed-repository registry does not intercept unrelated Git" "$REPO" \
+	"git -C '$PASSWORD_REPO' add test-secret.gpg"
+printf '{"initialized_repos":[{"path":"~aidevops-user-that-does-not-exist/repo"}]}\n' >"$REPOS_FILE"
+assert_allowed "invalid managed-repository path does not intercept unrelated Git" "$REPO" \
+	"git -C '$PASSWORD_REPO' add test-secret.gpg"
+printf '{"initialized_repos":[{"path":"%s"},{"path":"%s"}]}\n' \
+	"$REPO" "$SEPARATE_REPO" >"$REPOS_FILE"
 
 if [[ "$(git -C "$REPO" symbolic-ref --short HEAD)" == "main" ]] &&
 	[[ "$(git -C "$REPO" rev-parse HEAD)" == "$INITIAL_HEAD" ]] &&
@@ -156,12 +204,15 @@ PROSPECTIVE_REPO="${PROSPECTIVE_CONTEXT}/repository.git"
 git -C "$PROSPECTIVE_CONTEXT" init --bare -q repository.git
 assert_allowed_with_temp_root "allows the pinned merge-tree probe in its isolated bare temp repo" \
 	"$PROSPECTIVE_REPO" "git merge-tree --write-tree '$INITIAL_HEAD' '$INITIAL_HEAD'"
-assert_blocked "blocks unrelated writes in the isolated bare temp repo" \
-	"git -C '$PROSPECTIVE_REPO' update-ref refs/heads/main '$INITIAL_HEAD'"
+assert_allowed "allows unrelated writes in an unmanaged isolated bare temp repo" \
+	"$REPO" "git -C '$PROSPECTIVE_REPO' update-ref refs/heads/main '$INITIAL_HEAD'"
 
 git -C "$REPO" worktree add -q -b feature/example "$LINKED"
 assert_allowed "allows normal Git mutation in linked worktree" "$LINKED" "git switch -c feature/linked-child"
 assert_allowed "allows rev-list query in linked worktree" "$LINKED" "git rev-list --count HEAD"
+LINKED_GIT_DIR=$(git -C "$LINKED" rev-parse --path-format=absolute --git-dir)
+assert_blocked "blocks linked-worktree metadata from mutating the canonical worktree" \
+	"git --git-dir='$LINKED_GIT_DIR' --work-tree='$REPO' reset --hard"
 
 git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
 DEFAULT_BRANCH=$(
@@ -238,6 +289,8 @@ ln -s "${SCRIPT_DIR}/canonical_git_readonly.py" "${OLD_BUNDLE}/canonical_git_rea
 ln -s "${SCRIPT_DIR}/canonical_git_readonly.py" "${NEW_BUNDLE}/canonical_git_readonly.py"
 ln -s "${SCRIPT_DIR}/canonical_git_ref_queries.py" "${OLD_BUNDLE}/canonical_git_ref_queries.py"
 ln -s "${SCRIPT_DIR}/canonical_git_ref_queries.py" "${NEW_BUNDLE}/canonical_git_ref_queries.py"
+ln -s "${SCRIPT_DIR}/canonical_git_management.py" "${OLD_BUNDLE}/canonical_git_management.py"
+ln -s "${SCRIPT_DIR}/canonical_git_management.py" "${NEW_BUNDLE}/canonical_git_management.py"
 ln -s "${SCRIPT_DIR}/canonical_git_repository.py" "${OLD_BUNDLE}/canonical_git_repository.py"
 ln -s "${SCRIPT_DIR}/canonical_git_repository.py" "${NEW_BUNDLE}/canonical_git_repository.py"
 ln -s "${SCRIPT_DIR}/canonical_shell_parser.py" "${OLD_BUNDLE}/canonical_shell_parser.py"

@@ -74,6 +74,7 @@ setup_test_repo() {
 	printf '# TODO\n' >"${TEST_ROOT}/TODO.md"
 	printf 'tasks\n' >"${TEST_ROOT}/todo/tasks.md"
 	printf 'code\n' >"${TEST_ROOT}/src/foo.ts"
+	printf '{}\n' >"${TEST_ROOT}/.aidevops.json"
 	git -C "$TEST_ROOT" add .
 	git -C "$TEST_ROOT" commit -m "test: seed repo" >/dev/null 2>&1
 	return 0

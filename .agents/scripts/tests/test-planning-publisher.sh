@@ -34,7 +34,8 @@ setup_repo() {
 	printf '# Tasks\n' >"${root}/work/TODO.md"
 	mkdir -p "${root}/work/todo/tasks" || return 1
 	printf 'base\n' >"${root}/work/README.md"
-	git -C "${root}/work" add TODO.md README.md || return 1
+	printf '{}\n' >"${root}/work/.aidevops.json"
+	git -C "${root}/work" add TODO.md README.md .aidevops.json || return 1
 	GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid \
 		git -C "${root}/work" commit -m seed >/dev/null || return 1
 	git -C "${root}/work" push origin main >/dev/null 2>&1 || return 1
@@ -787,6 +788,7 @@ test_explicit_git_capability_preserves_guarded_checkout() {
 		"${SCRIPT_DIR_TEST}/../canonical_git_policy.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_git_readonly.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_git_ref_queries.py" \
+		"${SCRIPT_DIR_TEST}/../canonical_git_management.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_git_repository.py" \
 		"${SCRIPT_DIR_TEST}/../canonical_shell_parser.py" \
 		"$shim_dir/" || {
