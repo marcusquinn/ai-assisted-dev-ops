@@ -240,6 +240,31 @@ test_open_ci_repair_dirty_worktree_is_preserved() {
 	return 0
 }
 
+test_open_head_pr_outranks_embedded_terminal_reference() {
+	source_pulse_cleanup_with_stubs || return 1
+	gh_pr_list() {
+		printf '%s\n' "OPEN"
+		return 0
+	}
+	gh() {
+		if [[ "${1:-}" == "pr" && "${2:-}" == "view" && "${3:-}" == "23085" ]]; then
+			printf '%s\n' "CLOSED"
+			return 0
+		fi
+		return 1
+	}
+
+	local terminal_state=""
+	terminal_state=$(_pc_terminal_pr_state_for_branch "testowner/testrepo" "repair/pr-23085-followup" 2>/dev/null)
+	local lookup_rc=$?
+	local rc=0
+	[[ "$lookup_rc" -eq 1 ]] || rc=1
+	[[ -z "$terminal_state" ]] || rc=1
+	print_result "open head PR outranks embedded terminal PR reference" "$rc" \
+		"lookup_rc=$lookup_rc terminal_state=$terminal_state"
+	return 0
+}
+
 test_merged_branch_pr_removes_before_age_threshold() {
 	local repo_dir="${TEST_ROOT}/repo-merged-branch-pr"
 	local wt_path="${TEST_ROOT}/worker-wt-merged-branch-pr"
@@ -718,6 +743,7 @@ test_local_only_repo_worktree_logs_explicit_skip
 test_closed_issue_local_commit_no_pr_removes_before_age_threshold
 test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold
 test_open_ci_repair_dirty_worktree_is_preserved
+test_open_head_pr_outranks_embedded_terminal_reference
 test_merged_branch_pr_removes_before_age_threshold
 test_closed_issue_dirty_worktree_stashes_and_preserves_branch
 test_terminal_worktree_respects_live_owner_signal

@@ -238,6 +238,9 @@ _pc_terminal_pr_state_for_branch() {
 		return 0
 		;;
 	esac
+	# A directly associated OPEN PR outranks any numeric token embedded in the
+	# branch name. Only fall back when the local-only branch has no head PR.
+	[[ -z "$pr_state" ]] || return 1
 
 	pr_state=$(_pc_pr_state_for_branch_reference "$repo_slug" "$branch_name" 2>/dev/null) || return 1
 	case "$pr_state" in
