@@ -121,22 +121,21 @@ function pathHasSymlinkComponent(target) {
   }
 }
 
-function isManagedToolOutputRead(toolCalls, raw, dataHome) {
-  const permission = raw?.permission || raw?.type || "";
-  const callID = raw?.tool?.callID || raw?.callID || "";
-  if (permission !== "external_directory" || toolCalls.get(callID)?.tool !== "read") return false;
+function hasExactToolOutputPattern(raw, directory) {
+  const expected = `${normalizePathPattern(directory)}/*`;
+  const input = raw?.patterns ?? raw?.pattern;
+  const patterns = Array.isArray(input) ? input : input == null ? [] : [input];
+  return patterns.length === 1 && normalizePathPattern(patterns[0]) === expected;
+}
 
-  const directory = resolve(dataHome, "opencode", "tool-output");
-  const expectedPattern = `${normalizePathPattern(directory)}/*`;
-  const patternInput = raw?.patterns ?? raw?.pattern;
-  const patterns = Array.isArray(patternInput) ? patternInput : patternInput == null ? [] : [patternInput];
-  if (patterns.length !== 1 || normalizePathPattern(patterns[0]) !== expectedPattern) return false;
-
+function managedToolOutputPath(raw, directory) {
   const filepath = raw?.metadata?.filepath || "";
   const parentDir = raw?.metadata?.parentDir || "";
-  if (!filepath || !parentDir || resolve(parentDir) !== directory || dirname(resolve(filepath)) !== directory) return false;
-  if (!basename(filepath).startsWith("tool_")) return false;
+  if (!filepath || !parentDir || resolve(parentDir) !== directory || dirname(resolve(filepath)) !== directory) return "";
+  return basename(filepath).startsWith("tool_") ? filepath : "";
+}
 
+function isSafeManagedToolOutputFile(filepath, directory) {
   try {
     const info = lstatSync(filepath);
     return info.isFile()
@@ -146,6 +145,17 @@ function isManagedToolOutputRead(toolCalls, raw, dataHome) {
   } catch {
     return false;
   }
+}
+
+function isManagedToolOutputRead(toolCalls, raw, dataHome) {
+  const permission = raw?.permission || raw?.type || "";
+  const callID = raw?.tool?.callID || raw?.callID || "";
+  if (permission !== "external_directory" || toolCalls.get(callID)?.tool !== "read") return false;
+
+  const directory = resolve(dataHome, "opencode", "tool-output");
+  if (!hasExactToolOutputPattern(raw, directory)) return false;
+  const filepath = managedToolOutputPath(raw, directory);
+  return Boolean(filepath) && isSafeManagedToolOutputFile(filepath, directory);
 }
 
 function recordPermissionToolCall(toolCalls, isHeadless, home, input, output) {
