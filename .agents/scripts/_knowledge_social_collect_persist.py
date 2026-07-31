@@ -42,11 +42,10 @@ from knowledge_social_store import SocialStoreError, connect, migrate, write_raw
 class RawBatch:
     """Immutable response-envelope metadata used by fetch_batches."""
 
-    evidence_hash: str
+    batch_id: str
     blob_ref: str
     request_hash: str
     response_hash: str
-    fetch_batch_id: str
     observed_at: str
 
 
@@ -106,18 +105,6 @@ def _raw_batch(
     response = canonical_json(payload).encode("utf-8")
     request_hash = hashlib.sha256(request.encode("utf-8")).hexdigest()
     response_hash = hashlib.sha256(response).hexdigest()
-    fetch_identity = canonical_json(
-        {
-            "contract": "social-fetch-v1",
-            "provider": provider,
-            "connection_id": context.connection_id,
-            "stream": context.stream,
-            "observed_at": observed_at,
-            "request_hash": request_hash,
-            "response_sha256": response_hash,
-        }
-    ).encode("utf-8")
-    fetch_batch_id = hashlib.sha256(fetch_identity).hexdigest()
     envelope = canonical_json(
         {
             "provider": provider,
@@ -129,15 +116,14 @@ def _raw_batch(
             "response": payload,
         }
     ).encode("utf-8")
-    evidence_hash, blob_ref = write_raw_batch(
+    batch_id, blob_ref = write_raw_batch(
         context.root, provider, context.connection_id, envelope
     )
     return RawBatch(
-        evidence_hash,
+        batch_id,
         blob_ref,
         request_hash,
         response_hash,
-        fetch_batch_id,
         observed_at,
     )
 
@@ -146,19 +132,76 @@ def _insert_fetch_batch(
     database: sqlite3.Connection,
     context: CollectionContext,
     record: FetchRecord,
-) -> None:
-    database.execute(
-        """INSERT INTO fetch_batches(
-           batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
-           resource_count,budget_units,started_at,completed_at,terminal_status)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
-        (
-            record.raw.fetch_batch_id,
+) -> str:
+    existing = database.execute(
+        "SELECT batch_id,provider,connection_id,stream,request_hash,response_hash,"
+        "blob_ref,resource_count,budget_units,started_at,completed_at,terminal_status "
+        "FROM fetch_batches WHERE batch_id=?",
+        (record.raw.batch_id,),
+    ).fetchone()
+    if existing is not None:
+        identity = (
             _provider(context),
             context.connection_id,
             context.stream,
             record.raw.request_hash,
-            record.raw.evidence_hash,
+            record.raw.response_hash,
+            record.raw.blob_ref,
+            record.raw.observed_at,
+            record.raw.observed_at,
+        )
+        stored_identity = tuple(
+            existing[key]
+            for key in (
+                "provider",
+                "connection_id",
+                "stream",
+                "request_hash",
+                "response_hash",
+                "blob_ref",
+                "started_at",
+                "completed_at",
+            )
+        )
+        if stored_identity != identity:
+            raise SocialStoreError("social fetch replay metadata conflicts")
+        if existing["terminal_status"] == "legacy_recovered":
+            database.execute(
+                "UPDATE fetch_batches SET resource_count=?,budget_units=?,"
+                "terminal_status=? WHERE batch_id=?",
+                (
+                    record.resource_count,
+                    record.budget_units,
+                    record.terminal_status,
+                    record.raw.batch_id,
+                ),
+            )
+            return record.raw.batch_id
+        stored_result = (
+            existing["resource_count"],
+            existing["budget_units"],
+            existing["terminal_status"],
+        )
+        expected_result = (
+            record.resource_count,
+            record.budget_units,
+            record.terminal_status,
+        )
+        if stored_result != expected_result:
+            raise SocialStoreError("social fetch replay result metadata conflicts")
+        return str(existing["batch_id"])
+    database.execute(
+        """INSERT INTO fetch_batches(
+           batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
+           resource_count,budget_units,started_at,completed_at,terminal_status)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            record.raw.batch_id,
+            _provider(context),
+            context.connection_id,
+            context.stream,
+            record.raw.request_hash,
+            record.raw.response_hash,
             record.raw.blob_ref,
             record.resource_count,
             record.budget_units,
@@ -167,6 +210,7 @@ def _insert_fetch_batch(
             record.terminal_status,
         ),
     )
+    return record.raw.batch_id
 
 
 def _refresh_fts(
@@ -285,30 +329,30 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         raw = _raw_batch(
             context, page.payload, page.request, page.archive["exported_at"]
         )
+        resource_count = sum(
+            len(page.archive[key])
+            for key in ("accounts", "objects", "activities", "media")
+        )
+        fetch_batch_id = _insert_fetch_batch(
+            database,
+            context,
+            FetchRecord(raw, "success", resource_count, page.budget_units),
+        )
         upsert_connection(database, page.archive, provider, context.connection_id)
         import_accounts(database, page.archive, provider)
-        import_objects(database, page.archive, provider, raw.fetch_batch_id)
-        import_activities(database, page.archive, provider, raw.fetch_batch_id)
-        import_media(database, page.archive, provider, raw.fetch_batch_id)
+        import_objects(database, page.archive, provider, fetch_batch_id)
+        import_activities(database, page.archive, provider, fetch_batch_id)
+        import_media(database, page.archive, provider, fetch_batch_id)
         import_coverage(
             database,
             page.archive,
             provider,
             context.connection_id,
-            raw.fetch_batch_id,
+            fetch_batch_id,
         )
         _refresh_fts(database, provider, page.archive)
-        resource_count = sum(
-            len(page.archive[key])
-            for key in ("accounts", "objects", "activities", "media")
-        )
-        _insert_fetch_batch(
-            database,
-            context,
-            FetchRecord(raw, "success", resource_count, page.budget_units),
-        )
         _update_cursor(database, context, page)
-        _upsert_success_coverage(database, context, page, raw.fetch_batch_id)
+        _upsert_success_coverage(database, context, page, fetch_batch_id)
         _update_run_receipt_at(
             database,
             lease,
@@ -357,6 +401,7 @@ def _upsert_terminal_coverage(
     database: sqlite3.Connection,
     context: CollectionContext,
     raw: RawBatch,
+    fetch_batch_id: str,
     decision: TerminalDecision,
 ) -> None:
     retention_limit = getattr(context.spec, "retention_limit", None)
@@ -378,7 +423,7 @@ def _upsert_terminal_coverage(
             retention_limit,
             decision.failure_class,
             _terminal_coverage_status(decision),
-            raw.fetch_batch_id,
+            fetch_batch_id,
             raw.observed_at,
         ),
     )
@@ -408,12 +453,14 @@ def record_terminal(
             _provider(context),
             context.connection_id,
         )
-        _insert_fetch_batch(
+        fetch_batch_id = _insert_fetch_batch(
             database,
             context,
             FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
         )
-        _upsert_terminal_coverage(database, context, raw, decision)
+        _upsert_terminal_coverage(
+            database, context, raw, fetch_batch_id, decision
+        )
         _update_run_receipt_at(
             database,
             lease,

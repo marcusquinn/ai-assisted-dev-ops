@@ -376,7 +376,7 @@ def reconcile_snapshot(
             RunReceiptUpdate(
                 "complete", resource_delta=len(inventory), terminal=True
             ),
-            now,
+            social_now(now_epoch),
         )
         database.execute("COMMIT")
         return {

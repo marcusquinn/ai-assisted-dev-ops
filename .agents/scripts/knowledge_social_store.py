@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -18,10 +19,11 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 5
-SCHEMA_VERSION_SQL = "PRAGMA user_version=5"
+SCHEMA_VERSION = 6
+SCHEMA_VERSION_SQL = "PRAGMA user_version=6"
 OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
+MAX_RAW_BATCH_BYTES = 64 * 1024 * 1024
 
 
 class SocialStoreError(RuntimeError):
@@ -143,7 +145,7 @@ def _tables() -> tuple[str, ...]:
             PRIMARY KEY(provider, remote_id))""",
         """CREATE TABLE IF NOT EXISTS fetch_batches (
             batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL, connection_id TEXT NOT NULL,
-            stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL UNIQUE,
+            stream TEXT NOT NULL, request_hash TEXT, response_hash TEXT NOT NULL,
             blob_ref TEXT NOT NULL, resource_count INTEGER NOT NULL, budget_units INTEGER NOT NULL DEFAULT 0,
             started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL,
             evidence_id TEXT REFERENCES evidence_sources(evidence_id))""",
@@ -324,6 +326,272 @@ def _add_source_v5_columns(connection: sqlite3.Connection) -> None:
         )
 
 
+def _store_root(connection: sqlite3.Connection) -> Path:
+    database_rows = connection.execute("PRAGMA database_list").fetchall()
+    database_file = next(
+        (str(row["file"]) for row in database_rows if row["name"] == "main"), ""
+    )
+    if not database_file:
+        raise SocialStoreError("legacy social data requires a file-backed store")
+    return Path(database_file).resolve(strict=True).parent.parent
+
+
+def _read_raw_payload(
+    connection: sqlite3.Connection, blob_ref: str
+) -> tuple[bytes, str, str, str]:
+    root = _store_root(connection)
+    relative = Path(blob_ref)
+    if relative.is_absolute() or len(relative.parts) != 6:
+        raise SocialStoreError("legacy social raw evidence path is invalid")
+    prefix, provider, connection_id, filename = (
+        relative.parts[:3],
+        relative.parts[3],
+        relative.parts[4],
+        relative.parts[5],
+    )
+    if (
+        prefix != ("sources", "social", "raw")
+        or OPAQUE_ID.fullmatch(provider) is None
+        or OPAQUE_ID.fullmatch(connection_id) is None
+        or re.fullmatch(r"[0-9a-f]{64}\.json\.gz", filename) is None
+    ):
+        raise SocialStoreError("legacy social raw evidence path is invalid")
+    raw_root = root / "sources" / "social" / "raw"
+    path = root / relative
+    try:
+        resolved = path.resolve(strict=True)
+        if resolved != Path(os.path.abspath(path)):
+            raise SocialStoreError("legacy social raw evidence contains a symlink")
+        resolved.relative_to(raw_root.resolve(strict=True))
+        validate_directory(path.parent.parent, "social provider directory", repair=False)
+        validate_directory(path.parent, "social connection directory", repair=False)
+        validate_private_file(path, "legacy social raw evidence", repair=False)
+        with gzip.open(path, "rb") as source:
+            payload = source.read(MAX_RAW_BATCH_BYTES + 1)
+    except (CatalogError, OSError, EOFError, ValueError) as error:
+        raise SocialStoreError("legacy social raw evidence is unsafe") from error
+    if len(payload) > MAX_RAW_BATCH_BYTES:
+        raise SocialStoreError("legacy social raw evidence exceeds the size limit")
+    digest = hashlib.sha256(payload).hexdigest()
+    if filename != f"{digest}.json.gz":
+        raise SocialStoreError("legacy social raw evidence hash does not match")
+    return payload, digest, provider, connection_id
+
+
+def _collector_envelope(
+    payload: bytes, provider: str, connection_id: str, *, required: bool
+) -> dict[str, object] | None:
+    try:
+        envelope = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        if not required:
+            return None
+        raise SocialStoreError("legacy social raw evidence is invalid JSON") from error
+    expected_fields = {
+        "provider",
+        "connection_id",
+        "stream",
+        "observed_at",
+        "request_hash",
+        "response_sha256",
+        "response",
+    }
+    if not isinstance(envelope, dict) or set(envelope) != expected_fields:
+        if not required:
+            return None
+        raise SocialStoreError("legacy social raw evidence envelope is invalid")
+    canonical = json.dumps(
+        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    request_hash = envelope["request_hash"]
+    response_hash = envelope["response_sha256"]
+    if (
+        canonical != payload
+        or envelope["provider"] != provider
+        or envelope["connection_id"] != connection_id
+        or not isinstance(envelope["stream"], str)
+        or not envelope["stream"]
+        or not isinstance(envelope["observed_at"], str)
+        or not envelope["observed_at"]
+        or not isinstance(request_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None
+        or not isinstance(response_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", response_hash) is None
+    ):
+        raise SocialStoreError("legacy social raw evidence metadata is invalid")
+    response = json.dumps(
+        envelope["response"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    if hashlib.sha256(response).hexdigest() != response_hash:
+        raise SocialStoreError("legacy social response hash does not match")
+    return envelope
+
+
+def _canonical_fetch_identity_v6(
+    connection: sqlite3.Connection, row: sqlite3.Row
+) -> tuple[str, str]:
+    payload, digest, provider, connection_id = _read_raw_payload(
+        connection, str(row["blob_ref"])
+    )
+    envelope = _collector_envelope(
+        payload, provider, connection_id, required=False
+    )
+    if envelope is None:
+        if str(row["batch_id"]) != digest:
+            raise SocialStoreError("legacy fetch batch raw identity cannot be migrated")
+        return digest, str(row["response_hash"])
+    if (
+        row["provider"] != provider
+        or row["connection_id"] != connection_id
+        or row["stream"] != envelope["stream"]
+        or row["request_hash"] != envelope["request_hash"]
+        or row["completed_at"] != envelope["observed_at"]
+    ):
+        raise SocialStoreError("legacy fetch batch metadata conflicts with raw evidence")
+    return digest, str(envelope["response_sha256"])
+
+
+def _migrate_fetch_batches_v6(connection: sqlite3.Connection) -> None:
+    """Make raw-envelope hashes canonical batch IDs without body-hash uniqueness."""
+    connection.execute("DROP TRIGGER IF EXISTS fetch_batch_evidence_ai")
+    connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
+    rows = connection.execute("SELECT * FROM fetch_batches ORDER BY batch_id").fetchall()
+    migrated = [
+        (row, *_canonical_fetch_identity_v6(connection, row)) for row in rows
+    ]
+    metadata_fields = (
+        "provider",
+        "connection_id",
+        "stream",
+        "request_hash",
+        "blob_ref",
+        "resource_count",
+        "budget_units",
+        "started_at",
+        "completed_at",
+        "terminal_status",
+    )
+    canonical: dict[str, tuple[sqlite3.Row, str, tuple[object, ...]]] = {}
+    for row, batch_id, response_hash in migrated:
+        metadata = tuple(row[field] for field in metadata_fields) + (response_hash,)
+        existing = canonical.get(batch_id)
+        if existing is not None and existing[2] != metadata:
+            raise SocialStoreError("legacy fetch batch aliases have conflicting metadata")
+        if existing is None:
+            canonical[batch_id] = (row, response_hash, metadata)
+    connection.execute(
+        """CREATE TABLE fetch_batches_v6 (
+             batch_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+             connection_id TEXT NOT NULL, stream TEXT NOT NULL,
+             request_hash TEXT, response_hash TEXT NOT NULL, blob_ref TEXT NOT NULL,
+             resource_count INTEGER NOT NULL, budget_units INTEGER NOT NULL DEFAULT 0,
+             started_at TEXT, completed_at TEXT NOT NULL, terminal_status TEXT NOT NULL,
+             evidence_id TEXT REFERENCES evidence_sources(evidence_id))"""
+    )
+    connection.executemany(
+        """INSERT INTO fetch_batches_v6(
+             batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
+             resource_count,budget_units,started_at,completed_at,terminal_status,evidence_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+        [
+            (
+                batch_id,
+                row["provider"],
+                row["connection_id"],
+                row["stream"],
+                row["request_hash"],
+                response_hash,
+                row["blob_ref"],
+                row["resource_count"],
+                row["budget_units"],
+                row["started_at"],
+                row["completed_at"],
+                row["terminal_status"],
+            )
+            for batch_id, (row, response_hash, _) in sorted(canonical.items())
+        ],
+    )
+    connection.execute("DROP TABLE fetch_batches")
+    connection.execute("ALTER TABLE fetch_batches_v6 RENAME TO fetch_batches")
+    for table in ("objects", "activities", "media", "coverage_records", "tombstones"):
+        for row, batch_id, _ in migrated:
+            if row["batch_id"] != batch_id:
+                connection.execute(
+                    f"UPDATE {table} SET batch_id=? WHERE batch_id=?",
+                    (batch_id, row["batch_id"]),
+                )
+
+
+def _orphan_projection_batch_ids(connection: sqlite3.Connection) -> list[str]:
+    rows = connection.execute(
+        """SELECT p.batch_id FROM (
+             SELECT batch_id FROM objects UNION SELECT batch_id FROM activities
+             UNION SELECT batch_id FROM media UNION SELECT batch_id FROM coverage_records
+             UNION SELECT batch_id FROM tombstones
+           ) p LEFT JOIN fetch_batches f ON f.batch_id=p.batch_id
+           WHERE f.batch_id IS NULL ORDER BY p.batch_id"""
+    ).fetchall()
+    return [str(row["batch_id"]) for row in rows]
+
+
+def _raw_envelope_for_batch(
+    connection: sqlite3.Connection, batch_id: str
+) -> tuple[dict[str, object], str]:
+    if re.fullmatch(r"[0-9a-f]{64}", batch_id) is None:
+        raise SocialStoreError("legacy social projection has an invalid batch ID")
+    root = _store_root(connection)
+    raw_root = root / "sources" / "social" / "raw"
+    candidates = list(raw_root.glob(f"*/*/{batch_id}.json.gz"))
+    if len(candidates) != 1:
+        raise SocialStoreError(
+            "legacy social projection raw evidence is missing or ambiguous"
+        )
+    blob_ref = candidates[0].relative_to(root).as_posix()
+    payload, digest, provider, connection_id = _read_raw_payload(
+        connection, blob_ref
+    )
+    if digest != batch_id:
+        raise SocialStoreError("legacy social raw evidence hash does not match")
+    envelope = _collector_envelope(
+        payload, provider, connection_id, required=True
+    )
+    if envelope is None:
+        raise SocialStoreError("legacy social raw evidence envelope is invalid")
+    return envelope, blob_ref
+
+
+def _recover_orphaned_fetch_batches_v6(connection: sqlite3.Connection) -> None:
+    for batch_id in _orphan_projection_batch_ids(connection):
+        envelope, blob_ref = _raw_envelope_for_batch(connection, batch_id)
+        resource_count = sum(
+            connection.execute(
+                f"SELECT count(*) FROM {table} WHERE batch_id=?", (batch_id,)
+            ).fetchone()[0]
+            for table in ("objects", "activities", "media")
+        )
+        connection.execute(
+            """INSERT INTO fetch_batches(
+                 batch_id,provider,connection_id,stream,request_hash,response_hash,
+                 blob_ref,resource_count,budget_units,started_at,completed_at,
+                 terminal_status)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                batch_id,
+                envelope["provider"],
+                envelope["connection_id"],
+                envelope["stream"],
+                envelope["request_hash"],
+                envelope["response_sha256"],
+                blob_ref,
+                resource_count,
+                0,
+                envelope["observed_at"],
+                envelope["observed_at"],
+                "legacy_recovered",
+            ),
+        )
+
+
 def _migrate_source_contract(connection: sqlite3.Connection) -> None:
     connection.execute(
         "INSERT OR IGNORE INTO corpus_contract(singleton,corpus_id,contract_version) "
@@ -334,16 +602,22 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
                evidence_id,corpus_id,connector_id,content_sha256,authority,
                raw_ref,observed_at,provenance_json)
            SELECT 'ev1:' || c.corpus_id || ':' || f.connection_id || ':sha256:' ||
-                  f.response_hash,
-                  c.corpus_id,f.connection_id,f.response_hash,'raw',f.blob_ref,
-                  f.completed_at,json_object('provider',f.provider,'stream',f.stream)
-             FROM fetch_batches f CROSS JOIN corpus_contract c"""
+                   f.batch_id,
+                   c.corpus_id,f.connection_id,f.batch_id,'raw',f.blob_ref,
+                   f.completed_at,json_object('provider',f.provider,'stream',f.stream)
+              FROM fetch_batches f CROSS JOIN corpus_contract c"""
     )
     connection.execute(
         """UPDATE fetch_batches
               SET evidence_id='ev1:' || (SELECT corpus_id FROM corpus_contract WHERE singleton=1)
-                              || ':' || connection_id || ':sha256:' || response_hash
+                              || ':' || connection_id || ':sha256:' || batch_id
             WHERE evidence_id IS NULL"""
+    )
+    connection.execute(
+        """DELETE FROM evidence_sources
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM fetch_batches f
+                    WHERE f.evidence_id=evidence_sources.evidence_id)"""
     )
     connection.execute(
         """CREATE TRIGGER IF NOT EXISTS fetch_batch_evidence_ai
@@ -352,16 +626,16 @@ def _migrate_source_contract(connection: sqlite3.Connection) -> None:
              INSERT OR IGNORE INTO evidence_sources(
                evidence_id,corpus_id,connector_id,content_sha256,authority,
                raw_ref,observed_at,provenance_json)
-             SELECT 'ev1:' || corpus_id || ':' || NEW.connection_id || ':sha256:' ||
-                    NEW.response_hash,
-                    corpus_id,NEW.connection_id,NEW.response_hash,'raw',NEW.blob_ref,
-                    NEW.completed_at,json_object('provider',NEW.provider,'stream',NEW.stream)
+              SELECT 'ev1:' || corpus_id || ':' || NEW.connection_id || ':sha256:' ||
+                     NEW.batch_id,
+                     corpus_id,NEW.connection_id,NEW.batch_id,'raw',NEW.blob_ref,
+                     NEW.completed_at,json_object('provider',NEW.provider,'stream',NEW.stream)
                FROM corpus_contract WHERE singleton=1;
              UPDATE fetch_batches
                 SET evidence_id='ev1:' ||
-                    (SELECT corpus_id FROM corpus_contract WHERE singleton=1) || ':' ||
-                    NEW.connection_id || ':sha256:' || NEW.response_hash
-              WHERE batch_id=NEW.batch_id;
+                     (SELECT corpus_id FROM corpus_contract WHERE singleton=1) || ':' ||
+                     NEW.connection_id || ':sha256:' || NEW.batch_id
+               WHERE batch_id=NEW.batch_id;
            END"""
     )
     connection.execute("DROP VIEW IF EXISTS canonical_evidence_projections")
@@ -398,6 +672,9 @@ def migrate(connection: sqlite3.Connection) -> None:
             _add_sync_run_v2_columns(connection)
         if current < 4:
             _add_outbound_v4_columns(connection)
+        if 0 < current < 6:
+            _migrate_fetch_batches_v6(connection)
+            _recover_orphaned_fetch_batches_v6(connection)
         _migrate_source_contract(connection)
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sync_runs_connection "
