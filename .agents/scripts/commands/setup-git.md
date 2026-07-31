@@ -129,9 +129,11 @@ Use this template for each affected public ADMIN repo:
 === Repo: <SLUG> — branch protection / ruleset setup needed ===
 
 Why this matters: public repos need GitHub-enforced pull requests and required
-status checks on the default branch. Independent review should also be required
-when at least two review-eligible humans have write access. Pulse-side merge
-logic is defense in depth, not a substitute for repository protection.
+status checks on the default branch. The required maintainer-gate preserves
+`needs-maintainer-review` as the human authority boundary for external
+contributions. Native approval count is independent of collaborator topology so
+trusted maintainers can progress without synthetic cross-approvals. Pulse-side
+merge logic is defense in depth, not a substitute for repository protection.
 
 Fix (maintainer/admin action — run explicitly in GitHub settings or a separate
 terminal):
@@ -143,11 +145,11 @@ terminal):
   2. In GitHub Settings → Rules → Rulesets (preferred) or Branches → Branch
      protection, target the default branch and require:
        - Pull request before merging
-       - At least 1 approving review when two or more review-eligible humans
-         have push, write, maintain, or admin access
-       - Zero required approvals is the default for a verified solo-maintainer
-         repo, unless the maintainer explicitly requests review
+       - Zero native required approvals by default, regardless of collaborator
+         count; maintainers may explicitly request human review when useful
        - Required status checks, including review-bot-gate and maintainer-gate
+       - maintainer-gate must block external contributions carrying
+         needs-maintainer-review until cryptographic maintainer approval
        - No admin bypass for public ADMIN repos unless consciously documented
 
   3. Verify:

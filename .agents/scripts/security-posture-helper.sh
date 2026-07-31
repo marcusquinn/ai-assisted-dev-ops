@@ -70,6 +70,7 @@ readonly SEVERITY_PASS="pass"
 readonly CAT_WORKFLOWS="workflows"
 readonly CAT_BRANCH_PROTECTION="branch_protection"
 readonly CAT_REVIEW_BOT_GATE="review_bot_gate"
+readonly CAT_MAINTAINER_GATE="maintainer_gate"
 readonly CAT_LINKED_ISSUE_GATE="linked_issue_gate"
 readonly CAT_DEPENDENCIES="dependencies"
 readonly CAT_COLLABORATORS="collaborators"
@@ -89,7 +90,11 @@ FINDINGS_JSON="[]"
 # UTILITY FUNCTIONS (shared across sub-libraries)
 # ============================================================
 
-print_info() { local msg="$1"; echo -e "${BLUE}[INFO]${NC} $msg"; return 0; }
+print_info() {
+	local msg="$1"
+	echo -e "${BLUE}[INFO]${NC} $msg"
+	return 0
+}
 print_pass() {
 	local msg="$1"
 	echo -e "${GREEN}[PASS]${NC} $msg"
@@ -114,7 +119,11 @@ print_skip() {
 	((++FINDINGS_INFO))
 	return 0
 }
-print_header() { local msg="$1"; echo -e "\n${BOLD}${CYAN}$msg${NC}"; return 0; }
+print_header() {
+	local msg="$1"
+	echo -e "\n${BOLD}${CYAN}$msg${NC}"
+	return 0
+}
 
 # Add a finding to the JSON array
 # Usage: add_finding <severity> <category> <message>

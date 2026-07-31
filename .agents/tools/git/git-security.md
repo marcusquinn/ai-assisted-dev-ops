@@ -35,13 +35,13 @@ gh auth login -s workflow   # -s workflow for CI PR support
 
 ### Branch Protection
 
-Require pull requests, enforce admins, require CI checks, and use CODEOWNERS where available. Require one approving review and dismiss stale approvals when at least two review-eligible humans have push, write, maintain, or admin access. A verified solo-maintainer repository defaults to zero required approvals unless its maintainer explicitly requests review; unknown collaborator topology retains the stricter one-review default. Signed commits recommended.
+Require pull requests, enforce admins, require CI checks, and use CODEOWNERS where available. Aidevops-managed repositories default to zero native required approvals regardless of collaborator topology so trusted maintainers can progress independently; maintainers may explicitly request human review when useful. Require `review-bot-gate` and `maintainer-gate` as status checks: external contributions carrying `needs-maintainer-review` remain blocked until cryptographically verified maintainer approval. Signed commits recommended.
 
 ```bash
 gh api repos/{owner}/{repo}/branches/main/protection -X PUT \
-  -f required_status_checks='{"strict":true,"contexts":[]}' \
-  -f enforce_admins=true \
-  -f required_pull_request_reviews='{"required_approving_review_count":0}' # verified solo only; otherwise use 1
+	-f required_status_checks='{"strict":true,"contexts":["review-bot-gate","maintainer-gate"]}' \
+	-f enforce_admins=true \
+	-f required_pull_request_reviews='{"required_approving_review_count":0}' # external authority is enforced by maintainer-gate
 ```
 
 ### Commit Signing

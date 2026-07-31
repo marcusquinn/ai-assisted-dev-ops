@@ -40,6 +40,7 @@ RULESET_ALL_HEADS_PATTERN="refs/heads/*"
 GH_CLI_NOT_AVAILABLE_MSG="gh CLI not available"
 NO_GITHUB_REMOTE_MSG="No GitHub remote"
 NO_REQUIRED_STATUS_CHECKS_MSG="No required status checks"
+SECURITY_POSTURE_UNKNOWN="unknown"
 SYNC_PAT_NEED_NOT_NEEDED="not_needed"
 
 # _repo_is_public_admin <slug>
@@ -73,6 +74,14 @@ _classic_required_checks_count() {
 	return 0
 }
 
+_classic_branch_protection_json() {
+	local slug="$1"
+	local default_branch="$2"
+
+	gh api "repos/$slug/branches/$default_branch/protection" 2>/dev/null
+	return $?
+}
+
 # _collaborator_access_json <slug>
 # Emits one compact object per collaborator from the paginated endpoint.
 _collaborator_access_json() {
@@ -80,25 +89,6 @@ _collaborator_access_json() {
 
 	gh api --paginate "repos/$slug/collaborators?per_page=100" \
 		--jq '.[] | {login: .login, type: .type, role: .role_name, permissions: .permissions}' 2>/dev/null
-	return $?
-}
-
-# _review_eligible_human_count <slug>
-# Returns unknown via a non-zero status when collaborator topology cannot be
-# verified. Bots and apps cannot provide an independent approving review.
-_review_eligible_human_count() {
-	local slug="$1"
-	local collab_json
-
-	if ! collab_json=$(_collaborator_access_json "$slug"); then
-		return 1
-	fi
-
-	jq -s -r '[.[] | select(
-		.type == "User" and
-		(.role == "push" or .role == "write" or .role == "maintain" or .role == "admin" or
-		 .permissions.push == true or .permissions.maintain == true or .permissions.admin == true)
-	)] | length' <<<"$collab_json"
 	return $?
 }
 
@@ -253,7 +243,6 @@ _report_rulesets_branch_protection() {
 	local default_branch="$2"
 	local public_admin="$3"
 	local ruleset_details="${4:-}"
-	local review_eligible_humans="${5:-unknown}"
 
 	local rulesets_state protected_by_rulesets rulesets_pull_requests rulesets_reviews rulesets_checks rulesets_bypass
 	if [[ -n "$ruleset_details" ]]; then
@@ -279,7 +268,7 @@ _report_rulesets_branch_protection() {
 
 	print_pass "Default branch '$default_branch' protected by active repository ruleset(s)"
 	add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Rulesets protect $default_branch"
-	_report_rulesets_review_requirement "$default_branch" "$public_admin" "$rulesets_reviews" "$review_eligible_humans" "$rulesets_pull_requests"
+	_report_rulesets_review_requirement "$default_branch" "$public_admin" "$rulesets_reviews" "$rulesets_pull_requests"
 	_report_rulesets_check_requirement "$default_branch" "$public_admin" "$rulesets_checks"
 	_report_rulesets_bypass_requirement "$public_admin" "$rulesets_bypass"
 	return 0
@@ -289,15 +278,14 @@ _report_rulesets_review_requirement() {
 	local default_branch="$1"
 	local public_admin="$2"
 	local rulesets_reviews="$3"
-	local review_eligible_humans="${4:-unknown}"
-	local pull_requests_required="${5:-0}"
+	local pull_requests_required="${4:-0}"
 
 	if [[ "$rulesets_reviews" -eq 1 ]]; then
 		print_pass "Rulesets require pull request approval"
 		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Rulesets require PR approval"
-	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 && "$review_eligible_humans" =~ ^[0-9]+$ && "$review_eligible_humans" -le 1 ]]; then
-		print_pass "Rulesets allow zero approvals for verified solo-maintainer repository"
-		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR approval optional for solo maintainer"
+	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 ]]; then
+		print_pass "Rulesets allow zero native approvals; maintainer authority is enforced separately"
+		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Native PR approval optional with enforced pull requests"
 	elif [[ "$public_admin" -eq 1 ]]; then
 		print_crit "Rulesets do not require pull request approval on public ADMIN repo"
 		add_finding "$SEVERITY_CRITICAL" "$CAT_BRANCH_PROTECTION" "Rulesets missing PR approval requirement"
@@ -347,7 +335,6 @@ _report_classic_branch_protection() {
 	local protection_json="$1"
 	local default_branch="$2"
 	local public_admin="$3"
-	local review_eligible_humans="${4:-unknown}"
 
 	local pull_requests_required required_reviews required_checks enforce_admins
 	pull_requests_required=$(echo "$protection_json" | jq -r 'if .required_pull_request_reviews == null then 0 else 1 end' 2>/dev/null) || pull_requests_required="0"
@@ -355,7 +342,7 @@ _report_classic_branch_protection() {
 	required_checks=$(_classic_required_checks_count "$protection_json")
 	enforce_admins=$(echo "$protection_json" | jq -r '.enforce_admins.enabled // false' 2>/dev/null) || enforce_admins=false
 
-	_report_classic_review_requirement "$default_branch" "$public_admin" "$required_reviews" "$review_eligible_humans" "$pull_requests_required"
+	_report_classic_review_requirement "$default_branch" "$public_admin" "$required_reviews" "$pull_requests_required"
 	_report_classic_check_requirement "$default_branch" "$public_admin" "$required_checks"
 	_report_classic_admin_enforcement "$public_admin" "$enforce_admins"
 	return 0
@@ -365,15 +352,14 @@ _report_classic_review_requirement() {
 	local default_branch="$1"
 	local public_admin="$2"
 	local required_reviews="$3"
-	local review_eligible_humans="${4:-unknown}"
-	local pull_requests_required="${5:-0}"
+	local pull_requests_required="${4:-0}"
 
 	if [[ "$required_reviews" -gt 0 ]]; then
 		print_pass "PR reviews required ($required_reviews approving review(s))"
 		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR reviews required: $required_reviews"
-	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 && "$review_eligible_humans" =~ ^[0-9]+$ && "$review_eligible_humans" -le 1 ]]; then
-		print_pass "Zero required approvals accepted for verified solo-maintainer repository"
-		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "PR approval optional for solo maintainer"
+	elif [[ "$public_admin" -eq 1 && "$pull_requests_required" -eq 1 ]]; then
+		print_pass "Zero native approvals accepted; maintainer authority is enforced separately"
+		add_finding "$SEVERITY_PASS" "$CAT_BRANCH_PROTECTION" "Native PR approval optional with enforced pull requests"
 	elif [[ "$public_admin" -eq 1 ]]; then
 		print_crit "PR reviews not required on public ADMIN repo default branch '$default_branch'"
 		add_finding "$SEVERITY_CRITICAL" "$CAT_BRANCH_PROTECTION" "PR reviews not required"
@@ -439,28 +425,26 @@ check_branch_protection() {
 		return 0
 	fi
 
-	local default_branch public_admin protection_json review_eligible_humans
+	local default_branch public_admin protection_json
 	default_branch=$(git -C "$repo_path" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||') || true
 	default_branch="${default_branch:-main}"
 	public_admin=0
-	review_eligible_humans="unknown"
 	if _repo_is_public_admin "$slug"; then
 		public_admin=1
 		print_info "Repository is public and current token has admin access — PR merge gating is required"
-		review_eligible_humans=$(_review_eligible_human_count "$slug") || review_eligible_humans="unknown"
 	fi
 
-	protection_json=$(gh api "repos/$slug/branches/$default_branch/protection" 2>/dev/null) || true
+	protection_json=$(_classic_branch_protection_json "$slug" "$default_branch") || true
 	if [[ -z "$protection_json" || "$protection_json" == *"Not Found"* || "$protection_json" == *"Branch not protected"* ]]; then
 		if [[ "$#" -ge 2 ]]; then
-			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "$ruleset_details" "$review_eligible_humans"
+			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "$ruleset_details"
 		else
-			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" "" "$review_eligible_humans"
+			_report_rulesets_branch_protection "$slug" "$default_branch" "$public_admin" ""
 		fi
 		return 0
 	fi
 
-	_report_classic_branch_protection "$protection_json" "$default_branch" "$public_admin" "$review_eligible_humans"
+	_report_classic_branch_protection "$protection_json" "$default_branch" "$public_admin"
 	return 0
 }
 
@@ -595,6 +579,75 @@ _required_check_present() {
 	return $?
 }
 
+# Phase 3.25: Check maintainer authority workflow and required status.
+# Public ADMIN repositories need this independently of native approval count so
+# external contributions remain blocked by needs-maintainer-review while trusted
+# maintainers can progress without synthetic cross-approvals.
+check_maintainer_gate() {
+	local repo_path="$1"
+	local ruleset_details="${2:-}"
+
+	print_header "Phase 3.25: Maintainer Authority Gate"
+
+	local gate_workflow="$repo_path/.github/workflows/maintainer-gate.yml"
+	local slug=""
+	local public_admin=0
+	if command -v gh &>/dev/null && slug=$(resolve_slug "$repo_path"); then
+		if _repo_is_public_admin "$slug"; then
+			public_admin=1
+		fi
+	fi
+
+	if [[ -f "$gate_workflow" ]]; then
+		print_pass "maintainer-gate.yml workflow present"
+		add_finding "$SEVERITY_PASS" "$CAT_MAINTAINER_GATE" "Workflow file present"
+	elif [[ "$public_admin" -eq 1 ]]; then
+		print_crit "Missing maintainer-gate.yml on public ADMIN repo — external contributions lack NMR enforcement"
+		add_finding "$SEVERITY_CRITICAL" "$CAT_MAINTAINER_GATE" "maintainer-gate.yml missing on public ADMIN repo"
+		return 0
+	else
+		print_warn "Missing maintainer-gate.yml — external contributions may lack NMR enforcement"
+		add_finding "$SEVERITY_WARNING" "$CAT_MAINTAINER_GATE" "maintainer-gate.yml missing"
+		return 0
+	fi
+
+	if ! command -v gh &>/dev/null; then
+		print_skip "GitHub CLI unavailable — cannot verify maintainer-gate required status"
+		add_finding "$SEVERITY_INFO" "$CAT_MAINTAINER_GATE" "GitHub CLI unavailable for maintainer-gate check"
+		return 0
+	fi
+
+	if [[ -z "$slug" ]]; then
+		print_skip "Maintainer-gate required status check skipped: GitHub remote unavailable"
+		add_finding "$SEVERITY_INFO" "$CAT_MAINTAINER_GATE" "GitHub remote unavailable for maintainer-gate check"
+		return 0
+	fi
+
+	local default_branch protection_json check_contexts
+	default_branch=$(_default_branch_for_repo "$repo_path")
+	protection_json=$(_classic_branch_protection_json "$slug" "$default_branch") || true
+	check_contexts="$(_classic_required_check_contexts "$protection_json")"
+	check_contexts+=$'\n'
+	if [[ "$#" -ge 2 ]]; then
+		check_contexts+="$(_rulesets_required_check_contexts "$slug" "$default_branch" "$ruleset_details")"
+	else
+		check_contexts+="$(_rulesets_required_check_contexts "$slug" "$default_branch")"
+	fi
+
+	if _required_check_present "$check_contexts" "maintainer-gate"; then
+		print_pass "maintainer-gate is a required status check"
+		add_finding "$SEVERITY_PASS" "$CAT_MAINTAINER_GATE" "Maintainer gate required status configured"
+	elif [[ "$public_admin" -eq 1 ]]; then
+		print_crit "maintainer-gate is not required on public ADMIN repo — external NMR can be bypassed"
+		add_finding "$SEVERITY_CRITICAL" "$CAT_MAINTAINER_GATE" "maintainer-gate not required on public ADMIN repo"
+	else
+		print_warn "maintainer-gate workflow exists but is not required by branch protection or rulesets"
+		add_finding "$SEVERITY_WARNING" "$CAT_MAINTAINER_GATE" "maintainer-gate not required"
+	fi
+
+	return 0
+}
+
 # Phase 3.5: Check linked-issue-check workflow and required status
 check_linked_issue_gate() {
 	local repo_path="$1"
@@ -627,7 +680,7 @@ check_linked_issue_gate() {
 
 	local default_branch protection_json check_contexts
 	default_branch=$(_default_branch_for_repo "$repo_path")
-	protection_json=$(gh api "repos/$slug/branches/$default_branch/protection" 2>/dev/null) || true
+	protection_json=$(_classic_branch_protection_json "$slug" "$default_branch") || true
 	check_contexts="$(_classic_required_check_contexts "$protection_json")"
 	check_contexts+=$'\n'
 	if [[ "$#" -ge 2 ]]; then
@@ -1337,7 +1390,7 @@ store_posture() {
 	local total_findings
 	total_findings=$((FINDINGS_CRITICAL + FINDINGS_WARNING + FINDINGS_INFO + FINDINGS_PASS))
 
-	local posture_status="unknown"
+	local posture_status="$SECURITY_POSTURE_UNKNOWN"
 	if [[ "$FINDINGS_CRITICAL" -gt 0 ]]; then
 		posture_status="$SEVERITY_CRITICAL"
 	elif [[ "$FINDINGS_WARNING" -gt 0 ]]; then
@@ -1386,7 +1439,7 @@ print_summary() {
 			local stored_warnings
 			stored_warnings=$(jq -r '.security_posture.warnings // 0' "$config_file" 2>/dev/null) || stored_warnings="0"
 			local stored_ts
-			stored_ts=$(jq -r '.security_posture.last_audit // "unknown"' "$config_file" 2>/dev/null) || stored_ts="unknown"
+			stored_ts=$(jq -r --arg unknown "$SECURITY_POSTURE_UNKNOWN" '.security_posture.last_audit // $unknown' "$config_file" 2>/dev/null) || stored_ts="$SECURITY_POSTURE_UNKNOWN"
 
 			case "$stored_status" in
 			critical)
@@ -1467,6 +1520,7 @@ run_all_checks() {
 	check_workflow_security "$repo_path"
 	check_branch_protection "$repo_path" "$ruleset_details"
 	check_review_bot_gate "$repo_path"
+	check_maintainer_gate "$repo_path" "$ruleset_details"
 	check_linked_issue_gate "$repo_path" "$ruleset_details"
 	check_dependencies "$repo_path"
 	check_collaborators "$repo_path"

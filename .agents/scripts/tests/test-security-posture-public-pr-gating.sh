@@ -5,8 +5,8 @@
 # test-security-posture-public-pr-gating.sh — GH#22195 regression guard.
 #
 # Verifies public ADMIN repositories fail posture checks when default-branch PR
-# merge gating is incomplete, while classic and rulesets-backed protection with
-# review + required checks passes the branch protection phase.
+# merge gating or NMR enforcement is incomplete. Native approval count remains
+# independent of collaborator topology for both classic and ruleset protection.
 
 set -uo pipefail
 
@@ -50,6 +50,7 @@ FAKE_REPO="$TMP/fake-repo"
 mkdir -p "$FAKE_REPO/.git"
 mkdir -p "$FAKE_REPO/.github/workflows"
 touch "$FAKE_REPO/.github/workflows/linked-issue-check.yml"
+touch "$FAKE_REPO/.github/workflows/maintainer-gate.yml"
 
 OUTPUT_LOG="$TMP/output.log"
 FINDINGS_CRITICAL=0
@@ -58,16 +59,18 @@ FINDINGS_INFO=0
 FINDINGS_PASS=0
 FINDINGS_JSON="[]"
 
-readonly CLASSIC_GOOD='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
-readonly CLASSIC_NO_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":0},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
-readonly CLASSIC_NO_PR='{"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
+readonly CLASSIC_GOOD='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate","maintainer-gate"]},"enforce_admins":{"enabled":true}}'
+readonly CLASSIC_NO_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":0},"required_status_checks":{"contexts":["review-bot-gate","maintainer-gate"]},"enforce_admins":{"enabled":true}}'
+readonly CLASSIC_NO_MAINTAINER_GATE='{"required_pull_request_reviews":{"required_approving_review_count":0},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":true}}'
+readonly CLASSIC_NO_PR='{"required_status_checks":{"contexts":["review-bot-gate","maintainer-gate"]},"enforce_admins":{"enabled":true}}'
 readonly CLASSIC_NO_CHECKS='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]},"enforce_admins":{"enabled":true}}'
-readonly CLASSIC_ADMIN_BYPASS='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate"]},"enforce_admins":{"enabled":false}}'
+readonly CLASSIC_ADMIN_BYPASS='{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["review-bot-gate","maintainer-gate"]},"enforce_admins":{"enabled":false}}'
 readonly REPO_PUBLIC_ADMIN='{"private":false,"permissions":{"admin":true}}'
 readonly RULESETS_LIST_ACTIVE='[{"id":1000,"enforcement":"active"}]'
-readonly RULESET_GOOD='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
-readonly RULESET_NO_REVIEWS='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
-readonly RULESET_NO_PR='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_GOOD='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"},{"context":"maintainer-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_NO_REVIEWS='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"},{"context":"maintainer-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_NO_MAINTAINER_GATE='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"}]}}],"bypass_actors":[]}'
+readonly RULESET_NO_PR='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"review-bot-gate"},{"context":"maintainer-gate"}]}}],"bypass_actors":[]}'
 readonly RULESET_NO_CHECKS='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}],"bypass_actors":[]}'
 readonly CLASSIC_LINKED_ISSUE='{"required_status_checks":{"contexts":["linked-issue-check"]}}'
 readonly RULESET_LINKED_ISSUE='{"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"linked-issue-check"}]}}],"bypass_actors":[]}'
@@ -146,12 +149,36 @@ jq() {
 
 export -f gh git jq
 
-print_header() { local msg="$1"; printf '[HEADER] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
-print_info() { local msg="$1"; printf '[INFO] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
-print_pass() { local msg="$1"; printf '[PASS] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
-print_warn() { local msg="$1"; printf '[WARN] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
-print_crit() { local msg="$1"; printf '[CRIT] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
-print_skip() { local msg="$1"; printf '[SKIP] %s\n' "$msg" >>"$OUTPUT_LOG"; return 0; }
+print_header() {
+	local msg="$1"
+	printf '[HEADER] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_info() {
+	local msg="$1"
+	printf '[INFO] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_pass() {
+	local msg="$1"
+	printf '[PASS] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_warn() {
+	local msg="$1"
+	printf '[WARN] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_crit() {
+	local msg="$1"
+	printf '[CRIT] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_skip() {
+	local msg="$1"
+	printf '[SKIP] %s\n' "$msg" >>"$OUTPUT_LOG"
+	return 0
+}
 
 add_finding() {
 	local severity="$1"
@@ -180,6 +207,7 @@ SEVERITY_WARNING="warning"
 SEVERITY_INFO="info"
 SEVERITY_PASS="pass"
 CAT_BRANCH_PROTECTION="branch_protection"
+CAT_MAINTAINER_GATE="maintainer_gate"
 CAT_LINKED_ISSUE_GATE="linked_issue_gate"
 
 reset_state() {
@@ -217,24 +245,24 @@ assert_counts "public ADMIN without classic protection or rulesets is critical" 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
 check_branch_protection "$FAKE_REPO"
-assert_counts "verified solo-maintainer classic protection allows zero approvals" 0 0
+assert_counts "classic protection allows zero native approvals" 0 0
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_PR"
 check_branch_protection "$FAKE_REPO"
-assert_counts "verified solo-maintainer classic protection still requires pull requests" 1 0
+assert_counts "classic protection with zero approvals still requires pull requests" 1 0
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
 STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin"},{"login":"maintainer","type":"User","role_name":"write"}]'
 check_branch_protection "$FAKE_REPO"
-assert_counts "multi-maintainer classic protection without reviews is critical" 1 0
+assert_counts "multi-maintainer classic protection allows independent progress" 0 0
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
 STUB_COLLABORATORS_AVAILABLE=false
 check_branch_protection "$FAKE_REPO"
-assert_counts "unknown collaborator topology retains strict classic review finding" 1 0
+assert_counts "unknown collaborator topology does not change native approval policy" 0 0
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_NO_CHECKS"
@@ -258,14 +286,14 @@ STUB_PROTECTION_RESPONSE=""
 STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_NO_REVIEWS"
 check_branch_protection "$FAKE_REPO"
-assert_counts "verified solo-maintainer rulesets allow zero approvals" 0 0
+assert_counts "rulesets allow zero native approvals" 0 0
 
 reset_state
 STUB_PROTECTION_RESPONSE=""
 STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_NO_PR"
 check_branch_protection "$FAKE_REPO"
-assert_counts "verified solo-maintainer rulesets still require pull requests" 1 0
+assert_counts "rulesets with zero approvals still require pull requests" 1 0
 
 reset_state
 STUB_PROTECTION_RESPONSE=""
@@ -273,7 +301,7 @@ STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_NO_REVIEWS"
 STUB_COLLABORATORS_RESPONSE='[{"login":"owner","type":"User","role_name":"admin"},{"login":"maintainer","type":"User","role_name":"maintain"},{"login":"ci-bot","type":"Bot","role_name":"write"}]'
 check_branch_protection "$FAKE_REPO"
-assert_counts "multi-maintainer rulesets without reviews remain critical while bots are excluded" 1 0
+assert_counts "multi-maintainer rulesets allow independent progress" 0 0
 
 reset_state
 STUB_PROTECTION_RESPONSE=""
@@ -281,6 +309,36 @@ STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_NO_CHECKS"
 check_branch_protection "$FAKE_REPO"
 assert_counts "public ADMIN rulesets without checks is critical" 1 0
+
+reset_state
+STUB_PROTECTION_RESPONSE="$CLASSIC_NO_REVIEWS"
+check_maintainer_gate "$FAKE_REPO" ""
+assert_counts "classic protection requiring maintainer-gate enforces external NMR" 0 0
+
+reset_state
+STUB_PROTECTION_RESPONSE="$CLASSIC_NO_MAINTAINER_GATE"
+check_maintainer_gate "$FAKE_REPO" ""
+assert_counts "public ADMIN classic protection without maintainer-gate is critical" 1 0
+
+reset_state
+STUB_PROTECTION_RESPONSE=""
+STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
+STUB_RULESET_DETAIL="$RULESET_NO_REVIEWS"
+check_maintainer_gate "$FAKE_REPO" "$STUB_RULESET_DETAIL"
+assert_counts "ruleset requiring maintainer-gate enforces external NMR" 0 0
+
+reset_state
+STUB_PROTECTION_RESPONSE=""
+STUB_RULESETS_LIST="$RULESETS_LIST_ACTIVE"
+STUB_RULESET_DETAIL="$RULESET_NO_MAINTAINER_GATE"
+check_maintainer_gate "$FAKE_REPO" "$STUB_RULESET_DETAIL"
+assert_counts "public ADMIN ruleset without maintainer-gate is critical" 1 0
+
+reset_state
+rm -f "$FAKE_REPO/.github/workflows/maintainer-gate.yml"
+check_maintainer_gate "$FAKE_REPO" ""
+assert_counts "public ADMIN repository without maintainer-gate workflow is critical" 1 0
+touch "$FAKE_REPO/.github/workflows/maintainer-gate.yml"
 
 reset_state
 STUB_PROTECTION_RESPONSE="$CLASSIC_LINKED_ISSUE"
