@@ -129,6 +129,10 @@ Aggregation PR #29026 reviews corrective OpenCode unified-generator PR #29023
 at `623e6aeedd77dbf4b1b69b6f411ae71ceb66515d` because the simplification-state
 update advanced `main` before publication.
 
+A pending aggregation re-reviews authorized aggregation PR #29026 at
+`351c820f5db214ddf7a069d57f3db9b74e2b6321` because PR #28910 advanced `main`
+before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
