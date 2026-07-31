@@ -388,6 +388,17 @@ test_post_approval_linked_references() {
 	jq '.[0] += [(.[0][0] | .id = 422 | .node_id = "EV_422" | .created_at = null | .source.issue.number = 12)]' \
 		"${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
 	assert_verify "missing linked-reference timestamp fails closed" issue 41 API_ERROR 6
+
+	reset_and_sign issue 41
+	jq '.[0] += [(.[0][0] | .id = 423 | .node_id = "EV_423" | .created_at = "2026-02-30T00:06:00Z" | .source.issue.number = 13)]' \
+		"${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	assert_verify "calendar-invalid linked-reference timestamp fails closed" issue 41 API_ERROR 6
+
+	if PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" approval_snapshot_v2_build issue 41 owner/repo "" "2026-02-30T00:06:00Z" >/dev/null 2>&1; then
+		print_result "calendar-invalid approval cutoff fails closed" 1
+	else
+		print_result "calendar-invalid approval cutoff fails closed" 0
+	fi
 	return 0
 }
 

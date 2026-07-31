@@ -95,7 +95,6 @@ _approval_snapshot_v2_linked_references_json() {
 	local issued_at_cutoff="${2:-}"
 	local empty_string=""
 	local timestamp_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-	[[ -z "$issued_at_cutoff" || "$issued_at_cutoff" =~ $timestamp_pattern ]] || return 1
 
 	# GitHub timeline cross-reference events are the authoritative read-only
 	# projection of issue/PR links. Keep external text and URLs as opaque bytes;
@@ -109,7 +108,14 @@ _approval_snapshot_v2_linked_references_json() {
 			or (.event // $empty) == "connected"
 			or (.event // $empty) == "disconnected"
 			or (.event // $empty) == "referenced";
-		if $cutoff != $empty and any(.[][]?; is_linked_reference and (((.created_at // $empty) | test($timestamp_pattern)) | not)) then
+		def is_valid_timestamp:
+			. as $timestamp
+			| ($timestamp | type) == "string"
+			and ($timestamp | test($timestamp_pattern))
+			and ((try ($timestamp | fromdateiso8601 | todateiso8601) catch $empty) == $timestamp);
+		if $cutoff != $empty and (($cutoff | is_valid_timestamp) | not) then
+			error("approval cutoff has no authoritative issued_at")
+		elif $cutoff != $empty and any(.[][]?; is_linked_reference and (((.created_at // $empty) | is_valid_timestamp) | not)) then
 			error("linked reference has no authoritative created_at")
 		else
 		[.[][]?
