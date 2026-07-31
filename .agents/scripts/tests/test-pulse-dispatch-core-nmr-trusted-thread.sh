@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 CORE_SCRIPT="${SCRIPT_DIR}/../pulse-dispatch-core.sh"
+AUTHORITY_SCRIPT="${SCRIPT_DIR}/../shared-gh-collaborator-permission.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -21,6 +22,7 @@ ISSUE_LOGIN="maintainer"
 COMMENTS_JSON="[]"
 APPROVAL_KNOWN_STATUS=""
 COLLAB_PERMISSION="write"
+_AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE="unknown"
 
 print_result() {
 	local test_name="$1"
@@ -47,7 +49,8 @@ define_helpers_under_test() {
 		/^_issue_thread_is_trusted_maintainer_only\(\) \{/,/^}$/ { print }
 		/^_issue_actor_has_repo_write_permission\(\) \{/,/^}$/ { print }
 		/^_check_nmr_approval_gate\(\) \{/,/^}$/ { print }
-	' "$CORE_SCRIPT")
+		/^_gh_actor_has_repo_write_authority\(\) \{/,/^}$/ { print }
+	' "$CORE_SCRIPT" "$AUTHORITY_SCRIPT")
 	if [[ -z "$helper_src" ]]; then
 		printf 'ERROR: could not extract helpers from %s\n' "$CORE_SCRIPT" >&2
 		return 1
