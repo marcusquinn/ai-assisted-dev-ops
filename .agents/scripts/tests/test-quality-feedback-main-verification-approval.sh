@@ -351,6 +351,18 @@ test_skips_review_thread_response_inline_comment() {
 	return 0
 }
 
+test_skips_coderabbit_confirmed_addressed_thread() {
+	local comments result
+	comments='[{"id":3687897930,"user":{"login":"coderabbitai[bot]"},"body":"Send branch-protection fields as a JSON body. Use --input - rather than individual fields.\n\n✅ Confirmed as addressed by @maintainer","path":".agents/tools/git/git-security.md","original_line":42,"html_url":"https://example.invalid/review-root","created_at":"2026-07-31T03:31:01Z"},{"id":3687908739,"in_reply_to_id":3687897930,"user":{"login":"maintainer"},"body":"Fixed in a62acc4ff. The example now sends one structured JSON document through --input -.","path":".agents/tools/git/git-security.md","original_line":42,"html_url":"https://example.invalid/review-reply","created_at":"2026-07-31T03:41:01Z"},{"id":3687909595,"in_reply_to_id":3687897930,"user":{"login":"coderabbitai[bot]"},"body":"Confirmed. The structured JSON body addresses the nested-object encoding issue.\n\n<!-- <review_comment_addressed> -->","path":".agents/tools/git/git-security.md","original_line":42,"html_url":"https://example.invalid/review-confirmation","created_at":"2026-07-31T03:42:01Z"}]'
+	result=$(_build_inline_findings "$comments" "28983" "medium" | jq 'length')
+	if [[ "$result" == "0" ]]; then
+		print_result "skip CodeRabbit confirmed-addressed thread" 0
+	else
+		print_result "skip CodeRabbit confirmed-addressed thread" 1 "expected 0 findings, got ${result}"
+	fi
+	return 0
+}
+
 test_skips_no_further_concerns_inline_ack() {
 	local comments result
 	comments='[{"user":{"login":"gemini-code-assist[bot]"},"body":"Thank you for the update. The lookup map implementation is the correct approach, and I have no further concerns regarding this implementation.","path":".agents/scripts/quality-feedback-findings-lib.sh","line":329,"html_url":"https://example.invalid/review","created_at":"2026-06-16T00:00:00Z"}]'

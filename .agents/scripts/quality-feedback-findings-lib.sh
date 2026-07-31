@@ -30,6 +30,8 @@ _build_inline_findings() {
 		def resolution_or_ack:
 			test(
 				"aidevops:review-thread-response|" +
+				"review_comment_addressed|" +
+				"\\bconfirmed as addressed\\b|" +
 				"\\baddressed in[[:space:]]+`?[0-9a-f]{7,64}\\b`?|" +
 				"(?s:\\bthank you for verifying\\b.*\\blooks good\\b)|" +
 				"(?s:\\bthank you for the verification\\b.*?\\badding the regression test\\b.*?\\bcorrectly address(es|ed)?\\b)|" +
