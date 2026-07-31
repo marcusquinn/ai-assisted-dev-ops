@@ -132,8 +132,14 @@ load_subject() {
 	gh() {
 		if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 			case "${3:-}" in
-			28995) printf 'CLOSED\n'; return 0 ;;
-			28996) printf 'OPEN\n'; return 0 ;;
+			28995)
+				printf 'CLOSED\n'
+				return 0
+				;;
+			28996)
+				printf 'OPEN\n'
+				return 0
+				;;
 			esac
 		fi
 		return 1
@@ -201,8 +207,8 @@ test_orphan_sibling_dirs_move_to_trash_only() {
 	fi
 
 	local malformed_preserved=0
-	if [[ -d "$TEST_ROOT/Git/_worktrees/$CI_REPAIR_BAD_HASH_NAME" && \
-		-d "$TEST_ROOT/Git/_worktrees/$CI_REPAIR_BAD_PR_NAME" && \
+	if [[ -d "$TEST_ROOT/Git/_worktrees/$CI_REPAIR_BAD_HASH_NAME" &&
+		-d "$TEST_ROOT/Git/_worktrees/$CI_REPAIR_BAD_PR_NAME" &&
 		-d "$TEST_ROOT/Git/_worktrees/$CI_REPAIR_BAD_ATTEMPT_NAME" ]]; then
 		malformed_preserved=1
 	fi
