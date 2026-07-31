@@ -8,12 +8,14 @@
 # Asserts that worktree pre-creation failures are observable:
 #   1. _dlw_precreate_worktree returns 1 when path extraction fails
 #   2. _dlw_precreate_worktree marks fresh worktree creation as non-reused
-#   3. _dlw_precreate_worktree marks existing issue worktree reuse
-#   4. _dlw_check_worker_branch_orphan_loop skips fresh branches
-#   5. _dlw_check_worker_branch_orphan_loop still checks reused branches
-#   6. _dispatch_launch_worker skips dispatch (no setsid) when pre-creation fails
-#   7. worktree_precreation_failed_count counter is incremented on failure
-#   8. --dir argument no longer contains repo_path fallback
+#   3. helper creation receives task identity and headless ownership context
+#   4. _dlw_precreate_worktree marks existing issue worktree reuse
+#   5. incomplete continuation snapshots fall through to an atomic claim
+#   6. _dlw_check_worker_branch_orphan_loop skips fresh branches
+#   7. _dlw_check_worker_branch_orphan_loop still checks reused branches
+#   8. _dispatch_launch_worker skips dispatch (no setsid) when pre-creation fails
+#   9. worktree_precreation_failed_count counter is incremented on failure
+#  10. --dir argument no longer contains repo_path fallback
 #
 # Stub strategy: stub worktree-helper.sh, git, and dependent functions
 # to isolate _dlw_precreate_worktree and _dispatch_launch_worker.
@@ -71,9 +73,14 @@ mkdir -p "$FAKE_REPO"
 # Stub: worktree-helper.sh that emits configurable output
 # =============================================================================
 STUB_WT_HELPER="${TMP}/worktree-helper.sh"
+STUB_WT_ARGS_FILE="${TMP}/worktree-helper-args.txt"
+STUB_WT_ENV_FILE="${TMP}/worktree-helper-env.txt"
+export STUB_WT_ARGS_FILE STUB_WT_ENV_FILE
 cat >"$STUB_WT_HELPER" <<'STUB_EOF'
 #!/usr/bin/env bash
 # Stub worktree-helper.sh — output depends on STUB_WT_MODE
+printf '%s\n' "$*" >"${STUB_WT_ARGS_FILE:?}"
+printf '%s|%s\n' "${AIDEVOPS_SESSION_ORIGIN:-}" "${AIDEVOPS_SKIP_AUTO_CLAIM:-}" >"${STUB_WT_ENV_FILE:?}"
 case "${STUB_WT_MODE:-fail}" in
 	fail)
 		echo "Error: something went wrong, no path here"
@@ -353,6 +360,14 @@ else
 	fail "fresh precreated worktree does not use the reuse claim path" "got: '$CLAIMED_WORKTREE_ARGS'"
 fi
 
+if [[ "$(<"$STUB_WT_ARGS_FILE")" == *"--issue 88888"* &&
+	"$(<"$STUB_WT_ENV_FILE")" == "worker|1" ]]; then
+	pass "fresh precreation makes the helper's first ownership write task-complete and headless"
+else
+	fail "fresh precreation makes the helper's first ownership write task-complete and headless" \
+		"args='$(<"$STUB_WT_ARGS_FILE")' env='$(<"$STUB_WT_ENV_FILE")'"
+fi
+
 # =============================================================================
 # Test 2b: _dlw_precreate_worktree prefers git porcelain path resolution
 # =============================================================================
@@ -433,7 +448,30 @@ else
 fi
 
 # =============================================================================
-# Test 3b: an unowned reused worktree is claimed atomically before preparation
+# Test 3b: an incomplete owner snapshot falls through to an atomic claim
+# =============================================================================
+export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
+REGISTERED_WORKTREE_ARGS=""
+CLAIMED_WORKTREE_ARGS=""
+STUB_OWNER_INFO="12345|generation-7|batch-7||2026-07-18T00:00:00Z"
+STUB_CLAIM_WORKTREE_RC=0
+: >"$LOGFILE"
+_dlw_precreate_worktree "66666" "$FAKE_REPO"
+rc=$?
+expected_claim="${STUB_EXISTING_PATH}|${STUB_EXISTING_BRANCH}|66666|dispatch-precreate-66666|$$"
+if [[ "$rc" -eq 0 && "$CLAIMED_WORKTREE_ARGS" == "$expected_claim" &&
+	-z "${_DLW_WORKTREE_TRANSFER_MODE:-}" ]] &&
+	grep -Fq "Rejected incomplete or mismatched registry owner for #66666" "$LOGFILE"; then
+	pass "incomplete continuation owner is never exported and uses the atomic repair path"
+else
+	fail "incomplete continuation owner is never exported and uses the atomic repair path" \
+		"rc=$rc mode='${_DLW_WORKTREE_TRANSFER_MODE:-}' claim='$CLAIMED_WORKTREE_ARGS'"
+fi
+STUB_OWNER_INFO=""
+unset STUB_EXISTING_WORKTREE_LINE
+
+# =============================================================================
+# Test 3c: an unowned reused worktree is claimed atomically before preparation
 # =============================================================================
 export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
 REGISTERED_WORKTREE_ARGS=""

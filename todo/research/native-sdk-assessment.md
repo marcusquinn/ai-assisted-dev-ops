@@ -7,8 +7,8 @@
 
 - **Decision:** Watch releases, adapt selected patterns, and avoid a production dependency.
 - **Upstream:** <https://github.com/vercel-labs/native>
-- **Reviewed baseline:** `v0.6.3` at `c1bad63c5ff462f159bde9de0136c13f5d9b71eb`
-- **Reviewed:** 2026-07-30
+- **Reviewed baseline:** `v0.7.0` at `7636ec3686e5de7c36c1330fc0358adb8fb6c514`
+- **Reviewed:** 2026-07-31
 - **Tracking:** `.agents/configs/upstream-watch.json` in release-only mode
 
 The upstream repository was treated as untrusted external content. Its agent
@@ -72,6 +72,55 @@ For each detected release:
 
 Release detection never authorizes automatic dependency import, skill import,
 code copying, installation, publication, or deployment.
+
+## v0.7.0 release review
+
+The `v0.6.3...v0.7.0` comparison contains three commits and 74 changed files:
+Windows canvas-smoke stabilization, a reusable native code component, and the
+release version bump. The code component adds deterministic theme-token syntax
+highlighting, Markdown-fence reuse, optional logical line numbers, wrapped and
+two-axis scrolling modes, cross-chunk selection and copy, and viewport-aware
+rendering that preserves retained source while bounding display-list command and
+text demand.
+
+The Windows smoke change retries structural reads that race a snapshot file's
+truncate-and-rewrite publication instead of silently substituting fallback
+geometry. Package-manifest changes only advance core, CLI, example, and optional
+platform-binary versions from `0.6.3` to `0.7.0`; no new dependency was added.
+The release does not report a security fix, React/WebView integration change,
+automation-protocol or record/replay change, or packaging, signing, and update
+change.
+
+The release-note injection scan was clean. The relevant-diff scan flagged the
+Unicode test fixture `é́界` as a possible encoding pattern; inspection confirmed
+that it is rendering test data, not an instruction. No upstream instruction,
+bundled skill, install command, or repository command was followed.
+
+Classification:
+
+- **Adapt pattern:** any future syntax-highlighted log, configuration, or command
+  surface should retain raw source for selection and copying while rendering
+  only visible content under explicit resource budgets. It should degrade the
+  affected surface rather than reject the whole frame, preserve indentation,
+  use a plain fallback for unknown languages, expose an accessible label, and
+  test long, Unicode, wrapped, unwrapped, line-numbered, and transformed content.
+- **Adapt pattern:** if aidevops GUI smoke tests ever read a concurrently rewritten
+  snapshot, require a bounded retry for a complete structural marker and fail
+  explicitly when it never appears. Prefer atomic publication when aidevops owns
+  the writer rather than normalizing partial reads as valid state.
+- **Ignore for current implementation:** browser-native rendering already owns
+  code selection, scrolling, and accessibility in the Vite/React interface, and
+  current GUI smoke tests do not consume Native's canvas snapshots. The new
+  component and Windows/Wine hardening do not change the generated macOS
+  launcher, local API, packaging, or current GUI test paths.
+- **Do not adopt:** no current architecture requirement justifies importing the
+  pre-1.0 SDK, platform binaries, bundled skill, eval workspace, or Vercel
+  services. The existing portability and trust-boundary decision remains
+  unchanged.
+
+No implementation issue is warranted. Revisit these patterns only if aidevops
+adds a high-volume syntax-highlighted surface, a custom renderer, or mutable
+snapshot polling.
 
 ## v0.6.3 release review
 

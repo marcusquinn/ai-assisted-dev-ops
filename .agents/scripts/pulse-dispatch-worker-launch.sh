@@ -45,9 +45,12 @@ source "${_DLW_SCRIPT_DIR}/pulse-dispatch-worker-prompt.sh"
 source "${_DLW_SCRIPT_DIR}/pulse-dispatch-worker-gates.sh"
 unset _DLW_SCRIPT_DIR
 : "${AIDEVOPS_UNKNOWN_VERSION:=unknown}"
+if [[ -z "${_DLW_ZERO_ATTEMPT_EVIDENCE_PATTERN+x}" ]]; then
+	_DLW_ZERO_ATTEMPT_EVIDENCE_PATTERN='CLAIM_RELEASED reason=worker_worktree_live_owner|CLAIM_RELEASED reason=worker_worktree_continuation_[a-z_]+|CLAIM_RELEASED reason=worker_worktree_owner_concurrent_mutation'
+fi
 if [[ -z "${_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN+x}" ]]; then
 	# shellcheck disable=SC2016  # The backticks are literal review text matched in comments.
-	_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN='CLAIM_RELEASED reason=worker_noop_zero_output|worker_noop_zero_output|zero[- ]output|classified as `no_work`'
+	_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN="${_DLW_ZERO_ATTEMPT_EVIDENCE_PATTERN}"'|CLAIM_RELEASED reason=worker_noop_zero_output|worker_noop_zero_output|zero[- ]output|classified as `no_work`'
 fi
 
 _dlw_display_version_or_unknown() {
@@ -610,11 +613,19 @@ _dlw_capture_reused_worktree_owner() {
 	owner_info=$(check_worktree_owner "$worktree_path" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || return 1
 
-	IFS='|' read -r _DLW_WORKTREE_EXPECTED_OWNER_PID \
-		_DLW_WORKTREE_EXPECTED_OWNER_SESSION \
-		_DLW_WORKTREE_EXPECTED_OWNER_BATCH \
-		_DLW_WORKTREE_EXPECTED_OWNER_TASK \
-		_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT <<<"$owner_info"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_info"
+	if [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" ||
+		"$owner_task" != "$issue_number" || -z "$owner_created_at" ]]; then
+		echo "[dispatch_with_dedup] Rejected incomplete or mismatched registry owner for #${issue_number}; attempting an atomic same-task claim instead: ${worktree_path}" >>"$LOGFILE"
+		return 1
+	fi
+
+	_DLW_WORKTREE_EXPECTED_OWNER_PID="$owner_pid"
+	_DLW_WORKTREE_EXPECTED_OWNER_SESSION="$owner_session"
+	_DLW_WORKTREE_EXPECTED_OWNER_BATCH="$owner_batch"
+	_DLW_WORKTREE_EXPECTED_OWNER_TASK="$owner_task"
+	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT="$owner_created_at"
 	_DLW_WORKTREE_TRANSFER_MODE="continuation"
 	echo "[dispatch_with_dedup] Captured expected registry owner for #${issue_number} continuation without replacing it: ${worktree_path}" >>"$LOGFILE"
 	return 0
@@ -638,9 +649,7 @@ _dlw_claim_unowned_reused_worktree() {
 	return 0
 }
 
-_dlw_precreate_worktree() {
-	local issue_number="$1"
-	local repo_path="$2"
+_dlw_reset_precreated_worktree_state() {
 	_DLW_WORKTREE_PATH=""
 	_DLW_WORKTREE_BRANCH=""
 	_DLW_WORKTREE_REUSED=0
@@ -650,6 +659,13 @@ _dlw_precreate_worktree() {
 	_DLW_WORKTREE_EXPECTED_OWNER_BATCH=""
 	_DLW_WORKTREE_EXPECTED_OWNER_TASK=""
 	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT=""
+	return 0
+}
+
+_dlw_precreate_worktree() {
+	local issue_number="$1"
+	local repo_path="$2"
+	_dlw_reset_precreated_worktree_state
 	local _precreate_session="dispatch-precreate-${issue_number}"
 
 	local _wt_helper="${SCRIPT_DIR}/worktree-helper.sh"
@@ -704,7 +720,11 @@ _dlw_precreate_worktree() {
 	_branch="feature/auto-$(date +%Y%m%d-%H%M%S)-gh${issue_number}"
 	# Run from repo_path — worktree-helper.sh uses git commands that need
 	# to be inside the repo. The pulse-wrapper's cwd is typically / (launchd).
-	_wt_output=$(cd "$repo_path" && WORKTREE_NODE_MODULES_RESTORE_ENABLED=0 "$_wt_helper" add "$_branch" 2>&1) || true
+	_wt_output=$(cd "$repo_path" && \
+		AIDEVOPS_SESSION_ORIGIN=worker \
+		AIDEVOPS_SKIP_AUTO_CLAIM=1 \
+		WORKTREE_NODE_MODULES_RESTORE_ENABLED=0 \
+		"$_wt_helper" add "$_branch" --issue "$issue_number" 2>&1) || true
 	_wt_output=$(printf '%s' "$_wt_output" | sed $'s/\x1b\\[[0-9;]*m//g')
 	local _path _path_source="porcelain"
 	_path=$(_dlw_worktree_path_for_branch "$repo_path" "$_branch") || _path=""

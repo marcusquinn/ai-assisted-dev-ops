@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
-# Regression tests for dispatch prompt comment metrics reuse and zero-output
+# Regression tests for dispatch prompt comment metrics reuse and zero-attempt
 # evidence pattern consistency.
 
 set -uo pipefail
@@ -39,7 +39,7 @@ set -uo pipefail
 printf '%s\n' "$*" >>"${GH_CALLS_FILE:?}"
 case "$*" in
 *'issues/123/comments'*'@tsv'*)
-	printf '3\t0\t1\t120\n'
+	printf '3\t0\t1\t120\t1\n'
 	;;
 *'issues/123/comments'*)
 	printf '1\n'
@@ -87,8 +87,32 @@ if [[ "$gh_calls" != "1" ]]; then
 	fail "prepare prompt made ${gh_calls} GitHub calls instead of reusing one metrics fetch"
 fi
 
-if [[ "$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" != *"worker_noop_zero_output"* || "$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" != *"zero[- ]output"* ]]; then
-	fail "shared zero-output evidence pattern lost expected alternatives"
+if [[ "$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" != *"worker_noop_zero_output"* ||
+	"$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" != *"worker_worktree_continuation_"* ||
+	"$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" != *"zero[- ]output"* ]]; then
+	fail "shared zero-attempt evidence pattern lost expected alternatives"
+fi
+if command -v jq >/dev/null 2>&1 && ! jq -ne \
+	--arg body "CLAIM_RELEASED reason=worker_worktree_continuation_state_rejected session_count=0" \
+	--arg pattern "$_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN" \
+	'$body | test($pattern; "i")' >/dev/null; then
+	fail "shared zero-attempt evidence pattern does not match continuation release evidence"
+fi
+if [[ "$_DLW_ZERO_ATTEMPT_EVIDENCE_PATTERN" != *"worker_worktree_continuation_"* ]]; then
+	fail "dedicated zero-attempt evidence pattern lost continuation failures"
+fi
+
+if ! LOGFILE="${TEST_TMP}/pulse.log" \
+	CLEAN_ROOM_COMMENT_THRESHOLD=1 \
+	ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD=4 \
+	_dlw_hold_repeated_zero_output "123" "owner/repo" $'12\t12\t4\t60000\t4'; then
+	fail "clean-room comment bloat bypassed a threshold of zero-attempt infrastructure failures"
+fi
+if LOGFILE="${TEST_TMP}/pulse.log" \
+	CLEAN_ROOM_COMMENT_THRESHOLD=1 \
+	ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD=4 \
+	_dlw_hold_repeated_zero_output "123" "owner/repo" $'12\t12\t4\t60000\t0'; then
+	fail "clean-room mode stopped bypassing a generic zero-output brief rewrite"
 fi
 
 LOGFILE="${TEST_TMP}/pulse.log" \
@@ -191,7 +215,8 @@ fi
 SCRIPT_DIR="$original_script_dir"
 
 printf 'PASS: dispatch prompt reuses comment metrics for zero-output fallback\n'
-printf 'PASS: zero-output evidence detection uses one shared pattern\n'
+printf 'PASS: zero-attempt evidence detection uses one shared pattern\n'
+printf 'PASS: zero-attempt infrastructure holds override clean-room brief bypasses\n'
 printf 'PASS: invalid clean-room snapshots cannot authorize implementation\n'
 printf 'PASS: retry context is bounded, deterministic, and excludes prior prose\n'
 printf 'PASS: registered live workers transition queued issues to in-progress\n'

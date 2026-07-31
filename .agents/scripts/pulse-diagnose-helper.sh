@@ -220,6 +220,55 @@ _collect_issue_log_lines() {
 	return 0
 }
 
+# Summarise terminal prelaunch failures that never reached runtime metrics.
+# Args: $1=issue_log_lines
+# Outputs compact JSON with a total and reason counts.
+_issue_prelaunch_failure_summary_json() {
+	local issue_log_lines="$1"
+	if ! command -v jq >/dev/null 2>&1; then
+		printf '{"prelaunch_failure_count":0,"prelaunch_failure_reasons":{}}\n'
+		return 0
+	fi
+
+	jq -nc --arg lines "$issue_log_lines" '
+		[$lines | split("\n")[]
+			| capture("prelaunch failure reason=(?<reason>[A-Za-z0-9_.:-]+)")?] as $failures
+		| {
+			prelaunch_failure_count: ($failures | length),
+			prelaunch_failure_reasons: (
+				reduce $failures[] as $failure ({};
+					.[$failure.reason] = ((.[$failure.reason] // 0) + 1))
+			)
+		}' 2>/dev/null || printf '{"prelaunch_failure_count":0,"prelaunch_failure_reasons":{}}\n'
+	return 0
+}
+
+# Summarise durable zero-attempt releases from the issue audit trail.
+# Args: $1=comments_json
+# Outputs compact JSON with a total and reason counts.
+_issue_zero_attempt_release_summary_json() {
+	local comments_json="$1"
+	if ! command -v jq >/dev/null 2>&1; then
+		printf '{"zero_attempt_release_count":0,"zero_attempt_release_reasons":{}}\n'
+		return 0
+	fi
+
+	printf '%s' "$comments_json" | jq -c '
+		[.[]?
+			| (.body // "") as $body
+			| select($body | test("CLAIM_RELEASED reason=[A-Za-z0-9_.:-]+"; "i"))
+			| select($body | test("session_count=0"; "i"))
+			| ($body | capture("CLAIM_RELEASED reason=(?<reason>[A-Za-z0-9_.:-]+)"; "i"))] as $failures
+		| {
+			zero_attempt_release_count: ($failures | length),
+			zero_attempt_release_reasons: (
+				reduce $failures[] as $failure ({};
+					.[$failure.reason] = ((.[$failure.reason] // 0) + 1))
+			)
+		}' 2>/dev/null || printf '{"zero_attempt_release_count":0,"zero_attempt_release_reasons":{}}\n'
+	return 0
+}
+
 # Summarise headless runtime attempts for an issue and project retry/backoff state.
 # Args: $1=issue_number $2=metrics_file $3=repo_slug (optional)
 # Outputs compact JSON object.
@@ -1015,7 +1064,7 @@ _fetch_issue_metadata() {
 
 # Fetch issue comments from GitHub REST API.
 # Args: $1 = issue number, $2 = repo slug
-# Outputs JSON array to stdout.
+# Outputs one flattened JSON array to stdout.
 _fetch_issue_comments() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -1032,8 +1081,13 @@ _fetch_issue_comments() {
 	owner="${repo_slug%%/*}"
 	repo="${repo_slug##*/}"
 	local comments_json
-	comments_json=$(gh api "repos/${owner}/${repo}/issues/${issue_number}/comments" \
-		--paginate --jq '.' 2>/dev/null) || comments_json="[]"
+	if command -v jq >/dev/null 2>&1; then
+		comments_json=$(gh api "repos/${owner}/${repo}/issues/${issue_number}/comments?per_page=100" \
+			--paginate --slurp 2>/dev/null | jq -c 'add // []') || comments_json="[]"
+	else
+		comments_json=$(gh api "repos/${owner}/${repo}/issues/${issue_number}/comments?per_page=100" \
+			2>/dev/null) || comments_json="[]"
+	fi
 	echo "$comments_json"
 	return 0
 }
@@ -1190,12 +1244,21 @@ _render_issue_attempts_text() {
 		return 0
 	fi
 
-	local attempt_count="0" rate_limit_count="0" active="false" cooldown_secs="0" next_epoch="0"
-	read -r attempt_count rate_limit_count active cooldown_secs next_epoch < <(
-		printf '%s' "$attempt_summary_json" | jq -r '[.attempt_count // 0, .rate_limit_count // 0, .backoff_active // false, .cooldown_secs // 0, .next_eligible_epoch // 0] | @tsv' || printf '0\t0\tfalse\t0\t0\n'
+	local attempt_count="0" rate_limit_count="0" active="false" cooldown_secs="0" next_epoch="0" prelaunch_count="0"
+	local zero_attempt_release_count="0"
+	read -r attempt_count rate_limit_count active cooldown_secs next_epoch prelaunch_count zero_attempt_release_count < <(
+		printf '%s' "$attempt_summary_json" | jq -r '[.attempt_count // 0, .rate_limit_count // 0, .backoff_active // false, .cooldown_secs // 0, .next_eligible_epoch // 0, .prelaunch_failure_count // 0, .zero_attempt_release_count // 0] | @tsv' || printf '0\t0\tfalse\t0\t0\t0\t0\n'
 	)
 
 	printf '  Attempts in metrics: %s (rate-limit-equivalent: %s)\n' "$attempt_count" "$rate_limit_count"
+	printf '  Prelaunch failures in pulse log: %s\n' "$prelaunch_count"
+	if [[ "$prelaunch_count" =~ ^[0-9]+$ && "$prelaunch_count" -gt 0 ]]; then
+		printf '  Prelaunch failure reasons: %s\n' "$(printf '%s' "$attempt_summary_json" | jq -c '.prelaunch_failure_reasons // {}' 2>/dev/null || printf '{}')"
+	fi
+	printf '  Zero-attempt releases in issue comments: %s\n' "$zero_attempt_release_count"
+	if [[ "$zero_attempt_release_count" =~ ^[0-9]+$ && "$zero_attempt_release_count" -gt 0 ]]; then
+		printf '  Zero-attempt release reasons: %s\n' "$(printf '%s' "$attempt_summary_json" | jq -c '.zero_attempt_release_reasons // {}' 2>/dev/null || printf '{}')"
+	fi
 	if [[ "$rate_limit_count" =~ ^[0-9]+$ && "$rate_limit_count" -gt 0 ]]; then
 		local next_human=""
 		next_human=$(date -r "$next_epoch" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || \
@@ -1885,6 +1948,7 @@ cmd_issue() {
 	metrics_file=$(_resolve_metrics_file)
 
 	local issue_json="" comments_json="" pr_numbers="" attempt_summary_json="" issue_log_lines="" blocker_summary_json=""
+	local prelaunch_summary_json="" zero_attempt_summary_json=""
 	local blocker_log=""
 	blocker_log=$(_resolve_blocker_log)
 	issue_json=$(_fetch_issue_metadata "$_CMD_ISSUE_NUMBER" "$_CMD_ISSUE_REPO_SLUG")
@@ -1892,6 +1956,15 @@ cmd_issue() {
 	pr_numbers=$(_fetch_issue_linked_prs "$_CMD_ISSUE_NUMBER" "$_CMD_ISSUE_REPO_SLUG")
 	attempt_summary_json=$(_issue_attempt_summary_json "$_CMD_ISSUE_NUMBER" "$metrics_file" "$_CMD_ISSUE_REPO_SLUG")
 	issue_log_lines=$(_collect_issue_log_lines "$_CMD_ISSUE_NUMBER" "$logfile" "$logdir")
+	prelaunch_summary_json=$(_issue_prelaunch_failure_summary_json "$issue_log_lines")
+	zero_attempt_summary_json=$(_issue_zero_attempt_release_summary_json "$comments_json")
+	if command -v jq >/dev/null 2>&1; then
+		attempt_summary_json=$(jq -nc \
+			--argjson attempts "$attempt_summary_json" \
+			--argjson prelaunch "$prelaunch_summary_json" \
+			--argjson zero_attempt "$zero_attempt_summary_json" \
+			'$attempts + $prelaunch + $zero_attempt' 2>/dev/null) || return 1
+	fi
 	blocker_summary_json=$(_issue_blocker_summary_json "$_CMD_ISSUE_NUMBER" "$_CMD_ISSUE_REPO_SLUG" "$blocker_log")
 
 	if [[ "$_CMD_ISSUE_JSON_OUTPUT" -eq 1 ]]; then

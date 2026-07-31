@@ -28,10 +28,14 @@ Pulse cycle (every 3 min, configurable)
 
 ### Preserved worktree ownership transfer
 
-Reusing an issue worktree does not make its current registry owner stale. For a
-scheduled same-task continuation, dispatch captures the exact owner PID,
-session, batch, task ID, and ownership timestamp without replacing the row. The
-worker then verifies that snapshot and changes ownership with one atomic
+Reusing an issue worktree does not make its current registry owner stale. Fresh
+dispatcher creation passes the issue identity into `worktree-helper.sh`, so the
+helper's first durable owner row is already task-complete even if later setup is
+interrupted. For a scheduled same-task continuation, dispatch captures the exact
+owner PID, session, batch, matching task ID, and ownership timestamp without
+replacing the row. An incomplete or mismatched row is never exported as a
+continuation; dispatch falls through to the atomic claim/recovery path instead.
+The worker verifies a complete snapshot and changes ownership with one atomic
 compare-and-swap. Only that explicit continuation path may preserve dirty files
 or commits ahead of the upstream branch.
 
@@ -43,6 +47,15 @@ owners remain protected. Pre-runtime classifications distinguish
 `worker_worktree_continuation_concurrent_mutation`, and
 `worker_worktree_continuation_state_rejected`; use these instead of treating
 every refusal as an opaque `worker_worktree_live_owner` retry.
+
+Terminal continuation refusals have no runtime metric because the model was
+never invoked. `pulse-diagnose-helper.sh issue <N> --repo <owner/repo>` reports
+their count and reason distribution from pulse logs separately from model
+attempts. Repeated `CLAIM_RELEASED` zero-attempt evidence participates in the
+bounded dispatch-infrastructure hold instead of creating an unbounded claim and
+release comment loop. Once zero-attempt infrastructure evidence reaches the hold
+threshold, comment-bloat clean-room mode cannot bypass that hold; clean-room
+fallback remains available for model/brief zero-output evidence.
 
 ### Dispatch claim comment states
 

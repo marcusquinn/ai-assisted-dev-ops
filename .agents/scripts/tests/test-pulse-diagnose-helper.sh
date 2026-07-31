@@ -243,8 +243,9 @@ JSON
   exit 0
 fi
 if [[ "$*" == *"api"*"issues/21860/comments"* ]]; then
+  [[ "$*" == *"--paginate"*"--slurp"* ]] || exit 1
   cat <<'JSON'
-[{"created_at":"2026-04-27T10:00:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: existing PR #21876 for branch feature/auto-20260427-gh21860 already open\n<!-- ops:start -->\nworker-orphan comment\n<!-- ops:end -->"},{"created_at":"2026-04-27T10:05:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: second re-dispatch attempt detected on same branch"},{"created_at":"2026-04-27T10:10:00Z","user":{"login":"marcusquinn"},"body":"Looks like the pulse is looping on this one"}]
+[[{"created_at":"2026-04-27T10:00:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: existing PR #21876 for branch feature/auto-20260427-gh21860 already open\n<!-- ops:start -->\nworker-orphan comment\n<!-- ops:end -->"},{"created_at":"2026-04-27T10:05:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: second re-dispatch attempt detected on same branch"},{"created_at":"2026-04-27T10:06:00Z","user":{"login":"marcusquinn"},"body":"CLAIM_RELEASED reason=worker_worktree_continuation_state_rejected runner=runner-a exit=1 session_count=0"},{"created_at":"2026-04-27T10:07:00Z","user":{"login":"marcusquinn"},"body":"CLAIM_RELEASED reason=worker_worktree_owner_concurrent_mutation runner=runner-a exit=1 session_count=0"},{"created_at":"2026-04-27T10:10:00Z","user":{"login":"marcusquinn"},"body":"Looks like the pulse is looping on this one"}]]
 JSON
   exit 0
 fi
@@ -253,7 +254,8 @@ if [[ "$*" == *"api"*"issues/99998/timeline"* ]]; then
   exit 0
 fi
 if [[ "$*" == *"api"*"issues/99998/comments"* ]]; then
-  echo '[]'
+  [[ "$*" == *"--paginate"*"--slurp"* ]] || exit 1
+  echo '[[]]'
   exit 0
 fi
 if [[ "$*" == *"api"*"timeline"* ]]; then
@@ -450,6 +452,8 @@ cat >> "$FIXTURE_LOGFILE" <<'ISSUE_FIXTURE'
 2026-04-27T09:30:00Z [pulse-merge-conflict] Deterministic merge: closed conflicting PR #21876, linked issue left open for re-dispatch in marcusquinn/aidevops
 2026-04-27T09:30:01Z [pulse-wrapper] Deterministic merge pass complete: merged=0, closed_conflicting=1, failed=0
 2026-04-27T10:06:00Z [dispatch-backoff] BACKOFF_ACTIVE #21860 (marcusquinn/aidevops) count=2 cooldown=1800s wait=1500s next=2026-04-27T10:31:00
+2026-04-27T10:07:00Z [pulse-wrapper] Launch validation failed for issue #21860 (marcusquinn/aidevops) — prelaunch failure reason=worker_worktree_continuation_state_rejected detected in worker.log
+2026-04-27T10:08:00Z [pulse-wrapper] Launch validation failed for issue #21860 (marcusquinn/aidevops) — prelaunch failure reason=worker_worktree_owner_concurrent_mutation detected in worker.log
 ISSUE_FIXTURE
 
 now_epoch=$(date +%s)
@@ -482,6 +486,10 @@ assert_contains "shows terminal blocker lifecycle event" "issue_closed_completed
 assert_contains "shows WORKER_BRANCH_ORPHAN comment" "WORKER_BRANCH_ORPHAN" "$output"
 assert_contains "shows repeated attempts section" "Repeated attempts / dispatch backoff:" "$output"
 assert_contains "shows metric attempt count" "Attempts in metrics: 3" "$output"
+assert_contains "shows prelaunch failure count" "Prelaunch failures in pulse log: 2" "$output"
+assert_contains "shows prelaunch continuation reason" "worker_worktree_continuation_state_rejected" "$output"
+assert_contains "shows durable zero-attempt release count" "Zero-attempt releases in issue comments: 2" "$output"
+assert_contains "shows durable zero-attempt release reason" "worker_worktree_owner_concurrent_mutation" "$output"
 assert_contains "shows active backoff state" "Retry/backoff state: active=true" "$output"
 assert_contains "shows dispatch backoff log event" "BACKOFF_ACTIVE #21860" "$output"
 assert_contains "shows linked PRs section" "Linked/worker PRs:" "$output"
@@ -543,6 +551,14 @@ if command -v jq >/dev/null 2>&1; then
 	fi
 	json_attempt_count=$(echo "$output" | jq '.repeated_attempts.attempt_count' 2>/dev/null || echo 0)
 	assert_eq "JSON repeated_attempts attempt_count for #21860" "3" "$json_attempt_count"
+	json_prelaunch_count=$(echo "$output" | jq '.repeated_attempts.prelaunch_failure_count' 2>/dev/null || echo 0)
+	assert_eq "JSON repeated_attempts prelaunch_failure_count for #21860" "2" "$json_prelaunch_count"
+	json_prelaunch_reason_count=$(echo "$output" | jq '.repeated_attempts.prelaunch_failure_reasons.worker_worktree_continuation_state_rejected' 2>/dev/null || echo 0)
+	assert_eq "JSON repeated_attempts continuation reason count" "1" "$json_prelaunch_reason_count"
+	json_zero_attempt_count=$(echo "$output" | jq '.repeated_attempts.zero_attempt_release_count' 2>/dev/null || echo 0)
+	assert_eq "JSON repeated_attempts zero_attempt_release_count for #21860" "2" "$json_zero_attempt_count"
+	json_zero_attempt_reason_count=$(echo "$output" | jq '.repeated_attempts.zero_attempt_release_reasons.worker_worktree_owner_concurrent_mutation' 2>/dev/null || echo 0)
+	assert_eq "JSON repeated_attempts zero-attempt reason count" "1" "$json_zero_attempt_reason_count"
 	json_backoff_active=$(echo "$output" | jq '.repeated_attempts.backoff_active' 2>/dev/null || echo "false")
 	assert_eq "JSON repeated_attempts backoff_active=true" "true" "$json_backoff_active"
 	json_dispatch_events=$(echo "$output" | jq '.repeated_attempts.dispatch_log_events | length' 2>/dev/null || echo 0)

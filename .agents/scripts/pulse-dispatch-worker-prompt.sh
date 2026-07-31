@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# pulse-dispatch-worker-prompt.sh -- Worker prompt preparation and zero-output hold helpers.
+# pulse-dispatch-worker-prompt.sh -- Worker prompt preparation and zero-attempt hold helpers.
 #
 # Sourced by pulse-dispatch-worker-launch.sh. Depends on shared-constants.sh
 # plus dispatch state and GitHub helpers supplied by the pulse dispatcher.
@@ -88,17 +88,18 @@ _dlw_comment_bloat_metrics() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local zero_output_pattern="${_DLW_ZERO_OUTPUT_EVIDENCE_PATTERN}"
+	local zero_attempt_pattern="${_DLW_ZERO_ATTEMPT_EVIDENCE_PATTERN}"
 
-	[[ "${CLEAN_ROOM_COMMENT_EVIDENCE_ENABLED:-1}" == "1" ]] || { printf '0\t0\t0\t0'; return 0; }
-	[[ "$issue_number" =~ ^[0-9]+$ ]] || { printf '0\t0\t0\t0'; return 0; }
-	[[ -n "$repo_slug" ]] || { printf '0\t0\t0\t0'; return 0; }
+	[[ "${CLEAN_ROOM_COMMENT_EVIDENCE_ENABLED:-1}" == "1" ]] || { printf '0\t0\t0\t0\t0'; return 0; }
+	[[ "$issue_number" =~ ^[0-9]+$ ]] || { printf '0\t0\t0\t0\t0'; return 0; }
+	[[ -n "$repo_slug" ]] || { printf '0\t0\t0\t0\t0'; return 0; }
 
 	local metrics=""
 	# shellcheck disable=SC2016  # jq program is intentionally single-quoted.
 	metrics=$(gh api --paginate "repos/${repo_slug}/issues/${issue_number}/comments?per_page=100" \
-		--jq '[.[] | {body: (.body // "")}] | {comments: length, ops: ([.[] | select(.body | test("ops:start|DISPATCH_CLAIM|CLAIM_RELEASED|dispatch-cooldown|Worker Watchdog Kill"; "i"))] | length), zero: ([.[] | select(.body | test("'"${zero_output_pattern}"'"; "i"))] | length), chars: ([.[].body | length] | add // 0)} | [.comments, .ops, .zero, .chars] | @tsv' \
-		2>/dev/null | awk -F '\t' '{c+=$1; o+=$2; z+=$3; ch+=$4} END {printf "%d\t%d\t%d\t%d", c+0, o+0, z+0, ch+0}') || metrics="0	0	0	0"
-	[[ -n "$metrics" ]] || metrics=$'0\t0\t0\t0'
+		--jq '[.[] | {body: (.body // "")}] | {comments: length, ops: ([.[] | select(.body | test("ops:start|DISPATCH_CLAIM|CLAIM_RELEASED|dispatch-cooldown|Worker Watchdog Kill"; "i"))] | length), zero: ([.[] | select(.body | test("'"${zero_output_pattern}"'"; "i"))] | length), chars: ([.[].body | length] | add // 0), zero_attempt: ([.[] | select((.body | test("'"${zero_attempt_pattern}"'"; "i")) and (.body | test("session_count=0"; "i")))] | length)} | [.comments, .ops, .zero, .chars, .zero_attempt] | @tsv' \
+		2>/dev/null | awk -F '\t' '{c+=$1; o+=$2; z+=$3; ch+=$4; za+=$5} END {printf "%d\t%d\t%d\t%d\t%d", c+0, o+0, z+0, ch+0, za+0}') || metrics="0	0	0	0	0"
+	[[ -n "$metrics" ]] || metrics=$'0\t0\t0\t0\t0'
 	printf '%s' "$metrics"
 	return 0
 }
@@ -112,15 +113,19 @@ _dlw_comment_bloat_requires_clean_room() {
 	local ops=""
 	local zero=""
 	local chars=""
+	local zero_attempt=""
 	if [[ -z "$precomputed_metrics" ]]; then
 		precomputed_metrics=$(_dlw_comment_bloat_metrics "$issue_number" "$repo_slug")
 	fi
-	IFS=$'\t' read -r comments ops zero chars \
+	IFS=$'\t' read -r comments ops zero chars zero_attempt \
 		<<<"$precomputed_metrics"
 	[[ "$comments" =~ ^[0-9]+$ ]] || comments=0
 	[[ "$ops" =~ ^[0-9]+$ ]] || ops=0
 	[[ "$zero" =~ ^[0-9]+$ ]] || zero=0
 	[[ "$chars" =~ ^[0-9]+$ ]] || chars=0
+	[[ "$zero_attempt" =~ ^[0-9]+$ ]] || zero_attempt=0
+	local brief_zero_count=$((zero - zero_attempt))
+	[[ "$brief_zero_count" -ge 0 ]] || brief_zero_count=0
 
 	local comment_threshold="${CLEAN_ROOM_COMMENT_THRESHOLD:-100}"
 	local ops_threshold="${CLEAN_ROOM_OPS_COMMENT_THRESHOLD:-50}"
@@ -131,7 +136,7 @@ _dlw_comment_bloat_requires_clean_room() {
 	[[ "$zero_threshold" =~ ^[0-9]+$ ]] || zero_threshold=10
 	[[ "$chars_threshold" =~ ^[0-9]+$ ]] || chars_threshold=50000
 
-	if [[ "$comments" -ge "$comment_threshold" || "$ops" -ge "$ops_threshold" || "$zero" -ge "$zero_threshold" || "$chars" -ge "$chars_threshold" ]]; then
+	if [[ "$comments" -ge "$comment_threshold" || "$ops" -ge "$ops_threshold" || "$brief_zero_count" -ge "$zero_threshold" || "$chars" -ge "$chars_threshold" ]]; then
 		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: clean-room brief mode for comment-bloated issue comments=${comments} ops=${ops} zero=${zero} chars=${chars}" >>"$LOGFILE"
 		return 0
 	fi
@@ -314,6 +319,7 @@ _dlw_prepare_prompt_for_launch() {
 	local ops=""
 	local metrics_zero_count=""
 	local chars=""
+	local zero_attempt_count=""
 	local precomputed_zero_count=""
 	local prior_attempt_context=""
 
@@ -321,7 +327,8 @@ _dlw_prepare_prompt_for_launch() {
 
 	comment_metrics="$precomputed_comment_metrics"
 	[[ -n "$comment_metrics" ]] || comment_metrics=$(_dlw_comment_bloat_metrics "$issue_number" "$repo_slug")
-	IFS=$'\t' read -r comments ops metrics_zero_count chars <<<"$comment_metrics"
+	IFS=$'\t' read -r comments ops metrics_zero_count chars zero_attempt_count <<<"$comment_metrics"
+	[[ "$zero_attempt_count" =~ ^[0-9]+$ ]] || zero_attempt_count=0
 	if [[ "${CLEAN_ROOM_COMMENT_EVIDENCE_ENABLED:-1}" == "1" && "$metrics_zero_count" =~ ^[0-9]+$ ]]; then
 		precomputed_zero_count="$metrics_zero_count"
 	fi
@@ -351,7 +358,7 @@ _dlw_prepare_prompt_for_launch() {
 		if [[ -x "$snapshot_helper" ]] && "$snapshot_helper" fetch "$repo_slug" "$issue_number" >/dev/null 2>&1; then
 			snapshot_ready=1
 		fi
-		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: using URL-only bootstrap prompt after ${zero_count} zero-output launches" >>"$LOGFILE"
+		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: using URL-only bootstrap prompt after ${zero_count} zero-output or zero-attempt failures (${zero_attempt_count} zero-attempt)" >>"$LOGFILE"
 		_dlw_zero_output_fallback_prompt "$issue_number" "$repo_slug" "$issue_title" "$snapshot_ready"
 		printf '%s' "$prior_attempt_context"
 		_dlw_first_pass_completion_contract
@@ -373,16 +380,21 @@ _dlw_hold_repeated_zero_output() {
 	local ops=""
 	local metrics_zero_count=""
 	local chars=""
+	local zero_attempt_count=""
 	local precomputed_zero_count=""
 
 	comment_metrics="$precomputed_comment_metrics"
 	[[ -n "$comment_metrics" ]] || comment_metrics=$(_dlw_comment_bloat_metrics "$issue_number" "$repo_slug")
-	IFS=$'\t' read -r comments ops metrics_zero_count chars <<<"$comment_metrics"
+	IFS=$'\t' read -r comments ops metrics_zero_count chars zero_attempt_count <<<"$comment_metrics"
+	[[ "$zero_attempt_count" =~ ^[0-9]+$ ]] || zero_attempt_count=0
 	if [[ "${CLEAN_ROOM_COMMENT_EVIDENCE_ENABLED:-1}" == "1" && "$metrics_zero_count" =~ ^[0-9]+$ ]]; then
 		precomputed_zero_count="$metrics_zero_count"
 	fi
 
-	if _dlw_comment_bloat_requires_clean_room "$issue_number" "$repo_slug" "$comment_metrics"; then
+	local hold_threshold="${ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD:-4}"
+	[[ "$hold_threshold" =~ ^[0-9]+$ ]] || hold_threshold=4
+	if [[ "$zero_attempt_count" -lt "$hold_threshold" ]] &&
+		_dlw_comment_bloat_requires_clean_room "$issue_number" "$repo_slug" "$comment_metrics"; then
 		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: bypassing repeated zero-output brief-rewrite hold for clean-room brief mode" >>"$LOGFILE"
 		return 1
 	fi
@@ -390,14 +402,11 @@ _dlw_hold_repeated_zero_output() {
 	local zero_count=""
 	zero_count=$(_dlw_zero_output_evidence_count "$issue_number" "$repo_slug" "$precomputed_zero_count")
 	[[ "$zero_count" =~ ^[0-9]+$ ]] || zero_count=0
-	local hold_threshold="${ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD:-4}"
-	[[ "$hold_threshold" =~ ^[0-9]+$ ]] || hold_threshold=4
-
 	if [[ "$zero_count" -lt "$hold_threshold" ]]; then
 		return 1
 	fi
 
-	echo "[dispatch_with_dedup] Holding #${issue_number} in ${repo_slug}: ${zero_count} zero-output launches; applying dispatch infrastructure hold" >>"$LOGFILE"
+	echo "[dispatch_with_dedup] Holding #${issue_number} in ${repo_slug}: ${zero_count} zero-output or zero-attempt failures; applying dispatch infrastructure hold" >>"$LOGFILE"
 	gh issue edit "$issue_number" --repo "$repo_slug" \
 		--add-label "needs-maintainer-review" \
 		--remove-label "status:available" \
@@ -405,7 +414,7 @@ _dlw_hold_repeated_zero_output() {
 	gh issue comment "$issue_number" --repo "$repo_slug" --body "<!-- dispatch-infrastructure-failure -->
 ## Dispatch infrastructure failure detected
 
-This issue has accumulated ${zero_count} zero-output worker launches. The brief may still be valid; repeated setup/runtime failures must be diagnosed before another automatic dispatch.
+This issue has accumulated ${zero_count} zero-output or zero-attempt worker failures. The brief may still be valid; repeated setup/runtime failures must be diagnosed before another automatic dispatch.
 
 Next action: fix or wait out the worker/runtime failure family, then approve and requeue the issue so pulse can reconsider it afresh." >/dev/null 2>&1 || true
 	return 0
