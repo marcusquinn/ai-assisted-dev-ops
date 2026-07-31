@@ -701,9 +701,9 @@ _ghqa_capture_locked() {
 	local path="$6"
 	local page="$7"
 	shift 7
-	local debug_file parsed header version frame_count
+	local debug_file="" parsed="" header="" version="" frame_count=""
 	local started_ms finished_ms elapsed_ms rc=0
-	trap '_ghqa_capture_cleanup "$debug_file" "$lock_dir"' EXIT HUP INT TERM
+	trap '_ghqa_capture_cleanup "${debug_file:-}" "${lock_dir:-}"' EXIT HUP INT TERM
 	if ! _ghqa_lock_acquire "$lock_dir"; then
 		lock_dir=""
 		_ghqa_run_uncaptured_to_result "$result_file" "$path" "$page" "$@"

@@ -1496,6 +1496,28 @@ else
 	_fail "local-only exact-capture bypass" "log: $(cat "$local_log" 2>/dev/null || true)"
 fi
 
+# Successful managed writes with debug output unset still run capture cleanup.
+# Keep this path nounset-safe and preserve the wrapped commands' success status.
+write_success_state="$TMP/exact-write-success-state"
+write_success_log="$TMP/exact-write-success.log"
+write_success_err="$TMP/exact-write-success.err"
+: >"$write_success_log"
+: >"$write_success_err"
+if GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$write_success_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$write_success_log" "$SHIM_RUN" pr reopen 123 --repo owner/repo \
+	>/dev/null 2>"$write_success_err" && \
+	GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$write_success_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$write_success_log" "$SHIM_RUN" issue edit 123 --repo owner/repo \
+	>/dev/null 2>>"$write_success_err" && \
+	! grep -q 'debug_file: unbound variable' "$write_success_err"; then
+	_pass "successful PR and issue writes with unset debug output preserve status without nounset diagnostics"
+else
+	_fail "successful write cleanup with unset debug output" \
+		"stderr: $(cat "$write_success_err" 2>/dev/null || true)"
+fi
+
 # =============================================================================
 # Test 24: response-owned GraphQL cost is recorded after reading the response
 # =============================================================================
