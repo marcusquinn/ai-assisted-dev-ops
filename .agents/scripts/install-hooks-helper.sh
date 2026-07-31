@@ -1271,6 +1271,7 @@ _test_hook_script_path() {
 
 _test_hook_create_repo() {
 	local test_root="$1"
+	local managed="${2:-true}"
 	local real_git="${AIDEVOPS_REAL_GIT_BIN:-/usr/bin/git}"
 	"$real_git" -C "$test_root" init -b main >/dev/null 2>&1 || {
 		"$real_git" -C "$test_root" init >/dev/null 2>&1
@@ -1279,6 +1280,9 @@ _test_hook_create_repo() {
 	"$real_git" -C "$test_root" config user.name "Aidevops Hook Test"
 	"$real_git" -C "$test_root" config user.email "test@example.com"
 	"$real_git" -C "$test_root" config commit.gpgsign false
+	if [[ "$managed" == "true" ]]; then
+		printf '{}\n' >"${test_root}/.aidevops.json"
+	fi
 	printf 'seed\n' >"${test_root}/README.md"
 	"$real_git" -C "$test_root" add README.md >/dev/null 2>&1
 	"$real_git" -C "$test_root" commit -m "test: seed hook self-test" >/dev/null 2>&1
@@ -1398,6 +1402,19 @@ _test_hook_run_linked_worktree_cases() {
 	return 0
 }
 
+_test_hook_run_unmanaged_cases() {
+	local unmanaged_root="$1"
+	local test_script="$2"
+
+	if _test_hook_expect_allowed "$unmanaged_root" "$test_script" \
+		"git branch -m main external/example" "should allow in unmanaged repository"; then
+		HOOK_TEST_PASS=$((HOOK_TEST_PASS + 1))
+	else
+		HOOK_TEST_FAIL=$((HOOK_TEST_FAIL + 1))
+	fi
+	return 0
+}
+
 test_hook() {
 	print_info "Running hook self-test..."
 
@@ -1412,12 +1429,16 @@ test_hook() {
 	local linked_worktree="${test_root}/linked-wt"
 	local real_git="${AIDEVOPS_REAL_GIT_BIN:-/usr/bin/git}"
 	"$real_git" -C "$test_root" worktree add "$linked_worktree" -b feature/hook-linked-test >/dev/null 2>&1
+	local unmanaged_root="${test_root}/unmanaged-repo"
+	mkdir -p "$unmanaged_root"
+	_test_hook_create_repo "$unmanaged_root" false
 
 	HOOK_TEST_PASS=0
 	HOOK_TEST_FAIL=0
 	_test_hook_run_blocked_cases "$test_root" "$test_script"
 	_test_hook_run_allowed_cases "$test_root" "$test_script"
 	_test_hook_run_linked_worktree_cases "$linked_worktree" "$test_script"
+	_test_hook_run_unmanaged_cases "$unmanaged_root" "$test_script"
 
 	"$real_git" -C "$test_root" worktree remove "$linked_worktree" >/dev/null 2>&1 || rm -rf "$linked_worktree"
 	rm -rf "$test_root"
