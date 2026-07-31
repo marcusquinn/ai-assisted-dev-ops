@@ -1820,9 +1820,9 @@
       "pr": 16548
     },
     ".agents/scripts/approval-helper.sh": {
-      "at": "2026-07-27T03:10:39Z",
-      "hash": "76af1beab40fbbfd799939bb510e3c6f88e4ee0e",
-      "passes": 18,
+      "at": "2026-07-31T03:01:14Z",
+      "hash": "6fe523d9661495ec7e6beaae80ed74d57427c5f5",
+      "passes": 19,
       "pr": 17454
     },
     ".agents/scripts/attribution-detection-helper.sh": {
@@ -1952,9 +1952,9 @@
       "pr": 16797
     },
     ".agents/scripts/commands/full-loop.md": {
-      "at": "2026-07-31T00:44:18Z",
-      "hash": "442dc7786da1493f994713fc405bdd6f8d4953d8",
-      "passes": 44,
+      "at": "2026-07-31T03:01:16Z",
+      "hash": "539ddae8e57a2d184240548529b52a3928143aa0",
+      "passes": 45,
       "pr": 14590
     },
     ".agents/scripts/commands/init-routines.md": {
@@ -2394,9 +2394,9 @@
       "pr": 17590
     },
     ".agents/scripts/pulse-ancillary-dispatch.sh": {
-      "at": "2026-07-29T22:17:51Z",
-      "hash": "83df66917d5ffce1377ff9f8b7809a41bb58095b",
-      "passes": 29,
+      "at": "2026-07-31T03:01:25Z",
+      "hash": "d719bc2012781800399474ed75add5082b55b50a",
+      "passes": 30,
       "pr": 18657
     },
     ".agents/scripts/pulse-cleanup.sh": {
@@ -2418,9 +2418,9 @@
       "pr": 18832
     },
     ".agents/scripts/pulse-dispatch-engine.sh": {
-      "at": "2026-07-30T00:23:36Z",
-      "hash": "f815956d5507faf0bd6acab2cd6630c2bfb365c6",
-      "passes": 46,
+      "at": "2026-07-31T03:01:26Z",
+      "hash": "6e3813f4c9981468985e21b1df04bb0093fe6911",
+      "passes": 47,
       "pr": 18799
     },
     ".agents/scripts/pulse-fast-fail.sh": {
@@ -6126,9 +6126,9 @@
       "pr": 11909
     },
     ".agents/tools/git/git-security.md": {
-      "at": "2026-04-03T11:54:15Z",
-      "hash": "ebf3356f9a187064ca7cba0c5e0270bb25190fb0",
-      "passes": 1,
+      "at": "2026-07-31T03:02:26Z",
+      "hash": "19012cd2f6db93117e7df4ace72b611c49767806",
+      "passes": 2,
       "pr": 16442
     },
     ".agents/tools/git/gitea-cli.md": {
@@ -7193,9 +7193,9 @@
       "pr": 13065
     },
     ".agents/workflows/full-loop.md": {
-      "at": "2026-07-31T00:46:04Z",
-      "hash": "442dc7786da1493f994713fc405bdd6f8d4953d8",
-      "passes": 33,
+      "at": "2026-07-31T03:02:39Z",
+      "hash": "539ddae8e57a2d184240548529b52a3928143aa0",
+      "passes": 34,
       "pr": 19047
     },
     ".agents/workflows/git-workflow.md": {
@@ -7480,15 +7480,15 @@
       "pr": 16415
     },
     "TODO.md": {
-      "at": "2026-07-31T01:56:05Z",
-      "hash": "3dcc6edbc103e612f921b64877ec19777ac68392",
-      "passes": 218,
+      "at": "2026-07-31T03:02:41Z",
+      "hash": "ccb2655712695de6ae94f90741e672ba1961e7bc",
+      "passes": 219,
       "pr": 15490
     },
     "aidevops.sh": {
-      "at": "2026-07-30T04:53:53Z",
-      "hash": "aad10357d483111ffeca0c458b5b736479ad9910",
-      "passes": 313,
+      "at": "2026-07-31T03:02:41Z",
+      "hash": "c0a667c94f386b09776ca64c8aee0a3388619e99",
+      "passes": 314,
       "pr": 19029
     },
     "setup.sh": {
@@ -7594,10 +7594,10 @@
       "passes": 1
     },
     ".agents/scripts/task-brief-helper.sh": {
-      "hash": "ffab6e46e22a0e777a137e7f4c016792d0296d6c",
-      "at": "2026-07-12T07:33:56Z",
+      "hash": "efd536f07e956ca8a2cfdecb7ffd5056cbc81627",
+      "at": "2026-07-31T03:01:29Z",
       "pr": 20059,
-      "passes": 5
+      "passes": 6
     },
     ".agents/scripts/tests/test-workflow-cascade-lint.sh": {
       "hash": "40a239a36d592f111ec6a001201d21b210d65ad5",
@@ -7720,10 +7720,10 @@
       "passes": 7
     },
     ".agents/reference/auto-dispatch.md": {
-      "hash": "4e70c64692165c659a588ea59f8e6f10b0b4da9f",
-      "at": "2026-07-11T14:31:51Z",
+      "hash": "b6d9bd4b499a2a8a8c84c362e3b5647cab4281f6",
+      "at": "2026-07-31T03:01:10Z",
       "pr": 20441,
-      "passes": 8
+      "passes": 9
     },
     ".agents/reference/repos-json-fields.md": {
       "hash": "1307df7bf1612a1b5482ac6898826f9365167ace",
@@ -7774,10 +7774,10 @@
       "passes": 50
     },
     ".agents/reference/dispatch-blockers.md": {
-      "hash": "a474d553d1a257317c034d9071bf0b1ae4358725",
-      "at": "2026-07-18T15:38:48Z",
+      "hash": "8b830db9b669c0e1f379e7e98f9c2a5ed977d7c9",
+      "at": "2026-07-31T03:01:11Z",
       "pr": 20700,
-      "passes": 4
+      "passes": 5
     },
     ".agents/reference/plist-env-overrides.md": {
       "hash": "f78433942b15e81844435994f3b57056709390f0",
@@ -7828,10 +7828,10 @@
       "passes": 6
     },
     ".agents/scripts/commands/setup-git.md": {
-      "hash": "d5ea8af8dae571ad7371e5131d23fe22173adedb",
-      "at": "2026-05-22T00:32:58Z",
+      "hash": "04cbde49442d249959e097ca0640ffeb00b44685",
+      "at": "2026-07-31T03:01:20Z",
       "pr": 20994,
-      "passes": 4
+      "passes": 5
     },
     ".agents/reference/sync-pat-platforms.md": {
       "hash": "f1fe0560d21ec9b63f89394ad5bf67f771a74fdf",
@@ -7864,10 +7864,10 @@
       "passes": 9
     },
     ".agents/scripts/pulse-dispatch-lib.sh": {
-      "hash": "3875559a819c3dac5107a6e0733bb38e612ed1ac",
-      "at": "2026-07-29T22:17:51Z",
+      "hash": "c494d784bfc86e0c4c6bfd0a21a88ea6e8f00a18",
+      "at": "2026-07-31T03:01:26Z",
       "pr": 26041,
-      "passes": 8
+      "passes": 9
     },
     ".agents/aidevops/cases-plane.md": {
       "hash": "c04dd9d087d38be91374d25310943c94ae664f63",
