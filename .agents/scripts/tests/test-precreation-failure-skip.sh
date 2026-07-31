@@ -471,7 +471,30 @@ STUB_OWNER_INFO=""
 unset STUB_EXISTING_WORKTREE_LINE
 
 # =============================================================================
-# Test 3c: an unowned reused worktree is claimed atomically before preparation
+# Test 3c: an empty continuation batch falls through to an atomic claim
+# =============================================================================
+export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
+REGISTERED_WORKTREE_ARGS=""
+CLAIMED_WORKTREE_ARGS=""
+STUB_OWNER_INFO="12345|generation-7||66666|2026-07-18T00:00:00Z"
+STUB_CLAIM_WORKTREE_RC=0
+: >"$LOGFILE"
+_dlw_precreate_worktree "66666" "$FAKE_REPO"
+rc=$?
+expected_claim="${STUB_EXISTING_PATH}|${STUB_EXISTING_BRANCH}|66666|dispatch-precreate-66666|$$"
+if [[ "$rc" -eq 0 && "$CLAIMED_WORKTREE_ARGS" == "$expected_claim" &&
+	-z "${_DLW_WORKTREE_TRANSFER_MODE:-}" ]] &&
+	grep -Fq "Rejected incomplete or mismatched registry owner for #66666" "$LOGFILE"; then
+	pass "empty continuation batch is never exported and uses the atomic repair path"
+else
+	fail "empty continuation batch is never exported and uses the atomic repair path" \
+		"rc=$rc mode='${_DLW_WORKTREE_TRANSFER_MODE:-}' claim='$CLAIMED_WORKTREE_ARGS'"
+fi
+STUB_OWNER_INFO=""
+unset STUB_EXISTING_WORKTREE_LINE
+
+# =============================================================================
+# Test 3d: an unowned reused worktree is claimed atomically before preparation
 # =============================================================================
 export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
 REGISTERED_WORKTREE_ARGS=""
