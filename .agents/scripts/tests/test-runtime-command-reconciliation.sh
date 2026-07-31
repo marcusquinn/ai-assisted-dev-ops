@@ -45,14 +45,14 @@ if _opencode_managed_config_matches_source; then
 	exit 1
 fi
 
-HOME="$TEST_HOME" python3 "$REPO_ROOT/.agents/scripts/opencode-agent-discovery.py" >/dev/null
+_generate_for_runtime opencode agents >/dev/null
 if ! jq -e '.autoupdate == false and .custom == "preserve"' "$TEST_HOME/.config/opencode/opencode.json" >/dev/null; then
-	printf '%s\n' 'FAIL: OpenCode config generation did not disable autoupdate while preserving unrelated keys' >&2
+	printf '%s\n' 'FAIL: unified OpenCode config generation did not disable autoupdate while preserving unrelated keys' >&2
 	exit 1
 fi
-HOME="$TEST_HOME" python3 "$REPO_ROOT/.agents/scripts/opencode-agent-discovery.py" >/dev/null
+_generate_for_runtime opencode agents >/dev/null
 if ! jq -e '.autoupdate == false and .custom == "preserve"' "$TEST_HOME/.config/opencode/opencode.json" >/dev/null; then
-	printf '%s\n' 'FAIL: repeated OpenCode config generation did not preserve managed autoupdate state' >&2
+	printf '%s\n' 'FAIL: repeated unified OpenCode config generation did not preserve managed autoupdate state' >&2
 	exit 1
 fi
 

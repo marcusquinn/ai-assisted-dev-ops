@@ -124,6 +124,8 @@ def output_opencode_json():
         print(f"Error: Failed to load {config_path}: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Keep OpenCode updates behind the framework-controlled runtime pin.
+    config['autoupdate'] = False
     _update_opencode_agents(config, sorted_agents, primary_agents)
     _merge_instructions(config)
     _ensure_plugin_registered(config)
