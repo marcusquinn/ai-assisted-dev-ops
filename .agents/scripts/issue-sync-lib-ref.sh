@@ -256,11 +256,9 @@ resolve_task_gh_number() {
 			return 0
 		fi
 	fi
-	local task_id_ere
-	task_id_ere=$(_escape_ere "$task_id")
-
-	local ref="" issue_json="" issue_id="" issue_number="" issue_state="" issue_cursor=""
-	ref=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 |
+	local ref="" issue_json="" issue_id="" issue_number="" issue_state="" issue_cursor="" task_line=""
+	task_line=$(find_todo_task_line "$task_id" "$todo_file") || return 1
+	ref=$(printf '%s\n' "$task_line" |
 		grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || echo "")
 	[[ "$ref" =~ ^[1-9][0-9]*$ ]] || return 1
 	issue_json=$(_gh_with_timeout read gh issue view "$ref" --repo "$repo" --json id,number,state,updatedAt 2>/dev/null || true)

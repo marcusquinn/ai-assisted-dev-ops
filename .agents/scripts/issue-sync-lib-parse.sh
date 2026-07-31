@@ -65,6 +65,29 @@ strip_code_fences() {
 	return 0
 }
 
+# Return the first live TODO task line for TASK_ID without closing the parser's
+# output early. The final awk consumes the complete stripped stream and delays
+# its single output until EOF, so an early match cannot SIGPIPE
+# strip_code_fences. Parser and input failures remain non-zero.
+find_todo_task_line() {
+	local task_id="$1"
+	local todo_file="$2"
+	local pipeline_status=()
+	strip_code_fences <"$todo_file" | awk -v task_id="$task_id" '
+		!found && /^[[:space:]]*- \[.\] / {
+			candidate = $0
+			sub(/^[[:space:]]*- \[.\] /, "", candidate)
+			if (index(candidate, task_id " ") == 1) { first = $0; found = 1 }
+		}
+		END { if (found) print first }
+	'
+	pipeline_status=("${PIPESTATUS[@]}")
+	if [[ "${pipeline_status[0]}" -ne 0 || "${pipeline_status[1]}" -ne 0 ]]; then
+		return 1
+	fi
+	return 0
+}
+
 # Strip only HTML comment regions (<!-- ... -->) from stdin, including
 # multi-line comments. Leaves code fences and everything else untouched.
 # Useful for callers that need comment stripping without fence removal.

@@ -27,6 +27,10 @@
 #   13. strip_code_fences: strips multi-line HTML comments and example tasks
 #   14. strip_html_comments: standalone helper strips comments only
 #   15. add_gh_ref_to_todo: replaces placeholder ref:none instead of appending
+#   16. find_todo_task_line: large early match is pipefail-safe
+#   17. find_todo_task_line: no match is successful and empty
+#   18. find_todo_task_line: input failure remains detectable
+#   19. issue-sync first-match task lookups use the bounded helper
 #
 # Exit 0 = all tests pass, 1 = at least one failure.
 
@@ -550,6 +554,55 @@ if printf '%s\n' "$plan_result" | grep -q 'Root plan'; then
 	pass "find_plan_by_task_id: walks every ancestor to the root"
 else
 	fail "find_plan_by_task_id: failed deep hierarchy root lookup"
+fi
+
+# -----------------------------------------------------------------------------
+# Tests 16-19: bounded first-match task lookup (GH#28944)
+# -----------------------------------------------------------------------------
+first_match_todo="$TMP/todo-first-match-large.md"
+{
+	printf '%s\n' '- [ ] t1 early task ref:GH#1'
+	i=2
+	while [[ $i -le 100000 ]]; do
+		printf -- '- [ ] t%d generated filler ref:GH#%d\n' "$i" "$i"
+		i=$((i + 1))
+	done
+} >"$first_match_todo"
+
+first_match_stderr="$TMP/first-match.stderr"
+first_match_result=""
+first_match_status=0
+first_match_result=$(find_todo_task_line "t1" "$first_match_todo" 2>"$first_match_stderr") || first_match_status=$?
+first_match_stderr_bytes=$(wc -c <"$first_match_stderr")
+if [[ $first_match_status -eq 0 && "$first_match_result" == '- [ ] t1 early task ref:GH#1' && ! -s "$first_match_stderr" ]]; then
+	pass "find_todo_task_line: large early match is pipefail-safe"
+else
+	fail "find_todo_task_line: large early match failed or emitted diagnostics (status=${first_match_status}, result=${first_match_result:-<empty>}, stderr-bytes=${first_match_stderr_bytes})"
+fi
+
+no_match_result="sentinel"
+no_match_status=0
+no_match_result=$(find_todo_task_line "t100001" "$first_match_todo") || no_match_status=$?
+if [[ $no_match_status -eq 0 && -z "$no_match_result" ]]; then
+	pass "find_todo_task_line: no match is successful and empty"
+else
+	fail "find_todo_task_line: no-match contract changed"
+fi
+
+read_failure_status=0
+find_todo_task_line "t1" "$TMP/missing-todo.md" >/dev/null 2>&1 || read_failure_status=$?
+if [[ $read_failure_status -ne 0 ]]; then
+	pass "find_todo_task_line: input failure remains detectable"
+else
+	fail "find_todo_task_line: input failure was hidden"
+fi
+
+helper_lookup_count=$(grep -c 'find_todo_task_line' "$SCRIPT_DIR/issue-sync-helper.sh")
+close_lookup_count=$(grep -c 'find_todo_task_line' "$SCRIPT_DIR/issue-sync-helper-close.sh")
+if [[ "$helper_lookup_count" -eq 2 && "$close_lookup_count" -eq 3 ]]; then
+	pass "issue-sync first-match task lookups use the bounded helper"
+else
+	fail "issue-sync first-match task lookups are not fully migrated"
 fi
 
 # -----------------------------------------------------------------------------

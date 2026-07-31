@@ -231,9 +231,6 @@ _push_finalize_task_creation() {
 _push_process_task() {
 	local task_id="$1" repo="$2" todo_file="$3" project_root="$4"
 	log_verbose "Processing $task_id..."
-	local task_id_ere
-	task_id_ere=$(_escape_ere "$task_id")
-
 	# Skip if issue already exists
 	local existing
 	existing=$(gh_find_issue_by_title "$repo" "${task_id}:" "all" 500)
@@ -244,7 +241,10 @@ _push_process_task() {
 	fi
 
 	local task_line
-	task_line=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 || echo "")
+	if ! task_line=$(find_todo_task_line "$task_id" "$todo_file"); then
+		print_error "Failed to read TODO.md while looking up $task_id"
+		return 1
+	fi
 	[[ -z "$task_line" ]] && {
 		print_warning "Task $task_id not found in TODO.md"
 		return 0
@@ -319,9 +319,10 @@ _push_process_task() {
 _enrich_process_task() {
 	local task_id="$1" repo="$2" todo_file="$3" project_root="$4" task_line="${5:-}"
 	if [[ -z "$task_line" ]]; then
-		local task_id_ere
-		task_id_ere=$(_escape_ere "$task_id")
-		task_line=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 || echo "")
+		if ! task_line=$(find_todo_task_line "$task_id" "$todo_file"); then
+			print_error "Failed to read TODO.md while looking up $task_id"
+			return 1
+		fi
 	fi
 	local num
 	num=$(echo "$task_line" | grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || echo "")
