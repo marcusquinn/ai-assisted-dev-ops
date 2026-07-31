@@ -21,9 +21,9 @@ from _knowledge_social_collect import (
 from _knowledge_social_lease import (
     RunLease,
     RunReceiptUpdate,
-    assert_run_lease,
+    _assert_run_lease_at,
+    _update_run_receipt_at,
     social_now,
-    update_run_receipt,
 )
 from knowledge_social_import import (
     canonical_json,
@@ -133,12 +133,12 @@ def _insert_fetch_batch(
            resource_count,budget_units,started_at,completed_at,terminal_status)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
         (
-            record.raw.response_hash,
+            record.raw.batch_id,
             _provider(context),
             context.connection_id,
             context.stream,
             record.raw.request_hash,
-            record.raw.batch_id,
+            record.raw.response_hash,
             record.raw.blob_ref,
             record.resource_count,
             record.budget_units,
@@ -260,7 +260,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
         lease = _run_lease(context)
-        assert_run_lease(database, lease, now_epoch=social_now())
+        _assert_run_lease_at(database, lease, social_now())
         _assert_connection_binding(database, context)
         raw = _raw_batch(
             context, page.payload, page.request, page.archive["exported_at"]
@@ -285,7 +285,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
         )
         _update_cursor(database, context, page)
         _upsert_success_coverage(database, context, page, raw.batch_id)
-        update_run_receipt(
+        _update_run_receipt_at(
             database,
             lease,
             RunReceiptUpdate(
@@ -293,7 +293,7 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
                 resource_delta=resource_count,
                 terminal=page.complete,
             ),
-            now_epoch=social_now(),
+            social_now(),
         )
         database.execute("COMMIT")
         return resource_count
@@ -375,7 +375,7 @@ def record_terminal(
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
         lease = _run_lease(context)
-        assert_run_lease(database, lease, now_epoch=social_now())
+        _assert_run_lease_at(database, lease, social_now())
         _assert_connection_binding(database, context)
         raw = _raw_batch(context, payload, request, observed_at)
         upsert_connection(
@@ -390,7 +390,7 @@ def record_terminal(
             FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
         )
         _upsert_terminal_coverage(database, context, raw, decision)
-        update_run_receipt(
+        _update_run_receipt_at(
             database,
             lease,
             RunReceiptUpdate(
@@ -399,7 +399,7 @@ def record_terminal(
                 retry_after=retry_after,
                 terminal=True,
             ),
-            now_epoch=social_now(),
+            social_now(),
         )
         database.execute("COMMIT")
         return retry_after
@@ -445,7 +445,7 @@ def record_bounded_stop(
         migrate(database)
         database.execute("BEGIN IMMEDIATE")
         lease = _run_lease(context)
-        assert_run_lease(database, lease, now_epoch=now)
+        _assert_run_lease_at(database, lease, now)
         _assert_connection_binding(database, context)
         updated = database.execute(
             "UPDATE coverage_records SET status=?,unavailable_reason=?,observed_at=? "
@@ -461,11 +461,11 @@ def record_bounded_stop(
         ).rowcount
         if updated != 1:
             raise SocialStoreError("social stop has no durable coverage checkpoint")
-        update_run_receipt(
+        _update_run_receipt_at(
             database,
             lease,
             RunReceiptUpdate(status, failure_class=failure, terminal=True),
-            now_epoch=social_now(),
+            social_now(),
         )
         database.execute("COMMIT")
     except Exception:

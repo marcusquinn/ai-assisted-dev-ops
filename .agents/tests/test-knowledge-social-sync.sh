@@ -82,6 +82,112 @@ else
 	assert_eq "environment clock override is unavailable outside tests" rejected rejected
 fi
 
+production_clock_summary=$(
+	python3 - "$TMP_DIR" "$SCRIPT_DIR/../scripts" <<'PY'
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+os.environ.pop("AIDEVOPS_TEST_MODE", None)
+os.environ.pop("AIDEVOPS_SOCIAL_NOW_EPOCH", None)
+sys.path.insert(0, sys.argv[2])
+
+from _knowledge_social_collect import (
+    CollectionContext,
+    ConnectionConfig,
+    CursorState,
+    PageCheckpoint,
+    SuccessfulPage,
+)
+from _knowledge_social_collect_persist import persist_page
+from _knowledge_social_lease import (
+    RunLeaseRequest,
+    acquire_run_lease,
+    release_run_lease,
+    renew_run_lease,
+)
+from _knowledge_social_x import STREAMS
+
+root = Path(sys.argv[1]) / "production-clock"
+root.mkdir(mode=0o700)
+lease = acquire_run_lease(
+    root,
+    RunLeaseRequest("conn_real", "authored", "runner_real", "sync", 60),
+)
+lease = renew_run_lease(root, lease, 60)
+context = CollectionContext(
+    root,
+    "conn_real",
+    {"id": "acct_real"},
+    "authored",
+    "none",
+    ConnectionConfig(("authored",), {"media_hydration": "none"}),
+    CursorState(None, None, False),
+    STREAMS["authored"],
+    lease,
+    "xapi",
+)
+observed_at = "2026-07-31T12:00:00Z"
+archive = {
+    "remote_account_id": "acct_real",
+    "enabled_streams": ["authored"],
+    "policy": {"media_hydration": "none"},
+    "accounts": [],
+    "objects": [
+        {
+            "object_type": "post",
+            "remote_id": "post_real",
+            "account_remote_id": "acct_real",
+            "text": "production clock regression",
+            "created_at": observed_at,
+            "observed_at": observed_at,
+            "evidence_class": "account-visible",
+            "provider_json": {},
+        }
+    ],
+    "activities": [
+        {
+            "activity_type": "authored",
+            "remote_id": "acct_real-authored-post_real",
+            "actor_remote_id": "acct_real",
+            "object_remote_id": "post_real",
+            "occurred_at": observed_at,
+            "observed_at": observed_at,
+            "state": "active",
+            "provider_json": {},
+        }
+    ],
+    "media": [],
+    "exported_at": observed_at,
+}
+resources = persist_page(
+    context,
+    SuccessfulPage(
+        {"status": 200, "observed_at": observed_at, "data": []},
+        "/2/users/acct_real/tweets?max_results=100",
+        archive,
+        PageCheckpoint(None, "post_real"),
+        True,
+        1,
+    ),
+)
+with sqlite3.connect(root / "index" / "social.db") as database:
+    status = database.execute(
+        "SELECT status FROM sync_runs WHERE run_id=?", (lease.run_id,)
+    ).fetchone()[0]
+    joined = database.execute(
+        "SELECT count(*) FROM objects o "
+        "JOIN fetch_batches b ON b.batch_id=o.batch_id "
+        "WHERE o.remote_id='post_real' AND b.response_hash != b.batch_id"
+    ).fetchone()[0]
+released = int(release_run_lease(root, lease))
+print(f"{status}:{resources}:{joined}:{released}")
+PY
+)
+assert_eq "real-clock renewal and persistence succeed without test overrides" \
+	"$production_clock_summary" "complete:2:1:1"
+
 cat >"$TMP_DIR/initial.json" <<'JSON'
 {
   "identity": {"data": {"id": "acct42", "username": "private-handle"}},
@@ -112,6 +218,9 @@ assert_eq "successful receipt carries the collector fence" \
 assert_eq "completed invocation releases its live lease" \
 	"$(sql_value "SELECT count(*) FROM collector_leases WHERE connection_id='conn_sync'")" \
 	"0"
+assert_eq "normalized rows retain canonical fetch-batch provenance" \
+	"$(sql_value "SELECT (SELECT count(*) FROM objects o JOIN fetch_batches b ON b.batch_id=o.batch_id WHERE o.remote_id='post101') || ':' || (SELECT count(*) FROM activities a JOIN fetch_batches b ON b.batch_id=a.batch_id WHERE a.remote_id='acct42-authored-post101') || ':' || (SELECT count(*) FROM objects o JOIN fetch_batches b ON b.batch_id=o.batch_id WHERE o.remote_id='post101' AND b.response_hash != b.batch_id)")" \
+	"1:1:1"
 
 not_due=$("$HELPER" sync-due --base "$BASE" \
 	--now-epoch 1000 --interval-seconds 60)
