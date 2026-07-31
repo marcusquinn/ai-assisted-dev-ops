@@ -1,0 +1,63 @@
+{
+  "identity": {
+    "data": {
+      "id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_111111111111111111111111",
+      "provider_account_id": "111111111111111111111111",
+      "display_name": "Fixture Account",
+      "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+      "room_ids": [
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333"
+      ],
+      "server_version": "32.0.8",
+      "talk_version": "22.0.4",
+      "features": ["chat-v2", "conversation-v4", "edit-messages", "federation-v1", "reactions", "talk-polls"]
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {
+        "stream": "messages",
+        "room_index": 0,
+        "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+        "position": 0,
+        "stop_at": null,
+        "limit": 2
+      },
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:00:00Z",
+        "data": [
+          {
+            "kind": "message",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_444444444444444444444444",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+            "actor_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_111111111111111111111111",
+            "text": "Bounded fixture knowledge",
+            "created_at": "2026-07-31T11:59:00Z",
+            "message_type": "comment",
+            "system_message": "",
+            "parent_id": null,
+            "deleted": false,
+            "edited_at": "2026-07-31T11:59:30Z",
+            "expiration_at": null,
+            "reactions": {"ack": 2},
+            "mentions": [{"kind": "user", "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_555555555555555555555555"}],
+            "attachments": [{"remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_attachment_666666666666666666666666", "mime_type": "text/plain", "byte_size": 12, "hydration_state": "metadata"}],
+            "markdown": true
+          }
+        ],
+        "meta": {
+          "stream": "messages",
+          "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+          "next_room_index": 0,
+          "next_position": 90,
+          "newest_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_message_444444444444444444444444",
+          "reached_watermark": false,
+          "complete": false
+        }
+      }
+    }
+  ]
+}

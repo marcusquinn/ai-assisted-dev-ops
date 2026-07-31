@@ -29,7 +29,7 @@ tools:
 | Script | `nextcloud-talk-dispatch-helper.sh [setup\|start\|stop\|status\|map\|unmap\|mappings\|test\|logs]` |
 | Config | `~/.config/aidevops/nextcloud-talk-bot.json` (600 permissions) |
 | Data | `~/.aidevops/.agent-workspace/nextcloud-talk-bot/` |
-| Docs | [Talk docs](https://nextcloud-talk.readthedocs.io/) · [Bot API](https://docs.nextcloud.com/server/latest/developer_manual/digging_deeper/bots.html) |
+| Docs | [Talk docs](https://nextcloud-talk.readthedocs.io/) · [Bots and webhooks](https://nextcloud-talk.readthedocs.io/en/latest/bots/) |
 
 **Key differentiator**: You own server, database, encryption keys, and backups. No third party (including Nextcloud GmbH) has access. Unlike Slack/Teams/Discord: zero external data access. Unlike SimpleX/Signal: full collaboration suite (files, calendar, office, contacts).
 
@@ -43,7 +43,7 @@ nextcloud-talk-dispatch-helper.sh start --daemon
 
 ## Architecture
 
-**Stack**: Talk Room → webhook POST (HMAC-SHA256) → Bot Endpoint (Bun/Node) → `runner-helper.sh` → AI session → OCS API reply → Talk Room.
+**Stack**: Talk Room → webhook POST (HMAC-SHA256 over random header + body) → Bot Endpoint (Bun/Node) → `runner-helper.sh` → AI session → OCS API reply → Talk Room.
 
 **Message flow**: signature verify → access control → entity resolution (`entity-helper.sh`) → Layer 0 log → context load → dispatch → headless AI session → OCS API reply + reaction emoji (⏳/✅/❌).
 
@@ -99,8 +99,8 @@ const ALLOWED_USERS = new Set(["admin", "developer1", "developer2"]);
 const app = express();
 app.use(express.raw({ type: "application/json" }));
 
-function verifySignature(body: Buffer, signature: string): boolean {
-  const expected = createHmac("sha256", WEBHOOK_SECRET).update(body).digest("hex");
+function verifySignature(body: Buffer, random: string, signature: string): boolean {
+  const expected = createHmac("sha256", WEBHOOK_SECRET).update(random).update(body).digest("hex");
   if (expected.length !== signature.length) return false;
   let result = 0;
   for (let i = 0; i < expected.length; i++) result |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
@@ -117,7 +117,8 @@ async function ocsPost(path: string, body: object): Promise<void> {
 
 app.post("/webhook", async (req, res) => {
   const sig = req.headers["x-nextcloud-talk-signature"] as string;
-  if (!sig || !verifySignature(req.body, sig)) { res.status(401).send("Invalid signature"); return; }
+  const random = req.headers["x-nextcloud-talk-random"] as string;
+  if (!sig || !random || !verifySignature(req.body, random, sig)) { res.status(401).send("Invalid signature"); return; }
   res.status(200).send("OK");
 
   const p = JSON.parse(req.body.toString());
@@ -146,7 +147,7 @@ Base: `https://cloud.example.com/ocs/v2.php/apps/spreed/api/` · Auth: `Basic bo
 |--------|--------|------|
 | List conversations | GET | `v4/room` |
 | Send message | POST | `v1/chat/TOKEN` · body: `{"message":"..."}` |
-| Get messages | GET | `v1/chat/TOKEN?lookIntoFuture=0&limit=50` |
+| Get messages without read/status side effects | GET | `v1/chat/TOKEN?lookIntoFuture=0&limit=50&setReadMarker=0&noStatusUpdate=1&markNotificationsAsRead=0` |
 | Send reaction | POST | `v1/reaction/TOKEN/MESSAGE_ID` · body: `{"reaction":"👍"}` |
 
 Talk supports markdown: `**bold**`, `` `code` ``, headings, lists.
@@ -167,7 +168,7 @@ Better theoretical privacy: SimpleX (no user identifiers) and Signal (E2E everyt
 
 **Compliance**: GDPR (full control), HIPAA/SOC2/ISO 27001 configurable. Jurisdiction = where you host — no CLOUD Act/FISA 702 unless US-hosted. AGPL-3.0 — fully auditable.
 
-**Bot security**: webhook can be localhost/LAN/tunneled (no public internet required) · HMAC-SHA256 prevents forged deliveries · app password is scoped/revocable · handler+logs never leave your infrastructure.
+**Bot security**: webhook can be localhost/LAN/tunneled (no public internet required) · verify the backend header and HMAC-SHA256 over the random header plus raw body · app passwords are revocable account credentials, not endpoint-scoped API grants · room membership and explicit allowlists provide the collector boundary.
 
 ## aidevops Integration
 

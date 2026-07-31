@@ -1,0 +1,47 @@
+{
+  "identity": {
+    "data": {
+      "id": "nct_bbbbbbbbbbbbbbbbbbbbbbbb_user_111111111111111111111111",
+      "provider_account_id": "111111111111111111111111",
+      "instance_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+      "room_ids": ["nct_bbbbbbbbbbbbbbbbbbbbbbbb_room_222222222222222222222222"],
+      "server_version": "31.0.9",
+      "talk_version": "21.1.2",
+      "features": ["chat-v2", "conversation-v4", "federation-v1", "reactions"]
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {"stream": "rooms", "room_id": null, "position": 0},
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:03:00Z",
+        "data": [
+          {
+            "kind": "conversation",
+            "remote_id": "nct_bbbbbbbbbbbbbbbbbbbbbbbb_room_222222222222222222222222",
+            "name": "Synthetic room",
+            "room_type": 2,
+            "participant_type": 3,
+            "read_only": 0,
+            "message_expiration": 0,
+            "last_activity": "2026-07-31T12:00:00Z",
+            "has_call": false,
+            "unread_messages": 0,
+            "federated": false
+          }
+        ],
+        "meta": {
+          "stream": "rooms",
+          "instance_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+          "room_id": null,
+          "next_room_index": 0,
+          "next_position": 0,
+          "newest_id": "nct_bbbbbbbbbbbbbbbbbbbbbbbb_room_222222222222222222222222",
+          "reached_watermark": false,
+          "complete": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "identity": {
+    "data": {
+      "id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_user_111111111111111111111111",
+      "provider_account_id": "111111111111111111111111",
+      "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+      "room_ids": [
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+        "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333"
+      ],
+      "server_version": "32.0.8",
+      "talk_version": "22.0.4",
+      "features": ["chat-v2", "conversation-v4", "federation-v1"]
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {"stream": "participants", "room_index": 0, "position": 0},
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:03:30Z",
+        "data": [
+          {
+            "kind": "participant",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_participant_111111111111111111111111",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+            "actor_type": "users",
+            "participant_type": 3,
+            "permissions": 254,
+            "in_call": 0,
+            "federated": false,
+            "guest": false
+          },
+          {
+            "kind": "participant",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_participant_222222222222222222222222",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+            "actor_type": "guests",
+            "participant_type": 4,
+            "permissions": 118,
+            "in_call": 0,
+            "federated": false,
+            "guest": true
+          }
+        ],
+        "meta": {
+          "stream": "participants",
+          "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_222222222222222222222222",
+          "next_room_index": 1,
+          "next_position": 0,
+          "newest_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_participant_111111111111111111111111",
+          "reached_watermark": false,
+          "complete": false
+        }
+      }
+    },
+    {
+      "expect_request": {"stream": "participants", "room_index": 1, "position": 0},
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:03:31Z",
+        "data": [
+          {
+            "kind": "participant",
+            "remote_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_participant_333333333333333333333333",
+            "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+            "actor_type": "federated_users",
+            "participant_type": 3,
+            "permissions": 118,
+            "in_call": 0,
+            "federated": true,
+            "guest": false
+          }
+        ],
+        "meta": {
+          "stream": "participants",
+          "instance_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "room_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_room_333333333333333333333333",
+          "next_room_index": 2,
+          "next_position": 0,
+          "newest_id": "nct_aaaaaaaaaaaaaaaaaaaaaaaa_participant_333333333333333333333333",
+          "reached_watermark": false,
+          "complete": true
+        }
+      }
+    }
+  ]
+}
