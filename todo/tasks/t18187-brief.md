@@ -36,8 +36,8 @@ failure is scheduler discovery rather than release detection.
   routines registry shape while retaining fail-closed fence, comment,
   indentation, and out-of-section handling.
 - EDIT: `.agents/scripts/tests/test-pulse-routines-selector.sh` — generate a
-  real routines-repository fixture via `init-routines-helper.sh`, prove r916 is
-  selected, and prove task-section lookalikes remain excluded.
+  real routines-repository fixture via `init-routines-helper.sh`, prove core and
+  user routines are selected, and prove task-section lookalikes remain excluded.
 
 ### Implementation Steps
 
@@ -62,7 +62,8 @@ shellcheck .agents/scripts/pulse-routines.sh .agents/scripts/tests/test-pulse-ro
 
 ## Acceptance Criteria
 
-- [ ] A generated `aidevops-routines/TODO.md` exposes r916 to the scheduler.
+- [ ] A generated `aidevops-routines/TODO.md` exposes r916 and valid user
+      routines to the scheduler.
 - [ ] General-project `## Routines` registries continue to work unchanged.
 - [ ] Fenced, commented, indented, out-of-section, duplicate, mixed, and
       malformed routine definitions do not dispatch.

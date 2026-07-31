@@ -48,8 +48,8 @@
 #   8. (GH#28808) Missing, duplicate, or malformed boundaries fail closed
 #   9. (GH#28544) A stale cron-form r901 cannot invoke pulse-wrapper.sh and a
 #      later due descriptive-ID routine still executes in the same evaluator pass
-#  10. (GH#28957) The production routines scaffold exposes r916 while task
-#      lookalikes and mixed registry shapes fail closed
+#  10. (GH#28957) The production routines scaffold exposes core and user
+#      routines while task lookalikes and malformed/mixed shapes fail closed
 
 set -u
 
@@ -378,7 +378,7 @@ SCHEDULE_SCRIPT
 _test_generated_routines_repository_contract() {
 	local tmpdir="$1"
 	local fixture_dir="${tmpdir}/generated-routines"
-	local ids=""
+	local ids="" generated_line=""
 	mkdir -p "$fixture_dir"
 	(
 		# Source the production generator in isolation because it owns SCRIPT_DIR.
@@ -387,15 +387,23 @@ _test_generated_routines_repository_contract() {
 		DRY_RUN=false
 		_write_todo_md "$fixture_dir"
 	)
+	while IFS= read -r generated_line || [[ -n "$generated_line" ]]; do
+		printf '%s\n' "$generated_line"
+		if [[ "$generated_line" == "## User Routines" ]]; then
+			printf '%s\n' '- [x] r-user-contract User routine repeat:daily(@07:00) run:custom/scripts/user-contract.sh'
+		fi
+	done <"${fixture_dir}/TODO.md" >"${fixture_dir}/TODO.md.tmp"
+	mv "${fixture_dir}/TODO.md.tmp" "${fixture_dir}/TODO.md"
 	printf '%s\n' '- [x] r-task-lookalike Not a routine repeat:daily(@08:00) run:scripts/fake.sh' >>"${fixture_dir}/TODO.md"
 
 	ids=$(_collect_routine_ids "${fixture_dir}/TODO.md")
 	if [[ $'\n'"$ids"$'\n' == *$'\nr916\n'* ]] &&
 		[[ $'\n'"$ids"$'\n' == *$'\nr917\n'* ]] &&
+		[[ $'\n'"$ids"$'\n' == *$'\nr-user-contract\n'* ]] &&
 		[[ $'\n'"$ids"$'\n' != *$'\nr-task-lookalike\n'* ]]; then
-		pass "Case 10 (GH#28957): generated routines repository exposes core routines only"
+		pass "Case 10 (GH#28957): generated repository exposes core and user routines only"
 	else
-		fail "Case 10 (GH#28957): generated routines repository exposes core routines only" "ids=$ids"
+		fail "Case 10 (GH#28957): generated repository exposes core and user routines only" "ids=$ids"
 	fi
 
 	cat >>"${fixture_dir}/TODO.md" <<'MIXED_REGISTRY'
@@ -423,6 +431,21 @@ MALFORMED_DEDICATED
 		fail "Case 10c (GH#28957): out-of-order dedicated headings fail closed"
 	else
 		pass "Case 10c (GH#28957): out-of-order dedicated headings fail closed"
+	fi
+
+	cat >"${tmpdir}/pre-root-heading.md" <<'PRE_ROOT_HEADING'
+## Unexpected pre-root heading
+
+# Routines
+## Core Routines (framework-managed)
+- [x] r-pre-root Must not dispatch repeat:daily(@09:00) run:scripts/fake.sh
+## User Routines
+## Tasks
+PRE_ROOT_HEADING
+	if _routine_extract_section "${tmpdir}/pre-root-heading.md" >/dev/null; then
+		fail "Case 10d (GH#28957): headings before a dedicated root fail closed"
+	else
+		pass "Case 10d (GH#28957): headings before a dedicated root fail closed"
 	fi
 	return 0
 }

@@ -356,7 +356,7 @@ _routine_extract_section() {
 	[[ -f "$todo_file" ]] || return 1
 	local line="" section_content="" section_style="" heading_transition=""
 	local dedicated_style="dedicated" project_style="project"
-	local in_section=0 section_count=0 structure_error=0 dedicated_phase=0
+	local in_section=0 section_count=0 structure_error=0 dedicated_phase=0 pre_registry_heading=0
 	_RML_ACTIVE_LINE="" _RML_TRIMMED_LINE="" _RML_FENCE_CHAR="" _RML_FENCE_LENGTH=0 _RML_IN_COMMENT=0
 
 	while IFS= read -r line || [[ -n "$line" ]]; do
@@ -374,7 +374,14 @@ _routine_extract_section() {
 			else
 				section_style="$dedicated_style"
 				in_section=0
+				[[ "$pre_registry_heading" -eq 0 ]] || structure_error=1
 			fi
+			continue
+		fi
+
+		if [[ -z "$section_style" ]] &&
+			[[ "$_RML_TRIMMED_LINE" =~ ^#[[:space:]]+ || "$_RML_TRIMMED_LINE" =~ ^##[[:space:]]+ ]]; then
+			pre_registry_heading=1
 			continue
 		fi
 
