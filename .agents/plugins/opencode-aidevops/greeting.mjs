@@ -60,34 +60,41 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import {
-  closeSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "fs";
-import { join, dirname } from "path";
+  acquireRefreshLock,
+  cacheGreeting,
+  greetingCacheHasCurrentProvenance,
+  isGreetingCacheUsable,
+  observeSharedRefresh,
+  readGreetingCache,
+  releaseRefreshLock,
+} from "./greeting-refresh.mjs";
+import {
+  buildToast,
+  classifyLines,
+  emitCachedGreeting,
+  emitToast,
+} from "./greeting-toast.mjs";
+import { join } from "path";
 import { homedir } from "os";
+
+export {
+  buildToast,
+  classifyLines,
+  greetingCacheHasCurrentProvenance,
+  isGreetingCacheUsable,
+  readGreetingCache,
+};
 
 const execAsync = promisify(exec);
 
 const CACHE_DIR = join(homedir(), ".aidevops", "cache");
 const CACHE_BASENAME = "session-greeting-opencode.txt";
 const LOCK_BASENAME = "session-greeting-refresh.lock";
-const LOCK_OWNER_BASENAME = "owner";
-// Number of times to poll for a replacement lock or refreshed cache after the
-// prior lock disappears.
-const MAX_MISSING_LOCK_RETRIES = 4;
 // Comprehensive checks run at most once per 15-minute window. The subprocess
 // times out after 15 seconds, so a lock older than 30 seconds is safe to reap
 // after an abrupt plugin-process exit.
 export const REFRESH_TTL_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 30 * 1000;
-const WARNING_LINE_PREFIXES = ["Pulse stalled", "[OPENCODE MAINTENANCE]", "[WARNING]", "[WARN]"];
 
 // Fallback window: accept the first session.updated as a trigger if no
 // session.created arrived within this many ms of plugin init. Keeps the
@@ -132,7 +139,7 @@ function runGreetingAsync({ scriptsDir, client, cacheFile, lockDir, lockToken, e
       const combinedOutput = [output, maintenanceNotice].filter(Boolean).join("\n");
 
       cacheGreeting(cacheFile, combinedOutput);
-      const toast = greetingToast(combinedOutput);
+      const toast = buildToast(classifyLines(combinedOutput));
 
       if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
         const buckets = classifyLines(combinedOutput);
@@ -182,258 +189,6 @@ async function getOpenCodeMaintenanceNotice(scriptsDir) {
       console.error(`[aidevops] greeting: opencode maintenance notice failed: ${err.message}`);
     }
     return "";
-  }
-}
-
-/**
- * Write raw update-check output to ~/.aidevops/cache/session-greeting-opencode.txt
- * so non-Bash agents can consult it without re-running the script.
- * Failures are non-fatal — the toast path continues regardless.
- *
- * @param {string} output
- */
-function cacheGreeting(cacheFile, output) {
-  const tempFile = join(dirname(cacheFile), `.${CACHE_BASENAME}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
-  try {
-    mkdirSync(dirname(cacheFile), { recursive: true });
-    writeFileSync(tempFile, output + "\n", { encoding: "utf-8", mode: 0o600 });
-    renameSync(tempFile, cacheFile);
-  } catch (err) {
-    rmSync(tempFile, { force: true });
-    if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
-      console.error(`[aidevops] greeting: cache write failed: ${err.message}`);
-    }
-  }
-}
-
-export function readGreetingCache(cacheFile) {
-  let fd;
-  try {
-    fd = openSync(cacheFile, "r");
-    const output = readFileSync(fd, "utf-8").trim();
-    if (!output) return null;
-    return { output, mtimeMs: fstatSync(fd).mtimeMs };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-export function greetingCacheHasCurrentProvenance(cached, initializedAtMs) {
-  return Boolean(cached && cached.mtimeMs >= initializedAtMs);
-}
-
-export function isGreetingCacheUsable(cached, nowMs, refreshTtlMs, initializedAtMs) {
-  return greetingCacheHasCurrentProvenance(cached, initializedAtMs) &&
-    nowMs - cached.mtimeMs <= refreshTtlMs;
-}
-
-function greetingToast(output) {
-  return buildToast(classifyLines(output));
-}
-
-function emitCachedGreeting(client, cached) {
-  if (!cached) return;
-  const toast = greetingToast(cached.output);
-  if (toast) emitToast(client, toast);
-}
-
-function createOwnedLock(lockDir, lockToken) {
-  try {
-    mkdirSync(lockDir);
-    writeFileSync(join(lockDir, LOCK_OWNER_BASENAME), lockToken, { encoding: "utf-8", mode: 0o600 });
-    return lockToken;
-  } catch (err) {
-    if (err.code !== "EEXIST") {
-      rmSync(lockDir, { recursive: true, force: true });
-    }
-    return null;
-  }
-}
-
-function acquireRefreshLock(lockDir, staleMs, nowMs) {
-  const lockToken = `${process.pid}-${Math.random().toString(16).slice(2)}`;
-  try {
-    mkdirSync(dirname(lockDir), { recursive: true });
-    const acquired = createOwnedLock(lockDir, lockToken);
-    if (acquired) return acquired;
-  } catch (err) {
-    if (err.code !== "EEXIST") return null;
-  }
-
-  const staleDir = `${lockDir}.stale.${lockToken}`;
-  try {
-    if (nowMs - statSync(lockDir).mtimeMs <= staleMs) return null;
-    // Rename atomically before reaping: only one contender can claim a stale
-    // lock, and no contender can delete a replacement lock by path.
-    renameSync(lockDir, staleDir);
-    return createOwnedLock(lockDir, lockToken);
-  } catch {
-    // Another process either recovered or acquired the lock first.
-    return null;
-  } finally {
-    rmSync(staleDir, { recursive: true, force: true });
-  }
-}
-
-function releaseRefreshLock(lockDir, lockToken) {
-  try {
-    const owner = readFileSync(join(lockDir, LOCK_OWNER_BASENAME), "utf-8");
-    if (owner !== lockToken) return;
-    rmSync(lockDir, { recursive: true, force: true });
-  } catch (err) {
-    if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
-      console.error(`[aidevops] greeting: lock release failed: ${err.message}`);
-    }
-  }
-}
-
-function observeSharedRefresh({ cacheFile, lockDir, lockStaleMs, client, now, minimumMtimeMs }) {
-  const deadline = now() + lockStaleMs;
-  let missingLockRetries = 0;
-  const poll = () => {
-    const cached = readGreetingCache(cacheFile);
-    if (cached && cached.mtimeMs > minimumMtimeMs) {
-      emitCachedGreeting(client, cached);
-      return;
-    }
-
-    try {
-      if (now() >= deadline || now() - statSync(lockDir).mtimeMs > lockStaleMs) return;
-      missingLockRetries = 0;
-    } catch {
-      // The owner may publish the cache and remove its lock between our cache
-      // read and lock stat. Re-check once so that handoff still emits it.
-      const finalCached = readGreetingCache(cacheFile);
-      if (finalCached && finalCached.mtimeMs > minimumMtimeMs) {
-        emitCachedGreeting(client, finalCached);
-        return;
-      }
-      // A stale-lock contender may have renamed the old lock but not created
-      // its replacement yet. Allow a short handoff window without polling for
-      // the full stale-lock lifetime when an owner exits without publishing.
-      if (now() >= deadline) return;
-      if (missingLockRetries >= MAX_MISSING_LOCK_RETRIES) return;
-      missingLockRetries += 1;
-    }
-
-    const timer = setTimeout(poll, 25);
-    timer.unref?.();
-  };
-  poll();
-}
-
-/**
- * Classify each line of update-check output into toast variants.
- *
- * @param {string} output
- * @returns {{ info: string[], success: string[], warning: string[], error: string[] }}
- */
-export function classifyLines(output) {
-  const info = [];
-  const success = [];
-  const warning = [];
-  const error = [];
-
-  for (const rawLine of output.split("\n")) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    // Skip UPDATE_AVAILABLE| sentinel lines — those are machine-readable
-    // markers consumed by the model greeting, not human banner text.
-    if (line.startsWith("UPDATE_AVAILABLE|") || line === "AUTO_UPDATE_ENABLED") {
-      continue;
-    }
-
-    // Order matters: errors first (most specific), then warnings, then
-    // success, then info (catch-all for version/env lines).
-    if (line.startsWith("[SECURITY ADVISORY]") || line.startsWith("[ERROR]")) {
-      error.push(line);
-    } else if (isWarningLine(line)) {
-      warning.push(line);
-    } else if (line.startsWith("Security: all protections active")) {
-      success.push(line);
-    } else {
-      info.push(line);
-    }
-  }
-
-  return { info, success, warning, error };
-}
-
-function isWarningLine(line) {
-  return WARNING_LINE_PREFIXES.some((prefix) => line.startsWith(prefix)) || /contribution\(s\) need/i.test(line);
-}
-
-/**
- * Consolidate classified lines into a single toast body.
- *
- * OpenCode's TUI renders one toast at a time — each new client.tui.showToast()
- * call replaces the previous one before the user can read it (t2727, observed
- * after PR #20424 deployed: end user saw only the final "success" toast of the
- * original four-emit sequence). So we collapse the four-category Phase 1
- * design into a single emit that preserves severity ordering in the message
- * body.
- *
- * Variant follows the highest severity present (error > warning > info >
- * success); duration follows the variant's existing mapping (30s/15s/8s/5s).
- * Returns null when all buckets are empty so the caller can skip the emit.
- *
- * @param {{ info: string[], success: string[], warning: string[], error: string[] }} buckets
- * @returns {{ title: string, message: string, variant: "info"|"success"|"warning"|"error", duration: number } | null}
- */
-export function buildToast(buckets) {
-  const lines = [
-    ...buckets.error,
-    ...buckets.warning,
-    ...buckets.info,
-    ...buckets.success,
-  ];
-
-  if (lines.length === 0) return null;
-
-  let variant, duration;
-  if (buckets.error.length > 0) {
-    variant = "error";
-    duration = 30000;
-  } else if (buckets.warning.length > 0) {
-    variant = "warning";
-    duration = 15000;
-  } else if (buckets.info.length > 0) {
-    variant = "info";
-    duration = 8000;
-  } else {
-    variant = "success";
-    duration = 5000;
-  }
-
-  return {
-    title: "aidevops",
-    message: lines.join("\n"),
-    variant,
-    duration,
-  };
-}
-
-/**
- * Emit one toast via client.tui.showToast(). Logs failures when DEBUG is on.
- *
- * @param {any} client
- * @param {{ title: string, message: string, variant: string, duration: number }} body
- */
-async function emitToast(client, body) {
-  try {
-    await client.tui.showToast({ body });
-    if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
-      console.error(`[aidevops] greeting: toast emitted (variant=${body.variant}, ${body.message.length} chars)`);
-    }
-  } catch (err) {
-    // Log on DEBUG; otherwise swallow (failures here are non-fatal —
-    // the user still has the message-context greeting in Phase 1).
-    if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
-      console.error(`[aidevops] greeting: toast failed: ${err.message}`);
-    }
   }
 }
 
