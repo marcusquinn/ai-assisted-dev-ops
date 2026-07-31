@@ -216,6 +216,47 @@ test_update_preserves_manual_sections() {
 	return 0
 }
 
+test_update_migrates_generated_readme_with_commit_history_chart() {
+	local test_name="profile update adds commit-history chart to older generated README"
+
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+
+	mkdir -p "${helper_dir}" "${fixture_home}"
+	install_helper_with_libs "${helper_dir}"
+	write_stub_dependencies "${helper_dir}"
+	create_profile_repo_fixture "${fixture_home}" "${fixture_repo}" "${fixture_remote}"
+	printf '\n> Stats auto-updated by [aidevops](https://aidevops.sh).\n' >>"${fixture_repo}/README.md"
+	git -C "${fixture_repo}" add README.md
+	git -C "${fixture_repo}" commit -m "test: mark fixture as generated" >/dev/null
+	git -C "${fixture_repo}" push >/dev/null
+
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1 ||
+		! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
+		print_result "${test_name}" 1 "helper update command failed"
+		return 0
+	fi
+
+	local readme="${fixture_repo}/README.md"
+	if [[ "$(grep -c '<picture>' "$readme")" -ne 1 ]] ||
+		! grep -Fq 'srcset="https://commit-history.com/embed/profile-repo?theme=dark"' "$readme" ||
+		! grep -Fq 'src="https://commit-history.com/embed/profile-repo"' "$readme"; then
+		print_result "${test_name}" 1 "migration did not add one username-specific chart"
+		return 0
+	fi
+	if grep -Fq '<a href="https://commit-history.com/' "$readme"; then
+		print_result "${test_name}" 1 "migrated chart contains an unnecessary provider backlink"
+		return 0
+	fi
+
+	print_result "${test_name}" 0
+	return 0
+}
+
 teardown() {
 	if [[ -n "${TEST_DIR}" && -d "${TEST_DIR}" ]]; then
 		rm -rf "${TEST_DIR}"
@@ -477,6 +518,21 @@ EOF
 	# Verify it's a rich README (has the aidevops tagline)
 	if ! grep -q 'aidevops' "$readme"; then
 		print_result "${test_name}" 1 "aidevops reference not found — not a rich README"
+		return 0
+	fi
+
+	# Verify the final generated block is theme-aware and has no provider backlink.
+	if ! grep -Fq 'srcset="https://commit-history.com/embed/profile-repo?theme=dark"' "$readme" ||
+		! grep -Fq 'src="https://commit-history.com/embed/profile-repo"' "$readme"; then
+		print_result "${test_name}" 1 "commit-history light/dark image URLs missing"
+		return 0
+	fi
+	if grep -Fq '<a href="https://commit-history.com/' "$readme"; then
+		print_result "${test_name}" 1 "commit-history chart contains an unnecessary provider backlink"
+		return 0
+	fi
+	if [[ "$(tail -n 1 "$readme")" != "</div>" ]]; then
+		print_result "${test_name}" 1 "commit-history chart is not the final README block"
 		return 0
 	fi
 
@@ -1063,6 +1119,8 @@ main() {
 
 	if [[ "$mode" != "--unit-only" ]]; then
 		test_update_preserves_manual_sections
+		teardown
+		test_update_migrates_generated_readme_with_commit_history_chart
 		teardown
 		test_inject_markers_into_existing_readme
 		teardown
