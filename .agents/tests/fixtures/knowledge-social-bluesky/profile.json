@@ -1,0 +1,48 @@
+{
+  "identity": {
+    "status": 200,
+    "observed_at": "2026-07-31T12:00:00Z",
+    "data": {
+      "did": "did:plc:fixtureaccountaaaaaaaa",
+      "handle": "fixture.example.invalid",
+      "pds_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+      "appview_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+      "chat_id": "cccccccccccccccccccccccc",
+      "instance_id": "dddddddddddddddddddddddd",
+      "display_name": "Fixture Account"
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {
+        "stream": "profile",
+        "account_id": "did:plc:fixtureaccountaaaaaaaa",
+        "service_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "cursor": null
+      },
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T12:00:01Z",
+        "data": [
+          {
+            "uri": "at://did:plc:fixtureaccountaaaaaaaa/app.bsky.actor.profile/self",
+            "cid": "bafyfixtureprofilecid",
+            "value": {
+              "$type": "app.bsky.actor.profile",
+              "displayName": "Fixture Account",
+              "description": "Synthetic fixture only"
+            }
+          }
+        ],
+        "meta": {
+          "stream": "profile",
+          "did": "did:plc:fixtureaccountaaaaaaaa",
+          "service_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "next_cursor": null,
+          "complete": true,
+          "watermark": "bafyfixtureprofilecid"
+        }
+      }
+    }
+  ]
+}
