@@ -175,6 +175,10 @@ Aggregation PR #29122 reviews authorized workload-tier policy PR #29113 at
 advanced `main` before its explicitly authorized patch release completed. Its
 exact branch base is `228488086321849fa623c4d2384b79ffa884efb8`.
 
+An exact-tip aggregation is pending for authorized Cloudron monitoring
+PR #29117 at `d23478352070461bc3d1208ba74cc0f80c659dca` because release
+`v3.32.208` recovery and PR #29127 advanced `main` before publication.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
