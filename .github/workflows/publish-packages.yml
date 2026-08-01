@@ -357,12 +357,22 @@ jobs:
 
       - name: Queue exact-tag postflight
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.SYNC_PAT }}
+          JOB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run postflight.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref main \
-            --field "tag=$RELEASE_TAG"
+          #aidevops:trust-boundary
+          if [[ -n "$SYNC_TOKEN" ]] && GH_TOKEN="$SYNC_TOKEN" gh workflow run postflight.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field "tag=$RELEASE_TAG"; then
+            :
+          else
+            echo "::warning::SYNC_PAT could not dispatch postflight; retrying with the job token"
+            GH_TOKEN="$JOB_TOKEN" gh workflow run postflight.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field "tag=$RELEASE_TAG"
+          fi
           echo "Queued Postflight Verification for $RELEASE_TAG"
 
       - name: Publication summary

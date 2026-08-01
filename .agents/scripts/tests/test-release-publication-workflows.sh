@@ -118,9 +118,27 @@ assert_contains "Homebrew verification keeps its executable test selector" \
 assert_contains "Homebrew convergence compares the complete generated formula" \
 	"cmp -s homebrew/aidevops.rb" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow expressions and shell variables.
+assert_contains "postflight dispatch first exposes the protected PAT" \
+	'SYNC_TOKEN: ${{ secrets.SYNC_PAT }}' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow expression.
-assert_contains "postflight dispatch avoids the shared installation quota" \
-	'GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}' "$PACKAGE_WORKFLOW"
+assert_contains "postflight dispatch retains the job-token capability fallback" \
+	'JOB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "postflight dispatch tries the protected PAT first" \
+	'GH_TOKEN="$SYNC_TOKEN" gh workflow run postflight.yml' "$PACKAGE_WORKFLOW"
+assert_contains "postflight dispatch explains the capability fallback" \
+	'SYNC_PAT could not dispatch postflight; retrying with the job token' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "postflight dispatch retries with the job token" \
+	'GH_TOKEN="$JOB_TOKEN" gh workflow run postflight.yml' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_order "postflight dispatch orders quota avoidance before capability fallback" \
+	'GH_TOKEN="$SYNC_TOKEN" gh workflow run postflight.yml' \
+	'GH_TOKEN="$JOB_TOKEN" gh workflow run postflight.yml' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_absent "postflight dispatch does not mask a failed job-token retry" \
+	'GH_TOKEN="$JOB_TOKEN" gh workflow run postflight.yml || true' "$PACKAGE_WORKFLOW"
 assert_contains "postflight runs only in the protected release environment" \
 	"environment: release" "$POSTFLIGHT_WORKFLOW"
 assert_contains "postflight fallback retains Actions read permission" \
@@ -158,6 +176,13 @@ if [[ "$verification_count" -ne 1 ]]; then
 	exit 1
 fi
 printf 'PASS unified publication verifies provenance once before all side effects\n'
+
+postflight_dispatch_attempt_count=$(grep -cF 'gh workflow run postflight.yml' "$PACKAGE_WORKFLOW" || true)
+if [[ "$postflight_dispatch_attempt_count" -ne 2 ]]; then
+	printf 'FAIL postflight must make exactly two bounded dispatch attempts\n'
+	exit 1
+fi
+printf 'PASS postflight uses exactly two bounded dispatch attempts\n'
 
 # shellcheck disable=SC2016 # Match the literal workflow expression.
 postflight_token_fallback_count=$(grep -cF \
