@@ -755,6 +755,11 @@ if [[ "${1:-}:${2:-}" == "auth:git-credential" ]]; then
 	printf 'username=fixture\npassword=fixture\n\n'
 	exit "${NATIVE_CREDENTIAL_STATUS:-0}"
 fi
+if [[ "${1:-}:${2:-}" == "auth:token" ]]; then
+	printf 'fixture-auth-token'
+	printf 'native-auth-token-stderr\n' >&2
+	exit "${NATIVE_AUTH_TOKEN_STATUS:-0}"
+fi
 page=1
 jq_requested=0
 expect_jq=0
@@ -852,6 +857,35 @@ PATH="$NATIVE_FIXTURE:/usr/bin:/bin" NATIVE_CREDENTIAL_STATUS=17 \
 credential_failure_status=$?
 set -e
 assert_eq "local credential helper preserves native failure status" "17" "$credential_failure_status"
+
+# `gh auth token` is also a local credential read. Approval recovery executes it
+# through the invoking user's keychain session, where transport framing would
+# add dependencies and could expose credential output (GH#29153).
+rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
+auth_token_expected_output="$TMPDIR/auth-token-output.expected"
+auth_token_actual_output="$TMPDIR/auth-token-output.actual"
+auth_token_expected_error="$TMPDIR/auth-token-error.expected"
+auth_token_actual_error="$TMPDIR/auth-token-error.actual"
+printf 'fixture-auth-token' >"$auth_token_expected_output"
+printf 'native-auth-token-stderr\n' >"$auth_token_expected_error"
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
+	"$SHIM_FIXTURE/gh" auth token \
+	>"$auth_token_actual_output" 2>"$auth_token_actual_error"
+auth_token_output_status=0
+cmp -s "$auth_token_expected_output" "$auth_token_actual_output" || auth_token_output_status=$?
+assert_eq "local auth token preserves stdout bytes" "0" "$auth_token_output_status"
+auth_token_error_status=0
+cmp -s "$auth_token_expected_error" "$auth_token_actual_error" || auth_token_error_status=$?
+assert_eq "local auth token preserves stderr bytes" "0" "$auth_token_error_status"
+assert_eq "local auth token invokes native gh once" "1" "$(grep -c '^auth$' "$NATIVE_ATTEMPT_LOG")"
+assert_path_absent "local auth token emits no API telemetry" "$AIDEVOPS_GH_API_LOG"
+auth_token_failure_status=0
+set +e
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" NATIVE_AUTH_TOKEN_STATUS=23 \
+	"$SHIM_FIXTURE/gh" auth token >/dev/null 2>/dev/null
+auth_token_failure_status=$?
+set -e
+assert_eq "local auth token preserves native failure status" "23" "$auth_token_failure_status"
 
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
 PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
