@@ -91,6 +91,33 @@ printf 'renamed remote ahead\n' >>"${RENAMED_UPDATER}/README.md"
 /usr/bin/git -C "$RENAMED_UPDATER" commit -q -am 'renamed remote ahead'
 /usr/bin/git -C "$RENAMED_UPDATER" push -q origin main
 renamed_remote_tip=$(/usr/bin/git -C "$RENAMED_REMOTE" rev-parse refs/heads/main)
+renamed_before=$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)
+unregistered_output=""
+if unregistered_output=$(AIDEVOPS_REPOS_CONFIG="${ROOT}/missing-repos.json" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL unregistered GitHub recovery was accepted\n'
+	exit 1
+elif [[ "$unregistered_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS ordinary recovery rejects an unregistered GitHub repository\n'
+else
+	printf 'FAIL unregistered GitHub recovery did not fail before mutation\n'
+	exit 1
+fi
+update_identity_output=""
+if update_identity_output=$(AIDEVOPS_REPOS_CONFIG="${ROOT}/missing-repos.json" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--reason aidevops-update --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL framework update accepted a non-framework GitHub remote\n'
+	exit 1
+elif [[ "$update_identity_output" == *"BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS framework update rejects a non-framework GitHub remote\n'
+else
+	printf 'FAIL framework update identity rejection was not actionable or non-destructive\n'
+	exit 1
+fi
 printf '{"initialized_repos":[{"slug":"example/canonical-remote","path":"%s"}]}\n' \
 	"$RENAMED_REPO" >"$RENAMED_CONFIG"
 if AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
@@ -228,11 +255,17 @@ else
 	exit 1
 fi
 
-if AIDEVOPS_REAL_GIT_BIN=/usr/bin/git bash "$HELPER" fast-forward-current --repo "$REPO" --branch develop --reason aidevops-update --confirm FAST_FORWARD_CANONICAL_BRANCH >/dev/null &&
-	grep -q '"reason":"aidevops-update"' "$HOME/.aidevops/logs/canonical-recovery-audit.jsonl"; then
-	printf 'PASS routine update fast-forward records an audited reason without an invented issue number\n'
+update_local_mirror_output=""
+if update_local_mirror_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$REPO" --branch develop \
+	--reason aidevops-update --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL framework update accepted a local mirror without official GitHub identity\n'
+	exit 1
+elif [[ "$update_local_mirror_output" == *"BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$REPO" rev-parse HEAD)" == "$develop_remote_tip" ]]; then
+	printf 'PASS framework update rejects a local mirror without official GitHub identity\n'
 else
-	printf 'FAIL routine update fast-forward did not record its maintenance reason\n'
+	printf 'FAIL local-mirror framework update rejection was not actionable or non-destructive\n'
 	exit 1
 fi
 
@@ -987,10 +1020,12 @@ mkdir -p "$UPDATE_REPO"
 /usr/bin/git -C "$UPDATE_REPO" config user.name Test
 /usr/bin/git -C "$UPDATE_REPO" config user.email test@example.invalid
 /usr/bin/git -C "$UPDATE_REPO" config commit.gpgsign false
+UPDATE_FRAMEWORK_URL="https://github.com/marcusquinn/aidevops.git"
+/usr/bin/git -C "$UPDATE_REPO" config "url.${UPDATE_REMOTE}.insteadOf" "$UPDATE_FRAMEWORK_URL"
 printf 'update seed\n' >"${UPDATE_REPO}/README.md"
 /usr/bin/git -C "$UPDATE_REPO" add README.md
 /usr/bin/git -C "$UPDATE_REPO" commit -q -m seed
-/usr/bin/git -C "$UPDATE_REPO" remote add origin "$UPDATE_REMOTE"
+/usr/bin/git -C "$UPDATE_REPO" remote add origin "$UPDATE_FRAMEWORK_URL"
 /usr/bin/git -C "$UPDATE_REPO" push -q -u origin main
 /usr/bin/git -C "$UPDATE_REMOTE" symbolic-ref HEAD refs/heads/main
 /usr/bin/git -C "$UPDATE_REPO" remote set-head origin main

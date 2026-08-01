@@ -246,6 +246,12 @@ brew install marcusquinn/tap/aidevops && aidevops update
 bash <(curl -fsSL https://aidevops.sh/install)
 ```
 
+> **Updater recovery for v3.32.213:** If `aidevops update` stops because the
+> official framework source checkout is not in the project registry, run the
+> direct installer above once, then rerun `aidevops update`. Do not add the
+> framework checkout to the downstream project registry or bypass canonical
+> remote validation.
+
 **Manual** (git clone):
 
 ```bash
