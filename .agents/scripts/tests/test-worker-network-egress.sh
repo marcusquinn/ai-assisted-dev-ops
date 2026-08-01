@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 SANDBOX_HELPER="${SCRIPT_DIR}/sandbox-exec-helper.sh"
 NETWORK_HELPER="${SCRIPT_DIR}/network-tier-helper.sh"
 HEADLESS_HELPER="${SCRIPT_DIR}/headless-runtime-helper.sh"
+HEADLESS_INVOKE="${SCRIPT_DIR}/headless-runtime-invoke.sh"
 HEADLESS_WORKER="${SCRIPT_DIR}/headless-runtime-worker.sh"
 TEST_ROOT="$(mktemp -d)"
 TEST_HOME="${TEST_ROOT}/home"
@@ -273,17 +274,19 @@ test_headless_runtime_binds_egress_contract() {
 	local triage_mode_policy_count=0
 	local opencode_sandbox_policy_count=0
 	# Literal source patterns intentionally retain the runtime variable names.
+	# The OpenCode path is consolidated in the extracted invoke module, while
+	# shared policy definitions remain in the identity-bearing helper.
 	# shellcheck disable=SC2016
-	opencode_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id"' "$HEADLESS_HELPER")"
+	opencode_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id"' "$HEADLESS_INVOKE")"
 	# shellcheck disable=SC2016
 	claude_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --worker-id "$egress_worker_id"' "$HEADLESS_WORKER")"
 	# shellcheck disable=SC2016
-	required_guard_count="$(grep -h -cF -- '[[ "$egress_mode" == "required" ]]' "$HEADLESS_HELPER" "$HEADLESS_WORKER" | awk '{ total += $1 } END { print total + 0 }')"
+	required_guard_count="$(grep -h -cF -- '[[ "$egress_mode" == "required" ]]' "$HEADLESS_HELPER" "$HEADLESS_INVOKE" "$HEADLESS_WORKER" | awk '{ total += $1 } END { print total + 0 }')"
 	# shellcheck disable=SC2016
-	opencode_profile_count="$(grep -cF -- 'egress_policy_profile="provider:${_invoke_provider}"' "$HEADLESS_HELPER")"
-	triage_mode_policy_count="$(grep -cF -- '_resolve_public_triage_egress_mode' "$HEADLESS_HELPER")"
-	opencode_sandbox_policy_count="$(grep -cF -- '_headless_opencode_sandbox_required' "$HEADLESS_HELPER")"
-	if [[ "$opencode_egress_count" -eq 4 && "$claude_egress_count" -eq 4 && \
+	opencode_profile_count="$(grep -cF -- 'egress_policy_profile="provider:${_invoke_provider}"' "$HEADLESS_INVOKE")"
+	triage_mode_policy_count="$(grep -h -cF -- '_resolve_public_triage_egress_mode' "$HEADLESS_HELPER" "$HEADLESS_INVOKE" | awk '{ total += $1 } END { print total + 0 }')"
+	opencode_sandbox_policy_count="$(grep -h -cF -- '_headless_opencode_sandbox_required' "$HEADLESS_HELPER" "$HEADLESS_INVOKE" | awk '{ total += $1 } END { print total + 0 }')"
+	if [[ "$opencode_egress_count" -eq 1 && "$claude_egress_count" -eq 4 && \
 		"$required_guard_count" -eq 1 && "$opencode_profile_count" -eq 1 && \
 		"$triage_mode_policy_count" -eq 2 && "$opencode_sandbox_policy_count" -eq 2 ]]; then
 		pass "all headless runtimes bind egress and guard required mode"
