@@ -242,8 +242,8 @@ _cloudron_monitor_upstream_entry() {
 	fi
 	tag_prefixes=$(jq -c '.cloudron_package.upstream_tag_prefixes as $prefixes | if $prefixes == null then ["v", ""] else $prefixes end' <<<"$entry") || return 1
 	jq -e --arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" --arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" \
-		'type == $array_type and length > 0 and all(.[]; type == $string_type)' <<<"$tag_prefixes" >/dev/null 2>&1 ||
-		_cloudron_monitor_error "cloudron_package.upstream_tag_prefixes for $slug must be a non-empty array of strings." || return 1
+		'type == $array_type and length > 0 and all(.[]; type == $string_type and all(explode[]; . >= 32 and . != 127))' <<<"$tag_prefixes" >/dev/null 2>&1 ||
+		_cloudron_monitor_error "cloudron_package.upstream_tag_prefixes for $slug must be a non-empty array of strings; control characters are forbidden." || return 1
 	local releases_json=""
 	if ! releases_json=$(gh api "repos/${upstream_slug}/releases?per_page=100" --paginate); then
 		_cloudron_monitor_error "Could not fetch paginated GitHub releases for $upstream_slug." || return 1

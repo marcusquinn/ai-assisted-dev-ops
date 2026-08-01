@@ -230,6 +230,34 @@ test_monitor_rejects_malformed_prefixes() {
 	return 0
 }
 
+test_monitor_rejects_control_characters_in_prefixes() {
+	local home_dir="${TEST_ROOT}/control-prefix-home"
+	local repo_dir="${TEST_ROOT}/control-prefix-package"
+	local bin_dir="${TEST_ROOT}/control-prefix-bin"
+	local log_file="${TEST_ROOT}/control-prefix-issues.log"
+	local config_tmp="${TEST_ROOT}/control-prefix-repos.json"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	jq '.initialized_repos[0].cloudron_package.upstream_tag_prefixes = ["desktop-v\nv"]' \
+		"${home_dir}/.config/aidevops/repos.json" >"$config_tmp"
+	mv "$config_tmp" "${home_dir}/.config/aidevops/repos.json"
+
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" \
+		CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 1 "$rc" "control character in upstream tag prefix fails closed"
+	[[ "$output" == *"upstream_tag_prefixes for exampleorg/example-package must be a non-empty array of strings; control characters are forbidden"* ]] &&
+		assert_equal true true "control character prefix reports actionable error" ||
+		assert_equal true false "control character prefix reports actionable error"
+	[[ ! -f "$log_file" ]] && assert_equal true true "control character prefix creates no issue" || assert_equal true false "control character prefix creates no issue"
+	return 0
+}
+
 test_monitor_fails_closed_on_release_api_error() {
 	local home_dir="${TEST_ROOT}/api-home"
 	local repo_dir="${TEST_ROOT}/api-package"
@@ -282,6 +310,7 @@ main() {
 	test_monitor_deduplicates_and_preserves_source
 	test_monitor_selects_configured_stream
 	test_monitor_rejects_malformed_prefixes
+	test_monitor_rejects_control_characters_in_prefixes
 	test_monitor_fails_closed_on_release_api_error
 	test_monitor_rejects_blank_package_title
 	printf '\nRan %d tests, %d failed.\n' "$((PASSED + FAILED))" "$FAILED"

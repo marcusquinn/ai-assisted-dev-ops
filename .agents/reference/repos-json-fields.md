@@ -121,7 +121,7 @@ explicit values. Package slugs and paths remain local to `repos.json`.
 | `manifest` | `CloudronManifest.json` | Manifest path relative to the registered repository root. Absolute paths and `..` are rejected by monitors. |
 | `release_workflow` | `.github/workflows/cloudron-package-release.yml` | Thin tag-triggered caller scaffolded by `aidevops init`; existing files are never overwritten. |
 | `upstream_slug` | unset | Upstream GitHub `owner/repo` used for stable-release comparison. Monitoring stays disabled until this is explicitly configured. |
-| `upstream_tag_prefixes` | `["v", ""]` | Non-empty array of tag-stream prefixes. Each value must be a string; the empty string allows bare semantic tags. Only tags whose configured prefix leaves a semantic version are candidates. |
+| `upstream_tag_prefixes` | `["v", ""]` | Non-empty array of tag-stream prefixes. Each value must be a string; ASCII control characters are rejected, while the empty string allows bare semantic tags. Only tags whose configured prefix leaves a semantic version are candidates. |
 | `monitor_upstream` | `true` when `upstream_slug` is set; otherwise `false` | Include the package in the daily upstream-release routine. |
 | `monitor_compatibility` | `true` | Include the package in the weekly manifest and pinned-base audit. |
 
