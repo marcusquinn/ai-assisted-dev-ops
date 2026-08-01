@@ -166,6 +166,7 @@ from _knowledge_social_forem_http import (
     installation_fingerprint,
 )
 from _knowledge_social_forem_provider import _dispatch, _profile
+from _knowledge_social_forem_normalize import PageContext, normalize_page
 from _knowledge_social_forem_routes import EXACT_READ_PATHS, allowlisted_path, page
 
 assert set(STREAMS) == {
@@ -307,6 +308,31 @@ def tags_api(path, params):
 tags = page(tags_api, request_for("followed_tags"), {})
 assert tags["data"][0]["kind"] == "tag"
 assert tags["meta"]["snapshot"] is True
+
+account_id = namespaced_id(instance_a, "user", "42")
+follower_id = namespaced_id(instance_a, "user", "77")
+follower_archive = normalize_page(
+    {
+        "status": 200,
+        "observed_at": "2026-08-01T12:00:00Z",
+        "data": [{"kind": "user", "remote_id": follower_id, "name": "Follower"}],
+    },
+    PageContext(
+        "conn_followers",
+        {
+            "id": account_id,
+            "provider_account_id": "42",
+            "instance_id": instance_a,
+            "username": "selected-user",
+        },
+        "followers",
+        ("followers",),
+        {},
+    ),
+)
+follower_activity = follower_archive["activities"][0]
+assert follower_activity["actor_remote_id"] == follower_id
+assert follower_activity["object_remote_id"] == account_id
 
 dispatch_opener = Opener([
     {"id": 42, "username": "selected-user", "email": "private@example.invalid"},

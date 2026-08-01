@@ -136,11 +136,14 @@ def _activity_row(
     account_id = _required_text(context.account, "id")
     remote_id = _required_text(item, "remote_id")
     activity_type = ACTIVITY_TYPES[context.stream]
+    actor_id, object_id = account_id, remote_id
+    if context.stream == "followers":
+        actor_id, object_id = remote_id, account_id
     return {
         "activity_type": activity_type,
         "remote_id": f"{account_id}_{activity_type}_{remote_id}",
-        "actor_remote_id": account_id,
-        "object_remote_id": remote_id,
+        "actor_remote_id": actor_id,
+        "object_remote_id": object_id,
         "occurred_at": _occurred_at(item),
         "observed_at": observed_at,
         "state": "active",
