@@ -504,8 +504,8 @@ test_worker_worktree_continuation_transfers_dirty_same_task_owner() {
 	printf 'preserve me\n' >"${worktree_dir}/continuation.txt"
 	export WORKER_ISSUE_NUMBER="22438"
 	local live_pid="$$" owner_created_at="2026-07-18T00:00:00Z"
-	set_continuation_transfer_env "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
-	local claim_calls=0 transfer_calls=0
+	set_continuation_transfer_env "$live_pid" "generation-7" "" "22438" "$owner_created_at"
+	local claim_calls=0 transfer_calls=0 expected_batch_seen="missing"
 
 	claim_worktree_ownership() {
 		claim_calls=$((claim_calls + 1))
@@ -514,13 +514,25 @@ test_worker_worktree_continuation_transfers_dirty_same_task_owner() {
 	check_worktree_owner() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "" "22438" "$owner_created_at"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
 		local transfer_path="$1"
 		local transfer_branch="$2"
+		shift 2
 		[[ -n "$transfer_path" && -n "$transfer_branch" ]] || return 1
+		while [[ $# -gt 0 ]]; do
+			local option="$1"
+			case "$option" in
+			--expected-batch)
+				[[ $# -ge 2 ]] || return 1
+				expected_batch_seen="$2"
+				shift 2
+				;;
+			*) shift ;;
+			esac
+		done
 		transfer_calls=$((transfer_calls + 1))
 		return 0
 	}
@@ -533,12 +545,13 @@ test_worker_worktree_continuation_transfers_dirty_same_task_owner() {
 	clear_continuation_transfer_env
 
 	if [[ "$status" -eq 0 && "$claim_calls" -eq 0 && "$transfer_calls" -eq 1 &&
+		-z "$expected_batch_seen" &&
 		"$preserved_status" == *"continuation.txt"* ]]; then
-		print_result "dirty same-task continuation transfers without discarding edits" 0
+		print_result "empty-batch same-task continuation transfers without discarding edits" 0
 		return 0
 	fi
-	print_result "dirty same-task continuation transfers without discarding edits" 1 \
-		"status=$status claim_calls=$claim_calls transfer_calls=$transfer_calls git_status=${preserved_status:-<empty>}"
+	print_result "empty-batch same-task continuation transfers without discarding edits" 1 \
+		"status=$status claim_calls=$claim_calls transfer_calls=$transfer_calls expected_batch=${expected_batch_seen:-<empty>} git_status=${preserved_status:-<empty>}"
 	return 0
 }
 
