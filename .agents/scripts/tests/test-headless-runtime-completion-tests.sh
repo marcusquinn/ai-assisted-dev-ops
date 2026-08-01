@@ -773,16 +773,14 @@ test_begin_worker_runtime_run_refreshes_run_id() {
 
 test_internal_opencode_retries_refresh_run_id() {
 	local refresh_count=""
-	refresh_count=$(python3 - "$HELPER_SCRIPT" <<'PY'
+	local attempt_helper="${SCRIPT_DIR}/headless-runtime-attempt.sh"
+	refresh_count=$(python3 - "$attempt_helper" <<'PY'
 import pathlib
 import re
 import sys
 
 source = pathlib.Path(sys.argv[1]).read_text()
-start = source.index("_execute_run_attempt() {")
-end = source.index("\n#######################################\n# _discover_actual_worktree_dir", start)
-body = source[start:end]
-print(len(re.findall(r"_begin_worker_runtime_run\s*\n\s*_invoke_opencode", body)))
+print(len(re.findall(r"_begin_worker_runtime_run\s*\n\s*_invoke_opencode", source)))
 PY
 	)
 

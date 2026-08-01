@@ -1559,6 +1559,34 @@ test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
 	return 0
 }
 
+test_cmd_run_attempt_loop_preserves_attempt_exit() {
+	local result="" status=0
+	result=$(
+		_headless_run_is_ephemeral() { return 0; }
+		_execute_run_attempt() { return 80; }
+		_handle_cmd_run_terminal_attempt() {
+			# shellcheck disable=SC2154  # dynamically scoped by _cmd_run_attempt_loop
+			printf '%s' "$attempt_exit"
+			_cmd_run_disposition="return"
+			_cmd_run_return_status=0
+			return 0
+		}
+		local role="worker" session_key="issue-29125" work_dir="$TEST_ROOT"
+		local title="attempt status" prompt="test" selected_model="openai/test"
+		local variant_override="" agent_name="" model_override="" tier_override=""
+		local -a extra_args=()
+		_cmd_run_attempt_loop
+	) || status=$?
+
+	if [[ "$status" -eq 0 && "$result" == "80" ]]; then
+		print_result "cmd_run attempt loop preserves nonzero attempt status" 0
+		return 0
+	fi
+	print_result "cmd_run attempt loop preserves nonzero attempt status" 1 \
+		"status=$status attempt_status=${result:-<empty>}"
+	return 0
+}
+
 test_deleted_launch_cwd_recovers_to_work_dir() {
 	local stale_dir="${TEST_ROOT}/stale-cwd"
 	local worktree_dir="${TEST_ROOT}/worker-worktree"

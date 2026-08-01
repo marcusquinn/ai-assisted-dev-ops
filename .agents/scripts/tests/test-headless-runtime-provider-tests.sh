@@ -633,8 +633,10 @@ test_opencode_session_env_wrapper_strips_session_vars_only() {
 }
 
 test_worker_opencode_exec_paths_strip_session_env() {
-	if grep -Fq "run_without_opencode_session_env \"\$SANDBOX_EXEC_HELPER\" run" "$HELPER_SCRIPT" &&
-		grep -Fq "run_without_opencode_session_env timeout \"\$HEADLESS_SANDBOX_TIMEOUT_DEFAULT\"" "$HELPER_SCRIPT"; then
+	local invoke_helper="${SCRIPT_DIR}/headless-runtime-invoke.sh"
+	# shellcheck disable=SC2016 # Match literal caller-scoped variables in source.
+	if grep -Fq 'run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" "${sandbox_args[@]}"' "$invoke_helper" &&
+		grep -Fq 'run_without_opencode_session_env timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT"' "$invoke_helper"; then
 		print_result "worker OpenCode exec paths strip session env" 0
 		return 0
 	fi
@@ -645,8 +647,10 @@ test_worker_opencode_exec_paths_strip_session_env() {
 }
 
 test_worker_opencode_invocation_seeds_continuation_session() {
-	if grep -Fq "_seed_worker_db_session_context \"\$isolated_data_dir\" \"\$_invoke_persisted_session\"" "$HELPER_SCRIPT" &&
-		grep -Fq "[lifecycle] db_seeded session=\$_invoke_persisted_session" "$HELPER_SCRIPT"; then
+	local invoke_helper="${SCRIPT_DIR}/headless-runtime-invoke.sh"
+	# shellcheck disable=SC2016 # Match literal continuation variables in source.
+	if grep -Fq '_seed_worker_db_session_context "$isolated_data_dir" "$_invoke_persisted_session"' "$invoke_helper" &&
+		grep -Fq '[lifecycle] db_seeded session=$_invoke_persisted_session' "$invoke_helper"; then
 		print_result "worker OpenCode invocation seeds persisted continuation session" 0
 		return 0
 	fi
