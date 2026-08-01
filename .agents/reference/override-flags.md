@@ -17,6 +17,7 @@
 > - **Test coverage** — is the bypass path covered by a regression test?
 >
 > Discovery command:
+>
 > ```bash
 > rg "FORCE_\w+|SKIP_\w+|OVERRIDE_\w+|BYPASS_\w+|AIDEVOPS_.*_DISABLE" \
 >     .agents/scripts/ .agents/hooks/ -l
@@ -28,7 +29,7 @@
 
 | Flag | Owner file(s) | Bypasses | Logged? | Floor? | Test coverage |
 |---|---|---|---|---|---|
-| `FORCE_ENRICH` | `issue-sync-helper.sh:988`, `pulse-dispatch-core.sh:1151` | Content-preservation gate in `_enrich_update_issue` — skips brief-file check, sentinel check, and external-body preservation | ✅ log added (t2377 audit) | ✅ Layer 2 (t2377): refuses empty title, empty body, stub `tNNN: ` title regardless of flag | ✅ `test-enrich-no-data-loss.sh`, `test-brief-inline-classifier.sh` |
+| `FORCE_ENRICH` | `issue-sync-helper.sh:988`, `pulse-dispatch-core.sh:1151` | Content-preservation gate in `_enrich_update_issue` — skips brief-file check, sentinel check, and external-body preservation | ✅ log added (t2377 audit) | ✅ Layer 2 (t2377): refuses empty title, empty body, or a stub title beginning with `tNNN:` regardless of flag | ✅ `test-enrich-no-data-loss.sh`, `test-brief-inline-classifier.sh` |
 | `FORCE_PUSH` | `issue-sync-helper.sh:831` | CI-only gate for bulk issue creation from TODO.md — allows local push outside GitHub Actions | ✅ log added (t2377 audit) | ❌ No dedup guard against concurrent local+CI push (both see "no existing issue") — document: use `push <task_id>` (single-task path) instead | ❌ No dedicated bypass test |
 | `FORCE_CLOSE` | `issue-sync-helper.sh:526` | Evidence check (`_has_evidence`) before closing an issue — requires merged PR or `verified:` field | ✅ log added (t2377 audit) | ✅ `gh issue close` fails if issue does not exist; data-loss floor is the GitHub API itself | ❌ No dedicated bypass test |
 | `AIDEVOPS_VM_SKIP_BUMP_VERIFY` | `version-manager-release.sh:86` | `_verify_bump_commit_at_ref HEAD` check — allows tagging a non-bump commit | ✅ log added (t2377 audit) | ✅ git tag command fails if tag already exists; only bypasses pre-condition check | ✅ `test-version-manager-bump-verify.sh` (covers guard; not the bypass itself) |
@@ -46,7 +47,7 @@
 |---|---|---|---|---|---|
 | `AIDEVOPS_SKIP_PREDISPATCH_ELIGIBILITY` | `pre-dispatch-eligibility-helper.sh:194` | Pre-dispatch eligibility gate — checks issue closed state, `status:done`/`status:resolved` labels, recently merged linked PR | ✅ `[dispatch-precheck] AIDEVOPS_SKIP_PREDISPATCH_ELIGIBILITY=1 — bypassing` | ✅ Fail-open on API errors anyway; skip is emergency escape only | ✅ `test-pre-dispatch-eligibility.sh` |
 | `AIDEVOPS_SKIP_PREDISPATCH_VALIDATOR` | `pre-dispatch-validator-helper.sh:271` | Per-generator pre-dispatch validators for auto-generated issues | ✅ `AIDEVOPS_SKIP_PREDISPATCH_VALIDATOR=1 — skipping validator for #N` | ✅ Validator failure is non-fatal by design; skip removes the check entirely | ✅ `test-pre-dispatch-validator.sh` |
-| `AIDEVOPS_SKIP_TIER_VALIDATOR` | `tier-simple-body-shape-helper.sh:320` | `tier:simple` body-shape enforcement — allows dispatch of mis-shaped simple-tier issues | ✅ `AIDEVOPS_SKIP_TIER_VALIDATOR=1 — bypassing check for #N` | ✅ Worker dispatched regardless; only the auto-downgrade is skipped | ✅ `test-tier-simple-body-shape.sh` |
+| `AIDEVOPS_SKIP_TIER_VALIDATOR` | `tier-simple-body-shape-helper.sh` | Explicit `tier:simple` execution-contract enforcement — allows dispatch of a simple-labelled issue without the contract guard | ✅ `AIDEVOPS_SKIP_TIER_VALIDATOR=1 — bypassing check for #N` | ✅ Worker dispatched regardless; only the normalization is skipped | ✅ `test-tier-simple-body-shape.sh` |
 | `SKIP_FRAMEWORK_ROUTING_CHECK` | `claim-task-id.sh:1329` | Framework routing warning that alerts when a framework-level task is filed in a project repo | ✅ log added (t2377 audit) | ✅ ID allocation proceeds normally; only the routing warning is suppressed | ❌ No dedicated test for bypass path |
 
 ---

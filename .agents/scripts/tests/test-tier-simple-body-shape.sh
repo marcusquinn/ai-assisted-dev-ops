@@ -7,8 +7,8 @@
 #
 # test-tier-simple-body-shape.sh — fixture tests for t2389 (GH#19929)
 #
-# Exercises the 4 _check_* disqualifier functions in
-# tier-simple-body-shape-helper.sh with pass + fail fixtures for each.
+# Exercises the explicit checklist and execution-contract checks in
+# tier-simple-body-shape-helper.sh with positive and negative fixtures.
 #
 # Strategy: source the helper's check functions into a subshell (the
 # helper has a `if [[ BASH_SOURCE == $0 ]]; then main; fi` guard so
@@ -21,24 +21,9 @@
 # dispatch of a disqualified tier:simple issue. A structural test
 # verifies the wiring is in place.
 #
-# Test coverage:
-#   1a. _check_file_count: pass on 2-file brief
-#   1b. _check_file_count: fail on 3-file brief (NEW:/EDIT: markers)
-#   1c. _check_file_count: fail on 4-file brief (inline paths)
-#   2a. _check_estimate: pass on ~30m
-#   2b. _check_estimate: pass on ~1h
-#   2c. _check_estimate: fail on ~2h
-#   2d. _check_estimate: fail on ~1d
-#   3a. _check_acceptance_count: pass on 3 checkboxes
-#   3b. _check_acceptance_count: fail on 5 checkboxes
-#   3c. _check_acceptance_count: does NOT count checkboxes outside Acceptance section
-#   4a. _check_judgment_keywords: pass on clean brief
-#   4b. _check_judgment_keywords: fail on "fallback" keyword
-#   4c. _check_judgment_keywords: fail on "design the" phrase
-#   4d. _check_judgment_keywords: does NOT flag keyword in tier checklist section
-#   4e. _check_judgment_keywords: does NOT flag keyword in signature footer
-#   5.  cmd_help prints usage
-#   6.  Structural: cmd_check handler exists
+# Test coverage includes complete/incomplete/absent checklists, all canonical
+# contract forms, unpaired replacements, missing contracts, and regressions that
+# prove counts, estimates, and isolated keywords are no longer automatic gates.
 
 set -u
 
@@ -109,147 +94,109 @@ source "$HELPER"
 set -e
 
 # Sanity check the functions we expect are available
-for fn in _check_file_count _check_estimate _check_acceptance_count _check_judgment_keywords cmd_check cmd_help; do
+for fn in _check_tier_checklist _check_execution_contract cmd_check cmd_help; do
 	if ! declare -f "$fn" >/dev/null 2>&1; then
 		echo "${TEST_RED}FATAL${TEST_NC}: function $fn not available after source"
 		exit 1
 	fi
 done
 
-echo "${TEST_BLUE}=== t2389: tier-simple-body-shape-helper disqualifier tests ===${TEST_NC}"
+echo "${TEST_BLUE}=== t2389: tier-simple execution-contract tests ===${TEST_NC}"
 echo ""
 
 # -----------------------------------------------------------------------
-# Disqualifier 1: file count
+# Explicit checklist
 # -----------------------------------------------------------------------
 
-BODY_1A='## How
+BODY_1A='### Tier checklist (verify before assigning)
 
-### Files to modify
+- [x] Exact execution contract supplied?
+- [x] Targets and reference pattern verified?
+- [x] No semantic or design decision remains?
 
-- NEW: `.agents/scripts/foo.sh` — helper
-- EDIT: `.agents/scripts/bar.sh:45-60` — wire it in'
+**Selected tier:** `tier:simple`'
 
-assert_pass "1a: 2-file brief passes file-count check" _check_file_count "$BODY_1A"
+assert_pass "1a: complete tier checklist passes" _check_tier_checklist "$BODY_1A"
 
-BODY_1B='## How
+BODY_1B='### Tier checklist (verify before assigning)
 
-### Files to modify
+- [x] Exact execution contract supplied?
+- [ ] No semantic or design decision remains?
 
-- NEW: `.agents/scripts/foo.sh` — helper
-- EDIT: `.agents/scripts/bar.sh:45-60` — wire it in
-- EDIT: `.agents/scripts/baz.sh:100` — also patch this'
+**Selected tier:** `tier:simple`'
 
-assert_fail "1b: 3-file brief fails file-count check (NEW:/EDIT: markers)" _check_file_count "$BODY_1B"
-
-BODY_1C='## How
-
-### Files to modify
-
-- `.agents/scripts/foo.sh`
-- `.agents/scripts/bar.sh`
-- `.agents/scripts/baz.sh`
-- `.agents/scripts/qux.sh`'
-
-assert_fail "1c: 4-file brief fails file-count check (inline paths)" _check_file_count "$BODY_1C"
+assert_fail "1b: incomplete tier checklist fails" _check_tier_checklist "$BODY_1B"
+assert_pass "1c: legacy body without checklist passes checklist check" \
+	_check_tier_checklist "## How
+Apply the exact contract below."
 
 # -----------------------------------------------------------------------
-# Disqualifier 2: estimate
+# Exact execution contracts
 # -----------------------------------------------------------------------
 
-assert_pass "2a: ~30m estimate passes" _check_estimate "Description.
-Estimate: ~30m."
+BODY_2A='### Edit 1: exact replacement
 
-assert_pass "2b: ~1h estimate passes (boundary)" _check_estimate "Description.
-Estimate: ~1h."
+**oldString:**
+```
+old
+```
 
-assert_fail "2c: ~2h estimate fails" _check_estimate "Description.
-Estimate: ~2h."
+**newString:**
+```
+new
+```'
+assert_pass "2a: matched oldString/newString passes" _check_execution_contract "$BODY_2A"
 
-assert_fail "2d: ~1d estimate fails (1d = 8h)" _check_estimate "Description.
-Estimate: ~1d."
+BODY_2B='**oldString:**
+```
+old
+```'
+assert_fail "2b: unpaired replacement fails" _check_execution_contract "$BODY_2B"
+
+BODY_2C='### New file 1
+
+**Full content:**
+```text
+complete content
+```'
+assert_pass "2c: complete new-file content passes" _check_execution_contract "$BODY_2C"
+
+BODY_2D='### Exact transform 1
+
+**Exact transform:** `rename source.txt to destination.txt`'
+assert_pass "2d: exact deterministic transform passes" _check_execution_contract "$BODY_2D"
+
+assert_fail "2e: descriptive prose without a contract fails" \
+	_check_execution_contract "Update the file using the existing pattern."
 
 # -----------------------------------------------------------------------
-# Disqualifier 3: acceptance count
+# Retired proxy regressions
 # -----------------------------------------------------------------------
 
-BODY_3A='## Description
+BODY_3A='## How
 
-text
+- EDIT: `a.sh`
+- EDIT: `b.sh`
+- EDIT: `c.sh`
+- EDIT: `d.sh`
+
+Estimate: ~2h. Add fallback wording exactly as supplied.
 
 ## Acceptance
 
-- [ ] first
-- [ ] second
-- [ ] third'
+- [ ] one
+- [ ] two
+- [ ] three
+- [ ] four
+- [ ] five
+- [ ] six
 
-assert_pass "3a: 3 acceptance criteria passes" _check_acceptance_count "$BODY_3A"
+**Exact transform:** `replace token_old with token_new in each listed file`'
 
-BODY_3B='## Description
-
-text
-
-## Acceptance criteria
-
-- [ ] first
-- [ ] second
-- [ ] third
-- [ ] fourth
-- [ ] fifth'
-
-assert_fail "3b: 5 acceptance criteria fails" _check_acceptance_count "$BODY_3B"
-
-BODY_3C='## Description
-
-Rollout plan:
-
-- [ ] step one
-- [ ] step two
-- [ ] step three
-- [ ] step four
-- [ ] step five
-- [ ] step six
-
-## Acceptance
-
-- [ ] check one
-- [ ] check two'
-
-assert_pass "3c: checkboxes outside Acceptance section do not count" _check_acceptance_count "$BODY_3C"
-
-# -----------------------------------------------------------------------
-# Disqualifier 4: judgment keywords
-# -----------------------------------------------------------------------
-
-assert_pass "4a: clean brief passes keyword check" _check_judgment_keywords \
-	"Mechanical edit: replace foo with bar in config file."
-
-assert_fail "4b: \"fallback\" keyword fails" _check_judgment_keywords \
-	"Add a fallback path when the API times out."
-
-assert_fail "4c: \"design the\" phrase fails" _check_judgment_keywords \
-	"We need to design the error handling strategy here."
-
-BODY_4D='## How
-
-Simple edit — replace line X with line Y.
-
-## Tier checklist
-
-- [ ] Files: 1 (meets tier:simple threshold)
-- [ ] Disqualifier check: no fallback, no retry, no coordinate keywords'
-
-assert_pass "4d: keyword in Tier checklist section is ignored" _check_judgment_keywords "$BODY_4D"
-
-BODY_4E='## How
-
-Simple edit.
-
-<!-- aidevops:sig -->
----
-[aidevops.sh] plugin with claude-opus-4-7 spent time coordinating session state retry timing.'
-
-assert_pass "4e: keyword in signature footer is ignored" _check_judgment_keywords "$BODY_4E"
+assert_pass "3a: file, estimate, criteria, and keyword counts are not gates" \
+	_check_execution_contract "$BODY_3A"
+assert_pass "3b: retired proxies do not affect absent-checklist handling" \
+	_check_tier_checklist "$BODY_3A"
 
 # -----------------------------------------------------------------------
 # Structural / help
@@ -257,18 +204,18 @@ assert_pass "4e: keyword in signature footer is ignored" _check_judgment_keyword
 
 TESTS_RUN=$((TESTS_RUN + 1))
 if cmd_help 2>&1 | grep -q "tier-simple-body-shape-helper.sh"; then
-	echo "${TEST_GREEN}PASS${TEST_NC}: 5: cmd_help prints usage"
+	echo "${TEST_GREEN}PASS${TEST_NC}: 4: cmd_help prints usage"
 else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
-	echo "${TEST_RED}FAIL${TEST_NC}: 5: cmd_help did not print expected usage"
+	echo "${TEST_RED}FAIL${TEST_NC}: 4: cmd_help did not print expected usage"
 fi
 
 TESTS_RUN=$((TESTS_RUN + 1))
 if declare -f cmd_check >/dev/null 2>&1; then
-	echo "${TEST_GREEN}PASS${TEST_NC}: 6: cmd_check function declared"
+	echo "${TEST_GREEN}PASS${TEST_NC}: 5: cmd_check function declared"
 else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
-	echo "${TEST_RED}FAIL${TEST_NC}: 6: cmd_check function missing"
+	echo "${TEST_RED}FAIL${TEST_NC}: 5: cmd_check function missing"
 fi
 
 # -----------------------------------------------------------------------
@@ -278,10 +225,10 @@ fi
 DISPATCH_CORE="$SCRIPT_DIR/pulse-dispatch-core.sh"
 TESTS_RUN=$((TESTS_RUN + 1))
 if grep -q "_run_tier_simple_body_shape_check" "$DISPATCH_CORE"; then
-	echo "${TEST_GREEN}PASS${TEST_NC}: 7: pulse-dispatch-core.sh wires _run_tier_simple_body_shape_check"
+	echo "${TEST_GREEN}PASS${TEST_NC}: 6: pulse-dispatch-core.sh wires _run_tier_simple_body_shape_check"
 else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
-	echo "${TEST_RED}FAIL${TEST_NC}: 7: pulse-dispatch-core.sh missing wiring"
+	echo "${TEST_RED}FAIL${TEST_NC}: 6: pulse-dispatch-core.sh missing wiring"
 fi
 
 # -----------------------------------------------------------------------

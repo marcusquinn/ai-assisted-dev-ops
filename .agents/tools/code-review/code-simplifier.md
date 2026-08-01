@@ -40,7 +40,7 @@ Per finding: `### [file:line_range] Category: Brief description` with sections *
 
 ### Prescriptive format for tier:simple dispatch (MANDATORY for issue creation)
 
-Format eligible high-confidence code findings using `workflows/brief.md` prescriptive format. Historical benchmark evidence: Haiku achieved 100% success when issues provided verbatim oldString/newString. A finding is `tier:simple` only when it is single-file, pattern-following, exact-code-known, and leaves no semantic or design judgment to the worker; instruction-surface findings remain under Agent Review. Every prescriptive finding MUST include explicit Edit tool parameters, and verification MUST include a Qlty smells check for simplification targets rather than relying on shellcheck or grep alone:
+Format eligible high-confidence code findings using `workflows/brief.md` prescriptive format. Historical bounded-worker evidence achieved 100% success when issues provided verbatim oldString/newString. A finding is `tier:simple` only when it follows a verified pattern, supplies every exact action, is reversible and low consequence, and leaves no semantic, design, coordination, or recovery judgment to the worker; file count alone is not a tier gate, and instruction-surface findings remain under Agent Review. Every prescriptive finding MUST include explicit Edit tool parameters, and verification MUST include a Qlty smells check for simplification targets rather than relying on shellcheck or grep alone:
 
 ```markdown
 ### [path/to/file.sh:45-52] Safe: Remove decorative emoji from log message

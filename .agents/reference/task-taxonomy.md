@@ -33,113 +33,129 @@ Apply a domain tag only when the task clearly belongs to a specialist agent. Cod
 
 Tiers describe the work and route it through centrally configured model chains.
 The pulse resolves labels via `model-availability-helper.sh resolve <tier>`; runtime
-configuration owns concrete provider/model selection. Label every task so cascade
-dispatch can start with the lowest capable tier and escalate with accumulated context.
+configuration owns concrete provider/model selection. Label every task with the
+lowest tier that has a credible one-pass path to a safe, complete result.
 
 | Tier | TODO Tag | GitHub Label | Workload contract |
 |------|----------|--------------|-------------------|
-| simple | `tier:simple` | `tier:simple` | Mechanically complete brief with exact edits; bounded changes following an existing pattern |
-| standard | `tier:standard` | `tier:standard` | Implementation-ready work requiring local judgment, recovery, or coordinated changes |
-| thinking | `tier:thinking` | `tier:thinking` | Problem/constraint-led work requiring architecture, novel design, or complex trade-offs |
+| simple | `tier:simple` | `tier:simple` | Decision-complete, low-consequence execution contract with exact actions and focused verification |
+| standard | `tier:standard` | `tier:standard` | Implementation-ready work using established patterns with normal local judgment and recovery |
+| thinking | `tier:thinking` | `tier:thinking` | Consequential unresolved decisions, novel design, or synthesis-heavy problem solving |
 
-**Rules:**
-- Default to `tier:standard` when uncertain. Use `tier:simple` for prescriptive work, `tier:thinking` for deep reasoning.
-- **Cascade dispatch:** The pulse may start at `tier:simple` and escalate through `tier:standard` → `tier:thinking` if the worker fails. Each tier's attempt produces a structured escalation report (see `templates/escalation-report-template.md`) that gives the next tier pre-digested context.
+## Canonical Assignment Policy
 
-## Tier Assignment Validation
+Tier assignment is a judgment over the complete work contract. File count, line
+count, elapsed-time estimates, acceptance-criteria count, and isolated keywords
+are evidence, never standalone tier gates. A one-file architecture decision can
+require `tier:thinking`; several independent verbatim replacements can remain
+`tier:simple`.
 
-The cascade model tolerates initial mis-classification, but obvious mis-tiers waste compute on guaranteed failures. A 6-file task tagged `tier:simple` will fail at every simple-tier attempt before escalating — burning dispatches for no value. Apply these hard rules at task creation time.
+Apply this order:
 
-### tier:simple Disqualifiers
+1. **Keep authority and safety gates separate.** Missing permission, secrets,
+   policy approval, billing authority, or destructive-operation confirmation is
+   a blocker, not a reason to select a more capable tier.
+2. **Select `tier:thinking` when a consequential decision is unresolved.** This
+   includes architecture, product behaviour, trust/security/privacy boundaries,
+   irreversible migration or rollback strategy, novel cross-system failure modes,
+   or a problem whose evidence must be synthesized before the write surface is
+   knowable. The dispatch-path risk override below is also `tier:thinking`.
+3. **Select `tier:simple` only when every simple contract condition is proven.**
+   The exact action or complete content is supplied; targets and the existing
+   pattern are verified; no semantic, design, sequencing, error-recovery, or
+   compatibility choice remains; impact is bounded, reversible, and low
+   consequence; and focused verification plus rollback are known.
+4. **Otherwise select `tier:standard`.** This is the default for ordinary code,
+   debugging, refactoring, review, documentation, and bounded security-sensitive
+   implementation. Standard workers may adapt an established pattern, coordinate
+   a known write surface, and recover from known errors within decided boundaries.
 
-If **any** of the following are true, the task is **not** `tier:simple`. Use `tier:standard` or higher.
+When uncertainty is only about whether work is mechanical, choose `tier:standard`.
+When uncertainty is itself a consequential decision listed in step 2, choose
+`tier:thinking`.
 
-| # | Disqualifier | Rationale |
-|---|-------------|-----------|
-| 1 | >2 files to modify | Simple-tier work should not require non-trivial multi-file coordination |
-| 2 | Code blocks are skeletons, not complete | `tier:simple` requires exact oldString/newString or full file content; if the worker must invent logic, it needs judgment |
-| 3 | Conditional logic or branching to design | "if enabled, do X; if gateway fails, fall back to Y" requires reasoning about states |
-| 4 | Error handling, retry, or fallback logic | Designing resilience patterns is not copy-paste work |
-| 5 | Estimate >1h | Simple tasks are mechanical; longer estimates signal reasoning work |
-| 6 | >4 acceptance criteria | Many criteria = many things to coordinate and verify |
-| 7 | Keywords in brief: "graceful degradation", "fallback", "retry", "conditional", "coordinate", "design" | These signal judgment, not transcription |
-| 8 | Cross-package changes (multiple `packages/` dirs, multiple apps) | Cross-boundary reasoning exceeds simple-tier capability |
-| 9 | Target file is large (>500 lines) and brief lacks verbatim `oldString`/`newString` | Worker must navigate and locate the edit target — that is judgment work, not transcription. Large files with only a description of what to change require `tier:standard` to read context and identify the correct location |
+### Decision Evidence
 
-### tier:standard vs tier:thinking Signals
+| Axis | `tier:simple` evidence | `tier:standard` evidence | `tier:thinking` trigger |
+|------|------------------------|--------------------------|-------------------------|
+| Specification | Verbatim replacement, complete new content, or exact deterministic transform | Goal and boundaries resolved; implementation details remain | The solution boundary or write surface depends on a decision |
+| Novelty | Exact known pattern, no adaptation | Established pattern adapted locally | No adequate pattern; alternatives and trade-offs must be evaluated |
+| Consequence | Reversible, low-impact, no trust-boundary change | Bounded production/security change with known rollback | Consequential or irreversible choice is unresolved |
+| Coordination | Independent actions with no shared-state sequencing | Known multi-file/component coordination | Cross-system ownership, ordering, or failure semantics must be designed |
+| Context | Targets and decisive context are supplied | Normal repository discovery and focused references | Synthesis dominates the task or decisive context cannot fit a normal worker pass |
+| Verification | Focused command and rollback are explicit | Tests and recovery follow known patterns | The verification strategy or safety proof must be designed |
 
-| Signal | tier:standard | tier:thinking |
-|--------|--------------|----------------|
-| Files | 2-8, within one package/module | Many, cross-cutting, or unknown at brief time |
-| Pattern | Follow existing patterns with adaptation | No existing pattern; must design from scratch |
-| Decisions | Implementation choices (which API, which pattern) | Architectural choices (what abstraction, what trade-offs) |
-| Error modes | Known error modes with documented recovery | Novel failure modes requiring analysis |
-| Brief detail | Code skeletons with function signatures | Approach description with constraints |
-| Reference material | <2,000 lines total across all files | >2,000 lines, or 5+ files to synthesize |
+### Security and Trust Boundaries
 
-### High-Reference Tasks (GH#18458 — context budget awareness)
+Classify the decision, not the presence of a security keyword:
 
-Some tasks require reading large volumes of reference material before implementation
-can begin. These are systematically prone to worker timeout at `tier:standard`
-because reference loading consumes the context budget before implementation.
-Indicators:
+| Work shape | Tier |
+|------------|------|
+| Exact documentation, fixture, or identifier update that does not change effective access, trust, secret handling, privacy, egress, or destructive behaviour | `tier:simple` when every simple condition holds |
+| Implement a decided validation, authentication, authorization, secret-handling, or policy pattern inside an existing boundary | `tier:standard` |
+| Decide or redesign authentication, authorization, cryptography, sandboxing, privacy, egress, secret flow, destructive-operation, or other trust boundaries | `tier:thinking` |
+| Attempt to overcome a permission, authentication, policy, provider, or secret gate | Stop; no tier may bypass the gate |
 
-| Indicator | Example | Mitigation |
-|-----------|---------|------------|
-| >2,000 lines of reference files | Plan doc (649L) + model file (674L) + target file (3,164L) | Use Worker Quick-Start section, inline critical data |
-| 5+ files must be read before first edit | Plan, model test, target, wrapper, CI workflow | Use `tier:thinking` or split into smaller tasks |
-| Plan sketches reference function signatures | Plan says `fn(a, b)` but actual is `fn(a, b, c)` | Verify sketches against source before filing task |
-| Data must be extracted from large files | "48 function names from Plan section 3.1" | Include the data directly in the brief |
+### Context and Decomposition
 
-**Decomposition Phase 0 tasks** are a specific high-risk pattern: they require reading the plan document, the model/reference test file, the target source file, and the wrapper/orchestrator file. This routinely exceeds 4,000 lines. Dispatch Phase 0 tasks at `tier:thinking`. Subsequent phases (1-N) are pure mechanical moves and can use `tier:standard`.
+Context burden matters because loading evidence can consume the worker pass before
+implementation starts. Inline decisive data, add a Worker Quick-Start, or split
+independent work. Use `tier:thinking` when synthesis is itself the task; do not
+promote work merely because a file or checklist is long. Decomposition planning
+that must discover boundaries is thinking work; already-decided mechanical phases
+normally use `tier:standard`, or `tier:simple` only with complete execution contracts.
 
-### Quick-Check at Creation Time
+### Creation and Generator Contract
 
-Before assigning a tier, verify these in order. Stop at the first failure:
+At issue creation:
 
-1. **Count files in "Files to Modify"** — >2 files disqualifies `tier:simple`
-2. **Check code blocks** — skeletons or pseudocode disqualifies `tier:simple`; must be exact, copy-pasteable edits
-3. **Scan for judgment keywords** — fallback, retry, graceful, conditional, coordinate, design in the brief disqualifies `tier:simple`
-4. **Check estimate** — >1h disqualifies `tier:simple`
-5. **Check file size** — if the target file is >500 lines and the brief does not include verbatim `oldString`/`newString`, disqualifies `tier:simple`
-6. **Check reference budget** — if the brief's "Research/read" phase totals >2,000 lines, consider `tier:thinking`
-7. **When uncertain** — `tier:standard` (the default exists for this reason)
+- General-purpose and uncertain generators default to `tier:standard`.
+- A generator may emit `tier:simple` only when it emits the complete prescriptive
+  contract from `workflows/brief/tier-simple.md` and can prove every simple condition.
+- A generator may emit `tier:thinking` when its task shape inherently contains a
+  thinking trigger (for example, decomposition planning or broad failure analysis).
+- Shape-specific hardcoded `tier:standard` or `tier:thinking` labels remain valid
+  when the generator's contract proves that shape; do not infer tiers from a noun.
+- Keep exactly one `tier:*` label. Explicit policy upgrades replace lower labels.
 
 See `templates/brief-template.md` "Tier checklist" for the structured version used during task creation.
 
-### Server-side enforcement (t2389)
+### Deterministic Enforcement
 
-Creation-time discipline is primary; `tier-simple-body-shape-helper.sh` is defence-in-depth. The helper runs between `_ensure_issue_body_has_brief` and `_run_predispatch_validator` in `pulse-dispatch-core.sh::dispatch_with_dedup` and inspects any `tier:simple`-labelled issue for four **high-precision** disqualifiers:
+Judgment remains at task creation. Automation enforces only mechanically provable
+parts of this policy:
 
-| # | Check | Trigger |
-|---|-------|---------|
-| 1 | File count | `NEW:` / `EDIT:` markers OR file-path bullets under `## Files to modify` / `## How` > 2 |
-| 4 | Estimate | `~Nh` / `~Nm` / `~Nd` token resolves to > 60 minutes (1d = 8h) |
-| 6 | Acceptance criteria | `- [ ]` / `- [x]` checkboxes inside `## Acceptance` (or `## Acceptance criteria`) > 4 |
-| 7 | Judgment keywords | case-insensitive match for `graceful degradation`, `fallback`, `retry logic`, `conditional logic`, `coordinate`, `design a`, `design the`, `architecture`, `trade-off`, `strategy` — excluding signature footer, provenance markers, and the brief's own `## Tier checklist` section |
+- `issue-sync-lib-ref.sh::_validate_tier_checklist` changes a selected
+  `tier:simple` to `tier:standard` when the simple checklist is incomplete or the
+  brief lacks an exact execution contract.
+- `tier-simple-body-shape-helper.sh` repeats those explicit checks against the
+  issue body before dispatch. It does not infer complexity from counts, estimates,
+  or keywords.
+- `pre-dispatch-validator-helper.sh` applies the evidence-backed self-hosting
+  override: work touching the configured worker dispatch/spawn path starts at
+  `tier:thinking`, lower tier labels are removed, and dispatch metadata is refreshed.
+- Issue-sync's rank ratchet and worker failure escalation never lower a tier that
+  has already been raised by evidence.
 
-On hit the helper swaps `tier:simple` → `tier:standard` and posts an idempotent feedback comment (marker: `<!-- tier-simple-auto-downgrade -->`) explaining the disqualifier. **Non-blocking** — dispatch always proceeds, at the corrected tier on hit or at `tier:simple` otherwise. The worker never sees the mis-tier.
-
-The helper enforces only rows 1, 4, 6, 7 from the disqualifier table — rows 2, 3, 5, 8, 9 (skeleton code, conditional logic, error handling, cross-package changes, large-file + no verbatim) require fuzzier heuristics that risk false positives and remain a task-creation-time discipline item.
-
-Bypass (emergency recovery): `AIDEVOPS_SKIP_TIER_VALIDATOR=1`.
-
-Tests: `.agents/scripts/tests/test-tier-simple-body-shape.sh` (18 fixture cases covering every disqualifier + negative cases for the section-scoped exclusions).
+Both policy checks are non-blocking: dispatch proceeds at the normalized tier.
+Emergency bypasses remain `AIDEVOPS_SKIP_TIER_VALIDATOR=1` and
+`AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1`.
 
 ## Cascade Dispatch Model
 
-Instead of requiring perfect classification upfront, the cascade model starts with the lowest safe quality tier and escalates with accumulated knowledge:
+Initial classification should maximize one-pass completion, but unexpected
+failures still escalate with accumulated knowledge:
 
 ```text
-tier:simple (Luna max bounded-work route)
+tier:simple (decision-complete bounded execution)
   ✓ Success → done
   ✗ Failure → structured escalation report on issue → re-dispatch at tier:standard
 
-tier:standard (Sol high general implementation route)
+tier:standard (general implementation and recovery)
   ✓ Success → done (saved exploration tokens via escalation context)
   ✗ Failure → richer escalation report → re-dispatch at tier:thinking
 
-tier:thinking (Sol max deep-reasoning route)
+tier:thinking (deep reasoning and consequential decisions)
   ✓ Success → done (had full diagnostic context from both prior attempts)
   ✗ Persistent capability blocker → human review with complete attempt history
 ```

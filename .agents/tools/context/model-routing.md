@@ -22,7 +22,7 @@ model: simple
 
 ## Quick Reference
 
-- **Default**: `standard`. **Rule**: use the lowest tier that safely and reliably completes the task.
+- **Assignment policy**: `reference/task-taxonomy.md` is canonical. Default to `standard`; use the lowest tier with a credible one-pass path to safe completion.
 - **Spectrum**: `simple` → `standard` → `thinking`.
 - **Frontmatter**: `model: simple|standard|thinking`. Do not put provider names, model families, or reasoning variants in tier fields.
 - **Vault metadata**: `data_classification`, `runtime_policy`, `needs_vault`, `needs_collections`, `needs_device`, and `needs_remote_unlock` can restrict dispatch before a prompt leaves the device.
@@ -31,9 +31,9 @@ model: simple
 
 | Tier | Current ordered mapping | Use When |
 |------|-------|----------|
-| `simple` | openai/gpt-5.6-luna → anthropic/claude-haiku-4-5 | Classification, search, triage, formatting, and bounded transforms |
-| `standard` | openai/gpt-5.6-sol → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Code, review, debugging, docs, and most development tasks |
-| `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Architecture, novel problems, security audits, and complex trade-offs |
+| `simple` | openai/gpt-5.6-luna → anthropic/claude-haiku-4-5 | Complete low-consequence execution contracts |
+| `standard` | openai/gpt-5.6-sol → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Established-pattern implementation with normal judgment and recovery |
+| `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Consequential unresolved decisions, novel design, and synthesis-heavy work |
 
 **Model IDs**: Always fully-qualified (`claude-sonnet-4-6`, not `claude-sonnet-4`). Short-form → `ProviderModelNotFoundError`. CLI prefix: `anthropic/`, `google/`, `openai/`.
 
@@ -45,10 +45,14 @@ Only `simple`, `standard`, and `thinking` are valid authored tiers. Concrete mod
 
 ```text
 Privacy/on-device or Vault local-only? → YES → approved local mapping available? → use mapped model | NO: FAIL
-  NO → simple classification/search/formatting? → YES: simple
-    NO → novel architecture or complex security reasoning? → YES: thinking
+  NO → consequential unresolved decision or dispatch-path override? → YES: thinking
+    NO → complete verified low-consequence execution contract? → YES: simple
       NO → standard
 ```
+
+Tier selection never bypasses permission, secret, policy, billing, or destructive
+operation gates. Security-sensitive implementation inside a decided boundary is
+normally standard; deciding that boundary is thinking.
 
 ## Fallback Routing
 

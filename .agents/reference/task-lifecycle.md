@@ -70,7 +70,7 @@ recovery ladder, terminal exceptions, and completion review:
 
 **Brief composition**: All GitHub-written content (issue bodies, briefs, PR descriptions, comments, escalation reports, worker guidance) follows `workflows/brief.md` — the centralised formatting workflow. Load it before publishing; optional seeded draft PRs are governed there, not in this root guide.
 
-**Model tiers and dispatchability**: Use GitHub `tier:*` labels; default to `tier:standard` when uncertain. Before recommending a tier or queueing work, run `task-dispatchability-helper.sh check --task-id tNNN [--issue N]`. Full tier rules live in `reference/task-taxonomy.md`; `tier-simple-body-shape-helper.sh` still enforces high-confidence simple-tier downgrades pre-dispatch.
+**Workload tiers and dispatchability**: Use GitHub `tier:*` labels and the canonical decision order in `reference/task-taxonomy.md`; default to `tier:standard` unless a thinking trigger or complete simple contract is proven. Before recommending a tier or queueing work, run `task-dispatchability-helper.sh check --task-id tNNN [--issue N]`. `tier-simple-body-shape-helper.sh` enforces only explicit simple-contract invariants pre-dispatch.
 
 ## Conversation Intent Routing
 

@@ -97,6 +97,60 @@ for tier in simple standard thinking; do
 		.agents/reference/task-taxonomy.md
 done
 
+tier_policy_surfaces=(
+	.agents/reference/task-taxonomy.md
+	.agents/templates/brief-template.md
+	.agents/workflows/brief.md
+	.agents/workflows/define.md
+	.agents/workflows/route.md
+)
+check_absent \
+	"tier assignment surfaces do not restore retired numeric proxy gates" \
+	'>[[:space:]]*2 files|>[[:space:]]*4 acceptance|[Ee]stimate >1h|[Ss]ingle file.*tier:simple|2-3 files with coordination|[Ee]very target file under 500' \
+	"${tier_policy_surfaces[@]}"
+
+check_absent \
+	"tier assignment surfaces stay provider and relative-cost independent" \
+	'\b(Haiku|Sonnet|Opus|Terra|Luna|Sol)\b|Relative cost|vs sonnet baseline' \
+	"${tier_policy_surfaces[@]}"
+
+model_registry=.agents/scripts/model-registry-helper.sh
+classifier_src=$(awk '/^_route_classify_tier\(\) \{/,/^}$/ { print }' "$model_registry")
+if [[ -z "$classifier_src" ]]; then
+	printf 'FAIL: model registry tier classifier could not be extracted\n' >&2
+	failures=$((failures + 1))
+else
+	# shellcheck disable=SC1090,SC1091  # evaluated repository function under test
+	eval "$classifier_src"
+	check_route_tier() {
+		local description="$1"
+		local expected="$2"
+		local tier reason compute
+		_route_classify_tier "$description" tier reason compute
+		if [[ "$tier" == "$expected" ]]; then
+			printf 'PASS: route %s -> %s\n' "$description" "$expected"
+			return 0
+		fi
+		printf 'FAIL: route %s expected %s, got %s (%s)\n' "$description" "$expected" "$tier" "$reason" >&2
+		failures=$((failures + 1))
+		return 0
+	}
+
+	check_route_tier "rename variable_x to variable_y" "simple"
+	check_route_tier "summarize this document without recommendations" "simple"
+	check_route_tier "replace secret_old with secret_new in a test fixture" "simple"
+	check_route_tier "replace auth_old with auth_new in the authorization test fixture" "simple"
+	check_route_tier "replace allow_all with require_admin in production authorization middleware" "standard"
+	check_route_tier "replace allow_all with require_admin in production authorization middleware and update the test fixture" "standard"
+	check_route_tier "replace credential_old with credential_new in production config and update mock data" "standard"
+	check_route_tier "replace retry_old with retry_new and decide whether to add fallback" "standard"
+	check_route_tier "consolidate issue tier tagging policy across dispatch surfaces" "standard"
+	check_route_tier "implement decided authentication validation using the existing middleware pattern" "standard"
+	check_route_tier "design authentication trust boundaries and compare trade-offs" "thinking"
+	check_route_tier "perform a security audit of the authorization architecture" "thinking"
+	check_route_tier "refactor the entire project around a new abstraction" "thinking"
+fi
+
 check_absent \
 	"framework configuration contains no legacy tier values" \
 	'"(haiku|sonnet|opus|flash|pro|composer2)"' \

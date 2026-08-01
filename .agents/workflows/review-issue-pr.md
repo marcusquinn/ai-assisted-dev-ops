@@ -327,7 +327,7 @@ For an issue with an imperfect linked PR, recommend issue approval when the prob
 | TODO entry with ref | Yes/No | `ref:GH#NNN` in TODO.md |
 | Task ID claimed | Yes/No | via `claim-task-id.sh` |
 
-**Tier prerequisite met**: Yes/No — [does brief quality match the recommended tier? See AGENTS.md "Briefs, Tiers, and Dispatchability"]
+**Tier prerequisite met**: Yes/No — [does the brief satisfy `reference/task-taxonomy.md` "Canonical Assignment Policy" for the recommended tier?]
 **What's needed to dispatch**: [list missing prerequisites, or "Ready for dispatch"]
 ```
 

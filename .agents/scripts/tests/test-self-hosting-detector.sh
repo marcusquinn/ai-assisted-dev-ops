@@ -11,7 +11,7 @@
 #   test_idempotency               — re-run on already-labeled issue is no-op
 #   test_bypass_env_var            — AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1
 #   test_dry_run_mode              — dry-run emits intent without mutation
-#   test_not_tier_thinking         — non-tier:thinking issues are skipped
+#   test_collision_normalization   — lower tier labels are removed
 
 set -euo pipefail
 
@@ -95,16 +95,24 @@ _comment_log="${GH_COMMENT_LOG}"
 
 # Collect all args into a single string for pattern matching
 _all_args="\$*"
+_api_endpoint=""
+if [[ "\${1:-}" == "api" ]]; then
+	for _arg in "\$@"; do
+		case "\$_arg" in
+		repos/*) _api_endpoint="\$_arg"; break ;;
+		esac
+	done
+fi
 
 # gh api repos/<slug>/issues/<num>/comments — comment existence check
 # (Check this BEFORE the /issues/<num> pattern to avoid false match)
-if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+/comments\$'; then
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$_api_endpoint" | grep -qE '/issues/[0-9]+/comments\$'; then
 	printf '%s\n' "${existing_comments}"
 	exit 0
 fi
 
 # gh api repos/<slug>/issues/<num> --jq '...'
-if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+\$'; then
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$_api_endpoint" | grep -qE '/issues/[0-9]+\$'; then
 	# Distinguish body vs labels call by scanning for the jq expression
 	if printf '%s' "\$_all_args" | grep -qF 'labels'; then
 		printf '%s\n' "${labels}"
@@ -210,8 +218,8 @@ test_positive_detection() {
 	body_file=$(create_body_with_dispatch_path)
 	create_gh_stub "$body_file" "tier:standard,auto-dispatch" "0"
 
-	local rc=0
-	"$HELPER_SCRIPT" validate "100" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+	local rc=0 output=""
+	output=$("$HELPER_SCRIPT" validate "100" "marcusquinn/aidevops" 2>&1) || rc=$?
 
 	# Should exit 0 (self-hosting detector is non-blocking)
 	local exit_ok=1
@@ -219,8 +227,12 @@ test_positive_detection() {
 
 	# Check that the label was applied
 	local label_applied=1
-	if grep -qF "tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
+	if grep -qF -- "--remove-label tier:standard --add-label tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
 		label_applied=0
+	fi
+	local mutation_signaled=1
+	if printf '%s' "$output" | grep -qF "[aidevops:tier-labels-mutated]"; then
+		mutation_signaled=0
 	fi
 
 	# Check that a comment was posted
@@ -229,11 +241,11 @@ test_positive_detection() {
 		comment_posted=0
 	fi
 
-	if [[ "$exit_ok" -eq 0 && "$label_applied" -eq 0 && "$comment_posted" -eq 0 ]]; then
+	if [[ "$exit_ok" -eq 0 && "$label_applied" -eq 0 && "$comment_posted" -eq 0 && "$mutation_signaled" -eq 0 ]]; then
 		print_result "positive_detection: label applied + comment posted" 0
 	else
 		print_result "positive_detection: label applied + comment posted" 1 \
-			"exit=${rc} (want 0), label_applied=${label_applied} (want 0), comment_posted=${comment_posted} (want 0)"
+			"exit=${rc}, label=${label_applied}, comment=${comment_posted}, signal=${mutation_signaled} (all want 0)"
 	fi
 
 	teardown_test_env
@@ -421,7 +433,7 @@ test_standard_elevates_to_thinking() {
 	[[ "$rc" -eq 0 ]] && exit_ok=0
 
 	local label_applied=1
-	if grep -qF "tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
+	if grep -qF -- "--remove-label tier:standard --add-label tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
 		label_applied=0
 	fi
 
@@ -430,6 +442,36 @@ test_standard_elevates_to_thinking() {
 	else
 		print_result "standard_elevates: tier:standard → tier:thinking" 1 \
 			"exit=${rc} (want 0), label_applied=${label_applied} (want 0)"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_collision_normalization() {
+	setup_test_env
+	local body_file
+	body_file=$(create_body_with_dispatch_path)
+	create_gh_stub "$body_file" "tier:standard,tier:thinking,auto-dispatch" "1"
+
+	local rc=0 output=""
+	output=$("$HELPER_SCRIPT" validate "107" "marcusquinn/aidevops" 2>&1) || rc=$?
+	local normalized=1 no_comment=1 signaled=1
+	if grep -qF -- "--remove-label tier:standard --add-label tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
+		normalized=0
+	fi
+	if [[ ! -s "$GH_COMMENT_LOG" ]]; then
+		no_comment=0
+	fi
+	if printf '%s' "$output" | grep -qF "[aidevops:tier-labels-mutated]"; then
+		signaled=0
+	fi
+
+	if [[ "$rc" -eq 0 && "$normalized" -eq 0 && "$no_comment" -eq 0 && "$signaled" -eq 0 ]]; then
+		print_result "collision_normalization: lower tier removed without duplicate comment" 0
+	else
+		print_result "collision_normalization: lower tier removed without duplicate comment" 1 \
+			"exit=${rc}, normalized=${normalized}, no_comment=${no_comment}, signaled=${signaled} (all want 0)"
 	fi
 
 	teardown_test_env
@@ -455,6 +497,7 @@ main() {
 	test_bypass_env_var
 	test_dry_run_mode
 	test_standard_elevates_to_thinking
+	test_collision_normalization
 
 	printf '\n%d test(s) run, %d failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 

@@ -429,10 +429,9 @@ _extract_tier_from_brief() {
 	return 0
 }
 
-# Validate tier:simple briefs have all checklist boxes checked AND contain
-# actual prescriptive content (oldString/newString blocks). Without
-# prescriptive content, Haiku cannot execute the task — it needs exact
-# copy-pasteable replacement blocks, not descriptions of what to change.
+# Validate tier:simple briefs have all checklist boxes checked AND contain an
+# explicit execution contract. Open-ended tier judgment belongs to task creation;
+# this function enforces only mechanically provable contract invariants.
 # Arguments:
 #   $1 - brief file path
 #   $2 - selected tier label (e.g., "tier:simple")
@@ -466,17 +465,17 @@ _validate_tier_checklist() {
 		return 0
 	fi
 
-	# Gate 2: Verify the brief contains actual oldString/newString blocks.
-	# tier:simple requires exact, copy-pasteable replacement content — not
-	# descriptions of what to change. Without these markers, the task requires
-	# the worker to read surrounding code and invent the edit, which is
-	# judgment work (tier:standard). Matches both **oldString:** and
-	# ### Edit N: patterns from brief/tier-simple.md.
-	local has_prescriptive_content
-	has_prescriptive_content=$(grep -cE '^\*\*oldString:\*\*|^### Edit [0-9]+:' "$brief_path" || true)
+	# Gate 2: Verify one of the canonical prescriptive contracts. Existing-file
+	# replacements require matched oldString/newString markers; new files use
+	# Full content; deterministic non-content operations use Exact transform.
+	local old_count new_count full_count transform_count
+	old_count=$(grep -cE '^\*\*oldString:\*\*[[:space:]]*$' "$brief_path" || true)
+	new_count=$(grep -cE '^\*\*newString:\*\*[[:space:]]*$' "$brief_path" || true)
+	full_count=$(grep -cE '^\*\*Full content:\*\*[[:space:]]*$' "$brief_path" || true)
+	transform_count=$(grep -cE '^\*\*Exact transform:\*\*[[:space:]]*' "$brief_path" || true)
 
-	if [[ "$has_prescriptive_content" -eq 0 ]]; then
-		echo "[WARN] tier:simple selected but brief lacks oldString/newString blocks in $brief_path — overriding to tier:standard (Haiku needs exact replacement content, not descriptions)" >&2
+	if [[ "$old_count" -ne "$new_count" || ("$old_count" -eq 0 && "$full_count" -eq 0 && "$transform_count" -eq 0) ]]; then
+		echo "[WARN] tier:simple selected but brief lacks a complete exact execution contract in $brief_path — overriding to tier:standard" >&2
 		printf '%s' "tier:standard"
 		return 0
 	fi
