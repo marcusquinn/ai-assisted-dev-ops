@@ -13,7 +13,7 @@ Full PTY access: run any CLI (`vim`, `psql`, `ssh`, `htop`, dev servers). Long-r
 
 - Run `/session-review` before ending.
 - Suggest a new session after PR merge, domain switch, or 3+ hours.
-- Cleanup: commit or stash changes, then run `wt merge` to clean merged worktrees.
+- Leave linked-worktree removal to the guarded post-exit routine. Do not attempt or report normal deferred cleanup; mention only failures requiring user action or putting unpublished work at risk.
 - Full docs: `workflows/session-manager.md`.
 
 ## New Topic Hygiene

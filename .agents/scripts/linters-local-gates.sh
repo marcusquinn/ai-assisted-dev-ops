@@ -617,6 +617,10 @@ check_targeted_tests() {
 		mapped_test=true
 		bash .agents/scripts/tests/test-full-loop-efficient-orchestration.sh || exit_code=1
 	fi
+	if printf '%s\n' "$changed_files" | grep -Eq '^\.agents/(AGENTS\.md|reference/session\.md|workflows/full-loop\.md)$|^\.agents/scripts/tests/test-session-completion-summary-policy\.sh$'; then
+		mapped_test=true
+		bash .agents/scripts/tests/test-session-completion-summary-policy.sh || exit_code=1
+	fi
 	if [[ "$mapped_test" == false ]]; then
 		print_success "Targeted tests: no mapped changed files"
 	fi
