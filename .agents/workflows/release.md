@@ -21,13 +21,25 @@ tools:
 
 ```bash
 aidevops release [patch|minor|major] <merged-pr-number> [incremental|full]
+# Multi-PR authorization (PR numbers are resolved to verified merge SHAs):
+aidevops release patch <one-authorized-pr> --expected-sources <pr>,<pr>,<pr>
 # Before the new CLI is deployed, use the same helper from a current linked worktree:
-# ./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full]
+# ./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full] [--expected-sources <pr>,<pr>]
 ```
 
 The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. A tag push durably queues the unified GitHub/npm/Homebrew workflow; the local process observes the exact run but does not wait for terminal completion. Exit `8` means remotely queued work and creates no false terminal receipt. Repeating a completed command, or running `aidevops release reconcile <source-pr>`, reconciles success without another version bump or duplicate publication. A failed or skipped release cannot create or replace success evidence.
 
 The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → signs and pushes the tag. The tag workflow verifies immutable provenance before reconciling GitHub, npm OIDC, and Homebrew. A later trusted reconciliation verifies all three channels, runs local deploy sync from a detached tag worktree, and persists receipts. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
+
+Release authorization is an explicit trust-boundary input, not an inference from
+Git ancestry. `--expected-sources` accepts a comma-separated set of PR numbers;
+the runner resolves each to its merged `main` SHA, sorts the resulting `PR@SHA`
+manifest, and persists it before version mutation. The provenance resolver and
+version manager independently require exact equality with the direct or reviewed
+aggregation manifest. Missing, extra, duplicate, malformed, and SHA-mismatched
+sources fail before a bump, tag, package, or terminal receipt. Omitting the option
+retains singleton compatibility by treating the requested source PR as the
+expected set. A retry reuses the persisted manifest and rejects conflicting intent.
 
 ```bash
 aidevops release status <merged-pr-number>     # read-only remote/channel state
@@ -52,6 +64,14 @@ mode. The helper accepts only an exact aggregate `main` tip, marks the aggregate
 PR published, and marks included source receipts superseded with immutable
 release links. Arbitrary descendants and unreviewed direct commits remain
 blocked.
+
+For an already-published immutable tag with an authorization gap, do not retag,
+republish, infer missing authority from ancestry, or mark omitted PRs
+`release:not-requested`/`release:superseded`. Record detached
+`authorization-gap` evidence with the expected and observed manifests, tag object,
+release commit, timestamp, and reason. This evidence explicitly carries
+`terminal_cleanup_evidence:false`; it documents the incident but cannot complete
+cleanup or authorize another publication.
 
 An already-signed tag whose aggregate list was completely omitted may recover
 the redundant list only from its signed `Aidevops-Source-Merge` commit after the
@@ -122,5 +142,7 @@ git commit -m "fix: resolve critical issue"
 |-------|----------|
 | Signed tag already exists | Do not delete or retag it. Run `aidevops release status <source-pr>` and then `aidevops release reconcile <source-pr>`. |
 | Publication queued/interrupted | Exit `8` is durable pending state. Reconcile the same source PR; never bump again for the same tag. |
+| Expected/observed source mismatch | Stop before mutation. Correct the reviewed aggregation manifest or explicit trusted set; never infer authorization from ancestry. |
+| Historical immutable tag omitted authorized PRs | Preserve pending receipts and write detached `authorization-gap` evidence. Do not retag or create terminal cleanup evidence. |
 | GitHub CLI not authenticated | `gh auth login` (token needs `repo` scope) |
 | Version mismatch | `./.agents/scripts/version-manager.sh validate` — see `version-bump.md` |

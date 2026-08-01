@@ -73,6 +73,8 @@ chmod +x "$ROOT/version-manager.sh"
 
 cat >"$ROOT/source-resolver.sh" <<'STUB'
 #!/usr/bin/env bash
+command="${1:-}"
+shift || true
 source_pr=""
 expected_sources=""
 while [[ $# -gt 0 ]]; do
@@ -85,7 +87,7 @@ done
 if [[ -n "${RESOLVER_CALL_LOG:-}" ]]; then
 	printf 'expected=%s\n' "$expected_sources" >>"$RESOLVER_CALL_LOG"
 fi
-if [[ "${RESOLVER_MODE:-direct}" == "blocked" ]]; then
+if [[ "${RESOLVER_MODE:-direct}" == "blocked" && "$command" == "resolve-source" ]]; then
 	exit 1
 elif [[ "${RESOLVER_MODE:-direct}" == "aggregate" ]]; then
 	printf '{"mode":"aggregate","requested_pr":%s,"source_pr":99,"source_merge":"%040d","aggregated_sources":[{"pr":%s,"merge":"%040d"}],"expected_sources":[{"pr":%s,"merge":"%040d"}]}\n' \

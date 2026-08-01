@@ -21,6 +21,7 @@ _release_provenance_usage() {
 	cat <<'USAGE'
 Usage:
   release-provenance-helper.sh verify --tag TAG --repo OWNER/REPO [--branch BRANCH]
+  release-provenance-helper.sh resolve-authorization --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
   release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
 
 Verifies that a release tag is signed, version-consistent, reachable from the
@@ -126,6 +127,23 @@ _release_provenance_assert_expected_sources() {
 		return 1
 	fi
 	return 0
+}
+
+_release_provenance_resolve_authorization() {
+	local requested_pr="$1"
+	local raw_sources="$2"
+	local repo_slug="$3"
+	local branch_name="$4"
+	local release_head=""
+	local expected_sources_json=""
+	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$repo_slug" =~ ^[^/]+/[^/]+$ && "$branch_name" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+	release_head=$(git rev-parse HEAD 2>/dev/null) || return 1
+	[[ "$release_head" == "$(git rev-parse "origin/${branch_name}" 2>/dev/null)" ]] || return 1
+	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
+		"$repo_slug" "$branch_name" "$release_head") || return 1
+	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
+	return $?
 }
 
 _release_provenance_resolve_source() {
@@ -535,7 +553,7 @@ main() {
 	local expected_sources=""
 
 	case "$command" in
-	verify | resolve-source) ;;
+	verify | resolve-authorization | resolve-source) ;;
 	help | --help | -h)
 		_release_provenance_usage
 		return 0
@@ -575,6 +593,11 @@ main() {
 	done
 
 	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
+	if [[ "$command" == "resolve-authorization" ]]; then
+		[[ -n "$source_pr" ]] || return 1
+		_release_provenance_resolve_authorization "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
+		return $?
+	fi
 	if [[ "$command" == "resolve-source" ]]; then
 		[[ -n "$source_pr" ]] || return 1
 		_release_provenance_resolve_source "$source_pr" "$repo_slug" "$branch_name" "$expected_sources"

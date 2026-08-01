@@ -87,4 +87,11 @@ if [[ "$deployed_output" != *"deployed release helper: status 90"* ]] ||
 fi
 printf 'PASS deployed CLI ignores stale canonical helpers and preserves helper exit status\n'
 
+expected_set_output=$(run_deployed_cli release patch 90 full --expected-sources 89,90)
+if [[ "$expected_set_output" != *"deployed release helper: patch 90 full --expected-sources 89,90"* ]]; then
+	printf 'FAIL root CLI did not preserve the explicit expected source set\n'
+	exit 1
+fi
+printf 'PASS root CLI preserves explicit multi-PR release authorization input\n'
+
 exit 0

@@ -99,6 +99,23 @@ _FULL_LOOP_RESOLVED_SOURCE_MERGE=""
 _FULL_LOOP_RESOLVED_REQUESTED_MERGE=""
 _FULL_LOOP_RESOLVED_EXPECTED_SOURCES=""
 
+_full_loop_capture_release_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_path="$3"
+	local resolver="$4"
+	local expected_sources="${5:-}"
+	local authorization_json=""
+	local resolver_args=(resolve-authorization --source-pr "$source_pr" --repo "$repo" --branch main)
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	authorization_json=$(cd "$release_path" && bash "$resolver" "${resolver_args[@]}") || return 1
+	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=$(jq -er '
+		.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
+	' <<<"$authorization_json") || return 1
+	_full_loop_persist_release_authorization "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
+	return $?
+}
+
 _full_loop_resolve_requested_release_source() {
 	local repo="$1"
 	local source_pr="$2"
@@ -127,10 +144,13 @@ _full_loop_resolve_requested_release_source() {
 	_FULL_LOOP_RESOLVED_REQUESTED_MERGE=$(jq -er --argjson pr "$source_pr" '
 		if .source_pr == $pr then .source_merge else (.aggregated_sources[] | select(.pr == $pr) | .merge) end
 	' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
-	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=$(jq -er '
+	local resolved_expected=""
+	resolved_expected=$(jq -er '
 		(.expected_sources // (if .mode == "direct" then [{pr:.source_pr,merge:.source_merge}] else .aggregated_sources end))
 		| sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
 	' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	[[ -z "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || "$resolved_expected" == "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" ]] || return 1
+	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES="$resolved_expected"
 	return 0
 }
 
@@ -291,7 +311,7 @@ main() {
 	case "$existing_state_rc" in
 	0) return 0 ;;
 	2) ;;
-		*) return "$existing_state_rc" ;;
+	*) return "$existing_state_rc" ;;
 	esac
 	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
 		[[ -n "$expected_sources" ]] || expected_sources="$persisted_expected"
@@ -306,8 +326,8 @@ main() {
 	trap 'cleanup_release_worktree' EXIT
 
 	local resolver="${AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER:-$release_path/.agents/scripts/release-provenance-helper.sh}"
-	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources" || return 1
-	_full_loop_persist_release_authorization "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
+	_full_loop_capture_release_authorization "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources" || return 1
+	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
 	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
 
 	local version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
@@ -321,7 +341,7 @@ main() {
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
 			AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
 			bash "$version_manager" release "$release_type" --source-pr "$source_pr" \
-				--expected-sources "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
+			--expected-sources "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	) || release_rc=$?
 	if [[ "$release_rc" -eq 8 ]]; then
 		printf 'release:queued for PR #%s; publication continues remotely\n' "$source_pr"

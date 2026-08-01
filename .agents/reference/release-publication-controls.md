@@ -261,14 +261,32 @@ After the issue #28737 code checkpoint merges, the approved live target is:
 - permit exactly `v*` tag deployments and `main` branch recovery deployments;
 - keep environment administrator bypass disabled and re-check it in the UI.
 
-The signed annotated tag becomes the durable publication authorization. Before
-any public side effect, one unified workflow verifies its exact source PR/merge
-trailers, GitHub-verified tag object, release commit, and `main` ancestry. A normal
+The trusted operator's complete expected source set is the publication
+authorization input. The runner resolves every explicitly authorized PR to its
+merged `main` SHA, normalizes and persists the resulting `PR@SHA` set before any
+version mutation, and reuses that exact set on retry. Git ancestry proves code
+presence only; it never adds authority. The observed direct or reviewed aggregate
+manifest must equal the expected set exactly, so omissions, extras, duplicates,
+malformed entries, or SHA mismatches fail before a version bump, tag, package, or
+receipt mutation. Calls without an explicit set retain singleton compatibility by
+using the requested source PR as the expected set.
+
+After that equality gate, the signed annotated tag becomes the durable
+publication record. Before any public side effect, one unified workflow verifies
+its exact source PR/merge trailers, GitHub-verified tag object, release commit,
+and `main` ancestry. A normal
 tag run must execute at the matching tag ref. Recovery must execute the reviewed
 workflow from `main`, accepts only the newest exact semantic-version tag, and
 repeats the same provenance verifier. GitHub release creation, npm publication,
 and Homebrew update are each check-before-write and verify-after-write operations,
 so retries converge without duplicate publication or channel downgrade.
+
+Immutable historical tags are never rewritten to repair an authorization gap.
+Detached `authorization-gap` evidence records the expected and observed source
+sets, tag object, release commit, timestamp, and reason. It is deliberately not a
+release status or cleanup receipt, cannot transition cleanup to terminal success,
+and cannot authorize publication. Omitted source receipts remain pending until
+separately reviewed terminal evidence exists.
 
 This unified path supersedes the interim separate package dispatch. Workflow-run
 discovery binds a push to the exact tag commit. Recovery names and verifies an

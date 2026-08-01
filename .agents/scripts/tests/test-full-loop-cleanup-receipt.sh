@@ -143,4 +143,34 @@ full_loop_reconcile_cleanup_receipts
 jq -e '.resource_cleanup_state == "CLEANED"' "$receipt_two" >/dev/null
 printf 'PASS audit reconciliation repairs a crash between removal and CLEANED persistence\n'
 
+SCRIPT_DIR="$SCRIPTS_DIR"
+export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/release-receipts"
+# shellcheck source=../full-loop-helper-state.sh
+source "${SCRIPTS_DIR}/full-loop-helper-state.sh"
+expected_sources='28993@23667f1e351981e4e6ecfeb03dd4c7a52ecfd100,29006@da5fec68b034be737bbf1f8d7ccf05a8dbf64a10,29010@4745adde8faa4a92aa4e27763c52e2c1a02a5e76,29013@de9e0b1b76f8dbeb97ccb8d2c3d57020b41adbd0'
+observed_sources='29010@4745adde8faa4a92aa4e27763c52e2c1a02a5e76'
+_full_loop_persist_release_authorization example/repo 29040 "$expected_sources"
+if _full_loop_persist_release_authorization example/repo 29040 "$observed_sources" >/dev/null 2>&1; then
+	printf 'FAIL retry replaced the persisted trusted release authorization set\n'
+	exit 1
+fi
+[[ "$(_full_loop_read_release_authorization example/repo 29040)" == "$expected_sources" ]]
+printf 'PASS retries reuse persisted release authorization and reject conflicting intent\n'
+_full_loop_write_release_authorization_gap_evidence example/repo 29010 "$expected_sources" "$observed_sources" \
+	1901024bf5b675e4c6b680a801ea402b75f1f355 0050022840d6ab7df25608a8a16e50b54e12efec \
+	'published tag omitted explicitly authorized sources'
+gap_path=$(_full_loop_release_evidence_path example/repo 29010 authorization-gap)
+jq -e '
+	.status == "authorization-gap"
+	and (.expected_sources | length) == 4
+	and (.observed_sources | length) == 1
+	and .terminal_cleanup_evidence == false
+' "$gap_path" >/dev/null
+if full_loop_update_cleanup_release_status example/repo 29010 authorization-gap >/dev/null 2>&1; then
+	printf 'FAIL authorization-gap evidence became a terminal cleanup status\n'
+	exit 1
+fi
+[[ ! -f "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/example_repo-29010.status" ]]
+printf 'PASS authorization-gap evidence remains detached from terminal cleanup receipts\n'
+
 exit 0
