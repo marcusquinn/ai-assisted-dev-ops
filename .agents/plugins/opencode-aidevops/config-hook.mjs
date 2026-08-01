@@ -643,7 +643,7 @@ function researchOnlyProfile(agentsDir) {
       disable: true,
       prompt: RESEARCH_ONLY_FALLBACK_PROMPT,
       tools: { "*": false },
-      permission: "deny",
+      permission: { "*": "deny" },
     };
   }
 
@@ -705,7 +705,7 @@ export function registerResearchOnlyAgent(config, agentsDir, env = process.env) 
     // runtime needs inference only, so fail closed even against read-only tools
     // that the general research-only profile normally permits.
     profile.tools = { "*": false };
-    profile.permission = "deny";
+    profile.permission = { "*": "deny" };
   } else if (!profile.disable) {
     addResearchStagingPermissions(profile, env);
   }
@@ -735,18 +735,20 @@ export function enforcePublicTriageIsolation(
   }
 
   config.tools = { "*": false };
-  config.permission = "deny";
+  config.permission = { "*": "deny" };
   config.mcp = {};
   config.formatter = false;
   config.lsp = false;
   config.share = "disabled";
   config.subagent_depth = 0;
+  config.default_agent = PUBLIC_TRIAGE_AGENT_NAME;
 
   const triageProfile = config.agent[PUBLIC_TRIAGE_AGENT_NAME];
   config.agent[PUBLIC_TRIAGE_AGENT_NAME] = {
     ...triageProfile,
+    mode: "primary",
     tools: { "*": false },
-    permission: "deny",
+    permission: { "*": "deny" },
   };
   const disabledAgentNames = new Set([
     ...Object.keys(config.agent),
@@ -754,7 +756,7 @@ export function enforcePublicTriageIsolation(
   ]);
   disabledAgentNames.delete(PUBLIC_TRIAGE_AGENT_NAME);
   for (const agentName of disabledAgentNames) {
-    config.agent[agentName] = { ...(config.agent[agentName] || {}), disable: true };
+    config.agent[agentName] = { disable: true };
   }
   return 1;
 }

@@ -121,6 +121,7 @@ explicit values. Package slugs and paths remain local to `repos.json`.
 | `manifest` | `CloudronManifest.json` | Manifest path relative to the registered repository root. Absolute paths and `..` are rejected by monitors. |
 | `release_workflow` | `.github/workflows/cloudron-package-release.yml` | Thin tag-triggered caller scaffolded by `aidevops init`; existing files are never overwritten. |
 | `upstream_slug` | unset | Upstream GitHub `owner/repo` used for stable-release comparison. Monitoring stays disabled until this is explicitly configured. |
+| `upstream_tag_prefixes` | `["v", ""]` | Non-empty array of tag-stream prefixes. Each value must be a string; ASCII control characters are rejected, while the empty string allows bare semantic tags. Only tags whose configured prefix leaves a semantic version are candidates. |
 | `monitor_upstream` | `true` when `upstream_slug` is set; otherwise `false` | Include the package in the daily upstream-release routine. |
 | `monitor_compatibility` | `true` | Include the package in the weekly manifest and pinned-base audit. |
 
@@ -130,11 +131,31 @@ explicit values. Package slugs and paths remain local to `repos.json`.
   "cloudron_package": {
     "manifest": "CloudronManifest.json",
     "upstream_slug": "exampleorg/example-upstream",
+    "upstream_tag_prefixes": ["v", ""],
     "monitor_upstream": true,
     "monitor_compatibility": true
   }
 }
 ```
+
+Use a package-specific stream when one upstream repository publishes releases
+for multiple products. For example, this accepts `desktop-v0.5.3` while
+rejecting unrelated `v...` tags:
+
+```json
+{
+  "cloudron_package": {
+    "upstream_slug": "exampleorg/multi-product-upstream",
+    "upstream_tag_prefixes": ["desktop-v"],
+    "monitor_upstream": true
+  }
+}
+```
+
+The upstream monitor paginates all GitHub releases, excludes drafts and
+prereleases, and chooses the numerically highest stable semantic version from
+the configured streams. Invalid prefix configuration or no matching stable tag
+fails closed with a diagnostic rather than falling back to another stream.
 
 The monitors file deduplicated findings only in the package repository and only
 with `ADMIN` or `MAINTAIN` authority. They never build, tag, publish, deploy, or

@@ -91,7 +91,7 @@ receipt_one=$(full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROOT}/wo
 	"$OWNER_PID" session-one not-requested)
 export OPENCODE_PID="$OWNER_PID"
 _clean_acquire_removal_lease "${TEST_ROOT}/worktree-one" feature/one
-if _clean_removal_lease_owned_by_others "${TEST_ROOT}/worktree-one"; then
+if ! _clean_has_exact_removal_lease "${TEST_ROOT}/worktree-one"; then
 	printf 'FAIL cleanup exact-PID owner check rejected its own registry lease\n'
 	exit 1
 fi
@@ -124,6 +124,94 @@ newest_receipt=$(full_loop_write_cleanup_deferred example/repo 103 "${TEST_ROOT}
 selected_receipt=$(full_loop_cleanup_receipt_for_worktree "${TEST_ROOT}/worktree-one")
 [[ "$selected_receipt" == "$newest_receipt" ]]
 printf 'PASS reused worktree paths select the newest lifecycle receipt\n'
+
+atomic_worktree="${TEST_ROOT}/atomic-worktree"
+mkdir -p "$atomic_worktree"
+atomic_receipt_one=$(full_loop_write_cleanup_deferred example/atomic-one 201 "$atomic_worktree" feature/atomic \
+	"$OWNER_PID" atomic-session not-requested)
+atomic_receipt_two=$(full_loop_write_cleanup_deferred example/atomic-two 202 "$atomic_worktree" feature/atomic \
+	"$OWNER_PID" atomic-session not-requested)
+full_loop_transition_cleanup_receipt "$atomic_receipt_one" "$_FULL_LOOP_CLEANUP_CLEANED"
+full_loop_transition_cleanup_receipt "$atomic_receipt_two" "$_FULL_LOOP_CLEANUP_CLEANED"
+cp "$atomic_receipt_one" "${TEST_ROOT}/atomic-receipt-one.original"
+cp "$atomic_receipt_two" "${TEST_ROOT}/atomic-receipt-two.original"
+
+mock_bin="${TEST_ROOT}/mock-bin"
+mkdir -p "$mock_bin"
+real_mv=$(command -v mv)
+cat >"${mock_bin}/mv" <<'MOCK_MV'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${AIDEVOPS_TEST_RECEIPT_MV_COUNTER:-}" && "$#" -eq 2 &&
+	"$1" == "${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}"/.recreated-receipts.*/publish/*.json &&
+	"$2" == "${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}"/*.json ]]; then
+	publication_count=0
+	if [[ -f "$AIDEVOPS_TEST_RECEIPT_MV_COUNTER" ]]; then
+		IFS= read -r publication_count <"$AIDEVOPS_TEST_RECEIPT_MV_COUNTER" || publication_count=0
+	fi
+	[[ "$publication_count" =~ ^[0-9]+$ ]] || publication_count=0
+	publication_count=$((publication_count + 1))
+	printf '%s\n' "$publication_count" >"$AIDEVOPS_TEST_RECEIPT_MV_COUNTER"
+	if [[ "$publication_count" -eq "${AIDEVOPS_TEST_FAIL_RECEIPT_PUBLICATION_AT:-0}" ]]; then
+		exit 1
+	fi
+fi
+exec "$AIDEVOPS_TEST_REAL_MV" "$@"
+MOCK_MV
+chmod +x "${mock_bin}/mv"
+
+original_path="$PATH"
+export AIDEVOPS_TEST_REAL_MV="$real_mv"
+export AIDEVOPS_TEST_RECEIPT_MV_COUNTER="${TEST_ROOT}/receipt-publication-count"
+export AIDEVOPS_TEST_FAIL_RECEIPT_PUBLICATION_AT=2
+export PATH="${mock_bin}:${PATH}"
+atomic_result=0
+_full_loop_receipt_lock_acquire
+if _full_loop_supersede_recreated_receipt_files "$AIDEVOPS_FULL_LOOP_CLEANUP_DIR" "$atomic_worktree" \
+	feature/atomic aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$OWNER_PID" atomic-session \
+	'2026-08-01T00:00:00Z'; then
+	atomic_result=0
+else
+	atomic_result=$?
+fi
+_full_loop_receipt_lock_release
+export PATH="$original_path"
+unset AIDEVOPS_TEST_REAL_MV AIDEVOPS_TEST_RECEIPT_MV_COUNTER AIDEVOPS_TEST_FAIL_RECEIPT_PUBLICATION_AT
+
+if [[ "$atomic_result" -eq 0 ]]; then
+	printf 'FAIL second receipt publication failure was accepted\n'
+	exit 1
+fi
+cmp -s "$atomic_receipt_one" "${TEST_ROOT}/atomic-receipt-one.original"
+cmp -s "$atomic_receipt_two" "${TEST_ROOT}/atomic-receipt-two.original"
+jq -e '(.receipt_disposition // null) == null' "$atomic_receipt_one" "$atomic_receipt_two" >/dev/null
+for atomic_transaction in "$AIDEVOPS_FULL_LOOP_CLEANUP_DIR"/.recreated-receipts.*; do
+	[[ -e "$atomic_transaction" || -L "$atomic_transaction" ]] || continue
+	printf 'FAIL failed receipt publication left transaction state: %s\n' "$atomic_transaction"
+	exit 1
+done
+printf 'PASS multi-receipt publication failure restores every original receipt\n'
+
+recovery_transaction="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/.recreated-receipts.recovery-fixture"
+mkdir -p "${recovery_transaction}/backup" "${recovery_transaction}/staged" \
+	"${recovery_transaction}/publish" "${recovery_transaction}/restore"
+printf '%s\n' "$_FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA" >"${recovery_transaction}/schema"
+for recovery_receipt in "$atomic_receipt_one" "$atomic_receipt_two"; do
+	recovery_name="${recovery_receipt##*/}"
+	cp "$recovery_receipt" "${recovery_transaction}/backup/${recovery_name}"
+	jq '.receipt_disposition = {state:"INTERRUPTED_TEST_PUBLICATION"}' "$recovery_receipt" \
+		>"${recovery_transaction}/staged/${recovery_name}"
+done
+: >"${recovery_transaction}/state.prepared"
+cp "${recovery_transaction}/staged/${atomic_receipt_one##*/}" "$atomic_receipt_one"
+jq -e '.receipt_disposition.state == "INTERRUPTED_TEST_PUBLICATION"' "$atomic_receipt_one" >/dev/null
+selected_after_recovery=$(full_loop_cleanup_receipt_for_worktree "$atomic_worktree")
+[[ -n "$selected_after_recovery" ]]
+cmp -s "$atomic_receipt_one" "${TEST_ROOT}/atomic-receipt-one.original"
+cmp -s "$atomic_receipt_two" "${TEST_ROOT}/atomic-receipt-two.original"
+[[ ! -e "$recovery_transaction" && ! -L "$recovery_transaction" ]]
+printf 'PASS lock acquisition recovers an interrupted prepared receipt transaction\n'
 
 receipt_two=$(full_loop_write_cleanup_deferred example/repo 102 "${TEST_ROOT}/worktree-two" feature/two \
 	"$OWNER_PID" session-two not-requested)

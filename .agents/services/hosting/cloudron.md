@@ -237,7 +237,7 @@ cloudron-helper.sh add-user production newuser@domain.com
 Source: [forum.cloudron.io/topic/14976](https://forum.cloudron.io/topic/14976/what-s-coming-in-9-1) (released to unstable 2026-03-01)
 
 - **Custom app build/deploy**: `cloudron install` uploads source, builds on-server. Source backed up and rebuilt on restore.
-- **Community packages**: Third-party apps via `CloudronVersions.json` URL in dashboard. See `cloudron-app-publishing-skill.md`.
+- **Community packages**: Third-party apps via `CloudronVersions.json` URL in dashboard. Aidevops-packaged apps use keyless image/catalog provenance, while Cloudron currently does not enforce it client-side. See `cloudron-app-publishing-skill.md` and `reference/release-artifact-provenance.md`.
 - **Passkey auth**: FIDO2/WebAuthn. Tested: Bitwarden, YubiKey 5, Nitrokey, native browser/OS.
 - **OIDC CLI login**: Browser-based OIDC for CLI. Pre-obtained API tokens still work for CI/CD.
 - **Addon upgrades**: MongoDB 8, Redis 8.4, Node.js 24.x

@@ -75,6 +75,53 @@ assert_next_run() {
 	return 0
 }
 
+assert_pulse_timezone_policy() {
+	ROUTINE_SCHEDULE_HELPER="$HELPER"
+	unset _PULSE_ROUTINES_LOADED
+	# shellcheck source=../pulse-routines.sh
+	source "$PULSE_ROUTINES"
+
+	local parse_rc=0
+	if _routine_parse_line '- [x] r-zone Parsed zone repeat:daily(@00:30) ~1m run:scripts/example.sh timezone:Etc/GMT+1'; then
+		parse_rc=0
+	else
+		parse_rc=$?
+	fi
+	record_result "routine parser accepts IANA timezone token" "$parse_rc" 0
+	record_result "routine parser retains timezone override" "$_RPL_TIMEZONE" 'Etc/GMT+1'
+	record_result "timezone field terminates routine description" "$_RPL_DESC" 'Parsed zone'
+
+	local malformed_rc=0
+	_routine_parse_line '- [x] r-bad-zone Bad zone repeat:daily(@00:30) timezone:Europe/Jersey;' >/dev/null 2>&1 || malformed_rc=$?
+	record_result "malformed timezone field fails closed" "$malformed_rc" 1
+
+	local inherited_timezone="not-empty"
+	if _routine_parse_line '- [x] r-local-zone Local zone repeat:daily(@00:30) run:scripts/example.sh'; then
+		inherited_timezone="$_RPL_TIMEZONE"
+	fi
+	record_result "routine without override retains inherited timezone mode" "$inherited_timezone" ''
+
+	local now_epoch=""
+	local last_epoch=""
+	local override_rc=0
+	local inherited_rc=0
+	now_epoch=$(iso_epoch 2026-07-23T00:45:00Z) || return 1
+	last_epoch=$(iso_epoch 2026-07-23T00:00:00Z) || return 1
+	(
+		export AIDEVOPS_SCHEDULE_TIMEZONE=Europe/Jersey
+		export AIDEVOPS_SCHEDULE_NOW_EPOCH="$now_epoch"
+		_routine_schedule_is_due 'daily(@00:30)' "$last_epoch" UTC
+	) >/dev/null 2>&1 || override_rc=$?
+	(
+		export AIDEVOPS_SCHEDULE_TIMEZONE=Europe/Jersey
+		export AIDEVOPS_SCHEDULE_NOW_EPOCH="$now_epoch"
+		_routine_schedule_is_due 'daily(@00:30)' "$last_epoch" "$inherited_timezone"
+	) >/dev/null 2>&1 || inherited_rc=$?
+	record_result "explicit UTC routine overrides global Europe/Jersey timezone" "$override_rc" 0
+	record_result "routine without override inherits global Europe/Jersey timezone" "$inherited_rc" 1
+	return 0
+}
+
 assert_pulse_state_policy() {
 	ROUTINE_STATE_FILE="${TEST_ROOT}/routine-state.json"
 	LOGFILE="${TEST_ROOT}/pulse.log"
@@ -128,6 +175,7 @@ main() {
 		Europe/Jersey 2026-10-24T12:00:00Z 'daily(@01:30)' 2026-10-25T00:30:00Z
 	assert_next_run "spring-forward nonexistent local time fails closed" \
 		Europe/Jersey 2026-03-28T12:00:00Z 'daily(@01:30)' 'rc:2'
+	assert_pulse_timezone_policy
 	assert_pulse_state_policy
 
 	printf '\nRan %d tests, %d failed.\n' "$((PASSED + FAILED))" "$FAILED"

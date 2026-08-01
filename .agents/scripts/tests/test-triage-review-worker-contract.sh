@@ -112,7 +112,9 @@ unset TRIAGE_CONTRACT_RUNTIME_EXIT
 TRIAGE_AGENT_FILE="${SCRIPTS_DIR}/../workflows/triage-review.md"
 grep -q '^  "\*": false$' "$TRIAGE_AGENT_FILE" || \
 	fail "triage-review agent does not deny every built-in and plugin tool"
-grep -q '^permission: deny$' "$TRIAGE_AGENT_FILE" || \
+grep -q '^mode: primary$' "$TRIAGE_AGENT_FILE" || \
+	fail "triage-review agent is not selectable as the isolated primary agent"
+grep -q '^  "\*": deny$' "$TRIAGE_AGENT_FILE" || \
 	fail "triage-review agent does not deny every permission request"
 
 printf '%s\n' 'PASS triage review worker validates paths, tools, and worker authority'

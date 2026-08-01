@@ -143,9 +143,12 @@ if [[ "${GH_DEBUG:-}" == "api" && "${STUB_GH_DEBUG_RESPONSE:-0}" == "1" ]]; then
 			_stub_remaining=$((${STUB_GH_DEBUG_MULTI_REMAINING_BASE:-4900} - _stub_frame + 1))
 		fi
 		printf '* Request at 2026-07-24 00:00:00 +0000 UTC\n' >&2
+		[[ -z "${STUB_GH_DEBUG_HOST:-}" ]] || printf '> Host: %s\n' "$STUB_GH_DEBUG_HOST" >&2
+		[[ -z "${STUB_GH_DEBUG_CACHE_TTL:-}" ]] || printf '> X-Gh-Cache-Ttl: %s\n' "$STUB_GH_DEBUG_CACHE_TTL" >&2
 		printf '> Authorization: token private-fixture-token\n\n' >&2
 		if [[ "${STUB_GH_DEBUG_REQUEST_ONLY:-0}" != "1" ]]; then
 			printf '< HTTP/2.0 %s Fixture\n' "${STUB_GH_DEBUG_STATUS:-200}" >&2
+			[[ -z "${STUB_GH_DEBUG_DATE:-}" ]] || printf '< Date: %s\n' "$STUB_GH_DEBUG_DATE" >&2
 			printf '< X-Ratelimit-Resource: %s\n' "${STUB_GH_DEBUG_RESOURCE:-graphql}" >&2
 			printf '< X-Ratelimit-Used: %s\n' "$_stub_used" >&2
 			printf '< X-Ratelimit-Remaining: %s\n' "$_stub_remaining" >&2
@@ -160,7 +163,7 @@ if [[ "${GH_DEBUG:-}" == "api" && "${STUB_GH_DEBUG_RESPONSE:-0}" == "1" ]]; then
 				printf '{"private":"redirected-response-fixture"}\n' >&2
 			fi
 		fi
-		printf '* Request took 12.5ms\n' >&2
+		printf '* Request took %s\n' "${STUB_GH_DEBUG_DURATION:-12.5ms}" >&2
 		_stub_frame=$((_stub_frame + 1))
 	done
 	[[ -z "${STUB_GH_DIAGNOSTIC:-}" ]] || printf '%s\n' "$STUB_GH_DIAGNOSTIC" >&2
@@ -273,6 +276,9 @@ chmod +x "$TMP/scripts/gh-signature-helper.sh"
 # instead of the real one installed in ~/.aidevops/agents/scripts/.
 cp "$SHIM" "$TMP/scripts/gh"
 chmod +x "$TMP/scripts/gh"
+cp "$REPO_DIR/.agents/scripts/gh-native-transport-lib.sh" "$TMP/scripts/gh-native-transport-lib.sh"
+cp "$REPO_DIR/.agents/scripts/gh-api-guards-lib.sh" "$TMP/scripts/gh-api-guards-lib.sh"
+cp "$REPO_DIR/.agents/scripts/gh-write-policy-lib.sh" "$TMP/scripts/gh-write-policy-lib.sh"
 cp "$REPO_DIR/.agents/scripts/gh-api-instrument.sh" "$TMP/scripts/gh-api-instrument.sh"
 cp "$REPO_DIR/.agents/scripts/gh-quota-attribution-lib.sh" "$TMP/scripts/gh-quota-attribution-lib.sh"
 cp "$REPO_DIR/.agents/scripts/gh-quota-debug-filter.py" "$TMP/scripts/gh-quota-debug-filter.py"
@@ -391,6 +397,19 @@ else
 	_fail "--body original content preservation" "argv: $argv"
 fi
 
+# Inline marker prose is not a completed signature footer.
+echo ""
+echo "Test 2a: inline marker prose gets a standalone signature"
+_reset_log
+"$SHIM_RUN" issue comment 123 --repo owner/repo \
+	--body "Documentation mentions <!-- aidevops:sig --> inline" 2>/dev/null
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' "$STUB_GH_LOG" 2>/dev/null || true)
+if [[ "$marker_count" -eq 1 ]]; then
+	_pass "inline marker prose receives one standalone marker"
+else
+	_fail "inline marker prose signing" "standalone marker appeared $marker_count times, expected 1"
+fi
+
 # =============================================================================
 # Test 3: gh issue comment --body with marker passes through unchanged
 # =============================================================================
@@ -418,7 +437,7 @@ fi
 echo ""
 echo "Test 4: --body-file without marker gets sig appended"
 body_file="$TMP/body.md"
-printf 'unsigned body content\n' >"$body_file"
+printf 'unsigned body cites aidevops.sh:1715\n' >"$body_file"
 _reset_log
 "$SHIM_RUN" issue comment 456 --repo owner/repo --body-file "$body_file" 2>/dev/null
 argv=$(_read_argv)
@@ -428,7 +447,7 @@ if [[ -n "$resolved_body_file" && -f "$resolved_body_file" ]] && grep -q "<!-- a
 else
 	_fail "--body-file sig injection" "argv: $argv"
 fi
-if grep -q "unsigned body content" "$body_file" && ! grep -q "<!-- aidevops:sig -->" "$body_file"; then
+if grep -q "aidevops.sh:1715" "$body_file" && ! grep -q "<!-- aidevops:sig -->" "$body_file"; then
 	_pass "original --body-file content preserved without mutation"
 else
 	_fail "--body-file original preservation" ""
@@ -1056,6 +1075,17 @@ else
 	_fail "ops REST no-session signature" "argv: $argv sig argv: $sig_argv"
 fi
 
+_reset_log
+inline_api_body='Documentation mentions <!-- aidevops:sig --> inline'
+AIDEVOPS_HEADLESS=1 AIDEVOPS_REPOS_JSON="$repos_json" "$SHIM_RUN" \
+	api /repos/managed/repo/issues/789/comments -X POST -f body="$inline_api_body" 2>/dev/null
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' "$STUB_GH_LOG" 2>/dev/null || true)
+if [[ "$marker_count" -eq 1 ]]; then
+	_pass "direct REST body with inline marker prose receives a standalone marker"
+else
+	_fail "direct REST inline marker signing" "standalone marker appeared $marker_count times, expected 1"
+fi
+
 repos_json_missing_role="$TMP/repos-missing-role.json"
 printf '{"initialized_repos":[{"slug":"managed/repo","maintainer":"managed","pulse":true}]}' >"$repos_json_missing_role"
 _reset_log
@@ -1482,6 +1512,125 @@ if [[ "$(grep -c $'\tgh-quota-bootstrap\t.*\tattempt\t' "$zero_frame_log" || tru
 	_pass "valid zero-response capture adds no synthetic transport attempt"
 else
 	_fail "zero-response exact capture" "log: $(cat "$zero_frame_log" 2>/dev/null || true)"
+fi
+
+cache_hit_log="$TMP/exact-native-cache-hit.log"
+cache_hit_state="$TMP/exact-native-cache-hit-state"
+: >"$cache_hit_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$cache_hit_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$cache_hit_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=200 STUB_GH_DEBUG_REMAINING=4800 STUB_GH_DEBUG_RESET=2000 \
+	STUB_GH_DEBUG_HOST=api.github.com STUB_GH_DEBUG_CACHE_TTL=24h0m0s \
+	STUB_GH_DEBUG_DATE='Thu, 23 Jul 2026 23:00:00 GMT' \
+	STUB_GH_DEBUG_DURATION=2ms "$SHIM_RUN" pr checks 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(grep -c $'\tgh-quota-bootstrap\t.*\tattempt\t' "$cache_hit_log" || true)" == "1" \
+	&& "$(grep -c $'\tgh_pr_checks\t.*\tattempt\t' "$cache_hit_log" || true)" == "0" ]]; then
+	_pass "proven GitHub CLI cache hits add no synthetic transport attempt"
+else
+	_fail "native cache-hit attribution" "log: $(cat "$cache_hit_log" 2>/dev/null || true)"
+fi
+
+cache_miss_log="$TMP/exact-native-cache-miss.log"
+cache_miss_state="$TMP/exact-native-cache-miss-state"
+: >"$cache_miss_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$cache_miss_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$cache_miss_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_BOOTSTRAP_GRAPHQL_RESET=2000000000 \
+	STUB_GH_DEBUG_RESOURCE=graphql STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 \
+	STUB_GH_DEBUG_RESET=2000000000 \
+	STUB_GH_DEBUG_HOST=api.github.com STUB_GH_DEBUG_CACHE_TTL=24h0m0s \
+	STUB_GH_DEBUG_DATE='Thu, 23 Jul 2026 23:00:00 GMT' \
+	STUB_GH_DEBUG_DURATION='500µs' "$SHIM_RUN" pr checks 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(grep -c $'\tgh_pr_checks\t.*\tattempt\t' "$cache_miss_log" || true)" == "1" \
+	&& "$(_read_attempt_quota "$cache_miss_log")" == "1" ]]; then
+	_pass "cache-enabled network responses remain transport attempts"
+else
+	_fail "cache-miss fail-closed attribution" "log: $(cat "$cache_miss_log" 2>/dev/null || true)"
+fi
+
+malformed_date_log="$TMP/exact-native-cache-malformed-date.log"
+malformed_date_state="$TMP/exact-native-cache-malformed-date-state"
+: >"$malformed_date_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$malformed_date_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$malformed_date_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
+	STUB_GH_DEBUG_HOST=api.github.com STUB_GH_DEBUG_CACHE_TTL=24h0m0s \
+	STUB_GH_DEBUG_DATE=$'Thu, 23 Jul 2026 23:00:00 GMT\377' \
+	STUB_GH_DEBUG_DURATION='500µs' "$SHIM_RUN" pr checks 123 --repo owner/repo >/dev/null 2>/dev/null
+if [[ "$(grep -c $'\tgh_pr_checks\t.*\tattempt\t' "$malformed_date_log" || true)" == "1" \
+	&& "$(_read_attempt_quota "$malformed_date_log")" == "1" ]]; then
+	_pass "malformed cache response dates cannot prove synthetic zero-attempt hits"
+else
+	_fail "malformed cache-date attribution" "log: $(cat "$malformed_date_log" 2>/dev/null || true)"
+fi
+
+naive_date_log="$TMP/exact-native-cache-naive-date.log"
+naive_date_state="$TMP/exact-native-cache-naive-date-state"
+naive_date_err="$TMP/exact-native-cache-naive-date.err"
+: >"$naive_date_log"
+: >"$naive_date_err"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$naive_date_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$naive_date_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
+	STUB_GH_DEBUG_HOST=api.github.com STUB_GH_DEBUG_CACHE_TTL=24h0m0s \
+	STUB_GH_DEBUG_DATE='Thu, 23 Jul 2026 23:00:00' \
+	STUB_GH_DEBUG_DURATION='500µs' "$SHIM_RUN" pr checks 123 --repo owner/repo \
+	>/dev/null 2>"$naive_date_err"
+if [[ "$(grep -c $'\tgh_pr_checks\t.*\tattempt\t' "$naive_date_log" || true)" == "1" \
+	&& "$(_read_attempt_quota "$naive_date_log")" == "1" \
+	&& ! -s "$naive_date_err" ]]; then
+	_pass "timezone-free cache response dates fail closed without parser diagnostics"
+else
+	_fail "timezone-free cache-date attribution" \
+		"log: $(cat "$naive_date_log" 2>/dev/null || true) stderr: $(cat "$naive_date_err" 2>/dev/null || true)"
+fi
+
+interleaved_debug="$TMP/exact-interleaved-cache.debug"
+interleaved_err="$TMP/exact-interleaved-cache.err"
+cat >"$interleaved_debug" <<'EOF'
+* Request at 2026-07-24 00:00:00 +0000 UTC
+> Host: api.github.com
+> X-Gh-Cache-Ttl: 24h0m0s
+> Authorization: token private-fixture-token
+
+* Request at 2026-07-24 00:00:00 +0000 UTC
+> Host: api.github.com
+> Authorization: token private-fixture-token
+
+< HTTP/2.0 200 Fixture
+< Date: Thu, 23 Jul 2026 23:00:00 GMT
+< X-Ratelimit-Resource: graphql
+< X-Ratelimit-Used: 200
+< X-Ratelimit-Remaining: 4800
+< X-Ratelimit-Reset: 2000
+
+{"private":"cached-response-fixture"}
+* Request took 500µs
+< HTTP/2.0 200 Fixture
+< Date: Fri, 24 Jul 2026 00:00:00 GMT
+< X-Ratelimit-Resource: graphql
+< X-Ratelimit-Used: 201
+< X-Ratelimit-Remaining: 4799
+< X-Ratelimit-Reset: 2000000000
+
+{"private":"network-response-fixture"}
+* Request took 12.5ms
+EOF
+interleaved_parsed=$(python3 "$TMP/scripts/gh-quota-debug-filter.py" \
+	"$interleaved_debug" 2>"$interleaved_err")
+if [[ "$(printf '%s\n' "$interleaved_parsed" | grep -c $'^v1\t1$')" == "1" \
+	&& "$(printf '%s\n' "$interleaved_parsed" | grep -c $'^frame\t1\t1\t200\tgraphql\t201\t')" == "1" \
+	&& ! -s "$interleaved_err" ]]; then
+	_pass "interleaved cache completions do not hide the concurrent network response"
+else
+	_fail "interleaved cache attribution" "parsed: $interleaved_parsed"
 fi
 
 local_log="$TMP/exact-local-command.log"

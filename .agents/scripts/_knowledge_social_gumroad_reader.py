@@ -60,6 +60,22 @@ READER_POLICY = GuardedOAuthPolicy(
 )
 
 
+def _fixture_page(fixture: FixtureSequence, request: PageRequest) -> dict[str, Any]:
+    entry = fixture.next_page()
+    expectation = entry.get("expect_request", {})
+    if not isinstance(expectation, dict):
+        raise GumroadAdapterError("Gumroad fixture expectation must be an object")
+    actual = request.payload()
+    if any(actual.get(key) != value for key, value in expectation.items()):
+        raise GumroadAdapterError(
+            "Gumroad request did not resume at the expected checkpoint"
+        )
+    response = entry.get("response", entry)
+    if not isinstance(response, dict):
+        raise GumroadAdapterError("Gumroad fixture page response must be an object")
+    return response
+
+
 class GuardedGumroad(GuardedOAuthReader):
     """Execute only identity and allowlisted GET reads in a bounded child."""
 
@@ -78,17 +94,7 @@ class FixtureGumroad:
         return self.fixture.identity()
 
     def page(self, request: PageRequest) -> dict[str, Any]:
-        entry = self.fixture.next_page()
-        expectation = entry.get("expect_request", {})
-        if not isinstance(expectation, dict):
-            raise GumroadAdapterError("Gumroad fixture expectation must be an object")
-        actual = request.payload()
-        if any(actual.get(key) != value for key, value in expectation.items()):
-            raise GumroadAdapterError("Gumroad request did not resume at the expected checkpoint")
-        response = entry.get("response", entry)
-        if not isinstance(response, dict):
-            raise GumroadAdapterError("Gumroad fixture page response must be an object")
-        return response
+        return _fixture_page(self.fixture, request)
 
 
 def _optional_text(value: Any, field: str) -> str | None:

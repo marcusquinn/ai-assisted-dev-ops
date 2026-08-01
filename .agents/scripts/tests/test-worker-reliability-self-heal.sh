@@ -447,21 +447,26 @@ test_no_work_circuit_breaker_threshold_guard() {
 }
 
 test_no_work_circuit_breaker_marker_posted() {
-	# The NMR path must post a comment containing the
-	# cost-circuit-breaker:no_work_loop marker so that
-	# _nmr_application_is_circuit_breaker_trip can detect it.
+	# The actual NMR path must post the machine marker, while the below-threshold
+	# explanatory prose must not quote it and contaminate reason classification.
 
-	local fn_src
-	fn_src=$(awk '/^_log_no_work_skip_escalation\(\) \{/,/^\}/' "$LIFECYCLE_SCRIPT" 2>/dev/null)
-	if [[ -z "$fn_src" ]]; then
+	local breaker_src="" skip_src=""
+	breaker_src=$(awk '/^_apply_no_work_nmr_breaker\(\) \{/,/^\}/' "$LIFECYCLE_SCRIPT" 2>/dev/null)
+	skip_src=$(awk '/^_log_no_work_skip_escalation\(\) \{/,/^\}/' "$LIFECYCLE_SCRIPT" 2>/dev/null)
+	if [[ -z "$breaker_src" || -z "$skip_src" ]]; then
 		print_result "t2769: no_work circuit breaker marker posted" 1 \
-			"_log_no_work_skip_escalation not found"
+			"no_work breaker or below-threshold diagnostic function not found"
 		return 0
 	fi
 
-	if ! printf '%s\n' "$fn_src" | grep -q 'cost-circuit-breaker:no_work_loop'; then
+	if ! printf '%s\n' "$breaker_src" | grep -q 'cost-circuit-breaker:no_work_loop'; then
 		print_result "t2769: no_work circuit breaker marker posted" 1 \
-			"marker 'cost-circuit-breaker:no_work_loop' not found in function body"
+			"marker 'cost-circuit-breaker:no_work_loop' not found in breaker function"
+		return 0
+	fi
+	if printf '%s\n' "$skip_src" | grep -q 'cost-circuit-breaker:no_work_loop'; then
+		print_result "t2769: no_work circuit breaker marker posted" 1 \
+			"below-threshold diagnostic prose quotes the breaker marker"
 		return 0
 	fi
 

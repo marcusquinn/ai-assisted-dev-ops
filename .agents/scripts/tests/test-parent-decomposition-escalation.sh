@@ -6,7 +6,8 @@
 #
 # test-parent-decomposition-escalation.sh — tests for t2442 Fix #4
 #
-# Structural tests for the 7-day escalation path in pulse-issue-reconcile.sh:
+# Structural tests for the 7-day escalation path split across the parent and
+# action reconciliation modules:
 #   1. _compute_parent_nudge_age_hours helper exists and uses GNU+BSD date compat
 #   2. _post_parent_decomposition_escalation helper exists with canonical marker
 #   3. Escalation uses idempotency marker <!-- parent-needs-decomposition-escalated -->
@@ -66,12 +67,15 @@ assert_grep_fixed() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="$SCRIPT_DIR/pulse-issue-reconcile.sh"
+PARENT_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-parent.sh"
+ACTIONS_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
 
-if [[ ! -f "$TARGET" ]]; then
-	echo "${TEST_RED}FATAL${TEST_NC}: $TARGET not found"
-	exit 1
-fi
+for target in "$PARENT_TARGET" "$ACTIONS_TARGET"; do
+	if [[ ! -f "$target" ]]; then
+		echo "${TEST_RED}FATAL${TEST_NC}: $target not found"
+		exit 1
+	fi
+done
 
 echo "${TEST_BLUE}=== t2442 Fix #4: parent-task escalation structural tests ===${TEST_NC}"
 echo ""
@@ -81,104 +85,104 @@ echo ""
 assert_grep \
 	"1: _compute_parent_nudge_age_hours function defined" \
 	'^_compute_parent_nudge_age_hours\(\) \{' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 assert_grep \
 	"2: _post_parent_decomposition_escalation function defined" \
 	'^_post_parent_decomposition_escalation\(\) \{' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Date compat ---
 
 assert_grep \
 	"3: nudge-age helper uses GNU/BSD date compat path" \
 	'date --version >/dev/null 2>&1' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 assert_grep_fixed \
 	"4: nudge-age helper uses BSD date fallback" \
 	'date -j -u -f "%Y-%m-%dT%H:%M:%SZ"' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 # --- Marker wiring ---
 
 assert_grep_fixed \
 	"5: escalation helper uses canonical marker" \
 	'<!-- parent-needs-decomposition-escalated -->' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- NMR label application ---
 
 assert_grep_fixed \
 	"6: escalation applies needs-maintainer-review label" \
 	'--add-label "needs-maintainer-review"' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Comment body — 4 paths forward ---
 
 assert_grep_fixed \
 	"7a: escalation comment lists path 1 (decompose into children)" \
 	'Decompose into children' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep_fixed \
 	"7b: escalation comment lists path 2 (drop parent-task label)" \
 	'Drop the parent-task label' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep_fixed \
 	"7c: escalation comment lists path 3 (close)" \
 	'Close the issue' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep_fixed \
 	"7d: escalation comment lists path 4 (auto-decomposer)" \
 	'auto-decomposer' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Reconcile counter + gate wiring ---
 
 assert_grep \
 	"8: reconcile declares total_escalated=0 counter" \
 	'local total_escalated=0' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep \
 	"9: reconcile declares max_escalations cap" \
 	'local max_escalations=[0-9]+' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep \
 	"10: reconcile reads PARENT_DECOMPOSITION_ESCALATION_HOURS env (default 168)" \
 	'PARENT_DECOMPOSITION_ESCALATION_HOURS:-168' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep \
 	"11: reconcile gates escalation on nudge age via _compute_parent_nudge_age_hours" \
 	'_compute_parent_nudge_age_hours "\$slug" "\$issue_num"' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 assert_grep \
 	"12: reconcile calls _post_parent_decomposition_escalation with slug+num+title" \
 	'_post_parent_decomposition_escalation "\$slug" "\$issue_num" "\$issue_title"' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 assert_grep \
 	"13: reconcile increments total_escalated on success" \
 	'total_escalated=\$\(\(total_escalated \+ 1\)\)' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep \
 	"14: final log line includes escalated= counter" \
 	'escalated=\$\{total_escalated\}' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Idempotency check present ---
 
 assert_grep_fixed \
 	"15: escalation helper queries existing comments for idempotency" \
 	'repos/${slug}/issues/${parent_num}/comments' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- t2211 constraint: escalation preserves parent-task label ---
 # Escalation applies NMR but must NEVER execute a `gh issue edit
@@ -196,7 +200,7 @@ assert_grep_fixed \
 # anywhere in the function body, that IS executable and forbidden.
 
 TESTS_RUN=$((TESTS_RUN + 1))
-esc_body=$(awk '/^_post_parent_decomposition_escalation\(\) \{/,/^\}$/' "$TARGET")
+esc_body=$(awk '/^_post_parent_decomposition_escalation\(\) \{/,/^\}$/' "$PARENT_TARGET")
 # Match executable `gh issue edit "$VAR"` form followed anywhere on the
 # same line by `--remove-label parent-task`. The quoted var ref is the
 # executable tell.
@@ -216,7 +220,7 @@ fi
 assert_grep_fixed \
 	"17: escalation comment includes 'remove-label parent-task' as user instruction" \
 	'--remove-label parent-task' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Summary ---
 echo ""

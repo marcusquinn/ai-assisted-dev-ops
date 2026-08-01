@@ -1229,44 +1229,66 @@ cmd_export() {
 	return $?
 }
 
-# Classify a task description into a model tier.
-# Sets variables tier, reason, cost in the caller's scope via eval.
+# Classify a task description into a canonical workload tier.
+# This deterministic fallback recognizes only high-confidence language; richer
+# issue classification remains model judgment under reference/task-taxonomy.md.
+# Sets variables tier, reason, compute in the caller's scope via eval.
 # Arguments: <desc_lower>
 _route_classify_tier() {
 	local desc_lower="$1"
 	local out_tier="$2"
 	local out_reason="$3"
-	local out_cost="$4"
+	local out_compute="$4"
 
-	local tier="standard"
-	local reason="Default tier for general development tasks"
-	local cost="1x"
+	local _route_tier_value="standard"
+	local _route_reason_value="Default tier for general development tasks"
+	local _route_compute_value="balanced"
+	local _route_has_exact_transform=0
+	local _route_has_unresolved_choice=0
+	local _route_has_sensitive_effect=0
+	local _route_sensitive_confined_to_non_effective_context=0
 
-	# Thinking: architecture, design, security audit, novel, trade-off, evaluate
-	if echo "$desc_lower" | grep -qE 'architect|system.design|security.audit|novel|trade.?off|evaluat|complex.*(plan|design|decision)|from.scratch'; then
-		tier="thinking"
-		reason="Complex reasoning, architecture, or novel problem-solving"
-		cost="3x"
-	# Simple: rename, format, classify, triage, commit message, simple
-	elif echo "$desc_lower" | grep -qE 'rename|reformat|classify|triage|commit.message|simple.*(text|transform)|extract.field|sort|prioriti[sz]e|route|tag|label'; then
-		tier="simple"
-		reason="Simple classification, formatting, or text transform"
-		cost="0.25x"
-	# Simple: summarize, large context, bulk, read, scan
-	elif echo "$desc_lower" | grep -qE 'summari[sz]e|large.*(file|context|document|pdf)|bulk|scan.*files|read.*all|200.page|overview|skim'; then
-		tier="simple"
-		reason="Large context processing or summarization"
-		cost="0.20x"
-	# Thinking: large codebase, many files, refactor across
-	elif echo "$desc_lower" | grep -qE 'large.codebase|500.file|many.files|refactor.across|entire.project|full.repo|cross.file'; then
-		tier="thinking"
-		reason="Large codebase analysis requiring both context and reasoning"
-		cost="1.5x"
+	if printf '%s\n' "$desc_lower" | grep -qE 'oldstring.*newstring|apply.*(provided|exact).*verbatim|exact[[:space:]_.-]*(replacement|transform|edit)|rename[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+[^[:space:]]+|replace[[:space:]]+[^[:space:]]+[[:space:]]+with[[:space:]]+[^[:space:]]+'; then
+		_route_has_exact_transform=1
+	fi
+	if printf '%s\n' "$desc_lower" | grep -qE 'decid(e|ing)|design|choose|recommend|investigat|debug|diagnos|evaluate|compare|coordinate|fallback|retry|error[[:space:]_.-]*handling|conditional|compatib|migration|rollback'; then
+		_route_has_unresolved_choice=1
+	fi
+	if printf '%s\n' "$desc_lower" | grep -qE 'production|auth(entication|orization)?|permission|access[[:space:]_.-]*control|trust[[:space:]_.-]*boundar|secret|credential|crypt|privacy|egress|billing|destructive|delete.*data'; then
+		_route_has_sensitive_effect=1
+	fi
+	# A security-adjacent exact transform is simple only when the operation itself
+	# is confined to one non-effective artifact. An unrelated fixture/docs mention
+	# must not launder a production change into the simple tier.
+	if printf '%s\n' "$desc_lower" | grep -qE '(in|within|inside|for)[[:space:]_.-]+((a|an|the)[[:space:]_.-]+)?([[:alnum:]_-]+[[:space:]_.-]+){0,2}(test[[:space:]_.-]*(fixture|data)|mock([[:space:]_.-]*data)?|documentation|docs|comment|example|sample|identifier)[[:space:][:punct:]]*$' &&
+		! printf '%s\n' "$desc_lower" | grep -qE '[,;]|(^|[[:space:]])(and|also|plus)([[:space:]]|$)|production|runtime|middleware|handler|controller|service|endpoint|database|deployment|live[[:space:]_.-]*(system|app|code|data)|application|source[[:space:]_.-]*code|policy|config(uration)?'; then
+		_route_sensitive_confined_to_non_effective_context=1
 	fi
 
-	eval "${out_tier}=\"\${tier}\""
-	eval "${out_reason}=\"\${reason}\""
-	eval "${out_cost}=\"\${cost}\""
+	# Thinking wins when the description explicitly names consequential unresolved
+	# design/synthesis work. A security noun alone does not trigger this branch.
+	if printf '%s\n' "$desc_lower" | grep -qE 'architect(ure|ural)?|system[[:space:]_.-]*design|security[[:space:]_.-]*audit|threat[[:space:]_.-]*model|trust[[:space:]_.-]*boundar|novel[[:space:]_.-]*(design|approach|solution)|trade[[:space:]_.-]*off|from[[:space:]_.-]*scratch|migration[[:space:]_.-]*strategy|refactor.*(entire|full)[[:space:]_.-]*(project|repo|codebase)|cross[[:space:]_.-]*(system|service).*decision|evaluate.*(architecture|approach|trade)'; then
+		_route_tier_value="thinking"
+		_route_reason_value="Consequential architecture, trust-boundary, novelty, or synthesis decision is explicit"
+		_route_compute_value="higher"
+	# Simple requires explicit evidence of a deterministic bounded transform.
+	elif [[ "$_route_has_exact_transform" -eq 1 &&
+		"$_route_has_unresolved_choice" -eq 0 &&
+		("$_route_has_sensitive_effect" -eq 0 || "$_route_sensitive_confined_to_non_effective_context" -eq 1) ]]; then
+		_route_tier_value="simple"
+		_route_reason_value="Exact bounded transform is supplied with no decision language"
+		_route_compute_value="lower"
+	# Pure single-artifact processing is simple only when no recommendation or
+	# cross-source synthesis is requested.
+	elif printf '%s\n' "$desc_lower" | grep -qE '^(summari[sz]e|format|extract)[[:space:]]+(this|the)[[:space:]]+(single[[:space:]]+)?(document|file|text)([[:space:]]+without[[:space:]]+recommendations)?[[:space:]]*$'; then
+		_route_tier_value="simple"
+		_route_reason_value="Single-artifact transform has no recommendation or synthesis requirement"
+		_route_compute_value="lower"
+	fi
+
+	eval "${out_tier}=\"\${_route_tier_value}\""
+	eval "${out_reason}=\"\${_route_reason_value}\""
+	eval "${out_compute}=\"\${_route_compute_value}\""
 	return 0
 }
 
@@ -1310,12 +1332,12 @@ _route_output() {
 	local tier="$3"
 	local primary_model="$4"
 	local fallback_model="$5"
-	local cost="$6"
+	local compute="$6"
 	local reason="$7"
 
 	if [[ "$json_flag" == "true" ]]; then
-		printf '{"tier":"%s","model":"%s","fallback":"%s","cost":"%s","reason":"%s"}\n' \
-			"$tier" "$primary_model" "$fallback_model" "$cost" "$reason"
+		printf '{"tier":"%s","model":"%s","fallback":"%s","compute":"%s","reason":"%s"}\n' \
+			"$tier" "$primary_model" "$fallback_model" "$compute" "$reason"
 	else
 		echo ""
 		echo "Task: $description"
@@ -1323,7 +1345,7 @@ _route_output() {
 		echo "  Recommended tier:  $tier"
 		echo "  Primary model:     $primary_model"
 		echo "  Fallback model:    $fallback_model"
-		echo "  Relative cost:     $cost"
+		echo "  Compute profile:   $compute"
 		echo "  Reason:            $reason"
 		echo ""
 	fi
@@ -1354,9 +1376,9 @@ cmd_route() {
 		echo "Usage: model-registry-helper.sh route <task description>"
 		echo ""
 		echo "Examples:"
-		echo "  model-registry-helper.sh route 'rename variable X to Y'"
+		echo "  model-registry-helper.sh route 'rename variable_x to variable_y'"
 		echo "  model-registry-helper.sh route 'design auth system architecture'"
-		echo "  model-registry-helper.sh route 'summarize this 200-page PDF'"
+		echo "  model-registry-helper.sh route 'summarize this document without recommendations'"
 		echo ""
 		return 1
 	fi
@@ -1364,13 +1386,13 @@ cmd_route() {
 	local desc_lower
 	desc_lower=$(echo "$description" | tr '[:upper:]' '[:lower:]')
 
-	local tier reason cost
-	_route_classify_tier "$desc_lower" tier reason cost
+	local tier reason compute
+	_route_classify_tier "$desc_lower" tier reason compute
 
 	local primary_model fallback_model
 	_route_lookup_models "$tier" primary_model fallback_model
 
-	_route_output "$json_flag" "$description" "$tier" "$primary_model" "$fallback_model" "$cost" "$reason"
+	_route_output "$json_flag" "$description" "$tier" "$primary_model" "$fallback_model" "$compute" "$reason"
 	return 0
 }
 

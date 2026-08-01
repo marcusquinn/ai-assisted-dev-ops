@@ -16,6 +16,7 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 LOGFILE="${TEST_ROOT}/pulse.log"
 export AIDEVOPS_CLEANUP_LOG="${TEST_ROOT}/cleanup_worktrees.log"
 UNREGISTER_LOG="${TEST_ROOT}/unregister.log"
+LEASE_RELEASE_LOG="${TEST_ROOT}/lease-release.log"
 
 # Production functions under test invoke `git` by name. Pin fixture operations
 # to native Git so the canonical mutation guard for the real repository cannot
@@ -182,7 +183,12 @@ test_degraded_orphan_removal_is_recoverable() {
 	claim_worktree_ownership() {
 		return 0
 	}
-	unregister_worktree_if_owner_pid() {
+	worktree_has_exact_owner_contract() {
+		return 0
+	}
+	unregister_worktree_if_owner_contract() {
+		local candidate_path="$1"
+		printf '%s\n' "$candidate_path" >>"$LEASE_RELEASE_LOG"
 		return 0
 	}
 	is_worktree_owned_by_others_for_pid() {
@@ -203,7 +209,7 @@ test_degraded_orphan_removal_is_recoverable() {
 	if /usr/bin/git -C "$repo_path" worktree list --porcelain | grep -Fqx "worktree $wt_path"; then
 		fail "degraded orphan metadata remains registered"
 	fi
-	grep -Fxq "$wt_path" "$UNREGISTER_LOG" || fail "degraded orphan unregister was not called"
+	grep -Fxq "$wt_path" "$LEASE_RELEASE_LOG" || fail "degraded orphan exact lease release was not called"
 	grep -q 'degraded-cwd-orphan-recoverable.*mode=recoverable-trash' "$AIDEVOPS_CLEANUP_LOG" ||
 		fail "recoverable degraded removal was not audited"
 	pass "pulse cleanup recoverably removes a degraded clean zero-ahead no-PR orphan"
@@ -252,6 +258,47 @@ RACE_GIT
 	fi
 	grep -q 'git-worktree-locked.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" || fail "degraded race lock refusal was not audited"
 	pass "pulse degraded cleanup preserves a lock acquired after its guard"
+	return 0
+}
+
+test_degraded_orphan_lease_loss_after_archive_is_preserved() {
+	local repo_path="${TEST_ROOT}/repo-degraded-lease-race"
+	local wt_path="${TEST_ROOT}/wt-degraded-lease-race"
+	local trash_root="${TEST_ROOT}/recoverable-lease-race-trash"
+	local metadata=""
+	local wt_root=""
+	make_repo_with_worktree "$repo_path" "$wt_path" "feature/degraded-lease-race"
+	wt_root=$(/usr/bin/git -C "$wt_path" rev-parse --show-toplevel) || fail "lease race root became unreadable"
+	mkdir -p "$trash_root"
+
+	if (
+		local lease_checks=0
+		worktree_has_exact_owner_contract() {
+			lease_checks=$((lease_checks + 1))
+			[[ "$lease_checks" -eq 1 ]]
+			return $?
+		}
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_root" \
+			_cleanup_single_worktree "$repo_path" "$wt_path" \
+			"feature/degraded-lease-race" "$(date +%s)" "owner/repo" "main"
+	); then
+		fail "degraded lease loss after archive was reported as removed"
+	fi
+
+	[[ -d "$wt_path" ]] || fail "lease loss after archive removed the source"
+	compgen -G "${trash_root}/aidevops-worktree-cleanup-*/wt-degraded-lease-race" >/dev/null ||
+		fail "lease loss after archive lost the completed archive"
+	metadata=$(/usr/bin/git -C "$repo_path" worktree list --porcelain) || fail "lease race metadata became unreadable"
+	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || fail "lease loss after archive pruned exact metadata"
+	if [[ -f "$UNREGISTER_LOG" ]] && grep -Fxq "$wt_path" "$UNREGISTER_LOG"; then
+		fail "lease loss after archive unregistered replacement ownership"
+	fi
+	if [[ -f "$LEASE_RELEASE_LOG" ]] && grep -Fxq "$wt_path" "$LEASE_RELEASE_LOG"; then
+		fail "lease loss after archive released a replacement ownership contract"
+	fi
+	grep -q 'cleanup-lease-changed-after-archive.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" ||
+		fail "lease loss after archive was not audited"
+	pass "pulse degraded cleanup preserves source and archive after lease loss"
 	return 0
 }
 
@@ -603,6 +650,7 @@ test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence
 test_permanent_removal_failure_has_no_git_fallback
 test_degraded_orphan_removal_is_recoverable
 test_degraded_orphan_lock_race_is_preserved
+test_degraded_orphan_lease_loss_after_archive_is_preserved
 test_degraded_orphan_remove_failure_preserves_source_and_archive
 
 exit 0

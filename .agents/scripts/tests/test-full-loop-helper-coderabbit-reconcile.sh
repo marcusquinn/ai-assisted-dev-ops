@@ -227,10 +227,18 @@ test_full_loop_readiness_integration() {
 	print_warning() { return 0; }
 	# shellcheck source=../full-loop-helper-commit.sh
 	source "${SCRIPTS_DIR}/full-loop-helper-commit.sh"
+	gh_pr_checks_exact_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local selection_mode="$3"
+		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
+		printf '%s\n' '[{"name":"required-ci","state":"SUCCESS","bucket":"pass"}]'
+		return 0
+	}
 	local rc=0
 	_full_loop_verify_pr_readiness 42 owner/repo >/dev/null 2>&1 || rc=$?
 	if [[ "$rc" -eq 0 ]] && grep -q "dismissals" "$GH_LOG" \
-		&& grep -q "pr checks 42" "$GH_LOG"; then
+		&& grep -q "exact-checks owner/repo 42 required" "$GH_LOG"; then
 		record_result "full-loop readiness reconciles before required checks" 0
 	else
 		record_result "full-loop readiness reconciles before required checks" 1

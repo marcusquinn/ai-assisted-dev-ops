@@ -29,16 +29,18 @@ test("public triage disables every built-in, custom, and MCP tool after config e
 
   assert.equal(enforcePublicTriageIsolation(config, "triage"), 1);
   assert.deepEqual(config.tools, { "*": false });
-  assert.equal(config.permission, "deny");
+  assert.deepEqual(config.permission, { "*": "deny" });
   assert.deepEqual(config.mcp, {});
   assert.equal(config.formatter, false);
   assert.equal(config.lsp, false);
   assert.equal(config.share, "disabled");
   assert.equal(config.subagent_depth, 0);
+  assert.equal(config.default_agent, "triage-review");
+  assert.equal(config.agent["triage-review"].mode, "primary");
   assert.deepEqual(config.agent["triage-review"].tools, { "*": false });
-  assert.equal(config.agent["triage-review"].permission, "deny");
+  assert.deepEqual(config.agent["triage-review"].permission, { "*": "deny" });
   for (const name of ["build", "plan", "general", "explore", "arbitrary"]) {
-    assert.equal(config.agent[name].disable, true, `${name} remains selectable`);
+    assert.deepEqual(config.agent[name], { disable: true }, `${name} retains an active profile`);
   }
 });
 

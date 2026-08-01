@@ -104,9 +104,32 @@ test_blocked_completion_records_blocked_label() {
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing dependency credentials"}' >"$output_file"
 	local rc=0
 	_handle_run_result 0 "$output_file" "worker" "openai" "issue-456" "openai/gpt-5.5" || rc=$?
-	[[ "$rc" -eq 0 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" ]] && { print_result "BLOCKED terminal signal records blocked label" 0; return 0; }
-	print_result "BLOCKED terminal signal records blocked label" 1 \
+	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" ]] && {
+		print_result "BLOCKED signal requests terminal escalation evaluation" 0
+		return 0
+	}
+	print_result "BLOCKED signal requests terminal escalation evaluation" 1 \
 		"rc=$rc label=${_run_result_label:-<unset>} reason=${_run_failure_reason:-<unset>} source=${_run_classification_source:-<unset>}"
+	return 0
+}
+
+test_capability_escalation_ladder_is_bounded_and_exact() {
+	local result=0
+	local _capability_escalation_model=""
+	local _capability_escalation_variant=""
+	local _capability_escalation_label=""
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "max" 0 || result=1
+	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "high" ]] || result=1
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 1 || result=1
+	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "max" ]] || result=1
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 0 || result=1
+	if _resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "max" 0 ||
+		_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 2 ||
+		_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "high" 0 ||
+		_resolve_capability_escalation "pulse" "openai/gpt-5.6-luna" "max" 0; then
+		result=1
+	fi
+	print_result "Capability escalation is bounded to Luna max -> Sol high -> Sol max" "$result"
 	return 0
 }
 
@@ -145,7 +168,10 @@ test_missing_context_blocked_requests_brief_recovery() {
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing implementation context"}' >"$output_file"
 	local rc=0
 	_handle_run_result 0 "$output_file" "worker" "openai" "issue-456" "openai/gpt-5.5" || rc=$?
-	[[ "$rc" -eq 82 && "${_run_result_label:-}" == "brief_recovery" && "${_run_failure_reason:-}" == "missing_implementation_context" && "${_run_classification_pattern:-}" == "missing_implementation_context" ]] && { print_result "missing-context BLOCKED requests brief recovery" 0; return 0; }
+	[[ "$rc" -eq 82 && "${_run_result_label:-}" == "brief_recovery" && "${_run_failure_reason:-}" == "missing_implementation_context" && "${_run_classification_pattern:-}" == "missing_implementation_context" ]] && {
+		print_result "missing-context BLOCKED requests brief recovery" 0
+		return 0
+	}
 	print_result "missing-context BLOCKED requests brief recovery" 1 \
 		"rc=$rc label=${_run_result_label:-<unset>} reason=${_run_failure_reason:-<unset>} pattern=${_run_classification_pattern:-<unset>}"
 	return 0
@@ -194,6 +220,51 @@ test_headless_sandbox_timeout_budget() {
 
 	print_result "headless sandbox timeout exceeds checkpoint budget and remains bounded" 1 \
 		"base=$HEADLESS_SANDBOX_TIMEOUT_BASE_DEFAULT resolved=$HEADLESS_SANDBOX_TIMEOUT_DEFAULT max=$HEADLESS_SANDBOX_TIMEOUT_MAX explicit=$explicit_timeout capped=$capped_timeout invalid=$invalid_timeout"
+	return 0
+}
+
+test_public_triage_egress_mode_is_capability_aware() {
+	local absent_mode=""
+	local configured_mode=""
+	local required_mode=""
+	local off_mode=""
+	local invalid_status=0
+
+	absent_mode=$(_resolve_public_triage_egress_mode "auto" "")
+	configured_mode=$(_resolve_public_triage_egress_mode "auto" "/configured/backend")
+	required_mode=$(_resolve_public_triage_egress_mode "required" "")
+	off_mode=$(_resolve_public_triage_egress_mode "off" "")
+	_resolve_public_triage_egress_mode "invalid" "" >/dev/null 2>&1 || invalid_status=$?
+
+	if [[ "$absent_mode" == "auto" && "$configured_mode" == "required" &&
+		"$required_mode" == "required" && "$off_mode" == "auto" &&
+		"$invalid_status" -ne 0 ]]; then
+		print_result "public triage egress is capability-aware and cannot be disabled" 0
+		return 0
+	fi
+
+	print_result "public triage egress is capability-aware and cannot be disabled" 1 \
+		"absent=$absent_mode configured=$configured_mode required=$required_mode off=$off_mode invalid=$invalid_status"
+	return 0
+}
+
+test_public_triage_always_requires_isolated_sandbox() {
+	local failures=0
+
+	_headless_opencode_sandbox_required "triage" "0" "auto" || failures=$((failures + 1))
+	_headless_opencode_sandbox_required "worker" "0" "required" || failures=$((failures + 1))
+	_headless_opencode_sandbox_required "worker" "1" "auto" || failures=$((failures + 1))
+	if _headless_opencode_sandbox_required "worker" "0" "auto"; then
+		failures=$((failures + 1))
+	fi
+
+	if [[ "$failures" -eq 0 ]]; then
+		print_result "public triage retains the mandatory isolated sandbox" 0
+		return 0
+	fi
+
+	print_result "public triage retains the mandatory isolated sandbox" 1 \
+		"sandbox policy mismatches=${failures}"
 	return 0
 }
 
@@ -443,8 +514,8 @@ test_service_interruption_exhausted_metric_preserves_context() {
 
 	local captured
 	captured=$(<"$captured_file")
-	if [[ "$captured" == *$'service_interruption_exhausted\n81\nlocal_error\n1\n0\n24099\nowner/repo\n'* ]] && \
-		[[ "$captured" == *$'excerpt.log\nses_context\n'* ]] && \
+	if [[ "$captured" == *$'service_interruption_exhausted\n81\nlocal_error\n1\n0\n24099\nowner/repo\n'* ]] &&
+		[[ "$captured" == *$'excerpt.log\nses_context\n'* ]] &&
 		[[ "$captured" == *$'mid_session_interruption\nunknown\nresume_existing_session'* ]]; then
 		print_result "service interruption exhausted metric preserves diagnostics context" 0
 	else
@@ -488,23 +559,23 @@ EOF
 	local output
 	if output=$(
 		PATH="${fake_bin_dir}:$PATH" \
-		HOME="${canary_root}/home" \
-		OPENCODE_BIN="${fake_bin_dir}/opencode" \
-		OPENCODE_DB="${canary_root}/opencode.db" \
-		AIDEVOPS_OPENCODE_SESSION_ID="ses_parent" \
-		OPENCODE_SESSION_ID="ses_parent" \
-		OPENCODE_PID="12345" \
-		OPENCODE_RUN_ID="run_parent" \
-		OPENCODE_PROCESS_ROLE="tui" \
-		OPENCODE="1" \
-		OPENCODE_SERVER_PASSWORD="session-password" \
-		AIDEVOPS_PLUGIN_INDEX="$plugin_path" \
-		AIDEVOPS_CANARY_ARGS_FILE="$args_file" \
-		AIDEVOPS_CANARY_ENV_FILE="$env_file" \
-		AIDEVOPS_HEADLESS_RUNTIME_DIR="${canary_root}/runtime" \
-		CANARY_CACHE_TTL_SECONDS=0 \
-		CANARY_TIMEOUT_SECONDS=5 \
-		bash -c 'source "$1" help >/dev/null 2>&1; _run_canary_test "anthropic/claude-sonnet-4-6"' _ "$HELPER_SCRIPT"
+			HOME="${canary_root}/home" \
+			OPENCODE_BIN="${fake_bin_dir}/opencode" \
+			OPENCODE_DB="${canary_root}/opencode.db" \
+			AIDEVOPS_OPENCODE_SESSION_ID="ses_parent" \
+			OPENCODE_SESSION_ID="ses_parent" \
+			OPENCODE_PID="12345" \
+			OPENCODE_RUN_ID="run_parent" \
+			OPENCODE_PROCESS_ROLE="tui" \
+			OPENCODE="1" \
+			OPENCODE_SERVER_PASSWORD="session-password" \
+			AIDEVOPS_PLUGIN_INDEX="$plugin_path" \
+			AIDEVOPS_CANARY_ARGS_FILE="$args_file" \
+			AIDEVOPS_CANARY_ENV_FILE="$env_file" \
+			AIDEVOPS_HEADLESS_RUNTIME_DIR="${canary_root}/runtime" \
+			CANARY_CACHE_TTL_SECONDS=0 \
+			CANARY_TIMEOUT_SECONDS=5 \
+			bash -c 'source "$1" help >/dev/null 2>&1; _run_canary_test "anthropic/claude-sonnet-4-6"' _ "$HELPER_SCRIPT"
 	) && [[ -f "$args_file" && -f "$env_file" ]]; then
 		local args
 		args=$(<"$args_file")
@@ -535,15 +606,15 @@ test_opencode_session_env_wrapper_strips_session_vars_only() {
 	# shellcheck disable=SC2016 # Inner bash expands these after env stripping.
 	output=$(
 		AIDEVOPS_OPENCODE_SESSION_ID="ses_parent" \
-		OPENCODE_SESSION_ID="ses_parent" \
-		OPENCODE_PID="12345" \
-		OPENCODE_RUN_ID="run_parent" \
-		OPENCODE_PROCESS_ROLE="tui" \
-		OPENCODE="1" \
-		OPENCODE_SERVER_PASSWORD="session-password" \
-		OPENCODE_BIN="opencode" \
-		OPENCODE_DB="/tmp/opencode.db" \
-		run_without_opencode_session_env bash -c '
+			OPENCODE_SESSION_ID="ses_parent" \
+			OPENCODE_PID="12345" \
+			OPENCODE_RUN_ID="run_parent" \
+			OPENCODE_PROCESS_ROLE="tui" \
+			OPENCODE="1" \
+			OPENCODE_SERVER_PASSWORD="session-password" \
+			OPENCODE_BIN="opencode" \
+			OPENCODE_DB="/tmp/opencode.db" \
+			run_without_opencode_session_env bash -c '
 			printf "%s|%s|%s|%s|%s|%s|%s|%s|%s" \
 				"${AIDEVOPS_OPENCODE_SESSION_ID:-}" "${OPENCODE_SESSION_ID:-}" "${OPENCODE_PID:-}" "${OPENCODE_RUN_ID:-}" \
 				"${OPENCODE_PROCESS_ROLE:-}" "${OPENCODE:-}" "${OPENCODE_SERVER_PASSWORD:-}" \
@@ -562,8 +633,10 @@ test_opencode_session_env_wrapper_strips_session_vars_only() {
 }
 
 test_worker_opencode_exec_paths_strip_session_env() {
-	if grep -Fq "run_without_opencode_session_env \"\$SANDBOX_EXEC_HELPER\" run" "$HELPER_SCRIPT" &&
-		grep -Fq "run_without_opencode_session_env timeout \"\$HEADLESS_SANDBOX_TIMEOUT_DEFAULT\"" "$HELPER_SCRIPT"; then
+	local invoke_helper="${SCRIPT_DIR}/headless-runtime-invoke.sh"
+	# shellcheck disable=SC2016 # Match literal caller-scoped variables in source.
+	if grep -Fq 'run_without_opencode_session_env "$SANDBOX_EXEC_HELPER" "${sandbox_args[@]}"' "$invoke_helper" &&
+		grep -Fq 'run_without_opencode_session_env timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT"' "$invoke_helper"; then
 		print_result "worker OpenCode exec paths strip session env" 0
 		return 0
 	fi
@@ -574,8 +647,10 @@ test_worker_opencode_exec_paths_strip_session_env() {
 }
 
 test_worker_opencode_invocation_seeds_continuation_session() {
-	if grep -Fq "_seed_worker_db_session_context \"\$isolated_data_dir\" \"\$_invoke_persisted_session\"" "$HELPER_SCRIPT" &&
-		grep -Fq "[lifecycle] db_seeded session=\$_invoke_persisted_session" "$HELPER_SCRIPT"; then
+	local invoke_helper="${SCRIPT_DIR}/headless-runtime-invoke.sh"
+	# shellcheck disable=SC2016 # Match literal continuation variables in source.
+	if grep -Fq '_seed_worker_db_session_context "$isolated_data_dir" "$_invoke_persisted_session"' "$invoke_helper" &&
+		grep -Fq '[lifecycle] db_seeded session=$_invoke_persisted_session' "$invoke_helper"; then
 		print_result "worker OpenCode invocation seeds persisted continuation session" 0
 		return 0
 	fi
@@ -589,18 +664,18 @@ test_sandbox_passthrough_scopes_provider_env() {
 	local csv
 	csv=$(
 		OPENAI_API_KEY='openai-test' \
-		ANTHROPIC_API_KEY='anthropic-test' \
-		GOOGLE_API_KEY='google-test' \
-		OPENCODE_BIN='opencode' \
-		OPENCODE_DB='/tmp/opencode.db' \
-		AIDEVOPS_OPENCODE_SESSION_ID='ses_parent' \
-		OPENCODE_SESSION_ID='ses_parent' \
-		OPENCODE_PID='12345' \
-		OPENCODE_RUN_ID='run_parent' \
-		OPENCODE_PROCESS_ROLE='tui' \
-		OPENCODE='1' \
-		OPENCODE_SERVER_PASSWORD='session-password' \
-		build_sandbox_passthrough_csv "openai"
+			ANTHROPIC_API_KEY='anthropic-test' \
+			GOOGLE_API_KEY='google-test' \
+			OPENCODE_BIN='opencode' \
+			OPENCODE_DB='/tmp/opencode.db' \
+			AIDEVOPS_OPENCODE_SESSION_ID='ses_parent' \
+			OPENCODE_SESSION_ID='ses_parent' \
+			OPENCODE_PID='12345' \
+			OPENCODE_RUN_ID='run_parent' \
+			OPENCODE_PROCESS_ROLE='tui' \
+			OPENCODE='1' \
+			OPENCODE_SERVER_PASSWORD='session-password' \
+			build_sandbox_passthrough_csv "openai"
 	)
 
 	if [[ "$csv" == *"OPENAI_API_KEY"* ]] &&
@@ -628,38 +703,43 @@ test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
 	local csv=""
 	csv=$(
 		OPENAI_API_KEY='openai-test' \
-		OPENAI_ADMIN_KEY='openai-admin-test' \
-		OPENAI_BASE_URL='https://openai-endpoint.example.invalid' \
-		ANTHROPIC_API_KEY='anthropic-test' \
-		CLAUDE_CODE_OAUTH_TOKEN='anthropic-oauth-test' \
-		GOOGLE_OAUTH_ACCESS_TOKEN='google-oauth-test' \
-		GH_TOKEN='github-test' \
-		GITHUB_TOKEN='github-test' \
-		WORKER_ISSUE_NUMBER='28705' \
-		AIDEVOPS_PERMISSION_GRANT_FILE='/tmp/grant.json' \
-		AIDEVOPS_HEADLESS='1' \
-		AIDEVOPS_HEADLESS_AUTH_ISOLATION='1' \
-		AIDEVOPS_SESSION_ORIGIN='triage' \
-		XDG_CACHE_HOME='/tmp/triage-cache' \
-		XDG_CONFIG_HOME='/tmp/triage-config' \
-		XDG_DATA_HOME='/tmp/triage-data' \
-		XDG_STATE_HOME='/tmp/triage-state' \
-		OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
-		OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
-		OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
-		OTEL_EXPORTER_OTLP_ENDPOINT='https://telemetry.example.invalid' \
-		build_sandbox_passthrough_csv "openai" "triage"
+			OPENAI_ADMIN_KEY='openai-admin-test' \
+			OPENAI_BASE_URL='https://openai-endpoint.example.invalid' \
+			ANTHROPIC_API_KEY='anthropic-test' \
+			CLAUDE_CODE_OAUTH_TOKEN='anthropic-oauth-test' \
+			GOOGLE_OAUTH_ACCESS_TOKEN='google-oauth-test' \
+			GH_TOKEN='github-test' \
+			GITHUB_TOKEN='github-test' \
+			WORKER_ISSUE_NUMBER='28705' \
+			AIDEVOPS_PERMISSION_GRANT_FILE='/tmp/grant.json' \
+			AIDEVOPS_HEADLESS='1' \
+			AIDEVOPS_HEADLESS_AUTH_ISOLATION='1' \
+			AIDEVOPS_SESSION_ORIGIN='triage' \
+			XDG_CACHE_HOME='/tmp/triage-cache' \
+			XDG_CONFIG_HOME='/tmp/triage-config' \
+			XDG_DATA_HOME='/tmp/triage-data' \
+			XDG_STATE_HOME='/tmp/triage-state' \
+			OPENCODE_PURE=1 \
+			OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
+			OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
+			OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
+			OTEL_EXPORTER_OTLP_ENDPOINT='https://telemetry.example.invalid' \
+			build_sandbox_passthrough_csv "openai" "triage" 1
 	)
+	local env_auth_csv=""
+	env_auth_csv=$(OPENAI_API_KEY='openai-test' build_sandbox_passthrough_csv "openai" "triage" 0)
 
-	if [[ ",$csv," == *",OPENAI_API_KEY,"* && ",$csv," != *",OPENAI_ADMIN_KEY,"* && \
-		",$csv," != *",OPENAI_BASE_URL,"* && ",$csv," != *",ANTHROPIC_API_KEY,"* && \
-		",$csv," != *",CLAUDE_CODE_OAUTH_TOKEN,"* && \
-		",$csv," != *",GOOGLE_OAUTH_ACCESS_TOKEN,"* && \
-		",$csv," != *",GH_TOKEN,"* && ",$csv," != *",GITHUB_TOKEN,"* && \
-		",$csv," != *",WORKER_ISSUE_NUMBER,"* && ",$csv," != *",AIDEVOPS_PERMISSION_GRANT_FILE,"* && \
-		",$csv," != *",OTEL_EXPORTER_OTLP_ENDPOINT,"* && ",$csv," == *",AIDEVOPS_HEADLESS,"* && \
-		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* && \
-		",$csv," == *",OPENCODE_DISABLE_EXTERNAL_SKILLS,"* && \
+	if [[ ",$csv," != *",OPENAI_API_KEY,"* && ",$env_auth_csv," == *",OPENAI_API_KEY,"* &&
+		",$csv," != *",OPENAI_ADMIN_KEY,"* &&
+		",$csv," != *",OPENAI_BASE_URL,"* && ",$csv," != *",ANTHROPIC_API_KEY,"* &&
+		",$csv," != *",CLAUDE_CODE_OAUTH_TOKEN,"* &&
+		",$csv," != *",GOOGLE_OAUTH_ACCESS_TOKEN,"* &&
+		",$csv," != *",GH_TOKEN,"* && ",$csv," != *",GITHUB_TOKEN,"* &&
+		",$csv," != *",WORKER_ISSUE_NUMBER,"* && ",$csv," != *",AIDEVOPS_PERMISSION_GRANT_FILE,"* &&
+		",$csv," != *",OTEL_EXPORTER_OTLP_ENDPOINT,"* && ",$csv," == *",AIDEVOPS_HEADLESS,"* &&
+		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_PURE,"* &&
+		",$csv," != *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
+		",$csv," == *",OPENCODE_DISABLE_EXTERNAL_SKILLS,"* &&
 		",$csv," == *",OPENCODE_DISABLE_CLAUDE_CODE_SKILLS,"* ]]; then
 		print_result "triage sandbox passthrough excludes GitHub and worker authority" 0
 		return 0
@@ -691,6 +771,7 @@ test_strict_scoped_auth_rejects_malformed_source() {
 test_triage_runtime_directory_is_framework_owned_and_empty() {
 	local runtime_dir=""
 	local managed_root="${TEST_ROOT}/managed-triage-runtime"
+	local triage_agent=""
 	if ! AIDEVOPS_SENSITIVE_TEMP_DIR="$managed_root" \
 		_prepare_triage_runtime_directory "runtime_dir"; then
 		print_result "triage runtime directory is isolated from target repository" 1 \
@@ -700,10 +781,13 @@ test_triage_runtime_directory_is_framework_owned_and_empty() {
 	managed_root=$(cd "$managed_root" && pwd -P) || return 1
 
 	local runtime_config="${runtime_dir}/.opencode/opencode.json"
-	if [[ "$runtime_dir" == "$managed_root"/aidevops-headless-triage.* && \
-		-f "${runtime_dir}/.opencode/agent/triage-review.md" && \
-		-f "$runtime_config" && ! -e "${runtime_dir}/.git" && \
-		$(jq -r '(.permission == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]]; then
+	triage_agent="${runtime_dir}/.opencode/agent/triage-review.md"
+	if [[ "$runtime_dir" == "$managed_root"/aidevops-headless-triage.* &&
+		-f "$triage_agent" &&
+		-f "$runtime_config" && ! -e "${runtime_dir}/.git" &&
+		$(jq -r '(.default_agent == "triage-review") and (.permission["*"] == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]] &&
+		grep -q '^mode: primary$' "$triage_agent" &&
+		grep -q '^  "\*": deny$' "$triage_agent"; then
 		print_result "triage runtime directory is isolated from target repository" 0
 	else
 		print_result "triage runtime directory is isolated from target repository" 1 \
@@ -719,20 +803,20 @@ test_private_sandbox_passthrough_excludes_parent_credentials() {
 	local csv=""
 	csv=$(
 		OPENAI_API_KEY='openai-test' \
-		GH_TOKEN='github-test' \
-		OPENCODE_CONFIG='/tmp/untrusted-opencode.json' \
-		OPENCODE_BIN='opencode' \
-		XDG_CACHE_HOME='/tmp/private-cache' \
-		XDG_CONFIG_HOME='/tmp/private-config' \
-		XDG_DATA_HOME='/tmp/private-data' \
-		XDG_STATE_HOME='/tmp/private-state' \
-		build_sandbox_passthrough_csv "openai"
+			GH_TOKEN='github-test' \
+			OPENCODE_CONFIG='/tmp/untrusted-opencode.json' \
+			OPENCODE_BIN='opencode' \
+			XDG_CACHE_HOME='/tmp/private-cache' \
+			XDG_CONFIG_HOME='/tmp/private-config' \
+			XDG_DATA_HOME='/tmp/private-data' \
+			XDG_STATE_HOME='/tmp/private-state' \
+			build_sandbox_passthrough_csv "openai"
 	)
 	local item_count=0
 	item_count=$(printf '%s\n' "$csv" | tr ',' '\n' | wc -l | tr -d ' ')
 
-	if [[ "$item_count" -eq 4 && ",${csv}," == *",XDG_CACHE_HOME,"* && \
-		",${csv}," == *",XDG_CONFIG_HOME,"* && ",${csv}," == *",XDG_DATA_HOME,"* && \
+	if [[ "$item_count" -eq 4 && ",${csv}," == *",XDG_CACHE_HOME,"* &&
+		",${csv}," == *",XDG_CONFIG_HOME,"* && ",${csv}," == *",XDG_DATA_HOME,"* &&
 		",${csv}," == *",XDG_STATE_HOME,"* ]]; then
 		print_result "private sandbox passthrough excludes parent credentials and config overrides" 0
 		return 0

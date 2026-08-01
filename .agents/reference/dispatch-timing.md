@@ -29,7 +29,7 @@ pulse-dispatch-worker-launch.sh    — launch sub-stages instrumented
 | `gh_issue_view`      | Single canonical metadata fetch (t2996 bundle)      |
 | `dedup_check`        | All 9 dedup layers (`_dispatch_dedup_check_layers`)  |
 | `brief_freshness`    | Brief-body freshness guard (`_ensure_issue_body_has_brief`) |
-| `tier_body_shape`    | tier:simple body-shape auto-downgrade check          |
+| `tier_body_shape`    | explicit tier:simple execution-contract guard        |
 | `predispatch_validator` | Generator-tagged premise validation (GH#19118)    |
 | `eligibility_gate`   | Generic eligibility gate (CLOSED, status:done, recent-merge) |
 | `worker_launch_total` | Full `_dispatch_launch_worker` call                 |

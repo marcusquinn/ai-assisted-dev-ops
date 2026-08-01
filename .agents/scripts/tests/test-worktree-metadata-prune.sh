@@ -49,6 +49,10 @@ mkdir -p "$REPO" "$SHIM_BIN"
 /usr/bin/git -C "$REPO" config user.name Test
 /usr/bin/git -C "$REPO" config user.email test@example.invalid
 /usr/bin/git -C "$REPO" config commit.gpgsign false
+# The canonical Git guard identifies managed roots via .aidevops.json or the
+# repository registry. Keep this fixture explicitly managed so the direct-prune
+# assertion does not depend on the developer's personal repos.json.
+printf '{}\n' >"${REPO}/.aidevops.json"
 printf 'seed\n' >"${REPO}/README.md"
 /usr/bin/git -C "$REPO" add README.md
 /usr/bin/git -C "$REPO" commit -q -m seed
@@ -261,6 +265,14 @@ is_worktree_owned_by_others() {
 	local worktree_path="$1"
 	: "$worktree_path"
 	return 1
+}
+worktree_has_exact_owner_contract() {
+	local worktree_path="$1"
+	local owner_pid="$2"
+	local owner_session="$3"
+	local task_id="$4"
+	: "$worktree_path" "$owner_pid" "$owner_session" "$task_id"
+	return 0
 }
 unregister_worktree() {
 	local worktree_path="$1"
@@ -482,10 +494,13 @@ printf 'PASS --force-merged cannot authorize dirty degraded cleanup\n'
 owned_output=""
 if owned_output=$(
 	cd "$REPO" || exit 1
-	is_worktree_owned_by_others() {
+	worktree_has_exact_owner_contract() {
 		local worktree_path="$1"
-		: "$worktree_path"
-		return 0
+		local owner_pid="$2"
+		local owner_session="$3"
+		local task_id="$4"
+		: "$worktree_path" "$owner_pid" "$owner_session" "$task_id"
+		return 1
 	}
 	_clean_remove_classified_worktree "$OWNERSHIP_LINKED" "feature/recoverable-ownership" \
 		"false" "false" "visibility=degraded" "$REPO" "$_WT_CLEAN_MODE_RECOVERABLE" "true"

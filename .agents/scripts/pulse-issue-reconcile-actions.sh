@@ -24,6 +24,7 @@
 #   _try_close_parent_tracker     — close parent if all children are resolved
 #
 # Exports — single-pass stage predicates:
+#   _should_reconcile_persistent_issue — stage 0a non-task predicate
 #   _should_reconcile_external_issue_gate — stage 0 trust predicate
 #   _should_ciw   — stage 1 predicate (status:available)
 #   _should_rsd   — stage 2 predicate (status:done)
@@ -32,6 +33,7 @@
 #   _should_lia   — stage 5 predicate (labelless aidevops-shaped)
 #
 # Exports — single-pass per-issue action helpers:
+#   _action_reconcile_persistent_issue_labels — stage 0a label hygiene
 #   _action_reconcile_external_issue_gate — stage 0 trust repair/block
 #   _action_ciw_single   — close issue with merged PR (stage 1)
 #   _action_rsd_single   — reconcile stale-done issue (stage 2)
@@ -566,6 +568,10 @@ _try_close_parent_tracker() {
 		return 1
 	fi
 
+	# Child reads and close-contract checks can span several API round-trips.
+	# Re-read the parent at the final mutation boundary so an NMR/persistent hold
+	# added during that interval cannot race the earlier caller-side gate.
+	_pir_parent_mutation_is_allowed "$slug" "$parent_num" || return 1
 	gh issue close "$parent_num" --repo "$slug" \
 		--comment "## All declared child tasks completed — closing parent tracker
 
@@ -580,7 +586,61 @@ _Detected by reconcile_completed_parent_tasks (pulse-issue-reconcile.sh)._" \
 	return 0
 }
 
-# Stage 0 predicate: cached metadata identifies a non-maintainer issue author,
+# Exact comma-delimited label membership without substring matches.
+# Args: $1=labels CSV, $2=label
+_pir_labels_csv_contains() {
+	local labels_csv="$1"
+	local label="$2"
+	case ",${labels_csv}," in
+	*,"$label",*) return 0 ;;
+	esac
+	return 1
+}
+
+# Stage 0a predicate: persistent issues are monitoring/tracking surfaces, not
+# implementation tasks. They must bypass task lifecycle reconciliation.
+# Args: $1=labels CSV
+_should_reconcile_persistent_issue() {
+	local labels_csv="$1"
+	_pir_labels_csv_contains "$labels_csv" "$_PIR_PERSISTENT_LABEL" && return 0
+	return 1
+}
+
+#######################################
+# Remove stale triage-failure residue from a persistent non-task issue. An NMR
+# label is deliberately preserved: persistent blocks dispatch, but it must not
+# become a bypass for the cryptographically protected NMR removal boundary.
+#
+# Args: $1=slug, $2=issue number, $3=labels CSV
+# Returns: 0=labels repaired, 1=no repair needed or write failed
+#######################################
+_action_reconcile_persistent_issue_labels() {
+	local slug="$1"
+	local issue_num="$2"
+	local labels_csv="$3"
+	local -a edit_args=()
+
+	if _pir_labels_csv_contains "$labels_csv" "$_PIR_TRIAGE_FAILED_LABEL"; then
+		edit_args+=("$_PIR_REMOVE_LABEL_FLAG" "$_PIR_TRIAGE_FAILED_LABEL")
+	fi
+	[[ "${#edit_args[@]}" -gt 0 ]] || return 1
+
+	#aidevops:trust-boundary -- persistent blocks dispatch but never authorizes NMR removal.
+	local edit_rc=0
+	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
+		gh_issue_edit_safe "$issue_num" --repo "$slug" "${edit_args[@]}" >/dev/null 2>&1 || edit_rc=$?
+	else
+		gh issue edit "$issue_num" --repo "$slug" "${edit_args[@]}" >/dev/null 2>&1 || edit_rc=$?
+	fi
+	if [[ "$edit_rc" -ne 0 ]]; then
+		echo "[pulse-wrapper] Persistent issue reconcile: label repair failed for #${issue_num} in ${slug}" >>"$LOGFILE"
+		return 1
+	fi
+	echo "[pulse-wrapper] Persistent issue reconcile: removed stale triage labels from #${issue_num} in ${slug}" >>"$LOGFILE"
+	return 0
+}
+
+# Stage 0b predicate: cached metadata identifies a non-maintainer issue author,
 # or metadata is unavailable and later lifecycle stages must remain blocked.
 # Unknown rows are not relabeled because that could misclassify legacy trusted
 # issues; live worker entry gates independently remain fail-closed.
@@ -612,10 +672,9 @@ _action_reconcile_external_issue_gate() {
 	local labels_csv="$3"
 	local author_association="$4"
 	local author_login="$5"
-	local labels_with_commas=",${labels_csv},"
 	_PIR_EXTERNAL_GATE_MUTATED=0
 
-	if [[ "$labels_with_commas" == *",${_PIR_NMR_LABEL},"* ]]; then
+	if _pir_labels_csv_contains "$labels_csv" "$_PIR_NMR_LABEL"; then
 		return 0
 	fi
 	if [[ -z "$author_association" ]]; then
@@ -631,6 +690,10 @@ _action_reconcile_external_issue_gate() {
 	fi
 	if [[ "$authority_rc" -eq 0 ]]; then
 		return 1
+	fi
+	if [[ "$authority_rc" -ne 1 ]]; then
+		echo "[pulse-wrapper] External issue trust reconcile: blocked #${issue_num} in ${slug}; author authority lookup unavailable, labels unchanged" >>"$LOGFILE"
+		return 0
 	fi
 
 	local approval_helper="${_PIR_SCRIPT_DIR}/approval-helper.sh"
@@ -649,10 +712,10 @@ _action_reconcile_external_issue_gate() {
 	fi
 
 	local -a edit_args=("$_PIR_ADD_LABEL_FLAG" "$_PIR_NMR_LABEL")
-	if [[ "$labels_with_commas" == *",${_PIR_AUTO_DISPATCH_LABEL},"* ]]; then
+	if _pir_labels_csv_contains "$labels_csv" "$_PIR_AUTO_DISPATCH_LABEL"; then
 		edit_args+=("$_PIR_REMOVE_LABEL_FLAG" "$_PIR_AUTO_DISPATCH_LABEL")
 	fi
-	if [[ "$labels_with_commas" == *",${_PIR_STATUS_AVAILABLE},"* ]]; then
+	if _pir_labels_csv_contains "$labels_csv" "$_PIR_STATUS_AVAILABLE"; then
 		edit_args+=("$_PIR_REMOVE_LABEL_FLAG" "$_PIR_STATUS_AVAILABLE")
 	fi
 
@@ -707,12 +770,18 @@ _should_oimp() {
 	return 0
 }
 
-# Stage 4 predicate: issue carries the parent-task label.
+# Stage 4 predicate: issue carries the parent-task label without an automation
+# hold. NMR and persistent labels are maintainer-owned barriers, not lifecycle
+# states that parent automation may clear or work around.
 # Args: $1 = labels_csv
 _should_cpt() {
 	local labels_csv="$1"
-	case "$labels_csv" in
-	*parent-task*) return 0 ;;
+	local nmr_label="${_PIR_NMR_LABEL:-needs-maintainer-review}"
+	local parent_label="${_PIR_PT_LABEL:-parent-task}"
+	local persistent_label="${_PIR_PERSISTENT_LABEL:-persistent}"
+	case ",${labels_csv}," in
+	*,"${nmr_label}",* | *,"${persistent_label}",*) return 1 ;;
+	*,"${parent_label}",*) return 0 ;;
 	esac
 	return 1
 }
@@ -1012,6 +1081,9 @@ _SP_CPT_CLOSED=0
 _SP_CPT_NUDGED=0
 _SP_CPT_ESCALATED=0
 _SP_CPT_REOPENED=0
+_PIR_CPT_CHILD_NUMS=""
+_PIR_CPT_CHILD_SOURCE="none"
+_PIR_CPT_KNOWN_CHILD_COUNT=0
 
 _repair_recently_closed_parent() {
 	local slug="$1" issue_num="$2" issue_body="$3" known_child_count="$4"
@@ -1029,6 +1101,62 @@ _repair_recently_closed_parent() {
 	return 0
 }
 
+_pir_collect_parent_child_evidence() {
+	local slug="$1"
+	local issue_num="$2"
+	local issue_body="$3"
+	local graph_nums=""
+	local body_nums=""
+	local prose_nums=""
+	local comment_nums=""
+	local source_parts=""
+	local children_section=""
+
+	graph_nums=$(_fetch_subissue_numbers "$slug" "$issue_num" | sort -un | grep -v "^${issue_num}$" | grep -v '^$' || true)
+	[[ -n "$graph_nums" ]] && source_parts="${source_parts:+${source_parts}+}graph"
+	children_section=$(_extract_children_section "$issue_body")
+	if [[ -n "$children_section" ]]; then
+		body_nums=$(printf '%s' "$children_section" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | sort -un | grep -v "^${issue_num}$" || true)
+		[[ -n "$body_nums" ]] && source_parts="${source_parts:+${source_parts}+}body"
+	fi
+	prose_nums=$(_extract_children_from_prose "$issue_body" | grep -v "^${issue_num}$" || true)
+	[[ -n "$prose_nums" ]] && source_parts="${source_parts:+${source_parts}+}prose"
+	comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num" | grep -v "^${issue_num}$" || true)
+	[[ -n "$comment_nums" ]] && source_parts="${source_parts:+${source_parts}+}comments"
+	_PIR_CPT_CHILD_NUMS=$(printf '%s\n%s\n%s\n%s\n' "$graph_nums" "$body_nums" "$prose_nums" "$comment_nums" |
+		grep -E '^[0-9]+$' | sort -un | grep -v "^${issue_num}$" || true)
+	_PIR_CPT_CHILD_SOURCE="${source_parts:-none}"
+	_PIR_CPT_KNOWN_CHILD_COUNT=$(printf '%s\n' "$_PIR_CPT_CHILD_NUMS" |
+		awk '$0 ~ /^[0-9]+$/ { c++ } END { print c+0 }')
+	return 0
+}
+
+# Re-read the parent immediately before each mutating action. Cached issue lists
+# are only an initial filter; missing metadata, label removal, NMR, or persistent
+# state all fail closed for this cycle.
+_pir_parent_mutation_is_allowed() {
+	local slug="$1"
+	local issue_num="$2"
+	local live_issue_json=""
+	local nmr_label="${_PIR_NMR_LABEL:-needs-maintainer-review}"
+	local parent_label="${_PIR_PT_LABEL:-parent-task}"
+	local persistent_label="${_PIR_PERSISTENT_LABEL:-persistent}"
+
+	[[ "$slug" == */* && "$issue_num" =~ ^[1-9][0-9]*$ ]] || return 1
+	live_issue_json=$(gh api "repos/${slug}/issues/${issue_num}" 2>/dev/null) || return 1
+	#aidevops:trust-boundary -- live NMR/persistent labels stop all parent mutations.
+	printf '%s' "$live_issue_json" | jq -e --argjson issue "$issue_num" \
+		--arg nmr "$nmr_label" --arg parent "$parent_label" \
+		--arg persistent "$persistent_label" '
+		def names: [.labels[]? | if type == "string" then . else (.name // empty) end];
+		(.number == $issue) and
+		(names | index($parent) != null) and
+		(names | index($nmr) == null) and
+		(names | index($persistent) == null)
+	' >/dev/null 2>&1 || return 1
+	return 0
+}
+
 #######################################
 # Stage 4 action: reconcile a parent-task issue (close/nudge/escalate).
 # (Per-issue body of reconcile_completed_parent_tasks — no slug loop.)
@@ -1040,7 +1168,7 @@ _repair_recently_closed_parent() {
 # Args:
 #   $1=slug, $2=issue_num, $3=issue_title, $4=issue_body
 #   $5=can_close (1|0), $6=can_nudge (1|0), $7=can_escalate (1|0)
-#   $8=escalation_threshold_hours, $9=issue_state (OPEN|CLOSED)
+#   $8=escalation_threshold_hours, $9=issue_state (OPEN|CLOSED), $10=labels CSV
 # Returns: 0 always (action outcomes via globals)
 #######################################
 _action_cpt_single() {
@@ -1048,64 +1176,38 @@ _action_cpt_single() {
 	local can_close="${5:-0}" can_nudge="${6:-0}" can_escalate="${7:-0}"
 	local escalation_threshold_hours="${8:-168}"
 	local issue_state="${9:-OPEN}"
+	local labels_csv="${10:-}"
 	_SP_CPT_CLOSED=0
 	_SP_CPT_NUDGED=0
 	_SP_CPT_ESCALATED=0
 	_SP_CPT_REOPENED=0
-
-	# Child detection (GH#20872): UNION of (graph, body, prose) sources, not
-	# first-non-empty-wins (the pre-GH#20872 behaviour). Real-world parent
-	# bodies frequently have a partially-populated sub-issue graph where some
-	# children are wired via GraphQL `sub_issues` and others only listed in
-	# the body's `## Children` section or referenced in prose. First-wins made
-	# the smaller graph result silently mask the larger body listing — the
-	# child_count guard then blocked auto-close on parents whose children were
-	# all closed (canonical: #20559, #20581 during v3.11.1 deploy verification).
-	#
-	# Source label remains informative: dash-joined list of contributing
-	# sources (e.g. `graph+body`, `body`, `graph+body+prose`) so the log line
-	# in `_try_close_parent_tracker` records which extractors found children.
-	# t2841: explicit init — under set -u, _b_nums is referenced at the
-	# union step below regardless of whether children_section is
-	# non-empty. Without init, an issue body with no children-section
-	# triggers `_b_nums: unbound variable` and aborts the function.
-	local _g_nums="" _b_nums="" _p_nums="" _c_nums="" child_nums=""
-	local _src_parts=""
-	_g_nums=$(_fetch_subissue_numbers "$slug" "$issue_num" | sort -un | grep -v "^${issue_num}$" | grep -v '^$' || true)
-	[[ -n "$_g_nums" ]] && _src_parts="${_src_parts:+${_src_parts}+}graph"
-
-	local children_section
-	children_section=$(_extract_children_section "$issue_body")
-	if [[ -n "$children_section" ]]; then
-		_b_nums=$(printf '%s' "$children_section" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | sort -un | grep -v "^${issue_num}$" || true)
-		[[ -n "$_b_nums" ]] && _src_parts="${_src_parts:+${_src_parts}+}body"
+	if _pir_labels_csv_contains "$labels_csv" "${_PIR_NMR_LABEL:-needs-maintainer-review}" ||
+		_pir_labels_csv_contains "$labels_csv" "${_PIR_PERSISTENT_LABEL:-persistent}"; then
+		return 0
 	fi
 
-	_p_nums=$(_extract_children_from_prose "$issue_body" | grep -v "^${issue_num}$" || true)
-	[[ -n "$_p_nums" ]] && _src_parts="${_src_parts:+${_src_parts}+}prose"
-
-	_c_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num" | grep -v "^${issue_num}$" || true)
-	[[ -n "$_c_nums" ]] && _src_parts="${_src_parts:+${_src_parts}+}comments"
-
-	# Union: concatenate, keep numeric lines, dedupe, drop self-reference
-	child_nums=$(printf '%s\n%s\n%s\n%s\n' "$_g_nums" "$_b_nums" "$_p_nums" "$_c_nums" |
-		grep -E '^[0-9]+$' | sort -un | grep -v "^${issue_num}$" || true)
-	local child_source="${_src_parts:-none}"
-	local known_child_count=0
-	known_child_count=$(printf '%s\n' "$child_nums" |
-		awk '$0 ~ /^[0-9]+$/ { c++ } END { print c+0 }')
+	# Child evidence is the union of graph, body, prose, and trusted roadmap
+	# comments; no single incomplete source may mask another.
+	_pir_collect_parent_child_evidence "$slug" "$issue_num" "$issue_body"
+	local child_nums="$_PIR_CPT_CHILD_NUMS"
+	local child_source="$_PIR_CPT_CHILD_SOURCE"
+	local known_child_count="$_PIR_CPT_KNOWN_CHILD_COUNT"
 
 	# Recently closed parents are repair candidates only when deterministic
 	# body evidence proves that the close contract remains incomplete.
-	if _repair_recently_closed_parent "$slug" "$issue_num" "$issue_body" \
-		"$known_child_count" "$issue_state"; then
-		return 0
+	if [[ "$issue_state" == "CLOSED" || "$issue_state" == "closed" ]]; then
+		_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
+		if _repair_recently_closed_parent "$slug" "$issue_num" "$issue_body" \
+			"$known_child_count" "$issue_state"; then
+			return 0
+		fi
 	fi
 
 	if [[ -z "$child_nums" ]]; then
 		# No children — try phase extractor, then nudge/escalate (t2771/t2388/t2442)
 		local _phase_extractor="${_PIR_SCRIPT_DIR}/parent-task-phase-extractor.sh"
 		if [[ -x "$_phase_extractor" ]]; then
+			_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
 			if PHASE_EXTRACTOR_DRY_RUN="${PHASE_EXTRACTOR_DRY_RUN:-0}" \
 				"$_phase_extractor" run "$issue_num" "$slug" >>"${LOGFILE:-/dev/null}" 2>&1; then
 				echo "[pulse-wrapper] Reconcile parent-task: phase-extractor filed children for #${issue_num} in ${slug} (t2771)" >>"${LOGFILE:-/dev/null}"
@@ -1113,12 +1215,14 @@ _action_cpt_single() {
 			fi
 		fi
 		if declare -F auto_file_next_unfiled_parent_phase >/dev/null 2>&1; then
+			_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
 			if auto_file_next_unfiled_parent_phase "$issue_num" "$slug" >>"${LOGFILE:-/dev/null}" 2>&1; then
 				echo "[pulse-wrapper] Reconcile parent-task: phase bootstrap filed next child for #${issue_num} in ${slug} (GH#22534)" >>"${LOGFILE:-/dev/null}"
 				return 0
 			fi
 		fi
 		if [[ "$can_nudge" == "1" ]]; then
+			_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
 			if _post_parent_decomposition_nudge "$slug" "$issue_num" "$issue_title"; then
 				_SP_CPT_NUDGED=1
 			fi
@@ -1128,6 +1232,7 @@ _action_cpt_single() {
 			_nudge_age_hours=$(_compute_parent_nudge_age_hours "$slug" "$issue_num")
 			if [[ "$_nudge_age_hours" =~ ^[0-9]+$ ]] &&
 				[[ "$_nudge_age_hours" -ge "$escalation_threshold_hours" ]]; then
+				_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
 				if _post_parent_decomposition_escalation "$slug" "$issue_num" "$issue_title"; then
 					_SP_CPT_ESCALATED=1
 				fi
@@ -1137,6 +1242,7 @@ _action_cpt_single() {
 	fi
 
 	if [[ "$can_close" == "1" ]]; then
+		_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
 		if _try_close_parent_tracker "$slug" "$issue_num" "$child_nums" "$child_source" "$issue_body"; then
 			_SP_CPT_CLOSED=1
 		fi

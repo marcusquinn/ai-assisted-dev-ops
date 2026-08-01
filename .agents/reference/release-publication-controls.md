@@ -170,6 +170,22 @@ Aggregation PR #29082 reviews authorized Luna standard-routing PR #29072 at
 `d222f326dbdfb705352087e6695ce8bda0d4d0a0` because subsequent merges advanced
 `main` before its explicitly authorized patch release could begin.
 
+Aggregation PR #29122 reviews authorized workload-tier policy PR #29113 at
+`c9ed6bcc591cf98659e44457123d72cdcbf68ff3`. Protected-main recovery PR #29116
+advanced `main` before its explicitly authorized patch release completed. Its
+exact branch base is `228488086321849fa623c4d2384b79ffa884efb8`.
+
+Aggregation PR #29130 reviews authorized Cloudron monitoring PR #29117 at
+`d23478352070461bc3d1208ba74cc0f80c659dca` because release `v3.32.208`
+recovery and PR #29127 advanced `main` before publication. Its exact branch
+base is `a144e469da47bad93cd3ebfec8cda0a18429c73d`.
+
+Aggregation PR #29148 reviews authorized Qlty postflight PR #29127 at
+`c8d6491cdf52e4ab1b8162ee793958bf7c2dfde9` because releases `v3.32.208` and
+`v3.32.209`, plus subsequent merges, advanced `main` before its explicitly
+authorized patch release completed. Its exact branch base is
+`af4dc8979fde7864fd0d7ffc898f47629dd3241e`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 

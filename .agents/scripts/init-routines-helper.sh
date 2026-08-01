@@ -64,6 +64,7 @@ Fields:
   repeat: -- schedule: daily(@HH:MM), weekly(day@HH:MM), monthly(N@HH:MM), cron(expr)
   run:    -- deterministic script relative to ~/.aidevops/agents/
   agent:  -- LLM agent dispatched via headless-runtime-helper.sh
+  timezone: -- optional per-routine IANA timezone override
   [x] enabled, [ ] disabled/paused
 
 ## Core Routines (framework-managed)
@@ -79,10 +80,12 @@ TODOEOF
 	if [[ -f "${SCRIPT_DIR}/routines/core-routines.sh" ]]; then
 		# shellcheck disable=SC1091  # sourced file path is dynamic but verified above
 		source "${SCRIPT_DIR}/routines/core-routines.sh"
-		local line
-		while IFS='|' read -r rid enabled title schedule estimate script rtype; do
+		local rid enabled title schedule estimate script rtype timezone
+		local timezone_field=""
+		while IFS='|' read -r rid enabled title schedule estimate script rtype timezone; do
 			[[ -z "$rid" ]] && continue
-			echo "- [${enabled}] ${rid} ${title} ${schedule} ${estimate} run:${script}" >>"${repo_path}/TODO.md"
+			timezone_field="${timezone:+ timezone:${timezone}}"
+			printf '%s\n' "- [${enabled}] ${rid} ${title} ${schedule}${timezone_field} ${estimate} run:${script}" >>"${repo_path}/TODO.md"
 		done < <(get_core_routine_entries)
 	fi
 
@@ -162,7 +165,7 @@ CUSTOMEOF
 <!-- To fix: edit describe_rNNN() in core-routines.sh, not this file -->
 
 "
-	while IFS='|' read -r rid _ _ _ _ _ _; do
+	while IFS='|' read -r rid _ _ _ _ _ _ _; do
 		[[ -z "$rid" ]] && continue
 		local describe_fn="describe_${rid}"
 		if declare -f "$describe_fn" &>/dev/null; then
@@ -881,8 +884,8 @@ _create_core_routine_issues() {
 	local tz_name
 	tz_name=$(_detect_timezone)
 
-	local rid enabled title schedule estimate script rtype
-	while IFS='|' read -r rid enabled title schedule estimate script rtype; do
+	local rid enabled title schedule estimate script rtype timezone
+	while IFS='|' read -r rid enabled title schedule estimate script rtype timezone; do
 		[[ -z "$rid" ]] && continue
 		# Extract short title (before the em dash if present)
 		local short_title
@@ -890,7 +893,9 @@ _create_core_routine_issues() {
 
 		# Generate human-readable schedule
 		local human_schedule
-		human_schedule=$(_humanise_schedule "$schedule" "$tz_name")
+		local schedule_timezone=""
+		schedule_timezone="${timezone:-$tz_name}"
+		human_schedule=$(_humanise_schedule "$schedule" "$schedule_timezone")
 
 		# Detect whether this routine already has a tracking state file. If it
 		# does, we must NOT fire the initial `update --status success` body-

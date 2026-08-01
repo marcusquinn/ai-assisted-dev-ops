@@ -23,6 +23,7 @@
 [[ -n "${_HEADLESS_RUNTIME_WORKER_PREPARE_LIB_LOADED:-}" ]] && return 0
 _HEADLESS_RUNTIME_WORKER_PREPARE_LIB_LOADED=1
 : "${_HRW_ROLE_WORKER:=worker}"
+_HRW_PR_REPAIR_OWNERSHIP_LINKED_ISSUE="linked-issue"
 
 # Defensive SCRIPT_DIR fallback (test harnesses may not set it)
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -48,11 +49,25 @@ _hrw_mark_runtime_launch_started() {
 	return 0
 }
 
+_hrw_ownership_log() {
+	local level="$1"
+	local message="$2"
+	local rendered="[ownership-fence] ${message}"
+	case "$level" in
+	error) print_error "$rendered" ;;
+	warning) print_warning "$rendered" ;;
+	info) print_info "$rendered" ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
 #######################################
-# Verify that a worker still owns its exact dispatch target. Issue and linked-
-# issue PR-repair workers require the live issue assignment granted at dispatch.
-# Direct PR-remediation workers instead require the exact open PR head selected
-# by the scanner. This helper is read-only and fail-closed.
+# Verify that a worker still owns its exact dispatch target. Issue workers use
+# their live assignment, direct PR workers use the exact open head, and draft
+# checkpoints use the complete PR/linkage/assignee envelope. A legacy linked-
+# issue CI repair must explicitly request both exact-head and issue fences.
+# This helper is read-only and fail-closed.
 #######################################
 _hrw_verify_dispatch_ownership() {
 	local issue_number="${WORKER_ISSUE_NUMBER:-}"
@@ -60,33 +75,81 @@ _hrw_verify_dispatch_ownership() {
 	local repo_slug="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
 	local ownership_helper="${HEADLESS_RUNTIME_OWNERSHIP_HELPER:-${SCRIPT_DIR}/dispatch-claim-helper.sh}"
 	if [[ -z "$repo_slug" || ! -x "$ownership_helper" ]]; then
-		print_error "[ownership-fence] incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} helper=$([[ -x "$ownership_helper" ]] && printf available || printf missing)"
+		_hrw_ownership_log error "incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} helper=$([[ -x "$ownership_helper" ]] && printf available || printf missing)"
 		return 1
 	fi
 
 	local repair_pr_number="${AIDEVOPS_PR_REPAIR_NUMBER:-}"
-	if [[ -n "$repair_pr_number" && "$repair_pr_number" == "$issue_number" ]]; then
+	local repair_linked_issue="${AIDEVOPS_PR_REPAIR_LINKED_ISSUE:-}"
+	local repair_ownership_mode="${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}"
+	if [[ -n "$repair_linked_issue" && -z "$repair_pr_number" ]]; then
+		_hrw_ownership_log error "incomplete PR checkpoint contract issue=${issue_number} repo=${repo_slug} pr=missing"
+		return 1
+	fi
+	if [[ -n "$repair_ownership_mode" && -z "$repair_pr_number" ]]; then
+		_hrw_ownership_log error "incomplete PR repair ownership contract issue=${issue_number} repo=${repo_slug} pr=missing mode=${repair_ownership_mode}"
+		return 1
+	fi
+	if [[ -n "$repair_pr_number" ]]; then
 		local expected_head_sha="${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}"
 		local expected_head_ref="${AIDEVOPS_PR_REPAIR_HEAD_REF:-}"
 		if [[ -z "$expected_head_sha" || -z "$expected_head_ref" ]]; then
-			print_error "[ownership-fence] incomplete direct PR repair contract pr=${repair_pr_number} repo=${repo_slug} head_sha=${expected_head_sha:-missing} head_ref=${expected_head_ref:-missing}"
+			_hrw_ownership_log error "incomplete direct PR repair contract pr=${repair_pr_number} repo=${repo_slug} head_sha=${expected_head_sha:-missing} head_ref=${expected_head_ref:-missing}"
 			return 1
 		fi
 		local target_output=""
 		local target_rc=0
-		target_output=$("$ownership_helper" verify-pr-repair-target \
-			"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" 2>&1) || target_rc=$?
-		if [[ "$target_rc" -eq 0 ]]; then
-			print_info "[ownership-fence] ${target_output}"
+		if [[ -n "$repair_linked_issue" ]]; then
+			local expected_assignee="${AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE:-}"
+			if [[ -n "$repair_ownership_mode" ]]; then
+				_hrw_ownership_log error "conflicting PR checkpoint ownership mode issue=${issue_number} pr=${repair_pr_number} mode=${repair_ownership_mode}"
+				return 1
+			fi
+			if [[ "$repair_linked_issue" != "$issue_number" ]]; then
+				_hrw_ownership_log error "PR checkpoint linked issue mismatch worker_issue=${issue_number} linked_issue=${repair_linked_issue}"
+				return 1
+			fi
+			if [[ -z "$expected_assignee" || "${WORKER_GITHUB_LOGIN:-}" != "$expected_assignee" ]]; then
+				_hrw_ownership_log error "incomplete PR checkpoint assignee contract issue=${issue_number} expected=${expected_assignee:-missing} worker=${WORKER_GITHUB_LOGIN:-missing}"
+				return 1
+			fi
+			target_output=$("$ownership_helper" verify-pr-checkpoint-target \
+				"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" \
+				"$repair_linked_issue" "$expected_assignee" 2>&1) || target_rc=$?
+			if [[ "$target_rc" -ne 0 ]]; then
+				_hrw_ownership_log warning "PR checkpoint target unavailable pr=${repair_pr_number} issue=${repair_linked_issue} repo=${repo_slug} rc=${target_rc}: ${target_output}"
+				return 1
+			fi
+			_hrw_ownership_log info "$target_output"
 			return 0
+		elif [[ "$repair_pr_number" == "$issue_number" && -z "$repair_ownership_mode" ]]; then
+			target_output=$("$ownership_helper" verify-pr-repair-target \
+				"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" 2>&1) || target_rc=$?
+			if [[ "$target_rc" -eq 0 ]]; then
+				_hrw_ownership_log info "$target_output"
+				return 0
+			fi
+			_hrw_ownership_log warning "direct PR repair target unavailable pr=${repair_pr_number} repo=${repo_slug} rc=${target_rc}: ${target_output}"
+			return 1
+		elif [[ "$repair_ownership_mode" == "$_HRW_PR_REPAIR_OWNERSHIP_LINKED_ISSUE" &&
+			"$repair_pr_number" != "$issue_number" ]]; then
+			target_output=$("$ownership_helper" verify-pr-repair-target \
+				"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" \
+				"$issue_number" 2>&1) || target_rc=$?
+			if [[ "$target_rc" -ne 0 ]]; then
+				_hrw_ownership_log warning "linked-issue PR repair target unavailable pr=${repair_pr_number} issue=${issue_number} repo=${repo_slug} rc=${target_rc}: ${target_output}"
+				return 1
+			fi
+			_hrw_ownership_log info "$target_output"
+		else
+			_hrw_ownership_log error "unclassified PR repair ownership contract issue=${issue_number} pr=${repair_pr_number} repo=${repo_slug} mode=${repair_ownership_mode:-missing}"
+			return 1
 		fi
-		print_warning "[ownership-fence] direct PR repair target unavailable pr=${repair_pr_number} repo=${repo_slug} rc=${target_rc}: ${target_output}"
-		return 1
 	fi
 
 	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
 	if [[ -z "$runner_login" ]]; then
-		print_error "[ownership-fence] incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} runner=${runner_login:-missing}"
+		_hrw_ownership_log error "incomplete worker ownership contract issue=${issue_number} repo=${repo_slug:-missing} runner=${runner_login:-missing}"
 		return 1
 	fi
 
@@ -95,10 +158,10 @@ _hrw_verify_dispatch_ownership() {
 	ownership_output=$("$ownership_helper" verify-worker-ownership \
 		"$issue_number" "$repo_slug" "$runner_login" 2>&1) || ownership_rc=$?
 	if [[ "$ownership_rc" -eq 0 ]]; then
-		print_info "[ownership-fence] ${ownership_output}"
+		_hrw_ownership_log info "$ownership_output"
 		return 0
 	fi
-	print_warning "[ownership-fence] worker ownership unavailable issue=${issue_number} repo=${repo_slug} runner=${runner_login} rc=${ownership_rc}: ${ownership_output}"
+	_hrw_ownership_log warning "worker ownership unavailable issue=${issue_number} repo=${repo_slug} runner=${runner_login} rc=${ownership_rc}: ${ownership_output}"
 	return 1
 }
 

@@ -86,7 +86,7 @@ test("research-only profile fails closed when canonical frontmatter is invalid",
     const config = { agent: {} };
     assert.equal(registerResearchOnlyAgent(config, agentsDir), 1);
     assert.deepEqual(config.agent["research-only"].tools, { "*": false });
-    assert.equal(config.agent["research-only"].permission, "deny");
+    assert.deepEqual(config.agent["research-only"].permission, { "*": "deny" });
     assert.equal(config.agent["research-only"].disable, true);
   } finally {
     rmSync(agentsDir, { recursive: true, force: true });
@@ -124,7 +124,7 @@ Canonical research prompt.
     const profile = config.agent["research-only"];
 
     assert.deepEqual(profile.tools, { "*": false });
-    assert.equal(profile.permission, "deny");
+    assert.deepEqual(profile.permission, { "*": "deny" });
     assert.equal(profile.prompt, "Canonical research prompt.");
   } finally {
     rmSync(agentsDir, { recursive: true, force: true });

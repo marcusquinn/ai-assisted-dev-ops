@@ -94,11 +94,13 @@ GITCONFIG
 	assert_equal cloudron-package "$(jq -r '.initialized_repos[0].app_type' "$REPOS_FILE")" "registration records Cloudron app_type"
 	assert_equal CloudronManifest.json "$(jq -r '.initialized_repos[0].cloudron_package.manifest' "$REPOS_FILE")" "registration records manifest path"
 	assert_equal true "$(jq -r '.initialized_repos[0].cloudron_package.monitor_compatibility' "$REPOS_FILE")" "compatibility monitoring defaults on"
-	jq '.initialized_repos[0].cloudron_package += {"upstream_slug":"exampleorg/upstream","monitor_compatibility":false}' "$REPOS_FILE" >"${REPOS_FILE}.tmp"
+	assert_equal '["v",""]' "$(jq -c '.initialized_repos[0].cloudron_package.upstream_tag_prefixes' "$REPOS_FILE")" "registration defaults to v-prefixed and bare upstream tags"
+	jq '.initialized_repos[0].cloudron_package += {"upstream_slug":"exampleorg/upstream","monitor_compatibility":false,"upstream_tag_prefixes":["desktop-v"]}' "$REPOS_FILE" >"${REPOS_FILE}.tmp"
 	mv "${REPOS_FILE}.tmp" "$REPOS_FILE"
 	register_repo "$repo_dir" 9.9.10 planning
 	assert_equal exampleorg/upstream "$(jq -r '.initialized_repos[0].cloudron_package.upstream_slug' "$REPOS_FILE")" "explicit upstream metadata preserved"
 	assert_equal false "$(jq -r '.initialized_repos[0].cloudron_package.monitor_compatibility' "$REPOS_FILE")" "explicit monitoring preference preserved"
+	assert_equal '["desktop-v"]' "$(jq -c '.initialized_repos[0].cloudron_package.upstream_tag_prefixes' "$REPOS_FILE")" "explicit upstream tag stream preserved"
 	return 0
 }
 

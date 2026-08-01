@@ -63,7 +63,7 @@ immutable tag. Full contract: `reference/release-publication-controls.md`
 
 **DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, authenticated `gh`, an accessible aidevops repository, and unreleased changelog content (or changelog-only `--force`). The helper fetches `origin/main` and creates its own detached release worktree; it does not require or mutate a clean canonical checkout.
 
-**Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `.agents/scripts/validate-version-consistency.sh`
+**Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `reference/release-artifact-provenance.md` · `.agents/scripts/validate-version-consistency.sh`
 
 ## Manual Release (Non-aidevops Repos)
 
@@ -72,6 +72,14 @@ repeat a full source scan merely because release follows every merge. Run the
 repository's broad gate only when no trustworthy SHA-matched evidence exists or
 the release changes shared/root contracts that were not covered by affected
 checks.
+
+When a repository publishes installable artifacts, images, update manifests, or
+catalogs from GitHub Actions, default to unattended OIDC/Sigstore provenance:
+attest the exact file or immutable digest, verify the emitted bundle against the
+repository, exact signer workflow, and validated release ref, then publish.
+Preserve native ecosystem signing and state clearly whether consumers enforce
+the attestation. Full design and examples:
+`reference/release-artifact-provenance.md`.
 
 ```bash
 # Conditional only: ./.agents/scripts/linters-local.sh --full

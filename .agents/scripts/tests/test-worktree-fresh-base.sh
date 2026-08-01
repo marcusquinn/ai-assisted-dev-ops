@@ -17,6 +17,8 @@ UPDATER="${ROOT}/updater"
 WORKTREES="${ROOT}/worktrees"
 HOME="${ROOT}/home"
 export HOME AIDEVOPS_WORKTREE_BASE_DIR="$WORKTREES"
+export AIDEVOPS_FULL_LOOP_CLEANUP_DIR="${ROOT}/cleanup-receipts"
+REGISTRY_DB="${HOME}/.aidevops/.agent-workspace/worktree-registry.db"
 
 git init -q --bare "$REMOTE"
 git clone -q "$REMOTE" "$CANONICAL"
@@ -82,7 +84,123 @@ PINNED_PATH="${WORKTREES}/canonical-test-pinned-base"
 }
 printf 'PASS immutable explicit base permits audited offline recovery\n'
 
-REGISTRY_DB="${HOME}/.aidevops/.agent-workspace/worktree-registry.db"
+# Recreating a manually retained branch at a path whose prior lifecycle is
+# terminal must preserve the old receipt while superseding it as active truth.
+# shellcheck source=../full-loop-cleanup-receipt.sh
+source "${SCRIPT_DIR}/../full-loop-cleanup-receipt.sh"
+RECREATED_BRANCH="test/recreated-cleaned-path"
+RECREATED_PATH="${WORKTREES}/canonical-test-recreated-cleaned-path"
+git -C "$CANONICAL" branch "$RECREATED_BRANCH" "$PINNED_SHA"
+RECREATED_RECEIPT=$(full_loop_write_cleanup_deferred example/repository 777 \
+	"$RECREATED_PATH" "$RECREATED_BRANCH" "$$" test-session not-requested)
+full_loop_transition_cleanup_receipt "$RECREATED_RECEIPT" "$_FULL_LOOP_CLEANUP_CLEANED"
+RECREATED_OUTPUT=$(
+	cd "$CANONICAL" || exit 1
+	AIDEVOPS_SKIP_AUTO_CLAIM=1 "$HELPER" add "$RECREATED_BRANCH" "$RECREATED_PATH" 2>&1
+)
+[[ -d "$RECREATED_PATH" ]] || {
+	printf 'FAIL terminal receipt reconciliation removed the valid recreated worktree\n'
+	exit 1
+}
+RECREATED_OWNER=$(sqlite3 -separator '|' "$REGISTRY_DB" \
+	"SELECT owner_pid, owner_session, branch, task_id FROM worktree_owners WHERE branch = '${RECREATED_BRANCH}';")
+IFS='|' read -r RECREATED_OWNER_PID RECREATED_OWNER_SESSION RECREATED_OWNER_BRANCH RECREATED_OWNER_TASK <<<"$RECREATED_OWNER"
+if [[ ! "$RECREATED_OWNER_PID" =~ ^[0-9]+$ || "$RECREATED_OWNER_BRANCH" != "$RECREATED_BRANCH" ||
+	-n "$RECREATED_OWNER_TASK" ]]; then
+	printf 'FAIL recreated path lacks verified ownership registration: %s\n' "${RECREATED_OWNER:-<missing>}"
+	exit 1
+fi
+jq -e --arg branch "$RECREATED_BRANCH" --arg head "$PINNED_SHA" \
+	--argjson owner_pid "$RECREATED_OWNER_PID" --arg owner_session "$RECREATED_OWNER_SESSION" '
+	.resource_cleanup_state == "CLEANED"
+	and .receipt_disposition.state == "SUPERSEDED_BY_PATH_RECREATION"
+	and .receipt_disposition.reason == "worktree-path-recreated"
+	and .receipt_disposition.replacement_generation.branch == $branch
+	and .receipt_disposition.replacement_generation.head == $head
+	and .receipt_disposition.replacement_generation.owner.pid == $owner_pid
+	and .receipt_disposition.replacement_generation.owner.session == $owner_session
+' "$RECREATED_RECEIPT" >/dev/null || {
+	printf 'FAIL recreated path did not preserve registered-generation receipt evidence\n'
+	exit 1
+}
+if full_loop_cleanup_receipt_for_worktree "$RECREATED_PATH" >/dev/null 2>&1; then
+	printf 'FAIL superseded terminal receipt remained selectable for the recreated path\n'
+	exit 1
+fi
+if [[ "$RECREATED_OUTPUT" != *"AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=PATH_RECREATED_AFTER_CLEANUP"* ||
+	"$RECREATED_OUTPUT" != *"prior_pr=777"* ]]; then
+	printf 'FAIL recreated path omitted explicit lifecycle disposition: %s\n' "$RECREATED_OUTPUT"
+	exit 1
+fi
+printf 'PASS recreated path supersedes terminal receipt with explicit lifecycle disposition\n'
+
+REGISTRATION_FAILURE_BRANCH="test/recreated-registration-failure"
+REGISTRATION_FAILURE_PATH="${WORKTREES}/canonical-test-recreated-registration-failure"
+git -C "$CANONICAL" branch "$REGISTRATION_FAILURE_BRANCH" "$PINNED_SHA"
+REGISTRATION_FAILURE_RECEIPT=$(full_loop_write_cleanup_deferred example/repository 779 \
+	"$REGISTRATION_FAILURE_PATH" "$REGISTRATION_FAILURE_BRANCH" "$$" registration-failure-session not-requested)
+full_loop_transition_cleanup_receipt "$REGISTRATION_FAILURE_RECEIPT" "$_FULL_LOOP_CLEANUP_CLEANED"
+BROKEN_HOME="${ROOT}/broken-registry-home"
+mkdir -p "${BROKEN_HOME}/.aidevops/.agent-workspace/worktree-registry.db"
+REGISTRATION_FAILURE_OUTPUT=""
+REGISTRATION_FAILURE_RC=0
+REGISTRATION_FAILURE_OUTPUT=$(
+	cd "$CANONICAL" || exit 1
+	HOME="$BROKEN_HOME" AIDEVOPS_SKIP_AUTO_CLAIM=1 \
+		"$HELPER" add "$REGISTRATION_FAILURE_BRANCH" "$REGISTRATION_FAILURE_PATH" 2>&1
+) || REGISTRATION_FAILURE_RC=$?
+if [[ "$REGISTRATION_FAILURE_RC" -eq 0 || ! -d "$REGISTRATION_FAILURE_PATH" ||
+	"$REGISTRATION_FAILURE_OUTPUT" != *"AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=REGISTRATION_FAILED"* ]]; then
+	printf 'FAIL registration failure did not preserve unverifiable path recreation: rc=%s output=%s\n' \
+		"$REGISTRATION_FAILURE_RC" "$REGISTRATION_FAILURE_OUTPUT"
+	exit 1
+fi
+jq -e '
+	.resource_cleanup_state == "CLEANED"
+	and (.receipt_disposition == null)
+' "$REGISTRATION_FAILURE_RECEIPT" >/dev/null || {
+	printf 'FAIL registration failure superseded terminal receipt before ownership was durable\n'
+	exit 1
+}
+[[ "$(full_loop_cleanup_receipt_for_worktree "$REGISTRATION_FAILURE_PATH")" == "$REGISTRATION_FAILURE_RECEIPT" ]] || {
+	printf 'FAIL registration failure retired selectable terminal receipt evidence\n'
+	exit 1
+}
+printf 'PASS registration failure preserves terminal receipt and unverifiable worktree generation\n'
+
+ACTIVE_RECEIPT_BRANCH="test/recreated-active-path"
+ACTIVE_RECEIPT_PATH="${WORKTREES}/canonical-test-recreated-active-path"
+git -C "$CANONICAL" branch "$ACTIVE_RECEIPT_BRANCH" "$PINNED_SHA"
+ACTIVE_RECEIPT=$(full_loop_write_cleanup_deferred example/repository 778 \
+	"$ACTIVE_RECEIPT_PATH" "$ACTIVE_RECEIPT_BRANCH" "$$" active-session not-requested)
+ACTIVE_OUTPUT=""
+ACTIVE_RC=0
+ACTIVE_OUTPUT=$(
+	cd "$CANONICAL" || exit 1
+	AIDEVOPS_SKIP_AUTO_CLAIM=1 "$HELPER" add "$ACTIVE_RECEIPT_BRANCH" "$ACTIVE_RECEIPT_PATH" 2>&1
+) || ACTIVE_RC=$?
+if [[ "$ACTIVE_RC" -eq 0 || -d "$ACTIVE_RECEIPT_PATH" ||
+	"$ACTIVE_OUTPUT" != *"AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=RECONCILIATION_FAILED"* ]]; then
+	printf 'FAIL active cleanup receipt did not roll back path recreation: rc=%s output=%s\n' \
+		"$ACTIVE_RC" "$ACTIVE_OUTPUT"
+	exit 1
+fi
+jq -e '
+	.resource_cleanup_state == "CLEANUP_DEFERRED"
+	and (.receipt_disposition == null)
+' "$ACTIVE_RECEIPT" >/dev/null || {
+	printf 'FAIL active cleanup receipt was mutated during rejected path recreation\n'
+	exit 1
+}
+printf 'PASS active cleanup receipt blocks and rolls back path recreation\n'
+ACTIVE_OWNER_COUNT=$(sqlite3 "$REGISTRY_DB" \
+	"SELECT COUNT(*) FROM worktree_owners WHERE branch = '${ACTIVE_RECEIPT_BRANCH}';")
+[[ "$ACTIVE_OWNER_COUNT" == "0" ]] || {
+	printf 'FAIL rejected path recreation retained a stale ownership registration\n'
+	exit 1
+}
+printf 'PASS receipt reconciliation rollback retires ownership registration\n'
+
 PINNED_OWNER=$(sqlite3 -separator '|' "$REGISTRY_DB" \
 	"SELECT branch, task_id FROM worktree_owners WHERE branch = 'test/pinned-base';")
 [[ "$PINNED_OWNER" == "test/pinned-base|" ]] || {

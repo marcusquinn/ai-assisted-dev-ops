@@ -855,6 +855,8 @@ jobs:
   # QLTY_SMELL_THRESHOLD and monotonically decreases over time". First ratchet
   # counter that covers non-shell files (Python/JS/TS/mjs). Auto-ratcheted down
   # by ratchet-post-merge.yml when the count drops below threshold - 2.
+  # This absolute baseline is advisory during release postflight; PR-specific
+  # increases remain blocking in `.github/workflows/qlty-regression.yml`.
   qlty-smell-threshold:
     name: Qlty Smell Threshold
     runs-on: ubuntu-latest

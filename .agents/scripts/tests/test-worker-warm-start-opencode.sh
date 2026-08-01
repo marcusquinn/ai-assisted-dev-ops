@@ -7,7 +7,7 @@
 # Verifies that the OpenCode pre-warm logic in _dlw_nohup_launch:
 #   1. Runs opencode --version against the isolated DB dir before nohup launch.
 #   2. Logs opencode_warm_start + opencode_warm_done lifecycle markers.
-#   3. Sets AIDEVOPS_WORKER_PREWARM_DIR env var for headless-runtime-helper.
+#   3. Sets AIDEVOPS_WORKER_PREWARM_DIR for the runtime invoke module.
 #   4. Handles warm-up failure non-fatally (dispatch continues without prewarm).
 #   5. Skips warm-up when opencode binary is absent (non-opencode runtimes).
 #
@@ -270,31 +270,31 @@ test_warm_up_failure_nonfatal() {
 }
 
 # ---------------------------------------------------------------------------
-# Test: headless-runtime-helper.sh honours AIDEVOPS_WORKER_PREWARM_DIR
+# Test: the runtime invoke module honours AIDEVOPS_WORKER_PREWARM_DIR
 # ---------------------------------------------------------------------------
 test_headless_runtime_honours_prewarm_dir() {
-	# Verify the headless-runtime-helper.sh source contains the t2758 prewarm check.
-	local helper_path="$SCRIPT_DIR/../headless-runtime-helper.sh"
-	if [[ ! -f "$helper_path" ]]; then
-		print_result "prewarm_dir_check_in_helper" 1 "headless-runtime-helper.sh not found at $helper_path"
+	# Verify the extracted OpenCode invoke source contains the t2758 prewarm check.
+	local invoke_path="$SCRIPT_DIR/../headless-runtime-invoke.sh"
+	if [[ ! -f "$invoke_path" ]]; then
+		print_result "prewarm_dir_check_in_invoke" 1 "headless-runtime-invoke.sh not found at $invoke_path"
 		return 1
 	fi
 
 	local rc=0
 	# Check for the t2758 env var reuse block
-	if ! grep -q "AIDEVOPS_WORKER_PREWARM_DIR" "$helper_path"; then
-		print_result "prewarm_env_var_in_helper" 1 "AIDEVOPS_WORKER_PREWARM_DIR not found in headless-runtime-helper.sh"
+	if ! grep -q "AIDEVOPS_WORKER_PREWARM_DIR" "$invoke_path"; then
+		print_result "prewarm_env_var_in_invoke" 1 "AIDEVOPS_WORKER_PREWARM_DIR not found in headless-runtime-invoke.sh"
 		rc=1
 	else
-		print_result "prewarm_env_var_in_helper" 0
+		print_result "prewarm_env_var_in_invoke" 0
 	fi
 
-	# Check for the opencode_warm_done lifecycle marker in helper
-	if ! grep -q "opencode_warm_done" "$helper_path"; then
-		print_result "warm_done_marker_in_helper" 1 "opencode_warm_done not found in headless-runtime-helper.sh"
+	# Check for the opencode_warm_done lifecycle marker in the invoke module
+	if ! grep -q "opencode_warm_done" "$invoke_path"; then
+		print_result "warm_done_marker_in_invoke" 1 "opencode_warm_done not found in headless-runtime-invoke.sh"
 		rc=1
 	else
-		print_result "warm_done_marker_in_helper" 0
+		print_result "warm_done_marker_in_invoke" 0
 	fi
 
 	if [[ "$rc" -eq 0 ]]; then return 0; fi

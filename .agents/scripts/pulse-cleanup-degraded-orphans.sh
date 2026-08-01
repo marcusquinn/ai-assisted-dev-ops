@@ -31,7 +31,7 @@ _pcdo_open_pr_absent_verified() {
 
 _pcdo_release_removal_lease() {
 	local wt_path="$1"
-	unregister_worktree_if_owner_pid "$wt_path" "$$" 2>/dev/null || true
+	_clean_release_removal_lease "$wt_path" || true
 	return 0
 }
 
@@ -42,7 +42,7 @@ _pcdo_post_lease_owner_or_claim_exists() {
 	if pgrep -f "$wt_path" >/dev/null 2>&1; then
 		return 0
 	fi
-	if _clean_removal_lease_owned_by_others "$wt_path"; then
+	if ! _clean_has_exact_removal_lease "$wt_path"; then
 		return 0
 	fi
 	if _branch_has_active_interactive_claim "$wt_path" "$wt_branch"; then
@@ -142,6 +142,11 @@ _pc_remove_degraded_orphan_recoverably() {
 		return 1
 	fi
 	recoverable_archive="$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH"
+	if ! _clean_has_exact_removal_lease "$wt_path_age"; then
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
+			"cleanup-lease-changed-after-archive" "$_WTAR_MODE_SKIPPED" "$audit_context"
+		return 1
+	fi
 	if ! remove_archived_worktree_path "$wt_path_age" "$recoverable_archive" \
 		"$_WTAR_PC_CALLER" "$_PCDO_REASON_RECOVERABLE" "$audit_context" \
 		"true" "false"; then
@@ -157,7 +162,7 @@ _pc_remove_degraded_orphan_recoverably() {
 		return 1
 	fi
 
-	unregister_worktree "$wt_path_age" 2>/dev/null || true
+	_pcdo_release_removal_lease "$wt_path_age"
 	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" \
 		"$_PCDO_REASON_RECOVERABLE" "recoverable-trash" "$audit_context"
 	if declare -F full_loop_mark_cleanup_cleaned_for_worktree >/dev/null 2>&1; then

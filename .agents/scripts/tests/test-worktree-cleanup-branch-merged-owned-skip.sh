@@ -85,6 +85,8 @@ source_clean_lib_with_stubs() {
 	localdev_auto_branch_rm() { return 0; }
 	unregister_worktree() { return 0; }
 	unregister_worktree_if_owner_pid() { unregister_worktree "$1"; return 0; }
+	unregister_worktree_if_owner_contract() { unregister_worktree "$1"; return 0; }
+	worktree_has_exact_owner_contract() { return 0; }
 	claim_worktree_ownership() { return 0; }
 	assert_git_available() { return 0; }
 	assert_main_worktree_sane() { return 0; }
@@ -298,8 +300,8 @@ test_cleanup_lease_released_when_removal_guard_blocks() {
 		source_clean_lib_with_stubs || exit 1
 		claim_worktree_ownership() { return 0; }
 		worktree_removal_guard() { return 1; }
-		unregister_worktree_if_owner_pid() {
-			[[ "$2" == "$$" ]] || return 1
+		unregister_worktree_if_owner_contract() {
+			[[ "$2" == "$$" && "$3" == "cleanup:$$" && "$4" == "worktree-removal" ]] || return 1
 			printf 'released\n' >"$release_marker"
 			return 0
 		}

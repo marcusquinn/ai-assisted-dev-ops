@@ -32,6 +32,12 @@
 [[ -n "${_WORKTREE_CMDS_LIB_LOADED:-}" ]] && return 0
 _WORKTREE_CMDS_LIB_LOADED=1
 _WT_REMOVE_MODE_MANUAL="manual"
+_WT_REMOVE_DEGRADED_RECOVERY=0
+_WT_REMOVE_DEGRADED_BRANCH=""
+_WT_REMOVE_DEGRADED_PR=""
+_WT_REMOVE_DEGRADED_AUDIT_CONTEXT=""
+_WT_BOOL_TRUE="true"
+_WT_BOOL_FALSE="false"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -130,11 +136,112 @@ _remove_show_guard_error() {
 		printf '%s\n' "Reason: git-metadata-unreadable — the guard could not prove the exact worktree registration is readable and unlocked." >&2
 		printf '%s\n' "Recovery: repair Git metadata access and verify the exact worktree block is unlocked before retrying. --force cannot bypass this protection." >&2
 		;;
+	cwd-visibility-degraded)
+		printf '%s\n' "Reason: cwd-visibility-degraded — targeted recovery could not prove a clean, unowned exact-head merged-PR worktree." >&2
+		printf '%s\n' "Recovery: resolve dirty, claim, ownership, open-PR, or GitHub-proof state and retry. --force cannot bypass live-CWD protection." >&2
+		;;
 	*)
 		printf '%s\n' "Reason: ${guard_reason:-guard-refused} — the shared safety guard did not authorize removal." >&2
 		printf '%s\n' "Recovery: inspect the cleanup audit log, resolve the safety condition, then retry." >&2
 		;;
 	esac
+	return 0
+}
+
+# Resolve the GitHub repository slug from the candidate worktree's own origin.
+# Args: $1=path_to_remove
+_remove_repo_slug_for_worktree() {
+	local path_to_remove="$1"
+	local remote_url=""
+	local owner=""
+	local repo_name=""
+
+	remote_url=$(git -C "$path_to_remove" remote get-url origin 2>/dev/null) || return 1
+	remote_url="${remote_url%.git}"
+	case "$remote_url" in
+	git@github.com:*) remote_url="${remote_url#git@github.com:}" ;;
+	https://github.com/*) remote_url="${remote_url#https://github.com/}" ;;
+	http://github.com/*) remote_url="${remote_url#http://github.com/}" ;;
+	ssh://git@github.com/*) remote_url="${remote_url#ssh://git@github.com/}" ;;
+	*) return 1 ;;
+	esac
+	owner="${remote_url%%/*}"
+	repo_name="${remote_url#*/}"
+	[[ -n "$owner" && -n "$repo_name" && "$repo_name" != */* ]] || return 1
+	printf '%s/%s\n' "$owner" "$repo_name"
+	return 0
+}
+
+# Prove that the candidate's exact current HEAD belongs to a merged PR and that
+# the same branch has no open PR. Prints the merged PR number on success.
+# Args: $1=path_to_remove, $2=branch_name, $3=expected_head_sha
+_remove_exact_head_merged_pr() {
+	local path_to_remove="$1"
+	local branch_name="$2"
+	local expected_head_sha="$3"
+	local repo_slug=""
+	local merged_json=""
+	local open_json=""
+	local pr_number=""
+	local open_count=""
+
+	command -v gh_pr_list >/dev/null 2>&1 || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+	[[ "$expected_head_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || return 1
+	repo_slug=$(_remove_repo_slug_for_worktree "$path_to_remove") || return 1
+	merged_json=$(gh_pr_list --repo "$repo_slug" --state merged --head "$branch_name" --limit 100 \
+		--json number,state,mergedAt,headRefName,headRefOid 2>/dev/null) || return 1
+	pr_number=$(printf '%s' "$merged_json" | jq -r --arg branch "$branch_name" --arg head "$expected_head_sha" '
+		[.[] | select(
+			.state == "MERGED" and
+			((.mergedAt // "") | length) > 0 and
+			.headRefName == $branch and
+			.headRefOid == $head
+		)] | .[0].number // empty' 2>/dev/null) || return 1
+	[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
+
+	open_json=$(gh_pr_list --repo "$repo_slug" --state open --head "$branch_name" --limit 100 \
+		--json number,headRefName,headRefOid 2>/dev/null) || return 1
+	open_count=$(printf '%s' "$open_json" | jq -r --arg branch "$branch_name" \
+		'[.[] | select(.headRefName == $branch)] | length' 2>/dev/null) || return 1
+	[[ "$open_count" == "0" ]] || return 1
+	printf '%s\n' "$pr_number"
+	return 0
+}
+
+# Authorize only candidate-local archive-first removal when CWD visibility is
+# degraded. Every predicate is intentionally re-runnable around archive/removal.
+# Args: $1=path_to_remove, $2=optional exact cleanup-lease PID
+_remove_degraded_fallback_allowed() {
+	local path_to_remove="$1"
+	local cleanup_lease_pid="${2:-}"
+	local branch_name=""
+	local head_sha=""
+	local head_after_proof=""
+	local pr_number=""
+
+	[[ "${WORKTREE_REMOVAL_GUARD_REASON:-}" == "${_WT_CWD_REASON_DEGRADED:-cwd-visibility-degraded}" ]] || return 1
+	worktree_has_changes "$path_to_remove" && return 1
+	branch_name=$(git -C "$path_to_remove" branch --show-current 2>/dev/null) || return 1
+	[[ -n "$branch_name" ]] || return 1
+	declare -F _branch_has_active_interactive_claim >/dev/null 2>&1 || return 1
+	_branch_has_active_interactive_claim "$path_to_remove" "$branch_name" && return 1
+	if [[ -n "$cleanup_lease_pid" ]]; then
+		[[ "$cleanup_lease_pid" =~ ^[0-9]+$ ]] || return 1
+		declare -F worktree_has_exact_owner_contract >/dev/null 2>&1 || return 1
+		worktree_has_exact_owner_contract "$path_to_remove" "$cleanup_lease_pid" \
+			"cleanup:${cleanup_lease_pid}" "worktree-removal" || return 1
+	else
+		is_worktree_owned_by_others "$path_to_remove" && return 1
+	fi
+	head_sha=$(git -C "$path_to_remove" rev-parse --verify HEAD 2>/dev/null) || return 1
+	pr_number=$(_remove_exact_head_merged_pr "$path_to_remove" "$branch_name" "$head_sha") || return 1
+	head_after_proof=$(git -C "$path_to_remove" rev-parse --verify HEAD 2>/dev/null) || return 1
+	[[ "$head_after_proof" == "$head_sha" ]] || return 1
+
+	_WT_REMOVE_DEGRADED_BRANCH="$branch_name"
+	_WT_REMOVE_DEGRADED_PR="$pr_number"
+	_WT_REMOVE_DEGRADED_AUDIT_CONTEXT="recovery_path=manual-archive-first visibility=degraded branch=${branch_name} head=${head_sha} merged_pr=${pr_number} branch_preserved=true"
 	return 0
 }
 
@@ -145,12 +252,23 @@ _remove_show_guard_error() {
 _remove_validate_path() {
 	local path_to_remove="$1"
 	local guard_caller="${SCRIPT_NAME:-worktree-helper.sh}"
+	local guard_status=0
+	_WT_REMOVE_DEGRADED_RECOVERY=0
 
 	# The shared guard blocks canonical repos, Git-locked or metadata-unreadable
 	# worktrees, this shell's cwd, and every live process whose cwd is inside the
 	# target. --force may override ownership or dirty-state policy, but it must
 	# never override these preservation boundaries.
-	if ! worktree_removal_guard "$path_to_remove" "$guard_caller" "$_WT_REMOVE_MODE_MANUAL"; then
+	if worktree_removal_guard "$path_to_remove" "$guard_caller" "$_WT_REMOVE_MODE_MANUAL"; then
+		guard_status=0
+	else
+		guard_status=$?
+	fi
+	if [[ "$guard_status" -eq "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" ]] &&
+		_remove_degraded_fallback_allowed "$path_to_remove"; then
+		_WT_REMOVE_DEGRADED_RECOVERY=1
+		printf '%s\n' "Targeted recovery: exact merged PR #${_WT_REMOVE_DEGRADED_PR}; using archive-first removal with branch preservation."
+	elif [[ "$guard_status" -ne 0 ]]; then
 		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
 		return 1
 	fi
@@ -193,14 +311,36 @@ _remove_validate_path() {
 # Also handles unregistration and localdev cleanup.
 # Args: $1=path_to_remove
 # Returns 0 on success, 1 on failure.
+_remove_acquire_degraded_cleanup_lease() {
+	local path_to_remove="$1"
+	if ! declare -F _clean_acquire_removal_lease >/dev/null 2>&1 ||
+		! _clean_acquire_removal_lease "$path_to_remove" "$_WT_REMOVE_DEGRADED_BRANCH"; then
+		printf '%s\n' "Cleanup stopped: the candidate-local removal lease could not be acquired." >&2
+		return 1
+	fi
+	if ! _remove_degraded_fallback_allowed "$path_to_remove" "$$"; then
+		_clean_release_removal_lease "$path_to_remove" || true
+		printf '%s\n' "Cleanup stopped: degraded-recovery evidence changed after lease acquisition." >&2
+		return 1
+	fi
+	return 0
+}
+
 _remove_cleanup_and_execute() {
 	local path_to_remove="$1"
 	local repo_context=""
 	local completed_mode="trash"
 	local recoverable_archive=""
-	local force_remove="false"
+	local force_remove="$_WT_BOOL_FALSE"
+	local allow_degraded="$_WT_BOOL_FALSE"
+	local degraded_recovery="$_WT_BOOL_FALSE"
+	local guard_status=0
+	local cleanup_lease_acquired="$_WT_BOOL_FALSE"
+	local audit_context="recovery_path=archive-first"
 	repo_context=$(get_repo_root) || return 1
-	[[ "${WORKTREE_FORCE_REMOVE:-}" == "1" ]] && force_remove="true"
+	if [[ "${WORKTREE_FORCE_REMOVE:-}" == "1" && "${_WT_REMOVE_DEGRADED_RECOVERY:-0}" != "1" ]]; then
+		force_remove="$_WT_BOOL_TRUE"
+	fi
 
 	# Capture branch name before removal for localdev cleanup (t1224.8)
 	local removed_branch=""
@@ -208,16 +348,38 @@ _remove_cleanup_and_execute() {
 	# Close the validation/removal race as tightly as possible. A process may
 	# enter the worktree after cmd_remove validates it; recheck immediately
 	# before the directory is moved or deregistered.
-	if ! worktree_removal_guard "$path_to_remove" "${SCRIPT_NAME:-worktree-helper.sh}" "$_WT_REMOVE_MODE_MANUAL"; then
+	if worktree_removal_guard "$path_to_remove" "${SCRIPT_NAME:-worktree-helper.sh}" "$_WT_REMOVE_MODE_MANUAL"; then
+		guard_status=0
+	else
+		guard_status=$?
+	fi
+	if [[ "$guard_status" -eq "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" &&
+		"${_WT_REMOVE_DEGRADED_RECOVERY:-0}" == "1" ]] &&
+		_remove_degraded_fallback_allowed "$path_to_remove"; then
+		degraded_recovery="$_WT_BOOL_TRUE"
+		allow_degraded="$_WT_BOOL_TRUE"
+		completed_mode="recoverable-trash"
+		audit_context="$_WT_REMOVE_DEGRADED_AUDIT_CONTEXT"
+	elif [[ "$guard_status" -ne 0 ]]; then
 		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
 		return 1
 	fi
+	if [[ "$degraded_recovery" == "$_WT_BOOL_TRUE" ]]; then
+		_remove_acquire_degraded_cleanup_lease "$path_to_remove" || return 1
+		cleanup_lease_acquired="$_WT_BOOL_TRUE"
+	fi
 	if ! archive_worktree_path_recoverably "$path_to_remove" "${SCRIPT_NAME:-worktree-helper.sh}" \
 		"manual-cleanup"; then
+		[[ "$cleanup_lease_acquired" != "$_WT_BOOL_TRUE" ]] || _clean_release_removal_lease "$path_to_remove" || true
 		_remove_show_guard_error "$path_to_remove" "${WORKTREE_REMOVAL_GUARD_REASON:-}"
 		return 1
 	fi
 	recoverable_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	if [[ "$degraded_recovery" == "$_WT_BOOL_TRUE" ]] && ! _remove_degraded_fallback_allowed "$path_to_remove" "$$"; then
+		_clean_release_removal_lease "$path_to_remove" || true
+		printf '%s\n' "Cleanup stopped: the source remains intact and its archive was retained because merge or activity evidence changed." >&2
+		return 1
+	fi
 
 	echo -e "${BLUE}Removing worktree: $path_to_remove${NC}"
 	# Copy first, then let native Git perform the final source removal. A lock
@@ -225,11 +387,13 @@ _remove_cleanup_and_execute() {
 	# intact, while an interruption after it still leaves the archive.
 	if ! remove_archived_worktree_path "$path_to_remove" "$recoverable_archive" \
 		"${SCRIPT_NAME:-worktree-helper.sh}" "$_WT_REMOVE_MODE_MANUAL" \
-		"recovery_path=archive-first" "false" "$force_remove"; then
+		"$audit_context" "$allow_degraded" "$force_remove"; then
+		[[ "$cleanup_lease_acquired" != "$_WT_BOOL_TRUE" ]] || _clean_release_removal_lease "$path_to_remove" || true
 		printf '%b\n' "${YELLOW}Cleanup stopped: the source remains protected and its recoverable archive was retained.${NC}"
 		return 1
 	fi
 	if ! prune_missing_worktree_metadata "$repo_context" "$path_to_remove"; then
+		[[ "$cleanup_lease_acquired" != "$_WT_BOOL_TRUE" ]] || _clean_release_removal_lease "$path_to_remove" || true
 		printf '%b\n' "${YELLOW}Partial cleanup: the worktree archive is retained, but Git metadata verification failed.${NC}"
 		printf '%s\n' "Recovery: preserve the archive, resolve Git metadata permissions, then verify the exact worktree is absent from 'git worktree list --porcelain'."
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$path_to_remove" "metadata-prune-failed" "partial-cleanup"
@@ -237,12 +401,16 @@ _remove_cleanup_and_execute() {
 	fi
 
 	# Unregister ownership (t189)
-	unregister_worktree "$path_to_remove"
+	if [[ "$cleanup_lease_acquired" == "$_WT_BOOL_TRUE" ]]; then
+		_clean_release_removal_lease "$path_to_remove" || true
+	else
+		unregister_worktree "$path_to_remove"
+	fi
 
 	echo -e "${GREEN}Worktree removed successfully${NC}"
 
 	# t2976: audit log — manual removal completed
-	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_WH_CALLER" "$path_to_remove" "$_WT_REMOVE_MODE_MANUAL" "$completed_mode"
+	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_WH_CALLER" "$path_to_remove" "$_WT_REMOVE_MODE_MANUAL" "$completed_mode" "$audit_context"
 
 	# Localdev integration (t1224.8): auto-remove branch subdomain route
 	if [[ -n "$removed_branch" ]]; then
@@ -263,6 +431,10 @@ _remove_cleanup_and_execute() {
 cmd_remove() {
 	local target=""
 	local force_remove=0
+	_WT_REMOVE_DEGRADED_RECOVERY=0
+	_WT_REMOVE_DEGRADED_BRANCH=""
+	_WT_REMOVE_DEGRADED_PR=""
+	_WT_REMOVE_DEGRADED_AUDIT_CONTEXT=""
 
 	# Parse arguments
 	while [[ $# -gt 0 ]]; do
