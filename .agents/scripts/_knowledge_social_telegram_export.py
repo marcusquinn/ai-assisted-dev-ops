@@ -227,35 +227,29 @@ def _select_coverage(
     return present_record if present else absent_record
 
 
-def _export_coverage(
-    observed_at: str, contacts_present: bool, missing_media: bool, chat_types: set[str]
-) -> list[dict[str, Any]]:
+def _scoped_coverage(
+    contacts_present: bool, missing_media: bool, chat_types: set[str]
+) -> list[CoverageSpec]:
     saved = "saved_messages" in chat_types
     channels = any("channel" in value for value in chat_types)
-    records = [
-        ("messages", "complete", None, True),
-        ("chats", "complete", None, True),
+    subscription_reason = "scoped_export_is_not_an_account_wide_subscription_inventory"
+    return [
         _select_coverage(
             contacts_present,
             ("contacts", "complete", None, True),
-            (
-                "contacts",
-                "unavailable",
-                "category_not_present_in_export",
-                False,
-            ),
+            ("contacts", "unavailable", "category_not_present_in_export", False),
         ),
         _select_coverage(
             not missing_media,
             ("media_bytes", "complete", None, True),
-            (
-                "media_bytes",
-                "partial",
-                "export_references_missing_media",
-                False,
-            ),
+            ("media_bytes", "partial", "export_references_missing_media", False),
         ),
-        ("normal_message_deletions", "unavailable", "telegram_export_does_not_preserve_deleted_messages", False),
+        (
+            "normal_message_deletions",
+            "unavailable",
+            "telegram_export_does_not_preserve_deleted_messages",
+            False,
+        ),
         _select_coverage(
             saved,
             ("saved_messages", "complete", None, True),
@@ -268,19 +262,19 @@ def _export_coverage(
         ),
         _select_coverage(
             channels,
-            (
-                "channel_subscriptions",
-                "partial",
-                "scoped_export_is_not_an_account_wide_subscription_inventory",
-                False,
-            ),
-            (
-                "channel_subscriptions",
-                "unavailable",
-                "scoped_export_is_not_an_account_wide_subscription_inventory",
-                False,
-            ),
+            ("channel_subscriptions", "partial", subscription_reason, False),
+            ("channel_subscriptions", "unavailable", subscription_reason, False),
         ),
+    ]
+
+
+def _export_coverage(
+    observed_at: str, contacts_present: bool, missing_media: bool, chat_types: set[str]
+) -> list[dict[str, Any]]:
+    records = [
+        ("messages", "complete", None, True),
+        ("chats", "complete", None, True),
+        *_scoped_coverage(contacts_present, missing_media, chat_types),
         ("participants", "partial", "message_senders_and_service_events_are_not_a_complete_member_roster", False),
         ("stories", "unavailable", "telegram_desktop_story_schema_not_versioned_by_this_parser", False),
         ("topics_replies_quotes_edits_reactions_polls_service_events", "partial", "normalized_only_when_present_in_scoped_export_messages", False),
