@@ -14,7 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from _knowledge_social_collect import CursorState, PageCheckpoint
-from _knowledge_social_slack_identity import (
+# Same-name imports define the stable Slack policy facade for provider modules.
+from _knowledge_social_slack_identity import (  # pylint: disable=unused-import
     ALIAS as ALIAS,
     CONVERSATION_KINDS as CONVERSATION_KINDS,
     TOKEN_TYPES as TOKEN_TYPES,

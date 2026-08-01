@@ -84,7 +84,8 @@ def _base_members(mode: str) -> dict[str, Any]:
     elif mode == "stale":
         messages[0]["text"] = "stale archive fixture knowledge"
     elif mode == "credential":
-        messages[0]["access_token"] = "fixture-redacted-value"
+        # Synthetic non-secret value exercises credential-key rejection.
+        messages[0]["access_token"] = "fixture-redacted-value"  # nosec B105
     elif mode == "credential-scalar":
         messages[0]["text"] = SYNTHETIC_TOKEN
     return {

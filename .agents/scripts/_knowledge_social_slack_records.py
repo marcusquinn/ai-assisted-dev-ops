@@ -21,7 +21,8 @@ from _knowledge_social_slack_contract import (
     optional_boolean,
     optional_text,
 )
-from _knowledge_social_slack_message_records import (
+# Same-name imports define the stable record facade used by route modules.
+from _knowledge_social_slack_message_records import (  # pylint: disable=unused-import
     file_records as file_records,
     file_records_for_conversation as file_records_for_conversation,
     message_record as message_record,
@@ -29,7 +30,7 @@ from _knowledge_social_slack_message_records import (
     reaction_item_records as reaction_item_records,
 )
 from _knowledge_social_slack_record_contract import ACTOR_ID, epoch_iso, stable_id
-from _knowledge_social_slack_snapshot_records import (
+from _knowledge_social_slack_snapshot_records import (  # pylint: disable=unused-import
     bookmark_record as bookmark_record,
     pin_record as pin_record,
 )
