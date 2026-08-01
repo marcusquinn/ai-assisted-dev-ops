@@ -43,6 +43,24 @@ release_authorization_manifest_string() {
 	return $?
 }
 
+release_authorization_observed_sources_json() {
+	local expected_json="$1"
+	local source_json="$2"
+	jq -ce --argjson expected "$expected_json" '
+		($expected | sort_by(.pr)) as $normalized_expected
+		| ([{pr:.source_pr,merge:.source_merge}] | sort_by(.pr)) as $direct_source
+		| if (($normalized_expected == $direct_source) or ((.aggregated_sources // []) | length == 0))
+			then $direct_source
+			else (.aggregated_sources | sort_by(.pr))
+		  end
+		| if all(.[]; ((.pr | type) == "number") and (.merge | test("^[0-9a-f]{40}$")))
+			then .
+			else error("observed release source manifest is malformed")
+		  end
+	' <<<"$source_json" 2>/dev/null
+	return $?
+}
+
 release_authorization_compare() {
 	local expected="$1"
 	local observed="$2"

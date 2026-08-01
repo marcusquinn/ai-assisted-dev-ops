@@ -254,10 +254,15 @@ jq -e '
 	and (.observed_sources | length) == 1
 	and .terminal_cleanup_evidence == false
 ' "$gap_path" >/dev/null
+mkdir -p "${TEST_ROOT}/gap-worktree"
+gap_cleanup_receipt=$(full_loop_write_cleanup_deferred example/repo 29010 "${TEST_ROOT}/gap-worktree" \
+	feature/gap "$OWNER_PID" session-gap pending)
+cp "$gap_cleanup_receipt" "${TEST_ROOT}/gap-cleanup-original.json"
 if full_loop_update_cleanup_release_status example/repo 29010 authorization-gap >/dev/null 2>&1; then
 	printf 'FAIL authorization-gap evidence became a terminal cleanup status\n'
 	exit 1
 fi
+cmp -s "$gap_cleanup_receipt" "${TEST_ROOT}/gap-cleanup-original.json"
 [[ ! -f "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/example_repo-29010.status" ]]
 printf 'PASS authorization-gap evidence remains detached from terminal cleanup receipts\n'
 

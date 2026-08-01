@@ -97,6 +97,71 @@ if ! jq -e '.source_pr == 90
 fi
 printf 'PASS signed tag trailers reconstruct release provenance\n'
 
+(
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/gap-receipts"
+	# shellcheck source=../full-loop-helper-state.sh
+	source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+	gap_expected='28993@23667f1e351981e4e6ecfeb03dd4c7a52ecfd100,29006@da5fec68b034be737bbf1f8d7ccf05a8dbf64a10,29010@4745adde8faa4a92aa4e27763c52e2c1a02a5e76,29013@de9e0b1b76f8dbeb97ccb8d2c3d57020b41adbd0'
+	gap_observed='29010@4745adde8faa4a92aa4e27763c52e2c1a02a5e76'
+	gap_tag_object='1901024bf5b675e4c6b680a801ea402b75f1f355'
+	gap_release_commit='0050022840d6ab7df25608a8a16e50b54e12efec'
+	gap_reason='published tag omitted explicitly authorized sources'
+	_full_loop_release_verify_tag_provenance() {
+		local repo="$1"
+		local tag_name="$2"
+		[[ "$repo" == "test/repo" && "$tag_name" == "v3.32.200" ]]
+		return $?
+	}
+	_full_loop_release_resolve_tag_expected_sources() {
+		local repo="$1"
+		local requested_pr="$2"
+		local tag_name="$3"
+		local expected_sources="$4"
+		[[ "$repo" == "test/repo" && "$requested_pr" == "29010" && "$tag_name" == "v3.32.200" ]] || return 1
+		[[ "$expected_sources" == "$gap_expected" ]] || return 1
+		printf '%s\n' "$gap_expected"
+		return 0
+	}
+	_full_loop_release_observed_sources_for_expected() {
+		local tag_name="$1"
+		local expected_sources="$2"
+		[[ "$tag_name" == "v3.32.200" && "$expected_sources" == "$gap_expected" ]] || return 1
+		printf '%s\n' "$gap_observed"
+		return 0
+	}
+	git() {
+		local args="$*"
+		case "$args" in
+		*" fetch origin --tags --quiet") return 0 ;;
+		*" rev-parse refs/tags/v3.32.200^{commit}") printf '%s\n' "$gap_release_commit" ;;
+		*" rev-parse refs/tags/v3.32.200") printf '%s\n' "$gap_tag_object" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" "$gap_reason" >/dev/null
+	gap_path=$(_full_loop_release_evidence_path test/repo 29010 authorization-gap)
+	jq -e --arg tag_object "$gap_tag_object" --arg release_commit "$gap_release_commit" '
+		.status == "authorization-gap"
+		and (.expected_sources | length) == 4
+		and (.observed_sources | length) == 1
+		and .tag_object == $tag_object
+		and .release_commit == $release_commit
+		and .terminal_cleanup_evidence == false
+	' "$gap_path" >/dev/null
+	cp "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
+	_full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" "$gap_reason" >/dev/null
+	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
+	if _full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" \
+		'conflicting incident classification' >/dev/null 2>&1; then
+		printf 'FAIL conflicting authorization-gap replay replaced immutable incident evidence\n'
+		exit 1
+	fi
+	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
+	[[ ! -f "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-29010.status" ]]
+)
+printf 'PASS historical authorization gaps use idempotent detached production evidence\n'
+
 legacy_source_json_file="${TEST_ROOT}/legacy-source.json"
 (
 	_full_loop_release_tag_body() {

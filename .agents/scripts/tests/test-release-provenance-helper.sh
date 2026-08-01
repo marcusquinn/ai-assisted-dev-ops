@@ -250,14 +250,15 @@ git -C "$AGG_REPO" switch -q --detach "$AGGREGATE_MERGE"
 aggregate_self_json=$(
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
-		bash "$HELPER" resolve-source --source-pr 99 --repo test/aggregate --expected-sources 42
+		bash "$HELPER" resolve-source --source-pr 99 --repo test/aggregate
 )
 jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
 	.mode == "aggregate" and .requested_pr == 99 and .source_pr == 99
 	and .source_merge == $merge
 	and .aggregated_sources == [{pr:42,merge:$original}]
+	and .expected_sources == [{pr:99,merge:$merge}]
 ' <<<"$aggregate_self_json" >/dev/null
-printf 'PASS exact-tip aggregation PR preserves its reviewed source manifest\n'
+printf 'PASS singleton aggregation-PR calls preserve the reviewed source manifest\n'
 
 git -C "$AGG_REPO" switch -q --detach "$AGG_ORIGINAL"
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed direct commit'
@@ -285,6 +286,14 @@ Aidevops-Source-PR: 99
 Aidevops-Source-Merge: ${AGGREGATE_MERGE}
 Aidevops-Aggregated-Source: 42@${AGG_ORIGINAL}"
 git -C "$AGG_REPO" push -q origin HEAD:main --tags
+tag_authorization_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-authorization --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42,43,44,45
+)
+jq -e '(.expected_sources | map(.pr)) == [42,43,44,45]' <<<"$tag_authorization_json" >/dev/null
+printf 'PASS immutable-tag authorization resolves every trusted PR to its verified merge SHA\n'
 (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \

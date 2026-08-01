@@ -44,6 +44,9 @@ expected set. A retry reuses the persisted manifest and rejects conflicting inte
 ```bash
 aidevops release status <merged-pr-number>     # read-only remote/channel state
 aidevops release reconcile <merged-pr-number> # recover/finalize newest signed tag
+# Historical incident evidence only; TAG must already exist and verify:
+aidevops release authorization-gap <source-pr> --tag <vX.Y.Z> \
+  --expected-sources <pr@merge-sha>,<pr@merge-sha> --reason '<incident reason>'
 ```
 
 Recovery runs the reviewed workflow from `main` because older tags do not contain
@@ -71,7 +74,10 @@ republish, infer missing authority from ancestry, or mark omitted PRs
 `authorization-gap` evidence with the expected and observed manifests, tag object,
 release commit, timestamp, and reason. This evidence explicitly carries
 `terminal_cleanup_evidence:false`; it documents the incident but cannot complete
-cleanup or authorize another publication.
+cleanup or authorize another publication. The command verifies the immutable tag,
+resolves every supplied PR/merge pair against that tag commit, rejects a matching
+manifest because no gap exists, and treats identical evidence as an idempotent
+replay while rejecting conflicting incident evidence.
 
 An already-signed tag whose aggregate list was completely omitted may recover
 the redundant list only from its signed `Aidevops-Source-Merge` commit after the

@@ -441,10 +441,7 @@ run_shellcheck() {
 	local incomplete=0
 	local file_count=${#ALL_SH_FILES[@]}
 
-	# Large lifecycle libraries can exceed 30 seconds under concurrent worker load.
-	# Keep the gate bounded while allowing callers to tune the resource ceiling.
-	local sc_timeout="${LINTERS_LOCAL_SHELLCHECK_TIMEOUT_SECONDS:-60}"
-	[[ "$sc_timeout" =~ ^[0-9]+$ ]] && [[ "$sc_timeout" -ge 10 ]] || sc_timeout=60
+	local sc_timeout=30
 	local batch_size="${LINTERS_LOCAL_SHELLCHECK_BATCH_SIZE:-50}"
 	[[ "$batch_size" =~ ^[0-9]+$ ]] && [[ "$batch_size" -gt 0 ]] || batch_size=50
 	local offset=0

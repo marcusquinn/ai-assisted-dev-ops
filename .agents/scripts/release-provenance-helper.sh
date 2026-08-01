@@ -22,6 +22,7 @@ _release_provenance_usage() {
 Usage:
   release-provenance-helper.sh verify --tag TAG --repo OWNER/REPO [--branch BRANCH]
   release-provenance-helper.sh resolve-authorization --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
+  release-provenance-helper.sh resolve-tag-authorization --tag TAG --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR@SHA[,PR@SHA...]]
   release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
 
 Verifies that a release tag is signed, version-consistent, reachable from the
@@ -146,6 +147,26 @@ _release_provenance_resolve_authorization() {
 	return $?
 }
 
+_release_provenance_resolve_tag_authorization() {
+	local tag_name="$1"
+	local requested_pr="$2"
+	local raw_sources="$3"
+	local repo_slug="$4"
+	local branch_name="$5"
+	local release_head=""
+	local tag_commit=""
+	local expected_sources_json=""
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$repo_slug" =~ ^[^/]+/[^/]+$ && "$branch_name" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+	release_head=$(git rev-parse HEAD 2>/dev/null) || return 1
+	tag_commit=$(git rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	[[ "$release_head" == "$tag_commit" ]] || return 1
+	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
+		"$repo_slug" "$branch_name" "$tag_commit") || return 1
+	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
+	return $?
+}
+
 _release_provenance_resolve_source() {
 	local requested_pr="$1"
 	local repo_slug="$2"
@@ -162,6 +183,8 @@ _release_provenance_resolve_source() {
 	local found_requested=false
 	local sources_json='[]'
 	local expected_sources_json='[]'
+	local source_result_json=""
+	local observed_sources_json=""
 
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || {
 		_release_provenance_error "source PR is not numeric"
@@ -190,7 +213,7 @@ _release_provenance_resolve_source() {
 			_release_provenance_assert_expected_sources "$expected_sources_json" "$sources_json" || return 1
 			jq -cn --argjson requested_pr "$requested_pr" --arg source_merge "$requested_merge" --argjson expected "$expected_sources_json" \
 				'{mode:"direct",requested_pr:$requested_pr,source_pr:$requested_pr,source_merge:$source_merge,aggregated_sources:[],expected_sources:$expected}'
-			return 0
+			return $?
 		fi
 		_release_provenance_error "current main tip is not an explicit release-aggregation PR"
 		return 1
@@ -234,11 +257,13 @@ _release_provenance_resolve_source() {
 		return 1
 	}
 	sources_json=$(jq -c 'sort_by(.pr)' <<<"$sources_json") || return 1
-	_release_provenance_assert_expected_sources "$expected_sources_json" "$sources_json" || return 1
-	jq -cn --argjson requested_pr "$requested_pr" --argjson source_pr "$aggregate_pr" \
-		--arg source_merge "$release_head" --argjson sources "$sources_json" --argjson expected "$expected_sources_json" \
-		'{mode:"aggregate",requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$sources,expected_sources:$expected}'
-	return 0
+	source_result_json=$(jq -cn --argjson requested_pr "$requested_pr" --argjson source_pr "$aggregate_pr" \
+		--arg source_merge "$release_head" --argjson sources "$sources_json" \
+		'{mode:"aggregate",requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$sources}') || return 1
+	observed_sources_json=$(release_authorization_observed_sources_json "$expected_sources_json" "$source_result_json") || return 1
+	_release_provenance_assert_expected_sources "$expected_sources_json" "$observed_sources_json" || return 1
+	jq -c --argjson expected "$expected_sources_json" '. + {expected_sources:$expected}' <<<"$source_result_json"
+	return $?
 }
 
 _release_provenance_trailer() {
@@ -553,7 +578,7 @@ main() {
 	local expected_sources=""
 
 	case "$command" in
-	verify | resolve-authorization | resolve-source) ;;
+	verify | resolve-authorization | resolve-tag-authorization | resolve-source) ;;
 	help | --help | -h)
 		_release_provenance_usage
 		return 0
@@ -596,6 +621,11 @@ main() {
 	if [[ "$command" == "resolve-authorization" ]]; then
 		[[ -n "$source_pr" ]] || return 1
 		_release_provenance_resolve_authorization "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
+		return $?
+	fi
+	if [[ "$command" == "resolve-tag-authorization" ]]; then
+		[[ -n "$tag_name" && -n "$source_pr" ]] || return 1
+		_release_provenance_resolve_tag_authorization "$tag_name" "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
 		return $?
 	fi
 	if [[ "$command" == "resolve-source" ]]; then

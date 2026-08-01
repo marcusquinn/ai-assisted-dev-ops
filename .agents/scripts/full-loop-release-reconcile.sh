@@ -229,6 +229,66 @@ _full_loop_release_source_json_from_tag() {
 	return $?
 }
 
+_full_loop_release_resolve_tag_expected_sources() {
+	local repo="$1"
+	local requested_pr="$2"
+	local tag_name="$3"
+	local expected_sources="$4"
+	local resolver="${SCRIPT_DIR}/release-provenance-helper.sh"
+	local authorization_json=""
+	local resolver_args=(resolve-tag-authorization --tag "$tag_name" --source-pr "$requested_pr" --repo "$repo" --branch main)
+	[[ -x "$resolver" ]] || return 1
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
+	authorization_json=$(cd "$_FULL_LOOP_RELEASE_PATH" && bash "$resolver" "${resolver_args[@]}") || return 1
+	jq -er '.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")' <<<"$authorization_json"
+	return $?
+}
+
+_full_loop_release_observed_sources_for_expected() {
+	local tag_name="$1"
+	local expected_sources="$2"
+	local expected_json=""
+	local observed_json=""
+	local source_json=""
+	expected_json=$(release_authorization_manifest_json "$expected_sources") || return 1
+	source_json=$(_full_loop_release_source_json_from_tag "$tag_name") || return 1
+	observed_json=$(release_authorization_observed_sources_json "$expected_json" "$source_json") || return 1
+	jq -r 'map("\(.pr)@\(.merge)") | join(",")' <<<"$observed_json"
+	return $?
+}
+
+_full_loop_release_record_authorization_gap() {
+	local repo="$1"
+	local requested_pr="$2"
+	local tag_name="$3"
+	local expected_sources="$4"
+	local reason="$5"
+	local observed_sources=""
+	local tag_object=""
+	local release_commit=""
+	local tag_ref=""
+	[[ "$requested_pr" =~ ^[0-9]+$ && "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	[[ -n "$expected_sources" && -n "$reason" ]] || return 1
+	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
+	_full_loop_release_verify_tag_provenance "$repo" "$tag_name" || return 1
+	expected_sources=$(_full_loop_release_resolve_tag_expected_sources \
+		"$repo" "$requested_pr" "$tag_name" "$expected_sources") || return 1
+	observed_sources=$(_full_loop_release_observed_sources_for_expected "$tag_name" "$expected_sources") || return 1
+	if release_authorization_compare "$expected_sources" "$observed_sources"; then
+		printf 'Cannot record authorization-gap evidence: expected and observed sources match for %s\n' "$tag_name" >&2
+		return 1
+	fi
+	printf -v tag_ref 'refs/tags/%s' "$tag_name"
+	tag_object=$(git -C "$REPO_ROOT" rev-parse "$tag_ref" 2>/dev/null) || return 1
+	release_commit=$(git -C "$REPO_ROOT" rev-parse "${tag_ref}^{commit}" 2>/dev/null) || return 1
+	_full_loop_persist_release_authorization "$repo" "$requested_pr" "$expected_sources" || return 1
+	_full_loop_write_release_authorization_gap_evidence "$repo" "$requested_pr" "$expected_sources" \
+		"$observed_sources" "$tag_object" "$release_commit" "$reason" || return 1
+	printf 'release:authorization-gap tag=%s requested_pr=%s\n' "$tag_name" "$requested_pr"
+	return 0
+}
+
 _full_loop_release_runs_payload_valid() {
 	local runs_json="$1"
 	jq -e --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \

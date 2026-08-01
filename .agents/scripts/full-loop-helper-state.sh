@@ -374,6 +374,17 @@ _full_loop_write_release_authorization_gap_evidence() {
 	expected_json=$(release_authorization_manifest_json "$expected_sources") || return 1
 	observed_json=$(release_authorization_manifest_json "$observed_sources") || return 1
 	evidence_path=$(_full_loop_release_evidence_path "$repo" "$requested_pr" authorization-gap) || return 1
+	if [[ -f "$evidence_path" ]]; then
+		jq -e --arg repo "$repo" --argjson requested_pr "$requested_pr" --argjson expected "$expected_json" \
+			--argjson observed "$observed_json" --arg tag_object "$tag_object" --arg release_commit "$release_commit" \
+			--arg reason "$reason" '
+			.schema_version == 1 and .status == "authorization-gap" and .repository == $repo
+			and .requested_pr == $requested_pr and .expected_sources == $expected and .observed_sources == $observed
+			and .tag_object == $tag_object and .release_commit == $release_commit and .reason == $reason
+			and .terminal_cleanup_evidence == false
+		' "$evidence_path" >/dev/null 2>&1
+		return $?
+	fi
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	mkdir -p "${evidence_path%/*}" || return 1
 	jq -cn --arg repo "$repo" --argjson requested_pr "$requested_pr" --argjson expected "$expected_json" \
