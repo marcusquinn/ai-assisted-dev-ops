@@ -300,10 +300,10 @@ issue_has_required_approval() {
 }
 
 #######################################
-# GH#18671 / t2386: Check whether an NMR label application on an issue
-# corresponds to a *creation-time automation default* — a marker that
-# means "the pulse applied NMR by default, not because retries failed."
-# Creation defaults are safe to auto-clear so the issue can dispatch.
+# GH#18671 / t2386 / GH#29151: Check whether an NMR label application on
+# an issue corresponds to a trusted automation default or deterministic
+# workflow-reapplication marker. These signatures are safe to auto-clear
+# only after reason-coded, circuit-breaker, and security gates have passed.
 #
 # This function used to also match circuit-breaker trip markers
 # (stale-recovery-tick:escalated, cost-circuit-breaker:fired,
@@ -320,43 +320,65 @@ issue_has_required_approval() {
 # creation defaults. See t2386 brief and AGENTS.md
 # "Cryptographic issue/PR approval" for the split semantics.
 #
-# Creation-default signatures detected (t2686 extended set):
+# Automation signatures detected (t2686/GH#29151 extended set):
 #   - source:review-scanner                 — GH#18538 post-merge-review-scanner.sh (comment marker)
 #   - source:review-feedback                — quality-feedback-helper.sh (comment marker)
 #   - quality-feedback-helper.sh            — quality-feedback-helper.sh (comment body marker)
+#   - label-protection-notice                — maintainer-gate workflow reapplication by github-actions[bot]
+#   - parent-needs-decomposition-escalated   — historical parent escalation by the same label actor
 #   - review-followup / source:review-scanner / source:review-feedback labels on issue itself
 #
 # Args:
 #   $1 - issue_num  : GitHub issue number
 #   $2 - slug       : repo slug (owner/repo)
 #   $3 - label_at   : ISO8601 timestamp when NMR label was applied
+#   $4 - label_actor: actor who applied NMR (optional; required for same-actor markers)
 #
 # Exit codes:
-#   0 - creation-default signature found (NMR is a scanner default, safe to auto-clear)
-#   1 - no creation-default signature (NMR is either manual or a breaker trip)
+#   0 - trusted automation signature found (safe to auto-clear after other gates)
+#   1 - no trusted automation signature (NMR is manual, unknown, or a breaker trip)
 #######################################
 _nmr_application_has_automation_signature() {
 	local issue_num="$1"
 	local slug="$2"
 	local label_at="$3"
+	local label_actor="${4:-}"
 
 	[[ -n "$issue_num" && -n "$slug" && -n "$label_at" ]] || return 1
 
-	# Fetch all issue comments once. Filter in jq to any comment posted
-	# within a 60-second window of the label event AND containing a
-	# creation-default marker. Window math: label_at - 5s ≤
+	# Fetch all issue comments once. Flatten paginated responses before filtering
+	# so a marker on a later page cannot be lost. Filter to comments posted within
+	# a 60-second window of the label event AND containing a
+	# trusted automation marker. Window math: label_at - 5s ≤
 	# comment.created_at ≤ label_at + 60s (lower bound covers the API
 	# latency race where the comment posts before the label API call
 	# completes).
-	#
-	# Markers matched (t2686 extended set):
-	#   - source:review-scanner     — post-merge-review-scanner.sh (GH#18538)
-	#   - source:review-feedback    — quality-feedback-helper.sh scan-merged
-	#   - quality-feedback-helper.sh — approval-instructions comment body
+	local comments_json="[]"
+	comments_json=$(gh api "repos/${slug}/issues/${issue_num}/comments" --paginate --slurp 2>/dev/null) || comments_json="[]"
+	[[ -n "$comments_json" && "$comments_json" != "null" ]] || comments_json="[]"
+
 	local has_signature
-	has_signature=$(gh api "repos/${slug}/issues/${issue_num}/comments" --paginate \
-		--jq "[.[] | select((.created_at | fromdateiso8601) >= ((\"${label_at}\" | fromdateiso8601) - 5) and (.created_at | fromdateiso8601) <= ((\"${label_at}\" | fromdateiso8601) + 60)) | .body | select(test(\"source:review-scanner|source:review-feedback|quality-feedback-helper\\\\.sh\"))] | length" \
-		2>/dev/null) || has_signature=0
+	has_signature=$(printf '%s' "$comments_json" | jq -r \
+		--arg label_at "$label_at" --arg label_actor "$label_actor" '
+		(if type == "array" and (.[0]? | type) == "array" then [.[][]]
+		elif type == "array" then . else [] end)
+		| [
+			.[]
+			| select(.created_at != null)
+			| select((.created_at | fromdateiso8601) >= (($label_at | fromdateiso8601) - 5)
+				and (.created_at | fromdateiso8601) <= (($label_at | fromdateiso8601) + 60))
+			| (.body // "") as $body
+			| (.user.login // "") as $commenter
+			| select(
+				($body | test("source:review-scanner|source:review-feedback|quality-feedback-helper\\.sh"))
+				or (($body | contains("label-protection-notice"))
+					and (($commenter | ascii_downcase) == "github-actions[bot]"))
+				or (($body | contains("parent-needs-decomposition-escalated"))
+					and $label_actor != ""
+					and (($commenter | ascii_downcase) == ($label_actor | ascii_downcase)))
+			)
+		] | length
+	' 2>/dev/null) || has_signature=0
 	[[ "$has_signature" =~ ^[0-9]+$ ]] || has_signature=0
 
 	if [[ "$has_signature" -gt 0 ]]; then
@@ -913,7 +935,11 @@ _nmr_temporary_assumption_resolved() {
 	local slug="$2"
 	local code="$3"
 	local label_at="$4"
-	if [[ "$code" == "transient_infrastructure" ]]; then
+	# Recovery-loop markers classify as diagnostic ambiguity, while rate-limit
+	# and zero-session markers classify as transient infrastructure. Both may use
+	# the existing one-retry-per-breaker-release gate; stale/manual diagnostics
+	# remain preserved because _nmr_breaker_release_retry_reason rejects them.
+	if [[ "$code" == "transient_infrastructure" || "$code" == "diagnostic_ambiguity" ]]; then
 		local retry_reason=""
 		retry_reason=$(_nmr_breaker_release_retry_reason "$issue_num" "$slug" "$label_at") || retry_reason=""
 		if [[ -n "$retry_reason" ]]; then
@@ -1075,8 +1101,8 @@ _nmr_actor_event_is_manual_hold() {
 		;;
 	esac
 
-	if [[ -n "$nmr_at" ]] && _nmr_application_has_automation_signature "$issue_num" "$slug" "$nmr_at"; then
-		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — write-authorized actor=${nmr_actor} but creation-default signature detected — classifying as automation-applied (GH#18671)" >>"$LOGFILE"
+	if [[ -n "$nmr_at" ]] && _nmr_application_has_automation_signature "$issue_num" "$slug" "$nmr_at" "$nmr_actor"; then
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — write-authorized actor=${nmr_actor} but trusted automation signature detected — classifying as automation-applied (GH#18671/GH#29151)" >>"$LOGFILE"
 		return 1
 	fi
 

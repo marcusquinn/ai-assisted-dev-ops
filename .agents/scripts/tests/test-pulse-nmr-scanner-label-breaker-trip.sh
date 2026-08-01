@@ -65,6 +65,7 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export AIDEVOPS_NMR_REVALIDATION_STATE_FILE="${TEST_ROOT}/nmr-state.json"
 	: >"$LOGFILE"
 	COMMENTS_FIXTURE="${TEST_ROOT}/comments.json"
 	ISSUE_META_FIXTURE="${TEST_ROOT}/issue-meta.json"
@@ -149,63 +150,19 @@ set_timeline() {
 	return 0
 }
 
-# Extract the helper chain used by _nmr_applied_by_maintainer from the source file.
 define_helpers_under_test() {
-	local sig_src breaker_src history_src security_src sort_src current_src retry_event_src retry_used_src retry_src maint_src
-	sig_src=$(awk '
-		/^_nmr_application_has_automation_signature\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	breaker_src=$(awk '
-		/^_nmr_application_is_circuit_breaker_trip\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	history_src=$(awk '
-		/^_nmr_application_has_breaker_history\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	security_src=$(awk '
-		/^_nmr_application_is_security_sensitive\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	sort_src=$(awk '
-		/^_nmr_version_sort_key\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	current_src=$(awk '
-		/^_nmr_current_aidevops_version\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_event_src=$(awk '
-		/^_nmr_retry_breaker_event_json\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_used_src=$(awk '
-		/^_nmr_retry_already_used_for_version\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_src=$(awk '
-		/^_nmr_breaker_release_retry_reason\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	maint_src=$(awk '
-		/^_nmr_applied_by_maintainer\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	if [[ -z "$sig_src" || -z "$breaker_src" || -z "$history_src" || -z "$security_src" || -z "$sort_src" || -z "$current_src" || -z "$retry_event_src" || -z "$retry_used_src" || -z "$retry_src" || -z "$maint_src" ]]; then
-		printf 'ERROR: could not extract one of the NMR helpers from %s\n' "$NMR_SCRIPT" >&2
-		return 1
-	fi
+	unset _PULSE_NMR_APPROVAL_LOADED
 	# shellcheck disable=SC1090
-	eval "$sig_src"
-	# shellcheck disable=SC1090
-	eval "$breaker_src"
-	# shellcheck disable=SC1090
-	eval "$history_src"
-	# shellcheck disable=SC1090
-	eval "$security_src"
-	# shellcheck disable=SC1090
-	eval "$sort_src"
-	# shellcheck disable=SC1090
-	eval "$current_src"
-	# shellcheck disable=SC1090
-	eval "$retry_event_src"
-	# shellcheck disable=SC1090
-	eval "$retry_used_src"
-	# shellcheck disable=SC1090
-	eval "$retry_src"
-	# shellcheck disable=SC1090
-	eval "$maint_src"
+	source "$NMR_SCRIPT"
+	_nmr_record_revalidation_state() { return 0; }
+	_nmr_emit_decision_packet() { return 0; }
+	_notify_stale_recovery_resolved_by_pr() { return 0; }
+	_gh_actor_has_repo_write_authority() {
+		local repo_slug="$1" actor="$2" association="${3:-}"
+		[[ -n "$repo_slug" && -n "$association" ]] || return 2
+		[[ "$actor" != "external-contributor" ]]
+		return $?
+	}
 	return 0
 }
 

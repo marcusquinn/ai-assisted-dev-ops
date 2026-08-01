@@ -81,11 +81,37 @@ if [[ "${1:-}" == "api" && "$*" == *"/comments"* ]]; then
 	esac
 fi
 
+if [[ "${1:-}" == "api" && "$*" == "api repos/owner/repo/issues/42" ]]; then
+	case "${GH_SCENARIO:-}" in
+		issue-bot-trusted-owner)
+			created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+			printf '{"user":{"login":"trusted-author"},"author_association":"OWNER","created_at":"%s"}\n' "$created_at"
+			exit 0
+			;;
+		issue-bot-trusted-collab)
+			created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+			printf '{"user":{"login":"trusted-author"},"author_association":"COLLABORATOR","created_at":"%s"}\n' "$created_at"
+			exit 0
+			;;
+		issue-bot-stale-trusted)
+			printf '{"user":{"login":"trusted-author"},"author_association":"OWNER","created_at":"2020-01-01T00:00:00Z"}\n'
+			exit 0
+			;;
+		issue-bot-trust-api-failure) exit 1 ;;
+		*) printf '{"user":{"login":"external"},"author_association":"NONE","created_at":"2020-01-01T00:00:00Z"}\n'; exit 0 ;;
+	esac
+fi
+
 if [[ "${1:-}" == "api" && "$*" == *"collaborators/trusted-collab/permission"* ]]; then
 	case "${GH_SCENARIO:-}" in
 		issue-permission-failure|pr-permission-failure) exit 1 ;;
 		*) printf 'write\n'; exit 0 ;;
 	esac
+fi
+
+if [[ "${1:-}" == "api" && "$*" == *"collaborators/trusted-author/permission"* ]]; then
+	printf 'write\n'
+	exit 0
 fi
 
 if [[ "${1:-}" == "api" && "$*" == *"/statuses/"* ]]; then
@@ -117,9 +143,10 @@ run_issue_job() {
 	local scenario="$1"
 	local actor="${2:-maintainer}"
 	local labels_json="${3:-[]}"
+	local issue_author="${4:-external}"
 	GH_SCENARIO="$scenario" \
 		ISSUE_NUMBER=42 \
-		ISSUE_AUTHOR=external \
+		ISSUE_AUTHOR="$issue_author" \
 		ACTOR="$actor" \
 		ACTOR_ASSOCIATION=OWNER \
 		ISSUE_LABELS_JSON="$labels_json" \
@@ -199,6 +226,22 @@ test_issue_approval_paths() {
 		print_result "write-collaborator issue approval is accepted" 1 "job returned non-zero"
 	fi
 	assert_no_mutation "write-collaborator issue approval does not restore NMR"
+	: >"$GH_CALLS"
+	if run_issue_job issue-bot-trusted-owner 'github-actions[bot]' '[]' trusted-author >/dev/null 2>&1; then
+		print_result "creation-time bot cleanup is accepted for live OWNER author" 0
+	else
+		print_result "creation-time bot cleanup is accepted for live OWNER author" 1 "job returned non-zero"
+	fi
+	assert_no_mutation "trusted OWNER bot cleanup does not restore NMR"
+	: >"$GH_CALLS"
+	if run_issue_job issue-bot-trusted-collab 'github-actions[bot]' '[]' trusted-author >/dev/null 2>&1; then
+		print_result "creation-time bot cleanup is accepted for write collaborator author" 0
+	else
+		print_result "creation-time bot cleanup is accepted for write collaborator author" 1 "job returned non-zero"
+	fi
+	assert_no_mutation "trusted collaborator bot cleanup does not restore NMR"
+	assert_job_restores_nmr issue issue-bot-trust-api-failure "unverifiable bot cleanup" "github-actions[bot]"
+	assert_job_restores_nmr issue issue-bot-stale-trusted "late bot cleanup of trusted issue" "github-actions[bot]"
 	: >"$GH_CALLS"
 	run_issue_job issue-unsigned maintainer '["persistent"]' >/dev/null 2>&1 || true
 	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then

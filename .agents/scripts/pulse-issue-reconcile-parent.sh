@@ -172,8 +172,8 @@ _Automated by \`_post_parent_decomposition_nudge\` in \`pulse-issue-reconcile-pa
 # Behaviour:
 #   1. Idempotency — if the <!-- parent-needs-decomposition-escalated -->
 #      marker is already present in any comment, returns 1 (no-op).
-#   2. Applies `needs-maintainer-review` so the issue surfaces in the
-#      maintainer's review queue on next interactive session start.
+#   2. Remains advisory-only: parent-task already blocks dispatch, while adding
+#      `needs-maintainer-review` would also block the auto-decomposer scanner.
 #   3. The comment body must explicitly list the four paths forward
 #      (decompose / drop label / close / file children). This is the
 #      final AI-advisory touch before the maintainer decides.
@@ -227,7 +227,7 @@ _post_parent_decomposition_escalation() {
 	local comment_body="${marker}
 ## Parent Task Decomposition — Escalation
 
-The decomposition nudge on this issue has been open for **7+ days** with no action. This issue still carries \`parent-task\` (dispatch blocked), still has zero filed children, and no auto-decompose worker issue is tracking it. Applying \`needs-maintainer-review\` so it surfaces in the maintainer queue.
+The decomposition nudge on this issue has been open for **7+ days** with no action. This issue still carries \`parent-task\` (dispatch blocked), still has zero filed children, and no auto-decompose worker issue is tracking it. This escalation is advisory only; it does not add another dispatch-blocking label.
 
 **Paths forward — pick one:**
 
@@ -241,16 +241,11 @@ The decomposition nudge on this issue has been open for **7+ days** with no acti
 
 3. **Close the issue.** If the work is no longer needed or has been superseded.
 
-4. **Let the auto-decomposer handle it.** If you want a \`tier:thinking\` worker to propose a decomposition plan automatically, remove the \`needs-maintainer-review\` label — the next pulse cycle will file a \`<!-- aidevops:generator=auto-decompose -->\` issue that dispatches a worker to decompose this parent.
+4. **Let the auto-decomposer handle it.** No label change is needed — the next eligible scanner cycle will file a \`<!-- aidevops:generator=auto-decompose -->\` issue that dispatches a \`tier:thinking\` worker to decompose this parent.
 
 See \`.agents/AGENTS.md\` → \"Parent / meta tasks\" (t1986 / t2211 / t2442) for the full rule.
 
 _Automated by \`_post_parent_decomposition_escalation\` in \`pulse-issue-reconcile-parent.sh\` (t2442). Posted once per issue via the \`<!-- parent-needs-decomposition-escalated -->\` marker; re-runs are no-ops._"
-
-	# Apply needs-maintainer-review label. Non-fatal — if it fails we still
-	# want the comment posted so the maintainer sees the escalation.
-	gh issue edit "$parent_num" --repo "$slug" \
-		--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
 
 	gh_issue_comment "$parent_num" --repo "$slug" \
 		--body "$comment_body" >/dev/null 2>&1 || return 1

@@ -11,7 +11,7 @@
 #   1. _compute_parent_nudge_age_hours helper exists and uses GNU+BSD date compat
 #   2. _post_parent_decomposition_escalation helper exists with canonical marker
 #   3. Escalation uses idempotency marker <!-- parent-needs-decomposition-escalated -->
-#   4. Escalation applies needs-maintainer-review label
+#   4. Escalation remains advisory-only and does not apply needs-maintainer-review
 #   5. Escalation comment lists 4 paths forward (decompose / drop / close / auto-decompose)
 #   6. reconcile_completed_parent_tasks declares total_escalated + max_escalations counters
 #   7. Reconcile reads PARENT_DECOMPOSITION_ESCALATION_HOURS env override (default 168h)
@@ -66,6 +66,20 @@ assert_grep_fixed() {
 	return 0
 }
 
+assert_not_grep_fixed() {
+	local label="$1" pattern="$2" file="$3"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if grep -qF -- "$pattern" "$file" 2>/dev/null; then
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  unexpected literal: $pattern"
+		echo "  in file:            $file"
+	else
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	fi
+	return 0
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PARENT_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-parent.sh"
 ACTIONS_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
@@ -111,11 +125,16 @@ assert_grep_fixed \
 	'<!-- parent-needs-decomposition-escalated -->' \
 	"$PARENT_TARGET"
 
-# --- NMR label application ---
+# --- Advisory-only escalation ---
+
+assert_not_grep_fixed \
+	"6a: escalation does not apply needs-maintainer-review label" \
+	'--add-label "needs-maintainer-review"' \
+	"$PARENT_TARGET"
 
 assert_grep_fixed \
-	"6: escalation applies needs-maintainer-review label" \
-	'--add-label "needs-maintainer-review"' \
+	"6b: escalation explicitly describes advisory-only behaviour" \
+	'This escalation is advisory only; it does not add another dispatch-blocking label.' \
 	"$PARENT_TARGET"
 
 # --- Comment body — 4 paths forward ---

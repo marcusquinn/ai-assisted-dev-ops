@@ -30,14 +30,6 @@ jobs:
               return;
             }
 
-            // #aidevops:trust-boundary — persistent is itself an unconditional
-            // dispatch blocker. If that label is later removed, Pulse applies
-            // the ordinary author trust gate before any task lifecycle action.
-            if (issueLabels.has('persistent')) {
-              console.log(`Issue #${issue.number} is persistent — bypassing task triage`);
-              return;
-            }
-
             // OWNER/MEMBER are authoritative associations. COLLABORATOR can
             // represent read/triage access, so require a live write-level lookup.
             const trustedRoles = ['OWNER', 'MEMBER'];
@@ -76,6 +68,15 @@ jobs:
                   core.warning(`Unable to remove stale review label: ${error.message}`);
                 }
               }
+              return;
+            }
+
+            // #aidevops:trust-boundary — persistent is itself an unconditional
+            // dispatch blocker. Run trusted-author cleanup first so dashboards
+            // do not retain a redundant NMR label; untrusted persistent issues
+            // still stop here before any task lifecycle labels are added.
+            if (issueLabels.has('persistent')) {
+              console.log(`Issue #${issue.number} is persistent — bypassing task triage`);
               return;
             }
 
