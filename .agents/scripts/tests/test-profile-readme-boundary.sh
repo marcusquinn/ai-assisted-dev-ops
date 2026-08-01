@@ -64,6 +64,11 @@ install_helper_with_libs() {
 		"${SOURCE_HELPER%/*}/screen_time_linux_logind.py" \
 		"${SOURCE_HELPER%/*}/screen_time_linux_wtmp.py" \
 		"${SOURCE_HELPER%/*}/screen_time_history.py" "$helper_dir/"
+	cat >"${helper_dir}/worktree-helper.sh" <<EOF
+#!/usr/bin/env bash
+exec "${SOURCE_HELPER%/*}/worktree-helper.sh" "\$@"
+EOF
+	chmod +x "${helper_dir}/worktree-helper.sh"
 	return 0
 }
 
@@ -158,6 +163,13 @@ EOF
 	return 0
 }
 
+read_remote_readme() {
+	local remote_repo="$1"
+	local output_file="$2"
+	git --git-dir="$remote_repo" show main:README.md >"$output_file"
+	return $?
+}
+
 strip_dynamic_sections() {
 	local file_path="$1"
 	awk '
@@ -171,7 +183,7 @@ strip_dynamic_sections() {
 }
 
 test_update_preserves_manual_sections() {
-	local test_name="profile update preserves non-marker sections"
+	local test_name="profile update publishes once from a linked worktree and preserves the canonical checkout"
 
 	TEST_DIR=$(mktemp -d)
 	local fixture_home="${TEST_DIR}/home"
@@ -188,14 +200,23 @@ test_update_preserves_manual_sections() {
 
 	local before_file="${TEST_DIR}/before.md"
 	local after_file="${TEST_DIR}/after.md"
+	local update_output="${TEST_DIR}/update-output"
 	cp "${fixture_repo}/README.md" "${before_file}"
+	local canonical_head_before=""
+	local remote_head_before=""
+	canonical_head_before=$(git -C "$fixture_repo" rev-parse HEAD)
+	remote_head_before=$(git --git-dir="$fixture_remote" rev-parse main)
 
-	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
+	if ! HOME="${fixture_home}" \
+		PATH="${SOURCE_HELPER%/*}:${PATH}" \
+		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
+		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
+		bash "${helper_path}" update >"$update_output" 2>&1; then
 		print_result "${test_name}" 1 "helper update command failed"
 		return 0
 	fi
 
-	cp "${fixture_repo}/README.md" "${after_file}"
+	read_remote_readme "$fixture_remote" "$after_file"
 
 	local before_static
 	local after_static
@@ -211,8 +232,129 @@ test_update_preserves_manual_sections() {
 		print_result "${test_name}" 1 "manual badge lines missing after update"
 		return 0
 	fi
+	if [[ "$canonical_head_before" != "$(git -C "$fixture_repo" rev-parse HEAD)" ]] ||
+		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]] ||
+		! cmp -s "$before_file" "${fixture_repo}/README.md"; then
+		print_result "${test_name}" 1 "canonical profile checkout changed"
+		return 0
+	fi
+	if [[ "$(git --git-dir="$fixture_remote" rev-list --count "${remote_head_before}..main")" != "1" ]]; then
+		print_result "${test_name}" 1 "remote did not receive exactly one generated README commit"
+		return 0
+	fi
+	if [[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]] ||
+		grep -q 'BLOCKED by canonical Git guard' "$update_output"; then
+		print_result "${test_name}" 1 "publication worktree was not cleaned or canonical guard blocked publication"
+		return 0
+	fi
 
 	print_result "${test_name}" 0
+	return 0
+}
+
+test_update_dry_run_is_canonical_safe() {
+	local test_name="profile update dry-run leaves canonical checkout and remote unchanged"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local output_file="${TEST_DIR}/dry-run-output"
+	mkdir -p "$helper_dir" "$fixture_home"
+	install_helper_with_libs "$helper_dir"
+	write_stub_dependencies "$helper_dir"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+
+	local canonical_head_before=""
+	local remote_head_before=""
+	canonical_head_before=$(git -C "$fixture_repo" rev-parse HEAD)
+	remote_head_before=$(git --git-dir="$fixture_remote" rev-parse main)
+	if ! HOME="$fixture_home" \
+		PATH="${SOURCE_HELPER%/*}:${PATH}" \
+		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
+		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
+		bash "$helper_path" update --dry-run >"$output_file" 2>&1; then
+		print_result "$test_name" 1 "dry-run command failed"
+		return 0
+	fi
+	if ! grep -q 'DRY RUN' "$output_file" ||
+		[[ "$canonical_head_before" != "$(git -C "$fixture_repo" rev-parse HEAD)" ]] ||
+		[[ "$remote_head_before" != "$(git --git-dir="$fixture_remote" rev-parse main)" ]] ||
+		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]] ||
+		[[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]]; then
+		print_result "$test_name" 1 "dry-run mutated state or left a publication worktree"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_update_prepublication_failure_is_canonical_safe() {
+	local test_name="profile update pre-publication failure leaves canonical checkout unchanged"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local before_file="${TEST_DIR}/before.md"
+	mkdir -p "$helper_dir" "$fixture_home"
+	install_helper_with_libs "$helper_dir"
+	write_stub_dependencies "$helper_dir"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+	git -C "$fixture_repo" remote set-url origin "${TEST_DIR}/missing-remote.git"
+	cp "${fixture_repo}/README.md" "$before_file"
+	local canonical_head_before=""
+	canonical_head_before=$(git -C "$fixture_repo" rev-parse HEAD)
+
+	if HOME="$fixture_home" \
+		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
+		bash "$helper_path" update >/dev/null 2>&1; then
+		print_result "$test_name" 1 "update unexpectedly succeeded with an unavailable remote"
+		return 0
+	fi
+	if [[ "$canonical_head_before" != "$(git -C "$fixture_repo" rev-parse HEAD)" ]] ||
+		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]] ||
+		! cmp -s "$before_file" "${fixture_repo}/README.md" ||
+		[[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]]; then
+		print_result "$test_name" 1 "failed update changed canonical state or leaked a worktree"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_internal_override_rejects_canonical_checkout() {
+	local test_name="profile publication override rejects a canonical checkout target"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	mkdir -p "$helper_dir" "$fixture_home"
+	install_helper_with_libs "$helper_dir"
+	write_stub_dependencies "$helper_dir"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+	local canonical_head_before=""
+	canonical_head_before=$(git -C "$fixture_repo" rev-parse HEAD)
+
+	if HOME="$fixture_home" \
+		AIDEVOPS_PROFILE_PUBLICATION_WORKTREE=1 \
+		AIDEVOPS_PROFILE_REPO_OVERRIDE="$fixture_repo" \
+		AIDEVOPS_PROFILE_CANONICAL_REPO="$fixture_repo" \
+		AIDEVOPS_PROFILE_UPDATE_LOCK_HELD=1 \
+		bash "$helper_path" update >/dev/null 2>&1; then
+		print_result "$test_name" 1 "internal override accepted the canonical checkout"
+		return 0
+	fi
+	if [[ "$canonical_head_before" != "$(git -C "$fixture_repo" rev-parse HEAD)" ]] ||
+		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]]; then
+		print_result "$test_name" 1 "rejected override still changed canonical state"
+		return 0
+	fi
+	print_result "$test_name" 0
 	return 0
 }
 
@@ -241,7 +383,8 @@ test_update_migrates_generated_readme_with_commit_history_chart() {
 		return 0
 	fi
 
-	local readme="${fixture_repo}/README.md"
+	local readme="${TEST_DIR}/remote-readme.md"
+	read_remote_readme "$fixture_remote" "$readme"
 	if [[ "$(grep -c '<picture>' "$readme")" -ne 1 ]] ||
 		! grep -Fq 'srcset="https://commit-history.com/embed/profile-repo?theme=dark"' "$readme" ||
 		! grep -Fq 'src="https://commit-history.com/embed/profile-repo"' "$readme"; then
@@ -322,7 +465,8 @@ EOF
 		return 0
 	fi
 
-	local readme="${fixture_repo}/README.md"
+	local readme="${TEST_DIR}/remote-readme.md"
+	read_remote_readme "$fixture_remote" "$readme"
 
 	# Verify markers were injected
 	if ! grep -q '<!-- STATS-START -->' "$readme"; then
@@ -414,7 +558,8 @@ EOF
 	# Run update — should detect diverged history and recover
 	HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1 || true
 
-	local readme="${fixture_repo}/README.md"
+	local readme="${TEST_DIR}/remote-readme.md"
+	read_remote_readme "$fixture_remote" "$readme"
 
 	# After recovery, the README should have markers (either injected or from re-seed)
 	if ! grep -q '<!-- STATS-START -->' "$readme" 2>/dev/null; then
@@ -501,7 +646,8 @@ EOF
 		return 0
 	fi
 
-	local readme="${fixture_repo}/README.md"
+	local readme="${TEST_DIR}/remote-readme.md"
+	read_remote_readme "$fixture_remote" "$readme"
 
 	# Verify the default template is gone
 	if grep -q 'is a.*special.*repository' "$readme" 2>/dev/null; then
@@ -611,7 +757,8 @@ EOF
 		return 0
 	fi
 
-	local readme="${fixture_repo}/README.md"
+	local readme="${TEST_DIR}/remote-readme.md"
+	read_remote_readme "$fixture_remote" "$readme"
 
 	# Verify the default template is gone
 	if grep -q 'is a.*special.*repository' "$readme" 2>/dev/null; then
@@ -1119,6 +1266,12 @@ main() {
 
 	if [[ "$mode" != "--unit-only" ]]; then
 		test_update_preserves_manual_sections
+		teardown
+		test_update_dry_run_is_canonical_safe
+		teardown
+		test_update_prepublication_failure_is_canonical_safe
+		teardown
+		test_internal_override_rejects_canonical_checkout
 		teardown
 		test_update_migrates_generated_readme_with_commit_history_chart
 		teardown
