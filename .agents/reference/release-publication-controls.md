@@ -206,7 +206,7 @@ PR #29152 at `817e68674104c07951932c9cc914763f31f56b94`, prior aggregation PR #2
 both authorized sources. The exact branch base is
 `80d0a1cee4caf0e01514e2278d0ac3665e3c41af`.
 
-Aggregation issue #29176 records authorized workflow diagnostics PR #29161 at
+Aggregation PR #29177 re-reviews authorized workflow diagnostics PR #29161 at
 `671ed712079913857b3c5213cf4ff97ed56c4287` and unresolved combined aggregation
 PR #29169 at `f87af46e46501b5e03f9e015c4b790fae2477a22` for a fresh exact-tip review.
 Immutable `v3.32.212` settled aggregation PR #29164 and its GH audit chain;
