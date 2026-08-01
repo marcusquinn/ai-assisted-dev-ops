@@ -13,7 +13,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -22,6 +22,10 @@ from urllib.request import Request, urlopen
 from _knowledge_social_google_business_profile_records import (
     RecordError,
     serialize_records,
+)
+from _knowledge_social_google_business_profile_routes import (
+    READ_STREAMS,
+    build_route,
 )
 
 MAX_REQUEST_BYTES = 32 * 1024
@@ -37,18 +41,6 @@ API_BASES = frozenset(
         "https://mybusiness.googleapis.com/v4",
         "https://mybusinessverifications.googleapis.com/v1",
         "https://businessprofileperformance.googleapis.com/v1",
-    }
-)
-READ_STREAMS = frozenset(
-    {
-        "location_profile",
-        "attributes",
-        "media",
-        "local_posts",
-        "reviews",
-        "verification_state",
-        "performance",
-        "search_keywords",
     }
 )
 RATE_LIMIT_REASONS = frozenset(
@@ -288,10 +280,6 @@ def _page_token(cursor: Any) -> str | None:
     return token
 
 
-def _month(value: date) -> dict[str, int]:
-    return {"year": value.year, "month": value.month}
-
-
 def _route(
     api: Callable[[str, str, dict[str, Any] | None], ApiResult],
     request: dict[str, Any],
@@ -310,59 +298,10 @@ def _route(
     if request.get("stop_at") is not None:
         raise ProviderError("Google Business Profile snapshot watermark must be empty")
     token = _page_token(request.get("cursor"))
-    common = {"pageSize": limit, "pageToken": token}
-    account_location = f"accounts/{identity.account_id}/locations/{identity.location_id}"
-    if stream == "location_profile":
-        base = "https://mybusinessbusinessinformation.googleapis.com/v1"
-        path = f"/locations/{identity.location_id}"
-        params = {"readMask": "name,title,storeCode,phoneNumbers,categories,storefrontAddress,websiteUri,regularHours,specialHours,serviceArea,labels,latlng,openInfo,metadata,profile,relationshipData,moreHours,serviceItems"}
-    elif stream == "attributes":
-        base = "https://mybusinessbusinessinformation.googleapis.com/v1"
-        path = f"/locations/{identity.location_id}/attributes"
-        params = common
-    elif stream == "media":
-        base = "https://mybusiness.googleapis.com/v4"
-        path = f"/{account_location}/media"
-        params = common
-    elif stream == "local_posts":
-        base = "https://mybusiness.googleapis.com/v4"
-        path = f"/{account_location}/localPosts"
-        params = common
-    elif stream == "reviews":
-        base = "https://mybusiness.googleapis.com/v4"
-        path = f"/{account_location}/reviews"
-        params = common
-    elif stream == "verification_state":
-        base = "https://mybusinessverifications.googleapis.com/v1"
-        path = f"/locations/{identity.location_id}/VoiceOfMerchantState"
-        params = None
-    elif stream == "performance":
-        end = date.today() - timedelta(days=1)
-        start = end - timedelta(days=89)
-        base = "https://businessprofileperformance.googleapis.com/v1"
-        path = f"/locations/{identity.location_id}:fetchMultiDailyMetricsTimeSeries"
-        params = {
-            "dailyMetrics": ["BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "BUSINESS_IMPRESSIONS_MOBILE_MAPS", "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", "WEBSITE_CLICKS", "CALL_CLICKS", "BUSINESS_DIRECTION_REQUESTS"],
-            "dailyRange.startDate.year": start.year,
-            "dailyRange.startDate.month": start.month,
-            "dailyRange.startDate.day": start.day,
-            "dailyRange.endDate.year": end.year,
-            "dailyRange.endDate.month": end.month,
-            "dailyRange.endDate.day": end.day,
-        }
-    else:
-        end = date.today().replace(day=1) - timedelta(days=1)
-        start = (end.replace(day=1) - timedelta(days=335)).replace(day=1)
-        base = "https://businessprofileperformance.googleapis.com/v1"
-        path = f"/locations/{identity.location_id}/searchkeywords/impressions/monthly"
-        params = {
-            "monthlyRange.startMonth.year": _month(start)["year"],
-            "monthlyRange.startMonth.month": _month(start)["month"],
-            "monthlyRange.endMonth.year": _month(end)["year"],
-            "monthlyRange.endMonth.month": _month(end)["month"],
-            **common,
-        }
-    result = api(base, path, params)
+    route = build_route(
+        stream, identity.account_id, identity.location_id, token, limit
+    )
+    result = api(route.base, route.path, route.params)
     if result.status != 200:
         return _terminal(result)
     next_token = result.payload.get("nextPageToken")
