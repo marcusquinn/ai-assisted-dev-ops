@@ -83,6 +83,9 @@ _PREDISPATCH_CLOSE_REASON_NOT_PLANNED="not planned"
 # ---------------------------------------------------------------------------
 # Label applied when self-hosting pattern is detected
 _SELF_HOSTING_TARGET_LABEL="tier:thinking"
+readonly _TIER_SIMPLE_LABEL="tier:simple"
+readonly _TIER_STANDARD_LABEL="tier:standard"
+readonly _TIER_LABELS_MUTATED_MARKER='[aidevops:tier-labels-mutated]'
 
 # Load patterns from shared conf file (t2821). Non-blocking if conf missing.
 _load_self_hosting_patterns() {
@@ -658,6 +661,39 @@ _sht_match_dispatch_pattern() {
 	return 1
 }
 
+# Return 0 when a comma-separated label list contains the exact target label.
+_sht_labels_include() {
+	local labels="$1"
+	local target="$2"
+	case ",${labels}," in
+		*",${target},"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Replace lower workload tiers with the self-hosting target tier. Outputs the
+# internal mutation marker only after GitHub accepts the normalization.
+_sht_replace_tier_labels() {
+	local issue_number="$1"
+	local slug="$2"
+	local labels="$3"
+	local edit_args=(issue edit "$issue_number" --repo "$slug")
+
+	if _sht_labels_include "$labels" "$_TIER_SIMPLE_LABEL"; then
+		edit_args+=(--remove-label "$_TIER_SIMPLE_LABEL")
+	fi
+	if _sht_labels_include "$labels" "$_TIER_STANDARD_LABEL"; then
+		edit_args+=(--remove-label "$_TIER_STANDARD_LABEL")
+	fi
+	edit_args+=(--add-label "$_SELF_HOSTING_TARGET_LABEL")
+
+	if ! gh "${edit_args[@]}" >/dev/null 2>&1; then
+		return 1
+	fi
+	printf '%s\n' "$_TIER_LABELS_MUTATED_MARKER"
+	return 0
+}
+
 # Check whether the self-hosting audit comment has already been posted.
 # If the marker exists: ensures label is applied (idempotent recovery).
 # Returns 0 when caller should skip re-posting, 1 when posting is needed.
@@ -666,6 +702,7 @@ _sht_check_comment_idempotent() {
 	local issue_number="$1"
 	local slug="$2"
 	local marker="$3"
+	local labels="$4"
 
 	local existing=""
 	existing=$(gh api --paginate "repos/${slug}/issues/${issue_number}/comments" \
@@ -673,11 +710,10 @@ _sht_check_comment_idempotent() {
 		2>/dev/null | awk '{s+=$1} END{print s+0}') || existing="0"
 
 	if [[ "$existing" =~ ^[1-9][0-9]*$ ]]; then
-		_log "INFO" "#${issue_number}: self-hosting comment already posted — ensuring label"
-		# Ensure label even if comment exists (in case label was manually removed)
+		_log "INFO" "#${issue_number}: self-hosting comment already posted — normalizing tier label"
 		if [[ "${AIDEVOPS_SELF_HOSTING_DETECTOR_DRY_RUN:-}" != "1" ]]; then
-			gh issue edit "$issue_number" --repo "$slug" \
-				--add-label "$_SELF_HOSTING_TARGET_LABEL" >/dev/null 2>&1 || true
+			_sht_replace_tier_labels "$issue_number" "$slug" "$labels" ||
+				_log "WARN" "#${issue_number}: failed to normalize self-hosting tier labels"
 		fi
 		return 0
 	fi
@@ -692,21 +728,21 @@ _sht_apply_label_and_comment() {
 	local slug="$2"
 	local matched_pattern="$3"
 	local marker="$4"
+	local labels="$5"
 
-	if ! gh issue edit "$issue_number" --repo "$slug" \
-		--add-label "$_SELF_HOSTING_TARGET_LABEL" >/dev/null 2>&1; then
-		_log "WARN" "#${issue_number}: failed to apply ${_SELF_HOSTING_TARGET_LABEL} label — continuing"
+	if ! _sht_replace_tier_labels "$issue_number" "$slug" "$labels"; then
+		_log "WARN" "#${issue_number}: failed to normalize to ${_SELF_HOSTING_TARGET_LABEL} — continuing"
 		return 0
 	fi
 
-	_log "INFO" "#${issue_number}: applied ${_SELF_HOSTING_TARGET_LABEL} label (self-hosting dispatch-path task)"
+	_log "INFO" "#${issue_number}: normalized to ${_SELF_HOSTING_TARGET_LABEL} (self-hosting dispatch-path task)"
 
 	local comment_body
 	comment_body="${marker}
 <!-- provenance:start -->
 ## Self-Hosting Tier Override
 
-Pre-dispatch self-hosting detector applied \`${_SELF_HOSTING_TARGET_LABEL}\` to this issue.
+Pre-dispatch self-hosting detector replaced lower workload-tier labels with \`${_SELF_HOSTING_TARGET_LABEL}\` on this issue.
 
 **Matched pattern:** \`${matched_pattern}\` in issue body
 
@@ -776,8 +812,11 @@ _detect_self_hosting_task() {
 	local labels
 	labels=$(gh api "repos/${slug}/issues/${issue_number}" --jq '[.labels[].name] | join(",")' 2>/dev/null) || labels=""
 
-	# Already has target label — idempotent no-op
-	if printf '%s' "$labels" | grep -qF "$_SELF_HOSTING_TARGET_LABEL"; then
+	# Already normalized to exactly the target tier — idempotent no-op. A
+	# collision containing target + lower tiers still needs cleanup.
+	if _sht_labels_include "$labels" "$_SELF_HOSTING_TARGET_LABEL" &&
+		! _sht_labels_include "$labels" "$_TIER_SIMPLE_LABEL" &&
+		! _sht_labels_include "$labels" "$_TIER_STANDARD_LABEL"; then
 		_log "INFO" "#${issue_number}: already has ${_SELF_HOSTING_TARGET_LABEL} — self-hosting detector no-op"
 		return 0
 	fi
@@ -785,7 +824,7 @@ _detect_self_hosting_task() {
 	local marker='<!-- self-hosting-tier-override -->'
 
 	# Idempotency check: look for existing comment marker
-	if _sht_check_comment_idempotent "$issue_number" "$slug" "$marker"; then
+	if _sht_check_comment_idempotent "$issue_number" "$slug" "$marker" "$labels"; then
 		return 0
 	fi
 
@@ -796,7 +835,7 @@ _detect_self_hosting_task() {
 	fi
 
 	# Apply the label and post the audit comment
-	_sht_apply_label_and_comment "$issue_number" "$slug" "$matched_pattern" "$marker"
+	_sht_apply_label_and_comment "$issue_number" "$slug" "$matched_pattern" "$marker" "$labels"
 	return 0
 }
 

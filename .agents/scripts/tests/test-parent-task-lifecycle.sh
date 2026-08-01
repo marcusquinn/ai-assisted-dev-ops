@@ -157,6 +157,7 @@ _parse_phases_section() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="$SCRIPT_DIR/pulse-issue-reconcile.sh"
 ACTIONS_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
+PARENT_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-parent.sh"
 WRAPPER_TARGET="$SCRIPT_DIR/shared-gh-wrappers-create.sh"
 
 if [[ ! -f "$TARGET" || ! -f "$ACTIONS_TARGET" ]]; then
@@ -401,21 +402,43 @@ assert_grep_fixed \
 	'auto_file_next_unfiled_parent_phase() {' \
 	"$SHARED_TARGET"
 
-# B10: parent creation stamps a machine-readable contract before signing.
+# B10: parent actions remain behind cached and live maintainer hold barriers.
 assert_grep_fixed \
-	"B10a: parent creation contract helper is defined" \
+	"B10a: live parent mutation gate is defined" \
+	'_pir_parent_mutation_is_allowed() {' \
+	"$ACTIONS_TARGET"
+assert_grep_fixed \
+	"B10b: single-pass parent action forwards current labels" \
+	'"$cpt_esc_hours" "OPEN" "$labels_csv"' \
+	"$TARGET"
+assert_grep_fixed \
+	"B10c: legacy parent pass forwards current state and labels" \
+	'"$escalation_threshold_hours" "$issue_state" "$issue_labels"' \
+	"$PARENT_TARGET"
+TESTS_RUN=$((TESTS_RUN + 1))
+hold_guard_count=$(grep -Fc '_pir_parent_mutation_is_allowed "$slug" "$issue_num"' "$ACTIONS_TARGET" 2>/dev/null || true)
+if [[ "$hold_guard_count" -ge 6 ]]; then
+	echo "${TEST_GREEN}PASS${TEST_NC}: B10d: every parent mutation class has a live hold recheck"
+else
+	TESTS_FAILED=$((TESTS_FAILED + 1))
+	echo "${TEST_RED}FAIL${TEST_NC}: B10d: expected at least 6 live parent hold checks, found $hold_guard_count"
+fi
+
+# B11: parent creation stamps a machine-readable contract before signing.
+assert_grep_fixed \
+	"B11a: parent creation contract helper is defined" \
 	'_gh_ci_prepare_parent_close_contract() {' \
 	"$WRAPPER_TARGET"
 assert_grep_fixed \
-	"B10b: phase-plan contract marker is generated" \
+	"B11b: phase-plan contract marker is generated" \
 	'<!-- parent-close-contract: phase-plan -->' \
 	"$WRAPPER_TARGET"
 assert_grep_fixed \
-	"B10c: child-count contract marker is generated" \
+	"B11c: child-count contract marker is generated" \
 	'<!-- parent-close-contract: expected-children=${children_count} -->' \
 	"$WRAPPER_TARGET"
 assert_grep_fixed \
-	"B10d: undecomposed parents receive a fail-closed marker" \
+	"B11d: undecomposed parents receive a fail-closed marker" \
 	'<!-- parent-close-contract: needs-decomposition -->' \
 	"$WRAPPER_TARGET"
 
@@ -425,26 +448,26 @@ assert_grep_fixed \
 source "$WRAPPER_TARGET"
 _gh_ci_prepare_parent_close_contract 1 --body $'## Phases\n\n- Phase 1 - deliver #101' --label parent-task
 contract_args=$(printf '%s\n' "${_GH_CI_CONTRACT_ARGS[@]}")
-assert_contains "B10e: canonical phase body receives phase-plan contract" \
+assert_contains "B11e: canonical phase body receives phase-plan contract" \
 	'<!-- parent-close-contract: phase-plan -->' "$contract_args"
 
 _gh_ci_prepare_parent_close_contract 1 --body $'## Children\n\n- #101\n- #102' --label parent-task
 contract_args=$(printf '%s\n' "${_GH_CI_CONTRACT_ARGS[@]}")
-assert_contains "B10f: children body records expected child count" \
+assert_contains "B11f: children body records expected child count" \
 	'<!-- parent-close-contract: expected-children=2 -->' "$contract_args"
 
 _gh_ci_prepare_parent_close_contract 0 --body 'ordinary leaf issue' --label bug
 contract_args=$(printf '%s\n' "${_GH_CI_CONTRACT_ARGS[@]}")
-assert_not_contains "B10g: non-parent issue body remains unstamped" \
+assert_not_contains "B11g: non-parent issue body remains unstamped" \
 	'<!-- parent-close-contract:' "$contract_args"
 
 _gh_ci_prepare_parent_close_contract 1 --body $'## Children\n\nNo children filed yet.' --label parent-task
 contract_args=$(printf '%s\n' "${_GH_CI_CONTRACT_ARGS[@]}")
-assert_contains "B10h: empty children section remains safe under pipefail" \
+assert_contains "B11h: empty children section remains safe under pipefail" \
 	'<!-- parent-close-contract: needs-decomposition -->' "$contract_args"
 
 assert_grep_fixed \
-	"B10i: close-contract nudge marker varies with the blocking reason" \
+	"B11i: close-contract nudge marker varies with the blocking reason" \
 	'<!-- parent-close-contract-incomplete:${_PARENT_CLOSE_CONTRACT_REASON} -->' \
 	"$ACTIONS_TARGET"
 

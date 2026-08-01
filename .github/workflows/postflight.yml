@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to verify (leave empty for latest)'
-        required: false
+        description: 'Exact release tag to verify'
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.tag || github.sha }}
@@ -26,12 +26,31 @@ jobs:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
-        ref: ${{ github.event.inputs.tag || github.ref }}
+        ref: ${{ github.sha }}
         fetch-depth: 0
 
     - name: Resolve release commit
       id: release_commit
-      run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      env:
+        RELEASE_TAG: ${{ github.event.inputs.tag }}
+      run: |
+        [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          echo "::error::Invalid release tag: $RELEASE_TAG"
+          exit 1
+        }
+        git fetch --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" || {
+          echo "::error::Release tag is unavailable: $RELEASE_TAG"
+          exit 1
+        }
+        RELEASE_COMMIT=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}") || {
+          echo "::error::Release tag does not resolve to a commit: $RELEASE_TAG"
+          exit 1
+        }
+        [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+          echo "::error::Release tag commit is malformed"
+          exit 1
+        }
+        echo "sha=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
     - name: Prepare reviewed postflight runtime
       id: postflight_runtime
@@ -67,6 +86,8 @@ jobs:
         
         # Poll for completion, excluding this workflow to avoid circular dependency
         SELF_NAME="Verify Release Health"
+        COMPLETE_STREAK=0
+        STABLE_COMPLETE=false
         for i in {1..20}; do
           CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
             "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
@@ -88,18 +109,31 @@ jobs:
             <<<"$RELEASE_CHECK_RUNS")
           
           if [[ "$PENDING" == "0" ]]; then
-            echo "All release-owned check runs completed"
-            break
+            COMPLETE_STREAK=$((COMPLETE_STREAK + 1))
+            if [[ "$COMPLETE_STREAK" -ge 2 ]]; then
+              STABLE_COMPLETE=true
+              echo "Release-owned checks remained terminal across two snapshots"
+              break
+            fi
+            echo "Required checks appear terminal; confirming after 30 seconds"
+          else
+            COMPLETE_STREAK=0
+
+            # Show which workflows are still pending
+            echo "Waiting for $PENDING check runs... (attempt $i/20)"
+            jq -r --arg self_name "$SELF_NAME" \
+              '.check_runs[] | select(.status != "completed") | "  - \(.name): \(.status)"' \
+              <<<"$RELEASE_CHECK_RUNS" || true
           fi
-          
-          # Show which workflows are still pending
-          echo "Waiting for $PENDING check runs... (attempt $i/20)"
-          jq -r --arg self_name "$SELF_NAME" \
-            '.check_runs[] | select(.status != "completed") | "  - \(.name): \(.status)"' \
-            <<<"$RELEASE_CHECK_RUNS" || true
           sleep 30
         done
 
+        if [[ "$STABLE_COMPLETE" != "true" ]]; then
+          echo "::error::Release-owned checks did not reach a stable terminal state"
+          exit 1
+        fi
+
+        # Final refresh catches a check that appeared after the quiescence window.
         CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
           | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq")
@@ -143,9 +177,9 @@ jobs:
         echo "## CI/CD Pipeline Status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Select the latest completed run for each check name/app pair. GitHub
-        # retains superseded runs on a commit, so counting every historical
-        # cancellation can incorrectly fail an otherwise healthy release.
+        # Select the latest run for each check name/app pair. GitHub retains
+        # superseded runs on a commit, so historical results must not override
+        # the latest required evidence.
         SELF_NAME="Verify Release Health"
         CHECK_RUNS_RESPONSE=$(gh api --paginate --slurp \
           "repos/${REPO}/commits/${COMMIT_SHA}/check-runs?per_page=100" \
@@ -162,91 +196,105 @@ jobs:
           --slurpfile recovery_run_documents <(printf '%s\n' "$RECOVERY_RUNS_RESPONSE") \
           -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/release-owned-check-runs.jq" \
           <<<"$CHECK_RUNS_RESPONSE")
-        EFFECTIVE_CHECK_RUNS=$(echo "$RELEASE_CHECK_RUNS" \
-          | jq -c --arg self_name "$SELF_NAME" \
-            -f "$POSTFLIGHT_RUNTIME/.github/scripts/effective-check-runs.jq")
+        REQUIRED_CHECK_RUNS=$(echo "$RELEASE_CHECK_RUNS" | jq -c '.check_runs')
+        ADVISORY_CHECK_RUNS=$(echo "$RELEASE_CHECK_RUNS" | jq -c '.advisory_check_runs')
 
         # A later push to the default branch can cancel checks on the release
         # commit via cancel-in-progress. Accept only a successful check with the
-        # same name/app on a descendant default-branch commit; real failures and
-        # cancellations without descendant proof remain blocking.
+        # same name/app and workflow path/event on a descendant default-branch
+        # commit; real failures and cancellations without provenance remain blocking.
         DESCENDANT_CHECK_RUNS='[]'
         DEFAULT_BRANCH=$(gh api "repos/${REPO}" --jq '.default_branch // empty' 2>/dev/null || true)
         DEFAULT_SHA=$(gh api "repos/${REPO}/commits/${DEFAULT_BRANCH}" --jq '.sha // empty' 2>/dev/null || true)
         if [[ -n "$DEFAULT_SHA" && "$DEFAULT_SHA" != "$COMMIT_SHA" ]]; then
           COMPARE_STATUS=$(gh api "repos/${REPO}/compare/${COMMIT_SHA}...${DEFAULT_SHA}" --jq '.status // empty' 2>/dev/null || true)
+          # The compare API is base...head: ahead/identical proves DEFAULT_SHA is
+          # the release commit or its descendant before replacement evidence is used.
           if [[ "$COMPARE_STATUS" == "ahead" || "$COMPARE_STATUS" == "identical" ]]; then
             DESCENDANT_RESPONSE=$(gh api --paginate --slurp \
               "repos/${REPO}/commits/${DEFAULT_SHA}/check-runs?per_page=100" 2>/dev/null \
               | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/flatten-check-run-pages.jq" || true)
-            if [[ -n "$DESCENDANT_RESPONSE" ]]; then
+            DESCENDANT_WORKFLOW_RUNS_RESPONSE=$(gh api --paginate --slurp \
+              "repos/${REPO}/actions/runs?head_sha=${DEFAULT_SHA}&per_page=100" 2>/dev/null || true)
+            if [[ -n "$DESCENDANT_RESPONSE" && -n "$DESCENDANT_WORKFLOW_RUNS_RESPONSE" ]]; then
               DESCENDANT_CHECK_RUNS=$(echo "$DESCENDANT_RESPONSE" \
                 | jq -c --arg self_name "$SELF_NAME" \
+                  --slurpfile workflow_run_documents <(printf '%s\n' "$DESCENDANT_WORKFLOW_RUNS_RESPONSE") \
                   -f "$POSTFLIGHT_RUNTIME/.github/scripts/effective-check-runs.jq")
             fi
           fi
         fi
         # Stream large API responses through file descriptors instead of argv.
         # Check-run output payloads can exceed the runner's ARG_MAX limit.
-        CHECK_RUNS=$(jq -cn \
-          --slurpfile current_run_documents <(printf '%s\n' "$EFFECTIVE_CHECK_RUNS") \
+        REQUIRED_CHECK_RUNS=$(jq -cn \
+          --slurpfile current_run_documents <(printf '%s\n' "$REQUIRED_CHECK_RUNS") \
           --slurpfile descendant_run_documents <(printf '%s\n' "$DESCENDANT_CHECK_RUNS") \
-          -f "$POSTFLIGHT_RUNTIME/.github/scripts/reconcile-superseded-cancellations.jq" \
-          | jq -c '.[] | {name, status, conclusion, app: (.app.slug // .app.name // "unknown"), superseded_by_check_run_id}')
+          -f "$POSTFLIGHT_RUNTIME/.github/scripts/reconcile-superseded-cancellations.jq")
+        POSTFLIGHT_CHECKS=$(jq -cn \
+          --slurpfile required_documents <(printf '%s\n' "$REQUIRED_CHECK_RUNS") \
+          --slurpfile advisory_documents <(printf '%s\n' "$ADVISORY_CHECK_RUNS") \
+          '{
+            check_runs: ($required_documents[0] // []),
+            advisory_check_runs: ($advisory_documents[0] // [])
+          }')
+        OUTCOME=$(echo "$POSTFLIGHT_CHECKS" \
+          | jq -c -f "$POSTFLIGHT_RUNTIME/.agents/scripts/jq/postflight-check-outcome.jq")
         
-        # Count results (excluding self)
-        TOTAL=$(echo "$CHECK_RUNS" | jq -s 'length')
-        PASSED=$(echo "$CHECK_RUNS" | jq -s '[.[] | select(.conclusion == "success")] | length')
-        SKIPPED=$(echo "$CHECK_RUNS" | jq -s '[.[] | select(.conclusion == "skipped")] | length')
-        FAILED=$(echo "$CHECK_RUNS" | jq -s '[.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required")] | length')
+        # Count required and advisory results separately. Release-owned baseline
+        # ratchets remain visible without overriding the PR new-debt gate.
+        REQUIRED_TOTAL=$(echo "$OUTCOME" | jq '.required.total')
+        REQUIRED_PASSED=$(echo "$OUTCOME" | jq '.required.accepted | length')
+        REQUIRED_FAILED=$(echo "$OUTCOME" | jq '.required.failed | length')
+        REQUIRED_PENDING=$(echo "$OUTCOME" | jq '.required.pending | length')
+        ADVISORY_TOTAL=$(echo "$OUTCOME" | jq '.advisory.total')
+        ADVISORY_FAILED=$(echo "$OUTCOME" | jq '.advisory.failed | length')
+        ADVISORY_PENDING=$(echo "$OUTCOME" | jq '.advisory.pending | length')
 
-        if [[ "$TOTAL" == "0" ]]; then
+        if [[ "$REQUIRED_TOTAL" == "0" ]]; then
           echo "::error::No terminal check-run evidence exists for release commit ${COMMIT_SHA}"
           exit 1
         fi
         
-        echo "| Check | Status | Conclusion |" >> $GITHUB_STEP_SUMMARY
-        echo "|-------|--------|------------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Classification | Reason | Status | Conclusion |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|----------------|--------|--------|------------|" >> $GITHUB_STEP_SUMMARY
         
-        # Show the effective check runs used for pass/fail decisions.
-        echo "$CHECK_RUNS" | jq -rs '.[] | "| \(.name) | \(.status) | \(.conclusion // "pending") |"' >> $GITHUB_STEP_SUMMARY
+        # Show the exact required/advisory evidence used for the decision.
+        echo "$OUTCOME" \
+          | jq -r '(.required.all + .advisory.all)[] | "| \(.name) | \(.classification) | \(.classification_reason) | \(.status) | \(.conclusion // "pending") |"' \
+          >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "*Note: latest completed run per check name/app is used; descendant success may replace a superseded cancellation; 'Verify Release Health' is excluded*" >> $GITHUB_STEP_SUMMARY
+        echo "*Note: latest run per check name/app is used; descendant success may replace a superseded cancellation; 'Verify Release Health' is excluded*" >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Total**: $TOTAL | **Passed**: $PASSED | **Skipped**: $SKIPPED | **Failed**: $FAILED" >> $GITHUB_STEP_SUMMARY
-        
-        # Separate critical workflow failures from advisory tool failures
-        # Critical: core CI checks (Security Validation, Framework Validation, Version Consistency)
-        # Advisory: external analysis tools that fail intermittently (non-blocking)
-        # Pipe-delimited list of exact check names to treat as advisory
-        ADVISORY_NAMES="SonarCloud Code Analysis"
-        
-        CRITICAL_FAILED=$(echo "$CHECK_RUNS" | jq -s --arg names "$ADVISORY_NAMES" \
-          '($names | split("|")) as $adv |
-           [.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.name as $n | $adv | index($n) | not)] | length')
-        ADVISORY_FAILED=$(echo "$CHECK_RUNS" | jq -s --arg names "$ADVISORY_NAMES" \
-          '($names | split("|")) as $adv |
-           [.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.name as $n | $adv | index($n))] | length')
+        echo "**Required**: $REQUIRED_TOTAL | **Required passed**: $REQUIRED_PASSED | **Required failed**: $REQUIRED_FAILED | **Advisory**: $ADVISORY_TOTAL" >> $GITHUB_STEP_SUMMARY
         
         if [[ "$ADVISORY_FAILED" != "0" ]]; then
           echo "::warning::$ADVISORY_FAILED advisory check(s) failed (non-blocking)"
-          echo "$CHECK_RUNS" | jq -rs --arg names "$ADVISORY_NAMES" \
-            '($names | split("|")) as $adv |
-             .[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.name as $n | $adv | index($n)) | "  Advisory failure: \(.name) (\(.conclusion))"'
+          echo "$OUTCOME" | jq -r \
+            '.advisory.failed[] | "  Advisory failure: \(.name) (\(.conclusion // "missing"); reason=\(.classification_reason))"'
         fi
-        
-        if [[ "$CRITICAL_FAILED" != "0" ]]; then
-          echo "::error::$CRITICAL_FAILED critical check run(s) failed"
-          echo "$CHECK_RUNS" | jq -rs --arg names "$ADVISORY_NAMES" \
-            '($names | split("|")) as $adv |
-             .[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required") | select(.name as $n | $adv | index($n) | not) | "  Critical failure: \(.name) (\(.conclusion))"'
+        if [[ "$ADVISORY_PENDING" != "0" ]]; then
+          echo "::warning::$ADVISORY_PENDING advisory check(s) remain non-terminal (non-blocking)"
+        fi
+
+        if [[ "$REQUIRED_PENDING" != "0" ]]; then
+          echo "::error::$REQUIRED_PENDING required check run(s) remain non-terminal"
+          echo "$OUTCOME" | jq -r \
+            '.required.pending[] | "  Required pending: \(.name) (\(.status))"'
+          echo "cicd_status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        if [[ "$REQUIRED_FAILED" != "0" ]]; then
+          echo "::error::$REQUIRED_FAILED required check run(s) failed"
+          echo "$OUTCOME" | jq -r \
+            '.required.failed[] | "  Required failure: \(.name) (\(.conclusion // "missing"); reason=\(.classification_reason))"'
           echo "cicd_status=failed" >> $GITHUB_OUTPUT
           exit 1
         fi
         
-        if [[ "$ADVISORY_FAILED" != "0" ]]; then
+        if [[ "$ADVISORY_FAILED" != "0" || "$ADVISORY_PENDING" != "0" ]]; then
           echo "cicd_status=warning" >> $GITHUB_OUTPUT
         else
           echo "cicd_status=passed" >> $GITHUB_OUTPUT

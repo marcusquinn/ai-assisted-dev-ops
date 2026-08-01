@@ -46,6 +46,10 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 fi
 # shellcheck source=./task-identity-lib.sh
 source "${SCRIPT_DIR}/task-identity-lib.sh"
+if [[ -f "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh" ]]; then
+	# shellcheck source=./full-loop-cleanup-receipt.sh
+	source "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh"
+fi
 
 # --- Worktree Path Utilities ---
 
@@ -967,6 +971,62 @@ _cmd_add_create_worktree() {
 	return 1
 }
 
+# Reconcile a terminal cleanup receipt when manual add intentionally creates a
+# new generation at the same path. The old receipt remains historical CLEANED
+# evidence but is no longer selectable by cleanup supervisors.
+# Args: $1=branch, $2=worktree path, $3=registered owner PID,
+#       $4=registered owner session
+_cmd_add_reconcile_cleanup_generation() {
+	local branch="$1"
+	local path="$2"
+	local owner_pid="$3"
+	local owner_session="$4"
+	local head_sha=""
+	local receipt_path=""
+	local prior_pr=""
+	local reconcile_status=0
+
+	declare -F full_loop_supersede_cleaned_receipts_for_recreated_worktree >/dev/null 2>&1 || return 0
+	head_sha=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null) || return 1
+	if receipt_path=$(full_loop_supersede_cleaned_receipts_for_recreated_worktree \
+		"$path" "$branch" "$head_sha" "$owner_pid" "$owner_session"); then
+		prior_pr=$(jq -r '.pr_number // empty' "$receipt_path" 2>/dev/null || true)
+		print_warning "Reopened a path with terminal cleanup history; the historical CLEANED receipt is now superseded by this worktree generation."
+		printf 'AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=PATH_RECREATED_AFTER_CLEANUP prior_pr=%s branch=%s head=%s\n' \
+			"${prior_pr:-unknown}" "$branch" "$head_sha"
+		return 0
+	else
+		reconcile_status=$?
+	fi
+	[[ "$reconcile_status" -eq 2 ]] && return 0
+	print_warning "Worktree creation cannot continue because cleanup-receipt generation reconciliation failed."
+	printf 'AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=RECONCILIATION_FAILED branch=%s head=%s\n' \
+		"$branch" "$head_sha" >&2
+	return 1
+}
+
+_cmd_add_created_registration_contract() {
+	local path="$1"
+	local expected_owner_pid="$2"
+	local expected_owner_session="$3"
+	local expected_task="$4"
+	local owner_info=""
+	local actual_owner_pid=""
+	local actual_owner_session=""
+	local actual_owner_batch=""
+	local actual_task=""
+	local actual_created_at=""
+
+	owner_info=$(check_worktree_owner "$path" 2>/dev/null) || return 1
+	IFS='|' read -r actual_owner_pid actual_owner_session actual_owner_batch actual_task actual_created_at <<<"$owner_info"
+	[[ -n "$actual_created_at" ]] || return 1
+	[[ "$actual_owner_pid" == "$expected_owner_pid" &&
+		"$actual_owner_session" == "$expected_owner_session" &&
+		-z "$actual_owner_batch" && "$actual_task" == "$expected_task" ]] || return 1
+	printf '%s\n' "$owner_info"
+	return 0
+}
+
 _cmd_add_warn_task_id_variant() {
 	local branch="$1"
 	if [[ ! "$branch" =~ t[0-9]+[a-z]($|[-_/]) && ! "$branch" =~ t[0-9]+[-._][0-9]+($|[-_/]) ]]; then
@@ -1039,6 +1099,49 @@ _cmd_add_prepare_collision_mode() {
 	return 0
 }
 
+_cmd_add_verify_created_generation() {
+	local branch="$1"
+	local path="$2"
+	local explicit_issue="$3"
+	local owner_pid=""
+	local owner_session="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+	local registration_status=0
+	local registration_contract=""
+	local registered_owner_pid=""
+	local registered_owner_session=""
+	local registered_owner_batch=""
+	local registered_task=""
+	local registered_created_at=""
+	local repository_root=""
+
+	_cmd_add_verify_collision_tip "$branch" "$path" || return 1
+	owner_pid=$(_resolve_worktree_owner_pid "") || return 1
+	register_worktree "$path" "$branch" --task "$explicit_issue" || registration_status=$?
+	registration_contract=$(_cmd_add_created_registration_contract \
+		"$path" "$owner_pid" "$owner_session" "$explicit_issue" 2>/dev/null) || registration_contract=""
+	if [[ "$registration_status" -ne 0 ]] ||
+		[[ -z "$registration_contract" ]]; then
+		print_warning "Worktree creation cannot continue because ownership registration failed verification."
+		printf 'AIDEVOPS_WORKTREE_LIFECYCLE_DISPOSITION=REGISTRATION_FAILED branch=%s\n' "$branch" >&2
+		print_warning "Rollback preserved the newly created worktree because no exact ownership contract is available for safe removal."
+		return 1
+	fi
+	IFS='|' read -r registered_owner_pid registered_owner_session registered_owner_batch \
+		registered_task registered_created_at <<<"$registration_contract"
+
+	if _cmd_add_reconcile_cleanup_generation "$branch" "$path" "$owner_pid" "$owner_session"; then
+		return 0
+	fi
+	repository_root=$(get_repo_root) || return 1
+	if ! remove_worktree_if_owner_contract "$path" "$repository_root" "$branch" \
+		"$registered_owner_pid" "$registered_owner_session" "$registered_owner_batch" \
+		"$registered_task" "$registered_created_at"; then
+		print_warning "Rollback preserved the newly created worktree because its exact ownership contract changed or safe removal failed."
+		return 1
+	fi
+	return 1
+}
+
 # --- cmd_add ---
 
 cmd_add() {
@@ -1104,11 +1207,9 @@ cmd_add() {
 
 	# Create worktree (existing branch → simple checkout; new branch → base-ref dance).
 	_cmd_add_create_worktree "$branch" "$path" "$explicit_base" || return 1
-	_cmd_add_verify_collision_tip "$branch" "$path" || return 1
-
-	# Register ownership (t189). Preserve the explicit issue identity so a
-	# same-task headless continuation can safely reclaim this worktree.
-	register_worktree "$path" "$branch" --task "$explicit_issue"
+	# Register ownership before retiring historical cleanup receipts. The
+	# transaction helper verifies the exact row and compensates on failure.
+	_cmd_add_verify_created_generation "$branch" "$path" "$explicit_issue" || return 1
 
 	# Restore gitignored dependencies (node_modules) from canonical repo.
 	local _repo_root=""

@@ -29,6 +29,37 @@ def _canonical_without_hash(entry: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _verify_entry(
+    entry: dict[str, Any], line_number: int, expected_prev_hash: str
+) -> tuple[str, int]:
+    stored_hash = entry.get("hash")
+    stored_prev_hash = entry.get("prev_hash")
+    if not isinstance(stored_hash, str) or not stored_hash:
+        _error(f"Entry {line_number}: Missing hash field")
+        return expected_prev_hash, 1
+
+    errors = 0
+    if stored_prev_hash != expected_prev_hash:
+        _error(f"Entry {line_number}: Chain broken — prev_hash mismatch")
+        _error(f"  Expected: {expected_prev_hash}")
+        _error(f"  Found:    {stored_prev_hash or ''}")
+        errors += 1
+
+    try:
+        computed_hash = hashlib.sha256(_canonical_without_hash(entry)).hexdigest()
+    except (TypeError, ValueError):
+        _error(f"Entry {line_number}: Invalid JSON value")
+        return stored_hash, errors + 1
+
+    if computed_hash != stored_hash:
+        _error(f"Entry {line_number}: Hash mismatch — entry has been tampered with")
+        _error(f"  Stored:   {stored_hash}")
+        _error(f"  Computed: {computed_hash}")
+        errors += 1
+
+    return stored_hash, errors
+
+
 def verify(path: Path, genesis_hash: str, quiet: bool) -> int:
     expected_prev_hash = genesis_hash
     errors = 0
@@ -57,37 +88,10 @@ def verify(path: Path, genesis_hash: str, quiet: bool) -> int:
                 errors += 1
                 continue
 
-            stored_hash = entry.get("hash")
-            stored_prev_hash = entry.get("prev_hash")
-            if not isinstance(stored_hash, str) or not stored_hash:
-                _error(f"Entry {line_number}: Missing hash field")
-                errors += 1
-                continue
-
-            if stored_prev_hash != expected_prev_hash:
-                _error(f"Entry {line_number}: Chain broken — prev_hash mismatch")
-                _error(f"  Expected: {expected_prev_hash}")
-                _error(f"  Found:    {stored_prev_hash or ''}")
-                errors += 1
-
-            try:
-                computed_hash = hashlib.sha256(
-                    _canonical_without_hash(entry)
-                ).hexdigest()
-            except (TypeError, ValueError):
-                _error(f"Entry {line_number}: Invalid JSON value")
-                errors += 1
-                expected_prev_hash = stored_hash
-                continue
-            if computed_hash != stored_hash:
-                _error(
-                    f"Entry {line_number}: Hash mismatch — entry has been tampered with"
-                )
-                _error(f"  Stored:   {stored_hash}")
-                _error(f"  Computed: {computed_hash}")
-                errors += 1
-
-            expected_prev_hash = stored_hash
+            expected_prev_hash, entry_errors = _verify_entry(
+                entry, line_number, expected_prev_hash
+            )
+            errors += entry_errors
 
     if errors:
         _error(f"Verification FAILED: {errors} error(s) in {total_lines} entries")

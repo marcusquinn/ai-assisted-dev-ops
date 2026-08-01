@@ -159,6 +159,13 @@ Management: `install-hooks-helper.sh [status|install|test|uninstall]`. Files: `~
 
 After file changes: run preflight automatically. Pass → auto-commit with suggested message (confirm or override). Fail → show issues, offer fixes. After commit → auto-push, offer: create PR, continue working, or done.
 
+**Release-bearing repositories:** when a repository publishes artifacts, images,
+update manifests, or catalogs through GitHub Actions, assess unattended
+OIDC/Sigstore keyless provenance before changing its release workflow. Attest
+exact bytes/digests and verify repository + signer workflow + validated ref
+before publication; retain native platform signing. Pattern:
+`reference/release-artifact-provenance.md`.
+
 **PR Title (MANDATORY)**: `{task-id}: {description}`. Task ID is `tNNN` (from TODO.md) or `GH#NNN` (GitHub issue number, for quality-debt/simplification-debt/issue-only work). Examples: `t318: Update PR workflow documentation`, `GH#12455: tighten hashline-edit-format.md`. NEVER use `qd-`, bare numbers, or invented prefixes. NEVER invent suffixes or variants either — `t2213b`, `t2213-2`, `t2213.fix`, `t2213-followup` are all forbidden. Task IDs come EXCLUSIVELY from `claim-task-id.sh` output; for follow-up work, claim a FRESH ID. For unplanned work: create TODO entry first.
 
 **If changes include `.agents/` files**: Offer to run `./setup.sh` to deploy to `~/.aidevops/agents/`.
@@ -193,6 +200,7 @@ See `workflows/sql-migrations.md`. **Critical rules**: Never modify pushed/deplo
 | `postflight.md` | Verification after release |
 | `version-bump.md` | Version management, release branches |
 | `release.md` | Full release process |
+| `reference/release-artifact-provenance.md` | GitHub OIDC/Sigstore release signing and verification |
 | `sql-migrations.md` | Database schema version control |
 | `tools/git/lumen.md` | AI-powered diffs, commit messages |
 | `tools/security/opsec.md` | CI/CD AI agent security |

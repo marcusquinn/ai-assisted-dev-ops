@@ -414,8 +414,8 @@ _gh_wrapper_auto_sig() {
 
 	# Handle --body case
 	if [[ $body_idx -ge 0 && -n "$body_val" ]]; then
-		# Already signed — skip
-		[[ "$body_val" == *"<!-- aidevops:sig -->"* ]] && return 0
+		# Already signed — skip only for a standalone canonical marker line.
+		grep -Fqx '<!-- aidevops:sig -->' <<<"$body_val" && return 0
 		local sig_footer
 		sig_footer=$("$sig_helper" footer --body "$body_val" 2>/dev/null || echo "")
 		[[ -z "$sig_footer" ]] && return 0
@@ -434,7 +434,7 @@ _gh_wrapper_auto_sig() {
 	if [[ $body_file_idx -ge 0 && -n "$body_file_val" && -f "$body_file_val" ]]; then
 		local abs_body_file_val
 		abs_body_file_val=$(_gh_wrapper_abs_body_file_path "$body_file_val") || abs_body_file_val="$body_file_val"
-		if grep -q '<!-- aidevops:sig -->' "$abs_body_file_val" 2>/dev/null; then
+		if grep -Fqx '<!-- aidevops:sig -->' "$abs_body_file_val" 2>/dev/null; then
 			if [[ "$bf_is_eq" -eq 1 ]]; then
 				_GH_WRAPPER_SIG_MODIFIED_ARGS[body_file_idx]="--body-file=${abs_body_file_val}"
 			else

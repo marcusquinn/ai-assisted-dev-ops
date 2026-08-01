@@ -93,16 +93,17 @@ with open(sys.argv[1], encoding="utf-8") as source:
 PY
 		return 0
 	fi
-	local args=(pr checks "$pr_number" --repo "$repo" --json "name,state,bucket,link,workflow")
+	local selection_mode="all"
 	if [[ "$required_only" -eq 1 ]]; then
-		args+=(--required)
+		selection_mode="required"
 	fi
 	local rc=0
 	local checks=""
 	local checks_stderr=""
 	local checks_stderr_file=""
 	checks_stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-gh-checks-wait.XXXXXX") || return 1
-	checks=$(gh "${args[@]}" 2>"$checks_stderr_file") || rc=$?
+	checks=$(gh_pr_checks_exact_json "$repo" "$pr_number" "$selection_mode" \
+		2>"$checks_stderr_file") || rc=$?
 	checks_stderr=$(<"$checks_stderr_file")
 	rm -f "$checks_stderr_file"
 	if [[ "$required_only" -eq 1 && "$rc" -eq 1 && -z "$checks" && "$checks_stderr" =~ ^no\ required\ checks\ reported\ on\ the\ \'[^\']+\'\ branch$ ]]; then

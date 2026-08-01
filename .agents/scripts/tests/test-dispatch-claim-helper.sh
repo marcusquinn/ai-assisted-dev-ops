@@ -1049,6 +1049,40 @@ EOF
 }
 
 #######################################
+# Assert the optional linked-issue contract using the direct-target fixture.
+# Args: mock directory, gh call log, expected head SHA
+#######################################
+_assert_linked_issue_pr_repair_target() {
+	local tmp_dir="$1"
+	local calls_file="$2"
+	local expected_sha="$3"
+	local linked_pr=""
+	local output=""
+	local status=0
+	linked_pr="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\",\"isCrossRepository\":false,\"closingIssuesReferences\":[{\"number\":42,\"repository\":{\"name\":\"repo\",\"owner\":{\"login\":\"owner\"}}}]}"
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" MOCK_PR_JSON="$linked_pr" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 42 2>&1) || status=$?
+	if [[ "$status" -eq 0 && "$output" == *"PR_REPAIR_TARGET_VALID"* ]] &&
+		grep -Fxq 'pr view 77 --repo owner/repo --json state,headRefName,headRefOid,isCrossRepository,closingIssuesReferences' "$calls_file"; then
+		print_result "linked-issue PR target binds exact closing identity" 0
+	else
+		print_result "linked-issue PR target binds exact closing identity" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" MOCK_PR_JSON="$linked_pr" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 43 2>&1) || status=$?
+	if [[ "$status" -eq 1 && "$output" == *"reason=closing_link_changed"* ]]; then
+		print_result "linked-issue PR target rejects unrelated issue ownership" 0
+	else
+		print_result "linked-issue PR target rejects unrelated issue ownership" 1 "status=$status output=$output"
+	fi
+	return 0
+}
+
+#######################################
 # Test: direct PR-repair verification accepts only the exact open head and
 # fails closed when the PR closes, its head drifts, or metadata is unavailable.
 #######################################
@@ -1075,10 +1109,10 @@ EOF
 
 	output=$(PATH="${tmp_dir}/bin:$PATH" \
 		MOCK_PR_GH_CALLS="$calls_file" \
-		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}" \
+		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\",\"isCrossRepository\":false}" \
 		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
 	if [[ "$status" -eq 0 && "$output" == *"PR_REPAIR_TARGET_VALID"* ]] && \
-		grep -Fxq 'pr view 77 --repo owner/repo --json state,headRefName,headRefOid' "$calls_file"; then
+		grep -Fxq 'pr view 77 --repo owner/repo --json state,headRefName,headRefOid,isCrossRepository' "$calls_file"; then
 		print_result "direct PR target accepts exact open head" 0
 	else
 		print_result "direct PR target accepts exact open head" 1 "status=$status output=$output"
@@ -1087,7 +1121,7 @@ EOF
 	status=0
 	output=$(PATH="${tmp_dir}/bin:$PATH" \
 		MOCK_PR_GH_CALLS="$calls_file" \
-		MOCK_PR_JSON="{\"state\":\"CLOSED\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}" \
+		MOCK_PR_JSON="{\"state\":\"CLOSED\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\",\"isCrossRepository\":false}" \
 		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
 	if [[ "$status" -eq 1 && "$output" == *"PR_REPAIR_TARGET_LOST"* && "$output" == *'"state":"CLOSED"'* ]]; then
 		print_result "direct PR target rejects closed PR" 0
@@ -1098,13 +1132,26 @@ EOF
 	status=0
 	output=$(PATH="${tmp_dir}/bin:$PATH" \
 		MOCK_PR_GH_CALLS="$calls_file" \
-		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${drifted_sha}\"}" \
+		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${drifted_sha}\",\"isCrossRepository\":false}" \
 		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
 	if [[ "$status" -eq 1 && "$output" == *"PR_REPAIR_TARGET_LOST"* && "$output" == *"${drifted_sha}"* ]]; then
 		print_result "direct PR target rejects head drift" 0
 	else
 		print_result "direct PR target rejects head drift" 1 "status=$status output=$output"
 	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" \
+		MOCK_PR_GH_CALLS="$calls_file" \
+		MOCK_PR_JSON="{\"state\":\"OPEN\",\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\",\"isCrossRepository\":true}" \
+		"$CLAIM_HELPER" verify-pr-repair-target 77 owner/repo "$expected_sha" feature/review 2>&1) || status=$?
+	if [[ "$status" -eq 1 && "$output" == *"PR_REPAIR_TARGET_LOST"* && "$output" == *'"is_cross_repository":true'* ]]; then
+		print_result "direct PR target rejects cross-repository head" 0
+	else
+		print_result "direct PR target rejects cross-repository head" 1 "status=$status output=$output"
+	fi
+
+	_assert_linked_issue_pr_repair_target "$tmp_dir" "$calls_file" "$expected_sha"
 
 	status=0
 	output=$(PATH="${tmp_dir}/bin:$PATH" \
@@ -1117,6 +1164,104 @@ EOF
 	else
 		print_result "direct PR target metadata failure fails closed" 1 "status=$status output=$output"
 	fi
+
+	rm -rf "$tmp_dir"
+	return 0
+}
+
+#######################################
+# Test: stale draft continuation revalidates draft mode, authoritative closing
+# linkage, protected PR labels, and the linked issue lifecycle envelope.
+#######################################
+test_pr_checkpoint_target_verification() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	mkdir -p "${tmp_dir}/bin"
+	cat >"${tmp_dir}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MOCK_CHECKPOINT_GH_CALLS:?}"
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	printf '%s\n' "${MOCK_CHECKPOINT_PR_JSON:?}"
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42" ]]; then
+	printf '%s\n' "${MOCK_CHECKPOINT_ISSUE_JSON:?}"
+	exit 0
+fi
+exit 1
+EOF
+	chmod +x "${tmp_dir}/bin/gh"
+	local calls_file="${tmp_dir}/gh-calls"
+	local expected_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	local valid_pr=""
+	local valid_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"}],"assignees":[{"login":"mockrunner"}]}'
+	local output=""
+	local status=0
+	valid_pr="{\"number\":77,\"state\":\"OPEN\",\"closingIssuesReferences\":[{\"number\":42,\"repository\":{\"name\":\"repo\",\"owner\":{\"login\":\"owner\"}}}],\"isDraft\":true,\"isCrossRepository\":false,\"labels\":[{\"name\":\"origin:worker\"}],\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}"
+
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$valid_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	if [[ "$status" -eq 0 && "$output" == *"PR_CHECKPOINT_TARGET_VALID"* ]] &&
+		grep -q '^pr view 77 ' "$calls_file" && grep -q '^api repos/owner/repo/issues/42$' "$calls_file"; then
+		print_result "PR checkpoint target accepts exact runnable worker draft" 0
+	else
+		print_result "PR checkpoint target accepts exact runnable worker draft" 1 "status=$status output=$output"
+	fi
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="${valid_pr/\"isDraft\":true/\"isDraft\":false}" \
+		MOCK_CHECKPOINT_ISSUE_JSON="$valid_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects ready-state transition" 0 \
+		|| print_result "PR checkpoint target rejects ready-state transition" 1 "status=$status output=$output"
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="${valid_pr/\"isCrossRepository\":false/\"isCrossRepository\":true}" \
+		MOCK_CHECKPOINT_ISSUE_JSON="$valid_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects cross-repository head" 0 \
+		|| print_result "PR checkpoint target rejects cross-repository head" 1 "status=$status output=$output"
+
+	status=0
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="${valid_pr/\[\{\"number\":42,\"repository\":\{\"name\":\"repo\",\"owner\":\{\"login\":\"owner\"\}\}\}\]/[]}" \
+		MOCK_CHECKPOINT_ISSUE_JSON="$valid_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects bare issue linkage" 0 \
+		|| print_result "PR checkpoint target rejects bare issue linkage" 1 "status=$status output=$output"
+
+	status=0
+	local held_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"},{"name":"needs-maintainer-review"}],"assignees":[{"login":"mockrunner"}]}'
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$held_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects linked issue hold" 0 \
+		|| print_result "PR checkpoint target rejects linked issue hold" 1 "status=$status output=$output"
+
+	status=0
+	local contradictory_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"},{"name":"status:done"}],"assignees":[{"login":"mockrunner"}]}'
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$contradictory_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects contradictory lifecycle statuses" 0 \
+		|| print_result "PR checkpoint target rejects contradictory lifecycle statuses" 1 "status=$status output=$output"
+
+	status=0
+	local reassigned_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"}],"assignees":[{"login":"replacement-owner"}]}'
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$reassigned_issue" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects one-for-one reassignment" 0 \
+		|| print_result "PR checkpoint target rejects one-for-one reassignment" 1 "status=$status output=$output"
 
 	rm -rf "$tmp_dir"
 	return 0
@@ -1790,6 +1935,7 @@ main() {
 	test_claim_revoked_after_consensus_takeover
 	test_worker_runtime_ownership_verification
 	test_pr_repair_target_verification
+	test_pr_checkpoint_target_verification
 	test_env_var_defaults
 	test_check_releases_claim_only_orphan
 	test_check_preserves_fresh_claim_only_marker

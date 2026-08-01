@@ -36,8 +36,26 @@ write_fake_commands() {
 	cat >"${bin_dir}/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "api" && "${2:-}" == repos/*/releases/latest ]]; then
-    printf '%s\n' 'v2.0.0'
+if [[ "${1:-}" == "api" && "${2:-}" == repos/*/releases\?per_page=100 && "${3:-}" == "--paginate" ]]; then
+    [[ "${MONITOR_API_FAIL:-false}" != true ]] || exit 1
+    if [[ -n "${MONITOR_RELEASES_FILE:-}" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            printf '%s\n' "$line"
+        done <"${MONITOR_RELEASES_FILE}"
+    else
+        cat <<'JSON'
+[
+  {"tag_name":"v1.10.0","draft":false,"prerelease":false},
+  {"tag_name":"v9.0.0","draft":true,"prerelease":false},
+  {"tag_name":"desktop-v99.0.0","draft":false,"prerelease":false}
+]
+[
+  {"tag_name":"v8.0.0","draft":false,"prerelease":true},
+  {"tag_name":"2.0.0","draft":false,"prerelease":false},
+  {"tag_name":99,"draft":false,"prerelease":false}
+]
+JSON
+    fi
     exit 0
 fi
 if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
@@ -150,6 +168,119 @@ test_monitor_deduplicates_and_preserves_source() {
 	return 0
 }
 
+test_monitor_selects_configured_stream() {
+	local home_dir="${TEST_ROOT}/stream-home"
+	local repo_dir="${TEST_ROOT}/stream-package"
+	local bin_dir="${TEST_ROOT}/stream-bin"
+	local log_file="${TEST_ROOT}/stream-issues.log"
+	local releases_file="${TEST_ROOT}/stream-releases.json"
+	local config_tmp="${TEST_ROOT}/stream-repos.json"
+	local manifest_tmp="${TEST_ROOT}/stream-manifest.json"
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	jq '.initialized_repos[0].cloudron_package.upstream_tag_prefixes = ["desktop-v"]' \
+		"${home_dir}/.config/aidevops/repos.json" >"$config_tmp"
+	mv "$config_tmp" "${home_dir}/.config/aidevops/repos.json"
+	jq '.upstreamVersion = "0.5.0"' "${repo_dir}/CloudronManifest.json" >"$manifest_tmp"
+	mv "$manifest_tmp" "${repo_dir}/CloudronManifest.json"
+	cat >"$releases_file" <<'JSON'
+[
+  {"tag_name":"desktop-v0.5.2","draft":false,"prerelease":false},
+  {"tag_name":"v99.0.0","draft":false,"prerelease":false},
+  {"tag_name":"desktop-v0.5.3","draft":false,"prerelease":false},
+  {"tag_name":"desktop-v9.0.0","draft":true,"prerelease":false},
+  {"tag_name":"desktop-v8.0.0","draft":false,"prerelease":true}
+]
+JSON
+
+	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" \
+		MONITOR_RELEASES_FILE="$releases_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" \
+		bash "$HELPER" upstream --apply >/dev/null
+	assert_equal 1 "$(grep -c '^CALL exampleorg/example-package$' "$log_file")" "configured stream creates one issue"
+	assert_equal 1 "$(grep -c '^TITLE Example Package upstream v0.5.3 is available$' "$log_file")" "configured prefix selects highest matching stable tag"
+	assert_equal 0 "$(grep -c '^TITLE Example Package upstream v99.0.0 is available$' "$log_file" || true)" "configured prefix rejects numerically larger unrelated stream"
+	return 0
+}
+
+test_monitor_rejects_malformed_prefixes() {
+	local home_dir="${TEST_ROOT}/prefix-home"
+	local repo_dir="${TEST_ROOT}/prefix-package"
+	local bin_dir="${TEST_ROOT}/prefix-bin"
+	local log_file="${TEST_ROOT}/prefix-issues.log"
+	local config_tmp="${TEST_ROOT}/prefix-repos.json"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	jq '.initialized_repos[0].cloudron_package.upstream_tag_prefixes = []' \
+		"${home_dir}/.config/aidevops/repos.json" >"$config_tmp"
+	mv "$config_tmp" "${home_dir}/.config/aidevops/repos.json"
+
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" \
+		CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 1 "$rc" "empty upstream tag-prefix array fails closed"
+	[[ "$output" == *"upstream_tag_prefixes for exampleorg/example-package must be a non-empty array of strings"* ]] &&
+		assert_equal true true "malformed tag prefixes report actionable error" ||
+		assert_equal true false "malformed tag prefixes report actionable error"
+	[[ ! -f "$log_file" ]] && assert_equal true true "malformed tag prefixes create no issue" || assert_equal true false "malformed tag prefixes create no issue"
+	return 0
+}
+
+test_monitor_rejects_control_characters_in_prefixes() {
+	local home_dir="${TEST_ROOT}/control-prefix-home"
+	local repo_dir="${TEST_ROOT}/control-prefix-package"
+	local bin_dir="${TEST_ROOT}/control-prefix-bin"
+	local log_file="${TEST_ROOT}/control-prefix-issues.log"
+	local config_tmp="${TEST_ROOT}/control-prefix-repos.json"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	jq '.initialized_repos[0].cloudron_package.upstream_tag_prefixes = ["desktop-v\nv"]' \
+		"${home_dir}/.config/aidevops/repos.json" >"$config_tmp"
+	mv "$config_tmp" "${home_dir}/.config/aidevops/repos.json"
+
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" \
+		CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 1 "$rc" "control character in upstream tag prefix fails closed"
+	[[ "$output" == *"upstream_tag_prefixes for exampleorg/example-package must be a non-empty array of strings; control characters are forbidden"* ]] &&
+		assert_equal true true "control character prefix reports actionable error" ||
+		assert_equal true false "control character prefix reports actionable error"
+	[[ ! -f "$log_file" ]] && assert_equal true true "control character prefix creates no issue" || assert_equal true false "control character prefix creates no issue"
+	return 0
+}
+
+test_monitor_fails_closed_on_release_api_error() {
+	local home_dir="${TEST_ROOT}/api-home"
+	local repo_dir="${TEST_ROOT}/api-package"
+	local bin_dir="${TEST_ROOT}/api-bin"
+	local log_file="${TEST_ROOT}/api-issues.log"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" MONITOR_API_FAIL=true \
+		CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 1 "$rc" "paginated release API failure fails closed"
+	[[ "$output" == *"Could not fetch paginated GitHub releases for exampleorg/upstream"* ]] &&
+		assert_equal true true "release API failure reports actionable error" ||
+		assert_equal true false "release API failure reports actionable error"
+	[[ ! -f "$log_file" ]] && assert_equal true true "release API failure creates no issue" || assert_equal true false "release API failure creates no issue"
+	return 0
+}
+
 test_monitor_rejects_blank_package_title() {
 	local home_dir="${TEST_ROOT}/blank-title-home"
 	local repo_dir="${TEST_ROOT}/blank-title-package"
@@ -177,6 +308,10 @@ main() {
 	TEST_ROOT=$(mktemp -d)
 	trap cleanup EXIT
 	test_monitor_deduplicates_and_preserves_source
+	test_monitor_selects_configured_stream
+	test_monitor_rejects_malformed_prefixes
+	test_monitor_rejects_control_characters_in_prefixes
+	test_monitor_fails_closed_on_release_api_error
 	test_monitor_rejects_blank_package_title
 	printf '\nRan %d tests, %d failed.\n' "$((PASSED + FAILED))" "$FAILED"
 	[[ "$FAILED" -eq 0 ]] || return 1

@@ -15,7 +15,9 @@ Runs **after** dedup checks and **before** worker spawn for auto-generated issue
 ```text
 _dispatch_dedup_check_layers()   ← all dedup gates
 _ensure_issue_body_has_brief()   ← t2063 freshness guard
+_run_tier_simple_body_shape_check() ← explicit simple-contract guard
 _run_predispatch_validator()     ← GH#19118 ← HERE
+_refresh_issue_meta_after_tier_policy_checks() ← only after a label mutation
 _dispatch_launch_worker()        ← worker spawn
 ```
 
@@ -48,11 +50,12 @@ Prevents workers spawning only to find no ratchet-down work exists (GH#19024).
 
 Runs BEFORE generator-marker validators in `cmd_validate()`. Detects issues that modify the worker dispatch/spawn path by scanning the body's `## Files to modify` / `## How` sections for canonical dispatch-path file patterns (`pulse-wrapper.sh`, `pulse-dispatch-*.sh`, `headless-runtime-helper.sh`, `worker-lifecycle-common.sh`, `shared-dispatch-dedup.sh`, etc.).
 
-When dispatch-path work is detected without `tier:thinking`:
+When dispatch-path work is detected without one normalized `tier:thinking` label:
 
-1. Applies `tier:thinking` via `gh issue edit`
+1. Removes lower `tier:*` labels and applies `tier:thinking` via `gh issue edit`
 2. Posts a provenance-wrapped audit comment (`<!-- self-hosting-tier-override -->` marker for idempotency)
-3. Returns 0 (never blocks dispatch)
+3. Signals the dispatcher to refresh its bundled issue metadata before model resolution
+4. Returns 0 (never blocks dispatch)
 
 **Rationale:** Self-hosting tasks run through the dispatch path being changed. Applying the terminal workload tier upfront avoids lower-tier attempts while leaving concrete model and reasoning selection to runtime routing.
 

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+
+set -euo pipefail
+
+TEST_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAYERS="$(cd "${TEST_SCRIPT_DIR}/.." && pwd)/pulse-dispatch-dedup-layers.sh"
+TEST_ROOT="$(mktemp -d)"
+TESTS_RUN=0
+TESTS_FAILED=0
+trap 'rm -rf "$TEST_ROOT"' EXIT
+
+print_result() {
+	local name="$1"
+	local passed="$2"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$passed" -eq 0 ]]; then
+		printf 'PASS %s\n' "$name"
+		return 0
+	fi
+	printf 'FAIL %s\n' "$name"
+	TESTS_FAILED=$((TESTS_FAILED + 1))
+	return 0
+}
+
+# shellcheck source=../pulse-dispatch-dedup-layers.sh
+source "$LAYERS"
+SCRIPT_DIR="${TEST_ROOT}/scripts"
+LOGFILE="${TEST_ROOT}/pulse.log"
+mkdir -p "$SCRIPT_DIR"
+cat >"${SCRIPT_DIR}/dispatch-dedup-helper.sh" <<'DEDUP_STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "is-assigned" ]]; then
+	printf '%s\n' "${STUB_ASSIGNED_OUTPUT}"
+	exit 1
+fi
+exit 1
+DEDUP_STUB
+chmod +x "${SCRIPT_DIR}/dispatch-dedup-helper.sh"
+
+# Exercise the production router's event parsing/argument fence before replacing
+# it with a counter stub for the Layer 6 return-semantics tests below.
+ROUTE_ARGS_FILE="${TEST_ROOT}/route-args"
+mkdir -p "${TEST_ROOT}/repo"
+cat >"${SCRIPT_DIR}/pr-checkpoint-continuation-helper.sh" <<ROUTE_STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"${ROUTE_ARGS_FILE}"
+exit 0
+ROUTE_STUB
+chmod +x "${SCRIPT_DIR}/pr-checkpoint-continuation-helper.sh"
+_pulse_merge_repo_path_for_slug() {
+	local _repo_slug="$1"
+	: "$_repo_slug"
+	printf '%s\n' "${TEST_ROOT}/repo"
+	return 0
+}
+
+PRODUCTION_ROUTER="_dispatch_stale_pr_checkpoint_continuation"
+if "$PRODUCTION_ROUTER" "123" "owner/repo" \
+	'STALE_PR_CONTINUATION: issue #123 in owner/repo — PR #42 preserved for exact-head continuation assignee=stale-runner' "runner" && \
+	[[ "$(<"$ROUTE_ARGS_FILE")" == "dispatch owner/repo ${TEST_ROOT}/repo 42 123 stale-runner runner" ]]; then
+	print_result "router binds continuation to stale and authenticated owners" 0
+else
+	print_result "router binds continuation to stale and authenticated owners" 1
+fi
+
+if ! "$PRODUCTION_ROUTER" "123" "owner/repo" \
+	'STALE_PR_CONTINUATION: issue #123 in owner/repo — PR #42 preserved for exact-head continuation' "runner"; then
+	print_result "router rejects continuation without exact stale assignee" 0
+else
+	print_result "router rejects continuation without exact stale assignee" 1
+fi
+
+ROUTE_CALLS=0
+ROUTE_RESULT=0
+_dispatch_stale_pr_checkpoint_continuation() {
+	local _issue_number="$1"
+	local _repo_slug="$2"
+	local _assigned_output="$3"
+	local _self_login="$4"
+	: "$_issue_number" "$_repo_slug" "$_assigned_output" "$_self_login"
+	ROUTE_CALLS=$((ROUTE_CALLS + 1))
+	return "$ROUTE_RESULT"
+}
+
+export STUB_ASSIGNED_OUTPUT='STALE_PR_CONTINUATION: issue #123 in owner/repo — PR #42 preserved for exact-head continuation assignee=stale-runner'
+if _dedup_layer6_assignee_and_stale "123" "owner/repo" "runner" && [[ "$ROUTE_CALLS" -eq 1 ]]; then
+	print_result "stale draft continuation routes once and blocks issue redispatch" 0
+else
+	print_result "stale draft continuation routes once and blocks issue redispatch" 1
+fi
+
+ROUTE_RESULT=1
+if _dedup_layer6_assignee_and_stale "123" "owner/repo" "runner" && [[ "$ROUTE_CALLS" -eq 2 ]]; then
+	print_result "continuation launch failure still blocks competing dispatch" 0
+else
+	print_result "continuation launch failure still blocks competing dispatch" 1
+fi
+
+export STUB_ASSIGNED_OUTPUT='STALE_RECHECK_BLOCKED: issue #123 in owner/repo — evidence changed before draft continuation'
+if _dedup_layer6_assignee_and_stale "123" "owner/repo" "runner" && [[ "$ROUTE_CALLS" -eq 2 ]]; then
+	print_result "changed stale evidence fails closed without continuation or redispatch" 0
+else
+	print_result "changed stale evidence fails closed without continuation or redispatch" 1
+fi
+
+if [[ "$TESTS_FAILED" -eq 0 ]]; then
+	printf 'All %d tests passed\n' "$TESTS_RUN"
+	exit 0
+fi
+printf '%d / %d tests failed\n' "$TESTS_FAILED" "$TESTS_RUN"
+exit 1

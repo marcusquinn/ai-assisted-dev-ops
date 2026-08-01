@@ -67,6 +67,15 @@
       "conclusion": null,
       "check_suite": { "id": 501 },
       "app": { "slug": "github-actions" }
+    },
+    {
+      "id": 2008,
+      "name": "Qlty Smell Threshold",
+      "status": "completed",
+      "conclusion": "failure",
+      "completed_at": "2026-07-13T20:04:00Z",
+      "check_suite": { "id": 501 },
+      "app": { "slug": "github-actions" }
     }
   ]
 }

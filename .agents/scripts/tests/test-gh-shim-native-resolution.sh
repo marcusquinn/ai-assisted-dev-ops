@@ -43,6 +43,9 @@ for shim_path in \
 	"$TMP/home/.aidevops/agents/scripts/gh" \
 	"$TMP/repo/.agents/scripts/gh"; do
 	cp "$SHIM" "$shim_path"
+	for module in gh-native-transport-lib.sh gh-api-guards-lib.sh gh-write-policy-lib.sh; do
+		cp "${REPO_DIR}/.agents/scripts/${module}" "$(dirname "$shim_path")/${module}"
+	done
 	chmod +x "$shim_path"
 done
 ln -s "$TMP/home/.aidevops/agents/scripts/gh" "$TMP/home/.aidevops/bin/gh"

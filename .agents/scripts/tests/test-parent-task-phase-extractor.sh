@@ -98,9 +98,9 @@ assert_true() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 EXTRACTOR="$SCRIPT_DIR/parent-task-phase-extractor.sh"
-RECONCILE="$SCRIPT_DIR/pulse-issue-reconcile.sh"
+RECONCILE_ACTIONS="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
 
-for required in "$EXTRACTOR" "$RECONCILE"; do
+for required in "$EXTRACTOR" "$RECONCILE_ACTIONS"; do
 	if [ ! -f "$required" ]; then
 		printf '%sFATAL%s: %s not found\n' "$TEST_RED" "$TEST_NC" "$required"
 		exit 1
@@ -450,29 +450,29 @@ assert_grep_fixed \
 	'no-auto-dispatch' \
 	"$EXTRACTOR"
 
-# ─── 17. Wiring: reconcile.sh calls phase-extractor before nudge/escalation ───
+# ─── 17. Wiring: action module calls extractor before nudge/escalation ────────
 
 assert_grep \
-	"17a: reconcile.sh calls phase-extractor (t2771)" \
+	"17a: action module calls phase-extractor (t2771)" \
 	'parent-task-phase-extractor\.sh' \
-	"$RECONCILE"
+	"$RECONCILE_ACTIONS"
 
 assert_grep \
-	"17b: reconcile.sh skips nudge/escalation when extractor fires" \
+	"17b: action module skips nudge/escalation when extractor fires" \
 	'_phase_extractor.*run.*issue_num' \
-	"$RECONCILE"
+	"$RECONCILE_ACTIONS"
 
 assert_grep_fixed \
-	"17c: reconcile.sh references t2771 in the phase-extractor integration comment" \
+	"17c: action module references t2771 in the phase-extractor integration comment" \
 	't2771' \
-	"$RECONCILE"
+	"$RECONCILE_ACTIONS"
 
 # ─── 18. Wiring: reconcile uses _PIR_SCRIPT_DIR for extractor path ────────────
 
 assert_grep_fixed \
-	"18: reconcile.sh uses _PIR_SCRIPT_DIR to locate extractor (consistent with module sourcing)" \
+	"18: action module uses _PIR_SCRIPT_DIR to locate extractor" \
 	'_PIR_SCRIPT_DIR' \
-	"$RECONCILE"
+	"$RECONCILE_ACTIONS"
 
 # ─── Shellcheck ───────────────────────────────────────────────────────────────
 

@@ -412,8 +412,10 @@ cmd_footer() {
 		esac
 	done
 
-	# Dedup: if the body already contains an aidevops signature, skip
-	if [[ -n "$body_to_check" ]] && [[ "$body_to_check" == *"aidevops.sh"* ]]; then
+	# Dedup only on the canonical marker occupying its own complete line.
+	# Root script references and inline marker documentation are body content,
+	# not evidence that a signature footer has already been appended.
+	if [[ -n "$body_to_check" ]] && grep -Fqx '<!-- aidevops:sig -->' <<<"$body_to_check"; then
 		return 0
 	fi
 

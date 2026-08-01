@@ -534,6 +534,23 @@ assert_contains "OpenCode CLI override still detects version" "plugin for [OpenC
 rm -rf "$tmp_home_21"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Test 22: footer dedup uses only a standalone canonical marker line
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 22: footer dedup requires a standalone canonical marker line"
+result=$("$HELPER" footer --body "See aidevops.sh:1715 for the release entry point" \
+	--cli "OpenCode" --model "m" --tokens 1)
+assert_contains "root script reference still receives footer" "<!-- aidevops:sig -->" "$result"
+
+result=$("$HELPER" footer --body "Documentation mentions <!-- aidevops:sig --> inline" \
+	--cli "OpenCode" --model "m" --tokens 1)
+assert_contains "inline marker mention still receives footer" "<!-- aidevops:sig -->" "$result"
+
+result=$("$HELPER" footer --body $'Existing footer\n<!-- aidevops:sig -->\n---\nsigned' \
+	--cli "OpenCode" --model "m" --tokens 1)
+assert_eq "standalone marker suppresses duplicate footer" "" "$result"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""

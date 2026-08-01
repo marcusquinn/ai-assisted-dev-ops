@@ -315,7 +315,7 @@ _fetch_recently_closed_parent_tasks() {
 	cutoff=$(_recent_closed_parent_cutoff) || return 1
 	gh_issue_list --repo "$slug" --state closed \
 		--label "$parent_label" --search "closed:>=${cutoff}" \
-		--json number,title,body,state --limit 10 2>/dev/null || return 1
+		--json number,title,body,state,labels --limit 10 2>/dev/null || return 1
 	return 0
 }
 
@@ -355,7 +355,7 @@ reconcile_completed_parent_tasks() {
 		else
 			open_issues_json=$(gh_issue_list --repo "$slug" --state open \
 				--label "$_cpt_lbl" \
-				--json number,title,body,state --limit 10 2>/dev/null) || open_issues_json="[]"
+				--json number,title,body,state,labels --limit 10 2>/dev/null) || open_issues_json="[]"
 		fi
 		closed_issues_json=$(_fetch_recently_closed_parent_tasks "$slug" "$_cpt_lbl") || closed_issues_json="[]"
 		issues_json=$(printf '%s\n%s\n' "$open_issues_json" "$closed_issues_json" | \
@@ -368,12 +368,14 @@ reconcile_completed_parent_tasks() {
 
 		local i=0
 		while [[ "$i" -lt "$issue_count" ]] && [[ "$total_closed" -lt "$max_closes" || "$total_nudged" -lt "$max_nudges" || "$total_escalated" -lt "$max_escalations" || "$total_reopened" -lt "$max_reopens" ]]; do
-			local issue_num="" issue_body="" issue_title="" issue_state=""
+			local issue_num="" issue_body="" issue_title="" issue_state="" issue_labels=""
 			issue_num=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].number // ""') || true
 			issue_body=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].body // ""') || true
 			issue_title=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].title // ""') || true
 			issue_state=$(printf '%s' "$issues_json" | \
 				jq -r --argjson i "$i" --arg state "$_open_state" '.[$i].state // $state') || issue_state="$_open_state"
+			issue_labels=$(printf '%s' "$issues_json" | \
+				jq -r --argjson i "$i" '[.[$i].labels[]?.name] | join(",")') || issue_labels=""
 			i=$((i + 1))
 			[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
 
@@ -386,7 +388,7 @@ reconcile_completed_parent_tasks() {
 			[[ $((_can_close + _can_nudge + _can_escalate)) -gt 0 ]] || continue
 
 			_action_cpt_single "$slug" "$issue_num" "$issue_title" "$issue_body" \
-				"$_can_close" "$_can_nudge" "$_can_escalate" "$escalation_threshold_hours" "$issue_state"
+				"$_can_close" "$_can_nudge" "$_can_escalate" "$escalation_threshold_hours" "$issue_state" "$issue_labels"
 			[[ "$_SP_CPT_CLOSED" -eq 1 ]] && total_closed=$((total_closed + 1))
 			[[ "$_SP_CPT_NUDGED" -eq 1 ]] && total_nudged=$((total_nudged + 1))
 			[[ "$_SP_CPT_ESCALATED" -eq 1 ]] && total_escalated=$((total_escalated + 1))

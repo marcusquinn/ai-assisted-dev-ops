@@ -79,16 +79,20 @@ live_bin="${TMPDIR_TEST}/live-bin"
 mkdir -p "$live_bin"
 cat >"${live_bin}/gh" <<'STUB'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	printf '%s\n' 'live-head'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo/pulls/123" ]]; then
+	printf '%s\n' '{"number":123,"node_id":"PR_fixture","head":{"ref":"feature/test","sha":"0123456789abcdef0123456789abcdef01234567"}}'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
 	if [[ "${GH_TEST_MODE:-no-required}" == "api-error" ]]; then
 		printf '%s\n' 'HTTP 503: service unavailable' >&2
 		exit 1
 	fi
-	printf "%s\n" "no required checks reported on the 'feature/test' branch" >&2
-	exit 1
-fi
-if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
-	printf '%s\n' 'live-head'
+	printf '%s\n' '{"data":{"node":{"__typename":"PullRequest","statusCheckRollup":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"StatusContext","context":"optional","state":"SUCCESS","targetUrl":"","createdAt":"2026-08-01T00:00:00Z","description":"","isRequired":false}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}]}},"rateLimit":{"cost":1}}}'
 	exit 0
 fi
 exit 1
@@ -97,15 +101,15 @@ chmod +x "${live_bin}/gh"
 
 live_no_required_output=$(PATH="${live_bin}:$PATH" AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \
 	"$HELPER" wait 123 --repo example/repo --timeout 0 2>&1)
-assert_contains "canonical CLI no-required message is terminal success" "PASS: required checks completed" "$live_no_required_output"
+assert_contains "canonical no-required message is terminal success" "PASS: required checks completed" "$live_no_required_output"
 
 set +e
 live_api_error_output=$(PATH="${live_bin}:$PATH" GH_TEST_MODE=api-error AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \
 	"$HELPER" wait 123 --repo example/repo --timeout 0 2>&1)
 live_api_error_rc=$?
 set -e
-[[ "$live_api_error_rc" -eq 2 ]] && pass "CLI API error remains indeterminate" || fail "CLI API error remains indeterminate" "got ${live_api_error_rc}"
-assert_contains "CLI API error is diagnosed" "state unavailable" "$live_api_error_output"
+[[ "$live_api_error_rc" -eq 2 ]] && pass "exact-read API error remains indeterminate" || fail "exact-read API error remains indeterminate" "got ${live_api_error_rc}"
+assert_contains "exact-read API error is diagnosed" "state unavailable" "$live_api_error_output"
 
 mixed_skipping_dir="${TMPDIR_TEST}/mixed-skipping"
 write_fixture "$mixed_skipping_dir" 1 '[{"name":"Required","workflow":"CI","state":"SUCCESS","bucket":"pass","link":""},{"name":"Optional","workflow":"CI","state":"SKIPPED","bucket":"skipping","link":""}]'

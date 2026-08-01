@@ -308,6 +308,29 @@ test_explicit_cleanup_lease_identity() {
 	if ! is_worktree_owned_by_others_for_pid "$wt_path" "invalid" >/dev/null 2>&1; then
 		rc=1
 	fi
+	if ! worktree_has_exact_owner_contract "$wt_path" "$$" "cleanup:$$" \
+		"worktree-removal"; then
+		rc=1
+	fi
+	if worktree_has_exact_owner_contract "$wt_path" "$$" "cleanup-replaced" \
+		"worktree-removal"; then
+		rc=1
+	fi
+	if unregister_worktree_if_owner_contract "$wt_path" "$$" "cleanup-replaced" \
+		"worktree-removal"; then
+		rc=1
+	fi
+	if ! worktree_has_exact_owner_contract "$wt_path" "$$" "cleanup:$$" \
+		"worktree-removal"; then
+		rc=1
+	fi
+	if ! unregister_worktree_if_owner_contract "$wt_path" "$$" "cleanup:$$" \
+		"worktree-removal"; then
+		rc=1
+	fi
+	if check_worktree_owner "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
 	kill "$distinct_live_pid" 2>/dev/null || true
 	wait "$distinct_live_pid" 2>/dev/null || true
 	print_result "explicit cleanup lease distinguishes exact holder and other runtimes" "$rc"

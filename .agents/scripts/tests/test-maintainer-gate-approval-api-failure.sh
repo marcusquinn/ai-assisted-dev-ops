@@ -116,15 +116,18 @@ teardown_test_env() {
 run_issue_job() {
 	local scenario="$1"
 	local actor="${2:-maintainer}"
+	local labels_json="${3:-[]}"
 	GH_SCENARIO="$scenario" \
 		ISSUE_NUMBER=42 \
 		ISSUE_AUTHOR=external \
 		ACTOR="$actor" \
 		ACTOR_ASSOCIATION=OWNER \
+		ISSUE_LABELS_JSON="$labels_json" \
 		REPO=owner/repo \
 		GH_TOKEN=test-token \
 		PATH="${TEST_ROOT}/bin:${PATH}" \
-		bash -e "${TEST_ROOT}/issue-job.sh"
+		bash -e "${TEST_ROOT}/issue-job.sh" || return 1
+	return 0
 }
 
 run_pr_job() {
@@ -137,7 +140,8 @@ run_pr_job() {
 		REPO=owner/repo \
 		GH_TOKEN=test-token \
 		PATH="${TEST_ROOT}/bin:${PATH}" \
-		bash -e "${TEST_ROOT}/pr-job.sh"
+		bash -e "${TEST_ROOT}/pr-job.sh" || return 1
+	return 0
 }
 
 assert_no_mutation() {
@@ -195,6 +199,19 @@ test_issue_approval_paths() {
 		print_result "write-collaborator issue approval is accepted" 1 "job returned non-zero"
 	fi
 	assert_no_mutation "write-collaborator issue approval does not restore NMR"
+	: >"$GH_CALLS"
+	run_issue_job issue-unsigned maintainer '["persistent"]' >/dev/null 2>&1 || true
+	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
+		print_result "persistent issue cannot bypass protected NMR removal" 0
+	else
+		print_result "persistent issue cannot bypass protected NMR removal" 1 "expected issue edit"
+	fi
+	run_issue_job issue-unsigned maintainer '{"malformed":true}' >/dev/null 2>&1 || true
+	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
+		print_result "malformed persistent-label metadata fails closed" 0
+	else
+		print_result "malformed persistent-label metadata fails closed" 1 "expected issue edit"
+	fi
 	: >"$GH_CALLS"
 	run_issue_job issue-unsigned >/dev/null 2>&1 || true
 	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then

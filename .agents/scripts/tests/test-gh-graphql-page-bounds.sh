@@ -31,6 +31,9 @@ fail() {
 
 mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/shim"
 cp "$SHIM_SOURCE" "$TMP_ROOT/shim/gh"
+cp "${REPO_ROOT}/.agents/scripts/gh-native-transport-lib.sh" "$TMP_ROOT/shim/gh-native-transport-lib.sh"
+cp "${REPO_ROOT}/.agents/scripts/gh-api-guards-lib.sh" "$TMP_ROOT/shim/gh-api-guards-lib.sh"
+cp "${REPO_ROOT}/.agents/scripts/gh-write-policy-lib.sh" "$TMP_ROOT/shim/gh-write-policy-lib.sh"
 chmod +x "$TMP_ROOT/shim/gh"
 export GH_CALL_LOG="$TMP_ROOT/gh-calls.log"
 export PATH="$TMP_ROOT/bin:$PATH"

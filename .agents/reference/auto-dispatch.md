@@ -97,7 +97,7 @@ Tasks that modify the worker dispatch/spawn path **historically** defaulted to `
 **As of t2920 (Apr 2026), this default is reversed: dispatch-path tasks auto-dispatch like everything else.** The protection cascade now covers the residual risk:
 
 1. **Worker worktree isolation** — workers operate in isolated worktrees; a buggy in-flight fix cannot affect the live pulse.
-2. **t2819 pre-dispatch detector** — auto-elevates dispatch-path tasks to `tier:thinking` before dispatch, eliminating wasted lower-tier attempts while runtime routing chooses the model.
+2. **t2819 pre-dispatch detector** — normalizes dispatch-path tasks to one `tier:thinking` label before dispatch, eliminating wasted lower-tier attempts while runtime routing chooses the model.
 3. **CI gates** — every PR runs the full quality suite before merge.
 4. **Watchdog kills** — `worker-activity-watchdog.sh` kills workers with no output for 300s.
 5. **t2690 circuit breaker** — pauses ALL dispatch when GraphQL budget < 5%.
@@ -111,7 +111,7 @@ The task's brief `## How` section or `### Files Scope` references any file in th
 
 ### Decision tree (post-t2920)
 
-1. Brief references a dispatch-path file → use `#auto-dispatch` as normal. The t2819 detector applies `tier:thinking` before dispatch. The advisory tooling below emits non-blocking informational messages.
+1. Brief references a dispatch-path file → use `#auto-dispatch` as normal. The t2819 detector replaces lower tier labels with `tier:thinking` before dispatch. The advisory tooling below emits non-blocking informational messages.
 2. Author implements the issue interactively → keep `#auto-dispatch` and start through `interactive-start-helper.sh ... --auto-dispatch`. The temporary `status:in-review` + assignee claim blocks concurrent dispatch; release and unassign restore automatic continuation.
 3. A durable manual stop is explicitly required → use `#no-auto-dispatch` (or `interactive-session-helper.sh lockdown` when all pulse mutation must stop) and record the unresolved human decision or safety reason.
 4. No dispatch-path files in brief → normal dispatch rules apply.

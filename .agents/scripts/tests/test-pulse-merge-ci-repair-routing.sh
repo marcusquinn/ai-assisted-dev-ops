@@ -61,7 +61,7 @@ setup_test_env() {
 	export TEST_PR_HEAD_SHA
 	cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
 if [[ "$*" == *"--detach"* ]]; then
 	sleep "${TEST_WORKER_SLEEP_SECONDS:-2}" >/dev/null 2>&1 &
 	printf 'Dispatched PID: %s\n' "$!"
@@ -330,6 +330,7 @@ define_feedback_helpers() {
 		_ci_actionable_failed_checks_markdown
 		_ci_terminal_failed_check_results
 		_ci_merge_check_sets
+		_ci_repair_required_checks_json
 		_append_feedback_to_issue
 		_transition_issue_for_redispatch
 		_close_and_label_feedback_pr
@@ -380,6 +381,30 @@ EOF
 	_pulse_merge_repo_path_for_slug() { local repo_slug="$1"; [[ -n "$repo_slug" ]]; printf '%s\n' "${TEST_ROOT}/repo"; return 0; }
 	_is_process_alive_and_matches() { local process_pid="$1"; local process_pattern="$2"; local stored_hash="$3"; [[ -n "$process_pattern" || -n "$stored_hash" ]]; kill -0 "$process_pid" 2>/dev/null; return $?; }
 	_file_mtime_epoch() { local file_path="$1"; [[ -e "$file_path" ]] || return 1; date +%s; return 0; }
+	gh_pr_checks_exact_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local selection_mode="$3"
+		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
+		case "${TEST_CHECK_SCENARIO:-terminal_failure}" in
+		pending_only)
+			printf '%s\n' '[{"name":"Lint","bucket":"pending","state":"IN_PROGRESS","link":""}]'
+			return 8
+			;;
+		mixed_pending_pass)
+			printf '%s\n' '[{"name":"Lint","bucket":"pending","state":"QUEUED","link":""},{"name":"Unit","bucket":"pass","state":"SUCCESS","link":""}]'
+			return 8
+			;;
+		advisory_failure)
+			printf "%s\n" "no required checks reported on the 'feature/repair' branch" >&2
+			return 1
+			;;
+		*)
+			printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
+			return 1
+			;;
+		esac
+	}
 	for fn in "${fns[@]}"; do
 		fn_src=$(extract_function "$fn" "$FEEDBACK_SCRIPT")
 		[[ -n "$fn_src" ]] || return 1
@@ -549,18 +574,19 @@ test_ci_repair_dedupes_identical_evidence_for_same_head() {
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 
-	local edit_count state_count worktree_count dispatch_count active_count
+	local edit_count state_count worktree_count dispatch_count active_count ownership_mode_count
 	edit_count=$(grep -c 'gh issue edit .*--body' "$GH_LOG" || true)
 	[[ "$edit_count" =~ ^[0-9]+$ ]] || edit_count=0
 	state_count=$(find "$AIDEVOPS_CI_REPAIR_STATE_DIR" -name state.json -type f | wc -l | tr -d ' ')
 	worktree_count=$(grep -c '^worktree add ' "$GH_LOG" || true)
 	dispatch_count=$(grep -c 'dispatched in-place CI repair' "$LOGFILE" || true)
 	active_count=$(grep -c 'in-place CI repair already active' "$LOGFILE" || true)
+	ownership_mode_count=$(grep -c '|linked-issue|' "$GH_LOG" || true)
 
 	if [[ "$edit_count" -ne 0 || "$state_count" -ne 1 || "$worktree_count" -ne 1 ]]; then
 		print_result "CI repair dedupes identical evidence by repo/PR/head" 1 "issue_edits=${edit_count}, states=${state_count}, worktrees=${worktree_count}"
-	elif [[ "$dispatch_count" -ne 1 || "$active_count" -ne 1 ]]; then
-		print_result "CI repair distinguishes dispatch from a live lease" 1 "dispatches=${dispatch_count}, active=${active_count}"
+	elif [[ "$dispatch_count" -ne 1 || "$active_count" -ne 1 || "$ownership_mode_count" -ne 1 ]]; then
+		print_result "CI repair distinguishes dispatch from a live lease" 1 "dispatches=${dispatch_count}, active=${active_count}, ownership_modes=${ownership_mode_count}"
 	else
 		print_result "CI repair dedupes and reports a live lease without false dispatch" 0
 	fi

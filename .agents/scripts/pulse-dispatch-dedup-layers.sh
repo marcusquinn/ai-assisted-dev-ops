@@ -251,6 +251,53 @@ _dedup_layer5_dispatch_comment() {
 }
 
 #######################################
+# Route a preserved stale worker draft to the bounded exact-PR continuation
+# helper. Any lookup or launch failure remains a hard duplicate-dispatch block;
+# the existing draft is never replaced by a competing implementation.
+# Arguments: issue_number, repo_slug, stale helper output, authenticated login
+# Exit: 0 when continuation launched/deduplicated, 1 when routing unavailable
+#######################################
+_dispatch_stale_pr_checkpoint_continuation() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local assigned_output="$3"
+	local self_login="$4"
+	local pr_number=""
+	local checkpoint_assignee=""
+	local repo_path=""
+	local continuation_helper="${SCRIPT_DIR}/pr-checkpoint-continuation-helper.sh"
+
+	if [[ "$assigned_output" =~ PR[[:space:]]#([0-9]+) ]]; then
+		pr_number="${BASH_REMATCH[1]}"
+	fi
+	if [[ "$assigned_output" =~ assignee=([^[:space:]]+) ]]; then
+		checkpoint_assignee="${BASH_REMATCH[1]}"
+	fi
+	if [[ -z "$pr_number" || -z "$self_login" ||
+		! "$checkpoint_assignee" =~ ^[A-Za-z0-9._-]+(\[bot\])?$ ||
+		"$checkpoint_assignee" == *,* || ! -x "$continuation_helper" ]]; then
+		echo "[pulse-wrapper] Dedup: stale draft continuation unavailable for #${issue_number} in ${repo_slug} (pr=${pr_number:-unknown}, assignee=${checkpoint_assignee:-unknown}, helper=${continuation_helper})" >>"$LOGFILE"
+		return 1
+	fi
+	if ! declare -F _pulse_merge_repo_path_for_slug >/dev/null 2>&1; then
+		echo "[pulse-wrapper] Dedup: stale draft continuation cannot resolve repository path for #${issue_number} in ${repo_slug}" >>"$LOGFILE"
+		return 1
+	fi
+	repo_path=$(_pulse_merge_repo_path_for_slug "$repo_slug" 2>/dev/null) || repo_path=""
+	if [[ -z "$repo_path" || ! -d "$repo_path" ]]; then
+		echo "[pulse-wrapper] Dedup: stale draft continuation repository path unavailable for #${issue_number} in ${repo_slug}" >>"$LOGFILE"
+		return 1
+	fi
+	if "$continuation_helper" dispatch "$repo_slug" "$repo_path" "$pr_number" \
+		"$issue_number" "$checkpoint_assignee" "$self_login" >>"$LOGFILE" 2>&1; then
+		echo "[pulse-wrapper] Dedup: routed stale draft PR #${pr_number} for issue #${issue_number} to exact-head continuation" >>"$LOGFILE"
+		return 0
+	fi
+	echo "[pulse-wrapper] Dedup: exact-head continuation deferred for stale draft PR #${pr_number} on issue #${issue_number}; preserving duplicate-dispatch block" >>"$LOGFILE"
+	return 1
+}
+
+#######################################
 # Layer 6 (GH#6891): cross-machine assignee guard + stale recovery.
 # Prevents runners from dispatching workers for issues already assigned to
 # another login. On STALE_RECOVERED with worker evidence, records fast-fail
@@ -270,6 +317,14 @@ _dedup_layer6_assignee_and_stale() {
 			assigned_reason=$("$dedup_helper" classify-blocker "$assigned_output" 2>/dev/null) || assigned_reason="unknown"
 			echo "[pulse-wrapper] Dedup: #${issue_number} in ${repo_slug} already assigned — DISPATCH_BLOCK_REASON reason=${assigned_reason} signal=${assigned_output}" >>"$LOGFILE"
 			printf '%s\n' "$assigned_output"
+			return 0
+		fi
+		if [[ "$assigned_output" == *STALE_PR_CONTINUATION* ]]; then
+			_dispatch_stale_pr_checkpoint_continuation "$issue_number" "$repo_slug" "$assigned_output" "$self_login" || true
+			return 0
+		fi
+		if [[ "$assigned_output" == *STALE_RECHECK_BLOCKED* ]]; then
+			echo "[pulse-wrapper] Dedup: stale evidence changed for #${issue_number} in ${repo_slug}; preserving assignment and blocking this cycle" >>"$LOGFILE"
 			return 0
 		fi
 		# GH#27853: exhausted stale-recovery paths are terminal outcomes. Route
