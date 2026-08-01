@@ -241,10 +241,11 @@ unset _cand
 # -----------------------------------------------------------------------------
 _SHIM_READ_REWRITE=""
 case "${1:-}:${2:-}" in
-	auth:git-credential)
-		# The Git credential-helper protocol only reads local auth storage and
-		# exchanges key/value records over stdin/stdout. Counting it as GraphQL
-		# creates false unknown-quota attempts (GH#27777); preserve it byte-for-byte.
+	auth:git-credential | auth:token)
+		# These auth commands only read local credential storage. Counting them as
+		# GraphQL creates false unknown-quota attempts, while transport framing can
+		# break keychain recovery under sudo (GH#27777, GH#29153). Preserve native
+		# stdout, stderr, and exit status byte-for-byte without logging token output.
 		_real_gh="$(_find_real_gh)" || {
 			printf '[aidevops] gh shim: real gh binary not found on PATH\n' >&2
 			exit 127
