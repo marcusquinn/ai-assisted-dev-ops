@@ -805,6 +805,80 @@ detect_unregistered_repo() {
 	return 0
 }
 
+# Refresh the configured upstream for a protected branch and record its state.
+# A branch without a configured remote upstream remains valid for local-only use.
+_protected_branch_refresh_upstream() {
+	local current_branch="$1"
+	_PROTECTED_BRANCH_UPSTREAM=""
+	_PROTECTED_BRANCH_AHEAD=0
+	_PROTECTED_BRANCH_BEHIND=0
+
+	local remote="" merge_ref="" remote_branch="" remote_tracking_ref=""
+	remote=$(git config --get "branch.${current_branch}.remote" 2>/dev/null || true)
+	merge_ref=$(git config --get "branch.${current_branch}.merge" 2>/dev/null || true)
+	[[ -n "$remote" && "$remote" != "." && "$merge_ref" == refs/heads/* ]] || return 0
+
+	remote_branch="${merge_ref#refs/heads/}"
+	remote_tracking_ref="refs/remotes/${remote}/${remote_branch}"
+	if ! git fetch --quiet "$remote" "+${merge_ref}:${remote_tracking_ref}"; then
+		print_error "Could not refresh ${remote}/${remote_branch}; refusing protected-branch initialization"
+		return 1
+	fi
+
+	_PROTECTED_BRANCH_UPSTREAM="${remote}/${remote_branch}"
+	local counts=""
+	counts=$(git rev-list --left-right --count "HEAD...${_PROTECTED_BRANCH_UPSTREAM}" 2>/dev/null) || {
+		print_error "Could not compare ${current_branch} with ${_PROTECTED_BRANCH_UPSTREAM}"
+		return 1
+	}
+	read -r _PROTECTED_BRANCH_AHEAD _PROTECTED_BRANCH_BEHIND <<<"$counts"
+	return 0
+}
+
+_protected_branch_worktree_path() {
+	local branch_name="$1"
+	git worktree list --porcelain | awk -v branch_ref="refs/heads/${branch_name}" '
+		/^worktree / { path = substr($0, 10) }
+		$0 == "branch " branch_ref { print path; exit }
+	'
+	return 0
+}
+
+_protected_branch_create_worktree() {
+	local suggested_branch="$1"
+	local upstream="$2"
+	local fallback_dir="$3"
+	local worktree_dir="$fallback_dir"
+
+	if [[ -f "$AGENTS_DIR/scripts/worktree-helper.sh" ]]; then
+		local -a worktree_args=(add "$suggested_branch")
+		[[ -n "$upstream" ]] && worktree_args+=(--base "$upstream")
+		bash "$AGENTS_DIR/scripts/worktree-helper.sh" "${worktree_args[@]}" || {
+			print_error "Failed to create worktree via worktree-helper.sh"
+			return 1
+		}
+		worktree_dir=$(_protected_branch_worktree_path "$suggested_branch")
+		if [[ -z "$worktree_dir" || ! -d "$worktree_dir" ]]; then
+			print_error "Could not resolve the worktree created for $suggested_branch"
+			return 1
+		fi
+	else
+		local worktree_base="${upstream:-HEAD}"
+		git worktree add -b "$suggested_branch" "$worktree_dir" "$worktree_base" || {
+			print_error "Failed to create worktree"
+			return 1
+		}
+	fi
+
+	export WORKTREE_PATH="$worktree_dir"
+	echo ""
+	print_success "Worktree created at: $worktree_dir"
+	print_info "Switching to: $worktree_dir"
+	echo ""
+	cd "$worktree_dir" || return 1
+	return 0
+}
+
 # Check if on protected branch and offer worktree creation
 # Returns 0 if safe to proceed, 1 if user cancelled
 # Sets WORKTREE_PATH if worktree was created
@@ -830,18 +904,28 @@ check_protected_branch() {
 	local repo_name
 	repo_name=$(basename "$project_root")
 	local suggested_branch="$branch_type/$branch_suffix"
+	local _PROTECTED_BRANCH_UPSTREAM=""
+	local _PROTECTED_BRANCH_AHEAD=0
+	local _PROTECTED_BRANCH_BEHIND=0
+	_protected_branch_refresh_upstream "$current_branch" || return 1
 
 	local choice
 	# In non-interactive (non-TTY) contexts, auto-select option 1 (create worktree)
 	# without prompting. This prevents read from blocking or getting EOF in CI/AI
 	# assistant environments, which could cause silent script termination with set -e.
-	if [[ -t 0 ]]; then
+	if [[ -n "${AIDEVOPS_PROTECTED_BRANCH_CHOICE:-}" ]]; then
+		choice="$AIDEVOPS_PROTECTED_BRANCH_CHOICE"
+	elif [[ -t 0 ]]; then
 		echo ""
 		print_warning "On protected branch '$current_branch'"
 		echo ""
 		echo "Options:"
 		echo "  1. Create worktree: $suggested_branch (recommended)"
-		echo "  2. Continue on $current_branch (commits directly to main)"
+		if [[ "$_PROTECTED_BRANCH_BEHIND" -gt 0 ]]; then
+			echo "  2. Continue on $current_branch (unavailable: behind ${_PROTECTED_BRANCH_UPSTREAM} by ${_PROTECTED_BRANCH_BEHIND})"
+		else
+			echo "  2. Continue on $current_branch (commits directly to main)"
+		fi
 		echo "  3. Cancel"
 		echo ""
 		read -r -p "Choice [1]: " choice
@@ -854,42 +938,22 @@ check_protected_branch() {
 
 	case "$choice" in
 	1)
-		# Create worktree
 		local worktree_dir
 		worktree_dir="$(dirname "$project_root")/${repo_name}-${branch_type}-${branch_suffix}"
-
 		print_info "Creating worktree at $worktree_dir..."
-
-		local worktree_created=false
-		if [[ -f "$AGENTS_DIR/scripts/worktree-helper.sh" ]]; then
-			if bash "$AGENTS_DIR/scripts/worktree-helper.sh" add "$suggested_branch"; then
-				worktree_created=true
-			else
-				print_error "Failed to create worktree via worktree-helper.sh"
-				return 1
-			fi
-		else
-			# Fallback without helper script
-			if git worktree add -b "$suggested_branch" "$worktree_dir"; then
-				worktree_created=true
-			else
-				print_error "Failed to create worktree"
-				return 1
-			fi
-		fi
-
-		if [[ "$worktree_created" == "true" ]]; then
-			export WORKTREE_PATH="$worktree_dir"
-			echo ""
-			print_success "Worktree created at: $worktree_dir"
-			print_info "Switching to: $worktree_dir"
-			echo ""
-			# Change to worktree directory for the remainder of this process
-			cd "$worktree_dir" || return 1
-			return 0
-		fi
+		_protected_branch_create_worktree "$suggested_branch" "$_PROTECTED_BRANCH_UPSTREAM" "$worktree_dir" || return 1
+		return 0
 		;;
 	2)
+		if [[ "$_PROTECTED_BRANCH_BEHIND" -gt 0 ]]; then
+			if [[ "$_PROTECTED_BRANCH_AHEAD" -gt 0 ]]; then
+				print_error "Cannot initialize directly on diverged $current_branch (${_PROTECTED_BRANCH_AHEAD} ahead, ${_PROTECTED_BRANCH_BEHIND} behind ${_PROTECTED_BRANCH_UPSTREAM})"
+			else
+				print_error "Cannot initialize directly on stale $current_branch (${_PROTECTED_BRANCH_BEHIND} behind ${_PROTECTED_BRANCH_UPSTREAM})"
+			fi
+			print_info "Choose the recommended worktree option; it starts from the refreshed remote tip"
+			return 1
+		fi
 		print_warning "Continuing on $current_branch - changes will commit directly"
 		return 0
 		;;
