@@ -108,6 +108,7 @@ sys.path.insert(0, str(scripts))
 import _knowledge_social_google_business_profile as gbp
 import _knowledge_social_google_business_profile_provider as provider
 from _knowledge_social_google_business_profile_records import serialize_records
+from _knowledge_social_google_business_profile_routes import build_route
 from _knowledge_social_google_business_profile_transport import ApiResult
 
 expected = {
@@ -116,6 +117,9 @@ expected = {
 }
 assert set(gbp.STREAMS) == expected == set(provider.READ_STREAMS)
 assert importlib.util.find_spec("googleapiclient") is None
+assert build_route("attributes", "account42", "location42", "ignored", 10).params is None
+reviews_route = build_route("reviews", "account42", "location42", "next-page", 10)
+assert reviews_route.params == {"pageSize": 10, "pageToken": "next-page"}
 
 identity = provider.Identity("subject42", "account42", "organization42", "location42")
 responses = {

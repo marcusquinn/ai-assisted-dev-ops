@@ -49,11 +49,11 @@ def _profile(
 def _attributes(
     account_id: str, location_id: str, token: str | None, limit: int
 ) -> ReadRoute:
-    del account_id
+    del account_id, token, limit
     return ReadRoute(
         "https://mybusinessbusinessinformation.googleapis.com/v1",
         f"/locations/{location_id}/attributes",
-        _common(token, limit),
+        None,
     )
 
 

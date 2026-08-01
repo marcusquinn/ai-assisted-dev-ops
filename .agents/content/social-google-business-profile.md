@@ -18,7 +18,7 @@ gated and have changed independently.
 | Google identity | Google OAuth user-info `GET /oauth2/v3/userinfo` | Required identity fence; request `openid` and bind the immutable subject locally. Email is neither requested nor persisted. |
 | Accounts and organizations | Account Management v1 `GET /accounts/{account}` | Required account fence. An optional organization selector is fetched and matched independently. Account lists are not used for fuzzy discovery. |
 | Location identity and profile | Business Information v1 `GET /locations/{location}` with an explicit read mask | Supported: title, description, contacts, categories, address/service area, website, hours, labels, opening state, metadata, relationships, more-hours, and service items. |
-| Attributes | Business Information v1 `GET /locations/{location}/attributes` | Supported as an independent paginated stream. |
+| Attributes | Business Information v1 `GET /locations/{location}/attributes` | Supported as an independent snapshot stream. |
 | Media | Business Profile v4 `GET /accounts/{account}/locations/{location}/media` | Supported only while the approved project exposes this legacy-version read surface. |
 | Local posts/updates | Business Profile v4 `GET /accounts/{account}/locations/{location}/localPosts` | Supported only while the approved project exposes this legacy-version read surface. |
 | Reviews and owner replies | Business Profile v4 `GET /accounts/{account}/locations/{location}/reviews` | Supported. Review text and replies are protected customer content. Reviewer profile details are not normalized. |
