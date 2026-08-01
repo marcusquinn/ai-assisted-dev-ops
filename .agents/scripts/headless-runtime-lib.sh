@@ -128,17 +128,9 @@ source "${SCRIPT_DIR}/headless-runtime-provider.sh"
 
 # --- Section 4: Output Parsing ---
 
-classify_failure_reason() {
+_classify_trusted_provider_failure() {
 	local file_path="$1"
-	_failure_provider_error_type=""
-	_failure_provider_status=""
-	_failure_runtime_error_type=""
-	_failure_classification_source="output_pattern"
-	_failure_classification_pattern=""
-	local classification=""
-	local classified_reason="" classified_provider_type="" classified_status="" classified_source="" classified_pattern=""
-	classification=$(
-		python3 - "$file_path" <<'PY'
+	if python3 - "$file_path" <<'PY'; then
 import json
 import re
 import sys
@@ -192,7 +184,69 @@ elif re.search(r'\b(500|502|503|504)\b', text) or any(token in text for token in
 elif re.search(r'\b(401)\b', text) or any(token in text for token in ('unauthorized', 'invalid api key', 'authentication failed', 'token refresh failed', 'invalid_grant', 'invalid refresh token')) or ('auth' in text and 'failed' in text):
     emit('auth_error', 'auth_error', '401', 'trusted_auth_error|401|token_refresh|invalid_grant')
 PY
-	)
+		return 0
+	fi
+	return 1
+}
+
+_read_failure_output_lowercase() {
+	local file_path="$1"
+	if python3 - "$file_path" <<'PY'; then
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).read_text(errors="ignore").lower())
+PY
+		return 0
+	fi
+	return 1
+}
+
+_emit_local_runtime_failure() {
+	local runtime_type="$1"
+	local classification_source="$2"
+	local classification_pattern="$3"
+	_failure_runtime_error_type="$runtime_type"
+	_failure_classification_source="$classification_source"
+	_failure_classification_pattern="$classification_pattern"
+	printf '%s' "local_error"
+	return 0
+}
+
+_classify_local_runtime_failure() {
+	local lowered="$1"
+	if [[ "$lowered" == *"sqliteerror: disk i/o error"* ]] || [[ "$lowered" == *"sqlite_error"* && "$lowered" == *"disk i/o"* ]]; then
+		_emit_local_runtime_failure "opencode_sqlite_io" "opencode_runtime" "sqlite_disk_io"
+		return 0
+	fi
+	if [[ "$lowered" == *"failed to list snapshot files"* ]] || { [[ "$lowered" == *"fatal: not a git repository"* ]] && [[ "$lowered" == *"snapshot"* ]]; }; then
+		_emit_local_runtime_failure "opencode_snapshot_git" "opencode_runtime" "snapshot_git_failure"
+		return 0
+	fi
+	if [[ "$lowered" == *"spawn"* && "$lowered" == *"enoent"* ]] || [[ "$lowered" == *"command not found"* ]] || [[ "$lowered" == *"no such file or directory"* && "$lowered" == *"opencode"* ]]; then
+		_emit_local_runtime_failure "runtime_command_missing" "local_runtime" "command_missing|spawn_enoent"
+		return 0
+	fi
+	if [[ "$lowered" == *"permission denied"* ]] || [[ "$lowered" == *"eacces"* ]]; then
+		_emit_local_runtime_failure "runtime_permission_denied" "local_runtime" "permission_denied|eacces"
+		return 0
+	fi
+	if [[ "$lowered" == *"no space left on device"* ]] || [[ "$lowered" == *"enospc"* ]]; then
+		_emit_local_runtime_failure "runtime_storage_full" "local_runtime" "no_space_left|enospc"
+		return 0
+	fi
+	return 1
+}
+
+classify_failure_reason() {
+	local file_path="$1"
+	_failure_provider_error_type=""
+	_failure_provider_status=""
+	_failure_runtime_error_type=""
+	_failure_classification_source="output_pattern"
+	_failure_classification_pattern=""
+	local classification=""
+	local classified_reason="" classified_provider_type="" classified_status="" classified_source="" classified_pattern=""
+	classification=$(_classify_trusted_provider_failure "$file_path")
 	if [[ -n "$classification" ]]; then
 		IFS=$'\t' read -r classified_reason classified_provider_type classified_status classified_source classified_pattern <<<"$classification"
 		_failure_provider_error_type="$classified_provider_type"
@@ -203,46 +257,8 @@ PY
 		return 0
 	fi
 	local lowered
-	lowered=$(
-		python3 - "$file_path" <<'PY'
-from pathlib import Path
-import sys
-print(Path(sys.argv[1]).read_text(errors="ignore").lower())
-PY
-	)
-	if [[ "$lowered" == *"sqliteerror: disk i/o error"* ]] || [[ "$lowered" == *"sqlite_error"* && "$lowered" == *"disk i/o"* ]]; then
-		_failure_runtime_error_type="opencode_sqlite_io"
-		_failure_classification_source="opencode_runtime"
-		_failure_classification_pattern="sqlite_disk_io"
-		printf '%s' "local_error"
-		return 0
-	fi
-	if [[ "$lowered" == *"failed to list snapshot files"* ]] || { [[ "$lowered" == *"fatal: not a git repository"* ]] && [[ "$lowered" == *"snapshot"* ]]; }; then
-		_failure_runtime_error_type="opencode_snapshot_git"
-		_failure_classification_source="opencode_runtime"
-		_failure_classification_pattern="snapshot_git_failure"
-		printf '%s' "local_error"
-		return 0
-	fi
-	if [[ "$lowered" == *"spawn"* && "$lowered" == *"enoent"* ]] || [[ "$lowered" == *"command not found"* ]] || [[ "$lowered" == *"no such file or directory"* && "$lowered" == *"opencode"* ]]; then
-		_failure_runtime_error_type="runtime_command_missing"
-		_failure_classification_source="local_runtime"
-		_failure_classification_pattern="command_missing|spawn_enoent"
-		printf '%s' "local_error"
-		return 0
-	fi
-	if [[ "$lowered" == *"permission denied"* ]] || [[ "$lowered" == *"eacces"* ]]; then
-		_failure_runtime_error_type="runtime_permission_denied"
-		_failure_classification_source="local_runtime"
-		_failure_classification_pattern="permission_denied|eacces"
-		printf '%s' "local_error"
-		return 0
-	fi
-	if [[ "$lowered" == *"no space left on device"* ]] || [[ "$lowered" == *"enospc"* ]]; then
-		_failure_runtime_error_type="runtime_storage_full"
-		_failure_classification_source="local_runtime"
-		_failure_classification_pattern="no_space_left|enospc"
-		printf '%s' "local_error"
+	lowered=$(_read_failure_output_lowercase "$file_path")
+	if _classify_local_runtime_failure "$lowered"; then
 		return 0
 	fi
 	# Provider/rate-limit/auth/server classification intentionally uses only
@@ -1636,149 +1652,102 @@ _record_canary_provider_backoff() {
 	return 0
 }
 
-_run_canary_test() {
-	local requested_model="${1:-}"
-	local cache_file="${STATE_DIR}/canary-last-pass"
-	local fail_cache_file="${STATE_DIR}/canary-last-fail"
-	# t2887: sibling reason file -- categorises the most-recent failure so
-	# the negative-cache TTL can be tuned to the failure class (transient
-	# vs structural).
-	local fail_reason_file="${fail_cache_file}.reason"
+_canary_pass_cache_is_fresh() {
+	local cache_file="$1"
+	if [[ ! -f "$cache_file" ]]; then
+		return 1
+	fi
+	local last_pass
+	last_pass=$(cat "$cache_file" 2>/dev/null || echo "0")
+	local now
+	now=$(date +%s)
+	local age=$((now - last_pass))
+	if [[ "$age" -lt "$CANARY_CACHE_TTL_SECONDS" ]]; then
+		return 0
+	fi
+	return 1
+}
 
-	# Check cache -- skip if last canary passed recently
-	if [[ -f "$cache_file" ]]; then
-		local last_pass
-		last_pass=$(cat "$cache_file" 2>/dev/null || echo "0")
-		local now
-		now=$(date +%s)
-		local age=$((now - last_pass))
-		if [[ "$age" -lt "$CANARY_CACHE_TTL_SECONDS" ]]; then
-			return 0
-		fi
+_canary_negative_cache_is_active() {
+	local fail_cache_file="$1"
+	local fail_reason_file="$2"
+	if [[ "${AIDEVOPS_SKIP_CANARY_NEG_CACHE:-0}" == "1" ]] || [[ ! -f "$fail_cache_file" ]]; then
+		return 1
+	fi
+	local last_fail
+	local neg_now
+	local neg_age
+	local active_ttl
+	local fail_reason
+	last_fail=$(cat "$fail_cache_file" 2>/dev/null || echo "0")
+	neg_now=$(date +%s)
+	neg_age=$((neg_now - last_fail))
+	fail_reason=$(cat "$fail_reason_file" 2>/dev/null || echo "transient")
+	# t2887/t3558: Structural failures retain a longer negative-cache TTL;
+	# CPU/load overload is intentionally not a distinct TTL class.
+	case "$fail_reason" in
+	config_error) active_ttl="$CANARY_CONFIG_ERROR_TTL_SECONDS" ;;
+	*) active_ttl="$CANARY_NEGATIVE_TTL_SECONDS" ;;
+	esac
+	if [[ "$last_fail" =~ ^[0-9]+$ ]] && [[ "$neg_age" -ge 0 ]] && [[ "$neg_age" -lt "$active_ttl" ]]; then
+		print_warning "Canary negative cache active (age=${neg_age}s, ttl=${active_ttl}s, reason=${fail_reason}) — failing fast (t2814/t2887/t3210)"
+		return 0
+	fi
+	return 1
+}
+
+_resolve_canary_opencode_binary() {
+	local fail_cache_file="$1"
+	local fail_reason_file="$2"
+	_CANARY_EFFECTIVE_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	local validate_rc=0
+	_validate_opencode_binary "$OPENCODE_BIN_DEFAULT" || validate_rc=$?
+	if [[ "$validate_rc" -eq 0 ]]; then
+		return 0
 	fi
 
-	# t2814 (Phase 3, fix #4): Negative cache short-circuit. If the canary
-	# failed within the relevant TTL, fail-fast instead of re-running.
-	# Without this, every dispatch attempt during a 90s auth blip spends
-	# up to CANARY_TIMEOUT_SECONDS (default 60s) running a canary that
-	# will fail identically. Bypass: AIDEVOPS_SKIP_CANARY_NEG_CACHE=1.
-	#
-	# t2887: TTL is now reason-aware. Structural errors (wrong binary,
-	# missing binary -- "config_error") use CANARY_CONFIG_ERROR_TTL_SECONDS
-	# (default 1h) since they don't self-resolve in 90s. Transient errors
-	# (auth blip, rate limit, provider outage -- "transient" or absent)
-	# keep the original 90s TTL.
-	if [[ "${AIDEVOPS_SKIP_CANARY_NEG_CACHE:-0}" != "1" ]] && [[ -f "$fail_cache_file" ]]; then
-		local last_fail neg_now neg_age active_ttl fail_reason
-		last_fail=$(cat "$fail_cache_file" 2>/dev/null || echo "0")
-		neg_now=$(date +%s)
-		neg_age=$((neg_now - last_fail))
-		fail_reason=$(cat "$fail_reason_file" 2>/dev/null || echo "transient")
-		# t2887/t3558: TTL is reason-aware. Each failure class has its own
-		# self-resolution timescale, so a one-size-fits-all TTL either spams
-		# the canary on structural problems (90s on a missing binary) or
-		# delays recovery on transient ones (1h on an auth blip). CPU/load
-		# overload is intentionally not a distinct TTL class anymore.
-		case "$fail_reason" in
-			config_error) active_ttl="$CANARY_CONFIG_ERROR_TTL_SECONDS" ;;
-			*) active_ttl="$CANARY_NEGATIVE_TTL_SECONDS" ;;
-		esac
-		if [[ "$last_fail" =~ ^[0-9]+$ ]] && [[ "$neg_age" -ge 0 ]] && [[ "$neg_age" -lt "$active_ttl" ]]; then
-			print_warning "Canary negative cache active (age=${neg_age}s, ttl=${active_ttl}s, reason=${fail_reason}) — failing fast (t2814/t2887/t3210)"
-			return 1
-		fi
+	# GH#21003: reuse the version captured by binary validation.
+	local wrong_version="${_VALIDATE_OC_VERSION:-<missing>}"
+	local alt_bin=""
+	if alt_bin=$(_find_alternative_opencode_binary); then
+		print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' is invalid (version='${wrong_version}', rc=${validate_rc}) — falling back to '${alt_bin}' (t2887)"
+		_CANARY_EFFECTIVE_OPENCODE_BIN="$alt_bin"
+		export OPENCODE_BIN="$alt_bin"
+		return 0
 	fi
 
-	# t3558: no CPU/load/saturation preflight or sampling. The canary below
-	# tests only OpenCode/runtime/model health; RAM/disk/provider gates live
-	# elsewhere in the dispatch path.
+	# Structural failure: stamp config_error so later attempts fail fast.
+	print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' returns '${wrong_version}' (rc=${validate_rc}) — not anomalyco/opencode."
+	print_warning "Canary: searched $(_opencode_fixed_candidate_dirs_for_warning) — no valid binary found."
+	print_warning "Canary: install with 'npm install -g opencode-ai' or set OPENCODE_BIN to a valid binary (t2887)."
+	mkdir -p "${STATE_DIR}" 2>/dev/null || true
+	date +%s >"$fail_cache_file" 2>/dev/null || true
+	printf 'config_error\n' >"$fail_reason_file" 2>/dev/null || true
+	return 1
+}
 
-	# t2887: Pre-canary binary validation. Detect the case where
-	# $OPENCODE_BIN_DEFAULT resolves to anthropic/claude CLI instead of
-	# anomalyco/opencode (alex-solovyev runner symptom: 468
-	# launch_recovery:no_worker_process failures in 48h). Recover via
-	# alternative-path search if a real opencode is installed elsewhere on
-	# the system; fail loud with structured diagnostic if not. The
-	# resolved path is stored in _effective_opencode_bin (the local
-	# variable used by the canary command) AND exported as OPENCODE_BIN so
-	# downstream worker dispatch picks up the same binary.
-	#
-	# OPENCODE_BIN_DEFAULT is `readonly` (headless-runtime-helper.sh:38),
-	# so we cannot reassign it -- _effective_opencode_bin is the local
-	# override that flows through.
-	local _effective_opencode_bin="$OPENCODE_BIN_DEFAULT"
-	local _validate_rc=0
-	_validate_opencode_binary "$OPENCODE_BIN_DEFAULT" || _validate_rc=$?
-	if [[ "$_validate_rc" -ne 0 ]]; then
-		# GH#21003: reuse version captured by _validate_opencode_binary
-		# instead of re-running --version (avoids redundant I/O).
-		local wrong_version="${_VALIDATE_OC_VERSION:-<missing>}"
-		local alt_bin=""
-		if alt_bin=$(_find_alternative_opencode_binary); then
-			print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' is invalid (version='${wrong_version}', rc=${_validate_rc}) — falling back to '${alt_bin}' (t2887)"
-			_effective_opencode_bin="$alt_bin"
-			export OPENCODE_BIN="$alt_bin"
-		else
-			# Structural failure: no valid opencode anywhere. Stamp
-			# config_error so the next ~1h of dispatch attempts
-			# fail-fast on the cache hit instead of re-discovering this
-			# state every 90s.
-			print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' returns '${wrong_version}' (rc=${_validate_rc}) — not anomalyco/opencode."
-			print_warning "Canary: searched $(_opencode_fixed_candidate_dirs_for_warning) — no valid binary found."
-			print_warning "Canary: install with 'npm install -g opencode-ai' or set OPENCODE_BIN to a valid binary (t2887)."
-			mkdir -p "${STATE_DIR}" 2>/dev/null || true
-			date +%s >"$fail_cache_file" 2>/dev/null || true
-			printf 'config_error\n' >"$fail_reason_file" 2>/dev/null || true
-			return 1
-		fi
-	fi
-
-	local canary_output
-	canary_output=$(mktemp "${TMPDIR:-/tmp}/aidevops-canary.XXXXXX")
-
-	# GH#23598: OAuth-only Anthropic canaries must exercise the same plugin
-	# auth path as workers. Keep isolated XDG state for GH#22250, but do not
-	# use `--pure`; load the aidevops plugin and suppress interactive hooks via
-	# AIDEVOPS_HEADLESS=1 below.
-	local canary_model="$requested_model"
+_select_canary_model() {
+	local canary_model="$1"
 	if [[ -z "$canary_model" ]]; then
 		while IFS= read -r canary_model; do
 			[[ -n "$canary_model" ]] && break
 		done < <(get_configured_models)
 	fi
-	# Fallback to the script-level default if routing resolution yielded nothing.
 	if [[ -z "$canary_model" ]]; then
 		canary_model="$DEFAULT_HEADLESS_MODELS"
 	fi
-	local canary_exit=0
+	printf '%s' "$canary_model"
+	return 0
+}
 
-	# GH#17829: Detect running opencode server and build attach args.
-	# The canary must test the same mode workers will use -- if a server is
-	# running, both canary and workers need --attach to avoid conflicts.
-	local canary_attach_args=()
-	local _canary_server_info=""
-	if _canary_server_info=$(_detect_opencode_server); then
-		local _canary_url _canary_pass
-		_canary_url=$(echo "$_canary_server_info" | head -1)
-		_canary_pass=$(echo "$_canary_server_info" | tail -1)
-		canary_attach_args=(--attach "$_canary_url" --password "$_canary_pass")
-	fi
-
-	# DB isolation for canary: give it a fresh temp DB so it does not open
-	# the shared opencode.db (which can be multi-GB with thousands of
-	# accumulated sessions). Without this, opencode startup against the
-	# shared DB takes >20s and the canary times out even when the model
-	# responds correctly. Same pattern workers already use (GH#17549).
+_prepare_canary_isolation() {
+	local canary_model="$1"
+	# A fresh DB avoids opening a large shared opencode.db during the probe.
 	local _canary_data_dir=""
 	_canary_data_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-canary-db.XXXXXX")
 	mkdir -p "${_canary_data_dir}/opencode"
-	# Config isolation for canary: avoid validating the user's global
-	# default_agent before the smoke prompt runs. A stale or subagent-only
-	# default agent should not block provider/model health checks (GH#22250).
-	#
-	# GH#23598: include the opencode-aidevops plugin when present so OAuth
-	# auth is transformed correctly. Static-key hosts without the plugin keep
-	# the previous bare-config behaviour.
+	# Isolated config avoids stale global default_agent validation. Include the
+	# aidevops plugin when present so OAuth follows the worker auth path.
 	local _canary_config_dir=""
 	_canary_config_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-canary-config.XXXXXX")
 	mkdir -p "${_canary_config_dir}/opencode"
@@ -1791,108 +1760,96 @@ _run_canary_test() {
 	jq -n --arg plugin_url "$_canary_plugin_url" \
 		'{"$schema":"https://opencode.ai/config.json"} + (if $plugin_url == "" then {} else {plugin: [$plugin_url]} end)' \
 		>"${_canary_config_dir}/opencode/opencode.json"
-	local _canary_provider
+
 	local _canary_default_provider="anthropic"
+	local _canary_provider
 	_canary_provider=$(extract_provider "$canary_model" 2>/dev/null || printf '%s' "$_canary_default_provider")
 	[[ -n "$_canary_provider" ]] || _canary_provider="$_canary_default_provider"
-
-	# Copy only the selected provider's auth entry so canary startup does not
-	# initialize unrelated provider state. Env/API-key auth still passes through
-	# normally via the selected provider's environment variables.
 	local _oc_auth="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json"
 	if [[ -f "$_oc_auth" ]]; then
 		copy_scoped_opencode_auth "$_oc_auth" "${_canary_data_dir}/opencode/auth.json" "$_canary_provider"
 	fi
-	# t3362: Mirror the real worker auth path. A multi-account OAuth pool can
-	# have the shared auth.json pointing at a cooldown/rate-limited account while
-	# another account is healthy. Workers rotate their isolated auth.json before
-	# launch; the canary must do the same or it blocks dispatch with a false
-	# no_worker_process failure before the worker gets a chance to rotate.
+	# Mirror worker OAuth rotation before invoking OpenCode (t3362).
 	if [[ -f "${_canary_data_dir}/opencode/auth.json" ]] && declare -F _maybe_rotate_isolated_auth >/dev/null 2>&1; then
 		XDG_DATA_HOME="$_canary_data_dir" _maybe_rotate_isolated_auth \
 			"${_canary_data_dir}/opencode/auth.json" "$_canary_provider" || true
 	fi
 
-	# Process-tree timeout: the `opencode` npm distribution ships a Node.js
-	# wrapper (#!/usr/bin/env node) that spawns the Go binary (.opencode)
-	# as a child via child_process.spawnSync. A `perl alarm` only delivers
-	# SIGALRM to the direct child (the Node wrapper); the Go grandchild
-	# does NOT inherit the ITIMER_REAL and survives the alarm, orphaning
-	# into the pulse service cgroup with PPID=systemd. `timeout(1)` puts
-	# the whole invocation in a new process group and, on firing, signals
-	# the entire group (SIGTERM, then SIGKILL after --kill-after grace),
-	# catching the grandchild too. (GH#19623)
+	_CANARY_DATA_DIR="$_canary_data_dir"
+	_CANARY_CONFIG_DIR="$_canary_config_dir"
+	return 0
+}
+
+_execute_canary_probe() {
+	local _effective_opencode_bin="$1"
+	local canary_model="$2"
+	local canary_output="$3"
+	local _canary_config_dir="$4"
+	local _canary_data_dir="$5"
+	local canary_attach_args=()
+	local _canary_server_info=""
+	if _canary_server_info=$(_detect_opencode_server); then
+		local _canary_url
+		local _canary_pass
+		_canary_url=$(echo "$_canary_server_info" | head -1)
+		_canary_pass=$(echo "$_canary_server_info" | tail -1)
+		canary_attach_args=(--attach "$_canary_url" --password "$_canary_pass")
+	fi
+
+	# Prefer process-group-aware coreutils timeout; perl is the last resort.
 	local _canary_timeout_cmd=()
 	if command -v timeout >/dev/null 2>&1; then
-		# GNU coreutils timeout (Linux default; macOS via `brew install coreutils`)
 		_canary_timeout_cmd=(timeout --kill-after=5s "${CANARY_TIMEOUT_SECONDS}s")
 	elif command -v gtimeout >/dev/null 2>&1; then
-		# macOS with coreutils installed as gtimeout
 		_canary_timeout_cmd=(gtimeout --kill-after=5s "${CANARY_TIMEOUT_SECONDS}s")
 	else
-		# Last-resort fallback: perl alarm. Does NOT reap the Go grandchild
-		# when opencode is installed via npm; install coreutils
-		# (`brew install coreutils`) for clean behaviour.
 		_canary_timeout_cmd=(perl -e "alarm $CANARY_TIMEOUT_SECONDS; exec @ARGV" --)
 	fi
 
-	# t2887: use _effective_opencode_bin (resolved above), not
-	# $OPENCODE_BIN_DEFAULT directly. Identical to the default in the
-	# happy path; differs only when alternative-path fallback fired.
-	#
-	# GH#23598/GH#23950: AIDEVOPS_HEADLESS=1 prevents plugin greeting/TTSR
-	# injection, while the benign arithmetic probe avoids prompt-injection-shaped
-	# canary tokens. Pin OpenCode's vanilla build agent so hosts with a global
-	# default_agent such as Build+ cannot load interactive greeting mandates into
-	# this runtime/model health check.
+	_CANARY_PROBE_EXIT=0
 	XDG_CONFIG_HOME="$_canary_config_dir" XDG_DATA_HOME="$_canary_data_dir" \
 		AIDEVOPS_HEADLESS=1 \
 		run_without_opencode_session_env "${_canary_timeout_cmd[@]}" \
 		"$_effective_opencode_bin" run "What is two plus two? Answer with the single word: Four" \
 		-m "$canary_model" --dir "${HOME}" --agent build \
 		${canary_attach_args[@]+"${canary_attach_args[@]}"} \
-		>"$canary_output" 2>&1 || canary_exit=$?
+		>"$canary_output" 2>&1 || _CANARY_PROBE_EXIT=$?
+	return 0
+}
 
-	# Clean up canary's isolated DB/config dirs
-	rm -rf "$_canary_data_dir" 2>/dev/null || true
-	rm -rf "$_canary_config_dir" 2>/dev/null || true
+_cleanup_canary_isolation() {
+	local canary_data_dir="$1"
+	local canary_config_dir="$2"
+	rm -rf "$canary_data_dir" 2>/dev/null || true
+	rm -rf "$canary_config_dir" 2>/dev/null || true
+	return 0
+}
 
-	# Output-aware check: the model responding with the expected word is the
-	# real success signal. The exit code reflects process lifecycle (opencode
-	# cleanup time, signal handling) not model health. Previously this
-	# required exit=0 AND the expected token, but opencode 1.4.x takes longer
-	# to shut down cleanly — the timeout mechanism kills it (exit=124/SIGTERM
-	# or 137/SIGKILL on Linux; exit=142/SIGALRM on perl-alarm fallback) even
-	# after the model has already responded. Checking output alone is safe
-	# because the expected token can only appear if the model actually
-	# processed the prompt and generated a response.
-	#
-	# GH#23598: match the benign probe answer case-insensitively with the
-	# portable whole-word mode supported by GNU and BSD grep.
-	if grep -qwi 'four' "$canary_output"; then
-		# Cache the pass timestamp
-		mkdir -p "${STATE_DIR}" 2>/dev/null || true
-		date +%s >"$cache_file"
-		# t2814: success clears the negative cache so the next failure
-		# starts a fresh TTL window instead of inheriting a stale one.
-		# t2887: also clear the reason file so a subsequent transient
-		# failure is not mis-categorised as a structural error.
-		rm -f "$fail_cache_file" 2>/dev/null || true
-		rm -f "$fail_reason_file" 2>/dev/null || true
-		rm -f "$canary_output"
-		return 0
+_canary_output_is_success() {
+	local canary_output="$1"
+	local cache_file="$2"
+	local fail_cache_file="$3"
+	local fail_reason_file="$4"
+	if ! grep -qwi 'four' "$canary_output"; then
+		return 1
 	fi
+	mkdir -p "${STATE_DIR}" 2>/dev/null || true
+	date +%s >"$cache_file"
+	rm -f "$fail_cache_file" 2>/dev/null || true
+	rm -f "$fail_reason_file" 2>/dev/null || true
+	rm -f "$canary_output"
+	return 0
+}
 
-	# Canary failed -- log diagnostics (capture enough output to surface API errors,
-	# not just startup hooks which is all head -5 typically showed)
-	# GH#21505: reuse _VALIDATE_OC_VERSION set earlier instead of a redundant --version call.
+_record_canary_failure() {
+	local canary_output="$1"
+	local canary_exit="$2"
+	local canary_model="$3"
+	local fail_cache_file="$4"
+	local fail_reason_file="$5"
 	local oc_version="${_VALIDATE_OC_VERSION:-unknown}"
 	print_warning "Canary test FAILED (exit=$canary_exit, model=$canary_model, opencode=$oc_version, timeout=${CANARY_TIMEOUT_SECONDS}s)"
 	print_warning "Output (last 20 lines): $(tail -20 "$canary_output" 2>/dev/null || echo '<empty>')"
-	# t2814/t2887/t3449: Stamp the negative cache with a concrete reason so
-	# dispatch can distinguish hard failures (auth/runtime/local) from bounded
-	# soft failures (timeout/rate_limit/provider_error) when recent workers prove
-	# the runtime is still capable of launching.
 	local canary_reason
 	canary_reason=$(_classify_canary_failure_reason "$canary_output" "$canary_exit")
 	mkdir -p "${STATE_DIR}" 2>/dev/null || true
@@ -1900,6 +1857,51 @@ _run_canary_test() {
 	printf '%s\n' "$canary_reason" >"$fail_reason_file" 2>/dev/null || true
 	_record_canary_provider_backoff "$canary_model" "$canary_reason" "$canary_output"
 	rm -f "$canary_output"
+	return 0
+}
+
+_run_canary_test() {
+	local requested_model="${1:-}"
+	local cache_file="${STATE_DIR}/canary-last-pass"
+	local fail_cache_file="${STATE_DIR}/canary-last-fail"
+	local fail_reason_file="${fail_cache_file}.reason"
+	if _canary_pass_cache_is_fresh "$cache_file"; then
+		return 0
+	fi
+	# t2814/t2887: fail fast while the reason-aware negative cache is active.
+	if _canary_negative_cache_is_active "$fail_cache_file" "$fail_reason_file"; then
+		return 1
+	fi
+
+	# t3558: no CPU/load/saturation preflight or sampling. This tests only
+	# OpenCode/runtime/model health; other resource gates live elsewhere.
+	if ! _resolve_canary_opencode_binary "$fail_cache_file" "$fail_reason_file"; then
+		unset _CANARY_EFFECTIVE_OPENCODE_BIN
+		return 1
+	fi
+	local _effective_opencode_bin="$_CANARY_EFFECTIVE_OPENCODE_BIN"
+	unset _CANARY_EFFECTIVE_OPENCODE_BIN
+
+	local canary_output
+	canary_output=$(mktemp "${TMPDIR:-/tmp}/aidevops-canary.XXXXXX")
+	local canary_model
+	canary_model=$(_select_canary_model "$requested_model")
+	_prepare_canary_isolation "$canary_model"
+	local _canary_data_dir="$_CANARY_DATA_DIR"
+	local _canary_config_dir="$_CANARY_CONFIG_DIR"
+	unset _CANARY_DATA_DIR _CANARY_CONFIG_DIR
+
+	_execute_canary_probe "$_effective_opencode_bin" "$canary_model" "$canary_output" \
+		"$_canary_config_dir" "$_canary_data_dir"
+	local canary_exit="${_CANARY_PROBE_EXIT:-1}"
+	unset _CANARY_PROBE_EXIT
+	_cleanup_canary_isolation "$_canary_data_dir" "$_canary_config_dir"
+	if _canary_output_is_success "$canary_output" "$cache_file" "$fail_cache_file" "$fail_reason_file"; then
+		return 0
+	fi
+
+	_record_canary_failure "$canary_output" "$canary_exit" "$canary_model" \
+		"$fail_cache_file" "$fail_reason_file"
 	return 1
 }
 
