@@ -10,6 +10,10 @@ import subprocess
 import sys
 
 
+class OwnerContractRemovalError(Exception):
+    """The exact registry contract does not authorize worktree removal."""
+
+
 def remove_if_owner_contract(arguments: list[str]) -> int:
     """Remove one worktree while its exact registry row is write-locked."""
     if len(arguments) != 10:
@@ -27,25 +31,18 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
         expected_task_id,
         expected_created_at,
     ) = arguments
+    connection = None
     try:
         expected_owner_pid = int(expected_owner_pid_text)
-    except ValueError:
-        return 1
-
-    expected_owner = (
-        expected_branch,
-        expected_owner_pid,
-        expected_owner_session,
-        expected_owner_batch,
-        expected_task_id,
-        expected_created_at,
-    )
-    try:
+        expected_owner = (
+            expected_branch,
+            expected_owner_pid,
+            expected_owner_session,
+            expected_owner_batch,
+            expected_task_id,
+            expected_created_at,
+        )
         connection = sqlite3.connect(db_path, timeout=30, isolation_level=None)
-    except sqlite3.Error:
-        return 1
-
-    try:
         connection.execute("BEGIN IMMEDIATE")
         observed_owner = connection.execute(
             """SELECT branch, owner_pid, COALESCE(owner_session, ''),
@@ -55,8 +52,7 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
             (worktree_path,),
         ).fetchone()
         if observed_owner != expected_owner:
-            connection.execute("ROLLBACK")
-            return 1
+            raise OwnerContractRemovalError
         removal = subprocess.run(
             [git_path, "-C", repository_root, "worktree", "remove", worktree_path],
             stdout=subprocess.DEVNULL,
@@ -65,8 +61,7 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
             timeout=60,
         )
         if removal.returncode != 0:
-            connection.execute("ROLLBACK")
-            return 1
+            raise OwnerContractRemovalError
         deleted = connection.execute(
             """DELETE FROM worktree_owners
                WHERE worktree_path = ? AND branch = ? AND owner_pid = ?
@@ -85,15 +80,24 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
             ),
         )
         if deleted.rowcount != 1:
-            connection.execute("ROLLBACK")
-            return 1
+            raise OwnerContractRemovalError
         connection.execute("COMMIT")
-    except (OSError, sqlite3.Error, subprocess.SubprocessError):
-        if connection.in_transaction:
-            connection.execute("ROLLBACK")
+    except (
+        ValueError,
+        OSError,
+        OwnerContractRemovalError,
+        sqlite3.Error,
+        subprocess.SubprocessError,
+    ):
+        if connection is not None and connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
         return 1
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     return 0
 
 
