@@ -1814,7 +1814,7 @@ _full_loop_verify_aidevops_release_deploy() {
 	[[ "$deployed_version" == "$version" ]] || return 1
 	local postflight="${SCRIPT_DIR}/postflight-check.sh"
 	[[ -f "$postflight" ]] || return 1
-	bash "$postflight" --quick --sha "$release_sha" >/dev/null 2>&1 || return 1
+	bash "$postflight" --quick --sha "$release_sha" --tag "$tag_name" >/dev/null 2>&1 || return 1
 	return 0
 }
 
