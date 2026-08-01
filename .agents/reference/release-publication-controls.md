@@ -180,6 +180,12 @@ Aggregation PR #29130 reviews authorized Cloudron monitoring PR #29117 at
 recovery and PR #29127 advanced `main` before publication. Its exact branch
 base is `a144e469da47bad93cd3ebfec8cda0a18429c73d`.
 
+Aggregation PR #29148 reviews authorized Qlty postflight PR #29127 at
+`c8d6491cdf52e4ab1b8162ee793958bf7c2dfde9` because releases `v3.32.208` and
+`v3.32.209`, plus subsequent merges, advanced `main` before its explicitly
+authorized patch release completed. Its exact branch base is
+`af4dc8979fde7864fd0d7ffc898f47629dd3241e`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
