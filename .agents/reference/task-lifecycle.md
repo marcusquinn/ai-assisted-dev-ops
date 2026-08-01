@@ -25,7 +25,7 @@ implementing the pending-publication state and its reconciliation phases.
 1. Define the task: `/define` (interactive interview) or `/new-task` (quick creation)
 2. Brief file at `todo/tasks/{task_id}-brief.md` is MANDATORY (see `templates/brief-template.md`)
 3. Brief must include: session origin, what, why, how, acceptance criteria, context
-4. Resolve the user's execution intent before stopping: implement now, queue/dispatch in the background, or save for later.
+4. Resolve the execution route before publication: implement now, create a worker-ready implementation issue and auto-dispatch it, or save a local TODO/plan for later. Creating the implementation issue is itself approval to implement; do not seek a second dispatch decision afterward.
 5. Full-loop: keep canonical repo on `main` → create/use linked worktree → implement → test → verify → commit/PR
 6. Queue: add to TODO.md for supervisor dispatch
 7. Never skip testing. Never declare "done" without verification.
@@ -91,44 +91,27 @@ Natural-language task capture must be as explicit as slash commands. When a user
 |-------------|-------|--------------|
 | `/full-loop ...`, issue/task number after `/full-loop`, "do/work/fix/implement this now", "in this session" | Execute `/full-loop` in the primary conversation | Do not ask whether to start or delegate; proceed unless blocked by safety/secret/destructive gates |
 | "background", "worker", "auto-dispatch", "have an agent do this" | Compose with `workflows/brief.md`, create TODO/issue with `#auto-dispatch` when readiness passes, and queue/dispatch | Ask only for missing secrets, destructive approval, unknown repo, or unavailable verification |
-| "save", "log", "for later", `/save-todo`, `/aidevops-save-todo` | Compose with `workflows/brief.md`; save as TODO/plan/issue for later | After saving, ask numbered dispatch options |
-| Ambiguous "we need to...", "should add...", "can you note..." | Ask a numbered intent question before creating or executing | Use the shortest option set that disambiguates now/later/background |
+| "save", "log", "for later", `/save-todo`, `/aidevops-save-todo` | Compose with `workflows/brief.md`; save as a local TODO/plan without creating an implementation issue | Do not ask again; explicit later intent is the decision |
+| "create/file/open an issue", or a session identifies a fixable out-of-scope finding | Compose with `workflows/brief.md`; create a worker-ready implementation issue with `#auto-dispatch` | Do not ask for separate dispatch approval; issue creation authorizes implementation |
+| Ambiguous "we need to...", "should add...", "can you note..." | Infer the safest productive route from the established objective: implement in scope now, otherwise create a worker-ready auto-dispatch issue | Ask before publication only when human input is materially irreplaceable under `reference/self-improvement.md` |
 
-Default prompt for ambiguous implementation work:
-
-```text
-Do you want to:
-1. Work on this now with /full-loop
-2. Save as a TODO for later
-3. Save as a TODO and auto-dispatch a background worker
-4. Create a GitHub issue
-5. Create a GitHub issue and auto-dispatch a worker
-
-Reply 1-5.
-```
-
-Default prompt after explicit save/later intent:
-
-```text
-Saved as {task_or_issue} with a worker-ready brief.
-
-Auto-dispatch a worker?
-1. Yes, start now in the background
-2. Later
-3. No, keep it manual
-```
-
-Do not end a save flow with only "start anytime" when the task is worker-ready; offer the numbered dispatch choice. If a brief cannot meet auto-dispatch readiness, state the blocker and the missing information needed.
+Never offer "create an issue" and "create an issue and auto-dispatch" as separate
+choices for implementation work. Decide whether an issue should exist before
+publishing it; once created, automatic implementation is the default. Explicit
+save/later intent stays local and needs no follow-up question. If a brief cannot
+meet auto-dispatch readiness, repair it autonomously when possible; otherwise
+record the concrete blocker and missing irreplaceable input without converting
+routine uncertainty into `#no-auto-dispatch`.
 
 ## Auto-Dispatch and Completion
 
-- **Auto-dispatch default**: Worker-ready implementation issues/tasks created by interactive agents (user-facing sessions) or workers default to `#auto-dispatch`; readiness is the gate, not an opt-in. Add the tag only when the brief/body has:
+- **Auto-dispatch default**: Worker-ready implementation issues/tasks created by interactive agents (user-facing sessions) or workers default to `#auto-dispatch`; issue creation is the implementation decision, so no second dispatch confirmation is allowed. Readiness is the gate, not an opt-in. Add the tag only when the brief/body has:
   - a clear deliverable in the `What` section;
   - referenced files or patterns in the `How` section;
   - automatable verification; and
   - 2+ acceptance criteria beyond generic tests/lint.
 
-  If readiness is missing, improve the brief when practical, but do not suppress useful issue publication. Publish without `#auto-dispatch`, state the missing information, and leave the issue recorded for enrichment; use `#parent`/blocked only when those semantics are true. Do not add `#no-auto-dispatch` merely because readiness is incomplete—that label is reserved for durable manual intent. See `workflows/plans.md` "Auto-Dispatch Tagging".
+  If readiness is missing, improve the brief when practical, but do not suppress useful issue publication or ask the user to perform routine triage. Publish without `#auto-dispatch`, state the missing information, and leave the issue recorded for autonomous enrichment; use `#parent`/blocked only when those semantics are true. Do not add `#no-auto-dispatch` merely because readiness is incomplete—that label is reserved for explicit durable manual intent with its reason recorded on the issue. See `workflows/plans.md` "Auto-Dispatch Tagging".
 - **Exclusions**: Omit `#auto-dispatch` only for:
   - blocker labels;
   - credentials, accounts, or purchases;
@@ -139,7 +122,7 @@ Do not end a save flow with only "start anytime" when the task is worker-ready; 
   - explicit user preference for interactive/manual handling.
 
   Dispatch-path files are **not** excluded post-t2920; they auto-dispatch with opus-4-7 elevation. Canonical blocker label set: `reference/dispatch-blockers.md`.
-- **Dispatch-path advisory (t2821, t2832, t2920)**: When a task's `### Files Scope` or `## How` section references a file in `.agents/configs/self-hosting-files.conf`, use `#auto-dispatch` as normal. The t2819 detector auto-elevates these workers to `tier:thinking`; runtime routing chooses the concrete model and reasoning level. Worker isolation, CI gates, watchdog kills, and the t2690 circuit breaker replace the historical `no-auto-dispatch` default. Interactive implementation keeps `#auto-dispatch`; its active claim is the temporary deduplication gate. **Durable opt-out (rare):** use `#no-auto-dispatch` only for explicit manual intent or a recorded unresolved safety/authority decision. Full decision tree: `reference/auto-dispatch.md` "Dispatch-Path Default (t2821 / t2920)".
+- **Dispatch-path advisory (t2821, t2832, t2920)**: When a task's `### Files Scope` or `## How` section references a file in `.agents/configs/self-hosting-files.conf`, use `#auto-dispatch` as normal. The t2819 detector auto-elevates these workers to `tier:thinking`; runtime routing chooses the concrete model and reasoning level. Worker isolation, CI gates, watchdog kills, and the t2690 circuit breaker replace the historical `no-auto-dispatch` default. Interactive implementation keeps `#auto-dispatch`; its active claim is the temporary deduplication gate. **Durable opt-out (rare):** use `#no-auto-dispatch` only for explicit manual intent or a recorded unresolved safety/authority decision, never merely because the creating session will not implement the issue itself. Full decision tree: `reference/auto-dispatch.md` "Dispatch-Path Default (t2821 / t2920)".
 - **Quality gate**: Same readiness definition as `#auto-dispatch` above; do not maintain a second criteria list.
 - **Dispatch-label mutual exclusion**: `#auto-dispatch` and `#no-auto-dispatch` must never coexist. Managed issue-create/edit paths normalize conflicts without suppressing publication: an explicit manual hold wins a same-command conflict, and adding either label removes its opposite.
 - **Interactive workflow**: Keep worker-ready issues tagged `#auto-dispatch`; claim with `status:in-review` + assignment while working, then release with unassignment so unfinished work resumes automatically.

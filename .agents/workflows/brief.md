@@ -126,6 +126,12 @@ brief unless that brief has been migrated to this complete contract.
 
 **The brief IS the product.** A vague brief wastes high-capability reasoning, while a mechanically complete brief can run reliably at a lower workload tier. Invest the effort in decision-relevant context, not question or token quotas.
 
+For maintained repositories, publishing a worker-ready implementation issue is
+the decision to implement it. Add `auto-dispatch` at creation and do not ask for
+a second dispatch approval. If the user explicitly chose later/manual handling,
+keep the work as a local TODO/plan instead; reserve `no-auto-dispatch` for a
+durable hold whose reason is recorded on the issue.
+
 ## Ordered Work / Dependencies
 
 When composing TODOs or issues that must run in sequence, include the textual

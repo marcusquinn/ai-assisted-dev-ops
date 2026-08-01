@@ -44,7 +44,8 @@ Use `framework-issue-helper.sh`, not `claim-task-id.sh`:
 
 # File on marcusquinn/aidevops (auto-deduplicates)
 ~/.aidevops/agents/scripts/framework-issue-helper.sh log \
-  --title "Bug: supervisor pipeline fails..." --body "Observed in..." --label "bug"
+  --title "Bug: supervisor pipeline fails..." --body "Observed in..." \
+  --label "bug" --auto-dispatch --tier standard
 ```
 
 ## Constraints & Quality
@@ -76,7 +77,7 @@ Treat valuable session learning as system input, not disposable transcript conte
 
 - **Apply now by default:** repair an observed failure, efficiency loss, or productivity gap in the current session when it is safe, authorized, and in scope; verify the repair before moving on.
 - **Preserve context momentum:** when the session has enough evidence, authorization, and safe execution paths, continue through implementation and verification instead of handing reconstruction cost to a future session. Defer only for a real dependency, safety boundary, resource fuse, or explicit user choice.
-- **File larger work separately** when the repair would materially widen scope or delay the active objective. Deduplicate first, then create a dedicated issue with files, pattern, evidence, verification, and an explicit note when paths are unknown; do not leave an actionable lesson only in chat or memory. When the authenticated creator has maintainer/admin authority and the issue is worker-ready, apply the `auto-dispatch` label at creation under `reference/task-lifecycle.md`; maintainer authorship or `origin:interactive` provenance does not substitute for that label. Do not auto-dispatch contributor-authored issues at creation; leave them on the existing external-issue triage path in `workflows/triage-review.md`.
+- **File larger work separately** when the repair would materially widen scope or delay the active objective. Deduplicate first, then create a dedicated issue with files, pattern, evidence, verification, and an explicit note when paths are unknown; do not leave an actionable lesson only in chat or memory. When the authenticated creator has maintainer/admin authority and the issue is worker-ready, apply the `auto-dispatch` label at creation under `reference/task-lifecycle.md`; creating that implementation issue is the decision to implement, so do not seek a second dispatch confirmation. Maintainer authorship or `origin:interactive` provenance does not substitute for the label. Do not auto-dispatch contributor-authored issues at creation; leave them on the existing external-issue triage path in `workflows/triage-review.md`.
 - **Store memory/reference** when the lesson is reusable but not immediately dispatchable, especially diagnostics, edge cases, duplicate patterns, and "similar but different" hazards.
 - **Route design learning by scope:** durable repo-specific UI patterns belong in that repo's `DESIGN.md`; generic aidevops briefing/verification patterns become aidevops issues with anonymised evidence; uncertain or broad design lessons become worker-ready follow-ups instead of bloating global docs.
 - **Avoid speculative bloat:** capture observed examples and evidence; do not add global guidance for hypothetical failures.

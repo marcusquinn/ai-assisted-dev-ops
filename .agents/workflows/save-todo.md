@@ -13,7 +13,7 @@ Topic/context: $ARGUMENTS
 
 ## Core Rule
 
-All TODOs, plans, and issues created by this workflow MUST use `workflows/brief.md` and `templates/brief-template.md` so future workers can execute without the original chat. For auto-dispatch, use only the shared "Dispatch Readiness Contract (brief schema v2)" checklist and its `verify-brief-helper.sh check-readiness <brief>` gate. Saving is not implementation; if the user says `/full-loop`, "work on it now", or equivalent, route to `/full-loop` instead of stopping after capture.
+All TODOs, plans, and issues created by this workflow MUST use `workflows/brief.md` and `templates/brief-template.md` so future workers can execute without the original chat. For auto-dispatch, use only the shared "Dispatch Readiness Contract (brief schema v2)" checklist and its `verify-brief-helper.sh check-readiness <brief>` gate. Saving is explicit later intent: keep the work as a local TODO/plan and do not ask whether to dispatch it. If an implementation issue is created, that creation authorizes implementation, so add `auto-dispatch` when readiness passes. If the user says `/full-loop`, "work on it now", or equivalent, route to `/full-loop` instead of stopping after capture.
 
 ## Intent Routing
 
@@ -26,21 +26,13 @@ issue from the active interactive implementation session.
 |--------|--------|
 | `/full-loop`, "work on this now", "fix/implement/do this in this session" | Start `/full-loop $ARGUMENTS`; do not ask whether to begin |
 | "background", "worker", "auto-dispatch" | Create a briefed TODO/issue and add `#auto-dispatch` when readiness passes |
-| "save", "log", "for later", `/save-todo`, `/aidevops-save-todo` | Save the briefed task, then ask whether to auto-dispatch now/later/not |
-| Ambiguous "we need to", "should add", "can you note" | Ask the numbered intent prompt before saving or implementing |
+| "save", "log", "for later", `/save-todo`, `/aidevops-save-todo` | Save a local briefed TODO/plan; do not create an implementation issue or ask about dispatch |
+| "create/file/open an issue", or a fixable out-of-scope finding | Create a worker-ready implementation issue with `#auto-dispatch`; do not seek separate dispatch approval |
+| Ambiguous "we need to", "should add", "can you note" | Infer the safest productive route; ask only when human input is materially irreplaceable |
 
-Ambiguous prompt:
-
-```text
-Do you want to:
-1. Work on this now with /full-loop
-2. Save as a TODO for later
-3. Save as a TODO and auto-dispatch a background worker
-4. Create a GitHub issue
-5. Create a GitHub issue and auto-dispatch a worker
-
-Reply 1-5.
-```
+Never offer "create an issue" and "create an issue and auto-dispatch" as
+separate choices. Decide whether an issue should exist before publishing it;
+once created, automatic implementation is the default.
 
 ## Auto-Detection
 
@@ -60,7 +52,7 @@ Reply 1-5.
 
 ## Step 1b: Dispatch Tags (MANDATORY)
 
-**`#auto-dispatch`** — Add when ALL true: clear description with specific files/patterns, ≤2h scope, no credentials/purchases needed, no user-preference design decisions, automatable verification. **Default to `#auto-dispatch`** — omit only when a specific exclusion applies. Full criteria: `workflows/plans.md` "Auto-Dispatch Tagging". Canonical blocker labels: `reference/dispatch-blockers.md`.
+**`#auto-dispatch`** — For background intent or a published implementation issue, add when ALL true: clear description with specific files/patterns, ≤2h scope, no credentials/purchases needed, no user-preference design decisions, automatable verification. **Default published implementation issues to `#auto-dispatch`** — omit only when a specific exclusion applies. Explicit save/later intent remains a local TODO/plan without this tag. Full criteria: `workflows/plans.md` "Auto-Dispatch Tagging". Canonical blocker labels: `reference/dispatch-blockers.md`.
 
 **`#plan`** — Add when decomposition needed before implementation (multi-phase, >2h, research/design).
 
@@ -68,13 +60,13 @@ Reply 1-5.
 
 ## Step 2: Save
 
-**Simple** → create `todo/tasks/{task_id}-brief.md`, add to TODO.md Backlog, and confirm:
+**Simple** → create `todo/tasks/{task_id}-brief.md`, add to TODO.md Backlog, and report:
 
 ```markdown
-- [ ] t{NNN} {title} #{tag} #auto-dispatch ~{estimate} logged:{YYYY-MM-DD}
+- [ ] t{NNN} {title} #{tag} ~{estimate} logged:{YYYY-MM-DD}
 ```
 
-**Complex** → confirm, then:
+**Complex** → create the plan without a routine confirmation, then:
 
 1. Create entry in `todo/PLANS.md`:
 
@@ -117,49 +109,27 @@ Reply 1-5.
 
 4. Optionally create PRD/tasks files if scope warrants.
 
-## Confirmation Prompts
+## Completion Message
 
-**Simple:**
-
-```text
-Saving to TODO.md: "{title}" ~{estimate} | Creating brief: todo/tasks/{task_id}-brief.md
-1. Confirm  2. Add more details  3. Create full plan instead
-```
-
-**Complex:**
-
-```text
-This looks like complex work. Creating execution plan and brief.
-Title: {title} | Estimate: ~{estimate} | Phases: {count}
-1. Confirm and create plan + brief  2. Simplify to TODO.md + brief  3. Add context
-```
-
-After saving, do not respond with only "Start anytime". Use:
+When available context is sufficient, save directly instead of asking for a
+routine confirmation. Ask one specific question only when irreplaceable context
+or a consequential choice is missing. After saving, report the durable state
+without reopening the dispatch decision:
 
 ```text
 Saved as {task_id}: "{title}" with brief {brief_path}.
-
-Auto-dispatch a worker?
-1. Yes, start now in the background
-2. Later
-3. No, keep it manual
 ```
 
-If the task was created with explicit background/worker intent and dispatch readiness passes, report the queued/dispatch action instead of asking.
+If the task was created with explicit background/worker intent or as a GitHub
+implementation issue and dispatch readiness passes, report the queued/dispatch
+action instead of asking.
 
 ## Example
 
 ```text
-User: We discussed the authentication overhaul with OAuth, session management, and migration
-AI:   Complex work. Title: Authentication Overhaul | ~2w | 4 phases | Creating brief: todo/tasks/{task_id}-brief.md
-      1. Confirm and create plan + brief  2. Simplify to TODO.md + brief  3. Add context
-User: 1
+User: /save-todo We discussed the authentication overhaul with OAuth, session management, and migration
 AI:   Saved as t123: "Authentication Overhaul" with brief todo/tasks/t123-brief.md
       - Plan: todo/PLANS.md
       - Reference: TODO.md
       - PRD: todo/tasks/prd-auth-overhaul.md
-      Auto-dispatch a worker?
-      1. Yes, start now in the background
-      2. Later
-      3. No, keep it manual
 ```

@@ -36,3 +36,22 @@ scenarios:
       fix. Never patch around a broken process -- fix the process.
     fast_fail_triggers:
       - refusal
+
+  - name: "auto-dispatches a created implementation issue without another approval"
+    prompt: "You found a well-specified, reversible framework bug that is too large for the active session. You have maintainer authority and are creating an implementation issue. Should it receive no-auto-dispatch while waiting for the user to approve implementation?"
+    expected:
+      contains:
+        - "auto-dispatch"
+      not_contains:
+        - "ask the user"
+        - "no-auto-dispatch"
+        - "wait for approval"
+      min_length: 35
+      max_length: 500
+    reference_answer: |
+      Create the worker-ready issue with auto-dispatch immediately. Publishing
+      the implementation issue is already the decision to implement it, so do
+      not ask for a second dispatch approval. Reserve a manual hold for an
+      explicit, recorded safety or authority reason.
+    fast_fail_triggers:
+      - refusal
