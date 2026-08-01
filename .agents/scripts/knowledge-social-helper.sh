@@ -20,6 +20,7 @@ SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
 BROWSER_HELPER="${SCRIPT_DIR}/knowledge_social_browser.py"
 OPERATIONS_HELPER="${SCRIPT_DIR}/knowledge_social_operations.py"
+REGISTRY_HELPER="${SCRIPT_DIR}/knowledge_social_registry.py"
 VAULT_RUNTIME_CHECK="${SCRIPT_DIR}/vault-runtime-check.py"
 VAULT_RUNTIME_PYTHON="${HOME:+$HOME/.aidevops/.agent-workspace/python-env/vault/bin/python3}"
 
@@ -165,6 +166,9 @@ Usage:
     [--lease-seconds SECONDS] [--now-epoch EPOCH]
   knowledge-social-helper.sh receipts [--base PATH] [--alias ALIAS] \
     [--connection-id ID] [--limit 1-1000]
+  knowledge-social-helper.sh providers
+  knowledge-social-helper.sh provider-resolve --provider PROVIDER
+  knowledge-social-helper.sh provider-run --provider PROVIDER --mode MODE -- [ARGS]
 EOF
 	return 0
 }
@@ -232,6 +236,12 @@ Browser gap capture:
   Capture files are read-only artifacts from an approved profile; this helper
   cannot launch a browser or perform a platform write. Item and byte limits are
   hard bounds, and replay is content-addressed and idempotent.
+
+Provider registry:
+  providers and provider-resolve expose deterministic privacy-safe capability
+  metadata. provider-run resolves only an exact canonical ID or declared alias,
+  requires an explicit supported mode, and executes one allowlisted local
+  read/import adapter without eval or fallback. A no-route provider always fails.
 
 Encrypted workspace sharing:
   Public identity and grant files contain only opaque IDs, public keys, and signed
@@ -324,6 +334,35 @@ run_provider_sync() {
 	return 0
 }
 
+run_registry_command() {
+	local subcommand="$1"
+	shift || return 1
+	require_runtime || return 1
+	if [[ ! -r "$REGISTRY_HELPER" ]]; then
+		printf 'ERROR: social provider registry missing: %s\n' "$REGISTRY_HELPER" >&2
+		return 1
+	fi
+	case "$subcommand" in
+	providers) python3 "$REGISTRY_HELPER" list "$@" || return 1 ;;
+	provider-resolve) python3 "$REGISTRY_HELPER" resolve "$@" || return 1 ;;
+	provider-run) python3 "$REGISTRY_HELPER" run "$@" || return 1 ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+run_query_command() {
+	local subcommand="$1"
+	shift || return 1
+	require_runtime || return 1
+	if [[ ! -r "$QUERY_HELPER" ]]; then
+		printf 'ERROR: social query implementation missing: %s\n' "$QUERY_HELPER" >&2
+		return 1
+	fi
+	python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
+	return 0
+}
+
 main() {
 	local subcommand="${1:-help}"
 	if [[ $# -gt 0 ]]; then
@@ -379,12 +418,7 @@ main() {
 		run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1
 		;;
 	query | annotate)
-		require_runtime || return 1
-		if [[ ! -r "$QUERY_HELPER" ]]; then
-			printf 'ERROR: social query implementation missing: %s\n' "$QUERY_HELPER" >&2
-			return 1
-		fi
-		python3 "$QUERY_HELPER" "$subcommand" "$@" || return 1
+		run_query_command "$subcommand" "$@" || return 1
 		;;
 	provider-validate | capture-browser-gap)
 		require_runtime || return 1
@@ -393,6 +427,9 @@ main() {
 			return 1
 		fi
 		python3 "$BROWSER_HELPER" "$subcommand" "$@" || return 1
+		;;
+	providers | provider-resolve | provider-run)
+		run_registry_command "$subcommand" "$@" || return 1
 		;;
 	sync-due | reconcile-due | reconcile | receipts)
 		require_runtime || return 1
