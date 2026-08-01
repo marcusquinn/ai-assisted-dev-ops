@@ -223,26 +223,49 @@ _ghqa_prepare_private_dir() {
 	return 0
 }
 
-_ghqa_lock_reclaim() {
+_ghqa_lock_reclaim() (
 	local lock_dir="$1"
 	local tries="$2"
 	local pid_file="${lock_dir}/pid"
+	local contender_pid="${BASHPID:-$$}"
+	local reclaim_guard="${lock_dir}/.reclaim.d"
+	local reclaim_dir="${lock_dir}.reclaim.${contender_pid}.${RANDOM}.${tries}"
 	local owner=""
 	[[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 1
+	# Pin this exact lock directory while inspecting it. A releasing owner cannot
+	# remove and replace the path until the guard is gone, and the subshell trap
+	# keeps ordinary interruption from stranding the guard.
+	mkdir "$reclaim_guard" 2>/dev/null || return 1
+	printf '%s\n' "$contender_pid" >"${reclaim_guard}/pid" 2>/dev/null || {
+		rmdir "$reclaim_guard" 2>/dev/null || true
+		return 1
+	}
+	trap 'rm -f "${reclaim_guard}/pid" 2>/dev/null || true; rmdir "$reclaim_guard" 2>/dev/null || true' EXIT HUP INT TERM
 	if [[ -f "$pid_file" && ! -L "$pid_file" ]]; then
-		IFS= read -r owner <"$pid_file" 2>/dev/null || owner=""
+		# Redirect the assignment before opening pid_file so a concurrent release
+		# is ordinary retryable contention rather than a shell diagnostic.
+		if ! owner=$(<"$pid_file") 2>/dev/null; then
+			return 1
+		fi
 		if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
 			return 1
 		fi
-		rm -f "$pid_file" 2>/dev/null || return 1
-		rmdir "$lock_dir" 2>/dev/null || return 1
-		return 0
+	else
+		[[ "$tries" -ge 100 ]] || return 1
 	fi
-	[[ "$tries" -ge 100 ]] || return 1
-	rm -f "$pid_file" 2>/dev/null || return 1
-	rmdir "$lock_dir" 2>/dev/null || return 1
+	# Rename-before-delete atomically claims the guarded directory. Contenders
+	# can acquire the original path immediately without being deleted by this
+	# stale-lock cleanup.
+	[[ ! -e "$reclaim_dir" && ! -L "$reclaim_dir" ]] || return 1
+	mv "$lock_dir" "$reclaim_dir" 2>/dev/null || return 1
+	reclaim_guard="${reclaim_dir}/.reclaim.d"
+	pid_file="${reclaim_dir}/pid"
+	rm -f "$pid_file" "${reclaim_guard}/pid" 2>/dev/null || return 1
+	rmdir "$reclaim_guard" 2>/dev/null || return 1
+	rmdir "$reclaim_dir" 2>/dev/null || return 1
+	trap - EXIT HUP INT TERM
 	return 0
-}
+)
 
 _ghqa_lock_acquire() {
 	local lock_dir="$1"
