@@ -4,11 +4,12 @@
 #
 # test-cleanup-worktrees-async.sh — Unit tests for cleanup-worktrees-async-helper.sh (GH#20554)
 #
-# Tests cover the four key behaviours from the acceptance criteria:
+# Tests cover the core lifecycle behaviours from the acceptance criteria:
 #   1. lock-held     — second invocation skips when lock is held by a live PID
 #   2. cadence-gate  — invocation skips when last-run is within the cadence window
 #   3. cold-start    — first invocation runs when no lock and no last-run file
 #   4. stale-PID     — lock reclamation when the holder PID is dead
+#   5. signal-exit   — TERM stops the helper and releases its singleton lock
 #
 # Tests do NOT call the real cleanup_worktrees (which calls gh and git across
 # all repos). Instead they inject a mock via CLEANUP_WORKTREES_ASYNC_TEST_MOCK.
@@ -189,7 +190,7 @@ test_cadence_gate() {
 	rm -f "$mock_ran"
 
 	# Write a recent last-run timestamp (30 seconds ago) — well within 10-min cadence
-	local recent_epoch=$(( $(date +%s) - 30 ))
+	local recent_epoch=$(($(date +%s) - 30))
 	printf '%s\n' "$recent_epoch" >"$last_run_file"
 
 	MOCK_CLEANUP_EXIT=0 CLEANUP_WORKTREES_ASYNC_CADENCE_MIN=10 \
@@ -320,7 +321,101 @@ test_lock_released_after_run() {
 }
 
 # ============================================================
-# TEST 9: HOME unset — explicit log dir avoids set -u unbound errors
+# TEST 9: TERM exits the helper instead of only releasing its lock
+# ============================================================
+test_term_exits_and_releases_lock() {
+	local stub_dir="${TEST_DIR}/scripts"
+	local logs_dir="${TEST_DIR}/.aidevops/logs"
+	local lock_dir="${logs_dir}/cleanup_worktrees.lock"
+	local pid_file="${lock_dir}/pid"
+	local mock_ran="${TEST_DIR}/mock-ran"
+	local helper_pid=""
+	local attempts=0
+	mkdir -p "$stub_dir"
+	rm -rf "$lock_dir"
+	rm -f "$mock_ran"
+
+	cat >"${stub_dir}/shared-constants.sh" <<'STUB'
+# stub shared-constants.sh
+STUB
+	cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
+# stub pulse-cleanup.sh
+cleanup_worktrees() {
+	printf 'MOCK_RAN\n' >>"${mock_ran}"
+	while :; do
+		sleep 1
+	done
+	return 0
+}
+STUB
+	cp "$HELPER" "${stub_dir}/cleanup-worktrees-async-helper.sh"
+	chmod +x "${stub_dir}/cleanup-worktrees-async-helper.sh"
+
+	env HOME="$TEST_DIR" CLEANUP_WORKTREES_ASYNC_CADENCE_MIN=10 \
+		bash "${stub_dir}/cleanup-worktrees-async-helper.sh" >/dev/null 2>&1 &
+	helper_pid=$!
+	while [[ ! -s "$pid_file" && "$attempts" -lt 50 ]]; do
+		sleep 0.1
+		attempts=$((attempts + 1))
+	done
+	if [[ ! -s "$pid_file" ]]; then
+		kill -KILL "$helper_pid" 2>/dev/null || true
+		wait "$helper_pid" 2>/dev/null || true
+		print_result "signal-exit: helper acquires lock before TERM" 1 "lock PID file was not created"
+		return 0
+	fi
+
+	kill -TERM "$helper_pid"
+	attempts=0
+	while kill -0 "$helper_pid" 2>/dev/null && [[ "$attempts" -lt 50 ]]; do
+		sleep 0.1
+		attempts=$((attempts + 1))
+	done
+	if kill -0 "$helper_pid" 2>/dev/null; then
+		kill -KILL "$helper_pid" 2>/dev/null || true
+		wait "$helper_pid" 2>/dev/null || true
+		print_result "signal-exit: TERM stops helper and releases lock" 1 "helper remained alive after TERM"
+		return 0
+	fi
+	wait "$helper_pid" 2>/dev/null || true
+
+	if [[ ! -d "$lock_dir" ]]; then
+		print_result "signal-exit: TERM stops helper and releases lock" 0
+	else
+		print_result "signal-exit: TERM stops helper and releases lock" 1 "lock remained after helper exited"
+	fi
+	return 0
+}
+
+# ============================================================
+# TEST 10: sibling async lock helpers use the same terminating traps
+# ============================================================
+test_async_lock_helpers_install_terminating_traps() {
+	local scripts_dir="${SCRIPT_DIR}/.."
+	local helper_name=""
+	local helper_path=""
+	local invalid_helpers=""
+	for helper_name in \
+		cleanup-worktrees-async-helper.sh \
+		cleanup-stashes-async-helper.sh \
+		cleanup-remote-branches-async-helper.sh \
+		opencode-db-archive-async-helper.sh; do
+		helper_path="${scripts_dir}/${helper_name}"
+		if ! grep -Fq "trap '_lock_signal_exit 130' INT" "$helper_path" ||
+			! grep -Fq "trap '_lock_signal_exit 143' TERM" "$helper_path"; then
+			invalid_helpers="${invalid_helpers}${invalid_helpers:+, }${helper_name}"
+		fi
+	done
+	if [[ -z "$invalid_helpers" ]]; then
+		print_result "signal-exit: all async lock helpers install terminating traps" 0
+	else
+		print_result "signal-exit: all async lock helpers install terminating traps" 1 "missing terminating traps: ${invalid_helpers}"
+	fi
+	return 0
+}
+
+# ============================================================
+# TEST 11: HOME unset — explicit log dir avoids set -u unbound errors
 # ============================================================
 test_home_unset_uses_explicit_log_dir() {
 	local custom_log_dir="${TEST_DIR}/custom-logs"
@@ -360,25 +455,40 @@ main() {
 	test_last_run_updated
 
 	# Must re-setup between tests that share state
-	teardown; setup
+	teardown
+	setup
 	test_cadence_gate
 
-	teardown; setup
+	teardown
+	setup
 	test_lock_held
 
-	teardown; setup
+	teardown
+	setup
 	test_stale_pid_reclaim
 
-	teardown; setup
+	teardown
+	setup
 	test_failed_cleanup_no_last_run_update
 
-	teardown; setup
+	teardown
+	setup
 	test_skipped_cleanup_no_last_run_update
 
-	teardown; setup
+	teardown
+	setup
 	test_lock_released_after_run
 
-	teardown; setup
+	teardown
+	setup
+	test_term_exits_and_releases_lock
+
+	teardown
+	setup
+	test_async_lock_helpers_install_terminating_traps
+
+	teardown
+	setup
 	test_home_unset_uses_explicit_log_dir
 
 	echo ""

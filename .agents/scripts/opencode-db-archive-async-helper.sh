@@ -64,6 +64,21 @@ _lock_release() {
 	return 0
 }
 
+_lock_signal_exit() {
+	local exit_code="$1"
+	trap - EXIT INT TERM
+	_lock_release
+	exit "$exit_code"
+	return 1
+}
+
+_lock_install_traps() {
+	trap '_lock_release' EXIT
+	trap '_lock_signal_exit 130' INT
+	trap '_lock_signal_exit 143' TERM
+	return 0
+}
+
 # Check whether the PID that holds the lock is still alive.
 # Uses kill -0 (existence) + ps comm= (command-aware, guards against PID reuse).
 # Returns 0 if alive, 1 if dead or indeterminate.
@@ -91,8 +106,7 @@ _is_pid_alive() {
 _lock_acquire() {
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
 		printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null || true
-		# shellcheck disable=SC2064
-		trap "_lock_release" EXIT INT TERM
+		_lock_install_traps
 		return 0
 	fi
 
@@ -104,8 +118,7 @@ _lock_acquire() {
 			rm -rf "$LOCK_DIR" 2>/dev/null || true
 			if mkdir "$LOCK_DIR" 2>/dev/null; then
 				printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null || true
-				# shellcheck disable=SC2064
-				trap "_lock_release" EXIT INT TERM
+				_lock_install_traps
 				return 0
 			fi
 		fi
