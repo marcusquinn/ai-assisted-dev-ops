@@ -37,7 +37,7 @@ tools:
 6. Read env vars fresh on every start (values change across restarts) — never cache at startup
 7. Health check path must return HTTP 200 unauthenticated
 
-**File Structure**: `CloudronManifest.json`, `Dockerfile`, `start.sh`, `logo.png` (256×256). Independently distributed packages also keep `CloudronVersions.json`, a Cloudron-format changelog, a publishing runbook, and at least one privacy-reviewed screenshot or 3:1 hero; follow `cloudron-app-publishing-skill.md`.
+**File Structure**: `CloudronManifest.json`, `Dockerfile`, `start.sh`, `logo.png` (256×256). Independently distributed packages also keep `CloudronVersions.json`, a Cloudron-format changelog, a publishing runbook, keyless image/catalog provenance, and at least one privacy-reviewed screenshot or 3:1 hero; follow `cloudron-app-publishing-skill.md`.
 
 **CLI Workflow**:
 

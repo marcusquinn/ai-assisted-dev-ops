@@ -48,6 +48,7 @@ Commit these before the first registry build:
 - A local square 256×256 PNG icon (`icon` normally points to it) and at least one privacy-reviewed product screenshot or hero. `mediaLinks` must use public HTTPS URLs; Cloudron recommends 3:1 images such as 1200×400.
 - A Cloudron-format changelog file when using `file://`: each release heading must be exactly `[X.Y.Z]`, because `cloudron versions add` does not parse Keep a Changelog headings such as `## [X.Y.Z]`.
 - A short publishing runbook that records the canonical catalog URL, registry/repository ownership, asset provenance, test install, rollback, and Community Apps listing steps without storing credentials.
+- A managed GitHub Actions release workflow that creates and verifies keyless provenance for the immutable image digest and exact generated `CloudronVersions.json`; use `reference/release-artifact-provenance.md` before the first publication.
 
 `packageUrl` controls the package-source link in Community Apps and should point to the package repository. It requires `minBoxVersion` 10.0.0. Keep `packagerUrl` pointed at the package maintainer; do not repurpose it as the repository link. Packages that need Cloudron 9.1 compatibility should omit `packageUrl`, while packages that require a repository link should raise the minimum explicitly. `author` and `contactEmail` are deprecated in the manifest reference but are still required by the current CLI version-catalog validator.
 
@@ -106,6 +107,22 @@ git add CloudronVersions.json && git commit -m "release 1.1.0" && git push
 ```
 
 Before promotion, verify fresh install, upgrade from the previous published version, restart, backup/restore, health checks, and the public icon/media URLs. Image push, catalog promotion, catalog hosting, and Community Apps submission are publication actions and require explicit authorization.
+
+## Keyless Publication Provenance
+
+For aidevops-packaged community apps, GitHub Actions OIDC/Sigstore provenance is
+the default release design. Pin the package image by digest; attest both that OCI
+digest and the exact generated catalog bytes; verify each emitted bundle against
+the package repository, exact catalog workflow, and protected source ref before
+committing or promoting the catalog. Add a no-version-bump path that attests the
+existing catalog when this control is first adopted.
+
+Cloudron does not currently verify external Sigstore attestations when importing
+`CloudronVersions.json` or applying automatic updates. Describe the result as
+tamper evidence and publisher provenance, not client-enforced signing. A checksum
+beside the catalog does not close this gap because the same compromised host can
+replace both. Full workflow and verification pattern:
+`reference/release-artifact-provenance.md`.
 
 ## Distribution
 
