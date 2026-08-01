@@ -24,9 +24,10 @@ tools:
 - **Type**: E2E encrypted messaging — phone number required, minimal metadata, sealed sender
 - **Bot tool**: [signal-cli](https://github.com/AsamK/signal-cli) (Java/GraalVM native) — GPL-3.0
 - **Daemon API**: JSON-RPC 2.0 over HTTP (`:8080`), TCP (`:7583`), Unix socket, stdin/stdout, D-Bus; SSE: `GET /api/v1/events`
-- **Data**: `~/.local/share/signal-cli/data/` (SQLite: `account.db`)
+- **Bot data**: `~/.local/share/signal-cli/data/` (SQLite: `account.db`); never a knowledge-collector input
 - **Registration**: SMS/voice + CAPTCHA, or QR code link to existing account
 - **Docs**: https://github.com/AsamK/signal-cli/wiki
+- **Private knowledge**: offline pre-captured receive notifications only; see `content/social-signal.md`
 
 | Criterion | Signal | SimpleX | Matrix | Telegram |
 |-----------|--------|---------|--------|----------|
@@ -45,6 +46,22 @@ tools:
 **Bot security**: (1) treat all inbound as untrusted — sanitize before AI/shell; (2) allowlist by E.164/UUID; (3) sandbox commands; (4) isolate credentials; (5) scan with `prompt-guard-helper.sh` before AI dispatch.
 
 Cross-reference: `tools/security/opsec.md`, `tools/credentials/gopass.md`, `tools/security/prompt-injection-defender.md`
+
+### Knowledge collector boundary
+
+Bot operations in this reference are not knowledge-ingestion instructions. The collector
+in `scripts/knowledge_social_signal.py` accepts only a bounded, mode-0600 file containing
+pre-captured `receive` notifications whose account identity is present and matches a
+private config. It has no process, network, socket, account-database, key, send, receipt,
+typing, reaction, trust, contact/group, remote-delete, registration, or link route.
+
+As reviewed on 2026-07-31, the supported schema is pinned to unofficial `signal-cli`
+0.14.6. Live collection is not exposed because `receive` sends default delivery receipts
+even when optional read receipts are disabled. No official third-party message
+export/backup contract was validated. Stories and view-once payloads are excluded;
+disappearing messages become content-free tombstones; pre-link and identity-change
+history remain explicit unavailable coverage. See `content/social-signal.md` for the full
+capability and retention table.
 
 **Access control** — no built-in allowlists; filter on sender at the application layer. Identifier types: E.164 (`+XXXXXXXXXXX`), ACI UUID (`a1b2c3d4-...`), PNI (`PNI:a1b2c3d4-...`), username (`u:username.NNN`).
 
@@ -208,7 +225,7 @@ signal-cli -a +1234567890 updateGroup -g GROUP_ID -m +NEW -r +OLD --admin +ADMIN
 ```bash
 signal-cli --config /custom/path ...                                   # custom data dir
 signal-cli --log-file /var/log/signal-cli.log --scrub-log ...          # logging (scrubs sensitive data)
-cp ~/.local/share/signal-cli/data/+1234567890/account.db{,.bak.$(date +%Y%m%d)}  # backup before upgrade
+cp ~/.local/share/signal-cli/data/+1234567890/account.db{,.bak.$(date +%Y%m%d)}  # bot maintenance only; never collector input
 ```
 
 Options: `--service-environment live` (production, default), `--trust-new-identities on-first-use|always|never`, `--disable-send-log`.
