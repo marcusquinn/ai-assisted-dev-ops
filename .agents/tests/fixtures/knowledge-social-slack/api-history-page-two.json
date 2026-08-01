@@ -1,0 +1,54 @@
+{
+  "identity": {
+    "data": {
+      "id": "slack_T123ABC456_user_U123ABC456",
+      "provider_account_id": "U123ABC456",
+      "workspace_id": "T123ABC456",
+      "enterprise_id": null,
+      "token_type": "bot",
+      "scopes": ["channels:history"],
+      "conversation_binding_sha256": "3fcc8f8db59e6e3e71c06f82804df4a43cc456c1283010b6b809874c47136b4c"
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {
+        "selector": "history",
+        "conversation_alias": "engineering",
+        "cursor": "cursor-one",
+        "oldest": null,
+        "limit": 1
+      },
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-31T19:01:00Z",
+        "data": [
+          {
+            "kind": "message",
+            "remote_id": "slack_T123ABC456_message_QzEyM0FCQzQ1NjoxNzA5MDAwMDAwLjAwMDAwMQ",
+            "conversation_remote_id": "slack_T123ABC456_conversation_QzEyM0FCQzQ1Ng",
+            "message_ts": "1709000000.000001",
+            "thread_remote_id": null,
+            "actor_remote_id": "slack_T123ABC456_user_U123ABC456",
+            "text": "older Slack fixture knowledge",
+            "subtype": null,
+            "state": "active",
+            "created_at": "2024-02-27T02:13:20.000001Z",
+            "edited_at": null,
+            "reactions": [],
+            "is_starred": false
+          }
+        ],
+        "meta": {
+          "stream": "conversation/engineering/history",
+          "selector": "history",
+          "workspace_id": "T123ABC456",
+          "next_cursor": null,
+          "newest_ts": "1709000000.000001",
+          "complete": true,
+          "source": "slack_web_api"
+        }
+      }
+    }
+  ]
+}
