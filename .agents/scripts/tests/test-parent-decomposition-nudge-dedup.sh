@@ -109,6 +109,20 @@ has_combined_slurp_and_filter() {
 	return 1
 }
 
+find_combined_slurp_and_filter_files() {
+	local repo_root="$1"
+	local relative_file=""
+	while IFS= read -r relative_file; do
+		case "$relative_file" in
+		.agents/scripts/tests/*) continue ;;
+		esac
+		if has_combined_slurp_and_filter "$repo_root/$relative_file"; then
+			printf '%s\n' "$relative_file"
+		fi
+	done < <(git -C "$repo_root" ls-files --cached --others --exclude-standard '.agents/scripts/*.sh')
+	return 0
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$AGENTS_DIR/.." && pwd)"
@@ -131,16 +145,7 @@ echo ""
 # detected. Scan tracked and untracked production shell files, but exclude test
 # fixtures that intentionally model the invalid combination.
 TESTS_RUN=$((TESTS_RUN + 1))
-anti_pattern_hits=$(
-	while IFS= read -r relative_file; do
-		case "$relative_file" in
-		.agents/scripts/tests/*) continue ;;
-		esac
-		if has_combined_slurp_and_filter "$REPO_ROOT/$relative_file"; then
-			printf '%s\n' "$relative_file"
-		fi
-	done < <(git -C "$REPO_ROOT" ls-files --cached --others --exclude-standard '.agents/scripts/*.sh')
-)
+anti_pattern_hits=$(find_combined_slurp_and_filter_files "$REPO_ROOT")
 if [[ -z "$anti_pattern_hits" ]]; then
 	echo "${TEST_GREEN}PASS${TEST_NC}: 1: no production gh api command combines --slurp with --jq/--template"
 else
