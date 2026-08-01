@@ -754,6 +754,93 @@ AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log
 }
 printf 'PASS merge-only aidevops lifecycle skips publication evidence\n'
 
+release_sha="$(printf '%040d' 3)"
+release_repo_root="${ROOT}/release-repo"
+release_home="${ROOT}/release-home"
+release_bin="${ROOT}/release-bin"
+postflight_dir="${ROOT}/postflight"
+postflight_log="${ROOT}/postflight-calls.log"
+mkdir -p "$release_repo_root" "${release_home}/.aidevops/agents" "$release_bin" "$postflight_dir"
+printf '%s\n' 3.0.0 >"${release_repo_root}/VERSION"
+printf '%s\n' 3.0.0 >"${release_home}/.aidevops/agents/VERSION"
+
+cat >"${release_bin}/git" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+"rev-parse --show-toplevel")
+	printf '%s\n' "${TEST_RELEASE_REPO_ROOT:?}"
+	;;
+"ls-remote --exit-code --tags origin refs/tags/v3.0.0^{}")
+	printf '%s\t%s\n' "${TEST_RELEASE_SHA:?}" 'refs/tags/v3.0.0^{}'
+	;;
+"worktree list --porcelain") ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "${release_bin}/git"
+
+cat >"${postflight_dir}/postflight-check.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${POSTFLIGHT_RELEASE_TAG-unset}" "$*" >>"${TEST_POSTFLIGHT_LOG:?}"
+[[ "${POSTFLIGHT_RELEASE_TAG+x}" != x ]]
+[[ "$*" == "--quick --sha ${TEST_RELEASE_SHA:?} --tag v3.0.0" ]]
+STUB
+chmod +x "${postflight_dir}/postflight-check.sh"
+
+release_completion_runner="${ROOT}/release-completion-runner.sh"
+cat >"$release_completion_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+STATE_DIR='${ROOT}/release-completion-state'
+STATE_FILE='${ROOT}/release-completion-state/full-loop.state'
+DEFAULT_MAX_TASK_ITERATIONS=50
+DEFAULT_MAX_PREFLIGHT_ITERATIONS=5
+DEFAULT_MAX_PR_ITERATIONS=20
+HEADLESS=false
+print_error() { return 0; }
+print_info() { return 0; }
+print_warning() { return 0; }
+source '${SCRIPTS_DIR}/shared-constants.sh'
+[[ -z "\${BOLD+x}" ]] && BOLD=''
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
+SCRIPT_DIR='${postflight_dir}'
+cmd_complete_after_cleanup "\$@"
+RUNNER
+chmod +x "$release_completion_runner"
+
+published_removed_path="${ROOT}/published-removed-worktree"
+superseded_removed_path="${ROOT}/superseded-removed-worktree"
+printf '[2026-08-01T00:00:01Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
+	"$published_removed_path" >>"$cleanup_log"
+printf '[2026-08-01T00:00:02Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
+	"$superseded_removed_path" >>"$cleanup_log"
+printf '%s\n' published >"${receipt_dir}/marcusquinn_aidevops-56.status"
+full_loop_write_cleanup_deferred marcusquinn/aidevops 56 "$published_removed_path" \
+	feature/published-cleanup "$$" published-cleanup-session published >/dev/null
+printf '%s\n' superseded >"${receipt_dir}/marcusquinn_aidevops-57.status"
+jq -cn --arg release_sha "$release_sha" \
+	'{schema_version:1,status:"superseded",repository:"marcusquinn/aidevops",pr_number:57,
+	  source_merge:("1" * 40),aggregate_pr:99,aggregate_merge:("2" * 40),release_tag:"v3.0.0",
+	  release_commit:$release_sha,recorded_at:"2026-08-01T00:00:00Z"}' \
+	>"${receipt_dir}/marcusquinn_aidevops-57.aggregate.json"
+full_loop_write_cleanup_deferred marcusquinn/aidevops 57 "$superseded_removed_path" \
+	feature/superseded-cleanup "$$" superseded-cleanup-session superseded >/dev/null
+
+for release_case in "56:$published_removed_path" "57:$superseded_removed_path"; do
+	IFS=: read -r release_pr release_removed_path <<<"$release_case"
+	env -u POSTFLIGHT_RELEASE_TAG \
+		HOME="$release_home" AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+		AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+		TEST_RELEASE_REPO_ROOT="$release_repo_root" TEST_RELEASE_SHA="$release_sha" \
+		TEST_POSTFLIGHT_LOG="$postflight_log" \
+		PATH="${release_bin}:${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$release_completion_runner" "$release_pr" "$release_removed_path" marcusquinn/aidevops >/dev/null
+done
+[[ "$(wc -l <"$postflight_log" | tr -d ' ')" -eq 2 ]]
+grep -qx "unset|--quick --sha ${release_sha} --tag v3.0.0" "$postflight_log"
+printf 'PASS published and superseded cleanup pass exact release tags to postflight without environment overrides\n'
+
 printf '%s\n' failed >"${receipt_dir}/marcusquinn_aidevops-42.status"
 if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" marcusquinn/aidevops >/dev/null; then
 	printf 'FAIL release:failed lifecycle was accepted as complete\n'
