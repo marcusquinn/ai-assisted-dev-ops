@@ -186,6 +186,12 @@ Aggregation PR #29148 reviews authorized Qlty postflight PR #29127 at
 authorized patch release completed. Its exact branch base is
 `af4dc8979fde7864fd0d7ffc898f47629dd3241e`.
 
+A pending aggregation review covers authorized GH audit PR #29152 at
+`817e68674104c07951932c9cc914763f31f56b94` because protected release PR #29155
+advanced `main` after the source merged, while immutable `v3.32.210` predates
+that source. Its exact branch base is
+`71ad1b62a0da67f161a9a41992d4d4a5958b5e2c`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
