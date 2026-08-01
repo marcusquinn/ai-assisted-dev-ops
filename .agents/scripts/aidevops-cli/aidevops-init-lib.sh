@@ -149,6 +149,73 @@ _init_configure_repo_verify() {
 	return 0
 }
 
+_init_finalize_repo_verify() {
+	local project_root="$1"
+	local config_file="${project_root}/.aidevops.json"
+	[[ -f "$config_file" ]] || return 0
+	[[ "$(jq -r '.features.code_quality == true and .verify.enabled != false' "$config_file" 2>/dev/null)" == "true" ]] || return 0
+	if ! _init_load_repo_verify_lib; then
+		print_error "Repo verify configuration helper unavailable during final hook verification"
+		return 1
+	fi
+
+	local hook_status=""
+	hook_status=$(repo_verify_hook_status "$project_root") || hook_status="unavailable"
+	if [[ "$hook_status" != "installed" ]] || ! _init_repo_verify_hook_integrity "$project_root"; then
+		repo_verify_install_hook "$project_root" >/dev/null 2>&1 || {
+			print_error "Required repo-verify pre-push hook was replaced during initialization"
+			return 1
+		}
+		hook_status=$(repo_verify_hook_status "$project_root") || hook_status="unavailable"
+	fi
+	if [[ "$hook_status" != "installed" ]] || ! _init_repo_verify_hook_integrity "$project_root"; then
+		print_error "Required repo-verify pre-push hook failed its final integrity check (status: ${hook_status})"
+		return 1
+	fi
+	print_success "Verified final repo-verify pre-push hook integrity"
+	return 0
+}
+
+_init_repo_verify_hook_integrity() {
+	local project_root="$1"
+	local common_dir="" hook_file=""
+	common_dir=$(git -C "$project_root" rev-parse --git-common-dir 2>/dev/null) || return 1
+	[[ "$common_dir" == /* ]] || common_dir="${project_root}/${common_dir}"
+	hook_file="${common_dir}/hooks/pre-push"
+	[[ -x "$hook_file" ]] || return 1
+	bash -n "$hook_file" >/dev/null 2>&1 || return 1
+	# shellcheck disable=SC2016 # Match literal dispatcher expressions.
+	grep -Fq '_stdin_data=$(cat)' "$hook_file" || return 1
+	grep -Fq '_repo_verify_hook=""' "$hook_file" || return 1
+	# shellcheck disable=SC2016 # Match literal dispatcher expressions.
+	grep -Fq '"$_repo_verify_hook" "$@" || _exit_code=$?' "$hook_file" || return 1
+	# shellcheck disable=SC2016 # Match literal dispatcher expressions.
+	grep -Fq 'exit "$_exit_code"' "$hook_file" || return 1
+	return 0
+}
+
+_init_run_beads_init() {
+	local project_root="$1"
+	if bd init --help 2>&1 | grep -q -- '--skip-hooks'; then
+		(cd "$project_root" && bd init --skip-hooks 2>/dev/null)
+		return $?
+	fi
+
+	local common_dir="" hook_file="" hook_backup="" beads_status=0
+	common_dir=$(git -C "$project_root" rev-parse --git-common-dir 2>/dev/null) || return 1
+	[[ "$common_dir" == /* ]] || common_dir="${project_root}/${common_dir}"
+	hook_file="${common_dir}/hooks/pre-push"
+	if [[ -f "$hook_file" ]]; then
+		hook_backup=$(mktemp "${hook_file}.aidevops-init.XXXXXX") || return 1
+		cp -p "$hook_file" "$hook_backup" || return 1
+	fi
+	(cd "$project_root" && bd init 2>/dev/null) || beads_status=$?
+	if [[ -n "$hook_backup" ]]; then
+		mv "$hook_backup" "$hook_file" || return 1
+	fi
+	return "$beads_status"
+}
+
 _agent_source_template_dir() {
 	printf '%s\n' "${AGENTS_DIR}/templates/agent-source-repo"
 	return 0
@@ -962,6 +1029,7 @@ _init_run_workflow() {
 	local enable_time_tracking=false enable_database=false enable_beads=false
 	local enable_sops=false enable_security=false enable_deployment_context=false
 	local enable_wordpress_context=false
+	local init_security_posture="not-requested"
 	local _f
 	for _f in $parsed; do
 		case "$_f" in
@@ -1306,7 +1374,7 @@ EOF
 			# Initialize Beads in the project
 			if [[ ! -d "$project_root/.beads" ]]; then
 				print_info "Initializing Beads database..."
-				if (cd "$project_root" && bd init 2>/dev/null); then
+				if _init_run_beads_init "$project_root"; then
 					print_success "Beads initialized"
 				else
 					print_warning "Beads init failed - run manually: bd init"
@@ -1629,24 +1697,36 @@ _init_scaffold_cloudron_release_workflow() {
 	return 0
 }
 
-_init_security_and_registration() {
-
-	# Run security posture assessment if enabled (t1412.11)
+_init_assess_security_posture() {
 	if [[ "$enable_security" == "true" && "${config_migration_deferred:-false}" != "true" ]]; then
 		local security_posture_script="$AGENTS_DIR/scripts/security-posture-helper.sh"
 		if [[ -f "$security_posture_script" ]]; then
 			print_info "Running security posture assessment..."
-			if bash "$security_posture_script" store "$project_root"; then
+			local security_status=0
+			bash "$security_posture_script" store "$project_root" || security_status=$?
+			init_security_posture=$(jq -r '.security_posture.status // "warning"' "$project_root/.aidevops.json" 2>/dev/null || printf 'warning')
+			if [[ "$security_status" -eq 0 && "$init_security_posture" == "good" ]]; then
 				print_success "Security posture assessed and stored in .aidevops.json"
-			else
+			elif [[ "$security_status" -le 1 ]]; then
 				print_warning "Security posture assessment found issues (review with: aidevops security audit)"
+			else
+				print_error "Security posture assessment failed before completion"
+				return 1
 			fi
 		else
+			init_security_posture="skipped"
 			print_info "Security posture check skipped (security-posture-helper.sh not available)"
 		fi
 	elif [[ "$enable_security" == "true" ]]; then
+		init_security_posture="deferred"
 		print_info "Security posture storage deferred until .aidevops.json migration is committed"
 	fi
+	return 0
+}
+
+_init_security_and_registration() {
+	_init_finalize_repo_verify "$project_root" || return 1
+	_init_assess_security_posture || return 1
 
 	# Build features string for registration
 	local features_list=""
@@ -1735,7 +1815,17 @@ _init_commit_files() {
 _init_print_summary() {
 
 	echo ""
-	print_success "AI DevOps initialized! (scope: $init_scope)"
+	case "$init_security_posture" in
+	critical)
+		print_warning "AI DevOps local scaffolding initialized (scope: $init_scope); security and remote hardening remain CRITICAL"
+		;;
+	warning | partial | deferred | skipped | unknown)
+		print_warning "AI DevOps local scaffolding initialized (scope: $init_scope); security or remote hardening remains incomplete"
+		;;
+	*)
+		print_success "AI DevOps initialized! (scope: $init_scope)"
+		;;
+	esac
 	echo ""
 	echo "Enabled features:"
 	[[ "$enable_planning" == "true" ]] && echo "  ✓ Planning (TODO.md, PLANS.md)"

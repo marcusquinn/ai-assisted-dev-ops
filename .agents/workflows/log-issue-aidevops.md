@@ -63,7 +63,7 @@ Before composing any framework-bug report, run these 6 checks. They are shared w
 
 3. **File:line verification**: For every file reference in the brief, run `git ls-files <path>` or `sed -n "<line>p" <path>` to confirm the reference exists and the content matches the claim. Phantom line refs force the worker to spend the first hour re-locating the code (GH#17832-17835).
 
-4. **Tier disqualifier check**: Framework bugs are usually `tier:standard`. Cross-check the draft brief against `reference/task-taxonomy.md` "Tier Assignment Validation" disqualifiers before assigning `tier:simple`. Default to `tier:standard` when uncertain.
+4. **Tier contract check**: Framework bugs are usually `tier:standard`. Apply `reference/task-taxonomy.md` "Canonical Assignment Policy": exact low-consequence execution contracts may be simple; consequential unresolved architecture or trust-boundary decisions are thinking; bounded security implementation inside a decided boundary remains standard.
 
 5. **Self-assignment awareness**: If filing via `gh_create_issue` with the `auto-dispatch` label, plan to `gh issue edit N --remove-assignee <user>` immediately after — the wrapper currently self-assigns (t2406/#19991). Alternatively, omit `auto-dispatch` until ready to hand off.
 

@@ -165,7 +165,7 @@ test_single_pass_cache_consolidation() {
 	# call sites for standalone/test use. We verify:
 	#   a) reconcile_issues_single_pass is defined
 	#   b) _read_cache_issues_for_slug is still present (≥2: definition + single-pass)
-	#   c) The six _should_* predicates are defined
+	#   c) The seven _should_* predicates are defined
 
 	# (a) single-pass function defined
 	local sp_count
@@ -187,16 +187,16 @@ test_single_pass_cache_consolidation() {
 		_fail "single-pass: expected ≥2 _read_cache_issues_for_slug matches, got ${cache_read_count}"
 	fi
 
-	# (c) all six _should_* predicates defined in the actions sub-library
+	# (c) all seven _should_* predicates defined in the actions sub-library
 	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
 	local pred_count
-	pred_count=$(grep -c '^_should_reconcile_external_issue_gate()\|^_should_ciw()\|^_should_rsd()\|^_should_oimp()\|^_should_cpt()\|^_should_lia()' \
+	pred_count=$(grep -c '^_should_reconcile_persistent_issue()\|^_should_reconcile_external_issue_gate()\|^_should_ciw()\|^_should_rsd()\|^_should_oimp()\|^_should_cpt()\|^_should_lia()' \
 		"${actions_sh}" 2>/dev/null || true)
 	[[ "$pred_count" =~ ^[0-9]+$ ]] || pred_count=0
-	if [[ "$pred_count" -eq 6 ]]; then
-		_pass "single-pass: all 6 _should_* predicates defined"
+	if [[ "$pred_count" -eq 7 ]]; then
+		_pass "single-pass: all 7 _should_* predicates defined"
 	else
-		_fail "single-pass: expected 6 _should_* predicates, found ${pred_count}"
+		_fail "single-pass: expected 7 _should_* predicates, found ${pred_count}"
 	fi
 	return 0
 }
@@ -229,6 +229,17 @@ test_body_in_prefetch_fetch() {
 # ---------------------------------------------------------------------------
 # Test 8: _should_* predicates (t2776)
 # ---------------------------------------------------------------------------
+_assert_should_predicate_result() {
+	local result="$1"
+	local expected="$2"
+	local failure_message="$3"
+	if printf '%s\n' "$result" | grep -qx "$expected"; then
+		return 0
+	fi
+	_fail "$failure_message"
+	return 1
+}
+
 test_should_predicates() {
 	# Source just the predicate functions from the actions sub-library in a subshell.
 	# We extract the five _should_* function definitions then call each.
@@ -262,6 +273,8 @@ test_should_predicates() {
 		# _should_cpt: true for parent-task
 		_should_cpt 'parent-task,origin:worker' && echo 'cpt:1' || echo 'cpt:0'
 		_should_cpt 'status:available'          && echo 'cpt-noparent:1' || echo 'cpt-noparent:0'
+		_should_cpt 'parent-task,needs-maintainer-review' && echo 'cpt-nmr:1' || echo 'cpt-nmr:0'
+		_should_cpt 'parent-task,persistent' && echo 'cpt-persistent:1' || echo 'cpt-persistent:0'
 
 		# _should_lia: true for tNNN: title + no aidevops labels
 		_should_lia 't1234: fix something' '' && echo 'lia:1' || echo 'lia:0'
@@ -273,56 +286,113 @@ test_should_predicates() {
 	local all_ok=1
 
 	# Check each expected result
-	if ! printf '%s\n' "$result" | grep -qx 'ciw:1'; then
-		_fail "_should_ciw: status:available should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'ciw-done:0'; then
-		_fail "_should_ciw: status:done should return 1"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'rsd:1'; then
-		_fail "_should_rsd: status:done should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'rsd-avail:0'; then
-		_fail "_should_rsd: status:available should return 1"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'oimp-parent:0'; then
-		_fail "_should_oimp: parent-task issue should return 1"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'oimp-nonparent:1'; then
-		_fail "_should_oimp: non-parent issue should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'cpt:1'; then
-		_fail "_should_cpt: parent-task should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'cpt-noparent:0'; then
-		_fail "_should_cpt: no parent-task should return 1"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'lia:1'; then
-		_fail "_should_lia: tNNN: title + no labels should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'lia-gh:1'; then
-		_fail "_should_lia: GH#NNN: title + no labels should return 0"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'lia-labeled:0'; then
-		_fail "_should_lia: labeled issue should return 1"
-		all_ok=0
-	fi
-	if ! printf '%s\n' "$result" | grep -qx 'lia-badtitle:0'; then
-		_fail "_should_lia: non-task title should return 1"
-		all_ok=0
-	fi
+	_assert_should_predicate_result "$result" 'ciw:1' \
+		"_should_ciw: status:available should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'ciw-done:0' \
+		"_should_ciw: status:done should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'rsd:1' \
+		"_should_rsd: status:done should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'rsd-avail:0' \
+		"_should_rsd: status:available should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'oimp-parent:0' \
+		"_should_oimp: parent-task issue should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'oimp-nonparent:1' \
+		"_should_oimp: non-parent issue should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'cpt:1' \
+		"_should_cpt: parent-task should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'cpt-noparent:0' \
+		"_should_cpt: no parent-task should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'cpt-nmr:0' \
+		"_should_cpt: NMR-held parent should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'cpt-persistent:0' \
+		"_should_cpt: persistent parent should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'lia:1' \
+		"_should_lia: tNNN: title + no labels should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'lia-gh:1' \
+		"_should_lia: GH#NNN: title + no labels should return 0" || all_ok=0
+	_assert_should_predicate_result "$result" 'lia-labeled:0' \
+		"_should_lia: labeled issue should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'lia-badtitle:0' \
+		"_should_lia: non-task title should return 1" || all_ok=0
 
-	[[ "$all_ok" == "1" ]] && _pass "_should_* predicates: all 12 cases correct"
+	[[ "$all_ok" == "1" ]] && _pass "_should_* predicates: all 14 cases correct"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Parent mutation gate: live labels and cached holds fail closed.
+# ---------------------------------------------------------------------------
+test_parent_live_hold_gate() {
+	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
+	local result=""
+	result=$(ACTIONS_SH="$actions_sh" bash -c '
+		_PIR_NMR_LABEL="needs-maintainer-review"
+		_PIR_PERSISTENT_LABEL="persistent"
+		_PIR_PT_LABEL="parent-task"
+		_PIR_SCRIPT_DIR="/nonexistent"
+		source "$ACTIONS_SH"
+		LIVE_MODE="clear"
+		gh() {
+			local command="$1"
+			local endpoint="${2:-}"
+			[[ "$command" == "api" && "$endpoint" == "repos/owner/repo/issues/42" ]] || return 1
+			case "$LIVE_MODE" in
+			clear) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}]}" ;;
+			nmr) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"needs-maintainer-review\"}]}" ;;
+			persistent) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"persistent\"}]}" ;;
+			missing-parent) printf "%s\n" "{\"number\":42,\"labels\":[]}" ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		for LIVE_MODE in clear nmr persistent missing-parent api-failure; do
+			_pir_parent_mutation_is_allowed owner/repo 42 &&
+				printf "%s:allowed\n" "$LIVE_MODE" || printf "%s:blocked\n" "$LIVE_MODE"
+		done
+		COLLECT_CALLS=0
+		_pir_collect_parent_child_evidence() {
+			COLLECT_CALLS=$((COLLECT_CALLS + 1))
+			return 0
+		}
+		_action_cpt_single owner/repo 42 Parent body 1 1 1 168 OPEN \
+			"parent-task,needs-maintainer-review"
+		printf "cached-hold-collect-calls:%s\n" "$COLLECT_CALLS"
+
+		FINAL_GATE_CALLS=0
+		CLOSE_CALLS=0
+		_parent_close_contract_incomplete() { return 1; }
+		_pir_parent_mutation_is_allowed() {
+			FINAL_GATE_CALLS=$((FINAL_GATE_CALLS + 1))
+			return 1
+		}
+		gh() {
+			if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/43" ]]; then
+				[[ "$*" == *".state"* ]] && printf "closed\n" || printf "Finished child\n"
+				return 0
+			fi
+			if [[ "${1:-}" == "issue" && "${2:-}" == "close" ]]; then
+				CLOSE_CALLS=$((CLOSE_CALLS + 1))
+				return 0
+			fi
+			return 1
+		}
+		_try_close_parent_tracker owner/repo 42 43 graph "" || true
+		printf "final-gate:%s close-calls:%s\n" "$FINAL_GATE_CALLS" "$CLOSE_CALLS"
+	' 2>/dev/null)
+
+	local all_ok=1
+	printf '%s\n' "$result" | grep -qx 'clear:allowed' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'nmr:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'persistent:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'missing-parent:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'api-failure:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'cached-hold-collect-calls:0' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'final-gate:1 close-calls:0' || all_ok=0
+	if [[ "$all_ok" -eq 1 ]]; then
+		_pass "parent mutation gate blocks cached/live holds and rechecks at final close"
+	else
+		_fail "parent mutation gate result mismatch: ${result}"
+	fi
 	return 0
 }
 
@@ -1092,6 +1162,7 @@ test_no_raw_gh_issue_list_outside_fallback
 test_single_pass_cache_consolidation
 test_body_in_prefetch_fetch
 test_should_predicates
+test_parent_live_hold_gate
 test_pr_merged_at_prefers_wrapper
 test_single_pass_wired_in_engine
 test_batched_field_extraction_parity

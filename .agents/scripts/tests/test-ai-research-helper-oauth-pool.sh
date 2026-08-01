@@ -178,7 +178,7 @@ test_opencode_tier_models() {
 	standard_model=$(resolve_opencode_model_id standard)
 	standard_variant=$(resolve_opencode_variant standard)
 	thinking_model=$(resolve_opencode_model_id thinking)
-	if [[ "$standard_model" == "openai/gpt-5.6-luna" && "$standard_variant" == "max" && "$thinking_model" == "openai/gpt-5.6-sol" ]]; then
+	if [[ "$standard_model" == "openai/gpt-5.6-sol" && "$standard_variant" == "high" && "$thinking_model" == "openai/gpt-5.6-sol" ]]; then
 		record_result "OpenCode research tiers follow canonical Luna and Sol defaults" 0
 		return 0
 	fi

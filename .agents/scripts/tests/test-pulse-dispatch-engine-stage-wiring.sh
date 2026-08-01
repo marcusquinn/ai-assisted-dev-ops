@@ -16,8 +16,9 @@
 # an independent stage so each gets its own timeout budget; t3055 then moved
 # those independent stages behind an async post-dispatch lock so housekeeping
 # cannot hold the dispatch cycle open while worker slots drain. GH#28880 also
-# keeps cross-repository label maintenance between two unwrapped fill passes so
-# already-eligible work launches before those sweeps.
+# keeps cross-repository label maintenance and trusted NMR reconciliation
+# between two unwrapped fill passes so already-eligible work launches first and
+# newly unblocked work remains eligible for the same-cycle refill.
 
 set -u
 
@@ -96,7 +97,7 @@ assert_match_count() {
 
 assert_refill_runtime_contract() {
 	local label="$1"
-	local actual_events="" expected_events="dispatch:skip;routine;invalidate:label_maintenance_complete;dispatch:normalize;"
+	local actual_events="" expected_events="dispatch:skip;routine;stage:auto_approve_maintainer_issues:7;nmr;invalidate:label_maintenance_complete;dispatch:normalize;"
 	TESTS_RUN=$((TESTS_RUN + 1))
 	actual_events=$(
 		(
@@ -106,6 +107,7 @@ assert_refill_runtime_contract() {
 			REFILL_EVENTS=""
 			STOP_FLAG=""
 			LOGFILE="/dev/null"
+			PRE_RUN_STAGE_TIMEOUT=7
 
 			_dispatch_invalidate_candidate_snapshot() {
 				local reason="$1"
@@ -124,7 +126,24 @@ assert_refill_runtime_contract() {
 				return 0
 			}
 
+			run_stage_with_timeout() {
+				local stage_name="$1"
+				local stage_timeout="$2"
+				local stage_fn="$3"
+				REFILL_EVENTS="${REFILL_EVENTS}stage:${stage_name}:${stage_timeout};"
+				if "$stage_fn"; then
+					return 0
+				fi
+				return 1
+			}
+
+			auto_approve_maintainer_issues() {
+				REFILL_EVENTS="${REFILL_EVENTS}nmr;"
+				return 0
+			}
+
 			_preflight_early_dispatch
+			_preflight_trusted_nmr_reconcile
 			_preflight_post_label_refill
 			STOP_FLAG="$PREFLIGHT_LIB"
 			_preflight_post_label_refill
@@ -264,6 +283,10 @@ assert_grep \
 	"9d: post-label refill has a dedicated helper" \
 	'^_preflight_post_label_refill\(\)' \
 	"$PREFLIGHT_LIB"
+assert_grep \
+	"9d2: trusted NMR reconciliation has a dedicated helper" \
+	'^_preflight_trusted_nmr_reconcile\(\)' \
+	"$PREFLIGHT_LIB"
 assert_order \
 	"9e: capacity completes before the initial fill" \
 	'^[[:space:]]*run_stage_with_timeout "preflight_capacity"' \
@@ -275,8 +298,13 @@ assert_order \
 	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
 	"$ENGINE"
 assert_order \
-	"9g: label maintenance precedes the same-cycle refill" \
+	"9g: label maintenance precedes trusted NMR reconciliation" \
 	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
+	'^[[:space:]]*_preflight_trusted_nmr_reconcile([[:space:]]|$)' \
+	"$ENGINE"
+assert_order \
+	"9g2: trusted NMR reconciliation precedes the same-cycle refill" \
+	'^[[:space:]]*_preflight_trusted_nmr_reconcile([[:space:]]|$)' \
 	'^[[:space:]]*_preflight_post_label_refill([[:space:]]|$)' \
 	"$ENGINE"
 assert_order \
@@ -297,8 +325,13 @@ assert_match_count \
 	'^[[:space:]]*dispatch_routine_comment_responses[[:space:]]*\|\|[[:space:]]*true' \
 	1 \
 	"$PREFLIGHT_LIB"
+assert_match_count \
+	"9k2: trusted NMR reconciliation runs exactly once per preflight" \
+	'^[[:space:]]*run_stage_with_timeout "auto_approve_maintainer_issues"' \
+	1 \
+	"$PREFLIGHT_LIB"
 assert_refill_runtime_contract \
-	"9l: initial fill skips dependency normalization and refill restores the default"
+	"9l: trusted NMR reconciliation completes before the normalized refill"
 
 # --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
 

@@ -25,7 +25,7 @@ material, dispatch paths, and logs remain private with restrictive modes.
 ## Routines
 
 - [x] r001 Weekly SEO rankings export repeat:weekly(mon@09:00) ~30m run:custom/scripts/seo-export.sh
-- [x] r002 Daily health check repeat:daily(@06:00) ~2m run:custom/scripts/health-check.sh
+- [x] r002 Daily health check repeat:daily(@06:00) timezone:UTC ~2m run:custom/scripts/health-check.sh
 - [ ] r003 Monthly content calendar review repeat:monthly(1@09:00) ~15m agent:Content
 - [x] r004 Nightly repo triage repeat:cron(15 2 * * *) ~20m agent:Build+
 ```
@@ -44,6 +44,7 @@ diagnostic.
 | `[x]` / `[ ]` | Enabled / disabled (keep disabled entries for auditability) |
 | `r001` / `r-name` | Stable `r`-prefixed ID — never reuse |
 | `repeat:` | Recurrence expression (see below) |
+| `timezone:` | Optional per-routine IANA timezone token, such as `UTC`, `Europe/Jersey`, or `Etc/GMT+1` |
 | `~30m` | Expected runtime estimate |
 | `run:` | Script path relative to `~/.aidevops/agents/` — deterministic, no LLM tokens |
 | `agent:` | Agent name dispatched via `headless-runtime-helper.sh` |
@@ -57,10 +58,19 @@ diagnostic.
 | `monthly(N@HH:MM)` | `monthly(1@09:00)` | Day N of each month |
 | `cron(expr)` | `cron(15 2 * * *)` | Complex schedules only |
 
-Calendar expressions use the host-local timezone by default. Set
-`AIDEVOPS_SCHEDULE_TIMEZONE` to an IANA timezone when a fleet needs an explicit
-shared contract. `is-due` and `next-run` use the same local-calendar boundaries:
-a run is due when its last successful/terminal run predates the latest boundary.
+Calendar expressions use this precedence: the routine's optional `timezone:`
+field, global `AIDEVOPS_SCHEDULE_TIMEZONE`, the inherited `TZ`, then the host
+timezone. A per-routine field therefore provides a version-controlled exception
+without changing unrelated routines. For example:
+
+```markdown
+- [x] r005 UTC report repeat:daily(@00:30) timezone:UTC run:custom/scripts/report.sh
+```
+
+Timezone values are single IANA-style tokens; malformed fields fail closed
+instead of falling back to the global or host timezone. `is-due` and `next-run`
+use the same local-calendar boundaries: a run is due when its last
+successful/terminal run predates the latest boundary.
 This catches up missed slots and prevents an off-slot bootstrap or manual run from
 suppressing the next boundary. Repeated fall-back hours belong to their first
 occurrence; nonexistent spring-forward local times fail closed with a diagnostic.

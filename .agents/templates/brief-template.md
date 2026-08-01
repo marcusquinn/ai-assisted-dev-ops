@@ -42,31 +42,34 @@ mode: subagent
 ## Tier
 
 <!-- Recommended model tier. Determines cascade dispatch starting point.
-     See reference/task-taxonomy.md for full criteria, disqualifiers, and cascade model.
-     The checklist below is MANDATORY — it prevents mis-tagging that wastes
-     compute on guaranteed-to-fail dispatches (see t1921). -->
+     reference/task-taxonomy.md is the canonical assignment policy.
+     The checklist below records the evidence required for tier:simple;
+     counts, estimates, and isolated keywords are not tier gates. -->
 
 ### Tier checklist (verify before assigning)
 
-Answer each question for `tier:simple`. If **any** answer is "no", use `tier:standard` or higher.
+First select `tier:thinking` when the brief leaves a consequential architecture,
+product, trust/security/privacy, irreversible migration, or novel cross-system
+decision unresolved. Otherwise answer every question for `tier:simple`:
 
-- [ ] **2 or fewer files to modify?** (count the Files to Modify section below)
-- [ ] **Every target file under 500 lines?** (large files require codebase navigation — that is judgment work, not transcription)
-- [ ] **Exact `oldString`/`newString` for every edit?** (not skeletons, not descriptions of changes — literal copy-pasteable replacement blocks)
-- [ ] **No judgment or design decisions?** (no "choose between", "design", "coordinate", "compatible with")
-- [ ] **No error handling or fallback logic to design?** (no "graceful", "retry", "fallback")
-- [ ] **No cross-package or cross-module changes?** (no `packages/a/` + `packages/b/`, no changes spanning unrelated subsystems)
-- [ ] **Estimate 1h or less?**
-- [ ] **4 or fewer acceptance criteria?**
-- [ ] **Dispatch-path classification (t2821/t2920):** Does the `### Files Scope` or `## How` section reference a file in `.agents/configs/self-hosting-files.conf`? If yes, keep the normal `#auto-dispatch` default and use `tier:thinking`; runtime routing chooses the model and reasoning level. Interactive implementation keeps `#auto-dispatch` because its active claim prevents concurrent pickup. Use `#no-auto-dispatch` only for explicit durable manual intent or a recorded unresolved safety/authority decision. See `.agents/reference/task-taxonomy.md` and `.agents/reference/auto-dispatch.md`.
+- [ ] **Exact execution contract supplied?** Existing-file work has complete `oldString`/`newString`; new-file work has `Full content`; deterministic rename/move/delete work has an `Exact transform`.
+- [ ] **Targets and reference pattern verified?** The worker need not discover the write surface or choose among patterns.
+- [ ] **No semantic or design decision remains?** Behaviour, compatibility, sequencing, and error/recovery policy are already decided.
+- [ ] **Bounded, reversible, low-consequence impact?** The work does not alter a trust boundary, require destructive authority, or create an unknown migration/rollback obligation.
+- [ ] **No stateful coordination to invent?** Multiple exact independent actions are allowed; cross-component ordering or shared-state recovery is not.
+- [ ] **Focused verification and rollback are explicit?** Completion and safe reversal are mechanically checkable.
+- [ ] **No dispatch-path risk override?** Files in `.agents/configs/self-hosting-files.conf` use `tier:thinking` because workers execute through that path; keep normal `#auto-dispatch` unless a separate authority/safety gate requires a durable stop.
 
-All checked = `tier:simple`. Any unchecked = `tier:standard` (default) or `tier:thinking` (no existing pattern to follow).
+All checked = `tier:simple`. Any unchecked without a thinking trigger =
+`tier:standard` (default). A consequential unresolved decision or dispatch-path
+override = `tier:thinking`.
 
 **Selected tier:** `tier:simple` | `tier:standard` | `tier:thinking`
 
-**Tier rationale:** {1-2 sentences justifying the tier choice, referencing which checklist items
-drove the decision. e.g., "6 files across 3 packages, fallback retry logic needed -> tier:standard"
-or "Single-file config edit with exact code block provided -> tier:simple"}
+**Tier rationale:** {1-2 sentences naming the decisive contract evidence. Examples:
+"verbatim config replacement with focused verification and rollback -> tier:simple";
+"known authentication pattern inside a decided boundary, with local recovery choices -> tier:standard";
+"authorization boundary and rollback trade-offs remain unresolved -> tier:thinking".}
 
 ## PR Conventions
 

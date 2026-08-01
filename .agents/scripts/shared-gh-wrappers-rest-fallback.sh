@@ -237,7 +237,7 @@ _rest_body_file_arg() {
 _rest_append_sig() {
 	local body_file="$1"
 	[[ -f "$body_file" ]] || return 0
-	grep -q "<!-- aidevops:sig -->" "$body_file" 2>/dev/null && return 0
+	grep -Fqx '<!-- aidevops:sig -->' "$body_file" 2>/dev/null && return 0
 	local helper="" _cand
 	for _cand in \
 		"${HOME}/.aidevops/agents/scripts/gh-signature-helper.sh" \

@@ -62,6 +62,23 @@ owner_info() {
 	return 0
 }
 
+create_linked_worktree_fixture() {
+	local canonical_path="$1"
+	local linked_path="$2"
+	local branch="$3"
+
+	mkdir -p "$canonical_path"
+	/usr/bin/git -C "$canonical_path" init -q -b main || return 1
+	/usr/bin/git -C "$canonical_path" config user.name Test || return 1
+	/usr/bin/git -C "$canonical_path" config user.email test@example.invalid || return 1
+	/usr/bin/git -C "$canonical_path" config commit.gpgsign false || return 1
+	printf 'seed\n' >"${canonical_path}/README.md" || return 1
+	/usr/bin/git -C "$canonical_path" add README.md || return 1
+	/usr/bin/git -C "$canonical_path" commit -q -m seed || return 1
+	/usr/bin/git -C "$canonical_path" worktree add -q -b "$branch" "$linked_path" || return 1
+	return 0
+}
+
 test_same_opencode_session_rolls_owner_pid() {
 	local wt_path="${TEST_ROOT}/same-session"
 	mkdir -p "$wt_path"
@@ -279,6 +296,58 @@ test_expected_owner_transfer_rejects_missing_option_value_cleanly() {
 	return 0
 }
 
+test_owner_contract_removal_is_atomic() {
+	reset_registry
+	local canonical_path="${TEST_ROOT}/atomic-remove-canonical"
+	local linked_path="${TEST_ROOT}/atomic-remove-linked"
+	local branch="feature/atomic-remove"
+	create_linked_worktree_fixture "$canonical_path" "$linked_path" "$branch" || return 1
+	register_worktree "$linked_path" "$branch" --owner-pid "$OWNER_PID" \
+		--session "created-owner" --batch "" --task ""
+
+	local captured_owner="" expected_pid="" expected_session="" expected_batch=""
+	local expected_task="" expected_created_at=""
+	captured_owner=$(owner_info "$linked_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at <<<"$captured_owner"
+	local rc=0
+	remove_worktree_if_owner_contract "$linked_path" "$canonical_path" "$branch" \
+		"$expected_pid" "$expected_session" "$expected_batch" "$expected_task" \
+		"$expected_created_at" || rc=1
+	[[ ! -e "$linked_path" ]] || rc=1
+	if check_worktree_owner "$linked_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	print_result "exact owner-contract removal retires worktree and registration atomically" "$rc"
+	return 0
+}
+
+test_owner_contract_removal_rejects_concurrent_transfer() {
+	reset_registry
+	local canonical_path="${TEST_ROOT}/atomic-race-canonical"
+	local linked_path="${TEST_ROOT}/atomic-race-linked"
+	local branch="feature/atomic-race"
+	create_linked_worktree_fixture "$canonical_path" "$linked_path" "$branch" || return 1
+	register_worktree "$linked_path" "$branch" --owner-pid "$OWNER_PID" \
+		--session "created-owner" --batch "" --task ""
+
+	local captured_owner="" expected_pid="" expected_session="" expected_batch=""
+	local expected_task="" expected_created_at=""
+	captured_owner=$(owner_info "$linked_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at <<<"$captured_owner"
+	register_worktree "$linked_path" "$branch" --owner-pid "$CLAIM_PID" \
+		--session "replacement-owner" --batch "replacement" --task ""
+	local rc=0
+	if remove_worktree_if_owner_contract "$linked_path" "$canonical_path" "$branch" \
+		"$expected_pid" "$expected_session" "$expected_batch" "$expected_task" \
+		"$expected_created_at"; then
+		rc=1
+	fi
+	[[ -d "$linked_path" ]] || rc=1
+	[[ "$(owner_info "$linked_path")" == "${CLAIM_PID}|replacement-owner|replacement||"* ]] || rc=1
+	print_result "owner-contract removal preserves a concurrently transferred worktree" "$rc"
+	return 0
+}
+
 main() {
 	start_live_pids
 	test_same_opencode_session_rolls_owner_pid
@@ -290,6 +359,8 @@ main() {
 	test_expected_owner_transfer_is_atomic
 	test_expected_owner_transfer_rejects_concurrent_mutation
 	test_expected_owner_transfer_rejects_missing_option_value_cleanly
+	test_owner_contract_removal_is_atomic
+	test_owner_contract_removal_rejects_concurrent_transfer
 	printf 'Results: %s/%s passed, %s failed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]] && return 0
 	return 1

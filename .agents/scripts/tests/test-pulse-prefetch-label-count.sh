@@ -198,6 +198,15 @@ test_nmr_consumer() {
 		passed=1
 	fi
 	print_result "positive NMR cache reaches generated triage output" "$passed"
+
+	passed=0
+	NMR_LIVE_JSON='[{"number":42,"title":"Review me","author":{"login":"known-user"},"createdAt":"2026-07-20T00:00:00Z","updatedAt":"2026-07-20T00:00:00Z","labels":[{"name":"needs-maintainer-review"}]},{"number":43,"title":"Persistent dashboard","author":{"login":"known-user"},"createdAt":"2026-07-20T00:00:00Z","updatedAt":"2026-07-20T00:00:00Z","labels":[{"name":"needs-maintainer-review"},{"name":"persistent"}]}]'
+	: >"$LIVE_CALLS_FILE"
+	output=$(prefetch_triage_review_status 'owner/repo|/repo')
+	if [[ "$output" != *"Issue #42: Review me"* || "$output" == *"Issue #43"* ]]; then
+		passed=1
+	fi
+	print_result "persistent NMR issues are excluded from triage output" "$passed"
 	return 0
 }
 

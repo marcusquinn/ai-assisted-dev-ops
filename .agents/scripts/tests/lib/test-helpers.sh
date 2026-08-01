@@ -180,16 +180,27 @@ _test_copy_shared_deps() {
 		fi
 	done <<<"$deps"
 
-	# Second pass: discover sub-library deps from each first-level dep.
-	# Sub-libraries (e.g. shared-gh-wrappers-session.sh) are sourced from
-	# their parent via `source "$_SHARED_GH_WRAPPERS_DIR/<filename>.sh"` or
-	# similar runtime-resolved patterns. Match unconditional source lines
-	# that reference a shared-gh-wrappers-*.sh basename.
-	local sub_deps=""
+	# Recursively discover sub-library deps. Split wrapper modules can source
+	# further shared-gh-wrappers-*.sh modules, so a single second pass leaves
+	# deeper dependencies absent from hermetic test sandboxes.
+	local dep_queue=()
 	while IFS= read -r sibling; do
-		[[ -z "$sibling" ]] && continue
-		local _sub_dep_list
-		_sub_dep_list=$(awk '
+		[[ -n "$sibling" ]] && dep_queue+=("$sibling")
+	done <<<"$deps"
+	local queue_index=0
+	while [[ $queue_index -lt ${#dep_queue[@]} ]]; do
+		sibling="${dep_queue[queue_index]}"
+		queue_index=$((queue_index + 1))
+		local sub_dep
+		while IFS= read -r sub_dep; do
+			[[ -z "$sub_dep" || -f "${dest_dir}/${sub_dep}" ]] && continue
+			[[ -f "${src_dir}/${sub_dep}" ]] || continue
+			if ! cp "${src_dir}/${sub_dep}" "${dest_dir}/${sub_dep}"; then
+				printf 'FAIL: could not copy sub-dep %s to %s\n' "$sub_dep" "$dest_dir" >&2
+				return 1
+			fi
+			dep_queue+=("$sub_dep")
+		done < <(awk '
 			/source.*shared-gh-wrappers-[a-z]/ {
 				line = $0
 				sub(/.*\//, "", line)
@@ -197,21 +208,7 @@ _test_copy_shared_deps() {
 				if (line != "" && line ~ /^shared-gh-wrappers-/) print line
 			}
 		' "${dest_dir}/${sibling}" 2>/dev/null || true)
-		[[ -n "$_sub_dep_list" ]] && sub_deps="${sub_deps}${sub_deps:+
-}${_sub_dep_list}"
-	done <<<"$deps"
-
-	# Copy sub-library deps (skip already-copied files).
-	while IFS= read -r sibling; do
-		[[ -z "$sibling" ]] && continue
-		[[ -f "${dest_dir}/${sibling}" ]] && continue
-		if [[ -f "${src_dir}/${sibling}" ]]; then
-			if ! cp "${src_dir}/${sibling}" "${dest_dir}/${sibling}"; then
-				printf 'FAIL: could not copy sub-dep %s to %s\n' "$sibling" "$dest_dir" >&2
-				return 1
-			fi
-		fi
-	done <<<"$sub_deps"
+	done
 
 	return 0
 }

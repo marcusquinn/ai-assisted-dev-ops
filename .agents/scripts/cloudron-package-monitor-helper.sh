@@ -12,6 +12,8 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 source "${SCRIPT_DIR}/cloudron-package-release-lib.sh"
 
 REPOS_FILE="${AIDEVOPS_REPOS_FILE:-${HOME}/.config/aidevops/repos.json}"
+_CLOUDRON_MONITOR_JSON_TYPE_ARRAY=array
+_CLOUDRON_MONITOR_JSON_TYPE_STRING=string
 
 _cloudron_monitor_error() {
 	local message="$1"
@@ -23,8 +25,20 @@ _cloudron_monitor_require_tools() {
 	command -v jq >/dev/null 2>&1 || _cloudron_monitor_error "jq is required." || return 1
 	command -v gh >/dev/null 2>&1 || _cloudron_monitor_error "GitHub CLI is required." || return 1
 	[[ -f "$REPOS_FILE" ]] || _cloudron_monitor_error "repos.json not found: $REPOS_FILE" || return 1
-	jq -e '.initialized_repos | type == "array"' "$REPOS_FILE" >/dev/null 2>&1 || _cloudron_monitor_error "repos.json has no initialized_repos array." || return 1
+	jq -e --arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" \
+		'.initialized_repos | type == $array_type' "$REPOS_FILE" >/dev/null 2>&1 || _cloudron_monitor_error "repos.json has no initialized_repos array." || return 1
 	return 0
+}
+
+_cloudron_monitor_component_newer() {
+	local candidate="$1"
+	local current="$2"
+	if [[ "${#candidate}" -ne "${#current}" ]]; then
+		[[ "${#candidate}" -gt "${#current}" ]]
+		return $?
+	fi
+	[[ "$candidate" > "$current" ]]
+	return $?
 }
 
 _cloudron_monitor_version_newer() {
@@ -38,22 +52,75 @@ _cloudron_monitor_version_newer() {
 	local current_major=0 current_minor=0 current_patch=0
 	IFS=. read -r candidate_major candidate_minor candidate_patch <<<"$candidate_core"
 	IFS=. read -r current_major current_minor current_patch <<<"$current_core"
-	if ((candidate_major != current_major)); then
-		((candidate_major > current_major))
+	if [[ "$candidate_major" != "$current_major" ]]; then
+		_cloudron_monitor_component_newer "$candidate_major" "$current_major"
 		return $?
 	fi
-	if ((candidate_minor != current_minor)); then
-		((candidate_minor > current_minor))
+	if [[ "$candidate_minor" != "$current_minor" ]]; then
+		_cloudron_monitor_component_newer "$candidate_minor" "$current_minor"
 		return $?
 	fi
-	if ((candidate_patch != current_patch)); then
-		((candidate_patch > current_patch))
+	if [[ "$candidate_patch" != "$current_patch" ]]; then
+		_cloudron_monitor_component_newer "$candidate_patch" "$current_patch"
 		return $?
 	fi
 	if [[ "$candidate" != *-* && "$current" == *-* ]]; then
 		return 0
 	fi
 	return 1
+}
+
+_cloudron_monitor_tag_version() {
+	local tag="$1"
+	local prefixes_json="$2"
+	local prefix=""
+	local version=""
+	while IFS= read -r prefix; do
+		[[ "$tag" == "$prefix"* ]] || continue
+		version="${tag#"$prefix"}"
+		cloudron_package_is_semver "$version" || continue
+		[[ "${version%%+*}" != *-* ]] || continue
+		printf '%s\n' "$version"
+		return 0
+	done < <(jq -r '.[]' <<<"$prefixes_json")
+	return 1
+}
+
+_cloudron_monitor_latest_release_version() {
+	local releases_json="$1"
+	local prefixes_json="$2"
+	local upstream_slug="$3"
+	local stable_tags=""
+	local tag=""
+	local version=""
+	local latest_version=""
+
+	[[ -n "$releases_json" ]] || _cloudron_monitor_error "GitHub returned an empty releases response for $upstream_slug." || return 1
+	if ! stable_tags=$(jq -r \
+		--arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" \
+		--arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" '
+		if type != $array_type then
+			error("expected a release array")
+		else
+			.[]
+			| select(type == "object" and .draft != true and .prerelease != true and (.tag_name | type == $string_type))
+			| .tag_name
+		end
+	' <<<"$releases_json"); then
+		_cloudron_monitor_error "GitHub releases response for $upstream_slug was not a valid release array." || return 1
+	fi
+
+	while IFS= read -r tag; do
+		[[ -n "$tag" ]] || continue
+		version=$(_cloudron_monitor_tag_version "$tag" "$prefixes_json") || continue
+		if [[ -z "$latest_version" ]] || _cloudron_monitor_version_newer "$version" "$latest_version"; then
+			latest_version="$version"
+		fi
+	done <<<"$stable_tags"
+
+	[[ -n "$latest_version" ]] || _cloudron_monitor_error "No stable semantic release tag for $upstream_slug matches cloudron_package.upstream_tag_prefixes ${prefixes_json}; configure the tag streams or publish a matching stable release." || return 1
+	printf '%s\n' "$latest_version"
+	return 0
 }
 
 _cloudron_monitor_has_authority() {
@@ -156,6 +223,7 @@ _cloudron_monitor_upstream_entry() {
 	local manifest_rel=""
 	local upstream_slug=""
 	local monitor_enabled=""
+	local tag_prefixes=""
 	slug=$(jq -r '.slug // empty' <<<"$entry")
 	repo_path=$(jq -r '.path // empty' <<<"$entry")
 	manifest_rel=$(jq -r '.cloudron_package.manifest // "CloudronManifest.json"' <<<"$entry")
@@ -168,13 +236,20 @@ _cloudron_monitor_upstream_entry() {
 	local manifest_path="${repo_path}/${manifest_rel}"
 	[[ -f "$manifest_path" ]] || _cloudron_monitor_error "Manifest missing for registered Cloudron package $slug." || return 1
 	local package_title=""
-	if ! package_title=$(jq -er '.title | select(type == "string" and test("\\S"))' "$manifest_path"); then
+	if ! package_title=$(jq -er --arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" \
+		'.title | select(type == $string_type and test("\\S"))' "$manifest_path"); then
 		_cloudron_monitor_error "Manifest title is missing or blank for registered Cloudron package $slug." || return 1
 	fi
-	local latest_tag=""
-	latest_tag=$(gh api "repos/${upstream_slug}/releases/latest" --jq '.tag_name') || return 1
-	local latest_version="${latest_tag#v}"
-	cloudron_package_is_semver "$latest_version" || _cloudron_monitor_error "Latest release tag for $upstream_slug is not semantic versioning: $latest_tag" || return 1
+	tag_prefixes=$(jq -c '.cloudron_package.upstream_tag_prefixes as $prefixes | if $prefixes == null then ["v", ""] else $prefixes end' <<<"$entry") || return 1
+	jq -e --arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" --arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" \
+		'type == $array_type and length > 0 and all(.[]; type == $string_type and all(explode[]; . >= 32 and . != 127))' <<<"$tag_prefixes" >/dev/null 2>&1 ||
+		_cloudron_monitor_error "cloudron_package.upstream_tag_prefixes for $slug must be a non-empty array of strings; control characters are forbidden." || return 1
+	local releases_json=""
+	if ! releases_json=$(gh api "repos/${upstream_slug}/releases?per_page=100" --paginate); then
+		_cloudron_monitor_error "Could not fetch paginated GitHub releases for $upstream_slug." || return 1
+	fi
+	local latest_version=""
+	latest_version=$(_cloudron_monitor_latest_release_version "$releases_json" "$tag_prefixes" "$upstream_slug") || return 1
 	local current_version=""
 	current_version=$(jq -r '.upstreamVersion // empty' "$manifest_path") || return 1
 	if [[ -n "$current_version" ]] && ! _cloudron_monitor_version_newer "$latest_version" "$current_version"; then

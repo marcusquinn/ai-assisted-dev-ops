@@ -215,6 +215,83 @@ else
 fi
 
 # =============================================================================
+# Class C: _validate_tier_checklist enforces explicit simple contracts
+# =============================================================================
+
+cat >"$TMP/brief-simple-complete.md" <<'BRIEF'
+### Tier checklist (verify before assigning)
+- [x] Exact execution contract supplied?
+- [x] No semantic decision remains?
+**Selected tier:** `tier:simple`
+
+**oldString:**
+```
+old
+```
+**newString:**
+```
+new
+```
+
+## Acceptance Criteria
+- [ ] The replacement is applied exactly once.
+BRIEF
+
+result=$(_validate_tier_checklist "$TMP/brief-simple-complete.md" "tier:simple" 2>/dev/null)
+if [[ "$result" == "tier:simple" ]]; then
+	pass "complete simple checklist and replacement contract stay simple"
+else
+	fail "complete simple checklist and replacement contract stay simple" "got '$result'"
+fi
+
+cat >"$TMP/brief-simple-unchecked.md" <<'BRIEF'
+### Tier checklist (verify before assigning)
+- [x] Exact execution contract supplied?
+- [ ] No semantic decision remains?
+**Selected tier:** `tier:simple`
+**Exact transform:** `rename old.txt to new.txt`
+BRIEF
+
+result=$(_validate_tier_checklist "$TMP/brief-simple-unchecked.md" "tier:simple" 2>/dev/null)
+if [[ "$result" == "tier:standard" ]]; then
+	pass "unchecked simple checklist normalizes to standard"
+else
+	fail "unchecked simple checklist normalizes to standard" "got '$result'"
+fi
+
+cat >"$TMP/brief-simple-no-contract.md" <<'BRIEF'
+### Tier checklist (verify before assigning)
+- [x] Exact execution contract supplied?
+- [x] No semantic decision remains?
+**Selected tier:** `tier:simple`
+Describe the change using the existing pattern.
+BRIEF
+
+result=$(_validate_tier_checklist "$TMP/brief-simple-no-contract.md" "tier:simple" 2>/dev/null)
+if [[ "$result" == "tier:standard" ]]; then
+	pass "missing exact simple contract normalizes to standard"
+else
+	fail "missing exact simple contract normalizes to standard" "got '$result'"
+fi
+
+cat >"$TMP/brief-simple-full-content.md" <<'BRIEF'
+### Tier checklist (verify before assigning)
+- [x] Exact execution contract supplied?
+**Selected tier:** `tier:simple`
+**Full content:**
+```text
+complete
+```
+BRIEF
+
+result=$(_validate_tier_checklist "$TMP/brief-simple-full-content.md" "tier:simple" 2>/dev/null)
+if [[ "$result" == "tier:simple" ]]; then
+	pass "complete new-file content stays simple"
+else
+	fail "complete new-file content stays simple" "got '$result'"
+fi
+
+# =============================================================================
 # Class B: _apply_tier_label_replace removes existing tier labels
 # =============================================================================
 

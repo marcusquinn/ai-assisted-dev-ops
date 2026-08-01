@@ -10,6 +10,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.213] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [3.32.212] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [3.32.211] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [3.32.210] - 2026-08-01
+
+### Added
+
+- add safe WhatsApp knowledge ingestion (#29135)
+- add safe local Signal knowledge ingestion (#29134)
+
+### Changed
+
+- Refactor: decompose headless runtime orchestration (#29137)
+- Refactor: split headless runtime complexity (#29133)
+
+### Fixed
+
+- detect standalone signature markers (#29144)
+- retry interactive maintainer gate statuses (#29143)
+
+## [3.32.209] - 2026-08-01
+
+### Changed
+
+- Documentation: normalize changelog release spacing
+
+## [3.32.208] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.32.207] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.32.206] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.32.205] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.32.204] - 2026-08-01
+
+### Changed
+
+- Version bump and maintenance updates
+
 ## [3.32.203] - 2026-07-31
 
 ### Added
@@ -322,7 +396,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.32.182] - 2026-07-26
 
 ### Changed
@@ -634,7 +707,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.32.160] - 2026-07-21
 

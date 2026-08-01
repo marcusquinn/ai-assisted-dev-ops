@@ -106,6 +106,46 @@ print_info() { return 0; }
 print_warning() { return 0; }
 print_success() { return 0; }
 source '${SCRIPTS_DIR}/full-loop-helper-commit.sh'
+gh_pr_checks_exact_json() {
+	local repo_slug="\$1"
+	local pr_number="\$2"
+	local selection_mode="\$3"
+	: "\$repo_slug" "\$pr_number" "\$selection_mode"
+	case "\${GH_TEST_MODE:-pass}" in
+		pending)
+			printf '%s\n' '[{"name":"required-ci","state":"IN_PROGRESS","bucket":"pending"}]'
+			return 8
+			;;
+		no-required)
+			printf '%s\n' 'exact check helper must not run when configuration has no contexts' >&2
+			return 99
+			;;
+		cli-no-required)
+			printf "%s\n" "no required checks reported on the 'remote-branch' branch" >&2
+			return 1
+			;;
+		api-error)
+			printf '%s\n' 'exact check read unavailable' >&2
+			return 2
+			;;
+		changed-wording)
+			printf "%s\n" "no required checks configured for the 'remote-branch' branch" >&2
+			return 1
+			;;
+		malformed)
+			printf '%s\n' 'not-json'
+			return 0
+			;;
+		empty-array)
+			printf '%s\n' '[]'
+			return 0
+			;;
+		*)
+			printf '%s\n' '[{"name":"required-ci","state":"SUCCESS","bucket":"pass"}]'
+			return 0
+			;;
+	esac
+}
 cmd_pre_merge_gate 42 testorg/testrepo
 RUNNER
 	chmod +x "$runner"

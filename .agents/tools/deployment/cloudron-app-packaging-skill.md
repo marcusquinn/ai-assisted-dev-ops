@@ -25,7 +25,7 @@ Cloudron apps are Docker images plus `CloudronManifest.json`. The platform provi
 
 - **Upstream**: [git.cloudron.io/docs/skills](https://git.cloudron.io/docs/skills) (`cloudron-app-packaging`) | [docs.cloudron.io/packaging](https://docs.cloudron.io/packaging/)
 - **Reference files**: `cloudron-app-packaging-skill/manifest-ref.md`, `cloudron-app-packaging-skill/addons-ref.md`
-- **Also see**: `cloudron-app-packaging.md` (native aidevops guide: helpers, local dev, Dockerfile/start.sh patterns, pre-packaging checks) and `cloudron-app-publishing-skill.md` (required version catalog, public metadata, visual assets, and publication lifecycle)
+- **Also see**: `cloudron-app-packaging.md` (native aidevops guide: helpers, local dev, Dockerfile/start.sh patterns, pre-packaging checks) and `cloudron-app-publishing-skill.md` (required version catalog, public metadata, keyless image/catalog provenance, visual assets, and publication lifecycle)
 - **Last upstream review**: `fcea39616e6e` ("Update the skill for cloudron sync"); no local import changes required beyond keeping the native guide and skill pointers aligned.
 
 ```bash
@@ -35,7 +35,8 @@ cloudron init                    # creates CloudronManifest.json and Dockerfile
 cloudron install                 # uploads source, builds on server, installs app
 cloudron update                  # re-uploads, rebuilds, updates running app
 # For any independently distributed package, initialize and maintain
-# CloudronVersions.json using cloudron-app-publishing-skill.md.
+# CloudronVersions.json and keyless release provenance using
+# cloudron-app-publishing-skill.md.
 ```
 
 <!-- AI-CONTEXT-END -->

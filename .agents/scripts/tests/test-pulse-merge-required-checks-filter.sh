@@ -73,9 +73,9 @@ print_result() {
 #   expected_only   — required status context is expected/not reported yet
 #   skipping_only   — required check-run concludes skipped
 #   empty_required_pending_fallback — branch/ruleset APIs expose no contexts,
-#      but `gh pr checks --required` reports a pending required check
+#      but the exact PR-check read reports a pending required check
 #   empty_required_stale_maintainer_gate_fallback — branch/ruleset APIs expose
-#      no contexts, `gh pr checks --required` has a stale pending maintainer-gate
+#      no contexts, the exact PR-check read has a stale pending maintainer-gate
 #      status, and the current head's maintainer-gate CheckRun is successful
 #   pr_checks_empty_failure — PR-level required checks exits non-zero with no JSON
 #   ruleset_review_malformed_optional — ruleset detail has unexpected shapes
@@ -214,32 +214,6 @@ fi
 if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"headRefOid"* ]]; then
 	apply_jq '{"headRefOid":"abc123def456789000000000000000000000abcd"}' "$@"
 	exit 0
-fi
-
-if [[ "$1" == "pr" && "$2" == "checks" && "$*" == *"--required"* ]]; then
-	case "${MOCK_GH_MODE:-all_pass}" in
-	empty_required_pending_fallback)
-		apply_jq '[
-			{"name":"ShellCheck (macos-latest)","state":"PENDING","bucket":"pending"},
-			{"name":"maintainer-gate","state":"SUCCESS","bucket":"pass"}
-		]' "$@"
-		exit 2
-		;;
-	empty_required_stale_maintainer_gate_fallback | empty_required_current_pending_maintainer_gate_fallback)
-		apply_jq '[
-			{"name":"Complexity Analysis","state":"SUCCESS","bucket":"pass"},
-			{"name":"maintainer-gate","state":"PENDING","bucket":"pending"}
-		]' "$@"
-		exit 1
-		;;
-	pr_checks_empty_failure)
-		exit 1
-		;;
-	*)
-		apply_jq '[]' "$@"
-		exit 0
-		;;
-	esac
 fi
 
 if [[ "$1" == "api" && "$*" == *"/check-runs"* ]]; then
@@ -386,6 +360,36 @@ define_function_under_test() {
 	# functions in isolation; extracted functions reference the PMRC_* contract.
 	# shellcheck disable=SC1090  # dynamic source from sibling lib
 	source "$REQUIRED_CHECKS_SCRIPT"
+	gh_pr_checks_exact_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local selection_mode="$3"
+		: "$repo_slug" "$pr_number" "$selection_mode"
+		case "${MOCK_GH_MODE:-all_pass}" in
+		empty_required_pending_fallback)
+			printf '%s\n' '[
+				{"name":"ShellCheck (macos-latest)","state":"PENDING","bucket":"pending"},
+				{"name":"maintainer-gate","state":"SUCCESS","bucket":"pass"}
+			]'
+			return 8
+			;;
+		empty_required_stale_maintainer_gate_fallback | empty_required_current_pending_maintainer_gate_fallback)
+			printf '%s\n' '[
+				{"name":"Complexity Analysis","state":"SUCCESS","bucket":"pass"},
+				{"name":"maintainer-gate","state":"PENDING","bucket":"pending"}
+			]'
+			return 8
+			;;
+		pr_checks_empty_failure)
+			printf '%s\n' 'exact check read unavailable' >&2
+			return 2
+			;;
+		*)
+			printf "%s\n" "no required checks reported on the 'fixture-branch' branch" >&2
+			return 1
+			;;
+		esac
+	}
 	gh_pr_view() {
 		if gh pr view "$@"; then
 			return 0

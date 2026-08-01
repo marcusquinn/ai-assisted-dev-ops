@@ -19,6 +19,60 @@ mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/receipts"
 # shellcheck source=../full-loop-release-reconcile.sh
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
 
+stale_publication_jobs_fixture() {
+	local mode="${1:-valid}"
+	local jobs_json=""
+	jobs_json=$(jq -cn '
+		{total_count:1,jobs:[{id:101,name:"Publish GitHub, npm, and Homebrew",
+		status:"completed",conclusion:"failure",steps:[
+		{name:"Set up job",number:1,status:"completed",conclusion:"success"},
+		{name:"Checkout verified tag",number:2,status:"completed",conclusion:"success"},
+		{name:"Verify immutable release provenance",number:3,status:"completed",conclusion:"success"},
+		{name:"Create or reconcile GitHub release",number:4,status:"completed",conclusion:"success"},
+		{name:"Publish to npm",number:5,status:"completed",conclusion:"skipped"},
+		{name:"Verify npm publication",number:6,status:"completed",conclusion:"success"},
+		{name:"Push to Homebrew tap",number:7,status:"completed",conclusion:"skipped"},
+		{name:"Verify Homebrew tap",number:8,status:"completed",conclusion:"success"},
+		{name:"Queue exact-tag postflight",number:9,status:"completed",conclusion:"failure"},
+		{name:"Publication summary",number:10,status:"completed",conclusion:"skipped"}
+		]}]}
+	') || return 1
+	case "$mode" in
+	valid) ;;
+	queue-success) jobs_json=$(jq '.jobs[0].steps[8].conclusion = "success"' <<<"$jobs_json") || return 1 ;;
+	duplicate-npm) jobs_json=$(jq '.jobs[0].steps += [.jobs[0].steps[5]]' <<<"$jobs_json") || return 1 ;;
+	extra-failure) jobs_json=$(jq '.jobs[0].steps[3].conclusion = "failure"' <<<"$jobs_json") || return 1 ;;
+	nonterminal) jobs_json=$(jq '.jobs[0].steps[8].status = "in_progress"' <<<"$jobs_json") || return 1 ;;
+	reordered-postflight) jobs_json=$(jq '.jobs[0].steps[3].number = 9 | .jobs[0].steps[8].number = 4' <<<"$jobs_json") || return 1 ;;
+	*) return 1 ;;
+	esac
+	printf '%s\n' "$jobs_json"
+	return 0
+}
+
+valid_stale_jobs=$(stale_publication_jobs_fixture valid)
+_full_loop_release_run_jobs_payload_valid "$valid_stale_jobs" || {
+	printf 'FAIL valid workflow jobs payload was rejected\n'
+	exit 1
+}
+_full_loop_release_stale_publication_jobs_valid "$valid_stale_jobs" || {
+	printf 'FAIL exact post-publication dispatch failure evidence was rejected\n'
+	exit 1
+}
+for invalid_jobs_mode in queue-success duplicate-npm extra-failure nonterminal reordered-postflight; do
+	if _full_loop_release_stale_publication_jobs_valid \
+		"$(stale_publication_jobs_fixture "$invalid_jobs_mode")"; then
+		printf 'FAIL %s stale publication job evidence was accepted\n' "$invalid_jobs_mode"
+		exit 1
+	fi
+done
+if _full_loop_release_run_jobs_payload_valid \
+	"$(jq '.total_count = 2' <<<"$valid_stale_jobs")"; then
+	printf 'FAIL truncated workflow jobs payload was accepted\n'
+	exit 1
+fi
+printf 'PASS stale publication proof requires exact successful channels and sole postflight failure\n'
+
 _full_loop_release_tag_body() {
 	local tag_name="$1"
 	[[ "$tag_name" == "v1.2.3" ]] || return 1
@@ -338,7 +392,9 @@ if [[ "$args" == *" workflow run publish-packages.yml "* ]]; then
 	exit 0
 fi
 if [[ "$args" == *" -f event=push "* ]]; then
-	printf '%s\n' '{"workflow_runs":[{"id":10,"event":"push","head_sha":"3333333333333333333333333333333333333333","status":"completed","conclusion":"success","created_at":"2026-07-27T00:00:00Z","display_title":"push","html_url":"push-url"}]}'
+	push_branch='v1.2.3'
+	[[ "${FAKE_PUSH_BRANCH_MODE:-valid}" == "mismatch" ]] && push_branch='v9.9.9'
+	printf '{"workflow_runs":[{"id":10,"event":"push","head_branch":"%s","head_sha":"3333333333333333333333333333333333333333","status":"completed","conclusion":"success","created_at":"2026-07-27T00:00:00Z","display_title":"push","html_url":"push-url"}]}\n' "$push_branch"
 	exit 0
 fi
 if [[ "$args" == *" -f event=workflow_dispatch "* ]]; then
@@ -414,6 +470,7 @@ chmod +x "${TEST_ROOT}/bin/git" "${TEST_ROOT}/bin/npm" "${TEST_ROOT}/bin/curl"
 PATH="${TEST_ROOT}/bin:${PATH}"
 export FAKE_RUN_SCHEMA_MODE=valid
 export FAKE_RECOVERY_CORRELATION_MODE=valid
+export FAKE_PUSH_BRANCH_MODE=valid
 export FAKE_RELEASE_DRAFT=0
 export FAKE_NPM_VERSION=1.2.3
 FAKE_NPM_DIGEST=$(printf '%0128d' 0)
@@ -472,6 +529,19 @@ if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "10" ]]; then
 fi
 export FAKE_RECOVERY_CORRELATION_MODE=valid
 printf 'PASS recovery workflow correlation binds tag and workflow commits\n'
+
+export FAKE_RECOVERY_CORRELATION_MODE=mismatch
+export FAKE_PUSH_BRANCH_MODE=mismatch
+wrong_push_rc=0
+_full_loop_release_find_workflow_run test/repo v1.2.3 \
+	3333333333333333333333333333333333333333 >/dev/null 2>&1 || wrong_push_rc=$?
+if [[ "$wrong_push_rc" -ne 3 ]]; then
+	printf 'FAIL push workflow with a mismatched tag ref was accepted\n'
+	exit 1
+fi
+export FAKE_RECOVERY_CORRELATION_MODE=valid
+export FAKE_PUSH_BRANCH_MODE=valid
+printf 'PASS push workflow correlation binds the exact release tag ref\n'
 
 saved_script_dir="$SCRIPT_DIR"
 SCRIPT_DIR="${TEST_ROOT}/no-audit-helper"
@@ -580,6 +650,108 @@ FAKE_FORMULA_DRIFT=0
 export FAKE_FORMULA_DRIFT
 printf 'PASS published channel verification binds release, package, formula, and digest\n'
 
+run_stale_supersession_fixture() {
+	local mode="$1"
+	local write_log="$2"
+	(
+		_full_loop_release_source_json_from_tag() {
+			local tag_name="$1"
+			case "$tag_name" in
+			v1.2.3)
+				printf '%s\n' '{"source_pr":90,"source_merge":"1111111111111111111111111111111111111111","aggregated_sources":[]}'
+				;;
+			v1.2.4)
+				printf '%s\n' '{"source_pr":91,"source_merge":"2222222222222222222222222222222222222222","aggregated_sources":[]}'
+				;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_resolve_tag_commit() {
+			local tag_name="$1"
+			case "$tag_name" in
+			v1.2.3) printf '%040d\n' 3 ;;
+			v1.2.4) printf '%040d\n' 4 ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_verify_stale_publication_run() {
+			local repo="$1"
+			local tag_name="$2"
+			local tag_commit="$3"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" && "$tag_commit" == "$(printf '%040d' 3)" ]] || return 1
+			[[ "$mode" != "source-run" ]] || return 1
+			_FULL_LOOP_RELEASE_RUN_JSON='{"id":101}'
+			return 0
+		}
+		_full_loop_release_reset_tag_worktree() {
+			return 0
+		}
+		_full_loop_release_verify_tag_provenance() {
+			local repo="$1"
+			local tag_name="$2"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]]
+			return $?
+		}
+		_full_loop_release_inspect_remote() {
+			local repo="$1"
+			local tag_name="$2"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]] || return 1
+			[[ "$mode" != "latest-remote" ]] || return 1
+			_FULL_LOOP_RELEASE_RUN_JSON='{"id":202}'
+			return 0
+		}
+		_full_loop_release_receipt_path() {
+			local repo="$1"
+			local pr_number="$2"
+			[[ "$repo" == "test/repo" ]] || return 1
+			if [[ "$mode" == "receipt" ]]; then
+				printf '%s/missing-%s.status\n' "$TEST_ROOT" "$pr_number"
+			else
+				printf '%s/receipts/test_repo-%s.status\n' "$TEST_ROOT" "$pr_number"
+			fi
+			return 0
+		}
+		_full_loop_write_successor_release_receipt() {
+			local args="$*"
+			printf '%s\n' "$args" >"$write_log"
+			return 0
+		}
+		git() {
+			local args="$*"
+			[[ "$args" == *" merge-base --is-ancestor "* && "$mode" != "ancestry" ]]
+			return $?
+		}
+		_full_loop_release_finalize_stale_supersession test/repo 90 v1.2.3 v1.2.4
+	)
+	return $?
+}
+
+printf 'published\n' >"${TEST_ROOT}/receipts/test_repo-91.status"
+stale_write_log="${TEST_ROOT}/stale-successor-write.log"
+run_stale_supersession_fixture valid "$stale_write_log" || {
+	printf 'FAIL verified stale publication and terminal successor did not reconcile\n'
+	exit 1
+}
+if ! grep -qx "test/repo 90 1111111111111111111111111111111111111111 v1.2.3 $(printf '%040d' 3) 101 91 2222222222222222222222222222222222222222 v1.2.4 $(printf '%040d' 4) 202" \
+	"$stale_write_log"; then
+	printf 'FAIL post-publication supersession omitted immutable source or successor evidence\n'
+	exit 1
+fi
+for stale_failure_mode in source-run ancestry latest-remote receipt; do
+	rm -f "$stale_write_log"
+	if run_stale_supersession_fixture "$stale_failure_mode" "$stale_write_log"; then
+		printf 'FAIL %s uncertainty allowed stale release supersession\n' "$stale_failure_mode"
+		exit 1
+	fi
+	[[ ! -e "$stale_write_log" ]] || {
+		printf 'FAIL %s uncertainty wrote terminal supersession evidence\n' "$stale_failure_mode"
+		exit 1
+	}
+done
+printf 'PASS stale receipt supersession binds both releases and fails closed on uncertain evidence\n'
+
 _full_loop_resolve_repo() {
 	local requested_repo="$1"
 	printf '%s\n' "${requested_repo:-test/repo}"
@@ -619,6 +791,27 @@ _full_loop_release_finalize_reconciliation() {
 	local pr_number="$2"
 	local tag_name="$3"
 	printf '%s %s %s\n' "$repo" "$pr_number" "$tag_name" >"${TEST_ROOT}/finalize.log"
+	return 0
+}
+_full_loop_release_finalize_stale_supersession() {
+	local repo="$1"
+	local pr_number="$2"
+	local source_tag="$3"
+	local release_tag="$4"
+	printf '%s %s %s %s\n' "$repo" "$pr_number" "$source_tag" "$release_tag" \
+		>"${TEST_ROOT}/stale-finalize.log"
+	return "${STALE_FINALIZE_RC:-0}"
+}
+_full_loop_verify_superseded_release_receipt() {
+	local repo="$1"
+	local pr_number="$2"
+	[[ "$repo" == "test/repo" && "$pr_number" == "90" ]]
+	return $?
+}
+_full_loop_update_superseded_cleanup_receipt() {
+	local repo="$1"
+	local pr_number="$2"
+	printf '%s %s\n' "$repo" "$pr_number" >"${TEST_ROOT}/cleanup-update.log"
 	return 0
 }
 
@@ -686,13 +879,49 @@ _full_loop_release_latest_tag() {
 	printf 'v1.2.4\n'
 	return 0
 }
-stale_rc=0
-AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
-	>/dev/null 2>&1 || stale_rc=$?
-if [[ "$stale_rc" -ne 1 ]]; then
-	printf 'FAIL stale release tag was allowed to republish over a newer release\n'
+printf 'failed\n' >"${TEST_ROOT}/receipts/test_repo-90.status"
+stale_status_rc=0
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command status 90 \
+	>/dev/null 2>&1 || stale_status_rc=$?
+if [[ "$stale_status_rc" -ne 1 || -e "${TEST_ROOT}/stale-finalize.log" ]]; then
+	printf 'FAIL read-only stale release status mutated terminal evidence\n'
 	exit 1
 fi
-printf 'PASS stale release tags cannot downgrade public channels\n'
+stale_reconcile_rc=0
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
+	>/dev/null 2>&1 || stale_reconcile_rc=$?
+if [[ "$stale_reconcile_rc" -ne 0 ]] ||
+	! grep -qx 'test/repo 90 v1.2.3 v1.2.4' "${TEST_ROOT}/stale-finalize.log" ||
+	[[ -e "${TEST_ROOT}/dispatch.log" || -e "${TEST_ROOT}/finalize.log" ]]; then
+	printf 'FAIL stale release receipt did not use the no-publication supersession path\n'
+	exit 1
+fi
+
+rm -f "${TEST_ROOT}/stale-finalize.log"
+STALE_FINALIZE_RC=1
+export STALE_FINALIZE_RC
+stale_uncertain_rc=0
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
+	>/dev/null 2>&1 || stale_uncertain_rc=$?
+if [[ "$stale_uncertain_rc" -ne 1 ]] || ! grep -qx 'failed' "${TEST_ROOT}/receipts/test_repo-90.status"; then
+	printf 'FAIL uncertain stale supersession replaced the failed receipt\n'
+	exit 1
+fi
+unset STALE_FINALIZE_RC
+
+printf 'superseded\n' >"${TEST_ROOT}/receipts/test_repo-90.status"
+rm -f "${TEST_ROOT}/stale-finalize.log" "${TEST_ROOT}/cleanup-update.log"
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command status 90 >/dev/null
+if [[ -e "${TEST_ROOT}/cleanup-update.log" ]]; then
+	printf 'FAIL read-only terminal stale status updated cleanup evidence\n'
+	exit 1
+fi
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 >/dev/null
+if [[ -e "${TEST_ROOT}/stale-finalize.log" ]] ||
+	! grep -qx 'test/repo 90' "${TEST_ROOT}/cleanup-update.log"; then
+	printf 'FAIL terminal stale supersession evidence was finalized twice\n'
+	exit 1
+fi
+printf 'PASS stale release tags cannot downgrade channels and reconcile only through verified supersession\n'
 
 exit 0

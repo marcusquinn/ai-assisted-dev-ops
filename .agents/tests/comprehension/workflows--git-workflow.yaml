@@ -1,4 +1,4 @@
-# Test: .agents/workflows/git-workflow.md (158 lines — complex workflow doc)
+# Test: .agents/workflows/git-workflow.md (complex workflow doc)
 file: .agents/workflows/git-workflow.md
 tier_minimum: standard
 
@@ -55,3 +55,25 @@ scenarios:
     fast_fail_triggers:
       - refusal
       - structural_violation
+
+  - name: "routes release artifacts to keyless provenance"
+    prompt: "A repository publishes images and an update manifest from GitHub Actions. What provenance pattern should be assessed before changing its release workflow?"
+    expected:
+      contains:
+        - "OIDC"
+        - "exact"
+        - "signer workflow"
+        - "validated ref"
+      not_contains:
+        - "checksum is sufficient"
+      min_length: 60
+      max_length: 700
+    reference_answer: |
+      Assess unattended GitHub Actions OIDC/Sigstore provenance. Attest the exact
+      artifact bytes or immutable image digest, then verify the repository, exact
+      signer workflow, and already validated release ref before publication.
+      Keep any native platform signing or consumer-enforced mechanism. Load
+      reference/release-artifact-provenance.md for the full pattern.
+    fast_fail_triggers:
+      - refusal
+      - security_violation

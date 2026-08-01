@@ -71,6 +71,15 @@ jobs:
               return;
             }
 
+            // #aidevops:trust-boundary — persistent is itself an unconditional
+            // dispatch blocker. Run trusted-author cleanup first so dashboards
+            // do not retain a redundant NMR label; untrusted persistent issues
+            // still stop here before any task lifecycle labels are added.
+            if (issueLabels.has('persistent')) {
+              console.log(`Issue #${issue.number} is persistent — bypassing task triage`);
+              return;
+            }
+
             console.log(`Author ${author} has role ${association} — applying triage gate`);
 
             // Apply the critical trust label before cleanup/comment calls. Only

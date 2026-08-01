@@ -37,6 +37,10 @@
 #       PR list (with .number and .headRefOid) and need each PR's
 #       aggregated status.
 #
+#   gh_pr_checks_exact_json <slug> <pr_number> <required|all>
+#     → echoes the internal `gh pr checks --json` field superset while every
+#       GraphQL page reports its own operation-owned rateLimit.cost.
+#
 # Usage: source "${SCRIPT_DIR}/shared-gh-wrappers-checks.sh"
 #
 # Dependencies:
@@ -480,6 +484,381 @@ _gh_checks_api_read() {
 
 	gh api "$endpoint" "$@"
 	return $?
+}
+
+#######################################
+# Emit a stable diagnostic for an indeterminate exact PR-check read.
+# Args: $1=detail
+#######################################
+_gh_pr_checks_exact_error() {
+	local detail="$1"
+	printf 'gh_pr_checks_exact_json: %s\n' "$detail" >&2
+	return 0
+}
+
+#######################################
+# Normalize and deduplicate collected status-rollup pages like gh CLI 2.96.0.
+# The newest StatusContext wins by context name. The newest CheckRun wins by
+# name/workflow/event. Deduplication happens before required-only filtering.
+#
+# Args: $1=required|all, $2=JSON-lines file containing one nodes array per page
+# Stdout: normalized JSON array
+# Returns: 0=valid, 1=invalid response shape
+#######################################
+_gh_pr_checks_exact_aggregate() {
+	local mode="$1"
+	local pages_file="$2"
+	local array_type='array'
+	local required_mode='required'
+
+	jq -cs --arg mode "$mode" --arg array_type "$array_type" \
+		--arg required_mode "$required_mode" '
+		def bucket_for($state):
+			if $state == "SUCCESS" then "pass"
+			elif ($state == "SKIPPED" or $state == "NEUTRAL") then "skipping"
+			elif ($state == "ERROR" or $state == "FAILURE" or $state == "TIMED_OUT" or $state == "ACTION_REQUIRED") then "fail"
+			elif $state == "CANCELLED" then "cancel"
+			else "pending" end;
+		if all(.[]; type == $array_type) then add else error("invalid page collection") end
+		| map(
+			if .__typename == "StatusContext" then
+				(.state // "") as $state
+				| {
+					_dedup_key: ("status\u0000" + .context),
+					_sort_at: (.createdAt // ""),
+					isRequired: .isRequired,
+					name: .context,
+					state: $state,
+					startedAt: (.createdAt // ""),
+					completedAt: "",
+					link: (.targetUrl // ""),
+					bucket: bucket_for($state),
+					event: "",
+					workflow: "",
+					description: (.description // "")
+				}
+			elif .__typename == "CheckRun" then
+				(.checkSuite.workflowRun.workflow.name // "") as $workflow
+				| (.checkSuite.workflowRun.event // "") as $event
+				| (if .status == "COMPLETED" then (.conclusion // "") else (.status // "") end) as $state
+				| {
+					_dedup_key: ("check\u0000" + .name + "\u0000" + $workflow + "\u0000" + $event),
+					_sort_at: (.startedAt // ""),
+					isRequired: .isRequired,
+					name: .name,
+					state: $state,
+					startedAt: (.startedAt // ""),
+					completedAt: (.completedAt // ""),
+					link: (.detailsUrl // ""),
+					bucket: bucket_for($state),
+					event: $event,
+					workflow: $workflow,
+					description: ""
+				}
+			else error("unsupported check context") end
+		)
+		| sort_by(._sort_at) | reverse
+		| reduce .[] as $item (
+			{seen: {}, items: []};
+			if .seen[$item._dedup_key] then .
+			else .seen[$item._dedup_key] = true | .items += [$item] end
+		)
+		| .items
+		| if $mode == $required_mode then map(select(.isRequired == true)) else . end
+		| map(del(._dedup_key, ._sort_at, .isRequired))
+	' "$pages_file" 2>/dev/null
+	return $?
+}
+
+#######################################
+# Resolve and validate the immutable identity needed for an exact PR-check read.
+# Args: $1=repo slug, $2=numeric PR
+# Stdout: PR node ID, head ref, and head SHA as TSV
+# Returns: 0=valid identity, 2=API/parse failure
+#######################################
+_gh_pr_checks_exact_identity() {
+	local slug="$1"
+	local pr_number="$2"
+	local identity_json="" identity=""
+	local object_type='object'
+	local string_type='string'
+
+	identity_json=$(AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="gh-pr-checks-identity-rest" \
+		_gh_checks_api_read "repos/${slug}/pulls/${pr_number}" 2>/dev/null) || {
+		_gh_pr_checks_exact_error "pull-request identity read failed"
+		return 2
+	}
+	identity=$(printf '%s' "$identity_json" | jq -er --argjson expected "$pr_number" \
+		--arg object_type "$object_type" --arg string_type "$string_type" '
+		select(type == $object_type and .number == $expected)
+		| select((.node_id | type) == $string_type and (.node_id | length) > 0)
+		| select((.head.ref | type) == $string_type and (.head.ref | length) > 0)
+		| select((.head.sha | type) == $string_type and (.head.sha | test("^[0-9A-Fa-f]{40}$|^[0-9A-Fa-f]{64}$")))
+		| [.node_id, .head.ref, .head.sha] | @tsv
+	' 2>/dev/null) || identity=""
+	if [[ -z "$identity" ]]; then
+		_gh_pr_checks_exact_error "pull-request identity response was malformed"
+		return 2
+	fi
+	printf '%s\n' "$identity"
+	return 0
+}
+
+#######################################
+# Emit the bounded status-rollup query used by exact PR-check reads.
+# Stdout: GraphQL query
+#######################################
+_gh_pr_checks_exact_query() {
+	# CheckRun.event is part of GitHub CLI's duplicate identity on hosts that
+	# support it. A host returning a field error fails closed rather than silently
+	# collapsing distinct workflow events into one check.
+	# shellcheck disable=SC2016
+	printf '%s\n' 'query PullRequestStatusChecks($id: ID!, $endCursor: String) {
+		node(id: $id) {
+			__typename
+			... on PullRequest {
+				statusCheckRollup: commits(last: 1) {
+					nodes {
+						commit {
+							statusCheckRollup {
+								contexts(first: 100, after: $endCursor) {
+									nodes {
+										__typename
+										... on StatusContext {
+											context state targetUrl createdAt description
+											isRequired(pullRequestId: $id)
+										}
+										... on CheckRun {
+											name status conclusion startedAt completedAt detailsUrl
+											checkSuite { workflowRun { event workflow { name } } }
+											isRequired(pullRequestId: $id)
+										}
+									}
+									pageInfo { hasNextPage endCursor }
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		rateLimit { cost }
+	}'
+	return 0
+}
+
+#######################################
+# Validate one status-rollup page and return its pagination metadata.
+# Args: $1=GraphQL response JSON
+# Stdout: hasNextPage and endCursor as TSV
+# Returns: 0=valid page, 1=partial or malformed page
+#######################################
+_gh_pr_checks_exact_page_meta() {
+	local response="$1"
+	local object_type='object'
+	local array_type='array'
+	local string_type='string'
+	local boolean_type='boolean'
+
+	printf '%s' "$response" | jq -er --arg object_type "$object_type" \
+		--arg array_type "$array_type" --arg string_type "$string_type" \
+		--arg boolean_type "$boolean_type" '
+		select(type == $object_type)
+		| select(((.errors // []) | type) == $array_type and ((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == "number" and .data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| select(.data.node.__typename == "PullRequest")
+		| .data.node.statusCheckRollup.nodes as $commits
+		| select(($commits | type) == $array_type and ($commits | length) == 1)
+		| $commits[0].commit.statusCheckRollup.contexts as $contexts
+		| select(($contexts | type) == $object_type)
+		| select(($contexts.nodes | type) == $array_type)
+		| select(all($contexts.nodes[];
+			(.__typename == "StatusContext" and (.context | type) == $string_type and (.context | length) > 0 and (.state | type) == $string_type and (.isRequired | type) == $boolean_type)
+			or
+			(.__typename == "CheckRun" and (.name | type) == $string_type and (.name | length) > 0 and (.status | type) == $string_type and (.isRequired | type) == $boolean_type)
+		))
+		| select(($contexts.pageInfo.hasNextPage | type) == $boolean_type)
+		| select(($contexts.pageInfo.hasNextPage == false) or (($contexts.pageInfo.endCursor | type) == $string_type and ($contexts.pageInfo.endCursor | length) > 0))
+		| [$contexts.pageInfo.hasNextPage, ($contexts.pageInfo.endCursor // "")] | @tsv
+	' 2>/dev/null
+	return $?
+}
+
+#######################################
+# Collect every bounded status-rollup page into a JSON-lines file.
+# Args: $1=PR node ID, $2=GraphQL query, $3=page file, $4=max pages
+# Returns: 0=complete collection, 2=API/parse/pagination failure
+#######################################
+_gh_pr_checks_exact_collect_pages() {
+	local node_id="$1"
+	local query="$2"
+	local pages_file="$3"
+	local max_pages="$4"
+	local page_number=0 cursor="" next_cursor="" has_next="" page_meta=""
+	local response="" nodes_json="" seen_cursors=$'\n' cursor_flag="" cursor_field=""
+	local false_text='false'
+
+	while true; do
+		page_number=$((page_number + 1))
+		if [[ "$page_number" -gt "$max_pages" ]]; then
+			rm -f "$pages_file"
+			_gh_pr_checks_exact_error "status-rollup pagination exceeded ${max_pages} pages"
+			return 2
+		fi
+		if [[ -n "$cursor" ]]; then
+			cursor_flag="-f"
+			cursor_field="endCursor=${cursor}"
+		else
+			cursor_flag="-F"
+			cursor_field="endCursor=null"
+		fi
+		response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+			AIDEVOPS_GH_ROUTE_DECISION="gh-pr-checks-status-rollup-exact-cost" \
+			_gh_checks_api_read graphql -f id="$node_id" "$cursor_flag" "$cursor_field" -f query="$query" 2>/dev/null) || {
+			rm -f "$pages_file"
+			_gh_pr_checks_exact_error "status-rollup page ${page_number} read failed"
+			return 2
+		}
+		page_meta=$(_gh_pr_checks_exact_page_meta "$response") || page_meta=""
+		if [[ -z "$page_meta" ]]; then
+			_gh_pr_checks_exact_error "status-rollup page ${page_number} response was partial or malformed"
+			return 2
+		fi
+		IFS=$'\t' read -r has_next next_cursor <<<"$page_meta"
+		nodes_json=$(printf '%s' "$response" | jq -c '.data.node.statusCheckRollup.nodes[0].commit.statusCheckRollup.contexts.nodes' 2>/dev/null) || nodes_json=""
+		if [[ -z "$nodes_json" ]]; then
+			_gh_pr_checks_exact_error "status-rollup page ${page_number} contexts were unavailable"
+			return 2
+		fi
+		printf '%s\n' "$nodes_json" >>"$pages_file" || {
+			_gh_pr_checks_exact_error "status-rollup page collection failed"
+			return 2
+		}
+		if [[ "$has_next" == "$false_text" ]]; then
+			return 0
+		fi
+		if [[ -z "$next_cursor" || "$seen_cursors" == *$'\n'"$next_cursor"$'\n'* ]]; then
+			_gh_pr_checks_exact_error "status-rollup pagination cursor was incomplete or repeated"
+			return 2
+		fi
+		seen_cursors="${seen_cursors}${next_cursor}"$'\n'
+		cursor="$next_cursor"
+	done
+	return 0
+}
+
+#######################################
+# Aggregate collected pages, emit JSON, and map check buckets to CLI exits.
+# Args: $1=required|all, $2=head ref, $3=JSON-lines page file
+# Returns: 0=pass, 1=terminal failure/no checks, 8=pending, 2=parse failure
+#######################################
+_gh_pr_checks_exact_emit_result() {
+	local mode="$1"
+	local head_ref="$2"
+	local pages_file="$3"
+	local checks_json="" check_count="" result_flags="" has_failure="" has_pending=""
+	local required_mode='required'
+	local fail_bucket='fail'
+	local pending_bucket='pending'
+	local true_text='true'
+	local false_text='false'
+
+	checks_json=$(_gh_pr_checks_exact_aggregate "$mode" "$pages_file") || checks_json=""
+	if [[ -z "$checks_json" ]]; then
+		_gh_pr_checks_exact_error "status-rollup aggregation failed"
+		return 2
+	fi
+	check_count=$(printf '%s' "$checks_json" | jq -r 'length' 2>/dev/null) || check_count=""
+	if [[ ! "$check_count" =~ ^[0-9]+$ ]]; then
+		_gh_pr_checks_exact_error "status-rollup aggregate was malformed"
+		return 2
+	fi
+	if [[ "$check_count" -eq 0 ]]; then
+		if [[ "$mode" == "$required_mode" ]]; then
+			printf "no required checks reported on the '%s' branch\n" "$head_ref" >&2
+		else
+			printf "no checks reported on the '%s' branch\n" "$head_ref" >&2
+		fi
+		return 1
+	fi
+
+	result_flags=$(printf '%s' "$checks_json" | jq -r --arg fail_bucket "$fail_bucket" \
+		--arg pending_bucket "$pending_bucket" \
+		'[any(.[]; .bucket == $fail_bucket), any(.[]; .bucket == $pending_bucket)] | @tsv' 2>/dev/null) || result_flags=""
+	IFS=$'\t' read -r has_failure has_pending <<<"$result_flags"
+	if [[ "$has_failure" != "$true_text" && "$has_failure" != "$false_text" ]] || \
+		[[ "$has_pending" != "$true_text" && "$has_pending" != "$false_text" ]]; then
+		_gh_pr_checks_exact_error "status-rollup outcome was malformed"
+		return 2
+	fi
+	printf '%s\n' "$checks_json"
+	if [[ "$has_failure" == "$true_text" ]]; then
+		return 1
+	fi
+	if [[ "$has_pending" == "$true_text" ]]; then
+		return 8
+	fi
+	return 0
+}
+
+#######################################
+# Read one PR's checks through a bounded status-rollup GraphQL query whose every
+# page carries its own rateLimit.cost. This intentionally covers only the JSON
+# surface used by framework internals; it is not a replacement for interactive
+# `gh pr checks` modes such as --watch, --web, or templates.
+#
+# Args: $1=repo slug, $2=numeric PR, $3=required|all
+# Stdout: JSON array with name/state/bucket/link/workflow plus CLI-compatible
+#         event, description, startedAt, and completedAt fields
+# Returns: 0=no failing or pending checks, 1=terminal failure/no matching checks,
+#          8=pending checks, 2=API/parse/partial-page failure
+#######################################
+gh_pr_checks_exact_json() {
+	local slug="$1"
+	local pr_number="$2"
+	local mode="$3"
+	local max_pages="${AIDEVOPS_GH_PR_CHECKS_MAX_PAGES:-20}"
+	local identity="" identity_exit=0 node_id="" head_ref="" head_sha=""
+	local pages_file="" temp_root="${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}"
+	local query="" collect_exit=0 result_exit=0
+	local required_mode='required'
+	local all_mode='all'
+
+	if [[ ! "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
+		_gh_pr_checks_exact_error "repository and numeric PR are required"
+		return 2
+	fi
+	if [[ "$mode" != "$required_mode" && "$mode" != "$all_mode" ]]; then
+		_gh_pr_checks_exact_error "mode must be required or all"
+		return 2
+	fi
+	if [[ ! "$max_pages" =~ ^[1-9][0-9]*$ || "$max_pages" -gt 100 ]]; then
+		max_pages=20
+	fi
+
+	identity=$(_gh_pr_checks_exact_identity "$slug" "$pr_number") || identity_exit=$?
+	[[ "$identity_exit" -eq 0 ]] || return "$identity_exit"
+	IFS=$'\t' read -r node_id head_ref head_sha <<<"$identity"
+	if [[ -z "$node_id" || -z "$head_ref" || -z "$head_sha" ]]; then
+		_gh_pr_checks_exact_error "pull-request identity response was incomplete"
+		return 2
+	fi
+
+	pages_file=$(mktemp "${temp_root}/aidevops-gh-pr-checks.XXXXXX" 2>/dev/null) || {
+		_gh_pr_checks_exact_error "temporary page collection unavailable"
+		return 2
+	}
+	query=$(_gh_pr_checks_exact_query)
+	_gh_pr_checks_exact_collect_pages "$node_id" "$query" "$pages_file" "$max_pages" || collect_exit=$?
+	if [[ "$collect_exit" -ne 0 ]]; then
+		rm -f "$pages_file"
+		return "$collect_exit"
+	fi
+
+	_gh_pr_checks_exact_emit_result "$mode" "$head_ref" "$pages_file" || result_exit=$?
+	rm -f "$pages_file"
+	return "$result_exit"
 }
 
 #######################################

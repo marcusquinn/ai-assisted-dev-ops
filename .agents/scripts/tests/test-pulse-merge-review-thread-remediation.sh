@@ -48,6 +48,8 @@ SCANNER
 	_PULSE_MERGE_DIR="${TEST_ROOT}/scripts"
 	_OW_LABEL_PAT=",origin:worker,"
 	export SCANNER_RC=0
+	PULSE_REVIEW_REMEDIATION_DEFERRED_RC=10
+	_PULSE_MERGE_REMEDIATION_OUTCOME=""
 	_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND=""
 	unset AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST
 	unset DRY_RUN
@@ -180,9 +182,9 @@ test_failed_preflight_dispatch_stays_blocked_and_consumes_marker() {
 	if grep -q 'review-thread remediation dispatch failed for PR #77 in owner/repo' "$LOGFILE" &&
 		! grep -q 'review-thread remediation queued for PR #77 in owner/repo' "$LOGFILE" &&
 		[[ -z "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]]; then
-		print_result "failed or deduplicated preflight dispatch consumes typed marker" 0
+		print_result "failed preflight dispatch consumes typed marker" 0
 	else
-		print_result "failed or deduplicated preflight dispatch consumes typed marker" 1 \
+		print_result "failed preflight dispatch consumes typed marker" 1 \
 			"marker=${_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND:-<none>}, log=$(tr '\n' ';' <"$LOGFILE")"
 	fi
 	teardown_test_env
@@ -349,6 +351,63 @@ test_changes_requested_routes_when_remediation_unavailable() {
 	return 0
 }
 
+test_changes_requested_active_remediation_preserves_pr_without_routing() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=10
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		printf 'route %s %s\n' "$pr_number" "$repo_slug" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
+
+	if _handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker"; then
+		print_result "active response-worker remediation preserves CHANGES_REQUESTED PR" 1 \
+			"Expected gate to skip merge while preserving the active remediation"
+	elif [[ ! -s "$route_log" ]] \
+		&& grep -q 'review-thread remediation deferred for PR #77 in owner/repo' "$LOGFILE" \
+		&& grep -q 'response remediation already active/deferred, preserving PR' "$LOGFILE"; then
+		print_result "active response-worker remediation preserves CHANGES_REQUESTED PR" 0
+	else
+		print_result "active response-worker remediation preserves CHANGES_REQUESTED PR" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_changes_requested_hard_dispatch_failure_still_routes() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=1
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		printf 'route %s %s\n' "$pr_number" "$repo_slug" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q 'route 77 owner/repo' "$route_log" \
+		&& grep -q 'review-thread remediation dispatch failed for PR #77 in owner/repo' "$LOGFILE"; then
+		print_result "hard response-worker dispatch failure retains fix-worker fallback" 0
+	else
+		print_result "hard response-worker dispatch failure retains fix-worker fallback" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_changes_requested_skips_remediation_for_external_contributor() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
@@ -464,6 +523,8 @@ main() {
 	test_changes_requested_routes_by_default
 	test_changes_requested_opt_in_dispatches_remediation_without_routing
 	test_changes_requested_routes_when_remediation_unavailable
+	test_changes_requested_active_remediation_preserves_pr_without_routing
+	test_changes_requested_hard_dispatch_failure_still_routes
 	test_changes_requested_skips_remediation_for_external_contributor
 	test_changes_requested_empty_worker_label_pattern_does_not_match_every_label
 	test_changes_requested_refreshes_empty_caller_labels

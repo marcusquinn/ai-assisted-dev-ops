@@ -153,13 +153,14 @@ COMMENTS_JSON='[[
   {"created_at":"2026-05-04T12:43:16Z","body":"DISPATCH_CLAIM nonce=fresh runner=runner ts=2026-05-04T12:43:16Z"}
 ]]'
 
-_recover_stale_assignment 3978 owner/repo runner "worker lease expired"
+draft_output=""
+draft_output=$(_recover_stale_assignment 3978 owner/repo runner "worker lease expired")
 
-if [[ "$ESCALATED" -eq 1 && "$RECOVERED" -eq 0 && "$ESCALATION_REASON" == "draft_checkpoint:456:worker lease expired" ]]; then
-	pass "stale draft checkpoint escalates without competing redispatch"
+if [[ "$ESCALATED" -eq 0 && "$RECOVERED" -eq 0 && "$draft_output" == *"STALE_PR_CONTINUATION"* ]]; then
+	pass "stale draft checkpoint requests exact-head continuation without competing redispatch"
 else
-	fail "stale draft checkpoint escalates without competing redispatch" \
-		"ESCALATED=${ESCALATED} RECOVERED=${RECOVERED} REASON=${ESCALATION_REASON}"
+	fail "stale draft checkpoint requests exact-head continuation without competing redispatch" \
+		"ESCALATED=${ESCALATED} RECOVERED=${RECOVERED} output=${draft_output}"
 fi
 
 ESCALATED=0

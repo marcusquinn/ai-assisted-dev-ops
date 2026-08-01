@@ -1803,19 +1803,16 @@ dispatch_with_dedup() {
 	_ensure_issue_body_has_brief "$issue_number" "$repo_slug" "$repo_path" "$issue_title" "$issue_meta_json"
 	_ds_record "$issue_number" "$repo_slug" "brief_freshness" "$_ds_t0"
 
-	# t2389: tier:simple body-shape check — auto-downgrade mis-tiered briefs.
-	# Non-blocking: inspects the issue body for 4 high-precision tier:simple
-	# disqualifiers (>2 files, estimate >1h, >4 acceptance criteria, judgment
-	# keywords) and swaps tier:simple → tier:standard + posts feedback on hit.
+	# t2389: explicit tier:simple execution-contract guard.
+	# Non-blocking: normalizes tier:simple → tier:standard when a present checklist
+	# is incomplete or the issue lacks a canonical exact execution contract.
 	# Always returns 0. Dispatch proceeds at the corrected tier on hit, or
 	# unchanged tier on miss. See .agents/reference/task-taxonomy.md.
-	# GH#23601: because the helper mutates labels on GitHub after the bundled
-	# t2996 metadata snapshot, refresh the bundle only for pre-check tier:simple
-	# candidates so eligibility/model resolution observe any tier upgrade.
+	# Label-mutating policy helpers emit one internal marker; metadata is refreshed
+	# once after this guard and the self-hosting override have both run.
+	_TIER_LABELS_MUTATED=0
 	_ds_t0=$(_ds_now_ns)
 	_run_tier_simple_body_shape_check "$issue_number" "$repo_slug"
-	issue_meta_json=$(_refresh_issue_meta_after_tier_body_shape_check \
-		"$issue_number" "$repo_slug" "$issue_meta_json")
 	_ds_record "$issue_number" "$repo_slug" "tier_body_shape" "$_ds_t0"
 
 	# GH#19118: Pre-dispatch validator — runs after dedup, before worker spawn.
@@ -1827,6 +1824,8 @@ dispatch_with_dedup() {
 	_ds_t0=$(_ds_now_ns)
 	_run_predispatch_validator "$issue_number" "$repo_slug"
 	local _validator_rc=$?
+	issue_meta_json=$(_refresh_issue_meta_after_tier_policy_checks \
+		"$issue_number" "$repo_slug" "$issue_meta_json" "$_TIER_LABELS_MUTATED")
 	local _review_followup_validator_required=0
 	if printf '%s' "$issue_meta_json" | jq -e '[.labels[]?.name] | (index("review-followup") != null or index("source:review-scanner") != null)' >/dev/null 2>&1; then
 		_review_followup_validator_required=1
@@ -2026,6 +2025,18 @@ _ensure_issue_body_has_brief() {
 #   20 — validator error; caller should log warning and continue dispatch
 #   30 — duplicate-state uncertainty; caller must fail closed
 #######################################
+_record_tier_policy_output() {
+	local helper_output="$1"
+	if [[ -z "$helper_output" ]]; then
+		return 0
+	fi
+	printf '%s\n' "$helper_output" >>"$LOGFILE"
+	if [[ "$helper_output" == *"[aidevops:tier-labels-mutated]"* ]]; then
+		_TIER_LABELS_MUTATED=1
+	fi
+	return 0
+}
+
 _run_predispatch_validator() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -2037,8 +2048,9 @@ _run_predispatch_validator() {
 		return 20
 	fi
 
-	local validator_rc=0
-	"$validator_helper" validate "$issue_number" "$repo_slug" >>"$LOGFILE" 2>&1 || validator_rc=$?
+	local validator_rc=0 validator_output=""
+	validator_output=$("$validator_helper" validate "$issue_number" "$repo_slug" 2>&1) || validator_rc=$?
+	_record_tier_policy_output "$validator_output"
 	return "$validator_rc"
 }
 
@@ -2072,46 +2084,48 @@ _run_tier_simple_body_shape_check() {
 		return 0
 	fi
 
-	# Always pass regardless of helper exit code. The helper itself is
-	# documented non-blocking, but this wrapper is defensive.
-	"$check_helper" check "$issue_number" "$repo_slug" >>"$LOGFILE" 2>&1 || true
+	# Always pass regardless of helper exit code. Capture the mutation marker so
+	# the caller can refresh bundled metadata once after all tier policy checks.
+	local check_output=""
+	check_output=$("$check_helper" check "$issue_number" "$repo_slug" 2>&1) || true
+	_record_tier_policy_output "$check_output"
 	return 0
 }
 
 #######################################
-# Refresh bundled issue metadata after tier:simple body-shape validation.
+# Refresh bundled issue metadata after tier policy label mutation.
 #
-# The validator may swap tier:simple → tier:standard on GitHub. The dispatch
-# pipeline otherwise forwards the pre-validator t2996 metadata bundle to the
-# eligibility gate and worker launch, causing label-derived model resolution to
-# use stale tier labels. Keep the extra API call limited to candidates whose
-# original snapshot included tier:simple, and fail open with the original bundle.
+# The simple-contract guard and self-hosting detector may normalize tier labels
+# on GitHub. Refresh once when either emitted the internal mutation marker so
+# eligibility and worker model resolution consume the normalized single tier.
 #
 # Arguments:
 #   $1 - issue_number
 #   $2 - repo_slug (owner/repo)
 #   $3 - current issue_meta_json bundle
+#   $4 - mutation flag (1 when a policy helper changed labels)
 #
 # Output:
 #   refreshed issue_meta_json when available; otherwise the original bundle
 # Exit codes:
 #   0 — always (fail-open metadata refresh)
 #######################################
-_refresh_issue_meta_after_tier_body_shape_check() {
+_refresh_issue_meta_after_tier_policy_checks() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local issue_meta_json="$3"
+	local tier_labels_mutated="$4"
 
-	if ! printf '%s' "$issue_meta_json" | jq -e 'any(.labels[]?; .name == "tier:simple")' >/dev/null 2>&1; then
+	if [[ "$tier_labels_mutated" != "1" ]]; then
 		printf '%s' "$issue_meta_json"
 		return 0
 	fi
 
 	local refreshed_issue_meta_json
 	refreshed_issue_meta_json=$(gh_issue_view "$issue_number" --repo "$repo_slug" \
-		--json number,title,state,labels,assignees,body 2>/dev/null) || refreshed_issue_meta_json=""
+		--json number,title,state,labels,assignees,body,author 2>/dev/null) || refreshed_issue_meta_json=""
 	if [[ -z "$refreshed_issue_meta_json" ]]; then
-		echo "[dispatch_with_dedup] GH#23601: unable to refresh issue metadata after tier:simple body-shape check for #${issue_number} in ${repo_slug}; continuing with original snapshot" >>"$LOGFILE"
+		echo "[dispatch_with_dedup] unable to refresh issue metadata after tier policy mutation for #${issue_number} in ${repo_slug}; continuing with original snapshot" >>"$LOGFILE"
 		printf '%s' "$issue_meta_json"
 		return 0
 	fi

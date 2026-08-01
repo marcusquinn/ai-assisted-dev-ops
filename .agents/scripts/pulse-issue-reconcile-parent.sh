@@ -172,8 +172,8 @@ _Automated by \`_post_parent_decomposition_nudge\` in \`pulse-issue-reconcile-pa
 # Behaviour:
 #   1. Idempotency — if the <!-- parent-needs-decomposition-escalated -->
 #      marker is already present in any comment, returns 1 (no-op).
-#   2. Applies `needs-maintainer-review` so the issue surfaces in the
-#      maintainer's review queue on next interactive session start.
+#   2. Remains advisory-only: parent-task already blocks dispatch, while adding
+#      `needs-maintainer-review` would also block the auto-decomposer scanner.
 #   3. The comment body must explicitly list the four paths forward
 #      (decompose / drop label / close / file children). This is the
 #      final AI-advisory touch before the maintainer decides.
@@ -227,7 +227,7 @@ _post_parent_decomposition_escalation() {
 	local comment_body="${marker}
 ## Parent Task Decomposition — Escalation
 
-The decomposition nudge on this issue has been open for **7+ days** with no action. This issue still carries \`parent-task\` (dispatch blocked), still has zero filed children, and no auto-decompose worker issue is tracking it. Applying \`needs-maintainer-review\` so it surfaces in the maintainer queue.
+The decomposition nudge on this issue has been open for **7+ days** with no action. This issue still carries \`parent-task\` (dispatch blocked), still has zero filed children, and no auto-decompose worker issue is tracking it. This escalation is advisory only; it does not add another dispatch-blocking label.
 
 **Paths forward — pick one:**
 
@@ -241,16 +241,11 @@ The decomposition nudge on this issue has been open for **7+ days** with no acti
 
 3. **Close the issue.** If the work is no longer needed or has been superseded.
 
-4. **Let the auto-decomposer handle it.** If you want a \`tier:thinking\` worker to propose a decomposition plan automatically, remove the \`needs-maintainer-review\` label — the next pulse cycle will file a \`<!-- aidevops:generator=auto-decompose -->\` issue that dispatches a worker to decompose this parent.
+4. **Let the auto-decomposer handle it.** No label change is needed — the next eligible scanner cycle will file a \`<!-- aidevops:generator=auto-decompose -->\` issue that dispatches a \`tier:thinking\` worker to decompose this parent.
 
 See \`.agents/AGENTS.md\` → \"Parent / meta tasks\" (t1986 / t2211 / t2442) for the full rule.
 
 _Automated by \`_post_parent_decomposition_escalation\` in \`pulse-issue-reconcile-parent.sh\` (t2442). Posted once per issue via the \`<!-- parent-needs-decomposition-escalated -->\` marker; re-runs are no-ops._"
-
-	# Apply needs-maintainer-review label. Non-fatal — if it fails we still
-	# want the comment posted so the maintainer sees the escalation.
-	gh issue edit "$parent_num" --repo "$slug" \
-		--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
 
 	gh_issue_comment "$parent_num" --repo "$slug" \
 		--body "$comment_body" >/dev/null 2>&1 || return 1
@@ -315,7 +310,7 @@ _fetch_recently_closed_parent_tasks() {
 	cutoff=$(_recent_closed_parent_cutoff) || return 1
 	gh_issue_list --repo "$slug" --state closed \
 		--label "$parent_label" --search "closed:>=${cutoff}" \
-		--json number,title,body,state --limit 10 2>/dev/null || return 1
+		--json number,title,body,state,labels --limit 10 2>/dev/null || return 1
 	return 0
 }
 
@@ -355,7 +350,7 @@ reconcile_completed_parent_tasks() {
 		else
 			open_issues_json=$(gh_issue_list --repo "$slug" --state open \
 				--label "$_cpt_lbl" \
-				--json number,title,body,state --limit 10 2>/dev/null) || open_issues_json="[]"
+				--json number,title,body,state,labels --limit 10 2>/dev/null) || open_issues_json="[]"
 		fi
 		closed_issues_json=$(_fetch_recently_closed_parent_tasks "$slug" "$_cpt_lbl") || closed_issues_json="[]"
 		issues_json=$(printf '%s\n%s\n' "$open_issues_json" "$closed_issues_json" | \
@@ -368,12 +363,14 @@ reconcile_completed_parent_tasks() {
 
 		local i=0
 		while [[ "$i" -lt "$issue_count" ]] && [[ "$total_closed" -lt "$max_closes" || "$total_nudged" -lt "$max_nudges" || "$total_escalated" -lt "$max_escalations" || "$total_reopened" -lt "$max_reopens" ]]; do
-			local issue_num="" issue_body="" issue_title="" issue_state=""
+			local issue_num="" issue_body="" issue_title="" issue_state="" issue_labels=""
 			issue_num=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].number // ""') || true
 			issue_body=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].body // ""') || true
 			issue_title=$(printf '%s' "$issues_json" | jq -r --argjson i "$i" '.[$i].title // ""') || true
 			issue_state=$(printf '%s' "$issues_json" | \
 				jq -r --argjson i "$i" --arg state "$_open_state" '.[$i].state // $state') || issue_state="$_open_state"
+			issue_labels=$(printf '%s' "$issues_json" | \
+				jq -r --argjson i "$i" '[.[$i].labels[]?.name] | join(",")') || issue_labels=""
 			i=$((i + 1))
 			[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
 
@@ -386,7 +383,7 @@ reconcile_completed_parent_tasks() {
 			[[ $((_can_close + _can_nudge + _can_escalate)) -gt 0 ]] || continue
 
 			_action_cpt_single "$slug" "$issue_num" "$issue_title" "$issue_body" \
-				"$_can_close" "$_can_nudge" "$_can_escalate" "$escalation_threshold_hours" "$issue_state"
+				"$_can_close" "$_can_nudge" "$_can_escalate" "$escalation_threshold_hours" "$issue_state" "$issue_labels"
 			[[ "$_SP_CPT_CLOSED" -eq 1 ]] && total_closed=$((total_closed + 1))
 			[[ "$_SP_CPT_NUDGED" -eq 1 ]] && total_nudged=$((total_nudged + 1))
 			[[ "$_SP_CPT_ESCALATED" -eq 1 ]] && total_escalated=$((total_escalated + 1))

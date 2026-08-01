@@ -1,5 +1,5 @@
 ---
-description: Cost-aware model routing - match task complexity to optimal model tier
+description: Quality- and security-aware model routing across canonical workload tiers
 mode: subagent
 tools:
   read: true
@@ -16,13 +16,13 @@ model: simple
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Cost-Aware Model Routing
+# Quality- and Security-Aware Model Routing
 
 <!-- AI-CONTEXT-START -->
 
 ## Quick Reference
 
-- **Default**: `standard`. **Rule**: use the lowest tier that reliably completes the task.
+- **Assignment policy**: `reference/task-taxonomy.md` is canonical. Default to `standard`; use the lowest tier with a credible one-pass path to safe completion.
 - **Spectrum**: `simple` → `standard` → `thinking`.
 - **Frontmatter**: `model: simple|standard|thinking`. Do not put provider names, model families, or reasoning variants in tier fields.
 - **Vault metadata**: `data_classification`, `runtime_policy`, `needs_vault`, `needs_collections`, `needs_device`, and `needs_remote_unlock` can restrict dispatch before a prompt leaves the device.
@@ -31,9 +31,9 @@ model: simple
 
 | Tier | Current ordered mapping | Use When |
 |------|-------|----------|
-| `simple` | openai/gpt-5.6-terra → anthropic/claude-haiku-4-5 | Classification, search, triage, formatting, and bounded transforms |
-| `standard` | openai/gpt-5.6-luna → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Code, review, debugging, docs, and most development tasks |
-| `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Architecture, novel problems, security audits, and complex trade-offs |
+| `simple` | openai/gpt-5.6-luna → anthropic/claude-haiku-4-5 | Complete low-consequence execution contracts |
+| `standard` | openai/gpt-5.6-sol → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Established-pattern implementation with normal judgment and recovery |
+| `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Consequential unresolved decisions, novel design, and synthesis-heavy work |
 
 **Model IDs**: Always fully-qualified (`claude-sonnet-4-6`, not `claude-sonnet-4`). Short-form → `ProviderModelNotFoundError`. CLI prefix: `anthropic/`, `google/`, `openai/`.
 
@@ -45,10 +45,14 @@ Only `simple`, `standard`, and `thinking` are valid authored tiers. Concrete mod
 
 ```text
 Privacy/on-device or Vault local-only? → YES → approved local mapping available? → use mapped model | NO: FAIL
-  NO → simple classification/search/formatting? → YES: simple
-    NO → novel architecture or complex security reasoning? → YES: thinking
+  NO → consequential unresolved decision or dispatch-path override? → YES: thinking
+    NO → complete verified low-consequence execution contract? → YES: simple
       NO → standard
 ```
+
+Tier selection never bypasses permission, secret, policy, billing, or destructive
+operation gates. Security-sensitive implementation inside a decided boundary is
+normally standard; deciding that boundary is thinking.
 
 ## Fallback Routing
 
@@ -80,10 +84,10 @@ is always denied because secrets must flow through secret tooling, not prompts.
 - **Pulse**: Resolves `standard` through `model-availability-helper.sh resolve standard`, so it follows routing-table order, health checks, local routing-table overrides, and `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST`.
 - **Workers**: Round-robin across canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
-- **Current default mapping**: The active routing table currently maps `simple` to OpenAI Terra then Anthropic Haiku, `standard` to OpenAI Luna then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
-- **Reasoning mapping**: The same routing table currently maps OpenAI `simple`, `standard`, and `thinking` to `medium`, `max`, and `high`. Other providers use their provider/runtime defaults unless configured explicitly.
-- **Thinking-tier balance**: `high` is the shared Sol default for complex work. Explicit `max` and `xhigh` overrides remain available when a task justifies higher effort.
-- **OpenAI tier rationale**: Terra costs $2.50/M input and $15/M output and remains the conservative choice for prescriptive/simple work. Luna costs $1/M input and $6/M output and supports `max` reasoning, making it the cost-efficient default for standard work. Sol remains the flagship thinking model at $5/M input and $30/M output.
+- **Current default mapping**: The active routing table currently maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Sol then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
+- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `max`, Sol `high`, and Sol `max`. Other providers use their provider/runtime defaults unless configured explicitly.
+- **Capability escalation**: A Luna `max` worker that reports a capability-related `BLOCKED` outcome resumes once at Sol `high`; a Sol `high` blocker resumes once at Sol `max`. Sol `max` is terminal. Permission, authentication, provider, rate-limit, policy, and trust-boundary failures retain dedicated fail-closed handling and never escalate reasoning to bypass controls.
+- **OpenAI tier rationale**: The automatic ladder prioritizes quality and security over minimum token cost: Luna `max` handles bounded work, Sol `high` handles general implementation, and Sol `max` handles deep reasoning. Terra remains available for explicit use or future evidence-based routing, but is not in the automatic default chain.
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
 - **GPT-5.5 standard workers**: aidevops omits env-derived standard-tier variants so OpenCode sends no explicit thinking override. Explicit CLI `--variant` still wins.
 - **GLM-5.2 option**: Standard routing may use `zai-coding-plan/glm-5.2` when that OpenCode provider is authenticated. Direct `zai/glm-5.2` is intentionally excluded.
@@ -104,7 +108,7 @@ Example custom override for OpenAI-capable headless routing:
 ```json
 {
   "tiers": {
-    "standard": { "models": ["openai/gpt-5.6-luna", "anthropic/claude-sonnet-4-6"] },
+    "standard": { "models": ["openai/gpt-5.6-sol", "anthropic/claude-sonnet-4-6"] },
     "thinking": { "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"] }
   }
 }

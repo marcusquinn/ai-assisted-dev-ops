@@ -1433,10 +1433,12 @@ _run_preflight_stages() {
 	_preflight_early_dispatch || _pflt_ed_rc=$?
 	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc"
 	# GH#28880: cross-repository label maintenance can take 3-5 minutes. Run it
-	# after the initial fill so already-eligible workers boot in parallel, then
-	# refill once so newly unblocked candidates remain dispatchable this cycle.
+	# after the initial fill so already-eligible workers boot in parallel. Then
+	# reconcile trusted NMR holds and refill once so every newly unblocked
+	# candidate remains dispatchable this cycle.
 	run_stage_with_timeout "preflight_label_maintenance" "$_pflt_timeout" \
 		_preflight_label_maintenance || true
+	_preflight_trusted_nmr_reconcile || true
 	local _pflt_refill_start=$SECONDS
 	local _pflt_refill_rc=0
 	_preflight_post_label_refill || _pflt_refill_rc=$?

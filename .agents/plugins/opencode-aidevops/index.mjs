@@ -231,8 +231,10 @@ export async function AidevopsPlugin({ directory, client }) {
   // that brought cursor + google onto the same lazy-start pattern.
 
   // Create tools
-  const baseTools = createTools(SCRIPTS_DIR, run);
-  baseTools["model-accounts-pool"] = createPoolTool(client);
+  const baseTools = createTools(SCRIPTS_DIR, run, {
+    sessionOrigin: process.env.AIDEVOPS_SESSION_ORIGIN,
+    poolToolFactory: () => createPoolTool(client),
+  });
 
   // Create hooks from extracted modules
   const configHook = createConfigHook({

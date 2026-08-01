@@ -11,8 +11,8 @@
 # re-register as a new function-complexity violation if moved).
 #
 # Each helper groups one phase of preflight work: asynchronous merge-first,
-# cleanup/reap, capacity, early dispatch, label maintenance/refill, ownership
-# reconcile, and prefetch+scope.
+# cleanup/reap, capacity, early dispatch, label maintenance, trusted NMR
+# reconciliation/refill, ownership reconcile, and prefetch+scope.
 #
 # Usage: source "${SCRIPT_DIR}/pulse-dispatch-preflight-lib.sh"
 #
@@ -37,8 +37,8 @@ _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED=1
 # -----------------------------------------------------------------------------
 # The helpers below group related preflight work so _run_preflight_stages
 # stays under 100 lines and each group (merge-first, cleanup/reap, capacity,
-# early dispatch, label maintenance/refill, daily scans, ownership reconcile,
-# and prefetch/scope) can be read independently.
+# early dispatch, label maintenance, trusted NMR reconciliation/refill, daily
+# scans, ownership reconcile, and prefetch/scope) can be read independently.
 
 #######################################
 # Give the existing standalone merge routine a non-blocking head start before
@@ -214,6 +214,17 @@ _preflight_label_maintenance() {
 }
 
 #######################################
+# Reconcile only NMR holds that pass the authority, provenance, breaker, and
+# security gates in auto_approve_maintainer_issues. Running this after the first
+# fill but before candidate snapshot invalidation lets newly trusted candidates
+# enter the same-cycle refill without delaying already-eligible work.
+#######################################
+_preflight_trusted_nmr_reconcile() {
+	run_stage_with_timeout "auto_approve_maintainer_issues" "$PRE_RUN_STAGE_TIMEOUT" auto_approve_maintainer_issues || true
+	return 0
+}
+
+#######################################
 # Early dispatch pass + routine comment responses.
 #
 # Fills available worker slots BEFORE heavy housekeeping. Workers take
@@ -274,8 +285,8 @@ _preflight_post_label_refill() {
 #######################################
 # Ownership normalization + issue reconciliation stages.
 # Ensures active labels reflect ownership (prevents multi-worker overlap),
-# closes issues whose linked PRs already merged, reconciles status:done
-# stuck states, and auto-approves maintainer-created issues.
+# closes issues whose linked PRs already merged, and reconciles status:done
+# stuck states. Trusted NMR reconciliation runs before the refill instead.
 #######################################
 _preflight_ownership_reconcile() {
 	# GH#21470: per-substage timing for the unwrapped prefetch_contribution_watch
@@ -296,9 +307,6 @@ _preflight_ownership_reconcile() {
 	# fetch loop; now 5N → N iterations per cycle.
 	run_stage_with_timeout "reconcile_issues_single_pass" "$PRE_RUN_STAGE_TIMEOUT" reconcile_issues_single_pass || true
 
-	# Auto-approve maintainer issues: remove needs-maintainer-review when
-	# the maintainer created or commented on the issue (GH#16842).
-	run_stage_with_timeout "auto_approve_maintainer_issues" "$PRE_RUN_STAGE_TIMEOUT" auto_approve_maintainer_issues || true
 	return 0
 }
 

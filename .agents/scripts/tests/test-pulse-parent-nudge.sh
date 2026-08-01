@@ -6,12 +6,11 @@
 #
 # test-pulse-parent-nudge.sh — structural tests for t2388 (GH#19927)
 #
-# Verifies the parent-task decomposition nudge wiring in
-# pulse-issue-reconcile.sh. The nudge fires when a parent-task-labelled
-# issue has ZERO filed children (neither GraphQL sub-issue graph nor
-# ## Children body section), which is a silent-stuck state: dispatch is
-# blocked by the parent-task label, the completion sweep has nothing to
-# sweep, and nothing else nudges it forward.
+# Verifies the parent-task decomposition nudge wiring split across the parent
+# and action reconciliation modules. The nudge fires when a parent-task-labelled
+# issue has ZERO filed children, which is a silent-stuck state: dispatch is
+# blocked by the parent-task label, the completion sweep has nothing to sweep,
+# and nothing else nudges it forward.
 #
 # Test strategy: this is a structural test — we grep the source file to
 # verify the wiring is present, rather than executing the function (which
@@ -80,12 +79,15 @@ assert_grep_fixed() {
 # --- Locate source file ---
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="$SCRIPT_DIR/pulse-issue-reconcile.sh"
+PARENT_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-parent.sh"
+ACTIONS_TARGET="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
 
-if [[ ! -f "$TARGET" ]]; then
-	echo "${TEST_RED}FATAL${TEST_NC}: $TARGET not found"
-	exit 1
-fi
+for target in "$PARENT_TARGET" "$ACTIONS_TARGET"; do
+	if [[ ! -f "$target" ]]; then
+		echo "${TEST_RED}FATAL${TEST_NC}: $target not found"
+		exit 1
+	fi
+done
 
 echo "${TEST_BLUE}=== t2388: parent-task decomposition nudge structural tests ===${TEST_NC}"
 echo ""
@@ -95,68 +97,68 @@ echo ""
 assert_grep \
 	"1: _post_parent_decomposition_nudge function defined" \
 	'^_post_parent_decomposition_nudge\(\) \{' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Marker wiring ---
 
 assert_grep_fixed \
 	"2: helper uses canonical marker <!-- parent-needs-decomposition -->" \
 	'<!-- parent-needs-decomposition -->' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Idempotency check ---
 
 assert_grep \
 	"3: helper queries existing comments via gh api --paginate for idempotency" \
 	'gh api --paginate "repos/\$\{slug\}/issues/\$\{parent_num\}/comments"' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Comment posting ---
 
 assert_grep \
 	"4: helper posts via gh_issue_comment wrapper" \
 	'gh_issue_comment "\$parent_num" --repo "\$slug"' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Reconcile function counter ---
 
 assert_grep \
 	"5: reconcile declares total_nudged=0 counter" \
 	'local total_nudged=0' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 assert_grep \
 	"6: reconcile declares max_nudges=5 cap" \
 	'local max_nudges=5' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Title extraction ---
 
 assert_grep \
 	"7: reconcile extracts issue_title from jq" \
 	'issue_title=\$\(printf .* jq -r --argjson i "\$i" .*.title' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Nudge call wiring ---
 
 assert_grep \
 	"8: reconcile calls _post_parent_decomposition_nudge with slug+num+title" \
 	'_post_parent_decomposition_nudge "\$slug" "\$issue_num" "\$issue_title"' \
-	"$TARGET"
+	"$ACTIONS_TARGET"
 
 # --- Counter increment ---
 
 assert_grep \
 	"9: reconcile increments total_nudged on success" \
 	'total_nudged=\$\(\(total_nudged \+ 1\)\)' \
-	"$TARGET"
+	"$PARENT_TARGET"
 
 # --- Final log line ---
 
 assert_grep \
 	"10: final log line includes nudged= counter" \
-	'closed=\$\{total_closed\} nudged=\$\{total_nudged\}' \
-	"$TARGET"
+	'nudged=\$\{total_nudged\}' \
+	"$PARENT_TARGET"
 
 # --- Entry conditions ---
 
@@ -165,10 +167,14 @@ assert_grep \
 # placing the nudge AFTER the existing graph/body resolution block and
 # BEFORE the silent-continue that previously existed.
 assert_grep_fixed \
-	"11: nudge fires only when \$child_nums is empty (guards graph+body lookups first)" \
-	'if [[ -z "$child_nums" ]]; then
-				if [[ "$total_nudged" -lt "$max_nudges" ]]; then' \
-	"$TARGET"
+	"11a: no-child action branch exists after child-source union" \
+	'if [[ -z "$child_nums" ]]; then' \
+	"$ACTIONS_TARGET"
+
+assert_grep_fixed \
+	"11b: nudge remains bounded by the caller-provided action cap" \
+	'if [[ "$can_nudge" == "1" ]]; then' \
+	"$ACTIONS_TARGET"
 
 # --- Summary ---
 

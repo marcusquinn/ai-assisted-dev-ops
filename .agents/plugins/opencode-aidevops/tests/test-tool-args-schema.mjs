@@ -13,10 +13,9 @@ import { createPoolTool } from "../oauth-pool-tool.mjs";
 
 describe("aidevops plugin tool schemas", () => {
   test("all registered tools expose args schemas", () => {
-    const tools = {
-      ...createTools("/tmp/aidevops-test-scripts", () => ""),
-      "model-accounts-pool": createPoolTool({}),
-    };
+    const tools = createTools("/tmp/aidevops-test-scripts", () => "", {
+      poolToolFactory: () => createPoolTool({}),
+    });
 
     for (const [name, definition] of Object.entries(tools)) {
       assert.ok(definition.args, `${name} must expose args for OpenCode ToolRegistry`);
@@ -34,5 +33,19 @@ describe("aidevops plugin tool schemas", () => {
     assert.ok(tools.aidevops_hook_status.args.workdir?._zod, "hook-status workdir must be Zod");
     assert.ok(pool.args.action?._zod, "pool action must be Zod");
     assert.ok(pool.args.provider?._zod, "pool provider must be Zod");
+  });
+
+  test("public triage exports no plugin tool definitions", () => {
+    let poolToolCreated = false;
+    const tools = createTools("/tmp/aidevops-test-scripts", () => "", {
+      sessionOrigin: "triage",
+      poolToolFactory: () => {
+        poolToolCreated = true;
+        return createPoolTool({});
+      },
+    });
+
+    assert.deepEqual(tools, {});
+    assert.equal(poolToolCreated, false);
   });
 });

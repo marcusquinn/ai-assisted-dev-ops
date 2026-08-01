@@ -40,6 +40,7 @@ PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL="${PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL
 PR_REVIEW_THREAD_RESPONSE_LOCK_STALE="${PR_REVIEW_THREAD_RESPONSE_LOCK_STALE:-600}"
 PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER="${PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER:-3}"
 PR_REVIEW_THREAD_RESPONSE_MODEL="${PR_REVIEW_THREAD_RESPONSE_MODEL:-}"
+PR_REVIEW_THREAD_RESPONSE_WORKER_TITLE_SUFFIX="${PR_REVIEW_THREAD_RESPONSE_WORKER_TITLE_SUFFIX:-review-thread response}"
 # gemini-code-assist remains for unresolved historical thread compatibility.
 PR_REVIEW_THREAD_RESPONSE_BOT_RE="${PR_REVIEW_THREAD_RESPONSE_BOT_RE:-coderabbitai|gemini-code-assist|claude-review|gpt-review|augment-code|augmentcode|copilot}"
 PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN="${PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN:-false}"
@@ -50,6 +51,9 @@ PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
 PRRTS_WORKER_CONTRACT_VERSION="3"
+# Targeted callers distinguish productive dispatch deduplication from a hard
+# launch failure so an already-remediating PR is preserved.
+PRRTS_RC_DISPATCH_DEFERRED=10
 PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
@@ -807,7 +811,7 @@ _prrts_acquire_dispatch_lock() {
 		fi
 	fi
 	_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dispatch lock already held"
-	return 1
+	return "$PRRTS_RC_DISPATCH_DEFERRED"
 }
 
 _prrts_session_key() {
@@ -969,7 +973,7 @@ _prrts_should_dispatch() {
 
 	if _prrts_worker_active "$repo_slug" "$pr_number"; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — response worker already active"
-		return 1
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
 	fi
 	if [[ "$state_repeated_same_fingerprint" == "$PRRTS_BOOL_TRUE" && "$analysis_complete" == "$PRRTS_BOOL_TRUE" && "$maintainer_attention" == "$PRRTS_BOOL_TRUE" ]]; then
 		if [[ "$last_attempt_count" -eq 1 ]] && _prrts_retryable_prelaunch_failure_once "$blocker_reason"; then
@@ -982,11 +986,11 @@ _prrts_should_dispatch() {
 	age_seconds=$((now_epoch - dispatched_at))
 	if [[ "$dispatched_at" -gt 0 && "$age_seconds" -lt "$inflight_ttl" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dispatch state active ${age_seconds}s ago"
-		return 1
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
 	fi
 	if [[ "$state_repeated_same_fingerprint" == "$PRRTS_BOOL_TRUE" && "$state_same_head_sha" == "$PRRTS_BOOL_TRUE" && "$age_seconds" -lt "$cooldown" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — same thread fingerprint dispatched ${age_seconds}s ago"
-		return 1
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
 	fi
 	if [[ "$retry_stale_head_validation" == "$PRRTS_BOOL_TRUE" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} retrying stale PR head validation failure once (${blocker_reason})"
@@ -1371,6 +1375,35 @@ _prrts_reset_worktree_transfer_context() {
 	return 0
 }
 
+# Extension points for bounded PR workflows. Ordinary review repair uses the PR
+# number as its worker task and has no separate linked-issue contract.
+_prrts_worker_task_id() {
+	local pr_number="$1"
+	printf '%s' "$pr_number"
+	return 0
+}
+
+_prrts_repair_linked_issue() {
+	local pr_number="$1"
+	: "$pr_number"
+	return 0
+}
+
+_prrts_worker_login() {
+	local pr_number="$1"
+	: "$pr_number"
+	return 0
+}
+
+_prrts_prelaunch_target_fence() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local head_ref="$3"
+	local head_oid="$4"
+	: "$repo_slug" "$pr_number" "$head_ref" "$head_oid"
+	return 0
+}
+
 _prrts_read_worktree_owner_snapshot() {
 	local worktree_path="$1"
 	local owner_pid_var="$2"
@@ -1403,10 +1436,12 @@ _prrts_apply_expected_worktree_owner() {
 	local owner_task="$7"
 	local owner_created_at="$8"
 	local required_session="$9"
+	local worker_task=""
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
 
 	if [[ -z "$owner_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
-	elif [[ "$owner_task" != "$pr_number" ]]; then
+	elif [[ -z "$worker_task" || "$owner_task" != "$worker_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="review_worktree_owned_by_other_task"
 	elif [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" || -z "$owner_created_at" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
@@ -1453,6 +1488,9 @@ _prrts_claim_dispatch_precreate_owner() {
 	local worktree_path="$3"
 	local head_ref="$4"
 	local precreate_session="dispatch-precreate-${pr_number}"
+	local worker_task=""
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
+	[[ -n "$worker_task" ]] || return 1
 
 	if ! declare -F claim_worktree_ownership >/dev/null 2>&1; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
@@ -1460,7 +1498,7 @@ _prrts_claim_dispatch_precreate_owner() {
 		return 1
 	fi
 	if ! claim_worktree_ownership "$worktree_path" "$head_ref" \
-		--task "$pr_number" --session "$precreate_session" --owner-pid "$$" 2>/dev/null; then
+		--task "$worker_task" --session "$precreate_session" --owner-pid "$$" 2>/dev/null; then
 		PRRTS_WORKTREE_FAILURE_REASON="review_worktree_ownership_conflict"
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — atomic worktree ownership claim was rejected (${worktree_path})"
 		return 1
@@ -1501,6 +1539,8 @@ _prrts_prepare_created_worktree_owner() {
 	local owner_batch=""
 	local owner_task=""
 	local owner_created_at=""
+	local worker_task=""
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
 
 	if ! _prrts_read_worktree_owner_snapshot "$worktree_path" owner_pid owner_session owner_batch owner_task owner_created_at; then
 		_prrts_claim_dispatch_precreate_owner "$repo_slug" "$pr_number" "$worktree_path" "$head_ref" || return 1
@@ -1511,7 +1551,7 @@ _prrts_prepare_created_worktree_owner() {
 	# snapshot captured below must have a non-empty session before worker launch.
 	if [[ -z "$owner_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
-	elif [[ "$owner_task" != "$pr_number" ]]; then
+	elif [[ -z "$worker_task" || "$owner_task" != "$worker_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="review_worktree_owned_by_other_task"
 	elif [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_created_at" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
@@ -1528,7 +1568,7 @@ _prrts_prepare_created_worktree_owner() {
 		return 1
 	fi
 	if ! transfer_worktree_ownership_if_expected "$worktree_path" "$head_ref" \
-		--task "$pr_number" --session "$precreate_session" --owner-pid "$$" \
+		--task "$worker_task" --session "$precreate_session" --owner-pid "$$" \
 		--expected-owner-pid "$owner_pid" --expected-session "$owner_session" \
 		--expected-batch "$owner_batch" --expected-task "$owner_task" \
 		--expected-created-at "$owner_created_at" 2>/dev/null; then
@@ -1549,6 +1589,9 @@ _prrts_prepare_worker_worktree() {
 	local output_var="$6"
 	local existing_path="" repo_name="" safe_ref="" worktree_path="" resolved_path=""
 	local actual_head=""
+	local worker_task=""
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
+	[[ -n "$worker_task" ]] || return 1
 
 	_prrts_reset_worktree_transfer_context
 	PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_INFRASTRUCTURE"
@@ -1586,7 +1629,7 @@ _prrts_prepare_worker_worktree() {
 	fi
 	_prrts_fetch_exact_worker_head "$repo_slug" "$repo_path" "$pr_number" "$head_ref" "$head_oid" || return 1
 	if ! (cd "$repo_path" && AIDEVOPS_SKIP_AUTO_CLAIM=1 AIDEVOPS_WORKTREE_BASE_DIR="$PR_REVIEW_THREAD_RESPONSE_WORKTREE_BASE_DIR" \
-		"$PR_REVIEW_THREAD_RESPONSE_WORKTREE_HELPER" add "$head_ref" "$worktree_path" --base "$head_oid" --issue "$pr_number") >>"$LOGFILE" 2>&1; then
+		"$PR_REVIEW_THREAD_RESPONSE_WORKTREE_HELPER" add "$head_ref" "$worktree_path" --base "$head_oid" --issue "$worker_task") >>"$LOGFILE" 2>&1; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not create linked worktree for ${head_ref}"
 		return 1
 	fi
@@ -1614,6 +1657,7 @@ _prrts_dispatch_worker() {
 	local head_ref="$8"
 	local head_oid="$9"
 	local prompt_file="" session_key="" model="" worker_worktree_path="" worker_pid="" detach_mode=""
+	local worker_task="" repair_linked_issue="" worker_login=""
 	local -a cmd worker_cmd
 
 	PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_INFRASTRUCTURE"
@@ -1625,13 +1669,22 @@ _prrts_dispatch_worker() {
 	if ! _prrts_prepare_worker_worktree "$repo_slug" "$repo_path" "$pr_number" "$head_ref" "$head_oid" worker_worktree_path; then
 		return 1
 	fi
+	if ! _prrts_prelaunch_target_fence "$repo_slug" "$pr_number" "$head_ref" "$head_oid"; then
+		PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_CODE"
+		[[ -n "$PRRTS_WORKTREE_FAILURE_REASON" ]] || PRRTS_WORKTREE_FAILURE_REASON="pr_target_eligibility_changed_before_launch"
+		return 1
+	fi
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
+	repair_linked_issue=$(_prrts_repair_linked_issue "$pr_number") || repair_linked_issue=""
+	worker_login=$(_prrts_worker_login "$pr_number") || worker_login=""
+	[[ -n "$worker_task" ]] || return 1
 	prompt_file="$(_prrts_write_prompt_file "$repo_slug" "$worker_worktree_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview")"
 	session_key="$(_prrts_session_key "$repo_slug" "$pr_number")"
 	cmd=("$HEADLESS_RUNTIME_HELPER" run
 		--role worker
 		--session-key "$session_key"
 		--dir "$worker_worktree_path"
-		--title "PR #${pr_number}: review-thread response"
+		--title "PR #${pr_number}: ${PR_REVIEW_THREAD_RESPONSE_WORKER_TITLE_SUFFIX}"
 		--prompt-file "$prompt_file")
 	model="$PR_REVIEW_THREAD_RESPONSE_MODEL"
 	if [[ -n "$model" ]]; then
@@ -1639,8 +1692,9 @@ _prrts_dispatch_worker() {
 	fi
 	worker_cmd=(env
 		"HEADLESS=1"
-		"WORKER_ISSUE_NUMBER=${pr_number}"
+		"WORKER_ISSUE_NUMBER=${worker_task}"
 		"WORKER_REPO_SLUG=${repo_slug}"
+		"WORKER_GITHUB_LOGIN=${worker_login}"
 		"WORKER_WORKTREE_PATH=${worker_worktree_path}"
 		"GITHUB_REPOSITORY=${repo_slug}"
 		"WORKER_NO_EXIT_PUSH=1"
@@ -1651,6 +1705,8 @@ _prrts_dispatch_worker() {
 		"AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK=${PRRTS_WORKTREE_EXPECTED_OWNER_TASK}"
 		"AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=${PRRTS_WORKTREE_EXPECTED_OWNER_CREATED_AT}"
 		"AIDEVOPS_PR_REPAIR_NUMBER=${pr_number}"
+		"AIDEVOPS_PR_REPAIR_LINKED_ISSUE=${repair_linked_issue}"
+		"AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE=${worker_login}"
 		"AIDEVOPS_PR_REPAIR_HEAD_SHA=${head_oid}"
 		"AIDEVOPS_PR_REPAIR_HEAD_REF=${head_ref}"
 		"${cmd[@]}")
@@ -1685,12 +1741,16 @@ _prrts_dispatch_guarded() {
 	local lock_dir=""
 	local attempt_count="1" repeated_same_fingerprint="$PRRTS_BOOL_FALSE" same_head_sha="$PRRTS_BOOL_FALSE" maintainer_attention="$PRRTS_BOOL_FALSE"
 	local failure_maintainer_attention="$PRRTS_BOOL_FALSE"
-	if ! _prrts_acquire_dispatch_lock "$repo_slug" "$pr_number" lock_dir; then
-		return 1
+	local dispatch_guard_rc=0
+	_prrts_acquire_dispatch_lock "$repo_slug" "$pr_number" lock_dir || dispatch_guard_rc=$?
+	if [[ "$dispatch_guard_rc" -ne 0 ]]; then
+		return "$dispatch_guard_rc"
 	fi
-	if ! _prrts_should_dispatch "$repo_slug" "$pr_number" "$fingerprint" "$now_epoch" "$head_oid" attempt_count repeated_same_fingerprint same_head_sha; then
+	dispatch_guard_rc=0
+	_prrts_should_dispatch "$repo_slug" "$pr_number" "$fingerprint" "$now_epoch" "$head_oid" attempt_count repeated_same_fingerprint same_head_sha || dispatch_guard_rc=$?
+	if [[ "$dispatch_guard_rc" -ne 0 ]]; then
 		_prrts_remove_lock_dir "$lock_dir"
-		return 1
+		return "$dispatch_guard_rc"
 	fi
 	if _prrts_should_escalate_attempt "$attempt_count" "$repeated_same_fingerprint" "$same_head_sha"; then
 		maintainer_attention="$PRRTS_BOOL_TRUE"
@@ -1810,7 +1870,7 @@ _prrts_dispatch_pr() {
 	local repo_path="$2"
 	local pr_number="$3"
 	local dry_run="$4"
-	local candidate now_epoch thread_count fingerprint title head_ref head_oid author preview
+	local candidate now_epoch thread_count fingerprint title head_ref head_oid author preview dispatch_rc
 	candidate=""
 	now_epoch=""
 	thread_count=""
@@ -1820,6 +1880,7 @@ _prrts_dispatch_pr() {
 	head_oid=""
 	author=""
 	preview=""
+	dispatch_rc=0
 
 	if [[ -z "$repo_path" || ! -d "${repo_path/#\~/$HOME}" || ! "$pr_number" =~ ^[0-9]+$ ]]; then
 		_prrts_log "dispatch-pr: ${repo_slug}#${pr_number} skipped — repo path missing/invalid or PR number invalid (${repo_path})"
@@ -1834,8 +1895,9 @@ _prrts_dispatch_pr() {
 	now_epoch="$(date +%s)"
 	IFS="$PRRTS_TSV_FIELD_SEPARATOR" read -r pr_number thread_count fingerprint title head_ref head_oid author preview \
 		<<<"${candidate//$'\t'/$PRRTS_TSV_FIELD_SEPARATOR}"
-	if ! _prrts_dispatch_guarded "$repo_slug" "$repo_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview" "$now_epoch" "$dry_run" "dispatch-pr" "$head_ref" "$head_oid" "$author"; then
-		return 1
+	_prrts_dispatch_guarded "$repo_slug" "$repo_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview" "$now_epoch" "$dry_run" "dispatch-pr" "$head_ref" "$head_oid" "$author" || dispatch_rc=$?
+	if [[ "$dispatch_rc" -ne 0 ]]; then
+		return "$dispatch_rc"
 	fi
 	if [[ "$dry_run" != "$PRRTS_BOOL_TRUE" ]]; then
 		_prrts_log "dispatch-pr: ${repo_slug}#${pr_number} completed, dispatched=1, include_human=${PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN}"
@@ -1847,6 +1909,7 @@ main() {
 	local command="${1:-}"
 	local repo_slug="${2:-}"
 	local repo_path="${3:-}"
+	local dispatch_rc=0
 	case "$command" in
 	scan)
 		if [[ -z "$repo_slug" ]]; then
@@ -1870,8 +1933,9 @@ main() {
 			_prrts_usage >&2
 			return 2
 		fi
-		if ! _prrts_dispatch_pr "$repo_slug" "$repo_path" "${4:-}" "$PRRTS_BOOL_FALSE"; then
-			return 1
+		_prrts_dispatch_pr "$repo_slug" "$repo_path" "${4:-}" "$PRRTS_BOOL_FALSE" || dispatch_rc=$?
+		if [[ "$dispatch_rc" -ne 0 ]]; then
+			return "$dispatch_rc"
 		fi
 		;;
 	dry-run)
@@ -1904,4 +1968,6 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

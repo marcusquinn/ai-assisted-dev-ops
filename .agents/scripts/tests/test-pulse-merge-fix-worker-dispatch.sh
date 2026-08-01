@@ -233,6 +233,14 @@ teardown_test_env() {
 define_helpers_under_test() {
 	local fn fn_src
 	gh_issue_edit_safe() { gh issue edit "$@"; return $?; }
+	gh_pr_checks_exact_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local selection_mode="$3"
+		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
+		printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
+		return 1
+	}
 	# Functions to extract, in source order. _build_review_feedback_section
 	# is used by the "build section" tests; the three shared helpers are
 	# required by the refactored _dispatch_pr_fix_worker body.
@@ -245,6 +253,7 @@ define_helpers_under_test() {
 		_ci_actionable_failed_checks_markdown
 		_ci_terminal_failed_check_results
 		_build_ci_feedback_section
+		_ci_repair_required_checks_json
 		_route_ci_repair_fallback
 		_ci_repair_hash_text
 		_dispatch_ci_fix_worker
@@ -589,6 +598,8 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 	_route_ci_repair_fallback "100" "owner/repo" "42" "abc123repairsha" "feature/worker" \
 		"changed-fingerprint" "retry budget exhausted" "## CI Failure Feedback" "- **Unit**: failure"
+	_route_ci_repair_fallback "100" "owner/repo" "42" "abc123repairsha" "feature/worker" \
+		"another-fingerprint" "retry budget exhausted" "## CI Failure Feedback" "- **Unit**: failure"
 
 	local body_edit_count pr_close_count
 	body_edit_count=$(grep -cE 'gh issue edit 42 --repo owner/repo --body' "$GH_LOG" 2>/dev/null || true)

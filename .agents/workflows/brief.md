@@ -20,7 +20,7 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Single source of truth for all GitHub-written content — briefs, issue bodies, PR descriptions, comments, escalation reports
-- **Historical evidence**: 47-PR research corpus — 100% Haiku success with exact oldString/newString, 0% with descriptive prose.
+- **Historical evidence**: A 47-PR bounded-worker corpus completed exact `oldString`/`newString` contracts reliably and failed on descriptive prose.
 - **Template**: `templates/brief-template.md`
 - **Escalation template**: `templates/escalation-report-template.md`
 - **Tier criteria**: `reference/task-taxonomy.md`
@@ -62,15 +62,14 @@ sed -n '<line>p' <path>       # verify line content matches claim
 
 Briefs with phantom line references waste worker cycles. Every `file:line` claim must be verified against the current `HEAD` before filing.
 
-### 4. Tier disqualifier check
+### 4. Tier contract check
 
-Cross-check the draft brief against `reference/task-taxonomy.md` "Tier Assignment Validation" disqualifiers BEFORE choosing a tier. Server-side `tier-simple-body-shape-helper.sh` (t2389) catches some mis-tiers at dispatch, but catching at composition time is cheaper.
-
-Quick disqualifiers for `tier:simple`:
-- More than 2 files → `tier:standard`
-- Any target file >500 lines without exact `oldString`/`newString` → `tier:standard`
-- Judgment keywords (design, choose, coordinate, graceful, retry, fallback) → `tier:standard`
-- Estimate >1h or >4 acceptance criteria → `tier:standard`
+Classify with `reference/task-taxonomy.md` "Canonical Assignment Policy" BEFORE
+choosing a tier. Select `tier:thinking` for consequential unresolved decisions,
+select `tier:simple` only when every prescriptive execution-contract condition is
+proven, and otherwise use `tier:standard`. Counts, estimates, and isolated words
+are evidence rather than gates. Server-side checks enforce only explicit checklist,
+contract, and dispatch-path invariants; composition owns the judgment.
 
 For long-running shell/framework tasks, add a recoverability checkpoint to the
 brief: run the focused test(s), create a WIP commit before broad lint/release
@@ -179,18 +178,16 @@ Record the decision in `templates/brief-template.md` under **Seeded Draft PR** w
 
 ## Tier Classification
 
-Assess every work item against these empirical criteria (from 47-PR research):
+Use `reference/task-taxonomy.md` as the single policy source. In order:
 
-| Criterion | tier:simple | tier:standard | tier:thinking |
-|-----------|------------|---------------|----------------|
-| **Files** | Single file | 2-3 files with coordination | 4+ files or architectural |
-| **Lines changed** | Under 100 | 100-500 | 500+ or novel design |
-| **Pattern** | Follows existing pattern | Adapts pattern to new context | Creates new pattern |
-| **Implementation detail** | Exact oldString/newString; no unresolved choice | Verified files/patterns; skeletons for resolved boundaries | Problem, constraints, evidence, and decisions; no speculative skeletons |
-| **Judgment needed** | None — mechanical execution | Error recovery, approach selection | Design decisions, trade-offs |
-| **Examples** | Review feedback, config tweaks, quote fixes, docs additions | Bug fixes, refactors, feature impl | Architecture, security audits |
+1. Consequential unresolved decision or dispatch-path override → `tier:thinking`.
+2. Complete, verified, reversible, low-consequence execution contract with no
+   remaining judgment or coordination design → `tier:simple`.
+3. Everything else → `tier:standard`.
 
-**Default to `tier:standard`.** Downgrade to `tier:simple` only with exact `oldString`/`newString` for every edit, file <500 lines, no judgment required. Check `reference/task-taxonomy.md` "tier:simple Disqualifiers".
+Security wording alone does not select a tier. A bounded implementation inside a
+decided trust boundary is normally standard; deciding the boundary is thinking;
+an exact security-adjacent edit that changes no effective boundary may be simple.
 
 ## The Mentorship Principle
 

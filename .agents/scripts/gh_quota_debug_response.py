@@ -11,17 +11,25 @@ from typing import Dict, List, Optional, Tuple
 
 
 REQUEST_END = re.compile(
-    rb"^\* Request took ([0-9]+(?:\.[0-9]+)?)(ms|s)\s*$"
+    rb"^\* Request took ([0-9]+(?:\.[0-9]+)?)(ns|(?:\xc2\xb5|\xce\xbc|u)s|ms|s)\s*$"
 )
 RESPONSE_STATUS = re.compile(
     rb"^< HTTP/\S+\s+([0-9]{3})(?:\s+.*)?$", re.IGNORECASE
 )
+DATE_HEADER = re.compile(rb"^< Date:\s*(.+?)\s*$", re.IGNORECASE)
 RATE_HEADER = re.compile(
     rb"^< X-Ratelimit-(Resource|Used|Remaining|Reset):\s*([^\s]+)\s*$",
     re.IGNORECASE,
 )
 RATE_FIELDS = frozenset({"resource", "used", "remaining", "reset"})
 Response = Tuple[Dict[str, str], List[bytes]]
+
+
+def _decode_ascii(value: bytes) -> Optional[str]:
+    try:
+        return value.decode("ascii")
+    except UnicodeDecodeError:
+        return None
 
 
 def _response_start(line: bytes) -> Optional[Response]:
@@ -31,12 +39,21 @@ def _response_start(line: bytes) -> Optional[Response]:
     return {"status": match.group(1).decode("ascii")}, []
 
 
-def _capture_rate_header(headers: Dict[str, str], line: bytes) -> None:
+def _capture_response_header(headers: Dict[str, str], line: bytes) -> None:
+    date_match = DATE_HEADER.match(line)
+    if date_match is not None:
+        date_value = _decode_ascii(date_match.group(1))
+        if date_value is not None:
+            headers["date"] = date_value
+        return
     match = RATE_HEADER.match(line)
     if match is None:
         return
-    name = match.group(1).decode("ascii").lower()
-    headers[name] = match.group(2).decode("ascii", errors="ignore")
+    name = _decode_ascii(match.group(1))
+    value = _decode_ascii(match.group(2))
+    if name is None or value is None:
+        return
+    headers[name.lower()] = value
 
 
 def _graphql_rate_cost(body: List[bytes]) -> Optional[int]:
@@ -72,7 +89,7 @@ def response_metadata(
         headers, body = responses[-1]
         if in_headers:
             in_headers = stripped != b""
-            _capture_rate_header(headers, stripped)
+            _capture_response_header(headers, stripped)
         elif not REQUEST_END.match(stripped):
             body.append(stripped)
     rate_responses = [

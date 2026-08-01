@@ -13,7 +13,7 @@
 #   5. status --issue returns exit 1 when the issue is not claimed
 #   6. scan-stale detects dead-PID + missing-worktree claims
 #   7. scan-stale ignores claims from other hostnames (can't verify)
-#   8. offline gh path warns and exits 0 without blocking the caller
+#   8. API-token fallback works while true offline warns without writes
 #   9. help subcommand prints usage
 #
 # The tests stub `gh`, `jq`, `kill`, and `hostname` via a PATH shim so no
@@ -72,8 +72,9 @@ mkdir -p "$STUB_BIN" "$STUB_STATE_DIR"
 export STUB_LOG STUB_STATE_DIR
 
 # Default stub mode — override via STUB_GH_MODE
-#   online   — gh returns successful responses
-#   offline  — gh auth status returns 1 (simulates offline / unauth)
+#   online    — gh returns successful responses
+#   api-only  — gh auth status fails while authenticated API calls succeed
+#   offline   — gh auth status and authenticated API calls both fail
 export STUB_GH_MODE=online
 export STUB_PERMISSION=admin
 
@@ -83,23 +84,64 @@ printf 'gh %s\n' "$*" >>"${STUB_LOG:-/dev/null}"
 
 case "$1" in
 auth)
-	if [[ "${STUB_GH_MODE:-online}" == "offline" ]]; then
+	if [[ "${STUB_GH_MODE:-online}" == "offline" || "${STUB_GH_MODE:-online}" == "api-only" ]]; then
 		exit 1
 	fi
 	exit 0
 	;;
 	api)
-		# Keep status transitions on their primary `gh issue edit` path. An empty
-		# rate-limit response now triggers REST fallback, which this focused stub
-		# does not model and would make label assertions environment-dependent.
+		# Keep unrelated wrapper calls on their primary path. Status-specific REST
+		# reads are modelled below while writes deliberately exercise the native
+		# fallback whose command shape this suite asserts.
 		if [[ "$2" == "rate_limit" ]]; then
 			printf '5000\n'
 			exit 0
 		fi
 		# gh api user --jq '.login'
 		if [[ "$2" == "user" ]]; then
+			if [[ "${STUB_GH_MODE:-online}" == "offline" ]]; then
+				exit 1
+			fi
 			printf 'testuser\n'
 			exit 0
+		fi
+		if [[ "$2" == /repos/*/labels\?per_page=100 ]]; then
+			printf '%s\t%s\t%s\n' \
+				"status:available" "0e8a16" "Task is available for claiming" \
+				"status:queued" "fbca04" "Worker dispatched, not yet started" \
+				"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+				"status:in-progress" "1d76db" "Worker actively running" \
+				"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+				"status:done" "6f42c1" "Task is complete" \
+				"status:blocked" "d93f0b" "Waiting on blocker task"
+			exit 0
+		fi
+		if [[ "$2" == /repos/*/issues/* ]]; then
+			issue_number="${2##*/}"
+			state_file="${STUB_STATE_DIR:?}/${issue_number}.json"
+			if [[ -f "$state_file" ]]; then
+				cat "$state_file"
+				exit 0
+			fi
+			labels_arr=""
+			if [[ "${STUB_ISSUE_HAS_IN_REVIEW:-0}" == "1" ]]; then
+				labels_arr='{"name":"status:in-review"}'
+			fi
+			if [[ "${STUB_ISSUE_HAS_AUTO_DISPATCH:-0}" == "1" ]]; then
+				labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"auto-dispatch\"}"
+			fi
+			if [[ "${STUB_ISSUE_HAS_PARENT_TASK:-0}" == "1" ]]; then
+				labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"parent-task\"}"
+			fi
+			printf '{"state":"%s","labels":[%s],"assignees":[]}\n' \
+				"${STUB_ISSUE_STATE:-OPEN}" "$labels_arr"
+			exit 0
+		fi
+		# Force REST status mutations onto the native fallback whose command shape
+		# this focused interactive-session suite asserts. Shared wrapper suites own
+		# the REST mutation state-machine coverage.
+		if [[ "$2" == "-X" && ( "$3" == "POST" || "$3" == "DELETE" || "$3" == "PATCH" ) && "$4" == /repos/*/issues/* ]]; then
+			exit 1
 		fi
 		if [[ "$2" == "-i" && "${3:-}" == */collaborators/*/permission ]]; then
 			if [[ "${STUB_PERMISSION_FAIL:-0}" == "1" ]]; then
@@ -182,19 +224,49 @@ issue)
 			exit 1
 		fi
 		if [[ -n "${STUB_STATE_DIR:-}" && "${STUB_GH_EDIT_NO_MUTATE:-0}" != "1" ]]; then
-			new_assignee=""
+			add_labels=""
+			remove_labels=""
+			add_assignees=""
+			remove_assignees=""
 			previous=""
 			for argument in "$@"; do
-				if [[ "$previous" == "--add-assignee" ]]; then
-					new_assignee="$argument"
-					break
+				if [[ -n "$previous" ]]; then
+					case "$previous" in
+					--add-label) add_labels="${add_labels}${add_labels:+$'\n'}${argument}" ;;
+					--remove-label) remove_labels="${remove_labels}${remove_labels:+$'\n'}${argument}" ;;
+					--add-assignee) add_assignees="${add_assignees}${add_assignees:+$'\n'}${argument}" ;;
+					--remove-assignee) remove_assignees="${remove_assignees}${remove_assignees:+$'\n'}${argument}" ;;
+					esac
+					previous=""
+					continue
 				fi
-				previous="$argument"
+				case "$argument" in
+				--add-label | --remove-label | --add-assignee | --remove-assignee) previous="$argument" ;;
+				esac
 			done
-			if [[ -n "$new_assignee" ]]; then
-				printf '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"%s"}],"comments":[]}\n' \
-					"$new_assignee" >"${STUB_STATE_DIR}/${3}.json"
+			state_file="${STUB_STATE_DIR}/${3}.json"
+			current_json='{"state":"OPEN","labels":[],"assignees":[],"comments":[]}'
+			if [[ -f "$state_file" ]]; then
+				current_json=$(<"$state_file")
 			fi
+			printf '%s' "$current_json" | jq -c \
+				--arg add_labels "$add_labels" \
+				--arg remove_labels "$remove_labels" \
+				--arg add_assignees "$add_assignees" \
+				--arg remove_assignees "$remove_assignees" '
+					def values($input): $input | split("\n") | map(select(length > 0));
+					(values($add_labels)) as $label_adds |
+					(values($remove_labels)) as $label_removes |
+					(values($add_assignees)) as $assignee_adds |
+					(values($remove_assignees)) as $assignee_removes |
+					.labels = (((.labels // []) |
+						map(select(.name as $name | ($label_removes | index($name)) == null))) +
+						($label_adds | map({name: .})) | unique_by(.name)) |
+					.assignees = (((.assignees // []) |
+						map(select(.login as $login | ($assignee_removes | index($login)) == null))) +
+						($assignee_adds | map({login: .})) | unique_by(.login))
+				' >"${state_file}.tmp" || exit 1
+			mv "${state_file}.tmp" "$state_file"
 		fi
 		exit 0
 		;;
@@ -406,20 +478,58 @@ else
 fi
 
 # =============================================================================
-# Test 7 — offline gh path: claim warns and exits 0, no stamp written
+# Test 7 — stale keyring status falls back to a usable API token for claim and
+# release --unassign (GH#29149).
+# =============================================================================
+export STUB_GH_MODE=api-only
+export STUB_ISSUE_HAS_IN_REVIEW=0
+api_only_stamp=$(_isc_stamp_path 88887 testowner/testrepo)
+rm -f "$api_only_stamp" 2>/dev/null || true
+: >"$STUB_LOG"
+
+api_only_claim_out=$(_isc_cmd_claim 88887 testowner/testrepo --worktree /tmp/api-only-wt 2>&1)
+api_only_claim_rc=$?
+export STUB_ISSUE_HAS_IN_REVIEW=1
+api_only_release_out=$(_isc_cmd_release 88887 testowner/testrepo --unassign 2>&1)
+api_only_release_rc=$?
+api_only_log=$(cat "$STUB_LOG")
+
+if [[ $api_only_claim_rc -eq 0 && $api_only_release_rc -eq 0 && ! -f "$api_only_stamp" ]] &&
+	printf '%s' "$api_only_log" | grep -q 'gh auth status' &&
+	printf '%s' "$api_only_log" | grep -q 'gh api user --jq .login' &&
+	printf '%s' "$api_only_log" | grep -q 'issue edit 88887 .*--add-assignee testuser' &&
+	printf '%s' "$api_only_log" | grep -q 'issue edit 88887 .*--remove-assignee testuser' &&
+	[[ "${api_only_claim_out}${api_only_release_out}" != *"offline"* ]]; then
+	print_result "GH#29149 API token fallback claims and releases with unassignment" 0
+else
+	print_result "GH#29149 API token fallback claims and releases with unassignment" 1 \
+		"(claim_rc=$api_only_claim_rc, release_rc=$api_only_release_rc, log=${api_only_log:0:300})"
+fi
+
+# =============================================================================
+# Test 7b — true offline path: both probes fail, claim warns and exits 0 with
+# no stamp or GitHub write.
 # =============================================================================
 export STUB_GH_MODE=offline
+export STUB_ISSUE_HAS_IN_REVIEW=0
 rm -f "${claim_dir}"/*.json 2>/dev/null || true
+: >"$STUB_LOG"
 
 offline_out=$(_isc_cmd_claim 88888 offline/repo 2>&1)
 offline_rc=$?
+offline_log=$(cat "$STUB_LOG")
 
 offline_stamp="${claim_dir}/offline-repo-88888.json"
 
-if [[ $offline_rc -eq 0 && ! -f "$offline_stamp" ]] && printf '%s' "$offline_out" | grep -q 'offline'; then
-	print_result "offline gh: warn and continue, no stamp" 0
+if [[ $offline_rc -eq 0 && ! -f "$offline_stamp" ]] &&
+	printf '%s' "$offline_out" | grep -q 'offline' &&
+	printf '%s' "$offline_log" | grep -q 'gh auth status' &&
+	printf '%s' "$offline_log" | grep -q 'gh api user --jq .login' &&
+	! printf '%s' "$offline_log" | grep -q 'issue edit 88888'; then
+	print_result "true offline gh: warn and continue without writes" 0
 else
-	print_result "offline gh: warn and continue, no stamp" 1 "(rc=$offline_rc, out=${offline_out:0:100})"
+	print_result "true offline gh: warn and continue without writes" 1 \
+		"(rc=$offline_rc, log=${offline_log:0:200}, out=${offline_out:0:100})"
 fi
 
 export STUB_GH_MODE=online

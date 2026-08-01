@@ -14,7 +14,7 @@
 #   FORCE_PUSH          — bulk issue push bypasses CI-only gate (issue-sync-helper.sh)
 #   FORCE_CLOSE         — issue close bypasses evidence check (issue-sync-helper.sh)
 #   AIDEVOPS_VM_SKIP_BUMP_VERIFY — tag bypass skips bump-commit verify (version-manager-release.sh)
-#   AIDEVOPS_HEADLESS_SANDBOX_DISABLED — sandbox bypass falls back to bare exec (headless-runtime-helper.sh)
+#   AIDEVOPS_HEADLESS_SANDBOX_DISABLED — sandbox bypass falls back to bare exec (headless runtime modules)
 #   SKIP_FRAMEWORK_ROUTING_CHECK — routing warning bypass (claim-task-id.sh)
 #   FORCE_ENRICH        — enrich bypass skips content-preservation gate (issue-sync-helper.sh)
 #                         (deep coverage in test-enrich-no-data-loss.sh; log audit only here)
@@ -81,7 +81,8 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)" || exit 1
 HELPER="${SCRIPTS_DIR}/issue-sync-helper.sh"
 VERSION_MGMT_RELEASE="${SCRIPTS_DIR}/version-manager-release.sh"
 CLAIM_HELPER="${SCRIPTS_DIR}/claim-task-id.sh"
-HEADLESS_HELPER="${SCRIPTS_DIR}/headless-runtime-helper.sh"
+HEADLESS_INVOKE="${SCRIPTS_DIR}/headless-runtime-invoke.sh"
+HEADLESS_WORKER="${SCRIPTS_DIR}/headless-runtime-worker.sh"
 WORKTREE_HELPER="${SCRIPTS_DIR}/worktree-helper.sh"
 
 for f in "$HELPER" "$CLAIM_HELPER"; do
@@ -296,26 +297,26 @@ else
 fi
 
 # ============================================================
-# Section 5: AIDEVOPS_HEADLESS_SANDBOX_DISABLED bypass log (headless-runtime-helper.sh)
+# Section 5: AIDEVOPS_HEADLESS_SANDBOX_DISABLED bypass log (headless runtime modules)
 # ============================================================
-section "5. AIDEVOPS_HEADLESS_SANDBOX_DISABLED bypass log (headless-runtime-helper.sh)"
+section "5. AIDEVOPS_HEADLESS_SANDBOX_DISABLED bypass log (headless runtime modules)"
 
-if [[ ! -f "$HEADLESS_HELPER" ]]; then
-	printf '  SKIP: %s not found\n' "$HEADLESS_HELPER"
+if [[ ! -f "$HEADLESS_INVOKE" || ! -f "$HEADLESS_WORKER" ]]; then
+	printf '  SKIP: headless runtime modules not found\n'
 else
 	# Structural assertion: log call is present at both bypass sites
-	count=$(grep -c "AIDEVOPS_HEADLESS_SANDBOX_DISABLED=1 —" "$HEADLESS_HELPER" 2>/dev/null || true)
+	count=$(grep -h -c "AIDEVOPS_HEADLESS_SANDBOX_DISABLED=1 —" "$HEADLESS_INVOKE" "$HEADLESS_WORKER" 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')
 	if [[ "$count" -ge 2 ]]; then
 		pass "AIDEVOPS_HEADLESS_SANDBOX_DISABLED has info_log at both bypass sites (count=$count)"
 	elif [[ "$count" -eq 1 ]]; then
 		fail "AIDEVOPS_HEADLESS_SANDBOX_DISABLED: only 1 of 2 bypass sites has info_log (expected 2)"
 	else
 		fail "AIDEVOPS_HEADLESS_SANDBOX_DISABLED: no bypass sites have info_log" \
-			"grep for 'AIDEVOPS_HEADLESS_SANDBOX_DISABLED=1 —' in $HEADLESS_HELPER returned 0"
+			"grep for 'AIDEVOPS_HEADLESS_SANDBOX_DISABLED=1 —' in headless runtime modules returned 0"
 	fi
 
 	# Floor: timeout command is still used even when sandbox is disabled
-	if grep -q "timeout.*HEADLESS_SANDBOX_TIMEOUT" "$HEADLESS_HELPER"; then
+	if grep -q "timeout.*HEADLESS_SANDBOX_TIMEOUT" "$HEADLESS_INVOKE" "$HEADLESS_WORKER"; then
 		pass "AIDEVOPS_HEADLESS_SANDBOX_DISABLED floor: timeout limit still enforced after bypass"
 	else
 		fail "AIDEVOPS_HEADLESS_SANDBOX_DISABLED floor: timeout enforcement missing from bypass path"
