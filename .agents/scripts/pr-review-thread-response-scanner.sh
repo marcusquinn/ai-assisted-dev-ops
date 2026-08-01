@@ -20,6 +20,9 @@
 # existing PR-review loop model. The targeted merge-blocker path can opt in to
 # human-authored threads with PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN=true. The
 # worker must read/verify the thread before editing code or resolving/commenting.
+# Targeted dispatch has a stable outcome contract: 0=queued, 10=deferred,
+# 11=no matching thread/race converged, 12=terminal maintainer attention, and
+# 13=retryable scan or launch failure.
 
 set -euo pipefail
 
@@ -54,6 +57,9 @@ PRRTS_WORKER_CONTRACT_VERSION="3"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
+PRRTS_RC_NO_MATCH=11
+PRRTS_RC_MAINTAINER_ATTENTION=12
+PRRTS_RC_RETRYABLE_FAILURE=13
 PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
@@ -559,7 +565,7 @@ cmd_scan_pr() {
 	summary="$(_prrts_review_thread_summary "$repo_slug" "$pr_number")" || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		_prrts_log "scan-pr: ${repo_slug}#${pr_number} skipped — review-thread fetch failed"
-		return 0
+		return "$rc"
 	fi
 	IFS="$PRRTS_TSV_FIELD_SEPARATOR" read -r thread_count fingerprint preview \
 		<<<"${summary//$'\t'/$PRRTS_TSV_FIELD_SEPARATOR}"
@@ -980,7 +986,7 @@ _prrts_should_dispatch() {
 			retry_stale_head_validation="$PRRTS_BOOL_TRUE"
 		else
 			_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — analysis complete and blocked by ${blocked_by:-decision}; maintainer attention pending"
-			return 1
+			return "$PRRTS_RC_MAINTAINER_ATTENTION"
 		fi
 	fi
 	age_seconds=$((now_epoch - dispatched_at))
@@ -1758,10 +1764,12 @@ _prrts_dispatch_guarded() {
 			printf 'DRY-RUN would escalate %s#%s after %s repeated unresolved thread attempt(s)\n' "$repo_slug" "$pr_number" "$attempt_count"
 		else
 			_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid"
+			_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" \
+				"maintainer" "$PRRTS_BOOL_TRUE" "same_unresolved_thread_fingerprint"
 			_prrts_log "dispatch: ${repo_slug}#${pr_number} not launching response worker — same unresolved thread fingerprint reached attempt ${attempt_count}; maintainer attention recommended (local state/log only, no GitHub write)"
 		fi
 		_prrts_remove_lock_dir "$lock_dir"
-		return 1
+		return "$PRRTS_RC_MAINTAINER_ATTENTION"
 	fi
 	if [[ "$dry_run" == "$PRRTS_BOOL_TRUE" ]]; then
 		printf 'DRY-RUN would dispatch %s#%s (%s unresolved thread(s))\n' "$repo_slug" "$pr_number" "$thread_count"
@@ -1781,7 +1789,7 @@ _prrts_dispatch_guarded() {
 		_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" \
 			"$PRRTS_WORKTREE_FAILURE_BLOCKED_BY" "$failure_maintainer_attention" "$PRRTS_WORKTREE_FAILURE_REASON"
 		_prrts_remove_lock_dir "$lock_dir"
-		return 1
+		return "$PRRTS_RC_RETRYABLE_FAILURE"
 	fi
 	_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid"
 	_prrts_remove_lock_dir "$lock_dir"
@@ -1870,7 +1878,7 @@ _prrts_dispatch_pr() {
 	local repo_path="$2"
 	local pr_number="$3"
 	local dry_run="$4"
-	local candidate now_epoch thread_count fingerprint title head_ref head_oid author preview dispatch_rc
+	local candidate now_epoch thread_count fingerprint title head_ref head_oid author preview dispatch_rc scan_rc
 	candidate=""
 	now_epoch=""
 	thread_count=""
@@ -1881,16 +1889,21 @@ _prrts_dispatch_pr() {
 	author=""
 	preview=""
 	dispatch_rc=0
+	scan_rc=0
 
 	if [[ -z "$repo_path" || ! -d "${repo_path/#\~/$HOME}" || ! "$pr_number" =~ ^[0-9]+$ ]]; then
 		_prrts_log "dispatch-pr: ${repo_slug}#${pr_number} skipped — repo path missing/invalid or PR number invalid (${repo_path})"
-		return 1
+		return "$PRRTS_RC_RETRYABLE_FAILURE"
 	fi
 	repo_path="${repo_path/#\~/$HOME}"
-	candidate="$(cmd_scan_pr "$repo_slug" "$pr_number")"
+	candidate="$(cmd_scan_pr "$repo_slug" "$pr_number")" || scan_rc=$?
+	if [[ "$scan_rc" -ne 0 ]]; then
+		_prrts_log "dispatch-pr: ${repo_slug}#${pr_number} retryable review-thread scan failure (scan_rc=${scan_rc})"
+		return "$PRRTS_RC_RETRYABLE_FAILURE"
+	fi
 	[[ -n "$candidate" ]] || {
 		_prrts_log "dispatch-pr: ${repo_slug}#${pr_number} has no unresolved review threads matching current filters"
-		return 1
+		return "$PRRTS_RC_NO_MATCH"
 	}
 	now_epoch="$(date +%s)"
 	IFS="$PRRTS_TSV_FIELD_SEPARATOR" read -r pr_number thread_count fingerprint title head_ref head_oid author preview \

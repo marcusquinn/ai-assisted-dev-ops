@@ -1004,6 +1004,39 @@ test_dispatch_pr_launches_targeted_worker_with_human_opt_in() {
 	return 0
 }
 
+test_dispatch_pr_reports_no_match_as_converged() {
+	setup_test_env
+	export STUB_THREADS_MODE="none"
+	local dispatch_rc=0
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq 11 && ! -s "$HEADLESS_LOG" ]] &&
+		grep -q 'has no unresolved review threads matching current filters' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch-pr reports a resolved-between-snapshot race as converged" 0
+	else
+		print_result "dispatch-pr reports a resolved-between-snapshot race as converged" 1 \
+			"rc=${dispatch_rc}, headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_reports_fetch_failure_as_retryable() {
+	setup_test_env
+	export STUB_THREADS_MODE="error"
+	export STUB_GRAPHQL_REMAINING="100"
+	local dispatch_rc=0
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq 13 && ! -s "$HEADLESS_LOG" ]] &&
+		grep -q 'retryable review-thread scan failure (scan_rc=2)' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch-pr propagates review-thread fetch failure as retryable" 0
+	else
+		print_result "dispatch-pr propagates review-thread fetch failure as retryable" 1 \
+			"rc=${dispatch_rc}, headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_is_idempotent_for_same_fingerprint() {
 	setup_test_env
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
@@ -1037,26 +1070,33 @@ test_dispatch_skips_mixed_fingerprint_during_inflight_window() {
 
 test_dispatch_escalates_repeated_same_fingerprint_without_worker_loop() {
 	setup_test_env
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
 	wait_for_headless_log || true
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
-	local old_epoch=""
+	local old_epoch="" terminal_rc=0 repeat_rc=0 state_before_repeat=""
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
 	: >"$HEADLESS_LOG"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
 	wait_for_headless_log || true
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
 	: >"$HEADLESS_LOG"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
-	if [[ ! -s "$HEADLESS_LOG" ]] &&
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || terminal_rc=$?
+	state_before_repeat="$(<"$state_file")"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || repeat_rc=$?
+	if [[ "$terminal_rc" -eq 12 && "$repeat_rc" -eq 12 && ! -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=3$' "$state_file" 2>/dev/null &&
+		grep -q '^analysis_complete=true$' "$state_file" 2>/dev/null &&
+		grep -q '^blocked_by=maintainer$' "$state_file" 2>/dev/null &&
 		grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
+		grep -q '^blocker_reason=same_unresolved_thread_fingerprint$' "$state_file" 2>/dev/null &&
+		[[ "$(<"$state_file")" == "$state_before_repeat" ]] &&
 		grep -q 'not launching response worker — same unresolved thread fingerprint reached attempt 3' "$LOGFILE" 2>/dev/null; then
-		print_result "dispatch escalates repeated same fingerprint without worker loop" 0
+		print_result "dispatch-pr persists terminal same-fingerprint attention and deduplicates repeats" 0
 	else
-		print_result "dispatch escalates repeated same fingerprint without worker loop" 1 "headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+		print_result "dispatch-pr persists terminal same-fingerprint attention and deduplicates repeats" 1 \
+			"terminal_rc=${terminal_rc}, repeat_rc=${repeat_rc}, headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
@@ -1249,10 +1289,12 @@ test_dispatch_retries_transient_head_fetch_failure_once() {
 test_dispatch_retries_generic_infrastructure_launch_failure() {
 	setup_test_env
 	chmod -x "$HEADLESS_RUNTIME_HELPER"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	local first_dispatch_rc=0
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || first_dispatch_rc=$?
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	local first_failure_ok="false"
-	if grep -q '^analysis_complete=true$' "$state_file" 2>/dev/null &&
+	if [[ "$first_dispatch_rc" -eq 13 ]] &&
+		grep -q '^analysis_complete=true$' "$state_file" 2>/dev/null &&
 		grep -q '^blocked_by=infrastructure$' "$state_file" 2>/dev/null &&
 		grep -q '^maintainer_attention=false$' "$state_file" 2>/dev/null &&
 		grep -q '^blocker_reason=review_worker_launch_failed$' "$state_file" 2>/dev/null; then
@@ -1262,7 +1304,7 @@ test_dispatch_retries_generic_infrastructure_launch_failure() {
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
 	chmod +x "$HEADLESS_RUNTIME_HELPER"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
 	wait_for_headless_log || true
 	if [[ "$first_failure_ok" == "true" && -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=2$' "$state_file" 2>/dev/null &&
@@ -1270,7 +1312,7 @@ test_dispatch_retries_generic_infrastructure_launch_failure() {
 		print_result "dispatch retries a generic infrastructure launch failure" 0
 	else
 		print_result "dispatch retries a generic infrastructure launch failure" 1 \
-			"first_failure_ok=${first_failure_ok}, headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+			"first_dispatch_rc=${first_dispatch_rc}, first_failure_ok=${first_failure_ok}, headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
@@ -1721,6 +1763,8 @@ main() {
 	test_dispatch_prompt_declares_precreated_worktree_contract
 	test_dispatch_prompt_marks_dynamic_metadata_untrusted
 	test_dispatch_pr_launches_targeted_worker_with_human_opt_in
+	test_dispatch_pr_reports_no_match_as_converged
+	test_dispatch_pr_reports_fetch_failure_as_retryable
 	test_dispatch_is_idempotent_for_same_fingerprint
 	test_dispatch_skips_mixed_fingerprint_during_inflight_window
 	test_dispatch_escalates_repeated_same_fingerprint_without_worker_loop

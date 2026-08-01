@@ -49,6 +49,9 @@ SCANNER
 	_OW_LABEL_PAT=",origin:worker,"
 	export SCANNER_RC=0
 	PULSE_REVIEW_REMEDIATION_DEFERRED_RC=10
+	PULSE_REVIEW_REMEDIATION_NO_MATCH_RC=11
+	PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC=12
+	PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC=13
 	_PULSE_MERGE_REMEDIATION_OUTCOME=""
 	_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND=""
 	unset AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST
@@ -170,7 +173,7 @@ test_unrelated_preflight_blocker_does_not_dispatch() {
 
 test_failed_preflight_dispatch_stays_blocked_and_consumes_marker() {
 	setup_test_env
-	export SCANNER_RC=1
+	export SCANNER_RC=13
 	define_helpers_under_test || {
 		teardown_test_env
 		return 0
@@ -179,13 +182,59 @@ test_failed_preflight_dispatch_stays_blocked_and_consumes_marker() {
 
 	_pulse_merge_maybe_dispatch_preflight_remediation 77 owner/repo
 
-	if grep -q 'review-thread remediation dispatch failed for PR #77 in owner/repo' "$LOGFILE" &&
+	if grep -q 'review-thread remediation scan/launch failed for PR #77 in owner/repo' "$LOGFILE" &&
 		! grep -q 'review-thread remediation queued for PR #77 in owner/repo' "$LOGFILE" &&
 		[[ -z "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]]; then
 		print_result "failed preflight dispatch consumes typed marker" 0
 	else
 		print_result "failed preflight dispatch consumes typed marker" 1 \
 			"marker=${_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND:-<none>}, log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_no_match_preflight_dispatch_converges_and_consumes_marker() {
+	setup_test_env
+	export SCANNER_RC=11
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_REQUIRED_REVIEW_THREADS"
+
+	_pulse_merge_maybe_dispatch_preflight_remediation 77 owner/repo
+
+	if [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "converged" && -z "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] &&
+		grep -q 'review-thread remediation converged for PR #77 in owner/repo' "$LOGFILE" &&
+		! grep -q 'review-thread remediation queued for PR #77 in owner/repo' "$LOGFILE"; then
+		print_result "no-match preflight outcome converges and consumes typed marker" 0
+	else
+		print_result "no-match preflight outcome converges and consumes typed marker" 1 \
+			"outcome=${_PULSE_MERGE_REMEDIATION_OUTCOME:-<none>}, marker=${_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND:-<none>}, log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_terminal_attention_preflight_dispatch_stays_fail_closed() {
+	setup_test_env
+	export SCANNER_RC=12
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_REQUIRED_REVIEW_THREADS"
+
+	_pulse_merge_maybe_dispatch_preflight_remediation 77 owner/repo
+
+	if [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "maintainer_attention" && -z "$_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND" ]] &&
+		grep -q 'review-thread remediation reached terminal maintainer attention for PR #77 in owner/repo' "$LOGFILE" &&
+		! grep -q 'review-thread remediation queued for PR #77 in owner/repo' "$LOGFILE"; then
+		print_result "terminal-attention preflight outcome remains fail-closed" 0
+	else
+		print_result "terminal-attention preflight outcome remains fail-closed" 1 \
+			"outcome=${_PULSE_MERGE_REMEDIATION_OUTCOME:-<none>}, marker=${_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND:-<none>}, log=$(tr '\n' ';' <"$LOGFILE")"
 	fi
 	teardown_test_env
 	return 0
@@ -381,10 +430,74 @@ test_changes_requested_active_remediation_preserves_pr_without_routing() {
 	return 0
 }
 
+test_changes_requested_converged_remediation_preserves_pr_without_routing() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=11
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		printf 'route %s %s\n' "$pr_number" "$repo_slug" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() {
+		return 1
+	}
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if [[ ! -s "$route_log" ]] &&
+		grep -q 'no matching unresolved thread remained after refresh, preserving PR for reevaluation' "$LOGFILE"; then
+		print_result "converged response remediation preserves CHANGES_REQUESTED PR" 0
+	else
+		print_result "converged response remediation preserves CHANGES_REQUESTED PR" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_changes_requested_terminal_attention_preserves_pr_without_routing() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=12
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		printf 'route %s %s\n' "$pr_number" "$repo_slug" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() {
+		return 1
+	}
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if [[ ! -s "$route_log" ]] &&
+		grep -q 'terminal review-thread maintainer attention pending, preserving PR' "$LOGFILE"; then
+		print_result "terminal-attention remediation preserves CHANGES_REQUESTED PR" 0
+	else
+		print_result "terminal-attention remediation preserves CHANGES_REQUESTED PR" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_changes_requested_hard_dispatch_failure_still_routes() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
-	export SCANNER_RC=1
+	export SCANNER_RC=13
 	define_helpers_under_test || { teardown_test_env; return 0; }
 	local route_log="${TEST_ROOT}/route.log"
 	: >"$route_log"
@@ -398,7 +511,7 @@ test_changes_requested_hard_dispatch_failure_still_routes() {
 
 	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
 	if grep -q 'route 77 owner/repo' "$route_log" \
-		&& grep -q 'review-thread remediation dispatch failed for PR #77 in owner/repo' "$LOGFILE"; then
+		&& grep -q 'review-thread remediation scan/launch failed for PR #77 in owner/repo' "$LOGFILE"; then
 		print_result "hard response-worker dispatch failure retains fix-worker fallback" 0
 	else
 		print_result "hard response-worker dispatch failure retains fix-worker fallback" 1 \
@@ -516,6 +629,8 @@ main() {
 	test_required_review_thread_preflight_blocker_dispatches
 	test_unrelated_preflight_blocker_does_not_dispatch
 	test_failed_preflight_dispatch_stays_blocked_and_consumes_marker
+	test_no_match_preflight_dispatch_converges_and_consumes_marker
+	test_terminal_attention_preflight_dispatch_stays_fail_closed
 	test_dry_run_preflight_blocker_never_dispatches
 	test_unresolved_conversation_dispatches_targeted_human_thread_remediation
 	test_repo_path_lookup_ignores_slug_case
@@ -524,6 +639,8 @@ main() {
 	test_changes_requested_opt_in_dispatches_remediation_without_routing
 	test_changes_requested_routes_when_remediation_unavailable
 	test_changes_requested_active_remediation_preserves_pr_without_routing
+	test_changes_requested_converged_remediation_preserves_pr_without_routing
+	test_changes_requested_terminal_attention_preserves_pr_without_routing
 	test_changes_requested_hard_dispatch_failure_still_routes
 	test_changes_requested_skips_remediation_for_external_contributor
 	test_changes_requested_empty_worker_label_pattern_does_not_match_every_label

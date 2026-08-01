@@ -71,8 +71,11 @@
 _PULSE_MERGE_LOADED=1
 PULSE_REVIEW_EVIDENCE_SCHEMA="aidevops.review-gate-evidence/v1"
 PULSE_UNKNOWN_STATE="UNKNOWN"
-# Keep synchronized with PRRTS_RC_DISPATCH_DEFERRED in the response scanner.
+# Keep synchronized with the targeted exit contract in the response scanner.
 PULSE_REVIEW_REMEDIATION_DEFERRED_RC=10
+PULSE_REVIEW_REMEDIATION_NO_MATCH_RC=11
+PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC=12
+PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC=13
 _PULSE_MERGE_REMEDIATION_OUTCOME=""
 
 # t2863: Module-level variable defaults (set -u guards).
@@ -136,9 +139,24 @@ _pulse_merge_dispatch_review_thread_remediation() {
 		echo "[pulse-merge] review-thread remediation deferred for PR #${pr_number} in ${repo_slug} — response dispatch active or recently deduplicated ${reason}" >>"$LOGFILE"
 		return 0
 	fi
+	if [[ "$scanner_rc" -eq "$PULSE_REVIEW_REMEDIATION_NO_MATCH_RC" ]]; then
+		_PULSE_MERGE_REMEDIATION_OUTCOME="converged"
+		echo "[pulse-merge] review-thread remediation converged for PR #${pr_number} in ${repo_slug} — no matching unresolved thread remained ${reason}" >>"$LOGFILE"
+		return 0
+	fi
+	if [[ "$scanner_rc" -eq "$PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC" ]]; then
+		_PULSE_MERGE_REMEDIATION_OUTCOME="maintainer_attention"
+		echo "[pulse-merge] review-thread remediation reached terminal maintainer attention for PR #${pr_number} in ${repo_slug} ${reason}" >>"$LOGFILE"
+		return 0
+	fi
+	if [[ "$scanner_rc" -eq "$PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC" ]]; then
+		_PULSE_MERGE_REMEDIATION_OUTCOME="failed"
+		echo "[pulse-merge] review-thread remediation scan/launch failed for PR #${pr_number} in ${repo_slug} ${reason} (scanner_rc=${scanner_rc}); retry remains available" >>"$LOGFILE"
+		return 1
+	fi
 	if [[ "$scanner_rc" -ne 0 ]]; then
 		_PULSE_MERGE_REMEDIATION_OUTCOME="failed"
-		echo "[pulse-merge] review-thread remediation dispatch failed for PR #${pr_number} in ${repo_slug} ${reason} (scanner_rc=${scanner_rc})" >>"$LOGFILE"
+		echo "[pulse-merge] review-thread remediation returned unexpected outcome for PR #${pr_number} in ${repo_slug} ${reason} (scanner_rc=${scanner_rc})" >>"$LOGFILE"
 		return 1
 	fi
 	_PULSE_MERGE_REMEDIATION_OUTCOME="queued"
@@ -315,6 +333,10 @@ _handle_changes_requested_review_gate() {
 		&& _pulse_merge_dispatch_review_thread_remediation "$pr_number" "$repo_slug" "after CHANGES_REQUESTED review gate"; then
 		if [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "deferred" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; response remediation already active/deferred, preserving PR" >>"$LOGFILE"
+		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "converged" ]]; then
+			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread remained after refresh, preserving PR for reevaluation" >>"$LOGFILE"
+		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "maintainer_attention" ]]; then
+			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; terminal review-thread maintainer attention pending, preserving PR" >>"$LOGFILE"
 		else
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; review-thread remediation queued" >>"$LOGFILE"
 		fi
