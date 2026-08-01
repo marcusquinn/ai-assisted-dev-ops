@@ -113,16 +113,23 @@ test_blocked_completion_records_blocked_label() {
 	return 0
 }
 
-test_sol_max_terminal_retry_is_bounded_and_exact() {
+test_capability_escalation_ladder_is_bounded_and_exact() {
 	local result=0
-	_should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "high" 0 || result=1
-	if _should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "max" 0 ||
-		_should_retry_sol_at_max "worker" "openai/gpt-5.6-sol" "high" 1 ||
-		_should_retry_sol_at_max "worker" "openai/gpt-5.6-luna" "high" 0 ||
-		_should_retry_sol_at_max "pulse" "openai/gpt-5.6-sol" "high" 0; then
+	local _capability_escalation_model=""
+	local _capability_escalation_variant=""
+	local _capability_escalation_label=""
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "max" 0 || result=1
+	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "high" ]] || result=1
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 1 || result=1
+	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "max" ]] || result=1
+	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 0 || result=1
+	if _resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "max" 0 ||
+		_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 2 ||
+		_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "high" 0 ||
+		_resolve_capability_escalation "pulse" "openai/gpt-5.6-luna" "max" 0; then
 		result=1
 	fi
-	print_result "Sol max terminal retry is bounded to one high-reasoning worker attempt" "$result"
+	print_result "Capability escalation is bounded to Luna max -> Sol high -> Sol max" "$result"
 	return 0
 }
 

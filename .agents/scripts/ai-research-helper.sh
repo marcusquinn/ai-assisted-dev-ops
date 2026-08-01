@@ -44,7 +44,7 @@ resolve_opencode_model_id() {
 	case "$name" in
 	simple) echo "openai/gpt-5.6-luna" ;;
 	local) echo "openai/gpt-5.4-mini" ;;
-	standard) echo "openai/gpt-5.6-luna" ;;
+	standard) echo "openai/gpt-5.6-sol" ;;
 	thinking) echo "openai/gpt-5.6-sol" ;;
 	openai/* | anthropic/* | google/*) echo "$name" ;;
 	*) echo "$name" ;;
@@ -55,9 +55,9 @@ resolve_opencode_model_id() {
 resolve_opencode_variant() {
 	local name="${1:-simple}"
 	case "$name" in
-	simple) echo "medium" ;;
-	standard) echo "max" ;;
-	thinking) echo "high" ;;
+	simple) echo "max" ;;
+	standard) echo "high" ;;
+	thinking) echo "max" ;;
 	*) echo "" ;;
 	esac
 	return 0

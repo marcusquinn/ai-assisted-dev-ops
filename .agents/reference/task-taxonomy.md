@@ -128,22 +128,20 @@ Tests: `.agents/scripts/tests/test-tier-simple-body-shape.sh` (18 fixture cases 
 
 ## Cascade Dispatch Model
 
-Instead of classifying tasks to the "correct" tier upfront, the cascade model starts cheap and escalates with knowledge:
+Instead of requiring perfect classification upfront, the cascade model starts with the lowest safe quality tier and escalates with accumulated knowledge:
 
 ```text
-tier:simple (lowest-cost configured route)
-  ✓ Success → done (cheapest resolution)
+tier:simple (Luna max bounded-work route)
+  ✓ Success → done
   ✗ Failure → structured escalation report on issue → re-dispatch at tier:standard
 
-tier:standard (general implementation route)
+tier:standard (Sol high general implementation route)
   ✓ Success → done (saved exploration tokens via escalation context)
   ✗ Failure → richer escalation report → re-dispatch at tier:thinking
 
-tier:thinking (deep-reasoning route)
+tier:thinking (Sol max deep-reasoning route)
   ✓ Success → done (had full diagnostic context from both prior attempts)
-  ✗ Sol high capability blocker → retry same session once at Sol max
-      ✓ Success → done
-      ✗ Persistent blocker → human review with complete attempt history
+  ✗ Persistent capability blocker → human review with complete attempt history
 ```
 
 Each escalation report captures: what was attempted, where it got stuck, what was unclear in the brief, and what was discovered. The next tier starts with this context instead of exploring from zero. See `templates/escalation-report-template.md` for the structured format.

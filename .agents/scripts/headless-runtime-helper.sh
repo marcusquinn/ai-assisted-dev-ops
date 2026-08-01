@@ -643,13 +643,25 @@ _private_workload_exit_trap() {
 	return "$cleanup_status"
 }
 
-_should_retry_sol_at_max() {
+_resolve_capability_escalation() {
 	local role="$1"
 	local selected_model="$2"
 	local variant="$3"
 	local retry_count="$4"
-	if [[ "$role" == "worker" && "$selected_model" == "openai/gpt-5.6-sol" &&
-		"$variant" == "high" && "$retry_count" -eq 0 ]]; then
+	_capability_escalation_model=""
+	_capability_escalation_variant=""
+	_capability_escalation_label=""
+	[[ "$role" == "worker" ]] || return 1
+	if [[ "$selected_model" == "openai/gpt-5.6-luna" && "$variant" == "max" && "$retry_count" -eq 0 ]]; then
+		_capability_escalation_model="openai/gpt-5.6-sol"
+		_capability_escalation_variant="high"
+		_capability_escalation_label="Luna max reported BLOCKED — escalating once to Sol high"
+		return 0
+	fi
+	if [[ "$selected_model" == "openai/gpt-5.6-sol" && "$variant" == "high" && "$retry_count" -le 1 ]]; then
+		_capability_escalation_model="$selected_model"
+		_capability_escalation_variant="max"
+		_capability_escalation_label="Sol high reported BLOCKED — escalating once to Sol max"
 		return 0
 	fi
 	return 1
@@ -2063,17 +2075,18 @@ cmd_run() {
 			return $?
 		fi
 
-		# Issue #29088: a Sol high worker that reports a capability blocker gets
-		# one direct retry at max reasoning. This is an internal terminal retry,
-		# not a fourth authored workload tier. Other providers, variants, roles,
-		# and non-capability failures keep their existing terminal behaviour.
+		# Issue #29102: capability blockers follow the quality-first authored tier
+		# ladder Luna max -> Sol high -> Sol max. OpenCode permission events and
+		# provider/rate-limit failures exit through their dedicated paths above and
+		# cannot use reasoning escalation to bypass a security or trust boundary.
 		if [[ "$attempt_exit" -eq 83 ]]; then
-			if _should_retry_sol_at_max \
+			if _resolve_capability_escalation \
 				"$role" "$selected_model" "$variant_override" "$max_reasoning_retry_count"; then
-				max_reasoning_retry_count=1
-				variant_override="max"
-				prompt="The previous Sol high attempt reported BLOCKED after working on the task. Retry the same objective once at maximum reasoning. Resume the existing session and worktree, challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Stop only at FULL_LOOP_COMPLETE or BLOCKED with concrete evidence that persists at max reasoning."
-				print_warning "Sol high reported BLOCKED — retrying once at Sol max before accepting the blocker"
+				max_reasoning_retry_count=$((max_reasoning_retry_count + 1))
+				selected_model="$_capability_escalation_model"
+				variant_override="$_capability_escalation_variant"
+				prompt="The previous attempt reported BLOCKED after working on the task. Resume the existing session and worktree at the next authorized reasoning tier (${selected_model} ${variant_override}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. Stop only at FULL_LOOP_COMPLETE or BLOCKED with concrete evidence that persists at the terminal Sol max tier."
+				print_warning "$_capability_escalation_label"
 				continue
 			fi
 
