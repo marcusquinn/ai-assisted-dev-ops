@@ -53,7 +53,9 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
         ).fetchone()
         if observed_owner != expected_owner:
             raise OwnerContractRemovalError
-        removal = subprocess.run(
+        # The caller command-resolves git and validates both filesystem paths;
+        # argv remains structured and never enters a command shell.
+        removal = subprocess.run(  # nosec B603
             [git_path, "-C", repository_root, "worktree", "remove", worktree_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
