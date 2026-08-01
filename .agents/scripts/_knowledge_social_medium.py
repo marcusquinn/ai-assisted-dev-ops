@@ -33,7 +33,12 @@ from knowledge_social_import import (
     reject_credentials,
     upsert_connection,
 )
-from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
+from knowledge_social_store import (
+    SocialStoreError,
+    connect,
+    migrate,
+    raw_evidence_transaction,
+)
 
 
 def parse_medium_archive(*values: Any) -> tuple[ParsedMediumArchive, bytes]:
@@ -104,14 +109,6 @@ def _validate_replay_blob(
         raise SocialStoreError("Medium raw replay evidence does not match its batch")
 
 
-def _remove_created_raw(path: Path, digest: str) -> None:
-    try:
-        if _gzip_payload_digest(path) == digest:
-            path.unlink()
-    except (OSError, SocialStoreError):
-        return
-
-
 def _result(
     parsed: ParsedMediumArchive,
     blob_ref: str,
@@ -143,109 +140,97 @@ def persist_medium_archive(
         raise SocialStoreError("Medium archive changed after validation")
     connection_id = archive["connection_id"]
     account_id = archive["remote_account_id"]
-    raw_path = _raw_path(root, connection_id, parsed.raw_sha256)
-    raw_existed = raw_path.exists() or raw_path.is_symlink()
-    created_raw = False
-    committed = False
     database = connect(root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        assert_run_lease(database, lease)
-        _assert_connection_binding(database, connection_id, account_id)
-        existing = database.execute(
-            "SELECT provider,connection_id,stream,response_hash,blob_ref,"
-            "resource_count,completed_at FROM fetch_batches WHERE batch_id=?",
-            (parsed.raw_sha256,),
-        ).fetchone()
-        if existing is not None:
-            if (
-                existing["provider"] != PROVIDER
-                or existing["connection_id"] != connection_id
-            ):
-                raise SocialStoreError(
-                    "Medium archive digest is already bound to another connection"
+        with raw_evidence_transaction(database, root) as transaction:
+            assert_run_lease(database, lease)
+            _assert_connection_binding(database, connection_id, account_id)
+            existing = database.execute(
+                "SELECT provider,connection_id,stream,response_hash,blob_ref,"
+                "resource_count,completed_at FROM fetch_batches WHERE batch_id=?",
+                (parsed.raw_sha256,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["provider"] != PROVIDER
+                    or existing["connection_id"] != connection_id
+                ):
+                    raise SocialStoreError(
+                        "Medium archive digest is already bound to another connection"
+                    )
+                if (
+                    existing["stream"] != "archive"
+                    or existing["response_hash"] != parsed.raw_sha256
+                    or existing["completed_at"] != archive["exported_at"]
+                ):
+                    raise SocialStoreError(
+                        "Medium archive replay metadata conflicts with the stored batch"
+                    )
+                _validate_replay_blob(
+                    root,
+                    connection_id,
+                    parsed.raw_sha256,
+                    str(existing["blob_ref"]),
                 )
-            if (
-                existing["stream"] != "archive"
-                or existing["response_hash"] != parsed.raw_sha256
-                or existing["completed_at"] != archive["exported_at"]
-            ):
-                raise SocialStoreError(
-                    "Medium archive replay metadata conflicts with the stored batch"
+                update_run_receipt(
+                    database,
+                    lease,
+                    RunReceiptUpdate("complete", resource_delta=0, terminal=True),
                 )
-            _validate_replay_blob(
-                root,
-                connection_id,
-                parsed.raw_sha256,
-                str(existing["blob_ref"]),
+                return _result(
+                    parsed,
+                    str(existing["blob_ref"]),
+                    int(existing["resource_count"]),
+                    True,
+                )
+            batch_id, blob_ref = transaction.write(
+                PROVIDER, connection_id, payload
+            )
+            if batch_id != parsed.raw_sha256:
+                raise SocialStoreError("Medium raw evidence hash changed")
+            upsert_connection(database, archive, PROVIDER, connection_id)
+            import_accounts(database, archive, PROVIDER)
+            import_objects(database, archive, PROVIDER, batch_id)
+            import_activities(database, archive, PROVIDER, batch_id)
+            import_media(database, archive, PROVIDER, batch_id)
+            import_coverage(database, archive, PROVIDER, connection_id, batch_id)
+            _refresh_fts(database, archive)
+            database.execute(
+                """INSERT INTO fetch_batches(
+                   batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
+                   resource_count,budget_units,started_at,completed_at,terminal_status)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
+                (
+                    batch_id,
+                    PROVIDER,
+                    connection_id,
+                    "archive",
+                    batch_id,
+                    batch_id,
+                    blob_ref,
+                    parsed.normalized_items,
+                    0,
+                    archive["exported_at"],
+                    archive["exported_at"],
+                    "success",
+                ),
+            )
+            database.execute(
+                """INSERT INTO sync_cursors(
+                   connection_id,stream,cursor,watermark,last_success_at,backfill_complete)
+                   VALUES(?,?,?,?,?,1) ON CONFLICT(connection_id,stream) DO UPDATE SET
+                   cursor=NULL,watermark=excluded.watermark,
+                   last_success_at=excluded.last_success_at,backfill_complete=1""",
+                (connection_id, "archive", None, batch_id, archive["exported_at"]),
             )
             update_run_receipt(
                 database,
                 lease,
-                RunReceiptUpdate("complete", resource_delta=0, terminal=True),
+                RunReceiptUpdate(
+                    "complete", resource_delta=parsed.normalized_items, terminal=True
+                ),
             )
-            database.execute("COMMIT")
-            committed = True
-            return _result(
-                parsed, str(existing["blob_ref"]), int(existing["resource_count"]), True
-            )
-        batch_id, blob_ref = write_raw_batch(
-            root, PROVIDER, connection_id, payload
-        )
-        created_raw = not raw_existed
-        if batch_id != parsed.raw_sha256:
-            raise SocialStoreError("Medium raw evidence hash changed")
-        upsert_connection(database, archive, PROVIDER, connection_id)
-        import_accounts(database, archive, PROVIDER)
-        import_objects(database, archive, PROVIDER, batch_id)
-        import_activities(database, archive, PROVIDER, batch_id)
-        import_media(database, archive, PROVIDER, batch_id)
-        import_coverage(database, archive, PROVIDER, connection_id, batch_id)
-        _refresh_fts(database, archive)
-        database.execute(
-            """INSERT INTO fetch_batches(
-               batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
-               resource_count,budget_units,started_at,completed_at,terminal_status)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
-            (
-                batch_id,
-                PROVIDER,
-                connection_id,
-                "archive",
-                batch_id,
-                batch_id,
-                blob_ref,
-                parsed.normalized_items,
-                0,
-                archive["exported_at"],
-                archive["exported_at"],
-                "success",
-            ),
-        )
-        database.execute(
-            """INSERT INTO sync_cursors(
-               connection_id,stream,cursor,watermark,last_success_at,backfill_complete)
-               VALUES(?,?,?,?,?,1) ON CONFLICT(connection_id,stream) DO UPDATE SET
-               cursor=NULL,watermark=excluded.watermark,
-               last_success_at=excluded.last_success_at,backfill_complete=1""",
-            (connection_id, "archive", None, batch_id, archive["exported_at"]),
-        )
-        update_run_receipt(
-            database,
-            lease,
-            RunReceiptUpdate(
-                "complete", resource_delta=parsed.normalized_items, terminal=True
-            ),
-        )
-        database.execute("COMMIT")
-        committed = True
-        return _result(parsed, blob_ref, parsed.normalized_items, False)
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        if created_raw and not committed:
-            _remove_created_raw(raw_path, parsed.raw_sha256)
-        raise
+            return _result(parsed, blob_ref, parsed.normalized_items, False)
     finally:
         database.close()

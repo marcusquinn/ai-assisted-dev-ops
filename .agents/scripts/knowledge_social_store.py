@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Private per-corpus social schema and immutable raw-batch storage."""
+"""Private per-corpus social schema and immutable raw-batch storage.
+
+Every production fetch-batch writer commits through ``raw_evidence_transaction``:
+the matching immutable raw file and its parent entry become durable before the
+SQLite row, while stale unreferenced evidence is reclaimed only after a lease
+boundary. This ordering is the store's cross-filesystem crash invariant.
+"""
 
 from __future__ import annotations
 
-import gzip
-import hashlib
-import json
 import os
 import sqlite3
 from pathlib import Path
@@ -21,9 +24,15 @@ from _knowledge_social_store_schema import (
     add_source_v5_columns as _add_source_v5_columns,
     add_sync_run_v2_columns as _add_sync_run_v2_columns,
 )
+from _knowledge_social_store_raw_write import (
+    RawEvidenceTransaction,
+    private_directory,
+    raw_evidence_transaction,
+    validate_opaque,
+    write_raw_batch,
+)
+from _knowledge_social_store_raw_recovery import recover_raw_evidence
 from _knowledge_social_store_support import (
-    MAX_RAW_BATCH_BYTES,
-    OPAQUE_ID,
     SocialStoreError,
 )
 from knowledge_corpus_context import (
@@ -35,18 +44,6 @@ from knowledge_corpus_context import (
 SCHEMA_VERSION = 6
 SCHEMA_VERSION_SQL = "PRAGMA user_version=6"
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
-
-
-def private_directory(root: Path, relative: Path) -> Path:
-    directory = root
-    for component in relative.parts:
-        directory /= component
-        directory.mkdir(mode=0o700, exist_ok=True)
-        try:
-            validate_directory(directory, "social store directory", repair=True)
-        except CatalogError as error:
-            raise SocialStoreError(str(error)) from error
-    return directory
 
 
 def validate_root(root: Path) -> Path:
@@ -362,8 +359,10 @@ def migrate(connection: sqlite3.Connection) -> None:
         connection.execute(SCHEMA_VERSION_SQL)
         connection.execute("COMMIT")
     except Exception:
-        connection.execute("ROLLBACK")
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
         raise
+    recover_raw_evidence(connection, verify_referenced=False)
 
 
 def rebuild_fts(connection: sqlite3.Connection) -> None:
@@ -381,43 +380,3 @@ def rebuild_fts(connection: sqlite3.Connection) -> None:
     except Exception:
         connection.execute("ROLLBACK")
         raise
-
-
-def validate_opaque(value: str, field: str) -> str:
-    if not OPAQUE_ID.fullmatch(value):
-        raise SocialStoreError(f"{field} must be an opaque identifier")
-    return value
-
-
-def write_raw_batch(root: Path, provider: str, connection_id: str, payload: bytes) -> tuple[str, str]:
-    provider = validate_opaque(provider, "provider")
-    connection_id = validate_opaque(connection_id, "connection_id")
-    digest = hashlib.sha256(payload).hexdigest()
-    directory = private_directory(
-        root, Path("sources") / "social" / "raw" / provider / connection_id
-    )
-    path = directory / f"{digest}.json.gz"
-    relative = path.relative_to(root).as_posix()
-    if path.exists():
-        if path.is_symlink():
-            raise SocialStoreError("raw batch cannot be a symlink")
-        with gzip.open(path, "rb") as existing:
-            if hashlib.sha256(existing.read()).hexdigest() != digest:
-                raise SocialStoreError("immutable raw batch hash mismatch")
-        return digest, relative
-    compressed = gzip.compress(payload, compresslevel=9, mtime=0)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        target = os.fdopen(descriptor, "wb")
-        descriptor = -1
-        with target:
-            target.write(compressed)
-            target.flush()
-            os.fsync(target.fileno())
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    return digest, relative

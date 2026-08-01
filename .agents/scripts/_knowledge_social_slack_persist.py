@@ -40,7 +40,12 @@ from _knowledge_social_slack_store import (
     update_page_state,
 )
 from knowledge_social_import import canonical_json
-from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
+from knowledge_social_store import (
+    SocialStoreError,
+    connect,
+    migrate,
+    raw_evidence_transaction,
+)
 
 
 @dataclass(frozen=True)
@@ -147,14 +152,6 @@ def _validate_replay_blob(
         raise SocialStoreError("Slack raw replay evidence does not match its batch")
 
 
-def _remove_created_raw(path: Path, digest: str) -> None:
-    try:
-        if _gzip_payload_digest(path) == digest:
-            path.unlink()
-    except (OSError, SocialStoreError):
-        return
-
-
 def _result(
     parsed: ParsedSlackArchive, blob_ref: str, replayed: bool
 ) -> dict[str, Any]:
@@ -199,59 +196,49 @@ def persist_slack_page(
         raise SocialStoreError("Slack page persistence requires the Slack provider")
     reject_slack_credentials(page.payload)
     reject_slack_credentials(page.archive)
-    raw_path: Path | None = None
-    created_raw = False
     database = connect(context.root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        lease = _run_lease(context)
-        _assert_run_lease_at(database, lease, social_now())
-        _assert_connection_binding(database, context)
-        archive = merge_connection_state(database, page.archive)
-        observation = _page_observation(context, page, archive["exported_at"])
-        _assert_observation_slot(database, observation)
-        raw_path = _raw_path(
-            context.root, context.connection_id, observation.batch_id
-        )
-        raw_existed = raw_path.exists() or raw_path.is_symlink()
-        raw = _raw_batch(
-            context, page.payload, page.request, archive["exported_at"]
-        )
-        created_raw = not raw_existed
-        if raw.batch_id != observation.batch_id:
-            raise SocialStoreError("Slack API evidence hash changed")
-        resource_count = sum(
-            len(archive[key])
-            for key in ("accounts", "objects", "activities", "media")
-        )
-        batch_id = _insert_fetch_batch(
-            database,
-            context,
-            FetchRecord(raw, "success", resource_count, page.budget_units),
-        )
-        store_ordered_records(
-            database, archive, batch_id, context.connection_id
-        )
-        update_page_state(database, context, page, archive, batch_id)
-        _update_run_receipt_at(
-            database,
-            lease,
-            RunReceiptUpdate(
-                "complete" if page.complete else "running",
-                resource_delta=resource_count,
-                terminal=page.complete,
-            ),
-            social_now(),
-        )
-        database.execute("COMMIT")
+        with raw_evidence_transaction(database, context.root) as transaction:
+            lease = _run_lease(context)
+            _assert_run_lease_at(database, lease, social_now())
+            _assert_connection_binding(database, context)
+            archive = merge_connection_state(database, page.archive)
+            observation = _page_observation(context, page, archive["exported_at"])
+            _assert_observation_slot(database, observation)
+            raw = _raw_batch(
+                transaction,
+                context,
+                page.payload,
+                page.request,
+                archive["exported_at"],
+            )
+            if raw.batch_id != observation.batch_id:
+                raise SocialStoreError("Slack API evidence hash changed")
+            resource_count = sum(
+                len(archive[key])
+                for key in ("accounts", "objects", "activities", "media")
+            )
+            batch_id = _insert_fetch_batch(
+                database,
+                context,
+                FetchRecord(raw, "success", resource_count, page.budget_units),
+            )
+            store_ordered_records(
+                database, archive, batch_id, context.connection_id
+            )
+            update_page_state(database, context, page, archive, batch_id)
+            _update_run_receipt_at(
+                database,
+                lease,
+                RunReceiptUpdate(
+                    "complete" if page.complete else "running",
+                    resource_delta=resource_count,
+                    terminal=page.complete,
+                ),
+                social_now(),
+            )
         return resource_count
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        if created_raw and raw_path is not None:
-            _remove_created_raw(raw_path, observation.batch_id)
-        raise
     finally:
         database.close()
 
@@ -265,117 +252,102 @@ def persist_slack_archive(
     if hashlib.sha256(parsed.evidence).hexdigest() != parsed.evidence_sha256:
         raise SocialStoreError("Slack filtered evidence changed after validation")
     connection_id = archive["connection_id"]
-    raw_path = _raw_path(root, connection_id, parsed.evidence_sha256)
-    raw_existed = raw_path.exists() or raw_path.is_symlink()
-    created_raw = False
-    committed = False
     database = connect(root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        assert_run_lease(database, lease)
-        _assert_observation_slot(
-            database,
-            ObservationSlot(
-                connection_id,
-                "archive",
-                parsed.evidence_sha256,
-                parsed.source_sha256,
-                archive["exported_at"],
-                parsed.evidence_sha256,
-            ),
-        )
-        archive = merge_connection_state(database, archive)
-        existing = database.execute(
-            "SELECT provider,connection_id,stream,request_hash,response_hash,blob_ref,"
-            "resource_count,budget_units,started_at,completed_at,terminal_status "
-            "FROM fetch_batches WHERE batch_id=?",
-            (parsed.evidence_sha256,),
-        ).fetchone()
-        if existing is not None:
-            observed = (
-                existing["provider"],
-                existing["connection_id"],
-                existing["stream"],
-                existing["request_hash"],
-                existing["response_hash"],
-                existing["resource_count"],
-                existing["budget_units"],
-                existing["started_at"],
-                existing["completed_at"],
-                existing["terminal_status"],
+        with raw_evidence_transaction(database, root) as transaction:
+            assert_run_lease(database, lease)
+            _assert_observation_slot(
+                database,
+                ObservationSlot(
+                    connection_id,
+                    "archive",
+                    parsed.evidence_sha256,
+                    parsed.source_sha256,
+                    archive["exported_at"],
+                    parsed.evidence_sha256,
+                ),
             )
-            expected = (
-                PROVIDER,
-                connection_id,
-                "archive",
-                parsed.evidence_sha256,
-                parsed.source_sha256,
-                parsed.normalized_items,
-                0,
-                archive["exported_at"],
-                archive["exported_at"],
-                "success",
+            archive = merge_connection_state(database, archive)
+            existing = database.execute(
+                "SELECT provider,connection_id,stream,request_hash,response_hash,blob_ref,"
+                "resource_count,budget_units,started_at,completed_at,terminal_status "
+                "FROM fetch_batches WHERE batch_id=?",
+                (parsed.evidence_sha256,),
+            ).fetchone()
+            if existing is not None:
+                observed = (
+                    existing["provider"],
+                    existing["connection_id"],
+                    existing["stream"],
+                    existing["request_hash"],
+                    existing["response_hash"],
+                    existing["resource_count"],
+                    existing["budget_units"],
+                    existing["started_at"],
+                    existing["completed_at"],
+                    existing["terminal_status"],
+                )
+                expected = (
+                    PROVIDER,
+                    connection_id,
+                    "archive",
+                    parsed.evidence_sha256,
+                    parsed.source_sha256,
+                    parsed.normalized_items,
+                    0,
+                    archive["exported_at"],
+                    archive["exported_at"],
+                    "success",
+                )
+                if observed != expected:
+                    raise SocialStoreError("Slack export replay metadata conflicts")
+                _validate_replay_blob(
+                    root,
+                    connection_id,
+                    parsed.evidence_sha256,
+                    str(existing["blob_ref"]),
+                )
+                update_run_receipt(
+                    database,
+                    lease,
+                    RunReceiptUpdate("complete", resource_delta=0, terminal=True),
+                )
+                return _result(parsed, str(existing["blob_ref"]), True)
+            batch_id, blob_ref = transaction.write(
+                PROVIDER, connection_id, parsed.evidence
             )
-            if observed != expected:
-                raise SocialStoreError("Slack export replay metadata conflicts")
-            _validate_replay_blob(
-                root,
-                connection_id,
-                parsed.evidence_sha256,
-                str(existing["blob_ref"]),
+            if batch_id != parsed.evidence_sha256:
+                raise SocialStoreError("Slack filtered evidence hash changed")
+            store_ordered_records(database, archive, batch_id, connection_id)
+            database.execute(
+                """INSERT INTO fetch_batches(
+                   batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
+                   resource_count,budget_units,started_at,completed_at,terminal_status)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    batch_id,
+                    PROVIDER,
+                    connection_id,
+                    "archive",
+                    parsed.evidence_sha256,
+                    parsed.source_sha256,
+                    blob_ref,
+                    parsed.normalized_items,
+                    0,
+                    archive["exported_at"],
+                    archive["exported_at"],
+                    "success",
+                ),
             )
+            _insert_cursors(database, parsed, connection_id, archive["exported_at"])
             update_run_receipt(
                 database,
                 lease,
-                RunReceiptUpdate("complete", resource_delta=0, terminal=True),
+                RunReceiptUpdate(
+                    "complete", resource_delta=parsed.normalized_items, terminal=True
+                ),
             )
-            database.execute("COMMIT")
-            committed = True
-            return _result(parsed, str(existing["blob_ref"]), True)
-        batch_id, blob_ref = write_raw_batch(
-            root, PROVIDER, connection_id, parsed.evidence
-        )
-        created_raw = not raw_existed
-        if batch_id != parsed.evidence_sha256:
-            raise SocialStoreError("Slack filtered evidence hash changed")
-        store_ordered_records(database, archive, batch_id, connection_id)
-        database.execute(
-            """INSERT INTO fetch_batches(
-               batch_id,provider,connection_id,stream,request_hash,response_hash,blob_ref,
-               resource_count,budget_units,started_at,completed_at,terminal_status)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                batch_id,
-                PROVIDER,
-                connection_id,
-                "archive",
-                parsed.evidence_sha256,
-                parsed.source_sha256,
-                blob_ref,
-                parsed.normalized_items,
-                0,
-                archive["exported_at"],
-                archive["exported_at"],
-                "success",
-            ),
-        )
-        _insert_cursors(database, parsed, connection_id, archive["exported_at"])
-        update_run_receipt(
-            database,
-            lease,
-            RunReceiptUpdate(
-                "complete", resource_delta=parsed.normalized_items, terminal=True
-            ),
-        )
-        database.execute("COMMIT")
-        committed = True
-        return _result(parsed, blob_ref, False)
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        if created_raw and not committed:
-            _remove_created_raw(raw_path, parsed.evidence_sha256)
-        raise
+            return _result(parsed, blob_ref, False)
     finally:
         database.close()

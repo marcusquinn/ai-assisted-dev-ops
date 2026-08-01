@@ -23,11 +23,11 @@ from knowledge_social_store import (
     connect,
     connect_read_only,
     migrate,
+    raw_evidence_transaction,
     rebuild_fts,
     require_schema,
     validate_opaque,
     validate_root,
-    write_raw_batch,
 )
 
 OBJECT_UPSERT = """INSERT INTO objects(
@@ -207,29 +207,38 @@ def import_archive_payload(
     database = connect(root)
     try:
         migrate(database)
-        batch_id, blob_ref = write_raw_batch(root, provider, connection_id, payload)
-        database.execute("BEGIN IMMEDIATE")
-        upsert_connection(database, archive, provider, connection_id)
-        import_accounts(database, archive, provider)
-        import_objects(database, archive, provider, batch_id)
-        import_activities(database, archive, provider, batch_id)
-        import_media(database, archive, provider, batch_id)
-        import_coverage(database, archive, provider, connection_id, batch_id)
-        resource_count = sum(len(record_list(archive, key)) for key in ("accounts", "objects", "activities", "media"))
-        database.execute(
-            """INSERT OR IGNORE INTO fetch_batches(
-                batch_id,provider,connection_id,stream,response_hash,blob_ref,
-                resource_count,completed_at,terminal_status) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (batch_id, provider, connection_id, "archive", batch_id, blob_ref,
-             resource_count, completed_at, "success"),
-        )
-        database.execute("COMMIT")
+        with raw_evidence_transaction(database, root) as transaction:
+            batch_id, blob_ref = transaction.write(
+                provider, connection_id, payload
+            )
+            upsert_connection(database, archive, provider, connection_id)
+            import_accounts(database, archive, provider)
+            import_objects(database, archive, provider, batch_id)
+            import_activities(database, archive, provider, batch_id)
+            import_media(database, archive, provider, batch_id)
+            import_coverage(database, archive, provider, connection_id, batch_id)
+            resource_count = sum(
+                len(record_list(archive, key))
+                for key in ("accounts", "objects", "activities", "media")
+            )
+            database.execute(
+                """INSERT OR IGNORE INTO fetch_batches(
+                    batch_id,provider,connection_id,stream,response_hash,blob_ref,
+                    resource_count,completed_at,terminal_status) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    batch_id,
+                    provider,
+                    connection_id,
+                    "archive",
+                    batch_id,
+                    blob_ref,
+                    resource_count,
+                    completed_at,
+                    "success",
+                ),
+            )
         rebuild_fts(database)
         return {"batch_id": batch_id, "resource_count": resource_count, "blob_ref": blob_ref}
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
     finally:
         database.close()
 

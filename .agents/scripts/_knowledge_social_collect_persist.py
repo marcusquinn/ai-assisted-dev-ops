@@ -35,7 +35,13 @@ from knowledge_social_import import (
     reject_credentials,
     upsert_connection,
 )
-from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
+from knowledge_social_store import (
+    RawEvidenceTransaction,
+    SocialStoreError,
+    connect,
+    migrate,
+    raw_evidence_transaction,
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,7 @@ def _connection_archive(context: CollectionContext) -> dict[str, Any]:
 
 
 def _raw_batch(
+    transaction: RawEvidenceTransaction,
     context: CollectionContext,
     payload: dict[str, Any],
     request: str,
@@ -116,9 +123,7 @@ def _raw_batch(
             "response": payload,
         }
     ).encode("utf-8")
-    batch_id, blob_ref = write_raw_batch(
-        context.root, provider, context.connection_id, envelope
-    )
+    batch_id, blob_ref = transaction.write(provider, context.connection_id, envelope)
     return RawBatch(
         batch_id,
         blob_ref,
@@ -322,53 +327,54 @@ def persist_page(context: CollectionContext, page: SuccessfulPage) -> int:
     database = connect(context.root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        lease = _run_lease(context)
-        _assert_run_lease_at(database, lease, social_now())
-        _assert_connection_binding(database, context)
-        raw = _raw_batch(
-            context, page.payload, page.request, page.archive["exported_at"]
-        )
-        resource_count = sum(
-            len(page.archive[key])
-            for key in ("accounts", "objects", "activities", "media")
-        )
-        fetch_batch_id = _insert_fetch_batch(
-            database,
-            context,
-            FetchRecord(raw, "success", resource_count, page.budget_units),
-        )
-        upsert_connection(database, page.archive, provider, context.connection_id)
-        import_accounts(database, page.archive, provider)
-        import_objects(database, page.archive, provider, fetch_batch_id)
-        import_activities(database, page.archive, provider, fetch_batch_id)
-        import_media(database, page.archive, provider, fetch_batch_id)
-        import_coverage(
-            database,
-            page.archive,
-            provider,
-            context.connection_id,
-            fetch_batch_id,
-        )
-        _refresh_fts(database, provider, page.archive)
-        _update_cursor(database, context, page)
-        _upsert_success_coverage(database, context, page, fetch_batch_id)
-        _update_run_receipt_at(
-            database,
-            lease,
-            RunReceiptUpdate(
-                "complete" if page.complete else "running",
-                resource_delta=resource_count,
-                terminal=page.complete,
-            ),
-            social_now(),
-        )
-        database.execute("COMMIT")
+        with raw_evidence_transaction(database, context.root) as transaction:
+            lease = _run_lease(context)
+            _assert_run_lease_at(database, lease, social_now())
+            _assert_connection_binding(database, context)
+            raw = _raw_batch(
+                transaction,
+                context,
+                page.payload,
+                page.request,
+                page.archive["exported_at"],
+            )
+            resource_count = sum(
+                len(page.archive[key])
+                for key in ("accounts", "objects", "activities", "media")
+            )
+            fetch_batch_id = _insert_fetch_batch(
+                database,
+                context,
+                FetchRecord(raw, "success", resource_count, page.budget_units),
+            )
+            upsert_connection(
+                database, page.archive, provider, context.connection_id
+            )
+            import_accounts(database, page.archive, provider)
+            import_objects(database, page.archive, provider, fetch_batch_id)
+            import_activities(database, page.archive, provider, fetch_batch_id)
+            import_media(database, page.archive, provider, fetch_batch_id)
+            import_coverage(
+                database,
+                page.archive,
+                provider,
+                context.connection_id,
+                fetch_batch_id,
+            )
+            _refresh_fts(database, provider, page.archive)
+            _update_cursor(database, context, page)
+            _upsert_success_coverage(database, context, page, fetch_batch_id)
+            _update_run_receipt_at(
+                database,
+                lease,
+                RunReceiptUpdate(
+                    "complete" if page.complete else "running",
+                    resource_delta=resource_count,
+                    terminal=page.complete,
+                ),
+                social_now(),
+            )
         return resource_count
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
     finally:
         database.close()
 
@@ -442,42 +448,37 @@ def record_terminal(
     database = connect(context.root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        lease = _run_lease(context)
-        _assert_run_lease_at(database, lease, social_now())
-        _assert_connection_binding(database, context)
-        raw = _raw_batch(context, payload, request, observed_at)
-        upsert_connection(
-            database,
-            _connection_archive(context),
-            _provider(context),
-            context.connection_id,
-        )
-        fetch_batch_id = _insert_fetch_batch(
-            database,
-            context,
-            FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
-        )
-        _upsert_terminal_coverage(
-            database, context, raw, fetch_batch_id, decision
-        )
-        _update_run_receipt_at(
-            database,
-            lease,
-            RunReceiptUpdate(
-                decision.run_status,
-                failure_class=decision.failure_class,
-                retry_after=retry_after,
-                terminal=True,
-            ),
-            social_now(),
-        )
-        database.execute("COMMIT")
+        with raw_evidence_transaction(database, context.root) as transaction:
+            lease = _run_lease(context)
+            _assert_run_lease_at(database, lease, social_now())
+            _assert_connection_binding(database, context)
+            raw = _raw_batch(transaction, context, payload, request, observed_at)
+            upsert_connection(
+                database,
+                _connection_archive(context),
+                _provider(context),
+                context.connection_id,
+            )
+            fetch_batch_id = _insert_fetch_batch(
+                database,
+                context,
+                FetchRecord(raw, decision.failure_class, 0, context.spec.cost_units),
+            )
+            _upsert_terminal_coverage(
+                database, context, raw, fetch_batch_id, decision
+            )
+            _update_run_receipt_at(
+                database,
+                lease,
+                RunReceiptUpdate(
+                    decision.run_status,
+                    failure_class=decision.failure_class,
+                    retry_after=retry_after,
+                    terminal=True,
+                ),
+                social_now(),
+            )
         return retry_after
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
     finally:
         database.close()
 

@@ -23,7 +23,13 @@ from _knowledge_social_lease import (
     social_now,
 )
 from knowledge_social_import import canonical_json, reject_credentials, required_text
-from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
+from knowledge_social_store import (
+    RawEvidenceTransaction,
+    SocialStoreError,
+    connect,
+    migrate,
+    raw_evidence_transaction,
+)
 
 
 @dataclass(frozen=True)
@@ -277,13 +283,12 @@ def _evidence_payload(
 
 
 def _insert_evidence_batch(
+    transaction: RawEvidenceTransaction,
     database: sqlite3.Connection,
-    root: Path,
     lease: RunLease,
     snapshot: ReconciliationSnapshot,
 ) -> None:
-    batch_id, blob_ref = write_raw_batch(
-        root,
+    batch_id, blob_ref = transaction.write(
         snapshot.provider,
         lease.connection_id,
         _evidence_payload(lease, snapshot),
@@ -357,28 +362,29 @@ def reconcile_snapshot(
     database = connect(root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        _assert_run_lease_at(database, lease, now)
-        provider = _connection_provider(
-            database, lease.connection_id, lease.stream
-        )
-        if provider != snapshot.provider:
-            raise SocialStoreError("reconciliation provider does not match connection")
-        _validate_snapshot_order(database, lease, snapshot)
-        _insert_evidence_batch(database, root, lease, snapshot)
-        inventory = _inventory(database, lease.connection_id, lease.stream)
-        present_count, missing_count, unknown_count = _apply_states(
-            database, lease, snapshot, inventory
-        )
-        _update_run_receipt_at(
-            database,
-            lease,
-            RunReceiptUpdate(
-                "complete", resource_delta=len(inventory), terminal=True
-            ),
-            social_now(now_epoch),
-        )
-        database.execute("COMMIT")
+        with raw_evidence_transaction(database, root) as transaction:
+            _assert_run_lease_at(database, lease, now)
+            provider = _connection_provider(
+                database, lease.connection_id, lease.stream
+            )
+            if provider != snapshot.provider:
+                raise SocialStoreError(
+                    "reconciliation provider does not match connection"
+                )
+            _validate_snapshot_order(database, lease, snapshot)
+            _insert_evidence_batch(transaction, database, lease, snapshot)
+            inventory = _inventory(database, lease.connection_id, lease.stream)
+            present_count, missing_count, unknown_count = _apply_states(
+                database, lease, snapshot, inventory
+            )
+            _update_run_receipt_at(
+                database,
+                lease,
+                RunReceiptUpdate(
+                    "complete", resource_delta=len(inventory), terminal=True
+                ),
+                social_now(now_epoch),
+            )
         return {
             "status": "complete",
             "run_id": lease.run_id,
@@ -387,9 +393,5 @@ def reconcile_snapshot(
             "unknown": unknown_count,
             "complete_snapshot": snapshot.complete,
         }
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
     finally:
         database.close()

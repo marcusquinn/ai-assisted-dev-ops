@@ -15,7 +15,7 @@ from typing import Any
 from _knowledge_social_lease import RunLease, RunReceiptUpdate, assert_run_lease, update_run_receipt
 from _knowledge_social_whatsapp_contract import PROVIDER, ParsedWhatsAppBatch
 from knowledge_social_import import import_accounts, import_activities, import_coverage, import_media, import_objects, reject_credentials, upsert_connection
-from knowledge_social_store import SocialStoreError, connect, migrate, write_raw_batch
+from knowledge_social_store import SocialStoreError, connect, migrate, raw_evidence_transaction
 
 
 def _assert_binding(database: sqlite3.Connection, connection_id: str, account_id: str) -> None:
@@ -134,22 +134,6 @@ def _import_new_batch(
     )
 
 
-def _remove_uncommitted_raw(raw_path: Path, parsed: ParsedWhatsAppBatch) -> None:
-    try:
-        if _raw_digest(raw_path) == parsed.raw_sha256:
-            raw_path.unlink()
-    except (OSError, SocialStoreError):
-        return
-
-
-@dataclass
-class _PersistState:
-    raw_path: Path
-    raw_existed: bool
-    created_raw: bool = False
-    committed: bool = False
-
-
 @dataclass(frozen=True)
 class _PersistRequest:
     root: Path
@@ -175,49 +159,44 @@ def _validate_persist_request(
 def _commit_batch(
     database: sqlite3.Connection,
     request: _PersistRequest,
-    state: _PersistState,
 ) -> dict[str, Any]:
     archive = request.archive
     parsed = request.parsed
     connection_id = archive["connection_id"]
     migrate(database)
-    database.execute("BEGIN IMMEDIATE")
-    assert_run_lease(database, request.lease)
-    _assert_binding(database, connection_id, archive["remote_account_id"])
-    existing_ref = _existing_replay(database, request.root, parsed, connection_id, state.raw_path)
-    if existing_ref is not None:
-        update_run_receipt(database, request.lease, RunReceiptUpdate("complete", terminal=True))
-        database.execute("COMMIT")
-        state.committed = True
-        return _replay_result(parsed, existing_ref)
-    raw_digest, blob_ref = write_raw_batch(request.root, PROVIDER, connection_id, request.payload)
-    state.created_raw = not state.raw_existed
-    if raw_digest != parsed.raw_sha256:
-        raise SocialStoreError("WhatsApp raw evidence hash changed")
-    _import_new_batch(database, archive, parsed, connection_id, blob_ref)
-    update_run_receipt(
-        database,
-        request.lease,
-        RunReceiptUpdate("complete", resource_delta=parsed.normalized_items, terminal=True),
-    )
-    database.execute("COMMIT")
-    state.committed = True
-    return {**_replay_result(parsed, blob_ref), "replayed": False}
+    with raw_evidence_transaction(database, request.root) as transaction:
+        assert_run_lease(database, request.lease)
+        _assert_binding(database, connection_id, archive["remote_account_id"])
+        raw_path = _raw_path(request.root, connection_id, parsed.raw_sha256)
+        existing_ref = _existing_replay(
+            database, request.root, parsed, connection_id, raw_path
+        )
+        if existing_ref is not None:
+            update_run_receipt(
+                database, request.lease, RunReceiptUpdate("complete", terminal=True)
+            )
+            return _replay_result(parsed, existing_ref)
+        raw_digest, blob_ref = transaction.write(
+            PROVIDER, connection_id, request.payload
+        )
+        if raw_digest != parsed.raw_sha256:
+            raise SocialStoreError("WhatsApp raw evidence hash changed")
+        _import_new_batch(database, archive, parsed, connection_id, blob_ref)
+        update_run_receipt(
+            database,
+            request.lease,
+            RunReceiptUpdate(
+                "complete", resource_delta=parsed.normalized_items, terminal=True
+            ),
+        )
+        return {**_replay_result(parsed, blob_ref), "replayed": False}
 
 
 def persist_batch(root: Path, parsed: ParsedWhatsAppBatch, payload: bytes, lease: RunLease) -> dict[str, Any]:
-    archive, connection_id = _validate_persist_request(parsed, payload, lease)
-    raw_path = _raw_path(root, connection_id, parsed.raw_sha256)
-    state = _PersistState(raw_path, raw_path.exists() or raw_path.is_symlink())
+    archive, _ = _validate_persist_request(parsed, payload, lease)
     request = _PersistRequest(root, archive, parsed, payload, lease)
     database = connect(root)
     try:
-        return _commit_batch(database, request, state)
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        if state.created_raw and not state.committed:
-            _remove_uncommitted_raw(state.raw_path, parsed)
-        raise
+        return _commit_batch(database, request)
     finally:
         database.close()

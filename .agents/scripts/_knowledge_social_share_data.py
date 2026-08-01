@@ -25,9 +25,9 @@ from knowledge_social_store import (
     connect_read_only,
     create_fts,
     migrate,
+    raw_evidence_transaction,
     require_schema,
     validate_opaque as validate_store_opaque,
-    write_raw_batch,
 )
 
 SNAPSHOT_VERSION = 1
@@ -414,71 +414,72 @@ def restore_snapshot(
     root: Path, payload: dict[str, Any], workspace_id: str, corpus_id: str
 ) -> dict[str, int]:
     tables, raw_batches = validate_snapshot(payload, workspace_id, corpus_id)
-    fetch_rows = {str(row["batch_id"]): row for row in tables["fetch_batches"]}
-    blob_refs: dict[str, str] = {}
-    for batch_id, raw in raw_batches.items():
-        row = fetch_rows[batch_id]
-        provider = validate_store_opaque(str(row["provider"]), "provider")
-        connection_id = validate_store_opaque(
-            str(row["connection_id"]), "connection_id"
-        )
-        written_id, blob_ref = write_raw_batch(root, provider, connection_id, raw)
-        if written_id != batch_id:
-            raise SocialStoreError("restored raw batch hash changed")
-        blob_refs[batch_id] = blob_ref
     database = connect(root)
     try:
         migrate(database)
-        database.execute("BEGIN IMMEDIATE")
-        if database.execute("SELECT count(*) FROM annotations").fetchone()[0]:
-            raise SocialStoreError("shared restore refuses to remove private annotations")
-        for statement in DELETE_STATEMENTS:
-            database.execute(statement)
-        connection_rows = [
-            {**row, "auth_profile_ref": None} for row in tables["connections"]
-        ]
-        _insert_rows(
-            database,
-            "connections",
-            connection_rows,
-        )
-        for table in ("accounts", "objects", "activities"):
-            _insert_rows(database, table, tables[table])
-        media_rows = [{**row, "blob_ref": None} for row in tables["media"]]
-        _insert_rows(
-            database,
-            "media",
-            media_rows,
-        )
-        fetch_with_refs = [
-            {**row, "blob_ref": blob_refs[str(row["batch_id"])]}
-            for row in tables["fetch_batches"]
-        ]
-        _insert_rows(
-            database,
-            "fetch_batches",
-            fetch_with_refs,
-        )
-        for table in (
-            "sync_cursors",
-            "reconciliation_items",
-            "tombstones",
-            "coverage_records",
-        ):
-            _insert_rows(database, table, tables[table])
-        database.execute("DROP TABLE IF EXISTS objects_fts")
-        create_fts(database)
-        database.execute(
-            """INSERT INTO objects_fts(
-                provider,object_type,remote_id,account_remote_id,text_content,evidence_class)
-               SELECT provider,object_type,remote_id,account_remote_id,text_content,evidence_class
-                 FROM objects ORDER BY object_id"""
-        )
-        database.execute("COMMIT")
-    except Exception:
-        if database.in_transaction:
-            database.execute("ROLLBACK")
-        raise
+        with raw_evidence_transaction(database, root) as transaction:
+            fetch_rows = {
+                str(row["batch_id"]): row for row in tables["fetch_batches"]
+            }
+            blob_refs: dict[str, str] = {}
+            for batch_id, raw in raw_batches.items():
+                row = fetch_rows[batch_id]
+                provider = validate_store_opaque(str(row["provider"]), "provider")
+                connection_id = validate_store_opaque(
+                    str(row["connection_id"]), "connection_id"
+                )
+                written_id, blob_ref = transaction.write(
+                    provider, connection_id, raw
+                )
+                if written_id != batch_id:
+                    raise SocialStoreError("restored raw batch hash changed")
+                blob_refs[batch_id] = blob_ref
+            if database.execute("SELECT count(*) FROM annotations").fetchone()[0]:
+                raise SocialStoreError(
+                    "shared restore refuses to remove private annotations"
+                )
+            for statement in DELETE_STATEMENTS:
+                database.execute(statement)
+            connection_rows = [
+                {**row, "auth_profile_ref": None} for row in tables["connections"]
+            ]
+            _insert_rows(
+                database,
+                "connections",
+                connection_rows,
+            )
+            for table in ("accounts", "objects", "activities"):
+                _insert_rows(database, table, tables[table])
+            media_rows = [{**row, "blob_ref": None} for row in tables["media"]]
+            _insert_rows(
+                database,
+                "media",
+                media_rows,
+            )
+            fetch_with_refs = [
+                {**row, "blob_ref": blob_refs[str(row["batch_id"])]}
+                for row in tables["fetch_batches"]
+            ]
+            _insert_rows(
+                database,
+                "fetch_batches",
+                fetch_with_refs,
+            )
+            for table in (
+                "sync_cursors",
+                "reconciliation_items",
+                "tombstones",
+                "coverage_records",
+            ):
+                _insert_rows(database, table, tables[table])
+            database.execute("DROP TABLE IF EXISTS objects_fts")
+            create_fts(database)
+            database.execute(
+                """INSERT INTO objects_fts(
+                    provider,object_type,remote_id,account_remote_id,text_content,evidence_class)
+                   SELECT provider,object_type,remote_id,account_remote_id,text_content,evidence_class
+                     FROM objects ORDER BY object_id"""
+            )
     finally:
         database.close()
     return {
