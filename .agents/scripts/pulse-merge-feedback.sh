@@ -388,7 +388,7 @@ _ci_actionable_failed_checks_markdown() {
 # Return terminal failed check details and names from one jq pass.
 #
 # Args:
-#   $1 - checks_json (array from gh pr checks --json name,bucket,state,link)
+#   $1 - checks_json (normalized exact-read array with name,bucket,state,link)
 #   $2 - terminal_failed_check_filter (jq select expression)
 #
 # Output: first line is filtered checks JSON, followed by a marker and one
@@ -411,6 +411,29 @@ _ci_merge_check_sets() {
 	local primary_checks="$1"
 	local all_checks="$2"
 	printf '%s\n%s\n' "$primary_checks" "$all_checks" | jq -sc 'add | unique_by([.name, .link])' 2>/dev/null || printf '%s' "${primary_checks:-[]}"
+	return 0
+}
+
+#######################################
+# Normalize exact required-check output for CI repair evidence collection.
+# Args: $1=repo slug, $2=PR number, $3=optional supplied checks JSON
+# Stdout: checks JSON, defaulting to an empty array on indeterminate reads
+#######################################
+_ci_repair_required_checks_json() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local supplied_checks_json="${3:-}"
+	local checks_json="$supplied_checks_json"
+	local checks_exit=0
+
+	if [[ -z "$checks_json" ]]; then
+		checks_json=$(gh_pr_checks_exact_json "$repo_slug" "$pr_number" required 2>/dev/null) || checks_exit=$?
+		case "$checks_exit" in
+		0 | 1 | 8) [[ -n "$checks_json" ]] || checks_json="[]" ;;
+		*) checks_json="[]" ;;
+		esac
+	fi
+	printf '%s\n' "$checks_json"
 	return 0
 }
 
@@ -454,13 +477,9 @@ _dispatch_ci_fix_worker() {
 	# failures. Advisory failures do not justify branch ownership or repair work.
 	local terminal_failed_check_filter
 	terminal_failed_check_filter='(.bucket == "fail" or .bucket == "cancel") and (((.conclusion // .state // "") | ascii_downcase) | test("^(failure|action_required)$")) and ((.link // "") != "")'
-	local checks_json="$supplied_checks_json" result_marker=$'\n__AIDEVOPS_CHECK_NAMES__'
+	local checks_json="" result_marker=$'\n__AIDEVOPS_CHECK_NAMES__'
 	local check_results="" failing_checks_json="" failing_checks="" failing_names="" classification_output=""
-	if [[ -z "$checks_json" ]]; then
-		checks_json=$(gh pr checks "$pr_number" --repo "$repo_slug" --required \
-			--json name,bucket,state,link \
-			2>/dev/null) || checks_json="[]"
-	fi
+	checks_json=$(_ci_repair_required_checks_json "$repo_slug" "$pr_number" "$supplied_checks_json")
 	check_results=$(_ci_terminal_failed_check_results "$checks_json" "$terminal_failed_check_filter")
 	failing_checks_json="${check_results%%"$result_marker"*}"
 	failing_names="${check_results#*"$result_marker"}"

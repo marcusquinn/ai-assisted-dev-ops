@@ -173,6 +173,48 @@ gh() {
 	return 1
 }
 
+gh_pr_checks_exact_json() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local selection_mode="$3"
+	: "$repo_slug" "$pr_number" "$selection_mode"
+	case "$CHECK_MODE" in
+	pending)
+		printf '[{"name":"required","state":"IN_PROGRESS","bucket":"pending"}]\n'
+		return 8
+		;;
+	failure)
+		printf '[{"name":"required","state":"FAILURE","bucket":"fail"}]\n'
+		return 1
+		;;
+	success)
+		printf '[{"name":"required","state":"SUCCESS","bucket":"pass"}]\n'
+		return 0
+		;;
+	no-required)
+		printf 'exact check helper must not run when configuration has no contexts\n' >&2
+		return 99
+		;;
+	api-error)
+		printf 'exact check read unavailable\n' >&2
+		return 2
+		;;
+	changed-wording)
+		printf "no required checks configured for the 'fixture-remote' branch\n" >&2
+		return 1
+		;;
+	malformed)
+		printf 'not-json\n'
+		return 0
+		;;
+	empty-array)
+		printf '[]\n'
+		return 0
+		;;
+	*) return 2 ;;
+	esac
+}
+
 FULL_LOOP_PR_CHECK_STATUS=""
 _full_loop_verify_pr_readiness 42 owner/repo && fail "pending checks passed readiness"
 [[ "$FULL_LOOP_PR_CHECK_STATUS" == "pending" ]] || fail "pending checks were not classified as pending"

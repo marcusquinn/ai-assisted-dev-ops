@@ -106,11 +106,11 @@ _full_loop_query_required_checks() {
 		FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="cannot capture gh stderr"
 		return 1
 	}
-	required_checks=$(gh pr checks "$pr_number" --repo "$repo" \
-		--required --json name,state,bucket 2>"$required_checks_stderr_file") || required_rc=$?
+	required_checks=$(gh_pr_checks_exact_json "$repo" "$pr_number" required \
+		2>"$required_checks_stderr_file") || required_rc=$?
 	required_checks_stderr=$(<"$required_checks_stderr_file")
 	rm -f "$required_checks_stderr_file"
-	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="gh exit ${required_rc}"
+	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="exact check read exit ${required_rc}"
 
 	if [[ "$required_rc" -eq 1 && -z "$required_checks" && -n "$pr_head_ref" && "$required_checks_stderr" == "$expected_no_required_checks" ]]; then
 		required_checks="[]"

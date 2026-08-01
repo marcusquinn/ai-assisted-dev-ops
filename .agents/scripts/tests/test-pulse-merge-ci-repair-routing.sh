@@ -330,6 +330,7 @@ define_feedback_helpers() {
 		_ci_actionable_failed_checks_markdown
 		_ci_terminal_failed_check_results
 		_ci_merge_check_sets
+		_ci_repair_required_checks_json
 		_append_feedback_to_issue
 		_transition_issue_for_redispatch
 		_close_and_label_feedback_pr
@@ -380,6 +381,30 @@ EOF
 	_pulse_merge_repo_path_for_slug() { local repo_slug="$1"; [[ -n "$repo_slug" ]]; printf '%s\n' "${TEST_ROOT}/repo"; return 0; }
 	_is_process_alive_and_matches() { local process_pid="$1"; local process_pattern="$2"; local stored_hash="$3"; [[ -n "$process_pattern" || -n "$stored_hash" ]]; kill -0 "$process_pid" 2>/dev/null; return $?; }
 	_file_mtime_epoch() { local file_path="$1"; [[ -e "$file_path" ]] || return 1; date +%s; return 0; }
+	gh_pr_checks_exact_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		local selection_mode="$3"
+		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
+		case "${TEST_CHECK_SCENARIO:-terminal_failure}" in
+		pending_only)
+			printf '%s\n' '[{"name":"Lint","bucket":"pending","state":"IN_PROGRESS","link":""}]'
+			return 8
+			;;
+		mixed_pending_pass)
+			printf '%s\n' '[{"name":"Lint","bucket":"pending","state":"QUEUED","link":""},{"name":"Unit","bucket":"pass","state":"SUCCESS","link":""}]'
+			return 8
+			;;
+		advisory_failure)
+			printf "%s\n" "no required checks reported on the 'feature/repair' branch" >&2
+			return 1
+			;;
+		*)
+			printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
+			return 1
+			;;
+		esac
+	}
 	for fn in "${fns[@]}"; do
 		fn_src=$(extract_function "$fn" "$FEEDBACK_SCRIPT")
 		[[ -n "$fn_src" ]] || return 1

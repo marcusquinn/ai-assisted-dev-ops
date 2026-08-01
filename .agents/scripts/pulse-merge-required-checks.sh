@@ -1038,6 +1038,42 @@ _pulse_merge_preflight_snapshot_gate() {
 }
 
 #######################################
+# Normalize the exact required-check read used by the PR-level fallback.
+# Args: $1=repo_slug, $2=pr_number
+# Stdout: checks JSON
+# Returns: 0=usable JSON or canonical no-required result, 2=API/parse error
+#######################################
+_pmrc_exact_required_checks_json() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local checks_json="" checks_exit=0
+	local checks_stderr="" checks_stderr_file=""
+
+	checks_stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-required-checks.XXXXXX") || return 2
+	checks_json=$(gh_pr_checks_exact_json "$repo_slug" "$pr_number" required \
+		2>"$checks_stderr_file") || checks_exit=$?
+	checks_stderr=$(<"$checks_stderr_file")
+	rm -f "$checks_stderr_file"
+	if [[ "$checks_exit" -eq 1 && -z "$checks_json" && "$checks_stderr" =~ ^no\ required\ checks\ reported\ on\ the\ \'[^\']+\'\ branch$ ]]; then
+		printf '[]\n'
+		return 0
+	fi
+	if [[ "$checks_exit" -ne 0 && -z "$checks_json" ]]; then
+		return 2
+	fi
+	[[ -z "$checks_stderr" ]] || return 2
+	if [[ -z "$checks_json" || "$checks_json" == "null" || "$checks_json" == "[]" ]]; then
+		if [[ "$checks_exit" -ne 0 ]]; then
+			return 2
+		fi
+		printf '[]\n'
+		return 0
+	fi
+	printf '%s\n' "$checks_json"
+	return 0
+}
+
+#######################################
 # Fallback required-check verification for repositories where the classic branch
 # protection endpoint and repository-rulesets endpoint expose no contexts, but
 # GitHub still reports PR-level required checks (for example org-level rulesets).
@@ -1052,16 +1088,8 @@ _check_required_pr_checks_passing_fallback() {
 	local pr_number="$2"
 
 	local checks_json=""
-	local checks_exit=0
-	checks_json=$(_pmrc_gh_read gh pr checks "$pr_number" --repo "$repo_slug" --required --json name,state,bucket 2>/dev/null)
-	checks_exit=$?
-	if [[ $checks_exit -ne 0 && -z "$checks_json" ]]; then
-		return 2
-	fi
-	if [[ -z "$checks_json" || "$checks_json" == "null" || "$checks_json" == "[]" ]]; then
-		if [[ $checks_exit -ne 0 ]]; then
-			return 2
-		fi
+	checks_json=$(_pmrc_exact_required_checks_json "$repo_slug" "$pr_number") || return 2
+	if [[ "$checks_json" == "[]" ]]; then
 		printf '[]\n'
 		return 0
 	fi
