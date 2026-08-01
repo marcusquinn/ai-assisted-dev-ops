@@ -14,6 +14,15 @@ class RecordError(RuntimeError):
     """Raised when a provider response has no safe stable projection."""
 
 
+PROFILE_FIELDS = tuple(
+    (
+        "storeCode phoneNumbers categories storefrontAddress websiteUri regularHours "
+        "specialHours serviceArea labels latlng openInfo metadata relationshipData "
+        "moreHours serviceItems profile"
+    ).split()
+)
+
+
 def _copy(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: payload[key] for key in keys if payload.get(key) is not None}
 
@@ -41,17 +50,11 @@ def _profile(payload: dict[str, Any], location_id: str) -> list[dict[str, Any]]:
         for value in (payload.get("title"), profile.get("description"))
         if isinstance(value, str) and value
     ) or None
-    fields = (
-        "storeCode", "phoneNumbers", "categories", "storefrontAddress",
-        "websiteUri", "regularHours", "specialHours", "serviceArea", "labels",
-        "latlng", "openInfo", "metadata", "relationshipData", "moreHours",
-        "serviceItems", "profile",
-    )
     return [{
         "kind": "location_profile",
         "remote_id": location_id,
         "text": text,
-        "provider_json": _copy(payload, fields),
+        "provider_json": _copy(payload, PROFILE_FIELDS),
     }]
 
 
