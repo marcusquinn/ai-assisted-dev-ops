@@ -7,17 +7,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import sys
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from _knowledge_social_google_business_profile_records import (
     RecordError,
@@ -27,39 +22,18 @@ from _knowledge_social_google_business_profile_routes import (
     READ_STREAMS,
     build_route,
 )
+from _knowledge_social_google_business_profile_transport import (
+    ApiResult,
+    ProviderError,
+    UrlOpen,
+    api_request,
+    http_exports,
+)
 
 MAX_REQUEST_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-HTTP_TIMEOUT_SECONDS = 60
 PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$")
-API_BASES = frozenset(
-    {
-        "https://www.googleapis.com/oauth2/v3",
-        "https://mybusinessaccountmanagement.googleapis.com/v1",
-        "https://mybusinessbusinessinformation.googleapis.com/v1",
-        "https://mybusiness.googleapis.com/v4",
-        "https://mybusinessverifications.googleapis.com/v1",
-        "https://businessprofileperformance.googleapis.com/v1",
-    }
-)
-RATE_LIMIT_REASONS = frozenset(
-    {"dailyLimitExceeded", "quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
-)
-UrlOpen = Callable[..., Any]
-
-
-class ProviderError(RuntimeError):
-    """Raised for a privacy-safe local provider failure."""
-
-
-@dataclass(frozen=True)
-class ApiResult:
-    """One bounded HTTP result without provider error-body disclosure."""
-
-    status: int
-    payload: dict[str, Any]
-    retry_after: int | None = None
 
 
 @dataclass(frozen=True)
@@ -111,93 +85,8 @@ def _profile(profile: str) -> tuple[str, Identity]:
     return token, Identity(subject, account_id, organization_id, location_id)
 
 
-def _http_exports() -> UrlOpen:
-    if not callable(Request) or not callable(urlopen) or not callable(urlencode):
-        raise ProviderError("Python urllib HTTP exports are unavailable")
-    return urlopen
-
-
 def _observed_at() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _decode_response(payload: bytes) -> dict[str, Any]:
-    if len(payload) > MAX_RESPONSE_BYTES:
-        raise ProviderError("Google Business Profile response exceeds the safety limit")
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ProviderError("Google Business Profile returned no valid JSON") from error
-    if not isinstance(value, dict):
-        raise ProviderError("Google Business Profile response root must be an object")
-    return value
-
-
-def _retry_epoch(value: str | None) -> int | None:
-    try:
-        seconds = float(value) if value is not None else -1
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(seconds) or seconds < 0:
-        return None
-    return int(time.time() + math.ceil(seconds))
-
-
-def _terminal_status(error: HTTPError) -> int:
-    if error.code != 403:
-        return error.code
-    try:
-        body = _decode_response(error.read(MAX_RESPONSE_BYTES + 1))
-    except (OSError, ProviderError):
-        return error.code
-    envelope = body.get("error")
-    details = envelope.get("errors") if isinstance(envelope, dict) else None
-    reasons = {
-        entry.get("reason")
-        for entry in details or []
-        if isinstance(entry, dict) and isinstance(entry.get("reason"), str)
-    }
-    return 429 if reasons.intersection(RATE_LIMIT_REASONS) else error.code
-
-
-def _api(
-    token: str,
-    opener: UrlOpen,
-    base: str,
-    path: str,
-    params: dict[str, Any] | None = None,
-) -> ApiResult:
-    if base not in API_BASES or not path.startswith("/") or ".." in path:
-        raise ProviderError("Google Business Profile API route is not allowlisted")
-    filtered = {
-        key: value for key, value in (params or {}).items() if value is not None
-    }
-    query = urlencode(filtered, doseq=True)
-    url = f"{base}{path}{'?' + query if query else ''}"
-    request = Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "aidevops-google-business-profile-knowledge/1",
-        },
-        method="GET",
-    )
-    try:
-        with opener(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-            if not isinstance(payload, bytes):
-                raise ProviderError("Google Business Profile HTTP response is invalid")
-            status = getattr(response, "status", 200)
-            if isinstance(status, bool) or not isinstance(status, int):
-                raise ProviderError("Google Business Profile HTTP status is invalid")
-            return ApiResult(status, _decode_response(payload))
-    except HTTPError as error:
-        return ApiResult(
-            _terminal_status(error), {}, _retry_epoch(error.headers.get("Retry-After"))
-        )
-    except (TimeoutError, URLError, OSError) as error:
-        raise ProviderError("Google Business Profile read provider request failed") from error
 
 
 def _terminal(result: ApiResult) -> dict[str, Any]:
@@ -354,8 +243,10 @@ def main() -> int:
     try:
         request = _request()
         token, identity = _profile(args.profile)
-        opener = _http_exports()
-        api = lambda base, path, params=None: _api(token, opener, base, path, params)
+        opener = http_exports()
+        api = lambda base, path, params=None: api_request(
+            token, opener, base, path, params
+        )
         action = request.get("action")
         if action == "identity" and set(request) == {"action", "account_id"}:
             expected = _stable_id(request.get("account_id"), "location ID")
