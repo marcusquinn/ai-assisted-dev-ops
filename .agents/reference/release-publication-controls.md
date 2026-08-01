@@ -192,7 +192,7 @@ advanced `main` after the source merged, while immutable `v3.32.210` predates
 that source. Its exact branch base is
 `71ad1b62a0da67f161a9a41992d4d4a5958b5e2c`.
 
-A pending re-aggregation review covers authorized GH audit PR #29152 at
+Aggregation PR #29164 re-reviews authorized GH audit PR #29152 at
 `817e68674104c07951932c9cc914763f31f56b94` and prior aggregation PR #29159 at
 `29714078dee12f926f9a52c9eeb51a63549373e3` because subsequent maintained
 merges advanced `main` before publication. Its exact branch base is
