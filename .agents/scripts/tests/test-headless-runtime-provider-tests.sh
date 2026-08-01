@@ -216,6 +216,51 @@ test_headless_sandbox_timeout_budget() {
 	return 0
 }
 
+test_public_triage_egress_mode_is_capability_aware() {
+	local absent_mode=""
+	local configured_mode=""
+	local required_mode=""
+	local off_mode=""
+	local invalid_status=0
+
+	absent_mode=$(_resolve_public_triage_egress_mode "auto" "")
+	configured_mode=$(_resolve_public_triage_egress_mode "auto" "/configured/backend")
+	required_mode=$(_resolve_public_triage_egress_mode "required" "")
+	off_mode=$(_resolve_public_triage_egress_mode "off" "")
+	_resolve_public_triage_egress_mode "invalid" "" >/dev/null 2>&1 || invalid_status=$?
+
+	if [[ "$absent_mode" == "auto" && "$configured_mode" == "required" &&
+		"$required_mode" == "required" && "$off_mode" == "auto" &&
+		"$invalid_status" -ne 0 ]]; then
+		print_result "public triage egress is capability-aware and cannot be disabled" 0
+		return 0
+	fi
+
+	print_result "public triage egress is capability-aware and cannot be disabled" 1 \
+		"absent=$absent_mode configured=$configured_mode required=$required_mode off=$off_mode invalid=$invalid_status"
+	return 0
+}
+
+test_public_triage_always_requires_isolated_sandbox() {
+	local failures=0
+
+	_headless_opencode_sandbox_required "triage" "0" "auto" || failures=$((failures + 1))
+	_headless_opencode_sandbox_required "worker" "0" "required" || failures=$((failures + 1))
+	_headless_opencode_sandbox_required "worker" "1" "auto" || failures=$((failures + 1))
+	if _headless_opencode_sandbox_required "worker" "0" "auto"; then
+		failures=$((failures + 1))
+	fi
+
+	if [[ "$failures" -eq 0 ]]; then
+		print_result "public triage retains the mandatory isolated sandbox" 0
+		return 0
+	fi
+
+	print_result "public triage retains the mandatory isolated sandbox" 1 \
+		"sandbox policy mismatches=${failures}"
+	return 0
+}
+
 test_claude_bare_paths_use_resolved_sandbox_timeout() {
 	local timeout_log="${TEST_ROOT}/claude-bare-timeout.log"
 	local direct_output="${TEST_ROOT}/claude-bare-direct.out"
@@ -663,21 +708,26 @@ test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
 			XDG_CONFIG_HOME='/tmp/triage-config' \
 			XDG_DATA_HOME='/tmp/triage-data' \
 			XDG_STATE_HOME='/tmp/triage-state' \
+			OPENCODE_PURE=1 \
 			OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
 			OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
 			OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
 			OTEL_EXPORTER_OTLP_ENDPOINT='https://telemetry.example.invalid' \
-			build_sandbox_passthrough_csv "openai" "triage"
+			build_sandbox_passthrough_csv "openai" "triage" 1
 	)
+	local env_auth_csv=""
+	env_auth_csv=$(OPENAI_API_KEY='openai-test' build_sandbox_passthrough_csv "openai" "triage" 0)
 
-	if [[ ",$csv," == *",OPENAI_API_KEY,"* && ",$csv," != *",OPENAI_ADMIN_KEY,"* &&
+	if [[ ",$csv," != *",OPENAI_API_KEY,"* && ",$env_auth_csv," == *",OPENAI_API_KEY,"* &&
+		",$csv," != *",OPENAI_ADMIN_KEY,"* &&
 		",$csv," != *",OPENAI_BASE_URL,"* && ",$csv," != *",ANTHROPIC_API_KEY,"* &&
 		",$csv," != *",CLAUDE_CODE_OAUTH_TOKEN,"* &&
 		",$csv," != *",GOOGLE_OAUTH_ACCESS_TOKEN,"* &&
 		",$csv," != *",GH_TOKEN,"* && ",$csv," != *",GITHUB_TOKEN,"* &&
 		",$csv," != *",WORKER_ISSUE_NUMBER,"* && ",$csv," != *",AIDEVOPS_PERMISSION_GRANT_FILE,"* &&
 		",$csv," != *",OTEL_EXPORTER_OTLP_ENDPOINT,"* && ",$csv," == *",AIDEVOPS_HEADLESS,"* &&
-		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
+		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_PURE,"* &&
+		",$csv," != *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
 		",$csv," == *",OPENCODE_DISABLE_EXTERNAL_SKILLS,"* &&
 		",$csv," == *",OPENCODE_DISABLE_CLAUDE_CODE_SKILLS,"* ]]; then
 		print_result "triage sandbox passthrough excludes GitHub and worker authority" 0
@@ -710,6 +760,7 @@ test_strict_scoped_auth_rejects_malformed_source() {
 test_triage_runtime_directory_is_framework_owned_and_empty() {
 	local runtime_dir=""
 	local managed_root="${TEST_ROOT}/managed-triage-runtime"
+	local triage_agent=""
 	if ! AIDEVOPS_SENSITIVE_TEMP_DIR="$managed_root" \
 		_prepare_triage_runtime_directory "runtime_dir"; then
 		print_result "triage runtime directory is isolated from target repository" 1 \
@@ -719,10 +770,13 @@ test_triage_runtime_directory_is_framework_owned_and_empty() {
 	managed_root=$(cd "$managed_root" && pwd -P) || return 1
 
 	local runtime_config="${runtime_dir}/.opencode/opencode.json"
+	triage_agent="${runtime_dir}/.opencode/agent/triage-review.md"
 	if [[ "$runtime_dir" == "$managed_root"/aidevops-headless-triage.* &&
-		-f "${runtime_dir}/.opencode/agent/triage-review.md" &&
+		-f "$triage_agent" &&
 		-f "$runtime_config" && ! -e "${runtime_dir}/.git" &&
-		$(jq -r '(.permission == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]]; then
+		$(jq -r '(.default_agent == "triage-review") and (.permission["*"] == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]] &&
+		grep -q '^mode: primary$' "$triage_agent" &&
+		grep -q '^  "\*": deny$' "$triage_agent"; then
 		print_result "triage runtime directory is isolated from target repository" 0
 	else
 		print_result "triage runtime directory is isolated from target repository" 1 \

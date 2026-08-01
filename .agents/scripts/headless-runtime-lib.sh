@@ -696,6 +696,7 @@ run_without_opencode_session_env() {
 build_sandbox_passthrough_csv() {
 	local provider="${1:-}"
 	local role="${2:-worker}"
+	local scoped_auth_ready="${3:-0}"
 	local names=()
 	local seen_names=" "
 	local name
@@ -710,12 +711,16 @@ build_sandbox_passthrough_csv() {
 			continue
 		fi
 		if [[ "$role" == "triage" ]]; then
-			if [[ -n "$provider" ]] && _headless_triage_provider_env_allowed "$provider" "$name"; then
+			# Prefer the isolated provider entry over ambient credentials. This
+			# prevents a stale API key from overriding a copied OAuth session while
+			# preserving environment-only authentication when no entry was copied.
+			if [[ "$scoped_auth_ready" != "1" && -n "$provider" ]] && \
+				_headless_triage_provider_env_allowed "$provider" "$name"; then
 				names+=("$name")
 				continue
 			fi
 			case "$name" in
-			AIDEVOPS_HEADLESS | AIDEVOPS_HEADLESS_AUTH_ISOLATION | AIDEVOPS_SESSION_ORIGIN | OPENCODE_DISABLE_CLAUDE_CODE_SKILLS | OPENCODE_DISABLE_DEFAULT_PLUGINS | OPENCODE_DISABLE_EXTERNAL_SKILLS | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | XDG_STATE_HOME)
+			AIDEVOPS_HEADLESS | AIDEVOPS_HEADLESS_AUTH_ISOLATION | AIDEVOPS_SESSION_ORIGIN | OPENCODE_DISABLE_CLAUDE_CODE_SKILLS | OPENCODE_DISABLE_EXTERNAL_SKILLS | OPENCODE_PURE | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | XDG_STATE_HOME)
 				names+=("$name")
 				;;
 			esac

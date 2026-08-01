@@ -1,11 +1,12 @@
 ---
 description: Sandboxed triage review for external contributor issues — provider-only network access
 model: thinking
-mode: subagent
+mode: primary
 temperature: 0.2
 tools:
   "*": false
-permission: deny
+permission:
+  "*": deny
 ---
 
 <!-- SPDX-License-Identifier: MIT -->

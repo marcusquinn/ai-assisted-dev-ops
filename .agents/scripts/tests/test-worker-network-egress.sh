@@ -270,6 +270,8 @@ test_headless_runtime_binds_egress_contract() {
 	local claude_egress_count=0
 	local required_guard_count=0
 	local opencode_profile_count=0
+	local triage_mode_policy_count=0
+	local opencode_sandbox_policy_count=0
 	# Literal source patterns intentionally retain the runtime variable names.
 	# shellcheck disable=SC2016
 	opencode_egress_count="$(grep -cF -- '--egress-mode "$egress_mode" --egress-policy-profile "$egress_policy_profile" --worker-id "$egress_worker_id"' "$HEADLESS_HELPER")"
@@ -279,11 +281,14 @@ test_headless_runtime_binds_egress_contract() {
 	required_guard_count="$(grep -h -cF -- '[[ "$egress_mode" == "required" ]]' "$HEADLESS_HELPER" "$HEADLESS_WORKER" | awk '{ total += $1 } END { print total + 0 }')"
 	# shellcheck disable=SC2016
 	opencode_profile_count="$(grep -cF -- 'egress_policy_profile="provider:${_invoke_provider}"' "$HEADLESS_HELPER")"
+	triage_mode_policy_count="$(grep -cF -- '_resolve_public_triage_egress_mode' "$HEADLESS_HELPER")"
+	opencode_sandbox_policy_count="$(grep -cF -- '_headless_opencode_sandbox_required' "$HEADLESS_HELPER")"
 	if [[ "$opencode_egress_count" -eq 4 && "$claude_egress_count" -eq 4 && \
-		"$required_guard_count" -eq 2 && "$opencode_profile_count" -eq 1 ]]; then
+		"$required_guard_count" -eq 1 && "$opencode_profile_count" -eq 1 && \
+		"$triage_mode_policy_count" -eq 2 && "$opencode_sandbox_policy_count" -eq 2 ]]; then
 		pass "all headless runtimes bind egress and guard required mode"
 	else
-		fail "all headless runtimes bind egress and guard required mode" "opencode=${opencode_egress_count} claude=${claude_egress_count} guards=${required_guard_count} triage_profiles=${opencode_profile_count}"
+		fail "all headless runtimes bind egress and guard required mode" "opencode=${opencode_egress_count} claude=${claude_egress_count} guards=${required_guard_count} triage_profiles=${opencode_profile_count} triage_policy=${triage_mode_policy_count} sandbox_policy=${opencode_sandbox_policy_count}"
 	fi
 	return 0
 }

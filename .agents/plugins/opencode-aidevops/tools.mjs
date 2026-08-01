@@ -404,14 +404,20 @@ function runPreEditCheck(script, args, cwd, timeoutMs) {
  *
  * @param {string} scriptsDir - Path to scripts directory
  * @param {function} run - Shell command runner
- * @param {{preEditTimeoutMs?: number, workerWorktree?: string}} [options] - Tool-specific test/runtime overrides
+ * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function}} [options] - Tool-specific test/runtime overrides
  * @returns {Record<string, object>}
  */
 export function createTools(scriptsDir, run, options = {}) {
-  return {
+  if (options.sessionOrigin === "triage") return {};
+
+  const tools = {
     aidevops: createAidevopsTool(run),
     aidevops_memory: createMemoryTool(scriptsDir, run),
     aidevops_pre_edit_check: createPreEditCheckTool(scriptsDir, options.preEditTimeoutMs),
     aidevops_hook_status: createHookStatusTool({ workerWorktree: options.workerWorktree }),
   };
+  if (typeof options.poolToolFactory === "function") {
+    tools["model-accounts-pool"] = options.poolToolFactory();
+  }
+  return tools;
 }

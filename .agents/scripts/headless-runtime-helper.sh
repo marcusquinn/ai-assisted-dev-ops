@@ -71,6 +71,52 @@ readonly RESOURCE_METRICS_HELPER="${SCRIPT_DIR}/resource-metrics-helper.sh"
 readonly RESOURCE_METRICS_FILE="${METRICS_DIR}/resource-metrics.jsonl"
 readonly PRIVATE_OUTPUT_FILTER="${SCRIPT_DIR}/headless-private-output-filter.py"
 readonly HEADLESS_ROLE_TRIAGE="triage"
+readonly HEADLESS_EGRESS_MODE_AUTO="auto"
+readonly HEADLESS_EGRESS_MODE_REQUIRED="required"
+
+# Resolve the public-triage whole-process egress posture. Triage always uses at
+# least auto mode: a configured backend becomes fail-closed required mode, while
+# an absent backend retains the no-tools, isolated-runtime boundary. Operators
+# can require a backend globally with AIDEVOPS_WORKER_EGRESS_MODE=required;
+# setting the generic mode to off never disables triage's capability probe.
+# Arguments: $1=requested mode, $2=configured backend path (possibly empty).
+# Output: auto|required. Returns 1 for an invalid requested mode.
+_resolve_public_triage_egress_mode() {
+	local requested_mode="$1"
+	local configured_backend="$2"
+
+	case "$requested_mode" in
+	required)
+		printf '%s' "$HEADLESS_EGRESS_MODE_REQUIRED"
+		return 0
+		;;
+	auto | off)
+		if [[ -n "$configured_backend" ]]; then
+			printf '%s' "$HEADLESS_EGRESS_MODE_REQUIRED"
+		else
+			printf '%s' "$HEADLESS_EGRESS_MODE_AUTO"
+		fi
+		return 0
+		;;
+	*) return 1 ;;
+	esac
+}
+
+# The clean environment and isolated HOME remain mandatory for public triage
+# even when whole-process egress runs in capability-aware auto mode.
+# Arguments: $1=runtime role, $2=private-workload flag, $3=egress mode.
+# Returns 0 when the sandbox launcher is mandatory, 1 otherwise.
+_headless_opencode_sandbox_required() {
+	local runtime_role="$1"
+	local private_workload="$2"
+	local egress_mode="$3"
+
+	if [[ "$private_workload" -eq 1 || "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" || \
+		"$egress_mode" == "$HEADLESS_EGRESS_MODE_REQUIRED" ]]; then
+		return 0
+	fi
+	return 1
+}
 
 # Launch preparation helpers (prompt transport, argument parsing, worker-env
 # validation, deleted-cwd recovery, and recoverable OpenCode startup errors).
@@ -145,7 +191,7 @@ _finalize_isolated_runtime_data() {
 	unset XDG_DATA_HOME
 	if [[ "$ephemeral_run" -eq 1 ]]; then
 		unset XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME
-		unset OPENCODE_DISABLE_DEFAULT_PLUGINS
+		unset OPENCODE_DISABLE_DEFAULT_PLUGINS OPENCODE_PURE
 		unset OPENCODE_DISABLE_EXTERNAL_SKILLS
 		unset OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
 	fi
@@ -178,6 +224,7 @@ _invoke_opencode() {
 	local private_workload=0
 	local runtime_role="${_invoke_role:-worker}"
 	local public_triage=0
+	local public_triage_auth_ready=0
 	if _headless_private_workload_enabled; then
 		private_workload=1
 		if [[ ! -f "$PRIVATE_OUTPUT_FILTER" ]] || ! command -v python3 >/dev/null 2>&1; then
@@ -250,6 +297,11 @@ _invoke_opencode() {
 				printf '%s' "86" >"$exit_code_file"
 				return 0
 			fi
+			if [[ "$public_triage" -eq 1 && -n "${_invoke_provider:-}" ]] && \
+				jq -e --arg provider "$_invoke_provider" 'has($provider)' \
+				"${isolated_data_dir}/opencode/auth.json" >/dev/null 2>&1; then
+				public_triage_auth_ready=1
+			fi
 		fi
 		# GH#17549: Each worker gets its OWN SQLite DB (no shared OPENCODE_DB).
 		# Previously we set OPENCODE_DB back to the shared DB for session stats,
@@ -262,7 +314,10 @@ _invoke_opencode() {
 			export XDG_CACHE_HOME="${isolated_data_dir}/cache"
 			export XDG_CONFIG_HOME="${isolated_data_dir}/config"
 			export XDG_STATE_HOME="${isolated_data_dir}/state"
-			export OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+			# OpenCode OAuth requires its bundled provider-auth plugin. Pure mode
+			# retains bundled plugins while refusing configured/external plugins;
+			# the generated triage config independently denies every tool.
+			export OPENCODE_PURE=1
 			export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
 			export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
 			mkdir -p "$isolated_home_dir" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
@@ -325,7 +380,18 @@ _invoke_opencode() {
 				printf '%s' "126" >"$exit_code_file"
 				exit 126
 			fi
-			egress_mode="required"
+			local requested_egress_mode="$egress_mode"
+			if ! egress_mode="$(_resolve_public_triage_egress_mode \
+				"$requested_egress_mode" "${AIDEVOPS_WORKER_EGRESS_BACKEND:-}")"; then
+				print_error "Invalid public triage egress mode '${requested_egress_mode}'"
+				printf '%s' "126" >"$exit_code_file"
+				exit 126
+			fi
+			if [[ "$requested_egress_mode" == "off" ]]; then
+				print_warning "Public triage ignores egress mode off; effective mode=${egress_mode}"
+			elif [[ "$egress_mode" == "$HEADLESS_EGRESS_MODE_AUTO" ]]; then
+				print_warning "Public triage whole-process egress backend unavailable; continuing with the no-tools isolated runtime (egress=logical-isolation)"
+			fi
 			egress_policy_profile="provider:${_invoke_provider}"
 			sandbox_home_args=(--home-dir "$isolated_home_dir")
 		fi
@@ -349,7 +415,8 @@ _invoke_opencode() {
 		fi
 		if [[ -x "$SANDBOX_EXEC_HELPER" && "${AIDEVOPS_HEADLESS_SANDBOX_DISABLED:-}" != "1" ]]; then
 			local passthrough_csv
-			passthrough_csv="$(build_sandbox_passthrough_csv "${_invoke_provider:-}" "$runtime_role")"
+			passthrough_csv="$(build_sandbox_passthrough_csv \
+				"${_invoke_provider:-}" "$runtime_role" "$public_triage_auth_ready")"
 			# --stream-stdout: let child stdout flow through the capture pipeline
 			# so the activity watchdog can monitor output in real-time
 			# (GH#15180 bug #4). Without this, the sandbox captures stdout to
@@ -388,8 +455,13 @@ _invoke_opencode() {
 				printf '%s' "86" >"$exit_code_file"
 				exit 86
 			fi
-			if [[ "$egress_mode" == "required" ]]; then
-				print_error "Whole-process worker egress is required, but the sandbox launcher is disabled or unavailable"
+			if _headless_opencode_sandbox_required \
+				"$runtime_role" "$private_workload" "$egress_mode"; then
+				if [[ "$public_triage" -eq 1 ]]; then
+					print_error "Public triage requires the sandbox launcher for its isolated runtime"
+				else
+					print_error "Whole-process worker egress is required, but the sandbox launcher is disabled or unavailable"
+				fi
 				printf '%s' "126" >"$exit_code_file"
 				exit 126
 			fi
@@ -2265,6 +2337,9 @@ Defaults:
   AIDEVOPS_HEADLESS_VARIANT sets an OpenCode model variant (for example: high, xhigh).
   AIDEVOPS_HEADLESS_PULSE_VARIANT / AIDEVOPS_HEADLESS_WORKER_VARIANT override by role.
   AIDEVOPS_HEADLESS_APPEND_CONTRACT=0 disables worker /full-loop contract injection
+  Public triage uses capability-aware egress: a configured backend is required;
+  without one, the mandatory no-tools isolated sandbox runs with explicit degraded telemetry.
+  Set AIDEVOPS_WORKER_EGRESS_MODE=required to require a backend for every triage run.
   NOTE: opencode/* gateway models are NOT used — per-token billing is too expensive.
 EOF
 	return 0

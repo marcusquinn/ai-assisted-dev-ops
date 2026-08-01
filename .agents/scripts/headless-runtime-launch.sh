@@ -236,7 +236,8 @@ _prepare_triage_runtime_directory() {
 		jq -n --arg plugin_url "$plugin_url" '{
 			"$schema": "https://opencode.ai/config.json",
 			plugin: [$plugin_url],
-			permission: "deny",
+			default_agent: "triage-review",
+			permission: {"*": "deny"},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
@@ -247,7 +248,8 @@ _prepare_triage_runtime_directory() {
 	else
 		jq -n '{
 			"$schema": "https://opencode.ai/config.json",
-			permission: "deny",
+			default_agent: "triage-review",
+			permission: {"*": "deny"},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
