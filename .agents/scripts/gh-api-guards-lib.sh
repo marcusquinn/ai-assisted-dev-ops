@@ -166,7 +166,7 @@ _shim_api_inject_body_sig() {
 			case "$_next" in
 			body=@*)
 				_bfile="${_next#body=@}"
-				if [[ -f "$_bfile" ]] && ! grep -q "<!-- aidevops:sig -->" "$_bfile" 2>/dev/null; then
+				if [[ -f "$_bfile" ]] && ! grep -Fqx '<!-- aidevops:sig -->' "$_bfile" 2>/dev/null; then
 					_bval=$(<"$_bfile") || _bval=""
 					_footer=$(_shim_sig_footer_for_body "$_bval") || true
 					[[ -n "$_footer" ]] && printf '%s' "$_footer" >>"$_bfile" || true
@@ -174,7 +174,7 @@ _shim_api_inject_body_sig() {
 				;;
 			body=*)
 				_bval="${_next#body=}"
-				if [[ "$_bval" != *"<!-- aidevops:sig -->"* ]]; then
+				if ! grep -Fqx '<!-- aidevops:sig -->' <<<"$_bval"; then
 					_footer=$(_shim_sig_footer_for_body "$_bval") || {
 						i=$((i + 2))
 						continue
@@ -196,7 +196,7 @@ _shim_api_inject_body_sig() {
 			case "$_kv" in
 			body=@*)
 				_bfile="${_kv#body=@}"
-				if [[ -f "$_bfile" ]] && ! grep -q "<!-- aidevops:sig -->" "$_bfile" 2>/dev/null; then
+				if [[ -f "$_bfile" ]] && ! grep -Fqx '<!-- aidevops:sig -->' "$_bfile" 2>/dev/null; then
 					_bval=$(<"$_bfile") || _bval=""
 					_footer=$(_shim_sig_footer_for_body "$_bval") || true
 					[[ -n "$_footer" ]] && printf '%s' "$_footer" >>"$_bfile" || true
@@ -204,7 +204,7 @@ _shim_api_inject_body_sig() {
 				;;
 			body=*)
 				_bval="${_kv#body=}"
-				if [[ "$_bval" != *"<!-- aidevops:sig -->"* ]]; then
+				if ! grep -Fqx '<!-- aidevops:sig -->' <<<"$_bval"; then
 					_footer=$(_shim_sig_footer_for_body "$_bval") || {
 						i=$((i + 1))
 						continue

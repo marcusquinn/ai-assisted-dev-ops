@@ -906,7 +906,7 @@ _shim_prepare_ephemeral_body_file() {
 		printf '[aidevops][gh-ephemeral-body][BLOCK] Body is not a valid managed triage comment artifact.\n' >&2
 		return 1
 	fi
-	if ! grep -q '<!-- aidevops:sig -->' "$requested_body_file" 2>/dev/null; then
+	if ! grep -Fqx '<!-- aidevops:sig -->' "$requested_body_file" 2>/dev/null; then
 		printf '[aidevops][gh-ephemeral-body][BLOCK] Ephemeral body lacks the canonical signature marker.\n' >&2
 		return 1
 	fi

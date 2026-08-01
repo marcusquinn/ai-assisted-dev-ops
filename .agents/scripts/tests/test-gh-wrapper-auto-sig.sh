@@ -143,6 +143,19 @@ done
 assert_eq "body unchanged when already signed" "$original_body" "$body_val"
 assert_not_contains "no stub footer appended" "stub footer" "$body_val"
 
+# Inline documentation of the marker is not a completed footer.
+inline_marker_body="Documentation mentions <!-- aidevops:sig --> inline"
+_gh_wrapper_auto_sig --repo "owner/repo" --title "test" --body "$inline_marker_body"
+body_val=""
+for ((i = 0; i < ${#_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}; i++)); do
+	if [[ "${_GH_WRAPPER_SIG_MODIFIED_ARGS[i]}" == "--body" ]]; then
+		body_val="${_GH_WRAPPER_SIG_MODIFIED_ARGS[i + 1]}"
+		break
+	fi
+done
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' <<<"$body_val" || true)
+assert_eq "inline marker prose receives one standalone marker" "1" "$marker_count"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 3: --body=VALUE form (equals syntax)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,13 +328,13 @@ assert_eq "marker appears exactly once (no double-sign)" "1" "$marker_count"
 echo ""
 echo "Test 11 (t2393): gh_issue_comment --body-file signs temp copy"
 bf="${TMPDIR_TEST}/issue-body.md"
-printf 'Body from file content' >"$bf"
+printf 'Body from file cites aidevops.sh:1715' >"$bf"
 : >"$GH_STUB_ARGS_FILE"
 : >"$GH_STUB_BODY_FILE_CONTENT"
 gh_issue_comment 19951 --repo "owner/repo" --body-file "$bf"
 file_content=$(<"$bf")
 assert_not_contains "original file did not get signature footer" "<!-- aidevops:sig -->" "$file_content"
-assert_contains "original file still has original content" "Body from file content" "$file_content"
+assert_contains "original file still has root script reference" "aidevops.sh:1715" "$file_content"
 captured=$(<"$GH_STUB_ARGS_FILE")
 assert_contains "gh received --body-file flag" "--body-file" "$captured"
 captured_body_file=""
@@ -353,7 +366,9 @@ else
 	fi
 	captured_file_content=$(<"$GH_STUB_BODY_FILE_CONTENT")
 	assert_contains "gh received temp body-file with signature" "<!-- aidevops:sig -->" "$captured_file_content"
-	assert_contains "gh received temp body-file with original content" "Body from file content" "$captured_file_content"
+	assert_contains "gh received temp body-file with root script reference" "aidevops.sh:1715" "$captured_file_content"
+	marker_count=$(grep -Fxc '<!-- aidevops:sig -->' <<<"$captured_file_content" || true)
+	assert_eq "gh received exactly one standalone marker line" "1" "$marker_count"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

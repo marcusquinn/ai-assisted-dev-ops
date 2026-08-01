@@ -869,7 +869,7 @@ done
 
 # --- --body case -------------------------------------------------------------
 if [[ $_body_idx -ge 0 && -n "$_body_val" ]]; then
-	if [[ "$_body_val" != *"<!-- aidevops:sig -->"* ]]; then
+	if ! grep -Fqx '<!-- aidevops:sig -->' <<<"$_body_val"; then
 		_sig_footer=$("$SIG_HELPER" footer --body "$_body_val" 2>/dev/null || echo "")
 		if [[ -n "$_sig_footer" ]]; then
 			_new_body="${_body_val}${_sig_footer}"
@@ -888,7 +888,7 @@ fi
 # gh call. The temp file is cleaned up by a background reaper because the native
 # transport may outlive setup-time shell traps.
 if [[ $_body_file_idx -ge 0 && -n "$_body_file_val" && -f "$_body_file_val" ]]; then
-	if ! grep -q "<!-- aidevops:sig -->" "$_body_file_val" 2>/dev/null; then
+	if ! grep -Fqx '<!-- aidevops:sig -->' "$_body_file_val" 2>/dev/null; then
 		_file_content=$(<"$_body_file_val") || _file_content=""
 		_sig_footer=$("$SIG_HELPER" footer --body "$_file_content" 2>/dev/null || echo "")
 		if [[ -n "$_sig_footer" ]]; then

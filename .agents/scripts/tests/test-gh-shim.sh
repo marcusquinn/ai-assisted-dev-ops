@@ -397,6 +397,19 @@ else
 	_fail "--body original content preservation" "argv: $argv"
 fi
 
+# Inline marker prose is not a completed signature footer.
+echo ""
+echo "Test 2a: inline marker prose gets a standalone signature"
+_reset_log
+"$SHIM_RUN" issue comment 123 --repo owner/repo \
+	--body "Documentation mentions <!-- aidevops:sig --> inline" 2>/dev/null
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' "$STUB_GH_LOG" 2>/dev/null || true)
+if [[ "$marker_count" -eq 1 ]]; then
+	_pass "inline marker prose receives one standalone marker"
+else
+	_fail "inline marker prose signing" "standalone marker appeared $marker_count times, expected 1"
+fi
+
 # =============================================================================
 # Test 3: gh issue comment --body with marker passes through unchanged
 # =============================================================================
@@ -424,7 +437,7 @@ fi
 echo ""
 echo "Test 4: --body-file without marker gets sig appended"
 body_file="$TMP/body.md"
-printf 'unsigned body content\n' >"$body_file"
+printf 'unsigned body cites aidevops.sh:1715\n' >"$body_file"
 _reset_log
 "$SHIM_RUN" issue comment 456 --repo owner/repo --body-file "$body_file" 2>/dev/null
 argv=$(_read_argv)
@@ -434,7 +447,7 @@ if [[ -n "$resolved_body_file" && -f "$resolved_body_file" ]] && grep -q "<!-- a
 else
 	_fail "--body-file sig injection" "argv: $argv"
 fi
-if grep -q "unsigned body content" "$body_file" && ! grep -q "<!-- aidevops:sig -->" "$body_file"; then
+if grep -q "aidevops.sh:1715" "$body_file" && ! grep -q "<!-- aidevops:sig -->" "$body_file"; then
 	_pass "original --body-file content preserved without mutation"
 else
 	_fail "--body-file original preservation" ""
@@ -1060,6 +1073,17 @@ if [[ "$argv" == *"<!-- aidevops:sig -->"* ]] && [[ "$sig_argv" == *$'--no-sessi
 	_pass "deterministic ops REST comments sign without session metrics"
 else
 	_fail "ops REST no-session signature" "argv: $argv sig argv: $sig_argv"
+fi
+
+_reset_log
+inline_api_body='Documentation mentions <!-- aidevops:sig --> inline'
+AIDEVOPS_HEADLESS=1 AIDEVOPS_REPOS_JSON="$repos_json" "$SHIM_RUN" \
+	api /repos/managed/repo/issues/789/comments -X POST -f body="$inline_api_body" 2>/dev/null
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' "$STUB_GH_LOG" 2>/dev/null || true)
+if [[ "$marker_count" -eq 1 ]]; then
+	_pass "direct REST body with inline marker prose receives a standalone marker"
+else
+	_fail "direct REST inline marker signing" "standalone marker appeared $marker_count times, expected 1"
 fi
 
 repos_json_missing_role="$TMP/repos-missing-role.json"

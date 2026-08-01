@@ -140,6 +140,20 @@ printf '%sRunning gh api sig-footer injection tests (t2707 / GH#20350)%s\n' \
 	"$TEST_BLUE" "$TEST_NC"
 
 # =============================================================================
+# Test 0: REST fallback dedup requires a standalone canonical marker line
+# =============================================================================
+_BODY0="${TMP}/body0.md"
+printf 'Documentation mentions <!-- aidevops:sig --> inline.\n' >"$_BODY0"
+_rest_append_sig "$_BODY0"
+marker_count=$(grep -Fxc '<!-- aidevops:sig -->' "$_BODY0" 2>/dev/null || true)
+if [[ "$marker_count" -eq 1 ]]; then
+	pass "REST fallback signs a body containing an inline marker mention"
+else
+	fail "REST fallback signs a body containing an inline marker mention" \
+		"standalone marker count was ${marker_count}, expected 1"
+fi
+
+# =============================================================================
 # Test 1: _rest_issue_create injects sig into body file
 # Use --body-file with a user-owned file so the translator doesn't clean it up
 # (tmp_body_owned=0 when body_file is provided). We can then check the file
@@ -209,10 +223,9 @@ fi
 # Set up a stub SIG_HELPER variable (normally set by the shim at init time).
 SIG_HELPER="$_STUB_SIG_HELPER"
 
-# Source only the function definitions from the shim by temporarily setting
-# a flag that prevents the exec calls and sourcing via a here-doc wrapper.
-# Strategy: use eval to extract the function bodies from the shim.
-_SHIM_SCRIPT="${SCRIPTS_DIR}/gh"
+# Source only the function definitions from the shim API guard library.
+# The shim delegates these helpers to this adjacent module.
+_SHIM_SCRIPT="${SCRIPTS_DIR}/gh-api-guards-lib.sh"
 
 # Extract and define the helper plus its direct signature dependencies.
 # This avoids executing the shim's main body which calls exec.

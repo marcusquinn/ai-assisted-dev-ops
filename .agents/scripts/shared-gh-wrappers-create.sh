@@ -694,7 +694,7 @@ gh_issue_comment() {
 		# _gh_wrapper_auto_sig would create another pathname-backed temp copy.
 		if [[ "$ephemeral_body_file" != /* || ! -f "$ephemeral_body_file" || \
 			-L "$ephemeral_body_file" ]] || \
-			! grep -q '<!-- aidevops:sig -->' "$ephemeral_body_file" 2>/dev/null; then
+			! grep -Fqx '<!-- aidevops:sig -->' "$ephemeral_body_file" 2>/dev/null; then
 			printf '[aidevops][gh-wrapper][BLOCK] Invalid pre-signed ephemeral comment body.\n' >&2
 			return 1
 		fi
