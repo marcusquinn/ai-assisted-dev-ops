@@ -784,6 +784,46 @@ unregister_worktree() {
 	return 0
 }
 
+# Remove a clean linked worktree only while the complete expected ownership row
+# remains protected by the same SQLite write transaction. Registry writers
+# cannot transfer or replace ownership between verification and `git worktree
+# remove`; dirty worktrees still fail closed because removal is never forced.
+# Arguments: worktree path, repository root, expected branch, owner PID,
+#            owner session, owner batch, task ID, and created-at timestamp.
+remove_worktree_if_owner_contract() {
+	[[ $# -eq 8 ]] || return 1
+	local wt_path="$1"
+	local repository_root="$2"
+	local expected_branch="$3"
+	local expected_owner_pid="$4"
+	local expected_owner_session="$5"
+	local expected_owner_batch="$6"
+	local expected_task_id="$7"
+	local expected_created_at="$8"
+	local git_path=""
+	local owner_remove_helper="${_WORKTREE_REGISTRY_SCRIPT_DIR}/worktree-owner-contract-remove.py"
+
+	[[ -n "$wt_path" && -n "$repository_root" && -n "$expected_branch" ]] || return 1
+	[[ "$expected_owner_pid" =~ ^[0-9]+$ && -n "$expected_created_at" ]] || return 1
+	command -v python3 >/dev/null 2>&1 || return 1
+	git_path=$(command -v git) || return 1
+	[[ -f "$owner_remove_helper" && ! -L "$owner_remove_helper" ]] || return 1
+	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 1
+	_init_registry_db || return 1
+	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
+	[[ -d "$wt_path" && ! -L "$wt_path" ]] || return 1
+	if _wt_path_is_canonical "$wt_path"; then
+		return 1
+	fi
+	repository_root=$(cd "$repository_root" 2>/dev/null && pwd -P) || return 1
+	"$git_path" -C "$repository_root" rev-parse --git-common-dir >/dev/null 2>&1 || return 1
+
+	python3 "$owner_remove_helper" "$WORKTREE_REGISTRY_DB" "$wt_path" "$repository_root" "$git_path" \
+		"$expected_branch" "$expected_owner_pid" "$expected_owner_session" \
+		"$expected_owner_batch" "$expected_task_id" "$expected_created_at" || return 1
+	return 0
+}
+
 unregister_worktree_if_owner_pid() {
 	local wt_path="$1"
 	local expected_owner_pid="$2"
@@ -800,6 +840,61 @@ unregister_worktree_if_owner_pid() {
 		SELECT changes();
 	" 2>/dev/null || printf '0')
 	[[ "$changed" == "1" ]] || return 1
+	return 0
+}
+
+# Delete an ownership row only when its complete lease contract still matches.
+# This atomic compare-and-delete prevents cleanup failure paths from erasing a
+# replacement owner that reused the same process ID.
+unregister_worktree_if_owner_contract() {
+	local wt_path="$1"
+	local expected_owner_pid="$2"
+	local expected_owner_session="$3"
+	local expected_task_id="$4"
+	local changed="0"
+
+	[[ "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
+	[[ -n "$expected_owner_session" && -n "$expected_task_id" ]] || return 1
+	command -v sqlite3 >/dev/null 2>&1 || return 1
+	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 1
+	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
+	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+		DELETE FROM worktree_owners
+		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
+		  AND owner_pid = ${expected_owner_pid}
+		  AND owner_session = '$(_wt_sql_escape "$expected_owner_session")'
+		  AND task_id = '$(_wt_sql_escape "$expected_task_id")';
+		SELECT changes();
+	" 2>/dev/null) || return 1
+	[[ "$changed" == "1" ]] || return 1
+	return 0
+}
+
+# Return success only when the registry contains the complete expected owner
+# contract. Callers use this positive proof after acquiring destructive leases;
+# missing, replaced, malformed, or unreadable registry evidence must fail closed.
+worktree_has_exact_owner_contract() {
+	local wt_path="$1"
+	local expected_owner_pid="$2"
+	local expected_owner_session="$3"
+	local expected_task_id="$4"
+	local exact_match=""
+
+	[[ "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
+	[[ -n "$expected_owner_session" && -n "$expected_task_id" ]] || return 1
+	command -v sqlite3 >/dev/null 2>&1 || return 1
+	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 1
+	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
+	exact_match=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+		SELECT 1
+		FROM worktree_owners
+		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
+		  AND owner_pid = ${expected_owner_pid}
+		  AND owner_session = '$(_wt_sql_escape "$expected_owner_session")'
+		  AND task_id = '$(_wt_sql_escape "$expected_task_id")'
+		LIMIT 1;
+	" 2>/dev/null) || return 1
+	[[ "$exact_match" == "1" ]] || return 1
 	return 0
 }
 

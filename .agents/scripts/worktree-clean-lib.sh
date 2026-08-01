@@ -36,6 +36,8 @@ _WORKTREE_CLEAN_LIB_LOADED=1
 _WT_CLEAN_DEFERRED_MARKER=".agents/.full-loop-cleanup-deferred"
 _WT_CLEAN_DEFERRED_OWNER_PID=""
 _WT_CLEAN_REASON_OWNED_SKIP="owned-skip"
+_WT_CLEAN_REMOVAL_LEASE_SESSION="cleanup:$$"
+_WT_CLEAN_REMOVAL_LEASE_TASK="worktree-removal"
 
 # SCRIPT_DIR fallback — covers sourcing from test harnesses or direct invocation
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -88,28 +90,34 @@ _clean_acquire_removal_lease() {
 	local wt_branch="$2"
 	declare -F claim_worktree_ownership >/dev/null 2>&1 || return 1
 	claim_worktree_ownership "$wt_path" "$wt_branch" \
-		--owner-pid "$$" --session "cleanup:$$" --task "worktree-removal" >/dev/null 2>&1 || return 1
+		--owner-pid "$$" --session "$_WT_CLEAN_REMOVAL_LEASE_SESSION" \
+		--task "$_WT_CLEAN_REMOVAL_LEASE_TASK" >/dev/null 2>&1 || return 1
 	local receipt_path=""
 	if declare -F full_loop_cleanup_receipt_for_worktree >/dev/null 2>&1; then
 		receipt_path=$(full_loop_cleanup_receipt_for_worktree "$wt_path" 2>/dev/null || true)
 	fi
 	if [[ -n "$receipt_path" ]] && ! full_loop_transition_cleanup_receipt "$receipt_path" "$_FULL_LOOP_CLEANUP_LEASED" "$$"; then
-		unregister_worktree_if_owner_pid "$wt_path" "$$" 2>/dev/null || true
+		_clean_release_removal_lease "$wt_path" || true
 		return 1
 	fi
 	return 0
 }
 
-_clean_removal_lease_owned_by_others() {
+_clean_has_exact_removal_lease() {
 	local wt_path="$1"
-	if declare -F is_worktree_owned_by_others_for_pid >/dev/null 2>&1; then
-		is_worktree_owned_by_others_for_pid "$wt_path" "$$"
-		return $?
-	fi
-	# Compatibility for focused tests and older embedders that stub only the
-	# generic ownership API. Production registry loads always use the exact PID.
-	is_worktree_owned_by_others "$wt_path"
-	return $?
+	declare -F worktree_has_exact_owner_contract >/dev/null 2>&1 || return 1
+	worktree_has_exact_owner_contract "$wt_path" "$$" \
+		"$_WT_CLEAN_REMOVAL_LEASE_SESSION" "$_WT_CLEAN_REMOVAL_LEASE_TASK" || return 1
+	return 0
+}
+
+_clean_release_removal_lease() {
+	local wt_path="$1"
+	declare -F unregister_worktree_if_owner_contract >/dev/null 2>&1 || return 1
+	unregister_worktree_if_owner_contract "$wt_path" "$$" \
+		"$_WT_CLEAN_REMOVAL_LEASE_SESSION" "$_WT_CLEAN_REMOVAL_LEASE_TASK" \
+		>/dev/null 2>&1 || return 1
+	return 0
 }
 
 _clean_terminal_owner_blocks_cleanup() {
@@ -1082,7 +1090,7 @@ _clean_degraded_visibility_fallback_allowed() {
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "active-claim" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
 		return 1
 	fi
-	if _clean_removal_lease_owned_by_others "$worktree_path"; then
+	if ! _clean_has_exact_removal_lease "$worktree_path"; then
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "$_WT_CLEAN_REASON_OWNED_SKIP" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
 		return 1
 	fi
@@ -1102,6 +1110,39 @@ _clean_degraded_visibility_fallback_allowed() {
 	return 1
 }
 
+_clean_remove_recoverably_after_lease() {
+	local worktree_path="$1"
+	local audit_context="$2"
+	local recoverable_archive=""
+
+	if ! _clean_archive_worktree_recoverably "$worktree_path"; then
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
+			"recoverable-archive-failed" "$_WT_CLEAN_MODE_SKIPPED" \
+			"$audit_context recoverable_backends=${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
+		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
+		return 1
+	fi
+	recoverable_archive="$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH"
+	if [[ -z "$recoverable_archive" && ! -e "$worktree_path" && ! -L "$worktree_path" ]]; then
+		return 0
+	fi
+	if ! _clean_has_exact_removal_lease "$worktree_path"; then
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
+			"cleanup-lease-changed-after-archive" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
+		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
+		return 1
+	fi
+	if ! remove_archived_worktree_path "$worktree_path" "$recoverable_archive" \
+		"$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED" "$audit_context" \
+		"$_WT_CLEAN_BOOL_TRUE" "$_WT_CLEAN_BOOL_FALSE"; then
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
+			"recoverable-remove-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
+		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
+		return 1
+	fi
+	return 0
+}
+
 _clean_remove_classified_worktree() {
 	local worktree_path="$1"
 	local worktree_branch="$2"
@@ -1116,7 +1157,6 @@ _clean_remove_classified_worktree() {
 	local guard_status=0
 	local audit_reason="$_WT_CLEAN_REASON_BRANCH_MERGED"
 	local completed_mode="$_WT_CLEAN_MODE_PERMANENT"
-	local recoverable_archive=""
 	_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_SKIPPED"
 
 	if worktree_removal_guard "$worktree_path" "$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED"; then
@@ -1131,7 +1171,7 @@ _clean_remove_classified_worktree() {
 		fi
 		worktree_has_changes "$worktree_path" && return 1
 		_branch_has_active_interactive_claim "$worktree_path" "$worktree_branch" && return 1
-		_clean_removal_lease_owned_by_others "$worktree_path" && return 1
+		_clean_has_exact_removal_lease "$worktree_path" || return 1
 	elif [[ "$guard_status" -ne 0 ]]; then
 		return "$guard_status"
 	fi
@@ -1140,26 +1180,9 @@ _clean_remove_classified_worktree() {
 		use_force="$_WT_CLEAN_BOOL_TRUE"
 	fi
 	if [[ "$removal_mode" == "$_WT_CLEAN_MODE_RECOVERABLE" ]]; then
-		if _clean_archive_worktree_recoverably "$worktree_path"; then
-			recoverable_archive="$_WT_CLEAN_RECOVERABLE_ARCHIVE_PATH"
-			if [[ -z "$recoverable_archive" && ! -e "$worktree_path" && ! -L "$worktree_path" ]]; then
-				removed="$_WT_CLEAN_BOOL_TRUE"
-			elif ! remove_archived_worktree_path "$worktree_path" "$recoverable_archive" \
-				"$_WTAR_WH_CALLER" "$_WT_CLEAN_REASON_BRANCH_MERGED" "$audit_context" \
-				"true" "false"; then
-				log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" \
-					"recoverable-remove-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
-				_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
-				return 1
-			else
-				removed="$_WT_CLEAN_BOOL_TRUE"
-			fi
-			completed_mode="$_WT_CLEAN_MODE_RECOVERABLE"
-		else
-			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "recoverable-archive-failed" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context recoverable_backends=${_WT_CLEAN_RECOVERABLE_FAILURE_DETAIL:-unknown}"
-			_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
-			return 1
-		fi
+		_clean_remove_recoverably_after_lease "$worktree_path" "$audit_context" || return 1
+		removed="$_WT_CLEAN_BOOL_TRUE"
+		completed_mode="$_WT_CLEAN_MODE_RECOVERABLE"
 	elif [[ "$preserve_branch" == "$_WT_CLEAN_BOOL_TRUE" ]]; then
 		if _clean_remove_preserving_branch "$worktree_path" "$worktree_branch" "$audit_context"; then
 			removed="$_WT_CLEAN_BOOL_TRUE"
@@ -1189,7 +1212,7 @@ _clean_remove_classified_worktree() {
 		_WT_CLEAN_LAST_REMOVAL_OUTCOME="$_WT_CLEAN_OUTCOME_FAILED"
 		return 1
 	fi
-	unregister_worktree "$worktree_path"
+	_clean_release_removal_lease "$worktree_path" || true
 	if [[ "$preserve_branch" != "$_WT_CLEAN_BOOL_TRUE" ]]; then
 		localdev_auto_branch_rm "$worktree_branch"
 		git branch -D "$worktree_branch" 2>/dev/null || true
@@ -1230,7 +1253,7 @@ _clean_remove_candidate_after_lease() {
 		removal_mode="$_WT_CLEAN_MODE_RECOVERABLE"
 		recovery_authorized="$_WT_CLEAN_BOOL_TRUE"
 	elif [[ "$guard_status" -ne 0 ]]; then
-		unregister_worktree_if_owner_pid "$worktree_path" "$$" 2>/dev/null || true
+		_clean_release_removal_lease "$worktree_path" || true
 		echo -e "${YELLOW}Skipped $worktree_branch - removal guard refused path${NC}" >&2
 		return 1
 	fi
@@ -1245,7 +1268,7 @@ _clean_remove_candidate_after_lease() {
 		_clean_remove_classified_worktree "$worktree_path" "$worktree_branch" "$force_merged" "$preserve_branch" "$audit_context" "$main_wt_path" "$_WT_CLEAN_MODE_RECOVERABLE" "$_WT_CLEAN_BOOL_TRUE"; then
 		return 0
 	fi
-	unregister_worktree_if_owner_pid "$worktree_path" "$$" 2>/dev/null || true
+	_clean_release_removal_lease "$worktree_path" || true
 	return 1
 }
 

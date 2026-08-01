@@ -61,7 +61,7 @@ setup_test_env() {
 	export TEST_PR_HEAD_SHA
 	cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
 if [[ "$*" == *"--detach"* ]]; then
 	sleep "${TEST_WORKER_SLEEP_SECONDS:-2}" >/dev/null 2>&1 &
 	printf 'Dispatched PID: %s\n' "$!"
@@ -574,18 +574,19 @@ test_ci_repair_dedupes_identical_evidence_for_same_head() {
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 
-	local edit_count state_count worktree_count dispatch_count active_count
+	local edit_count state_count worktree_count dispatch_count active_count ownership_mode_count
 	edit_count=$(grep -c 'gh issue edit .*--body' "$GH_LOG" || true)
 	[[ "$edit_count" =~ ^[0-9]+$ ]] || edit_count=0
 	state_count=$(find "$AIDEVOPS_CI_REPAIR_STATE_DIR" -name state.json -type f | wc -l | tr -d ' ')
 	worktree_count=$(grep -c '^worktree add ' "$GH_LOG" || true)
 	dispatch_count=$(grep -c 'dispatched in-place CI repair' "$LOGFILE" || true)
 	active_count=$(grep -c 'in-place CI repair already active' "$LOGFILE" || true)
+	ownership_mode_count=$(grep -c '|linked-issue|' "$GH_LOG" || true)
 
 	if [[ "$edit_count" -ne 0 || "$state_count" -ne 1 || "$worktree_count" -ne 1 ]]; then
 		print_result "CI repair dedupes identical evidence by repo/PR/head" 1 "issue_edits=${edit_count}, states=${state_count}, worktrees=${worktree_count}"
-	elif [[ "$dispatch_count" -ne 1 || "$active_count" -ne 1 ]]; then
-		print_result "CI repair distinguishes dispatch from a live lease" 1 "dispatches=${dispatch_count}, active=${active_count}"
+	elif [[ "$dispatch_count" -ne 1 || "$active_count" -ne 1 || "$ownership_mode_count" -ne 1 ]]; then
+		print_result "CI repair distinguishes dispatch from a live lease" 1 "dispatches=${dispatch_count}, active=${active_count}, ownership_modes=${ownership_mode_count}"
 	else
 		print_result "CI repair dedupes and reports a live lease without false dispatch" 0
 	fi

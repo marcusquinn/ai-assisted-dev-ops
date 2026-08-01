@@ -18,6 +18,8 @@ _FULL_LOOP_EXECUTOR_COMPLETE="COMPLETE"
 _FULL_LOOP_RECEIPT_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED="superseded"
+_FULL_LOOP_RECEIPT_PATH_RECREATED="SUPERSEDED_BY_PATH_RECREATION"
+_FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA="aidevops.full-loop.recreated-receipts.transaction/v1"
 _FULL_LOOP_RECEIPT_LOCK=""
 
 _full_loop_validate_aggregate_evidence() {
@@ -107,6 +109,170 @@ _full_loop_process_identity() {
 	return 0
 }
 
+_full_loop_recreated_receipt_transaction_path_is_safe() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+
+	[[ -n "$receipt_dir" && -n "$transaction_dir" ]] || return 1
+	case "$transaction_dir" in
+	"${receipt_dir}"/.recreated-receipts.*) ;;
+	*) return 1 ;;
+	esac
+	[[ -d "$transaction_dir" && ! -L "$transaction_dir" ]] || return 1
+	return 0
+}
+
+_full_loop_remove_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+
+	_full_loop_recreated_receipt_transaction_path_is_safe "$receipt_dir" "$transaction_dir" || return 1
+	rm -rf "$transaction_dir" || return 1
+	[[ ! -e "$transaction_dir" && ! -L "$transaction_dir" ]] || return 1
+	return 0
+}
+
+_full_loop_recreated_receipt_transaction_state() {
+	local transaction_dir="$1"
+	local marker=""
+	local marker_path=""
+	local selected_state="none"
+	local state_count=0
+
+	[[ -d "$transaction_dir" && ! -L "$transaction_dir" ]] || return 1
+	for marker in prepared committed rolled-back; do
+		marker_path="${transaction_dir}/state.${marker}"
+		[[ ! -L "$marker_path" ]] || return 1
+		if [[ -f "$marker_path" ]]; then
+			selected_state="$marker"
+			state_count=$((state_count + 1))
+		elif [[ -e "$marker_path" ]]; then
+			return 1
+		fi
+	done
+	[[ "$state_count" -le 1 ]] || return 1
+	printf '%s\n' "$selected_state"
+	return 0
+}
+
+_full_loop_recreated_receipt_transaction_schema_matches() {
+	local transaction_dir="$1"
+	local schema_path="${transaction_dir}/schema"
+	local schema=""
+
+	[[ -f "$schema_path" && ! -L "$schema_path" ]] || return 1
+	IFS= read -r schema <"$schema_path" || return 1
+	[[ "$schema" == "$_FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA" ]] || return 1
+	return 0
+}
+
+_full_loop_receipt_file_is_json_object() {
+	local receipt_path="$1"
+
+	jq -e 'type == "object"' "$receipt_path" >/dev/null 2>&1
+	return $?
+}
+
+_full_loop_validate_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+	local backup_dir="${transaction_dir}/backup"
+	local staged_dir="${transaction_dir}/staged"
+	local publish_dir="${transaction_dir}/publish"
+	local restore_dir="${transaction_dir}/restore"
+	local required_dir=""
+	local backup_path=""
+	local staged_path=""
+	local destination_path=""
+	local receipt_name=""
+	local receipt_count=0
+
+	_full_loop_recreated_receipt_transaction_path_is_safe "$receipt_dir" "$transaction_dir" || return 1
+	_full_loop_recreated_receipt_transaction_schema_matches "$transaction_dir" || return 1
+	for required_dir in "$backup_dir" "$staged_dir" "$publish_dir" "$restore_dir"; do
+		[[ -d "$required_dir" && ! -L "$required_dir" ]] || return 1
+	done
+	for backup_path in "$backup_dir"/*.json; do
+		[[ -e "$backup_path" || -L "$backup_path" ]] || continue
+		[[ -f "$backup_path" && ! -L "$backup_path" ]] || return 1
+		receipt_name="${backup_path##*/}"
+		staged_path="${staged_dir}/${receipt_name}"
+		destination_path="${receipt_dir}/${receipt_name}"
+		[[ -f "$staged_path" && ! -L "$staged_path" ]] || return 1
+		[[ ! -L "$destination_path" ]] || return 1
+		[[ ! -e "$destination_path" || -f "$destination_path" ]] || return 1
+		_full_loop_receipt_file_is_json_object "$backup_path" || return 1
+		_full_loop_receipt_file_is_json_object "$staged_path" || return 1
+		receipt_count=$((receipt_count + 1))
+	done
+	[[ "$receipt_count" -gt 0 ]] || return 1
+	for staged_path in "$staged_dir"/*.json; do
+		[[ -e "$staged_path" || -L "$staged_path" ]] || continue
+		[[ -f "$staged_path" && ! -L "$staged_path" ]] || return 1
+		receipt_name="${staged_path##*/}"
+		[[ -f "${backup_dir}/${receipt_name}" && ! -L "${backup_dir}/${receipt_name}" ]] || return 1
+	done
+	return 0
+}
+
+_full_loop_rollback_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+	local backup_dir="${transaction_dir}/backup"
+	local restore_dir="${transaction_dir}/restore"
+	local backup_path=""
+	local restore_path=""
+	local destination_path=""
+	local receipt_name=""
+	local transaction_state=""
+
+	_full_loop_validate_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" || return 1
+	transaction_state=$(_full_loop_recreated_receipt_transaction_state "$transaction_dir") || return 1
+	[[ "$transaction_state" == "prepared" ]] || return 1
+	for backup_path in "$backup_dir"/*.json; do
+		[[ -f "$backup_path" && ! -L "$backup_path" ]] || return 1
+		receipt_name="${backup_path##*/}"
+		restore_path="${restore_dir}/${receipt_name}"
+		destination_path="${receipt_dir}/${receipt_name}"
+		rm -f "$restore_path" || return 1
+		cp "$backup_path" "$restore_path" || return 1
+		cmp -s "$backup_path" "$restore_path" || return 1
+		if ! mv "$restore_path" "$destination_path"; then
+			rm -f "$restore_path" || true
+			return 1
+		fi
+		cmp -s "$backup_path" "$destination_path" || return 1
+	done
+	if ! mv "${transaction_dir}/state.prepared" "${transaction_dir}/state.rolled-back"; then
+		return 1
+	fi
+	_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+	return 0
+}
+
+_full_loop_recover_recreated_receipt_transactions() {
+	local receipt_dir="$1"
+	local transaction_dir=""
+	local transaction_state=""
+
+	[[ -d "$receipt_dir" && ! -L "$receipt_dir" ]] || return 1
+	for transaction_dir in "$receipt_dir"/.recreated-receipts.*; do
+		[[ -e "$transaction_dir" || -L "$transaction_dir" ]] || continue
+		_full_loop_recreated_receipt_transaction_path_is_safe "$receipt_dir" "$transaction_dir" || return 1
+		transaction_state=$(_full_loop_recreated_receipt_transaction_state "$transaction_dir") || return 1
+		case "$transaction_state" in
+		prepared)
+			_full_loop_rollback_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" || return 1
+			;;
+		committed | rolled-back | none)
+			_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" || return 1
+			;;
+		*) return 1 ;;
+		esac
+	done
+	return 0
+}
+
 _full_loop_receipt_lock_acquire() {
 	local receipt_dir=""
 	local lock_dir=""
@@ -122,6 +288,11 @@ _full_loop_receipt_lock_acquire() {
 				return 1
 			}
 			_FULL_LOOP_RECEIPT_LOCK="$lock_dir"
+			if declare -F _full_loop_recover_recreated_receipt_transactions >/dev/null 2>&1 &&
+				! _full_loop_recover_recreated_receipt_transactions "$receipt_dir"; then
+				_full_loop_receipt_lock_release
+				return 1
+			fi
 			return 0
 		fi
 		owner_pid=""
@@ -245,7 +416,7 @@ full_loop_write_cleanup_deferred() {
 	return 0
 }
 
-full_loop_cleanup_receipt_for_worktree() {
+_full_loop_cleanup_receipt_for_worktree_unlocked() {
 	local worktree="$1"
 	local receipt_dir=""
 	local receipt_path=""
@@ -260,7 +431,10 @@ full_loop_cleanup_receipt_for_worktree() {
 	[[ -d "$receipt_dir" ]] || return 1
 	for receipt_path in "$receipt_dir"/*.json; do
 		[[ -f "$receipt_path" ]] || continue
-		if jq -e --arg worktree "$worktree" '.worktree == $worktree' "$receipt_path" >/dev/null 2>&1; then
+		if jq -e --arg worktree "$worktree" --arg superseded "$_FULL_LOOP_RECEIPT_PATH_RECREATED" '
+			.worktree == $worktree
+			and ((.receipt_disposition.state // "") != $superseded)
+		' "$receipt_path" >/dev/null 2>&1; then
 			candidate_created_at=$(jq -r '.created_at // empty' "$receipt_path" 2>/dev/null || true)
 			candidate_is_migrated=0
 			jq -e '.migration.from_repository | type == "string" and length > 0' "$receipt_path" >/dev/null 2>&1 && candidate_is_migrated=1
@@ -273,6 +447,322 @@ full_loop_cleanup_receipt_for_worktree() {
 		fi
 	done
 	[[ -n "$selected_path" ]] || return 1
+	printf '%s\n' "$selected_path"
+	return 0
+}
+
+full_loop_cleanup_receipt_for_worktree() {
+	local worktree="$1"
+	local receipt_dir=""
+	local selected_path=""
+	local lookup_status=0
+
+	[[ -n "$worktree" ]] || return 1
+	receipt_dir=$(_full_loop_cleanup_receipt_dir) || return 1
+	[[ -d "$receipt_dir" ]] || return 1
+	_full_loop_receipt_lock_acquire || return 1
+	selected_path=$(_full_loop_cleanup_receipt_for_worktree_unlocked "$worktree") || lookup_status=$?
+	_full_loop_receipt_lock_release
+	[[ "$lookup_status" -eq 0 && -n "$selected_path" ]] || return 1
+	printf '%s\n' "$selected_path"
+	return 0
+}
+
+_full_loop_valid_receipt_file_count() {
+	local receipt_dir="$1"
+	local receipt_path=""
+	local receipt_file_count=0
+
+	for receipt_path in "$receipt_dir"/*.json; do
+		[[ -f "$receipt_path" ]] || continue
+		[[ ! -L "$receipt_path" ]] || return 1
+		_full_loop_receipt_file_is_json_object "$receipt_path" || return 1
+		receipt_file_count=$((receipt_file_count + 1))
+	done
+	printf '%s\n' "$receipt_file_count"
+	return 0
+}
+
+_full_loop_recreated_worktree_identity_matches() {
+	local worktree="$1"
+	local branch="$2"
+	local head_sha="$3"
+	local expected_root=""
+	local actual_root=""
+	local actual_branch=""
+	local actual_head=""
+
+	expected_root=$(cd "$worktree" 2>/dev/null && pwd -P) || return 1
+	actual_root=$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null) || return 1
+	actual_root=$(cd "$actual_root" 2>/dev/null && pwd -P) || return 1
+	actual_branch=$(git -C "$worktree" branch --show-current 2>/dev/null) || return 1
+	actual_head=$(git -C "$worktree" rev-parse --verify HEAD 2>/dev/null) || return 1
+	[[ "$actual_root" == "$expected_root" && "$actual_branch" == "$branch" && "$actual_head" == "$head_sha" ]] || return 1
+	return 0
+}
+
+_full_loop_active_recreated_receipts_are_cleaned() {
+	local receipt_dir="$1"
+	local worktree="$2"
+	local receipt_path=""
+	local state=""
+	local matching_count=0
+
+	for receipt_path in "$receipt_dir"/*.json; do
+		[[ -f "$receipt_path" ]] || continue
+		if ! jq -e --arg worktree "$worktree" --arg superseded "$_FULL_LOOP_RECEIPT_PATH_RECREATED" '
+			.worktree == $worktree
+			and ((.receipt_disposition.state // "") != $superseded)
+		' "$receipt_path" >/dev/null 2>&1; then
+			continue
+		fi
+		state=$(jq -r '.resource_cleanup_state // empty' "$receipt_path" 2>/dev/null) || return 1
+		[[ "$state" == "$_FULL_LOOP_CLEANUP_CLEANED" ]] || return 1
+		matching_count=$((matching_count + 1))
+	done
+	[[ "$matching_count" -gt 0 ]] || return 1
+	return 0
+}
+
+_full_loop_initialize_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local transaction_dir=""
+
+	transaction_dir=$(mktemp -d "${receipt_dir}/.recreated-receipts.XXXXXX") || return 1
+	chmod 700 "$transaction_dir" || {
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	}
+	printf '%s\n' "$_FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA" >"${transaction_dir}/schema" || {
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	}
+	mkdir -p "${transaction_dir}/backup" "${transaction_dir}/staged" \
+		"${transaction_dir}/publish" "${transaction_dir}/restore" || {
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	}
+	printf '%s\n' "$transaction_dir"
+	return 0
+}
+
+_full_loop_stage_recreated_receipt_file() {
+	local receipt_path="$1"
+	local transaction_dir="$2"
+	local worktree="$3"
+	local branch="$4"
+	local head_sha="$5"
+	local owner_pid="$6"
+	local owner_session="$7"
+	local now="$8"
+	local generation_id="$9"
+	local receipt_name="${receipt_path##*/}"
+	local backup_path="${transaction_dir}/backup/${receipt_name}"
+	local staged_path="${transaction_dir}/staged/${receipt_name}"
+
+	cp "$receipt_path" "$backup_path" || return 1
+	cmp -s "$receipt_path" "$backup_path" || return 1
+	jq --arg disposition "$_FULL_LOOP_RECEIPT_PATH_RECREATED" \
+		--arg now "$now" --arg generation_id "$generation_id" \
+		--arg worktree "$worktree" --arg branch "$branch" --arg head "$head_sha" \
+		--argjson owner_pid "$owner_pid" --arg owner_session "$owner_session" '
+		.receipt_disposition = {
+			state:$disposition,
+			reason:"worktree-path-recreated",
+			superseded_at:$now,
+			replacement_generation:{
+				id:$generation_id,
+				worktree:$worktree,
+				branch:$branch,
+				head:$head,
+				owner:{pid:$owner_pid,session:$owner_session}
+			}
+		}
+		| .updated_at = $now
+	' "$receipt_path" >"$staged_path" || return 1
+	jq -e --arg disposition "$_FULL_LOOP_RECEIPT_PATH_RECREATED" \
+		--arg generation_id "$generation_id" --arg worktree "$worktree" \
+		--arg branch "$branch" --arg head "$head_sha" --argjson owner_pid "$owner_pid" \
+		--arg owner_session "$owner_session" '
+		.receipt_disposition.state == $disposition
+		and .receipt_disposition.replacement_generation.id == $generation_id
+		and .receipt_disposition.replacement_generation.worktree == $worktree
+		and .receipt_disposition.replacement_generation.branch == $branch
+		and .receipt_disposition.replacement_generation.head == $head
+		and .receipt_disposition.replacement_generation.owner.pid == $owner_pid
+		and .receipt_disposition.replacement_generation.owner.session == $owner_session
+	' "$staged_path" >/dev/null 2>&1 || return 1
+	return 0
+}
+
+_full_loop_prepare_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local worktree="$2"
+	local branch="$3"
+	local head_sha="$4"
+	local owner_pid="$5"
+	local owner_session="$6"
+	local now="$7"
+	local generation_id="${head_sha}:${owner_pid}:${now}"
+	local transaction_dir=""
+	local receipt_path=""
+	local matching_count=0
+
+	transaction_dir=$(_full_loop_initialize_recreated_receipt_transaction "$receipt_dir") || return 1
+	for receipt_path in "$receipt_dir"/*.json; do
+		[[ -f "$receipt_path" ]] || continue
+		if [[ -L "$receipt_path" ]]; then
+			_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+			return 1
+		fi
+		if ! jq -e --arg worktree "$worktree" --arg cleaned "$_FULL_LOOP_CLEANUP_CLEANED" \
+			--arg superseded "$_FULL_LOOP_RECEIPT_PATH_RECREATED" '
+			.worktree == $worktree
+			and .resource_cleanup_state == $cleaned
+			and ((.receipt_disposition.state // "") != $superseded)
+		' "$receipt_path" >/dev/null 2>&1; then
+			continue
+		fi
+		if ! _full_loop_stage_recreated_receipt_file "$receipt_path" "$transaction_dir" \
+			"$worktree" "$branch" "$head_sha" "$owner_pid" "$owner_session" "$now" "$generation_id"; then
+			_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+			return 1
+		fi
+		matching_count=$((matching_count + 1))
+	done
+	if [[ "$matching_count" -eq 0 ]] ||
+		! _full_loop_validate_recreated_receipt_transaction "$receipt_dir" "$transaction_dir"; then
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	fi
+	: >"${transaction_dir}/state.prepared.tmp" || {
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	}
+	if ! mv "${transaction_dir}/state.prepared.tmp" "${transaction_dir}/state.prepared"; then
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 1
+	fi
+	printf '%s\n' "$transaction_dir"
+	return 0
+}
+
+_full_loop_publish_recreated_receipt_file() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+	local receipt_name="$3"
+	local staged_path="${transaction_dir}/staged/${receipt_name}"
+	local publish_path="${transaction_dir}/publish/${receipt_name}"
+	local destination_path="${receipt_dir}/${receipt_name}"
+
+	rm -f "$publish_path" || return 1
+	cp "$staged_path" "$publish_path" || return 1
+	cmp -s "$staged_path" "$publish_path" || return 1
+	mv "$publish_path" "$destination_path" || return 1
+	cmp -s "$staged_path" "$destination_path" || return 1
+	return 0
+}
+
+_full_loop_publish_recreated_receipt_transaction() {
+	local receipt_dir="$1"
+	local transaction_dir="$2"
+	local backup_path=""
+	local receipt_name=""
+	local transaction_state=""
+
+	_full_loop_validate_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" || return 1
+	transaction_state=$(_full_loop_recreated_receipt_transaction_state "$transaction_dir") || return 1
+	[[ "$transaction_state" == "prepared" ]] || return 1
+	for backup_path in "$transaction_dir"/backup/*.json; do
+		receipt_name="${backup_path##*/}"
+		if ! _full_loop_publish_recreated_receipt_file "$receipt_dir" "$transaction_dir" "$receipt_name"; then
+			_full_loop_rollback_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+			return 1
+		fi
+	done
+	if mv "${transaction_dir}/state.prepared" "${transaction_dir}/state.committed"; then
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 0
+	fi
+	transaction_state=$(_full_loop_recreated_receipt_transaction_state "$transaction_dir" 2>/dev/null || true)
+	if [[ "$transaction_state" == "committed" ]]; then
+		_full_loop_remove_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+		return 0
+	fi
+	_full_loop_rollback_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" >/dev/null 2>&1 || true
+	return 1
+}
+
+_full_loop_supersede_recreated_receipt_files() {
+	local receipt_dir="$1"
+	local worktree="$2"
+	local branch="$3"
+	local head_sha="$4"
+	local owner_pid="$5"
+	local owner_session="$6"
+	local now="$7"
+	local transaction_dir=""
+
+	transaction_dir=$(_full_loop_prepare_recreated_receipt_transaction "$receipt_dir" "$worktree" "$branch" \
+		"$head_sha" "$owner_pid" "$owner_session" "$now") || return 1
+	_full_loop_publish_recreated_receipt_transaction "$receipt_dir" "$transaction_dir" || return 1
+	return 0
+}
+
+# Preserve terminal cleanup history while retiring it as active lifecycle
+# evidence when a manual add creates a new worktree generation at the same path.
+# Every unsuperseded receipt for the path must already be CLEANED; an active
+# non-terminal lifecycle is a conflict and fails closed.
+# Args: $1=worktree, $2=branch, $3=head SHA, $4=owner PID, $5=owner session
+# Prints the previously selected receipt path on success.
+# Returns: 0 superseded, 1 conflict/mutation failure, 2 no matching receipt.
+full_loop_supersede_cleaned_receipts_for_recreated_worktree() {
+	local worktree="$1"
+	local branch="$2"
+	local head_sha="$3"
+	local owner_pid="$4"
+	local owner_session="$5"
+	local receipt_dir=""
+	local selected_path=""
+	local now=""
+	local receipt_file_count=0
+
+	[[ -d "$worktree" && ! -L "$worktree" && -n "$branch" ]] || return 1
+	[[ "$head_sha" =~ ^[0-9a-fA-F]{40,64}$ && "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	receipt_dir=$(_full_loop_cleanup_receipt_dir) || return 1
+	[[ -d "$receipt_dir" ]] || return 2
+	command -v git >/dev/null 2>&1 || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+	_full_loop_recreated_worktree_identity_matches "$worktree" "$branch" "$head_sha" || return 1
+	_full_loop_receipt_lock_acquire || return 1
+	receipt_file_count=$(_full_loop_valid_receipt_file_count "$receipt_dir") || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	if [[ "$receipt_file_count" -eq 0 ]]; then
+		_full_loop_receipt_lock_release
+		return 2
+	fi
+	selected_path=$(_full_loop_cleanup_receipt_for_worktree_unlocked "$worktree" 2>/dev/null) || {
+		_full_loop_receipt_lock_release
+		return 2
+	}
+	if ! _full_loop_recreated_worktree_identity_matches "$worktree" "$branch" "$head_sha" ||
+		! _full_loop_active_recreated_receipts_are_cleaned "$receipt_dir" "$worktree"; then
+		_full_loop_receipt_lock_release
+		return 1
+	fi
+
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
+		_full_loop_receipt_lock_release
+		return 1
+	}
+	if ! _full_loop_supersede_recreated_receipt_files "$receipt_dir" "$worktree" "$branch" \
+		"$head_sha" "$owner_pid" "$owner_session" "$now"; then
+		_full_loop_receipt_lock_release
+		return 1
+	fi
+	_full_loop_receipt_lock_release
 	printf '%s\n' "$selected_path"
 	return 0
 }
@@ -332,12 +822,13 @@ full_loop_transition_cleanup_receipt() {
 		_full_loop_receipt_lock_release
 		return 1
 	}
-	jq --arg state "$target_state" --arg now "$now" --arg lease_pid "$lease_pid" '
+	jq --arg state "$target_state" --arg cleaned "$_FULL_LOOP_CLEANUP_CLEANED" \
+		--arg now "$now" --arg lease_pid "$lease_pid" '
 		.resource_cleanup_state = $state
 		| .updated_at = $now
 		| if $state == "CLEANUP_LEASED" then
 			.cleanup_lease = {state:"acquired",pid:($lease_pid | tonumber),acquired_at:$now}
-		  elif $state == "CLEANED" then
+		  elif $state == $cleaned then
 			.cleanup_lease.state = "released" | .cleaned_at = $now
 		  else . end
 	' "$receipt_path" >"${receipt_path}.tmp.$$" || {

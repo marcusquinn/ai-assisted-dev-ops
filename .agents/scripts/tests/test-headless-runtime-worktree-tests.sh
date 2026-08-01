@@ -964,14 +964,16 @@ test_triage_prepare_arms_non_worker_exit_cleanup() {
 	return 0
 }
 
-test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
+test_pr_checkpoint_runtime_fence_uses_exact_envelope() {
 	local ownership_helper="${TEST_ROOT}/linked-issue-ownership-helper.sh"
 	local calls_file="${TEST_ROOT}/linked-issue-ownership-calls"
 	cat >"$ownership_helper" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"${LINKED_ISSUE_OWNERSHIP_CALLS:?}"
-printf 'WORKER_OWNERSHIP_VALID: linked issue assignment\n'
-exit 0
+printf '%s\n' "$*" >>"${LINKED_ISSUE_OWNERSHIP_CALLS:?}"
+case "${1:-}" in
+verify-pr-checkpoint-target) printf 'PR_CHECKPOINT_TARGET_VALID: exact draft envelope\n'; exit 0 ;;
+esac
+exit 1
 EOF
 	chmod +x "$ownership_helper"
 	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
@@ -980,6 +982,8 @@ EOF
 	export WORKER_REPO_SLUG="owner/repo"
 	export WORKER_GITHUB_LOGIN="expected-runner"
 	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_LINKED_ISSUE="42"
+	export AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE="expected-runner"
 	export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
@@ -991,16 +995,99 @@ EOF
 	calls=$(<"$calls_file")
 	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER LINKED_ISSUE_OWNERSHIP_CALLS \
 		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_GITHUB_LOGIN \
+		AIDEVOPS_PR_REPAIR_NUMBER AIDEVOPS_PR_REPAIR_LINKED_ISSUE AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE AIDEVOPS_PR_REPAIR_HEAD_SHA \
+		AIDEVOPS_PR_REPAIR_HEAD_REF 2>/dev/null || true
+
+	if [[ "$status" -eq 0 ]] &&
+		grep -Fxq 'verify-pr-checkpoint-target 77 owner/repo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa feature/review 42 expected-runner' "$calls_file" &&
+		[[ "$output" == *"PR_CHECKPOINT_TARGET_VALID"* ]]; then
+		print_result "linked-issue PR repair fences exact PR and assignee metadata" 0
+		return 0
+	fi
+	print_result "linked-issue PR repair fences exact PR and assignee metadata" 1 \
+		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	return 0
+}
+
+test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
+	local ownership_helper="${TEST_ROOT}/linked-issue-ownership-helper.sh"
+	local calls_file="${TEST_ROOT}/linked-issue-ownership-calls"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${LINKED_ISSUE_OWNERSHIP_CALLS:?}"
+case "${1:-}" in
+verify-pr-repair-target) printf 'PR_REPAIR_TARGET_VALID: exact open head\n'; exit 0 ;;
+verify-worker-ownership) printf 'WORKER_OWNERSHIP_VALID: linked issue assignment\n'; exit 0 ;;
+esac
+exit 1
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export LINKED_ISSUE_OWNERSHIP_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="42"
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_GITHUB_LOGIN="expected-runner"
+	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+	export AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE="linked-issue"
+	unset DISPATCH_REPO_SLUG AIDEVOPS_PR_REPAIR_LINKED_ISSUE 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER LINKED_ISSUE_OWNERSHIP_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_GITHUB_LOGIN \
+		AIDEVOPS_PR_REPAIR_NUMBER AIDEVOPS_PR_REPAIR_HEAD_SHA AIDEVOPS_PR_REPAIR_HEAD_REF \
+		AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE 2>/dev/null || true
+
+	if [[ "$status" -eq 0 ]] &&
+		grep -Fxq 'verify-pr-repair-target 77 owner/repo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa feature/review 42' "$calls_file" &&
+		grep -Fxq 'verify-worker-ownership 42 owner/repo expected-runner' "$calls_file" &&
+		[[ "$output" == *"PR_REPAIR_TARGET_VALID"* && "$output" == *"WORKER_OWNERSHIP_VALID"* ]]; then
+		print_result "linked-issue PR repair requires exact head and live issue ownership" 0
+		return 0
+	fi
+	print_result "linked-issue PR repair requires exact head and live issue ownership" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
+test_mismatched_pr_repair_contract_fails_closed() {
+	local ownership_helper="${TEST_ROOT}/mismatched-pr-ownership-helper.sh"
+	local calls_file="${TEST_ROOT}/mismatched-pr-ownership-calls"
+	cat >"$ownership_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MISMATCHED_PR_OWNERSHIP_CALLS:?}"
+exit 0
+EOF
+	chmod +x "$ownership_helper"
+	export HEADLESS_RUNTIME_OWNERSHIP_HELPER="$ownership_helper"
+	export MISMATCHED_PR_OWNERSHIP_CALLS="$calls_file"
+	export WORKER_ISSUE_NUMBER="42"
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_GITHUB_LOGIN="expected-runner"
+	export AIDEVOPS_PR_REPAIR_NUMBER="77"
+	export AIDEVOPS_PR_REPAIR_HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	export AIDEVOPS_PR_REPAIR_HEAD_REF="feature/review"
+	unset DISPATCH_REPO_SLUG AIDEVOPS_PR_REPAIR_LINKED_ISSUE \
+		AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE 2>/dev/null || true
+
+	local output=""
+	local status=0
+	output=$(_hrw_verify_dispatch_ownership 2>&1) || status=$?
+	unset HEADLESS_RUNTIME_OWNERSHIP_HELPER MISMATCHED_PR_OWNERSHIP_CALLS \
+		WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_GITHUB_LOGIN \
 		AIDEVOPS_PR_REPAIR_NUMBER AIDEVOPS_PR_REPAIR_HEAD_SHA \
 		AIDEVOPS_PR_REPAIR_HEAD_REF 2>/dev/null || true
 
-	if [[ "$status" -eq 0 && "$calls" == "verify-worker-ownership 42 owner/repo expected-runner" && \
-		"$output" == *"WORKER_OWNERSHIP_VALID"* ]]; then
-		print_result "linked-issue PR repair keeps strict issue ownership fence" 0
+	if [[ "$status" -eq 1 && ! -e "$calls_file" &&
+		"$output" == *"unclassified PR repair ownership contract"* ]]; then
+		print_result "mismatched PR repair contract cannot fall through to issue ownership" 0
 		return 0
 	fi
-	print_result "linked-issue PR repair keeps strict issue ownership fence" 1 \
-		"status=$status calls=${calls:-<empty>} output=${output:-<empty>}"
+	print_result "mismatched PR repair contract cannot fall through to issue ownership" 1 \
+		"status=$status output=${output:-<empty>}"
 	return 0
 }
 

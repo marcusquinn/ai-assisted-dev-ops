@@ -53,6 +53,8 @@ unset _HRFF_SCRIPT_DIR
 # authoritative regardless of reason value.
 readonly _HRFF_FALLBACK_EXIT="process_exit"
 readonly _HRFF_PRELAUNCH_NOT_INVOKED="worker_runtime_not_invoked"
+readonly _HRFF_DEFERRED_CLEANUP_MARKER=".agents/.full-loop-cleanup-deferred"
+readonly _HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC=":(exclude)${_HRFF_DEFERRED_CLEANUP_MARKER}"
 
 # Per-issue transient rate-limit release circuit breaker (t3570 / GH#23102).
 # These defaults intentionally keep the first transient failures visible while
@@ -782,6 +784,51 @@ classify_worker_kill_reason() {
 }
 
 #######################################
+# Remove the runtime-only deferred-cleanup marker from the index.
+#
+# The merge lifecycle writes this marker after the final implementation commit.
+# A worker exit must not turn that process-local ownership sentinel into product
+# history, including when another path staged it before the EXIT trap ran.
+#
+# Args:
+#   $1 = worktree path
+#######################################
+_hrff_unstage_deferred_cleanup_marker() {
+	local work_dir="$1"
+
+	git -C "$work_dir" reset -q HEAD -- "$_HRFF_DEFERRED_CLEANUP_MARKER" >/dev/null 2>&1 || true
+	return 0
+}
+
+#######################################
+# Return dirty status excluding the runtime-only deferred-cleanup marker.
+#
+# Args:
+#   $1 = worktree path
+#######################################
+_hrff_actionable_dirty_status() {
+	local work_dir="$1"
+
+	git -C "$work_dir" status --porcelain --untracked-files=all -- . \
+		"$_HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC" 2>/dev/null || true
+	return 0
+}
+
+#######################################
+# Stage worker-authored changes without the runtime-only cleanup marker.
+#
+# Args:
+#   $1 = worktree path
+#######################################
+_hrff_stage_actionable_worker_changes() {
+	local work_dir="$1"
+
+	git -C "$work_dir" add -A -- . \
+		"$_HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC" >/dev/null 2>&1 || return 1
+	return 0
+}
+
+#######################################
 # Preserve and push any worker WIP before worker exits.
 # Best-effort, fail-open — never blocks claim release or shutdown.
 #
@@ -818,11 +865,12 @@ _push_wip_commits_on_exit() {
 		;;
 	esac
 
+	_hrff_unstage_deferred_cleanup_marker "$work_dir"
 	local dirty_status=""
-	dirty_status=$(git -C "$work_dir" status --porcelain 2>/dev/null || true)
+	dirty_status=$(_hrff_actionable_dirty_status "$work_dir")
 	if [[ -n "$dirty_status" ]]; then
 		print_info "[lifecycle] worker_exit_preserving_dirty_work branch=${branch_name}"
-		git -C "$work_dir" add -A >/dev/null 2>&1 || true
+		_hrff_stage_actionable_worker_changes "$work_dir" || true
 		if ! git -C "$work_dir" diff --cached --quiet --exit-code >/dev/null 2>&1; then
 			if git -C "$work_dir" commit -m "wip: preserve worker changes on abnormal exit" >/dev/null 2>&1; then
 				_WORKER_DIRTY_WORK_PRESERVED=1
@@ -878,14 +926,17 @@ _worker_archive_dirty_worktree_patch() {
 	local archive_dir="${archive_root}/${safe_branch}-${stamp}"
 
 	mkdir -p "$archive_dir" 2>/dev/null || return 0
-	git -C "$work_dir" status --short --branch >"${archive_dir}/status.txt" 2>/dev/null || true
-	if git -C "$work_dir" diff --binary --cached >"${archive_dir}/changes.patch" 2>/dev/null \
+	git -C "$work_dir" status --short --branch -- . \
+		"$_HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC" >"${archive_dir}/status.txt" 2>/dev/null || true
+	if git -C "$work_dir" diff --binary --cached -- . \
+		"$_HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC" >"${archive_dir}/changes.patch" 2>/dev/null \
 		&& [[ -s "${archive_dir}/changes.patch" ]]; then
 		_WORKER_DIRTY_WORK_PRESERVED=1
 		print_warning "[lifecycle] worker_dirty_work_preserved archive=${archive_dir}"
 		return 0
 	fi
-	if git -C "$work_dir" diff --binary >"${archive_dir}/changes.patch" 2>/dev/null \
+	if git -C "$work_dir" diff --binary -- . \
+		"$_HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC" >"${archive_dir}/changes.patch" 2>/dev/null \
 		&& [[ -s "${archive_dir}/changes.patch" ]]; then
 		_WORKER_DIRTY_WORK_PRESERVED=1
 		print_warning "[lifecycle] worker_dirty_work_preserved archive=${archive_dir}"

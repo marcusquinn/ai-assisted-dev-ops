@@ -194,10 +194,10 @@ set -euo pipefail
 
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -q '/comments'; then
 	if [[ -n "${terminal_body}" ]]; then
-		printf '%s\n' '[{"created_at":"${dispatch_created_at}","author":"runner1","body_start":"${dispatch_body}"},{"created_at":"${terminal_created_at}","author":"runner1","body_start":"${terminal_body}"}]'
+		printf '%s\n' '[{"id":1,"created_at":"${dispatch_created_at}","user":{"login":"runner1"},"author_association":"MEMBER","body":"${dispatch_body}"},{"id":2,"created_at":"${terminal_created_at}","user":{"login":"runner1"},"author_association":"MEMBER","body":"${terminal_body}"}]'
 		exit 0
 	fi
-	printf '%s\n' '[{"created_at":"${dispatch_created_at}","author":"runner1","body_start":"${dispatch_body}"}]'
+	printf '%s\n' '[{"id":1,"created_at":"${dispatch_created_at}","user":{"login":"runner1"},"author_association":"MEMBER","body":"${dispatch_body}"}]'
 	exit 0
 fi
 
