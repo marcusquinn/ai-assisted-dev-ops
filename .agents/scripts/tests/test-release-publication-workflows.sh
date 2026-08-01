@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 1
 PACKAGE_WORKFLOW="${REPO_ROOT}/.github/workflows/publish-packages.yml"
+POSTFLIGHT_WORKFLOW="${REPO_ROOT}/.github/workflows/postflight.yml"
 SETTINGS_HELPER="${REPO_ROOT}/.agents/scripts/release-publication-settings-helper.sh"
 readonly SNAPSHOT_MODE="snapshot-empty"
 
@@ -117,6 +118,22 @@ assert_contains "Homebrew verification keeps its executable test selector" \
 assert_contains "Homebrew convergence compares the complete generated formula" \
 	"cmp -s homebrew/aidevops.rb" "$PACKAGE_WORKFLOW"
 assert_absent "Homebrew publication failures are not masked" "continue-on-error: true" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow expression.
+assert_contains "postflight dispatch avoids the shared installation quota" \
+	'GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}' "$PACKAGE_WORKFLOW"
+assert_contains "postflight runs only in the protected release environment" \
+	"environment: release" "$POSTFLIGHT_WORKFLOW"
+assert_contains "postflight fallback retains Actions read permission" \
+	"actions: read" "$POSTFLIGHT_WORKFLOW"
+assert_contains "postflight PAT access has an explicit trust-boundary marker" \
+	"#aidevops:trust-boundary" "$POSTFLIGHT_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "postflight rejects non-main workflow dispatches" \
+	'[[ "$GITHUB_REF" == "refs/heads/main" ]]' "$POSTFLIGHT_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow content and expressions.
+assert_order "postflight verifies reviewed main before exposing the PAT fallback" \
+	'[[ "$GITHUB_REF" == "refs/heads/main" ]]' \
+	'GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}' "$POSTFLIGHT_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal verifier command.
 assert_order "release provenance precedes release creation" \
 	'bash "$VERIFIER" verify' "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
@@ -141,6 +158,15 @@ if [[ "$verification_count" -ne 1 ]]; then
 	exit 1
 fi
 printf 'PASS unified publication verifies provenance once before all side effects\n'
+
+# shellcheck disable=SC2016 # Match the literal workflow expression.
+postflight_token_fallback_count=$(grep -cF \
+	'GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}' "$POSTFLIGHT_WORKFLOW" || true)
+if [[ "$postflight_token_fallback_count" -ne 2 ]]; then
+	printf 'FAIL postflight must use the protected token fallback for both API polling steps\n'
+	exit 1
+fi
+printf 'PASS postflight uses the protected token fallback for both API polling steps\n'
 
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT

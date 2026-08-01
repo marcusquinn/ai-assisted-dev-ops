@@ -357,7 +357,7 @@ jobs:
 
       - name: Queue exact-tag postflight
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run postflight.yml \
             --repo "$GITHUB_REPOSITORY" \
