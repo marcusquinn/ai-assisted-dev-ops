@@ -212,6 +212,22 @@ def _route(
     }
 
 
+def _guarded_page(
+    api: Callable[[str, str, dict[str, Any] | None], ApiResult],
+    request: dict[str, Any],
+    identity: Identity,
+) -> dict[str, Any]:
+    """Read one page only while both surrounding identity fences pass."""
+    initial_fence = _identity(api, identity.location_id, identity)
+    if initial_fence.get("status") != 200:
+        return initial_fence
+    page = _route(api, request, identity)
+    if page.get("status") != 200:
+        return page
+    final_fence = _identity(api, identity.location_id, identity)
+    return page if final_fence.get("status") == 200 else final_fence
+
+
 def _request() -> dict[str, Any]:
     payload = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
     if len(payload) > MAX_REQUEST_BYTES:
@@ -257,8 +273,7 @@ def main() -> int:
             "action", "stream", "location_id", "business_account_id",
             "organization_id", "cursor", "stop_at", "limit",
         }:
-            fence = _identity(api, identity.location_id, identity)
-            payload = fence if fence.get("status") != 200 else _route(api, request, identity)
+            payload = _guarded_page(api, request, identity)
         else:
             raise ProviderError("Google Business Profile read action is unsupported")
         _emit(payload)

@@ -81,12 +81,13 @@ python3 .agents/scripts/knowledge_social_google_business_profile.py \
 
 The budget is a hard logical collection-unit limit: one identity phase plus two
 units per persisted provider page. A live identity fence performs three exact
-GETs, or four when an organization is configured; a page repeats that fence and
-performs at most one stream GET. Each HTTP response is capped at 8 MiB, requests
-time out after 60 seconds, pages cap at 100 items, and child execution is bounded
-at 120 seconds. Rate-limit responses preserve the prior page cursor and record a
-sanitized retry time. Permission denial, unavailable API family, malformed page,
-identity drift, lease loss, timeout, or quota stop cannot advance evidence.
+GETs, or four when an organization is configured. A page surrounds its single
+stream GET with complete identity fences so hierarchy drift cannot reach the
+checkpoint commit. Each HTTP response is capped at 8 MiB, requests time out after
+60 seconds, pages cap at 100 items, and child execution is bounded at 120 seconds.
+Rate-limit responses preserve the prior page cursor and record a sanitized retry
+time. Permission denial, unavailable API family, malformed page, identity drift,
+lease loss, timeout, or quota stop cannot advance evidence.
 
 Streams are independent by connection/location/stream lease and cursor:
 

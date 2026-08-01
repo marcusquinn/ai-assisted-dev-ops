@@ -108,6 +108,7 @@ sys.path.insert(0, str(scripts))
 import _knowledge_social_google_business_profile as gbp
 import _knowledge_social_google_business_profile_provider as provider
 from _knowledge_social_google_business_profile_records import serialize_records
+from _knowledge_social_google_business_profile_transport import ApiResult
 
 expected = {
     "location_profile", "attributes", "media", "local_posts", "reviews",
@@ -149,6 +150,39 @@ responses["search_keywords"]["searchKeywordsCounts"][0]["insightsValue"] = {
 assert serialize_records(
     "search_keywords", responses["search_keywords"], identity.location_id
 )[0]["remote_id"] == keyword_id
+
+page_request = {
+    "stream": "reviews", "location_id": "location42",
+    "business_account_id": "account42", "organization_id": "organization42",
+    "cursor": None, "stop_at": None, "limit": 10,
+}
+state = {"route_seen": False, "userinfo_calls": 0}
+
+def fake_api(base, path, params):
+    del base, params
+    if path == "/userinfo":
+        state["userinfo_calls"] += 1
+        if state["route_seen"] and state.get("drift"):
+            return ApiResult(403, {})
+        return ApiResult(200, {"sub": "subject42"})
+    if path == "/accounts/account42":
+        return ApiResult(200, {"name": "accounts/account42"})
+    if path == "/accounts/organization42":
+        return ApiResult(200, {"name": "accounts/organization42"})
+    if path == "/locations/location42":
+        return ApiResult(200, {"name": "locations/location42", "title": "Synthetic"})
+    if path.endswith("/reviews"):
+        state["route_seen"] = True
+        return ApiResult(200, {"reviews": []})
+    raise AssertionError(path)
+
+guarded = provider._guarded_page(fake_api, page_request, identity)
+assert guarded["status"] == 200
+assert state == {"route_seen": True, "userinfo_calls": 2}
+state = {"route_seen": False, "userinfo_calls": 0, "drift": True}
+guarded = provider._guarded_page(fake_api, page_request, identity)
+assert guarded["status"] == 403 and "data" not in guarded
+assert state["userinfo_calls"] == 2
 
 sources = [
     path.read_text(encoding="utf-8")
