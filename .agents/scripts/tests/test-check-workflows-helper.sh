@@ -23,12 +23,23 @@
 #  19. Stale local checkout reports local evidence and upstream divergence
 #  20. Repository-scoped checks prefer a matching caller-owned linked worktree
 #      without relying on Git 2.31's --path-format option
+#  13a. Verbose mirror drift shows the rendered and normalised comparison
 #
 # Strategy: Each scenario writes a temporary repos.json + temporary repo trees
 # under a per-test TMPDIR, points HOME at it, and invokes the helper. No
 # network calls, no real GitHub API.
 
 set -uo pipefail
+
+# Fixture repositories are disposable. Export a test-local native Git boundary
+# so child helper shells cannot inherit the runtime's canonical-repo guard while
+# the normal PATH remains available for dependencies such as jq.
+git() {
+	local _git_bin="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+	"$_git_bin" "$@"
+	return $?
+}
+export -f git
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 HELPER="${SCRIPT_DIR}/../check-workflows-helper.sh"
@@ -190,10 +201,14 @@ sed 's|issue-sync-reusable\.yml@main|issue-sync-reusable.yml@v3.9.0|g' \
 _write_repos_json "$TMPDIR_4B" \
 	"$(jq -n --arg path "$TMPDIR_4B/repos/downstream-split-pin" '{initialized_repos: [{slug: "x/split-pin", path: $path, local_only: false}]}')"
 result=$(_run_and_classify "$TMPDIR_4B")
-if [[ "$result" == "DRIFTED/CALLER" ]]; then
-	_pass "pinned reusable with helper on main → DRIFTED/CALLER"
+verbose_result=$(HOME="$TMPDIR_4B" bash "$HELPER" \
+	--repo "x/split-pin" --workflow issue-sync --verbose 2>/dev/null)
+if [[ "$result" == "DRIFTED/CALLER" ]] &&
+	[[ "$verbose_result" == *"helper provenance mismatch"* ]]; then
+	_pass "pinned reusable with helper on main → actionable DRIFTED/CALLER diagnostics"
 else
-	_fail "pinned reusable with helper on main → DRIFTED/CALLER" "got: $result"
+	_fail "pinned reusable with helper on main → actionable DRIFTED/CALLER diagnostics" \
+		"classification: $result; output: $verbose_result"
 fi
 rm -rf "$TMPDIR_4B"
 
@@ -398,6 +413,39 @@ else
 fi
 rm -rf "$TMPDIR_13"
 
+# Test 13a: Verbose caller diagnostics must display the same rendered and
+# normalised comparison that produced DRIFTED/CALLER (GH#29142).
+TMPDIR_13A="$(mktemp -d)"
+_setup_fake_home "$TMPDIR_13A"
+_make_repo_with_workflow "$TMPDIR_13A/repos/org-header-drift"
+sed \
+	-e 's|^    branches: \[main\]$|    branches: [develop]|' \
+	-e 's|^    uses: marcusquinn/aidevops/.github/workflows/issue-sync-reusable.yml@main$|    uses: ORG/.github/.github/workflows/issue-sync-reusable.yml@release#candidate|' \
+	-e 's|^    secrets:$|    secrets:\
+      AIDEVOPS_READ_TOKEN: ${{ secrets.AIDEVOPS_READ_TOKEN }}|' \
+	-e 's|^    with:$|    with:\
+      runner: ubuntu-latest-arm64|' \
+	-e 's|^      aidevops_ref: main$|      aidevops_repository: ORG/.github\
+      aidevops_ref: release#candidate|' \
+	"$CANONICAL_TEMPLATE" >"$TMPDIR_13A/repos/org-header-drift/.github/workflows/issue-sync.yml"
+_write_repos_json "$TMPDIR_13A" \
+	"$(jq -n --arg path "$TMPDIR_13A/repos/org-header-drift" \
+		'{workflow_reusable_repo: "ORG/.github", workflow_reusable_ref: "1234567890abcdef1234567890abcdef12345678", initialized_repos: [{slug: "x/org-header-drift", path: $path, local_only: false}]}')"
+verbose_output=$(HOME="$TMPDIR_13A" bash "$HELPER" \
+	--repo "x/org-header-drift" --workflow issue-sync --verbose 2>/dev/null)
+verbose_rc=$?
+if [[ "$verbose_rc" -eq 1 ]] &&
+	[[ "$verbose_output" == *"DRIFTED/CALLER"* ]] &&
+	[[ "$verbose_output" == *"-# Upstream logic lives in: ORG/.github/.github/workflows/issue-sync-reusable.yml"* ]] &&
+	[[ "$verbose_output" == *"+# Upstream logic lives in: marcusquinn/aidevops/.github/workflows/issue-sync-reusable.yml"* ]] &&
+	! printf '%s\n' "$verbose_output" | grep -Eq '^[+-][[:space:]]+(uses:|branches:|runner:|aidevops_(repository|ref):)'; then
+	_pass "GH#29142 verbose drift → rendered header delta without normalised-away noise"
+else
+	_fail "GH#29142 verbose drift → rendered header delta without normalised-away noise" \
+		"rc=$verbose_rc; output: $verbose_output"
+fi
+rm -rf "$TMPDIR_13A"
+
 # Test 14: Unconfigured third-party reusable repo is not silently trusted.
 TMPDIR_14="$(mktemp -d)"
 _setup_fake_home "$TMPDIR_14"
@@ -528,7 +576,7 @@ rm -rf "$TMPDIR_19"
 # must classify that worktree rather than the registered canonical checkout.
 TMPDIR_20="$(mktemp -d)"
 _setup_fake_home "$TMPDIR_20"
-REAL_GIT_20=$(command -v git)
+REAL_GIT_20="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 BARE_20="$TMPDIR_20/remote.git"
 REPO_20="$TMPDIR_20/repos/canonical"
 LINKED_20="$TMPDIR_20/worktrees/caller-owned"
@@ -561,7 +609,7 @@ done
 exec "$REAL_GIT_20" "\$@"
 EOF
 chmod +x "$TMPDIR_20/bin/git"
-json_row=$(cd "$LINKED_20" && HOME="$TMPDIR_20" PATH="$TMPDIR_20/bin:$PATH" bash "$HELPER" \
+json_row=$(cd "$LINKED_20" && HOME="$TMPDIR_20" AIDEVOPS_TEST_GIT_BIN="$TMPDIR_20/bin/git" bash "$HELPER" \
 	--json --repo x/caller-owned --workflow issue-sync 2>/dev/null || true)
 LINKED_ROOT_20=$(git -C "$LINKED_20" rev-parse --show-toplevel)
 if [[ "$(printf '%s\n' "$json_row" | jq -r '.classification')" == "DRIFTED/CALLER" ]] &&

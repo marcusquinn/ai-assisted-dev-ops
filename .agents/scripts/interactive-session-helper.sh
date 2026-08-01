@@ -167,10 +167,15 @@ _isc_gh_reachable() {
 	if ! command -v gh >/dev/null 2>&1; then
 		return 1
 	fi
-	# gh auth status is cheap and covers both offline and deauth cases
-	if ! gh auth status >/dev/null 2>&1; then
-		return 1
+	# Stored-keyring validation can fail while an environment/App token remains
+	# usable. Accept the cheap status path first, then probe the API capability
+	# this helper needs before declaring GitHub offline or unauthenticated.
+	if gh auth status >/dev/null 2>&1; then
+		return 0
 	fi
+	local login=""
+	login=$(_isc_current_user)
+	[[ -n "$login" ]] || return 1
 	return 0
 }
 
