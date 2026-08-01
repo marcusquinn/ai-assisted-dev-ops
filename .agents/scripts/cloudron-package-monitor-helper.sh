@@ -12,6 +12,8 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 source "${SCRIPT_DIR}/cloudron-package-release-lib.sh"
 
 REPOS_FILE="${AIDEVOPS_REPOS_FILE:-${HOME}/.config/aidevops/repos.json}"
+_CLOUDRON_MONITOR_JSON_TYPE_ARRAY=array
+_CLOUDRON_MONITOR_JSON_TYPE_STRING=string
 
 _cloudron_monitor_error() {
 	local message="$1"
@@ -23,7 +25,8 @@ _cloudron_monitor_require_tools() {
 	command -v jq >/dev/null 2>&1 || _cloudron_monitor_error "jq is required." || return 1
 	command -v gh >/dev/null 2>&1 || _cloudron_monitor_error "GitHub CLI is required." || return 1
 	[[ -f "$REPOS_FILE" ]] || _cloudron_monitor_error "repos.json not found: $REPOS_FILE" || return 1
-	jq -e '.initialized_repos | type == "array"' "$REPOS_FILE" >/dev/null 2>&1 || _cloudron_monitor_error "repos.json has no initialized_repos array." || return 1
+	jq -e --arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" \
+		'.initialized_repos | type == $array_type' "$REPOS_FILE" >/dev/null 2>&1 || _cloudron_monitor_error "repos.json has no initialized_repos array." || return 1
 	return 0
 }
 
@@ -93,12 +96,14 @@ _cloudron_monitor_latest_release_version() {
 	local latest_version=""
 
 	[[ -n "$releases_json" ]] || _cloudron_monitor_error "GitHub returned an empty releases response for $upstream_slug." || return 1
-	if ! stable_tags=$(jq -r '
-		if type != "array" then
+	if ! stable_tags=$(jq -r \
+		--arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" \
+		--arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" '
+		if type != $array_type then
 			error("expected a release array")
 		else
 			.[]
-			| select(type == "object" and .draft != true and .prerelease != true and (.tag_name | type == "string"))
+			| select(type == "object" and .draft != true and .prerelease != true and (.tag_name | type == $string_type))
 			| .tag_name
 		end
 	' <<<"$releases_json"); then
@@ -231,11 +236,13 @@ _cloudron_monitor_upstream_entry() {
 	local manifest_path="${repo_path}/${manifest_rel}"
 	[[ -f "$manifest_path" ]] || _cloudron_monitor_error "Manifest missing for registered Cloudron package $slug." || return 1
 	local package_title=""
-	if ! package_title=$(jq -er '.title | select(type == "string" and test("\\S"))' "$manifest_path"); then
+	if ! package_title=$(jq -er --arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" \
+		'.title | select(type == $string_type and test("\\S"))' "$manifest_path"); then
 		_cloudron_monitor_error "Manifest title is missing or blank for registered Cloudron package $slug." || return 1
 	fi
 	tag_prefixes=$(jq -c '.cloudron_package.upstream_tag_prefixes as $prefixes | if $prefixes == null then ["v", ""] else $prefixes end' <<<"$entry") || return 1
-	jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' <<<"$tag_prefixes" >/dev/null 2>&1 ||
+	jq -e --arg array_type "$_CLOUDRON_MONITOR_JSON_TYPE_ARRAY" --arg string_type "$_CLOUDRON_MONITOR_JSON_TYPE_STRING" \
+		'type == $array_type and length > 0 and all(.[]; type == $string_type)' <<<"$tag_prefixes" >/dev/null 2>&1 ||
 		_cloudron_monitor_error "cloudron_package.upstream_tag_prefixes for $slug must be a non-empty array of strings." || return 1
 	local releases_json=""
 	if ! releases_json=$(gh api "repos/${upstream_slug}/releases?per_page=100" --paginate); then
