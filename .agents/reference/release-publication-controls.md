@@ -170,7 +170,7 @@ Aggregation PR #29082 reviews authorized Luna standard-routing PR #29072 at
 `d222f326dbdfb705352087e6695ce8bda0d4d0a0` because subsequent merges advanced
 `main` before its explicitly authorized patch release could begin.
 
-Pending aggregation review records authorized workload-tier policy PR #29113 at
+Aggregation PR #29122 reviews authorized workload-tier policy PR #29113 at
 `c9ed6bcc591cf98659e44457123d72cdcbf68ff3`. Protected-main recovery PR #29116
 advanced `main` before its explicitly authorized patch release completed. Its
 exact branch base is `228488086321849fa623c4d2384b79ffa884efb8`.
