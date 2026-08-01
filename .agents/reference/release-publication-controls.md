@@ -198,6 +198,14 @@ Aggregation PR #29164 re-reviews authorized GH audit PR #29152 at
 merges advanced `main` before publication. Its exact branch base is
 `becf4e373d9c8a1eb509af6f90c3a0bb481c6225`.
 
+A pending combined aggregation review covers the authorized workflow diagnostics
+PR #29161 at `671ed712079913857b3c5213cf4ff97ed56c4287`; it also covers authorized GH
+audit PR #29152 at `817e68674104c07951932c9cc914763f31f56b94`, prior aggregation PR #29159
+at `29714078dee12f926f9a52c9eeb51a63549373e3`, and prior aggregation PR #29164 at
+`80d0a1cee4caf0e01514e2278d0ac3665e3c41af`. Immutable `v3.32.211` predates
+both authorized sources. The exact branch base is
+`80d0a1cee4caf0e01514e2278d0ac3665e3c41af`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
