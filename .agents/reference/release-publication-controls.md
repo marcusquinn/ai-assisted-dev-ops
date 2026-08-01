@@ -206,6 +206,14 @@ PR #29152 at `817e68674104c07951932c9cc914763f31f56b94`, prior aggregation PR #2
 both authorized sources. The exact branch base is
 `80d0a1cee4caf0e01514e2278d0ac3665e3c41af`.
 
+Aggregation issue #29176 records authorized workflow diagnostics PR #29161 at
+`671ed712079913857b3c5213cf4ff97ed56c4287` and unresolved combined aggregation
+PR #29169 at `f87af46e46501b5e03f9e015c4b790fae2477a22` for a fresh exact-tip review.
+Immutable `v3.32.212` settled aggregation PR #29164 and its GH audit chain;
+postflight quota fix PR #29174 then advanced `main` with terminal
+`release:not-requested` evidence. The exact branch base is
+`dacff2107e272a059bfbba693ab5594742c55f5e`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
