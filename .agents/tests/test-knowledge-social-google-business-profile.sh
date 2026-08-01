@@ -107,6 +107,7 @@ scripts = Path(sys.argv[1])
 sys.path.insert(0, str(scripts))
 import _knowledge_social_google_business_profile as gbp
 import _knowledge_social_google_business_profile_provider as provider
+from _knowledge_social_google_business_profile_records import serialize_records
 
 expected = {
     "location_profile", "attributes", "media", "local_posts", "reviews",
@@ -127,25 +128,25 @@ responses = {
     "search_keywords": {"searchKeywordsCounts": [{"searchKeyword": "synthetic query", "insightsValue": {"value": "2"}}]},
 }
 for stream, payload in responses.items():
-    records = provider._records(stream, payload, identity.location_id)
+    records = serialize_records(stream, payload, identity.location_id)
     assert records, stream
-assert len(provider._records("reviews", responses["reviews"], identity.location_id)) == 2
-performance_id = provider._records(
+assert len(serialize_records("reviews", responses["reviews"], identity.location_id)) == 2
+performance_id = serialize_records(
     "performance", responses["performance"], identity.location_id
 )[0]["remote_id"]
 responses["performance"]["multiDailyMetricTimeSeries"][0]["timeSeries"] = {
     "datedValues": [{"date": {"year": 2026, "month": 7, "day": 30}, "value": "9"}]
 }
-assert provider._records(
+assert serialize_records(
     "performance", responses["performance"], identity.location_id
 )[0]["remote_id"] == performance_id
-keyword_id = provider._records(
+keyword_id = serialize_records(
     "search_keywords", responses["search_keywords"], identity.location_id
 )[0]["remote_id"]
 responses["search_keywords"]["searchKeywordsCounts"][0]["insightsValue"] = {
     "value": "99"
 }
-assert provider._records(
+assert serialize_records(
     "search_keywords", responses["search_keywords"], identity.location_id
 )[0]["remote_id"] == keyword_id
 

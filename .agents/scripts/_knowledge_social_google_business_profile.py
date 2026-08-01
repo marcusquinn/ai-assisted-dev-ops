@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -218,3 +219,40 @@ def page_checkpoint(
         )
     encoded = _encode_cursor(next_cursor) if next_cursor is not None else None
     return PageCheckpoint(encoded, state.watermark), complete
+
+
+def run_collector(description: str) -> int:
+    """Load provider callbacks lazily and execute the shared OAuth loop."""
+    from pathlib import Path
+
+    from _knowledge_social_google_business_profile_normalize import (
+        PageContext,
+        normalize_page,
+    )
+    from _knowledge_social_google_business_profile_reader import (
+        FixtureGoogleBusinessProfile,
+        GuardedGoogleBusinessProfileOAuth,
+        verified_identity,
+    )
+    from _knowledge_social_oauth_collector import (
+        OAuthCollectorPolicy,
+        run_oauth_collector,
+    )
+
+    policy = OAuthCollectorPolicy(
+        display_name="Google Business Profile",
+        provider_module=sys.modules[__name__],
+        helper=Path(__file__).with_name(
+            "_knowledge_social_google_business_profile_provider.py"
+        ),
+        fixture_reader=FixtureGoogleBusinessProfile,
+        live_reader=GuardedGoogleBusinessProfileOAuth,
+        page_context=PageContext,
+        normalize_page=normalize_page,
+        verified_identity=verified_identity,
+        budget_unit="bounded collection",
+        default_budget=11,
+        min_budget=3,
+        max_page_size=100,
+    )
+    return run_oauth_collector(policy, description)

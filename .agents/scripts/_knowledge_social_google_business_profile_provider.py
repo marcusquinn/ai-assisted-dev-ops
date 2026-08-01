@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -19,6 +18,11 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from _knowledge_social_google_business_profile_records import (
+    RecordError,
+    serialize_records,
+)
 
 MAX_REQUEST_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -284,133 +288,6 @@ def _page_token(cursor: Any) -> str | None:
     return token
 
 
-def _copy(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
-    return {key: payload[key] for key in keys if payload.get(key) is not None}
-
-
-def _derived_name(stream: str, item: dict[str, Any]) -> str:
-    """Build stable projection identity without metric values or observation time."""
-    candidates: tuple[Any, ...]
-    if stream == "performance":
-        candidates = (item.get("dailyMetric"), item.get("dailySubEntityType"))
-    elif stream == "search_keywords":
-        candidates = (item.get("searchKeyword"),)
-    elif stream == "attributes":
-        candidates = (item.get("attributeId"),)
-    else:
-        candidates = (item.get("name"), item.get("reviewId"), item.get("mediaKey"))
-    identity = [candidate for candidate in candidates if candidate is not None]
-    if not identity:
-        raise ProviderError(
-            f"Google Business Profile {stream} record has no stable identity"
-        )
-    digest = hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:24]
-    return f"{stream}-{digest}"
-
-
-def _records(stream: str, payload: dict[str, Any], location_id: str) -> list[dict[str, Any]]:
-    if stream == "location_profile":
-        profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
-        text = "\n\n".join(
-            value
-            for value in (payload.get("title"), profile.get("description"))
-            if isinstance(value, str) and value
-        ) or None
-        return [{
-            "kind": "location_profile",
-            "remote_id": location_id,
-            "text": text,
-            "provider_json": _copy(payload, (
-                "storeCode", "phoneNumbers", "categories", "storefrontAddress",
-                "websiteUri", "regularHours", "specialHours", "serviceArea", "labels",
-                "latlng", "openInfo", "metadata", "relationshipData", "moreHours",
-                "serviceItems", "profile",
-            )),
-        }]
-    key_map = {
-        "attributes": "attributes",
-        "media": "mediaItems",
-        "local_posts": "localPosts",
-        "reviews": "reviews",
-        "performance": "multiDailyMetricTimeSeries",
-        "search_keywords": "searchKeywordsCounts",
-    }
-    if stream == "verification_state":
-        return [{
-            "kind": "verification_state",
-            "remote_id": f"{location_id}-voice-of-merchant",
-            "provider_json": _copy(payload, ("hasVoiceOfMerchant", "hasBusinessAuthority")),
-        }]
-    items = payload.get(key_map[stream], [])
-    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-        raise ProviderError("Google Business Profile list response is invalid")
-    records: list[dict[str, Any]] = []
-    for position, item in enumerate(items):
-        name = item.get("name") or item.get("reviewId") or item.get("mediaKey")
-        if not isinstance(name, str) or not name:
-            name = _derived_name(stream, item)
-        if stream == "reviews":
-            comment = item.get("comment") if isinstance(item.get("comment"), str) else None
-            records.append({
-                "kind": "review",
-                "remote_id": name,
-                "text": comment,
-                "created_at": item.get("createTime"),
-                "updated_at": item.get("updateTime"),
-                "protected": True,
-                "provider_json": _copy(item, ("starRating", "createTime", "updateTime")),
-            })
-            reply = item.get("reviewReply")
-            if isinstance(reply, dict) and isinstance(reply.get("comment"), str):
-                records.append({
-                    "kind": "owner_reply",
-                    "remote_id": f"{name}-owner-reply",
-                    "text": reply["comment"],
-                    "updated_at": reply.get("updateTime"),
-                    "protected": True,
-                    "provider_json": {"review_id": name},
-                })
-        elif stream == "local_posts":
-            summary = item.get("summary") if isinstance(item.get("summary"), str) else None
-            records.append({
-                "kind": "local_post", "remote_id": name, "text": summary,
-                "created_at": item.get("createTime"), "updated_at": item.get("updateTime"),
-                "provider_json": _copy(item, ("topicType", "callToAction", "event", "offer", "product", "state")),
-            })
-        elif stream == "media":
-            records.append({
-                "kind": "media", "remote_id": name,
-                "created_at": item.get("createTime"),
-                "provider_json": _copy(item, ("mediaFormat", "locationAssociation", "googleUrl", "thumbnailUrl", "dimensions", "insights")),
-            })
-        elif stream == "attributes":
-            attribute_id = item.get("attributeId")
-            records.append({
-                "kind": "attribute", "remote_id": attribute_id or name,
-                "provider_json": _copy(item, ("attributeId", "valueType", "values", "repeatedEnumValue")),
-            })
-        elif stream == "performance":
-            records.append({
-                "kind": "performance_metric", "remote_id": name,
-                "provider_json": _copy(item, ("dailyMetric", "dailySubEntityType", "timeSeries")),
-            })
-        elif stream == "search_keywords":
-            keyword = item.get("searchKeyword")
-            keyword_text = keyword if isinstance(keyword, str) else None
-            records.append({
-                "kind": "search_keyword", "remote_id": name,
-                "text": keyword_text,
-                "provider_json": _copy(item, ("insightsValue",)),
-            })
-        else:
-            raise ProviderError("Google Business Profile read stream is unsupported")
-        if position >= 999:
-            raise ProviderError("Google Business Profile page exceeds the item safety limit")
-    return records
-
-
 def _month(value: date) -> dict[str, int]:
     return {"year": value.year, "month": value.month}
 
@@ -491,10 +368,14 @@ def _route(
     next_token = result.payload.get("nextPageToken")
     if next_token is not None and (not isinstance(next_token, str) or not next_token):
         raise ProviderError("Google Business Profile next page token is invalid")
+    try:
+        records = serialize_records(stream, result.payload, identity.location_id)
+    except RecordError as error:
+        raise ProviderError(str(error)) from error
     return {
         "status": 200,
         "observed_at": _observed_at(),
-        "data": _records(stream, result.payload, identity.location_id),
+        "data": records,
         "meta": {
             "next_cursor": {"page_token": next_token} if next_token else None,
             "complete": next_token is None,
