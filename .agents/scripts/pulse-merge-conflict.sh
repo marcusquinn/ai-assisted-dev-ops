@@ -820,7 +820,7 @@ _find_task_id_match_on_main() {
 # (origin:interactive) or external-contributor work (non-bot author,
 # no pulse origin label) must never be auto-closed.
 #
-# Fetches labels + author + authorAssociation with fail-CLOSED semantics.
+# Fetches labels + author with fail-CLOSED semantics.
 # If the metadata fetch fails, the caller must NOT close the PR.
 #
 # GH#18285: origin:interactive PRs are maintainer session work — pulse
@@ -852,7 +852,7 @@ _close_conflicting_pr_check_ownership_guard() {
 	local pr_meta meta_fetch_rc
 	meta_fetch_rc=0
 	pr_meta=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json labels,author,authorAssociation 2>/dev/null) || meta_fetch_rc=$?
+		--json labels,author 2>/dev/null) || meta_fetch_rc=$?
 	if [[ $meta_fetch_rc -ne 0 ]]; then
 		echo "[pulse-wrapper] _close_conflicting_pr: failed to fetch metadata for PR #${pr_number} in ${repo_slug} (exit ${meta_fetch_rc}) — skipping close to protect potential origin:interactive or contributor PR (t2383, GH#20485)" >>"$LOGFILE"
 		return 0

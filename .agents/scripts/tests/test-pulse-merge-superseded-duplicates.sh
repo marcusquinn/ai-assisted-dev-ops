@@ -101,8 +101,8 @@ $(awk '
 install_stubs() {
 	gh() {
 		printf '%s\n' "$*" >>"$GH_CALL_LOG"
-		if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"authorAssociation"* ]]; then
-			printf '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"},"authorAssociation":"MEMBER"}\n'
+		if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"--json labels,author"* && "$*" != *"authorAssociation"* ]]; then
+			printf '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}\n'
 			return 0
 		fi
 		if [[ "$1" == "pr" && "$2" == "view" && "$3" == "6130" && "$*" == *"state"* ]]; then

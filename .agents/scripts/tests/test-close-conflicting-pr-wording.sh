@@ -130,8 +130,8 @@ fi
 			if [[ -f "\$response" ]]; then cat "\$response"; fi
 			exit 0
 			;;
-		"labels,author,authorAssociation")
-			# GH#20485: _close_conflicting_pr_check_ownership_guard fetches
+		"labels,author")
+			# GH#20485/GH#29170: _close_conflicting_pr_check_ownership_guard fetches
 			# labels + author metadata in one call. Return pr-meta.json if
 			# present; fall back to a default that simulates a worker PR
 			# (origin:worker label, bot author) so existing tests are unaffected.
@@ -139,7 +139,7 @@ fi
 			if [[ -f "\$response" ]]; then
 				cat "\$response"
 			else
-				echo '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"},"authorAssociation":"NONE"}'
+				echo '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}'
 			fi
 			exit 0
 			;;
@@ -265,12 +265,12 @@ set_responses() {
 	: >"${TEST_ROOT}/pr-labels.txt"
 	echo "feature/test" >"${TEST_ROOT}/pr-branch.txt"
 	echo "develop" >"${TEST_ROOT}/pr-base-branch.txt"
-	# GH#20485: ownership guard metadata. Default = worker-origin bot PR
+	# GH#20485/GH#29170: ownership guard metadata. Default = worker-origin bot PR
 	# so existing close-path tests still proceed to the close logic.
 	if [[ -n "$pr_meta_json" ]]; then
 		printf '%s' "$pr_meta_json" >"${TEST_ROOT}/pr-meta.json"
 	else
-		printf '%s' '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"},"authorAssociation":"NONE"}' \
+		printf '%s' '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}' \
 			>"${TEST_ROOT}/pr-meta.json"
 	fi
 	return 0
@@ -524,7 +524,7 @@ test_no_close_for_external_contributor_pr() {
 		'[{"sha":"abc1234567890abcdef","subject":"chore: unrelated commit"},{"sha":"def4567890abcdef","subject":"feat: also unrelated"}]' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
-		'{"labels":[],"author":{"login":"superdav42"},"authorAssociation":"CONTRIBUTOR"}'
+		'{"labels":[],"author":{"login":"superdav42"}}'
 
 	load_functions_under_test
 
@@ -562,7 +562,7 @@ test_close_for_worker_origin_pr() {
 		'[{"sha":"abc1234567890abcdef","subject":"chore: unrelated commit"}]' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
-		'{"labels":[{"name":"origin:worker"}],"author":{"login":"superdav42"},"authorAssociation":"CONTRIBUTOR"}'
+		'{"labels":[{"name":"origin:worker"}],"author":{"login":"superdav42"}}'
 
 	load_functions_under_test
 
@@ -597,7 +597,7 @@ test_close_for_worker_takeover_pr() {
 		'[{"sha":"abc1234567890abcdef","subject":"chore: unrelated commit"}]' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
-		'{"labels":[{"name":"origin:worker-takeover"},{"name":"origin:interactive"}],"author":{"login":"marcusquinn"},"authorAssociation":"OWNER"}'
+		'{"labels":[{"name":"origin:worker-takeover"},{"name":"origin:interactive"}],"author":{"login":"marcusquinn"}}'
 
 	load_functions_under_test
 
@@ -620,7 +620,7 @@ test_close_for_worker_takeover_pr() {
 		'[{"sha":"abc1234567890abcdef","subject":"chore: unrelated commit"}]' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
-		'{"labels":[{"name":"origin:worker-takeover"}],"author":{"login":"superdav42"},"authorAssociation":"CONTRIBUTOR"}'
+		'{"labels":[{"name":"origin:worker-takeover"}],"author":{"login":"superdav42"}}'
 
 	load_functions_under_test
 
@@ -645,7 +645,7 @@ test_close_for_bot_author_no_label_pr() {
 		'[{"sha":"abc1234567890abcdef","subject":"chore: unrelated commit"}]' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
 		'.agents/scripts/pulse-merge-conflict.sh' \
-		'{"labels":[],"author":{"login":"dependabot[bot]"},"authorAssociation":"NONE"}'
+		'{"labels":[],"author":{"login":"dependabot[bot]"}}'
 
 	load_functions_under_test
 
@@ -666,7 +666,7 @@ test_close_for_bot_author_no_label_pr() {
 
 # GH#20485: metadata fetch failure → fail CLOSED → no close.
 test_no_close_on_metadata_fetch_failure() {
-	# Simulate gh pr view returning non-zero for labels,author,authorAssociation
+	# Simulate gh pr view returning non-zero for the REST-preservable metadata shape.
 	local tmp_sandbox
 	tmp_sandbox=$(mktemp -d)
 	local stub_dir="${tmp_sandbox}/stubs"
@@ -691,7 +691,7 @@ if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
     fi
     i=\$((i + 1))
   done
-  if [[ "\$field" == "labels,author,authorAssociation" ]]; then
+  if [[ "\$field" == "labels,author" ]]; then
     exit 1
   fi
 fi
