@@ -63,6 +63,33 @@ commit. A failed pre-publication attempt records both the requested and current
 source SHAs as actionable failure evidence, but creates no tag or publication.
 Retries reconcile terminal receipts and cannot publish twice.
 
+### Post-publication supersession
+
+A different recovery path applies when an older signed tag already published all
+three package channels, exact-tag postflight dispatch was its sole failed step,
+and a later independently authorized release has since become terminal. The old
+tag cannot use normal recovery because GitHub, npm, and Homebrew now converge on
+the newer version, and deploying its checkout would downgrade the runtime.
+
+`aidevops release reconcile <older-source-pr>` may mark that receipt
+`release:superseded` without publication or deployment only when it verifies:
+
+1. the older tag's immutable source provenance and correlated workflow job;
+2. successful GitHub release, npm, and Homebrew verification steps followed by
+   one failed `Queue exact-tag postflight` step and no other failed step;
+3. a strictly descendant latest signed tag with a terminal-success publication
+   run and exact current channel convergence; and
+4. a local `release:published` receipt for the latest tag's source PR.
+
+The resulting `.successor.json` receipt records both source PRs, merge SHAs,
+tags, release commits, and workflow run IDs with evidence type
+`post-publication-supersession`. It is distinct from reviewed aggregation: the
+newer tag does not retroactively claim an `Aidevops-Aggregated-Source` trailer.
+Missing, duplicated, renamed, malformed, nonterminal, or conflicting evidence
+fails closed and leaves the older receipt unchanged. `status` remains read-only,
+and this path never dispatches publication or runs `post-release` from the stale
+checkout.
+
 The aggregation PR must expose a durable review record before merge. Create it
 as a draft from an initial documentation commit, then add the allocated PR
 number and every authorized `PR@MERGE_SHA` source in a follow-up commit without

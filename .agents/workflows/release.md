@@ -61,6 +61,15 @@ exact reviewed `main` workflow commit while package contents stay pinned to the
 immutable tag. Full contract: `reference/release-publication-controls.md`
 "Intervening-main recovery".
 
+If an older signed tag already completed GitHub, npm, and Homebrew publication
+but failed only while queuing postflight, do not recover it after a later release
+becomes current. `aidevops release reconcile <older-source-pr>` can instead write
+a distinct post-publication supersession receipt after verifying the older run's
+exact successful publication steps, strict release ancestry, the latest signed
+tag and channels, and the latest source's terminal published receipt. It never
+dispatches or deploys the stale tag and does not fabricate aggregate provenance.
+See `reference/release-publication-controls.md` "Post-publication supersession".
+
 **DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, authenticated `gh`, an accessible aidevops repository, and unreleased changelog content (or changelog-only `--force`). The helper fetches `origin/main` and creates its own detached release worktree; it does not require or mutate a clean canonical checkout.
 
 **Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `reference/release-artifact-provenance.md` · `.agents/scripts/validate-version-consistency.sh`
@@ -130,5 +139,6 @@ git commit -m "fix: resolve critical issue"
 |-------|----------|
 | Signed tag already exists | Do not delete or retag it. Run `aidevops release status <source-pr>` and then `aidevops release reconcile <source-pr>`. |
 | Publication queued/interrupted | Exit `8` is durable pending state. Reconcile the same source PR; never bump again for the same tag. |
+| Published tag is older than the latest release | Never republish or deploy the older tag. Reconcile it only through verified post-publication supersession; uncertain evidence remains `release:failed`. |
 | GitHub CLI not authenticated | `gh auth login` (token needs `repo` scope) |
 | Version mismatch | `./.agents/scripts/version-manager.sh validate` — see `version-bump.md` |

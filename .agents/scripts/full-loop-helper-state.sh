@@ -28,6 +28,8 @@ _FULL_LOOP_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RELEASE_SUPERSEDED="superseded"
 _FULL_LOOP_SHA40_REGEX='^[0-9a-f]{40}$'
+_FULL_LOOP_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+_FULL_LOOP_JSON_NUMBER_TYPE="number"
 _FULL_LOOP_EXECUTOR_INITIALIZED="initialized-only"
 _FULL_LOOP_EXECUTOR_IN_PROGRESS="in-progress"
 _FULL_LOOP_PHASE_FAILED="failed"
@@ -290,7 +292,7 @@ _full_loop_release_evidence_path() {
 	local pr_number="$2"
 	local evidence_type="$3"
 	local receipt_path=""
-	case "$evidence_type" in aggregate | failure) ;; *) return 1 ;; esac
+	case "$evidence_type" in aggregate | failure | successor) ;; *) return 1 ;; esac
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	printf '%s.%s.json\n' "${receipt_path%.status}" "$evidence_type"
 	return 0
@@ -317,7 +319,7 @@ _full_loop_write_release_receipt() {
 	if [[ "$status" == "$_FULL_LOOP_RELEASE_PUBLISHED" || "$status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
 		local failure_path=""
 		failure_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" failure) || return 1
-		rm -f "$failure_path"
+		rm -f "$failure_path" || return 1
 	fi
 	return 0
 }
@@ -355,11 +357,14 @@ _full_loop_write_superseded_release_receipt() {
 	local tag_name="$6"
 	local tag_commit="$7"
 	local evidence_path=""
+	local successor_path=""
 	local now=""
 	[[ "$pr_number" =~ ^[0-9]+$ && "$aggregate_pr" =~ ^[0-9]+$ ]] || return 1
 	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$aggregate_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	[[ "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]] || return 1
 	evidence_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
+	successor_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" successor) || return 1
+	[[ ! -e "$successor_path" ]] || return 1
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	mkdir -p "${evidence_path%/*}" || return 1
 	jq -cn --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" --argjson pr_number "$pr_number" --arg source_merge "$source_merge" \
@@ -370,24 +375,127 @@ _full_loop_write_superseded_release_receipt() {
 		>"${evidence_path}.tmp.$$" || return 1
 	mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
 	_full_loop_write_release_receipt "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
+	_full_loop_update_superseded_cleanup_receipt "$repo" "$pr_number"
+	return $?
+}
+
+_full_loop_update_superseded_cleanup_receipt() {
+	local repo="$1"
+	local pr_number="$2"
 	if declare -F full_loop_update_cleanup_release_status >/dev/null 2>&1; then
 		full_loop_update_cleanup_release_status "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
 	fi
 	return 0
 }
 
+_full_loop_verify_aggregate_superseded_release_evidence() {
+	local evidence_path="$1"
+	local repo="$2"
+	local pr_number="$3"
+	[[ "$evidence_path" == *.aggregate.json ]] || return 1
+	_full_loop_validate_superseded_evidence "$evidence_path" "$repo" "$pr_number"
+	return $?
+}
+
+_full_loop_verify_successor_superseded_release_evidence() {
+	local evidence_path="$1"
+	local repo="$2"
+	local pr_number="$3"
+	[[ "$evidence_path" == *.successor.json ]] || return 1
+	_full_loop_validate_superseded_evidence "$evidence_path" "$repo" "$pr_number"
+	return $?
+}
+
+_full_loop_superseded_release_evidence_path() {
+	local repo="$1"
+	local pr_number="$2"
+	local aggregate_path=""
+	local successor_path=""
+	local evidence_path=""
+	aggregate_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
+	successor_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" successor) || return 1
+	if [[ -f "$aggregate_path" ]]; then
+		_full_loop_verify_aggregate_superseded_release_evidence \
+			"$aggregate_path" "$repo" "$pr_number" || return 1
+		evidence_path="$aggregate_path"
+	fi
+	if [[ -f "$successor_path" ]]; then
+		[[ -z "$evidence_path" ]] || return 1
+		_full_loop_verify_successor_superseded_release_evidence \
+			"$successor_path" "$repo" "$pr_number" || return 1
+		evidence_path="$successor_path"
+	fi
+	[[ -n "$evidence_path" ]] || return 1
+	printf '%s\n' "$evidence_path"
+	return 0
+}
+
 _full_loop_verify_superseded_release_receipt() {
 	local repo="$1"
 	local pr_number="$2"
+	_full_loop_superseded_release_evidence_path "$repo" "$pr_number" >/dev/null
+	return $?
+}
+
+_full_loop_write_successor_release_receipt() {
+	local repo="$1"
+	local source_pr="$2"
+	local source_merge="$3"
+	local source_tag="$4"
+	local source_commit="$5"
+	local source_run="$6"
+	local successor_pr="$7"
+	local successor_merge="$8"
+	local release_tag="$9"
+	shift 9
+	local release_commit="$1"
+	local release_run="$2"
+	local aggregate_path=""
 	local evidence_path=""
-	evidence_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
-	[[ -f "$evidence_path" ]] || return 1
-	jq -e --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" --arg sha_regex "$_FULL_LOOP_SHA40_REGEX" --argjson pr "$pr_number" '
-		.schema_version == 1 and .status == $status and .repository == $repo and .pr_number == $pr
-		and (.source_merge | test($sha_regex)) and (.aggregate_pr | type == "number")
-		and (.aggregate_merge | test($sha_regex)) and (.release_tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
-		and (.release_commit | test($sha_regex))
-	' "$evidence_path" >/dev/null 2>&1
+	local now=""
+	[[ "$source_pr" =~ ^[0-9]+$ && "$successor_pr" =~ ^[0-9]+$ && "$source_pr" != "$successor_pr" ]] || return 1
+	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$successor_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$source_commit" =~ $_FULL_LOOP_SHA40_REGEX && "$release_commit" =~ $_FULL_LOOP_SHA40_REGEX && "$source_commit" != "$release_commit" ]] || return 1
+	[[ "$source_tag" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$release_tag" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$source_tag" != "$release_tag" ]] || return 1
+	[[ "$source_run" =~ ^[0-9]+$ && "$release_run" =~ ^[0-9]+$ && "$source_run" -gt 0 && "$release_run" -gt 0 && "$source_run" != "$release_run" ]] || return 1
+	aggregate_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" aggregate) || return 1
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" successor) || return 1
+	[[ ! -e "$aggregate_path" ]] || return 1
+	if [[ -f "$evidence_path" ]]; then
+		_full_loop_verify_successor_superseded_release_evidence \
+			"$evidence_path" "$repo" "$source_pr" || return 1
+		jq -e --arg source_merge "$source_merge" --arg source_tag "$source_tag" \
+			--arg source_commit "$source_commit" --argjson source_run "$source_run" \
+			--argjson successor_pr "$successor_pr" --arg successor_merge "$successor_merge" \
+			--arg release_tag "$release_tag" --arg release_commit "$release_commit" \
+			--argjson release_run "$release_run" '
+			.source_merge == $source_merge and .source_release_tag == $source_tag
+			and .source_release_commit == $source_commit and .source_workflow_run == $source_run
+			and .successor_pr == $successor_pr and .successor_merge == $successor_merge
+			and .release_tag == $release_tag and .release_commit == $release_commit
+			and .release_workflow_run == $release_run
+		' "$evidence_path" >/dev/null 2>&1 || return 1
+	else
+		now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+		mkdir -p "${evidence_path%/*}" || return 1
+		jq -cn --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" \
+			--arg evidence_type "post-publication-supersession" --argjson source_pr "$source_pr" \
+			--arg source_merge "$source_merge" --arg source_tag "$source_tag" \
+			--arg source_commit "$source_commit" --argjson source_run "$source_run" \
+			--argjson successor_pr "$successor_pr" --arg successor_merge "$successor_merge" \
+			--arg release_tag "$release_tag" --arg release_commit "$release_commit" \
+			--argjson release_run "$release_run" --arg now "$now" '
+			{schema_version:1,evidence_type:$evidence_type,status:$status,repository:$repo,
+			 pr_number:$source_pr,source_pr:$source_pr,source_merge:$source_merge,
+			 source_release_tag:$source_tag,source_release_commit:$source_commit,
+			 source_workflow_run:$source_run,successor_pr:$successor_pr,successor_merge:$successor_merge,
+			 release_tag:$release_tag,release_commit:$release_commit,
+			 release_workflow_run:$release_run,recorded_at:$now}
+		' >"${evidence_path}.tmp.$$" || return 1
+		mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
+	fi
+	_full_loop_write_release_receipt "$repo" "$source_pr" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
+	_full_loop_update_superseded_cleanup_receipt "$repo" "$source_pr"
 	return $?
 }
 
@@ -1555,10 +1663,10 @@ _full_loop_verify_aidevops_release_deploy() {
 	local expected_release_sha=""
 	if [[ "$release_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
 		_full_loop_verify_superseded_release_receipt "$repo" "$pr_number" || return 1
-		local aggregate_evidence=""
-		aggregate_evidence=$(_full_loop_release_evidence_path "$repo" "$pr_number" aggregate) || return 1
-		tag_name=$(jq -er '.release_tag' "$aggregate_evidence") || return 1
-		expected_release_sha=$(jq -er '.release_commit' "$aggregate_evidence") || return 1
+		local superseded_evidence=""
+		superseded_evidence=$(_full_loop_superseded_release_evidence_path "$repo" "$pr_number") || return 1
+		tag_name=$(jq -er '.release_tag' "$superseded_evidence") || return 1
+		expected_release_sha=$(jq -er '.release_commit' "$superseded_evidence") || return 1
 		version="${tag_name#v}"
 	else
 		[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1

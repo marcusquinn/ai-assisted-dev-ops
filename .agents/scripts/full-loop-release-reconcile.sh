@@ -8,12 +8,20 @@ _FULL_LOOP_RELEASE_RECONCILE_LOADED=1
 
 _FULL_LOOP_RELEASE_FOUND_TAG=""
 _FULL_LOOP_RELEASE_RUN_JSON=""
+_FULL_LOOP_RELEASE_RUN_JOBS_JSON=""
 _FULL_LOOP_RELEASE_NPM_VERSION=""
 _FULL_LOOP_RELEASE_NPM_INTEGRITY=""
 _FULL_LOOP_RELEASE_EVENT_PUSH="push"
 _FULL_LOOP_RELEASE_EVENT_RECOVERY="workflow_dispatch"
 _FULL_LOOP_RELEASE_JSON_ARRAY_TYPE="array"
+_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE="number"
+_FULL_LOOP_RELEASE_STATUS_COMPLETED="completed"
+_FULL_LOOP_RELEASE_CONCLUSION_FAILURE="failure"
+_FULL_LOOP_RELEASE_CONCLUSION_SKIPPED="skipped"
+_FULL_LOOP_RELEASE_CONCLUSION_SUCCESS="success"
 _FULL_LOOP_RELEASE_JSON_STRING_TYPE="string"
+_FULL_LOOP_RELEASE_MODE_RECONCILE="reconcile"
+_FULL_LOOP_RELEASE_STEP_QUEUE_POSTFLIGHT="Queue exact-tag postflight"
 _FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
 _FULL_LOOP_RELEASE_TRUE="true"
 
@@ -223,7 +231,8 @@ _full_loop_release_source_json_from_tag() {
 
 _full_loop_release_runs_payload_valid() {
 	local runs_json="$1"
-	jq -e 'type == "object" and (.workflow_runs | type == "array")' \
+	jq -e --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+		'type == "object" and (.workflow_runs | type == $array_type)' \
 		<<<"$runs_json" >/dev/null
 	return $?
 }
@@ -243,12 +252,12 @@ _full_loop_release_find_workflow_run() {
 		-f event=workflow_dispatch -F per_page=50 2>/dev/null) || return 1
 	_full_loop_release_runs_payload_valid "$push_runs" || return 1
 	_full_loop_release_runs_payload_valid "$recovery_runs" || return 1
-	_FULL_LOOP_RELEASE_RUN_JSON=$(jq -cn --arg sha "$tag_commit" --arg title "$display_title" \
+	_FULL_LOOP_RELEASE_RUN_JSON=$(jq -cn --arg sha "$tag_commit" --arg tag "$tag_name" --arg title "$display_title" \
 		--arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
 		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" \
 		--arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
 		--argjson push "$push_runs" --argjson recovery "$recovery_runs" '
-		([($push.workflow_runs[]? | select(.event == $push_event and .head_sha == $sha))]
+		([($push.workflow_runs[]? | select(.event == $push_event and .head_branch == $tag and .head_sha == $sha))]
 		 + [($recovery.workflow_runs[]?
 			| select(.event == $recovery_event and .head_branch == "main"
 				and ((.head_sha | type) == $string_type)
@@ -258,9 +267,11 @@ _full_loop_release_find_workflow_run() {
 	') || return 1
 	[[ -n "$_FULL_LOOP_RELEASE_RUN_JSON" && "$_FULL_LOOP_RELEASE_RUN_JSON" != "null" ]] || return 3
 	jq -e --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		--arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		--arg completed "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" \
 		--arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
 		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" '
-		((.id | type) == "number")
+		((.id | type) == $number_type)
 		and (.event == $push_event or .event == $recovery_event)
 		and ((.head_sha | type) == $string_type)
 		and (.head_sha | test("^[0-9a-f]{40}$"))
@@ -268,11 +279,96 @@ _full_loop_release_find_workflow_run() {
 		and ((.status // "") | length > 0)
 		and ((.created_at | type) == $string_type)
 		and ((.created_at // "") | length > 0)
-		and (if .status == "completed" then
+		and (if .status == $completed then
 			((.conclusion | type) == $string_type) and ((.conclusion // "") | length > 0)
 		else .conclusion == null or ((.conclusion | type) == $string_type) end)
 	' <<<"$_FULL_LOOP_RELEASE_RUN_JSON" >/dev/null || return 1
 	return 0
+}
+
+_full_loop_release_run_jobs_payload_valid() {
+	local jobs_json="$1"
+	jq -e --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+		--arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" '
+		type == "object" and (.total_count | type == $number_type and . >= 0 and floor == .)
+		and (.jobs | type == $array_type) and .total_count == (.jobs | length)
+	' <<<"$jobs_json" >/dev/null
+	return $?
+}
+
+_full_loop_release_fetch_run_jobs() {
+	local repo="$1"
+	local run_id="$2"
+	local jobs_json=""
+	[[ "$repo" == */* && "$run_id" =~ ^[0-9]+$ && "$run_id" -gt 0 ]] || return 1
+	_FULL_LOOP_RELEASE_RUN_JOBS_JSON=""
+	jobs_json=$(gh api --method GET "repos/${repo}/actions/runs/${run_id}/jobs" \
+		-F per_page=100 2>/dev/null) || return 1
+	_full_loop_release_run_jobs_payload_valid "$jobs_json" || return 1
+	_FULL_LOOP_RELEASE_RUN_JOBS_JSON="$jobs_json"
+	return 0
+}
+
+_full_loop_release_stale_publication_jobs_valid() {
+	local jobs_json="$1"
+	jq -e --arg array_type "$_FULL_LOOP_RELEASE_JSON_ARRAY_TYPE" \
+		--arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		--arg completed "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" \
+		--arg failure "$_FULL_LOOP_RELEASE_CONCLUSION_FAILURE" \
+		--arg skipped "$_FULL_LOOP_RELEASE_CONCLUSION_SKIPPED" \
+		--arg success "$_FULL_LOOP_RELEASE_CONCLUSION_SUCCESS" \
+		--arg queue_step "$_FULL_LOOP_RELEASE_STEP_QUEUE_POSTFLIGHT" '
+		. as $payload
+		| ($payload.jobs | length) == 1
+		and ($payload.jobs[0] as $job
+			| $job.name == "Publish GitHub, npm, and Homebrew"
+			and $job.status == $completed and $job.conclusion == $failure
+			and ($job.steps | type == $array_type and length > 0)
+			and ([$job.steps[] | select(.name == $queue_step)] | length == 1)
+			and ([$job.steps[] | select(.conclusion == $failure)] | length == 1)
+			and (($job.steps | map(.number)) as $numbers
+				| ($numbers | all(type == $number_type and . > 0 and floor == .))
+				and ($numbers | length) == ($numbers | unique | length))
+			and (($job.steps | map(select(.name == $queue_step))[0].number) as $queue_number
+				| ([$job.steps[] | select(.name == "Checkout verified tag")] | length == 1)
+				and ([$job.steps[] | select(.name == "Checkout verified tag" and .number < $queue_number and .status == $completed and .conclusion == $success)] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify immutable release provenance")] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify immutable release provenance" and .number < $queue_number and .status == $completed and .conclusion == $success)] | length == 1)
+				and ([$job.steps[] | select(.name == "Create or reconcile GitHub release")] | length == 1)
+				and ([$job.steps[] | select(.name == "Create or reconcile GitHub release" and .number < $queue_number and .status == $completed and .conclusion == $success)] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify npm publication")] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify npm publication" and .number < $queue_number and .status == $completed and .conclusion == $success)] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify Homebrew tap")] | length == 1)
+				and ([$job.steps[] | select(.name == "Verify Homebrew tap" and .number < $queue_number and .status == $completed and .conclusion == $success)] | length == 1)
+				and ($job.steps | all(
+					.status == $completed
+					and if .name == $queue_step then .conclusion == $failure
+					else (.conclusion == $success or .conclusion == $skipped) end))))
+	' <<<"$jobs_json" >/dev/null
+	return $?
+}
+
+_full_loop_release_verify_stale_publication_run() {
+	local repo="$1"
+	local tag_name="$2"
+	local tag_commit="$3"
+	local run_id=""
+	local run_status=""
+	local run_conclusion=""
+	_full_loop_release_find_workflow_run "$repo" "$tag_name" "$tag_commit" || return 1
+	run_id=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		'.id | select(type == $number_type and . > 0 and floor == .)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	run_status=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.status | select(type == $string_type)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	run_conclusion=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.conclusion | select(type == $string_type)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	[[ "$run_status" == "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" && "$run_conclusion" == "$_FULL_LOOP_RELEASE_CONCLUSION_FAILURE" ]] || return 1
+	_full_loop_release_fetch_run_jobs "$repo" "$run_id" || return 1
+	_full_loop_release_stale_publication_jobs_valid "$_FULL_LOOP_RELEASE_RUN_JOBS_JSON"
+	return $?
 }
 
 _full_loop_release_sha256_stream() {
@@ -540,6 +636,18 @@ _full_loop_release_prepare_tag_worktree() {
 	return 0
 }
 
+_full_loop_release_reset_tag_worktree() {
+	local release_path="${_FULL_LOOP_RELEASE_PATH:-}"
+	local control_path="${_FULL_LOOP_RELEASE_CONTROL_PATH:-}"
+	[[ -n "$release_path" ]] || return 0
+	[[ -z "$control_path" || "$release_path" != "$control_path" ]] || return 1
+	if [[ -d "$release_path" ]]; then
+		git -C "$REPO_ROOT" worktree remove "$release_path" >/dev/null 2>&1 || return 1
+	fi
+	_FULL_LOOP_RELEASE_PATH=""
+	return 0
+}
+
 _full_loop_release_finalize_reconciliation() {
 	local repo="$1"
 	local requested_pr="$2"
@@ -576,6 +684,66 @@ _full_loop_release_finalize_reconciliation() {
 	return $?
 }
 
+_full_loop_release_finalize_stale_supersession() {
+	local repo="$1"
+	local requested_pr="$2"
+	local source_tag="$3"
+	local release_tag="$4"
+	local source_json=""
+	local source_merge=""
+	local source_commit=""
+	local source_run=""
+	local release_json=""
+	local successor_pr=""
+	local successor_merge=""
+	local release_commit=""
+	local release_run=""
+	local release_receipt=""
+	local release_status=""
+
+	source_json=$(_full_loop_release_source_json_from_tag "$source_tag") || return 1
+	source_merge=$(jq -er --argjson requested "$requested_pr" '
+		if .source_pr == $requested then .source_merge
+		else .aggregated_sources[] | select(.pr == $requested) | .merge end
+	' <<<"$source_json") || return 1
+	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	source_commit=$(_full_loop_release_resolve_tag_commit "$source_tag") || return 1
+	_full_loop_release_verify_stale_publication_run \
+		"$repo" "$source_tag" "$source_commit" || return 1
+	source_run=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		'.id | select(type == $number_type and . > 0 and floor == .)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+
+	_full_loop_release_reset_tag_worktree || return 1
+	_full_loop_release_verify_tag_provenance "$repo" "$release_tag" || return 1
+	release_json=$(_full_loop_release_source_json_from_tag "$release_tag") || return 1
+	successor_pr=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		'.source_pr | select(type == $number_type and . > 0 and floor == .)' \
+		<<<"$release_json") || return 1
+	successor_merge=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
+		'.source_merge | select(type == $string_type)' \
+		<<<"$release_json") || return 1
+	[[ "$successor_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$successor_pr" != "$requested_pr" ]] || return 1
+	release_commit=$(_full_loop_release_resolve_tag_commit "$release_tag") || return 1
+	[[ "$source_commit" != "$release_commit" ]] || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$source_commit" "$release_commit" \
+		>/dev/null 2>&1 || return 1
+	_full_loop_release_inspect_remote "$repo" "$release_tag" || return 1
+	release_run=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+		'.id | select(type == $number_type and . > 0 and floor == .)' \
+		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	[[ "$source_run" != "$release_run" ]] || return 1
+	release_receipt=$(_full_loop_release_receipt_path "$repo" "$successor_pr") || return 1
+	[[ -f "$release_receipt" ]] || return 1
+	IFS= read -r release_status <"$release_receipt" || return 1
+	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
+
+	_full_loop_write_successor_release_receipt "$repo" "$requested_pr" "$source_merge" \
+		"$source_tag" "$source_commit" "$source_run" "$successor_pr" "$successor_merge" \
+		"$release_tag" "$release_commit" "$release_run"
+	return $?
+}
+
 _full_loop_release_existing_command() {
 	local mode="$1"
 	local requested_pr="$2"
@@ -586,7 +754,7 @@ _full_loop_release_existing_command() {
 	local receipt_path=""
 	local receipt_status=""
 
-	[[ "$mode" == "status" || "$mode" == "reconcile" ]] || return 1
+	[[ "$mode" == "status" || "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]] || return 1
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
 	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$requested_pr") || return 1
@@ -608,17 +776,31 @@ _full_loop_release_existing_command() {
 	latest_tag=$(_full_loop_release_latest_tag) || return 1
 	if [[ "$tag_name" != "$latest_tag" ]]; then
 		printf 'STALE_RELEASE_TAG=%s\nLATEST_RELEASE_TAG=%s\n' "$tag_name" "$latest_tag"
-		return 1
+		if [[ "$receipt_status" == "$_FULL_LOOP_RELEASE_SUPERSEDED" ]]; then
+			_full_loop_verify_superseded_release_receipt "$repo" "$requested_pr" || return 1
+			if [[ "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]]; then
+				_full_loop_update_superseded_cleanup_receipt "$repo" "$requested_pr" || return 1
+			fi
+			printf 'release:superseded already recorded for PR #%s\n' "$requested_pr"
+			return 0
+		fi
+		[[ "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]] || return 1
+		[[ -z "$receipt_status" || "$receipt_status" == "$_FULL_LOOP_PHASE_FAILED" ]] || return 1
+		_full_loop_release_finalize_stale_supersession \
+			"$repo" "$requested_pr" "$tag_name" "$latest_tag" || return 1
+		printf 'release:superseded source_tag=%s successor_tag=%s\n' "$tag_name" "$latest_tag"
+		return 0
 	fi
 	_full_loop_release_inspect_remote "$repo" "$tag_name" || inspect_rc=$?
 	if [[ "$inspect_rc" -eq 0 ]]; then
-		if [[ "$mode" == "reconcile" ]]; then
+		if [[ "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]]; then
 			case "$receipt_status" in
 			"$_FULL_LOOP_RELEASE_PUBLISHED")
 				printf 'release:published already recorded for PR #%s\n' "$requested_pr"
 				;;
 			"$_FULL_LOOP_RELEASE_SUPERSEDED")
 				_full_loop_verify_superseded_release_receipt "$repo" "$requested_pr" || return 1
+				_full_loop_update_superseded_cleanup_receipt "$repo" "$requested_pr" || return 1
 				printf 'release:superseded already recorded for PR #%s\n' "$requested_pr"
 				;;
 			*)

@@ -19,66 +19,194 @@ _FULL_LOOP_RECEIPT_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED="superseded"
 _FULL_LOOP_RECEIPT_PATH_RECREATED="SUPERSEDED_BY_PATH_RECREATION"
+_FULL_LOOP_RECEIPT_JSON_NUMBER_TYPE="number"
+_FULL_LOOP_RECEIPT_JSON_STRING_TYPE="string"
+_FULL_LOOP_RECEIPT_SHA40_REGEX='^[0-9a-f]{40}$'
+_FULL_LOOP_RECEIPT_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+_FULL_LOOP_RECEIPT_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
 _FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA="aidevops.full-loop.recreated-receipts.transaction/v1"
 _FULL_LOOP_RECEIPT_LOCK=""
 
-_full_loop_validate_aggregate_evidence() {
+_full_loop_validate_superseded_evidence() {
 	local evidence_path="$1"
 	local repo="$2"
 	local pr_number="$3"
-	jq -e --arg repo "$repo" --arg status "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" --argjson pr "$pr_number" \
-		'.repository == $repo and .pr_number == $pr and .status == $status' "$evidence_path" >/dev/null 2>&1
+	local evidence_kind=""
+	case "$evidence_path" in
+	*.aggregate.json) evidence_kind="aggregate" ;;
+	*.successor.json) evidence_kind="successor" ;;
+	*) return 1 ;;
+	esac
+	jq -e --arg repo "$repo" --arg status "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" \
+		--arg evidence_kind "$evidence_kind" --arg sha_regex "$_FULL_LOOP_RECEIPT_SHA40_REGEX" \
+		--arg tag_regex "$_FULL_LOOP_RECEIPT_VERSION_TAG_REGEX" \
+		--arg timestamp_regex "$_FULL_LOOP_RECEIPT_TIMESTAMP_REGEX" \
+		--arg number_type "$_FULL_LOOP_RECEIPT_JSON_NUMBER_TYPE" \
+		--arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" --argjson pr "$pr_number" '
+		. as $e
+		| $e.repository == $repo and $e.pr_number == $pr and $e.status == $status
+		and ($e.recorded_at | type == $string_type and test($timestamp_regex))
+		and if $evidence_kind == "aggregate" then
+			$e.schema_version == 1
+			and ($e.source_merge | type == $string_type and test($sha_regex))
+			and ($e.aggregate_pr | type == $number_type and . > 0 and floor == .)
+			and ($e.aggregate_merge | type == $string_type and test($sha_regex))
+			and ($e.release_tag | type == $string_type and test($tag_regex))
+			and ($e.release_commit | type == $string_type and test($sha_regex))
+		else $e.schema_version == 1 and $e.evidence_type == "post-publication-supersession"
+			and $e.source_pr == $pr
+			and ($e.source_merge | type == $string_type and test($sha_regex))
+			and ($e.source_release_tag | type == $string_type and test($tag_regex))
+			and ($e.source_release_commit | type == $string_type and test($sha_regex))
+			and ($e.source_workflow_run | type == $number_type and . > 0 and floor == .)
+			and ($e.successor_pr | type == $number_type and . > 0 and floor == . and . != $pr)
+			and ($e.successor_merge | type == $string_type and test($sha_regex))
+			and ($e.release_tag | type == $string_type and test($tag_regex))
+			and $e.release_tag != $e.source_release_tag
+			and ($e.release_commit | type == $string_type and test($sha_regex))
+			and $e.release_commit != $e.source_release_commit
+			and ($e.release_workflow_run | type == $number_type and . > 0 and floor == .)
+			and $e.release_workflow_run != $e.source_workflow_run
+		end
+	' "$evidence_path" >/dev/null 2>&1
 	return $?
 }
 
-_full_loop_prepare_migrated_aggregate_evidence() {
-	local source_aggregate="$1"
-	local destination_aggregate="$2"
+_full_loop_superseded_migration_evidence_path() {
+	local release_path="$1"
+	local repo="$2"
+	local pr_number="$3"
+	local aggregate_path="${release_path%.status}.aggregate.json"
+	local successor_path="${release_path%.status}.successor.json"
+	local evidence_path=""
+	if [[ -f "$aggregate_path" ]]; then
+		_full_loop_validate_superseded_evidence "$aggregate_path" "$repo" "$pr_number" || return 1
+		evidence_path="$aggregate_path"
+	fi
+	if [[ -f "$successor_path" ]]; then
+		[[ -z "$evidence_path" ]] || return 1
+		_full_loop_validate_superseded_evidence "$successor_path" "$repo" "$pr_number" || return 1
+		evidence_path="$successor_path"
+	fi
+	[[ -n "$evidence_path" ]] || return 1
+	printf '%s\n' "$evidence_path"
+	return 0
+}
+
+_full_loop_prepare_migrated_superseded_evidence() {
+	local source_evidence="$1"
+	local destination_evidence="$2"
 	local old_repo="$3"
 	local new_repo="$4"
 	local now="$5"
 	jq --arg repo "$new_repo" --arg old_repo "$old_repo" --arg now "$now" '
 		.repository = $repo
 		| .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:$now}
-	' "$source_aggregate" >"${destination_aggregate}.tmp.$$"
+	' "$source_evidence" >"${destination_evidence}.tmp.$$"
+	return $?
+}
+
+_full_loop_migrated_cleanup_receipt_matches_source() {
+	local source_receipt="$1"
+	local destination_receipt="$2"
+	local old_repo="$3"
+	local new_repo="$4"
+	local pr_number="$5"
+	[[ -f "$source_receipt" && ! -L "$source_receipt" ]] || return 1
+	[[ -f "$destination_receipt" && ! -L "$destination_receipt" ]] || return 1
+	jq -e --slurpfile destination "$destination_receipt" \
+		--arg old_repo "$old_repo" --arg new_repo "$new_repo" \
+		--arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" \
+		--arg timestamp_regex "$_FULL_LOOP_RECEIPT_TIMESTAMP_REGEX" --argjson pr "$pr_number" '
+		.repository == $old_repo and .pr_number == $pr
+		and ($destination | length) == 1
+		and $destination[0].repository == $new_repo and $destination[0].pr_number == $pr
+		and $destination[0].migration.from_repository == $old_repo
+		and $destination[0].migration.to_repository == $new_repo
+		and ($destination[0].migration.migrated_at | type == $string_type and test($timestamp_regex))
+		and (del(.repository,.updated_at,.migration)
+			== ($destination[0] | del(.repository,.updated_at,.migration)))
+	' "$source_receipt" >/dev/null 2>&1
+	return $?
+}
+
+_full_loop_migrated_evidence_matches_source() {
+	local source_evidence="$1"
+	local destination_evidence="$2"
+	local old_repo="$3"
+	local new_repo="$4"
+	local pr_number="$5"
+	_full_loop_validate_superseded_evidence "$source_evidence" "$old_repo" "$pr_number" || return 1
+	_full_loop_validate_superseded_evidence "$destination_evidence" "$new_repo" "$pr_number" || return 1
+	jq -e --slurpfile destination "$destination_evidence" \
+		--arg old_repo "$old_repo" --arg new_repo "$new_repo" \
+		--arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" \
+		--arg timestamp_regex "$_FULL_LOOP_RECEIPT_TIMESTAMP_REGEX" '
+		($destination | length) == 1
+		and $destination[0].migration.from_repository == $old_repo
+		and $destination[0].migration.to_repository == $new_repo
+		and ($destination[0].migration.migrated_at | type == $string_type and test($timestamp_regex))
+		and (del(.repository,.migration) == ($destination[0] | del(.repository,.migration)))
+	' "$source_evidence" >/dev/null 2>&1
 	return $?
 }
 
 _full_loop_migrated_destination_matches() {
 	local destination_receipt="$1"
 	local destination_release="$2"
-	local destination_aggregate="$3"
-	local new_repo="$4"
-	local old_repo="$5"
-	local pr_number="$6"
-	local release_status="$7"
+	local new_repo="$3"
+	local old_repo="$4"
+	local pr_number="$5"
+	local release_status="$6"
 	local destination_status=""
-	[[ -f "$destination_release" ]] && IFS= read -r destination_status <"$destination_release" || true
-	jq -e --arg repo "$new_repo" --arg old_repo "$old_repo" --argjson pr "$pr_number" '
-		.repository == $repo and .pr_number == $pr and .migration.from_repository == $old_repo
+	local destination_evidence=""
+	local aggregate_path="${destination_release%.status}.aggregate.json"
+	local successor_path="${destination_release%.status}.successor.json"
+	[[ -f "$destination_receipt" && ! -L "$destination_receipt" ]] || return 1
+	[[ -f "$destination_release" && ! -L "$destination_release" ]] || return 1
+	IFS= read -r destination_status <"$destination_release" || return 1
+	jq -e --arg repo "$new_repo" --arg old_repo "$old_repo" \
+		--arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" \
+		--arg timestamp_regex "$_FULL_LOOP_RECEIPT_TIMESTAMP_REGEX" --argjson pr "$pr_number" '
+		.repository == $repo and .pr_number == $pr
+		and .migration.from_repository == $old_repo and .migration.to_repository == $repo
+		and (.migration.migrated_at | type == $string_type and test($timestamp_regex))
 	' "$destination_receipt" >/dev/null 2>&1 || return 1
 	[[ "$destination_status" == "$release_status" ]] || return 1
-	[[ "$release_status" != "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]] ||
-		_full_loop_validate_aggregate_evidence "$destination_aggregate" "$new_repo" "$pr_number"
-	return $?
+	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
+		destination_evidence=$(_full_loop_superseded_migration_evidence_path \
+			"$destination_release" "$new_repo" "$pr_number") || return 1
+		[[ -f "$destination_evidence" && ! -L "$destination_evidence" ]] || return 1
+	elif [[ -e "$aggregate_path" || -L "$aggregate_path" || -e "$successor_path" || -L "$successor_path" ]]; then
+		return 1
+	fi
+	return 0
 }
 
 _full_loop_migration_source_matches() {
 	local source_receipt="$1"
 	local source_release="$2"
-	local source_aggregate="$3"
-	local old_repo="$4"
-	local pr_number="$5"
-	local release_status="$6"
+	local old_repo="$3"
+	local pr_number="$4"
+	local release_status="$5"
 	local source_status=""
-	[[ -f "$source_receipt" && -f "$source_release" ]] || return 1
+	local source_evidence=""
+	local aggregate_path="${source_release%.status}.aggregate.json"
+	local successor_path="${source_release%.status}.successor.json"
+	[[ -f "$source_receipt" && ! -L "$source_receipt" ]] || return 1
+	[[ -f "$source_release" && ! -L "$source_release" ]] || return 1
 	jq -e --arg repo "$old_repo" --argjson pr "$pr_number" \
 		'.repository == $repo and .pr_number == $pr' "$source_receipt" >/dev/null 2>&1 || return 1
 	IFS= read -r source_status <"$source_release" || return 1
 	[[ "$source_status" == "$release_status" ]] || return 1
-	[[ "$release_status" != "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]] ||
-		_full_loop_validate_aggregate_evidence "$source_aggregate" "$old_repo" "$pr_number"
-	return $?
+	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
+		source_evidence=$(_full_loop_superseded_migration_evidence_path \
+			"$source_release" "$old_repo" "$pr_number") || return 1
+		[[ -f "$source_evidence" && ! -L "$source_evidence" ]] || return 1
+	elif [[ -e "$aggregate_path" || -L "$aggregate_path" || -e "$successor_path" || -L "$successor_path" ]]; then
+		return 1
+	fi
+	return 0
 }
 
 _full_loop_cleanup_receipt_dir() {
@@ -437,7 +565,9 @@ _full_loop_cleanup_receipt_for_worktree_unlocked() {
 		' "$receipt_path" >/dev/null 2>&1; then
 			candidate_created_at=$(jq -r '.created_at // empty' "$receipt_path" 2>/dev/null || true)
 			candidate_is_migrated=0
-			jq -e '.migration.from_repository | type == "string" and length > 0' "$receipt_path" >/dev/null 2>&1 && candidate_is_migrated=1
+			jq -e --arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" \
+				'.migration.from_repository | type == $string_type and length > 0' \
+				"$receipt_path" >/dev/null 2>&1 && candidate_is_migrated=1
 			if [[ -z "$selected_path" || "$candidate_created_at" > "$selected_created_at" ]] ||
 				[[ "$candidate_created_at" == "$selected_created_at" && "$candidate_is_migrated" -eq 1 && "$selected_is_migrated" -ne 1 ]]; then
 				selected_path="$receipt_path"
@@ -895,6 +1025,146 @@ full_loop_finalize_cleanup_receipt() {
 	return 0
 }
 
+_full_loop_reconcile_complete_migration() {
+	local old_repo="$1"
+	local new_repo="$2"
+	local pr_number="$3"
+	local source_receipt="$4"
+	local source_release="$5"
+	local destination_receipt="$6"
+	local destination_release="$7"
+	local release_status="$8"
+	local source_status=""
+	local source_evidence=""
+	local destination_evidence=""
+	local source_aggregate="${source_release%.status}.aggregate.json"
+	local source_successor="${source_release%.status}.successor.json"
+
+	[[ -f "$destination_receipt" && ! -L "$destination_receipt" ]] || return 2
+	_full_loop_migrated_destination_matches "$destination_receipt" "$destination_release" \
+		"$new_repo" "$old_repo" "$pr_number" "$release_status" || return 2
+	if [[ -e "$source_receipt" || -L "$source_receipt" ]]; then
+		[[ -f "$source_receipt" && ! -L "$source_receipt" ]] || return 1
+		_full_loop_migrated_cleanup_receipt_matches_source "$source_receipt" "$destination_receipt" \
+			"$old_repo" "$new_repo" "$pr_number" || return 3
+	fi
+	if [[ -e "$source_release" || -L "$source_release" ]]; then
+		[[ -f "$source_release" && ! -L "$source_release" ]] || return 1
+		IFS= read -r source_status <"$source_release" || return 1
+		[[ "$source_status" == "$release_status" ]] || return 1
+	fi
+	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
+		[[ ! -L "$source_aggregate" && ! -L "$source_successor" ]] || return 1
+		destination_evidence=$(_full_loop_superseded_migration_evidence_path \
+			"$destination_release" "$new_repo" "$pr_number") || return 1
+		if [[ -e "$source_aggregate" || -e "$source_successor" ]]; then
+			source_evidence=$(_full_loop_superseded_migration_evidence_path \
+				"$source_release" "$old_repo" "$pr_number") || return 1
+			_full_loop_migrated_evidence_matches_source "$source_evidence" "$destination_evidence" \
+				"$old_repo" "$new_repo" "$pr_number" || return 1
+		fi
+	elif [[ -e "$source_aggregate" || -L "$source_aggregate" || -e "$source_successor" || -L "$source_successor" ]]; then
+		return 1
+	fi
+	rm -f "$source_receipt" "$source_release" "$source_aggregate" "$source_successor"
+	return $?
+}
+
+_full_loop_prepare_partial_migration_retry() {
+	local old_repo="$1"
+	local new_repo="$2"
+	local pr_number="$3"
+	local source_receipt="$4"
+	local source_evidence="$5"
+	local destination_receipt="$6"
+	local destination_release="$7"
+	local destination_evidence="$8"
+	local release_status="$9"
+	local destination_status=""
+	local aggregate_path="${destination_release%.status}.aggregate.json"
+	local successor_path="${destination_release%.status}.successor.json"
+	local artifacts_present=0
+
+	if [[ -e "$destination_receipt" || -L "$destination_receipt" ||
+		-e "$destination_release" || -L "$destination_release" ||
+		-e "$aggregate_path" || -L "$aggregate_path" ||
+		-e "$successor_path" || -L "$successor_path" ]]; then
+		artifacts_present=1
+	fi
+	[[ "$artifacts_present" -eq 1 ]] || return 0
+	if [[ -e "$destination_receipt" || -L "$destination_receipt" ]]; then
+		_full_loop_migrated_cleanup_receipt_matches_source "$source_receipt" "$destination_receipt" \
+			"$old_repo" "$new_repo" "$pr_number" || return 1
+	fi
+	if [[ -e "$destination_release" || -L "$destination_release" ]]; then
+		[[ -f "$destination_release" && ! -L "$destination_release" ]] || return 1
+		IFS= read -r destination_status <"$destination_release" || return 1
+		[[ "$destination_status" == "$release_status" ]] || return 1
+	fi
+	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
+		[[ -n "$source_evidence" && -n "$destination_evidence" ]] || return 1
+		case "$destination_evidence" in
+		*.aggregate.json) [[ ! -e "$successor_path" && ! -L "$successor_path" ]] || return 1 ;;
+		*.successor.json) [[ ! -e "$aggregate_path" && ! -L "$aggregate_path" ]] || return 1 ;;
+		*) return 1 ;;
+		esac
+		if [[ -e "$destination_evidence" || -L "$destination_evidence" ]]; then
+			_full_loop_migrated_evidence_matches_source "$source_evidence" "$destination_evidence" \
+				"$old_repo" "$new_repo" "$pr_number" || return 1
+		fi
+	elif [[ -e "$aggregate_path" || -L "$aggregate_path" || -e "$successor_path" || -L "$successor_path" ]]; then
+		return 1
+	fi
+	rm -f "$destination_receipt" "$destination_release" "$aggregate_path" "$successor_path"
+	return $?
+}
+
+_full_loop_write_migrated_cleanup_receipt() {
+	local old_repo="$1"
+	local new_repo="$2"
+	local release_status="$3"
+	local source_receipt="$4"
+	local destination_receipt="$5"
+	local destination_release="$6"
+	local source_evidence="$7"
+	local destination_evidence="$8"
+	local now=""
+
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+	mkdir -p "${destination_release%/*}" || return 1
+	jq --arg repo "$new_repo" --arg old_repo "$old_repo" --arg now "$now" '
+		.repository = $repo
+		| .updated_at = $now
+		| .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:$now}
+	' "$source_receipt" >"${destination_receipt}.tmp.$$" || return 1
+	printf '%s\n' "$release_status" >"${destination_release}.tmp.$$" || {
+		rm -f "${destination_receipt}.tmp.$$"
+		return 1
+	}
+	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
+		_full_loop_prepare_migrated_superseded_evidence \
+			"$source_evidence" "$destination_evidence" "$old_repo" "$new_repo" "$now" || {
+			rm -f "${destination_receipt}.tmp.$$" "${destination_release}.tmp.$$" "${destination_evidence}.tmp.$$"
+			return 1
+		}
+		mv "${destination_evidence}.tmp.$$" "$destination_evidence" || {
+			rm -f "${destination_receipt}.tmp.$$" "${destination_release}.tmp.$$" "${destination_evidence}.tmp.$$"
+			return 1
+		}
+	fi
+	mv "${destination_receipt}.tmp.$$" "$destination_receipt" || {
+		rm -f "${destination_release}.tmp.$$"
+		[[ -z "$destination_evidence" ]] || rm -f "$destination_evidence"
+		return 1
+	}
+	if ! mv "${destination_release}.tmp.$$" "$destination_release"; then
+		rm -f "$destination_receipt"
+		[[ -z "$destination_evidence" ]] || rm -f "$destination_evidence"
+		return 1
+	fi
+	return 0
+}
+
 full_loop_migrate_cleanup_receipt() {
 	local old_repo="$1"
 	local new_repo="$2"
@@ -904,83 +1174,66 @@ full_loop_migrate_cleanup_receipt() {
 	local release_status="$6"
 	local source_receipt=""
 	local destination_receipt=""
-	local source_aggregate="${source_release%.status}.aggregate.json"
-	local destination_aggregate="${destination_release%.status}.aggregate.json"
-	local now=""
+	local source_evidence=""
+	local destination_evidence=""
+	local existing_destination_rc=0
 	[[ "$old_repo" != "$new_repo" ]] || return 1
 	[[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED" ]] || return 1
 	source_receipt=$(_full_loop_cleanup_receipt_path "$old_repo" "$pr_number") || return 1
 	destination_receipt=$(_full_loop_cleanup_receipt_path "$new_repo" "$pr_number") || return 1
 	_full_loop_receipt_lock_acquire || return 1
 
-	if [[ -f "$destination_receipt" ]]; then
-		if _full_loop_migrated_destination_matches "$destination_receipt" "$destination_release" "$destination_aggregate" \
-			"$new_repo" "$old_repo" "$pr_number" "$release_status"; then
-			if [[ -f "$source_receipt" ]] && jq -e --slurpfile destination "$destination_receipt" '
-				.worktree == $destination[0].worktree
-				and .branch == $destination[0].branch
-				and .created_at == $destination[0].created_at
-				and .owner.process_identity == $destination[0].owner.process_identity
-			' "$source_receipt" >/dev/null 2>&1; then
-				rm -f "$source_release" "$source_receipt" "$source_aggregate"
-			fi
-			_full_loop_receipt_lock_release
-			return 0
-		fi
+	_full_loop_reconcile_complete_migration "$old_repo" "$new_repo" "$pr_number" \
+		"$source_receipt" "$source_release" "$destination_receipt" "$destination_release" \
+		"$release_status" || existing_destination_rc=$?
+	case "$existing_destination_rc" in
+	0)
+		_full_loop_receipt_lock_release
+		return 0
+		;;
+	2) ;;
+	3)
+		_full_loop_receipt_lock_release
+		return 0
+		;;
+	*)
 		_full_loop_receipt_lock_release
 		return 1
-	fi
-	if ! _full_loop_migration_source_matches "$source_receipt" "$source_release" "$source_aggregate" \
+		;;
+	esac
+	if ! _full_loop_migration_source_matches "$source_receipt" "$source_release" \
 		"$old_repo" "$pr_number" "$release_status"; then
 		_full_loop_receipt_lock_release
 		return 1
 	fi
-	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
-		_full_loop_receipt_lock_release
-		return 1
-	}
-	mkdir -p "${destination_release%/*}" || {
-		_full_loop_receipt_lock_release
-		return 1
-	}
-	jq --arg repo "$new_repo" --arg old_repo "$old_repo" --arg now "$now" '
-		.repository = $repo
-		| .updated_at = $now
-		| .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:$now}
-	' "$source_receipt" >"${destination_receipt}.tmp.$$" || {
-		_full_loop_receipt_lock_release
-		return 1
-	}
-	printf '%s\n' "$release_status" >"${destination_release}.tmp.$$" || {
-		rm -f "${destination_receipt}.tmp.$$"
-		_full_loop_receipt_lock_release
-		return 1
-	}
 	if [[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" ]]; then
-		_full_loop_prepare_migrated_aggregate_evidence \
-			"$source_aggregate" "$destination_aggregate" "$old_repo" "$new_repo" "$now" || {
-			rm -f "${destination_receipt}.tmp.$$" "${destination_release}.tmp.$$"
+		source_evidence=$(_full_loop_superseded_migration_evidence_path \
+			"$source_release" "$old_repo" "$pr_number") || {
 			_full_loop_receipt_lock_release
 			return 1
 		}
-		mv "${destination_aggregate}.tmp.$$" "$destination_aggregate" || {
-			rm -f "${destination_receipt}.tmp.$$" "${destination_release}.tmp.$$"
+		case "$source_evidence" in
+		*.aggregate.json) destination_evidence="${destination_release%.status}.aggregate.json" ;;
+		*.successor.json) destination_evidence="${destination_release%.status}.successor.json" ;;
+		*)
 			_full_loop_receipt_lock_release
 			return 1
-		}
+			;;
+		esac
 	fi
-	mv "${destination_receipt}.tmp.$$" "$destination_receipt" || {
-		rm -f "${destination_release}.tmp.$$"
-		rm -f "$destination_aggregate"
-		_full_loop_receipt_lock_release
-		return 1
-	}
-	if ! mv "${destination_release}.tmp.$$" "$destination_release"; then
-		rm -f "$destination_receipt" "$destination_aggregate"
+	if ! _full_loop_prepare_partial_migration_retry "$old_repo" "$new_repo" "$pr_number" \
+		"$source_receipt" "$source_evidence" "$destination_receipt" "$destination_release" \
+		"$destination_evidence" "$release_status"; then
 		_full_loop_receipt_lock_release
 		return 1
 	fi
-	rm -f "$source_release" "$source_receipt" "$source_aggregate" || {
+	if ! _full_loop_write_migrated_cleanup_receipt \
+		"$old_repo" "$new_repo" "$release_status" "$source_receipt" \
+		"$destination_receipt" "$destination_release" "$source_evidence" "$destination_evidence"; then
+		_full_loop_receipt_lock_release
+		return 1
+	fi
+	rm -f "$source_release" "$source_receipt" "$source_evidence" || {
 		_full_loop_receipt_lock_release
 		return 1
 	}

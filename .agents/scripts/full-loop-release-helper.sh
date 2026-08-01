@@ -228,7 +228,8 @@ Usage:
 Release publication is provenance-bound and normally unattended. `status` is
 read-only. `reconcile` verifies the newest matching signed tag, queues an
 idempotent recovery workflow when needed, and finalizes local release receipts
-only after GitHub, npm, and Homebrew all converge.
+only after GitHub, npm, and Homebrew all converge. A published stale tag can be
+settled only by verified post-publication supersession; it is never redispatched.
 EOF
 	return 0
 }
