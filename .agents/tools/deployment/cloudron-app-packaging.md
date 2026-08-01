@@ -262,8 +262,15 @@ Track version in `/app/data/.app_version`; compare on start to run per-version m
 `aidevops init` detects `CloudronManifest.json`, records
 `app_type: cloudron-package` in local `repos.json`, and installs the thin
 `.github/workflows/cloudron-package-release.yml` caller when no file already
-exists. Configure `cloudron_package.upstream_slug` locally to enable daily
-stable-release comparison; compatibility monitoring is enabled by default.
+exists. Configure `cloudron_package.upstream_slug` locally to enable stable-release
+comparison. `cloudron_package.upstream_tag_prefixes` defaults to `["v", ""]`,
+covering `v1.2.3` and bare `1.2.3` tags. Set a product stream such as
+`["desktop-v"]` when a shared upstream publishes tags like `desktop-v0.5.3`;
+unrelated `v...` releases are then ignored. The monitor paginates the GitHub
+releases API, excludes drafts and prereleases, validates the version remaining
+after a configured prefix, and selects the numerically highest matching stable
+semantic release. Invalid prefix configuration and repositories with no matching
+stable tag fail closed. Compatibility monitoring is enabled by default.
 The generated caller pins both the reusable workflow and checked-out validator
 to the same full framework commit. Updating that revision is an explicit,
 reviewed package change; repeated init never overwrites an existing caller.
@@ -283,7 +290,8 @@ changelog entry, and the exact pinned final Cloudron base image.
 
 Core routines provide ongoing reporting:
 
-- `r916` runs `cloudron-package-monitor-helper.sh upstream --apply` daily.
+- `r916` runs `cloudron-package-monitor-helper.sh upstream --apply` daily at
+  `00:30 UTC` using its version-controlled per-routine timezone override.
 - `r917` runs `cloudron-package-monitor-helper.sh compatibility --apply` weekly.
 
 Both routines deduplicate package-local issues, require maintainer-equivalent

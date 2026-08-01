@@ -549,7 +549,7 @@ register_repo() {
 	local cloudron_defaults='{}'
 	if [[ -f "${repo_path}/CloudronManifest.json" ]]; then
 		app_type_default="$cloudron_app_type"
-		cloudron_defaults='{"manifest":"CloudronManifest.json","release_workflow":".github/workflows/cloudron-package-release.yml","monitor_compatibility":true}'
+		cloudron_defaults='{"manifest":"CloudronManifest.json","release_workflow":".github/workflows/cloudron-package-release.yml","monitor_compatibility":true,"upstream_tag_prefixes":["v",""]}'
 	fi
 
 	if jq -e --arg path "$repo_path" '.initialized_repos[] | select(.path == $path)' "$REPOS_FILE" &>/dev/null; then

@@ -19,6 +19,7 @@
 #   - _routine_execute
 #   - _routine_extract_section
 #   - _routine_parse_line
+#   - _routine_schedule_is_due
 #   - evaluate_routines
 #
 # Keep behavioral changes in this module covered by the focused selector and
@@ -252,6 +253,7 @@ _RPL_REPEAT=""
 _RPL_RUN=""
 _RPL_AGENT=""
 _RPL_DESC=""
+_RPL_TIMEZONE=""
 
 #######################################
 # Normalize one Markdown line before registry parsing.
@@ -436,8 +438,9 @@ _routine_targets_supervisor() {
 # Parse a single routine TODO line into its component fields.
 #
 # Extracts routine_id, repeat expression, run script, agent name, and
-# description from a TODO.md routine line. Sets module-scope variables
-# (_RPL_ID, _RPL_REPEAT, _RPL_RUN, _RPL_AGENT, _RPL_DESC) on success.
+# optional timezone from a TODO.md routine line. Sets module-scope variables
+# (_RPL_ID, _RPL_REPEAT, _RPL_RUN, _RPL_AGENT, _RPL_DESC, _RPL_TIMEZONE) on
+# success.
 #
 # Arguments: $1 - a TODO.md line matching the routine pattern
 # Returns: 0 if the line was successfully parsed, 1 if it should be skipped
@@ -449,6 +452,7 @@ _routine_parse_line() {
 	_RPL_RUN=""
 	_RPL_AGENT=""
 	_RPL_DESC=""
+	_RPL_TIMEZONE=""
 
 	# Live routine definitions are top-level Markdown list items. Four-space
 	# indentation is a code block and must not become scheduler input.
@@ -486,7 +490,7 @@ _routine_parse_line() {
 
 	# Extract optional run: field — captures script path and any trailing
 	# space-separated argument tokens. Field keywords (agent:, repeat:,
-	# started:, blocked-by:) always contain a colon, so we stop as soon as
+	# timezone:, started:, blocked-by:) always contain a colon, so we stop when
 	# we encounter a token with a colon embedded.
 	if [[ "$line" =~ run:([^[:space:]]+) ]]; then
 		_RPL_RUN="${BASH_REMATCH[1]}"
@@ -507,11 +511,41 @@ _routine_parse_line() {
 		_RPL_AGENT="${BASH_REMATCH[1]}"
 	fi
 
+	# Per-routine timezone tokens are intentionally data-only. The scheduler
+	# receives the value through one environment assignment, never interpolation.
+	local _re_timezone='(^|[[:space:]])timezone:([^[:space:]]*)'
+	local _re_timezone_token='^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$'
+	if [[ "$line" =~ $_re_timezone ]]; then
+		_RPL_TIMEZONE="${BASH_REMATCH[2]}"
+		if [[ -z "$_RPL_TIMEZONE" ]] || ! [[ "$_RPL_TIMEZONE" =~ $_re_timezone_token ]]; then
+			printf 'ERROR: routine %s has malformed timezone field\n' "$_RPL_ID" >&2
+			_RPL_TIMEZONE=""
+			return 1
+		fi
+	fi
+
 	# Extract description (text between ID and first field tag).
 	local description_tail="${line#*"${_RPL_ID}"}"
-	_RPL_DESC=$(printf '%s' "$description_tail" | sed -E 's/^[[:space:]]*//' | sed -E 's/[[:space:]]*(repeat:|run:|agent:|#|~|@|started:|blocked-by:).*//')
+	_RPL_DESC=$(printf '%s' "$description_tail" | sed -E 's/^[[:space:]]*//' | sed -E 's/[[:space:]]*(repeat:|run:|agent:|timezone:|#|~|@|started:|blocked-by:).*//')
 
 	return 0
+}
+
+#######################################
+# Check one routine schedule with an optional timezone override.
+# Arguments: $1 - expression, $2 - last-run epoch, $3 - timezone or empty
+# Returns: schedule helper status
+#######################################
+_routine_schedule_is_due() {
+	local expression="$1"
+	local last_run_epoch="$2"
+	local timezone="$3"
+	if [[ -n "$timezone" ]]; then
+		AIDEVOPS_SCHEDULE_TIMEZONE="$timezone" "$ROUTINE_SCHEDULE_HELPER" is-due "$expression" "$last_run_epoch"
+		return $?
+	fi
+	"$ROUTINE_SCHEDULE_HELPER" is-due "$expression" "$last_run_epoch"
+	return $?
 }
 
 #######################################
@@ -575,10 +609,12 @@ evaluate_routines() {
 
 			# Check if due
 			local last_epoch
+			local timezone_context=""
 			last_epoch=$(_routine_last_run_epoch "$_RPL_ID")
+			timezone_context="${_RPL_TIMEZONE:-inherited}"
 
-			if "$ROUTINE_SCHEDULE_HELPER" is-due "$_RPL_REPEAT" "$last_epoch"; then
-				echo "[pulse-wrapper] routine ${_RPL_ID} is due (expr=${_RPL_REPEAT}, last_run_epoch=${last_epoch})" >>"$LOGFILE"
+			if _routine_schedule_is_due "$_RPL_REPEAT" "$last_epoch" "$_RPL_TIMEZONE"; then
+				echo "[pulse-wrapper] routine ${_RPL_ID} is due (expr=${_RPL_REPEAT}, timezone=${timezone_context}, last_run_epoch=${last_epoch})" >>"$LOGFILE"
 				_routine_execute "$_RPL_ID" "$_RPL_DESC" "$_RPL_RUN" "$_RPL_AGENT" "$repo_path"
 				routines_dispatched=$((routines_dispatched + 1))
 			fi
