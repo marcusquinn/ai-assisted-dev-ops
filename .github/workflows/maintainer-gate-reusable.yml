@@ -311,10 +311,11 @@ jobs:
           if echo "$PR_LABELS" | grep -q 'origin:interactive'; then
             if pr_author_has_maintainer_authority "$PR_AUTHOR_ASSOCIATION" "$PR_AUTHOR"; then
               echo "PASS: PR #$PR_NUMBER has origin:interactive and author is maintainer ($PR_AUTHOR_ASSOCIATION) — implied approval (t2030: applies to linked-issue PRs too)"
-              post_maintainer_gate_status_once \
+              # Fail closed when branch protection cannot observe the implied
+              # approval, matching every other terminal Job 1 path (GH#29128).
+              post_maintainer_gate_status_with_retry \
                 success \
-                "origin:interactive by maintainer ($PR_AUTHOR_ASSOCIATION) — implied approval" \
-                2>/dev/null || true
+                "origin:interactive by maintainer ($PR_AUTHOR_ASSOCIATION) — implied approval"
               exit 0
             else
               echo "SKIP: PR #$PR_NUMBER has origin:interactive but author is $PR_AUTHOR_ASSOCIATION without maintainer-authority — continuing normal gate checks"
