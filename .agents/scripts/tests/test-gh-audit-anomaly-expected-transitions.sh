@@ -40,12 +40,13 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:09:00Z","op":"issue_edit","repo":"example/repo","number":10,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":0,"labels":["needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":-100,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress","body_delta_pct=-100"]}
 {"ts":"2026-07-31T00:10:00Z","op":"issue_edit","repo":"example/repo","number":11,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":[]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:11:00Z","op":"issue_edit","repo":"example/repo","number":12,"caller_script":"/runtime/agents/scripts/routine-log-helper.sh","caller_function":"_update_tracking_issue","flags":{},"before":{"capture_status":"ok","title_len":27,"body_len":1822,"labels":["routines","routine-tracking"]},"after":{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null},"delta":{"comparable":false,"title_delta_pct":null,"body_delta_pct":null,"labels_removed":null,"labels_added":null},"suspicious":["state_capture_unavailable:after"]}
+{"ts":"2026-07-31T00:12:00Z","op":"issue_edit","repo":"example/repo","number":13,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress","status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review","needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
 	GH_AUDIT_QUIET=true "$HELPER" scan --all --dry-run)
 
-[[ "$output" == *"**Anomalies found:** 8"* ]] || fail "expected transitions were not excluded exactly"
+[[ "$output" == *"**Anomalies found:** 9"* ]] || fail "expected transitions were not excluded exactly"
 [[ "$output" == *"| #3 |"* ]] || fail "unexpected lifecycle transition was hidden"
 [[ "$output" == *"| #4 |"* ]] || fail "approval transition with an additional signal was hidden"
 [[ "$output" == *"| #5 |"* ]] || fail "malformed provenance was dropped instead of retained"
@@ -54,6 +55,7 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #10 |"* ]] || fail "permission block with an additional signal was hidden"
 [[ "$output" == *"| #11 |"* ]] || fail "permission block without its blocker label was hidden"
 [[ "$output" == *"| #12 |"* ]] || fail "unavailable state capture was hidden"
+[[ "$output" == *"| #13 |"* ]] || fail "permission block with a lingering active status was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
 [[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* ]] ||
 	fail "an exact expected transition remained actionable"
@@ -62,7 +64,7 @@ MALFORMED_LOG="${TEST_ROOT}/malformed-audit.log"
 cat >"$MALFORMED_LOG" <<'EOF'
 {"suspicious":[]}
 not-json
-{"ts":"2026-07-31T00:12:00Z","op":"issue_edit","repo":"example/repo","number":13,"caller_function":"main","suspicious":["body_delta_pct=-100"]}
+{"ts":"2026-07-31T00:13:00Z","op":"issue_edit","repo":"example/repo","number":14,"caller_function":"main","suspicious":["body_delta_pct=-100"]}
 EOF
 malformed_rc=0
 GH_AUDIT_LOG_FILE="$MALFORMED_LOG" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/malformed-state.json" \

@@ -236,6 +236,12 @@ _cmd_scan_collect_anomalies() {
 					and (((.delta.labels_added // []) - [$permission]) | length == 0)
 					and (.delta.title_delta_pct == 0)
 					and (.delta.body_delta_pct == 0)
+					and ([.after.labels[]? | select(
+						. == "status:queued"
+						or . == "status:claimed"
+						or . == "status:in-progress"
+						or . == "status:in-review"
+					)] | length == 0)
 					and ((.suspicious // []) | length > 0)
 					and all(.suspicious[];
 						. == "protected_label_removed:status:claimed"
