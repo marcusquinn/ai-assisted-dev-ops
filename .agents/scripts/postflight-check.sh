@@ -5,7 +5,7 @@
 # Postflight Verification Script
 # Verifies release health after tag creation and GitHub release publication
 #
-# Usage: ./postflight-check.sh [--quick|--full|--ci-only|--security-only]
+# Usage: ./postflight-check.sh [--quick|--full|--ci-only|--security-only] [--tag TAG]
 #
 # Author: AI DevOps Framework
 # Version: 1.0.0
@@ -16,10 +16,11 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 set -euo pipefail
 
 # Configuration
-readonly TIMEOUT_CI=600    # 10 minutes for CI/CD
-readonly TIMEOUT_TOOLS=300 # 5 minutes for code review tools
-readonly POLL_INTERVAL=30  # Check every 30 seconds
-readonly MAX_ATTEMPTS=20   # Maximum polling attempts
+readonly TIMEOUT_CI=600                                  # 10 minutes for CI/CD
+readonly TIMEOUT_TOOLS=300                               # 5 minutes for code review tools
+readonly POLL_INTERVAL="${POSTFLIGHT_POLL_INTERVAL:-30}" # Check every 30 seconds
+readonly MAX_ATTEMPTS="${POSTFLIGHT_MAX_ATTEMPTS:-20}"   # Maximum polling attempts
+readonly POSTFLIGHT_CHECK_COMPLETED="completed"
 
 # Repository info
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit
@@ -33,6 +34,7 @@ FAILED=0
 WARNINGS=0
 SKIPPED=0
 POSTFLIGHT_COMMIT_SHA=""
+POSTFLIGHT_STABLE_RELEASE_CHECKS=""
 
 print_header() {
 	echo -e "${BLUE}========================================${NC}"
@@ -159,6 +161,78 @@ load_release_owned_checks() {
 	return $?
 }
 
+_postflight_wait_for_stable_required_checks() {
+	local repo="$1"
+	local release_sha="$2"
+	local attempt=0
+	local complete_streak=0
+	local pending_count refreshed_checks
+
+	while [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; do
+		((++attempt))
+		pending_count=$(jq --arg completed "$POSTFLIGHT_CHECK_COMPLETED" \
+			'[.check_runs[] | select(.status != $completed)] | length' \
+			<<<"$POSTFLIGHT_STABLE_RELEASE_CHECKS") || return 1
+
+		if [[ "$pending_count" -eq 0 ]]; then
+			((++complete_streak))
+			if [[ "$complete_streak" -ge 2 ]]; then
+				refreshed_checks=$(load_release_owned_checks "$repo" "$release_sha") || {
+					complete_streak=0
+					continue
+				}
+				POSTFLIGHT_STABLE_RELEASE_CHECKS="$refreshed_checks"
+				pending_count=$(jq --arg completed "$POSTFLIGHT_CHECK_COMPLETED" \
+					'[.check_runs[] | select(.status != $completed)] | length' \
+					<<<"$POSTFLIGHT_STABLE_RELEASE_CHECKS") || return 1
+				if [[ "$pending_count" -eq 0 ]]; then
+					return 0
+				fi
+				complete_streak=0
+				print_info "A required check appeared during the final refresh"
+				continue
+			fi
+			print_info "Required checks appear terminal; confirming after ${POLL_INTERVAL}s"
+		else
+			complete_streak=0
+			print_info "Waiting for $pending_count release-owned check(s) (snapshot $attempt/$MAX_ATTEMPTS)"
+		fi
+
+		sleep "$POLL_INTERVAL"
+		if refreshed_checks=$(load_release_owned_checks "$repo" "$release_sha"); then
+			POSTFLIGHT_STABLE_RELEASE_CHECKS="$refreshed_checks"
+		else
+			complete_streak=0
+		fi
+	done
+
+	pending_count=$(jq --arg completed "$POSTFLIGHT_CHECK_COMPLETED" \
+		'[.check_runs[] | select(.status != $completed)] | length' \
+		<<<"$POSTFLIGHT_STABLE_RELEASE_CHECKS") || return 1
+	if [[ "$pending_count" -gt 0 ]]; then
+		jq -r --arg completed "$POSTFLIGHT_CHECK_COMPLETED" \
+			'.check_runs[] | select(.status != $completed) | "  - \(.name): \(.status)"' \
+			<<<"$POSTFLIGHT_STABLE_RELEASE_CHECKS"
+	fi
+	return 1
+}
+
+_postflight_report_advisory_checks() {
+	local outcome="$1"
+	local advisory_pending advisory_failed
+	advisory_pending=$(jq '.advisory.pending | length' <<<"$outcome")
+	advisory_failed=$(jq '.advisory.failed | length' <<<"$outcome")
+	if [[ "$advisory_pending" -gt 0 ]]; then
+		count_warning "$advisory_pending non-required advisory check(s) remain non-terminal"
+	fi
+	if [[ "$advisory_failed" -gt 0 ]]; then
+		count_warning "$advisory_failed non-required advisory check(s) failed"
+		jq -r '.advisory.failed[] | "  - \(.name): \(.conclusion // "missing") (\(.classification_reason))"' \
+			<<<"$outcome"
+	fi
+	return 0
+}
+
 # Check GitHub Actions CI/CD status using release-owned exact-SHA evidence.
 check_cicd_status() {
 	print_section "CI/CD Pipeline Status"
@@ -168,7 +242,7 @@ check_cicd_status() {
 		return 1
 	fi
 
-	local repo release_sha release_checks
+	local repo release_sha release_checks release_tag
 	repo=$(get_repo_info)
 	if [[ -z "$repo" ]]; then
 		count_failure "Could not determine repository"
@@ -181,6 +255,12 @@ check_cicd_status() {
 		return 1
 	fi
 	print_info "Release commit: $release_sha"
+	release_tag="${POSTFLIGHT_RELEASE_TAG:-}"
+	if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		count_failure "Exact release tag is required for publication evidence"
+		return 1
+	fi
+	print_info "Release tag: $release_tag"
 	release_checks=$(load_release_owned_checks "$repo" "$release_sha") || {
 		count_failure "Could not load release-owned workflow evidence"
 		return 1
@@ -193,41 +273,39 @@ check_cicd_status() {
 		jq -r '.unrelated_workflow_runs[] | "  - \(.name) [event=\(.event), id=\(.id)]"' <<<"$release_checks"
 	fi
 
-	local attempt=0 pending_count
-	pending_count=$(jq '[.check_runs[] | select(.status != "completed")] | length' <<<"$release_checks")
-	while [[ "$pending_count" -gt 0 && "$attempt" -lt "$MAX_ATTEMPTS" ]]; do
-		((++attempt))
-		print_info "Waiting for $pending_count release-owned check(s) (attempt $attempt/$MAX_ATTEMPTS)"
-		sleep "$POLL_INTERVAL"
-		release_checks=$(load_release_owned_checks "$repo" "$release_sha") || continue
-		pending_count=$(jq '[.check_runs[] | select(.status != "completed")] | length' <<<"$release_checks")
-	done
+	POSTFLIGHT_STABLE_RELEASE_CHECKS="$release_checks"
+	if ! _postflight_wait_for_stable_required_checks "$repo" "$release_sha"; then
+		count_failure "Release-owned checks did not reach a stable terminal state"
+		return 1
+	fi
+	release_checks="$POSTFLIGHT_STABLE_RELEASE_CHECKS"
 
-	local required_count failed_count
-	required_count=$(jq '.check_runs | length' <<<"$release_checks")
+	local required_count failed_count outcome pending_count
+	outcome=$(jq -c -f "$SCRIPT_DIR/jq/postflight-check-outcome.jq" <<<"$release_checks") || {
+		count_failure "Could not classify release-owned workflow evidence"
+		return 1
+	}
+	required_count=$(jq '.required.total' <<<"$outcome")
+	pending_count=$(jq '.required.pending | length' <<<"$outcome")
 	if [[ "$required_count" -eq 0 ]]; then
 		count_failure "No release-owned check-run evidence exists for $release_sha"
 		return 1
 	fi
 	if [[ "$pending_count" -gt 0 ]]; then
 		count_failure "$pending_count release-owned check(s) remained non-terminal after timeout"
-		jq -r '.check_runs[] | select(.status != "completed") | "  - \(.name): \(.status)"' <<<"$release_checks"
+		jq -r '.required.pending[] | "  - \(.name): \(.status)"' <<<"$outcome"
 		return 1
 	fi
 
-	failed_count=$(jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required")] | length' <<<"$release_checks")
+	failed_count=$(jq '.required.failed | length' <<<"$outcome")
 	if [[ "$failed_count" -gt 0 ]]; then
 		count_failure "$failed_count required release-owned check(s) failed"
-		jq -r '.check_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required") | "  - \(.name): \(.conclusion)"' <<<"$release_checks"
+		jq -r '.required.failed[] | "  - \(.name): \(.conclusion // "missing")"' <<<"$outcome"
 		return 1
 	fi
 
 	count_success "$required_count required release-owned check(s) passed"
-	local advisory_pending
-	advisory_pending=$(jq '[.advisory_check_runs[] | select(.status != "completed")] | length' <<<"$release_checks")
-	if [[ "$advisory_pending" -gt 0 ]]; then
-		count_warning "$advisory_pending non-required advisory check(s) remain non-terminal"
-	fi
+	_postflight_report_advisory_checks "$outcome"
 	return 0
 }
 
@@ -455,12 +533,13 @@ show_usage() {
 	echo "  --ci-only       Run CI/CD checks only"
 	echo "  --security-only Run security checks only"
 	echo "  --sha SHA       Verify CI evidence for this exact release commit"
+	echo "  --tag TAG       Require publication evidence for this exact release tag"
 	echo "  --help          Show this help message"
 	echo ""
 	echo "Examples:"
-	echo "  $0              # Run full postflight verification"
-	echo "  $0 --quick      # Quick check after minor release"
-	echo "  $0 --security   # Security-focused verification"
+	echo "  $0 --full --tag v1.2.3   # Full exact-release verification"
+	echo "  $0 --quick --tag v1.2.3  # Quick exact-release verification"
+	echo "  $0 --security-only        # Security-focused verification"
 	return 0
 }
 
@@ -494,6 +573,19 @@ main() {
 				return 1
 			fi
 			POSTFLIGHT_COMMIT_SHA="$2"
+			shift 2
+			;;
+		--tag)
+			if [[ $# -lt 2 || -z "${2:-}" ]]; then
+				echo "--tag requires an exact release tag"
+				return 1
+			fi
+			local release_tag_arg="$2"
+			if [[ ! "$release_tag_arg" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+				echo "Invalid release tag: $release_tag_arg"
+				return 1
+			fi
+			POSTFLIGHT_RELEASE_TAG="$release_tag_arg"
 			shift 2
 			;;
 		--help | -h)
