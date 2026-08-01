@@ -1,0 +1,31 @@
+{
+  "identity": {
+    "data": {
+      "id": "location42",
+      "business_account_id": "account42",
+      "organization_id": "organization42",
+      "title": "Synthetic location",
+      "google_identity_verified": true
+    }
+  },
+  "pages": [
+    {
+      "expect_request": {"cursor": {"page_token": "reviews-next"}},
+      "response": {
+        "status": 200,
+        "observed_at": "2026-07-30T10:01:00Z",
+        "data": [
+          {
+            "kind": "owner_reply",
+            "remote_id": "review-new-owner-reply",
+            "text": "Synthetic owner response",
+            "updated_at": "2026-07-30T09:00:00Z",
+            "protected": true,
+            "provider_json": {"review_id": "review-new"}
+          }
+        ],
+        "meta": {"next_cursor": null, "complete": true, "snapshot": true}
+      }
+    }
+  ]
+}

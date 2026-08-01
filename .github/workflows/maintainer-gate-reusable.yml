@@ -553,11 +553,61 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
           ACTOR: ${{ github.actor }}
-          ACTOR_ASSOCIATION: ${{ github.event.issue.author_association }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Label 'needs-maintainer-review' removed from issue #$ISSUE_NUMBER by $ACTOR"
+
+          issue_author_has_live_authority() {
+            local issue_json="$1"
+            local identity="" author="" association="" permission=""
+            if ! identity=$(printf '%s' "$issue_json" | jq -r '
+              if (.user.login // "") != "" and (.author_association // "") != ""
+              then [(.user.login // ""), (.author_association // "")] | @tsv
+              else error("missing live issue author metadata") end
+            ' 2>/dev/null); then
+              return 2
+            fi
+            IFS=$'\t' read -r author association <<< "$identity"
+            [[ "$author" == "$ISSUE_AUTHOR" ]] || return 2
+            case "$association" in
+              OWNER|MEMBER) return 0 ;;
+              COLLABORATOR) ;;
+              *) return 1 ;;
+            esac
+            if ! permission=$(gh api "repos/${REPO}/collaborators/${author}/permission" \
+              --jq '.permission // "none"' 2>/dev/null); then
+              return 2
+            fi
+            case "$permission" in
+              admin|maintain|write) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          trusted_bot_open_cleanup_is_allowed() {
+            local issue_json="" created_at="" created_epoch="" now_epoch="" age_seconds="" authority_rc=0
+            [[ "$ACTOR" == "github-actions[bot]" ]] || return 1
+            if ! issue_json=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null); then
+              return 2
+            fi
+            created_at=$(printf '%s' "$issue_json" | jq -r '.created_at // ""' 2>/dev/null) || return 2
+            [[ -n "$created_at" ]] || return 2
+            if date --version >/dev/null 2>&1; then
+              created_epoch=$(date -u -d "$created_at" '+%s' 2>/dev/null) || return 2
+            else
+              created_epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" '+%s' 2>/dev/null) || return 2
+            fi
+            now_epoch=$(date -u '+%s' 2>/dev/null) || return 2
+            age_seconds=$((now_epoch - created_epoch))
+            [[ "$age_seconds" -ge 0 && "$age_seconds" -le 300 ]] || return 1
+            issue_author_has_live_authority "$issue_json" || authority_rc=$?
+            case "$authority_rc" in
+              0) return 0 ;;
+              2) return 2 ;;
+              *) return 1 ;;
+            esac
+          }
 
           approval_comments_have_maintainer_authority() {
             local comments_json="$1"
@@ -598,6 +648,23 @@ jobs:
             done <<< "$identities"
             return 1
           }
+
+          #aidevops:trust-boundary GH#29151: issue-triage removes a form-default
+          # NMR label as github-actions[bot] immediately after a trusted author
+          # opens an issue. Permit only that narrow, live-verified creation-time
+          # cleanup. Later bot removals still require cryptographic approval so
+          # an explicit human hold cannot be erased by unrelated automation.
+          if [[ "$ACTOR" == "github-actions[bot]" ]]; then
+            TRUSTED_BOT_RC=0
+            trusted_bot_open_cleanup_is_allowed || TRUSTED_BOT_RC=$?
+            if [[ "$TRUSTED_BOT_RC" -eq 0 ]]; then
+              echo "ALLOWED: creation-time triage cleanup by github-actions[bot] for a live-verified maintainer-authored issue"
+              exit 0
+            fi
+            if [[ "$TRUSTED_BOT_RC" -eq 2 ]]; then
+              echo "::warning::Unable to verify creation-time trusted-author cleanup — restoring NMR"
+            fi
+          fi
 
           #aidevops:trust-boundary GH#1894/GH#27611/GH#28622: marker text is
           # attacker-controlled and bot identity alone is not approval. Require

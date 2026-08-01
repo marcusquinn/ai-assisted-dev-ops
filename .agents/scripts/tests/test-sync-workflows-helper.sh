@@ -13,6 +13,16 @@
 
 set -uo pipefail
 
+# Fixture repositories are disposable. Export a test-local native Git boundary
+# so child helper shells cannot inherit the runtime's canonical-repo guard while
+# the normal PATH remains available for dependencies such as jq.
+git() {
+	local _git_bin="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+	"$_git_bin" "$@"
+	return $?
+}
+export -f git
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 HELPER="$SCRIPT_DIR/../sync-workflows-helper.sh"
@@ -576,7 +586,7 @@ rm -rf "$TMPDIR_16"
 TMPDIR_17="$(mktemp -d)"
 _setup_fake_home "$TMPDIR_17"
 _setup_mock_gh "$TMPDIR_17"
-REAL_GIT_17=$(command -v git)
+REAL_GIT_17="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 cat >"$TMPDIR_17/bin/git" <<'EOF'
 #!/usr/bin/env bash
 for _arg in "$@"; do
@@ -613,6 +623,7 @@ _write_repos_json "$TMPDIR_17" \
 SYNC_BRANCH_17="chore/test-caller-owned"
 OUT_17=$(cd "$LINKED_17" && \
 	HOME="$TMPDIR_17" PATH="$TMPDIR_17/bin:$PATH" REAL_GIT="$REAL_GIT_17" \
+	AIDEVOPS_TEST_GIT_BIN="$TMPDIR_17/bin/git" \
 	GH_CALL_LOG="$TMPDIR_17/gh-calls.log" \
 	AIDEVOPS_WORKTREE_BASE_DIR="$TMPDIR_17/framework-worktrees" \
 	bash "$HELPER" --apply --repo owner/repo-caller-owned --workflow issue-sync \

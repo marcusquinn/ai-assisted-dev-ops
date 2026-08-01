@@ -688,16 +688,51 @@ _render_row_json() {
 	return 0
 }
 
-# _diff_summary <workflow-file> <canonical-template>
-# Emit a compact diff summary for verbose mode.
+# _diff_summary <workflow-file> <canonical-template> [<reusable-file> <target-repo> <target-ref>]
+# Emit a compact diff summary for verbose mode. Caller diagnostics use the same
+# target rendering and normalisation pipeline as classification so displayed
+# evidence cannot diverge from the comparison that produced DRIFTED/CALLER.
 _diff_summary() {
 	local _wf="$1"
 	local _canon="$2"
+	local _reusable_file="${3:-}"
+	local _target_repo="${4:-}"
+	local _target_ref="${5:-}"
 	if ! command -v diff >/dev/null 2>&1; then
+		return 0
+	fi
+	if [[ -n "$_reusable_file" && -n "$_target_repo" && -n "$_target_ref" ]]; then
+		local _target_escaped _canon_rendered
+		_target_escaped="$(_escape_ere "$_target_repo")/\.github/workflows/$(_escape_ere "$_reusable_file")"
+		if grep -qE '^      aidevops_ref:' "$_canon" &&
+			! _caller_helper_provenance_matches "$_wf" "$_target_repo" "$_target_escaped"; then
+			printf '  helper provenance mismatch: reusable uses and aidevops_repository/aidevops_ref must identify the same target\n'
+		fi
+		_canon_rendered=$(_render_template_for_target \
+			"$_canon" "$_target_repo" "$_reusable_file" "$_target_ref")
+		diff -u \
+			<(_normalize_wf_text_for_compare "$_canon_rendered" "$_target_escaped") \
+			<(_normalize_wf_for_compare "$_wf" "$_target_escaped") 2>/dev/null | head -n 20
 		return 0
 	fi
 	# Unified diff, only show first 20 lines so a huge drift doesn't blast output.
 	diff -u "$_canon" "$_wf" 2>/dev/null | head -n 20
+	return 0
+}
+
+# _caller_diff_summary <slug> <workflow-file> <canonical-template> <reusable-file>
+# Resolve the per-repository target tuple and render one caller comparison.
+_caller_diff_summary() {
+	local _slug="$1"
+	local _wf="$2"
+	local _canonical="$3"
+	local _reusable_file="$4"
+	local _target_repo _target_ref
+	_target_repo=$(_workflow_reusable_repo_for_slug "$_slug")
+	_target_ref=$(_workflow_reusable_ref_for_slug "$_slug")
+	printf '\n'
+	_diff_summary "$_wf" "$_canonical" "$_reusable_file" "$_target_repo" "$_target_ref"
+	printf '\n'
 	return 0
 }
 
@@ -995,9 +1030,8 @@ _process_rows() {
 			else
 				_render_row_human "$_label" "$_path" "$_class" "$_note" "$_workflow_name"
 				if ((_verbose == 1)) && [[ "$_base_class" == "DRIFTED/CALLER" ]] && [[ -n "$_canonical" ]]; then
-					echo ""
-					_diff_summary "$_path/.github/workflows/${_workflow_file}" "$_canonical"
-					echo ""
+					_caller_diff_summary "$_slug" "$_path/.github/workflows/${_workflow_file}" \
+						"$_canonical" "$_reusable_file"
 				elif ((_verbose == 1)) && [[ "$_base_class" == "DRIFTED/REUSABLE" ]]; then
 					local _canonical_reusable
 					_canonical_reusable=$(_resolve_canonical_reusable "$_reusable_file") || _canonical_reusable=""

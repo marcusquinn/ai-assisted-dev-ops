@@ -23,15 +23,23 @@ check_pattern() {
 }
 
 main() {
-	local first_add="" first_create="" persistent_guard=""
+	local first_add="" first_create="" persistent_guard="" trusted_cleanup=""
 	first_add=$(grep -n 'await github\.rest\.issues\.addLabels' "$WORKFLOW" | head -1 | cut -d: -f1)
 	first_create=$(grep -n 'await github\.rest\.issues\.createLabel' "$WORKFLOW" | head -1 | cut -d: -f1)
 	persistent_guard=$(grep -n "issueLabels\.has('persistent')" "$WORKFLOW" | head -1 | cut -d: -f1)
+	trusted_cleanup=$(grep -n 'if (authorIsTrusted)' "$WORKFLOW" | head -1 | cut -d: -f1)
 	TESTS_RUN=$((TESTS_RUN + 1))
 	if [[ "$first_add" =~ ^[0-9]+$ && "$first_create" =~ ^[0-9]+$ && "$first_add" -lt "$first_create" ]]; then
 		printf 'PASS critical label application precedes label creation\n'
 	else
 		printf 'FAIL critical label application does not precede label creation\n' >&2
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$trusted_cleanup" =~ ^[0-9]+$ && "$persistent_guard" =~ ^[0-9]+$ && "$trusted_cleanup" -lt "$persistent_guard" ]]; then
+		printf 'PASS trusted-author NMR cleanup precedes persistent non-task guard\n'
+	else
+		printf 'FAIL persistent non-task guard still bypasses trusted-author cleanup\n' >&2
 		TESTS_FAILED=$((TESTS_FAILED + 1))
 	fi
 	TESTS_RUN=$((TESTS_RUN + 1))
@@ -50,8 +58,8 @@ main() {
 		"bare collaborator association is excluded from trusted roles"
 	check_pattern "collaborators/\{username\}/permission" \
 		"collaborator authority uses the repository permission endpoint"
-	check_pattern "persistent is itself an unconditional" \
-		"persistent bypass documents the remaining dispatch trust boundary"
+	check_pattern "Run trusted-author cleanup first" \
+		"persistent bypass documents trusted cleanup ordering"
 	check_pattern "if \(!issueLabels\.has\(label\)\)" \
 		"absent cleanup labels do not spend removal requests"
 	check_pattern "Review label is applied but welcome comment failed" \

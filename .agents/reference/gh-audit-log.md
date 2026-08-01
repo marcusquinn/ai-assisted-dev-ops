@@ -21,9 +21,10 @@ Each log line is a compact JSON object (NDJSON):
   "caller_line": 945,
   "pid": 12345,
   "flags": {"FORCE_ENRICH": "true"},
-  "before": {"title_len": 87, "body_len": 4678, "labels": ["status:in-review", "origin:interactive"]},
-  "after":  {"title_len": 7,  "body_len": 0,    "labels": ["auto-dispatch", "tier:thinking"]},
+  "before": {"capture_status": "ok", "title_len": 87, "body_len": 4678, "labels": ["status:in-review", "origin:interactive"]},
+  "after":  {"capture_status": "ok", "title_len": 7,  "body_len": 0,    "labels": ["auto-dispatch", "tier:thinking"]},
   "delta": {
+    "comparable": true,
     "title_delta_pct": -92,
     "body_delta_pct": -100,
     "labels_removed": ["status:in-review", "origin:interactive"],
@@ -46,9 +47,9 @@ Each log line is a compact JSON object (NDJSON):
 | `caller_line` | integer | `BASH_LINENO` of the call site |
 | `pid` | integer | Process ID of the caller |
 | `flags` | object | Relevant env vars active at call time (e.g. `FORCE_ENRICH`) |
-| `before` | object | Issue/PR state immediately before the operation |
-| `after` | object | Issue/PR state immediately after the operation |
-| `delta` | object | Computed change metrics |
+| `before` | object | Issue/PR state immediately before the operation, or an explicit unavailable snapshot |
+| `after` | object | Issue/PR state immediately after the operation, or an explicit unavailable snapshot |
+| `delta` | object | Computed change metrics; values are null when snapshots are not comparable |
 | `suspicious` | array | Anomaly signal strings (empty = normal operation) |
 
 ### Operation types (`op`)
@@ -66,20 +67,26 @@ Each log line is a compact JSON object (NDJSON):
 
 ```json
 {
+  "capture_status": "ok",
   "title_len": 87,
   "body_len": 4678,
   "labels": ["status:in-review", "origin:interactive"]
 }
 ```
 
-- `title_len`: Character length of the title (0 if unavailable)
-- `body_len`: Character length of the body (0 if unavailable)
-- `labels`: Array of label names at that point in time
+- `capture_status`: `ok` when the GitHub read succeeded; `unavailable` when it failed
+- `title_len`: Character length of the title, or `null` when capture is unavailable
+- `body_len`: Character length of the body, or `null` when capture is unavailable
+- `labels`: Array of label names at that point in time, or `null` when capture is unavailable
+
+Legacy entries without `capture_status` retain their original schema. New entries
+never encode a failed read as zero-length content or an empty label list.
 
 ### Delta object
 
 ```json
 {
+  "comparable": true,
   "title_delta_pct": -92,
   "body_delta_pct": -100,
   "labels_removed": ["status:in-review"],
@@ -87,14 +94,29 @@ Each log line is a compact JSON object (NDJSON):
 }
 ```
 
-- `title_delta_pct`: `(after - before) * 100 / before` (-100 = fully wiped, 0 = no change)
-- `body_delta_pct`: Same formula for body
-- `labels_removed`: Labels present in before but not after
-- `labels_added`: Labels present in after but not before
+- `comparable`: `true` only when both snapshots were captured successfully
+- `title_delta_pct`: `(after - before) * 100 / before` (-100 = fully wiped, 0 = no change), or `null`
+- `body_delta_pct`: Same formula for body, or `null`
+- `labels_removed`: Labels present in before but not after, or `null`
+- `labels_added`: Labels present in after but not before, or `null`
 
 ## Anomaly Taxonomy
 
 The `suspicious[]` array is populated when any of these signals fires:
+
+### `state_capture_unavailable:<phase>`
+
+**Meaning:** The `before` or `after` GitHub state read failed, so no destructive
+delta can be inferred for that operation.
+
+**Normal causes:** Transient network, authentication, or API availability errors.
+
+**Abnormal causes:** Persistent loss of audit visibility or a broken state-read path.
+
+**Investigation:** Verify the current GitHub state and inspect nearby audit entries.
+Do not treat null snapshot fields as proof that content or labels were removed.
+
+---
 
 ### `title_delta_pct<-50`
 
@@ -160,7 +182,7 @@ jq 'select(.repo == "owner/repo")' ~/.aidevops/logs/gh-audit.log | tail -20
 The GitHub Events API records rename and label events independently:
 
 ```bash
-# Show title/body changes (rename events)
+# Show title changes (rename events)
 gh api /repos/OWNER/REPO/issues/NNN/events \
   --jq '[.[] | select(.event == "renamed") | {ts: .created_at, from: .rename.from, to: .rename.to}]'
 
@@ -171,7 +193,8 @@ gh api /repos/OWNER/REPO/issues/NNN/events \
 
 ### Step 3: Restore from before-state
 
-If the audit log captured the before-state before the wipe, restore it:
+If the audit log captured the before-state before the wipe, use its lengths to
+validate candidate recovery sources:
 
 ```bash
 # Extract the before-state from the audit log
@@ -227,10 +250,11 @@ The daily routine `r-gh-audit-scan` runs `gh-audit-anomaly-helper.sh scan`:
 
 The scanner:
 1. Reads entries since the last scan (tracked in `~/.aidevops/logs/gh-audit-scanner.state`)
-2. Filters entries with `suspicious[] | length > 0`, excluding the exact
-   `approval-helper.sh` transition that removes `needs-maintainer-review` after
-   current-state V2 approval verification (the original audit entry remains
-   unchanged)
+2. Filters entries with `suspicious[] | length > 0`, excluding only exact,
+   fully comparable expected transitions: verified issue/PR approval removal of
+   `needs-maintainer-review`, and worker permission blocking that replaces active
+   lifecycle labels with `needs-maintainer-permissions` (the original audit entry
+   remains unchanged)
 3. Files a GitHub issue on `marcusquinn/aidevops` with a summary table when anomalies are found
 
 To run the scanner manually:
