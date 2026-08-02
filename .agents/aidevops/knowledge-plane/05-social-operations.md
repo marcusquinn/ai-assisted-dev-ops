@@ -40,8 +40,8 @@ rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
-Readwise Reader #29225, Lemmy #29227, and public-only Hacker News #29228 are now
-live. FreshRSS #29226 is the remaining ranked child. Each route owns its identity
+Readwise Reader #29225, Lemmy #29227, public-only Hacker News #29228, and Ghost
+#29318 are now live. FreshRSS #29226 is the remaining ranked child. Each route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
 tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
 Pocket are deferred or rejected for the reasons in
@@ -61,6 +61,14 @@ request budget, and atomically commits the raw boundary envelope, normalized
 rows, coverage, receipt, and next checkpoint. A terminal or malformed page keeps
 the previous checkpoint. Snapshot streams never infer deletion from partial
 coverage.
+
+Ghost collection binds an opaque operator-selected publication ID to the exact
+frontend URL returned by unauthenticated `GET /ghost/api/admin/site/` before
+every page. Four independent snapshot streams use only Ghost v6 Content API GET
+routes for published posts, pages, public tags, and public authors. The Content
+credential is isolated in a child process and never reaches evidence; redirects,
+Admin authentication, mutation-capable routes, members, newsletters, comments,
+and automated exports are unreachable. Details: `.agents/content/social-ghost.md`.
 
 Mastodon collection uses a user token bound to one exact HTTPS home instance and
 rechecks `GET /api/v1/accounts/verify_credentials` before every page. Authored

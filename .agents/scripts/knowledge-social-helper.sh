@@ -18,6 +18,7 @@ NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
 LEMMY_HELPER="${SCRIPT_DIR}/knowledge_social_lemmy.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
+GHOST_HELPER="${SCRIPT_DIR}/knowledge_social_ghost.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
 HACKER_NEWS_HELPER="${SCRIPT_DIR}/knowledge_social_hacker_news.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
@@ -167,6 +168,19 @@ EOF
 	return 0
 }
 
+usage_sync_ghost() {
+	cat <<'EOF'
+Ghost synchronization:
+  sync-ghost binds an operator-selected publication ID to the exact HTTPS URL
+  returned by unauthenticated GET /ghost/api/admin/site/ before every page. It
+  exposes only Ghost v6 Content API posts, pages, public tags, and public authors.
+  Admin credentials, member/newsletter records, comments, exports, redirects,
+  and mutations are unreachable. --budget is 3-1000 and --page-size is 1-100.
+
+EOF
+	return 0
+}
+
 usage_commands() {
 	cat <<'EOF'
 Usage:
@@ -217,6 +231,10 @@ Usage:
   knowledge-social-helper.sh sync-lemmy [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id PERSON_NUMERIC_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-50] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-ghost [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id OPAQUE_SITE_ID --stream posts|pages|tags|authors \
+    --profile PROFILE [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-github [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id NUMERIC_ACCOUNT_ID --stream STREAM \
@@ -303,6 +321,7 @@ Medium account export:
 
 EOF
 	usage_sync
+	usage_sync_ghost
 	cat <<'EOF'
 Deterministic routines:
   sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
@@ -424,6 +443,7 @@ run_named_provider_sync() {
 	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
 	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
 	sync-lemmy) run_provider_sync Lemmy "$LEMMY_HELPER" "$@" || return 1 ;;
+	sync-ghost) run_provider_sync Ghost "$GHOST_HELPER" "$@" || return 1 ;;
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
 	sync-hacker-news) run_provider_sync "Hacker News" "$HACKER_NEWS_HELPER" "$@" || return 1 ;;
@@ -508,7 +528,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-ghost | sync-github | sync-stack-exchange | sync-hacker-news | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)
