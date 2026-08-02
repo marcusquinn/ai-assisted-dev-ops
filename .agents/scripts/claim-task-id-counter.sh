@@ -264,8 +264,8 @@ resolve_implicit_counter_branch() {
 	local default_counter="0"
 	local todo_seed="0"
 
-	[[ "${_COUNTER_BRANCH_SET:-false}" == "false" ]] || return 0
-	[[ "${OFFLINE_MODE:-false}" == "false" ]] || return 0
+	[[ "${_COUNTER_BRANCH_SET:-false}" == false ]] || return 0
+	[[ "${OFFLINE_MODE:-false}" == false ]] || return 0
 	[[ "$COUNTER_BRANCH" == "${DEFAULT_BRANCH:-main}" ]] || return 0
 	[[ -n "$candidate" && "$candidate" != "$COUNTER_BRANCH" ]] || return 0
 	cd "$repo_path" || return 1
@@ -366,8 +366,8 @@ preflight_counter_branch_policy() {
 	local repo_path="$1"
 	local slug=""
 
-	[[ "${OFFLINE_MODE:-false}" == "false" ]] || return 0
-	[[ "${DRY_RUN:-false}" == "false" ]] || return 0
+	[[ "${OFFLINE_MODE:-false}" == false ]] || return 0
+	[[ "${DRY_RUN:-false}" == false ]] || return 0
 	command -v gh >/dev/null 2>&1 || return 0
 	command -v jq >/dev/null 2>&1 || return 0
 	slug=$(_cas_extract_github_slug "$repo_path") || return 0
