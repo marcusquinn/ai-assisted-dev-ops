@@ -1793,7 +1793,7 @@ process_pr() {
 	# JSON object with metadata used by draft, label, stale, and repair-routing
 	# gates.
 	local pr_obj
-	pr_obj=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+	pr_obj=$(AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
 		--json "$(_pulse_merge_ready_pr_json_fields)" 2>/dev/null) || pr_obj=""
 
 	if [[ -z "$pr_obj" || "$pr_obj" == "null" ]]; then

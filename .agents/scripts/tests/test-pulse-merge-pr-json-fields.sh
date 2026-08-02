@@ -41,7 +41,7 @@ PROCESS_PR_TEST_STATE="OPEN"
 gh_pr_view() {
 	local pr_number="$1"
 	[[ -n "$PROCESS_PR_TEST_CALL_LOG" ]] || return 1
-	printf '%s\n' "$pr_number" >>"$PROCESS_PR_TEST_CALL_LOG"
+	printf '%s|%s\n' "$pr_number" "${AIDEVOPS_GH_REST_FIRST_READS:-0}" >>"$PROCESS_PR_TEST_CALL_LOG"
 	printf '{"number":%s,"state":"%s"}\n' "$pr_number" "$PROCESS_PR_TEST_STATE"
 	return 0
 }
@@ -102,7 +102,7 @@ test_callers_use_shared_field_helper() {
 }
 
 test_process_pr_runtime_reuses_one_view() {
-	local helper_src normalize_src process_src call_log payload_log log_file call_count payload failure=""
+	local helper_src normalize_src process_src call_log payload_log log_file call_count call_line payload failure=""
 	helper_src=$(awk '
 		/^_pulse_merge_ready_pr_json_fields\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
@@ -133,8 +133,10 @@ test_process_pr_runtime_reuses_one_view() {
 		failure="process_pr rejected a lowercase open prefetched state"
 	else
 		call_count=$(wc -l <"$call_log" | tr -d ' ')
+		call_line=$(<"$call_log")
 		payload=$(<"$payload_log")
 		[[ "$call_count" == "1" ]] || failure="gh_pr_view calls=${call_count}"
+		[[ "$call_line" == "42|1" ]] || failure="webhook PR view did not force REST-first routing: ${call_line}"
 		[[ "$payload" == *'"state":"open"'* ]] || failure="prefetched state was not forwarded"
 	fi
 	if [[ -z "$failure" ]]; then
@@ -145,8 +147,10 @@ test_process_pr_runtime_reuses_one_view() {
 			failure="process_pr accepted a MERGED prefetched state"
 		else
 			call_count=$(wc -l <"$call_log" | tr -d ' ')
+			call_line=$(<"$call_log")
 			payload=$(<"$payload_log")
 			[[ "$call_count" == "1" ]] || failure="closed-state gh_pr_view calls=${call_count}"
+			[[ "$call_line" == "42|1" ]] || failure="closed-state PR view did not force REST-first routing: ${call_line}"
 			[[ -z "$payload" ]] || failure="closed-state PR reached merge processing"
 		fi
 	fi
@@ -156,7 +160,7 @@ test_process_pr_runtime_reuses_one_view() {
 		print_result "process_pr runtime reuses one PR view and state gate" 1 "$failure"
 		return 0
 	fi
-	print_result "process_pr runtime reuses one PR view and state gate" 0
+	print_result "process_pr runtime uses one REST-first PR view and state gate" 0
 	return 0
 }
 
