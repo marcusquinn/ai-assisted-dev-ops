@@ -216,6 +216,87 @@ _PAD_TRIAGE_REVIEW_APPROVE_COLOR="${_PAD_TRIAGE_REVIEW_APPROVE_COLOR:-0E8A16}"
 _PAD_TRIAGE_REVIEW_FEEDBACK_COLOR="${_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR:-FBCA04}"
 _PAD_TRIAGE_REVIEW_DECLINE_COLOR="${_PAD_TRIAGE_REVIEW_DECLINE_COLOR:-D73A4A}"
 
+_triage_recommendation_label_contract() {
+	printf '%s\t%s\t%s\n' \
+		"$_PAD_TRIAGE_REVIEW_APPROVE_LABEL" "$_PAD_TRIAGE_REVIEW_APPROVE_COLOR" \
+		"Advisory automated triage recommendation: approve" \
+		"$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL" "$_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR" \
+		"Advisory automated triage recommendation: request changes" \
+		"$_PAD_TRIAGE_REVIEW_DECLINE_LABEL" "$_PAD_TRIAGE_REVIEW_DECLINE_COLOR" \
+		"Advisory automated triage recommendation: decline"
+	return 0
+}
+
+# Return a bounded JSON snapshot of repository labels. Explicit page numbers
+# prevent a malformed pagination response from creating an unbounded read loop.
+_triage_recommendation_labels_snapshot() {
+	local repo_slug="$1"
+	local page=1
+	local page_size=100
+	local max_pages=10
+	local response=""
+	local response_count=""
+	local snapshot='[]'
+
+	while [[ "$page" -le "$max_pages" ]]; do
+		response=$(AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-inventory-rest" \
+			gh api -X GET "/repos/${repo_slug}/labels?per_page=${page_size}&page=${page}" 2>/dev/null) || return 1
+		response_count=$(printf '%s' "$response" | jq -er --arg array_type "$_PAD_JSON_ARRAY_TYPE" \
+			'if type == $array_type then length else error("labels response has an invalid type") end' \
+			2>/dev/null) || return 1
+		snapshot=$(jq -cn --argjson current "$snapshot" --argjson page "$response" '
+			$current + [$page[] | {
+				name: (.name // ""),
+				color: ((.color // "") | ascii_downcase),
+				description: (.description // "")
+			}]') || return 1
+		if [[ "$response_count" -lt "$page_size" ]]; then
+			printf '%s\n' "$snapshot"
+			return 0
+		fi
+		page=$((page + 1))
+	done
+	return 1
+}
+
+_triage_recommendation_label_state() {
+	local snapshot="$1"
+	local expected_name="$2"
+	local expected_color="$3"
+	local expected_description="$4"
+	printf '%s' "$snapshot" | jq -er --arg name "$expected_name" --arg color "$expected_color" \
+		--arg description "$expected_description" '
+		[.[] | select((.name | ascii_downcase) == ($name | ascii_downcase))][0] as $label
+		| if $label == null then "missing"
+		elif (($label.color | ascii_downcase) == ($color | ascii_downcase)) and
+			($label.description == $description) then "current"
+		else "drifted"
+		end'
+	return $?
+}
+
+_triage_recommendation_label_write() {
+	local action="$1"
+	local repo_slug="$2"
+	local label_name="$3"
+	local color="$4"
+	local description="$5"
+	local encoded_name=""
+
+	if [[ "$action" == "create" ]]; then
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-create-rest" \
+			gh api -X POST "/repos/${repo_slug}/labels" -f name="$label_name" \
+			-f color="$color" -f description="$description" >/dev/null 2>&1
+		return $?
+	fi
+	[[ "$action" == "update" ]] || return 1
+	encoded_name=$(jq -rn --arg name "$label_name" '$name | @uri') || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-update-rest" \
+		gh api -X PATCH "/repos/${repo_slug}/labels/${encoded_name}" -f new_name="$label_name" \
+		-f color="$color" -f description="$description" >/dev/null 2>&1
+	return $?
+}
+
 #######################################
 # Provision the three canonical, mutually exclusive advisory recommendation
 # labels. Failure is propagated so no review comment can be posted without its
@@ -223,19 +304,31 @@ _PAD_TRIAGE_REVIEW_DECLINE_COLOR="${_PAD_TRIAGE_REVIEW_DECLINE_COLOR:-D73A4A}"
 #######################################
 _ensure_triage_recommendation_labels() {
 	local repo_slug="$1"
-	[[ -n "$repo_slug" ]] || return 1
-	gh label create "$_PAD_TRIAGE_REVIEW_APPROVE_LABEL" --repo "$repo_slug" \
-		--color "$_PAD_TRIAGE_REVIEW_APPROVE_COLOR" \
-		--description "Advisory automated triage recommendation: approve" \
-		--force >/dev/null 2>&1 || return 1
-	gh label create "$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL" --repo "$repo_slug" \
-		--color "$_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR" \
-		--description "Advisory automated triage recommendation: request changes" \
-		--force >/dev/null 2>&1 || return 1
-	gh label create "$_PAD_TRIAGE_REVIEW_DECLINE_LABEL" --repo "$repo_slug" \
-		--color "$_PAD_TRIAGE_REVIEW_DECLINE_COLOR" \
-		--description "Advisory automated triage recommendation: decline" \
-		--force >/dev/null 2>&1 || return 1
+	local labels_snapshot=""
+	local label_name=""
+	local color=""
+	local description=""
+	local label_state=""
+	[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+	labels_snapshot=$(_triage_recommendation_labels_snapshot "$repo_slug") || return 1
+
+	while IFS=$'\t' read -r label_name color description; do
+		[[ -n "$label_name" ]] || continue
+		label_state=$(_triage_recommendation_label_state "$labels_snapshot" "$label_name" \
+			"$color" "$description") || return 1
+		case "$label_state" in
+		current) continue ;;
+		missing)
+			_triage_recommendation_label_write create "$repo_slug" "$label_name" \
+				"$color" "$description" || return 1
+			;;
+		drifted)
+			_triage_recommendation_label_write update "$repo_slug" "$label_name" \
+				"$color" "$description" || return 1
+			;;
+		*) return 1 ;;
+		esac
+	done < <(_triage_recommendation_label_contract)
 	return 0
 }
 
