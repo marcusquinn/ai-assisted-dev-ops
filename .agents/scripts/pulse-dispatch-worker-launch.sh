@@ -678,6 +678,7 @@ _dlw_precreate_worktree() {
 	# is dispatched repeatedly (GH#19042). Matches branch names containing
 	# gh<N> or gh-<N> (the pattern used by this function and cleanup regex).
 	local _existing_path="" _existing_branch=""
+	local _pending_request_id="" _pending_session=""
 	local _wt_line=""
 	while IFS= read -r _wt_line; do
 		local _wt_p="" _wt_b=""
@@ -690,6 +691,33 @@ _dlw_precreate_worktree() {
 			break
 		fi
 	done < <(git -C "$repo_path" worktree list 2>/dev/null)
+
+	# A signed permission grant is bound to the original worker session and
+	# worktree. The remote branch can survive after local cleanup, but a fresh
+	# worktree cannot safely consume that grant because its pending marker and
+	# worktree digest are gone. Prefer a surviving pending marker even when the
+	# branch name does not contain gh<N>; this is the authoritative continuation
+	# identity recorded by worker-permission-helper.sh.
+	if [[ -z "$_existing_path" ]]; then
+		while IFS= read -r _wt_line; do
+			local _wt_p="" _wt_git_dir="" _pending_file=""
+			_wt_p=$(printf '%s' "$_wt_line" | awk '{print $1}') || _wt_p=""
+			[[ -d "$_wt_p" ]] || continue
+			_wt_git_dir=$(git -C "$_wt_p" rev-parse --absolute-git-dir 2>/dev/null) || continue
+			_pending_file="${_wt_git_dir}/aidevops-permission-pending"
+			[[ -f "$_pending_file" ]] || continue
+			if ! _pending_request_id=$(jq -er --arg issue "$issue_number" '
+				select(.issue == ($issue | tonumber)) | .request_id | select(type == "string" and length > 0)
+			' "$_pending_file" 2>/dev/null); then
+				continue
+			fi
+			_pending_session=$(jq -r '.session // ""' "$_pending_file" 2>/dev/null || true)
+			_existing_path="$_wt_p"
+			_existing_branch=$(git -C "$_wt_p" branch --show-current 2>/dev/null || true)
+			echo "[dispatch_with_dedup] Found permission-bound continuation for #${issue_number}: ${_existing_path} (session: ${_pending_session:-unknown}, request: ${_pending_request_id})" >>"$LOGFILE"
+			break
+		done < <(git -C "$repo_path" worktree list 2>/dev/null)
+	fi
 
 	if [[ -n "$_existing_path" ]]; then
 		_DLW_WORKTREE_PATH="$_existing_path"
