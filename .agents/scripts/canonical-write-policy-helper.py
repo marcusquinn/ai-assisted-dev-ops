@@ -141,15 +141,24 @@ def _git_symlink_origin(cwd: str, file_path: str) -> Classification | None:
     """Return the Git location containing a traversed symlink, if any."""
     target = Path(file_path).expanduser()
     if not target.is_absolute():
-        target = Path(cwd) / target
-    target = Path(os.path.abspath(target))
+        base = Path(cwd).expanduser()
+        if not base.is_absolute():
+            base = Path.cwd() / base
+        target = base / target
     current = Path(target.anchor)
     for part in target.parts[1:]:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            continue
         candidate = current / part
         if candidate.is_symlink():
             origin = classify_location(str(current))
             if origin.inside_git:
                 return origin
+            current = Path(os.path.realpath(candidate))
+            continue
         current = candidate
     return None
 

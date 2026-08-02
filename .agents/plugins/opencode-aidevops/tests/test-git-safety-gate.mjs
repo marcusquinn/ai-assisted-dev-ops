@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -178,6 +178,7 @@ test("allows cross-repository linked writes only inside the trusted Git workspac
   const foreignLinked = join(root, "foreign-linked");
   const outsideRepo = join(outsideRoot, "outside-repo");
   const outsideLinked = join(outsideRoot, "outside-linked");
+  const escapedOutsideFile = `${outsideRoot}-escaped.txt`;
 
   function createLinkedRepo(repoPath, linkedPath, branch) {
     mkdirSync(repoPath);
@@ -219,9 +220,20 @@ test("allows cross-repository linked writes only inside the trusted Git workspac
     const outsideFile = join(outsideRoot, "outside.txt");
     const outsideFileAlias = join(linked, "outside-files");
     writeFileSync(outsideFile, "outside\n");
+    writeFileSync(escapedOutsideFile, "escaped\n");
     symlinkSync(outsideRoot, outsideFileAlias, "dir");
     assert.throws(
       () => checkCanonicalWriteSafetyGate(join(outsideFileAlias, "outside.txt"), scriptsDir, linked),
+      /symlinked write target escapes/,
+    );
+    const traversedExisting = `${outsideFileAlias}${sep}..${sep}${basename(escapedOutsideFile)}`;
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate(traversedExisting, scriptsDir, linked),
+      /symlinked write target escapes/,
+    );
+    const traversedMissing = `${outsideFileAlias}${sep}..${sep}${basename(outsideRoot)}-missing.txt`;
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate(traversedMissing, scriptsDir, linked),
       /symlinked write target escapes/,
     );
     assert.doesNotThrow(
@@ -236,6 +248,7 @@ test("allows cross-repository linked writes only inside the trusted Git workspac
     }
     rmSync(root, { recursive: true, force: true });
     rmSync(outsideRoot, { recursive: true, force: true });
+    rmSync(escapedOutsideFile, { force: true });
   }
 });
 

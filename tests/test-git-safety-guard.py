@@ -186,6 +186,9 @@ class CanonicalWritePolicyTests(unittest.TestCase):
         outside_root = Path(outside_temp.name)
         outside_file = outside_root / "outside.txt"
         outside_file.write_text("outside\n", encoding="utf-8")
+        escaped_outside_file = outside_root.parent / f"{outside_root.name}-escaped.txt"
+        escaped_outside_file.write_text("escaped\n", encoding="utf-8")
+        self.addCleanup(escaped_outside_file.unlink, missing_ok=True)
         alias = self.linked / "outside-alias"
         alias.symlink_to(outside_root, target_is_directory=True)
 
@@ -197,6 +200,15 @@ class CanonicalWritePolicyTests(unittest.TestCase):
             self.assertIsNotNone(denial)
             reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertIn("symlinked write target escapes", reason)
+            traversed_existing = alias / ".." / escaped_outside_file.name
+            traversal_denial = self._check(self.linked, traversed_existing)
+            self.assertIsNotNone(traversal_denial)
+            traversal_reason = traversal_denial["hookSpecificOutput"][
+                "permissionDecisionReason"
+            ]
+            self.assertIn("symlinked write target escapes", traversal_reason)
+            traversed_missing = alias / ".." / f"{outside_root.name}-missing.txt"
+            self.assertIsNotNone(self._check(self.linked, traversed_missing))
             self.assertIsNone(self._check(self.linked, outside_file))
 
     def test_linked_context_cannot_target_canonical_checkout(self):
