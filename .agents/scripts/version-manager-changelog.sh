@@ -390,8 +390,7 @@ update_changelog() {
 		print_warning "No conventional commits found for changelog generation"
 		changelog_content="### Changed
 
-- Version bump and maintenance updates
-"
+- Version bump and maintenance updates"
 	fi
 
 	# Create temp files for the update with trap cleanup
