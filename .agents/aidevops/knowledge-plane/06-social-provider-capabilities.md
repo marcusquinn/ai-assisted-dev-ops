@@ -48,6 +48,7 @@ a claim that the route is enabled.
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
 | Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | One bounded public `submitted` stream uses a mutable case-sensitive username selector and official item IDs; missing/deleted/dead and all private state remain explicit unavailable coverage. |
+| Notion Sites | **Live/Gate/Partial** allowlisted pages, blocks, and database rows | **No** account-wide interaction route | **Live/Gate/Partial** unresolved comments; **Export/Gate** resolved comments; **No** messages | **No** workspace-wide discovery | **Live/Gate/Partial** child databases/data sources | Official API bot/workspace identity plus explicit root UUIDs; a public Site URL grants no API authority, Search is disabled, and files/embeds are metadata-only non-fetch targets. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
 | Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
 
@@ -70,6 +71,7 @@ falls back to another provider or to an outbound mutation route.
 | Binance Square | **No** | Officially verified surfaces are mutation-only; no adapter, export, browser, or credential route is registered. |
 | Bluesky / AT Protocol | **Live** repository/AppView reads | Chat remains separately permissioned; account identity is a stable DID. |
 | Forem | **Live** multi-instance reads | `dev-community` and `dev.to` are aliases of `forem`, not separate providers. |
+| Notion Sites | **Live/Gate** official API root traversal | Integration bot/workspace/root binding is mandatory; public URLs, Search, external fetches, and mutations are excluded. |
 
 HubSpot Community remains a Discourse installation and is not registered as a
 separate provider family.
@@ -228,6 +230,16 @@ separate provider family.
   `.agents/content/social-readwise-reader.md` records official auth, document,
   tag, cursor, HTML, rate, privacy, export, retention, and terms evidence checked
   on 2026-08-02.
+- **Live/Gated Notion Sites:** `.agents/scripts/knowledge_social_notion.py`,
+  `.agents/scripts/_knowledge_social_notion*.py`, and
+  `.agents/tests/test-knowledge-social-notion.sh` prove bot/workspace/root
+  rebinding, descendant-only queue traversal, opaque pagination, page/block/
+  request/byte/depth bounds, unresolved-comment capability gating, URL-free file
+  metadata, exact fixed-origin routes, one read-only data-source query POST,
+  redirect and mutation isolation, terminal/malformed response preservation, and
+  lease-fenced persistence. `.agents/content/social-notion-sites.md` records the
+  official Sites, API, identity, content, comments, file, export, pagination,
+  rate, and Search boundaries checked on 2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,

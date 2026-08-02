@@ -47,6 +47,11 @@ tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, an
 Pocket are deferred or rejected for the reasons in
 `.agents/content/social-provider-candidates.md`.
 
+Notion Sites #29322 is also live as an integration-scoped document route. It is
+not a public-site crawler: the selected bot workspace and an explicit root-page
+UUID allowlist are rebound before every content request. Details:
+`.agents/content/social-notion-sites.md`.
+
 The maintained planning and gap inventory is
 `06-social-provider-capabilities.md`. A matrix entry is not implementation
 authority: every provider child must revalidate current official API/export
@@ -132,6 +137,17 @@ cursors with one-second `updatedAfter` overlap. Only fixed-origin auth, list, an
 tag GET routes are reachable; each invocation is capped below the documented
 20-request/minute limit. Provider identity, deletion, complete export, and
 retention remain explicit gaps. Details: `.agents/content/social-readwise-reader.md`.
+
+Notion Sites collection binds `/v1/users/me` bot and workspace identity before
+every content request. It starts only from explicit root page UUIDs, follows
+returned child blocks/pages and database data sources through a durable bounded
+queue, and optionally lists unresolved comments when the connection has that
+capability. Search, linked-page references, copied synced-block sources, external
+embeds, redirects, and file URLs are never traversal targets. File metadata is
+retained without URLs or downloads. The exact data-source query POST is the only
+non-GET request and cannot mutate provider state. A public Site URL, workspace-
+wide visibility, or a valid token without the expected workspace/root binding
+never grants collection authority. Details: `.agents/content/social-notion-sites.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

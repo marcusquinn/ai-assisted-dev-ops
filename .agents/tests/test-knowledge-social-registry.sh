@@ -51,6 +51,7 @@ expected = {
     "mastodon": ("live",),
     "miniflux": ("live",),
     "nextcloud-talk": ("live",),
+    "notion-sites": ("live",),
     "readwise-reader": ("live",),
     "signal": ("inspect", "manual-import", "status"),
     "slack": ("archive", "live"),
@@ -76,6 +77,7 @@ for alias, provider in {
     "dev.to": "forem",
     "gbp": "google-business-profile",
     "hn": "hacker-news",
+    "notion": "notion-sites",
     "reader": "readwise-reader",
     "stackexchange": "stack-exchange",
     "whats-app": "whatsapp",
@@ -100,14 +102,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("18:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("19:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "18:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "19:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "18"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "19"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
@@ -118,6 +120,13 @@ if [[ "$hacker_news_help" == *"bounded public Hacker News submitted-item slice"*
 	assert_eq "Hacker News alias executes only the public local adapter" canonical canonical
 else
 	assert_eq "Hacker News alias executes only the public local adapter" unexpected canonical
+fi
+
+notion_help=$("$HELPER" provider-run --provider notion --mode live -- --help 2>&1)
+if [[ "$notion_help" == *"bounded authorized Notion root tree"* ]]; then
+	assert_eq "Notion alias executes only the root-bound local adapter" canonical canonical
+else
+	assert_eq "Notion alias executes only the root-bound local adapter" unexpected canonical
 fi
 
 if "$HELPER" provider-run --provider binance-square --mode no-route >/dev/null 2>&1; then
