@@ -10,13 +10,11 @@ import fcntl
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,6 +22,15 @@ SCHEMA = "aidevops.knowledge-collector/v1"
 MODES = frozenset(("event", "poll", "watch", "archive", "manual", "hybrid"))
 OPAQUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from _knowledge_collector_runtime import (  # noqa: E402
+    CollectorInterrupted,
+    CollectorScheduleError,
+    _receipt,
+    _run_bounded,
+)
+
 DEFAULT_CONFIG = Path.home() / ".config" / "aidevops" / "knowledge-collectors.json"
 DEFAULT_STATE = (
     Path.home()
@@ -38,31 +45,8 @@ CONNECTORS = {
     "mailbox": (SCRIPT_DIR / "email-poll-helper.sh", "tick"),
     "social": (SCRIPT_DIR / "knowledge-social-helper.sh", "provider-run"),
 }
-CHANGE_KEYS = (
-    "changed_count",
-    "fetched_count",
-    "normalized_items",
-    "resource_count",
-    "resources",
-    "processed",
-)
 COUNT_KEYS = ("pages", "items", "bytes", "budget_units")
-COVERAGE_STATES = frozenset(("complete", "partial", "unavailable", "unknown"))
 OPTIONAL_RECEIPT_KEYS = (*COUNT_KEYS, "rate_reset_at", "coverage_status", "budget_stop")
-DEFERRED_STATUSES = frozenset(("busy", "deferred", "rate_limited"))
-PARTIAL_STATUSES = frozenset(
-    ("budget-stopped", "budget_exhausted", "delta_unavailable", "partial", "partial_error")
-)
-FAILED_STATUSES = frozenset(("error", "failed"))
-COMPLETE_STATUSES = frozenset(("complete", "ok", "success"))
-
-
-class CollectorScheduleError(ValueError):
-    """Raised for a privacy-safe collector scheduling failure."""
-
-
-class CollectorInterrupted(Exception):
-    """Raised after an external interrupt safely terminates the active collector."""
 
 
 @dataclass(frozen=True)
@@ -107,64 +91,73 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return value
 
 
+def _opaque_field(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not OPAQUE.fullmatch(value):
+        raise CollectorScheduleError(f"{label} must be opaque")
+    return value
+
+
+def _arguments(value: Any) -> tuple[str, ...]:
+    if (
+        not isinstance(value, list)
+        or len(value) > 64
+        or any(not isinstance(item, str) or len(item) > 1024 or "\x00" in item for item in value)
+    ):
+        raise CollectorScheduleError("collector arguments are invalid")
+    return tuple(value)
+
+
+def _directory(value: Any, label: str) -> Path:
+    if not isinstance(value, str):
+        raise CollectorScheduleError(f"{label} must be text")
+    directory = Path(value).expanduser().resolve()
+    if not directory.is_dir():
+        raise CollectorScheduleError(f"{label} is unavailable")
+    return directory
+
+
+def _projection_root(value: Any, connector_id: str, mode: str) -> Path | None:
+    projection_value = value.get("projection_root")
+    if connector_id == "social":
+        if projection_value is not None:
+            raise CollectorScheduleError("social collectors update their own query index")
+        return None
+    if mode not in ("archive", "manual") and projection_value is None:
+        raise CollectorScheduleError("active document collectors require projection_root")
+    if projection_value is None:
+        return None
+    return _directory(projection_value, "projection_root")
+
+
+def _event_token(value: Any) -> str | None:
+    event_token = value.get("event_token")
+    if event_token is not None:
+        event_token = _opaque_field(event_token, "event_token")
+    if value.get("event_pending", False) is True and event_token is None:
+        raise CollectorScheduleError("event_pending requires an event_token")
+    return event_token
+
+
 def _connection(value: Any) -> Connection:
     if not isinstance(value, dict):
         raise CollectorScheduleError("collector connection must be an object")
-    connection_id = value.get("connection_id")
+    connection_id = _opaque_field(value.get("connection_id"), "connection_id")
     connector_id = value.get("connector_id")
     mode = value.get("mode")
-    if not isinstance(connection_id, str) or not OPAQUE.fullmatch(connection_id):
-        raise CollectorScheduleError("connection_id must be opaque")
     if connector_id not in CONNECTORS:
         raise CollectorScheduleError("connector_id is not allowlisted")
     if mode not in MODES:
         raise CollectorScheduleError("collector mode is invalid")
-    arguments = value.get("arguments", [])
-    if (
-        not isinstance(arguments, list)
-        or len(arguments) > 64
-        or any(not isinstance(item, str) or len(item) > 1024 or "\x00" in item for item in arguments)
-    ):
-        raise CollectorScheduleError("collector arguments are invalid")
-    working = value.get("working_directory", ".")
-    if not isinstance(working, str):
-        raise CollectorScheduleError("working_directory must be text")
-    working_directory = Path(working).expanduser().resolve()
-    if not working_directory.is_dir():
-        raise CollectorScheduleError("working_directory is unavailable")
-    projection_value = value.get("projection_root")
-    projection_root: Path | None = None
-    if connector_id == "social":
-        if projection_value is not None:
-            raise CollectorScheduleError("social collectors update their own query index")
-    elif mode not in ("archive", "manual"):
-        if not isinstance(projection_value, str):
-            raise CollectorScheduleError("active document collectors require projection_root")
-        projection_root = Path(projection_value).expanduser().resolve()
-        if not projection_root.is_dir():
-            raise CollectorScheduleError("projection_root is unavailable")
-    elif projection_value is not None:
-        if not isinstance(projection_value, str):
-            raise CollectorScheduleError("projection_root must be text")
-        projection_root = Path(projection_value).expanduser().resolve()
-        if not projection_root.is_dir():
-            raise CollectorScheduleError("projection_root is unavailable")
+    arguments = _arguments(value.get("arguments", []))
     if value.get("enabled", False) is True and "--dry-run" in arguments:
         raise CollectorScheduleError("enabled collectors cannot use --dry-run")
-    event_token = value.get("event_token")
-    if event_token is not None and (
-        not isinstance(event_token, str) or not OPAQUE.fullmatch(event_token)
-    ):
-        raise CollectorScheduleError("event_token must be opaque")
-    if value.get("event_pending", False) is True and event_token is None:
-        raise CollectorScheduleError("event_pending requires an event_token")
     return Connection(
         connection_id,
         connector_id,
         mode,
-        tuple(arguments),
-        working_directory,
-        projection_root,
+        arguments,
+        _directory(value.get("working_directory", "."), "working_directory"),
+        _projection_root(value, connector_id, mode),
         _integer(value.get("freshness_seconds", 3600), "freshness_seconds", 60, 31_536_000),
         _integer(value.get("minimum_interval_seconds", 60), "minimum_interval_seconds", 60, 31_536_000),
         _integer(value.get("reconcile_seconds", 86_400), "reconcile_seconds", 60, 31_536_000),
@@ -173,7 +166,7 @@ def _connection(value: Any) -> Connection:
         if isinstance(value.get("budget", {}), dict)
         else _integer(None, "budget", 1, 3600),
         _integer(value.get("alert_after_failures", 3), "alert_after_failures", 1, 100),
-        event_token,
+        _event_token(value),
         value.get("enabled", False) is True,
     )
 
@@ -232,27 +225,28 @@ def due_at(connection: Connection, record: dict[str, Any], now: int) -> int | No
 
 
 def _health(connection: Connection, record: dict[str, Any], now: int) -> str:
+    health = "healthy" if record.get("last_success", 0) else "pending"
     if not connection.enabled:
-        return "disabled"
-    if connection.mode in ("archive", "manual"):
-        return "manual"
-    if record.get("status") == "running":
-        return "pending"
-    rate_reset = record.get("rate_reset_at")
-    if isinstance(rate_reset, int) and rate_reset > now:
-        return "rate-reset"
-    failures = record.get("consecutive_failures", 0)
-    if isinstance(failures, int) and failures >= connection.alert_after_failures:
-        return "terminal-failure"
-    if record.get("status") == "pending":
-        return "pending"
-    if record.get("status") == "partial" or record.get("coverage_status") == "partial":
-        return "partial"
-    last_success = record.get("last_success", 0)
-    freshness_reference = last_success or record.get("last_attempt", 0)
-    if freshness_reference and now - freshness_reference > connection.stale_seconds:
-        return "stale"
-    return "healthy" if last_success else "pending"
+        health = "disabled"
+    elif connection.mode in ("archive", "manual"):
+        health = "manual"
+    elif record.get("status") == "running":
+        health = "pending"
+    elif isinstance(record.get("rate_reset_at"), int) and record["rate_reset_at"] > now:
+        health = "rate-reset"
+    elif isinstance(record.get("consecutive_failures", 0), int) and record.get(
+        "consecutive_failures", 0
+    ) >= connection.alert_after_failures:
+        health = "terminal-failure"
+    elif record.get("status") == "pending":
+        health = "pending"
+    elif record.get("status") == "partial" or record.get("coverage_status") == "partial":
+        health = "partial"
+    else:
+        freshness_reference = record.get("last_success", 0) or record.get("last_attempt", 0)
+        if freshness_reference and now - freshness_reference > connection.stale_seconds:
+            health = "stale"
+    return health
 
 
 def plan(connections: list[Connection], state: dict[str, Any], now: int) -> list[dict[str, Any]]:
@@ -287,150 +281,6 @@ def build_command(connection: Connection) -> list[str]:
     return [str(entrypoint), *prefix[1:], *connection.arguments]
 
 
-def _descendant_pids(root_pid: int) -> list[int]:
-    """Snapshot descendants so session-changing children cannot escape cleanup."""
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    children: dict[int, list[int]] = {}
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 2 or not all(field.isdigit() for field in fields):
-            continue
-        pid, parent = (int(field) for field in fields)
-        children.setdefault(parent, []).append(pid)
-    descendants: list[int] = []
-    pending = [root_pid]
-    while pending:
-        current = pending.pop()
-        direct = children.get(current, [])
-        descendants.extend(direct)
-        pending.extend(direct)
-    return list(reversed(descendants))
-
-
-def _signal_pids(pids: list[int], requested_signal: signal.Signals) -> None:
-    for pid in pids:
-        try:
-            os.kill(pid, requested_signal)
-        except ProcessLookupError:
-            continue
-
-
-def _signal_group(pid: int, requested_signal: signal.Signals) -> None:
-    try:
-        os.killpg(pid, requested_signal)
-    except ProcessLookupError:
-        return
-
-
-def _freeze_process_tree(root_pid: int) -> list[int]:
-    """Freeze a process tree to a fixed point before terminal cleanup."""
-    _signal_group(root_pid, signal.SIGSTOP)
-    descendants: set[int] = set()
-    stable_scans = 0
-    for _ in range(8):
-        current = set(_descendant_pids(root_pid))
-        new_pids = current - descendants
-        _signal_pids(sorted(new_pids), signal.SIGSTOP)
-        descendants.update(current)
-        if new_pids:
-            stable_scans = 0
-        else:
-            stable_scans += 1
-            if stable_scans == 2:
-                break
-        time.sleep(0.01)
-    return sorted(descendants, reverse=True)
-
-
-def _close_process_pipes(process: subprocess.Popen[str]) -> None:
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            stream.close()
-
-
-def _terminate_process_tree(
-    process: subprocess.Popen[str], original_error: BaseException
-) -> tuple[str | bytes, str | bytes]:
-    descendants = _freeze_process_tree(process.pid)
-    _signal_pids(descendants, signal.SIGKILL)
-    _signal_group(process.pid, signal.SIGKILL)
-    try:
-        return process.communicate(timeout=2)
-    except subprocess.TimeoutExpired as cleanup_error:
-        _close_process_pipes(process)
-        if process.poll() is None:
-            process.kill()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
-        original_output = getattr(original_error, "output", None)
-        original_stderr = getattr(original_error, "stderr", None)
-        return (
-            cleanup_error.output or original_output or "",
-            cleanup_error.stderr or original_stderr or "",
-        )
-
-
-def _run_bounded(
-    command: list[str], working_directory: Path, environment: dict[str, str], timeout: int
-) -> subprocess.CompletedProcess[str]:
-    """Execute one process group and terminate every descendant at its deadline."""
-    interrupt_signals = (signal.SIGINT, signal.SIGTERM)
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, interrupt_signals)
-    previous_handlers: dict[signal.Signals, Any] = {}
-
-    def interrupt(signum: int, _frame: Any) -> None:
-        raise CollectorInterrupted(signum)
-
-    for interrupt_signal in interrupt_signals:
-        previous_handlers[interrupt_signal] = signal.signal(interrupt_signal, interrupt)
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=working_directory,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except BaseException:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-        for interrupt_signal, previous_handler in previous_handlers.items():
-            signal.signal(interrupt_signal, previous_handler)
-        raise
-    try:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        for interrupt_signal in interrupt_signals:
-            signal.signal(interrupt_signal, signal.SIG_IGN)
-        stdout, stderr = _terminate_process_tree(process, error)
-        raise subprocess.TimeoutExpired(
-            command, timeout, output=stdout, stderr=stderr
-        ) from error
-    except CollectorInterrupted as error:
-        for interrupt_signal in interrupt_signals:
-            signal.signal(interrupt_signal, signal.SIG_IGN)
-        _terminate_process_tree(process, error)
-        raise
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-        for interrupt_signal, previous_handler in previous_handlers.items():
-            signal.signal(interrupt_signal, previous_handler)
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
 def run_process(connection: Connection, command: list[str]) -> subprocess.CompletedProcess[str]:
     """Execute one bounded collector without a shell or inherited content output."""
     environment = os.environ.copy()
@@ -438,103 +288,6 @@ def run_process(connection: Connection, command: list[str]) -> subprocess.Comple
     return _run_bounded(
         command, connection.working_directory, environment, connection.timeout_seconds
     )
-
-
-def _receipt(stdout: str, now: int | None = None) -> dict[str, Any]:
-    value: Any = None
-    for line in reversed(stdout.splitlines()):
-        try:
-            candidate = json.loads(line)
-        except (json.JSONDecodeError, UnicodeError):
-            continue
-        if isinstance(candidate, dict):
-            value = candidate
-            break
-    if not isinstance(value, dict):
-        raise CollectorScheduleError("collector did not emit a valid receipt")
-    receipt: dict[str, Any] = {}
-    for key in CHANGE_KEYS:
-        count = value.get(key)
-        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-            receipt["changed_count"] = count
-            break
-    counts = value.get("counts")
-    if "changed_count" not in receipt and isinstance(counts, dict):
-        imported = counts.get("imported")
-        if isinstance(imported, int) and not isinstance(imported, bool) and imported >= 0:
-            receipt["changed_count"] = imported
-    if "changed_count" not in receipt:
-        raise CollectorScheduleError("collector receipt has no changed count")
-    for key in COUNT_KEYS:
-        count = value.get(key)
-        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-            receipt[key] = count
-    rate_reset = value.get("rate_reset_at")
-    if isinstance(rate_reset, int) and not isinstance(rate_reset, bool) and rate_reset >= 0:
-        receipt["rate_reset_at"] = rate_reset
-    coverage = value.get("coverage_status")
-    if coverage in COVERAGE_STATES:
-        receipt["coverage_status"] = coverage
-    if isinstance(value.get("budget_stop"), bool):
-        receipt["budget_stop"] = value["budget_stop"]
-    if value.get("commit_state") in ("dry-run", "planned"):
-        raise CollectorScheduleError("collector receipt reports an uncommitted run")
-    status = value.get("collector_status", value.get("status", "complete"))
-    failure_class = value.get("failure_class")
-    if not isinstance(status, str) or not OPAQUE.fullmatch(status):
-        raise CollectorScheduleError("collector receipt status is invalid")
-    if failure_class is not None and (
-        not isinstance(failure_class, str) or not OPAQUE.fullmatch(failure_class)
-    ):
-        raise CollectorScheduleError("collector receipt failure class is invalid")
-    if status in DEFERRED_STATUSES:
-        receipt["disposition"] = "deferred"
-    elif status in PARTIAL_STATUSES or failure_class == "delta_not_supported":
-        receipt["disposition"] = "partial"
-        receipt.setdefault(
-            "coverage_status", "unavailable" if status == "delta_unavailable" else "partial"
-        )
-        if status in ("budget-stopped", "budget_exhausted"):
-            receipt["budget_stop"] = True
-    elif status in FAILED_STATUSES or failure_class is not None:
-        receipt["disposition"] = "failed"
-    elif receipt.get("coverage_status") == "partial":
-        receipt["disposition"] = "partial"
-    elif status in COMPLETE_STATUSES:
-        receipt["disposition"] = "complete"
-    else:
-        raise CollectorScheduleError("collector receipt status is unsupported")
-    retry_seconds = value.get("retry_after_seconds")
-    retry_after = value.get("retry_after")
-    if retry_seconds is not None and retry_after is not None:
-        raise CollectorScheduleError("collector receipt has ambiguous retry boundaries")
-    if retry_seconds is not None:
-        if isinstance(retry_seconds, str) and retry_seconds.isdigit():
-            retry_seconds = int(retry_seconds)
-        if (
-            isinstance(retry_seconds, bool)
-            or not isinstance(retry_seconds, int)
-            or not 0 <= retry_seconds <= 31_536_000
-            or now is None
-        ):
-            raise CollectorScheduleError("collector retry duration is invalid")
-        receipt["rate_reset_at"] = now + retry_seconds
-    elif isinstance(retry_after, int) and not isinstance(retry_after, bool):
-        receipt["rate_reset_at"] = max(0, retry_after)
-    elif isinstance(retry_after, str):
-        try:
-            if retry_after.isdigit():
-                if now is None:
-                    raise ValueError
-                receipt["rate_reset_at"] = now + int(retry_after)
-            else:
-                parsed_retry = datetime.fromisoformat(retry_after.replace("Z", "+00:00"))
-                if parsed_retry.tzinfo is None:
-                    raise ValueError
-                receipt["rate_reset_at"] = int(parsed_retry.timestamp())
-        except (OverflowError, ValueError) as error:
-            raise CollectorScheduleError("collector retry boundary is invalid") from error
-    return receipt
 
 
 def _run_projection(connection: Connection, timeout: int) -> str:
@@ -619,98 +372,142 @@ def _apply_receipt(
     return changed, projection_pending
 
 
+@dataclass(frozen=True)
+class ExecutionHooks:
+    """Injectable side effects for deterministic execution and testing."""
+
+    dry_run: bool
+    command_builder: Callable[[Connection], list[str]] = build_command
+    process_runner: Callable[
+        [Connection, list[str]], subprocess.CompletedProcess[str]
+    ] = run_process
+    projection_runner: Callable[[Connection, int], str] = _run_projection
+    checkpoint: Callable[[dict[str, Any]], None] | None = None
+
+
+ProjectionGroups = dict[Path, list[tuple[Connection, dict[str, Any]]]]
+
+
+def _checkpoint(state: dict[str, Any], hooks: ExecutionHooks) -> None:
+    if hooks.checkpoint is not None:
+        hooks.checkpoint(state)
+
+
+def _queue_projection(
+    groups: ProjectionGroups, connection: Connection, record: dict[str, Any]
+) -> None:
+    root = connection.projection_root
+    if root is None:
+        raise CollectorScheduleError("projection target is unavailable")
+    group = groups.setdefault(root, [])
+    if not any(existing_record is record for _, existing_record in group):
+        group.append((connection, record))
+
+
+def _run_collector(
+    connection: Connection, hooks: ExecutionHooks
+) -> subprocess.CompletedProcess[str]:
+    command: list[str] = []
+    try:
+        command = hooks.command_builder(connection)
+        return hooks.process_runner(connection, command)
+    except (CollectorScheduleError, OSError, subprocess.SubprocessError):
+        return subprocess.CompletedProcess(command, 124, "", "")
+
+
+def _collect_connection(
+    connection: Connection,
+    record: dict[str, Any],
+    state: dict[str, Any],
+    now: int,
+    hooks: ExecutionHooks,
+    groups: ProjectionGroups,
+) -> dict[str, Any] | None:
+    boundary = due_at(connection, record, now)
+    if boundary is None or boundary > now:
+        return None
+    if hooks.dry_run:
+        return {"connection_id": connection.connection_id, "status": "planned"}
+    record.update({"last_attempt": now, "status": "running"})
+    _checkpoint(state, hooks)
+    completed = _run_collector(connection, hooks)
+    changed = 0
+    try:
+        receipt = _receipt(completed.stdout, now)
+    except CollectorScheduleError:
+        receipt = None
+    if receipt is None:
+        _record_failure(record, connection, now)
+    else:
+        changed, projection_pending = _apply_receipt(
+            record, connection, receipt, now, completed.returncode
+        )
+        if projection_pending:
+            _queue_projection(groups, connection, record)
+    _checkpoint(state, hooks)
+    return {
+        "connection_id": connection.connection_id,
+        "status": record["status"],
+        "changed_count": changed,
+    }
+
+
+def _apply_projection(record: dict[str, Any], projection: str) -> None:
+    if projection == "failed":
+        record["projection_status"] = "pending"
+        if record.get("collector_outcome") == "complete":
+            record["status"] = "partial"
+        return
+    record["projection_status"] = projection
+    outcome_status = {
+        "complete": "complete",
+        "partial": "partial",
+        "deferred": "pending",
+    }
+    outcome = record.get("collector_outcome")
+    if outcome in outcome_status:
+        record["status"] = outcome_status[outcome]
+
+
+def _run_projection_group(
+    group: list[tuple[Connection, dict[str, Any]]], hooks: ExecutionHooks
+) -> None:
+    representative = group[0][0]
+    try:
+        projection = hooks.projection_runner(representative, representative.timeout_seconds)
+    except (OSError, subprocess.SubprocessError):
+        projection = "failed"
+    for _, record in group:
+        _apply_projection(record, projection)
+
+
 def execute_due(
     connections: list[Connection],
     state: dict[str, Any],
     now: int,
     *,
     dry_run: bool,
-    command_builder: Callable[[Connection], list[str]] = build_command,
-    process_runner: Callable[[Connection, list[str]], subprocess.CompletedProcess[str]] = run_process,
-    projection_runner: Callable[[Connection, int], str] = _run_projection,
-    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+    **overrides: Any,
 ) -> list[dict[str, Any]]:
     """Execute due work sequentially and retain independent terminal receipts."""
-    results = []
-    changed_by_directory: dict[Path, list[tuple[Connection, dict[str, Any]]]] = {}
+    hooks = ExecutionHooks(dry_run=dry_run, **overrides)
+    results: list[dict[str, Any]] = []
+    groups: ProjectionGroups = {}
     for connection in connections:
         record = _record(state, connection.connection_id)
-        if not dry_run and (
-            record.get("projection_status") == "pending"
+        if (
+            not hooks.dry_run
+            and record.get("projection_status") == "pending"
             and connection.projection_root is not None
         ):
-            changed_by_directory.setdefault(connection.projection_root, []).append(
-                (connection, record)
-            )
-        boundary = due_at(connection, record, now)
-        if boundary is None or boundary > now:
-            continue
-        if dry_run:
-            results.append({"connection_id": connection.connection_id, "status": "planned"})
-            continue
-        record.update({"last_attempt": now, "status": "running"})
-        if checkpoint is not None:
-            checkpoint(state)
-        command: list[str] = []
-        try:
-            command = command_builder(connection)
-            completed = process_runner(connection, command)
-        except (CollectorScheduleError, OSError, subprocess.SubprocessError):
-            completed = subprocess.CompletedProcess(command, 124, "", "")
-        changed = 0
-        try:
-            receipt = _receipt(completed.stdout, now)
-        except CollectorScheduleError:
-            receipt = None
-        if receipt is None:
-            _record_failure(record, connection, now)
-        else:
-            changed, projection_pending = _apply_receipt(
-                record, connection, receipt, now, completed.returncode
-            )
-            if projection_pending and not any(
-                existing_record is record
-                for _, existing_record in changed_by_directory.get(
-                    connection.projection_root, []
-                )
-            ):
-                if connection.projection_root is None:
-                    raise CollectorScheduleError("projection target is unavailable")
-                changed_by_directory.setdefault(connection.projection_root, []).append(
-                    (connection, record)
-                )
-        if checkpoint is not None:
-            checkpoint(state)
-        results.append(
-            {
-                "connection_id": connection.connection_id,
-                "status": record["status"],
-                "changed_count": changed,
-            }
-        )
-    for group in changed_by_directory.values():
-        representative = group[0][0]
-        try:
-            projection = projection_runner(representative, representative.timeout_seconds)
-        except (OSError, subprocess.SubprocessError):
-            projection = "failed"
-        for _, record in group:
-            if projection == "failed":
-                record["projection_status"] = "pending"
-                if record.get("collector_outcome") == "complete":
-                    record["status"] = "partial"
-            else:
-                record["projection_status"] = projection
-                outcome = record.get("collector_outcome")
-                if outcome == "complete":
-                    record["status"] = "complete"
-                elif outcome == "partial":
-                    record["status"] = "partial"
-                elif outcome == "deferred":
-                    record["status"] = "pending"
-        if checkpoint is not None:
-            checkpoint(state)
-    if not dry_run:
+            _queue_projection(groups, connection, record)
+        result = _collect_connection(connection, record, state, now, hooks, groups)
+        if result is not None:
+            results.append(result)
+    for group in groups.values():
+        _run_projection_group(group, hooks)
+        _checkpoint(state, hooks)
+    if not hooks.dry_run:
         result_records = state["connections"]
         for result in results:
             result["status"] = result_records[result["connection_id"]]["status"]
