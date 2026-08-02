@@ -43,6 +43,8 @@ resolve beneath `${AIDEVOPS_GIT_WORKSPACE_ROOT:-~/Git}` and the target is a link
 worktree. Canonical checkouts remain read-only regardless of their location.
 Resolved worktree, Git directory, and common-directory paths must all remain
 inside the workspace, so sibling-prefix paths and symlink escapes are denied.
+Sanctioned outside-Git paths remain separate: a symlink traversed from inside a
+Git worktree cannot use that allowance to escape the trusted workspace.
 
 ## Related
 

@@ -137,6 +137,23 @@ def _target_probe(cwd: str, file_path: str) -> str:
     return str(target.resolve(strict=False))
 
 
+def _git_symlink_origin(cwd: str, file_path: str) -> Classification | None:
+    """Return the Git location containing a traversed symlink, if any."""
+    target = Path(file_path).expanduser()
+    if not target.is_absolute():
+        target = Path(cwd) / target
+    target = Path(os.path.abspath(target))
+    current = Path(target.anchor)
+    for part in target.parts[1:]:
+        candidate = current / part
+        if candidate.is_symlink():
+            origin = classify_location(str(current))
+            if origin.inside_git:
+                return origin
+        current = candidate
+    return None
+
+
 def git_workspace_root_from_environment() -> str:
     """Return the trusted Git workspace root, defaulting to ~/Git."""
     if GIT_WORKSPACE_ROOT_ENV in os.environ:
@@ -176,18 +193,41 @@ def _repository_within_workspace(
     )
 
 
+def _write_action(
+    decision: str,
+    cross_repository_target: bool,
+    symlink_workspace_escape: bool,
+) -> str:
+    if decision != "deny":
+        return "none"
+    if symlink_workspace_escape:
+        return "use_direct_sanctioned_outside_path"
+    if cross_repository_target:
+        return "use_linked_worktree_under_git_workspace"
+    return "create_or_use_linked_worktree"
+
+
 def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     """Return one fail-closed direct-file-write decision."""
     context = classify_location(cwd)
     if not file_path:
         target = Classification("unknown", False, reason="write target is empty")
+        target_probe = cwd
+        symlink_origin = None
     else:
-        target = classify_location(_target_probe(cwd, file_path))
+        target_probe = _target_probe(cwd, file_path)
+        target = classify_location(target_probe)
+        symlink_origin = _git_symlink_origin(cwd, file_path)
     workspace_root = _canonical_git_workspace_root(
         git_workspace_root_from_environment()
     )
     cross_repository_target = target.classification == "linked" and (
         not context.inside_git or target.common_dir != context.common_dir
+    )
+    symlink_workspace_escape = (
+        symlink_origin is not None
+        and target.classification == "outside"
+        and not _is_within_workspace(target_probe, workspace_root)
     )
 
     if target.classification == "unknown":
@@ -196,6 +236,12 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     elif target.classification == "canonical":
         decision = "deny"
         reason = "canonical checkouts are read-only session mirrors"
+    elif symlink_workspace_escape:
+        decision = "deny"
+        reason = (
+            "symlinked write target escapes from a Git worktree outside the "
+            "trusted Git workspace"
+        )
     elif cross_repository_target and not (
         _repository_within_workspace(context, workspace_root)
         and _repository_within_workspace(target, workspace_root)
@@ -223,12 +269,8 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
         "git_workspace_root": workspace_root,
         "decision": decision,
         "reason": reason,
-        "action": (
-            "use_linked_worktree_under_git_workspace"
-            if decision == "deny" and cross_repository_target
-            else (
-                "create_or_use_linked_worktree" if decision == "deny" else "none"
-            )
+        "action": _write_action(
+            decision, cross_repository_target, symlink_workspace_escape
         ),
         "context": asdict(context),
         "target": asdict(target),

@@ -178,6 +178,27 @@ class CanonicalWritePolicyTests(unittest.TestCase):
             reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertIn("limited to the trusted Git workspace", reason)
 
+    def test_git_worktree_symlink_cannot_escape_to_outside_workspace(self):
+        outside_temp = tempfile.TemporaryDirectory(
+            prefix=f"{self.root.name}-outside-", dir=self.root.parent
+        )
+        self.addCleanup(outside_temp.cleanup)
+        outside_root = Path(outside_temp.name)
+        outside_file = outside_root / "outside.txt"
+        outside_file.write_text("outside\n", encoding="utf-8")
+        alias = self.linked / "outside-alias"
+        alias.symlink_to(outside_root, target_is_directory=True)
+
+        with mock.patch.dict(
+            canonical_write_policy.os.environ,
+            {"AIDEVOPS_GIT_WORKSPACE_ROOT": str(self.root)},
+        ):
+            denial = self._check(self.linked, alias / "outside.txt")
+            self.assertIsNotNone(denial)
+            reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("symlinked write target escapes", reason)
+            self.assertIsNone(self._check(self.linked, outside_file))
+
     def test_linked_context_cannot_target_canonical_checkout(self):
         denial = self._check(self.linked, self.repo / "README.md")
         self.assertIsNotNone(denial)

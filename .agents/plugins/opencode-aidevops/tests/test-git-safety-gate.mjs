@@ -215,6 +215,19 @@ test("allows cross-repository linked writes only inside the trusted Git workspac
       () => checkCanonicalWriteSafetyGate(join(escapedAlias, "README.md"), scriptsDir, linked),
       /limited to the trusted Git workspace/,
     );
+
+    const outsideFile = join(outsideRoot, "outside.txt");
+    const outsideFileAlias = join(linked, "outside-files");
+    writeFileSync(outsideFile, "outside\n");
+    symlinkSync(outsideRoot, outsideFileAlias, "dir");
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate(join(outsideFileAlias, "outside.txt"), scriptsDir, linked),
+      /symlinked write target escapes/,
+    );
+    assert.doesNotThrow(
+      () => checkCanonicalWriteSafetyGate(outsideFile, scriptsDir, linked),
+      "an explicit sanctioned outside-Git path should retain its existing allowance",
+    );
   } finally {
     if (previousWorkspace === undefined) {
       delete process.env.AIDEVOPS_GIT_WORKSPACE_ROOT;
