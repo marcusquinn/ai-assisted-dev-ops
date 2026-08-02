@@ -67,6 +67,32 @@ EOF
 	return 0
 }
 
+usage_sync_feed_readers() {
+	cat <<'EOF'
+Miniflux synchronization:
+  sync-miniflux binds one user ID to a keyed exact HTTPS installation before
+  every page. Entries, read, removed, starred, tags, feeds, categories, and OPML
+  use GET-only routes. Entry streams resume by ascending ID and overlap
+  changed_after by one second. --budget is 3-1000 and --page-size is 1-100.
+
+FreshRSS synchronization:
+  sync-freshrss binds the current Google Reader user to a keyed exact HTTPS
+  installation before every page. One exact ClientLogin POST obtains ephemeral
+  authorization; subscriptions, folders, tags, items, unread, starred, and OPML
+  then use exact GET-only routes with opaque continuation checkpoints. Fever
+  remains unavailable because authenticated Fever reads require another POST.
+  --budget is 5-1000 and --page-size is 1-1000.
+
+Readwise Reader synchronization:
+  sync-readwise-reader requires a deployment-owned account ID plus keyed expected
+  token binding before fixed-origin token validation. Seven GET-only streams use
+  opaque cursors and one-second updatedAfter overlap. The per-invocation request
+  budget is 3-19 to remain below the documented 20/minute limit.
+
+EOF
+	return 0
+}
+
 usage_sync() {
 	cat <<'EOF'
 X synchronization:
@@ -152,27 +178,8 @@ Hacker News synchronization:
   --profile must be public, --budget is 3-1000 request units, and --page-size
   is a 1-100 item slice limit.
 
-Miniflux synchronization:
-  sync-miniflux binds one user ID to a keyed exact HTTPS installation before
-  every page. Entries, read, removed, starred, tags, feeds, categories, and OPML
-  use GET-only routes. Entry streams resume by ascending ID and overlap
-  changed_after by one second. --budget is 3-1000 and --page-size is 1-100.
-
-FreshRSS synchronization:
-  sync-freshrss binds the current Google Reader user to a keyed exact HTTPS
-  installation before every page. One exact ClientLogin POST obtains ephemeral
-  authorization; subscriptions, folders, tags, items, unread, starred, and OPML
-  then use exact GET-only routes with opaque continuation checkpoints. Fever
-  remains unavailable because authenticated Fever reads require another POST.
-  --budget is 5-1000 and --page-size is 1-1000.
-
-Readwise Reader synchronization:
-  sync-readwise-reader requires a deployment-owned account ID plus keyed expected
-  token binding before fixed-origin token validation. Seven GET-only streams use
-  opaque cursors and one-second updatedAfter overlap. The per-invocation request
-  budget is 3-19 to remain below the documented 20/minute limit.
-
 EOF
+	usage_sync_feed_readers || return 1
 	return 0
 }
 
