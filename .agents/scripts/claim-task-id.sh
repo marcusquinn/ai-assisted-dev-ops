@@ -906,6 +906,20 @@ _validate_labels_exist() {
 	return 0
 }
 
+# Emit the online dry-run allocation without mutating the remote counter.
+_main_emit_online_dry_run_allocation() {
+	local current=""
+	current=$(read_remote_counter "$REPO_PATH" 2>/dev/null || read_local_counter "$REPO_PATH" 2>/dev/null || echo "?")
+	if [[ "$current" =~ ^[0-9]+$ ]]; then
+		log_info "Would allocate $(printf 't%03d' "$current")..$(printf 't%03d' "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
+	else
+		log_info "Would allocate task ID (counter unreadable: ${current})"
+	fi
+	echo "task_id=tDRY_RUN"
+	echo "ref=DRY_RUN"
+	return 0
+}
+
 # Resolve allocation: online (with dry-run shortcut) or offline fallback.
 # Sets caller-local variables first_id and is_offline via stdout protocol:
 #   prints "first_id=NNN" and "is_offline=true|false" on success,
@@ -918,15 +932,7 @@ _main_resolve_allocation() {
 
 	if [[ "$OFFLINE_MODE" == "false" ]]; then
 		if [[ "$DRY_RUN" == "true" ]]; then
-			local current
-			current=$(read_remote_counter "$REPO_PATH" 2>/dev/null || read_local_counter "$REPO_PATH" 2>/dev/null || echo "?")
-			if [[ "$current" =~ ^[0-9]+$ ]]; then
-				log_info "Would allocate $(printf 't%03d' "$current")..$(printf 't%03d' "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
-			else
-				log_info "Would allocate task ID (counter unreadable: ${current})"
-			fi
-			echo "task_id=tDRY_RUN"
-			echo "ref=DRY_RUN"
+			_main_emit_online_dry_run_allocation
 			return 0
 		fi
 
