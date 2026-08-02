@@ -186,6 +186,60 @@ _shim_transport_caller_label() {
 	return 0
 }
 
+# Return a reviewed, bounded gh JSON field list or fail closed. Future gh fields
+# remain classified as dynamic until added here so arbitrary pre-validation
+# argument values can never influence telemetry digests.
+_shim_read_json_fields() {
+	local sub1="$1"
+	local sub2="$2"
+	local fields="$3"
+	local field=""
+	local -a field_list=()
+	[[ -n "$fields" && ${#fields} -le 1024 ]] || return 1
+	[[ "$fields" != ,* && "$fields" != *, && "$fields" != *,,* ]] || return 1
+	IFS=',' read -r -a field_list <<<"$fields"
+	[[ ${#field_list[@]} -gt 0 ]] || return 1
+	for field in "${field_list[@]}"; do
+		case "${sub1}:${sub2}:${field}" in
+		issue:list:assignees | issue:list:author | issue:list:blockedBy | issue:list:blocking | \
+			issue:list:body | issue:list:closed | issue:list:closedAt | issue:list:closedByPullRequestsReferences | \
+			issue:list:comments | issue:list:createdAt | issue:list:id | issue:list:isPinned | issue:list:issueType | \
+			issue:list:labels | issue:list:milestone | issue:list:number | issue:list:parent | issue:list:projectCards | \
+			issue:list:projectItems | issue:list:reactionGroups | issue:list:state | issue:list:stateReason | \
+			issue:list:subIssues | issue:list:subIssuesSummary | issue:list:title | issue:list:updatedAt | issue:list:url | \
+			issue:view:assignees | issue:view:author | issue:view:blockedBy | issue:view:blocking | \
+			issue:view:body | issue:view:closed | issue:view:closedAt | issue:view:closedByPullRequestsReferences | \
+			issue:view:comments | issue:view:createdAt | issue:view:id | issue:view:isPinned | issue:view:issueType | \
+			issue:view:labels | issue:view:milestone | issue:view:number | issue:view:parent | issue:view:projectCards | \
+			issue:view:projectItems | issue:view:reactionGroups | issue:view:state | issue:view:stateReason | \
+			issue:view:subIssues | issue:view:subIssuesSummary | issue:view:title | issue:view:updatedAt | issue:view:url | \
+			pr:list:additions | pr:list:assignees | pr:list:author | pr:list:autoMergeRequest | pr:list:baseRefName | \
+			pr:list:baseRefOid | pr:list:body | pr:list:changedFiles | pr:list:closed | pr:list:closedAt | \
+			pr:list:closingIssuesReferences | pr:list:comments | pr:list:commits | pr:list:createdAt | pr:list:deletions | \
+			pr:list:files | pr:list:fullDatabaseId | pr:list:headRefName | pr:list:headRefOid | pr:list:headRepository | \
+			pr:list:headRepositoryOwner | pr:list:id | pr:list:isCrossRepository | pr:list:isDraft | pr:list:labels | \
+			pr:list:latestReviews | pr:list:maintainerCanModify | pr:list:mergeCommit | pr:list:mergeStateStatus | \
+			pr:list:mergeable | pr:list:mergedAt | pr:list:mergedBy | pr:list:milestone | pr:list:number | \
+			pr:list:potentialMergeCommit | pr:list:projectCards | pr:list:projectItems | pr:list:reactionGroups | \
+			pr:list:reviewDecision | pr:list:reviewRequests | pr:list:reviews | pr:list:state | \
+			pr:list:statusCheckRollup | pr:list:title | pr:list:updatedAt | pr:list:url | \
+			pr:view:additions | pr:view:assignees | pr:view:author | pr:view:autoMergeRequest | pr:view:baseRefName | \
+			pr:view:baseRefOid | pr:view:body | pr:view:changedFiles | pr:view:closed | pr:view:closedAt | \
+			pr:view:closingIssuesReferences | pr:view:comments | pr:view:commits | pr:view:createdAt | pr:view:deletions | \
+			pr:view:files | pr:view:fullDatabaseId | pr:view:headRefName | pr:view:headRefOid | pr:view:headRepository | \
+			pr:view:headRepositoryOwner | pr:view:id | pr:view:isCrossRepository | pr:view:isDraft | pr:view:labels | \
+			pr:view:latestReviews | pr:view:maintainerCanModify | pr:view:mergeCommit | pr:view:mergeStateStatus | \
+			pr:view:mergeable | pr:view:mergedAt | pr:view:mergedBy | pr:view:milestone | pr:view:number | \
+			pr:view:potentialMergeCommit | pr:view:projectCards | pr:view:projectItems | pr:view:reactionGroups | \
+			pr:view:reviewDecision | pr:view:reviewRequests | pr:view:reviews | pr:view:state | \
+			pr:view:statusCheckRollup | pr:view:title | pr:view:updatedAt | pr:view:url) ;;
+		*) return 1 ;;
+		esac
+	done
+	printf '%s' "$fields"
+	return 0
+}
+
 # Return a stable, privacy-safe digest for one native issue/pr read shape.
 # Repository names, references, jq/template expressions, and other argument
 # values never enter the digest input. JSON field names are retained because
@@ -212,11 +266,7 @@ _shim_read_shape_digest() {
 		if [[ -n "$expect_value" ]]; then
 			case "$expect_value" in
 			json)
-				if [[ "$arg" =~ ^[A-Za-z0-9_,]+$ ]]; then
-					json_fields="$arg"
-				else
-					json_fields="dynamic"
-				fi
+				json_fields=$(_shim_read_json_fields "$sub1" "$sub2" "$arg" 2>/dev/null) || json_fields="dynamic"
 				;;
 			jq) has_jq=1 ;;
 			template) has_template=1 ;;
@@ -229,8 +279,7 @@ _shim_read_shape_digest() {
 		--repo=* | -R?*) ;;
 		--json) expect_value="json" ;;
 		--json=*)
-			json_fields="${arg#--json=}"
-			[[ "$json_fields" =~ ^[A-Za-z0-9_,]+$ ]] || json_fields="dynamic"
+			json_fields=$(_shim_read_json_fields "$sub1" "$sub2" "${arg#--json=}" 2>/dev/null) || json_fields="dynamic"
 			;;
 		--jq | -q) expect_value="jq" ;;
 		--jq=* | -q=*) has_jq=1 ;;

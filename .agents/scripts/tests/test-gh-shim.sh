@@ -814,6 +814,37 @@ else
 		"shape_one=$native_shape_one shape_two=$native_shape_two log_one=$(cat "$native_shape_log_one" 2>/dev/null || true)"
 fi
 
+native_dynamic_log_one="$TMP/gh-api-native-dynamic-one.log"
+native_dynamic_log_two="$TMP/gh-api-native-dynamic-two.log"
+native_oversized_log="$TMP/gh-api-native-oversized.log"
+oversized_json_fields="state"
+while [[ ${#oversized_json_fields} -le 1024 ]]; do
+	oversized_json_fields="${oversized_json_fields},state"
+done
+rm -f "$native_dynamic_log_one" "$native_dynamic_log_two" "$native_oversized_log"
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_dynamic_log_one" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --json PrivateIdentifierOne >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_dynamic_log_two" \
+	"$SHIM_RUN" issue view 999 --repo other/repo --json OtherSensitiveIdentifier999 >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_oversized_log" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --json "$oversized_json_fields" >/dev/null 2>&1 || true
+native_dynamic_one=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_dynamic_log_one")
+native_dynamic_two=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_dynamic_log_two")
+native_oversized=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_oversized_log")
+if [[ "$native_dynamic_one" == "$native_dynamic_two" && "$native_oversized" == "$native_dynamic_one" ]] &&
+	[[ "$native_dynamic_one" =~ ^graphql-bypass:shape-[[:xdigit:]]{12}$ ]] &&
+	[[ "$native_shape_one" != "$native_dynamic_one" ]] &&
+	! grep -Eq 'PrivateIdentifierOne|OtherSensitiveIdentifier999' \
+		"$native_dynamic_log_one" "$native_dynamic_log_two" "$native_oversized_log"; then
+	_pass "native read shape admits only bounded documented JSON fields"
+else
+	_fail "native read JSON field privacy boundary" \
+		"valid=$native_shape_one dynamic_one=$native_dynamic_one dynamic_two=$native_dynamic_two oversized=$native_oversized"
+fi
+
 native_alias_long_log="$TMP/gh-api-native-alias-long.log"
 native_alias_short_log="$TMP/gh-api-native-alias-short.log"
 native_bypass_long_log="$TMP/gh-api-native-bypass-long.log"
