@@ -49,6 +49,7 @@ a claim that the route is enabled.
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
 | Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | One bounded public `submitted` stream uses a mutable case-sensitive username selector and official item IDs; missing/deleted/dead and all private state remain explicit unavailable coverage. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
+| FreshRSS | **Live/Partial** feed items | **Live/Partial** unread and starred state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** folders and tags | Seven installation/user-bound Google Reader streams allow only ClientLogin POST plus exact data GETs, preserve opaque continuations and OPML snapshots, and leave POST-authenticated Fever fallback unavailable. |
 | Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
 
 ## Integrated provider families
@@ -85,7 +86,7 @@ separate provider family.
 | GitHub | **Live/Partial** contributions | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications; **No** discussions | **Live/Gate/Partial** follows, organizations, and repositories | **Live/Gate/Partial** user lists and Projects v2 | #29222 implements numeric/node identity, token-family gates, opaque mixed-API cursors, and no complete reaction or social export claim. |
 | Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | #29228 implements bounded official Firebase user/item GETs, content-addressed submitted-ID resume, and explicit mutable-public-selector and tombstone coverage. |
 | Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
-| FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
+| FreshRSS | **Live/Partial** feed items | **Live/Partial** unread and starred state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** folders/tags | #29226 implements keyed installation/user identity, one exact ClientLogin POST, exact GET-only Google Reader routes, opaque continuation resume, OPML snapshots, and an explicit unavailable Fever POST boundary. |
 | Readwise Reader | **Live/Gate/Partial** saved documents | **Live/Gate/Partial** tags, state, notes, and progress | **No** | **No** | **Live/Gate/Partial** tags and locations | #29225 implements a deployment-owned account/token binding because official token validation exposes no stable account ID, plus fixed-origin GET-only cursor reads. |
 | Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
@@ -218,6 +219,16 @@ separate provider family.
   `.agents/content/social-miniflux.md` records official current identity, entries,
   feed, category, OPML, authentication, version, and operator-retention evidence
   checked on 2026-08-02.
+- **Live FreshRSS:** `.agents/scripts/knowledge_social_freshrss.py`,
+  `.agents/scripts/_knowledge_social_freshrss*.py`, and
+  `.agents/tests/test-knowledge-social-freshrss.sh` prove keyed installation/user
+  identity, seven independent streams, opaque continuation resume, incremental
+  overlap, bounded OPML reconciliation, credential rejection, exact ClientLogin
+  POST plus data-route GET isolation, sanitized terminal coverage, replay, and
+  lease-fenced atomic persistence. `.agents/content/social-freshrss.md` records
+  the current Google Reader identity, subscriptions, tags, item/state, OPML,
+  authentication, retention, and incompatible Fever POST boundary checked on
+  2026-08-02.
 - **Live/Gated Readwise Reader:**
   `.agents/scripts/knowledge_social_readwise_reader.py`,
   `.agents/scripts/_knowledge_social_readwise_reader*.py`, and
