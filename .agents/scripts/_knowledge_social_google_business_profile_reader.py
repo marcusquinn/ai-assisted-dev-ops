@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_google_business_profile import (
     GoogleBusinessProfileAdapterError,
     GoogleBusinessProfileProviderUnavailableError,
@@ -89,39 +89,13 @@ class GuardedGoogleBusinessProfileOAuth(GuardedOAuthReader):
         super().__init__(helper, profile, GBP_OAUTH_POLICY)
 
 
-def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile fixture request expectation must be an object"
-        )
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile request did not resume at the expected checkpoint"
-        )
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile fixture response must be an object"
-        )
-    return response
-
-
-class FixtureGoogleBusinessProfile:
+class FixtureGoogleBusinessProfile(FixturePageReader):
     """Deterministic substitute for hierarchy, pagination, and failure fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(
+        super().__init__(
             path, "Google Business Profile", GoogleBusinessProfileAdapterError
         )
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return _fixture_page(self.fixture.next_page(), request)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:

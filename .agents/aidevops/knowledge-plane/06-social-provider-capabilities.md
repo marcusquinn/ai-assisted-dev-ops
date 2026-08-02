@@ -38,6 +38,7 @@ a claim that the route is enabled.
 | Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
+| beehiiv | **Live/Partial/Export** confirmed posts and paywall-enforced free web content; **Export** drafts and archives | **No** subscriber-derived engagement statistics | **No** | **Gate/Export/No** subscriber records are excluded pending an explicit PII need and authorization | **Gate/No** segments and newsletter-list membership expose audience structure and are not collected | One expected, singly visible publication; exact GET-only API-v2 routes, bounded page replay, 100-page cap, and no subscriber PII, premium expansion, remote media, dashboard automation, or mutation reachability. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
@@ -52,6 +53,7 @@ a claim that the route is enabled.
 | Hashnode | **Live** posts; **Live/Gate** owned publications and drafts | **Live/Partial** comments and likes received; **No** authored-comment or reaction history | **No** messages or notifications | **Live/Partial** followers and following | **No** | Eight viewer-bound streams use nine fixed GraphQL read documents, repeated author/publication ownership checks, opaque nested cursors, and **Export/Gate** account-archive coverage pending a current identity-bearing schema. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
 | Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
+| beehiiv | **Live/Partial/Export** confirmed post metadata and free web HTML | **No** subscriber-derived post statistics | **No** | **Gate/Export/No** subscriber PII | **Gate/No** segments and newsletter-list membership | Publication ID/name/organization rebinding before each page; API-key scope must expose exactly one publication. |
 
 ## Integrated provider families
 
@@ -242,6 +244,15 @@ separate provider family.
   `.agents/content/social-readwise-reader.md` records official auth, document,
   tag, cursor, HTML, rate, privacy, export, retention, and terms evidence checked
   on 2026-08-02.
+- **Live/Gated beehiiv:** `.agents/scripts/knowledge_social_beehiiv.py`,
+  `.agents/scripts/_knowledge_social_beehiiv*.py`, and
+  `.agents/tests/test-knowledge-social-beehiiv.sh` prove a singly visible expected
+  publication, repeated ID/name/organization verification, bounded API-v2 post
+  pages, exact replay, terminal and malformed-page safety, credential rejection,
+  stale-lease fencing, and fixed-origin GET-only mutation isolation.
+  `.agents/content/social-beehiiv.md` records official API-v2 authentication,
+  endpoint-specific pagination, organization quota, plan/export gates, privacy,
+  terms, and excluded subscriber fields checked on 2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,

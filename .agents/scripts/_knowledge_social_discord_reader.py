@@ -15,7 +15,7 @@ from _knowledge_social_discord import (
     PageRequest,
     snowflake,
 )
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_oauth_reader import GuardedOAuthPolicy, GuardedOAuthReader
 from knowledge_social_import import reject_credentials
 
@@ -81,31 +81,11 @@ class GuardedDiscordBot(GuardedOAuthReader):
         super().__init__(helper, profile, DISCORD_BOT_POLICY)
 
 
-def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise DiscordAdapterError("Discord fixture expectation must be an object")
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise DiscordAdapterError("Discord request did not resume at the checkpoint")
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise DiscordAdapterError("Discord fixture page must be an object")
-    return response
-
-
-class FixtureDiscord:
+class FixtureDiscord(FixturePageReader):
     """Deterministic provider substitute for Discord collection fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "Discord", DiscordAdapterError)
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return _fixture_page(self.fixture.next_page(), request)
+        super().__init__(path, "Discord", DiscordAdapterError)
 
 
 def _bool(value: Any, field: str) -> bool:

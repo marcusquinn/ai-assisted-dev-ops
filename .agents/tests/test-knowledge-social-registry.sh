@@ -39,6 +39,7 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 expected = {
+    "beehiiv": ("live",),
     "bluesky": ("live",),
     "binance-square": ("no-route",),
     "discord": ("live",),
@@ -101,14 +102,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("19:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("20:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "19:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "20:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "19"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "20"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')

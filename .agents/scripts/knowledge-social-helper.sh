@@ -23,6 +23,7 @@ HACKER_NEWS_HELPER="${SCRIPT_DIR}/knowledge_social_hacker_news.py"
 HASHNODE_HELPER="${SCRIPT_DIR}/knowledge_social_hashnode.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
 READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
+BEEHIIV_HELPER="${SCRIPT_DIR}/knowledge_social_beehiiv.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -145,6 +146,14 @@ Stack Exchange synchronization:
   exhaustion, continue only while has_more, and cap pages at 100 items.
   --budget is 3-1000 and --page-size is 1-100.
 
+EOF
+	usage_sync_more || return 1
+	return 0
+}
+
+usage_sync_more() {
+	cat <<'EOF'
+
 Hacker News synchronization:
   sync-hacker-news observes one exact case-sensitive public username selector;
   it never claims authenticated or immutable account identity. One bounded
@@ -163,6 +172,13 @@ Readwise Reader synchronization:
   token binding before fixed-origin token validation. Seven GET-only streams use
   opaque cursors and one-second updatedAfter overlap. The per-invocation request
   budget is 3-19 to remain below the documented 20/minute limit.
+
+beehiiv synchronization:
+  sync-beehiiv requires one expected publication ID, name, and organization plus
+  a credential that exposes exactly that publication. The fixed-origin API v2
+  route collects confirmed posts and paywall-enforced free web content only.
+  Subscriber PII, segments, engagement stats, premium content, redirects, and
+  every mutation route are excluded. --budget is 3-59 and pages are 1-100 items.
 
 EOF
 	return 0
@@ -254,6 +270,10 @@ Usage:
   knowledge-social-helper.sh sync-readwise-reader [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id DEPLOYMENT_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget 3-19] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-beehiiv [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id PUBLICATION_ID --stream posts \
+    --profile PROFILE [--budget 3-59] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
@@ -448,6 +468,7 @@ run_named_provider_sync() {
 	sync-hashnode) run_provider_sync Hashnode "$HASHNODE_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
 	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
+	sync-beehiiv) run_provider_sync beehiiv "$BEEHIIV_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -527,7 +548,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-readwise-reader | sync-beehiiv)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

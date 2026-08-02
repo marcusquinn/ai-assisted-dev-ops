@@ -51,7 +51,6 @@ class FixtureSequence:
         self.position += 1
         return page
 
-
 class FixturePageReader:
     """Match provider page requests against one deterministic fixture sequence."""
 
@@ -65,7 +64,7 @@ class FixturePageReader:
             raise self.error_type(f"{self.provider} {message}")
         return value
 
-    def identity(self, expected_id: str) -> dict[str, Any]:
+    def identity(self, expected_id: str | None = None) -> dict[str, Any]:
         del expected_id
         return self.fixture.identity()
 

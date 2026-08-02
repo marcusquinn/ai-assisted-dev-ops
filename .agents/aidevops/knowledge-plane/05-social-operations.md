@@ -41,10 +41,11 @@ rows. Replay preserves both evidence and projection IDs.
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
 Readwise Reader #29225, Lemmy #29227, public-only Hacker News #29228, and
-Hashnode #29323 are now live. FreshRSS #29226 is the remaining ranked child. Each
-route owns its identity contract, stream allowlist, checkpoint semantics, and
-negative write-reachability tests. Raindrop.io remains optional; Inoreader,
-Wallabag, Feedly, Instapaper, and Pocket are deferred or rejected for the reasons in
+Hashnode #29323 and the publication-scoped beehiiv route #29319 are now live.
+FreshRSS #29226 is the remaining ranked child. Each route owns its identity
+contract, stream allowlist, checkpoint semantics, and negative write-reachability
+tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
+Pocket are deferred or rejected for the reasons in
 `.agents/content/social-provider-candidates.md`.
 
 The maintained planning and gap inventory is
@@ -153,6 +154,16 @@ cursors with one-second `updatedAfter` overlap. Only fixed-origin auth, list, an
 tag GET routes are reachable; each invocation is capped below the documented
 20-request/minute limit. Provider identity, deletion, complete export, and
 retention remain explicit gaps. Details: `.agents/content/social-readwise-reader.md`.
+
+beehiiv collection binds the configured `pub_...` ID, publication name, and
+organization name to a credential whose `GET /v2/publications` result exposes
+exactly that publication before every page. Confirmed posts and their
+paywall-enforced free web HTML use bounded API-v2 offset pages; the current post
+endpoint documents page numbers rather than the API's preferred opaque cursor
+shape, so the collector caps the route at page 100 and records partial coverage.
+Subscriber records, segments, engagement statistics, premium content, remote
+media, exports, redirects, and mutations are unreachable. Details:
+`.agents/content/social-beehiiv.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

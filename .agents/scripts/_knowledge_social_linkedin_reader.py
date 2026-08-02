@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_linkedin import (
     LinkedInAdapterError,
     LinkedInProviderUnavailableError,
@@ -79,35 +79,11 @@ class GuardedLinkedInOAuth(GuardedOAuthReader):
         super().__init__(helper, profile, LINKEDIN_OAUTH_POLICY)
 
 
-def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise LinkedInAdapterError(
-            "LinkedIn fixture request expectation must be an object"
-        )
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise LinkedInAdapterError(
-            "LinkedIn request did not resume at the expected checkpoint"
-        )
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise LinkedInAdapterError("LinkedIn fixture page response must be an object")
-    return response
-
-
-class FixtureLinkedIn:
+class FixtureLinkedIn(FixturePageReader):
     """Deterministic OAuth substitute for pagination and failure fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "LinkedIn", LinkedInAdapterError)
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return _fixture_page(self.fixture.next_page(), request)
+        super().__init__(path, "LinkedIn", LinkedInAdapterError)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, str]:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from _knowledge_social_collect_cli import guarded_reader_environment
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_meta import (
     MetaAdapterError,
     MetaProviderUnavailableError,
@@ -87,34 +87,17 @@ class GuardedMetaOAuth(GuardedOAuthReader):
         )
 
 
-def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise MetaAdapterError("Meta fixture request expectation must be an object")
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise MetaAdapterError("Meta request did not resume at the expected checkpoint")
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise MetaAdapterError("Meta fixture page response must be an object")
-    return response
-
-
-class FixtureMeta:
+class FixtureMeta(FixturePageReader):
     """Deterministic OAuth substitute for product pagination and failures."""
 
     def __init__(self, path: Path, product: str) -> None:
         self.product = product
-        self.fixture = FixtureSequence(path, f"Meta {product}", MetaAdapterError)
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
+        super().__init__(path, f"Meta {product}", MetaAdapterError)
 
     def page(self, request: PageRequest) -> dict[str, Any]:
         if request.product != self.product:
             raise MetaAdapterError("Meta fixture product does not match the request")
-        return _fixture_page(self.fixture.next_page(), request)
+        return super().page(request)
 
 
 def verified_identity(

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from _knowledge_social_collect_cli import GuardedReaderProcess
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_reddit import (
     PageRequest,
     RedditAdapterError,
@@ -126,30 +126,11 @@ class GuardedPraw:
         return self.process.run(request.payload())
 
 
-def _fixture_page(entry: dict[str, Any], request: PageRequest) -> dict[str, Any]:
-    expectation = entry.get("expect_request", {})
-    if not isinstance(expectation, dict):
-        raise RedditAdapterError("Reddit fixture request expectation must be an object")
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise RedditAdapterError("Reddit request did not resume at the expected checkpoint")
-    response = entry.get("response", entry)
-    if not isinstance(response, dict):
-        raise RedditAdapterError("Reddit fixture page response must be an object")
-    return response
-
-
-class FixtureReddit:
+class FixtureReddit(FixturePageReader):
     """Deterministic PRAW substitute for pagination and failure fixtures."""
 
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "Reddit", RedditAdapterError)
-
-    def identity(self) -> dict[str, Any]:
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return _fixture_page(self.fixture.next_page(), request)
+        super().__init__(path, "Reddit", RedditAdapterError)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:
