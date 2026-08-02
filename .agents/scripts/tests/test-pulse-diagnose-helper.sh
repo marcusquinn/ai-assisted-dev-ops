@@ -85,8 +85,12 @@ FIXTURE_GH_API_LOG="${TMPDIR_TEST}/gh-api-calls.log"
 FIXTURE_TIMER="${TMPDIR_TEST}/aidevops-supervisor-pulse.timer"
 FIXTURE_GH_COOLDOWN="${TMPDIR_TEST}/gh-secondary-cooldown.json"
 FIXTURE_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/gh-cooldown-events.jsonl"
+WRAPPER_GH_COOLDOWN="${TMPDIR_TEST}/wrapper-gh-secondary-cooldown.json"
+WRAPPER_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/wrapper-gh-cooldown-events.jsonl"
 FIXTURE_BLOCKERS="${TMPDIR_TEST}/worker-progress-blockers.jsonl"
 export PULSE_DIAGNOSE_BLOCKER_LOG="$FIXTURE_BLOCKERS"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="$WRAPPER_GH_COOLDOWN"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="$WRAPPER_GH_COOLDOWN_EVENTS"
 unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
 
 # Create fixture pulse.log with 3+ distinct rule outcomes:
@@ -113,6 +117,7 @@ cat > "$FIXTURE_LOGFILE" <<'FIXTURE'
 2026-04-21T20:01:00Z [pulse-wrapper] Review bot gate: PASS for PR #28869 in marcusquinn/aidevops
 2026-04-21T20:01:01Z [pulse-mystery] first unknown observation for PR #28869
 2026-04-21T20:01:02Z [pulse-mystery] second unknown observation for PR #28869
+2026-04-21T20:02:00Z [pulse-wrapper] Merge pass: skipping PR #29285 in marcusquinn/aidevops — 1 required status check(s) failing (t2104)
 FIXTURE
 
 cat >"$FIXTURE_BLOCKERS" <<'BLOCKERS'
@@ -214,6 +219,13 @@ if [[ "$*" == *"pr view"*"28869"* ]]; then
   cat <<'JSON'
 {"number":28869,"title":"fix pulse diagnostics","state":"OPEN","author":{"login":"worker"},"mergedAt":null,"closedAt":null,"createdAt":"2026-07-29T19:21:19Z","labels":[{"name":"origin:worker"}],"reviewDecision":"","mergeStateStatus":"BLOCKED","headRefName":"feature/auto-20260729-192119-gh28780","baseRefName":"main","isDraft":true}
 JSON
+  exit 0
+fi
+if [[ "$*" == *"pr view"*"29285"* ]]; then
+  sleep 4
+  if [[ -n "${PULSE_DIAGNOSE_TEST_TIMEOUT_SENTINEL:-}" ]]; then
+    printf 'unbounded\n' >"$PULSE_DIAGNOSE_TEST_TIMEOUT_SENTINEL"
+  fi
   exit 0
 fi
 if [[ "$*" == *"issue view"*"21860"* ]]; then
@@ -436,6 +448,29 @@ output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
 
 assert_contains "works with gh offline" "PR #20336" "$output"
 assert_contains "author shows unknown when offline" "unknown" "$output"
+
+# --- Test 11b: PR metadata timeout preserves log diagnostics ---
+printf '\nTest 11b: PR metadata timeout preserves log diagnostics\n'
+TIMEOUT_SENTINEL="${TMPDIR_TEST}/pr-metadata-unbounded"
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PULSE_DIAGNOSE_TEST_TIMEOUT_SENTINEL="$TIMEOUT_SENTINEL" \
+	AIDEVOPS_GH_READ_TIMEOUT=1 \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 29285 --repo marcusquinn/aidevops 2>&1) || true
+
+assert_contains "timeout names the metadata deadline" "gh pr view timed out after 1s for PR #29285" "$output"
+assert_contains "timeout still renders the PR heading" "PR #29285" "$output"
+assert_contains "timeout reports unknown metadata" "Created: unknown" "$output"
+assert_contains "timeout preserves collected pulse evidence" "pw-merge-skip-checks" "$output"
+TOTAL=$((TOTAL + 1))
+if [[ ! -e "$TIMEOUT_SENTINEL" ]]; then
+	PASS=$((PASS + 1))
+	printf '  ✓ metadata read was terminated before the slow command completed\n'
+else
+	FAIL=$((FAIL + 1))
+	printf '  ✗ metadata read was not terminated before the slow command completed\n'
+fi
 
 # --- Test 12: no arguments ---
 printf '\nTest 12: missing PR number shows error\n'
