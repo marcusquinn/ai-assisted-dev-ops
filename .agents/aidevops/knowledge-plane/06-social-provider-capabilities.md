@@ -46,6 +46,7 @@ a claim that the route is enabled.
 | Lemmy | **Live/Partial** versioned posts and comments | **Live/Partial** saved and currently liked posts/comments | **Live/Partial** unified v4 notifications or split v3 replies/mentions; **No** private-message bodies | **Live/Partial** community subscriptions; **No** person follows | **Live/Partial** v4 multicommunities; **No** v3 equivalent | Exact `/api/v3/site` discovery gates nine independently checkpointed streams per API family; v4 opaque cursors and v3 numeric pages cannot cross, numeric IDs are installation-namespaced, and federation/retention/export/history gaps remain explicit. |
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
+| Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | One bounded public `submitted` stream uses a mutable case-sensitive username selector and official item IDs; missing/deleted/dead and all private state remain explicit unavailable coverage. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
 | Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
 
@@ -81,7 +82,7 @@ separate provider family.
 | Lemmy | **Live/Partial** versioned authored content | **Live/Partial** saved and liked state | **Live/Partial** unified v4 or split v3 inbox; **No** private-message bodies | **Live/Partial** communities; **No** person follows | **Live/Partial** v4 multicommunities; **No** v3 equivalent | #29227 implements exact version/account rebinding, isolated v4/v3 routes and cursors, installation-namespaced numeric IDs, retained ActivityPub IDs, and explicit federation/retention/export/history gaps. |
 | Stack Exchange | **Live/Partial** authored content | **Live/Partial** favourites; **No** complete vote history | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | #29223 implements network plus per-site identity, mandatory `backoff` and quota stops, bounded paging, and explicit archive/completeness gaps. |
 | GitHub | **Live/Partial** contributions | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications; **No** discussions | **Live/Gate/Partial** follows, organizations, and repositories | **Live/Gate/Partial** user lists and Projects v2 | #29222 implements numeric/node identity, token-family gates, opaque mixed-API cursors, and no complete reaction or social export claim. |
-| Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
+| Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | #29228 implements bounded official Firebase user/item GETs, content-addressed submitted-ID resume, and explicit mutable-public-selector and tombstone coverage. |
 | Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
 | FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
 | Readwise Reader | **Live/Gate/Partial** saved documents | **Live/Gate/Partial** tags, state, notes, and progress | **No** | **No** | **Live/Gate/Partial** tags and locations | #29225 implements a deployment-owned account/token binding because official token validation exposes no stable account ID, plus fixed-origin GET-only cursor reads. |
@@ -196,6 +197,17 @@ separate provider family.
   terminal coverage, and atomic persistence. `.agents/content/social-stack-exchange.md`
   records official v2.3 identity, route, OAuth, paging, filter, quota, throttle,
   duplicate-request, and completeness evidence checked on 2026-08-02.
+- **Live/Partial Hacker News:**
+  `.agents/scripts/knowledge_social_hacker_news.py`,
+  `.agents/scripts/_knowledge_social_hacker_news*.py`, and
+  `.agents/tests/test-knowledge-social-hacker-news.sh` prove the case-sensitive
+  mutable public-selector boundary, bounded submitted-ID snapshots, deterministic
+  resume, missing/deleted/dead coverage, request/item/byte fuses, exact GET-only
+  routes, replay, sanitized terminal failures, and atomic lease-fenced persistence.
+  `.agents/content/social-hacker-news.md` records official Firebase v0 user/item
+  schemas, public-activity visibility, versioning, current no-rate-limit statement,
+  repository license, and absent private/authenticated categories checked on
+  2026-08-02.
 - **Live Miniflux:** `.agents/scripts/knowledge_social_miniflux.py`,
   `.agents/scripts/_knowledge_social_miniflux*.py`, and
   `.agents/tests/test-knowledge-social-miniflux.sh` prove keyed installation/user

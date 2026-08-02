@@ -19,6 +19,7 @@ MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
 LEMMY_HELPER="${SCRIPT_DIR}/knowledge_social_lemmy.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
+HACKER_NEWS_HELPER="${SCRIPT_DIR}/knowledge_social_hacker_news.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
 READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
@@ -143,6 +144,13 @@ Stack Exchange synchronization:
   exhaustion, continue only while has_more, and cap pages at 100 items.
   --budget is 3-1000 and --page-size is 1-100.
 
+Hacker News synchronization:
+  sync-hacker-news observes one exact case-sensitive public username selector;
+  it never claims authenticated or immutable account identity. One bounded
+  submitted-ID slice resolves only official Firebase user/item GET routes.
+  --profile must be public, --budget is 3-1000 request units, and --page-size
+  is a 1-100 item slice limit.
+
 Miniflux synchronization:
   sync-miniflux binds one user ID to a keyed exact HTTPS installation before
   every page. Entries, read, removed, starred, tags, feeds, categories, and OPML
@@ -217,6 +225,10 @@ Usage:
   knowledge-social-helper.sh sync-stack-exchange [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id NETWORK_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-hacker-news [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id CASE_SENSITIVE_USERNAME --stream submitted \
+    --profile public [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-miniflux [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
@@ -414,6 +426,7 @@ run_named_provider_sync() {
 	sync-lemmy) run_provider_sync Lemmy "$LEMMY_HELPER" "$@" || return 1 ;;
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
+	sync-hacker-news) run_provider_sync "Hacker News" "$HACKER_NEWS_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
 	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
@@ -495,7 +508,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

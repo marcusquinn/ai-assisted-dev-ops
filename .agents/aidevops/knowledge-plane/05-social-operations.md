@@ -40,9 +40,8 @@ rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
-Readwise Reader #29225, and Lemmy #29227 are now live. The remaining ranked
-children are FreshRSS issue #29226 and public-only Hacker News #29228. Each route
-owns its identity
+Readwise Reader #29225, Lemmy #29227, and public-only Hacker News #29228 are now
+live. FreshRSS #29226 is the remaining ranked child. Each route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
 tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
 Pocket are deferred or rejected for the reasons in
@@ -98,6 +97,15 @@ accounts have independent per-site checkpoints. Pages stop before persistence on
 `backoff` or quota exhaustion and continue only while `has_more`. Votes, follows,
 subscriptions, lists, projects, complete archives, and inaccessible site history
 remain explicit gaps. Details: `.agents/content/social-stack-exchange.md`.
+
+Hacker News collection observes an exact case-sensitive public username before
+each bounded official item GET. The username remains an explicitly mutable public
+selector, never authenticated identity. A versioned cursor retains the complete
+bounded submitted-ID slice so resume is independent of newly prepended IDs.
+Missing users/items and deleted/dead tombstones produce explicit unavailable
+coverage; votes, favourites, inbox, notifications, relationships, subscriptions,
+lists, removed content, and private state remain unavailable. Details:
+`.agents/content/social-hacker-news.md`.
 
 Miniflux collection binds `/v1/me` user identity to a keyed exact HTTPS
 installation before every page. Entries, read, removed, starred, tags, feeds,
