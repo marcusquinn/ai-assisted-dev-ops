@@ -39,8 +39,8 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221 and GitHub #29222 are now live. The remaining ranked children
-are Stack Exchange #29223, Miniflux #29224, Readwise Reader #29225, FreshRSS
+Mastodon #29221, GitHub #29222, and Stack Exchange #29223 are now live. The
+remaining ranked children are Miniflux #29224, Readwise Reader #29225, FreshRSS
 issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
 route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
@@ -79,6 +79,14 @@ Projects v2 have independent snapshot checkpoints. Exact REST `Link` targets
 and GraphQL `pageInfo` cursors remain opaque. Token-family capability limits,
 reactions, migration expiry, deletion, private visibility, and organization
 audit authority remain explicit gaps. Details: `.agents/content/social-github.md`.
+
+Stack Exchange collection binds OAuth `/me` network `account_id`, selected
+`api_site_parameter`, and site `user_id` before every page. Authored posts,
+questions, answers, comments, favourites, inbox, notifications, and associated
+accounts have independent per-site checkpoints. Pages stop before persistence on
+`backoff` or quota exhaustion and continue only while `has_more`. Votes, follows,
+subscriptions, lists, projects, complete archives, and inaccessible site history
+remain explicit gaps. Details: `.agents/content/social-stack-exchange.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

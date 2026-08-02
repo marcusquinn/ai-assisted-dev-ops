@@ -17,6 +17,7 @@ DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
+STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -126,6 +127,12 @@ GitHub synchronization:
   opaque; REST writes, GraphQL mutations, and redirects are unreachable.
   --budget is 5-1000 and --page-size is 1-100.
 
+Stack Exchange synchronization:
+  sync-stack-exchange binds one network account ID to a selected API site and
+  site user ID before every page. Eight GET-only streams stop on backoff or quota
+  exhaustion, continue only while has_more, and cap pages at 100 items.
+  --budget is 3-1000 and --page-size is 1-100.
+
 EOF
 	return 0
 }
@@ -179,6 +186,10 @@ Usage:
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-github [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id NUMERIC_ACCOUNT_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-stack-exchange [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id NETWORK_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
@@ -367,6 +378,7 @@ run_named_provider_sync() {
 	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
 	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
+	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -446,7 +458,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github | sync-stack-exchange)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

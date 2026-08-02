@@ -44,6 +44,7 @@ a claim that the route is enabled.
 | NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
 | Mastodon | **Live/Partial** authored statuses | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** followers, following, and followed tags | **Live/Partial** lists; **No** nested membership | Eight exact-origin GET-only streams preserve opaque `Link` cursors and expose federation, moderation, deletion, export, and operator-retention gaps. |
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
+| Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
 
 ## Integrated provider families
 
@@ -75,7 +76,7 @@ separate provider family.
 | Mastodon | **Live/Partial** | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** follows and followed tags | **Live/Partial** lists; **No** nested membership | #29221 implements exact-origin identity-bound reads with opaque `Link` cursors and explicit federation/operator-retention gaps. |
 | Bluesky / AT Protocol | **Live** records | **Live** likes and reposts | **Live/Gate** notifications; **No/Gate** chat | **Live** follows | **Live** lists and feeds | DID-bound repository/AppView reads with separate chat authorization. |
 | Lemmy | **API/Gate** versioned authored content | **API/Gate** saved and liked state | **API/Gate** unified v4 or split v3 inbox | **API/Gate** communities; **No** person follows | **API/Gate** v4 multicommunities | Rank 7, #29227. Implement only behind exact v4/v3 discovery; namespace local IDs and preserve opaque version-sensitive cursors. |
-| Stack Exchange | **API** authored content | **API** favourites; **No** complete vote history | **API/Gate** inbox and notifications | **API** associated site accounts; **No** follows | **No** | Rank 3, #29223. Bind network plus per-site identity, obey `backoff`, and keep archive/completeness gaps explicit. |
+| Stack Exchange | **Live/Partial** authored content | **Live/Partial** favourites; **No** complete vote history | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | #29223 implements network plus per-site identity, mandatory `backoff` and quota stops, bounded paging, and explicit archive/completeness gaps. |
 | GitHub | **Live/Partial** contributions | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications; **No** discussions | **Live/Gate/Partial** follows, organizations, and repositories | **Live/Gate/Partial** user lists and Projects v2 | #29222 implements numeric/node identity, token-family gates, opaque mixed-API cursors, and no complete reaction or social export claim. |
 | Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
 | Miniflux | **API/Export** feed items | **API** read, removed, starred, and tagged state | **No** | **API/Export** subscriptions | **API/Export** categories/tags | Rank 4, #29224. Strong self-hosted identity and replay; locally enforce GET-only use of mutation-capable API keys. |
@@ -173,6 +174,14 @@ separate provider family.
   persistence. `.agents/content/social-github.md` records official identity,
   stream, pagination, rate-limit, migration, and completeness evidence checked on
   2026-08-02.
+- **Live Stack Exchange:** `.agents/scripts/knowledge_social_stack_exchange.py`,
+  `.agents/scripts/_knowledge_social_stack_exchange*.py`, and
+  `.agents/tests/test-knowledge-social-stack-exchange.sh` prove network-plus-site
+  identity, eight independent streams, bounded page resume, mandatory `backoff`
+  and quota stops, read-scope and GET-only enforcement, credential rejection,
+  terminal coverage, and atomic persistence. `.agents/content/social-stack-exchange.md`
+  records official v2.3 identity, route, OAuth, paging, filter, quota, throttle,
+  duplicate-request, and completeness evidence checked on 2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,

@@ -54,6 +54,12 @@ PROVIDER_SPECS = (
     ProviderSpec("github", (), "knowledge_social_github.py", (("live", ()),)),
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec(
+        "stack-exchange",
+        ("stackexchange",),
+        "knowledge_social_stack_exchange.py",
+        (("live", ()),),
+    ),
+    ProviderSpec(
         "nextcloud-talk",
         (),
         "knowledge_social_nextcloud_talk.py",

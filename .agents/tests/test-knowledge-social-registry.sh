@@ -50,6 +50,7 @@ expected = {
     "nextcloud-talk": ("live",),
     "signal": ("inspect", "manual-import", "status"),
     "slack": ("archive", "live"),
+    "stack-exchange": ("live",),
     "telegram": ("archive", "event", "status"),
     "whatsapp": ("archive", "event"),
 }
@@ -70,6 +71,7 @@ for alias, provider in {
     "dev-community": "forem",
     "dev.to": "forem",
     "gbp": "google-business-profile",
+    "stackexchange": "stack-exchange",
     "whats-app": "whatsapp",
 }.items():
     if module.resolve_provider(alias).provider != provider:
@@ -92,14 +94,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("13:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("14:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "13:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "14:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "13"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "14"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
