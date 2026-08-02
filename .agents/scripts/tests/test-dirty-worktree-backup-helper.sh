@@ -106,6 +106,8 @@ test_clean_refuses_changed_state() {
 	local output=""
 	local backup_id=""
 	local backup_dir=""
+	local verification_output=""
+	local limit_output=""
 	local rc=0
 
 	setup_repo "$repo_dir" || return 1
@@ -122,6 +124,81 @@ test_clean_refuses_changed_state() {
 	grep -q '^second$' "$repo_dir/README.md" || rc=1
 	[[ -d "$backup_dir" ]] || rc=1
 	print_result "clean refuses state changed after preservation" "$rc"
+	return 0
+}
+
+test_ignored_descendants_and_clean_rollback() {
+	local repo_dir="${TEST_ROOT}/ignored-repo"
+	local backup_root="${TEST_ROOT}/ignored-backups"
+	local failure_hook="${TEST_ROOT}/fail-clean.sh"
+	local output=""
+	local backup_id=""
+	local backup_dir=""
+	local rc=0
+
+	setup_repo "$repo_dir" || return 1
+	mkdir -p "$repo_dir/local-state/runtime/nested"
+	printf 'runtime/\n' >"$repo_dir/local-state/.gitignore"
+	printf 'metadata\n' >"$repo_dir/local-state/metadata.txt"
+	printf '\001ignored\000payload\377' >"$repo_dir/local-state/runtime/nested/payload.bin"
+	chmod 640 "$repo_dir/local-state/runtime/nested/payload.bin"
+	ln -s payload.bin "$repo_dir/local-state/runtime/nested/payload-link"
+	printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$failure_hook"
+	chmod +x "$failure_hook"
+
+	output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" backup --repo "$repo_dir" --operation-id ignored --machine 2>/dev/null) || return 1
+	IFS='|' read -r backup_id backup_dir <<<"$output"
+	[[ -f "$backup_dir/untracked/local-state/runtime/nested/payload.bin" ]] || rc=1
+	[[ -L "$backup_dir/untracked/local-state/runtime/nested/payload-link" ]] || rc=1
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" verify --repo "$repo_dir" --backup "$backup_id" >/dev/null || rc=1
+	chmod 600 "$backup_dir/untracked/local-state/runtime/nested/payload.bin"
+	if verification_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" verify --repo "$repo_dir" --backup "$backup_id" 2>&1); then
+		rc=1
+	fi
+	[[ "$verification_output" != *"payload.bin"* ]] || rc=1
+	chmod 640 "$backup_dir/untracked/local-state/runtime/nested/payload.bin"
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" verify --repo "$repo_dir" --backup "$backup_id" >/dev/null || rc=1
+	if limit_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES=2 \
+		bash "$HELPER" backup --repo "$repo_dir" --operation-id bounded --machine 2>&1); then
+		rc=1
+	fi
+	[[ "$limit_output" != *"payload.bin"* ]] || rc=1
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" matches --repo "$repo_dir" --backup "$backup_id" >/dev/null || rc=1
+
+	if AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		AIDEVOPS_DIRTY_BACKUP_AFTER_REMOVE_HOOK="$failure_hook" \
+		bash "$HELPER" clean --repo "$repo_dir" --backup "$backup_id" \
+		--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP >/dev/null 2>&1; then
+		rc=1
+	fi
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" matches --repo "$repo_dir" --backup "$backup_id" >/dev/null || rc=1
+	[[ "$(awk -F '\t' '$1 == "clean_state" { print $2 }' "$backup_dir/manifest.tsv")" == "rolled_back" ]] || rc=1
+	[[ "$(stat -f '%Lp' "$repo_dir/local-state/runtime/nested/payload.bin" 2>/dev/null ||
+		stat -c '%a' "$repo_dir/local-state/runtime/nested/payload.bin")" == "640" ]] || rc=1
+
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" clean --repo "$repo_dir" --backup "$backup_id" \
+		--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP >/dev/null || rc=1
+	[[ -z "$(/usr/bin/git -C "$repo_dir" status --porcelain=v1)" ]] || rc=1
+	[[ ! -e "$repo_dir/local-state/.gitignore" ]] || rc=1
+	[[ ! -e "$repo_dir/local-state/runtime/nested/payload.bin" ]] || rc=1
+
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" restore --repo "$repo_dir" --backup "$backup_id" \
+		--confirm RESTORE_DIRTY_WORKTREE_BACKUP >/dev/null || rc=1
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$backup_root" \
+		bash "$HELPER" matches --repo "$repo_dir" --backup "$backup_id" >/dev/null || rc=1
+	[[ "$(/usr/bin/git -C "$repo_dir" check-ignore local-state/runtime/nested/payload.bin)" == "local-state/runtime/nested/payload.bin" ]] || rc=1
+	[[ "$(readlink "$repo_dir/local-state/runtime/nested/payload-link")" == "payload.bin" ]] || rc=1
+
+	print_result "ignored descendants are integrity-protected and failed clean rolls back before safe retry" "$rc" "backup_id=$backup_id"
 	return 0
 }
 
@@ -156,6 +233,7 @@ main() {
 
 	test_round_trip_preserves_exact_state
 	test_clean_refuses_changed_state
+	test_ignored_descendants_and_clean_rollback
 	test_prune_requires_terminal_state
 
 	printf '\nTests run: %s, failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

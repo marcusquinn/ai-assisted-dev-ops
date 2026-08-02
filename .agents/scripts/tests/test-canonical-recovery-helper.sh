@@ -901,6 +901,12 @@ printf 'staged state\n' >"${SYNC_REPO}/staged.txt"
 printf 'unstaged state\n' >>"${SYNC_REPO}/README.md"
 mkdir -p "${SYNC_REPO}/todo/tasks"
 printf 'untracked state\n' >"${SYNC_REPO}/todo/tasks/recovery.md"
+mkdir -p "${SYNC_REPO}/local-state/runtime/nested"
+printf 'runtime/\n' >"${SYNC_REPO}/local-state/.gitignore"
+printf 'runtime metadata\n' >"${SYNC_REPO}/local-state/metadata.txt"
+printf '\001runtime\000payload\377' >"${SYNC_REPO}/local-state/runtime/nested/payload.bin"
+chmod 640 "${SYNC_REPO}/local-state/runtime/nested/payload.bin"
+ln -s payload.bin "${SYNC_REPO}/local-state/runtime/nested/payload-link"
 
 printf 'remote divergence\n' >"${SYNC_UPDATER}/remote-only.txt"
 /usr/bin/git -C "$SYNC_UPDATER" add remote-only.txt
@@ -927,6 +933,34 @@ VALUES ('${SYNC_REPO}', 'develop', $$, 'invalid-canonical-owner');
 sync_failure_hook="${ROOT}/fail-before-sync-ref-update.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$sync_failure_hook"
 chmod +x "$sync_failure_hook"
+clean_failure_output=""
+clean_failure_rc=0
+clean_failure_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	AIDEVOPS_DIRTY_BACKUP_ROOT="$SYNC_BACKUPS" \
+	WORKTREE_REGISTRY_DIR="$SYNC_REGISTRY_DIR" \
+	WORKTREE_REGISTRY_DB="$SYNC_REGISTRY_DB" \
+	AIDEVOPS_DIRTY_BACKUP_AFTER_REMOVE_HOOK="$sync_failure_hook" \
+	bash "$HELPER" sync-mirror --repo "$SYNC_REPO" --issue 28065 \
+	--confirm SYNCHRONIZE_CANONICAL_MIRROR 2>&1) || clean_failure_rc=$?
+clean_failure_backup_id=""
+while IFS= read -r clean_failure_line; do
+	case "$clean_failure_line" in
+	PRESERVED_BACKUP_ID=*) clean_failure_backup_id="${clean_failure_line#PRESERVED_BACKUP_ID=}" ;;
+	esac
+done <<<"$clean_failure_output"
+if [[ "$clean_failure_rc" -ne 0 ]] && [[ -n "$clean_failure_backup_id" ]] &&
+	[[ "$clean_failure_output" == *"RECOVER_CLEAN_COMMAND="* ]] &&
+	[[ "$clean_failure_output" == *"pre-clean state was restored"* ]] &&
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$SYNC_BACKUPS" \
+		bash "$DIRTY_HELPER" matches --repo "$SYNC_REPO" --backup "$clean_failure_backup_id" >/dev/null &&
+	[[ -f "${SYNC_REPO}/local-state/runtime/nested/payload.bin" ]] &&
+	[[ "$(readlink "${SYNC_REPO}/local-state/runtime/nested/payload-link")" == "payload.bin" ]]; then
+	printf 'PASS failed canonical clean restores ignored descendants and emits resumable recovery evidence\n'
+else
+	printf 'FAIL failed canonical clean did not restore the preserved pre-clean state\n'
+	exit 1
+fi
+
 sync_output=""
 sync_rc=0
 sync_output=$(AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
@@ -982,7 +1016,10 @@ AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$SYNC_BACKUPS" \
 	--confirm RESTORE_DIRTY_WORKTREE_BACKUP >/dev/null
 if AIDEVOPS_REAL_GIT_BIN=/usr/bin/git AIDEVOPS_DIRTY_BACKUP_ROOT="$SYNC_BACKUPS" \
 	bash "$DIRTY_HELPER" matches --repo "$SYNC_REPO" --backup "$sync_backup_id" >/dev/null &&
-	[[ "$(/usr/bin/git -C "$SYNC_REPO" rev-parse HEAD)" == "$sync_local_tip" ]]; then
+	[[ "$(/usr/bin/git -C "$SYNC_REPO" rev-parse HEAD)" == "$sync_local_tip" ]] &&
+	[[ "$(/usr/bin/git -C "$SYNC_REPO" check-ignore local-state/runtime/nested/payload.bin)" == "local-state/runtime/nested/payload.bin" ]] &&
+	[[ "$(stat -f '%Lp' "${SYNC_REPO}/local-state/runtime/nested/payload.bin" 2>/dev/null ||
+		stat -c '%a' "${SYNC_REPO}/local-state/runtime/nested/payload.bin")" == "640" ]]; then
 	printf 'PASS emitted backup ID restores byte-identical content and index state\n'
 else
 	printf 'FAIL backup restore did not reconstruct the original canonical state\n'

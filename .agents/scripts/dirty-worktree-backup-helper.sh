@@ -15,14 +15,18 @@ fi
 BACKUP_ROOT="${AIDEVOPS_DIRTY_BACKUP_ROOT:-${HOME}/.aidevops/.agent-workspace/tmp/dirty-main-backups}"
 DEFAULT_RETENTION_DAYS="${AIDEVOPS_DIRTY_BACKUP_RETENTION_DAYS:-30}"
 REAL_GIT="${AIDEVOPS_REAL_GIT_BIN:-/usr/bin/git}"
-BACKUP_SCHEMA="dirty-worktree-backup-v2"
+BACKUP_SCHEMA="dirty-worktree-backup-v3"
+LEGACY_BACKUP_SCHEMA="dirty-worktree-backup-v2"
 UNTRACKED_LIST_NAME="untracked-files.nul"
+MAX_UNTRACKED_FILES="${AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES:-10000}"
+MAX_UNTRACKED_BYTES="${AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_BYTES:-1073741824}"
 
 CAPTURE_HEAD=""
 CAPTURE_BRANCH=""
 CAPTURE_INDEX_TREE=""
 CAPTURE_WORKTREE_TREE=""
 CAPTURE_STATUS_HASH=""
+CAPTURE_UNTRACKED_HASH=""
 CAPTURE_FINGERPRINT=""
 
 usage() {
@@ -38,7 +42,9 @@ Commands:
   matches --repo PATH --backup ID
       Verify that the current worktree still byte-matches a backup.
   clean --repo PATH --backup ID --confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP
-      Remove only state that still exactly matches the verified backup.
+      Transactionally remove only state that exactly matches the verified backup.
+  recover-clean --repo PATH --backup ID --confirm RECOVER_DIRTY_WORKTREE_CLEAN
+      Resume rollback after an interrupted clean, restoring the pre-clean state.
   restore --repo PATH --backup ID --confirm RESTORE_DIRTY_WORKTREE_BACKUP
       Restore the original HEAD, index, worktree, and untracked state.
   acknowledge --backup ID --confirm ACKNOWLEDGE_DIRTY_WORKTREE_BACKUP
@@ -51,6 +57,8 @@ Commands:
 Environment:
   AIDEVOPS_DIRTY_BACKUP_ROOT            Override backup directory.
   AIDEVOPS_DIRTY_BACKUP_RETENTION_DAYS Override stale-backup retention (default: 30).
+  AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES Maximum captured paths (default: 10000).
+  AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_BYTES Maximum captured payload bytes (default: 1 GiB).
 USAGE
 	return 0
 }
@@ -92,12 +100,129 @@ fingerprint_values() {
 	local index_tree="$2"
 	local worktree_tree="$3"
 	local status_hash="$4"
+	local untracked_hash="$5"
+	python3 - "$head_sha" "$index_tree" "$worktree_tree" "$status_hash" "$untracked_hash" <<'PY'
+import hashlib
+import sys
+
+payload = "".join(f"{value}\n" for value in sys.argv[1:]).encode()
+print(hashlib.sha256(payload).hexdigest())
+PY
+	return $?
+}
+
+legacy_fingerprint_values() {
+	local head_sha="$1"
+	local index_tree="$2"
+	local worktree_tree="$3"
+	local status_hash="$4"
 	python3 - "$head_sha" "$index_tree" "$worktree_tree" "$status_hash" <<'PY'
 import hashlib
 import sys
 
 payload = "".join(f"{value}\n" for value in sys.argv[1:]).encode()
 print(hashlib.sha256(payload).hexdigest())
+PY
+	return $?
+}
+
+inventory_untracked_files() {
+	local repo_path="$1"
+	local capture_dir="$2"
+	local visible_path="$capture_dir/untracked-visible.nul"
+	local ignore_dirs_path="$capture_dir/untracked-ignore-dirs.nul"
+	local combined_path="$capture_dir/untracked-combined.nul"
+	local ignore_dir=""
+
+	"$REAL_GIT" -C "$repo_path" ls-files --others --exclude-standard -z >"$visible_path" || return 1
+	python3 - "$visible_path" "$ignore_dirs_path" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+paths = pathlib.Path(sys.argv[1]).read_bytes().split(b"\0")
+directories = {
+    raw.rpartition(b"/")[0] or b"."
+    for raw in paths
+    if raw and raw.rpartition(b"/")[2] == b".gitignore"
+}
+pathlib.Path(sys.argv[2]).write_bytes(b"".join(path + b"\0" for path in sorted(directories)))
+PY
+	cp "$visible_path" "$combined_path" || return 1
+	while IFS= read -r -d '' ignore_dir; do
+		"$REAL_GIT" -C "$repo_path" ls-files --others --ignored --exclude-standard -z -- "$ignore_dir" \
+			>>"$combined_path" || return 1
+	done <"$ignore_dirs_path"
+	python3 - "$combined_path" "$capture_dir/$UNTRACKED_LIST_NAME" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_bytes().split(b"\0")
+paths = set()
+for raw in source:
+    if not raw:
+        continue
+    path = pathlib.PurePosixPath(raw.decode("utf-8", "surrogateescape"))
+    if path.is_absolute() or ".." in path.parts:
+        raise SystemExit("invalid combined inventory")
+    paths.add(raw)
+pathlib.Path(sys.argv[2]).write_bytes(b"".join(path + b"\0" for path in sorted(paths)))
+PY
+	return $?
+}
+
+hash_untracked_payload() {
+	local payload_root="$1"
+	local nul_path="$2"
+	python3 - "$payload_root" "$nul_path" "$MAX_UNTRACKED_FILES" "$MAX_UNTRACKED_BYTES" 2>/dev/null <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+paths = pathlib.Path(sys.argv[2]).read_bytes().split(b"\0")
+max_files = int(sys.argv[3])
+max_bytes = int(sys.argv[4])
+digest = hashlib.sha256()
+count = 0
+total = 0
+for raw in paths:
+    if not raw:
+        continue
+    relative = pathlib.Path(os.fsdecode(raw))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit("invalid payload inventory")
+    parent = (root / relative.parent).resolve(strict=False)
+    if os.path.commonpath((str(root), str(parent))) != str(root):
+        raise SystemExit("untracked inventory escaped repository")
+    target = parent / relative.name
+    metadata = target.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        kind = b"l"
+        payload = os.fsencode(os.readlink(target))
+    elif stat.S_ISREG(metadata.st_mode):
+        kind = b"f"
+        payload = None
+    else:
+        raise SystemExit("unsupported untracked file type")
+    count += 1
+    size = len(payload) if payload is not None else metadata.st_size
+    total += size
+    if count > max_files or total > max_bytes:
+        raise SystemExit("untracked backup inventory exceeds configured limit")
+    digest.update(len(raw).to_bytes(8, "big"))
+    digest.update(raw)
+    digest.update(kind)
+    digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(4, "big"))
+    digest.update(size.to_bytes(8, "big"))
+    if payload is not None:
+        digest.update(payload)
+    else:
+        with target.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+print(digest.hexdigest())
 PY
 	return $?
 }
@@ -180,18 +305,45 @@ copy_untracked_files() {
 	local repo_path="$1"
 	local backup_dir="$2"
 	local nul_path="$backup_dir"/"$UNTRACKED_LIST_NAME"
-	local rel_path=""
-	local target_path=""
+	python3 - "$repo_path" "$backup_dir/untracked" "$nul_path" "$MAX_UNTRACKED_FILES" "$MAX_UNTRACKED_BYTES" 2>/dev/null <<'PY'
+import os
+import pathlib
+import shutil
+import stat
+import sys
 
-	: >"$backup_dir/untracked-files.txt"
-	while IFS= read -r -d '' rel_path; do
-		[[ -n "$rel_path" ]] || continue
-		printf '%s\n' "$rel_path" >>"$backup_dir/untracked-files.txt"
-		target_path="$backup_dir/untracked/$rel_path"
-		mkdir -p "$(dirname "$target_path")"
-		cp -Pp "$repo_path/$rel_path" "$target_path"
-	done <"$nul_path"
-	return 0
+root = pathlib.Path(sys.argv[1]).resolve()
+destination = pathlib.Path(sys.argv[2]).resolve()
+paths = pathlib.Path(sys.argv[3]).read_bytes().split(b"\0")
+max_files = int(sys.argv[4])
+max_bytes = int(sys.argv[5])
+count = 0
+total = 0
+for raw in paths:
+    if not raw:
+        continue
+    relative = pathlib.Path(os.fsdecode(raw))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit("invalid copy inventory")
+    source_parent = (root / relative.parent).resolve(strict=False)
+    if os.path.commonpath((str(root), str(source_parent))) != str(root):
+        raise SystemExit("untracked source escaped repository")
+    source = source_parent / relative.name
+    metadata = source.lstat()
+    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+        raise SystemExit("unsupported untracked file type")
+    count += 1
+    total += len(os.fsencode(os.readlink(source))) if source.is_symlink() else metadata.st_size
+    if count > max_files or total > max_bytes:
+        raise SystemExit("untracked backup inventory exceeds configured limit")
+    target = destination / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        target.symlink_to(os.readlink(source))
+    else:
+        shutil.copy2(source, target, follow_symlinks=False)
+PY
+	return $?
 }
 
 capture_state() {
@@ -216,11 +368,13 @@ capture_state() {
 	"$REAL_GIT" -C "$repo_path" status --porcelain=v1 -z >"$capture_dir/git-status.nul"
 	"$REAL_GIT" -C "$repo_path" diff --binary >"$capture_dir/tracked.patch"
 	"$REAL_GIT" -C "$repo_path" diff --cached --binary >"$capture_dir/staged.patch"
-	"$REAL_GIT" -C "$repo_path" ls-files --others --exclude-standard -z >"$capture_dir"/"$UNTRACKED_LIST_NAME"
+	inventory_untracked_files "$repo_path" "$capture_dir" || return 1
 	copy_untracked_files "$repo_path" "$capture_dir" || return 1
+	CAPTURE_UNTRACKED_HASH=$(hash_untracked_payload "$capture_dir/untracked" \
+		"$capture_dir/$UNTRACKED_LIST_NAME") || return 1
 	CAPTURE_STATUS_HASH=$(hash_file "$capture_dir/git-status.nul") || return 1
 	CAPTURE_FINGERPRINT=$(fingerprint_values "$CAPTURE_HEAD" "$CAPTURE_INDEX_TREE" \
-		"$CAPTURE_WORKTREE_TREE" "$CAPTURE_STATUS_HASH") || return 1
+		"$CAPTURE_WORKTREE_TREE" "$CAPTURE_STATUS_HASH" "$CAPTURE_UNTRACKED_HASH") || return 1
 	return 0
 }
 
@@ -298,6 +452,7 @@ write_backup_manifest() {
 	manifest_write "$manifest_path" tracked_patch_sha256 "$tracked_patch_hash"
 	manifest_write "$manifest_path" staged_patch_sha256 "$staged_patch_hash"
 	manifest_write "$manifest_path" untracked_list_sha256 "$untracked_list_hash"
+	manifest_write "$manifest_path" untracked_payload_sha256 "$CAPTURE_UNTRACKED_HASH"
 	manifest_write "$manifest_path" session "$session_key"
 	manifest_write "$manifest_path" task "$task_id"
 	manifest_write "$manifest_path" pr "$pr_number"
@@ -322,8 +477,10 @@ verify_backup_dir() {
 	local expected_fingerprint=""
 	local actual=""
 	local expected_hash=""
+	local schema=""
 
-	[[ "$(manifest_value "$manifest_path" schema)" == "$BACKUP_SCHEMA" ]] || return 1
+	schema=$(manifest_value "$manifest_path" schema)
+	[[ "$schema" == "$BACKUP_SCHEMA" || "$schema" == "$LEGACY_BACKUP_SCHEMA" ]] || return 1
 	[[ "$(manifest_value "$manifest_path" repo_path)" == "$repo_path" ]] || return 1
 	backup_id=$(manifest_value "$manifest_path" backup_id)
 	backup_ref=$(manifest_value "$manifest_path" backup_ref)
@@ -360,7 +517,14 @@ verify_backup_dir() {
 	actual=$(hash_file "$backup_dir"/"$UNTRACKED_LIST_NAME") || return 1
 	expected_hash=$(manifest_value "$manifest_path" untracked_list_sha256)
 	[[ "$actual" == "$expected_hash" ]] || return 1
-	expected_fingerprint=$(fingerprint_values "$head_sha" "$index_tree" "$worktree_tree" "$status_hash") || return 1
+	if [[ "$schema" == "$BACKUP_SCHEMA" ]]; then
+		actual=$(hash_untracked_payload "$backup_dir/untracked" "$backup_dir/$UNTRACKED_LIST_NAME") || return 1
+		expected_hash=$(manifest_value "$manifest_path" untracked_payload_sha256)
+		[[ "$actual" == "$expected_hash" ]] || return 1
+		expected_fingerprint=$(fingerprint_values "$head_sha" "$index_tree" "$worktree_tree" "$status_hash" "$expected_hash") || return 1
+	else
+		expected_fingerprint=$(legacy_fingerprint_values "$head_sha" "$index_tree" "$worktree_tree" "$status_hash") || return 1
+	fi
 	[[ "$expected_fingerprint" == "$(manifest_value "$manifest_path" fingerprint)" ]] || return 1
 	return 0
 }
@@ -371,14 +535,23 @@ current_state_matches_backup() {
 	local manifest_path="$backup_dir/manifest.tsv"
 	local capture_dir=""
 	local expected_fingerprint=""
+	local actual_fingerprint=""
+	local schema=""
 	expected_fingerprint=$(manifest_value "$manifest_path" fingerprint)
+	schema=$(manifest_value "$manifest_path" schema)
 	capture_dir=$(mktemp -d "${BACKUP_ROOT}/.verify.XXXXXXXX") || return 1
 	if ! capture_state "$repo_path" "$capture_dir"; then
 		rm -rf "$capture_dir"
 		return 1
 	fi
 	rm -rf "$capture_dir"
-	[[ "$CAPTURE_FINGERPRINT" == "$expected_fingerprint" ]]
+	if [[ "$schema" == "$LEGACY_BACKUP_SCHEMA" ]]; then
+		actual_fingerprint=$(legacy_fingerprint_values "$CAPTURE_HEAD" "$CAPTURE_INDEX_TREE" \
+			"$CAPTURE_WORKTREE_TREE" "$CAPTURE_STATUS_HASH") || return 1
+	else
+		actual_fingerprint="$CAPTURE_FINGERPRINT"
+	fi
+	[[ "$actual_fingerprint" == "$expected_fingerprint" ]]
 	return $?
 }
 
@@ -562,7 +735,7 @@ cmd_matches() {
 remove_preserved_untracked() {
 	local repo_path="$1"
 	local nul_path="$2"
-	python3 - "$repo_path" "$nul_path" <<'PY'
+	python3 - "$repo_path" "$nul_path" 2>/dev/null <<'PY'
 import os
 import pathlib
 import sys
@@ -582,7 +755,7 @@ for raw in paths:
     if target.is_symlink() or target.is_file():
         target.unlink()
     elif target.exists():
-        raise SystemExit(f"refusing unexpected untracked directory: {relative}")
+        raise SystemExit("refusing unexpected untracked directory")
     parent = target.parent
     while parent != root:
         try:
@@ -594,6 +767,92 @@ PY
 	return $?
 }
 
+restore_preserved_untracked() {
+	local repo_path="$1"
+	local backup_dir="$2"
+	python3 - "$repo_path" "$backup_dir/untracked" "$backup_dir/$UNTRACKED_LIST_NAME" 2>/dev/null <<'PY'
+import os
+import pathlib
+import shutil
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+source_root = pathlib.Path(sys.argv[2]).resolve()
+paths = pathlib.Path(sys.argv[3]).read_bytes().split(b"\0")
+for raw in paths:
+    if not raw:
+        continue
+    relative = pathlib.Path(os.fsdecode(raw))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit("invalid restore inventory")
+    source_parent = (source_root / relative.parent).resolve(strict=False)
+    target_parent = (root / relative.parent).resolve(strict=False)
+    if os.path.commonpath((str(source_root), str(source_parent))) != str(source_root):
+        raise SystemExit("untracked backup escaped payload root")
+    if os.path.commonpath((str(root), str(target_parent))) != str(root):
+        raise SystemExit("untracked restore escaped repository")
+    source = source_parent / relative.name
+    metadata = source.lstat()
+    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+        raise SystemExit("unsupported untracked backup file type")
+    target_parent.mkdir(parents=True, exist_ok=True)
+    target = target_parent / relative.name
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.exists():
+        raise SystemExit("refusing unexpected untracked restore directory")
+    if stat.S_ISLNK(metadata.st_mode):
+        target.symlink_to(os.readlink(source))
+    else:
+        shutil.copy2(source, target, follow_symlinks=False)
+PY
+	return $?
+}
+
+restore_backup_state() {
+	local repo_path="$1"
+	local backup_dir="$2"
+	local index_tree=""
+	local worktree_tree=""
+	index_tree=$(manifest_value "$backup_dir/manifest.tsv" index_tree)
+	worktree_tree=$(manifest_value "$backup_dir/manifest.tsv" worktree_tree)
+	"$REAL_GIT" -C "$repo_path" read-tree --reset -u "$worktree_tree" || return 1
+	restore_preserved_untracked "$repo_path" "$backup_dir" || return 1
+	"$REAL_GIT" -C "$repo_path" read-tree "$index_tree" || return 1
+	current_state_matches_backup "$repo_path" "$backup_dir" || return 1
+	return 0
+}
+
+rollback_clean() {
+	local repo_path="$1"
+	local backup_dir="$2"
+	local rolled_back_at=""
+	if ! restore_backup_state "$repo_path" "$backup_dir"; then
+		manifest_set "$backup_dir/manifest.tsv" clean_state rollback_failed || true
+		printf 'CLEAN_ROLLBACK_REQUIRED_BACKUP_ID=%s\n' "$PARSED_BACKUP_ID" >&2
+		return 1
+	fi
+	rolled_back_at=$(iso_utc) || return 1
+	manifest_set "$backup_dir/manifest.tsv" clean_rolled_back_at "$rolled_back_at" || return 1
+	manifest_set "$backup_dir/manifest.tsv" clean_state rolled_back || return 1
+	printf 'CLEAN_ROLLED_BACK_BACKUP_ID=%s\n' "$PARSED_BACKUP_ID" >&2
+	return 0
+}
+
+recover_interrupted_clean() {
+	local repo_path="$1"
+	local backup_dir="$2"
+	local clean_state=""
+	clean_state=$(manifest_value "$backup_dir/manifest.tsv" clean_state)
+	case "$clean_state" in
+	in_progress | rollback_failed)
+		rollback_clean "$repo_path" "$backup_dir" || return 1
+		;;
+	esac
+	return 0
+}
+
 cmd_clean() {
 	parse_repo_backup_args "$@" || return 1
 	[[ "$PARSED_CONFIRMATION" == "CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP" ]] || return 1
@@ -602,16 +861,49 @@ cmd_clean() {
 	local backup_dir=""
 	backup_dir=$(resolve_backup_dir "$PARSED_BACKUP_ID") || return 1
 	verify_backup_dir "$repo_path" "$backup_dir" || return 1
+	[[ "$(manifest_value "$backup_dir/manifest.tsv" schema)" == "$BACKUP_SCHEMA" ]] || return 1
+	recover_interrupted_clean "$repo_path" "$backup_dir" || return 1
 	current_state_matches_backup "$repo_path" "$backup_dir" || return 1
 	local original_head=""
 	local cleaned_at=""
 	original_head=$(manifest_value "$backup_dir/manifest.tsv" head)
-	"$REAL_GIT" -C "$repo_path" read-tree --reset -u "$original_head" || return 1
-	remove_preserved_untracked "$repo_path" "$backup_dir"/"$UNTRACKED_LIST_NAME" || return 1
-	[[ -z "$("$REAL_GIT" -C "$repo_path" status --porcelain=v1)" ]] || return 1
-	cleaned_at=$(iso_utc) || return 1
-	manifest_set "$backup_dir/manifest.tsv" cleaned_at "$cleaned_at" || return 1
+	manifest_set "$backup_dir/manifest.tsv" clean_started_at "$(iso_utc)" || return 1
+	manifest_set "$backup_dir/manifest.tsv" clean_state in_progress || return 1
+	if ! "$REAL_GIT" -C "$repo_path" read-tree --reset -u "$original_head" ||
+		! remove_preserved_untracked "$repo_path" "$backup_dir"/"$UNTRACKED_LIST_NAME" ||
+		{ [[ -n "${AIDEVOPS_DIRTY_BACKUP_AFTER_REMOVE_HOOK:-}" ]] &&
+			! bash "$AIDEVOPS_DIRTY_BACKUP_AFTER_REMOVE_HOOK"; } ||
+		[[ -n "$("$REAL_GIT" -C "$repo_path" status --porcelain=v1)" ]]; then
+		rollback_clean "$repo_path" "$backup_dir" || return 1
+		return 1
+	fi
+	cleaned_at=$(iso_utc) || {
+		rollback_clean "$repo_path" "$backup_dir" || return 1
+		return 1
+	}
+	if ! manifest_set "$backup_dir/manifest.tsv" cleaned_at "$cleaned_at" ||
+		! manifest_set "$backup_dir/manifest.tsv" clean_state cleaned; then
+		rollback_clean "$repo_path" "$backup_dir" || return 1
+		return 1
+	fi
 	printf 'CLEANED_BACKUP_ID=%s\n' "$PARSED_BACKUP_ID"
+	return 0
+}
+
+cmd_recover_clean() {
+	parse_repo_backup_args "$@" || return 1
+	[[ "$PARSED_CONFIRMATION" == "RECOVER_DIRTY_WORKTREE_CLEAN" ]] || return 1
+	local repo_path=""
+	repo_path=$(resolve_repo_path "$PARSED_REPO_PATH") || return 1
+	local backup_dir=""
+	backup_dir=$(resolve_backup_dir "$PARSED_BACKUP_ID") || return 1
+	verify_backup_dir "$repo_path" "$backup_dir" || return 1
+	case "$(manifest_value "$backup_dir/manifest.tsv" clean_state)" in
+	in_progress | rollback_failed) ;;
+	*) return 1 ;;
+	esac
+	rollback_clean "$repo_path" "$backup_dir" || return 1
+	printf 'RECOVERED_CLEAN_BACKUP_ID=%s\n' "$PARSED_BACKUP_ID"
 	return 0
 }
 
@@ -622,8 +914,8 @@ rollback_restore() {
 	local rollback_head="$4"
 	local untracked_nul="$5"
 	"$REAL_GIT" -C "$repo_path" update-ref "$branch_ref" "$rollback_head" "$original_head" || return 1
-	"$REAL_GIT" -C "$repo_path" read-tree --reset -u "$rollback_head" || return 1
 	remove_preserved_untracked "$repo_path" "$untracked_nul" || return 1
+	"$REAL_GIT" -C "$repo_path" read-tree --reset -u "$rollback_head" || return 1
 	return 0
 }
 
@@ -641,22 +933,12 @@ cmd_restore() {
 	[[ "$branch" == "$(manifest_value "$backup_dir/manifest.tsv" branch)" ]] || return 1
 	local rollback_head=""
 	local original_head=""
-	local index_tree=""
-	local worktree_tree=""
 	local restored_at=""
 	rollback_head=$("$REAL_GIT" -C "$repo_path" rev-parse --verify 'HEAD^{commit}') || return 1
 	original_head=$(manifest_value "$backup_dir/manifest.tsv" head)
-	index_tree=$(manifest_value "$backup_dir/manifest.tsv" index_tree)
-	worktree_tree=$(manifest_value "$backup_dir/manifest.tsv" worktree_tree)
 	local branch_ref="refs/heads/${branch}"
 	"$REAL_GIT" -C "$repo_path" update-ref "$branch_ref" "$original_head" "$rollback_head" || return 1
-	if ! "$REAL_GIT" -C "$repo_path" read-tree --reset -u "$worktree_tree" ||
-		! "$REAL_GIT" -C "$repo_path" read-tree "$index_tree"; then
-		rollback_restore "$repo_path" "$branch_ref" "$original_head" "$rollback_head" \
-			"$backup_dir"/"$UNTRACKED_LIST_NAME" || return 1
-		return 1
-	fi
-	if ! current_state_matches_backup "$repo_path" "$backup_dir"; then
+	if ! restore_backup_state "$repo_path" "$backup_dir"; then
 		rollback_restore "$repo_path" "$branch_ref" "$original_head" "$rollback_head" \
 			"$backup_dir"/"$UNTRACKED_LIST_NAME" || return 1
 		return 1
@@ -824,6 +1106,10 @@ main() {
 		;;
 	clean)
 		cmd_clean "$@"
+		return $?
+		;;
+	recover-clean)
+		cmd_recover_clean "$@"
 		return $?
 		;;
 	restore)
