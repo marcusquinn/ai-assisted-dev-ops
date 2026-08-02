@@ -376,7 +376,7 @@ test_count_and_byte_pressure_preserve_protected_bundles() {
 	[[ ! -d "$bundles_dir/pressure-bytes" ]] || fail "byte pressure did not prune the unprotected candidate"
 	after_checksum=$(cksum "$active_root/scripts/helper.sh" "$previous_root/scripts/helper.sh" "$live_bundle/agents/marker" "$pinned_bundle/agents/.bundle-manifest")
 	assert_eq "$before_checksum" "$after_checksum" "count and byte pressure preserve protected bundle byte identity"
-	pulse_runtime_pin_clear
+	pulse_runtime_pin_clear --force
 	return 0
 }
 
@@ -399,7 +399,7 @@ test_runtime_bundle_inventory_explains_protection() {
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .reclaimable_bytes > 0')" == "true" ]] || fail "runtime inventory omitted unreferenced reclaimable bytes"
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .unknown_bytes')" == "0" ]] || fail "runtime inventory left classified bundles unknown"
 	[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .protection_reasons[]' | grep -c 'active Pulse runtime pin')" -eq 1 ]] || fail "runtime inventory omitted the active Pulse pin reason"
-	pulse_runtime_pin_clear
+	pulse_runtime_pin_clear --force
 	pass "runtime inventory explains protected and reclaimable bundle bytes"
 	return 0
 }

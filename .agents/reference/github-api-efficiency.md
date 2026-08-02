@@ -120,12 +120,19 @@ AIDEVOPS_PULSE_RUNTIME_PIN_REFRESH_SCHEDULERS=1 \
   ./setup.sh --stage pulse --non-interactive
 ```
 
-Clear the pin and reconcile Pulse after capture or failure:
+Stop the observation's collector and fuse jobs before deliberately clearing an
+active pin, then reconcile Pulse after capture or failure:
 
 ```bash
-~/.aidevops/agents/scripts/pulse-runtime-pin.sh clear
+~/.aidevops/agents/scripts/pulse-runtime-pin.sh status
+~/.aidevops/agents/scripts/pulse-runtime-pin.sh clear --force
 ./setup.sh --stage pulse --non-interactive
 ```
+
+Plain `clear` remains idempotent for missing or expired pins, but refuses to
+remove an active or invalid pin. The explicit override prevents an independent
+session from silently invalidating an owned controlled window. Pin mutations
+are serialized so expired-pin cleanup cannot race a new active pin into removal.
 
 Collectors must still bind reports to fixed activation/cutoff timestamps and
 fail closed on incomplete evidence. A Pulse pin does not authorize a release,

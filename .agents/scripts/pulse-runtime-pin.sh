@@ -16,10 +16,78 @@ _PULSE_RUNTIME_PIN_ROOT=""
 _PULSE_RUNTIME_PIN_CREATED=""
 _PULSE_RUNTIME_PIN_EXPIRES=""
 _PULSE_RUNTIME_PIN_MAX_SECONDS=172800
+_PULSE_RUNTIME_PIN_LOCK_HELD=""
 
 pulse_runtime_pin_config_path() {
 	printf '%s\n' "${AIDEVOPS_PULSE_RUNTIME_PIN_FILE:-${HOME:?HOME must be set}/.config/aidevops/pulse-runtime-pin.conf}"
 	return 0
+}
+
+# Serialize pin writers and clearers so an expired-pin cleanup cannot remove a
+# new active pin between validation and unlink. mkdir keeps the lock portable to
+# Bash 3.2 hosts; dead or incomplete owners are reclaimed with bounded waits.
+_pulse_runtime_pin_lock_acquire() {
+	local config_path="$1"
+	local lock_dir="${config_path}.lock.d"
+	local wait_seconds="${AIDEVOPS_PULSE_RUNTIME_PIN_LOCK_WAIT_SECONDS:-5}"
+	local waited=0
+	local owner_pid=""
+	local owner_missing_observations=0
+	case "$wait_seconds" in
+	'' | *[!0-9]*) wait_seconds=5 ;;
+	esac
+	mkdir -p "${config_path%/*}" || return 1
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		owner_pid=""
+		if [[ -r "$lock_dir/pid" ]]; then
+			IFS= read -r owner_pid <"$lock_dir/pid" || owner_pid=""
+		fi
+		if [[ "$owner_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+			if rm -f "$lock_dir/pid" 2>/dev/null && rmdir "$lock_dir" 2>/dev/null; then
+				owner_missing_observations=0
+				continue
+			fi
+		fi
+		if [[ ! "$owner_pid" =~ ^[0-9]+$ ]]; then
+			owner_missing_observations=$((owner_missing_observations + 1))
+			if [[ "$owner_missing_observations" -ge 2 ]]; then
+				if rm -f "$lock_dir/pid" 2>/dev/null && rmdir "$lock_dir" 2>/dev/null; then
+					owner_missing_observations=0
+					continue
+				fi
+				owner_missing_observations=0
+			fi
+		else
+			owner_missing_observations=0
+		fi
+		[[ "$waited" -lt "$wait_seconds" ]] || return 1
+		sleep 1
+		waited=$((waited + 1))
+	done
+	printf '%s\n' "$$" >"$lock_dir/pid" || {
+		rmdir "$lock_dir" 2>/dev/null || true
+		return 1
+	}
+	_PULSE_RUNTIME_PIN_LOCK_HELD="$lock_dir"
+	return 0
+}
+
+_pulse_runtime_pin_lock_release() {
+	local lock_dir="${_PULSE_RUNTIME_PIN_LOCK_HELD:-}"
+	local owner_pid=""
+	local release_rc=0
+	[[ -n "$lock_dir" ]] || return 0
+	if [[ -r "$lock_dir/pid" ]]; then
+		IFS= read -r owner_pid <"$lock_dir/pid" || owner_pid=""
+	fi
+	if [[ "$owner_pid" != "$$" ]]; then
+		_PULSE_RUNTIME_PIN_LOCK_HELD=""
+		return 1
+	fi
+	rm -f "$lock_dir/pid" || release_rc=1
+	rmdir "$lock_dir" 2>/dev/null || release_rc=1
+	_PULSE_RUNTIME_PIN_LOCK_HELD=""
+	return "$release_rc"
 }
 
 _pulse_runtime_pin_stat_value() {
@@ -213,26 +281,39 @@ pulse_runtime_pin_set() {
 	esac
 	[[ "${#expires_epoch}" -le 12 ]] || return 2
 	expires_epoch=$((10#$expires_epoch))
-	now=$(date +%s) || return 1
-	[[ "$expires_epoch" -gt "$now" && $((expires_epoch - now)) -le "$_PULSE_RUNTIME_PIN_MAX_SECONDS" ]] || return 2
 	agents_root=$(_pulse_runtime_pin_validate_root "$requested_root") || return $?
 	config_path=$(pulse_runtime_pin_config_path) || return 1
 	config_dir="${config_path%/*}"
-	mkdir -p "$config_dir" || return 1
-	temporary=$(mktemp "$config_dir/.pulse-runtime-pin.XXXXXX") || return 1
+	_pulse_runtime_pin_lock_acquire "$config_path" || return 1
+	now=$(date +%s) || {
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
+		return 1
+	}
+	if [[ "$expires_epoch" -le "$now" || $((expires_epoch - now)) -gt "$_PULSE_RUNTIME_PIN_MAX_SECONDS" ]]; then
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
+		return 2
+	fi
+	temporary=$(mktemp "$config_dir/.pulse-runtime-pin.XXXXXX") || {
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
+		return 1
+	}
 	chmod 600 "$temporary" || {
 		rm -f "$temporary"
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
 		return 1
 	}
 	if ! printf 'schema=1\nagents_root=%s\ncreated_epoch=%s\nexpires_epoch=%s\n' \
 		"$agents_root" "$now" "$expires_epoch" >"$temporary"; then
 		rm -f "$temporary"
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
 		return 1
 	fi
 	mv "$temporary" "$config_path" || {
 		rm -f "$temporary"
+		_pulse_runtime_pin_lock_release >/dev/null 2>&1 || true
 		return 1
 	}
+	_pulse_runtime_pin_lock_release || return 1
 	return 0
 }
 
@@ -254,10 +335,39 @@ pulse_runtime_pin_set_current() {
 }
 
 pulse_runtime_pin_clear() {
+	local force_flag="${1:-}"
 	local config_path=""
+	local read_rc=0
+	local clear_rc=0
+	case "$force_flag" in
+	'' | --force) ;;
+	*) return 2 ;;
+	esac
 	config_path=$(pulse_runtime_pin_config_path) || return 1
-	rm -f "$config_path" || return 1
-	return 0
+	[[ -e "$config_path" || -L "$config_path" ]] || return 0
+	if ! _pulse_runtime_pin_lock_acquire "$config_path"; then
+		printf 'Pulse runtime pin mutation is busy; refusing to clear it\n' >&2
+		return 1
+	fi
+	if [[ "$force_flag" == "--force" ]]; then
+		rm -f "$config_path" || clear_rc=1
+	else
+		_pulse_runtime_pin_read_config || read_rc=$?
+		case "$read_rc" in
+		0)
+			printf 'Pulse runtime pin is active until epoch %s; refusing to clear without --force\n' "$_PULSE_RUNTIME_PIN_EXPIRES" >&2
+			clear_rc=4
+			;;
+		1) clear_rc=0 ;;
+		3) rm -f "$config_path" || clear_rc=1 ;;
+		*)
+			printf 'Pulse runtime pin is invalid; refusing to clear without --force\n' >&2
+			clear_rc=2
+			;;
+		esac
+	fi
+	_pulse_runtime_pin_lock_release || return 1
+	return "$clear_rc"
 }
 
 pulse_runtime_pin_status() {
@@ -284,27 +394,34 @@ pulse_runtime_pin_status() {
 
 pulse_runtime_pin_main() {
 	local command_name="${1:-status}"
+	local first_arg="${2:-}"
+	local second_arg="${3:-}"
+	local arg_count="$#"
 	case "$command_name" in
 	resolve)
 		pulse_runtime_pin_resolve
 		return $?
 		;;
 	set-current)
-		[[ "$#" -eq 2 ]] || return 2
-		pulse_runtime_pin_set_current "$2" || return $?
+		[[ "$arg_count" -eq 2 ]] || return 2
+		pulse_runtime_pin_set_current "$first_arg" || return $?
 		pulse_runtime_pin_status
 		return $?
 		;;
 	set)
-		[[ "$#" -eq 3 ]] || return 2
-		pulse_runtime_pin_set "$2" "$3" || return $?
+		[[ "$arg_count" -eq 3 ]] || return 2
+		pulse_runtime_pin_set "$first_arg" "$second_arg" || return $?
 		pulse_runtime_pin_status
 		return $?
 		;;
 	clear)
-		[[ "$#" -eq 1 ]] || return 2
-		pulse_runtime_pin_clear || return $?
-		printf 'Pulse runtime pin: cleared\n'
+		[[ "$arg_count" -le 2 ]] || return 2
+		pulse_runtime_pin_clear "$first_arg" || return $?
+		if [[ "$first_arg" == "--force" ]]; then
+			printf 'Pulse runtime pin: cleared (forced)\n'
+		else
+			printf 'Pulse runtime pin: cleared\n'
+		fi
 		return 0
 		;;
 	status)
@@ -312,7 +429,7 @@ pulse_runtime_pin_main() {
 		return $?
 		;;
 	*)
-		printf 'Usage: pulse-runtime-pin.sh [status|resolve|set-current <ttl-seconds>|set <agents-root> <expires-epoch>|clear]\n' >&2
+		printf 'Usage: pulse-runtime-pin.sh [status|resolve|set-current <ttl-seconds>|set <agents-root> <expires-epoch>|clear [--force]]\n' >&2
 		return 2
 		;;
 	esac
