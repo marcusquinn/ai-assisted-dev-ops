@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Callable
+from typing import Any
 
 from _knowledge_social_notion import Limits, PageRequest, Task, parse_page_request
 from _knowledge_social_notion_contract import (

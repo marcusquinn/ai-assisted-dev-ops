@@ -148,9 +148,21 @@ def task_value(value: Any, limits: Limits) -> Task:
     if (parent_kind is None) != (parent_id is None):
         raise NotionAdapterError("Notion traversal parent binding is incomplete")
     database_id = _optional_id(value.get("database_id"), "task database ID")
-    if kind == "data_source" and database_id is None:
-        raise NotionAdapterError("Notion data source task requires its database ID")
-    if kind != "data_source" and database_id is not None and parent_kind != "data_source_id":
+    if kind == "data_source" and (
+        database_id is None
+        or parent_kind != "database_id"
+        or parent_id != database_id
+    ):
+        raise NotionAdapterError("Notion data source task requires its database binding")
+    if kind == "database" and parent_kind not in {"page_id", "block_id"}:
+        raise NotionAdapterError("Notion database task requires its descendant parent")
+    if kind == "page" and parent_kind not in {None, "page_id", "block_id"}:
+        raise NotionAdapterError("Notion page task parent binding is invalid")
+    if parent_kind == "data_source_id" and (
+        kind not in {"blocks", "comments"} or database_id is None
+    ):
+        raise NotionAdapterError("Notion row task database binding is invalid")
+    if parent_kind != "data_source_id" and kind != "data_source" and database_id is not None:
         raise NotionAdapterError("Notion traversal database binding is unexpected")
     return Task(
         kind,
@@ -370,27 +382,43 @@ def _nonnegative(meta: dict[str, Any], key: str) -> int:
 
 
 def _validate_discovery(current: Task, candidate: Task) -> None:
-    direct = candidate.depth in {current.depth, current.depth + 1}
     same_resource = candidate.resource_id == current.resource_id
     valid = False
     if current.kind == "page":
-        valid = same_resource and candidate.kind in {"blocks", "comments"}
+        valid = (
+            candidate.depth == current.depth
+            and same_resource
+            and candidate.kind in {"blocks", "comments"}
+            and candidate.parent_kind is None
+        )
     elif current.kind == "blocks":
-        if candidate.kind in {"blocks", "comments", "page", "database"}:
-            valid = candidate.parent_id == current.resource_id
+        valid = (
+            candidate.depth == current.depth + 1
+            and candidate.kind in {"blocks", "comments", "page", "database"}
+            and candidate.parent_id == current.resource_id
+            and (
+                candidate.parent_kind == "block_id"
+                if candidate.kind == "comments"
+                else candidate.parent_kind in {"page_id", "block_id"}
+            )
+        )
     elif current.kind == "database":
         valid = (
-            candidate.kind == "data_source"
+            candidate.depth == current.depth
+            and candidate.kind == "data_source"
+            and candidate.parent_kind == "database_id"
             and candidate.database_id == current.resource_id
             and candidate.parent_id == current.resource_id
         )
     elif current.kind == "data_source":
         valid = (
-            candidate.kind in {"blocks", "comments"}
+            candidate.depth == current.depth + 1
+            and candidate.kind in {"blocks", "comments"}
             and candidate.parent_kind == "data_source_id"
+            and candidate.parent_id == current.resource_id
             and candidate.database_id == current.database_id
         )
-    if not direct or not valid:
+    if not valid:
         raise NotionAdapterError("Notion traversal attempted to escape its authorized descendants")
 
 
