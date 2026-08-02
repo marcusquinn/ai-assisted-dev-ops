@@ -44,6 +44,7 @@ PROVIDER_SPECS = (
         "knowledge_social_forem.py",
         (("live", ()),),
     ),
+    ProviderSpec("freshrss", (), "knowledge_social_freshrss.py", (("live", ()),)),
     ProviderSpec(
         "google-business-profile",
         ("gbp",),
