@@ -40,11 +40,11 @@ rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
-Readwise Reader #29225, Lemmy #29227, and public-only Hacker News #29228 are now
-live. FreshRSS #29226 is the remaining ranked child. Each route owns its identity
-contract, stream allowlist, checkpoint semantics, and negative write-reachability
-tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
-Pocket are deferred or rejected for the reasons in
+Readwise Reader #29225, Lemmy #29227, public-only Hacker News #29228, and
+Hashnode #29323 are now live. FreshRSS #29226 is the remaining ranked child. Each
+route owns its identity contract, stream allowlist, checkpoint semantics, and
+negative write-reachability tests. Raindrop.io remains optional; Inoreader,
+Wallabag, Feedly, Instapaper, and Pocket are deferred or rejected for the reasons in
 `.agents/content/social-provider-candidates.md`.
 
 The maintained planning and gap inventory is
@@ -115,6 +115,17 @@ Missing users/items and deleted/dead tombstones produce explicit unavailable
 coverage; votes, favourites, inbox, notifications, relationships, subscriptions,
 lists, removed content, and private state remain unavailable. Details:
 `.agents/content/social-hacker-news.md`.
+
+Hashnode collection binds the authenticated GraphQL viewer ID and username before
+every page, then revalidates publication and authored-content ownership. Profile,
+owned publications, authored posts, publication drafts, comments and likes
+received on authored posts, followers, and following have independent opaque
+checkpoints. Nine fixed query documents are reachable; arbitrary GraphQL,
+mutations, subscriptions, redirects, partial responses, and unowned resources are
+rejected. Publication and draft visibility remains Pro- and authority-gated;
+authored comments elsewhere, reaction history, messages, notifications, nested
+comment replies, and an unversioned historical export remain explicit gaps.
+Details: `.agents/content/social-hashnode.md`.
 
 Miniflux collection binds `/v1/me` user identity to a keyed exact HTTPS
 installation before every page. Entries, read, removed, starred, tags, feeds,

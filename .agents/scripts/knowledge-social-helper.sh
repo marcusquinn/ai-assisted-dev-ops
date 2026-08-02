@@ -20,6 +20,7 @@ LEMMY_HELPER="${SCRIPT_DIR}/knowledge_social_lemmy.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
 HACKER_NEWS_HELPER="${SCRIPT_DIR}/knowledge_social_hacker_news.py"
+HASHNODE_HELPER="${SCRIPT_DIR}/knowledge_social_hashnode.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
 READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
@@ -167,6 +168,18 @@ EOF
 	return 0
 }
 
+usage_sync_hashnode() {
+	cat <<'EOF'
+Hashnode synchronization:
+  sync-hashnode binds the authenticated viewer ID and username before every
+  fixed GraphQL read page. Eight independent streams reject arbitrary GraphQL,
+  mutations, partial errors, redirects, and unowned resources.
+  --budget is 3-1000 and --page-size is 1-50.
+
+EOF
+	return 0
+}
+
 usage_commands() {
 	cat <<'EOF'
 Usage:
@@ -229,6 +242,10 @@ Usage:
   knowledge-social-helper.sh sync-hacker-news [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id CASE_SENSITIVE_USERNAME --stream submitted \
     --profile public [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-hashnode [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id HASHNODE_ACCOUNT_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-50] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-miniflux [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
@@ -303,6 +320,7 @@ Medium account export:
 
 EOF
 	usage_sync
+	usage_sync_hashnode
 	cat <<'EOF'
 Deterministic routines:
   sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
@@ -427,6 +445,7 @@ run_named_provider_sync() {
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
 	sync-hacker-news) run_provider_sync "Hacker News" "$HACKER_NEWS_HELPER" "$@" || return 1 ;;
+	sync-hashnode) run_provider_sync Hashnode "$HASHNODE_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
 	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
@@ -508,7 +527,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

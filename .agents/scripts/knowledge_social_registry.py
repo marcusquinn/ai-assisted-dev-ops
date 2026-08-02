@@ -58,6 +58,7 @@ PROVIDER_SPECS = (
         "knowledge_social_hacker_news.py",
         (("live", ()),),
     ),
+    ProviderSpec("hashnode", (), "knowledge_social_hashnode.py", (("live", ()),)),
     ProviderSpec("lemmy", (), "knowledge_social_lemmy.py", (("live", ()),)),
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec("miniflux", (), "knowledge_social_miniflux.py", (("live", ()),)),
