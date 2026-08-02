@@ -170,6 +170,62 @@ test("blocks every canonical direct write and preserves linked-worktree writes",
   }
 });
 
+test("allows cross-repository linked writes only inside the trusted Git workspace", () => {
+  const { root, repo, linked } = setupRepo();
+  const outsideRoot = mkdtempSync(`${root}-sibling-`);
+  const previousWorkspace = process.env.AIDEVOPS_GIT_WORKSPACE_ROOT;
+  const foreignRepo = join(root, "foreign-repo");
+  const foreignLinked = join(root, "foreign-linked");
+  const outsideRepo = join(outsideRoot, "outside-repo");
+  const outsideLinked = join(outsideRoot, "outside-linked");
+
+  function createLinkedRepo(repoPath, linkedPath, branch) {
+    mkdirSync(repoPath);
+    execFileSync(realGit, ["init", "-q", "-b", "main"], { cwd: repoPath });
+    execFileSync(realGit, ["config", "user.name", "Test"], { cwd: repoPath });
+    execFileSync(realGit, ["config", "user.email", "test@example.invalid"], { cwd: repoPath });
+    execFileSync(realGit, ["config", "commit.gpgsign", "false"], { cwd: repoPath });
+    writeFileSync(join(repoPath, "README.md"), `${branch}\n`);
+    execFileSync(realGit, ["add", "README.md"], { cwd: repoPath });
+    execFileSync(realGit, ["commit", "-q", "-m", `${branch} seed`], { cwd: repoPath });
+    execFileSync(realGit, ["worktree", "add", "-q", "-b", `feature/${branch}`, linkedPath], { cwd: repoPath });
+  }
+
+  try {
+    createLinkedRepo(foreignRepo, foreignLinked, "foreign");
+    createLinkedRepo(outsideRepo, outsideLinked, "outside");
+    process.env.AIDEVOPS_GIT_WORKSPACE_ROOT = root;
+
+    assert.doesNotThrow(
+      () => checkCanonicalWriteSafetyGate(join(foreignLinked, "README.md"), scriptsDir, linked),
+      "linked worktrees from sibling repositories inside the trusted workspace should be writable",
+    );
+    assert.doesNotThrow(
+      () => checkCanonicalWriteSafetyGate(join(foreignLinked, "README.md"), scriptsDir, repo),
+      "canonical context must not block a structurally safe foreign linked-worktree target",
+    );
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate(join(outsideLinked, "README.md"), scriptsDir, linked),
+      /limited to the trusted Git workspace/,
+    );
+
+    const escapedAlias = join(root, "outside-alias");
+    symlinkSync(outsideLinked, escapedAlias, "dir");
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate(join(escapedAlias, "README.md"), scriptsDir, linked),
+      /limited to the trusted Git workspace/,
+    );
+  } finally {
+    if (previousWorkspace === undefined) {
+      delete process.env.AIDEVOPS_GIT_WORKSPACE_ROOT;
+    } else {
+      process.env.AIDEVOPS_GIT_WORKSPACE_ROOT = previousWorkspace;
+    }
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
 test("blocks canonical branch mutation before execution", () => {
   const { root, repo } = setupRepo();
   try {

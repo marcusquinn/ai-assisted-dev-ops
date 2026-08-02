@@ -26,7 +26,8 @@ from canonical_git_policy import _git_output as _shared_git_output
 from canonical_git_policy import real_git
 
 
-POLICY_VERSION = "canonical-write-policy-v1"
+POLICY_VERSION = "canonical-write-policy-v2"
+GIT_WORKSPACE_ROOT_ENV = "AIDEVOPS_GIT_WORKSPACE_ROOT"
 
 
 @dataclass
@@ -136,6 +137,45 @@ def _target_probe(cwd: str, file_path: str) -> str:
     return str(target.resolve(strict=False))
 
 
+def git_workspace_root_from_environment() -> str:
+    """Return the trusted Git workspace root, defaulting to ~/Git."""
+    if GIT_WORKSPACE_ROOT_ENV in os.environ:
+        return os.environ[GIT_WORKSPACE_ROOT_ENV]
+    return str(Path.home() / "Git")
+
+
+def _canonical_git_workspace_root(workspace_root: str) -> str:
+    if not workspace_root:
+        return ""
+    root = os.path.realpath(os.path.expanduser(workspace_root))
+    home = os.path.realpath(str(Path.home()))
+    if root in {os.path.abspath(os.sep), home} or not os.path.isdir(root):
+        return ""
+    return root
+
+
+def _is_within_workspace(path: str, workspace_root: str) -> bool:
+    if not path or not workspace_root:
+        return False
+    try:
+        return (
+            os.path.commonpath([os.path.realpath(path), workspace_root])
+            == workspace_root
+        )
+    except ValueError:
+        return False
+
+
+def _repository_within_workspace(
+    location: Classification, workspace_root: str
+) -> bool:
+    """Require the worktree and its shared Git metadata beneath one root."""
+    return location.inside_git and all(
+        _is_within_workspace(path, workspace_root)
+        for path in (location.repo_root, location.git_dir, location.common_dir)
+    )
+
+
 def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     """Return one fail-closed direct-file-write decision."""
     context = classify_location(cwd)
@@ -143,6 +183,12 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
         target = Classification("unknown", False, reason="write target is empty")
     else:
         target = classify_location(_target_probe(cwd, file_path))
+    workspace_root = _canonical_git_workspace_root(
+        git_workspace_root_from_environment()
+    )
+    cross_repository_target = target.classification == "linked" and (
+        not context.inside_git or target.common_dir != context.common_dir
+    )
 
     if target.classification == "unknown":
         decision = "deny"
@@ -150,27 +196,39 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     elif target.classification == "canonical":
         decision = "deny"
         reason = "canonical checkouts are read-only session mirrors"
-    elif (
-        target.classification == "linked"
-        and context.inside_git
-        and target.common_dir != context.common_dir
+    elif cross_repository_target and not (
+        _repository_within_workspace(context, workspace_root)
+        and _repository_within_workspace(target, workspace_root)
     ):
         decision = "deny"
-        reason = "linked worktree target belongs to a different repository"
+        reason = (
+            "cross-repository linked worktree access is limited to the "
+            "trusted Git workspace"
+        )
     else:
         decision = "allow"
         reason = (
-            "write target resolves inside an allowed linked worktree"
-            if target.classification == "linked"
-            else "write target is outside canonical worktrees"
+            "cross-repository write target resolves inside a linked worktree "
+            "within the trusted Git workspace"
+            if cross_repository_target
+            else (
+                "write target resolves inside an allowed linked worktree"
+                if target.classification == "linked"
+                else "write target is outside canonical worktrees"
+            )
         )
 
     return {
         "policy": POLICY_VERSION,
+        "git_workspace_root": workspace_root,
         "decision": decision,
         "reason": reason,
         "action": (
-            "create_or_use_linked_worktree" if decision == "deny" else "none"
+            "use_linked_worktree_under_git_workspace"
+            if decision == "deny" and cross_repository_target
+            else (
+                "create_or_use_linked_worktree" if decision == "deny" else "none"
+            )
         ),
         "context": asdict(context),
         "target": asdict(target),
