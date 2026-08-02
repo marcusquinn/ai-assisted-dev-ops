@@ -154,6 +154,16 @@ tag GET routes are reachable; each invocation is capped below the documented
 20-request/minute limit. Provider identity, deletion, complete export, and
 retention remain explicit gaps. Details: `.agents/content/social-readwise-reader.md`.
 
+Patreon collection binds API v2 `/identity` creator status to an explicit set of
+creator-owned campaigns before every page. Account, campaigns, posts, benefits
+and tiers, and current memberships have independent checkpoints. Posts require
+`campaigns.posts`; memberships additionally require `campaigns.members`, the
+exact `membership-services` purpose, and a local HMAC key. Member names, email,
+addresses, direct provider member IDs, and patron-owned memberships are never
+requested or persisted. The invocation cap is 99 requests, below the documented
+per-token minute limit. Creator CSV export remains unwired because Patreon does
+not publish a versioned import schema. Details: `.agents/content/social-patreon.md`.
+
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and
 OAuth user identity; it never reuses the service-account research helper:
@@ -174,6 +184,12 @@ aidevops secret YOUTUBE_PERSONAL_ACCESS_TOKEN -- \
   knowledge-social-helper.sh sync-youtube --alias personal:default \
   --connection-id YOUTUBE_CONNECTION_ID --account-id STABLE_CHANNEL_ID \
   --stream authored_videos --profile personal --budget 11 --page-size 50
+
+aidevops secret PATREON_CREATOR_ACCESS_TOKEN PATREON_CREATOR_CAMPAIGN_IDS \
+  PATREON_CREATOR_SCOPES -- \
+  knowledge-social-helper.sh sync-patreon --alias personal:default \
+  --connection-id PATREON_CONNECTION_ID --account-id CREATOR_USER_ID \
+  --stream posts --profile creator --budget 20 --page-size 100
 ```
 
 Every Reddit stream has an independent cursor. Authored content, inbox activity,
@@ -197,6 +213,15 @@ Later, saved third-party playlists, and complete authored-comment history remain
 explicit unavailable/export-unverified coverage. API metadata carries the current
 30-day refresh/delete retention boundary. Details and official evidence:
 `.agents/content/social-youtube.md`.
+
+Patreon profiles use `PATREON_<PROFILE>_ACCESS_TOKEN`,
+`PATREON_<PROFILE>_CAMPAIGN_IDS`, and `PATREON_<PROFILE>_SCOPES`. Base collection
+requires exactly the `identity` and `campaigns` read scopes plus only the optional
+stream scope. Membership collection also requires
+`PATREON_<PROFILE>_MEMBER_DATA_PURPOSE=membership-services` and a private
+`PATREON_<PROFILE>_PII_KEY` of at least 32 bytes. Token issuance and rotation stay
+outside the collector, and no Patreon write, webhook, browser, or patron-profile
+route is reachable.
 
 ## Approval-bound account operations
 

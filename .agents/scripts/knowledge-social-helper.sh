@@ -13,6 +13,7 @@ YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
 LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 META_HELPER="${SCRIPT_DIR}/knowledge_social_meta.py"
 MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
+PATREON_HELPER="${SCRIPT_DIR}/knowledge_social_patreon.py"
 DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
@@ -180,6 +181,19 @@ EOF
 	return 0
 }
 
+usage_patreon_sync() {
+	cat <<'EOF'
+Patreon synchronization:
+  sync-patreon verifies one creator identity and every explicitly configured,
+  creator-owned campaign before each page. Account, campaign, post, benefit, and
+  purpose-gated current-membership streams have independent checkpoints.
+  --budget is a hard 5-99 request limit and --page-size is 1-100 items. Patron
+  memberships, sensitive member scopes, redirects, and mutation routes are rejected.
+
+EOF
+	return 0
+}
+
 usage_commands() {
 	cat <<'EOF'
 Usage:
@@ -206,6 +220,10 @@ Usage:
   knowledge-social-helper.sh sync-youtube [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id CHANNEL_ID --stream STREAM --profile PROFILE \
     [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
+    [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-patreon [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id CREATOR_USER_ID --stream STREAM --profile PROFILE \
+    [--budget 5-99] [--page-size 1-100] [--collector-id ID] \
     [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-linkedin [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id MEMBER_ID --stream STREAM --profile PROFILE \
@@ -321,6 +339,7 @@ Medium account export:
 EOF
 	usage_sync
 	usage_sync_hashnode
+	usage_patreon_sync
 	cat <<'EOF'
 Deterministic routines:
   sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
@@ -438,6 +457,7 @@ run_named_provider_sync() {
 	shift || return 1
 	case "$subcommand" in
 	sync-meta) run_provider_sync Meta "$META_HELPER" "$@" || return 1 ;;
+	sync-patreon) run_provider_sync Patreon "$PATREON_HELPER" "$@" || return 1 ;;
 	sync-discourse) run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1 ;;
 	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
 	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
@@ -527,7 +547,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-patreon | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

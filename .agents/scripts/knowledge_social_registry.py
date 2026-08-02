@@ -80,6 +80,7 @@ PROVIDER_SPECS = (
         "knowledge_social_nextcloud_talk.py",
         (("live", ()),),
     ),
+    ProviderSpec("patreon", (), "knowledge_social_patreon.py", (("live", ()),)),
     ProviderSpec(
         "signal",
         (),
