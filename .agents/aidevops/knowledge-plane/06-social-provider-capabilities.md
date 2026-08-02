@@ -70,14 +70,16 @@ separate provider family.
 
 | Provider family | Authored content | Interactions and curation | Mentions or messages | Relationships and subscriptions | Lists or custom feeds | Current disposition |
 |---|---|---|---|---|---|---|
-| Mastodon | **API** | **API** favourites and bookmarks | **API** notifications | **API** follows | **API** lists | Strong official-API candidate; account for instance-specific retention and limits. |
+| Mastodon | **API** | **API** favourites and bookmarks | **API/Gate** notifications and conversations | **API** follows and followed tags | **API** lists and membership | Rank 1. Mature official API; bind home-instance identity, preserve opaque `Link` cursors, and record federation/operator retention gaps. |
 | Bluesky / AT Protocol | **Live** records | **Live** likes and reposts | **Live/Gate** notifications; **No/Gate** chat | **Live** follows | **Live** lists and feeds | DID-bound repository/AppView reads with separate chat authorization. |
-| Lemmy | **API** | **API** saved and votes | **API** replies and mentions | **API** communities | **API/Gate** | Verify instance version and federation-visible versus private account state. |
-| Stack Exchange | **API/Export** | **API/Export** | **API/Gate** inbox | **API/Export** associated accounts | **No** until verified | Observe API quota and per-site identity boundaries. |
-| GitHub | **API/Export** | **API** reactions, stars, and watches | **API** notifications and discussions | **API** follows, organizations, and repositories | **API/Gate** saved lists/projects | Keep developer-work evidence distinct from general social engagement. |
-| Hacker News | **API** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Public account history only; do not infer authenticated/private state. |
-| RSS/Atom readers | **API/Export** feed items | **API/Export** reader state where supported | **No** | **Export** subscriptions | **Export** folders/tags | Treat OPML and reader APIs as source-specific adapters, not one universal account API. |
-| Read-later services | **API/Export** saved pages | **API/Export** tags and archive state | **No** | **No** | **API/Export** tags/lists | Select maintained services individually; do not assume one provider's API or export contract. |
+| Lemmy | **API/Gate** versioned authored content | **API/Gate** saved and liked state | **API/Gate** unified v4 or split v3 inbox | **API/Gate** communities; **No** person follows | **API/Gate** v4 multicommunities | Rank 7. Implement only behind exact v4/v3 discovery; namespace local IDs and preserve opaque version-sensitive cursors. |
+| Stack Exchange | **API** authored content | **API** favourites; **No** complete vote history | **API/Gate** inbox and notifications | **API** associated site accounts; **No** follows | **No** | Rank 3. Bind network plus per-site identity, obey `backoff`, and keep archive/completeness gaps explicit. |
+| GitHub | **API/Export** contributions | **API/Partial** stars, subscriptions, and object reactions | **API/Gate/Partial** notifications and discussions | **API/Gate** follows, organizations, and repositories | **API/Gate** user lists and Projects v2 | Rank 2. Use numeric/node identity and token-family capability evidence; no complete reaction or social export claim. |
+| Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
+| Miniflux | **API/Export** feed items | **API** read, removed, starred, and tagged state | **No** | **API/Export** subscriptions | **API/Export** categories/tags | Rank 4. Strong self-hosted identity and replay; locally enforce GET-only use of mutation-capable API keys. |
+| FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6. Google Reader API first, OPML reconciliation, Fever fallback only; dedicated API password is not read-only scoped. |
+| Readwise Reader | **API/Export** saved documents | **API/Export** tags, state, notes, and progress | **No** | **No** | **API/Export** tags and locations | Rank 5. Strong cursor/update contract, but implementation is gated on expected-account binding because token validation has no stable account ID. |
+| Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
 ## Evidence and update discipline
 
@@ -178,3 +180,7 @@ separate provider family.
   replay/idempotency, and write-reachability tests pass.
 - If API/archive coverage is partial, persist an explicit coverage gap. Browser
   evidence remains a bounded last resort under `05-social-operations.md`.
+- **Recommended candidate evidence:**
+  `.agents/content/social-provider-candidates.md` records the official identity,
+  API/export, pagination, quota, retention, terms, and unsupported evidence
+  checked on 2026-08-02, plus the ranked per-provider child disposition.

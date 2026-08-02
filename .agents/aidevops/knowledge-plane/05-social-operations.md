@@ -38,6 +38,14 @@ normalized object, activity, and media rows are exposed only as
 transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
+Candidate implementation is provider-specific, not one generic social adapter.
+The current ranked sequence is Mastodon, GitHub, Stack Exchange, Miniflux,
+Readwise Reader, FreshRSS, version-gated Lemmy, then public-only Hacker News.
+Each route gets its own child issue, identity contract, stream allowlist,
+checkpoint semantics, and negative write-reachability tests. Raindrop.io remains
+optional; Inoreader, Wallabag, Feedly, Instapaper, and Pocket are deferred or
+rejected for the reasons in `.agents/content/social-provider-candidates.md`.
+
 The maintained planning and gap inventory is
 `06-social-provider-capabilities.md`. A matrix entry is not implementation
 authority: every provider child must revalidate current official API/export
