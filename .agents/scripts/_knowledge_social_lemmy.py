@@ -22,7 +22,6 @@ from _knowledge_social_lemmy_identity import (
     provider_account_id,
 )
 from _knowledge_social_lemmy_streams import (
-    RETENTION_LIMIT,
     STREAMS,
     V3_STREAMS,
     V4_STREAMS,

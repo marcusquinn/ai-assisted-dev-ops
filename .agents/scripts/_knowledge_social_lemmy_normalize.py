@@ -11,12 +11,12 @@ from typing import Any
 from _knowledge_social_lemmy import (
     ACCOUNT_AUTH_MODE,
     PROVIDER,
-    RETENTION_LIMIT,
     LemmyAdapterError,
     api_family,
     instance_id,
     page_data,
 )
+from _knowledge_social_lemmy_streams import RETENTION_LIMIT
 from knowledge_social_import import reject_credentials
 
 PROVENANCE = "lemmy_official_versioned_rest_api"
