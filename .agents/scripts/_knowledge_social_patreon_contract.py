@@ -10,6 +10,7 @@ import hmac
 from typing import Any
 
 from _knowledge_social_patreon_cursor import next_cursor
+from _knowledge_social_patreon_relationships import relationship_ids as _relationship_ids
 from _knowledge_social_patreon_types import (
     PatreonAdapterError,
     campaign_id,
@@ -19,7 +20,6 @@ from knowledge_social_import import reject_credentials
 
 DOCUMENT_KEYS = frozenset({"data", "included", "links", "meta", "jsonapi"})
 RESOURCE_KEYS = frozenset({"attributes", "id", "links", "relationships", "type"})
-IDENTIFIER_KEYS = frozenset({"id", "meta", "type"})
 
 CAMPAIGN_ATTRIBUTES = frozenset(
     {
@@ -120,48 +120,6 @@ def _resource(
             f"Patreon {resource_type} resource contains unrequested relationships"
         )
     return remote_id, attributes, relationships
-
-
-def _identifier(value: Any, resource_type: str) -> str:
-    identifier = object_value(value, f"{resource_type} relationship identifier")
-    if not set(identifier).issubset(IDENTIFIER_KEYS) or identifier.get("type") != resource_type:
-        raise PatreonAdapterError(
-            f"Patreon {resource_type} relationship identifier is invalid"
-        )
-    return provider_id(identifier.get("id"), f"{resource_type} relationship ID")
-
-
-def _relationship_values(relation: Any, name: str) -> list[Any]:
-    relation_object = object_value(relation, f"{name} relationship")
-    if not set(relation_object).issubset({"data", "links", "meta"}):
-        raise PatreonAdapterError(f"Patreon {name} relationship has an invalid shape")
-    if "data" not in relation_object:
-        raise PatreonAdapterError(f"Patreon {name} relationship has an invalid shape")
-    data = relation_object["data"]
-    if isinstance(data, list):
-        return data
-    return [] if data is None else [data]
-
-
-def _relationship_ids(
-    relationships: dict[str, Any],
-    name: str,
-    resource_type: str,
-    *,
-    required: bool = False,
-) -> tuple[str, ...]:
-    relation = relationships.get(name)
-    if relation is None:
-        if required:
-            raise PatreonAdapterError(f"Patreon {name} relationship is missing")
-        return ()
-    identifiers = tuple(
-        _identifier(item, resource_type)
-        for item in _relationship_values(relation, name)
-    )
-    if len(identifiers) != len(set(identifiers)):
-        raise PatreonAdapterError(f"Patreon {name} relationship contains duplicates")
-    return identifiers
 
 
 def _optional_text(value: Any, field: str, maximum: int = 64 * 1024) -> str | None:
