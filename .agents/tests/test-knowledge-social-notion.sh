@@ -1124,7 +1124,8 @@ PY
 assert_eq "stale Notion lease cannot commit evidence or a cursor" verified verified
 
 assert_eq "provider documentation classifies every route as Live, Export, Gate, or No" \
-	"$(python3 - "$SCRIPT_DIR/../content/social-notion-sites.md" <<'PY'
+	"$(
+		python3 - "$SCRIPT_DIR/../content/social-notion-sites.md" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1132,7 +1133,7 @@ text = Path(sys.argv[1]).read_text(encoding="utf-8")
 required = ("**Live", "**Export", "**Gate", "**No")
 print("classified" if all(item in text for item in required) else "missing")
 PY
-)" classified
+	)" classified
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
