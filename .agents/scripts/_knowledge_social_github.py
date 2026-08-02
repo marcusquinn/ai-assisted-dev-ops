@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import base64
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +17,7 @@ from _knowledge_social_github_identity import (
     login,
     provider_account_id,
 )
-from _knowledge_social_oauth_request import OAuthPageRequest
+from _knowledge_social_oauth_request import OAuthPageRequest, OAuthRequestCodec
 from knowledge_social_import import canonical_json, reject_credentials
 
 PROVIDER = "github"
@@ -65,10 +64,21 @@ class PageRequest(OAuthPageRequest):
         return self.handle
 
 
-PAGE_REQUEST_KEYS = {
-    "action", "stream", "account_id", "provider_account_id", "login",
-    "instance_id", "position", "stop_at", "limit",
-}
+REQUEST_CODEC = OAuthRequestCodec(
+    display_name="GitHub",
+    cursor_prefix=CURSOR_PREFIX,
+    cursor_key="cursor",
+    handle_key=PageRequest.HANDLE_KEY,
+    max_page_size=MAX_PAGE_ITEMS,
+    max_text_bytes=16 * 1024,
+    streams=frozenset(STREAMS),
+    request_type=PageRequest,
+    error_type=GitHubAdapterError,
+    account_validator=provider_account_id,
+    handle_validator=login,
+    instance_validator=instance_id,
+)
+PAGE_REQUEST_KEYS = set(REQUEST_CODEC.request_keys)
 
 
 def _text(value: Any, field: str, *, optional: bool = False) -> str | None:
@@ -81,78 +91,24 @@ def _text(value: Any, field: str, *, optional: bool = False) -> str | None:
     return value
 
 
-def _position(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise GitHubAdapterError("GitHub page position must be positive")
-    return value
-
-
 def _encode_cursor(position: int, cursor: str) -> str:
     payload = canonical_json({"cursor": cursor, "position": position}).encode()
     encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     return f"{CURSOR_PREFIX}{encoded}"
 
 
-def _decode_cursor(cursor: str) -> tuple[int, str]:
-    if not cursor.startswith(CURSOR_PREFIX):
-        raise GitHubAdapterError("stored GitHub cursor has an unsupported version")
-    try:
-        raw = cursor.removeprefix(CURSOR_PREFIX)
-        parsed = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
-    except (ValueError, UnicodeError, json.JSONDecodeError) as error:
-        raise GitHubAdapterError("stored GitHub cursor is invalid") from error
-    if not isinstance(parsed, dict) or set(parsed) != {"cursor", "position"}:
-        raise GitHubAdapterError("stored GitHub cursor has an invalid shape")
-    reject_credentials(parsed)
-    opaque = _text(parsed.get("cursor"), "cursor")
-    if opaque is None:
-        raise GitHubAdapterError("stored GitHub cursor is invalid")
-    return _position(parsed.get("position")), opaque
-
-
 def page_request(stream: str, account: dict[str, Any], state: CursorState, limit: int) -> PageRequest:
-    if stream not in STREAMS:
-        raise GitHubAdapterError("GitHub stream is unsupported")
-    position, cursor = (1, None)
-    if state.cursor:
-        position, cursor = _decode_cursor(state.cursor)
-    selected = _text(account.get("id"), "selected account ID")
-    if selected is None:
-        raise GitHubAdapterError("verified GitHub identity is incomplete")
-    return PageRequest(
-        stream,
-        selected,
-        provider_account_id(account.get("provider_account_id")),
-        login(account.get("login")),
-        instance_id(account.get("instance_id")),
-        position,
-        cursor,
-        limit,
-    )
+    request = REQUEST_CODEC.collection_request(stream, account, state.cursor, limit)
+    if not isinstance(request, PageRequest):
+        raise GitHubAdapterError("GitHub request codec returned an invalid type")
+    return request
 
 
 def parse_page_request(payload: dict[str, Any]) -> PageRequest:
-    if set(payload) != PAGE_REQUEST_KEYS or payload.get("action") != "page":
-        raise GitHubAdapterError("GitHub read request has an invalid action shape")
-    stream = payload.get("stream")
-    if not isinstance(stream, str) or stream not in STREAMS:
-        raise GitHubAdapterError("GitHub stream is unsupported")
-    limit = payload.get("limit")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-        raise GitHubAdapterError("GitHub page size is invalid")
-    selected = _text(payload.get("account_id"), "selected account ID")
-    if selected is None:
-        raise GitHubAdapterError("GitHub selected account ID is required")
-    return PageRequest(
-        stream,
-        selected,
-        provider_account_id(payload.get("provider_account_id")),
-        login(payload.get("login")),
-        instance_id(payload.get("instance_id")),
-        _position(payload.get("position")),
-        _text(payload.get("stop_at"), "cursor", optional=True),
-        limit,
-    )
+    request = REQUEST_CODEC.provider_request(payload)
+    if not isinstance(request, PageRequest):
+        raise GitHubAdapterError("GitHub request codec returned an invalid type")
+    return request
 
 
 def response_status(payload: dict[str, Any]) -> int:
