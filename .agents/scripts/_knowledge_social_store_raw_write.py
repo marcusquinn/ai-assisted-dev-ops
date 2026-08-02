@@ -240,7 +240,13 @@ class RawEvidenceTransaction:
             self._rollback()
             raise
         for staged in self._staged:
-            _finish_stage(staged)
+            try:
+                _finish_stage(staged)
+            except (OSError, SocialStoreError):
+                # SQLite is already committed, so marker cleanup cannot turn a
+                # successful durable write into an ambiguous caller failure.
+                # Recovery removes any marker or partial cleanup left behind.
+                pass
         return False
 
 

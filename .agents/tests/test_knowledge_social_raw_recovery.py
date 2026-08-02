@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
@@ -44,6 +45,7 @@ from _knowledge_social_reconcile import (  # noqa: E402
     reconcile_snapshot,
 )
 from _knowledge_social_x import STREAMS  # noqa: E402
+import _knowledge_social_store_raw_write as raw_write  # noqa: E402
 from knowledge_social_import import (  # noqa: E402
     canonical_json,
     import_archive_payload,
@@ -377,6 +379,46 @@ class RawEvidenceWriterTests(unittest.TestCase):
         self.assertEqual(len(self._raw_files(root)), 1)
         self.assertFalse(marker.exists())
         self.assertFalse(staged_file.exists())
+
+    def test_post_commit_marker_cleanup_failure_remains_successful(self) -> None:
+        root = self.base / "post-commit-cleanup"
+        _prepare_root(root)
+        archive = _archive("xapi", "conn_cleanup", "acct_fault")
+        payload = canonical_json(archive).encode("utf-8")
+        original_unlink = raw_write._unlink_private_file
+
+        def fail_marker_unlink(path: Path) -> bool:
+            if path.suffix == ".json" and path.parent.name == ".staging":
+                raise SocialStoreError("injected post-commit marker cleanup failure")
+            return original_unlink(path)
+
+        with mock.patch.object(
+            raw_write,
+            "_unlink_private_file",
+            side_effect=fail_marker_unlink,
+        ):
+            imported = import_archive_payload(root, archive, payload)
+
+        self.assertEqual(self._fetch_count(root), 1)
+        self.assertEqual(len(self._raw_files(root)), 1)
+        self.assertEqual(len(self._markers(root)), 1)
+        self.assertTrue(str(imported["blob_ref"]).endswith(".json.gz"))
+
+        database = connect(root)
+        try:
+            migrate(database)
+            recovered = recover_raw_evidence(
+                database,
+                now_epoch=time.time() + 1,
+                grace_seconds=0,
+            )
+        finally:
+            database.close()
+        self.assertEqual(recovered.orphan_files_removed, 0)
+        self.assertEqual(recovered.markers_removed, 1)
+        self.assertEqual(self._fetch_count(root), 1)
+        self.assertEqual(len(self._raw_files(root)), 1)
+        self.assertEqual(self._markers(root), [])
 
     def test_corrupt_orphans_are_removed_but_corrupt_references_fail_closed(self) -> None:
         orphan_root = self.base / "corrupt-orphan"
