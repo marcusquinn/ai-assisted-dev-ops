@@ -517,9 +517,17 @@ dispatch_max() {
 		return 0
 	fi
 
-	local runnable_count queued_without_worker
-	runnable_count=$(normalize_count_output "$(count_runnable_candidates)")
-	queued_without_worker=$(normalize_count_output "$(count_queued_without_worker)")
+	# GH#29255: ranked candidates are the launch-path backlog source. Do not run
+	# the broad all-repository issue+PR diagnostic counters before this snapshot.
+	local candidates_json candidate_count
+	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT" "$dependency_normalization_mode") || candidates_json='[]'
+	candidate_count=$(printf '%s' "$candidates_json" | jq 'length' 2>/dev/null) || candidate_count=0
+	[[ "$candidate_count" =~ ^[0-9]+$ ]] || candidate_count=0
+	if [[ "$candidate_count" -eq 0 ]]; then
+		echo "[pulse-wrapper] Dispatch_max skipped: no ranked candidates (available=${available_slots})" >>"$LOGFILE"
+		echo 0
+		return 0
+	fi
 
 	local self_login
 	self_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
@@ -529,17 +537,7 @@ dispatch_max() {
 		return 0
 	fi
 
-	local candidates_json candidate_count
-	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_RUNNABLE_ISSUE_LIMIT" "$dependency_normalization_mode") || candidates_json='[]'
-	candidate_count=$(printf '%s' "$candidates_json" | jq 'length' 2>/dev/null) || candidate_count=0
-	[[ "$candidate_count" =~ ^[0-9]+$ ]] || candidate_count=0
-	if [[ "$candidate_count" -eq 0 ]]; then
-		echo "[pulse-wrapper] Dispatch_max skipped: no ranked candidates (available=${available_slots}, runnable=${runnable_count}, queued_without_worker=${queued_without_worker})" >>"$LOGFILE"
-		echo 0
-		return 0
-	fi
-
-	echo "[pulse-wrapper] Dispatch_max: available=${available_slots}, runnable=${runnable_count}, queued_without_worker=${queued_without_worker}, candidates=${candidate_count}" >>"$LOGFILE"
+	echo "[pulse-wrapper] Dispatch_max: available=${available_slots}, candidates=${candidate_count}" >>"$LOGFILE"
 
 	local prepass_line=""
 	local triage_attempted=0 triage_infrastructure_failed=0
