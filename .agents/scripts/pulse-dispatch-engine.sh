@@ -486,12 +486,13 @@ _dispatch_order_idle_borrowing_candidates() {
 # and fills empty local slots. Ranking remains simple and auditable; judgment
 # stays with the pulse LLM for merges, blockers, and unusual edge cases.
 #
-# t3005/t3014: Loop body extracted into _dispatch_floor_loop /
+# t3005/t3014/GH#29234: Loop body extracted into _dispatch_floor_loop /
 # _dispatch_max_loop — the orchestrator picks one based on
-# DISPATCH_MAX_PARALLEL (t3014 default = effective_slots when unset)
-# and adaptive throttle state. Throttle mode forces serial (1 dispatch per
-# round) to preserve the existing "test the waters" recovery semantics;
-# otherwise parallel is preferred so the 24-slot pool fills in 1 cycle.
+# DISPATCH_MAX_PARALLEL (default = min(6, effective_slots) when unset or invalid)
+# and adaptive throttle state. Throttle mode forces serial (1 dispatch per round)
+# to preserve the existing "test the waters" recovery semantics; otherwise
+# bounded parallelism is preferred. Explicit positive overrides can raise the
+# ceremony cap up to effective_slots.
 #
 # Arguments:
 #   $1 - dependency normalization mode (optional: normalize or skip)
