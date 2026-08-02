@@ -52,6 +52,7 @@ PROVIDER_SPECS = (
     ),
     ProviderSpec("gumroad", (), "knowledge_social_gumroad.py", (("live", ()),)),
     ProviderSpec("github", (), "knowledge_social_github.py", (("live", ()),)),
+    ProviderSpec("lemmy", (), "knowledge_social_lemmy.py", (("live", ()),)),
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec("miniflux", (), "knowledge_social_miniflux.py", (("live", ()),)),
     ProviderSpec(
