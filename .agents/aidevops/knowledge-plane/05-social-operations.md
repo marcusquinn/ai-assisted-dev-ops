@@ -39,8 +39,8 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221, GitHub #29222, Stack Exchange #29223, and Miniflux #29224 are
-now live. The remaining ranked children are Readwise Reader #29225, FreshRSS
+Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224, and
+Readwise Reader #29225 are now live. The remaining ranked children are FreshRSS
 issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
 route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
@@ -95,6 +95,15 @@ ascending ID; later runs use `changed_after` with a one-second overlap. Only fiv
 exact GET routes are reachable despite mutation-capable API keys. Operator cleanup,
 pre-retention state, complete archives, and deletion inference remain explicit
 gaps. Details: `.agents/content/social-miniflux.md`.
+
+Readwise Reader collection compensates for `/api/v2/auth/` returning no stable
+account ID by requiring a deployment-owned account identifier and keyed expected
+token binding. A wrong but valid token fails before network collection. Documents,
+tags, notes, state, progress, locations, and optional HTML use independent opaque
+cursors with one-second `updatedAfter` overlap. Only fixed-origin auth, list, and
+tag GET routes are reachable; each invocation is capped below the documented
+20-request/minute limit. Provider identity, deletion, complete export, and
+retention remain explicit gaps. Details: `.agents/content/social-readwise-reader.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

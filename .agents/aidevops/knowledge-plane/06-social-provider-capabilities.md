@@ -46,6 +46,7 @@ a claim that the route is enabled.
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
+| Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
 
 ## Integrated provider families
 
@@ -82,7 +83,7 @@ separate provider family.
 | Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
 | Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
 | FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
-| Readwise Reader | **API/Export** saved documents | **API/Export** tags, state, notes, and progress | **No** | **No** | **API/Export** tags and locations | Rank 5, #29225. Strong cursor/update contract, but implementation is gated on expected-account binding because token validation has no stable account ID. |
+| Readwise Reader | **Live/Gate/Partial** saved documents | **Live/Gate/Partial** tags, state, notes, and progress | **No** | **No** | **Live/Gate/Partial** tags and locations | #29225 implements a deployment-owned account/token binding because official token validation exposes no stable account ID, plus fixed-origin GET-only cursor reads. |
 | Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
 ## Evidence and update discipline
@@ -192,6 +193,16 @@ separate provider family.
   `.agents/content/social-miniflux.md` records official current identity, entries,
   feed, category, OPML, authentication, version, and operator-retention evidence
   checked on 2026-08-02.
+- **Live/Gated Readwise Reader:**
+  `.agents/scripts/knowledge_social_readwise_reader.py`,
+  `.agents/scripts/_knowledge_social_readwise_reader*.py`, and
+  `.agents/tests/test-knowledge-social-readwise-reader.sh` prove independent
+  deployment account/token binding, seven streams, opaque resume,
+  `updatedAfter` overlap, request-rate budgeting, exact GET-only routes,
+  credential rejection, terminal coverage, and atomic persistence.
+  `.agents/content/social-readwise-reader.md` records official auth, document,
+  tag, cursor, HTML, rate, privacy, export, retention, and terms evidence checked
+  on 2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,

@@ -55,6 +55,12 @@ PROVIDER_SPECS = (
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec("miniflux", (), "knowledge_social_miniflux.py", (("live", ()),)),
     ProviderSpec(
+        "readwise-reader",
+        ("reader",),
+        "knowledge_social_readwise_reader.py",
+        (("live", ()),),
+    ),
+    ProviderSpec(
         "stack-exchange",
         ("stackexchange",),
         "knowledge_social_stack_exchange.py",

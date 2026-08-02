@@ -49,6 +49,7 @@ expected = {
     "mastodon": ("live",),
     "miniflux": ("live",),
     "nextcloud-talk": ("live",),
+    "readwise-reader": ("live",),
     "signal": ("inspect", "manual-import", "status"),
     "slack": ("archive", "live"),
     "stack-exchange": ("live",),
@@ -72,6 +73,7 @@ for alias, provider in {
     "dev-community": "forem",
     "dev.to": "forem",
     "gbp": "google-business-profile",
+    "reader": "readwise-reader",
     "stackexchange": "stack-exchange",
     "whats-app": "whatsapp",
 }.items():
@@ -95,14 +97,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("15:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("16:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "15:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "16:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "15"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "16"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')

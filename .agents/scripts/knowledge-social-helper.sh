@@ -19,6 +19,7 @@ MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
+READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -140,6 +141,12 @@ Miniflux synchronization:
   use GET-only routes. Entry streams resume by ascending ID and overlap
   changed_after by one second. --budget is 3-1000 and --page-size is 1-100.
 
+Readwise Reader synchronization:
+  sync-readwise-reader requires a deployment-owned account ID plus keyed expected
+  token binding before fixed-origin token validation. Seven GET-only streams use
+  opaque cursors and one-second updatedAfter overlap. The per-invocation request
+  budget is 3-19 to remain below the documented 20/minute limit.
+
 EOF
 	return 0
 }
@@ -202,6 +209,10 @@ Usage:
   knowledge-social-helper.sh sync-miniflux [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-readwise-reader [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id DEPLOYMENT_ACCOUNT_ID --stream STREAM \
+    --profile PROFILE [--budget 3-19] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
     [--now-epoch EPOCH] [--interval-seconds SECONDS]
@@ -391,6 +402,7 @@ run_named_provider_sync() {
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
+	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -470,7 +482,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github | sync-stack-exchange | sync-miniflux)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github | sync-stack-exchange | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)
