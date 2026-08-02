@@ -13,7 +13,7 @@
 #   5. status --issue returns exit 1 when the issue is not claimed
 #   6. scan-stale detects dead-PID + missing-worktree claims
 #   7. scan-stale ignores claims from other hostnames (can't verify)
-#   8. API-token fallback works while true offline warns without writes
+#   8. API-token fallback works while failed identity probes remain write-free
 #   9. help subcommand prints usage
 #
 # The tests stub `gh`, `jq`, `kill`, and `hostname` via a PATH shim so no
@@ -72,9 +72,10 @@ mkdir -p "$STUB_BIN" "$STUB_STATE_DIR"
 export STUB_LOG STUB_STATE_DIR
 
 # Default stub mode — override via STUB_GH_MODE
-#   online    — gh returns successful responses
-#   api-only  — gh auth status fails while authenticated API calls succeed
-#   offline   — gh auth status and authenticated API calls both fail
+#   online             — gh returns successful responses
+#   api-only           — gh auth status fails while authenticated API calls succeed
+#   offline            — gh auth status and authenticated API calls both fail
+#   noisy-user-failure — gh api user emits stdout before returning nonzero
 export STUB_GH_MODE=online
 export STUB_PERMISSION=admin
 
@@ -99,6 +100,10 @@ auth)
 		fi
 		# gh api user --jq '.login'
 		if [[ "$2" == "user" ]]; then
+			if [[ "${STUB_GH_MODE:-online}" == "noisy-user-failure" ]]; then
+				printf 'synthetic-noisy-login\n'
+				exit 1
+			fi
 			if [[ "${STUB_GH_MODE:-online}" == "offline" ]]; then
 				exit 1
 			fi
@@ -530,6 +535,32 @@ if [[ $offline_rc -eq 0 && ! -f "$offline_stamp" ]] &&
 else
 	print_result "true offline gh: warn and continue without writes" 1 \
 		"(rc=$offline_rc, log=${offline_log:0:200}, out=${offline_out:0:100})"
+fi
+
+# =============================================================================
+# Test 7c — a failed identity probe that emits stdout must discard that output
+# and stop before collaborator lookup, issue mutation, or stamp persistence.
+# =============================================================================
+export STUB_GH_MODE=noisy-user-failure
+noisy_stamp="${claim_dir}/noisy-repo-88889.json"
+rm -f "$noisy_stamp" 2>/dev/null || true
+: >"$STUB_LOG"
+
+noisy_identity=$(_isc_current_user)
+noisy_identity_rc=$?
+noisy_claim_out=$(_isc_cmd_claim 88889 noisy/repo --worktree /tmp/noisy-wt 2>&1)
+noisy_claim_rc=$?
+noisy_log=$(cat "$STUB_LOG")
+
+if [[ $noisy_identity_rc -eq 0 && -z "$noisy_identity" && $noisy_claim_rc -eq 0 && ! -f "$noisy_stamp" ]] &&
+	printf '%s' "$noisy_log" | grep -q 'gh api user --jq .login' &&
+	! printf '%s' "$noisy_log" | grep -q 'collaborators/.*/permission' &&
+	! printf '%s' "$noisy_log" | grep -q 'issue edit 88889' &&
+	[[ "$noisy_claim_out" != *"synthetic-noisy-login"* ]]; then
+	print_result "failed noisy identity probe discards output and prevents writes" 0
+else
+	print_result "failed noisy identity probe discards output and prevents writes" 1 \
+		"(identity=$noisy_identity identity_rc=$noisy_identity_rc claim_rc=$noisy_claim_rc stamp=$([[ -f "$noisy_stamp" ]] && echo yes || echo no) log=${noisy_log:0:200})"
 fi
 
 export STUB_GH_MODE=online
