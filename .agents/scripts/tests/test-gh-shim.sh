@@ -287,6 +287,10 @@ cp "$REPO_DIR/.agents/scripts/gh_quota_debug_response.py" "$TMP/scripts/gh_quota
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-fallback.sh" "$TMP/scripts/shared-gh-wrappers-rest-fallback.sh"
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-read-semantics.sh" "$TMP/scripts/shared-gh-wrappers-rest-read-semantics.sh"
 cp "$REPO_DIR/.agents/scripts/log-issue-helper.sh" "$TMP/scripts/log-issue-helper.sh"
+# Caller attribution accepts only verified framework script basenames that are
+# present beside the shim. A zero-byte fixture is sufficient for that identity
+# check; it is never executed by this harness.
+: >"$TMP/scripts/pulse-wrapper.sh"
 mkdir -p "$TMP/scripts/lib"
 cp "$REPO_DIR/.agents/scripts/lib/version.sh" "$TMP/scripts/lib/version.sh"
 cp "$REPO_DIR/.agents/scripts/lib/issue-fingerprint.sh" "$TMP/scripts/lib/issue-fingerprint.sh"
@@ -778,11 +782,128 @@ AIDEVOPS_GH_REST_FIRST_READS=1 "$SHIM_RUN" pr list --repo owner/repo \
 	--state open --json number,reviewDecision,headRefOid 2>/dev/null || true
 argv=$(_read_argv)
 if [[ "$argv" == $'pr\nlist\n--repo\nowner/repo\n--state\nopen\n--json\nnumber,reviewDecision,headRefOid' ]] &&
-	awk -F '\t' '$2 == "gh_pr_list" && $3 == "graphql" && $6 == "graphql-selected" { found = 1 } END { exit found ? 0 : 1 }' \
+	awk -F '\t' '$2 == "gh_pr_list" && $3 == "graphql" && $6 ~ /^graphql-selected:shape-[[:xdigit:]]+$/ { found = 1 } END { exit found ? 0 : 1 }' \
 		"$AIDEVOPS_GH_API_LOG"; then
 	_pass "REST-first leaves GraphQL-only pr list fields on GraphQL"
 else
 	_fail "REST-first GraphQL-only pr list preservation" "argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
+echo ""
+echo "Test 15g: native read attribution is caller-aware and privacy-safe"
+_reset_log
+native_shape_log_one="$TMP/gh-api-native-shape-one.log"
+native_shape_log_two="$TMP/gh-api-native-shape-two.log"
+rm -f "$native_shape_log_one" "$native_shape_log_two"
+AIDEVOPS_GH_CALLER=pulse-wrapper.sh AIDEVOPS_GH_REST_FIRST_READS=1 \
+	AIDEVOPS_GH_API_LOG="$native_shape_log_one" "$SHIM_RUN" issue view 111 \
+	--repo private-owner/private-repo --json state,labels,assignees,comments \
+	--jq '.comments[] | select(.body == "private-one")' >/dev/null 2>&1 || true
+AIDEVOPS_GH_CALLER=pulse-wrapper.sh AIDEVOPS_GH_REST_FIRST_READS=1 \
+	AIDEVOPS_GH_API_LOG="$native_shape_log_two" "$SHIM_RUN" issue view 999 \
+	--repo other-private/other-private --json state,labels,assignees,comments \
+	--jq '.comments[] | select(.body == "private-two")' >/dev/null 2>&1 || true
+native_shape_one=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_shape_log_one")
+native_shape_two=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_shape_log_two")
+if [[ "$native_shape_one" == "$native_shape_two" && "$native_shape_one" =~ ^graphql-selected:shape-[[:xdigit:]]{12}$ ]] &&
+	awk -F '\t' '$2 == "pulse-wrapper.sh" && $9 == "logical" { found = 1 } END { exit found ? 0 : 1 }' "$native_shape_log_one" &&
+	! grep -Eq 'private-owner|private-repo|private-one|other-private|private-two|comments\[\]' "$native_shape_log_one" "$native_shape_log_two"; then
+	_pass "native read telemetry records framework caller and value-free stable shape"
+else
+	_fail "native read privacy-safe attribution" \
+		"shape_one=$native_shape_one shape_two=$native_shape_two log_one=$(cat "$native_shape_log_one" 2>/dev/null || true)"
+fi
+
+native_dynamic_log_one="$TMP/gh-api-native-dynamic-one.log"
+native_dynamic_log_two="$TMP/gh-api-native-dynamic-two.log"
+native_oversized_log="$TMP/gh-api-native-oversized.log"
+oversized_json_fields="state"
+while [[ ${#oversized_json_fields} -le 1024 ]]; do
+	oversized_json_fields="${oversized_json_fields},state"
+done
+rm -f "$native_dynamic_log_one" "$native_dynamic_log_two" "$native_oversized_log"
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_dynamic_log_one" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --json PrivateIdentifierOne >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_dynamic_log_two" \
+	"$SHIM_RUN" issue view 999 --repo other/repo --json OtherSensitiveIdentifier999 >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_oversized_log" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --json "$oversized_json_fields" >/dev/null 2>&1 || true
+native_dynamic_one=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_dynamic_log_one")
+native_dynamic_two=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_dynamic_log_two")
+native_oversized=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_oversized_log")
+if [[ "$native_dynamic_one" == "$native_dynamic_two" && "$native_oversized" == "$native_dynamic_one" ]] &&
+	[[ "$native_dynamic_one" =~ ^graphql-bypass:shape-[[:xdigit:]]{12}$ ]] &&
+	[[ "$native_shape_one" != "$native_dynamic_one" ]] &&
+	! grep -Eq 'PrivateIdentifierOne|OtherSensitiveIdentifier999' \
+		"$native_dynamic_log_one" "$native_dynamic_log_two" "$native_oversized_log"; then
+	_pass "native read shape admits only bounded documented JSON fields"
+else
+	_fail "native read JSON field privacy boundary" \
+		"valid=$native_shape_one dynamic_one=$native_dynamic_one dynamic_two=$native_dynamic_two oversized=$native_oversized"
+fi
+
+native_alias_long_log="$TMP/gh-api-native-alias-long.log"
+native_alias_short_log="$TMP/gh-api-native-alias-short.log"
+native_bypass_long_log="$TMP/gh-api-native-bypass-long.log"
+native_bypass_short_log="$TMP/gh-api-native-bypass-short.log"
+rm -f "$native_alias_long_log" "$native_alias_short_log" "$native_bypass_long_log" "$native_bypass_short_log"
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_API_LOG="$native_alias_long_log" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --comments --web >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_API_LOG="$native_alias_short_log" \
+	"$SHIM_RUN" issue view 999 --repo other/repo -c -w >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_bypass_long_log" \
+	"$SHIM_RUN" issue view 111 --repo owner/repo --comments --web >/dev/null 2>&1 || true
+AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_SHIM_NO_REST_REWRITE=1 \
+	AIDEVOPS_GH_API_LOG="$native_bypass_short_log" \
+	"$SHIM_RUN" issue view 999 --repo other/repo -c -w >/dev/null 2>&1 || true
+native_alias_long=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_alias_long_log")
+native_alias_short=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_alias_short_log")
+native_bypass_long=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_bypass_long_log")
+native_bypass_short=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_bypass_short_log")
+if [[ "$native_alias_long" == "$native_alias_short" && "$native_alias_long" =~ ^graphql-selected:shape-[[:xdigit:]]{12}$ ]] &&
+	[[ "$native_bypass_long" == "$native_bypass_short" && "$native_bypass_long" =~ ^graphql-bypass:shape-[[:xdigit:]]{12}$ ]]; then
+	_pass "native read shape treats short and long flag aliases identically"
+else
+	_fail "native read flag alias attribution" \
+		"fallback_long=$native_alias_long fallback_short=$native_alias_short bypass_long=$native_bypass_long bypass_short=$native_bypass_short"
+fi
+
+hash_shasum_dir="$TMP/hash-shasum"
+hash_sha256sum_dir="$TMP/hash-sha256sum"
+hash_openssl_dir="$TMP/hash-openssl"
+hash_empty_dir="$TMP/hash-empty"
+mkdir -p "$hash_shasum_dir" "$hash_sha256sum_dir" "$hash_openssl_dir" "$hash_empty_dir"
+cat >"$hash_shasum_dir/shasum" <<'EOF'
+#!/bin/bash
+IFS= read -r _input || true
+printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  -\n'
+EOF
+cat >"$hash_sha256sum_dir/sha256sum" <<'EOF'
+#!/bin/bash
+IFS= read -r _input || true
+printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  -\n'
+EOF
+cat >"$hash_openssl_dir/openssl" <<'EOF'
+#!/bin/bash
+IFS= read -r _input || true
+printf 'SHA2-256(stdin)= 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n'
+EOF
+chmod +x "$hash_shasum_dir/shasum" "$hash_sha256sum_dir/sha256sum" "$hash_openssl_dir/openssl"
+hash_shape_shasum=$(PATH="$hash_shasum_dir" "$BASH" -c "source \"\$1\"; _shim_read_shape_digest issue view 1 --repo private/repo --json state" _ "$TMP/scripts/gh-native-transport-lib.sh")
+hash_shape_sha256sum=$(PATH="$hash_sha256sum_dir" "$BASH" -c "source \"\$1\"; _shim_read_shape_digest issue view 1 --repo private/repo --json state" _ "$TMP/scripts/gh-native-transport-lib.sh")
+hash_shape_openssl=$(PATH="$hash_openssl_dir" "$BASH" -c "source \"\$1\"; _shim_read_shape_digest issue view 1 --repo private/repo --json state" _ "$TMP/scripts/gh-native-transport-lib.sh")
+if [[ "$hash_shape_shasum" == "shape-0123456789ab" && "$hash_shape_sha256sum" == "$hash_shape_shasum" &&
+	"$hash_shape_openssl" == "$hash_shape_shasum" ]] &&
+	PATH="$hash_empty_dir" "$BASH" -c "source \"\$1\"; ! _shim_read_shape_digest issue view 1 --repo private/repo --json state" _ \
+		"$TMP/scripts/gh-native-transport-lib.sh"; then
+	_pass "native read shape is stable across SHA-256 backends and fails closed without one"
+else
+	_fail "native read SHA-256 backend stability" \
+		"shasum=$hash_shape_shasum sha256sum=$hash_shape_sha256sum openssl=$hash_shape_openssl"
 fi
 
 echo ""
