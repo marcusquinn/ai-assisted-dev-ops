@@ -45,6 +45,7 @@ jq -e --argjson owner_pid "$OWNER_PID" '
 	and (.owner.process_identity | length > 0)
 ' "$receipt_one" >/dev/null
 full_loop_cleanup_owner_alive "$receipt_one"
+[[ "$_FULL_LOOP_CLEANUP_OWNER_PID" == "$OWNER_PID" ]]
 printf 'PASS deferred receipt persists external owner identity and pending lease\n'
 
 cp "$receipt_one" "${TEST_ROOT}/receipt-idempotent.json"

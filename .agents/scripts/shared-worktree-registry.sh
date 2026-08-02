@@ -255,13 +255,44 @@ PY
 	return 0
 }
 
-# Resolve the registry key for a worktree path.
-# If a legacy non-normalized row already exists for an equivalent path,
-# return that stored key so ownership checks remain backward compatible.
-# Otherwise return the normalized path.
+_wt_registry_resolve_path_python() {
+	local requested_path="$1"
+	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 2
+	command -v python3 >/dev/null 2>&1 || return 2
+
+	python3 - "$WORKTREE_REGISTRY_DB" "$requested_path" <<'PY' 2>/dev/null
+import os
+import sqlite3
+import sys
+
+database_path, requested_path = sys.argv[1:]
+normalized = os.path.realpath(requested_path)
+try:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute("SELECT worktree_path FROM worktree_owners")
+        for (stored_path,) in rows:
+            if stored_path and os.path.realpath(stored_path) == normalized:
+                print(stored_path)
+                raise SystemExit(0)
+except sqlite3.Error:
+    raise SystemExit(2)
+print(normalized)
+PY
+	return $?
+}
+
+# Resolve the registry key for a worktree path. Resolve all legacy rows in one
+# Python process so a lookup remains O(rows) without spawning one interpreter
+# per row. If Python or SQLite access fails, retain the portable shell fallback.
 _wt_registry_lookup_path() {
 	local requested_path="$1"
-	local normalized
+	local resolved_path=""
+	if resolved_path=$(_wt_registry_resolve_path_python "$requested_path"); then
+		printf '%s' "$resolved_path"
+		return 0
+	fi
+
+	local normalized=""
 	normalized=$(_wt_normalize_path "$requested_path")
 
 	[[ ! -f "$WORKTREE_REGISTRY_DB" ]] && {

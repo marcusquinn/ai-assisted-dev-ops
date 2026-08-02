@@ -26,6 +26,7 @@ _FULL_LOOP_RECEIPT_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2
 _FULL_LOOP_RECEIPT_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
 _FULL_LOOP_RECREATED_RECEIPT_TRANSACTION_SCHEMA="aidevops.full-loop.recreated-receipts.transaction/v1"
 _FULL_LOOP_RECEIPT_LOCK=""
+_FULL_LOOP_CLEANUP_OWNER_PID=""
 
 _full_loop_validate_superseded_evidence() {
 	local evidence_path="$1"
@@ -952,10 +953,13 @@ full_loop_cleanup_owner_alive() {
 	local owner_pid=""
 	local expected_identity=""
 	local observed_identity=""
+	local owner_record=""
+	_FULL_LOOP_CLEANUP_OWNER_PID=""
 
 	[[ -f "$receipt_path" ]] || return 1
-	owner_pid=$(jq -r '.owner.pid // empty' "$receipt_path" 2>/dev/null || true)
-	expected_identity=$(jq -r '.owner.process_identity // empty' "$receipt_path" 2>/dev/null || true)
+	owner_record=$(jq -r '[.owner.pid // "", .owner.process_identity // ""] | @tsv' "$receipt_path" 2>/dev/null || true)
+	IFS=$'\t' read -r owner_pid expected_identity <<<"$owner_record"
+	_FULL_LOOP_CLEANUP_OWNER_PID="$owner_pid"
 	[[ "$owner_pid" =~ ^[0-9]+$ && -n "$expected_identity" ]] || return 1
 	kill -0 "$owner_pid" 2>/dev/null || return 1
 	observed_identity=$(_full_loop_process_identity "$owner_pid") || return 1

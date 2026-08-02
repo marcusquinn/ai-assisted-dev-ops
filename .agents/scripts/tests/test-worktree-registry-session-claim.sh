@@ -125,6 +125,26 @@ PY
 	return 0
 }
 
+test_legacy_equivalent_registry_path_resolves() {
+	reset_registry
+	local real_path="${TEST_ROOT}/legacy-real-path"
+	local legacy_path="${TEST_ROOT}/legacy-symlink-path"
+	local resolved_path=""
+	local rc=0
+	mkdir -p "$real_path"
+	ln -s "$real_path" "$legacy_path"
+	_init_registry_db
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+		INSERT INTO worktree_owners (worktree_path, branch, owner_pid)
+		VALUES ('$(_wt_sql_escape "$legacy_path")', 'feature/legacy-equivalent-path', ${OWNER_PID});
+	"
+
+	resolved_path=$(_wt_registry_lookup_path "$real_path") || rc=1
+	[[ "$resolved_path" == "$legacy_path" ]] || rc=1
+	print_result "legacy equivalent registry path resolves through batched normalization" "$rc"
+	return 0
+}
+
 test_different_session_stays_blocked() {
 	reset_registry
 	local wt_path="${TEST_ROOT}/different-session"
@@ -352,6 +372,7 @@ main() {
 	start_live_pids
 	test_same_opencode_session_rolls_owner_pid
 	test_parameterized_claim_preserves_metacharacters
+	test_legacy_equivalent_registry_path_resolves
 	test_different_session_stays_blocked
 	test_empty_session_cannot_roll_owner_pid
 	test_untrusted_session_cannot_roll_owner_pid
