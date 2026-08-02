@@ -51,6 +51,7 @@ PROVIDER_SPECS = (
         (("live", ()),),
     ),
     ProviderSpec("gumroad", (), "knowledge_social_gumroad.py", (("live", ()),)),
+    ProviderSpec("github", (), "knowledge_social_github.py", (("live", ()),)),
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec(
         "nextcloud-talk",

@@ -101,6 +101,7 @@ class OAuthCollectorPolicy:
     default_budget: int = 11
     min_budget: int = 3
     max_page_size: int = 50
+    identity_cost_units: int = IDENTITY_COST_UNITS
 
 
 @dataclass
@@ -161,7 +162,7 @@ class OAuthCollector:
         self, runner: OAuthReader, initial: CollectionContext
     ) -> dict[str, Any]:
         context = initial
-        progress = CollectionProgress(budget_units=IDENTITY_COST_UNITS)
+        progress = CollectionProgress(budget_units=self.policy.identity_cost_units)
         while progress.budget_units + context.spec.cost_units <= self.args.budget:
             if context.lease is None:
                 raise self.policy.provider_module.ADAPTER_ERROR(
@@ -238,7 +239,7 @@ class OAuthCollector:
         )
         return collection_result(
             decision.output_status,
-            CollectionProgress(budget_units=IDENTITY_COST_UNITS),
+            CollectionProgress(budget_units=self.policy.identity_cost_units),
             failure_class=decision.failure_class,
             retry_after=retry_value,
             run_id=lease.run_id,

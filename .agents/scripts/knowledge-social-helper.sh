@@ -16,6 +16,7 @@ MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
 DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
+GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -118,6 +119,13 @@ Mastodon synchronization:
   Write scopes, redirects, cross-origin links, and mutations are rejected.
   --budget is 3-1000 and --page-size is 1-100.
 
+GitHub synchronization:
+  sync-github binds REST /user numeric and node IDs to GraphQL viewer identity
+  before every page. Ten independent streams use exact REST GET routes or fixed
+  GraphQL read queries. REST Link targets and GraphQL pageInfo cursors remain
+  opaque; REST writes, GraphQL mutations, and redirects are unreachable.
+  --budget is 5-1000 and --page-size is 1-100.
+
 EOF
 	return 0
 }
@@ -167,6 +175,10 @@ Usage:
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-mastodon [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id OPAQUE_HOME_ACCOUNT_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-github [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id NUMERIC_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-due [--base PATH] [--alias ALIAS] \
@@ -346,6 +358,20 @@ run_provider_sync() {
 	return 0
 }
 
+run_named_provider_sync() {
+	local subcommand="$1"
+	shift || return 1
+	case "$subcommand" in
+	sync-meta) run_provider_sync Meta "$META_HELPER" "$@" || return 1 ;;
+	sync-discourse) run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1 ;;
+	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
+	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
+	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
 run_registry_command() {
 	local subcommand="$1"
 	shift || return 1
@@ -420,17 +446,8 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta)
-		run_provider_sync Meta "$META_HELPER" "$@" || return 1
-		;;
-	sync-discourse)
-		run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1
-		;;
-	sync-nodebb)
-		run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1
-		;;
-	sync-mastodon)
-		run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github)
+		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)
 		run_query_command "$subcommand" "$@" || return 1

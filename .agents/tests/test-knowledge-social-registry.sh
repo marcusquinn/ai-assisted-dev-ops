@@ -43,6 +43,7 @@ expected = {
     "binance-square": ("no-route",),
     "discord": ("live",),
     "forem": ("live",),
+    "github": ("live",),
     "google-business-profile": ("live",),
     "gumroad": ("live",),
     "mastodon": ("live",),
@@ -91,14 +92,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("12:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("13:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "12:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "13:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "12"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "13"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')

@@ -39,9 +39,10 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221 is now live. The remaining ranked children are GitHub #29222, Stack Exchange #29223,
-Miniflux #29224, Readwise Reader #29225, FreshRSS #29226, Lemmy issue #29227,
-then public-only Hacker News #29228. Each route owns its identity
+Mastodon #29221 and GitHub #29222 are now live. The remaining ranked children
+are Stack Exchange #29223, Miniflux #29224, Readwise Reader #29225, FreshRSS
+issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
+route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
 tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
 Pocket are deferred or rejected for the reasons in
@@ -70,6 +71,14 @@ tags, and lists have independent snapshot checkpoints. Complete same-origin
 rejected. Conversations, nested list membership, exports, federation,
 moderation, deletion, and operator retention remain explicit gaps. Details:
 `.agents/content/social-mastodon.md`.
+
+GitHub collection binds `GET /user` numeric and node IDs to GraphQL `viewer`
+identity before every page. Contributions, repositories, stars, notifications,
+followers, following, organizations, subscriptions, user lists, and visible
+Projects v2 have independent snapshot checkpoints. Exact REST `Link` targets
+and GraphQL `pageInfo` cursors remain opaque. Token-family capability limits,
+reactions, migration expiry, deletion, private visibility, and organization
+audit authority remain explicit gaps. Details: `.agents/content/social-github.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and
