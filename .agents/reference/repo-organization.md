@@ -36,6 +36,16 @@ Examples:
 
 If a clone was accidentally created at `~/Git/{repo}` but belongs to a grouped ecosystem, move or recreate it under the grouped parent before adding new worktrees. Do not overwrite an existing grouped clone; fetch the required remotes/branches into the grouped canonical repo and recreate clean linked worktrees there.
 
+## Direct-write workspace boundary
+
+Direct file-mutation tools may write across repositories when both identities
+resolve beneath `${AIDEVOPS_GIT_WORKSPACE_ROOT:-~/Git}` and the target is a linked
+worktree. Canonical checkouts remain read-only regardless of their location.
+Resolved worktree, Git directory, and common-directory paths must all remain
+inside the workspace, so sibling-prefix paths and symlink escapes are denied.
+Sanctioned outside-Git paths remain separate: a symlink traversed from inside a
+Git worktree cannot use that allowance to escape the trusted workspace.
+
 ## Related
 
 - `workflows/worktree.md` — worktree mechanics

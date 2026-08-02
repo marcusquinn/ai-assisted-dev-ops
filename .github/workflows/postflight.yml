@@ -15,9 +15,11 @@ jobs:
   postflight:
     name: Verify Release Health
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 15
     
     permissions:
+      actions: read
       contents: read
       checks: read
       security-events: read
@@ -34,6 +36,11 @@ jobs:
       env:
         RELEASE_TAG: ${{ github.event.inputs.tag }}
       run: |
+        #aidevops:trust-boundary
+        [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+          echo "::error::Postflight must run from reviewed main"
+          exit 1
+        }
         [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
           echo "::error::Invalid release tag: $RELEASE_TAG"
           exit 1
@@ -74,7 +81,7 @@ jobs:
     
     - name: Wait for CI/CD Pipelines
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
         RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
@@ -168,7 +175,7 @@ jobs:
     - name: Verify CI/CD Status
       id: cicd
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ steps.release_commit.outputs.sha }}
         RELEASE_TAG: ${{ github.event.inputs.tag || '' }}

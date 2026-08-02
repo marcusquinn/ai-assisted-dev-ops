@@ -33,12 +33,13 @@ init_log_file || true
 # Constants
 # =============================================================================
 
-readonly GH_ANOMALY_VERSION="1.0.0"
+readonly GH_ANOMALY_VERSION="1.1.0"
 readonly GH_ANOMALY_STATE_FILE_DEFAULT="${HOME}/.aidevops/logs/gh-audit-scanner.state"
 readonly GH_ANOMALY_LOG_DIR_DEFAULT="${HOME}/.aidevops/logs"
 readonly GH_ANOMALY_LOG_FILENAME="gh-audit.log"
 readonly GH_ANOMALY_DEFAULT_REPO="marcusquinn/aidevops"
 readonly GH_ANOMALY_NMR_LABEL="needs-maintainer-review"
+readonly GH_ANOMALY_PERMISSION_LABEL="needs-maintainer-permissions"
 # Maximum anomaly entries to include in an issue (prevents overly large issues)
 readonly GH_ANOMALY_MAX_ISSUE_ENTRIES=20
 
@@ -189,29 +190,66 @@ _cmd_scan_collect_anomalies() {
 	if command -v jq &>/dev/null; then
 		# Single jq pass: skip counted lines, emit only actionable anomalies.
 		# Gemini feedback (GH#20145 PR #20153): avoid one-jq-per-line in while read loops.
-		# The approval helper intentionally removes needs-maintainer-review only after
-		# its signed approval checks pass. Keep that transition in the immutable log,
-		# but do not file a daily alert when its complete provenance and delta match.
+		# Verified approvals and permission-block transitions intentionally remove
+		# protected labels. Keep them in the immutable log, but suppress alerts only
+		# when capture, provenance, proof, and the complete semantic delta match.
 		local line filtered_file
 		filtered_file="$(mktemp -t gh-audit-anomaly-filter.XXXXXX)" || {
 			_ga_warn "Could not create anomaly scan buffer"
 			return 1
 		}
+		# aidevops:trust-boundary — fail closed unless each expected transition has
+		# independently meaningful end-state evidence and no extra state change.
 		if ! tail -n +"$((skip_count + 1))" "$log_file" |
-			jq -c --arg nmr "$GH_ANOMALY_NMR_LABEL" '
-				select(try ((.suspicious | length) > 0) catch true)
-				# aidevops:trust-boundary — fail closed unless every approval transition field matches.
-				| select((try (
-					.op == "issue_edit"
-					and .caller_function == "_approval_apply_issue_lifecycle_updates"
+			jq -c --arg nmr "$GH_ANOMALY_NMR_LABEL" --arg permission "$GH_ANOMALY_PERMISSION_LABEL" '
+				def comparable_state:
+					((.before.capture_status // "ok") == "ok")
+					and ((.after.capture_status // "ok") == "ok")
+					and ((.delta.comparable // true) == true);
+				def expected_approval_transition:
+					comparable_state
+					and (
+						(.op == "issue_edit" and .caller_function == "_approval_apply_issue_lifecycle_updates")
+						or (.op == "pr_edit" and .caller_function == "_approval_apply_pr_lifecycle_updates")
+					)
 					and ((.caller_script // "") | endswith("/agents/scripts/approval-helper.sh")
 						or endswith("/.agents/scripts/approval-helper.sh"))
 					and .flags.approval_verified == "v2-current-state"
 					and .suspicious == [("protected_label_removed:" + $nmr)]
 					and (.delta.labels_removed // []) == [$nmr]
 					and (((.delta.labels_added // []) - ["auto-dispatch"]) | length == 0)
+					and (.delta.title_delta_pct == 0)
+					and (.delta.body_delta_pct == 0)
 					and ((.before.labels // []) | index($nmr) != null)
-					and ((.after.labels // []) | index($nmr) == null)
+					and ((.after.labels // []) | index($nmr) == null);
+				def expected_permission_block_transition:
+					comparable_state
+					and .op == "issue_edit"
+					and .caller_function == "permission_apply_block"
+					and ((.caller_script // "") | endswith("/agents/scripts/worker-permission-helper.sh")
+						or endswith("/.agents/scripts/worker-permission-helper.sh"))
+					and ((.after.labels // []) | index($permission) != null)
+					and (((.delta.labels_removed // []) | length) > 0)
+					and (((.delta.labels_removed // []) - [
+						"status:queued", "status:claimed", "status:in-progress", "status:in-review"
+					]) | length == 0)
+					and (((.delta.labels_added // []) - [$permission]) | length == 0)
+					and (.delta.title_delta_pct == 0)
+					and (.delta.body_delta_pct == 0)
+					and ([.after.labels[]? | select(
+						. == "status:queued"
+						or . == "status:claimed"
+						or . == "status:in-progress"
+						or . == "status:in-review"
+					)] | length == 0)
+					and ((.suspicious // []) | length > 0)
+					and all(.suspicious[];
+						. == "protected_label_removed:status:claimed"
+						or . == "protected_label_removed:status:in-progress"
+						or . == "protected_label_removed:status:in-review");
+				select(try ((.suspicious | length) > 0) catch true)
+				| select((try (
+					expected_approval_transition or expected_permission_block_transition
 				) catch false) | not)' >"$filtered_file" 2>/dev/null; then
 			rm -f "$filtered_file"
 			_ga_warn "Malformed audit NDJSON detected — checkpoint not advanced"
@@ -273,11 +311,12 @@ BODY
 
 ## Next Steps
 
-1. Review each entry in \`~/.aidevops/logs/gh-audit.log\`
-2. Cross-reference with GitHub events API:
+1. Review each entry in \`~/.aidevops/logs/gh-audit.log\`, including each snapshot's \`capture_status\`.
+2. Verify the current GitHub state and cross-reference the events API:
    \`gh api /repos/OWNER/REPO/issues/N/events --jq '[.[] | select(.event == "renamed")]'\`
-3. If title/body wipe was unintended, restore from the before-state in the log.
-4. See \`reference/gh-audit-log.md\` for the forensics workflow.
+3. A \`state_capture_unavailable:*\` signal means the audit read failed; it is not evidence that content was wiped.
+4. If a destructive edit is confirmed, recover content from GitHub history or a committed backup. The audit log stores lengths, not content.
+5. See \`reference/gh-audit-log.md\` for the forensics workflow.
 
 <!-- gh-audit-anomaly-scanner:${scan_ts} -->
 FOOTER

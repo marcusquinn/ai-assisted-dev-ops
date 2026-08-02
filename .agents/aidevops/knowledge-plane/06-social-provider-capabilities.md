@@ -43,18 +43,43 @@ a claim that the route is enabled.
 | Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
 | NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
 
+## Integrated provider families
+
+These independently implemented contracts are registered by canonical provider ID
+and explicit aliases. `provider-run` requires an exact supported mode and never
+falls back to another provider or to an outbound mutation route.
+
+| Provider | Implemented mode | Explicit gaps and boundaries |
+|---|---|---|
+| Slack | **Live** Web API; **Live/Export** approved archive | Workspace identity, token visibility, plan retention, and export authority remain explicit. |
+| Discord | **Live/Gate** bounded bot-visible reads | User-token automation and unavailable private history remain unsupported. |
+| WhatsApp | **Live/Export** consumer chat archives; **Live/Gate** Business webhook events | No consumer-account polling or mutation route. |
+| Signal | **Live/Manual** offline `signal-cli` receive-event import | No remote account API, history scraping, or send reachability. |
+| Nextcloud Talk | **Live** multi-instance reads | Instance identity, room membership, retention, and webhook coverage remain explicit. |
+| Gumroad | **Live/Gate** seller-account reads | Buyer/seller visibility and unavailable private or mutation categories remain explicit. |
+| Google Business Profile | **Live/Gate** account/location reads | Listing writes and other management authority are isolated from collection. |
+| Telegram | **Live/Export** account archive; **Live/Gate** bot events | No user-account polling, private-history inference, or bot mutation route. |
+| Binance Square | **No** | Officially verified surfaces are mutation-only; no adapter, export, browser, or credential route is registered. |
+| Bluesky / AT Protocol | **Live** repository/AppView reads | Chat remains separately permissioned; account identity is a stable DID. |
+| Forem | **Live** multi-instance reads | `dev-community` and `dev.to` are aliases of `forem`, not separate providers. |
+
+HubSpot Community remains a Discourse installation and is not registered as a
+separate provider family.
+
 ## Recommended candidates
 
 | Provider family | Authored content | Interactions and curation | Mentions or messages | Relationships and subscriptions | Lists or custom feeds | Current disposition |
 |---|---|---|---|---|---|---|
-| Mastodon | **API** | **API** favourites and bookmarks | **API** notifications | **API** follows | **API** lists | Strong official-API candidate; account for instance-specific retention and limits. |
-| Bluesky / AT Protocol | **API** | **API** likes and reposts | **API/Gate** notifications or chat | **API** follows | **API** lists and feeds | Separate repository records, AppView reads, and chat authorization. |
-| Lemmy | **API** | **API** saved and votes | **API** replies and mentions | **API** communities | **API/Gate** | Verify instance version and federation-visible versus private account state. |
-| Stack Exchange | **API/Export** | **API/Export** | **API/Gate** inbox | **API/Export** associated accounts | **No** until verified | Observe API quota and per-site identity boundaries. |
-| GitHub | **API/Export** | **API** reactions, stars, and watches | **API** notifications and discussions | **API** follows, organizations, and repositories | **API/Gate** saved lists/projects | Keep developer-work evidence distinct from general social engagement. |
-| Hacker News | **API** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Public account history only; do not infer authenticated/private state. |
-| RSS/Atom readers | **API/Export** feed items | **API/Export** reader state where supported | **No** | **Export** subscriptions | **Export** folders/tags | Treat OPML and reader APIs as source-specific adapters, not one universal account API. |
-| Read-later services | **API/Export** saved pages | **API/Export** tags and archive state | **No** | **No** | **API/Export** tags/lists | Select maintained services individually; do not assume one provider's API or export contract. |
+| Mastodon | **API** | **API** favourites and bookmarks | **API/Gate** notifications and conversations | **API** follows and followed tags | **API** lists and membership | Rank 1, #29221. Mature official API; bind home-instance identity, preserve opaque `Link` cursors, and record federation/operator retention gaps. |
+| Bluesky / AT Protocol | **Live** records | **Live** likes and reposts | **Live/Gate** notifications; **No/Gate** chat | **Live** follows | **Live** lists and feeds | DID-bound repository/AppView reads with separate chat authorization. |
+| Lemmy | **API/Gate** versioned authored content | **API/Gate** saved and liked state | **API/Gate** unified v4 or split v3 inbox | **API/Gate** communities; **No** person follows | **API/Gate** v4 multicommunities | Rank 7, #29227. Implement only behind exact v4/v3 discovery; namespace local IDs and preserve opaque version-sensitive cursors. |
+| Stack Exchange | **API** authored content | **API** favourites; **No** complete vote history | **API/Gate** inbox and notifications | **API** associated site accounts; **No** follows | **No** | Rank 3, #29223. Bind network plus per-site identity, obey `backoff`, and keep archive/completeness gaps explicit. |
+| GitHub | **API/Export** contributions | **API/Partial** stars, subscriptions, and object reactions | **API/Gate/Partial** notifications and discussions | **API/Gate** follows, organizations, and repositories | **API/Gate** user lists and Projects v2 | Rank 2, #29222. Use numeric/node identity and token-family capability evidence; no complete reaction or social export claim. |
+| Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
+| Miniflux | **API/Export** feed items | **API** read, removed, starred, and tagged state | **No** | **API/Export** subscriptions | **API/Export** categories/tags | Rank 4, #29224. Strong self-hosted identity and replay; locally enforce GET-only use of mutation-capable API keys. |
+| FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
+| Readwise Reader | **API/Export** saved documents | **API/Export** tags, state, notes, and progress | **No** | **No** | **API/Export** tags and locations | Rank 5, #29225. Strong cursor/update contract, but implementation is gated on expected-account binding because token validation has no stable account ID. |
+| Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
 ## Evidence and update discipline
 
@@ -129,6 +154,12 @@ a claim that the route is enabled.
   evidence, public capability limits, admin-only version/plugin discovery,
   account-visible permissions, exports, retention, terms, and explicit plugin,
   message-body, and history gaps checked on 2026-07-28.
+- **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
+  and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
+  registration, collision rejection, exact aliases and modes, no-route failure,
+  allowlisted local execution, and the absence of fallback dispatch. Provider-
+  focused tests remain the authority for identity, pagination/import replay,
+  budgets, persistence, coverage, and mutation isolation.
 - **Quora export disposition:** `.agents/content/social-quora.md` records the
   official owner-request route, current public archive observations, absent
   schema and retention guarantees, and the identity-verification gap checked on
@@ -149,3 +180,7 @@ a claim that the route is enabled.
   replay/idempotency, and write-reachability tests pass.
 - If API/archive coverage is partial, persist an explicit coverage gap. Browser
   evidence remains a bounded last resort under `05-social-operations.md`.
+- **Recommended candidate evidence:**
+  `.agents/content/social-provider-candidates.md` records the official identity,
+  API/export, pagination, quota, retention, terms, and unsupported evidence
+  checked on 2026-08-02, plus the ranked per-provider child disposition.

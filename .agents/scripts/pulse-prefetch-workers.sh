@@ -265,7 +265,7 @@ _prefetch_triage_nmr_json() {
 	local nmr_err_msg=""
 	nmr_err=$(mktemp) || return 1
 	if ! nmr_json=$(gh_issue_list --repo "$slug" --label "needs-maintainer-review" \
-		--state open --json number,title,author,createdAt,updatedAt \
+		--state open --json number,title,author,createdAt,updatedAt,labels \
 		--limit 50 2>"$nmr_err"); then
 		nmr_read_ok=$_PREFETCH_BOOL_FALSE
 	fi
@@ -280,6 +280,14 @@ _prefetch_triage_nmr_json() {
 			_pulse_mark_rate_limited "prefetch_triage_review_status:${slug}"
 		fi
 		echo "[pulse-wrapper] prefetch_triage_review_status: gh_issue_list FAILED for ${slug}: ${nmr_err_msg}" >>"$LOGFILE"
+		rm -f "$nmr_err"
+		return 1
+	fi
+	# Persistent monitoring/tracking issues are unconditional non-task blockers;
+	# NMR review and triage-failure state are inapplicable to them.
+	if ! nmr_json=$(printf '%s' "$nmr_json" | jq -c \
+		'[.[] | select((((.labels // []) | map(.name) | index("persistent")) == null))]'); then
+		echo "[pulse-wrapper] prefetch_triage_review_status: failed to filter persistent issues for ${slug}" >>"$LOGFILE"
 		rm -f "$nmr_err"
 		return 1
 	fi

@@ -373,6 +373,105 @@ test_exit_push_preserves_dirty_worktree() {
 	return 0
 }
 
+test_exit_push_excludes_deferred_cleanup_marker() {
+	# Bypass the production canonical-repository guard for this disposable fixture.
+	git() { /usr/bin/git "$@"; }
+	local case_dir="${TMPDIR_TEST}/marker-and-work"
+	local origin_dir="${case_dir}/origin.git"
+	local repo_dir="${case_dir}/repo"
+	local marker_path=".agents/.full-loop-cleanup-deferred"
+	mkdir -p "$case_dir"
+	git init --bare "$origin_dir" >/dev/null 2>&1
+	git clone "$origin_dir" "$repo_dir" >/dev/null 2>&1
+	git -C "$repo_dir" config user.email "worker@example.invalid"
+	git -C "$repo_dir" config user.name "Worker Test"
+	git -C "$repo_dir" config commit.gpgsign false
+	git -C "$repo_dir" checkout -b main >/dev/null 2>&1
+	printf 'base\n' >"${repo_dir}/tracked.txt"
+	git -C "$repo_dir" add tracked.txt >/dev/null 2>&1
+	git -C "$repo_dir" commit -m "test: seed repository" >/dev/null 2>&1
+	git -C "$repo_dir" push -u origin main >/dev/null 2>&1
+	git -C "$repo_dir" checkout -b feature/marker-and-work >/dev/null 2>&1
+	mkdir -p "${repo_dir}/.agents"
+	printf 'base\nworker change\n' >"${repo_dir}/tracked.txt"
+	printf '12345\n' >"${repo_dir}/${marker_path}"
+	# Pre-stage the marker to prove the exit trap removes an existing index entry.
+	git -C "$repo_dir" add tracked.txt "$marker_path" >/dev/null 2>&1
+
+	_WORKER_WORKTREE_PATH="$repo_dir"
+	_WORKER_DIRTY_WORK_PRESERVED=0
+	_push_wip_commits_on_exit
+	local preserved="${_WORKER_DIRTY_WORK_PRESERVED:-0}"
+	unset _WORKER_WORKTREE_PATH _WORKER_DIRTY_WORK_PRESERVED
+
+	git -C "$repo_dir" fetch origin feature/marker-and-work >/dev/null 2>&1
+	local pushed_count=""
+	pushed_count=$(git -C "$repo_dir" rev-list --count origin/main..origin/feature/marker-and-work 2>/dev/null || printf '0')
+	local marker_in_commit=""
+	marker_in_commit=$(git -C "$repo_dir" ls-tree -r --name-only origin/feature/marker-and-work -- "$marker_path" 2>/dev/null || true)
+	local marker_in_index=""
+	marker_in_index=$(git -C "$repo_dir" diff --cached --name-only -- "$marker_path" 2>/dev/null || true)
+	local marker_status=""
+	marker_status=$(git -C "$repo_dir" status --porcelain -- "$marker_path" 2>/dev/null || true)
+	local tracked_content=""
+	tracked_content=$(git -C "$repo_dir" show "origin/feature/marker-and-work:tracked.txt" 2>/dev/null || true)
+	if [[ "$preserved" == "1" && "$pushed_count" == "1" && -z "$marker_in_commit" && \
+		-z "$marker_in_index" && "$marker_status" == "?? ${marker_path}" && "$tracked_content" == *"worker change"* ]]; then
+		print_result "exit push excludes pre-staged deferred-cleanup marker" 0
+	else
+		print_result "exit push excludes pre-staged deferred-cleanup marker" 1 \
+			"preserved=${preserved} pushed_count=${pushed_count} committed='${marker_in_commit}' cached='${marker_in_index}' status='${marker_status}'"
+	fi
+	unset -f git
+	return 0
+}
+
+test_exit_push_ignores_marker_only_dirty_state() {
+	# Bypass the production canonical-repository guard for this disposable fixture.
+	git() { /usr/bin/git "$@"; }
+	local case_dir="${TMPDIR_TEST}/marker-only"
+	local origin_dir="${case_dir}/origin.git"
+	local repo_dir="${case_dir}/repo"
+	local marker_path=".agents/.full-loop-cleanup-deferred"
+	mkdir -p "$case_dir"
+	git init --bare "$origin_dir" >/dev/null 2>&1
+	git clone "$origin_dir" "$repo_dir" >/dev/null 2>&1
+	git -C "$repo_dir" config user.email "worker@example.invalid"
+	git -C "$repo_dir" config user.name "Worker Test"
+	git -C "$repo_dir" config commit.gpgsign false
+	git -C "$repo_dir" checkout -b main >/dev/null 2>&1
+	printf 'base\n' >"${repo_dir}/tracked.txt"
+	git -C "$repo_dir" add tracked.txt >/dev/null 2>&1
+	git -C "$repo_dir" commit -m "test: seed repository" >/dev/null 2>&1
+	git -C "$repo_dir" push -u origin main >/dev/null 2>&1
+	git -C "$repo_dir" checkout -b feature/marker-only >/dev/null 2>&1
+	mkdir -p "${repo_dir}/.agents"
+	printf '12345\n' >"${repo_dir}/${marker_path}"
+	git -C "$repo_dir" add "$marker_path" >/dev/null 2>&1
+
+	_WORKER_WORKTREE_PATH="$repo_dir"
+	_WORKER_DIRTY_WORK_PRESERVED=0
+	_push_wip_commits_on_exit
+	local preserved="${_WORKER_DIRTY_WORK_PRESERVED:-0}"
+	unset _WORKER_WORKTREE_PATH _WORKER_DIRTY_WORK_PRESERVED
+
+	local ahead_count=""
+	ahead_count=$(git -C "$repo_dir" rev-list --count origin/main..HEAD 2>/dev/null || printf '1')
+	local marker_in_index=""
+	marker_in_index=$(git -C "$repo_dir" diff --cached --name-only -- "$marker_path" 2>/dev/null || true)
+	local marker_status=""
+	marker_status=$(git -C "$repo_dir" status --porcelain -- "$marker_path" 2>/dev/null || true)
+	if [[ "$preserved" == "0" && "$ahead_count" == "0" && -z "$marker_in_index" && \
+		"$marker_status" == "?? ${marker_path}" ]]; then
+		print_result "exit push ignores marker-only dirty state" 0
+	else
+		print_result "exit push ignores marker-only dirty state" 1 \
+			"preserved=${preserved} ahead=${ahead_count} cached='${marker_in_index}' status='${marker_status}'"
+	fi
+	unset -f git
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -397,6 +496,8 @@ main() {
 	test_no_start_time_empty_db
 	test_no_start_time_with_sessions
 	test_exit_push_preserves_dirty_worktree
+	test_exit_push_excludes_deferred_cleanup_marker
+	test_exit_push_ignores_marker_only_dirty_state
 
 	printf '\n%d tests: %d passed, %d failed\n' \
 		"$TESTS_RUN" "$TESTS_PASSED" "$TESTS_FAILED"

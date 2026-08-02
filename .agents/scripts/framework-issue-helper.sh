@@ -24,8 +24,10 @@
 #                        --title TEXT      Issue title (required)
 #                        --body TEXT       Issue body (optional, auto-generated if omitted)
 #                        --label LABEL     GitHub label (default: "bug")
-#                        --auto-dispatch   Add worker-ready auto-dispatch labels
-#                        --tier TIER       Add tier label for auto-dispatch (for example: standard)
+#                        --auto-dispatch   Explicitly retain the default automatic dispatch
+#                        --tier TIER       Add tier label (default: "standard")
+#                        --no-auto-dispatch  Apply a durable manual hold (requires --hold-reason)
+#                        --hold-reason TEXT  Record why automatic dispatch is unsafe or unauthorized
 #                        --dry-run         Print what would be created, don't create
 #
 #   check-repo         Check if the current repo is the aidevops framework repo.
@@ -56,6 +58,7 @@
 #   framework-issue-helper.sh log \
 #     --title "Phase 3 pipeline stdin consumption bug in ai-lifecycle.sh" \
 #     --body "Observed: workers fail when stdin is consumed in phase 3..."
+#   # Worker-ready framework issues default to auto-dispatch at tier:standard.
 #
 #   # Check if we're in the aidevops repo
 #   if framework-issue-helper.sh check-repo; then
@@ -301,12 +304,10 @@ _validate_gh_prereqs() {
 		log_error "Install with: brew install gh (macOS) or apt install gh (Linux)"
 		return 1
 	fi
-
-
 	# `gh auth status` validates stored keyring entries and can fail even when an
 	# active environment/App token successfully serves API requests. Probe the
 	# capability needed by this helper before declaring authentication broken.
-	if ! gh auth status &>/dev/null && \
+	if ! gh auth status &>/dev/null &&
 		! gh api graphql -f 'query={viewer{login}}' --jq '.data.viewer.login' &>/dev/null; then
 		log_error "GitHub CLI cannot authenticate an API request — run: gh auth login"
 		return 1
@@ -461,7 +462,10 @@ _append_signature_footer() {
 _emit_issue_result() {
 	local issue_output="$1"
 	local issue_url
-	issue_url=$(_extract_issue_url "$issue_output" || printf '%s' "$issue_output")
+	issue_url=$(_extract_issue_url "$issue_output") || {
+		log_error "Issue creation returned no canonical numeric issue URL: $issue_output"
+		return 1
+	}
 	local issue_num
 	issue_num=$(_extract_issue_number "$issue_url" || true)
 
@@ -501,7 +505,7 @@ _normalise_tier_label() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# log_framework_issue TITLE BODY LABEL DRY_RUN AUTO_DISPATCH TIER
+# log_framework_issue TITLE BODY LABEL DRY_RUN AUTO_DISPATCH TIER HOLD_REASON
 #
 # Creates an issue on marcusquinn/aidevops. Deduplicates by title.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,8 +514,9 @@ log_framework_issue() {
 	local body="$2"
 	local label="${3:-bug}"
 	local dry_run="${4:-false}"
-	local auto_dispatch="${5:-false}"
-	local tier="${6:-}"
+	local auto_dispatch="${5:-yes}"
+	local tier="${6:-standard}"
+	local hold_reason="${7:-}"
 
 	_validate_gh_prereqs "$title" || return 1
 
@@ -531,11 +536,21 @@ log_framework_issue() {
 		body=$(_build_issue_body "$title")
 	fi
 
+	if [[ "$auto_dispatch" == "no" ]]; then
+		if [[ -z "$hold_reason" ]]; then
+			log_error "--no-auto-dispatch requires --hold-reason with the durable manual, safety, or authority reason"
+			return 1
+		fi
+		body="${body}"$'\n\n'"## Dispatch Hold"$'\n\n'"${hold_reason}"
+	fi
+
 	body=$(_append_signature_footer "$body")
 
 	local -a issue_labels=("$label")
 	if [[ "$auto_dispatch" == "yes" ]]; then
 		issue_labels+=("auto-dispatch" "status:available")
+	else
+		issue_labels+=("no-auto-dispatch" "status:blocked")
 	fi
 	if [[ -n "$tier" ]]; then
 		local tier_label
@@ -558,8 +573,8 @@ log_framework_issue() {
 	log_info "Creating issue on ${AIDEVOPS_SLUG}: $title"
 
 	local -a create_args=(
-		--repo "$AIDEVOPS_SLUG" \
-		--title "$title" \
+		--repo "$AIDEVOPS_SLUG"
+		--title "$title"
 		--body "$body"
 	)
 	local create_label
@@ -606,11 +621,11 @@ _log_option_value() {
 # _parse_log_command ARGS...
 # ─────────────────────────────────────────────────────────────────────────────
 _parse_log_command() {
-	local title="" body="" label="bug" dry_run="false" auto_dispatch="no" tier=""
+	local title="" body="" label="bug" dry_run="false" auto_dispatch="yes" tier="standard" hold_reason="" dispatch_flag=""
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
 		case "$option" in
-		--title | --title=* | --body | --body=* | --label | --label=* | --tier | --tier=*)
+		--title | --title=* | --body | --body=* | --label | --label=* | --tier | --tier=* | --hold-reason | --hold-reason=*)
 			local flag_name="${option%%=*}"
 			local option_value
 			option_value="$(_log_option_value "$flag_name" "$option" "$#" "${2-}")" || return 1
@@ -627,6 +642,9 @@ _parse_log_command() {
 			--tier)
 				tier="$option_value"
 				;;
+			--hold-reason)
+				hold_reason="$option_value"
+				;;
 			esac
 			case "$option" in
 			*=*)
@@ -638,7 +656,21 @@ _parse_log_command() {
 			esac
 			;;
 		--auto-dispatch)
+			if [[ "$dispatch_flag" == "no" ]]; then
+				log_error "--auto-dispatch and --no-auto-dispatch are mutually exclusive"
+				return 1
+			fi
+			dispatch_flag="yes"
 			auto_dispatch="yes"
+			shift
+			;;
+		--no-auto-dispatch)
+			if [[ "$dispatch_flag" == "yes" ]]; then
+				log_error "--auto-dispatch and --no-auto-dispatch are mutually exclusive"
+				return 1
+			fi
+			dispatch_flag="no"
+			auto_dispatch="no"
 			shift
 			;;
 		--dry-run)
@@ -651,7 +683,20 @@ _parse_log_command() {
 			;;
 		esac
 	done
-	log_framework_issue "$title" "$body" "$label" "$dry_run" "$auto_dispatch" "$tier"
+
+	case ",${label}," in
+	*,auto-dispatch,* | *,no-auto-dispatch,*)
+		log_error "Use --auto-dispatch or --no-auto-dispatch instead of passing a dispatch label through --label"
+		return 1
+		;;
+	esac
+
+	if [[ -n "$hold_reason" && "$auto_dispatch" != "no" ]]; then
+		log_error "--hold-reason requires --no-auto-dispatch"
+		return 1
+	fi
+
+	log_framework_issue "$title" "$body" "$label" "$dry_run" "$auto_dispatch" "$tier" "$hold_reason"
 	return $?
 }
 

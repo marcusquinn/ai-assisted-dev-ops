@@ -35,6 +35,12 @@
 
 set -euo pipefail
 
+_DCH_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_DCH_SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && _DCH_SCRIPT_DIR="."
+# shellcheck source=pr-checkpoint-target-lib.sh
+source "${_DCH_SCRIPT_DIR}/pr-checkpoint-target-lib.sh"
+unset _DCH_SCRIPT_DIR
+
 # Consensus window — how long to wait after posting a claim before checking
 # who won. Must be long enough for GitHub API propagation across runners.
 DISPATCH_CLAIM_WINDOW="${DISPATCH_CLAIM_WINDOW:-8}"
@@ -1313,6 +1319,7 @@ cmd_verify_worker_ownership() {
 #   $2 = repo slug (owner/repo)
 #   $3 = expected head SHA
 #   $4 = expected head ref
+#   $5 = expected sole same-repository closing issue (optional)
 # Returns:
 #   exit 0 = open PR at the exact expected head
 #   exit 1 = PR closed/merged or head changed
@@ -1323,31 +1330,46 @@ cmd_verify_pr_repair_target() {
 	local repo_slug="${2:-}"
 	local expected_head_sha="${3:-}"
 	local expected_head_ref="${4:-}"
+	local linked_issue="${5:-}"
 	if [[ ! "$pr_number" =~ ^[0-9]+$ || -z "$repo_slug" || -z "$expected_head_sha" || -z "$expected_head_ref" ]]; then
 		printf 'PR_REPAIR_TARGET_UNKNOWN: pr=#%s repo=%s reason=incomplete_contract\n' \
 			"${pr_number:-missing}" "${repo_slug:-missing}"
 		return 2
 	fi
+	if [[ -n "$linked_issue" && ! "$linked_issue" =~ ^[1-9][0-9]*$ ]]; then
+		printf 'PR_REPAIR_TARGET_UNKNOWN: pr=#%s repo=%s reason=invalid_linked_issue\n' \
+			"$pr_number" "$repo_slug"
+		return 2
+	fi
 
 	local pr_json=""
+	local pr_fields="state,headRefName,headRefOid,isCrossRepository"
+	[[ -n "$linked_issue" ]] && pr_fields="${pr_fields},closingIssuesReferences"
 	if ! pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json state,headRefName,headRefOid 2>/dev/null); then
+		--json "$pr_fields" 2>/dev/null); then
 		printf 'PR_REPAIR_TARGET_UNKNOWN: pr=#%s repo=%s reason=metadata_unavailable\n' \
 			"$pr_number" "$repo_slug"
 		return 2
 	fi
 	if ! printf '%s' "$pr_json" | jq -e '
-		[.state, .headRefName, .headRefOid] |
-		all((type == "string") and (length > 0))
+		([.state, .headRefName, .headRefOid] |
+		all((type == "string") and (length > 0))) and
+		(.isCrossRepository | type) == "boolean"
 	' >/dev/null 2>&1; then
 		printf 'PR_REPAIR_TARGET_UNKNOWN: pr=#%s repo=%s reason=invalid_metadata\n' \
 			"$pr_number" "$repo_slug"
 		return 2
 	fi
+	if [[ -n "$linked_issue" ]] &&
+		! _pr_closing_link_matches_issue "$pr_json" "$repo_slug" "$linked_issue"; then
+		printf 'PR_REPAIR_TARGET_LOST: pr=#%s repo=%s issue=#%s reason=closing_link_changed\n' \
+			"$pr_number" "$repo_slug" "$linked_issue"
+		return 1
+	fi
 	if printf '%s' "$pr_json" | jq -e \
 		--arg expected_head_sha "$expected_head_sha" \
 		--arg expected_head_ref "$expected_head_ref" '
-		(.state == "OPEN") and
+		(.state == "OPEN") and (.isCrossRepository == false) and
 		(.headRefOid == $expected_head_sha) and
 		(.headRefName == $expected_head_ref)
 	' >/dev/null 2>&1; then
@@ -1361,6 +1383,7 @@ cmd_verify_pr_repair_target() {
 		--arg expected_head_sha "$expected_head_sha" \
 		--arg expected_head_ref "$expected_head_ref" '{
 			state: .state,
+			is_cross_repository: .isCrossRepository,
 			head_sha: .headRefOid,
 			head_ref: .headRefName,
 			expected_head_sha: $expected_head_sha,
@@ -1368,6 +1391,60 @@ cmd_verify_pr_repair_target() {
 		}' 2>/dev/null) || target_summary="unparseable"
 	printf 'PR_REPAIR_TARGET_LOST: pr=#%s repo=%s target=%s\n' \
 		"$pr_number" "$repo_slug" "$target_summary"
+	return 1
+}
+
+#######################################
+# Verify the complete live authorization envelope for a stale worker draft
+# continuation. Unlike ordinary PR repair, this requires draft mode, exact
+# closing linkage, worker ownership labels, and a still-runnable linked issue.
+# Args: PR number, repo slug, expected head SHA, expected head ref, linked issue,
+#       expected issue assignee
+# Returns: 0=valid, 1=eligibility changed, 2=invalid/unavailable metadata
+#######################################
+cmd_verify_pr_checkpoint_target() {
+	local pr_number="${1:-}"
+	local repo_slug="${2:-}"
+	local expected_head_sha="${3:-}"
+	local expected_head_ref="${4:-}"
+	local linked_issue="${5:-}"
+	local expected_assignee="${6:-}"
+	local pr_json=""
+	local issue_json=""
+
+	if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ || -z "$repo_slug" ||
+		! "$expected_head_sha" =~ ^[0-9a-fA-F]{40,64}$ || -z "$expected_head_ref" ||
+		! "$linked_issue" =~ ^[1-9][0-9]*$ || -z "$expected_assignee" ]]; then
+		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=incomplete_contract\n' \
+			"${pr_number:-missing}" "${repo_slug:-missing}" "${linked_issue:-missing}"
+		return 2
+	fi
+	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
+		--json number,state,isDraft,isCrossRepository,labels,headRefName,headRefOid,closingIssuesReferences 2>/dev/null) || {
+		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=pr_metadata_unavailable\n' \
+			"$pr_number" "$repo_slug" "$linked_issue"
+		return 2
+	}
+	issue_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || {
+		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=issue_metadata_unavailable\n' \
+			"$pr_number" "$repo_slug" "$linked_issue"
+		return 2
+	}
+	if ! printf '%s\n%s\n' "$pr_json" "$issue_json" | jq -se \
+		'length == 2 and all(.[]; type == "object")' >/dev/null 2>&1; then
+		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=invalid_metadata\n' \
+			"$pr_number" "$repo_slug" "$linked_issue"
+		return 2
+	fi
+	if _pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" "$linked_issue" \
+		"$expected_head_sha" "$expected_head_ref" &&
+		_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" "$expected_assignee"; then
+		printf 'PR_CHECKPOINT_TARGET_VALID: pr=#%s repo=%s issue=#%s assignee=%s head_sha=%s head_ref=%s\n' \
+			"$pr_number" "$repo_slug" "$linked_issue" "$expected_assignee" "$expected_head_sha" "$expected_head_ref"
+		return 0
+	fi
+	printf 'PR_CHECKPOINT_TARGET_LOST: pr=#%s repo=%s issue=#%s reason=eligibility_changed\n' \
+		"$pr_number" "$repo_slug" "$linked_issue"
 	return 1
 }
 
@@ -1549,10 +1626,16 @@ Usage:
     Exit 1 = ownership changed (terminalize worker lease)
     Exit 2 = metadata unavailable or invalid (fail closed)
 
-  dispatch-claim-helper.sh verify-pr-repair-target <pr-number> <repo-slug> <head-sha> <head-ref>
+  dispatch-claim-helper.sh verify-pr-repair-target <pr-number> <repo-slug> <head-sha> <head-ref> [linked-issue]
     Verify a direct PR-remediation worker still targets the exact open PR head.
     Exit 0 = open PR at the exact expected head
     Exit 1 = PR closed/merged or head changed
+    Exit 2 = contract or metadata unavailable/invalid (fail closed)
+
+  dispatch-claim-helper.sh verify-pr-checkpoint-target <pr-number> <repo-slug> <head-sha> <head-ref> <linked-issue> <expected-assignee>
+    Verify a stale draft continuation still has its complete authorization envelope.
+    Exit 0 = exact worker draft and runnable linked issue remain eligible
+    Exit 1 = draft, linkage, labels, issue state, assignment, or head changed
     Exit 2 = contract or metadata unavailable/invalid (fail closed)
 
   dispatch-claim-helper.sh help
@@ -1607,6 +1690,9 @@ main() {
 		;;
 	verify-pr-repair-target)
 		cmd_verify_pr_repair_target "$@"
+		;;
+	verify-pr-checkpoint-target)
+		cmd_verify_pr_checkpoint_target "$@"
 		;;
 	transition)
 		cmd_transition "$@"

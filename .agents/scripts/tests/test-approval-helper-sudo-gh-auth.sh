@@ -176,6 +176,57 @@ run_case "sudo gh auth recovery uses absolute gh binary when sudo path is restri
 assert_not_contains "absolute path recovered token is not printed" "$LAST_OUTPUT" "path-token"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "sudo gh auth recovery works through the aidevops gh shim" '
+	set -uo pipefail
+	export SUDO_USER=alice
+	export HOME=/var/root
+	fixture_root=$(mktemp -d)
+	trap '\''rm -rf "$fixture_root"'\'' EXIT
+	helper_dir=${APPROVAL_HELPER_UNDER_TEST%/*}
+	shim_dir="$fixture_root/shim"
+	native_dir="$fixture_root/native"
+	mkdir -p "$shim_dir" "$native_dir"
+	for module in gh gh-native-transport-lib.sh gh-api-guards-lib.sh gh-write-policy-lib.sh gh-api-instrument.sh gh-rest-pagination-lib.sh; do
+		cp "$helper_dir/$module" "$shim_dir/$module"
+	done
+	chmod +x "$shim_dir/gh"
+	printf '\''#!/usr/bin/env bash\nif [[ "${1:-}:${2:-}" == "auth:token" ]]; then printf integrated-shim-token; exit 0; fi\nexit 1\n'\'' >"$native_dir/gh"
+	chmod +x "$native_dir/gh"
+	export PATH="$shim_dir:$native_dir:/usr/bin:/bin"
+	export AIDEVOPS_GH_API_LOG="$fixture_root/api.log"
+	id() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "-u" && -z "$arg2" ]]; then printf "0"; return 0; fi
+		if [[ "$arg1" == "-u" && "$arg2" == "alice" ]]; then printf "501"; return 0; fi
+		return 1
+	}
+	getent() { return 1; }
+	dscl() { printf "NFSHomeDirectory: /Users/alice\n"; return 0; }
+	launchctl() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "asuser" && "$arg2" == "501" && "$#" -ge 11 ]]; then
+			shift 8
+			"$@"
+			return $?
+		fi
+		return 1
+	}
+	sudo() { return 1; }
+	gh() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "auth" && "$arg2" == "status" && "${GH_TOKEN:-}" == "integrated-shim-token" ]]; then return 0; fi
+		return 1
+	}
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_require_gh_auth && [[ ! -e "$AIDEVOPS_GH_API_LOG" ]]
+' 0
+assert_not_contains "integrated shim recovered token is not printed" "$LAST_OUTPUT" "integrated-shim-token"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "sudo gh auth failure reports recovery failure without token leakage" '
 	set -uo pipefail
 	export SUDO_USER=alice

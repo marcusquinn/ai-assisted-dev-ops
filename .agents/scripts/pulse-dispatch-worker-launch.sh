@@ -615,7 +615,7 @@ _dlw_capture_reused_worktree_owner() {
 
 	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
 	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_info"
-	if [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" || -z "$owner_batch" ||
+	if [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" ||
 		"$owner_task" != "$issue_number" || -z "$owner_created_at" ]]; then
 		echo "[dispatch_with_dedup] Rejected incomplete or mismatched registry owner for #${issue_number}; attempting an atomic same-task claim instead: ${worktree_path}" >>"$LOGFILE"
 		return 1

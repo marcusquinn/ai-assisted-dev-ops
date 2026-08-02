@@ -107,6 +107,48 @@ exists; do not derive a service label from the routine title or ID.
 - Schedule semantics outside version control
 - Collapsing SOP, targets, and schedule into a single prompt — keep them independent
 
+## Knowledge collector freshness (r047)
+
+`r047` is a disabled, deterministic routine for configured folder, inbox-watch,
+mailbox, and social sources. It does not launch an LLM or duplicate Pulse. A
+private mode-0600 `knowledge-collectors.json` declares opaque connection IDs,
+allowlisted connector IDs, source mode (`event`, `poll`, `watch`, `hybrid`,
+`archive`, or `manual`), minimum/freshness/reconciliation intervals, bounded
+runtime, installation-local arguments, and an explicit canonical
+`projection_root` for active document collectors. Social collectors omit that
+field because their transaction updates the social query index directly. Event notifications use a new opaque
+`event_token` for each durable event; successful collection acknowledges that
+token exactly once while the bounded reconciliation interval remains active.
+
+Run `knowledge-collector-routine.sh plan` first. `run --dry-run` reports only due
+opaque IDs; enabled execution is sequential, lease-protected by the state lock,
+and invokes fixed local argv vectors without `eval`. Manual/archive sources are
+reported as manual and are never polled. Event/hybrid sources reconcile on their
+bounded interval. Poll/watch sources respect both useful freshness and a minimum
+interval. Successful changed runs trigger incremental enrichment/indexing;
+empty or failed runs do not.
+
+Content-free owner-only health state records attempt/success/failure boundaries,
+changed counts, projection status, next due state, rate-reset state, and
+consecutive terminal failures. It never records account IDs, paths, filters,
+arguments, provider output, or content. Alerts become eligible only after the
+configured consecutive-failure threshold; pending, rate-reset, manual, and
+disabled states are not terminal failures.
+
+Operator-private setup:
+
+1. Copy the schema from `test-knowledge-collector-routine.sh` into
+   `~/.config/aidevops/knowledge-collectors.json`; keep mode `0600`.
+2. Use only opaque connection IDs and local arguments; credentials remain in
+   `aidevops secret`/provider profiles, never config arguments. Set
+   `projection_root` to the exact existing `_knowledge` directory written by
+   each non-social active collector; it is never inferred from the process
+   working directory.
+3. Run `plan`, then `run --dry-run`, inspect `health`, and execute one bounded
+   manual `run` before enabling r047 in the installation's private override.
+4. Keep the public repository definition disabled unless its checked-in config
+   is intentionally installation-neutral.
+
 ## Runtime Health Audit (r-runtime-audit, t3072)
 
 The supervisor LLM cycle triages GitHub state — issues, PRs, labels, scanner findings — but never inspects processes, logs, pulse-stats counters, or deployed-script mtimes. That gap is a structural blind spot: bugs visible to any operator running `ps`, `jq`, `tail` go unraised for hours.

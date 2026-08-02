@@ -63,6 +63,33 @@ commit. A failed pre-publication attempt records both the requested and current
 source SHAs as actionable failure evidence, but creates no tag or publication.
 Retries reconcile terminal receipts and cannot publish twice.
 
+### Post-publication supersession
+
+A different recovery path applies when an older signed tag already published all
+three package channels, exact-tag postflight dispatch was its sole failed step,
+and a later independently authorized release has since become terminal. The old
+tag cannot use normal recovery because GitHub, npm, and Homebrew now converge on
+the newer version, and deploying its checkout would downgrade the runtime.
+
+`aidevops release reconcile <older-source-pr>` may mark that receipt
+`release:superseded` without publication or deployment only when it verifies:
+
+1. the older tag's immutable source provenance and correlated workflow job;
+2. successful GitHub release, npm, and Homebrew verification steps followed by
+   one failed `Queue exact-tag postflight` step and no other failed step;
+3. a strictly descendant latest signed tag with a terminal-success publication
+   run and exact current channel convergence; and
+4. a local `release:published` receipt for the latest tag's source PR.
+
+The resulting `.successor.json` receipt records both source PRs, merge SHAs,
+tags, release commits, and workflow run IDs with evidence type
+`post-publication-supersession`. It is distinct from reviewed aggregation: the
+newer tag does not retroactively claim an `Aidevops-Aggregated-Source` trailer.
+Missing, duplicated, renamed, malformed, nonterminal, or conflicting evidence
+fails closed and leaves the older receipt unchanged. `status` remains read-only,
+and this path never dispatches publication or runs `post-release` from the stale
+checkout.
+
 The aggregation PR must expose a durable review record before merge. Create it
 as a draft from an initial documentation commit, then add the allocated PR
 number and every authorized `PR@MERGE_SHA` source in a follow-up commit without
@@ -180,6 +207,40 @@ Aggregation PR #29130 reviews authorized Cloudron monitoring PR #29117 at
 recovery and PR #29127 advanced `main` before publication. Its exact branch
 base is `a144e469da47bad93cd3ebfec8cda0a18429c73d`.
 
+Aggregation PR #29148 reviews authorized Qlty postflight PR #29127 at
+`c8d6491cdf52e4ab1b8162ee793958bf7c2dfde9` because releases `v3.32.208` and
+`v3.32.209`, plus subsequent merges, advanced `main` before its explicitly
+authorized patch release completed. Its exact branch base is
+`af4dc8979fde7864fd0d7ffc898f47629dd3241e`.
+
+Aggregation PR #29159 reviews authorized GH audit PR #29152 at
+`817e68674104c07951932c9cc914763f31f56b94` because protected release PR #29155
+advanced `main` after the source merged, while immutable `v3.32.210` predates
+that source. Its exact branch base is
+`71ad1b62a0da67f161a9a41992d4d4a5958b5e2c`.
+
+Aggregation PR #29164 re-reviews authorized GH audit PR #29152 at
+`817e68674104c07951932c9cc914763f31f56b94` and prior aggregation PR #29159 at
+`29714078dee12f926f9a52c9eeb51a63549373e3` because subsequent maintained
+merges advanced `main` before publication. Its exact branch base is
+`becf4e373d9c8a1eb509af6f90c3a0bb481c6225`.
+
+Aggregation PR #29169 re-reviews authorized workflow diagnostics PR #29161 at
+`671ed712079913857b3c5213cf4ff97ed56c4287`; it also covers authorized GH audit
+PR #29152 at `817e68674104c07951932c9cc914763f31f56b94`, prior aggregation PR #29159 at
+`29714078dee12f926f9a52c9eeb51a63549373e3`, and prior aggregation PR #29164 at
+`80d0a1cee4caf0e01514e2278d0ac3665e3c41af`. Immutable `v3.32.211` predates
+both authorized sources. The exact branch base is
+`80d0a1cee4caf0e01514e2278d0ac3665e3c41af`.
+
+Aggregation PR #29177 re-reviews authorized workflow diagnostics PR #29161 at
+`671ed712079913857b3c5213cf4ff97ed56c4287` and unresolved combined aggregation
+PR #29169 at `f87af46e46501b5e03f9e015c4b790fae2477a22` for a fresh exact-tip review.
+Immutable `v3.32.212` settled aggregation PR #29164 and its GH audit chain;
+postflight quota fix PR #29174 then advanced `main` with terminal
+`release:not-requested` evidence. The exact branch base is
+`dacff2107e272a059bfbba693ab5594742c55f5e`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
@@ -271,14 +332,32 @@ After the issue #28737 code checkpoint merges, the approved live target is:
 - permit exactly `v*` tag deployments and `main` branch recovery deployments;
 - keep environment administrator bypass disabled and re-check it in the UI.
 
-The signed annotated tag becomes the durable publication authorization. Before
-any public side effect, one unified workflow verifies its exact source PR/merge
-trailers, GitHub-verified tag object, release commit, and `main` ancestry. A normal
+The trusted operator's complete expected source set is the publication
+authorization input. The runner resolves every explicitly authorized PR to its
+merged `main` SHA, normalizes and persists the resulting `PR@SHA` set before any
+version mutation, and reuses that exact set on retry. Git ancestry proves code
+presence only; it never adds authority. The observed direct or reviewed aggregate
+manifest must equal the expected set exactly, so omissions, extras, duplicates,
+malformed entries, or SHA mismatches fail before a version bump, tag, package, or
+receipt mutation. Calls without an explicit set retain singleton compatibility by
+using the requested source PR as the expected set.
+
+After that equality gate, the signed annotated tag becomes the durable
+publication record. Before any public side effect, one unified workflow verifies
+its exact source PR/merge trailers, GitHub-verified tag object, release commit,
+and `main` ancestry. A normal
 tag run must execute at the matching tag ref. Recovery must execute the reviewed
 workflow from `main`, accepts only the newest exact semantic-version tag, and
 repeats the same provenance verifier. GitHub release creation, npm publication,
 and Homebrew update are each check-before-write and verify-after-write operations,
 so retries converge without duplicate publication or channel downgrade.
+
+Immutable historical tags are never rewritten to repair an authorization gap.
+Detached `authorization-gap` evidence records the expected and observed source
+sets, tag object, release commit, timestamp, and reason. It is deliberately not a
+release status or cleanup receipt, cannot transition cleanup to terminal success,
+and cannot authorize publication. Omitted source receipts remain pending until
+separately reviewed terminal evidence exists.
 
 This unified path supersedes the interim separate package dispatch. Workflow-run
 discovery binds a push to the exact tag commit. Recovery names and verifies an

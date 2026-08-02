@@ -39,6 +39,15 @@ readonly DROP_DIR_NAME="_drop"
 readonly DEBOUNCE_SECS="${INBOX_WATCH_DEBOUNCE_SECS:-5}"
 readonly MAX_BATCH="${INBOX_WATCH_MAX_BATCH:-50}"
 
+_emit_collector_receipt() {
+	local changed_count="$1"
+	local collector_status="$2"
+	local coverage_status="$3"
+	printf '{"changed_count":%s,"collector_status":"%s","coverage_status":"%s"}\n' \
+		"$changed_count" "$collector_status" "$coverage_status"
+	return 0
+}
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -51,6 +60,9 @@ main() {
 	# Nothing to do if _drop/ doesn't exist
 	if [[ ! -d "$drop_dir" ]]; then
 		print_info "No _drop/ directory at ${drop_dir} — nothing to process"
+		if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+			_emit_collector_receipt 0 complete complete
+		fi
 		return 0
 	fi
 
@@ -70,9 +82,9 @@ main() {
 
 		# Debounce: check modification time
 		local file_mtime
-		file_mtime="$(date -r "$file_path" +%s 2>/dev/null \
-			|| _file_mtime_epoch "$file_path")"
-		local age=$(( now_ts - file_mtime ))
+		file_mtime="$(date -r "$file_path" +%s 2>/dev/null ||
+			_file_mtime_epoch "$file_path")"
+		local age=$((now_ts - file_mtime))
 
 		if [[ "$age" -lt "$DEBOUNCE_SECS" ]]; then
 			skipped=$((skipped + 1))
@@ -91,6 +103,13 @@ main() {
 
 	if [[ "$processed" -gt 0 || "$errors" -gt 0 ]]; then
 		print_info "Watch routine complete: processed=${processed} skipped=${skipped} errors=${errors}"
+	fi
+	if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+		local coverage_status="complete"
+		local collector_status="complete"
+		[[ "$errors" -gt 0 ]] && coverage_status="partial"
+		[[ "$errors" -gt 0 ]] && collector_status="partial"
+		_emit_collector_receipt "$processed" "$collector_status" "$coverage_status"
 	fi
 	return 0
 }

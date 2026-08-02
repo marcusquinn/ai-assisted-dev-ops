@@ -16,6 +16,8 @@ _PIR_ADD_LABEL_FLAG="--add-label"
 _PIR_REMOVE_LABEL_FLAG="--remove-label"
 _PIR_AUTO_DISPATCH_LABEL="auto-dispatch"
 _PIR_STATUS_AVAILABLE="status:available"
+_PIR_PERSISTENT_LABEL="persistent"
+_PIR_TRIAGE_FAILED_LABEL="triage-failed"
 AUTHORITY_RC=1
 GH_EDIT_LOG="$TEST_ROOT/edit.log"
 TESTS_RUN=0
@@ -62,6 +64,27 @@ record() {
 
 main() {
 	local rc=0
+	_should_reconcile_persistent_issue "persistent,source:health-dashboard" || rc=$?
+	record "persistent issue is a non-task reconciliation candidate" "$rc"
+	rc=0
+	_should_reconcile_persistent_issue "status:available,origin:worker" || rc=$?
+	[[ "$rc" -eq 1 ]] && record "ordinary task is not a persistent candidate" 0 \
+		|| record "ordinary task is not a persistent candidate" 1
+
+	: >"$GH_EDIT_LOG"
+	rc=0
+	_action_reconcile_persistent_issue_labels owner/repo 26416 \
+		"persistent,needs-maintainer-review,triage-failed" || rc=$?
+	if [[ "$rc" -eq 0 ]] \
+		&& grep -q -- '--remove-label triage-failed' "$GH_EDIT_LOG" \
+		&& ! grep -q -- '--remove-label needs-maintainer-review' "$GH_EDIT_LOG" \
+		&& ! grep -q -- '--add-label' "$GH_EDIT_LOG"; then
+		record "persistent issue drops triage residue without bypassing NMR" 0
+	else
+		record "persistent issue drops triage residue without bypassing NMR" 1
+	fi
+
+	rc=0
 	_should_reconcile_external_issue_gate CONTRIBUTOR User false || rc=$?
 	record "ordinary external issue is a trust candidate regardless of title" "$rc"
 	rc=0
@@ -115,8 +138,19 @@ main() {
 	[[ "$rc" -eq 1 ]] && record "write-authorized collaborator continues" 0 \
 		|| record "write-authorized collaborator continues" 1
 
+	AUTHORITY_RC=2
+	: >"$GH_EDIT_LOG"
+	rc=0
+	_action_reconcile_external_issue_gate owner/repo 29090 \
+		"auto-dispatch,status:available" COLLABORATOR writer || rc=$?
+	if [[ "$rc" -eq 0 && "$_PIR_EXTERNAL_GATE_MUTATED" -eq 0 && ! -s "$GH_EDIT_LOG" ]]; then
+		record "unavailable collaborator lookup blocks without permanent NMR mutation" 0
+	else
+		record "unavailable collaborator lookup blocks without permanent NMR mutation" 1
+	fi
+
 	local stage_zero_line="" stage_one_line=""
-	stage_zero_line=$(grep -n '# Stage 0:' "$ORCHESTRATOR" | tail -1 | cut -d: -f1)
+	stage_zero_line=$(grep -n '# Stage 0a:' "$ORCHESTRATOR" | tail -1 | cut -d: -f1)
 	stage_one_line=$(grep -n '# Stage 1:' "$ORCHESTRATOR" | tail -1 | cut -d: -f1)
 	if [[ "$stage_zero_line" =~ ^[0-9]+$ && "$stage_one_line" =~ ^[0-9]+$ && "$stage_zero_line" -lt "$stage_one_line" ]]; then
 		record "trust reconciliation runs before lifecycle actions" 0

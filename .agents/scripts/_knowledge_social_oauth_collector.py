@@ -227,21 +227,20 @@ class OAuthCollector:
                 raise self.policy.provider_module.ADAPTER_ERROR(
                     f"{self.policy.display_name} retry_after must be text or an integer"
                 )
-        retry_after = str(retry_value) if retry_value is not None else None
         finish_active_run(
             root,
             lease,
             RunReceiptUpdate(
                 decision.run_status,
                 failure_class=decision.failure_class,
-                retry_after=retry_after,
+                retry_after=retry_value,
             ),
         )
         return collection_result(
             decision.output_status,
             CollectionProgress(budget_units=IDENTITY_COST_UNITS),
             failure_class=decision.failure_class,
-            retry_after=retry_after,
+            retry_after=retry_value,
             run_id=lease.run_id,
         )
 

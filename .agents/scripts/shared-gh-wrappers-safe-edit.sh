@@ -135,67 +135,73 @@ _gh_extract_repo_from_args() {
 
 #######################################
 # Fetch issue state as JSON for the audit log.
-# Non-blocking: returns empty-state JSON on any failure.
+# Non-blocking: returns an explicitly unavailable snapshot on any failure so a
+# read outage can never masquerade as a destructive edit.
 # Args: $1=issue_num $2=repo_slug
-# Output: JSON {"title_len":N,"body_len":N,"labels":["l1",...]}
+# Output: JSON {"capture_status":"ok|unavailable","title_len":N|null,
+#               "body_len":N|null,"labels":["l1",...]|null}
 #######################################
 _gh_audit_fetch_issue_state_json() {
 	local issue_num="$1"
 	local repo="$2"
-	local empty='{"title_len":0,"body_len":0,"labels":[]}'
+	local unavailable='{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null}'
 
-	[[ -z "$issue_num" || -z "$repo" ]] && echo "$empty" && return 0
-	[[ ! "$issue_num" =~ ^[0-9]+$ ]] && echo "$empty" && return 0
+	[[ -z "$issue_num" || -z "$repo" ]] && printf '%s\n' "$unavailable" && return 0
+	[[ ! "$issue_num" =~ ^[0-9]+$ ]] && printf '%s\n' "$unavailable" && return 0
 	command -v jq &>/dev/null || {
-		echo "$empty"
+		printf '%s\n' "$unavailable"
 		return 0
 	}
 
 	local data
 	data=$(gh issue view "$issue_num" --repo "$repo" \
 		--json title,body,labels 2>/dev/null) || {
-		echo "$empty"
+		printf '%s\n' "$unavailable"
 		return 0
 	}
 
 	jq -c '{
+		capture_status: "ok",
 		title_len: ((.title // "") | length),
 		body_len:  ((.body  // "") | length),
 		labels:    ([.labels[]?.name // empty])
-	}' <<<"$data" 2>/dev/null || echo "$empty"
+	}' <<<"$data" 2>/dev/null || printf '%s\n' "$unavailable"
 	return 0
 }
 
 #######################################
 # Fetch PR state as JSON for the audit log.
-# Non-blocking: returns empty-state JSON on any failure.
+# Non-blocking: returns an explicitly unavailable snapshot on any failure so a
+# read outage can never masquerade as a destructive edit.
 # Args: $1=pr_num $2=repo_slug
-# Output: JSON {"title_len":N,"body_len":N,"labels":["l1",...]}
+# Output: JSON {"capture_status":"ok|unavailable","title_len":N|null,
+#               "body_len":N|null,"labels":["l1",...]|null}
 #######################################
 _gh_audit_fetch_pr_state_json() {
 	local pr_num="$1"
 	local repo="$2"
-	local empty='{"title_len":0,"body_len":0,"labels":[]}'
+	local unavailable='{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null}'
 
-	[[ -z "$pr_num" || -z "$repo" ]] && echo "$empty" && return 0
-	[[ ! "$pr_num" =~ ^[0-9]+$ ]] && echo "$empty" && return 0
+	[[ -z "$pr_num" || -z "$repo" ]] && printf '%s\n' "$unavailable" && return 0
+	[[ ! "$pr_num" =~ ^[0-9]+$ ]] && printf '%s\n' "$unavailable" && return 0
 	command -v jq &>/dev/null || {
-		echo "$empty"
+		printf '%s\n' "$unavailable"
 		return 0
 	}
 
 	local data
 	data=$(gh pr view "$pr_num" --repo "$repo" \
 		--json title,body,labels 2>/dev/null) || {
-		echo "$empty"
+		printf '%s\n' "$unavailable"
 		return 0
 	}
 
 	jq -c '{
+		capture_status: "ok",
 		title_len: ((.title // "") | length),
 		body_len:  ((.body  // "") | length),
 		labels:    ([.labels[]?.name // empty])
-	}' <<<"$data" 2>/dev/null || echo "$empty"
+	}' <<<"$data" 2>/dev/null || printf '%s\n' "$unavailable"
 	return 0
 }
 
@@ -228,10 +234,15 @@ _gh_audit_record_op() {
 	# aidevops:trust-boundary — caller provenance alone is spoofable. Record the
 	# exemption proof only after independently re-verifying the signed approval
 	# and authenticated actor authority against current GitHub state.
-	if [[ "$op" == "issue_edit" && "$caller_function" == "_approval_apply_issue_lifecycle_updates" ]] &&
-		command -v cmd_verify &>/dev/null; then
+	local approval_target_type=""
+	if [[ "$op" == "issue_edit" && "$caller_function" == "_approval_apply_issue_lifecycle_updates" ]]; then
+		approval_target_type="issue"
+	elif [[ "$op" == "pr_edit" && "$caller_function" == "_approval_apply_pr_lifecycle_updates" ]]; then
+		approval_target_type="pr"
+	fi
+	if [[ -n "$approval_target_type" ]] && command -v cmd_verify &>/dev/null; then
 		local approval_verification=""
-		approval_verification=$(cmd_verify issue "$number" "$repo" --require-authority 2>/dev/null) || approval_verification=""
+		approval_verification=$(cmd_verify "$approval_target_type" "$number" "$repo" --require-authority 2>/dev/null) || approval_verification=""
 		if [[ "$approval_verification" == "VERIFIED" ]]; then
 			flags_json='{"approval_verified":"v2-current-state"}'
 		fi

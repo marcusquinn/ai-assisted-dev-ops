@@ -18,6 +18,8 @@ REMOTE="${ROOT}/remote.git"
 REPO="${ROOT}/repo"
 LINKED="${ROOT}/release"
 BIN="${ROOT}/bin"
+RESOLVER_LOG="${ROOT}/resolver.log"
+export RESOLVER_LOG
 mkdir -p "$BIN"
 
 git init -q --bare "$REMOTE"
@@ -99,22 +101,40 @@ printf 'PASS stale historical source PR is rejected\n'
 
 cat >"${BIN}/aggregate-resolver.sh" <<STUB
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >"\${RESOLVER_LOG:?}"
+expected_sources=""
+while [[ \$# -gt 0 ]]; do
+	case "\$1" in
+	--expected-sources) expected_sources="\${2:-}"; shift 2 ;;
+	*) shift ;;
+	esac
+done
+[[ "\$expected_sources" == "42@${HISTORICAL_MERGE}" ]] || exit 1
 printf '%s\n' '{"mode":"aggregate","requested_pr":42,"source_pr":99,"source_merge":"${MERGE_SHA}","aggregated_sources":[{"pr":42,"merge":"${HISTORICAL_MERGE}"}]}'
 exit 0
 STUB
 chmod +x "${BIN}/aggregate-resolver.sh"
 AIDEVOPS_RELEASE_SOURCE_RESOLVER="${BIN}/aggregate-resolver.sh" \
-	verify_release_source_pr 42 main testorg/aidevops || {
+	verify_release_source_pr 42 main testorg/aidevops "42@${HISTORICAL_MERGE}" || {
 	printf 'FAIL version manager rejected reviewed aggregate source metadata\n'
 	exit 1
 }
+grep -qx "resolve-source --source-pr 42 --repo testorg/aidevops --branch main --expected-sources 42@${HISTORICAL_MERGE}" \
+	"$RESOLVER_LOG"
 [[ "$VERSION_MANAGER_SOURCE_PR" == "99" ]]
 [[ "$VERSION_MANAGER_SOURCE_MERGE_SHA" == "$MERGE_SHA" ]]
 [[ "$VERSION_MANAGER_AGGREGATED_SOURCES" == "42@${HISTORICAL_MERGE}" ]]
+[[ "$VERSION_MANAGER_EXPECTED_SOURCES" == "42@${HISTORICAL_MERGE}" ]]
 aggregate_tag_message=$(_release_tag_message 1.2.3)
 [[ "$aggregate_tag_message" == *"Aidevops-Source-PR: 99"* ]]
 [[ "$aggregate_tag_message" == *"Aidevops-Aggregated-Source: 42@${HISTORICAL_MERGE}"* ]]
 printf 'PASS version manager carries aggregate source provenance into immutable tag trailers\n'
+if AIDEVOPS_RELEASE_SOURCE_RESOLVER="${BIN}/aggregate-resolver.sh" \
+	verify_release_source_pr 42 main testorg/aidevops "42@${MERGE_SHA}"; then
+	printf 'FAIL version manager accepted a changed authorization set at the final boundary\n'
+	exit 1
+fi
+printf 'PASS version manager forwards the exact trusted set at the final boundary\n'
 VERSION_MANAGER_SOURCE_PR=42
 VERSION_MANAGER_SOURCE_MERGE_SHA="$MERGE_SHA"
 VERSION_MANAGER_AGGREGATED_SOURCES=""

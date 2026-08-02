@@ -79,6 +79,30 @@ class CanonicalWritePolicyTests(unittest.TestCase):
                 str(target), patch_text
             )
 
+    def _create_repo_with_linked_worktree(
+        self, root: Path, name: str
+    ) -> tuple[Path, Path]:
+        repo = root / f"{name}-repo"
+        linked = root / f"{name}-linked"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "config", "user.name", "Test")
+        self._git(repo, "config", "user.email", "test@example.invalid")
+        self._git(repo, "config", "commit.gpgsign", "false")
+        (repo / "README.md").write_text(f"{name}\n", encoding="utf-8")
+        self._git(repo, "add", "README.md")
+        self._git(repo, "commit", "-q", "-m", f"{name} seed")
+        self._git(
+            repo,
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            f"feature/{name}",
+            str(linked),
+        )
+        return repo, linked
+
     def test_planning_files_are_denied_in_canonical_develop_checkout(self):
         for relative_path in ("README.md", "TODO.md", "todo/task.md"):
             with self.subTest(relative_path=relative_path):
@@ -96,33 +120,96 @@ class CanonicalWritePolicyTests(unittest.TestCase):
         self.assertIsNone(self._check(self.repo, outside_target))
         self.assertIsNone(self._check(self.repo, self.linked / "new-file.md"))
 
-    def test_cross_repository_linked_target_is_denied(self):
-        foreign_repo = self.root / "foreign-repo"
-        foreign_linked = self.root / "foreign-linked"
-        foreign_repo.mkdir()
-        self._git(foreign_repo, "init", "-q", "-b", "main")
-        self._git(foreign_repo, "config", "user.name", "Test")
-        self._git(foreign_repo, "config", "user.email", "test@example.invalid")
-        self._git(foreign_repo, "config", "commit.gpgsign", "false")
-        (foreign_repo / "README.md").write_text("foreign\n", encoding="utf-8")
-        self._git(foreign_repo, "add", "README.md")
-        self._git(foreign_repo, "commit", "-q", "-m", "foreign seed")
-        self._git(
-            foreign_repo,
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "feature/foreign",
-            str(foreign_linked),
+    def test_cross_repository_linked_target_is_allowed_within_workspace(self):
+        _, foreign_linked = self._create_repo_with_linked_worktree(
+            self.root, "foreign"
         )
 
-        for cwd in (self.repo, self.linked):
-            with self.subTest(cwd=cwd):
-                denial = self._check(cwd, foreign_linked / "README.md")
-                self.assertIsNotNone(denial)
-                reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn("different repository", reason)
+        with mock.patch.dict(
+            canonical_write_policy.os.environ,
+            {"AIDEVOPS_GIT_WORKSPACE_ROOT": str(self.root)},
+        ):
+            for cwd in (self.repo, self.linked):
+                with self.subTest(cwd=cwd):
+                    self.assertIsNone(
+                        self._check(cwd, foreign_linked / "README.md")
+                    )
+
+    def test_cross_repository_linked_target_outside_workspace_is_denied(self):
+        outside_temp = tempfile.TemporaryDirectory(
+            prefix=f"{self.root.name}-sibling-", dir=self.root.parent
+        )
+        self.addCleanup(outside_temp.cleanup)
+        outside_root = Path(outside_temp.name)
+        _, foreign_linked = self._create_repo_with_linked_worktree(
+            outside_root, "foreign"
+        )
+
+        with mock.patch.dict(
+            canonical_write_policy.os.environ,
+            {"AIDEVOPS_GIT_WORKSPACE_ROOT": str(self.root)},
+        ):
+            denial = self._check(self.linked, foreign_linked / "README.md")
+            self.assertIsNotNone(denial)
+            reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("limited to the trusted Git workspace", reason)
+
+            alias = self.root / "foreign-alias"
+            alias.symlink_to(foreign_linked, target_is_directory=True)
+            denial = self._check(self.linked, alias / "README.md")
+            self.assertIsNotNone(denial)
+            reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("limited to the trusted Git workspace", reason)
+
+    def test_context_outside_workspace_cannot_target_foreign_linked_worktree(self):
+        outside_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_temp.cleanup)
+        outside_root = Path(outside_temp.name)
+        _, outside_linked = self._create_repo_with_linked_worktree(
+            outside_root, "outside"
+        )
+
+        with mock.patch.dict(
+            canonical_write_policy.os.environ,
+            {"AIDEVOPS_GIT_WORKSPACE_ROOT": str(self.root)},
+        ):
+            denial = self._check(outside_linked, self.linked / "README.md")
+            self.assertIsNotNone(denial)
+            reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("limited to the trusted Git workspace", reason)
+
+    def test_git_worktree_symlink_cannot_escape_to_outside_workspace(self):
+        outside_temp = tempfile.TemporaryDirectory(
+            prefix=f"{self.root.name}-outside-", dir=self.root.parent
+        )
+        self.addCleanup(outside_temp.cleanup)
+        outside_root = Path(outside_temp.name)
+        outside_file = outside_root / "outside.txt"
+        outside_file.write_text("outside\n", encoding="utf-8")
+        escaped_outside_file = outside_root.parent / f"{outside_root.name}-escaped.txt"
+        escaped_outside_file.write_text("escaped\n", encoding="utf-8")
+        self.addCleanup(escaped_outside_file.unlink, missing_ok=True)
+        alias = self.linked / "outside-alias"
+        alias.symlink_to(outside_root, target_is_directory=True)
+
+        with mock.patch.dict(
+            canonical_write_policy.os.environ,
+            {"AIDEVOPS_GIT_WORKSPACE_ROOT": str(self.root)},
+        ):
+            denial = self._check(self.linked, alias / "outside.txt")
+            self.assertIsNotNone(denial)
+            reason = denial["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("symlinked write target escapes", reason)
+            traversed_existing = alias / ".." / escaped_outside_file.name
+            traversal_denial = self._check(self.linked, traversed_existing)
+            self.assertIsNotNone(traversal_denial)
+            traversal_reason = traversal_denial["hookSpecificOutput"][
+                "permissionDecisionReason"
+            ]
+            self.assertIn("symlinked write target escapes", traversal_reason)
+            traversed_missing = alias / ".." / f"{outside_root.name}-missing.txt"
+            self.assertIsNotNone(self._check(self.linked, traversed_missing))
+            self.assertIsNone(self._check(self.linked, outside_file))
 
     def test_linked_context_cannot_target_canonical_checkout(self):
         denial = self._check(self.linked, self.repo / "README.md")

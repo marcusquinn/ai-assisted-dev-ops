@@ -6,9 +6,9 @@
 #
 # test-parent-task-child-union.sh — GH#20872 regression
 #
-# Verifies that child detection in `_action_cpt_single` (pulse-issue-reconcile.sh)
-# unions the three child sources (sub-issue graph, ## Children body section,
-# prose #NNN references) instead of taking the first non-empty one.
+# Verifies that child detection in `_pir_collect_parent_child_evidence`
+# (pulse-issue-reconcile-actions.sh) unions the child sources instead of taking
+# the first non-empty one.
 #
 # Pre-GH#20872 behaviour: graph→body→prose first-wins. A graph with 1 child
 # silently masked a body listing 4 children — the `child_count >= 2` guard in
@@ -17,8 +17,8 @@
 # #20581 (graph=1, body=2 closed children) both stayed open until the
 # maintainer manually closed them.
 #
-# Test strategy: inline the union logic exactly as it appears in
-# `_action_cpt_single` and verify behaviour against synthetic graph/body/prose
+# Test strategy: inline the union logic exactly as it appears in the collector
+# helper and verify behaviour against synthetic graph/body/prose
 # inputs. Pure string processing — no gh stubs needed. The structural test
 # file (test-parent-task-lifecycle.sh) verifies the union code is wired into
 # the production function body via grep on the source.
@@ -196,11 +196,11 @@ assert_eq "S9: dedup across sources — union returns 3 unique children" \
 	"701 702 703" "$result"
 
 # ============================================================
-# Scenario 10: structural — the production `_action_cpt_single` body must
-# contain the union code, not the pre-GH#20872 first-wins chain.
+# Scenario 10: structural — the production collector must contain the union
+# code, not the pre-GH#20872 first-wins chain.
 # ============================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="$SCRIPT_DIR/pulse-issue-reconcile.sh"
+TARGET="$SCRIPT_DIR/pulse-issue-reconcile-actions.sh"
 
 assert_grep_fixed() {
 	local label="$1" pattern="$2" file="$3"
@@ -216,17 +216,17 @@ assert_grep_fixed() {
 	return 0
 }
 
-# S10a: union code is present in production source
-assert_grep_fixed "S10a: production source contains union of (graph, body, prose)" \
-	'UNION of (graph, body, prose)' "$TARGET"
+# S10a: the extracted union collector is present in production source
+assert_grep_fixed "S10a: production source contains the union collector" \
+	'_pir_collect_parent_child_evidence()' "$TARGET"
 
 # S10b: source label uses + joiner
 assert_grep_fixed "S10b: source label uses + joiner for composite sources" \
-	'_src_parts:+${_src_parts}+' "$TARGET"
+	'source_parts:+${source_parts}+' "$TARGET"
 
 # S10c: union concatenation pattern present
 assert_grep_fixed "S10c: union concatenation pattern present" \
-	'_g_nums" "$_b_nums" "$_p_nums' "$TARGET"
+	'"$graph_nums" "$body_nums" "$prose_nums"' "$TARGET"
 
 # ============================================================
 echo ""

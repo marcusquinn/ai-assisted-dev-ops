@@ -25,6 +25,9 @@ _DDS_NMR_LABEL="needs-maintainer-review"
 _DDS_KIND_DRAFT="draft_checkpoint"
 _DDS_KIND_READY="ready"
 _DDS_KIND_READY_FAILED="ready_failed"
+_DDS_KIND_LINKED_AMBIGUOUS="linked_ambiguous"
+_DDS_CLOSING_REFERENCE_PAGE_SIZE=100
+STALE_RECOVERY_OPEN_PR_SCAN_LIMIT="${STALE_RECOVERY_OPEN_PR_SCAN_LIMIT:-1000}"
 
 #######################################
 # t2132: Separate threshold for interactive claims.
@@ -193,22 +196,83 @@ _stale_recovery_has_terminal_evidence_since() {
 }
 
 #######################################
+# Classify every open PR whose authoritative GitHub closing metadata includes
+# this same-repository stale issue. A PR is exact only when that issue is its
+# sole closing identity; all multi-issue linkage remains durable but ambiguous.
+# Args: $1=issue number, $2=repo slug, $3=open PR list JSON
+# Output: matching "PR number|exact|ambiguous" rows, one per line
+#######################################
+_stale_recovery_linked_pr_rows() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local open_pr_json="$3"
+	local repo_owner=""
+	local repo_name=""
+
+	[[ "$issue_number" =~ ^[1-9][0-9]*$ && "$repo_slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+	repo_owner="${repo_slug%%/*}"
+	repo_name="${repo_slug#*/}"
+	# gh 2.96 does not expose nested pageInfo or preload later closing-reference
+	# pages for `pr list`. A full 100-node array is therefore indeterminate: the
+	# target issue or another closing identity may exist on a hidden next page.
+	printf '%s' "$open_pr_json" | jq -e \
+		--argjson closing_page_size "$_DDS_CLOSING_REFERENCE_PAGE_SIZE" '
+		type == "array" and all(.[];
+			(.number | type) == "number" and .number > 0 and
+			(.closingIssuesReferences | type) == "array" and
+			(.closingIssuesReferences | length) < $closing_page_size and
+			all(.closingIssuesReferences[]?;
+				(.number | type) == "number" and .number > 0 and
+				(.repository.name | type) == "string" and
+				(.repository.owner.login | type) == "string"))
+	' >/dev/null 2>&1 || return 1
+	printf '%s' "$open_pr_json" | jq -r --argjson issue "$issue_number" \
+		--arg owner "$repo_owner" --arg name "$repo_name" '
+		def matches_target:
+			.number == $issue and
+			((.repository.name | ascii_downcase) == ($name | ascii_downcase)) and
+			((.repository.owner.login | ascii_downcase) == ($owner | ascii_downcase));
+		.[] |
+		(.closingIssuesReferences | map(select(matches_target))) as $matches |
+		select(($matches | length) > 0) |
+		"\(.number)|\(if ((.closingIssuesReferences | length) == 1 and ($matches | length) == 1) then "exact" else "ambiguous" end)"
+	' 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
 # Classify an open PR referencing this issue for stale recovery.
-# Output: "number|ready|ready_failed|draft_checkpoint|protected_draft".
+# Output: "number|ready|ready_failed|draft_checkpoint|protected_draft|linked_ambiguous".
 # Args: $1 = issue number, $2 = repo slug
 # Output: PR number (or empty) on stdout
 #######################################
 _stale_recovery_find_open_pr() {
 	local issue_number="$1"
 	local repo_slug="$2"
-	local _open_pr _open_pr_json
+	local _open_pr="" _open_pr_json="" _linked_rows="" _exact_pr_numbers=""
+	local _linked_count=0 _open_pr_count=0 _scan_limit="$STALE_RECOVERY_OPEN_PR_SCAN_LIMIT"
+	[[ "$_scan_limit" =~ ^[1-9][0-9]*$ ]] || _scan_limit=1000
 	_open_pr_json=$(gh pr list --repo "$repo_slug" --state open \
-		--search "#${issue_number} in:body" --limit 20 \
-		--json number,isDraft,labels,statusCheckRollup 2>/dev/null) || return 1
+		--limit "$_scan_limit" \
+		--json number,closingIssuesReferences,isDraft,labels,statusCheckRollup 2>/dev/null) || return 1
+	_open_pr_count=$(printf '%s' "$_open_pr_json" | jq -er 'length' 2>/dev/null) || return 1
+	# Reaching the bound means authoritative linkage may exist outside this page.
+	[[ "$_open_pr_count" -lt "$_scan_limit" ]] || return 1
+	_linked_rows=$(_stale_recovery_linked_pr_rows "$issue_number" "$repo_slug" "$_open_pr_json") || return 1
+	[[ -n "$_linked_rows" ]] || {
+		printf '%s' ""
+		return 0
+	}
+	_linked_count=$(printf '%s\n' "$_linked_rows" | grep -c . 2>/dev/null || true)
+	if [[ "$_linked_count" -ne 1 || "$_linked_rows" == *"|ambiguous"* ]]; then
+		printf '%s|%s' "${_linked_rows%%|*}" "$_DDS_KIND_LINKED_AMBIGUOUS"
+		return 0
+	fi
+	_exact_pr_numbers="${_linked_rows%%|*}"
 	_open_pr=$(printf '%s' "$_open_pr_json" | jq -r \
 		--arg ready_failed "$_DDS_KIND_READY_FAILED" \
 		--arg ready "$_DDS_KIND_READY" \
-		--arg draft "$_DDS_KIND_DRAFT" '
+		--arg draft "$_DDS_KIND_DRAFT" --arg exact_pr_numbers "$_exact_pr_numbers" '
 			def names: [.labels[]?.name];
 			def protected: names | any(
 				. == "origin:interactive" or . == "hold-for-review" or
@@ -235,6 +299,8 @@ _stale_recovery_find_open_pr() {
 				elif .isDraft != true then $ready
 				elif worker_owned and (protected | not) then $draft
 				else "protected_draft" end;
+			($exact_pr_numbers | split("\n") | map(select(length > 0) | tonumber)) as $exact |
+			map(select(.number as $number | ($exact | index($number)) != null)) |
 			map(. + {lifecycle_kind: kind}) |
 			sort_by(if .lifecycle_kind == $ready_failed then 0
 				elif .lifecycle_kind == $ready then 1
@@ -242,6 +308,33 @@ _stale_recovery_find_open_pr() {
 			.[0] | if . then "\(.number)|\(.lifecycle_kind)" else "" end' \
 		2>/dev/null) || return 1
 	printf '%s' "$_open_pr"
+	return 0
+}
+
+#######################################
+# Preserve a stale worker draft for exact-branch continuation.
+#
+# A draft PR is durable implementation progress, so stale recovery must not
+# unassign its issue owner or convert it into a permanent NMR hold. The pulse
+# caller consumes this signal and launches a bounded direct-PR continuation
+# worker whose runtime ownership fence is bound to the exact open PR head.
+#
+# Args: issue number, repo slug, PR number, expected dispatch timestamp,
+#       exact stale assignee contract
+#######################################
+_stale_recovery_preserve_draft_checkpoint() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local pr_number="$3"
+	local expected_dispatch_ts="$4"
+	local stale_assignees="$5"
+	if ! _stale_recovery_final_evidence_recheck "$issue_number" "$repo_slug" "$expected_dispatch_ts"; then
+		printf 'STALE_RECHECK_BLOCKED: issue #%s in %s — evidence changed before draft continuation\n' \
+			"$issue_number" "$repo_slug"
+		return 0
+	fi
+	printf 'STALE_PR_CONTINUATION: issue #%s in %s — PR #%s preserved for exact-head continuation assignee=%s\n' \
+		"$issue_number" "$repo_slug" "$pr_number" "$stale_assignees"
 	return 0
 }
 
@@ -271,9 +364,11 @@ _stale_recovery_verify_blocking_transition() {
 }
 
 #######################################
-# Escalate an exhausted worker draft or terminally failed ready PR. Protected
-# drafts never call this path. Ownership is retained unless the blocking label
-# and assignee/status transition can be read back from GitHub.
+# Escalate a terminally failed ready PR. Worker draft checkpoints use
+# _stale_recovery_preserve_draft_checkpoint instead so their existing branch can
+# be continued without a permanent review hold. Protected drafts never call
+# this path. Ownership is retained unless the blocking label and
+# assignee/status transition can be read back from GitHub.
 # Args: issue, repo, stale assignees, reason, PR number, dispatch ts, kind
 #######################################
 _stale_recovery_escalate_pr_checkpoint() {
@@ -624,7 +719,10 @@ _This recovery prevents the orphaned-assignment deadlock where offline runners p
 #   2. Count prior non-reset tick comments from the GitHub issue comment log.
 #   3. Find the latest dispatch marker in that same GitHub comment log.
 #   4. Look up any open PR referencing this issue.
-#      - If an open PR exists: preserve ownership and stop; the PR is progress.
+#      - Worker draft: preserve ownership and emit an exact-head continuation
+#        signal for the pulse caller.
+#      - Ready PR: preserve ownership and stop; the PR is durable progress.
+#      - Ready PR with terminal code/check failure: escalate to NMR.
 #      - Else increment the global recovery count. At the threshold, escalate
 #        immediately. A stale assignment is itself terminal no-progress evidence.
 #      - Under threshold, record the tick inside the single recovery comment.
@@ -660,7 +758,12 @@ _recover_stale_assignment() {
 	if [[ -n "$_open_pr" ]]; then
 		_open_pr_number="${_open_pr%%|*}"
 		_open_pr_kind="${_open_pr#*|}"
-		if [[ "$_open_pr_kind" == "$_DDS_KIND_DRAFT" || "$_open_pr_kind" == "$_DDS_KIND_READY_FAILED" ]]; then
+		if [[ "$_open_pr_kind" == "$_DDS_KIND_DRAFT" ]]; then
+			_stale_recovery_preserve_draft_checkpoint "$issue_number" "$repo_slug" \
+				"$_open_pr_number" "$_latest_dispatch_ts" "$stale_assignees"
+			return 0
+		fi
+		if [[ "$_open_pr_kind" == "$_DDS_KIND_READY_FAILED" ]]; then
 			if printf '%s' "$_comments_pages" | jq -e --arg marker "stale-pr-checkpoint:escalated pr=${_open_pr_number} kind=${_open_pr_kind}" \
 				'any(.[] | .[]?; (.body // "") | contains($marker))' >/dev/null 2>&1; then
 				printf 'STALE_PR_ESCALATED: issue #%s in %s — PR #%s already escalated\n' \
@@ -673,6 +776,11 @@ _recover_stale_assignment() {
 		fi
 		if [[ "$_open_pr_kind" == "protected_draft" ]]; then
 			printf 'STALE_DRAFT_PROTECTED: issue #%s in %s — draft PR #%s is held or not worker-owned; no automated mutation\n' \
+				"$issue_number" "$repo_slug" "$_open_pr_number"
+			return 0
+		fi
+		if [[ "$_open_pr_kind" == "$_DDS_KIND_LINKED_AMBIGUOUS" ]]; then
+			printf 'STALE_PR_LINKAGE_AMBIGUOUS: issue #%s in %s — PR #%s is durable but not safe for exact continuation; no automated mutation\n' \
 				"$issue_number" "$repo_slug" "$_open_pr_number"
 			return 0
 		fi
@@ -698,9 +806,9 @@ _recover_stale_assignment() {
 # whether that assignment is stale: no active worker process, dispatch
 # claim comment is >1h old, and no progress (comments) in the last hour.
 #
-# If stale, calls _recover_stale_assignment which unassigns the blocking
-# users, removes status:queued and status:in-progress labels, posts a
-# recovery comment, and returns 0 (stale, safe to re-dispatch).
+# If stale, calls _recover_stale_assignment. No-PR recovery unassigns blocking
+# users and returns the issue to dispatch. A worker draft instead preserves the
+# assignment and emits STALE_PR_CONTINUATION for bounded direct-PR repair.
 #
 # Args:
 #   $1 = issue number

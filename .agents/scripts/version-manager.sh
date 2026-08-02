@@ -495,6 +495,14 @@ _parse_release_args() {
 			}
 			shift 2
 			;;
+		--expected-sources)
+			expected_sources="${2:-}"
+			[[ -n "$expected_sources" ]] || {
+				print_error "--expected-sources requires a comma-separated PR or PR@SHA set"
+				return 1
+			}
+			shift 2
+			;;
 		*)
 			print_error "Unknown release option: $1"
 			return 1
@@ -510,7 +518,7 @@ _main_release() {
 	[[ -n "$bump_type" ]] || bump_type="patch"
 
 	# Parse flags (can be in any order after bump_type)
-	local force_flag=0 skip_preflight=0 allow_dirty=0 hotfix_flag=0 dry_run=0 source_pr=""
+	local force_flag=0 skip_preflight=0 allow_dirty=0 hotfix_flag=0 dry_run=0 source_pr="" expected_sources=""
 	_parse_release_args "$@" || return 1
 
 	# Hotfix releases are restricted to patch bumps and require maintainer identity
@@ -545,7 +553,7 @@ _main_release() {
 		exit 1
 	fi
 	if [[ -n "$source_pr" ]]; then
-		verify_release_source_pr "$source_pr" "main" || exit 1
+		verify_release_source_pr "$source_pr" "main" "" "$expected_sources" || exit 1
 	fi
 	# The detached release worktree and merged-PR provenance above are the
 	# complete publication boundary. Human canonical checkouts may be dirty,
@@ -604,7 +612,7 @@ _main_usage() {
 	echo "  tag                           Create git tag for current version"
 	echo "  github-release                Create or observe publication for the current version"
 	echo "  post-release [--hotfix]       Retry post-publication propagation and deployment gates"
-	echo "  release [major|minor|patch] --source-pr N"
+	echo "  release [major|minor|patch] --source-pr N [--expected-sources PR[,PR...]]"
 	echo "                                 Bump version (default: patch), tag, publish, and deploy from a verified merged PR"
 	echo "  release patch --hotfix       Patch release with hotfix signal for immediate runner propagation"
 	echo "  preflight [major|minor|patch] Run release preflight checks only"

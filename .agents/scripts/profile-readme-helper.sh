@@ -31,6 +31,9 @@ CONTRIBUTIONS_START_MARKER='<!-- CONTRIBUTIONS-START -->'
 CONTRIBUTIONS_END_MARKER='<!-- CONTRIBUTIONS-END -->'
 PROFILE_UPDATE_LOCK_TOKEN=""
 PROFILE_UPDATE_LOCK_GRACE_SECONDS="${AIDEVOPS_PROFILE_LOCK_GRACE_SECONDS:-30}"
+PROFILE_PUBLICATION_WORKTREE=""
+PROFILE_PUBLICATION_CANONICAL_REPO=""
+PROFILE_CONTRIBUTIONS_REFRESHED=false
 
 # --- Serialize profile refreshes so scheduler overlap cannot duplicate scans/writes ---
 _profile_update_lock_dir() {
@@ -128,8 +131,74 @@ _release_profile_update_lock() {
 	return 0
 }
 
+_profile_publication_worktree_helper() {
+	printf '%s\n' "${AIDEVOPS_PROFILE_WORKTREE_HELPER:-${SCRIPT_DIR}/worktree-helper.sh}"
+	return 0
+}
+
+_cleanup_profile_publication_worktree() {
+	if [[ -z "$PROFILE_PUBLICATION_WORKTREE" ]]; then
+		return 0
+	fi
+	local worktree_path="$PROFILE_PUBLICATION_WORKTREE"
+	local canonical_repo="$PROFILE_PUBLICATION_CANONICAL_REPO"
+	local worktree_helper=""
+	worktree_helper=$(_profile_publication_worktree_helper)
+	if [[ -z "$canonical_repo" || ! -d "$canonical_repo" || ! -x "$worktree_helper" ]]; then
+		echo "Warning: profile publication worktree cleanup is unavailable: $worktree_path" >&2
+		return 1
+	fi
+	if ! (cd "$canonical_repo" && "$worktree_helper" remove "$worktree_path" --force >/dev/null); then
+		echo "Warning: profile publication worktree cleanup failed: $worktree_path" >&2
+		return 1
+	fi
+	PROFILE_PUBLICATION_WORKTREE=""
+	PROFILE_PUBLICATION_CANONICAL_REPO=""
+	return 0
+}
+
+_profile_update_exit_cleanup() {
+	_cleanup_profile_publication_worktree || true
+	_release_profile_update_lock || true
+	return 0
+}
+
+_ensure_profile_update_lock() {
+	if [[ "${AIDEVOPS_PROFILE_UPDATE_LOCK_HELD:-0}" == "1" ]]; then
+		return 0
+	fi
+	_acquire_profile_update_lock || return 1
+	export AIDEVOPS_PROFILE_UPDATE_LOCK_HELD=1
+	trap _profile_update_exit_cleanup EXIT
+	return 0
+}
+
 # --- Resolve profile repo path from repos.json ---
 _resolve_profile_repo() {
+	if [[ -n "${AIDEVOPS_PROFILE_REPO_OVERRIDE:-}" ]]; then
+		local override_git_dir=""
+		local override_common_dir=""
+		local canonical_common_dir=""
+		if [[ ! -d "$AIDEVOPS_PROFILE_REPO_OVERRIDE" ]] ||
+			! git -C "$AIDEVOPS_PROFILE_REPO_OVERRIDE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			echo "Error: profile repository override is not a Git worktree" >&2
+			return 1
+		fi
+		override_git_dir=$(git -C "$AIDEVOPS_PROFILE_REPO_OVERRIDE" rev-parse --path-format=absolute --git-dir) || return 1
+		override_common_dir=$(git -C "$AIDEVOPS_PROFILE_REPO_OVERRIDE" rev-parse --path-format=absolute --git-common-dir) || return 1
+		if [[ "$override_git_dir" == "$override_common_dir" ]]; then
+			echo "Error: profile repository override must be a linked worktree" >&2
+			return 1
+		fi
+		if [[ -z "${AIDEVOPS_PROFILE_CANONICAL_REPO:-}" ]] ||
+			! canonical_common_dir=$(git -C "$AIDEVOPS_PROFILE_CANONICAL_REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+			[[ "$canonical_common_dir" != "$override_common_dir" ]]; then
+			echo "Error: profile repository override does not match its canonical repository" >&2
+			return 1
+		fi
+		printf '%s\n' "$AIDEVOPS_PROFILE_REPO_OVERRIDE"
+		return 0
+	fi
 	local repos_json="${HOME}/.config/aidevops/repos.json"
 
 	# Try repos.json first (primary lookup)
@@ -300,8 +369,9 @@ _resolve_profile_user() {
 	fi
 
 	# Fallback to directory basename
-	local base
-	base=$(basename "$profile_repo")
+	local fallback_repo="${AIDEVOPS_PROFILE_CANONICAL_REPO:-$profile_repo}"
+	local base=""
+	base=$(basename "$fallback_repo")
 	if [[ -n "$base" ]]; then
 		echo "$base"
 		return 0
@@ -1065,7 +1135,7 @@ _update_inject_timestamp() {
 
 # --- Ensure STATS markers exist in a README, injecting or regenerating as needed ---
 # Usage: _update_inject_markers_if_needed <profile_repo> <readme_path>
-# Commits the injection to the profile repo if changes were made.
+# The caller owns the single publication commit after all transforms complete.
 _update_inject_markers_if_needed() {
 	local profile_repo="$1"
 	local readme_path="$2"
@@ -1083,8 +1153,6 @@ _update_inject_markers_if_needed() {
 			echo "Could not resolve username — injecting markers only..."
 			_inject_markers_into_readme "$readme_path"
 		fi
-		git -C "$profile_repo" add README.md
-		git -C "$profile_repo" commit -m "feat: replace default GitHub template with rich profile README" --no-verify 2>/dev/null || true
 		return 0
 	fi
 
@@ -1094,62 +1162,67 @@ _update_inject_markers_if_needed() {
 
 	echo "Markers missing from README — injecting them..."
 	_inject_markers_into_readme "$readme_path"
-	git -C "$profile_repo" add README.md
-	git -C "$profile_repo" commit -m "feat: initialize profile README with aidevops stat markers" --no-verify 2>/dev/null || true
 	return 0
 }
 
-# --- Push a profile repo commit, recovering from diverged history if needed ---
-# Usage: _update_push_with_recovery <profile_repo> <commit_msg> [extra_args...]
-# Returns 0 always (recovery is attempted on push failure).
+# --- Commit and publish one profile README update from the linked worktree ---
+# Usage: _update_push_with_recovery <profile_repo> <commit_msg>
 _update_push_with_recovery() {
 	local profile_repo="$1"
 	local commit_msg="$2"
-	shift 2
-	local extra_args=("$@")
 
-	git -C "$profile_repo" add README.md
-	git -C "$profile_repo" commit -m "$commit_msg" --no-verify 2>/dev/null || {
-		echo "No changes to commit after profile README update"
-		return 0
-	}
+	git -C "$profile_repo" add README.md || return 1
+	if ! git -C "$profile_repo" commit -m "$commit_msg" --no-verify 2>/dev/null; then
+		if git -C "$profile_repo" diff --cached --quiet -- README.md; then
+			echo "No changes to commit after profile README update"
+			return 0
+		fi
+		echo "Profile README commit failed in the publication worktree" >&2
+		return 1
+	fi
 	echo "Committed profile README update: $commit_msg"
 
-	local default_branch
-	default_branch=$(git -C "$profile_repo" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || true)
-	if [[ -z "$default_branch" ]]; then
-		default_branch=$(git -C "$profile_repo" branch --show-current 2>/dev/null || true)
+	local default_branch=""
+	default_branch=$(_profile_default_branch "$profile_repo")
+	if ! git -C "$profile_repo" push origin "HEAD:refs/heads/${default_branch}" 2>/dev/null; then
+		echo "Profile README push failed; canonical checkout was not changed" >&2
+		return 1
 	fi
-	default_branch="${default_branch:-main}"
+	echo "Pushed profile README update to origin/${default_branch}"
+	return 0
+}
 
-	if ! git -C "$profile_repo" push origin "$default_branch" 2>/dev/null; then
-		echo "Push failed — attempting recovery from diverged history..." >&2
-		local gh_user
-		gh_user=$(_resolve_profile_user "$profile_repo")
-		if [[ -n "$gh_user" ]]; then
-			local repo_slug="${gh_user}/${gh_user}"
-			_recover_diverged_profile "$profile_repo" "$repo_slug" "$default_branch" "$gh_user"
-			echo "Running fresh stats update after recovery..."
-			cmd_update "${extra_args[@]}"
-		else
-			echo "Warning: push failed and could not resolve username for recovery" >&2
-		fi
+_profile_refresh_daily_contributions() {
+	local readme_path="$1"
+	local dry_run="$2"
+	local last_contrib_file="${HOME}/.aidevops/cache/contributions-last-update"
+	local today=""
+	local last_contrib_date=""
+	PROFILE_CONTRIBUTIONS_REFRESHED=false
+	today=$(date -u +"%Y-%m-%d")
+	if [[ -f "$last_contrib_file" ]]; then
+		last_contrib_date=$(<"$last_contrib_file")
+	fi
+	if [[ "$last_contrib_date" == "$today" ]] ||
+		! grep -q '<!-- CONTRIBUTIONS-START -->' "$readme_path" 2>/dev/null; then
+		return 0
+	fi
+	echo "Daily contributions refresh triggered..."
+	if [[ "$dry_run" == true ]]; then
+		cmd_update_contributions "--dry-run" || echo "Warning: contributions update failed — continuing with stats" >&2
+	elif AIDEVOPS_PROFILE_DEFER_PUBLICATION=1 cmd_update_contributions; then
+		PROFILE_CONTRIBUTIONS_REFRESHED=true
 	else
-		echo "Pushed profile README update to origin/${default_branch}"
+		echo "Warning: contributions update failed — continuing with stats" >&2
 	fi
 	return 0
 }
 
-# --- Update the profile README ---
-cmd_update() {
+# --- Update the profile README inside an isolated publication worktree ---
+_cmd_update_in_repo() {
 	local dry_run=false
 	if [[ "${1:-}" == "--dry-run" ]]; then
 		dry_run=true
-	fi
-	if [[ "${AIDEVOPS_PROFILE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
-		_acquire_profile_update_lock || return 1
-		export AIDEVOPS_PROFILE_UPDATE_LOCK_HELD=1
-		trap _release_profile_update_lock EXIT
 	fi
 	echo "Profile README update started at $(date -u +%Y-%m-%dT%H:%M:%SZ) (dry_run=${dry_run})"
 
@@ -1167,27 +1240,8 @@ cmd_update() {
 	local new_stats
 	new_stats=$(cmd_generate)
 
-	# Daily contributions refresh — piggyback on the hourly stats job.
-	# Only runs once per day to keep API costs low (~11 core API calls/run).
-	local cache_dir="${HOME}/.aidevops/cache"
-	local last_contrib_file="${cache_dir}/contributions-last-update"
-	local today
-	today=$(date -u +"%Y-%m-%d")
-	local last_contrib_date=""
-	if [[ -f "$last_contrib_file" ]]; then
-		last_contrib_date=$(cat "$last_contrib_file" 2>/dev/null || true)
-	fi
-	if [[ "$last_contrib_date" != "$today" ]] && grep -q '<!-- CONTRIBUTIONS-START -->' "$readme_path" 2>/dev/null; then
-		echo "Daily contributions refresh triggered..."
-		if [[ "$dry_run" == true ]]; then
-			cmd_update_contributions "--dry-run" || echo "Warning: contributions update failed — continuing with stats" >&2
-		else
-			cmd_update_contributions || echo "Warning: contributions update failed — continuing with stats" >&2
-		fi
-		if [[ "$dry_run" != true ]]; then
-			git -C "$profile_repo" pull --rebase --quiet 2>/dev/null || true
-		fi
-	fi
+	# Daily contributions piggyback on the hourly stats job once per UTC day.
+	_profile_refresh_daily_contributions "$readme_path" "$dry_run"
 
 	# Ensure markers exist — inject or regenerate if missing
 	_update_inject_markers_if_needed "$profile_repo" "$readme_path"
@@ -1217,7 +1271,11 @@ cmd_update() {
 	local old_normalized new_normalized
 	old_normalized=$(_normalize_readme_for_compare "$readme_path")
 	new_normalized=$(_normalize_readme_for_compare "$tmp_file")
-	if [[ "$old_normalized" == "$new_normalized" ]]; then
+	local readme_dirty=false
+	if ! git -C "$profile_repo" diff --quiet -- README.md; then
+		readme_dirty=true
+	fi
+	if [[ "$old_normalized" == "$new_normalized" && "$readme_dirty" == false ]]; then
 		echo "No changes to profile content — skipping commit"
 		rm -f "$tmp_file"
 		return 0
@@ -1236,7 +1294,10 @@ cmd_update() {
 	# Apply changes and push
 	mv "$tmp_file" "$readme_path"
 	echo "Profile README content changed — committing and pushing"
-	_update_push_with_recovery "$profile_repo" "chore: update profile stats ($(date -u +%Y-%m-%d))" "$@"
+	_update_push_with_recovery "$profile_repo" "chore: update profile stats ($(date -u +%Y-%m-%d))" || return 1
+	if [[ "$PROFILE_CONTRIBUTIONS_REFRESHED" == true ]]; then
+		_record_contributions_update || return 1
+	fi
 
 	echo "Profile README updated and pushed"
 	return 0
@@ -1440,7 +1501,7 @@ _update_contributions_push() {
 
 	local default_branch
 	default_branch=$(_profile_default_branch "$profile_repo")
-	if ! git -C "$profile_repo" push origin "$default_branch" 2>/dev/null; then
+	if ! git -C "$profile_repo" push origin "HEAD:refs/heads/${default_branch}" 2>/dev/null; then
 		echo "Warning: push failed — contributions committed locally" >&2
 		return 1
 	fi
@@ -1538,7 +1599,7 @@ _render_contributions_candidate() {
 # --- Update contributions section between markers ---
 # Can be called standalone or from cmd_update with daily throttle.
 # Uses _generate_contributions() to fetch fork parent URLs + repos.json entries.
-cmd_update_contributions() {
+_cmd_update_contributions_in_repo() {
 	local dry_run=false
 	if [[ "${1:-}" == "--dry-run" ]]; then
 		dry_run=true
@@ -1619,8 +1680,127 @@ cmd_update_contributions() {
 		rm -f "$tmp_file"
 		return 1
 	fi
+	if [[ "${AIDEVOPS_PROFILE_DEFER_PUBLICATION:-0}" == "1" ]]; then
+		echo "Profile contributions staged for the combined README publication"
+		return 0
+	fi
 	_update_contributions_push "$profile_repo" || return 1
 	return 0
+}
+
+_profile_assert_canonical_clean() {
+	local canonical_repo="$1"
+	local status_output=""
+	if ! status_output=$(git -C "$canonical_repo" status --porcelain --untracked-files=all); then
+		echo "Error: could not verify canonical profile checkout state" >&2
+		return 1
+	fi
+	if [[ -n "$status_output" ]]; then
+		echo "Error: canonical profile checkout is not clean; refusing automated publication" >&2
+		return 1
+	fi
+	local default_branch=""
+	local ahead_count=""
+	default_branch=$(_profile_default_branch "$canonical_repo")
+	if ! ahead_count=$(git -C "$canonical_repo" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null); then
+		echo "Error: could not verify canonical profile branch state" >&2
+		return 1
+	fi
+	if [[ "$ahead_count" -gt 0 ]]; then
+		echo "Error: canonical profile checkout has unpushed commits; refusing automated publication" >&2
+		return 1
+	fi
+	return 0
+}
+
+_profile_run_in_worktree() {
+	local publication_command="$1"
+	shift
+	local canonical_repo=""
+	canonical_repo=$(_resolve_profile_repo) || return 1
+	_profile_assert_canonical_clean "$canonical_repo" || return 1
+
+	local worktree_helper=""
+	worktree_helper=$(_profile_publication_worktree_helper)
+	if [[ ! -x "$worktree_helper" ]]; then
+		echo "Error: worktree-helper.sh is required for canonical-safe profile publication" >&2
+		return 1
+	fi
+
+	local canonical_head_before=""
+	local canonical_status_before=""
+	canonical_head_before=$(git -C "$canonical_repo" rev-parse HEAD) || return 1
+	canonical_status_before=$(git -C "$canonical_repo" status --porcelain --untracked-files=all) || return 1
+
+	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
+	local worktree_name=""
+	worktree_name="$(basename "$canonical_repo")-profile-readme-$(date -u +%Y%m%d%H%M%S)-$$-${RANDOM}"
+	local worktree_path="${worktree_base}/${worktree_name}"
+	mkdir -p "$worktree_base" || return 1
+	if ! git -C "$canonical_repo" worktree add --detach "$worktree_path" HEAD >/dev/null; then
+		echo "Error: could not create profile publication worktree" >&2
+		return 1
+	fi
+	PROFILE_PUBLICATION_WORKTREE="$worktree_path"
+	PROFILE_PUBLICATION_CANONICAL_REPO="$canonical_repo"
+
+	local default_branch=""
+	default_branch=$(_profile_default_branch "$canonical_repo")
+	if ! git -C "$worktree_path" fetch --quiet origin "$default_branch" ||
+		! git -C "$worktree_path" reset --hard FETCH_HEAD >/dev/null; then
+		echo "Error: could not prepare profile publication worktree from origin/${default_branch}" >&2
+		_cleanup_profile_publication_worktree || true
+		return 1
+	fi
+
+	local inner_status=0
+	if AIDEVOPS_PROFILE_PUBLICATION_WORKTREE=1 \
+		AIDEVOPS_PROFILE_REPO_OVERRIDE="$worktree_path" \
+		AIDEVOPS_PROFILE_CANONICAL_REPO="$canonical_repo" \
+		AIDEVOPS_PROFILE_UPDATE_LOCK_HELD=1 \
+		bash "${SCRIPT_DIR}/profile-readme-helper.sh" "$publication_command" "$@"; then
+		inner_status=0
+	else
+		inner_status=$?
+	fi
+
+	if ! _cleanup_profile_publication_worktree; then
+		echo "Error: profile publication worktree remains for guarded recovery: $worktree_path" >&2
+		return 1
+	fi
+
+	local canonical_head_after=""
+	local canonical_status_after=""
+	canonical_head_after=$(git -C "$canonical_repo" rev-parse HEAD) || return 1
+	canonical_status_after=$(git -C "$canonical_repo" status --porcelain --untracked-files=all) || return 1
+	if [[ "$canonical_head_after" != "$canonical_head_before" ||
+		"$canonical_status_after" != "$canonical_status_before" ]]; then
+		echo "Error: canonical profile checkout changed during isolated publication" >&2
+		return 1
+	fi
+	return "$inner_status"
+}
+
+# --- Update the profile README without mutating its configured canonical checkout ---
+cmd_update() {
+	if [[ "${AIDEVOPS_PROFILE_PUBLICATION_WORKTREE:-0}" == "1" ]]; then
+		_cmd_update_in_repo "$@"
+		return $?
+	fi
+	_ensure_profile_update_lock || return 1
+	_profile_run_in_worktree update "$@"
+	return $?
+}
+
+# --- Refresh contributions through the same canonical-safe publication boundary ---
+cmd_update_contributions() {
+	if [[ "${AIDEVOPS_PROFILE_PUBLICATION_WORKTREE:-0}" == "1" ]]; then
+		_cmd_update_contributions_in_repo "$@"
+		return $?
+	fi
+	_ensure_profile_update_lock || return 1
+	_profile_run_in_worktree update-contributions "$@"
+	return $?
 }
 
 # --- Main dispatch ---

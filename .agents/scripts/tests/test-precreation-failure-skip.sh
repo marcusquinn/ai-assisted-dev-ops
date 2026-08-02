@@ -471,7 +471,7 @@ STUB_OWNER_INFO=""
 unset STUB_EXISTING_WORKTREE_LINE
 
 # =============================================================================
-# Test 3c: an empty continuation batch falls through to an atomic claim
+# Test 3c: an empty continuation batch remains an exact transferable snapshot
 # =============================================================================
 export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
 REGISTERED_WORKTREE_ARGS=""
@@ -481,13 +481,18 @@ STUB_CLAIM_WORKTREE_RC=0
 : >"$LOGFILE"
 _dlw_precreate_worktree "66666" "$FAKE_REPO"
 rc=$?
-expected_claim="${STUB_EXISTING_PATH}|${STUB_EXISTING_BRANCH}|66666|dispatch-precreate-66666|$$"
-if [[ "$rc" -eq 0 && "$CLAIMED_WORKTREE_ARGS" == "$expected_claim" &&
-	-z "${_DLW_WORKTREE_TRANSFER_MODE:-}" ]] &&
-	grep -Fq "Rejected incomplete or mismatched registry owner for #66666" "$LOGFILE"; then
-	pass "empty continuation batch is never exported and uses the atomic repair path"
+if [[ "$rc" -eq 0 && -z "$CLAIMED_WORKTREE_ARGS" &&
+	"${_DLW_WORKTREE_TRANSFER_MODE:-}" == "continuation" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_PID:-}" == "12345" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_SESSION:-}" == "generation-7" &&
+	-z "${_DLW_WORKTREE_EXPECTED_OWNER_BATCH:-}" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_TASK:-}" == "66666" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" == "2026-07-18T00:00:00Z" ]] &&
+	grep -Fq "Preserving reused worktree until its expected continuation owner transfers" "$LOGFILE" &&
+	! grep -Fq "Rejected incomplete or mismatched registry owner for #66666" "$LOGFILE"; then
+	pass "empty continuation batch remains an exact transferable snapshot"
 else
-	fail "empty continuation batch is never exported and uses the atomic repair path" \
+	fail "empty continuation batch remains an exact transferable snapshot" \
 		"rc=$rc mode='${_DLW_WORKTREE_TRANSFER_MODE:-}' claim='$CLAIMED_WORKTREE_ARGS'"
 fi
 STUB_OWNER_INFO=""

@@ -1069,6 +1069,7 @@ _ci_repair_launch_worker() {
 		WORKER_NO_EXIT_PUSH=1 WORKER_PROCESS_PATTERN="$process_pattern" AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER=1 \
 		AIDEVOPS_PR_REPAIR_NUMBER="$pr_number" AIDEVOPS_PR_REPAIR_HEAD_SHA="$pr_head_sha" \
 		AIDEVOPS_PR_REPAIR_HEAD_REF="$pr_head_ref" AIDEVOPS_PR_REPAIR_FINGERPRINT="$failure_fingerprint" \
+		AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE="linked-issue" \
 		"$helper" run --role worker --session-key "$session_key" --dir "$worktree_path" \
 		--title "PR #${pr_number}: CI repair" --prompt-file "$prompt_file" --detach \
 		</dev/null 2>&1) || {

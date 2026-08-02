@@ -87,4 +87,20 @@ if [[ "$deployed_output" != *"deployed release helper: status 90"* ]] ||
 fi
 printf 'PASS deployed CLI ignores stale canonical helpers and preserves helper exit status\n'
 
+expected_set_output=$(run_deployed_cli release patch 90 full --expected-sources 89,90)
+if [[ "$expected_set_output" != *"deployed release helper: patch 90 full --expected-sources 89,90"* ]]; then
+	printf 'FAIL root CLI did not preserve the explicit expected source set\n'
+	exit 1
+fi
+printf 'PASS root CLI preserves explicit multi-PR release authorization input\n'
+
+gap_output=$(run_deployed_cli release authorization-gap 90 --tag v3.32.200 \
+	--expected-sources 89@1111111111111111111111111111111111111111 \
+	--reason 'historical authorization gap')
+if [[ "$gap_output" != *"deployed release helper: authorization-gap 90 --tag v3.32.200 --expected-sources 89@1111111111111111111111111111111111111111 --reason historical authorization gap"* ]]; then
+	printf 'FAIL root CLI did not preserve historical authorization-gap evidence input\n'
+	exit 1
+fi
+printf 'PASS root CLI preserves historical authorization-gap evidence input\n'
+
 exit 0

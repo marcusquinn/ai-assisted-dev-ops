@@ -209,6 +209,16 @@ run_cmd_run_orchestration_tests() {
 	return 0
 }
 
+run_runtime_ownership_fence_tests() {
+	test_worker_runtime_ownership_fence_rejects_takeover
+	test_direct_pr_runtime_target_fence_uses_exact_head_without_runner
+	test_direct_pr_runtime_target_fence_fails_closed
+	test_pr_checkpoint_runtime_fence_uses_exact_envelope
+	test_linked_issue_pr_repair_keeps_issue_ownership_fence
+	test_mismatched_pr_repair_contract_fails_closed
+	return 0
+}
+
 main() {
 	setup_test_env
 	test_appends_escalation_contract
@@ -233,10 +243,7 @@ main() {
 	test_issue_worker_env_contract_accepts_valid_precreated_worktree
 	test_triage_env_contract_does_not_require_worker_authority
 	run_worker_worktree_ownership_tests
-	test_worker_runtime_ownership_fence_rejects_takeover
-	test_direct_pr_runtime_target_fence_uses_exact_head_without_runner
-	test_direct_pr_runtime_target_fence_fails_closed
-	test_linked_issue_pr_repair_keeps_issue_ownership_fence
+	run_runtime_ownership_fence_tests
 	test_triage_prepare_drops_worker_authority_and_skips_ownership_fence
 	test_triage_prepare_arms_non_worker_exit_cleanup
 	test_triage_finish_skips_worker_claim_and_worktree_release

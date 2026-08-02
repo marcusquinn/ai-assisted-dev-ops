@@ -67,7 +67,7 @@ class RunReceiptUpdate:
     status: str
     resource_delta: int = 0
     failure_class: str | None = None
-    retry_after: str | None = None
+    retry_after: int | str | None = None
     terminal: bool = False
 
 
@@ -93,6 +93,32 @@ def social_now(explicit: int | None = None) -> int:
     if epoch < 0 or str(value).strip() != str(epoch):
         raise SocialStoreError("social clock must be a non-negative integer")
     return epoch
+
+
+def persisted_retry_after(value: int | str | None, now: int) -> str | None:
+    """Normalize typed provider retry values to one persisted absolute epoch."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise SocialStoreError("social retry boundary is invalid")
+    if isinstance(value, int):
+        if value < 0:
+            raise SocialStoreError("social retry boundary is invalid")
+        return str(value)
+    if not isinstance(value, str) or not value:
+        raise SocialStoreError("social retry boundary is invalid")
+    if value.isdigit():
+        seconds = int(value)
+        if seconds > 31_536_000:
+            raise SocialStoreError("social retry duration exceeds one year")
+        return str(now + seconds)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise SocialStoreError("social retry boundary is invalid") from error
+    if parsed.tzinfo is None:
+        raise SocialStoreError("social retry boundary requires a timezone")
+    return str(int(parsed.timestamp()))
 
 
 def _validate_run_request(request: RunLeaseRequest) -> RunLeaseRequest:
@@ -349,7 +375,7 @@ def _update_run_receipt_at(
             update.status,
             update.resource_delta,
             update.failure_class,
-            update.retry_after,
+            persisted_retry_after(update.retry_after, now),
             now if update.terminal else None,
             lease.run_id,
             lease.collector_id,

@@ -17,123 +17,38 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass
-from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
 from canonical_branch_policy import resolve_branch
-from canonical_git_policy import _git_output as _shared_git_output
-from canonical_git_policy import real_git
+from canonical_write_policy_paths import (
+    Classification,
+    canonical_git_workspace_root as _canonical_git_workspace_root,
+    classify_location,
+    git_output as _git_output,
+    git_symlink_origin as _git_symlink_origin,
+    git_workspace_root_from_environment,
+    is_within_workspace as _is_within_workspace,
+    repository_within_workspace as _repository_within_workspace,
+    target_probe as _target_probe,
+)
 
 
-POLICY_VERSION = "canonical-write-policy-v1"
+POLICY_VERSION = "canonical-write-policy-v2"
 
 
-@dataclass
-class Classification:
-    """One repository-location classification."""
-
-    classification: str
-    inside_git: bool
-    repo_root: str = ""
-    git_dir: str = ""
-    common_dir: str = ""
-    branch: str = ""
-    reason: str = ""
-
-
-def _real_git() -> str:
-    explicit = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "") or os.environ.get(
-        "AIDEVOPS_REAL_GIT", ""
-    )
-    if not explicit and os.path.isfile("/usr/bin/git"):
-        explicit = "/usr/bin/git"
-    return real_git(explicit)
-
-
-def _git_output(cwd: Path, *args: str) -> str:
-    try:
-        return _shared_git_output(_real_git(), str(cwd), *args)
-    except RuntimeError as exc:
-        raise RuntimeError(f"Git repository probe failed: {exc}") from exc
-
-
-def _existing_probe_path(raw_path: str) -> Path:
-    path = Path(raw_path).expanduser().resolve(strict=False)
-    if path.is_file() or path.is_symlink():
-        path = path.parent
-    while not path.exists() and path != path.parent:
-        path = path.parent
-    return path
-
-
-def _repository_probes(probe_path: Path) -> dict[str, str]:
-    return {
-        "repo_root": _git_output(probe_path, "rev-parse", "--show-toplevel"),
-        "git_dir": _git_output(probe_path, "rev-parse", "--git-dir"),
-        "common_dir": _git_output(probe_path, "rev-parse", "--git-common-dir"),
-        "branch": _git_output(probe_path, "branch", "--show-current"),
-    }
-
-
-def _absolute_probe_value(probe_path: Path, raw_value: str) -> str:
-    path = Path(raw_value)
-    if not path.is_absolute():
-        path = probe_path / path
-    return os.path.realpath(path)
-
-
-def classify_location(raw_path: str) -> Classification:
-    """Classify a path as canonical, linked, outside Git, or unknown."""
-    probe_path = _existing_probe_path(raw_path)
-    try:
-        inside = _git_output(probe_path, "rev-parse", "--is-inside-work-tree")
-    except RuntimeError as exc:
-        return Classification("unknown", False, reason=str(exc))
-    if inside != "true":
-        return Classification(
-            "outside", False, reason="path is outside a Git worktree"
-        )
-
-    try:
-        values = _repository_probes(probe_path)
-    except RuntimeError as exc:
-        return Classification("unknown", True, reason=str(exc))
-
-    required = ("repo_root", "git_dir", "common_dir")
-    if any(not values[name] for name in required):
-        return Classification(
-            "unknown",
-            True,
-            reason="required Git worktree identity could not be resolved",
-        )
-
-    repo_root = _absolute_probe_value(probe_path, values["repo_root"])
-    git_dir = _absolute_probe_value(probe_path, values["git_dir"])
-    common_dir = _absolute_probe_value(probe_path, values["common_dir"])
-    classification = "canonical" if git_dir == common_dir else "linked"
-    return Classification(
-        classification,
-        True,
-        repo_root=repo_root,
-        git_dir=git_dir,
-        common_dir=common_dir,
-        branch=values["branch"],
-        reason=(
-            "Git directory equals common directory"
-            if classification == "canonical"
-            else "Git directory is isolated beneath the common directory"
-        ),
-    )
-
-
-def _target_probe(cwd: str, file_path: str) -> str:
-    if not file_path:
-        return cwd
-    target = Path(file_path).expanduser()
-    if not target.is_absolute():
-        target = Path(cwd) / target
-    return str(target.resolve(strict=False))
+def _write_action(
+    decision: str,
+    cross_repository_target: bool,
+    symlink_workspace_escape: bool,
+) -> str:
+    if decision != "deny":
+        return "none"
+    if symlink_workspace_escape:
+        return "use_direct_sanctioned_outside_path"
+    if cross_repository_target:
+        return "use_linked_worktree_under_git_workspace"
+    return "create_or_use_linked_worktree"
 
 
 def check_write(cwd: str, file_path: str) -> dict[str, Any]:
@@ -141,8 +56,23 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     context = classify_location(cwd)
     if not file_path:
         target = Classification("unknown", False, reason="write target is empty")
+        target_probe = cwd
+        symlink_origin = None
     else:
-        target = classify_location(_target_probe(cwd, file_path))
+        target_probe = _target_probe(cwd, file_path)
+        target = classify_location(target_probe)
+        symlink_origin = _git_symlink_origin(cwd, file_path)
+    workspace_root = _canonical_git_workspace_root(
+        git_workspace_root_from_environment()
+    )
+    cross_repository_target = target.classification == "linked" and (
+        not context.inside_git or target.common_dir != context.common_dir
+    )
+    symlink_workspace_escape = (
+        symlink_origin is not None
+        and target.classification == "outside"
+        and not _is_within_workspace(target_probe, workspace_root)
+    )
 
     if target.classification == "unknown":
         decision = "deny"
@@ -150,27 +80,41 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
     elif target.classification == "canonical":
         decision = "deny"
         reason = "canonical checkouts are read-only session mirrors"
-    elif (
-        target.classification == "linked"
-        and context.inside_git
-        and target.common_dir != context.common_dir
+    elif symlink_workspace_escape:
+        decision = "deny"
+        reason = (
+            "symlinked write target escapes from a Git worktree outside the "
+            "trusted Git workspace"
+        )
+    elif cross_repository_target and not (
+        _repository_within_workspace(context, workspace_root)
+        and _repository_within_workspace(target, workspace_root)
     ):
         decision = "deny"
-        reason = "linked worktree target belongs to a different repository"
+        reason = (
+            "cross-repository linked worktree access is limited to the "
+            "trusted Git workspace"
+        )
     else:
         decision = "allow"
         reason = (
-            "write target resolves inside an allowed linked worktree"
-            if target.classification == "linked"
-            else "write target is outside canonical worktrees"
+            "cross-repository write target resolves inside a linked worktree "
+            "within the trusted Git workspace"
+            if cross_repository_target
+            else (
+                "write target resolves inside an allowed linked worktree"
+                if target.classification == "linked"
+                else "write target is outside canonical worktrees"
+            )
         )
 
     return {
         "policy": POLICY_VERSION,
+        "git_workspace_root": workspace_root,
         "decision": decision,
         "reason": reason,
-        "action": (
-            "create_or_use_linked_worktree" if decision == "deny" else "none"
+        "action": _write_action(
+            decision, cross_repository_target, symlink_workspace_escape
         ),
         "context": asdict(context),
         "target": asdict(target),

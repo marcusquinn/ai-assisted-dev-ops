@@ -97,18 +97,38 @@ _FULL_LOOP_RESOLVED_SOURCE_JSON=""
 _FULL_LOOP_RESOLVED_SOURCE_PR=""
 _FULL_LOOP_RESOLVED_SOURCE_MERGE=""
 _FULL_LOOP_RESOLVED_REQUESTED_MERGE=""
+_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=""
+
+_full_loop_capture_release_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_path="$3"
+	local resolver="$4"
+	local expected_sources="${5:-}"
+	local authorization_json=""
+	local resolver_args=(resolve-authorization --source-pr "$source_pr" --repo "$repo" --branch main)
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	authorization_json=$(cd "$release_path" && bash "$resolver" "${resolver_args[@]}") || return 1
+	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=$(jq -er '
+		.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
+	' <<<"$authorization_json") || return 1
+	_full_loop_persist_release_authorization "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
+	return $?
+}
 
 _full_loop_resolve_requested_release_source() {
 	local repo="$1"
 	local source_pr="$2"
 	local release_path="$3"
 	local resolver="$4"
+	local expected_sources="${5:-}"
 	local blocked_pr_json=""
 	local blocked_merge=""
 	local blocked_head=""
 	[[ -x "$resolver" ]] || return 1
-	if ! _FULL_LOOP_RESOLVED_SOURCE_JSON=$(cd "$release_path" && bash "$resolver" resolve-source \
-		--source-pr "$source_pr" --repo "$repo" --branch main); then
+	local resolver_args=(resolve-source --source-pr "$source_pr" --repo "$repo" --branch main)
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	if ! _FULL_LOOP_RESOLVED_SOURCE_JSON=$(cd "$release_path" && bash "$resolver" "${resolver_args[@]}"); then
 		blocked_pr_json=$(gh pr view "$source_pr" --repo "$repo" --json state,mergedAt,mergeCommit,baseRefName 2>/dev/null || true)
 		blocked_merge=$(jq -er 'select(.state == "MERGED" and .baseRefName == "main" and ((.mergedAt // "") | length > 0)) | .mergeCommit.oid' \
 			<<<"$blocked_pr_json" 2>/dev/null || true)
@@ -124,6 +144,13 @@ _full_loop_resolve_requested_release_source() {
 	_FULL_LOOP_RESOLVED_REQUESTED_MERGE=$(jq -er --argjson pr "$source_pr" '
 		if .source_pr == $pr then .source_merge else (.aggregated_sources[] | select(.pr == $pr) | .merge) end
 	' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	local resolved_expected=""
+	resolved_expected=$(jq -er '
+		(.expected_sources // (if .mode == "direct" then [{pr:.source_pr,merge:.source_merge}] else .aggregated_sources end))
+		| sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
+	' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	[[ -z "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || "$resolved_expected" == "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" ]] || return 1
+	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES="$resolved_expected"
 	return 0
 }
 
@@ -172,9 +199,35 @@ _full_loop_persist_release_success() {
 	return $?
 }
 
+_full_loop_release_validate_existing_tag_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local tag_name="$_FULL_LOOP_RELEASE_FOUND_TAG"
+	local observed_sources=""
+	local tag_object=""
+	local release_commit=""
+	local reason="existing immutable tag source manifest differs from persisted trusted release authorization"
+	expected_sources=$(_full_loop_release_resolve_tag_expected_sources \
+		"$repo" "$source_pr" "$tag_name" "$expected_sources") || return 1
+	_full_loop_persist_release_authorization "$repo" "$source_pr" "$expected_sources" || return 1
+	observed_sources=$(_full_loop_release_observed_sources_for_expected "$tag_name" "$expected_sources") || return 1
+	if release_authorization_compare "$expected_sources" "$observed_sources"; then
+		return 0
+	fi
+	tag_object=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}" 2>/dev/null) || return 1
+	release_commit=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	_full_loop_write_release_authorization_gap_evidence "$repo" "$source_pr" "$expected_sources" \
+		"$observed_sources" "$tag_object" "$release_commit" "$reason" || return 1
+	printf 'Existing tag %s does not match the trusted expected source set; publication reconciliation refused\n' \
+		"$tag_name" >&2
+	return 1
+}
+
 _full_loop_release_guard_existing() {
 	local repo="$1"
 	local source_pr="$2"
+	local expected_sources="${3:-$source_pr}"
 	local receipt_path=""
 	local release_status=""
 	local existing_tag_rc=0
@@ -208,6 +261,7 @@ _full_loop_release_guard_existing() {
 	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
 	case "$existing_tag_rc" in
 	0)
+		_full_loop_release_validate_existing_tag_authorization "$repo" "$source_pr" "$expected_sources" || return 1
 		printf 'Existing signed release tag found for PR #%s; reconciling without another version bump\n' "$source_pr"
 		_full_loop_release_existing_command reconcile "$source_pr"
 		return $?
@@ -221,65 +275,43 @@ _full_loop_release_guard_existing() {
 _full_loop_release_usage() {
 	cat <<'EOF'
 Usage:
-  aidevops release [patch|minor|major] SOURCE_PR [incremental|full]
+  aidevops release [patch|minor|major] SOURCE_PR [incremental|full] [--expected-sources PR[,PR...]]
   aidevops release status SOURCE_PR
   aidevops release reconcile SOURCE_PR
+  aidevops release authorization-gap SOURCE_PR --tag TAG --expected-sources PR@SHA[,PR@SHA...] --reason TEXT
 
 Release publication is provenance-bound and normally unattended. `status` is
 read-only. `reconcile` verifies the newest matching signed tag, queues an
 idempotent recovery workflow when needed, and finalizes local release receipts
-only after GitHub, npm, and Homebrew all converge.
+only after GitHub, npm, and Homebrew all converge. A published stale tag can be
+settled only by verified post-publication supersession; it is never redispatched.
 EOF
 	return 0
 }
 
-main() {
-	local release_type="${1:-patch}"
-	local source_pr="${2:-}"
-	local deployment_scope="${3:-incremental}"
-	case "$release_type" in
-	help | --help | -h)
-		_full_loop_release_usage
-		return 0
-		;;
-	status | reconcile)
-		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
-			_full_loop_release_usage >&2
-			return 1
-		}
-		_full_loop_release_bind_repo_context || return 1
-		_full_loop_release_existing_command "$release_type" "$source_pr"
-		return $?
-		;;
-	esac
-	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
-	case "$deployment_scope" in incremental | full) ;; *) return 1 ;; esac
-	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
-	_full_loop_release_bind_repo_context || return 1
-	local repo=""
-	local existing_state_rc=0
-	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
-	_full_loop_release_guard_existing "$repo" "$source_pr" || existing_state_rc=$?
-	case "$existing_state_rc" in
-	0) return 0 ;;
-	2) ;;
-	*) return "$existing_state_rc" ;;
-	esac
-
+_full_loop_release_run_new() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_type="$3"
+	local deployment_scope="$4"
+	local expected_sources="$5"
 	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
 	local release_path="${worktree_base}/aidevops-release-${source_pr}-$$"
+	local resolver=""
+	local version_manager=""
+	local release_rc=0
 	[[ -d "$worktree_base" ]] || return 1
 	git -C "$REPO_ROOT" fetch origin main >/dev/null || return 1
 	git -C "$REPO_ROOT" worktree add --detach "$release_path" origin/main >/dev/null || return 1
 	_FULL_LOOP_RELEASE_PATH="$release_path"
 	trap 'cleanup_release_worktree' EXIT
 
-	local resolver="${AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER:-$release_path/.agents/scripts/release-provenance-helper.sh}"
-	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" || return 1
+	resolver="${AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER:-$release_path/.agents/scripts/release-provenance-helper.sh}"
+	_full_loop_capture_release_authorization "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources" || return 1
+	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
 	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
 
-	local version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
-	local release_rc=0
+	version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
 	[[ "$version_manager" = /* ]] || version_manager="$PWD/$version_manager"
 	[[ -f "$version_manager" ]] || return 1
 	(
@@ -288,7 +320,8 @@ main() {
 		AIDEVOPS_RELEASE_INTENT_TRUSTED=1 \
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
 			AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
-			bash "$version_manager" release "$release_type" --source-pr "$source_pr"
+			bash "$version_manager" release "$release_type" --source-pr "$source_pr" \
+			--expected-sources "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	) || release_rc=$?
 	if [[ "$release_rc" -eq 8 ]]; then
 		printf 'release:queued for PR #%s; publication continues remotely\n' "$source_pr"
@@ -305,6 +338,91 @@ main() {
 	fi
 	_full_loop_persist_release_success "$repo" "$release_path" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" \
 		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE"
+	return $?
+}
+
+main() {
+	local release_type="${1:-patch}"
+	local source_pr="${2:-}"
+	local deployment_scope="incremental"
+	local expected_sources="${AIDEVOPS_RELEASE_EXPECTED_SOURCES:-}"
+	local tag_name=""
+	local gap_reason=""
+	if [[ $# -ge 2 ]]; then
+		shift 2
+	else
+		shift "$#"
+	fi
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		incremental | full)
+			deployment_scope="$1"
+			shift
+			;;
+		--expected-sources)
+			expected_sources="${2:-}"
+			[[ -n "$expected_sources" ]] || return 1
+			shift 2
+			;;
+		--tag)
+			tag_name="${2:-}"
+			[[ -n "$tag_name" ]] || return 1
+			shift 2
+			;;
+		--reason)
+			gap_reason="${2:-}"
+			[[ -n "$gap_reason" ]] || return 1
+			shift 2
+			;;
+		*) return 1 ;;
+		esac
+	done
+	case "$release_type" in
+	help | --help | -h)
+		_full_loop_release_usage
+		return 0
+		;;
+	status | reconcile)
+		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
+			_full_loop_release_usage >&2
+			return 1
+		}
+		_full_loop_release_bind_repo_context || return 1
+		_full_loop_release_existing_command "$release_type" "$source_pr"
+		return $?
+		;;
+	authorization-gap)
+		[[ "$source_pr" =~ ^[0-9]+$ && -n "$tag_name" && -n "$expected_sources" && -n "$gap_reason" ]] || {
+			_full_loop_release_usage >&2
+			return 1
+		}
+		_full_loop_release_bind_repo_context || return 1
+		local gap_repo=""
+		gap_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+		_full_loop_release_record_authorization_gap "$gap_repo" "$source_pr" "$tag_name" "$expected_sources" "$gap_reason"
+		return $?
+		;;
+	esac
+	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
+	[[ -z "$tag_name" && -z "$gap_reason" ]] || return 1
+	case "$deployment_scope" in incremental | full) ;; *) return 1 ;; esac
+	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	_full_loop_release_bind_repo_context || return 1
+	local repo=""
+	local existing_state_rc=0
+	local persisted_expected=""
+	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
+		[[ -n "$expected_sources" ]] || expected_sources="$persisted_expected"
+	fi
+	_full_loop_release_guard_existing "$repo" "$source_pr" "${expected_sources:-$source_pr}" || existing_state_rc=$?
+	case "$existing_state_rc" in
+	0) return 0 ;;
+	2) ;;
+	*) return "$existing_state_rc" ;;
+	esac
+	_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" \
+		"${expected_sources:-$source_pr}"
 	return $?
 }
 

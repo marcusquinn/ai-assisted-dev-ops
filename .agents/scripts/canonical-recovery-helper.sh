@@ -10,6 +10,10 @@ SYNC_MIRROR_CMD="sync-mirror"
 CLEAR_STALE_REBASE_CMD="clear-stale-rebase"
 CLEAR_ABANDONED_REBASE_CMD="clear-abandoned-rebase"
 AIDEVOPS_UPDATE_REASON="aidevops-update"
+#aidevops:trust-boundary
+# Framework maintenance pins its upstream identity here instead of trusting a
+# downstream project registration or a caller-controlled remote name.
+AIDEVOPS_FRAMEWORK_GITHUB_SLUG="marcusquinn/aidevops"
 ABANDONED_REBASE_MIN_AGE_SECONDS=86400
 ABANDONED_REBASE_KIND="abandoned"
 HEAD_COMMIT_EXPR='HEAD^{commit}'
@@ -132,11 +136,12 @@ registered_repo_slug() {
 }
 
 # Resolve the remote that represents the registered GitHub repository. Exact
-# fetch+push identity is required. The origin fallback is limited to local
-# mirrors where no configured remote can be parsed as GitHub at all.
+# fetch+push identity is required. Callers may allow the origin fallback for
+# local mirrors where no configured remote can be parsed as GitHub at all.
 resolve_github_remote() {
 	local repo="$1"
 	local expected_slug="$2"
+	local allow_local_mirror="${3:-true}"
 	local expected_lower=""
 	local remote_names=""
 	local remote=""
@@ -200,7 +205,7 @@ resolve_github_remote() {
 		printf '%s\n' "$candidate"
 		return 0
 	fi
-	if [[ "$candidate_count" -eq 0 && "$github_seen" -eq 0 ]] &&
+	if [[ "$allow_local_mirror" == "true" && "$candidate_count" -eq 0 && "$github_seen" -eq 0 ]] &&
 		origin_is_local_mirror "$repo"; then
 		printf 'origin\n'
 		return 0
@@ -579,14 +584,27 @@ policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
 	printf 'BLOCKED: canonical branch policy helper is unavailable\n' >&2
 	exit 1
 }
-registered_slug=$(registered_repo_slug "$repo_path") || {
-	printf 'BLOCKED: registered canonical repository identity is invalid or ambiguous\n' >&2
+registered_slug=""
+expected_slug=""
+allow_local_mirror=true
+if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
+	expected_slug="$AIDEVOPS_FRAMEWORK_GITHUB_SLUG"
+	allow_local_mirror=false
+else
+	registered_slug=$(registered_repo_slug "$repo_path") || {
+		printf 'BLOCKED: registered canonical repository identity is invalid or ambiguous\n' >&2
+		exit 1
+	}
+	expected_slug="$registered_slug"
+fi
+if ! canonical_remote=$(resolve_github_remote "$repo_path" "$expected_slug" "$allow_local_mirror"); then
+	if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
+		printf 'BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous\n' >&2
+	else
+		printf 'BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous\n' >&2
+	fi
 	exit 1
-}
-canonical_remote=$(resolve_github_remote "$repo_path" "$registered_slug") || {
-	printf 'BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous\n' >&2
-	exit 1
-}
+fi
 target_branch=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
 	python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field branch) || exit 1
 target_branch_source=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
@@ -888,6 +906,7 @@ AUDIT_LOG_FILE="$recovery_audit_file" AUDIT_QUIET=true "$audit_helper" log opera
 	--detail "issue=${issue_number:-none}" --detail "reason=${maintenance_reason:-none}" --detail "repo=${repo_path}" \
 	--detail "operation=${cmd}" --detail "target=${target_branch}" --detail "target_source=${target_branch_source}" \
 	--detail "remote=${canonical_remote}" --detail "registered_slug=${registered_slug:-none}" \
+	--detail "expected_slug=${expected_slug}" \
 	--detail "target_sha=${target_sha}" --detail "local_sha=${local_sha}" \
 	--detail "preservation_ref=${preservation_ref:-none}" --detail "backup_id=${sync_backup_id:-none}" \
 	--detail "stale_rebase_fingerprint=${stale_rebase_fingerprint:-none}" \

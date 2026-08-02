@@ -6,9 +6,10 @@
 #
 # test-parent-task-application-warn.sh — tests for t2442 Fix #2
 #
-# Regression tests for _parent_body_has_phase_markers() in issue-sync-lib.sh
-# and the warning wiring at the two creation call sites (issue-sync-helper.sh
-# cmd_push, claim-task-id.sh create_github_issue bare-fallback path).
+# Regression tests for _parent_body_has_phase_markers() in
+# issue-sync-lib-compose.sh and the warning wiring at the two creation call
+# sites (issue-sync-helper.sh cmd_push, claim-task-id.sh create_github_issue
+# bare-fallback path).
 #
 # The function is a pure string check: exit 0 if the body carries a
 # decomposition marker the reconciler understands, exit 1 if the body has
@@ -85,7 +86,7 @@ assert_grep_fixed() {
 	return 0
 }
 
-# --- Function under test (mirrored from issue-sync-lib.sh) ---
+# --- Function under test (mirrored from issue-sync-lib-compose.sh) ---
 
 _parent_body_has_phase_markers() {
 	local body="$1"
@@ -204,23 +205,24 @@ assert_rc "13: unrelated ## headings → no markers" "1" "$?"
 # --- Wiring assertions (both call sites post the warning) ---
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_LIB="$SCRIPT_DIR/issue-sync-lib-compose.sh"
 
-# Helper exists in issue-sync-lib
+# Helpers exist in the focused compose sub-library sourced by issue-sync-lib.sh.
 assert_grep \
-	"14: _parent_body_has_phase_markers defined in issue-sync-lib.sh" \
+	"14: _parent_body_has_phase_markers defined in issue-sync-lib-compose.sh" \
 	'^_parent_body_has_phase_markers\(\) \{' \
-	"$SCRIPT_DIR/issue-sync-lib.sh"
+	"$COMPOSE_LIB"
 
 assert_grep \
-	"15: _post_parent_task_no_markers_warning defined in issue-sync-lib.sh" \
+	"15: _post_parent_task_no_markers_warning defined in issue-sync-lib-compose.sh" \
 	'^_post_parent_task_no_markers_warning\(\) \{' \
-	"$SCRIPT_DIR/issue-sync-lib.sh"
+	"$COMPOSE_LIB"
 
 # Marker constant is the canonical name
 assert_grep_fixed \
 	"16: warning helper uses canonical marker" \
-	'<!-- parent-task-no-phase-markers -->' \
-	"$SCRIPT_DIR/issue-sync-lib.sh"
+	'<!-- parent-task:no-markers-warning -->' \
+	"$COMPOSE_LIB"
 
 # Call site 1: issue-sync-helper.sh cmd_push
 assert_grep \

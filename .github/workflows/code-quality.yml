@@ -364,6 +364,9 @@ jobs:
         bash .agents/scripts/safety-policy-check.sh
         echo "Secret safety policy checks passed"
 
+    - name: Session Completion Summary Policy
+      run: bash .agents/scripts/tests/test-session-completion-summary-policy.sh
+
     - name: Vault Security Suite
       run: |
         echo "Running Vault security validation suite..."

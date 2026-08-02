@@ -797,7 +797,11 @@ cmd_folder() {
 	fi
 	local corpus_id="repo:default"
 	[[ "$(_get_knowledge_mode "$repo_path")" == "$KNOWLEDGE_MODE_PERSONAL" ]] && corpus_id="$PERSONAL_CORPUS_ALIAS"
-	python3 "$FOLDER_IMPORT_HELPER" "$action" "${forwarded[@]}" \
+	local collector_args=()
+	if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+		collector_args=(--json)
+	fi
+	python3 "$FOLDER_IMPORT_HELPER" "$action" "${forwarded[@]}" "${collector_args[@]}" \
 		--knowledge-root "$knowledge_root" --scripts-dir "$SCRIPT_DIR" --corpus-id "$corpus_id"
 	return $?
 }

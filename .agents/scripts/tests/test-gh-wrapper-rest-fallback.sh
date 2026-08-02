@@ -1801,7 +1801,7 @@ unset AIDEVOPS_GH_PR_VIEW_CACHE AIDEVOPS_GH_PR_VIEW_CACHE_DIR AIDEVOPS_GH_PR_VIE
 
 : >"$GH_CALLS"
 : >"$GH_INFO_OUTPUT"
-unsupported_pr_view_fields=(statusCheckRollup reviews latestReviews reviewThreads commits files reviewDecision autoMergeRequest mergeStateStatus)
+unsupported_pr_view_fields=(authorAssociation statusCheckRollup reviews latestReviews reviewThreads commits files reviewDecision autoMergeRequest mergeStateStatus)
 unsupported_preserve_ok=1
 for field in "${unsupported_pr_view_fields[@]}"; do
 	if _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json "$field"; then
@@ -1858,12 +1858,14 @@ else
 fi
 
 if _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json title &&
+	_rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json labels,author &&
 	_rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json mergeable &&
 	_rest_pr_view_can_emergency_fallback_args 123 --repo "owner/repo" --json mergeable &&
+	! _rest_pr_view_can_preserve_args 123 --repo "owner/repo" --json labels,author,authorAssociation &&
 	! _rest_pr_view_can_emergency_fallback_args 123 --repo "owner/repo" --json reviewDecision; then
-	pass "gh_pr_view validators preserve exact REST and GraphQL-only fields"
+	pass "gh_pr_view validators preserve labels,author and reject GraphQL-only fields"
 else
-	fail "gh_pr_view validators preserve exact REST and GraphQL-only fields" \
+	fail "gh_pr_view validators preserve labels,author and reject GraphQL-only fields" \
 		"unexpected proactive or emergency field classification"
 fi
 

@@ -133,6 +133,39 @@ run_auto_dispatch_equals_case() {
 	return 1
 }
 
+run_default_dispatch_case() {
+	local stub_dir="$1"
+	local output_file="$2"
+	local trace_file="$3"
+
+	if TEST_DUPLICATE_VALUE="" \
+		TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9104" \
+		TEST_GH_TRACE="$trace_file" \
+		PATH="${stub_dir}:$PATH" \
+		"$HELPER" log --title "fix: default dispatch labels" --body "body" --label bug >"$output_file" 2>&1; then
+		return 0
+	fi
+
+	return 1
+}
+
+run_manual_hold_case() {
+	local stub_dir="$1"
+	local output_file="$2"
+	local trace_file="$3"
+
+	if TEST_DUPLICATE_VALUE="" \
+		TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9105" \
+		TEST_GH_TRACE="$trace_file" \
+		PATH="${stub_dir}:$PATH" \
+		"$HELPER" log --title "fix: durable manual hold" --body "body" --label bug \
+		--no-auto-dispatch --hold-reason "Requires an unresolved authority decision" >"$output_file" 2>&1; then
+		return 0
+	fi
+
+	return 1
+}
+
 run_flag_value_case() {
 	local stub_dir="$1"
 	local output_file="$2"
@@ -201,6 +234,51 @@ else
 	assert_not_contains "$invalid_create_text" "issue_url=https://github.com/marcusquinn/aidevops/issues/[]" "invalid created issue URL is not emitted"
 fi
 
+default_dispatch_output="${TMP_DIR}/default-dispatch.out"
+default_dispatch_trace="${TMP_DIR}/default-dispatch.trace"
+if run_default_dispatch_case "${TMP_DIR}" "$default_dispatch_output" "$default_dispatch_trace"; then
+	default_dispatch_text=$(<"$default_dispatch_output")
+	default_dispatch_calls=$(<"$default_dispatch_trace")
+	assert_contains "$default_dispatch_text" "status=created" "default dispatch case creates issue"
+	assert_contains "$default_dispatch_calls" "--label auto-dispatch" "framework issues auto-dispatch by default"
+	assert_contains "$default_dispatch_calls" "--label tier:standard" "default dispatch uses tier standard"
+	assert_contains "$default_dispatch_calls" "--label status:available" "default dispatch includes available status"
+	assert_not_contains "$default_dispatch_calls" "--label no-auto-dispatch" "default dispatch does not add a manual hold"
+else
+	fail "default dispatch case creates issue" "helper failed"
+fi
+
+manual_hold_output="${TMP_DIR}/manual-hold.out"
+manual_hold_trace="${TMP_DIR}/manual-hold.trace"
+if run_manual_hold_case "${TMP_DIR}" "$manual_hold_output" "$manual_hold_trace"; then
+	manual_hold_text=$(<"$manual_hold_output")
+	manual_hold_calls=$(<"$manual_hold_trace")
+	assert_contains "$manual_hold_text" "status=created" "documented manual hold creates issue"
+	assert_contains "$manual_hold_calls" "--label no-auto-dispatch" "documented manual hold adds no-auto-dispatch"
+	assert_contains "$manual_hold_calls" "--label status:blocked" "documented manual hold uses blocked status"
+	assert_contains "$manual_hold_calls" "## Dispatch Hold" "documented manual hold records a body section"
+	assert_contains "$manual_hold_calls" "Requires an unresolved authority decision" "documented manual hold records its reason"
+	assert_not_contains "$manual_hold_calls" "--label auto-dispatch" "documented manual hold excludes auto-dispatch"
+else
+	fail "documented manual hold creates issue" "helper failed"
+fi
+
+missing_hold_reason_output="${TMP_DIR}/missing-hold-reason.out"
+missing_hold_reason_trace="${TMP_DIR}/missing-hold-reason.trace"
+if TEST_DUPLICATE_VALUE="" TEST_GH_TRACE="$missing_hold_reason_trace" PATH="${TMP_DIR}:$PATH" \
+	"$HELPER" log --title "fix: undocumented manual hold" --body "body" --no-auto-dispatch >"$missing_hold_reason_output" 2>&1; then
+	fail "undocumented manual hold is rejected" "helper succeeded without --hold-reason"
+else
+	missing_hold_reason_text=$(<"$missing_hold_reason_output")
+	assert_contains "$missing_hold_reason_text" "requires --hold-reason" "undocumented manual hold explains the required reason"
+	if [[ -f "$missing_hold_reason_trace" ]]; then
+		missing_hold_reason_calls=$(<"$missing_hold_reason_trace")
+		assert_not_contains "$missing_hold_reason_calls" "issue create" "undocumented manual hold creates no issue"
+	else
+		pass "undocumented manual hold creates no issue"
+	fi
+fi
+
 auto_dispatch_output="${TMP_DIR}/auto-dispatch.out"
 auto_dispatch_trace="${TMP_DIR}/auto-dispatch.trace"
 if run_auto_dispatch_case "${TMP_DIR}" "$auto_dispatch_output" "$auto_dispatch_trace"; then
@@ -258,6 +336,8 @@ help_output="${TMP_DIR}/help.out"
 help_text=$(<"$help_output")
 assert_contains "$help_text" "--auto-dispatch" "usage documents auto-dispatch flag"
 assert_contains "$help_text" "--tier TIER" "usage documents tier flag"
+assert_contains "$help_text" "--no-auto-dispatch" "usage documents durable manual hold flag"
+assert_contains "$help_text" "--hold-reason TEXT" "usage documents required hold reason"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

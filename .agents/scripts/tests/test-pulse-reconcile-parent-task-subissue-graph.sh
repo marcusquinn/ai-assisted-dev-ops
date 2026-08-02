@@ -122,6 +122,19 @@ case "$1" in
 			fi
 			shift
 		done
+		# Live parent mutation fences request the complete issue object. Reuse the
+		# current scenario's parent list entry so label/state changes stay coherent.
+		if [[ -n "$local_issue" && -z "$local_jq" ]]; then
+			for local_issue_file in "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"; do
+				[[ -f "$local_issue_file" ]] || continue
+				local_issue_json=$(jq -c --argjson issue "$local_issue" \
+					'.[] | select(.number == $issue)' "$local_issue_file" 2>/dev/null) || local_issue_json=""
+				if [[ -n "$local_issue_json" ]]; then
+					printf '%s\n' "$local_issue_json"
+					exit 0
+				fi
+			done
+		fi
 		# Load state from env file
 		if [[ -n "$local_issue" && -f "${TEST_ROOT}/gh-child-states.env" ]]; then
 			# shellcheck disable=SC1090
@@ -212,7 +225,7 @@ set_parent_list() {
 	# Args: issue_num title body
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b}]' >"${TEST_ROOT}/gh-issue-list.json"
+		'[{number:$n, title:$t, body:$b, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-issue-list.json"
 	return 0
 }
 
@@ -220,7 +233,7 @@ set_closed_parent_list() {
 	# Args: issue_num title body
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b, state:"closed"}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+		'[{number:$n, title:$t, body:$b, state:"closed", labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
 	return 0
 }
 

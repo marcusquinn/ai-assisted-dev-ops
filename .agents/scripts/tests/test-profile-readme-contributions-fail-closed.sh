@@ -164,6 +164,13 @@ EOF
 	return 0
 }
 
+read_remote_readme() {
+	local remote_repo="$1"
+	local output_file="$2"
+	git --git-dir="$remote_repo" show main:README.md >"$output_file"
+	return $?
+}
+
 run_failure_case() {
 	local scenario="$1"
 	local case_root
@@ -463,8 +470,10 @@ test_legacy_joined_marker_is_repaired() {
 		fail "legacy joined marker is repaired" "$output"
 		return 0
 	fi
-	if [[ "$(grep -cFx '<!-- CONTRIBUTIONS-START -->' "$readme")" -ne 1 ]] ||
-		[[ "$(grep -cFx '<!-- CONTRIBUTIONS-END -->' "$readme")" -ne 1 ]]; then
+	local remote_readme="${case_root}/remote-readme.md"
+	read_remote_readme "${case_root}/remote.git" "$remote_readme"
+	if [[ "$(grep -cFx '<!-- CONTRIBUTIONS-START -->' "$remote_readme")" -ne 1 ]] ||
+		[[ "$(grep -cFx '<!-- CONTRIBUTIONS-END -->' "$remote_readme")" -ne 1 ]]; then
 		fail "legacy joined marker becomes one exact pair" "marker counts are invalid"
 		return 0
 	fi
@@ -483,7 +492,8 @@ test_successful_refresh() {
 		fail "healthy refresh succeeds" "$output"
 		return 0
 	fi
-	local readme="${profile_repo}/README.md"
+	local readme="${case_root}/remote-readme.md"
+	read_remote_readme "${case_root}/remote.git" "$readme"
 	if ! grep -Fq -- '- **[configured](https://example.invalid/configured)** -- No description' "$readme" ||
 		! grep -Fq -- '- **[fork-one](https://example.invalid/fork-one)** -- Fork description' "$readme"; then
 		fail "healthy refresh renders validated records" "expected contribution lines missing"
@@ -521,7 +531,7 @@ test_unchanged_refresh_records_throttle() {
 	fi
 	rm -f "${case_root}/home/.aidevops/cache/contributions-last-update"
 	local before_head
-	before_head=$(git -C "$profile_repo" rev-parse HEAD)
+	before_head=$(git --git-dir="${case_root}/remote.git" rev-parse main)
 	local output=""
 	if ! output=$(HOME="${case_root}/home" PATH="$run_env_path" GH_SCENARIO=success \
 		bash "$HELPER" update-contributions 2>&1); then
@@ -530,7 +540,7 @@ test_unchanged_refresh_records_throttle() {
 	fi
 	if [[ "$output" != *"Contributions unchanged"* ]] ||
 		[[ ! -f "${case_root}/home/.aidevops/cache/contributions-last-update" ]] ||
-		[[ "$before_head" != "$(git -C "$profile_repo" rev-parse HEAD)" ]]; then
+		[[ "$before_head" != "$(git --git-dir="${case_root}/remote.git" rev-parse main)" ]]; then
 		fail "unchanged refresh records throttle" "output=${output}"
 		return 0
 	fi
@@ -542,13 +552,15 @@ test_push_failure_propagates() {
 	local case_root
 	case_root=$(create_fixture "push-failure") || return 1
 	local profile_repo="${case_root}/fixture"
+	local canonical_head=""
+	canonical_head=$(git -C "$profile_repo" rev-parse HEAD)
 	git -C "$profile_repo" remote set-url origin "${case_root}/missing-remote.git"
 
 	local output=""
 	local exit_code=0
 	output=$(HOME="${case_root}/home" PATH="${case_root}/bin:${PATH}" GH_SCENARIO=success \
 		bash "$HELPER" update-contributions 2>&1) || exit_code=$?
-	if [[ "$exit_code" -eq 0 || "$output" != *"push failed"* ]]; then
+	if [[ "$exit_code" -eq 0 || "$output" != *"could not prepare profile publication worktree"* ]]; then
 		fail "push failure propagates" "exit=${exit_code} output=${output}"
 		return 0
 	fi
@@ -567,7 +579,7 @@ test_push_failure_propagates() {
 	local local_head remote_head
 	local_head=$(git -C "$profile_repo" rev-parse HEAD)
 	remote_head=$(git --git-dir="${case_root}/remote.git" rev-parse main)
-	if [[ "$local_head" != "$remote_head" ]] ||
+	if [[ "$local_head" != "$canonical_head" || "$remote_head" == "$canonical_head" ]] ||
 		[[ ! -f "${case_root}/home/.aidevops/cache/contributions-last-update" ]]; then
 		fail "push retry closes throttle after remote sync" "local=${local_head} remote=${remote_head} output=${retry_output}"
 		return 0

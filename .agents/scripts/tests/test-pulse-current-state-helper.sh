@@ -99,12 +99,12 @@ os.makedirs(state_dir, exist_ok=True)
 open(os.path.join(state_dir, 'owner-repo-12.state'), 'w').write(
     'fingerprint=THREAD1\n'
     'thread_count=1\n'
-    'attempt_count=2\n'
+    'attempt_count=3\n'
     'analysis_complete=true\n'
     'maintainer_attention=true\n'
     'blocked_by=maintainer\n'
-    'blocker_reason=needs_decision\n'
-    'blocker_details=choose follow-up scope\n'
+    'attention_reason=same_unresolved_thread_fingerprint\n'
+    'blocker_reason=same_unresolved_thread_fingerprint\n'
     f'completed_at={int(now)}\n'
 )
 PY
@@ -143,7 +143,7 @@ grep -q 'API call pressure:' "$output"
 grep -q 'Prefetch cache:' "$output"
 grep -q 'Cycle state:' "$output"
 grep -q 'Review-thread maintainer attention:' "$output"
-grep -q 'needs_decision' "$output"
+grep -q 'same_unresolved_thread_fingerprint' "$output"
 grep -q 'worker_launch_total' "$output"
 grep -q 'watchdog_killed' "$output"
 grep -q 'rate_limited' "$output"
@@ -183,7 +183,8 @@ jq -e '.cycle_state.outcome == "progressed"' "$json_output" >/dev/null
 jq -e '.cycle_state.progress.kinds == ["worker-dispatched"]' "$json_output" >/dev/null
 jq -e '.review_thread_attention[0].blocked_by == "maintainer"' "$json_output" >/dev/null
 jq -e '.review_thread_attention[0].pr_number == 12' "$json_output" >/dev/null
-jq -e '.review_thread_attention[0].reason == "needs_decision"' "$json_output" >/dev/null
+jq -e '.review_thread_attention[0].reason == "same_unresolved_thread_fingerprint"' "$json_output" >/dev/null
+jq -e '.review_thread_attention[0].attempt_count == 3' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.objectives_without_next_action == 1' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.expired_assumptions == 1' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.oldest_unverified_assumption.number == 41' "$json_output" >/dev/null

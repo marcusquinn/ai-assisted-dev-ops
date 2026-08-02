@@ -15,9 +15,10 @@
 # loop (22 watchdog kills, 5 auto-approve cycles in one afternoon).
 #
 # Post-fix semantics:
-#   - _nmr_application_has_automation_signature  →  matches ONLY
-#     creation defaults (source:review-scanner marker/label,
-#     review-followup label). These can be auto-cleared.
+#   - _nmr_application_has_automation_signature  →  matches ONLY trusted
+#     automation defaults/provenance (scanner markers/labels and bounded
+#     workflow reapplication markers). These can be auto-cleared after
+#     reason, breaker, and security gates pass.
 #   - _nmr_application_is_circuit_breaker_trip   →  matches ONLY
 #     breaker trips (stale-recovery-tick:escalated,
 #     cost-circuit-breaker:fired, dispatch-backoff:rate_limit_nmr,
@@ -61,6 +62,7 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export AIDEVOPS_NMR_REVALIDATION_STATE_FILE="${TEST_ROOT}/nmr-state.json"
 	: >"$LOGFILE"
 	COMMENTS_FIXTURE="${TEST_ROOT}/comments.json"
 	ISSUE_META_FIXTURE="${TEST_ROOT}/issue-meta.json"
@@ -145,64 +147,19 @@ set_timeline() {
 	printf '%s\n' "$body" >"$TIMELINE_FIXTURE"
 }
 
-# Extract helpers from the source file. Same awk-extract-and-eval
-# pattern used by the force-dispatch and bot-cleanup test suites.
 define_helpers_under_test() {
-	local sig_src breaker_src history_src security_src sort_src current_src retry_event_src retry_used_src retry_src maint_src
-	sig_src=$(awk '
-		/^_nmr_application_has_automation_signature\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	breaker_src=$(awk '
-		/^_nmr_application_is_circuit_breaker_trip\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	history_src=$(awk '
-		/^_nmr_application_has_breaker_history\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	security_src=$(awk '
-		/^_nmr_application_is_security_sensitive\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	sort_src=$(awk '
-		/^_nmr_version_sort_key\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	current_src=$(awk '
-		/^_nmr_current_aidevops_version\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_event_src=$(awk '
-		/^_nmr_retry_breaker_event_json\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_used_src=$(awk '
-		/^_nmr_retry_already_used_for_version\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	retry_src=$(awk '
-		/^_nmr_breaker_release_retry_reason\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	maint_src=$(awk '
-		/^_nmr_applied_by_maintainer\(\) \{/,/^}$/ { print }
-	' "$NMR_SCRIPT")
-	if [[ -z "$sig_src" || -z "$breaker_src" || -z "$history_src" || -z "$security_src" || -z "$sort_src" || -z "$current_src" || -z "$retry_event_src" || -z "$retry_used_src" || -z "$retry_src" || -z "$maint_src" ]]; then
-		printf 'ERROR: could not extract one of the NMR helpers from %s\n' "$NMR_SCRIPT" >&2
-		return 1
-	fi
+	unset _PULSE_NMR_APPROVAL_LOADED
 	# shellcheck disable=SC1090
-	eval "$sig_src"
-	# shellcheck disable=SC1090
-	eval "$breaker_src"
-	# shellcheck disable=SC1090
-	eval "$history_src"
-	# shellcheck disable=SC1090
-	eval "$security_src"
-	# shellcheck disable=SC1090
-	eval "$sort_src"
-	# shellcheck disable=SC1090
-	eval "$current_src"
-	# shellcheck disable=SC1090
-	eval "$retry_event_src"
-	# shellcheck disable=SC1090
-	eval "$retry_used_src"
-	# shellcheck disable=SC1090
-	eval "$retry_src"
-	# shellcheck disable=SC1090
-	eval "$maint_src"
+	source "$NMR_SCRIPT"
+	_nmr_record_revalidation_state() { return 0; }
+	_nmr_emit_decision_packet() { return 0; }
+	_notify_stale_recovery_resolved_by_pr() { return 0; }
+	_gh_actor_has_repo_write_authority() {
+		local repo_slug="$1" actor="$2" association="${3:-}"
+		[[ -n "$repo_slug" && -n "$association" ]] || return 2
+		[[ "$actor" != "external-contributor" ]]
+		return $?
+	}
 	return 0
 }
 
@@ -346,6 +303,61 @@ test_signature_detects_source_review_feedback_comment_marker() {
 		return 0
 	fi
 	print_result "signature detects source:review-feedback comment marker (t2686)" 1
+	return 0
+}
+
+test_signature_detects_actions_label_protection_notice() {
+	set_comments '[{"created_at":"2026-04-21T01:49:38Z","body":"<!-- label-protection-notice -->","user":{"login":"github-actions[bot]"}}]'
+	set_issue_meta '{"labels":[]}'
+	if _nmr_application_has_automation_signature 2572 exampleorg/examplerepo "2026-04-21T01:49:36Z" "github-actions[bot]"; then
+		print_result "signature detects actions label-protection workflow residue" 0
+		return 0
+	fi
+	print_result "signature detects actions label-protection workflow residue" 1
+	return 0
+}
+
+test_signature_detects_actions_notice_on_later_page() {
+	set_comments '[[{"created_at":"2026-04-21T01:49:38Z","body":"unrelated","user":{"login":"github-actions[bot]"}}],[{"created_at":"2026-04-21T01:49:40Z","body":"<!-- label-protection-notice -->","user":{"login":"github-actions[bot]"}}]]'
+	set_issue_meta '{"labels":[]}'
+	if _nmr_application_has_automation_signature 2572 exampleorg/examplerepo "2026-04-21T01:49:36Z" "github-actions[bot]"; then
+		print_result "signature detects workflow residue on later paginated page" 0
+		return 0
+	fi
+	print_result "signature detects workflow residue on later paginated page" 1
+	return 0
+}
+
+test_signature_rejects_external_label_protection_text() {
+	set_comments '[{"created_at":"2026-04-21T01:49:38Z","body":"<!-- label-protection-notice -->","user":{"login":"external-contributor"}}]'
+	set_issue_meta '{"labels":[]}'
+	if _nmr_application_has_automation_signature 2572 exampleorg/examplerepo "2026-04-21T01:49:36Z" "github-actions[bot]"; then
+		print_result "signature rejects attacker-copied label-protection text" 1
+		return 0
+	fi
+	print_result "signature rejects attacker-copied label-protection text" 0
+	return 0
+}
+
+test_signature_detects_same_actor_parent_escalation() {
+	set_comments '[{"created_at":"2026-04-21T01:49:38Z","body":"<!-- parent-needs-decomposition-escalated -->","user":{"login":"runner"}}]'
+	set_issue_meta '{"labels":[]}'
+	if _nmr_application_has_automation_signature 2572 exampleorg/examplerepo "2026-04-21T01:49:36Z" runner; then
+		print_result "signature detects historical same-actor parent escalation" 0
+		return 0
+	fi
+	print_result "signature detects historical same-actor parent escalation" 1
+	return 0
+}
+
+test_signature_rejects_other_actor_parent_escalation() {
+	set_comments '[{"created_at":"2026-04-21T01:49:38Z","body":"<!-- parent-needs-decomposition-escalated -->","user":{"login":"external-contributor"}}]'
+	set_issue_meta '{"labels":[]}'
+	if _nmr_application_has_automation_signature 2572 exampleorg/examplerepo "2026-04-21T01:49:36Z" runner; then
+		print_result "signature rejects copied parent escalation from another actor" 1
+		return 0
+	fi
+	print_result "signature rejects copied parent escalation from another actor" 0
 	return 0
 }
 
@@ -843,7 +855,7 @@ main() {
 		return 1
 	fi
 
-	# _nmr_application_has_automation_signature (creation defaults only)
+	# _nmr_application_has_automation_signature (trusted automation only)
 	test_signature_rejects_stale_recovery_marker
 	test_signature_rejects_cost_circuit_breaker_marker
 	test_signature_rejects_circuit_breaker_escalated_marker
@@ -854,6 +866,11 @@ main() {
 	test_signature_detects_source_review_feedback_label_fallback
 	test_signature_detects_quality_feedback_helper_comment_marker
 	test_signature_detects_source_review_feedback_comment_marker
+	test_signature_detects_actions_label_protection_notice
+	test_signature_detects_actions_notice_on_later_page
+	test_signature_rejects_external_label_protection_text
+	test_signature_detects_same_actor_parent_escalation
+	test_signature_rejects_other_actor_parent_escalation
 	test_signature_ignores_unrelated_comment_in_window
 	test_signature_detects_lower_bound_comment_before_label
 	test_signature_empty_args_returns_nonzero

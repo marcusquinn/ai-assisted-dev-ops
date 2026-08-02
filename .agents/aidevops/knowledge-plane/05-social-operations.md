@@ -38,6 +38,15 @@ normalized object, activity, and media rows are exposed only as
 transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
+Candidate implementation is provider-specific, not one generic social adapter.
+The ranked children are Mastodon #29221, GitHub #29222, Stack Exchange #29223,
+Miniflux #29224, Readwise Reader #29225, FreshRSS #29226, Lemmy issue #29227,
+then public-only Hacker News #29228. Each route owns its identity
+contract, stream allowlist, checkpoint semantics, and negative write-reachability
+tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
+Pocket are deferred or rejected for the reasons in
+`.agents/content/social-provider-candidates.md`.
+
 The maintained planning and gap inventory is
 `06-social-provider-capabilities.md`. A matrix entry is not implementation
 authority: every provider child must revalidate current official API/export
@@ -224,6 +233,14 @@ authentication loss, CAPTCHA, or a changed account scope stops that route; it
 does not authorize a profile, proxy, or identity change.
 
 ## Operator verification
+
+Provider registry routes may be scheduled through the disabled deterministic
+`knowledge-collector-routine.sh`. The private source policy owns mode, useful
+freshness, minimum and reconciliation intervals, and a runtime budget. Social
+arguments still resolve through `provider-run`, so scheduling cannot widen a
+provider's supported mode or reach approval-bound outbound operations. Content-
+free routine health supplements, but never replaces, atomic provider receipts
+and checkpoints.
 
 Before enabling a routine:
 

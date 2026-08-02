@@ -1,0 +1,73 @@
+{
+  "schema": "telegram-bot-api-update-fanout-v1",
+  "delivery": "append_only_fanout",
+  "authenticity_verified": true,
+  "owner_id": "fixture_primary_owner",
+  "observed_at": "2026-07-30T10:20:00Z",
+  "privacy_mode": "disabled",
+  "installed_at": "2026-07-30T09:00:00Z",
+  "chat_authority": {
+    "-200": {
+      "member_status": "administrator",
+      "can_read_all_group_messages": true,
+      "history_visible": true
+    }
+  },
+  "allowed_updates": [
+    "message",
+    "edited_message",
+    "message_reaction",
+    "chat_member"
+  ],
+  "bot": {
+    "id": 9001,
+    "is_bot": true,
+    "first_name": "Fixture Bot",
+    "username": "fixture_bot"
+  },
+  "updates": [
+    {
+      "update_id": 503,
+      "fanout_sequence": 3,
+      "message_reaction": {
+        "chat": {"id": -200, "type": "supergroup", "title": "Synthetic Forum"},
+        "message_id": 10,
+        "actor_chat": {"id": -200, "type": "supergroup", "title": "Synthetic Forum"},
+        "date": 1785406800,
+        "old_reaction": [],
+        "new_reaction": [{"type": "emoji", "emoji": "check"}]
+      }
+    },
+    {
+      "update_id": 501,
+      "fanout_sequence": 1,
+      "edited_message": {
+        "message_id": 10,
+        "message_thread_id": 7,
+        "from": {"id": 2002, "is_bot": false, "first_name": "Fixture", "username": "fixture_contact"},
+        "chat": {"id": -200, "type": "supergroup", "title": "Synthetic Forum", "is_forum": true},
+        "date": 1785405600,
+        "edit_date": 1785406500,
+        "text": "Synthetic message edited by event fan-out",
+        "document": {
+          "file_id": "private-transport-value-not-projected",
+          "file_unique_id": "fixture-unique-document",
+          "file_name": "fixture.txt",
+          "mime_type": "text/plain",
+          "file_size": 32
+        }
+      }
+    },
+    {
+      "update_id": 502,
+      "fanout_sequence": 2,
+      "chat_member": {
+        "chat": {"id": -200, "type": "supergroup", "title": "Synthetic Forum"},
+        "from": {"id": 1001, "is_bot": false, "first_name": "Fixture"},
+        "date": 1785406700,
+        "old_chat_member": {"status": "member", "user": {"id": 2002, "is_bot": false, "first_name": "Fixture"}},
+        "new_chat_member": {"status": "administrator", "user": {"id": 2002, "is_bot": false, "first_name": "Fixture"}}
+      }
+    }
+  ]
+}

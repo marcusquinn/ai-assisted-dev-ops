@@ -63,7 +63,7 @@ if [[ "${RELEASE_RUNNER_EXIT:-0}" -eq 0 ]]; then
 	receipt_base="${receipt_dir}/${repo//\//_}-${pr_number}"
 	printf '%s\n' "$status" >"${receipt_base}.status"
 	if [[ "$status" == "superseded" ]]; then
-		printf '%s\n' '{"schema_version":1,"status":"superseded","repository":"marcusquinn/aidevops","pr_number":42,"source_merge":"0000000000000000000000000000000000000001","aggregate_pr":99,"aggregate_merge":"0000000000000000000000000000000000000002","release_tag":"v3.0.0","release_commit":"0000000000000000000000000000000000000003"}' >"${receipt_base}.aggregate.json"
+		printf '%s\n' '{"schema_version":1,"status":"superseded","repository":"marcusquinn/aidevops","pr_number":42,"source_merge":"0000000000000000000000000000000000000001","aggregate_pr":99,"aggregate_merge":"0000000000000000000000000000000000000002","release_tag":"v3.0.0","release_commit":"0000000000000000000000000000000000000003","recorded_at":"2026-08-01T00:00:00Z"}' >"${receipt_base}.aggregate.json"
 	fi
 fi
 exit "${RELEASE_RUNNER_EXIT:-0}"
@@ -196,6 +196,68 @@ if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew
 fi
 printf 'PASS superseded source receipts finalize truthfully and cannot be downgraded\n'
 
+successor_superseded_worktree="${ROOT}/successor-superseded-worktree"
+mkdir -p "$successor_superseded_worktree"
+successor_superseded_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops 49 \
+	"$successor_superseded_worktree" feature/successor-superseded \
+	"$$" successor-superseded-session pending FINALIZATION_PENDING)
+successor_supersede_runner="${ROOT}/successor-supersede-runner.sh"
+cat >"$successor_supersede_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
+_full_loop_write_successor_release_receipt "\$@"
+RUNNER
+chmod +x "$successor_supersede_runner"
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" marcusquinn/aidevops 49 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$finalize_runner" 49 marcusquinn/aidevops >/dev/null
+jq -e '.executor_completion_state == "COMPLETE" and .release_status == "superseded"' \
+	"$successor_superseded_receipt" >/dev/null
+jq -e '.evidence_type == "post-publication-supersession" and .source_pr == 49
+	and .source_workflow_run == 101 and .successor_pr == 99 and .release_workflow_run == 202
+	and .source_release_tag == "v3.0.0" and .release_tag == "v3.0.1"' \
+	"${receipt_dir}/marcusquinn_aidevops-49.successor.json" >/dev/null
+cp "${receipt_dir}/marcusquinn_aidevops-49.successor.json" "${ROOT}/successor-evidence-before.json"
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" marcusquinn/aidevops 49 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202
+cmp -s "${receipt_dir}/marcusquinn_aidevops-49.successor.json" "${ROOT}/successor-evidence-before.json"
+
+printf '%s\n' failed >"${receipt_dir}/marcusquinn_aidevops-50.status"
+cp "${receipt_dir}/marcusquinn_aidevops-46.aggregate.json" \
+	"${receipt_dir}/marcusquinn_aidevops-50.aggregate.json"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" marcusquinn/aidevops 50 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202 >/dev/null 2>&1; then
+	printf 'FAIL aggregate evidence allowed a conflicting post-publication supersession receipt\n'
+	exit 1
+fi
+grep -qx 'failed' "${receipt_dir}/marcusquinn_aidevops-50.status"
+[[ ! -e "${receipt_dir}/marcusquinn_aidevops-50.successor.json" ]]
+
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" marcusquinn/aidevops 52 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$supersede_runner" marcusquinn/aidevops 52 \
+	"$(printf '%040d' 1)" 99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" >/dev/null 2>&1; then
+	printf 'FAIL successor evidence allowed conflicting aggregate provenance\n'
+	exit 1
+fi
+[[ -f "${receipt_dir}/marcusquinn_aidevops-52.successor.json" ]]
+[[ ! -e "${receipt_dir}/marcusquinn_aidevops-52.aggregate.json" ]]
+printf 'PASS post-publication successor receipts finalize idempotently without fabricating aggregate provenance\n'
+
 alias_canonical="${ROOT}/alias-canonical"
 alias_worktree="${ROOT}/alias-worktree"
 alias_branch="bugfix/repair-pr-head"
@@ -304,6 +366,112 @@ AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$c
 	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
 	bash "$migration_runner" 44 example/old-repo example/renamed-repo >/dev/null
 printf 'PASS repository migration preserves owner, lease, creation, cleanup, and release evidence idempotently\n'
+
+successor_migration_worktree="${ROOT}/successor-migration-worktree"
+mkdir -p "$successor_migration_worktree"
+full_loop_write_cleanup_deferred example/successor-old 51 "$successor_migration_worktree" \
+	feature/successor-migration "$$" successor-migration-session pending FINALIZATION_PENDING >/dev/null
+printf '%s\n' superseded >"${receipt_dir}/example_successor-old-51.status"
+jq -cn '{schema_version:1,evidence_type:"post-publication-supersession",status:"superseded",
+	repository:"example/successor-old",pr_number:51,source_pr:51,source_merge:("1" * 40),
+	source_release_tag:"v3.0.0",source_release_commit:("2" * 40),source_workflow_run:101,
+	successor_pr:99,successor_merge:("3" * 40),release_tag:"v3.0.1",
+	release_commit:("4" * 40),release_workflow_run:202,recorded_at:"2026-08-01T00:00:00Z"}' \
+	>"${receipt_dir}/example_successor-old-51.successor.json"
+full_loop_update_cleanup_release_status example/successor-old 51 superseded
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$migration_runner" 51 example/successor-old example/successor-new >/dev/null
+[[ ! -e "${receipt_dir}/example_successor-old-51.status" ]]
+[[ ! -e "${receipt_dir}/example_successor-old-51.successor.json" ]]
+grep -qx 'superseded' "${receipt_dir}/example_successor-new-51.status"
+jq -e '.repository == "example/successor-new" and .source_pr == 51
+	and .migration.from_repository == "example/successor-old"' \
+	"${receipt_dir}/example_successor-new-51.successor.json" >/dev/null
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$migration_runner" 51 example/successor-old example/successor-new >/dev/null
+printf 'PASS repository migration preserves distinct post-publication supersession evidence idempotently\n'
+
+malformed_migration_worktree="${ROOT}/malformed-migration-worktree"
+mkdir -p "$malformed_migration_worktree"
+full_loop_write_cleanup_deferred example/malformed-old 53 "$malformed_migration_worktree" \
+	feature/malformed-migration "$$" malformed-migration-session pending FINALIZATION_PENDING >/dev/null
+printf '%s\n' superseded >"${receipt_dir}/example_malformed-old-53.status"
+jq -cn '{schema_version:1,evidence_type:"post-publication-supersession",status:"superseded",
+	repository:"example/malformed-old",pr_number:53,source_pr:53,successor_pr:99}' \
+	>"${receipt_dir}/example_malformed-old-53.successor.json"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$migration_runner" 53 example/malformed-old example/malformed-new >/dev/null 2>&1; then
+	printf 'FAIL repository migration accepted an incomplete successor evidence schema\n'
+	exit 1
+fi
+[[ -f "${cleanup_receipt_dir}/example_malformed-old-53.json" ]]
+[[ -f "${receipt_dir}/example_malformed-old-53.status" ]]
+[[ -f "${receipt_dir}/example_malformed-old-53.successor.json" ]]
+[[ ! -e "${cleanup_receipt_dir}/example_malformed-new-53.json" ]]
+printf 'PASS repository migration rejects incomplete supersession evidence without deleting its source\n'
+
+evidence_conflict_worktree="${ROOT}/evidence-conflict-worktree"
+mkdir -p "$evidence_conflict_worktree"
+full_loop_write_cleanup_deferred example/evidence-old 54 "$evidence_conflict_worktree" \
+	feature/evidence-conflict "$$" evidence-conflict-session pending FINALIZATION_PENDING >/dev/null
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" example/evidence-old 54 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202
+jq --arg repo example/evidence-new --arg old_repo example/evidence-old \
+	'.repository = $repo | .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:"2026-08-01T01:00:00Z"}' \
+	"${cleanup_receipt_dir}/example_evidence-old-54.json" \
+	>"${cleanup_receipt_dir}/example_evidence-new-54.json"
+printf '%s\n' superseded >"${receipt_dir}/example_evidence-new-54.status"
+jq --arg repo example/evidence-new --arg old_repo example/evidence-old \
+	'.repository = $repo | .release_workflow_run = 303
+	| .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:"2026-08-01T01:00:00Z"}' \
+	"${receipt_dir}/example_evidence-old-54.successor.json" \
+	>"${receipt_dir}/example_evidence-new-54.successor.json"
+cp "${receipt_dir}/example_evidence-old-54.successor.json" "${ROOT}/evidence-conflict-source-before.json"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$migration_runner" 54 example/evidence-old example/evidence-new >/dev/null 2>&1; then
+	printf 'FAIL conflicting complete destination evidence reported a successful migration\n'
+	exit 1
+fi
+cmp -s "${receipt_dir}/example_evidence-old-54.successor.json" "${ROOT}/evidence-conflict-source-before.json"
+[[ -f "${cleanup_receipt_dir}/example_evidence-old-54.json" ]]
+jq -e '.release_workflow_run == 303' "${receipt_dir}/example_evidence-new-54.successor.json" >/dev/null
+printf 'PASS conflicting complete destination evidence cannot delete a valid migration source\n'
+
+partial_migration_worktree="${ROOT}/partial-migration-worktree"
+mkdir -p "$partial_migration_worktree"
+full_loop_write_cleanup_deferred example/partial-old 55 "$partial_migration_worktree" \
+	feature/partial-migration "$$" partial-migration-session pending FINALIZATION_PENDING >/dev/null
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	bash "$successor_supersede_runner" example/partial-old 55 \
+	"$(printf '%040d' 1)" v3.0.0 "$(printf '%040d' 3)" 101 \
+	99 "$(printf '%040d' 2)" v3.0.1 "$(printf '%040d' 4)" 202
+jq --arg repo example/partial-new --arg old_repo example/partial-old \
+	'.repository = $repo | .updated_at = "2026-08-01T02:00:00Z"
+	| .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:"2026-08-01T02:00:00Z"}' \
+	"${cleanup_receipt_dir}/example_partial-old-55.json" \
+	>"${cleanup_receipt_dir}/example_partial-new-55.json"
+jq --arg repo example/partial-new --arg old_repo example/partial-old \
+	'.repository = $repo | .migration = {from_repository:$old_repo,to_repository:$repo,migrated_at:"2026-08-01T02:00:00Z"}' \
+	"${receipt_dir}/example_partial-old-55.successor.json" \
+	>"${receipt_dir}/example_partial-new-55.successor.json"
+[[ ! -e "${receipt_dir}/example_partial-new-55.status" ]]
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$migration_runner" 55 example/partial-old example/partial-new >/dev/null
+[[ ! -e "${cleanup_receipt_dir}/example_partial-old-55.json" ]]
+[[ ! -e "${receipt_dir}/example_partial-old-55.status" ]]
+[[ ! -e "${receipt_dir}/example_partial-old-55.successor.json" ]]
+grep -qx 'superseded' "${receipt_dir}/example_partial-new-55.status"
+jq -e '.repository == "example/partial-new" and .source_pr == 55
+	and .release_workflow_run == 202 and .migration.from_repository == "example/partial-old"' \
+	"${receipt_dir}/example_partial-new-55.successor.json" >/dev/null
+printf 'PASS repository migration recovers verified partial destination publication idempotently\n'
 
 successor_worktree="${ROOT}/successor-worktree"
 mkdir -p "$successor_worktree"
@@ -526,7 +694,8 @@ printf 'PASS matching published receipt atomically promotes stale authorized lif
 
 printf '%s\n' superseded >"${receipt_dir}/marcusquinn_aidevops-47.status"
 jq -cn '{schema_version:1,status:"superseded",repository:"marcusquinn/aidevops",pr_number:47,
-	source_merge:("1" * 40),aggregate_pr:99,aggregate_merge:("2" * 40),release_tag:"v3.0.0",release_commit:("3" * 40)}' \
+	source_merge:("1" * 40),aggregate_pr:99,aggregate_merge:("2" * 40),release_tag:"v3.0.0",
+	release_commit:("3" * 40),recorded_at:"2026-08-01T00:00:00Z"}' \
 	>"${receipt_dir}/marcusquinn_aidevops-47.aggregate.json"
 superseded_handoff_output=$(AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
 	AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \

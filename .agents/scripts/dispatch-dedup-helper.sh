@@ -76,6 +76,10 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/dispatch-dedup-cost.sh"
 
+# Shared strict GitHub closing-clause parser for stale PR routing.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/pr-closing-link-lib.sh"
+
 # GH#18916: stale assignment recovery subsystem extracted.
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/dispatch-dedup-stale.sh"

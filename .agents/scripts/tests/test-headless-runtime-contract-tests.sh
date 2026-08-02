@@ -205,6 +205,7 @@ test_headless_temp_initialization_preserves_process_scratch() {
 	local TMP="/host/tmp"
 	local TEMP="/host/temp"
 	local AIDEVOPS_WORKSPACE_DIR="${HOME}/.aidevops/.agent-workspace"
+	local run_script="${HELPER_SCRIPT%/*}/headless-runtime-run.sh"
 	local expected=""
 
 	aidevops_init_temp_workspace || {
@@ -215,7 +216,7 @@ test_headless_temp_initialization_preserves_process_scratch() {
 
 	if [[ "$TMPDIR" == "/host/tmpdir" && "$TMP" == "/host/tmp" && "$TEMP" == "/host/temp" ]] &&
 		[[ "$AIDEVOPS_TEMP_DIR" == "$expected" ]] &&
-		grep -q 'aidevops_init_temp_workspace' "$HELPER_SCRIPT"; then
+		grep -q 'aidevops_init_temp_workspace' "$run_script"; then
 		print_result "headless initialization preserves process scratch" 0
 		return 0
 	fi
@@ -419,10 +420,12 @@ test_private_workload_arguments_are_fail_closed() {
 	local -a extra_args=("--pure")
 	local helper_source=""
 	local launch_source=""
+	local run_source=""
 	setup_private_workload_profile_fixture "$work_dir"
 	private_profile_sha256=$(private_workload_profile_sha256 "$work_dir") || return 1
 	helper_source=$(<"$HELPER_SCRIPT")
 	launch_source=$(<"${HELPER_SCRIPT%/*}/headless-runtime-launch.sh")
+	run_source=$(<"${HELPER_SCRIPT%/*}/headless-runtime-run.sh")
 
 	_parse_run_args --private-workload --private-profile-sha256 "$private_profile_sha256"
 	local valid_status=0
@@ -486,11 +489,11 @@ test_private_workload_arguments_are_fail_closed() {
 		"$unsafe_profile_status" -eq 1 && \
 		"$unexpected_permission_status" -eq 1 && "$unexpected_config_status" -eq 1 && \
 		"$description_status" -eq 1 && "$steps_status" -eq 1 && \
-		"$helper_source" == *'lifecycle_work_dir="[private]"'* && \
+		"$run_source" == *'lifecycle_work_dir="[private]"'* && \
 		"$launch_source" == *'display_work_dir="[private]"'* && \
 		"$launch_source" == *'display_recovery_dir="[private]"'* && \
 		"$helper_source" == *'metric_work_dir=""'* && \
-		"$helper_source" == *'unset WORKER_WORKTREE_PATH _WORKER_WORKTREE_PATH'* ]]; then
+		"$run_source" == *'unset WORKER_WORKTREE_PATH _WORKER_WORKTREE_PATH'* ]]; then
 		print_result "private workload arguments enforce the non-content boundary" 0
 		return 0
 	fi

@@ -73,21 +73,28 @@ chmod +x "$ROOT/version-manager.sh"
 
 cat >"$ROOT/source-resolver.sh" <<'STUB'
 #!/usr/bin/env bash
+command="${1:-}"
+shift || true
 source_pr=""
+expected_sources=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--source-pr) source_pr="$2"; shift 2 ;;
+	--expected-sources) expected_sources="$2"; shift 2 ;;
 	*) shift ;;
 	esac
 done
-if [[ "${RESOLVER_MODE:-direct}" == "blocked" ]]; then
+if [[ -n "${RESOLVER_CALL_LOG:-}" ]]; then
+	printf 'expected=%s\n' "$expected_sources" >>"$RESOLVER_CALL_LOG"
+fi
+if [[ "${RESOLVER_MODE:-direct}" == "blocked" && "$command" == "resolve-source" ]]; then
 	exit 1
 elif [[ "${RESOLVER_MODE:-direct}" == "aggregate" ]]; then
-	printf '{"mode":"aggregate","requested_pr":%s,"source_pr":99,"source_merge":"%040d","aggregated_sources":[{"pr":%s,"merge":"%040d"}]}\n' \
-		"$source_pr" 0 "$source_pr" 1
+	printf '{"mode":"aggregate","requested_pr":%s,"source_pr":99,"source_merge":"%040d","aggregated_sources":[{"pr":%s,"merge":"%040d"}],"expected_sources":[{"pr":%s,"merge":"%040d"}]}\n' \
+		"$source_pr" 0 "$source_pr" 1 "$source_pr" 1
 else
-	printf '{"mode":"direct","requested_pr":%s,"source_pr":%s,"source_merge":"%040d","aggregated_sources":[]}\n' \
-		"$source_pr" "$source_pr" 0
+	printf '{"mode":"direct","requested_pr":%s,"source_pr":%s,"source_merge":"%040d","aggregated_sources":[],"expected_sources":[{"pr":%s,"merge":"%040d"}]}\n' \
+		"$source_pr" "$source_pr" 0 "$source_pr" 0
 fi
 exit 0
 STUB
@@ -98,6 +105,7 @@ chmod +x "$ROOT/source-resolver.sh"
 	PATH="$ROOT/bin:/usr/bin:/bin" \
 		GIT_CALL_LOG="$ROOT/git.log" \
 		GH_CALL_LOG="$ROOT/gh.log" \
+		RESOLVER_CALL_LOG="$ROOT/resolver.log" \
 		VM_CALL_LOG="$ROOT/vm.log" \
 		FAKE_REPO_ROOT="$ROOT/repo" \
 		FAKE_CONTROL_PARENT="$ROOT/worktrees" \
@@ -106,17 +114,20 @@ chmod +x "$ROOT/source-resolver.sh"
 		AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER="$ROOT/source-resolver.sh" \
 		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
 		AIDEVOPS_TRUSTED_ISSUE_PRIORITY=critical \
-		bash "$SCRIPT_DIR/full-loop-release-helper.sh" minor 42 full
+		bash "$SCRIPT_DIR/full-loop-release-helper.sh" minor 42 full --expected-sources 42
 )
 
 grep -q 'worktree add --detach' "$ROOT/git.log"
 grep -q 'worktree remove' "$ROOT/git.log"
-grep -qx 'args=release minor --source-pr 42' "$ROOT/vm.log"
+grep -qx 'args=release minor --source-pr 42 --expected-sources 42@0000000000000000000000000000000000000000' "$ROOT/vm.log"
+grep -qx 'expected=42' "$ROOT/resolver.log"
 grep -Eq "^cwd=${ROOT}/worktrees/aidevops-release-42-[0-9]+$" "$ROOT/vm.log"
 grep -qx 'intent=1' "$ROOT/vm.log"
 grep -qx 'priority=critical' "$ROOT/vm.log"
 grep -qx 'deploy=full' "$ROOT/vm.log"
 grep -qx 'published' "$ROOT/receipts/marcusquinn_aidevops-42.status"
+jq -e '.expected_sources == [{"pr":42,"merge":"0000000000000000000000000000000000000000"}]' \
+	"$ROOT/receipts/marcusquinn_aidevops-42.authorization.json" >/dev/null
 grep -Eq "^repo-view-cwd=${ROOT}/worktrees/aidevops-release-control-[0-9]+$" "$ROOT/gh.log"
 if grep -Fq -- "-C $ROOT/repo fetch " "$ROOT/git.log" ||
 	! grep -Eq -- "-C ${ROOT}/worktrees/aidevops-release-control-[0-9]+ fetch origin (main|--tags)" \

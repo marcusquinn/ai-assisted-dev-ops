@@ -60,7 +60,7 @@ The result: an AI operations platform that manages projects across every busines
 [![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025--2026-blue.svg)](https://github.com/marcusquinn)
 
 <!-- Release & Version Info -->
-[![Version](https://img.shields.io/badge/Version-3.32.209-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
+[![Version](https://img.shields.io/badge/Version-3.32.216-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
 [![npm version](https://img.shields.io/npm/v/aidevops)](https://www.npmjs.com/package/aidevops)
 [![Homebrew](https://img.shields.io/badge/homebrew-marcusquinn%2Ftap-orange)](https://github.com/marcusquinn/homebrew-tap)
 [![GitHub repository](https://img.shields.io/badge/github-repository-181717.svg?logo=github)](https://github.com/marcusquinn/aidevops)
@@ -245,6 +245,12 @@ brew install marcusquinn/tap/aidevops && aidevops update
 ```bash
 bash <(curl -fsSL https://aidevops.sh/install)
 ```
+
+> **Updater recovery for v3.32.213:** If `aidevops update` stops because the
+> official framework source checkout is not in the project registry, run the
+> direct installer above once, then rerun `aidevops update`. Do not add the
+> framework checkout to the downstream project registry or bypass canonical
+> remote validation.
 
 **Manual** (git clone):
 

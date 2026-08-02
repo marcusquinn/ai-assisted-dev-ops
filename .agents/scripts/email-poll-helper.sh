@@ -169,6 +169,15 @@ _release_lock() {
 	return 0
 }
 
+_emit_collector_receipt() {
+	local changed_count="$1"
+	local collector_status="$2"
+	local coverage_status="$3"
+	printf '{"changed_count":%s,"collector_status":"%s","coverage_status":"%s"}\n' \
+		"$changed_count" "$collector_status" "$coverage_status"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -177,6 +186,9 @@ cmd_tick() {
 	local config_path
 	if ! config_path=$(_find_config 2>&1); then
 		log_info "skipped — no mailboxes configured; run aidevops email mailbox add to enable"
+		if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+			_emit_collector_receipt 0 complete complete
+		fi
 		return 0
 	fi
 
@@ -186,6 +198,9 @@ cmd_tick() {
 	filter_config=$(_resolve_collection_filter_config) || return 1
 
 	if ! _acquire_lock; then
+		if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+			_emit_collector_receipt 0 deferred unknown
+		fi
 		return 0
 	fi
 	trap '_release_lock' EXIT
@@ -237,6 +252,13 @@ print(total)
 		if [[ -n "$filter_config" ]]; then
 			command_rc=1
 		fi
+	fi
+	if [[ "${AIDEVOPS_COLLECTOR_RECEIPT:-0}" == "1" ]]; then
+		local coverage_status="partial"
+		local collector_status="partial"
+		[[ "$overall_status" == "ok" ]] && coverage_status="complete"
+		[[ "$overall_status" == "ok" ]] && collector_status="complete"
+		_emit_collector_receipt "$fetched_count" "$collector_status" "$coverage_status"
 	fi
 
 	_release_lock

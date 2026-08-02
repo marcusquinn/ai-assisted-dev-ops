@@ -150,6 +150,12 @@ git -C "$AGG_REPO" config user.email test@example.invalid
 git -C "$AGG_REPO" commit -q --allow-empty -m seed
 git -C "$AGG_REPO" commit -q --allow-empty -m 'authorized source merge'
 AGG_ORIGINAL=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" commit -q --allow-empty -m 'second authorized source merge'
+AGG_SECOND=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" commit -q --allow-empty -m 'third authorized source merge'
+AGG_THIRD=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" commit -q --allow-empty -m 'fourth authorized source merge'
+AGG_FOURTH=$(git -C "$AGG_REPO" rev-parse HEAD)
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed automated synchronization'
 git -C "$AGG_REPO" commit -q --allow-empty -m "reviewed aggregate source
 
@@ -163,7 +169,11 @@ cat >"${AGG_BIN}/gh" <<STUB
 if [[ "\${1:-}" == "pr" ]]; then
 	case "\${3:-}" in
 	42) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T00:00:00Z","baseRefName":"main","headRefOid":"source-head","mergeCommit":{"oid":"${AGG_ORIGINAL}"}}' ;;
+	43) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T01:00:00Z","baseRefName":"main","headRefOid":"second-head","mergeCommit":{"oid":"${AGG_SECOND}"}}' ;;
+	44) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T02:00:00Z","baseRefName":"main","headRefOid":"third-head","mergeCommit":{"oid":"${AGG_THIRD}"}}' ;;
+	45) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T03:00:00Z","baseRefName":"main","headRefOid":"fourth-head","mergeCommit":{"oid":"${AGG_FOURTH}"}}' ;;
 	99) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","headRefOid":"aggregate-head","mergeCommit":{"oid":"${AGGREGATE_MERGE}"}}' ;;
+	100) printf '{"state":"MERGED","mergedAt":"2026-07-28T00:00:00Z","baseRefName":"main","headRefOid":"complete-head","mergeCommit":{"oid":"%s"}}\n' "\${COMPLETE_AGGREGATE_MERGE:?}" ;;
 	*) exit 1 ;;
 	esac
 	exit 0
@@ -191,6 +201,52 @@ jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
 ' <<<"$aggregate_json" >/dev/null
 printf 'PASS reviewed aggregation manifest recovers an authorized historical source\n'
 
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate --expected-sources 42,43,44,45
+) >/dev/null 2>&1; then
+	printf 'FAIL incomplete aggregation manifest matched the complete trusted source set\n'
+	exit 1
+fi
+printf 'PASS incomplete aggregation manifest rejects the complete trusted source set\n'
+
+for invalid_sources in '42,42' '42,not-a-pr' "42@0000000000000000000000000000000000000000"; do
+	if (
+		cd "$AGG_REPO" || exit 1
+		PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+			bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate --expected-sources "$invalid_sources"
+	) >/dev/null 2>&1; then
+		printf 'FAIL invalid expected source set was accepted: %s\n' "$invalid_sources"
+		exit 1
+	fi
+done
+printf 'PASS duplicate, malformed, and SHA-mismatched expected sources are rejected\n'
+
+git -C "$AGG_REPO" commit -q --allow-empty -m "complete reviewed aggregate source
+
+Aidevops-Release-Aggregator-PR: 100
+Aidevops-Release-Aggregates: 42@${AGG_ORIGINAL}
+Aidevops-Release-Aggregates: 43@${AGG_SECOND}
+Aidevops-Release-Aggregates: 44@${AGG_THIRD}
+Aidevops-Release-Aggregates: 45@${AGG_FOURTH}"
+COMPLETE_AGGREGATE_MERGE=$(git -C "$AGG_REPO" rev-parse HEAD)
+export COMPLETE_AGGREGATE_MERGE
+git -C "$AGG_REPO" push -q --force origin HEAD:main
+complete_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate --expected-sources 45,42,44,43
+)
+jq -e --arg merge "$COMPLETE_AGGREGATE_MERGE" '
+	.source_pr == 100 and .source_merge == $merge
+	and (.expected_sources | map(.pr)) == [42,43,44,45]
+	and .aggregated_sources == .expected_sources
+' <<<"$complete_json" >/dev/null
+printf 'PASS complete multi-PR aggregation exactly matches normalized trusted sources\n'
+git -C "$AGG_REPO" push -q --force origin "${AGGREGATE_MERGE}:main"
+git -C "$AGG_REPO" switch -q --detach "$AGGREGATE_MERGE"
+
 aggregate_self_json=$(
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
@@ -200,8 +256,9 @@ jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
 	.mode == "aggregate" and .requested_pr == 99 and .source_pr == 99
 	and .source_merge == $merge
 	and .aggregated_sources == [{pr:42,merge:$original}]
+	and .expected_sources == [{pr:99,merge:$merge}]
 ' <<<"$aggregate_self_json" >/dev/null
-printf 'PASS exact-tip aggregation PR preserves its reviewed source manifest\n'
+printf 'PASS singleton aggregation-PR calls preserve the reviewed source manifest\n'
 
 git -C "$AGG_REPO" switch -q --detach "$AGG_ORIGINAL"
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed direct commit'
@@ -229,6 +286,14 @@ Aidevops-Source-PR: 99
 Aidevops-Source-Merge: ${AGGREGATE_MERGE}
 Aidevops-Aggregated-Source: 42@${AGG_ORIGINAL}"
 git -C "$AGG_REPO" push -q origin HEAD:main --tags
+tag_authorization_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-authorization --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42,43,44,45
+)
+jq -e '(.expected_sources | map(.pr)) == [42,43,44,45]' <<<"$tag_authorization_json" >/dev/null
+printf 'PASS immutable-tag authorization resolves every trusted PR to its verified merge SHA\n'
 (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \

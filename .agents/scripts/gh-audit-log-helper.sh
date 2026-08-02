@@ -20,9 +20,11 @@
 #   caller_line     — line number in caller_script
 #   pid             — process ID of the caller
 #   flags           — object of relevant env vars (FORCE_ENRICH, etc.)
-#   before          — {title_len:N, body_len:N, labels:["l1","l2"]}
-#   after           — {title_len:N, body_len:N, labels:["l1","l2"]}
-#   delta           — {title_delta_pct:N, body_delta_pct:N,
+#   before          — {capture_status:"ok|unavailable", title_len:N|null,
+#                      body_len:N|null, labels:["l1","l2"]|null}
+#   after           — same shape as before
+#   delta           — {comparable:true|false, title_delta_pct:N|null,
+#                      body_delta_pct:N|null,
 #                      labels_removed:[], labels_added:[]}
 #   suspicious      — array of anomaly signal strings (empty = normal)
 #
@@ -53,11 +55,14 @@ init_log_file || true
 # Constants
 # =============================================================================
 
-readonly GH_AUDIT_VERSION="1.0.0"
+readonly GH_AUDIT_VERSION="1.1.0"
 readonly GH_AUDIT_LOG_DIR_DEFAULT="${HOME}/.aidevops/logs"
 readonly GH_AUDIT_LOG_FILENAME="gh-audit.log"
 readonly GH_AUDIT_MAX_SIZE_MB_DEFAULT=10
 readonly GH_AUDIT_MAX_ROTATIONS_DEFAULT=10
+readonly GH_AUDIT_CAPTURE_OK="ok"
+readonly GH_AUDIT_CAPTURE_UNAVAILABLE="unavailable"
+readonly GH_AUDIT_UNAVAILABLE_STATE_JSON='{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null}'
 
 # Anomaly thresholds
 readonly GH_AUDIT_TITLE_SHRINK_PCT_THRESHOLD=50 # flag if title shrinks >50%
@@ -337,6 +342,59 @@ _gh_audit_compute_suspicious() {
 	return 0
 }
 
+# Compute anomaly signals when one or both state snapshots were unavailable.
+# Args: before_capture_status after_capture_status
+# Output: JSON array containing phase-specific capture signals.
+_gh_audit_compute_capture_suspicious() {
+	local before_capture_status="$1"
+	local after_capture_status="$2"
+	local signals=""
+
+	if [[ "$before_capture_status" != "$GH_AUDIT_CAPTURE_OK" ]]; then
+		signals='"state_capture_unavailable:before"'
+	fi
+	if [[ "$after_capture_status" != "$GH_AUDIT_CAPTURE_OK" ]]; then
+		if [[ -n "$signals" ]]; then
+			signals="${signals},\"state_capture_unavailable:after\""
+		else
+			signals='"state_capture_unavailable:after"'
+		fi
+	fi
+
+	printf '[%s]\n' "$signals"
+	return 0
+}
+
+# Classify whether a captured state JSON value is safe to compare.
+# Legacy records without capture_status remain comparable when all historical
+# fields have their expected types. Missing or null fields are never treated as
+# a successfully captured empty state.
+# Args: state_json
+# Output: ok | unavailable
+_gh_audit_state_capture_status() {
+	local state_json="$1"
+	local status="$GH_AUDIT_CAPTURE_UNAVAILABLE"
+
+	if ! command -v jq &>/dev/null; then
+		printf '%s\n' "$status"
+		return 0
+	fi
+	status=$(printf '%s' "$state_json" | jq -r \
+		--arg capture_ok "$GH_AUDIT_CAPTURE_OK" \
+		--arg capture_unavailable "$GH_AUDIT_CAPTURE_UNAVAILABLE" '
+		if ((.capture_status // $capture_ok) == $capture_ok)
+			and ((.title_len | type) == "number")
+			and ((.body_len | type) == "number")
+			and ((.labels | type) == "array")
+		then $capture_ok
+		else $capture_unavailable
+		end
+	' 2>/dev/null) || status="$GH_AUDIT_CAPTURE_UNAVAILABLE"
+	[[ "$status" == "$GH_AUDIT_CAPTURE_OK" ]] || status="$GH_AUDIT_CAPTURE_UNAVAILABLE"
+	printf '%s\n' "$status"
+	return 0
+}
+
 # Validate that an operation string is in the allowed list.
 # Returns 0 if valid, 1 if not.
 _gh_audit_validate_op() {
@@ -465,6 +523,8 @@ _cmd_record_validate_args() {
 }
 
 # Extract delta fields + suspicious signals from before/after JSON.
+# Deltas are null and comparable=false when either snapshot is unavailable;
+# audit-read failures must never be reported as destructive state changes.
 # Populates caller-scoped output vars: _rd_delta_json, _rd_suspicious_json,
 # _rd_removed_csv.
 # Args: before_json after_json
@@ -473,6 +533,23 @@ _cmd_record_compute_delta() {
 	local before_json="$1" after_json="$2"
 	local before_title_len=0 before_body_len=0 before_labels_csv=""
 	local after_title_len=0 after_body_len=0 after_labels_csv=""
+	local before_capture_status after_capture_status
+	before_capture_status="$(_gh_audit_state_capture_status "$before_json")"
+	after_capture_status="$(_gh_audit_state_capture_status "$after_json")"
+
+	if [[ "$before_capture_status" != "$GH_AUDIT_CAPTURE_OK" || "$after_capture_status" != "$GH_AUDIT_CAPTURE_OK" ]]; then
+		if command -v jq &>/dev/null; then
+			_rd_delta_json=$(jq -c -n \
+				'{comparable: false, title_delta_pct: null, body_delta_pct: null,
+				  labels_removed: null, labels_added: null}')
+		else
+			_rd_delta_json='{"comparable":false,"title_delta_pct":null,"body_delta_pct":null,"labels_removed":null,"labels_added":null}'
+		fi
+		_rd_suspicious_json="$(_gh_audit_compute_capture_suspicious \
+			"$before_capture_status" "$after_capture_status")"
+		_rd_removed_csv=""
+		return 0
+	fi
 
 	if command -v jq &>/dev/null; then
 		before_title_len=$(printf '%s' "$before_json" | jq -r '.title_len // 0')
@@ -502,14 +579,15 @@ _cmd_record_compute_delta() {
 
 	if command -v jq &>/dev/null; then
 		_rd_delta_json=$(jq -c -n \
+			--argjson comparable true \
 			--argjson title_delta_pct "$title_delta_pct" \
 			--argjson body_delta_pct "$body_delta_pct" \
 			--argjson labels_removed "$removed_json" \
 			--argjson labels_added "$added_json" \
-			'{title_delta_pct: $title_delta_pct, body_delta_pct: $body_delta_pct,
+			'{comparable: $comparable, title_delta_pct: $title_delta_pct, body_delta_pct: $body_delta_pct,
 			  labels_removed: $labels_removed, labels_added: $labels_added}')
 	else
-		_rd_delta_json="{\"title_delta_pct\":${title_delta_pct},\"body_delta_pct\":${body_delta_pct},\"labels_removed\":${removed_json},\"labels_added\":${added_json}}"
+		_rd_delta_json="{\"comparable\":true,\"title_delta_pct\":${title_delta_pct},\"body_delta_pct\":${body_delta_pct},\"labels_removed\":${removed_json},\"labels_added\":${added_json}}"
 	fi
 
 	_rd_suspicious_json="$(_gh_audit_compute_suspicious \
@@ -569,8 +647,8 @@ _cmd_record_build_event_json() {
 #   --number N       — issue or PR number
 #
 # Optional args (all have safe defaults):
-#   --before-json J  — JSON object: {"title_len":N,"body_len":N,"labels":[]}
-#   --after-json J   — JSON object: {"title_len":N,"body_len":N,"labels":[]}
+#   --before-json J  — captured state object (omitted/invalid = unavailable)
+#   --after-json J   — captured state object (omitted/invalid = unavailable)
 #   --caller-script F
 #   --caller-function FUNC
 #   --caller-line N
@@ -588,9 +666,18 @@ cmd_record() {
 		return 1
 	fi
 
-	# Apply defaults for optional fields.
-	[[ -z "$_rr_before_json" ]] && _rr_before_json='{"title_len":0,"body_len":0,"labels":[]}'
-	[[ -z "$_rr_after_json" ]] && _rr_after_json='{"title_len":0,"body_len":0,"labels":[]}'
+	# Apply defaults for optional fields. Missing or malformed snapshots remain
+	# explicit gaps in audit visibility instead of synthetic empty GitHub state.
+	[[ -z "$_rr_before_json" ]] && _rr_before_json="$GH_AUDIT_UNAVAILABLE_STATE_JSON"
+	[[ -z "$_rr_after_json" ]] && _rr_after_json="$GH_AUDIT_UNAVAILABLE_STATE_JSON"
+	if command -v jq &>/dev/null; then
+		if ! printf '%s' "$_rr_before_json" | jq -e 'type == "object"' &>/dev/null; then
+			_rr_before_json="$GH_AUDIT_UNAVAILABLE_STATE_JSON"
+		fi
+		if ! printf '%s' "$_rr_after_json" | jq -e 'type == "object"' &>/dev/null; then
+			_rr_after_json="$GH_AUDIT_UNAVAILABLE_STATE_JSON"
+		fi
+	fi
 	[[ -z "$_rr_caller_script" ]] && _rr_caller_script="unknown"
 	[[ -z "$_rr_caller_function" ]] && _rr_caller_function="unknown"
 	[[ ! "$_rr_caller_line" =~ ^[0-9]+$ ]] && _rr_caller_line=0
