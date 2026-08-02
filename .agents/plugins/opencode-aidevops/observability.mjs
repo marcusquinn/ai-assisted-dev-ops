@@ -23,11 +23,17 @@ import {
 import { join, dirname } from "path";
 import { homedir } from "os";
 import { execFileSync } from "child_process";
-import { fileURLToPath } from "url";
 import {
   canonicalizeSqliteDbPath, setDbPath, sqliteAvailable, sqliteExec, sqliteExecSync,
   shutdownSqlite as _shutdownSqlite, sqlEscape,
 } from "./observability-sqlite.mjs";
+import {
+  calculateCost,
+  DEFAULT_PRICING,
+  getPricing,
+  MODEL_PRICING,
+  UNKNOWN_PRICING_MODELS,
+} from "./observability-pricing.mjs";
 import {
   appendRuntimeEvent,
   initialiseRuntimeEventStore,
@@ -53,114 +59,7 @@ const DB_PATH = canonicalizeSqliteDbPath(
 const OBS_DIR = dirname(DB_PATH);
 const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v1.done`;
 
-// ---------------------------------------------------------------------------
-// Pricing table — loaded from shared JSON (single source of truth).
-// File: .agents/configs/model-pricing.json (also consumed by shared-constants.sh)
-// Falls back to hardcoded defaults if the JSON file is missing/unreadable.
-// ---------------------------------------------------------------------------
-
-/** Hardcoded fallback — used only when model-pricing.json is unreadable */
-const FALLBACK_PRICING = {
-  "opus-4":    { input: 15.0,  output: 75.0,  cacheRead: 1.50,   cacheWrite: 18.75 },
-  "sonnet-4":  { input: 3.0,   output: 15.0,  cacheRead: 0.30,   cacheWrite: 3.75  },
-  "haiku-4":   { input: 0.80,  output: 4.0,   cacheRead: 0.08,   cacheWrite: 1.0   },
-  "haiku-3":   { input: 0.80,  output: 4.0,   cacheRead: 0.08,   cacheWrite: 1.0   },
-  "gpt-5.6-sol":   { input: 5.0,  output: 30.0, cacheRead: 0.50, cacheWrite: 6.25  },
-  "gpt-5.6-terra": { input: 2.50, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
-  "gpt-5.6-luna":  { input: 1.0,  output: 6.0,  cacheRead: 0.10, cacheWrite: 1.25  },
-};
-const FALLBACK_DEFAULT = { input: 3.0, output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 };
-const UNKNOWN_PRICING_MODELS = ["gpt-5.6-sol-pro"];
-
-/**
- * Load pricing from the shared JSON file.
- * The JSON uses snake_case keys (cache_read, cache_write) for cross-language
- * compatibility; we convert to camelCase for JS consumption.
- * @returns {{ models: Record<string, {input,output,cacheRead,cacheWrite}>, default: {input,output,cacheRead,cacheWrite} }}
- */
-function loadPricingFromJSON() {
-  // Resolve relative to this file's location (works in both dev repo and deployed ~/.aidevops/)
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(thisDir, "..", "..", "configs", "model-pricing.json"),          // repo: .agents/plugins/../../configs/
-    join(HOME, ".aidevops", "agents", "configs", "model-pricing.json"), // deployed
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const raw = JSON.parse(readFileSync(candidate, "utf-8"));
-      const models = {};
-      for (const [key, p] of Object.entries(raw.models || {})) {
-        models[key] = {
-          input: p.input,
-          output: p.output,
-          cacheRead: p.cache_read,
-          cacheWrite: p.cache_write,
-        };
-      }
-      const def = raw.default || {};
-      const defaultPricing = {
-        input: def.input ?? 3.0,
-        output: def.output ?? 15.0,
-        cacheRead: def.cache_read ?? 0.30,
-        cacheWrite: def.cache_write ?? 3.75,
-      };
-      return { models, default: defaultPricing };
-    } catch {
-      // Try next candidate
-    }
-  }
-
-  // All candidates failed — use hardcoded fallback
-  console.error("[aidevops] Observability: model-pricing.json not found, using hardcoded fallback");
-  return { models: FALLBACK_PRICING, default: FALLBACK_DEFAULT };
-}
-
-const _pricing = loadPricingFromJSON();
-const MODEL_PRICING = _pricing.models;
-const DEFAULT_PRICING = _pricing.default;
-
-/**
- * Look up pricing for a model ID. Matches against the pricing table keys
- * as substrings of the model ID (e.g., "claude-sonnet-4-20250514" matches "sonnet-4").
- * @param {string} modelID
- * @returns {{ input: number, output: number, cacheRead: number, cacheWrite: number }}
- */
-export function getPricing(modelID) {
-  if (!modelID) return DEFAULT_PRICING;
-  const lower = modelID.toLowerCase();
-  if (UNKNOWN_PRICING_MODELS.some((model) => lower.includes(model))) return DEFAULT_PRICING;
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (lower.includes(key)) return pricing;
-  }
-  return DEFAULT_PRICING;
-}
-
-/**
- * Calculate cost from token counts and model pricing.
- * OpenCode does not provide cost in message events — we must compute it.
- * @param {object} tokens - { input, output, reasoning, cache: { read, write } }
- * @param {string} modelID
- * @returns {number} Total cost in USD
- */
-function calculateCost(tokens, modelID) {
-  if (!tokens) return 0.0;
-  const pricing = getPricing(modelID);
-  const inputTokens = tokens.input || 0;
-  const outputTokens = tokens.output || 0;
-  const reasoningTokens = tokens.reasoning || 0;
-  const cacheRead = tokens.cache?.read || 0;
-  const cacheWrite = tokens.cache?.write || 0;
-
-  // Reasoning tokens are billed at output rate
-  const cost =
-    (inputTokens / 1e6) * pricing.input +
-    ((outputTokens + reasoningTokens) / 1e6) * pricing.output +
-    (cacheRead / 1e6) * pricing.cacheRead +
-    (cacheWrite / 1e6) * pricing.cacheWrite;
-
-  return Math.round(cost * 1e8) / 1e8; // 8 decimal places
-}
+export { getPricing };
 
 /**
  * Initialise the observability database with WAL mode and schema.
