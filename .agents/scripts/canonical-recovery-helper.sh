@@ -842,10 +842,19 @@ if [[ "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 		printf 'PRESERVED_BACKUP_DIR=%s\n' "$sync_backup_dir"
 		printf 'RESTORE_COMMAND=%q restore --repo %q --backup %q --confirm RESTORE_DIRTY_WORKTREE_BACKUP\n' \
 			"$backup_helper" "$repo_path" "$sync_backup_id"
+		printf 'RECOVER_CLEAN_COMMAND=%q recover-clean --repo %q --backup %q --confirm RECOVER_DIRTY_WORKTREE_CLEAN\n' \
+			"$backup_helper" "$repo_path" "$sync_backup_id"
 		AIDEVOPS_REAL_GIT_BIN="$REAL_GIT" bash "$backup_helper" clean \
 			--repo "$repo_path" --backup "$sync_backup_id" \
 			--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP >/dev/null || {
-			printf 'BLOCKED: verified canonical state could not be cleaned\n' >&2
+			if AIDEVOPS_REAL_GIT_BIN="$REAL_GIT" bash "$backup_helper" matches \
+				--repo "$repo_path" --backup "$sync_backup_id" >/dev/null 2>&1; then
+				printf 'BLOCKED: canonical clean failed and pre-clean state was restored (backup %s)\n' \
+					"$sync_backup_id" >&2
+			else
+				printf 'BLOCKED: canonical clean recovery is required (backup %s)\n' \
+					"$sync_backup_id" >&2
+			fi
 			exit 1
 		}
 	fi

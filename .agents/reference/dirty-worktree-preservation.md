@@ -26,8 +26,13 @@ byte before removing only the matching state.
 The backup command does not mutate the checkout. It records the original HEAD,
 index tree, full worktree tree, status fingerprint, binary patches, copied
 untracked files, and stable `refs/aidevops/dirty-worktree-backups/<id>` commits.
-It prints the backup ID and exact restore command. Use `verify` and `matches`
-before any explicit `clean` operation.
+When an untracked `.gitignore` controls ignored descendants, those descendants
+join the copied, mode- and type-sensitive payload inventory. Capture fails
+closed before mutation if that inventory exceeds 10,000 paths or 1 GiB by
+default; the `AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES` and
+`AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_BYTES` environment variables can lower or
+raise those explicit bounds. It prints the backup ID and exact restore command.
+Use `verify` and `matches` before any explicit `clean` operation.
 
 ## Audited mirror synchronization
 
@@ -52,11 +57,20 @@ cannot select the target. Under the canonical recovery lock it:
 5. compare-and-swaps the local ref and updates the worktree to the pinned tip;
 6. verifies branch, HEAD, remote ref, worktree cleanliness, and the audit chain.
 
-If synchronization stops after cleanup, the old ref remains unchanged and the
-printed backup ID/restore command remains valid. Retry the same command: stable
-operation IDs reuse matching evidence rather than overwriting it. A failed
-compare-and-swap rolls the local ref back. Never bypass the helper with direct
-`git pull`, reset, or clean.
+Clean records an in-progress transition before its first worktree mutation. Any
+reset, removal, hook, final-status, or evidence-finalization failure immediately
+restores and verifies the complete pre-clean snapshot. The manifest audits the
+clean start, rollback, and completion. If interruption also prevents automatic
+rollback, run the printed `recover-clean` command with its confirmation token;
+it resumes rollback from the verified backup before another clean attempt.
+
+If synchronization stops after a completed cleanup, the old ref remains
+unchanged and the printed backup ID/restore command remains valid. Retry the
+same command: stable operation IDs reuse matching evidence rather than
+overwriting it. A failed compare-and-swap rolls the local ref back. Safe retry
+means either verified automatic rollback or an explicit successful
+`recover-clean`; never continue from partially cleaned state or bypass the
+helper with direct `git pull`, reset, or clean.
 
 ## Converged stale rebase recovery
 
