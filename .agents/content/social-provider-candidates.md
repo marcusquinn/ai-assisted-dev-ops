@@ -32,6 +32,9 @@ until current official documentation can be verified. Pocket is discontinued.
 The eight linked issues are provider-specific implementation authorities. This
 research task does not make any candidate route live and does not authorize one
 child to widen another provider's identity, permission, or coverage contract.
+Bluesky / AT Protocol needs no new child: its DID-bound repository and AppView
+collector is already **Live** in the provider registry and capability matrix;
+separately permissioned chat remains outside that read contract.
 
 ## Federated providers
 
@@ -82,7 +85,8 @@ child to widen another provider's identity, permission, or coverage contract.
 
 ### GitHub
 
-- Bind `GET /user` numeric `id` and GraphQL `node_id`, never mutable login alone.
+- Bind `GET /user` numeric `id` and REST `node_id`; verify that node identity
+  against GraphQL `User.id`, and never bind mutable login alone.
 - Candidate streams include contributions, repositories, stars, notifications,
   followers/following, organizations, subscriptions, user lists, and visible
   Projects v2. Reactions have no complete account-centric history route.
@@ -140,8 +144,10 @@ application API keys can mutate state. Official evidence:
 
 Use the Google Reader compatibility API for subscriptions, folders/tags, items,
 unread and starred state; use OPML as an independent subscription snapshot.
-Fever's 50-item `since_id`/`max_id` flow is fallback-only. The dedicated API
-password is not read-only scoped. Official evidence:
+The non-mutating `accounts/ClientLogin` authentication exchange is the sole
+allowlisted POST; collection routes remain GET-only. Fever's 50-item
+`since_id`/`max_id` flow is fallback-only. The dedicated API password is not
+read-only scoped. Official evidence:
 <https://freshrss.github.io/FreshRSS/en/developers/06_GoogleReader_API.html>,
 <https://freshrss.github.io/FreshRSS/en/developers/06_Fever_API.html>, and
 <https://freshrss.github.io/FreshRSS/en/developers/OPML.html>.
