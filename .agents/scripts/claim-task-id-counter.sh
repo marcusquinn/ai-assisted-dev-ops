@@ -1279,7 +1279,7 @@ allocate_offline() {
 		GIT_AUTHOR_NAME="aidevops" GIT_AUTHOR_EMAIL="aidevops@local" \
 		GIT_COMMITTER_NAME="aidevops" GIT_COMMITTER_EMAIL="aidevops@local" \
 		git commit -q -m "chore: offline claim $(_format_task_range "$first_id" "$last_id") [offline]" \
-			--no-verify --no-gpg-sign "$COUNTER_FILE" || true
+			--no-verify --no-gpg-sign "$COUNTER_FILE" >/dev/null || true
 	)
 
 	log_warn "Allocated $(printf 't%03d' "$first_id") with offset (reconcile when back online)"
