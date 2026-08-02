@@ -794,6 +794,22 @@ test_external_auto_merge_disable_failure_applies_draft_hold() {
 	return 0
 }
 
+test_protected_release_pr_uses_exact_merge_owner() {
+	# shellcheck source=../pulse-merge-process.sh
+	source "$PROCESS_SCRIPT"
+	if _pmp_is_protected_release_pr \
+		"chore/release-v1.2.3-provenance" "origin:worker,release,status:in-review" &&
+		! _pmp_is_protected_release_pr \
+			"chore/release-v1.2.3-provenance" "origin:worker,status:in-review" &&
+		! _pmp_is_protected_release_pr \
+			"feature/release-lookalike" "origin:worker,release,status:in-review"; then
+		print_result "Protected release PRs remain owned by exact-merge reconciliation" 0
+	else
+		print_result "Protected release PRs remain owned by exact-merge reconciliation" 1
+	fi
+	return 0
+}
+
 main() {
 	test_case_a_pending_ci_sets_auto_merge
 	test_case_a_missing_head_does_not_set_auto_merge
@@ -812,6 +828,7 @@ main() {
 	test_external_pending_ci_never_sets_deferred_auto_merge
 	test_external_existing_auto_merge_is_disabled
 	test_external_auto_merge_disable_failure_applies_draft_hold
+	test_protected_release_pr_uses_exact_merge_owner
 
 	printf '\n=================================\n'
 	printf 'Tests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"

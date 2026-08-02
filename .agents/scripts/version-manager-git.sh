@@ -40,6 +40,8 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 fi
 # shellcheck source=./task-identity-lib.sh
 source "${SCRIPT_DIR}/task-identity-lib.sh"
+# shellcheck source=./version-manager-protected-main.sh
+source "${SCRIPT_DIR}/version-manager-protected-main.sh"
 
 # Exit code 2 used by commit_version_changes to distinguish "nothing staged"
 # from "commit succeeded" (0). Callers that expect a new bump commit on HEAD
@@ -583,6 +585,7 @@ push_changes() {
 	local version="$1" # version string, e.g. "3.8.71"
 	local tag_name="v$version"
 	local release_parent=""
+	local push_output=""
 	cd "$REPO_ROOT" || exit 1
 	release_parent=$(git rev-parse HEAD^ 2>/dev/null) || {
 		print_error "Cannot resolve release source parent"
@@ -594,10 +597,27 @@ push_changes() {
 		attempt=$((attempt + 1))
 		print_info "Pushing changes to remote (attempt $attempt/$max_attempts)..."
 
-		# Use --atomic to ensure commit and tag are pushed together (all-or-nothing)
-		if git push --atomic origin HEAD:refs/heads/main --tags 2>/dev/null; then
+		# Use --atomic to ensure commit and tag are pushed together (all-or-nothing).
+		# Capture stderr so permanent branch-policy rejection is classified after
+		# one attempt rather than retried as transient contention.
+		if push_output=$(git push --atomic origin HEAD:refs/heads/main --tags 2>&1); then
 			print_success "Pushed changes and tags to remote"
 			return 0
+		fi
+		if _version_manager_push_requires_pr "$push_output"; then
+			print_error "Direct release push rejected: GH006 Changes must be made through a pull request"
+			if _version_manager_queue_protected_main_release "$version"; then
+				case "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" in
+				remote-tag-present | tag-pushed)
+					print_success "Published preserved ${tag_name} after protected main became reachable"
+					return 0
+					;;
+				esac
+				print_success "release:queued protected-pr=${_VERSION_MANAGER_PROTECTED_PR_NUMBER:-unknown}"
+				return 8
+			fi
+			print_error "Protected-main release recovery could not create a safe PR state"
+			return 1
 		fi
 
 		# A release tag's signed provenance binds the bump commit directly to its

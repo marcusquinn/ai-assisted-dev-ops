@@ -58,6 +58,15 @@ _PULSE_MERGE_PROCESS_LOADED=1
 : "${PULSE_MERGE_CHECKPOINT_FILE:=${HOME}/.aidevops/logs/pulse-merge-checkpoint}"
 : "${PULSE_MERGE_PR_CURSOR_FILE:=${PULSE_MERGE_CHECKPOINT_FILE}.pr-cursor}"
 
+_pmp_is_protected_release_pr() {
+	local head_ref="$1"
+	local labels_csv="$2"
+
+	[[ ",${labels_csv}," == *",release,"* ]] || return 1
+	[[ "$head_ref" =~ ^chore/release-v[0-9]+\.[0-9]+\.[0-9]+-provenance$ ]] || return 1
+	return 0
+}
+
 # Load the exact-output PR-list provider cache for standalone module tests and
 # direct routine sourcing. pulse-wrapper.sh also sources this before the merge
 # modules, so the include guard in pulse-pr-list-cache.sh keeps this idempotent.

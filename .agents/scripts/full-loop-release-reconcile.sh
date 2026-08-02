@@ -25,6 +25,9 @@ _FULL_LOOP_RELEASE_STEP_QUEUE_POSTFLIGHT="Queue exact-tag postflight"
 _FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
 _FULL_LOOP_RELEASE_TRUE="true"
 
+# shellcheck source=./version-manager-protected-main.sh
+source "${SCRIPT_DIR}/version-manager-protected-main.sh"
+
 _full_loop_release_tag_body() {
 	local tag_name="$1"
 	git -C "$REPO_ROOT" for-each-ref --format='%(contents)' "refs/tags/${tag_name}"
@@ -811,6 +814,7 @@ _full_loop_release_existing_command() {
 	local tag_name=""
 	local latest_tag=""
 	local inspect_rc=0
+	local protected_tag_state_rc=0
 	local receipt_path=""
 	local receipt_status=""
 
@@ -851,6 +855,15 @@ _full_loop_release_existing_command() {
 		printf 'release:superseded source_tag=%s successor_tag=%s\n' "$tag_name" "$latest_tag"
 		return 0
 	fi
+	_version_manager_reconcile_protected_release_tag "$repo" "$tag_name" "$mode" || protected_tag_state_rc=$?
+	[[ "$protected_tag_state_rc" -eq 0 ]] || return 1
+	case "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" in
+	pr-pending | tag-ready | tag-pushed)
+		return 8
+		;;
+	remote-tag-present) ;;
+	*) return 1 ;;
+	esac
 	_full_loop_release_inspect_remote "$repo" "$tag_name" || inspect_rc=$?
 	if [[ "$inspect_rc" -eq 0 ]]; then
 		if [[ "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]]; then

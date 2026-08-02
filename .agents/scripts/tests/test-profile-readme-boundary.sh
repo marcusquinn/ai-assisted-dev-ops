@@ -11,6 +11,8 @@ export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=commit.gpgsign
 export GIT_CONFIG_VALUE_0=false
+REAL_GIT=$(command -p -v git 2>/dev/null || command -v git)
+export REAL_GIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 SOURCE_HELPER="${SCRIPT_DIR}/../profile-readme-helper.sh"
@@ -65,9 +67,19 @@ install_helper_with_libs() {
 		"${SOURCE_HELPER%/*}/screen_time_linux_logind.py" \
 		"${SOURCE_HELPER%/*}/screen_time_linux_wtmp.py" \
 		"${SOURCE_HELPER%/*}/screen_time_history.py" "$helper_dir/"
-	cat >"${helper_dir}/worktree-helper.sh" <<EOF
+	# Keep this profile-boundary fixture independent of host /proc visibility.
+	# Shared worktree-removal guard behaviour has dedicated tests; this stub proves
+	# the profile helper invokes cleanup from the canonical checkout after its
+	# publication child exits.
+	cat >"${helper_dir}/worktree-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-exec "${SOURCE_HELPER%/*}/worktree-helper.sh" "\$@"
+set -euo pipefail
+
+operation="${1:-}"
+target="${2:-}"
+[[ "$operation" == "remove" && -n "$target" ]] || exit 1
+"${REAL_GIT:?}" worktree remove --force "$target"
+exit 0
 EOF
 	chmod +x "${helper_dir}/worktree-helper.sh"
 	return 0
