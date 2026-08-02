@@ -41,6 +41,7 @@ a claim that the route is enabled.
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
+| Google Sites | **Export/No** modern site content; **No** classic live API | **No** | **No** | **API/No** owner/editor metadata; **No** subscriptions | **No** | Drive exposes Sites MIME metadata but no documented Sites content, revision, or export MIME route; Takeout remains schema-free **Export/No**, and organization export is **Gate/No**. No adapter or CLI route is enabled. |
 | Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
 | NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
 | Mastodon | **Live/Partial** authored statuses | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** followers, following, and followed tags | **Live/Partial** lists; **No** nested membership | Eight exact-origin GET-only streams preserve opaque `Link` cursors and expose federation, moderation, deletion, export, and operator-retention gaps. |
@@ -253,6 +254,16 @@ separate provider family.
   proves that no provider module, registry entry, helper command, browser
   selector, or **Live** matrix claim is reachable until an identity-bearing,
   redirect-free official route is fixture-validated.
+- **Google Sites no-route disposition:**
+  `.agents/content/social-google-sites.md` separately records the deprecated
+  classic-only Sites API, Drive MIME/metadata and export-format boundary, user
+  Takeout, Data Portability scope omission, organization export gate, OAuth
+  identity/scopes, quotas, retention, and policy evidence checked on 2026-08-02.
+  `.agents/tests/test-knowledge-social-google-sites.sh` proves that no provider
+  module, registry entry, helper command, Drive metadata/export request, Takeout
+  importer, browser selector, or **Live** claim is reachable until exact account,
+  ownership, site-resource, format, pagination, and replay bindings are fixture-
+  validated.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.

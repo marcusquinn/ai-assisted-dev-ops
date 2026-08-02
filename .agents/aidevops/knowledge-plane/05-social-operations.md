@@ -62,6 +62,16 @@ profile and Notes activity. No manifest, provider registry entry, helper command
 RSS/browser fallback, or persistence path is added. The evidence and activation
 gate are recorded in `.agents/content/social-substack.md`.
 
+Google Sites has no enabled collection route. The deprecated Sites API is
+classic-only and cannot access rebuilt Sites. Drive exposes a Sites MIME type and
+file metadata, but its supported export table provides no Sites content format or
+modern revision-history route. User Takeout is an identity/schema-unverified
+export candidate, the Data Portability API has no Sites scope, and organization
+export requires super-admin authority. No provider registry entry, helper command,
+Drive OAuth request, Takeout importer, browser fallback, or persistence path is
+added. The evidence and activation gate are recorded in
+`.agents/content/social-google-sites.md`.
+
 ## Live account collection
 
 Live collectors verify the selected stable account before the first evidence
