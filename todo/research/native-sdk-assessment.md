@@ -7,8 +7,8 @@
 
 - **Decision:** Watch releases, adapt selected patterns, and avoid a production dependency.
 - **Upstream:** <https://github.com/vercel-labs/native>
-- **Reviewed baseline:** `v0.7.0` at `7636ec3686e5de7c36c1330fc0358adb8fb6c514`
-- **Reviewed:** 2026-07-31
+- **Reviewed baseline:** `v0.7.1` at `19519dd5ea7098983a224afa74c2cfd7cde8ccb4`
+- **Reviewed:** 2026-08-02
 - **Tracking:** `.agents/configs/upstream-watch.json` in release-only mode
 
 The upstream repository was treated as untrusted external content. Its agent
@@ -72,6 +72,61 @@ For each detected release:
 
 Release detection never authorizes automatic dependency import, skill import,
 code copying, installation, publication, or deployment.
+
+## v0.7.1 release review
+
+The `v0.7.0...v0.7.1` comparison contains five commits and 127 changed files.
+Its two material changes are a generated compiled-core facade with a required CI
+parity lane and a native code-editor example built on the code surface introduced
+in v0.7.0. The editor adds editable highlighting, large-file rendering budgets,
+folder-on-demand traversal, serialized saves, dirty-document close protection,
+stable asynchronous file-effect keys, independent windows, tab behavior, and
+macOS folder-only open dialogs.
+
+The compiled-core work generates the ABI facade and compiler profile from the
+contract sidecar, pins the external compiler to `0.0.21`, verifies that supplied
+compiler version before use, and adds a negative control proving an ambient
+`Date.now()` read is refused without emitting an archive or deterministic
+attestation. The CI lane then byte-compares generated and transpiled fixture
+behavior. This is useful evidence for generated-boundary conformance, but it does
+not replace aidevops helper/API trust-boundary or browser tests.
+
+Published manifests only advance core, CLI, example, and optional platform
+binary versions to `0.7.1`. The CLI keeps its two pinned TypeScript compiler
+packages, the root still requires Zig 0.16.0 with no mandatory Zig dependency,
+and the release adds no production dependency. It reports no security fix,
+React/WebView integration change, accessibility or agent-automation protocol
+change, record/replay change, or packaging, signing, and update change.
+
+The release-note scan and a line-preserving relevant-diff scan were clean. A scan
+of the compact one-line GitHub comparison JSON produced a DNS-exfiltration match
+because unrelated loop and host words shared one serialized line; inspection
+found no `dig` or `nslookup` command, and rescanning the same patches with file
+and line boundaries was clean. No upstream instruction, bundled skill, install
+command, or repository command was followed.
+
+Classification:
+
+- **Adapt pattern:** generated desktop boundary artifacts should have one
+  authoritative contract, explicit toolchain pins, committed effective metadata,
+  byte-level parity coverage, and a negative control proving forbidden ambient
+  effects are rejected without producing success artifacts.
+- **Adapt pattern:** future aidevops file editors or pickers should preserve dirty
+  state across tab, folder, and window transitions; serialize writes; reject stale
+  asynchronous completions with monotonic effect identities; traverse large trees
+  on demand; and budget rendering and measurement work.
+- **Ignore for current implementation:** aidevops uses browser-native editing and
+  file inputs in Vite/React, its generated macOS launcher opens the existing local
+  web/API scaffold, and it has no compiled-core or Native canvas boundary. The
+  release therefore does not change current GUI, desktop packaging, or CI paths.
+- **Do not adopt:** no current architecture requirement justifies importing the
+  pre-1.0 SDK, platform binaries, bundled skill, eval workspace, external compiler,
+  or Vercel services. The existing portability and trust-boundary decision remains
+  unchanged.
+
+No implementation issue is warranted. Revisit the editor patterns only when
+aidevops accepts a file-editing surface, and revisit compiled-core parity only if
+the desktop shell gains generated or ahead-of-time-compiled boundary artifacts.
 
 ## v0.7.0 release review
 
