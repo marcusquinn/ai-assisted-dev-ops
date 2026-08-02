@@ -858,6 +858,14 @@ _full_loop_release_finalize_reconciliation() {
 	printf '%s %s %s\n' "$repo" "$pr_number" "$tag_name" >"${TEST_ROOT}/finalize.log"
 	return 0
 }
+_version_manager_reconcile_protected_release_tag() {
+	local repo="$1"
+	local tag_name="$2"
+	local mode="$3"
+	[[ -n "$repo" && -n "$tag_name" && ("$mode" == "status" || "$mode" == "reconcile") ]] || return 1
+	_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="remote-tag-present"
+	return 0
+}
 _full_loop_release_finalize_stale_supersession() {
 	local repo="$1"
 	local pr_number="$2"

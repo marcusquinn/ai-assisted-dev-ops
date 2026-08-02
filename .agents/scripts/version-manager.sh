@@ -353,6 +353,7 @@ _release_execute() {
 	local hotfix_flag="$3"
 	local tag_name="v$new_version"
 	local publication_rc=0
+	local push_rc=0
 
 	_release_require_new_tag "$bump_type" "$tag_name"
 
@@ -389,9 +390,26 @@ _release_execute() {
 			print_error "Aborting release: tag creation failed (see above for diagnosis)"
 			exit 1
 		fi
-		if ! push_changes "$new_version"; then
+		push_changes "$new_version" || push_rc=$?
+		case "$push_rc" in
+		0) ;;
+		8)
+			_release_disable_failure_rollback
+			print_success "release:queued"
+			print_info "Protected-main PR #${_VERSION_MANAGER_PROTECTED_PR_NUMBER:-unknown} preserves the signed ${tag_name} commit"
+			print_info "Reconcile the source PR after merge: aidevops release reconcile ${VERSION_MANAGER_SOURCE_PR:-<SOURCE_PR>}"
+			return 8
+			;;
+		*)
+			if [[ "${VERSION_MANAGER_PRESERVE_RELEASE_STATE:-0}" == "1" ]]; then
+				_release_disable_failure_rollback
+				print_error "Release push failed after a protected-main policy rejection"
+				print_info "The original ${tag_name} ref and release commit were preserved for diagnosis"
+				return 1
+			fi
 			_release_handle_push_failure "$new_version"
-		fi
+			;;
+		esac
 		_publish_github_release "$new_version" || publication_rc=$?
 		if [[ "$publication_rc" -eq 8 ]]; then
 			_release_disable_failure_rollback

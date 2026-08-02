@@ -1319,6 +1319,10 @@ _process_single_ready_pr() {
 		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — draft PR not eligible for auto-merge (GH#23525)" >>"$LOGFILE"
 		return 1
 	fi
+	if _pmp_is_protected_release_pr "$pr_head_ref_name" "$pr_labels"; then
+		echo "[pulse-wrapper] Merge pass: deferring protected release PR #${pr_number} in ${repo_slug} to provenance-preserving exact-merge reconciliation" >>"$LOGFILE"
+		return 4
+	fi
 
 	# REST-first PR lists cannot preserve GraphQL-only mergeable state, so a
 	# truly conflicting PR may enter this function as UNKNOWN. Refresh that
