@@ -144,6 +144,12 @@ corpus tree exists; falls back to grep over `text.txt` files otherwise.
 
 To disable: change `[x]` to `[ ]` in `TODO.md` and commit.
 
+The disabled r047 collector routine calls enrichment and incremental index build
+only after a successful collector emits a positive content-free changed count.
+Empty polls, manual/archive status, and failed collectors do not trigger a full
+corpus rebuild. The existing r041/r042 routines remain independent recovery
+passes and retain their current review and sensitivity routing.
+
 ### Helper CLI
 
 ```bash

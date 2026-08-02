@@ -225,6 +225,14 @@ does not authorize a profile, proxy, or identity change.
 
 ## Operator verification
 
+Provider registry routes may be scheduled through the disabled deterministic
+`knowledge-collector-routine.sh`. The private source policy owns mode, useful
+freshness, minimum and reconciliation intervals, and a runtime budget. Social
+arguments still resolve through `provider-run`, so scheduling cannot widen a
+provider's supported mode or reach approval-bound outbound operations. Content-
+free routine health supplements, but never replaces, atomic provider receipts
+and checkpoints.
+
 Before enabling a routine:
 
 1. Confirm the corpus alias resolves only for the authenticated principal.

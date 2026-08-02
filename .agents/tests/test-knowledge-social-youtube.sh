@@ -147,6 +147,12 @@ PY
 		"$(json_field "$result" status)" "$expected_output"
 	assert_eq "initial ${name} identity response has a sanitized failure class" \
 		"$(json_field "$result" failure_class)" "$expected_failure"
+	if [[ "$status" == "429" ]]; then
+		local retry_shape=""
+		retry_shape=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1])["retry_after"]; print(f"{type(value).__name__}:{value}")' "$result")
+		assert_eq "initial quota identity response preserves its absolute retry epoch type" \
+			"$retry_shape" "int:1785150000"
+	fi
 	assert_eq "initial ${name} identity response finishes its run receipt" \
 		"$(sql_value "SELECT status || ':' || failure_class || ':' || coalesce(retry_after,'none') FROM sync_runs WHERE connection_id='${connection_id}'")" \
 		"$expected_receipt"

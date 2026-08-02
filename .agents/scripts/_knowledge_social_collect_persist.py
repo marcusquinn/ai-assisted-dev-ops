@@ -380,13 +380,13 @@ def _observation_time(payload: dict[str, Any]) -> str:
     return value
 
 
-def _retry_after(payload: dict[str, Any]) -> str | None:
+def _retry_after(payload: dict[str, Any]) -> int | str | None:
     value = payload.get("retry_after")
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise SocialStoreError("social retry_after must be text or an integer")
-    return str(value)
+    return value
 
 
 def _terminal_coverage_status(decision: TerminalDecision) -> str:
@@ -434,7 +434,7 @@ def record_terminal(
     payload: dict[str, Any],
     request: str,
     decision: TerminalDecision,
-) -> str | None:
+) -> int | str | None:
     """Persist a credential-filtered terminal response without cursor advance."""
     reject_credentials(payload)
     observed_at = _observation_time(payload)

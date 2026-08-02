@@ -61,7 +61,7 @@ class Profile:
 class ApiResult:
     status: int
     payload: Any
-    retry_after: int | None = None
+    retry_after: str | None = None
 
 
 def _observed_at() -> str:
@@ -109,7 +109,7 @@ def _request(profile: Profile, path: str, params: dict[str, str]) -> ApiResult:
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
         raise GumroadReadProviderError("Gumroad API returned no valid JSON") from error
-    retry = int(retry_after) if isinstance(retry_after, str) and retry_after.isdigit() else None
+    retry = retry_after if isinstance(retry_after, str) and retry_after.isdigit() else None
     return ApiResult(status, decoded, retry)
 
 

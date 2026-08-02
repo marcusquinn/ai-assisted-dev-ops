@@ -1291,6 +1291,9 @@ assert_eq "Slack rate limits produce a paused terminal result" \
 	"rate_limited:rate_limit"
 assert_eq "rate-limited streams advance no checkpoint" \
 	"$(sql_value "SELECT count(*) FROM sync_cursors WHERE connection_id='conn_rate'")" 0
+assert_eq "Slack retry duration persists as an absolute scheduler boundary" \
+	"$(sql_value "SELECT retry_after FROM sync_runs WHERE connection_id='conn_rate' ORDER BY rowid DESC LIMIT 1")" \
+	1785524430
 
 VALID_ARCHIVE="$TMP_DIR/slack-valid.zip"
 CHANGED_ARCHIVE="$TMP_DIR/slack-changed.zip"
