@@ -38,6 +38,7 @@ _WT_CLEAN_DEFERRED_OWNER_PID=""
 _WT_CLEAN_REASON_OWNED_SKIP="owned-skip"
 _WT_CLEAN_REMOVAL_LEASE_SESSION="cleanup:$$"
 _WT_CLEAN_REMOVAL_LEASE_TASK="worktree-removal"
+_WT_CLEAN_MARKER_CLOCK_SKEW_SECONDS=2
 
 # SCRIPT_DIR fallback — covers sourcing from test harnesses or direct invocation
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -54,6 +55,71 @@ if [[ -f "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh" ]]; then
 fi
 
 # --- Functions ---
+
+_clean_process_age_seconds() {
+	local owner_pid="$1"
+	local elapsed=""
+	local days=0
+	local hours=0
+	local minutes=0
+	local seconds=0
+	local colons_only=""
+	local colon_count=0
+
+	[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	elapsed=$(ps -p "$owner_pid" -o etime= 2>/dev/null | tr -d ' ') || return 1
+	[[ -n "$elapsed" ]] || return 1
+	if [[ "$elapsed" == *-* ]]; then
+		days="${elapsed%%-*}"
+		elapsed="${elapsed#*-}"
+	fi
+	colons_only="${elapsed//[!:]/}"
+	colon_count="${#colons_only}"
+	if [[ "$colon_count" -eq 2 ]]; then
+		IFS=':' read -r hours minutes seconds <<<"$elapsed"
+	elif [[ "$colon_count" -eq 1 ]]; then
+		IFS=':' read -r minutes seconds <<<"$elapsed"
+	else
+		seconds="$elapsed"
+	fi
+	[[ "$days" =~ ^[0-9]+$ ]] || return 1
+	[[ "$hours" =~ ^[0-9]+$ ]] || return 1
+	[[ "$minutes" =~ ^[0-9]+$ ]] || return 1
+	[[ "$seconds" =~ ^[0-9]+$ ]] || return 1
+	days=$((10#${days}))
+	hours=$((10#${hours}))
+	minutes=$((10#${minutes}))
+	seconds=$((10#${seconds}))
+	printf '%s\n' "$((days * 86400 + hours * 3600 + minutes * 60 + seconds))"
+	return 0
+}
+
+_clean_legacy_marker_matches_process_generation() {
+	local marker_path="$1"
+	local owner_pid="$2"
+	local marker_mtime=0
+	local now_epoch=0
+	local marker_age=0
+	local process_age=0
+
+	[[ -f "$marker_path" && "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	kill -0 "$owner_pid" 2>/dev/null || return 1
+	# Legacy markers contain only a PID. Compare ages so a process that started
+	# after the marker cannot inherit cleanup ownership through PID reuse.
+	# Missing timing evidence fails closed and preserves the worktree.
+	declare -F _file_mtime_epoch >/dev/null 2>&1 || return 0
+	marker_mtime=$(_file_mtime_epoch "$marker_path" 2>/dev/null) || return 0
+	process_age=$(_clean_process_age_seconds "$owner_pid" 2>/dev/null) || return 0
+	now_epoch=$(date +%s 2>/dev/null) || return 0
+	[[ "$marker_mtime" =~ ^[0-9]+$ && "$marker_mtime" -gt 0 ]] || return 0
+	[[ "$process_age" =~ ^[0-9]+$ ]] || return 0
+	[[ "$now_epoch" =~ ^[0-9]+$ && "$now_epoch" -ge "$marker_mtime" ]] || return 0
+	marker_age=$((now_epoch - marker_mtime))
+	if [[ $((process_age + _WT_CLEAN_MARKER_CLOCK_SKEW_SECONDS)) -ge "$marker_age" ]]; then
+		return 0
+	fi
+	return 1
+}
 
 _clean_deferred_parent_alive() {
 	local wt_path="$1"
@@ -78,7 +144,7 @@ _clean_deferred_parent_alive() {
 	local owner_pid=""
 	IFS= read -r owner_pid <"$marker_path" || true
 	_WT_CLEAN_DEFERRED_OWNER_PID="$owner_pid"
-	if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+	if _clean_legacy_marker_matches_process_generation "$marker_path" "$owner_pid"; then
 		return 0
 	fi
 	rm -f "$marker_path" 2>/dev/null || true

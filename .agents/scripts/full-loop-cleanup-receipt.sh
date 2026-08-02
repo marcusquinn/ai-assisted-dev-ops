@@ -544,7 +544,7 @@ full_loop_write_cleanup_deferred() {
 	return 0
 }
 
-_full_loop_cleanup_receipt_for_worktree_unlocked() {
+_full_loop_cleanup_receipt_for_worktree_unlocked_fallback() {
 	local worktree="$1"
 	local receipt_dir=""
 	local receipt_path=""
@@ -576,6 +576,56 @@ _full_loop_cleanup_receipt_for_worktree_unlocked() {
 			fi
 		fi
 	done
+	[[ -n "$selected_path" ]] || return 1
+	printf '%s\n' "$selected_path"
+	return 0
+}
+
+_full_loop_cleanup_receipt_for_worktree_unlocked() {
+	local worktree="$1"
+	local receipt_dir=""
+	local selected_path=""
+	local lookup_status=0
+
+	[[ -n "$worktree" ]] || return 1
+	receipt_dir=$(_full_loop_cleanup_receipt_dir) || return 1
+	[[ -d "$receipt_dir" ]] || return 1
+	# A cleanup pass can perform this lookup hundreds of times. Process every
+	# receipt in one jq invocation instead of launching jq once to three times
+	# per file. Malformed JSON falls back to the conservative per-file scan,
+	# which preserves the previous skip-invalid-file behaviour.
+	selected_path=$(jq -nr \
+		--arg worktree "$worktree" \
+		--arg superseded "$_FULL_LOOP_RECEIPT_PATH_RECREATED" \
+		--arg string_type "$_FULL_LOOP_RECEIPT_JSON_STRING_TYPE" '
+		reduce (
+			inputs
+			| select(type == "object")
+			| select(.worktree == $worktree)
+			| select((.receipt_disposition.state // "") != $superseded)
+			| {
+				path: input_filename,
+				created_at: (.created_at // ""),
+				is_migrated: (
+					if (((.migration.from_repository? // null) | type) == $string_type
+						and ((.migration.from_repository? // "") | length) > 0)
+					then 1 else 0 end
+				)
+			}
+		) as $candidate (
+			null;
+			if . == null
+				or $candidate.created_at > .created_at
+				or ($candidate.created_at == .created_at
+					and $candidate.is_migrated == 1 and .is_migrated != 1)
+			then $candidate else . end
+		)
+		| .path // empty
+	' "$receipt_dir"/*.json 2>/dev/null) || lookup_status=$?
+	if [[ "$lookup_status" -ne 0 ]]; then
+		_full_loop_cleanup_receipt_for_worktree_unlocked_fallback "$worktree"
+		return $?
+	fi
 	[[ -n "$selected_path" ]] || return 1
 	printf '%s\n' "$selected_path"
 	return 0

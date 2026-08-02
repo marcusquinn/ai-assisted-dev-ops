@@ -184,6 +184,10 @@ test_terminal_pr_cleanup_waits_for_deferred_parent_exit() {
 	(
 		cd "$repo_path" || exit 1
 		source_clean_lib_with_stubs || exit 1
+		_file_mtime_epoch() {
+			date +%s
+			return 0
+		}
 		_clean_remove_merged "main" "$repo_path" "false" "$branch" "" "true" "" >/dev/null
 	) || rc=1
 	[[ -d "$wt_path" ]] || rc=1
@@ -210,6 +214,33 @@ test_terminal_pr_cleanup_waits_for_deferred_parent_exit() {
 	[[ -f "$registry_release_marker" ]] || rc=1
 	print_result "terminal PR cleanup waits for deferred parent exit" "$rc" \
 		"Expected first pulse to defer and second pulse after owner exit to remove worktree"
+	return 0
+}
+
+test_reused_legacy_marker_pid_expires() {
+	local wt_path="${TEST_ROOT}/wt-reused-legacy-pid"
+	local marker_path="${wt_path}/.agents/.full-loop-cleanup-deferred"
+	local rc=0
+	mkdir -p "${wt_path}/.agents" || rc=1
+	printf '%s\n' "$$" >"$marker_path" || rc=1
+
+	(
+		source_clean_lib_with_stubs || exit 1
+		_file_mtime_epoch() {
+			printf '%s\n' "1"
+			return 0
+		}
+		_clean_process_age_seconds() {
+			printf '%s\n' "1"
+			return 0
+		}
+		local deferred_state=0
+		_clean_deferred_parent_alive "$wt_path" || deferred_state=$?
+		[[ "$deferred_state" -eq 2 && ! -f "$marker_path" ]]
+	) || rc=1
+
+	print_result "legacy marker rejects a process generation newer than the marker" "$rc" \
+		"Expected a live recycled PID to expire instead of extending cleanup ownership"
 	return 0
 }
 
@@ -842,6 +873,7 @@ echo "=== test-worktree-cleanup-branch-merged-owned-skip.sh ==="
 test_protected_pass_set_blocks_branch_merged_removal
 test_terminal_pr_proof_bypasses_protected_pass_skip
 test_terminal_pr_cleanup_waits_for_deferred_parent_exit
+test_reused_legacy_marker_pid_expires
 test_dead_marker_preserves_replacement_owner
 test_terminal_cleanup_requires_removal_lease
 test_cleanup_lease_released_when_removal_guard_blocks

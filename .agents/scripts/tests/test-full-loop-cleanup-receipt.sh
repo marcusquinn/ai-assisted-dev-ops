@@ -125,6 +125,48 @@ selected_receipt=$(full_loop_cleanup_receipt_for_worktree "${TEST_ROOT}/worktree
 [[ "$selected_receipt" == "$newest_receipt" ]]
 printf 'PASS reused worktree paths select the newest lifecycle receipt\n'
 
+migrated_receipt="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_migrated-104.json"
+jq '.repository = "example/migrated" | .pr_number = 104
+	| .migration = {from_repository:"example/repo",to_repository:"example/migrated",migrated_at:.created_at}' \
+	"$newest_receipt" >"$migrated_receipt"
+selected_receipt=$(full_loop_cleanup_receipt_for_worktree "${TEST_ROOT}/worktree-one")
+[[ "$selected_receipt" == "$migrated_receipt" ]]
+printf 'PASS equal-time receipt lookup preserves migrated-receipt preference\n'
+
+lookup_bin="${TEST_ROOT}/lookup-bin"
+lookup_counter="${TEST_ROOT}/lookup-jq-count"
+lookup_original_path="$PATH"
+real_jq=$(command -v jq)
+mkdir -p "$lookup_bin"
+cat >"${lookup_bin}/jq" <<'LOOKUP_JQ'
+#!/usr/bin/env bash
+set -euo pipefail
+lookup_count=0
+if [[ -f "$AIDEVOPS_TEST_LOOKUP_JQ_COUNTER" ]]; then
+	IFS= read -r lookup_count <"$AIDEVOPS_TEST_LOOKUP_JQ_COUNTER" || lookup_count=0
+fi
+[[ "$lookup_count" =~ ^[0-9]+$ ]] || lookup_count=0
+printf '%s\n' "$((lookup_count + 1))" >"$AIDEVOPS_TEST_LOOKUP_JQ_COUNTER"
+exec "$AIDEVOPS_TEST_REAL_JQ" "$@"
+LOOKUP_JQ
+chmod +x "${lookup_bin}/jq"
+export AIDEVOPS_TEST_LOOKUP_JQ_COUNTER="$lookup_counter"
+export AIDEVOPS_TEST_REAL_JQ="$real_jq"
+export PATH="${lookup_bin}:${PATH}"
+selected_receipt=$(full_loop_cleanup_receipt_for_worktree "${TEST_ROOT}/worktree-one")
+export PATH="$lookup_original_path"
+unset AIDEVOPS_TEST_LOOKUP_JQ_COUNTER AIDEVOPS_TEST_REAL_JQ
+IFS= read -r lookup_count <"$lookup_counter"
+[[ "$selected_receipt" == "$migrated_receipt" && "$lookup_count" -eq 1 ]]
+printf 'PASS receipt lookup scans all valid receipts with one jq process\n'
+
+invalid_receipt="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/invalid.json"
+printf '%s\n' '{invalid-json' >"$invalid_receipt"
+selected_receipt=$(full_loop_cleanup_receipt_for_worktree "${TEST_ROOT}/worktree-one")
+rm -f "$invalid_receipt"
+[[ "$selected_receipt" == "$migrated_receipt" ]]
+printf 'PASS malformed receipt falls back without hiding a valid lifecycle receipt\n'
+
 atomic_worktree="${TEST_ROOT}/atomic-worktree"
 mkdir -p "$atomic_worktree"
 atomic_receipt_one=$(full_loop_write_cleanup_deferred example/atomic-one 201 "$atomic_worktree" feature/atomic \
