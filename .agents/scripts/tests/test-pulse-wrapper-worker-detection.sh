@@ -1308,11 +1308,15 @@ test_dispatch_max_honors_stop_flag() {
 	return 0
 }
 
-test_dispatch_max_ignores_noisy_count_output() {
-	local dispatch_log="${TEST_ROOT}/deterministic-noisy-counts.log"
+test_dispatch_max_skips_broad_prelaunch_counts() {
+	local dispatch_log="${TEST_ROOT}/deterministic-no-broad-counts.log"
+	local count_call_log="${TEST_ROOT}/deterministic-broad-count-calls.log"
+	local login_call_log="${TEST_ROOT}/deterministic-login-calls.log"
 	local original_function_definitions
 	original_function_definitions=$(capture_function_definitions gh build_ranked_dispatch_candidates_json _dispatch_compute_capacity _dispatch_ranked_candidates_json _dispatch_run_prepasses _dispatch_order_idle_borrowing_candidates _dispatch_max_compute_parallel _dispatch_graphql_budget_allows_next _dispatch_should_skip_candidate _dispatch_check_model_concurrency_cap _pulse_refresh_repo _dispatch_with_timeout count_runnable_candidates count_queued_without_worker dispatch_with_dedup check_worker_launch _dispatch_maybe_engage_throttle)
 	: >"$dispatch_log"
+	: >"$count_call_log"
+	: >"$login_call_log"
 
 	build_ranked_dispatch_candidates_json() {
 		printf '%s\n' '[
@@ -1324,6 +1328,10 @@ test_dispatch_max_ignores_noisy_count_output() {
 		return 0
 	}
 	_dispatch_ranked_candidates_json() {
+		if [[ "${TEST_EMPTY_CANDIDATES:-0}" == "1" ]]; then
+			printf '[]\n'
+			return 0
+		fi
 		build_ranked_dispatch_candidates_json
 		return 0
 	}
@@ -1350,14 +1358,12 @@ test_dispatch_max_ignores_noisy_count_output() {
 		return $?
 	}
 	count_runnable_candidates() {
-		printf 'DEBUG: prefetched runnable backlog\n'
-		echo 5
-		return 0
+		printf 'count_runnable_candidates\n' >>"$count_call_log"
+		return 1
 	}
 	count_queued_without_worker() {
-		printf 'TRACE: queued scan complete\n'
-		echo 0
-		return 0
+		printf 'count_queued_without_worker\n' >>"$count_call_log"
+		return 1
 	}
 	dispatch_with_dedup() {
 		printf '%s\n' "$1" >>"$dispatch_log"
@@ -1367,6 +1373,7 @@ test_dispatch_max_ignores_noisy_count_output() {
 	_dispatch_maybe_engage_throttle() { return 0; }
 	gh() {
 		if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
+			printf 'login\n' >>"$login_call_log"
 			printf 'testuser\n'
 			return 0
 		fi
@@ -1374,19 +1381,24 @@ test_dispatch_max_ignores_noisy_count_output() {
 	}
 	export -f gh
 
-	local dispatch_count dispatched_numbers
+	local dispatch_count empty_dispatch_count dispatched_numbers count_call_count login_call_count
 	dispatch_count=$(dispatch_max)
+	TEST_EMPTY_CANDIDATES=1
+	empty_dispatch_count=$(dispatch_max)
+	unset TEST_EMPTY_CANDIDATES
 	dispatched_numbers=$(tr '\n' ',' <"$dispatch_log" | sed 's/,$//')
+	count_call_count=$(wc -l <"$count_call_log" | tr -d ' ')
+	login_call_count=$(wc -l <"$login_call_log" | tr -d ' ')
 
 	restore_function_definitions "$original_function_definitions" gh build_ranked_dispatch_candidates_json _dispatch_compute_capacity _dispatch_ranked_candidates_json _dispatch_run_prepasses _dispatch_order_idle_borrowing_candidates _dispatch_max_compute_parallel _dispatch_graphql_budget_allows_next _dispatch_should_skip_candidate _dispatch_check_model_concurrency_cap _pulse_refresh_repo _dispatch_with_timeout count_runnable_candidates count_queued_without_worker dispatch_with_dedup check_worker_launch _dispatch_maybe_engage_throttle
 
-	if [[ "$dispatch_count" == "1" && "$dispatched_numbers" == "9401" ]]; then
-		print_result "dispatch_max ignores noisy count helper output" 0
+	if [[ "$dispatch_count" == "1" && "$empty_dispatch_count" == "0" && "$dispatched_numbers" == "9401" && "$count_call_count" == "0" && "$login_call_count" == "1" ]]; then
+		print_result "dispatch_max skips broad pre-launch counts and empty-snapshot login" 0
 		return 0
 	fi
 
-	print_result "dispatch_max ignores noisy count helper output" 1 \
-		"Expected count=1 and issue 9401; got count=${dispatch_count}, issues=${dispatched_numbers}"
+	print_result "dispatch_max skips broad pre-launch counts and empty-snapshot login" 1 \
+		"Expected dispatch=1, empty=0, issue=9401, broad_counts=0, login_calls=1; got dispatch=${dispatch_count}, empty=${empty_dispatch_count}, issues=${dispatched_numbers}, broad_counts=${count_call_count}, login_calls=${login_call_count}"
 	return 0
 }
 
@@ -1564,7 +1576,7 @@ main() {
 	test_build_ranked_dispatch_candidates_json_accepts_array_pulse_hours
 	test_dispatch_max_dispatches_up_to_capacity
 	test_dispatch_max_honors_stop_flag
-	test_dispatch_max_ignores_noisy_count_output
+	test_dispatch_max_skips_broad_prelaunch_counts
 	test_active_pulse_refill_skips_without_idle_or_stall_signal
 	test_active_pulse_refill_dispatches_when_underfilled_and_idle
 	test_worker_detection_uses_unlimited_width_ps_flag
