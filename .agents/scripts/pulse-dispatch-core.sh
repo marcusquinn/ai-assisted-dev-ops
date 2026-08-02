@@ -1113,7 +1113,23 @@ _dispatch_permission_history_requires_grant() {
 	local repo_slug="$2"
 	local events_json="" labeled_count="" verification=""
 	_DISPATCH_PERMISSION_VERIFY_RESULT=""
-	events_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/events?per_page=100" --paginate --slurp 2>/dev/null) || {
+	local -a events_command=(gh api "repos/${repo_slug}/issues/${issue_number}/events?per_page=100" --paginate --slurp)
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		events_json=$(_gh_with_timeout read "${events_command[@]}" 2>/dev/null) || events_json=""
+	else
+		events_json=$("${events_command[@]}" 2>/dev/null) || events_json=""
+	fi
+	if [[ -z "$events_json" ]]; then
+		# A bounded retry prevents one transient timeout during parallel Pulse
+		# dispatch from turning a current signed grant into a false API_ERROR.
+		# Verification still fails closed when both independent reads fail.
+		if declare -F _gh_with_timeout >/dev/null 2>&1; then
+			events_json=$(_gh_with_timeout read "${events_command[@]}" 2>/dev/null) || events_json=""
+		else
+			events_json=$("${events_command[@]}" 2>/dev/null) || events_json=""
+		fi
+	fi
+	[[ -n "$events_json" ]] || {
 		_DISPATCH_PERMISSION_VERIFY_RESULT="API_ERROR"
 		return 0
 	}
