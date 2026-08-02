@@ -186,6 +186,78 @@ _shim_transport_caller_label() {
 	return 0
 }
 
+# Return a stable, privacy-safe digest for one native issue/pr read shape.
+# Repository names, references, jq/template expressions, and other argument
+# values never enter the digest input. JSON field names are retained because
+# they define the transport contract and are bounded gh identifiers.
+_shim_read_shape_digest() {
+	local sub1="${1:-}"
+	local sub2="${2:-}"
+	shift 2 2>/dev/null || true
+	local json_fields="none"
+	local has_jq=0
+	local has_template=0
+	local has_comments=0
+	local has_web=0
+	local unknown_flags=0
+	local positional_count=0
+	local expect_value=""
+	local arg=""
+	local shape=""
+	local digest=""
+
+	while [[ $# -gt 0 ]]; do
+		arg="$1"
+		shift
+		if [[ -n "$expect_value" ]]; then
+			case "$expect_value" in
+			json)
+				if [[ "$arg" =~ ^[A-Za-z0-9_,]+$ ]]; then
+					json_fields="$arg"
+				else
+					json_fields="dynamic"
+				fi
+				;;
+			jq) has_jq=1 ;;
+			template) has_template=1 ;;
+			esac
+			expect_value=""
+			continue
+		fi
+		case "$arg" in
+		--repo | -R) expect_value="private" ;;
+		--repo=* | -R?*) ;;
+		--json) expect_value="json" ;;
+		--json=*)
+			json_fields="${arg#--json=}"
+			[[ "$json_fields" =~ ^[A-Za-z0-9_,]+$ ]] || json_fields="dynamic"
+			;;
+		--jq | -q) expect_value="jq" ;;
+		--jq=* | -q=*) has_jq=1 ;;
+		--template | -t) expect_value="template" ;;
+		--template=* | -t=*) has_template=1 ;;
+		--comments) has_comments=1 ;;
+		--web) has_web=1 ;;
+		-*) unknown_flags=$((unknown_flags + 1)) ;;
+		*) positional_count=$((positional_count + 1)) ;;
+		esac
+	done
+	shape="${sub1}:${sub2}:json=${json_fields}:jq=${has_jq}:template=${has_template}:comments=${has_comments}:web=${has_web}:unknown_flags=${unknown_flags}:positionals=${positional_count}"
+	if command -v shasum >/dev/null 2>&1; then
+		digest=$(printf '%s' "$shape" | shasum -a 256 2>/dev/null) || return 1
+		digest="${digest%% *}"
+	elif command -v openssl >/dev/null 2>&1; then
+		digest=$(printf '%s' "$shape" | openssl dgst -sha256 2>/dev/null) || return 1
+		digest="${digest##* }"
+	else
+		digest=$(printf '%s' "$shape" | cksum 2>/dev/null) || return 1
+		digest="${digest%% *}"
+	fi
+	[[ "$digest" =~ ^[A-Fa-f0-9]+$ ]] || return 1
+	printf 'shape-%s' "${digest:0:12}"
+	return 0
+}
+
 _shim_transport_page() {
 	local arg=""
 	local page=1

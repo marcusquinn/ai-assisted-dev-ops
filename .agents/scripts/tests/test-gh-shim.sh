@@ -287,6 +287,10 @@ cp "$REPO_DIR/.agents/scripts/gh_quota_debug_response.py" "$TMP/scripts/gh_quota
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-fallback.sh" "$TMP/scripts/shared-gh-wrappers-rest-fallback.sh"
 cp "$REPO_DIR/.agents/scripts/shared-gh-wrappers-rest-read-semantics.sh" "$TMP/scripts/shared-gh-wrappers-rest-read-semantics.sh"
 cp "$REPO_DIR/.agents/scripts/log-issue-helper.sh" "$TMP/scripts/log-issue-helper.sh"
+# Caller attribution accepts only verified framework script basenames that are
+# present beside the shim. A zero-byte fixture is sufficient for that identity
+# check; it is never executed by this harness.
+: >"$TMP/scripts/pulse-wrapper.sh"
 mkdir -p "$TMP/scripts/lib"
 cp "$REPO_DIR/.agents/scripts/lib/version.sh" "$TMP/scripts/lib/version.sh"
 cp "$REPO_DIR/.agents/scripts/lib/issue-fingerprint.sh" "$TMP/scripts/lib/issue-fingerprint.sh"
@@ -778,11 +782,36 @@ AIDEVOPS_GH_REST_FIRST_READS=1 "$SHIM_RUN" pr list --repo owner/repo \
 	--state open --json number,reviewDecision,headRefOid 2>/dev/null || true
 argv=$(_read_argv)
 if [[ "$argv" == $'pr\nlist\n--repo\nowner/repo\n--state\nopen\n--json\nnumber,reviewDecision,headRefOid' ]] &&
-	awk -F '\t' '$2 == "gh_pr_list" && $3 == "graphql" && $6 == "graphql-selected" { found = 1 } END { exit found ? 0 : 1 }' \
+	awk -F '\t' '$2 == "gh_pr_list" && $3 == "graphql" && $6 ~ /^graphql-selected:shape-[[:xdigit:]]+$/ { found = 1 } END { exit found ? 0 : 1 }' \
 		"$AIDEVOPS_GH_API_LOG"; then
 	_pass "REST-first leaves GraphQL-only pr list fields on GraphQL"
 else
 	_fail "REST-first GraphQL-only pr list preservation" "argv: $argv log: $(cat "$AIDEVOPS_GH_API_LOG" 2>/dev/null || true)"
+fi
+
+echo ""
+echo "Test 15g: native read attribution is caller-aware and privacy-safe"
+_reset_log
+native_shape_log_one="$TMP/gh-api-native-shape-one.log"
+native_shape_log_two="$TMP/gh-api-native-shape-two.log"
+rm -f "$native_shape_log_one" "$native_shape_log_two"
+AIDEVOPS_GH_CALLER=pulse-wrapper.sh AIDEVOPS_GH_REST_FIRST_READS=1 \
+	AIDEVOPS_GH_API_LOG="$native_shape_log_one" "$SHIM_RUN" issue view 111 \
+	--repo private-owner/private-repo --json state,labels,assignees,comments \
+	--jq '.comments[] | select(.body == "private-one")' >/dev/null 2>&1 || true
+AIDEVOPS_GH_CALLER=pulse-wrapper.sh AIDEVOPS_GH_REST_FIRST_READS=1 \
+	AIDEVOPS_GH_API_LOG="$native_shape_log_two" "$SHIM_RUN" issue view 999 \
+	--repo other-private/other-private --json state,labels,assignees,comments \
+	--jq '.comments[] | select(.body == "private-two")' >/dev/null 2>&1 || true
+native_shape_one=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_shape_log_one")
+native_shape_two=$(awk -F '\t' '$9 == "logical" && $3 == "graphql" { print $6; exit }' "$native_shape_log_two")
+if [[ "$native_shape_one" == "$native_shape_two" && "$native_shape_one" =~ ^graphql-selected:shape-[[:xdigit:]]+$ ]] &&
+	awk -F '\t' '$2 == "pulse-wrapper.sh" && $9 == "logical" { found = 1 } END { exit found ? 0 : 1 }' "$native_shape_log_one" &&
+	! grep -Eq 'private-owner|private-repo|private-one|other-private|private-two|comments\[\]' "$native_shape_log_one" "$native_shape_log_two"; then
+	_pass "native read telemetry records framework caller and value-free stable shape"
+else
+	_fail "native read privacy-safe attribution" \
+		"shape_one=$native_shape_one shape_two=$native_shape_two log_one=$(cat "$native_shape_log_one" 2>/dev/null || true)"
 fi
 
 echo ""
