@@ -23,6 +23,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=portable-stat.sh
 source "${SCRIPT_DIR}/portable-stat.sh"
+# shellcheck source=audit-worktree-removal-helper.sh
+source "${SCRIPT_DIR}/audit-worktree-removal-helper.sh"
 METRICS_FILE="${HOME}/.aidevops/.agent-workspace/observability/metrics.jsonl"
 OBS_DB_FILE="${HOME}/.aidevops/.agent-workspace/observability/llm-requests.db"
 OPENCODE_DB_FILE="${HOME}/.local/share/opencode/opencode.db"
@@ -136,6 +138,22 @@ _profile_publication_worktree_helper() {
 	return 0
 }
 
+_archive_and_remove_profile_publication_worktree() {
+	local worktree_path="$1"
+	local archive_path=""
+	local caller="profile-readme-helper.sh"
+	local context="recovery_path=profile-publication-archive"
+
+	archive_worktree_path_recoverably "$worktree_path" "$caller" "$context" || return 1
+	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	[[ -n "$archive_path" ]] || return 1
+	remove_archived_worktree_path "$worktree_path" "$archive_path" "$caller" \
+		"profile-publication" "$context" "true" "false" || return 1
+	log_worktree_removal_event "$_WTAR_REMOVED" "$caller" "$worktree_path" \
+		"profile-publication" "recoverable" "$context"
+	return 0
+}
+
 _cleanup_profile_publication_worktree() {
 	if [[ -z "$PROFILE_PUBLICATION_WORKTREE" ]]; then
 		return 0
@@ -148,7 +166,13 @@ _cleanup_profile_publication_worktree() {
 		echo "Warning: profile publication worktree cleanup is unavailable: $worktree_path" >&2
 		return 1
 	fi
-	if ! (cd "$canonical_repo" && "$worktree_helper" remove "$worktree_path" --force >/dev/null); then
+	if (cd "$canonical_repo" && "$worktree_helper" remove "$worktree_path" >/dev/null); then
+		PROFILE_PUBLICATION_WORKTREE=""
+		PROFILE_PUBLICATION_CANONICAL_REPO=""
+		return 0
+	fi
+	if [[ -e "$worktree_path" ]] &&
+		! _archive_and_remove_profile_publication_worktree "$worktree_path"; then
 		echo "Warning: profile publication worktree cleanup failed: $worktree_path" >&2
 		return 1
 	fi

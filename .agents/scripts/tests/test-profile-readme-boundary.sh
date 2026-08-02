@@ -55,7 +55,8 @@ install_helper_with_libs() {
 	chmod +x "${helper_path}"
 	cp "${SOURCE_DATA_LIB}" "${helper_dir}/profile-readme-data-lib.sh"
 	cp "${SOURCE_RENDER_LIB}" "${helper_dir}/profile-readme-render-lib.sh"
-	cp "${SOURCE_HELPER%/*}/portable-stat.sh" \
+	cp "${SOURCE_HELPER%/*}/audit-worktree-removal-helper.sh" \
+		"${SOURCE_HELPER%/*}/portable-stat.sh" \
 		"${SOURCE_HELPER%/*}/screen-time-interval-engine.py" \
 		"${SOURCE_HELPER%/*}/screen_time_interval_common.py" \
 		"${SOURCE_HELPER%/*}/screen_time_macos.py" \
