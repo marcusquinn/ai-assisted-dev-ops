@@ -37,6 +37,9 @@ source "${SCRIPT_DIR}/shared-constants.sh" 2>/dev/null || {
 }
 set -euo pipefail
 
+readonly PARENT_STATUS_STATE_UNKNOWN="UNKNOWN"
+readonly PARENT_STATUS_VALUE_UNKNOWN="unknown"
+
 # =============================================================================
 # Helpers — gh API wrappers (offline-aware)
 # =============================================================================
@@ -55,7 +58,7 @@ _resolve_repo_slug() {
 	return 0
 }
 
-# Fetch issue JSON (number, title, body, labels, state).
+# Fetch issue JSON (number, title, body, labels, state, state reason).
 # Returns JSON string to stdout.
 _fetch_issue() {
 	local num="$1"
@@ -67,13 +70,17 @@ _fetch_issue() {
 			cat "$stub"
 		else
 			echo "{}"
+			return 1
 		fi
 		return 0
 	fi
 
 	local json
-	json=$(gh issue view "$num" --repo "$repo" \
-		--json number,title,body,state,labels 2>/dev/null) || json="{}"
+	if ! json=$(gh issue view "$num" --repo "$repo" \
+		--json number,title,body,state,stateReason,labels 2>/dev/null); then
+		echo "{}"
+		return 1
+	fi
 	echo "$json"
 	return 0
 }
@@ -90,6 +97,7 @@ _fetch_sub_issues() {
 			cat "$stub"
 		else
 			echo "[]"
+			return 1
 		fi
 		return 0
 	fi
@@ -97,7 +105,10 @@ _fetch_sub_issues() {
 	local owner="${repo%%/*}"
 	local reponame="${repo##*/}"
 	local json
-	json=$(gh api "repos/${owner}/${reponame}/issues/${num}/sub_issues" 2>/dev/null) || json="[]"
+	if ! json=$(gh api "repos/${owner}/${reponame}/issues/${num}/sub_issues?per_page=100" 2>/dev/null); then
+		echo "[]"
+		return 1
+	fi
 	echo "$json"
 	return 0
 }
@@ -241,19 +252,27 @@ _parse_phase_lines() {
 
 # Given a list of sub-issue numbers (one per line), fetch state + PR info.
 # Output (one per line):
-#   <issue_num>|<state>|<pr_num_or_empty>|<pr_state_or_empty>|<pr_merged_at_or_empty>|<issue_title>
+#   <issue_num>|<state>|<state_reason>|<labels_csv>|<pr_num>|<pr_state>|<merged_at>|<title>
 _resolve_children_state() {
 	local children_nums="$1"
 	local repo="$2"
 	[[ -z "$children_nums" ]] && return 0
+	local incomplete=0
 
 	while IFS= read -r num; do
 		[[ -z "$num" ]] && continue
 		local issue_json pr_json
-		issue_json=$(_fetch_issue "$num" "$repo")
-		local state title
-		state=$(printf '%s' "$issue_json" | jq -r '.state // "UNKNOWN"' 2>/dev/null) || state="UNKNOWN"
+		if ! issue_json=$(_fetch_issue "$num" "$repo"); then
+			issue_json="{}"
+			incomplete=1
+		fi
+		local state state_reason labels title
+		state=$(printf '%s' "$issue_json" | jq -r --arg unknown "$PARENT_STATUS_STATE_UNKNOWN" \
+			'.state // $unknown' 2>/dev/null) || state="$PARENT_STATUS_STATE_UNKNOWN"
+		state_reason=$(printf '%s' "$issue_json" | jq -r '.stateReason // .state_reason // ""' 2>/dev/null) || state_reason=""
+		labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels=""
 		title=$(printf '%s' "$issue_json" | jq -r '.title // ""' 2>/dev/null) || title=""
+		[[ "$state" == "$PARENT_STATUS_STATE_UNKNOWN" ]] && incomplete=1
 
 		pr_json=$(_fetch_child_pr "$num" "$repo")
 		local pr_num pr_state pr_merged_at
@@ -261,10 +280,10 @@ _resolve_children_state() {
 		pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""' 2>/dev/null) || pr_state=""
 		pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""' 2>/dev/null) || pr_merged_at=""
 
-		printf '%s|%s|%s|%s|%s|%s\n' \
-			"$num" "$state" "$pr_num" "$pr_state" "$pr_merged_at" "$title"
+		printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
+			"$num" "$state" "$state_reason" "$labels" "$pr_num" "$pr_state" "$pr_merged_at" "$title"
 	done <<< "$children_nums"
-	return 0
+	return "$incomplete"
 }
 
 # =============================================================================
@@ -276,23 +295,56 @@ _derive_next_action() {
 	local phases_filed="$2"
 	local in_flight_pr="$3"
 	local phases_merged="$4"
+	local children_open="$5"
+	local children_blocked="$6"
+	local children_unknown="$7"
+	local next_open_child="$8"
+	local next_blocked_child="$9"
+	local expected_children="${10}"
+	local contract_reason="${11}"
+	local missing_expected=0
+	if [[ "$expected_children" =~ ^[0-9]+$ && "$phases_filed" -lt "$expected_children" ]]; then
+		missing_expected=$((expected_children - phases_filed))
+	fi
 
-	if [[ "$phases_merged" -ge "$phases_total" && "$phases_total" -gt 0 ]]; then
-		echo "All phases complete — close the parent issue."
+	if [[ "$children_unknown" -gt 0 ]]; then
+		echo "Child state retrieval incomplete for ${children_unknown} child issue(s) — retry before closing the parent."
 		return 0
 	fi
 
-	if [[ -n "$in_flight_pr" ]]; then
-		echo "Merge PR #${in_flight_pr}, then file Phase $((phases_filed + 1)) child."
+	if [[ "$children_open" -gt 0 ]]; then
+		local missing_suffix=""
+		if [[ "$missing_expected" -gt 0 ]]; then
+			missing_suffix="; ${missing_expected} expected child issue(s) are not filed"
+		fi
+		if [[ -n "$in_flight_pr" ]]; then
+			echo "${children_open} child issue(s) remain open — merge PR #${in_flight_pr}, then continue child #${next_open_child}${missing_suffix}."
+		elif [[ "$children_blocked" -gt 0 ]]; then
+			echo "${children_open} child issue(s) remain open — resolve blockers on child #${next_blocked_child}${missing_suffix}."
+		else
+			echo "${children_open} child issue(s) remain open — continue child #${next_open_child}${missing_suffix}."
+		fi
 		return 0
 	fi
 
-	if [[ "$phases_filed" -lt "$phases_total" ]]; then
-		echo "File Phase $((phases_filed + 1)) child issue."
+	if [[ "$missing_expected" -gt 0 ]]; then
+		echo "File ${missing_expected} remaining expected child issue(s) before closing the parent."
 		return 0
 	fi
 
-	echo "All phases filed — waiting for children to merge."
+	if [[ -n "$contract_reason" ]]; then
+		echo "Parent close contract is incomplete (${contract_reason}) — keep the parent open."
+		return 0
+	fi
+
+	if [[ "$phases_filed" -eq 0 ]]; then
+		echo "No child issues are filed — keep the parent open."
+		return 0
+	fi
+
+	# Preserve these inputs in the function contract for stable callers/output.
+	: "$phases_total" "$phases_merged"
+	echo "All non-superseded child issues are complete — close the parent issue."
 	return 0
 }
 
@@ -307,12 +359,17 @@ _render_text() {
 	local phases_filed="$4"
 	local phases_merged="$5"
 	local phases_inflight="$6"
-	local phase_lines="$7"     # newline-separated: phase_num|name|child_num|child_state|pr_num|pr_state|pr_merged_at
-	local next_action="$8"
+	local children_open="$7"
+	local children_superseded="$8"
+	local children_unknown="$9"
+	local phase_lines="${10}"     # newline-separated: phase_num|name|child_num|child_state|pr_num|pr_state|pr_merged_at
+	local next_action="${11}"
 
 	printf '\nParent: #%s %s\n' "$parent_num" "$parent_title"
 	printf 'Phases: %d planned, %d filed, %d merged, %d in-flight\n\n' \
 		"$phases_total" "$phases_filed" "$phases_merged" "$phases_inflight"
+	printf 'Children: %d filed, %d remaining open, %d superseded, %d unknown\n\n' \
+		"$phases_filed" "$children_open" "$children_superseded" "$children_unknown"
 
 	while IFS= read -r line; do
 		[[ -z "$line" ]] && continue
@@ -349,8 +406,11 @@ _render_json() {
 	local phases_filed="$4"
 	local phases_merged="$5"
 	local phases_inflight="$6"
-	local phase_lines="$7"
-	local next_action="$8"
+	local children_open="$7"
+	local children_superseded="$8"
+	local children_unknown="$9"
+	local phase_lines="${10}"
+	local next_action="${11}"
 
 	local first=1
 	local _json_null="null"
@@ -361,6 +421,9 @@ _render_json() {
 	printf '  "phases_filed": %d,\n' "$phases_filed"
 	printf '  "phases_merged": %d,\n' "$phases_merged"
 	printf '  "phases_inflight": %d,\n' "$phases_inflight"
+	printf '  "children_open": %d,\n' "$children_open"
+	printf '  "children_superseded": %d,\n' "$children_superseded"
+	printf '  "children_unknown": %d,\n' "$children_unknown"
 	printf '  "next_action": %s,\n' "$(printf '%s' "$next_action" | jq -Rs '.' 2>/dev/null || printf '"%s"' "$next_action")"
 	printf '  "phases": [\n'
 
@@ -415,7 +478,16 @@ _gather_child_nums() {
 	local parent_body="$3"
 
 	local sub_issues_json
-	sub_issues_json=$(_fetch_sub_issues "$issue_num" "$repo")
+	local fetch_incomplete=0
+	if ! sub_issues_json=$(_fetch_sub_issues "$issue_num" "$repo"); then
+		sub_issues_json="[]"
+		fetch_incomplete=1
+	fi
+	if ! printf '%s' "$sub_issues_json" |
+		jq -e 'type == "array" and all(.[]; .number | type == "number")' >/dev/null 2>&1; then
+		sub_issues_json="[]"
+		fetch_incomplete=1
+	fi
 	local sub_issue_nums
 	sub_issue_nums=$(printf '%s' "$sub_issues_json" | \
 		jq -r '.[].number' 2>/dev/null | sort -un) || sub_issue_nums=""
@@ -442,7 +514,7 @@ _gather_child_nums() {
 
 	printf '%s\n%s\n' "$sub_issue_nums" "$body_child_nums" | \
 		grep -E '^[0-9]+$' | sort -un 2>/dev/null || true
-	return 0
+	return "$fetch_incomplete"
 }
 
 # Count state metrics from children_state_lines.
@@ -461,8 +533,8 @@ _count_child_states() {
 
 	while IFS= read -r cline; do
 		[[ -z "$cline" ]] && continue
-		local cnum cstate cpr_num cpr_state cpr_merged_at _ctitle
-		IFS='|' read -r cnum cstate cpr_num cpr_state cpr_merged_at _ctitle <<< "$cline"
+		local cnum cstate _creason _clabels cpr_num cpr_state cpr_merged_at _ctitle
+		IFS='|' read -r cnum cstate _creason _clabels cpr_num cpr_state cpr_merged_at _ctitle <<< "$cline"
 		if [[ -n "$cpr_merged_at" ]]; then
 			phases_merged=$((phases_merged + 1))
 		elif [[ "$cpr_state" == "OPEN" ]]; then
@@ -472,6 +544,64 @@ _count_child_states() {
 	done <<< "$children_state_lines"
 
 	printf '%s|%s|%s|%s\n' "$phases_filed" "$phases_merged" "$phases_inflight" "$in_flight_pr_num"
+	return 0
+}
+
+# Summarize closure readiness across every gathered child, not phase rows.
+# Echo: "<open>|<blocked>|<superseded>|<unknown>|<next_open>|<next_blocked>"
+_summarize_child_readiness() {
+	local children_state_lines="$1"
+	local children_open=0 children_blocked=0 children_superseded=0 children_unknown=0
+	local next_open_child="" next_blocked_child=""
+	while IFS= read -r cline; do
+		[[ -z "$cline" ]] && continue
+		local cnum cstate creason clabels _cpr_num _cpr_state _cpr_merged_at _ctitle
+		IFS='|' read -r cnum cstate creason clabels _cpr_num _cpr_state _cpr_merged_at _ctitle <<< "$cline"
+		if [[ "$cstate" == "$PARENT_STATUS_STATE_UNKNOWN" || "$cstate" == "$PARENT_STATUS_VALUE_UNKNOWN" ]]; then
+			children_unknown=$((children_unknown + 1))
+			continue
+		fi
+		if [[ "$creason" == "NOT_PLANNED" || "$creason" == "not_planned" ]]; then
+			children_superseded=$((children_superseded + 1))
+			continue
+		fi
+		if [[ "$cstate" != "CLOSED" && "$cstate" != "closed" ]]; then
+			children_open=$((children_open + 1))
+			[[ -z "$next_open_child" ]] && next_open_child="$cnum"
+			case ",${clabels}," in
+			*,blocked,* | *,status:blocked,*)
+				children_blocked=$((children_blocked + 1))
+				[[ -z "$next_blocked_child" ]] && next_blocked_child="$cnum"
+				;;
+			esac
+		fi
+	done <<< "$children_state_lines"
+	printf '%s|%s|%s|%s|%s|%s\n' \
+		"$children_open" "$children_blocked" "$children_superseded" "$children_unknown" \
+		"$next_open_child" "$next_blocked_child"
+	return 0
+}
+
+# Read deterministic parent close-contract constraints from the body.
+# Echo: "<expected_children>|<incomplete_reason>"
+_read_close_contract() {
+	local parent_body="$1"
+	local phase_plan="$2"
+	local expected_children="" reason=""
+	expected_children=$(printf '%s\n' "$parent_body" |
+		sed -nE 's/.*<!-- parent-close-contract: expected-children=([0-9]+) -->.*/\1/p' | head -n1)
+	if [[ "$parent_body" == *"<!-- parent-close-contract: needs-decomposition -->"* ||
+		"$parent_body" == *"<!-- parent-close-contract: keep-open -->"* ]]; then
+		reason="needs-decomposition"
+	elif [[ "$parent_body" == *"<!-- parent-close-contract: phase-plan -->"* && -z "$phase_plan" ]]; then
+		reason="invalid-phase-plan"
+	elif [[ -n "$phase_plan" ]] &&
+		printf '%s\n' "$phase_plan" | awk -F'|' '$3 == "" { found=1 } END { exit !found }'; then
+		reason="unfiled-phases"
+	elif printf '%s\n' "$parent_body" | grep -qE '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]'; then
+		reason="unchecked-criteria"
+	fi
+	printf '%s|%s\n' "$expected_children" "$reason"
 	return 0
 }
 
@@ -512,8 +642,8 @@ _annotate_phases_with_children() {
 				found_line=$(printf '%s\n' "$children_state_lines" | \
 					grep "^${resolved_child}|" | head -1) || found_line=""
 				if [[ -n "$found_line" ]]; then
-					local _cn _ctitle
-					IFS='|' read -r _cn cstate cpr_num cpr_state cpr_merged_at _ctitle <<< "$found_line"
+					local _cn _creason _clabels _ctitle
+					IFS='|' read -r _cn cstate _creason _clabels cpr_num cpr_state cpr_merged_at _ctitle <<< "$found_line"
 				fi
 			fi
 			printf '%s|%s|%s|%s|%s|%s|%s\n' \
@@ -529,8 +659,8 @@ _annotate_phases_with_children() {
 		local fi=1
 		while IFS= read -r cline; do
 			[[ -z "$cline" ]] && continue
-			local cnum cstate cpr_num cpr_state cpr_merged_at ctitle
-			IFS='|' read -r cnum cstate cpr_num cpr_state cpr_merged_at ctitle <<< "$cline"
+			local cnum cstate _creason _clabels cpr_num cpr_state cpr_merged_at ctitle
+			IFS='|' read -r cnum cstate _creason _clabels cpr_num cpr_state cpr_merged_at ctitle <<< "$cline"
 			local pname_fallback
 			pname_fallback=$(printf '%s' "$ctitle" | sed 's/^[[:space:]]*//' | cut -c1-60)
 			printf '%s|%s|%s|%s|%s|%s|%s\n' \
@@ -581,7 +711,8 @@ cmd_parent_status() {
 	fi
 
 	local parent_title parent_body
-	parent_title=$(printf '%s' "$parent_json" | jq -r '.title // "unknown"' 2>/dev/null) || parent_title="unknown"
+	parent_title=$(printf '%s' "$parent_json" | jq -r --arg unknown "$PARENT_STATUS_VALUE_UNKNOWN" \
+		'.title // $unknown' 2>/dev/null) || parent_title="$PARENT_STATUS_VALUE_UNKNOWN"
 	parent_body=$(printf '%s' "$parent_json" | jq -r '.body // ""' 2>/dev/null) || parent_body=""
 
 	local phase_plan phases_total
@@ -589,13 +720,23 @@ cmd_parent_status() {
 	phases_total=$(printf '%s\n' "$phase_plan" | grep -c '|' 2>/dev/null || echo 0)
 	[[ -z "$phase_plan" ]] && phases_total=0
 
-	local all_child_nums children_state_lines
-	all_child_nums=$(_gather_child_nums "$issue_num" "$repo" "$parent_body")
-	children_state_lines=$(_resolve_children_state "$all_child_nums" "$repo")
+	local all_child_nums children_state_lines retrieval_incomplete=0
+	if ! all_child_nums=$(_gather_child_nums "$issue_num" "$repo" "$parent_body"); then
+		retrieval_incomplete=1
+	fi
+	if ! children_state_lines=$(_resolve_children_state "$all_child_nums" "$repo"); then
+		retrieval_incomplete=1
+	fi
 
 	local metrics phases_filed phases_merged phases_inflight in_flight_pr_num
 	metrics=$(_count_child_states "$children_state_lines" "$all_child_nums")
 	IFS='|' read -r phases_filed phases_merged phases_inflight in_flight_pr_num <<< "$metrics"
+	local readiness children_open children_blocked children_superseded children_unknown next_open_child next_blocked_child
+	readiness=$(_summarize_child_readiness "$children_state_lines")
+	IFS='|' read -r children_open children_blocked children_superseded children_unknown next_open_child next_blocked_child <<< "$readiness"
+	if [[ "$retrieval_incomplete" -eq 1 && "$children_unknown" -eq 0 ]]; then
+		children_unknown=1
+	fi
 
 	local raw_annotated annotated_phase_lines
 	raw_annotated=$(_annotate_phases_with_children "$phase_plan" "$children_state_lines" "$all_child_nums" "$phases_filed")
@@ -604,16 +745,23 @@ cmd_parent_status() {
 	total_line=$(printf '%s\n' "$raw_annotated" | grep '^TOTAL:' | tail -1)
 	if [[ -z "$phase_plan" ]]; then phases_total="${total_line#TOTAL:}"; fi
 
-	local next_action
-	next_action=$(_derive_next_action "$phases_total" "$phases_filed" "$in_flight_pr_num" "$phases_merged")
+	local close_contract expected_children contract_reason next_action
+	close_contract=$(_read_close_contract "$parent_body" "$phase_plan")
+	IFS='|' read -r expected_children contract_reason <<< "$close_contract"
+	next_action=$(_derive_next_action \
+		"$phases_total" "$phases_filed" "$in_flight_pr_num" "$phases_merged" \
+		"$children_open" "$children_blocked" "$children_unknown" "$next_open_child" \
+		"$next_blocked_child" "$expected_children" "$contract_reason")
 
 	if [[ "$json_output" -eq 1 ]]; then
 		_render_json "$issue_num" "$parent_title" \
 			"$phases_total" "$phases_filed" "$phases_merged" "$phases_inflight" \
+			"$children_open" "$children_superseded" "$children_unknown" \
 			"$annotated_phase_lines" "$next_action"
 	else
 		_render_text "$issue_num" "$parent_title" \
 			"$phases_total" "$phases_filed" "$phases_merged" "$phases_inflight" \
+			"$children_open" "$children_superseded" "$children_unknown" \
 			"$annotated_phase_lines" "$next_action"
 	fi
 	return 0
@@ -643,6 +791,7 @@ EXAMPLES:
 
 OUTPUT COLUMNS:
   Phases: <planned> planned, <filed> filed, <merged> merged, <in-flight> in-flight
+  Children: <filed> filed, <remaining-open> open, <superseded>, <unknown>
   Per-phase: Phase N — Name: #CHILD (PR #PR OPEN|MERGED) or NOT FILED
 
 ENVIRONMENT:
