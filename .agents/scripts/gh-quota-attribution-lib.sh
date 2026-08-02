@@ -223,28 +223,65 @@ _ghqa_prepare_private_dir() {
 	return 0
 }
 
+_ghqa_reclaim_guard_acquire() (
+	local lock_dir="$1"
+	local tries="$2"
+	local reclaim_guard="$3"
+	local contender_pid="$4"
+	local candidate_dir="${lock_dir}.guard.${contender_pid}.${RANDOM}.${RANDOM}.${tries}"
+	local candidate_pid_file="${candidate_dir}/pid"
+	local guard_owner=""
+	[[ ! -e "$candidate_dir" && ! -L "$candidate_dir" ]] || return 1
+	trap 'rm -f "$candidate_pid_file" 2>/dev/null || true; rmdir "$candidate_dir" 2>/dev/null || true' EXIT
+	trap 'exit 1' HUP INT TERM
+	if mkdir "$candidate_dir" 2>/dev/null; then
+		if printf '%s\n' "$contender_pid" >"$candidate_pid_file" 2>/dev/null &&
+			ln "$candidate_pid_file" "$reclaim_guard" 2>/dev/null; then
+			rm -f "$candidate_pid_file" 2>/dev/null || return 1
+			rmdir "$candidate_dir" 2>/dev/null || return 1
+			trap - EXIT HUP INT TERM
+			return 0
+		fi
+	fi
+	[[ -d "$lock_dir" && ! -L "$lock_dir" && -f "$reclaim_guard" && ! -L "$reclaim_guard" ]] || return 1
+	guard_owner=$(cat "$reclaim_guard" 2>/dev/null) || guard_owner=""
+	if [[ "$guard_owner" =~ ^[0-9]+$ ]]; then
+		kill -0 "$guard_owner" 2>/dev/null && return 1
+	else
+		[[ "$tries" -ge 100 ]] || return 1
+	fi
+	rm -f "$reclaim_guard" 2>/dev/null || return 1
+	return 1
+)
+
 _ghqa_lock_reclaim() (
 	local lock_dir="$1"
 	local tries="$2"
 	local pid_file="${lock_dir}/pid"
-	local contender_pid="${BASHPID:-$$}"
-	local reclaim_guard="${lock_dir}/.reclaim.d"
+	local contender_pid=""
+	local reclaim_guard="${lock_dir}/.reclaim.guard"
 	local reclaim_dir="${lock_dir}.reclaim.${contender_pid}.${RANDOM}.${tries}"
+	local moved_reclaim_guard=""
 	local owner=""
+	if [[ -n "${BASHPID:-}" ]]; then
+		contender_pid="$BASHPID"
+	else
+		contender_pid=$(sh -c 'printf "%s" "$PPID"' 2>/dev/null) || contender_pid=""
+	fi
+	[[ "$contender_pid" =~ ^[0-9]+$ ]] || return 1
+	reclaim_dir="${lock_dir}.reclaim.${contender_pid}.${RANDOM}.${tries}"
+	moved_reclaim_guard="${reclaim_dir}/.reclaim.guard"
 	[[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 1
 	# Pin this exact lock directory while inspecting it. A releasing owner cannot
-	# remove and replace the path until the guard is gone, and the subshell trap
-	# keeps ordinary interruption from stranding the guard.
-	mkdir "$reclaim_guard" 2>/dev/null || return 1
-	printf '%s\n' "$contender_pid" >"${reclaim_guard}/pid" 2>/dev/null || {
-		rmdir "$reclaim_guard" 2>/dev/null || true
-		return 1
-	}
-	trap 'rm -f "${reclaim_guard}/pid" 2>/dev/null || true; rmdir "$reclaim_guard" 2>/dev/null || true' EXIT HUP INT TERM
+	# remove and replace the path until the guard is gone. The guard is installed
+	# as a complete hard link so interrupted setup cannot expose a partial guard.
+	_ghqa_reclaim_guard_acquire "$lock_dir" "$tries" "$reclaim_guard" "$contender_pid" || return 1
+	trap 'rm -f "$reclaim_guard" 2>/dev/null || true' EXIT
+	trap 'exit 1' HUP INT TERM
 	if [[ -f "$pid_file" && ! -L "$pid_file" ]]; then
-		# Redirect the assignment before opening pid_file so a concurrent release
-		# is ordinary retryable contention rather than a shell diagnostic.
-		if ! owner=$(<"$pid_file") 2>/dev/null; then
+		# Let cat open pid_file inside a stderr-suppressed command substitution so
+		# a concurrent release is retryable contention, not a shell diagnostic.
+		if ! owner=$(cat "$pid_file" 2>/dev/null); then
 			return 1
 		fi
 		if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
@@ -257,11 +294,10 @@ _ghqa_lock_reclaim() (
 	# can acquire the original path immediately without being deleted by this
 	# stale-lock cleanup.
 	[[ ! -e "$reclaim_dir" && ! -L "$reclaim_dir" ]] || return 1
+	reclaim_guard="$moved_reclaim_guard"
 	mv "$lock_dir" "$reclaim_dir" 2>/dev/null || return 1
-	reclaim_guard="${reclaim_dir}/.reclaim.d"
 	pid_file="${reclaim_dir}/pid"
-	rm -f "$pid_file" "${reclaim_guard}/pid" 2>/dev/null || return 1
-	rmdir "$reclaim_guard" 2>/dev/null || return 1
+	rm -f "$pid_file" "$reclaim_guard" 2>/dev/null || return 1
 	rmdir "$reclaim_dir" 2>/dev/null || return 1
 	trap - EXIT HUP INT TERM
 	return 0

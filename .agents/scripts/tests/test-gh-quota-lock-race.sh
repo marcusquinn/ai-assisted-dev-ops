@@ -52,27 +52,42 @@ race_lock_dir="${TEST_ROOT}/release-race.lock.d"
 race_marker="${TEST_ROOT}/release-race-triggered"
 race_stderr="${TEST_ROOT}/release-race.stderr"
 
-# Intercept creation of the reclaim guard to deterministically release the
-# owner at the old check/read boundary. The guard keeps rmdir from removing the
-# inspected directory, reproducing the disappearing PID without timing sleeps.
-mkdir() {
+# Intercept the PID reader so the existence check succeeds before the owner
+# releases its PID. The reclaim guard keeps rmdir from removing the inspected
+# directory while cat observes the disappeared file without emitting stderr.
+cat() {
 	local target="$1"
-	local mkdir_rc=0
-	command mkdir "$@" || mkdir_rc=$?
-	if [[ "$mkdir_rc" -eq 0 && "$target" == "${race_lock_dir}/.reclaim.d" ]]; then
+	local cat_rc=0
+	if [[ "$target" == "${race_lock_dir}/pid" ]]; then
 		rm -f "${race_lock_dir}/pid"
 		command rmdir "$race_lock_dir" 2>/dev/null || true
 		: >"$race_marker"
 	fi
-	return "$mkdir_rc"
+	command cat "$@" || cat_rc=$?
+	[[ "$cat_rc" -eq 0 ]] || return 1
+	return 0
 }
 
-mkdir "$race_lock_dir"
+ln() {
+	local target="$2"
+	local ln_rc=0
+	local signal_pid=""
+	command ln "$@" || ln_rc=$?
+	if [[ "$ln_rc" -eq 0 && "$target" == "${signal_lock_dir:-}/.reclaim.guard" ]]; then
+		signal_pid=$(command cat "$target" 2>/dev/null) || signal_pid=""
+		[[ "$signal_pid" =~ ^[0-9]+$ ]] || return 1
+		kill -TERM "$signal_pid"
+	fi
+	[[ "$ln_rc" -eq 0 ]] || return 1
+	return 0
+}
+
+command mkdir "$race_lock_dir"
 printf '%s\n' "${BASHPID:-$$}" >"${race_lock_dir}/pid"
 
 race_rc=0
 _ghqa_lock_reclaim "$race_lock_dir" 0 2>"$race_stderr" || race_rc=$?
-unset -f mkdir
+unset -f cat
 assert_eq "release race fixture reaches the guarded PID boundary" "yes" "$([[ -f "$race_marker" ]] && printf 'yes' || printf 'no')"
 assert_eq "disappearing PID is treated as retryable contention" "1" "$race_rc"
 stderr_bytes=$(wc -c <"$race_stderr" | tr -d ' ')
@@ -114,9 +129,54 @@ ownerless_bounded_rc=0
 _ghqa_lock_reclaim "$ownerless_lock_dir" 100 || ownerless_bounded_rc=$?
 assert_eq "ownerless lock is reclaimable after the bound" "0" "$ownerless_bounded_rc"
 
+signal_lock_dir="${TEST_ROOT}/signal-owner.lock.d"
+signal_stderr="${TEST_ROOT}/signal-owner.stderr"
+command mkdir "$signal_lock_dir"
+printf '%s\n' "${BASHPID:-$$}" >"${signal_lock_dir}/pid"
+signal_rc=0
+_ghqa_lock_reclaim "$signal_lock_dir" 0 2>"$signal_stderr" || signal_rc=$?
+unset -f ln
+assert_eq "guard-install interruption stops reclamation" "yes" "$([[ "$signal_rc" -ne 0 ]] && printf 'yes' || printf 'no')"
+assert_eq "guard-install interruption leaves complete stale evidence" "yes" "$([[ -f "${signal_lock_dir}/.reclaim.guard" ]] && printf 'yes' || printf 'no')"
+signal_recovery_rc=0
+_ghqa_lock_reclaim "$signal_lock_dir" 0 2>>"$signal_stderr" || signal_recovery_rc=$?
+assert_eq "retry clears an interrupted stale guard" "1" "$signal_recovery_rc"
+assert_eq "stale guard recovery removes the orphan" "no" "$([[ -e "${signal_lock_dir}/.reclaim.guard" ]] && printf 'yes' || printf 'no')"
+signal_owner=""
+IFS= read -r signal_owner <"${signal_lock_dir}/pid" || signal_owner=""
+assert_eq "stale guard recovery preserves the live owner" "${BASHPID:-$$}" "$signal_owner"
+_ghqa_lock_release "$signal_lock_dir"
+
+replacement_lock_dir="${TEST_ROOT}/replacement.lock.d"
+replacement_expected_owner="${BASHPID:-$$}"
+command mkdir "$replacement_lock_dir"
+printf '%s\n' '999999999' >"${replacement_lock_dir}/pid"
+mv() {
+	local source="$1"
+	local destination="$2"
+	local mv_rc=0
+	command mv "$source" "$destination" || mv_rc=$?
+	if [[ "$mv_rc" -eq 0 && "$source" == "$replacement_lock_dir" ]]; then
+		command mkdir "$replacement_lock_dir"
+		printf '%s\n' "$replacement_expected_owner" >"${replacement_lock_dir}/pid"
+	fi
+	[[ "$mv_rc" -eq 0 ]] || return 1
+	return 0
+}
+replacement_rc=0
+_ghqa_lock_reclaim "$replacement_lock_dir" 0 || replacement_rc=$?
+unset -f mv
+assert_eq "stale reclaim completes after a replacement appears" "0" "$replacement_rc"
+replacement_owner=""
+IFS= read -r replacement_owner <"${replacement_lock_dir}/pid" || replacement_owner=""
+assert_eq "stale cleanup preserves the replacement live owner" "$replacement_expected_owner" "$replacement_owner"
+_ghqa_lock_release "$replacement_lock_dir"
+
 concurrent_lock_dir="${TEST_ROOT}/concurrent.lock.d"
 concurrent_records="${TEST_ROOT}/concurrent-records.tsv"
 concurrent_stderr="${TEST_ROOT}/concurrent.stderr"
+concurrent_start="${TEST_ROOT}/concurrent.start"
+concurrent_active="${TEST_ROOT}/concurrent.active"
 : >"$concurrent_records"
 : >"$concurrent_stderr"
 contender_pids=()
@@ -126,14 +186,26 @@ while [[ "$contender" -le 12 ]]; do
 		set -uo pipefail
 		# shellcheck source=/dev/null
 		source "$1"
+		while [[ ! -f "$5" ]]; do sleep 0.01; done
 		AIDEVOPS_GH_QUOTA_LOCK_TRIES=2000 _ghqa_lock_acquire "$2" || exit 1
+		if ! command mkdir "$6"; then
+			_ghqa_lock_release "$2"
+			exit 2
+		fi
+		sleep 0.02
 		printf "%s\t%s\n" "${BASHPID:-$$}" "$4" >>"$3"
+		if ! command rmdir "$6"; then
+			_ghqa_lock_release "$2"
+			exit 3
+		fi
 		_ghqa_lock_release "$2"
 	' _ "${PARENT_DIR}/gh-quota-attribution-lib.sh" "$concurrent_lock_dir" "$concurrent_records" "$contender" \
+		"$concurrent_start" "$concurrent_active" \
 		2>>"$concurrent_stderr" &
 	contender_pids+=("$!")
 	contender=$((contender + 1))
 done
+: >"$concurrent_start"
 concurrent_rc=0
 for contender_pid in "${contender_pids[@]}"; do
 	wait "$contender_pid" || concurrent_rc=1
@@ -150,8 +222,12 @@ while IFS=$'\t' read -r record_pid record_id; do
 done <"$concurrent_records"
 assert_eq "concurrent records remain well formed" "yes" "$concurrent_records_valid"
 concurrent_stderr_bytes=$(wc -c <"$concurrent_stderr" | tr -d ' ')
+if [[ "$concurrent_stderr_bytes" != 0 ]]; then
+	command cat "$concurrent_stderr" >&2
+fi
 assert_eq "concurrent contenders emit no lock diagnostics" "0" "$concurrent_stderr_bytes"
 assert_eq "concurrent fixture releases the final lock" "no" "$([[ -e "$concurrent_lock_dir" ]] && printf 'yes' || printf 'no')"
+assert_eq "concurrent fixture leaves no overlapping-owner marker" "no" "$([[ -e "$concurrent_active" ]] && printf 'yes' || printf 'no')"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1
