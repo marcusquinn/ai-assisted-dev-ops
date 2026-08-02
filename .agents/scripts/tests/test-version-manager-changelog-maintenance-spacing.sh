@@ -43,7 +43,7 @@ Previous unreleased content
 EOF
 
 update_changelog "1.0.1"
-if ! npx --no-install markdownlint-cli2 "${REPO_ROOT}/CHANGELOG.md"; then
+if ! npx --yes markdownlint-cli2@0.22.0 "${REPO_ROOT}/CHANGELOG.md"; then
 	printf 'FAIL generated maintenance changelog is not Markdown-clean\n' >&2
 	exit 1
 fi
