@@ -50,6 +50,28 @@ print_result() {
 	return 0
 }
 
+print_helper_failure() {
+	local test_name="$1"
+	local message="$2"
+	local output_file="$3"
+
+	print_result "$test_name" 1 "$message"
+	if [[ ! -s "$output_file" ]]; then
+		echo "       Captured helper output: <empty>"
+		return 0
+	fi
+
+	echo "       Captured helper output:"
+	sed -E \
+		-e "s#${TEST_DIR}#<fixture>#g" \
+		-e 's#(https?://)[^/@[:space:]]+@#\1<redacted>@#g' \
+		"$output_file" |
+		while IFS= read -r output_line; do
+			printf '       | %s\n' "$output_line"
+		done
+	return 0
+}
+
 install_helper_with_libs() {
 	local helper_dir="$1"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
@@ -225,7 +247,7 @@ test_update_preserves_manual_sections() {
 		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
 		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
 		bash "${helper_path}" update >"$update_output" 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed: $(<"$update_output")"
+		print_helper_failure "${test_name}" "helper update command failed" "$update_output"
 		return 0
 	fi
 
@@ -288,7 +310,7 @@ test_update_dry_run_is_canonical_safe() {
 		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
 		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
 		bash "$helper_path" update --dry-run >"$output_file" 2>&1; then
-		print_result "$test_name" 1 "dry-run command failed"
+		print_helper_failure "$test_name" "dry-run command failed" "$output_file"
 		return 0
 	fi
 	if ! grep -q 'DRY RUN' "$output_file" ||
@@ -312,6 +334,7 @@ test_update_prepublication_failure_is_canonical_safe() {
 	local helper_dir="${TEST_DIR}/helper"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
 	local before_file="${TEST_DIR}/before.md"
+	local output_file="${TEST_DIR}/failed-update-output"
 	mkdir -p "$helper_dir" "$fixture_home"
 	install_helper_with_libs "$helper_dir"
 	write_stub_dependencies "$helper_dir"
@@ -323,15 +346,15 @@ test_update_prepublication_failure_is_canonical_safe() {
 
 	if HOME="$fixture_home" \
 		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
-		bash "$helper_path" update >/dev/null 2>&1; then
-		print_result "$test_name" 1 "update unexpectedly succeeded with an unavailable remote"
+		bash "$helper_path" update >"$output_file" 2>&1; then
+		print_helper_failure "$test_name" "update unexpectedly succeeded with an unavailable remote" "$output_file"
 		return 0
 	fi
 	if [[ "$canonical_head_before" != "$(git -C "$fixture_repo" rev-parse HEAD)" ]] ||
 		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]] ||
 		! cmp -s "$before_file" "${fixture_repo}/README.md" ||
 		[[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]]; then
-		print_result "$test_name" 1 "failed update changed canonical state or leaked a worktree"
+		print_helper_failure "$test_name" "failed update changed canonical state or leaked a worktree" "$output_file"
 		return 0
 	fi
 	print_result "$test_name" 0
@@ -380,6 +403,7 @@ test_update_migrates_generated_readme_with_commit_history_chart() {
 	local fixture_remote="${TEST_DIR}/profile-remote.git"
 	local helper_dir="${TEST_DIR}/helper"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local update_output="${TEST_DIR}/update-output"
 
 	mkdir -p "${helper_dir}" "${fixture_home}"
 	install_helper_with_libs "${helper_dir}"
@@ -390,9 +414,12 @@ test_update_migrates_generated_readme_with_commit_history_chart() {
 	git -C "${fixture_repo}" commit -m "test: mark fixture as generated" >/dev/null
 	git -C "${fixture_repo}" push >/dev/null
 
-	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1 ||
-		! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed"
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
+		print_helper_failure "${test_name}" "first helper update command failed" "$update_output"
+		return 0
+	fi
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
+		print_helper_failure "${test_name}" "second helper update command failed" "$update_output"
 		return 0
 	fi
 
@@ -430,6 +457,7 @@ test_inject_markers_into_existing_readme() {
 	local fixture_remote="${TEST_DIR}/profile-remote.git"
 	local helper_dir="${TEST_DIR}/helper"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local update_output="${TEST_DIR}/update-output"
 
 	mkdir -p "${helper_dir}" "${fixture_home}/.config/aidevops"
 	mkdir -p "${fixture_home}/.aidevops/.agent-workspace/observability"
@@ -473,8 +501,8 @@ EOF
 EOF
 
 	# Run update — should inject markers and then update stats
-	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed"
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
+		print_helper_failure "${test_name}" "helper update command failed" "$update_output"
 		return 0
 	fi
 
@@ -602,6 +630,7 @@ test_default_template_replaced_with_rich_readme() {
 	local fixture_remote="${TEST_DIR}/profile-remote.git"
 	local helper_dir="${TEST_DIR}/helper"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local update_output="${TEST_DIR}/update-output"
 
 	mkdir -p "${helper_dir}" "${fixture_home}/.config/aidevops"
 	mkdir -p "${fixture_home}/.aidevops/.agent-workspace/observability"
@@ -654,8 +683,8 @@ EOF
 EOF
 
 	# Run update — should detect default template and replace with rich README
-	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed"
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
+		print_helper_failure "${test_name}" "helper update command failed" "$update_output"
 		return 0
 	fi
 
@@ -708,6 +737,7 @@ test_default_template_with_existing_markers_replaced() {
 	local fixture_remote="${TEST_DIR}/profile-remote.git"
 	local helper_dir="${TEST_DIR}/helper"
 	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local update_output="${TEST_DIR}/update-output"
 
 	mkdir -p "${helper_dir}" "${fixture_home}/.config/aidevops"
 	mkdir -p "${fixture_home}/.aidevops/.agent-workspace/observability"
@@ -765,8 +795,8 @@ EOF
 EOF
 
 	# Run update — should detect default template despite markers and replace it
-	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed"
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
+		print_helper_failure "${test_name}" "helper update command failed" "$update_output"
 		return 0
 	fi
 
