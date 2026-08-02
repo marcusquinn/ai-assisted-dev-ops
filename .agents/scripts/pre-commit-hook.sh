@@ -547,7 +547,7 @@ validate_todo_completions() {
 	# Find ALL tasks (including subtasks) that changed from [ ] to [x] in this commit
 	# We need to check both top-level and subtasks
 	local newly_completed
-	newly_completed=$(git diff --cached -U0 TODO.md | grep -E '^\+.*- \[x\] t[0-9]+' | sed 's/^\+//' || true)
+	newly_completed=$(git diff --cached -U0 -- TODO.md | grep -E '^\+.*- \[x\] t[0-9]+' | sed 's/^\+//' || true)
 
 	if [[ -z "$newly_completed" ]]; then
 		return 0
@@ -555,7 +555,7 @@ validate_todo_completions() {
 
 	# Also get lines that were already [x] (to skip them - not a transition)
 	local already_completed
-	already_completed=$(git diff --cached -U0 TODO.md | grep -E '^\-.*- \[x\] t[0-9]+' | sed 's/^\-//' || true)
+	already_completed=$(git diff --cached -U0 -- TODO.md | grep -E '^\-.*- \[x\] t[0-9]+' | sed 's/^\-//' || true)
 
 	local task_count=0
 	local fail_count=0
@@ -716,7 +716,7 @@ validate_parent_subtask_blocking() {
 
 	# Find tasks that changed from [ ] to [x]
 	local newly_completed
-	newly_completed=$(git diff --cached -U0 TODO.md | grep -E '^\+.*- \[x\] t[0-9]+' | sed 's/^\+//' || true)
+	newly_completed=$(git diff --cached -U0 -- TODO.md | grep -E '^\+.*- \[x\] t[0-9]+' | sed 's/^\+//' || true)
 
 	if [[ -z "$newly_completed" ]]; then
 		return 0
@@ -724,7 +724,7 @@ validate_parent_subtask_blocking() {
 
 	# Also get lines that were already [x] (to skip them)
 	local already_completed
-	already_completed=$(git diff --cached -U0 TODO.md | grep -E '^\-.*- \[x\] t[0-9]+' | sed 's/^\-//' || true)
+	already_completed=$(git diff --cached -U0 -- TODO.md | grep -E '^\-.*- \[x\] t[0-9]+' | sed 's/^\-//' || true)
 
 	local fail_count=0
 	local failed_tasks=()
