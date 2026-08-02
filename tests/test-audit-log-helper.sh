@@ -642,38 +642,39 @@ test_testing_runtime_event() {
 	return 0
 }
 
-# Build a minimal PATH with jq excluded, using a shadow directory of symlinks
-# Prints the minimal PATH string; returns 1 if jq cannot be excluded
+# Build a minimal PATH with jq excluded, using a shadow directory of symlinks.
+# Populates caller variables with the PATH and shadow directory so the caller
+# can keep the directory alive for every fallback subtest and clean it afterward.
 _build_no_jq_path() {
-	local shadow_dir
-	shadow_dir="$(mktemp -d)"
+	local path_output_var="$1"
+	local shadow_output_var="$2"
+	local built_shadow_dir
+	built_shadow_dir="$(mktemp -d)"
 
-	# shellcheck disable=SC2064
-	trap "rm -rf '$shadow_dir'" EXIT
-
-	local needed_tools=(bash cat chmod cut date dirname env flock grep
-		head hostname ln ls mkdir mktemp mv printf pwd rm sed shasum
-		sha256sum source tail tr uname wc)
+	local needed_tools=(bash basename cat chmod cut date dirname env flock grep
+		head hostname ln ls mkdir mktemp mv printf pwd rm rmdir sed shasum
+		sha256sum sleep source stat tail tr uname wc)
 	local tool tool_path
 	for tool in "${needed_tools[@]}"; do
 		tool_path="$(command -v "$tool" 2>/dev/null || true)"
 		if [[ -n "$tool_path" ]] && [[ -x "$tool_path" ]]; then
-			ln -sf "$tool_path" "${shadow_dir}/${tool}" 2>/dev/null || true
+			ln -sf "$tool_path" "${built_shadow_dir}/${tool}" 2>/dev/null || true
 		fi
 	done
 
-	local minimal_path="${shadow_dir}"
+	local built_minimal_path="${built_shadow_dir}"
 	local saved_ifs="$IFS"
 	IFS=':'
 	local dir
 	for dir in $PATH; do
 		if [[ -d "$dir" ]] && ! [[ -x "${dir}/jq" ]]; then
-			minimal_path="${minimal_path}:${dir}"
+			built_minimal_path="${built_minimal_path}:${dir}"
 		fi
 	done
 	IFS="$saved_ifs"
 
-	echo "$minimal_path"
+	printf -v "$path_output_var" '%s' "$built_minimal_path"
+	printf -v "$shadow_output_var" '%s' "$built_shadow_dir"
 	return 0
 }
 
@@ -759,11 +760,10 @@ test_no_jq_fallback() {
 	# Strategy: build a minimal PATH containing symlinks to only the tools
 	# the script needs, explicitly excluding jq. This avoids symlinking all
 	# of /usr/bin (which has 1000+ entries on macOS and is very slow).
-	# shellcheck disable=SC2030
 	(
-		local minimal_path
-		minimal_path="$(_build_no_jq_path)"
-		# shellcheck disable=SC2031
+		local minimal_path shadow_dir
+		_build_no_jq_path minimal_path shadow_dir
+		trap 'rm -rf "$shadow_dir"' EXIT
 		export PATH="$minimal_path"
 
 		# Verify jq is actually gone
