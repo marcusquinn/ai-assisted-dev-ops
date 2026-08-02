@@ -45,26 +45,6 @@ get_max_workers_target() {
 }
 
 #######################################
-# Scale a decimal value by 100 for integer comparisons.
-# Arguments:
-#   $1 - decimal value
-#   $2 - fallback decimal value
-# Returns: scaled integer via stdout
-#######################################
-_pulse_capacity_float_scaled() {
-	local float_value="${1:-0}"
-	local fallback="${2:-0}"
-	python3 - "$float_value" "$fallback" <<'PY'
-import sys
-try:
-    print(int(float(sys.argv[1]) * 100))
-except (ValueError, IndexError):
-    print(int(float(sys.argv[2]) * 100))
-PY
-	return 0
-}
-
-#######################################
 # Resolve the provider that should drive round capacity planning.
 # Returns: provider token via stdout, or blank when unknown.
 #######################################
@@ -130,42 +110,7 @@ _pulse_capacity_provider_account_counts() {
 }
 
 #######################################
-# Return host load pressure points for capacity reduction.
-# Stdout: 0, 2, or 4.
-#######################################
-_pulse_capacity_load_pressure_points() {
-	local load_per_cpu="${PULSE_DISPATCH_STAGGER_LOAD_PER_CPU:-}"
-	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
-	if [[ -z "$load_per_cpu" && -f "$metrics_file" ]]; then
-		load_per_cpu=$(awk '
-			/"load_per_cpu"[[:space:]]*:/ { line = $0 }
-			END {
-				if (line != "") {
-					sub(/^.*"load_per_cpu"[[:space:]]*:[[:space:]]*/, "", line)
-					sub(/[,}].*$/, "", line)
-					print line
-				}
-			}
-		' "$metrics_file" 2>/dev/null) || load_per_cpu=""
-	fi
-	local load_scaled=0 high_scaled moderate_scaled
-	[[ -n "$load_per_cpu" ]] && load_scaled=$(_pulse_capacity_float_scaled "$load_per_cpu" 0)
-	high_scaled=$(_pulse_capacity_float_scaled "${PULSE_DISPATCH_STAGGER_LOAD_HIGH:-8}" 8)
-	moderate_scaled=$(_pulse_capacity_float_scaled "${PULSE_DISPATCH_STAGGER_LOAD_MODERATE:-4}" 4)
-	if ((load_scaled >= high_scaled && load_scaled > 0)); then
-		printf '4\n'
-		return 0
-	fi
-	if ((load_scaled >= moderate_scaled && load_scaled > 0)); then
-		printf '2\n'
-		return 0
-	fi
-	printf '0\n'
-	return 0
-}
-
-#######################################
-# Count recent terminal worker-role provider/load health signals. Continuation
+# Count recent terminal worker-role provider health signals. Continuation
 # events remain progress evidence but never become failure/capacity pressure.
 # Stdout: "<failures> <rate_limits> <service_interruptions> <provider_5xx> <progress_heartbeats>".
 #######################################
@@ -201,7 +146,9 @@ _pulse_capacity_recent_health_counts() {
 }
 
 #######################################
-# Apply a provider/account/load-aware cap to the raw dispatch target.
+# Apply a provider/account/terminal-health-aware cap to the raw dispatch target.
+# The historical function name remains for sourced-call compatibility; host
+# load is diagnostic-only and does not participate in capacity decisions.
 # Arguments:
 #   $1 - raw max workers
 #   $2 - active workers
@@ -224,10 +171,8 @@ pulse_apply_provider_load_capacity_cap() {
 	[[ "$account_limited" =~ ^[0-9]+$ ]] || account_limited=0
 	[[ "$account_auth_errors" =~ ^[0-9]+$ ]] || account_auth_errors=0
 
-	local load_points="" failures="" rate_limits="" service_interruptions="" provider_5xx="" progress_heartbeats=""
-	load_points=$(_pulse_capacity_load_pressure_points)
+	local failures="" rate_limits="" service_interruptions="" provider_5xx="" progress_heartbeats=""
 	read -r failures rate_limits service_interruptions provider_5xx progress_heartbeats <<<"$(_pulse_capacity_recent_health_counts)"
-	[[ "$load_points" =~ ^[0-9]+$ ]] || load_points=0
 	[[ "$failures" =~ ^[0-9]+$ ]] || failures=0
 	[[ "$rate_limits" =~ ^[0-9]+$ ]] || rate_limits=0
 	[[ "$service_interruptions" =~ ^[0-9]+$ ]] || service_interruptions=0
@@ -249,7 +194,7 @@ pulse_apply_provider_load_capacity_cap() {
 	fi
 
 	local floor_allowed=1 final_max="$raw_max_workers" floor_active=0
-	if ((load_points >= 4 || rate_limits > 0 || service_interruptions > 0 || provider_5xx > 0 || failures >= 3)); then
+	if ((rate_limits > 0 || service_interruptions > 0 || provider_5xx > 0 || failures >= 3)); then
 		floor_allowed=0
 	fi
 	if ((account_cap >= 0 && min_worker_floor > 0 && account_cap < min_worker_floor)); then
@@ -266,23 +211,16 @@ pulse_apply_provider_load_capacity_cap() {
 	if ((account_cap >= 0 && final_max > account_cap)); then
 		final_max="$account_cap"
 	fi
-	if ((load_points >= 4 && final_max > 1)); then
-		final_max=$(((final_max + 1) / 2))
-	elif ((load_points >= 2 && final_max > 1)); then
-		final_max=$(((final_max * 3 + 3) / 4))
-	fi
 	if ((rate_limits > 0 || service_interruptions > 0 || provider_5xx > 0 || failures >= 3)); then
 		if ((final_max > 1)); then
 			final_max=$(((final_max + 1) / 2))
 		fi
 	fi
 	if ((active_workers > 0 && progress_heartbeats > 0)); then
-		if ((load_points >= 4 || rate_limits > 0 || service_interruptions > 0 || provider_5xx > 0 || failures >= 3)); then
+		if ((rate_limits > 0 || service_interruptions > 0 || provider_5xx > 0 || failures >= 3)); then
 			if ((final_max > active_workers)); then
 				final_max="$active_workers"
 			fi
-		elif ((load_points >= 2 && final_max > active_workers + 1)); then
-			final_max=$((active_workers + 1))
 		fi
 	fi
 	if ((final_max < 0)); then
@@ -294,15 +232,14 @@ pulse_apply_provider_load_capacity_cap() {
 
 	if declare -F _dispatch_stats_gauge >/dev/null 2>&1; then
 		_dispatch_stats_gauge "dispatch_capacity_provider_accounts_available" "$((account_available < 0 ? 0 : account_available))"
-		_dispatch_stats_gauge "dispatch_capacity_load_pressure_points" "$load_points"
 		_dispatch_stats_gauge "dispatch_capacity_recent_failures" "$failures"
 		_dispatch_stats_gauge "dispatch_capacity_recent_worker_terminal_failures" "$failures"
 		_dispatch_stats_gauge "dispatch_capacity_final_max_workers" "$final_max"
 	fi
 	local health_window_seconds="${PULSE_DISPATCH_CAPACITY_HEALTH_WINDOW_SECONDS:-900}"
 	[[ "$health_window_seconds" =~ ^[0-9]+$ ]] || health_window_seconds=900
-	printf '[pulse-wrapper] Dispatch_capacity: capacity_unit=simultaneous_workers simultaneous_target_raw=%s simultaneous_target_final=%s active_workers=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s load_points=%s worker_terminal_failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s worker_progress_heartbeats=%s failure_observation_window_seconds=%s task_duration_limit=none min_floor=%s floor_allowed=%s floor_active=%s\n' \
-		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$load_points" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$health_window_seconds" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
+	printf '[pulse-wrapper] Dispatch_capacity: capacity_unit=simultaneous_workers simultaneous_target_raw=%s simultaneous_target_final=%s active_workers=%s provider=%s provider_accounts_total=%s provider_accounts_available=%s account_cap=%s provider_account_slot_multiplier=%s provider_account_slot_multiplier_source=%s override_hint="lower orchestration.provider_account_slot_multiplier or PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER if provider plan cannot sustain this concurrency" rate_limited_accounts=%s auth_error_accounts=%s worker_terminal_failures=%s rate_limits=%s service_interruptions=%s provider_5xx=%s worker_progress_heartbeats=%s failure_observation_window_seconds=%s task_duration_limit=none min_floor=%s floor_allowed=%s floor_active=%s\n' \
+		"$raw_max_workers" "$final_max" "$active_workers" "${provider:-unknown}" "$account_total" "$account_available" "$account_cap" "$account_multiplier" "$account_multiplier_source" "$account_limited" "$account_auth_errors" "$failures" "$rate_limits" "$service_interruptions" "$provider_5xx" "$progress_heartbeats" "$health_window_seconds" "$min_worker_floor" "$floor_allowed" "$floor_active" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
 	printf '%s %s\n' "$final_max" "$floor_active"
 	return 0
 }

@@ -153,27 +153,22 @@ test_capacity_respects_existing_higher_cap() {
 	return 0
 }
 
-test_capacity_caps_by_provider_accounts_and_high_load() {
+test_capacity_high_load_is_advisory_only() {
 	reset_capacity_pressure_env
 	TEST_MAX_WORKERS=12
 	TEST_ACTIVE_WORKERS=1
 	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
-	PULSE_MODEL="openai/gpt-5.5"
-	PULSE_DISPATCH_STAGGER_LOAD_PER_CPU=9
-	PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER=2
-	cat >"${HOME}/.aidevops/oauth-pool.json" <<'JSON'
-{"openai":[{"status":"idle"},{"status":"active"}]}
-JSON
+	PULSE_DISPATCH_STAGGER_LOAD_PER_CPU=99
 	unset _DISPATCH_MIN_WORKER_FLOOR_ACTIVE || true
 	local result capacity_file
 	capacity_file=$(mktemp)
 	_dispatch_compute_capacity >"$capacity_file"
 	result=$(<"$capacity_file")
 	rm -f "$capacity_file"
-	if [[ "$result" == "2 1 1" && "${_DISPATCH_MIN_WORKER_FLOOR_ACTIVE:-0}" == "0" ]]; then
-		print_result "capacity: provider accounts and high load cap below floor" 0
+	if [[ "$result" == "12 1 11" && "${_DISPATCH_MIN_WORKER_FLOOR_ACTIVE:-0}" == "1" ]]; then
+		print_result "capacity: high load remains advisory and preserves healthy floor" 0
 	else
-		print_result "capacity: provider accounts and high load cap below floor" 1 "result=${result} floor_active=${_DISPATCH_MIN_WORKER_FLOOR_ACTIVE:-unset}"
+		print_result "capacity: high load remains advisory and preserves healthy floor" 1 "result=${result} floor_active=${_DISPATCH_MIN_WORKER_FLOOR_ACTIVE:-unset}"
 	fi
 	return 0
 }
@@ -410,6 +405,22 @@ EOF
 		print_result "canary: at floor runs without CPU/load bypass marker" 0
 	else
 		print_result "canary: at floor runs without CPU/load bypass marker" 1 "log=$(cat "$worker_log" 2>/dev/null)"
+	fi
+	return 0
+}
+
+test_prebootstrap_ignores_deprecated_load_threshold() {
+	if (
+		_dlw_blocked_by_hard_stop() { return 1; }
+		_dlw_opencode_storage_preflight() { return 0; }
+		_dlw_hold_repeated_recovery_failures() { return 1; }
+		AIDEVOPS_DISPATCH_LOAD_PREFLIGHT=1
+		AIDEVOPS_DISPATCH_MAX_LOAD_PER_CPU=0
+		_dlw_prebootstrap_gates 104 "o/r" '{}' "$TEST_ROOT"
+	); then
+		print_result "prebootstrap: deprecated load threshold cannot block dispatch" 0
+	else
+		print_result "prebootstrap: deprecated load threshold cannot block dispatch" 1
 	fi
 	return 0
 }
@@ -815,7 +826,7 @@ EOF
 test_capacity_raises_soft_cap_to_floor
 test_capacity_reads_min_floor_from_config_default
 test_capacity_respects_existing_higher_cap
-test_capacity_caps_by_provider_accounts_and_high_load
+test_capacity_high_load_is_advisory_only
 test_capacity_uses_configured_provider_account_multiplier
 test_capacity_env_multiplier_overrides_config
 test_capacity_defaults_single_account_to_max_cap
@@ -825,6 +836,7 @@ test_capacity_clamps_provider_cap_below_active_to_zero_available
 test_throttle_does_not_force_serial_under_floor
 test_throttle_forces_serial_above_floor
 test_canary_preflight_marks_floor_without_cpu_bypass
+test_prebootstrap_ignores_deprecated_load_threshold
 test_apply_dispatch_refills_until_active_floor_after_partial_launch
 test_apply_dispatch_skips_refill_when_capacity_cap_disables_floor
 test_min_worker_floor_refill_uses_precomputed_counts

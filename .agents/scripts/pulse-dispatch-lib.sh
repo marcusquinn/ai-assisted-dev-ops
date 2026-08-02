@@ -701,41 +701,6 @@ _dispatch_stats_gauge() {
 }
 
 #######################################
-# Return the latest numeric headless-runtime metric value for a key.
-#
-# Arguments:
-#   $1 - metric key
-# Stdout: numeric value, or blank when unavailable.
-#######################################
-_dispatch_latest_metric_value() {
-	local metric_key="$1"
-	local metrics_file="${AIDEVOPS_HEADLESS_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
-	[[ -f "$metrics_file" ]] || { printf '\n'; return 0; }
-	python3 - "$metrics_file" "$metric_key" <<'PY'
-import json
-import sys
-from collections import deque
-
-path, key = sys.argv[1], sys.argv[2]
-value = ""
-try:
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
-        for raw in deque(handle, 1000):
-            try:
-                item = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            candidate = item.get(key)
-            if isinstance(candidate, (int, float)):
-                value = str(candidate)
-except OSError:
-    pass
-print(value)
-PY
-	return 0
-}
-
-#######################################
 # Count recent worker failure/rate-limit metrics for launch pacing.
 #
 # Stdout: "<failures> <rate_limits>".
@@ -781,38 +746,6 @@ _dispatch_graphql_remaining_cached() {
 	fi
 	_DISPATCH_STAGGER_GRAPHQL_REMAINING=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || printf '\n')
 	printf '%s\n' "$_DISPATCH_STAGGER_GRAPHQL_REMAINING"
-	return 0
-}
-
-_dispatch_float_scaled() {
-	local float_value="${1:-0}"
-	local fallback="${2:-0}"
-	python3 - "$float_value" "$fallback" <<'PY'
-import sys
-try:
-    print(int(float(sys.argv[1]) * 100))
-except (ValueError, IndexError):
-    print(int(float(sys.argv[2]) * 100))
-PY
-	return 0
-}
-
-_dispatch_load_pressure_points() {
-	local load_per_cpu="${PULSE_DISPATCH_STAGGER_LOAD_PER_CPU:-}"
-	[[ -n "$load_per_cpu" ]] || load_per_cpu=$(_dispatch_latest_metric_value "load_per_cpu")
-	local load_scaled=0 high_scaled moderate_scaled
-	[[ -n "$load_per_cpu" ]] && load_scaled=$(_dispatch_float_scaled "$load_per_cpu" 0)
-	high_scaled=$(_dispatch_float_scaled "${PULSE_DISPATCH_STAGGER_LOAD_HIGH:-8}" 8)
-	moderate_scaled=$(_dispatch_float_scaled "${PULSE_DISPATCH_STAGGER_LOAD_MODERATE:-4}" 4)
-	if ((load_scaled >= high_scaled && load_scaled > 0)); then
-		printf '4\n'
-		return 0
-	fi
-	if ((load_scaled >= moderate_scaled && load_scaled > 0)); then
-		printf '2\n'
-		return 0
-	fi
-	printf '0\n'
 	return 0
 }
 
@@ -916,7 +849,6 @@ _dispatch_inter_launch_delay() {
 	fi
 
 	local pressure_points=0
-	pressure_points=$((pressure_points + $(_dispatch_load_pressure_points)))
 	local recent_failures="" recent_rate_limits="" pressure_line=""
 	pressure_line=$(_dispatch_recent_worker_pressure_counts)
 	read -r recent_failures recent_rate_limits <<<"$pressure_line"

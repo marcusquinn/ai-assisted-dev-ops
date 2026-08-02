@@ -55,27 +55,27 @@ delay_for_candidate() {
 	return 0
 }
 
-test_low_load_no_delay() {
+test_clean_cycle_no_delay() {
 	reset_stagger_env
 	local delay
 	delay=$(delay_for_candidate 100)
 	if [[ "$delay" == "0" ]]; then
-		print_result "staggering: low-load clean cycle has no delay" 0
+		print_result "staggering: clean cycle has no delay" 0
 	else
-		print_result "staggering: low-load clean cycle has no delay" 1 "delay=${delay}"
+		print_result "staggering: clean cycle has no delay" 1 "delay=${delay}"
 	fi
 	return 0
 }
 
-test_high_load_delay() {
+test_high_load_is_advisory_only() {
 	reset_stagger_env
 	export PULSE_DISPATCH_STAGGER_LOAD_PER_CPU=9.0
 	local delay
 	delay=$(delay_for_candidate 101)
-	if [[ "$delay" -gt 0 ]]; then
-		print_result "staggering: high load increases delay" 0
+	if [[ "$delay" == "0" ]]; then
+		print_result "staggering: high load alone adds no delay" 0
 	else
-		print_result "staggering: high load increases delay" 1 "delay=${delay}"
+		print_result "staggering: high load alone adds no delay" 1 "delay=${delay}"
 	fi
 	return 0
 }
@@ -121,7 +121,7 @@ test_graphql_low_budget_delay() {
 
 test_first_launch_never_delayed() {
 	reset_stagger_env
-	export PULSE_DISPATCH_STAGGER_LOAD_PER_CPU=99
+	export PULSE_DISPATCH_PROVIDER_BACKOFF_ACTIVE=1
 	local delay
 	delay=$(_dispatch_inter_launch_delay 0 1 '{"number":105}' 8)
 	if [[ "$delay" == "0" ]]; then
@@ -238,8 +238,8 @@ test_dispatch_ramp_handles_unset_logfile() {
 	return 0
 }
 
-test_low_load_no_delay
-test_high_load_delay
+test_clean_cycle_no_delay
+test_high_load_is_advisory_only
 test_provider_backoff_delay
 test_recent_failure_cluster_delay
 test_graphql_low_budget_delay

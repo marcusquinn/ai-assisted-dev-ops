@@ -387,20 +387,21 @@ Use this when a runner's dashboard is fresh but **Active Workers = 0**.
    low-concurrency signal by itself. By default,
    `orchestration.provider_account_slot_multiplier=24`, so one available
    OpenAI or Anthropic account may reach the configured `max_workers_cap` when
-   RAM/load and provider-health gates are clean. If the dashboard or
+   RAM/disk and provider-health gates are clean. If the dashboard or
    `pulse.log` `Dispatch_capacity` line shows `final_max` below `raw_max`, use
    the logged fields (`account_cap`, `provider_account_slot_multiplier`,
-   `rate_limits`, `service_interruptions`, `provider_5xx`, `auth_error_accounts`,
-   `load_points`) to identify the reducing gate. Lower concurrency explicitly
-   with `aidevops config set orchestration.provider_account_slot_multiplier <n>`
-   or `PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER=<n>` when a provider plan cannot
+   `rate_limits`, `service_interruptions`, `provider_5xx`, and
+   `auth_error_accounts`) to identify the reducing gate. Lower concurrency
+   explicitly with
+   `aidevops config set orchestration.provider_account_slot_multiplier <n>` or
+   `PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER=<n>` when a provider plan cannot
    sustain the default.
 
 5. Read the dashboard's **Worker Dispatch Diagnostics** section. It is rendered only when Active Workers is 0 and distinguishes:
    - no eligible work (`Assigned Issues=0`, `Total Issues=0`)
    - auth/model unavailable (OpenAI/Anthropic both missing)
    - canary or worker launch failure (`Last Launch Failure`)
-   - max-worker/resource gate (`Max Workers=0`, high CPU/load, memory pressure)
+   - max-worker/resource gate (`Max Workers=0`, memory or disk pressure)
    - API budget/dispatch blockers (inspect `Last Dispatch Stage` and the current-state helper output)
 
 6. Linux process counting must use the shared worker discovery path, which calls `ps axwwo pid,stat,etime,command` so long OpenCode commands are not truncated. A direct `pgrep` snapshot is not canonical because dispatch is bursty and can land between waves.
@@ -433,22 +434,23 @@ Pulse keeps a soft minimum implementation-worker floor so transient local pressu
 When active workers are below the floor:
 
 - `dispatch_max` keeps dispatch eligible up to the floor when only soft pressure is present.
-- The worker canary still checks runtime/model health. CPU/load/saturation is not a canary throttle; auth checks, GraphQL circuit breaker, stop flag, memory/process failures, and other hard safety gates still apply.
+- The worker canary still checks runtime/model health. CPU/load/saturation is diagnostic-only and never changes candidate eligibility, capacity, launch delay, or canary outcomes; auth checks, GraphQL circuit breaker, stop flag, memory/process failures, and other hard safety gates still apply.
 - Existing max worker caps above the floor still cap runaway dispatch.
 
 Set `orchestration.min_worker_concurrency=0` (or `AIDEVOPS_MIN_WORKER_CONCURRENCY=0`) to disable the floor, or set a higher/lower integer for a runner-specific target.
 
 ### Adaptive Worker Launch Staggering (t3482)
 
-Pulse staggers worker launches inside the parallel `dispatch_max` loop when live pressure signals show that a back-to-back batch is likely to waste provider budget or overload the local runtime. The first launch in a clean round is immediate; subsequent launches remain near-zero delay unless one or more pressure signals are active.
+Pulse staggers worker launches inside the parallel `dispatch_max` loop when provider, failure, or API-budget signals show that a back-to-back batch is likely to waste capacity. The first launch in a clean round is immediate; subsequent launches remain near-zero delay unless one or more pressure signals are active.
 
 Signals that increase the inter-launch delay:
 
-- High `load_per_cpu` from recent headless-runtime metrics.
 - Recent non-success worker terminal metrics, especially clustered `rate_limit` results.
 - Provider/rate-limit backoff flags.
 - Low cached GraphQL remaining budget.
 - Large in-flight launch bursts while pressure is already present.
+
+Host CPU and `load_per_cpu` remain visible in runtime metrics for diagnosis, but the OS scheduler arbitrates CPU contention; those values do not block or pace dispatch.
 
 Observability:
 
@@ -456,7 +458,7 @@ Observability:
 pulse-current-state-helper.sh --window 15m --json | jq '.dispatch_pacing'
 ```
 
-Relevant tuning knobs: `PULSE_DISPATCH_STAGGER_ADAPTIVE=0` disables adaptive staggering, `PULSE_DISPATCH_STAGGER_MAX_SECONDS` caps the delay (default 20s), `PULSE_DISPATCH_STAGGER_JITTER_MAX_SECONDS` caps deterministic jitter (default 3s), and the `PULSE_DISPATCH_STAGGER_*` threshold variables override load/failure/GraphQL sensitivity for diagnostics.
+Relevant tuning knobs: `PULSE_DISPATCH_STAGGER_ADAPTIVE=0` disables adaptive staggering, `PULSE_DISPATCH_STAGGER_MAX_SECONDS` caps the delay (default 20s), `PULSE_DISPATCH_STAGGER_JITTER_MAX_SECONDS` caps deterministic jitter (default 3s), and the `PULSE_DISPATCH_STAGGER_*` threshold variables override failure/GraphQL sensitivity for diagnostics.
 
 ### Version Guard
 

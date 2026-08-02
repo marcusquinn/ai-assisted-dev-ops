@@ -370,37 +370,6 @@ _dlw_opencode_storage_preflight() {
 	return 0
 }
 
-_dlw_load_preflight() {
-	local issue_number="$1"
-	local repo_slug="$2"
-	local max_load_per_cpu="${AIDEVOPS_DISPATCH_MAX_LOAD_PER_CPU:-3.0}"
-	local current_ratio=""
-
-	[[ "${AIDEVOPS_DISPATCH_LOAD_PREFLIGHT:-1}" != "0" ]] || return 0
-	current_ratio=$(python3 - <<'PY' 2>/dev/null || true
-import os
-try:
-    load = os.getloadavg()[0]
-    cpus = os.cpu_count() or 1
-    print(f"{load / cpus:.3f}")
-except Exception:
-    print("")
-PY
-)
-	[[ -n "$current_ratio" ]] || return 0
-	if ! python3 - "$current_ratio" "$max_load_per_cpu" >/dev/null 2>&1 <<'PY'
-import sys
-current = float(sys.argv[1])
-maximum = float(sys.argv[2])
-sys.exit(0 if current <= maximum else 1)
-PY
-	then
-		echo "[dispatch_with_dedup] Skipping #${issue_number} in ${repo_slug} — local load_per_cpu=${current_ratio} exceeds dispatch threshold ${max_load_per_cpu}" >>"$LOGFILE"
-		return 1
-	fi
-	return 0
-}
-
 _dlw_blocked_by_hard_stop() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -491,9 +460,6 @@ _dlw_prebootstrap_gates() {
 		return 1
 	fi
 	if ! _dlw_opencode_storage_preflight "$issue_number" "$repo_slug"; then
-		return 1
-	fi
-	if ! _dlw_load_preflight "$issue_number" "$repo_slug"; then
 		return 1
 	fi
 	if _dlw_hold_repeated_recovery_failures "$issue_number" "$repo_slug"; then
