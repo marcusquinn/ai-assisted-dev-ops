@@ -1379,7 +1379,7 @@ _merge_record_deferred_cleanup_owner() {
 	[[ "$owner_pid" =~ ^[0-9]+$ ]] || owner_pid="$PPID"
 	[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
 
-	local owner_session="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-full-loop-merge}}}"
+	local owner_session="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$_FULL_LOOP_OWNER_SESSION_FALLBACK}}}"
 	if ! declare -F full_loop_write_cleanup_deferred >/dev/null 2>&1; then
 		return 1
 	fi
@@ -1398,7 +1398,7 @@ _merge_record_deferred_cleanup_owner() {
 	if declare -F claim_worktree_ownership >/dev/null 2>&1; then
 		claim_worktree_ownership "$worktree_path" "$branch_name" \
 			--owner-pid "$owner_pid" \
-			--session "${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-full-loop-merge}}" \
+			--session "$owner_session" \
 			--task "post-merge-cleanup" >/dev/null 2>&1 || true
 	fi
 	return 0

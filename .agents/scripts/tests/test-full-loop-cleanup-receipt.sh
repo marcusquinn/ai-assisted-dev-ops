@@ -55,6 +55,51 @@ replayed_receipt=$(full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROO
 cmp -s "$receipt_one" "${TEST_ROOT}/receipt-idempotent.json"
 printf 'PASS identical deferred receipt replay is idempotent\n'
 
+finalizing_receipt=$(full_loop_write_cleanup_deferred example/repo 104 "${TEST_ROOT}/worktree-two" feature/finalize \
+	"$OWNER_PID" session-finalize not-requested FINALIZATION_PENDING)
+full_loop_finalize_cleanup_receipt example/repo 104 not-requested "${TEST_ROOT}/worktree-two" feature/finalize \
+	"$OWNER_PID" session-finalize
+jq -e '.executor_completion_state == "COMPLETE" and .resource_cleanup_state == "CLEANUP_DEFERRED"' \
+	"$finalizing_receipt" >/dev/null
+cp "$finalizing_receipt" "${TEST_ROOT}/receipt-finalized.json"
+full_loop_finalize_cleanup_receipt example/repo 104 not-requested "${TEST_ROOT}/worktree-two" feature/finalize \
+	"$OWNER_PID" session-finalize
+cmp -s "$finalizing_receipt" "${TEST_ROOT}/receipt-finalized.json"
+printf 'PASS exact deferred receipt finalization is idempotent\n'
+
+for conflict_filter in \
+	'.repository = "wrong/repo"' \
+	'.pr_number = 999' \
+	'.worktree = "/wrong/worktree"' \
+	'.branch = "feature/wrong"' \
+	'.owner.pid = 99999999' \
+	'.owner.process_identity = "wrong process generation"' \
+	'.owner.session = "wrong-session"' \
+	'.release_status = "published"' \
+	'.resource_cleanup_state = "CLEANUP_LEASED"' \
+	'.cleanup_lease = {state:"acquired",pid:99999999,acquired_at:"2026-08-02T00:00:00Z"}'; do
+	cp "${TEST_ROOT}/receipt-finalized.json" "$finalizing_receipt"
+	jq "$conflict_filter" "$finalizing_receipt" >"${finalizing_receipt}.tmp"
+	mv "${finalizing_receipt}.tmp" "$finalizing_receipt"
+	cp "$finalizing_receipt" "${TEST_ROOT}/receipt-finalize-conflict.json"
+	if full_loop_finalize_cleanup_receipt example/repo 104 not-requested "${TEST_ROOT}/worktree-two" feature/finalize \
+		"$OWNER_PID" session-finalize >/dev/null 2>&1; then
+		printf 'FAIL conflicting exact receipt evidence was finalized: %s\n' "$conflict_filter"
+		exit 1
+	fi
+	cmp -s "$finalizing_receipt" "${TEST_ROOT}/receipt-finalize-conflict.json"
+done
+rm -f "$finalizing_receipt"
+printf 'PASS exact finalization preserves conflicting repository, PR, worktree, branch, owner, release, and cleanup evidence\n'
+
+pending_release_receipt=$(full_loop_write_cleanup_deferred example/repo 105 "${TEST_ROOT}/worktree-two" \
+	feature/pending-release "$OWNER_PID" session-pending-release pending FINALIZATION_PENDING)
+full_loop_finalize_cleanup_receipt example/repo 105 not-requested "${TEST_ROOT}/worktree-two" \
+	feature/pending-release "$OWNER_PID" session-pending-release
+jq -e '.executor_completion_state == "COMPLETE" and .release_status == "not-requested"' \
+	"$pending_release_receipt" >/dev/null
+printf 'PASS exact finalization atomically converges pending cleanup release evidence\n'
+
 _WTAR_SKIPPED="skipped"
 _WTAR_WH_CALLER="test"
 _WT_CLEAN_MODE_SKIPPED="skipped"

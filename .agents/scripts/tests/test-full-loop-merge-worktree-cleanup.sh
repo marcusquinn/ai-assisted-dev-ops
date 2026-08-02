@@ -189,6 +189,25 @@ install_subject_stubs() {
 		return 0
 	}
 
+	load_state() {
+		PR_NUMBER=123
+		RELEASE_STATUS="not-requested"
+		SAVED_PROMPT="merge-cleanup-regression"
+		STARTED_AT="2026-08-02T00:00:00Z"
+		return 0
+	}
+
+	_full_loop_terminal_release_status() {
+		local repo="$1"
+		local pr_number="$2"
+		[[ -n "$repo" && "$pr_number" =~ ^[0-9]+$ ]] || return 1
+		case "$GH_RELEASE_STATUS" in
+		published | superseded | not-requested) printf '%s\n' "$GH_RELEASE_STATUS" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+
 	_merge_capture_session_distill_provenance() { return 0; }
 	_merge_reconcile_closing_issues() { return 0; }
 
@@ -204,6 +223,11 @@ setup_subject() {
 	export HOME="${TEST_ROOT}/home"
 	export AIDEVOPS_SKIP_AUTO_CLAIM=1
 	export AIDEVOPS_FULL_LOOP_CLEANUP_DIR="${TEST_ROOT}/cleanup-receipts"
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/release-receipts"
+	export AIDEVOPS_FULL_LOOP_REPO="example/repo"
+	unset AIDEVOPS_SESSION_ID OPENCODE_SESSION_ID CLAUDE_SESSION_ID
+	STATE_DIR="${TEST_ROOT}/state"
+	STATE_FILE="${STATE_DIR}/full-loop.state"
 	mkdir -p "$HOME" "${TEST_ROOT}/bin"
 	export AIDEVOPS_TEST_REAL_GIT="$FIXTURE_GIT_BIN"
 	cat >"${TEST_ROOT}/bin/git" <<'GIT'
@@ -250,6 +274,8 @@ TRASH
 	export SCRIPT_DIR="$AGENTS_SCRIPTS_DIR"
 	# shellcheck source=../shared-constants.sh
 	source "${AGENTS_SCRIPTS_DIR}/shared-constants.sh"
+	# shellcheck source=../full-loop-helper-state.sh
+	source "${AGENTS_SCRIPTS_DIR}/full-loop-helper-state.sh"
 	# shellcheck source=../full-loop-helper-merge.sh
 	source "${AGENTS_SCRIPTS_DIR}/full-loop-helper-merge.sh"
 	install_subject_stubs
@@ -299,6 +325,16 @@ test_cmd_merge_defers_current_linked_worktree() {
 		 and .cleanup_lease.state == "pending" and .worktree == $worktree and .branch == $branch
 		 and (.owner.pid | type == "number") and (.owner.process_identity | length > 0)' \
 		"$receipt_path" >/dev/null || rc=1
+	cmd_record_no_release "123" "example/repo" >/dev/null || rc=1
+	cmd_complete >/dev/null || rc=1
+	jq -e '
+		.executor_completion_state == "COMPLETE"
+		and .resource_cleanup_state == "CLEANUP_DEFERRED"
+		and .release_status == "not-requested"
+	' "$receipt_path" >/dev/null || rc=1
+	cp "$receipt_path" "${TEST_ROOT}/completed-receipt.json"
+	cmd_complete >/dev/null || rc=1
+	cmp -s "$receipt_path" "${TEST_ROOT}/completed-receipt.json" || rc=1
 	if [[ "$(git -C "$canonical_repo" branch --show-current)" != "feature/active" ]]; then
 		rc=1
 	fi
@@ -308,7 +344,27 @@ test_cmd_merge_defers_current_linked_worktree() {
 	# Cleanup is deferred before canonical refresh because the parent runtime may
 	# still use this logical project directory.
 	if [[ "$(git -C "$canonical_repo" rev-parse main)" == "$remote_main" ]]; then rc=1; fi
-	print_result "cmd_merge persists external deferred-cleanup ownership" "$rc"
+	print_result "merge then no-release completion finalizes deferred cleanup idempotently" "$rc"
+	return 0
+}
+
+test_no_release_before_merge_receipt_converges() {
+	setup_subject
+	local receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	local rc=0
+	cmd_record_no_release "123" "example/repo" >/dev/null || rc=1
+	[[ ! -e "$receipt_path" ]] || rc=1
+	cmd_merge "123" "example/repo" --squash >/dev/null || rc=1
+	jq -e '
+		.executor_completion_state == "FINALIZATION_PENDING"
+		and .release_status == "pending"
+	' "$receipt_path" >/dev/null || rc=1
+	cmd_complete >/dev/null || rc=1
+	jq -e '
+		.executor_completion_state == "COMPLETE"
+		and .release_status == "not-requested"
+	' "$receipt_path" >/dev/null || rc=1
+	print_result "no-release evidence recorded before merge receipt converges atomically" "$rc"
 	return 0
 }
 
@@ -586,6 +642,7 @@ main() {
 	setup_subject
 	test_refresh_canonical_reports_pending_without_mutation
 	test_cmd_merge_defers_current_linked_worktree
+	test_no_release_before_merge_receipt_converges
 	test_cmd_merge_defers_cleanup_for_live_process_cwd
 	test_cmd_merge_defers_exact_head_alias_worktree
 	test_cmd_adopt_merged_receipt_is_idempotent
