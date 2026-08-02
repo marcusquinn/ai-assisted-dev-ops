@@ -53,15 +53,6 @@ init_repo() {
 	return 0
 }
 
-prepare_function_hook() {
-	local function_hook="${TEST_ROOT}/pre-commit-hook.sh"
-	cp "$HOOK_PATH" "$function_hook"
-	cp "${SCRIPT_DIR}/../shared-constants.sh" "${TEST_ROOT}/shared-constants.sh"
-	sed '/^main "\$@"$/d' "$function_hook" >"${function_hook}.tmp"
-	mv "${function_hook}.tmp" "$function_hook"
-	return 0
-}
-
 run_validator() {
 	local validator="$1"
 	local staged_content="$2"
@@ -71,7 +62,12 @@ run_validator() {
 	VALIDATOR_OUTPUT=$(
 		cd "$CASE_REPO" || exit 1
 		# shellcheck source=/dev/null
-		source "${TEST_ROOT}/pre-commit-hook.sh" >/dev/null 2>&1
+		source "${SCRIPT_DIR}/../shared-constants.sh" >/dev/null 2>&1
+		# Source the hook without its trailing main invocation. Pre-sourcing
+		# shared constants keeps the validator functions available even though
+		# SCRIPT_DIR resolves against the process-substitution descriptor.
+		# shellcheck source=/dev/null
+		source <(sed '/^main "\$@"$/d' "$HOOK_PATH") >/dev/null 2>&1
 		set +e
 		"$validator" 2>&1
 		local validator_rc=$?
@@ -134,7 +130,6 @@ test_parent_with_open_subtask() {
 	return 0
 }
 
-prepare_function_hook
 test_staged_todo_deletion
 test_completion_without_evidence
 test_completion_with_evidence
