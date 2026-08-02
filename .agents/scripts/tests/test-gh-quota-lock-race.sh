@@ -51,8 +51,6 @@ source "${PARENT_DIR}/gh-quota-attribution-lib.sh"
 race_lock_dir="${TEST_ROOT}/release-race.lock.d"
 race_marker="${TEST_ROOT}/release-race-triggered"
 race_stderr="${TEST_ROOT}/release-race.stderr"
-mkdir "$race_lock_dir"
-printf '%s\n' "${BASHPID:-$$}" >"${race_lock_dir}/pid"
 
 # Intercept creation of the reclaim guard to deterministically release the
 # owner at the old check/read boundary. The guard keeps rmdir from removing the
@@ -68,6 +66,9 @@ mkdir() {
 	fi
 	return "$mkdir_rc"
 }
+
+mkdir "$race_lock_dir"
+printf '%s\n' "${BASHPID:-$$}" >"${race_lock_dir}/pid"
 
 race_rc=0
 _ghqa_lock_reclaim "$race_lock_dir" 0 2>"$race_stderr" || race_rc=$?
