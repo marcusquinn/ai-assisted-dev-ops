@@ -39,8 +39,8 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221, GitHub #29222, and Stack Exchange #29223 are now live. The
-remaining ranked children are Miniflux #29224, Readwise Reader #29225, FreshRSS
+Mastodon #29221, GitHub #29222, Stack Exchange #29223, and Miniflux #29224 are
+now live. The remaining ranked children are Readwise Reader #29225, FreshRSS
 issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
 route owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
@@ -87,6 +87,14 @@ accounts have independent per-site checkpoints. Pages stop before persistence on
 `backoff` or quota exhaustion and continue only while `has_more`. Votes, follows,
 subscriptions, lists, projects, complete archives, and inaccessible site history
 remain explicit gaps. Details: `.agents/content/social-stack-exchange.md`.
+
+Miniflux collection binds `/v1/me` user identity to a keyed exact HTTPS
+installation before every page. Entries, read, removed, starred, tags, feeds,
+categories, and OPML have independent checkpoints. Entry backfill advances by
+ascending ID; later runs use `changed_after` with a one-second overlap. Only five
+exact GET routes are reachable despite mutation-capable API keys. Operator cleanup,
+pre-retention state, complete archives, and deletion inference remain explicit
+gaps. Details: `.agents/content/social-miniflux.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

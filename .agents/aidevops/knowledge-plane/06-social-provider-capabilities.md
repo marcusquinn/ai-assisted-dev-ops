@@ -45,6 +45,7 @@ a claim that the route is enabled.
 | Mastodon | **Live/Partial** authored statuses | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** followers, following, and followed tags | **Live/Partial** lists; **No** nested membership | Eight exact-origin GET-only streams preserve opaque `Link` cursors and expose federation, moderation, deletion, export, and operator-retention gaps. |
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
+| Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
 
 ## Integrated provider families
 
@@ -79,7 +80,7 @@ separate provider family.
 | Stack Exchange | **Live/Partial** authored content | **Live/Partial** favourites; **No** complete vote history | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | #29223 implements network plus per-site identity, mandatory `backoff` and quota stops, bounded paging, and explicit archive/completeness gaps. |
 | GitHub | **Live/Partial** contributions | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications; **No** discussions | **Live/Gate/Partial** follows, organizations, and repositories | **Live/Gate/Partial** user lists and Projects v2 | #29222 implements numeric/node identity, token-family gates, opaque mixed-API cursors, and no complete reaction or social export claim. |
 | Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
-| Miniflux | **API/Export** feed items | **API** read, removed, starred, and tagged state | **No** | **API/Export** subscriptions | **API/Export** categories/tags | Rank 4, #29224. Strong self-hosted identity and replay; locally enforce GET-only use of mutation-capable API keys. |
+| Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
 | FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
 | Readwise Reader | **API/Export** saved documents | **API/Export** tags, state, notes, and progress | **No** | **No** | **API/Export** tags and locations | Rank 5, #29225. Strong cursor/update contract, but implementation is gated on expected-account binding because token validation has no stable account ID. |
 | Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
@@ -182,6 +183,15 @@ separate provider family.
   terminal coverage, and atomic persistence. `.agents/content/social-stack-exchange.md`
   records official v2.3 identity, route, OAuth, paging, filter, quota, throttle,
   duplicate-request, and completeness evidence checked on 2026-08-02.
+- **Live Miniflux:** `.agents/scripts/knowledge_social_miniflux.py`,
+  `.agents/scripts/_knowledge_social_miniflux*.py`, and
+  `.agents/tests/test-knowledge-social-miniflux.sh` prove keyed installation/user
+  identity, eight independent streams, ascending-ID resume, one-second
+  `changed_after` overlap, OPML replay, exact GET-only transport, credential
+  rejection, terminal coverage, and atomic persistence.
+  `.agents/content/social-miniflux.md` records official current identity, entries,
+  feed, category, OPML, authentication, version, and operator-retention evidence
+  checked on 2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,
