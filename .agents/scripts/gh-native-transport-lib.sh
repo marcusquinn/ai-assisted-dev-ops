@@ -236,8 +236,8 @@ _shim_read_shape_digest() {
 		--jq=* | -q=*) has_jq=1 ;;
 		--template | -t) expect_value="template" ;;
 		--template=* | -t=*) has_template=1 ;;
-		--comments) has_comments=1 ;;
-		--web) has_web=1 ;;
+		--comments | -c) has_comments=1 ;;
+		--web | -w) has_web=1 ;;
 		-*) unknown_flags=$((unknown_flags + 1)) ;;
 		*) positional_count=$((positional_count + 1)) ;;
 		esac
@@ -246,14 +246,16 @@ _shim_read_shape_digest() {
 	if command -v shasum >/dev/null 2>&1; then
 		digest=$(printf '%s' "$shape" | shasum -a 256 2>/dev/null) || return 1
 		digest="${digest%% *}"
+	elif command -v sha256sum >/dev/null 2>&1; then
+		digest=$(printf '%s' "$shape" | sha256sum 2>/dev/null) || return 1
+		digest="${digest%% *}"
 	elif command -v openssl >/dev/null 2>&1; then
 		digest=$(printf '%s' "$shape" | openssl dgst -sha256 2>/dev/null) || return 1
 		digest="${digest##* }"
 	else
-		digest=$(printf '%s' "$shape" | cksum 2>/dev/null) || return 1
-		digest="${digest%% *}"
+		return 1
 	fi
-	[[ "$digest" =~ ^[A-Fa-f0-9]+$ ]] || return 1
+	[[ "$digest" =~ ^[A-Fa-f0-9]{64}$ ]] || return 1
 	printf 'shape-%s' "${digest:0:12}"
 	return 0
 }
