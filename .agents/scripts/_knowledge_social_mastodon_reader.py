@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_mastodon import (
     MastodonAdapterError,
     MastodonProviderUnavailableError,
@@ -85,36 +85,9 @@ class GuardedMastodon(GuardedOAuthReader):
         super().__init__(helper, profile, MASTODON_READER_POLICY)
 
 
-def _fixture_object(value: Any, message: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise MastodonAdapterError(message)
-    return value
-
-
-class FixtureMastodon:
+class FixtureMastodon(FixturePageReader):
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "Mastodon", MastodonAdapterError)
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        entry = self.fixture.next_page()
-        expectation = _fixture_object(
-            entry.get("expect_request", {}),
-            "Mastodon fixture request expectation must be an object",
-        )
-        actual = request.payload()
-        for key, value in expectation.items():
-            if actual.get(key) != value:
-                raise MastodonAdapterError(
-                    "Mastodon request did not resume at the expected checkpoint"
-                )
-        return _fixture_object(
-            entry.get("response", entry),
-            "Mastodon fixture page response must be an object",
-        )
+        super().__init__(path, "Mastodon", MastodonAdapterError)
 
 
 def _display_text(value: Any, field: str) -> str | None:

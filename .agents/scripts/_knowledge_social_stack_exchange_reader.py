@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_oauth_reader import GuardedOAuthPolicy, GuardedOAuthReader
 from _knowledge_social_stack_exchange import (
     PageRequest,
@@ -86,36 +86,9 @@ class GuardedStackExchange(GuardedOAuthReader):
         super().__init__(helper, profile, STACK_EXCHANGE_READER_POLICY)
 
 
-def _fixture_object(value: Any, message: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise StackExchangeAdapterError(message)
-    return value
-
-
-class FixtureStackExchange:
+class FixtureStackExchange(FixturePageReader):
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "Stack Exchange", StackExchangeAdapterError)
-
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        entry = self.fixture.next_page()
-        expectation = _fixture_object(
-            entry.get("expect_request", {}),
-            "Stack Exchange fixture request expectation must be an object",
-        )
-        actual = request.payload()
-        for key, value in expectation.items():
-            if actual.get(key) != value:
-                raise StackExchangeAdapterError(
-                    "Stack Exchange request did not resume at the expected checkpoint"
-                )
-        return _fixture_object(
-            entry.get("response", entry),
-            "Stack Exchange fixture page response must be an object",
-        )
+        super().__init__(path, "Stack Exchange", StackExchangeAdapterError)
 
 
 def _display_text(value: Any, field: str) -> str | None:
