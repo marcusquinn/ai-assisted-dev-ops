@@ -52,6 +52,7 @@ expected = {
     "mastodon": ("live",),
     "miniflux": ("live",),
     "nextcloud-talk": ("live",),
+    "patreon": ("live",),
     "readwise-reader": ("live",),
     "signal": ("inspect", "manual-import", "status"),
     "slack": ("archive", "live"),
@@ -101,14 +102,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("19:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("20:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "19:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "20:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "19"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "20"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
@@ -133,6 +134,13 @@ if [[ "$hashnode_sync_help" == *"bounded, read-only Hashnode account stream"* ]]
 	assert_eq "Hashnode helper executes the same guarded local adapter" canonical canonical
 else
 	assert_eq "Hashnode helper executes the same guarded local adapter" unexpected canonical
+fi
+
+patreon_help=$("$HELPER" provider-run --provider patreon --mode live -- --help 2>&1)
+if [[ "$patreon_help" == *"bounded, read-only Patreon creator stream"* ]]; then
+	assert_eq "Patreon executes only the guarded creator adapter" canonical canonical
+else
+	assert_eq "Patreon executes only the guarded creator adapter" unexpected canonical
 fi
 
 if "$HELPER" provider-run --provider binance-square --mode no-route >/dev/null 2>&1; then

@@ -38,6 +38,7 @@ a claim that the route is enabled.
 | Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
+| Patreon | **Live/Gate** creator campaign posts | **No** patron curation or creator-side interaction history | **No** messages, comments, or mentions | **Live/Gate** minimized current creator memberships; **No** patron-owned memberships or subscriptions | **Live** creator campaigns, tiers, and benefits | Creator-owned campaign allowlist, exact read scopes, identity and ownership recheck, 99-request cap, opaque cursors, and a membership-services purpose gate; no patron-account collection. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
@@ -143,6 +144,16 @@ separate provider family.
   `.agents/content/social-medium.md` records the official HTML-ZIP export,
   unsupported legacy API, terms, retention, historical community schema
   evidence, and unverified categories checked on 2026-07-28.
+- **Live/Gated Patreon creator data:**
+  `.agents/scripts/knowledge_social_patreon.py`,
+  `.agents/scripts/_knowledge_social_patreon*.py`, and
+  `.agents/tests/test-knowledge-social-patreon.sh` prove selected creator and
+  campaign ownership, exact read-scope policy, five independent streams,
+  cursor-loop rejection, the 99-request fuse, member-data purpose and HMAC
+  minimization, terminal coverage, credential rejection, stale-lease fencing,
+  GET-only transport, and atomic persistence. `.agents/content/social-patreon.md`
+  records the current API v2, rate, creator-export, privacy-purpose, role, and
+  unsupported-category evidence checked on 2026-08-02.
 - **Live Discourse:** `.agents/scripts/knowledge_social_discourse.py`,
   `.agents/scripts/_knowledge_social_discourse*.py`, and
   `.agents/tests/test-knowledge-social-discourse.sh` prove ten independently
