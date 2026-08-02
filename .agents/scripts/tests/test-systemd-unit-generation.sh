@@ -19,6 +19,8 @@ REPO_SCRIPTS_DIR="${REPO_ROOT}/.agents/scripts"
 
 # shellcheck source=../setup/modules/schedulers-linux.sh
 source "${REPO_SCRIPTS_DIR}/setup/modules/schedulers-linux.sh"
+# shellcheck source=../pulse-dispatch-preflight-lib.sh
+source "${REPO_SCRIPTS_DIR}/pulse-dispatch-preflight-lib.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -430,6 +432,157 @@ test_no_literal_quotes_in_reposync_unit() {
 	return 0
 }
 
+write_cleanup_launcher_stubs() {
+	local bin_dir="$1"
+	mkdir -p "$bin_dir"
+	cat >"${bin_dir}/uname" <<'STUB'
+#!/usr/bin/env bash
+printf 'Linux\n'
+exit 0
+STUB
+	cat >"${bin_dir}/systemctl" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+	cat >"${bin_dir}/systemd-run" <<'STUB'
+#!/usr/bin/env bash
+{
+	printf 'CALL'
+	for arg in "$@"; do
+		printf '\t%s' "$arg"
+	done
+	printf '\n'
+} >>"$SYSTEMD_RUN_CAPTURE"
+[[ "${SYSTEMD_RUN_FAIL:-0}" == "1" ]] && exit 1
+exit 0
+STUB
+	cat >"${bin_dir}/nohup" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NOHUP_CAPTURE"
+exit 0
+STUB
+	chmod +x "${bin_dir}/uname" "${bin_dir}/systemctl" \
+		"${bin_dir}/systemd-run" "${bin_dir}/nohup"
+	return 0
+}
+
+write_cleanup_launcher_helpers() {
+	local helper_dir="$1"
+	local helper_name=""
+	mkdir -p "$helper_dir"
+	for helper_name in worktrees stashes remote-branches; do
+		cat >"${helper_dir}/${helper_name}.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+		chmod +x "${helper_dir}/${helper_name}.sh"
+	done
+	return 0
+}
+
+test_cleanup_helpers_use_transient_systemd_units() {
+	local tmpdir=""
+	local capture="" fallback_capture="" parent_log=""
+	local calls=0 unit_count=0 launch_call_count=0 rc=0
+	local merge_first_source="" cleanup_source=""
+	tmpdir=$(mktemp -d)
+	capture="${tmpdir}/systemd-run.log"
+	fallback_capture="${tmpdir}/nohup.log"
+	parent_log="${tmpdir}/pulse.log"
+	write_cleanup_launcher_stubs "${tmpdir}/bin"
+	write_cleanup_launcher_helpers "${tmpdir}/helpers"
+
+	(
+		export HOME="${tmpdir}/home"
+		export PATH="${tmpdir}/bin:${PATH}"
+		export XDG_CONFIG_HOME="${tmpdir}/xdg-config"
+		export CLEANUP_WORKTREES_ASYNC_CADENCE_MIN=23
+		export AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES=1234
+		export AIDEVOPS_REMOTE_BRANCH_CLEANUP_APPLY=1
+		export SYSTEMD_RUN_CAPTURE="$capture"
+		export NOHUP_CAPTURE="$fallback_capture"
+		export UNRELATED_ENV_SENTINEL="must-not-cross-boundary"
+		export GH_TOKEN="must-not-cross-boundary"
+		LOGFILE="$parent_log"
+		_preflight_launch_async_cleanup "${tmpdir}/helpers/worktrees.sh" "${tmpdir}/worktrees.log" "worktrees"
+		_preflight_launch_async_cleanup "${tmpdir}/helpers/stashes.sh" "${tmpdir}/stashes.log" "stashes"
+		_preflight_launch_async_cleanup "${tmpdir}/helpers/remote-branches.sh" "${tmpdir}/remote-branches.log" "remote-branches"
+	)
+
+	calls=$(wc -l <"$capture" | tr -d ' ')
+	unit_count=$(grep -oE -- '--unit=[^[:space:]]+' "$capture" | sort -u | wc -l | tr -d ' ')
+	[[ "$calls" == "3" && "$unit_count" == "3" ]] || rc=1
+	for required in \
+		'--collect' '--no-block' '--property=Type=exec' '--property=RuntimeMaxSec=3600' \
+		'--property=TimeoutStopSec=30' '--property=KillMode=control-group' \
+		'--property=SendSIGKILL=yes' '--property=Nice=10' \
+		'--property=IOSchedulingClass=idle' $'\t-i\t' \
+		"HOME=${tmpdir}/home" "PATH=${tmpdir}/bin:" \
+		"XDG_CONFIG_HOME=${tmpdir}/xdg-config" \
+		'CLEANUP_WORKTREES_ASYNC_CADENCE_MIN=23' \
+		'AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES=1234' \
+		'AIDEVOPS_REMOTE_BRANCH_CLEANUP_APPLY=1'; do
+		grep -qF -- "$required" "$capture" || rc=1
+	done
+	for unit_prefix in worktrees stashes remote-branches; do
+		grep -qE -- "--unit=aidevops-cleanup-${unit_prefix}-[0-9]+-[0-9]+" "$capture" || rc=1
+		grep -qF -- "--property=StandardOutput=append:${tmpdir}/${unit_prefix}.log" "$capture" || rc=1
+		grep -qF -- "--property=StandardError=append:${tmpdir}/${unit_prefix}.log" "$capture" || rc=1
+		grep -qF -- "${tmpdir}/helpers/${unit_prefix}.sh" "$capture" || rc=1
+	done
+	if grep -qE 'UNRELATED_ENV_SENTINEL=|GH_TOKEN=' "$capture"; then
+		rc=1
+	fi
+	[[ ! -s "$fallback_capture" ]] || rc=1
+	merge_first_source=$(declare -f _preflight_start_merge_first)
+	[[ "$merge_first_source" == *"nohup"* ]] || rc=1
+	[[ "$merge_first_source" != *"_preflight_launch_async_cleanup"* ]] || rc=1
+	cleanup_source=$(declare -f _preflight_cleanup_and_ledger)
+	launch_call_count=$(printf '%s\n' "$cleanup_source" | grep -c '_preflight_launch_async_cleanup')
+	[[ "$launch_call_count" == "3" && "$cleanup_source" != *"nohup"* ]] || rc=1
+
+	rm -rf "$tmpdir"
+	print_result "cleanup helpers use isolated transient units with an environment allowlist" "$rc"
+	return 0
+}
+
+test_cleanup_transient_failure_falls_back_once() {
+	local tmpdir=""
+	local capture="" fallback_capture="" parent_log=""
+	local attempts=0 systemd_calls=0 fallback_calls=0 rc=0
+	tmpdir=$(mktemp -d)
+	capture="${tmpdir}/systemd-run.log"
+	fallback_capture="${tmpdir}/nohup.log"
+	parent_log="${tmpdir}/pulse.log"
+	write_cleanup_launcher_stubs "${tmpdir}/bin"
+	write_cleanup_launcher_helpers "${tmpdir}/helpers"
+
+	(
+		export HOME="${tmpdir}/home"
+		export PATH="${tmpdir}/bin:${PATH}"
+		export SYSTEMD_RUN_CAPTURE="$capture"
+		export SYSTEMD_RUN_FAIL=1
+		export NOHUP_CAPTURE="$fallback_capture"
+		export AIDEVOPS_CLEANUP_SYSTEMD_RUNTIME_MAX_SEC="invalid"
+		LOGFILE="$parent_log"
+		_preflight_launch_async_cleanup "${tmpdir}/helpers/worktrees.sh" "${tmpdir}/worktrees.log" "worktrees"
+		while [[ ! -s "$fallback_capture" && "$attempts" -lt 20 ]]; do
+			sleep 0.05
+			attempts=$((attempts + 1))
+		done
+	)
+
+	systemd_calls=$(wc -l <"$capture" | tr -d ' ')
+	fallback_calls=$(wc -l <"$fallback_capture" | tr -d ' ')
+	[[ "$systemd_calls" == "1" && "$fallback_calls" == "1" ]] || rc=1
+	grep -qF -- '--property=RuntimeMaxSec=3600' "$capture" || rc=1
+	grep -qF -- "${tmpdir}/helpers/worktrees.sh" "$fallback_capture" || rc=1
+
+	rm -rf "$tmpdir"
+	print_result "failed transient cleanup submission uses exactly one nohup fallback" "$rc"
+	return 0
+}
+
 # --- Main ---
 
 main() {
@@ -455,6 +608,8 @@ main() {
 	test_no_literal_quotes_in_scheduler_unit
 	test_no_literal_quotes_in_autoupdate_unit
 	test_no_literal_quotes_in_reposync_unit
+	test_cleanup_helpers_use_transient_systemd_units
+	test_cleanup_transient_failure_falls_back_once
 
 	printf '\n%s/%s tests passed.\n' \
 		"$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN"
