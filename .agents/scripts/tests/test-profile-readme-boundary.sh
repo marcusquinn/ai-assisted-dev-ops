@@ -212,7 +212,7 @@ test_update_preserves_manual_sections() {
 		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
 		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
 		bash "${helper_path}" update >"$update_output" 2>&1; then
-		print_result "${test_name}" 1 "helper update command failed"
+		print_result "${test_name}" 1 "helper update command failed: $(<"$update_output")"
 		return 0
 	fi
 
