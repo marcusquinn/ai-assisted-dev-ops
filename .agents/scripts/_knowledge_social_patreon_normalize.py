@@ -131,14 +131,13 @@ def _object(
     }
 
 
-def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
-    """Build corpus rows while excluding direct member identity and credentials."""
-    reject_credentials(payload)
-    observed_at = _observed_at(payload)
-    account_id = _required_text(context.account.get("id"), "selected account ID")
-    items = page_data(payload)
-    objects = [_object(item, context, observed_at) for item in items]
-    activities = [
+def _activities(
+    items: list[dict[str, Any]],
+    context: PageContext,
+    account_id: str,
+    observed_at: str,
+) -> list[dict[str, Any]]:
+    return [
         {
             "activity_type": ACTIVITY_TYPES[context.stream],
             "remote_id": f"{account_id}_{context.stream}_{item['remote_id']}",
@@ -153,6 +152,9 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
         }
         for item in items
     ]
+
+
+def _policy(context: PageContext) -> dict[str, Any]:
     policy = dict(context.policy)
     policy.update(
         {
@@ -167,33 +169,61 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
             "patreon_webhooks_and_lives": "disabled",
         }
     )
-    campaigns = context.account.get("campaign_ids")
-    if not isinstance(campaigns, list):
-        raise PatreonAdapterError("Patreon selected campaign identity is invalid")
-    archive = {
+    return policy
+
+
+def _account_record(
+    account_id: str, campaigns: list[Any], observed_at: str
+) -> dict[str, Any]:
+    return {
+        "remote_id": account_id,
+        "handle": None,
+        "display_name": None,
+        "observed_at": observed_at,
+        "provider_json": {
+            "source": PROVENANCE,
+            "role": "creator",
+            "campaign_ids": campaigns,
+        },
+    }
+
+
+def _archive(
+    context: PageContext,
+    account_id: str,
+    campaigns: list[Any],
+    observed_at: str,
+    objects: list[dict[str, Any]],
+    activities: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
         "provider": PROVIDER,
         "connection_id": context.connection_id,
         "remote_account_id": account_id,
         "exported_at": observed_at,
         "enabled_streams": list(context.enabled_streams),
-        "policy": policy,
-        "accounts": [
-            {
-                "remote_id": account_id,
-                "handle": None,
-                "display_name": None,
-                "observed_at": observed_at,
-                "provider_json": {
-                    "source": PROVENANCE,
-                    "role": "creator",
-                    "campaign_ids": campaigns,
-                },
-            }
-        ],
+        "policy": _policy(context),
+        "accounts": [_account_record(account_id, campaigns, observed_at)],
         "objects": objects,
         "activities": activities,
         "media": [],
         "coverage": _coverage(observed_at),
     }
+
+
+def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
+    """Build corpus rows while excluding direct member identity and credentials."""
+    reject_credentials(payload)
+    observed_at = _observed_at(payload)
+    account_id = _required_text(context.account.get("id"), "selected account ID")
+    items = page_data(payload)
+    campaigns = context.account.get("campaign_ids")
+    if not isinstance(campaigns, list):
+        raise PatreonAdapterError("Patreon selected campaign identity is invalid")
+    objects = [_object(item, context, observed_at) for item in items]
+    activities = _activities(items, context, account_id, observed_at)
+    archive = _archive(
+        context, account_id, campaigns, observed_at, objects, activities
+    )
     reject_credentials(archive)
     return archive

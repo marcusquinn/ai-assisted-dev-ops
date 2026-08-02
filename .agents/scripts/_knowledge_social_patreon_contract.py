@@ -9,8 +9,8 @@ import hashlib
 import hmac
 from typing import Any
 
-from _knowledge_social_patreon import (
-    MAX_CURSOR_BYTES,
+from _knowledge_social_patreon_cursor import next_cursor
+from _knowledge_social_patreon_types import (
     PatreonAdapterError,
     campaign_id,
     provider_id,
@@ -131,6 +131,18 @@ def _identifier(value: Any, resource_type: str) -> str:
     return provider_id(identifier.get("id"), f"{resource_type} relationship ID")
 
 
+def _relationship_values(relation: Any, name: str) -> list[Any]:
+    relation_object = object_value(relation, f"{name} relationship")
+    if not set(relation_object).issubset({"data", "links", "meta"}):
+        raise PatreonAdapterError(f"Patreon {name} relationship has an invalid shape")
+    if "data" not in relation_object:
+        raise PatreonAdapterError(f"Patreon {name} relationship has an invalid shape")
+    data = relation_object["data"]
+    if isinstance(data, list):
+        return data
+    return [] if data is None else [data]
+
+
 def _relationship_ids(
     relationships: dict[str, Any],
     name: str,
@@ -143,12 +155,10 @@ def _relationship_ids(
         if required:
             raise PatreonAdapterError(f"Patreon {name} relationship is missing")
         return ()
-    relation_object = object_value(relation, f"{name} relationship")
-    if not set(relation_object).issubset({"data", "links", "meta"}) or "data" not in relation_object:
-        raise PatreonAdapterError(f"Patreon {name} relationship has an invalid shape")
-    data = relation_object["data"]
-    values = data if isinstance(data, list) else ([] if data is None else [data])
-    identifiers = tuple(_identifier(item, resource_type) for item in values)
+    identifiers = tuple(
+        _identifier(item, resource_type)
+        for item in _relationship_values(relation, name)
+    )
     if len(identifiers) != len(set(identifiers)):
         raise PatreonAdapterError(f"Patreon {name} relationship contains duplicates")
     return identifiers
@@ -174,32 +184,6 @@ def _optional_boolean(value: Any, field: str) -> bool | None:
     if value is not None and not isinstance(value, bool):
         raise PatreonAdapterError(f"Patreon {field} must be a boolean")
     return value
-
-
-def _next_cursor(root: dict[str, Any]) -> str | None:
-    meta = root.get("meta")
-    if meta is None:
-        return None
-    metadata = object_value(meta, "pagination metadata")
-    pagination = metadata.get("pagination")
-    if pagination is None:
-        return None
-    page = object_value(pagination, "pagination")
-    cursors = page.get("cursors")
-    if cursors is None:
-        return None
-    values = object_value(cursors, "pagination cursors")
-    cursor = values.get("next")
-    if cursor is None:
-        return None
-    if (
-        not isinstance(cursor, str)
-        or not cursor
-        or "\x00" in cursor
-        or len(cursor.encode()) > MAX_CURSOR_BYTES
-    ):
-        raise PatreonAdapterError("Patreon next pagination cursor is invalid")
-    return cursor
 
 
 def identity_record(payload: Any, expected_id: str) -> dict[str, Any]:
@@ -243,7 +227,7 @@ def owned_campaign_ids(payload: Any) -> tuple[tuple[str, ...], str | None]:
         raise PatreonAdapterError("Patreon campaign ownership response contains duplicates")
     if root.get("included") not in (None, []):
         raise PatreonAdapterError("Patreon campaign ownership returned unrequested includes")
-    return tuple(identifiers), _next_cursor(root)
+    return tuple(identifiers), next_cursor(root)
 
 
 def _campaign_values(attributes: dict[str, Any]) -> dict[str, Any]:
@@ -310,7 +294,7 @@ def post_records(payload: Any, expected_campaign_id: str) -> tuple[list[dict[str
         )
     if root.get("included") not in (None, []):
         raise PatreonAdapterError("Patreon posts returned unrequested includes")
-    return records, _next_cursor(root)
+    return records, next_cursor(root)
 
 
 def _included_resources(
@@ -341,6 +325,61 @@ def _included_resources(
     return resources
 
 
+def _included_ids(
+    included: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]],
+    resource_type: str,
+) -> set[str]:
+    return {
+        item_id
+        for item_type, item_id in included
+        if item_type == resource_type
+    }
+
+
+def _benefit_record(
+    campaign: str,
+    benefit: str,
+    attributes: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "kind": "benefit",
+        "remote_id": f"benefit_{campaign}_{benefit}",
+        "campaign_id": campaign,
+        "benefit_type": _optional_text(attributes.get("benefit_type"), "benefit type"),
+        "created_at": _optional_text(attributes.get("created_at"), "benefit created_at"),
+        "description": _optional_text(attributes.get("description"), "benefit description"),
+        "is_deleted": _optional_boolean(attributes.get("is_deleted"), "benefit is_deleted"),
+        "is_ended": _optional_boolean(attributes.get("is_ended"), "benefit is_ended"),
+        "is_published": _optional_boolean(
+            attributes.get("is_published"), "benefit is_published"
+        ),
+        "title": _optional_text(attributes.get("title"), "benefit title"),
+    }
+
+
+def _tier_record(
+    campaign: str,
+    tier: str,
+    attributes: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "kind": "tier",
+        "remote_id": f"tier_{campaign}_{tier}",
+        "campaign_id": campaign,
+        "amount_cents": _optional_integer(attributes.get("amount_cents"), "tier amount_cents"),
+        "created_at": _optional_text(attributes.get("created_at"), "tier created_at"),
+        "description": _optional_text(attributes.get("description"), "tier description"),
+        "edited_at": _optional_text(attributes.get("edited_at"), "tier edited_at"),
+        "published": _optional_boolean(attributes.get("published"), "tier published"),
+        "published_at": _optional_text(attributes.get("published_at"), "tier published_at"),
+        "requires_shipping": _optional_boolean(
+            attributes.get("requires_shipping"), "tier requires_shipping"
+        ),
+        "title": _optional_text(attributes.get("title"), "tier title"),
+        "url": _optional_text(attributes.get("url"), "tier URL"),
+    }
+
+
 def benefit_records(payload: Any, expected_campaign_id: str) -> list[dict[str, Any]]:
     """Validate campaign benefits and tiers with exact include linkage."""
     root = _document(payload)
@@ -358,47 +397,19 @@ def benefit_records(payload: Any, expected_campaign_id: str) -> list[dict[str, A
     included = _included_resources(
         root, {"benefit": BENEFIT_ATTRIBUTES, "tier": TIER_ATTRIBUTES}
     )
-    if {item_id for item_type, item_id in included if item_type == "benefit"} != set(benefit_ids):
+    if _included_ids(included, "benefit") != set(benefit_ids):
         raise PatreonAdapterError("Patreon benefit includes do not match campaign linkage")
-    if {item_id for item_type, item_id in included if item_type == "tier"} != set(tier_ids):
+    if _included_ids(included, "tier") != set(tier_ids):
         raise PatreonAdapterError("Patreon tier includes do not match campaign linkage")
     records = []
     for benefit in benefit_ids:
         attributes, item_relationships = included[("benefit", benefit)]
         _campaign_relationship(item_relationships, campaign)
-        records.append(
-            {
-                "kind": "benefit",
-                "remote_id": f"benefit_{campaign}_{benefit}",
-                "campaign_id": campaign,
-                "benefit_type": _optional_text(attributes.get("benefit_type"), "benefit type"),
-                "created_at": _optional_text(attributes.get("created_at"), "benefit created_at"),
-                "description": _optional_text(attributes.get("description"), "benefit description"),
-                "is_deleted": _optional_boolean(attributes.get("is_deleted"), "benefit is_deleted"),
-                "is_ended": _optional_boolean(attributes.get("is_ended"), "benefit is_ended"),
-                "is_published": _optional_boolean(attributes.get("is_published"), "benefit is_published"),
-                "title": _optional_text(attributes.get("title"), "benefit title"),
-            }
-        )
+        records.append(_benefit_record(campaign, benefit, attributes))
     for tier in tier_ids:
         attributes, item_relationships = included[("tier", tier)]
         _campaign_relationship(item_relationships, campaign)
-        records.append(
-            {
-                "kind": "tier",
-                "remote_id": f"tier_{campaign}_{tier}",
-                "campaign_id": campaign,
-                "amount_cents": _optional_integer(attributes.get("amount_cents"), "tier amount_cents"),
-                "created_at": _optional_text(attributes.get("created_at"), "tier created_at"),
-                "description": _optional_text(attributes.get("description"), "tier description"),
-                "edited_at": _optional_text(attributes.get("edited_at"), "tier edited_at"),
-                "published": _optional_boolean(attributes.get("published"), "tier published"),
-                "published_at": _optional_text(attributes.get("published_at"), "tier published_at"),
-                "requires_shipping": _optional_boolean(attributes.get("requires_shipping"), "tier requires_shipping"),
-                "title": _optional_text(attributes.get("title"), "tier title"),
-                "url": _optional_text(attributes.get("url"), "tier URL"),
-            }
-        )
+        records.append(_tier_record(campaign, tier, attributes))
     return records
 
 
@@ -409,15 +420,10 @@ def _member_reference(pii_key: bytes, campaign: str, member_id: str) -> str:
     return f"member_{digest[:32]}"
 
 
-def membership_records(
-    pii_key: bytes, payload: Any, expected_campaign_id: str
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Minimize current member entitlements and discard direct member identity."""
-    if len(pii_key) < 32:
-        raise PatreonAdapterError("Patreon profile PII key must be at least 32 bytes")
-    root = _document(payload)
-    campaign = campaign_id(expected_campaign_id)
-    raw_members = []
+def _member_rows(
+    root: dict[str, Any], campaign: str
+) -> tuple[list[tuple[str, dict[str, Any], tuple[str, ...]]], set[str]]:
+    rows = []
     referenced_tiers: set[str] = set()
     for value in array_value(root.get("data"), "membership data"):
         remote_id, attributes, relationships = _resource(
@@ -428,41 +434,58 @@ def membership_records(
         )
         _campaign_relationship(relationships, campaign)
         tiers = _relationship_ids(
-            relationships,
-            "currently_entitled_tiers",
-            "tier",
-            required=True,
+            relationships, "currently_entitled_tiers", "tier", required=True
         )
         referenced_tiers.update(tiers)
-        raw_members.append((remote_id, attributes, tiers))
+        rows.append((remote_id, attributes, tiers))
+    return rows, referenced_tiers
+
+
+def _membership_record(
+    pii_key: bytes,
+    campaign: str,
+    remote_id: str,
+    attributes: dict[str, Any],
+    tiers: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "kind": "membership",
+        "remote_id": _member_reference(pii_key, campaign, remote_id),
+        "campaign_id": campaign,
+        "currently_entitled_amount_cents": _optional_integer(
+            attributes.get("currently_entitled_amount_cents"),
+            "membership currently_entitled_amount_cents",
+        ),
+        "is_free_trial": _optional_boolean(
+            attributes.get("is_free_trial"), "membership is_free_trial"
+        ),
+        "is_gifted": _optional_boolean(
+            attributes.get("is_gifted"), "membership is_gifted"
+        ),
+        "patron_status": _optional_text(
+            attributes.get("patron_status"), "membership patron_status"
+        ),
+        "pledge_cadence": _optional_text(
+            attributes.get("pledge_cadence"), "membership pledge_cadence"
+        ),
+        "tier_ids": [f"tier_{campaign}_{tier}" for tier in tiers],
+    }
+
+
+def membership_records(
+    pii_key: bytes, payload: Any, expected_campaign_id: str
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Minimize current member entitlements and discard direct member identity."""
+    if len(pii_key) < 32:
+        raise PatreonAdapterError("Patreon profile PII key must be at least 32 bytes")
+    root = _document(payload)
+    campaign = campaign_id(expected_campaign_id)
+    raw_members, referenced_tiers = _member_rows(root, campaign)
     included = _included_resources(root, {"tier": TIER_ATTRIBUTES})
-    included_tiers = {item_id for item_type, item_id in included if item_type == "tier"}
-    if included_tiers != referenced_tiers:
+    if _included_ids(included, "tier") != referenced_tiers:
         raise PatreonAdapterError("Patreon membership tier includes do not match entitlement linkage")
-    records = []
-    for remote_id, attributes, tiers in raw_members:
-        records.append(
-            {
-                "kind": "membership",
-                "remote_id": _member_reference(pii_key, campaign, remote_id),
-                "campaign_id": campaign,
-                "currently_entitled_amount_cents": _optional_integer(
-                    attributes.get("currently_entitled_amount_cents"),
-                    "membership currently_entitled_amount_cents",
-                ),
-                "is_free_trial": _optional_boolean(
-                    attributes.get("is_free_trial"), "membership is_free_trial"
-                ),
-                "is_gifted": _optional_boolean(
-                    attributes.get("is_gifted"), "membership is_gifted"
-                ),
-                "patron_status": _optional_text(
-                    attributes.get("patron_status"), "membership patron_status"
-                ),
-                "pledge_cadence": _optional_text(
-                    attributes.get("pledge_cadence"), "membership pledge_cadence"
-                ),
-                "tier_ids": [f"tier_{campaign}_{tier}" for tier in tiers],
-            }
-        )
-    return records, _next_cursor(root)
+    records = [
+        _membership_record(pii_key, campaign, remote_id, attributes, tiers)
+        for remote_id, attributes, tiers in raw_members
+    ]
+    return records, next_cursor(root)

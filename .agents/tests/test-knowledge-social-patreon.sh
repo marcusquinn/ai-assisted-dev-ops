@@ -183,6 +183,23 @@ except PatreonReadProviderError:
 else:
     raise SystemExit("unowned Patreon campaign was accepted")
 
+def paged_campaign_api(_profile, path, _params):
+    if path == "/identity":
+        return ApiResult(200, {"data": {
+            "type": "user", "id": "creator_123", "attributes": {"is_creator": True},
+        }})
+    return ApiResult(200, {
+        "data": [{"type": "campaign", "id": "101"}],
+        "meta": {"pagination": {"cursors": {"next": "more-owned-campaigns"}}},
+    })
+
+try:
+    _dispatch({"action": "identity", "account_id": "creator_123"}, profile, paged_campaign_api)
+except PatreonReadProviderError as error:
+    assert "bounded identity page" in str(error)
+else:
+    raise SystemExit("incomplete Patreon campaign ownership page was accepted")
+
 malformed_benefits = {
     "data": {
         "type": "campaign", "id": "101", "attributes": {"name": "Campaign"},

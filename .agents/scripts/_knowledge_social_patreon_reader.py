@@ -33,6 +33,7 @@ SAFE_FAILURES = (
     "Patreon profile PII key must be at least 32 bytes",
     "selected Patreon account does not match the configured connection",
     "selected Patreon campaign is not owned by the authenticated creator",
+    "Patreon campaign ownership exceeds the bounded identity page",
 )
 
 
