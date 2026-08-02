@@ -42,6 +42,7 @@ a claim that the route is enabled.
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
 | NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
+| Mastodon | **Live/Partial** authored statuses | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** followers, following, and followed tags | **Live/Partial** lists; **No** nested membership | Eight exact-origin GET-only streams preserve opaque `Link` cursors and expose federation, moderation, deletion, export, and operator-retention gaps. |
 
 ## Integrated provider families
 
@@ -70,7 +71,7 @@ separate provider family.
 
 | Provider family | Authored content | Interactions and curation | Mentions or messages | Relationships and subscriptions | Lists or custom feeds | Current disposition |
 |---|---|---|---|---|---|---|
-| Mastodon | **API** | **API** favourites and bookmarks | **API/Gate** notifications and conversations | **API** follows and followed tags | **API** lists and membership | Rank 1, #29221. Mature official API; bind home-instance identity, preserve opaque `Link` cursors, and record federation/operator retention gaps. |
+| Mastodon | **Live/Partial** | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** follows and followed tags | **Live/Partial** lists; **No** nested membership | #29221 implements exact-origin identity-bound reads with opaque `Link` cursors and explicit federation/operator-retention gaps. |
 | Bluesky / AT Protocol | **Live** records | **Live** likes and reposts | **Live/Gate** notifications; **No/Gate** chat | **Live** follows | **Live** lists and feeds | DID-bound repository/AppView reads with separate chat authorization. |
 | Lemmy | **API/Gate** versioned authored content | **API/Gate** saved and liked state | **API/Gate** unified v4 or split v3 inbox | **API/Gate** communities; **No** person follows | **API/Gate** v4 multicommunities | Rank 7, #29227. Implement only behind exact v4/v3 discovery; namespace local IDs and preserve opaque version-sensitive cursors. |
 | Stack Exchange | **API** authored content | **API** favourites; **No** complete vote history | **API/Gate** inbox and notifications | **API** associated site accounts; **No** follows | **No** | Rank 3, #29223. Bind network plus per-site identity, obey `backoff`, and keep archive/completeness gaps explicit. |
@@ -154,6 +155,14 @@ separate provider family.
   evidence, public capability limits, admin-only version/plugin discovery,
   account-visible permissions, exports, retention, terms, and explicit plugin,
   message-body, and history gaps checked on 2026-07-28.
+- **Live Mastodon:** `.agents/scripts/knowledge_social_mastodon.py`,
+  `.agents/scripts/_knowledge_social_mastodon*.py`, and
+  `.agents/tests/test-knowledge-social-mastodon.sh` prove home-instance identity,
+  eight independent streams, exact same-origin RFC Link resume, read-scope and
+  GET-only enforcement, credential rejection, terminal coverage, and atomic
+  persistence. `.agents/content/social-mastodon.md` records official routes,
+  scopes, pagination, default rate limits, exports, and explicit gaps checked on
+  2026-08-02.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,
