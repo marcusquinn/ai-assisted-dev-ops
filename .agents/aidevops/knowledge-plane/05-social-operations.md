@@ -39,12 +39,13 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-The current ranked sequence is Mastodon, GitHub, Stack Exchange, Miniflux,
-Readwise Reader, FreshRSS, version-gated Lemmy, then public-only Hacker News.
-Each route gets its own child issue, identity contract, stream allowlist,
-checkpoint semantics, and negative write-reachability tests. Raindrop.io remains
-optional; Inoreader, Wallabag, Feedly, Instapaper, and Pocket are deferred or
-rejected for the reasons in `.agents/content/social-provider-candidates.md`.
+The ranked children are Mastodon #29221, GitHub #29222, Stack Exchange #29223,
+Miniflux #29224, Readwise Reader #29225, FreshRSS #29226, Lemmy issue #29227,
+then public-only Hacker News #29228. Each route owns its identity
+contract, stream allowlist, checkpoint semantics, and negative write-reachability
+tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
+Pocket are deferred or rejected for the reasons in
+`.agents/content/social-provider-candidates.md`.
 
 The maintained planning and gap inventory is
 `06-social-provider-capabilities.md`. A matrix entry is not implementation
