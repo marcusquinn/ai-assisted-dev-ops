@@ -447,18 +447,21 @@ _complexity_scan_sweep_check() {
 	sweep_result=$("$scan_helper" sweep-check "$aidevops_slug" 2>>"$LOGFILE") || sweep_result=""
 	if [[ "$sweep_result" == needed* ]]; then
 		echo "[pulse-wrapper] LLM sweep triggered: ${sweep_result}" >>"$LOGFILE"
-		# Create a one-off issue for the LLM sweep if none exists (t1855: check both title patterns)
+		# Create a one-off issue for the LLM sweep if none exists (t1855: check
+		# both title patterns). Sweep reviews are meta work and intentionally do
+		# not carry function-complexity-debt, so dedup by title rather than label.
 		local sweep_issue_exists
 		sweep_issue_exists=$(gh_issue_list --repo "$aidevops_slug" \
-			--label "function-complexity-debt" --state open \
+			--state open \
 			--search "in:title \"simplification debt stalled\" OR in:title \"LLM complexity sweep\"" \
 			--json number --jq 'length' 2>/dev/null) || sweep_issue_exists="0"
+		[[ "$sweep_issue_exists" =~ ^[0-9]+$ ]] || sweep_issue_exists="0"
 		if [[ "${sweep_issue_exists:-0}" -eq 0 ]]; then
 			local sweep_reason
 			sweep_reason=$(echo "$sweep_result" | cut -d'|' -f2)
 			gh_create_issue --repo "$aidevops_slug" \
 				--title "LLM complexity sweep: review stalled function-complexity debt" \
-				--label "function-complexity-debt" --label "auto-dispatch" --label "tier:thinking" --label "worker-ready" \
+				--label "quality-debt" --label "auto-dispatch" --label "tier:thinking" --label "worker-ready" \
 				--body "## Daily LLM sweep (automated, GH#15285)
 
 **Trigger:** ${sweep_reason}
@@ -469,6 +472,7 @@ The deterministic complexity scan detected that function-complexity debt has not
 2. Re-prioritize the backlog based on actual impact
 3. Close issues that are no longer relevant (files deleted, already simplified)
 4. Suggest new decomposition strategies for stuck files
+5. Check pulse logs for \`local_capacity_gate\`; if present, verify worktree cleanup is live and reducing the affected repo below \`AIDEVOPS_MAX_WORKTREES\` before changing safety caps
 
 ### Scope
 
