@@ -60,11 +60,20 @@ def _request_ranges(lines: List[bytes]) -> List[Tuple[int, int]]:
 
 def _completion_ranges(lines: List[bytes]) -> List[Tuple[int, int]]:
     ranges: List[Tuple[int, int]] = []
-    start = 0
+    start: Optional[int] = None
+    pending_requests = 0
     for index, line in enumerate(lines):
-        if REQUEST_END.match(line.rstrip(b"\r\n")):
-            ranges.append((start, index + 1))
-            start = index + 1
+        if REQUEST_START.match(line):
+            if pending_requests == 0:
+                start = index
+            pending_requests += 1
+        if not REQUEST_END.match(line.rstrip(b"\r\n")) or pending_requests == 0:
+            continue
+        if start is None:
+            continue
+        ranges.append((start, index + 1))
+        pending_requests -= 1
+        start = index + 1 if pending_requests else None
     return ranges
 
 
@@ -174,20 +183,13 @@ def _consume_proven_cache_hit(
     return False
 
 
-def _write_sanitized_stderr(
-    lines: List[bytes], ranges: List[Tuple[int, int]]
-) -> None:
-    if not ranges:
-        # Exact-capture mode deliberately enables GH_DEBUG. If its framing ever
-        # changes, raw stderr may contain request headers or response bodies.
-        # Suppress the whole stream rather than leak it as a normal diagnostic.
-        return
-    suppressed = {
-        index for start, end in ranges for index in range(start, end)
-    }
-    for index, line in enumerate(lines):
-        if index not in suppressed:
-            sys.stderr.buffer.write(line)
+def _write_sanitized_stderr() -> None:
+    # Exact-capture mode deliberately enables GH_DEBUG. Framing proves which
+    # bytes belong to private request/response blocks, but it cannot prove that
+    # bytes outside those blocks are diagnostics rather than malformed private
+    # payloads. Until native diagnostics have a strict allowlist, suppress every
+    # line instead of forwarding unframed content.
+    return
 
 
 def main() -> int:
@@ -199,7 +201,7 @@ def main() -> int:
         return 1
     lines = data.splitlines(keepends=True)
     request_ranges = _request_ranges(lines)
-    _write_sanitized_stderr(lines, request_ranges)
+    _write_sanitized_stderr()
     if data and not request_ranges:
         # Non-empty stderr without a recognized request frame may be a changed
         # GH_DEBUG format containing private request or response data. Keep it
