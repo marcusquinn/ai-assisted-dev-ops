@@ -110,6 +110,8 @@ if [[ ! -x "$HELPER" ]]; then
 fi
 
 FIXTURE_DIR="$(mktemp -d -t wah-test-XXXXXX)"
+MOCK_BIN="$FIXTURE_DIR/bin"
+PS_FIXTURE="$FIXTURE_DIR/ps.txt"
 METRICS="$FIXTURE_DIR/headless-runtime-metrics.jsonl"
 STATS="$FIXTURE_DIR/pulse-stats.json"
 PR_CACHE="$FIXTURE_DIR/pr-cache.json"
@@ -117,6 +119,13 @@ OAUTH_POOL="$FIXTURE_DIR/oauth-pool.json"
 BLOCKERS="$FIXTURE_DIR/worker-progress-blockers.jsonl"
 LEDGER="$FIXTURE_DIR/dispatch-ledger.jsonl"
 OBJECTIVE_EVIDENCE="$FIXTURE_DIR/objective-evidence.jsonl"
+
+mkdir -p "$MOCK_BIN"
+cat >"$MOCK_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+/bin/cat "${WAH_TEST_PS_FIXTURE:?}"
+EOF
+chmod +x "$MOCK_BIN/ps"
 
 cleanup() {
 	rm -rf "$FIXTURE_DIR"
@@ -268,17 +277,36 @@ assert_rc "1a: help exits 0" 0 "$RC"
 assert_contains "1b: help mentions canonical sources" "headless-runtime-metrics.jsonl" "$OUT"
 assert_contains "1c: help mentions pulse-stats" "pulse-stats.json" "$OUT"
 assert_contains "1d: help warns against worker-NNN.log mtime" "mtime" "$OUT"
+assert_contains "1e: help documents portable live worker count" "worker-activity-helper.sh live-workers" "$OUT"
+assert_not_contains "1f: help avoids unsupported pgrep count flags" "pgrep -fc" "$OUT"
+
+printf '  PID STAT ELAPSED COMMAND\n' >"$PS_FIXTURE"
+OUT=$(env PATH="$MOCK_BIN:$PATH" WAH_TEST_PS_FIXTURE="$PS_FIXTURE" "$HELPER" live-workers 2>&1)
+RC=$?
+assert_rc "1g: live-workers exits 0 with no workers" 0 "$RC"
+assert_eq "1h: live-workers reports zero cleanly" "0" "$OUT"
+
+cat >"$PS_FIXTURE" <<'EOF'
+  PID STAT ELAPSED COMMAND
+101 S      00:10 bash /Users/test/.aidevops/agents/scripts/headless-runtime-helper.sh run --role worker --session-key issue-1 --dir /tmp/wt
+102 S      00:05 bash /Users/test/.aidevops/agents/scripts/headless-runtime-helper.sh run --role pulse --session-key pulse
+103 S      00:01 pgrep -fc headless-runtime-helper.sh run
+EOF
+OUT=$(env PATH="$MOCK_BIN:$PATH" WAH_TEST_PS_FIXTURE="$PS_FIXTURE" "$HELPER" worker-count 2>&1)
+RC=$?
+assert_rc "1i: worker-count alias exits 0" 0 "$RC"
+assert_eq "1j: live count excludes unrelated processes" "1" "$OUT"
 
 # Bad subcommand exits 2.
 OUT=$("$HELPER" frobnicate 2>&1)
 RC=$?
-assert_rc "1e: unknown command exits 2" 2 "$RC"
+assert_rc "1k: unknown command exits 2" 2 "$RC"
 
 # Bad --since exits 2.
 OUT=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 99x --no-pr-check 2>&1)
 RC=$?
-assert_rc "1f: bad --since exits 2" 2 "$RC"
-assert_contains "1g: bad --since explains valid options" "1h|6h|24h|48h|7d" "$OUT"
+assert_rc "1l: bad --since exits 2" 2 "$RC"
+assert_contains "1m: bad --since explains valid options" "1h|6h|24h|48h|7d" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Section 2: 24h aggregation accuracy.

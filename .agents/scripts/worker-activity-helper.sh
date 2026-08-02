@@ -29,6 +29,7 @@
 #                                     [--repo OWNER/REPO]
 #   worker-activity-helper.sh providers [--since 1h|6h|24h|48h|7d]
 #                                      [--json]
+#   worker-activity-helper.sh live-workers
 #   worker-activity-helper.sh help
 
 set -euo pipefail
@@ -146,7 +147,7 @@ _wah_objective_outcomes_json() {
 		printf '[]'
 		return 0
 	fi
-	tail -n "$evidence_limit" "$WAH_OBJECTIVE_EVIDENCE_FILE" 2>/dev/null | \
+	tail -n "$evidence_limit" "$WAH_OBJECTIVE_EVIDENCE_FILE" 2>/dev/null |
 		jq -sc '[.[] | select(.record_type == "attempt_outcome")]' 2>/dev/null || printf '[]'
 	return 0
 }
@@ -175,7 +176,7 @@ _wah_aggregate_metrics() {
 	now_epoch="${2:-$(date +%s)}"
 
 	# Bucket semantics (must match the original awk fallthrough chain):
-#   succ — result=="success" AND exit_code==0 (runtime handoff, not delivery)
+	#   succ — result=="success" AND exit_code==0 (runtime handoff, not delivery)
 	#   wk   — result=="watchdog_stall_killed"   (terminal)
 	#   wc   — result=="watchdog_stall_continue" (heartbeat, NOT terminal)
 	#   sic  — result=="service_interruption_continue" (heartbeat, NOT terminal)
@@ -316,7 +317,7 @@ _wah_metric_details_json() {
 				| sort_by(.count) | reverse | .[0:10]),
 			failure_families: ($failures | _wah_failure_family_summary)
 		}'
-	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" "$jq_program" <"$metrics" 2>/dev/null || \
+	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" "$jq_program" <"$metrics" 2>/dev/null ||
 		printf '{"result_counts":{},"diagnostic_focus":{},"timing_ms":{"avg":0,"max":0,"samples":0},"recent_examples":[],"failure_groups":[],"failure_families":[]}'
 	return 0
 }
@@ -411,7 +412,7 @@ _wah_blocker_details_json() {
 			active_blockers: ($active | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source, permission, tool, risk_level, grantable, detail})),
 			retained_unverified: ($retained | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source})),
 			recent_blockers: ($window | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, blocking, source}))
-		}' "$blocker_log" 2>/dev/null || \
+		}' "$blocker_log" 2>/dev/null ||
 		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 	return 0
 }
@@ -963,6 +964,20 @@ cmd_providers() {
 }
 
 #######################################
+# Print the current logical worker count using the canonical, portable
+# process-tree detector shared with Pulse.
+#######################################
+cmd_live_workers() {
+	# shellcheck source=worker-lifecycle-common.sh
+	source "${SCRIPT_DIR}/worker-lifecycle-common.sh"
+	local count=""
+	count=$(count_active_workers 2>/dev/null) || count=0
+	[[ "$count" =~ ^[0-9]+$ ]] || count=0
+	printf '%s\n' "$count"
+	return 0
+}
+
+#######################################
 # Help text.
 #######################################
 cmd_help() {
@@ -972,6 +987,7 @@ worker-activity-helper.sh — Canonical worker activity summary
 Usage:
   worker-activity-helper.sh summary [OPTIONS]
   worker-activity-helper.sh providers [OPTIONS]
+  worker-activity-helper.sh live-workers
   worker-activity-helper.sh help
 
 Options:
@@ -1004,9 +1020,11 @@ Examples:
   # Include PR-opened, PR-merged, and solved-issue stages when API budget is healthy.
   worker-activity-helper.sh summary --since 24h --pr-check
 
+  # Current logical worker count (portable across macOS and Linux).
+  worker-activity-helper.sh live-workers
+
 NOT a substitute for:
   - worker-NNN.log mtime → file touch time, not outcome.
-  - pgrep -fc 'headless-runtime-helper.sh run' → live worker count.
   - recursive grep over ~/.aidevops/logs or OpenCode storage → unbounded noise.
   - pulse-runner-health-helper.sh diagnose → per-runner zero-attempt breaker.
 
@@ -1024,6 +1042,7 @@ main() {
 	case "$cmd" in
 	summary) cmd_summary "$@" ;;
 	providers | provider-usage) cmd_providers "$@" ;;
+	live-workers | worker-count) cmd_live_workers ;;
 	help | -h | --help) cmd_help ;;
 	*)
 		printf 'unknown command: %s\n' "$cmd" >&2
