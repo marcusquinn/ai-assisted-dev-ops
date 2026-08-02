@@ -65,6 +65,7 @@ extract_functions() {
 		/^_setup_opencode_homebrew_owner_action\(\)/, /^}$/ { print; next }
 		/^_setup_opencode_print_manual_install_hint\(\)/, /^}$/ { print; next }
 		/^_setup_opencode_node_path_for_binary\(\)/, /^}$/ { print; next }
+		/^_setup_opencode_binary_is_ephemeral\(\)/, /^}$/ { print; next }
 		/^_setup_clear_canary_negative_cache\(\)/, /^}$/ { print; next }
 		/^_setup_ensure_opencode_stable_shim\(\)/, /^}$/ { print; next }
 		/^_setup_find_valid_opencode_binary\(\)/, /^}$/ { print; next }
@@ -549,13 +550,46 @@ assert_eq "generic packages still use bun first" "bun install -g serve-sim@lates
 
 echo "Test 10c: npm_global_install falls back to bun for opencode-ai without npm"
 rm -f "$SANDBOX/install-policy/calls" "$SANDBOX/install-policy/bin/npm"
+ln -sf /bin/bash "$SANDBOX/install-policy/bin/bash"
 (
 	# shellcheck source=/dev/null
 	source "$SANDBOX/common-extract.sh"
-	export PATH="$SANDBOX/install-policy/bin:/usr/bin:/bin"
+	export PATH="$SANDBOX/install-policy/bin"
 	npm_global_install opencode-ai@latest
 ) >"$SANDBOX/out10c" 2>&1
 assert_eq "opencode-ai bun-only fallback" "bun install -g opencode-ai@latest" "$(cat "$SANDBOX/install-policy/calls")"
+
+echo "Test 11: stable shim rejects ephemeral target for persistent HOME"
+mkdir -p "$SANDBOX/ephemeral/bin" "$SANDBOX/persistent-home"
+cat >"$SANDBOX/ephemeral/bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+--version) printf '1.18.9\n' ;;
+--help) printf 'opencode run [message]\n' ;;
+*) printf 'stub\n' ;;
+esac
+EOF
+chmod +x "$SANDBOX/ephemeral/bin/opencode"
+shim_rc=0
+(
+	source_extracted
+	export HOME="$SANDBOX/persistent-home"
+	_setup_opencode_binary_is_ephemeral() {
+		local bin="$1"
+		case "$bin" in
+		"$SANDBOX/ephemeral"/*) return 0 ;;
+		"$SANDBOX/persistent-home/.aidevops-home") return 1 ;;
+		*) return 1 ;;
+		esac
+	}
+	_setup_ensure_opencode_stable_shim "$SANDBOX/ephemeral/bin/opencode"
+) >"$SANDBOX/ephemeral/stdout" 2>"$SANDBOX/ephemeral/stderr" || shim_rc=$?
+assert_eq "ephemeral target rejected" "1" "$shim_rc"
+if [[ -e "$SANDBOX/persistent-home/.local/bin/opencode" ]]; then
+	assert_eq "ephemeral rejection avoids shim write" "absent" "present"
+else
+	assert_eq "ephemeral rejection avoids shim write" "absent" "absent"
+fi
 
 echo ""
 echo "===== Results: $PASS passed, $FAIL failed ====="

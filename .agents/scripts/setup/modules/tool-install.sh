@@ -2194,12 +2194,18 @@ _setup_ensure_opencode_stable_shim() {
 	local real_bin="${1:-}"
 	local shim_dir="${HOME}/.local/bin"
 	local shim_path="${shim_dir}/opencode"
+	local resolved_bin=""
 	local wrapper_path=""
 	local wrapper_dir=""
 	local wrapper_path_value=""
 
 	[[ -n "$real_bin" ]] || return 1
-	_setup_validate_opencode_binary "$real_bin" || return 1
+	resolved_bin=$(command -v "$real_bin" 2>/dev/null || printf '%s' "$real_bin")
+	_setup_validate_opencode_binary "$resolved_bin" || return 1
+	if _setup_opencode_binary_is_ephemeral "$resolved_bin" && \
+		! _setup_opencode_binary_is_ephemeral "${HOME}/.aidevops-home"; then
+		return 1
+	fi
 
 	# If the daemon-visible stable path is already a valid OpenCode binary, use it.
 	if [[ -x "$shim_path" ]] && _setup_validate_opencode_binary "$shim_path"; then
@@ -2208,8 +2214,12 @@ _setup_ensure_opencode_stable_shim() {
 	fi
 
 	mkdir -p "$shim_dir" 2>/dev/null || return 1
-	wrapper_dir=$(cd "$(dirname "$real_bin")" 2>/dev/null && pwd -P) || return 1
-	wrapper_path="${wrapper_dir}/$(basename "$real_bin")"
+	wrapper_dir=$(cd "$(dirname "$resolved_bin")" 2>/dev/null && pwd -P) || return 1
+	wrapper_path="${wrapper_dir}/$(basename "$resolved_bin")"
+	if _setup_opencode_binary_is_ephemeral "$wrapper_path" && \
+		! _setup_opencode_binary_is_ephemeral "${HOME}/.aidevops-home"; then
+		return 1
+	fi
 	wrapper_path_value=$(_setup_opencode_node_path_for_binary "$wrapper_path")
 
 	cat >"$shim_path" <<EOF
@@ -2243,7 +2253,10 @@ _setup_find_valid_opencode_binary() {
 		[[ -n "$candidate" ]] || continue
 		[[ "$candidate" == "$shim_path" ]] && continue
 		candidate_path=$(command -v "$candidate" 2>/dev/null || printf '%s' "$candidate")
-		_setup_opencode_binary_is_ephemeral "$candidate_path" && continue
+		if _setup_opencode_binary_is_ephemeral "$candidate_path" && \
+			! _setup_opencode_binary_is_ephemeral "${HOME}/.aidevops-home"; then
+			continue
+		fi
 		if _setup_validate_opencode_binary "$candidate_path"; then
 			printf '%s\n' "$candidate_path"
 			return 0
