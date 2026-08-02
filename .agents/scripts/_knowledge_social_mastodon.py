@@ -111,6 +111,15 @@ def _decode_cursor(cursor: str) -> tuple[int, str]:
     return _position(parsed["position"]), next_url
 
 
+def _request_identity(identity: dict[str, Any]) -> tuple[str, str, str]:
+    """Validate fields shared by collection and provider requests."""
+    return (
+        provider_account_id(identity.get("provider_account_id")),
+        account_handle(identity.get("acct")),
+        instance_id(identity.get("instance_id")),
+    )
+
+
 def page_request(stream: str, account: dict[str, Any], state: CursorState, limit: int) -> PageRequest:
     if stream not in STREAMS:
         raise MastodonAdapterError("Mastodon stream is unsupported")
@@ -121,14 +130,7 @@ def page_request(stream: str, account: dict[str, Any], state: CursorState, limit
     if selected_id is None:
         raise MastodonAdapterError("verified Mastodon identity is incomplete")
     return PageRequest(
-        stream,
-        selected_id,
-        provider_account_id(account.get("provider_account_id")),
-        account_handle(account.get("acct")),
-        instance_id(account.get("instance_id")),
-        position,
-        next_url,
-        limit,
+        stream, selected_id, *_request_identity(account), position, next_url, limit,
     )
 
 
@@ -147,9 +149,7 @@ def parse_page_request(payload: dict[str, Any]) -> PageRequest:
     return PageRequest(
         stream,
         account_id,
-        provider_account_id(payload.get("provider_account_id")),
-        account_handle(payload.get("acct")),
-        instance_id(payload.get("instance_id")),
+        *_request_identity(payload),
         _position(payload.get("position")),
         _text(payload.get("stop_at"), "next link", optional=True),
         limit,
