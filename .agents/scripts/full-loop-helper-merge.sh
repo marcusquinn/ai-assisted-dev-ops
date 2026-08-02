@@ -1145,7 +1145,7 @@ _merge_worktree_record_matches() {
 	return 1
 }
 
-_merge_current_worktree_cleanup_plan() {
+_merge_current_worktree_cleanup_target() {
 	local pr_head_ref="$1"
 	local pr_head_oid="$2"
 	local pr_head_repo="$3"
@@ -1163,15 +1163,19 @@ _merge_current_worktree_cleanup_plan() {
 	current_head=$(git rev-parse --verify "HEAD^{commit}" 2>/dev/null || true)
 	[[ -n "$current_head" && "$current_head" == "$pr_head_oid" ]] || return 1
 
+	# Prove this is a linked worktree without depending on discovery of the
+	# canonical checkout path. The common Git directory remains authoritative
+	# even when the canonical working-tree registration is temporarily absent.
+	local git_dir=""
+	local common_dir=""
+	git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+	common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+	[[ -n "$git_dir" && -n "$common_dir" && "$git_dir" != "$common_dir" ]] || return 1
+
 	local porcelain=""
 	porcelain=$(git worktree list --porcelain 2>/dev/null || true)
 	[[ -n "$porcelain" ]] || return 1
 	_merge_worktree_record_matches "$porcelain" "$current_root" "$current_branch" "$current_head" || return 1
-
-	local canonical_dir=""
-	canonical_dir="${porcelain%%$'\n'*}"
-	canonical_dir="${canonical_dir#worktree }"
-	[[ -n "$canonical_dir" && "$canonical_dir" != "$current_root" ]] || return 1
 
 	local delete_remote_branch="1"
 	if [[ "$current_branch" != "$pr_head_ref" ]]; then
@@ -1188,11 +1192,44 @@ _merge_current_worktree_cleanup_plan() {
 		delete_remote_branch="0"
 	fi
 
-	printf '%s\t%s\t%s\t%s\n' "$current_root" "$current_branch" "$canonical_dir" "$delete_remote_branch"
+	printf '%s\t%s\t%s\n' "$current_root" "$current_branch" "$delete_remote_branch"
 	return 0
 }
 
-_merge_fresh_worktree_cleanup_plan() {
+_merge_current_canonical_dir_for_cleanup() {
+	local current_root="$1"
+	local porcelain=""
+	local canonical_dir=""
+
+	[[ -n "$current_root" ]] || return 1
+	porcelain=$(git worktree list --porcelain 2>/dev/null || true)
+	[[ -n "$porcelain" ]] || return 1
+	canonical_dir="${porcelain%%$'\n'*}"
+	canonical_dir="${canonical_dir#worktree }"
+	[[ -n "$canonical_dir" && "$canonical_dir" != "$current_root" && -d "$canonical_dir" ]] || return 1
+	printf '%s\n' "$canonical_dir"
+	return 0
+}
+
+_merge_current_worktree_cleanup_plan() {
+	local pr_head_ref="$1"
+	local pr_head_oid="$2"
+	local pr_head_repo="$3"
+	local repo="$4"
+	local cleanup_target=""
+	local worktree_path=""
+	local branch_name=""
+	local delete_remote_branch=""
+	local canonical_dir=""
+
+	cleanup_target=$(_merge_current_worktree_cleanup_target "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo") || return 1
+	IFS=$'\t' read -r worktree_path branch_name delete_remote_branch <<<"$cleanup_target"
+	canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$worktree_path") || return 1
+	printf '%s\t%s\t%s\t%s\n' "$worktree_path" "$branch_name" "$canonical_dir" "$delete_remote_branch"
+	return 0
+}
+
+_merge_fresh_worktree_cleanup_target() {
 	local pr_number="$1"
 	local repo="$2"
 	local pr_json=""
@@ -1212,20 +1249,37 @@ _merge_fresh_worktree_cleanup_plan() {
 		printf '%s' "$pr_json" | jq -r '[.headRefName, .headRefOid, .headRepository.nameWithOwner, .isCrossRepository] | @tsv'
 	)
 	: "$is_cross_repository"
-	_merge_current_worktree_cleanup_plan "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo" || return 1
+	_merge_current_worktree_cleanup_target "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo" || return 1
 	return 0
 }
 
-_merge_fresh_adopted_worktree_cleanup_plan() {
+_merge_fresh_worktree_cleanup_plan() {
+	local pr_number="$1"
+	local repo="$2"
+	local cleanup_target=""
+	local worktree_path=""
+	local branch_name=""
+	local delete_remote_branch=""
+	local canonical_dir=""
+
+	cleanup_target=$(_merge_fresh_worktree_cleanup_target "$pr_number" "$repo") || return 1
+	IFS=$'\t' read -r worktree_path branch_name delete_remote_branch <<<"$cleanup_target"
+	canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$worktree_path") || return 1
+	printf '%s\t%s\t%s\t%s\n' "$worktree_path" "$branch_name" "$canonical_dir" "$delete_remote_branch"
+	return 0
+}
+
+_merge_fresh_adopted_worktree_cleanup_target() {
 	local pr_number="$1"
 	local repo="$2"
 	local pr_json=""
 	local pr_head_ref=""
 	local pr_head_oid=""
 	local pr_head_repo=""
-	local cleanup_plan=""
+	local cleanup_target=""
 	local worktree_path=""
 	local branch_name=""
+	local delete_remote_branch=""
 	local current_repo=""
 
 	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
@@ -1242,12 +1296,13 @@ _merge_fresh_adopted_worktree_cleanup_plan() {
 	IFS=$'\t' read -r pr_head_ref pr_head_oid pr_head_repo < <(
 		printf '%s' "$pr_json" | jq -r '[.headRefName, .headRefOid, .headRepository.nameWithOwner] | @tsv'
 	)
-	cleanup_plan=$(_merge_current_worktree_cleanup_plan "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo") || return 1
-	IFS=$'\t' read -r worktree_path branch_name _ <<<"$cleanup_plan"
+	cleanup_target=$(_merge_current_worktree_cleanup_target "$pr_head_ref" "$pr_head_oid" "$pr_head_repo" "$repo") || return 1
+	IFS=$'\t' read -r worktree_path branch_name delete_remote_branch <<<"$cleanup_target"
+	: "$delete_remote_branch"
 	[[ "$branch_name" == "$pr_head_ref" ]] || return 1
 	current_repo=$(_merge_current_github_repo_identity "$worktree_path" 2>/dev/null || true)
 	[[ -n "$current_repo" && "$current_repo" == "$repo" ]] || return 1
-	printf '%s\n' "$cleanup_plan"
+	printf '%s\n' "$cleanup_target"
 	return 0
 }
 
@@ -1288,14 +1343,11 @@ _merge_refresh_canonical_for_cleanup() {
 }
 
 _merge_report_canonical_sync_state() {
-	local cleanup_plan="$1"
-	if [[ -z "$cleanup_plan" ]]; then
+	local canonical_dir="$1"
+	if [[ -z "$canonical_dir" ]]; then
 		print_warning "CANONICAL_SYNC_PENDING=true reason=canonical_path_unavailable"
 		return 1
 	fi
-	local worktree_path branch_name canonical_dir delete_remote_branch
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
-	: "$worktree_path" "$branch_name" "$delete_remote_branch"
 	local default_branch
 	default_branch=$(_merge_default_branch_for_cleanup "$canonical_dir")
 	_merge_refresh_canonical_for_cleanup "$canonical_dir" "$default_branch"
@@ -1363,12 +1415,12 @@ _merge_cleanup_linked_worktree() {
 _merge_record_deferred_cleanup_owner() {
 	local pr_number="$1"
 	local repo="$2"
-	local cleanup_plan="$3"
+	local cleanup_target="$3"
 	local release_status="${4:-pending}"
 	local executor_completion_state="${5:-FINALIZATION_PENDING}"
-	local worktree_path="" branch_name="" canonical_dir="" delete_remote_branch=""
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
-	: "$canonical_dir" "$delete_remote_branch"
+	local worktree_path="" branch_name="" delete_remote_branch=""
+	IFS=$'\t' read -r worktree_path branch_name delete_remote_branch <<<"$cleanup_target"
+	: "$delete_remote_branch"
 	[[ -n "$worktree_path" && -n "$branch_name" ]] || return 1
 	[[ -d "$worktree_path" ]] || return 1
 
@@ -1407,7 +1459,7 @@ _merge_record_deferred_cleanup_owner() {
 cmd_adopt_merged_receipt() {
 	local pr_number="${1:-}"
 	local repo=""
-	local cleanup_plan=""
+	local cleanup_target=""
 	local release_status=""
 
 	if [[ $# -lt 1 || $# -gt 2 || ! "$pr_number" =~ ^[0-9]+$ ]]; then
@@ -1418,7 +1470,7 @@ cmd_adopt_merged_receipt() {
 		print_error "Adoption blocked: repository identity is unavailable"
 		return 1
 	}
-	cleanup_plan=$(_merge_fresh_adopted_worktree_cleanup_plan "$pr_number" "$repo") || {
+	cleanup_target=$(_merge_fresh_adopted_worktree_cleanup_target "$pr_number" "$repo") || {
 		print_error "Adoption blocked: merged PR head does not match this registered linked worktree and repository"
 		return 1
 	}
@@ -1430,7 +1482,7 @@ cmd_adopt_merged_receipt() {
 		print_error "Adoption blocked: terminal release evidence is missing or invalid"
 		return 1
 	}
-	_merge_record_deferred_cleanup_owner "$pr_number" "$repo" "$cleanup_plan" \
+	_merge_record_deferred_cleanup_owner "$pr_number" "$repo" "$cleanup_target" \
 		"$release_status" "FINALIZATION_PENDING" || {
 		print_error "Adoption blocked: cleanup receipt conflicts with existing owner, lease, or lifecycle evidence"
 		return 1
@@ -1442,10 +1494,10 @@ cmd_adopt_merged_receipt() {
 _merge_capture_session_distill_provenance() {
 	local pr_number="$1"
 	local repo="$2"
-	local cleanup_plan="$3"
-	local worktree_path branch_name canonical_dir delete_remote_branch
-	IFS=$'\t' read -r worktree_path branch_name canonical_dir delete_remote_branch <<<"$cleanup_plan"
-	: "$canonical_dir" "$delete_remote_branch"
+	local cleanup_target="$3"
+	local worktree_path branch_name delete_remote_branch
+	IFS=$'\t' read -r worktree_path branch_name delete_remote_branch <<<"$cleanup_target"
+	: "$delete_remote_branch"
 	local distill_helper="${SCRIPT_DIR}/session-distill-helper.sh"
 	[[ -x "$distill_helper" ]] || return 0
 	local session_id="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
@@ -1460,8 +1512,8 @@ _merge_finalize_post_merge() {
 	local pr_number="$1"
 	local repo="$2"
 	local has_auto="$3"
-	local cleanup_plan="$4"
-	_merge_capture_session_distill_provenance "$pr_number" "$repo" "$cleanup_plan"
+	local cleanup_target="$4"
+	_merge_capture_session_distill_provenance "$pr_number" "$repo" "$cleanup_target"
 	local linked_issue=""
 	linked_issue=$(gh pr view "$pr_number" --repo "$repo" --json body \
 		--jq '.body' 2>/dev/null |
@@ -1479,8 +1531,8 @@ _merge_finalize_post_merge() {
 	fi
 
 	_merge_unlock_resources "$pr_number" "$repo"
-	if [[ "$has_auto" -eq 0 && -n "$cleanup_plan" ]]; then
-		if _merge_record_deferred_cleanup_owner "$pr_number" "$repo" "$cleanup_plan"; then
+	if [[ "$has_auto" -eq 0 && -n "$cleanup_target" ]]; then
+		if _merge_record_deferred_cleanup_owner "$pr_number" "$repo" "$cleanup_target"; then
 			print_info "LIFECYCLE_STATE=CLEANUP_DEFERRED; guarded cleanup ownership persisted outside the worktree"
 		else
 			print_warning "Post-merge worktree cleanup deferred, but durable handoff evidence could not be recorded"
@@ -1562,9 +1614,18 @@ cmd_merge() {
 		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
 		return 1
 	}
-	local _cleanup_plan=""
+	local _cleanup_target=""
+	local _cleanup_worktree=""
+	local _cleanup_branch=""
+	local _cleanup_delete_remote_branch=""
+	local _canonical_dir=""
 	if [[ "$has_auto" -eq 0 ]]; then
-		_cleanup_plan=$(_merge_fresh_worktree_cleanup_plan "$pr_number" "$repo" 2>/dev/null || true)
+		_cleanup_target=$(_merge_fresh_worktree_cleanup_target "$pr_number" "$repo" 2>/dev/null || true)
+		if [[ -n "$_cleanup_target" ]]; then
+			IFS=$'\t' read -r _cleanup_worktree _cleanup_branch _cleanup_delete_remote_branch <<<"$_cleanup_target"
+			: "$_cleanup_branch" "$_cleanup_delete_remote_branch"
+			_canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$_cleanup_worktree" 2>/dev/null || true)
+		fi
 	fi
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
@@ -1583,11 +1644,11 @@ cmd_merge() {
 		return 1
 	fi
 	print_success "LIFECYCLE_STATE=MERGED merge_sha=${FULL_LOOP_MERGE_SHA}"
-	_merge_report_canonical_sync_state "$_cleanup_plan" || true
+	_merge_report_canonical_sync_state "$_canonical_dir" || true
 	if declare -F is_loop_active >/dev/null 2>&1 && is_loop_active; then
 		_full_loop_record_phase "postflight" "$pr_number" || return 1
 	fi
-	_merge_finalize_post_merge "$pr_number" "$repo" "$has_auto" "$_cleanup_plan"
+	_merge_finalize_post_merge "$pr_number" "$repo" "$has_auto" "$_cleanup_target"
 
 	return 0
 }
