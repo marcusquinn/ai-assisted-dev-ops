@@ -99,7 +99,8 @@ export FULL_LOOP_MERGED_EVIDENCE_ATTEMPTS=2
 export FULL_LOOP_MERGED_EVIDENCE_DELAY_SECONDS=0
 # shellcheck source=../full-loop-cleanup-receipt.sh
 source "${SCRIPTS_DIR}/full-loop-cleanup-receipt.sh"
-full_loop_write_cleanup_deferred testorg/repo 42 "$removed_path" feature/test-cleanup "$$" test-session not-requested >/dev/null
+full_loop_write_cleanup_deferred testorg/repo 42 "$removed_path" feature/test-cleanup \
+	"$$" test-session pending FINALIZATION_PENDING >/dev/null
 
 record_runner="${ROOT}/record-runner.sh"
 cat >"$record_runner" <<RUNNER
@@ -737,13 +738,55 @@ for invalid_case in missing failed mismatched; do
 done
 printf 'PASS missing failed and mismatched receipts keep authorized lifecycle blocked\n'
 
-AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null || {
+mkdir -p "$receipt_dir"
+printf '%s\n' not-requested >"${receipt_dir}/testorg_repo-42.status"
+different_removed_path="${ROOT}/different-removed-worktree"
+printf '[2026-07-11T00:00:02Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
+	"$different_removed_path" >>"$cleanup_log"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" wrong/repo >/dev/null 2>&1; then
+	printf 'FAIL conflicting repository identity was accepted as complete\n'
+	exit 1
+fi
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 999 "$removed_path" testorg/repo >/dev/null 2>&1; then
+	printf 'FAIL conflicting PR identity was accepted as complete\n'
+	exit 1
+fi
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$different_removed_path" testorg/repo >/dev/null 2>&1; then
+	printf 'FAIL conflicting worktree identity was accepted as complete\n'
+	exit 1
+fi
+jq -e '.resource_cleanup_state == "CLEANUP_DEFERRED" and .executor_completion_state == "FINALIZATION_PENDING"' \
+	"${cleanup_receipt_dir}/testorg_repo-42.json" >/dev/null
+printf 'PASS completion rejects conflicting repository, PR, and worktree identities without mutation\n'
+
+release_conflict_path="${ROOT}/release-conflict-worktree"
+printf '[2026-07-11T00:00:03Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
+	"$release_conflict_path" >>"$cleanup_log"
+release_conflict_receipt=$(full_loop_write_cleanup_deferred testorg/repo 49 "$release_conflict_path" \
+	feature/release-conflict "$$" release-conflict-session published FINALIZATION_PENDING)
+printf '%s\n' not-requested >"${receipt_dir}/testorg_repo-49.status"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 49 "$release_conflict_path" testorg/repo >/dev/null 2>&1; then
+	printf 'FAIL conflicting release identity was accepted as complete\n'
+	exit 1
+fi
+jq -e '.resource_cleanup_state == "CLEANED" and .executor_completion_state == "FINALIZATION_PENDING"
+	and .release_status == "published"' "$release_conflict_receipt" >/dev/null
+printf 'PASS completion preserves audited cleanup while rejecting conflicting release identity\n'
+
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null || {
 	printf 'FAIL complete merged and cleaned evidence was rejected\n'
 	exit 1
 }
-jq -e '.resource_cleanup_state == "CLEANED" and .cleanup_lease.state == "released" and (.cleaned_at | length > 0)' \
+jq -e '.resource_cleanup_state == "CLEANED" and .cleanup_lease.state == "released"
+	and .executor_completion_state == "COMPLETE" and .release_status == "not-requested"
+	and (.cleaned_at | length > 0)' \
 	"${cleanup_receipt_dir}/testorg_repo-42.json" >/dev/null
-printf 'PASS merged and cleaned evidence completes lifecycle\n'
+printf 'PASS merged removal audit and terminal release evidence finalize the cleanup receipt\n'
 
 rm -f "${receipt_dir}/marcusquinn_aidevops-42.status"
 AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$record_runner" 42 marcusquinn/aidevops >/dev/null
@@ -762,20 +805,20 @@ fi
 printf 'PASS release:failed keeps lifecycle open\n'
 
 mkdir -p "$removed_path"
-if AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
 	printf 'FAIL existing worktree was accepted as cleaned\n'
 	exit 1
 fi
 printf 'PASS existing worktree keeps cleanup pending\n'
 rm -rf "$removed_path"
 
-if COMPLETION_PR_STATE=OPEN AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
+if COMPLETION_PR_STATE=OPEN AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="$cleanup_log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
 	printf 'FAIL open PR was accepted as complete\n'
 	exit 1
 fi
 printf 'PASS open PR blocks lifecycle completion\n'
 
-if AIDEVOPS_CLEANUP_LOG="${ROOT}/missing.log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_CLEANUP_LOG="${ROOT}/missing.log" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" 42 "$removed_path" testorg/repo >/dev/null; then
 	printf 'FAIL absent cleanup audit was accepted as complete\n'
 	exit 1
 fi

@@ -1816,6 +1816,7 @@ cmd_complete_after_cleanup() {
 	local pr_number="${1:-}"
 	local removed_worktree="${2:-}"
 	local repo=""
+	local release_status=""
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$removed_worktree" ]] || {
 		print_error "Usage: full-loop-helper.sh complete-after-cleanup <PR> <removed-worktree-path> [REPO]"
 		return 1
@@ -1832,24 +1833,31 @@ cmd_complete_after_cleanup() {
 		print_error "Completion blocked: no removal audit evidence for ${removed_worktree}"
 		return 1
 	}
-	if declare -F full_loop_mark_cleanup_cleaned_for_worktree >/dev/null 2>&1; then
-		full_loop_mark_cleanup_cleaned_for_worktree "$removed_worktree" || {
-			print_error "Completion blocked: durable cleanup receipt is not CLEANED for ${removed_worktree}"
-			return 1
-		}
-	fi
+	declare -F full_loop_mark_cleanup_cleaned_for_identity >/dev/null 2>&1 || {
+		print_error "Completion blocked: exact cleanup-receipt verifier is unavailable"
+		return 1
+	}
+	full_loop_mark_cleanup_cleaned_for_identity "$repo" "$pr_number" "$removed_worktree" || {
+		print_error "Completion blocked: durable cleanup receipt identity is not CLEANED for ${repo}#${pr_number} at ${removed_worktree}"
+		return 1
+	}
 	_full_loop_verify_merged_pr "$pr_number" "$repo" || {
 		print_error "Completion blocked: PR #${pr_number} lacks merged evidence"
+		return 1
+	}
+	release_status=$(_full_loop_terminal_release_status "$repo" "$pr_number") || {
+		print_error "Completion blocked: terminal release evidence is missing"
 		return 1
 	}
 	_full_loop_verify_aidevops_release_deploy "$repo" "$pr_number" || {
 		print_error "Completion blocked: release, deployment, or postflight evidence is missing"
 		return 1
 	}
+	full_loop_finalize_cleanup_receipt "$repo" "$pr_number" "$release_status" || {
+		print_error "Completion blocked: cleanup receipt conflicts with terminal release evidence"
+		return 1
+	}
 	printf "\n${BOLD}${GREEN}=== FULL DEVELOPMENT LOOP - COMPLETE ===${NC}\n"
-	local receipt_path="" release_status="$_FULL_LOOP_RELEASE_NOT_REQUESTED"
-	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
-	[[ -f "$receipt_path" ]] && IFS= read -r release_status <"$receipt_path"
 	printf "PR: #%s | Lifecycle: CLEANED | release:%s\n\n" "$pr_number" "$release_status"
 	echo "<promise>FULL_LOOP_COMPLETE</promise>"
 	return 0
