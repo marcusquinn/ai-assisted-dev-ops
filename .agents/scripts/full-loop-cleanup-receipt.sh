@@ -15,6 +15,11 @@ _FULL_LOOP_CLEANUP_DEFERRED="CLEANUP_DEFERRED"
 _FULL_LOOP_CLEANUP_LEASED="CLEANUP_LEASED"
 _FULL_LOOP_CLEANUP_CLEANED="CLEANED"
 _FULL_LOOP_EXECUTOR_COMPLETE="COMPLETE"
+_FULL_LOOP_EXECUTOR_FINALIZATION_PENDING="FINALIZATION_PENDING"
+_FULL_LOOP_CLEANUP_LEASE_PENDING="pending"
+_FULL_LOOP_OWNER_SESSION_FALLBACK="full-loop-lifecycle"
+_FULL_LOOP_RECEIPT_RELEASE_AUTHORIZED="authorized"
+_FULL_LOOP_RECEIPT_RELEASE_PENDING="$_FULL_LOOP_CLEANUP_LEASE_PENDING"
 _FULL_LOOP_RECEIPT_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED="superseded"
@@ -463,7 +468,8 @@ _full_loop_cleanup_deferred_matches() {
 		--argjson owner_pid "$owner_pid" --arg owner_identity "$owner_identity" \
 		--arg owner_session "$owner_session" --arg release_status "$release_status" \
 		--arg executor_completion_state "$executor_completion_state" \
-		--arg cleanup_deferred "$_FULL_LOOP_CLEANUP_DEFERRED" '
+		--arg cleanup_deferred "$_FULL_LOOP_CLEANUP_DEFERRED" \
+		--arg cleanup_lease_pending "$_FULL_LOOP_CLEANUP_LEASE_PENDING" '
 		.schema_version == 1
 		and .repository == $repo and .pr_number == $pr_number
 		and .worktree == $worktree and .branch == $branch
@@ -473,7 +479,7 @@ _full_loop_cleanup_deferred_matches() {
 		and .owner.pid == $owner_pid
 		and .owner.process_identity == $owner_identity
 		and .owner.session == $owner_session
-		and .cleanup_lease == {state:"pending",pid:null,acquired_at:null}
+		and .cleanup_lease == {state:$cleanup_lease_pending,pid:null,acquired_at:null}
 	' "$receipt_path" >/dev/null 2>&1
 	return $?
 }
@@ -493,7 +499,7 @@ full_loop_write_cleanup_deferred() {
 	local temp_path=""
 
 	[[ -n "$worktree" && -n "$branch" && "$owner_pid" =~ ^[0-9]+$ ]] || return 1
-	[[ "$executor_completion_state" == "FINALIZATION_PENDING" || "$executor_completion_state" == "$_FULL_LOOP_EXECUTOR_COMPLETE" ]] || return 1
+	[[ "$executor_completion_state" == "$_FULL_LOOP_EXECUTOR_FINALIZATION_PENDING" || "$executor_completion_state" == "$_FULL_LOOP_EXECUTOR_COMPLETE" ]] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
 	receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$pr_number") || return 1
 	_full_loop_receipt_lock_acquire || return 1
@@ -527,10 +533,11 @@ full_loop_write_cleanup_deferred() {
 		--arg owner_session "$owner_session" --arg release_status "$release_status" \
 		--arg executor_completion_state "$executor_completion_state" \
 		--arg state "$_FULL_LOOP_CLEANUP_DEFERRED" --arg now "$now" \
+		--arg cleanup_lease_pending "$_FULL_LOOP_CLEANUP_LEASE_PENDING" \
 		'{schema_version:1,repository:$repo,pr_number:$pr_number,worktree:$worktree,branch:$branch,
 		  executor_completion_state:$executor_completion_state,resource_cleanup_state:$state,release_status:$release_status,
 		  owner:{pid:$owner_pid,process_identity:$owner_identity,session:$owner_session},
-		  cleanup_lease:{state:"pending",pid:null,acquired_at:null},created_at:$now,updated_at:$now,cleaned_at:null}' \
+		  cleanup_lease:{state:$cleanup_lease_pending,pid:null,acquired_at:null},created_at:$now,updated_at:$now,cleaned_at:null}' \
 		>"$temp_path" || {
 		_full_loop_receipt_lock_release
 		return 1
@@ -1031,22 +1038,65 @@ full_loop_finalize_cleanup_receipt() {
 	local repo="$1"
 	local pr_number="$2"
 	local release_status="$3"
+	local expected_worktree="${4:-}"
+	local expected_branch="${5:-}"
+	local expected_owner_pid="${6:-}"
+	local expected_owner_session="${7:-}"
 	local receipt_path=""
 	local current_release=""
 	local current_executor=""
+	local expected_owner_identity=""
+	local require_exact_evidence=0
 	local now=""
+	[[ $# -eq 3 || $# -eq 7 ]] || return 1
 	[[ "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_PUBLISHED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_SUPERSEDED" || "$release_status" == "$_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED" ]] || return 1
+	if [[ $# -eq 7 ]]; then
+		[[ -n "$expected_worktree" && -n "$expected_branch" && "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
+		expected_owner_identity=$(_full_loop_process_identity "$expected_owner_pid") || return 1
+		require_exact_evidence=1
+	fi
 	receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$pr_number") || return 1
 	[[ -f "$receipt_path" ]] || return 1
 	_full_loop_receipt_lock_acquire || return 1
-	if ! jq -e --arg repo "$repo" --argjson pr "$pr_number" \
+	if [[ "$require_exact_evidence" -eq 1 ]]; then
+		if ! jq -e \
+			--arg repo "$repo" --argjson pr "$pr_number" \
+			--arg worktree "$expected_worktree" --arg branch "$expected_branch" \
+			--argjson owner_pid "$expected_owner_pid" --arg owner_identity "$expected_owner_identity" \
+			--arg owner_session "$expected_owner_session" --arg release_status "$release_status" \
+			--arg release_pending "$_FULL_LOOP_RECEIPT_RELEASE_PENDING" \
+			--arg release_authorized "$_FULL_LOOP_RECEIPT_RELEASE_AUTHORIZED" \
+			--arg release_not_requested "$_FULL_LOOP_RECEIPT_RELEASE_NOT_REQUESTED" \
+			--arg cleanup_deferred "$_FULL_LOOP_CLEANUP_DEFERRED" \
+			--arg executor_complete "$_FULL_LOOP_EXECUTOR_COMPLETE" \
+			--arg executor_pending "$_FULL_LOOP_EXECUTOR_FINALIZATION_PENDING" \
+			--arg cleanup_lease_pending "$_FULL_LOOP_CLEANUP_LEASE_PENDING" '
+			.schema_version == 1
+			and .repository == $repo and .pr_number == $pr
+			and .worktree == $worktree and .branch == $branch
+			and (.executor_completion_state == $executor_pending or .executor_completion_state == $executor_complete)
+			and .resource_cleanup_state == $cleanup_deferred
+			and (
+				.release_status == $release_status
+				or .release_status == $release_pending
+				or (.release_status == $release_authorized and $release_status != $release_not_requested)
+			)
+			and .owner.pid == $owner_pid
+			and .owner.process_identity == $owner_identity
+			and .owner.session == $owner_session
+			and .cleanup_lease == {state:$cleanup_lease_pending,pid:null,acquired_at:null}
+		' "$receipt_path" >/dev/null 2>&1; then
+			_full_loop_receipt_lock_release
+			return 1
+		fi
+	elif ! jq -e --arg repo "$repo" --argjson pr "$pr_number" \
 		'.repository == $repo and .pr_number == $pr' "$receipt_path" >/dev/null 2>&1; then
 		_full_loop_receipt_lock_release
 		return 1
 	fi
 	current_executor=$(jq -r '.executor_completion_state // empty' "$receipt_path" 2>/dev/null || true)
 	current_release=$(jq -r '.release_status // empty' "$receipt_path" 2>/dev/null || true)
-	if [[ "$current_executor" != "FINALIZATION_PENDING" && "$current_executor" != "$_FULL_LOOP_EXECUTOR_COMPLETE" ]]; then
+	if [[ "$current_executor" != "$_FULL_LOOP_EXECUTOR_FINALIZATION_PENDING" && "$current_executor" != "$_FULL_LOOP_EXECUTOR_COMPLETE" ]]; then
 		_full_loop_receipt_lock_release
 		return 1
 	fi

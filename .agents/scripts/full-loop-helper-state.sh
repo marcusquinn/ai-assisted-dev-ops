@@ -1595,18 +1595,32 @@ cmd_complete() {
 	current_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 	local current_branch=""
 	local owner_pid=""
-	local owner_session="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-full-loop-complete}}}"
+	local owner_session="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$_FULL_LOOP_OWNER_SESSION_FALLBACK}}}"
+	local receipt_path=""
 	current_branch=$(git branch --show-current 2>/dev/null || true)
 	owner_pid="${PPID:-}"
 	if declare -F _resolve_worktree_owner_pid >/dev/null 2>&1; then
 		owner_pid=$(_resolve_worktree_owner_pid "" 2>/dev/null || printf '%s' "${PPID:-}")
 	fi
 	if [[ -n "$current_root" && -n "$current_branch" ]] && declare -F full_loop_write_cleanup_deferred >/dev/null 2>&1; then
-		full_loop_write_cleanup_deferred "$repo" "$PR_NUMBER" "$current_root" "$current_branch" \
-			"$owner_pid" "$owner_session" "${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" >/dev/null || {
-			print_error "Cannot persist durable deferred-cleanup handoff"
-			return 1
-		}
+		receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$PR_NUMBER") || return 1
+		if [[ -f "$receipt_path" ]]; then
+			full_loop_finalize_cleanup_receipt "$repo" "$PR_NUMBER" \
+				"${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" "$current_root" "$current_branch" \
+				"$owner_pid" "$owner_session" || {
+				print_error "Cannot finalize durable deferred-cleanup handoff"
+				return 1
+			}
+		elif ! full_loop_write_cleanup_deferred "$repo" "$PR_NUMBER" "$current_root" "$current_branch" \
+			"$owner_pid" "$owner_session" "${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" >/dev/null; then
+			# A merge process may have created the receipt after the existence check.
+			full_loop_finalize_cleanup_receipt "$repo" "$PR_NUMBER" \
+				"${RELEASE_STATUS:-$_FULL_LOOP_RELEASE_NOT_REQUESTED}" "$current_root" "$current_branch" \
+				"$owner_pid" "$owner_session" || {
+				print_error "Cannot persist durable deferred-cleanup handoff"
+				return 1
+			}
+		fi
 	else
 		print_error "Cannot persist durable deferred-cleanup handoff without worktree and branch evidence"
 		return 1
