@@ -132,6 +132,7 @@ if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 	exit 0
 fi
 if [[ "${GH_DEBUG:-}" == "api" && "${STUB_GH_DEBUG_RESPONSE:-0}" == "1" ]]; then
+	[[ -z "${STUB_GH_DEBUG_PREFIX:-}" ]] || printf '%s\n' "$STUB_GH_DEBUG_PREFIX" >&2
 	_stub_frame=1
 	_stub_frame_total=1
 	[[ "${STUB_GH_DEBUG_MULTI_FRAME:-0}" == "1" ]] && _stub_frame_total=3
@@ -1284,7 +1285,7 @@ GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
 	AIDEVOPS_GH_API_LOG="$exact_log" STUB_GH_DEBUG_RESPONSE=1 \
 	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
 	STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
-	STUB_GH_DIAGNOSTIC='sanitized native diagnostic' \
+	STUB_GH_DIAGNOSTIC='unframed-private-trailing-fixture' \
 	"$SHIM_RUN" pr view 123 --repo owner/repo >/dev/null 2>"$exact_err"
 if [[ "$(_read_attempt_quota "$exact_log")" == "1" \
 	&& "$(_read_last_attempt_field "$exact_log" 15)" == "200" \
@@ -1293,12 +1294,58 @@ if [[ "$(_read_attempt_quota "$exact_log")" == "1" \
 else
 	_fail "GraphQL exact quota capture" "log: $(cat "$exact_log" 2>/dev/null || true)"
 fi
-if grep -Eq 'private-fixture-token|response-body-fixture' "$exact_err"; then
-	_fail "GH_DEBUG privacy filtering" "stderr exposed private debug content"
-elif grep -q '^sanitized native diagnostic$' "$exact_err"; then
-	_pass "GH_DEBUG request and response bodies are suppressed while native diagnostics survive"
+if [[ ! -s "$exact_err" ]]; then
+	_pass "GH_DEBUG frames and unframed trailing content are fully suppressed"
 else
-	_fail "GH_DEBUG sanitized diagnostic preservation" "stderr: $(cat "$exact_err" 2>/dev/null || true)"
+	_fail "GH_DEBUG trailing-content privacy filtering" "stderr: $(cat "$exact_err" 2>/dev/null || true)"
+fi
+
+prefix_log="$TMP/exact-unframed-prefix.log"
+prefix_err="$TMP/exact-unframed-prefix.err"
+prefix_state="$TMP/exact-unframed-prefix-state"
+: >"$prefix_log"
+GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$prefix_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_GH_API_LOG="$prefix_log" STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_GH_DEBUG_PREFIX='unframed-private-prefix-fixture' \
+	STUB_BOOTSTRAP_GRAPHQL_USED=200 STUB_GH_DEBUG_RESOURCE=graphql \
+	STUB_GH_DEBUG_USED=201 STUB_GH_DEBUG_REMAINING=4799 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" pr view 123 --repo owner/repo >/dev/null 2>"$prefix_err"
+if [[ "$(_read_attempt_quota "$prefix_log")" == "1" && ! -s "$prefix_err" ]]; then
+	_pass "unframed content before a valid GH_DEBUG frame stays private"
+else
+	_fail "GH_DEBUG prefix privacy filtering" \
+		"log: $(cat "$prefix_log" 2>/dev/null || true) stderr: $(cat "$prefix_err" 2>/dev/null || true)"
+fi
+
+mixed_debug="$TMP/exact-malformed-mixed.debug"
+mixed_err="$TMP/exact-malformed-mixed.err"
+cat >"$mixed_debug" <<'EOF'
+unframed-private-prefix-fixture
+* Request took 1ms
+* Request at 2026-07-24 00:00:00 +0000 UTC
+> Authorization: token private-fixture-token
+
+< HTTP/2.0 200 Fixture
+< X-Ratelimit-Resource: graphql
+< X-Ratelimit-Used: 201
+< X-Ratelimit-Remaining: 4799
+< X-Ratelimit-Reset: 2000
+
+{"private":"response-body-fixture"}
+* Request took 12.5ms
+unframed-private-trailing-fixture
+* Request took 1ms
+EOF
+mixed_parsed=$(python3 "$TMP/scripts/gh-quota-debug-filter.py" \
+	"$mixed_debug" 2>"$mixed_err")
+if [[ "$(printf '%s\n' "$mixed_parsed" | grep -c $'^v1\t1$')" == "1" \
+	&& "$(printf '%s\n' "$mixed_parsed" | grep -c $'^frame\t1\t1\t200\tgraphql\t201\t')" == "1" \
+	&& ! -s "$mixed_err" ]]; then
+	_pass "malformed mixed streams retain only structurally proven attempts"
+else
+	_fail "malformed mixed-stream attribution" \
+		"parsed: $mixed_parsed stderr: $(cat "$mixed_err" 2>/dev/null || true)"
 fi
 
 failed_log="$TMP/exact-failed-rest.log"
