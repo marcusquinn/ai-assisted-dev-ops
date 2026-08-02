@@ -25,11 +25,20 @@ class ForemProviderUnavailableError(ForemAdapterError):
     """Raised when the bounded Forem HTTP child cannot complete a read."""
 
 
+def _validated_text(value: Any, pattern: re.Pattern[str], message: str) -> str:
+    """Return text matching an allowlist or raise the adapter error."""
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise ForemAdapterError(message)
+    return value
+
+
 def instance_id(value: Any) -> str:
     """Validate a privacy-safe stable installation fingerprint."""
-    if not isinstance(value, str) or INSTANCE_ID.fullmatch(value) is None:
-        raise ForemAdapterError("Forem installation identity is invalid")
-    return value
+    return _validated_text(
+        value,
+        INSTANCE_ID,
+        "Forem installation identity is invalid",
+    )
 
 
 def provider_account_id(value: Any) -> str:
@@ -37,16 +46,12 @@ def provider_account_id(value: Any) -> str:
     text = str(value) if isinstance(value, int) and not isinstance(value, bool) else value
     if isinstance(text, str) and text.startswith("user_"):
         text = text.removeprefix("user_")
-    if not isinstance(text, str) or PROVIDER_ACCOUNT_ID.fullmatch(text) is None:
-        raise ForemAdapterError("Forem account ID is invalid")
-    return text
+    return _validated_text(text, PROVIDER_ACCOUNT_ID, "Forem account ID is invalid")
 
 
 def username(value: Any) -> str:
     """Validate the selected Forem username returned by authenticated identity."""
-    if not isinstance(value, str) or USERNAME.fullmatch(value) is None:
-        raise ForemAdapterError("Forem account username is invalid")
-    return value
+    return _validated_text(value, USERNAME, "Forem account username is invalid")
 
 
 def namespaced_id(installation: str, kind: str, value: str) -> str:
@@ -54,6 +59,5 @@ def namespaced_id(installation: str, kind: str, value: str) -> str:
     stable_instance = instance_id(installation)
     if RESOURCE_KIND.fullmatch(kind) is None:
         raise ForemAdapterError("Forem resource kind is invalid")
-    if not isinstance(value, str) or RESOURCE_ID.fullmatch(value) is None:
-        raise ForemAdapterError("Forem resource ID is invalid")
-    return f"frm_{stable_instance}_{kind}_{value}"
+    stable_value = _validated_text(value, RESOURCE_ID, "Forem resource ID is invalid")
+    return f"frm_{stable_instance}_{kind}_{stable_value}"

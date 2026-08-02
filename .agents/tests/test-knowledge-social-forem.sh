@@ -165,6 +165,12 @@ from _knowledge_social_forem_http import (
     api,
     installation_fingerprint,
 )
+from _knowledge_social_forem_identity import (
+    ForemAdapterError,
+    instance_id,
+    provider_account_id,
+    username,
+)
 from _knowledge_social_forem_provider import _dispatch, _profile
 from _knowledge_social_forem_normalize import PageContext, normalize_page
 from _knowledge_social_forem_routes import EXACT_READ_PATHS, allowlisted_path, page
@@ -190,9 +196,25 @@ instance_a = installation_fingerprint(base_a, "a" * 32)
 instance_b = installation_fingerprint(base_b, "b" * 32)
 assert base_a == "https://forem-a.example.invalid/community"
 assert instance_a != instance_b
+assert instance_id(instance_a) == instance_a
+assert provider_account_id(42) == "42"
+assert provider_account_id("user_42") == "42"
+assert username("selected-user") == "selected-user"
+assert namespaced_id(instance_a, "user", "42") == f"frm_{instance_a}_user_42"
 assert namespaced_id(instance_a, "user", "42") != namespaced_id(
     instance_b, "user", "42"
 )
+for validator, rejected in (
+    (instance_id, "a" * 23),
+    (provider_account_id, True),
+    (username, "selected user"),
+):
+    try:
+        validator(rejected)
+    except ForemAdapterError:
+        pass
+    else:
+        raise AssertionError("unsafe Forem identity value was accepted")
 for invalid in (
     "http://forem.example.invalid",
     "https://user@forem.example.invalid",
