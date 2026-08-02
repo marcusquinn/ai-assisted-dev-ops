@@ -115,16 +115,17 @@ def _verify_page_account(request: PageRequest, identity: dict[str, Any]) -> None
         )
 
 
-def _dispatch(
+def _identity_action(
     request: dict[str, Any], config: ProfileConfig, opener: Opener
 ) -> dict[str, Any]:
-    action = request.get("action")
-    if action == "identity":
-        if set(request) != {"action", "account_id"}:
-            raise FreshRSSReadProviderError("FreshRSS identity request shape is invalid")
-        return _identity(config, opener, user_id(request.get("account_id")))
-    if action != "page":
-        raise FreshRSSReadProviderError("FreshRSS read action is unsupported")
+    if set(request) != {"action", "account_id"}:
+        raise FreshRSSReadProviderError("FreshRSS identity request shape is invalid")
+    return _identity(config, opener, user_id(request.get("account_id")))
+
+
+def _page_action(
+    request: dict[str, Any], config: ProfileConfig, opener: Opener
+) -> dict[str, Any]:
     page_request = parse_page_request(request)
     if page_request.installation_id != config.installation_id:
         raise FreshRSSReadProviderError(
@@ -140,6 +141,17 @@ def _dispatch(
     _verify_page_account(page_request, identity)
     result = page(partial(api, config, opener, authorized.payload), page_request)
     return terminal_payload(result) if isinstance(result, ApiResult) else result
+
+
+def _dispatch(
+    request: dict[str, Any], config: ProfileConfig, opener: Opener
+) -> dict[str, Any]:
+    action = request.get("action")
+    if action == "identity":
+        return _identity_action(request, config, opener)
+    if action == "page":
+        return _page_action(request, config, opener)
+    raise FreshRSSReadProviderError("FreshRSS read action is unsupported")
 
 
 def _emit(payload: dict[str, Any]) -> None:

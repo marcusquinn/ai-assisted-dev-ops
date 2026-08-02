@@ -2,7 +2,7 @@
 
 Checked 2026-08-02 against the official FreshRSS Google Reader, Fever, OPML,
 mobile-access documentation, and current upstream API source. The worker runtime
-provides Python 3.12.3 standard-library HTTP, JSON, SQLite, and XML exports; no
+provides Python 3.12.3 standard-library HTTP, JSON, SQLite, and HTML parsing; no
 third-party FreshRSS client is installed or required.
 
 ## Implemented evidence

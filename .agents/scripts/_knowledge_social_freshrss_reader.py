@@ -85,29 +85,32 @@ def _fixture_object(value: Any, message: str) -> dict[str, Any]:
     return value
 
 
+def _fixture_page(sequence: FixtureSequence, request: PageRequest) -> dict[str, Any]:
+    entry = sequence.next_page()
+    expectation = _fixture_object(
+        entry.get("expect_request", {}),
+        "FreshRSS fixture request expectation must be an object",
+    )
+    actual = request.payload()
+    if any(actual.get(key) != value for key, value in expectation.items()):
+        raise FreshRSSAdapterError(
+            "FreshRSS request did not resume at the expected checkpoint"
+        )
+    return _fixture_object(
+        entry.get("response", entry),
+        "FreshRSS fixture page response must be an object",
+    )
+
+
 class FixtureFreshRSS:
     def __init__(self, path: Path) -> None:
-        self.fixture = FixtureSequence(path, "FreshRSS", FreshRSSAdapterError)
+        self.sequence = FixtureSequence(path, "FreshRSS", FreshRSSAdapterError)
 
-    def identity(self, expected_id: str) -> dict[str, Any]:
-        del expected_id
-        return self.fixture.identity()
+    def identity(self, _expected_id: str) -> dict[str, Any]:
+        return self.sequence.identity()
 
     def page(self, request: PageRequest) -> dict[str, Any]:
-        entry = self.fixture.next_page()
-        expectation = _fixture_object(
-            entry.get("expect_request", {}),
-            "FreshRSS fixture request expectation must be an object",
-        )
-        for key, value in expectation.items():
-            if request.payload().get(key) != value:
-                raise FreshRSSAdapterError(
-                    "FreshRSS request did not resume at the expected checkpoint"
-                )
-        return _fixture_object(
-            entry.get("response", entry),
-            "FreshRSS fixture page response must be an object",
-        )
+        return _fixture_page(self.sequence, request)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:

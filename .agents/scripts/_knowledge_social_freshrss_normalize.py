@@ -88,20 +88,22 @@ def _object_row(
     if not isinstance(kind, str) or kind not in OBJECT_TYPES:
         raise FreshRSSAdapterError("FreshRSS page contains an unsupported item kind")
     remote_id = _required_text(item, "remote_id")
-    text = "\n\n".join(
-        value
+    values = [
+        _optional_text(item, key)
         for key in ("title", "body", "author", "description", "category")
-        if (value := _optional_text(item, key))
-    ) or None
+    ]
+    text = "\n\n".join(value for value in values if value) or None
     provider_json = {"source": PROVENANCE, "stream": context.stream, "record": item}
     reject_credentials(provider_json)
+    created_at = _optional_text(item, "created_at")
+    if created_at is None:
+        created_at = _optional_text(item, "published_at")
     return {
         "object_type": kind,
         "remote_id": remote_id,
         "account_remote_id": context.account.get("id"),
         "text": text,
-        "created_at": _optional_text(item, "created_at")
-        or _optional_text(item, "published_at"),
+        "created_at": created_at,
         "observed_at": observed_at,
         "evidence_class": "observed",
         "provider_json": provider_json,
@@ -128,6 +130,45 @@ def _activity_row(
     }
 
 
+def _account_row(context: PageContext, observed_at: str) -> dict[str, Any]:
+    username = context.account.get("username")
+    return {
+        "remote_id": context.account.get("id"),
+        "handle": username,
+        "display_name": username,
+        "observed_at": observed_at,
+        "provider_json": {
+            "source": PROVENANCE,
+            "installation_id": context.account.get("installation_id"),
+            "user_id": context.account.get("user_id"),
+        },
+    }
+
+
+def _archive(
+    context: PageContext,
+    observed_at: str,
+    policy: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    archive = {
+        "provider": PROVIDER,
+        "connection_id": context.connection_id,
+        "remote_account_id": context.account.get("id"),
+        "exported_at": observed_at,
+        "enabled_streams": list(context.enabled_streams),
+    }
+    archive["policy"] = policy
+    archive["accounts"] = [_account_row(context, observed_at)]
+    archive["objects"] = [_object_row(item, context, observed_at) for item in items]
+    archive["activities"] = [
+        _activity_row(item, context, observed_at) for item in items
+    ]
+    archive["media"] = []
+    archive["coverage"] = _coverage(observed_at)
+    return archive
+
+
 def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
     reject_credentials(payload)
     observed_at = _observed_at(payload)
@@ -142,30 +183,6 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
             "freshrss_fever": "fallback_not_live_because_authenticated_reads_require_post",
         }
     )
-    archive = {
-        "provider": PROVIDER,
-        "connection_id": context.connection_id,
-        "remote_account_id": context.account.get("id"),
-        "exported_at": observed_at,
-        "enabled_streams": list(context.enabled_streams),
-        "policy": policy,
-        "accounts": [
-            {
-                "remote_id": context.account.get("id"),
-                "handle": context.account.get("username"),
-                "display_name": context.account.get("username"),
-                "observed_at": observed_at,
-                "provider_json": {
-                    "source": PROVENANCE,
-                    "installation_id": context.account.get("installation_id"),
-                    "user_id": context.account.get("user_id"),
-                },
-            }
-        ],
-        "objects": [_object_row(item, context, observed_at) for item in items],
-        "activities": [_activity_row(item, context, observed_at) for item in items],
-        "media": [],
-        "coverage": _coverage(observed_at),
-    }
+    archive = _archive(context, observed_at, policy, items)
     reject_credentials(archive)
     return archive

@@ -84,22 +84,32 @@ def _api_root(config: ProfileConfig) -> str:
 
 
 def _target_url(config: ProfileConfig, path: str, params: dict[str, str]) -> str:
-    if not allowlisted_path(path) or set(params) - query_keys_for_path(path):
+    if not allowlisted_path(path):
         raise FreshRSSReadProviderError("FreshRSS API route is not allowlisted")
-    if any(
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or len(value.encode()) > 16 * 1024
-        for value in params.values()
-    ):
-        raise FreshRSSReadProviderError("FreshRSS API query is invalid")
+    if set(params).difference(query_keys_for_path(path)):
+        raise FreshRSSReadProviderError("FreshRSS API route is not allowlisted")
+    for value in params.values():
+        _query_text(value)
     for key in ("n", "ot"):
         value = params.get(key)
-        if value is not None and not value.isdigit():
-            raise FreshRSSReadProviderError("FreshRSS paging query is invalid")
+        if value is not None:
+            _paging_number(value)
     query = urlencode(params)
     return f"{_api_root(config)}{path}" + (f"?{query}" if query else "")
+
+
+def _query_text(value: Any) -> None:
+    if not isinstance(value, str):
+        raise FreshRSSReadProviderError("FreshRSS API query is invalid")
+    if not value or "\x00" in value:
+        raise FreshRSSReadProviderError("FreshRSS API query is invalid")
+    if len(value.encode()) > 16 * 1024:
+        raise FreshRSSReadProviderError("FreshRSS API query is invalid")
+
+
+def _paging_number(value: str) -> None:
+    if not value.isdigit():
+        raise FreshRSSReadProviderError("FreshRSS paging query is invalid")
 
 
 def _status(response: Response) -> int:
@@ -107,6 +117,44 @@ def _status(response: Response) -> int:
     if isinstance(status, bool) or not isinstance(status, int):
         raise FreshRSSReadProviderError("FreshRSS HTTP status is invalid")
     return status
+
+
+def _read_body(response: Response, limit: int, message: str) -> bytes:
+    payload = response.read(limit + 1)
+    if not isinstance(payload, bytes):
+        raise FreshRSSReadProviderError(message)
+    if len(payload) > limit:
+        raise FreshRSSReadProviderError(message)
+    return payload
+
+
+def _retry_from_error(error: HTTPError) -> int | None:
+    if error.headers is None:
+        return None
+    return _retry_epoch(error.headers.get("Retry-After"))
+
+
+def _authorization(value: Any) -> str:
+    if not isinstance(value, str):
+        raise FreshRSSReadProviderError("FreshRSS authorization is invalid")
+    if not value or "\x00" in value:
+        raise FreshRSSReadProviderError("FreshRSS authorization is invalid")
+    if len(value.encode()) > 16 * 1024:
+        raise FreshRSSReadProviderError("FreshRSS authorization is invalid")
+    return value
+
+
+def _opml_text(payload: bytes) -> str:
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise FreshRSSReadProviderError("FreshRSS OPML response is invalid") from error
+
+
+def _api_payload(path: str, payload: bytes) -> Any:
+    if path == "/reader/api/0/subscription/export":
+        return _opml_text(payload)
+    return decode_json(payload, MAX_RESPONSE_BYTES)
 
 
 def login(config: ProfileConfig, opener: Opener) -> ApiResult:
@@ -124,15 +172,14 @@ def login(config: ProfileConfig, opener: Opener) -> ApiResult:
     )
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            payload = response.read(MAX_LOGIN_BYTES + 1)
-            if not isinstance(payload, bytes) or len(payload) > MAX_LOGIN_BYTES:
-                raise FreshRSSReadProviderError(
-                    "FreshRSS login response exceeds the safety limit"
-                )
+            payload = _read_body(
+                response,
+                MAX_LOGIN_BYTES,
+                "FreshRSS login response exceeds the safety limit",
+            )
             return ApiResult(_status(response), login_token(payload, MAX_LOGIN_BYTES))
     except HTTPError as error:
-        retry = error.headers.get("Retry-After") if error.headers is not None else None
-        return ApiResult(error.code, None, _retry_epoch(retry))
+        return ApiResult(error.code, None, _retry_from_error(error))
     except (TimeoutError, URLError, OSError) as error:
         raise FreshRSSReadProviderError("FreshRSS read provider request failed") from error
 
@@ -145,8 +192,7 @@ def api(
     params: dict[str, str],
 ) -> ApiResult:
     """Execute one exact-origin, redirect-free, GET-only data request."""
-    if not isinstance(auth, str) or not auth or "\x00" in auth:
-        raise FreshRSSReadProviderError("FreshRSS authorization is invalid")
+    authorization = _authorization(auth)
     request = Request(
         _target_url(config, path, params),
         headers={
@@ -155,30 +201,20 @@ def api(
                 if path == "/reader/api/0/subscription/export"
                 else "application/json"
             ),
-            "Authorization": f"GoogleLogin auth={auth}",
+            "Authorization": f"GoogleLogin auth={authorization}",
             "User-Agent": "aidevops-freshrss-knowledge/1",
         },
         method="GET",
     )
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-            if not isinstance(payload, bytes) or len(payload) > MAX_RESPONSE_BYTES:
-                raise FreshRSSReadProviderError(
-                    "FreshRSS read response exceeds the safety limit"
-                )
-            if path == "/reader/api/0/subscription/export":
-                try:
-                    decoded: Any = payload.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise FreshRSSReadProviderError(
-                        "FreshRSS OPML response is invalid"
-                    ) from error
-            else:
-                decoded = decode_json(payload, MAX_RESPONSE_BYTES)
-            return ApiResult(_status(response), decoded)
+            payload = _read_body(
+                response,
+                MAX_RESPONSE_BYTES,
+                "FreshRSS read response exceeds the safety limit",
+            )
+            return ApiResult(_status(response), _api_payload(path, payload))
     except HTTPError as error:
-        retry = error.headers.get("Retry-After") if error.headers is not None else None
-        return ApiResult(error.code, {}, _retry_epoch(retry))
+        return ApiResult(error.code, {}, _retry_from_error(error))
     except (TimeoutError, URLError, OSError) as error:
         raise FreshRSSReadProviderError("FreshRSS read provider request failed") from error

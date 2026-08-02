@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, urlsplit
 
 from _knowledge_social_freshrss_identity import account_id, user_id
 
@@ -75,7 +75,9 @@ def object_list(value: Any, field: str, *, limit: int) -> list[dict[str, Any]]:
 def optional_text(value: Any, field: str, *, limit: int = MAX_TEXT_BYTES) -> str | None:
     if value is None:
         return None
-    if not isinstance(value, str) or "\x00" in value or len(value.encode()) > limit:
+    if not isinstance(value, str):
+        raise FreshRSSReadProviderError(f"FreshRSS {field} must be text")
+    if "\x00" in value or len(value.encode()) > limit:
         raise FreshRSSReadProviderError(f"FreshRSS {field} must be text")
     return value
 
@@ -87,58 +89,92 @@ def required_text(value: Any, field: str, *, limit: int = 4096) -> str:
     return text
 
 
-def safe_url(value: Any, field: str) -> str | None:
-    """Reject credentials and credential-shaped URL query parameters."""
-    text = optional_text(value, field, limit=64 * 1024)
-    if text is None:
-        return None
+def _url_parts(text: str, field: str) -> tuple[SplitResult, int | None]:
     try:
         parsed = urlsplit(text)
         port = parsed.port
     except ValueError as error:
         raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid") from error
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or port is not None and not 1 <= port <= 65535
-    ):
+    return parsed, port
+
+
+def _validate_url_origin(parsed: SplitResult, port: int | None, field: str) -> None:
+    if parsed.scheme.lower() not in {"http", "https"}:
         raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid")
+    if parsed.hostname is None:
+        raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid")
+    if parsed.username is not None:
+        raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid")
+    if parsed.password is not None:
+        raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid")
+    if port is None:
+        return
+    if port < 1 or port > 65535:
+        raise FreshRSSReadProviderError(f"FreshRSS {field} is invalid")
+
+
+def _reject_sensitive_query(parsed: SplitResult, field: str) -> None:
     for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
         normalized = key.casefold().replace("-", "_")
-        if any(marker in normalized for marker in SENSITIVE_QUERY_MARKERS):
-            raise FreshRSSReadProviderError(
-                f"FreshRSS {field} contains credential-shaped data"
-            )
+        for marker in SENSITIVE_QUERY_MARKERS:
+            if marker in normalized:
+                raise FreshRSSReadProviderError(
+                    f"FreshRSS {field} contains credential-shaped data"
+                )
+
+
+def safe_url(value: Any, field: str) -> str | None:
+    """Reject credentials and credential-shaped URL query parameters."""
+    text = optional_text(value, field, limit=64 * 1024)
+    if text is None:
+        return None
+    parsed, port = _url_parts(text, field)
+    _validate_url_origin(parsed, port, field)
+    _reject_sensitive_query(parsed, field)
     return text
 
 
-def login_token(payload: bytes, limit: int) -> str:
-    """Parse ClientLogin without exposing SID/Auth material to the parent."""
+def _login_text(payload: bytes, limit: int) -> str:
     if len(payload) > limit:
         raise FreshRSSReadProviderError("FreshRSS login response exceeds the safety limit")
     try:
-        text = payload.decode("utf-8")
+        return payload.decode("utf-8")
     except UnicodeDecodeError as error:
         raise FreshRSSReadProviderError("FreshRSS login response is invalid") from error
+
+
+def _login_values(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text.splitlines():
         if not line:
             continue
         key, separator, value = line.partition("=")
-        if not separator or key in values or key not in {"SID", "LSID", "Auth"}:
+        if not separator:
+            raise FreshRSSReadProviderError("FreshRSS login response is invalid")
+        if key in values:
+            raise FreshRSSReadProviderError("FreshRSS login response is invalid")
+        if key not in {"SID", "LSID", "Auth"}:
             raise FreshRSSReadProviderError("FreshRSS login response is invalid")
         values[key] = value
+    return values
+
+
+def _auth_value(values: dict[str, str]) -> str:
     token = values.get("Auth")
-    if (
-        not token
-        or "\x00" in token
-        or len(token.encode()) > 16 * 1024
-        or any(character.isspace() for character in token)
-    ):
+    if not token:
+        raise FreshRSSReadProviderError("FreshRSS login response is invalid")
+    if "\x00" in token:
+        raise FreshRSSReadProviderError("FreshRSS login response is invalid")
+    if len(token.encode()) > 16 * 1024:
+        raise FreshRSSReadProviderError("FreshRSS login response is invalid")
+    if any(character.isspace() for character in token):
         raise FreshRSSReadProviderError("FreshRSS login response is invalid")
     return token
+
+
+def login_token(payload: bytes, limit: int) -> str:
+    """Parse ClientLogin without exposing SID/Auth material to the parent."""
+    return _auth_value(_login_values(_login_text(payload, limit)))
 
 
 def identity_value(payload: Any, expected_user_id: str, instance: str) -> dict[str, Any]:

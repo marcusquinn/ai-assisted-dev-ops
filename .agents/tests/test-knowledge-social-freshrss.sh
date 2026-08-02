@@ -116,7 +116,11 @@ sys.path.insert(0, str(scripts))
 
 from _knowledge_social_collect import CursorState
 from _knowledge_social_freshrss import PageRequest, STREAMS, page_checkpoint, page_request
-from _knowledge_social_freshrss_contract import ApiResult, identity_value
+from _knowledge_social_freshrss_contract import (
+    ApiResult,
+    FreshRSSReadProviderError,
+    identity_value,
+)
 from _knowledge_social_freshrss_http import (
     API_PREFIX,
     HTTP_TIMEOUT_SECONDS,
@@ -247,15 +251,31 @@ assert [record["kind"] for record in tags["data"]] == ["tag"]
 opml = page(
     lambda path, params: ApiResult(
         200,
-        '<opml xmlns:frss="https://freshrss.org/opml"><body><outline text="Research">'
+        '<opml xmlns:frss="https://freshrss.org/opml"><body><outline>'
+        '<outline text="Research">'
         '<outline text="Feed" type="rss" xmlUrl="https://feed.example/rss" '
         'htmlUrl="https://site.example/" frss:CURLOPT_COOKIE="must-not-persist"/>'
-        '</outline></body></opml>',
+        '</outline></outline></body></opml>',
     ),
     PageRequest("opml", identity["id"], instance, "reader", None, None, 10),
 )
 assert opml["data"][0]["category"] == "Research"
 assert "CURLOPT" not in json.dumps(opml)
+
+for unsafe_opml in (
+    '<!DOCTYPE opml [<!ENTITY local SYSTEM "file:///blocked">]><opml><body/></opml>',
+    '<opml><body><outline text="Unclosed"></body></opml>',
+    '<opml><body><outline xmlUrl="https://feed.example/rss?api_key=blocked"/></body></opml>',
+):
+    try:
+        page(
+            lambda path, params, body=unsafe_opml: ApiResult(200, body),
+            PageRequest("opml", identity["id"], instance, "reader", None, None, 10),
+        )
+    except FreshRSSReadProviderError:
+        pass
+    else:
+        raise AssertionError("unsafe FreshRSS OPML was accepted")
 
 
 class Headers:

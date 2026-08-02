@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
-import base64
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from _knowledge_social_collect import CursorState, PageCheckpoint
+from _knowledge_social_freshrss_cursor import (
+    continuation_value,
+    decode_cursor,
+    encode_cursor,
+    positive_int,
+)
 from _knowledge_social_freshrss_identity import (
     FreshRSSAdapterError,
     FreshRSSProviderUnavailableError,
@@ -20,7 +24,6 @@ from _knowledge_social_freshrss_identity import (
 from knowledge_social_import import canonical_json, reject_credentials
 
 PROVIDER = "freshrss"
-CURSOR_PREFIX = "freshrss-greader-v1:"
 RETENTION_LIMIT = "operator_retention_and_current_database_state"
 MAX_PAGE_ITEMS = 1000
 
@@ -81,57 +84,30 @@ class PageRequest:
 PAGE_REQUEST_KEYS = frozenset(PageRequest.__dataclass_fields__) | {"action"}
 
 
-def _positive(value: Any, field: str, *, allow_zero: bool = False) -> int:
-    minimum = 0 if allow_zero else 1
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise FreshRSSAdapterError(f"FreshRSS {field} is invalid")
-    return value
-
-
 def _text(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value or "\x00" in value or len(value.encode()) > 4096:
+    if not isinstance(value, str):
+        raise FreshRSSAdapterError(f"FreshRSS {field} is invalid")
+    if not value or "\x00" in value:
+        raise FreshRSSAdapterError(f"FreshRSS {field} is invalid")
+    if len(value.encode()) > 4096:
         raise FreshRSSAdapterError(f"FreshRSS {field} is invalid")
     return value
 
 
-def _continuation(value: Any) -> str | None:
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or len(value.encode()) > 16 * 1024
-    ):
-        raise FreshRSSAdapterError("FreshRSS continuation is invalid")
-    return value
+def _incremental_watermark(value: str | None) -> int:
+    if value is None or not value.isdigit():
+        raise FreshRSSAdapterError("stored FreshRSS watermark is invalid")
+    return max(0, int(value) - 1)
 
 
-def _encode_cursor(continuation: str, newer_than: int | None) -> str:
-    encoded = base64.urlsafe_b64encode(
-        canonical_json({"continuation": continuation, "newer_than": newer_than}).encode()
-    ).decode().rstrip("=")
-    return f"{CURSOR_PREFIX}{encoded}"
-
-
-def _decode_cursor(cursor: str) -> tuple[str, int | None]:
-    if not cursor.startswith(CURSOR_PREFIX):
-        raise FreshRSSAdapterError("stored FreshRSS cursor has an unsupported version")
-    try:
-        raw = cursor.removeprefix(CURSOR_PREFIX)
-        payload = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
-    except (ValueError, UnicodeError, json.JSONDecodeError) as error:
-        raise FreshRSSAdapterError("stored FreshRSS cursor is invalid") from error
-    if not isinstance(payload, dict) or set(payload) != {"continuation", "newer_than"}:
-        raise FreshRSSAdapterError("stored FreshRSS cursor has an invalid shape")
-    reject_credentials(payload)
-    newer_than = payload.get("newer_than")
-    if newer_than is not None:
-        newer_than = _positive(newer_than, "newer-than cursor", allow_zero=True)
-    continuation = _continuation(payload.get("continuation"))
-    if continuation is None:
-        raise FreshRSSAdapterError("stored FreshRSS cursor is invalid")
-    return continuation, newer_than
+def _request_cursor(stream: str, state: CursorState) -> tuple[str | None, int | None]:
+    if stream not in ITEM_STREAMS:
+        return None, None
+    if state.cursor:
+        return decode_cursor(state.cursor)
+    if stream == "items" and state.backfill_complete:
+        return None, _incremental_watermark(state.watermark)
+    return None, None
 
 
 def page_request(
@@ -139,13 +115,7 @@ def page_request(
 ) -> PageRequest:
     if stream not in STREAMS:
         raise FreshRSSAdapterError("FreshRSS stream is unsupported")
-    continuation, newer_than = _decode_cursor(state.cursor) if state.cursor else (None, None)
-    if stream == "items" and state.backfill_complete and not state.cursor:
-        if state.watermark is None or not state.watermark.isdigit():
-            raise FreshRSSAdapterError("stored FreshRSS watermark is invalid")
-        newer_than = max(0, int(state.watermark) - 1)
-    if stream not in ITEM_STREAMS:
-        continuation, newer_than = None, None
+    continuation, newer_than = _request_cursor(stream, state)
     return PageRequest(
         stream,
         _text(account.get("id"), "selected account ID"),
@@ -157,26 +127,53 @@ def page_request(
     )
 
 
-def parse_page_request(payload: dict[str, Any]) -> PageRequest:
-    if set(payload) != PAGE_REQUEST_KEYS or payload.get("action") != "page":
-        raise FreshRSSAdapterError("FreshRSS read request has an invalid action shape")
+def _request_stream(payload: dict[str, Any]) -> str:
     stream = payload.get("stream")
     if not isinstance(stream, str) or stream not in STREAMS:
         raise FreshRSSAdapterError("FreshRSS stream is unsupported")
-    limit = _positive(payload.get("limit"), "page size")
+    return stream
+
+
+def _request_limit(payload: dict[str, Any]) -> int:
+    limit = positive_int(payload.get("limit"), "page size")
     if limit > MAX_PAGE_ITEMS:
         raise FreshRSSAdapterError("FreshRSS page size is invalid")
+    return limit
+
+
+def _request_position(
+    payload: dict[str, Any], stream: str
+) -> tuple[str | None, int | None]:
     newer_than = payload.get("newer_than")
     if newer_than is not None:
-        newer_than = _positive(newer_than, "newer-than cursor", allow_zero=True)
-    continuation = _continuation(payload.get("continuation"))
-    if stream not in ITEM_STREAMS and (continuation is not None or newer_than is not None):
-        raise FreshRSSAdapterError("FreshRSS snapshot request has an invalid cursor")
+        newer_than = positive_int(newer_than, "newer-than cursor", allow_zero=True)
+    continuation = continuation_value(payload.get("continuation"))
+    if stream not in ITEM_STREAMS:
+        if continuation is not None:
+            raise FreshRSSAdapterError("FreshRSS snapshot request has an invalid cursor")
+        if newer_than is not None:
+            raise FreshRSSAdapterError("FreshRSS snapshot request has an invalid cursor")
+    return continuation, newer_than
+
+
+def _request_identity(payload: dict[str, Any]) -> tuple[str, str, str]:
     local = user_id(payload.get("user_id"))
     instance = _text(payload.get("installation_id"), "installation ID")
     selected = _text(payload.get("account_id"), "selected account ID")
     if selected != account_id(instance, local):
         raise FreshRSSAdapterError("FreshRSS account identity binding is invalid")
+    return selected, instance, local
+
+
+def parse_page_request(payload: dict[str, Any]) -> PageRequest:
+    if set(payload) != PAGE_REQUEST_KEYS:
+        raise FreshRSSAdapterError("FreshRSS read request has an invalid action shape")
+    if payload.get("action") != "page":
+        raise FreshRSSAdapterError("FreshRSS read request has an invalid action shape")
+    stream = _request_stream(payload)
+    limit = _request_limit(payload)
+    continuation, newer_than = _request_position(payload, stream)
+    selected, instance, local = _request_identity(payload)
     return PageRequest(stream, selected, instance, local, continuation, newer_than, limit)
 
 
@@ -194,36 +191,56 @@ def page_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return data
 
 
+def _page_meta(
+    payload: dict[str, Any], request: PageRequest, item_count: int
+) -> tuple[dict[str, Any], bool]:
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        raise FreshRSSAdapterError("FreshRSS page provenance is invalid")
+    if meta.get("stream") != request.stream:
+        raise FreshRSSAdapterError("FreshRSS page provenance is invalid")
+    reject_credentials(meta)
+    expected_snapshot = request.stream not in ITEM_STREAMS
+    if item_count > request.limit:
+        raise FreshRSSAdapterError("FreshRSS page metadata is invalid")
+    if meta.get("snapshot") is not expected_snapshot:
+        raise FreshRSSAdapterError("FreshRSS page metadata is invalid")
+    has_more = meta.get("has_more")
+    if not isinstance(has_more, bool):
+        raise FreshRSSAdapterError("FreshRSS has_more is invalid")
+    if expected_snapshot and has_more:
+        raise FreshRSSAdapterError("FreshRSS has_more is invalid")
+    return meta, has_more
+
+
+def _next_cursor(meta: dict[str, Any], request: PageRequest, has_more: bool) -> str | None:
+    next_continuation = continuation_value(meta.get("next_continuation"))
+    if has_more:
+        if next_continuation is None:
+            raise FreshRSSAdapterError("FreshRSS continuation did not advance")
+        if next_continuation == request.continuation:
+            raise FreshRSSAdapterError("FreshRSS continuation did not advance")
+        return encode_cursor(next_continuation, request.newer_than)
+    if next_continuation is not None:
+        raise FreshRSSAdapterError("FreshRSS terminal page retained a continuation")
+    return None
+
+
+def _next_watermark(meta: dict[str, Any], stored: str | None) -> str | None:
+    observed = meta.get("watermark")
+    if observed is None:
+        return stored
+    current = positive_int(observed, "watermark", allow_zero=True)
+    previous = int(stored) if stored and stored.isdigit() else 0
+    return str(max(previous, current))
+
+
 def page_checkpoint(
     payload: dict[str, Any], state: CursorState, request: PageRequest
 ) -> tuple[PageCheckpoint, bool]:
-    meta = payload.get("meta")
-    if not isinstance(meta, dict) or meta.get("stream") != request.stream:
-        raise FreshRSSAdapterError("FreshRSS page provenance is invalid")
-    reject_credentials(meta)
     items = page_data(payload)
-    expected_snapshot = request.stream not in ITEM_STREAMS
-    if len(items) > request.limit or meta.get("snapshot") is not expected_snapshot:
-        raise FreshRSSAdapterError("FreshRSS page metadata is invalid")
-    has_more = meta.get("has_more")
-    if not isinstance(has_more, bool) or expected_snapshot and has_more:
-        raise FreshRSSAdapterError("FreshRSS has_more is invalid")
-    next_continuation = _continuation(meta.get("next_continuation"))
-    if has_more and (
-        next_continuation is None or next_continuation == request.continuation
-    ):
-        raise FreshRSSAdapterError("FreshRSS continuation did not advance")
-    if not has_more and next_continuation is not None:
-        raise FreshRSSAdapterError("FreshRSS terminal page retained a continuation")
-    cursor = (
-        _encode_cursor(next_continuation, request.newer_than)
-        if next_continuation is not None
-        else None
-    )
+    meta, has_more = _page_meta(payload, request, len(items))
+    cursor = _next_cursor(meta, request, has_more)
     watermark = state.watermark
-    observed = meta.get("watermark")
-    if observed is not None:
-        observed = _positive(observed, "watermark", allow_zero=True)
-        previous = int(watermark) if watermark and watermark.isdigit() else 0
-        watermark = str(max(previous, observed))
+    watermark = _next_watermark(meta, watermark)
     return PageCheckpoint(cursor, watermark), not has_more
