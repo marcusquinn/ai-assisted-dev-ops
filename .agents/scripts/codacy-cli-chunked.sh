@@ -526,7 +526,7 @@ show_help() {
 
 # Main function
 main() {
-	local _arg2="$2"
+	local _arg2="${2:-}"
 	local command="${1:-help}"
 
 	# Ensure temp directory exists
