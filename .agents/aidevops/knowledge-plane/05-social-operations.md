@@ -53,6 +53,15 @@ authority: every provider child must revalidate current official API/export
 access, required scopes, installed dependency symbols, retention, and terms
 before adding a route.
 
+Substack has no enabled collection route. Its official publication ZIP and
+subscriber CSV have no published stable publication identity or versioned schema;
+public RSS is partial publication syndication rather than authenticated account
+history. The read-only MCP surface is limited to eligible Bestseller publication
+analytics, requires interactive sign-in and consent, and explicitly excludes
+profile and Notes activity. No manifest, provider registry entry, helper command,
+RSS/browser fallback, or persistence path is added. The evidence and activation
+gate are recorded in `.agents/content/social-substack.md`.
+
 ## Live account collection
 
 Live collectors verify the selected stable account before the first evidence
