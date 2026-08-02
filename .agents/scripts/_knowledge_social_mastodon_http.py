@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import math
 import re
 import time
@@ -17,7 +16,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from _knowledge_social_mastodon_contract import ApiResult, MastodonReadProviderError
+from _knowledge_social_mastodon_contract import (
+    ApiResult,
+    MastodonReadProviderError,
+    decode_json,
+)
 from _knowledge_social_mastodon_routes import (
     allowlisted_path,
     page_limit_for_path,
@@ -118,14 +121,7 @@ def _retry_epoch(value: str | None) -> int | None:
 
 
 def _decode_response(payload: bytes) -> Any:
-    if len(payload) > MAX_RESPONSE_BYTES:
-        raise MastodonReadProviderError("Mastodon read response exceeds the safety limit")
-    try:
-        decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MastodonReadProviderError(
-            "Mastodon read provider returned no valid JSON"
-        ) from error
+    decoded = decode_json(payload, MAX_RESPONSE_BYTES)
     if not isinstance(decoded, (dict, list)):
         raise MastodonReadProviderError(
             "Mastodon API response root must be an object or array"
@@ -135,14 +131,15 @@ def _decode_response(payload: bytes) -> Any:
 
 def _same_origin(config: ProfileConfig, parsed: SplitResult) -> bool:
     base = urlsplit(config.base_url)
-    return (
-        parsed.scheme.lower() == base.scheme
-        and parsed.hostname == base.hostname
-        and parsed.port == base.port
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
+    checks = (
+        parsed.scheme.lower() == base.scheme,
+        parsed.hostname == base.hostname,
+        parsed.port == base.port,
+        parsed.username is None,
+        parsed.password is None,
+        not parsed.fragment,
     )
+    return all(checks)
 
 
 def _validate_query(path: str, query: str) -> None:

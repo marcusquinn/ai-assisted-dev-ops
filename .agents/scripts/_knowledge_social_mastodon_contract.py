@@ -36,13 +36,17 @@ def exact_keys(request: dict[str, Any], expected: set[str]) -> None:
         raise MastodonReadProviderError("Mastodon read request has an invalid action shape")
 
 
-def request_object(payload: bytes, limit: int) -> dict[str, Any]:
+def decode_json(payload: bytes, limit: int) -> Any:
     if len(payload) > limit:
-        raise MastodonReadProviderError("Mastodon read request exceeds the safety limit")
+        raise MastodonReadProviderError("Mastodon JSON payload exceeds the safety limit")
     try:
-        request = json.loads(payload.decode("utf-8"))
+        return json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MastodonReadProviderError("Mastodon read request is not valid JSON") from error
+        raise MastodonReadProviderError("Mastodon JSON payload is invalid") from error
+
+
+def request_object(payload: bytes, limit: int) -> dict[str, Any]:
+    request = decode_json(payload, limit)
     if not isinstance(request, dict):
         raise MastodonReadProviderError("Mastodon read request root must be an object")
     return request
