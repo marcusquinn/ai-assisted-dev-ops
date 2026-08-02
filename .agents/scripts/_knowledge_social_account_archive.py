@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from knowledge_social_import import reject_credentials
 
@@ -16,6 +16,15 @@ class AccountPageContext(Protocol):
     account: dict[str, Any]
     enabled_streams: tuple[str, ...]
     policy: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AccountArchiveRows:
+    """Normalized rows carried into the shared account archive envelope."""
+
+    objects: list[dict[str, Any]]
+    activities: list[dict[str, Any]]
+    coverage: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -33,9 +42,7 @@ class AccountArchivePolicy:
         context: AccountPageContext,
         observed_at: str,
         installation: str,
-        objects: list[dict[str, Any]],
-        activities: list[dict[str, Any]],
-        coverage: list[dict[str, Any]],
+        rows: AccountArchiveRows,
     ) -> dict[str, Any]:
         """Build and credential-scan the common account archive envelope."""
         account = context.account
@@ -62,10 +69,37 @@ class AccountArchivePolicy:
                     },
                 }
             ],
-            "objects": objects,
-            "activities": activities,
+            "objects": rows.objects,
+            "activities": rows.activities,
             "media": [],
-            "coverage": coverage,
+            "coverage": rows.coverage,
         }
         reject_credentials(archive)
         return archive
+
+
+@dataclass(frozen=True)
+class AccountPageNormalizer:
+    """Run the shared normalization flow with provider-specific callbacks."""
+
+    archive_policy: AccountArchivePolicy
+    observed_at: Callable[[dict[str, Any]], str]
+    installation_id: Callable[[Any], str]
+    page_data: Callable[[dict[str, Any]], list[dict[str, Any]]]
+    object_row: Callable[..., dict[str, Any]]
+    activity_row: Callable[..., dict[str, Any]]
+    coverage: Callable[[str], list[dict[str, Any]]]
+
+    def normalize(
+        self, payload: dict[str, Any], context: AccountPageContext
+    ) -> dict[str, Any]:
+        reject_credentials(payload)
+        observed_at = self.observed_at(payload)
+        installation = self.installation_id(context.account.get("instance_id"))
+        items = self.page_data(payload)
+        rows = AccountArchiveRows(
+            [self.object_row(item, context, observed_at, installation) for item in items],
+            [self.activity_row(item, context, observed_at, installation) for item in items],
+            self.coverage(observed_at),
+        )
+        return self.archive_policy.build(context, observed_at, installation, rows)

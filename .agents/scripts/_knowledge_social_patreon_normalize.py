@@ -193,8 +193,7 @@ def _archive(
     account_id: str,
     campaigns: list[Any],
     observed_at: str,
-    objects: list[dict[str, Any]],
-    activities: list[dict[str, Any]],
+    items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "provider": PROVIDER,
@@ -204,8 +203,8 @@ def _archive(
         "enabled_streams": list(context.enabled_streams),
         "policy": _policy(context),
         "accounts": [_account_record(account_id, campaigns, observed_at)],
-        "objects": objects,
-        "activities": activities,
+        "objects": [_object(item, context, observed_at) for item in items],
+        "activities": _activities(items, context, account_id, observed_at),
         "media": [],
         "coverage": _coverage(observed_at),
     }
@@ -220,10 +219,6 @@ def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, A
     campaigns = context.account.get("campaign_ids")
     if not isinstance(campaigns, list):
         raise PatreonAdapterError("Patreon selected campaign identity is invalid")
-    objects = [_object(item, context, observed_at) for item in items]
-    activities = _activities(items, context, account_id, observed_at)
-    archive = _archive(
-        context, account_id, campaigns, observed_at, objects, activities
-    )
+    archive = _archive(context, account_id, campaigns, observed_at, items)
     reject_credentials(archive)
     return archive

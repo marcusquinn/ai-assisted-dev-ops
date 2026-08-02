@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from _knowledge_social_account_archive import AccountArchivePolicy
+from _knowledge_social_account_archive import AccountArchivePolicy, AccountPageNormalizer
 from _knowledge_social_forem import (
     ACCOUNT_AUTH_MODE,
     PROVIDER,
@@ -168,17 +168,17 @@ def _activity_row(
     }
 
 
+NORMALIZER = AccountPageNormalizer(
+    ARCHIVE_POLICY,
+    _observed_at,
+    instance_id,
+    page_data,
+    _object_row,
+    _activity_row,
+    _coverage,
+)
+
+
 def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
     """Build provider-neutral rows and explicit installation-specific gaps."""
-    reject_credentials(payload)
-    observed_at = _observed_at(payload)
-    installation = instance_id(context.account.get("instance_id"))
-    items = page_data(payload)
-    return ARCHIVE_POLICY.build(
-        context,
-        observed_at,
-        installation,
-        [_object_row(item, context, observed_at, installation) for item in items],
-        [_activity_row(item, context, observed_at, installation) for item in items],
-        _coverage(observed_at),
-    )
+    return NORMALIZER.normalize(payload, context)
