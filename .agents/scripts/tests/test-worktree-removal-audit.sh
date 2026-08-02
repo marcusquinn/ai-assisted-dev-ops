@@ -34,7 +34,6 @@ AUDIT_HELPER="${SCRIPT_DIR}/../audit-worktree-removal-helper.sh"
 COMMANDS_HELPER="${SCRIPT_DIR}/../worktree-helper-cmds.sh"
 CLEAN_HELPER="${SCRIPT_DIR}/../worktree-clean-lib.sh"
 REGISTRY_HELPER="${SCRIPT_DIR}/../shared-worktree-registry.sh"
-CLEANUP_RECEIPT_HELPER="${SCRIPT_DIR}/../full-loop-cleanup-receipt.sh"
 SKILL_PR_HELPER="${SCRIPT_DIR}/../skill-update-pr-lib.sh"
 GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 
@@ -848,12 +847,10 @@ test_manual_cleanup_archives_removes_and_prunes() {
 		export AIDEVOPS_REAL_GIT_BIN="$GIT_BIN"
 		export AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_destination"
 		export AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir"
-		# shellcheck source=../full-loop-cleanup-receipt.sh
-		source "$CLEANUP_RECEIPT_HELPER"
-		full_loop_write_cleanup_deferred example/repo 321 "$wt_path" feature/manual-archive \
-			"$$" manual-cleanup-test not-requested >/dev/null
 		# shellcheck source=../worktree-helper-cmds.sh
 		source "$COMMANDS_HELPER"
+		full_loop_write_cleanup_deferred example/repo 321 "$wt_path" feature/manual-archive \
+			"$$" manual-cleanup-test not-requested >/dev/null
 		get_repo_root() {
 			printf '%s\n' "$repo_path"
 			return 0

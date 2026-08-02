@@ -47,6 +47,11 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+if [[ -f "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh" ]]; then
+	# shellcheck source=./full-loop-cleanup-receipt.sh
+	source "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh"
+fi
+
 # --- cmd_list ---
 
 # List all worktrees with branch names, merge status, and current marker.
