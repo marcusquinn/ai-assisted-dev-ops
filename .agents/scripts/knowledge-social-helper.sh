@@ -16,6 +16,7 @@ MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
 DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
+LEMMY_HELPER="${SCRIPT_DIR}/knowledge_social_lemmy.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
@@ -122,6 +123,13 @@ Mastodon synchronization:
   Write scopes, redirects, cross-origin links, and mutations are rejected.
   --budget is 3-1000 and --page-size is 1-100.
 
+Lemmy synchronization:
+  sync-lemmy discovers the exact server version and selected local person through
+  GET /api/v3/site before every page. Lemmy 1.x uses only v4 opaque-cursor routes;
+  0.19.x uses only v3 numeric-page routes. Installation-local IDs are namespaced,
+  ActivityPub IDs are retained, and every request is same-origin GET-only.
+  --budget is 3-1000 and --page-size is 1-50.
+
 GitHub synchronization:
   sync-github binds REST /user numeric and node IDs to GraphQL viewer identity
   before every page. Ten independent streams use exact REST GET routes or fixed
@@ -197,6 +205,10 @@ Usage:
   knowledge-social-helper.sh sync-mastodon [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id OPAQUE_HOME_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-lemmy [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id PERSON_NUMERIC_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-50] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-github [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id NUMERIC_ACCOUNT_ID --stream STREAM \
@@ -399,6 +411,7 @@ run_named_provider_sync() {
 	sync-discourse) run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1 ;;
 	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
 	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
+	sync-lemmy) run_provider_sync Lemmy "$LEMMY_HELPER" "$@" || return 1 ;;
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
@@ -482,7 +495,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github | sync-stack-exchange | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-miniflux | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

@@ -39,10 +39,10 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224, and
-Readwise Reader #29225 are now live. The remaining ranked children are FreshRSS
-issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
-route owns its identity
+Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
+Readwise Reader #29225, and Lemmy #29227 are now live. The remaining ranked
+children are FreshRSS issue #29226 and public-only Hacker News #29228. Each route
+owns its identity
 contract, stream allowlist, checkpoint semantics, and negative write-reachability
 tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
 Pocket are deferred or rejected for the reasons in
@@ -71,6 +71,17 @@ tags, and lists have independent snapshot checkpoints. Complete same-origin
 rejected. Conversations, nested list membership, exports, federation,
 moderation, deletion, and operator retention remain explicit gaps. Details:
 `.agents/content/social-mastodon.md`.
+
+Lemmy collection uses a selected user token and rechecks authenticated
+`GET /api/v3/site` identity plus exact server version before every page. Lemmy
+1.x routes only through v4 opaque `page_cursor` reads; 0.19.x routes only through
+v3 numeric page/limit reads. Authored posts/comments, saved/liked posts/comments,
+version-specific inbox evidence, and community subscriptions have independent
+checkpoints; v4 additionally exposes multicommunities. Numeric resource IDs are
+installation-namespaced while ActivityPub IDs remain evidence. Federation,
+operator retention, settings exports, private-message bodies, complete vote
+history, deletion, and opposite-version routes remain explicit gaps. Details:
+`.agents/content/social-lemmy.md`.
 
 GitHub collection binds `GET /user` numeric and node IDs to GraphQL `viewer`
 identity before every page. Contributions, repositories, stars, notifications,

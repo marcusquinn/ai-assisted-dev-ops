@@ -1,0 +1,316 @@
+{
+  "v4": {
+    "identity": {
+      "version": "1.0.0-beta.1",
+      "my_user": {
+        "local_user_view": {
+          "person": {
+            "id": 42,
+            "name": "selected",
+            "display_name": "Selected",
+            "ap_id": "https://lemmy.example.invalid/u/selected",
+            "local": true
+          }
+        }
+      }
+    },
+    "records": {
+      "post": {
+        "type_": "post",
+        "post": {
+          "id": 7,
+          "name": "Fixture post",
+          "body": "Fixture knowledge",
+          "published_at": "2026-08-02T08:00:00Z",
+          "ap_id": "https://lemmy.example.invalid/post/7",
+          "deleted": false,
+          "removed": false
+        },
+        "creator": {
+          "id": 42,
+          "ap_id": "https://lemmy.example.invalid/u/selected"
+        },
+        "community": {
+          "id": 9,
+          "ap_id": "https://lemmy.example.invalid/c/research"
+        }
+      },
+      "comment": {
+        "type_": "comment",
+        "comment": {
+          "id": 8,
+          "content": "Fixture comment",
+          "published_at": "2026-08-02T08:01:00Z",
+          "ap_id": "https://lemmy.example.invalid/comment/8",
+          "deleted": false,
+          "removed": false
+        },
+        "creator": {
+          "id": 42,
+          "ap_id": "https://lemmy.example.invalid/u/selected"
+        },
+        "post": {"id": 7},
+        "community": {"id": 9}
+      },
+      "notification": {
+        "notification": {
+          "id": 11,
+          "recipient_id": 42,
+          "creator_id": 7,
+          "comment_id": 8,
+          "kind": "comment_reply",
+          "published_at": "2026-08-02T08:02:00Z",
+          "read": false
+        },
+        "data": {
+          "type_": "comment",
+          "creator": {
+            "id": 7,
+            "ap_id": "https://remote.example.invalid/u/author"
+          }
+        }
+      },
+      "community": {
+        "community": {
+          "id": 9,
+          "name": "research",
+          "title": "Research",
+          "summary": "Fixture community",
+          "published_at": "2026-08-02T08:03:00Z",
+          "ap_id": "https://lemmy.example.invalid/c/research"
+        },
+        "community_actions": {"follow_state": "accepted"}
+      },
+      "multicommunity": {
+        "multi": {
+          "id": 5,
+          "name": "knowledge",
+          "title": "Knowledge",
+          "summary": "Fixture multicommunity",
+          "published_at": "2026-08-02T08:04:00Z",
+          "ap_id": "https://lemmy.example.invalid/m/knowledge"
+        },
+        "follow_state": "accepted"
+      }
+    },
+    "streams": {
+      "authored_posts": {
+        "path": "/api/v4/person/content",
+        "params": {"person_id": "42", "type_": "posts", "limit": "1"},
+        "record": "post",
+        "kind": "post"
+      },
+      "authored_comments": {
+        "path": "/api/v4/person/content",
+        "params": {"person_id": "42", "type_": "comments", "limit": "1"},
+        "record": "comment",
+        "kind": "comment"
+      },
+      "saved_posts": {
+        "path": "/api/v4/account/saved",
+        "params": {"type_": "posts", "limit": "1"},
+        "record": "post",
+        "kind": "post"
+      },
+      "saved_comments": {
+        "path": "/api/v4/account/saved",
+        "params": {"type_": "comments", "limit": "1"},
+        "record": "comment",
+        "kind": "comment"
+      },
+      "liked_posts": {
+        "path": "/api/v4/account/liked",
+        "params": {"type_": "posts", "like_type": "liked_only", "limit": "1"},
+        "record": "post",
+        "kind": "post"
+      },
+      "liked_comments": {
+        "path": "/api/v4/account/liked",
+        "params": {"type_": "comments", "like_type": "liked_only", "limit": "1"},
+        "record": "comment",
+        "kind": "comment"
+      },
+      "notifications": {
+        "path": "/api/v4/account/notification/list",
+        "params": {"type_": "all", "unread_only": "false", "limit": "1"},
+        "record": "notification",
+        "kind": "notification"
+      },
+      "subscriptions": {
+        "path": "/api/v4/community/list",
+        "params": {"type_": "subscribed", "limit": "1"},
+        "record": "community",
+        "kind": "community"
+      },
+      "multicommunities": {
+        "path": "/api/v4/multi_community/list",
+        "params": {"type_": "subscribed", "limit": "1"},
+        "record": "multicommunity",
+        "kind": "multicommunity"
+      }
+    }
+  },
+  "v3": {
+    "identity": {
+      "version": "0.19.20",
+      "my_user": {
+        "local_user_view": {
+          "person": {
+            "id": 42,
+            "name": "selected",
+            "display_name": "Selected",
+            "actor_id": "https://lemmy.example.invalid/u/selected",
+            "local": true
+          }
+        }
+      }
+    },
+    "records": {
+      "post": {
+        "post": {
+          "id": 7,
+          "name": "Fixture post",
+          "body": "Fixture knowledge",
+          "published": "2026-08-02T08:00:00Z",
+          "ap_id": "https://lemmy.example.invalid/post/7",
+          "deleted": false,
+          "removed": false
+        },
+        "creator": {
+          "id": 42,
+          "actor_id": "https://lemmy.example.invalid/u/selected"
+        },
+        "community": {
+          "id": 9,
+          "actor_id": "https://lemmy.example.invalid/c/research"
+        }
+      },
+      "comment": {
+        "comment": {
+          "id": 8,
+          "content": "Fixture comment",
+          "published": "2026-08-02T08:01:00Z",
+          "ap_id": "https://lemmy.example.invalid/comment/8",
+          "deleted": false,
+          "removed": false
+        },
+        "creator": {
+          "id": 42,
+          "actor_id": "https://lemmy.example.invalid/u/selected"
+        },
+        "post": {"id": 7},
+        "community": {"id": 9}
+      },
+      "reply": {
+        "comment_reply": {
+          "id": 21,
+          "recipient_id": 42,
+          "published": "2026-08-02T08:02:00Z",
+          "read": false
+        },
+        "comment": {
+          "id": 8,
+          "content": "Fixture reply",
+          "ap_id": "https://lemmy.example.invalid/comment/8"
+        },
+        "creator": {
+          "id": 7,
+          "actor_id": "https://remote.example.invalid/u/author"
+        }
+      },
+      "mention": {
+        "person_mention": {
+          "id": 22,
+          "recipient_id": 42,
+          "published": "2026-08-02T08:03:00Z",
+          "read": false
+        },
+        "comment": {
+          "id": 9,
+          "content": "Fixture mention",
+          "ap_id": "https://lemmy.example.invalid/comment/9"
+        },
+        "creator": {
+          "id": 7,
+          "actor_id": "https://remote.example.invalid/u/author"
+        }
+      },
+      "community": {
+        "community": {
+          "id": 9,
+          "name": "research",
+          "title": "Research",
+          "description": "Fixture community",
+          "published": "2026-08-02T08:04:00Z",
+          "actor_id": "https://lemmy.example.invalid/c/research"
+        },
+        "subscribed": "Subscribed"
+      }
+    },
+    "streams": {
+      "authored_posts": {
+        "path": "/api/v3/user",
+        "params": {"sort": "New", "page": "1", "limit": "1", "person_id": "42"},
+        "envelope": "posts",
+        "record": "post",
+        "kind": "post"
+      },
+      "authored_comments": {
+        "path": "/api/v3/user",
+        "params": {"sort": "New", "page": "1", "limit": "1", "person_id": "42"},
+        "envelope": "comments",
+        "record": "comment",
+        "kind": "comment"
+      },
+      "saved_posts": {
+        "path": "/api/v3/post/list",
+        "params": {"sort": "New", "page": "1", "limit": "1", "type_": "All", "saved_only": "true"},
+        "envelope": "posts",
+        "record": "post",
+        "kind": "post"
+      },
+      "saved_comments": {
+        "path": "/api/v3/comment/list",
+        "params": {"sort": "New", "page": "1", "limit": "1", "type_": "All", "saved_only": "true"},
+        "envelope": "comments",
+        "record": "comment",
+        "kind": "comment"
+      },
+      "liked_posts": {
+        "path": "/api/v3/post/list",
+        "params": {"sort": "New", "page": "1", "limit": "1", "type_": "All", "liked_only": "true"},
+        "envelope": "posts",
+        "record": "post",
+        "kind": "post"
+      },
+      "liked_comments": {
+        "path": "/api/v3/comment/list",
+        "params": {"sort": "New", "page": "1", "limit": "1", "type_": "All", "liked_only": "true"},
+        "envelope": "comments",
+        "record": "comment",
+        "kind": "comment"
+      },
+      "replies": {
+        "path": "/api/v3/user/replies",
+        "params": {"sort": "New", "page": "1", "limit": "1", "unread_only": "false"},
+        "envelope": "replies",
+        "record": "reply",
+        "kind": "reply"
+      },
+      "mentions": {
+        "path": "/api/v3/user/mention",
+        "params": {"sort": "New", "page": "1", "limit": "1", "unread_only": "false"},
+        "envelope": "mentions",
+        "record": "mention",
+        "kind": "mention"
+      },
+      "subscriptions": {
+        "path": "/api/v3/community/list",
+        "params": {"sort": "New", "page": "1", "limit": "1", "type_": "Subscribed"},
+        "envelope": "communities",
+        "record": "community",
+        "kind": "community"
+      }
+    }
+  }
+}
