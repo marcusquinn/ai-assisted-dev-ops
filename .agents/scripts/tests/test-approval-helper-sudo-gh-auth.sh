@@ -227,6 +227,90 @@ run_case "sudo gh auth recovery works through the aidevops gh shim" '
 assert_not_contains "integrated shim recovered token is not printed" "$LAST_OUTPUT" "integrated-shim-token"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "sudo gh auth classifies recovered token core exhaustion" '
+	set -uo pipefail
+	export SUDO_USER=alice
+	export HOME=/var/root
+	probe_log=$(mktemp)
+	trap '\''rm -f "$probe_log"'\'' EXIT
+	id() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "-u" && -z "$arg2" ]]; then printf "0"; return 0; fi
+		if [[ "$arg1" == "-u" && "$arg2" == "alice" ]]; then printf "501"; return 0; fi
+		return 1
+	}
+	getent() { return 1; }
+	dscl() { printf "NFSHomeDirectory: /Users/alice\n"; return 0; }
+	launchctl() { printf "exhausted-user-token"; return 0; }
+	sudo() { return 1; }
+	gh() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "auth" && "$arg2" == "status" ]]; then return 1; fi
+		if [[ "$arg1" == "api" && "$arg2" == "rate_limit" ]]; then
+			printf "%s\n" "$*" >"$probe_log"
+			[[ "${GH_TOKEN:-}" == "exhausted-user-token" ]] || return 1
+			printf "0\t1785697847\n"
+			return 0
+		fi
+		return 1
+	}
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	auth_rc=0
+	_require_gh_auth || auth_rc=$?
+	[[ "$auth_rc" -eq 1 ]] || exit 1
+	[[ "$(<"$probe_log")" == "api rate_limit --jq [.resources.core.remaining,.resources.core.reset] | @tsv" ]]
+' 0
+assert_contains "core exhaustion is diagnosed" "$LAST_OUTPUT" "GitHub core API rate limit is exhausted"
+assert_contains "core exhaustion reports reset epoch" "$LAST_OUTPUT" "1785697847"
+assert_contains "core exhaustion explains credentials cannot repair quota" "$LAST_OUTPUT" "Re-authentication or forwarding GH_TOKEN will not help before reset"
+assert_not_contains "core exhaustion does not report generic auth recovery failure" "$LAST_OUTPUT" "automatic recovery from the invoking user's gh auth failed"
+assert_not_contains "exhausted recovered token is not printed" "$LAST_OUTPUT" "exhausted-user-token"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "sudo gh auth quota probe obeys shared cooldown" '
+	set -uo pipefail
+	export SUDO_USER=alice
+	export HOME=/var/root
+	probe_log=$(mktemp)
+	rm -f "$probe_log"
+	trap '\''rm -f "$probe_log"'\'' EXIT
+	id() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "-u" && -z "$arg2" ]]; then printf "0"; return 0; fi
+		if [[ "$arg1" == "-u" && "$arg2" == "alice" ]]; then printf "501"; return 0; fi
+		return 1
+	}
+	getent() { return 1; }
+	dscl() { printf "NFSHomeDirectory: /Users/alice\n"; return 0; }
+	launchctl() { printf "cooldown-user-token"; return 0; }
+	sudo() { return 1; }
+	gh() {
+		local arg1="${1:-}"
+		local arg2="${2:-}"
+		if [[ "$arg1" == "auth" && "$arg2" == "status" ]]; then return 1; fi
+		if [[ "$arg1" == "api" && "$arg2" == "rate_limit" ]]; then
+			printf "called\n" >"$probe_log"
+			printf "0\t1785697847\n"
+			return 0
+		fi
+		return 1
+	}
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_gh_secondary_cooldown_preflight() { return 75; }
+	auth_rc=0
+	_require_gh_auth || auth_rc=$?
+	[[ "$auth_rc" -eq 1 && ! -e "$probe_log" ]]
+' 0
+assert_contains "cooldown-blocked probe preserves generic auth failure" "$LAST_OUTPUT" "automatic recovery from the invoking user's gh auth failed"
+assert_not_contains "cooldown-blocked probe is not misclassified" "$LAST_OUTPUT" "GitHub core API rate limit is exhausted"
+assert_not_contains "cooldown-blocked recovered token is not printed" "$LAST_OUTPUT" "cooldown-user-token"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "sudo gh auth failure reports recovery failure without token leakage" '
 	set -uo pipefail
 	export SUDO_USER=alice
@@ -249,6 +333,7 @@ run_case "sudo gh auth failure reports recovery failure without token leakage" '
 ' 1
 assert_contains "auth failure explains automatic recovery" "$LAST_OUTPUT" "automatic recovery from the invoking user's gh auth failed"
 assert_not_contains "failed token is not printed" "$LAST_OUTPUT" "bad-token"
+assert_not_contains "invalid token is not misclassified as quota exhaustion" "$LAST_OUTPUT" "GitHub core API rate limit is exhausted"
 
 printf '\n===========================================\n'
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

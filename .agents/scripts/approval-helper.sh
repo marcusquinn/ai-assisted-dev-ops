@@ -89,6 +89,8 @@ readonly _PERMISSION_BLOCKER_TRUE="true"
 readonly _PERMISSION_APPROVAL_REJECTED_EVENT="permission_approval_rejected"
 readonly _PERMISSION_GRANT_PERSISTENCE_FAILED_EVENT="permission_grant_persistence_failed"
 
+_APPROVAL_GH_RATE_LIMIT_RESET=""
+
 _run_worker_blocker_logger() {
 	local logger="$1"
 	shift
@@ -219,10 +221,44 @@ _print_error() {
 	return 0
 }
 
+_approval_probe_core_rate_limit() {
+	local quota=""
+	local remaining=""
+	local reset=""
+
+	# The endpoint is zero-cost, but it must still respect any active shared
+	# secondary cooldown rather than creating a diagnostic bypass.
+	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
+		_gh_secondary_cooldown_preflight read >/dev/null 2>&1 || return 1
+	fi
+
+	if ! quota=$(gh api rate_limit --jq '[.resources.core.remaining,.resources.core.reset] | @tsv' 2>/dev/null); then
+		return 1
+	fi
+	IFS=$'\t' read -r remaining reset <<<"$quota"
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ ]]; then
+		return 1
+	fi
+
+	printf '%s\t%s' "$remaining" "$reset"
+	return 0
+}
+
+_approval_report_core_rate_limit() {
+	local reset="$1"
+	_print_error "GitHub core API rate limit is exhausted for the invoking user's credential (reset epoch: ${reset})"
+	_print_info "Wait until reset epoch ${reset} before retrying. Re-authentication or forwarding GH_TOKEN will not help before reset."
+	return 0
+}
+
 _approval_use_gh_token() {
 	local token="${1:-}"
 	local previous_token="${GH_TOKEN:-}"
 	local token_was_set="${GH_TOKEN+x}"
+	local quota=""
+	local remaining=""
+	local reset=""
+	_APPROVAL_GH_RATE_LIMIT_RESET=""
 
 	if [[ -z "$token" ]]; then
 		return 1
@@ -231,6 +267,12 @@ _approval_use_gh_token() {
 	export GH_TOKEN="$token"
 	if gh auth status >/dev/null 2>&1; then
 		return 0
+	fi
+	if quota=$(_approval_probe_core_rate_limit); then
+		IFS=$'\t' read -r remaining reset <<<"$quota"
+		if [[ "$remaining" == "0" ]]; then
+			_APPROVAL_GH_RATE_LIMIT_RESET="$reset"
+		fi
 	fi
 
 	if [[ -n "$token_was_set" ]]; then
@@ -296,6 +338,7 @@ _approval_user_gh_token() {
 }
 
 _require_gh_auth() {
+	_APPROVAL_GH_RATE_LIMIT_RESET=""
 	if gh auth status >/dev/null 2>&1; then
 		return 0
 	fi
@@ -307,6 +350,10 @@ _require_gh_auth() {
 		if _approval_use_gh_token "$user_token"; then
 			return 0
 		fi
+		if [[ -n "$_APPROVAL_GH_RATE_LIMIT_RESET" ]]; then
+			_approval_report_core_rate_limit "$_APPROVAL_GH_RATE_LIMIT_RESET"
+			return 1
+		fi
 
 		# Read token directly from gh config file for non-keyring storage.
 		local real_home
@@ -317,6 +364,10 @@ _require_gh_auth() {
 			file_token=$(awk '/oauth_token:/{print $2; exit}' "$gh_hosts" 2>/dev/null || true)
 			if _approval_use_gh_token "$file_token"; then
 				return 0
+			fi
+			if [[ -n "$_APPROVAL_GH_RATE_LIMIT_RESET" ]]; then
+				_approval_report_core_rate_limit "$_APPROVAL_GH_RATE_LIMIT_RESET"
+				return 1
 			fi
 		fi
 	fi
