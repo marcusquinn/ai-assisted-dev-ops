@@ -67,23 +67,21 @@ if [[ -n "${FILL_FLOOR_PER_CANDIDATE_TIMEOUT:-}" && -z "${DISPATCH_PER_CANDIDATE
 	export DISPATCH_PER_CANDIDATE_TIMEOUT
 fi
 : "${DISPATCH_PER_CANDIDATE_TIMEOUT:=30}"
-# t3005/t3014: parallel dispatch concurrency for dispatch_max.
+# t3005/t3014/GH#29234: parallel dispatch concurrency for dispatch_max.
 # Each successful dispatch takes ~30-180s (gh API ceremony + worktree-helper.sh
 # add + worker spawn) so the previous serial loop capped throughput at ~1
 # dispatch per pulse cycle.
 #
-# Default (t3014): unset → max_parallel = _effective_slots (typically 24, the
-# full slot budget). The cap inside _dispatch_max_compute_parallel still clamps at
-# _effective_slots, so the default never exceeds capacity. Setting an explicit
-# integer overrides the default. Set to 1 to retain the legacy serial behavior
-# (regression escape hatch); set to a smaller integer to ration concurrency.
+# Default (GH#29234): unset or invalid → min(6, _effective_slots). Worker-slot
+# capacity is not a safe proxy for simultaneous dispatch ceremony process trees;
+# each candidate adds API, worktree, and runtime-start overhead before occupying
+# its worker slot. Setting an explicit positive integer overrides the default,
+# while the cap inside _dispatch_max_compute_parallel still prevents concurrency
+# above _effective_slots. Set to 1 to retain the legacy serial behavior.
 #
-# Pre-t3014 default was 6 — too low to saturate the 24-slot budget under the
-# adaptive-timeout / probe-mode regime where each dispatch retries through gh
-# rate-limit backoff. Measured failure mode (cycle 21126, 2026-04-28): 10
-# candidates dispatched in parallel, only 3/10 succeeded; steady-state worker
-# count = 4 against 24-slot budget. Raising the default to _effective_slots
-# allows the 24-slot pool to fill in 1-2 cycles instead of 6+.
+# A 24-way default overloaded a 16-CPU host before workers could settle; six-way
+# dispatch restored bounded load and successful launches. Larger hosts can opt in
+# to more concurrency with DISPATCH_MAX_PARALLEL.
 #
 # Intentionally left as soft default (`:-` form, no `:=` global default) so
 # the variable stays unset for callers that read it for diagnostics.

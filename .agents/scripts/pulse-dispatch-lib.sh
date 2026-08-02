@@ -2002,15 +2002,13 @@ _dispatch_maybe_engage_throttle() {
 }
 
 #######################################
-# t3005/t3014: Decide the parallelism level for the dispatch_max loop.
+# t3005/t3014/GH#29234: Decide the parallelism level for dispatch_max.
 #
 # Defaults to DISPATCH_MAX_PARALLEL when set to a positive integer.
-# When unset, empty, or non-numeric, defaults to effective_slots — i.e. the
-# full slot budget — so the parallel loop saturates the worker pool in one
-# cycle (t3014). The pre-t3014 default of 6 capped throughput at 6 dispatches
-# per cycle even when the slot budget was 24, leaving ~17 idle slots per cycle
-# under adaptive-timeout / probe-mode regimes that produce 30-180s per-candidate
-# dispatch latency.
+# When unset, empty, or non-numeric, defaults to 6 (GH#29234), then clamps to
+# effective_slots. Worker slots represent settled worker capacity, not the safe
+# number of concurrent API/worktree/runtime-start ceremony process trees. An
+# explicit positive override remains available for larger or smaller hosts.
 #
 # Always capped at the effective slot budget — never schedule more concurrent
 # dispatches than slots we'd consume. Forced to 1 when the adaptive throttle
@@ -2032,12 +2030,12 @@ _dispatch_max_compute_parallel() {
 		DISPATCH_MAX_PARALLEL="$DISPATCH_FILL_FLOOR_PARALLEL"
 		export DISPATCH_MAX_PARALLEL
 	fi
-	# t3014: when unset/empty/invalid, default to effective_slots (full budget)
-	# instead of the historical 6. Env override still wins when set to a valid
-	# positive integer; the cap below still clamps at effective_slots.
+	# GH#29234: use a conservative ceremony cap when unset/empty/invalid. An env
+	# override still wins when it is a positive integer; the effective-slot cap
+	# below remains authoritative.
 	local max_parallel="${DISPATCH_MAX_PARALLEL:-}"
 	if ! [[ "$max_parallel" =~ ^[1-9][0-9]*$ ]]; then
-		max_parallel="$effective_slots"
+		max_parallel=6
 	fi
 	if ((max_parallel > effective_slots)); then
 		max_parallel="$effective_slots"

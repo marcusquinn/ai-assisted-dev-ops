@@ -61,20 +61,44 @@ source "${SCRIPT_DIR}/pulse-dispatch-engine.sh"
 # Test 1: _dispatch_max_compute_parallel honours DISPATCH_MAX_PARALLEL
 # =============================================================================
 test_compute_max_parallel_default() {
-	# t3014: when DISPATCH_MAX_PARALLEL is unset, default is now
-	# effective_slots (full slot budget), not the historical 6. Pre-t3014
-	# the default capped throughput at 6/cycle even with a 24-slot budget,
-	# leaving ~17 slots idle per cycle under adaptive-timeout regimes.
+	# GH#29234: unset defaults to the conservative ceremony cap of 6 rather
+	# than treating the full worker-slot budget as safe launch parallelism.
 	unset DISPATCH_MAX_PARALLEL || true
 	_DISPATCH_THROTTLE_FILE="${HOME}/.aidevops/logs/dispatch-throttle"
 	rm -f "$_DISPATCH_THROTTLE_FILE"
 	local result
-	# effective_slots=24 → expect 24 (full budget, t3014 default)
+	# effective_slots=24 → expect the default ceremony cap of 6.
 	result=$(_dispatch_max_compute_parallel 24)
-	if [[ "$result" == "24" ]]; then
-		print_result "compute_max_parallel: default=effective_slots(24) when unset" 0
+	if [[ "$result" == "6" ]]; then
+		print_result "compute_max_parallel: default=6 when unset" 0
 	else
-		print_result "compute_max_parallel: default=effective_slots(24) when unset" 1 "got=${result}"
+		print_result "compute_max_parallel: default=6 when unset" 1 "got=${result}"
+	fi
+	return 0
+}
+
+test_compute_max_parallel_default_caps_at_slots() {
+	unset DISPATCH_MAX_PARALLEL || true
+	rm -f "$_DISPATCH_THROTTLE_FILE"
+	local result
+	result=$(_dispatch_max_compute_parallel 3)
+	if [[ "$result" == "3" ]]; then
+		print_result "compute_max_parallel: default caps at effective_slots (3)" 0
+	else
+		print_result "compute_max_parallel: default caps at effective_slots (3)" 1 "got=${result}"
+	fi
+	return 0
+}
+
+test_compute_max_parallel_override() {
+	export DISPATCH_MAX_PARALLEL=10
+	rm -f "$_DISPATCH_THROTTLE_FILE"
+	local result
+	result=$(_dispatch_max_compute_parallel 24)
+	if [[ "$result" == "10" ]]; then
+		print_result "compute_max_parallel: explicit positive override wins" 0
+	else
+		print_result "compute_max_parallel: explicit positive override wins" 1 "got=${result}"
 	fi
 	return 0
 }
@@ -107,17 +131,15 @@ test_compute_max_parallel_throttle_forces_serial() {
 }
 
 test_compute_max_parallel_invalid_var() {
-	# t3014: invalid value falls back to effective_slots (was 6 pre-t3014).
-	# This keeps the validator graceful — a typo'd env var doesn't trap the
-	# pulse at degraded throughput; it gets the safe full-budget default.
+	# Invalid input follows the same conservative default as unset input.
 	export DISPATCH_MAX_PARALLEL="not-a-number"
 	rm -f "$_DISPATCH_THROTTLE_FILE"
 	local result
 	result=$(_dispatch_max_compute_parallel 24)
-	if [[ "$result" == "24" ]]; then
-		print_result "compute_max_parallel: invalid env falls back to effective_slots(24)" 0
+	if [[ "$result" == "6" ]]; then
+		print_result "compute_max_parallel: invalid env falls back to 6" 0
 	else
-		print_result "compute_max_parallel: invalid env falls back to effective_slots(24)" 1 "got=${result}"
+		print_result "compute_max_parallel: invalid env falls back to 6" 1 "got=${result}"
 	fi
 	unset DISPATCH_MAX_PARALLEL || true
 	return 0
@@ -611,6 +633,8 @@ test_serial_loop_allows_unset_stop_flag() {
 # Run all tests
 # =============================================================================
 test_compute_max_parallel_default
+test_compute_max_parallel_default_caps_at_slots
+test_compute_max_parallel_override
 test_compute_max_parallel_caps_at_slots
 test_compute_max_parallel_throttle_forces_serial
 test_compute_max_parallel_invalid_var
