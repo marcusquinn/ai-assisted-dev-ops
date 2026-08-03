@@ -163,11 +163,43 @@ test_auto_update_plist_filters_polluted_env_path() {
 	return 0
 }
 
+test_auto_update_plist_injects_label_overrides() {
+	local original_home="$HOME"
+	local override_file="$TEST_DIR/home/.config/aidevops/plist-env-overrides.json"
+	local plist ok
+	HOME="$TEST_DIR/home"
+	mkdir -p "${override_file%/*}"
+	cat >"$override_file" <<'EOF'
+{
+  "com.test.aidevops-auto-update": {
+    "AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT": "3",
+    "BACKUP_KEEP_COUNT": "2"
+  }
+}
+EOF
+
+	plist=$(_generate_auto_update_plist "/bin/true" "600" "/usr/bin:/bin")
+	ok=0
+	[[ "$plist" == *"<key>AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT</key>"* ]] || ok=1
+	[[ "$plist" == *"<string>3</string>"* ]] || ok=1
+	[[ "$plist" == *"<key>BACKUP_KEEP_COUNT</key>"* ]] || ok=1
+	[[ "$plist" == *"<string>2</string>"* ]] || ok=1
+	HOME="$original_home"
+
+	if [[ "$ok" -eq 0 ]]; then
+		pass "test_auto_update_plist_injects_label_overrides"
+	else
+		fail "test_auto_update_plist_injects_label_overrides" "generated plist omitted auto-update overrides"
+	fi
+	return 0
+}
+
 main() {
 	setup
 	test_sanitized_path_filters_unsafe_entries
 	test_sanitized_path_preserves_unset_ifs
 	test_auto_update_plist_filters_polluted_env_path
+	test_auto_update_plist_injects_label_overrides
 
 	printf 'Ran %d tests, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]] || return 1

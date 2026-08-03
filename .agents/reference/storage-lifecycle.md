@@ -205,6 +205,12 @@ limits: the active bundle, previous rollback bundle, Pulse-pinned bundle, and
 every live-leased bundle remain protected even when an override is lower than
 the protected bundle count or bytes.
 
+On macOS, persist these values for scheduled updates under the
+`com.aidevops.aidevops-auto-update` label in
+`~/.config/aidevops/plist-env-overrides.json`; the generated auto-update
+LaunchAgent injects them into its environment. See
+`reference/plist-env-overrides.md` for the file format and setup steps.
+
 ### Runtime Bundle Dependency Decision
 
 Runtime activation continues to verify the OpenCode host's existing dependency

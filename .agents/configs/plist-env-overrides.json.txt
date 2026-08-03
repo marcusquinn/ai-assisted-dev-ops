@@ -8,5 +8,11 @@
     "_AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD_doc": "Canonical default is 0.05, defined in .agents/configs/pulse-rate-limit.conf (GH#20638, lowered from 0.30 in t2896/GH#21034). Override here only if you need a value different from that canonical default. launchd plists cannot source conf files at plist-parse time, so an override must be set explicitly.",
     "_AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD": "0.05",
     "_AIDEVOPS_SKIP_TIER_VALIDATOR": "1"
+  },
+  "com.aidevops.aidevops-auto-update": {
+    "_doc": "Retention examples for scheduled updates — rename (remove leading _) to activate.",
+    "_AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT": "5",
+    "_AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES": "1073741824",
+    "_BACKUP_KEEP_COUNT": "3"
   }
 }

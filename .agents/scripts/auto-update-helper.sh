@@ -66,6 +66,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_resolve_script_path)" || exit
 unset -f _resolve_script_path
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=plist-env-overrides-lib.sh
+source "${SCRIPT_DIR}/plist-env-overrides-lib.sh"
 
 init_log_file
 
@@ -202,6 +204,8 @@ _generate_auto_update_plist() {
 	local interval_seconds="$2"
 	local env_path="$3"
 	env_path=$(aidevops_launchd_sanitized_path "$env_path")
+	local env_overrides_xml
+	env_overrides_xml=$(_build_plist_env_overrides_xml "$LAUNCHD_LABEL")
 
 	cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -225,7 +229,7 @@ _generate_auto_update_plist() {
 	<dict>
 		<key>PATH</key>
 		<string>${env_path}</string>
-	</dict>
+${env_overrides_xml}	</dict>
 	<key>RunAtLoad</key>
 	<false/>
 	<key>KeepAlive</key>

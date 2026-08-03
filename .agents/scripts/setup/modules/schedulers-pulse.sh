@@ -39,6 +39,12 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _sched_pulse_lib_path
 fi
 
+_schedulers_pulse_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_schedulers_pulse_dir" == "${BASH_SOURCE[0]}" ]] && _schedulers_pulse_dir="."
+# shellcheck source=../../plist-env-overrides-lib.sh
+source "${_schedulers_pulse_dir}/../../plist-env-overrides-lib.sh"
+unset _schedulers_pulse_dir
+
 # --- Functions ---
 
 # Resolve the modern bash binary path for use in launchd ProgramArguments.
@@ -735,78 +741,6 @@ _cleanup_old_pulse_plists() {
 _build_pulse_headless_env_xml() {
 	# Intentionally empty — model config read from credentials.sh at runtime.
 	printf '%s' ""
-	return 0
-}
-
-# Read user-owned plist env override file and emit XML key/string pairs
-# for the matching label's env vars. Keys prefixed with _ are skipped
-# (used as comments in the JSON template).
-#
-# Args: $1=plist_label (e.g. "com.aidevops.aidevops-supervisor-pulse")
-#       $2=override_file (absolute path; default ~/.config/aidevops/plist-env-overrides.json)
-#       $3=indent (string to prepend each line; default "\t\t")
-#
-# Returns 0 on success (including empty result when label not found).
-# Prints WARN to stderr and returns 0 when file is present but malformed.
-# Emits nothing when file is absent.
-_plist_env_overrides_file() {
-	local stable_file="$HOME/.config/aidevops/plist-env-overrides.json"
-	local legacy_file="$HOME/.aidevops/agents/configs/plist-env-overrides.json"
-
-	if [[ -f "$stable_file" ]]; then
-		printf '%s' "$stable_file"
-	elif [[ -f "$legacy_file" ]]; then
-		# Compatibility fallback for installs that have not run bundle migration yet.
-		printf '%s' "$legacy_file"
-	else
-		printf '%s' "$stable_file"
-	fi
-	return 0
-}
-
-_build_plist_env_overrides_xml() {
-	local _label="$1"
-	local _override_file="${2:-}"
-	local _indent="${3:-		}"
-	[[ -n "$_override_file" ]] || _override_file=$(_plist_env_overrides_file)
-
-	# Missing file is the normal case (user has not created the override file yet)
-	[[ -f "$_override_file" ]] || return 0
-
-	# Require jq — without it we cannot parse JSON safely
-	if ! command -v jq >/dev/null 2>&1; then
-		echo "[schedulers] WARN: jq not found; skipping plist-env-overrides.json injection" >&2
-		return 0
-	fi
-
-	# Validate JSON
-	if ! jq empty "$_override_file" 2>/dev/null; then
-		echo "[schedulers] WARN: plist-env-overrides.json is malformed; skipping injection (file: $_override_file)" >&2
-		return 0
-	fi
-
-	# Extract key=value pairs for the matching label; skip _ prefixed keys
-	local _pairs
-	_pairs=$(jq -r --arg label "$_label" '
-		.[$label] // {} |
-		to_entries[] |
-		select(.key | startswith("_") | not) |
-		"\(.key)=\(.value)"
-	' "$_override_file" 2>/dev/null) || return 0
-
-	[[ -z "$_pairs" ]] && return 0
-
-	local _line _key _val _xml_key _xml_val
-	while IFS= read -r _line; do
-		[[ -z "$_line" ]] && continue
-		_key="${_line%%=*}"
-		_val="${_line#*=}"
-		_xml_key=$(_xml_escape "$_key")
-		_xml_val=$(_xml_escape "$_val")
-		printf '%s<key>%s</key>\n%s<string>%s</string>\n' \
-			"$_indent" "$_xml_key" "$_indent" "$_xml_val"
-	done <<<"$_pairs"
-
 	return 0
 }
 

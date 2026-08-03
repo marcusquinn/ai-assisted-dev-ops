@@ -35,6 +35,12 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
     unset _lib_path
 fi
 
+_auto_update_scheduler_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_auto_update_scheduler_dir" == "${BASH_SOURCE[0]}" ]] && _auto_update_scheduler_dir="."
+# shellcheck source=plist-env-overrides-lib.sh
+source "${_auto_update_scheduler_dir}/plist-env-overrides-lib.sh"
+unset _auto_update_scheduler_dir
+
 # --- Functions ---
 
 #######################################
@@ -88,6 +94,8 @@ _generate_auto_update_plist() {
 	local interval_seconds="$2"
 	local env_path="$3"
 	env_path=$(aidevops_launchd_sanitized_path "$env_path")
+	local env_overrides_xml
+	env_overrides_xml=$(_build_plist_env_overrides_xml "$LAUNCHD_LABEL")
 
 	cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -111,7 +119,7 @@ _generate_auto_update_plist() {
 	<dict>
 		<key>PATH</key>
 		<string>${env_path}</string>
-	</dict>
+${env_overrides_xml}	</dict>
 	<key>RunAtLoad</key>
 	<false/>
 	<key>KeepAlive</key>

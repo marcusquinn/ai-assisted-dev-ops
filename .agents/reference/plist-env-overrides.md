@@ -7,9 +7,10 @@ losing them on every `aidevops update` or `setup.sh` run.
 
 `setup.sh` regenerates launchd plists on every run (~every 10 min via
 `aidevops update`). Any manual edits to
-`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist` or
-`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-merge.plist` are
-silently wiped.
+`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist`,
+`~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-merge.plist`, or
+`~/Library/LaunchAgents/com.aidevops.aidevops-auto-update.plist` are silently
+wiped.
 
 The override file survives framework updates because it lives in the stable
 user config root, outside replaceable runtime bundles.
@@ -29,6 +30,11 @@ nano ~/.config/aidevops/plist-env-overrides.json
 # 3. Run setup.sh to regenerate the plist with your overrides
 ~/.aidevops/agents/../setup.sh --non-interactive
 # or: aidevops update
+
+# For com.aidevops.aidevops-auto-update, reload that agent after changing
+# its own environment so the running scheduler adopts the new plist:
+aidevops auto-update disable
+aidevops auto-update enable
 ```
 
 ## File Format
@@ -50,16 +56,31 @@ Keys prefixed with `_` are skipped — they serve as in-file comments.
 
 ## Supported Labels
 
-The main Pulse and dedicated merge-pass supervisors are handled:
+The main Pulse, dedicated merge-pass, and scheduled auto-update agents are handled:
 
 | Label | Plist |
 |-------|-------|
 | `com.aidevops.aidevops-supervisor-pulse` | `~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-pulse.plist` |
 | `com.aidevops.aidevops-supervisor-merge` | `~/Library/LaunchAgents/com.aidevops.aidevops-supervisor-merge.plist` |
+| `com.aidevops.aidevops-auto-update` | `~/Library/LaunchAgents/com.aidevops.aidevops-auto-update.plist` |
 
 Additional labels can be supported by extending
 their plist generators to call `_build_plist_env_overrides_xml` from
-`.agents/scripts/setup/modules/schedulers-pulse.sh`.
+`.agents/scripts/plist-env-overrides-lib.sh`.
+
+## Worked Example: Bound Scheduled Update Storage
+
+To apply lower runtime-bundle and setup-backup ceilings to background updates:
+
+```json
+{
+  "com.aidevops.aidevops-auto-update": {
+    "AIDEVOPS_RUNTIME_BUNDLE_MAX_COUNT": "5",
+    "AIDEVOPS_RUNTIME_BUNDLE_MAX_BYTES": "1073741824",
+    "BACKUP_KEEP_COUNT": "3"
+  }
+}
+```
 
 ## Worked Example: Tune Per-Runner Thresholds
 
