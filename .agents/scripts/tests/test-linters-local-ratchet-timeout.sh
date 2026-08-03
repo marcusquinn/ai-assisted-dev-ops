@@ -167,11 +167,66 @@ test_each_ratchet_blocks_regression_and_allows_improvement() {
 	return 0
 }
 
+test_snapshot_increase_detection_covers_all_counters() {
+	source_ratchet_helpers
+	local candidate=""
+	local detected=0
+	local candidates=("1 0 0 0 0" "0 1 0 0 0" "0 0 1 0 0" "0 0 0 1 0" "0 0 0 0 1")
+	for candidate in "${candidates[@]}"; do
+		_ratchet_counts_increased "$candidate" "0 0 0 0 0" && detected=$((detected + 1))
+	done
+	if [[ "$detected" -eq 5 ]] && ! _ratchet_counts_increased "0 1 2 3 4" "1 2 3 4 5"; then
+		print_result "ratchet migration: every counter increase requires evidence" 0
+	else
+		print_result "ratchet migration: every counter increase requires evidence" 1 "detected=$detected"
+	fi
+	return 0
+}
+
+test_atomic_write_preserves_baseline_on_invalid_json() {
+	source_ratchet_helpers
+	local tmp_dir baseline_file before after ret=0
+	tmp_dir=$(mktemp -d)
+	baseline_file="${tmp_dir}/ratchets.json"
+	printf '{"version":1}\n' >"$baseline_file"
+	before=$(cksum <"$baseline_file")
+	_ratchet_write_json_atomically "$baseline_file" '{invalid' > /dev/null 2>&1 || ret=$?
+	after=$(cksum <"$baseline_file")
+	if [[ "$ret" -ne 0 && "$before" == "$after" ]]; then
+		print_result "ratchet migration: invalid JSON leaves baseline unchanged" 0
+	else
+		print_result "ratchet migration: invalid JSON leaves baseline unchanged" 1 "ret=$ret before=$before after=$after"
+	fi
+	rm -rf "$tmp_dir"
+	return 0
+}
+
+test_snapshot_match_detects_idempotent_update() {
+	source_ratchet_helpers
+	local tmp_dir baseline_file rendered ret=0
+	tmp_dir=$(mktemp -d)
+	baseline_file="${tmp_dir}/ratchets.json"
+	rendered=$(_ratchet_build_baseline_json "2026-08-03T00:00:00Z" "source-sha" "tree-sha" "base-sha" \
+		"1 2 3 4 5" 1 1 "previous-sha" "2026-04-04T00:00:00Z" "0 1 2 3 4" "null")
+	printf '%s\n' "$rendered" >"$baseline_file"
+	_ratchet_snapshot_matches "$baseline_file" "source-sha" "tree-sha" "base-sha" "1 2 3 4 5" || ret=$?
+	if [[ "$ret" -eq 0 ]]; then
+		print_result "ratchet migration: identical snapshot is a no-op" 0
+	else
+		print_result "ratchet migration: identical snapshot is a no-op" 1 "ret=$ret"
+	fi
+	rm -rf "$tmp_dir"
+	return 0
+}
+
 main() {
 	test_ratchet_counter_times_out_with_diagnostic
 	test_ratchet_counter_reports_progress_and_value
 	test_missing_return_counter_scans_inventory_once
 	test_each_ratchet_blocks_regression_and_allows_improvement
+	test_snapshot_increase_detection_covers_all_counters
+	test_atomic_write_preserves_baseline_on_invalid_json
+	test_snapshot_match_detects_idempotent_update
 
 	echo ""
 	if [ "$TESTS_FAILED" -eq 0 ]; then

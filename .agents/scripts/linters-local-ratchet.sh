@@ -455,6 +455,31 @@ _ratchet_write_json_atomically() {
 	return 0
 }
 
+# _ratchet_snapshot_matches: detect a no-op snapshot update.
+# Arguments: $1=baseline_file $2=source_commit $3=scripts_tree $4=base_commit
+#            $5=current_counts
+# Returns: 0 when all deterministic snapshot fields already match.
+_ratchet_snapshot_matches() {
+	local baseline_file="$1"
+	local source_commit="$2"
+	local scripts_tree="$3"
+	local base_commit="$4"
+	local current_counts="$5"
+	jq -e --argjson schema "$RATCHET_SCHEMA_VERSION" --argjson counter "$RATCHET_COUNTER_VERSION" \
+		--arg source "$source_commit" --arg tree "$scripts_tree" --arg base "$base_commit" --arg counts "$current_counts" '
+		($counts | split(" ") | map(tonumber)) as $c |
+		.version == $schema and .counter_version == $counter and
+		.provenance.source_commit == $source and .provenance.scripts_tree == $tree and
+		.provenance.comparison_base_commit == $base and
+		.ratchets.bare_positional_params.count == $c[0] and
+		.ratchets.hardcoded_aidevops_path.count == $c[1] and
+		.ratchets.broad_catch_or_true.count == $c[2] and
+		.ratchets.silent_errors.count == $c[3] and
+		.ratchets.missing_return_files.count == $c[4]
+	' "$baseline_file" > /dev/null 2>&1
+	return $?
+}
+
 # _ratchet_write_baseline: validate and write (or dry-run) a provenance snapshot.
 # Arguments: $1=baseline_file $2=repo_root $3=current_counts
 # Returns: 0 on success, 1 when provenance or migration evidence is incomplete.
@@ -469,6 +494,10 @@ _ratchet_write_baseline() {
 	[[ -f "$baseline_file" ]] && previous_counts=$(_ratchet_load_baselines "$baseline_file")
 	[[ -f "$baseline_file" ]] && previous_updated=$(jq -r '.updated // ""' "$baseline_file" 2> /dev/null || :)
 	[[ -f "$baseline_file" ]] && previous_source=$(jq -r '.provenance.source_commit // ""' "$baseline_file" 2> /dev/null || :)
+	if [[ "$previous_schema" -eq "$RATCHET_SCHEMA_VERSION" && "$previous_counter" -ne "$RATCHET_COUNTER_VERSION" ]]; then
+		print_error "Ratchets: unexpected counter definition for schema ${previous_schema}; bump the schema with reviewed migration evidence"
+		return 1
+	fi
 
 	_ratchet_verify_update_tree "$repo_root" || return 1
 	source_commit=$(git -C "$repo_root" rev-parse HEAD 2> /dev/null) || return 1
@@ -482,6 +511,10 @@ _ratchet_write_baseline() {
 		print_error "Ratchets: working-tree counts do not match committed source ${source_commit}"
 		return 1
 	fi
+	if [[ -f "$baseline_file" ]] && _ratchet_snapshot_matches "$baseline_file" "$source_commit" "$scripts_tree" "$base_commit" "$current_counts"; then
+		print_success "Ratchets: baseline provenance already matches ${source_commit}; no update needed"
+		return 0
+	fi
 
 	if [[ "$previous_schema" -ne "$RATCHET_SCHEMA_VERSION" ]] || _ratchet_counts_increased "$current_counts" "$previous_counts"; then
 		if [[ "${RATCHET_ALLOW_MIGRATION:-false}" != "true" ]]; then
@@ -494,7 +527,7 @@ _ratchet_write_baseline() {
 			return 1
 		}
 		[[ -n "$previous_source" ]] || previous_source="${RATCHET_PREVIOUS_SOURCE_COMMIT:-}"
-		git -C "$repo_root" rev-parse --verify "${previous_source}^{commit}" > /dev/null 2>&1 || {
+		previous_source=$(git -C "$repo_root" rev-parse --verify "${previous_source}^{commit}" 2> /dev/null) || {
 			print_error "Ratchets: previous source commit is missing or unavailable"
 			return 1
 		}
