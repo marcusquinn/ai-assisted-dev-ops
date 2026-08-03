@@ -42,6 +42,9 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
 	203 | 204)
 		printf '## Implementation target\nUpdate the extensionless repository path `.agents/scripts/gh`.\n'
 		;;
+	205)
+		printf '## Implementation target\nUpdate `.agents/scripts/target.sh`; evidence is at `https://example.com/unrelated/gh`.\n'
+		;;
 	*)
 		exit 1
 		;;
@@ -67,6 +70,9 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 		printf '{"files":[{"path":".agents/scripts/gh"}]}\n'
 		;;
 	105)
+		printf '{"files":[{"path":"unrelated/gh"}]}\n'
+		;;
+	106)
 		printf '{"files":[{"path":"unrelated/gh"}]}\n'
 		;;
 	*)
@@ -140,6 +146,7 @@ assert_check_passes "independent general target survives a supporting specific p
 assert_check_rejects "specific target cannot be satisfied by an unrelated same-basename file" 202 103
 assert_check_passes "extensionless repository path matches the exact PR file" 104 203
 assert_check_rejects "extensionless repository path rejects an unrelated same-basename file" 204 105
+assert_check_rejects "backtick URL cannot supply an extensionless repository path" 205 106
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

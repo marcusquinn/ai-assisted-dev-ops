@@ -74,11 +74,11 @@ extract_file_paths_from_text() {
 	fi
 
 	# Pattern 2: Backtick-enclosed repository paths, including extensionless
-	# executables such as `.agents/scripts/gh`. Requiring a slash and restricting
-	# the first segment avoids treating URL hosts as repository paths.
+	# executables such as `.agents/scripts/gh`. Inspect whole backtick tokens so a
+	# URL cannot yield a path-like substring after its hostname.
 	local backtick_paths
 	# shellcheck disable=SC2016 # Literal backtick regex, not shell expansion.
-	backtick_paths=$(printf '%s' "$text" | grep -oE '`(\.[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/[a-zA-Z0-9._/-]+(:[0-9]+(-[0-9]+)?)?`' | tr -d '`' | sed 's/:[0-9]*\(-[0-9]*\)\{0,1\}$//' | sort -u || true)
+	backtick_paths=$(printf '%s' "$text" | grep -oE '`[a-zA-Z0-9._:/-]+`' | tr -d '`' | grep '/' | grep -v '://' | sed 's/:[0-9]*\(-[0-9]*\)\{0,1\}$//' | grep -E '^(\.[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/[a-zA-Z0-9._/-]*[a-zA-Z0-9._-]$' | sort -u || true)
 	if [[ -n "$backtick_paths" ]]; then
 		paths="${paths}${backtick_paths}"$'\n'
 	fi
