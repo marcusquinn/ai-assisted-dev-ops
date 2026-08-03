@@ -345,11 +345,12 @@ test_llm_sweep_meta_review_is_not_measured_debt() {
 	local list_args create_args
 	list_args=$(<"$GH_ISSUE_LIST_LOG")
 	create_args=$(<"$GH_CREATE_ISSUE_LOG")
-	if [[ "$list_args" == *'in:title "simplification debt stalled" OR in:title "LLM complexity sweep"'* ]] \
-		&& [[ "$list_args" != *'--label function-complexity-debt'* ]] \
-		&& [[ "$create_args" == *'--label quality-debt'* ]] \
-		&& [[ "$create_args" != *'--label function-complexity-debt'* ]] \
-		&& [[ "$create_args" == *'local_capacity_gate'* ]]; then
+	if [[ "$list_args" == *'in:title "simplification debt stalled" OR in:title "LLM complexity sweep"'* ]] &&
+		[[ "$list_args" != *'--label function-complexity-debt'* ]] &&
+		[[ "$create_args" == *'--label quality-debt'* ]] &&
+		[[ "$create_args" != *'--label function-complexity-debt'* ]] &&
+		[[ "$create_args" == *'local_capacity_gate'* ]] &&
+		[[ "$create_args" == *'aidevops:generator=complexity-stall-sweep stall_hours=6'* ]]; then
 		print_result "_complexity_run_llm_sweep: meta review stays outside measured debt" 0
 	else
 		print_result "_complexity_run_llm_sweep: meta review stays outside measured debt" 1 \

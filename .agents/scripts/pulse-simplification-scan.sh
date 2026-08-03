@@ -285,7 +285,9 @@ _complexity_run_llm_sweep() {
 	fi
 
 	local sweep_body
-	sweep_body="## Simplification debt stall — LLM sweep (automated, GH#15285)
+	sweep_body="<!-- aidevops:generator=complexity-stall-sweep stall_hours=$((${COMPLEXITY_LLM_SWEEP_INTERVAL:-21600} / 3600)) -->
+
+## Simplification debt stall — LLM sweep (automated, GH#15285)
 
 **Open function-complexity-debt issues:** ${current_count:-unknown}
 

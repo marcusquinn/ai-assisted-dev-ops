@@ -38,6 +38,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/shared-constants.sh"
 
+: "${REPOS_JSON:=${HOME}/.config/aidevops/repos.json}"
+
+if [[ -f "${SCRIPT_DIR}/shared-gh-collaborator-permission.sh" ]]; then
+	# shellcheck source=./shared-gh-collaborator-permission.sh
+	source "${SCRIPT_DIR}/shared-gh-collaborator-permission.sh"
+fi
+
 if [[ -f "${SCRIPT_DIR}/pulse-repo-meta.sh" ]]; then
 	# shellcheck source=./pulse-repo-meta.sh
 	source "${SCRIPT_DIR}/pulse-repo-meta.sh"
@@ -125,6 +132,7 @@ _register_validators() {
 	_VALIDATOR_REGISTRY["large-file-simplification-gate"]="_validator_large_file_simplification_gate"
 	_VALIDATOR_REGISTRY["agent-doc-simplification-gate"]="_validator_agent_doc_simplification_gate"
 	_VALIDATOR_REGISTRY["function-complexity-gate"]="_validator_function_complexity_gate"
+	_VALIDATOR_REGISTRY["complexity-stall-sweep"]="_validator_complexity_stall_sweep"
 	_VALIDATOR_REGISTRY["upstream-watch"]="_validator_upstream_watch"
 	_VALIDATOR_REGISTRY["runtime-audit"]="_validator_runtime_audit"
 	return 0
@@ -191,6 +199,60 @@ Closing this stale zero-progress meta-issue in the pre-dispatch validator so aut
 		_log "WARN" "#${issue_number}: failed to close recovered zero-progress meta-issue"
 	_log "INFO" "#${issue_number}: zero-progress meta premise recovered — issue closed, dispatch blocked"
 	return 10
+}
+
+# Re-check a simplification-debt stall immediately before worker dispatch. A
+# closure inside the original stall window proves throughput resumed, making
+# the diagnostic meta-issue stale. API ambiguity fails open to preserve work.
+_validator_complexity_stall_sweep() {
+	local slug="$1"
+	local stall_hours="${STALL_WINDOW_HOURS:-6}"
+	local now_epoch=""
+	local since_epoch=""
+	local since_date=""
+	local recent_closures=""
+
+	if [[ ! "$stall_hours" =~ ^[1-9][0-9]*$ ]]; then
+		_log "WARN" "complexity-stall-sweep validator: invalid stall_hours=${stall_hours}"
+		return 20
+	fi
+
+	now_epoch=$(date +%s) || return 20
+	since_epoch=$((now_epoch - stall_hours * 3600))
+	since_date=$(date -u -d "@${since_epoch}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) ||
+		since_date=$(date -u -r "$since_epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) ||
+		since_date=""
+	if [[ -z "$since_date" ]]; then
+		_log "WARN" "complexity-stall-sweep validator: unable to calculate closure window"
+		return 20
+	fi
+
+	recent_closures=$(gh api graphql \
+		-f query="query { search(query:\"repo:${slug} label:function-complexity-debt is:issue is:closed closed:>${since_date}\", type:ISSUE) { issueCount } }" \
+		--jq '.data.search.issueCount' 2>/dev/null) || {
+		_log "WARN" "complexity-stall-sweep validator: recent-closure lookup failed"
+		return 20
+	}
+	if [[ ! "$recent_closures" =~ ^[0-9]+$ ]]; then
+		_log "WARN" "complexity-stall-sweep validator: malformed closure count"
+		return 20
+	fi
+
+	if [[ "$recent_closures" -gt 0 ]]; then
+		# #aidevops:trust-boundary — this validator can trigger a comment and
+		# issue close. Confirm live write authority before returning falsified.
+		if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 ||
+			! repo_allows_pulse_write_actions "$slug"; then
+			_log "WARN" "complexity-stall-sweep validator: recovery detected but runner lacks repo write permission"
+			return 20
+		fi
+		VALIDATOR_RATIONALE="Throughput resumed: ${recent_closures} function-complexity-debt issue(s) closed in the last ${stall_hours}h. The stall premise recovered before dispatch."
+		_log "INFO" "complexity-stall-sweep validator: ${recent_closures} recent closure(s) — premise falsified"
+		return 10
+	fi
+
+	_log "INFO" "complexity-stall-sweep validator: zero recent closures — premise holds"
+	return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1638,11 +1700,12 @@ cmd_validate() {
 		return 0
 	fi
 
-	# Extract optional attributes: cited_file, threshold, upstream_slug, detector
+	# Extract optional attributes: cited_file, threshold, upstream_slug, detector, stall_hours
 	CITED_FILE=$(printf '%s' "$generator_line" | grep -oE 'cited_file=[^ >]+' | sed 's/cited_file=//' 2>/dev/null) || CITED_FILE=""
 	CITED_THRESHOLD=$(printf '%s' "$generator_line" | grep -oE 'threshold=[0-9]+' | sed 's/threshold=//' 2>/dev/null) || CITED_THRESHOLD=""
 	UPSTREAM_SLUG=$(printf '%s' "$generator_line" | grep -oE 'upstream_slug=[^ >]+' | sed 's/upstream_slug=//' 2>/dev/null) || UPSTREAM_SLUG=""
 	DETECTOR_ID=$(printf '%s' "$generator_line" | grep -oE 'detector=[a-z0-9_-]+' | sed 's/detector=//' 2>/dev/null) || DETECTOR_ID=""
+	STALL_WINDOW_HOURS=$(printf '%s' "$generator_line" | grep -oE 'stall_hours=[0-9]+' | sed 's/stall_hours=//' 2>/dev/null) || STALL_WINDOW_HOURS=""
 
 	_log "INFO" "#${issue_number}: generator=${generator} cited_file=${CITED_FILE:-<none>} threshold=${CITED_THRESHOLD:-<none>} detector=${DETECTOR_ID:-<none>}"
 

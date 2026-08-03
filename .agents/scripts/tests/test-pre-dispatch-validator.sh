@@ -11,6 +11,8 @@
 #   test_bypass_env_var             — AIDEVOPS_SKIP_PREDISPATCH_VALIDATOR=1 → exit 0
 #   test_zero_progress_meta_recovered_blocks_dispatch — recovered meta issue → exit 10
 #   test_zero_progress_meta_active_allows_dispatch    — active meta issue → exit 0
+#   test_complexity_stall_recovered_blocks_dispatch   — resumed throughput → exit 10
+#   test_complexity_stall_active_allows_dispatch      — zero throughput → exit 0
 
 set -euo pipefail
 
@@ -160,16 +162,59 @@ if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+\
 fi
 
 if [[ "\${1:-}" == "api" ]] && [[ "\${2:-}" == "user" ]]; then
-	printf 'runner\n'
+	printf 'marcusquinn\n'
 	exit 0
 fi
 
-if [[ "\${1:-}" == "api" ]] && printf '%s' "\$*" | grep -qE '/repos/.*/collaborators/runner/permission'; then
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$*" | grep -qE '/repos/.*/collaborators/marcusquinn/permission'; then
 	printf 'HTTP/2.0 200 OK\n\n{"permission":"${permission_value}"}\n'
 	exit 0
 fi
 
 if [[ "\${1:-}" == "issue" ]]; then
+	exit 0
+fi
+
+printf 'unsupported gh invocation: %s\n' "\$*" >&2
+exit 1
+GHEOF
+	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
+create_gh_stub_complexity_stall_body() {
+	local recent_closures="$1"
+	local permission_value="${2:-write}"
+	local body_file="${TEST_ROOT}/issue_body.txt"
+	local actions_file="${TEST_ROOT}/gh-actions.log"
+	printf '<!-- aidevops:generator=complexity-stall-sweep stall_hours=6 -->\n## Simplification debt stall\n' >"$body_file"
+
+	cat >"${TEST_ROOT}/bin/gh" <<GHEOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+\$'; then
+	python3 -c "import sys; sys.stdout.write(open('${body_file}').read())" 2>/dev/null
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && [[ "\${2:-}" == "graphql" ]]; then
+	printf '%s\n' '${recent_closures}'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && [[ "\${2:-}" == "user" ]]; then
+	printf 'marcusquinn\n'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$*" | grep -qE '/repos/.*/collaborators/marcusquinn/permission'; then
+	printf 'HTTP/2.0 200 OK\n\n{"permission":"${permission_value}"}\n'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "issue" ]]; then
+	printf '%s\n' "\$*" >>'${actions_file}'
 	exit 0
 fi
 
@@ -525,13 +570,13 @@ test_zero_progress_meta_recovered_blocks_dispatch() {
 	create_gh_stub_zero_progress_body "write"
 	write_zero_progress_stats "0"
 
-	local rc=0
-	"$HELPER_SCRIPT" validate "52" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+	local rc=0 output=""
+	output=$("$HELPER_SCRIPT" validate "52" "marcusquinn/aidevops" 2>&1) || rc=$?
 
 	if [[ "$rc" -eq 10 ]]; then
 		print_result "zero_progress meta recovered exits 10" 0
 	else
-		print_result "zero_progress meta recovered exits 10" 1 "Expected exit 10, got ${rc}"
+		print_result "zero_progress meta recovered exits 10" 1 "Expected exit 10, got ${rc}: ${output}"
 	fi
 
 	teardown_test_env
@@ -699,6 +744,57 @@ test_function_complexity_sweep_missing_cited_file_allows_dispatch() {
 	return 0
 }
 
+test_complexity_stall_recovered_blocks_dispatch() {
+	setup_test_env
+	create_gh_stub_complexity_stall_body "2"
+
+	local rc=0 output=""
+	output=$("$HELPER_SCRIPT" validate "29393" "marcusquinn/aidevops" 2>&1) || rc=$?
+
+	if [[ "$rc" -eq 10 ]] && grep -q "close 29393" "${TEST_ROOT}/gh-actions.log" 2>/dev/null; then
+		print_result "complexity stall recovery closes stale meta issue" 0
+	else
+		print_result "complexity stall recovery closes stale meta issue" 1 "Expected exit 10 and close action, got ${rc}: ${output}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_complexity_stall_active_allows_dispatch() {
+	setup_test_env
+	create_gh_stub_complexity_stall_body "0"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "29393" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 0 ]] && [[ ! -s "${TEST_ROOT}/gh-actions.log" ]]; then
+		print_result "active complexity stall remains dispatchable" 0
+	else
+		print_result "active complexity stall remains dispatchable" 1 "Expected exit 0 without close action, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_complexity_stall_recovered_readonly_fails_open() {
+	setup_test_env
+	create_gh_stub_complexity_stall_body "2" "read"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "29393" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 20 ]] && [[ ! -s "${TEST_ROOT}/gh-actions.log" ]]; then
+		print_result "complexity stall recovery requires live write authority" 0
+	else
+		print_result "complexity stall recovery requires live write authority" 1 "Expected exit 20 without close action, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -719,6 +815,9 @@ main() {
 	test_zero_progress_meta_recovered_blocks_dispatch
 	test_zero_progress_meta_recovered_readonly_allows_dispatch_without_write
 	test_zero_progress_meta_active_allows_dispatch
+	test_complexity_stall_recovered_blocks_dispatch
+	test_complexity_stall_active_allows_dispatch
+	test_complexity_stall_recovered_readonly_fails_open
 	test_review_feedback_extended_extensions
 	test_review_feedback_keyword_scoring_whole_words
 	test_review_feedback_preserves_version_directory_paths
