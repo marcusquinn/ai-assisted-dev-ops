@@ -7,6 +7,7 @@
 _WORKTREE_RECOVERY_APPLY_HELPER_LOADED=1
 
 WORKTREE_RECOVERY_APPLY_RECEIPT_SCHEMA="aidevops.worktree-recovery-apply-receipt/v1"
+WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA="aidevops.worktree-recovery-apply-reservation/v1"
 WORKTREE_RECOVERY_APPLY_TRANSACTION_SCHEMA="aidevops.worktree-recovery-apply-transaction/v1"
 WORKTREE_RECOVERY_APPLY_STATE_PLANNED="planned"
 WORKTREE_RECOVERY_APPLY_STATE_STAGED="staged"
@@ -244,6 +245,72 @@ _worktree_recovery_apply_new_receipt_path() {
 	return 0
 }
 
+_worktree_recovery_apply_reservation_json() {
+	local apply_metadata="$1"
+	local transaction_id="$2"
+	local reserved_at=""
+
+	reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+	printf '%s\n' "$apply_metadata" | jq -c \
+		--arg schema "$WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA" \
+		--arg transaction_id "$transaction_id" --arg reserved_at "$reserved_at" '
+		{schema:$schema,complete:false,plan_id:.plan_id,plan_digest:.plan_digest,
+		confirmation:.confirmation,candidate_count:.candidate_count,
+		expected_allocated_bytes:.candidate_bytes,transaction_id:$transaction_id,
+		reserved_at:$reserved_at}'
+	return $?
+}
+
+_worktree_recovery_apply_validate_reservation() {
+	local receipt_path="$1"
+	local apply_metadata="$2"
+	local transaction_id="$3"
+
+	_worktree_recovery_apply_canonical_path "$receipt_path" >/dev/null || return 1
+	[[ -f "$receipt_path" && ! -L "$receipt_path" && -r "$receipt_path" ]] || return 1
+	jq -e --argjson expected "$apply_metadata" \
+		--arg schema "$WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA" \
+		--arg transaction_id "$transaction_id" \
+		--arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" '
+		type == "object" and
+		(keys | sort) == (["candidate_count","complete","confirmation",
+			"expected_allocated_bytes","plan_digest","plan_id","reserved_at","schema",
+			"transaction_id"] | sort) and
+		.schema == $schema and .complete == false and
+		.plan_id == $expected.plan_id and .plan_digest == $expected.plan_digest and
+		.confirmation == $expected.confirmation and
+		.candidate_count == $expected.candidate_count and
+		.expected_allocated_bytes == $expected.candidate_bytes and
+		.transaction_id == $transaction_id and (.reserved_at | type == $string_type)
+	' "$receipt_path" >/dev/null 2>&1
+	return $?
+}
+
+# Reserve the caller-selected receipt path before any archive mutation. Return 2
+# only when an exact completed receipt proves this plan already finished.
+_worktree_recovery_apply_ensure_receipt_reservation() {
+	local receipt_path="$1"
+	local apply_metadata="$2"
+	local transaction_id="$3"
+	local reservation_json=""
+
+	if [[ -e "$receipt_path" || -L "$receipt_path" ]]; then
+		if _worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata"; then
+			return 2
+		fi
+		_worktree_recovery_apply_validate_reservation \
+			"$receipt_path" "$apply_metadata" "$transaction_id" || return 1
+		return 0
+	fi
+	_worktree_recovery_apply_new_receipt_path "$receipt_path" || return 1
+	reservation_json=$(_worktree_recovery_apply_reservation_json \
+		"$apply_metadata" "$transaction_id") || return 1
+	_worktree_recovery_apply_publish_new "$receipt_path" "$reservation_json" || return 1
+	_worktree_recovery_apply_validate_reservation \
+		"$receipt_path" "$apply_metadata" "$transaction_id"
+	return $?
+}
+
 _worktree_recovery_apply_transaction_entries() {
 	local plan_json="$1"
 	local transaction_id="$2"
@@ -272,19 +339,30 @@ _worktree_recovery_apply_atomic_replace() {
 	local payload="$2"
 	local parent_path="${output_path%/*}"
 	local base_name="${output_path##*/}"
-	local temp_path=""
+	local temp_path="${parent_path}/.${base_name}.next"
 	local previous_umask=""
 
 	[[ -d "$parent_path" && ! -L "$parent_path" ]] || return 1
+	if [[ -e "$temp_path" || -L "$temp_path" ]]; then
+		[[ -f "$temp_path" && ! -L "$temp_path" ]] || return 1
+		rm -f "$temp_path" || return 1
+	fi
 	previous_umask=$(umask)
 	umask 077
-	temp_path=$(mktemp "${parent_path}/.${base_name}.tmp.XXXXXX") || {
+	if ! (set -C && printf '%s\n' "$payload" >"$temp_path"); then
 		umask "$previous_umask"
 		return 1
-	}
+	fi
 	umask "$previous_umask"
-	if ! printf '%s\n' "$payload" >"$temp_path" || ! chmod 600 "$temp_path" ||
-		! mv "$temp_path" "$output_path"; then
+	if ! chmod 600 "$temp_path"; then
+		rm -f "$temp_path"
+		return 1
+	fi
+	if [[ "$base_name" == "journal.json" &&
+		"${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_JOURNAL_NEXT:-0}" == "1" ]]; then
+		return 1
+	fi
+	if ! mv "$temp_path" "$output_path"; then
 		rm -f "$temp_path"
 		return 1
 	fi
@@ -334,6 +412,47 @@ _worktree_recovery_apply_prepare_transaction_dir() {
 		mkdir "$transaction_dir" || return 1
 	fi
 	return 0
+}
+
+_worktree_recovery_apply_discard_next_file() {
+	local output_path="$1"
+	local next_path="${output_path%/*}/.${output_path##*/}.next"
+
+	[[ -e "$next_path" || -L "$next_path" ]] || return 0
+	[[ -f "$next_path" && ! -L "$next_path" ]] || return 1
+	rm -f "$next_path"
+	return $?
+}
+
+_worktree_recovery_apply_validate_uninitialized_transaction_dirs() {
+	local recovery_root="$1"
+	local entries_json="$2"
+	local transaction_id="$3"
+	local journal_path="$4"
+	local journal_next="${journal_path%/*}/.${journal_path##*/}.next"
+	local transaction_dir=""
+	local artifact=""
+	local transaction_dirs=""
+
+	transaction_dirs=$(printf '%s\n' "$entries_json" | jq -c \
+		--arg recovery_root "$recovery_root" --arg transaction_id "$transaction_id" '
+		([$recovery_root] + [.[] | .original_path as $original_path |
+			$original_path[0:($original_path | rindex("/"))]]) | unique |
+		map(. + "/.retention-trash/" + $transaction_id)
+	') || return 1
+	while IFS= read -r transaction_dir; do
+		[[ -e "$transaction_dir" || -L "$transaction_dir" ]] || continue
+		[[ -d "$transaction_dir" && ! -L "$transaction_dir" ]] || return 1
+		for artifact in "$transaction_dir"/.* "$transaction_dir"/*; do
+			[[ -e "$artifact" || -L "$artifact" ]] || continue
+			case "${artifact##*/}" in
+			. | ..) continue ;;
+			esac
+			[[ "$artifact" == "$journal_next" && -f "$artifact" && ! -L "$artifact" ]] || return 1
+		done
+	done < <(printf '%s\n' "$transaction_dirs" | jq -r '.[]')
+	_worktree_recovery_apply_discard_next_file "$journal_path"
+	return $?
 }
 
 _worktree_recovery_apply_expected_journal() {
@@ -726,25 +845,40 @@ _worktree_recovery_apply_under_lock() {
 	local journal_json=""
 	local source_root=""
 	local receipt_json=""
+	local receipt_status=0
 
 	_worktree_recovery_apply_validate_plan "$plan_path" "$supplied_confirmation" || return 1
 	apply_metadata="$WORKTREE_RECOVERY_APPLY_VALIDATED_METADATA"
 	plan_json="$WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON"
+	_worktree_recovery_apply_validate_control_path_scope \
+		"$receipt_path" "$plan_json" || return 1
 	plan_digest=$(printf '%s\n' "$apply_metadata" | jq -r '.plan_digest | sub("^sha256:"; "")') || return 1
 	transaction_id="apply-${plan_digest}"
 	entries_json=$(_worktree_recovery_apply_transaction_entries "$plan_json" "$transaction_id") || return 1
 	transaction_dir="${recovery_root}/.retention-trash/${transaction_id}"
 	journal_path="${transaction_dir}/journal.json"
-	if [[ -e "$transaction_dir" || -L "$transaction_dir" ]]; then
-		[[ -d "$transaction_dir" && ! -L "$transaction_dir" && -f "$journal_path" && ! -L "$journal_path" ]] || return 1
+	_worktree_recovery_apply_ensure_receipt_reservation \
+		"$receipt_path" "$apply_metadata" "$transaction_id" || receipt_status=$?
+	if [[ "$receipt_status" -eq 2 ]]; then
+		return 0
+	fi
+	[[ "$receipt_status" -eq 0 ]] || return "$receipt_status"
+	if [[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_RECEIPT_RESERVATION:-0}" == "1" ]]; then
+		return 1
+	fi
+	if [[ -f "$journal_path" && ! -L "$journal_path" ]]; then
 		started_at=$(jq -r '.started_at // empty' "$journal_path") || return 1
 	else
+		[[ ! -e "$journal_path" && ! -L "$journal_path" ]] || return 1
+		_worktree_recovery_apply_validate_uninitialized_transaction_dirs \
+			"$recovery_root" "$entries_json" "$transaction_id" "$journal_path" || return 1
 		started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	fi
 	expected_journal=$(_worktree_recovery_apply_expected_journal \
 		"$transaction_id" "$apply_metadata" "$entries_json" "$started_at") || return 1
 	if [[ -f "$journal_path" ]]; then
 		_worktree_recovery_apply_validate_existing_journal "$journal_path" "$expected_journal" || return 1
+		_worktree_recovery_apply_discard_next_file "$journal_path" || return 1
 	else
 		_worktree_recovery_apply_prepare_transaction_dir "$recovery_root" "$transaction_id" || return 1
 		while IFS= read -r source_root; do
@@ -753,6 +887,9 @@ _worktree_recovery_apply_under_lock() {
 			[.[] | .original_path as $original_path |
 				$original_path[0:($original_path | rindex("/"))]] | unique[]
 		')
+		if [[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_TRANSACTION_DIR:-0}" == "1" ]]; then
+			return 1
+		fi
 		journal_json="$expected_journal"
 		_worktree_recovery_apply_atomic_replace "$journal_path" "$journal_json" || return 1
 	fi
@@ -766,7 +903,10 @@ _worktree_recovery_apply_under_lock() {
 	_worktree_recovery_apply_validate_all_staged "$journal_path" || return 1
 	_worktree_recovery_apply_remove_staged "$journal_path" || return 1
 	receipt_json=$(_worktree_recovery_apply_receipt_json "$journal_path" "$apply_metadata") || return 1
-	_worktree_recovery_apply_publish_new "$receipt_path" "$receipt_json" || return 1
+	_worktree_recovery_apply_validate_reservation \
+		"$receipt_path" "$apply_metadata" "$transaction_id" || return 1
+	_worktree_recovery_apply_atomic_replace "$receipt_path" "$receipt_json" || return 1
+	_worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata" || return 1
 	_worktree_recovery_apply_cleanup_transaction "$journal_path" || return 1
 	return 0
 }
@@ -787,12 +927,6 @@ worktree_recovery_apply() {
 	plan_json="$WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON"
 	_worktree_recovery_apply_validate_control_path_scope \
 		"$receipt_path" "$plan_json" || return 1
-	if [[ -e "$receipt_path" || -L "$receipt_path" ]]; then
-		_worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata" || return 1
-		printf '%s\n' "$receipt_path"
-		return 0
-	fi
-	_worktree_recovery_apply_new_receipt_path "$receipt_path" || return 1
 	recovery_root=$(_worktree_recovery_store_root) || return 1
 	[[ -d "$recovery_root" && ! -L "$recovery_root" ]] || return 1
 	recovery_root_real=$(cd "$recovery_root" 2>/dev/null && pwd -P) || return 1

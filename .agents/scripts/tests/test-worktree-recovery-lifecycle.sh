@@ -564,7 +564,10 @@ test_apply_preflight_drift_stages_nothing() {
 	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
 		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
 		--confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
-	[[ -d "$bucket_a" && -d "$bucket_b" && ! -e "$receipt_path" ]] || rc=1
+	[[ -d "$bucket_a" && -d "$bucket_b" && -f "$receipt_path" ]] || rc=1
+	jq -e '
+		.schema == "aidevops.worktree-recovery-apply-reservation/v1" and .complete == false
+	' "$receipt_path" >/dev/null || rc=1
 	for staged_path in "$recovery_root"/.retention-trash/apply-*/candidate-*; do
 		[[ -e "$staged_path" || -L "$staged_path" ]] || continue
 		staged_count=$((staged_count + 1))
@@ -602,7 +605,9 @@ test_apply_resumes_move_and_delete_crash_windows() {
 		[[ -f "$candidate_journal" ]] || continue
 		journal_path="$candidate_journal"
 	done
-	[[ -n "$journal_path" && ! -e "$bucket_path" && ! -e "$move_receipt" ]] || rc=1
+	[[ -n "$journal_path" && ! -e "$bucket_path" && -f "$move_receipt" ]] || rc=1
+	jq -e '.schema == "aidevops.worktree-recovery-apply-reservation/v1" and .complete == false' \
+		"$move_receipt" >/dev/null || rc=1
 	staged_path=$(jq -r '.entries[0].staged_path' "$journal_path") || rc=1
 	[[ "$(jq -r '.entries[0].state' "$journal_path")" == "planned" && -d "$staged_path" ]] || rc=1
 	HOME="$move_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$move_root" cmd_recovery apply \
@@ -625,7 +630,9 @@ test_apply_resumes_move_and_delete_crash_windows() {
 		[[ -f "$candidate_journal" ]] || continue
 		journal_path="$candidate_journal"
 	done
-	[[ -n "$journal_path" && ! -e "$bucket_path" && ! -e "$delete_receipt" ]] || rc=1
+	[[ -n "$journal_path" && ! -e "$bucket_path" && -f "$delete_receipt" ]] || rc=1
+	jq -e '.schema == "aidevops.worktree-recovery-apply-reservation/v1" and .complete == false' \
+		"$delete_receipt" >/dev/null || rc=1
 	staged_path=$(jq -r '.entries[0].staged_path' "$journal_path") || rc=1
 	[[ "$(jq -r '.entries[0].state' "$journal_path")" == "staged" && ! -e "$staged_path" ]] || rc=1
 	HOME="$delete_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$delete_root" cmd_recovery apply \
@@ -634,6 +641,88 @@ test_apply_resumes_move_and_delete_crash_windows() {
 	[[ -f "$delete_receipt" ]] || rc=1
 	print_result "apply_resumes_move_and_delete_crash_windows" "$rc" \
 		"Expected retries to reconcile exact journal state after rename or delete interruption"
+	return 0
+}
+
+test_apply_resumes_transaction_initialization_crashes() {
+	local dir_home="${TEST_DIR}/transaction-dir-home"
+	local dir_root="${dir_home}/recovery"
+	local dir_plan="${TEST_DIR}/transaction-dir-plan.json"
+	local dir_receipt="${TEST_DIR}/transaction-dir-receipt.json"
+	local next_home="${TEST_DIR}/journal-next-home"
+	local next_root="${next_home}/recovery"
+	local next_plan="${TEST_DIR}/journal-next-plan.json"
+	local next_receipt="${TEST_DIR}/journal-next-receipt.json"
+	local archive_path="" bucket_path="" confirmation="" next_path=""
+	local rc=0
+
+	archive_path=$(create_candidate_plan_fixture "$dir_home" "${TEST_DIR}/transaction-dir-repo" \
+		"${TEST_DIR}/transaction-dir-worktree" "$dir_root" \
+		"bugfix/gh29389-transaction-dir-interrupt" "$dir_plan") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$dir_plan") || rc=1
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_TRANSACTION_DIR=1 HOME="$dir_home" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$dir_root" cmd_recovery apply --plan "$dir_plan" \
+		--receipt "$dir_receipt" --confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "$bucket_path" && -f "$dir_receipt" ]] || rc=1
+	HOME="$dir_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$dir_root" cmd_recovery apply \
+		--plan "$dir_plan" --receipt "$dir_receipt" --confirm "$confirmation" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" ]] || rc=1
+
+	archive_path=$(create_candidate_plan_fixture "$next_home" "${TEST_DIR}/journal-next-repo" \
+		"${TEST_DIR}/journal-next-worktree" "$next_root" \
+		"bugfix/gh29389-journal-next-interrupt" "$next_plan") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$next_plan") || rc=1
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_JOURNAL_NEXT=1 HOME="$next_home" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$next_root" cmd_recovery apply --plan "$next_plan" \
+		--receipt "$next_receipt" --confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	for next_path in "$next_root"/.retention-trash/apply-*/.journal.json.next; do
+		[[ -f "$next_path" && -d "$bucket_path" ]] || rc=1
+	done
+	HOME="$next_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$next_root" cmd_recovery apply \
+		--plan "$next_plan" --receipt "$next_receipt" --confirm "$confirmation" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" ]] || rc=1
+	print_result "apply_resumes_transaction_initialization_crashes" "$rc" \
+		"Expected empty transaction directories and journal-next files to resume safely"
+	return 0
+}
+
+test_receipt_reservation_blocks_conflicting_plan() {
+	local home_path="${TEST_DIR}/reservation-home"
+	local recovery_root="${home_path}/recovery"
+	local first_plan="${TEST_DIR}/reservation-first-plan.json"
+	local second_plan="${TEST_DIR}/reservation-second-plan.json"
+	local receipt_path="${TEST_DIR}/reservation-receipt.json"
+	local first_archive="" first_bucket="" first_confirmation=""
+	local second_archive="" second_bucket="" second_confirmation=""
+	local rc=0
+
+	first_archive=$(create_candidate_plan_fixture "$home_path" "${TEST_DIR}/reservation-first-repo" \
+		"${TEST_DIR}/reservation-first-worktree" "$recovery_root" \
+		"bugfix/gh29389-reservation-first" "$first_plan") || rc=1
+	first_bucket="${first_archive%/*}"
+	first_confirmation=$(jq -r '.confirmation_token' "$first_plan") || rc=1
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_RECEIPT_RESERVATION=1 HOME="$home_path" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" cmd_recovery apply --plan "$first_plan" \
+		--receipt "$receipt_path" --confirm "$first_confirmation" >/dev/null 2>&1; then rc=1; fi
+	second_archive=$(create_candidate_plan_fixture "$home_path" "${TEST_DIR}/reservation-second-repo" \
+		"${TEST_DIR}/reservation-second-worktree" "$recovery_root" \
+		"bugfix/gh29389-reservation-second" "$second_plan") || rc=1
+	second_bucket="${second_archive%/*}"
+	second_confirmation=$(jq -r '.confirmation_token' "$second_plan") || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" cmd_recovery apply \
+		--plan "$second_plan" --receipt "$receipt_path" --confirm "$second_confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	[[ -d "$first_bucket" && -d "$second_bucket" ]] || rc=1
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" cmd_recovery apply \
+		--plan "$first_plan" --receipt "$receipt_path" --confirm "$first_confirmation" >/dev/null || rc=1
+	[[ ! -e "$first_bucket" && -d "$second_bucket" ]] || rc=1
+	jq -e --arg plan_id "$(jq -r '.plan_id' "$first_plan")" \
+		'.schema == "aidevops.worktree-recovery-apply-receipt/v1" and
+		.complete == true and .plan_id == $plan_id' "$receipt_path" >/dev/null || rc=1
+	print_result "receipt_reservation_blocks_conflicting_plan" "$rc" \
+		"Expected one plan-bound reservation to block conflicting deletion and permit exact retry"
 	return 0
 }
 
@@ -736,6 +825,8 @@ test_apply_removes_only_candidates_and_replays_receipt
 test_apply_rejects_unsafe_manifest_and_cli_inputs
 test_apply_preflight_drift_stages_nothing
 test_apply_resumes_move_and_delete_crash_windows
+test_apply_resumes_transaction_initialization_crashes
+test_receipt_reservation_blocks_conflicting_plan
 test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

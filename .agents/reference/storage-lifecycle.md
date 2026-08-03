@@ -146,7 +146,8 @@ worktree-helper.sh recovery apply \
 ```
 
 Apply accepts only the exact supported producer manifest and its bound token.
-It rejects relative or symlinked inputs, existing mismatched receipts,
+It rejects relative or symlinked inputs, existing mismatched receipts or
+reservations,
 unsupported schemas, duplicate paths or identities, candidates outside an
 attributable recovery root, and any summary or digest mismatch. Archive creation
 and apply contend on the same exclusive producer lock. The lock records PID,
@@ -154,20 +155,26 @@ process start time, and an owner token; live, malformed, ambiguous, or
 unverifiable ownership blocks mutation, while only conclusively stale ownership
 may be reclaimed.
 
-Under the lock, apply revalidates every candidate and all mutable evidence before
-moving any candidate. It then rechecks each exact identity and allocated byte
-count immediately before a same-filesystem rename into that recovery root's
-`.retention-trash/<transaction-id>/` directory. An atomically replaced journal
-lists every permitted original and staged path; removal operates only on those
-journal entries, never a wildcard or a newly discovered archive. Interrupted
-rename or removal windows remain attributable and can resume only from the exact
-plan and journal.
+Under the lock, apply first creates or validates a mode-0600, plan-bound
+`aidevops.worktree-recovery-apply-reservation/v1` at the requested receipt path.
+This reservation prevents a concurrent plan from deleting data and then losing
+its receipt to a path collision. An exact retry may resume an incomplete
+reservation; a different plan fails before mutation. Apply then revalidates every
+candidate and all mutable evidence before moving any candidate. It rechecks each
+exact identity and allocated byte count immediately before a same-filesystem
+rename into that recovery root's `.retention-trash/<transaction-id>/` directory.
+An atomically replaced journal lists every permitted original and staged path;
+removal operates only on those journal entries, never a wildcard or a newly
+discovered archive. Empty initialization directories and deterministic
+journal-next files are recoverable, while any unrelated transaction artifact
+fails closed. Interrupted initialization, rename, journal update, or removal
+windows remain attributable and can resume only from the exact plan and journal.
 
-Success atomically publishes a new mode-0600
+Success atomically replaces the exact reservation with a mode-0600
 `aidevops.worktree-recovery-apply-receipt/v1` receipt containing the plan and
 transaction identities, confirmation binding, times, exact paths and archive
 identities, expected/observed bytes, and terminal outcomes. Replaying the same
-complete receipt is a no-op; a conflicting receipt fails closed. Protected,
+complete receipt is a no-op; a conflicting receipt or reservation fails closed. Protected,
 unknown, unrelated Trash, and newly created content remain untouched. This
 explicit command does not add age-based or automatic recovery deletion.
 
