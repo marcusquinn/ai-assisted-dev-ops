@@ -41,6 +41,12 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+_claim_counter_lib_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_claim_counter_lib_dir" == "${BASH_SOURCE[0]}" ]] && _claim_counter_lib_dir="."
+# shellcheck source=./task-identity-lib.sh
+source "${_claim_counter_lib_dir}/task-identity-lib.sh"
+unset _claim_counter_lib_dir
+
 # =============================================================================
 # Formatting Helpers
 # =============================================================================
@@ -50,13 +56,26 @@ fi
 # callers must not reconcile and attempt the same forbidden push again.
 CAS_PROTECTED_BRANCH_RC="${CAS_PROTECTED_BRANCH_RC:-4}"
 
+# Format a numeric sequence as a canonical legacy task identity.
+# Args: $1 numeric sequence.
+_format_legacy_task_id() {
+	local sequence="$1"
+	task_identity_format "legacy" "" "$sequence" ""
+	return $?
+}
+
 # Format a task ID range for log messages and commit subjects.
 # Args: $1 first numeric ID, $2 last numeric ID.
-# Outputs: e.g. "t042..t045"
+# Outputs: e.g. "t42..t45"
 _format_task_range() {
 	local first_num="$1"
 	local last_num="$2"
-	printf 't%03d..t%03d' "$first_num" "$last_num"
+	local first_id=""
+	local last_id=""
+	first_id=$(_format_legacy_task_id "$first_num") || return 1
+	last_id=$(_format_legacy_task_id "$last_num") || return 1
+	printf '%s..%s' "$first_id" "$last_id"
+	return 0
 }
 
 # Machine-local coordinator integration. Legacy CAS remains authoritative unless
@@ -75,7 +94,7 @@ _task_coordinator_shadow_legacy() {
 	cli=$(_task_coordinator_cli)
 	local operation_id="legacy-${AIDEVOPS_SESSION_ID:-${BASHPID:-$$}}-${first_id}-${count}"
 	local legacy_id=""
-	printf -v legacy_id 't%03d' "$first_id"
+	legacy_id=$(_format_legacy_task_id "$first_id") || return 1
 	if ! node "$cli" allocate --operation-id "$operation_id" --count "$count" \
 		--legacy-id "$legacy_id" --payload '{"source":"legacy-cas-shadow"}' >/dev/null; then
 		log_warn "Task coordinator shadow write failed; legacy CAS allocation remains valid"
@@ -123,7 +142,7 @@ _append_claim_audit_log() {
 	ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 	pid="${BASHPID:-$$}"
 	sid="${AIDEVOPS_SESSION_ID:-${Claude_SESSION_ID:-${OPENCODE_SESSION_ID:-unknown}}}"
-	tid=$(printf 't%03d' "$first_id")
+	tid=$(_format_legacy_task_id "$first_id") || return 0
 
 	# Tab-separated; single append is atomic on POSIX filesystems for short writes.
 	printf '%s\t%s\t%s\t%s\t%s\t%ss\n' \
@@ -1165,7 +1184,7 @@ allocate_counter_cas() {
 
 	local commit_msg="chore: claim task ID"
 	if [[ "$count" -eq 1 ]]; then
-		commit_msg="chore: claim $(printf 't%03d' "$first_id") [${nonce}]"
+		commit_msg="chore: claim $(_format_legacy_task_id "$first_id") [${nonce}]"
 	else
 		commit_msg="chore: claim $(_format_task_range "$first_id" "$last_id") [${nonce}]"
 	fi
@@ -1240,7 +1259,7 @@ allocate_online() {
 		case $cas_result in
 		0)
 			# go for it — CAS succeeded on this attempt
-			log_success "Claimed $(printf 't%03d' "$first_id") (attempt ${attempt}, ${elapsed}s)"
+			log_success "Claimed $(_format_legacy_task_id "$first_id") (attempt ${attempt}, ${elapsed}s)"
 			# Phase 3 (t2569 / GH#20001): structured audit log.
 			_append_claim_audit_log "$first_id" "$attempt" "$elapsed"
 			_task_coordinator_shadow_legacy "$first_id" "$count"
@@ -1313,7 +1332,7 @@ _allocate_online_with_collision_check() {
 		fi
 
 		total_skips=$((total_skips + 1))
-		log_info "TODO.md collision: t$(printf '%03d' "$collision_id") already exists — skipping (${total_skips}/${max_skips})"
+		log_info "TODO.md collision: $(_format_legacy_task_id "$collision_id") already exists — skipping (${total_skips}/${max_skips})"
 
 		if [[ $total_skips -ge $max_skips ]]; then
 			log_error "TODO.md collision guard: exhausted ${max_skips} skip attempts"
@@ -1362,7 +1381,7 @@ allocate_offline() {
 			--no-verify --no-gpg-sign "$COUNTER_FILE" || true
 	)
 
-	log_warn "Allocated $(printf 't%03d' "$first_id") with offset (reconcile when back online)"
+	log_warn "Allocated $(_format_legacy_task_id "$first_id") with offset (reconcile when back online)"
 
 	echo "$first_id"
 	return 0

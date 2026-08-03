@@ -915,7 +915,7 @@ _main_emit_online_dry_run_allocation() {
 	local current=""
 	current=$(read_remote_counter "$REPO_PATH" 2>/dev/null || read_local_counter "$REPO_PATH" 2>/dev/null || echo "?")
 	if [[ "$current" =~ ^[0-9]+$ ]]; then
-		log_info "Would allocate $(printf 't%03d' "$current")..$(printf 't%03d' "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
+		log_info "Would allocate $(_format_task_range "$current" "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
 	else
 		log_info "Would allocate task ID (counter unreadable: ${current})"
 	fi
@@ -954,7 +954,7 @@ _main_resolve_allocation() {
 		local _allocation_rc=0
 		first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT") || _allocation_rc=$?
 		if [[ $_allocation_rc -eq 0 ]]; then
-			log_success "Allocated task ID: $(printf 't%03d' "$first_id_out")"
+			log_success "Allocated task ID: $(_format_legacy_task_id "$first_id_out")"
 		elif [[ $_allocation_rc -eq ${CAS_PROTECTED_BRANCH_RC:-4} ]]; then
 			return "$_allocation_rc"
 		else
@@ -966,7 +966,7 @@ _main_resolve_allocation() {
 					first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT") || _retry_allocation_rc=$?
 					if [[ $_retry_allocation_rc -eq 0 ]]; then
 						allocation_status="recovered_contention"
-						log_success "Allocated task ID after counter reconciliation: $(printf 't%03d' "$first_id_out")"
+						log_success "Allocated task ID after counter reconciliation: $(_format_legacy_task_id "$first_id_out")"
 					elif [[ $_retry_allocation_rc -eq ${CAS_PROTECTED_BRANCH_RC:-4} ]]; then
 						return "$_retry_allocation_rc"
 					else
@@ -1013,9 +1013,9 @@ _main_resolve_allocation() {
 	fi
 
 	if [[ "$allocation_status" == "normal_success" ]]; then
-		_task_counter_status "normal_success" "task_id=$(printf 't%03d' "$first_id_out")"
+		_task_counter_status "normal_success" "task_id=$(_format_legacy_task_id "$first_id_out")"
 	elif [[ "$allocation_status" == "recovered_contention" ]]; then
-		_task_counter_status "recovered_contention" "task_id=$(printf 't%03d' "$first_id_out")"
+		_task_counter_status "recovered_contention" "task_id=$(_format_legacy_task_id "$first_id_out")"
 	fi
 
 	# Communicate results back to caller via stdout key=value pairs
@@ -1050,7 +1050,7 @@ _main_create_issues() {
 			local i
 			for ((i = first_id; i <= last_id; i++)); do
 				local issue_title
-				issue_title="$(printf 't%03d' "$i"): ${TASK_TITLE}"
+				issue_title="$(_format_legacy_task_id "$i"): ${TASK_TITLE}"
 				local issue_num=""
 
 				case "$platform" in
@@ -1070,7 +1070,7 @@ _main_create_issues() {
 						first_issue_num="$issue_num"
 					fi
 				else
-					log_warn "Issue creation failed for $(printf 't%03d' "$i") (non-fatal — ID is secured)"
+					log_warn "Issue creation failed for $(_format_legacy_task_id "$i") (non-fatal — ID is secured)"
 					issue_nums+=("")
 				fi
 			done
@@ -1104,12 +1104,16 @@ _main_output_results() {
 	local issue_nums_csv="$6"
 
 	local last_id=$((first_id + ALLOC_COUNT - 1))
+	local first_task_id=""
+	local last_task_id=""
+	first_task_id=$(_format_legacy_task_id "$first_id") || return 1
+	last_task_id=$(_format_legacy_task_id "$last_id") || return 1
 
 	if [[ "$ALLOC_COUNT" -eq 1 ]]; then
-		printf "task_id=t%03d\n" "$first_id"
+		printf 'task_id=%s\n' "$first_task_id"
 	else
-		printf "task_id=t%03d\n" "$first_id"
-		printf "task_id_last=t%03d\n" "$last_id"
+		printf 'task_id=%s\n' "$first_task_id"
+		printf 'task_id_last=%s\n' "$last_task_id"
 		echo "task_count=${ALLOC_COUNT}"
 	fi
 
@@ -1704,7 +1708,7 @@ main() {
 	# Non-blocking: failure to find the entry leaves TASK_LABELS unchanged.
 	if [[ "$NO_ISSUE" == "false" ]] && [[ "$is_offline" == "false" ]]; then
 		local _task_id_for_scan
-		printf -v _task_id_for_scan 't%03d' "$first_id"
+		_task_id_for_scan=$(_format_legacy_task_id "$first_id") || return 1
 		local _todo_derived_labels=""
 		_todo_derived_labels=$(_scan_todo_labels_for_task "$_task_id_for_scan" "$REPO_PATH") || true
 		if [[ -n "$_todo_derived_labels" ]]; then
