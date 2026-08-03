@@ -88,11 +88,26 @@ install_external_evidence_stub() {
 }
 
 install_clear_evidence_stubs() {
-	_worktree_recovery_plan_git_state() { printf 'clear\n'; return 0; }
-	_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; return 0; }
-	_worktree_recovery_plan_registry_state() { printf 'clear\n'; return 0; }
-	_worktree_recovery_plan_claim_state() { printf 'clear\n'; return 0; }
-	_worktree_recovery_plan_process_state() { printf 'clear\n'; return 0; }
+	_worktree_recovery_plan_git_state() {
+		printf 'clear\n'
+		return 0
+	}
+	_worktree_recovery_plan_worktree_reference_state() {
+		printf 'clear\n'
+		return 0
+	}
+	_worktree_recovery_plan_registry_state() {
+		printf 'clear\n'
+		return 0
+	}
+	_worktree_recovery_plan_claim_state() {
+		printf 'clear\n'
+		return 0
+	}
+	_worktree_recovery_plan_process_state() {
+		printf 'clear\n'
+		return 0
+	}
 	install_external_evidence_stub
 	return 0
 }
