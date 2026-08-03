@@ -222,26 +222,28 @@ _print_error() {
 }
 
 _approval_probe_core_rate_limit() {
-	local quota=""
-	local remaining=""
-	local reset=""
-
-	# The endpoint is zero-cost, but it must still respect any active shared
-	# secondary cooldown rather than creating a diagnostic bypass.
+	local response=""
+	local api_rc=0
+	# The diagnostic request must respect any active shared secondary cooldown.
 	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
 		_gh_secondary_cooldown_preflight read >/dev/null 2>&1 || return 1
 	fi
-
-	if ! quota=$(gh api rate_limit --jq '[.resources.core.remaining,.resources.core.reset] | @tsv' 2>/dev/null); then
-		return 1
-	fi
-	IFS=$'\t' read -r remaining reset <<<"$quota"
-	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ ]]; then
-		return 1
-	fi
-
-	printf '%s\t%s' "$remaining" "$reset"
-	return 0
+	response=$(gh api user --include --silent 2>/dev/null) || api_rc=$?
+	[[ "$api_rc" -ne 0 && -n "$response" ]] || return 1
+	printf '%s\n' "$response" | awk '
+		{ sub(/\r$/, "", $0) }
+		$1 ~ /^HTTP\// { status = $2 }
+		tolower($1) == "x-ratelimit-remaining:" { remaining = $2 }
+		tolower($1) == "x-ratelimit-reset:" { reset = $2 }
+		tolower($1) == "x-ratelimit-resource:" { resource = tolower($2) }
+		END {
+			if (status == "403" && remaining == "0" && reset ~ /^[0-9]+$/ && resource == "core") {
+				printf "%s\t%s", remaining, reset
+				exit 0
+			}
+			exit 1
+		}'
+	return $?
 }
 
 _approval_report_core_rate_limit() {
