@@ -107,6 +107,20 @@ _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	fail "repeated-label security review NMR did not preserve its gate"
 
 _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'security,needs-credentials,needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"security,needs-credentials,hold-for-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"auto-dispatch"* ]] ||
+	fail "security NMR lost its hold when an independent blocker was present"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'security-review,no-auto-dispatch,needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"security-review,no-auto-dispatch,hold-for-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"hold-for-review,auto-dispatch"* ]] ||
+	fail "security-review NMR lost its hold alongside no-auto-dispatch"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	--label 'quality-debt,external-contributor,needs-maintainer-review'
 [[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"external-contributor,needs-maintainer-review"* ]] ||
 	fail "external-origin authority gate was normalized as trusted self-review"

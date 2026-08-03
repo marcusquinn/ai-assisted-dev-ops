@@ -650,6 +650,24 @@ _nmr_application_has_breaker_history() {
 }
 
 #######################################
+# Validate the live issue-label contract before making trust or lifecycle
+# decisions. Missing/null labels must not be interpreted as an empty set.
+# Args: issue metadata JSON
+#######################################
+_nmr_issue_metadata_has_valid_labels() {
+	local issue_meta_json="$1"
+	[[ -n "$issue_meta_json" ]] || return 1
+	printf '%s' "$issue_meta_json" | jq -e '
+		type == "object"
+		and ((.labels | type) == "array")
+		and all(.labels[];
+			if type == "object" then ((.name | type) == "string")
+			else false end)
+	' >/dev/null 2>&1
+	return $?
+}
+
+#######################################
 # Check whether an NMR issue is security-sensitive.
 #
 # Security-labelled work must not be auto-dispatched by a generic creation-
@@ -684,11 +702,12 @@ _nmr_application_is_security_sensitive() {
 		issue_meta_json=$(gh api "$issue_api_path" 2>/dev/null) || return 2
 	fi
 	[[ -n "$issue_meta_json" ]] || return 2
+	_nmr_issue_metadata_has_valid_labels "$issue_meta_json" || return 2
 
 	local has_security_label
 	has_security_label=$(printf '%s' "$issue_meta_json" \
 		| jq --arg security_label 'security' --arg security_review_label 'security-review' \
-			'[(.labels // [])[].name] | map(select(. == $security_label or . == $security_review_label)) | length' \
+			'[.labels[].name] | map(select(. == $security_label or . == $security_review_label)) | length' \
 			2>/dev/null) || return 2
 	[[ "$has_security_label" =~ ^[0-9]+$ ]] || return 2
 
@@ -1148,6 +1167,31 @@ _nmr_evaluate_reason_metadata() {
 	return 0
 }
 
+_nmr_evaluate_security_evidence() {
+	local issue_num="$1"
+	local slug="$2"
+	local nmr_at="$3"
+	_NMR_REASON_ACTION="$NMR_REASON_ACTION_CONTINUE"
+	_NMR_REASON_OVERRIDE=""
+
+	local security_rc=0
+	_nmr_application_is_security_sensitive "$issue_num" "$slug" || security_rc=$?
+	if [[ "$security_rc" -gt 1 ]]; then
+		_NMR_REASON_ACTION="$NMR_REASON_ACTION_DEFER"
+		_NMR_REASON_OVERRIDE="security state read failed"
+		return 0
+	fi
+	if [[ "$security_rc" -eq 0 ]]; then
+		local security_metadata=""
+		security_metadata=$(_nmr_metadata_json "security" "$NMR_CLASS_GENUINE_AUTHORITY" "security-label" true)
+		_nmr_record_revalidation_state "$issue_num" "$slug" "$security_metadata" "$nmr_at" "$NMR_STATUS_HUMAN_AUTHORITY" || true
+		_nmr_emit_decision_packet "$issue_num" "$slug" "security" || true
+		_NMR_REASON_ACTION="$NMR_REASON_ACTION_HUMAN_HOLD"
+		_NMR_REASON_OVERRIDE="security-sensitive label present; preserving review-hold semantics"
+	fi
+	return 0
+}
+
 _nmr_apply_trusted_classification_action() {
 	local issue_num="$1"
 	local slug="$2"
@@ -1226,21 +1270,6 @@ _nmr_evaluate_legacy_state_evidence() {
 		return 0
 	fi
 
-	local security_rc=0
-	_nmr_application_is_security_sensitive "$issue_num" "$slug" || security_rc=$?
-	if [[ "$security_rc" -gt 1 ]]; then
-		_NMR_REASON_ACTION="$NMR_REASON_ACTION_DEFER"
-		_NMR_REASON_OVERRIDE="security state read failed"
-		return 0
-	fi
-	if [[ "$security_rc" -eq 0 ]]; then
-		local security_metadata=""
-		security_metadata=$(_nmr_metadata_json "security" "$NMR_CLASS_GENUINE_AUTHORITY" "security-label" true)
-		_nmr_record_revalidation_state "$issue_num" "$slug" "$security_metadata" "$nmr_at" "$NMR_STATUS_HUMAN_AUTHORITY" || true
-		_nmr_emit_decision_packet "$issue_num" "$slug" "security" || true
-		_NMR_REASON_ACTION="$NMR_REASON_ACTION_HUMAN_HOLD"
-		_NMR_REASON_OVERRIDE="security-sensitive label present; preserving review-hold semantics"
-	fi
 	return 0
 }
 
@@ -1303,8 +1332,17 @@ _nmr_applied_by_maintainer() {
 		return 0
 	fi
 
-	_nmr_evaluate_reason_metadata "$issue_num" "$slug" "$nmr_at"
+	# Security is an independent durable hold and takes precedence over temporary
+	# reason recovery or machine-breaker normalization.
+	_nmr_evaluate_security_evidence "$issue_num" "$slug" "$nmr_at"
 	local action_rc=0
+	_nmr_apply_trusted_classification_action "$issue_num" "$slug" || action_rc=$?
+	if [[ "$action_rc" -ne 2 ]]; then
+		return "$action_rc"
+	fi
+
+	_nmr_evaluate_reason_metadata "$issue_num" "$slug" "$nmr_at"
+	action_rc=0
 	_nmr_apply_trusted_classification_action "$issue_num" "$slug" || action_rc=$?
 	if [[ "$action_rc" -ne 2 ]]; then
 		return "$action_rc"
@@ -1450,8 +1488,12 @@ _nmr_current_actor_can_post_maintainer_approval() {
 		echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: live issue metadata lookup failed" >>"$LOGFILE"
 		return 1
 	fi
+	if ! _nmr_issue_metadata_has_valid_labels "$issue_meta"; then
+		echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: live issue labels are incomplete or malformed" >>"$LOGFILE"
+		return 1
+	fi
 	if printf '%s' "$issue_meta" | jq -e \
-		'[.labels[]?.name] | index("external-contributor") != null' >/dev/null 2>&1; then
+		'[.labels[].name] | index("external-contributor") != null' >/dev/null 2>&1; then
 		echo "[pulse-wrapper] trusted-author NMR normalization skipped for #${issue_num} in ${slug}: explicit external-contributor provenance requires approval" >>"$LOGFILE"
 		return 1
 	fi
@@ -1825,8 +1867,9 @@ _nmr_issue_label_state() {
 	local slug="$2"
 	local issue_json=""
 	issue_json=$(gh api "$(_nmr_issue_api_path "$issue_num" "$slug")" 2>/dev/null) || return 1
+	_nmr_issue_metadata_has_valid_labels "$issue_json" || return 1
 	printf '%s' "$issue_json" | jq -r --arg no_status "$NMR_STATUS_NONE" '
-		[.labels[]?.name] as $labels
+		[.labels[].name] as $labels
 		| [
 			([$labels[] | select(startswith("status:"))][0] // $no_status),
 			(any($labels[];
@@ -1839,6 +1882,34 @@ _nmr_issue_label_state() {
 				. == "status:done" or . == "status:resolved"))
 		] | @tsv
 	' 2>/dev/null
+	return $?
+}
+
+_nmr_set_transition_status() {
+	local issue_num="$1"
+	local slug="$2"
+	local target_status_name="$3"
+	local current_status="$4"
+	local target_status="status:${target_status_name}"
+	local applied_state=""
+	local applied_status=""
+	local applied_manual_suppress=""
+	local applied_terminal_suppress=""
+
+	[[ "$current_status" == "$target_status" ]] && return 0
+	if declare -F set_issue_status >/dev/null 2>&1; then
+		set_issue_status "$issue_num" "$slug" "$target_status_name" >/dev/null 2>&1 || return 1
+	else
+		local -a status_flags=(--add-label "$target_status")
+		if [[ "$current_status" == status:* ]]; then
+			status_flags+=(--remove-label "$current_status")
+		fi
+		_nmr_edit_issue_labels "$issue_num" "$slug" "${status_flags[@]}" || return 1
+	fi
+	applied_state=$(_nmr_issue_label_state "$issue_num" "$slug") || return 1
+	IFS=$'\t' read -r applied_status applied_manual_suppress applied_terminal_suppress <<<"$applied_state"
+	: "$applied_manual_suppress" "$applied_terminal_suppress"
+	[[ "$applied_status" == "$target_status" ]]
 	return $?
 }
 
@@ -1873,15 +1944,9 @@ _nmr_restore_dispatchable_state() {
 	if [[ "$current_status" == "$NMR_STATUS_NONE" || ( "$_NMR_FORCE_AVAILABLE" -eq 1 && "$current_status" == "status:blocked" ) ]]; then
 		should_set_available=1
 	fi
-	if [[ "$should_set_available" -eq 0 ]]; then
-		_nmr_edit_issue_labels "$issue_num" "$slug" "${label_flags[@]}"
-		return $?
+	if [[ "$should_set_available" -eq 1 ]]; then
+		_nmr_set_transition_status "$issue_num" "$slug" "available" "$current_status" || return 1
 	fi
-	if declare -F set_issue_status >/dev/null 2>&1; then
-		set_issue_status "$issue_num" "$slug" "available" "${label_flags[@]}" >/dev/null 2>&1
-		return $?
-	fi
-	label_flags+=(--add-label "status:available")
 	_nmr_edit_issue_labels "$issue_num" "$slug" "${label_flags[@]}"
 	return $?
 }
@@ -1925,11 +1990,7 @@ _nmr_translate_trusted_author_blocked() {
 	if [[ "$manual_suppress" == "$NMR_BOOL_FALSE" ]]; then
 		label_flags+=(--add-label "auto-dispatch")
 	fi
-	if declare -F set_issue_status >/dev/null 2>&1; then
-		set_issue_status "$issue_num" "$slug" "blocked" "${label_flags[@]}" >/dev/null 2>&1
-		return $?
-	fi
-	label_flags+=(--add-label "status:blocked")
+	_nmr_set_transition_status "$issue_num" "$slug" "blocked" "$current_status" || return 1
 	_nmr_edit_issue_labels "$issue_num" "$slug" "${label_flags[@]}"
 	return $?
 }
@@ -1976,6 +2037,12 @@ _nmr_apply_auto_approval_transition() {
 		fi
 		;;
 	"$NMR_TRANSITION_CRYPTO_APPROVED")
+		local approved_security_rc=0
+		_nmr_application_is_security_sensitive "$issue_num" "$slug" || approved_security_rc=$?
+		if [[ "$approved_security_rc" -gt 1 ]]; then
+			echo "[pulse-wrapper] Auto-approve deferred for #${issue_num} in ${slug} — live security labels unavailable; NMR unchanged" >>"$LOGFILE"
+			return 0
+		fi
 		# Lock before posting the trusted marker so untrusted comments cannot race
 		# the maintainer gate. The worker unlocks after dispatch completes.
 		gh issue lock "$issue_num" --repo "$slug" --reason "resolved" >/dev/null 2>&1 || true
@@ -1986,12 +2053,20 @@ Auto-approved: ${approval_reason}. Stale recovery tick reset." \
 			2>/dev/null || true
 
 		local edit_exit=0
-		_nmr_restore_dispatchable_state "$issue_num" "$slug" || edit_exit=$?
+		if [[ "$approved_security_rc" -eq 0 ]]; then
+			_nmr_translate_trusted_author_hold "$issue_num" "$slug" || edit_exit=$?
+		else
+			_nmr_restore_dispatchable_state "$issue_num" "$slug" || edit_exit=$?
+		fi
 		if [[ "$edit_exit" -eq 0 ]]; then
 			_NMR_AUTO_TRANSITION_RESULT="$NMR_AUTO_RESULT_APPROVED"
-			echo "[pulse-wrapper] Auto-approved #${issue_num} in ${slug} — ${approval_reason} (locked + approval marker + tick reset)" >>"$LOGFILE"
-			# t2845: promote knowledge-review source when applicable.
-			_handle_knowledge_review_promotion "$issue_num" "$slug" || true
+			if [[ "$approved_security_rc" -eq 0 ]]; then
+				echo "[pulse-wrapper] Approved external authority for #${issue_num} in ${slug} — security review remains on hold-for-review" >>"$LOGFILE"
+			else
+				echo "[pulse-wrapper] Auto-approved #${issue_num} in ${slug} — ${approval_reason} (locked + approval marker + tick reset)" >>"$LOGFILE"
+				# t2845: promote knowledge-review source when applicable.
+				_handle_knowledge_review_promotion "$issue_num" "$slug" || true
+			fi
 		else
 			echo "[pulse-wrapper] Auto-approve label update FAILED for #${issue_num} in ${slug} (exit: ${edit_exit}) — approval marker posted but labels unchanged" >>"$LOGFILE"
 		fi

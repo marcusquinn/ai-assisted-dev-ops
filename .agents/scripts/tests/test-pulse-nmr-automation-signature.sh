@@ -730,6 +730,26 @@ test_release_upgrade_allows_rate_limit_breaker_retry() {
 	return 0
 }
 
+test_security_label_precedes_release_upgrade_retry() {
+	set_timeline '[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"marcusquinn"},"created_at":"2026-05-07T21:26:05Z"}]'
+	set_comments '[{"created_at":"2026-05-07T21:26:06Z","body":"<!-- dispatch-backoff:rate_limit_nmr -->\n## Rate-Limit Backoff Circuit Breaker (t2781)\n---\n[aidevops.sh](https://aidevops.sh) v3.14.91 automated scan."}]'
+	set_issue_meta '{"labels":[{"name":"needs-maintainer-review"},{"name":"security"},{"name":"auto-dispatch"}]}'
+	AIDEVOPS_CURRENT_VERSION_OVERRIDE=3.14.94
+	export AIDEVOPS_CURRENT_VERSION_OVERRIDE
+	local classification_rc=0
+	_nmr_applied_by_maintainer 4508 exampleorg/examplerepo marcusquinn || classification_rc=$?
+	unset AIDEVOPS_CURRENT_VERSION_OVERRIDE
+	if [[ "$classification_rc" -eq 0 \
+		&& "$_NMR_TRUSTED_TRANSITION_OVERRIDE" == "$NMR_TRANSITION_TRUSTED_HOLD" \
+		&& "$_NMR_FORCE_AVAILABLE" -eq 0 ]]; then
+		print_result "security label takes precedence over release-upgrade retry" 0
+		return 0
+	fi
+	print_result "security label takes precedence over release-upgrade retry" 1 \
+		"Expected trusted hold without forced availability; rc=${classification_rc} transition=${_NMR_TRUSTED_TRANSITION_OVERRIDE:-none} force=${_NMR_FORCE_AVAILABLE:-unset}"
+	return 0
+}
+
 test_same_release_preserves_rate_limit_breaker_nmr() {
 	# The release gate must not defeat #19756-style breaker preservation when
 	# no newer aidevops release is available and cooldown has not expired.
@@ -909,6 +929,7 @@ main() {
 	test_peer_runner_breaker_trip_preserves_nmr
 	test_paginated_timeline_latest_nmr_event_preserves_breaker_trip
 	test_release_upgrade_allows_rate_limit_breaker_retry
+	test_security_label_precedes_release_upgrade_retry
 	test_same_release_preserves_rate_limit_breaker_nmr
 	test_rate_limit_cooldown_allows_retry
 	test_markerless_relabel_after_recovery_breaker_preserves_same_release

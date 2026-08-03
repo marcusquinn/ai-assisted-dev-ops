@@ -266,9 +266,8 @@ _gh_ci_prepare_trusted_nmr_labels() {
 			break
 		fi
 	done
-	if [[ "$explicit_suppress" -eq 0 ]] \
-		&& { _gh_wrapper_args_have_label "security" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}" \
-			|| _gh_wrapper_args_have_label "security-review" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; }; then
+	if _gh_wrapper_args_have_label "security" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}" \
+		|| _gh_wrapper_args_have_label "security-review" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
 		infer_dispatch=0
 		replacement_label="hold-for-review"
 	elif [[ "$explicit_suppress" -eq 0 ]] \
