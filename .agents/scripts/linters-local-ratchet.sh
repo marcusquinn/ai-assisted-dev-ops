@@ -53,6 +53,55 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 readonly RATCHET_SCHEMA_VERSION=2
 readonly RATCHET_COUNTER_VERSION=2
+RATCHET_SH_FILES=()
+RATCHET_INVENTORY_DIR=""
+RATCHET_INVENTORY_READY=false
+
+# _ratchet_is_shell_path: mirror ripgrep's shell type without ignore-state drift.
+# Arguments: $1=file_path
+# Returns: 0 for a shell-type path, 1 otherwise.
+_ratchet_is_shell_path() {
+	local file_path="$1"
+	local basename="${file_path##*/}"
+	case "$basename" in
+	*.bash | *.bashrc | *.csh | *.cshrc | *.ksh | *.kshrc | *.sh | *.tcsh | *.zsh | \
+		.bash_login | .bash_logout | .bash_profile | .login | .logout | .profile | .tcshrc | \
+		.zlogin | .zlogout | .zprofile | .zshenv | .zshrc | bash_login | bash_logout | bash_profile | bashrc | profile | \
+		zlogin | zlogout | zprofile | zshenv | zshrc) return 0 ;;
+	esac
+	return 1
+}
+
+# _ratchet_prepare_inventory: collect one deterministic shell-file inventory.
+# Arguments: $1=scripts_dir
+# Returns: 0 with RATCHET_SH_FILES populated, 1 when the directory is unavailable.
+_ratchet_prepare_inventory() {
+	local scripts_dir="$1"
+	local repo_root=""
+	local file_path=""
+	[[ -d "$scripts_dir" ]] || return 1
+	if [[ "$RATCHET_INVENTORY_READY" == "true" && "$RATCHET_INVENTORY_DIR" == "$scripts_dir" ]]; then
+		return 0
+	fi
+
+	RATCHET_SH_FILES=()
+	repo_root=$(git -C "$scripts_dir" rev-parse --show-toplevel 2> /dev/null || :)
+	if [[ -n "$repo_root" && "$scripts_dir" == "${repo_root}/.agents/scripts" ]]; then
+		while IFS= read -r file_path; do
+			[[ -n "$file_path" && "$file_path" != */_archive/* ]] || continue
+			_ratchet_is_shell_path "$file_path" || continue
+			RATCHET_SH_FILES+=("${repo_root}/${file_path}")
+		done < <(git -C "$repo_root" ls-files --cached --others --exclude-standard -- '.agents/scripts/**' | LC_ALL=C sort -u)
+	else
+		while IFS= read -r file_path; do
+			[[ -n "$file_path" && "$file_path" != */_archive/* ]] || continue
+			RATCHET_SH_FILES+=("$file_path")
+		done < <(rg --files --hidden --no-ignore-vcs --type sh "$scripts_dir" | LC_ALL=C sort -u)
+	fi
+	RATCHET_INVENTORY_DIR="$scripts_dir"
+	RATCHET_INVENTORY_READY=true
+	return 0
+}
 
 # _ratchet_step_timeout_seconds: read and validate per-ratchet timeout.
 # Returns: timeout seconds via stdout
@@ -137,8 +186,12 @@ _ratchet_count_with_progress() {
 _ratchet_count_bare_positional() {
 	local scripts_dir="$1"
 	local count=0
-	[[ -d "$scripts_dir" ]] || return 1
-	count=$(rg '\$[1-9]' --type sh --no-filename "$scripts_dir" 2> /dev/null |
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
+	[[ ${#RATCHET_SH_FILES[@]} -gt 0 ]] || {
+		echo "0"
+		return 0
+	}
+	count=$(rg '\$[1-9]' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
 		grep -v 'local.*=.*\$[1-9]' |
 		grep -cv '^[[:space:]]*#') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
@@ -151,10 +204,14 @@ _ratchet_count_bare_positional() {
 _ratchet_count_hardcoded_path() {
 	local scripts_dir="$1"
 	local count=0
-	[[ -d "$scripts_dir" ]] || return 1
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
+	[[ ${#RATCHET_SH_FILES[@]} -gt 0 ]] || {
+		echo "0"
+		return 0
+	}
 	# Tilde is intentional: we search for the literal string ~/.aidevops in scripts
 	# shellcheck disable=SC2088
-	count=$(rg '~/.aidevops|/Users/' --type sh --no-filename "$scripts_dir" 2> /dev/null |
+	count=$(rg '~/.aidevops|/Users/' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
 		grep -v '^[[:space:]]*#' |
 		grep -cv '# ') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
@@ -167,8 +224,12 @@ _ratchet_count_hardcoded_path() {
 _ratchet_count_broad_catch() {
 	local scripts_dir="$1"
 	local count=0
-	[[ -d "$scripts_dir" ]] || return 1
-	count=$(rg '\|\| true' --type sh --no-filename "$scripts_dir" 2> /dev/null |
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
+	[[ ${#RATCHET_SH_FILES[@]} -gt 0 ]] || {
+		echo "0"
+		return 0
+	}
+	count=$(rg '\|\| true' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
 		wc -l | tr -d '[:space:]') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	echo "$count"
@@ -180,8 +241,12 @@ _ratchet_count_broad_catch() {
 _ratchet_count_silent_errors() {
 	local scripts_dir="$1"
 	local count=0
-	[[ -d "$scripts_dir" ]] || return 1
-	count=$(rg '2>/dev/null' --type sh --no-filename "$scripts_dir" 2> /dev/null |
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
+	[[ ${#RATCHET_SH_FILES[@]} -gt 0 ]] || {
+		echo "0"
+		return 0
+	}
+	count=$(rg '2>/dev/null' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
 		wc -l | tr -d '[:space:]') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	echo "$count"
@@ -193,13 +258,8 @@ _ratchet_count_silent_errors() {
 # Returns: count via stdout
 _ratchet_count_missing_return() {
 	local scripts_dir="$1"
-	local shell_files=()
-	[[ -d "$scripts_dir" ]] || return 1
-	while IFS= read -r file; do
-		[[ -n "$file" ]] && shell_files+=("$file")
-	done < <(rg --files --type sh "$scripts_dir" | grep -v '/_archive/' | LC_ALL=C sort)
-
-	[[ ${#shell_files[@]} -gt 0 ]] || {
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
+	[[ ${#RATCHET_SH_FILES[@]} -gt 0 ]] || {
 		echo "0"
 		return 0
 	}
@@ -225,7 +285,7 @@ _ratchet_count_missing_return() {
 		in_function && /return[[:space:]]+([0-9]+|\$)/ { has_return = 1 }
 		in_function && /^}$/ { finish_function() }
 		END { finish_file(); print missing + 0 }
-	' "${shell_files[@]}"
+	' "${RATCHET_SH_FILES[@]}"
 	return 0
 }
 
@@ -279,10 +339,11 @@ _ratchet_check_pattern() {
 # _ratchet_count_all: count current values for all 5 ratchet patterns
 # Arguments: $1=scripts_dir
 # Outputs: 5 space-separated counts: bare hardcoded broad silent missing
-# Returns: 0 always
+# Returns: 0 on success, 1 when inventory or a counter fails.
 _ratchet_count_all() {
 	local scripts_dir="$1"
 	local count_bare count_hardcoded count_broad count_silent count_missing
+	_ratchet_prepare_inventory "$scripts_dir" || return 1
 	count_bare=$(_ratchet_count_with_progress "bare_positional_params" "_ratchet_count_bare_positional" "$scripts_dir") || return 1
 	count_hardcoded=$(_ratchet_count_with_progress "hardcoded_aidevops_path" "_ratchet_count_hardcoded_path" "$scripts_dir") || return 1
 	count_broad=$(_ratchet_count_with_progress "broad_catch_or_true" "_ratchet_count_broad_catch" "$scripts_dir") || return 1
