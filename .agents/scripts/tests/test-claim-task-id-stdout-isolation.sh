@@ -17,10 +17,10 @@
 #   claim-task-id.sh: line NNN: [0;34m[INFO][0m ... new counter: 2459:
 #       syntax error in expression (error token is "[0;34m[INFO][0m...")
 #
-# `git push -q` suppresses git's own progress output but does NOT
-# suppress hook stdout.  Complementary defense is redirecting stdout
-# to /dev/null inside the CAS helpers (caller-side isolation), which
-# is what this test exercises.
+# The hook now runs explicitly before `git push --no-verify -q`, and both
+# phases suppress stdout. Complementary defense is redirecting stdout to
+# /dev/null inside the CAS helpers (caller-side isolation), which is what this
+# test exercises.
 #
 # Sibling test: test-stdout-narration-hygiene.sh (GH#20212) covers the
 # hook-side of the same class of bugs.  This test covers the
@@ -100,7 +100,7 @@ _contains_ansi() {
 #
 # We extract each target function body with awk and then check the
 # redirect is present on the relevant git push/fetch line.  A bare
-# `git push -q "$REMOTE_NAME" …` WITHOUT `>/dev/null` is the regression
+# `git push [--no-verify] -q "$REMOTE_NAME" …` WITHOUT `>/dev/null` is the regression
 # we are defending against.
 # ---------------------------------------------------------------------------
 
@@ -124,20 +124,21 @@ test_cas_build_push_redirects_push_stdout() {
 	local body
 	body=$(_func_body _cas_build_and_push "$CLAIM_SCRIPT")
 
-	# Look for a `push -q "$REMOTE_NAME"` line that also has `>/dev/null`.
+	# Look for a push line that also has `>/dev/null`; GH#29417 inserts
+	# --no-verify because the hook has already run with its own timeout.
 	local push_line
 	# shellcheck disable=SC2016  # single-quoted regex matches literal "$REMOTE_NAME" in source
-	push_line=$(printf '%s\n' "$body" | grep -E 'push -q "\$REMOTE_NAME"' | head -1 || true)
+	push_line=$(printf '%s\n' "$body" | grep -E 'push (--no-verify )?-q "\$REMOTE_NAME"' | head -1 || true)
 
 	if [[ -z "$push_line" ]]; then
-		fail "$name" "could not locate 'push -q \"\$REMOTE_NAME\"' in _cas_build_and_push"
+		fail "$name" "could not locate CAS push command in _cas_build_and_push"
 		return 0
 	fi
 
 	# Multi-line continuation: check the whole function body for the
 	# redirect appearing on the same logical statement as the push.
 	# shellcheck disable=SC2016  # single-quoted regex matches literal "$REMOTE_NAME" in source
-	if printf '%s\n' "$body" | grep -qE 'push -q "\$REMOTE_NAME"[^\n]*>/dev/null'; then
+	if printf '%s\n' "$body" | grep -qE 'push (--no-verify )?-q "\$REMOTE_NAME"[^\n]*>/dev/null'; then
 		pass "$name"
 	else
 		fail "$name" "push line lacks >/dev/null redirect: ${push_line}"

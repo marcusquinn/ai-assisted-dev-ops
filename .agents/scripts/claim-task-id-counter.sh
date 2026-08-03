@@ -253,6 +253,60 @@ _run_git_with_ssh_fallback() {
 	return $rc
 }
 
+# Run the pre-push hook once, outside the remote transport timeout. Git normally
+# includes hook execution in the `git push` process, which caused a valid but
+# slow repo-verify gate to exhaust CAS_HTTPS_TIMEOUT_S and be misreported as
+# retriable contention (GH#29417). The subsequent push uses --no-verify.
+# Args: $1 local commit SHA, $2 expected remote commit SHA.
+# Returns: 0 when no hook exists or it passes; 1 on remote lookup, hook timeout,
+# or hook failure. Diagnostics identify the phase and elapsed time.
+_cas_run_pre_push_hook() {
+	local local_sha="$1"
+	local remote_sha="$2"
+	local remote_ref="refs/heads/${COUNTER_BRANCH}"
+	local started_at=""
+	local finished_at=""
+	local elapsed=0
+	local remote_url=""
+	local hook_path=""
+	local hook_rc=0
+
+	started_at=$(date +%s)
+	remote_url=$(git remote get-url "$REMOTE_NAME" 2>/dev/null) || {
+		finished_at=$(date +%s)
+		elapsed=$((finished_at - started_at))
+		log_error "CAS remote configuration validation failed after ${elapsed}s for remote ${REMOTE_NAME}"
+		return 1
+	}
+	finished_at=$(date +%s)
+	elapsed=$((finished_at - started_at))
+	log_info "CAS remote configuration validated in ${elapsed}s"
+
+	hook_path=$(git rev-parse --git-path hooks/pre-push 2>/dev/null) || {
+		log_error "Could not resolve the pre-push hook path"
+		return 1
+	}
+	[[ -x "$hook_path" ]] || return 0
+
+	started_at=$(date +%s)
+	timeout_sec "${CAS_HOOK_TIMEOUT_S:-300}" "$hook_path" "$REMOTE_NAME" "$remote_url" \
+		<<<"${local_sha} ${local_sha} ${remote_ref} ${remote_sha}" >/dev/null || hook_rc=$?
+	finished_at=$(date +%s)
+	elapsed=$((finished_at - started_at))
+
+	if [[ $hook_rc -eq 124 ]]; then
+		log_error "Pre-push hook timed out after ${elapsed}s (limit=${CAS_HOOK_TIMEOUT_S:-300}s); remote push was not attempted"
+		return 1
+	fi
+	if [[ $hook_rc -ne 0 ]]; then
+		log_error "Pre-push hook failed after ${elapsed}s with rc=${hook_rc}; remote push was not attempted"
+		return 1
+	fi
+
+	log_info "Pre-push hook completed in ${elapsed}s (limit=${CAS_HOOK_TIMEOUT_S:-300}s)"
+	return 0
+}
+
 # Prefer the conventional dedicated branch when neither CLI nor project config
 # selected a counter branch. The candidate is accepted only when its counter is
 # at least the default-branch counter and the TODO-derived seed, preventing an
@@ -400,6 +454,22 @@ _cas_push_rejection_is_protected_branch() {
 		return 0
 	fi
 	return 1
+}
+
+# Detect an actual compare-and-swap race. Only these failures are retriable;
+# transport, authentication, hook, and provider-policy failures are hard errors.
+_cas_push_rejection_is_non_fast_forward() {
+	local push_stderr="$1"
+	printf '%s\n' "$push_stderr" | grep -Eiq \
+		'non-fast-forward|\(fetch first\)|stale info|remote ref updated since checkout'
+	return $?
+}
+
+_cas_push_rejection_is_auth_failure() {
+	local push_stderr="$1"
+	printf '%s\n' "$push_stderr" | grep -Eiq \
+		'authentication failed|could not read Username|permission denied \(publickey\)|http[^[:space:]]* 40[13]|repository not found'
+	return $?
 }
 
 # Emit protected-branch guidance without exposing full remote URLs or stderr.
@@ -1006,24 +1076,26 @@ _cas_build_and_push() {
 	# into the captured result and poisons downstream arithmetic parsing.
 	# Hook stderr stays visible for error diagnosis.
 	#
-	# GH#21904: wrap with `timeout_sec` + SSH fallback so an HTTPS credential-
-	# helper hang (osxkeychain etc.) cannot stall the push.  The SSH fallback
-	# returns the same exit codes as a direct push, so the conflict (rc=1)
-	# vs success (rc=0) handling below is unchanged.
+	# GH#21904: wrap remote transport with `timeout_sec` + SSH fallback so an
+	# HTTPS credential-helper hang cannot stall the push. GH#29417 runs the hook
+	# first with its own budget, then skips Git's duplicate hook invocation.
 	local push_rc=0
 	local push_stderr=""
 	local push_err_file=""
+	if ! _cas_run_pre_push_hook "$commit_sha" "$pinned_sha"; then
+		return 1
+	fi
 	push_err_file=$(mktemp "${TMPDIR:-/tmp}/claim-task-id-push.XXXXXX" 2>/dev/null) || push_err_file=""
 	if [[ -n "$push_err_file" ]]; then
 		_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
 			-c http.lowSpeedLimit=1000 -c http.lowSpeedTime="$CAS_GIT_CMD_TIMEOUT_S" \
-			push -q "$REMOTE_NAME" "${commit_sha}:refs/heads/${COUNTER_BRANCH}" >/dev/null 2>"$push_err_file" || push_rc=$?
+			push --no-verify -q "$REMOTE_NAME" "${commit_sha}:refs/heads/${COUNTER_BRANCH}" >/dev/null 2>"$push_err_file" || push_rc=$?
 		push_stderr=$(<"$push_err_file")
 		rm -f "$push_err_file" 2>/dev/null || true
 	else
 		_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
 			-c http.lowSpeedLimit=1000 -c http.lowSpeedTime="$CAS_GIT_CMD_TIMEOUT_S" \
-			push -q "$REMOTE_NAME" "${commit_sha}:refs/heads/${COUNTER_BRANCH}" >/dev/null || push_rc=$?
+			push --no-verify -q "$REMOTE_NAME" "${commit_sha}:refs/heads/${COUNTER_BRANCH}" >/dev/null || push_rc=$?
 	fi
 	if [[ $push_rc -ne 0 ]]; then
 		if _cas_push_rejection_is_protected_branch "$push_stderr"; then
@@ -1031,14 +1103,22 @@ _cas_build_and_push() {
 			return "$CAS_PROTECTED_BRANCH_RC"
 		fi
 		if [[ $push_rc -eq 124 ]]; then
-			log_warn "Push timed out (HTTPS + SSH fallback both unavailable) — treating as retriable conflict"
-		else
-			log_warn "Push failed (conflict — another session claimed an ID)"
+			log_error "Push transport/authentication timed out after ${CAS_HTTPS_TIMEOUT_S:-30}s; CAS update was not retried as contention"
+			return 1
 		fi
-		_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
-			-c http.lowSpeedLimit=1000 -c http.lowSpeedTime="$CAS_GIT_CMD_TIMEOUT_S" \
-			fetch -q "$REMOTE_NAME" "$COUNTER_BRANCH" >/dev/null || true
-		return 2
+		if _cas_push_rejection_is_auth_failure "$push_stderr"; then
+			log_error "Push authentication failed; verify credentials for remote ${REMOTE_NAME}"
+			return 1
+		fi
+		if _cas_push_rejection_is_non_fast_forward "$push_stderr"; then
+			log_warn "Push failed (conflict — another session claimed an ID)"
+			_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
+				-c http.lowSpeedLimit=1000 -c http.lowSpeedTime="$CAS_GIT_CMD_TIMEOUT_S" \
+				fetch -q "$REMOTE_NAME" "$COUNTER_BRANCH" >/dev/null || true
+			return 2
+		fi
+		log_error "Push failed with rc=${push_rc} before the CAS update; failure is not a retriable conflict"
+		return 1
 	fi
 
 	_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \

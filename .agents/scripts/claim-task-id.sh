@@ -156,14 +156,18 @@ CAS_WALL_TIMEOUT_S=${CAS_WALL_TIMEOUT_S:-30}
 # Per-git-command timeout (seconds).  Wraps git fetch/push in the CAS path
 # to prevent indefinite hangs on index.lock contention or network stalls.
 CAS_GIT_CMD_TIMEOUT_S=${CAS_GIT_CMD_TIMEOUT_S:-10}
-# GH#21904: wall-clock timeout for each individual `git fetch`/`git push` call
-# in the CAS path.  Wraps the call with `timeout_sec` so credential-helper
-# hangs (osxkeychain, libsecret, manager-core) cannot stall a session past
-# this budget.  Distinct from CAS_GIT_CMD_TIMEOUT_S which only sets git's
-# `http.lowSpeedTime` (transport-level, fires only after bytes start flowing
-# — does not catch credential negotiation hangs).
+# GH#21904: wall-clock timeout for each individual remote `git fetch`/`git
+# push` call in the CAS path. The CAS push runs its pre-push hook separately,
+# then uses `git push --no-verify`, so local validation no longer consumes this
+# transport budget (GH#29417). Distinct from CAS_GIT_CMD_TIMEOUT_S which only
+# sets git's `http.lowSpeedTime` after bytes start flowing.
 # Memory: mem_20260430054453_5f0d112e (HTTPS push hung; SSH workaround verified).
 CAS_HTTPS_TIMEOUT_S=${CAS_HTTPS_TIMEOUT_S:-30}
+# Pre-push validation can include the repository's full format/lint/typecheck
+# gate. Give that local work its own budget and classify its timeout as a hard
+# validation failure rather than CAS contention. The hook still runs exactly
+# once before either HTTPS or SSH transport is attempted.
+CAS_HOOK_TIMEOUT_S=${CAS_HOOK_TIMEOUT_S:-300}
 # GH#21904: when 1 (default), a `git fetch`/`git push` that times out on an
 # HTTPS GitHub remote is retried once via the SSH-equivalent URL.  Set to 0
 # to disable fallback (e.g. on hosts where SSH to github.com is blocked and
