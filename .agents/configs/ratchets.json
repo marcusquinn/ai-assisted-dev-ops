@@ -1,33 +1,50 @@
 {
   "version": 2,
   "counter_version": 2,
-  "updated": "2026-08-03T15:51:15Z",
+  "updated": "2026-08-03T15:55:39Z",
   "description": "Compatibility snapshot with verified provenance; active checks compare the working tree with its default-branch merge-base.",
   "comparison": {
     "mode": "merge-base",
     "fail_closed_without_base": true
   },
   "provenance": {
-    "source_commit": "3d1f1a219c876cd762a4e43ac5b4645fa6701b9f",
-    "scripts_tree": "682b506dd6fec35a0c9b0930933dfca49534e203",
+    "source_commit": "7d7eaff2378588b39f462daac87550bff521d44d",
+    "scripts_tree": "42010ad6982f2723346ff157db00a958141bc96d",
     "comparison_base_commit": "d6d323c7b5a0eb0c38e488772ce2ce74e5419f8d",
     "migration": {
       "reason": "Replace the non-reproducible 2026-04 snapshot with a commit-bound compatibility snapshot while active checks move to same-definition merge-base deltas",
       "previous_source_commit": "441813092cdcfa97b172953d890c1a063eb0e421",
       "previous_schema_version": 1,
-      "previous_counter_version": 1
-    },
-    "previous_snapshot": {
-      "schema_version": 1,
-      "counter_version": 1,
-      "source_commit": "441813092cdcfa97b172953d890c1a063eb0e421",
-      "updated": "2026-04-04T00:00:00Z",
-      "counts": {
+      "previous_counter_version": 1,
+      "target_source_commit": "3d1f1a219c876cd762a4e43ac5b4645fa6701b9f",
+      "target_schema_version": 2,
+      "target_counter_version": 2,
+      "previous_counts": {
         "bare_positional_params": 4687,
         "hardcoded_aidevops_path": 309,
         "broad_catch_or_true": 2233,
         "silent_errors": 5589,
         "missing_return_files": 2
+      },
+      "migrated_counts": {
+        "bare_positional_params": 4739,
+        "hardcoded_aidevops_path": 448,
+        "broad_catch_or_true": 7956,
+        "silent_errors": 16009,
+        "missing_return_files": 424
+      }
+    },
+    "previous_snapshot": {
+      "schema_version": 2,
+      "counter_version": 2,
+      "source_commit": "3d1f1a219c876cd762a4e43ac5b4645fa6701b9f",
+      "updated": "2026-08-03T15:51:15Z",
+      "counts": {
+        "bare_positional_params": 4739,
+        "hardcoded_aidevops_path": 448,
+        "broad_catch_or_true": 7956,
+        "silent_errors": 16009,
+        "missing_return_files": 424
       }
     }
   },
