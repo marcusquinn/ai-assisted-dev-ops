@@ -155,6 +155,18 @@ PIP_TOOLS=(
 # here installs redundant global copies that diverge from pinned project versions.
 # See: https://github.com/marcusquinn/aidevops/issues/6763
 
+_tool_package_supported_on_platform() {
+	local package="$1"
+	local platform="${2:-}"
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null || printf '%s' "unknown")
+	fi
+	if [[ "$package" == "@steipete/macos-automator-mcp" && "$platform" != "Darwin" ]]; then
+		return 1
+	fi
+	return 0
+}
+
 # Tools installed via curl/custom installers (not in brew/npm/pip registries)
 # Latest version cannot be checked via registry — use "self" category
 # which skips latest-version lookup and just reports installed version
@@ -596,6 +608,7 @@ check_category() {
 	local category name cmd ver_flag pkg update_cmd
 	for tool_spec in "${tools[@]}"; do
 		IFS='|' read -r category name cmd ver_flag pkg update_cmd <<<"$tool_spec"
+		_tool_package_supported_on_platform "$pkg" || continue
 		check_tool "$category" "$name" "$cmd" "$ver_flag" "$pkg" "$update_cmd"
 	done
 	return 0

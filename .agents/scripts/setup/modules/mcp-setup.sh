@@ -11,6 +11,18 @@ IFS=$'\n\t'
 trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO} exit $rc" >&2' ERR
 shopt -s inherit_errexit 2>/dev/null || true
 
+_mcp_package_supported_on_platform() {
+	local package="$1"
+	local platform="${2:-}"
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null || printf '%s' "unknown")
+	fi
+	if [[ "$package" == "@steipete/macos-automator-mcp" && "$platform" != "Darwin" ]]; then
+		return 1
+	fi
+	return 0
+}
+
 _install_mcp_packages_node() {
 	# Install/update Node.js MCP packages globally.
 	# Security note: MCP servers run as persistent processes with access to conversation
@@ -35,6 +47,7 @@ _install_mcp_packages_node() {
 	local failed=0
 	local pkg
 	for pkg in "${node_mcps[@]}"; do
+		_mcp_package_supported_on_platform "$pkg" || continue
 		local short_name="${pkg##*/}" # Strip @scope/ prefix for display
 		if run_with_spinner "Installing $short_name" npm_global_install "${pkg}@latest"; then
 			((++updated))
