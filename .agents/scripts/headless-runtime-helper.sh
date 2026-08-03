@@ -738,7 +738,9 @@ _execute_run_attempt() {
 	local _metric_kill_reason=""
 	local _t3077_watcher_pid="" _normalized_exit_info=""
 	local _run_watchdog_hard_killed=0 _stall_killed_marker="" _rl_fast_sentinel=""
-	_create_run_attempt_files || return 1
+	prepare_status=0
+	_create_run_attempt_files || prepare_status=$?
+	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
 	prepare_status=0
 	_configure_run_attempt_context || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"

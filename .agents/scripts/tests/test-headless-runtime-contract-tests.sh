@@ -159,6 +159,90 @@ test_runtime_temp_files_bypass_group_writable_workspace() {
 	return 0
 }
 
+test_runtime_temp_creation_reports_root_failure() {
+	local detail="" status=0
+	detail=$(
+		exec 2>&1
+		aidevops_sensitive_temp_root() { return 17; }
+		_create_headless_runtime_temp_file
+	) || status=$?
+
+	if [[ "$status" -eq 17 && "$detail" == *"_create_headless_runtime_temp_file.resolve_sensitive_temp_root failed rc=17"* ]]; then
+		print_result "runtime temp creation identifies sensitive-root failure" 0
+		return 0
+	fi
+
+	print_result "runtime temp creation identifies sensitive-root failure" 1 \
+		"status=$status detail=${detail:-<empty>}"
+	return 0
+}
+
+test_run_attempt_file_creation_reports_failure_site_and_reason() {
+	local detail="" status=0
+	detail=$(
+		exec 2>&1
+		local role="worker" session_key="issue-29375"
+		local output_file="" permission_request_file="" exit_code_file=""
+		local resource_stop_file="" resource_result_file="" start_ms=0
+		local file_status=0 _run_failure_reason=""
+		_create_headless_runtime_temp_file() { return 23; }
+		_create_run_attempt_files || file_status=$?
+		printf 'reason=%s run_reason=%s\n' \
+			"${_WORKER_PRELAUNCH_FAILURE_REASON:-}" "${_run_failure_reason:-}"
+		return "$file_status"
+	) || status=$?
+
+	if [[ "$status" -eq 23 && \
+		"$detail" == *"_create_run_attempt_files.create_output_file failed rc=23 session=issue-29375"* && \
+		"$detail" == *"reason=worker_output_temp_file_creation_failed run_reason=worker_output_temp_file_creation_failed"* ]]; then
+		print_result "run-attempt file creation records failure site and reason" 0
+		return 0
+	fi
+
+	print_result "run-attempt file creation records failure site and reason" 1 \
+		"status=$status detail=${detail:-<empty>}"
+	return 0
+}
+
+test_execute_run_attempt_preserves_file_creation_status() {
+	local status=0
+	(
+		_begin_worker_runtime_run() { return 0; }
+		_prepare_run_attempt_command() { return 0; }
+		_create_run_attempt_files() { return 23; }
+		_execute_run_attempt \
+			"worker" "issue-29375" "$TEST_ROOT" "Issue #29375" "prompt" \
+			"openai/gpt-5.6" "" "Build+"
+	) >/dev/null 2>&1 || status=$?
+
+	if [[ "$status" -eq 23 ]]; then
+		print_result "execute-run-attempt preserves file-creation status" 0
+		return 0
+	fi
+
+	print_result "execute-run-attempt preserves file-creation status" 1 "status=$status"
+	return 0
+}
+
+test_run_attempt_command_reports_cwd_recovery_failure() {
+	local detail="" status=0
+	detail=$(
+		exec 2>&1
+		local work_dir="$TEST_ROOT" session_key="issue-29375"
+		_recover_deleted_cwd_before_launch() { return 19; }
+		_prepare_run_attempt_command
+	) || status=$?
+
+	if [[ "$status" -eq 19 && "$detail" == *"_prepare_run_attempt_command.recover_deleted_cwd failed rc=19 session=issue-29375"* ]]; then
+		print_result "run-attempt command identifies cwd recovery failure" 0
+		return 0
+	fi
+
+	print_result "run-attempt command identifies cwd recovery failure" 1 \
+		"status=$status detail=${detail:-<empty>}"
+	return 0
+}
+
 test_sensitive_temp_preflight_aborts_before_worker_ownership() {
 	local unsafe_parent="${TEST_ROOT}/unsafe-sensitive-parent"
 	local ownership_marker="${TEST_ROOT}/ownership-called"

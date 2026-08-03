@@ -25,19 +25,42 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _attempt_lib_path
 fi
 
+# Preserve a machine-readable exit-trap reason while identifying the exact
+# prelaunch helper that failed in the worker log.
+_report_run_attempt_prelaunch_failure() {
+	local failure_site="$1"
+	local failure_status="$2"
+	local failure_reason="$3"
+	_WORKER_PRELAUNCH_FAILURE_REASON="$failure_reason"
+	_run_failure_reason="$failure_reason"
+	print_error "[lifecycle] ${failure_site} failed rc=${failure_status} session=${session_key}"
+	return 0
+}
+
 # Resolve prompt transport, provider/session state, and the runtime command.
 _prepare_run_attempt_command() {
-	_recover_deleted_cwd_before_launch "$work_dir" "execute_run_attempt" || return 1
+	local prepare_status=0
+	_recover_deleted_cwd_before_launch "$work_dir" "execute_run_attempt" || prepare_status=$?
+	if [[ "$prepare_status" -ne 0 ]]; then
+		_report_run_attempt_prelaunch_failure \
+			"_prepare_run_attempt_command.recover_deleted_cwd" "$prepare_status" \
+			"worker_cwd_recovery_failed"
+		return "$prepare_status"
+	fi
 	runtime="${headless_runtime:-opencode}"
 	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" && "$runtime" != "opencode" ]] && ! _headless_private_workload_enabled; then
-		print_error "Public triage supports only the isolated OpenCode runtime"
+		_report_run_attempt_prelaunch_failure \
+			"_prepare_run_attempt_command.validate_runtime" 126 \
+			"worker_runtime_unsupported"
 		return 126
 	fi
 	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
 		force_file_transport=1
 	fi
 	if ! _prepare_runtime_prompt_transport "$runtime" "$prompt" "$force_file_transport"; then
-		print_error "Public triage could not prepare protected prompt transport"
+		_report_run_attempt_prelaunch_failure \
+			"_prepare_run_attempt_command.prepare_prompt_transport" 126 \
+			"worker_prompt_transport_failed"
 		return 126
 	fi
 	prompt_arg="$_HEADLESS_RUN_PROMPT_ARG"
@@ -58,7 +81,9 @@ _prepare_run_attempt_command() {
 	case "$runtime" in
 	claude)
 		if ! type -P claude >/dev/null 2>&1; then
-			print_error "Claude CLI not found in PATH (requested via --runtime claude)"
+			_report_run_attempt_prelaunch_failure \
+				"_prepare_run_attempt_command.resolve_claude_cli" 1 \
+				"worker_runtime_cli_missing"
 			return 1
 		fi
 		while IFS= read -r -d '' arg; do cmd+=("$arg"); done < <(
@@ -78,34 +103,66 @@ _prepare_run_attempt_command() {
 
 # Create and register all per-attempt files before arming the runtime boundary.
 _create_run_attempt_files() {
+	local file_status=0
 	start_ms=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
-	output_file=$(_create_headless_runtime_temp_file) || return 1
-	if ! _register_headless_runtime_output_temp_path "$role" "$output_file"; then
-		rm -f "$output_file" 2>/dev/null || true
-		return 1
+	output_file=$(_create_headless_runtime_temp_file) || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.create_output_file" "$file_status" \
+			"worker_output_temp_file_creation_failed"
+		return "$file_status"
 	fi
-	permission_request_file=$(_create_headless_runtime_temp_file) || {
+	file_status=0
+	_register_headless_runtime_output_temp_path "$role" "$output_file" || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
+		rm -f "$output_file" 2>/dev/null || true
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.register_output_file" "$file_status" \
+			"worker_output_temp_registration_failed"
+		return "$file_status"
+	fi
+	file_status=0
+	permission_request_file=$(_create_headless_runtime_temp_file) || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
 		rm -f "$output_file"
-		return 1
-	}
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.create_permission_request_file" "$file_status" \
+			"worker_permission_temp_file_creation_failed"
+		return "$file_status"
+	fi
 	_register_headless_runtime_temp_path "$permission_request_file"
 	rm -f "$permission_request_file" 2>/dev/null || true
 	export AIDEVOPS_PERMISSION_REQUEST_FILE="$permission_request_file"
 	_run_permission_request_file="$permission_request_file"
-	exit_code_file=$(_create_headless_runtime_temp_file) || {
+	file_status=0
+	exit_code_file=$(_create_headless_runtime_temp_file) || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
 		rm -f "$output_file" "$permission_request_file"
-		return 1
-	}
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.create_exit_code_file" "$file_status" \
+			"worker_exit_code_temp_file_creation_failed"
+		return "$file_status"
+	fi
 	_register_headless_runtime_temp_path "$exit_code_file"
-	resource_stop_file=$(_create_headless_runtime_temp_file) || {
+	file_status=0
+	resource_stop_file=$(_create_headless_runtime_temp_file) || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
 		rm -f "$output_file" "$exit_code_file"
-		return 1
-	}
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.create_resource_stop_file" "$file_status" \
+			"worker_resource_stop_temp_file_creation_failed"
+		return "$file_status"
+	fi
 	_register_headless_runtime_temp_path "$resource_stop_file"
-	resource_result_file=$(_create_headless_runtime_temp_file) || {
+	file_status=0
+	resource_result_file=$(_create_headless_runtime_temp_file) || file_status=$?
+	if [[ "$file_status" -ne 0 ]]; then
 		rm -f "$output_file" "$exit_code_file" "$resource_stop_file"
-		return 1
-	}
+		_report_run_attempt_prelaunch_failure \
+			"_create_run_attempt_files.create_resource_result_file" "$file_status" \
+			"worker_resource_result_temp_file_creation_failed"
+		return "$file_status"
+	fi
 	_register_headless_runtime_temp_path "$resource_result_file"
 	rm -f "$resource_stop_file" "$resource_result_file" 2>/dev/null || true
 	exit_code=0
@@ -122,7 +179,9 @@ _configure_run_attempt_context() {
 	export WORKER_SESSION_KEY="$session_key"
 	_t3077_setup_fix_the_fixer_observability "${WORKER_ISSUE_NUMBER:-}" "${DISPATCH_REPO_SLUG:-}" || true
 	if ! _t3077_write_preflight_sentinel; then
-		print_error "[lifecycle] preflight_abort reason=sentinel_write_blocked pid=$$ session=$session_key"
+		_report_run_attempt_prelaunch_failure \
+			"_configure_run_attempt_context.write_preflight_sentinel" 11 \
+			"worker_preflight_sentinel_write_failed"
 		printf '11' >"$exit_code_file" 2>/dev/null || true
 		exit_code=11
 		return 11

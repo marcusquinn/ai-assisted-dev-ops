@@ -65,8 +65,17 @@ _headless_run_is_ephemeral() {
 
 _create_headless_runtime_temp_file() {
 	local temp_root=""
-	temp_root=$(aidevops_sensitive_temp_root) || return 1
-	(umask 077 && mktemp "${temp_root}/aidevops-headless-runtime.XXXXXX") || return 1
+	local temp_status=0
+	temp_root=$(aidevops_sensitive_temp_root) || temp_status=$?
+	if [[ "$temp_status" -ne 0 ]]; then
+		print_error "[lifecycle] _create_headless_runtime_temp_file.resolve_sensitive_temp_root failed rc=${temp_status}"
+		return "$temp_status"
+	fi
+	(umask 077 && mktemp "${temp_root}/aidevops-headless-runtime.XXXXXX") || temp_status=$?
+	if [[ "$temp_status" -ne 0 ]]; then
+		print_error "[lifecycle] _create_headless_runtime_temp_file.mktemp failed rc=${temp_status}"
+		return "$temp_status"
+	fi
 	return 0
 }
 
