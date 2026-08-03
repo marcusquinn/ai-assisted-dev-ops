@@ -219,6 +219,36 @@ test_snapshot_match_detects_idempotent_update() {
 	return 0
 }
 
+test_snapshot_increase_is_rejected_without_migration_evidence() {
+	source_ratchet_helpers
+	local tmp_dir repo_dir baseline_file rendered before after ret=0
+	tmp_dir=$(mktemp -d)
+	repo_dir="${tmp_dir}/repo"
+	baseline_file="${repo_dir}/.agents/configs/ratchets.json"
+	mkdir -p "${repo_dir}/.agents/scripts" "${repo_dir}/.agents/configs"
+	printf 'safe() {\n\treturn 0\n}\nfalse %s%s\n' '||' ' true' >"${repo_dir}/.agents/scripts/fixture.sh"
+	printf '' >"${repo_dir}/.gitignore"
+	git -C "$repo_dir" init -q -b main
+	git -C "$repo_dir" config user.email "test@example.invalid"
+	git -C "$repo_dir" config user.name "Ratchet Test"
+	git -C "$repo_dir" add .
+	git -C "$repo_dir" commit -q -m "fixture" --no-verify
+	rendered=$(_ratchet_build_baseline_json "2026-08-03T00:00:00Z" "source-sha" "tree-sha" "base-sha" \
+		"0 0 0 0 0" 1 1 "previous-sha" "2026-04-04T00:00:00Z" "0 0 0 0 0" "null")
+	printf '%s\n' "$rendered" >"$baseline_file"
+	before=$(cksum <"$baseline_file")
+	unset RATCHET_ALLOW_MIGRATION RATCHET_MIGRATION_REASON RATCHET_PREVIOUS_SOURCE_COMMIT
+	_ratchet_write_baseline "$baseline_file" "$repo_dir" "0 0 1 0 0" > /dev/null 2>&1 || ret=$?
+	after=$(cksum <"$baseline_file")
+	if [[ "$ret" -ne 0 && "$before" == "$after" ]]; then
+		print_result "ratchet migration: unexplained increase is rejected transactionally" 0
+	else
+		print_result "ratchet migration: unexplained increase is rejected transactionally" 1 "ret=$ret before=$before after=$after"
+	fi
+	rm -rf "$tmp_dir"
+	return 0
+}
+
 main() {
 	test_ratchet_counter_times_out_with_diagnostic
 	test_ratchet_counter_reports_progress_and_value
@@ -227,6 +257,7 @@ main() {
 	test_snapshot_increase_detection_covers_all_counters
 	test_atomic_write_preserves_baseline_on_invalid_json
 	test_snapshot_match_detects_idempotent_update
+	test_snapshot_increase_is_rejected_without_migration_evidence
 
 	echo ""
 	if [ "$TESTS_FAILED" -eq 0 ]; then
