@@ -168,6 +168,28 @@ _runtime_bundle_inventory_metadata() {
 	return 0
 }
 
+_runtime_bundle_validate_plugin_integrity() {
+	local agents_root="$1"
+	local manifest_file="$2"
+	local plugin_sha=""
+	local actual_plugin_sha=""
+
+	plugin_sha=$(_runtime_bundle_verify_manifest_value "$manifest_file" plugin_entry_sha256 2>/dev/null || printf '%s' 'missing')
+	if [[ "$plugin_sha" == "missing" ]]; then
+		if [[ -e "$agents_root/plugins/opencode-aidevops/index.mjs" ]]; then
+			_RUNTIME_BUNDLE_LAST_ERROR="target plugin exists without manifest integrity evidence"
+			return 1
+		fi
+		return 0
+	fi
+	actual_plugin_sha=$(_runtime_bundle_verify_sha256_file "$agents_root/plugins/opencode-aidevops/index.mjs" 2>/dev/null || true)
+	if [[ -z "$actual_plugin_sha" || "$actual_plugin_sha" != "$plugin_sha" ]]; then
+		_RUNTIME_BUNDLE_LAST_ERROR="target plugin integrity verification failed"
+		return 1
+	fi
+	return 0
+}
+
 _runtime_bundle_validate_bundle() {
 	local bundle_id="$1"
 	local repo_dir="$2"
@@ -183,8 +205,6 @@ _runtime_bundle_validate_bundle() {
 	local git_sha=""
 	local source_version=""
 	local active_version=""
-	local plugin_sha=""
-	local actual_plugin_sha=""
 
 	_RUNTIME_BUNDLE_LAST_ERROR=""
 	_RUNTIME_BUNDLE_VALIDATED_ROOT=""
@@ -256,19 +276,7 @@ _runtime_bundle_validate_bundle() {
 		_RUNTIME_BUNDLE_LAST_ERROR="target runtime sentinel integrity verification failed"
 		return 1
 	fi
-	plugin_sha=$(_runtime_bundle_verify_manifest_value "$manifest_file" plugin_entry_sha256 2>/dev/null || printf '%s' 'missing')
-	if [[ "$plugin_sha" == "missing" ]]; then
-		if [[ -e "$agents_root/plugins/opencode-aidevops/index.mjs" ]]; then
-			_RUNTIME_BUNDLE_LAST_ERROR="target plugin exists without manifest integrity evidence"
-			return 1
-		fi
-	else
-		actual_plugin_sha=$(_runtime_bundle_verify_sha256_file "$agents_root/plugins/opencode-aidevops/index.mjs" 2>/dev/null || true)
-		if [[ -z "$actual_plugin_sha" || "$actual_plugin_sha" != "$plugin_sha" ]]; then
-			_RUNTIME_BUNDLE_LAST_ERROR="target plugin integrity verification failed"
-			return 1
-		fi
-	fi
+	_runtime_bundle_validate_plugin_integrity "$agents_root" "$manifest_file" || return 1
 	_RUNTIME_BUNDLE_VALIDATED_ROOT="$agents_root"
 	_RUNTIME_BUNDLE_VALIDATED_ID="$bundle_id"
 	_RUNTIME_BUNDLE_VALIDATED_VERSION="$version"
@@ -492,6 +500,83 @@ _runtime_bundle_rollback_blocked() {
 	return 1
 }
 
+_runtime_bundle_apply_transition() {
+	local active_link="$1"
+	local previous_link="$2"
+	local stamp_file="$3"
+	local source_root="$4"
+	local source_id="$5"
+	local source_version="$6"
+	local source_sha="$7"
+	local target_root="$8"
+	local target_id="$9"
+	local target_version="${10}"
+	local target_sha="${11}"
+	local repo_dir="${12}"
+	local reason="${13}"
+	local mode="${14}"
+
+	_RUNTIME_BUNDLE_RESTORE_ACTIVE_ROOT="$source_root"
+	_RUNTIME_BUNDLE_RESTORE_PREVIOUS_LINK="$previous_link"
+	_RUNTIME_BUNDLE_RESTORE_STAMP_FILE="$stamp_file"
+	if ! aidevops_runtime_switch_link "$active_link" "$target_root"; then
+		_RUNTIME_BUNDLE_LAST_ERROR="failed to atomically switch the active runtime link"
+		return 1
+	fi
+	_RUNTIME_BUNDLE_TRANSACTION_MUTATED=true
+	if [[ "${AIDEVOPS_RUNTIME_BUNDLE_ROLLBACK_FAIL_AT:-}" == "after-active-switch" ]]; then
+		_RUNTIME_BUNDLE_LAST_ERROR="injected failure after active runtime switch"
+		return 1
+	fi
+	if ! aidevops_runtime_switch_link "$previous_link" "$source_root"; then
+		_RUNTIME_BUNDLE_LAST_ERROR="failed to atomically update the previous-runtime link"
+		return 1
+	fi
+	if ! _runtime_bundle_write_stamp "$stamp_file" "$target_sha"; then
+		_RUNTIME_BUNDLE_LAST_ERROR="failed to update the deployed SHA stamp"
+		return 1
+	fi
+	_runtime_bundle_post_switch_verify \
+		"$target_id" "$target_root" "$source_root" "$target_sha" "$repo_dir" || return 1
+	if ! _runtime_bundle_audit_event allowed "$reason" \
+		"$source_id" "$source_version" "$source_sha" \
+		"$target_id" "$target_version" "$target_sha" "none" "$mode"; then
+		_RUNTIME_BUNDLE_LAST_ERROR="successful transition could not be recorded in the tamper-evident audit log"
+		return 1
+	fi
+	return 0
+}
+
+_runtime_bundle_report_transition_failure() {
+	local transition_error="$1"
+	local reason="$2"
+	local source_id="$3"
+	local source_version="$4"
+	local source_sha="$5"
+	local target_id="$6"
+	local target_version="$7"
+	local target_sha="$8"
+	local mode="$9"
+	local restore_note=""
+
+	if [[ "$_RUNTIME_BUNDLE_TRANSACTION_MUTATED" == "true" ]]; then
+		if _runtime_bundle_restore_transaction; then
+			restore_note="; captured active runtime restored"
+			_RUNTIME_BUNDLE_TRANSACTION_MUTATED=false
+		else
+			restore_note="; CRITICAL: automatic restoration failed"
+		fi
+	fi
+	aidevops_runtime_transition_lock_release
+	trap - EXIT
+	_runtime_bundle_audit_event blocked "$reason" \
+		"${source_id:-unknown}" "${source_version:-unknown}" "${source_sha:-unknown}" \
+		"$target_id" "${target_version:-unknown}" "${target_sha:-unknown}" \
+		"${transition_error}${restore_note}" "$mode" >/dev/null 2>&1 || true
+	_runtime_bundle_rollback_error "Runtime bundle rollback failed: ${transition_error}${restore_note}"
+	return 1
+}
+
 _runtime_bundle_rollback_execute() {
 	local target_id="$1"
 	local reason="$2"
@@ -509,7 +594,6 @@ _runtime_bundle_rollback_execute() {
 	local target_version=""
 	local target_sha=""
 	local transition_error=""
-	local restore_note=""
 
 	if ! _runtime_bundle_validate_id "$target_id"; then
 		_runtime_bundle_rollback_blocked "$reason" "$target_id" "A retained bundle ID is required; filesystem paths are not accepted" "$mode"
@@ -569,51 +653,18 @@ _runtime_bundle_rollback_execute() {
 		transition_error="$_RUNTIME_BUNDLE_LAST_ERROR"
 	fi
 
-	if [[ -z "$transition_error" ]]; then
-		_RUNTIME_BUNDLE_RESTORE_ACTIVE_ROOT="$source_root"
-		_RUNTIME_BUNDLE_RESTORE_PREVIOUS_LINK="$previous_link"
-		_RUNTIME_BUNDLE_RESTORE_STAMP_FILE="$stamp_file"
-		if ! aidevops_runtime_switch_link "$active_link" "$target_root"; then
-			transition_error="failed to atomically switch the active runtime link"
-		else
-			_RUNTIME_BUNDLE_TRANSACTION_MUTATED=true
-		fi
-	fi
-	if [[ -z "$transition_error" && "${AIDEVOPS_RUNTIME_BUNDLE_ROLLBACK_FAIL_AT:-}" == "after-active-switch" ]]; then
-		transition_error="injected failure after active runtime switch"
-	fi
-	if [[ -z "$transition_error" ]] && ! aidevops_runtime_switch_link "$previous_link" "$source_root"; then
-		transition_error="failed to atomically update the previous-runtime link"
-	fi
-	if [[ -z "$transition_error" ]] && ! _runtime_bundle_write_stamp "$stamp_file" "$target_sha"; then
-		transition_error="failed to update the deployed SHA stamp"
-	fi
-	if [[ -z "$transition_error" ]] && ! _runtime_bundle_post_switch_verify \
-		"$target_id" "$target_root" "$source_root" "$target_sha" "$repo_dir"; then
-		transition_error="${_RUNTIME_BUNDLE_LAST_ERROR:-post-switch verification failed}"
-	fi
-	if [[ -z "$transition_error" ]] && ! _runtime_bundle_audit_event allowed "$reason" \
-		"$source_id" "$source_version" "$source_sha" \
-		"$target_id" "$target_version" "$target_sha" "none" "$mode"; then
-		transition_error="successful transition could not be recorded in the tamper-evident audit log"
+	if [[ -z "$transition_error" ]] && ! _runtime_bundle_apply_transition \
+		"$active_link" "$previous_link" "$stamp_file" \
+		"$source_root" "$source_id" "$source_version" "$source_sha" \
+		"$target_root" "$target_id" "$target_version" "$target_sha" \
+		"$repo_dir" "$reason" "$mode"; then
+		transition_error="${_RUNTIME_BUNDLE_LAST_ERROR:-runtime transition failed}"
 	fi
 
 	if [[ -n "$transition_error" ]]; then
-		if [[ "$_RUNTIME_BUNDLE_TRANSACTION_MUTATED" == "true" ]]; then
-			if _runtime_bundle_restore_transaction; then
-				restore_note="; captured active runtime restored"
-				_RUNTIME_BUNDLE_TRANSACTION_MUTATED=false
-			else
-				restore_note="; CRITICAL: automatic restoration failed"
-			fi
-		fi
-		aidevops_runtime_transition_lock_release
-		trap - EXIT
-		_runtime_bundle_audit_event blocked "$reason" \
-			"${source_id:-unknown}" "${source_version:-unknown}" "${source_sha:-unknown}" \
-			"$target_id" "${target_version:-unknown}" "${target_sha:-unknown}" \
-			"${transition_error}${restore_note}" "$mode" >/dev/null 2>&1 || true
-		_runtime_bundle_rollback_error "Runtime bundle rollback failed: ${transition_error}${restore_note}"
+		_runtime_bundle_report_transition_failure "$transition_error" "$reason" \
+			"$source_id" "$source_version" "$source_sha" \
+			"$target_id" "$target_version" "$target_sha" "$mode"
 		return 1
 	fi
 
