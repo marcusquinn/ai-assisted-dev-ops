@@ -68,12 +68,19 @@ install_stubs() {
 	ISSUE_METADATA_FAIL=0
 	PR_AUTHOR="maintainer"
 	ROUTE_GUARD_RC=0
+	COMPARE_FAIL=0
+	COMPARE_BEHIND=1
+	TERMINAL_CHECK_RC=0
+	PENDING_CHECK_RC=1
+	ADMIN_SAFETY_RC=0
+	UPDATE_BRANCH_RC=0
 	gh() {
 		local arg1="${1:-}"
 		local arg2="${2:-}"
 		local args="$*"
 		printf 'gh %s\n' "$args" >>"$GH_CALL_LOG"
 		if [[ "$arg1" == "api" && "$args" == *"/compare/"* ]]; then
+			[[ "${COMPARE_FAIL:-0}" == "1" ]] && return 1
 			printf '%s\n' "${COMPARE_BEHIND:-1}"
 			return 0
 		fi
@@ -107,6 +114,10 @@ install_stubs() {
 	_dispatch_ci_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-ci %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
 	_dispatch_pr_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-review %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
 	_dispatch_conflict_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-conflict %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
+	_check_required_checks_has_terminal_failure() { local repo_slug="$1"; local pr_number="$2"; local expected_head_sha="${3:-}"; printf 'terminal-check %s %s %s\n' "$repo_slug" "$pr_number" "$expected_head_sha" >>"$GH_CALL_LOG"; return "$TERMINAL_CHECK_RC"; }
+	_check_required_checks_have_pending_or_in_progress() { local repo_slug="$1"; local pr_number="$2"; local expected_head_sha="${3:-}"; printf 'pending-check %s %s %s\n' "$repo_slug" "$pr_number" "$expected_head_sha" >>"$GH_CALL_LOG"; return "$PENDING_CHECK_RC"; }
+	_pulse_merge_admin_safety_check() { local pr_number="$1"; local repo_slug="$2"; local expected_head_sha="${3:-}"; printf 'admin-safety %s %s %s\n' "$pr_number" "$repo_slug" "$expected_head_sha" >>"$GH_CALL_LOG"; return "$ADMIN_SAFETY_RC"; }
+	_pmp_update_branch_rest() { local pr_number="$1"; local repo_slug="$2"; local head_oid="$3"; printf 'update-branch %s %s %s\n' "$pr_number" "$repo_slug" "$head_oid" >>"$GH_CALL_LOG"; return "$UPDATE_BRANCH_RC"; }
 	_feedback_route_guard_existing_terminal_label() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; local kind="$4"; printf 'route-guard %s %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" "$kind" >>"$GH_CALL_LOG"; return "$ROUTE_GUARD_RC"; }
 	_interactive_pr_is_stale() { return 1; }
 	_is_collaborator_author() { local author="$1"; [[ "$author" == "maintainer" ]]; return $?; }
@@ -140,6 +151,77 @@ test_ci_rebase_fetches_when_context_missing() {
 		return 0
 	fi
 	pass "CI rebase falls back to volatile refetch"
+	return 0
+}
+
+test_review_repair_rebase_requires_explicit_behind_evidence() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	COMPARE_FAIL=1
+	local rc=0
+	_attempt_pr_ci_rebase_retry "123" "owner/repo" "main" "deadbeef" "review-repair" || rc=$?
+
+	if [[ "$rc" -ne 1 ]] || grep -q '^update-branch ' "$GH_CALL_LOG"; then
+		fail "review-repair rebase requires explicit behind evidence" "rc=${rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "review-repair rebase fails closed without explicit behind evidence"
+	return 0
+}
+
+test_review_repair_rebase_waits_for_active_checks() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	COMPARE_BEHIND=1
+	PENDING_CHECK_RC=0
+	local rc=0
+	_attempt_pr_ci_rebase_retry "123" "owner/repo" "main" "deadbeef" "review-repair" || rc=$?
+
+	if [[ "$rc" -ne 1 ]] || grep -q '^update-branch ' "$GH_CALL_LOG"; then
+		fail "review-repair rebase waits for active checks" "rc=${rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "review-repair rebase does not restart active required checks"
+	return 0
+}
+
+test_review_repair_rebase_revalidates_live_pr_authority() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	COMPARE_BEHIND=1
+	TERMINAL_CHECK_RC=0
+	PENDING_CHECK_RC=1
+	ADMIN_SAFETY_RC=1
+	local rc=0
+	_attempt_pr_ci_rebase_retry "123" "owner/repo" "main" "deadbeef" "review-repair" || rc=$?
+
+	if [[ "$rc" -ne 1 ]] || grep -q '^update-branch ' "$GH_CALL_LOG" \
+		|| ! grep -qF 'admin-safety 123 owner/repo deadbeef' "$GH_CALL_LOG"; then
+		fail "review-repair rebase revalidates live PR authority" "rc=${rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "review-repair rebase preserves PR-level maintainer holds before update"
+	return 0
+}
+
+test_review_repair_rebase_updates_when_strictly_eligible() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	COMPARE_BEHIND=1
+	TERMINAL_CHECK_RC=0
+	PENDING_CHECK_RC=1
+	UPDATE_BRANCH_RC=0
+	local rc=0
+	_attempt_pr_ci_rebase_retry "123" "owner/repo" "main" "deadbeef" "review-repair" || rc=$?
+
+	if [[ "$rc" -ne 0 ]] || ! grep -q '^update-branch 123 owner/repo deadbeef$' "$GH_CALL_LOG" \
+		|| ! grep -qF 'terminal-check owner/repo 123 deadbeef' "$GH_CALL_LOG" \
+		|| ! grep -qF 'pending-check owner/repo 123 deadbeef' "$GH_CALL_LOG" \
+		|| ! grep -qF 'admin-safety 123 owner/repo deadbeef' "$GH_CALL_LOG"; then
+		fail "review-repair rebase updates when strictly eligible" "rc=${rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "review-repair rebase updates only after settled terminal failure and behind evidence"
 	return 0
 }
 
@@ -366,6 +448,10 @@ main() {
 	install_stubs
 	test_ci_rebase_uses_provided_context
 	test_ci_rebase_fetches_when_context_missing
+	test_review_repair_rebase_requires_explicit_behind_evidence
+	test_review_repair_rebase_waits_for_active_checks
+	test_review_repair_rebase_revalidates_live_pr_authority
+	test_review_repair_rebase_updates_when_strictly_eligible
 	test_route_uses_provided_labels
 	test_route_falls_back_to_linked_worker_issue_for_ci
 	test_route_falls_back_to_linked_worker_issue_for_conflict

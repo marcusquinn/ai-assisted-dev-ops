@@ -1318,12 +1318,13 @@ _check_ruleset_required_reviews_passing() {
 # in_progress, waiting, skipped-by-dependency, expected, absent-from-rollup,
 # and null conclusions must not trigger close/requeue/repair routing.
 #
-# Args: $1=repo_slug, $2=pr_number
+# Args: $1=repo_slug, $2=pr_number, $3=expected_head_sha (optional)
 # Returns: 0=terminal failure found, 1=no terminal failures, 2=API/parse error
 #######################################
 _check_required_checks_has_terminal_failure() {
 	local repo_slug="$1"
 	local pr_number="$2"
+	local expected_head_sha="${3:-}"
 
 	local required_contexts=""
 	required_contexts=$(_required_contexts_for_default_branch "$repo_slug") || return 2
@@ -1332,9 +1333,11 @@ _check_required_checks_has_terminal_failure() {
 		return 1
 	fi
 
-	local pr_sha=""
-	pr_sha=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json headRefOid --jq '.headRefOid // ""') || true
+	local pr_sha="$expected_head_sha"
+	if [[ -z "$pr_sha" ]]; then
+		pr_sha=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
+			--json headRefOid --jq '.headRefOid // ""') || true
+	fi
 	if [[ -z "$pr_sha" ]]; then
 		echo "[pulse-merge] _check_required_checks_has_terminal_failure: headRefOid fetch failed for PR #${pr_number} in ${repo_slug} — failing closed (t3567)" >>"$LOGFILE"
 		return 2
@@ -1386,13 +1389,14 @@ _check_required_checks_has_terminal_failure() {
 # This is the pre-update guard for branch refresh paths: mutating a PR branch
 # while required checks are still active restarts CI and wastes runner time.
 #
-# Args: $1=repo_slug, $2=pr_number
+# Args: $1=repo_slug, $2=pr_number, $3=expected_head_sha (optional)
 # Returns: 0=pending/in-progress required check found, 1=no active required
 #          checks, 2=API/parse error
 #######################################
 _check_required_checks_have_pending_or_in_progress() {
 	local repo_slug="$1"
 	local pr_number="$2"
+	local expected_head_sha="${3:-}"
 
 	local required_contexts=""
 	required_contexts=$(_required_contexts_for_default_branch "$repo_slug") || return 2
@@ -1401,9 +1405,11 @@ _check_required_checks_have_pending_or_in_progress() {
 		return 1
 	fi
 
-	local pr_sha=""
-	pr_sha=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json headRefOid --jq '.headRefOid // ""') || true
+	local pr_sha="$expected_head_sha"
+	if [[ -z "$pr_sha" ]]; then
+		pr_sha=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
+			--json headRefOid --jq '.headRefOid // ""') || true
+	fi
 	if [[ -z "$pr_sha" ]]; then
 		echo "[pulse-merge] _check_required_checks_have_pending_or_in_progress: headRefOid fetch failed for PR #${pr_number} in ${repo_slug} — failing open for branch-update caller (GH#26406)" >>"$LOGFILE"
 		return 2

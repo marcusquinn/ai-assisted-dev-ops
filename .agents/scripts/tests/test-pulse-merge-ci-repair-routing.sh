@@ -353,6 +353,7 @@ define_process_helper() {
 	DRY_RUN=0
 	GATE_CALLS=0
 	GATE_REVIEW_ARG=""
+	GATE_REVIEW_MODE=""
 	RESOLVE_CALLS=0
 	ROUTE_CALLS=0
 	ROUTE_ARGS=""
@@ -361,6 +362,10 @@ define_process_helper() {
 	DISMISS_CALLS=0
 	PR_REQUIRED_CHECKS_RC=1
 	REBASE_RETRY_RC=1
+	REBASE_RETRY_CALLS=0
+	REBASE_RETRY_POLICY=""
+	DUPLICATE_CLOSE_RC=1
+	DUPLICATE_CLOSE_CALLS=0
 	PREFLIGHT_RC=0
 	PREFLIGHT_EVIDENCE="[]"
 	REFRESHED_MERGEABLE="UNKNOWN"
@@ -374,12 +379,13 @@ define_process_helper() {
 	_pmp_review_decision_is_unknown() { local raw_decision="$1" _test_normalized_decision=""; _pmp_normalize_review_decision_into _test_normalized_decision "$raw_decision"; [[ "$_test_normalized_decision" == "UNKNOWN" ]]; return $?; }
 	_pmp_refresh_unknown_review_decision_into() { local dest_var="$1" pr_number="$2" repo_slug="$3" review_decision="$4"; [[ -n "$pr_number$repo_slug$review_decision" ]]; REVIEW_REFRESH_CALLS=$((REVIEW_REFRESH_CALLS + 1)); printf -v "$dest_var" '%s' "$REFRESHED_REVIEW_DECISION"; return 0; }
 	_extract_linked_issue() { local pr_number="$1" repo_slug="$2"; [[ -n "$pr_number$repo_slug" ]]; printf '42\n'; return 0; }
-	_check_pr_merge_gates() { local pr_number="$1" repo_slug="$2" pr_author="$3" pr_review="$4" linked_issue="$5"; [[ -n "$pr_number$repo_slug$pr_author$pr_review$linked_issue" ]]; GATE_CALLS=$((GATE_CALLS + 1)); GATE_REVIEW_ARG="$pr_review"; return 0; }
+	_check_pr_merge_gates() { local pr_number="$1" repo_slug="$2" pr_author="$3" pr_review="$4" linked_issue="$5" review_mode="${8:-merge}"; [[ -n "$pr_number$repo_slug$pr_author$pr_review$linked_issue" ]]; GATE_CALLS=$((GATE_CALLS + 1)); GATE_REVIEW_ARG="$pr_review"; GATE_REVIEW_MODE="$review_mode"; return 0; }
 	_pr_required_checks_pass() { local pr_number="$1" repo_slug="$2"; [[ -n "$pr_number$repo_slug" ]]; if [[ "$PR_REQUIRED_CHECKS_RC" -eq 0 ]]; then return 0; fi; return 1; }
 	_check_required_checks_passing() { local repo_slug="$1" pr_number="$2"; [[ -n "$repo_slug$pr_number" ]]; return 1; }
 	_is_trusted_dependabot_update_pr() { local pr_number="$1" repo_slug="$2" pr_author="$3"; [[ -n "$pr_number$repo_slug$pr_author" ]]; return 1; }
 	_trusted_dependabot_non_review_checks_green() { local pr_number="$1" repo_slug="$2" pr_obj="$3"; [[ -n "$pr_number$repo_slug$pr_obj" ]]; return 1; }
-	_attempt_pr_ci_rebase_retry() { local pr_number="$1" repo_slug="$2"; [[ -n "$pr_number$repo_slug" ]]; return "$REBASE_RETRY_RC"; }
+	_attempt_pr_ci_rebase_retry() { local pr_number="$1" repo_slug="$2" rebase_policy="${5:-standard}"; [[ -n "$pr_number$repo_slug" ]]; REBASE_RETRY_CALLS=$((REBASE_RETRY_CALLS + 1)); REBASE_RETRY_POLICY="$rebase_policy"; return "$REBASE_RETRY_RC"; }
+	_pm_close_superseded_duplicate_pr_if_issue_solved() { local pr_number="$1" repo_slug="$2" linked_issue="$3" pr_labels="$4"; [[ -n "$pr_number$repo_slug$linked_issue$pr_labels" ]]; DUPLICATE_CLOSE_CALLS=$((DUPLICATE_CLOSE_CALLS + 1)); return "$DUPLICATE_CLOSE_RC"; }
 	_route_pr_to_fix_worker() { local pr_number="$1" repo_slug="$2" linked_issue="$3" mode="$4" pr_labels="${5:-}" checks_json="${9:-}"; ROUTE_CALLS=$((ROUTE_CALLS + 1)); ROUTE_ARGS="${pr_number}|${repo_slug}|${linked_issue}|${mode}"; ROUTE_LABELS="$pr_labels"; ROUTE_EVIDENCE="$checks_json"; return 0; }
 	_pulse_merge_dismiss_coderabbit_nits() { local pr_number="$1" repo_slug="$2"; [[ -n "$pr_number$repo_slug" ]]; DISMISS_CALLS=$((DISMISS_CALLS + 1)); if [[ "${DISMISS_NITS_RC:-0}" -eq 0 ]]; then return 0; fi; return 1; }
 	_attempt_pr_update_branch() { return 1; }
@@ -534,6 +540,105 @@ test_rebase_success_defers_ci_repair_route() {
 		print_result "successful CI-drift rebase defers CI repair routing" 1 "route_calls=${ROUTE_CALLS}, route_args=${ROUTE_ARGS}"
 	else
 		print_result "successful CI-drift rebase defers CI repair routing" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_converged_changes_requested_runs_strict_rebase_only() {
+	setup_test_env
+	define_process_helper || { print_result "defines process helper for review-repair rebase" 1 "could not extract _process_single_ready_pr or review gate"; teardown_test_env; return 0; }
+	_pulse_merge_changes_requested_thread_remediation_first_enabled() { return 0; }
+	_pulse_merge_dispatch_review_thread_remediation() { _PULSE_MERGE_REMEDIATION_OUTCOME="converged"; return 0; }
+
+	local pr_object rc=0
+	REBASE_RETRY_RC=0
+	DUPLICATE_CLOSE_RC=0
+	printf -v pr_object '%s' '{"number":558,"state":"OPEN","mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","author":{"login":"worker-bot"},"title":"GH#503: repair drift","updatedAt":"2026-08-03T00:00:00Z","headRefOid":"sha558","headRefName":"fix/review-repair","baseRefName":"main","labels":[{"name":"origin:worker"},{"name":"status:in-review"}],"isDraft":false}'
+	_process_single_ready_pr "owner/repo" "$pr_object" || rc=$?
+
+	if [[ "$rc" -ne 1 ]]; then
+		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "Expected skip return 1, got ${rc}"
+	elif [[ "$GATE_CALLS" -ne 1 || "$GATE_REVIEW_ARG" != "CHANGES_REQUESTED" || "$GATE_REVIEW_MODE" != "ci-rebase-only" ]]; then
+		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "gate_calls=${GATE_CALLS}, gate_review=${GATE_REVIEW_ARG}, gate_mode=${GATE_REVIEW_MODE}"
+	elif [[ "$REBASE_RETRY_CALLS" -ne 1 || "$REBASE_RETRY_POLICY" != "review-repair" ]]; then
+		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "rebase_calls=${REBASE_RETRY_CALLS}, policy=${REBASE_RETRY_POLICY}"
+	elif [[ "$DUPLICATE_CLOSE_CALLS" -ne 0 ]]; then
+		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "duplicate_close_calls=${DUPLICATE_CLOSE_CALLS}"
+	elif [[ "$ROUTE_CALLS" -ne 0 ]]; then
+		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "route_calls=${ROUTE_CALLS}, route_args=${ROUTE_ARGS}"
+	else
+		print_result "converged CHANGES_REQUESTED runs trust-gated strict rebase only" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_converged_changes_requested_never_falls_through_to_merge() {
+	setup_test_env
+	define_process_helper || { print_result "defines process helper for review-repair merge block" 1 "could not extract _process_single_ready_pr or review gate"; teardown_test_env; return 0; }
+	_pulse_merge_changes_requested_thread_remediation_first_enabled() { return 0; }
+	_pulse_merge_dispatch_review_thread_remediation() { _PULSE_MERGE_REMEDIATION_OUTCOME="converged"; return 0; }
+
+	local pr_object rc=0
+	PR_REQUIRED_CHECKS_RC=0
+	REBASE_RETRY_RC=1
+	printf -v pr_object '%s' '{"number":559,"state":"OPEN","mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","author":{"login":"worker-bot"},"title":"GH#504: preserve review block","updatedAt":"2026-08-03T00:00:00Z","headRefOid":"sha559","headRefName":"fix/review-block","baseRefName":"main","labels":[{"name":"origin:worker"},{"name":"status:in-review"}],"isDraft":false}'
+	_process_single_ready_pr "owner/repo" "$pr_object" || rc=$?
+
+	if [[ "$rc" -ne 1 || "$REBASE_RETRY_CALLS" -ne 1 || "$ROUTE_CALLS" -ne 0 ]]; then
+		print_result "converged CHANGES_REQUESTED never reaches merge" 1 "rc=${rc}, rebase_calls=${REBASE_RETRY_CALLS}, route_calls=${ROUTE_CALLS}"
+	else
+		print_result "converged CHANGES_REQUESTED remains blocking after repair-only no-op" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_repair_only_gate_stops_before_review_bot_boundary() {
+	setup_test_env
+	define_process_helper || { print_result "defines repair-only gate helper" 1 "could not extract review gate"; teardown_test_env; return 0; }
+	local gate_src="" gate_rc=0 review_bot_calls=0
+	local old_agents_dir="${AGENTS_DIR:-}"
+	gate_src=$(extract_function _check_pr_merge_gates "$MERGE_SCRIPT")
+	if [[ -z "$gate_src" ]]; then
+		print_result "repair-only gate stops before review-bot boundary" 1 "could not extract _check_pr_merge_gates"
+		teardown_test_env
+		return 0
+	fi
+	AGENTS_DIR="${TEST_ROOT}/agents"
+	mkdir -p "${AGENTS_DIR}/scripts"
+	: >"${AGENTS_DIR}/scripts/review-bot-gate-helper.sh"
+	_is_collaborator_author() { _PULSE_AUTHOR_PERMISSION_VALUE="write"; return 0; }
+	check_pr_modifies_workflows() { return 1; }
+	_pm_issue_api() { local repo_slug="$1" issue_number="$2"; printf 'repos/%s/issues/%s\n' "$repo_slug" "$issue_number"; return 0; }
+	gh() { return 0; }
+	gh_pr_view() {
+		if [[ "$*" == *"labels,isDraft"* ]]; then
+			printf '%s\n' '{"labels":[{"name":"origin:worker"}],"isDraft":false}'
+		else
+			printf 'origin:worker\n'
+		fi
+		return 0
+	}
+	_attempt_worker_briefed_auto_merge() { return 0; }
+	bash() { review_bot_calls=$((review_bot_calls + 1)); return 1; }
+	# shellcheck disable=SC1090
+	eval "$gate_src"
+
+	_check_pr_merge_gates "560" "owner/repo" "worker-bot" "CHANGES_REQUESTED" "42" "origin:worker" "sha560" "ci-rebase-only" || gate_rc=$?
+	unset -f bash gh gh_pr_view _is_collaborator_author check_pr_modifies_workflows \
+		_pm_issue_api _attempt_worker_briefed_auto_merge _check_pr_merge_gates
+	if [[ -n "$old_agents_dir" ]]; then
+		AGENTS_DIR="$old_agents_dir"
+	else
+		unset AGENTS_DIR
+	fi
+
+	if [[ "$gate_rc" -ne 0 || "$review_bot_calls" -ne 0 ]]; then
+		print_result "repair-only gate stops before review-bot boundary" 1 "gate_rc=${gate_rc}, review_bot_calls=${review_bot_calls}"
+	else
+		print_result "repair-only mode applies non-review trust gates without treating review as cleared" 0
 	fi
 	teardown_test_env
 	return 0
@@ -1111,6 +1216,9 @@ test_ci_feedback_includes_required_and_advisory_failures_together() {
 main() {
 	test_red_pr_passes_gates_before_repair_route
 	test_rebase_success_defers_ci_repair_route
+	test_converged_changes_requested_runs_strict_rebase_only
+	test_converged_changes_requested_never_falls_through_to_merge
+	test_repair_only_gate_stops_before_review_bot_boundary
 	test_preflight_terminal_blocker_routes_supplied_evidence
 	test_changes_requested_unknown_routes_before_mergeable_skip
 	test_rest_missing_review_decision_refreshes_before_ci_route

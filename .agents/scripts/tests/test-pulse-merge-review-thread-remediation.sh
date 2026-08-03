@@ -476,7 +476,7 @@ test_changes_requested_active_remediation_preserves_pr_without_routing() {
 	return 0
 }
 
-test_changes_requested_converged_remediation_preserves_pr_without_routing() {
+test_changes_requested_converged_remediation_exposes_repair_only_mode() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
 	export SCANNER_RC=11
@@ -495,14 +495,16 @@ test_changes_requested_converged_remediation_preserves_pr_without_routing() {
 	_pulse_merge_dismiss_coderabbit_nits() {
 		return 1
 	}
+	local review_gate_mode="merge"
+	local gate_rc=0
 
-	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
-	if [[ ! -s "$route_log" ]] &&
-		grep -q 'no matching unresolved thread remained after refresh, preserving PR for reevaluation' "$LOGFILE"; then
-		print_result "converged response remediation preserves CHANGES_REQUESTED PR" 0
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" "" review_gate_mode || gate_rc=$?
+	if [[ "$gate_rc" -eq 1 && "$review_gate_mode" == "ci-rebase-only" && ! -s "$route_log" ]] &&
+		grep -q 'preserving the review block while allowing trust-gated CI-drift repair evaluation' "$LOGFILE"; then
+		print_result "converged response remediation exposes repair-only mode" 0
 	else
-		print_result "converged response remediation preserves CHANGES_REQUESTED PR" 1 \
-			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+		print_result "converged response remediation exposes repair-only mode" 1 \
+			"gate_rc=${gate_rc}, mode=${review_gate_mode}, route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
 	fi
 	teardown_test_env
 	return 0
@@ -687,7 +689,7 @@ main() {
 	test_changes_requested_opt_in_dispatches_remediation_without_routing
 	test_changes_requested_routes_when_remediation_unavailable
 	test_changes_requested_active_remediation_preserves_pr_without_routing
-	test_changes_requested_converged_remediation_preserves_pr_without_routing
+	test_changes_requested_converged_remediation_exposes_repair_only_mode
 	test_changes_requested_terminal_attention_preserves_pr_without_routing
 	test_changes_requested_hard_dispatch_failure_still_routes
 	test_changes_requested_skips_remediation_for_external_contributor

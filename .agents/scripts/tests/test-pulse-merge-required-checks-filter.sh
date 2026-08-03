@@ -404,6 +404,7 @@ define_function_under_test() {
 	eval_function_from_file _ruleset_required_review_count_for_default_branch "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _check_ruleset_required_reviews_passing "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _check_required_checks_has_terminal_failure "$REQUIRED_CHECKS_SCRIPT" || return 1
+	eval_function_from_file _check_required_checks_have_pending_or_in_progress "$REQUIRED_CHECKS_SCRIPT" || return 1
 	return 0
 }
 
@@ -707,6 +708,42 @@ test_skipping_required_allows_merge() {
 	return 0
 }
 
+test_terminal_classifier_uses_supplied_head() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="one_fail"
+	local actual_rc=0
+	_check_required_checks_has_terminal_failure "marcusquinn/aidevops" "19023" "review-head-terminal" || actual_rc=$?
+	if [[ "$actual_rc" -ne 0 ]]; then
+		print_result "terminal classifier binds checks to supplied head" 1 "Expected rc=0, got rc=${actual_rc}"
+	elif ! grep -Fq -- "/commits/review-head-terminal/check-runs" "$GH_CALL_LOG"; then
+		print_result "terminal classifier binds checks to supplied head" 1 "Expected supplied SHA in REST check-run call"
+	elif grep -Fq -- "pr view 19023" "$GH_CALL_LOG"; then
+		print_result "terminal classifier binds checks to supplied head" 1 "Unexpected volatile headRefOid lookup"
+	else
+		print_result "terminal classifier binds checks to supplied head" 0
+	fi
+	return 0
+}
+
+test_pending_classifier_uses_supplied_head() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="pending_only"
+	local actual_rc=0
+	_check_required_checks_have_pending_or_in_progress "marcusquinn/aidevops" "19023" "review-head-pending" || actual_rc=$?
+	if [[ "$actual_rc" -ne 0 ]]; then
+		print_result "pending classifier binds checks to supplied head" 1 "Expected rc=0, got rc=${actual_rc}"
+	elif ! grep -Fq -- "/commits/review-head-pending/check-runs" "$GH_CALL_LOG"; then
+		print_result "pending classifier binds checks to supplied head" 1 "Expected supplied SHA in REST check-run call"
+	elif grep -Fq -- "pr view 19023" "$GH_CALL_LOG"; then
+		print_result "pending classifier binds checks to supplied head" 1 "Unexpected volatile headRefOid lookup"
+	else
+		print_result "pending classifier binds checks to supplied head" 0
+	fi
+	return 0
+}
+
 test_ruleset_review_only_missing_blocks_merge() {
 	: >"$GH_CALL_LOG"
 	: >"$LOGFILE"
@@ -865,6 +902,8 @@ main() {
 	test_queued_required_is_non_terminal
 	test_expected_required_is_non_terminal
 	test_skipping_required_allows_merge
+	test_terminal_classifier_uses_supplied_head
+	test_pending_classifier_uses_supplied_head
 	test_ruleset_review_only_missing_blocks_merge
 	test_ruleset_review_count_accepts_prefetched_rulesets_json
 	test_ruleset_review_only_approved_allows_merge

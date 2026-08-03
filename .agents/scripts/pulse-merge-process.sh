@@ -599,8 +599,9 @@ _pr_required_checks_pass() {
 #
 # Returns 0 if update-branch succeeded (caller should skip fix-worker
 # routing and let the next pulse cycle re-check CI on the rebased HEAD).
-# Returns 1 if the PR is already up-to-date with its base or if
-# update-branch failed (caller should fall through to fix-worker routing).
+# Returns 1 if the PR is already up-to-date with its base or if update-branch
+# failed. Standard callers may route a fix worker; review-repair callers must
+# preserve CHANGES_REQUESTED and return without merge or feedback routing.
 #
 # Rate-limit: one call per PR per merge cycle — same as t2116.
 #
@@ -611,6 +612,13 @@ _attempt_pr_ci_rebase_retry() {
 	local repo_slug="$2"
 	local _base_branch="${3:-}"
 	local _head_oid="${4:-}"
+	local _rebase_policy="${5:-standard}"
+	local _review_repair_policy="review-repair"
+
+	if [[ "$_rebase_policy" != "standard" && "$_rebase_policy" != "$_review_repair_policy" ]]; then
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: refusing unknown CI-drift rebase policy ${_rebase_policy}" >>"$LOGFILE"
+		return 1
+	fi
 
 	# Prefer per-cycle PR list context; direct/webhook callers may omit it.
 	if [[ -z "$_base_branch" || -z "$_head_oid" ]]; then
@@ -620,10 +628,19 @@ _attempt_pr_ci_rebase_retry() {
 		read -r _base_branch _head_oid <<< "$_pr_info"
 	fi
 
+	if [[ "$_rebase_policy" == "$_review_repair_policy" && ( -z "$_base_branch" || -z "$_head_oid" ) ]]; then
+		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: strict review-repair rebase lacks current base/head evidence; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+		return 1
+	fi
+
 	if [[ -n "$_base_branch" && -n "$_head_oid" ]]; then
 		local _compare_behind
 		_compare_behind=$(gh api "repos/${repo_slug}/compare/${_base_branch}...${_head_oid}" \
 			--jq '.behind_by' 2>/dev/null) || _compare_behind=""
+		if [[ "$_rebase_policy" == "$_review_repair_policy" && ! "$_compare_behind" =~ ^[1-9][0-9]*$ ]]; then
+			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: strict review-repair rebase requires explicit behind_by>0 evidence; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+			return 1
+		fi
 		if [[ "$_compare_behind" == "0" ]]; then
 			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: already up-to-date with ${_base_branch}, skipping CI-drift rebase (t2805)" >>"$LOGFILE"
 			return 1
@@ -635,10 +652,10 @@ _attempt_pr_ci_rebase_retry() {
 	# required-check failure. Pending/in-progress required checks are not failures,
 	# and stale failures from older head SHAs must not trigger a branch refresh.
 	local _terminal_check_rc=0
-	_check_required_checks_has_terminal_failure "$repo_slug" "$pr_number"
+	_check_required_checks_has_terminal_failure "$repo_slug" "$pr_number" "$_head_oid"
 	_terminal_check_rc=$?
 	if [[ $_terminal_check_rc -eq 1 ]]; then
-		if _check_required_checks_have_pending_or_in_progress "$repo_slug" "$pr_number" >/dev/null 2>&1; then
+		if _check_required_checks_have_pending_or_in_progress "$repo_slug" "$pr_number" "$_head_oid" >/dev/null 2>&1; then
 			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: skipping CI-drift update-branch because required checks are active on the current head; wait for current CI or rely on native auto-merge to avoid restarting checks (GH#26406)" >>"$LOGFILE"
 			return 1
 		fi
@@ -646,7 +663,33 @@ _attempt_pr_ci_rebase_retry() {
 		return 1
 	fi
 	if [[ $_terminal_check_rc -ne 0 ]]; then
+		if [[ "$_rebase_policy" == "$_review_repair_policy" ]]; then
+			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: terminal required-check evidence unavailable before strict review-repair rebase; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+			return 1
+		fi
 		echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: required-check head-state unavailable before CI-drift update-branch; fail-open to existing update-branch behaviour (GH#26406)" >>"$LOGFILE"
+	fi
+	if [[ "$_rebase_policy" == "$_review_repair_policy" ]]; then
+		local _pending_check_rc=0
+		_check_required_checks_have_pending_or_in_progress "$repo_slug" "$pr_number" "$_head_oid" >/dev/null 2>&1 || _pending_check_rc=$?
+		if [[ "$_pending_check_rc" -ne 1 ]]; then
+			if [[ "$_pending_check_rc" -eq 0 ]]; then
+				echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: strict review-repair rebase deferred because required checks remain active on the current head" >>"$LOGFILE"
+			else
+				echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: active required-check state unavailable before strict review-repair rebase; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+			fi
+			return 1
+		fi
+		# #aidevops:trust-boundary — update-branch is a write. Revalidate live PR
+		# labels, linked-issue holds, author permission, external authority, and
+		# the exact expected head immediately before the repair mutation. This
+		# keeps PR-level needs-maintainer-review authoritative even though the
+		# repair-only gate intentionally stops before merge-only final checks.
+		if ! declare -F _pulse_merge_admin_safety_check >/dev/null 2>&1 \
+			|| ! _pulse_merge_admin_safety_check "$pr_number" "$repo_slug" "$_head_oid"; then
+			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: live PR authority failed before strict review-repair rebase; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+			return 1
+		fi
 	fi
 
 	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: attempting CI-drift rebase via update-branch (t2805)" >>"$LOGFILE"
