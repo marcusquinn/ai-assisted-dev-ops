@@ -169,6 +169,10 @@ test_sensitive_temp_preflight_aborts_before_worker_ownership() {
 	detail=$(
 		exec 2>&1
 		export AIDEVOPS_SENSITIVE_TEMP_DIR="${unsafe_parent}/nested"
+		export AIDEVOPS_HEADLESS_OUTCOME_FILE="${TEST_ROOT}/prrts.outcome"
+		export AIDEVOPS_HEADLESS_OUTCOME_ID="dispatch-29376"
+		export _WORKER_EXTERNAL_OUTCOME_FILE="poison-file"
+		export _WORKER_EXTERNAL_OUTCOME_ID="poison-id"
 		_acquire_session_lock() { return 0; }
 		_exit_trap_handler() { return 0; }
 		aidevops_runtime_bundle_lease_release() { return 0; }
@@ -181,13 +185,18 @@ test_sensitive_temp_preflight_aborts_before_worker_ownership() {
 			return 0
 		}
 		local prepare_status=0
+		local internal_exported="no"
 		_cmd_run_prepare "issue-28796" "$TEST_ROOT" "worker" || prepare_status=$?
-		printf 'status=%s reason=%s launch_started=%s\n' \
+		export -p | grep -q '_WORKER_EXTERNAL_OUTCOME_' && internal_exported="yes"
+		printf 'status=%s reason=%s launch_started=%s outcome_file=%s outcome_id=%s inherited_file=%s inherited_id=%s internal_exported=%s\n' \
 			"$prepare_status" "${_WORKER_PRELAUNCH_FAILURE_REASON:-}" \
-			"${_WORKER_RUNTIME_LAUNCH_STARTED:-}"
+			"${_WORKER_RUNTIME_LAUNCH_STARTED:-}" "${_WORKER_EXTERNAL_OUTCOME_FILE:-}" \
+			"${_WORKER_EXTERNAL_OUTCOME_ID:-}" "${AIDEVOPS_HEADLESS_OUTCOME_FILE:-unset}" \
+			"${AIDEVOPS_HEADLESS_OUTCOME_ID:-unset}" "$internal_exported"
 	)
 
 	if [[ "$detail" == *"status=86 reason=worker_sensitive_temp_preflight_failed launch_started=0"* && \
+		"$detail" == *"outcome_file=${TEST_ROOT}/prrts.outcome outcome_id=dispatch-29376 inherited_file=unset inherited_id=unset internal_exported=no"* && \
 		"$detail" == *"[sensitive-temp] rejected component="* && \
 		"$detail" == *" owner_uid="* && "$detail" == *" mode="* && \
 		! -e "$ownership_marker" ]]; then

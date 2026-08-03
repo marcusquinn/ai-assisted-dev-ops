@@ -907,6 +907,56 @@ _push_wip_commits_on_exit() {
 }
 
 #######################################
+# Persist a caller-requested terminal outcome for local recovery loops.
+# The path must be absolute and its parent must already exist.
+# Args: $1=session, $2=reason, $3=session count
+#######################################
+_hrff_write_external_outcome() {
+	local session_key="$1"
+	local reason="$2"
+	local session_count="$3"
+	local outcome_file="${_WORKER_EXTERNAL_OUTCOME_FILE:-}"
+	local outcome_id="${_WORKER_EXTERNAL_OUTCOME_ID:-}"
+	local outcome_dir="" tmp_file="" finished_at=""
+
+	[[ -n "$outcome_file" && "$outcome_id" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+	case "$outcome_file" in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	outcome_dir="${outcome_file%/*}"
+	[[ -d "$outcome_dir" && ! -L "$outcome_dir" && -O "$outcome_dir" && ! -L "$outcome_file" ]] || return 1
+	reason="${reason//$'\r'/_}"
+	reason="${reason//$'\n'/_}"
+	reason="${reason//=/_}"
+	session_key="${session_key//$'\r'/_}"
+	session_key="${session_key//$'\n'/_}"
+	session_key="${session_key//=/_}"
+	[[ "$session_count" =~ ^[0-9]+$ ]] || session_count=0
+	finished_at="$(date +%s)"
+	tmp_file=$(mktemp "${outcome_file}.tmp.XXXXXX") || return 1
+	[[ -f "$tmp_file" && ! -L "$tmp_file" && -O "$tmp_file" ]] || {
+		rm -f "$tmp_file" 2>/dev/null || true
+		return 1
+	}
+	if ! {
+		printf 'session_key=%s\n' "$session_key"
+		printf 'outcome_id=%s\n' "$outcome_id"
+		printf 'reason=%s\n' "$reason"
+		printf 'session_count=%s\n' "$session_count"
+		printf 'finished_at=%s\n' "$finished_at"
+	} >"$tmp_file"; then
+		rm -f "$tmp_file" 2>/dev/null || true
+		return 1
+	fi
+	if ! mv -f "$tmp_file" "$outcome_file"; then
+		rm -f "$tmp_file" 2>/dev/null || true
+		return 1
+	fi
+	return 0
+}
+
+#######################################
 # Archive dirty worktree changes as a local binary patch.
 # Best-effort fallback when exit-time commit/push cannot preserve the work.
 #
@@ -967,6 +1017,9 @@ _hrff_finalize_exit_trap() {
 		else
 			reason="worker_dirty_work_preserved"
 		fi
+	fi
+	if ! _hrff_write_external_outcome "$session_key" "$reason" "$session_count"; then
+		print_warning "[exit-trap] failed to persist external outcome for session=${session_key}"
 	fi
 	if declare -F _emit_worker_runtime_event >/dev/null 2>&1; then
 		if [[ "$reason" == "worker_complete" ]]; then

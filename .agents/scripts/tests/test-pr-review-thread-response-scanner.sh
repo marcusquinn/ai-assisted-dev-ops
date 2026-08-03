@@ -230,10 +230,16 @@ printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=%s\n' "${AIDEVOPS_WORKTREE_E
 printf 'AIDEVOPS_PR_REPAIR_NUMBER=%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_PR_REPAIR_HEAD_SHA=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_PR_REPAIR_HEAD_REF=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_HEADLESS_OUTCOME_FILE=%s\n' "${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_HEADLESS_OUTCOME_ID=%s\n' "${AIDEVOPS_HEADLESS_OUTCOME_ID:-}" >>"${HEADLESS_ENV_CAPTURE}"
 if [[ -n "$prompt_file" && -f "$prompt_file" ]]; then
 	cp "$prompt_file" "${HEADLESS_PROMPT_CAPTURE}"
 fi
 printf '%s\n' "${prompt_file}" >>"${HEADLESS_LOG}"
+if [[ "${STUB_HEADLESS_MARK_COMPLETE:-false}" == "true" ]]; then
+	"${PRRTS_SCANNER_UNDER_TEST}" mark-complete owner/repo "${WORKER_ISSUE_NUMBER}" immediate_worker_completion
+fi
+printf 'complete\n' >>"${HEADLESS_COMPLETE_LOG}"
 exit 0
 HEADLESS_STUB
 	chmod +x "${TEST_ROOT}/headless-runtime-helper.sh"
@@ -322,12 +328,14 @@ setup_test_env() {
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
 	unset STUB_WORKTREE_REGISTER_OWNER STUB_WORKTREE_OWNER_PID STUB_WORKTREE_OWNER_SESSION
 	unset STUB_ACTIVE_RESPONSE_WORKER
-	unset PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER
+	unset STUB_HEADLESS_MARK_COMPLETE
+	unset PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN
 	TEST_ROOT="$(mktemp -d -t prrts.XXXXXX)"
 	export HOME="${TEST_ROOT}/home"
 	export LOGFILE="${TEST_ROOT}/scanner.log"
 	export AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR="${TEST_ROOT}/state"
 	export HEADLESS_LOG="${TEST_ROOT}/headless.log"
+	export HEADLESS_COMPLETE_LOG="${TEST_ROOT}/headless-complete.log"
 	export HEADLESS_ARGS_CAPTURE="${TEST_ROOT}/headless-args.txt"
 	export HEADLESS_ENV_CAPTURE="${TEST_ROOT}/headless-env.txt"
 	export HEADLESS_PROMPT_CAPTURE="${TEST_ROOT}/prompt.md"
@@ -358,10 +366,13 @@ setup_test_env() {
 	export GRAPHQL_BODY_CAPTURE="${TEST_ROOT}/graphql-body.txt"
 	export GRAPHQL_BODY_FLAG_CAPTURE="${TEST_ROOT}/graphql-body-flag.txt"
 	export PR_REVIEW_THREAD_RESPONSE_COOLDOWN=3600
+	export PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN=90
+	export PRRTS_SCANNER_UNDER_TEST="$SCANNER"
 	: >"$GRAPHQL_MUTATIONS_LOG"
 	: >"$GRAPHQL_BODY_CAPTURE"
 	: >"$GRAPHQL_BODY_FLAG_CAPTURE"
 	: >"$HEADLESS_LOG"
+	: >"$HEADLESS_COMPLETE_LOG"
 	: >"$DETACH_LAUNCH_LOG"
 	: >"$GIT_FETCH_CWD_LOG"
 	rm -f "$GIT_FETCHED_HEAD_STATE"
@@ -679,6 +690,32 @@ wait_for_headless_log() {
 	return 1
 }
 
+wait_for_state_marker() {
+	local state_file="$1"
+	local marker="$2"
+	local attempts=0
+	while [[ "$attempts" -lt 10 ]]; do
+		if grep -q "$marker" "$state_file" 2>/dev/null; then
+			return 0
+		fi
+		sleep 1
+		attempts=$((attempts + 1))
+	done
+	return 1
+}
+
+wait_for_headless_completion() {
+	local attempts=0
+	while [[ "$attempts" -lt 10 ]]; do
+		if [[ -s "$HEADLESS_COMPLETE_LOG" ]]; then
+			return 0
+		fi
+		sleep 1
+		attempts=$((attempts + 1))
+	done
+	return 1
+}
+
 expire_state_dispatch_time() {
 	local state_file="$1"
 	local dispatched_at="$2"
@@ -692,6 +729,35 @@ expire_state_dispatch_time() {
 	done <"$state_file" >"$tmp_file"
 	mv "$tmp_file" "$state_file"
 	return 0
+}
+
+write_worker_outcome() {
+	local outcome_file="$1"
+	local reason="$2"
+	local session_count="$3"
+	local finished_at="$4"
+	local outcome_id="$5"
+	{
+		printf 'session_key=pr-review-thread-response-owner-repo-1\n'
+		printf 'outcome_id=%s\n' "$outcome_id"
+		printf 'reason=%s\n' "$reason"
+		printf 'session_count=%s\n' "$session_count"
+		printf 'finished_at=%s\n' "$finished_at"
+	} >"$outcome_file"
+	return 0
+}
+
+read_state_value() {
+	local state_file="$1"
+	local wanted_key="$2"
+	local key="" value=""
+	while IFS='=' read -r key value; do
+		if [[ "$key" == "$wanted_key" ]]; then
+			printf '%s\n' "$value"
+			return 0
+		fi
+	done <"$state_file"
+	return 1
 }
 
 test_scan_finds_unresolved_bot_thread() {
@@ -1047,6 +1113,129 @@ test_dispatch_is_idempotent_for_same_fingerprint() {
 		print_result "dispatch skips same fingerprint during cooldown" 0
 	else
 		print_result "dispatch skips same fingerprint during cooldown" 1 "second dispatch unexpectedly launched"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_preserves_immediate_worker_terminal_state() {
+	setup_test_env
+	export STUB_HEADLESS_MARK_COMPLETE=true
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	wait_for_state_marker "$state_file" '^analysis_complete=true$' || true
+	wait_for_headless_completion || true
+	if grep -q '^analysis_complete=true$' "$state_file" 2>/dev/null &&
+		grep -q '^blocker_reason=immediate_worker_completion$' "$state_file" 2>/dev/null; then
+		print_result "dispatch preserves immediate worker terminal state" 0
+	else
+		print_result "dispatch preserves immediate worker terminal state" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_retries_zero_session_infrastructure_failure_after_short_cooldown() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "worker_noop_zero_output" "0" "$((old_epoch + 1))" "$outcome_id"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" ]] &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_HEADLESS_OUTCOME_FILE=${outcome_file}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_HEADLESS_OUTCOME_ID=$(read_state_value "$state_file" outcome_id)" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -q 'worker_noop_zero_output session_count=0 — classifying as infrastructure failure' "$LOGFILE" 2>/dev/null &&
+		grep -q 'retrying after infrastructure-failure short cooldown' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch retries zero-session infrastructure failure after short cooldown" 0
+	else
+		print_result "dispatch retries zero-session infrastructure failure after short cooldown" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_defers_zero_session_infrastructure_failure_during_short_cooldown() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 30))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "worker_noop_zero_output" "0" "$((old_epoch + 1))" "$outcome_id"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q 'infrastructure-failure short cooldown active' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch defers zero-session infrastructure failure during short cooldown" 0
+	else
+		print_result "dispatch defers zero-session infrastructure failure during short cooldown" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_preserves_full_cooldown_after_model_session() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 400))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "worker_noop_zero_output" "1" "$((old_epoch + 1))" "$outcome_id"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q 'same thread fingerprint dispatched' "$LOGFILE" 2>/dev/null &&
+		! grep -q 'classifying as infrastructure failure' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch preserves full cooldown after a model session" 0
+	else
+		print_result "dispatch preserves full cooldown after a model session" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_rejects_mismatched_or_future_outcomes() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 400))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "worker_noop_zero_output" "0" "$((old_epoch + 1))" "stale-${outcome_id}"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	write_worker_outcome "$outcome_file" "worker_noop_zero_output" "0" "$(($(date +%s) + 3600))" "$outcome_id"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q 'same thread fingerprint dispatched' "$LOGFILE" 2>/dev/null &&
+		! grep -q 'classifying as infrastructure failure' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch rejects mismatched and future zero-session outcomes" 0
+	else
+		print_result "dispatch rejects mismatched and future zero-session outcomes" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
@@ -1766,6 +1955,11 @@ main() {
 	test_dispatch_pr_reports_no_match_as_converged
 	test_dispatch_pr_reports_fetch_failure_as_retryable
 	test_dispatch_is_idempotent_for_same_fingerprint
+	test_dispatch_preserves_immediate_worker_terminal_state
+	test_dispatch_retries_zero_session_infrastructure_failure_after_short_cooldown
+	test_dispatch_defers_zero_session_infrastructure_failure_during_short_cooldown
+	test_dispatch_preserves_full_cooldown_after_model_session
+	test_dispatch_rejects_mismatched_or_future_outcomes
 	test_dispatch_skips_mixed_fingerprint_during_inflight_window
 	test_dispatch_escalates_repeated_same_fingerprint_without_worker_loop
 	test_dispatch_retries_escalated_previous_worker_contract

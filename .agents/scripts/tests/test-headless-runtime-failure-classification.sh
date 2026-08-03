@@ -181,6 +181,28 @@ check_pool_retry_seconds "short_retry_after" "retry after 120 seconds" "rate_lim
 check_pool_retry_seconds "over_max_retry_after" "retry after 2 days" "rate_limit" "21600"
 check_pool_retry_seconds "auth_error_fallback" "authentication failed" "auth_error" "3600"
 
+OUTCOME_FILE="$FIXTURE_DIR/prrts.outcome"
+_WORKER_EXTERNAL_OUTCOME_FILE="$OUTCOME_FILE"
+_WORKER_EXTERNAL_OUTCOME_ID="dispatch-29376"
+_hrff_write_external_outcome "pr-review-thread-response-owner-repo-1" "worker_noop_zero_output" "0"
+assert_eq "external outcome dispatch identity persisted" "dispatch-29376" \
+	"$(awk -F= '$1 == "outcome_id" { print $2 }' "$OUTCOME_FILE")"
+assert_eq "external outcome reason persisted" "worker_noop_zero_output" \
+	"$(awk -F= '$1 == "reason" { print $2 }' "$OUTCOME_FILE")"
+assert_eq "external outcome session count persisted" "0" \
+	"$(awk -F= '$1 == "session_count" { print $2 }' "$OUTCOME_FILE")"
+assert_eq "external outcome has numeric completion time" "true" \
+	"$(awk -F= '$1 == "finished_at" && $2 ~ /^[0-9]+$/ { print "true" }' "$OUTCOME_FILE")"
+OUTCOME_TARGET="$FIXTURE_DIR/outcome-target"
+printf 'unchanged\n' >"$OUTCOME_TARGET"
+rm -f "$OUTCOME_FILE"
+ln -s "$OUTCOME_TARGET" "$OUTCOME_FILE"
+OUTCOME_WRITE_RC=0
+_hrff_write_external_outcome "pr-review-thread-response-owner-repo-1" "worker_noop_zero_output" "0" || OUTCOME_WRITE_RC=$?
+assert_eq "external outcome rejects destination symlink" "1" "$OUTCOME_WRITE_RC"
+assert_eq "external outcome symlink target remains unchanged" "unchanged" "$(<"$OUTCOME_TARGET")"
+unset _WORKER_EXTERNAL_OUTCOME_FILE _WORKER_EXTERNAL_OUTCOME_ID
+
 echo
 echo "${TEST_BLUE}=== Summary ===${TEST_NC}"
 echo "Tests run:    $TESTS_RUN"
