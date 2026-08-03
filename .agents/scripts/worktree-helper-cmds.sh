@@ -690,6 +690,10 @@ COMMANDS
   recovery plan --output <absolute-path>
                          Write an exact read-only cleanup plan. Existing or
                          symlinked outputs and ambiguous evidence fail closed.
+  recovery apply --plan <absolute-path> --receipt <absolute-new-path>
+                 --confirm <manifest-token>
+                         Apply only exact candidates from a supported plan after
+                         locked revalidation, staging, and receipt publication.
 
   registry [list|prune]  View or prune the ownership registry (t189, t197)
                          list: Show all registered worktrees with ownership info
@@ -770,11 +774,15 @@ EOF
 cmd_recovery() {
 	local action="${1:-status}"
 	local output_path=""
+	local plan_path=""
+	local receipt_path=""
+	local confirmation=""
+	local option=""
 
 	case "$action" in
 	status)
 		[[ "$#" -eq 0 || ("$#" -eq 1 && "$1" == "status") ]] || {
-			printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>]" >&2
+			printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>|apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>]" >&2
 			return 1
 		}
 		if declare -F worktree_recovery_lifecycle_status >/dev/null 2>&1; then
@@ -792,8 +800,38 @@ cmd_recovery() {
 		declare -F worktree_recovery_plan_write >/dev/null 2>&1 || return 1
 		worktree_recovery_plan_write "$output_path" || return 1
 		;;
+	apply)
+		shift
+		while [[ "$#" -gt 0 ]]; do
+			option="$1"
+			shift
+			[[ "$#" -gt 0 ]] || return 1
+			case "$option" in
+			--plan)
+				[[ -z "$plan_path" ]] || return 1
+				plan_path="$1"
+				;;
+			--receipt)
+				[[ -z "$receipt_path" ]] || return 1
+				receipt_path="$1"
+				;;
+			--confirm)
+				[[ -z "$confirmation" ]] || return 1
+				confirmation="$1"
+				;;
+			*) return 1 ;;
+			esac
+			shift
+		done
+		[[ -n "$plan_path" && -n "$receipt_path" && -n "$confirmation" ]] || {
+			printf '%s\n' "Usage: worktree-helper.sh recovery apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>" >&2
+			return 1
+		}
+		declare -F worktree_recovery_apply >/dev/null 2>&1 || return 1
+		worktree_recovery_apply "$plan_path" "$receipt_path" "$confirmation" || return 1
+		;;
 	*)
-		printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>]" >&2
+		printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>|apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>]" >&2
 		return 1
 		;;
 	esac

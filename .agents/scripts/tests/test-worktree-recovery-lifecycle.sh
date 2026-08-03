@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# Regression tests for exact, read-only worktree recovery cleanup plans.
+# Regression tests for exact worktree recovery planning and explicit apply.
 
 set -euo pipefail
 
@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="${SCRIPT_DIR}/.."
 GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 TEST_DIR=""
+TEST_LEGACY_RECOVERY_ROOT=""
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -38,11 +39,10 @@ teardown() {
 	return 0
 }
 
-create_archived_fixture() {
+create_unarchived_fixture() {
 	local repo_path="$1"
 	local worktree_path="$2"
-	local recovery_root="$3"
-	local branch_name="$4"
+	local branch_name="$3"
 
 	"$GIT_BIN" init -q -b main "$repo_path" || return 1
 	"$GIT_BIN" -C "$repo_path" config user.email test@example.invalid || return 1
@@ -52,12 +52,86 @@ create_archived_fixture() {
 	"$GIT_BIN" -C "$repo_path" add README.md || return 1
 	"$GIT_BIN" -C "$repo_path" commit -q -m init || return 1
 	"$GIT_BIN" -C "$repo_path" worktree add -q -b "$branch_name" "$worktree_path" || return 1
+	return 0
+}
+
+create_archived_fixture() {
+	local repo_path="$1"
+	local worktree_path="$2"
+	local recovery_root="$3"
+	local branch_name="$4"
+
+	create_unarchived_fixture "$repo_path" "$worktree_path" "$branch_name" || return 1
 	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
 		archive_worktree_path_recoverably "$worktree_path" "test.sh" "recovery-plan" || return 1
 	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
 		"$worktree_path" "$WORKTREE_RECOVERABLE_ARCHIVE_PATH" "test.sh" "recovery-plan" \
 		"recovery_path=archive-first" "false" "false" || return 1
 	printf '%s\n' "$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	return 0
+}
+
+create_candidate_plan_fixture() {
+	local home_path="$1"
+	local repo_path="$2"
+	local worktree_path="$3"
+	local recovery_root="$4"
+	local branch_name="$5"
+	local plan_path="$6"
+	local archive_path=""
+
+	mkdir -p "$home_path" "$recovery_root" || return 1
+	archive_path=$(create_archived_fixture "$repo_path" "$worktree_path" "$recovery_root" \
+		"$branch_name") || return 1
+	install_clear_evidence_stubs
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery plan --output "$plan_path" >/dev/null || return 1
+	printf '%s\n' "$archive_path"
+	return 0
+}
+
+resign_test_plan() {
+	local plan_path="$1"
+	local plan_material=""
+	local plan_digest=""
+	local candidate_count=""
+	local candidate_bytes=""
+	local confirmation=""
+	local temp_path="${plan_path}.resign.$$"
+
+	plan_material=$(_worktree_recovery_apply_plan_material "$plan_path") || return 1
+	plan_digest=$(_worktree_recovery_plan_sha256_text "$plan_material") || return 1
+	candidate_count=$(jq -r '.candidate_count' "$plan_path") || return 1
+	candidate_bytes=$(jq -r '.candidate_bytes' "$plan_path") || return 1
+	confirmation=$(_worktree_recovery_plan_confirmation_token \
+		"sha256:$plan_digest" "$candidate_count" "$candidate_bytes") || return 1
+	jq -c --arg plan_id "sha256:$plan_digest" --arg confirmation "$confirmation" \
+		'.plan_id = $plan_id | .confirmation_token = $confirmation' \
+		"$plan_path" >"$temp_path" || return 1
+	mv "$temp_path" "$plan_path" || return 1
+	return 0
+}
+
+write_test_producer_lock() {
+	local recovery_root="$1"
+	local owner_pid="$2"
+	local owner_lstart="$3"
+	local lock_path="${recovery_root}/${_WT_RECOVERY_PRODUCER_LOCK_NAME}"
+
+	mkdir "$lock_path" || return 1
+	printf '%s\n' "$owner_pid" >"$lock_path/pid" || return 1
+	printf '%s\n' "$owner_lstart" >"$lock_path/lstart" || return 1
+	printf '%s\n' "fixture-lock-token" >"$lock_path/token" || return 1
+	printf '%s\n' "complete" >"$lock_path/initialized" || return 1
+	return 0
+}
+
+remove_test_producer_lock() {
+	local recovery_root="$1"
+	local lock_path="${recovery_root}/${_WT_RECOVERY_PRODUCER_LOCK_NAME}"
+
+	rm -f "$lock_path/pid" "$lock_path/lstart" "$lock_path/token" "$lock_path/initialized" || return 1
+	rmdir "$lock_path" || return 1
 	return 0
 }
 
@@ -141,13 +215,14 @@ test_exact_plan_writes_candidate_without_mutation() {
 	[[ "$tree_digest_before" == "$tree_digest_after" ]] || rc=1
 	[[ ! -e "$worktree_path" && -d "$archive_path" ]] || rc=1
 	jq -e --arg archive "$archive_path" '
-		.schema == "aidevops.worktree-recovery-plan/v1" and .producer == "worktree-helper" and
+		.schema == "aidevops.worktree-recovery-plan/v2" and .producer == "worktree-helper" and
 		.read_only == true and .inventory_complete == true and .inventory_error == null and
 		(.source_roots | length == 1) and .entry_count == 1 and
 		.sized_entry_count == 1 and .unavailable_size_count == 0 and
 		.candidate_count == 1 and .protected_count == 0 and .unknown_count == 0 and
 		(.candidate_bytes > 0) and .candidate_bytes == .expected_allocated_bytes and
 		(.plan_id | startswith("sha256:")) and
+		(.confirmation_token | startswith("apply-sha256:")) and
 		(.entries | length == 1) and .entries[0].archive_path == $archive and
 		.entries[0].disposition == "candidate" and
 		.entries[0].expected_allocated_bytes > 0 and
@@ -334,6 +409,313 @@ test_global_inventory_failure_is_explicit() {
 	return 0
 }
 
+test_apply_removes_only_candidates_and_replays_receipt() {
+	local home_path="${TEST_DIR}/apply-home"
+	local repo_path="${TEST_DIR}/apply-repo"
+	local worktree_path="${TEST_DIR}/apply-worktree"
+	local recovery_root="${home_path}/recovery"
+	local malformed_bucket="${recovery_root}/aidevops-worktree-cleanup-unknown"
+	local plan_path="${TEST_DIR}/apply-plan.json"
+	local receipt_path="${TEST_DIR}/apply-receipt.json"
+	local archive_path=""
+	local bucket_path=""
+	local confirmation=""
+	local rc=0
+
+	mkdir -p "$recovery_root" "${malformed_bucket}/${_WT_RECOVERY_DIR_NAME}" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT_V2" > \
+		"${malformed_bucket}/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
+	archive_path=$(create_archived_fixture "$repo_path" "$worktree_path" "$recovery_root" \
+		"bugfix/gh29389-apply-success") || rc=1
+	bucket_path="${archive_path%/*}"
+	install_clear_evidence_stubs
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery plan --output "$plan_path" >/dev/null || rc=1
+	confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--confirm "$confirmation" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" && -d "$malformed_bucket" && -f "$receipt_path" ]] || rc=1
+	jq -e '
+		.schema == "aidevops.worktree-recovery-apply-receipt/v1" and
+		.complete == true and .candidate_count == 1 and
+		.expected_allocated_bytes == .observed_allocated_bytes and
+		(.entries | length == 1) and .entries[0].outcome == "removed"
+	' "$receipt_path" >/dev/null || rc=1
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --receipt "$receipt_path" --confirm "$confirmation" \
+		--plan "$plan_path" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" && -d "$malformed_bucket" ]] || rc=1
+	print_result "apply_removes_only_candidates_and_replays_receipt" "$rc" \
+		"Expected exact candidate deletion, unknown preservation, an auditable receipt, and safe replay"
+	return 0
+}
+
+test_apply_rejects_unsafe_manifest_and_cli_inputs() {
+	local home_path="${TEST_DIR}/reject-home"
+	local repo_path="${TEST_DIR}/reject-repo"
+	local worktree_path="${TEST_DIR}/reject-worktree"
+	local recovery_root="${home_path}/recovery"
+	local plan_path="${TEST_DIR}/reject-plan.json"
+	local duplicate_plan="${TEST_DIR}/duplicate-plan.json"
+	local outside_plan="${TEST_DIR}/outside-plan.json"
+	local unsupported_plan="${TEST_DIR}/unsupported-plan.json"
+	local symlink_plan="${TEST_DIR}/reject-symlink-plan.json"
+	local mismatched_receipt="${TEST_DIR}/mismatched-receipt.json"
+	local receipt_path="${TEST_DIR}/rejected-receipt.json"
+	local candidate_plan=""
+	local candidate_receipt=""
+	local outside_root="${TEST_DIR}/outside-root"
+	local archive_path=""
+	local bucket_path=""
+	local confirmation=""
+	local rc=0
+
+	archive_path=$(create_candidate_plan_fixture "$home_path" "$repo_path" "$worktree_path" \
+		"$recovery_root" "bugfix/gh29389-reject-inputs" "$plan_path") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+	install_clear_evidence_stubs
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--confirm "apply-sha256:$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then rc=1; fi
+	if cmd_recovery apply --plan "$plan_path" --plan "$plan_path" \
+		--receipt "$receipt_path" --confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	if cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--unknown value --confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	if cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" >/dev/null 2>&1; then rc=1; fi
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "relative-plan.json" "$receipt_path" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$plan_path" "relative-receipt.json" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	candidate_receipt="${archive_path}/unsafe-receipt.json"
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$plan_path" "$candidate_receipt" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	candidate_plan="${archive_path}/unsafe-plan.json"
+	jq -c '.' "$plan_path" >"$candidate_plan" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$candidate_plan" "$receipt_path" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	ln -s "$plan_path" "$symlink_plan" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$symlink_plan" "$receipt_path" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	printf '{}\n' >"$mismatched_receipt" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$plan_path" "$mismatched_receipt" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	jq -c '.schema = "aidevops.worktree-recovery-plan/unsupported"' \
+		"$plan_path" >"$unsupported_plan" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$unsupported_plan" "$receipt_path" "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	jq -c '
+		.entries += [.entries[0]] |
+		.entry_count += 1 | .sized_entry_count += 1 |
+		.expected_allocated_bytes += .entries[0].expected_allocated_bytes |
+		.candidate_count += 1 | .candidate_bytes += .entries[0].expected_allocated_bytes
+	' "$plan_path" >"$duplicate_plan" || rc=1
+	resign_test_plan "$duplicate_plan" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$duplicate_plan" "$receipt_path" \
+		"$(jq -r '.confirmation_token' "$duplicate_plan")" >/dev/null 2>&1; then rc=1; fi
+	mkdir -p "$outside_root" || rc=1
+	jq -c --arg path "${outside_root}/forged-bucket" \
+		--arg archive "${outside_root}/forged-bucket/archive" \
+		'.entries[0].path = $path | .entries[0].archive_path = $archive' \
+		"$plan_path" >"$outside_plan" || rc=1
+	resign_test_plan "$outside_plan" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		worktree_recovery_apply "$outside_plan" "$receipt_path" \
+		"$(jq -r '.confirmation_token' "$outside_plan")" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "$bucket_path" && ! -e "$receipt_path" && ! -L "$receipt_path" &&
+		! -e "$candidate_receipt" ]] || rc=1
+	print_result "apply_rejects_unsafe_manifest_and_cli_inputs" "$rc" \
+		"Expected malformed consent, parser input, receipts, schemas, duplicates, and roots to fail closed"
+	return 0
+}
+
+test_apply_preflight_drift_stages_nothing() {
+	local home_path="${TEST_DIR}/preflight-home"
+	local recovery_root="${home_path}/recovery"
+	local plan_path="${TEST_DIR}/preflight-plan.json"
+	local receipt_path="${TEST_DIR}/preflight-receipt.json"
+	local archive_a="" archive_b="" bucket_a="" bucket_b="" confirmation=""
+	local staged_count=0
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_a=$(create_archived_fixture "${TEST_DIR}/preflight-repo-a" \
+		"${TEST_DIR}/preflight-worktree-a" "$recovery_root" \
+		"bugfix/gh29389-preflight-a") || rc=1
+	archive_b=$(create_archived_fixture "${TEST_DIR}/preflight-repo-b" \
+		"${TEST_DIR}/preflight-worktree-b" "$recovery_root" \
+		"bugfix/gh29389-preflight-b") || rc=1
+	bucket_a="${archive_a%/*}"
+	bucket_b="${archive_b%/*}"
+	install_clear_evidence_stubs
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery plan --output "$plan_path" >/dev/null || rc=1
+	confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+	printf 'late drift\n' >"${archive_b}/late-drift.bin" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "$bucket_a" && -d "$bucket_b" && ! -e "$receipt_path" ]] || rc=1
+	for staged_path in "$recovery_root"/.retention-trash/apply-*/candidate-*; do
+		[[ -e "$staged_path" || -L "$staged_path" ]] || continue
+		staged_count=$((staged_count + 1))
+	done
+	[[ "$staged_count" -eq 0 ]] || rc=1
+	print_result "apply_preflight_drift_stages_nothing" "$rc" \
+		"Expected one late candidate drift to leave the complete batch at original paths"
+	return 0
+}
+
+test_apply_resumes_move_and_delete_crash_windows() {
+	local move_home="${TEST_DIR}/move-home"
+	local move_root="${move_home}/recovery"
+	local move_plan="${TEST_DIR}/move-plan.json"
+	local move_receipt="${TEST_DIR}/move-receipt.json"
+	local delete_home="${TEST_DIR}/delete-home"
+	local delete_root="${delete_home}/recovery"
+	local delete_plan="${TEST_DIR}/delete-plan.json"
+	local delete_receipt="${TEST_DIR}/delete-receipt.json"
+	local archive_path="" bucket_path="" confirmation="" journal_path="" staged_path=""
+	local candidate_journal=""
+	local rc=0
+
+	archive_path=$(create_candidate_plan_fixture "$move_home" "${TEST_DIR}/move-repo" \
+		"${TEST_DIR}/move-worktree" "$move_root" "bugfix/gh29389-move-interrupt" \
+		"$move_plan") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$move_plan") || rc=1
+	install_clear_evidence_stubs
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_MOVE=1 HOME="$move_home" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$move_root" cmd_recovery apply \
+		--plan "$move_plan" --receipt "$move_receipt" --confirm "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	for candidate_journal in "$move_root"/.retention-trash/apply-*/journal.json; do
+		[[ -f "$candidate_journal" ]] || continue
+		journal_path="$candidate_journal"
+	done
+	[[ -n "$journal_path" && ! -e "$bucket_path" && ! -e "$move_receipt" ]] || rc=1
+	staged_path=$(jq -r '.entries[0].staged_path' "$journal_path") || rc=1
+	[[ "$(jq -r '.entries[0].state' "$journal_path")" == "planned" && -d "$staged_path" ]] || rc=1
+	HOME="$move_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$move_root" cmd_recovery apply \
+		--plan "$move_plan" --receipt "$move_receipt" --confirm "$confirmation" \
+		>/dev/null || rc=1
+	[[ -f "$move_receipt" && ! -e "$staged_path" ]] || rc=1
+
+	archive_path=$(create_candidate_plan_fixture "$delete_home" "${TEST_DIR}/delete-repo" \
+		"${TEST_DIR}/delete-worktree" "$delete_root" "bugfix/gh29389-delete-interrupt" \
+		"$delete_plan") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$delete_plan") || rc=1
+	install_clear_evidence_stubs
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_DELETE=1 HOME="$delete_home" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$delete_root" cmd_recovery apply \
+		--plan "$delete_plan" --receipt "$delete_receipt" --confirm "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	journal_path=""
+	for candidate_journal in "$delete_root"/.retention-trash/apply-*/journal.json; do
+		[[ -f "$candidate_journal" ]] || continue
+		journal_path="$candidate_journal"
+	done
+	[[ -n "$journal_path" && ! -e "$bucket_path" && ! -e "$delete_receipt" ]] || rc=1
+	staged_path=$(jq -r '.entries[0].staged_path' "$journal_path") || rc=1
+	[[ "$(jq -r '.entries[0].state' "$journal_path")" == "staged" && ! -e "$staged_path" ]] || rc=1
+	HOME="$delete_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$delete_root" cmd_recovery apply \
+		--plan "$delete_plan" --receipt "$delete_receipt" --confirm "$confirmation" \
+		>/dev/null || rc=1
+	[[ -f "$delete_receipt" ]] || rc=1
+	print_result "apply_resumes_move_and_delete_crash_windows" "$rc" \
+		"Expected retries to reconcile exact journal state after rename or delete interruption"
+	return 0
+}
+
+test_shared_producer_lock_fails_closed_and_reclaims_stale() {
+	local home_path="${TEST_DIR}/lock-home"
+	local recovery_root="${home_path}/recovery"
+	local plan_path="${TEST_DIR}/lock-plan.json"
+	local receipt_path="${TEST_DIR}/lock-receipt.json"
+	local archive_path="" bucket_path="" confirmation="" live_lstart=""
+	local source_repo="${TEST_DIR}/lock-source-repo"
+	local source_worktree="${TEST_DIR}/lock-source-worktree"
+	local lock_path="${recovery_root}/${_WT_RECOVERY_PRODUCER_LOCK_NAME}"
+	local rc=0
+
+	archive_path=$(create_candidate_plan_fixture "$home_path" "${TEST_DIR}/lock-repo" \
+		"${TEST_DIR}/lock-worktree" "$recovery_root" "bugfix/gh29389-lock-apply" \
+		"$plan_path") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+	create_unarchived_fixture "$source_repo" "$source_worktree" \
+		"bugfix/gh29389-lock-archive" || rc=1
+	live_lstart=$(_worktree_recovery_process_lstart "$$") || rc=1
+	write_test_producer_lock "$recovery_root" "$$" "$live_lstart" || rc=1
+	install_clear_evidence_stubs
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" archive_worktree_path_recoverably \
+		"$source_worktree" "test.sh" "shared-lock" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "$bucket_path" && -d "$source_worktree" && ! -e "$receipt_path" ]] || rc=1
+	remove_test_producer_lock "$recovery_root" || rc=1
+	mkdir "$lock_path" || rc=1
+	if HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		cmd_recovery apply --plan "$plan_path" --receipt "$receipt_path" \
+		--confirm "$confirmation" >/dev/null 2>&1; then rc=1; fi
+	rmdir "$lock_path" || rc=1
+	write_test_producer_lock "$recovery_root" "999999999" "stale-process-generation" || rc=1
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" cmd_recovery apply \
+		--plan "$plan_path" --receipt "$receipt_path" --confirm "$confirmation" \
+		>/dev/null || rc=1
+	[[ ! -e "$bucket_path" && -f "$receipt_path" && ! -e "$lock_path" ]] || rc=1
+	print_result "shared_producer_lock_fails_closed_and_reclaims_stale" "$rc" \
+		"Expected live/malformed locks to block both producers and a proven stale lock to be reclaimed"
+	return 0
+}
+
+test_apply_handles_attributable_legacy_root_transaction() {
+	local home_path="${TEST_DIR}/legacy-home"
+	local current_root="${home_path}/current-recovery"
+	local legacy_root="${home_path}/.Trash"
+	local plan_path="${TEST_DIR}/legacy-plan.json"
+	local receipt_path="${TEST_DIR}/legacy-receipt.json"
+	local archive_path="" bucket_path="" confirmation=""
+	local rc=0
+
+	mkdir -p "$current_root" "$legacy_root" || rc=1
+	archive_path=$(create_archived_fixture "${TEST_DIR}/legacy-repo" \
+		"${TEST_DIR}/legacy-worktree" "$legacy_root" \
+		"bugfix/gh29389-legacy-transaction") || rc=1
+	bucket_path="${archive_path%/*}"
+	TEST_LEGACY_RECOVERY_ROOT="$legacy_root"
+	_worktree_legacy_recovery_root() {
+		local ignored_platform="${1:-}"
+		: "$ignored_platform"
+		printf '%s\n' "$TEST_LEGACY_RECOVERY_ROOT"
+		return 0
+	}
+	install_clear_evidence_stubs
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$current_root" \
+		cmd_recovery plan --output "$plan_path" >/dev/null || rc=1
+	confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+	HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$current_root" cmd_recovery apply \
+		--plan "$plan_path" --receipt "$receipt_path" --confirm "$confirmation" \
+		>/dev/null || rc=1
+	[[ ! -e "$bucket_path" && -f "$receipt_path" &&
+		! -d "$legacy_root/.retention-trash" && ! -d "$current_root/.retention-trash" ]] || rc=1
+	print_result "apply_handles_attributable_legacy_root_transaction" "$rc" \
+		"Expected one locked journal to stage and clean an exact candidate in an attributable legacy root"
+	return 0
+}
+
 # shellcheck source=../audit-worktree-removal-helper.sh
 source "${SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
 # shellcheck source=../worktree-recovery-lifecycle-helper.sh
@@ -350,5 +732,11 @@ test_classification_fails_closed
 test_plan_records_malformed_bucket_unknown
 test_size_drift_downgrades_only_entry
 test_global_inventory_failure_is_explicit
+test_apply_removes_only_candidates_and_replays_receipt
+test_apply_rejects_unsafe_manifest_and_cli_inputs
+test_apply_preflight_drift_stages_nothing
+test_apply_resumes_move_and_delete_crash_windows
+test_shared_producer_lock_fails_closed_and_reclaims_stale
+test_apply_handles_attributable_legacy_root_transaction
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

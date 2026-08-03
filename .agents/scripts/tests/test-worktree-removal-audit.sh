@@ -1988,6 +1988,44 @@ test_manual_guard_refusal_diagnostics() {
 }
 
 # =============================================================================
+# Archive publication uses the same exclusive producer lock as recovery apply.
+# =============================================================================
+test_recoverable_archive_honours_shared_producer_lock() {
+	local repo_path="${TEST_DIR}/producer-lock-repo"
+	local wt_path="${TEST_DIR}/producer-lock-worktree"
+	local recovery_root="${TEST_DIR}/producer-lock-recovery"
+	local lock_path="${recovery_root}/${_WT_RECOVERY_PRODUCER_LOCK_NAME}"
+	local process_lstart=""
+	local archive_path=""
+	local rc=0
+
+	create_git_worktree_fixture "$repo_path" "$wt_path" "feature/producer-lock" || rc=1
+	mkdir -p "$recovery_root" "$lock_path" || rc=1
+	process_lstart=$(_worktree_recovery_process_lstart "$$") || rc=1
+	printf '%s\n' "$$" >"$lock_path/pid" || rc=1
+	printf '%s\n' "$process_lstart" >"$lock_path/lstart" || rc=1
+	printf '%s\n' "archive-lock-fixture" >"$lock_path/token" || rc=1
+	printf '%s\n' "complete" >"$lock_path/initialized" || rc=1
+	if AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$wt_path" "test.sh" "producer-lock"; then
+		rc=1
+	fi
+	[[ -d "$wt_path" && -d "$lock_path" ]] || rc=1
+	if compgen -G "${recovery_root}/aidevops-worktree-cleanup-*" >/dev/null; then rc=1; fi
+	rm -f "$lock_path/pid" "$lock_path/lstart" "$lock_path/token" "$lock_path/initialized" || rc=1
+	rmdir "$lock_path" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$wt_path" "test.sh" "producer-lock" || rc=1
+	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	[[ -d "$archive_path" &&
+		-f "${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" &&
+		! -e "$lock_path" ]] || rc=1
+	print_result "recoverable_archive_honours_shared_producer_lock" "$rc" \
+		"Expected a live apply-compatible lock to block archive publication through its completion marker"
+	return 0
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -2042,6 +2080,7 @@ test_proc_snapshot_requires_usable_evidence_after_foreign_skips
 test_proc_snapshot_ignores_vanished_entry
 test_guard_reason_is_machine_readable
 test_manual_guard_refusal_diagnostics
+test_recoverable_archive_honours_shared_producer_lock
 
 echo ""
 echo "Results: ${TESTS_PASSED}/${TESTS_RUN} passed, ${TESTS_FAILED} failed."

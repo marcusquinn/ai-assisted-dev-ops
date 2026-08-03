@@ -106,7 +106,7 @@ Incomplete, symlinked, unrecognised, or unsized buckets are `unknown`; inventory
 never migrates, rewrites, or deletes them.
 
 Run `worktree-helper.sh recovery plan --output <absolute-path>` to persist a
-versioned `aidevops.worktree-recovery-plan/v1` JSON review artifact. The output
+versioned `aidevops.worktree-recovery-plan/v2` JSON review artifact. The output
 path must be new, absolute, non-symlinked, and writable. The helper builds the
 complete document in a mode-0600 temporary file beside the destination and
 publishes it atomically without replacing an existing path. Plan generation is
@@ -122,6 +122,9 @@ archive paths to its format, Git HEAD/branch, source/admin/common identity,
 archive index and completion-marker digests, expected allocated bytes, observed
 local/remote evidence, disposition, and reason codes. Unchanged evidence yields
 the same entries and plan ID; the generation timestamp remains observational.
+The v2 confirmation token binds that plan ID to the exact candidate count,
+expected allocated bytes, schema, and permanent-delete action. Earlier or
+tokenless plan versions are never upgraded into destructive authorization.
 
 Candidate status requires a valid complete archive, completed source removal,
 a clean tracked/untracked/ignored Git state, an exact merged commit, a closed
@@ -131,8 +134,42 @@ reference, and exact readable sizing. Positive live or unfinished evidence is
 is `unknown`. Identity and allocated bytes are read again immediately before an
 entry is emitted, so concurrent drift downgrades only that entry. Age, size, and
 OpenCode or Claude session history never prove reclaimability. Plan files grant
-no deletion authority; only a future version-matched apply command may consume
-candidate entries after repeating every mutable proof.
+no deletion authority by themselves.
+
+After reviewing a v2 plan, an operator may run:
+
+```bash
+worktree-helper.sh recovery apply \
+  --plan <absolute-path> \
+  --receipt <absolute-new-path> \
+  --confirm <manifest-token>
+```
+
+Apply accepts only the exact supported producer manifest and its bound token.
+It rejects relative or symlinked inputs, existing mismatched receipts,
+unsupported schemas, duplicate paths or identities, candidates outside an
+attributable recovery root, and any summary or digest mismatch. Archive creation
+and apply contend on the same exclusive producer lock. The lock records PID,
+process start time, and an owner token; live, malformed, ambiguous, or
+unverifiable ownership blocks mutation, while only conclusively stale ownership
+may be reclaimed.
+
+Under the lock, apply revalidates every candidate and all mutable evidence before
+moving any candidate. It then rechecks each exact identity and allocated byte
+count immediately before a same-filesystem rename into that recovery root's
+`.retention-trash/<transaction-id>/` directory. An atomically replaced journal
+lists every permitted original and staged path; removal operates only on those
+journal entries, never a wildcard or a newly discovered archive. Interrupted
+rename or removal windows remain attributable and can resume only from the exact
+plan and journal.
+
+Success atomically publishes a new mode-0600
+`aidevops.worktree-recovery-apply-receipt/v1` receipt containing the plan and
+transaction identities, confirmation binding, times, exact paths and archive
+identities, expected/observed bytes, and terminal outcomes. Replaying the same
+complete receipt is a no-op; a conflicting receipt fails closed. Protected,
+unknown, unrelated Trash, and newly created content remain untouched. This
+explicit command does not add age-based or automatic recovery deletion.
 
 An originating OpenCode or Claude session identifier is recovery guidance, not
 deletion proof. Session history can reconstruct text edits and intent but may be

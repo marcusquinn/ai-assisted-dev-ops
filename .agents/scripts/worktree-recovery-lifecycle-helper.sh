@@ -9,7 +9,7 @@ _WORKTREE_RECOVERY_LIFECYCLE_HELPER_LOADED=1
 WORKTREE_RECOVERY_INVENTORY_SCHEMA="aidevops.worktree-recovery-inventory/v1"
 WORKTREE_RECOVERY_INVALID_RECORD="invalid-inventory-record"
 WORKTREE_RECOVERY_UNAVAILABLE="unavailable"
-WORKTREE_RECOVERY_PLAN_SCHEMA="aidevops.worktree-recovery-plan/v1"
+WORKTREE_RECOVERY_PLAN_SCHEMA="aidevops.worktree-recovery-plan/v2"
 WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE="candidate"
 WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED="protected"
 WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN="unknown"
@@ -323,6 +323,28 @@ _worktree_recovery_plan_sha256_file() {
 	digest="${digest%%[[:space:]]*}"
 	[[ "$digest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
 	printf '%s\n' "$digest" | tr '[:upper:]' '[:lower:]'
+	return 0
+}
+
+_worktree_recovery_plan_confirmation_token() {
+	local plan_id="$1"
+	local candidate_count="$2"
+	local candidate_bytes="$3"
+	local confirmation_material=""
+	local confirmation_digest=""
+
+	[[ "$plan_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+	case "$candidate_count:$candidate_bytes" in
+	*[!0-9:]*) return 1 ;;
+	esac
+	confirmation_material=$(printf '%s\n' \
+		"schema=$WORKTREE_RECOVERY_PLAN_SCHEMA" \
+		"plan-id=$plan_id" \
+		"candidate-count=$candidate_count" \
+		"candidate-bytes=$candidate_bytes" \
+		"action=permanently-delete-exact-candidates") || return 1
+	confirmation_digest=$(_worktree_recovery_plan_sha256_text "$confirmation_material") || return 1
+	printf 'apply-sha256:%s\n' "$confirmation_digest"
 	return 0
 }
 
@@ -786,7 +808,8 @@ _worktree_recovery_plan_entries_json() {
 worktree_recovery_plan_json() {
 	local platform="${1:-}"
 	local entries_bundle="" entries_json="" inventory_complete="" inventory_error=""
-	local plan_material="" plan_digest="" generated_at=""
+	local plan_material="" plan_digest="" generated_at="" plan_json=""
+	local candidate_count="" candidate_bytes="" confirmation_token=""
 
 	command -v jq >/dev/null 2>&1 || return 1
 	if [[ -z "$platform" ]]; then
@@ -802,7 +825,7 @@ worktree_recovery_plan_json() {
 		'{schema:$schema,inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),entries:$entries}') || return 1
 	plan_digest=$(_worktree_recovery_plan_sha256_text "$plan_material") || return 1
 	generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-	jq -cn --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
+	plan_json=$(jq -cn --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
 		--arg plan_id "sha256:$plan_digest" --arg generated_at "$generated_at" \
 		--arg producer "$WORKTREE_RECOVERY_PRODUCER" \
 		--arg candidate "$WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE" \
@@ -824,7 +847,13 @@ worktree_recovery_plan_json() {
 		protected_bytes:([$entries[] | select(.disposition == $protected) | .expected_allocated_bytes | numbers] | add // 0),
 		unknown_count:([$entries[] | select(.disposition == $unknown)] | length),
 		unknown_bytes:([$entries[] | select(.disposition == $unknown) | .expected_allocated_bytes | numbers] | add // 0),
-		entries:$entries}'
+		entries:$entries}') || return 1
+	candidate_count=$(printf '%s\n' "$plan_json" | jq -r '.candidate_count') || return 1
+	candidate_bytes=$(printf '%s\n' "$plan_json" | jq -r '.candidate_bytes') || return 1
+	confirmation_token=$(_worktree_recovery_plan_confirmation_token \
+		"sha256:$plan_digest" "$candidate_count" "$candidate_bytes") || return 1
+	printf '%s\n' "$plan_json" | jq -c --arg confirmation_token "$confirmation_token" \
+		'. + {confirmation_token:$confirmation_token}'
 	return $?
 }
 
@@ -863,8 +892,13 @@ worktree_recovery_plan_write() {
 	return 0
 }
 
+if [[ -f "$WORKTREE_RECOVERY_LIFECYCLE_DIR/worktree-recovery-apply-helper.sh" ]]; then
+	# shellcheck source=worktree-recovery-apply-helper.sh
+	source "$WORKTREE_RECOVERY_LIFECYCLE_DIR/worktree-recovery-apply-helper.sh"
+fi
+
 _worktree_recovery_lifecycle_usage() {
-	printf '%s\n' 'Usage: worktree-recovery-lifecycle-helper.sh [status|json|plan --output <absolute-path>]'
+	printf '%s\n' 'Usage: worktree-recovery-lifecycle-helper.sh [status|json|plan --output <absolute-path>|apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>]'
 	return 0
 }
 
@@ -877,6 +911,14 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 			exit 1
 		}
 		worktree_recovery_plan_write "$3"
+		;;
+	apply)
+		[[ "$#" -eq 7 && "$2" == "--plan" && "$4" == "--receipt" && "$6" == "--confirm" ]] || {
+			_worktree_recovery_lifecycle_usage >&2
+			exit 1
+		}
+		declare -F worktree_recovery_apply >/dev/null 2>&1 || exit 1
+		worktree_recovery_apply "$3" "$5" "$7"
 		;;
 	status) worktree_recovery_lifecycle_status ;;
 	help | --help | -h) _worktree_recovery_lifecycle_usage ;;

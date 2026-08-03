@@ -83,7 +83,14 @@ _WT_RECOVERY_ROOT_UNAVAILABLE="$_WT_STATE_UNAVAILABLE"
 _WT_RECOVERY_BRANCH_DETACHED="detached"
 _WT_RECOVERY_OUTCOME_PENDING="pending"
 _WT_RECOVERY_OUTCOME_REMOVED="removed"
+_WT_RECOVERY_PRODUCER_LOCK_NAME=".aidevops-worktree-recovery.lock"
+_WT_RECOVERY_LOCK_STATE_LIVE="live"
+_WT_RECOVERY_LOCK_STATE_STALE="stale"
+_WT_RECOVERY_LOCK_STATE_UNCERTAIN="uncertain"
 WORKTREE_RECOVERABLE_ARCHIVE_PATH=""
+WORKTREE_RECOVERY_PRODUCER_LOCK_PATH=""
+WORKTREE_RECOVERY_PRODUCER_LOCK_TOKEN=""
+WORKTREE_RECOVERY_PRODUCER_LOCK_LSTART=""
 
 _WT_ID_REAL_GIT=""
 _WT_ID_SOURCE_REAL=""
@@ -975,7 +982,146 @@ worktree_recovery_inventory() {
 	return 0
 }
 
-archive_worktree_path_recoverably() {
+_worktree_recovery_process_lstart() {
+	local pid="$1"
+	local process_lstart=""
+
+	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
+	process_lstart=$(LC_ALL=C TZ=UTC ps -ww -p "$pid" -o lstart= 2>/dev/null || true)
+	process_lstart="${process_lstart#"${process_lstart%%[![:space:]]*}"}"
+	[[ -n "$process_lstart" ]] || return 1
+	printf '%s\n' "$process_lstart"
+	return 0
+}
+
+_worktree_recovery_lock_owner_state() {
+	local lock_path="$1"
+	local owner_pid=""
+	local owner_lstart=""
+	local current_lstart=""
+	local metadata_name=""
+
+	[[ -d "$lock_path" && ! -L "$lock_path" ]] || {
+		printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_UNCERTAIN"
+		return 0
+	}
+	for metadata_name in pid lstart token initialized; do
+		[[ -f "$lock_path/$metadata_name" && ! -L "$lock_path/$metadata_name" ]] || {
+			printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_UNCERTAIN"
+			return 0
+		}
+	done
+	IFS= read -r owner_pid <"$lock_path/pid" || owner_pid=""
+	IFS= read -r owner_lstart <"$lock_path/lstart" || owner_lstart=""
+	[[ "$owner_pid" =~ ^[0-9]+$ && -n "$owner_lstart" ]] || {
+		printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_UNCERTAIN"
+		return 0
+	}
+	if ! kill -0 "$owner_pid" 2>/dev/null; then
+		printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_STALE"
+		return 0
+	fi
+	current_lstart=$(_worktree_recovery_process_lstart "$owner_pid" 2>/dev/null || true)
+	if [[ -z "$current_lstart" ]]; then
+		if kill -0 "$owner_pid" 2>/dev/null; then
+			printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_UNCERTAIN"
+		else
+			printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_STALE"
+		fi
+	elif [[ "$current_lstart" == "$owner_lstart" ]]; then
+		printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_LIVE"
+	else
+		printf '%s\n' "$_WT_RECOVERY_LOCK_STATE_STALE"
+	fi
+	return 0
+}
+
+_worktree_recovery_acquire_producer_lock() {
+	local recovery_root="$1"
+	local lock_path="${recovery_root}/${_WT_RECOVERY_PRODUCER_LOCK_NAME}"
+	local reclaim_path=""
+	local owner_state=""
+	local process_lstart=""
+	local owner_token=""
+	local observed_pid=""
+	local observed_lstart=""
+	local observed_token=""
+	local reclaimed_pid=""
+	local reclaimed_lstart=""
+	local reclaimed_token=""
+	local reclaim_state=""
+	local attempt=0
+
+	WORKTREE_RECOVERY_PRODUCER_LOCK_PATH=""
+	WORKTREE_RECOVERY_PRODUCER_LOCK_TOKEN=""
+	WORKTREE_RECOVERY_PRODUCER_LOCK_LSTART=""
+	[[ -d "$recovery_root" && ! -L "$recovery_root" ]] || return 1
+	process_lstart=$(_worktree_recovery_process_lstart "$$") || return 1
+	owner_token="$$-${RANDOM}-$(date -u '+%Y%m%dT%H%M%SZ')"
+	while [[ "$attempt" -lt 2 ]]; do
+		if mkdir "$lock_path" 2>/dev/null; then
+			if ! printf '%s\n' "$$" >"$lock_path/pid" ||
+				! printf '%s\n' "$process_lstart" >"$lock_path/lstart" ||
+				! printf '%s\n' "$owner_token" >"$lock_path/token" ||
+				! printf '%s\n' "complete" >"$lock_path/initialized"; then
+				rm -f "$lock_path/pid" "$lock_path/lstart" "$lock_path/token" \
+					"$lock_path/initialized" 2>/dev/null || true
+				rmdir "$lock_path" 2>/dev/null || true
+				return 1
+			fi
+			WORKTREE_RECOVERY_PRODUCER_LOCK_PATH="$lock_path"
+			WORKTREE_RECOVERY_PRODUCER_LOCK_TOKEN="$owner_token"
+			WORKTREE_RECOVERY_PRODUCER_LOCK_LSTART="$process_lstart"
+			return 0
+		fi
+		[[ -e "$lock_path" || -L "$lock_path" ]] || return 1
+		owner_state=$(_worktree_recovery_lock_owner_state "$lock_path") || return 1
+		[[ "$owner_state" == "$_WT_RECOVERY_LOCK_STATE_STALE" ]] || return 1
+		IFS= read -r observed_pid <"$lock_path/pid" || return 1
+		IFS= read -r observed_lstart <"$lock_path/lstart" || return 1
+		IFS= read -r observed_token <"$lock_path/token" || return 1
+		reclaim_path="${lock_path}.reclaim.$$-${RANDOM}"
+		mv "$lock_path" "$reclaim_path" 2>/dev/null || return 1
+		reclaim_state=$(_worktree_recovery_lock_owner_state "$reclaim_path") || return 1
+		IFS= read -r reclaimed_pid <"$reclaim_path/pid" || return 1
+		IFS= read -r reclaimed_lstart <"$reclaim_path/lstart" || return 1
+		IFS= read -r reclaimed_token <"$reclaim_path/token" || return 1
+		if [[ "$reclaim_state" != "$_WT_RECOVERY_LOCK_STATE_STALE" ||
+			"$reclaimed_pid" != "$observed_pid" || "$reclaimed_lstart" != "$observed_lstart" ||
+			"$reclaimed_token" != "$observed_token" ]]; then
+			if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+				mv "$reclaim_path" "$lock_path" 2>/dev/null || true
+			fi
+			return 1
+		fi
+		rm -rf "$reclaim_path" || return 1
+		attempt=$((attempt + 1))
+	done
+	return 1
+}
+
+_worktree_recovery_release_producer_lock() {
+	local lock_path="${WORKTREE_RECOVERY_PRODUCER_LOCK_PATH:-}"
+	local owner_pid=""
+	local owner_lstart=""
+	local owner_token=""
+
+	[[ -n "$lock_path" && -d "$lock_path" && ! -L "$lock_path" ]] || return 1
+	IFS= read -r owner_pid <"$lock_path/pid" || return 1
+	IFS= read -r owner_lstart <"$lock_path/lstart" || return 1
+	IFS= read -r owner_token <"$lock_path/token" || return 1
+	[[ "$owner_pid" == "$$" && "$owner_lstart" == "$WORKTREE_RECOVERY_PRODUCER_LOCK_LSTART" &&
+		"$owner_token" == "$WORKTREE_RECOVERY_PRODUCER_LOCK_TOKEN" ]] || return 1
+	rm -f "$lock_path/initialized" "$lock_path/pid" "$lock_path/lstart" \
+		"$lock_path/token" || return 1
+	rmdir "$lock_path" || return 1
+	WORKTREE_RECOVERY_PRODUCER_LOCK_PATH=""
+	WORKTREE_RECOVERY_PRODUCER_LOCK_TOKEN=""
+	WORKTREE_RECOVERY_PRODUCER_LOCK_LSTART=""
+	return 0
+}
+
+_archive_worktree_path_recoverably_under_lock() {
 	local wt_path="$1"
 	local caller="$2"
 	local context="${3:-}"
@@ -1040,6 +1186,29 @@ archive_worktree_path_recoverably() {
 	fi
 	WORKTREE_RECOVERABLE_ARCHIVE_PATH="$archive_path"
 	return 0
+}
+
+archive_worktree_path_recoverably() {
+	local wt_path="$1"
+	local caller="$2"
+	local context="${3:-}"
+	local recovery_root=""
+	local recovery_root_real=""
+	local archive_status=0
+	local hold_seconds="${AIDEVOPS_WORKTREE_RECOVERY_TEST_HOLD_LOCK_SECONDS:-0}"
+
+	WORKTREE_RECOVERABLE_ARCHIVE_PATH=""
+	recovery_root=$(_worktree_recovery_store_root) || return 1
+	mkdir -p "$recovery_root" 2>/dev/null || return 1
+	recovery_root_real=$(cd "$recovery_root" 2>/dev/null && pwd -P) || return 1
+	_worktree_recovery_acquire_producer_lock "$recovery_root_real" || return 1
+	case "$hold_seconds" in
+	'' | *[!0-9]*) hold_seconds=0 ;;
+	esac
+	[[ "$hold_seconds" -eq 0 ]] || sleep "$hold_seconds"
+	_archive_worktree_path_recoverably_under_lock "$wt_path" "$caller" "$context" || archive_status=$?
+	_worktree_recovery_release_producer_lock || archive_status=1
+	return "$archive_status"
 }
 
 _worktree_guard_path_is_usable() {
