@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve complete, bounded review feedback across paginated review and comment results (#29392)
+
 ## [3.32.216] - 2026-08-02
 
 ### Changed
