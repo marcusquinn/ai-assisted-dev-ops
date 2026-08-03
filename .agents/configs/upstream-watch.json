@@ -114,7 +114,7 @@
       "affects": [
         ".agents/tools/deployment/cloudron-app-packaging.md"
       ],
-      "last_seen_commit": "047e4b07ce362f484a0c5a9854b14a1a5ecf1b48",
+      "last_seen_commit": "ad446c4136a7c7ed5af5f8cdb4e71bb9ec70db3a",
       "added_at": "2026-03-19"
     }
   ]

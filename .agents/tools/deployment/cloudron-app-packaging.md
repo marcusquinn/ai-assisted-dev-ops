@@ -80,10 +80,37 @@ Score both axes before writing code. Initial packaging is ~25% of effort; SSO, u
 
 ### Pre-Packaging Research
 
-1. Fetch upstream `docker-compose.yml` — **most valuable artifact** (reveals true dependency graph), `Dockerfile`, dependency files, auth docs (search "LDAP", "OIDC", "SSO"), releases page
-2. **Forum search**: `https://forum.cloudron.io/search?term=APP_NAME&in=titles`
-3. **App store**: `cloudron appstore search APP_NAME`
-4. **Reference apps**: [cloudron-git-reference.md](cloudron-git-reference.md) for apps by technology
+1. Verify the assessment brief against repository metadata and primary files: current release, activity, and `LICENSE`. Report stale or contradictory inputs instead of silently correcting them.
+2. Search the whole tree for Compose files — **the most valuable artifacts** because they reveal the intended topology and true dependency graph — then inspect the relevant `Dockerfile`, dependency manifests, deployment docs, and auth docs (search "LDAP", "OIDC", "SSO", "SAML").
+3. Review releases for breaking changes over the latest 20 releases or six months, whichever is shorter. Some projects publish tags without releases, so check both when needed.
+4. **Forum search**: `https://forum.cloudron.io/search?term=APP_NAME&in=titles`. Distinguish no prior thread, useful evidence, and a deleted/restricted thread; unsupported claims are leads, not scoring evidence.
+5. Gather resource-sizing evidence (documented minimum RAM, Compose limits, and memory issues) and credible roadmap items that could change the score.
+6. **App store**: `cloudron appstore search APP_NAME`
+7. **Reference apps**: [cloudron-git-reference.md](cloudron-git-reference.md) for apps by technology
+
+For each unresolved question, inspect at most five source files, then record the uncertainty and confidence rather than continuing unbounded source archaeology.
+
+### Scoring Interpretation
+
+- Name the exact released edition, repository, build variant, and topology being scored. Score the mode intended for packaging, not every optional distributed profile; disclose open-core boundaries without penalising features irrelevant to a single-container deployment.
+- A pre-built binary satisfies runtime scoring only when it targets Linux amd64 with glibc. Alpine/musl-only or architecture-mismatched artifacts still require a compatible build.
+- A stable REST endpoint can make admin bootstrap scriptable even when undocumented, but record the maintenance risk.
+- For SSO, score whether the mechanism works and separately report post-login administration such as manual role assignment. Do not mistake application-specific federation endpoints for standards-based SSO.
+- For upstream stability, breaking-change history governs the score; release cadence alone moves it by at most one point.
+- For platform fit, include companion infrastructure required for advertised features, not only ports opened by the main container. State both footprints.
+- Configuration drift measures risk introduced by the package. Core runtime behaviour belongs here only when its write paths or self-modification conflict with Cloudron's read-only model.
+- Score released behaviour only. Record credible unshipped changes separately as roadmap risk and state how they would change the score if released.
+- Do not move a score for an unsupported forum or issue claim; list it as an unverified risk and say what evidence would confirm it. Round upward only when adjacent scores remain equally defensible after reviewing the evidence.
+
+Use the subtotals to calibrate the first packaging round (excluding assessment research):
+
+| Structural | Compliance | Realistic effort |
+|---|---|---|
+| 0-2 | 0-2 | 4-8 hours |
+| 0-2 | 3-5 | 6-12 hours |
+| 3-4 | 3-5 | 10-16 hours |
+| 5-6 | any | 16-30 hours |
+| 7+ | any | 30+ hours or reconsider |
 
 ## Base Image
 
@@ -93,7 +120,7 @@ Score both axes before writing code. Initial packaging is ~25% of effort; SSO, u
 
 **Base image contents (Cloudron 9.1.3)**: Ubuntu 24.04.1 LTS, Node.js 24.x (default; 22 LTS at `/usr/local/node-22.14.0`), Python 3.12.3, PHP 8.3.6 (redis/imagick/ldap/gd/mbstring), Nginx 1.24.0, Apache 2.4.58, Supervisor 4.2.5, gosu 1.17, gcc 13.3.0, ImageMagick 6.9.12, ffmpeg 6.1.1, psql 16.6, mysql 8.0.41, redis-cli 7.4.2, mongosh 2.4.0. Reviewed `cloudron/base:5.0.0` tag digest remains `sha256:04fd70dbd8ad6149c19de39e35718e024417c3e01dc9c6637eaf4a41ec4e596c`. **Not included** (install if needed): Ruby, Go, Java, Rust, pandoc, wkhtmltopdf.
 
-**Community assessment intake (reviewed at `047e4b07ce36`)**: import packaging lessons from the added assessment corpus rather than copying whole assessments. Good follow-up candidates include Huginn (medium structural, moderate maintenance, viable), while AppFlowy Cloud and ejabberd remain poor fits because of multi-service/auth/storage or network-port constraints. Prosody is the stronger XMPP path when raw TCP/TLS/DNS requirements are acceptable.
+**Community assessment intake (reviewed at `ad446c4136a7`)**: import packaging lessons from the assessment corpus rather than copying whole assessments. Its live-tool findings now define evidence boundaries, scoring-target selection, compound-axis tie-breakers, and effort calibration above. Good follow-up candidates include Huginn (medium structural, moderate maintenance, viable), while AppFlowy Cloud and ejabberd remain poor fits because of multi-service/auth/storage or network-port constraints. Prosody is the stronger XMPP path when raw TCP/TLS/DNS requirements are acceptable.
 
 ## CloudronManifest.json
 
