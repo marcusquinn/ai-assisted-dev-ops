@@ -48,6 +48,48 @@ _full_loop_release_verify_tag_provenance() {
 	return $?
 }
 
+_full_loop_release_verify_protected_source_provenance() {
+	local repo="$1"
+	local tag_name="$2"
+	local verifier="${SCRIPT_DIR}/release-provenance-helper.sh"
+
+	[[ -x "$verifier" ]] || return 1
+	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
+	(
+		cd "$_FULL_LOOP_RELEASE_PATH" || exit 1
+		bash "$verifier" verify-local-source --tag "$tag_name" --repo "$repo" >/dev/null
+	)
+	return $?
+}
+
+_full_loop_release_verify_candidate_tag_provenance() {
+	local repo="$1"
+	local tag_name="$2"
+	local protected_state_rc=0
+
+	_version_manager_classify_remote_tag "$tag_name" || return 1
+	case "$_VERSION_MANAGER_REMOTE_TAG_STATE" in
+	"$_VERSION_MANAGER_TAG_STATE_MATCHING")
+		_full_loop_release_verify_tag_provenance "$repo" "$tag_name"
+		return $?
+		;;
+	"$_VERSION_MANAGER_TAG_STATE_ABSENT")
+		_full_loop_release_verify_protected_source_provenance "$repo" "$tag_name" || return 1
+		_version_manager_reconcile_protected_release_tag "$repo" "$tag_name" status \
+			>/dev/null || protected_state_rc=$?
+		[[ "$protected_state_rc" -eq 0 ]] || return 1
+		case "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" in
+		pr-pending | tag-ready) return 0 ;;
+		remote-tag-present)
+			_full_loop_release_verify_tag_provenance "$repo" "$tag_name"
+			return $?
+			;;
+		esac
+		;;
+	esac
+	return 1
+}
+
 _full_loop_release_candidate_tags_for_pr() {
 	local requested_pr="$1"
 	local ref_format='%(refname:short)%1f'
@@ -123,7 +165,7 @@ _full_loop_release_find_tag_for_pr() {
 			return 1
 		fi
 		[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || continue
-		_full_loop_release_verify_tag_provenance "$repo" "$candidate_tag" || return 1
+		_full_loop_release_verify_candidate_tag_provenance "$repo" "$candidate_tag" || return 1
 		_FULL_LOOP_RELEASE_FOUND_TAG="$candidate_tag"
 		return 0
 	done <<<"$candidate_tags"

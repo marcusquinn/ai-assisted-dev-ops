@@ -241,6 +241,12 @@ legacy_found_tag_file="${TEST_ROOT}/legacy-found-tag.txt"
 		[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]]
 		return $?
 	}
+	_version_manager_classify_remote_tag() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.4" ]] || return 1
+		_VERSION_MANAGER_REMOTE_TAG_STATE="$_VERSION_MANAGER_TAG_STATE_MATCHING"
+		return 0
+	}
 	_full_loop_release_find_tag_for_pr test/repo 89 || exit 1
 	printf '%s\n' "$_FULL_LOOP_RELEASE_FOUND_TAG"
 ) >"$legacy_found_tag_file"
@@ -360,8 +366,7 @@ export FAKE_VERIFY_LOG FAKE_POST_RELEASE_LOG FAKE_PERSIST_LOG FAKE_OLD_RUNTIME_L
 cat >"${TEST_ROOT}/runtime/release-provenance-helper.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$PWD" >"${FAKE_VERIFY_LOG:?}"
-printf '%s\n' "$*" >>"${FAKE_VERIFY_LOG:?}"
+printf 'cwd=%s\nargs=%s\n' "$PWD" "$*" >>"${FAKE_VERIFY_LOG:?}"
 STUB
 cat >"${TEST_ROOT}/runtime/version-manager.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -384,6 +389,7 @@ chmod +x "${TEST_ROOT}/runtime/release-provenance-helper.sh" \
 
 saved_script_dir="$SCRIPT_DIR"
 SCRIPT_DIR="${TEST_ROOT}/runtime"
+: >"$FAKE_VERIFY_LOG"
 _full_loop_release_prepare_tag_worktree() {
 	local tag_name="$1"
 	[[ "$tag_name" == "v1.2.3" ]] || return 1
@@ -391,12 +397,14 @@ _full_loop_release_prepare_tag_worktree() {
 	return 0
 }
 if ! _full_loop_release_verify_tag_provenance test/repo v1.2.3 ||
-	! grep -qx "${TEST_ROOT}/tag-checkout" "$FAKE_VERIFY_LOG" ||
-	! grep -qx 'verify --tag v1.2.3 --repo test/repo' "$FAKE_VERIFY_LOG"; then
+	! _full_loop_release_verify_protected_source_provenance test/repo v1.2.3 ||
+	! grep -qx "cwd=${TEST_ROOT}/tag-checkout" "$FAKE_VERIFY_LOG" ||
+	! grep -qx 'args=verify --tag v1.2.3 --repo test/repo' "$FAKE_VERIFY_LOG" ||
+	! grep -qx 'args=verify-local-source --tag v1.2.3 --repo test/repo' "$FAKE_VERIFY_LOG"; then
 	printf 'FAIL release provenance was not verified from the detached tag checkout\n'
 	exit 1
 fi
-printf 'PASS release provenance verification runs from the detached tag checkout\n'
+printf 'PASS remote and protected-source provenance verification run from the detached tag checkout\n'
 
 _full_loop_validate_release_candidates() {
 	local repo="$1"
@@ -816,6 +824,103 @@ for stale_failure_mode in source-run ancestry latest-remote receipt; do
 	}
 done
 printf 'PASS stale receipt supersession binds both releases and fails closed on uncertain evidence\n'
+
+protected_state_log="${TEST_ROOT}/protected-state.log"
+protected_source_log="${TEST_ROOT}/protected-source.log"
+protected_push_log="${TEST_ROOT}/protected-push.log"
+protected_remote_verify_log="${TEST_ROOT}/protected-remote-verify.log"
+export protected_state_log protected_source_log protected_push_log protected_remote_verify_log
+(
+	git() {
+		local args="$*"
+		case "$args" in
+		*" fetch origin --tags --quiet"*) return 0 ;;
+		*" for-each-ref "*)
+			printf 'v1.2.3\x1f90\x1f1111111111111111111111111111111111111111\x1f\n'
+			;;
+		*" log --all --fixed-strings "*) return 0 ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_resolve_repo() {
+		local requested_repo="$1"
+		printf '%s\n' "${requested_repo:-test/repo}"
+		return 0
+	}
+	_full_loop_release_receipt_path() {
+		local repo="$1"
+		local pr_number="$2"
+		printf '%s/protected-%s-%s.status\n' "$TEST_ROOT" "${repo//\//_}" "$pr_number"
+		return 0
+	}
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.3" ]] || return 1
+		printf '%s\n' \
+			'Aidevops-Source-PR: 90' \
+			'Aidevops-Source-Merge: 1111111111111111111111111111111111111111'
+		return 0
+	}
+	_full_loop_release_source_json_from_tag() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.3" ]] || return 1
+		printf '%s\n' '{"source_pr":90,"source_merge":"1111111111111111111111111111111111111111","aggregated_sources":[]}'
+		return 0
+	}
+	_version_manager_classify_remote_tag() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v1.2.3" ]] || return 1
+		_VERSION_MANAGER_REMOTE_TAG_STATE="$_VERSION_MANAGER_TAG_STATE_ABSENT"
+		return 0
+	}
+	_full_loop_release_verify_tag_provenance() {
+		local repo="$1"
+		local tag_name="$2"
+		printf '%s %s\n' "$repo" "$tag_name" >"$protected_remote_verify_log"
+		return 1
+	}
+	_full_loop_release_verify_protected_source_provenance() {
+		local repo="$1"
+		local tag_name="$2"
+		printf '%s %s\n' "$repo" "$tag_name" >>"$protected_source_log"
+		return 0
+	}
+	_version_manager_reconcile_protected_release_tag() {
+		local repo="$1"
+		local tag_name="$2"
+		local mode="$3"
+		printf '%s %s %s\n' "$repo" "$tag_name" "$mode" >>"$protected_state_log"
+		if [[ "$mode" == "reconcile" ]]; then
+			printf '%s %s\n' "$repo" "$tag_name" >"$protected_push_log"
+			_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="tag-pushed"
+		else
+			_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="tag-ready"
+		fi
+		return 0
+	}
+	_full_loop_release_latest_tag() {
+		printf 'v1.2.3\n'
+		return 0
+	}
+	status_rc=0
+	AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command status 90 \
+		>/dev/null 2>&1 || status_rc=$?
+	[[ "$status_rc" -eq 8 && ! -e "$protected_push_log" ]] || exit 1
+	reconcile_rc=0
+	AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
+		>/dev/null 2>&1 || reconcile_rc=$?
+	[[ "$reconcile_rc" -eq 8 ]] || exit 1
+)
+if [[ -e "$protected_remote_verify_log" ]] ||
+	! grep -qx 'test/repo v1.2.3' "$protected_push_log" ||
+	[[ "$(grep -c '^test/repo v1.2.3 status$' "$protected_state_log")" -ne 3 ]] ||
+	[[ "$(grep -c '^test/repo v1.2.3 reconcile$' "$protected_state_log")" -ne 1 ]] ||
+	[[ "$(grep -c '^test/repo v1.2.3$' "$protected_source_log")" -ne 2 ]]; then
+	printf 'FAIL public reconciliation did not preserve the read-only protected-tag discovery boundary\n'
+	exit 1
+fi
+printf 'PASS public status is read-only and reconcile reaches exact protected-tag publication\n'
 
 _full_loop_resolve_repo() {
 	local requested_repo="$1"

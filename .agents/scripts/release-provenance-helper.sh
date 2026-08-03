@@ -10,6 +10,8 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=release-authorization-manifest-helper.sh
 source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 _RELEASE_PROVENANCE_TAG_REF_PREFIX="refs/tags/"
+_RELEASE_PROVENANCE_SCOPE_REMOTE="remote"
+_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE="local-source"
 
 _release_provenance_error() {
 	local message="$1"
@@ -21,12 +23,15 @@ _release_provenance_usage() {
 	cat <<'USAGE'
 Usage:
   release-provenance-helper.sh verify --tag TAG --repo OWNER/REPO [--branch BRANCH]
+  release-provenance-helper.sh verify-local-source --tag TAG --repo OWNER/REPO [--branch BRANCH]
   release-provenance-helper.sh resolve-authorization --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
   release-provenance-helper.sh resolve-tag-authorization --tag TAG --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR@SHA[,PR@SHA...]]
   release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
 
 Verifies that a release tag is signed, version-consistent, reachable from the
 canonical branch, and bound to a merged source PR through immutable tag trailers.
+The local-source mode omits remote-tag and canonical-branch reachability checks;
+callers must pair it with exact protected-release PR and ancestry verification.
 USAGE
 	return 0
 }
@@ -530,6 +535,8 @@ _release_provenance_verify() {
 	local tag_name="$1"
 	local repo_slug="$2"
 	local branch_name="$3"
+	local verification_scope="${4:-$_RELEASE_PROVENANCE_SCOPE_REMOTE}"
+	local verification_label=""
 
 	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
 		_release_provenance_error "tag must be a complete semantic version"
@@ -543,6 +550,8 @@ _release_provenance_verify() {
 		_release_provenance_error "invalid canonical branch"
 		return 1
 	}
+	[[ "$verification_scope" == "$_RELEASE_PROVENANCE_SCOPE_REMOTE" ||
+		"$verification_scope" == "$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" ]] || return 1
 	_release_provenance_verify_versions "$tag_name" || return 1
 	_release_provenance_verify_local_tag "$tag_name" || return 1
 	_release_provenance_load_trailers "$tag_name" || return 1
@@ -551,7 +560,8 @@ _release_provenance_verify() {
 		_release_provenance_error "cannot refresh origin/${branch_name}"
 		return 1
 	}
-	if ! git merge-base --is-ancestor "$_RELEASE_PROVENANCE_TAG_COMMIT" "origin/${branch_name}" 2>/dev/null; then
+	if [[ "$verification_scope" == "$_RELEASE_PROVENANCE_SCOPE_REMOTE" ]] &&
+		! git merge-base --is-ancestor "$_RELEASE_PROVENANCE_TAG_COMMIT" "origin/${branch_name}" 2>/dev/null; then
 		_release_provenance_error "release tag commit is not reachable from origin/${branch_name}"
 		return 1
 	fi
@@ -559,12 +569,17 @@ _release_provenance_verify() {
 		"$repo_slug" "$branch_name" "$_RELEASE_PROVENANCE_SOURCE_PR" \
 		"$_RELEASE_PROVENANCE_SOURCE_MERGE" "$_RELEASE_PROVENANCE_TAG_COMMIT" || return 1
 	_release_provenance_verify_aggregate_manifest "$repo_slug" "$branch_name" || return 1
-	_release_provenance_verify_github_tag \
-		"$repo_slug" "$tag_name" "$_RELEASE_PROVENANCE_TAG_COMMIT" \
-		"$_RELEASE_PROVENANCE_TAG_OBJECT" || return 1
+	if [[ "$verification_scope" == "$_RELEASE_PROVENANCE_SCOPE_REMOTE" ]]; then
+		_release_provenance_verify_github_tag \
+			"$repo_slug" "$tag_name" "$_RELEASE_PROVENANCE_TAG_COMMIT" \
+			"$_RELEASE_PROVENANCE_TAG_OBJECT" || return 1
+	fi
+	[[ "$verification_scope" != "$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" ]] || \
+		verification_label=" local source"
 
-	printf 'release-provenance: verified %s at %s from PR #%s\n' \
-		"$tag_name" "$_RELEASE_PROVENANCE_TAG_COMMIT" "$_RELEASE_PROVENANCE_SOURCE_PR"
+	printf 'release-provenance: verified %s%s at %s from PR #%s\n' \
+		"$tag_name" "$verification_label" \
+		"$_RELEASE_PROVENANCE_TAG_COMMIT" "$_RELEASE_PROVENANCE_SOURCE_PR"
 	return 0
 }
 
@@ -578,7 +593,7 @@ main() {
 	local expected_sources=""
 
 	case "$command" in
-	verify | resolve-authorization | resolve-tag-authorization | resolve-source) ;;
+	verify | verify-local-source | resolve-authorization | resolve-tag-authorization | resolve-source) ;;
 	help | --help | -h)
 		_release_provenance_usage
 		return 0
@@ -634,7 +649,13 @@ main() {
 		return $?
 	fi
 	[[ -n "$tag_name" ]] || return 1
-	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name"
+	if [[ "$command" == "verify-local-source" ]]; then
+		_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
+			"$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE"
+		return $?
+	fi
+	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
+		"$_RELEASE_PROVENANCE_SCOPE_REMOTE"
 	return $?
 }
 

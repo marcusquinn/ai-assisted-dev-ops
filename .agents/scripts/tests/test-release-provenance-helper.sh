@@ -82,6 +82,17 @@ run_helper() {
 	return $?
 }
 
+run_local_source_helper() {
+	local mode="${1:-valid}"
+	(
+		cd "$REPO" || exit 1
+		export PROVENANCE_MODE="$mode"
+		PATH="${BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+			bash "$HELPER" verify-local-source --tag v1.2.3 --repo test/repo
+	) || return 1
+	return 0
+}
+
 assert_rejected() {
 	local name="$1"
 	local mode="$2"
@@ -117,6 +128,15 @@ if run_helper >/dev/null 2>&1; then
 	exit 1
 fi
 printf 'PASS non-main release commit is rejected\n'
+run_local_source_helper >/dev/null || {
+	printf 'FAIL protected local source provenance was rejected before main ancestry converged\n'
+	exit 1
+}
+if run_local_source_helper pr-mismatch >/dev/null 2>&1; then
+	printf 'FAIL protected local source provenance accepted a mismatched source PR\n'
+	exit 1
+fi
+printf 'PASS protected local source mode preserves strict source provenance without remote-tag inference\n'
 git -C "$REPO" push -q --force origin "${TAG_COMMIT}:main"
 
 git -C "$REPO" tag -d v1.2.3 >/dev/null

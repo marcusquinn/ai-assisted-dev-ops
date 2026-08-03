@@ -78,19 +78,31 @@ if [[ "${1:-}" == "api" && " $* " == *" repos/test/repo/pulls "* ]]; then
 		printf '[]\n'
 		exit 0
 	fi
-	branch_sha=$("${REAL_GIT:?}" ls-remote "${REMOTE:?}" \
-		'refs/heads/chore/release-v1.2.3-provenance' | cut -f1)
+	if [[ -f "${PR_MERGED_FILE:?}" ]]; then
+		branch_sha="${RECOVERY_HEAD:?}"
+	else
+		branch_sha=$("${REAL_GIT:?}" ls-remote "${REMOTE:?}" \
+			'refs/heads/chore/release-v1.2.3-provenance' | cut -f1)
+	fi
 	auto_merge=null
+	pr_state=open
+	merged_at=null
+	if [[ -f "${PR_MERGED_FILE:?}" ]]; then
+		pr_state=closed
+		merged_at='"2026-08-03T00:00:00Z"'
+	fi
+	author_association="${PR_AUTHOR_ASSOCIATION:-OWNER}"
 	[[ ! -f "${AUTO_MERGE_FILE:?}" ]] || auto_merge='{"merge_method":"merge"}'
 	body="<!-- aidevops:release-provenance tag=v1.2.3 tag-object=${TAG_OBJECT:?} release-commit=${RELEASE_COMMIT:?} merge-method=merge -->"
 	jq -nc --arg branch_sha "$branch_sha" --arg body "$body" \
-		--argjson auto_merge "$auto_merge" '[{
+		--arg pr_state "$pr_state" --arg author_association "$author_association" \
+		--argjson merged_at "$merged_at" --argjson auto_merge "$auto_merge" '[{
 			number: 77,
-			state: "open",
-			merged_at: null,
+			state: $pr_state,
+			merged_at: $merged_at,
 			draft: false,
 			auto_merge: $auto_merge,
-			author_association: "OWNER",
+			author_association: $author_association,
 			user: {login: "test-owner"},
 			body: $body,
 			head: {ref: "chore/release-v1.2.3-provenance", sha: $branch_sha, repo: {full_name: "test/repo"}},
@@ -120,6 +132,7 @@ export FAKE_GH_LOG="${TEST_ROOT}/gh.log"
 export DIRECT_PUSH_COUNT="${TEST_ROOT}/direct-push-count"
 export PR_CREATED_FILE="${TEST_ROOT}/pr-created"
 export AUTO_MERGE_FILE="${TEST_ROOT}/auto-merge"
+export PR_MERGED_FILE="${TEST_ROOT}/pr-merged"
 export PATH="${BIN}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export AIDEVOPS_VERSION_MANAGER_REPO_SLUG=test/repo
 
@@ -156,6 +169,7 @@ printf 'PASS permanent PR-required rejection stops after one direct push\n'
 
 RECOVERY_BRANCH='chore/release-v1.2.3-provenance'
 RECOVERY_HEAD=$("$REAL_GIT" ls-remote "$REMOTE" "refs/heads/${RECOVERY_BRANCH}" | cut -f1)
+export RECOVERY_HEAD
 [[ "$RECOVERY_HEAD" =~ ^[0-9a-f]{40}$ ]]
 [[ "$("$REAL_GIT" -C "$REPO" rev-parse "${RECOVERY_HEAD}^1")" == "$CURRENT_MAIN" ]]
 [[ "$("$REAL_GIT" -C "$REPO" rev-parse "${RECOVERY_HEAD}^2")" == "$RELEASE_COMMIT" ]]
@@ -196,6 +210,26 @@ merge_calls_after=$(grep -c '^pr merge ' "$FAKE_GH_LOG")
 "$REAL_GIT" -C "$REPO" checkout -q --detach "$RECOVERY_HEAD"
 printf 'PASS incompatible recovery descendants fail closed before merge queueing\n'
 
+export PR_AUTHOR_ASSOCIATION=NONE
+if _version_manager_reconcile_protected_release_tag test/repo v1.2.3 status \
+	>/dev/null 2>&1; then
+	printf 'FAIL untrusted protected release PR authorized tag reconciliation\n'
+	exit 1
+fi
+unset PR_AUTHOR_ASSOCIATION
+[[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
+printf 'PASS protected release reconciliation requires a trusted PR author\n'
+
+"$REAL_GIT" -C "$REPO" tag -f -a v1.2.3 -m 'replacement tag object' "$RELEASE_COMMIT"
+if _version_manager_reconcile_protected_release_tag test/repo v1.2.3 status \
+	>/dev/null 2>&1; then
+	printf 'FAIL replacement local tag object matched protected release evidence\n'
+	exit 1
+fi
+"$REAL_GIT" -C "$REPO" update-ref refs/tags/v1.2.3 "$TAG_OBJECT"
+[[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
+printf 'PASS protected release reconciliation binds the exact preserved tag object\n'
+
 _version_manager_reconcile_protected_release_tag test/repo v1.2.3 status >/dev/null
 [[ "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "pr-pending" ]]
 [[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
@@ -206,6 +240,27 @@ printf 'PASS final tag publication remains blocked while the recovery PR is open
 "$REAL_GIT" -C "$MERGER" config user.email test@example.invalid
 "$REAL_GIT" -C "$MERGER" merge -q --no-ff --no-edit "origin/${RECOVERY_BRANCH}"
 "$REAL_GIT" -C "$MERGER" push -q origin main
+MERGED_MAIN=$("$REAL_GIT" -C "$MERGER" rev-parse HEAD)
+: >"$PR_MERGED_FILE"
+"$REAL_GIT" --git-dir="$REMOTE" update-ref -d "refs/heads/${RECOVERY_BRANCH}"
+
+tag_pushes_before=$({ grep -c 'push origin refs/tags/v1.2.3:refs/tags/v1.2.3' "$FAKE_GIT_LOG" || true; })
+_version_manager_reconcile_protected_release_tag test/repo v1.2.3 status >/dev/null
+tag_pushes_after=$({ grep -c 'push origin refs/tags/v1.2.3:refs/tags/v1.2.3' "$FAKE_GIT_LOG" || true; })
+[[ "$tag_pushes_after" -eq "$tag_pushes_before" ]]
+[[ "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "tag-ready" ]]
+[[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
+printf 'PASS merged protected release status remains read-only after branch deletion\n'
+
+"$REAL_GIT" --git-dir="$REMOTE" update-ref refs/heads/main "$CURRENT_MAIN"
+if _version_manager_reconcile_protected_release_tag test/repo v1.2.3 reconcile \
+	>/dev/null 2>&1; then
+	printf 'FAIL merged PR metadata bypassed release ancestry verification\n'
+	exit 1
+fi
+[[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
+"$REAL_GIT" --git-dir="$REMOTE" update-ref refs/heads/main "$MERGED_MAIN"
+printf 'PASS merged protected release still requires exact main ancestry\n'
 
 _version_manager_reconcile_protected_release_tag test/repo v1.2.3 reconcile >/dev/null
 [[ "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "tag-pushed" ]]

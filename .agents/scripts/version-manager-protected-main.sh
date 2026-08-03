@@ -33,6 +33,8 @@ _VERSION_MANAGER_TAG_STATE_ABSENT="absent"
 _VERSION_MANAGER_TAG_STATE_MATCHING="matching"
 _VERSION_MANAGER_RELEASE_RESULT_QUEUED="queued"
 _VERSION_MANAGER_MODE_RECONCILE="reconcile"
+_VERSION_MANAGER_PR_STATE_OPEN="open"
+_VERSION_MANAGER_PR_STATE_CLOSED="closed"
 
 _version_manager_push_requires_pr() {
 	local push_output="$1"
@@ -401,7 +403,7 @@ _version_manager_queue_exact_merge() {
 	state=$(jq -r '.state // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
 	auto_merge=$(jq -r 'if .auto_merge == null then "" else "configured" end' \
 		<<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
-	if [[ "$state" == "closed" && "$(jq -r '.merged_at // ""' \
+	if [[ "$state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" && "$(jq -r '.merged_at // ""' \
 		<<<"$_VERSION_MANAGER_PROTECTED_PR_JSON")" != "" ]]; then
 		_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="merged"
 		return 0
@@ -577,35 +579,41 @@ _version_manager_reconcile_protected_release_tag() {
 	release_parent=$(git -C "$REPO_ROOT" rev-parse \
 		"${_VERSION_MANAGER_LOCAL_TAG_COMMIT}^" 2>/dev/null) || return 1
 	current_main=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null) || return 1
-	if git -C "$REPO_ROOT" merge-base --is-ancestor \
-		"$_VERSION_MANAGER_LOCAL_TAG_COMMIT" origin/main; then
-		if [[ "$mode" == "status" ]]; then
-			_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="tag-ready"
-			printf 'RELEASE_TAG_STATE=ready tag=%s commit=%s\n' \
-				"$tag_name" "$_VERSION_MANAGER_LOCAL_TAG_COMMIT"
-			return 0
-		fi
-		_version_manager_publish_reachable_tag "$tag_name" || return 1
-		printf 'release:queued tag=%s correlation=%s\n' \
-			"$tag_name" "$_VERSION_MANAGER_LOCAL_TAG_COMMIT"
-		return 0
-	fi
-
 	branch_name=$(_version_manager_protected_release_branch_name "$version") || return 1
 	_version_manager_find_protected_release_pr "$repo" "$branch_name" || return 1
 	if [[ -z "$_VERSION_MANAGER_PROTECTED_PR_NUMBER" ]]; then
-		print_error "Release commit is not reachable from main and no protected recovery PR exists"
+		print_error "No protected release PR exists for preserved ${tag_name}"
 		return 1
 	fi
 	pr_head=$(jq -r '.head.sha // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
 	_version_manager_verify_protected_pr_head "$pr_head" || return 1
+	_version_manager_verify_protected_pr_identity "$repo" "$branch_name" "$version" \
+		"$_VERSION_MANAGER_LOCAL_TAG_OBJECT" "$_VERSION_MANAGER_LOCAL_TAG_COMMIT" || return 1
+	pr_state=$(jq -r '.state // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
+	merged_at=$(jq -r '.merged_at // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
+	if [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" && -z "$merged_at" ]]; then
+		print_error "Protected release PR #${_VERSION_MANAGER_PROTECTED_PR_NUMBER} closed without merge"
+		return 1
+	fi
+	if [[ "$pr_state" != "$_VERSION_MANAGER_PR_STATE_OPEN" &&
+		"$pr_state" != "$_VERSION_MANAGER_PR_STATE_CLOSED" ]]; then
+		return 1
+	fi
 	_version_manager_remote_branch_head "$branch_name" || return 1
 	remote_branch_head="$_VERSION_MANAGER_PROTECTED_RELEASE_HEAD"
-	if [[ -z "$remote_branch_head" || "$remote_branch_head" != "$pr_head" ]]; then
+	if [[ -n "$remote_branch_head" && "$remote_branch_head" != "$pr_head" ]]; then
 		print_error "Protected release PR head no longer matches its remote branch"
 		return 1
 	fi
-	_version_manager_fetch_recovery_branch "$branch_name" || return 1
+	if [[ -n "$remote_branch_head" ]]; then
+		_version_manager_fetch_recovery_branch "$branch_name" || return 1
+	elif [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_OPEN" ]]; then
+		print_error "Open protected release PR head no longer has its remote branch"
+		return 1
+	elif ! git -C "$REPO_ROOT" cat-file -e "${pr_head}^{commit}" 2>/dev/null; then
+		print_error "Merged protected release PR head is unavailable for verification"
+		return 1
+	fi
 	_version_manager_verify_recovery_head "$pr_head" \
 		"$_VERSION_MANAGER_LOCAL_TAG_COMMIT" "$release_parent" "$current_main" || return 1
 	if ! git -C "$REPO_ROOT" merge-base --is-ancestor \
@@ -613,13 +621,15 @@ _version_manager_reconcile_protected_release_tag() {
 		print_error "Protected release PR does not contain the signed release commit"
 		return 1
 	fi
-	pr_state=$(jq -r '.state // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
-	merged_at=$(jq -r '.merged_at // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
-	if [[ "$pr_state" == "closed" && -n "$merged_at" ]]; then
+	if [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" && -n "$merged_at" ]]; then
 		git -C "$REPO_ROOT" fetch origin main --quiet || return 1
 		if ! git -C "$REPO_ROOT" merge-base --is-ancestor \
 			"$_VERSION_MANAGER_LOCAL_TAG_COMMIT" origin/main; then
 			print_error "Merged protected release PR did not preserve release ancestry"
+			return 1
+		fi
+		if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$pr_head" origin/main; then
+			print_error "Merged protected release PR head is not reachable from main"
 			return 1
 		fi
 		if [[ "$mode" == "$_VERSION_MANAGER_MODE_RECONCILE" ]]; then
@@ -630,10 +640,6 @@ _version_manager_reconcile_protected_release_tag() {
 			_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="tag-ready"
 		fi
 		return 0
-	fi
-	if [[ "$pr_state" != "open" ]]; then
-		print_error "Protected release PR #${_VERSION_MANAGER_PROTECTED_PR_NUMBER} closed without merge"
-		return 1
 	fi
 	if [[ "$mode" == "$_VERSION_MANAGER_MODE_RECONCILE" ]]; then
 		_version_manager_queue_exact_merge "$repo" "$branch_name" "$pr_head" \
