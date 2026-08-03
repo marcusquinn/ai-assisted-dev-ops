@@ -166,7 +166,7 @@ unset _pulse_fd_limit
 #######################################
 PULSE_JITTER_MAX="${PULSE_JITTER_MAX:-30}"
 # Phase 0 (t1963): diagnostic flags must return instantly. Skip jitter
-# when --self-check, --dry-run, or --merge-only appears anywhere in the
+# when --self-check, --dry-run, --merge-only, or --refill-only appears anywhere in the
 # argument list (or PULSE_DRY_RUN=1 is set) so CI, post-install
 # verification, and interactive debugging aren't delayed by up to 30 s of
 # random sleep. --merge-only skips jitter because the 60s plist interval is
@@ -179,7 +179,7 @@ if [[ "${PULSE_DRY_RUN:-0}" == "1" ]]; then
 	_pulse_skip_jitter=1
 else
 	for _pulse_arg in "$@"; do
-		if [[ "$_pulse_arg" == "--self-check" || "$_pulse_arg" == "--dry-run" || "$_pulse_arg" == "--merge-only" ]]; then
+		if [[ "$_pulse_arg" == "--self-check" || "$_pulse_arg" == "--dry-run" || "$_pulse_arg" == "--merge-only" || "$_pulse_arg" == "--refill-only" ]]; then
 			_pulse_skip_jitter=1
 			break
 		fi
@@ -577,7 +577,7 @@ source "${SCRIPT_DIR}/pulse-wrapper-cycle.sh"
 # shellcheck source=./pulse-wrapper-bootstrap.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/pulse-wrapper-bootstrap.sh"
-
+source "${SCRIPT_DIR}/pulse-event-refill.sh"
 if [[ ! -x "$HEADLESS_RUNTIME_HELPER" ]]; then
 	printf '[pulse-wrapper] ERROR: headless runtime helper is missing or not executable: %s (SCRIPT_DIR=%s)\n' "$HEADLESS_RUNTIME_HELPER" "$SCRIPT_DIR" >&2
 	exit 1
@@ -1501,14 +1501,12 @@ main() {
 	_pulse_setup_dry_run_mode "$@"
 	_pulse_setup_canary_mode "$@"
 
-	# t21247 (GH#21247): --merge-only short-circuit. Bypasses all dispatch
-	# lifecycle phases (is-running, rate-limit, main instance lock, session
-	# gate, dedup, preflight, LLM supervisor) and runs only
-	# merge_ready_prs_all_repos() under its own SEPARATE lockdir. The dedicated
-	# 60s plist (com.aidevops.aidevops-supervisor-merge) fires this path every
-	# minute; the main dispatch cycle remains unaffected. Bootstrap (sourcing
-	# of pulse-merge.sh + all PULSE_* config) is already complete by the time
-	# main() runs, so merge_ready_prs_all_repos() can be called directly.
+	# Event refill skips preflight/LLM but keeps the main lock and dispatch gates.
+	_pulse_setup_refill_only_mode "$@"
+	if [[ "${PULSE_REFILL_ONLY:-0}" == "1" ]]; then
+		_pulse_run_refill_only
+		return $?
+	fi
 	_pulse_setup_merge_only_mode "$@"
 	if [[ "${PULSE_MERGE_ONLY:-0}" == "1" ]]; then
 		_pulse_run_merge_only
@@ -1772,6 +1770,11 @@ main() {
 	# defer in reserve mode. The t2690 dispatch breaker still fail-closes actual
 	# worker launch at the emergency floor.
 	_pulse_set_graphql_budget_priority
+	local _cycle_dispatch_before
+	_cycle_dispatch_before=$(_pulse_capture_dispatch_total)
+	if [[ "${PULSE_DRY_RUN:-0}" != "1" ]]; then
+		pulse_event_refill_drain "cycle-entry" || true
+	fi
 
 	# GH#22478: if GraphQL headroom is already inside the REST fallback reserve,
 	# force all supported read/list wrappers through REST for the whole pulse
@@ -1853,8 +1856,6 @@ main() {
 	# unexpected set -e exits publish a conservative partial cycle rather than
 	# silently dropping the observation window.
 	_pulse_efficiency_cycle_start
-	local _cycle_dispatch_before
-	_cycle_dispatch_before=$(_pulse_capture_dispatch_total)
 	_pulse_cycle_state_publish preflight || true
 
 	# t3068: drain any pending approval-trigger records before the regular
@@ -1889,6 +1890,7 @@ main() {
 	# extracted to helper.
 	_pulse_cycle_state_publish deterministic || true
 	_pulse_run_deterministic_pipeline
+	pulse_event_refill_drain "cycle-final" || true
 
 	# Run LLM supervisor if stall/daily-sweep/force conditions are met.
 	# GH#18689: extracted to _pulse_maybe_run_llm_supervisor().

@@ -58,6 +58,8 @@ print_result() {
 
 setup() {
 	TMPDIR_TEST=$(mktemp -d)
+	unset AIDEVOPS_PULSE_EVENT_REFILL_ENABLED PULSE_EVENT_REFILL_HELPER \
+		PULSE_EVENT_REFILL_TRIGGER_FILE PULSE_EVENT_REFILL_WRAPPER 2>/dev/null || true
 	# We only need _dlw_spawn_lifecycle_observer; source the file selectively
 	# by extracting the function. Sourcing the whole file pulls in the load
 	# guard and all the helpers — which is fine for our purposes since
@@ -193,6 +195,40 @@ test_observer_skips_empty_logfile_arg() {
 	return 0
 }
 
+test_observer_signals_event_refill() {
+	local logfile="${TMPDIR_TEST}/pulse-refill.log"
+	local capture_file="${TMPDIR_TEST}/refill-signal.log"
+	local fake_helper="${TMPDIR_TEST}/pulse-event-refill.sh"
+	: >"$logfile"
+	cat >"$fake_helper" <<'HELPER'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "${AIDEVOPS_PULSE_EVENT_REFILL_ENABLED:-}" >>"${REFILL_CAPTURE_FILE}"
+HELPER
+	chmod +x "$fake_helper"
+	export REFILL_CAPTURE_FILE="$capture_file"
+	export AIDEVOPS_PULSE_EVENT_REFILL_ENABLED=1
+	PULSE_EVENT_REFILL_HELPER="$fake_helper"
+	PULSE_EVENT_REFILL_TRIGGER_FILE="${TMPDIR_TEST}/refill.trigger"
+	PULSE_EVENT_REFILL_WRAPPER="${TMPDIR_TEST}/pulse-wrapper.sh"
+
+	local synth_pid
+	bash -c 'exit 0' </dev/null >/dev/null 2>&1 &
+	synth_pid="$!"
+	export DLW_LIFECYCLE_OBSERVER_POLL_SECONDS=1
+	export DLW_LIFECYCLE_OBSERVER_MAX_SECONDS=30
+	_dlw_spawn_lifecycle_observer "$synth_pid" "54321" "$logfile"
+
+	if _wait_for_line 30 "signal\\|54321\\|${synth_pid}\\|1" "$capture_file"; then
+		print_result "observer requests event refill after worker termination" 0
+	else
+		print_result "observer requests event refill after worker termination" 1 \
+			"no refill signal captured for worker ${synth_pid}"
+	fi
+	unset AIDEVOPS_PULSE_EVENT_REFILL_ENABLED PULSE_EVENT_REFILL_HELPER \
+		PULSE_EVENT_REFILL_TRIGGER_FILE PULSE_EVENT_REFILL_WRAPPER REFILL_CAPTURE_FILE
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 
@@ -204,6 +240,7 @@ main() {
 	test_observer_line_carries_observer_marker
 	test_observer_skips_invalid_pid
 	test_observer_skips_empty_logfile_arg
+	test_observer_signals_event_refill
 
 	echo
 	echo "Tests run: ${TESTS_RUN}, passed: ${TESTS_PASSED}, failed: ${TESTS_FAILED}"

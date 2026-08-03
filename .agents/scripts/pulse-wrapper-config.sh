@@ -45,6 +45,11 @@ PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT="${PULSE_UNDERFILLED_STALE_RECOVERY_TIM
 PULSE_ACTIVE_REFILL_INTERVAL="${PULSE_ACTIVE_REFILL_INTERVAL:-120}"                          # Min seconds between wrapper-side refill attempts during an active pulse
 PULSE_ACTIVE_REFILL_IDLE_MIN="${PULSE_ACTIVE_REFILL_IDLE_MIN:-60}"                           # Idle seconds before wrapper-side refill may intervene during monitoring sleep
 PULSE_ACTIVE_REFILL_STALL_MIN="${PULSE_ACTIVE_REFILL_STALL_MIN:-120}"                        # Progress stall seconds before wrapper-side refill may intervene during an active pulse
+AIDEVOPS_PULSE_EVENT_REFILL_ENABLED="${AIDEVOPS_PULSE_EVENT_REFILL_ENABLED:-1}"                # Refill capacity immediately after detached worker exits
+PULSE_EVENT_REFILL_WAIT_SECONDS="${PULSE_EVENT_REFILL_WAIT_SECONDS:-20}"                       # Bounded wait for an active deterministic Pulse cycle to release its lock
+PULSE_EVENT_REFILL_POLL_SECONDS="${PULSE_EVENT_REFILL_POLL_SECONDS:-1}"                        # Instance-lock retry cadence for refill-only mode
+PULSE_EVENT_REFILL_MAX_PASSES="${PULSE_EVENT_REFILL_MAX_PASSES:-2}"                            # Drain again when another exit lands during a refill
+PULSE_EVENT_REFILL_WAKE_PASSES="${PULSE_EVENT_REFILL_WAKE_PASSES:-2}"                          # Retry wrapper wake when a trigger remains after one refill invocation
 ORPHAN_MAX_AGE="${ORPHAN_MAX_AGE:-7200}"                                                     # 2 hours — kill orphans older than this
 ORPHAN_WORKTREE_GRACE_SECS="${ORPHAN_WORKTREE_GRACE_SECS:-1800}"                             # 30 min grace for 0-commit worktrees with no open PR (t1884)
 RAM_PER_WORKER_MB="${RAM_PER_WORKER_MB:-512}"                                                # 512 MB per worker (opencode headless is lightweight)
@@ -277,6 +282,10 @@ PULSE_PROGRESS_TIMEOUT=$(_validate_int PULSE_PROGRESS_TIMEOUT "$PULSE_PROGRESS_T
 PULSE_COLD_START_TIMEOUT=$(_validate_int PULSE_COLD_START_TIMEOUT "$PULSE_COLD_START_TIMEOUT" 1200 300)
 PULSE_COLD_START_TIMEOUT_UNDERFILLED=$(_validate_int PULSE_COLD_START_TIMEOUT_UNDERFILLED "$PULSE_COLD_START_TIMEOUT_UNDERFILLED" 600 120)
 PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT=$(_validate_int PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT "$PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT" 900 300)
+PULSE_EVENT_REFILL_WAIT_SECONDS=$(_validate_int PULSE_EVENT_REFILL_WAIT_SECONDS "$PULSE_EVENT_REFILL_WAIT_SECONDS" 20 0)
+PULSE_EVENT_REFILL_POLL_SECONDS=$(_validate_int PULSE_EVENT_REFILL_POLL_SECONDS "$PULSE_EVENT_REFILL_POLL_SECONDS" 1 1)
+PULSE_EVENT_REFILL_MAX_PASSES=$(_validate_int PULSE_EVENT_REFILL_MAX_PASSES "$PULSE_EVENT_REFILL_MAX_PASSES" 2 1)
+PULSE_EVENT_REFILL_WAKE_PASSES=$(_validate_int PULSE_EVENT_REFILL_WAKE_PASSES "$PULSE_EVENT_REFILL_WAKE_PASSES" 2 1)
 ORPHAN_MAX_AGE=$(_validate_int ORPHAN_MAX_AGE "$ORPHAN_MAX_AGE" 7200)
 ORPHAN_WORKTREE_GRACE_SECS=$(_validate_int ORPHAN_WORKTREE_GRACE_SECS "$ORPHAN_WORKTREE_GRACE_SECS" 1800 60)
 RAM_PER_WORKER_MB=$(_validate_int RAM_PER_WORKER_MB "$RAM_PER_WORKER_MB" 512 1)
@@ -365,6 +374,14 @@ LOGFILE="${HOME}/.aidevops/logs/pulse.log"
 WRAPPER_LOGFILE="${HOME}/.aidevops/logs/pulse-wrapper.log"
 SESSION_FLAG="${HOME}/.aidevops/logs/pulse-session.flag"
 STOP_FLAG="${HOME}/.aidevops/logs/pulse-session.stop"
+case "$AIDEVOPS_PULSE_EVENT_REFILL_ENABLED" in
+1 | true | TRUE | yes | YES | on | ON) AIDEVOPS_PULSE_EVENT_REFILL_ENABLED=1 ;;
+*) AIDEVOPS_PULSE_EVENT_REFILL_ENABLED=0 ;;
+esac
+PULSE_EVENT_REFILL_TRIGGER_FILE="${PULSE_EVENT_REFILL_TRIGGER_FILE:-${AIDEVOPS_PULSE_EVENT_REFILL_TRIGGER_FILE:-${HOME}/.aidevops/cache/pulse-event-refill.trigger}}"
+PULSE_EVENT_REFILL_HELPER="${PULSE_EVENT_REFILL_HELPER:-${SCRIPT_DIR}/pulse-event-refill.sh}"
+PULSE_EVENT_REFILL_WRAPPER="${PULSE_EVENT_REFILL_WRAPPER:-${SCRIPT_DIR}/pulse-wrapper.sh}"
+export AIDEVOPS_PULSE_EVENT_REFILL_ENABLED PULSE_EVENT_REFILL_TRIGGER_FILE
 OPENCODE_BIN="${OPENCODE_BIN:-$(command -v opencode 2>/dev/null || echo "opencode")}"
 # PULSE_DIR: working directory for the supervisor pulse session.
 # Defaults to a neutral workspace path so pulse sessions are not associated

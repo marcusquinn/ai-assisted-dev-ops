@@ -197,7 +197,39 @@ test_supervisor_circuit_breaker_refresh_present() {
 	return 0
 }
 
-# Test 6: Static check — idle backoff observes eligible auto-dispatch work.
+# Test 6: A pending event-refill trigger remains inert during --dry-run.
+test_dry_run_skips_event_refill() {
+	local sandbox rc output trigger_file pulse_log
+	sandbox=$(mktemp -d)
+	mkdir -p "${sandbox}/home/.aidevops/cache" "${sandbox}/home/.aidevops/logs"
+	seed_sandbox_config "${sandbox}/home"
+	trigger_file="${sandbox}/home/.aidevops/cache/pulse-event-refill.trigger"
+	pulse_log="${sandbox}/home/.aidevops/logs/pulse.log"
+	printf 'issue=1 worker_pid=1 ts=test\n' >"$trigger_file"
+
+	output=$(
+		HOME="${sandbox}/home" \
+			FULL_LOOP_HEADLESS=1 \
+			AIDEVOPS_SUPERVISOR_PULSE=true \
+			AIDEVOPS_PULSE_EVENT_REFILL_ENABLED=0 \
+			AIDEVOPS_SKIP_FIX_THE_FIXER_DETECTOR=1 \
+			AIDEVOPS_SKIP_CACHE_PRIME=1 \
+			AIDEVOPS_SKIP_RUNAWAY_LOG_CHECK=1 \
+			timeout "$DRY_RUN_TIMEOUT" bash "$WRAPPER_SCRIPT" --dry-run 2>&1
+	)
+	rc=$?
+	if [[ "$rc" -eq 0 && -f "$trigger_file" ]] && \
+		! grep -q 'source=cycle-entry' "$pulse_log" 2>/dev/null; then
+		print_result "--dry-run does not drain pending event-refill triggers" 0
+	else
+		print_result "--dry-run does not drain pending event-refill triggers" 1 \
+			"Expected an inert retained trigger, got exit ${rc}. Output: ${output}"
+	fi
+	rm -rf "$sandbox"
+	return 0
+}
+
+# Test 7: Static check — idle backoff observes eligible auto-dispatch work.
 test_idle_backoff_available_work_bypass_present() {
 	if grep -q 'pulse-wrapper-cycle-gates.sh' "$WRAPPER_SCRIPT" &&
 		grep -q '_pulse_available_auto_dispatch_work_exists' "$CYCLE_GATES_SCRIPT" &&
@@ -216,6 +248,7 @@ main_test() {
 	test_include_guard_present
 	test_dry_run_short_circuit_present
 	test_supervisor_circuit_breaker_refresh_present
+	test_dry_run_skips_event_refill
 	test_idle_backoff_available_work_bypass_present
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

@@ -1325,6 +1325,18 @@ _dlw_spawn_lifecycle_observer() {
 	local logfile="$3"
 	local max_seconds="${DLW_LIFECYCLE_OBSERVER_MAX_SECONDS:-21600}"
 	local poll_interval="${DLW_LIFECYCLE_OBSERVER_POLL_SECONDS:-5}"
+	local refill_configured=0
+	local refill_enabled=0
+	local refill_helper=""
+	local refill_trigger=""
+	local refill_wrapper=""
+	if [[ -n "${AIDEVOPS_PULSE_EVENT_REFILL_ENABLED+x}" ]]; then
+		refill_configured=1
+		refill_enabled="$AIDEVOPS_PULSE_EVENT_REFILL_ENABLED"
+		refill_helper="${PULSE_EVENT_REFILL_HELPER:-${BASH_SOURCE[0]%/*}/pulse-event-refill.sh}"
+		refill_trigger="${PULSE_EVENT_REFILL_TRIGGER_FILE:-${HOME}/.aidevops/cache/pulse-event-refill.trigger}"
+		refill_wrapper="${PULSE_EVENT_REFILL_WRAPPER:-${BASH_SOURCE[0]%/*}/pulse-wrapper.sh}"
+	fi
 
 	# Defensive: skip if PID is not numeric (caller bug or test fixture)
 	if [[ ! "$worker_pid" =~ ^[0-9]+$ ]]; then
@@ -1335,7 +1347,7 @@ _dlw_spawn_lifecycle_observer() {
 	fi
 
 	# Inner body runs in a detached subshell and outlives the pulse cycle.
-	# Positional args: pid, issue, log, max_seconds, interval.
+	# Positional args: pid, issue, log, max_seconds, interval, refill settings.
 	local observer_script
 	# SC2016: variable expansion is intentional inside the inner `bash -c`
 	# body, not in the outer shell. Mirrors the pattern used in
@@ -1343,13 +1355,28 @@ _dlw_spawn_lifecycle_observer() {
 	# shellcheck disable=SC2016
 	observer_script='
 		_dlw_observer_body() {
-			local pid="$1" issue="$2" log="$3" max_s="$4" interval="$5"
+			local pid="$1"
+			local issue="$2"
+			local log="$3"
+			local max_s="$4"
+			local interval="$5"
+			local refill_configured="$6"
+			local refill_enabled="$7"
+			local refill_helper="$8"
+			local refill_trigger="$9"
+			local refill_wrapper="${10}"
 			local elapsed=0 ts="" reason="observed"
 			while [[ "$elapsed" -lt "$max_s" ]]; do
 				if ! kill -0 "$pid" 2>/dev/null; then
 					ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "?")
 					printf "[INFO] [lifecycle] worker_exited pid=%s wait_status=unknown kill_reason=%s observer=parent issue=%s ts=%s\n" \
 						"$pid" "$reason" "$issue" "$ts" >>"$log" 2>/dev/null || true
+					if [[ "$refill_configured" == "1" && -x "$refill_helper" ]]; then
+						AIDEVOPS_PULSE_EVENT_REFILL_ENABLED="$refill_enabled" \
+							PULSE_EVENT_REFILL_TRIGGER_FILE="$refill_trigger" \
+							PULSE_EVENT_REFILL_WRAPPER="$refill_wrapper" \
+							"$refill_helper" signal "$issue" "$pid" >>"$log" 2>&1 || true
+					fi
 					return 0
 				fi
 				sleep "$interval"
@@ -1370,19 +1397,22 @@ _dlw_spawn_lifecycle_observer() {
 		_dlw_exec_systemd_user_service "aidevops-worker-observer" "/dev/null" "$issue_number" \
 			bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
-			"$max_seconds" "$poll_interval" \
+			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
 			>/dev/null 2>&1 && return 0
 	fi
 
 	if command -v setsid >/dev/null 2>&1; then
 		setsid nohup bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
-			"$max_seconds" "$poll_interval" \
+			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
 			</dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 	else
 		nohup bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
-			"$max_seconds" "$poll_interval" \
+			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
 			</dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 	fi
 	disown 2>/dev/null || true
