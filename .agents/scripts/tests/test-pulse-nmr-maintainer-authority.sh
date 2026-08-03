@@ -588,14 +588,17 @@ test_label_helpers_reject_incomplete_metadata() {
 	local security_rc=0
 	local state_rc=0
 	local authority_rc=0
+	local empty_name_authority_rc=0
 	_nmr_application_is_security_sensitive 24479 owner/repo '{"labels":null}' || security_rc=$?
 	_nmr_issue_label_state 24479 owner/repo >/dev/null || state_rc=$?
 	_nmr_issue_author_has_repo_write_authority 24479 owner/repo || authority_rc=$?
-	if [[ "$security_rc" -eq 2 && "$state_rc" -ne 0 && "$authority_rc" -eq 2 ]]; then
+	export ISSUE_LABELS_JSON='[{"name":""}]'
+	_nmr_issue_author_has_repo_write_authority 24479 owner/repo || empty_name_authority_rc=$?
+	if [[ "$security_rc" -eq 2 && "$state_rc" -ne 0 && "$authority_rc" -eq 2 && "$empty_name_authority_rc" -eq 2 ]]; then
 		print_result "authority, security, and lifecycle helpers reject incomplete label metadata" 0
 	else
 		print_result "authority, security, and lifecycle helpers reject incomplete label metadata" 1 \
-			"security_rc=${security_rc} state_rc=${state_rc} authority_rc=${authority_rc}"
+			"security_rc=${security_rc} state_rc=${state_rc} authority_rc=${authority_rc} empty_name_authority_rc=${empty_name_authority_rc}"
 	fi
 	teardown_test_env
 	return 0

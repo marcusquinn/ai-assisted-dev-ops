@@ -662,7 +662,7 @@ _nmr_issue_metadata_has_valid_labels() {
 		type == "object"
 		and ((.labels | type) == "array")
 		and all(.labels[];
-			if type == "object" then ((.name | type) == "string")
+			if type == "object" then ((.name | type) == "string" and (.name | length) > 0)
 			else false end)
 	' >/dev/null 2>&1
 	return $?

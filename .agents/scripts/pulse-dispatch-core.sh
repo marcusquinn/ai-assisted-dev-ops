@@ -751,7 +751,7 @@ _check_external_issue_author_gate() {
 
 	local issue_author_meta=""
 	issue_author_meta=$(gh api "repos/${repo_slug}/issues/${issue_number}" \
-		--jq 'if (type == "object" and ((.labels | type) == "array") and all(.labels[]; if type == "object" then ((.name | type) == "string") else false end)) then [.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[].name] | index("external-contributor") != null) | tostring)] | join("|") else empty end' 2>/dev/null) || issue_author_meta=""
+		--jq 'if (type == "object" and ((.labels | type) == "array") and all(.labels[]; if type == "object" then ((.name | type) == "string" and (.name | length) > 0) else false end)) then [.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[].name] | index("external-contributor") != null) | tostring)] | join("|") else empty end' 2>/dev/null) || issue_author_meta=""
 
 	local author_association="NONE"
 	local author_type=""

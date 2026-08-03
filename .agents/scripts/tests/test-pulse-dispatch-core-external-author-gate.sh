@@ -73,6 +73,7 @@ setup_case() {
 
 	local labels_json='[]'
 	[[ "$external_source" == "true" ]] && labels_json='[{"name":"external-contributor"}]'
+	[[ "$labels_mode" == "empty-name" ]] && labels_json='[{"name":""}]'
 	case "$labels_mode" in
 	null)
 		labels_json='null'
@@ -265,6 +266,21 @@ test_bot_with_missing_labels_fails_closed() {
 	return 0
 }
 
+test_bot_with_empty_label_name_fails_closed() {
+	setup_case "NONE" "Bot" "" 0 false empty-name
+	if _check_external_issue_author_gate 27 "owner/repo"; then
+		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with empty label name fails closed and applies NMR" 0
+		else
+			print_result "bot with empty label name fails closed and applies NMR" 1 "NMR label was not applied"
+		fi
+	else
+		print_result "bot with empty label name fails closed and applies NMR" 1 "Expected gate to block"
+	fi
+	cleanup_case
+	return 0
+}
+
 test_external_author_with_crypto_approval_allows_dispatch() {
 	setup_case "CONTRIBUTOR" "User" "VERIFIED"
 	if _check_external_issue_author_gate 3 "owner/repo"; then
@@ -326,6 +342,7 @@ main() {
 	test_external_origin_bot_without_approval_blocks
 	test_bot_with_null_labels_fails_closed
 	test_bot_with_missing_labels_fails_closed
+	test_bot_with_empty_label_name_fails_closed
 	test_external_author_with_crypto_approval_allows_dispatch
 	test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr
 	test_author_lookup_failure_fails_closed
