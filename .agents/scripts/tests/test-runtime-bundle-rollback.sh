@@ -274,6 +274,8 @@ main() {
 	FAKE_REPO="$TEST_ROOT/repo"
 	export HOME
 	mkdir -p "$HOME/.aidevops/runtime-bundles" "$HOME/.config/aidevops" "$FAKE_REPO"
+	HOME=$(cd "$HOME" && pwd -P)
+	export HOME
 	git -C "$FAKE_REPO" init -q
 	write_revision "1.0.0" "retained-target"
 	TARGET_SHA=$(git -C "$FAKE_REPO" rev-parse HEAD)
