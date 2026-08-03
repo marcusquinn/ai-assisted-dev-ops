@@ -33,6 +33,15 @@ source "$REPO_ROOT/.agents/scripts/runtime-bundle-lease.sh"
 # shellcheck source=../pulse-runtime-pin.sh
 source "$REPO_ROOT/.agents/scripts/pulse-runtime-pin.sh"
 
+assert_output_contains() {
+	local output="$1"
+	local pattern="$2"
+	local message="$3"
+	[[ "$output" == *"$pattern"* ]] || fail "$message"
+	pass "$message"
+	return 0
+}
+
 _xml_escape() { local value="$1"; printf '%s' "$value"; return 0; }
 
 cleanup() {
@@ -597,9 +606,12 @@ test_serialized_older_version_refuses_global_activation() {
 	_runtime_bundle_activate "$target_dir" "$current_bundle"
 	active_before=$(_runtime_bundle_resolve_root "$target_dir")
 
-	if _runtime_bundle_activate "$target_dir" "$stale_bundle"; then
+	local output=""
+	if output=$(_runtime_bundle_activate "$target_dir" "$stale_bundle" 2>&1); then
 		fail "serialized older candidate unexpectedly replaced the active bundle"
 	fi
+	assert_output_contains "$output" "aidevops runtime-bundle rollback --help" \
+		"stale activation diagnostic names the public rollback help path"
 	active_after=$(_runtime_bundle_resolve_root "$target_dir")
 	assert_eq "$active_before" "$active_after" "serialized older candidate preserves the active bundle"
 	assert_eq "13.0.0" "$(tr -d '[:space:]' <"$target_dir/VERSION")" "serialized activation cannot move the global version backwards"

@@ -822,24 +822,14 @@ _runtime_bundle_stage() {
 _runtime_bundle_replace_link() {
 	local link_tmp="$1"
 	local link_path="$2"
-	if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
-		mv -f -h "$link_tmp" "$link_path"
-	else
-		mv -Tf "$link_tmp" "$link_path"
-	fi
+	aidevops_runtime_replace_link "$link_tmp" "$link_path"
 	return $?
 }
 
 _runtime_bundle_switch_link() {
 	local target_dir="$1"
 	local agents_root="$2"
-	local link_tmp="${target_dir}.link.$$"
-	rm -f "$link_tmp"
-	ln -s "$agents_root" "$link_tmp" || return 1
-	if ! _runtime_bundle_replace_link "$link_tmp" "$target_dir"; then
-		rm -f "$link_tmp"
-		return 1
-	fi
+	aidevops_runtime_switch_link "$target_dir" "$agents_root" || return 1
 	return 0
 }
 
@@ -977,7 +967,7 @@ _runtime_bundle_activate_locked() {
 	if previous_root=$(_runtime_bundle_resolve_root "$target_dir" 2>/dev/null); then
 		stale_reason=$(_runtime_bundle_stale_candidate_reason "$bundle_dir" "$previous_root")
 		if [[ -n "$stale_reason" ]]; then
-			print_error "Refusing stale runtime bundle activation: ${stale_reason}. Use a dedicated audited rollback operation instead of setup."
+			print_error "Refusing stale runtime bundle activation: ${stale_reason}. Use 'aidevops runtime-bundle rollback --help' for the dedicated audited rollback operation instead of setup."
 			return 1
 		fi
 		_AIDEVOPS_PREVIOUS_BUNDLE_ROOT="$previous_root"

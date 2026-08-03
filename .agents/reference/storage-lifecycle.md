@@ -216,6 +216,34 @@ The measured duplication is instead bounded by pruning unreferenced bundles.
 This preserves atomic activation and makes each retained rollback bundle
 self-verifying without making npm's global cache framework-owned.
 
+### Explicit Runtime Bundle Rollback
+
+Normal setup remains monotonic: it rejects an older framework version or a
+strict ancestor of the active source commit. Operators can inspect eligible
+retained bundles and perform the separate audited transition with:
+
+```bash
+aidevops runtime-bundle list
+aidevops runtime-bundle rollback --bundle-id <id> --reason "<operator reason>"
+```
+
+The command accepts a bundle ID from the managed inventory, never a path. It
+requires matching validated manifests, a manifest-bound bundle ID, the retained
+source commit, matching version and runtime sentinel hashes, and CLI/plugin
+integrity before taking the same mutation lock as setup. The active link,
+previous-runtime link, and deployed-SHA stamp are then changed atomically per
+file and verified as one transaction. Any post-switch failure restores the
+captured active root, previous link, and stamp.
+
+The former active bundle becomes the new rollback point. Existing process
+leases and the bounded Pulse runtime pin continue naming their immutable roots;
+rollback neither deletes nor rewrites them. Every allowed or blocked attempt is
+recorded in the hash-chained runtime-bundle rollback audit log with the operator
+reason, outcome, mode, and source/target bundle IDs, versions, and Git SHAs.
+Retention can remove an unreferenced bundle before an operator selects it, so
+`runtime-bundle list` is the authoritative eligibility inventory at execution
+time. A later successful setup or update may move the global link forward again.
+
 ### Coordinated Backup and Log Policies
 
 Setup, headless-runtime failure evidence, and Pulse remain separate storage

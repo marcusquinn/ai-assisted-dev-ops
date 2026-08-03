@@ -106,6 +106,33 @@ aidevops_runtime_transition_lock_release() {
 	return 0
 }
 
+# Atomically replace one runtime symlink on GNU/Linux or macOS. Keeping this
+# primitive beside the transition lock makes setup and explicit rollback use the
+# same cross-platform mutation semantics.
+aidevops_runtime_replace_link() {
+	local link_tmp="$1"
+	local link_path="$2"
+	if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+		mv -f -h "$link_tmp" "$link_path"
+	else
+		mv -Tf "$link_tmp" "$link_path"
+	fi
+	return $?
+}
+
+aidevops_runtime_switch_link() {
+	local link_path="$1"
+	local link_target="$2"
+	local link_tmp="${link_path}.link.$$"
+	rm -f "$link_tmp"
+	ln -s "$link_target" "$link_tmp" || return 1
+	if ! aidevops_runtime_replace_link "$link_tmp" "$link_path"; then
+		rm -f "$link_tmp"
+		return 1
+	fi
+	return 0
+}
+
 # _convert_agent_frontmatter: strips aidevops-only fields from agent markdown.
 # Reads from stdin, writes converted content to stdout.
 # Tracks whether we're inside an indented block (subagents list) to correctly
