@@ -6,9 +6,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$SCRIPT_DIR/../storage-inventory-helper.sh"
+AUDIT_HELPER="$SCRIPT_DIR/../audit-worktree-removal-helper.sh"
+GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
 TEST_ROOT="$(mktemp -d -t aidevops-storage-inventory.XXXXXX)"
 HOME="$TEST_ROOT/home"
 export HOME
+AIDEVOPS_WORKTREE_TRASH_ROOT="$HOME/.aidevops/recovery/worktrees"
+export AIDEVOPS_WORKTREE_TRASH_ROOT
+# shellcheck source=../audit-worktree-removal-helper.sh
+source "$AUDIT_HELPER"
 
 cleanup() {
 	rm -rf "$TEST_ROOT"
@@ -44,6 +50,24 @@ make_fixture() {
 	return 0
 }
 
+make_recovery_fixture() {
+	local repo_path="$TEST_ROOT/recovery-repo"
+	local worktree_path="$TEST_ROOT/recovery-worktree"
+
+	"$GIT_BIN" init -q -b main "$repo_path" || return 1
+	"$GIT_BIN" -C "$repo_path" config user.email test@example.invalid || return 1
+	"$GIT_BIN" -C "$repo_path" config user.name 'Aidevops Test' || return 1
+	"$GIT_BIN" -C "$repo_path" config commit.gpgsign false || return 1
+	printf 'base\n' >"$repo_path/README.md" || return 1
+	"$GIT_BIN" -C "$repo_path" add README.md || return 1
+	"$GIT_BIN" -C "$repo_path" commit -q -m init || return 1
+	"$GIT_BIN" -C "$repo_path" worktree add -q -b feature/recovery-inventory \
+		"$worktree_path" main || return 1
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" archive_worktree_path_recoverably \
+		"$worktree_path" "test-storage-inventory-helper.sh" "storage-inventory" || return 1
+	return 0
+}
+
 fixture_checksum() {
 	cksum \
 		"$HOME/.aidevops/runtime-bundles/bundle-a/data" \
@@ -59,6 +83,7 @@ fixture_checksum() {
 }
 
 make_fixture
+make_recovery_fixture
 before_checksum=$(fixture_checksum)
 report=$(bash "$HELPER" json)
 after_checksum=$(fixture_checksum)
@@ -66,7 +91,7 @@ after_checksum=$(fixture_checksum)
 
 [[ "$(printf '%s' "$report" | jq -r '.schema_version')" == "2" ]] || fail "schema version missing"
 [[ "$(printf '%s' "$report" | jq -r '.read_only')" == "true" ]] || fail "read-only marker missing"
-[[ "$(printf '%s' "$report" | jq '.stores | length')" == "15" ]] || fail "expected explicit producer and split OpenCode stores"
+[[ "$(printf '%s' "$report" | jq '.stores | length')" == "16" ]] || fail "expected explicit producer and split OpenCode stores"
 [[ "$(printf '%s' "$report" | jq '[.stores[].reclaimable_bytes] | add')" == "0" ]] || fail "foundation report suggested reclaimable bytes"
 [[ "$(printf '%s' "$report" | jq '[.stores[] | select(.total_bytes != null) | (.total_bytes == (.protected_bytes + .reclaimable_bytes + .unknown_bytes))] | all')" == "true" ]] || fail "storage categories did not reconcile with totals"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .unknown_bytes > 0')" == "true" ]] || fail "runtime bundles were not fail-closed unknown"
@@ -77,9 +102,13 @@ after_checksum=$(fixture_checksum)
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "opencode-active-db") | .owner')" == "joint" ]] || fail "OpenCode active DB ownership was not bounded"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "opencode-active-db") | .safety_class')" == "unknown" ]] || fail "unavailable OpenCode schema did not fail closed"
 [[ "$(printf '%s' "$report" | jq '[.stores[] | select(.store_id | startswith("opencode-")) | .reclaimable_bytes] | add')" == "0" ]] || fail "OpenCode report exposed cleanup candidates"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "worktree-recovery") | .bucket_count')" == "1" ]] || fail "worktree recovery archive was not inventoried"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "worktree-recovery") | .total_bytes > 0')" == "true" ]] || fail "worktree recovery bytes were not measured"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "worktree-recovery") | .protected_bytes == .total_bytes')" == "true" ]] || fail "attributed worktree recovery bytes were not protected"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "worktree-recovery") | .reclaimable_bytes')" == "0" ]] || fail "worktree recovery inventory granted deletion authority"
 
 home_unset_report=$(env -u HOME -u SUDO_USER -u AIDEVOPS_OPENCODE_DATA_DIR -u AIDEVOPS_OPENCODE_DB_PATH -u OPENCODE_DB_PATH -u OPENCODE_DB -u AIDEVOPS_NPM_CACHE_DIR bash "$HELPER" json)
-[[ "$(printf '%s' "$home_unset_report" | jq '.stores | length')" == "15" ]] || fail "HOME-unset inventory did not return every store"
+[[ "$(printf '%s' "$home_unset_report" | jq '.stores | length')" == "16" ]] || fail "HOME-unset inventory did not return every store"
 [[ "$(printf '%s' "$home_unset_report" | jq -r '[.stores[] | .error == "home-unavailable"] | all')" == "true" ]] || fail "HOME-unset stores did not fail closed"
 
 report=$(BACKUP_KEEP_COUNT=1 AIDEVOPS_WORKER_EXCERPT_KEEP_COUNT=1 bash "$HELPER" json)
@@ -122,6 +151,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$FAILING_DU"
 chmod +x "$FAILING_DU"
 report=$(AIDEVOPS_STORAGE_DU_COMMAND="$FAILING_DU" bash "$HELPER" json)
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "runtime-bundles") | .error')" == "sizing-failed" ]] || fail "sizing failure was not visible"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "worktree-recovery") | .error')" == "sizing-failed" ]] || fail "worktree recovery sizing failure was not visible"
 
 SLOW_DU="$TEST_ROOT/slow-du"
 printf '%s\n' '#!/usr/bin/env bash' 'sleep 5' >"$SLOW_DU"
