@@ -154,8 +154,8 @@ test_each_ratchet_blocks_regression_and_allows_improvement() {
 		regressed_count=$(ratchet_fixture_count "$pattern_name" "${tmp_dir}/${pattern_name}/regressed")
 		regression_rc=0
 		improvement_rc=0
-		_ratchet_check_pattern "$pattern_name" "$regressed_count" "$clean_count" 0 true > /dev/null 2>&1 || regression_rc=$?
-		_ratchet_check_pattern "$pattern_name" "$clean_count" "$regressed_count" 0 true > /dev/null 2>&1 || improvement_rc=$?
+		_ratchet_check_pattern "$pattern_name" "$regressed_count" "$clean_count" 0 true >/dev/null 2>&1 || regression_rc=$?
+		_ratchet_check_pattern "$pattern_name" "$clean_count" "$regressed_count" 0 true >/dev/null 2>&1 || improvement_rc=$?
 		if [[ "$clean_count" -eq 0 && "$regressed_count" -eq 1 && "$regression_rc" -eq 1 && "$improvement_rc" -eq 0 ]]; then
 			print_result "ratchet delta: ${pattern_name} blocks +1 and permits -1" 0
 		else
@@ -190,7 +190,7 @@ test_atomic_write_preserves_baseline_on_invalid_json() {
 	baseline_file="${tmp_dir}/ratchets.json"
 	printf '{"version":1}\n' >"$baseline_file"
 	before=$(cksum <"$baseline_file")
-	_ratchet_write_json_atomically "$baseline_file" '{invalid' > /dev/null 2>&1 || ret=$?
+	_ratchet_write_json_atomically "$baseline_file" '{invalid' >/dev/null 2>&1 || ret=$?
 	after=$(cksum <"$baseline_file")
 	if [[ "$ret" -ne 0 && "$before" == "$after" ]]; then
 		print_result "ratchet migration: invalid JSON leaves baseline unchanged" 0
@@ -239,7 +239,7 @@ test_snapshot_increase_is_rejected_without_migration_evidence() {
 	printf '%s\n' "$rendered" >"$baseline_file"
 	before=$(cksum <"$baseline_file")
 	unset RATCHET_ALLOW_MIGRATION RATCHET_MIGRATION_REASON RATCHET_PREVIOUS_SOURCE_COMMIT
-	_ratchet_write_baseline "$baseline_file" "$repo_dir" "0 0 1 0 0" > /dev/null 2>&1 || ret=$?
+	_ratchet_write_baseline "$baseline_file" "$repo_dir" "0 0 1 0 0" >/dev/null 2>&1 || ret=$?
 	after=$(cksum <"$baseline_file")
 	if [[ "$ret" -ne 0 && "$before" == "$after" ]]; then
 		print_result "ratchet migration: unexplained increase is rejected transactionally" 0

@@ -53,6 +53,7 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 readonly RATCHET_SCHEMA_VERSION=2
 readonly RATCHET_COUNTER_VERSION=2
+readonly RATCHET_NULL_DEVICE="/dev/null"
 RATCHET_SH_FILES=()
 RATCHET_INVENTORY_DIR=""
 RATCHET_INVENTORY_READY=false
@@ -85,7 +86,7 @@ _ratchet_prepare_inventory() {
 	fi
 
 	RATCHET_SH_FILES=()
-	repo_root=$(git -C "$scripts_dir" rev-parse --show-toplevel 2> /dev/null || :)
+	repo_root=$(git -C "$scripts_dir" rev-parse --show-toplevel 2>"$RATCHET_NULL_DEVICE" || :)
 	if [[ -n "$repo_root" && "$scripts_dir" == "${repo_root}/.agents/scripts" ]]; then
 		while IFS= read -r file_path; do
 			[[ -n "$file_path" && "$file_path" != */_archive/* ]] || continue
@@ -191,7 +192,7 @@ _ratchet_count_bare_positional() {
 		echo "0"
 		return 0
 	}
-	count=$(rg '\$[1-9]' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
+	count=$(rg '\$[1-9]' --no-filename -- "${RATCHET_SH_FILES[@]}" 2>"$RATCHET_NULL_DEVICE" |
 		grep -v 'local.*=.*\$[1-9]' |
 		grep -cv '^[[:space:]]*#') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
@@ -211,7 +212,7 @@ _ratchet_count_hardcoded_path() {
 	}
 	# Tilde is intentional: we search for the literal string ~/.aidevops in scripts
 	# shellcheck disable=SC2088
-	count=$(rg '~/.aidevops|/Users/' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
+	count=$(rg '~/.aidevops|/Users/' --no-filename -- "${RATCHET_SH_FILES[@]}" 2>"$RATCHET_NULL_DEVICE" |
 		grep -v '^[[:space:]]*#' |
 		grep -cv '# ') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
@@ -229,7 +230,7 @@ _ratchet_count_broad_catch() {
 		echo "0"
 		return 0
 	}
-	count=$(rg '\|\| true' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
+	count=$(rg '\|\| true' --no-filename -- "${RATCHET_SH_FILES[@]}" 2>"$RATCHET_NULL_DEVICE" |
 		wc -l | tr -d '[:space:]') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	echo "$count"
@@ -246,7 +247,7 @@ _ratchet_count_silent_errors() {
 		echo "0"
 		return 0
 	}
-	count=$(rg '2>/dev/null' --no-filename -- "${RATCHET_SH_FILES[@]}" 2> /dev/null |
+	count=$(rg '2>/dev/null' --no-filename -- "${RATCHET_SH_FILES[@]}" 2>"$RATCHET_NULL_DEVICE" |
 		wc -l | tr -d '[:space:]') || count=0
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	echo "$count"
@@ -364,14 +365,14 @@ _ratchet_resolve_base_ref() {
 	local base_ref=""
 
 	if [[ -n "$configured_ref" ]]; then
-		git -C "$repo_root" rev-parse --verify "${configured_ref}^{commit}" 2> /dev/null
+		git -C "$repo_root" rev-parse --verify "${configured_ref}^{commit}" 2>"$RATCHET_NULL_DEVICE"
 		return $?
 	fi
 
-	default_ref=$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2> /dev/null || :)
+	default_ref=$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>"$RATCHET_NULL_DEVICE" || :)
 	for candidate in "$default_ref" origin/main main origin/master master; do
 		[[ -n "$candidate" ]] || continue
-		base_ref=$(git -C "$repo_root" merge-base HEAD "$candidate" 2> /dev/null || :)
+		base_ref=$(git -C "$repo_root" merge-base HEAD "$candidate" 2>"$RATCHET_NULL_DEVICE" || :)
 		if [[ -n "$base_ref" ]]; then
 			printf '%s\n' "$base_ref"
 			return 0
@@ -503,7 +504,7 @@ _ratchet_write_json_atomically() {
 	local new_json="$2"
 	local temp_file=""
 	temp_file=$(mktemp "${baseline_file}.tmp.XXXXXX") || return 1
-	if ! printf '%s\n' "$new_json" >"$temp_file" || ! jq -e . "$temp_file" > /dev/null; then
+	if ! printf '%s\n' "$new_json" >"$temp_file" || ! jq -e . "$temp_file" >/dev/null; then
 		rm -f "$temp_file"
 		print_error "Ratchets: generated baseline failed validation"
 		return 1
@@ -536,7 +537,7 @@ _ratchet_snapshot_matches() {
 		.ratchets.broad_catch_or_true.count == $c[2] and
 		.ratchets.silent_errors.count == $c[3] and
 		.ratchets.missing_return_files.count == $c[4]
-	' "$baseline_file" > /dev/null 2>&1
+	' "$baseline_file" >/dev/null 2>&1
 	return $?
 }
 
@@ -602,19 +603,19 @@ _ratchet_write_baseline() {
 	local previous_source="" previous_updated="" source_commit="" scripts_tree="" base_commit=""
 	local verified_counts="" migration_json="null" migration_reason="" new_json="" now=""
 
-	[[ -f "$baseline_file" ]] && previous_schema=$(jq -r '.version // 0' "$baseline_file" 2> /dev/null || printf '0')
-	[[ -f "$baseline_file" ]] && previous_counter=$(jq -r '.counter_version // 1' "$baseline_file" 2> /dev/null || printf '1')
+	[[ -f "$baseline_file" ]] && previous_schema=$(jq -r '.version // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE" || printf '0')
+	[[ -f "$baseline_file" ]] && previous_counter=$(jq -r '.counter_version // 1' "$baseline_file" 2>"$RATCHET_NULL_DEVICE" || printf '1')
 	[[ -f "$baseline_file" ]] && previous_counts=$(_ratchet_load_baselines "$baseline_file")
-	[[ -f "$baseline_file" ]] && previous_updated=$(jq -r '.updated // ""' "$baseline_file" 2> /dev/null || :)
-	[[ -f "$baseline_file" ]] && previous_source=$(jq -r '.provenance.source_commit // ""' "$baseline_file" 2> /dev/null || :)
+	[[ -f "$baseline_file" ]] && previous_updated=$(jq -r '.updated // ""' "$baseline_file" 2>"$RATCHET_NULL_DEVICE" || :)
+	[[ -f "$baseline_file" ]] && previous_source=$(jq -r '.provenance.source_commit // ""' "$baseline_file" 2>"$RATCHET_NULL_DEVICE" || :)
 	if [[ "$previous_schema" -eq "$RATCHET_SCHEMA_VERSION" && "$previous_counter" -ne "$RATCHET_COUNTER_VERSION" ]]; then
 		print_error "Ratchets: unexpected counter definition for schema ${previous_schema}; bump the schema with reviewed migration evidence"
 		return 1
 	fi
 
 	_ratchet_verify_update_tree "$repo_root" || return 1
-	source_commit=$(git -C "$repo_root" rev-parse HEAD 2> /dev/null) || return 1
-	scripts_tree=$(git -C "$repo_root" rev-parse 'HEAD:.agents/scripts' 2> /dev/null) || return 1
+	source_commit=$(git -C "$repo_root" rev-parse HEAD 2>"$RATCHET_NULL_DEVICE") || return 1
+	scripts_tree=$(git -C "$repo_root" rev-parse 'HEAD:.agents/scripts' 2>"$RATCHET_NULL_DEVICE") || return 1
 	base_commit=$(_ratchet_resolve_base_ref "$repo_root") || {
 		print_error "Ratchets: baseline update requires a verified default-branch base"
 		return 1
@@ -640,7 +641,7 @@ _ratchet_write_baseline() {
 			return 1
 		}
 		[[ -n "$previous_source" ]] || previous_source="${RATCHET_PREVIOUS_SOURCE_COMMIT:-}"
-		previous_source=$(git -C "$repo_root" rev-parse --verify "${previous_source}^{commit}" 2> /dev/null) || {
+		previous_source=$(git -C "$repo_root" rev-parse --verify "${previous_source}^{commit}" 2>"$RATCHET_NULL_DEVICE") || {
 			print_error "Ratchets: previous source commit is missing or unavailable"
 			return 1
 		}
@@ -671,11 +672,11 @@ _ratchet_write_baseline() {
 _ratchet_load_baselines() {
 	local baseline_file="$1"
 	local baseline_bare baseline_hardcoded baseline_broad baseline_silent baseline_missing
-	baseline_bare=$(jq -r '.ratchets.bare_positional_params.count // 0' "$baseline_file" 2> /dev/null) || baseline_bare=0
-	baseline_hardcoded=$(jq -r '.ratchets.hardcoded_aidevops_path.count // 0' "$baseline_file" 2> /dev/null) || baseline_hardcoded=0
-	baseline_broad=$(jq -r '.ratchets.broad_catch_or_true.count // 0' "$baseline_file" 2> /dev/null) || baseline_broad=0
-	baseline_silent=$(jq -r '.ratchets.silent_errors.count // 0' "$baseline_file" 2> /dev/null) || baseline_silent=0
-	baseline_missing=$(jq -r '.ratchets.missing_return_files.count // 0' "$baseline_file" 2> /dev/null) || baseline_missing=0
+	baseline_bare=$(jq -r '.ratchets.bare_positional_params.count // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE") || baseline_bare=0
+	baseline_hardcoded=$(jq -r '.ratchets.hardcoded_aidevops_path.count // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE") || baseline_hardcoded=0
+	baseline_broad=$(jq -r '.ratchets.broad_catch_or_true.count // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE") || baseline_broad=0
+	baseline_silent=$(jq -r '.ratchets.silent_errors.count // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE") || baseline_silent=0
+	baseline_missing=$(jq -r '.ratchets.missing_return_files.count // 0' "$baseline_file" 2>"$RATCHET_NULL_DEVICE") || baseline_missing=0
 	echo "$baseline_bare $baseline_hardcoded $baseline_broad $baseline_silent $baseline_missing"
 	return 0
 }
@@ -735,7 +736,7 @@ _ratchet_validate_baseline_config() {
 	local baseline_file="$1"
 	if ! jq -e --argjson schema "$RATCHET_SCHEMA_VERSION" --argjson counter "$RATCHET_COUNTER_VERSION" \
 		'.version == $schema and .counter_version == $counter and .comparison.mode == "merge-base" and (.provenance.source_commit | type == "string")' \
-		"$baseline_file" > /dev/null 2>&1; then
+		"$baseline_file" >/dev/null 2>&1; then
 		print_error "Ratchets: baseline schema/counter mismatch; run the explicit migration workflow"
 		return 1
 	fi
@@ -750,7 +751,7 @@ check_ratchets() {
 
 	local repo_root="" scripts_dir="" baseline_file="" exceptions_dir=""
 	local strict_mode="${RATCHET_STRICT:-false}"
-	repo_root=$(git rev-parse --show-toplevel 2> /dev/null) || {
+	repo_root=$(git rev-parse --show-toplevel 2>"$RATCHET_NULL_DEVICE") || {
 		print_error "Ratchets: repository root unavailable"
 		return 1
 	}
