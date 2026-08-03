@@ -139,6 +139,7 @@ shellcheck .agents/scripts/pulse-dispatch-worker-launch.sh .agents/scripts/pulse
 
 ### Files Scope
 
+- `.task-counter` (synchronize the already-claimed `origin/task-id-counter` state through `t18192`)
 - `.agents/scripts/pulse-dispatch-worker-launch.sh`
 - `.agents/scripts/pulse-event-refill.sh`
 - `.agents/scripts/pulse-wrapper-config.sh`
