@@ -122,7 +122,7 @@ The allowlist allows peer runners (separate machine/account, `COLLABORATOR` asso
 
 ### Security Gate: External-Author NMR Authority
 
-`auto_approve_maintainer_issues` uses live issue-author authority as the invariant. A verified write-authorized author never self-approves: unreasoned residue is removed, explicit durable human-decision or security evidence becomes `hold-for-review`, and machine-breaker evidence becomes `status:blocked`, without posting an approval marker. Label actor, elapsed time, and missing automation provenance cannot manufacture human intent.
+`auto_approve_maintainer_issues` uses live issue-author authority as the invariant. A verified write-authorized author never self-approves: unreasoned residue is removed, explicit durable human-decision or security evidence becomes `hold-for-review`, and machine-breaker evidence becomes `status:blocked`, without posting an approval marker. Label actor, elapsed time, and missing automation provenance cannot manufacture human intent; incomplete timeline, comment, or current-label evidence leaves NMR unchanged for retry.
 
 An external or unverifiable author remains gated. Cryptographic approval (`sudo aidevops approve issue N`) requires the maintainer's root-protected SSH key, which workers cannot access, and is the only authority signal that clears that external boundary.
 
@@ -157,7 +157,7 @@ Configured review-provider failures use `review_gate.advisory_check_contexts`. A
 
 Current producers reserve `needs-maintainer-review` for external-author authority. Internal decisions use `hold-for-review`; machine-recoverable dependency, cost, stale-worker, and infrastructure failures use `status:blocked`, cooldowns, or root-cause meta-issues.
 
-`pulse-nmr-approval.sh` still recognizes historical scanner, breaker, and explicit reason signatures so pre-migration issues fail safely while being normalized. For a write-authorized author, it clears unreasoned/default residue while preserving active `status:*`, translates explicit durable human-decision evidence to `hold-for-review`, and converts unresolved machine-breaker evidence to `status:blocked`; it never manufactures cryptographic approval. For an external or unverifiable author, NMR remains until valid cryptographic approval.
+`pulse-nmr-approval.sh` still recognizes historical scanner, breaker, and explicit reason signatures so pre-migration issues fail safely while being normalized. For a write-authorized author, it clears unreasoned/default residue while preserving active `status:*`, translates explicit durable human-decision evidence to `hold-for-review`, and converts unresolved machine-breaker evidence to `status:blocked`; it never manufactures cryptographic approval. Security-labelled trusted creation requests become explicit holds. Incomplete evidence defers mutation, while external or unverifiable authors retain NMR until valid cryptographic approval.
 
 Historical breaker signatures remain recognized to prevent the GH#19756 loop while old issues are reconciled. New breaker paths never use NMR, so clearing an author-authority gate cannot blind-redispatch an unresolved machine failure.
 

@@ -94,6 +94,19 @@ _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	fail "parent tracker gained dispatch intent while trusted NMR cleared"
 
 _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'security,needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"security,hold-for-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"auto-dispatch"* ]] ||
+	fail "trusted security NMR did not become an explicit review hold"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'security-review' --label 'needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"--label security-review --label hold-for-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* ]] ||
+	fail "repeated-label security review NMR did not preserve its gate"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	--label 'quality-debt,external-contributor,needs-maintainer-review'
 [[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"external-contributor,needs-maintainer-review"* ]] ||
 	fail "external-origin authority gate was normalized as trusted self-review"

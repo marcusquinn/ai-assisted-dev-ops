@@ -252,18 +252,27 @@ _gh_ci_prepare_trusted_nmr_labels() {
 
 	local infer_dispatch=1
 	local replacement_label="$_GH_CREATE_AUTO_DISPATCH_LABEL"
+	local explicit_suppress=0
 	local suppression_label=""
 	for suppression_label in \
 		"hold-for-review" "no-auto-dispatch" "parent-task" "meta" \
 		"persistent" "supervisor" "contributor" "quality-review" \
-		"routine-tracking" "needs-credentials" "status:done" "status:resolved"; do
+		"routine-tracking" "needs-credentials" "needs-maintainer-permissions" \
+		"status:done" "status:resolved"; do
 		if _gh_wrapper_args_have_label "$suppression_label" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
+			explicit_suppress=1
 			infer_dispatch=0
 			replacement_label=""
 			break
 		fi
 	done
-	if _gh_wrapper_args_have_label "$_GH_CREATE_AUTO_DISPATCH_LABEL" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
+	if [[ "$explicit_suppress" -eq 0 ]] \
+		&& { _gh_wrapper_args_have_label "security" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}" \
+			|| _gh_wrapper_args_have_label "security-review" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; }; then
+		infer_dispatch=0
+		replacement_label="hold-for-review"
+	elif [[ "$explicit_suppress" -eq 0 ]] \
+		&& _gh_wrapper_args_have_label "$_GH_CREATE_AUTO_DISPATCH_LABEL" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
 		infer_dispatch=0
 		replacement_label=""
 	fi

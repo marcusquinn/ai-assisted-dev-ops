@@ -10,7 +10,9 @@ def explicit_metadata:
   catch null;
 def legacy_metadata:
   ascii_downcase as $text
-  | if ($text | test("<!--\\s*(cost-circuit-breaker:(fired|no_work_loop)|billing-approval-required)\\b")) then metadata("billing"; "genuine-authority"; "legacy-marker")
+  | if ($text | test("<!--\\s*billing-approval-required\\b")) then metadata("billing"; "genuine-authority"; "legacy-marker")
+    elif ($text | test("<!--\\s*cost-circuit-breaker:fired\\b")) then metadata("cost_limit"; "temporary"; "legacy-marker")
+    elif ($text | test("<!--\\s*cost-circuit-breaker:no_work_loop\\b")) then metadata("diagnostic_ambiguity"; "temporary"; "legacy-marker")
     elif ($text | test("<!--\\s*(secret-required|credential-access-required)\\b")) then metadata("secret"; "genuine-authority"; "legacy-marker")
     elif ($text | test("<!--\\s*(destructive-approval-required|irreversible-operation)\\b")) then metadata("destructive"; "genuine-authority"; "legacy-marker")
     elif ($text | test("<!--\\s*(security-sensitive|auth-boundary-approval-required)\\b")) then metadata("security"; "genuine-authority"; "legacy-marker")

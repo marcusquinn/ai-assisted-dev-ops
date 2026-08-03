@@ -27,6 +27,7 @@ assert_reason() {
 
 authority='{"code":"authority","class":"genuine-authority","source":"default","revalidate_after_seconds":null,"requires_crypto":true}'
 billing='{"code":"billing","class":"genuine-authority","source":"legacy-marker","revalidate_after_seconds":null,"requires_crypto":true}'
+cost_limit='{"code":"cost_limit","class":"temporary","source":"legacy-marker","revalidate_after_seconds":3600,"requires_crypto":false}'
 diagnostic='{"code":"diagnostic_ambiguity","class":"temporary","source":"legacy-marker","revalidate_after_seconds":3600,"requires_crypto":false}'
 structured='{"code":"billing","class":"genuine-authority","source":"structured-marker","revalidate_after_seconds":null,"requires_crypto":true}'
 
@@ -47,8 +48,16 @@ assert_reason "unrelated billing prose remains fail-closed authority" \
 	'[{"body":"Documentation discusses billing and spend approval without an NMR marker."}]' \
 	"$authority"
 
-assert_reason "exact cost breaker remains genuine authority" \
+assert_reason "no-work cost breaker remains structural" \
 	'[{"body":"<!-- cost-circuit-breaker:no_work_loop count=3 -->"}]' \
+	"$diagnostic"
+
+assert_reason "cost limit breaker remains structural" \
+	'[{"body":"<!-- cost-circuit-breaker:fired tier=thinking -->"}]' \
+	"$cost_limit"
+
+assert_reason "explicit billing approval remains genuine authority" \
+	'[{"body":"<!-- billing-approval-required -->"}]' \
 	"$billing"
 
 assert_reason "structured marker overrides later legacy marker" \

@@ -47,6 +47,9 @@ setup_test_env() {
 	export AUTHOR_PERMISSION="write"
 	export NMR_TIMELINE_JSON='[]'
 	export ISSUE_COMMENTS_JSON='[]'
+	export COMMENTS_API_FAIL=0
+	export TIMELINE_API_FAIL=0
+	export ISSUE_API_FAIL=0
 	: >"$LOGFILE"
 	: >"$POSTED_COMMENT"
 	: >"$STATUS_CALLS_FILE"
@@ -90,16 +93,19 @@ if [[ "${1:-}" == "api" ]]; then
 		exit 0
 	fi
 	if [[ "$path" == */issues/24479 ]]; then
+		[[ "${ISSUE_API_FAIL:-0}" -eq 0 ]] || exit 1
 		printf '{"user":{"login":"%s","type":"%s"},"author_association":"%s","labels":%s}\n' \
 			"${ISSUE_API_AUTHOR:-maintainer}" "${ISSUE_AUTHOR_TYPE:-User}" \
 			"${ISSUE_ASSOC:-NONE}" "${ISSUE_LABELS_JSON:-[]}"
 		exit 0
 	fi
 	if [[ "$path" == */timeline ]]; then
+		[[ "${TIMELINE_API_FAIL:-0}" -eq 0 ]] || exit 1
 		printf '%s\n' "${NMR_TIMELINE_JSON:-[]}"
 		exit 0
 	fi
 	if [[ "$path" == */comments ]]; then
+		[[ "${COMMENTS_API_FAIL:-0}" -eq 0 ]] || exit 1
 		printf '%s\n' "${ISSUE_COMMENTS_JSON:-[]}"
 		exit 0
 	fi
@@ -211,6 +217,7 @@ test_allows_owner_author_with_write_permission() {
 	setup_test_env
 	export ISSUE_ASSOC="OWNER"
 	export ACTOR_PERMISSION="write"
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
 	run_auto_approve
 	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null; then
 		print_result "trusted OWNER normalization does not post a synthetic approval" 0
@@ -220,7 +227,7 @@ test_allows_owner_author_with_write_permission() {
 	if grep -q -- '^24479 owner/repo available --remove-label needs-maintainer-review --add-label auto-dispatch$' "$STATUS_CALLS_FILE" 2>/dev/null; then
 		print_result "auto-approval atomically restores complete dispatchable state" 0
 	else
-		print_result "auto-approval atomically restores complete dispatchable state" 1 "status call: $(cat "$STATUS_CALLS_FILE")"
+		print_result "auto-approval atomically restores complete dispatchable state" 1 "status call: $(<"$STATUS_CALLS_FILE")"
 	fi
 	teardown_test_env
 	return 0
@@ -232,6 +239,7 @@ test_allows_write_authorized_collaborator() {
 	export ISSUE_API_AUTHOR="trusted-author"
 	export ISSUE_ASSOC="COLLABORATOR"
 	export AUTHOR_PERMISSION="write"
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"trusted-author"},"created_at":"2026-07-30T20:00:00Z"}]'
 	run_auto_approve
 	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null \
 		&& grep -q -- 'available --remove-label needs-maintainer-review --add-label auto-dispatch' "$STATUS_CALLS_FILE" 2>/dev/null; then
@@ -376,6 +384,123 @@ test_legacy_breaker_becomes_structural_block() {
 	return 0
 }
 
+test_cost_breaker_becomes_structural_block() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"auto-dispatch"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export ISSUE_COMMENTS_JSON='[{"created_at":"2026-07-30T20:00:02Z","body":"<!-- cost-circuit-breaker:fired tier=thinking -->"}]'
+	run_auto_approve
+	if grep -q -- '^24479 owner/repo blocked --remove-label needs-maintainer-review --add-label auto-dispatch$' "$STATUS_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- 'hold-for-review' "$STATUS_CALLS_FILE" "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "cost circuit breaker becomes status:blocked instead of a human hold" 0
+	else
+		print_result "cost circuit breaker becomes status:blocked instead of a human hold" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_breaker_preserves_hold_while_setting_blocked() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"hold-for-review"},{"name":"status:available"},{"name":"auto-dispatch"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export ISSUE_COMMENTS_JSON='[{"created_at":"2026-07-30T20:00:02Z","body":"<!-- stale-recovery-tick:escalated (threshold=2) -->"}]'
+	run_auto_approve
+	if grep -q -- '^24479 owner/repo blocked --remove-label needs-maintainer-review$' "$STATUS_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- '--add-label auto-dispatch\|--add-label hold-for-review' "$STATUS_CALLS_FILE" "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "machine blocker preserves explicit hold while converging status:blocked" 0
+	else
+		print_result "machine blocker preserves explicit hold while converging status:blocked" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_breaker_preserves_no_auto_while_setting_blocked() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"no-auto-dispatch"},{"name":"status:available"},{"name":"auto-dispatch"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export ISSUE_COMMENTS_JSON='[{"created_at":"2026-07-30T20:00:02Z","body":"<!-- stale-recovery-tick:escalated (threshold=2) -->"}]'
+	run_auto_approve
+	if grep -q -- '^24479 owner/repo blocked --remove-label needs-maintainer-review$' "$STATUS_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- '--add-label auto-dispatch\|hold-for-review' "$STATUS_CALLS_FILE" "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "machine blocker preserves no-auto-dispatch while converging status:blocked" 0
+	else
+		print_result "machine blocker preserves no-auto-dispatch while converging status:blocked" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_resolved_breaker_preserves_active_status() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:in-review"},{"name":"auto-dispatch"}]'
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	_NMR_FORCE_AVAILABLE=1
+	_nmr_restore_dispatchable_state 24479 owner/repo
+	if [[ ! -s "$STATUS_CALLS_FILE" ]] \
+		&& grep -q -- '--remove-label needs-maintainer-review --add-label auto-dispatch' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "resolved breaker retry preserves active lifecycle status" 0
+	else
+		print_result "resolved breaker retry preserves active lifecycle status" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_resolved_breaker_recovers_blocked_status() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:blocked"},{"name":"auto-dispatch"}]'
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	_NMR_FORCE_AVAILABLE=1
+	_nmr_restore_dispatchable_state 24479 owner/repo
+	if grep -q -- '^24479 owner/repo available --remove-label needs-maintainer-review --add-label auto-dispatch$' "$STATUS_CALLS_FILE" 2>/dev/null; then
+		print_result "resolved breaker retry restores status:available from blocked" 0
+	else
+		print_result "resolved breaker retry restores status:available from blocked" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_comments_failure_defers_trusted_cleanup() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export COMMENTS_API_FAIL=1
+	run_auto_approve
+	if [[ ! -s "$STATUS_CALLS_FILE" && ! -s "$ISSUE_EDIT_CALLS_FILE" && ! -s "$POSTED_COMMENT" ]]; then
+		print_result "comment evidence failure defers trusted cleanup without manufacturing a hold" 0
+	else
+		print_result "comment evidence failure defers trusted cleanup without manufacturing a hold" 1 \
+			"comment=$(<"$POSTED_COMMENT") status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_timeline_failure_defers_trusted_cleanup() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"}]'
+	export TIMELINE_API_FAIL=1
+	run_auto_approve
+	if [[ ! -s "$STATUS_CALLS_FILE" && ! -s "$ISSUE_EDIT_CALLS_FILE" && ! -s "$POSTED_COMMENT" ]]; then
+		print_result "timeline evidence failure defers trusted cleanup without manufacturing a hold" 0
+	else
+		print_result "timeline evidence failure defers trusted cleanup without manufacturing a hold" 1 \
+			"comment=$(<"$POSTED_COMMENT") status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_decision_packet_is_idempotent_across_pages() {
 	setup_test_env
 	export ISSUE_COMMENTS_JSON='[[{"body":"unrelated"}],[{"body":"<!-- nmr-decision-packet reason=security -->"}]]'
@@ -386,6 +511,21 @@ test_decision_packet_is_idempotent_across_pages() {
 		print_result "paginated prior decision packet suppresses duplicate comment" 0
 	else
 		print_result "paginated prior decision packet suppresses duplicate comment" 1 "comment=$(<"$POSTED_COMMENT")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_decision_packet_defers_when_comments_unavailable() {
+	setup_test_env
+	export COMMENTS_API_FAIL=1
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	_nmr_emit_decision_packet 24479 owner/repo security
+	if [[ ! -s "$POSTED_COMMENT" ]]; then
+		print_result "decision packet does not duplicate when comments are unavailable" 0
+	else
+		print_result "decision packet does not duplicate when comments are unavailable" 1 "comment=$(<"$POSTED_COMMENT")"
 	fi
 	teardown_test_env
 	return 0
@@ -432,7 +572,15 @@ main() {
 	test_trusted_clear_preserves_active_status
 	test_trusted_clear_preserves_existing_explicit_hold
 	test_legacy_breaker_becomes_structural_block
+	test_cost_breaker_becomes_structural_block
+	test_breaker_preserves_hold_while_setting_blocked
+	test_breaker_preserves_no_auto_while_setting_blocked
+	test_resolved_breaker_preserves_active_status
+	test_resolved_breaker_recovers_blocked_status
+	test_comments_failure_defers_trusted_cleanup
+	test_timeline_failure_defers_trusted_cleanup
 	test_decision_packet_is_idempotent_across_pages
+	test_decision_packet_defers_when_comments_unavailable
 	test_ever_nmr_history_bypasses_self_approval_for_trusted_author
 	test_ever_nmr_history_still_blocks_external_author
 	printf '\nTests run: %d\n' "$TESTS_RUN"
