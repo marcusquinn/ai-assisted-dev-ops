@@ -17,7 +17,7 @@ changing a matrix row to **Live**.
 | 3 | Stack Exchange ([#29223](https://github.com/marcusquinn/aidevops/issues/29223)) | API v2.3 | Network account plus per-site identity; mandatory backoff and per-site checkpoints. |
 | 4 | Miniflux ([#29224](https://github.com/marcusquinn/aidevops/issues/29224)) | Official self-hosted API | GET-only local allowlist because API keys are not read-only scoped. |
 | 5 | Readwise Reader ([#29225](https://github.com/marcusquinn/aidevops/issues/29225)) | Official Reader API | Token validation lacks a stable account identifier; deployment must bind an expected account independently. |
-| 6 | FreshRSS ([#29226](https://github.com/marcusquinn/aidevops/issues/29226)) | Google Reader API plus OPML | Dedicated API password is mutation-capable; Fever is fallback-only. |
+| 6 | FreshRSS ([#29350](https://github.com/marcusquinn/aidevops/issues/29350)) | Google Reader API plus OPML | Dedicated API password is mutation-capable; Fever is fallback-only. |
 | 7 | Lemmy ([#29227](https://github.com/marcusquinn/aidevops/issues/29227)) | Version-gated v4/v3 APIs | Numeric IDs are instance-local; v4 cursors and features must not be assumed on v3. |
 | 8 | Hacker News ([#29228](https://github.com/marcusquinn/aidevops/issues/29228)) | Public Firebase API | Public submitted-item history only; no authenticated or private account state. |
 

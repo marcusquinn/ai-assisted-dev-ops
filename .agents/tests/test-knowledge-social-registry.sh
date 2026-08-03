@@ -43,6 +43,7 @@ expected = {
     "binance-square": ("no-route",),
     "discord": ("live",),
     "forem": ("live",),
+    "freshrss": ("live",),
     "github": ("live",),
     "hacker-news": ("live",),
     "hashnode": ("live",),
@@ -102,14 +103,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("20:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("21:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "20:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "21:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "20"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "21"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
@@ -134,6 +135,20 @@ if [[ "$hashnode_sync_help" == *"bounded, read-only Hashnode account stream"* ]]
 	assert_eq "Hashnode helper executes the same guarded local adapter" canonical canonical
 else
 	assert_eq "Hashnode helper executes the same guarded local adapter" unexpected canonical
+fi
+
+freshrss_help=$("$HELPER" provider-run --provider freshrss --mode live -- --help 2>&1)
+if [[ "$freshrss_help" == *"Collect one bounded FreshRSS account stream"* ]]; then
+	assert_eq "FreshRSS registry executes only the guarded local adapter" canonical canonical
+else
+	assert_eq "FreshRSS registry executes only the guarded local adapter" unexpected canonical
+fi
+
+freshrss_sync_help=$("$HELPER" sync-freshrss --help 2>&1)
+if [[ "$freshrss_sync_help" == *"Collect one bounded FreshRSS account stream"* ]]; then
+	assert_eq "FreshRSS helper executes the same guarded local adapter" canonical canonical
+else
+	assert_eq "FreshRSS helper executes the same guarded local adapter" unexpected canonical
 fi
 
 patreon_help=$("$HELPER" provider-run --provider patreon --mode live -- --help 2>&1)

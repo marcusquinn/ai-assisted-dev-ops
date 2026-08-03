@@ -40,11 +40,12 @@ rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
-Readwise Reader #29225, Lemmy #29227, public-only Hacker News #29228, and
-Hashnode #29323 are now live. FreshRSS #29226 is the remaining ranked child. Each
-route owns its identity contract, stream allowlist, checkpoint semantics, and
-negative write-reachability tests. Raindrop.io remains optional; Inoreader,
-Wallabag, Feedly, Instapaper, and Pocket are deferred or rejected for the reasons in
+Readwise Reader #29225, FreshRSS #29350, Lemmy #29227, public-only
+Hacker News #29228, and Hashnode #29323 are now live. Each route owns its
+identity contract, stream allowlist, checkpoint semantics, and negative
+write-reachability tests.
+Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and Pocket
+are deferred or rejected for the reasons in
 `.agents/content/social-provider-candidates.md`.
 
 The maintained planning and gap inventory is
@@ -144,6 +145,16 @@ ascending ID; later runs use `changed_after` with a one-second overlap. Only fiv
 exact GET routes are reachable despite mutation-capable API keys. Operator cleanup,
 pre-retention state, complete archives, and deletion inference remain explicit
 gaps. Details: `.agents/content/social-miniflux.md`.
+
+FreshRSS collection allows only the non-mutating Google Reader ClientLogin POST,
+then binds `user-info` identity to a keyed exact HTTPS installation before every
+GET-only data page. Items, unread, starred, subscriptions, folders, tags, and
+OPML have independent checkpoints; item pages preserve opaque continuations and
+overlap incremental timestamps by one second. A 20-request-unit invocation fuse,
+page item cap, response byte cap, and continuation-cycle detection bound replay.
+Modification tokens and write routes are unreachable. Fever remains fallback-only
+evidence rather than a live route because its current authentication requires a
+POST on a mutation-capable endpoint. Details: `.agents/content/social-freshrss.md`.
 
 Readwise Reader collection compensates for `/api/v2/auth/` returning no stable
 account ID by requiring a deployment-owned account identifier and keyed expected
