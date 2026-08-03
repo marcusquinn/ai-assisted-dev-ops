@@ -517,20 +517,18 @@ _ratchet_write_json_atomically() {
 }
 
 # _ratchet_snapshot_matches: detect a no-op snapshot update.
-# Arguments: $1=baseline_file $2=source_commit $3=scripts_tree $4=base_commit
-#            $5=current_counts
+# Arguments: $1=baseline_file $2=scripts_tree $3=base_commit $4=current_counts
 # Returns: 0 when all deterministic snapshot fields already match.
 _ratchet_snapshot_matches() {
 	local baseline_file="$1"
-	local source_commit="$2"
-	local scripts_tree="$3"
-	local base_commit="$4"
-	local current_counts="$5"
+	local scripts_tree="$2"
+	local base_commit="$3"
+	local current_counts="$4"
 	jq -e --argjson schema "$RATCHET_SCHEMA_VERSION" --argjson counter "$RATCHET_COUNTER_VERSION" \
-		--arg source "$source_commit" --arg tree "$scripts_tree" --arg base "$base_commit" --arg counts "$current_counts" '
+		--arg tree "$scripts_tree" --arg base "$base_commit" --arg counts "$current_counts" '
 		($counts | split(" ") | map(tonumber)) as $c |
 		.version == $schema and .counter_version == $counter and
-		.provenance.source_commit == $source and .provenance.scripts_tree == $tree and
+		.provenance.scripts_tree == $tree and
 		.provenance.comparison_base_commit == $base and
 		.provenance.migration.previous_counts != null and .provenance.migration.migrated_counts != null and
 		.ratchets.bare_positional_params.count == $c[0] and
@@ -626,8 +624,8 @@ _ratchet_write_baseline() {
 		print_error "Ratchets: working-tree counts [${current_counts}] do not match committed source ${source_commit} [${verified_counts}]"
 		return 1
 	fi
-	if [[ -f "$baseline_file" ]] && _ratchet_snapshot_matches "$baseline_file" "$source_commit" "$scripts_tree" "$base_commit" "$current_counts"; then
-		print_success "Ratchets: baseline provenance already matches ${source_commit}; no update needed"
+	if [[ -f "$baseline_file" ]] && _ratchet_snapshot_matches "$baseline_file" "$scripts_tree" "$base_commit" "$current_counts"; then
+		print_success "Ratchets: baseline provenance already matches scripts tree ${scripts_tree}; no update needed"
 		return 0
 	fi
 

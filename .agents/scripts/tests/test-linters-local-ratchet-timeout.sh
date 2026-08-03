@@ -210,7 +210,7 @@ test_snapshot_match_detects_idempotent_update() {
 	rendered=$(_ratchet_build_baseline_json "2026-08-03T00:00:00Z" "source-sha" "tree-sha" "base-sha" \
 		"1 2 3 4 5" 1 1 "previous-sha" "2026-04-04T00:00:00Z" "0 1 2 3 4" "$migration")
 	printf '%s\n' "$rendered" >"$baseline_file"
-	_ratchet_snapshot_matches "$baseline_file" "source-sha" "tree-sha" "base-sha" "1 2 3 4 5" || ret=$?
+	_ratchet_snapshot_matches "$baseline_file" "tree-sha" "base-sha" "1 2 3 4 5" || ret=$?
 	if [[ "$ret" -eq 0 ]]; then
 		print_result "ratchet migration: identical snapshot is a no-op" 0
 	else
