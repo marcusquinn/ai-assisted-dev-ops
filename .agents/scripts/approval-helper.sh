@@ -1006,6 +1006,10 @@ _approve_target() {
 	fi
 
 	if ! _post_issue_approval_updates "$target_type" "$target_number" "$slug"; then
+		# The signed comment already passed current-state verification. Queue the
+		# bounded reconciliation path even when synchronous lifecycle writes race
+		# label-protection automation or hit a transient API failure.
+		_kick_pulse_after_approval "$target_type" "$target_number" "$slug"
 		_print_error "Approval signed, but post-approval protection updates did not reach the required state"
 		return 1
 	fi

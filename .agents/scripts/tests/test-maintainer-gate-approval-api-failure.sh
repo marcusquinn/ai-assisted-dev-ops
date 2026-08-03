@@ -72,12 +72,12 @@ if [[ "${1:-}" == "api" && "$*" == *"/comments"* ]]; then
 	case "${GH_SCENARIO:-}" in
 		issue-api-failure|pr-approval-failure) exit 1 ;;
 		issue-invalid|pr-invalid) printf '{"message":"rate limited"}\n'; exit 0 ;;
-		issue-signed|pr-signed) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"maintainer"},"author_association":"OWNER"}]]\n'; exit 0 ;;
-		issue-other-maintainer|pr-other-maintainer) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"owner"},"author_association":"OWNER"}]]\n'; exit 0 ;;
-		issue-collab|pr-collab|issue-permission-failure|pr-permission-failure) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"trusted-collab"},"author_association":"COLLABORATOR"}]]\n'; exit 0 ;;
-		issue-forged|pr-forged) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"external"},"author_association":"NONE"}]]\n'; exit 0 ;;
-		issue-bot|pr-bot) printf '[[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"github-actions[bot]"},"author_association":"NONE"}]]\n'; exit 0 ;;
-		issue-unsigned|pr-unsigned) printf '[[]]\n'; exit 0 ;;
+		issue-signed|pr-signed) printf '[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"maintainer"},"author_association":"OWNER"}]\n'; exit 0 ;;
+		issue-other-maintainer|pr-other-maintainer) printf '[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"owner"},"author_association":"OWNER"}]\n'; exit 0 ;;
+		issue-collab|pr-collab|issue-permission-failure|pr-permission-failure) printf '[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"trusted-collab"},"author_association":"COLLABORATOR"}]\n'; exit 0 ;;
+		issue-forged|pr-forged) printf '[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"external"},"author_association":"NONE"}]\n'; exit 0 ;;
+		issue-bot|pr-bot) printf '[{"body":"<!-- aidevops-signed-approval -->","user":{"login":"github-actions[bot]"},"author_association":"NONE"}]\n'; exit 0 ;;
+		issue-unsigned|pr-unsigned) printf '[]\n'; exit 0 ;;
 	esac
 fi
 
@@ -358,6 +358,18 @@ EOF
 	return 0
 }
 
+test_workflow_uses_explicit_page_aggregation() {
+	local workflow_source=""
+	workflow_source=$(<"$WORKFLOW_FILE")
+	if [[ "$workflow_source" == *"set -o pipefail; gh api --paginate"* ]] &&
+		[[ "$workflow_source" == *"| jq -s '.'"* ]]; then
+		print_result "maintainer gate aggregates paginated pages with pipeline failure propagation" 0
+	else
+		print_result "maintainer gate aggregates paginated pages with pipeline failure propagation" 1 "missing explicit fail-closed page aggregation"
+	fi
+	return 0
+}
+
 main() {
 	setup_test_env
 	trap teardown_test_env EXIT
@@ -365,6 +377,7 @@ main() {
 	test_pr_approval_paths
 	test_live_pr_nmr_blocks_before_comments
 	test_slurp_and_jq_are_separate
+	test_workflow_uses_explicit_page_aggregation
 	printf '\nTests run: %d\nTests failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then
 		return 1

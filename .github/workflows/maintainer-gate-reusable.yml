@@ -672,8 +672,8 @@ jobs:
           # actor who removed the label. Any lookup uncertainty restores the
           # existing hold instead of converting missing evidence into authority.
           APPROVAL_COMMENTS=""
-          if ! APPROVAL_COMMENTS=$(gh api --paginate --slurp \
-            "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null); then
+          if ! APPROVAL_COMMENTS=$(set -o pipefail; gh api --paginate \
+            "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" | jq -s '.'); then
             echo "::error::Unable to read approval comments for issue #$ISSUE_NUMBER — restoring NMR"
           else
             APPROVAL_RC=0
@@ -695,8 +695,8 @@ jobs:
           # Post a comment explaining why
           NOTICE_COMMENTS=""
           EXISTING=""
-          if ! NOTICE_COMMENTS=$(gh api --paginate --slurp \
-            "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null); then
+          if ! NOTICE_COMMENTS=$(set -o pipefail; gh api --paginate \
+            "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" | jq -s '.'); then
             echo "::warning::Unable to check for an existing label-protection notice — skipping comment"
             exit 0
           fi
@@ -1124,8 +1124,8 @@ jobs:
           # the label-removal actor; bot identity, malformed data, and lookup
           # uncertainty restore NMR.
           APPROVAL_COMMENTS=""
-          if ! APPROVAL_COMMENTS=$(gh api --paginate --slurp \
-            "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null); then
+          if ! APPROVAL_COMMENTS=$(set -o pipefail; gh api --paginate \
+            "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s '.'); then
             echo "::error::Unable to read approval comments for PR #$PR_NUMBER — restoring NMR"
           else
             APPROVAL_RC=0
@@ -1147,8 +1147,8 @@ jobs:
           # Post a comment explaining why (only once)
           NOTICE_COMMENTS=""
           EXISTING=""
-          if ! NOTICE_COMMENTS=$(gh api --paginate --slurp \
-            "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null); then
+          if ! NOTICE_COMMENTS=$(set -o pipefail; gh api --paginate \
+            "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s '.'); then
             echo "::warning::Unable to check for an existing PR label-protection notice — skipping comment"
             exit 0
           fi

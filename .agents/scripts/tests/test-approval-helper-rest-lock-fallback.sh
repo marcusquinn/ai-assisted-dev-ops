@@ -279,12 +279,12 @@ run_case "post-approval protection failure blocks final success" '
 	gh_issue_comment() { return 0; }
 	cmd_verify() { printf "VERIFIED"; return 0; }
 	_post_issue_approval_updates() { return 1; }
-	_kick_pulse_after_approval() { printf "SHOULD_NOT_KICK"; return 0; }
+	_kick_pulse_after_approval() { printf "KICKED_RECONCILIATION"; return 0; }
 	_approve_target issue 123 marcusquinn/aidevops
 ' 1
 assert_contains "post-approval failure suppresses final success" "$LAST_OUTPUT" "post-approval protection updates did not reach the required state"
 assert_not_contains "post-approval failure does not print success" "$LAST_OUTPUT" "Issue #123 approved and signed"
-assert_not_contains "post-approval failure does not kick pulse" "$LAST_OUTPUT" "SHOULD_NOT_KICK"
+assert_contains "post-approval failure queues bounded reconciliation" "$LAST_OUTPUT" "KICKED_RECONCILIATION"
 
 # GH#28717: target reconciliation accepts only the current authenticated actor's
 # signed comment when that actor has maintainer-equivalent authority.
