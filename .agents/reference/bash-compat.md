@@ -62,6 +62,11 @@ Regression pattern: a fix for one axis breaks the other. Recent production failu
 
 **Test both platforms before merging.** ShellCheck catches neither axis — manual review and regression tests required.
 
+CI also runs `.agents/scripts/platform-fix-regression-evidence.sh`: PRs that
+claim Linux/macOS or coreutils portability fixes must update a targeted test or
+include a substantive `## Regression Evidence` rationale. Documentation-only
+changes are exempt; see `todo/plans/shell-portability-hardening.md` for context.
+
 ## Bash 3.2 Compatibility (macOS default shell)
 
 macOS ships bash 3.2.57. All shell scripts MUST work on this version.

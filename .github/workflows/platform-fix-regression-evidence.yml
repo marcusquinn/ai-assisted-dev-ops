@@ -1,0 +1,39 @@
+name: Platform Fix Regression Evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  regression-evidence:
+    name: Platform Fix Regression Evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+
+      - name: Collect pull request metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          gh api --paginate \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            --jq '.[].filename' > "$RUNNER_TEMP/pr-files.txt"
+
+      - name: Require regression evidence for platform fixes
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          bash .agents/scripts/platform-fix-regression-evidence.sh \
+            --title "$PR_TITLE" \
+            --body-file "$RUNNER_TEMP/pr-body.md" \
+            --files-file "$RUNNER_TEMP/pr-files.txt"
