@@ -36,8 +36,9 @@
 #   --full              Release-boundary path: run every gate without cache/time-budget downgrade
 #   --strict            Make ratchet failures and broad-gate timeouts blocking
 # Ratchet flags:
-#   --update-baseline   Re-count all patterns and write new ratchets.json baseline
+#   --update-baseline   Record only same/lower committed compatibility counts
 #   --init-baseline     Same as --update-baseline (alias for first-time setup)
+#   --migrate-baseline  Explicit schema/count migration; requires evidence env vars
 #   --strict            Make ratchet failures blocking (default: advisory)
 #   --changed           Fast PR mode: run changed-file safety gates only
 #   --fast-pr           Alias for --changed
@@ -185,6 +186,10 @@ _linters_local_parse_args() {
 			;;
 		--update-baseline | --init-baseline)
 			export RATCHET_UPDATE_BASELINE=true
+			;;
+		--migrate-baseline)
+			export RATCHET_UPDATE_BASELINE=true
+			export RATCHET_ALLOW_MIGRATION=true
 			;;
 		--strict)
 			export RATCHET_STRICT=true
