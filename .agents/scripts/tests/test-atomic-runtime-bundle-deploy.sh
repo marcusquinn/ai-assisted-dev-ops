@@ -502,7 +502,7 @@ test_dependency_install_recovery_activates_candidate() {
 	[[ -f "$TEST_ROOT/npm-called" ]] || fail "missing dependencies invoke npm install"
 	pass "missing dependencies invoke npm install"
 	npm_calls=$(tr '\n' ' ' <"$TEST_ROOT/npm-called")
-	[[ "$npm_calls" == *"ci --omit=dev --omit=peer --prefer-offline --no-audit --no-fund --prefix "* ]] || \
+	[[ "$npm_calls" == *"ci --omit=dev --omit=peer --prefer-offline --no-audit --no-fund --prefix "* ]] ||
 		fail "dependency recovery did not use the exact lockfile install mode (calls: $npm_calls)"
 	pass "dependency recovery uses the exact lockfile install mode"
 	_runtime_bundle_activate "$target_dir" "$_AIDEVOPS_STAGED_BUNDLE_DIR"
