@@ -508,7 +508,7 @@ _ratchet_write_baseline() {
 	}
 	verified_counts=$(_ratchet_count_ref "$repo_root" "$source_commit") || return 1
 	if [[ "$verified_counts" != "$current_counts" ]]; then
-		print_error "Ratchets: working-tree counts do not match committed source ${source_commit}"
+		print_error "Ratchets: working-tree counts [${current_counts}] do not match committed source ${source_commit} [${verified_counts}]"
 		return 1
 	fi
 	if [[ -f "$baseline_file" ]] && _ratchet_snapshot_matches "$baseline_file" "$source_commit" "$scripts_tree" "$base_commit" "$current_counts"; then
