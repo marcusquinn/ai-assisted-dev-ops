@@ -106,6 +106,7 @@ write_fake_revision() {
 write_fake_plugin_manifest() {
 	mkdir -p "$FAKE_REPO/.agents/plugins/opencode-aidevops"
 	printf '{"name":"opencode-aidevops","type":"module"}\n' >"$FAKE_REPO/.agents/plugins/opencode-aidevops/package.json"
+	printf '{"name":"opencode-aidevops","lockfileVersion":3,"packages":{}}\n' >"$FAKE_REPO/.agents/plugins/opencode-aidevops/package-lock.json"
 	return 0
 }
 
@@ -478,7 +479,7 @@ install_mock_plugin_dependency_hooks() {
 	}
 
 	npm() {
-		printf '%s\n' "$MOCK_PLUGIN_VERIFY_MODE" >"$TEST_ROOT/npm-called"
+		printf '%s\n%s\n' "$MOCK_PLUGIN_VERIFY_MODE" "$*" >>"$TEST_ROOT/npm-called"
 		if [[ "$MOCK_PLUGIN_VERIFY_MODE" == "recover" ]]; then
 			printf 'installed\n' >"$TEST_ROOT/npm-install-complete"
 			return 0
@@ -491,6 +492,7 @@ install_mock_plugin_dependency_hooks() {
 
 test_dependency_install_recovery_activates_candidate() {
 	local target_dir="$HOME/.aidevops/agents"
+	local npm_calls=""
 	write_fake_revision "8.0.0" "dependency-recovery"
 	write_fake_plugin_manifest
 	MOCK_PLUGIN_VERIFY_MODE="recover"
@@ -499,8 +501,34 @@ test_dependency_install_recovery_activates_candidate() {
 	stage_revision "$target_dir"
 	[[ -f "$TEST_ROOT/npm-called" ]] || fail "missing dependencies invoke npm install"
 	pass "missing dependencies invoke npm install"
+	npm_calls=$(tr '\n' ' ' <"$TEST_ROOT/npm-called")
+	[[ "$npm_calls" == *"ci --omit=dev --omit=peer --prefer-offline --no-audit --no-fund --prefix "* ]] || \
+		fail "dependency recovery did not use the exact lockfile install mode (calls: $npm_calls)"
+	pass "dependency recovery uses the exact lockfile install mode"
 	_runtime_bundle_activate "$target_dir" "$_AIDEVOPS_STAGED_BUNDLE_DIR"
 	assert_eq "8.0.0" "$(tr -d '[:space:]' <"$target_dir/VERSION")" "dependency-complete candidate activates after install"
+	return 0
+}
+
+test_missing_dependency_lock_preserves_active_bundle() {
+	local target_dir="$HOME/.aidevops/agents"
+	local active_before=""
+	local active_after=""
+	active_before=$(_runtime_bundle_resolve_root "$target_dir")
+	write_fake_revision "8.1.0" "dependency-lock-missing"
+	write_fake_plugin_manifest
+	rm -f "$FAKE_REPO/.agents/plugins/opencode-aidevops/package-lock.json"
+	MOCK_PLUGIN_VERIFY_MODE="recover"
+	rm -f "$TEST_ROOT/npm-called" "$TEST_ROOT/npm-install-complete"
+
+	if stage_revision "$target_dir"; then
+		fail "plugin dependency install without a lockfile unexpectedly staged a bundle"
+	fi
+	[[ ! -f "$TEST_ROOT/npm-called" ]] || fail "missing dependency lockfile unexpectedly invoked npm"
+	pass "missing dependency lockfile blocks npm before resolution"
+	active_after=$(_runtime_bundle_resolve_root "$target_dir")
+	assert_eq "$active_before" "$active_after" "missing dependency lockfile preserves active bundle"
+	assert_eq "8.0.0" "$(tr -d '[:space:]' <"$target_dir/VERSION")" "lockless candidate never becomes active"
 	return 0
 }
 
@@ -637,6 +665,7 @@ main() {
 	test_plugin_dependency_smoke_check
 	install_mock_plugin_dependency_hooks
 	test_dependency_install_recovery_activates_candidate
+	test_missing_dependency_lock_preserves_active_bundle
 	test_dependency_install_failure_preserves_active_bundle
 	test_plist_override_survives_two_bundle_activations
 	test_serialized_older_version_refuses_global_activation

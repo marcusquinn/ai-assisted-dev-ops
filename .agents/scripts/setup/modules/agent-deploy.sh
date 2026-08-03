@@ -372,10 +372,12 @@ _verify_opencode_plugin_deps() {
 # GH#17829: @bufbuild/protobuf was missing; GH#17891: only symlink on first run.
 # Uses --omit=peer to skip the 630MB opencode-ai peer dep (the host app).
 # GH#27714: installation or import failure must block bundle activation.
+# GH#29313: a reviewed lockfile makes fallback installs exact and repeatable.
 _install_opencode_plugin_deps() {
 	local target_dir="$1"
 	local oc_node_modules="$HOME/.config/opencode/node_modules"
 	local plugin_dir="$target_dir/plugins/opencode-aidevops"
+	local lock_file="$plugin_dir/package-lock.json"
 	local install_log=""
 	local verify_output=""
 
@@ -398,14 +400,18 @@ _install_opencode_plugin_deps() {
 		print_error "Plugin dependencies are unavailable and npm is not installed: ${verify_output:-import failed}"
 		return 1
 	fi
+	if [[ ! -f "$lock_file" ]]; then
+		print_error "OpenCode plugin dependency lockfile is unavailable; runtime bundle activation blocked"
+		return 1
+	fi
 
-	# Remove the shared symlink so npm installs the declared versions locally.
+	# Remove the shared symlink so npm installs the reviewed versions locally.
 	[[ -L "$plugin_dir/node_modules" ]] && rm "$plugin_dir/node_modules"
 	install_log=$(mktemp "${TMPDIR:-/tmp}/aidevops-plugin-install.XXXXXX") || {
 		print_error "Failed to create the plugin dependency install log"
 		return 1
 	}
-	if ! npm install --omit=dev --omit=peer --prefix "$plugin_dir" >"$install_log" 2>&1; then
+	if ! npm ci --omit=dev --omit=peer --prefer-offline --no-audit --no-fund --prefix "$plugin_dir" >"$install_log" 2>&1; then
 		print_error "Failed to install OpenCode plugin dependencies; runtime bundle activation blocked"
 		tail -n 12 "$install_log" >&2
 		rm -f "$install_log"
