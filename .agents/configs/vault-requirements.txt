@@ -3,6 +3,6 @@
 
 # Dedicated aidevops Vault runtime. Exact pins keep the security boundary
 # reproducible without requiring the optional DSPy environment.
-cryptography==49.0.0
+cryptography==50.0.0
 cffi==2.1.0
 pycparser==3.0
