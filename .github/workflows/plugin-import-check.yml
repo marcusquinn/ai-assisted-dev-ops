@@ -12,6 +12,9 @@ on:
   pull_request:
     paths:
       - '.agents/plugins/**/*.mjs'
+      - '.agents/plugins/**/package.json'
+      - '.agents/plugins/**/package-lock.json'
+      - '.github/workflows/plugin-import-check.yml'
 
 permissions:
   contents: read
@@ -38,7 +41,11 @@ jobs:
           for plugin_dir in .agents/plugins/*/; do
             [ -f "${plugin_dir}package.json" ] || continue
             echo "Installing dependencies for: $plugin_dir"
-            npm install --prefix "$plugin_dir" --include=dev
+            if [ -f "${plugin_dir}package-lock.json" ]; then
+              npm ci --prefix "$plugin_dir" --include=dev --omit=peer
+            else
+              npm install --prefix "$plugin_dir" --include=dev
+            fi
           done
 
       - name: Check plugin import resolution
