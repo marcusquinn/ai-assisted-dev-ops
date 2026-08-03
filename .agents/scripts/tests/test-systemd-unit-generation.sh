@@ -148,13 +148,18 @@ WantedBy=multi-user.target
 	return 0
 }
 
-test_real_scheduler_unit_uses_control_group() {
+test_real_scheduler_units_verify() {
 	local tmpdir=""
 	local service_name="aidevops-killmode-test-$$"
 	local service_file=""
-	local kill_mode=""
+	local timer_file=""
+	local service_text=""
+	local timer_text=""
+	local verify_output=""
+	local rc=0
 	tmpdir=$(mktemp -d)
 	service_file="${tmpdir}/home/.config/systemd/user/${service_name}.service"
+	timer_file="${tmpdir}/home/.config/systemd/user/${service_name}.timer"
 	mkdir -p "${tmpdir}/bin" "${tmpdir}/home"
 	printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"${tmpdir}/bin/systemctl"
 	chmod +x "${tmpdir}/bin/systemctl"
@@ -165,15 +170,33 @@ test_real_scheduler_unit_uses_control_group() {
 		_install_scheduler_systemd "$service_name" "true" "60" \
 			"${tmpdir}/scheduler.log" "" "false" "false" "" "60" >/dev/null 2>&1 || true
 	)
-	kill_mode=$(grep -E '^KillMode=' "$service_file" 2>/dev/null || true)
-	rm -rf "$tmpdir"
 
-	if [[ "$kill_mode" == "KillMode=control-group" ]]; then
-		print_result "real shared scheduler unit uses control-group cleanup" 0
+	if [[ ! -f "$service_file" || ! -f "$timer_file" ]]; then
+		rc=1
 	else
-		print_result "real shared scheduler unit uses control-group cleanup" 1 \
-			"Expected KillMode=control-group, got: ${kill_mode:-missing}"
+		service_text=$(<"$service_file")
+		timer_text=$(<"$timer_file")
+		[[ "$service_text" == *"KillMode=control-group"* ]] || rc=1
+		[[ "$service_text" == *"ExecStart=/bin/bash -lc"* ]] || rc=1
+		[[ "$timer_text" == *"OnUnitActiveSec=60"* ]] || rc=1
+		[[ "$timer_text" == *"Persistent=true"* ]] || rc=1
+
+		if command -v systemd-analyze >/dev/null 2>&1; then
+			if ! verify_output=$(systemd-analyze verify "$service_file" "$timer_file" 2>&1); then
+				rc=1
+			fi
+		else
+			verify_output="systemd-analyze unavailable; static unit assertions used"
+		fi
 	fi
+
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "real shared scheduler service and timer verify" 0
+	else
+		print_result "real shared scheduler service and timer verify" 1 \
+			"service=${service_file}: ${service_text//$'\n'/ | }; timer=${timer_file}: ${timer_text//$'\n'/ | }; verify=${verify_output:-not run}"
+	fi
+	rm -rf "$tmpdir"
 	return 0
 }
 
@@ -587,7 +610,7 @@ test_cleanup_transient_failure_falls_back_once() {
 
 main() {
 	printf 'Running systemd unit generation tests...\n\n'
-	test_real_scheduler_unit_uses_control_group
+	test_real_scheduler_units_verify
 	test_standalone_templates_use_control_group
 
 	if systemd_analyze_available; then

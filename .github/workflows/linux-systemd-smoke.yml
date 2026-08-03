@@ -1,0 +1,46 @@
+name: Linux systemd smoke
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '.agents/scripts/**'
+      - '.github/workflows/linux-systemd-smoke.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.agents/scripts/**'
+      - '.github/workflows/linux-systemd-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-systemd-smoke:
+    name: Linux systemd smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Linux systemd smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tests=(
+            .agents/scripts/tests/test-systemd-unit-generation.sh
+            .agents/scripts/tests/test-routine-systemd-calendar.sh
+            .agents/scripts/tests/test-scheduler-dedup-linux.sh
+          )
+
+          for test_script in "${tests[@]}"; do
+            printf '\n==> %s\n' "$test_script"
+            if ! bash "$test_script"; then
+              printf '::error file=%s::Linux systemd smoke failed: %s\n' \
+                "$test_script" "$test_script"
+              exit 1
+            fi
+          done
