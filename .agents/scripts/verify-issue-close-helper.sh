@@ -73,7 +73,18 @@ extract_file_paths_from_text() {
 		paths="${paths}${dir_paths}"$'\n'
 	fi
 
-	# Pattern 2: Backtick-enclosed file references (e.g., `schedulers.sh`, `pulse-wrapper.sh:6098`)
+	# Pattern 2: Backtick-enclosed repository paths, including extensionless
+	# executables such as `.agents/scripts/gh`. Requiring a slash and restricting
+	# the first segment avoids treating URL hosts as repository paths.
+	local backtick_paths
+	# shellcheck disable=SC2016 # Literal backtick regex, not shell expansion.
+	backtick_paths=$(printf '%s' "$text" | grep -oE '`(\.[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/[a-zA-Z0-9._/-]+(:[0-9]+(-[0-9]+)?)?`' | tr -d '`' | sed 's/:[0-9]*\(-[0-9]*\)\{0,1\}$//' | sort -u || true)
+	if [[ -n "$backtick_paths" ]]; then
+		paths="${paths}${backtick_paths}"$'\n'
+	fi
+
+	# Pattern 3: Backtick-enclosed file references without directory separators
+	# (e.g., `schedulers.sh`, `pulse-wrapper.sh:6098`).
 	local backtick_files
 	# shellcheck disable=SC2016 # Literal backtick regex, not shell expansion.
 	backtick_files=$(printf '%s' "$text" | grep -oE '`[a-zA-Z0-9._/-]+\.(sh|ts|js|py|md|json|yaml|yml|toml|go|rs|tsx|jsx|css|html|sql|rb|php|java|c|h|cpp|hpp)(:[0-9]+(-[0-9]+)?)?`' | tr -d '`' | sed 's/:[0-9]*\(-[0-9]*\)\{0,1\}$//' | sort -u || true)
@@ -81,7 +92,7 @@ extract_file_paths_from_text() {
 		paths="${paths}${backtick_files}"$'\n'
 	fi
 
-	# Pattern 3: Bare filenames with common extensions mentioned outside backticks
+	# Pattern 4: Bare filenames with common extensions mentioned outside backticks
 	# More conservative — requires word boundaries
 	local bare_files
 	bare_files=$(printf '%s' "$text" | grep -oE '\b[a-zA-Z0-9_-]+\.(sh|ts|js|py|json|yaml|yml|toml|go|rs)\b' | sort -u || true)
