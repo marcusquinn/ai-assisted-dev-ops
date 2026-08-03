@@ -81,6 +81,43 @@ printf 'Test 0: OpenCode remains pinned to the last verified headless release\n'
 source "$SHARED_CONSTANTS"
 assert_eq "OpenCode headless regression pin" "1.18.9" "$OPENCODE_PINNED_VERSION"
 
+printf 'Test 0a: routine freshness treats the approved OpenCode pin as current\n'
+mkdir -p "$SANDBOX/routine-freshness/bin"
+printf '1.18.9\n' >"$SANDBOX/routine-freshness/opencode-version"
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/routine-freshness/bin/opencode" '#!/usr/bin/env bash
+version=$(<"'"$SANDBOX"'/routine-freshness/opencode-version")
+printf "%s\n" "$version"'
+for cli in claude codex repomix dspyground mcp-local-wp beads-ui bdui chrome-devtools-mcp playwriter macos-automator-mcp claude-code-mcp gws; do
+	write_executable "$SANDBOX/routine-freshness/bin/$cli" '#!/usr/bin/env bash
+printf "9.99.9\n"'
+done
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/routine-freshness/bin/npm" '#!/usr/bin/env bash
+case "${1:-}" in
+view) printf "9.99.9\n" ;;
+install) printf "%s\n" "$*" >>"'"$SANDBOX"'/routine-freshness/calls" ;;
+*) exit 1 ;;
+esac'
+routine_output=$(PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet)
+assert_eq "matching pin performs no routine update" "" "$routine_output"
+assert_eq "matching pin executes no install command" "0" "$([[ -f "$SANDBOX/routine-freshness/calls" ]] && wc -l <"$SANDBOX/routine-freshness/calls" || printf '0\n')"
+
+routine_json=$(PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --json)
+opencode_json=$(printf '%s\n' "$routine_json" | grep '"name": "OpenCode"')
+assert_eq "registry release remains visible for pinned OpenCode" "1" "$([[ "$opencode_json" == *'"latest": "9.99.9", "status": "up_to_date"'* ]] && printf '1\n' || printf '0\n')"
+
+printf 'Test 0b: routine freshness repairs genuine drift from the OpenCode pin\n'
+printf '1.18.8\n' >"$SANDBOX/routine-freshness/opencode-version"
+PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet >/dev/null
+assert_eq "drift repair installs the approved pin" "install -g opencode-ai@1.18.9" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
+
+printf 'Test 0c: routine freshness restores versions newer than the safety pin\n'
+: >"$SANDBOX/routine-freshness/calls"
+printf '1.19.0\n' >"$SANDBOX/routine-freshness/opencode-version"
+PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet >/dev/null
+assert_eq "newer drift is restored to the approved pin" "install -g opencode-ai@1.18.9" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
+
 printf 'Test 1: Homebrew OpenCode chooses brew instead of npm\n'
 mkdir -p "$SANDBOX/opt/homebrew/bin" "$SANDBOX/opt/homebrew/Cellar/opencode/1.15.10/bin" "$SANDBOX/opt/homebrew/opt" "$SANDBOX/homebrew-case"
 write_executable "$SANDBOX/opt/homebrew/Cellar/opencode/1.15.10/bin/opencode" '#!/usr/bin/env bash

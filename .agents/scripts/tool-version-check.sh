@@ -450,6 +450,17 @@ _classify_tool_status() {
 	local class_icon="✓"
 	local class_color="$GREEN"
 	local effective_latest="$latest_val"
+	local approved_version="$latest_val"
+	local enforce_exact_version=false
+
+	# OpenCode may be deliberately pinned below the registry release. Keep the
+	# registry value for awareness, but classify and repair against the approved
+	# pin so an already-correct install is not repeatedly reinstalled. Unlike a
+	# normal upgrade check, any drift from the safety pin is actionable.
+	if [[ "$cmd" == "opencode" && "$OPENCODE_PINNED_VERSION" != "latest" ]]; then
+		approved_version="$OPENCODE_PINNED_VERSION"
+		enforce_exact_version=true
+	fi
 
 	if [[ "$cmd" == "gh" && "$installed" != "not installed" ]] && ! aidevops_gh_slurp_supported; then
 		class_status="minimum_required"
@@ -468,15 +479,17 @@ _classify_tool_status() {
 		class_icon="⏱"
 		class_color="$RED"
 		((++TIMEOUT_COUNT))
-	elif [[ "$installed" == "unknown" || "$latest_val" == "unknown" ]]; then
+	elif [[ "$installed" == "unknown" || "$approved_version" == "unknown" ]]; then
 		class_status="unknown"
 		class_icon="?"
 		class_color="$YELLOW"
 		((++UNKNOWN_COUNT))
-	elif [[ "$installed" != "$latest_val" ]] && version_lt "$installed" "$latest_val"; then
+	elif [[ "$installed" != "$approved_version" ]] &&
+		{ [[ "$enforce_exact_version" == "true" ]] || version_lt "$installed" "$approved_version"; }; then
 		class_status="outdated"
 		class_icon="⬆"
 		class_color="$RED"
+		effective_latest="$approved_version"
 		((++OUTDATED_COUNT))
 		OUTDATED_PACKAGES+=("$update_cmd")
 	else
