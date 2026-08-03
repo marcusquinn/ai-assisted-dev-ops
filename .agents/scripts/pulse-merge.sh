@@ -321,6 +321,24 @@ _handle_changes_requested_review_gate() {
 	fi
 
 	local _cr_label_list=",${_cr_pr_labels},"
+	# GH#29288: a completed CI-repair route followed by a completed review route
+	# leaves an open worker PR that neither pipeline can own. Once required CI has
+	# healed, surface that dual-failure state for a maintainer instead of silently
+	# repeating the CHANGES_REQUESTED skip forever. Adding the conservative label
+	# never clears the review or weakens any merge gate.
+	if [[ "$_cr_label_list" == *",ci-feedback-routed,"* \
+		&& "$_cr_label_list" == *",review-routed-to-issue,"* \
+		&& "$_cr_label_list" != *",needs-maintainer-review,"* ]] \
+		&& declare -F _check_required_checks_passing >/dev/null 2>&1 \
+		&& _check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1; then
+		if gh api --silent "repos/${repo_slug}/issues/${pr_number}/labels" \
+			-X POST -f 'labels[]=needs-maintainer-review'; then
+			echo "[pulse-merge] stalled PR #${pr_number} in ${repo_slug} — dual-failure state (ci-feedback-routed + review-routed-to-issue) with required CI green: flagging for maintainer (GH#29288)" >>"$LOGFILE"
+		else
+			echo "[pulse-merge] stalled PR #${pr_number} in ${repo_slug} — dual-failure state detected but needs-maintainer-review label write failed (GH#29288)" >>"$LOGFILE"
+		fi
+		return 1
+	fi
 	# Optional policy override (GH#26535): by default CHANGES_REQUESTED worker
 	# PRs keep the historical fast-routing behaviour below. Operators who prefer
 	# preserving the PR/review context can opt in to a remediation-first cycle.
