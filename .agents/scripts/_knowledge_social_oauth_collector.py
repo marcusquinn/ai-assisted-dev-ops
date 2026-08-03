@@ -103,6 +103,7 @@ class OAuthCollectorPolicy:
     max_page_size: int = 50
     identity_cost_units: int = IDENTITY_COST_UNITS
     max_budget: int = 1000
+    preflight: Callable[[argparse.Namespace], None] | None = None
 
 
 @dataclass
@@ -253,6 +254,8 @@ class OAuthCollector:
         collector_id: str,
     ) -> dict[str, Any]:
         del args
+        if self.policy.preflight is not None:
+            self.policy.preflight(self.args)
         connection_id = validate_opaque(self.args.connection_id, "connection_id")
         account_id = validate_opaque(self.args.account_id, "account_id")
         lease = acquire_run_lease(

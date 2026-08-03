@@ -37,6 +37,7 @@ api.aigateway.com
 api.anthropic.com
 api.app.outscraper.com
 api.au.snyk.io
+api.beehiiv.com
 api.blocklist.de
 api.builtwith.com
 api.capsolver.com

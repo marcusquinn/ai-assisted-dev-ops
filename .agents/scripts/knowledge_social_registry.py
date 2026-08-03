@@ -36,6 +36,7 @@ PROVIDER_SPECS = (
         "knowledge_social_bluesky.py",
         (("live", ()),),
     ),
+    ProviderSpec("beehiiv", (), "knowledge_social_beehiiv.py", (("live", ()),)),
     ProviderSpec("binance-square", (), None, (("no-route", ()),)),
     ProviderSpec("discord", (), "knowledge_social_discord.py", (("live", ()),)),
     ProviderSpec(

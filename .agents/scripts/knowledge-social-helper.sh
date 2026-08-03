@@ -25,6 +25,7 @@ HASHNODE_HELPER="${SCRIPT_DIR}/knowledge_social_hashnode.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
 FRESHRSS_HELPER="${SCRIPT_DIR}/knowledge_social_freshrss.py"
 READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
+BEEHIIV_HELPER="${SCRIPT_DIR}/knowledge_social_beehiiv.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
@@ -90,6 +91,14 @@ Readwise Reader synchronization:
   token binding before fixed-origin token validation. Seven GET-only streams use
   opaque cursors and one-second updatedAfter overlap. The per-invocation request
   budget is 3-19 to remain below the documented 20/minute limit.
+
+beehiiv synchronization:
+  sync-beehiiv requires a creator-ownership attestation bound to one expected
+  publication ID, name, and organization, plus a credential that exposes exactly
+  that publication. The fixed-origin API v2 route collects confirmed posts and
+  paywall-enforced free web content only.
+  Subscriber PII, segments, engagement stats, premium content, redirects, and
+  every mutation route are excluded. --budget is 3-59 and pages are 1-100 items.
 
 EOF
 	return 0
@@ -309,8 +318,19 @@ EOF
 	return 0
 }
 
+usage_beehiiv_command() {
+	cat <<'EOF'
+  knowledge-social-helper.sh sync-beehiiv [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id PUBLICATION_ID --stream posts \
+    --profile PROFILE [--budget 3-59] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+EOF
+	return 0
+}
+
 usage() {
 	usage_commands
+	usage_beehiiv_command
 	usage_operations
 	cat <<'EOF'
   knowledge-social-helper.sh identity-export [--base PATH] [--vault-dir DIR] --output FILE
@@ -489,6 +509,7 @@ run_named_provider_sync() {
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
 	sync-freshrss) run_provider_sync FreshRSS "$FRESHRSS_HELPER" "$@" || return 1 ;;
 	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
+	sync-beehiiv) run_provider_sync beehiiv "$BEEHIIV_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -568,7 +589,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-patreon | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-freshrss | sync-readwise-reader)
+	sync-meta | sync-patreon | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-freshrss | sync-readwise-reader | sync-beehiiv)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

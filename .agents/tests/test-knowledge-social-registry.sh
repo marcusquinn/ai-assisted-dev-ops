@@ -39,6 +39,7 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 expected = {
+    "beehiiv": ("live",),
     "bluesky": ("live",),
     "binance-square": ("no-route",),
     "discord": ("live",),
@@ -103,14 +104,14 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("21:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("22:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "21:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "22:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "21"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "22"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
@@ -149,6 +150,13 @@ if [[ "$freshrss_sync_help" == *"Collect one bounded FreshRSS account stream"* ]
 	assert_eq "FreshRSS helper executes the same guarded local adapter" canonical canonical
 else
 	assert_eq "FreshRSS helper executes the same guarded local adapter" unexpected canonical
+fi
+
+beehiiv_help=$("$HELPER" provider-run --provider beehiiv --mode live -- --help 2>&1)
+if [[ "$beehiiv_help" == *"Collect one bounded, creator-owned beehiiv publication post stream"* ]]; then
+	assert_eq "beehiiv registry executes only the guarded local adapter" canonical canonical
+else
+	assert_eq "beehiiv registry executes only the guarded local adapter" unexpected canonical
 fi
 
 patreon_help=$("$HELPER" provider-run --provider patreon --mode live -- --help 2>&1)

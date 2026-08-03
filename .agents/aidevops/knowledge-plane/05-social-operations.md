@@ -41,8 +41,8 @@ rows. Replay preserves both evidence and projection IDs.
 Candidate implementation is provider-specific, not one generic social adapter.
 Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
 Readwise Reader #29225, FreshRSS #29350, Lemmy #29227, public-only
-Hacker News #29228, and Hashnode #29323 are now live. Each route owns its
-identity contract, stream allowlist, checkpoint semantics, and negative
+Hacker News #29228, Hashnode #29323, and beehiiv #29319 are now live. Each route
+owns its identity contract, stream allowlist, checkpoint semantics, and negative
 write-reachability tests.
 Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and Pocket
 are deferred or rejected for the reasons in
@@ -174,6 +174,17 @@ addresses, direct provider member IDs, and patron-owned memberships are never
 requested or persisted. The invocation cap is 99 requests, below the documented
 per-token minute limit. Creator CSV export remains unwired because Patreon does
 not publish a versioned import schema. Details: `.agents/content/social-patreon.md`.
+
+beehiiv collection requires an explicit creator-ownership attestation, then binds
+the configured `pub_...` ID, publication name, and organization name to a
+credential whose `GET /v2/publications` result exposes exactly that publication
+before every page. Confirmed posts and their
+paywall-enforced free web HTML use bounded API-v2 offset pages; the current post
+endpoint documents page numbers rather than the API's preferred opaque cursor
+shape, so the collector caps the route at page 100 and records partial coverage.
+Subscriber records, segments, engagement statistics, premium content, remote
+media, exports, redirects, and mutations are unreachable. Details:
+`.agents/content/social-beehiiv.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and

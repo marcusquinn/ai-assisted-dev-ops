@@ -39,6 +39,7 @@ a claim that the route is enabled.
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Patreon | **Live/Gate** creator campaign posts | **No** patron curation or creator-side interaction history | **No** messages, comments, or mentions | **Live/Gate** minimized current creator memberships; **No** patron-owned memberships or subscriptions | **Live** creator campaigns, tiers, and benefits | Creator-owned campaign allowlist, exact read scopes, identity and ownership recheck, 99-request cap, opaque cursors, and a membership-services purpose gate; no patron-account collection. |
+| beehiiv | **Gate/Live/Partial/Export** confirmed posts and paywall-enforced free web content; **Export** drafts and archives | **No** subscriber-derived engagement statistics | **No** | **Gate/Export/No** subscriber records are excluded pending an explicit PII need and authorization | **Gate/No** segments and newsletter-list membership expose audience structure and are not collected | Explicit creator-ownership attestation plus one expected, singly visible publication; exact GET-only API-v2 routes, bounded page replay, 100-page cap, and no subscriber PII, premium expansion, remote media, dashboard automation, or mutation reachability. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
@@ -92,6 +93,7 @@ separate provider family.
 | Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
 | FreshRSS | **Live/Partial** feed items | **Live/Partial** unread and starred state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** folders/tags | #29350 implements keyed installation/user identity, one exact ClientLogin POST, exact GET-only Google Reader routes, cycle-safe opaque continuation resume, strict OPML snapshots, bounded invocation costs, and an explicit unavailable Fever POST boundary. |
 | Readwise Reader | **Live/Gate/Partial** saved documents | **Live/Gate/Partial** tags, state, notes, and progress | **No** | **No** | **Live/Gate/Partial** tags and locations | #29225 implements a deployment-owned account/token binding because official token validation exposes no stable account ID, plus fixed-origin GET-only cursor reads. |
+| beehiiv | **Gate/Live/Partial/Export** confirmed post metadata and free web HTML | **No** subscriber-derived post statistics | **No** | **Gate/Export/No** subscriber PII | **Gate/No** segments and newsletter-list membership | #29319 implements an explicit creator-ownership attestation plus publication ID/name/organization rebinding before each page; API-key scope must expose exactly one publication. |
 | Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
 ## Evidence and update discipline
@@ -264,6 +266,16 @@ separate provider family.
   `.agents/content/social-readwise-reader.md` records official auth, document,
   tag, cursor, HTML, rate, privacy, export, retention, and terms evidence checked
   on 2026-08-02.
+- **Live/Gated beehiiv:** `.agents/scripts/knowledge_social_beehiiv.py`,
+  `.agents/scripts/_knowledge_social_beehiiv*.py`, and
+  `.agents/tests/test-knowledge-social-beehiiv.sh` prove an explicit
+  creator-ownership attestation, a singly visible expected publication, repeated
+  ID/name/organization verification, bounded API-v2 post pages, exact replay,
+  terminal and malformed-page safety, credential rejection, stale-lease fencing,
+  and fixed-origin GET-only mutation isolation.
+  `.agents/content/social-beehiiv.md` records official API-v2 authentication,
+  endpoint-specific pagination, organization quota, plan/export gates, privacy,
+  terms, and excluded subscriber fields checked on 2026-08-03.
 - **Integrated provider registry:** `.agents/scripts/knowledge_social_registry.py`
   and `.agents/tests/test-knowledge-social-registry.sh` prove order-independent
   registration, collision rejection, exact aliases and modes, no-route failure,
