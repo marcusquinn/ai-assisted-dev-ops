@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# t2019: Unit tests for the triage-review output-shape and JSON
-# extraction path in pulse-ancillary-dispatch.sh.
+# t2019: Unit tests for the triage-review output-shape and JSON extraction path
+# in the focused pulse-ancillary-dispatch sub-libraries.
 #
 # What this guards:
 #   - _extract_review_text_from_json correctly extracts text events
@@ -242,8 +242,7 @@ export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 	_triage_increment_failure _triage_awaiting_contributor_reply \
 	lock_issue_for_worker unlock_issue_after_worker
 
-# Load just the functions under test from the production file using
-# awk/sed extraction — same pattern as test-triage-failure-escalation.sh.
+# Load the focused production sub-libraries without booting pulse-wrapper.
 # We load:
 #   - _extract_review_text_from_json
 #   - _log_suppressed_triage_output
@@ -251,36 +250,25 @@ export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 #   - _post_triage_escalation_comment
 #   - _dispatch_triage_review_worker
 load_helpers_under_test() {
-	local src
+	local scripts_dir
 	local here
 	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-	src="${AIDEVOPS_SOURCE:-${here}/../pulse-ancillary-dispatch.sh}"
-	if [[ ! -f "$src" ]]; then
-		printf 'ERROR: cannot locate pulse-ancillary-dispatch.sh (tried %s)\n' "$src" >&2
+	scripts_dir="${here}/.."
+	if [[ -n "${AIDEVOPS_SOURCE:-}" ]]; then
+		scripts_dir=$(cd "$(dirname "$AIDEVOPS_SOURCE")" && pwd)
+	fi
+	if [[ ! -f "${scripts_dir}/pulse-ancillary-dispatch-core.sh" ]]; then
+		printf 'ERROR: cannot locate pulse ancillary sub-libraries in %s\n' "$scripts_dir" >&2
 		exit 2
 	fi
-	# Extract the pre-post snapshot fence, then the posting/dispatch helper block.
-	# The fence now lives before _ensure_triage_failed_label in production, so the
-	# historical single-range extraction silently omitted it.
-	local tmp
-	tmp=$(mktemp)
-	awk '
-	/^_triage_post_snapshot_failure_reason\(\) \{/{flag=1}
-	flag{print}
-	/^_triage_fetch_pr_snapshot\(\) \{/{flag=0}
-	' "$src" |
-		sed '/^_triage_fetch_pr_snapshot()/,$d' >"$tmp"
-	awk '
-	/^_ensure_triage_failed_label\(\) \{/{flag=1}
-	flag{print}
-	/^dispatch_triage_reviews\(\) \{/{flag=0}
-	' "$src" |
-		sed '/^dispatch_triage_reviews()/,$d' >>"$tmp"
 	# shellcheck source=../sensitive-temp-helper.sh
 	source "${here}/../sensitive-temp-helper.sh"
-	# shellcheck disable=SC1090
-	source "$tmp"
-	rm -f "$tmp"
+	# shellcheck source=../pulse-ancillary-dispatch-core.sh
+	source "${scripts_dir}/pulse-ancillary-dispatch-core.sh"
+	# shellcheck source=../pulse-ancillary-dispatch-evidence.sh
+	source "${scripts_dir}/pulse-ancillary-dispatch-evidence.sh"
+	# shellcheck source=../pulse-ancillary-dispatch-review.sh
+	source "${scripts_dir}/pulse-ancillary-dispatch-review.sh"
 	_triage_current_text_snapshot_hash() {
 		printf '%s\n' "$MOCK_CURRENT_TEXT_SNAPSHOT_HASH"
 		return 0

@@ -7,6 +7,7 @@ set -euo pipefail
 
 TEST_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 ANCILLARY_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-ancillary-dispatch.sh"
+ANCILLARY_REVIEW_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-ancillary-dispatch-review.sh"
 DIRTY_SWEEP_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-dirty-pr-sweep.sh"
 
 TEST_ROOT=""
@@ -137,18 +138,20 @@ main() {
 		"pulse-dirty-pr-comments-rest|api --paginate repos/owner/repo/issues/123/comments?per_page=100 --jq .[].body"
 
 	assert_source_contains "triage prompt binds REST file evidence to captured revisions" \
-		"$ANCILLARY_SCRIPT" \
+		"$ANCILLARY_REVIEW_SCRIPT" \
 		"\"\$repo_slug\" \"\$_ps_base_sha\" \"\$_ps_head_sha\""
 	assert_source_contains "dirty-PR idempotency calls the exact REST comment helper" \
 		"$DIRTY_SWEEP_SCRIPT" \
 		"existing=\$(_dps_pr_comment_bodies_rest \"\$pr_number\" \"\$repo_slug\""
 
-	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr view.*--json files' "$ANCILLARY_SCRIPT"; then
+	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr view.*--json files' \
+		"$ANCILLARY_SCRIPT" "$ANCILLARY_REVIEW_SCRIPT"; then
 		print_result "ancillary dispatch avoids native GraphQL PR-file views" 1
 	else
 		print_result "ancillary dispatch avoids native GraphQL PR-file views" 0
 	fi
-	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr diff' "$ANCILLARY_SCRIPT"; then
+	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr diff' \
+		"$ANCILLARY_SCRIPT" "$ANCILLARY_REVIEW_SCRIPT"; then
 		print_result "triage evidence avoids mutable native PR diff reads" 1
 	else
 		print_result "triage evidence avoids mutable native PR diff reads" 0

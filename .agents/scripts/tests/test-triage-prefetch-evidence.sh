@@ -96,36 +96,36 @@ commit_git_fixture() {
 	return 0
 }
 
-# Load _triage_read_cited_file_window through _triage_write_prompt_file from
-# the production file using awk extraction — same pattern as
-# test-triage-output-shape.sh.
+# Load evidence helpers from the focused production libraries and retain a
+# narrow extraction for the complexity-identity function in the orchestrator.
 load_evidence_helpers() {
-	local src
+	local core_src evidence_src orchestrator_src
 	local here
 	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-	src="${AIDEVOPS_SOURCE:-${here}/../pulse-ancillary-dispatch.sh}"
-	if [[ ! -f "$src" ]]; then
+	orchestrator_src="${AIDEVOPS_SOURCE:-${here}/../pulse-ancillary-dispatch.sh}"
+	core_src="$(dirname "$orchestrator_src")/pulse-ancillary-dispatch-core.sh"
+	evidence_src="$(dirname "$orchestrator_src")/pulse-ancillary-dispatch-evidence.sh"
+	if [[ ! -f "$orchestrator_src" || ! -f "$core_src" || ! -f "$evidence_src" ]]; then
 		printf 'ERROR: cannot locate pulse-ancillary-dispatch.sh (tried %s)\n' \
-			"$src" >&2
+			"$orchestrator_src" >&2
 		exit 2
 	fi
-	# Load the shared managed-temp primitives, extract the locale-safe byte-count
-	# dependency and two triage-specific temp wrappers, then extract the
-	# evidence/prompt functions under test.
+	# Load managed-temp primitives and the focused helper modules, then extract
+	# only the retained prompt-writer function from the orchestrator.
 	# shellcheck source=../sensitive-temp-helper.sh
 	source "${here}/../sensitive-temp-helper.sh"
+	# shellcheck source=../pulse-ancillary-dispatch-core.sh
+	source "$core_src"
+	# shellcheck source=../pulse-ancillary-dispatch-evidence.sh
+	source "$evidence_src"
+	# Keep this focused harness isolated from scanner and retry side effects that
+	# are covered by test-triage-security-gate.sh.
+	_triage_untrusted_content_is_safe() { return 0; }
+	_triage_mark_infrastructure_retry() { return 0; }
 	local tmp
 	tmp=$(mktemp)
-	awk '
-	/^_triage_text_byte_count\(\) \{/,/^}$/ {print}
-	/^_triage_create_sensitive_artifact_dir\(\) \{/{temp=1}
-	/^_triage_mark_security_hold\(\) \{/{temp=0}
-	temp{print}
-	/^_triage_read_cited_file_window\(\) \{/{flag=1}
-	flag{print}
-	/^_build_triage_review_prompt\(\) \{/{flag=0}
-	' "$src" |
-		sed '/^_build_triage_review_prompt()/,$d' >"$tmp"
+	awk '/^_triage_write_prompt_file\(\) \{/{flag=1} flag{print} flag && /^}$/{exit}' \
+		"$orchestrator_src" >"$tmp"
 	# shellcheck disable=SC1090
 	source "$tmp"
 	rm -f "$tmp"
