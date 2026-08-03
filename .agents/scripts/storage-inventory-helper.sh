@@ -25,6 +25,10 @@ if [[ -f "$SCRIPT_DIR/opencode-db-safety-lib.sh" ]]; then
 	source "$SCRIPT_DIR/opencode-db-safety-lib.sh"
 	OPENCODE_STORAGE_PROBES_AVAILABLE=1
 fi
+if [[ -f "$SCRIPT_DIR/worktree-recovery-lifecycle-helper.sh" ]]; then
+	# shellcheck source=worktree-recovery-lifecycle-helper.sh
+	source "$SCRIPT_DIR/worktree-recovery-lifecycle-helper.sh"
+fi
 
 STORAGE_SCHEMA_VERSION=2
 STORAGE_SIZE_TIMEOUT_TENTHS="${AIDEVOPS_STORAGE_SIZE_TIMEOUT_TENTHS:-20}"
@@ -676,6 +680,36 @@ _storage_observability_record() {
 	return 0
 }
 
+_storage_worktree_recovery_record() {
+	local report=""
+	local home_label="~"
+	local display_path="${home_label}/.aidevops/recovery/worktrees and attributable legacy roots"
+
+	if ! declare -F worktree_recovery_lifecycle_json >/dev/null 2>&1; then
+		_storage_emit_measured_record "worktree-recovery" "worktree-helper" "$display_path" \
+			"$STORAGE_UNKNOWN" "recovery" "manual-review; no deletion authority" "$STORAGE_UNKNOWN" \
+			"producer inventory helper is unavailable" "Restore the deployed worktree recovery helper; leave archives untouched" \
+			"${STORAGE_JSON_NULL}|unavailable|classification-unavailable"
+		return 0
+	fi
+	report=$(worktree_recovery_lifecycle_json 2>/dev/null || true)
+	if [[ -z "$report" ]] || ! printf '%s\n' "$report" | jq -e '
+		type == "object" and .schema == "aidevops.worktree-recovery-inventory/v1" and
+		(.reclaimable_bytes == 0) and
+		((.total_bytes == null and .protected_bytes == null and .unknown_bytes == null) or
+		 (.total_bytes >= 0 and .protected_bytes >= 0 and .unknown_bytes >= 0 and
+		  .total_bytes == (.protected_bytes + .reclaimable_bytes + .unknown_bytes)))
+	' >/dev/null 2>&1; then
+		_storage_emit_measured_record "worktree-recovery" "worktree-helper" "$display_path" \
+			"$STORAGE_UNKNOWN" "recovery" "manual-review; no deletion authority" "$STORAGE_UNKNOWN" \
+			"producer inventory output is unavailable or invalid" "Run worktree-helper.sh recovery; leave archives untouched" \
+			"${STORAGE_JSON_NULL}|unavailable|classification-unavailable"
+		return 0
+	fi
+	printf '%s\n' "$report" | jq -c 'del(.schema, .buckets)'
+	return 0
+}
+
 _storage_inventory_records() {
 	local home_label="~"
 	local framework_owner="$STORAGE_OWNER_FRAMEWORK"
@@ -685,6 +719,7 @@ _storage_inventory_records() {
 	local pulse_producer="$STORAGE_PRODUCER_PULSE"
 	_storage_emit_runtime_bundle_record
 	_storage_observability_record
+	_storage_worktree_recovery_record
 	_storage_emit_retention_record "agent-backups" "setup-backup" "${home_label}/.aidevops/agents-backups" "${HOME:+$HOME/.aidevops/agents-backups}" "$STORAGE_SAFETY_MIXED" "10 snapshots, 180 days, and 4 GiB soft limits" "newest verified rollback and retention trash" "Setup computes a dry run before confirmed producer-owned rotation" "_backup_retention_plan"
 	_storage_emit_retention_record "worker-failure-excerpts" "headless-runtime" "${home_label}/.aidevops/logs/worker-failure-excerpts" "${HOME:+$HOME/.aidevops/logs/worker-failure-excerpts}" "$STORAGE_SAFETY_MIXED" "64 KiB per excerpt; 3 excerpts, 30 days, and 192 KiB per session soft limits" "newest unresolved recovery evidence per session" "Headless runtime computes a dry run after each preserved failure" "_storage_worker_excerpt_plan"
 	_storage_emit_record "pulse-hot-log" "$pulse_producer" "${home_label}/.aidevops/logs/pulse.log" "${HOME:+$HOME/.aidevops/logs/pulse.log}" "$framework_owner" "$active_class" "50 MiB active-file cap with gzip archive rotation" "$protected_disposition" "$active_writer_reason" "Use pulse-owned rotate_pulse_log; never unlink the active file"

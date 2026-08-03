@@ -55,7 +55,9 @@ _WTAR_SKIPPED="skipped"
 _WTAR_FIXTURE_REMOVED="fixture-removed"
 _WTAR_MODE_SKIPPED="skipped"
 _WTAR_BOOL_TRUE="true"
-_WT_CWD_VISIBILITY_COMPLETE="complete"
+_WT_STATE_COMPLETE="complete"
+_WT_STATE_UNAVAILABLE="unavailable"
+_WT_CWD_VISIBILITY_COMPLETE="$_WT_STATE_COMPLETE"
 _WT_CWD_VISIBILITY_DEGRADED="degraded"
 _WT_CWD_VISIBILITY_UNUSABLE="unusable"
 _WT_CWD_CAPTURE_DEGRADED_RC=2
@@ -71,12 +73,16 @@ _WT_GIT_REASON_UNREADABLE="git-metadata-unreadable"
 _WT_GIT_REASON_IDENTITY_CHANGED="git-worktree-identity-changed"
 _WT_GIT_REASON_REMOVE_FAILED="git-worktree-remove-failed"
 _WT_GIT_STATUS_FIELD_PREFIX="aidevops-git-status "
-_WT_RECOVERY_FORMAT="aidevops-worktree-recovery-v1"
+_WT_RECOVERY_FORMAT_V1="aidevops-worktree-recovery-v1"
+_WT_RECOVERY_FORMAT_V2="aidevops-worktree-recovery-v2"
+_WT_RECOVERY_FORMAT="$_WT_RECOVERY_FORMAT_V2"
 _WT_RECOVERY_DIR_NAME=".aidevops-worktree-recovery"
 _WT_RECOVERY_COMPLETE_MARKER="archive-complete"
 _WT_RECOVERY_STORAGE_OWNER="framework"
-_WT_RECOVERY_ROOT_UNAVAILABLE="unavailable"
+_WT_RECOVERY_ROOT_UNAVAILABLE="$_WT_STATE_UNAVAILABLE"
 _WT_RECOVERY_BRANCH_DETACHED="detached"
+_WT_RECOVERY_OUTCOME_PENDING="pending"
+_WT_RECOVERY_OUTCOME_REMOVED="removed"
 WORKTREE_RECOVERABLE_ARCHIVE_PATH=""
 
 _WT_ID_REAL_GIT=""
@@ -616,6 +622,95 @@ _worktree_recovery_dir_for_archive() {
 	return 0
 }
 
+_worktree_recovery_format_is_supported() {
+	local format="$1"
+	case "$format" in
+	"$_WT_RECOVERY_FORMAT_V1" | "$_WT_RECOVERY_FORMAT_V2") return 0 ;;
+	esac
+	return 1
+}
+
+_worktree_recovery_line_payload_is_valid() {
+	local payload="$1"
+	[[ -n "$payload" ]] || return 1
+	case "$payload" in
+	*$'\n'* | *$'\r'*) return 1 ;;
+	esac
+	return 0
+}
+
+_worktree_recovery_v2_contract_is_valid() {
+	local recovery_dir="$1"
+	local created_at=""
+	local producer=""
+	local producer_context=""
+	local session_id=""
+	local archive_outcome=""
+	local source_outcome=""
+	local metadata_name=""
+
+	for metadata_name in created-at producer producer-context session-id archive-outcome source-removal-outcome; do
+		[[ -f "$recovery_dir/$metadata_name" && ! -L "$recovery_dir/$metadata_name" ]] || return 1
+	done
+	IFS= read -r created_at <"$recovery_dir/created-at" || return 1
+	IFS= read -r producer <"$recovery_dir/producer" || return 1
+	IFS= read -r producer_context <"$recovery_dir/producer-context" || return 1
+	IFS= read -r session_id <"$recovery_dir/session-id" || return 1
+	IFS= read -r archive_outcome <"$recovery_dir/archive-outcome" || return 1
+	IFS= read -r source_outcome <"$recovery_dir/source-removal-outcome" || return 1
+	[[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+	_worktree_recovery_line_payload_is_valid "$producer" || return 1
+	_worktree_recovery_line_payload_is_valid "$producer_context" || return 1
+	[[ "$session_id" == "$_WT_STATE_UNAVAILABLE" || "$session_id" =~ ^[A-Za-z0-9._:-]+$ ]] || return 1
+	[[ "$archive_outcome" == "$_WT_STATE_COMPLETE" ]] || return 1
+	case "$source_outcome" in
+	"$_WT_RECOVERY_OUTCOME_PENDING" | "$_WT_RECOVERY_OUTCOME_REMOVED") return 0 ;;
+	esac
+	return 1
+}
+
+_worktree_write_recovery_v2_metadata() {
+	local recovery_dir="$1"
+	local caller="$2"
+	local context="${3:-unspecified}"
+	local created_at=""
+	local session_id="${AIDEVOPS_SESSION_ID:-${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-unavailable}}}"
+
+	[[ -n "$context" ]] || context="unspecified"
+	created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
+	_worktree_recovery_line_payload_is_valid "$caller" || return 1
+	_worktree_recovery_line_payload_is_valid "$context" || return 1
+	[[ "$session_id" == "$_WT_STATE_UNAVAILABLE" || "$session_id" =~ ^[A-Za-z0-9._:-]+$ ]] || session_id="$_WT_STATE_UNAVAILABLE"
+	printf '%s\n' "$created_at" >"${recovery_dir}/created-at" || return 1
+	printf '%s\n' "$caller" >"${recovery_dir}/producer" || return 1
+	printf '%s\n' "$context" >"${recovery_dir}/producer-context" || return 1
+	printf '%s\n' "$session_id" >"${recovery_dir}/session-id" || return 1
+	printf '%s\n' "$_WT_STATE_COMPLETE" >"${recovery_dir}/archive-outcome" || return 1
+	printf '%s\n' "$_WT_RECOVERY_OUTCOME_PENDING" >"${recovery_dir}/source-removal-outcome" || return 1
+	return 0
+}
+
+_worktree_recovery_record_source_outcome() {
+	local archive_path="$1"
+	local outcome="$2"
+	local recovery_dir=""
+	local format=""
+	local outcome_tmp=""
+
+	case "$outcome" in
+	"$_WT_RECOVERY_OUTCOME_PENDING" | "$_WT_RECOVERY_OUTCOME_REMOVED") ;;
+	*) return 1 ;;
+	esac
+	recovery_dir=$(_worktree_recovery_dir_for_archive "$archive_path") || return 1
+	IFS= read -r format <"$recovery_dir/format" || return 1
+	[[ "$format" == "$_WT_RECOVERY_FORMAT_V2" ]] || return 0
+	outcome_tmp="${recovery_dir}/.source-removal-outcome.$$-${RANDOM}"
+	printf '%s\n' "$outcome" >"$outcome_tmp" || return 1
+	mv "$outcome_tmp" "$recovery_dir/source-removal-outcome" || return 1
+	_worktree_recovery_v2_contract_is_valid "$recovery_dir" || return 1
+	return 0
+}
+
 _worktree_write_recovery_identity() {
 	local recovery_dir="$1"
 
@@ -649,7 +744,10 @@ _worktree_recovery_archive_is_valid() {
 	IFS= read -r format <"${recovery_dir}/format" || return 1
 	IFS= read -r expected_head <"${recovery_dir}/head" || return 1
 	IFS= read -r expected_branch <"${recovery_dir}/branch" || return 1
-	[[ "$format" == "$_WT_RECOVERY_FORMAT" ]] || return 1
+	_worktree_recovery_format_is_supported "$format" || return 1
+	if [[ "$format" == "$_WT_RECOVERY_FORMAT_V2" ]]; then
+		_worktree_recovery_v2_contract_is_valid "$recovery_dir" || return 1
+	fi
 	_worktree_git_head_payload_is_valid "$expected_head" || return 1
 	if [[ "$expected_branch" != "$_WT_RECOVERY_BRANCH_DETACHED" ]]; then
 		_worktree_git_branch_payload_is_valid "$expected_branch" || return 1
@@ -749,12 +847,13 @@ _worktree_legacy_recovery_bucket_is_valid() {
 	return 0
 }
 
-_worktree_recovery_v2_metadata_is_present() {
+_worktree_recovery_extended_metadata_is_present() {
 	local bucket="$1"
 	local recovery_dir="${bucket}/${_WT_RECOVERY_DIR_NAME}"
 	local metadata_name=""
 
-	for metadata_name in "$_WT_RECOVERY_COMPLETE_MARKER" storage-owner storage-class storage-policy storage-root; do
+	for metadata_name in "$_WT_RECOVERY_COMPLETE_MARKER" storage-owner storage-class storage-policy storage-root \
+		created-at producer producer-context session-id archive-outcome source-removal-outcome; do
 		if [[ -e "$recovery_dir/$metadata_name" || -L "$recovery_dir/$metadata_name" ]]; then
 			return 0
 		fi
@@ -819,8 +918,8 @@ _worktree_recovery_inventory_root() {
 			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
 			IFS= read -r completion < \
 				"$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || completion=""
-			if [[ "$format" == "$_WT_RECOVERY_FORMAT" &&
-				"$completion" == "$_WT_RECOVERY_FORMAT" ]] &&
+			if _worktree_recovery_format_is_supported "$format" &&
+				[[ "$completion" == "$format" ]] &&
 				_worktree_recovery_storage_contract_is_valid "$bucket" "$root_real" &&
 				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
 				state="attributed"
@@ -829,8 +928,8 @@ _worktree_recovery_inventory_root() {
 			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
 			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" ]]; then
 			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
-			if [[ "$format" == "$_WT_RECOVERY_FORMAT" ]] &&
-				! _worktree_recovery_v2_metadata_is_present "$bucket" &&
+			if [[ "$format" == "$_WT_RECOVERY_FORMAT_V1" ]] &&
+				! _worktree_recovery_extended_metadata_is_present "$bucket" &&
 				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
 				state="attributed-legacy"
 			fi
@@ -919,6 +1018,7 @@ archive_worktree_path_recoverably() {
 	mkdir "$recovery_dir" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$_WT_ID_ADMIN_REAL" "$recovery_admin" || return 1
 	_worktree_write_recovery_identity "$recovery_dir" || return 1
+	_worktree_write_recovery_v2_metadata "$recovery_dir" "$caller" "$context" || return 1
 	printf '%s\n' "$_WT_RECOVERY_STORAGE_OWNER" >"${recovery_dir}/storage-owner" || return 1
 	printf '%s\n' "recovery" >"${recovery_dir}/storage-class" || return 1
 	printf '%s\n' "manual-review" >"${recovery_dir}/storage-policy" || return 1
@@ -1174,6 +1274,8 @@ remove_archived_worktree_path() {
 		[[ "$allow_degraded" == "$_WTAR_BOOL_TRUE" && "$guard_status" -eq "$_WT_CWD_CAPTURE_DEGRADED_RC" ]] || return 1
 	fi
 	_worktree_remove_with_native_git "$wt_path" "$caller" "$context" "$force_remove" "$archive_path" || return 1
+	_worktree_recovery_archive_is_valid "$archive_path" || return 1
+	_worktree_recovery_record_source_outcome "$archive_path" "$_WT_RECOVERY_OUTCOME_REMOVED" || return 1
 	_worktree_recovery_archive_is_valid "$archive_path" || return 1
 	return 0
 }

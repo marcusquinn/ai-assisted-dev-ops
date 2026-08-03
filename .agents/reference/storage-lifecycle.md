@@ -64,7 +64,7 @@ Reference, lease, recovery, and audit checks remain hard vetoes.
 | `~/.aidevops/.agent-workspace/observability` | framework | audit, archive, cache | Part streams and tool metadata are bounded at ingestion; runtime events use a 30-day active candidate window, verified immutable archive partitions, compacted low-value summaries, pinned recovery state, and append-only manifests | Measure defaults across routine/high-activity installations before changing the active window or adding any archive deletion policy |
 | `~/.aidevops/agents-backups` | framework | rollback, archive | Setup computes a dry-run plan under 10-snapshot, 180-day, and 4 GiB soft limits; the newest snapshot is always protected | Tune defaults from broader measurements without weakening rollback or attribution checks |
 | `~/.aidevops/logs/worker-failure-excerpts` | framework | recovery, archive | Excerpts are capped at 64 KiB; each session retains its newest evidence while older duplicates converge under 3-excerpt, 30-day, and 192 KiB soft limits | Add terminal issue/PR awareness before reclaiming the newest evidence for any session |
-| `~/.aidevops/recovery/worktrees` (Linux and non-macOS) | framework | recovery, unknown | Archive-first removal copies worktree and Git administrative state into an attributable bucket; `worktree-helper.sh recovery` reports current and legacy buckets without deleting them | Keep all buckets protected for manual review until a producer-specific restore and retention policy can prove them reclaimable |
+| `~/.aidevops/recovery/worktrees` (Linux and non-macOS) | framework | recovery, unknown | Archive-first removal copies worktree and Git administrative state into an attributable bucket; `worktree-helper.sh recovery` and shared storage status report current/legacy count and bytes without deleting them | Keep all buckets protected with zero reclaimable bytes until an exact producer-specific plan proves them reclaimable |
 | Pulse active logs and `~/.aidevops/logs/pulse-archive` | framework | active, archive | Pulse preserves active descriptors while gzip-rotating 50 MiB hot/wrapper logs and 1 MiB timing logs; cold archives converge under 1 GiB | Keep rotation producer-owned and never replace it with generic unlink-by-age cleanup |
 | OpenCode data under its application-data root | joint | active, recovery, archive, unknown | OpenCode owns session and DB formats; aidevops archive/maintenance helpers coordinate selected operations | Separate logical retention from WAL/fragmentation maintenance; report only classifications proven through OpenCode-aware queries |
 | npm and other package-manager caches | external | cache | Package manager owns lifecycle | Context-only reporting; no aidevops aggregate deletion |
@@ -83,18 +83,34 @@ not silently delete these recovery snapshots. Operators can continue to select
 an absolute root with `AIDEVOPS_WORKTREE_TRASH_ROOT` (or the legacy
 `AIDEVOPS_ORPHAN_TRASH_ROOT` fallback).
 
-Each new bucket records `framework` ownership, the `recovery` safety class, and
-a `manual-review` policy beside its Git recovery identity. A completion marker
-is written only after archive integrity and source identity validation. Run
-`worktree-helper.sh recovery` for a read-only inventory. On non-macOS systems it
-also reports attributable legacy `$HOME/.Trash/aidevops-worktree-cleanup-*`
-buckets. The command reports framework-owned default roots separately from
-joint OS Trash or operator-selected roots. Incomplete, symlinked, or
-unrecognised buckets are `unknown`; the inventory never migrates or deletes
-them. Markerless v1 buckets are attributed only when the original archive
-integrity validator still proves their Git recovery structure. Existing archive
-integrity, lock, identity, late-write, detached-HEAD, and interruption checks
-remain authoritative.
+New buckets use the additive `aidevops-worktree-recovery-v2` evidence contract.
+Alongside stable Git identity, each records creation time, producer/context,
+optional runtime session identity, archive completion, source-removal outcome,
+`framework` ownership, the `recovery` safety class, and a `manual-review`
+policy. The completion marker is written only after archive integrity and source
+identity validation; successful native removal then atomically advances the
+source outcome from `pending` to `removed`.
+
+Readers remain compatible with complete v1 buckets from the platform-storage
+transition and markerless legacy v1 buckets whose original Git recovery
+structure still validates. Partial v2 evidence is never reinterpreted as v1.
+Older readers reject v2 and therefore fail closed without damaging an archive.
+
+Run `worktree-helper.sh recovery` for a read-only count/byte report with
+protected/unknown reasons. The same producer summary appears as one
+`worktree-recovery` record in shared storage status; `reclaimable_bytes` remains
+zero in this phase. On non-macOS systems, inventory also includes attributable
+legacy `$HOME/.Trash/aidevops-worktree-cleanup-*` buckets. Framework-owned
+default roots remain distinct from joint OS Trash or operator-selected roots.
+Incomplete, symlinked, unrecognised, or unsized buckets are `unknown`; inventory
+never migrates, rewrites, or deletes them.
+
+An originating OpenCode or Claude session identifier is recovery guidance, not
+deletion proof. Session history can reconstruct text edits and intent but may be
+archived, unavailable, or incomplete and does not prove preservation of ignored
+or binary files, permissions, symlinks, index state, or detached Git metadata.
+Existing archive integrity, lock, identity, late-write, detached-HEAD, and
+interruption checks remain authoritative.
 
 ### Runtime Bundle Retention Overrides
 

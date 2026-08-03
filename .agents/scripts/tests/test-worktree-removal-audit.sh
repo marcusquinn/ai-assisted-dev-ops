@@ -602,6 +602,10 @@ test_recovery_inventory_reports_legacy_buckets_fail_closed() {
 	local interrupted_worktree="${TEST_DIR}/interrupted-inventory-worktree"
 	local interrupted_archive=""
 	local interrupted_bucket=""
+	local compat_repo="${TEST_DIR}/compat-v1-inventory-repo"
+	local compat_worktree="${TEST_DIR}/compat-v1-inventory-worktree"
+	local compat_archive=""
+	local compat_bucket=""
 	local legacy_repo="${TEST_DIR}/legacy-v1-inventory-repo"
 	local legacy_worktree="${TEST_DIR}/legacy-v1-inventory-worktree"
 	local legacy_archive=""
@@ -635,15 +639,30 @@ test_recovery_inventory_reports_legacy_buckets_fail_closed() {
 	interrupted_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	interrupted_bucket="${interrupted_archive%/*}"
 	rm -f "$interrupted_bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	create_git_worktree_fixture "$compat_repo" "$compat_worktree" "feature/compat-v1-inventory" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$compat_worktree" "test.sh" "compat-v1-inventory" || rc=1
+	compat_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	compat_bucket="${compat_archive%/*}"
+	recovery_dir="$compat_bucket/${_WT_RECOVERY_DIR_NAME}"
+	printf '%s\n' "$_WT_RECOVERY_FORMAT_V1" >"$recovery_dir/format" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT_V1" >"$recovery_dir/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	rm -f "$recovery_dir/created-at" "$recovery_dir/producer" \
+		"$recovery_dir/producer-context" "$recovery_dir/session-id" \
+		"$recovery_dir/archive-outcome" "$recovery_dir/source-removal-outcome" || rc=1
 	create_git_worktree_fixture "$legacy_repo" "$legacy_worktree" "feature/legacy-inventory" || rc=1
 	AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
 		archive_worktree_path_recoverably "$legacy_worktree" "test.sh" "legacy-inventory" || rc=1
 	legacy_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	legacy_bucket="${legacy_archive%/*}"
 	recovery_dir="$legacy_bucket/${_WT_RECOVERY_DIR_NAME}"
+	printf '%s\n' "$_WT_RECOVERY_FORMAT_V1" >"$recovery_dir/format" || rc=1
 	rm -f "$recovery_dir/${_WT_RECOVERY_COMPLETE_MARKER}" \
 		"$recovery_dir/storage-owner" "$recovery_dir/storage-class" \
-		"$recovery_dir/storage-policy" "$recovery_dir/storage-root" || rc=1
+		"$recovery_dir/storage-policy" "$recovery_dir/storage-root" \
+		"$recovery_dir/created-at" "$recovery_dir/producer" \
+		"$recovery_dir/producer-context" "$recovery_dir/session-id" \
+		"$recovery_dir/archive-outcome" "$recovery_dir/source-removal-outcome" || rc=1
 	output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$override_link" \
 		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
 	printf '%s\n' "$output" | grep -Fq $'store\tcurrent\tjoint\trecovery\tmanual-review\tpresent\t' || rc=1
@@ -652,6 +671,7 @@ test_recovery_inventory_reports_legacy_buckets_fail_closed() {
 	printf '%s\n' "$output" | grep -Fq $'bucket\tcurrent\tframework\tunknown\t'"$spoofed_bucket" || rc=1
 	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t'"$unknown_bucket" || rc=1
 	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t'"$interrupted_bucket" || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tattributed\t'"$compat_bucket" || rc=1
 	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tattributed-legacy\t'"$legacy_bucket" || rc=1
 	alias_output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_alias" \
 		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
@@ -673,13 +693,19 @@ test_recoverable_archive_then_native_remove() {
 
 	create_git_worktree_fixture "$repo_path" "$wt_path" "feature/archive" || rc=1
 	wt_root=$("$GIT_BIN" -C "$wt_path" rev-parse --show-toplevel 2>/dev/null) || rc=1
-	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" archive_worktree_path_recoverably \
+	AIDEVOPS_SESSION_ID="ses_test_recovery" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" archive_worktree_path_recoverably \
 		"$wt_path" "test.sh" "archive-test" || rc=1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	[[ -d "$wt_path" && -d "$archive_path" && -e "$archive_path/.git" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/format")" == "$_WT_RECOVERY_FORMAT_V2" ]] || rc=1
 	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-owner")" == "framework" ]] || rc=1
 	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-class")" == "recovery" ]] || rc=1
 	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-policy")" == "manual-review" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/producer")" == "test.sh" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/producer-context")" == "archive-test" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/session-id")" == "ses_test_recovery" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/archive-outcome")" == "complete" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/source-removal-outcome")" == "pending" ]] || rc=1
 	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}")" == "$_WT_RECOVERY_FORMAT" ]] || rc=1
 	metadata=$("$GIT_BIN" -C "$repo_path" worktree list --porcelain) || rc=1
 	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || rc=1
@@ -691,6 +717,7 @@ test_recoverable_archive_then_native_remove() {
 		rc=1
 	fi
 	[[ ! -e "$wt_path" && -d "$archive_path" && -e "$archive_path/.git" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/source-removal-outcome")" == "removed" ]] || rc=1
 	print_result "recoverable_archive_then_native_remove" "$rc" \
 		"Expected archive retention after native source and metadata removal"
 	return 0

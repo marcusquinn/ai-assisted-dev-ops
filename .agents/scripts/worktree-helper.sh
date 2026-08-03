@@ -71,6 +71,10 @@ if [[ -f "${SCRIPT_DIR}/audit-worktree-removal-helper.sh" ]]; then
 	# shellcheck source=audit-worktree-removal-helper.sh
 	source "${SCRIPT_DIR}/audit-worktree-removal-helper.sh"
 fi
+if [[ -f "${SCRIPT_DIR}/worktree-recovery-lifecycle-helper.sh" ]]; then
+	# shellcheck source=worktree-recovery-lifecycle-helper.sh
+	source "${SCRIPT_DIR}/worktree-recovery-lifecycle-helper.sh"
+fi
 # Caller ID used in every log_worktree_removal_event call below (avoids repeated literals).
 _WTAR_WH_CALLER="worktree-helper.sh"
 

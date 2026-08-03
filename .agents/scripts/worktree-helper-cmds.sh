@@ -769,7 +769,11 @@ cmd_recovery() {
 		printf '%s\n' "Usage: worktree-helper.sh recovery" >&2
 		return 1
 	fi
-	worktree_recovery_inventory || return 1
+	if declare -F worktree_recovery_lifecycle_status >/dev/null 2>&1; then
+		worktree_recovery_lifecycle_status || return 1
+	else
+		worktree_recovery_inventory || return 1
+	fi
 	return 0
 }
 

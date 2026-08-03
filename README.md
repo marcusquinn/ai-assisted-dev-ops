@@ -2394,7 +2394,13 @@ wt merge
 # Creates: ~/Git/{repo}-feature-my-feature/ (cd there manually)
 ~/.aidevops/agents/scripts/worktree-helper.sh list
 ~/.aidevops/agents/scripts/worktree-helper.sh clean
+# Read-only count/byte inventory of retained recovery archives
+~/.aidevops/agents/scripts/worktree-helper.sh recovery
 ```
+
+Recovery inventory classifies attributable archives as protected or unknown and
+never deletes them. OpenCode session history can aid reconstruction, but it does
+not replace archive integrity evidence or authorize cleanup.
 
 **Benefits:**
 - Run tests on one branch while coding on another
