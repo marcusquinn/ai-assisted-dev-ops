@@ -203,11 +203,12 @@ test_atomic_write_preserves_baseline_on_invalid_json() {
 
 test_snapshot_match_detects_idempotent_update() {
 	source_ratchet_helpers
-	local tmp_dir baseline_file rendered ret=0
+	local tmp_dir baseline_file migration rendered ret=0
 	tmp_dir=$(mktemp -d)
 	baseline_file="${tmp_dir}/ratchets.json"
+	migration=$(_ratchet_build_migration_json "fixture migration" "previous-sha" "source-sha" 1 1 "0 1 2 3 4" "1 2 3 4 5")
 	rendered=$(_ratchet_build_baseline_json "2026-08-03T00:00:00Z" "source-sha" "tree-sha" "base-sha" \
-		"1 2 3 4 5" 1 1 "previous-sha" "2026-04-04T00:00:00Z" "0 1 2 3 4" "null")
+		"1 2 3 4 5" 1 1 "previous-sha" "2026-04-04T00:00:00Z" "0 1 2 3 4" "$migration")
 	printf '%s\n' "$rendered" >"$baseline_file"
 	_ratchet_snapshot_matches "$baseline_file" "source-sha" "tree-sha" "base-sha" "1 2 3 4 5" || ret=$?
 	if [[ "$ret" -eq 0 ]]; then

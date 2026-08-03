@@ -532,12 +532,66 @@ _ratchet_snapshot_matches() {
 		.version == $schema and .counter_version == $counter and
 		.provenance.source_commit == $source and .provenance.scripts_tree == $tree and
 		.provenance.comparison_base_commit == $base and
+		.provenance.migration.previous_counts != null and .provenance.migration.migrated_counts != null and
 		.ratchets.bare_positional_params.count == $c[0] and
 		.ratchets.hardcoded_aidevops_path.count == $c[1] and
 		.ratchets.broad_catch_or_true.count == $c[2] and
 		.ratchets.silent_errors.count == $c[3] and
 		.ratchets.missing_return_files.count == $c[4]
 	' "$baseline_file" > /dev/null 2>&1
+	return $?
+}
+
+# _ratchet_build_migration_json: preserve the complete measured migration matrix.
+# Arguments: $1=reason $2=previous_source $3=target_source $4=previous_schema
+#            $5=previous_counter $6=previous_counts $7=current_counts
+# Returns: migration JSON via stdout.
+_ratchet_build_migration_json() {
+	local reason="$1" previous_source="$2" target_source="$3"
+	local previous_schema="$4" previous_counter="$5" previous_counts="$6" current_counts="$7"
+	jq -n --arg reason "$reason" --arg previous_source "$previous_source" --arg target_source "$target_source" \
+		--argjson previous_schema "$previous_schema" --argjson previous_counter "$previous_counter" \
+		--argjson target_schema "$RATCHET_SCHEMA_VERSION" --argjson target_counter "$RATCHET_COUNTER_VERSION" \
+		--arg previous "$previous_counts" --arg current "$current_counts" '
+		($previous | split(" ") | map(tonumber)) as $p |
+		($current | split(" ") | map(tonumber)) as $c |
+		{
+			reason: $reason,
+			previous_source_commit: $previous_source,
+			target_source_commit: $target_source,
+			previous_schema_version: $previous_schema,
+			previous_counter_version: $previous_counter,
+			target_schema_version: $target_schema,
+			target_counter_version: $target_counter,
+			previous_counts: {bare_positional_params: $p[0], hardcoded_aidevops_path: $p[1], broad_catch_or_true: $p[2], silent_errors: $p[3], missing_return_files: $p[4]},
+			migrated_counts: {bare_positional_params: $c[0], hardcoded_aidevops_path: $c[1], broad_catch_or_true: $c[2], silent_errors: $c[3], missing_return_files: $c[4]}
+		}'
+	return $?
+}
+
+# _ratchet_load_migration_json: retain or enrich migration evidence from schema v2.
+# Arguments: $1=baseline_file
+# Returns: migration JSON or null via stdout.
+_ratchet_load_migration_json() {
+	local baseline_file="$1"
+	jq -c '
+		(.provenance.migration // null) as $migration |
+		if $migration == null then null
+		elif $migration.previous_counts != null and $migration.migrated_counts != null then $migration
+		else $migration + {
+			target_source_commit: .provenance.source_commit,
+			target_schema_version: .version,
+			target_counter_version: .counter_version,
+			previous_counts: .provenance.previous_snapshot.counts,
+			migrated_counts: {
+				bare_positional_params: .ratchets.bare_positional_params.count,
+				hardcoded_aidevops_path: .ratchets.hardcoded_aidevops_path.count,
+				broad_catch_or_true: .ratchets.broad_catch_or_true.count,
+				silent_errors: .ratchets.silent_errors.count,
+				missing_return_files: .ratchets.missing_return_files.count
+			}
+		} end
+	' "$baseline_file"
 	return $?
 }
 
@@ -592,11 +646,10 @@ _ratchet_write_baseline() {
 			print_error "Ratchets: previous source commit is missing or unavailable"
 			return 1
 		}
-		migration_json=$(jq -n --arg reason "$migration_reason" --arg source "$previous_source" \
-			--argjson schema "$previous_schema" --argjson counter "$previous_counter" \
-			'{reason: $reason, previous_source_commit: $source, previous_schema_version: $schema, previous_counter_version: $counter}') || return 1
+		migration_json=$(_ratchet_build_migration_json "$migration_reason" "$previous_source" "$source_commit" \
+			"$previous_schema" "$previous_counter" "$previous_counts" "$current_counts") || return 1
 	else
-		migration_json=$(jq -c '.provenance.migration // null' "$baseline_file") || return 1
+		migration_json=$(_ratchet_load_migration_json "$baseline_file") || return 1
 	fi
 
 	now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
