@@ -123,6 +123,15 @@ _gh_auto_link_sub_issue() { return 0; }
 # the simple path — assignee logic isn't under test)
 _gh_wrapper_auto_assignee() { return 0; }
 
+# Stub creator authority for NMR normalization tests. The default is unknown,
+# which preserves labels and avoids changing unrelated creation fixtures.
+_gh_current_user_allows_repo_write() {
+	if [[ "${TEST_CREATOR_HAS_WRITE:-0}" == "1" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 # Stub TODO derivation hooks. Most tests leave these empty; B'9 sets env vars
 # to simulate TODO.md-derived labels without depending on a repository TODO.md.
 _gh_wrapper_extract_task_id_from_title() {
@@ -550,6 +559,35 @@ else
 		"status_count=$status_n line: $last"
 fi
 unset TEST_TODO_TASK_ID TEST_TODO_DERIVED_LABELS
+
+# B'10: NMR is reserved for external trust decisions. A live-verified writer
+# creating an issue must not create a self-review gate, while sibling labels are
+# preserved in their original comma-separated argument.
+reset_recorder
+TEST_CREATOR_HAS_WRITE=1 SESSION_ORIGIN_OVERRIDE="origin:worker" \
+	gh_create_issue --repo o/r --title "trusted creator" --body "body" \
+	--label "bug,needs-maintainer-review,hold-for-review" >/dev/null 2>&1
+last=$(tail -1 "$GH_RECORD_FILE")
+if [[ "$last" == *"bug,hold-for-review"* && "$last" != *"needs-maintainer-review"* ]]; then
+	print_result "B'10: trusted issue creator strips NMR but preserves structural holds" 0
+else
+	print_result "B'10: trusted issue creator strips NMR but preserves structural holds" 1 \
+		"unexpected create argv: $last"
+fi
+
+# B'11: unknown/read-only creator authority fails closed and preserves NMR.
+reset_recorder
+TEST_CREATOR_HAS_WRITE=0 SESSION_ORIGIN_OVERRIDE="origin:interactive" \
+	gh_create_issue --repo o/r --title "unknown creator" --body "body" \
+	--label="needs-maintainer-review,bug" >/dev/null 2>&1
+last=$(tail -1 "$GH_RECORD_FILE")
+if [[ "$last" == *"needs-maintainer-review,bug"* ]]; then
+	print_result "B'11: unverified issue creator retains NMR" 0
+else
+	print_result "B'11: unverified issue creator retains NMR" 1 \
+		"unexpected create argv: $last"
+fi
+unset TEST_CREATOR_HAS_WRITE
 
 # ---------------------------------------------------------------------------
 # Layer C: structural checks on full-loop-helper-commit.sh

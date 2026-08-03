@@ -186,6 +186,79 @@ _gh_ci_prepare_status_label() {
 	return 0
 }
 
+# NMR is an external-authority gate, not a generic hold. Framework issue
+# creation normally runs as the authenticated repository writer, so strip an
+# explicitly requested NMR label when that creator's live write permission is
+# known. Lookup uncertainty preserves the caller's labels unchanged.
+_GH_CI_NMR_LABEL="needs-maintainer-review"
+_GH_CI_AUTHORITY_NORMALIZED_ARGS=()
+_gh_ci_filter_label_csv() {
+	local labels="$1"
+	local excluded_label="$2"
+	local filtered=""
+	local old_ifs="$IFS"
+	local label=""
+
+	IFS=','
+	for label in $labels; do
+		[[ "$label" == "$excluded_label" ]] && continue
+		filtered="${filtered:+${filtered},}${label}"
+	done
+	IFS="$old_ifs"
+	printf '%s' "$filtered"
+	return 0
+}
+
+_gh_ci_normalize_nmr_for_trusted_creator() {
+	_GH_CI_AUTHORITY_NORMALIZED_ARGS=("$@")
+	_gh_wrapper_args_have_label "$_GH_CI_NMR_LABEL" "$@" || return 0
+
+	local target_repo=""
+	target_repo=$(_gh_extract_repo_from_args "$@" 2>/dev/null || true)
+	[[ -n "$target_repo" ]] || return 0
+	declare -F _gh_current_user_allows_repo_write >/dev/null 2>&1 || return 0
+	#aidevops:trust-boundary -- only a live authenticated write-permission check
+	# may remove NMR before creation; failure or read-only access keeps it.
+	_gh_current_user_allows_repo_write "$target_repo" || return 0
+
+	_GH_CI_AUTHORITY_NORMALIZED_ARGS=()
+	local arg=""
+	local label_value=""
+	local filtered_labels=""
+	local arg_index=0
+	local -a input_args=("$@")
+	while [[ "$arg_index" -lt ${#input_args[@]} ]]; do
+		arg="${input_args[arg_index]}"
+		arg_index=$((arg_index + 1))
+		case "$arg" in
+		--label)
+			if [[ "$arg_index" -ge ${#input_args[@]} ]]; then
+				_GH_CI_AUTHORITY_NORMALIZED_ARGS+=("$arg")
+				continue
+			fi
+			label_value="${input_args[arg_index]}"
+			arg_index=$((arg_index + 1))
+			filtered_labels=$(_gh_ci_filter_label_csv "$label_value" "$_GH_CI_NMR_LABEL")
+			if [[ -n "$filtered_labels" ]]; then
+				_GH_CI_AUTHORITY_NORMALIZED_ARGS+=("--label" "$filtered_labels")
+			fi
+			;;
+		--label=*)
+			label_value="${arg#--label=}"
+			filtered_labels=$(_gh_ci_filter_label_csv "$label_value" "$_GH_CI_NMR_LABEL")
+			if [[ -n "$filtered_labels" ]]; then
+				_GH_CI_AUTHORITY_NORMALIZED_ARGS+=("--label=${filtered_labels}")
+			fi
+			;;
+		*)
+			_GH_CI_AUTHORITY_NORMALIZED_ARGS+=("$arg")
+			;;
+		esac
+	done
+	print_info "[INFO] Removed ${_GH_CI_NMR_LABEL} from repository-writer issue creation; use a structural hold label when dispatch must pause."
+	return 0
+}
+
 _GH_CI_CONTRACT_ARGS=()
 _gh_ci_prepare_parent_close_contract() {
 	local is_parent_task="$1"
@@ -323,21 +396,25 @@ gh_create_issue() {
 		_gh_ci_prepare_status_label "$@"
 	fi
 
-	# Build command arrays safely; avoid empty-arg injection (GH#22056).
-	local -a _issue_cmd=(gh issue create "$@")
-	local -a _rest_args=("$@")
+	# Build the complete creation argv before enforcing the author-authority
+	# invariant so caller, TODO-derived, default-status, and origin labels are all
+	# normalized consistently.
+	local -a _creation_args=("$@")
 	if [[ ${#_GH_CI_STATUS_LABEL_ARGS[@]} -gt 0 ]]; then
-		_issue_cmd+=("${_GH_CI_STATUS_LABEL_ARGS[@]}")
-		_rest_args+=("${_GH_CI_STATUS_LABEL_ARGS[@]}")
+		_creation_args+=("${_GH_CI_STATUS_LABEL_ARGS[@]}")
 	fi
 	if [[ ${#_todo_label_args[@]} -gt 0 ]]; then
-		_issue_cmd+=("${_todo_label_args[@]}")
-		_rest_args+=("${_todo_label_args[@]}")
+		_creation_args+=("${_todo_label_args[@]}")
 	fi
 	if [[ ${#_origin_label_args[@]} -gt 0 ]]; then
-		_issue_cmd+=("${_origin_label_args[@]}")
-		_rest_args+=("${_origin_label_args[@]}")
+		_creation_args+=("${_origin_label_args[@]}")
 	fi
+	_gh_ci_normalize_nmr_for_trusted_creator "${_creation_args[@]}"
+	_creation_args=("${_GH_CI_AUTHORITY_NORMALIZED_ARGS[@]}")
+
+	# Build command arrays safely; avoid empty-arg injection (GH#22056).
+	local -a _issue_cmd=(gh issue create "${_creation_args[@]}")
+	local -a _rest_args=("${_creation_args[@]}")
 
 	# t2028/t2406/GH#27929: choose an eligible auto-assignee before creation,
 	# but keep durable creation independent from the best-effort assignment.
