@@ -114,9 +114,11 @@ read-only for every recovery root and archive; it never moves, rewrites, or
 deletes a bucket.
 
 The envelope records its producer, generation time, deterministic plan ID,
-source roots, reconciled entry/byte totals, and ordered `candidate`, `protected`,
-and `unknown` entries. Each attributable entry binds the exact physical bucket
-and archive paths to its format, Git HEAD/branch, source/admin/common identity,
+inventory completeness/error state, source roots, reconciled entry/byte totals,
+and ordered `candidate`, `protected`, and `unknown` entries. An incomplete global
+inventory produces no candidates; a partial report downgrades its reported
+entries to unknown. Each attributable entry binds the exact physical bucket and
+archive paths to its format, Git HEAD/branch, source/admin/common identity,
 archive index and completion-marker digests, expected allocated bytes, observed
 local/remote evidence, disposition, and reason codes. Unchanged evidence yields
 the same entries and plan ID; the generation timestamp remains observational.

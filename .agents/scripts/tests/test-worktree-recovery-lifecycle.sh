@@ -142,7 +142,8 @@ test_exact_plan_writes_candidate_without_mutation() {
 	[[ ! -e "$worktree_path" && -d "$archive_path" ]] || rc=1
 	jq -e --arg archive "$archive_path" '
 		.schema == "aidevops.worktree-recovery-plan/v1" and .producer == "worktree-helper" and
-		.read_only == true and (.source_roots | length == 1) and .entry_count == 1 and
+		.read_only == true and .inventory_complete == true and .inventory_error == null and
+		(.source_roots | length == 1) and .entry_count == 1 and
 		.sized_entry_count == 1 and .unavailable_size_count == 0 and
 		.candidate_count == 1 and .protected_count == 0 and .unknown_count == 0 and
 		(.candidate_bytes > 0) and .candidate_bytes == .expected_allocated_bytes and
@@ -313,6 +314,26 @@ test_size_drift_downgrades_only_entry() {
 	return 0
 }
 
+test_global_inventory_failure_is_explicit() {
+	local plan=""
+	local rc=0
+
+	plan=$(
+		worktree_recovery_inventory() {
+			return 1
+		}
+		worktree_recovery_plan_json "Linux"
+	) || rc=1
+	printf '%s\n' "$plan" | jq -e '
+		.inventory_complete == false and
+		.inventory_error == "classification-unavailable" and
+		.candidate_count == 0 and .entry_count == 0
+	' >/dev/null || rc=1
+	print_result "global_inventory_failure_is_explicit" "$rc" \
+		"Expected a failed global scan to produce no candidates and an explicit error"
+	return 0
+}
+
 # shellcheck source=../audit-worktree-removal-helper.sh
 source "${SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
 # shellcheck source=../worktree-recovery-lifecycle-helper.sh
@@ -328,5 +349,6 @@ test_plan_output_refuses_unsafe_targets
 test_classification_fails_closed
 test_plan_records_malformed_bucket_unknown
 test_size_drift_downgrades_only_entry
+test_global_inventory_failure_is_explicit
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]
