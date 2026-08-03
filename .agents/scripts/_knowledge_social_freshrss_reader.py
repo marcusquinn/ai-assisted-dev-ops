@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
-from _knowledge_social_fixture import FixtureSequence
+from _knowledge_social_fixture import FixturePageReader
 from _knowledge_social_freshrss import (
     FreshRSSAdapterError,
     FreshRSSProviderUnavailableError,
@@ -79,38 +79,9 @@ class GuardedFreshRSS(GuardedOAuthReader):
         super().__init__(helper, profile, FRESHRSS_READER_POLICY)
 
 
-def _fixture_object(value: Any, message: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise FreshRSSAdapterError(message)
-    return value
-
-
-def _fixture_page(sequence: FixtureSequence, request: PageRequest) -> dict[str, Any]:
-    entry = sequence.next_page()
-    expectation = _fixture_object(
-        entry.get("expect_request", {}),
-        "FreshRSS fixture request expectation must be an object",
-    )
-    actual = request.payload()
-    if any(actual.get(key) != value for key, value in expectation.items()):
-        raise FreshRSSAdapterError(
-            "FreshRSS request did not resume at the expected checkpoint"
-        )
-    return _fixture_object(
-        entry.get("response", entry),
-        "FreshRSS fixture page response must be an object",
-    )
-
-
-class FixtureFreshRSS:
+class FixtureFreshRSS(FixturePageReader):
     def __init__(self, path: Path) -> None:
-        self.sequence = FixtureSequence(path, "FreshRSS", FreshRSSAdapterError)
-
-    def identity(self, _expected_id: str) -> dict[str, Any]:
-        return self.sequence.identity()
-
-    def page(self, request: PageRequest) -> dict[str, Any]:
-        return _fixture_page(self.sequence, request)
+        super().__init__(path, "FreshRSS", FreshRSSAdapterError)
 
 
 def verified_identity(payload: dict[str, Any], expected_id: str) -> dict[str, Any]:
