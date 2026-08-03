@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
 # Unit tests for t2016 triage failure escalation helpers in
-# pulse-ancillary-dispatch-core.sh:
+# pulse-ancillary-dispatch.sh and its focused sub-libraries:
 #   - _ensure_triage_failed_label (label provisioning)
 #   - _post_triage_escalation_comment (maintainer-visible escalation)
 #
@@ -70,7 +70,7 @@ teardown_test_env() {
 # Stub the t2393 comment wrappers so _post_triage_escalation_comment's
 # `gh_issue_comment` call reaches the test's gh mock. The real wrappers live
 # in shared-constants.sh, which this test doesn't source — it loads only the
-# focused ancillary core library. Delegating
+# focused ancillary orchestrator. Delegating
 # to `gh issue comment` preserves the pre-t2393 test contract.
 # shellcheck disable=SC2317
 gh_issue_comment() { gh issue comment "$@" && return 0 || return 1; }
@@ -106,15 +106,15 @@ export -f gh
 # Load the focused production sub-library without booting the whole
 # pulse-wrapper runtime.
 load_helpers_under_test() {
-	local src="${AIDEVOPS_SOURCE:-$HOME/Git/aidevops-bugfix-t2016-triage-cache-gate/.agents/scripts/pulse-ancillary-dispatch-core.sh}"
+	local src="${AIDEVOPS_SOURCE:-$HOME/Git/aidevops-bugfix-t2016-triage-cache-gate/.agents/scripts/pulse-ancillary-dispatch.sh}"
 	if [[ ! -f "$src" ]]; then
 		# Fallback: derive from this test file's location.
 		local here
 		here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-		src="${here}/../pulse-ancillary-dispatch-core.sh"
+		src="${here}/../pulse-ancillary-dispatch.sh"
 	fi
 	if [[ ! -f "$src" ]]; then
-		printf 'ERROR: cannot locate pulse-ancillary-dispatch-core.sh (tried %s)\n' "$src" >&2
+		printf 'ERROR: cannot locate pulse-ancillary-dispatch.sh (tried %s)\n' "$src" >&2
 		exit 2
 	fi
 	# shellcheck disable=SC1090  # production sub-library path is runtime-resolved

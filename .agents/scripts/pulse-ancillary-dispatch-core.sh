@@ -9,6 +9,143 @@
 [[ -n "${_PULSE_ANCILLARY_DISPATCH_CORE_SH_LOADED:-}" ]] && return 0
 _PULSE_ANCILLARY_DISPATCH_CORE_SH_LOADED=1
 
+_triage_recommendation_label_contract() {
+	printf '%s\t%s\t%s\n' \
+		"$_PAD_TRIAGE_REVIEW_APPROVE_LABEL" "$_PAD_TRIAGE_REVIEW_APPROVE_COLOR" \
+		"Advisory automated triage recommendation: approve" \
+		"$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL" "$_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR" \
+		"Advisory automated triage recommendation: request changes" \
+		"$_PAD_TRIAGE_REVIEW_DECLINE_LABEL" "$_PAD_TRIAGE_REVIEW_DECLINE_COLOR" \
+		"Advisory automated triage recommendation: decline"
+	return 0
+}
+
+# Return a bounded JSON snapshot of repository labels. Explicit page numbers
+# prevent a malformed pagination response from creating an unbounded read loop.
+_triage_recommendation_labels_snapshot() {
+	local repo_slug="$1"
+	local page=1
+	local page_size=100
+	local max_pages=10
+	local response=""
+	local response_count=""
+	local snapshot='[]'
+
+	while [[ "$page" -le "$max_pages" ]]; do
+		response=$(AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-inventory-rest" \
+			gh api -X GET "/repos/${repo_slug}/labels?per_page=${page_size}&page=${page}" 2>/dev/null) || return 1
+		response_count=$(printf '%s' "$response" | jq -er --arg array_type "$_PAD_JSON_ARRAY_TYPE" \
+			'if type == $array_type then length else error("labels response has an invalid type") end' \
+			2>/dev/null) || return 1
+		snapshot=$(jq -cn --argjson current "$snapshot" --argjson page "$response" '
+			$current + [$page[] | {
+				name: (.name // ""),
+				color: ((.color // "") | ascii_downcase),
+				description: (.description // "")
+			}]') || return 1
+		if [[ "$response_count" -lt "$page_size" ]]; then
+			printf '%s\n' "$snapshot"
+			return 0
+		fi
+		page=$((page + 1))
+	done
+	return 1
+}
+
+_triage_recommendation_label_state() {
+	local snapshot="$1"
+	local expected_name="$2"
+	local expected_color="$3"
+	local expected_description="$4"
+	printf '%s' "$snapshot" | jq -er --arg name "$expected_name" --arg color "$expected_color" \
+		--arg description "$expected_description" '
+		[.[] | select((.name | ascii_downcase) == ($name | ascii_downcase))][0] as $label
+		| if $label == null then "missing"
+		elif (($label.color | ascii_downcase) == ($color | ascii_downcase)) and
+			($label.description == $description) then "current"
+		else "drifted"
+		end'
+	return $?
+}
+
+_triage_recommendation_label_write() {
+	local action="$1"
+	local repo_slug="$2"
+	local label_name="$3"
+	local color="$4"
+	local description="$5"
+	local encoded_name=""
+
+	if [[ "$action" == "create" ]]; then
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-create-rest" \
+			gh api -X POST "/repos/${repo_slug}/labels" -f name="$label_name" \
+			-f color="$color" -f description="$description" >/dev/null 2>&1
+		return $?
+	fi
+	[[ "$action" == "update" ]] || return 1
+	encoded_name=$(jq -rn --arg name "$label_name" '$name | @uri') || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-update-rest" \
+		gh api -X PATCH "/repos/${repo_slug}/labels/${encoded_name}" -f new_name="$label_name" \
+		-f color="$color" -f description="$description" >/dev/null 2>&1
+	return $?
+}
+
+_triage_terminal_snapshot_fingerprint() {
+	local issue_json="$1"
+	printf '%s' "$issue_json" | jq -cS \
+		'{number,title,body,updatedAt,labels:([.labels[].name] | sort)}' 2>/dev/null | \
+		python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+	local statuses=("${PIPESTATUS[@]}")
+	[[ "${statuses[0]}" -eq 0 && "${statuses[1]}" -eq 0 ]] || return 1
+	return 0
+}
+
+_triage_terminal_snapshot_file() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local slug_safe="${repo_slug//\//_}"
+	printf '%s/%s-%s.%s.terminal\n' \
+		"${TRIAGE_CACHE_DIR:-${HOME}/.aidevops/.agent-workspace/tmp/triage-cache}" \
+		"$slug_safe" "$issue_num" "$reason"
+	return 0
+}
+
+_triage_terminal_snapshot_active() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local issue_json="$4"
+	local state_file="" fingerprint="" recorded=""
+	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
+	[[ -f "$state_file" ]] || return 1
+	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
+	recorded=$(<"$state_file")
+	[[ "$recorded" == "$fingerprint" ]] || return 1
+	return 0
+}
+
+_triage_mark_terminal_snapshot() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local reason="$3"
+	local issue_json="$4"
+	local state_file="" state_dir="" fingerprint="" tmp_file=""
+	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
+	state_dir="${state_file%/*}"
+	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
+	mkdir -p "$state_dir" || return 1
+	tmp_file=$(mktemp "${state_file}.XXXXXX") || return 1
+	if ! printf '%s\n' "$fingerprint" >"$tmp_file" || ! mv "$tmp_file" "$state_file"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
+	printf '[pulse-wrapper] Triage prefetch terminal for #%s in %s (reason=%s) — unchanged snapshot requires manual review\n' \
+		"$issue_num" "$repo_slug" "$reason" >>"$LOGFILE"
+	return 0
+}
+
+
 #######################################
 # Expand a repo path that may start with `~` into an absolute path.
 _expand_foss_repo_path() {
@@ -130,109 +267,6 @@ _foss_recent_runtime_evidence() {
 	[[ "$matches" =~ ^[0-9]+$ ]] || matches=0
 	[[ "$matches" -gt 0 ]] && return 0
 	return 1
-}
-
-#######################################
-# Ensure the triage-failed label exists in the target repo.
-#
-# Uses gh label create --force (idempotent — creates if missing,
-# refreshes colour/description if present). This fixes t2016 where
-# the label was never provisioned in any repo and every
-# `gh issue edit --add-label "triage-failed"` call failed silently.
-#
-# Arguments:
-#   $1 - repo_slug (owner/repo)
-#######################################
-_ensure_triage_failed_label() {
-	local repo_slug="$1"
-	[[ -n "$repo_slug" ]] || return 0
-	gh label create "triage-failed" \
-		--repo "$repo_slug" \
-		--color "E11D21" \
-		--description "Automated triage could not produce a review — needs manual attention" \
-		--force >/dev/null 2>&1 || true
-	return 0
-}
-
-_triage_recommendation_label_contract() {
-	printf '%s\t%s\t%s\n' \
-		"$_PAD_TRIAGE_REVIEW_APPROVE_LABEL" "$_PAD_TRIAGE_REVIEW_APPROVE_COLOR" \
-		"Advisory automated triage recommendation: approve" \
-		"$_PAD_TRIAGE_REVIEW_FEEDBACK_LABEL" "$_PAD_TRIAGE_REVIEW_FEEDBACK_COLOR" \
-		"Advisory automated triage recommendation: request changes" \
-		"$_PAD_TRIAGE_REVIEW_DECLINE_LABEL" "$_PAD_TRIAGE_REVIEW_DECLINE_COLOR" \
-		"Advisory automated triage recommendation: decline"
-	return 0
-}
-
-# Return a bounded JSON snapshot of repository labels. Explicit page numbers
-# prevent a malformed pagination response from creating an unbounded read loop.
-_triage_recommendation_labels_snapshot() {
-	local repo_slug="$1"
-	local page=1
-	local page_size=100
-	local max_pages=10
-	local response=""
-	local response_count=""
-	local snapshot='[]'
-
-	while [[ "$page" -le "$max_pages" ]]; do
-		response=$(AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-inventory-rest" \
-			gh api -X GET "/repos/${repo_slug}/labels?per_page=${page_size}&page=${page}" 2>/dev/null) || return 1
-		response_count=$(printf '%s' "$response" | jq -er --arg array_type "$_PAD_JSON_ARRAY_TYPE" \
-			'if type == $array_type then length else error("labels response has an invalid type") end' \
-			2>/dev/null) || return 1
-		snapshot=$(jq -cn --argjson current "$snapshot" --argjson page "$response" '
-			$current + [$page[] | {
-				name: (.name // ""),
-				color: ((.color // "") | ascii_downcase),
-				description: (.description // "")
-			}]') || return 1
-		if [[ "$response_count" -lt "$page_size" ]]; then
-			printf '%s\n' "$snapshot"
-			return 0
-		fi
-		page=$((page + 1))
-	done
-	return 1
-}
-
-_triage_recommendation_label_state() {
-	local snapshot="$1"
-	local expected_name="$2"
-	local expected_color="$3"
-	local expected_description="$4"
-	printf '%s' "$snapshot" | jq -er --arg name "$expected_name" --arg color "$expected_color" \
-		--arg description "$expected_description" '
-		[.[] | select((.name | ascii_downcase) == ($name | ascii_downcase))][0] as $label
-		| if $label == null then "missing"
-		elif (($label.color | ascii_downcase) == ($color | ascii_downcase)) and
-			($label.description == $description) then "current"
-		else "drifted"
-		end'
-	return $?
-}
-
-_triage_recommendation_label_write() {
-	local action="$1"
-	local repo_slug="$2"
-	local label_name="$3"
-	local color="$4"
-	local description="$5"
-	local encoded_name=""
-
-	if [[ "$action" == "create" ]]; then
-		AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-create-rest" \
-			gh api -X POST "/repos/${repo_slug}/labels" -f name="$label_name" \
-			-f color="$color" -f description="$description" >/dev/null 2>&1
-		return $?
-	fi
-	[[ "$action" == "update" ]] || return 1
-	encoded_name=$(jq -rn --arg name "$label_name" '$name | @uri') || return 1
-	AIDEVOPS_GH_ROUTE_DECISION="pulse-triage-label-update-rest" \
-		gh api -X PATCH "/repos/${repo_slug}/labels/${encoded_name}" -f new_name="$label_name" \
-		-f color="$color" -f description="$description" >/dev/null 2>&1
-	return $?
 }
 
 #######################################
@@ -417,94 +451,6 @@ ESCALATION_EOF
 }
 
 #######################################
-# Extract the model's text response from a raw headless-runtime output file.
-#
-# t2019: The dispatcher previously ran a plain-text regex on the raw output
-# file, but headless-runtime-helper.sh passes --format json to OpenCode
-# and --output-format stream-json to Claude CLI. Both runtimes emit
-# newline-delimited JSON events where the model's markdown response is
-# embedded inside "text" fields of JSON objects — on a single physical
-# line. A `sed '/^## .*Review/,$'` pattern therefore never matched any
-# real triage review, producing the 60-80KB headerless-output symptom
-# documented in #18482 / pulse-wrapper.log for #18428.
-#
-# This helper concatenates all text events from both formats:
-#   OpenCode:     {"type":"text","text":"..."}
-#                 {"part":{"type":"text","text":"..."}}
-#   Claude CLI:   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
-#
-# Falls back to the raw file content if no JSON events parse (so legacy
-# callers passing already-extracted text still work).
-#
-# Arguments:
-#   $1 - path to raw output file
-#
-# Outputs the extracted text to stdout. Returns 0 always.
-#######################################
-_extract_review_text_from_json() {
-	local file_path="$1"
-	[[ -f "$file_path" ]] || return 0
-	python3 - "$file_path" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-try:
-    raw = path.read_text(errors="ignore")
-except Exception:
-    print("")
-    sys.exit(0)
-
-texts = []
-saw_json = False
-
-for line in raw.splitlines():
-    stripped = line.strip()
-    if not stripped or not stripped.startswith("{"):
-        continue
-    try:
-        obj = json.loads(stripped)
-    except Exception:
-        continue
-    saw_json = True
-    # OpenCode direct text event: {"type":"text","text":"..."}
-    if obj.get("type") == "text" and isinstance(obj.get("text"), str):
-        texts.append(obj["text"])
-        continue
-    # OpenCode part-wrapped: {"part":{"type":"text","text":"..."}}
-    part = obj.get("part") or {}
-    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-        texts.append(part["text"])
-        continue
-    # Claude CLI stream-json assistant event:
-    #   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}, ...]}}
-    if obj.get("type") == "assistant":
-        msg = obj.get("message") or {}
-        content = msg.get("content") or []
-        if isinstance(content, list):
-            for sub in content:
-                if isinstance(sub, dict) and sub.get("type") == "text" and isinstance(sub.get("text"), str):
-                    texts.append(sub["text"])
-        continue
-    # Claude CLI top-level final-result event uses one key for type and payload.
-    result_key = "result"
-    if obj.get("type") == result_key and isinstance(obj.get(result_key), str):
-        texts.append(obj[result_key])
-        continue
-
-if not saw_json:
-    # Legacy or error path: runtime printed plain text (or infra leak).
-    # Return raw content so downstream safety filters can inspect it.
-    sys.stdout.write(raw)
-    sys.exit(0)
-
-sys.stdout.write("\n".join(texts))
-PY
-	return 0
-}
-
-#######################################
 # Classify headless-runtime failures that happen before a triage model can
 # produce a review. These are infrastructure/contract failures, not review
 # content failures, so they must not consume the triage retry/cache budget.
@@ -566,81 +512,6 @@ _triage_failure_is_infrastructure() {
 }
 
 #######################################
-# Record a controlled prefetch infrastructure failure without consuming the
-# content retry budget. Public data is never copied into this diagnostic.
-#
-# Arguments:
-#   $1 - issue number
-#   $2 - repo slug
-#   $3 - controlled reason tag
-#######################################
-_triage_mark_infrastructure_retry() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local reason="$3"
-
-	gh issue edit "$issue_num" --repo "$repo_slug" \
-		--remove-label "triage-failed" >/dev/null 2>&1 || true
-	echo "[pulse-wrapper] Triage prefetch blocked for #${issue_num} in ${repo_slug} (reason=${reason}) — infrastructure failure, will retry without invoking the model" >>"$LOGFILE"
-	return 0
-}
-
-_triage_terminal_snapshot_fingerprint() {
-	local issue_json="$1"
-	printf '%s' "$issue_json" | jq -cS \
-		'{number,title,body,updatedAt,labels:([.labels[].name] | sort)}' 2>/dev/null | \
-		python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
-	local statuses=("${PIPESTATUS[@]}")
-	[[ "${statuses[0]}" -eq 0 && "${statuses[1]}" -eq 0 ]] || return 1
-	return 0
-}
-
-_triage_terminal_snapshot_file() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local reason="$3"
-	local slug_safe="${repo_slug//\//_}"
-	printf '%s/%s-%s.%s.terminal\n' \
-		"${TRIAGE_CACHE_DIR:-${HOME}/.aidevops/.agent-workspace/tmp/triage-cache}" \
-		"$slug_safe" "$issue_num" "$reason"
-	return 0
-}
-
-_triage_terminal_snapshot_active() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local reason="$3"
-	local issue_json="$4"
-	local state_file="" fingerprint="" recorded=""
-	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
-	[[ -f "$state_file" ]] || return 1
-	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
-	recorded=$(<"$state_file")
-	[[ "$recorded" == "$fingerprint" ]] || return 1
-	return 0
-}
-
-_triage_mark_terminal_snapshot() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local reason="$3"
-	local issue_json="$4"
-	local state_file="" state_dir="" fingerprint="" tmp_file=""
-	state_file=$(_triage_terminal_snapshot_file "$issue_num" "$repo_slug" "$reason") || return 1
-	state_dir="${state_file%/*}"
-	fingerprint=$(_triage_terminal_snapshot_fingerprint "$issue_json") || return 1
-	mkdir -p "$state_dir" || return 1
-	tmp_file=$(mktemp "${state_file}.XXXXXX") || return 1
-	if ! printf '%s\n' "$fingerprint" >"$tmp_file" || ! mv "$tmp_file" "$state_file"; then
-		rm -f "$tmp_file"
-		return 1
-	fi
-	printf '[pulse-wrapper] Triage prefetch terminal for #%s in %s (reason=%s) — unchanged snapshot requires manual review\n' \
-		"$issue_num" "$repo_slug" "$reason" >>"$LOGFILE"
-	return 0
-}
-
-#######################################
 # Create a private managed directory for untrusted triage artifacts and start
 # a detached cleanup guardian. Normal paths remove the directory immediately;
 # the guardian covers SIGKILL and enforces bounded retention.
@@ -670,39 +541,6 @@ _triage_cleanup_sensitive_artifact_dir() {
 	local artifact_dir="$1"
 	[[ -n "$artifact_dir" ]] || return 0
 	aidevops_sensitive_temp_cleanup "$artifact_dir" 2>/dev/null || return 1
-	return 0
-}
-
-#######################################
-# Put an issue on an explicit security hold without copying untrusted content
-# into labels, logs, or comments. Label writes are idempotent and best-effort;
-# the caller still blocks model invocation if GitHub is unavailable.
-#
-# Arguments:
-#   $1 - issue number
-#   $2 - repo slug
-#   $3 - controlled reason tag
-#######################################
-_triage_mark_security_hold() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local reason="$3"
-
-	[[ -n "$issue_num" && -n "$repo_slug" ]] || return 0
-	gh label create "security-review" --repo "$repo_slug" --color "D73A4A" \
-		--description "Requires security review — suspicious AI request" --force \
-		>/dev/null 2>&1 || true
-	gh label create "$_PAD_REVIEW_HOLD_LABEL" --repo "$repo_slug" --color "D73A4A" \
-		--description "Opt-out: block issue auto-dispatch or PR auto-merge for maintainer review" --force \
-		>/dev/null 2>&1 || true
-	if ! gh issue edit "$issue_num" --repo "$repo_slug" \
-		--add-label "security-review" --add-label "$_PAD_REVIEW_HOLD_LABEL" \
-		>/dev/null 2>&1; then
-		echo "[pulse-wrapper] SECURITY: failed to persist triage security hold for #${issue_num} in ${repo_slug}; model invocation remains blocked (reason=${reason})" >>"$LOGFILE"
-	fi
-	gh issue edit "$issue_num" --repo "$repo_slug" \
-		--remove-label "triage-failed" >/dev/null 2>&1 || true
-	echo "[pulse-wrapper] SECURITY: blocked triage model invocation for #${issue_num} in ${repo_slug} (reason=${reason})" >>"$LOGFILE"
 	return 0
 }
 
@@ -828,145 +666,5 @@ _triage_text_byte_count() {
 	byte_count="${byte_count//[[:space:]]/}"
 	[[ "$byte_count" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$byte_count"
-	return 0
-}
-
-#######################################
-# Validate the GitHub issue/PR payload fields consumed by triage identities.
-_triage_issue_json_is_valid() {
-	local issue_json="$1"
-	local issue_num="$2"
-
-	if ! printf '%s' "$issue_json" | jq -e --argjson expected "$issue_num" \
-		--arg array_type "$_PAD_JSON_ARRAY_TYPE" \
-		--arg string_type "$_PAD_JSON_STRING_TYPE" \
-		'.number == $expected and (.title | type == $string_type) and (.title | length > 0) and
-		 ((.body | type) == $string_type or (.body | type) == "null") and
-		 (.labels | type == $array_type) and
-		 all(.labels[]; (.name | type) == $string_type) and
-		 (.createdAt | type == $string_type) and
-		 (.updatedAt | type == $string_type)' \
-		>/dev/null 2>&1; then
-		return 1
-	fi
-	return 0
-}
-
-#######################################
-# Fetch issue data for later snapshot and skip-condition checks.
-#
-# Fetches and validates issue JSON, comments, and body. Cache decisions happen
-# only after PR revision, diff, and file inputs have also been fetched.
-# Writes results to caller-supplied named variables via printf -v so the
-# function's "return" values are explicit in the signature (GH#18865).
-#
-# Arguments:
-#   $1 - issue_num
-#   $2 - repo_slug
-#   $3 - name of variable to receive raw issue JSON
-#   $4 - name of variable to receive raw comments JSON array
-#   $5 - name of variable to receive issue body text
-#
-# Returns:
-#   0 — proceed with triage (named variables are populated)
-#   1 — infrastructure failure (named variables unset)
-#######################################
-_triage_prefetch_issue() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local issue_json_var="$3"
-	local issue_comments_var="$4"
-	local issue_body_var="$5"
-
-	# ── GH#17746: Fetch body+comments early — needed for dedup AND prompt ──
-	local issue_json=""
-	if ! issue_json=$(gh issue view "$issue_num" --repo "$repo_slug" \
-		--json number,title,body,author,labels,createdAt,updatedAt 2>/dev/null); then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "github-issue-read-failed"
-		return 1
-	fi
-	if ! _triage_issue_json_is_valid "$issue_json" "$issue_num"; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "github-issue-read-malformed"
-		return 1
-	fi
-	if _triage_terminal_snapshot_active "$issue_num" "$repo_slug" \
-		"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json"; then
-		return 1
-	fi
-
-	local issue_comment_pages=""
-	if ! issue_comment_pages=$(gh api \
-		"repos/${repo_slug}/issues/${issue_num}/comments?per_page=100" \
-		--paginate --slurp 2>/dev/null); then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "github-comments-read-failed"
-		return 1
-	fi
-	if ! printf '%s' "$issue_comment_pages" | jq -e \
-		--arg array_type "$_PAD_JSON_ARRAY_TYPE" \
-		'type == $array_type and all(.[]; type == $array_type)' \
-		>/dev/null 2>&1; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "$_PAD_GITHUB_COMMENTS_READ_MALFORMED_REASON"
-		return 1
-	fi
-	local issue_comment_count=""
-	if ! issue_comment_count=$(printf '%s' "$issue_comment_pages" \
-		| jq -r '[.[][]?] | length' 2>/dev/null) || \
-		[[ ! "$issue_comment_count" =~ ^[0-9]+$ ]]; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "$_PAD_GITHUB_COMMENTS_READ_MALFORMED_REASON"
-		return 1
-	fi
-	if [[ "$issue_comment_count" -gt "$_PAD_TRIAGE_MAX_COMMENTS" ]]; then
-		_triage_mark_terminal_snapshot "$issue_num" "$repo_slug" \
-			"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json" || true
-		return 1
-	fi
-
-	local issue_comments=""
-	if ! issue_comments=$(printf '%s' "$issue_comment_pages" | jq -ce '
-		[.[][]? | {
-			id: .id,
-			author: (.user.login // ""),
-			association: (.author_association // ""),
-			body: (.body // ""),
-			created: (.created_at // ""),
-			updated: (.updated_at // .created_at // "")
-		}]
-		| if all(.[];
-			((.id | type) == "number") and
-			((.author | type) == "string") and
-			((.association | type) == "string") and
-			((.body | type) == "string") and
-			((.created | type) == "string") and
-			((.updated | type) == "string"))
-		then . else error("malformed comment snapshot") end' 2>/dev/null); then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "$_PAD_GITHUB_COMMENTS_READ_MALFORMED_REASON"
-		return 1
-	fi
-	local issue_comment_bytes=""
-	issue_comment_bytes=$(_triage_text_byte_count "$issue_comments") || return 1
-	if [[ "$issue_comment_bytes" -gt "$_PAD_TRIAGE_MAX_COMMENT_BYTES" ]]; then
-		_triage_mark_terminal_snapshot "$issue_num" "$repo_slug" \
-			"$_PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON" "$issue_json" || true
-		return 1
-	fi
-
-	local issue_body=""
-	if ! issue_body=$(printf '%s' "$issue_json" \
-		| jq -r '.body // "No body"' 2>/dev/null); then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "github-issue-body-malformed"
-		return 1
-	fi
-
-	# Write results to caller's named variables (explicit data flow — GH#18865)
-	printf -v "$issue_json_var" '%s' "$issue_json"
-	printf -v "$issue_comments_var" '%s' "$issue_comments"
-	printf -v "$issue_body_var" '%s' "$issue_body"
 	return 0
 }

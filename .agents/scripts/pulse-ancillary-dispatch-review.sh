@@ -10,6 +10,290 @@
 _PULSE_ANCILLARY_DISPATCH_REVIEW_SH_LOADED=1
 
 #######################################
+# Run the headless triage-review worker without implementation-worker authority.
+#
+# Arguments:
+#   $1 - issue_num
+#   $2 - repo_slug
+#   $3 - repo_path
+#   $4 - resolved model flag (empty or "--model ...")
+#   $5 - prompt file
+#   $6 - output file
+#
+# Exit code: headless runtime status; contract failures return non-zero.
+#######################################
+_run_triage_review_worker() {
+	local triage_issue_num="$1"
+	local triage_repo_slug="$2"
+	local triage_repo_path="$3"
+	local model_flag="$4"
+	local prefetch_file="$5"
+	local review_output_file="$6"
+
+	if [[ -z "$review_output_file" ]]; then
+		printf '%s\n' '[fatal] triage worker output file missing; aborting before model launch' >&2
+		return 1
+	fi
+	if [[ -z "$prefetch_file" || ! -s "$prefetch_file" ]]; then
+		printf '%s\n' '[fatal] triage worker env contract missing prefetch file; aborting before model launch' >"$review_output_file"
+		return 1
+	fi
+
+	# Triage correlation lives in the session/title/prompt. WORKER_* variables
+	# grant implementation claim, worktree, and cleanup authority and therefore
+	# must be absent from this subprocess.
+	local runtime_status=0
+	(
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH \
+			WORKER_GITHUB_LOGIN WORKER_SESSION_KEY AIDEVOPS_WORKER_GITHUB_LOGIN \
+			DISPATCH_REPO_SLUG AIDEVOPS_DISPATCH_LEASE_TOKEN \
+			AIDEVOPS_DISPATCH_LEASE_DEVICE AIDEVOPS_ATTEMPT_ID \
+			AIDEVOPS_PARENT_WORKER_ID AIDEVOPS_ROOT_WORKER_ID AIDEVOPS_WORKER_ID \
+			AIDEVOPS_PERMISSION_GRANT_FILE AIDEVOPS_PERMISSION_REQUEST_ID \
+			AIDEVOPS_WORKTREE_OWNER_PID AIDEVOPS_WORKTREE_OWNER_SESSION \
+			AIDEVOPS_WORKTREE_OWNER_TASK AIDEVOPS_WORKTREE_OWNER_PATH
+		export HEADLESS=1
+		# shellcheck disable=SC2086
+		"$HEADLESS_RUNTIME_HELPER" run \
+			--role triage \
+			--session-key "triage-review-${triage_issue_num}" \
+			--dir "$triage_repo_path" \
+			$model_flag \
+			--agent triage-review \
+			--title "Sandboxed triage review: Issue #${triage_issue_num}" \
+			--prompt-file "$prefetch_file" </dev/null
+	) >"$review_output_file" 2>&1 || runtime_status=$?
+
+	return "$runtime_status"
+}
+
+_triage_review_result_fields() {
+	local post_result="$1"
+	local infrastructure_failure_reason="$2"
+	local failure_reason="${post_result#FAILED:}"
+	local outcome="$_PAD_TRIAGE_OUTCOME_REVIEW_FAILED"
+	if [[ "$post_result" == "POSTED" ]]; then
+		printf 'true||%s\n' "$_PAD_TRIAGE_OUTCOME_POSTED"
+		return 0
+	fi
+	if [[ -n "$infrastructure_failure_reason" ]]; then
+		outcome="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
+	fi
+	printf 'false|%s|%s\n' "$failure_reason" "$outcome"
+	return 0
+}
+
+#######################################
+# Dispatch a sandboxed triage review worker and post its output
+#
+# Runs the triage-review agent, posts the review comment (with safety filtering
+# via _extract_and_post_triage_review), and updates triage labels and cache via
+# _finalize_triage_state. Triage never acquires implementation-worker locks.
+#
+# Arguments:
+#   $1 - issue_num
+#   $2 - repo_slug
+#   $3 - repo_path (passed to --dir of headless helper)
+#   $4 - prompt_file (path to prefetch temp file; consumed and removed)
+#   $5 - content_hash (for success/failure cache update)
+#   $6 - resolved_model (empty = let helper choose)
+#   $7 - verified item kind ("issue" or "pr")
+#   $8 - expected immutable PR revision pair (empty for issues)
+#   $9 - expected mutable issue/PR text snapshot hash
+#   $10 - expected public evidence revision
+#
+# Exit code: always 0
+#######################################
+_dispatch_triage_review_worker() {
+	local issue_num="$1"
+	local repo_slug="$2"
+	local repo_path="$3"
+	local prefetch_file="$4"
+	local content_hash="$5"
+	local resolved_model="${6:-}"
+	local item_kind="$7"
+	local expected_pr_revision="${8:-}"
+	local expected_text_snapshot="${9:-}"
+	local expected_public_revision="${10:-}"
+	_PAD_TRIAGE_LAST_OUTCOME="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
+
+	local model_flag=""
+	[[ -n "$resolved_model" ]] && model_flag="--model $resolved_model"
+
+	# The caller supplies the explicit restricted triage-review agent; the
+	# format-first prefetched prompt remains the primary constraint.
+	local review_artifact_dir="${prefetch_file%/*}"
+	local review_output_file="${review_artifact_dir}/review-output.ndjson"
+	if ! (umask 077 && : >"$review_output_file"); then
+		if ! _triage_cleanup_sensitive_artifact_dir "$review_artifact_dir"; then
+			echo "[pulse-wrapper] Triage runtime artifact cleanup failed for #${issue_num} in ${repo_slug}; guardian retained" >>"$LOGFILE"
+		fi
+		_finalize_triage_state \
+			"$issue_num" "$repo_slug" "$content_hash" \
+			"false" "$_PAD_TRIAGE_RUNTIME_TEMP_FAILURE_REASON" "0"
+		return 0
+	fi
+
+	# Run the no-tools triage-review agent under a distinct role so the
+	# implementation-worker issue/worktree contract does not reject it before
+	# model launch (GH#23854/GH#28705).
+	local runtime_status=0
+	_run_triage_review_worker \
+		"$issue_num" "$repo_slug" "$repo_path" \
+		"$model_flag" "$prefetch_file" "$review_output_file" || runtime_status=$?
+
+	# t2019: Extract raw metrics and text content from the JSON stream.
+	# The headless runtime emits line-delimited JSON; the model's markdown
+	# is embedded in "text" fields — extract before filtering so header
+	# detection works on decoded text, not raw JSON escaping.
+	local raw_output_chars=0
+	if [[ -f "$review_output_file" ]]; then
+		raw_output_chars=$(wc -c <"$review_output_file" 2>/dev/null || echo 0)
+		raw_output_chars="${raw_output_chars// /}"
+	fi
+
+	local review_text=""
+	review_text=$(_extract_review_text_from_json "$review_output_file")
+	local output_chars="${#review_text}"
+
+	# Inspect a bounded sample in memory for deterministic infrastructure
+	# classification only. Suppression diagnostics never retain this content.
+	local raw_sample=""
+	if [[ -f "$review_output_file" ]]; then
+		raw_sample=$(head -c 1000 "$review_output_file" 2>/dev/null || true)
+	fi
+	local artifact_cleanup_status=0
+	_triage_cleanup_sensitive_artifact_dir "$review_artifact_dir" \
+		|| artifact_cleanup_status=$?
+
+	# t2089/GH#23854: Detect runtime/prelaunch failures BEFORE finalising triage
+	# state. The safety filter must still suppress any output, but infra
+	# failures must not consume retry budget or cache the content hash.
+	local infra_failure_reason=""
+	infra_failure_reason=$(_triage_runtime_result_failure_reason \
+		"$runtime_status" "$artifact_cleanup_status" "$raw_sample")
+	if [[ -n "$infra_failure_reason" ]]; then
+		echo "[pulse-wrapper] Triage runtime failure for #${issue_num} in ${repo_slug}: ${infra_failure_reason} — infrastructure/contract failure, not a review failure (GH#23854)" >>"$LOGFILE"
+	fi
+
+	# Validate output safety and post or suppress the review comment.
+	local post_result=""
+	if [[ -n "$infra_failure_reason" ]]; then
+		post_result="FAILED:${infra_failure_reason}"
+	else
+		post_result=$(_extract_and_post_triage_review \
+			"$issue_num" "$repo_slug" "$review_text" "$output_chars" \
+			"$raw_output_chars" "$item_kind" "$expected_pr_revision" \
+			"$expected_text_snapshot" "$expected_public_revision")
+	fi
+
+	local triage_posted="false" failure_reason="" outcome_fields=""
+	outcome_fields=$(_triage_review_result_fields "$post_result" "$infra_failure_reason")
+	IFS='|' read -r triage_posted failure_reason _PAD_TRIAGE_LAST_OUTCOME <<<"$outcome_fields"
+
+	# Update labels and content-hash cache.
+	_finalize_triage_state \
+		"$issue_num" "$repo_slug" "$content_hash" \
+		"$triage_posted" "$failure_reason" "$output_chars"
+
+	return 0
+}
+
+_triage_outcome_json() {
+	local attempted="$1"
+	local posted="$2"
+	local review_failed="$3"
+	local infrastructure_failed="$4"
+	local preparation_failed="$5"
+	jq -cn \
+		--arg schema "$_PAD_TRIAGE_OUTCOME_SCHEMA" \
+		--argjson attempted "$attempted" \
+		--argjson posted "$posted" \
+		--argjson review_failed "$review_failed" \
+		--argjson infrastructure_failed "$infrastructure_failed" \
+		--argjson preparation_failed "$preparation_failed" \
+		'{schema:$schema, attempted:$attempted, posted:$posted, review_failed:$review_failed, infrastructure_failed:$infrastructure_failed, preparation_failed:$preparation_failed}'
+	return 0
+}
+
+#######################################
+# Validate independently propagated prompt metadata before worker dispatch.
+#######################################
+_triage_prompt_metadata_is_valid() {
+	local item_kind="$1"
+	local expected_pr_revision="$2"
+	local expected_text_snapshot="$3"
+	local expected_public_revision="$4"
+	[[ "$expected_public_revision" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+
+	case "$item_kind" in
+	issue)
+		[[ -z "$expected_pr_revision" && \
+			"$expected_text_snapshot" =~ ^[0-9a-f]{64}$ ]] || return 1
+		;;
+	pr)
+		[[ "$expected_pr_revision" =~ ^[0-9a-f]{40,64}:[0-9a-f]{40,64}$ && \
+			"$expected_text_snapshot" =~ ^[0-9a-f]{64}$ && \
+			"${expected_pr_revision#*:}" == "$expected_public_revision" ]] || return 1
+		;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+_triage_review_candidates() {
+	local triage_file="$1"
+	local repos_json="$2"
+	local line="" current_slug="" current_path="" issue_num="" author="" metadata_line=""
+	local priority_candidates="" regular_candidates="" candidate_count=0
+	local author_suffix_regex='\[author: @([A-Za-z0-9-]+)\]$'
+	local review_suffix_regex='\[status: \*\*needs-review\*\*\] \[created: [^]]+\]$'
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^##[[:space:]]+([^[:space:]]+/[^[:space:]]+) ]]; then
+			current_slug="${BASH_REMATCH[1]}"
+			current_path=$(jq -r --arg s "$current_slug" '.initialized_repos[]? | select(.slug == $s) | .path' "$repos_json" 2>/dev/null || printf '')
+			current_path="${current_path/#\~/$HOME}"
+			continue
+		fi
+		author=""
+		metadata_line="$line"
+		if [[ "$line" =~ $author_suffix_regex ]]; then
+			author="${BASH_REMATCH[1]}"
+			metadata_line="${line% \[author: @"${author}"\]}"
+		fi
+		if [[ "$metadata_line" =~ $review_suffix_regex && "$metadata_line" =~ Issue\ #([0-9]+) ]]; then
+			issue_num="${BASH_REMATCH[1]}"
+			if [[ -n "$current_slug" && -n "$current_path" ]]; then
+				local candidate="${issue_num}|${current_slug}|${current_path}|${author}"
+				if _triage_author_is_known_contributor "$author"; then
+					priority_candidates="${priority_candidates}${candidate}"$'\n'
+				else
+					regular_candidates="${regular_candidates}${candidate}"$'\n'
+				fi
+				candidate_count=$((candidate_count + 1))
+			fi
+		fi
+	done <"$triage_file"
+	echo "[pulse-wrapper] dispatch_triage_reviews: parsed ${candidate_count} candidates from state file" >>"$LOGFILE"
+	printf '%s%s' "$priority_candidates" "$regular_candidates"
+	return 0
+}
+
+_triage_author_is_known_contributor() {
+	local author="$1"
+	local known_contributors="${PULSE_TRIAGE_KNOWN_CONTRIBUTORS:-}"
+	local author_normalized="" known_normalized=""
+	[[ "$author" =~ ^[A-Za-z0-9-]+$ && -n "$known_contributors" ]] || return 1
+	author_normalized=$(printf '%s' "$author" | tr '[:upper:]' '[:lower:]')
+	known_normalized=$(printf ',%s,' "$known_contributors" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$known_normalized" in
+	*,"$author_normalized",*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+
+#######################################
 # Read a bounded PR diff for one immutable base/head commit pair.
 #
 # Arguments:
@@ -256,35 +540,6 @@ _triage_fetch_pr_snapshot() {
 	printf -v "$head_sha_var" '%s' "$_ps_head_sha"
 	printf -v "$diff_var" '%s' "$_ps_diff"
 	printf -v "$files_var" '%s' "$_ps_files"
-	return 0
-}
-
-#######################################
-# Validate the repository prerequisites used to resolve public evidence.
-# Records a controlled infrastructure retry reason when validation fails.
-#######################################
-_triage_local_context_is_usable() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local repo_path="$3"
-
-	if [[ -z "$repo_path" || ! -d "$repo_path" ]]; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "local-repository-unavailable"
-		return 1
-	fi
-	if ! command -v python3 >/dev/null 2>&1 || ! command -v rg >/dev/null 2>&1; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "triage-local-tool-unavailable"
-		return 1
-	fi
-	local repo_is_worktree=""
-	if ! repo_is_worktree=$(git -C "$repo_path" rev-parse \
-		--is-inside-work-tree 2>/dev/null) || [[ "$repo_is_worktree" != "true" ]]; then
-		_triage_mark_infrastructure_retry \
-			"$issue_num" "$repo_slug" "local-git-context-unavailable"
-		return 1
-	fi
 	return 0
 }
 
@@ -577,359 +832,4 @@ _extract_and_post_triage_review() {
 	echo "[pulse-wrapper] Posted sandboxed triage review for #${issue_num} in ${repo_slug} (${output_chars} extracted chars)" >>"$LOGFILE"
 	printf 'POSTED\n'
 	return 0
-}
-
-#######################################
-# Update triage-failed label and content-hash cache after a dispatch.
-#
-# Manages the triage-failed label (remove on success, add on failure), then
-# updates the content-hash cache. On success the hash is cached immediately;
-# on failure, the retry counter is incremented and the hash is only cached when
-# the retry cap is hit.
-#
-# Arguments:
-#   $1 - issue_num
-#   $2 - repo_slug
-#   $3 - content_hash
-#   $4 - triage_posted ("true" or "false")
-#   $5 - failure_reason (empty string if posted successfully)
-#   $6 - output_chars
-#######################################
-_finalize_triage_state() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local content_hash="$3"
-	local triage_posted="$4"
-	local failure_reason="$5"
-	local output_chars="$6"
-
-	# GH#17829: Surface triage failures visibly. Add label so maintainers
-	# can identify issues needing manual triage; remove on success.
-	# t2016: Ensure the label exists first (gh label create --force is
-	# idempotent) and only log "Added" when the add command succeeds.
-	# t2089/GH#23854/GH#28705: infrastructure failures are not triage content
-	# failures. Remove any stale triage-failed label and retry transparently
-	# without consuming the content budget.
-	if [[ "$triage_posted" == "true" ]] || _triage_failure_is_infrastructure "$failure_reason"; then
-		gh issue edit "$issue_num" --repo "$repo_slug" \
-			--remove-label "triage-failed" >/dev/null 2>&1 || true
-	elif ! _triage_failure_is_infrastructure "$failure_reason"; then
-		_ensure_triage_failed_label "$repo_slug"
-		if gh issue edit "$issue_num" --repo "$repo_slug" \
-			--add-label "triage-failed" >/dev/null 2>&1; then
-			echo "[pulse-wrapper] Added triage-failed label to #${issue_num} in ${repo_slug}" >>"$LOGFILE"
-		else
-			echo "[pulse-wrapper] FAILED to add triage-failed label to #${issue_num} in ${repo_slug} (gh issue edit returned non-zero)" >>"$LOGFILE"
-		fi
-	fi
-
-	# GH#17873: Only cache content hash on successful post.
-	# GH#17827: If failures are persistent (>= TRIAGE_MAX_RETRIES on the
-	# same content hash), cache to break the infinite lock→agent→fail→unlock
-	# loop. The triage-failed label remains for maintainer visibility.
-	# t2016: When the retry cap is hit, post a structured escalation comment
-	# BEFORE writing the cache, so the maintainer has a visible signal
-	# instead of a silently-cached issue that disappears from triage forever.
-	# t2089/GH#23854: infrastructure failures skip BOTH the retry counter AND the
-	# cache write — the issue content hasn't changed; the runtime/contract was
-	# unavailable. Incrementing the counter would cause the next infra failure
-	# to hit the cap and permanently lock the issue out of triage.
-	if [[ "$triage_posted" == "true" ]]; then
-		_triage_update_cache "$issue_num" "$repo_slug" "$content_hash"
-	elif _triage_failure_is_infrastructure "$failure_reason"; then
-		echo "[pulse-wrapper] Triage skipped for #${issue_num} — ${failure_reason}, will retry next cycle without consuming retry budget (GH#23854)" >>"$LOGFILE"
-	elif _triage_increment_failure "$issue_num" "$repo_slug" "$content_hash"; then
-		echo "[pulse-wrapper] Triage retry cap reached for #${issue_num} in ${repo_slug} — caching hash to stop lock/unlock loop (GH#17827)" >>"$LOGFILE"
-		local cap_attempts="${TRIAGE_MAX_RETRIES:-1}"
-		_post_triage_escalation_comment \
-			"$issue_num" "$repo_slug" \
-			"$failure_reason" "$cap_attempts" "$output_chars"
-		_triage_update_cache "$issue_num" "$repo_slug" "$content_hash"
-	else
-		echo "[pulse-wrapper] Skipping triage cache for #${issue_num} — review not posted, will retry on next cycle" >>"$LOGFILE"
-	fi
-	return 0
-}
-
-#######################################
-# Run the headless triage-review worker without implementation-worker authority.
-#
-# Arguments:
-#   $1 - issue_num
-#   $2 - repo_slug
-#   $3 - repo_path
-#   $4 - resolved model flag (empty or "--model ...")
-#   $5 - prompt file
-#   $6 - output file
-#
-# Exit code: headless runtime status; contract failures return non-zero.
-#######################################
-_run_triage_review_worker() {
-	local triage_issue_num="$1"
-	local triage_repo_slug="$2"
-	local triage_repo_path="$3"
-	local model_flag="$4"
-	local prefetch_file="$5"
-	local review_output_file="$6"
-
-	if [[ -z "$review_output_file" ]]; then
-		printf '%s\n' '[fatal] triage worker output file missing; aborting before model launch' >&2
-		return 1
-	fi
-	if [[ -z "$prefetch_file" || ! -s "$prefetch_file" ]]; then
-		printf '%s\n' '[fatal] triage worker env contract missing prefetch file; aborting before model launch' >"$review_output_file"
-		return 1
-	fi
-
-	# Triage correlation lives in the session/title/prompt. WORKER_* variables
-	# grant implementation claim, worktree, and cleanup authority and therefore
-	# must be absent from this subprocess.
-	local runtime_status=0
-	(
-		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH \
-			WORKER_GITHUB_LOGIN WORKER_SESSION_KEY AIDEVOPS_WORKER_GITHUB_LOGIN \
-			DISPATCH_REPO_SLUG AIDEVOPS_DISPATCH_LEASE_TOKEN \
-			AIDEVOPS_DISPATCH_LEASE_DEVICE AIDEVOPS_ATTEMPT_ID \
-			AIDEVOPS_PARENT_WORKER_ID AIDEVOPS_ROOT_WORKER_ID AIDEVOPS_WORKER_ID \
-			AIDEVOPS_PERMISSION_GRANT_FILE AIDEVOPS_PERMISSION_REQUEST_ID \
-			AIDEVOPS_WORKTREE_OWNER_PID AIDEVOPS_WORKTREE_OWNER_SESSION \
-			AIDEVOPS_WORKTREE_OWNER_TASK AIDEVOPS_WORKTREE_OWNER_PATH
-		export HEADLESS=1
-		# shellcheck disable=SC2086
-		"$HEADLESS_RUNTIME_HELPER" run \
-			--role triage \
-			--session-key "triage-review-${triage_issue_num}" \
-			--dir "$triage_repo_path" \
-			$model_flag \
-			--agent triage-review \
-			--title "Sandboxed triage review: Issue #${triage_issue_num}" \
-			--prompt-file "$prefetch_file" </dev/null
-	) >"$review_output_file" 2>&1 || runtime_status=$?
-
-	return "$runtime_status"
-}
-
-_triage_review_result_fields() {
-	local post_result="$1"
-	local infrastructure_failure_reason="$2"
-	local failure_reason="${post_result#FAILED:}"
-	local outcome="$_PAD_TRIAGE_OUTCOME_REVIEW_FAILED"
-	if [[ "$post_result" == "POSTED" ]]; then
-		printf 'true||%s\n' "$_PAD_TRIAGE_OUTCOME_POSTED"
-		return 0
-	fi
-	if [[ -n "$infrastructure_failure_reason" ]]; then
-		outcome="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
-	fi
-	printf 'false|%s|%s\n' "$failure_reason" "$outcome"
-	return 0
-}
-
-#######################################
-# Dispatch a sandboxed triage review worker and post its output
-#
-# Runs the triage-review agent, posts the review comment (with safety filtering
-# via _extract_and_post_triage_review), and updates triage labels and cache via
-# _finalize_triage_state. Triage never acquires implementation-worker locks.
-#
-# Arguments:
-#   $1 - issue_num
-#   $2 - repo_slug
-#   $3 - repo_path (passed to --dir of headless helper)
-#   $4 - prompt_file (path to prefetch temp file; consumed and removed)
-#   $5 - content_hash (for success/failure cache update)
-#   $6 - resolved_model (empty = let helper choose)
-#   $7 - verified item kind ("issue" or "pr")
-#   $8 - expected immutable PR revision pair (empty for issues)
-#   $9 - expected mutable issue/PR text snapshot hash
-#   $10 - expected public evidence revision
-#
-# Exit code: always 0
-#######################################
-_dispatch_triage_review_worker() {
-	local issue_num="$1"
-	local repo_slug="$2"
-	local repo_path="$3"
-	local prefetch_file="$4"
-	local content_hash="$5"
-	local resolved_model="${6:-}"
-	local item_kind="$7"
-	local expected_pr_revision="${8:-}"
-	local expected_text_snapshot="${9:-}"
-	local expected_public_revision="${10:-}"
-	_PAD_TRIAGE_LAST_OUTCOME="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
-
-	local model_flag=""
-	[[ -n "$resolved_model" ]] && model_flag="--model $resolved_model"
-
-	# The caller supplies the explicit restricted triage-review agent; the
-	# format-first prefetched prompt remains the primary constraint.
-	local review_artifact_dir="${prefetch_file%/*}"
-	local review_output_file="${review_artifact_dir}/review-output.ndjson"
-	if ! (umask 077 && : >"$review_output_file"); then
-		if ! _triage_cleanup_sensitive_artifact_dir "$review_artifact_dir"; then
-			echo "[pulse-wrapper] Triage runtime artifact cleanup failed for #${issue_num} in ${repo_slug}; guardian retained" >>"$LOGFILE"
-		fi
-		_finalize_triage_state \
-			"$issue_num" "$repo_slug" "$content_hash" \
-			"false" "$_PAD_TRIAGE_RUNTIME_TEMP_FAILURE_REASON" "0"
-		return 0
-	fi
-
-	# Run the no-tools triage-review agent under a distinct role so the
-	# implementation-worker issue/worktree contract does not reject it before
-	# model launch (GH#23854/GH#28705).
-	local runtime_status=0
-	_run_triage_review_worker \
-		"$issue_num" "$repo_slug" "$repo_path" \
-		"$model_flag" "$prefetch_file" "$review_output_file" || runtime_status=$?
-
-	# t2019: Extract raw metrics and text content from the JSON stream.
-	# The headless runtime emits line-delimited JSON; the model's markdown
-	# is embedded in "text" fields — extract before filtering so header
-	# detection works on decoded text, not raw JSON escaping.
-	local raw_output_chars=0
-	if [[ -f "$review_output_file" ]]; then
-		raw_output_chars=$(wc -c <"$review_output_file" 2>/dev/null || echo 0)
-		raw_output_chars="${raw_output_chars// /}"
-	fi
-
-	local review_text=""
-	review_text=$(_extract_review_text_from_json "$review_output_file")
-	local output_chars="${#review_text}"
-
-	# Inspect a bounded sample in memory for deterministic infrastructure
-	# classification only. Suppression diagnostics never retain this content.
-	local raw_sample=""
-	if [[ -f "$review_output_file" ]]; then
-		raw_sample=$(head -c 1000 "$review_output_file" 2>/dev/null || true)
-	fi
-	local artifact_cleanup_status=0
-	_triage_cleanup_sensitive_artifact_dir "$review_artifact_dir" \
-		|| artifact_cleanup_status=$?
-
-	# t2089/GH#23854: Detect runtime/prelaunch failures BEFORE finalising triage
-	# state. The safety filter must still suppress any output, but infra
-	# failures must not consume retry budget or cache the content hash.
-	local infra_failure_reason=""
-	infra_failure_reason=$(_triage_runtime_result_failure_reason \
-		"$runtime_status" "$artifact_cleanup_status" "$raw_sample")
-	if [[ -n "$infra_failure_reason" ]]; then
-		echo "[pulse-wrapper] Triage runtime failure for #${issue_num} in ${repo_slug}: ${infra_failure_reason} — infrastructure/contract failure, not a review failure (GH#23854)" >>"$LOGFILE"
-	fi
-
-	# Validate output safety and post or suppress the review comment.
-	local post_result=""
-	if [[ -n "$infra_failure_reason" ]]; then
-		post_result="FAILED:${infra_failure_reason}"
-	else
-		post_result=$(_extract_and_post_triage_review \
-			"$issue_num" "$repo_slug" "$review_text" "$output_chars" \
-			"$raw_output_chars" "$item_kind" "$expected_pr_revision" \
-			"$expected_text_snapshot" "$expected_public_revision")
-	fi
-
-	local triage_posted="false" failure_reason="" outcome_fields=""
-	outcome_fields=$(_triage_review_result_fields "$post_result" "$infra_failure_reason")
-	IFS='|' read -r triage_posted failure_reason _PAD_TRIAGE_LAST_OUTCOME <<<"$outcome_fields"
-
-	# Update labels and content-hash cache.
-	_finalize_triage_state \
-		"$issue_num" "$repo_slug" "$content_hash" \
-		"$triage_posted" "$failure_reason" "$output_chars"
-
-	return 0
-}
-
-_triage_outcome_json() {
-	local attempted="$1"
-	local posted="$2"
-	local review_failed="$3"
-	local infrastructure_failed="$4"
-	local preparation_failed="$5"
-	jq -cn \
-		--arg schema "$_PAD_TRIAGE_OUTCOME_SCHEMA" \
-		--argjson attempted "$attempted" \
-		--argjson posted "$posted" \
-		--argjson review_failed "$review_failed" \
-		--argjson infrastructure_failed "$infrastructure_failed" \
-		--argjson preparation_failed "$preparation_failed" \
-		'{schema:$schema, attempted:$attempted, posted:$posted, review_failed:$review_failed, infrastructure_failed:$infrastructure_failed, preparation_failed:$preparation_failed}'
-	return 0
-}
-
-#######################################
-# Validate independently propagated prompt metadata before worker dispatch.
-#######################################
-_triage_prompt_metadata_is_valid() {
-	local item_kind="$1"
-	local expected_pr_revision="$2"
-	local expected_text_snapshot="$3"
-	local expected_public_revision="$4"
-	[[ "$expected_public_revision" =~ ^[0-9a-f]{40,64}$ ]] || return 1
-
-	case "$item_kind" in
-	issue)
-		[[ -z "$expected_pr_revision" && \
-			"$expected_text_snapshot" =~ ^[0-9a-f]{64}$ ]] || return 1
-		;;
-	pr)
-		[[ "$expected_pr_revision" =~ ^[0-9a-f]{40,64}:[0-9a-f]{40,64}$ && \
-			"$expected_text_snapshot" =~ ^[0-9a-f]{64}$ && \
-			"${expected_pr_revision#*:}" == "$expected_public_revision" ]] || return 1
-		;;
-	*) return 1 ;;
-	esac
-	return 0
-}
-
-_triage_review_candidates() {
-	local triage_file="$1"
-	local repos_json="$2"
-	local line="" current_slug="" current_path="" issue_num="" author="" metadata_line=""
-	local priority_candidates="" regular_candidates="" candidate_count=0
-	local author_suffix_regex='\[author: @([A-Za-z0-9-]+)\]$'
-	local review_suffix_regex='\[status: \*\*needs-review\*\*\] \[created: [^]]+\]$'
-	while IFS= read -r line; do
-		if [[ "$line" =~ ^##[[:space:]]+([^[:space:]]+/[^[:space:]]+) ]]; then
-			current_slug="${BASH_REMATCH[1]}"
-			current_path=$(jq -r --arg s "$current_slug" '.initialized_repos[]? | select(.slug == $s) | .path' "$repos_json" 2>/dev/null || printf '')
-			current_path="${current_path/#\~/$HOME}"
-			continue
-		fi
-		author=""
-		metadata_line="$line"
-		if [[ "$line" =~ $author_suffix_regex ]]; then
-			author="${BASH_REMATCH[1]}"
-			metadata_line="${line% \[author: @"${author}"\]}"
-		fi
-		if [[ "$metadata_line" =~ $review_suffix_regex && "$metadata_line" =~ Issue\ #([0-9]+) ]]; then
-			issue_num="${BASH_REMATCH[1]}"
-			if [[ -n "$current_slug" && -n "$current_path" ]]; then
-				local candidate="${issue_num}|${current_slug}|${current_path}|${author}"
-				if _triage_author_is_known_contributor "$author"; then
-					priority_candidates="${priority_candidates}${candidate}"$'\n'
-				else
-					regular_candidates="${regular_candidates}${candidate}"$'\n'
-				fi
-				candidate_count=$((candidate_count + 1))
-			fi
-		fi
-	done <"$triage_file"
-	echo "[pulse-wrapper] dispatch_triage_reviews: parsed ${candidate_count} candidates from state file" >>"$LOGFILE"
-	printf '%s%s' "$priority_candidates" "$regular_candidates"
-	return 0
-}
-
-_triage_author_is_known_contributor() {
-	local author="$1"
-	local known_contributors="${PULSE_TRIAGE_KNOWN_CONTRIBUTORS:-}"
-	local author_normalized="" known_normalized=""
-	[[ "$author" =~ ^[A-Za-z0-9-]+$ && -n "$known_contributors" ]] || return 1
-	author_normalized=$(printf '%s' "$author" | tr '[:upper:]' '[:lower:]')
-	known_normalized=$(printf ',%s,' "$known_contributors" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-	case "$known_normalized" in
-	*,"$author_normalized",*) return 0 ;;
-	*) return 1 ;;
-	esac
 }

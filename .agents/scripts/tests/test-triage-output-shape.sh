@@ -242,7 +242,7 @@ export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 	_triage_increment_failure _triage_awaiting_contributor_reply \
 	lock_issue_for_worker unlock_issue_after_worker
 
-# Load the focused production sub-libraries without booting pulse-wrapper.
+# Load the focused ancillary orchestrator without booting pulse-wrapper.
 # We load:
 #   - _extract_review_text_from_json
 #   - _log_suppressed_triage_output
@@ -250,25 +250,20 @@ export -f _triage_content_hash _triage_is_cached _triage_update_cache \
 #   - _post_triage_escalation_comment
 #   - _dispatch_triage_review_worker
 load_helpers_under_test() {
-	local scripts_dir
+	local src
 	local here
 	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-	scripts_dir="${here}/.."
-	if [[ -n "${AIDEVOPS_SOURCE:-}" ]]; then
-		scripts_dir=$(cd "$(dirname "$AIDEVOPS_SOURCE")" && pwd)
-	fi
-	if [[ ! -f "${scripts_dir}/pulse-ancillary-dispatch-core.sh" ]]; then
-		printf 'ERROR: cannot locate pulse ancillary sub-libraries in %s\n' "$scripts_dir" >&2
+	src="${AIDEVOPS_SOURCE:-${here}/../pulse-ancillary-dispatch.sh}"
+	if [[ ! -f "$src" ]]; then
+		printf 'ERROR: cannot locate pulse ancillary orchestrator at %s\n' "$src" >&2
 		exit 2
 	fi
-	# shellcheck source=../sensitive-temp-helper.sh
-	source "${here}/../sensitive-temp-helper.sh"
-	# shellcheck source=../pulse-ancillary-dispatch-core.sh
-	source "${scripts_dir}/pulse-ancillary-dispatch-core.sh"
-	# shellcheck source=../pulse-ancillary-dispatch-evidence.sh
-	source "${scripts_dir}/pulse-ancillary-dispatch-evidence.sh"
-	# shellcheck source=../pulse-ancillary-dispatch-review.sh
-	source "${scripts_dir}/pulse-ancillary-dispatch-review.sh"
+	unset _PULSE_ANCILLARY_DISPATCH_LOADED \
+		_PULSE_ANCILLARY_DISPATCH_CORE_SH_LOADED \
+		_PULSE_ANCILLARY_DISPATCH_EVIDENCE_SH_LOADED \
+		_PULSE_ANCILLARY_DISPATCH_REVIEW_SH_LOADED
+	# shellcheck disable=SC1090  # production orchestrator path is runtime-resolved
+	source "$src"
 	_triage_current_text_snapshot_hash() {
 		printf '%s\n' "$MOCK_CURRENT_TEXT_SNAPSHOT_HASH"
 		return 0
