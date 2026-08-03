@@ -751,22 +751,26 @@ _check_external_issue_author_gate() {
 
 	local issue_author_meta=""
 	issue_author_meta=$(gh api "repos/${repo_slug}/issues/${issue_number}" \
-		--jq '[.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | join("|")' 2>/dev/null) || issue_author_meta=""
+		--jq 'if (type == "object" and ((.labels | type) == "array") and all(.labels[]; if type == "object" then ((.name | type) == "string") else false end)) then [.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[].name] | index("external-contributor") != null) | tostring)] | join("|") else empty end' 2>/dev/null) || issue_author_meta=""
 
 	local author_association="NONE"
 	local author_type=""
 	local author_login=""
-	local external_source="false"
+	local external_source="unknown"
+	local metadata_valid=0
 	if [[ -n "$issue_author_meta" ]]; then
 		IFS='|' read -r author_association author_type author_login external_source <<<"$issue_author_meta"
+		if [[ -n "$author_login" && "$external_source" =~ ^(true|false)$ ]]; then
+			metadata_valid=1
+		fi
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
 
-	if [[ "$author_type" == "Bot" && "$external_source" != "true" ]]; then
+	if [[ "$metadata_valid" -eq 1 && "$author_type" == "Bot" && "$external_source" != "true" ]]; then
 		return 1
 	fi
-	local authority_rc=1
-	if [[ "$external_source" != "true" ]]; then
+	local authority_rc=2
+	if [[ "$metadata_valid" -eq 1 && "$external_source" != "true" ]]; then
 		authority_rc=0
 		_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
 	fi

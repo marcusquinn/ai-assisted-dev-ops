@@ -306,10 +306,11 @@ _nmr_issue_author_has_repo_write_authority() {
 
 	[[ -n "$issue_num" && -n "$slug" ]] || return 2
 	issue_meta=$(gh api "$(_nmr_issue_api_path "$issue_num" "$slug")" 2>/dev/null) || return 2
+	_nmr_issue_metadata_has_valid_labels "$issue_meta" || return 2
 	# A trusted bot may have generated this issue from an external contribution.
 	# The explicit provenance label keeps that source authority gate intact.
 	if printf '%s' "$issue_meta" | jq -e \
-		'[.labels[]?.name] | index("external-contributor") != null' >/dev/null 2>&1; then
+		'[.labels[].name] | index("external-contributor") != null' >/dev/null 2>&1; then
 		return 1
 	fi
 	identity=$(printf '%s' "$issue_meta" | jq -r '
@@ -1870,8 +1871,10 @@ _nmr_issue_label_state() {
 	_nmr_issue_metadata_has_valid_labels "$issue_json" || return 1
 	printf '%s' "$issue_json" | jq -r --arg no_status "$NMR_STATUS_NONE" '
 		[.labels[].name] as $labels
-		| [
-			([$labels[] | select(startswith("status:"))][0] // $no_status),
+		| [$labels[] | select(startswith("status:"))] as $statuses
+		| if ($statuses | length) > 1 then error("conflicting lifecycle statuses")
+		else [
+			($statuses[0] // $no_status),
 			(any($labels[];
 				. == "hold-for-review" or . == "no-auto-dispatch" or
 				. == "needs-credentials" or . == "needs-maintainer-permissions")),
@@ -1880,7 +1883,7 @@ _nmr_issue_label_state() {
 				. == "supervisor" or . == "contributor" or . == "quality-review" or
 				. == "routine-tracking" or
 				. == "status:done" or . == "status:resolved"))
-		] | @tsv
+		] | @tsv end
 	' 2>/dev/null
 	return $?
 }

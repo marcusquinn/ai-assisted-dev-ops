@@ -538,6 +538,33 @@ test_resolved_breaker_recovers_blocked_status() {
 	return 0
 }
 
+test_conflicting_statuses_defer_recovery_in_any_order() {
+	setup_test_env
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	_NMR_FORCE_AVAILABLE=1
+	local first_rc=0
+	local second_rc=0
+	local first_clean=0
+	local second_clean=0
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:blocked"},{"name":"status:in-review"},{"name":"auto-dispatch"}]'
+	_nmr_restore_dispatchable_state 24479 owner/repo || first_rc=$?
+	[[ "$first_rc" -ne 0 && ! -s "$STATUS_CALLS_FILE" && ! -s "$ISSUE_EDIT_CALLS_FILE" ]] && first_clean=1
+	: >"$STATUS_CALLS_FILE"
+	: >"$ISSUE_EDIT_CALLS_FILE"
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:in-review"},{"name":"status:blocked"},{"name":"auto-dispatch"}]'
+	_nmr_restore_dispatchable_state 24479 owner/repo || second_rc=$?
+	[[ "$second_rc" -ne 0 && ! -s "$STATUS_CALLS_FILE" && ! -s "$ISSUE_EDIT_CALLS_FILE" ]] && second_clean=1
+	if [[ "$first_clean" -eq 1 && "$second_clean" -eq 1 ]]; then
+		print_result "conflicting lifecycle statuses defer NMR recovery independent of label order" 0
+	else
+		print_result "conflicting lifecycle statuses defer NMR recovery independent of label order" 1 \
+			"first_rc=${first_rc} first_clean=${first_clean} second_rc=${second_rc} second_clean=${second_clean}"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_incomplete_labels_defer_trusted_cleanup() {
 	setup_test_env
 	export ISSUE_LABELS_JSON='null'
@@ -560,13 +587,15 @@ test_label_helpers_reject_incomplete_metadata() {
 	source "$NMR_SCRIPT"
 	local security_rc=0
 	local state_rc=0
+	local authority_rc=0
 	_nmr_application_is_security_sensitive 24479 owner/repo '{"labels":null}' || security_rc=$?
 	_nmr_issue_label_state 24479 owner/repo >/dev/null || state_rc=$?
-	if [[ "$security_rc" -eq 2 && "$state_rc" -ne 0 ]]; then
-		print_result "security and lifecycle helpers reject incomplete label metadata" 0
+	_nmr_issue_author_has_repo_write_authority 24479 owner/repo || authority_rc=$?
+	if [[ "$security_rc" -eq 2 && "$state_rc" -ne 0 && "$authority_rc" -eq 2 ]]; then
+		print_result "authority, security, and lifecycle helpers reject incomplete label metadata" 0
 	else
-		print_result "security and lifecycle helpers reject incomplete label metadata" 1 \
-			"security_rc=${security_rc} state_rc=${state_rc}"
+		print_result "authority, security, and lifecycle helpers reject incomplete label metadata" 1 \
+			"security_rc=${security_rc} state_rc=${state_rc} authority_rc=${authority_rc}"
 	fi
 	teardown_test_env
 	return 0
@@ -700,6 +729,7 @@ main() {
 	test_available_status_failure_retains_nmr
 	test_resolved_breaker_preserves_active_status
 	test_resolved_breaker_recovers_blocked_status
+	test_conflicting_statuses_defer_recovery_in_any_order
 	test_incomplete_labels_defer_trusted_cleanup
 	test_label_helpers_reject_incomplete_metadata
 	test_crypto_approval_preserves_independent_security_hold

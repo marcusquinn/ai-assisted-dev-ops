@@ -59,6 +59,7 @@ setup_case() {
 	local approval_result="${3:-}"
 	local authority_rc="${4:-1}"
 	local external_source="${5:-false}"
+	local labels_mode="${6:-valid}"
 	MOCK_AUTHORITY_RC="$authority_rc"
 
 	TEST_ROOT=$(mktemp -d 2>/dev/null || mktemp -d -t aidevops-gh22399)
@@ -70,15 +71,44 @@ setup_case() {
 	: >"$GH_CALLS_FILE"
 	: >"$LOGFILE"
 
-	cat >"${TEST_ROOT}/issue-meta.tsv" <<EOF
-${association}|${author_type}|fixture-author|${external_source}
-EOF
+	local labels_json='[]'
+	[[ "$external_source" == "true" ]] && labels_json='[{"name":"external-contributor"}]'
+	case "$labels_mode" in
+	null)
+		labels_json='null'
+		jq -nc --arg association "$association" --arg author_type "$author_type" --argjson labels "$labels_json" \
+			'{author_association:$association,user:{login:"fixture-author",type:$author_type},labels:$labels}' >"${TEST_ROOT}/issue-meta.json"
+		;;
+	missing)
+		jq -nc --arg association "$association" --arg author_type "$author_type" \
+			'{author_association:$association,user:{login:"fixture-author",type:$author_type}}' >"${TEST_ROOT}/issue-meta.json"
+		;;
+	*)
+		jq -nc --arg association "$association" --arg author_type "$author_type" --argjson labels "$labels_json" \
+			'{author_association:$association,user:{login:"fixture-author",type:$author_type},labels:$labels}' >"${TEST_ROOT}/issue-meta.json"
+		;;
+	esac
 	cat >"${TEST_ROOT}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "gh $*" >>"$GH_CALLS_FILE"
 if [[ "${1:-}" == "api" ]]; then
-	cat "${TEST_ROOT}/issue-meta.tsv"
+	shift 2
+	jq_filter=""
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--jq)
+			jq_filter="$2"
+			shift 2
+			;;
+		*) shift ;;
+		esac
+	done
+	if [[ -n "$jq_filter" ]]; then
+		jq -r "$jq_filter" "${TEST_ROOT}/issue-meta.json"
+	else
+		cat "${TEST_ROOT}/issue-meta.json"
+	fi
 	exit 0
 fi
 exit 0
@@ -205,6 +235,36 @@ test_external_origin_bot_without_approval_blocks() {
 	return 0
 }
 
+test_bot_with_null_labels_fails_closed() {
+	setup_case "NONE" "Bot" "" 0 false null
+	if _check_external_issue_author_gate 25 "owner/repo"; then
+		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with null labels fails closed and applies NMR" 0
+		else
+			print_result "bot with null labels fails closed and applies NMR" 1 "NMR label was not applied"
+		fi
+	else
+		print_result "bot with null labels fails closed and applies NMR" 1 "Expected gate to block"
+	fi
+	cleanup_case
+	return 0
+}
+
+test_bot_with_missing_labels_fails_closed() {
+	setup_case "NONE" "Bot" "" 0 false missing
+	if _check_external_issue_author_gate 26 "owner/repo"; then
+		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with missing labels fails closed and applies NMR" 0
+		else
+			print_result "bot with missing labels fails closed and applies NMR" 1 "NMR label was not applied"
+		fi
+	else
+		print_result "bot with missing labels fails closed and applies NMR" 1 "Expected gate to block"
+	fi
+	cleanup_case
+	return 0
+}
+
 test_external_author_with_crypto_approval_allows_dispatch() {
 	setup_case "CONTRIBUTOR" "User" "VERIFIED"
 	if _check_external_issue_author_gate 3 "owner/repo"; then
@@ -236,7 +296,7 @@ test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr() 
 
 test_author_lookup_failure_fails_closed() {
 	setup_case "" "" ""
-	rm -f "${TEST_ROOT}/issue-meta.tsv"
+	rm -f "${TEST_ROOT}/issue-meta.json"
 	if _check_external_issue_author_gate 4 "owner/repo"; then
 		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
 			print_result "author lookup failure fails closed with NMR" 0
@@ -264,6 +324,8 @@ main() {
 	test_read_collaborator_without_approval_blocks
 	test_collaborator_permission_lookup_failure_blocks
 	test_external_origin_bot_without_approval_blocks
+	test_bot_with_null_labels_fails_closed
+	test_bot_with_missing_labels_fails_closed
 	test_external_author_with_crypto_approval_allows_dispatch
 	test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr
 	test_author_lookup_failure_fails_closed
