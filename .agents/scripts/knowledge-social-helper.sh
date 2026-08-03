@@ -13,12 +13,17 @@ YOUTUBE_HELPER="${SCRIPT_DIR}/knowledge_social_youtube.py"
 LINKEDIN_HELPER="${SCRIPT_DIR}/knowledge_social_linkedin.py"
 META_HELPER="${SCRIPT_DIR}/knowledge_social_meta.py"
 MEDIUM_HELPER="${SCRIPT_DIR}/knowledge_social_medium.py"
+PATREON_HELPER="${SCRIPT_DIR}/knowledge_social_patreon.py"
 DISCOURSE_HELPER="${SCRIPT_DIR}/knowledge_social_discourse.py"
 NODEBB_HELPER="${SCRIPT_DIR}/knowledge_social_nodebb.py"
 MASTODON_HELPER="${SCRIPT_DIR}/knowledge_social_mastodon.py"
+LEMMY_HELPER="${SCRIPT_DIR}/knowledge_social_lemmy.py"
 GITHUB_HELPER="${SCRIPT_DIR}/knowledge_social_github.py"
 STACK_EXCHANGE_HELPER="${SCRIPT_DIR}/knowledge_social_stack_exchange.py"
+HACKER_NEWS_HELPER="${SCRIPT_DIR}/knowledge_social_hacker_news.py"
+HASHNODE_HELPER="${SCRIPT_DIR}/knowledge_social_hashnode.py"
 MINIFLUX_HELPER="${SCRIPT_DIR}/knowledge_social_miniflux.py"
+FRESHRSS_HELPER="${SCRIPT_DIR}/knowledge_social_freshrss.py"
 READWISE_READER_HELPER="${SCRIPT_DIR}/knowledge_social_readwise_reader.py"
 QUERY_HELPER="${SCRIPT_DIR}/knowledge_social_query.py"
 SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
@@ -59,6 +64,32 @@ to an expiring approval. Due runners verify the stable X identity immediately
 before one mapped write attempt. Ambiguous outcomes are never retried; reconcile
 them explicitly. Notification commands maintain a local workflow overlay without
 mutating mention/reply evidence.
+
+EOF
+	return 0
+}
+
+usage_sync_feed_readers() {
+	cat <<'EOF'
+Miniflux synchronization:
+  sync-miniflux binds one user ID to a keyed exact HTTPS installation before
+  every page. Entries, read, removed, starred, tags, feeds, categories, and OPML
+  use GET-only routes. Entry streams resume by ascending ID and overlap
+  changed_after by one second. --budget is 3-1000 and --page-size is 1-100.
+
+FreshRSS synchronization:
+  sync-freshrss binds the current Google Reader user to a keyed exact HTTPS
+  installation before every page. One exact ClientLogin POST obtains ephemeral
+  authorization; subscriptions, folders, tags, items, unread, starred, and OPML
+  then use exact GET-only routes with opaque continuation checkpoints. Fever
+  remains unavailable because authenticated Fever reads require another POST.
+  --budget is 5-1000 and --page-size is 1-1000.
+
+Readwise Reader synchronization:
+  sync-readwise-reader requires a deployment-owned account ID plus keyed expected
+  token binding before fixed-origin token validation. Seven GET-only streams use
+  opaque cursors and one-second updatedAfter overlap. The per-invocation request
+  budget is 3-19 to remain below the documented 20/minute limit.
 
 EOF
 	return 0
@@ -122,6 +153,13 @@ Mastodon synchronization:
   Write scopes, redirects, cross-origin links, and mutations are rejected.
   --budget is 3-1000 and --page-size is 1-100.
 
+Lemmy synchronization:
+  sync-lemmy discovers the exact server version and selected local person through
+  GET /api/v3/site before every page. Lemmy 1.x uses only v4 opaque-cursor routes;
+  0.19.x uses only v3 numeric-page routes. Installation-local IDs are namespaced,
+  ActivityPub IDs are retained, and every request is same-origin GET-only.
+  --budget is 3-1000 and --page-size is 1-50.
+
 GitHub synchronization:
   sync-github binds REST /user numeric and node IDs to GraphQL viewer identity
   before every page. Ten independent streams use exact REST GET routes or fixed
@@ -135,17 +173,38 @@ Stack Exchange synchronization:
   exhaustion, continue only while has_more, and cap pages at 100 items.
   --budget is 3-1000 and --page-size is 1-100.
 
-Miniflux synchronization:
-  sync-miniflux binds one user ID to a keyed exact HTTPS installation before
-  every page. Entries, read, removed, starred, tags, feeds, categories, and OPML
-  use GET-only routes. Entry streams resume by ascending ID and overlap
-  changed_after by one second. --budget is 3-1000 and --page-size is 1-100.
+Hacker News synchronization:
+  sync-hacker-news observes one exact case-sensitive public username selector;
+  it never claims authenticated or immutable account identity. One bounded
+  submitted-ID slice resolves only official Firebase user/item GET routes.
+  --profile must be public, --budget is 3-1000 request units, and --page-size
+  is a 1-100 item slice limit.
 
-Readwise Reader synchronization:
-  sync-readwise-reader requires a deployment-owned account ID plus keyed expected
-  token binding before fixed-origin token validation. Seven GET-only streams use
-  opaque cursors and one-second updatedAfter overlap. The per-invocation request
-  budget is 3-19 to remain below the documented 20/minute limit.
+EOF
+	usage_sync_feed_readers || return 1
+	return 0
+}
+
+usage_sync_hashnode() {
+	cat <<'EOF'
+Hashnode synchronization:
+  sync-hashnode binds the authenticated viewer ID and username before every
+  fixed GraphQL read page. Eight independent streams reject arbitrary GraphQL,
+  mutations, partial errors, redirects, and unowned resources.
+  --budget is 3-1000 and --page-size is 1-50.
+
+EOF
+	return 0
+}
+
+usage_patreon_sync() {
+	cat <<'EOF'
+Patreon synchronization:
+  sync-patreon verifies one creator identity and every explicitly configured,
+  creator-owned campaign before each page. Account, campaign, post, benefit, and
+  purpose-gated current-membership streams have independent checkpoints.
+  --budget is a hard 5-99 request limit and --page-size is 1-100 items. Patron
+  memberships, sensitive member scopes, redirects, and mutation routes are rejected.
 
 EOF
 	return 0
@@ -178,6 +237,10 @@ Usage:
     --connection-id ID --account-id CHANNEL_ID --stream STREAM --profile PROFILE \
     [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
     [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-patreon [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id CREATOR_USER_ID --stream STREAM --profile PROFILE \
+    [--budget 5-99] [--page-size 1-100] [--collector-id ID] \
+    [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-linkedin [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id MEMBER_ID --stream STREAM --profile PROFILE \
     [--budget UNITS] [--page-size 1-50] [--collector-id ID] \
@@ -198,6 +261,10 @@ Usage:
     --connection-id ID --account-id OPAQUE_HOME_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-lemmy [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id PERSON_NUMERIC_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-50] \
+    [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-github [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id NUMERIC_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
@@ -206,9 +273,21 @@ Usage:
     --connection-id ID --account-id NETWORK_ACCOUNT_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
     [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-hacker-news [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id CASE_SENSITIVE_USERNAME --stream submitted \
+    --profile public [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-hashnode [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id HASHNODE_ACCOUNT_ID --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-50] \
+    [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-miniflux [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id USER_NUMERIC_ID --stream STREAM \
     --profile PROFILE [--budget UNITS] [--page-size 1-100] \
+    [--collector-id ID] [--lease-seconds SECONDS]
+  knowledge-social-helper.sh sync-freshrss [--base PATH] [--alias ALIAS] \
+    --connection-id ID --account-id FRESHRSS_USERNAME --stream STREAM \
+    --profile PROFILE [--budget UNITS] [--page-size 1-1000] \
     [--collector-id ID] [--lease-seconds SECONDS]
   knowledge-social-helper.sh sync-readwise-reader [--base PATH] [--alias ALIAS] \
     --connection-id ID --account-id DEPLOYMENT_ACCOUNT_ID --stream STREAM \
@@ -279,6 +358,8 @@ Medium account export:
 
 EOF
 	usage_sync
+	usage_sync_hashnode
+	usage_patreon_sync
 	cat <<'EOF'
 Deterministic routines:
   sync-due and reconcile-due return sorted privacy-safe work plans. Every sync or
@@ -396,12 +477,17 @@ run_named_provider_sync() {
 	shift || return 1
 	case "$subcommand" in
 	sync-meta) run_provider_sync Meta "$META_HELPER" "$@" || return 1 ;;
+	sync-patreon) run_provider_sync Patreon "$PATREON_HELPER" "$@" || return 1 ;;
 	sync-discourse) run_provider_sync Discourse "$DISCOURSE_HELPER" "$@" || return 1 ;;
 	sync-nodebb) run_provider_sync NodeBB "$NODEBB_HELPER" "$@" || return 1 ;;
 	sync-mastodon) run_provider_sync Mastodon "$MASTODON_HELPER" "$@" || return 1 ;;
+	sync-lemmy) run_provider_sync Lemmy "$LEMMY_HELPER" "$@" || return 1 ;;
 	sync-github) run_provider_sync GitHub "$GITHUB_HELPER" "$@" || return 1 ;;
 	sync-stack-exchange) run_provider_sync "Stack Exchange" "$STACK_EXCHANGE_HELPER" "$@" || return 1 ;;
+	sync-hacker-news) run_provider_sync "Hacker News" "$HACKER_NEWS_HELPER" "$@" || return 1 ;;
+	sync-hashnode) run_provider_sync Hashnode "$HASHNODE_HELPER" "$@" || return 1 ;;
 	sync-miniflux) run_provider_sync Miniflux "$MINIFLUX_HELPER" "$@" || return 1 ;;
+	sync-freshrss) run_provider_sync FreshRSS "$FRESHRSS_HELPER" "$@" || return 1 ;;
 	sync-readwise-reader) run_provider_sync "Readwise Reader" "$READWISE_READER_HELPER" "$@" || return 1 ;;
 	*) return 1 ;;
 	esac
@@ -482,7 +568,7 @@ main() {
 		fi
 		python3 "$LINKEDIN_HELPER" "$@" || return 1
 		;;
-	sync-meta | sync-discourse | sync-nodebb | sync-mastodon | sync-github | sync-stack-exchange | sync-miniflux | sync-readwise-reader)
+	sync-meta | sync-patreon | sync-discourse | sync-nodebb | sync-mastodon | sync-lemmy | sync-github | sync-stack-exchange | sync-hacker-news | sync-hashnode | sync-miniflux | sync-freshrss | sync-readwise-reader)
 		run_named_provider_sync "$subcommand" "$@" || return 1
 		;;
 	query | annotate)

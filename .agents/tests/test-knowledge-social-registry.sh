@@ -43,12 +43,17 @@ expected = {
     "binance-square": ("no-route",),
     "discord": ("live",),
     "forem": ("live",),
+    "freshrss": ("live",),
     "github": ("live",),
+    "hacker-news": ("live",),
+    "hashnode": ("live",),
     "google-business-profile": ("live",),
     "gumroad": ("live",),
+    "lemmy": ("live",),
     "mastodon": ("live",),
     "miniflux": ("live",),
     "nextcloud-talk": ("live",),
+    "patreon": ("live",),
     "readwise-reader": ("live",),
     "signal": ("inspect", "manual-import", "status"),
     "slack": ("archive", "live"),
@@ -73,6 +78,7 @@ for alias, provider in {
     "dev-community": "forem",
     "dev.to": "forem",
     "gbp": "google-business-profile",
+    "hn": "hacker-news",
     "reader": "readwise-reader",
     "stackexchange": "stack-exchange",
     "whats-app": "whatsapp",
@@ -97,18 +103,60 @@ except module.ProviderRegistryError:
 else:
     raise SystemExit("unknown provider used a fallback")
 
-print("16:order-independent:aliases-exact:collisions-rejected:no-fallback")
+print("21:order-independent:aliases-exact:collisions-rejected:no-fallback")
 PY
 )
 assert_eq "all merged provider outcomes register deterministically" \
-	"$registry_summary" "16:order-independent:aliases-exact:collisions-rejected:no-fallback"
+	"$registry_summary" "21:order-independent:aliases-exact:collisions-rejected:no-fallback"
 
 provider_count=$("$HELPER" providers | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-assert_eq "helper exposes the complete provider registry" "$provider_count" "16"
+assert_eq "helper exposes the complete provider registry" "$provider_count" "21"
 
 forem_resolution=$("$HELPER" provider-resolve --provider dev-community |
 	python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["provider"] + ":" + ",".join(data["modes"]))')
 assert_eq "DEV Community resolves only to the Forem family" "$forem_resolution" "forem:live"
+
+hacker_news_help=$("$HELPER" provider-run --provider hn --mode live -- --help 2>&1)
+if [[ "$hacker_news_help" == *"bounded public Hacker News submitted-item slice"* ]]; then
+	assert_eq "Hacker News alias executes only the public local adapter" canonical canonical
+else
+	assert_eq "Hacker News alias executes only the public local adapter" unexpected canonical
+fi
+
+hashnode_help=$("$HELPER" provider-run --provider hashnode --mode live -- --help 2>&1)
+if [[ "$hashnode_help" == *"bounded, read-only Hashnode account stream"* ]]; then
+	assert_eq "Hashnode registry executes only the guarded local adapter" canonical canonical
+else
+	assert_eq "Hashnode registry executes only the guarded local adapter" unexpected canonical
+fi
+
+hashnode_sync_help=$("$HELPER" sync-hashnode --help 2>&1)
+if [[ "$hashnode_sync_help" == *"bounded, read-only Hashnode account stream"* ]]; then
+	assert_eq "Hashnode helper executes the same guarded local adapter" canonical canonical
+else
+	assert_eq "Hashnode helper executes the same guarded local adapter" unexpected canonical
+fi
+
+freshrss_help=$("$HELPER" provider-run --provider freshrss --mode live -- --help 2>&1)
+if [[ "$freshrss_help" == *"Collect one bounded FreshRSS account stream"* ]]; then
+	assert_eq "FreshRSS registry executes only the guarded local adapter" canonical canonical
+else
+	assert_eq "FreshRSS registry executes only the guarded local adapter" unexpected canonical
+fi
+
+freshrss_sync_help=$("$HELPER" sync-freshrss --help 2>&1)
+if [[ "$freshrss_sync_help" == *"Collect one bounded FreshRSS account stream"* ]]; then
+	assert_eq "FreshRSS helper executes the same guarded local adapter" canonical canonical
+else
+	assert_eq "FreshRSS helper executes the same guarded local adapter" unexpected canonical
+fi
+
+patreon_help=$("$HELPER" provider-run --provider patreon --mode live -- --help 2>&1)
+if [[ "$patreon_help" == *"bounded, read-only Patreon creator stream"* ]]; then
+	assert_eq "Patreon executes only the guarded creator adapter" canonical canonical
+else
+	assert_eq "Patreon executes only the guarded creator adapter" unexpected canonical
+fi
 
 if "$HELPER" provider-run --provider binance-square --mode no-route >/dev/null 2>&1; then
 	assert_eq "no-route outcomes cannot execute" accepted rejected

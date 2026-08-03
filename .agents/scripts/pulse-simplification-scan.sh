@@ -264,12 +264,15 @@ _complexity_run_llm_sweep() {
 	local maintainer="$3"
 
 	# Dedup: check if an open sweep issue already exists (t1855).
-	# Both sweep code paths use different title patterns — check both.
+	# Both sweep code paths use different title patterns — check both. Stall
+	# reviews deliberately do not carry function-complexity-debt because they
+	# are meta work, so title-based dedup must not depend on that label.
 	local sweep_exists
 	sweep_exists=$(gh_issue_list --repo "$aidevops_slug" \
-		--label "function-complexity-debt" --state open \
-		--search "in:title \"simplification debt stalled\"" \
+		--state open \
+		--search "in:title \"simplification debt stalled\" OR in:title \"LLM complexity sweep\"" \
 		--json number --jq 'length' 2>/dev/null) || sweep_exists="0"
+	[[ "$sweep_exists" =~ ^[0-9]+$ ]] || sweep_exists="0"
 	if [[ "${sweep_exists:-0}" -gt 0 ]]; then
 		echo "[pulse-wrapper] Complexity LLM sweep: skipping — open stall issue already exists" >>"$LOGFILE"
 		printf '%s\n' "$now_epoch" >"$COMPLEXITY_LLM_SWEEP_LAST_RUN"
@@ -292,13 +295,14 @@ The simplification debt count has not decreased in the last $((${COMPLEXITY_LLM_
 
 1. Are the open function-complexity-debt issues actionable? Check for issues that are blocked, stale, or need maintainer review.
 2. Are workers dispatching on function-complexity-debt issues? Check recent pulse logs for dispatch activity.
-3. Is the open cap (500) being hit? If so, consider raising it or closing stale issues.
+3. Is the open debt cap (500) or the local worktree cap (\`AIDEVOPS_MAX_WORKTREES\`, default 200) being hit? Check pulse logs for \`local_capacity_gate\` and verify cleanup liveness before changing either safety cap.
 4. Are there systemic blockers (e.g., all remaining issues require architectural decisions)?
 
 ### Suggested actions
 
 - Review the oldest 10 open function-complexity-debt issues and close any that are no longer relevant.
 - Check if \`tier:simple\` and \`tier:standard\` issues are being dispatched — if not, verify the pulse is routing them correctly.
+- If dispatch reports \`local_capacity_gate\`, verify \`cleanup-worktrees-async-helper.sh\` is live and reducing the affected repo's registered worktree count; do not raise safety caps while recoverable worktrees remain.
 - If debt is growing, consider lowering \`COMPLEXITY_MD_MIN_LINES\` or \`COMPLEXITY_FILE_VIOLATION_THRESHOLD\` to catch more candidates.
 
 ### Worker Guidance
@@ -332,9 +336,12 @@ This is an automated stall-detection sweep. The LLM should review the actual iss
 	# t1955: Don't self-assign on issue creation — let dispatch_with_dedup handle
 	# assignment. Self-assigning creates a phantom claim that triggers stale recovery
 	# on other runners, producing audit trail gaps.
+	# A stall review is quality-debt meta work, not a function violation. Giving
+	# it the function-complexity-debt label would inflate the open debt count and
+	# make closing the review look like real simplification throughput.
 	if gh_create_issue --repo "$aidevops_slug" \
 		--title "perf: simplification debt stalled — LLM sweep needed ($(date -u +%Y-%m-%d))" \
-		--label "function-complexity-debt" $sweep_review_label --label "tier:thinking" --label "worker-ready" \
+		--label "quality-debt" $sweep_review_label --label "tier:thinking" --label "worker-ready" \
 		--body "$sweep_body" >/dev/null 2>&1; then
 		echo "[pulse-wrapper] Complexity LLM sweep: created stall-review issue" >>"$LOGFILE"
 	else

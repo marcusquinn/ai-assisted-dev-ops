@@ -115,8 +115,8 @@ _isc_stamp_path() {
 # Resolve the current GitHub user login. Returns empty string on failure so
 # callers can decide whether to proceed or abort.
 _isc_current_user() {
-	local login
-	login=$(gh api user --jq '.login' 2>/dev/null || echo "")
+	local login=""
+	login=$(gh api user --jq '.login' 2>/dev/null) || login=""
 	# Reject JSON null / empty / literal "null"
 	if [[ -z "$login" || "$login" == "null" ]]; then
 		printf ''

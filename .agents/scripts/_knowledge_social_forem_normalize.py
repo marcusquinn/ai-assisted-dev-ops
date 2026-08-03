@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from _knowledge_social_account_archive import AccountArchivePolicy, AccountPageNormalizer
 from _knowledge_social_forem import (
     ACCOUNT_AUTH_MODE,
     PROVIDER,
@@ -37,6 +38,18 @@ ACTIVITY_TYPES = {
     "followed_tags": "followed_tag",
     "followers": "follower",
 }
+ARCHIVE_POLICY = AccountArchivePolicy(
+    PROVIDER,
+    PROVENANCE,
+    "username",
+    "forem_instance_id",
+    (
+        ("forem_auth_mode", ACCOUNT_AUTH_MODE),
+        ("forem_transport", "stdlib_urllib_get_only"),
+        ("forem_redirects", "rejected"),
+        ("forem_admin_and_browser_routes", "disabled"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -155,53 +168,17 @@ def _activity_row(
     }
 
 
+NORMALIZER = AccountPageNormalizer(
+    ARCHIVE_POLICY,
+    _observed_at,
+    instance_id,
+    page_data,
+    _object_row,
+    _activity_row,
+    _coverage,
+)
+
+
 def normalize_page(payload: dict[str, Any], context: PageContext) -> dict[str, Any]:
     """Build provider-neutral rows and explicit installation-specific gaps."""
-    reject_credentials(payload)
-    observed_at = _observed_at(payload)
-    installation = instance_id(context.account.get("instance_id"))
-    objects = [
-        _object_row(item, context, observed_at, installation)
-        for item in page_data(payload)
-    ]
-    activities = [
-        _activity_row(item, context, observed_at, installation)
-        for item in page_data(payload)
-    ]
-    policy = dict(context.policy)
-    policy.update(
-        {
-            "forem_auth_mode": ACCOUNT_AUTH_MODE,
-            "forem_instance_id": installation,
-            "forem_transport": "stdlib_urllib_get_only",
-            "forem_redirects": "rejected",
-            "forem_admin_and_browser_routes": "disabled",
-        }
-    )
-    archive = {
-        "provider": PROVIDER,
-        "connection_id": context.connection_id,
-        "remote_account_id": context.account.get("id"),
-        "exported_at": observed_at,
-        "enabled_streams": list(context.enabled_streams),
-        "policy": policy,
-        "accounts": [
-            {
-                "remote_id": context.account.get("id"),
-                "handle": context.account.get("username"),
-                "display_name": context.account.get("name"),
-                "observed_at": observed_at,
-                "provider_json": {
-                    "source": PROVENANCE,
-                    "instance_id": installation,
-                    "provider_account_id": context.account.get("provider_account_id"),
-                },
-            }
-        ],
-        "objects": objects,
-        "activities": activities,
-        "media": [],
-        "coverage": _coverage(observed_at),
-    }
-    reject_credentials(archive)
-    return archive
+    return NORMALIZER.normalize(payload, context)

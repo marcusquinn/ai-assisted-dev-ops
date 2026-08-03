@@ -154,7 +154,19 @@ printf 'PASS cleanup lease survives a real registry round trip with distinct run
 printf '[2026-07-21T00:00:00Z] [test] worktree-removed: %s — branch-merged — mode=permanent\n' \
 	"${TEST_ROOT}/worktree-one" >>"$AIDEVOPS_CLEANUP_LOG"
 rm -rf "${TEST_ROOT}/worktree-one"
-full_loop_mark_cleanup_cleaned_for_worktree "${TEST_ROOT}/worktree-one"
+if full_loop_mark_cleanup_cleaned_for_identity wrong/repo 101 "${TEST_ROOT}/worktree-one"; then
+	printf 'FAIL conflicting repository identity transitioned the cleanup receipt\n'
+	exit 1
+fi
+if full_loop_mark_cleanup_cleaned_for_identity example/repo 999 "${TEST_ROOT}/worktree-one"; then
+	printf 'FAIL conflicting PR identity transitioned the cleanup receipt\n'
+	exit 1
+fi
+if full_loop_mark_cleanup_cleaned_for_identity example/repo 101 "${TEST_ROOT}/different-worktree"; then
+	printf 'FAIL conflicting worktree identity transitioned the cleanup receipt\n'
+	exit 1
+fi
+full_loop_mark_cleanup_cleaned_for_identity example/repo 101 "${TEST_ROOT}/worktree-one"
 full_loop_mark_cleanup_cleaned_for_worktree "${TEST_ROOT}/worktree-one"
 jq -e '.resource_cleanup_state == "CLEANED" and .cleanup_lease.state == "released" and (.cleaned_at | length > 0)' \
 	"$receipt_one" >/dev/null
@@ -162,6 +174,7 @@ if full_loop_transition_cleanup_receipt "$receipt_one" "$_FULL_LOOP_CLEANUP_DEFE
 	printf 'FAIL terminal CLEANED receipt regressed to CLEANUP_DEFERRED\n'
 	exit 1
 fi
+printf 'PASS conflicting repository, PR, and worktree identities fail closed\n'
 printf 'PASS CLEANED transition is idempotent and irreversible\n'
 
 sleep 1

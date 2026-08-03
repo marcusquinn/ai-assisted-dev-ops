@@ -330,9 +330,12 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 	# Bypass — explicit override.
 	if [[ "${AIDEVOPS_GH_SHIM_NO_REST_REWRITE:-0}" == "1" ]]; then
 		_transport_path=$(_shim_classify_endpoint "${1:-}" "${2:-}")
-		_transport_caller=$(_shim_caller_label "${1:-}" "${2:-}")
-		gh_record_call "$_transport_path" "$_transport_caller" 2>/dev/null || true
-		_shim_run_transport "$REAL_GH" "$_transport_path" "$_transport_caller" 0 "$@"
+		_transport_caller=$(_shim_transport_caller_label "${1:-}" "${2:-}")
+		_transport_shape=$(_shim_read_shape_digest "$@" 2>/dev/null || printf 'shape-unknown')
+		_transport_decision="graphql-bypass:${_transport_shape}"
+		gh_record_call "$_transport_path" "$_transport_caller" "" "" "$_transport_decision" 2>/dev/null || true
+		AIDEVOPS_GH_ROUTE_DECISION="$_transport_decision" \
+			_shim_run_transport "$REAL_GH" "$_transport_path" "$_transport_caller" 0 "$@"
 		exit $?
 	fi
 
@@ -483,11 +486,13 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		# Preserve native fallback for projection/local failures because REST may
 		# have returned data that cannot safely reproduce gh output. Routes that
 		# never attempted REST are plain GraphQL selection.
-		_transport_caller=$(_shim_caller_label "${1:-}" "${2:-}")
+		_transport_caller=$(_shim_transport_caller_label "${1:-}" "${2:-}")
 		_transport_retry=$(gh_attempt_count_for_logical "$AIDEVOPS_GH_LOGICAL_ID")
 		[[ "$_transport_retry" =~ ^[0-9]+$ ]] || _transport_retry=0
 		_transport_decision=graphql-selected
 		[[ "$_SHIM_REST_REWRITE_ATTEMPTED" -eq 0 ]] || _transport_decision=rest-fallback-graphql
+		_transport_shape=$(_shim_read_shape_digest "$@" 2>/dev/null || printf 'shape-unknown')
+		_transport_decision="${_transport_decision}:${_transport_shape}"
 		gh_record_call graphql "$_transport_caller" "" "" "$_transport_decision" 2>/dev/null || true
 		AIDEVOPS_GH_ROUTE_DECISION="$_transport_decision" \
 			_shim_run_transport "$REAL_GH" graphql "$_transport_caller" "$_transport_retry" "$@"

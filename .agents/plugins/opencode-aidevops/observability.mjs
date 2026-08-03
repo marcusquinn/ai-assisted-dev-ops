@@ -17,17 +17,23 @@
  * @module observability
  */
 
-import {
-  mkdirSync, readFileSync, writeFileSync, existsSync, rmdirSync, unlinkSync, statSync,
-} from "fs";
+import { mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
-import { execFileSync } from "child_process";
-import { fileURLToPath } from "url";
 import {
   canonicalizeSqliteDbPath, setDbPath, sqliteAvailable, sqliteExec, sqliteExecSync,
   shutdownSqlite as _shutdownSqlite, sqlEscape,
 } from "./observability-sqlite.mjs";
+import {
+  createSchema as _createSchema,
+  isSchemaInitialized as _isSchemaInitialized,
+  withInitLock as _withInitLock,
+} from "./observability-init.mjs";
+import {
+  calculateCost,
+  getPricing,
+} from "./observability-pricing.mjs";
+import { scheduleCostBackfill } from "./observability-cost-backfill.mjs";
 import {
   appendRuntimeEvent,
   initialiseRuntimeEventStore,
@@ -53,114 +59,7 @@ const DB_PATH = canonicalizeSqliteDbPath(
 const OBS_DIR = dirname(DB_PATH);
 const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v1.done`;
 
-// ---------------------------------------------------------------------------
-// Pricing table — loaded from shared JSON (single source of truth).
-// File: .agents/configs/model-pricing.json (also consumed by shared-constants.sh)
-// Falls back to hardcoded defaults if the JSON file is missing/unreadable.
-// ---------------------------------------------------------------------------
-
-/** Hardcoded fallback — used only when model-pricing.json is unreadable */
-const FALLBACK_PRICING = {
-  "opus-4":    { input: 15.0,  output: 75.0,  cacheRead: 1.50,   cacheWrite: 18.75 },
-  "sonnet-4":  { input: 3.0,   output: 15.0,  cacheRead: 0.30,   cacheWrite: 3.75  },
-  "haiku-4":   { input: 0.80,  output: 4.0,   cacheRead: 0.08,   cacheWrite: 1.0   },
-  "haiku-3":   { input: 0.80,  output: 4.0,   cacheRead: 0.08,   cacheWrite: 1.0   },
-  "gpt-5.6-sol":   { input: 5.0,  output: 30.0, cacheRead: 0.50, cacheWrite: 6.25  },
-  "gpt-5.6-terra": { input: 2.50, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
-  "gpt-5.6-luna":  { input: 1.0,  output: 6.0,  cacheRead: 0.10, cacheWrite: 1.25  },
-};
-const FALLBACK_DEFAULT = { input: 3.0, output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 };
-const UNKNOWN_PRICING_MODELS = ["gpt-5.6-sol-pro"];
-
-/**
- * Load pricing from the shared JSON file.
- * The JSON uses snake_case keys (cache_read, cache_write) for cross-language
- * compatibility; we convert to camelCase for JS consumption.
- * @returns {{ models: Record<string, {input,output,cacheRead,cacheWrite}>, default: {input,output,cacheRead,cacheWrite} }}
- */
-function loadPricingFromJSON() {
-  // Resolve relative to this file's location (works in both dev repo and deployed ~/.aidevops/)
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(thisDir, "..", "..", "configs", "model-pricing.json"),          // repo: .agents/plugins/../../configs/
-    join(HOME, ".aidevops", "agents", "configs", "model-pricing.json"), // deployed
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const raw = JSON.parse(readFileSync(candidate, "utf-8"));
-      const models = {};
-      for (const [key, p] of Object.entries(raw.models || {})) {
-        models[key] = {
-          input: p.input,
-          output: p.output,
-          cacheRead: p.cache_read,
-          cacheWrite: p.cache_write,
-        };
-      }
-      const def = raw.default || {};
-      const defaultPricing = {
-        input: def.input ?? 3.0,
-        output: def.output ?? 15.0,
-        cacheRead: def.cache_read ?? 0.30,
-        cacheWrite: def.cache_write ?? 3.75,
-      };
-      return { models, default: defaultPricing };
-    } catch {
-      // Try next candidate
-    }
-  }
-
-  // All candidates failed — use hardcoded fallback
-  console.error("[aidevops] Observability: model-pricing.json not found, using hardcoded fallback");
-  return { models: FALLBACK_PRICING, default: FALLBACK_DEFAULT };
-}
-
-const _pricing = loadPricingFromJSON();
-const MODEL_PRICING = _pricing.models;
-const DEFAULT_PRICING = _pricing.default;
-
-/**
- * Look up pricing for a model ID. Matches against the pricing table keys
- * as substrings of the model ID (e.g., "claude-sonnet-4-20250514" matches "sonnet-4").
- * @param {string} modelID
- * @returns {{ input: number, output: number, cacheRead: number, cacheWrite: number }}
- */
-export function getPricing(modelID) {
-  if (!modelID) return DEFAULT_PRICING;
-  const lower = modelID.toLowerCase();
-  if (UNKNOWN_PRICING_MODELS.some((model) => lower.includes(model))) return DEFAULT_PRICING;
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (lower.includes(key)) return pricing;
-  }
-  return DEFAULT_PRICING;
-}
-
-/**
- * Calculate cost from token counts and model pricing.
- * OpenCode does not provide cost in message events — we must compute it.
- * @param {object} tokens - { input, output, reasoning, cache: { read, write } }
- * @param {string} modelID
- * @returns {number} Total cost in USD
- */
-function calculateCost(tokens, modelID) {
-  if (!tokens) return 0.0;
-  const pricing = getPricing(modelID);
-  const inputTokens = tokens.input || 0;
-  const outputTokens = tokens.output || 0;
-  const reasoningTokens = tokens.reasoning || 0;
-  const cacheRead = tokens.cache?.read || 0;
-  const cacheWrite = tokens.cache?.write || 0;
-
-  // Reasoning tokens are billed at output rate
-  const cost =
-    (inputTokens / 1e6) * pricing.input +
-    ((outputTokens + reasoningTokens) / 1e6) * pricing.output +
-    (cacheRead / 1e6) * pricing.cacheRead +
-    (cacheWrite / 1e6) * pricing.cacheWrite;
-
-  return Math.round(cost * 1e8) / 1e8; // 8 decimal places
-}
+export { getPricing };
 
 /**
  * Initialise the observability database with WAL mode and schema.
@@ -191,7 +90,7 @@ function initDatabase() {
   // beyond the 5s `.timeout` and produced `database is locked (5)` on
   // 100% of worker startups. Read-only check first — no lock contention,
   // skips the slow path entirely once the DB is ready.
-  if (existsSync(DB_PATH) && _isSchemaInitialized()) {
+  if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
     return _runDataMigrations({ intentColumnReady: true });
   }
 
@@ -199,141 +98,15 @@ function initDatabase() {
   // via mkdir-based advisory lock. mkdir is POSIX-atomic on every fs we
   // care about, so we don't need flock (which has FD-inheritance footguns).
   // Pattern follows oauth-pool-storage::withPoolLock.
-  return _withInitLock(() => {
+  return _withInitLock(DB_PATH, () => {
     // DOUBLE-CHECKED LOCKING: another worker may have completed init while
     // we waited. If schema is now ready, skip the writer-lock-heavy path.
-    if (existsSync(DB_PATH) && _isSchemaInitialized()) {
+    if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
       return _runDataMigrations({ intentColumnReady: true });
     }
     if (!_createSchema()) return false;
     return _runDataMigrations();
   });
-}
-
-/**
- * Read-only check: are all expected tables present and is the t1309 `intent`
- * column on `tool_calls`? Uses `sqlite3 -readonly` so it never contends on
- * the writer lock — safe to call from N concurrent workers without race.
- *
- * Returns false on any error (DB doesn't exist, sqlite3 fails, schema is
- * incomplete) so the caller falls through to the slow path.
- *
- * @returns {boolean}
- */
-function _isSchemaInitialized() {
-  try {
-    const result = execFileSync(
-      "sqlite3",
-      ["-readonly", "-separator", "|", DB_PATH,
-       "SELECT " +
-      "(SELECT COUNT(*) FROM sqlite_master WHERE type='table' " +
-       "AND name IN ('llm_requests','tool_calls','session_summaries','runtime_events','runtime_event_archives')) AS tbls, " +
-       "(SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='intent') AS intent_col, " +
-       "(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' " +
-       "AND name IN ('runtime_events_reject_update','runtime_events_reject_delete'," +
-       "'runtime_event_archives_reject_update','runtime_event_archives_reject_delete')) AS guards;"],
-      {
-        encoding: "utf-8",
-        timeout: 2000,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    ).trim();
-    if (!result) return false;
-    const [tbls, intentCol, guards] = result.split("|");
-    return tbls === "5" && intentCol === "1" && guards === "4";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Run the heavy schema CREATE block (the writer-lock contention point).
- * Caller is responsible for serialising this via `_withInitLock`.
- *
- * @returns {boolean} true on success
- */
-function _createSchema() {
-  const schema = `
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
-
-CREATE TABLE IF NOT EXISTS llm_requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  session_id TEXT NOT NULL,
-  message_id TEXT,
-  provider_id TEXT,
-  model_id TEXT,
-  agent TEXT,
-  tokens_input INTEGER DEFAULT 0,
-  tokens_output INTEGER DEFAULT 0,
-  tokens_reasoning INTEGER DEFAULT 0,
-  tokens_cache_read INTEGER DEFAULT 0,
-  tokens_cache_write INTEGER DEFAULT 0,
-  tokens_total INTEGER DEFAULT 0,
-  cost REAL DEFAULT 0.0,
-  duration_ms INTEGER,
-  finish_reason TEXT,
-  error_type TEXT,
-  error_message TEXT,
-  tool_call_count INTEGER DEFAULT 0,
-  project_path TEXT,
-  variant TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_llm_requests_session
-  ON llm_requests(session_id);
-CREATE INDEX IF NOT EXISTS idx_llm_requests_timestamp
-  ON llm_requests(timestamp);
-CREATE INDEX IF NOT EXISTS idx_llm_requests_model
-  ON llm_requests(model_id);
-CREATE INDEX IF NOT EXISTS idx_llm_requests_provider
-  ON llm_requests(provider_id);
-
-CREATE TABLE IF NOT EXISTS tool_calls (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  session_id TEXT NOT NULL,
-  message_id TEXT,
-  call_id TEXT,
-  tool_name TEXT NOT NULL,
-  intent TEXT,
-  success INTEGER DEFAULT 1,
-  duration_ms INTEGER,
-  metadata TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_tool_calls_session
-  ON tool_calls(session_id);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_tool
-  ON tool_calls(tool_name);
-
-CREATE TABLE IF NOT EXISTS session_summaries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL UNIQUE,
-  first_seen TEXT NOT NULL,
-  last_seen TEXT NOT NULL,
-  request_count INTEGER DEFAULT 0,
-  total_tokens_input INTEGER DEFAULT 0,
-  total_tokens_output INTEGER DEFAULT 0,
-  total_cost REAL DEFAULT 0.0,
-  total_tool_calls INTEGER DEFAULT 0,
-  total_errors INTEGER DEFAULT 0,
-  project_path TEXT,
-  models_used TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_summaries_session
-  ON session_summaries(session_id);
-
-`;
-
-  const result = sqliteExecSync(schema, 10000);
-  if (result === null) {
-    console.error("[aidevops] Observability: schema creation failed");
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -366,247 +139,9 @@ function _runDataMigrations(options = {}) {
   // Migration: backfill cost for rows where cost=0 but tokens exist.
   // OpenCode never provided msg.cost — all historical rows have cost=0.
   // Non-critical historical cleanup; never block the TUI startup path on it.
-  scheduleCostBackfill();
+  scheduleCostBackfill(COST_BACKFILL_MARKER);
 
   return true;
-}
-
-/**
- * mkdir-based advisory lock for schema initialisation (t2900).
- *
- * Pattern matches `oauth-pool-storage::withPoolLock`. mkdirSync is
- * POSIX-atomic — only one of N concurrent callers wins. Stale locks (dead
- * PID or older than `STALE_MS`) are reclaimed automatically.
- *
- * Lock is per-DB-path so the test suite (which sets `AIDEVOPS_OBS_DB_OVERRIDE`)
- * doesn't fight production workers for the same lockdir.
- *
- * On lock-acquisition timeout, falls back to running `fn()` without the
- * lock — the SQLite `.timeout 5000` busy_timeout is still in effect, and
- * a worst-case `database is locked` is preferable to dropping observability
- * for the rest of the session.
- *
- * @template T
- * @param {() => T} fn
- * @returns {T}
- */
-function _withInitLock(fn) {
-  const LOCK_DIR = `${DB_PATH}.init.lock.d`;
-  const OWNER_FILE = `${LOCK_DIR}/owner`;
-  const STALE_MS = 30000; // 30s — schema init has historically taken <2s
-  const deadline = Date.now() + 30000;
-
-  if (!_acquireInitLock(LOCK_DIR, OWNER_FILE, STALE_MS, deadline)) {
-    console.error("[aidevops] Observability: init lock timeout — proceeding without lock");
-    return fn();
-  }
-
-  try {
-    return fn();
-  } finally {
-    _releaseInitLock(LOCK_DIR, OWNER_FILE);
-  }
-}
-
-/**
- * Block until the init lock is acquired, the deadline is reached, or a
- * stale lock is reclaimed. Returns true on acquisition, false on timeout.
- *
- * Stale locks (dead PID or older than `staleMs`) are removed and the loop
- * retries. Concurrent callers race via mkdirSync POSIX-atomic semantics —
- * exactly one wins per attempt.
- *
- * @param {string} lockDir
- * @param {string} ownerFile
- * @param {number} staleMs
- * @param {number} deadline epoch-ms after which we give up
- * @returns {boolean}
- */
-function _acquireInitLock(lockDir, ownerFile, staleMs, deadline) {
-  const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-  while (Date.now() < deadline) {
-    try {
-      mkdirSync(lockDir);
-      writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, ts: Date.now() }), { mode: 0o600 });
-      return true;
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      if (_isInitLockStale(ownerFile, staleMs)) {
-        _removeStaleLockFiles(lockDir, ownerFile);
-        continue;
-      }
-      Atomics.wait(sleepBuf, 0, 0, 100);
-    }
-  }
-  return false;
-}
-
-/**
- * Best-effort removal of a stale init lock's owner file and dir. Any
- * ENOENT/EBUSY race against another reclaiming process is swallowed.
- *
- * @param {string} lockDir
- * @param {string} ownerFile
- */
-function _removeStaleLockFiles(lockDir, ownerFile) {
-  try { unlinkSync(ownerFile); } catch { /* race */ }
-  try { rmdirSync(lockDir); } catch { /* race */ }
-}
-
-/**
- * Returns true if the init lock's owner PID is dead or older than `staleMs`.
- * Returns false on any read error (caller should keep waiting).
- *
- * @param {string} ownerFile
- * @param {number} staleMs
- * @returns {boolean}
- */
-function _isInitLockStale(ownerFile, staleMs) {
-  try {
-    const { pid, ts } = JSON.parse(readFileSync(ownerFile, "utf-8"));
-    const processGone = (() => {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (e) {
-        // ESRCH = no such process (gone); EPERM = exists but owned by another user
-        return e.code === "ESRCH";
-      }
-    })();
-    return processGone || (Date.now() - ts > staleMs);
-  } catch {
-    // Owner file missing or corrupt (e.g. killed between mkdirSync and writeFileSync).
-    // Fall back to the lock directory's mtime as a reliable staleness signal.
-    try {
-      const stats = statSync(dirname(ownerFile));
-      return (Date.now() - stats.mtimeMs) > staleMs;
-    } catch {
-      return false;
-    }
-  }
-}
-
-/**
- * Release the init lock if and only if we still own it (PID match).
- * Prevents a finally-block from removing another process's lock after a
- * stale takeover.
- *
- * @param {string} lockDir
- * @param {string} ownerFile
- */
-function _releaseInitLock(lockDir, ownerFile) {
-  try {
-    const { pid } = JSON.parse(readFileSync(ownerFile, "utf-8"));
-    if (pid !== process.pid) return;
-    try { unlinkSync(ownerFile); } catch { /* race */ }
-    try { rmdirSync(lockDir); } catch { /* race */ }
-  } catch { /* lock dir already gone */ }
-}
-
-/**
- * Return true when historical rows still need the cost backfill.
- *
- * This runs only from the delayed background migration path. On large SQLite
- * DBs even this read-only probe can take seconds without a completion marker,
- * so it must not be called from initDatabase().
- *
- * @returns {boolean}
- */
-function hasCostBackfillCandidates() {
-  if (existsSync(COST_BACKFILL_MARKER)) return false;
-
-  const result = sqliteExecSync(
-    "SELECT 1 FROM llm_requests WHERE cost = 0.0 AND tokens_total > 0 LIMIT 1;",
-    5000,
-  );
-  if (result === null) return false;
-
-  const hasCandidates = result === "1";
-  if (!hasCandidates) markCostBackfillComplete();
-  return hasCandidates;
-}
-
-/** Schedule the one-time historical cost backfill outside plugin startup. */
-function scheduleCostBackfill() {
-  if (existsSync(COST_BACKFILL_MARKER)) return;
-
-  const timer = setTimeout(() => {
-    try {
-      backfillCosts();
-    } catch (err) {
-      if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
-        console.error(`[aidevops] Observability: delayed cost backfill failed: ${err.message}`);
-      }
-    }
-  }, 2500);
-  timer.unref?.();
-}
-
-/** Record that the one-time historical cost migration is complete. */
-function markCostBackfillComplete() {
-  try {
-    writeFileSync(COST_BACKFILL_MARKER, `${new Date().toISOString()}\n`, { mode: 0o600 });
-  } catch {
-    // best-effort marker only; migration remains safe without it
-  }
-}
-
-/**
- * Backfill cost for historical rows where cost=0 but tokens exist.
- * Uses SQL CASE expressions matching the JS pricing table to avoid
- * round-tripping each row through JS. Runs in a single UPDATE statement.
- * Idempotent — only updates rows where cost=0 AND tokens_total>0.
- */
-function backfillCosts() {
-  if (!hasCostBackfillCandidates()) return;
-
-  // Build SQL CASE expression from the pricing table
-  const unknownCases = UNKNOWN_PRICING_MODELS.map((model) =>
-    `WHEN lower(model_id) LIKE '%${model}%' THEN ` +
-    `(tokens_input * ${DEFAULT_PRICING.input} + (tokens_output + tokens_reasoning) * ${DEFAULT_PRICING.output} ` +
-    `+ tokens_cache_read * ${DEFAULT_PRICING.cacheRead} + tokens_cache_write * ${DEFAULT_PRICING.cacheWrite}) / 1000000.0`
-  ).join("\n    ");
-  const cases = Object.entries(MODEL_PRICING).map(([key, p]) =>
-    `WHEN lower(model_id) LIKE '%${key}%' THEN ` +
-    `(tokens_input * ${p.input} + (tokens_output + tokens_reasoning) * ${p.output} ` +
-    `+ tokens_cache_read * ${p.cacheRead} + tokens_cache_write * ${p.cacheWrite}) / 1000000.0`
-  ).join("\n    ");
-
-  const sql = `
-UPDATE llm_requests
-SET cost = CASE
-    ${unknownCases}
-    ${cases}
-    ELSE (tokens_input * ${DEFAULT_PRICING.input} + (tokens_output + tokens_reasoning) * ${DEFAULT_PRICING.output}
-      + tokens_cache_read * ${DEFAULT_PRICING.cacheRead} + tokens_cache_write * ${DEFAULT_PRICING.cacheWrite}) / 1000000.0
-  END
-WHERE cost = 0.0 AND tokens_total > 0;
-`;
-
-  // Combine UPDATE and SELECT changes() in a single sqliteExecSync call so
-  // they run on the same sqlite3 connection — a separate call returns 0.
-  const countRaw = sqliteExecSync(`${sql}\nSELECT changes();`, 30000);
-  const count = countRaw?.split("\n").pop() ?? "0";
-  if (parseInt(count, 10) > 0) {
-    console.error(`[aidevops] Observability: backfilled cost for ${count} rows`);
-
-    // Rebuild session_summaries from the corrected data.
-    // Compute total_errors from actual error columns instead of hardcoding 0.
-    sqliteExecSync(`
-DELETE FROM session_summaries;
-INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count,
-  total_tokens_input, total_tokens_output, total_cost, total_tool_calls, total_errors,
-  project_path, models_used)
-SELECT session_id, MIN(timestamp), MAX(timestamp), COUNT(*),
-  SUM(tokens_input), SUM(tokens_output), SUM(cost), MAX(tool_call_count),
-  SUM(CASE WHEN error_type IS NOT NULL OR error_message IS NOT NULL THEN 1 ELSE 0 END),
-  MAX(project_path), GROUP_CONCAT(DISTINCT model_id)
-FROM llm_requests
-GROUP BY session_id;
-    `, 30000);
-    console.error("[aidevops] Observability: rebuilt session_summaries with corrected costs");
-  }
-  markCostBackfillComplete();
 }
 
 // ---------------------------------------------------------------------------

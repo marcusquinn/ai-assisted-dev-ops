@@ -417,14 +417,24 @@ _fetch_pr_metadata() {
 		echo "{}"
 		return 0
 	fi
-
-	local pr_json
-	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,baseRefName,isDraft 2>/dev/null) || {
-		print_warning "gh pr view failed for PR #${pr_number} in ${repo_slug}"
+	if ! declare -F _gh_with_timeout >/dev/null 2>&1; then
+		print_warning "shared GitHub timeout wrapper unavailable — skipping PR metadata fetch"
 		echo "{}"
 		return 0
-	}
+	fi
+
+	local pr_json="" gh_rc=0
+	pr_json=$(_gh_with_timeout read gh pr view "$pr_number" --repo "$repo_slug" \
+		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,baseRefName,isDraft 2>/dev/null) || gh_rc=$?
+	if [[ "$gh_rc" -ne 0 ]]; then
+		if [[ "$gh_rc" -eq 124 ]]; then
+			print_warning "gh pr view timed out after ${AIDEVOPS_GH_READ_TIMEOUT:-15}s for PR #${pr_number} in ${repo_slug}"
+		else
+			print_warning "gh pr view failed for PR #${pr_number} in ${repo_slug}"
+		fi
+		echo "{}"
+		return 0
+	fi
 	echo "$pr_json"
 	return 0
 }

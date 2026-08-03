@@ -39,13 +39,13 @@ transaction without rewriting raw gzip artifacts, cursors, coverage, or provider
 rows. Replay preserves both evidence and projection IDs.
 
 Candidate implementation is provider-specific, not one generic social adapter.
-Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224, and
-Readwise Reader #29225 are now live. The remaining ranked children are FreshRSS
-issue #29226, Lemmy issue #29227, then public-only Hacker News #29228. Each
-route owns its identity
-contract, stream allowlist, checkpoint semantics, and negative write-reachability
-tests. Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and
-Pocket are deferred or rejected for the reasons in
+Mastodon #29221, GitHub #29222, Stack Exchange #29223, Miniflux #29224,
+Readwise Reader #29225, FreshRSS #29350, Lemmy #29227, public-only
+Hacker News #29228, and Hashnode #29323 are now live. Each route owns its
+identity contract, stream allowlist, checkpoint semantics, and negative
+write-reachability tests.
+Raindrop.io remains optional; Inoreader, Wallabag, Feedly, Instapaper, and Pocket
+are deferred or rejected for the reasons in
 `.agents/content/social-provider-candidates.md`.
 
 The maintained planning and gap inventory is
@@ -53,6 +53,25 @@ The maintained planning and gap inventory is
 authority: every provider child must revalidate current official API/export
 access, required scopes, installed dependency symbols, retention, and terms
 before adding a route.
+
+Substack has no enabled collection route. Its official publication ZIP and
+subscriber CSV have no published stable publication identity or versioned schema;
+public RSS is partial publication syndication rather than authenticated account
+history. The read-only MCP surface is limited to eligible Bestseller publication
+analytics, requires interactive sign-in and consent, and explicitly excludes
+profile and Notes activity. No manifest, provider registry entry, helper command,
+RSS/browser fallback, or persistence path is added. The evidence and activation
+gate are recorded in `.agents/content/social-substack.md`.
+
+Google Sites has no enabled collection route. The deprecated Sites API is
+classic-only and cannot access rebuilt Sites. Drive exposes a Sites MIME type and
+file metadata, but its supported export table provides no Sites content format or
+modern revision-history route. User Takeout is an identity/schema-unverified
+export candidate, the Data Portability API has no Sites scope, and organization
+export requires super-admin authority. No provider registry entry, helper command,
+Drive OAuth request, Takeout importer, browser fallback, or persistence path is
+added. The evidence and activation gate are recorded in
+`.agents/content/social-google-sites.md`.
 
 ## Live account collection
 
@@ -72,6 +91,17 @@ rejected. Conversations, nested list membership, exports, federation,
 moderation, deletion, and operator retention remain explicit gaps. Details:
 `.agents/content/social-mastodon.md`.
 
+Lemmy collection uses a selected user token and rechecks authenticated
+`GET /api/v3/site` identity plus exact server version before every page. Lemmy
+1.x routes only through v4 opaque `page_cursor` reads; 0.19.x routes only through
+v3 numeric page/limit reads. Authored posts/comments, saved/liked posts/comments,
+version-specific inbox evidence, and community subscriptions have independent
+checkpoints; v4 additionally exposes multicommunities. Numeric resource IDs are
+installation-namespaced while ActivityPub IDs remain evidence. Federation,
+operator retention, settings exports, private-message bodies, complete vote
+history, deletion, and opposite-version routes remain explicit gaps. Details:
+`.agents/content/social-lemmy.md`.
+
 GitHub collection binds `GET /user` numeric and node IDs to GraphQL `viewer`
 identity before every page. Contributions, repositories, stars, notifications,
 followers, following, organizations, subscriptions, user lists, and visible
@@ -88,6 +118,26 @@ accounts have independent per-site checkpoints. Pages stop before persistence on
 subscriptions, lists, projects, complete archives, and inaccessible site history
 remain explicit gaps. Details: `.agents/content/social-stack-exchange.md`.
 
+Hacker News collection observes an exact case-sensitive public username before
+each bounded official item GET. The username remains an explicitly mutable public
+selector, never authenticated identity. A versioned cursor retains the complete
+bounded submitted-ID slice so resume is independent of newly prepended IDs.
+Missing users/items and deleted/dead tombstones produce explicit unavailable
+coverage; votes, favourites, inbox, notifications, relationships, subscriptions,
+lists, removed content, and private state remain unavailable. Details:
+`.agents/content/social-hacker-news.md`.
+
+Hashnode collection binds the authenticated GraphQL viewer ID and username before
+every page, then revalidates publication and authored-content ownership. Profile,
+owned publications, authored posts, publication drafts, comments and likes
+received on authored posts, followers, and following have independent opaque
+checkpoints. Nine fixed query documents are reachable; arbitrary GraphQL,
+mutations, subscriptions, redirects, partial responses, and unowned resources are
+rejected. Publication and draft visibility remains Pro- and authority-gated;
+authored comments elsewhere, reaction history, messages, notifications, nested
+comment replies, and an unversioned historical export remain explicit gaps.
+Details: `.agents/content/social-hashnode.md`.
+
 Miniflux collection binds `/v1/me` user identity to a keyed exact HTTPS
 installation before every page. Entries, read, removed, starred, tags, feeds,
 categories, and OPML have independent checkpoints. Entry backfill advances by
@@ -95,6 +145,16 @@ ascending ID; later runs use `changed_after` with a one-second overlap. Only fiv
 exact GET routes are reachable despite mutation-capable API keys. Operator cleanup,
 pre-retention state, complete archives, and deletion inference remain explicit
 gaps. Details: `.agents/content/social-miniflux.md`.
+
+FreshRSS collection allows only the non-mutating Google Reader ClientLogin POST,
+then binds `user-info` identity to a keyed exact HTTPS installation before every
+GET-only data page. Items, unread, starred, subscriptions, folders, tags, and
+OPML have independent checkpoints; item pages preserve opaque continuations and
+overlap incremental timestamps by one second. A 20-request-unit invocation fuse,
+page item cap, response byte cap, and continuation-cycle detection bound replay.
+Modification tokens and write routes are unreachable. Fever remains fallback-only
+evidence rather than a live route because its current authentication requires a
+POST on a mutation-capable endpoint. Details: `.agents/content/social-freshrss.md`.
 
 Readwise Reader collection compensates for `/api/v2/auth/` returning no stable
 account ID by requiring a deployment-owned account identifier and keyed expected
@@ -104,6 +164,16 @@ cursors with one-second `updatedAfter` overlap. Only fixed-origin auth, list, an
 tag GET routes are reachable; each invocation is capped below the documented
 20-request/minute limit. Provider identity, deletion, complete export, and
 retention remain explicit gaps. Details: `.agents/content/social-readwise-reader.md`.
+
+Patreon collection binds API v2 `/identity` creator status to an explicit set of
+creator-owned campaigns before every page. Account, campaigns, posts, benefits
+and tiers, and current memberships have independent checkpoints. Posts require
+`campaigns.posts`; memberships additionally require `campaigns.members`, the
+exact `membership-services` purpose, and a local HMAC key. Member names, email,
+addresses, direct provider member IDs, and patron-owned memberships are never
+requested or persisted. The invocation cap is 99 requests, below the documented
+per-token minute limit. Creator CSV export remains unwired because Patreon does
+not publish a versioned import schema. Details: `.agents/content/social-patreon.md`.
 
 X collection uses the guarded official `xurl` helper. Reddit collection uses an
 optional PRAW 8 child. YouTube collection uses a standard-library HTTP child and
@@ -125,6 +195,12 @@ aidevops secret YOUTUBE_PERSONAL_ACCESS_TOKEN -- \
   knowledge-social-helper.sh sync-youtube --alias personal:default \
   --connection-id YOUTUBE_CONNECTION_ID --account-id STABLE_CHANNEL_ID \
   --stream authored_videos --profile personal --budget 11 --page-size 50
+
+aidevops secret PATREON_CREATOR_ACCESS_TOKEN PATREON_CREATOR_CAMPAIGN_IDS \
+  PATREON_CREATOR_SCOPES -- \
+  knowledge-social-helper.sh sync-patreon --alias personal:default \
+  --connection-id PATREON_CONNECTION_ID --account-id CREATOR_USER_ID \
+  --stream posts --profile creator --budget 20 --page-size 100
 ```
 
 Every Reddit stream has an independent cursor. Authored content, inbox activity,
@@ -148,6 +224,15 @@ Later, saved third-party playlists, and complete authored-comment history remain
 explicit unavailable/export-unverified coverage. API metadata carries the current
 30-day refresh/delete retention boundary. Details and official evidence:
 `.agents/content/social-youtube.md`.
+
+Patreon profiles use `PATREON_<PROFILE>_ACCESS_TOKEN`,
+`PATREON_<PROFILE>_CAMPAIGN_IDS`, and `PATREON_<PROFILE>_SCOPES`. Base collection
+requires exactly the `identity` and `campaigns` read scopes plus only the optional
+stream scope. Membership collection also requires
+`PATREON_<PROFILE>_MEMBER_DATA_PURPOSE=membership-services` and a private
+`PATREON_<PROFILE>_PII_KEY` of at least 32 bytes. Token issuance and rotation stay
+outside the collector, and no Patreon write, webhook, browser, or patron-profile
+route is reachable.
 
 ## Approval-bound account operations
 

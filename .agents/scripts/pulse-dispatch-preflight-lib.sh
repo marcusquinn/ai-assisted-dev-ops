@@ -29,6 +29,7 @@
 # Include guard
 [[ -n "${_PULSE_DISPATCH_PREFLIGHT_LIB_LOADED:-}" ]] && return 0
 _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED=1
+_PREFLIGHT_CLEANUP_SYSTEMD_UNIT_SEQUENCE=0
 
 # --- Preflight helper functions (extracted) ---
 
@@ -39,6 +40,115 @@ _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED=1
 # stays under 100 lines and each group (merge-first, cleanup/reap, capacity,
 # early dispatch, label maintenance, trusted NMR reconciliation/refill, daily
 # scans, ownership reconcile, and prefetch/scope) can be read independently.
+
+#######################################
+# Return 0 when a Linux systemd user manager can own transient cleanup
+# services outside the parent pulse cgroup (GH#29292).
+#######################################
+_preflight_cleanup_systemd_user_service_available() {
+	[[ "${AIDEVOPS_SKIP_SYSTEMD_CLEANUP_SERVICE:-0}" == "1" ]] && return 1
+	[[ "$(uname -s 2>/dev/null || printf '%s' unknown)" == "Linux" ]] || return 1
+	command -v systemd-run >/dev/null 2>&1 || return 1
+	command -v systemctl >/dev/null 2>&1 || return 1
+	systemctl --user show-environment >/dev/null 2>&1 || return 1
+	return 0
+}
+
+_preflight_cleanup_systemd_unit_name() {
+	local cleanup_name="$1"
+	local sequence="$2"
+	printf 'aidevops-cleanup-%s-%s-%s\n' "$cleanup_name" "$$" "$sequence"
+	return 0
+}
+
+#######################################
+# Submit one cleanup helper to a bounded transient user service. The child is
+# started without shell evaluation and receives only non-secret operational
+# settings needed by the cleanup helpers; credentials are resolved from HOME.
+# Args: $1=helper path, $2=log path, $3=stable cleanup name
+#######################################
+_preflight_launch_systemd_cleanup() {
+	local helper="$1"
+	local log_file="$2"
+	local cleanup_name="$3"
+	local runtime_max="${AIDEVOPS_CLEANUP_SYSTEMD_RUNTIME_MAX_SEC:-3600}"
+	[[ "$runtime_max" =~ ^[1-9][0-9]*$ ]] || runtime_max=3600
+
+	local unit_name=""
+	_PREFLIGHT_CLEANUP_SYSTEMD_UNIT_SEQUENCE=$((_PREFLIGHT_CLEANUP_SYSTEMD_UNIT_SEQUENCE + 1))
+	unit_name=$(_preflight_cleanup_systemd_unit_name \
+		"$cleanup_name" "$_PREFLIGHT_CLEANUP_SYSTEMD_UNIT_SEQUENCE")
+	local env_bin=""
+	env_bin=$(command -v env 2>/dev/null || true)
+	[[ -n "$env_bin" && -n "${HOME:-}" ]] || return 1
+	mkdir -p "$(dirname "$log_file")" 2>/dev/null || return 1
+
+	local -a allowed_env_names=(
+		XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_RUNTIME_DIR
+		AIDEVOPS_LOG_DIR AIDEVOPS_TEMP_DIR AIDEVOPS_WORKTREE_BASE_DIR
+		AIDEVOPS_HEADLESS_METRICS_FILE AIDEVOPS_ORPHAN_TRASH_ROOT
+		AIDEVOPS_SKIP_INFRA_FAILURE_ESCALATION
+		AIDEVOPS_DIRTY_BACKUP_ROOT AIDEVOPS_DIRTY_BACKUP_RETENTION_DAYS
+		AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_FILES AIDEVOPS_DIRTY_BACKUP_MAX_UNTRACKED_BYTES
+		AIDEVOPS_REAL_GIT_BIN AIDEVOPS_SESSION_KEY AIDEVOPS_TASK_ID
+		WORKER_SESSION_KEY WORKER_TASK_NUMBER
+		CLEANUP_WORKTREES_ASYNC_CADENCE_MIN DIRTY_WORKTREE_BACKUP_RETENTION_DAYS
+		CLEANUP_STASHES_ASYNC_CADENCE_MIN CLEANUP_REMOTE_BRANCHES_ASYNC_CADENCE_MIN
+		AIDEVOPS_REMOTE_BRANCH_CLEANUP_MIN_GH_REMAINING
+		AIDEVOPS_REMOTE_BRANCH_CLEANUP_SKIP_RATE_LIMIT
+		AIDEVOPS_REMOTE_BRANCH_CLEANUP_SKIP_GH AIDEVOPS_REMOTE_BRANCH_CLEANUP_APPLY
+		AIDEVOPS_REMOTE_BRANCH_CLEANUP_INCLUDE_CLOSED_PR
+		DISPATCH_COOLDOWN_AFTER_LAUNCH_FAILURE_SECONDS ORPHAN_MAX_AGE
+		ORPHAN_WORKTREE_GRACE_SECS ORPHAN_DETACHED_REVIEW_ARCHIVE_SECS
+		ORPHAN_GENERATED_CLEAN_ARCHIVE_SECS ORPHAN_GENERATED_DIRTY_ARCHIVE_SECS
+		ORPHAN_LOCAL_COMMIT_ARCHIVE_SECS PULSE_IDLE_CPU_THRESHOLD
+	)
+	local -a child_env=("HOME=${HOME}" "PATH=${PATH:-/usr/local/bin:/usr/bin:/bin}")
+	local env_name="" env_value=""
+	for env_name in "${allowed_env_names[@]}"; do
+		env_value="${!env_name:-}"
+		[[ -n "$env_value" ]] && child_env+=("${env_name}=${env_value}")
+	done
+
+	systemd-run --user --unit="$unit_name" --collect --quiet --no-block \
+		--description="aidevops ${cleanup_name} async cleanup" \
+		--property=Type=exec \
+		--property="RuntimeMaxSec=${runtime_max}" \
+		--property=TimeoutStopSec=30 \
+		--property=KillMode=control-group \
+		--property=SendSIGKILL=yes \
+		--property=Nice=10 \
+		--property=IOSchedulingClass=idle \
+		--property="StandardOutput=append:${log_file}" \
+		--property="StandardError=append:${log_file}" \
+		"$env_bin" -i "${child_env[@]}" "$helper" </dev/null >/dev/null 2>>"$log_file"
+	return $?
+}
+
+#######################################
+# Launch cleanup outside the parent pulse cgroup where systemd is available,
+# retaining the existing nohup behaviour on other platforms or submission
+# failure. Helper-level locks and cadence gates remain authoritative.
+# Args: $1=helper path, $2=log path, $3=stable cleanup name
+#######################################
+_preflight_launch_async_cleanup() {
+	local helper="$1"
+	local log_file="$2"
+	local cleanup_name="$3"
+
+	if _preflight_cleanup_systemd_user_service_available; then
+		if _preflight_launch_systemd_cleanup "$helper" "$log_file" "$cleanup_name"; then
+			echo "[pulse-wrapper] ${cleanup_name} cleanup started in an isolated transient user service" >>"${LOGFILE:-/dev/null}"
+			return 0
+		fi
+		echo "[pulse-wrapper] ${cleanup_name} transient cleanup submission failed; using nohup fallback" >>"${LOGFILE:-/dev/null}"
+	fi
+
+	nohup "$helper" </dev/null >>"$log_file" 2>&1 &
+	local helper_pid=$!
+	disown "$helper_pid" 2>/dev/null || true
+	return 0
+}
 
 #######################################
 # Give the existing standalone merge routine a non-blocking head start before
@@ -89,45 +199,41 @@ _preflight_cleanup_and_ledger() {
 		[[ "$_temp_cleanup_timeout" =~ ^[0-9]+$ ]] || _temp_cleanup_timeout=60
 		run_stage_with_timeout "cleanup_stale_temp_worktrees" "$_temp_cleanup_timeout" cleanup_stale_temp_worktrees || true
 	fi
-	# GH#20554: Worktree cleanup is moved to an async background job so a slow
-	# cleanup (20+ worktrees × 2-5s gh API calls each) never hits a hard timeout
-	# and blocks the pulse cycle. The helper enforces a single-runner lock and
-	# a cadence gate (CLEANUP_WORKTREES_ASYNC_CADENCE_MIN, default 10 min) so
-	# concurrent pulse invocations do not spawn duplicate cleanup processes.
+	# GH#20554/GH#29292: Worktree cleanup is moved to an async background job so
+	# a slow cleanup (20+ worktrees × 2-5s gh API calls each) never blocks the
+	# pulse cycle. On systemd it runs in a transient user service so the parent
+	# pulse TimeoutStartSec cannot kill it. The helper retains its single-runner
+	# lock and cadence gate (CLEANUP_WORKTREES_ASYNC_CADENCE_MIN, default 10 min).
 	# Progress and last-run timestamp: ~/.aidevops/logs/cleanup_worktrees.*
 	local _cleanup_async_helper="${SCRIPT_DIR}/cleanup-worktrees-async-helper.sh"
 	if [[ -x "$_cleanup_async_helper" ]]; then
-		nohup "$_cleanup_async_helper" \
-			>>"${HOME}/.aidevops/logs/cleanup_worktrees.log" 2>&1 &
-		disown $! 2>/dev/null || true
+		_preflight_launch_async_cleanup "$_cleanup_async_helper" \
+			"${HOME}/.aidevops/logs/cleanup_worktrees.log" "worktrees"
 	else
 		# Fallback: synchronous with short timeout (old GH#18979 behaviour)
 		run_stage_with_timeout "cleanup_worktrees" 60 cleanup_worktrees || true
 	fi
-	# GH#21997: Stash cleanup is moved to an async background job so slow
-	# stash auditing (including gh API calls inside stash-audit-helper.sh) cannot
-	# stall pulse preflight before early dispatch. The helper enforces a
-	# single-runner lock and cadence gate (CLEANUP_STASHES_ASYNC_CADENCE_MIN,
-	# default 10 min). Progress: ~/.aidevops/logs/cleanup_stashes.*
+	# GH#21997/GH#29292: Stash cleanup uses the same isolated async launcher so
+	# slow auditing cannot stall preflight or share the parent pulse lifetime.
+	# The helper retains its single-runner lock and cadence gate.
+	# Progress: ~/.aidevops/logs/cleanup_stashes.*
 	local _cleanup_stashes_async_helper="${SCRIPT_DIR}/cleanup-stashes-async-helper.sh"
 	if [[ -x "$_cleanup_stashes_async_helper" ]]; then
-		nohup "$_cleanup_stashes_async_helper" \
-			>>"${HOME}/.aidevops/logs/cleanup_stashes.log" 2>&1 &
-		disown $! 2>/dev/null || true
+		_preflight_launch_async_cleanup "$_cleanup_stashes_async_helper" \
+			"${HOME}/.aidevops/logs/cleanup_stashes.log" "stashes"
 	else
 		# Fallback: synchronous with the standard pre-run stage timeout.
 		run_stage_with_timeout "cleanup_stashes" "$PRE_RUN_STAGE_TIMEOUT" cleanup_stashes || true
 	fi
-	# GH#22415: Remote branch cleanup is moved to an async background job so
-	# cross-repo branch audits and optional safe deletes do not block preflight.
-	# The helper is dry-run by default, enforces a single-runner lock/cadence gate,
-	# and skips when GitHub API budget is below the configured floor.
+	# GH#22415/GH#29292: Remote branch cleanup uses the isolated async launcher so
+	# cross-repo audits do not block preflight or share the parent pulse lifetime.
+	# The helper remains dry-run by default, retains its lock/cadence gate, and
+	# skips when GitHub API budget is below the configured floor.
 	# Progress: ~/.aidevops/logs/cleanup_remote_branches.*
 	local _cleanup_remote_branches_async_helper="${SCRIPT_DIR}/cleanup-remote-branches-async-helper.sh"
 	if [[ -x "$_cleanup_remote_branches_async_helper" ]]; then
-		nohup "$_cleanup_remote_branches_async_helper" \
-			>>"${HOME}/.aidevops/logs/cleanup_remote_branches.log" 2>&1 &
-		disown $! 2>/dev/null || true
+		_preflight_launch_async_cleanup "$_cleanup_remote_branches_async_helper" \
+			"${HOME}/.aidevops/logs/cleanup_remote_branches.log" "remote-branches"
 	fi
 
 	# GH#25136: OpenCode DB archive/VACUUM is heavy SQLite maintenance, not

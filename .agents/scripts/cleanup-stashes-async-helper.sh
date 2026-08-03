@@ -3,9 +3,9 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # cleanup-stashes-async-helper.sh — Async background stash cleanup runner (GH#21997).
 #
-# Designed to be invoked via nohup from _preflight_cleanup_and_ledger so slow
-# stash auditing, including any GitHub API calls made by stash-audit-helper.sh,
-# never blocks the pulse's early dispatch path.
+# Designed to be invoked by _preflight_launch_async_cleanup from
+# _preflight_cleanup_and_ledger. Linux systemd hosts use a transient user
+# service outside the parent pulse cgroup; other hosts retain a nohup fallback.
 
 set -euo pipefail
 

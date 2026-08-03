@@ -3,9 +3,9 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # cleanup-worktrees-async-helper.sh — Async background worktree cleanup runner (GH#20554).
 #
-# Designed to be invoked via nohup from _preflight_cleanup_and_ledger in
-# pulse-dispatch-engine.sh so slow gh API calls during cleanup never block
-# the pulse's main dispatch cycle.
+# Designed to be invoked by _preflight_launch_async_cleanup from
+# _preflight_cleanup_and_ledger. Linux systemd hosts use a transient user
+# service outside the parent pulse cgroup; other hosts retain a nohup fallback.
 #
 # Lifecycle:
 #   1. Acquire a mkdir-based single-runner lock (~/.aidevops/logs/cleanup_worktrees.lock).
@@ -14,10 +14,10 @@
 #   4. Update ~/.aidevops/logs/cleanup_worktrees.last-run on success.
 #   5. Release lock on EXIT/INT/TERM (trap).
 #
-# Usage (from pulse-dispatch-engine.sh):
-#   nohup "${SCRIPT_DIR}/cleanup-worktrees-async-helper.sh" \
-#     >>"${HOME}/.aidevops/logs/cleanup_worktrees.log" 2>&1 &
-#   disown $! 2>/dev/null || true
+# Usage (from pulse-dispatch-preflight-lib.sh):
+#   _preflight_launch_async_cleanup \
+#     "${SCRIPT_DIR}/cleanup-worktrees-async-helper.sh" \
+#     "${HOME}/.aidevops/logs/cleanup_worktrees.log" "worktrees"
 #
 # DO NOT call cleanup_worktrees inline in pulse-dispatch-engine.sh after
 # this helper is deployed — use this wrapper instead.

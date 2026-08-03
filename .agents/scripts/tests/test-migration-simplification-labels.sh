@@ -133,7 +133,7 @@ _classify_title() {
 		return 0
 	fi
 	if printf '%s' "$title" | grep -qiE '(simplification debt stalled|LLM complexity sweep|LLM sweep needed)'; then
-		printf 'function-complexity-debt'
+		printf 'skip'
 		return 0
 	fi
 	printf 'skip'
@@ -144,7 +144,7 @@ _classify_title() {
 # Tests — _classify_title classification logic
 # =============================================================================
 printf '\n=== test-migration-simplification-labels.sh (t2168) ===\n\n'
-printf '--- Classification tests ---\n\n'
+printf '%s\n\n' '--- Classification tests ---'
 
 # ---- Test 1: file-size-debt — legacy "simplification-debt: <path> exceeds N lines" ----
 result=$(_classify_title "simplification-debt: .agents/scripts/issue-sync-helper.sh exceeds 2000 lines")
@@ -176,17 +176,17 @@ assert_eq \
 	"re-queue title → function-complexity-debt" \
 	"function-complexity-debt" "$result"
 
-# ---- Test 6: function-complexity-debt — LLM sweep ----
+# ---- Test 6: skip — LLM sweep meta review ----
 result=$(_classify_title "perf: simplification debt stalled — LLM sweep needed (2026-04-01)")
 assert_eq \
-	"LLM sweep stall title → function-complexity-debt" \
-	"function-complexity-debt" "$result"
+	"LLM sweep stall title → skip (meta review)" \
+	"skip" "$result"
 
-# ---- Test 7: function-complexity-debt — LLM complexity sweep ----
+# ---- Test 7: skip — LLM complexity sweep meta review ----
 result=$(_classify_title "LLM complexity sweep: review stalled function-complexity debt")
 assert_eq \
-	"LLM complexity sweep title → function-complexity-debt" \
-	"function-complexity-debt" "$result"
+	"LLM complexity sweep title → skip (meta review)" \
+	"skip" "$result"
 
 # ---- Test 8: skip — ambiguous/unmatched title ----
 result=$(_classify_title "fix: update authentication logic")

@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
 FEEDBACK_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback.sh"
+FINALIZER_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback-finalizer.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -59,6 +60,10 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/repo"
 	TEST_PR_HEAD_SHA="abcdef0123456789abcdef0123456789abcdef01"
 	export TEST_PR_HEAD_SHA
+	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
+	printf 'origin:worker\n' >"${TEST_ROOT}/pr-labels.txt"
+	printf 'status:in-review,origin:interactive\n' >"${TEST_ROOT}/issue-labels.txt"
+	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
 	cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
@@ -124,7 +129,7 @@ if [[ "${1:-} ${2:-}" == "pr view" ]]; then
 		exit 0
 	fi
 	if [[ "$*" == *"--json labels"* ]]; then
-		printf 'origin:worker\n'
+		cat "${TEST_ROOT}/pr-labels.txt"
 		exit 0
 	fi
 	if [[ "$*" == *"--json headRefOid"* ]]; then
@@ -135,6 +140,43 @@ if [[ "${1:-} ${2:-}" == "pr view" ]]; then
 		fi
 		exit 0
 	fi
+	exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "pr close" ]]; then
+	printf 'CLOSED\n' >"${TEST_ROOT}/pr-state.txt"
+	exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "pr reopen" ]]; then
+	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
+	exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "pr edit" ]]; then
+	_labels=$(<"${TEST_ROOT}/pr-labels.txt")
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--add-label)
+			shift
+			_value="${1:-}"
+			[[ ",${_labels}," == *",${_value},"* ]] || _labels="${_labels:+${_labels},}${_value}"
+			;;
+		--remove-label)
+			shift
+			_value="${1:-}"
+			_next=""
+			IFS=',' read -r -a _parts <<<"$_labels"
+			for _part in "${_parts[@]}"; do
+				[[ "$_part" == "$_value" ]] && continue
+				_next="${_next:+${_next},}${_part}"
+			done
+			_labels="$_next"
+			;;
+		esac
+		shift || true
+	done
+	printf '%s\n' "$_labels" >"${TEST_ROOT}/pr-labels.txt"
 	exit 0
 fi
 
@@ -203,6 +245,10 @@ _append_gh_mock_routes() {
 	fi
 
 if [[ "${1:-} ${2:-}" == "issue view" ]]; then
+	if [[ "$*" == *"--json assignees"* ]]; then
+		cat "${TEST_ROOT}/issue-assignees.txt"
+		exit 0
+	fi
 	if [[ "$*" == *"--json body"* ]]; then
 		cat "${TEST_ROOT}/issue-body.txt"
 		exit 0
@@ -211,14 +257,52 @@ if [[ "${1:-} ${2:-}" == "issue view" ]]; then
 fi
 
 if [[ "${1:-} ${2:-}" == "issue edit" ]]; then
+	_labels=$(<"${TEST_ROOT}/issue-labels.txt")
+	_assignees=$(<"${TEST_ROOT}/issue-assignees.txt")
 	while [[ $# -gt 0 ]]; do
-		if [[ "$1" == "--body" ]]; then
+		_action="$1"
+		if [[ "$_action" == "--body" ]]; then
 			shift
 			printf '%s' "$1" >"${TEST_ROOT}/issue-body.txt"
-			exit 0
+		elif [[ "$_action" == "--add-label" ]]; then
+			shift
+			_value="${1:-}"
+			[[ ",${_labels}," == *",${_value},"* ]] || _labels="${_labels:+${_labels},}${_value}"
+		elif [[ "$_action" == "--remove-label" ]]; then
+			shift
+			_value="${1:-}"
+			_next=""
+			IFS=',' read -r -a _parts <<<"$_labels"
+			for _part in "${_parts[@]}"; do
+				[[ "$_part" == "$_value" ]] && continue
+				_next="${_next:+${_next},}${_part}"
+			done
+			_labels="$_next"
+		elif [[ "$_action" == "--remove-assignee" ]]; then
+			shift
+			_value="${1:-}"
+			[[ "$_assignees" == "$_value" ]] && _assignees=""
 		fi
-		shift
+		shift || true
 	done
+	printf '%s\n' "$_labels" >"${TEST_ROOT}/issue-labels.txt"
+	printf '%s' "$_assignees" >"${TEST_ROOT}/issue-assignees.txt"
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/pulls/100" ]]; then
+	printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" "$TEST_PR_HEAD_SHA" \
+		"$(<"${TEST_ROOT}/pr-labels.txt")"
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42" ]]; then
+	if [[ "$*" == *".body"* ]]; then
+		cat "${TEST_ROOT}/issue-body.txt"
+	else
+		printf '%s\t%s\n' "$(<"${TEST_ROOT}/issue-labels.txt")" \
+			"$(<"${TEST_ROOT}/issue-assignees.txt")"
+	fi
 	exit 0
 fi
 
@@ -312,6 +396,7 @@ define_process_helper() {
 	_pulse_merge_final_trust_gate() { _PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE=0; _PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON="$PREFLIGHT_EVIDENCE"; return "$PREFLIGHT_RC"; }
 	_pulse_merge_maybe_dispatch_preflight_remediation() { return 0; }
 	_close_conflicting_pr() { return 0; }
+	_pmp_is_protected_release_pr() { return 1; }
 	_pmp_normalize_mergeable_state_into() { return 0; }
 	gh_pr_view() { gh pr view "$@"; return $?; }
 	printf -v PR_OBJECT '%s' '{"number":100,"state":"OPEN","mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"worker-bot"},"title":"t1: fix"}'
@@ -333,7 +418,6 @@ define_feedback_helpers() {
 		_ci_repair_required_checks_json
 		_append_feedback_to_issue
 		_transition_issue_for_redispatch
-		_close_and_label_feedback_pr
 		_ci_repair_write_state
 		_ci_repair_process_start
 		_ci_repair_pid_is_live
@@ -411,6 +495,9 @@ EOF
 		# shellcheck disable=SC1090
 		eval "$fn_src"
 	done
+	unset _PULSE_MERGE_FEEDBACK_FINALIZER_LOADED
+	# shellcheck disable=SC1090
+	source "$FINALIZER_SCRIPT"
 	return 0
 }
 

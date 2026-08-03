@@ -45,6 +45,11 @@ fi
 # Formatting Helpers
 # =============================================================================
 
+# Preserve the public claim-task-id.sh setup-error exit contract through every
+# allocation layer. A protected-branch rejection is policy, not contention, so
+# callers must not reconcile and attempt the same forbidden push again.
+CAS_PROTECTED_BRANCH_RC="${CAS_PROTECTED_BRANCH_RC:-4}"
+
 # Format a task ID range for log messages and commit subjects.
 # Args: $1 first numeric ID, $2 last numeric ID.
 # Outputs: e.g. "t042..t045"
@@ -248,6 +253,136 @@ _run_git_with_ssh_fallback() {
 	return $rc
 }
 
+# Prefer the conventional dedicated branch when neither CLI nor project config
+# selected a counter branch. The candidate is accepted only when its counter is
+# at least the default-branch counter and the TODO-derived seed, preventing an
+# implicit migration from reusing IDs or introducing a migration gap.
+resolve_implicit_counter_branch() {
+	local repo_path="$1"
+	local candidate="${AIDEVOPS_DEDICATED_COUNTER_BRANCH:-task-id-counter}"
+	local candidate_counter=""
+	local default_counter="0"
+	local todo_seed="0"
+
+	[[ "${_COUNTER_BRANCH_SET:-false}" == "false" ]] || return 0
+	[[ "${OFFLINE_MODE:-false}" == "false" ]] || return 0
+	[[ "$COUNTER_BRANCH" == "${DEFAULT_BRANCH:-main}" ]] || return 0
+	[[ -n "$candidate" && "$candidate" != "$COUNTER_BRANCH" ]] || return 0
+	cd "$repo_path" || return 1
+
+	if ! _run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
+		fetch -q "$REMOTE_NAME" "$candidate" >/dev/null; then
+		return 0
+	fi
+	candidate_counter=$(git show "${REMOTE_NAME}/${candidate}:${COUNTER_FILE}" 2>/dev/null | tr -d '[:space:]' || true)
+	[[ "$candidate_counter" =~ ^[0-9]+$ ]] || return 0
+
+	_run_git_with_ssh_fallback "${CAS_HTTPS_TIMEOUT_S:-30}" \
+		fetch -q "$REMOTE_NAME" "${DEFAULT_BRANCH:-main}" >/dev/null || true
+	default_counter=$(git show "${REMOTE_NAME}/${DEFAULT_BRANCH:-main}:${COUNTER_FILE}" 2>/dev/null | tr -d '[:space:]' || true)
+	[[ "$default_counter" =~ ^[0-9]+$ ]] || default_counter="0"
+	todo_seed=$(_compute_counter_seed "$repo_path")
+
+	if ((10#$candidate_counter < 10#$default_counter || 10#$candidate_counter < 10#$todo_seed)); then
+		log_warn "Dedicated counter branch ${REMOTE_NAME}/${candidate} is behind canonical task state; refusing implicit migration"
+		return 0
+	fi
+
+	COUNTER_BRANCH="$candidate"
+	log_info "counter branch auto-selected from validated dedicated branch: ${COUNTER_BRANCH}"
+	return 0
+}
+
+# Resolve the GitHub owner/repository slug from the configured remote without
+# applying git url.*.insteadOf rewrites. The raw value lets fixtures route a
+# GitHub-shaped URL to a local bare repository while production still queries
+# the policy for the configured remote.
+_cas_extract_github_slug() {
+	local repo_path="$1"
+	local remote_url=""
+	local slug=""
+
+	remote_url=$(git -C "$repo_path" config --get "remote.${REMOTE_NAME}.url" 2>/dev/null || true)
+	[[ -n "$remote_url" ]] || return 1
+	remote_url="${remote_url%.git}"
+
+	case "$remote_url" in
+	https://github.com/*)
+		slug="${remote_url#https://github.com/}"
+		;;
+	git@github.com:*)
+		slug="${remote_url#git@github.com:}"
+		;;
+	ssh://git@github.com/*)
+		slug="${remote_url#ssh://git@github.com/}"
+		;;
+	*)
+		return 1
+		;;
+	esac
+
+	[[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+	printf '%s\n' "$slug"
+	return 0
+}
+
+# Return success only when GitHub reports that the configured counter branch
+# requires pull-request updates. Classic protection and modern rulesets expose
+# that requirement through separate REST endpoints, so inspect both. API
+# failures remain fail-open here; the push-time rejection classifier below is
+# retained as the provider-independent final safety net.
+_cas_github_branch_requires_pull_request() {
+	local slug="$1"
+	local protection_json=""
+	local rules_json=""
+	local protection_rc=0
+	local rules_rc=0
+
+	protection_json=$(gh api "repos/${slug}/branches/${COUNTER_BRANCH}/protection" 2>/dev/null) || protection_rc=$?
+	if [[ $protection_rc -eq 0 ]] \
+		&& jq -e '.required_pull_request_reviews != null' >/dev/null 2>&1 <<<"$protection_json"; then
+		return 0
+	fi
+
+	rules_json=$(gh api "repos/${slug}/rules/branches/${COUNTER_BRANCH}" 2>/dev/null) || rules_rc=$?
+	if [[ $rules_rc -eq 0 ]] \
+		&& jq -e 'any(.[]; .type == "pull_request")' >/dev/null 2>&1 <<<"$rules_json"; then
+		return 0
+	fi
+
+	return 1
+}
+
+_cas_log_counter_branch_remediation() {
+	log_error "Recovery: initialize a dedicated unprotected counter branch from the current ${COUNTER_FILE} value,"
+	log_error "then set .aidevops.json counter_branch to that branch (for example, \"task-id-counter\")."
+	log_error "Keep ${DEFAULT_BRANCH:-main} pull-request protection unchanged; do not emulate CAS through a pull request."
+	return 0
+}
+
+# Reject a known PR-only counter branch before any fetch, object creation, or
+# push can advance the allocation state.
+preflight_counter_branch_policy() {
+	local repo_path="$1"
+	local slug=""
+
+	[[ "${OFFLINE_MODE:-false}" == "false" ]] || return 0
+	[[ "${DRY_RUN:-false}" == "false" ]] || return 0
+	command -v gh >/dev/null 2>&1 || return 0
+	command -v jq >/dev/null 2>&1 || return 0
+	slug=$(_cas_extract_github_slug "$repo_path") || return 0
+
+	if _cas_github_branch_requires_pull_request "$slug"; then
+		log_error "PROTECTED_COUNTER_BRANCH: ${REMOTE_NAME}/${COUNTER_BRANCH} requires pull-request updates"
+		log_error "Task ID allocation stopped before reading or advancing ${COUNTER_FILE}."
+		_cas_log_counter_branch_remediation
+		_task_counter_status "setup_error" "protected_counter_branch"
+		return 1
+	fi
+
+	return 0
+}
+
 # Detect GitHub protected-branch rejections in git push stderr.
 # These are policy failures, not CAS contention, so retrying only burns the
 # wall-clock budget and hides the actionable remediation.
@@ -271,8 +406,7 @@ _cas_push_rejection_is_protected_branch() {
 _cas_log_protected_branch_rejection() {
 	log_error "PROTECTED_COUNTER_BRANCH: ${REMOTE_NAME}/${COUNTER_BRANCH} rejects direct counter pushes"
 	log_error "Task ID allocation cannot advance ${COUNTER_FILE} by direct CAS push on a protected branch."
-	log_error "Recovery: configure .aidevops.json counter_branch to an unprotected counter branch,"
-	log_error "or relax protection for the dedicated counter branch before retrying."
+	_cas_log_counter_branch_remediation
 	log_error "The CAS helper used git plumbing only; no working-tree changes or local commits were created."
 	return 0
 }
@@ -894,7 +1028,7 @@ _cas_build_and_push() {
 	if [[ $push_rc -ne 0 ]]; then
 		if _cas_push_rejection_is_protected_branch "$push_stderr"; then
 			_cas_log_protected_branch_rejection
-			return 1
+			return "$CAS_PROTECTED_BRANCH_RC"
 		fi
 		if [[ $push_rc -eq 124 ]]; then
 			log_warn "Push timed out (HTTPS + SSH fallback both unavailable) — treating as retriable conflict"
@@ -918,7 +1052,8 @@ _cas_build_and_push() {
 # =============================================================================
 
 # Atomic CAS allocation: fetch → read → increment → commit → push
-# Returns 0 on success, 1 on hard error, 2 on retriable conflict
+# Returns 0 on success, 1 on hard error, 2 on retriable conflict, and
+# CAS_PROTECTED_BRANCH_RC when repository policy rejects direct pushes.
 allocate_counter_cas() {
 	local repo_path="$1"
 	local count="$2"
@@ -1036,6 +1171,11 @@ allocate_online() {
 			# Retriable conflict — loop continues
 			continue
 			;;
+		"$CAS_PROTECTED_BRANCH_RC")
+			# Policy rejection — preserve the distinct setup-error result so
+			# higher layers do not run contention reconciliation and retry.
+			return "$CAS_PROTECTED_BRANCH_RC"
+			;;
 		*)
 			log_error "Hard error during allocation"
 			return 1
@@ -1061,6 +1201,7 @@ allocate_online() {
 # Returns:
 #   0 — first clean first_id echoed to stdout
 #   1 — hard error (allocation failed or 100-skip cap exceeded)
+#   CAS_PROTECTED_BRANCH_RC — direct counter pushes are forbidden by policy
 _allocate_online_with_collision_check() {
 	local repo_path="$1"
 	local count="$2"
@@ -1069,8 +1210,10 @@ _allocate_online_with_collision_check() {
 
 	while true; do
 		local first_id=""
-		if ! first_id=$(allocate_online "$repo_path" "$count"); then
-			return 1
+		local allocation_rc=0
+		first_id=$(allocate_online "$repo_path" "$count") || allocation_rc=$?
+		if [[ $allocation_rc -ne 0 ]]; then
+			return "$allocation_rc"
 		fi
 
 		# Check every ID in the batch against TODO.md

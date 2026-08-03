@@ -47,6 +47,11 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+if [[ -f "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh" ]]; then
+	# shellcheck source=./full-loop-cleanup-receipt.sh
+	source "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh"
+fi
+
 # --- cmd_list ---
 
 # List all worktrees with branch names, merge status, and current marker.
@@ -326,6 +331,26 @@ _remove_acquire_degraded_cleanup_lease() {
 	return 0
 }
 
+_remove_finalize_post_removal() {
+	local removed_branch="$1"
+	local cleanup_receipt="$2"
+	local path_to_remove="$3"
+
+	if [[ -n "$removed_branch" ]]; then
+		localdev_auto_branch_rm "$removed_branch"
+		preview_proxy_auto_free "$removed_branch"
+	fi
+	if [[ -z "$cleanup_receipt" ]]; then
+		return 0
+	fi
+	if ! declare -F full_loop_mark_cleanup_receipt_cleaned >/dev/null 2>&1 ||
+		! full_loop_mark_cleanup_receipt_cleaned "$cleanup_receipt" "$path_to_remove"; then
+		printf '%b\n' "${YELLOW}Partial cleanup: worktree removal was audited, but its durable cleanup receipt was not transitioned.${NC}" >&2
+		return 1
+	fi
+	return 0
+}
+
 _remove_cleanup_and_execute() {
 	local path_to_remove="$1"
 	local repo_context=""
@@ -337,9 +362,13 @@ _remove_cleanup_and_execute() {
 	local guard_status=0
 	local cleanup_lease_acquired="$_WT_BOOL_FALSE"
 	local audit_context="recovery_path=archive-first"
+	local cleanup_receipt=""
 	repo_context=$(get_repo_root) || return 1
 	if [[ "${WORKTREE_FORCE_REMOVE:-}" == "1" && "${_WT_REMOVE_DEGRADED_RECOVERY:-0}" != "1" ]]; then
 		force_remove="$_WT_BOOL_TRUE"
+	fi
+	if declare -F full_loop_cleanup_receipt_for_worktree >/dev/null 2>&1; then
+		cleanup_receipt=$(full_loop_cleanup_receipt_for_worktree "$path_to_remove" 2>/dev/null || true)
 	fi
 
 	# Capture branch name before removal for localdev cleanup (t1224.8)
@@ -412,15 +441,7 @@ _remove_cleanup_and_execute() {
 	# t2976: audit log — manual removal completed
 	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_WH_CALLER" "$path_to_remove" "$_WT_REMOVE_MODE_MANUAL" "$completed_mode" "$audit_context"
 
-	# Localdev integration (t1224.8): auto-remove branch subdomain route
-	if [[ -n "$removed_branch" ]]; then
-		localdev_auto_branch_rm "$removed_branch"
-	fi
-
-	# Preview proxy integration (GH#21560): free port + deregister proxy route
-	if [[ -n "$removed_branch" ]]; then
-		preview_proxy_auto_free "$removed_branch"
-	fi
+	_remove_finalize_post_removal "$removed_branch" "$cleanup_receipt" "$path_to_remove" || return 1
 
 	return 0
 }

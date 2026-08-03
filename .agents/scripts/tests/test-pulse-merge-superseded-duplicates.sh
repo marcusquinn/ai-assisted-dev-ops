@@ -20,6 +20,13 @@ TEST_ISSUE_LABELS_RC=0
 TEST_PARENT_LABELS=""
 TEST_COMMIT_SUBJECT="t3571: merged equivalent fix (#9001)"
 TEST_LINKED_ISSUE="23105"
+TEST_GRAPHQL_COST="1"
+TEST_GRAPHQL_HAS_NEXT_PAGE="false"
+TEST_GRAPHQL_REPOSITORY="exampleorg/examplerepo"
+TEST_GRAPHQL_ISSUE_STATE="CLOSED"
+TEST_GRAPHQL_CLOSER_NUMBER="6130"
+TEST_GRAPHQL_CLOSER_STATE="MERGED"
+TEST_GRAPHQL_CLOSER_MERGED_AT="2026-06-02T14:53:00Z"
 
 pass() {
 	local name="$1"
@@ -37,6 +44,19 @@ fail() {
 	if [[ -n "$detail" ]]; then
 		printf '     %s\n' "$detail"
 	fi
+	return 0
+}
+
+_print_supersession_graphql_response() {
+	printf '{"data":{"repository":{"nameWithOwner":"%s","issue":{"state":"%s","closedByPullRequestsReferences":{"nodes":[{"number":%s,"state":"%s","mergedAt":"%s","repository":{"nameWithOwner":"%s"}}],"pageInfo":{"hasNextPage":%s}}}},"rateLimit":{"cost":%s}}}\n' \
+		"$TEST_GRAPHQL_REPOSITORY" \
+		"$TEST_GRAPHQL_ISSUE_STATE" \
+		"$TEST_GRAPHQL_CLOSER_NUMBER" \
+		"$TEST_GRAPHQL_CLOSER_STATE" \
+		"$TEST_GRAPHQL_CLOSER_MERGED_AT" \
+		"$TEST_GRAPHQL_REPOSITORY" \
+		"$TEST_GRAPHQL_HAS_NEXT_PAGE" \
+		"$TEST_GRAPHQL_COST"
 	return 0
 }
 
@@ -100,7 +120,16 @@ $(awk '
 
 install_stubs() {
 	gh() {
+		local command="${1:-}"
+		local subcommand="${2:-}"
 		printf '%s\n' "$*" >>"$GH_CALL_LOG"
+		if [[ "$command" == "api" && "$subcommand" == "graphql" ]]; then
+			printf 'graphql-env route=%s response-cost=%s\n' \
+				"${AIDEVOPS_GH_ROUTE_DECISION:-}" \
+				"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" >>"$GH_CALL_LOG"
+			_print_supersession_graphql_response
+			return 0
+		fi
 		if [[ "$1" == "pr" && "$2" == "view" && "$*" == *"--json labels,author"* && "$*" != *"authorAssociation"* ]]; then
 			printf '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}\n'
 			return 0
@@ -195,6 +224,13 @@ reset_case() {
 	export TEST_PARENT_LABELS=""
 	export TEST_COMMIT_SUBJECT="t3571: merged equivalent fix (#9001)"
 	export TEST_LINKED_ISSUE="23105"
+	export TEST_GRAPHQL_COST="1"
+	export TEST_GRAPHQL_HAS_NEXT_PAGE="false"
+	export TEST_GRAPHQL_REPOSITORY="exampleorg/examplerepo"
+	export TEST_GRAPHQL_ISSUE_STATE="CLOSED"
+	export TEST_GRAPHQL_CLOSER_NUMBER="6130"
+	export TEST_GRAPHQL_CLOSER_STATE="MERGED"
+	export TEST_GRAPHQL_CLOSER_MERGED_AT="2026-06-02T14:53:00Z"
 	return 0
 }
 
@@ -295,8 +331,63 @@ test_merge_ready_duplicate_pr_closed_before_merge() {
 	reset_case
 	_pm_close_superseded_duplicate_pr_if_issue_solved "6131" "exampleorg/examplerepo" "6125" "origin:worker"
 	assert_log_contains "$GH_CALL_LOG" "pr close 6131" "merge-ready duplicate closes current PR"
-	assert_log_contains "$GH_CALL_LOG" "issue view 6125" "merge-ready duplicate checks linked issue closer"
+	assert_log_contains "$GH_CALL_LOG" "api graphql" "merge-ready duplicate uses fixed GraphQL closer query"
+	assert_log_contains "$GH_CALL_LOG" "graphql-env route=pulse-supersession-closing-pr-exact-cost response-cost=1" "merge-ready duplicate attributes response-owned GraphQL cost"
+	assert_log_not_contains "$GH_CALL_LOG" "issue view 6125" "merge-ready duplicate avoids native issue view"
+	assert_log_not_contains "$GH_CALL_LOG" "pr view 6130" "merge-ready duplicate avoids native closer PR views"
 	assert_log_contains "$GH_CALL_LOG" "merged PR #6130" "merge-ready duplicate comment cites merged PR"
+	return 0
+}
+
+test_supersession_graphql_fail_closed_guards() {
+	reset_case
+	TEST_GRAPHQL_CLOSER_NUMBER="6131"
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession ignores current PR as closer" "Expected current PR reference to be excluded"
+	else
+		pass "supersession ignores current PR as closer"
+	fi
+
+	reset_case
+	TEST_GRAPHQL_CLOSER_STATE="OPEN"
+	TEST_GRAPHQL_CLOSER_MERGED_AT=""
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession ignores unmerged closer" "Expected open PR reference to be excluded"
+	else
+		pass "supersession ignores unmerged closer"
+	fi
+
+	reset_case
+	TEST_GRAPHQL_ISSUE_STATE="OPEN"
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession requires closed issue" "Expected open issue to fail closed"
+	else
+		pass "supersession requires closed issue"
+	fi
+
+	reset_case
+	TEST_GRAPHQL_COST="0"
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession rejects invalid GraphQL cost" "Expected zero response-owned cost to fail closed"
+	else
+		pass "supersession rejects invalid GraphQL cost"
+	fi
+
+	reset_case
+	TEST_GRAPHQL_HAS_NEXT_PAGE="true"
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession rejects truncated closer connection" "Expected hasNextPage=true to fail closed"
+	else
+		pass "supersession rejects truncated closer connection"
+	fi
+
+	reset_case
+	TEST_GRAPHQL_REPOSITORY="untrusted/example"
+	if _psh_find_merged_closer_for_closed_issue "exampleorg/examplerepo" "6125" "6131" >/dev/null; then
+		fail "supersession rejects mismatched repository" "Expected repository mismatch to fail closed"
+	else
+		pass "supersession rejects mismatched repository"
+	fi
 	return 0
 }
 
@@ -325,6 +416,7 @@ main() {
 	test_label_lookup_failure_skips_issue_closure
 	test_protected_precheck_skips_draft_interactive_without_metadata_fetch
 	test_merge_ready_duplicate_pr_closed_before_merge
+	test_supersession_graphql_fail_closed_guards
 	test_followup_label_preserves_duplicate_guard
 
 	printf '\nTests run: %s, failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

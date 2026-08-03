@@ -575,6 +575,35 @@ test_worktree_metadata_match_rejects_missing_record() {
 	return 0
 }
 
+test_cmd_merge_persists_cleanup_without_canonical_path() {
+	setup_subject
+	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
+	local receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	local receipt_worktree=""
+	local output=""
+	local rc=0
+	receipt_worktree=$(git -C "$worktree_path" rev-parse --show-toplevel)
+
+	_merge_current_canonical_dir_for_cleanup() {
+		local current_root="$1"
+		[[ -n "$current_root" ]] || return 1
+		return 1
+	}
+
+	output=$(cmd_merge "123" "example/repo" --squash 2>&1) || rc=1
+	[[ "$output" == *"CANONICAL_SYNC_PENDING=true reason=canonical_path_unavailable"* ]] || rc=1
+	[[ "$output" == *"LIFECYCLE_STATE=CLEANUP_DEFERRED"* ]] || rc=1
+	[[ -f "$receipt_path" ]] || rc=1
+	jq -e --arg worktree "$receipt_worktree" '
+		.repository == "example/repo" and .pr_number == 123
+		and .worktree == $worktree and .branch == "feature/full-loop-cleanup"
+		and .resource_cleanup_state == "CLEANUP_DEFERRED"
+		and .executor_completion_state == "FINALIZATION_PENDING"
+	' "$receipt_path" >/dev/null || rc=1
+	print_result "canonical sync pending coexists with durable deferred cleanup" "$rc"
+	return 0
+}
+
 test_cmd_merge_defers_cleanup_for_live_process_cwd() {
 	setup_subject
 	local canonical_repo="${TEST_ROOT}/repo"
@@ -654,6 +683,8 @@ main() {
 	test_cleanup_plan_rejects_unrelated_same_content_branch
 	test_cleanup_plan_rejects_ambiguous_alias_repository
 	test_worktree_metadata_match_rejects_missing_record
+	# This fixture replaces the canonical resolver, so keep it last.
+	test_cmd_merge_persists_cleanup_without_canonical_path
 	printf '\n%d/%d tests passed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN"
 	[[ "$TESTS_FAILED" -eq 0 ]] || return 1
 	return 0

@@ -28,7 +28,7 @@
 #   - _build_review_feedback_section      (t2093)
 #   - _append_feedback_to_issue           (GH#20057, shared helper)
 #   - _transition_issue_for_redispatch    (GH#20057, shared helper)
-#   - _close_and_label_feedback_pr        (GH#20057, shared helper)
+#   - _finalize_feedback_route            (GH#29288, sourced state machine)
 #   - _build_ci_feedback_section          (GH#20057, extracted builder)
 #   - _dispatch_ci_fix_worker             (t2093 follow-up)
 #   - _classify_conflicts_by_pattern      (t2987, pattern classifier)
@@ -37,8 +37,8 @@
 #   - _dispatch_conflict_fix_worker       (t2093 follow-up)
 #   - _dispatch_pr_fix_worker             (t2093)
 #
-# All functions fail-open: missing helpers, API errors, or malformed
-# state never block the merge pass — they log and return 0.
+# Routing failures remain isolated from unrelated PRs, but incomplete
+# finalization returns a typed deferred/maintainer outcome to the merge loop.
 
 # Include guard — prevent double-sourcing.
 [[ -n "${_PULSE_MERGE_FEEDBACK_LOADED:-}" ]] && return 0
@@ -48,6 +48,13 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 # Ensures LOGFILE is safe to dereference in all functions when this module
 # is sourced outside the pulse-wrapper.sh bootstrap context.
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
+
+_feedback_finalizer_path="${BASH_SOURCE[0]%/*}/pulse-merge-feedback-finalizer.sh"
+if [[ -r "$_feedback_finalizer_path" ]]; then
+	# shellcheck source=./pulse-merge-feedback-finalizer.sh
+	source "$_feedback_finalizer_path"
+fi
+unset _feedback_finalizer_path
 
 #######################################
 # Build the markdown "Review Feedback" section for routing to a linked
@@ -87,9 +94,9 @@ _build_review_feedback_section() {
 	header="## Review Feedback routed from PR #${pr_number} (t2093)
 
 This section was auto-generated when the deterministic merge pass detected
-\`reviewDecision=CHANGES_REQUESTED\` on the linked worker PR. The PR has been
-closed and this issue re-entered the dispatch queue. The next worker should
-address the findings below and open a fresh PR against this issue.
+\`reviewDecision=CHANGES_REQUESTED\` on the linked worker PR. A head-bound
+finalizer is routing the issue for redispatch. The next worker should address
+the findings below and open a fresh PR against this issue.
 
 See the original PR for full context: https://github.com/${repo_slug}/pull/${pr_number}
 "
@@ -188,11 +195,13 @@ ${feedback_section}"
 #   $1 - linked_issue  (issue number)
 #   $2 - repo_slug     (owner/repo)
 #   $3 - source_label  (e.g. "source:ci-feedback")
+#   $4 - clear_hold    (optional: 1 removes needs-maintainer-review on recovery)
 #######################################
 _transition_issue_for_redispatch() {
 	local linked_issue="$1"
 	local repo_slug="$2"
 	local source_label="$3"
+	local clear_hold="${4:-0}"
 	local _assignees=""
 	_assignees=$(gh issue view "$linked_issue" --repo "$repo_slug" --json assignees --jq '.assignees[].login' 2>/dev/null) || _assignees=""
 
@@ -205,45 +214,27 @@ _transition_issue_for_redispatch() {
 	while IFS= read -r _assignee; do
 		[[ -n "$_assignee" ]] && _redispatch_flags+=(--remove-assignee "$_assignee")
 	done <<<"$_assignees"
+	if [[ "$clear_hold" == "1" ]]; then
+		_redispatch_flags+=(--remove-label "needs-maintainer-review")
+	fi
 
 	if declare -F set_issue_status >/dev/null 2>&1; then
-		set_issue_status "$linked_issue" "$repo_slug" "available" \
-			--add-label "$source_label" "${_redispatch_flags[@]}" >/dev/null 2>&1 || true
+		if ! set_issue_status "$linked_issue" "$repo_slug" "available" \
+			--add-label "$source_label" "${_redispatch_flags[@]}" >/dev/null 2>&1; then
+			echo "[pulse-wrapper] feedback finalizer: failed to transition issue #${linked_issue} in ${repo_slug} to status:available" >>"$LOGFILE"
+			return 1
+		fi
 	else
-		gh issue edit "$linked_issue" --repo "$repo_slug" \
+		if ! _feedback_route_gh_write issue edit "$linked_issue" --repo "$repo_slug" \
 			--add-label "status:available" --add-label "$source_label" \
 			"${_redispatch_flags[@]}" \
 			--remove-label "status:queued" --remove-label "status:in-progress" \
 			--remove-label "status:in-review" --remove-label "status:claimed" \
-			>/dev/null 2>&1 || true
-	fi
-	return 0
-}
-
-#######################################
-# Close a feedback-routed PR with an explanatory comment and apply an
-# idempotency label.
-#
-# Args:
-#   $1 - pr_number
-#   $2 - repo_slug
-#   $3 - close_comment  (markdown body for the close comment)
-#   $4 - label          (e.g. "ci-feedback-routed")
-#######################################
-_close_and_label_feedback_pr() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local close_comment="$3"
-	local label="$4"
-
-	if gh pr close "$pr_number" --repo "$repo_slug" \
-		--comment "$close_comment" >/dev/null 2>&1; then
-		if declare -F _pulse_merge_invalidate_pr_list_cache >/dev/null 2>&1; then
-			_pulse_merge_invalidate_pr_list_cache "$repo_slug" "closed feedback-routed PR #${pr_number}"
+			>/dev/null 2>&1; then
+			echo "[pulse-wrapper] feedback finalizer: fallback transition failed for issue #${linked_issue} in ${repo_slug}" >>"$LOGFILE"
+			return 1
 		fi
 	fi
-	gh pr edit "$pr_number" --repo "$repo_slug" \
-		--add-label "$label" >/dev/null 2>&1 || true
 	return 0
 }
 
@@ -275,8 +266,8 @@ _build_ci_feedback_section() {
 	cat <<-EOF
 		## CI Repair Feedback (from PR #${pr_number})
 
-		The previous worker's PR #${pr_number} had terminal failed CI checks. The PR has been
-		closed and this issue re-queued for dispatch. The next worker should address these failures.
+		The previous worker's PR #${pr_number} had terminal failed CI checks. A head-bound
+		finalizer is routing this issue for redispatch. The next worker should address these failures.
 
 		### Terminal failed checks
 
@@ -461,6 +452,10 @@ _dispatch_ci_fix_worker() {
 	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 0
 	[[ -n "$repo_slug" ]] || return 0
 	[[ "$linked_issue" =~ ^[0-9]+$ ]] || return 0
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] feedback finalizer: deferred PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — dry-run forbids CI repair dispatch and feedback finalization writes" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
 	local initial_head_sha=""
 	initial_head_sha=$(gh pr view "$pr_number" --repo "$repo_slug" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null) || initial_head_sha=""
 	if [[ -z "$initial_head_sha" ]]; then
@@ -544,9 +539,10 @@ _dispatch_ci_fix_worker() {
 	fi
 
 	echo "[pulse-wrapper] _dispatch_ci_fix_worker: durable fallback authorized for PR #${pr_number} in ${repo_slug}: ${fallback_reason}" >>"$LOGFILE"
+	local route_rc=0
 	_route_ci_repair_fallback "$pr_number" "$repo_slug" "$linked_issue" "$pr_head_sha" \
-		"$pr_head_ref" "$failure_fingerprint" "$fallback_reason" "$feedback_section" "$failing_checks"
-	return 0
+		"$pr_head_ref" "$failure_fingerprint" "$fallback_reason" "$feedback_section" "$failing_checks" || route_rc=$?
+	return "$route_rc"
 }
 
 #######################################
@@ -564,38 +560,30 @@ _route_ci_repair_fallback() {
 	local failing_checks="$9"
 	local marker_prefix="<!-- ci-feedback-fallback:PR${pr_number}:SHA${pr_head_sha:-unknown}"
 	local marker="${marker_prefix} -->"
-	local current_body=""
+	local legacy_match="<!-- ci-feedback-fallback:PR${pr_number}:SHA"
 	: "$failure_fingerprint"
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] feedback finalizer: deferred PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — dry-run forbids CI feedback finalization writes" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	if ! declare -F _finalize_feedback_route >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _dispatch_ci_fix_worker: feedback finalizer unavailable for PR #${pr_number} in ${repo_slug}" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
 
-	gh label create "ci-feedback-routed" --repo "$repo_slug" --color "E4E669" \
+	_feedback_route_gh_write label create "ci-feedback-routed" --repo "$repo_slug" --color "E4E669" \
 		--description "Worker PR with failing CI routed to linked issue for re-dispatch" \
 		--force >/dev/null 2>&1 || true
-	gh label create "source:ci-feedback" --repo "$repo_slug" --color "FEF2C0" \
+	_feedback_route_gh_write label create "source:ci-feedback" --repo "$repo_slug" --color "FEF2C0" \
 		--description "Issue carries CI failure feedback routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
-	current_body=$(gh issue view "$linked_issue" --repo "$repo_slug" \
-		--json body --jq '.body // ""' 2>/dev/null) || current_body=""
-	# Match both the PR/head marker and the legacy marker that appended :FP...
-	# so an upgrade cannot replay an already-routed fallback.
-	if [[ -n "$current_body" ]] && printf '%s' "$current_body" | grep -qF "$marker_prefix"; then
-		echo "[pulse-wrapper] _dispatch_ci_fix_worker: issue #${linked_issue} already has CI repair fallback marker for PR #${pr_number} head ${pr_head_sha:-unknown} — skipping duplicate fallback" >>"$LOGFILE"
-		return 0
-	fi
 	feedback_section="${feedback_section}
 
 ### In-place repair fallback
 
 - Reason: ${fallback_reason}
 - Retry: re-run the deterministic merge pass after restoring access to branch \`${pr_head_ref:-unknown}\`; keep PR #${pr_number} open until that retry is impossible."
-	_append_feedback_to_issue "$linked_issue" "$repo_slug" "$marker" \
-		"$feedback_section" "_dispatch_ci_fix_worker" || return 0
-
-	# Transition issue to available for re-dispatch
-	_transition_issue_for_redispatch "$linked_issue" "$repo_slug" "source:ci-feedback"
-
-	# Close the PR with feedback summary
-	_close_and_label_feedback_pr "$pr_number" "$repo_slug" \
-		"## CI repair feedback routed to issue #${linked_issue}
+	local close_comment="## CI repair feedback routed to issue #${linked_issue}
 
 This worker PR had terminal failed CI checks. The check details have been appended
 to the linked issue body so the next worker can address them.
@@ -603,11 +591,15 @@ to the linked issue body so the next worker can address them.
 Terminal failed checks:
 ${failing_checks}
 
-_Closed by deterministic merge pass (pulse-merge.sh)._" \
-		"ci-feedback-routed"
-
-	echo "[pulse-wrapper] _dispatch_ci_fix_worker: in-place repair impossible for PR #${pr_number}; routed fallback to issue #${linked_issue} in ${repo_slug}: ${fallback_reason}" >>"$LOGFILE"
-	return 0
+_Closed by deterministic merge pass (pulse-merge.sh)._"
+	local finalize_rc=0
+	_finalize_feedback_route "ci" "$pr_number" "$repo_slug" "$linked_issue" "$pr_head_sha" \
+		"source:ci-feedback" "ci-feedback-routed" "$marker" "$feedback_section" \
+		"_dispatch_ci_fix_worker" "$close_comment" "$legacy_match" || finalize_rc=$?
+	if [[ "$finalize_rc" -eq 0 ]]; then
+		echo "[pulse-wrapper] _dispatch_ci_fix_worker: in-place repair impossible for PR #${pr_number}; routed fallback to issue #${linked_issue} in ${repo_slug}: ${fallback_reason}" >>"$LOGFILE"
+	fi
+	return "$finalize_rc"
 }
 
 #######################################
@@ -1849,12 +1841,20 @@ _dispatch_conflict_fix_worker() {
 	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 0
 	[[ -n "$repo_slug" ]] || return 0
 	[[ "$linked_issue" =~ ^[0-9]+$ ]] || return 0
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] feedback finalizer: deferred PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — dry-run forbids conflict feedback finalization writes" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	if ! declare -F _finalize_feedback_route >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _dispatch_conflict_fix_worker: feedback finalizer unavailable for PR #${pr_number} in ${repo_slug}" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
 
 	# Create labels (idempotent, --force)
-	gh label create "conflict-feedback-routed" --repo "$repo_slug" --color "D4C5F9" \
+	_feedback_route_gh_write label create "conflict-feedback-routed" --repo "$repo_slug" --color "D4C5F9" \
 		--description "Worker PR with merge conflicts routed to linked issue for re-dispatch" \
 		--force >/dev/null 2>&1 || true
-	gh label create "source:conflict-feedback" --repo "$repo_slug" --color "E6D8FA" \
+	_feedback_route_gh_write label create "source:conflict-feedback" --repo "$repo_slug" --color "E6D8FA" \
 		--description "Issue carries conflict context routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
 
@@ -1871,8 +1871,7 @@ _dispatch_conflict_fix_worker() {
 		pr_file_count=$(printf '%s\n' "$pr_files" | grep -c '^.' || true)
 	fi
 
-	# Get the closed PR's head commit SHA (t2426) — reachable for >=30 days after close
-	# and lets the next worker cherry-pick instead of rewriting from scratch.
+	# Snapshot the PR head before finalization so every later write is generation-bound.
 	local pr_head_sha
 	pr_head_sha=$(gh pr view "$pr_number" --repo "$repo_slug" \
 		--json headRefOid --jq '.headRefOid' 2>/dev/null) || pr_head_sha=""
@@ -1890,25 +1889,20 @@ _dispatch_conflict_fix_worker() {
 		"$pr_number" "$pr_title" "$pr_files" "$pr_head_sha" \
 		"$default_branch" "$pr_file_count")
 
-	# Append to issue body (marker-guarded, t2383 fail-safe)
 	local marker="<!-- conflict-feedback:PR${pr_number} -->"
-	_append_feedback_to_issue "$linked_issue" "$repo_slug" "$marker" \
-		"$feedback_section" "_dispatch_conflict_fix_worker" || return 0
-
-	# Transition issue to available for re-dispatch
-	_transition_issue_for_redispatch "$linked_issue" "$repo_slug" "source:conflict-feedback"
-
-	# Close the PR with conflict context
-	_close_and_label_feedback_pr "$pr_number" "$repo_slug" \
-		"## Merge conflict feedback routed to issue #${linked_issue}
+	local close_comment="## Merge conflict feedback routed to issue #${linked_issue}
 
 This worker PR had semantic merge conflicts with \`${default_branch}\` that \`update-branch\` could not resolve. The conflict context and file list have been appended to the linked issue body so the next worker can re-implement on top of current \`${default_branch}\`.
 
-_Closed by deterministic merge pass (pulse-merge.sh)._" \
-		"conflict-feedback-routed"
-
-	echo "[pulse-wrapper] _dispatch_conflict_fix_worker: routed conflict feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug}" >>"$LOGFILE"
-	return 0
+_Closed by deterministic merge pass (pulse-merge.sh)._"
+	local finalize_rc=0
+	_finalize_feedback_route "conflict" "$pr_number" "$repo_slug" "$linked_issue" "$pr_head_sha" \
+		"source:conflict-feedback" "conflict-feedback-routed" "$marker" "$feedback_section" \
+		"_dispatch_conflict_fix_worker" "$close_comment" || finalize_rc=$?
+	if [[ "$finalize_rc" -eq 0 ]]; then
+		echo "[pulse-wrapper] _dispatch_conflict_fix_worker: routed conflict feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug}" >>"$LOGFILE"
+	fi
+	return "$finalize_rc"
 }
 
 #######################################
@@ -1934,11 +1928,11 @@ _Closed by deterministic merge pass (pulse-merge.sh)._" \
 #   4. Closes the stuck PR with an explanatory comment and tags it
 #      `review-routed-to-issue` as a belt-and-suspenders idempotency flag.
 #
-# Interactive PRs and external-contributor PRs are filtered out by the
-# caller (`_check_pr_merge_gates`) — they have their own review flows.
+# Interactive, external-contributor, no-takeover, and maintainer-held PRs are
+# filtered by `_route_pr_to_fix_worker` before this helper is called.
 #
-# Fail-open: any API failure is logged and swallowed. The merge pass must
-# continue processing other PRs.
+# Partial finalization returns a typed deferred or maintainer outcome. The
+# merge-loop boundary logs that outcome and continues processing unrelated PRs.
 #
 # Reference patterns:
 #   - `quality-feedback-helper.sh` — bot review comment extraction
@@ -1958,14 +1952,31 @@ _dispatch_pr_fix_worker() {
 	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 0
 	[[ -n "$repo_slug" ]] || return 0
 	[[ "$linked_issue" =~ ^[0-9]+$ ]] || return 0
+	if ! declare -F _finalize_feedback_route >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _dispatch_pr_fix_worker: feedback finalizer unavailable for PR #${pr_number} in ${repo_slug}" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] feedback finalizer: deferred PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — dry-run forbids review feedback finalization writes" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	local route_snapshot=""
+	local route_state=""
+	local expected_head=""
+	local route_labels=""
+	route_snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || {
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "initial review-route PR snapshot unavailable"
+		return $?
+	}
+	IFS=$'\t' read -r route_state expected_head route_labels <<<"$route_snapshot"
 
 	# Ensure the idempotency + origin labels exist on the repo (idempotent,
 	# --force, swallowed failures). quality-feedback-helper.sh also creates
 	# source:review-feedback — redundant creation is harmless.
-	gh label create "review-routed-to-issue" --repo "$repo_slug" --color "D93F0B" \
+	_feedback_route_gh_write label create "review-routed-to-issue" --repo "$repo_slug" --color "D93F0B" \
 		--description "Worker PR with CHANGES_REQUESTED routed to linked issue for re-dispatch (t2093)" \
 		--force >/dev/null 2>&1 || true
-	gh label create "source:review-feedback" --repo "$repo_slug" --color "C2E0C6" \
+	_feedback_route_gh_write label create "source:review-feedback" --repo "$repo_slug" --color "C2E0C6" \
 		--description "Issue carries review feedback routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
 
@@ -1999,15 +2010,7 @@ _dispatch_pr_fix_worker() {
 		return 0
 	fi
 
-	# --- Append to linked issue body (marker-guarded, t2383 fail-safe) ---
 	local marker="<!-- t2093:review-feedback:PR${pr_number} -->"
-	_append_feedback_to_issue "$linked_issue" "$repo_slug" "$marker" \
-		"$feedback_section" "_dispatch_pr_fix_worker" || return 0
-
-	# --- Transition issue status to available for re-dispatch ---
-	_transition_issue_for_redispatch "$linked_issue" "$repo_slug" "source:review-feedback"
-
-	# --- Close the stuck PR with explanatory comment ---
 	local close_comment
 	close_comment="## Review feedback routed to linked issue #${linked_issue} (t2093)
 
@@ -2026,13 +2029,12 @@ The next worker will see the updated issue body, address the review findings, an
 open a fresh PR against issue #${linked_issue}.
 
 _Closed by deterministic merge pass (pulse-merge.sh, t2093)._"
-
-	# Mark the PR as routed so any racing merge-pass re-read (via cached
-	# listing) skips re-processing. This is belt-and-suspenders — closed
-	# PRs are already excluded from the merge cycle's open-PR query.
-	_close_and_label_feedback_pr "$pr_number" "$repo_slug" \
-		"$close_comment" "review-routed-to-issue"
-
-	echo "[pulse-wrapper] _dispatch_pr_fix_worker: routed review feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug} (t2093)" >>"$LOGFILE"
-	return 0
+	local finalize_rc=0
+	_finalize_feedback_route "review" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head" \
+		"source:review-feedback" "review-routed-to-issue" "$marker" "$feedback_section" \
+		"_dispatch_pr_fix_worker" "$close_comment" || finalize_rc=$?
+	if [[ "$finalize_rc" -eq 0 ]]; then
+		echo "[pulse-wrapper] _dispatch_pr_fix_worker: routed review feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug} (t2093)" >>"$LOGFILE"
+	fi
+	return "$finalize_rc"
 }

@@ -1399,15 +1399,41 @@ full_loop_update_cleanup_release_status() {
 	return 0
 }
 
+full_loop_mark_cleanup_receipt_cleaned() {
+	local receipt_path="$1"
+	local worktree="$2"
+	local cleanup_log="${3:-${AIDEVOPS_CLEANUP_LOG:-${HOME}/.aidevops/logs/cleanup_worktrees.log}}"
+
+	[[ -f "$receipt_path" && -n "$worktree" && ! -e "$worktree" && -f "$cleanup_log" ]] || return 1
+	grep -Fq "worktree-removed: ${worktree} —" "$cleanup_log" || return 1
+	jq -e --arg worktree "$worktree" '.worktree == $worktree' "$receipt_path" >/dev/null 2>&1 || return 1
+	full_loop_transition_cleanup_receipt "$receipt_path" "$_FULL_LOOP_CLEANUP_CLEANED"
+	return $?
+}
+
+full_loop_mark_cleanup_cleaned_for_identity() {
+	local repo="$1"
+	local pr_number="$2"
+	local worktree="$3"
+	local cleanup_log="${4:-${AIDEVOPS_CLEANUP_LOG:-${HOME}/.aidevops/logs/cleanup_worktrees.log}}"
+	local receipt_path=""
+
+	receipt_path=$(_full_loop_cleanup_receipt_path "$repo" "$pr_number") || return 1
+	[[ -f "$receipt_path" ]] || return 1
+	jq -e --arg repo "$repo" --argjson pr_number "$pr_number" --arg worktree "$worktree" '
+		.repository == $repo and .pr_number == $pr_number and .worktree == $worktree
+	' "$receipt_path" >/dev/null 2>&1 || return 1
+	full_loop_mark_cleanup_receipt_cleaned "$receipt_path" "$worktree" "$cleanup_log"
+	return $?
+}
+
 full_loop_mark_cleanup_cleaned_for_worktree() {
 	local worktree="$1"
 	local cleanup_log="${2:-${AIDEVOPS_CLEANUP_LOG:-${HOME}/.aidevops/logs/cleanup_worktrees.log}}"
 	local receipt_path=""
 
-	[[ -n "$worktree" && ! -e "$worktree" && -f "$cleanup_log" ]] || return 1
-	grep -Fq "worktree-removed: ${worktree} —" "$cleanup_log" || return 1
 	receipt_path=$(full_loop_cleanup_receipt_for_worktree "$worktree") || return 1
-	full_loop_transition_cleanup_receipt "$receipt_path" "$_FULL_LOOP_CLEANUP_CLEANED"
+	full_loop_mark_cleanup_receipt_cleaned "$receipt_path" "$worktree" "$cleanup_log"
 	return $?
 }
 

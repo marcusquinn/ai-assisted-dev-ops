@@ -757,12 +757,13 @@ _dispatch_pr_repair_by_kind() {
 	local linked_issue="$4"
 	local pr_title="$5"
 	local checks_json="$6"
+	local dispatch_rc=0
 	case "$kind" in
-		review) _dispatch_pr_fix_worker "$pr_number" "$repo_slug" "$linked_issue" || true ;;
-		conflict) _dispatch_conflict_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "$pr_title" || true ;;
-		ci) _dispatch_ci_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "$checks_json" || true ;;
+		review) _dispatch_pr_fix_worker "$pr_number" "$repo_slug" "$linked_issue" || dispatch_rc=$? ;;
+		conflict) _dispatch_conflict_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "$pr_title" || dispatch_rc=$? ;;
+		ci) _dispatch_ci_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "$checks_json" || dispatch_rc=$? ;;
 	esac
-	return 0
+	return "$dispatch_rc"
 }
 
 _route_issue_origin_is_trusted() {
@@ -783,6 +784,39 @@ _route_issue_origin_is_trusted() {
 	return 0
 }
 
+_route_pr_issue_labels_for_dispatch() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local issue_labels=""
+
+	if ! issue_labels=$(gh api "repos/${repo_slug}/issues/${linked_issue}" \
+		--jq '[.labels[].name] | join(",")' 2>/dev/null); then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: linked issue #${linked_issue} metadata unavailable for PR #${pr_number} in ${repo_slug} — refusing destructive routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	[[ ",${issue_labels}," != *",needs-maintainer-review,"* ]] || return 1
+	printf '%s\n' "$issue_labels"
+	return 0
+}
+
+_route_pr_feedback_terminal_guard() {
+	local has_routed_label="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local kind="$5"
+	local routed_label="$6"
+
+	[[ "$has_routed_label" -eq 1 ]] || return 0
+	if ! declare -F _feedback_route_guard_existing_terminal_label >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: feedback finalizer unavailable behind ${routed_label} on PR #${pr_number} in ${repo_slug}" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	_feedback_route_guard_existing_terminal_label "$pr_number" "$repo_slug" "$linked_issue" "$kind"
+	return $?
+}
+
 #######################################
 # Route a PR to the appropriate fix worker based on origin label and kind.
 #
@@ -801,7 +835,8 @@ _route_issue_origin_is_trusted() {
 #   $8 = head_ref_oid  (optional — passed to staleness check)
 #   $9 = checks_json   (optional — head-bound terminal blocker evidence for CI repair)
 #
-# Returns: 0 if dispatched, 1 if not routable (no match or excluded)
+# Returns: 0 if dispatched, 1 if not routable, 75 if finalization is deferred,
+#          or 76 if ambiguous state was preserved for maintainer review.
 #
 # Design: case-statement dispatch over kind — no dynamic function calls.
 # Per-kind return semantics are handled by the CALLER, not here.
@@ -822,6 +857,8 @@ _route_pr_to_fix_worker() {
 	local issue_has_worker_origin=0
 	local label_list=""
 	local takeover_pattern=",origin:worker-takeover,"
+	local has_routed_label=0
+	local issue_labels_rc=0
 
 	# No linked issue → nothing to route to
 	[[ -z "$linked_issue" ]] && return 1
@@ -848,25 +885,24 @@ _route_pr_to_fix_worker() {
 			;;
 	esac
 
-	# Check exclusion labels — already routed or no-takeover
-	if [[ "$label_list" == *",${routed_label},"* ]] \
-		|| [[ "$label_list" == *",no-takeover,"* ]]; then
+	# These labels preserve explicit human/external ownership before any route
+	# recovery can inspect or mutate the PR and linked issue.
+	if [[ "$label_list" == *",no-takeover,"* \
+		|| "$label_list" == *",needs-maintainer-review,"* \
+		|| "$label_list" == *",external-contributor,"* ]]; then
 		return 1
+	fi
+	if [[ "$label_list" == *",${routed_label},"* ]]; then
+		has_routed_label=1
 	fi
 
-	# Review gate has an additional exclusion for external contributors
-	if [[ "$kind" == "review" ]] && [[ "$label_list" == *",external-contributor,"* ]]; then
-		return 1
-	fi
+	# A linked issue on explicit maintainer hold is never rewritten or reopened.
+	issue_labels=$(_route_pr_issue_labels_for_dispatch "$pr_number" "$repo_slug" "$linked_issue") || issue_labels_rc=$?
+	[[ "$issue_labels_rc" -eq 0 ]] || return "$issue_labels_rc"
 
 	if [[ "$label_list" != *",origin:worker,"* \
 		&& "$label_list" != *"$takeover_pattern"* \
 		&& "$label_list" != *",origin:interactive,"* ]]; then
-		if ! issue_labels=$(gh api "repos/${repo_slug}/issues/${linked_issue}" \
-			--jq '[.labels[].name] | join(",")' 2>/dev/null); then
-			echo "[pulse-wrapper] _route_pr_to_fix_worker: linked issue #${linked_issue} metadata unavailable for PR #${pr_number} in ${repo_slug} — refusing destructive routing" >>"$LOGFILE"
-			return 1
-		fi
 		if [[ ",${issue_labels}," == *",origin:worker,"* ]]; then
 			issue_has_worker_origin=1
 		fi
@@ -879,8 +915,10 @@ _route_pr_to_fix_worker() {
 		[[ "$issue_has_worker_origin" -eq 0 ]] \
 			|| _route_issue_origin_is_trusted "$pr_number" "$repo_slug" "$linked_issue" \
 			|| return 1
+		_route_pr_feedback_terminal_guard "$has_routed_label" "$pr_number" "$repo_slug" \
+			"$linked_issue" "$kind" "$routed_label" || return $?
 		_dispatch_pr_repair_by_kind "$kind" "$pr_number" "$repo_slug" "$linked_issue" "$pr_title" "$checks_json"
-		return 0
+		return $?
 	fi
 
 	# Stale interactive PRs: handover first, then dispatch
@@ -896,8 +934,10 @@ _route_pr_to_fix_worker() {
 			echo "[pulse-wrapper] _route_pr_to_fix_worker: origin:worker-takeover not confirmed for PR #${pr_number} in ${repo_slug} — refusing destructive routing" >>"$LOGFILE"
 			return 1
 		fi
+		_route_pr_feedback_terminal_guard "$has_routed_label" "$pr_number" "$repo_slug" \
+			"$linked_issue" "$kind" "$routed_label" || return $?
 		_dispatch_pr_repair_by_kind "$kind" "$pr_number" "$repo_slug" "$linked_issue" "$pr_title" "$checks_json"
-		return 0
+		return $?
 	fi
 
 	# Not routable (no matching origin label or not stale)

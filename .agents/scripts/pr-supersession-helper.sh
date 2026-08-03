@@ -302,32 +302,62 @@ _psh_find_merged_closer_for_closed_issue() {
 	local repo_slug="$1"
 	local issue_number="$2"
 	local current_pr="$3"
+	local owner="${repo_slug%%/*}"
+	local name="${repo_slug#*/}"
+	local response=""
+	local reported_cost=""
+	local closer_number=""
 
 	[[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
 	[[ "$current_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+	[[ -n "$owner" && -n "$name" ]] || return 1
 
-	local issue_json issue_state closer_numbers closer_number pr_state merged_at
-	issue_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
-		--json state,closedByPullRequestsReferences 2>/dev/null) || return 1
-	issue_state=$(printf '%s' "$issue_json" | jq -r '.state // empty' 2>/dev/null) || issue_state=""
-	[[ "$issue_state" == "CLOSED" ]] || return 1
-
-	closer_numbers=$(printf '%s' "$issue_json" | jq -r '.closedByPullRequestsReferences[]?.number // empty' 2>/dev/null) || closer_numbers=""
-	while IFS= read -r closer_number; do
-		[[ "$closer_number" =~ ^[0-9]+$ ]] || continue
-		[[ "$closer_number" != "$current_pr" ]] || continue
-		pr_state=$(gh pr view "$closer_number" --repo "$repo_slug" \
-			--json state,mergedAt --jq '.state // empty' 2>/dev/null) || pr_state=""
-		merged_at=$(gh pr view "$closer_number" --repo "$repo_slug" \
-			--json mergedAt --jq '.mergedAt // empty' 2>/dev/null) || merged_at=""
-		if [[ "$pr_state" == "MERGED" || -n "$merged_at" ]]; then
-			printf '%s' "$closer_number"
-			return 0
-		fi
-	done <<EOF
-$closer_numbers
-EOF
-	return 1
+	# `closedByPullRequestsReferences` is GraphQL-only. Keep the supersession
+	# trust gate on one fixed, response-metered request instead of opaque native
+	# issue/PR views. Reject truncated connections and mismatched repositories so
+	# an incomplete snapshot can never authorize closing a worker PR.
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-supersession-closing-pr-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_number" -f query='
+		query($owner: String!, $name: String!, $number: Int!) {
+			repository(owner: $owner, name: $name) {
+				nameWithOwner
+				issue(number: $number) {
+					state
+					closedByPullRequestsReferences(first: 100) {
+						nodes { number state mergedAt repository { nameWithOwner } }
+						pageInfo { hasNextPage }
+					}
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 1
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
+	closer_number=$(printf '%s' "$response" | jq -er \
+		--arg repo "$repo_slug" --arg current_pr "$current_pr" '
+		.data.repository as $repository
+		| select(($repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase))
+		| $repository.issue as $issue
+		| select($issue != null and $issue.state == "CLOSED")
+		| $issue.closedByPullRequestsReferences
+		| select(.pageInfo.hasNextPage == false)
+		| [.nodes[]?
+			| select(
+				(.repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase)
+				and (.number | tostring) != $current_pr
+				and .state == "MERGED"
+				and ((.mergedAt // "") | length) > 0
+			)
+			| .number]
+		| first
+		| select(type == "number")
+	' 2>/dev/null) || return 1
+	[[ "$closer_number" =~ ^[0-9]+$ ]] || return 1
+	printf '%s' "$closer_number"
+	return 0
 }
 
 _psh_classify_json() {

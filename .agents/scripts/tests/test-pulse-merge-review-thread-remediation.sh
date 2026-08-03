@@ -341,6 +341,52 @@ test_changes_requested_routes_by_default() {
 	return 0
 }
 
+test_changes_requested_translates_maintainer_route_outcome() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		printf 'route\n' >>"$route_log"
+		return 76
+	}
+	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q '^route$' "$route_log" \
+		&& grep -qF 'feedback finalization for PR #77 in owner/repo requires maintainer review' "$LOGFILE"; then
+		print_result "CHANGES_REQUESTED translates maintainer route outcome" 0
+	else
+		print_result "CHANGES_REQUESTED translates maintainer route outcome" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_changes_requested_translates_deferred_route_outcome() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		printf 'route\n' >>"$route_log"
+		return 75
+	}
+	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q '^route$' "$route_log" \
+		&& grep -qF 'feedback finalization deferred for PR #77 in owner/repo; preserving retryable route state' "$LOGFILE"; then
+		print_result "CHANGES_REQUESTED translates deferred route outcome" 0
+	else
+		print_result "CHANGES_REQUESTED translates deferred route outcome" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_changes_requested_opt_in_dispatches_remediation_without_routing() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
@@ -636,6 +682,8 @@ main() {
 	test_repo_path_lookup_ignores_slug_case
 	test_other_merge_failures_do_not_dispatch_review_thread_remediation
 	test_changes_requested_routes_by_default
+	test_changes_requested_translates_maintainer_route_outcome
+	test_changes_requested_translates_deferred_route_outcome
 	test_changes_requested_opt_in_dispatches_remediation_without_routing
 	test_changes_requested_routes_when_remediation_unavailable
 	test_changes_requested_active_remediation_preserves_pr_without_routing

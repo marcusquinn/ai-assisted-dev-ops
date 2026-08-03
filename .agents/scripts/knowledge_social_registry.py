@@ -44,6 +44,7 @@ PROVIDER_SPECS = (
         "knowledge_social_forem.py",
         (("live", ()),),
     ),
+    ProviderSpec("freshrss", (), "knowledge_social_freshrss.py", (("live", ()),)),
     ProviderSpec(
         "google-business-profile",
         ("gbp",),
@@ -52,6 +53,14 @@ PROVIDER_SPECS = (
     ),
     ProviderSpec("gumroad", (), "knowledge_social_gumroad.py", (("live", ()),)),
     ProviderSpec("github", (), "knowledge_social_github.py", (("live", ()),)),
+    ProviderSpec(
+        "hacker-news",
+        ("hn",),
+        "knowledge_social_hacker_news.py",
+        (("live", ()),),
+    ),
+    ProviderSpec("hashnode", (), "knowledge_social_hashnode.py", (("live", ()),)),
+    ProviderSpec("lemmy", (), "knowledge_social_lemmy.py", (("live", ()),)),
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec("miniflux", (), "knowledge_social_miniflux.py", (("live", ()),)),
     ProviderSpec(
@@ -72,6 +81,7 @@ PROVIDER_SPECS = (
         "knowledge_social_nextcloud_talk.py",
         (("live", ()),),
     ),
+    ProviderSpec("patreon", (), "knowledge_social_patreon.py", (("live", ()),)),
     ProviderSpec(
         "signal",
         (),

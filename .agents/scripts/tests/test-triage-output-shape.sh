@@ -40,6 +40,9 @@ EPHEMERAL_BODY_LOG=""
 MOCK_COMMENT_WRITE_FAILURE=0
 MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 MOCK_PR_REVISION_PAIR=""
+MOCK_LABELS_JSON=""
+MOCK_LABEL_INVENTORY_FAILURE=0
+MOCK_LABEL_WRITE_FAILURE=0
 readonly EXPECTED_TEXT_SNAPSHOT_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
 readonly EXPECTED_PUBLIC_REVISION="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -107,6 +110,9 @@ SIG_STUB
 	MOCK_COMMENT_WRITE_FAILURE=0
 	MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 	MOCK_PR_REVISION_PAIR=""
+	MOCK_LABELS_JSON='[{"name":"review:approve","color":"0e8a16","description":"Advisory automated triage recommendation: approve"},{"name":"review:feedback","color":"fbca04","description":"Advisory automated triage recommendation: request changes"},{"name":"review:decline","color":"d73a4a","description":"Advisory automated triage recommendation: decline"}]'
+	MOCK_LABEL_INVENTORY_FAILURE=0
+	MOCK_LABEL_WRITE_FAILURE=0
 	MOCK_CURRENT_TEXT_SNAPSHOT_HASH="$EXPECTED_TEXT_SNAPSHOT_HASH"
 	MOCK_CURRENT_PUBLIC_REVISION="$EXPECTED_PUBLIC_REVISION"
 	unset TRIAGE_TEST_RUNTIME_EXIT_STATUS TRIAGE_TEST_SIGNATURE_FAILURE 2>/dev/null || true
@@ -177,6 +183,19 @@ gh() {
 		return 0
 		;;
 	api)
+		if [[ "$call_args" == *"/labels?per_page=100&page="* ]]; then
+			printf 'label-route=%s\n' "${AIDEVOPS_GH_ROUTE_DECISION:-}" >>"$GH_CALL_LOG"
+			[[ "$MOCK_LABEL_INVENTORY_FAILURE" -eq 0 ]] || return 1
+			printf '%s\n' "$MOCK_LABELS_JSON"
+			return 0
+		fi
+		if [[ "$call_args" == *"/repos/owner/repo/labels"* && \
+			( "$call_args" == *"-X POST"* || "$call_args" == *"-X PATCH"* ) ]]; then
+			printf 'label-route=%s\n' "${AIDEVOPS_GH_ROUTE_DECISION:-}" >>"$GH_CALL_LOG"
+			[[ "$MOCK_LABEL_WRITE_FAILURE" -eq 0 ]] || return 1
+			printf '%s\n' '{}'
+			return 0
+		fi
 		if [[ "$call_args" == *"/comments?per_page=100"* ]]; then
 			printf '%s\n' '[[{"id":1,"user":{"login":"external"},"author_association":"CONTRIBUTOR","body":"Stable test comment","created_at":"2026-07-27T00:01:00Z","updated_at":"2026-07-27T00:01:00Z"}]]'
 			return 0
@@ -691,6 +710,63 @@ test_recommendation_labels_map_exact_decisions() {
 		detail="${detail} decline-missing"
 	}
 	print_result "exact triage decisions map to canonical advisory labels" "$ok" "$detail"
+	teardown_test_env
+}
+
+test_recommendation_label_provisioning_uses_bounded_rest_routes() {
+	setup_test_env
+	load_helpers_under_test
+	MOCK_LABELS_JSON='[{"name":"review:approve","color":"0e8a16","description":"Advisory automated triage recommendation: approve"},{"name":"review:feedback","color":"000000","description":"stale"}]'
+	local ok=0 detail="" inventory_count=0
+	_ensure_triage_recommendation_labels "owner/repo" || ok=1
+	inventory_count=$(grep -c '^api -X GET /repos/owner/repo/labels?per_page=100&page=1$' \
+		"$GH_CALL_LOG" 2>/dev/null || true)
+	[[ "$inventory_count" -eq 1 ]] || {
+		ok=1
+		detail="${detail} inventory-count=${inventory_count}"
+	}
+	grep -q '^api -X PATCH /repos/owner/repo/labels/review%3Afeedback ' "$GH_CALL_LOG" || {
+		ok=1
+		detail="${detail} feedback-update-missing"
+	}
+	grep -q '^api -X POST /repos/owner/repo/labels -f name=review:decline ' "$GH_CALL_LOG" || {
+		ok=1
+		detail="${detail} decline-create-missing"
+	}
+	if grep -Eq '^label create |--force|name=review:approve' "$GH_CALL_LOG"; then
+		ok=1
+		detail="${detail} current-label-written-or-force-used"
+	fi
+	grep -q '^label-route=pulse-triage-label-inventory-rest$' "$GH_CALL_LOG" || ok=1
+	grep -q '^label-route=pulse-triage-label-update-rest$' "$GH_CALL_LOG" || ok=1
+	grep -q '^label-route=pulse-triage-label-create-rest$' "$GH_CALL_LOG" || ok=1
+	print_result "recommendation labels use bounded successful REST create/update routes" \
+		"$ok" "$detail"
+	teardown_test_env
+}
+
+test_recommendation_label_inventory_stops_at_page_bound() {
+	setup_test_env
+	load_helpers_under_test
+	MOCK_LABELS_JSON=$(jq -cn '[range(0; 100) | {
+		name: ("fixture-" + tostring), color: "ffffff", description: "fixture"
+	}]')
+	local ok=0 detail="" inventory_count=0
+	if _ensure_triage_recommendation_labels "owner/repo"; then
+		ok=1
+		detail="unbounded inventory returned success"
+	fi
+	inventory_count=$(grep -c '^api -X GET /repos/owner/repo/labels?per_page=100&page=' \
+		"$GH_CALL_LOG" 2>/dev/null || true)
+	[[ "$inventory_count" -eq 10 ]] || {
+		ok=1
+		detail="${detail} inventory-count=${inventory_count}"
+	}
+	if grep -Eq '^api -X (POST|PATCH) /repos/owner/repo/labels' "$GH_CALL_LOG"; then
+		ok=1
+		detail="${detail} write-after-truncation"
+	fi
+	print_result "recommendation label inventory fails closed at its page bound" "$ok" "$detail"
 	teardown_test_env
 }
 
@@ -1254,6 +1330,8 @@ main() {
 	test_review_shape_enforces_exact_contract
 	test_dispatch_accepts_clean_review_in_json
 	test_recommendation_labels_map_exact_decisions
+	test_recommendation_label_provisioning_uses_bounded_rest_routes
+	test_recommendation_label_inventory_stops_at_page_bound
 	test_review_label_write_failure_blocks_comment_and_cache
 	test_signature_failure_blocks_comment_transport
 	test_dispatch_rejects_issue_schema_for_pr

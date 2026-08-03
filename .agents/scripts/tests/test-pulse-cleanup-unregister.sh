@@ -399,11 +399,23 @@ gh() {
 		printf '%s\n' "${GH_ISSUE_STATE:-OPEN}"
 		return 0
 	fi
-	if [[ "$subcommand" == "pr" && "$action" == "list" ]]; then
+	if [[ "$subcommand" == "api" && "$action" == "graphql" ]]; then
 		[[ "${GH_API_FAIL:-0}" == "0" ]] || return 1
-		jq -cn --argjson number "${GH_MERGED_PR:-3964}" --argjson issue "${GH_CLOSING_ISSUE:-3964}" \
+		printf 'graphql-env response-cost=%s route=%s\n' \
+			"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+			"${AIDEVOPS_GH_ROUTE_DECISION:-}" >>"${GH_LOG:?}"
+		jq -cn --arg repo "${GH_GRAPHQL_REPO:-exampleorg/examplerepo}" \
+			--argjson number "${GH_MERGED_PR:-3964}" --argjson issue "${GH_CLOSING_ISSUE:-3964}" \
 			--arg branch "${GH_PR_BRANCH:?}" --arg head "${GH_PR_HEAD:?}" \
-			'[{number:$number,state:"MERGED",mergedAt:"2026-07-15T12:00:00Z",headRefName:$branch,headRefOid:$head,closingIssuesReferences:[{number:$issue}]}]'
+			--argjson pr_has_next "${GH_PR_PAGE_HAS_NEXT:-false}" \
+			--argjson closing_has_next "${GH_CLOSING_PAGE_HAS_NEXT:-false}" \
+			--argjson cost "${GH_GRAPHQL_COST:-1}" '
+			{data:{repository:{nameWithOwner:$repo,pullRequests:{nodes:[{
+				number:$number,state:"MERGED",mergedAt:"2026-07-15T12:00:00Z",
+				headRefName:$branch,headRefOid:$head,
+				closingIssuesReferences:{nodes:[{number:$issue,repository:{nameWithOwner:$repo}}],
+					pageInfo:{hasNextPage:$closing_has_next}}
+			}],pageInfo:{hasNextPage:$pr_has_next}}},rateLimit:{cost:$cost}}}'
 		return 0
 	fi
 	return 1
@@ -526,9 +538,15 @@ test_zombie_reaper_uses_ledger_repo_and_pid() {
 	SCRIPT_DIR="$original_script_dir"
 
 	grep -Fxq '123' "$kill_log" || fail "zombie reaper did not kill the ledger PID"
-	grep -q -- '--repo exampleorg/examplerepo' "$gh_log" || fail "zombie reaper did not query the ledger repo"
-	grep -q -- '--head feature/worker-3964' "$gh_log" || fail "zombie reaper did not bind merged PR lookup to worker branch"
+	grep -q -- '-F owner=exampleorg -F name=examplerepo' "$gh_log" || fail "zombie reaper did not query the ledger repo"
+	grep -q -- '-F head=feature/worker-3964' "$gh_log" || fail "zombie reaper did not bind merged PR lookup to worker branch"
 	grep -q 'closingIssuesReferences' "$gh_log" || fail "zombie reaper did not verify structured closing references"
+	grep -q 'pageInfo { hasNextPage }' "$gh_log" || fail "zombie reaper did not request pagination proof"
+	grep -q 'rateLimit { cost }' "$gh_log" || fail "zombie reaper did not request response-owned cost"
+	grep -q 'graphql-env response-cost=1 route=pulse-zombie-merged-pr-exact-cost' "$gh_log" || fail "zombie reaper GraphQL route was not attributed exactly"
+	if grep -q '^pr list ' "$gh_log"; then
+		fail "zombie reaper used an opaque native PR list"
+	fi
 	grep -q 'record-outcome.*--reason merged_pr_reap' "$ledger_log" || fail "zombie reaper did not record typed terminal telemetry"
 	grep -q 'complete.*--lease-token lease-3964.*--reason merged_pr_reap' "$ledger_log" || fail "zombie reaper did not complete the exact lease"
 	grep -q 'PR #5000 already merged in exampleorg/examplerepo' "$LOGFILE" || fail "missing ledger-repo reap audit log"
@@ -604,6 +622,36 @@ test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence() {
 	return 0
 }
 
+test_worker_closing_pr_fails_closed_on_truncated_or_unmetered_graphql() {
+	local gh_log="${TEST_ROOT}/gh-truncated-closing-pr.log"
+	local head_oid="1111111111111111111111111111111111111111"
+	local verification_rc=0
+	: >"$gh_log"
+	export GH_LOG="$gh_log" GH_API_FAIL=0 GH_MERGED_PR=5003 GH_CLOSING_ISSUE=3964
+	export GH_PR_BRANCH="feature/worker-3964-truncated" GH_PR_HEAD="$head_oid"
+
+	export GH_PR_PAGE_HAS_NEXT=true GH_CLOSING_PAGE_HAS_NEXT=false GH_GRAPHQL_COST=1
+	_verified_worker_closing_pr "exampleorg/examplerepo" "3964" "$GH_PR_BRANCH" "$head_oid" \
+		>/dev/null || verification_rc=$?
+	[[ "$verification_rc" -eq 2 ]] || fail "truncated merged PR connection did not fail closed"
+
+	verification_rc=0
+	export GH_PR_PAGE_HAS_NEXT=false GH_CLOSING_PAGE_HAS_NEXT=true
+	_verified_worker_closing_pr "exampleorg/examplerepo" "3964" "$GH_PR_BRANCH" "$head_oid" \
+		>/dev/null || verification_rc=$?
+	[[ "$verification_rc" -eq 2 ]] || fail "truncated closing-issue connection did not fail closed"
+
+	verification_rc=0
+	export GH_CLOSING_PAGE_HAS_NEXT=false GH_GRAPHQL_COST=0
+	_verified_worker_closing_pr "exampleorg/examplerepo" "3964" "$GH_PR_BRANCH" "$head_oid" \
+		>/dev/null || verification_rc=$?
+	[[ "$verification_rc" -eq 2 ]] || fail "nonpositive GraphQL cost did not fail closed"
+
+	unset GH_PR_PAGE_HAS_NEXT GH_CLOSING_PAGE_HAS_NEXT GH_GRAPHQL_COST
+	pass "worker closing PR proof rejects truncated or unmetered GraphQL"
+	return 0
+}
+
 test_permanent_removal_failure_has_no_git_fallback() {
 	local repo_path="${TEST_ROOT}/repo-no-fallback"
 	local wt_path="${TEST_ROOT}/wt-no-fallback"
@@ -647,6 +695,7 @@ test_zombie_reaper_requires_ledger_repo
 test_zombie_reaper_uses_ledger_repo_and_pid
 test_zombie_reaper_rejects_unverified_completion
 test_zombie_reaper_fails_closed_on_stale_or_indeterminate_evidence
+test_worker_closing_pr_fails_closed_on_truncated_or_unmetered_graphql
 test_permanent_removal_failure_has_no_git_fallback
 test_degraded_orphan_removal_is_recoverable
 test_degraded_orphan_lock_race_is_preserved

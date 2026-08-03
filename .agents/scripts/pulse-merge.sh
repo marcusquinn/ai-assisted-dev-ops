@@ -345,7 +345,13 @@ _handle_changes_requested_review_gate() {
 
 	# If remediation is unavailable or fails to dispatch, route worker-authored
 	# PRs for fix dispatch and skip the merge (t2203: consolidated in helper).
-	_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "review" "$_cr_pr_labels" || true
+	local review_route_rc=0
+	_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "review" "$_cr_pr_labels" || review_route_rc=$?
+	if [[ "$review_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ]]; then
+		echo "[pulse-wrapper] Merge pass: review feedback finalization deferred for PR #${pr_number} in ${repo_slug}; preserving retryable route state" >>"$LOGFILE"
+	elif [[ "$review_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+		echo "[pulse-wrapper] Merge pass: review feedback finalization for PR #${pr_number} in ${repo_slug} requires maintainer review" >>"$LOGFILE"
+	fi
 	echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED" >>"$LOGFILE"
 	return 1
 }
@@ -1393,9 +1399,16 @@ _process_single_ready_pr() {
 			# PRs to fix workers before the protected-close precheck. Active
 			# interactive PRs remain protected because _route_pr_to_fix_worker only
 			# accepts origin:interactive after _interactive_pr_is_stale passes.
-				if _route_pr_to_fix_worker "$pr_number" "$repo_slug" "$_t2116_linked_issue" "conflict" "$pr_labels" "$pr_title" "$pr_updated_at" "$pr_head_ref_oid"; then
+				local _conflict_route_rc=0
+				_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$_t2116_linked_issue" "conflict" "$pr_labels" "$pr_title" "$pr_updated_at" "$pr_head_ref_oid" || _conflict_route_rc=$?
+				if [[ "$_conflict_route_rc" -eq 0 ]]; then
 					[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}mergeability_s" "$_mergeability_start"
 					return 2
+				fi
+				if [[ "$_conflict_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+					|| "$_conflict_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+					[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}mergeability_s" "$_mergeability_start"
+					return 1
 				fi
 
 			# GH#23371: some PRs are already known to be protected from
@@ -1512,7 +1525,12 @@ _process_single_ready_pr() {
 				return 1
 			fi
 			# CI failure: route to fix worker if applicable (t2203: consolidated).
-			_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "ci" "$pr_labels" "" "$pr_updated_at" "$pr_head_ref_oid" || true
+			local _ci_route_rc=0
+			_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "ci" "$pr_labels" "" "$pr_updated_at" "$pr_head_ref_oid" || _ci_route_rc=$?
+			if [[ "$_ci_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+				|| "$_ci_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+				echo "[pulse-wrapper] Merge pass: CI feedback route for PR #${pr_number} in ${repo_slug} remains partial; preserving the PR for retry or maintainer review" >>"$LOGFILE"
+			fi
 			[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}branch_protection_s" "$_branch_protection_start"
 			return 1
 		fi
@@ -1577,9 +1595,14 @@ _process_single_ready_pr() {
 	if ! _pulse_merge_final_trust_gate "$pr_number" "$repo_slug" "$pr_head_ref_oid"; then
 		_pulse_merge_maybe_dispatch_preflight_remediation "$pr_number" "$repo_slug"
 		if [[ "${_PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON:-[]}" != "[]" ]]; then
+			local _preflight_route_rc=0
 			_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "ci" \
 				"$pr_labels" "" "$pr_updated_at" "$pr_head_ref_oid" \
-				"$_PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON" || true
+				"$_PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON" || _preflight_route_rc=$?
+			if [[ "$_preflight_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+				|| "$_preflight_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+				echo "[pulse-wrapper] Merge pass: preflight feedback route for PR #${pr_number} in ${repo_slug} remains partial" >>"$LOGFILE"
+			fi
 		fi
 		return 1
 	fi
@@ -1793,7 +1816,7 @@ process_pr() {
 	# JSON object with metadata used by draft, label, stale, and repair-routing
 	# gates.
 	local pr_obj
-	pr_obj=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+	pr_obj=$(AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
 		--json "$(_pulse_merge_ready_pr_json_fields)" 2>/dev/null) || pr_obj=""
 
 	if [[ -z "$pr_obj" || "$pr_obj" == "null" ]]; then

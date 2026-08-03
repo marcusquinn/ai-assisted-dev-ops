@@ -53,6 +53,7 @@ class CollectorCliPolicy:
     min_budget: int
     max_page_size: int
     budget_unit: str
+    max_budget: int = 1000
 
 
 @dataclass(frozen=True)
@@ -128,9 +129,9 @@ def parse_collector_args(policy: CollectorCliPolicy) -> argparse.Namespace:
     parser.add_argument("--lease-seconds", type=int, default=300)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.budget < policy.min_budget or args.budget > 1000:
+    if args.budget < policy.min_budget or args.budget > policy.max_budget:
         parser.error(
-            f"--budget must be between {policy.min_budget} and 1000 "
+            f"--budget must be between {policy.min_budget} and {policy.max_budget} "
             f"{policy.budget_unit} units"
         )
     if args.page_size < 1 or args.page_size > policy.max_page_size:

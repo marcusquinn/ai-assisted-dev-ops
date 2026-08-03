@@ -102,6 +102,7 @@ class OAuthCollectorPolicy:
     min_budget: int = 3
     max_page_size: int = 50
     identity_cost_units: int = IDENTITY_COST_UNITS
+    max_budget: int = 1000
 
 
 @dataclass
@@ -305,6 +306,7 @@ def run_oauth_collector(policy: OAuthCollectorPolicy, description: str) -> int:
         min_budget=policy.min_budget,
         max_page_size=policy.max_page_size,
         budget_unit=policy.budget_unit,
+        max_budget=policy.max_budget,
     )
     args = parse_collector_args(cli_policy)
     collector = OAuthCollector(policy, args)

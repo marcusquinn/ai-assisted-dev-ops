@@ -104,6 +104,7 @@ create_git_worktree_fixture() {
 	"$GIT_BIN" init -q -b main "$repo_path" || return 1
 	"$GIT_BIN" -C "$repo_path" config user.email test@example.invalid || return 1
 	"$GIT_BIN" -C "$repo_path" config user.name 'Aidevops Test' || return 1
+	"$GIT_BIN" -C "$repo_path" config commit.gpgsign false || return 1
 	printf 'base\n' >"${repo_path}/README.md" || return 1
 	"$GIT_BIN" -C "$repo_path" add README.md || return 1
 	"$GIT_BIN" -C "$repo_path" commit -q -m init || return 1
@@ -828,6 +829,8 @@ test_manual_cleanup_archives_removes_and_prunes() {
 	local wt_path="${TEST_DIR}/manual-archive-worktree"
 	local trash_destination="${TEST_DIR}/manual-archive-trash"
 	local unregister_log="${TEST_DIR}/manual-archive-unregister.log"
+	local cleanup_receipt_dir="${TEST_DIR}/manual-cleanup-receipts"
+	local cleanup_receipt="${TEST_DIR}/manual-cleanup-receipts/example_repo-321.json"
 	local wt_root=""
 	local rc=0
 	export AIDEVOPS_CLEANUP_LOG="$log_file"
@@ -836,14 +839,18 @@ test_manual_cleanup_archives_removes_and_prunes() {
 	wt_root=$("$GIT_BIN" -C "$wt_path" rev-parse --show-toplevel 2>/dev/null) || rc=1
 	if ! (
 		unset _WORKTREE_CMDS_LIB_LOADED 2>/dev/null || true
+		unset _FULL_LOOP_CLEANUP_RECEIPT_LOADED 2>/dev/null || true
 		SCRIPT_DIR="${COMMANDS_HELPER%/*}"
 		SCRIPT_NAME="worktree-helper.sh"
 		_WTAR_WH_CALLER="worktree-helper.sh"
 		RED="" GREEN="" YELLOW="" BLUE="" NC=""
 		export AIDEVOPS_REAL_GIT_BIN="$GIT_BIN"
 		export AIDEVOPS_WORKTREE_TRASH_ROOT="$trash_destination"
+		export AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir"
 		# shellcheck source=../worktree-helper-cmds.sh
 		source "$COMMANDS_HELPER"
+		full_loop_write_cleanup_deferred example/repo 321 "$wt_path" feature/manual-archive \
+			"$$" manual-cleanup-test not-requested >/dev/null
 		get_repo_root() {
 			printf '%s\n' "$repo_path"
 			return 0
@@ -871,8 +878,11 @@ test_manual_cleanup_archives_removes_and_prunes() {
 	fi
 	grep -Fxq "$wt_path" "$unregister_log" 2>/dev/null || rc=1
 	assert_file_contains "$log_file" "worktree-removed.*manual.*mode=trash" || rc=1
+	jq -e '.repository == "example/repo" and .pr_number == 321
+		and .resource_cleanup_state == "CLEANED" and .cleanup_lease.state == "released"' \
+		"$cleanup_receipt" >/dev/null || rc=1
 	print_result "manual_cleanup_archives_removes_and_prunes" "$rc" \
-		"Expected archive-first manual cleanup to verify metadata and unregister"
+		"Expected archive-first manual cleanup to verify metadata, unregister, and transition its exact receipt"
 	return 0
 }
 

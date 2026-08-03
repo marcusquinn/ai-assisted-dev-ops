@@ -22,8 +22,9 @@
 #   --repo-path PATH           Path to git repository (default: current directory)
 #   --remote NAME              Git remote name for counter branch (default: origin,
 #                              or value from .aidevops.json "remote" key)
-#   --counter-branch BRANCH    Branch holding .task-counter (default: main,
-#                              or value from .aidevops.json "counter_branch" key)
+#   --counter-branch BRANCH    Branch holding .task-counter (config value first;
+#                              otherwise a validated task-id-counter branch,
+#                              then main)
 #   --skip-label-validation    Skip pre-flight label existence check (useful for
 #                              bulk --count N allocation or when gh is rate-limited)
 #   --no-blocked-by            Suppress auto-detection of predecessor references
@@ -39,13 +40,14 @@
 # Project-level config (.aidevops.json in repo root):
 #   {
 #     "remote": "upstream",
-#     "default_branch": "develop",
-#     "counter_branch": "develop"
+#     "default_branch": "main",
+#     "counter_branch": "task-id-counter"
 #   }
 #   Keys:
 #     remote          - git remote name (default: "origin")
 #     default_branch  - informational default branch name (not used by CAS)
-#     counter_branch  - branch that holds .task-counter (default: "main")
+#     counter_branch  - explicit branch that holds .task-counter; when omitted,
+#                       a validated task-id-counter branch is preferred over main
 #   CLI flags --remote and --counter-branch override .aidevops.json values.
 #
 # Exit codes:
@@ -53,6 +55,7 @@
 #   1  - Error (network failure, git error, etc.)
 #   2  - Offline fallback used (outputs: task_id=tNNN ref=offline)
 #   3  - Invalid --labels argument(s): counter NOT advanced (t2800)
+#   4  - Counter branch requires pull requests: counter NOT advanced
 #   10 - User declined claim after duplicate warning (interactive TTY only, t2180)
 #
 # Algorithm (CAS loop — compare-and-swap via git push):
@@ -178,7 +181,8 @@ COUNTER_FILE=".task-counter"
 REMOTE_NAME="origin"
 COUNTER_BRANCH="main"
 DEFAULT_BRANCH="main"
-# Track whether CLI flags explicitly set these (CLI overrides config file)
+# Track whether CLI flags or project config explicitly selected these values.
+# CLI still wins because config loading only applies while the flag is false.
 _REMOTE_NAME_SET=false
 _COUNTER_BRANCH_SET=false
 
@@ -216,6 +220,7 @@ load_project_config() {
 
 	if [[ -n "$counter_branch_val" ]] && [[ "$_COUNTER_BRANCH_SET" == "false" ]]; then
 		COUNTER_BRANCH="$counter_branch_val"
+		_COUNTER_BRANCH_SET=true
 		log_info "counter_branch set from .aidevops.json: $COUNTER_BRANCH"
 	fi
 
@@ -901,6 +906,20 @@ _validate_labels_exist() {
 	return 0
 }
 
+# Emit the online dry-run allocation without mutating the remote counter.
+_main_emit_online_dry_run_allocation() {
+	local current=""
+	current=$(read_remote_counter "$REPO_PATH" 2>/dev/null || read_local_counter "$REPO_PATH" 2>/dev/null || echo "?")
+	if [[ "$current" =~ ^[0-9]+$ ]]; then
+		log_info "Would allocate $(printf 't%03d' "$current")..$(printf 't%03d' "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
+	else
+		log_info "Would allocate task ID (counter unreadable: ${current})"
+	fi
+	echo "task_id=tDRY_RUN"
+	echo "ref=DRY_RUN"
+	return 0
+}
+
 # Resolve allocation: online (with dry-run shortcut) or offline fallback.
 # Sets caller-local variables first_id and is_offline via stdout protocol:
 #   prints "first_id=NNN" and "is_offline=true|false" on success,
@@ -913,15 +932,7 @@ _main_resolve_allocation() {
 
 	if [[ "$OFFLINE_MODE" == "false" ]]; then
 		if [[ "$DRY_RUN" == "true" ]]; then
-			local current
-			current=$(read_remote_counter "$REPO_PATH" 2>/dev/null || read_local_counter "$REPO_PATH" 2>/dev/null || echo "?")
-			if [[ "$current" =~ ^[0-9]+$ ]]; then
-				log_info "Would allocate $(printf 't%03d' "$current")..$(printf 't%03d' "$((current + ALLOC_COUNT - 1))") (counter at ${current})"
-			else
-				log_info "Would allocate task ID (counter unreadable: ${current})"
-			fi
-			echo "task_id=tDRY_RUN"
-			echo "ref=DRY_RUN"
+			_main_emit_online_dry_run_allocation
 			return 0
 		fi
 
@@ -936,16 +947,24 @@ _main_resolve_allocation() {
 			fi
 		fi
 
-		if first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT"); then
+		local _allocation_rc=0
+		first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT") || _allocation_rc=$?
+		if [[ $_allocation_rc -eq 0 ]]; then
 			log_success "Allocated task ID: $(printf 't%03d' "$first_id_out")"
+		elif [[ $_allocation_rc -eq ${CAS_PROTECTED_BRANCH_RC:-4} ]]; then
+			return "$_allocation_rc"
 		else
 			if [[ "$CAS_RECONCILE_RETRY_ON_FAILURE" == "1" ]]; then
 				local _reconcile_rc=0
 				_cas_reconcile_counter_branch "$REPO_PATH" "${DEFAULT_BRANCH:-main}" || _reconcile_rc=$?
 				if [[ $_reconcile_rc -eq 0 || $_reconcile_rc -eq 2 ]]; then
-					if first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT"); then
+					local _retry_allocation_rc=0
+					first_id_out=$(_allocate_online_with_collision_check "$REPO_PATH" "$ALLOC_COUNT") || _retry_allocation_rc=$?
+					if [[ $_retry_allocation_rc -eq 0 ]]; then
 						allocation_status="recovered_contention"
 						log_success "Allocated task ID after counter reconciliation: $(printf 't%03d' "$first_id_out")"
+					elif [[ $_retry_allocation_rc -eq ${CAS_PROTECTED_BRANCH_RC:-4} ]]; then
+						return "$_retry_allocation_rc"
 					else
 						log_error "UNRECOVERABLE_COUNTER_DESYNC: allocation still failed after refetch/reconcile"
 						_task_counter_status "unrecoverable_desync" "post_reconcile_allocation_failed"
@@ -1583,6 +1602,7 @@ main() {
 	[[ "$_CLAIM_NAMESPACED_HANDLED" == "true" ]] && return "$_CLAIM_NAMESPACED_RC"
 
 	load_project_config "$REPO_PATH"
+	resolve_implicit_counter_branch "$REPO_PATH"
 
 	# GH#20834: detect predecessor refs in description and populate
 	# _CLAIM_BLOCKED_BY_REFS for use by _ensure_todo_entry_written.
@@ -1621,6 +1641,15 @@ main() {
 	local platform
 	platform=$(detect_platform)
 	log_info "Detected platform: $platform"
+
+	# A CAS counter cannot use a branch whose updates must arrive through pull
+	# requests: review/merge is not an atomic compare-and-swap lock. GitHub's
+	# read-only policy API lets us reject that setup before allocation mutates
+	# the remote. Push-time classification remains as a fail-open fallback when
+	# the API or CLI is unavailable.
+	if ! preflight_counter_branch_policy "$REPO_PATH"; then
+		return 4
+	fi
 
 	# --- t2800: Pre-flight label validation (before counter is advanced) ---
 	# Only validate when issuing to GitHub, labels are provided, and not skipped.

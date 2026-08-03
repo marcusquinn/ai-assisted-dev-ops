@@ -189,6 +189,83 @@ cat >"$STUB_DIR/pr-for-20510.json" <<'EOF'
 null
 EOF
 
+# GH#29325 regression: five display phases map to a 15-child closure set.
+jq -n '{number:30000,title:"Fifteen-child parent",state:"OPEN",body:("## Phases\n\nPhase 1 — Discovery\nPhase 2 — Build\nPhase 3 — Migrate\nPhase 4 — Verify\nPhase 5 — Closeout\n\n<!-- parent-close-contract: expected-children=15 -->"),labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30000.json"
+jq -n '[range(30001;30016) | {number:.,title:("Child " + (.|tostring))}]' \
+	>"$STUB_DIR/sub-issues-30000.json"
+child_num=30001
+while [[ "$child_num" -le 30015 ]]; do
+	if [[ "$child_num" -le 30006 ]]; then
+		jq -n --argjson number "$child_num" \
+			'{number:$number,title:("Child " + ($number|tostring)),state:"CLOSED",stateReason:"COMPLETED",labels:[]}' \
+			>"$STUB_DIR/issue-${child_num}.json"
+		jq -n --argjson number "$((child_num + 1000))" \
+			'{number:$number,state:"CLOSED",mergedAt:"2026-08-01T00:00:00Z"}' \
+			>"$STUB_DIR/pr-for-${child_num}.json"
+	else
+		labels='[]'
+		[[ "$child_num" -eq 30008 ]] && labels='[{"name":"status:blocked"}]'
+		jq -n --argjson number "$child_num" --argjson labels "$labels" \
+			'{number:$number,title:("Child " + ($number|tostring)),state:"OPEN",stateReason:null,labels:$labels}' \
+			>"$STUB_DIR/issue-${child_num}.json"
+		if [[ "$child_num" -eq 30007 ]]; then
+			jq -n '{number:32007,state:"OPEN",mergedAt:null}' >"$STUB_DIR/pr-for-${child_num}.json"
+		else
+			printf 'null\n' >"$STUB_DIR/pr-for-${child_num}.json"
+		fi
+	fi
+	child_num=$((child_num + 1))
+done
+
+# Complete + superseded children are both terminal for closure readiness.
+jq -n '{number:30100,title:"Complete parent",state:"OPEN",body:"<!-- parent-close-contract: expected-children=2 -->",labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30100.json"
+printf '%s\n' '[{"number":30101},{"number":30102}]' >"$STUB_DIR/sub-issues-30100.json"
+printf '%s\n' '{"number":30101,"title":"Completed child","state":"CLOSED","stateReason":"COMPLETED","labels":[]}' \
+	>"$STUB_DIR/issue-30101.json"
+printf '%s\n' '{"number":30102,"title":"Superseded child","state":"CLOSED","stateReason":"NOT_PLANNED","labels":[]}' \
+	>"$STUB_DIR/issue-30102.json"
+printf '%s\n' '{"number":32101,"state":"CLOSED","mergedAt":"2026-08-01T00:00:00Z"}' \
+	>"$STUB_DIR/pr-for-30101.json"
+printf 'null\n' >"$STUB_DIR/pr-for-30102.json"
+
+# Expected-child, incomplete-read, blocked, and plain-open recommendation cases.
+jq -n '{number:30200,title:"Missing expected child",state:"OPEN",body:"<!-- parent-close-contract: expected-children=3 -->",labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30200.json"
+printf '%s\n' '[{"number":30101},{"number":30102}]' >"$STUB_DIR/sub-issues-30200.json"
+jq -n '{number:30300,title:"Incomplete child read",state:"OPEN",body:"<!-- parent-close-contract: expected-children=1 -->",labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30300.json"
+printf '%s\n' '[{"number":30301}]' >"$STUB_DIR/sub-issues-30300.json"
+for parent_num in 30400 30500; do
+	jq -n --argjson number "$parent_num" \
+		'{number:$number,title:"Open child parent",state:"OPEN",body:"<!-- parent-close-contract: expected-children=1 -->",labels:[{name:"parent-task"}]}' \
+		>"$STUB_DIR/issue-${parent_num}.json"
+	printf '[{"number":%s}]\n' "$((parent_num + 1))" >"$STUB_DIR/sub-issues-${parent_num}.json"
+done
+printf '%s\n' '{"number":30401,"title":"Blocked child","state":"OPEN","labels":[{"name":"status:blocked"}]}' \
+	>"$STUB_DIR/issue-30401.json"
+printf '%s\n' '{"number":30501,"title":"Open child","state":"OPEN","labels":[]}' \
+	>"$STUB_DIR/issue-30501.json"
+printf 'null\n' >"$STUB_DIR/pr-for-30401.json"
+printf 'null\n' >"$STUB_DIR/pr-for-30501.json"
+
+# Malformed native data must remain fail-closed even when a complete body-linked
+# child exists. Canonical phase rows also remain part of the close contract when
+# a legacy parent predates explicit parent-close-contract markers.
+jq -n '{number:30600,title:"Malformed native data",state:"OPEN",body:"## Children\n\n- #30601\n\n<!-- parent-close-contract: complete -->",labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30600.json"
+printf '%s\n' '{}' >"$STUB_DIR/sub-issues-30600.json"
+printf '%s\n' '{"number":30601,"title":"Complete body child","state":"CLOSED","stateReason":"COMPLETED","labels":[]}' \
+	>"$STUB_DIR/issue-30601.json"
+printf 'null\n' >"$STUB_DIR/pr-for-30601.json"
+jq -n '{number:30700,title:"Legacy phase plan",state:"OPEN",body:"## Phases\n\nPhase 1 — Complete #30701\nPhase 2 — Not filed",labels:[{name:"parent-task"}]}' \
+	>"$STUB_DIR/issue-30700.json"
+printf '%s\n' '[{"number":30701}]' >"$STUB_DIR/sub-issues-30700.json"
+printf '%s\n' '{"number":30701,"title":"Complete phase","state":"CLOSED","stateReason":"COMPLETED","labels":[]}' \
+	>"$STUB_DIR/issue-30701.json"
+printf 'null\n' >"$STUB_DIR/pr-for-30701.json"
+
 # =============================================================================
 # Test runner
 # =============================================================================
@@ -354,6 +431,72 @@ if [[ "$json_phases_total" == "7" ]]; then
 	pass "15: --json phases_total=7"
 else
 	fail "15: Expected phases_total=7, got: $json_phases_total"
+fi
+
+# =============================================================================
+# Tests 16-21: GH#29325 closure-readiness recommendations
+# =============================================================================
+fifteen_output=$(run_helper 30000 --repo marcusquinn/aidevops)
+if printf '%s' "$fifteen_output" | grep -q 'Phases: 5 planned, 15 filed, 6 merged, 1 in-flight' &&
+	printf '%s' "$fifteen_output" | grep -q '15 filed, 9 remaining open' &&
+	printf '%s' "$fifteen_output" | grep -q 'merge PR #32007' &&
+	! printf '%s' "$fifteen_output" | grep -q 'close the parent issue'; then
+	pass "16: 15-child/5-phase parent reports nine open children without recommending closure"
+else
+	fail "16: 15-child/5-phase parent produced an unsafe recommendation"
+fi
+
+complete_output=$(run_helper 30100 --repo marcusquinn/aidevops)
+if printf '%s' "$complete_output" | grep -q '0 remaining open, 1 superseded' &&
+	printf '%s' "$complete_output" | grep -q 'close the parent issue'; then
+	pass "17: completed and superseded child set recommends closure"
+else
+	fail "17: terminal completed/superseded set did not recommend closure"
+fi
+
+missing_output=$(run_helper 30200 --repo marcusquinn/aidevops)
+if printf '%s' "$missing_output" | grep -q 'File 1 remaining expected child issue'; then
+	pass "18: expected-children contract reports a missing child"
+else
+	fail "18: expected-children contract did not block closure"
+fi
+
+incomplete_output=$(run_helper 30300 --repo marcusquinn/aidevops)
+if printf '%s' "$incomplete_output" | grep -q 'Child state retrieval incomplete' &&
+	! printf '%s' "$incomplete_output" | grep -q 'close the parent issue'; then
+	pass "19: incomplete child API data fails closed"
+else
+	fail "19: incomplete child API data produced an unsafe recommendation"
+fi
+
+blocked_output=$(run_helper 30400 --repo marcusquinn/aidevops)
+if printf '%s' "$blocked_output" | grep -q 'resolve blockers on child #30401'; then
+	pass "20: blocked child set recommends resolving the next blocker"
+else
+	fail "20: blocked child set did not identify the next blocker"
+fi
+
+open_output=$(run_helper 30500 --repo marcusquinn/aidevops)
+if printf '%s' "$open_output" | grep -q '1 child issue(s) remain open — continue child #30501'; then
+	pass "21: open child set identifies the next child action"
+else
+	fail "21: open child set did not identify the next child action"
+fi
+
+malformed_output=$(run_helper 30600 --repo marcusquinn/aidevops)
+if printf '%s' "$malformed_output" | grep -q 'Child state retrieval incomplete' &&
+	! printf '%s' "$malformed_output" | grep -q 'close the parent issue'; then
+	pass "22: malformed native sub-issue data fails closed"
+else
+	fail "22: malformed native sub-issue data produced an unsafe recommendation"
+fi
+
+legacy_phase_output=$(run_helper 30700 --repo marcusquinn/aidevops)
+if printf '%s' "$legacy_phase_output" | grep -q 'Parent close contract is incomplete (unfiled-phases)' &&
+	! printf '%s' "$legacy_phase_output" | grep -q 'close the parent issue'; then
+	pass "23: unfiled canonical phase blocks closure without an explicit marker"
+else
+	fail "23: legacy canonical phase plan produced an unsafe recommendation"
 fi
 
 # =============================================================================

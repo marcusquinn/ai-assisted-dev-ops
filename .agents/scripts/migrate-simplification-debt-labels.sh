@@ -12,7 +12,7 @@
 #   Title matches "simplification: reduce function ..."     → function-complexity-debt
 #   Title matches "simplification: re-queue ..."            → function-complexity-debt
 #   Title matches "reduce N Qlty smells"                    → function-complexity-debt
-#   Title matches "LLM complexity sweep"                    → function-complexity-debt
+#   Title matches an LLM stall/sweep review                  → skip (meta work)
 #   Otherwise                                               → skip (manual triage)
 #
 # Idempotent: issues that already have the new label are skipped.
@@ -121,11 +121,13 @@ _classify_title() {
 		return 0
 	fi
 
-	# LLM sweep issues
+	# LLM sweep issues are meta reviews, not measured function violations.
+	# Classifying them as function-complexity-debt inflates the open count and
+	# makes closing a review look like real simplification throughput.
 	# Format: "perf: simplification debt stalled — LLM sweep needed ..."
 	# Format: "LLM complexity sweep: ..."
 	if printf '%s' "$title" | grep -qiE '(simplification debt stalled|LLM complexity sweep|LLM sweep needed)'; then
-		printf 'function-complexity-debt'
+		printf 'skip'
 		return 0
 	fi
 

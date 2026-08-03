@@ -126,20 +126,27 @@ def _retry_epoch(value: str | None) -> int | None:
     return int(time.time() + math.ceil(seconds))
 
 
-def _decode_response(payload: bytes) -> Any:
-    if len(payload) > MAX_RESPONSE_BYTES:
-        raise ForemReadProviderError("Forem read response exceeds the safety limit")
+def _parse_json(payload: bytes) -> Any:
     try:
-        decoded = json.loads(payload.decode("utf-8"))
+        return json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ForemReadProviderError(
             "Forem read provider returned no valid JSON"
         ) from error
-    if not isinstance(decoded, (dict, list)):
+
+
+def _require_json_collection(value: Any) -> Any:
+    if not isinstance(value, (dict, list)):
         raise ForemReadProviderError(
             "Forem API response root must be an object or array"
         )
-    return decoded
+    return value
+
+
+def _decode_response(payload: bytes) -> Any:
+    if len(payload) > MAX_RESPONSE_BYTES:
+        raise ForemReadProviderError("Forem read response exceeds the safety limit")
+    return _require_json_collection(_parse_json(payload))
 
 
 def _query_keys(path: str) -> frozenset[str]:
@@ -179,6 +186,19 @@ def _request_for(config: ProfileConfig, path: str, params: dict[str, str]) -> Re
     )
 
 
+def _read_result(response: Response) -> ApiResult:
+    status = _http_status(getattr(response, "status", 200))
+    payload = response.read(MAX_RESPONSE_BYTES + 1)
+    if not isinstance(payload, bytes):
+        raise ForemReadProviderError("Forem HTTP response is invalid")
+    return ApiResult(status, _decode_response(payload))
+
+
+def _error_result(error: HTTPError) -> ApiResult:
+    retry = error.headers.get("Retry-After") if error.headers is not None else None
+    return ApiResult(_http_status(error.code), {}, _retry_epoch(retry))
+
+
 def api(
     config: ProfileConfig,
     opener: Opener,
@@ -190,13 +210,8 @@ def api(
     request = _request_for(config, path, params)
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            status = _http_status(getattr(response, "status", 200))
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-            if not isinstance(payload, bytes):
-                raise ForemReadProviderError("Forem HTTP response is invalid")
-            return ApiResult(status, _decode_response(payload))
+            return _read_result(response)
     except HTTPError as error:
-        retry = error.headers.get("Retry-After") if error.headers is not None else None
-        return ApiResult(_http_status(error.code), {}, _retry_epoch(retry))
+        return _error_result(error)
     except (TimeoutError, URLError, OSError) as error:
         raise ForemReadProviderError("Forem read provider request failed") from error

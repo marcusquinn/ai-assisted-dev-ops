@@ -12,6 +12,7 @@
 #   - _complexity_llm_sweep_due: returns 0 when interval elapsed and debt stalled
 #   - _complexity_llm_sweep_due: tolerates an unset sweep interval under set -u
 #   - _complexity_recent_debt_closures: tolerates empty arithmetic inputs under set -u
+#   - _complexity_run_llm_sweep: creates meta reviews outside measured function debt
 #   - _complexity_scan_check_interval: returns 0 when no last-run file
 #   - _complexity_scan_check_interval: returns 1 when interval not elapsed
 
@@ -19,6 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 SCAN_SCRIPT="${SCRIPT_DIR}/../pulse-simplification-scan.sh"
+ORCHESTRATION_SCRIPT="${SCRIPT_DIR}/../pulse-simplification-orchestration.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -30,6 +32,8 @@ TEST_ROOT=""
 ORIGINAL_HOME="${HOME}"
 ORIGINAL_PATH="${PATH}"
 GH_GRAPHQL_LOG=""
+GH_ISSUE_LIST_LOG=""
+GH_CREATE_ISSUE_LOG=""
 
 print_result() {
 	local test_name="$1"
@@ -58,14 +62,19 @@ setup_test_env() {
 	mkdir -p "${HOME}/.aidevops/logs"
 	LOGFILE="${HOME}/.aidevops/logs/pulse.log"
 	GH_GRAPHQL_LOG="${TEST_ROOT}/graphql.log"
+	GH_ISSUE_LIST_LOG="${TEST_ROOT}/issue-list.log"
+	GH_CREATE_ISSUE_LOG="${TEST_ROOT}/create-issue.log"
 	COMPLEXITY_SCAN_LAST_RUN="${HOME}/.aidevops/logs/complexity-scan-last-run"
 	COMPLEXITY_SCAN_INTERVAL=900
 	COMPLEXITY_SCAN_TREE_HASH_FILE="${HOME}/.aidevops/logs/complexity-scan-tree-hash"
 	COMPLEXITY_LLM_SWEEP_LAST_RUN="${HOME}/.aidevops/logs/complexity-llm-sweep-last-run"
 	COMPLEXITY_LLM_SWEEP_INTERVAL=21600
 	COMPLEXITY_DEBT_COUNT_FILE="${HOME}/.aidevops/logs/complexity-debt-count"
+	PULSE_START_EPOCH=0
 	: >"$GH_GRAPHQL_LOG"
-	export LOGFILE GH_GRAPHQL_LOG
+	: >"$GH_ISSUE_LIST_LOG"
+	: >"$GH_CREATE_ISSUE_LOG"
+	export LOGFILE GH_GRAPHQL_LOG GH_ISSUE_LIST_LOG GH_CREATE_ISSUE_LOG PULSE_START_EPOCH
 	# shellcheck source=/dev/null
 	source "$SCAN_SCRIPT"
 	return 0
@@ -87,8 +96,14 @@ _fixture_git() {
 }
 
 gh_issue_list() {
+	printf '%s\n' "$*" >>"$GH_ISSUE_LIST_LOG"
 	gh issue list "$@"
 	return $?
+}
+
+gh_create_issue() {
+	printf '%s\n' "$*" >"$GH_CREATE_ISSUE_LOG"
+	return 0
 }
 
 make_test_repo() {
@@ -318,6 +333,47 @@ test_llm_sweep_due_when_zero_recent_closures() {
 	return 0
 }
 
+test_llm_sweep_meta_review_is_not_measured_debt() {
+	install_fake_gh_for_sweep
+	: >"$GH_ISSUE_LIST_LOG"
+	: >"$GH_CREATE_ISSUE_LOG"
+	export GH_ISSUE_LIST_JSON='[]'
+	export _COMPLEXITY_SCAN_SKIP_REVIEW_GATE=true
+
+	_complexity_run_llm_sweep "test/repo" "100000" "maintainer"
+
+	local list_args create_args
+	list_args=$(<"$GH_ISSUE_LIST_LOG")
+	create_args=$(<"$GH_CREATE_ISSUE_LOG")
+	if [[ "$list_args" == *'in:title "simplification debt stalled" OR in:title "LLM complexity sweep"'* ]] \
+		&& [[ "$list_args" != *'--label function-complexity-debt'* ]] \
+		&& [[ "$create_args" == *'--label quality-debt'* ]] \
+		&& [[ "$create_args" != *'--label function-complexity-debt'* ]] \
+		&& [[ "$create_args" == *'local_capacity_gate'* ]]; then
+		print_result "_complexity_run_llm_sweep: meta review stays outside measured debt" 0
+	else
+		print_result "_complexity_run_llm_sweep: meta review stays outside measured debt" 1 \
+			"list=${list_args}; create=${create_args}"
+	fi
+	unset GH_ISSUE_LIST_JSON _COMPLEXITY_SCAN_SKIP_REVIEW_GATE
+	return 0
+}
+
+test_both_stall_issue_creators_use_meta_label() {
+	local old_inline_label="--label \"function-complexity-debt\" \$sweep_review_label --label \"tier:thinking\" --label \"worker-ready\""
+	local old_helper_label='--label "function-complexity-debt" --label "auto-dispatch" --label "tier:thinking" --label "worker-ready"'
+	local new_helper_label='--label "quality-debt" --label "auto-dispatch" --label "tier:thinking" --label "worker-ready"'
+
+	if ! grep -qF -- "$old_inline_label" "$SCAN_SCRIPT" \
+		&& ! grep -qF -- "$old_helper_label" "$ORCHESTRATION_SCRIPT" \
+		&& grep -qF -- "$new_helper_label" "$ORCHESTRATION_SCRIPT"; then
+		print_result "complexity stall creators label reviews as meta quality debt" 0
+	else
+		print_result "complexity stall creators label reviews as meta quality debt" 1
+	fi
+	return 0
+}
+
 test_recent_closures_defaults_empty_arithmetic_inputs() {
 	install_fake_gh_for_sweep
 	export GH_RECENT_CLOSURES=0
@@ -416,6 +472,8 @@ main() {
 	test_llm_sweep_check_interval_guard
 	test_llm_sweep_skips_when_recent_closures_exist
 	test_llm_sweep_due_when_zero_recent_closures
+	test_llm_sweep_meta_review_is_not_measured_debt
+	test_both_stall_issue_creators_use_meta_label
 	test_recent_closures_defaults_empty_arithmetic_inputs
 	test_llm_sweep_unset_interval_does_not_trip_strict_mode
 	test_check_interval_due_when_no_last_run

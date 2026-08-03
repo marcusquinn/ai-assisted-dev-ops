@@ -38,14 +38,21 @@ a claim that the route is enabled.
 | Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
+| Patreon | **Live/Gate** creator campaign posts | **No** patron curation or creator-side interaction history | **No** messages, comments, or mentions | **Live/Gate** minimized current creator memberships; **No** patron-owned memberships or subscriptions | **Live** creator campaigns, tiers, and benefits | Creator-owned campaign allowlist, exact read scopes, identity and ownership recheck, 99-request cap, opaque cursors, and a membership-services purpose gate; no patron-account collection. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
+| Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
+| Google Sites | **Export/No** modern site content; **No** classic live API | **No** | **No** | **API/No** owner/editor metadata; **No** subscriptions | **No** | Drive exposes Sites MIME metadata but no documented Sites content, revision, or export MIME route; Takeout remains schema-free **Export/No**, and organization export is **Gate/No**. No adapter or CLI route is enabled. |
 | Discourse | **Live** topics and posts | **Live/Partial** likes, bookmarks, and current reading state | **Live/Gate/Partial** notifications and private-topic metadata; **No** message bodies | **Live/Partial** groups and category preferences; **No** unverified Follow plugin | **No** watched/tracked topic inventories until search behavior is verified | Ten User API `read` streams with per-installation namespaces, repeated identity checks, exact GET routes, redirect rejection, and explicit plugin/export/history gaps. |
 | NodeBB | **Live** topics and posts | **Live/Partial** votes, bookmarks, watched topics, and category state | **Live/Partial** notifications and chat-room metadata; **No** message bodies | **Live/Partial** follows and groups | **No** plugin-provided lists | Thirteen independently checkpointed core GET streams with per-installation identity, bounded pagination, and explicit admin/plugin/export/history gaps. |
 | Mastodon | **Live/Partial** authored statuses | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** followers, following, and followed tags | **Live/Partial** lists; **No** nested membership | Eight exact-origin GET-only streams preserve opaque `Link` cursors and expose federation, moderation, deletion, export, and operator-retention gaps. |
+| Lemmy | **Live/Partial** versioned posts and comments | **Live/Partial** saved and currently liked posts/comments | **Live/Partial** unified v4 notifications or split v3 replies/mentions; **No** private-message bodies | **Live/Partial** community subscriptions; **No** person follows | **Live/Partial** v4 multicommunities; **No** v3 equivalent | Exact `/api/v3/site` discovery gates nine independently checkpointed streams per API family; v4 opaque cursors and v3 numeric pages cannot cross, numeric IDs are installation-namespaced, and federation/retention/export/history gaps remain explicit. |
 | GitHub | **Live/Partial** contribution calendar and repositories | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications | **Live/Gate/Partial** followers, following, and organizations | **Live/Gate/Partial** user lists and visible Projects v2 | Ten numeric/node-identity-bound streams preserve REST `Link` and GraphQL `pageInfo` cursors; token family, visibility, migration expiry, deletion, and audit authority remain explicit. |
 | Stack Exchange | **Live/Partial** posts, questions, answers, and comments | **Live/Partial** favourites; **No** complete votes | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | Eight network-plus-site-identity-bound GET streams obey `has_more`, `backoff`, quota, and 100-item page limits while preserving archive and inaccessible-history gaps. |
+| Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | One bounded public `submitted` stream uses a mutable case-sensitive username selector and official item IDs; missing/deleted/dead and all private state remain explicit unavailable coverage. |
+| Hashnode | **Live** posts; **Live/Gate** owned publications and drafts | **Live/Partial** comments and likes received; **No** authored-comment or reaction history | **No** messages or notifications | **Live/Partial** followers and following | **No** | Eight viewer-bound streams use nine fixed GraphQL read documents, repeated author/publication ownership checks, opaque nested cursors, and **Export/Gate** account-archive coverage pending a current identity-bearing schema. |
 | Miniflux | **Live/Partial** feed entries | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories and tags | Eight keyed-installation account streams use five exact GET routes, ascending entry-ID backfill, one-second `changed_after` overlap, bounded snapshots, and explicit operator-retention gaps. |
+| FreshRSS | **Live/Partial** feed items | **Live/Partial** unread and starred state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** folders and tags | Seven installation/user-bound Google Reader streams allow only ClientLogin POST plus exact data GETs, preserve opaque continuations and OPML snapshots, and leave POST-authenticated Fever fallback unavailable. |
 | Readwise Reader | **Live/Gate/Partial** saved documents and optional HTML | **Live/Gate/Partial** notes, state, progress, and tags | **No** | **No** | **Live/Gate/Partial** tags and locations | Seven deployment-bound streams preserve opaque cursors, overlap `updatedAfter`, cap invocations below 20 requests/minute, and expose the provider identity/export boundary. |
 
 ## Integrated provider families
@@ -77,12 +84,13 @@ separate provider family.
 |---|---|---|---|---|---|---|
 | Mastodon | **Live/Partial** | **Live/Partial** favourites and bookmarks | **Live/Gate/Partial** notifications; **No/Gate** conversations | **Live/Partial** follows and followed tags | **Live/Partial** lists; **No** nested membership | #29221 implements exact-origin identity-bound reads with opaque `Link` cursors and explicit federation/operator-retention gaps. |
 | Bluesky / AT Protocol | **Live** records | **Live** likes and reposts | **Live/Gate** notifications; **No/Gate** chat | **Live** follows | **Live** lists and feeds | DID-bound repository/AppView reads with separate chat authorization. |
-| Lemmy | **API/Gate** versioned authored content | **API/Gate** saved and liked state | **API/Gate** unified v4 or split v3 inbox | **API/Gate** communities; **No** person follows | **API/Gate** v4 multicommunities | Rank 7, #29227. Implement only behind exact v4/v3 discovery; namespace local IDs and preserve opaque version-sensitive cursors. |
+| Lemmy | **Live/Partial** versioned authored content | **Live/Partial** saved and liked state | **Live/Partial** unified v4 or split v3 inbox; **No** private-message bodies | **Live/Partial** communities; **No** person follows | **Live/Partial** v4 multicommunities; **No** v3 equivalent | #29227 implements exact version/account rebinding, isolated v4/v3 routes and cursors, installation-namespaced numeric IDs, retained ActivityPub IDs, and explicit federation/retention/export/history gaps. |
 | Stack Exchange | **Live/Partial** authored content | **Live/Partial** favourites; **No** complete vote history | **Live/Gate/Partial** inbox and notifications | **Live/Partial** associated site accounts; **No** follows | **No** | #29223 implements network plus per-site identity, mandatory `backoff` and quota stops, bounded paging, and explicit archive/completeness gaps. |
 | GitHub | **Live/Partial** contributions | **Live/Partial** stars and subscriptions; **No** complete reactions | **Live/Gate/Partial** notifications; **No** discussions | **Live/Gate/Partial** follows, organizations, and repositories | **Live/Gate/Partial** user lists and Projects v2 | #29222 implements numeric/node identity, token-family gates, opaque mixed-API cursors, and no complete reaction or social export claim. |
-| Hacker News | **API/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | Rank 8, #29228. Bounded public history only, keyed by case-sensitive username and item ID; never infer private state. |
+| Hacker News | **Live/Partial** public submissions and comments | **No** private votes or saved items | **No** | **No** | **No** | #29228 implements bounded official Firebase user/item GETs, content-addressed submitted-ID resume, and explicit mutable-public-selector and tombstone coverage. |
+| Hashnode | **Live** posts; **Live/Gate** publications and drafts | **Live/Partial** received comments and likes; **No** account-centric authored history | **No** | **Live/Partial** followers and following | **No** | #29323 implements authenticated viewer rebinding, owned-resource checks, fixed GraphQL reads, nested opaque resume, and an explicit **Export/Gate** archive boundary. |
 | Miniflux | **Live/Partial** feed items | **Live/Partial** read, removed, starred, and tagged state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** categories/tags | #29224 implements keyed installation/user identity, exact GET-only routes, incremental overlap, snapshots, and explicit operator-retention gaps. |
-| FreshRSS | **API/Export** feed items | **API** unread and starred state | **No** | **API/Export** subscriptions | **API/Export** folders/tags | Rank 6, #29226. Allow one non-mutating login POST, then GET-only Google Reader collection; reconcile OPML and keep Fever fallback-only. |
+| FreshRSS | **Live/Partial** feed items | **Live/Partial** unread and starred state | **No** | **Live/Partial/Export** subscriptions | **Live/Partial/Export** folders/tags | #29350 implements keyed installation/user identity, one exact ClientLogin POST, exact GET-only Google Reader routes, cycle-safe opaque continuation resume, strict OPML snapshots, bounded invocation costs, and an explicit unavailable Fever POST boundary. |
 | Readwise Reader | **Live/Gate/Partial** saved documents | **Live/Gate/Partial** tags, state, notes, and progress | **No** | **No** | **Live/Gate/Partial** tags and locations | #29225 implements a deployment-owned account/token binding because official token validation exposes no stable account ID, plus fixed-origin GET-only cursor reads. |
 | Other readers/read-later | **API/Export/Gate/No** | **API/Export/Gate/No** | **No** | **API/Export/Gate/No** | **API/Export/Gate/No** | Raindrop optional; Inoreader and Wallabag deferred; Feedly and Pocket rejected; Instapaper remains unverified. |
 
@@ -137,6 +145,16 @@ separate provider family.
   `.agents/content/social-medium.md` records the official HTML-ZIP export,
   unsupported legacy API, terms, retention, historical community schema
   evidence, and unverified categories checked on 2026-07-28.
+- **Live/Gated Patreon creator data:**
+  `.agents/scripts/knowledge_social_patreon.py`,
+  `.agents/scripts/_knowledge_social_patreon*.py`, and
+  `.agents/tests/test-knowledge-social-patreon.sh` prove selected creator and
+  campaign ownership, exact read-scope policy, five independent streams,
+  cursor-loop rejection, the 99-request fuse, member-data purpose and HMAC
+  minimization, terminal coverage, credential rejection, stale-lease fencing,
+  GET-only transport, and atomic persistence. `.agents/content/social-patreon.md`
+  records the current API v2, rate, creator-export, privacy-purpose, role, and
+  unsupported-category evidence checked on 2026-08-02.
 - **Live Discourse:** `.agents/scripts/knowledge_social_discourse.py`,
   `.agents/scripts/_knowledge_social_discourse*.py`, and
   `.agents/tests/test-knowledge-social-discourse.sh` prove ten independently
@@ -167,6 +185,17 @@ separate provider family.
   persistence. `.agents/content/social-mastodon.md` records official routes,
   scopes, pagination, default rate limits, exports, and explicit gaps checked on
   2026-08-02.
+- **Live Lemmy:** `.agents/scripts/knowledge_social_lemmy.py`,
+  `.agents/scripts/_knowledge_social_lemmy*.py`, and
+  `.agents/tests/test-knowledge-social-lemmy.sh` prove exact v4/v3 discovery,
+  authenticated account rebinding before each page, nine independently
+  checkpointed streams per family, opaque-v4 versus numeric-v3 cursor isolation,
+  installation-qualified numeric IDs, retained ActivityPub IDs, one-second
+  overlap, deterministic replay, sanitized terminal failures, credential and
+  malformed-page rejection, stale-lease fencing, and GET-only mutation
+  isolation. `.agents/content/social-lemmy.md` records the official v4 and v0.19
+  route, response, pagination, identity, retention, export, and unsupported
+  evidence checked on 2026-08-02.
 - **Live GitHub:** `.agents/scripts/knowledge_social_github.py`,
   `.agents/scripts/_knowledge_social_github*.py`, and
   `.agents/tests/test-knowledge-social-github.sh` prove REST plus GraphQL identity
@@ -184,6 +213,28 @@ separate provider family.
   terminal coverage, and atomic persistence. `.agents/content/social-stack-exchange.md`
   records official v2.3 identity, route, OAuth, paging, filter, quota, throttle,
   duplicate-request, and completeness evidence checked on 2026-08-02.
+- **Live/Partial Hacker News:**
+  `.agents/scripts/knowledge_social_hacker_news.py`,
+  `.agents/scripts/_knowledge_social_hacker_news*.py`, and
+  `.agents/tests/test-knowledge-social-hacker-news.sh` prove the case-sensitive
+  mutable public-selector boundary, bounded submitted-ID snapshots, deterministic
+  resume, missing/deleted/dead coverage, request/item/byte fuses, exact GET-only
+  routes, replay, sanitized terminal failures, and atomic lease-fenced persistence.
+  `.agents/content/social-hacker-news.md` records official Firebase v0 user/item
+  schemas, public-activity visibility, versioning, current no-rate-limit statement,
+  repository license, and absent private/authenticated categories checked on
+  2026-08-02.
+- **Live/Gated Hashnode:** `.agents/scripts/knowledge_social_hashnode.py`,
+  `.agents/scripts/_knowledge_social_hashnode*.py`, and
+  `.agents/tests/test-knowledge-social-hashnode.sh` prove authenticated viewer
+  rebinding, author and publication ownership, eight independent streams, opaque
+  simple and nested GraphQL cursor resume, fixed query and variable allowlists,
+  mutation and redirect isolation, partial-error and malformed-node rejection,
+  credential rejection, terminal coverage, request accounting, deterministic
+  replay, and atomic lease-fenced persistence. `.agents/content/social-hashnode.md`
+  records current official schema, auth, pagination, limits, publication/Pro
+  gates, privacy, export, retention, terms, and unsupported evidence checked on
+  2026-08-02.
 - **Live Miniflux:** `.agents/scripts/knowledge_social_miniflux.py`,
   `.agents/scripts/_knowledge_social_miniflux*.py`, and
   `.agents/tests/test-knowledge-social-miniflux.sh` prove keyed installation/user
@@ -193,6 +244,16 @@ separate provider family.
   `.agents/content/social-miniflux.md` records official current identity, entries,
   feed, category, OPML, authentication, version, and operator-retention evidence
   checked on 2026-08-02.
+- **Live FreshRSS:** `.agents/scripts/knowledge_social_freshrss.py`,
+  `.agents/scripts/_knowledge_social_freshrss*.py`, and
+  `.agents/tests/test-knowledge-social-freshrss.sh` prove keyed installation/user
+  identity, seven independent streams, cycle-safe opaque continuation resume,
+  incremental overlap, strict bounded OPML reconciliation, credential rejection,
+  exact ClientLogin POST plus data-route GET isolation, sanitized terminal coverage, replay, and
+  lease-fenced atomic persistence. `.agents/content/social-freshrss.md` records
+  the current Google Reader identity, subscriptions, tags, item/state, OPML,
+  authentication, retention, and incompatible Fever POST boundary checked on
+  2026-08-02.
 - **Live/Gated Readwise Reader:**
   `.agents/scripts/knowledge_social_readwise_reader.py`,
   `.agents/scripts/_knowledge_social_readwise_reader*.py`, and
@@ -221,6 +282,23 @@ separate provider family.
   checked on 2026-07-28. `.agents/tests/test-knowledge-social-skool.sh` proves
   that no provider module, helper command, browser selector, or **Live** matrix
   claim is reachable until an identity-bearing official export is validated.
+- **Substack no-route disposition:** `.agents/content/social-substack.md`
+  records the official publication ZIP, subscriber CSV, public RSS,
+  bestseller-only read-only MCP, privacy access, retention, and terms evidence
+  checked on 2026-08-02. `.agents/tests/test-knowledge-social-substack.sh`
+  proves that no provider module, registry entry, helper command, browser
+  selector, or **Live** matrix claim is reachable until an identity-bearing,
+  redirect-free official route is fixture-validated.
+- **Google Sites no-route disposition:**
+  `.agents/content/social-google-sites.md` separately records the deprecated
+  classic-only Sites API, Drive MIME/metadata and export-format boundary, user
+  Takeout, Data Portability scope omission, organization export gate, OAuth
+  identity/scopes, quotas, retention, and policy evidence checked on 2026-08-02.
+  `.agents/tests/test-knowledge-social-google-sites.sh` proves that no provider
+  module, registry entry, helper command, Drive metadata/export request, Takeout
+  importer, browser selector, or **Live** claim is reachable until exact account,
+  ownership, site-resource, format, pagination, and replay bindings are fixture-
+  validated.
 - **All candidate rows:** the provider child owns current official documentation,
   account/export samples, auth scopes, dependency versions, local exported
   symbols, retention evidence, and explicit unsupported findings.

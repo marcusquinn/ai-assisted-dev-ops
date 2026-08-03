@@ -70,14 +70,15 @@ def _parsed_url(value: str) -> SplitResult:
         port = parsed.port
     except ValueError as error:
         raise GitHubReadProviderError("GitHub API URL is invalid") from error
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "api.github.com"
-        or port not in (None, 443)
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.fragment
-    ):
+    allowed_origin = (
+        parsed.scheme == "https",
+        parsed.hostname == "api.github.com",
+        port in (None, 443),
+        parsed.username is None,
+        parsed.password is None,
+        not parsed.fragment,
+    )
+    if not all(allowed_origin):
         raise GitHubReadProviderError("GitHub API URL is not allowlisted")
     return parsed
 

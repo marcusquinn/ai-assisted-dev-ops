@@ -756,7 +756,7 @@ _pmrc_configured_advisory_contexts_json() {
 		return 0
 	fi
 	contexts=$(jq -c --arg slug "$repo_slug" --arg array_type "$PMRC_JSON_ARRAY" '
-		(first(.initialized_repos[]? | select((.slug | ascii_downcase) == ($slug | ascii_downcase)))
+		((first(.initialized_repos[]? | select(((.slug // "") | ascii_downcase) == ($slug | ascii_downcase))) // {})
 		| .review_gate.advisory_check_contexts // []) as $contexts
 		| if ($contexts | type) == $array_type and all($contexts[]; type == "string" and length > 0)
 			then ($contexts | unique)
@@ -814,7 +814,12 @@ _pmrc_snapshot_checks_acceptable() {
 	_PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON="[]"
 
 	required_json=$(printf '%s' "$required_contexts" | jq -Rsc '[split("\n")[] | select(length > 0)]') || return 1
-	configured_contexts_json=$(_pmrc_configured_advisory_contexts_json "$repo_slug") || return 1
+	configured_contexts_json=$(_pmrc_configured_advisory_contexts_json "$repo_slug") || {
+		_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_SNAPSHOT_UNAVAILABLE"
+		_pmrc_snapshot_log_failure "$repo_slug" "${PMRC_SUBJECT_PR_PREFIX}${pr_number}" \
+			"configured advisory-context lookup"
+		return 1
+	}
 	rows=$(jq -r --argjson required "$required_json" --arg failure "$PMRC_CHECK_FAILURE" '.[] | . as $check | ($check.members // [$check]) as $members | [
 		$check.name,
 		($check.family // $check.name),

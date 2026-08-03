@@ -599,6 +599,8 @@ _clean_query_exact_merged_pr_batch() {
 	local query_vars="\$owner:String!,\$name:String!"
 	local query_fields=""
 	local query=""
+	local response=""
+	local reported_cost=""
 	local branch=""
 	local index=0
 	local -a graphql_args=(-f "owner=$owner" -f "name=$repo_name")
@@ -609,10 +611,14 @@ _clean_query_exact_merged_pr_batch() {
 		graphql_args+=(-f "h${index}=$branch")
 		index=$((index + 1))
 	done
-	query="query(${query_vars}){repository(owner:\$owner,name:\$name){${query_fields}}}"
+	query="query(${query_vars}){repository(owner:\$owner,name:\$name){${query_fields}} rateLimit{cost}}"
 
-	_clean_gh_graphql -f "query=$query" "${graphql_args[@]}" \
-		--jq '(.data.repository // {}) | .[] | .nodes[]? | .headRefName'
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="worktree-clean-merged-pr-batch-exact-cost" \
+		_clean_gh_graphql -f "query=$query" "${graphql_args[@]}") || return 1
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
+	printf '%s' "$response" | jq -r '(.data.repository // {}) | .[] | .nodes[]? | .headRefName'
 	return $?
 }
 

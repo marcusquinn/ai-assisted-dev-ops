@@ -88,15 +88,16 @@ test("mcp-registry.mjs resolves binaries without spawning which", () => {
 
 test("observability.mjs skips heavy cost backfill when no rows need migration", () => {
   const src = readFileSync(resolve(pluginDir, "observability.mjs"), "utf8");
+  const backfillSrc = readFileSync(resolve(pluginDir, "observability-cost-backfill.mjs"), "utf8");
 
   assert.match(
     src,
-    /scheduleCostBackfill\(\);/,
+    /scheduleCostBackfill\(COST_BACKFILL_MARKER\);/,
     "Historical cost backfills should be scheduled outside synchronous startup.",
   );
   assert.match(
-    src,
-    /function hasCostBackfillCandidates\(\)/,
+    backfillSrc,
+    /function hasCostBackfillCandidates\(markerPath\)/,
     "Observability should still probe before running the expensive backfill.",
   );
   assert.match(
@@ -105,8 +106,8 @@ test("observability.mjs skips heavy cost backfill when no rows need migration", 
     "Completed one-time backfills should be memoized outside the hot startup path.",
   );
   assert.match(
-    src,
-    /if \(!hasCostBackfillCandidates\(\)\) return;/,
+    backfillSrc,
+    /if \(!hasCostBackfillCandidates\(markerPath\)\) return;/,
     "The expensive cost UPDATE must be skipped once the backfill is complete.",
   );
   assert.match(

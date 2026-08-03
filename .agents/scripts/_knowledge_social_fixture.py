@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+
+class FixturePageRequest(Protocol):
+    def payload(self) -> dict[str, Any]: ...
 
 
 class FixtureSequence:
@@ -46,3 +50,38 @@ class FixtureSequence:
         page = pages[self.position]
         self.position += 1
         return page
+
+
+class FixturePageReader:
+    """Match provider page requests against one deterministic fixture sequence."""
+
+    def __init__(self, path: Path, provider: str, error_type: type[Exception]) -> None:
+        self.provider = provider
+        self.error_type = error_type
+        self.fixture = FixtureSequence(path, provider, error_type)
+
+    def _object(self, value: Any, message: str) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise self.error_type(f"{self.provider} {message}")
+        return value
+
+    def identity(self, expected_id: str) -> dict[str, Any]:
+        del expected_id
+        return self.fixture.identity()
+
+    def page(self, request: FixturePageRequest) -> dict[str, Any]:
+        entry = self.fixture.next_page()
+        expectation = self._object(
+            entry.get("expect_request", {}),
+            "fixture request expectation must be an object",
+        )
+        actual = request.payload()
+        for key, value in expectation.items():
+            if actual.get(key) != value:
+                raise self.error_type(
+                    f"{self.provider} request did not resume at the expected checkpoint"
+                )
+        return self._object(
+            entry.get("response", entry),
+            "fixture page response must be an object",
+        )

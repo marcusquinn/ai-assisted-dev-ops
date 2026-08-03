@@ -501,6 +501,62 @@ test_exact_merged_pr_batch_prefetch_covers_worktree_heads() {
 	return 0
 }
 
+test_exact_merged_pr_batch_uses_response_owned_cost() {
+	local repo_path="${TEST_ROOT}/repo-batch-cost"
+	local args_file="${TEST_ROOT}/batch-cost-args"
+	local branch="feature/gh-99043-batch-cost"
+	local output=""
+	local rc=0
+	setup_repo "$repo_path" || rc=1
+
+	output=$(
+		cd "$repo_path" || exit 1
+		source_clean_lib_with_stubs || exit 1
+		_clean_gh_graphql() {
+			printf 'response-cost=%s route=%s args=%s\n' \
+				"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+				"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >"$args_file"
+			printf '%s\n' '{"data":{"repository":{"q0":{"nodes":[{"headRefName":"feature/gh-99043-batch-cost"}]}},"rateLimit":{"cost":2}}}'
+			return 0
+		}
+		_clean_query_exact_merged_pr_batch "testowner" "testrepo" "$branch"
+	) || rc=1
+
+	[[ "$output" == "$branch" ]] || rc=1
+	grep -Fq 'response-cost=1' "$args_file" 2>/dev/null || rc=1
+	grep -Fq 'route=worktree-clean-merged-pr-batch-exact-cost' "$args_file" 2>/dev/null || rc=1
+	grep -Fq 'rateLimit{cost}' "$args_file" 2>/dev/null || rc=1
+	if grep -Fq -- '--jq' "$args_file" 2>/dev/null; then
+		rc=1
+	fi
+	print_result "exact merged PR batch uses response-owned GraphQL cost" "$rc" \
+		"Expected a raw metered response, positive cost validation, and local projection"
+	return 0
+}
+
+test_exact_merged_pr_batch_rejects_nonpositive_cost() {
+	local repo_path="${TEST_ROOT}/repo-batch-invalid-cost"
+	local rc=0
+	setup_repo "$repo_path" || rc=1
+
+	(
+		cd "$repo_path" || exit 1
+		source_clean_lib_with_stubs || exit 1
+		_clean_gh_graphql() {
+			printf '%s\n' '{"data":{"repository":{},"rateLimit":{"cost":0}}}'
+			return 0
+		}
+		if _clean_query_exact_merged_pr_batch "testowner" "testrepo" \
+			"feature/gh-99044-invalid-cost" >/dev/null; then
+			exit 1
+		fi
+	) || rc=1
+
+	print_result "exact merged PR batch rejects nonpositive response cost" "$rc" \
+		"Expected an unmetered GraphQL response to fail closed"
+	return 0
+}
+
 test_complete_exact_prefetch_skips_per_head_lookup() {
 	local repo_path="${TEST_ROOT}/repo-complete-prefetch"
 	local marker="${TEST_ROOT}/complete-prefetch-gh-called"
@@ -996,6 +1052,8 @@ test_squash_merged_pr_without_ancestor_proof_classifies
 test_prefetched_merged_pr_metadata_skips_exact_head_lookup
 test_merged_pr_list_passes_explicit_repo_slug
 test_exact_merged_pr_batch_prefetch_covers_worktree_heads
+test_exact_merged_pr_batch_uses_response_owned_cost
+test_exact_merged_pr_batch_rejects_nonpositive_cost
 test_complete_exact_prefetch_skips_per_head_lookup
 test_prepared_git_branch_cache_avoids_per_branch_query
 test_auto_clean_skips_redundant_preview_scan

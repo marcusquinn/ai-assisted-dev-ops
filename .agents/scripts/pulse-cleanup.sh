@@ -2293,17 +2293,63 @@ _verified_worker_closing_pr() {
 	local issue_number="$2"
 	local branch_name="$3"
 	local head_oid="$4"
-	local candidates=""
-	candidates=$(gh pr list --repo "$repo_slug" --state merged --head "$branch_name" --limit 100 \
-		--json number,state,mergedAt,headRefName,headRefOid,closingIssuesReferences 2>/dev/null) || return 2
+	local owner="${repo_slug%%/*}"
+	local repo_name="${repo_slug#*/}"
+	local response=""
+	local reported_cost=""
+	[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 2
+	[[ "$issue_number" =~ ^[0-9]+$ ]] || return 2
+	[[ -n "$branch_name" ]] || return 2
+	[[ "$head_oid" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 2
+
+	# Both connections are bounded. Their pageInfo fields are part of the trust
+	# proof so truncated evidence can never authorize worker termination.
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-zombie-merged-pr-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$repo_name" -F head="$branch_name" -f query='
+		query($owner: String!, $name: String!, $head: String!) {
+			repository(owner: $owner, name: $name) {
+				nameWithOwner
+				pullRequests(first: 100, states: MERGED, headRefName: $head) {
+					nodes {
+						number
+						state
+						mergedAt
+						headRefName
+						headRefOid
+						closingIssuesReferences(first: 100) {
+							nodes { number repository { nameWithOwner } }
+							pageInfo { hasNextPage }
+						}
+					}
+					pageInfo { hasNextPage }
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 2
+	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 2
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 2
+
 	local verification="" verified_count="" verified_pr=""
-	verification=$(printf '%s' "$candidates" | jq -r --arg issue "$issue_number" --arg branch "$branch_name" --arg head "$head_oid" '
-		if length >= 100 then "limit"
+	verification=$(printf '%s' "$response" | jq -er --arg repo "$repo_slug" --arg issue "$issue_number" \
+		--arg branch "$branch_name" --arg head "$head_oid" '
+		select(((.errors // []) | length) == 0)
+		| .data.repository as $repository
+		| select(($repository.nameWithOwner // "" | ascii_downcase) == ($repo | ascii_downcase))
+		| $repository.pullRequests as $pull_requests
+		| [$pull_requests.nodes[]? | select(
+			.state == "MERGED" and (.mergedAt // "") != "" and
+			.headRefName == $branch and .headRefOid == $head
+		)] as $head_matches
+		| if ($pull_requests.pageInfo.hasNextPage != false) or
+			any($head_matches[]?; .closingIssuesReferences.pageInfo.hasNextPage != false)
+		then "limit"
 		else
-			[.[] | select(
-				.state == "MERGED" and (.mergedAt // "") != "" and
-				.headRefName == $branch and .headRefOid == $head and
-				([.closingIssuesReferences[]?.number | tostring] | index($issue)) != null
+			[$head_matches[] | select(
+				([.closingIssuesReferences.nodes[]?
+					| select((.repository.nameWithOwner // "" | ascii_downcase) == ($repo | ascii_downcase))
+					| .number | tostring] | index($issue)) != null
 			)] as $verified |
 			[($verified | length | tostring), ($verified[0].number // "" | tostring)] | @tsv
 		end
