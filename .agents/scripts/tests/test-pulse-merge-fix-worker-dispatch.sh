@@ -556,6 +556,24 @@ test_dispatch_wraps_paginated_feedback_reads() {
 	return 0
 }
 
+test_paginated_feedback_pages_are_merged() {
+	local pages_json='[{"id":"1001"}]
+[{"id":"1002"},{"id":"1003"}]'
+	local merged_json=""
+
+	merged_json=$(_review_feedback_merge_paginated_arrays "$pages_json") || {
+		print_result "paginated feedback preserves every API page" 1 "page merge failed"
+		return 0
+	}
+	if [[ "$(printf '%s' "$merged_json" | jq -r 'length')" == "3" \
+		&& "$(printf '%s' "$merged_json" | jq -r 'map(.id) | join(",")')" == "1001,1002,1003" ]]; then
+		print_result "paginated feedback preserves every API page" 0
+	else
+		print_result "paginated feedback preserves every API page" 1 "merged=${merged_json}"
+	fi
+	return 0
+}
+
 test_dispatch_timeout_fails_open_without_routing_empty_feedback() {
 	reset_mock_state
 	export TEST_TIMEOUT_FAIL_PATTERN="repos/owner/repo/pulls/100/"
@@ -1271,6 +1289,7 @@ main() {
 	test_build_section_empty_when_no_content
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
+	test_paginated_feedback_pages_are_merged
 	test_dispatch_timeout_fails_open_without_routing_empty_feedback
 	test_dispatch_preserves_ambiguous_legacy_marker
 	test_dispatch_retries_after_transition_failure

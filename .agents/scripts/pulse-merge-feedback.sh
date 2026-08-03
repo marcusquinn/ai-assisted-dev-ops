@@ -190,28 +190,46 @@ _review_feedback_evidence_fingerprint() {
 _PULSE_REVIEW_FEEDBACK_REVIEWS_JSON="[]"
 _PULSE_REVIEW_FEEDBACK_INLINE_JSON="[]"
 
+_review_feedback_merge_paginated_arrays() {
+	local pages_json="$1"
+
+	printf '%s\n' "$pages_json" | jq -cs '
+		if all(.[]; type == "array") then (add // [])
+		else error("expected paginated JSON arrays") end
+	' 2>/dev/null
+	return $?
+}
+
 _review_feedback_fetch_evidence() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local reviews_rc=0
 	local inline_rc=0
+	local reviews_pages=""
+	local inline_pages=""
 
 	_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON=""
 	_PULSE_REVIEW_FEEDBACK_INLINE_JSON=""
-	_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON=$(_gh_with_timeout read gh api \
+	reviews_pages=$(_gh_with_timeout read gh api \
 		"repos/${repo_slug}/pulls/${pr_number}/reviews" --paginate \
 		--jq '[.[] | select(.state == "CHANGES_REQUESTED" or ((.body // "") | length) > 30)
 			| {id: (.id // "" | tostring), author: (.user.login // "unknown"), state: .state,
 			   body: (.body // ""), url: (.html_url // ""),
 			   submitted_at: (.submitted_at // ""), commit_id: (.commit_id // "")}]' \
 		2>/dev/null) || reviews_rc=$?
-	_PULSE_REVIEW_FEEDBACK_INLINE_JSON=$(_gh_with_timeout read gh api \
+	inline_pages=$(_gh_with_timeout read gh api \
 		"repos/${repo_slug}/pulls/${pr_number}/comments" --paginate \
 		--jq '[.[] | {id: (.id // "" | tostring), author: (.user.login // "unknown"),
 			path: (.path // ""), line: (.line // .original_line // 0),
 			body: (.body // ""), url: (.html_url // ""),
 			updated_at: (.updated_at // ""), commit_id: (.commit_id // "")}]' \
 		2>/dev/null) || inline_rc=$?
+	if [[ "$reviews_rc" -eq 0 ]]; then
+		_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON=$(_review_feedback_merge_paginated_arrays "$reviews_pages") || reviews_rc=$?
+	fi
+	if [[ "$inline_rc" -eq 0 ]]; then
+		_PULSE_REVIEW_FEEDBACK_INLINE_JSON=$(_review_feedback_merge_paginated_arrays "$inline_pages") || inline_rc=$?
+	fi
 	[[ -n "$_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON" ]] || _PULSE_REVIEW_FEEDBACK_REVIEWS_JSON="[]"
 	[[ -n "$_PULSE_REVIEW_FEEDBACK_INLINE_JSON" ]] || _PULSE_REVIEW_FEEDBACK_INLINE_JSON="[]"
 	if [[ "$reviews_rc" -ne 0 || "$inline_rc" -ne 0 ]]; then
