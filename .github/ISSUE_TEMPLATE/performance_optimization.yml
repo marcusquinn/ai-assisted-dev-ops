@@ -1,7 +1,7 @@
 name: Performance Optimization
 description: Report a performance issue — requires actual measurements
 title: "Perf: "
-labels: ["performance", "needs-maintainer-review"]
+labels: ["performance"]
 body:
   - type: markdown
     attributes:

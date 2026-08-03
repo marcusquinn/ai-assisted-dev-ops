@@ -748,8 +748,7 @@ _verify_issue_status_convergence() {
 #   $2 — repo slug (owner/repo)
 #   $3 — new status: one of available|queued|claimed|in-progress|in-review|done|blocked
 #        OR empty string to clear all core status labels without adding one
-#        (used by stale-recovery escalation which applies needs-maintainer-review
-#        instead of a core status)
+#        (used only when a caller intentionally wants no lifecycle status)
 #   $@ — additional gh issue edit flags passed through verbatim (e.g.,
 #        --add-assignee, --remove-assignee, --add-label "other-non-status-label")
 #
@@ -764,8 +763,8 @@ _verify_issue_status_convergence() {
 #       --add-assignee "$worker_login" \
 #       --add-label "origin:worker"
 #
-#   set_issue_status 18444 owner/repo "" \
-#       --add-label "needs-maintainer-review"
+#   set_issue_status 18444 owner/repo blocked \
+#       --add-label "hold-for-review"
 #######################################
 set_issue_status() {
 	gh_record_call rest set_issue_status 2>/dev/null || true

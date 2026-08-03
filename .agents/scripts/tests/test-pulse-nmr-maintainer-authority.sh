@@ -36,8 +36,11 @@ setup_test_env() {
 	export REPOS_JSON="${TEST_ROOT}/repos.json"
 	export POSTED_COMMENT="${TEST_ROOT}/posted-comment.txt"
 	export STATUS_CALLS_FILE="${TEST_ROOT}/status-calls.txt"
+	export AGENTS_DIR="${TEST_ROOT}"
 	export ISSUE_ASSOC="OWNER"
 	export ISSUE_API_AUTHOR="maintainer"
+	export ISSUE_AUTHOR_TYPE="User"
+	export ISSUE_LABELS_JSON='[]'
 	export ISSUE_LIST_AUTHOR="maintainer"
 	export ACTOR_PERMISSION="write"
 	export AUTHOR_PERMISSION="write"
@@ -84,7 +87,9 @@ if [[ "${1:-}" == "api" ]]; then
 		exit 0
 	fi
 	if [[ "$path" == */issues/24479 ]]; then
-		printf '{"user":{"login":"%s"},"author_association":"%s","labels":[]}\n' "${ISSUE_API_AUTHOR:-maintainer}" "${ISSUE_ASSOC:-NONE}"
+		printf '{"user":{"login":"%s","type":"%s"},"author_association":"%s","labels":%s}\n' \
+			"${ISSUE_API_AUTHOR:-maintainer}" "${ISSUE_AUTHOR_TYPE:-User}" \
+			"${ISSUE_ASSOC:-NONE}" "${ISSUE_LABELS_JSON:-[]}"
 		exit 0
 	fi
 	if [[ "$path" == */timeline ]]; then
@@ -113,6 +118,7 @@ teardown_test_env() {
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
 	fi
+	unset AGENTS_DIR
 	return 0
 }
 
@@ -202,10 +208,10 @@ test_allows_owner_author_with_write_permission() {
 	export ISSUE_ASSOC="OWNER"
 	export ACTOR_PERMISSION="write"
 	run_auto_approve
-	if grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null; then
-		print_result "auto-approval allows upstream OWNER author and write-capable runner" 0
+	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null; then
+		print_result "trusted OWNER normalization does not post a synthetic approval" 0
 	else
-		print_result "auto-approval allows upstream OWNER author and write-capable runner" 1 "approval comment missing"
+		print_result "trusted OWNER normalization does not post a synthetic approval" 1 "unexpected approval marker"
 	fi
 	if grep -q -- '^24479 owner/repo available --remove-label needs-maintainer-review --add-label auto-dispatch$' "$STATUS_CALLS_FILE" 2>/dev/null; then
 		print_result "auto-approval atomically restores complete dispatchable state" 0
@@ -223,10 +229,11 @@ test_allows_write_authorized_collaborator() {
 	export ISSUE_ASSOC="COLLABORATOR"
 	export AUTHOR_PERMISSION="write"
 	run_auto_approve
-	if grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null; then
-		print_result "auto-approval allows write-authorized collaborator issues" 0
+	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null \
+		&& grep -q -- 'available --remove-label needs-maintainer-review --add-label auto-dispatch' "$STATUS_CALLS_FILE" 2>/dev/null; then
+		print_result "trusted collaborator normalization clears NMR without synthetic approval" 0
 	else
-		print_result "auto-approval allows write-authorized collaborator issues" 1 "approval comment missing"
+		print_result "trusted collaborator normalization clears NMR without synthetic approval" 1 "unexpected approval marker or missing status transition"
 	fi
 	teardown_test_env
 	return 0
@@ -248,6 +255,30 @@ test_blocks_read_only_collaborator() {
 	return 0
 }
 
+test_external_origin_bot_requires_approval() {
+	setup_test_env
+	export ISSUE_LIST_AUTHOR="github-actions[bot]"
+	export ISSUE_API_AUTHOR="github-actions[bot]"
+	export ISSUE_AUTHOR_TYPE="Bot"
+	export ISSUE_ASSOC="NONE"
+	export ISSUE_LABELS_JSON='[{"name":"external-contributor"},{"name":"needs-maintainer-review"}]'
+	run_auto_approve
+	if [[ ! -s "$POSTED_COMMENT" && ! -s "$STATUS_CALLS_FILE" ]]; then
+		print_result "trusted bot preserves explicit external-origin approval gate" 0
+	else
+		print_result "trusted bot preserves explicit external-origin approval gate" 1 "unexpected approval or status transition"
+	fi
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	if issue_has_required_approval 24479 owner/repo true; then
+		print_result "external-origin bot still requires cryptographic approval" 1 "authority gate was bypassed"
+	else
+		print_result "external-origin bot still requires cryptographic approval" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_preserves_peer_maintainer_manual_hold() {
 	setup_test_env
 	export ISSUE_LIST_AUTHOR="trusted-author"
@@ -256,10 +287,39 @@ test_preserves_peer_maintainer_manual_hold() {
 	export AUTHOR_PERMISSION="write"
 	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"trusted-author"},"created_at":"2026-07-30T20:00:00Z"}]'
 	run_auto_approve
-	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null && [[ ! -s "$STATUS_CALLS_FILE" ]]; then
-		print_result "auto-approval preserves peer maintainer manual NMR hold" 0
+	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null \
+		&& grep -q -- '--remove-label needs-maintainer-review --add-label hold-for-review' "$STATUS_CALLS_FILE" 2>/dev/null; then
+		print_result "trusted manual NMR becomes hold-for-review without self-approval" 0
 	else
-		print_result "auto-approval preserves peer maintainer manual NMR hold" 1 "unexpected approval or status transition"
+		print_result "trusted manual NMR becomes hold-for-review without self-approval" 1 "unexpected approval marker or missing hold translation"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_ever_nmr_history_bypasses_self_approval_for_trusted_author() {
+	setup_test_env
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	if issue_has_required_approval 24479 owner/repo true; then
+		print_result "ever-NMR history does not require trusted OWNER self-approval" 0
+	else
+		print_result "ever-NMR history does not require trusted OWNER self-approval" 1 "trusted author remained blocked"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_ever_nmr_history_still_blocks_external_author() {
+	setup_test_env
+	export ISSUE_API_AUTHOR="external-contributor"
+	export ISSUE_ASSOC="NONE"
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	if issue_has_required_approval 24479 owner/repo true; then
+		print_result "ever-NMR history still requires external-author approval" 1 "external author bypassed approval"
+	else
+		print_result "ever-NMR history still requires external-author approval" 0
 	fi
 	teardown_test_env
 	return 0
@@ -272,7 +332,10 @@ main() {
 	test_allows_owner_author_with_write_permission
 	test_allows_write_authorized_collaborator
 	test_blocks_read_only_collaborator
+	test_external_origin_bot_requires_approval
 	test_preserves_peer_maintainer_manual_hold
+	test_ever_nmr_history_bypasses_self_approval_for_trusted_author
+	test_ever_nmr_history_still_blocks_external_author
 	printf '\nTests run: %d\n' "$TESTS_RUN"
 	printf 'Tests failed: %d\n' "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

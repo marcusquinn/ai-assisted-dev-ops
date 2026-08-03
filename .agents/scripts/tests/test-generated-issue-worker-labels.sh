@@ -137,6 +137,11 @@ test_simplification_md_labels() {
 	assert_create_contains "md simplification has status available" "--label status:available"
 	assert_create_contains "md simplification has worker origin" "--label origin:worker"
 	assert_create_contains "md simplification has standard tier" "--label tier:standard"
+	reset_create_log
+	_COMPLEXITY_SCAN_SKIP_REVIEW_GATE=false _complexity_scan_process_single_md_file \
+		".agents/reference/example-held.md" "501" "marcusquinn/aidevops" "$PWD" "" "marcusquinn" >/dev/null
+	assert_create_contains "md simplification review gate uses hold-for-review" "--label hold-for-review"
+	assert_create_not_contains "md simplification review gate never uses NMR" "needs-maintainer-review"
 	return 0
 }
 
@@ -161,6 +166,7 @@ test_quality_feedback_labels() {
 	[[ "$maintainer_labels" == *"origin:worker"* ]] && print_result "quality labels include worker origin" 0 || print_result "quality labels include worker origin" 1 "$maintainer_labels"
 	[[ "$maintainer_labels" == *"tier:standard"* ]] && print_result "quality labels include tier" 0 || print_result "quality labels include tier" 1 "$maintainer_labels"
 	[[ "$external_labels" == *"needs-maintainer-review"* && "$external_labels" == *"auto-dispatch"* ]] && print_result "external quality labels keep NMR with dispatch label" 0 || print_result "external quality labels keep NMR with dispatch label" 1 "$external_labels"
+	[[ "$external_labels" == *"external-contributor"* ]] && print_result "external quality labels preserve source authority provenance" 0 || print_result "external quality labels preserve source authority provenance" 1 "$external_labels"
 	return 0
 }
 

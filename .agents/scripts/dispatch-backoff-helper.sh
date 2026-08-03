@@ -19,7 +19,7 @@
 #   1        | 5 min  (300s)   — single fluke; retry quickly
 #   2        | 30 min (1800s)  — pattern emerging; cool off
 #   3        | 2h     (7200s)  — systemic; wait for capacity recovery
-#   4+       | 24h    (86400s) — apply needs-maintainer-review too
+#   4+       | 24h    (86400s) — one-shot extended-cooldown notice
 #
 # Subcommands:
 #   check <issue_num> [<slug>]  — exit 0 if clear, exit 1 if cooldown active,
@@ -40,7 +40,7 @@
 #   DISPATCH_BACKOFF_METRICS_FILE     — path to headless-runtime-metrics.jsonl
 #                                       (default: ~/.aidevops/logs/headless-runtime-metrics.jsonl)
 #   DISPATCH_BACKOFF_LOOKBACK_SECS    — how far back to count failures (default 604800 = 7 days)
-#   DISPATCH_BACKOFF_NMR_THRESHOLD    — failure count at which to request NMR (default 4)
+#   DISPATCH_BACKOFF_NMR_THRESHOLD    — legacy-named threshold for the extended cooldown notice (default 4)
 #   DISPATCH_PROVIDER_BACKOFF_WINDOW_SECS — provider/model pressure window (default 900 = 15 min)
 #   DISPATCH_PROVIDER_BACKOFF_THRESHOLD   — rate_limit count that trips pressure cooldown (default 6)
 #   DISPATCH_PROVIDER_BACKOFF_COOLDOWN_SECS — provider/model cooldown after last event (default 300 = 5 min)
@@ -49,8 +49,8 @@
 # Integration:
 #   Sourced by pulse-dispatch-engine.sh. The check_dispatch_backoff() function
 #   is called in _dispatch_should_skip_candidate() after fast_fail_is_skipped().
-#   For NMR application (failure >= threshold), the caller reads the "NMR_REQUIRED"
-#   marker from stderr and applies the label via gh.
+#   At the extended-notice threshold, the caller reads BACKOFF_NOTICE_REQUIRED
+#   and posts a one-shot diagnostic. The cooldown remains the dispatch block.
 #
 # Counter:
 #   dispatch_backoff_skipped in ~/.aidevops/logs/pulse-stats.json
@@ -79,14 +79,14 @@ LOGFILE="${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}"
 # Configuration (overridable via environment).
 DISPATCH_BACKOFF_METRICS_FILE="${DISPATCH_BACKOFF_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
 DISPATCH_BACKOFF_LOOKBACK_SECS="${DISPATCH_BACKOFF_LOOKBACK_SECS:-604800}"  # 7 days
-DISPATCH_BACKOFF_NMR_THRESHOLD="${DISPATCH_BACKOFF_NMR_THRESHOLD:-4}"       # 4+ failures → NMR
+DISPATCH_BACKOFF_NMR_THRESHOLD="${DISPATCH_BACKOFF_NMR_THRESHOLD:-4}"       # legacy name: 4+ failures → extended notice
 DISPATCH_PROVIDER_BACKOFF_WINDOW_SECS="${DISPATCH_PROVIDER_BACKOFF_WINDOW_SECS:-900}"
 DISPATCH_PROVIDER_BACKOFF_THRESHOLD="${DISPATCH_PROVIDER_BACKOFF_THRESHOLD:-6}"
 DISPATCH_PROVIDER_BACKOFF_COOLDOWN_SECS="${DISPATCH_PROVIDER_BACKOFF_COOLDOWN_SECS:-300}"
 : "${AIDEVOPS_RATE_LIMIT_RELEASE_CIRCUIT_OVERRIDE:=0}"
 
 # Backoff intervals in seconds (indexed by failure count; index 0 unused).
-# Index >= NMR_THRESHOLD uses the last entry (86400 = 24h).
+# Index >= the extended-notice threshold uses the last entry (86400 = 24h).
 readonly _BACKOFF_SCHEDULE=(0 300 1800 7200 86400)  # [0]=unused [1]=5m [2]=30m [3]=2h [4+]=24h
 
 # Log prefix for all messages from this module.
@@ -479,15 +479,15 @@ check_dispatch_backoff() {
 			date -d "@${next_eligible}" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || \
 			printf 'epoch:%s' "$next_eligible")
 
-		local nmr_flag=""
+		local notice_flag=""
 		if [[ "$count" -ge "$DISPATCH_BACKOFF_NMR_THRESHOLD" ]]; then
-			nmr_flag=" NMR_REQUIRED"
+			notice_flag=" BACKOFF_NOTICE_REQUIRED"
 		fi
 
 		printf 'BACKOFF_ACTIVE reason=rate_limit_cooldown count=%s cooldown=%ss wait=%ss next=%s%s\n' \
-			"$count" "$cooldown_secs" "$wait_remaining" "$next_human" "$nmr_flag" >&2
+			"$count" "$cooldown_secs" "$wait_remaining" "$next_human" "$notice_flag" >&2
 
-		echo "${_DB_LOG_PREFIX} BACKOFF_ACTIVE #${issue_number} (${repo_slug}) count=${count} cooldown=${cooldown_secs}s wait=${wait_remaining}s next=${next_human}${nmr_flag}" >>"$LOGFILE"
+		echo "${_DB_LOG_PREFIX} BACKOFF_ACTIVE #${issue_number} (${repo_slug}) count=${count} cooldown=${cooldown_secs}s wait=${wait_remaining}s next=${next_human}${notice_flag}" >>"$LOGFILE"
 
 		# Increment stats counter.
 		if declare -F pulse_stats_increment >/dev/null 2>&1; then
@@ -503,11 +503,11 @@ check_dispatch_backoff() {
 }
 
 #######################################
-# Apply needs-maintainer-review to an issue when rate_limit failures
-# have exceeded the NMR threshold. Called by the dispatch engine when
-# check_dispatch_backoff returns 1 AND the stderr contains "NMR_REQUIRED".
+# Post a one-shot diagnostic when rate_limit failures exceed the extended
+# backoff threshold. The time-bounded cooldown remains the machine-recoverable
+# dispatch block; no maintainer trust label is applied.
 #
-# Idempotent: only applies NMR once per issue (uses a marker comment).
+# Idempotent: only posts the notice once per issue (uses a marker comment).
 # Best-effort: failures are logged but never fatal.
 #
 # Args:
@@ -515,35 +515,31 @@ check_dispatch_backoff() {
 #   $2 - repo_slug
 #   $3 - failure_count
 #######################################
-_db_apply_nmr_if_needed() {
+_db_record_extended_backoff_notice() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local failure_count="$3"
 
-	local nmr_marker="<!-- dispatch-backoff:rate_limit_nmr -->"
+	local notice_marker="<!-- dispatch-backoff:extended_cooldown -->"
 
 	# Idempotency check.
-	local existing_nmr=""
-	existing_nmr=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments" \
-		--jq "[.[] | select(.body | contains(\"dispatch-backoff:rate_limit_nmr\"))] | length" \
-		2>/dev/null) || existing_nmr=""
-	if [[ "$existing_nmr" =~ ^[1-9][0-9]*$ ]]; then
-		echo "${_DB_LOG_PREFIX} NMR already applied for #${issue_number} (${repo_slug}) — skipping" >>"$LOGFILE"
+	local existing_notice=""
+	existing_notice=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments" \
+		--jq "[.[] | select(.body | contains(\"dispatch-backoff:extended_cooldown\"))] | length" \
+		2>/dev/null) || existing_notice=""
+	if [[ "$existing_notice" =~ ^[1-9][0-9]*$ ]]; then
+		echo "${_DB_LOG_PREFIX} extended-backoff notice already posted for #${issue_number} (${repo_slug}) — skipping" >>"$LOGFILE"
 		return 0
 	fi
 
-	# Apply the label.
-	gh issue edit "$issue_number" --repo "$repo_slug" \
-		--add-label "needs-maintainer-review" 2>/dev/null || true
-
 	# Post diagnostic comment.
-	local body="${nmr_marker}
+	local body="${notice_marker}
 ## Rate-Limit Backoff Circuit Breaker (t2781)
 
 **Trigger:** ${failure_count} rate_limit failure(s) for this issue within the lookback window (threshold: ${DISPATCH_BACKOFF_NMR_THRESHOLD}).
-**Action:** Applied \`needs-maintainer-review\`. Further automated dispatch is suspended for 24h and until the label is removed.
+**Action:** Extended the machine-managed cooldown to 24h. Dispatch resumes automatically after capacity recovers and the cooldown elapses.
 
-**Why this is different from other NMR trips:** Worker rate_limit failures are NOT a problem with the issue body or model tier — they indicate provider capacity exhaustion specific to this issue's account/provider pairing. Escalating to a higher tier would not help.
+**Why this remains a cooldown:** Worker rate_limit failures are NOT a problem with author authority, issue content, or model tier — they indicate provider capacity exhaustion specific to this issue's account/provider pairing. Escalating to a higher tier would not help.
 
 **Possible causes:**
 - Provider rate limits for the account(s) dispatching this issue are exhausted
@@ -554,9 +550,9 @@ _db_apply_nmr_if_needed() {
 1. Check \`aidevops status\` for current GraphQL budget and account pool state
 2. Rotate or add accounts via \`model-accounts-pool-helper.sh\`
 3. Wait for provider rate-limit reset (typically 1h for Anthropic, 24h for OpenAI tier limits)
-4. Remove \`needs-maintainer-review\` to re-enable dispatch once capacity recovers
+4. No trust approval is needed; the next eligible pulse retries automatically
 
-_Per-issue rate_limit backoff circuit breaker (t2781). The \`dispatch-backoff:rate_limit_nmr\` marker is recognised by \`_nmr_application_is_circuit_breaker_trip\` in \`pulse-nmr-approval.sh\` (t2386 split semantics: auto-approval preserves NMR)._"
+_Per-issue rate_limit backoff circuit breaker (t2781). The cooldown state, not a review label, is the dispatch fuse._"
 
 	if declare -F gh_issue_comment >/dev/null 2>&1; then
 		gh_issue_comment "$issue_number" --repo "$repo_slug" --body "$body" 2>/dev/null || true
@@ -564,7 +560,7 @@ _Per-issue rate_limit backoff circuit breaker (t2781). The \`dispatch-backoff:ra
 		gh issue comment "$issue_number" --repo "$repo_slug" --body "$body" 2>/dev/null || true
 	fi
 
-	echo "${_DB_LOG_PREFIX} NMR applied for #${issue_number} (${repo_slug}) count=${failure_count}" >>"$LOGFILE"
+	echo "${_DB_LOG_PREFIX} extended-backoff notice posted for #${issue_number} (${repo_slug}) count=${failure_count}" >>"$LOGFILE"
 	return 0
 }
 
@@ -609,12 +605,12 @@ _main() {
 				1)
 					printf '%s\n' "$backoff_stderr_output"
 
-					# Apply NMR if needed (NMR_REQUIRED in output).
-					if printf '%s' "$backoff_stderr_output" | grep -q 'NMR_REQUIRED'; then
+					# Post the extended-cooldown notice once at the threshold.
+					if printf '%s' "$backoff_stderr_output" | grep -q 'BACKOFF_NOTICE_REQUIRED'; then
 						local count_field
 						count_field=$(printf '%s' "$backoff_stderr_output" | grep -oE 'count=[0-9]+' | head -1 | cut -d= -f2)
 						[[ "$count_field" =~ ^[0-9]+$ ]] || count_field="$DISPATCH_BACKOFF_NMR_THRESHOLD"
-						_db_apply_nmr_if_needed "$issue_number" "$slug" "$count_field"
+						_db_record_extended_backoff_notice "$issue_number" "$slug" "$count_field"
 					fi
 					return 1
 					;;
@@ -634,7 +630,7 @@ _main() {
 			printf 'Environment:\n'
 			printf '  DISPATCH_BACKOFF_METRICS_FILE      path to headless-runtime-metrics.jsonl\n'
 			printf '  DISPATCH_BACKOFF_LOOKBACK_SECS     lookback window in seconds (default 604800 = 7 days)\n'
-			printf '  DISPATCH_BACKOFF_NMR_THRESHOLD     failure count triggering NMR (default 4)\n'
+			printf '  DISPATCH_BACKOFF_NMR_THRESHOLD     legacy name: failure count triggering extended notice (default 4)\n'
 			printf '  AIDEVOPS_SKIP_DISPATCH_BACKOFF=1   emergency bypass\n'
 			return 0
 			;;

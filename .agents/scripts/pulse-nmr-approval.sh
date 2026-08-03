@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# pulse-nmr-approval.sh — Needs-maintainer-review (NMR) cache, approval requirement checks, and maintainer auto-approve.
+# pulse-nmr-approval.sh — External-author NMR cache, approval checks, and trusted-author normalization.
 #
 # Extracted from pulse-wrapper.sh in Phase 2 of the phased decomposition
 # (parent: GH#18356, plan: todo/plans/pulse-wrapper-decomposition.md §6).
@@ -21,6 +21,7 @@
 #   - _ever_nmr_cache_set_locked
 #   - _ever_nmr_cache_set
 #   - issue_was_ever_nmr
+#   - _nmr_issue_author_has_repo_write_authority
 #   - issue_has_required_approval
 #   - _nmr_applied_by_maintainer
 #   - _nmr_application_is_security_sensitive
@@ -28,11 +29,12 @@
 #   - _find_qualifying_pr_for_stale_recovery
 #   - _notify_stale_recovery_resolved_by_pr
 #   - _nmr_current_actor_can_post_maintainer_approval
+#   - _nmr_apply_auto_approval_transition
 #   - auto_approve_maintainer_issues
 #
-# This is a pure move from pulse-wrapper.sh. The function bodies are
-# byte-identical to their pre-extraction form. Any change must go in a
-# separate follow-up PR after the full decomposition (Phase 12) lands.
+# Changes in this module must preserve the external-author trust boundary:
+# unknown authority fails closed, while write-authorized authors never
+# fabricate or require self-approval.
 
 # Include guard — prevent double-sourcing.
 [[ -n "${_PULSE_NMR_APPROVAL_LOADED:-}" ]] && return 0
@@ -68,6 +70,12 @@ NMR_CLASS_GENUINE_AUTHORITY="genuine-authority"
 NMR_CLASS_TEMPORARY="temporary"
 NMR_SOURCE_DEFAULT="default"
 NMR_STATUS_HUMAN_AUTHORITY="human-authority-required"
+NMR_TRANSITION_TRUSTED_CLEAR="trusted-clear"
+NMR_TRANSITION_TRUSTED_HOLD="trusted-hold"
+NMR_TRANSITION_CRYPTO_APPROVED="crypto-approved"
+NMR_AUTO_RESULT_NORMALIZED="normalized"
+NMR_AUTO_RESULT_APPROVED="approved"
+_NMR_AUTO_TRANSITION_RESULT=""
 
 _nmr_metadata_json() {
 	local code="$1"
@@ -214,8 +222,8 @@ _ever_nmr_cache_set() {
 #######################################
 # Check if an issue was ever labeled needs-maintainer-review (t1894).
 # Uses the immutable GitHub timeline API — label removal does not erase
-# the history. This is the provenance gate: once an issue is tagged NMR,
-# it requires cryptographic approval forever, regardless of current labels.
+# the history. This provenance remains relevant for external-author issues;
+# write-authorized authors are independently trusted and must not self-approve.
 #
 # Arguments:
 #   $1 - issue number
@@ -266,8 +274,54 @@ issue_was_ever_nmr() {
 }
 
 #######################################
+# Verify the live issue author's repository authority.
+#
+# NMR is an external-author trust gate. OWNER/MEMBER authority comes from live
+# issue metadata; COLLABORATOR must be backed by authenticated write+ permission.
+# Any missing or unverifiable metadata fails closed.
+#
+# Arguments: issue number, repo slug
+# Returns: 0=write-authorized author, 1=external author, 2=lookup failure
+#######################################
+_nmr_issue_author_has_repo_write_authority() {
+	local issue_num="$1"
+	local slug="$2"
+	local issue_meta=""
+	local identity=""
+	local issue_author=""
+	local issue_assoc=""
+	local issue_author_type=""
+	local authority_rc=0
+
+	[[ -n "$issue_num" && -n "$slug" ]] || return 2
+	issue_meta=$(gh api "$(_nmr_issue_api_path "$issue_num" "$slug")" 2>/dev/null) || return 2
+	# A trusted bot may have generated this issue from an external contribution.
+	# The explicit provenance label keeps that source authority gate intact.
+	if printf '%s' "$issue_meta" | jq -e \
+		'[.labels[]?.name] | index("external-contributor") != null' >/dev/null 2>&1; then
+		return 1
+	fi
+	identity=$(printf '%s' "$issue_meta" | jq -r '
+		if (.user.login // "") != "" and (.author_association // "") != ""
+		then [(.user.login // ""), (.author_association // ""), (.user.type // "")] | @tsv
+		else error("missing live issue author metadata") end
+	' 2>/dev/null) || return 2
+	IFS=$'\t' read -r issue_author issue_assoc issue_author_type <<<"$identity"
+	[[ -n "$issue_author" && -n "$issue_assoc" ]] || return 2
+	[[ "$issue_author_type" == "Bot" ]] && return 0
+
+	_gh_actor_has_repo_write_authority "$slug" "$issue_author" "$issue_assoc" || authority_rc=$?
+	case "$authority_rc" in
+	0) return 0 ;;
+	1) return 1 ;;
+	*) return 2 ;;
+	esac
+}
+
+#######################################
 # Check if an issue requires cryptographic approval and has it (t1894).
-# Combines the "ever-NMR" provenance check with signature verification.
+# Combines external-author authority, "ever-NMR" provenance, and signature
+# verification. A write-authorized issue author never needs self-approval.
 #
 # Arguments:
 #   $1 - issue number
@@ -282,6 +336,13 @@ issue_has_required_approval() {
 
 	# If it was never NMR-labeled, no approval needed
 	if ! issue_was_ever_nmr "$issue_num" "$slug" "$known_status"; then
+		return 0
+	fi
+
+	# #aidevops:trust-boundary — history cannot turn a trusted author into an
+	# external contributor. Unknown live authority still falls through to the
+	# cryptographic gate rather than weakening it.
+	if _nmr_issue_author_has_repo_write_authority "$issue_num" "$slug"; then
 		return 0
 	fi
 
@@ -300,10 +361,10 @@ issue_has_required_approval() {
 }
 
 #######################################
-# GH#18671 / t2386 / GH#29151: Check whether an NMR label application on
-# an issue corresponds to a trusted automation default or deterministic
-# workflow-reapplication marker. These signatures are safe to auto-clear
-# only after reason-coded, circuit-breaker, and security gates have passed.
+# GH#18671 / t2386 / GH#29151: Recognize historical NMR automation defaults
+# and deterministic workflow-reapplication markers. Current internal producers
+# use hold-for-review or status:blocked; these signatures remain for safe
+# compatibility normalization of pre-migration issues.
 #
 # This function used to also match circuit-breaker trip markers
 # (stale-recovery-tick:escalated, cost-circuit-breaker:fired,
@@ -314,11 +375,9 @@ issue_has_required_approval() {
 # sessions and fired 22 watchdog kills + 5 auto-approve cycles in one
 # afternoon before the loop was diagnosed.
 #
-# Breaker trip detection now lives in `_nmr_application_is_circuit_breaker_trip`
-# below. `_nmr_applied_by_maintainer` consults both helpers and routes
-# breaker trips to "preserve NMR" while still auto-clearing
-# creation defaults. See t2386 brief and AGENTS.md
-# "Cryptographic issue/PR approval" for the split semantics.
+# Breaker trip detection lives in `_nmr_application_is_circuit_breaker_trip`
+# below. `_nmr_applied_by_maintainer` consults both helpers so legacy machine
+# failures cannot blind-redispatch while current producers use structural state.
 #
 # Automation signatures detected (t2686/GH#29151 extended set):
 #   - source:review-scanner                 — GH#18538 post-merge-review-scanner.sh (comment marker)
@@ -402,7 +461,7 @@ _nmr_application_has_automation_signature() {
 	#   - source:review-scanner     — post-merge-review-scanner.sh
 	#   - source:review-feedback    — quality-feedback-helper.sh scan-merged
 	local issue_meta_json
-	issue_meta_json=$(gh api "repos/${slug}/issues/${issue_num}" 2>/dev/null) || issue_meta_json=""
+	issue_meta_json=$(gh api "$(_nmr_issue_api_path "$issue_num" "$slug")" 2>/dev/null) || issue_meta_json=""
 
 	local has_bot_label=0
 	if [[ -n "$issue_meta_json" ]]; then
@@ -436,16 +495,13 @@ _nmr_application_has_automation_signature() {
 }
 
 #######################################
-# t2386: Check whether an NMR label application corresponds to a
-# circuit-breaker trip — one of the automated safety mechanisms that
-# STOPS further dispatch when a retry limit has been exceeded or a
-# cost budget has been exhausted.
+# t2386 compatibility: Check whether a historical NMR label application
+# corresponds to a circuit-breaker trip. Current breakers use status:blocked,
+# cooldowns, or root-cause meta-issues instead of an authority label.
 #
-# Breaker trips MUST preserve NMR. auto_approve_maintainer_issues
-# skips issues with a breaker-trip signature, leaving NMR in place
-# until a human runs `sudo aidevops approve issue <N>` after reviewing
-# why the breaker tripped. This is the safety mechanism whose defeat
-# caused the #19756 infinite-loop incident.
+# Legacy breaker trips remain held during normalization so an author-authority
+# cleanup cannot trigger the #19756 retry loop. New breaker producers must not
+# apply NMR.
 #
 # Breaker-trip signatures detected:
 #   - <!-- stale-recovery-tick:escalated   — t2008 stale recovery (retry limit)
@@ -463,7 +519,7 @@ _nmr_application_has_automation_signature() {
 #   $3 - label_at   : ISO8601 timestamp when NMR label was applied
 #
 # Exit codes:
-#   0 - breaker-trip signature found (NMR must be preserved)
+#   0 - legacy breaker-trip signature found (structural hold must be preserved)
 #   1 - no breaker-trip signature
 #######################################
 _nmr_application_is_circuit_breaker_trip() {
@@ -523,7 +579,7 @@ _nmr_application_is_circuit_breaker_trip() {
 #######################################
 # Check whether the current NMR label is part of an unresolved breaker episode.
 #
-# Recovery-loop incidents: a recovery/cost/no-work breaker can apply NMR with a
+# Legacy recovery-loop incidents: a recovery/cost/no-work breaker can apply NMR with a
 # marker, then a later automated retry can fail and re-apply NMR without
 # reposting the original marker. Looking only at the latest label event then
 # misclassifies the issue as a safe maintainer-authored automation default and
@@ -531,7 +587,7 @@ _nmr_application_is_circuit_breaker_trip() {
 #
 # This helper deliberately searches breaker markers at or before the latest NMR
 # label event. Once a breaker marker exists, the NMR remains a real hold until
-# cryptographic approval or a newer aidevops release allows one retry.
+# safe structural normalization or a newer aidevops release allows one retry.
 #
 # Args:
 #   $1 - issue_num  : GitHub issue number
@@ -585,16 +641,13 @@ _nmr_application_has_breaker_history() {
 #######################################
 # Check whether an NMR issue is security-sensitive.
 #
-# Security-labelled work must not be auto-cleared by the generic
-# creation-default path. The NMR label is the human review gate for findings
-# involving credentials, auth, approval/merge gates, supply chain, and similar
-# security boundaries. A scanner provenance marker proves automation created
-# the issue; it does not prove the recommended remediation is safe to dispatch.
+# Security-labelled work must not be auto-dispatched by a generic creation-
+# default cleanup. Trusted-author security review becomes hold-for-review;
+# external-author security work retains NMR until authority is approved.
 #
 # <!-- aidevops:trust-boundary -->
 # Treat the public `security` and `security-review` labels as authoritative
-# current-state holds. Once present, NMR requires cryptographic approval instead
-# of maintainer auto-approval.
+# current-state review holds independent of author authority.
 #
 # Args:
 #   $1 - issue_num  : GitHub issue number
@@ -1090,13 +1143,13 @@ _nmr_actor_event_is_manual_hold() {
 
 	local nmr_actor_authority_rc=0
 	#aidevops:trust-boundary -- a transient authority lookup must preserve an
-	# identified actor's NMR hold rather than silently treating it as automation.
+	# identified actor's review-hold intent rather than silently treating it as automation.
 	_gh_actor_has_repo_write_authority "$slug" "$nmr_actor" "COLLABORATOR" || nmr_actor_authority_rc=$?
 	case "$nmr_actor_authority_rc" in
 	0) ;;
 	1) return 1 ;;
 	*)
-		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — authority lookup failed for actor=${nmr_actor}; preserving NMR" >>"$LOGFILE"
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — authority lookup failed for actor=${nmr_actor}; preserving hold semantics" >>"$LOGFILE"
 		return 0
 		;;
 	esac
@@ -1114,10 +1167,9 @@ _nmr_actor_event_is_manual_hold() {
 }
 
 #######################################
-# Check if the needs-maintainer-review label was most recently applied
-# by a write-authorized maintainer (indicating a manual hold), OR by a
-# circuit breaker trip (which must be treated as a hold even though
-# the token actor is the maintainer).
+# Classify a trusted-author NMR application as an intentional hold or safe
+# automation residue. Intentional/legacy breaker state becomes an internal hold;
+# creation-default residue can be removed without self-approval.
 #
 # GH#18671 / t2386: the pulse runs as a write-authorized GitHub token,
 # so a maintainer-equivalent label actor matches all three cases:
@@ -1126,8 +1178,8 @@ _nmr_actor_event_is_manual_hold() {
 #   3. Circuit breaker trips (t2007 cost / t2008 stale) — MUST preserve
 #   4. Security-sensitive automation applies NMR — MUST preserve
 #
-# Cases 1, 3, and 4 are "preserve NMR" (return 0); case 2 is
-# "auto-clear OK" (return 1). The split is driven by companion helpers:
+# Cases 1, 3, and 4 are "preserve hold semantics" (return 0); case 2 is
+# "trusted normalization may clear" (return 1). Companion helpers provide
 # `_nmr_application_has_automation_signature` (creation defaults),
 # `_nmr_application_is_circuit_breaker_trip` (breaker trips), and
 # `_nmr_application_is_security_sensitive` (security review boundary).
@@ -1139,11 +1191,9 @@ _nmr_actor_event_is_manual_hold() {
 #   $2 - slug       : repo slug (owner/repo)
 #   $3 - maintainer : maintainer GitHub login
 #
-# Returns 0 if the maintainer applied NMR AND no creation-default
-#           signature is present (manual hold or breaker trip — do NOT
-#           auto-approve).
-# Returns 1 if NMR was applied by a scanner default or the actor is
-#           unknown (auto-approve OK).
+# Returns 0 for an intentional/manual, breaker, or security hold.
+# Returns 1 for trusted automation residue that may be removed without an
+#           approval marker.
 #######################################
 _nmr_applied_by_maintainer() {
 	local issue_num="$1"
@@ -1187,7 +1237,7 @@ _nmr_applied_by_maintainer() {
 				echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — ${release_retry_reason}; allowing one auto-approval retry" >>"$LOGFILE"
 				return 1
 			fi
-			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — circuit breaker tripped by actor=${nmr_actor:-unknown} — PRESERVING NMR, requires 'sudo aidevops approve issue ${issue_num} ${slug}' (t2386/t3566)" >>"$LOGFILE"
+			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — legacy circuit breaker tripped by actor=${nmr_actor:-unknown}; preserving structural hold semantics for trusted-author normalization (t2386/t3566)" >>"$LOGFILE"
 			# t3049: check if a subsequent worker produced a clean approved PR
 			# that resolves the stale-recovery false positive. Posts a one-shot
 			# notification to the maintainer if so. Does NOT clear NMR.
@@ -1205,7 +1255,7 @@ _nmr_applied_by_maintainer() {
 				echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — prior breaker marker found; ${history_retry_reason}; allowing one auto-approval retry" >>"$LOGFILE"
 				return 1
 			fi
-			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — prior circuit breaker marker remains active after latest NMR relabel by actor=${nmr_actor:-unknown} — PRESERVING NMR, requires 'sudo aidevops approve issue ${issue_num} ${slug}' (t2386/t3566)" >>"$LOGFILE"
+			echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — prior circuit breaker marker remains active after latest NMR relabel by actor=${nmr_actor:-unknown}; preserving structural hold semantics for trusted-author normalization (t2386/t3566)" >>"$LOGFILE"
 			_notify_stale_recovery_resolved_by_pr "$issue_num" "$slug" "$nmr_at" || true
 			return 0
 		fi
@@ -1216,7 +1266,7 @@ _nmr_applied_by_maintainer() {
 		security_metadata=$(_nmr_metadata_json "security" "$NMR_CLASS_GENUINE_AUTHORITY" "security-label" true)
 		_nmr_record_revalidation_state "$issue_num" "$slug" "$security_metadata" "$nmr_at" "$NMR_STATUS_HUMAN_AUTHORITY" || true
 		_nmr_emit_decision_packet "$issue_num" "$slug" "security" || true
-		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — security-sensitive label present — PRESERVING NMR, requires 'sudo aidevops approve issue ${issue_num} ${slug}'" >>"$LOGFILE"
+		echo "[pulse-wrapper] _nmr_applied_by_maintainer: #${issue_num} in ${slug} — security-sensitive label present; preserving review-hold semantics for trusted-author normalization" >>"$LOGFILE"
 		return 0
 	fi
 
@@ -1313,13 +1363,13 @@ notify_ever_nmr_without_approval() {
 }
 
 #######################################
-# Verify that this runner is allowed to post maintainer-authority approval
-# comments for the upstream repo.
+# Verify that this runner may normalize a trusted-author NMR issue for the
+# upstream repo.
 #
 # <!-- aidevops:trust-boundary -->
 # Local repos.json can be wrong or copied to an external contributor's machine.
-# Before automation posts `aidevops-signed-approval` or says "maintainer is
-# author", self-validate against GitHub: the current token actor must have
+# Before automation removes or translates NMR, self-validate against GitHub:
+# the current token actor must have
 # write/maintain/admin permission on the target repo, and the issue author must
 # independently have write/maintain/admin authority. This includes account-pool
 # collaborators that create trusted scanner issues in a user-owned repository.
@@ -1343,26 +1393,49 @@ _nmr_current_actor_can_post_maintainer_approval() {
 	local issue_api_path
 	printf -v issue_api_path 'repos/%s/issues/%s' "$slug" "$issue_num"
 	issue_meta=$(gh api "$issue_api_path" 2>/dev/null) || issue_meta=""
-	[[ -n "$issue_meta" ]] || return 1
+	if [[ -z "$issue_meta" ]]; then
+		echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: live issue metadata lookup failed" >>"$LOGFILE"
+		return 1
+	fi
+	if printf '%s' "$issue_meta" | jq -e \
+		'[.labels[]?.name] | index("external-contributor") != null' >/dev/null 2>&1; then
+		echo "[pulse-wrapper] trusted-author NMR normalization skipped for #${issue_num} in ${slug}: explicit external-contributor provenance requires approval" >>"$LOGFILE"
+		return 1
+	fi
 
 	local issue_author
 	local issue_assoc
+	local issue_author_type
 	issue_author=$(printf '%s' "$issue_meta" | jq -r '.user.login // empty' 2>/dev/null) || issue_author=""
 	issue_assoc=$(printf '%s' "$issue_meta" | jq -r '.author_association // "NONE"' 2>/dev/null) || issue_assoc="NONE"
+	issue_author_type=$(printf '%s' "$issue_meta" | jq -r '.user.type // ""' 2>/dev/null) || issue_author_type=""
 	[[ "$issue_author" == "$listed_author" ]] || return 1
 
 	# #aidevops:trust-boundary — never infer author authority from the mutable
 	# configured maintainer field or author_association alone.
-	_gh_actor_has_repo_write_authority "$slug" "$issue_author" "$issue_assoc" || return 1
+	if [[ "$issue_author_type" != "Bot" ]]; then
+		local issue_authority_rc=0
+		_gh_actor_has_repo_write_authority "$slug" "$issue_author" "$issue_assoc" || issue_authority_rc=$?
+		if [[ "$issue_authority_rc" -ne 0 ]]; then
+			[[ "$issue_authority_rc" -eq 2 ]] && echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: issue-author authority lookup failed (${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown})" >>"$LOGFILE"
+			return 1
+		fi
+	fi
 
 	local actor
 	actor=$(gh api user --jq '.login // empty' 2>/dev/null) || actor=""
-	[[ -n "$actor" ]] || return 1
+	if [[ -z "$actor" ]]; then
+		echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: current token identity lookup failed" >>"$LOGFILE"
+		return 1
+	fi
 
 	local actor_permission
 	# #aidevops:trust-boundary — maintainer approval posting requires confirmed
 	# write+ access; transient permission lookup failures fail closed.
-	_gh_collaborator_permission_lookup "$slug" "$actor" actor_permission || return 1
+	if ! _gh_collaborator_permission_lookup "$slug" "$actor" actor_permission; then
+		echo "[pulse-wrapper] trusted-author NMR normalization deferred for #${issue_num} in ${slug}: current token permission lookup failed (${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-unknown})" >>"$LOGFILE"
+		return 1
+	fi
 	case "$actor_permission" in
 	admin | maintain | write) return 0 ;;
 	*) return 1 ;;
@@ -1629,7 +1702,8 @@ _handle_knowledge_review_promotion() {
 	[[ -n "$issue_num" && -n "$slug" ]] || return 0
 
 	# Shared API path (avoids repeated literal, which would trip the string-literal ratchet)
-	local issue_api="repos/${slug}/issues/${issue_num}"
+	local issue_api=""
+	issue_api=$(_nmr_issue_api_path "$issue_num" "$slug")
 
 	# Only act on kind:knowledge-review issues
 	local has_kr_label
@@ -1682,9 +1756,9 @@ Knowledge source \`${source_id}\` promoted from staging to \`sources/\` after cr
 }
 
 #######################################
-# Restore the complete dispatchable state after trusted NMR approval.
-# Stale escalation removes both core status labels and auto-dispatch, so the
-# approval transition must not depend on a racing recovery writer.
+# Restore the complete dispatchable state after trusted-author normalization or
+# verified external approval. Legacy stale escalation removed both core status
+# labels and auto-dispatch, so this transition is self-contained.
 # Args: issue number, repo slug
 #######################################
 _nmr_restore_dispatchable_state() {
@@ -1698,32 +1772,107 @@ _nmr_restore_dispatchable_state() {
 	fi
 	gh issue edit "$issue_num" --repo "$slug" \
 		--remove-label "needs-maintainer-review" \
-		--add-label "status:available" \
-		--add-label "auto-dispatch" >/dev/null 2>&1
+		--add-label "status:available,auto-dispatch" >/dev/null 2>&1
 	return $?
 }
 
 #######################################
-# Auto-approve needs-maintainer-review issues using cryptographic
-# signature verification (t1894, replaces GH#16842 comment-based check).
+# Preserve intentional hold semantics while removing NMR from a trusted-author
+# issue. NMR is only an external trust gate; hold-for-review is the explicit
+# internal/manual hold.
+# Args: issue number, repo slug
+#######################################
+_nmr_translate_trusted_author_hold() {
+	local issue_num="$1"
+	local slug="$2"
+	if declare -F set_issue_status >/dev/null 2>&1; then
+		set_issue_status "$issue_num" "$slug" "" \
+			--remove-label "needs-maintainer-review" \
+			--add-label "hold-for-review" >/dev/null 2>&1
+		return $?
+	fi
+	gh issue edit "$issue_num" --repo "$slug" \
+		--remove-label "needs-maintainer-review" \
+		--add-label "hold-for-review" >/dev/null 2>&1
+	return $?
+}
+
+#######################################
+# Apply one trusted-author normalization or cryptographically approved external
+# transition. The caller owns aggregate counters; this helper records the
+# successful result in _NMR_AUTO_TRANSITION_RESULT.
+# Args: issue number, repo slug, transition kind, approval reason
+#######################################
+_nmr_apply_auto_approval_transition() {
+	local issue_num="$1"
+	local slug="$2"
+	local transition_kind="$3"
+	local approval_reason="$4"
+	_NMR_AUTO_TRANSITION_RESULT=""
+
+	case "$transition_kind" in
+	"$NMR_TRANSITION_TRUSTED_CLEAR")
+		if _nmr_restore_dispatchable_state "$issue_num" "$slug"; then
+			echo "[pulse-wrapper] Normalized trusted-author NMR on #${issue_num} in ${slug} — ${approval_reason}; no approval marker posted" >>"$LOGFILE"
+			_NMR_AUTO_TRANSITION_RESULT="$NMR_AUTO_RESULT_NORMALIZED"
+		else
+			echo "[pulse-wrapper] Trusted-author NMR normalization FAILED for #${issue_num} in ${slug}" >>"$LOGFILE"
+		fi
+		;;
+	"$NMR_TRANSITION_TRUSTED_HOLD")
+		if _nmr_translate_trusted_author_hold "$issue_num" "$slug"; then
+			echo "[pulse-wrapper] Translated trusted-author NMR on #${issue_num} in ${slug} to hold-for-review; no self-approval required" >>"$LOGFILE"
+			_NMR_AUTO_TRANSITION_RESULT="$NMR_AUTO_RESULT_NORMALIZED"
+		else
+			echo "[pulse-wrapper] Trusted-author hold translation FAILED for #${issue_num} in ${slug}" >>"$LOGFILE"
+		fi
+		;;
+	"$NMR_TRANSITION_CRYPTO_APPROVED")
+		# Lock before posting the trusted marker so untrusted comments cannot race
+		# the maintainer gate. The worker unlocks after dispatch completes.
+		gh issue lock "$issue_num" --repo "$slug" --reason "resolved" >/dev/null 2>&1 || true
+		gh_issue_comment "$issue_num" --repo "$slug" \
+			--body "<!-- aidevops-signed-approval -->
+<!-- stale-recovery-tick:0 (reset: auto-approved by maintainer — ${approval_reason}) -->
+Auto-approved: ${approval_reason}. Stale recovery tick reset." \
+			2>/dev/null || true
+
+		local edit_exit=0
+		_nmr_restore_dispatchable_state "$issue_num" "$slug" || edit_exit=$?
+		if [[ "$edit_exit" -eq 0 ]]; then
+			_NMR_AUTO_TRANSITION_RESULT="$NMR_AUTO_RESULT_APPROVED"
+			echo "[pulse-wrapper] Auto-approved #${issue_num} in ${slug} — ${approval_reason} (locked + approval marker + tick reset)" >>"$LOGFILE"
+			# t2845: promote knowledge-review source when applicable.
+			_handle_knowledge_review_promotion "$issue_num" "$slug" || true
+		else
+			echo "[pulse-wrapper] Auto-approve label update FAILED for #${issue_num} in ${slug} (exit: ${edit_exit}) — approval marker posted but labels unchanged" >>"$LOGFILE"
+		fi
+		;;
+	esac
+
+	return 0
+}
+
+#######################################
+# Normalize trusted-author NMR and process cryptographically approved external
+# NMR issues (t1894, replaces GH#16842 comment-based checks).
 #
 # The review gate exists for external contributions. Approval requires
 # a cryptographically signed comment posted via `sudo aidevops approve
 # issue <number>`. This ensures only a human with the system password
 # (and root access to the approval signing key) can approve issues.
 #
-# Fallback: maintainer-equivalent authored issues are still auto-approved (a
-# trusted scanner account should not gate its own issues), UNLESS a write-
-# authorized maintainer manually applied NMR — that signals an intentional hold
-# and must be preserved. Comment-based approval is removed — workers
-# share the same GitHub account so any comment from the account is
-# indistinguishable from a human comment.
+# Write-authorized authors never self-approve. Automation residue is removed
+# without an approval marker; an intentional/manual hold is translated to
+# hold-for-review. Comment-based approval remains forbidden because workers share
+# the same GitHub account and cannot prove human authority.
 #######################################
 auto_approve_maintainer_issues() {
 	local repos_json="$REPOS_JSON"
 	[[ -f "$repos_json" ]] || return 0
 
 	local total_approved=0
+	local total_normalized=0
 	local approval_helper="${AGENTS_DIR:-$HOME/.aidevops/agents}/scripts/approval-helper.sh"
 
 	while IFS='|' read -r slug maintainer; do
@@ -1747,67 +1896,50 @@ auto_approve_maintainer_issues() {
 			i=$((i + 1))
 			[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
 
-			local should_approve=false
+			local transition_kind=""
 			local approval_reason=""
 			_NMR_AUTO_APPROVAL_REASON_OVERRIDE=""
 
-			# Case 1: a maintainer-equivalent actor created the issue — auto-approve
-			# unless a write-authorized maintainer applied an intentional hold.
+			# Case 1: a write-authorized author never needs self-approval. Translate
+			# intentional/manual NMR to hold-for-review; otherwise remove the stray
+			# trust label and restore the dispatchable lifecycle state.
 			if _nmr_current_actor_can_post_maintainer_approval "$issue_num" "$slug" "$maintainer" "$issue_author"; then
 				if _nmr_applied_by_maintainer "$issue_num" "$slug" "$maintainer"; then
-					echo "[pulse-wrapper] Skipping auto-approve for #${issue_num} in ${slug} — NMR manually applied by maintainer" >>"$LOGFILE"
+					transition_kind="$NMR_TRANSITION_TRUSTED_HOLD"
+					approval_reason="trusted-author NMR hold translated to hold-for-review"
 				else
-					should_approve=true
+					transition_kind="$NMR_TRANSITION_TRUSTED_CLEAR"
 					approval_reason="${_NMR_AUTO_APPROVAL_REASON_OVERRIDE:-write-authorized maintainer is author, NMR applied by automation}"
 				fi
 			fi
 
 			# Case 2: cryptographic approval signature found
-			if [[ "$should_approve" == "false" && -f "$approval_helper" ]]; then
+			if [[ -z "$transition_kind" && -f "$approval_helper" ]]; then
 				local verify_result
 				verify_result=$(bash "$approval_helper" verify "$issue_num" "$slug" 2>/dev/null) || verify_result=""
 				if [[ "$verify_result" == "VERIFIED" ]]; then
-					should_approve=true
+					transition_kind="$NMR_TRANSITION_CRYPTO_APPROVED"
 					approval_reason="cryptographic approval verified"
 				fi
 			fi
 
-			if [[ "$should_approve" == "true" ]]; then
-				# Lock the issue BEFORE posting the approval marker to prevent
-				# comment prompt-injection. The marker (<!-- aidevops-signed-approval -->)
-				# is trusted by maintainer-gate.yml — if an attacker could post a
-				# comment containing it, they could bypass the NMR gate. Locking
-				# ensures only collaborators can comment during the approval window.
-				# The issue stays locked through dispatch (t1934) and unlocks after
-				# the worker completes.
-				gh issue lock "$issue_num" --repo "$slug" --reason "resolved" >/dev/null 2>&1 || true
-
-				# Post the approval marker BEFORE removing the label.
-				# maintainer-gate.yml checks for <!-- aidevops-signed-approval -->
-				# when NMR is removed — if the marker is missing, it re-adds NMR.
-				# Also resets the stale-recovery tick counter.
-				gh_issue_comment "$issue_num" --repo "$slug" \
-					--body "<!-- aidevops-signed-approval -->
-<!-- stale-recovery-tick:0 (reset: auto-approved by maintainer — ${approval_reason}) -->
-Auto-approved: ${approval_reason}. Stale recovery tick reset." \
-					2>/dev/null || true
-
-				_nmr_restore_dispatchable_state "$issue_num" "$slug"
-				local edit_exit=$?
-				if [[ "$edit_exit" -eq 0 ]]; then
-					echo "[pulse-wrapper] Auto-approved #${issue_num} in ${slug} — ${approval_reason} (locked + approval marker + tick reset)" >>"$LOGFILE"
-					total_approved=$((total_approved + 1))
-					# t2845: promote knowledge-review source if this is a kind:knowledge-review issue
-					_handle_knowledge_review_promotion "$issue_num" "$slug" || true
-				else
-					echo "[pulse-wrapper] Auto-approve label update FAILED for #${issue_num} in ${slug} (exit: ${edit_exit}) — approval marker posted but labels unchanged" >>"$LOGFILE"
-				fi
-			fi
+			_nmr_apply_auto_approval_transition "$issue_num" "$slug" "$transition_kind" "$approval_reason"
+			case "$_NMR_AUTO_TRANSITION_RESULT" in
+			"$NMR_AUTO_RESULT_NORMALIZED")
+				total_normalized=$((total_normalized + 1))
+				;;
+			"$NMR_AUTO_RESULT_APPROVED")
+				total_approved=$((total_approved + 1))
+				;;
+			esac
 		done
 	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.maintainer // (.slug | split("/")[0]))"' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_approved" -gt 0 ]]; then
 		echo "[pulse-wrapper] Auto-approve maintainer issues: approved ${total_approved} issue(s)" >>"$LOGFILE"
+	fi
+	if [[ "$total_normalized" -gt 0 ]]; then
+		echo "[pulse-wrapper] Trusted-author NMR normalization: normalized ${total_normalized} issue(s)" >>"$LOGFILE"
 	fi
 
 	return 0

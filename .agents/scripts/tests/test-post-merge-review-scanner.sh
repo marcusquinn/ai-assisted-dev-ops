@@ -968,6 +968,39 @@ recover_creation_marker stub/repo 42 false
 ' _ "$SCANNER" 2>&1)
 assert_contains "existing issue repairs missing source-PR marker" "RECOVERED:123" "$out"
 
+echo ""
+echo "Test: explicit scanner hold uses hold-for-review, never NMR"
+out=$(SCANNER_HOLD_FOR_REVIEW=true bash -c '
+set -euo pipefail
+source "$1"
+gh() { return 0; }
+gh_create_issue() {
+	printf "CREATE_ARGS:%s\n" "$*"
+	printf "https://github.com/stub/repo/issues/123\n"
+	return 0
+}
+create_issue stub/repo 42 title body false
+' _ "$SCANNER" 2>&1)
+assert_contains "explicit scanner hold applies hold-for-review" "hold-for-review" "$out"
+assert_not_contains "explicit scanner hold never applies NMR" "needs-maintainer-review" "$out"
+assert_not_contains "explicit scanner hold omits auto-dispatch" "auto-dispatch" "$out"
+
+echo ""
+echo "Test: legacy SCANNER_NEEDS_REVIEW alias translates to hold-for-review"
+out=$(SCANNER_NEEDS_REVIEW=true SCANNER_HOLD_FOR_REVIEW='' bash -c '
+set -euo pipefail
+source "$1"
+gh() { return 0; }
+gh_create_issue() {
+	printf "CREATE_ARGS:%s\n" "$*"
+	printf "https://github.com/stub/repo/issues/124\n"
+	return 0
+}
+create_issue stub/repo 43 title body false
+' _ "$SCANNER" 2>&1)
+assert_contains "legacy scanner hold alias applies hold-for-review" "hold-for-review" "$out"
+assert_not_contains "legacy scanner hold alias never applies NMR" "needs-maintainer-review" "$out"
+
 install_ok_gh
 
 # -----------------------------------------------------------------------------

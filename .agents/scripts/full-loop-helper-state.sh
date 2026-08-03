@@ -699,22 +699,23 @@ _linked_issue_author_allows_start() {
 	local issue_num="$1"
 	local repo="$2"
 	local raw_issue="$3"
-	local author_meta="" author_association="NONE" author_type="" author_login=""
+	local author_meta="" author_association="NONE" author_type="" author_login="" external_source="false"
 
 	author_meta=$(printf '%s' "$raw_issue" | jq -r \
-		'[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || author_meta=""
+		'[.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | join("|")' 2>/dev/null) || author_meta=""
 	if [[ -n "$author_meta" ]]; then
-		IFS='|' read -r author_association author_type author_login <<<"$author_meta"
+		IFS='|' read -r author_association author_type author_login external_source <<<"$author_meta"
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
-	if [[ "$author_type" == "Bot" ]]; then
+	if [[ "$author_type" == "Bot" && "$external_source" != "true" ]]; then
 		return 0
 	fi
 
-	local authority_rc=0
-	if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+	local authority_rc=1
+	if [[ "$external_source" != "true" ]] && declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+		authority_rc=0
 		_gh_actor_has_repo_write_authority "$repo" "$author_login" "$author_association" || authority_rc=$?
-	else
+	elif [[ "$external_source" != "true" ]]; then
 		authority_rc=2
 	fi
 	if [[ "$authority_rc" -eq 0 ]]; then
@@ -740,7 +741,7 @@ _linked_issue_author_allows_start() {
 		fi
 	fi
 
-	_FULL_LOOP_LINKED_AUTHOR_GATE_REASON="author_association=${author_association}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}, approval=${verification:-unavailable}"
+	_FULL_LOOP_LINKED_AUTHOR_GATE_REASON="author_association=${author_association}, external_source=${external_source}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}, approval=${verification:-unavailable}"
 	return 1
 }
 

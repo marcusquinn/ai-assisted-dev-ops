@@ -241,7 +241,13 @@ test_issue_approval_paths() {
 	fi
 	assert_no_mutation "trusted collaborator bot cleanup does not restore NMR"
 	assert_job_restores_nmr issue issue-bot-trust-api-failure "unverifiable bot cleanup" "github-actions[bot]"
-	assert_job_restores_nmr issue issue-bot-stale-trusted "late bot cleanup of trusted issue" "github-actions[bot]"
+	: >"$GH_CALLS"
+	if run_issue_job issue-bot-stale-trusted 'github-actions[bot]' '[]' trusted-author >/dev/null 2>&1; then
+		print_result "late bot cleanup is accepted for live OWNER author" 0
+	else
+		print_result "late bot cleanup is accepted for live OWNER author" 1 "job returned non-zero"
+	fi
+	assert_no_mutation "late trusted-author cleanup does not restore NMR"
 	: >"$GH_CALLS"
 	run_issue_job issue-unsigned maintainer '["persistent"]' >/dev/null 2>&1 || true
 	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then

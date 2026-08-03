@@ -560,7 +560,7 @@ This file contributes to a verified repository-wide threshold deficit on the cur
 
 ### Dispatch and review policy
 
-Trusted maintainer-owned sweeps label safe structural cleanup for bounded autonomous dispatch at \`tier:thinking\`. External or unverified automation retains \`needs-maintainer-review\`; reserve that gate for an actual behavior, API, security, or architecture trade-off rather than model strength alone.
+Trusted maintainer-owned sweeps label safe structural cleanup for bounded autonomous dispatch at \`tier:thinking\`. External or unverified creators retain \`needs-maintainer-review\` only until authority is approved. If trusted automation identifies a genuine behavior, API, security, or architecture decision, use \`hold-for-review\`; model strength alone is not a review gate.
 BODY
 	return 0
 }

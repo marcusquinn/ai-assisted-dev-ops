@@ -1089,7 +1089,7 @@ _issue_has_verified_crypto_approval() {
 # Nine criteria (see GH#20204):
 #   1. PR carries origin:worker label (caller pre-checks)
 #   2. Linked issue authored by OWNER or MEMBER
-#   3. NMR never applied OR cleared via cryptographic approval (not auto-approval)
+#   3. Linked issue has live maintainer-author authority or cryptographic approval
 #   4. All required status checks PASS/SKIPPED (checked by general gates)
 #   5. No CHANGES_REQUESTED from human reviewers (checked by general gates)
 #   6. PR is not a draft
@@ -1155,15 +1155,7 @@ _attempt_worker_briefed_auto_merge() {
 		issue_author_permission="$precomputed_pr_author_permission"
 	fi
 
-	# Fetch auto-approval signal once for the NMR crypto-vs-auto check (t2449).
-	# Cryptographic approval is verified separately via approval-helper.sh; do not
-	# trust marker-string presence in comments as a security gate.
 	local _not_true_status="not-verified"
-	local _has_auto=""
-	_has_auto=$(gh api "${_issue_api}/comments" --jq '
-		any(.[].body | strings; contains("auto-approved-maintainer-issue"))
-	' 2>/dev/null) || _has_auto="$_not_true_status"
-
 	local _has_crypto="$_not_true_status"
 	if _issue_has_verified_crypto_approval "$linked_issue" "$repo_slug"; then
 		_has_crypto="true"
@@ -1188,18 +1180,10 @@ _attempt_worker_briefed_auto_merge() {
 		fi
 	fi
 
-	# Gate: NMR crypto-vs-auto approval check.
-	# If NMR was ever applied to the linked issue, it must have been cleared
-	# via cryptographic approval (sudo aidevops approve issue N), NOT via
-	# auto_approve_maintainer_issues. Auto-approval runs as the pulse's own
-	# GitHub token — accepting it here would create a closed loop with zero
-	# human touchpoints (scanner → issue → dispatch → worker → PR → merge).
-	if [[ "$_has_auto" == "true" && "$_has_crypto" != "true" ]]; then
-		echo "[pulse-merge] worker-briefed auto-merge: skipping PR #${pr_number} in ${repo_slug} — linked issue #${linked_issue} NMR was auto-approved only (no crypto clearance) (t2449)" >>"$LOGFILE"
-		return 1
-	fi
-
-	# All gates pass — eligible for worker-briefed auto-merge
+	# Historical NMR/normalization comments are not current authority signals.
+	# Live issue-author authority above is sufficient; external authors still
+	# require verified cryptographic approval and live NMR remains blocked by the
+	# general merge gates.
 	echo "[pulse-merge] worker-briefed auto-merge: PR #${pr_number} in ${repo_slug} passed all gates (issue #${linked_issue}, author_assoc=${issue_author_assoc}, crypto_approved=${_has_crypto}) (t2449/t3052)" >>"$LOGFILE"
 	return 0
 }

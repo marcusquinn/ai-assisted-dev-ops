@@ -31,12 +31,11 @@
 #          pulse stage records a healthy yielded run instead of a hard timeout.
 #        SCANNER_CURSOR_DIR (default ~/.aidevops/logs/post-merge-review-scanner)
 #          — directory for per-repo resume cursors and fresh run logs.
-#        SCANNER_NEEDS_REVIEW (default false) — opt-in escape hatch to apply
-#          needs-maintainer-review at creation time. Normally the worker
-#          itself triages (verify premise → implement / close-wontfix /
-#          escalate-with-recommendation), so this should stay off. Flip to
-#          true only for pipelines where every bot finding genuinely needs
-#          human sign-off before any automated action.
+#        SCANNER_HOLD_FOR_REVIEW (default false) — opt-in escape hatch to apply
+#          hold-for-review at creation time. Normally the worker itself triages
+#          (verify premise → implement / close-wontfix /
+#          escalate-with-recommendation), so this should stay off. The legacy
+#          SCANNER_NEEDS_REVIEW variable remains a compatibility alias.
 #
 # Subcommands:
 #   scan             — scan recent merged PRs and create new review-followup issues
@@ -60,7 +59,7 @@
 #        judgment call the worker cannot make (architecture / policy /
 #        breaking change) → post a decision comment containing analysis,
 #        a recommended path, and the specific question that needs input,
-#        then apply needs-maintainer-review. The human reads a ready-to-
+#        then apply hold-for-review. The human reads a ready-to-
 #        approve recommendation, not a blank triage task.
 #
 #   This is the same rule as AGENTS.md "Reasoning responsibility":
@@ -105,7 +104,7 @@ SCANNER_PR_LIMIT="${SCANNER_PR_LIMIT:-1000}"
 SCANNER_MAX_COMMENTS="${SCANNER_MAX_COMMENTS:-10}"
 SCANNER_DIFFHUNK_LINES="${SCANNER_DIFFHUNK_LINES:-12}"
 SCANNER_REFRESH_LIMIT="${SCANNER_REFRESH_LIMIT:-200}"
-SCANNER_NEEDS_REVIEW="${SCANNER_NEEDS_REVIEW:-false}"
+SCANNER_HOLD_FOR_REVIEW="${SCANNER_HOLD_FOR_REVIEW:-${SCANNER_NEEDS_REVIEW:-false}}"
 SCANNER_BUDGET_SECONDS="${SCANNER_BUDGET_SECONDS:-540}"
 if [[ -z "${SCANNER_CURSOR_DIR:-}" ]]; then
 	if [[ -n "${HOME:-}" ]]; then
@@ -596,7 +595,7 @@ comment** with exactly these fields:
 - **Specific question:** the single decision the human needs to make
   (yes/no or pick-one, not open-ended).
 
-Then apply \`needs-maintainer-review\` and stop. The human wakes up to a
+Then apply \`hold-for-review\` and stop. The human wakes up to a
 ready-to-approve recommendation, not a blank task.
 
 > **Ambiguity about scope or style is not Outcome C.** Per
@@ -866,9 +865,9 @@ create_issue() {
 	# The worker itself verifies the bot's premise and picks one of three
 	# outcomes: close-as-falsified (Outcome A), implement-and-PR (B), or
 	# escalate-with-recommendation (C). We do NOT apply
-	# needs-maintainer-review unconditionally — that would be the exact
+	# hold-for-review unconditionally — that would be the exact
 	# "punt analysis to a human who hands it back to an AI" anti-pattern
-	# this script is meant to avoid. SCANNER_NEEDS_REVIEW is an opt-in
+	# this script is meant to avoid. SCANNER_HOLD_FOR_REVIEW is an opt-in
 	# escape hatch; the worker guidance inside the issue body carries the
 	# enforcement.
 	#
@@ -880,22 +879,20 @@ create_issue() {
 	# produces origin:worker. The hardcoding is a source-of-truth
 	# assertion: this scanner is by definition pulse-only output and
 	# should never ship origin:interactive regardless of caller context.
-	# GH#20631: tier:standard belongs in base labels — NMR'd issues also need
-	# a tier label so the dispatcher can pick them up after NMR auto-approval
-	# clears needs-maintainer-review and adds auto-dispatch. Without it,
-	# approved issues have auto-dispatch but no tier:*, leaving them stalled.
+	# GH#20631: tier:standard belongs in base labels so issues remain
+	# dispatchable after a maintainer removes an explicit review hold.
 	local label_list="$SCANNER_LABEL,source:review-scanner,origin:worker,tier:standard"
-	if [[ "$SCANNER_NEEDS_REVIEW" == "true" ]]; then
-		gh label create "needs-maintainer-review" --repo "$repo" \
-			--description "Requires human triage before worker dispatch" \
+	if [[ "$SCANNER_HOLD_FOR_REVIEW" == "true" ]]; then
+		gh label create "hold-for-review" --repo "$repo" \
+			--description "Explicit maintainer review hold" \
 			--color "B60205" || true
-		label_list="${label_list},needs-maintainer-review"
+		label_list="${label_list},hold-for-review"
 	else
 		# GH#20530 (t2748): scanner-emitted issues are dispatchable by default.
 		# Without auto-dispatch, pulse cannot pick them up and they sit unworked
 		# indefinitely (observed: 9 issues stalled when this branch was missing).
-		# NMR'd issues skip this branch — NMR auto-approval (pulse-nmr-approval.sh)
-		# adds auto-dispatch on clear, so we don't double-apply here.
+		# Explicitly held issues skip this branch until a maintainer removes the
+		# hold and deliberately restores dispatch intent.
 		label_list="${label_list},auto-dispatch"
 	fi
 

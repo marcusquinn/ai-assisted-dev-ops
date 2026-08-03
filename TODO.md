@@ -86,7 +86,7 @@ Compatible with [todo-md](https://github.com/todo-md/todo-md), [todomd](https://
 ## Routines
 
 - [x] r-gh-audit-scan Scan gh-audit.log for anomalies repeat:daily(@09:00) run:scripts/gh-audit-anomaly-helper.sh scan
-- [x] r040 Knowledge review gate — classify inbox items by trust, auto-promote or NMR-file repeat:cron(*/15 * * * *) ~1m run:scripts/knowledge-review-helper.sh tick
+- [x] r040 Knowledge review gate — classify inbox items by trust, auto-promote or review-file repeat:cron(*/15 * * * *) ~1m run:scripts/knowledge-review-helper.sh tick
 - [x] r041 Knowledge enrichment — extract structured fields from freshly-promoted sources repeat:cron(*/30 * * * *) ~2m run:scripts/document-enrich-helper.sh tick
 - [x] r042 Knowledge index build — incremental PageIndex tree across corpus repeat:cron(*/60 * * * *) ~2m run:scripts/knowledge-index-helper.sh build
 - [x] r044 IMAP mailbox polling — fetch new emails to _knowledge/inbox/ repeat:cron(*/10 * * * *) ~1m run:scripts/email-poll-helper.sh tick
@@ -1215,6 +1215,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [x] t18184 Fix status-label reconciliation and REST issue edit array safety #bug #efficiency #framework #github-api #no-auto-dispatch ref:GH#28912 pr:#28933 completed:2026-07-30
 
 - [ ] t18189 Route standard workload tier through OpenAI Luna max reasoning #type:enhancement ref:GH#29070
+
+- [ ] t18190 Restrict needs-maintainer-review to external trust gates #auto-dispatch #bug ref:GH#29394
 
 ## In Progress
 

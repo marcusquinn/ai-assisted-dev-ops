@@ -105,7 +105,7 @@ for f in files:
 
 | File | Contents | When to Load |
 |------|----------|--------------|
-| `reference/auto-merge.md` | Full t2411/t2449 criteria + NMR split semantics | Working on PR merge rules or debugging auto-merge behaviour |
+| `reference/auto-merge.md` | Full t2411/t2449 criteria + external-author NMR semantics | Working on PR merge rules or debugging auto-merge behaviour |
 | `reference/auto-dispatch.md` | Origin labels, dedup signal, #auto-dispatch mechanics, issue-sync auto-completion | Debugging dispatch blocks, changing origin labels |
 | `reference/parent-task-lifecycle.md` | 5 decomposition enforcement mechanisms | Working with parent-task labeled issues |
 | `reference/repos-json-fields.md` | Full repos.json field reference | Adding/editing repo registration |

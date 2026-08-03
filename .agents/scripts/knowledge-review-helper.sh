@@ -4,13 +4,13 @@
 # knowledge-review-helper.sh — Knowledge plane review gate routine (t2845)
 #
 # Scans _knowledge/inbox/ for pending sources, classifies them by trust ladder,
-# auto-promotes maintainer/trusted drops, and files NMR-gated GitHub issues for
-# untrusted sources. Designed to be run as pulse routine r040 every 15 minutes.
+# auto-promotes maintainer/trusted drops, and files explicitly held GitHub
+# review issues for untrusted sources. Designed to run as pulse routine r040.
 #
 # Usage (pulse routine r040):
 #   scripts/knowledge-review-helper.sh tick
 #
-# Usage (crypto-approval hook, called by pulse-nmr-approval.sh):
+# Usage (after explicit maintainer content review):
 #   knowledge-review-helper.sh promote <source-id>
 #
 # Usage (manual audit entry):
@@ -19,13 +19,13 @@
 # Trust classification (from _knowledge/_config/knowledge.json → trust):
 #   auto_promote  → maintainer drops / trusted paths+emails+bots → promote directly
 #   review_gate   → trusted partner emails → file kind:knowledge-review + auto-dispatch
-#   untrusted     → default ("*") → file kind:knowledge-review + needs-maintainer-review
+#   untrusted     → default ("*") → file kind:knowledge-review + hold-for-review
 #
 # Audit log: _knowledge/index/audit.log (JSONL, one record per action)
 #
 # Pattern reference: .agents/scripts/knowledge-helper.sh (provisioning)
 #                    .agents/scripts/email-poll-helper.sh (pulse routine)
-#                    .agents/scripts/pulse-nmr-approval.sh (NMR flow)
+#                    .agents/reference/dispatch-blockers.md (review holds)
 
 set -euo pipefail
 
@@ -382,8 +382,8 @@ ${preview}
 
 ## Review Actions
 
-- Approve: \`sudo aidevops approve issue <this-issue-number> ${repo_slug}\`
-  This triggers \`knowledge-review-helper.sh promote ${source_id}\`
+- Approve: after reviewing the staged source, run
+  \`knowledge-review-helper.sh promote ${source_id}\`, then close this issue.
 - Reject: close the issue without approving (source stays in staging/)
 
 Source staged at: \`_knowledge/staging/${source_id}/\`
@@ -396,6 +396,7 @@ BODY
 
 # ---------------------------------------------------------------------------
 # _file_nmr_issue — create a GitHub issue for a review-required source
+# The legacy function/state name is retained for on-disk compatibility.
 # Returns the issue URL on success
 # ---------------------------------------------------------------------------
 
@@ -420,7 +421,7 @@ _file_nmr_issue() {
 
 	local labels="kind:knowledge-review"
 	if [[ "$trust_class" == "untrusted" ]]; then
-		labels="${labels},needs-maintainer-review"
+		labels="${labels},hold-for-review"
 	else
 		labels="${labels},auto-dispatch"
 	fi
@@ -700,18 +701,18 @@ cmd_help() {
 knowledge-review-helper.sh — Knowledge plane review gate routine (t2845)
 
 Subcommands:
-  tick                       Scan inbox, classify trust, auto-promote or NMR-file
-  promote <source-id>        Promote from staging -> sources (called by approve hook)
+  tick                       Scan inbox, classify trust, auto-promote or file review
+  promote <source-id>        Promote a reviewed source from staging -> sources
   audit-log <action> <id>    Append JSONL entry to _knowledge/index/audit.log
   help                       Show this help
 
 Trust classification (from _knowledge/_config/knowledge.json .trust):
   auto_promote  maintainer/trusted drops → promoted directly + audit-logged
   review_gate   trusted partner email   → kind:knowledge-review + auto-dispatch
-  untrusted     default ("*")           → kind:knowledge-review + needs-maintainer-review
+  untrusted     default ("*")           → kind:knowledge-review + hold-for-review
 
-Crypto-approval flow (untrusted sources):
-  sudo aidevops approve issue <N> <owner/repo>  →  promotes source from staging/ to sources/
+Review flow (untrusted sources):
+  inspect staged content → knowledge-review-helper.sh promote <source-id> → close issue
 
 Audit log location: _knowledge/index/audit.log (JSONL)
 HELP
@@ -748,4 +749,6 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+	main "$@"
+fi

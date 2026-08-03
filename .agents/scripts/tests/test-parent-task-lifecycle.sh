@@ -127,7 +127,7 @@ assert_grep() {
 assert_grep_fixed() {
 	local label="$1" pattern="$2" file="$3"
 	TESTS_RUN=$((TESTS_RUN + 1))
-	if grep -qF "$pattern" "$file" 2>/dev/null; then
+	if grep -qF -- "$pattern" "$file" 2>/dev/null; then
 		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
 	else
 		TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -384,6 +384,14 @@ assert_grep_fixed \
 assert_grep_fixed \
 	'B7g: unchecked parent criteria are deterministic close blockers' \
 	'_PARENT_CLOSE_CONTRACT_REASON="unchecked-criteria"' \
+	"$ACTIONS_TARGET"
+assert_grep_fixed \
+	'B7h: incomplete parent close contracts use an explicit review hold' \
+	'_mark_parent_review_hold "$slug" "$parent_num"' \
+	"$ACTIONS_TARGET"
+assert_grep_fixed \
+	'B7i: parent review hold applies hold-for-review' \
+	'--add-label "hold-for-review"' \
 	"$ACTIONS_TARGET"
 
 # B8: call site passes issue_body as 5th arg

@@ -400,10 +400,11 @@ _complexity_scan_process_single_md_file() {
 	local issue_body
 	issue_body=$(_complexity_scan_md_build_full_body "$file_path" "$line_count" "$topic_label" "$recheck_mode" "$state_file")
 
-	# Build label list — skip needs-maintainer-review when user is maintainer (GH#16786)
+	# Non-maintainer admins receive an explicit review hold; NMR is reserved for
+	# external-author trust gates (GH#16786/GH#29394).
 	local review_label=""
 	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != "true" ]]; then
-		review_label="--label needs-maintainer-review"
+		review_label="--label hold-for-review"
 	fi
 
 	local create_ok=false
@@ -582,10 +583,10 @@ _complexity_scan_sh_create_issue() {
 	issue_body=$(_complexity_scan_sh_build_issue_body_with_sig "$file_path" "$violation_count" "$details")
 
 	local issue_title="simplification: reduce function complexity in ${file_path} (${violation_count} functions >${COMPLEXITY_FUNC_LINE_THRESHOLD} lines)"
-	# Skip needs-maintainer-review when user is maintainer (GH#16786)
+	# Non-maintainer admins receive an explicit review hold.
 	local review_label_sh=""
 	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != "true" ]]; then
-		review_label_sh="--label needs-maintainer-review"
+		review_label_sh="--label hold-for-review"
 	fi
 	# t1955: Don't self-assign — let dispatch_with_dedup handle assignment.
 	# shellcheck disable=SC2086

@@ -751,21 +751,25 @@ _check_external_issue_author_gate() {
 
 	local issue_author_meta=""
 	issue_author_meta=$(gh api "repos/${repo_slug}/issues/${issue_number}" \
-		--jq '[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || issue_author_meta=""
+		--jq '[.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | join("|")' 2>/dev/null) || issue_author_meta=""
 
 	local author_association="NONE"
 	local author_type=""
 	local author_login=""
+	local external_source="false"
 	if [[ -n "$issue_author_meta" ]]; then
-		IFS='|' read -r author_association author_type author_login <<<"$issue_author_meta"
+		IFS='|' read -r author_association author_type author_login external_source <<<"$issue_author_meta"
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
 
-	if [[ "$author_type" == "Bot" ]]; then
+	if [[ "$author_type" == "Bot" && "$external_source" != "true" ]]; then
 		return 1
 	fi
-	local authority_rc=0
-	_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
+	local authority_rc=1
+	if [[ "$external_source" != "true" ]]; then
+		authority_rc=0
+		_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
+	fi
 	if [[ "$authority_rc" -eq 0 ]]; then
 		return 1
 	fi
@@ -788,7 +792,7 @@ _check_external_issue_author_gate() {
 		fi
 	fi
 
-	echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: author_association=${author_association}, author_type=${author_type:-unknown}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}; applying ${nmr_label} until cryptographic approval lands (GH#22399)" >>"$LOGFILE"
+	echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: author_association=${author_association}, author_type=${author_type:-unknown}, external_source=${external_source}, authority=${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}; applying ${nmr_label} until cryptographic approval lands (GH#22399)" >>"$LOGFILE"
 	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
 		gh_issue_edit_safe "$issue_number" --repo "$repo_slug" \
 			--add-label "$nmr_label" >/dev/null 2>&1 || true

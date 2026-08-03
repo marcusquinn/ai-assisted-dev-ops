@@ -22,14 +22,14 @@ verify the content is safe to commit.
 
 ## Review Actions
 
-**Approve** (promote source to `sources/` and close this issue):
+**Approve** after reviewing the staged source (promote it to `sources/`):
 
 ```bash
-sudo aidevops approve issue <this-issue-number> {{REPO_SLUG}}
+knowledge-review-helper.sh promote {{SOURCE_ID}}
 ```
 
-This triggers `knowledge-review-helper.sh promote {{SOURCE_ID}}`, which moves
-the source from `_knowledge/staging/{{SOURCE_ID}}/` to
+After promotion succeeds, close this issue. The command moves the source from
+`_knowledge/staging/{{SOURCE_ID}}/` to
 `_knowledge/sources/{{SOURCE_ID}}/` and updates the audit log.
 
 **Reject** (keep source in staging, do not promote):

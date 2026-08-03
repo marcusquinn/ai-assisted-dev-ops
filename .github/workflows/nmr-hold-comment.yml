@@ -3,12 +3,12 @@
 #
 # NMR Hold Guidance Comment
 #
-# When the needs-maintainer-review label is added to any issue, this workflow
-# posts a comment explaining the hold and providing the approve command.
+# When the needs-maintainer-review label is added to an issue, this workflow
+# converts trusted-author uses to hold-for-review and posts approval guidance
+# only for external-author trust gates.
 #
-# Covers two scenarios:
-# 1. Collaborator self-applying NMR as a "hold" to prevent pulse dispatch
-# 2. Fallback for external issues where issue-triage-gate didn't post guidance
+# Trusted authors use hold-for-review for an intentional manual hold. NMR is
+# reserved for external authors who require cryptographic trust approval.
 #
 # Deduplicates against comments already posted by:
 # - issue-triage-gate.yml (on issue opened for non-collaborators)
@@ -58,6 +58,57 @@ jobs:
               return;
             }
 
+            // #aidevops:trust-boundary — NMR is only an external-author trust
+            // gate. OWNER/MEMBER are authoritative webhook associations;
+            // COLLABORATOR requires a live write-level permission lookup.
+            // Trusted automation can also file an issue derived from an external
+            // contribution; preserve that explicitly labelled source boundary.
+            const issueLabels = new Set((issue.labels || []).map(label => label.name));
+            const hasExternalAuthoritySource = issueLabels.has('external-contributor');
+            let authorIsTrusted = !hasExternalAuthoritySource &&
+              (issue.user?.type === 'Bot' ||
+                ['OWNER', 'MEMBER'].includes(issue.author_association));
+            if (!hasExternalAuthoritySource && !authorIsTrusted && issue.author_association === 'COLLABORATOR') {
+              try {
+                const permissionResponse = await github.request(
+                  'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    username: issue.user.login
+                  }
+                );
+                authorIsTrusted = ['admin', 'maintain', 'write'].includes(
+                  permissionResponse.data.permission
+                );
+              } catch (error) {
+                core.warning(`Unable to verify collaborator permission for ${issue.user.login}; preserving the external trust gate: ${error.message}`);
+              }
+            }
+
+            if (authorIsTrusted) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels: ['hold-for-review']
+              });
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: 'needs-maintainer-review'
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+              console.log(`Normalized trusted-author NMR on #${issueNumber} to hold-for-review`);
+              return;
+            }
+
             // Dedup: check for existing comments with the approve command.
             // Covers prior posts from issue-triage-gate, maintainer-gate
             // label protection, or a previous run of this workflow.
@@ -80,39 +131,18 @@ jobs:
               return;
             }
 
-            // Determine context: collaborator holding their own issue vs external triage
-            const association = issue.author_association;
-            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-            const isCollaboratorIssue = trustedRoles.includes(association);
-
-            let body;
-            if (isCollaboratorIssue) {
-              body = [
-                '<!-- nmr-hold-guidance -->',
-                '**Issue held from dispatch.** The `needs-maintainer-review` label prevents the pulse supervisor from dispatching workers for this issue.',
-                '',
-                'When ready to release it for work:',
-                '```',
-                `sudo aidevops approve issue ${issueNumber}`,
-                '```',
-                '',
-                'This posts a cryptographic approval comment and removes the label, allowing the pipeline to process the issue on the next pulse cycle.'
-              ].join('\n');
-            } else {
-              // Non-collaborator issue where triage gate somehow missed posting.
-              // Provides the same guidance as a fallback.
-              body = [
-                '<!-- nmr-hold-guidance -->',
-                'This issue requires maintainer review before it can be processed by the pipeline.',
-                '',
-                'A maintainer can approve it using:',
-                '```',
-                `sudo aidevops approve issue ${issueNumber}`,
-                '```',
-                '',
-                'This posts a cryptographic approval comment and removes the label, allowing the pipeline to process the issue on the next pulse cycle.'
-              ].join('\n');
-            }
+            // External issue where the triage gate did not already post guidance.
+            const body = [
+              '<!-- nmr-hold-guidance -->',
+              'This externally authored issue requires maintainer trust review before it can be processed by the pipeline.',
+              '',
+              'A maintainer can approve it using:',
+              '```',
+              `sudo aidevops approve issue ${issueNumber}`,
+              '```',
+              '',
+              'This posts a cryptographic approval comment and removes the label, allowing the pipeline to process the issue on the next pulse cycle.'
+            ].join('\n');
 
             try {
               await github.rest.issues.createComment({
@@ -132,4 +162,4 @@ jobs:
               throw error;
             }
 
-            console.log(`Posted hold guidance comment on #${issueNumber} (collaborator=${isCollaboratorIssue}, actor=${actor})`);
+            console.log(`Posted external-author trust guidance on #${issueNumber} (actor=${actor})`);

@@ -1100,9 +1100,11 @@ Thanks for filing this issue. Because it was created by a contributor outside th
 
 This comment is idempotent; the HTML sentinel prevents duplicates on subsequent pulse cycles."
 
-	# Fetch authorAssociation and PR marker (fail-closed: unknown → external, t2450).
+	# Fetch live author authority and PR marker (fail-closed: unknown → external,
+	# t2450/GH#29394). A bare COLLABORATOR association is not sufficient because
+	# it may represent read/triage access.
 	# GitHub PRs share the Issues API namespace; labelless backfill must never bless them as origin:worker/tier:standard.
-	local issue_json="" assoc="" is_pull_request=""
+	local issue_json="" assoc="" author_type="" author_login="" is_pull_request=""
 	issue_json=$(gh api "repos/${slug}/issues/${issue_num}" 2>/dev/null || echo '{}')
 	is_pull_request=$(printf '%s' "$issue_json" | jq -r 'has("pull_request")' 2>/dev/null || echo "false")
 	if [[ "$is_pull_request" == "true" ]]; then
@@ -1110,10 +1112,25 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 		return 1
 	fi
 	assoc=$(printf '%s' "$issue_json" | jq -r '.author_association // "NONE"' 2>/dev/null || echo "NONE")
+	author_type=$(printf '%s' "$issue_json" | jq -r '.user.type // ""' 2>/dev/null || echo "")
+	author_login=$(printf '%s' "$issue_json" | jq -r '.user.login // ""' 2>/dev/null || echo "")
 	local is_external="$_PIR_BOOL_TRUE"
-	case "$assoc" in
-		OWNER | MEMBER | COLLABORATOR) is_external="$_PIR_BOOL_FALSE" ;;
-	esac
+	if [[ "$author_type" == "Bot" ]]; then
+		is_external="$_PIR_BOOL_FALSE"
+	else
+		case "$assoc" in
+		OWNER | MEMBER) is_external="$_PIR_BOOL_FALSE" ;;
+		COLLABORATOR)
+			local authority_rc=0
+			if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+				_gh_actor_has_repo_write_authority "$slug" "$author_login" "$assoc" || authority_rc=$?
+			else
+				authority_rc=2
+			fi
+			[[ "$authority_rc" -eq 0 ]] && is_external="$_PIR_BOOL_FALSE"
+			;;
+		esac
+	fi
 
 	# Choose sentinel for idempotency check
 	local check_sentinel="$sentinel"

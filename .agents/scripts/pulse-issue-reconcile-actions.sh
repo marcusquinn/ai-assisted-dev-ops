@@ -461,14 +461,14 @@ _Posted once by parent close-contract reconciliation._"
 	return 0
 }
 
-_mark_parent_needs_decomposition() {
+_mark_parent_review_hold() {
 	local slug="$1" parent_num="$2"
 	if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
 		gh_issue_edit_safe "$parent_num" --repo "$slug" \
-			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+			--add-label "hold-for-review" >/dev/null 2>&1 || true
 	else
 		gh issue edit "$parent_num" --repo "$slug" \
-			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+			--add-label "hold-for-review" >/dev/null 2>&1 || true
 	fi
 	return 0
 }
@@ -493,7 +493,7 @@ _repair_closed_parent_contract() {
 
 	gh issue reopen "$parent_num" --repo "$slug" >/dev/null 2>&1 || return 1
 	_post_parent_close_contract_nudge "$slug" "$parent_num" "$reason" "$marker" || true
-	_mark_parent_needs_decomposition "$slug" "$parent_num"
+	_mark_parent_review_hold "$slug" "$parent_num"
 	echo "[pulse-wrapper] Reconcile parent-task: reopened #${parent_num} in ${slug} — incomplete close contract (${reason})" >>"${LOGFILE:-/dev/null}"
 	return 0
 }
@@ -563,7 +563,7 @@ _try_close_parent_tracker() {
 				"$_PARENT_CLOSE_CONTRACT_REASON" \
 				"<!-- parent-close-contract-incomplete:${_PARENT_CLOSE_CONTRACT_REASON} -->" || true
 		fi
-		_mark_parent_needs_decomposition "$slug" "$parent_num"
+		_mark_parent_review_hold "$slug" "$parent_num"
 		echo "[pulse-wrapper] Reconcile parent-task: kept #${parent_num} open in ${slug} — incomplete close contract (${_PARENT_CLOSE_CONTRACT_REASON})" >>"${LOGFILE:-/dev/null}"
 		return 1
 	fi

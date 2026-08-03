@@ -9,7 +9,7 @@
 #   1. First recovery (0 prior ticks) → tick:1 posted, status:available added
 #   2. Second recovery (1 prior tick) → tick:2 posted, status:available added
 #   3. Third recovery (2 prior ticks = threshold) → STALE_ESCALATED emitted,
-#      needs-maintainer-review applied, status:available NOT added
+#      status:blocked applied, status:available NOT added
 #   4. Open ready PR: durable progress is preserved without synthetic reset.
 #   5. Open worker draft: assignment is preserved and exact-head continuation
 #      is requested without NMR mutation.
@@ -103,9 +103,9 @@ if [[ "\$1" == "api" && "\$2" == *"/issues/99999"* && "\$*" != *"--method"* ]]; 
 	available)
 		printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:available"}],"assignees":[]}'
 		;;
-	nmr)
+	blocked)
 		if [[ "${transition_visible}" == "1" ]]; then
-			printf '%s\n' '{"state":"OPEN","labels":[{"name":"needs-maintainer-review"}],"assignees":[]}'
+			printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:blocked"}],"assignees":[]}'
 		else
 			printf '%s\n' '{"state":"OPEN","labels":[],"assignees":[{"login":"stale-runner"}]}'
 		fi
@@ -170,17 +170,17 @@ fi
 # remain silent successes.
 if [[ "\$1" == "issue" ]]; then
 	if [[ "\$2" == "edit" ]]; then
-		if [[ "\$*" == *"needs-maintainer-review"* ]]; then
-			printf '%s\n' nmr >"${TEST_ROOT}/transition_state"
+		if [[ "\$*" == *"--add-label status:blocked"* ]]; then
+			printf '%s\n' blocked >"${TEST_ROOT}/transition_state"
 		else
 			printf '%s\n' available >"${TEST_ROOT}/transition_state"
 		fi
 		exit 0
 	fi
 	if [[ "\$2" == "view" && "\$*" == *"--json state,labels,assignees"* ]]; then
-		if [[ "${open_pr}" == *"draft_checkpoint"* || "${open_pr}" == *"ready_failed"* ]]; then
+		if [[ -f "${TEST_ROOT}/transition_state" && "\$(cat "${TEST_ROOT}/transition_state")" == "blocked" ]]; then
 			if [[ "${transition_visible}" == "1" ]]; then
-				printf '%s\n' '{"state":"OPEN","labels":[{"name":"needs-maintainer-review"}],"assignees":[]}'
+				printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:blocked"}],"assignees":[]}'
 			else
 				printf '%s\n' '{"state":"OPEN","labels":[],"assignees":[{"login":"stale-runner"}]}'
 			fi
@@ -298,11 +298,12 @@ else
 	print_result "Escalation: STALE_RECOVERED NOT emitted (no re-dispatch loop)" 1 "(got: '$output')"
 fi
 
-# needs-maintainer-review must be applied (check gh issue edit call in log)
-if grep -q "needs-maintainer-review" "$GH_CALLS_FILE" 2>/dev/null; then
-	print_result "Escalation: needs-maintainer-review label applied" 0
+# status:blocked must be applied without adding NMR.
+if grep -q -- "--add-label status:blocked" "$GH_CALLS_FILE" 2>/dev/null && \
+	! grep -q -- "--add-label needs-maintainer-review" "$GH_CALLS_FILE" 2>/dev/null; then
+	print_result "Escalation: status:blocked applied without NMR" 0
 else
-	print_result "Escalation: needs-maintainer-review label applied" 1 "(gh calls: $(head -10 "$GH_CALLS_FILE" 2>/dev/null))"
+	print_result "Escalation: status:blocked applied without NMR" 1 "(gh calls: $(head -10 "$GH_CALLS_FILE" 2>/dev/null))"
 fi
 
 # status:available must NOT be --add-label'd in escalation path
@@ -314,11 +315,11 @@ else
 fi
 
 # auto-dispatch must be removed in the same escalation mutation so a later
-# status recovery cannot make this NMR-held issue appear runnable.
+# status recovery cannot make this structurally blocked issue appear runnable.
 if grep -q -- "--remove-label auto-dispatch" "$GH_CALLS_FILE" 2>/dev/null; then
-	print_result "Escalation: auto-dispatch removed with NMR hold" 0
+	print_result "Escalation: auto-dispatch removed with structural block" 0
 else
-	print_result "Escalation: auto-dispatch removed with NMR hold" 1 "(gh calls: $(cat "$GH_CALLS_FILE" 2>/dev/null))"
+	print_result "Escalation: auto-dispatch removed with structural block" 1 "(gh calls: $(cat "$GH_CALLS_FILE" 2>/dev/null))"
 fi
 
 # =============================================================================
@@ -378,10 +379,10 @@ else
 	print_result "Worker draft checkpoint requests continuation without issue mutation" 1 "(got: '$output')"
 fi
 
-if ! echo "$output" | grep -q "STALE_DRAFT_ESCALATED\|needs-maintainer-review"; then
-	print_result "Worker draft checkpoint never enters stale NMR escalation" 0
+if ! echo "$output" | grep -q "STALE_DRAFT_ESCALATED\|status:blocked"; then
+	print_result "Worker draft checkpoint never enters stale structural escalation" 0
 else
-	print_result "Worker draft checkpoint never enters stale NMR escalation" 1 "(got: '$output')"
+	print_result "Worker draft checkpoint never enters stale structural escalation" 1 "(got: '$output')"
 fi
 
 for unsafe_kind in draft_bare draft_mismatch; do
@@ -462,17 +463,19 @@ fi
 # =============================================================================
 
 run_recover 0 "81|ready_failed" 1
-if echo "$output" | grep -q "STALE_READY_FAILED_ESCALATED" && grep -q "needs-maintainer-review" "$GH_CALLS_FILE"; then
-	print_result "Terminal ready PR escalates after verified NMR read-back" 0
+if echo "$output" | grep -q "STALE_READY_FAILED_ESCALATED" && \
+	grep -q -- "--add-label status:blocked" "$GH_CALLS_FILE" && \
+	! grep -q -- "--add-label needs-maintainer-review" "$GH_CALLS_FILE"; then
+	print_result "Terminal ready PR escalates after verified structural-block read-back" 0
 else
-	print_result "Terminal ready PR escalates after verified NMR read-back" 1 "(got: '$output')"
+	print_result "Terminal ready PR escalates after verified structural-block read-back" 1 "(got: '$output')"
 fi
 
 run_recover 0 "81|ready_failed" 0
 if [[ "$rc" -ne 0 ]] && echo "$output" | grep -q "STALE_PR_ESCALATION_FAILED"; then
-	print_result "Terminal ready PR retains ownership when NMR transition is invisible" 0
+	print_result "Terminal ready PR retains ownership when structural block is invisible" 0
 else
-	print_result "Terminal ready PR retains ownership when NMR transition is invisible" 1 "(rc=$rc got: '$output')"
+	print_result "Terminal ready PR retains ownership when structural block is invisible" 1 "(rc=$rc got: '$output')"
 fi
 
 export PATH="$OLD_PATH"

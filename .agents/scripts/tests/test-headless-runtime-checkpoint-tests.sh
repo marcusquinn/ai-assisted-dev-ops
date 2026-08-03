@@ -162,7 +162,7 @@ test_post_pr_handoff_rejects_mismatched_head_or_missing_summary() {
 	return 0
 }
 
-test_failed_worker_draft_checkpoint_escalates_without_completion() {
+test_failed_worker_draft_checkpoint_preserves_continuation_without_completion() {
 	local result=""
 	local escalation_marker="${TEST_ROOT}/draft-checkpoint-escalated"
 	rm -f "$escalation_marker"
@@ -178,10 +178,11 @@ test_failed_worker_draft_checkpoint_escalates_without_completion() {
 			_hrw_resolve_default_branch() { printf 'main'; return 0; }
 			_pr_handoff_state_for_branch_or_issue() { printf 'draft_checkpoint|456'; return 0; }
 			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
-			set_issue_status() { : >"$escalation_marker"; return 0; }
+			_hrff_resolve_release_runner_login() { printf 'worker-bot'; return 0; }
+			set_issue_status() { printf '%s\n' "$*" >"$escalation_marker"; return 0; }
 			gh() {
 				if [[ "${*}" == *"issue view 99999"* ]]; then
-					printf '%s\n' '{"labels":[{"name":"needs-maintainer-review"}]}'
+					printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:in-review"},{"name":"needs-maintainer-review"}],"assignees":[{"login":"worker-bot"}]}'
 				fi
 				return 0
 			}
@@ -189,10 +190,16 @@ test_failed_worker_draft_checkpoint_escalates_without_completion() {
 			printf 'classification=%s\n' "${_HRW_RECOVERY_CLASSIFICATION:-}"
 		)
 	)
-	if [[ "$result" == *"release=worker_draft_checkpoint"* && -f "$escalation_marker" && "$result" == *"classification=worker_draft_checkpoint"* ]]; then
-		print_result "failed worker draft checkpoint escalates without worker_complete" 0
+	local transition=""
+	transition=$(<"$escalation_marker")
+	if [[ "$result" == *"release=worker_draft_checkpoint"* && \
+		"$transition" == *"99999 test-owner/test-repo in-review"* && \
+		"$transition" != *"needs-maintainer-review"* && \
+		"$transition" == *"--add-assignee worker-bot"* && \
+		"$result" == *"classification=worker_draft_checkpoint"* ]]; then
+		print_result "failed worker draft checkpoint preserves exact-head continuation without worker_complete" 0
 	else
-		print_result "failed worker draft checkpoint escalates without worker_complete" 1 "$result"
+		print_result "failed worker draft checkpoint preserves exact-head continuation without worker_complete" 1 "result=${result} transition=${transition}"
 	fi
 	return 0
 }
@@ -295,9 +302,9 @@ test_failed_worker_draft_retains_claim_when_block_not_visible() {
 		)
 	)
 	if [[ "$result" == *"classification=worker_draft_checkpoint_escalation_failed"* && "$result" != *"unexpected-release="* ]]; then
-		print_result "draft checkpoint retains claim when blocking label read-back fails" 0
+		print_result "draft checkpoint retains claim when continuation read-back fails" 0
 	else
-		print_result "draft checkpoint retains claim when blocking label read-back fails" 1 "$result"
+		print_result "draft checkpoint retains claim when continuation read-back fails" 1 "$result"
 	fi
 	return 0
 }
@@ -327,7 +334,7 @@ test_protected_draft_is_not_mutated_or_completed() {
 	return 0
 }
 
-test_checkpoint_terminal_telemetry_is_failed_escalated() {
+test_checkpoint_terminal_telemetry_is_deferred() {
 	local fixture_class="draft_checkpoint"
 	local expected_reason="worker_draft_checkpoint"
 	local result
@@ -340,10 +347,10 @@ test_checkpoint_terminal_telemetry_is_failed_escalated() {
 				"$_HRW_FINAL_RUNTIME_STATUS" "$_HRW_FINAL_RUNTIME_CLASSIFICATION"
 		)
 	)
-	if [[ "$result" == "failed|worker.failed|escalated|${expected_reason}" ]]; then
-		print_result "${fixture_class} records failed/escalated terminal telemetry" 0
+	if [[ "$result" == "deferred|worker.deferred|checkpointed|${expected_reason}" ]]; then
+		print_result "${fixture_class} records deferred checkpoint telemetry" 0
 	else
-		print_result "${fixture_class} records failed/escalated terminal telemetry" 1 "$result"
+		print_result "${fixture_class} records deferred checkpoint telemetry" 1 "$result"
 	fi
 	return 0
 }
@@ -498,15 +505,14 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_post_pr_handoff_propagates_classifier_failure
 	test_post_pr_handoff_treats_ci_as_monitoring_state
 	test_post_pr_handoff_rejects_mismatched_head_or_missing_summary
-	test_failed_worker_draft_checkpoint_escalates_without_completion
+	test_failed_worker_draft_checkpoint_preserves_continuation_without_completion
 	test_dirty_worktree_checkpoint_is_deferred_not_complete
 	test_exit_trap_dirty_checkpoint_is_deferred_not_complete
 	test_failed_worker_draft_retains_claim_when_block_not_visible
 	test_protected_draft_is_not_mutated_or_completed
-	test_checkpoint_terminal_telemetry_is_failed_escalated
+	test_checkpoint_terminal_telemetry_is_deferred
 	test_failed_ci_ready_pr_is_durable_handoff
 	test_closed_unmerged_pr_is_failed_not_completed
 	test_failed_worker_ready_pr_remains_completed_handoff
 	return 0
 }
-

@@ -94,7 +94,7 @@ ALL criteria must hold:
 
 1. PR carries the `origin:worker` label.
 2. Linked issue (via `Resolves #NNN` / `Closes #NNN` / `Fixes #NNN`) was authored by a user with `OWNER` or `MEMBER` association — **OR** the issue author's GitHub login is listed in `.agents/configs/trusted-issue-authors.conf` (t3062: peer runners trusted as operators, not external contributors) — **OR** the linked issue has a cryptographic approval signature (`aidevops:approval-signature:` in a comment body), proving a maintainer has personally vouched for the work with their SSH key (t3052).
-3. Linked issue never carried `needs-maintainer-review` OR NMR was cleared via **cryptographic** approval (`sudo aidevops approve issue N`), not via `auto_approve_maintainer_issues`.
+3. Neither the PR nor linked issue currently carries `needs-maintainer-review`. Historical NMR does not force an OWNER/MEMBER, authenticated write-authorized author, or trusted peer runner to self-approve; an external author satisfies criterion 2 only through verified cryptographic approval.
 4. All required status checks PASS or SKIPPED.
 5. No `CHANGES_REQUESTED` review from any reviewer with non-bot association.
 6. PR is **not a draft**.
@@ -114,17 +114,17 @@ The allowlist allows peer runners (separate machine/account, `COLLABORATOR` asso
 
 **Config file:** `.agents/configs/trusted-issue-authors.conf` — one GitHub login per line; `#` comments and blank lines ignored. Deployed copy: `~/.aidevops/agents/configs/trusted-issue-authors.conf`. Override path: `AIDEVOPS_TRUSTED_AUTHORS_CONF` env var.
 
-**What the allowlist bypasses:** the `OWNER`/`MEMBER` `author_association` check only. Everything else still applies: the NMR crypto-vs-auto gate (criterion 3), the feature flag, draft/hold-for-review/CHANGES_REQUESTED gates, and CI checks.
+**What the allowlist bypasses:** the `OWNER`/`MEMBER` `author_association` check only. Everything else still applies: the live NMR gate, feature flag, draft/hold-for-review/CHANGES_REQUESTED gates, and CI checks.
 
-**What it does NOT bypass:** A trusted-author issue that received `needs-maintainer-review` and was auto-approved (not crypto-cleared) still blocks — the closed-loop prevention from t2449 criterion 3 is independent of criterion 2.
+**What it does NOT bypass:** A live `needs-maintainer-review` label still blocks. Trusted-author legacy NMR is normalized without fabricating approval; external-author NMR requires verified cryptographic approval and label clearance.
 
-**Security posture:** Allowlist entries are local-trust grants from the maintainer of the runner machine. A rogue allowlist entry cannot bypass CI or NMR-crypto gates; it only relaxes the GitHub author_association check which is itself a proxy for maintainer trust.
+**Security posture:** Allowlist entries are local-trust grants from the maintainer of the runner machine. They cannot bypass CI, a live NMR gate, or PR-specific external merge authority; they only relax the GitHub author-association proxy.
 
-### Security Gate: NMR Crypto-vs-Auto Distinction (Criterion 3)
+### Security Gate: External-Author NMR Authority
 
-`auto_approve_maintainer_issues` runs as the pulse's own GitHub token — if auto-approval were accepted as NMR clearance, any review-scanner issue could auto-spawn a worker AND auto-merge without human touch (closed loop).
+`auto_approve_maintainer_issues` uses live issue-author authority as the invariant. A verified write-authorized author never self-approves: accidental automation residue is removed and an intentional review decision becomes `hold-for-review`, without posting an approval marker.
 
-Cryptographic approval (`sudo aidevops approve issue N`) requires the maintainer's root-protected SSH key, which workers cannot access — this is the only reliable human-in-the-loop signal.
+An external or unverifiable author remains gated. Cryptographic approval (`sudo aidevops approve issue N`) requires the maintainer's root-protected SSH key, which workers cannot access, and is the only authority signal that clears that external boundary.
 
 ### Author-Association Gate Crypto Bypass (t3063)
 
@@ -153,17 +153,15 @@ Symmetric extension of t3052 to the **deterministic merge cascade** — the `_ch
 
 Configured review-provider failures use `review_gate.advisory_check_contexts`. An exact named non-required failure is advisory only after the final trust gate reruns the read-only review helper and obtains typed `aidevops.review-gate-evidence/v1` for the exact PR head, a permitted author-class outcome, and resolved review threads. Duplicate maintainer-gate aliases are one audited family and remain blocking; all other check-run and commit-status sources retain independent failure identity.
 
-## NMR Automation Signatures (t2386, Split Semantics)
+## NMR Authority Normalization and Legacy Signatures
 
-The pulse runs as the maintainer's GitHub token, so `needs-maintainer-review` label events always record the maintainer as actor. `auto_approve_maintainer_issues` in `pulse-nmr-approval.sh` distinguishes three cases by comment markers:
+Current producers reserve `needs-maintainer-review` for external-author authority. Internal decisions use `hold-for-review`; machine-recoverable dependency, cost, stale-worker, and infrastructure failures use `status:blocked`, cooldowns, or root-cause meta-issues.
 
-- **Creation-default** (`source:review-scanner` comment marker, or `review-followup` / `source:review-scanner` label on issue) → scanner applied NMR by default at creation time; auto-approval CLEARS NMR so the issue can dispatch.
-- **Circuit-breaker trip** (`stale-recovery-tick:escalated`, `cost-circuit-breaker:fired`, `circuit-breaker-escalated` comment markers) → t2007/t2008 safety mechanism fired after retry/cost limit exceeded; auto-approval PRESERVES NMR. Clear with `sudo aidevops approve issue <N>` once the underlying problem is fixed.
-- **Manual hold** (no markers) → genuine maintainer decision to pause the issue; auto-approval PRESERVES NMR.
+`pulse-nmr-approval.sh` still recognizes historical scanner, breaker, and manual-hold signatures so pre-migration issues fail safely while being normalized. For a write-authorized author, it clears accidental/default residue or translates an intentional hold to `hold-for-review`; it never manufactures cryptographic approval. For an external or unverifiable author, NMR remains until valid cryptographic approval.
 
-**Background — why the split matters:** Pre-t2386, both automation cases were conflated. The result was the GH#19756 infinite loop: stale-recovery applied NMR → auto-approve stripped it → worker re-dispatched → crashed → stale-recovery re-applied NMR. 22 watchdog kills + 5 auto-approve cycles in one afternoon. The split prevents this by preserving NMR on circuit-breaker trips.
+Historical breaker signatures remain recognized to prevent the GH#19756 loop while old issues are reconciled. New breaker paths never use NMR, so clearing an author-authority gate cannot blind-redispatch an unresolved machine failure.
 
-Two helpers enforce the split: `_nmr_application_has_automation_signature` (creation defaults only) and `_nmr_application_is_circuit_breaker_trip` (breaker trips only). Regression test: `.agents/scripts/tests/test-pulse-nmr-automation-signature.sh::test_19756_loop_prevention_breaker_trip_preserves_nmr`.
+Compatibility helpers `_nmr_application_has_automation_signature` and `_nmr_application_is_circuit_breaker_trip` classify legacy events. New producer regressions must instead prove internal holds avoid NMR and preserve any independent live external gate.
 
 ## t3068 — Approval-Triggered Pulse Kick
 

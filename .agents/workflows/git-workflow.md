@@ -290,7 +290,7 @@ Worktrees: `wt switch -c {type}/{name}`. Keep the canonical repo directory on `m
 
 **Qlty New-File Smell Gate (t2068):** CI fails when brand-new source files ship with smells; details/override/local check: `reference/shell-style-guide.md` "Quality gate pattern reference".
 
-**Cryptographic approval + NMR automation (t2386):** moved to `reference/task-lifecycle.md`; read before approving issues/PRs or clearing/preserving NMR.
+**Cryptographic approval + review-block semantics:** moved to `reference/task-lifecycle.md`; read before approving external issues/PRs or changing NMR, `hold-for-review`, or structural blocker state.
 
 **Task-ID collision guard (t2047):** t-IDs in commit subjects MUST be claimed via `claim-task-id.sh`; enforcement details live in `reference/shell-style-guide.md` "Quality gate pattern reference".
 

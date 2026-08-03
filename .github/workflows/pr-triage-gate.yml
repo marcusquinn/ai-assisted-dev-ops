@@ -38,20 +38,34 @@ jobs:
             const author = pr.user.login;
             const association = pr.author_association;
 
-            // Bot accounts always bypass triage
-            if (pr.user.type === 'Bot') {
-              console.log(`Author ${author} is a bot — bypassing triage`);
-              return;
+            // OWNER/MEMBER and repository-installed bots are trusted. A bare
+            // COLLABORATOR association can represent read/triage access, so it
+            // requires a live write-level permission lookup.
+            // CONTRIBUTOR (has previous merged PRs) is NOT trusted
+            const trustedRoles = ['OWNER', 'MEMBER'];
+            let authorIsTrusted = pr.user.type === 'Bot' ||
+              trustedRoles.includes(association);
+            if (!authorIsTrusted && association === 'COLLABORATOR') {
+              try {
+                const permissionResponse = await github.request(
+                  'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    username: author
+                  }
+                );
+                authorIsTrusted = ['admin', 'maintain', 'write'].includes(
+                  permissionResponse.data.permission
+                );
+              } catch (error) {
+                core.warning(`Unable to verify collaborator permission for ${author}; preserving PR triage gate: ${error.message}`);
+              }
             }
 
-            // Maintainers and collaborators bypass triage
-            // OWNER, MEMBER, COLLABORATOR are trusted roles
-            // CONTRIBUTOR (has previous merged PRs) is NOT trusted
-            const trustedRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-
             // #aidevops:trust-boundary GH#17671/GH#28567
-            if (trustedRoles.includes(association)) {
-              console.log(`Author ${author} has role ${association} — bypassing triage`);
+            if (authorIsTrusted) {
+              console.log(`Author ${author} has verified trusted authority — bypassing triage`);
               return;
             }
 
@@ -63,7 +77,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 name: 'needs-maintainer-review',
-                description: 'External issue awaiting maintainer review before pipeline pickup',
+                description: 'External contribution awaiting maintainer approval before pipeline pickup',
                 color: 'FBCA04'
               });
             } catch (e) {

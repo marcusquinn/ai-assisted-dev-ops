@@ -560,16 +560,19 @@ jobs:
 
           issue_author_has_live_authority() {
             local issue_json="$1"
-            local identity="" author="" association="" permission=""
+            local identity="" author="" association="" author_type="" external_source="" permission=""
             if ! identity=$(printf '%s' "$issue_json" | jq -r '
               if (.user.login // "") != "" and (.author_association // "") != ""
-              then [(.user.login // ""), (.author_association // "")] | @tsv
+              then [(.user.login // ""), (.author_association // ""), (.user.type // ""),
+                (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | @tsv
               else error("missing live issue author metadata") end
             ' 2>/dev/null); then
               return 2
             fi
-            IFS=$'\t' read -r author association <<< "$identity"
+            IFS=$'\t' read -r author association author_type external_source <<< "$identity"
             [[ "$author" == "$ISSUE_AUTHOR" ]] || return 2
+            [[ "$external_source" != "true" ]] || return 1
+            [[ "$author_type" == "Bot" ]] && return 0
             case "$association" in
               OWNER|MEMBER) return 0 ;;
               COLLABORATOR) ;;
@@ -581,30 +584,6 @@ jobs:
             fi
             case "$permission" in
               admin|maintain|write) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-
-          trusted_bot_open_cleanup_is_allowed() {
-            local issue_json="" created_at="" created_epoch="" now_epoch="" age_seconds="" authority_rc=0
-            [[ "$ACTOR" == "github-actions[bot]" ]] || return 1
-            if ! issue_json=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null); then
-              return 2
-            fi
-            created_at=$(printf '%s' "$issue_json" | jq -r '.created_at // ""' 2>/dev/null) || return 2
-            [[ -n "$created_at" ]] || return 2
-            if date --version >/dev/null 2>&1; then
-              created_epoch=$(date -u -d "$created_at" '+%s' 2>/dev/null) || return 2
-            else
-              created_epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" '+%s' 2>/dev/null) || return 2
-            fi
-            now_epoch=$(date -u '+%s' 2>/dev/null) || return 2
-            age_seconds=$((now_epoch - created_epoch))
-            [[ "$age_seconds" -ge 0 && "$age_seconds" -le 300 ]] || return 1
-            issue_author_has_live_authority "$issue_json" || authority_rc=$?
-            case "$authority_rc" in
-              0) return 0 ;;
-              2) return 2 ;;
               *) return 1 ;;
             esac
           }
@@ -649,21 +628,22 @@ jobs:
             return 1
           }
 
-          #aidevops:trust-boundary GH#29151: issue-triage removes a form-default
-          # NMR label as github-actions[bot] immediately after a trusted author
-          # opens an issue. Permit only that narrow, live-verified creation-time
-          # cleanup. Later bot removals still require cryptographic approval so
-          # an explicit human hold cannot be erased by unrelated automation.
-          if [[ "$ACTOR" == "github-actions[bot]" ]]; then
-            TRUSTED_BOT_RC=0
-            trusted_bot_open_cleanup_is_allowed || TRUSTED_BOT_RC=$?
-            if [[ "$TRUSTED_BOT_RC" -eq 0 ]]; then
-              echo "ALLOWED: creation-time triage cleanup by github-actions[bot] for a live-verified maintainer-authored issue"
-              exit 0
-            fi
-            if [[ "$TRUSTED_BOT_RC" -eq 2 ]]; then
-              echo "::warning::Unable to verify creation-time trusted-author cleanup — restoring NMR"
-            fi
+          #aidevops:trust-boundary GH#29151/GH#29394: NMR is an external-author
+          # trust gate, not a hold for write-authorized issue authors. Permit any
+          # removal actor when the live issue author independently has write
+          # authority. Unknown authority still fails closed and restores NMR.
+          LIVE_ISSUE_JSON=""
+          LIVE_AUTHOR_RC=2
+          if LIVE_ISSUE_JSON=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null); then
+            LIVE_AUTHOR_RC=0
+            issue_author_has_live_authority "$LIVE_ISSUE_JSON" || LIVE_AUTHOR_RC=$?
+          fi
+          if [[ "$LIVE_AUTHOR_RC" -eq 0 ]]; then
+            echo "ALLOWED: NMR removal from live-verified write-authorized issue author"
+            exit 0
+          fi
+          if [[ "$LIVE_AUTHOR_RC" -eq 2 ]]; then
+            echo "::warning::Unable to verify live issue-author authority — restoring NMR"
           fi
 
           #aidevops:trust-boundary GH#1894/GH#27611/GH#28622: marker text is
@@ -1298,7 +1278,23 @@ jobs:
             # visibly instead of creating an irreversible ever-NMR record.
             EXTERNAL_AUTHOR="true"
             case "$ISSUE_AUTHOR_ASSOC" in
-              OWNER|MEMBER|COLLABORATOR) EXTERNAL_AUTHOR="false" ;;
+              OWNER|MEMBER) EXTERNAL_AUTHOR="false" ;;
+              COLLABORATOR)
+                ISSUE_AUTHOR_PERM=""
+                if ! ISSUE_AUTHOR_PERM=$(gh api "repos/${REPO}/collaborators/${ISSUE_AUTHOR}/permission" \
+                  --jq '.permission // "none"' 2>/dev/null); then
+                  echo "::error::Unable to verify permission for issue author $ISSUE_AUTHOR — leaving labels unchanged"
+                  exit 1
+                fi
+                case "$ISSUE_AUTHOR_PERM" in
+                  write|admin|maintain) EXTERNAL_AUTHOR="false" ;;
+                  none|read|triage) ;;
+                  *)
+                    echo "::error::Unexpected permission value for issue author $ISSUE_AUTHOR — leaving labels unchanged"
+                    exit 1
+                    ;;
+                esac
+                ;;
               CONTRIBUTOR|FIRST_TIME_CONTRIBUTOR|FIRST_TIMER|MANNEQUIN|NONE) ;;
               *)
                 echo "::error::Unexpected author association for issue #$ISSUE_NUMBER (author=$ISSUE_AUTHOR) — leaving labels unchanged"

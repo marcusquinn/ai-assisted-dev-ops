@@ -744,6 +744,13 @@ test_issue_author_guard_blocks_missing_label_bypass() {
 	[[ "$rc" -eq 1 && "$out" == *"no verified approval"* ]] && check=0
 	print_result "issue-author guard blocks missing-label bypass" "$check" "rc=$rc output=$out"
 
+	_DSI_TARGET_JSON='{"author_association":"NONE","user":{"login":"github-actions[bot]","type":"Bot"},"labels":[{"name":"external-contributor"}]}'
+	rc=0
+	out=$(_dsi_guard_issue_author_trust 28700 owner/repo 2>&1) || rc=$?
+	check=1
+	[[ "$rc" -eq 1 && "$out" == *"external_source=true"* ]] && check=0
+	print_result "issue-author guard blocks external-origin bot without approval" "$check" "rc=$rc output=$out"
+
 	printf '%s\n' '#!/usr/bin/env bash' 'printf "VERIFIED\n"' >"$helper"
 	rc=0
 	_dsi_guard_issue_author_trust 28700 owner/repo >/dev/null 2>&1 || rc=$?

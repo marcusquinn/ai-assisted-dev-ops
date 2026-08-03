@@ -11,8 +11,8 @@
 #       existing meta-issue URL without creating a duplicate
 #   (3) honours AIDEVOPS_CIRCUIT_BREAKER_META_FILE_DISABLE=1 as a no-op
 #   (4) validates --breaker as one of {cost,no_work}
-#   (5) unblock-on-merge removes blocked-by:#<meta> from the original
-#       and clears NMR when no other breaker markers remain
+#   (5) unblock-on-merge removes blocked-by:#<meta> from the original and
+#       restores status:available when no other current blockers remain
 #
 # Modeled on test-cost-circuit-breaker.sh (t2007).
 
@@ -61,10 +61,12 @@ FIXTURE_COMMENTS_JSON="${TEST_ROOT}/fixture-comments.json"
 FIXTURE_META_BODY="${TEST_ROOT}/fixture-meta-body"
 FIXTURE_HAS_FRAMEWORK_SOURCE="${TEST_ROOT}/fixture-has-framework-source"
 FIXTURE_REPO_PRIVATE="${TEST_ROOT}/fixture-repo-private"
+FIXTURE_BLOCKED_BY_COUNT="${TEST_ROOT}/fixture-blocked-by-count"
 echo '[]' >"$FIXTURE_COMMENTS_JSON"
 echo '' >"$FIXTURE_META_BODY"
 printf '1' >"$FIXTURE_HAS_FRAMEWORK_SOURCE"
 printf 'false' >"$FIXTURE_REPO_PRIVATE"
+printf '0' >"$FIXTURE_BLOCKED_BY_COUNT"
 
 write_stub_gh() {
 	cat >"${STUB_DIR}/gh" <<STUB
@@ -93,6 +95,17 @@ fi
 # gh api repos/SLUG/issues/N/comments --paginate
 if [[ "\$1" == "api" ]]; then
 	case "\$2" in
+		/repos/*/labels*)
+			printf 'status:available\t0e8a16\tTask is available for claiming\n'
+			printf 'status:queued\tfbca04\tWorker dispatched, not yet started\n'
+			printf 'status:claimed\tf9d0c4\tInteractive session claimed this task\n'
+			printf 'status:in-progress\t1d76db\tWorker actively running\n'
+			printf 'status:in-review\t5319e7\tPR open, awaiting review/merge\n'
+			printf 'status:done\t6f42c1\tTask is complete\n'
+			printf 'status:blocked\td93f0b\tWaiting on blocker task\n'
+			exit 0 ;;
+		/repos/*/issues/*)
+			exit 1 ;;
 		repos/*/contents/.agents/scripts/circuit-breaker-meta-filer.sh*)
 			if [[ "\$(cat "${FIXTURE_HAS_FRAMEWORK_SOURCE}")" == "1" ]]; then
 				echo '{"type":"file"}'
@@ -121,6 +134,12 @@ fi
 
 # gh issue comment N --repo SLUG --body B
 if [[ "\$1" == "issue" && "\$2" == "comment" ]]; then
+	exit 0
+fi
+
+# gh issue view N --json labels --jq ...
+if [[ "\$1" == "issue" && "\$2" == "view" ]]; then
+	cat "${FIXTURE_BLOCKED_BY_COUNT}"
 	exit 0
 fi
 
@@ -174,6 +193,7 @@ reset_stubs() {
 	echo '' >"$FIXTURE_META_BODY"
 	printf '1' >"$FIXTURE_HAS_FRAMEWORK_SOURCE"
 	printf 'false' >"$FIXTURE_REPO_PRIVATE"
+	printf '0' >"$FIXTURE_BLOCKED_BY_COUNT"
 	return 0
 }
 
@@ -268,10 +288,11 @@ else
 	print_result "cross-repo: create call targets framework repo" 1 "stub log: $(cat "$STUB_LOG")"
 fi
 
-if grep -qE 'issue edit 4003 --repo exampleorg/examplerepo --add-label blocked-by:marcusquinn/aidevops#99999' "$STUB_LOG"; then
-	print_result "cross-repo: original gets full blocked-by label" 0
+if grep -qE 'issue edit 4003 --repo exampleorg/examplerepo .*--add-label status:blocked .*--add-label blocked-by:marcusquinn/aidevops#99999' "$STUB_LOG" &&
+	! grep -q -- '--add-label needs-maintainer-review' "$STUB_LOG"; then
+	print_result "cross-repo: original gets structural block and full blocked-by label" 0
 else
-	print_result "cross-repo: original gets full blocked-by label" 1 "stub log: $(cat "$STUB_LOG")"
+	print_result "cross-repo: original gets structural block and full blocked-by label" 1 "stub log: $(cat "$STUB_LOG")"
 fi
 
 if grep -q 'circuit-breaker-meta-filed:marcusquinn/aidevops#99999' "$STUB_LOG"; then
@@ -421,6 +442,13 @@ else
 	print_result "unblock: removes blocked-by:#<meta>" 1 "stub log: $(cat "$STUB_LOG")"
 fi
 
+if grep -qE 'issue edit 21840 .*--add-label status:available' "$STUB_LOG" \
+	&& ! grep -q -- '--remove-label needs-maintainer-review' "$STUB_LOG"; then
+	print_result "unblock: restores status:available without clearing NMR" 0
+else
+	print_result "unblock: restores status:available without clearing NMR" 1 "stub log: $(cat "$STUB_LOG")"
+fi
+
 # Assert: an unblock comment was posted on #21840
 if grep -qE 'issue comment 21840 ' "$STUB_LOG"; then
 	print_result "unblock: posts unblock comment on original" 0
@@ -460,6 +488,29 @@ if grep -qE 'issue comment 4003 --repo exampleorg/examplerepo' "$STUB_LOG"; then
 	print_result "unblock-cross-repo: posts comment on original repo" 0
 else
 	print_result "unblock-cross-repo: posts comment on original repo" 1 "stub log: $(cat "$STUB_LOG")"
+fi
+
+# =============================================================================
+# Test 5c: unblock-on-merge — another current blocked-by label keeps blocked
+# =============================================================================
+reset_stubs
+printf '1' >"$FIXTURE_BLOCKED_BY_COUNT"
+cat >"$FIXTURE_META_BODY" <<'EOF'
+## Tracking original issue
+
+- Original: marcusquinn/aidevops#21840
+- Breaker: `t2769 no_work` (`cost-circuit-breaker:no_work_loop`)
+EOF
+
+OUT=$("$META_FILER" unblock-on-merge \
+	--meta 99999 --repo marcusquinn/aidevops 2>&1)
+RC=$?
+if [[ "$RC" -eq 0 ]] \
+	&& ! grep -q -- '--add-label status:available' "$STUB_LOG" \
+	&& ! grep -q -- '--remove-label needs-maintainer-review' "$STUB_LOG"; then
+	print_result "unblock-other-blocker: preserves blocked lifecycle and NMR" 0
+else
+	print_result "unblock-other-blocker: preserves blocked lifecycle and NMR" 1 "rc=$RC output=$OUT stub log: $(cat "$STUB_LOG")"
 fi
 
 # =============================================================================

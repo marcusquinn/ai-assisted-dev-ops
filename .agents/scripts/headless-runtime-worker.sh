@@ -38,6 +38,7 @@ _HRW_REASON_WORKER_COMPLETE="worker_complete"
 _HRW_TELEMETRY_SUCCESS="success"
 _HRW_TELEMETRY_FAILED="failed"
 _HRW_TELEMETRY_DEFERRED="deferred"
+_HRW_STATUS_CHECKPOINTED="checkpointed"
 _HRW_REASON_DRAFT_CHECKPOINT="worker_draft_checkpoint"
 _HRW_REASON_DRAFT_ESCALATION_FAILED="worker_draft_checkpoint_escalation_failed"
 _HRW_REASON_CLOSED_UNMERGED="worker_closed_unmerged_pr"
@@ -48,7 +49,6 @@ _HRW_REASON_OWNERSHIP_LOST="worker_ownership_lost"
 _HRW_REASON_SENSITIVE_TEMP_PREFLIGHT="worker_sensitive_temp_preflight_failed"
 _HRW_EVENT_FAILED="worker.failed"
 _HRW_EVENT_DEFERRED="worker.deferred"
-_HRW_NMR_LABEL="needs-maintainer-review"
 _HRW_PERMISSION_PERSISTENCE_FAILED="permission_request_persistence_failed"
 _HRW_SPOTLIGHT_MARKER=".metadata_never_index"
 _HRW_RECOVERY_CLASSIFICATION=""
@@ -653,9 +653,10 @@ _worker_produced_output() {
 }
 
 #######################################
-# Escalate an exhausted draft or terminally failed ready PR. The claim is only
-# released after the blocking NMR label is applied and read back. Failed or
-# invisible transitions retain ownership so ordinary dispatch cannot race.
+# Preserve an exhausted worker draft for exact-head continuation. The issue
+# remains assigned and in-review while auto-dispatch is disabled; stale recovery
+# can then route the exact existing PR instead of launching a competing branch.
+# Failed or invisible transitions retain the claim.
 # Args: $1=session key, $2=repo slug, $3=lifecycle state, $4=release reason
 #######################################
 _escalate_worker_pr_checkpoint() {
@@ -665,7 +666,7 @@ _escalate_worker_pr_checkpoint() {
 	local release_reason="${4:-$_HRW_REASON_DRAFT_CHECKPOINT}"
 	local issue_number=""
 	local runner_login=""
-	local -a transition_args=(--add-label "$_HRW_NMR_LABEL" --remove-label "auto-dispatch")
+	local -a transition_args=(--remove-label "auto-dispatch")
 
 	issue_number=$(printf '%s' "$session_key" | grep -oE '[0-9]+$' || true)
 	if [[ -z "$issue_number" || -z "$repo_slug" ]]; then
@@ -675,37 +676,47 @@ _escalate_worker_pr_checkpoint() {
 	fi
 	if declare -F _hrff_resolve_release_runner_login >/dev/null 2>&1; then
 		runner_login=$(_hrff_resolve_release_runner_login)
-		[[ -n "$runner_login" ]] && transition_args+=(--remove-assignee "$runner_login")
+		[[ -n "$runner_login" ]] && transition_args+=(--add-assignee "$runner_login")
 	fi
 	if declare -F set_issue_status >/dev/null 2>&1; then
-		if ! set_issue_status "$issue_number" "$repo_slug" "" "${transition_args[@]}"; then
+		if ! set_issue_status "$issue_number" "$repo_slug" "in-review" "${transition_args[@]}"; then
 			_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_DRAFT_ESCALATION_FAILED"
-			print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — blocking transition failed; retaining claim"
+			print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — continuation transition failed; retaining claim"
 			return 0
 		fi
 	elif ! gh issue edit "$issue_number" --repo "$repo_slug" \
-		--add-label "$_HRW_NMR_LABEL" --remove-label "auto-dispatch" >/dev/null 2>&1; then
+		--add-label "status:in-review" \
+		--remove-label "status:available,status:queued,status:in-progress" \
+		"${transition_args[@]}" >/dev/null 2>&1; then
 		_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_DRAFT_ESCALATION_FAILED"
-		print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — blocking transition failed; retaining claim"
+		print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — continuation transition failed; retaining claim"
 		return 0
 	fi
-	if ! _worker_pr_checkpoint_block_visible "$issue_number" "$repo_slug"; then
+	if ! _worker_pr_checkpoint_block_visible "$issue_number" "$repo_slug" "$runner_login"; then
 		_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_DRAFT_ESCALATION_FAILED"
-		print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — blocking label not visible; retaining claim"
+		print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — continuation state not visible; retaining claim"
 		return 0
 	fi
 
 	_hrw_release_dispatch_claim "$session_key" "$release_reason"
 	_HRW_RECOVERY_CLASSIFICATION="$release_reason"
-	print_warning "[lifecycle] worker_pr_checkpoint_escalated session=${session_key} state=${lifecycle_state} — maintainer review required"
+	print_warning "[lifecycle] worker_pr_checkpoint_preserved session=${session_key} state=${lifecycle_state} — exact-head continuation pending"
 	return 0
 }
 
 _worker_pr_checkpoint_block_visible() {
 	local issue_number="$1"
 	local repo_slug="$2"
-	gh issue view "$issue_number" --repo "$repo_slug" --json labels 2>/dev/null \
-		| jq -e --arg nmr "$_HRW_NMR_LABEL" '([.labels[]?.name] | index($nmr)) != null' >/dev/null 2>&1
+	local expected_runner="${3:-}"
+	gh issue view "$issue_number" --repo "$repo_slug" --json state,labels,assignees 2>/dev/null \
+		| jq -e --arg runner "$expected_runner" '
+			([.labels[]?.name]) as $labels |
+			([.assignees[]?.login]) as $assignees |
+			.state == "OPEN" and
+			($labels | index("status:in-review")) != null and
+			(["status:available", "status:queued", "status:in-progress", "auto-dispatch"] - $labels | length) == 4 and
+			($runner == "" or ($assignees | index($runner)) != null)
+		' >/dev/null 2>&1
 	return $?
 }
 
@@ -970,13 +981,13 @@ _handle_worker_dirty_worktree() {
 				--worktree "$work_dir" \
 				--branch "$branch_name" \
 				--changed-paths "$status_summary" \
-				--recoverability "checkpointed" 2>/dev/null || true
+				--recoverability "$_HRW_STATUS_CHECKPOINTED" 2>/dev/null || true
 		fi
 		_hrw_release_dispatch_claim "$session_key" "$_HRW_REASON_DRAFT_CHECKPOINT"
 		_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_DRAFT_CHECKPOINT"
 		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
 		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
-		_HRW_FINAL_RUNTIME_STATUS="checkpointed"
+		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
 		_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_REASON_DRAFT_CHECKPOINT"
 		print_info "[lifecycle] worker_dirty_worktree_checkpointed session=${session_key} branch=${branch_name:-<none>}"
 		return 0
@@ -1818,7 +1829,7 @@ _hrw_finish_success_run() {
 	#   branch_orphan         — branch pushed but no PR → auto-recover
 	#   local_branch_unpushed — local commits but no remote branch/PR → push+recover
 	#   dirty_worktree        — local edits exist but no commit/PR → preserve marker
-	#   draft_checkpoint      — durable but incomplete PR → explicit escalation
+	#   draft_checkpoint      — durable but incomplete PR → exact-head continuation
 	#   pr_exists             — PR confirmed, or fail-open → worker_complete
 	#
 	# Fail-open semantics are preserved: when signals cannot be evaluated (no git
@@ -1851,7 +1862,10 @@ _hrw_finish_success_run() {
 			_escalate_worker_pr_checkpoint "$session_key" "${DISPATCH_REPO_SLUG:-}" "$output_class"
 			release_needed=0
 			if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_DRAFT_CHECKPOINT" ]]; then
-				_hrw_mark_failed_terminal_state "$_HRW_STATUS_ESCALATED" "$_HRW_RECOVERY_CLASSIFICATION"
+				_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
+				_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
+				_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
+				_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_RECOVERY_CLASSIFICATION"
 			else
 				_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_RECOVERY_CLASSIFICATION"
 			fi

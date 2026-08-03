@@ -320,8 +320,8 @@ _preflight_label_maintenance() {
 }
 
 #######################################
-# Reconcile only NMR holds that pass the authority, provenance, breaker, and
-# security gates in auto_approve_maintainer_issues. Running this after the first
+# Normalize NMR only after live author-authority, provenance, breaker, and
+# security classification in auto_approve_maintainer_issues. Running this after the first
 # fill but before candidate snapshot invalidation lets newly trusted candidates
 # enter the same-cycle refill without delaying already-eligible work.
 #######################################

@@ -309,7 +309,7 @@ ${feedback_section}"
 #   $1 - linked_issue  (issue number)
 #   $2 - repo_slug     (owner/repo)
 #   $3 - source_label  (e.g. "source:ci-feedback")
-#   $4 - clear_hold    (optional: 1 removes needs-maintainer-review on recovery)
+#   $4 - clear_hold    (optional: 1 removes hold-for-review on recovery)
 #######################################
 _transition_issue_for_redispatch() {
 	local linked_issue="$1"
@@ -329,7 +329,7 @@ _transition_issue_for_redispatch() {
 		[[ -n "$_assignee" ]] && _redispatch_flags+=(--remove-assignee "$_assignee")
 	done <<<"$_assignees"
 	if [[ "$clear_hold" == "1" ]]; then
-		_redispatch_flags+=(--remove-label "needs-maintainer-review")
+		_redispatch_flags+=(--remove-label "hold-for-review")
 	fi
 
 	if declare -F set_issue_status >/dev/null 2>&1; then

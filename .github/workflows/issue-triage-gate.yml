@@ -24,17 +24,17 @@ jobs:
             const association = issue.author_association;
             const issueLabels = new Set((issue.labels || []).map(label => label.name));
 
-            // Bot accounts always bypass triage (github-actions[bot], dependabot, etc.)
-            if (issue.user.type === 'Bot') {
-              console.log(`Author ${author} is a bot — bypassing triage`);
-              return;
-            }
-
             // OWNER/MEMBER are authoritative associations. COLLABORATOR can
             // represent read/triage access, so require a live write-level lookup.
+            // Repository-installed bots are trusted automation authors, but still
+            // run through stale-NMR cleanup below instead of returning early.
+            // An explicit external-contributor label records external source
+            // provenance even when trusted automation authored the issue.
             const trustedRoles = ['OWNER', 'MEMBER'];
-            let authorIsTrusted = trustedRoles.includes(association);
-            if (!authorIsTrusted && association === 'COLLABORATOR') {
+            const hasExternalAuthoritySource = issueLabels.has('external-contributor');
+            let authorIsTrusted = !hasExternalAuthoritySource &&
+              (issue.user.type === 'Bot' || trustedRoles.includes(association));
+            if (!hasExternalAuthoritySource && !authorIsTrusted && association === 'COLLABORATOR') {
               try {
                 const permissionResponse = await github.request(
                   'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
@@ -65,7 +65,8 @@ jobs:
                     name: 'needs-maintainer-review'
                   });
                 } catch (error) {
-                  core.warning(`Unable to remove stale review label: ${error.message}`);
+                  core.error(`Unable to remove stale review label: ${error.message}`);
+                  throw error;
                 }
               }
               return;

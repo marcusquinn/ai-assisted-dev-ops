@@ -743,8 +743,8 @@ _fast_fail_reset_locked() {
 # under backoff and should not be interfered with.
 #
 # Safety ceiling (t2397): after FAST_FAIL_AGE_OUT_MAX_RESETS consecutive
-# auto-resets without a successful dispatch, applies needs-maintainer-review
-# to prevent infinite token burn on genuinely broken issues.
+# auto-resets without a successful dispatch, structurally blocks non-capacity
+# failures and routes them to terminal consolidation.
 #
 # Arguments: $1 issue_number, $2 repo_slug
 #######################################
@@ -811,13 +811,24 @@ _fast_fail_age_out_locked() {
 	new_reset_count=$((existing_reset_count + 1))
 	local max_resets="${FAST_FAIL_AGE_OUT_MAX_RESETS:-3}"
 
-	# Safety ceiling: after max_resets consecutive auto-resets, escalate to maintainer.
+	# Safety ceiling: capacity failures remain time-bounded and self-healing;
+	# other repeated failures become structurally blocked and consolidated.
 	if [[ "$new_reset_count" -gt "$max_resets" ]]; then
-		echo "[pulse-wrapper] fast_fail_age_out: #${issue_number} (${repo_slug}) exceeded ${max_resets} auto-resets without success — applying needs-maintainer-review" >>"$LOGFILE"
-		gh issue edit "$issue_number" --repo "$repo_slug" --add-label "needs-maintainer-review" >>"$LOGFILE" 2>&1 || true
 		case "$existing_reason" in
-		rate_limit* | backoff) return 0 ;;
-		*) return 2 ;;
+		rate_limit* | backoff)
+			new_reset_count="$max_resets"
+			echo "[pulse-wrapper] fast_fail_age_out: #${issue_number} (${repo_slug}) reached ${max_resets} capacity resets — retaining bounded automatic recovery" >>"$LOGFILE"
+			;;
+		*)
+			echo "[pulse-wrapper] fast_fail_age_out: #${issue_number} (${repo_slug}) exceeded ${max_resets} auto-resets without success — applying status:blocked" >>"$LOGFILE"
+			if declare -F set_issue_status >/dev/null 2>&1; then
+				set_issue_status "$issue_number" "$repo_slug" "blocked" >>"$LOGFILE" 2>&1 || true
+			else
+				gh issue edit "$issue_number" --repo "$repo_slug" \
+					--add-label "status:blocked" >>"$LOGFILE" 2>&1 || true
+			fi
+			return 2
+			;;
 		esac
 	fi
 

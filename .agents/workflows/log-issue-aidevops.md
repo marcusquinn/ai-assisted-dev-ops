@@ -41,7 +41,7 @@ these keywords.
 | Workaround applied | Likely systemic fix |
 |---|---|
 | Applied `complexity-bump-ok` label to bypass a false-positive gate | Gate needs refinement for specific false-positive class |
-| `sudo aidevops approve` to unblock auto-approved issue stuck in NMR | NMR classification logic has a gap |
+| `sudo aidevops approve` suggested for a write-authorized issue stuck in NMR | Author-authority normalization has a gap; trusted authors must not self-approve |
 | Manually ran `pre-edit-check.sh` because hook didn't fire | Hook installation or detection issue |
 | `gh pr edit --base main` after an `origin:interactive` PR stacked on a feature branch | Stacked-PR retarget logic needs extending to grandchildren |
 

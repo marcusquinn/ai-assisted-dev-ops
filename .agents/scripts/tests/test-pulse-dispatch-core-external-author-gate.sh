@@ -58,6 +58,7 @@ setup_case() {
 	local author_type="${2:-User}"
 	local approval_result="${3:-}"
 	local authority_rc="${4:-1}"
+	local external_source="${5:-false}"
 	MOCK_AUTHORITY_RC="$authority_rc"
 
 	TEST_ROOT=$(mktemp -d 2>/dev/null || mktemp -d -t aidevops-gh22399)
@@ -70,7 +71,7 @@ setup_case() {
 	: >"$LOGFILE"
 
 	cat >"${TEST_ROOT}/issue-meta.tsv" <<EOF
-${association}|${author_type}|fixture-author
+${association}|${author_type}|fixture-author|${external_source}
 EOF
 	cat >"${TEST_ROOT}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -189,6 +190,21 @@ test_collaborator_permission_lookup_failure_blocks() {
 	return 0
 }
 
+test_external_origin_bot_without_approval_blocks() {
+	setup_case "NONE" "Bot" "" 0 true
+	if _check_external_issue_author_gate 24 "owner/repo"; then
+		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "external-origin bot without approval blocks and applies NMR" 0
+		else
+			print_result "external-origin bot without approval blocks and applies NMR" 1 "NMR label was not applied"
+		fi
+	else
+		print_result "external-origin bot without approval blocks and applies NMR" 1 "Expected gate to block"
+	fi
+	cleanup_case
+	return 0
+}
+
 test_external_author_with_crypto_approval_allows_dispatch() {
 	setup_case "CONTRIBUTOR" "User" "VERIFIED"
 	if _check_external_issue_author_gate 3 "owner/repo"; then
@@ -247,6 +263,7 @@ main() {
 	test_collaborator_author_allows_dispatch
 	test_read_collaborator_without_approval_blocks
 	test_collaborator_permission_lookup_failure_blocks
+	test_external_origin_bot_without_approval_blocks
 	test_external_author_with_crypto_approval_allows_dispatch
 	test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr
 	test_author_lookup_failure_fails_closed

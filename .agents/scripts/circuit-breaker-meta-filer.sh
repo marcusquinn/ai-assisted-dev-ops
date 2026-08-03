@@ -5,9 +5,8 @@
 # circuit breakers (t2007 cost, t2769 no_work) trip (t3076).
 #
 # Background:
-#   The existing breakers halt dispatch and apply needs-maintainer-review.
-#   NMR is a maintainer-queue dead-end — it surfaces the problem but does
-#   not move it forward. This helper turns each trip into a self-healing
+#   The existing breakers halt dispatch with status:blocked. This helper turns
+#   each trip into a self-healing
 #   cycle:
 #
 #     breaker fires → forensics gathered → meta-issue filed with hypothesis
@@ -59,8 +58,8 @@
 #
 # Released by:
 #   - pulse-merge.sh               (when meta-PR merges, removes blocked-by
-#                                  on the original; clears NMR if no other
-#                                  breaker markers remain)
+#                                  on the original; restores status:available
+#                                  if no other blockers remain)
 
 set -uo pipefail
 
@@ -285,7 +284,7 @@ The breaker tripping is the SYMPTOM. This issue is for finding and fixing the RO
 
 ## Why
 
-The existing breaker (\`${breaker_label}\`) halts dispatch and applies \`needs-maintainer-review\` on the original, but does not move the underlying problem forward. NMR is a maintainer-queue dead-end. Filing this meta-issue converts the trip into a self-healing cycle: forensics → hypothesis → fix → original unblocks automatically.
+The existing breaker (\`${breaker_label}\`) halts dispatch with \`status:blocked\` on the original. Filing this meta-issue converts the trip into a self-healing cycle: forensics → hypothesis → fix → original unblocks automatically.
 
 The original (#${issue_number}) gets a \`blocked-by\` label pointing at this meta-issue and clears automatically when this meta-issue's PR merges (handled by \`pulse-merge.sh::_unblock_circuit_breaker_meta_original\`).
 
@@ -357,8 +356,8 @@ Treat the original (#${issue_number}) as evidence, not as the work to do. The wo
 
 ### Reference pattern
 
-- Existing breaker NMR application paths in \`worker-lifecycle-common.sh\` (no_work) and \`dispatch-dedup-cost.sh\` (cost) for the trip → label → comment flow that this filer hooks into.
-- \`pulse-nmr-approval.sh::_nmr_application_is_circuit_breaker_trip\` for the marker-recognition pattern (this filer's marker \`${_CB_META_MARKER}\` is also recognised).
+- Existing structural breaker paths in \`worker-lifecycle-common.sh\` (no_work) and \`dispatch-dedup-cost.sh\` (cost) for the trip → \`status:blocked\` → comment flow that this filer hooks into.
+- \`pulse-nmr-approval.sh::_nmr_application_is_circuit_breaker_trip\` only for backward-compatible recognition of pre-migration NMR episodes (this filer's marker \`${_CB_META_MARKER}\` is also recognised).
 
 ### Forensics: pulse log slice (last ${max_lines} lines mentioning the issue)
 
@@ -377,7 +376,7 @@ ${stages_slice:-(no matching stage records)}
 1. Root cause identified and named explicitly in the PR description (which file/function/race).
 2. Fix lands as a normal PR with \`Resolves #<this>\` (NOT \`Resolves #${issue_number}\` — this meta-issue is the unit of work, the original is downstream).
 3. PR merge automatically removes the meta blocker label that points from the original issue to this meta-issue via \`_unblock_circuit_breaker_meta_original\`.
-4. If no other circuit-breaker markers remain on #${issue_number}, NMR is also cleared automatically.
+4. If no other \`blocked-by:*\` labels remain on #${issue_number}, \`status:available\` is restored automatically.
 5. A regression test exists for the specific failure mode identified (test in \`.agents/scripts/tests/\`).
 
 ### Verification
@@ -385,7 +384,7 @@ ${stages_slice:-(no matching stage records)}
 \`\`\`bash
 # After the fix lands and #${issue_number} unblocks, dispatch should proceed normally:
 gh issue view ${issue_number} --repo ${repo_slug} --json labels --jq '[.labels[].name]'
-# Expect: no needs-maintainer-review, no blocked-by label for the meta-issue
+# Expect: status:available and no blocked-by label for the meta-issue
 
 # Re-run the regression tests:
 bash .agents/scripts/tests/test-circuit-breaker-meta-filer.sh
@@ -493,8 +492,17 @@ _cb_meta_link_original() {
 	# unblock independently (matches t2442 parent-task linkage style).
 	local blocked_label
 	blocked_label=$(_cb_meta_blocked_label "$repo_slug" "$meta_repo" "$meta_number")
-	gh issue edit "$original_issue" --repo "$repo_slug" \
-		--add-label "$blocked_label" 2>/dev/null || true
+	if ! set_issue_status "$original_issue" "$repo_slug" "blocked" \
+		--add-label "$blocked_label" >/dev/null 2>&1; then
+		gh issue edit "$original_issue" --repo "$repo_slug" \
+			--remove-label "status:available" \
+			--remove-label "status:queued" \
+			--remove-label "status:claimed" \
+			--remove-label "status:in-progress" \
+			--remove-label "status:in-review" \
+			--add-label "status:blocked" \
+			--add-label "$blocked_label" >/dev/null 2>&1 || true
+	fi
 
 	local tracking_ref="#${meta_number}"
 	if [[ "$repo_slug" != "$meta_repo" ]]; then
@@ -511,7 +519,7 @@ The **${breaker_label}** breaker tripped after ${failure_count} consecutive fail
 
 → Tracking: ${tracking_ref}
 
-This issue is now \`${blocked_label}\` and will unblock automatically when the meta-issue's PR merges. NMR will also clear if no other breaker markers remain.
+This issue is now \`status:blocked\` by \`${blocked_label}\` and will unblock automatically when the meta-issue's PR merges.
 
 _Auto-filed by \`circuit-breaker-meta-filer.sh\` (t3076). Set \`AIDEVOPS_CIRCUIT_BREAKER_META_FILE_DISABLE=1\` to suppress._"
 
@@ -685,45 +693,27 @@ _cb_meta_extract_original() {
 }
 
 #######################################
-# Check whether any OTHER circuit-breaker trip markers remain in the
-# original issue's comments. Used to decide whether NMR can be cleared
-# alongside the blocked-by label removal.
-#
-# Markers checked:
-#   cost-circuit-breaker:fired
-#   cost-circuit-breaker:no_work_loop
-#   stale-recovery-tick:escalated
-#   circuit-breaker-escalated
-#
-# Args: $1=original_issue, $2=repo_slug, $3=meta_number_to_ignore
-# Returns: 0 if other markers remain, 1 if none remain (NMR safe to clear)
+# Check whether any current blocked-by label remains after one meta fix merges.
+# Immutable historical comments cannot represent current blocker state.
+# Args: $1=original_issue, $2=repo_slug
+# Returns: 0 if another blocker remains, 1 if dispatch may be restored
 #######################################
-_cb_meta_other_markers_remain() {
+_cb_meta_other_blockers_remain() {
 	local original_issue="$1"
 	local repo_slug="$2"
-
-	local comments
-	comments=$(gh api "repos/${repo_slug}/issues/${original_issue}/comments" \
-		--paginate 2>/dev/null) || return 0
-
-	local hits
-	hits=$(printf '%s' "$comments" |
-		jq -r '.[].body // ""' 2>/dev/null |
-		grep -cE '(cost-circuit-breaker:(fired|no_work_loop)|stale-recovery-tick:escalated|circuit-breaker-escalated)' \
-			2>/dev/null) || hits=0
-	[[ "$hits" =~ ^[0-9]+$ ]] || hits=0
-
-	# We expect at least one trip marker (the one this meta-issue resolved).
-	# More than one means another breaker also tripped and is still
-	# unresolved — keep NMR.
-	[[ "$hits" -gt 1 ]] && return 0
+	local blocked_count=""
+	blocked_count=$(gh issue view "$original_issue" --repo "$repo_slug" \
+		--json labels --jq '[.labels[]?.name | select(startswith("blocked-by:"))] | length' \
+		2>/dev/null) || return 0
+	[[ "$blocked_count" =~ ^[0-9]+$ ]] || return 0
+	[[ "$blocked_count" -gt 0 ]] && return 0
 	return 1
 }
 
 #######################################
 # Unblock an original issue when its meta-issue's PR has merged.
-# Removes the blocked-by label for the meta; if no other breaker markers remain,
-# also clears needs-maintainer-review and posts an unblock comment.
+# Removes the blocked-by label for the meta; if no other current blocker labels
+# remain, restores status:available and posts an unblock comment.
 # Idempotent — second call is a no-op.
 #
 # Args: $1=meta_issue_number, $2=repo_slug
@@ -779,11 +769,11 @@ cmd_unblock_on_merge() {
 			--remove-label "blocked-by:#${meta_number}" 2>/dev/null || true
 	fi
 
-	local nmr_cleared="no"
-	if ! _cb_meta_other_markers_remain "$original_issue" "$original_repo"; then
-		gh issue edit "$original_issue" --repo "$original_repo" \
-			--remove-label "needs-maintainer-review" 2>/dev/null || true
-		nmr_cleared="yes"
+	local dispatch_released="no"
+	if ! _cb_meta_other_blockers_remain "$original_issue" "$original_repo"; then
+		if set_issue_status "$original_issue" "$original_repo" "available" 2>/dev/null; then
+			dispatch_released="yes"
+		fi
 	fi
 
 	gh_issue_comment "$original_issue" --repo "$original_repo" \
@@ -792,13 +782,13 @@ cmd_unblock_on_merge() {
 
 The meta-issue ${repo_slug}#${meta_number} (which was diagnosing the breaker trip on this issue) has merged its fix. \`${blocked_label}\` has been removed.
 
-NMR cleared: **${nmr_cleared}** _(no other breaker markers remained)_.
+Dispatch released: **${dispatch_released}** _(no other \`blocked-by:*\` labels remained)_.
 
 If dispatch should now proceed, the next pulse cycle will pick this up.
 
 _Auto-released by \`circuit-breaker-meta-filer.sh\` (t3076) via \`pulse-merge.sh::_handle_post_merge_actions\`._" 2>/dev/null || true
 
-	log_success "[circuit-breaker-meta-filer] unblocked ${original_repo}#${original_issue} (meta=${repo_slug}#${meta_number}, nmr_cleared=${nmr_cleared})" >&2
+	log_success "[circuit-breaker-meta-filer] unblocked ${original_repo}#${original_issue} (meta=${repo_slug}#${meta_number}, dispatch_released=${dispatch_released})" >&2
 	return 0
 }
 

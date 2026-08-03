@@ -1377,13 +1377,13 @@ _dispatch_skip_for_backoff() {
 		if [[ "$_backoff_rc" -eq 1 ]]; then
 			echo "[pulse-wrapper] Dispatch_max: skipping #${issue_number} (${repo_slug}) — ${_backoff_output}" >>"$LOGFILE"
 			_dispatch_stats_increment "dispatch_candidate_skipped_backoff"
-			# Apply NMR when the backoff helper signals 4th+ failure threshold.
-			if printf '%s' "$_backoff_output" | grep -q 'NMR_REQUIRED'; then
+			# Record the extended cooldown once at the 4th+ failure threshold.
+			if printf '%s' "$_backoff_output" | grep -q 'BACKOFF_NOTICE_REQUIRED'; then
 				local _backoff_count=""
 				_backoff_count=$(printf '%s' "$_backoff_output" | grep -oE 'count=[0-9]+' | head -1 | cut -d= -f2)
 				[[ "$_backoff_count" =~ ^[0-9]+$ ]] || _backoff_count="${DISPATCH_BACKOFF_NMR_THRESHOLD:-4}"
-				declare -F _db_apply_nmr_if_needed >/dev/null 2>&1 && \
-					_db_apply_nmr_if_needed "$issue_number" "$repo_slug" "$_backoff_count" || true
+				declare -F _db_record_extended_backoff_notice >/dev/null 2>&1 && \
+					_db_record_extended_backoff_notice "$issue_number" "$repo_slug" "$_backoff_count" || true
 			fi
 			return 0
 		fi

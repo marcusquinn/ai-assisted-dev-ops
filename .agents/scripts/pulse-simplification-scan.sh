@@ -327,10 +327,11 @@ This is an automated stall-detection sweep. The LLM should review the actual iss
 		--tokens 0 --time "$_sweep_elapsed" --session-type routine 2>/dev/null || true)
 	sweep_body="${sweep_body}${sig_footer}"
 
-	# Skip needs-maintainer-review when user is maintainer (GH#16786)
+	# Non-maintainer admins receive hold-for-review; NMR is reserved for
+	# external-author trust gates (GH#16786/GH#29394).
 	local sweep_review_label=""
 	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != "true" ]]; then
-		sweep_review_label="--label needs-maintainer-review"
+		sweep_review_label="--label hold-for-review"
 	fi
 	# shellcheck disable=SC2086
 	# t1955: Don't self-assign on issue creation — let dispatch_with_dedup handle
@@ -578,9 +579,8 @@ _complexity_scan_permission_gate() {
 		esac
 	fi
 
-	# When the authenticated user IS the repo maintainer, skip the
-	# needs-maintainer-review label — the standard auto-dispatch + PR
-	# review flow provides sufficient gating (GH#16786).
+	# When the authenticated user IS the configured maintainer, skip the explicit
+	# hold — the standard auto-dispatch + PR review flow is sufficient (GH#16786).
 	local maintainer_from_config
 	maintainer_from_config=$(jq -r --arg slug "$aidevops_slug" \
 		'.initialized_repos[] | select(.slug == $slug) | .maintainer // empty' \

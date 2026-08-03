@@ -14,8 +14,8 @@
 #
 # Post-fix semantics:
 #   - Stage 1: maintainer fast-path (repos.json .maintainer or slug owner)
-#   - Stage 2: collaborator permission probe (admin OR maintain → trusted)
-#   - Fail-closed on API errors, missing write permission, unknown user
+#   - Stage 2: collaborator permission probe (admin/maintain/write → trusted)
+#   - Fail-closed on API errors, read-only permission, unknown user
 #
 # This test never hits the real GitHub API — the `gh` CLI is stubbed via a
 # shell script on PATH that serves fixture responses.
@@ -193,17 +193,16 @@ test_maintain_collaborator_is_trusted() {
 	return 0
 }
 
-test_write_collaborator_is_not_trusted() {
-	# Stage 2: non-maintainer with write permission → NOT trusted.
-	# Write collaborators can push branches but have not been granted the
-	# same institutional trust as admin/maintain.
+test_write_collaborator_is_trusted() {
+	# Stage 2: write permission is authenticated repository authority. NMR is
+	# reserved for external/read-only authors, not a higher maintainer-role bar.
 	set_permission_fixture '{"permission":"write"}'
 	if _is_maintainer_equivalent_author "contributor-dev" "exampleorg/examplerepo"; then
-		print_result "write collaborator NOT treated as maintainer-equivalent (t2686)" 1 \
-			"Expected exit 1 — write permission is below the trust bar"
+		print_result "write collaborator treated as repository-authorized (GH#29394)" 0
 		return 0
 	fi
-	print_result "write collaborator NOT treated as maintainer-equivalent (t2686)" 0
+	print_result "write collaborator treated as repository-authorized (GH#29394)" 1 \
+		"Expected exit 0 — write permission satisfies the external-authority gate"
 	return 0
 }
 
@@ -276,7 +275,7 @@ main() {
 	test_maintainer_fast_path_matches
 	test_admin_collaborator_is_trusted
 	test_maintain_collaborator_is_trusted
-	test_write_collaborator_is_not_trusted
+	test_write_collaborator_is_trusted
 	test_api_failure_is_fail_closed
 	test_none_permission_is_not_trusted
 	test_empty_author_returns_nonzero

@@ -370,20 +370,20 @@ test_output_md_report() {
 test_real_nmr_hold_workflow() {
 	local nmr_file=".github/workflows/nmr-hold-comment.yml"
 	if [ ! -f "$nmr_file" ]; then
-		print_result "real: nmr-hold-comment.yml flagged as VULN" 1 "file not found"
+		print_result "real: nmr-hold-comment.yml avoids cancellation cascade" 1 "file not found"
 		return 0
 	fi
 	local output rc
 	output=$(bash "$SCRIPT_UNDER_TEST" "$nmr_file" 2>&1)
 	rc=$?
 	local failed=0
-	if [[ $rc -ne 1 ]]; then
+	if [[ $rc -ne 0 ]]; then
 		failed=1
 	fi
-	if ! echo "$output" | grep -q "VULN"; then
+	if echo "$output" | grep -q "VULN"; then
 		failed=1
 	fi
-	print_result "real: nmr-hold-comment.yml flagged as VULN" "$failed" "exit=$rc"
+	print_result "real: nmr-hold-comment.yml avoids cancellation cascade" "$failed" "exit=$rc"
 	return 0
 }
 

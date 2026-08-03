@@ -1027,7 +1027,7 @@ _is_assigned_check_hold_for_review() {
 # across many issues simultaneously when one runner is unhealthy.
 #
 # Complementary to:
-#   - t2769 (per-issue 3-stack circuit breaker → NMR escalation)
+#   - t2769 (per-issue 3-stack circuit breaker → status:blocked + meta-repair)
 #   - t2897 (per-runner health breaker, 10 events / 6h → runner pause)
 # This guard is per-issue and short (default 30 min), so it absorbs
 # transient runner failures before the longer-horizon breakers fire.
@@ -1468,8 +1468,8 @@ check_worker_orphan_remote_children() {
 # is_assigned helper: cost-per-issue circuit breaker (t2007).
 #
 # Aggregate token spend across all worker attempts; if the cumulative total
-# exceeds the tier-appropriate budget, apply needs-maintainer-review and
-# block dispatch. Fail-open on aggregation errors so unrelated GitHub API
+# exceeds the tier-appropriate budget, apply status:blocked and stop dispatch.
+# Fail-open on aggregation errors so unrelated GitHub API
 # hiccups don't starve the queue. Closes the cost-runaway hole that t1986
 # (parent-task guard) and t2008 (stale-recovery escalation) leave open: an
 # issue with a correct tier assignment that workers can never finish

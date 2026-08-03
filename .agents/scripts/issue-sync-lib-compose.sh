@@ -188,7 +188,7 @@ Without at least one of these, this issue will:
 
 1. Sit blocked (no worker can pick it up).
 2. Receive a decomposition nudge on the next pulse cycle (\`<!-- parent-needs-decomposition -->\`).
-3. Escalate to \`needs-maintainer-review\` after 7 days if still unresolved (t2442).
+3. Receive a one-time advisory escalation after 7 days if still unresolved (t2442).
 4. Be picked up by the auto-decomposer scanner after 4h if the nudge sits (t2442/t2949) — a \`tier:thinking\` worker will be dispatched to propose a decomposition plan.
 
 **Quick fixes — pick one:**

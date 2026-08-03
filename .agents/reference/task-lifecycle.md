@@ -11,7 +11,7 @@ When to load:
 - Deciding whether a task should be auto-dispatched, parent-blocked, or implemented interactively.
 - Updating task completion state or linking verification evidence.
 - Creating tasks in another registered repo or editing `repos.json`.
-- Diagnosing issue/PR lifecycle labels, origin labels, auto-merge eligibility, cryptographic approvals, or NMR automation.
+- Diagnosing issue/PR lifecycle labels, origin labels, auto-merge eligibility, cryptographic approvals, or external-author NMR normalization.
 
 For prompt-economy reasons these rules live here rather than in always-on AGENTS.md context. The pointer in AGENTS.md (`## Task Lifecycle`) names the key lifecycle topics so a `grep` in AGENTS.md still finds this forwarding address.
 
@@ -138,7 +138,7 @@ routine uncertainty into `#no-auto-dispatch`.
 
 **Auto-merge timing (t2411/GH#23238):** `origin:interactive` PRs from `OWNER`/`MEMBER` auto-merge only when CI passes, no CHANGES_REQUESTED, not draft, no `hold-for-review`, and merge throughput is explicitly opted in by `allow-auto-merge`, `AIDEVOPS_INTERACTIVE_PR_AUTO_MERGE=1`, global `orchestration.interactive_pr_auto_merge=true`, or per-repo `repos.json` `interactive_pr_auto_merge=true`. Default is manual/draft. `/pr-loop` or an explicit finalise/ready request is the normal signal to make a draft PR ready. Full checklist and user preference precedence: `reference/auto-merge.md`.
 
-**Auto-merge timing (t2449, t3052, t3062) — `origin:worker` (worker-briefed):** `origin:worker` PRs auto-merge when the linked issue was filed by `OWNER`/`MEMBER` OR the issue author login is in the trusted-issue-author allowlist (`.agents/configs/trusted-issue-authors.conf`, t3062) OR the linked issue has a cryptographic approval signature from a maintainer (`sudo aidevops approve issue N`), NMR was never applied OR was cleared via **cryptographic** approval (not `auto_approve_maintainer_issues`), and CI passes. Feature flag: `AIDEVOPS_WORKER_BRIEFED_AUTO_MERGE` (default 1=on). Full 9-criterion checklist + security rationale: `reference/auto-merge.md`.
+**Auto-merge timing (t2449, t3052, t3062) — `origin:worker` (worker-briefed):** `origin:worker` PRs auto-merge when the linked issue was filed by `OWNER`/`MEMBER`, its author has authenticated write authority, its author is in the trusted-issue-author allowlist (`.agents/configs/trusted-issue-authors.conf`, t3062), OR the linked issue has verified cryptographic maintainer approval (`sudo aidevops approve issue N`); no live NMR/hold gate remains; and CI passes. Historical NMR does not force a trusted author to self-approve. Feature flag: `AIDEVOPS_WORKER_BRIEFED_AUTO_MERGE` (default 1=on). Full 9-criterion checklist + security rationale: `reference/auto-merge.md`.
 
 **Admin merge authority:** Interactive sessions run as the repo admin/owner. For maintainer-owned or maintainer-approved work (`OWNER`/`MEMBER` PR author, maintainer-authored linked issue, trusted issue author, or valid crypto approval), `REVIEW_REQUIRED`, stale branch-protection state, or a self-blocking framework gate is not a user-action blocker once non-gate CI is green and no human `CHANGES_REQUESTED` review exists. Use `gh pr merge <N> --repo <slug> --admin --squash --delete-branch` when needed and record the evidence. Only keep the merge gated when the issue/PR originates from a non-maintainer and lacks cryptographic maintainer approval.
 
@@ -158,9 +158,9 @@ Architecture: `dispatch_with_dedup` → `check_dispatch_dedup` Layer 6 is the ca
 
 Use for: decomposition epics, roadmap trackers, research summaries. **Do not use for:** issues that should be implemented as a single unit.
 
-**Maintainer-authored research tasks MUST use `#parent` (t2211):** if a maintainer files an issue without `#auto-dispatch` and it later escalates to `needs-maintainer-review` (e.g. because a worker picked it up anyway via stale-recovery or a TODO-first flow), `auto_approve_maintainer_issues()` at `pulse-nmr-approval.sh:468-470` unconditionally adds the `auto-dispatch` label when removing NMR. Body prose like "Do NOT `#auto-dispatch`" is silently overridden — the auto-approval path intentionally converts NMR'd maintainer-authored issues into dispatchable ones (approver intent wins). `#parent` is the only reliable dispatch block in this case because its `parent-task` label short-circuits `dispatch-dedup-helper.sh is-assigned` with `PARENT_TASK_BLOCKED` upstream of the approval path. Practical rule: any investigation, research, or "think-before-acting" issue the maintainer files should carry `#parent` from the start.
+**Maintainer-authored roadmap/research tasks use `#parent` (t2211):** `parent-task` is the permanent structural dispatch block for work implemented only through children. It short-circuits `dispatch-dedup-helper.sh is-assigned` with `PARENT_TASK_BLOCKED`, independent of authority-label normalization. Use `no-auto-dispatch` for a durable explicit manual stop on a normal issue and `hold-for-review` for a specific unresolved decision; body prose alone is not a dispatch block.
 
-**Parent-task decomposition lifecycle (t2442):** A `parent-task` label must be paired with a decomposition plan or it becomes backlog rot. Five cooperating enforcement mechanisms: no-markers warning at creation, prose-pattern child extraction, advisory nudge (posted on next pulse cycle after ≥4h, env `PARENT_TASK_NUDGE_SECONDS`), auto-decomposer scanner (every pulse cycle, 4h nudge-age threshold, 4h re-file gate, env `PARENT_TASK_REFILE_GATE_SECONDS`), and 7-day NMR escalation. Escalation never removes `parent-task`. Full detail: `reference/parent-task-lifecycle.md`.
+**Parent-task decomposition lifecycle (t2442):** A `parent-task` label must be paired with a decomposition plan or it becomes backlog rot. Five cooperating enforcement mechanisms: no-markers warning at creation, prose-pattern child extraction, advisory nudge (posted on next pulse cycle after ≥4h, env `PARENT_TASK_NUDGE_SECONDS`), auto-decomposer scanner (every pulse cycle, 4h nudge-age threshold, 4h re-file gate, env `PARENT_TASK_REFILE_GATE_SECONDS`), and a 7-day advisory escalation. Escalation never removes `parent-task` or adds a redundant blocker. Deterministic incomplete close-contract repairs separately use `hold-for-review`. Full detail: `reference/parent-task-lifecycle.md`.
 
 Completion: NEVER mark `[x]` without merged PR (`pr:#NNN`) or `verified:YYYY-MM-DD`. Use `task-complete-helper.sh`. Every completed task must link to its verification evidence — work without an audit trail is unverifiable and may be reverted.
 
@@ -205,13 +205,10 @@ Full rules: `reference/planning-detail.md`
 
 For multi-runner coordination (concurrent pulse runners across machines), see `reference/cross-runner-coordination.md`.
 
-## Cryptographic approval and NMR automation
+## Cryptographic approval and review-block semantics
 
 **Cryptographic issue/PR approval (human-only gate):** `sudo aidevops approve issue <number> [owner/repo]` — SSH-signed approval comment; workers cannot forge it (private key is root-only). Setup once with `sudo aidevops approve setup`. Verify: `aidevops approve verify <number>`. This is distinct from the `ai-approved` label (which is a simple collaborator gate, not cryptographic).
 
-**NMR automation signatures (t2386, split semantics):** `auto_approve_maintainer_issues` in `pulse-nmr-approval.sh` distinguishes three cases:
-- **Creation-default** (`source:review-scanner` marker/label) → auto-approval CLEARS NMR so the issue can dispatch.
-- **Circuit-breaker trip** (`stale-recovery-tick:escalated`, `cost-circuit-breaker:fired` markers) → auto-approval PRESERVES NMR. Clear with `sudo aidevops approve issue <N>` once the problem is fixed.
-- **Manual hold** (no markers) → auto-approval PRESERVES NMR.
+**Canonical split:** `needs-maintainer-review` means missing external-author authority and requires cryptographic approval. `hold-for-review` means an internal/manual content, policy, architecture, or security decision and is removed explicitly after review. `status:blocked`, cooldown state, or a root-cause meta-issue represents a machine-recoverable structural/circuit-breaker failure.
 
-Background and infinite-loop root cause (t2386): `reference/auto-merge.md` (NMR section).
+`auto_approve_maintainer_issues` verifies live author authority. Write-authorized authors never self-approve: legacy accidental NMR is cleared, intentional NMR becomes `hold-for-review`, and no synthetic approval marker is posted. Unknown authority fails closed. Legacy automation signatures remain recognized only for safe migration and loop prevention; full rationale: `reference/auto-merge.md`.

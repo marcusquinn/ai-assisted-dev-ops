@@ -61,6 +61,17 @@ source "${SCRIPTS_DIR}/pulse-dispatch-worker-launch.sh" >/dev/null 2>&1 || {
 	exit 1
 }
 
+# Capture semantic lifecycle transitions after the sourced modules have loaded
+# the production wrapper implementation.
+set_issue_status() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local status="$3"
+	shift 3
+	printf 'set_issue_status %s %s %s %s\n' "$issue_number" "$repo_slug" "$status" "$*" >>"${TMP}/gh-calls.log"
+	return 0
+}
+
 write_state() {
 	local count="$1"
 	local reason="${2:-worker_noop_zero_output}"
@@ -162,12 +173,13 @@ _dlw_hold_repeated_zero_output 123 owner/repo
 hold_rc=$?
 gh_calls=$(tr '\n' ' ' <"${TMP}/gh-calls.log" 2>/dev/null || true)
 if [[ "$hold_rc" -eq 0 ]] \
-	&& printf '%s' "$gh_calls" | grep -q 'needs-maintainer-review' \
+	&& printf '%s' "$gh_calls" | grep -q 'set_issue_status 123 owner/repo blocked' \
 	&& printf '%s' "$gh_calls" | grep -q 'dispatch-infrastructure-failure' \
+	&& ! printf '%s' "$gh_calls" | grep -q -- '--add-label needs-maintainer-review' \
 	&& ! printf '%s' "$gh_calls" | grep -q 'needs-brief-rewrite'; then
-	pass "continued zero-output launches hold dispatch for infrastructure review"
+	pass "continued zero-output launches apply structural infrastructure block"
 else
-	fail "continued zero-output launches hold dispatch for infrastructure review" \
+	fail "continued zero-output launches apply structural infrastructure block" \
 		"rc=${hold_rc}; gh_calls=${gh_calls}"
 fi
 
@@ -179,7 +191,9 @@ _dlw_hold_repeated_zero_output 123 owner/repo
 comment_hold_rc=$?
 comment_gh_calls=$(tr '\n' ' ' <"${TMP}/gh-calls.log" 2>/dev/null || true)
 if [[ "$comment_hold_rc" -eq 0 ]] \
+	&& printf '%s' "$comment_gh_calls" | grep -q 'set_issue_status 123 owner/repo blocked' \
 	&& printf '%s' "$comment_gh_calls" | grep -q 'dispatch-infrastructure-failure' \
+	&& ! printf '%s' "$comment_gh_calls" | grep -q -- '--add-label needs-maintainer-review' \
 	&& ! printf '%s' "$comment_gh_calls" | grep -q 'needs-brief-rewrite'; then
 	pass "comment evidence triggers infrastructure hold when state count is low"
 else
@@ -197,7 +211,9 @@ shared_metrics_hold_rc=$?
 shared_metrics_hold_calls=$(tr '\n' ' ' <"${TMP}/gh-calls.log" 2>/dev/null || true)
 hold_api_calls=$(wc -l <"${TMP}/gh-api-calls.log" | tr -d '[:space:]')
 if [[ "$shared_metrics_hold_rc" -eq 0 ]] \
+	&& printf '%s' "$shared_metrics_hold_calls" | grep -q 'set_issue_status 123 owner/repo blocked' \
 	&& printf '%s' "$shared_metrics_hold_calls" | grep -q 'dispatch-infrastructure-failure' \
+	&& ! printf '%s' "$shared_metrics_hold_calls" | grep -q -- '--add-label needs-maintainer-review' \
 	&& ! printf '%s' "$shared_metrics_hold_calls" | grep -q 'needs-brief-rewrite' \
 	&& [[ "$hold_api_calls" == "1" ]]; then
 	pass "zero-output hold reuses comment bloat metrics for evidence count"

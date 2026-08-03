@@ -152,7 +152,7 @@ Do not treat null snapshot fields as proof that content or labels were removed.
 - `status:claimed` — dispatched but not yet started
 - `origin:interactive` — human session ownership
 - `no-auto-dispatch` — explicit opt-out of pulse dispatch
-- `needs-maintainer-review` — human review gate in place
+- `needs-maintainer-review` — external-author authority gate in place
 
 **Normal causes:** Intentional state transitions (e.g., `status:in-review` → `status:done` on PR merge).
 

@@ -10,7 +10,8 @@ PULSE_FEEDBACK_ROUTE_DEFERRED_RC=75
 PULSE_FEEDBACK_ROUTE_MAINTAINER_RC=76
 PULSE_FEEDBACK_ROUTE_HANDLED_RC=77
 PULSE_FEEDBACK_ROUTE_CLOSED_STATE="CLOSED"
-PULSE_FEEDBACK_ROUTE_HOLD_LABEL="needs-maintainer-review"
+PULSE_FEEDBACK_ROUTE_HOLD_LABEL="hold-for-review"
+PULSE_FEEDBACK_ROUTE_NMR_LABEL="needs-maintainer-review"
 PULSE_FEEDBACK_ROUTE_OPEN_STATE="OPEN"
 
 _feedback_route_gh_write() {
@@ -34,7 +35,8 @@ _feedback_route_labels_block_routing() {
 
 	if _feedback_route_labels_include "$labels" "no-takeover" \
 		|| _feedback_route_labels_include "$labels" "external-contributor" \
-		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
+		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_NMR_LABEL"; then
 		return 0
 	fi
 	if _feedback_route_labels_include "$labels" "origin:interactive" \
@@ -193,6 +195,7 @@ _feedback_route_issue_is_ready() {
 	! _feedback_route_labels_include "$labels" "origin:interactive" || return 1
 	! _feedback_route_labels_include "$labels" "origin:worker-takeover" || return 1
 	! _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" || return 1
+	! _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_NMR_LABEL" || return 1
 	[[ -z "$assignees" ]] || return 1
 	return 0
 }

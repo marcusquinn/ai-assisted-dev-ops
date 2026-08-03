@@ -7,12 +7,15 @@
 #
 # Strategy: stub `gh` as a bash function (PATH-shadow won't work because the
 # reconcile module runs with the pulse's prepended PATH) so we can intercept
-# every call. Five fixture issues:
+# every call. Eight fixture issues:
 #   #500 — aidevops-shaped + labelless + MEMBER author          (MUST be blessed internal)
 #   #501 — non-aidevops shape (random bug title)                (MUST be ignored)
 #   #502 — aidevops-shaped + already has origin:worker          (MUST be ignored)
 #   #503 — aidevops-shaped + labelless + CONTRIBUTOR author     (MUST be gated external, t2450)
 #   #504 — aidevops-shaped + labelless + NONE author, no tags   (MUST be gated external, t2450)
+#   #505 — aidevops-shaped + labelless + read collaborator       (MUST be gated external)
+#   #506 — aidevops-shaped + labelless + write collaborator      (MUST be blessed internal)
+#   #507 — aidevops-shaped + labelless + trusted bot             (MUST be blessed internal)
 #
 # Assertions — internal path (unchanged from t2112):
 #   - #500 edit adds origin:worker, tier:standard, and body tags (ai, security)
@@ -90,6 +93,24 @@ FIXTURE_ISSUES_JSON=$(
     "title": "GH#9999: propose additional dedup layer",
     "body": "External NONE-authored labelless aidevops-shaped issue with no body tags.",
     "labels": []
+  },
+  {
+    "number": 505,
+    "title": "t2550: read collaborator proposal",
+    "body": "Read-only collaborator issue.",
+    "labels": []
+  },
+  {
+    "number": 506,
+    "title": "t2551: write collaborator task",
+    "body": "Write-authorized collaborator issue.",
+    "labels": []
+  },
+  {
+    "number": 507,
+    "title": "t2552: trusted automation task",
+    "body": "Trusted bot issue.",
+    "labels": []
   }
 ]
 JSON
@@ -108,6 +129,18 @@ export -f set_issue_status
 
 # shellcheck disable=SC1090
 source "$RECONCILE_SRC"
+
+_gh_actor_has_repo_write_authority() {
+	local repo_slug="$1"
+	local author_login="$2"
+	local association="$3"
+	[[ -n "$repo_slug" && "$association" == "COLLABORATOR" ]] || return 2
+	case "$author_login" in
+	write-collab) return 0 ;;
+	read-collab) return 1 ;;
+	*) return 2 ;;
+	esac
+}
 
 # Stub the t2393 comment wrappers so reconcile_labelless_aidevops_issues's
 # `gh_issue_comment` call reaches the test's gh mock. The real wrappers live
@@ -153,9 +186,12 @@ gh() {
 			*/issues/*)
 				local num="${sub##*/}"
 				case "$num" in
-					500 | 501 | 502) printf '%s' '{"author_association":"MEMBER"}' ;;
-					503) printf '%s' '{"author_association":"CONTRIBUTOR"}' ;;
-					504) printf '%s' '{"author_association":"NONE"}' ;;
+					500 | 501 | 502) printf '%s' '{"author_association":"MEMBER","user":{"login":"member","type":"User"}}' ;;
+					503) printf '%s' '{"author_association":"CONTRIBUTOR","user":{"login":"external","type":"User"}}' ;;
+					504) printf '%s' '{"author_association":"NONE","user":{"login":"unknown","type":"User"}}' ;;
+					505) printf '%s' '{"author_association":"COLLABORATOR","user":{"login":"read-collab","type":"User"}}' ;;
+					506) printf '%s' '{"author_association":"COLLABORATOR","user":{"login":"write-collab","type":"User"}}' ;;
+					507) printf '%s' '{"author_association":"NONE","user":{"login":"github-actions[bot]","type":"Bot"}}' ;;
 					*) printf '%s' '{"author_association":"NONE"}' ;;
 				esac
 				return 0
@@ -217,14 +253,31 @@ edit_501=$(grep -c '^gh issue edit 501 --repo test/repo' "$TRACE_FILE" || true)
 edit_502=$(grep -c '^gh issue edit 502 --repo test/repo' "$TRACE_FILE" || true)
 comment_500=$(grep -c '^gh issue comment 500 --repo test/repo' "$TRACE_FILE" || true)
 comment_501=$(grep -c '^gh issue comment 501 --repo test/repo' "$TRACE_FILE" || true)
-rest_comment_reads=$(grep -cE '^gh api repos/test/repo/issues/(500|503|504)/comments\?per_page=100 --paginate --slurp$' "$TRACE_FILE" || true)
+rest_comment_reads=$(grep -cE '^gh api repos/test/repo/issues/(500|503|504|505|506|507)/comments\?per_page=100 --paginate --slurp$' "$TRACE_FILE" || true)
 native_comment_reads=$(grep -cE '^gh issue view .*--json comments' "$TRACE_FILE" || true)
 
-if [[ "$rest_comment_reads" -ne 3 || "$native_comment_reads" -ne 0 ]]; then
-	printf 'FAIL: expected 3 paginated REST comment reads and 0 native comment views; got REST=%d native=%d\n' \
+if [[ "$rest_comment_reads" -ne 6 || "$native_comment_reads" -ne 0 ]]; then
+	printf 'FAIL: expected 6 paginated REST comment reads and 0 native comment views; got REST=%d native=%d\n' \
 		"$rest_comment_reads" "$native_comment_reads"
 	failed=1
 fi
+
+# GH#29394: COLLABORATOR must be live permission-checked, while trusted bots
+# retain the automation fast path.
+edit_line_505=$(grep '^gh issue edit 505 --repo test/repo' "$TRACE_FILE" | head -1)
+if [[ "$edit_line_505" != *"--add-label needs-maintainer-review"* || "$edit_line_505" == *"--add-label origin:worker"* ]]; then
+	printf 'FAIL: #505 read collaborator did not retain the external-authority gate\n'
+	printf '  got: %s\n' "$edit_line_505"
+	failed=1
+fi
+for trusted_num in 506 507; do
+	trusted_line=$(grep "^gh issue edit ${trusted_num} --repo test/repo" "$TRACE_FILE" | head -1)
+	if [[ "$trusted_line" != *"--add-label origin:worker"* || "$trusted_line" != *"--add-label tier:standard"* || "$trusted_line" == *"needs-maintainer-review"* ]]; then
+		printf 'FAIL: #%s trusted author did not receive internal backfill labels\n' "$trusted_num"
+		printf '  got: %s\n' "$trusted_line"
+		failed=1
+	fi
+done
 
 # #500 MUST be edited at least once
 if [[ "$edit_500" -lt 1 ]]; then

@@ -363,9 +363,11 @@ _build_quality_debt_labels() {
 	fi
 
 	# GH#17916: External PRs get needs-maintainer-review so the dispatch gate
-	# actually blocks until the maintainer approves. Maintainer PRs skip this.
+	# actually blocks until the maintainer approves. Preserve the external-origin
+	# provenance because the generated issue itself is authored by trusted
+	# automation. Maintainer PRs skip this gate.
 	if [[ "$is_maintainer_pr" != "true" ]]; then
-		label_args="${label_args},needs-maintainer-review"
+		label_args="${label_args},external-contributor,needs-maintainer-review"
 	fi
 
 	printf '%s' "$label_args"
@@ -625,7 +627,7 @@ _create_or_append_file_issue() {
 #      Avoids a gh api call on solo-maintainer repos (the common case).
 #   2. Collaborator-permission probe:
 #      gh api repos/{slug}/collaborators/{user}/permission.
-#      Accepts permission ∈ {admin, maintain}. Fail-closed on API errors
+#      Accepts permission ∈ {admin, maintain, write}. Fail-closed on API errors
 #      (404, 403, network failure) — an unreachable API is not a trust
 #      signal; default to NOT maintainer-equivalent so NMR still applies.
 #
@@ -661,7 +663,8 @@ _is_maintainer_equivalent_author() {
 		return 0
 	fi
 
-	# Stage 2: collaborator permission probe. Accepts admin or maintain.
+	# Stage 2: collaborator permission probe. NMR is an external-authority gate,
+	# so every authenticated write-level collaborator is trusted here.
 	# #aidevops:trust-boundary — maintainer-equivalent classification requires
 	# confirmed admin/maintain; lookup failures fail closed separately from none.
 	local collab_permission=""
@@ -669,7 +672,7 @@ _is_maintainer_equivalent_author() {
 		echo "[quality-feedback] permission check failed for author ${pr_author} on ${repo_slug} (HTTP ${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-unknown}) — not treating as maintainer-equivalent" >&2
 		return 1
 	}
-	if [[ "$collab_permission" == "admin" || "$collab_permission" == "maintain" ]]; then
+	if [[ "$collab_permission" == "admin" || "$collab_permission" == "maintain" || "$collab_permission" == "write" ]]; then
 		echo "[quality-feedback] author ${pr_author} has ${collab_permission} permission on ${repo_slug} — treating as maintainer-equivalent (t2686)" >&2
 		return 0
 	fi

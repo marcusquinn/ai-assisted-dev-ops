@@ -204,7 +204,7 @@ assert_grep_fixed \
 	"$PARENT_TARGET"
 
 # --- t2211 constraint: escalation preserves parent-task label ---
-# Escalation applies NMR but must NEVER execute a `gh issue edit
+# Escalation remains advisory and must NEVER execute a `gh issue edit
 # --remove-label parent-task` on the escalated issue — that would
 # defeat the dispatch block. The ONLY time `--remove-label parent-task`
 # may appear is inside the comment body's markdown code fence as an

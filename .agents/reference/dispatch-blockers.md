@@ -14,11 +14,11 @@ Applied to GitHub issues. The pulse checks these before spawning a worker.
 
 | Label | Enforced by | Rationale |
 |-------|-------------|-----------|
-| `parent-task` | `dispatch-dedup-helper.sh` `_is_assigned_check_parent_task` | Epics/trackers — children implement, not this issue. Cannot be overridden by NMR clearance (t2211). |
+| `parent-task` | `dispatch-dedup-helper.sh` `_is_assigned_check_parent_task` | Epics/trackers — children implement, not this issue. Permanent until explicitly removed; review-label normalization cannot override it (t2211). |
 | `meta` | Same as `parent-task` — treated as an alias | Alternative spelling of `parent-task`. |
 | `no-auto-dispatch` | `dispatch-dedup-helper.sh` `_is_assigned_check_no_auto_dispatch` (t2832), `issue-sync-lib.sh`, `interactive-session-helper.sh` lockdown | Durable explicit manual hold for issues. Blocks dispatch (`NO_AUTO_DISPATCH_BLOCKED`), ordinary/bulk/pulse enrich, and decomposition. Routine interactive ownership uses `status:in-review` + assignment instead. The explicit maintainer-only `issue-sync-helper.sh sync-body tNNN` exception can update only the authoritative body while continuously verifying the hold and all metadata; it cannot dispatch, change labels, or bypass a genuine claim. Applied by `interactive-session-helper.sh lockdown`. |
-| `hold-for-review` | `dispatch-dedup-helper.sh` `_is_assigned_check_hold_for_review`, `issue-sync-lib.sh`; PR merge checks below | Confirmed unresolved manual or security review hold. On issues, same dispatch-block intent as `no-auto-dispatch` (`HOLD_FOR_REVIEW_BLOCKED` signal). On PRs, blocks auto-merge until a maintainer removes the label. Scanner availability, temporary-file, input, and execution failures are infrastructure retries and must not apply this label. |
-| `needs-maintainer-review` | `pulse-nmr-approval.sh` `auto_approve_maintainer_issues` | Requires maintainer cryptographic approval (`sudo aidevops approve issue <N>`) before dispatch. |
+| `hold-for-review` | `dispatch-dedup-helper.sh` `_is_assigned_check_hold_for_review`, `issue-sync-lib.sh`; PR merge checks below | Confirmed unresolved internal, manual, policy, or security review hold. On issues, same dispatch-block intent as `no-auto-dispatch` (`HOLD_FOR_REVIEW_BLOCKED` signal). On PRs, blocks auto-merge until a maintainer removes the label. It does not represent missing author authority and needs no cryptographic self-approval. Scanner availability, temporary-file, input, and execution failures are infrastructure retries and must not apply this label. |
+| `needs-maintainer-review` | `pulse-nmr-approval.sh` `auto_approve_maintainer_issues`, external-author workflows | External-author authority gate. Authors without verified write authority require maintainer cryptographic approval (`sudo aidevops approve issue <N>`) before dispatch. Write-authorized authors never self-approve: intentional holds normalize to `hold-for-review`, accidental/automated residue is removed, and unknown authority fails closed. |
 | `needs-maintainer-permissions` | `worker-permission-helper.sh`, `dispatch-dedup-helper.sh`, `pulse-dispatch-core.sh`, candidate filters | Worker paused after requesting a capability outside its sandbox. Only the request-specific signed permission command clears this label; dispatch also verifies historical applications against the matching unexpired grant, so removing the label alone cannot bypass the hold. It is distinct from scope/trust approval. |
 | `needs-credentials` | `label-sync-helper.sh` SYSTEM_LABELS | Task requires credentials, API keys, or account access — cannot be completed by a headless worker autonomously. Add when the TODO entry has `#no-auto-dispatch` due to credential dependency. |
 | `persistent` | `pulse-issue-reconcile.sh` | Monitoring/tracking issue — must not be dispatched as a code task. |
@@ -26,7 +26,7 @@ Applied to GitHub issues. The pulse checks these before spawning a worker.
 | `contributor` | `pulse-issue-reconcile.sh` | Contributor health dashboard — pulse-managed, not a dispatch target. |
 | `quality-review` | `pulse-issue-reconcile.sh` | Daily quality review tracker — pulse-managed. |
 | `routine-tracking` | `pulse-issue-reconcile.sh` | Routine execution tracking — pulse skips these unconditionally. |
-| `status:blocked` | `dispatch-dedup-helper.sh` `_has_active_claim` | Blocked on incomplete dependent tasks (`blocked-by:` edges). |
+| `status:blocked` | `dispatch-dedup-helper.sh`, dependency and circuit-breaker recovery | Machine-recoverable structural block: incomplete dependencies, exhausted retry/cost limits, or infrastructure repair. Restore `status:available` only after the blocker is verified resolved. |
 
 Permission grants are limited to exact-pattern `bash` and `external_directory` requests, bound to the issue, request digest, worker session, branch, and worktree hash, and expire after four hours. Action-only permissions and credential-bearing or unbounded paths remain non-grantable.
 
@@ -103,7 +103,7 @@ To add a new label-level dispatch blocker:
 ## Cross-References
 
 - `reference/auto-dispatch.md` — combined signal rule (`(active status label) AND (non-self assignee)`) and full dispatch lifecycle
-- `reference/auto-merge.md` — auto-merge timing rules (t2411, t2449) and NMR semantics
+- `reference/auto-merge.md` — auto-merge timing rules (t2411, t2449) and external-author NMR semantics
 - `reference/parent-task-lifecycle.md` — `parent-task` label lifecycle in detail (t2442)
 - `reference/worker-diagnostics.md` — pre-dispatch eligibility gate (t2424) and circuit breakers
 - `.agents/scripts/dispatch-dedup-helper.sh` — `is-assigned` command and all layer checks

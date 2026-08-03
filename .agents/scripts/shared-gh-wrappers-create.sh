@@ -186,6 +186,87 @@ _gh_ci_prepare_status_label() {
 	return 0
 }
 
+# GH#29394: NMR is reserved for external-author trust gates. Wrapper-created
+# issues are authored by the authenticated token actor, so a live write-level
+# permission check can safely translate a legacy trusted-author NMR request to
+# the structural hold-for-review label before the issue-created event fires.
+# Unknown or insufficient permission fails closed and preserves NMR.
+_GH_CI_TRUST_NORMALIZED_ARGS=()
+_gh_ci_replace_nmr_label_csv() {
+	local labels_csv="$1"
+	local old_ifs="${IFS-}"
+	local ifs_was_set=0
+	local label=""
+	local normalized=""
+	local hold_seen=0
+	local -a labels=()
+
+	[[ -n "${IFS+x}" ]] && ifs_was_set=1
+	IFS=',' read -ra labels <<<"$labels_csv"
+	if [[ "$ifs_was_set" -eq 1 ]]; then
+		IFS="$old_ifs"
+	else
+		unset IFS
+	fi
+
+	for label in "${labels[@]}"; do
+		[[ "$label" == "needs-maintainer-review" ]] && label="hold-for-review"
+		if [[ "$label" == "hold-for-review" ]]; then
+			[[ "$hold_seen" -eq 1 ]] && continue
+			hold_seen=1
+		fi
+		if [[ -n "$normalized" ]]; then
+			normalized="${normalized},${label}"
+		else
+			normalized="$label"
+		fi
+	done
+	printf '%s\n' "$normalized"
+	return 0
+}
+
+_gh_ci_prepare_trusted_nmr_labels() {
+	_GH_CI_TRUST_NORMALIZED_ARGS=("$@")
+	_gh_wrapper_args_have_label "needs-maintainer-review" "$@" || return 0
+	# A trusted automation account can create an issue from external source
+	# material. The explicit provenance label keeps that authority boundary from
+	# being mistaken for a self-review hold.
+	if _gh_wrapper_args_have_label "external-contributor" "$@"; then
+		print_info "[INFO] GH#29394: preserving external-origin needs-maintainer-review"
+		return 0
+	fi
+
+	local target_repo=""
+	target_repo=$(_gh_extract_repo_from_args "$@" 2>/dev/null || true)
+	[[ -n "$target_repo" ]] || return 0
+	declare -F _gh_current_user_allows_repo_write >/dev/null 2>&1 || return 0
+	if ! _gh_current_user_allows_repo_write "$target_repo" >/dev/null 2>&1; then
+		print_warning "[WARN] GH#29394: preserving needs-maintainer-review because creator write authority could not be verified (${AIDEVOPS_GH_WRITE_PERMISSION_REASON:-unknown})"
+		return 0
+	fi
+
+	local i=0
+	local labels_csv=""
+	while [[ "$i" -lt ${#_GH_CI_TRUST_NORMALIZED_ARGS[@]} ]]; do
+		case "${_GH_CI_TRUST_NORMALIZED_ARGS[i]}" in
+		--label)
+			if [[ $((i + 1)) -lt ${#_GH_CI_TRUST_NORMALIZED_ARGS[@]} ]]; then
+				labels_csv=$(_gh_ci_replace_nmr_label_csv "${_GH_CI_TRUST_NORMALIZED_ARGS[i + 1]}")
+				_GH_CI_TRUST_NORMALIZED_ARGS[i + 1]="$labels_csv"
+				i=$((i + 1))
+			fi
+			;;
+		--label=*)
+			labels_csv=$(_gh_ci_replace_nmr_label_csv "${_GH_CI_TRUST_NORMALIZED_ARGS[i]#--label=}")
+			_GH_CI_TRUST_NORMALIZED_ARGS[i]="--label=${labels_csv}"
+			;;
+		esac
+		i=$((i + 1))
+	done
+	print_info "[INFO] GH#29394: translated trusted-author needs-maintainer-review to hold-for-review"
+	return 0
+}
+
 _GH_CI_CONTRACT_ARGS=()
 _gh_ci_prepare_parent_close_contract() {
 	local is_parent_task="$1"
@@ -317,11 +398,16 @@ gh_create_issue() {
 	_gh_ci_prepare_parent_contract_and_signature "$@"
 	set -- "${_GH_CI_READY_ARGS[@]}"
 
+	# Fold derived labels into one list, then normalize trusted-author NMR before
+	# building either the GraphQL or REST creation command.
 	if [[ ${#_todo_label_args[@]} -gt 0 ]]; then
-		_gh_ci_prepare_status_label "$@" "${_todo_label_args[@]}"
+		_gh_ci_prepare_trusted_nmr_labels "$@" "${_todo_label_args[@]}"
 	else
-		_gh_ci_prepare_status_label "$@"
+		_gh_ci_prepare_trusted_nmr_labels "$@"
 	fi
+	set -- "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"
+	_todo_label_args=()
+	_gh_ci_prepare_status_label "$@"
 
 	# Build command arrays safely; avoid empty-arg injection (GH#22056).
 	local -a _issue_cmd=(gh issue create "$@")
@@ -329,10 +415,6 @@ gh_create_issue() {
 	if [[ ${#_GH_CI_STATUS_LABEL_ARGS[@]} -gt 0 ]]; then
 		_issue_cmd+=("${_GH_CI_STATUS_LABEL_ARGS[@]}")
 		_rest_args+=("${_GH_CI_STATUS_LABEL_ARGS[@]}")
-	fi
-	if [[ ${#_todo_label_args[@]} -gt 0 ]]; then
-		_issue_cmd+=("${_todo_label_args[@]}")
-		_rest_args+=("${_todo_label_args[@]}")
 	fi
 	if [[ ${#_origin_label_args[@]} -gt 0 ]]; then
 		_issue_cmd+=("${_origin_label_args[@]}")

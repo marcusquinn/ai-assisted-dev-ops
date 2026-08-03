@@ -14,6 +14,8 @@ NMR_LIVE_JSON="[]"
 NMR_LIVE_EXIT=0
 NI_LIVE_JSON="[]"
 LIVE_CALLS_FILE=""
+AUTHOR_META_RESULT="NONE|Bot|github-actions[bot]|false"
+RELABEL_CALLS_FILE=""
 
 print_result() {
 	local name="$1"
@@ -31,9 +33,11 @@ print_result() {
 setup() {
 	TEST_ROOT=$(mktemp -d)
 	LIVE_CALLS_FILE="$TEST_ROOT/live-calls.log"
+	RELABEL_CALLS_FILE="$TEST_ROOT/relabel-calls.log"
 	export LOGFILE="$TEST_ROOT/pulse.log"
 	export PULSE_PREFETCH_CACHE_FILE="$TEST_ROOT/prefetch-cache.json"
 	: >"$LIVE_CALLS_FILE"
+	: >"$RELABEL_CALLS_FILE"
 	: >"$LOGFILE"
 	return 0
 }
@@ -57,6 +61,8 @@ source "$SCRIPTS_DIR/pulse-prefetch-workers.sh"
 source "$SCRIPTS_DIR/pulse-prefetch-secondary.sh"
 # shellcheck source=../pulse-prefetch-orchestration.sh
 source "$SCRIPTS_DIR/pulse-prefetch-orchestration.sh"
+# shellcheck source=../pulse-ancillary-dispatch.sh
+source "$SCRIPTS_DIR/pulse-ancillary-dispatch.sh"
 
 _prefetch_cache_get() {
 	local slug="$1"
@@ -88,11 +94,25 @@ gh() {
 	local command="$1"
 	shift
 	if [[ "$command" == "api" ]]; then
+		if [[ "${1:-}" == "repos/owner/repo/issues/84" ]]; then
+			printf '%s\n' "$AUTHOR_META_RESULT"
+			return 0
+		fi
 		printf '0\n'
 		return 0
 	fi
 	: "$@"
 	return 1
+}
+
+gh_issue_edit_safe() {
+	printf 'edit %s\n' "$*" >>"$RELABEL_CALLS_FILE"
+	return 0
+}
+
+gh_issue_comment() {
+	printf 'comment %s\n' "$*" >>"$RELABEL_CALLS_FILE"
+	return 0
 }
 
 _prefetch_ni_fetch_issues() {
@@ -311,11 +331,42 @@ test_needs_info_consumer() {
 	return 0
 }
 
+test_needs_info_relabel_authority() {
+	local state_file="$TEST_ROOT/needs-info-state.txt"
+	local calls=""
+	export STATE_FILE="$state_file"
+	printf 'replied|84|owner/repo\n' >"$state_file"
+
+	AUTHOR_META_RESULT='NONE|Bot|github-actions[bot]|true'
+	: >"$RELABEL_CALLS_FILE"
+	relabel_needs_info_replies
+	calls=$(<"$RELABEL_CALLS_FILE")
+	if [[ "$calls" == *"--add-label needs-maintainer-review"* && \
+		"$calls" != *"--add-label hold-for-review"* ]]; then
+		print_result "external-origin bot reply preserves NMR authority gate" 0
+	else
+		print_result "external-origin bot reply preserves NMR authority gate" 1
+	fi
+
+	AUTHOR_META_RESULT='NONE|Bot|github-actions[bot]|false'
+	: >"$RELABEL_CALLS_FILE"
+	relabel_needs_info_replies
+	calls=$(<"$RELABEL_CALLS_FILE")
+	if [[ "$calls" == *"--add-label hold-for-review"* && \
+		"$calls" != *"--add-label needs-maintainer-review"* ]]; then
+		print_result "trusted bot reply uses internal review hold" 0
+	else
+		print_result "trusted bot reply uses internal review hold" 1
+	fi
+	return 0
+}
+
 printf '=== test-pulse-prefetch-label-count.sh ===\n'
 test_predicate_contract
 test_nmr_consumer
 test_untrusted_cache_falls_through_live_query
 test_needs_info_consumer
+test_needs_info_relabel_authority
 test_atomic_triage_state_refresh
 test_failed_live_nmr_read_is_not_false_empty
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

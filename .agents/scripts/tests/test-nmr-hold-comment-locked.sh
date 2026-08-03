@@ -29,12 +29,30 @@ const execute = new Function(
   'github',
   'context',
   'console',
+  'core',
   `return (async () => {\n${script}\n})();`
 );
 
-async function runScenario({ locked = false, comments = [], createError } = {}) {
-  const calls = { paginate: 0, createComment: 0, logs: [] };
+async function runScenario({
+  locked = false,
+  comments = [],
+  createError,
+  association = 'CONTRIBUTOR',
+  userType = 'User',
+  permission = 'read',
+  labels = [],
+  removeError
+} = {}) {
+  const calls = {
+    paginate: 0,
+    createComment: 0,
+    addLabels: 0,
+    removeLabel: 0,
+    logs: [],
+    warnings: []
+  };
   const github = {
+    request: async () => ({ data: { permission } }),
     paginate: async () => {
       calls.paginate += 1;
       return comments;
@@ -45,6 +63,13 @@ async function runScenario({ locked = false, comments = [], createError } = {}) 
         createComment: async () => {
           calls.createComment += 1;
           if (createError) throw createError;
+        },
+        addLabels: async () => {
+          calls.addLabels += 1;
+        },
+        removeLabel: async () => {
+          calls.removeLabel += 1;
+          if (removeError) throw removeError;
         }
       }
     }
@@ -56,12 +81,15 @@ async function runScenario({ locked = false, comments = [], createError } = {}) 
       issue: {
         number: 42,
         locked,
-        author_association: 'MEMBER'
+        author_association: association,
+        user: { login: 'issue-author', type: userType },
+        labels: labels.map(name => ({ name }))
       }
     }
   };
   const testConsole = { log: message => calls.logs.push(message) };
-  await execute(github, context, testConsole);
+  const core = { warning: message => calls.warnings.push(message) };
+  await execute(github, context, testConsole, core);
   return calls;
 }
 
@@ -74,6 +102,35 @@ async function main() {
   const unlocked = await runScenario();
   assert.equal(unlocked.paginate, 1, 'unlocked issue must preserve paginated dedup');
   assert.equal(unlocked.createComment, 1, 'unlocked issue without guidance must post once');
+
+  const trustedOwner = await runScenario({ association: 'OWNER' });
+  assert.equal(trustedOwner.addLabels, 1, 'trusted OWNER NMR must become a structural hold');
+  assert.equal(trustedOwner.removeLabel, 1, 'trusted OWNER NMR must be removed');
+  assert.equal(trustedOwner.paginate, 0, 'trusted normalization must not post external approval guidance');
+
+  const trustedCollaborator = await runScenario({
+    association: 'COLLABORATOR',
+    permission: 'write'
+  });
+  assert.equal(trustedCollaborator.addLabels, 1, 'write collaborator NMR must become a structural hold');
+  assert.equal(trustedCollaborator.removeLabel, 1, 'write collaborator NMR must be removed');
+
+  const externalOriginBot = await runScenario({
+    association: 'NONE',
+    userType: 'Bot',
+    labels: ['external-contributor']
+  });
+  assert.equal(externalOriginBot.addLabels, 0, 'external-origin bot NMR must not become an internal hold');
+  assert.equal(externalOriginBot.removeLabel, 0, 'external-origin bot NMR must remain live');
+  assert.equal(externalOriginBot.createComment, 1, 'external-origin bot NMR must receive approval guidance');
+
+  const failedRemoval = new Error('rate limited');
+  failedRemoval.status = 429;
+  await assert.rejects(
+    runScenario({ association: 'MEMBER', removeError: failedRemoval }),
+    failedRemoval,
+    'trusted normalization failure must remain observable'
+  );
 
   const deduplicated = await runScenario({
     comments: [{ body: '<!-- nmr-hold-guidance --> already posted' }]

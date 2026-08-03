@@ -407,10 +407,14 @@ _dlw_hold_repeated_zero_output() {
 	fi
 
 	echo "[dispatch_with_dedup] Holding #${issue_number} in ${repo_slug}: ${zero_count} zero-output or zero-attempt failures; applying dispatch infrastructure hold" >>"$LOGFILE"
-	gh issue edit "$issue_number" --repo "$repo_slug" \
-		--add-label "needs-maintainer-review" \
-		--remove-label "status:available" \
-		--remove-label "status:queued" >/dev/null 2>&1 || true
+	if declare -F set_issue_status >/dev/null 2>&1; then
+		set_issue_status "$issue_number" "$repo_slug" "blocked" >/dev/null 2>&1 || true
+	else
+		gh issue edit "$issue_number" --repo "$repo_slug" \
+			--add-label "status:blocked" \
+			--remove-label "status:available" \
+			--remove-label "status:queued" >/dev/null 2>&1 || true
+	fi
 	gh issue comment "$issue_number" --repo "$repo_slug" --body "<!-- dispatch-infrastructure-failure -->
 ## Dispatch infrastructure failure detected
 

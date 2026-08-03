@@ -42,6 +42,7 @@
 # Include guard
 [[ -n "${_WORKER_LIFECYCLE_COMMON_LOADED:-}" ]] && return 0
 _WORKER_LIFECYCLE_COMMON_LOADED=1
+_WLC_STATUS_BLOCKED="blocked"
 
 _ensure_worker_lineage() {
 	local session_key="$1"
@@ -1132,7 +1133,7 @@ _count_issue_comments_containing_marker() {
 # t3076: file a root-cause meta-issue with forensics when the no_work
 # breaker fires. Idempotent — second trip on the same original is a
 # no-op (filer self-checks via marker comment). Best-effort: failures
-# are swallowed; NMR remains the canonical block on the original.
+# are swallowed; status:blocked remains the canonical block on the original.
 #
 # Args: $1=issue_number, $2=repo_slug, $3=failure_count, $4=reason
 # Returns: 0 always
@@ -1160,8 +1161,8 @@ _file_circuit_breaker_meta_no_work() {
 # refresh race). Tier escalation is the wrong response to infra failures:
 # a more expensive model cannot fix an FD leak. We keep the issue at its
 # current tier, let the next retry attempt run cheaply after the infra
-# issue resolves, and rely on the existing circuit breakers to apply NMR
-# on cost/staleness thresholds if retries keep failing.
+# issue resolves, and rely on the existing circuit breakers to apply
+# machine-recoverable structural blocks if retries keep failing.
 #
 # Idempotent: checks for a prior comment with the marker
 # <!-- no-work-escalation-skip --> and skips if present, so a cascade of
@@ -1175,15 +1176,13 @@ _file_circuit_breaker_meta_no_work() {
 # Returns: 0 always (best-effort, never fatal)
 #######################################
 #######################################
-# Apply the no_work NMR circuit breaker (t2769) when failure_count
-# reaches the threshold: idempotent NMR label + comment with the
-# `cost-circuit-breaker:no_work_loop` marker that
-# `_nmr_application_is_circuit_breaker_trip` recognises (t2386 split
-# semantics — auto-approval preserves NMR), then file the t3076
-# root-cause meta-issue.
+# Apply the no_work lifecycle circuit breaker (t2769) when failure_count
+# reaches the threshold: idempotent status:blocked state + comment with the
+# backward-compatible `cost-circuit-breaker:no_work_loop` marker, then file the
+# t3076 root-cause meta-issue.
 #
 # Args: $1=issue_number, $2=repo_slug, $3=failure_count,
-#        $4=nmr_threshold, $5=reason
+#        $4=legacy-named threshold, $5=reason
 # Returns: 0 always (best-effort, never fatal)
 #######################################
 _apply_no_work_nmr_breaker() {
@@ -1195,13 +1194,12 @@ _apply_no_work_nmr_breaker() {
 	existing_nmr=$(_count_issue_comments_containing_marker \
 		"$issue_number" "$repo_slug" "$nmr_marker") || existing_nmr=""
 	if [[ "$existing_nmr" =~ ^[1-9][0-9]*$ ]]; then
-		printf '[worker-lifecycle][t2769] no_work NMR circuit breaker already applied for #%s (%s, count=%s)\n' \
+		printf '[worker-lifecycle][t2769] no_work circuit breaker already applied for #%s (%s, count=%s)\n' \
 			"$issue_number" "$repo_slug" "$failure_count" >&2 || true
 		return 0
 	fi
 
-	gh issue edit "$issue_number" --repo "$repo_slug" \
-		--add-label "needs-maintainer-review" 2>/dev/null || true
+	set_issue_status "$issue_number" "$repo_slug" "$_WLC_STATUS_BLOCKED" 2>/dev/null || true
 
 	local safe_reason
 	safe_reason=$(_sanitize_markdown "$reason")
@@ -1211,7 +1209,7 @@ _apply_no_work_nmr_breaker() {
 ## no_work Circuit Breaker Fired (t2769)
 
 **Trigger:** ${failure_count} consecutive worker failure(s) classified as \`no_work\` (threshold: ${nmr_threshold}).
-**Action:** Applied \`needs-maintainer-review\`. Further automated dispatch is suspended.
+**Action:** Applied \`status:blocked\`. Further automated dispatch is suspended.
 **Last failure reason:** ${safe_reason}
 
 **Why this class of failure does not cascade tiers:** \`no_work\` usually means the worker crashed during runtime setup before reading any target files (FD exhaustion, plugin init failure, auth refresh race) or stale-recovery falsely concluded no progress. A more expensive model cannot fix an infrastructure problem it never reached.
@@ -1223,11 +1221,11 @@ _apply_no_work_nmr_breaker() {
 - Branch naming race at dispatch time
 - Stale-recovery false positive on long issue threads (check dispatch-dedup-stale comment pagination and recent-activity aggregation)
 
-Remove \`needs-maintainer-review\` after investigating the root cause to re-enable dispatch.
+The linked root-cause meta-issue restores \`status:available\` after its fix merges. Manual recovery should requeue only after preserving any worker output.
 
-_Per-issue no_work circuit breaker (t2769). The \`${nmr_marker}\` marker is recognised by \`_nmr_application_is_circuit_breaker_trip\` in \`pulse-nmr-approval.sh\` (t2386 split semantics: auto-approval preserves NMR)._" 2>/dev/null || true
+_Per-issue no_work circuit breaker (t2769). The \`${nmr_marker}\` marker remains backward-compatible evidence for legacy NMR reconciliation._" 2>/dev/null || true
 
-	printf '[worker-lifecycle][t2769] no_work NMR circuit breaker fired for #%s (%s, count=%s)\n' \
+	printf '[worker-lifecycle][t2769] no_work circuit breaker fired for #%s (%s, count=%s)\n' \
 		"$issue_number" "$repo_slug" "$failure_count" >&2 || true
 
 	_file_circuit_breaker_meta_no_work "$issue_number" "$repo_slug" \
@@ -1240,7 +1238,7 @@ _Per-issue no_work circuit breaker (t2769). The \`${nmr_marker}\` marker is reco
 # preflight.
 #
 # These launch-control skips are not evidence that a worker reached the brief,
-# so they must not participate in the t2769 per-issue no_work NMR breaker.
+# so they must not participate in the t2769 per-issue no_work breaker.
 # Legitimate post-launch no_work reasons (for example worker_noop_zero_output)
 # still flow through the existing breaker path unchanged.
 #
@@ -1291,8 +1289,8 @@ _worker_failure_reason_is_completion_infrastructure() {
 	github_api_timeout | command_policy_timeout | prepared_commit_push_blocked | completed_locally_remote_completion_blocked | \
 		*"GitHub API timeout"* | *"github api timeout"* | \
 		*"command-policy timeout"* | *"command policy timeout"* | \
-		*"prepared commit"*"push"*"blocked"* | \
-		*"completed locally"*"remote completion"*"blocked"*)
+		*"prepared commit"*"push"*"$_WLC_STATUS_BLOCKED"* | \
+		*"completed locally"*"remote completion"*"$_WLC_STATUS_BLOCKED"*)
 		return 0
 		;;
 	*)
@@ -1319,14 +1317,13 @@ _log_no_work_skip_escalation() {
 	local nmr_threshold="${NO_WORK_NMR_THRESHOLD:-3}"
 
 	if _no_work_reason_is_prelaunch_skip "$reason"; then
-		printf '[worker-lifecycle][t2769] no_work NMR breaker skipped for pre-launch reason on #%s (%s, count=%s): %s\n' \
+		printf '[worker-lifecycle][t2769] no_work breaker skipped for pre-launch reason on #%s (%s, count=%s): %s\n' \
 			"$issue_number" "$repo_slug" "$failure_count" "$reason" >&2 || true
 		return 0
 	fi
 
 	# Circuit-breaker path (t2769): when failure_count >= threshold,
-	# apply NMR + file root-cause meta-issue. Auto-approval preserves NMR
-	# via the marker (t2386 split semantics).
+	# apply status:blocked + file a root-cause meta-issue.
 	if [[ "$failure_count" -ge "$nmr_threshold" ]]; then
 		_apply_no_work_nmr_breaker "$issue_number" "$repo_slug" \
 			"$failure_count" "$nmr_threshold" "$reason"
@@ -1363,7 +1360,7 @@ ${marker}
 
 **Why no cascade:** \`no_work\` means the worker never produced reliable implementation evidence — it crashed during runtime setup (FD exhaustion, plugin init failure, branch naming race, auth refresh race) or stale-recovery falsely concluded no progress. A more expensive model cannot fix an infrastructure problem it never reached. Cascading to \`tier:thinking\` would waste capacity on a problem the mapped standard or simple model can handle once the infrastructure clears.
 
-After ${nmr_threshold} consecutive \`no_work\` failures the per-issue no_work circuit breaker (t2769) applies \`needs-maintainer-review\` with a dedicated machine marker, so auto-approval correctly preserves NMR.
+After ${nmr_threshold} consecutive \`no_work\` failures the per-issue no_work circuit breaker (t2769) applies \`status:blocked\` and files a machine-recoverable root-cause meta-issue.
 
 _Automated by \`escalate_issue_tier()\` no_work skip (t2387) in worker-lifecycle-common.sh_
 <!-- ops:end -->"
@@ -1388,8 +1385,8 @@ _Automated by \`escalate_issue_tier()\` no_work skip (t2387) in worker-lifecycle
 #     auth refresh race). **Short-circuits BEFORE tier cascade** (t2387) —
 #     a more expensive model cannot fix infrastructure. Keeps the issue
 #     at its current tier and posts a diagnostic comment via
-#     _log_no_work_skip_escalation; existing circuit breakers apply NMR
-#     on cost/staleness thresholds if retries persist.
+#     _log_no_work_skip_escalation; existing circuit breakers apply structural
+#     status blocks on cost/staleness thresholds if retries persist.
 #   - "partial" / other: default threshold (2). Model got partway, may
 #     succeed with a continuation or fresh attempt.
 #

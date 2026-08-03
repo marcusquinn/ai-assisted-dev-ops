@@ -1103,8 +1103,8 @@ _Triggered by \`pulse-dirty-pr-sweep.sh\` (t2350 / GH#19948)._"
 
 # Notify action: post an informational comment once (idempotent via marker).
 # This does NOT block merge, does NOT apply a label, does NOT dispatch a worker.
-# It only posts an idempotent comment. For a real escalation (maintainer review
-# required), use `needs-maintainer-review` labelling via `set_issue_status` instead.
+# It only posts an idempotent comment. For an explicit maintainer review hold,
+# use `hold-for-review`; NMR remains reserved for external-author trust gates.
 _dirty_pr_action_notify() {
 	local pr_number="$1"
 	local repo_slug="$2"

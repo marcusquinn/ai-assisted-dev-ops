@@ -22,6 +22,8 @@
 #######################################
 STALE_ASSIGNMENT_THRESHOLD_SECONDS="${STALE_ASSIGNMENT_THRESHOLD_SECONDS:-${DISPATCH_COMMENT_MAX_AGE:-600}}"
 _DDS_NMR_LABEL="needs-maintainer-review"
+_DDS_STRUCTURAL_BLOCK_LABEL="status:blocked"
+_DDS_STATUS_BLOCKED="blocked"
 _DDS_KIND_DRAFT="draft_checkpoint"
 _DDS_KIND_READY="ready"
 _DDS_KIND_READY_FAILED="ready_failed"
@@ -315,7 +317,7 @@ _stale_recovery_find_open_pr() {
 # Preserve a stale worker draft for exact-branch continuation.
 #
 # A draft PR is durable implementation progress, so stale recovery must not
-# unassign its issue owner or convert it into a permanent NMR hold. The pulse
+# unassign its issue owner or convert it into a permanent structural hold. The pulse
 # caller consumes this signal and launches a bounded direct-PR continuation
 # worker whose runtime ownership fence is bound to the exact open PR head.
 #
@@ -339,7 +341,7 @@ _stale_recovery_preserve_draft_checkpoint() {
 }
 
 #######################################
-# Verify that a blocking NMR transition is visible before releasing ownership.
+# Verify that a structural stale-recovery block is visible before releasing ownership.
 # Args: issue number, repo slug, stale assignees CSV
 #######################################
 _stale_recovery_verify_blocking_transition() {
@@ -350,12 +352,12 @@ _stale_recovery_verify_blocking_transition() {
 
 	issue_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
 		--json state,labels,assignees 2>/dev/null) || return 1
-	printf '%s' "$issue_json" | jq -e --arg nmr "$_DDS_NMR_LABEL" --arg stale "$stale_assignees" '
+	printf '%s' "$issue_json" | jq -e --arg blocked "$_DDS_STRUCTURAL_BLOCK_LABEL" --arg stale "$stale_assignees" '
 		($stale | split(",") | map(select(length > 0))) as $stale_users |
 		([.labels[]?.name]) as $labels |
 		([.assignees[]?.login]) as $current_users |
 		.state == "OPEN" and
-		($labels | index($nmr)) != null and
+		($labels | index($blocked)) != null and
 		($labels | index("status:queued")) == null and
 		($labels | index("status:in-progress")) == null and
 		([ $stale_users[] as $user | select(($current_users | index($user)) != null) ] | length == 0)
@@ -385,7 +387,7 @@ _stale_recovery_escalate_pr_checkpoint() {
 	local ifs_was_set=0
 	local assignee=""
 	local -a assignees=()
-	local -a transition_args=(--add-label "$_DDS_NMR_LABEL" --remove-label "auto-dispatch")
+	local -a transition_args=(--remove-label "auto-dispatch")
 
 	if [[ "$checkpoint_kind" == "$_DDS_KIND_READY_FAILED" ]]; then
 		description="ready PR with terminally failed checks"
@@ -407,7 +409,7 @@ _stale_recovery_escalate_pr_checkpoint() {
 		[[ -n "$assignee" ]] && transition_args+=(--remove-assignee "$assignee")
 	done
 
-	if ! set_issue_status "$issue_number" "$repo_slug" "" "${transition_args[@]}"; then
+	if ! set_issue_status "$issue_number" "$repo_slug" "$_DDS_STATUS_BLOCKED" "${transition_args[@]}"; then
 		printf 'STALE_PR_ESCALATION_FAILED: issue #%s in %s — blocking transition failed; ownership retained\n' "$issue_number" "$repo_slug"
 		return 1
 	fi
@@ -419,17 +421,17 @@ _stale_recovery_escalate_pr_checkpoint() {
 	gh_issue_comment "$issue_number" --repo "$repo_slug" \
 		--body "<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 <!-- stale-pr-checkpoint:escalated pr=${pr_number} kind=${checkpoint_kind} -->
-**PR checkpoint requires continuation review**
+**PR checkpoint requires structural repair**
 
 The ${description} #${pr_number} preserves committed progress but is not completion evidence. Ordinary redispatch remains blocked to avoid a competing implementation.
 
 Previously assigned to: ${stale_assignees}
 Stale reason: ${reason}
 
-Applied \`${_DDS_NMR_LABEL}\`. Continue or repair the existing PR before re-enabling dispatch.
+Applied \`${_DDS_STRUCTURAL_BLOCK_LABEL}\`. Continue or repair the existing PR, then return the linked issue to \`status:available\`.
 <!-- ops:end -->" 2>/dev/null || true
 	printf '%s: issue #%s in %s — PR #%s preserved, applied %s\n' \
-		"$event" "$issue_number" "$repo_slug" "$pr_number" "$_DDS_NMR_LABEL"
+		"$event" "$issue_number" "$repo_slug" "$pr_number" "$_DDS_STRUCTURAL_BLOCK_LABEL"
 	return 0
 }
 
@@ -453,11 +455,10 @@ _stale_recovery_find_open_pr_activity() {
 }
 
 #######################################
-# Escalate to needs-maintainer-review after the stale-recovery threshold
-# is reached (t2008).
+# Apply a structural block after the stale-recovery threshold is reached (t2008).
 #
-# Unassigns stale workers, clears status labels via set_issue_status, adds
-# needs-maintainer-review, and posts an explanatory comment. Emits
+# Unassigns stale workers, sets status:blocked via set_issue_status, and posts
+# an explanatory comment. Emits
 # STALE_ESCALATED on stdout for caller pattern matching.
 #
 # Args:
@@ -467,7 +468,7 @@ _stale_recovery_find_open_pr_activity() {
 #   $4 = reason for latest stale
 #   $5 = threshold
 #   $6 = prior tick count
-# Returns: 0 (always — all gh ops are fire-and-forget)
+# Returns: 0 on a verified transition, 1 when the block cannot be verified
 #######################################
 _stale_recovery_escalate() {
 	local issue_number="$1"
@@ -487,19 +488,24 @@ _stale_recovery_escalate() {
 	local -a _esc_assignee_arr=()
 	IFS=',' read -ra _esc_assignee_arr <<<"$stale_assignees"
 	IFS="$_esc_ifs"
-	# t2033: build remove-assignee flags and clear all core status labels
-	# in one atomic edit via set_issue_status (empty target = clear only).
-	# NMR is a dispatch hold, so remove auto-dispatch in the same mutation;
+	# t2033: build remove-assignee flags and set the structural blocker in one
+	# atomic edit via set_issue_status. Remove auto-dispatch in the same mutation;
 	# otherwise a racing recovery can restore status:available and make the
 	# held issue look runnable to idle-backoff even though dispatch rejects it.
 	local -a _esc_extra=(
-		--add-label "$_DDS_NMR_LABEL"
 		--remove-label "auto-dispatch"
 	)
 	for _esc_assignee in "${_esc_assignee_arr[@]}"; do
 		_esc_extra+=(--remove-assignee "$_esc_assignee")
 	done
-	set_issue_status "$issue_number" "$repo_slug" "" "${_esc_extra[@]}" || true
+	if ! set_issue_status "$issue_number" "$repo_slug" "$_DDS_STATUS_BLOCKED" "${_esc_extra[@]}"; then
+		printf 'STALE_ESCALATION_FAILED: issue #%s in %s — structural block transition failed; ownership retained\n' "$issue_number" "$repo_slug"
+		return 1
+	fi
+	if ! _stale_recovery_verify_blocking_transition "$issue_number" "$repo_slug" "$stale_assignees"; then
+		printf 'STALE_ESCALATION_FAILED: issue #%s in %s — structural block not visible; ownership retained\n' "$issue_number" "$repo_slug"
+		return 1
+	fi
 
 	# Post escalation comment explaining the suspension
 	gh_issue_comment "$issue_number" --repo "$repo_slug" \
@@ -513,12 +519,12 @@ Previously assigned to: ${stale_assignees}
 Reason for latest stale: ${reason}
 Recovery count: ${_prior_ticks} (threshold: ${_threshold})
 
-Marked \`needs-maintainer-review\`. Remove this label after investigating why workers keep failing (wrong brief, unimplementable scope, missing dependency, etc.) to re-enable dispatch.
+Marked \`status:blocked\`. Investigate why workers keep failing (wrong brief, unimplementable scope, missing dependency, etc.), then return the issue to \`status:available\` when the structural blocker is resolved.
 
 _This escalation is the \"no-progress fail-safe\" from t2008 (paired with t1986 parent-task guard and t2007 cost circuit breaker)._
 <!-- ops:end -->" \
 		2>/dev/null || true
-	printf 'STALE_ESCALATED: issue #%s in %s — unassigned %s, applied needs-maintainer-review (threshold %s reached after %s ticks)\n' \
+	printf 'STALE_ESCALATED: issue #%s in %s — unassigned %s, applied status:blocked (threshold %s reached after %s ticks)\n' \
 		"$issue_number" "$repo_slug" "$stale_assignees" "$_threshold" "$_prior_ticks"
 	return 0
 }
@@ -601,11 +607,11 @@ _stale_recovery_apply_blocked_by_hold() {
 		printf 'STALE_RECHECK_BLOCKED: issue #%s in %s — evidence changed before blocked takeover\n' "$issue_number" "$repo_slug"
 		return 0
 	fi
-	if ! set_issue_status "$issue_number" "$repo_slug" "blocked" "${recov_extra[@]}"; then
+	if ! set_issue_status "$issue_number" "$repo_slug" "$_DDS_STATUS_BLOCKED" "${recov_extra[@]}"; then
 		printf 'STALE_RECOVERY_UNCERTAIN: issue #%s in %s — blocked transition failed\n' "$issue_number" "$repo_slug"
 		return 1
 	fi
-	if ! _stale_recovery_verify_transition "$issue_number" "$repo_slug" "blocked" "$stale_assignees"; then
+	if ! _stale_recovery_verify_transition "$issue_number" "$repo_slug" "$_DDS_STATUS_BLOCKED" "$stale_assignees"; then
 		printf 'STALE_RECOVERY_UNCERTAIN: issue #%s in %s — blocked transition verification failed\n' "$issue_number" "$repo_slug"
 		return 1
 	fi
@@ -722,7 +728,7 @@ _This recovery prevents the orphaned-assignment deadlock where offline runners p
 #      - Worker draft: preserve ownership and emit an exact-head continuation
 #        signal for the pulse caller.
 #      - Ready PR: preserve ownership and stop; the PR is durable progress.
-#      - Ready PR with terminal code/check failure: escalate to NMR.
+#      - Ready PR with terminal code/check failure: apply a structural block.
 #      - Else increment the global recovery count. At the threshold, escalate
 #        immediately. A stale assignment is itself terminal no-progress evidence.
 #      - Under threshold, record the tick inside the single recovery comment.
@@ -742,7 +748,7 @@ _recover_stale_assignment() {
 
 	# ── Stale-recovery escalation check (t2008) ──────────────────────────
 	# After STALE_RECOVERY_THRESHOLD consecutive recoveries without a PR, stop
-	# resetting to status:available and apply needs-maintainer-review instead.
+	# resetting to status:available and apply status:blocked instead.
 	# Counter is stored as structured comment markers for cross-runner correctness.
 	# Config: .agents/configs/dispatch-stale-recovery.conf
 	local _threshold _prior_ticks _open_pr _open_pr_number _open_pr_kind _comments_pages _latest_dispatch_ts _next_tick
@@ -790,7 +796,7 @@ _recover_stale_assignment() {
 	fi
 	_next_tick=$((_prior_ticks + 1))
 	if [[ "$_next_tick" -ge "$_threshold" ]]; then
-		_stale_recovery_escalate "$issue_number" "$repo_slug" "$stale_assignees" "$reason" "$_threshold" "$_next_tick" "$_latest_dispatch_ts"
+		_stale_recovery_escalate "$issue_number" "$repo_slug" "$stale_assignees" "$reason" "$_threshold" "$_next_tick" "$_latest_dispatch_ts" || return 1
 		return 0
 	fi
 	# ── End stale-recovery escalation check ──────────────────────────────

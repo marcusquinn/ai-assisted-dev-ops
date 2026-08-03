@@ -49,6 +49,7 @@ _PAD_TRIAGE_OUTCOME_POSTED="posted"
 _PAD_TRIAGE_OUTCOME_REVIEW_FAILED="review_failed"
 _PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED="infrastructure_failed"
 _PAD_TRIAGE_LAST_OUTCOME=""
+_PAD_REVIEW_HOLD_LABEL="hold-for-review"
 _PAD_GITHUB_COMMENTS_READ_MALFORMED_REASON="github-comments-read-malformed"
 _PAD_GITHUB_COMMENTS_SNAPSHOT_TOO_LARGE_REASON="github-comments-snapshot-too-large"
 _PAD_TRIAGE_MAX_COMMENTS=100
@@ -754,11 +755,11 @@ _triage_mark_security_hold() {
 	gh label create "security-review" --repo "$repo_slug" --color "D73A4A" \
 		--description "Requires security review — suspicious AI request" --force \
 		>/dev/null 2>&1 || true
-	gh label create "hold-for-review" --repo "$repo_slug" --color "D73A4A" \
+	gh label create "$_PAD_REVIEW_HOLD_LABEL" --repo "$repo_slug" --color "D73A4A" \
 		--description "Opt-out: block issue auto-dispatch or PR auto-merge for maintainer review" --force \
 		>/dev/null 2>&1 || true
 	if ! gh issue edit "$issue_num" --repo "$repo_slug" \
-		--add-label "security-review" --add-label "hold-for-review" \
+		--add-label "security-review" --add-label "$_PAD_REVIEW_HOLD_LABEL" \
 		>/dev/null 2>&1; then
 		echo "[pulse-wrapper] SECURITY: failed to persist triage security hold for #${issue_num} in ${repo_slug}; model invocation remains blocked (reason=${reason})" >>"$LOGFILE"
 	fi
@@ -2838,8 +2839,9 @@ dispatch_triage_reviews() {
 #######################################
 # Relabel status:needs-info issues where contributor has replied
 #
-# Reads the pre-fetched needs-info reply status from STATE_FILE and
-# transitions replied issues to needs-maintainer-review.
+# Reads the pre-fetched needs-info reply status from STATE_FILE and transitions
+# replied issues according to live author authority: external/unknown authors
+# return to NMR triage; trusted authors use hold-for-review without self-approval.
 #
 # Arguments:
 #   $1 - repos JSON path (default: REPOS_JSON)
@@ -2855,12 +2857,47 @@ relabel_needs_info_replies() {
 	while IFS='|' read -r issue_num repo_slug; do
 		[[ -n "$issue_num" && -n "$repo_slug" ]] || continue
 
-		gh issue edit "$issue_num" --repo "$repo_slug" \
-			--remove-label "status:needs-info" \
-			--add-label "needs-maintainer-review" 2>/dev/null || true
+		local author_meta="" author_association="NONE" author_type="" author_login="" external_source="false"
+		author_meta=$(gh api "repos/${repo_slug}/issues/${issue_num}" \
+			--jq '[.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | join("|")' \
+			2>/dev/null) || author_meta=""
+		if [[ -z "$author_meta" ]]; then
+			echo "[pulse-wrapper] relabel_needs_info_replies: authority lookup failed for #${issue_num} in ${repo_slug}; preserving status:needs-info" >>"$LOGFILE"
+			continue
+		fi
+		IFS='|' read -r author_association author_type author_login external_source <<<"$author_meta"
+
+		local authority_rc=1 review_label="needs-maintainer-review"
+		if [[ "$external_source" != "true" ]]; then
+			authority_rc=2
+			if [[ "$author_type" == "Bot" ]]; then
+				authority_rc=0
+			elif declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+				authority_rc=0
+				_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
+			fi
+		fi
+		if [[ "$authority_rc" -eq 0 ]]; then
+			review_label="$_PAD_REVIEW_HOLD_LABEL"
+		elif [[ "$authority_rc" -eq 2 ]]; then
+			echo "[pulse-wrapper] relabel_needs_info_replies: author authority uncertain for #${issue_num} in ${repo_slug}; failing closed to NMR (${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown})" >>"$LOGFILE"
+		fi
+
+		local edit_rc=0
+		if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
+			gh_issue_edit_safe "$issue_num" --repo "$repo_slug" \
+				--remove-label "status:needs-info" --add-label "$review_label" >/dev/null 2>&1 || edit_rc=$?
+		else
+			gh issue edit "$issue_num" --repo "$repo_slug" \
+				--remove-label "status:needs-info" --add-label "$review_label" >/dev/null 2>&1 || edit_rc=$?
+		fi
+		if [[ "$edit_rc" -ne 0 ]]; then
+			echo "[pulse-wrapper] relabel_needs_info_replies: transition failed for #${issue_num} in ${repo_slug} (target=${review_label}, rc=${edit_rc})" >>"$LOGFILE"
+			continue
+		fi
 		gh_issue_comment "$issue_num" --repo "$repo_slug" \
-			--body "Contributor replied to the information request. Relabeled to \`needs-maintainer-review\` for re-evaluation." \
-			2>/dev/null || true
+			--body "The issue author replied to the information request. Relabeled to \`${review_label}\` for re-evaluation." \
+			2>/dev/null || echo "[pulse-wrapper] relabel_needs_info_replies: transition comment failed for #${issue_num} in ${repo_slug}" >>"$LOGFILE"
 	done < <(sed -n 's/^replied|//p' "$state_file" 2>/dev/null || true)
 
 	return 0

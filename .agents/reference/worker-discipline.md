@@ -31,9 +31,9 @@ When dispatched against an auto-generated issue body (review-followup, quality-d
 
 - **A. Premise falsified → close the issue** with a `> Premise falsified. <claim>. <code reality>. Not acting.` rationale comment. No PR. The closing comment trains the next session and the noise filter.
 - **B. Premise correct + obvious fix → implement and PR** with normal lifecycle gate (`Resolves #<this-issue>`).
-- **C. Premise correct but genuinely ambiguous** (architecture / policy / breaking change the worker cannot resolve autonomously) → post a decision comment containing: **Premise check** (one line), **Analysis** (2-4 bullets on trade-offs), **Recommended path** (what you would do if the call were yours, with rationale), **Specific question** (yes/no or pick-one — not open-ended). Then apply `needs-maintainer-review` and stop. The human wakes up to a ready-to-approve recommendation, not a blank task.
+- **C. Premise correct but genuinely ambiguous** (architecture / policy / breaking change the worker cannot resolve autonomously) → post a decision comment containing: **Premise check** (one line), **Analysis** (2-4 bullets on trade-offs), **Recommended path** (what you would do if the call were yours, with rationale), **Specific question** (yes/no or pick-one — not open-ended). Then apply `hold-for-review` and stop. The human wakes up to a decision-ready recommendation, not a blank task. `needs-maintainer-review` is reserved for missing external-author authority.
 
-Ambiguity about scope or style is NOT Outcome C. Applying `needs-maintainer-review` at issue creation time — the "punt analysis to a human who hands it back to an AI" anti-pattern — is forbidden. Reasoning responsibility applies here too: you do the thinking.
+Ambiguity about scope or style is NOT Outcome C. Applying any review hold at issue creation time merely to punt analysis to a human is forbidden. Reasoning responsibility applies here too: you do the thinking.
 
 ## Worker scope enforcement (t1894)
 

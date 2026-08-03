@@ -928,11 +928,9 @@ _consecutive_zero_session_failures() {
 # worker) what the symptom is, how it differs from regular failures, and
 # what diagnostics to run BEFORE re-dispatching at the same tier.
 #
-# The body intentionally does NOT remove auto-dispatch — that's the
-# caller's job. It carries the `dispatch-infrastructure-failure` marker
-# so `auto_approve_maintainer_issues` PRESERVES the NMR label rather than
-# clearing it (t2386 split semantics: this is a circuit-breaker family
-# trip, not a creation-default scanner-filed issue).
+# The body intentionally does NOT remove auto-dispatch — that's the caller's
+# job. It carries the backward-compatible `dispatch-infrastructure-failure`
+# marker while `status:blocked` provides the machine-recoverable dispatch fuse.
 #
 # Args:
 #   $1 - issue_number: for the worker-log path hint
@@ -964,17 +962,11 @@ A \`session_count=0\` release indicates the worker died in setup (sandbox crash,
    - \`${log_path_hint}\`
    - \`${log_path_hint}.*\` (rotated copies)
 2. Identify the failure family — sandbox / auth / OpenCode / prompt / SIGTERM source.
-3. Once the underlying issue is fixed, clear NMR with:
-
-\`\`\`bash
-sudo aidevops approve issue ${issue_number} ${repo_slug}
-\`\`\`
-
-This applies the cryptographic approval signature that takes precedence over the \`dispatch-infrastructure-failure\` marker, allowing the next dispatch to proceed.
+3. Once the underlying issue is fixed and no recoverable worker output remains, restore \`status:available\`.
 
 ### Why dispatch is paused
 
-Re-dispatching this issue without a setup-side fix would (a) burn another worker on the same failure mode, (b) not surface diagnostics the maintainer hasn't already seen, and (c) progress the cost circuit breaker without producing useful output. The \`needs-maintainer-review\` label + \`dispatch-infrastructure-failure\` marker pause the dispatch loop until a human verifies the failure family and lands a fix.
+Re-dispatching this issue without a setup-side fix would (a) burn another worker on the same failure mode, (b) not surface diagnostics the maintainer hasn't already seen, and (c) progress the cost circuit breaker without producing useful output. The \`status:blocked\` lifecycle state + \`dispatch-infrastructure-failure\` marker pause the dispatch loop until the failure family is fixed.
 MARKER_EOF
 	return 0
 }
@@ -1035,9 +1027,9 @@ _pulse_cleanup_issue_open_for_write() {
 # t3050: per-issue infra-failure escalation. Before posting the
 # crash_type=no_work failure comment, check whether the most recent
 # CLAIM_RELEASED comments already carry session_count=0 in a row. If 2+
-# consecutive zero-session releases are detected, apply
-# needs-maintainer-review with a dispatch-infrastructure-failure marker
-# instead of re-dispatching — the loop won't break by retrying.
+# consecutive zero-session releases are detected, apply `status:blocked` with a
+# dispatch-infrastructure-failure marker instead of re-dispatching — the loop
+# won't break by retrying.
 #
 # Args:
 #   $1 - wt_branch_age: branch name (non-empty; caller checks)
@@ -1076,22 +1068,19 @@ _record_orphan_crash_classification() {
 
 	# t3050: per-issue infra-failure escalation. If the last 2 CLAIM_RELEASED
 	# comments both carry session_count=0, the issue is repeatedly killing
-	# workers in setup. Apply NMR with the dispatch-infrastructure-failure
-	# marker so auto_approve_maintainer_issues PRESERVES NMR (t2386 split
-	# semantics) and the dispatch loop pauses until a maintainer fixes
-	# the underlying setup-side issue. Best-effort, idempotent: failure
+	# workers in setup. Apply status:blocked with the
+	# dispatch-infrastructure-failure marker so the dispatch loop pauses until a
+	# maintainer fixes the underlying setup-side issue. Best-effort, idempotent: failure
 	# falls through to the legacy "Worker failed" comment path below.
 	# Skip when AIDEVOPS_SKIP_INFRA_FAILURE_ESCALATION=1 (test/diagnostic bypass).
 	if [[ "${AIDEVOPS_SKIP_INFRA_FAILURE_ESCALATION:-0}" != "1" ]] \
 		&& _consecutive_zero_session_failures "$orphan_issue_num" "$repo_slug_age" 2; then
-		echo "[pulse-wrapper] Orphan cleanup: dispatch-infrastructure-failure detected for #${orphan_issue_num} (${repo_slug_age}) — applying needs-maintainer-review" >>"$LOGFILE"
-		# Apply NMR label (best-effort — gh_issue_edit_safe is from shared-gh-wrappers.sh)
-		if declare -F gh_issue_edit_safe >/dev/null 2>&1; then
-			gh_issue_edit_safe "$orphan_issue_num" --repo "$repo_slug_age" \
-				--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+		echo "[pulse-wrapper] Orphan cleanup: dispatch-infrastructure-failure detected for #${orphan_issue_num} (${repo_slug_age}) — applying status:blocked" >>"$LOGFILE"
+		if declare -F set_issue_status >/dev/null 2>&1; then
+			set_issue_status "$orphan_issue_num" "$repo_slug_age" "blocked" >/dev/null 2>&1 || true
 		else
 			gh issue edit "$orphan_issue_num" --repo "$repo_slug_age" \
-				--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+				--add-label "status:blocked" >/dev/null 2>&1 || true
 		fi
 		# Post the worker-mentoring advisory comment carrying the marker.
 		local _advisory_body

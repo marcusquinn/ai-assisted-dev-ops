@@ -87,7 +87,7 @@ Stale recovery is globally bounded by the GitHub-backed recovery markers. The
 default threshold of two includes silent/phantom assignments: a stale timeout is
 itself terminal no-progress evidence even when a crashed launcher omitted its
 terminal marker. The first recovery emits one combined recovery/tick comment;
-the second applies `needs-maintainer-review`. An open PR is durable progress, so
+the second applies machine-recoverable `status:blocked`. An open PR is durable progress, so
 stale recovery preserves its ownership and emits no synthetic reset comment.
 
 ## Progress-Blocker Evidence
@@ -491,7 +491,7 @@ CLAIM_RELEASED reason=launch_recovery:no_worker_process runner=<login> ts=<ISO>
 **Mitigation already in place**:
 - After 3 consecutive `no_worker_process` failures in a round, the canary cache is invalidated — next dispatch re-runs the canary to detect broken runtimes.
 - `no_worker_process` failures are classified as `crash_type=no_work` (t2815) — cascade tier escalation is **skipped** (t2387). The issue retries at the same tier so the next attempt runs cheaply once the infrastructure issue clears.
-- After `NO_WORK_NMR_THRESHOLD` (default 3) consecutive infra failures per issue, the per-issue no_work circuit breaker (t2769) applies `needs-maintainer-review` with a `cost-circuit-breaker:no_work_loop` marker.
+- After `NO_WORK_NMR_THRESHOLD` (legacy variable name; default 3) consecutive infra failures per issue, the per-issue no_work circuit breaker (t2769) applies `status:blocked`, posts the backward-compatible `cost-circuit-breaker:no_work_loop` marker, and files a root-cause meta-issue.
 - `fast_fail_record` increments the per-issue failure counter for backoff.
 
 **Diagnostic**:
@@ -624,8 +624,8 @@ However, the more impactful failure mode is the canary FAILING (Path 1), not pas
 `crash_type=no_work` before calling `fast_fail_record`. This routes through the t2387
 infra-failure guard in `escalate_issue_tier`, which skips tier escalation and keeps
 the issue at its current tier. Same-tier retry applies; after `NO_WORK_NMR_THRESHOLD`
-(default 3) consecutive failures the t2769 no_work circuit breaker applies
-`needs-maintainer-review`. The cascade no longer fires on infrastructure failures where
+(legacy variable name; default 3) consecutive failures the t2769 no_work circuit breaker applies
+`status:blocked` and files a root-cause meta-issue. The cascade no longer fires on infrastructure failures where
 the worker never spawned.
 
 #### Diagnostic gap (the core infrastructure finding)
@@ -742,7 +742,7 @@ and no explicit `crash_type` was provided, the effective crash type is now force
 This routes through the t2387 infra-failure guard in `escalate_issue_tier`, which skips tier
 escalation entirely. Observable change:
 - Before: 2 consecutive `no_worker_process` → tier:standard upgraded to tier:thinking → opus dispatch → same infra failure.
-- After: 2 consecutive `no_worker_process` → same-tier retry (no tier change). After `NO_WORK_NMR_THRESHOLD` (default 3) failures, the t2769 no_work circuit breaker applies `needs-maintainer-review`.
+- After: 2 consecutive `no_worker_process` → same-tier retry (no tier change). After `NO_WORK_NMR_THRESHOLD` (legacy variable name; default 3) failures, the t2769 no_work circuit breaker applies `status:blocked` and files a root-cause meta-issue.
 
 **Crash type classification for `recover_failed_launch_state`**:
 
@@ -864,7 +864,7 @@ After worktree pre-creation, `pulse-dispatch-worker-launch.sh` calls `dispatch-d
 
 The hold is branch-specific: a different branch or a different issue does not inherit the count. Triage the diagnostic by running the suggested `gh pr list --head <branch>` command; if the branch already has the intended PR, link/merge it, otherwise remove or reset the stale issue-linked worktree/branch so a fresh branch can dispatch.
 
-If the issue later shows repeated `<!-- aidevops-signed-approval -->` comments followed by fresh `needs-maintainer-review` labels but no new breaker comment, treat it as the same unresolved recovery episode. `pulse-nmr-approval.sh` preserves NMR from prior breaker history across marker-less relabels and only allows one automatic retry for the breaker-version lineage after a newer aidevops release; later unrelated patch releases stay held until `sudo aidevops approve issue <N> <repo>` after inspecting the branch/worktree evidence.
+Current orphan-loop recovery uses `status:blocked`; the root-cause repair or an operator who has inspected preserved branch/worktree evidence restores `status:available`. Legacy issues may still show signed-approval/NMR cycles from pre-migration releases. Treat those labels as compatibility evidence, normalize trusted-author residue without self-approval, and never use authority approval as a substitute for fixing the unresolved machine failure.
 
 ## GitHub API Budget, Instrumentation, and Cache Priming
 

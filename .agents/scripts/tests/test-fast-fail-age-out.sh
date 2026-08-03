@@ -21,7 +21,7 @@
 #   4. After reset, fast_fail_is_skipped returns 1 (safe to dispatch)
 #   5. reset_count increments on each age-out
 #   6. After FAST_FAIL_AGE_OUT_MAX_RESETS, the counter is not reset
-#   7. After FAST_FAIL_AGE_OUT_MAX_RESETS, NMR is applied
+#   7. After FAST_FAIL_AGE_OUT_MAX_RESETS, status:blocked is applied
 #   8. Exhausted age-out retries route to consolidation
 #   9. Issue comment posted once per age-out event
 #  10. Infra/no_work hard stops use FAST_FAIL_INFRA_AGE_OUT_SECONDS
@@ -140,6 +140,17 @@ source "${SCRIPTS_DIR}/pulse-fast-fail.sh" >/dev/null 2>&1 || {
 	exit 1
 }
 
+# Capture lifecycle transitions after the production module has sourced the
+# shared wrapper implementation.
+set_issue_status() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local status="$3"
+	shift 3
+	printf 'set_issue_status %s %s %s %s\n' "$issue_number" "$repo_slug" "$status" "$*" >>"${GH_CALLS}"
+	return 0
+}
+
 printf '%sRunning fast_fail_age_out tests (t2397)%s\n' "$TEST_BLUE" "$TEST_NC"
 
 # =============================================================================
@@ -240,17 +251,17 @@ else
 fi
 
 # =============================================================================
-# Test 6 — after MAX_RESETS, NMR label applied (not another reset)
+# Test 6 — after MAX_RESETS, structural block applied (not another reset)
 # =============================================================================
 : >"$GH_CALLS"
-# reset_count=3 means this would be the 4th reset (> max=3), so NMR fires.
+# reset_count=3 means this would be the 4th reset (> max=3), so the block fires.
 _write_ff_entry "105" "6" "20" "3"
 CONSOLIDATION_CALLS=0
 LAST_CONSOLIDATION=""
 
 fast_fail_age_out "105" "test/repo" 2>/dev/null || true
 
-# count should NOT have been reset to 0 (ceiling triggered NMR instead)
+# count should NOT have been reset to 0 (ceiling triggered a structural block instead)
 result_count=$(jq -r '."test/repo/105".count // -1' "$FAST_FAIL_STATE_FILE" 2>/dev/null) || result_count="-1"
 gh_calls_content=$(cat "$GH_CALLS" 2>/dev/null || true)
 
@@ -261,11 +272,12 @@ else
 		"expected count=6 (unchanged), got count=${result_count}"
 fi
 
-if printf '%s' "$gh_calls_content" | grep -q "needs-maintainer-review"; then
-	pass "after MAX_RESETS exceeded → needs-maintainer-review label applied"
+if printf '%s' "$gh_calls_content" | grep -q "set_issue_status 105 test/repo blocked" \
+	&& ! printf '%s' "$gh_calls_content" | grep -q -- "--add-label needs-maintainer-review"; then
+	pass "after MAX_RESETS exceeded → status:blocked applied without NMR"
 else
-	fail "after MAX_RESETS exceeded → needs-maintainer-review label applied" \
-		"expected 'needs-maintainer-review' in gh calls: ${gh_calls_content}"
+	fail "after MAX_RESETS exceeded → status:blocked applied without NMR" \
+		"expected blocked lifecycle transition without NMR addition: ${gh_calls_content}"
 fi
 
 if [[ "$CONSOLIDATION_CALLS" -eq 1 && "$LAST_CONSOLIDATION" == "105|test/repo|fast-fail-age-out-ceiling|maximum automatic resets exhausted" ]]; then

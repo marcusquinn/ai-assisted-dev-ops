@@ -103,7 +103,7 @@ _ddh_apply_recovery_loop_hold() {
 	local comments_json="$8"
 	local existing_block="0"
 
-	set_issue_status "$issue_number" "$repo_slug" "" --add-label "needs-maintainer-review" >/dev/null 2>&1 || true
+	set_issue_status "$issue_number" "$repo_slug" "blocked" >/dev/null 2>&1 || true
 
 	existing_block=$(_ddh_count_recovery_loop_blocks "$comments_json")
 	if [[ "$existing_block" -eq 0 ]]; then
@@ -115,7 +115,7 @@ _ddh_apply_recovery_loop_hold() {
 		version="${version:-unknown}"
 		local diag=""
 		# shellcheck disable=SC2016 # Backticks are literal Markdown, not command substitution.
-		diag=$(printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n<!-- worker-recovery-loop:blocked count=%s threshold=%s window_s=%s latest=%s version=%s -->\n<!-- dispatch-circuit-breaker:worker_recovery_loop -->\n## Dispatch paused: repeated worker recovery failures\n\nThis issue has produced %s worker recovery-failure outcome(s) within the last %s seconds. Those outcomes mean workers produced branch evidence but the automation could not confirm a PR, so another redispatch would likely add more audit comments without solving the issue.\n\n**Action:** applied `needs-maintainer-review` and cleared active status labels. Automated dispatch is suspended until a human reviews the runner worktrees/logs, recovers any branch output, or lands a setup-side fix.\n\n**Verification before re-enabling:** confirm a PR exists for the work or confirm there is no unrecovered worker branch output left to preserve, then remove `needs-maintainer-review`.\n<!-- ops:end -->' \
+		diag=$(printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n<!-- worker-recovery-loop:blocked count=%s threshold=%s window_s=%s latest=%s version=%s -->\n<!-- dispatch-circuit-breaker:worker_recovery_loop -->\n## Dispatch paused: repeated worker recovery failures\n\nThis issue has produced %s worker recovery-failure outcome(s) within the last %s seconds. Those outcomes mean workers produced branch evidence but the automation could not confirm a PR, so another redispatch would likely add more audit comments without solving the issue.\n\n**Action:** applied `status:blocked` and cleared active status labels. Automated dispatch is suspended until a human reviews the runner worktrees/logs, recovers any branch output, or lands a setup-side fix.\n\n**Verification before re-enabling:** confirm a PR exists for the work or confirm there is no unrecovered worker branch output left to preserve, then restore `status:available`.\n<!-- ops:end -->' \
 			"$count" "$threshold" "$window_s" "${latest_iso:-unknown}" "$version" "$count" "$window_s")
 		gh api "$comments_post_endpoint" --method POST --field body="$diag" >/dev/null 2>&1 || true
 	fi

@@ -118,7 +118,7 @@ SYSTEM_LABELS=(
 	"security|D73A4A|Security-sensitive issue"
 	"security-adjacent|D73A4A|Security-adjacent issue requiring human attention"
 	"needs-review|D73A4A|Flagged for human review by AI supervisor"
-	"needs-maintainer-review|D73A4A|Requires maintainer approval before work begins"
+	"needs-maintainer-review|D73A4A|External-author gate requiring maintainer approval before work begins"
 	"needs-maintainer-permissions|B60205|Block: background work paused for a scoped maintainer permission grant"
 	"security-review|D73A4A|Requires security review — suspicious AI request"
 	"parent-task|D4C5F9|Parent/meta task — children implement, not this issue"

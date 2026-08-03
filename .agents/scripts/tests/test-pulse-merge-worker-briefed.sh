@@ -8,7 +8,7 @@
 #   Case (a): origin:worker + issue-author=OWNER + green CI + no NMR → auto-merges
 #   Case (b): origin:worker + issue-author=MEMBER + green + no NMR → auto-merges
 #   Case (c): origin:worker + issue-author=CONTRIBUTOR → does NOT auto-merge
-#   Case (d): origin:worker + NMR auto-approved (not crypto) → does NOT auto-merge
+#   Case (d): origin:worker + trusted-author legacy auto-normalization → auto-merges
 #   Case (e): origin:worker + NMR cleared via crypto approval → auto-merges
 #   Case (f): origin:worker + hold-for-review label → does NOT auto-merge
 #   Case (g): origin:worker + human CHANGES_REQUESTED → does NOT auto-merge
@@ -293,14 +293,15 @@ test_case_c_contributor_issue_blocked() {
 }
 
 # =============================================================================
-# Case (d): NMR auto-approved only (no crypto) → blocked
+# Case (d): trusted-author legacy auto-normalization residue → passes
 # =============================================================================
-test_case_d_nmr_auto_approved_blocked() {
+test_case_d_trusted_author_normalization_passes() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
 
 	printf '{"author_association":"OWNER"}' >"${TEST_ROOT}/issue.json"
-	# Comments contain auto-approval marker but NO crypto signature
+	# Historical auto-approval marker is residue, not a current trust gate. The
+	# live OWNER author independently establishes authority.
 	printf '[{"body":"auto-approved-maintainer-issue: cleared NMR"}]' >"${TEST_ROOT}/comments.json"
 	export AIDEVOPS_WORKER_BRIEFED_AUTO_MERGE=1
 
@@ -308,15 +309,10 @@ test_case_d_nmr_auto_approved_blocked() {
 	_attempt_worker_briefed_auto_merge "103" "owner/repo" "origin:worker" "false" "45" && result=0 || result=$?
 
 	if [[ "$result" -eq 0 ]]; then
-		print_result "Case (d): NMR auto-approved only → blocked" 1 \
-			"Expected non-zero exit, got 0 (auto-approval without crypto should block)"
+		print_result "Case (d): trusted-author normalization residue → passes" 0
 	else
-		if grep -q "auto-approved only" "$LOGFILE" 2>/dev/null; then
-			print_result "Case (d): NMR auto-approved only → blocked" 0
-		else
-			print_result "Case (d): NMR auto-approved only → blocked" 1 \
-				"Exit was non-zero but expected log message not found"
-		fi
+		print_result "Case (d): trusted-author normalization residue → passes" 1 \
+			"Expected exit 0, got ${result}"
 	fi
 	teardown_test_env
 	return 0
@@ -876,7 +872,7 @@ main() {
 	test_case_a_owner_issue_passes
 	test_case_b_member_issue_passes
 	test_case_c_contributor_issue_blocked
-	test_case_d_nmr_auto_approved_blocked
+	test_case_d_trusted_author_normalization_passes
 	test_case_e_nmr_crypto_cleared_passes
 	test_case_f_hold_for_review_blocked
 	test_case_g_changes_requested_is_upstream

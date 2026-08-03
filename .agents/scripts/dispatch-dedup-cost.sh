@@ -25,9 +25,9 @@ _DISPATCH_DEDUP_COST_LOADED=1
 # ─────────────────────────────────────────
 # Tracks cumulative token spend across all worker attempts on an issue
 # by parsing signature-footer patterns ("spent N tokens" / "has used N
-# tokens") from comments. When spend exceeds the tier-appropriate budget
-# the breaker fires: applies needs-maintainer-review label, posts one
-# explanatory comment per issue, and emits the COST_BUDGET_EXCEEDED signal.
+# tokens") from comments. When spend exceeds the tier-appropriate budget,
+# the breaker applies status:blocked, posts one explanatory comment per issue,
+# and emits the COST_BUDGET_EXCEEDED signal.
 #
 # Design (paired with t1986 parent-task guard and t2008 stale escalation):
 #   1. The breaker check runs in is_assigned() AFTER the parent-task
@@ -40,9 +40,8 @@ _DISPATCH_DEDUP_COST_LOADED=1
 #   3. Failure mode: fail-open. If we can't compute spend (gh failure,
 #      no comments, jq error), allow dispatch. The breaker is a safety
 #      net, not a hard gate. The other dedup layers still apply.
-#   4. Side effects are idempotent on both the needs-maintainer-review label
-#      and prior cost-circuit-breaker:fired marker. If the label is missing
-#      after an approval loop, re-apply NMR but do not post another comment.
+#   4. Side effects are idempotent through the status state machine and the
+#      prior cost-circuit-breaker:fired marker.
 #######################################
 
 #######################################
@@ -207,8 +206,8 @@ _issue_has_cost_breaker_comment() {
 }
 
 #######################################
-# Apply cost-breaker side effects: label + at most one explanatory comment.
-# Idempotent — if needs-maintainer-review is already present, no-op.
+# Apply cost-breaker side effects: structural block + one explanatory comment.
+# The root-cause meta-issue provides the machine-recoverable release path.
 #
 # Args:
 #   $1 = issue number
@@ -217,7 +216,6 @@ _issue_has_cost_breaker_comment() {
 #   $4 = budget (tokens, integer)
 #   $5 = tier short name (simple|standard|thinking)
 #   $6 = attempts count (integer)
-#   $7 = "true" if needs-maintainer-review label already set (skip side effects)
 #######################################
 _apply_cost_breaker_side_effects() {
 	local issue_number="$1"
@@ -226,16 +224,9 @@ _apply_cost_breaker_side_effects() {
 	local budget="$4"
 	local tier="$5"
 	local attempts="$6"
-	local has_label="$7"
-
-	if [[ "$has_label" == "true" ]]; then
-		# Already escalated — no double-comment, signal still emitted by caller
-		return 0
-	fi
-
-	# Apply needs-maintainer-review label without touching core status labels
-	set_issue_status "$issue_number" "$repo_slug" "" \
-		--add-label "needs-maintainer-review" 2>/dev/null || true
+	# NMR is an external-author trust gate, not a circuit breaker. Preserve any
+	# independently valid trust gate while recording the budget stop as lifecycle state.
+	set_issue_status "$issue_number" "$repo_slug" "blocked" 2>/dev/null || true
 
 	local _spent_k=$((spent / 1000))
 	local _budget_k=$((budget / 1000))
@@ -253,7 +244,7 @@ _apply_cost_breaker_side_effects() {
 
 Cumulative spend **${_spent_k}K tokens** across **${attempts}** worker attempt(s) exceeds \`tier:${tier}\` budget of **${_budget_k}K tokens**.
 
-Further automated dispatch is suspended. Applied \`needs-maintainer-review\` label.
+Further automated dispatch is suspended with \`status:blocked\` while a root-cause meta-issue is investigated.
 
 Maintainer review required before further dispatch. Possible causes:
 - Brief is unimplementable as written (refine scope or split the task)
@@ -261,13 +252,7 @@ Maintainer review required before further dispatch. Possible causes:
 - Worker stuck in a loop (model can't decompose the task — escalate tier)
 - Wrong tier assigned (downgrade a tier:thinking task to standard, or vice versa)
 
-After investigating, approve another dispatch with:
-
-\`\`\`bash
-sudo aidevops approve issue ${issue_number} ${repo_slug}
-\`\`\`
-
-Remove \`needs-maintainer-review\` after investigating the root cause to re-enable dispatch.
+The circuit-breaker meta flow restores \`status:available\` automatically after its fix merges. Manual recovery should requeue only after the root cause is fixed.
 
 _This is the cost-runaway fail-safe from t2007 (paired with t1986 parent-task guard and t2008 stale-recovery escalation)._
 <!-- ops:end -->" 2>/dev/null || true
@@ -276,15 +261,15 @@ _This is the cost-runaway fail-safe from t2007 (paired with t1986 parent-task gu
 	# t3076: file root-cause meta-issue with forensics and dispatch a
 	# tier:thinking worker against it. Idempotent — second trip on the
 	# same original is a no-op. Best-effort: failures are logged but
-	# never propagate (NMR is the canonical block, the meta-issue is
-	# the self-healing channel).
+	# never propagate (status:blocked is canonical; the meta-issue is the
+	# self-healing channel).
 	local _cb_meta_filer="${SCRIPT_DIR:-${HOME}/.aidevops/agents/scripts}/circuit-breaker-meta-filer.sh"
 	if [[ -x "$_cb_meta_filer" ]]; then
 		"$_cb_meta_filer" file \
 			--issue "$issue_number" --repo "$repo_slug" \
 			--breaker cost --tier "$tier" \
 			--spent "$spent" --budget "$budget" \
-			--attempts "$attempts" >/dev/null 2>&1 || true
+			--failure-count "$attempts" >/dev/null 2>&1 || true
 	fi
 
 	return 0
@@ -387,25 +372,9 @@ _check_cost_budget() {
 		"$_audit_log_helper" log cost-circuit-breaker "$_cost_trip_msg" >/dev/null 2>&1 || true
 	fi
 
-	# Over budget — check if needs-maintainer-review is already set (idempotency).
-	# When called via the CLI subcommand the caller doesn't pass issue_meta_json,
-	# so fetch it ourselves on the slow path. The hot path (is_assigned)
-	# always passes pre-fetched metadata to avoid a double round-trip.
-	if [[ -z "$issue_meta_json" ]]; then
-		issue_meta_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
-			--json state,assignees,labels 2>/dev/null) || issue_meta_json=""
-	fi
-	local has_label="false"
-	if [[ -n "$issue_meta_json" ]]; then
-		local label_hit
-		label_hit=$(printf '%s' "$issue_meta_json" |
-			jq -r '[(.labels // [])[].name] | index("needs-maintainer-review") != null' 2>/dev/null) || label_hit="false"
-		[[ "$label_hit" == "true" ]] && has_label="true"
-	fi
-
-	# Apply side effects (no-op if has_label=true)
+	# Apply the structural block and marker-idempotent diagnostics.
 	_apply_cost_breaker_side_effects "$issue_number" "$repo_slug" \
-		"$spent" "$budget" "${tier#tier:}" "$attempts" "$has_label"
+		"$spent" "$budget" "${tier#tier:}" "$attempts"
 
 	# Emit signal for caller pattern matching (mirrors PARENT_TASK_BLOCKED)
 	printf 'COST_BUDGET_EXCEEDED (spent=%dK budget=%dK tier=%s attempts=%d)\n' \

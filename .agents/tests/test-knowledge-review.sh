@@ -9,7 +9,7 @@
 # Tests:
 #   1. shellcheck — zero violations
 #   2. auto-promotion path — maintainer trust → moves inbox → sources + audit
-#   3. NMR-file path — untrusted → moves to staging, audit record written
+#   3. review-file path — untrusted → moves to staging, audit record written
 #   4. review_gate path — review_gate email → staged (no GH slug, no issue filed)
 #   5. idempotent tick — re-run on already-staged source does not double-process
 #   6. promote subcommand — moves staging → sources, updates meta.json state
@@ -17,6 +17,7 @@
 #   8. trust ladder — explicit trust:trusted meta field triggers auto-promote
 #   9. trusted/authoritative meta field — both trigger auto-promote
 #  10. missing meta.json — skipped gracefully
+#  11. untrusted review issue — hold-for-review, never NMR, manual promotion guidance
 #
 # Mocking strategy: create a minimal _knowledge/ directory tree in a temp dir,
 # set KNOWLEDGE_ROOT and CWD so the helper picks it up, then inspect results.
@@ -177,7 +178,7 @@ test_auto_promote_trusted_meta() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: NMR-file path — unverified source moves to staging + audit entry
+# Test 3: legacy review-file state path — unverified source moves to staging + audit entry
 # ---------------------------------------------------------------------------
 
 test_untrusted_staged_and_audited() {
@@ -408,6 +409,58 @@ test_missing_meta() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 11: untrusted review issues use an explicit content-review hold
+# ---------------------------------------------------------------------------
+
+test_untrusted_review_issue_labels() {
+	local name="untrusted review issue uses hold-for-review without NMR"
+	local plane="${TEST_TMPDIR}/t11"
+	local label_log="${TEST_TMPDIR}/t11-labels.log"
+	local body_log="${TEST_TMPDIR}/t11-body.md"
+	make_plane "$plane"
+	make_trust_config "$plane"
+	make_source "$plane" "src-held-001" "unverified" "stranger@external.com"
+	mv "${plane}/inbox/src-held-001" "${plane}/staging/src-held-001"
+
+	LABEL_LOG="$label_log" BODY_LOG="$body_log" PLANE="$plane" HELPER_PATH="$HELPER" bash -c '
+		set -euo pipefail
+		source "$HELPER_PATH"
+		gh_create_issue() {
+			local expect=""
+			local arg=""
+			for arg in "$@"; do
+				if [[ "$expect" == "label" ]]; then
+					printf "%s\n" "$arg" >"$LABEL_LOG"
+					expect=""
+				elif [[ "$expect" == "body" ]]; then
+					cp "$arg" "$BODY_LOG"
+					expect=""
+				elif [[ "$arg" == "--label" ]]; then
+					expect="label"
+				elif [[ "$arg" == "--body-file" ]]; then
+					expect="body"
+				fi
+			done
+			printf "https://github.com/owner/repo/issues/123\n"
+			return 0
+		}
+		meta_json=$(jq "." "$PLANE/staging/src-held-001/meta.json")
+		_file_nmr_issue "$PLANE" "src-held-001" "$meta_json" "untrusted" "owner/repo" >/dev/null
+	' 2>/dev/null
+
+	local labels=""
+	labels=$(<"$label_log")
+	if [[ "$labels" == *"hold-for-review"* && "$labels" != *"needs-maintainer-review"* ]] \
+		&& grep -qF 'knowledge-review-helper.sh promote src-held-001' "$body_log" \
+		&& ! grep -qF 'sudo aidevops approve issue' "$body_log"; then
+		pass "$name"
+	else
+		fail "$name" "labels=${labels}"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -424,6 +477,7 @@ main() {
 	test_auto_promote_trusted_bot
 	test_auto_promote_authoritative
 	test_missing_meta
+	test_untrusted_review_issue_labels
 
 	teardown
 

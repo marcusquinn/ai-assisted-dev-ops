@@ -103,7 +103,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Never create tracking issues with raw `gh issue create`; use aidevops wrappers, or immediately normalize with `origin:interactive`, `status:in-review`, and the appropriate type label.
 - Interactive issue pickup: for repos where you have maintainer-equivalent access, immediately run `interactive-session-helper.sh claim <N> <owner/repo>`; for external non-maintainer repos, never run claim/dispatch/label routines — submit a PR when possible and leave at most one concise issue comment explaining the proposed solution. Details: `workflows/git-workflow.md`.
 - Worker/maintainer gate interpretation: an unassigned managed-repo issue is not a maintainer blocker for an OWNER/MEMBER interactive session; claim it and continue. For headless workers, work only on the dispatched issue/PR and treat mismatched linked-issue writes as out of scope unless the dispatcher explicitly assigned that target.
-- Interactive admin/maintainer sessions may use admin merge when branch policy only blocks self-review/review count after gates pass; never bypass `needs-maintainer-review` without crypto approval. Details: `reference/auto-merge.md`.
+- Interactive admin/maintainer sessions may use admin merge when branch policy only blocks self-review/review count after gates pass. A live external/unknown-author `needs-maintainer-review` gate requires crypto approval; write-authorized authors are normalized without self-approval. Details: `reference/auto-merge.md`.
 - Interactive sessions never switch, detach, create, rename, or delete branches/refs in a canonical repository, and never edit there. All work—including releases—uses a linked worktree under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}` (flat `<repo>-<slug>` names), never runtime temp dirs. Existing sibling worktrees remain valid until cleanup. User approval does not override this parallel-session invariant; explicitly authorized canonical synchronization and branch recovery use their separate audited helper paths. Headless implementation workers use worktree+PR unless explicitly planning-only.
 - Canonical checkouts are read-only service mirrors, not session-owned stores. Never stash/reset/clean unexpected state directly; the audited mirror-sync path must preserve and verify it before convergence. Details: `reference/dirty-worktree-preservation.md`.
 - Pre-edit passes only in a linked worktree; canonical checkouts return 1 interactively or 2 headlessly with worktree guidance. Do not revert others' changes without explicit request.
@@ -115,7 +115,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 
 - Managed-repo issues, PRs, and comments that describe work MUST include worker-ready context: files to modify, reference pattern, verification, and explicit note when paths cannot be known. Brief template source: `templates/brief-template.md`.
 - Use GitHub wrappers for managed-repo issue/PR creation so origin labels and signatures are applied; never hand-compose signature footers. PR/issue/comment bodies must satisfy same-command `--body-file` discipline. Thread-clean reading and non-collaborator body immunity: `reference/gh-command-discipline.md`.
-- Auto-generated issue triage outcomes: verify premise first; falsified → close with rationale; correct+obvious → implement+PR; correct+ambiguous only → decision-ready comment + `needs-maintainer-review`. Scope/style uncertainty is not NMR. Full templates: `reference/worker-discipline.md`.
+- Auto-generated issue triage outcomes: verify premise first; falsified → close with rationale; correct+obvious → implement+PR; correct+ambiguous only → decision-ready comment + `hold-for-review`. Scope/style uncertainty is not a review hold. Full templates: `reference/worker-discipline.md`.
 - Parent/research tasks: `parent-task` is a permanent dispatch block; PRs against parent issues use `For #NNN`/`Ref #NNN` until the final child/phase. New worker-ready implementation issues default to auto-dispatch because issue creation authorizes implementation; use `no-auto-dispatch` only for an explicit recorded durable hold. If implementing an auto-dispatch issue interactively, use `interactive-start-helper.sh --issue <N> --repo <owner/repo> --task "..." --auto-dispatch`.
 
 ### Quality and diagnostics
@@ -151,7 +151,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 
 ## Task Lifecycle
 
-Task creation, briefs/tiers/dispatchability, auto-dispatch/completion, routines, cross-repo tasks, repos.json, parent lifecycle, origin labels, auto-merge, cryptographic approvals, and NMR automation live in `reference/task-lifecycle.md`.
+Task creation, briefs/tiers/dispatchability, auto-dispatch/completion, routines, cross-repo tasks, repos.json, parent lifecycle, origin labels, auto-merge, cryptographic approvals, and review-block semantics live in `reference/task-lifecycle.md`.
 
 ## Git Workflow
 

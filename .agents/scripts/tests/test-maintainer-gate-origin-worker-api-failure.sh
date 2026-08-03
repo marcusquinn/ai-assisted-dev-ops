@@ -146,6 +146,21 @@ test_confirmed_external_is_remediated() {
 	return 0
 }
 
+test_read_only_collaborator_author_is_remediated() {
+	: >"$GH_CALLS"
+	if run_job external COLLABORATOR >/dev/null 2>&1; then
+		print_result "read-only collaborator author completes external remediation" 0
+	else
+		print_result "read-only collaborator author completes external remediation" 1 "job returned non-zero"
+	fi
+	if grep -q '^issue edit .*--add-label needs-maintainer-review' "$GH_CALLS"; then
+		print_result "read-only collaborator author receives NMR gate" 0
+	else
+		print_result "read-only collaborator author receives NMR gate" 1 "expected NMR issue edit"
+	fi
+	return 0
+}
+
 test_unknown_author_association_is_non_mutating() {
 	: >"$GH_CALLS"
 	if run_job unknown-association API_ERROR >/dev/null 2>&1; then
@@ -183,6 +198,7 @@ main() {
 	test_api_failure_is_non_mutating
 	test_trusted_collaborator_is_allowed
 	test_confirmed_external_is_remediated
+	test_read_only_collaborator_author_is_remediated
 	test_unknown_author_association_is_non_mutating
 	test_owner_authored_unlabel_is_restored_from_webhook
 	printf '\nTests run: %d\nTests failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"

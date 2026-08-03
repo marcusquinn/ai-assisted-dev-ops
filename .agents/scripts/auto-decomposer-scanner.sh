@@ -489,7 +489,7 @@ that existed when this issue was filed.
   requires an architectural / policy / breaking-change decision you
   cannot resolve autonomously: post a decision comment with
   **Premise check**, **Analysis**, **Recommended path**, and
-  **Specific question**, then apply \`needs-maintainer-review\`.
+  **Specific question**, then apply \`hold-for-review\`.
   Ambiguity about scope or style is NOT Outcome C.
 MD
 	return 0

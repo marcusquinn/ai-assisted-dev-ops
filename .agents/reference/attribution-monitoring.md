@@ -57,7 +57,7 @@ Keep exact search strings private, but monitor for distinctive aidevops
 behaviour clusters as well as literal source strings:
 
 - prompt-injection scanning for issue, PR, web, MCP, and tool-output content;
-- `needs-maintainer-review` gates, NMR automation, and cryptographic approvals;
+- external-author `needs-maintainer-review` gates, trusted-author normalization, and cryptographic approvals;
 - interactive issue/PR locking through origin labels, active statuses, and claim stamps;
 - linked-worktree safety and pre-edit gates;
 - review-bot settlement gates before merge;

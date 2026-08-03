@@ -254,7 +254,7 @@ FAST_FAIL_INITIAL_BACKOFF_SECS="${FAST_FAIL_INITIAL_BACKOFF_SECS:-600}" # 10 min
 FAST_FAIL_MAX_BACKOFF_SECS="${FAST_FAIL_MAX_BACKOFF_SECS:-604800}"      # 7-day max backoff
 FAST_FAIL_AGE_OUT_SECONDS="${FAST_FAIL_AGE_OUT_SECONDS:-86400}"         # Auto-reset HARD STOP after 24h quiet period (t2397)
 FAST_FAIL_AGE_OUT_MIN_COUNT="${FAST_FAIL_AGE_OUT_MIN_COUNT:-5}"         # Only age-out issues at/above HARD STOP threshold (t2397)
-FAST_FAIL_AGE_OUT_MAX_RESETS="${FAST_FAIL_AGE_OUT_MAX_RESETS:-3}"       # Max auto-resets before NMR escalation (t2397)
+FAST_FAIL_AGE_OUT_MAX_RESETS="${FAST_FAIL_AGE_OUT_MAX_RESETS:-3}"       # Max auto-resets before status:blocked escalation (t2397)
 
 EVER_NMR_CACHE_FILE="${EVER_NMR_CACHE_FILE:-${HOME}/.aidevops/.agent-workspace/supervisor/ever-nmr-cache.json}"
 EVER_NMR_NEGATIVE_CACHE_TTL_SECS="${EVER_NMR_NEGATIVE_CACHE_TTL_SECS:-300}" # Recheck negative results after 5 min

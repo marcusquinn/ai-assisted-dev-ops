@@ -613,7 +613,8 @@ EOF
 	fi
 	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]] \
 		|| grep -qF 'gh pr close 100' "$GH_LOG" \
-		|| ! grep -qF 'needs-maintainer-review' "$GH_LOG" \
+		|| ! grep -qF -- '--add-label hold-for-review' "$GH_LOG" \
+		|| grep -qF -- '--add-label needs-maintainer-review' "$GH_LOG" \
 		|| ! grep -qF 'legacy review route marker has no head-bound start evidence' "$LOGFILE"; then
 		print_result "ambiguous legacy route is preserved for maintainer review" 1 \
 			"rc=${dispatch_rc}; gh=$(tr '\n' ';' <"$GH_LOG"); log=$(tr '\n' ';' <"$LOGFILE")"
@@ -788,7 +789,9 @@ test_dispatch_recovers_terminal_label_failure() {
 	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
 	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete \
 		|| [[ ",$(<"${TEST_ROOT}/issue-labels.txt")," == *",needs-maintainer-review,"* \
-			|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",needs-maintainer-review,"* ]]; then
+			|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",needs-maintainer-review,"* \
+			|| ",$(<"${TEST_ROOT}/issue-labels.txt")," == *",hold-for-review,"* \
+			|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",hold-for-review,"* ]]; then
 		print_result "completed route recovers a missing terminal label" 1 \
 			"rc=${retry_rc}; issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); pr_labels=$(<"${TEST_ROOT}/pr-labels.txt")"
 		return 0
@@ -807,8 +810,9 @@ test_dispatch_holds_on_head_drift() {
 	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
 		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
 		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* \
-		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",needs-maintainer-review,"* \
-		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",needs-maintainer-review,"* ]]; then
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* ]] \
+		|| grep -qF -- '--add-label needs-maintainer-review' "$GH_LOG"; then
 		print_result "head drift preserves the changed PR for maintainer review" 1 \
 			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); head=$(<"${TEST_ROOT}/pr-head.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
 		return 0
@@ -827,7 +831,7 @@ test_dispatch_holds_when_ownership_changes_during_transition() {
 	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
 		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
 		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",no-takeover,"* \
-		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",needs-maintainer-review,"* ]] \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* ]] \
 		|| grep -qF 'gh pr close 100' "$GH_LOG"; then
 		print_result "ownership change during transition preserves the PR" 1 \
 			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
@@ -893,7 +897,8 @@ test_terminal_guard_rechecks_current_label() {
 	local guard_rc=0
 	_feedback_route_guard_existing_terminal_label "100" "owner/repo" "42" "review" || guard_rc=$?
 
-	if [[ "$guard_rc" -ne 0 ]] || grep -qF 'needs-maintainer-review' "$GH_LOG"; then
+	if [[ "$guard_rc" -ne 0 ]] \
+		|| grep -Eq -- '--add-label (needs-maintainer-review|hold-for-review)' "$GH_LOG"; then
 		print_result "terminal guard accepts a stale caller label after live removal" 1 \
 			"rc=${guard_rc}; labels=$(<"${TEST_ROOT}/pr-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
 		return 0

@@ -56,6 +56,10 @@ main() {
 		"label creation requires an independent missing-label confirmation"
 	check_pattern "const trustedRoles = \['OWNER', 'MEMBER'\]" \
 		"bare collaborator association is excluded from trusted roles"
+	check_pattern "issue\.user\.type === 'Bot' \|\|" \
+		"trusted bots run through stale-NMR cleanup instead of returning early"
+	check_pattern "hasExternalAuthoritySource = issueLabels\.has\('external-contributor'\)" \
+		"trusted automation preserves explicit external-source authority gates"
 	check_pattern "collaborators/\{username\}/permission" \
 		"collaborator authority uses the repository permission endpoint"
 	check_pattern "Run trusted-author cleanup first" \

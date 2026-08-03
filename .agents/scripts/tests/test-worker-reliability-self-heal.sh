@@ -107,6 +107,8 @@ _install_log_stubs() {
 	log_info() { printf '[info] %s\n' "$*" >>"$LOG_FILE" 2>/dev/null || true; }
 	log_warn() { printf '[warn] %s\n' "$*" >>"$LOG_FILE" 2>/dev/null || true; }
 	log_error() { printf '[error] %s\n' "$*" >>"$LOG_FILE" 2>/dev/null || true; }
+	# Extracted preservation helper depends on the launch-level privacy guard.
+	_headless_private_workload_enabled() { return 1; }
 	return 0
 }
 
@@ -402,7 +404,7 @@ NMR_APPROVAL_SCRIPT="${NMR_APPROVAL_SCRIPT:-$(dirname "$LIFECYCLE_SCRIPT")/pulse
 
 test_no_work_circuit_breaker_threshold_guard() {
 	# _log_no_work_skip_escalation must reference NO_WORK_NMR_THRESHOLD
-	# and delegate to the NMR breaker when the threshold is reached.
+	# and delegate to the legacy-named structural breaker when the threshold is reached.
 
 	# Assertion 1: NO_WORK_NMR_THRESHOLD is referenced in the function body.
 	local fn_src
@@ -419,14 +421,14 @@ test_no_work_circuit_breaker_threshold_guard() {
 		return 0
 	fi
 
-	# Assertion 2: the function delegates to the dedicated NMR breaker helper.
+	# Assertion 2: the function delegates to the dedicated structural breaker helper.
 	if ! printf '%s\n' "$fn_src" | grep -q '_apply_no_work_nmr_breaker'; then
 		print_result "t2769: no_work circuit breaker threshold guard" 1 \
 			"_apply_no_work_nmr_breaker not called in _log_no_work_skip_escalation"
 		return 0
 	fi
 
-	# Assertion 3: the NMR path appears BEFORE the below-threshold diagnostic path
+	# Assertion 3: the breaker path appears BEFORE the below-threshold diagnostic path
 	# (threshold check is the first branch; diagnostic is the fallthrough).
 	local nmr_line diag_line
 	nmr_line=$(printf '%s\n' "$fn_src" | grep -n '_apply_no_work_nmr_breaker' | head -1 | cut -d: -f1)
@@ -447,7 +449,7 @@ test_no_work_circuit_breaker_threshold_guard() {
 }
 
 test_no_work_circuit_breaker_marker_posted() {
-	# The actual NMR path must post the machine marker, while the below-threshold
+	# The structural breaker path must post the legacy machine marker, while the below-threshold
 	# explanatory prose must not quote it and contaminate reason classification.
 
 	local breaker_src="" skip_src=""

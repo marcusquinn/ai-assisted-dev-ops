@@ -2,7 +2,7 @@
 
 A `parent-task` label is a *permanent dispatch block* — it must be paired with a concrete decomposition plan, or it becomes backlog rot.
 
-**Key rule:** `#parent` is the only reliable dispatch block for maintainer-authored issues. Once a maintainer files with `#parent`, `auto_approve_maintainer_issues()` cannot override it via NMR clearance — `parent-task` short-circuits `dispatch-dedup-helper.sh is-assigned` with `PARENT_TASK_BLOCKED` upstream of the approval path. (t2211)
+**Key rule:** `#parent` is the permanent structural dispatch block for a roadmap or decomposition issue. Authority-label normalization cannot override it: `parent-task` short-circuits `dispatch-dedup-helper.sh is-assigned` with `PARENT_TASK_BLOCKED`. (t2211)
 
 ## Five Cooperating Enforcement Mechanisms
 
@@ -38,16 +38,16 @@ Per-parent state file (`AUTO_DECOMPOSER_PARENT_STATE`) prevents re-filing the sa
 
 Constants in `pulse-wrapper.sh`: `AUTO_DECOMPOSER_INTERVAL`, `AUTO_DECOMPOSER_PARENT_STATE`. Maintainer-only (skips `role: contributor` repos).
 
-### 5. 7-Day NMR Escalation (Fix #4)
+### 5. 7-Day Advisory Escalation (Fix #4)
 
-If the advisory nudge is ≥7 days old and still zero children exist, `_post_parent_decomposition_escalation` applies `needs-maintainer-review` and posts a comment listing the four paths forward:
+If the advisory nudge is ≥7 days old and still zero children exist, `_post_parent_decomposition_escalation` posts an idempotent advisory comment listing the four paths forward:
 
 1. Decompose into children
 2. Drop the `parent-task` label
 3. Close the issue
 4. Let the auto-decomposer handle it
 
-**Escalation never removes `parent-task`** — that would defeat the only reliable dispatch block (per t2211). The label removal instruction appears only as user-facing guidance inside a markdown code fence.
+The escalation adds no second blocker: `parent-task` already blocks direct implementation and must remain visible to the auto-decomposer. It never removes `parent-task`; the label removal instruction appears only as user-facing guidance inside a markdown code fence.
 
 Env override: `PARENT_DECOMPOSITION_ESCALATION_HOURS` (default 168). Capped at `max_escalations` per reconcile pass. Dedup via `<!-- parent-needs-decomposition-escalated -->` marker.
 
@@ -119,7 +119,7 @@ The `<!-- phase-auto-fire:on -->` HTML comment is the opt-in for narrative phase
 
 ### Close Guard
 
-The close guard (t2755 Phase 2) prevents premature parent-task closure while any declared phase is still unfiled or open. If a PR uses a closing keyword (`Closes #NNN`) on a parent-task issue that still has pending phases, the merge is accepted but the issue is re-opened with an explanatory comment.
+The close guard (t2755 Phase 2) prevents premature parent-task closure while any declared phase is still unfiled or open. If a PR uses a closing keyword (`Closes #NNN`) on a parent-task issue that still has pending phases, the merge is accepted but the issue is re-opened with an explanatory comment. Deterministic incomplete close-contract repairs use `hold-for-review`; the ordinary 7-day decomposition escalation remains advisory-only.
 
 ## Use Cases
 

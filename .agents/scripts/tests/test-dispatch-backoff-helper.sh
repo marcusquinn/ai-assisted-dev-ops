@@ -10,7 +10,7 @@
 #   3. 1st failure: 5min cooldown (300s) — blocks dispatch during window
 #   4. 2nd failure: 30min cooldown (1800s)
 #   5. 3rd failure: 2h cooldown (7200s)
-#   6. 4th+ failure: 24h cooldown + NMR_REQUIRED flag in stderr
+#   6. 4th+ failure: 24h cooldown + BACKOFF_NOTICE_REQUIRED flag in stderr
 #   7. Fails open on JSONL read error (missing file)
 #   8. Emergency bypass via AIDEVOPS_SKIP_DISPATCH_BACKOFF=1
 #   9. Stats counter increments on backoff block
@@ -18,7 +18,7 @@
 #  11. rate_limit_fast and provider metadata-only rate-limit signals count toward per-issue backoff
 #
 # Stub strategy: write a fixture JSONL file with controlled timestamps.
-# No gh stubs needed for the check subcommand (NMR application tests use gh stubs).
+# No gh stubs needed for the check subcommand (notice-posting tests use gh stubs).
 
 set -uo pipefail
 
@@ -74,7 +74,7 @@ pulse_stats_increment() {
 }
 export -f pulse_stats_increment
 
-# Stub gh for NMR tests — captures calls without network.
+# Stub gh for notice tests — captures calls without network.
 gh() {
 	printf '[gh-stub] %s\n' "$*" >>"${TMP}/gh-calls.log"
 	return 0
@@ -267,8 +267,8 @@ test_three_failures_blocked() {
 	return 0
 }
 
-# --- Test 6: 4+ failures → 24h cooldown + NMR_REQUIRED ---
-test_four_failures_nmr() {
+# --- Test 6: 4+ failures → 24h cooldown + BACKOFF_NOTICE_REQUIRED ---
+test_four_failures_notice() {
 	reset_test_state
 	local now
 	now=$(date +%s)
@@ -288,10 +288,10 @@ test_four_failures_nmr() {
 	else
 		fail "4-failure output shows 86400s cooldown" "output: ${output}"
 	fi
-	if printf '%s' "$output" | grep -q 'NMR_REQUIRED'; then
-		pass "4-failure output contains NMR_REQUIRED"
+	if printf '%s' "$output" | grep -q 'BACKOFF_NOTICE_REQUIRED'; then
+		pass "4-failure output contains BACKOFF_NOTICE_REQUIRED"
 	else
-		fail "4-failure output contains NMR_REQUIRED" "output: ${output}"
+		fail "4-failure output contains BACKOFF_NOTICE_REQUIRED" "output: ${output}"
 	fi
 	return 0
 }
@@ -436,8 +436,8 @@ test_provider_pressure_blocks_pool() {
 	return 0
 }
 
-# --- Test 14: rate_limit_fast entries trigger per-issue 24h cooldown + NMR_REQUIRED ---
-test_rate_limit_fast_entries_trigger_nmr() {
+# --- Test 14: rate_limit_fast entries trigger per-issue 24h cooldown + notice ---
+test_rate_limit_fast_entries_trigger_notice() {
 	reset_test_state
 	local now
 	now=$(date +%s)
@@ -452,10 +452,10 @@ test_rate_limit_fast_entries_trigger_nmr() {
 	else
 		fail "rate_limit_fast entries trigger per-issue backoff" "got exit ${rc} output=${output}"
 	fi
-	if printf '%s' "$output" | grep -q 'NMR_REQUIRED'; then
-		pass "rate_limit_fast 4+ entries emit NMR_REQUIRED"
+	if printf '%s' "$output" | grep -q 'BACKOFF_NOTICE_REQUIRED'; then
+		pass "rate_limit_fast 4+ entries emit BACKOFF_NOTICE_REQUIRED"
 	else
-		fail "rate_limit_fast 4+ entries emit NMR_REQUIRED" "output: ${output}"
+		fail "rate_limit_fast 4+ entries emit BACKOFF_NOTICE_REQUIRED" "output: ${output}"
 	fi
 	return 0
 }
@@ -501,10 +501,10 @@ test_provider_metadata_rate_limit_entries_count() {
 	else
 		fail "provider metadata-only rate limits trigger per-issue backoff" "got exit ${rc} output=${output}"
 	fi
-	if printf '%s' "$output" | grep -q 'NMR_REQUIRED'; then
-		pass "provider metadata-only 4+ entries emit NMR_REQUIRED"
+	if printf '%s' "$output" | grep -q 'BACKOFF_NOTICE_REQUIRED'; then
+		pass "provider metadata-only 4+ entries emit BACKOFF_NOTICE_REQUIRED"
 	else
-		fail "provider metadata-only 4+ entries emit NMR_REQUIRED" "output: ${output}"
+		fail "provider metadata-only 4+ entries emit BACKOFF_NOTICE_REQUIRED" "output: ${output}"
 	fi
 	return 0
 }
@@ -517,7 +517,7 @@ test_one_failure_elapsed_clear
 test_one_failure_within_cooldown_blocked
 test_two_failures_blocked
 test_three_failures_blocked
-test_four_failures_nmr
+test_four_failures_notice
 test_missing_jsonl_fail_open
 test_bypass
 test_stats_counter_incremented
@@ -525,7 +525,7 @@ test_ac3_two_failures_blocks_third
 test_old_events_ignored
 test_different_issue_not_affected
 test_provider_pressure_blocks_pool
-test_rate_limit_fast_entries_trigger_nmr
+test_rate_limit_fast_entries_trigger_notice
 test_mixed_rate_limit_entries_aggregate
 test_provider_metadata_rate_limit_entries_count
 

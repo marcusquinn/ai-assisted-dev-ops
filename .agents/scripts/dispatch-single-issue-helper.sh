@@ -69,6 +69,7 @@ _DSI_APPROVAL_HELPER="${_DSI_SCRIPT_DIR}/approval-helper.sh"
 _DSI_DISPATCH_BASE_BRANCH=""
 _DSI_STATE_RECOVERING="recovering"
 _DSI_UNKNOWN_VALUE="<unknown>"
+_DSI_JSON_TRUE="true"
 _DSI_CLAIM_WON=0
 _DSI_CLAIM_COMMENT_ID=""
 _DSI_TARGET_JSON=""
@@ -163,7 +164,7 @@ _dsi_target_is_pull_request() {
 	target_json=$(gh api "repos/${repo_slug}/issues/${issue_number}" 2>/dev/null) || return 2
 	_DSI_TARGET_JSON="$target_json"
 	has_pull_request=$(printf '%s' "$target_json" | jq -r 'has("pull_request")' 2>/dev/null) || return 2
-	if [[ "$has_pull_request" == "true" ]]; then
+	if [[ "$has_pull_request" == "$_DSI_JSON_TRUE" ]]; then
 		return 0
 	fi
 	if [[ "$has_pull_request" == "false" ]]; then
@@ -203,27 +204,28 @@ _dsi_guard_issue_author_trust() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local issue_json="${_DSI_TARGET_JSON:-}"
-	local author_meta="" author_association="NONE" author_type="" author_login=""
+	local author_meta="" author_association="NONE" author_type="" author_login="" external_source="false"
 
 	if [[ -z "$issue_json" ]]; then
 		issue_json=$(gh api "repos/${repo_slug}/issues/${issue_number}" 2>/dev/null) || issue_json=""
 	fi
 	if [[ -n "$issue_json" ]]; then
 		author_meta=$(printf '%s' "$issue_json" | jq -r \
-			'[.author_association // "NONE", .user.type // "", .user.login // ""] | join("|")' 2>/dev/null) || author_meta=""
+			'[.author_association // "NONE", .user.type // "", .user.login // "", (([.labels[]?.name] | index("external-contributor") != null) | tostring)] | join("|")' 2>/dev/null) || author_meta=""
 	fi
 	if [[ -n "$author_meta" ]]; then
-		IFS='|' read -r author_association author_type author_login <<<"$author_meta"
+		IFS='|' read -r author_association author_type author_login external_source <<<"$author_meta"
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
-	if [[ "$author_type" == "Bot" ]]; then
+	if [[ "$author_type" == "Bot" && "$external_source" != "$_DSI_JSON_TRUE" ]]; then
 		return 0
 	fi
 
-	local authority_rc=0
-	if declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+	local authority_rc=1
+	if [[ "$external_source" != "$_DSI_JSON_TRUE" ]] && declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1; then
+		authority_rc=0
 		_gh_actor_has_repo_write_authority "$repo_slug" "$author_login" "$author_association" || authority_rc=$?
-	else
+	elif [[ "$external_source" != "$_DSI_JSON_TRUE" ]]; then
 		authority_rc=2
 	fi
 	if [[ "$authority_rc" -eq 0 ]]; then
@@ -252,7 +254,7 @@ _dsi_guard_issue_author_trust() {
 		gh issue edit "$issue_number" --repo "$repo_slug" \
 			--add-label "needs-maintainer-review" >/dev/null 2>&1 || true
 	fi
-	_dsi_err "Issue #${issue_number} in ${repo_slug} has untrusted or unknown author authority (${author_association}; ${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}) and no verified approval; refusing manual worker dispatch"
+	_dsi_err "Issue #${issue_number} in ${repo_slug} has untrusted, external-source, or unknown author authority (${author_association}; external_source=${external_source}; ${AIDEVOPS_GH_ACTOR_AUTHORITY_REASON:-unknown}) and no verified approval; refusing manual worker dispatch"
 	return 1
 }
 

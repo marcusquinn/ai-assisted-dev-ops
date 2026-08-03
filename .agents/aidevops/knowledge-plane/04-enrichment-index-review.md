@@ -193,7 +193,7 @@ Three trust classes determine what happens to each inbox item:
 |-------|---------|--------|
 | `auto_promote` | `meta.json` `trust: "trusted"\|"authoritative"`, OR `ingested_by` matches a configured bot/email, OR `source_uri` starts with a trusted path | Direct promotion: inbox → staging → sources + audit entry |
 | `review_gate` | `ingested_by` matches `trust.review_gate.from_emails` | Staged + `kind:knowledge-review` issue filed with `auto-dispatch` (light review, worker-handled) |
-| `untrusted` | Default (`"*"`) | Staged + `kind:knowledge-review` issue filed with `needs-maintainer-review` (requires crypto-approval) |
+| `untrusted` | Default (`"*"`) | Staged + `kind:knowledge-review` issue filed with `hold-for-review` for manual content inspection |
 
 ### Trust Config
 
@@ -219,7 +219,7 @@ Defined in `_knowledge/_config/knowledge.json` (written at provision time from
 Override per-repo after provisioning: edit `_knowledge/_config/knowledge.json`
 directly. The config is versioned in `sources/` — changes are tracked in git.
 
-### NMR Issues
+### Review Issues
 
 Untrusted and review_gate sources produce `kind:knowledge-review` GitHub
 issues. Each issue body includes:
@@ -228,15 +228,17 @@ issues. Each issue body includes:
 - Trust class and review instructions
 - Text preview (first 500 chars) of the source content
 
-**Untrusted**: issues carry `needs-maintainer-review`. Approve with:
+**Untrusted**: issues carry `hold-for-review`. After inspecting the staged source, promote it with:
 
 ```bash
-sudo aidevops approve issue <N>
+knowledge-review-helper.sh promote <source-id>
 ```
 
-This triggers `knowledge-review-helper.sh promote <source-id>`, which moves
-the source from `_knowledge/staging/` to `_knowledge/sources/`, updates
-`meta.json` with `state: "promoted"`, and closes the issue.
+The command moves the source from `_knowledge/staging/` to
+`_knowledge/sources/`, updates `meta.json` with `state: "promoted"`, and writes
+the audit entry. Close the review issue after promotion succeeds. This is a
+content-safety hold, not an external-author authority gate, so no cryptographic
+self-approval is required.
 
 **Review-gate**: issues carry `auto-dispatch`. A worker reviews and can promote
 by calling the same `promote` subcommand.
@@ -251,12 +253,14 @@ Every action is appended to `_knowledge/index/audit.log` (JSONL):
 {"ts":"2026-04-27T12:00:00Z","action":"promoted","source_id":"ext-doc","actor":"maintainer","extra":"actor:maintainer path:approve_hook"}
 ```
 
-`_knowledge/index/` is gitignored — the audit log is local only.
+`_knowledge/index/` is gitignored — the audit log is local only. The legacy
+`nmr_filed` action/state name remains for compatibility with existing source
+metadata; newly filed issues use `hold-for-review`.
 
 ### Routine r040
 
 ```text
-- [x] r040 Knowledge review gate — classify inbox items by trust, auto-promote or NMR-file repeat:cron(*/15 * * * *) ~1m run:scripts/knowledge-review-helper.sh tick
+- [x] r040 Knowledge review gate — classify inbox items by trust, auto-promote or review-file repeat:cron(*/15 * * * *) ~1m run:scripts/knowledge-review-helper.sh tick
 ```
 
 To disable: change `[x]` to `[ ]` in `TODO.md` and commit.
@@ -267,7 +271,7 @@ To disable: change `[x]` to `[ ]` in `TODO.md` and commit.
 # Manual tick (same as r040 routine)
 ~/.aidevops/agents/scripts/knowledge-review-helper.sh tick
 
-# Explicit promotion (called automatically by approve hook)
+# Explicit promotion after reviewing staged content
 ~/.aidevops/agents/scripts/knowledge-review-helper.sh promote <source-id>
 
 # Manual audit entry

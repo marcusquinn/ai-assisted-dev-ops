@@ -118,6 +118,8 @@ main() {
 		printf 'FAIL external block did not attempt containment label\n' >&2
 		TESTS_FAILED=$((TESTS_FAILED + 1))
 	fi
+	check_gate "external-origin bot without approval blocks" 1 \
+		'{"author_association":"NONE","user":{"login":"github-actions[bot]","type":"Bot"},"labels":[{"name":"external-contributor"}]}'
 
 	: >"$GH_CALLS"
 	write_approval_helper VERIFIED

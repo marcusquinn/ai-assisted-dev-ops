@@ -330,7 +330,7 @@ _dedup_layer6_assignee_and_stale() {
 		# GH#27853: exhausted stale-recovery paths are terminal outcomes. Route
 		# them through the same idempotent consolidation dispatcher used by
 		# substantive-thread triage, then block this cycle so a stale candidate
-		# snapshot cannot launch a competing worker after NMR was applied.
+		# snapshot cannot launch a competing worker after a structural block.
 		if [[ "$assigned_output" == *STALE_ESCALATED* || "$assigned_output" == *STALE_PR_ESCALATED* ]]; then
 			local _stale_breaker_source="stale-recovery-threshold"
 			[[ "$assigned_output" == *STALE_PR_ESCALATED* ]] && _stale_breaker_source="stale-pr-checkpoint"

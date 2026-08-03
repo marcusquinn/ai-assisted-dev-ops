@@ -227,10 +227,12 @@ else
 	print_result "cost breaker trip writes diagnostic log line" 1 "(log=$(tr '\n' ' ' <"$LOGFILE" 2>/dev/null))"
 fi
 
-if grep -q 'sudo aidevops approve issue 18002 owner/repo' "$STUB_LOG" 2>/dev/null; then
-	print_result "cost breaker comment includes approval command" 0
+if grep -q 'issue edit 18002 .*--add-label status:blocked' "$STUB_LOG" 2>/dev/null &&
+	! grep -q -- '--add-label needs-maintainer-review' "$STUB_LOG" 2>/dev/null &&
+	! grep -q -- '--remove-label needs-maintainer-review' "$STUB_LOG" 2>/dev/null; then
+	print_result "cost breaker uses structural blocked state without mutating NMR" 0
 else
-	print_result "cost breaker comment includes approval command" 1 "(stub_log=$(tr '\n' ' ' <"$STUB_LOG" 2>/dev/null))"
+	print_result "cost breaker uses structural blocked state without mutating NMR" 1 "(stub_log=$(tr '\n' ' ' <"$STUB_LOG" 2>/dev/null))"
 fi
 
 # =============================================================================
@@ -283,16 +285,14 @@ else
 fi
 
 # =============================================================================
-# Assertion 7 — side-effect idempotency: when needs-maintainer-review is
-# already present, _apply_cost_breaker_side_effects must NOT post a new
-# `gh issue comment` call. We measure by comparing stub log lines before
-# and after a second over-budget invocation on the same issue.
+# Assertion 7 — side-effect idempotency uses the immutable breaker marker,
+# not a legacy NMR label or generic blocked status.
 # =============================================================================
 # Fresh log so the count is local to this assertion
 : >"$STUB_LOG"
-# Fixture: over budget AND needs-maintainer-review already on the issue
-write_fixture_issue '[{"name":"tier:standard"},{"name":"needs-maintainer-review"}]'
-write_fixture_comments "500000,400000"
+# Fixture: over budget, structurally blocked, and already carrying the marker.
+write_fixture_issue '[{"name":"tier:standard"},{"name":"status:blocked"}]'
+write_fixture_comments_with_existing_cost_marker "500000,400000"
 run_check_cost_budget 18007 "owner/repo" "standard"
 # The signal must still be emitted (so dispatch is blocked)…
 if [[ "$rc" -eq 0 && "$output" == *"COST_BUDGET_EXCEEDED"* ]]; then
@@ -307,9 +307,9 @@ else
 	idem_no_comment_ok=0
 fi
 if [[ "$idem_signal_ok" -eq 0 && "$idem_no_comment_ok" -eq 0 ]]; then
-	print_result "side-effect idempotency (label present → no double-comment)" 0
+	print_result "side-effect idempotency (marker present → no double-comment)" 0
 else
-	print_result "side-effect idempotency (label present → no double-comment)" 1 \
+	print_result "side-effect idempotency (marker present → no double-comment)" 1 \
 		"(signal_ok=$idem_signal_ok no_comment_ok=$idem_no_comment_ok output='$output')"
 fi
 
