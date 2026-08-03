@@ -91,7 +91,7 @@ assert_gt() {
 }
 
 # ---------------------------------------------------------------------------
-# Setup: locate files, isolate PULSE_STATS_FILE, source the modules.
+# Setup: locate files, isolate runtime state, source the modules.
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="$SCRIPT_DIR/pulse-merge-stuck.sh"
@@ -106,12 +106,14 @@ for required in "$MODULE" "$STATS_HELPER" "$MERGE_SCRIPT"; do
 	fi
 done
 
-# Isolate state writes to a temp file so the live ~/.aidevops/logs/pulse-stats.json
-# is not perturbed. Cleanup on exit.
+# Isolate state and audit writes so tests cannot perturb live user logs. Recovery
+# tests call the audited close wrapper with stub issue numbers, so the audit path
+# must be redirected before sourcing the module and its shared wrappers.
 TEST_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/test-pulse-merge-stuck-XXXXXX")
 trap 'rm -rf "$TEST_TMPDIR"' EXIT
 export PULSE_STATS_FILE="$TEST_TMPDIR/pulse-stats.json"
 export LOGFILE="$TEST_TMPDIR/pulse.log"
+export GH_AUDIT_LOG_FILE="$TEST_TMPDIR/gh-audit.log"
 
 # Source the helpers. pulse-stats-helper.sh sets -euo pipefail; turn that off
 # after source so a single failed assertion doesn't abort the whole suite.
