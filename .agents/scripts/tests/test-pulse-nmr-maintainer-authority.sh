@@ -593,6 +593,9 @@ test_label_helpers_reject_incomplete_metadata() {
 	_nmr_issue_label_state 24479 owner/repo >/dev/null || state_rc=$?
 	_nmr_issue_author_has_repo_write_authority 24479 owner/repo || authority_rc=$?
 	export ISSUE_LABELS_JSON='[{"name":""}]'
+	export ISSUE_API_AUTHOR='github-actions[bot]'
+	export ISSUE_AUTHOR_TYPE='Bot'
+	export ISSUE_ASSOC='NONE'
 	_nmr_issue_author_has_repo_write_authority 24479 owner/repo || empty_name_authority_rc=$?
 	if [[ "$security_rc" -eq 2 && "$state_rc" -ne 0 && "$authority_rc" -eq 2 && "$empty_name_authority_rc" -eq 2 ]]; then
 		print_result "authority, security, and lifecycle helpers reject incomplete label metadata" 0
