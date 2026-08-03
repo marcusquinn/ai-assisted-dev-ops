@@ -530,36 +530,29 @@ _auto_update_runtime_bundle_valid() {
 	return $?
 }
 
-_auto_update_replace_agents_link() {
-	local agents_root="$1"
-	local agents_path="${HOME}/.aidevops/agents"
-	local link_tmp="${agents_path}.rollback.$$"
-	rm -f "$link_tmp"
-	ln -s "$agents_root" "$link_tmp" || return 1
-	if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
-		mv -f -h "$link_tmp" "$agents_path" || {
-			rm -f "$link_tmp"
-			return 1
-		}
-	else
-		mv -Tf "$link_tmp" "$agents_path" || {
-			rm -f "$link_tmp"
-			return 1
-		}
-	fi
-	return 0
-}
-
 _auto_update_rollback_runtime_bundle() {
 	local requested_root="$1"
+	local rollback_reason="${2:-automatic update failure recovery}"
 	local previous_link="${HOME}/.aidevops/previous-runtime-bundle"
 	local rollback_root="$requested_root"
+	local bundles_root="${HOME}/.aidevops/runtime-bundles"
+	local rollback_helper="${SCRIPT_DIR}/runtime-bundle-rollback-helper.sh"
+	local bundle_id=""
 	if [[ ! -d "$rollback_root/scripts" && -d "$previous_link/scripts" ]]; then
 		rollback_root=$(cd "$previous_link" && pwd -P) || rollback_root=""
 	fi
-	[[ -n "$rollback_root" && -d "$rollback_root/scripts" ]] || return 1
-	_auto_update_replace_agents_link "$rollback_root" || return 1
-	log_warn "Rolled back runtime activation to $rollback_root"
+	[[ -n "$rollback_root" && -d "$rollback_root/scripts" && -f "$rollback_helper" ]] || return 1
+	bundles_root=$(cd "$bundles_root" 2>/dev/null && pwd -P) || return 1
+	rollback_root=$(cd "$rollback_root" 2>/dev/null && pwd -P) || return 1
+	case "$rollback_root" in
+	"$bundles_root"/*/agents) ;;
+	*) return 1 ;;
+	esac
+	bundle_id="${rollback_root%/agents}"
+	bundle_id="${bundle_id##*/}"
+	AIDEVOPS_INSTALL_DIR="$INSTALL_DIR" bash "$rollback_helper" rollback \
+		--bundle-id "$bundle_id" --reason "$rollback_reason" --automatic || return 1
+	log_warn "Rolled back runtime activation to retained bundle $bundle_id"
 	return 0
 }
 
@@ -774,7 +767,7 @@ _cmd_check_perform_update() {
 
 	if [[ "$_setup_exit" -ne 0 ]]; then
 		log_error "setup.sh failed (exit code: $_setup_exit)"
-		_auto_update_rollback_runtime_bundle "$prior_bundle_root" || true
+		_auto_update_rollback_runtime_bundle "$prior_bundle_root" "setup failed during automatic update" || true
 		if [[ "$_sentinel_ok" -ne 0 ]]; then
 			log_error "setup.sh did not reach completion sentinel — forensic tail written to $LOG_FILE by verify-setup-log.sh"
 		fi
@@ -784,7 +777,7 @@ _cmd_check_perform_update() {
 
 	if [[ "$_sentinel_ok" -ne 0 ]]; then
 		log_error "setup.sh exited 0 but did not reach completion sentinel — silent termination, forensic tail in $LOG_FILE"
-		_auto_update_rollback_runtime_bundle "$prior_bundle_root" || true
+		_auto_update_rollback_runtime_bundle "$prior_bundle_root" "setup completion sentinel was missing" || true
 		update_state "update" "$remote" "setup_sentinel_missing"
 		return 1
 	fi
@@ -799,7 +792,7 @@ _cmd_check_perform_update() {
 	if [[ "$new_version" != "$deployed_version" ]] ||
 		! _auto_update_runtime_bundle_valid "$active_bundle_root" "$new_version"; then
 		log_warn "Update pulled v$new_version but agents at v$deployed_version — deployment incomplete"
-		_auto_update_rollback_runtime_bundle "$prior_bundle_root" || true
+		_auto_update_rollback_runtime_bundle "$prior_bundle_root" "deployed agents failed automatic update verification" || true
 		update_state "update" "$new_version" "agents_stale"
 	else
 		log_info "Update complete: v$current -> v$new_version (agents deployed)"

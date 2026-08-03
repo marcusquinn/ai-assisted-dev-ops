@@ -102,6 +102,7 @@ the required notices and preferred credit text.
 - `aidevops init` - Initialize in any project
 - `aidevops update` - Update framework
 - `aidevops auto-update` - Automatic update polling (enable/disable/status)
+- `aidevops runtime-bundle list` - List retained validated runtime bundles; use `rollback --bundle-id <id> --reason <text>` for an explicit audited rollback
 - `aidevops gpt56-context [enable|disable|status]` - Keep GPT-5.6 at a 300K advertised context window in OpenCode (enabled by default), so 80% auto-compaction runs near 240K before long-context pricing; disable to use native provider limits
 - `aidevops secret` - Manage secrets (gopass encrypted, AI-safe)
 - `aidevops security` - Full security assessment (posture, secrets, supply chain)
@@ -283,6 +284,7 @@ aidevops status           # Check what's installed
 aidevops doctor           # Detect duplicate installs and PATH conflicts
 aidevops update           # Update framework + check registered projects
 aidevops auto-update      # Manage automatic update polling (every 10 min)
+aidevops runtime-bundle list # Inspect retained validated runtime bundles
 aidevops init             # Initialize aidevops in any project
 aidevops features         # List available features
 aidevops repos            # List/add/remove registered projects
