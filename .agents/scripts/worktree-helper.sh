@@ -21,7 +21,8 @@
 #   status                 Show current worktree info
 #   switch <branch>        Open/create worktree for branch (prints path)
 #   clean [--auto] [--force-merged]  Remove worktrees for merged branches
-#   recovery              Inventory current and legacy recovery archives
+#   recovery [plan --output <absolute-path>]
+#                         Inventory archives or write an exact read-only plan
 #   help                   Show this help
 #
 # Examples:
