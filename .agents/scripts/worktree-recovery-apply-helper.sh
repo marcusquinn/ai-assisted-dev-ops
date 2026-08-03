@@ -17,6 +17,7 @@ WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED="$WORKTREE_RECOVERY_APPLY_STATE_REMOVED"
 WORKTREE_RECOVERY_APPLY_JSON_TYPE_NUMBER="number"
 WORKTREE_RECOVERY_APPLY_JSON_TYPE_OBJECT="object"
 WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING="string"
+WORKTREE_RECOVERY_APPLY_TRASH_SEGMENT="/.retention-trash/"
 WORKTREE_RECOVERY_APPLY_VALIDATED_METADATA=""
 WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON=""
 
@@ -317,6 +318,7 @@ _worktree_recovery_apply_transaction_entries() {
 
 	printf '%s\n' "$plan_json" | jq -c --arg candidate "$WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE" \
 		--arg transaction_id "$transaction_id" \
+		--arg trash_segment "$WORKTREE_RECOVERY_APPLY_TRASH_SEGMENT" \
 		--arg planned "$WORKTREE_RECOVERY_APPLY_STATE_PLANNED" \
 		--arg pending "$WORKTREE_RECOVERY_APPLY_OUTCOME_PENDING" '
 		def parent_path: .[0:rindex("/")];
@@ -324,7 +326,7 @@ _worktree_recovery_apply_transaction_entries() {
 		[.entries[] | select(.disposition == $candidate)] | to_entries | map(
 			.key as $index | .value as $entry |
 			{index:$index,role:$entry.role,original_path:$entry.path,
-			staged_path:(($entry.path | parent_path) + "/.retention-trash/" + $transaction_id +
+			staged_path:(($entry.path | parent_path) + $trash_segment + $transaction_id +
 				"/candidate-" + ($index | tostring) + "-" + ($entry.path | base_name)),
 			archive_name:($entry.archive_path | base_name),
 			expected_allocated_bytes:$entry.expected_allocated_bytes,
@@ -435,10 +437,11 @@ _worktree_recovery_apply_validate_uninitialized_transaction_dirs() {
 	local transaction_dirs=""
 
 	transaction_dirs=$(printf '%s\n' "$entries_json" | jq -c \
-		--arg recovery_root "$recovery_root" --arg transaction_id "$transaction_id" '
+		--arg recovery_root "$recovery_root" --arg transaction_id "$transaction_id" \
+		--arg trash_segment "$WORKTREE_RECOVERY_APPLY_TRASH_SEGMENT" '
 		([$recovery_root] + [.[] | .original_path as $original_path |
 			$original_path[0:($original_path | rindex("/"))]]) | unique |
-		map(. + "/.retention-trash/" + $transaction_id)
+		map(. + $trash_segment + $transaction_id)
 	') || return 1
 	while IFS= read -r transaction_dir; do
 		[[ -e "$transaction_dir" || -L "$transaction_dir" ]] || continue
@@ -499,14 +502,15 @@ _worktree_recovery_apply_validate_transaction_scope() {
 	local transaction_dir=""
 	local artifact=""
 
-	jq -e --arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" '
+	jq -e --arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" \
+		--arg trash_segment "$WORKTREE_RECOVERY_APPLY_TRASH_SEGMENT" '
 		.transaction_id as $transaction_id |
 		all(.entries[];
 			.original_path as $original_path | .staged_path as $staged_path |
 			($staged_path | type == $string_type) and
 			($staged_path[0:($staged_path | rindex("/"))] ==
 				($original_path[0:($original_path | rindex("/"))] +
-				"/.retention-trash/" + $transaction_id)))
+				$trash_segment + $transaction_id)))
 	' "$journal_path" >/dev/null 2>&1 || return 1
 	while IFS= read -r transaction_dir; do
 		[[ -d "$transaction_dir" && ! -L "$transaction_dir" ]] || return 1
