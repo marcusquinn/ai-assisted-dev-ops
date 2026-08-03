@@ -592,36 +592,67 @@ test_recovery_inventory_reports_legacy_buckets_fail_closed() {
 	local override_link="${fixture_home}/operator-recovery"
 	local legacy_alias="${fixture_home}/legacy-recovery-alias"
 	local legacy_root="${fixture_home}/.Trash"
-	local valid_bucket="${current_root}/aidevops-worktree-cleanup-valid"
+	local spoofed_bucket="${current_root}/aidevops-worktree-cleanup-spoofed"
 	local unknown_bucket="${legacy_root}/aidevops-worktree-cleanup-interrupted"
-	local legacy_repo="${TEST_DIR}/legacy-inventory-repo"
-	local legacy_worktree="${TEST_DIR}/legacy-inventory-worktree"
+	local current_repo="${TEST_DIR}/current-inventory-repo"
+	local current_worktree="${TEST_DIR}/current-inventory-worktree"
+	local current_archive=""
+	local current_bucket=""
+	local interrupted_repo="${TEST_DIR}/interrupted-inventory-repo"
+	local interrupted_worktree="${TEST_DIR}/interrupted-inventory-worktree"
+	local interrupted_archive=""
+	local interrupted_bucket=""
+	local legacy_repo="${TEST_DIR}/legacy-v1-inventory-repo"
+	local legacy_worktree="${TEST_DIR}/legacy-v1-inventory-worktree"
 	local legacy_archive=""
+	local legacy_bucket=""
+	local recovery_dir=""
 	local output=""
 	local alias_output=""
 	local rc=0
 
-	mkdir -p "$valid_bucket/${_WT_RECOVERY_DIR_NAME}" \
+	mkdir -p "$spoofed_bucket/${_WT_RECOVERY_DIR_NAME}" \
 		"$unknown_bucket/${_WT_RECOVERY_DIR_NAME}" || rc=1
-	printf '%s\n' "$_WT_RECOVERY_FORMAT" >"$valid_bucket/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
-	printf '%s\n' "$_WT_RECOVERY_FORMAT" >\
-		"$valid_bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
-	printf '%s\n' "$_WT_RECOVERY_FORMAT" >\
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" >"$spoofed_bucket/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" > \
+		"$spoofed_bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" > \
 		"$unknown_bucket/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
+	spoofed_bucket=$(cd "$spoofed_bucket" 2>/dev/null && pwd -P) || rc=1
+	unknown_bucket=$(cd "$unknown_bucket" 2>/dev/null && pwd -P) || rc=1
 	ln -s "$current_root" "$override_link" || rc=1
 	ln -s "$legacy_root" "$legacy_alias" || rc=1
+	create_git_worktree_fixture "$current_repo" "$current_worktree" "feature/current-inventory" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$current_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$current_worktree" "test.sh" "current-inventory" || rc=1
+	current_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	current_bucket="${current_archive%/*}"
+	create_git_worktree_fixture "$interrupted_repo" "$interrupted_worktree" \
+		"feature/interrupted-inventory" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$interrupted_worktree" "test.sh" \
+		"interrupted-inventory" || rc=1
+	interrupted_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	interrupted_bucket="${interrupted_archive%/*}"
+	rm -f "$interrupted_bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
 	create_git_worktree_fixture "$legacy_repo" "$legacy_worktree" "feature/legacy-inventory" || rc=1
 	AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
 		archive_worktree_path_recoverably "$legacy_worktree" "test.sh" "legacy-inventory" || rc=1
 	legacy_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
-	rm -f "${legacy_archive%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	legacy_bucket="${legacy_archive%/*}"
+	recovery_dir="$legacy_bucket/${_WT_RECOVERY_DIR_NAME}"
+	rm -f "$recovery_dir/${_WT_RECOVERY_COMPLETE_MARKER}" \
+		"$recovery_dir/storage-owner" "$recovery_dir/storage-class" \
+		"$recovery_dir/storage-policy" "$recovery_dir/storage-root" || rc=1
 	output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$override_link" \
 		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
 	printf '%s\n' "$output" | grep -Fq $'store\tcurrent\tjoint\trecovery\tmanual-review\tpresent\t' || rc=1
 	printf '%s\n' "$output" | grep -Fq $'store\tlegacy\tjoint\trecovery\tmanual-review\tpresent\t' || rc=1
-	printf '%s\n' "$output" | grep -Fq $'bucket\tcurrent\tframework\tattributed\t' || rc=1
-	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t' || rc=1
-	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tattributed-legacy\t' || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tcurrent\tframework\tattributed\t'"$current_bucket" || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tcurrent\tframework\tunknown\t'"$spoofed_bucket" || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t'"$unknown_bucket" || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t'"$interrupted_bucket" || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tattributed-legacy\t'"$legacy_bucket" || rc=1
 	alias_output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_alias" \
 		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
 	[[ "$(printf '%s\n' "$alias_output" | grep -c '^store')" -eq 1 ]] || rc=1

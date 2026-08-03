@@ -74,6 +74,8 @@ _WT_GIT_STATUS_FIELD_PREFIX="aidevops-git-status "
 _WT_RECOVERY_FORMAT="aidevops-worktree-recovery-v1"
 _WT_RECOVERY_DIR_NAME=".aidevops-worktree-recovery"
 _WT_RECOVERY_COMPLETE_MARKER="archive-complete"
+_WT_RECOVERY_STORAGE_OWNER="framework"
+_WT_RECOVERY_ROOT_UNAVAILABLE="unavailable"
 _WT_RECOVERY_BRANCH_DETACHED="detached"
 WORKTREE_RECOVERABLE_ARCHIVE_PATH=""
 
@@ -747,6 +749,43 @@ _worktree_legacy_recovery_bucket_is_valid() {
 	return 0
 }
 
+_worktree_recovery_v2_metadata_is_present() {
+	local bucket="$1"
+	local recovery_dir="${bucket}/${_WT_RECOVERY_DIR_NAME}"
+	local metadata_name=""
+
+	for metadata_name in "$_WT_RECOVERY_COMPLETE_MARKER" storage-owner storage-class storage-policy storage-root; do
+		if [[ -e "$recovery_dir/$metadata_name" || -L "$recovery_dir/$metadata_name" ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+_worktree_recovery_storage_contract_is_valid() {
+	local bucket="$1"
+	local expected_root="$2"
+	local recovery_dir="${bucket}/${_WT_RECOVERY_DIR_NAME}"
+	local storage_owner=""
+	local storage_class=""
+	local storage_policy=""
+	local storage_root=""
+	local metadata_name=""
+
+	for metadata_name in storage-owner storage-class storage-policy storage-root; do
+		[[ -f "$recovery_dir/$metadata_name" && ! -L "$recovery_dir/$metadata_name" ]] || return 1
+	done
+	IFS= read -r storage_owner <"$recovery_dir/storage-owner" || return 1
+	IFS= read -r storage_class <"$recovery_dir/storage-class" || return 1
+	IFS= read -r storage_policy <"$recovery_dir/storage-policy" || return 1
+	IFS= read -r storage_root <"$recovery_dir/storage-root" || return 1
+	[[ "$storage_owner" == "$_WT_RECOVERY_STORAGE_OWNER" ]] || return 1
+	[[ "$storage_class" == "recovery" ]] || return 1
+	[[ "$storage_policy" == "manual-review" ]] || return 1
+	[[ "$storage_root" == "$expected_root" ]] || return 1
+	return 0
+}
+
 _worktree_recovery_inventory_root() {
 	local root_path="$1"
 	local store_role="$2"
@@ -759,10 +798,10 @@ _worktree_recovery_inventory_root() {
 	local state="unknown"
 
 	if [[ -d "$root_path" ]]; then
-		root_real=$(cd "$root_path" 2>/dev/null && pwd -P) || root_state="unavailable"
-		[[ "$root_state" == "unavailable" ]] || root_state="present"
+		root_real=$(cd "$root_path" 2>/dev/null && pwd -P) || root_state="$_WT_RECOVERY_ROOT_UNAVAILABLE"
+		[[ "$root_state" == "$_WT_RECOVERY_ROOT_UNAVAILABLE" ]] || root_state="present"
 	elif [[ -e "$root_path" || -L "$root_path" ]]; then
-		root_state="unavailable"
+		root_state="$_WT_RECOVERY_ROOT_UNAVAILABLE"
 	fi
 	printf 'store\t%s\t%s\trecovery\tmanual-review\t%s\t%s\n' \
 		"$store_role" "$root_owner" "$root_state" "$root_real"
@@ -778,20 +817,26 @@ _worktree_recovery_inventory_root() {
 			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" &&
 			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" ]]; then
 			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
-			IFS= read -r completion <\
+			IFS= read -r completion < \
 				"$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || completion=""
-			[[ "$format" == "$_WT_RECOVERY_FORMAT" &&
-				"$completion" == "$_WT_RECOVERY_FORMAT" ]] && state="attributed"
+			if [[ "$format" == "$_WT_RECOVERY_FORMAT" &&
+				"$completion" == "$_WT_RECOVERY_FORMAT" ]] &&
+				_worktree_recovery_storage_contract_is_valid "$bucket" "$root_real" &&
+				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
+				state="attributed"
+			fi
 		elif [[ -d "$bucket" && ! -L "$bucket" &&
 			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
 			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" ]]; then
 			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
 			if [[ "$format" == "$_WT_RECOVERY_FORMAT" ]] &&
+				! _worktree_recovery_v2_metadata_is_present "$bucket" &&
 				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
 				state="attributed-legacy"
 			fi
 		fi
-		printf 'bucket\t%s\tframework\t%s\t%s\n' "$store_role" "$state" "$bucket"
+		printf 'bucket\t%s\t%s\t%s\t%s\n' \
+			"$store_role" "$_WT_RECOVERY_STORAGE_OWNER" "$state" "$bucket"
 	done
 	return 0
 }
@@ -874,7 +919,7 @@ archive_worktree_path_recoverably() {
 	mkdir "$recovery_dir" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$_WT_ID_ADMIN_REAL" "$recovery_admin" || return 1
 	_worktree_write_recovery_identity "$recovery_dir" || return 1
-	printf '%s\n' "framework" >"${recovery_dir}/storage-owner" || return 1
+	printf '%s\n' "$_WT_RECOVERY_STORAGE_OWNER" >"${recovery_dir}/storage-owner" || return 1
 	printf '%s\n' "recovery" >"${recovery_dir}/storage-class" || return 1
 	printf '%s\n' "manual-review" >"${recovery_dir}/storage-policy" || return 1
 	printf '%s\n' "$recovery_root_real" >"${recovery_dir}/storage-root" || return 1
