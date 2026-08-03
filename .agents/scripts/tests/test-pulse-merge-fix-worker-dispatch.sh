@@ -27,6 +27,7 @@ TESTS_FAILED=0
 TEST_ROOT=""
 GH_LOG=""
 TIMEOUT_CALL_LOG=""
+EVENT_LOG=""
 
 print_result() {
 	local test_name="$1"
@@ -51,10 +52,20 @@ print_result() {
 reset_mock_state() {
 	: >"$GH_LOG"
 	: >"$TIMEOUT_CALL_LOG"
-	unset TEST_TIMEOUT_FAIL_PATTERN
+	: >"$EVENT_LOG"
+	unset DRY_RUN TEST_TIMEOUT_FAIL_PATTERN TEST_FAIL_TRANSITION TEST_FAIL_CLOSE \
+		TEST_FAIL_REOPEN TEST_FAIL_BODY_PHASE TEST_FAIL_TERMINAL_LABEL \
+		TEST_DRIFT_AFTER_TRANSITION_HEAD TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE \
+		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION
+	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
 	: >"${TEST_ROOT}/issue-body.txt"
 	: >"${TEST_ROOT}/reviews.json"
 	: >"${TEST_ROOT}/comments.json"
+	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
+	printf 'abc123repairsha\n' >"${TEST_ROOT}/pr-head.txt"
+	printf 'origin:worker,auto-dispatch\n' >"${TEST_ROOT}/pr-labels.txt"
+	printf 'status:in-review,origin:interactive\n' >"${TEST_ROOT}/issue-labels.txt"
+	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
 	# Defaults: populated reviews + comments, empty issue body.
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
 [{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","body":"Two issues in the new helper. Please address before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-1"}]
@@ -73,9 +84,11 @@ setup_test_paths() {
 	: >"$LOGFILE"
 	GH_LOG="${TEST_ROOT}/gh-calls.log"
 	TIMEOUT_CALL_LOG="${TEST_ROOT}/timeout-calls.log"
+	EVENT_LOG="${TEST_ROOT}/route-events.log"
 	: >"$GH_LOG"
 	: >"$TIMEOUT_CALL_LOG"
-	export TEST_ROOT GH_LOG TIMEOUT_CALL_LOG
+	: >"$EVENT_LOG"
+	export TEST_ROOT GH_LOG TIMEOUT_CALL_LOG EVENT_LOG
 	return 0
 }
 
@@ -105,7 +118,7 @@ case "$_subcmd" in
 	;;
 "pr view")
 	if [[ "$*" == *"--json labels"* ]]; then
-		printf '%s\n' "origin:worker,auto-dispatch"
+		cat "${TEST_ROOT}/pr-labels.txt"
 		exit 0
 	fi
 	if [[ "$*" == *"headRefOid,headRefName,isCrossRepository,maintainerCanModify"* ]]; then
@@ -137,12 +150,69 @@ case "$_subcmd" in
 	fi
 	exit 0
 	;;
-"pr close" | "pr edit")
+"pr close")
+	printf 'pr-close\n' >>"${EVENT_LOG}"
+	: >"${TEST_ROOT}/pr-close-observed"
+	if [[ "${TEST_FAIL_CLOSE:-0}" == "1" ]]; then
+		exit 1
+	fi
+	printf 'CLOSED\n' >"${TEST_ROOT}/pr-state.txt"
+	exit 0
+	;;
+"pr reopen")
+	printf 'pr-reopen\n' >>"${EVENT_LOG}"
+	if [[ "${TEST_FAIL_REOPEN:-0}" == "1" ]]; then
+		exit 1
+	fi
+	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
+	exit 0
+	;;
+GHEOF
+	return 0
+}
+
+append_gh_mock_pr_edit_cases() {
+	cat >>"${TEST_ROOT}/bin/gh" <<'GHEOF'
+"pr edit")
+	if [[ "$*" == *"--add-label review-routed-to-issue"* \
+		|| "$*" == *"--add-label conflict-feedback-routed"* \
+		|| "$*" == *"--add-label ci-feedback-routed"* ]]; then
+		printf 'pr-terminal-label\n' >>"${EVENT_LOG}"
+		if [[ "${TEST_FAIL_TERMINAL_LABEL:-0}" == "1" ]]; then
+			exit 1
+		fi
+	fi
+	_labels=$(<"${TEST_ROOT}/pr-labels.txt")
+	while [[ $# -gt 0 ]]; do
+		_action="$1"
+		case "$_action" in
+		--add-label)
+			shift
+			_value="${1:-}"
+			if [[ ",${_labels}," != *",${_value},"* ]]; then
+				_labels="${_labels:+${_labels},}${_value}"
+			fi
+			;;
+		--remove-label)
+			shift
+			_value="${1:-}"
+			_next=""
+			IFS=',' read -r -a _parts <<<"$_labels"
+			for _part in "${_parts[@]}"; do
+				[[ "$_part" == "$_value" ]] && continue
+				_next="${_next:+${_next},}${_part}"
+			done
+			_labels="$_next"
+			;;
+		esac
+		shift || true
+	done
+	printf '%s\n' "$_labels" >"${TEST_ROOT}/pr-labels.txt"
 	exit 0
 	;;
 "issue view")
 	if [[ "$*" == *"--json assignees"* ]]; then
-		printf '%s\n' 'stale-owner'
+		cat "${TEST_ROOT}/issue-assignees.txt"
 		exit 0
 	fi
 	if [[ "$*" == *"--json body"* ]]; then
@@ -151,16 +221,75 @@ case "$_subcmd" in
 	fi
 	exit 0
 	;;
+GHEOF
+	return 0
+}
+
+append_gh_mock_issue_edit_cases() {
+	cat >>"${TEST_ROOT}/bin/gh" <<'GHEOF'
 "issue edit")
-	# Capture the --body argument so subsequent views see the updated body.
+	_is_transition=0
+	if [[ "$*" == *"--body"* ]]; then
+		_body_phase="start"
+		if [[ "$*" == *"feedback-route:complete"* ]]; then
+			_body_phase="complete"
+		fi
+		printf 'issue-body-%s\n' "$_body_phase" >>"${EVENT_LOG}"
+		if [[ "${TEST_FAIL_BODY_PHASE:-}" == "$_body_phase" ]]; then
+			exit 1
+		fi
+	elif [[ "$*" == *"--add-label status:available"* ]]; then
+		_is_transition=1
+		printf 'issue-transition\n' >>"${EVENT_LOG}"
+		if [[ "${TEST_FAIL_TRANSITION:-0}" == "1" ]]; then
+			exit 1
+		fi
+	fi
+	_labels=$(<"${TEST_ROOT}/issue-labels.txt")
+	_assignees=$(<"${TEST_ROOT}/issue-assignees.txt")
 	while [[ $# -gt 0 ]]; do
-		if [[ "$1" == "--body" ]]; then
+		_action="$1"
+		if [[ "$_action" == "--body" ]]; then
 			shift
 			printf '%s' "$1" >"${TEST_ROOT}/issue-body.txt"
-			break
+		elif [[ "$_action" == "--add-label" ]]; then
+			shift
+			_value="${1:-}"
+			if [[ ",${_labels}," != *",${_value},"* ]]; then
+				_labels="${_labels:+${_labels},}${_value}"
+			fi
+		elif [[ "$_action" == "--remove-label" ]]; then
+			shift
+			_value="${1:-}"
+			_next=""
+			IFS=',' read -r -a _parts <<<"$_labels"
+			for _part in "${_parts[@]}"; do
+				[[ "$_part" == "$_value" ]] && continue
+				_next="${_next:+${_next},}${_part}"
+			done
+			_labels="$_next"
+		elif [[ "$_action" == "--remove-assignee" ]]; then
+			shift
+			_value="${1:-}"
+			[[ "$_assignees" == "$_value" ]] && _assignees=""
 		fi
-		shift
+		shift || true
 	done
+	if [[ "${TEST_ADD_NMR_DURING_TRANSITION:-0}" == "1" && "$_is_transition" -eq 1 \
+		&& ",${_labels}," != *",needs-maintainer-review,"* ]]; then
+		_labels="${_labels:+${_labels},}needs-maintainer-review"
+	fi
+	printf '%s\n' "$_labels" >"${TEST_ROOT}/issue-labels.txt"
+	printf '%s' "$_assignees" >"${TEST_ROOT}/issue-assignees.txt"
+	if [[ -n "${TEST_DRIFT_AFTER_TRANSITION_HEAD:-}" && "$_is_transition" -eq 1 ]]; then
+		printf '%s\n' "$TEST_DRIFT_AFTER_TRANSITION_HEAD" >"${TEST_ROOT}/pr-head.txt"
+	fi
+	if [[ -n "${TEST_ADD_PR_PROTECTION_DURING_TRANSITION:-}" && "$_is_transition" -eq 1 ]]; then
+		_pr_labels=$(<"${TEST_ROOT}/pr-labels.txt")
+		if [[ ",${_pr_labels}," != *",${TEST_ADD_PR_PROTECTION_DURING_TRANSITION},"* ]]; then
+			printf '%s,%s\n' "$_pr_labels" "$TEST_ADD_PR_PROTECTION_DURING_TRANSITION" >"${TEST_ROOT}/pr-labels.txt"
+		fi
+	fi
 	exit 0
 	;;
 esac
@@ -197,6 +326,25 @@ if [[ "${1:-}" == "api" ]]; then
 		fi
 		exit 0
 	fi
+	if [[ "${2:-}" == "repos/owner/repo/pulls/100" ]]; then
+		if [[ "${TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE:-0}" == "1" \
+			&& -f "${TEST_ROOT}/pr-close-observed" \
+			&& ! -f "${TEST_ROOT}/pr-snapshot-failure-consumed" ]]; then
+			: >"${TEST_ROOT}/pr-snapshot-failure-consumed"
+			exit 1
+		fi
+		printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
+			"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/pr-labels.txt")"
+		exit 0
+	fi
+	if [[ "${2:-}" == "repos/owner/repo/issues/42" ]]; then
+		if [[ "$_jq_filter" == *".body"* ]]; then
+			cat "${TEST_ROOT}/issue-body.txt"
+		else
+			printf '%s\t%s\n' "$(<"${TEST_ROOT}/issue-labels.txt")" "$(<"${TEST_ROOT}/issue-assignees.txt")"
+		fi
+		exit 0
+	fi
 fi
 
 exit 0
@@ -211,6 +359,8 @@ setup_test_env() {
 	# subcommand. Reads/writes to files under TEST_ROOT so tests can
 	# inspect/alter state between runs.
 	write_gh_mock_command_cases
+	append_gh_mock_pr_edit_cases
+	append_gh_mock_issue_edit_cases
 	append_gh_mock_api_cases
 	chmod +x "${TEST_ROOT}/bin/gh"
 	return 0
@@ -223,16 +373,16 @@ teardown_test_env() {
 	return 0
 }
 
-# Extract helpers under test and eval them in this shell. Same pattern
-# as test-pulse-merge-rebase-nudge.sh.
-#
-# GH#20057: _dispatch_pr_fix_worker now delegates to three shared helpers
-# (_append_feedback_to_issue, _transition_issue_for_redispatch,
-# _close_and_label_feedback_pr). All four must be eval'd into the test shell
-# for the dispatch tests to reach their assertions.
+# Source the feedback module so its head-bound finalizer dependency is exercised
+# exactly as Pulse loads it in production.
 define_helpers_under_test() {
-	local fn fn_src
 	gh_issue_edit_safe() { gh issue edit "$@"; return $?; }
+	_pulse_merge_invalidate_pr_list_cache() {
+		local repo_slug="$1"
+		local reason="$2"
+		printf 'pr-cache-invalidate %s %s\n' "$repo_slug" "$reason" >>"$EVENT_LOG"
+		return 0
+	}
 	gh_pr_checks_exact_json() {
 		local repo_slug="$1"
 		local pr_number="$2"
@@ -241,37 +391,9 @@ define_helpers_under_test() {
 		printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
 		return 1
 	}
-	# Functions to extract, in source order. _build_review_feedback_section
-	# is used by the "build section" tests; the three shared helpers are
-	# required by the refactored _dispatch_pr_fix_worker body.
-	local fns=(
-		_build_review_feedback_section
-		_append_feedback_to_issue
-		_transition_issue_for_redispatch
-		_close_and_label_feedback_pr
-		_ci_check_url_has_infra_failure_log
-		_ci_actionable_failed_checks_markdown
-		_ci_terminal_failed_check_results
-		_build_ci_feedback_section
-		_ci_repair_required_checks_json
-		_route_ci_repair_fallback
-		_ci_repair_hash_text
-		_dispatch_ci_fix_worker
-		_dispatch_pr_fix_worker
-	)
-	for fn in "${fns[@]}"; do
-		fn_src=$(awk -v name="$fn" '
-			$0 ~ "^" name "\\(\\) \\{" { capture = 1 }
-			capture { print }
-			capture && /^}$/ { capture = 0; exit }
-		' "$MERGE_SCRIPT")
-		if [[ -z "$fn_src" ]]; then
-			printf 'ERROR: could not extract %s from %s\n' "$fn" "$MERGE_SCRIPT" >&2
-			return 1
-		fi
-		# shellcheck disable=SC1090
-		eval "$fn_src"
-	done
+	unset _PULSE_MERGE_FEEDBACK_LOADED _PULSE_MERGE_FEEDBACK_FINALIZER_LOADED
+	# shellcheck disable=SC1090
+	source "$MERGE_SCRIPT"
 	_classify_ci_failures_by_pattern() { return 0; }
 	return 0
 }
@@ -380,6 +502,13 @@ test_dispatch_appends_to_issue_body_and_closes_pr() {
 			"Expected '--remove-assignee stale-owner' in call log"
 		return 0
 	fi
+	local actual_events=""
+	actual_events=$(<"$EVENT_LOG")
+	if [[ "$actual_events" != $'issue-body-start\nissue-transition\npr-close\npr-cache-invalidate owner/repo closed feedback-routed PR #100\nissue-body-complete\npr-terminal-label' ]]; then
+		print_result "dispatch commits route phases in safe order" 1 \
+			"events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
 	print_result "dispatch appends body, closes PR, transitions labels" 0
 	return 0
 }
@@ -413,9 +542,9 @@ test_dispatch_timeout_fails_open_without_routing_empty_feedback() {
 	return 0
 }
 
-test_dispatch_idempotent_when_marker_already_present() {
+test_dispatch_preserves_ambiguous_legacy_marker() {
 	reset_mock_state
-	# Pre-seed the issue body with the marker.
+	# Pre-seed only the legacy marker, without head-bound start/completion evidence.
 	cat >"${TEST_ROOT}/issue-body.txt" <<'EOF'
 Original body.
 
@@ -424,23 +553,371 @@ Previously routed feedback content.
 EOF
 	: >"$GH_LOG"
 
-	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
 
-	# The body should not have been edited again (issue edit --body should
-	# not appear in call log). The PR close + label ops still fire —
-	# idempotency is scoped to the body append only.
 	if grep -qE 'gh issue edit [0-9]+ --repo [^ ]+ --body' "$GH_LOG"; then
-		print_result "dispatch skips body update when marker already present" 1 \
+		print_result "legacy route marker remains untouched" 1 \
 			"Unexpected 'issue edit --body' call. Log: $(cat "$GH_LOG")"
 		return 0
 	fi
-	# Sanity check: the marker call path was taken (log entry should mention it).
-	if ! grep -qF 'already has routed feedback marker' "$LOGFILE"; then
-		print_result "dispatch skips body update when marker already present" 1 \
-			"Expected idempotency log message in $LOGFILE"
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]] \
+		|| grep -qF 'gh pr close 100' "$GH_LOG" \
+		|| ! grep -qF 'needs-maintainer-review' "$GH_LOG" \
+		|| ! grep -qF 'legacy review route marker has no head-bound start evidence' "$LOGFILE"; then
+		print_result "ambiguous legacy route is preserved for maintainer review" 1 \
+			"rc=${dispatch_rc}; gh=$(tr '\n' ';' <"$GH_LOG"); log=$(tr '\n' ';' <"$LOGFILE")"
 		return 0
 	fi
-	print_result "dispatch skips body update when marker already present" 0
+	print_result "ambiguous legacy route is preserved for maintainer review" 0
+	return 0
+}
+
+review_route_is_complete() {
+	local start_count=0
+	local completion_count=0
+	start_count=$(grep -cF '<!-- feedback-route:start:review:PR100:SHAabc123repairsha -->' \
+		"${TEST_ROOT}/issue-body.txt" 2>/dev/null || true)
+	completion_count=$(grep -cF '<!-- feedback-route:complete:review:PR100:SHAabc123repairsha -->' \
+		"${TEST_ROOT}/issue-body.txt" 2>/dev/null || true)
+	[[ "$start_count" -eq 1 && "$completion_count" -eq 1 ]] || return 1
+	[[ "$(<"${TEST_ROOT}/pr-state.txt")" == "CLOSED" ]] || return 1
+	[[ ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]] || return 1
+	return 0
+}
+
+test_dispatch_retries_after_transition_failure() {
+	reset_mock_state
+	export TEST_FAIL_TRANSITION=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_TRANSITION
+
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" != *"feedback-route:start:review:PR100:SHAabc123repairsha"* \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* ]]; then
+		print_result "transition failure preserves a resumable started route" 1 \
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete; then
+		print_result "started route resumes after issue transition recovers" 1 \
+			"rc=${retry_rc}; body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt")"
+		return 0
+	fi
+	print_result "transition failure defers and resumes without duplicate start evidence" 0
+	return 0
+}
+
+test_dispatch_preserves_maintainer_hold_racing_transition() {
+	reset_mock_state
+	export TEST_ADD_NMR_DURING_TRANSITION=1
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+	unset TEST_ADD_NMR_DURING_TRANSITION
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",needs-maintainer-review,"* ]] \
+		|| grep -qF 'gh pr close 100' "$GH_LOG"; then
+		print_result "maintainer hold racing issue transition blocks close" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "maintainer hold racing issue transition is preserved" 0
+	return 0
+}
+
+test_dispatch_retries_after_close_failure() {
+	reset_mock_state
+	export TEST_FAIL_CLOSE=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_CLOSE
+
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* ]]; then
+		print_result "close failure preserves an incomplete open route" 1 \
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete; then
+		print_result "open route resumes after PR close recovers" 1 \
+			"rc=${retry_rc}; body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "close failure defers and resumes without terminal-state drift" 0
+	return 0
+}
+
+test_dispatch_reopens_when_close_verification_fails() {
+	reset_mock_state
+	export TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE
+
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* ]] \
+		|| ! grep -qF 'pr-reopen' "$EVENT_LOG"; then
+		print_result "unverified acknowledged close compensates by reopening" 1 \
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete; then
+		print_result "route resumes after close verification recovers" 1 \
+			"rc=${retry_rc}; body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "close verification failure reopens and resumes safely" 0
+	return 0
+}
+
+test_dispatch_reopens_after_completion_write_failure() {
+	reset_mock_state
+	export TEST_FAIL_BODY_PHASE="complete"
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_BODY_PHASE
+
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* \
+		|| ! -s "$EVENT_LOG" ]] \
+		|| ! grep -qF 'pr-reopen' "$EVENT_LOG"; then
+		print_result "post-close completion failure compensates by reopening" 1 \
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete; then
+		print_result "compensated route completes on retry" 1 \
+			"rc=${retry_rc}; body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "completion-write failure reopens and resumes safely" 0
+	return 0
+}
+
+test_dispatch_recovers_terminal_label_failure() {
+	reset_mock_state
+	export TEST_FAIL_TERMINAL_LABEL=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_TERMINAL_LABEL
+
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" != *"feedback-route:complete:review:PR100:SHAabc123repairsha"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]]; then
+		print_result "terminal-label failure exposes partial completion" 1 \
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt")"
+		return 0
+	fi
+
+	# Production routing honors both hold labels before recovery. Simulate the
+	# maintainer releasing that explicit hold, then verify the completion marker
+	# lets the finalizer recover only the missing terminal label.
+	printf 'origin:worker,auto-dispatch\n' >"${TEST_ROOT}/pr-labels.txt"
+	printf 'status:in-review,origin:worker,source:review-feedback\n' >"${TEST_ROOT}/issue-labels.txt"
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete \
+		|| [[ ",$(<"${TEST_ROOT}/issue-labels.txt")," == *",needs-maintainer-review,"* \
+			|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",needs-maintainer-review,"* ]]; then
+		print_result "completed route recovers a missing terminal label" 1 \
+			"rc=${retry_rc}; issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); pr_labels=$(<"${TEST_ROOT}/pr-labels.txt")"
+		return 0
+	fi
+	print_result "required terminal-label failure recovers after maintainer release" 0
+	return 0
+}
+
+test_dispatch_holds_on_head_drift() {
+	reset_mock_state
+	export TEST_DRIFT_AFTER_TRANSITION_HEAD="def456newhead"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+	unset TEST_DRIFT_AFTER_TRANSITION_HEAD
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:complete:review:PR100:SHAabc123repairsha"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",needs-maintainer-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",needs-maintainer-review,"* ]]; then
+		print_result "head drift preserves the changed PR for maintainer review" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); head=$(<"${TEST_ROOT}/pr-head.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "head drift never closes a different PR generation" 0
+	return 0
+}
+
+test_dispatch_holds_when_ownership_changes_during_transition() {
+	reset_mock_state
+	export TEST_ADD_PR_PROTECTION_DURING_TRANSITION="no-takeover"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+	unset TEST_ADD_PR_PROTECTION_DURING_TRANSITION
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",no-takeover,"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",needs-maintainer-review,"* ]] \
+		|| grep -qF 'gh pr close 100' "$GH_LOG"; then
+		print_result "ownership change during transition preserves the PR" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "ownership labels are revalidated before close" 0
+	return 0
+}
+
+test_dispatch_holds_prior_ci_head_evidence() {
+	reset_mock_state
+	cat >"${TEST_ROOT}/issue-body.txt" <<'EOF'
+Original issue body.
+
+<!-- feedback-route:start:ci:PR100:SHAold123head -->
+<!-- ci-feedback-fallback:PR100:SHAold123head -->
+Previously routed CI feedback.
+EOF
+	local dispatch_rc=0
+	_route_ci_repair_fallback "100" "owner/repo" "42" "abc123repairsha" \
+		"feature/worker" "fingerprint" "retry budget exhausted" \
+		"## CI Failure Feedback" "- **Unit**: failure" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" == *"feedback-route:start:ci:PR100:SHAabc123repairsha"* ]] \
+		|| grep -qF 'gh pr close 100' "$GH_LOG" \
+		|| ! grep -qF 'different PR head' "$LOGFILE"; then
+		print_result "prior CI route evidence blocks a new-head close" 1 \
+			"rc=${dispatch_rc}; body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt"); events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "changed-head CI route evidence is preserved for maintainer review" 0
+	return 0
+}
+
+test_dispatch_does_not_transition_started_merged_route() {
+	reset_mock_state
+	cat >"${TEST_ROOT}/issue-body.txt" <<'EOF'
+Original issue body.
+
+<!-- feedback-route:start:review:PR100:SHAabc123repairsha -->
+<!-- t2093:review-feedback:PR100 -->
+Previously routed review feedback.
+EOF
+	printf 'MERGED\n' >"${TEST_ROOT}/pr-state.txt"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]] \
+		|| grep -qF 'issue-transition' "$EVENT_LOG" \
+		|| grep -qF 'gh pr close 100' "$GH_LOG"; then
+		print_result "started merged route remains untouched" 1 \
+			"rc=${dispatch_rc}; events=$(tr '\n' ';' <"$EVENT_LOG"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "non-open started route is held before issue transition" 0
+	return 0
+}
+
+test_terminal_guard_rechecks_current_label() {
+	reset_mock_state
+	local guard_rc=0
+	_feedback_route_guard_existing_terminal_label "100" "owner/repo" "42" "review" || guard_rc=$?
+
+	if [[ "$guard_rc" -ne 0 ]] || grep -qF 'needs-maintainer-review' "$GH_LOG"; then
+		print_result "terminal guard accepts a stale caller label after live removal" 1 \
+			"rc=${guard_rc}; labels=$(<"${TEST_ROOT}/pr-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "terminal guard revalidates the live routed label" 0
+	return 0
+}
+
+test_dispatch_holds_reopened_completed_route() {
+	reset_mock_state
+	cat >"${TEST_ROOT}/issue-body.txt" <<'EOF'
+Original issue body.
+
+<!-- feedback-route:start:review:PR100:SHAabc123repairsha -->
+<!-- t2093:review-feedback:PR100 -->
+Previously routed feedback.
+<!-- feedback-route:complete:review:PR100:SHAabc123repairsha -->
+EOF
+	printf 'origin:worker,auto-dispatch,review-routed-to-issue\n' >"${TEST_ROOT}/pr-labels.txt"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ]] \
+		|| grep -qF 'gh pr close 100' "$GH_LOG" \
+		|| ! grep -qF 'completed same-head review route was reopened' "$LOGFILE"; then
+		print_result "manually reopened completed route remains open" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "completed same-head route is never automatically reclosed" 0
+	return 0
+}
+
+test_dispatch_dry_run_has_no_writes() {
+	reset_mock_state
+	export DRY_RUN=1
+	local review_rc=0
+	local conflict_rc=0
+	local ci_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || review_rc=$?
+	_dispatch_conflict_fix_worker "100" "owner/repo" "42" "Conflict" || conflict_rc=$?
+	_route_ci_repair_fallback "100" "owner/repo" "42" "abc123repairsha" \
+		"feature/worker" "fingerprint" "retry budget exhausted" \
+		"## CI Failure Feedback" "- **Unit**: failure" || ci_rc=$?
+	unset DRY_RUN
+
+	if [[ "$review_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$conflict_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$ci_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ]] \
+		|| grep -Eq '^gh (label create|issue edit|pr (close|edit|reopen))' "$GH_LOG"; then
+		print_result "dry-run feedback routing performs no writes" 1 \
+			"review_rc=${review_rc}; conflict_rc=${conflict_rc}; ci_rc=${ci_rc}; gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "dry-run preserves route state without mutations" 0
+	return 0
+}
+
+test_conflict_dispatch_uses_shared_finalizer() {
+	reset_mock_state
+	local dispatch_rc=0
+	_dispatch_conflict_fix_worker "100" "owner/repo" "42" "Resolve generated-file conflict" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne 0 \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" != *"feedback-route:start:conflict:PR100:SHAabc123repairsha"* \
+		|| "$(<"${TEST_ROOT}/issue-body.txt")" != *"feedback-route:complete:conflict:PR100:SHAabc123repairsha"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",conflict-feedback-routed,"* ]]; then
+		print_result "conflict route uses shared head-bound finalizer" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt"); body=$(tr '\n' ';' <"${TEST_ROOT}/issue-body.txt")"
+		return 0
+	fi
+	print_result "conflict route uses shared head-bound finalizer" 0
 	return 0
 }
 
@@ -528,7 +1005,12 @@ _subcmd="${1:-} ${2:-}"
 
 case "$_subcmd" in
 "label create") exit 0 ;;
-"pr view") exit 0 ;;
+"pr view")
+	if [[ "$*" == *"headRefOid"* ]]; then
+		printf 'abc123head\n'
+	fi
+	exit 0
+	;;
 "pr close" | "pr edit") exit 0 ;;
 "issue view") exit 1 ;;
 "issue edit")
@@ -546,6 +1028,10 @@ if [[ "${1:-}" == "api" ]]; then
 			break
 		fi
 	done
+	if [[ "$*" == *"/pulls/100"* && "$*" != *"/reviews"* && "$*" != *"/comments"* ]]; then
+		printf 'OPEN\tabc123head\t\n'
+		exit 0
+	fi
 	if [[ "$*" == *"/pulls/"*"/reviews"* ]]; then
 		if [[ -n "$_jq_filter" ]]; then
 			jq "$_jq_filter" <"${TEST_ROOT}/reviews.json"
@@ -571,12 +1057,14 @@ GHEOF
 	: >"$LOGFILE"
 	rm -f "${TEST_ROOT}/clobber-marker.txt"
 
-	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
 
 	# The clobber marker should NOT exist (issue edit should not have been called)
-	if [[ -f "${TEST_ROOT}/clobber-marker.txt" ]]; then
+	if [[ -f "${TEST_ROOT}/clobber-marker.txt" \
+		|| "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ]]; then
 		print_result "t2383: dispatch skips body edit on issue view failure" 1 \
-			"gh issue edit was called after gh issue view failure — data loss risk"
+			"gh issue edit was called after gh issue view failure or rc was not deferred (rc=${dispatch_rc})"
 		return 0
 	fi
 
@@ -607,9 +1095,9 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 	[[ "$body_edit_count" =~ ^[0-9]+$ ]] || body_edit_count=0
 	[[ "$pr_close_count" =~ ^[0-9]+$ ]] || pr_close_count=0
 
-	if [[ "$body_edit_count" -ne 1 ]]; then
-		print_result "CI repair dispatch writes issue body exactly once per PR/head" 1 \
-			"Expected 1 body edit, got ${body_edit_count}. Log: $(cat "$GH_LOG")"
+	if [[ "$body_edit_count" -ne 2 ]]; then
+		print_result "CI repair dispatch writes start and completion evidence once per PR/head" 1 \
+			"Expected 2 body edits, got ${body_edit_count}. Log: $(cat "$GH_LOG")"
 		return 0
 	fi
 	if [[ "$pr_close_count" -ne 1 ]]; then
@@ -622,9 +1110,10 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 			"Expected fallback marker in issue body. Body: $(cat "${TEST_ROOT}/issue-body.txt")"
 		return 0
 	fi
-	if ! grep -qF 'already has CI repair fallback marker' "$LOGFILE"; then
-		print_result "CI repair dispatch logs duplicate skip" 1 \
-			"Expected duplicate skip log. Log: $(cat "$LOGFILE")"
+	if ! grep -qF '<!-- feedback-route:start:ci:PR100:SHAabc123repairsha -->' "${TEST_ROOT}/issue-body.txt" \
+		|| ! grep -qF '<!-- feedback-route:complete:ci:PR100:SHAabc123repairsha -->' "${TEST_ROOT}/issue-body.txt"; then
+		print_result "CI repair fallback stores head-bound start and completion evidence" 1 \
+			"Expected transaction markers in issue body. Body: $(cat "${TEST_ROOT}/issue-body.txt")"
 		return 0
 	fi
 	print_result "CI repair fallback dedupes changed evidence per PR/head" 0
@@ -645,7 +1134,21 @@ main() {
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
 	test_dispatch_timeout_fails_open_without_routing_empty_feedback
-	test_dispatch_idempotent_when_marker_already_present
+	test_dispatch_preserves_ambiguous_legacy_marker
+	test_dispatch_retries_after_transition_failure
+	test_dispatch_preserves_maintainer_hold_racing_transition
+	test_dispatch_retries_after_close_failure
+	test_dispatch_reopens_when_close_verification_fails
+	test_dispatch_reopens_after_completion_write_failure
+	test_dispatch_recovers_terminal_label_failure
+	test_dispatch_holds_on_head_drift
+	test_dispatch_holds_when_ownership_changes_during_transition
+	test_dispatch_holds_prior_ci_head_evidence
+	test_dispatch_does_not_transition_started_merged_route
+	test_terminal_guard_rechecks_current_label
+	test_dispatch_holds_reopened_completed_route
+	test_dispatch_dry_run_has_no_writes
+	test_conflict_dispatch_uses_shared_finalizer
 	test_dispatch_noop_when_no_substantive_feedback
 	test_dispatch_noop_on_invalid_inputs
 	test_dispatch_clears_in_progress_labels_as_fallback

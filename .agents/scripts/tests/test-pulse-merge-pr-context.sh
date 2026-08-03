@@ -50,6 +50,8 @@ define_functions_under_test() {
 		/^_attempt_pr_ci_rebase_retry\(\) \{/,/^}$/ { print }
 		/^_dispatch_pr_repair_by_kind\(\) \{/,/^}$/ { print }
 		/^_route_issue_origin_is_trusted\(\) \{/,/^}$/ { print }
+		/^_route_pr_issue_labels_for_dispatch\(\) \{/,/^}$/ { print }
+		/^_route_pr_feedback_terminal_guard\(\) \{/,/^}$/ { print }
 		/^_route_pr_to_fix_worker\(\) \{/,/^}$/ { print }
 	' "$PROCESS_SCRIPT")
 	if [[ -z "$fn_src" ]]; then
@@ -62,6 +64,10 @@ define_functions_under_test() {
 }
 
 install_stubs() {
+	ISSUE_LABELS="origin:worker,status:in-review"
+	ISSUE_METADATA_FAIL=0
+	PR_AUTHOR="maintainer"
+	ROUTE_GUARD_RC=0
 	gh() {
 		local arg1="${1:-}"
 		local arg2="${2:-}"
@@ -72,6 +78,7 @@ install_stubs() {
 			return 0
 		fi
 		if [[ "$arg1" == "api" && "$args" == *"repos/owner/repo/issues/456"* ]]; then
+			[[ "${ISSUE_METADATA_FAIL:-0}" == "1" ]] && return 1
 			printf '%s\n' "${ISSUE_LABELS:-origin:worker,status:in-review}"
 			return 0
 		fi
@@ -100,6 +107,7 @@ install_stubs() {
 	_dispatch_ci_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-ci %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
 	_dispatch_pr_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-review %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
 	_dispatch_conflict_fix_worker() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; printf 'dispatch-conflict %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" >>"$GH_CALL_LOG"; return 0; }
+	_feedback_route_guard_existing_terminal_label() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; local kind="$4"; printf 'route-guard %s %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" "$kind" >>"$GH_CALL_LOG"; return "$ROUTE_GUARD_RC"; }
 	_interactive_pr_is_stale() { return 1; }
 	_is_collaborator_author() { local author="$1"; [[ "$author" == "maintainer" ]]; return $?; }
 	return 0
@@ -254,6 +262,86 @@ test_missing_pr_label_metadata_fails_closed() {
 	return 0
 }
 
+test_explicit_ownership_labels_block_route_recovery() {
+	local labels=""
+	for labels in "origin:worker,no-takeover,review-routed-to-issue" \
+		"origin:worker,external-contributor,review-routed-to-issue" \
+		"origin:worker,needs-maintainer-review,review-routed-to-issue"; do
+		install_stubs
+		: >"$GH_CALL_LOG"
+		_route_pr_to_fix_worker "9010" "owner/repo" "456" "review" "$labels" || true
+		if grep -Eq 'route-guard|dispatch-' "$GH_CALL_LOG"; then
+			fail "explicit ownership labels block route recovery" \
+				"labels=${labels}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+			return 0
+		fi
+	done
+	pass "no-takeover, external, and maintainer holds precede route recovery"
+	return 0
+}
+
+test_linked_issue_maintainer_hold_blocks_route_recovery() {
+	install_stubs
+	ISSUE_LABELS="origin:worker,status:in-review,needs-maintainer-review"
+	: >"$GH_CALL_LOG"
+	_route_pr_to_fix_worker "9011" "owner/repo" "456" "ci" \
+		"origin:worker,ci-feedback-routed" || true
+	if grep -Eq 'route-guard|dispatch-' "$GH_CALL_LOG"; then
+		fail "linked issue maintainer hold blocks route recovery" \
+			"calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "linked issue maintainer hold blocks route recovery"
+	return 0
+}
+
+test_linked_issue_metadata_failure_is_retryable() {
+	install_stubs
+	ISSUE_METADATA_FAIL=1
+	: >"$GH_CALL_LOG"
+	local route_rc=0
+	_route_pr_to_fix_worker "9014" "owner/repo" "456" "conflict" \
+		"origin:worker" || route_rc=$?
+	if [[ "$route_rc" -ne 75 ]] || grep -Eq 'route-guard|dispatch-' "$GH_CALL_LOG"; then
+		fail "linked issue metadata failure is retryable" \
+			"rc=${route_rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "linked issue metadata failure preserves destructive routes for retry"
+	return 0
+}
+
+test_fresh_interactive_route_does_not_enter_terminal_guard() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	_route_pr_to_fix_worker "9012" "owner/repo" "456" "review" \
+		"origin:interactive,review-routed-to-issue" || true
+	if grep -Eq 'route-guard|dispatch-' "$GH_CALL_LOG"; then
+		fail "fresh interactive route does not enter terminal guard" \
+			"calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "fresh interactive ownership is checked before route recovery"
+	return 0
+}
+
+test_trusted_worker_terminal_guard_outcome_propagates() {
+	install_stubs
+	ROUTE_GUARD_RC=75
+	: >"$GH_CALL_LOG"
+	local route_rc=0
+	_route_pr_to_fix_worker "9013" "owner/repo" "456" "ci" \
+		"origin:worker,ci-feedback-routed" || route_rc=$?
+	if [[ "$route_rc" -ne 75 ]] || ! grep -qF 'route-guard 9013 owner/repo 456 ci' "$GH_CALL_LOG" \
+		|| grep -qF 'dispatch-ci' "$GH_CALL_LOG"; then
+		fail "trusted worker terminal guard outcome propagates" \
+			"rc=${route_rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "trusted worker partial-route outcome propagates without dispatch"
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -269,6 +357,11 @@ main() {
 	test_interactive_route_requires_confirmed_handover
 	test_interactive_route_dispatches_after_confirmed_takeover
 	test_missing_pr_label_metadata_fails_closed
+	test_explicit_ownership_labels_block_route_recovery
+	test_linked_issue_maintainer_hold_blocks_route_recovery
+	test_linked_issue_metadata_failure_is_retryable
+	test_fresh_interactive_route_does_not_enter_terminal_guard
+	test_trusted_worker_terminal_guard_outcome_propagates
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 	return $?

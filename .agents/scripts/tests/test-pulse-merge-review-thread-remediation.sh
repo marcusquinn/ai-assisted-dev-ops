@@ -341,64 +341,47 @@ test_changes_requested_routes_by_default() {
 	return 0
 }
 
-test_changes_requested_dual_feedback_stall_flags_maintainer() {
+test_changes_requested_translates_maintainer_route_outcome() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
 	local route_log="${TEST_ROOT}/route.log"
-	local label_log="${TEST_ROOT}/label.log"
 	: >"$route_log"
-	: >"$label_log"
-	_check_required_checks_passing() { return 0; }
-	gh() {
-		printf '%s\n' "$*" >>"$label_log"
-		return 0
-	}
 	_route_pr_to_fix_worker() {
 		printf 'route\n' >>"$route_log"
-		return 0
+		return 76
 	}
 	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
 
-	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 \
-		"origin:worker,ci-feedback-routed,review-routed-to-issue" || true
-	if [[ ! -s "$route_log" ]] \
-		&& grep -qF 'repos/owner/repo/issues/77/labels -X POST -f labels[]=needs-maintainer-review' "$label_log" \
-		&& grep -qF 'dual-failure state (ci-feedback-routed + review-routed-to-issue) with required CI green: flagging for maintainer' "$LOGFILE"; then
-		print_result "dual feedback stall with green CI flags maintainer" 0
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q '^route$' "$route_log" \
+		&& grep -qF 'feedback finalization for PR #77 in owner/repo requires maintainer review' "$LOGFILE"; then
+		print_result "CHANGES_REQUESTED translates maintainer route outcome" 0
 	else
-		print_result "dual feedback stall with green CI flags maintainer" 1 \
-			"route=$(tr '\n' ';' <"$route_log"), label=$(tr '\n' ';' <"$label_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+		print_result "CHANGES_REQUESTED translates maintainer route outcome" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
 	fi
 	teardown_test_env
 	return 0
 }
 
-test_changes_requested_dual_feedback_stall_waits_for_green_ci() {
+test_changes_requested_translates_deferred_route_outcome() {
 	setup_test_env
 	define_helpers_under_test || { teardown_test_env; return 0; }
 	local route_log="${TEST_ROOT}/route.log"
-	local label_log="${TEST_ROOT}/label.log"
 	: >"$route_log"
-	: >"$label_log"
-	_check_required_checks_passing() { return 1; }
-	gh() {
-		printf '%s\n' "$*" >>"$label_log"
-		return 0
-	}
 	_route_pr_to_fix_worker() {
 		printf 'route\n' >>"$route_log"
-		return 0
+		return 75
 	}
 	_pulse_merge_dismiss_coderabbit_nits() { return 1; }
 
-	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 \
-		"origin:worker,ci-feedback-routed,review-routed-to-issue" || true
-	if grep -q '^route$' "$route_log" && [[ ! -s "$label_log" ]] \
-		&& ! grep -qF 'flagging for maintainer' "$LOGFILE"; then
-		print_result "dual feedback stall waits for green CI before flagging" 0
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q '^route$' "$route_log" \
+		&& grep -qF 'feedback finalization deferred for PR #77 in owner/repo; preserving retryable route state' "$LOGFILE"; then
+		print_result "CHANGES_REQUESTED translates deferred route outcome" 0
 	else
-		print_result "dual feedback stall waits for green CI before flagging" 1 \
-			"route=$(tr '\n' ';' <"$route_log"), label=$(tr '\n' ';' <"$label_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+		print_result "CHANGES_REQUESTED translates deferred route outcome" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
 	fi
 	teardown_test_env
 	return 0
@@ -699,8 +682,8 @@ main() {
 	test_repo_path_lookup_ignores_slug_case
 	test_other_merge_failures_do_not_dispatch_review_thread_remediation
 	test_changes_requested_routes_by_default
-	test_changes_requested_dual_feedback_stall_flags_maintainer
-	test_changes_requested_dual_feedback_stall_waits_for_green_ci
+	test_changes_requested_translates_maintainer_route_outcome
+	test_changes_requested_translates_deferred_route_outcome
 	test_changes_requested_opt_in_dispatches_remediation_without_routing
 	test_changes_requested_routes_when_remediation_unavailable
 	test_changes_requested_active_remediation_preserves_pr_without_routing
