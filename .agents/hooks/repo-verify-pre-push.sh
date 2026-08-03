@@ -241,6 +241,26 @@ _emit_mentor_fail() {
 	printf '\n' >&2
 }
 
+_typecheck_missing_bun_dev_dependencies() {
+	local log_file="$1"
+	[[ -f "$REPO_ROOT/package.json" && -f "$REPO_ROOT/bun.lock" ]] || return 1
+	[[ ! -x "$REPO_ROOT/node_modules/.bin/tsc" && -f "$log_file" ]] || return 1
+	grep -Eiq '(tsc([^[:alnum:]_]|$).*(command not found|not found)|(command not found|not found).*tsc([^[:alnum:]_]|$))' \
+		"$log_file" 2>/dev/null || return 1
+	return 0
+}
+
+_emit_missing_bun_dev_dependencies() {
+	_log BLOCK "typecheck could not start: missing JavaScript dev dependencies"
+	printf '\n' >&2
+	printf '  Resolution:\n' >&2
+	printf '    1. Run: bun install\n' >&2
+	printf '    2. Re-run: %s\n' "$VERIFY_TYPECHECK" >&2
+	printf '    3. git push (re-runs repo verification)\n' >&2
+	printf '\n' >&2
+	return 0
+}
+
 # ----- main orchestration -------------------------------------------------
 
 main() {
@@ -295,7 +315,11 @@ main() {
 	# Typecheck never auto-fixes — semantic failures need code changes
 	if [[ -n "$VERIFY_TYPECHECK" ]]; then
 		if ! _run_check 'typecheck' "$VERIFY_TYPECHECK"; then
-			_emit_mentor_fail 'typecheck' '' "$VERIFY_TYPECHECK"
+			if _typecheck_missing_bun_dev_dependencies "${LAST_FAIL_LOG:-}"; then
+				_emit_missing_bun_dev_dependencies
+			else
+				_emit_mentor_fail 'typecheck' '' "$VERIFY_TYPECHECK"
+			fi
 			overall=1
 		fi
 	fi

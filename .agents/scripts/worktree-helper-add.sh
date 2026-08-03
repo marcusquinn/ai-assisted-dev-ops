@@ -36,6 +36,7 @@ _WORKTREE_ADD_LIB_LOADED=1
 : "${WORKTREE_NODE_MODULES_RESTORE_ENABLED:=1}"
 : "${WORKTREE_NODE_MODULES_RESTORE_LOCK_TIMEOUT_S:=2}"
 : "${WORKTREE_NODE_MODULES_RESTORE_MAX_DIRS:=2}"
+: "${AIDEVOPS_WORKTREE_JS_BOOTSTRAP_ENABLED:=1}"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -411,6 +412,40 @@ _restore_worktree_node_modules() {
 		fi
 	done < <(find "$wt_path" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" 2>/dev/null)
 	_restore_worktree_node_modules_release_lock "$_lock_dir"
+	return 0
+}
+
+# Install the aidevops repository's locked JavaScript dependencies when the
+# canonical checkout could not provide node_modules. Keep this deliberately
+# repo-specific: worktree-helper.sh also creates worktrees for user projects,
+# whose package lifecycle scripts must never run implicitly.
+_bootstrap_aidevops_worktree_js_deps() {
+	local wt_path="$1"
+	local package_file="${wt_path}/package.json"
+
+	[[ "$AIDEVOPS_WORKTREE_JS_BOOTSTRAP_ENABLED" == "1" ]] || return 0
+	[[ -f "$package_file" && -f "${wt_path}/bun.lock" ]] || return 0
+	[[ -f "${wt_path}/aidevops.sh" && -d "${wt_path}/.agents/scripts" ]] || return 0
+	grep -Eq '"name"[[:space:]]*:[[:space:]]*"aidevops"' "$package_file" 2>/dev/null || return 0
+	[[ ! -x "${wt_path}/node_modules/.bin/tsc" ]] || return 0
+
+	if ! command -v bun >/dev/null 2>&1; then
+		print_warning "aidevops JavaScript dev dependencies are missing in ${wt_path}"
+		print_warning "Run: (cd \"${wt_path}\" && bun install)"
+		return 0
+	fi
+
+	print_info "Installing aidevops JavaScript dev dependencies in ${wt_path}..."
+	if (cd "$wt_path" && bun install --frozen-lockfile); then
+		if [[ -x "${wt_path}/node_modules/.bin/tsc" ]]; then
+			print_success "Bootstrapped aidevops JavaScript dev dependencies"
+			return 0
+		fi
+		print_warning "bun install completed but node_modules/.bin/tsc is still missing"
+	else
+		print_warning "Automatic aidevops JavaScript dependency bootstrap failed"
+	fi
+	print_warning "Run: (cd \"${wt_path}\" && bun install)"
 	return 0
 }
 
@@ -1215,6 +1250,7 @@ cmd_add() {
 	local _repo_root=""
 	_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || _repo_root=""
 	_restore_worktree_node_modules "$path" "$_repo_root"
+	_bootstrap_aidevops_worktree_js_deps "$path"
 
 	# t2885: exclude the new worktree from macOS Spotlight + Time Machine.
 	# Worktrees are ephemeral — persistent state lives on the git remote.

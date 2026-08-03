@@ -19,8 +19,9 @@
 #  10. package.json: format:fix script is preferred over format_fix
 #  11. defaults conf: Cargo.toml triggers RUST_CARGO toolchain (cargo fmt --check)
 #  12. typecheck failure NEVER auto-fixes — exit 1 even with AUTOFIX=1
-#  13. Working tree dirty: warn + skip (exit 0)
-#  14. shellcheck on the hook itself
+#  13. Missing bun-installed tsc is diagnosed as missing dev dependencies
+#  14. Working tree dirty: warn + skip (exit 0)
+#  15. shellcheck on the hook itself
 #
 # Tests are hermetic: each scenario builds a temporary git repo and invokes
 # the hook as a subprocess. No network, no live GitHub API, no aidevops state.
@@ -328,7 +329,27 @@ JSON
 	rm -rf "$repo"
 }
 
-# Test 13: dirty working tree → warn + skip
+# Test 13: missing bun-installed tsc → dependency remediation
+{
+	repo=$(_mk_repo)
+	cat >"$repo/.aidevops.json" <<'JSON'
+{ "verify": { "typecheck": "echo 'tsc: command not found' >&2; false" } }
+JSON
+	cat >"$repo/package.json" <<'JSON'
+{ "name": "fixture", "devDependencies": { "typescript": "^5.0.0" } }
+JSON
+	printf '{}\n' >"$repo/bun.lock"
+	(cd "$repo" && /usr/bin/git add . && /usr/bin/git commit -q -m 'add bun typecheck fixture')
+	out=$(_run_hook "$repo" AIDEVOPS_PREPUSH_AUTOFIX=1)
+	ec=$(printf '%s' "$out" | head -n 1)
+	stderr=$(printf '%s' "$out" | tail -n +2)
+	assert_eq '13. missing tsc → exit 1' '1' "$ec"
+	assert_contains '13b. missing tsc → dependency diagnosis' 'missing JavaScript dev dependencies' "$stderr"
+	assert_contains '13c. missing tsc → exact remediation' 'Run: bun install' "$stderr"
+	rm -rf "$repo"
+}
+
+# Test 14: dirty working tree → warn + skip
 {
 	repo=$(_mk_repo)
 	cat >"$repo/.aidevops.json" <<'JSON'
@@ -340,24 +361,24 @@ JSON
 	out=$(_run_hook "$repo")
 	ec=$(printf '%s' "$out" | head -n 1)
 	stderr=$(printf '%s' "$out" | tail -n +2)
-	assert_eq '13. dirty WT → exit 0 (warn + skip)' '0' "$ec"
-	assert_contains '13b. dirty WT → warn message present' 'working tree has uncommitted changes' "$stderr"
+	assert_eq '14. dirty WT → exit 0 (warn + skip)' '0' "$ec"
+	assert_contains '14b. dirty WT → warn message present' 'working tree has uncommitted changes' "$stderr"
 	rm -rf "$repo"
 }
 
-# Test 14: shellcheck on the hook itself (regression — quality gate)
+# Test 15: shellcheck on the hook itself (regression — quality gate)
 {
 	if command -v shellcheck >/dev/null 2>&1; then
 		TESTS_RUN=$((TESTS_RUN + 1))
 		if shellcheck "$HOOK" >/dev/null 2>&1; then
-			printf '%sPASS%s: 14. hook passes shellcheck\n' "$TEST_GREEN" "$TEST_NC"
+			printf '%sPASS%s: 15. hook passes shellcheck\n' "$TEST_GREEN" "$TEST_NC"
 		else
 			TESTS_FAILED=$((TESTS_FAILED + 1))
-			printf '%sFAIL%s: 14. hook fails shellcheck\n' "$TEST_RED" "$TEST_NC"
+			printf '%sFAIL%s: 15. hook fails shellcheck\n' "$TEST_RED" "$TEST_NC"
 			shellcheck "$HOOK" || true
 		fi
 	else
-		printf '%sSKIP%s: 14. shellcheck not installed\n' "$TEST_BLUE" "$TEST_NC"
+		printf '%sSKIP%s: 15. shellcheck not installed\n' "$TEST_BLUE" "$TEST_NC"
 	fi
 }
 
