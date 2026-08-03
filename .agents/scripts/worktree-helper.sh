@@ -21,6 +21,7 @@
 #   status                 Show current worktree info
 #   switch <branch>        Open/create worktree for branch (prints path)
 #   clean [--auto] [--force-merged]  Remove worktrees for merged branches
+#   recovery              Inventory current and legacy recovery archives
 #   help                   Show this help
 #
 # Examples:
@@ -152,6 +153,9 @@ main() {
 		;;
 	clean)
 		cmd_clean "$@"
+		;;
+	recovery)
+		cmd_recovery "$@"
 		;;
 	registry | reg)
 		cmd_registry "$@"

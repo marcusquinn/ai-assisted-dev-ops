@@ -565,6 +565,71 @@ RACE_GIT
 # Recoverable cleanup creates a complete archive while the registered source is
 # still intact, then lets native Git remove the source and exact metadata.
 # =============================================================================
+test_recovery_store_selects_platform_semantics() {
+	local fixture_home="${TEST_DIR}/platform-home"
+	local override_root="${TEST_DIR}/operator-archive-root"
+	local actual=""
+	local rc=0
+
+	mkdir -p "$fixture_home" || rc=1
+	actual=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="" \
+		AIDEVOPS_ORPHAN_TRASH_ROOT="" _worktree_recovery_store_root "Linux") || rc=1
+	[[ "$actual" == "$fixture_home/.aidevops/recovery/worktrees" ]] || rc=1
+	actual=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="" \
+		AIDEVOPS_ORPHAN_TRASH_ROOT="" _worktree_recovery_store_root "Darwin") || rc=1
+	[[ "$actual" == "$fixture_home/.Trash" ]] || rc=1
+	actual=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$override_root" \
+		AIDEVOPS_ORPHAN_TRASH_ROOT="" _worktree_recovery_store_root "Linux") || rc=1
+	[[ "$actual" == "$override_root" ]] || rc=1
+	print_result "recovery_store_selects_platform_semantics" "$rc" \
+		"Expected Linux recovery ownership, macOS Trash, and explicit override precedence"
+	return 0
+}
+
+test_recovery_inventory_reports_legacy_buckets_fail_closed() {
+	local fixture_home="${TEST_DIR}/inventory-home"
+	local current_root="${fixture_home}/.aidevops/recovery/worktrees"
+	local override_link="${fixture_home}/operator-recovery"
+	local legacy_alias="${fixture_home}/legacy-recovery-alias"
+	local legacy_root="${fixture_home}/.Trash"
+	local valid_bucket="${current_root}/aidevops-worktree-cleanup-valid"
+	local unknown_bucket="${legacy_root}/aidevops-worktree-cleanup-interrupted"
+	local legacy_repo="${TEST_DIR}/legacy-inventory-repo"
+	local legacy_worktree="${TEST_DIR}/legacy-inventory-worktree"
+	local legacy_archive=""
+	local output=""
+	local alias_output=""
+	local rc=0
+
+	mkdir -p "$valid_bucket/${_WT_RECOVERY_DIR_NAME}" \
+		"$unknown_bucket/${_WT_RECOVERY_DIR_NAME}" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" >"$valid_bucket/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" >\
+		"$valid_bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" >\
+		"$unknown_bucket/${_WT_RECOVERY_DIR_NAME}/format" || rc=1
+	ln -s "$current_root" "$override_link" || rc=1
+	ln -s "$legacy_root" "$legacy_alias" || rc=1
+	create_git_worktree_fixture "$legacy_repo" "$legacy_worktree" "feature/legacy-inventory" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$legacy_worktree" "test.sh" "legacy-inventory" || rc=1
+	legacy_archive="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	rm -f "${legacy_archive%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || rc=1
+	output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$override_link" \
+		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
+	printf '%s\n' "$output" | grep -Fq $'store\tcurrent\tjoint\trecovery\tmanual-review\tpresent\t' || rc=1
+	printf '%s\n' "$output" | grep -Fq $'store\tlegacy\tjoint\trecovery\tmanual-review\tpresent\t' || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tcurrent\tframework\tattributed\t' || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tunknown\t' || rc=1
+	printf '%s\n' "$output" | grep -Fq $'bucket\tlegacy\tframework\tattributed-legacy\t' || rc=1
+	alias_output=$(HOME="$fixture_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$legacy_alias" \
+		AIDEVOPS_ORPHAN_TRASH_ROOT="" worktree_recovery_inventory "Linux") || rc=1
+	[[ "$(printf '%s\n' "$alias_output" | grep -c '^store')" -eq 1 ]] || rc=1
+	print_result "recovery_inventory_reports_legacy_buckets_fail_closed" "$rc" \
+		"Expected attributed current and unknown legacy buckets to remain visible and protected"
+	return 0
+}
+
 test_recoverable_archive_then_native_remove() {
 	local repo_path="${TEST_DIR}/archive-repo"
 	local wt_path="${TEST_DIR}/archive-worktree"
@@ -581,6 +646,10 @@ test_recoverable_archive_then_native_remove() {
 		"$wt_path" "test.sh" "archive-test" || rc=1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	[[ -d "$wt_path" && -d "$archive_path" && -e "$archive_path/.git" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-owner")" == "framework" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-class")" == "recovery" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/storage-policy")" == "manual-review" ]] || rc=1
+	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}")" == "$_WT_RECOVERY_FORMAT" ]] || rc=1
 	metadata=$("$GIT_BIN" -C "$repo_path" worktree list --porcelain) || rc=1
 	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || rc=1
 	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
@@ -1882,6 +1951,8 @@ test_git_lock_parser_handles_unusual_paths_and_adjacent_blocks
 test_git_lock_parser_rejects_malformed_blocks
 test_missing_worktree_physical_parent_alias
 test_permanent_helper_preserves_lock_acquired_after_guard
+test_recovery_store_selects_platform_semantics
+test_recovery_inventory_reports_legacy_buckets_fail_closed
 test_recoverable_archive_then_native_remove
 test_recoverable_archive_preserves_late_lock
 test_recovery_archive_preserves_index_and_dirty_files

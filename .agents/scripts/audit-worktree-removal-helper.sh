@@ -35,6 +35,8 @@
 #
 # Environment:
 #   AIDEVOPS_CLEANUP_LOG — override log file path (default: ~/.aidevops/logs/cleanup_worktrees.log)
+#   AIDEVOPS_WORKTREE_TRASH_ROOT — override recoverable archive root
+#   AIDEVOPS_ORPHAN_TRASH_ROOT — legacy fallback archive-root override
 #
 # Compatibility: bash 3.2+ (macOS default). Uses printf, not echo -e.
 # Fail-open: log write failures are silently swallowed — callers must not depend on
@@ -71,6 +73,7 @@ _WT_GIT_REASON_REMOVE_FAILED="git-worktree-remove-failed"
 _WT_GIT_STATUS_FIELD_PREFIX="aidevops-git-status "
 _WT_RECOVERY_FORMAT="aidevops-worktree-recovery-v1"
 _WT_RECOVERY_DIR_NAME=".aidevops-worktree-recovery"
+_WT_RECOVERY_COMPLETE_MARKER="archive-complete"
 _WT_RECOVERY_BRANCH_DETACHED="detached"
 WORKTREE_RECOVERABLE_ARCHIVE_PATH=""
 
@@ -691,17 +694,155 @@ _worktree_archive_source_matches() {
 	return 0
 }
 
+# Recoverable archives are framework-owned recovery data, not ordinary Trash on
+# platforms where $HOME/.Trash has no OS meaning. macOS keeps its established
+# OS Trash destination; Linux and other platforms use an explicit aidevops store.
+# Explicit operator overrides retain precedence on every platform.
+_worktree_recovery_store_root() {
+	local platform="${1:-}"
+	local configured_root="${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}"
+
+	if [[ -n "$configured_root" ]]; then
+		[[ "$configured_root" == /* ]] || return 1
+		printf '%s\n' "$configured_root"
+		return 0
+	fi
+	[[ -n "${HOME:-}" ]] || return 1
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null) || return 1
+	fi
+	case "$platform" in
+	Darwin) printf '%s/.Trash\n' "$HOME" ;;
+	*) printf '%s/.aidevops/recovery/worktrees\n' "$HOME" ;;
+	esac
+	return 0
+}
+
+_worktree_legacy_recovery_root() {
+	local platform="${1:-}"
+
+	[[ -n "${HOME:-}" ]] || return 1
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null) || return 1
+	fi
+	[[ "$platform" != "Darwin" ]] || return 1
+	printf '%s/.Trash\n' "$HOME"
+	return 0
+}
+
+_worktree_legacy_recovery_bucket_is_valid() {
+	local bucket="$1"
+	local recovery_dir="${bucket}/${_WT_RECOVERY_DIR_NAME}"
+	local recorded_gitdir=""
+	local archive_path=""
+
+	[[ -f "$recovery_dir/admin/gitdir" && ! -L "$recovery_dir/admin/gitdir" ]] || return 1
+	IFS= read -r recorded_gitdir <"$recovery_dir/admin/gitdir" || return 1
+	case "$recorded_gitdir" in
+	"$bucket"/*/.git) archive_path="${recorded_gitdir%/.git}" ;;
+	*) return 1 ;;
+	esac
+	[[ "${archive_path%/*}" == "$bucket" ]] || return 1
+	_worktree_recovery_archive_is_valid "$archive_path" || return 1
+	return 0
+}
+
+_worktree_recovery_inventory_root() {
+	local root_path="$1"
+	local store_role="$2"
+	local root_owner="$3"
+	local root_real="$root_path"
+	local root_state="missing"
+	local bucket=""
+	local completion=""
+	local format=""
+	local state="unknown"
+
+	if [[ -d "$root_path" ]]; then
+		root_real=$(cd "$root_path" 2>/dev/null && pwd -P) || root_state="unavailable"
+		[[ "$root_state" == "unavailable" ]] || root_state="present"
+	elif [[ -e "$root_path" || -L "$root_path" ]]; then
+		root_state="unavailable"
+	fi
+	printf 'store\t%s\t%s\trecovery\tmanual-review\t%s\t%s\n' \
+		"$store_role" "$root_owner" "$root_state" "$root_real"
+	[[ "$root_state" == "present" ]] || return 0
+	for bucket in "$root_real"/aidevops-worktree-cleanup-*; do
+		[[ -e "$bucket" || -L "$bucket" ]] || continue
+		state="unknown"
+		if [[ -d "$bucket" && ! -L "$bucket" &&
+			-d "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
+			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
+			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" &&
+			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" ]]; then
+			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
+			IFS= read -r completion <\
+				"$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || completion=""
+			[[ "$format" == "$_WT_RECOVERY_FORMAT" &&
+				"$completion" == "$_WT_RECOVERY_FORMAT" ]] && state="attributed"
+		elif [[ -d "$bucket" && ! -L "$bucket" &&
+			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" ]]; then
+			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
+			if [[ "$format" == "$_WT_RECOVERY_FORMAT" ]] &&
+				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
+				state="attributed-legacy"
+			fi
+		fi
+		printf 'bucket\t%s\tframework\t%s\t%s\n' "$store_role" "$state" "$bucket"
+	done
+	return 0
+}
+
+# Read-only, fail-closed inventory for current and attributable legacy buckets.
+# Unknown or interrupted buckets are reported, never treated as reclaimable.
+worktree_recovery_inventory() {
+	local platform="${1:-}"
+	local current_root=""
+	local current_root_compare=""
+	local current_owner="framework"
+	local legacy_root=""
+	local legacy_root_compare=""
+
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null) || return 1
+	fi
+	if [[ "$platform" == "Darwin" ||
+		-n "${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}" ]]; then
+		current_owner="joint"
+	fi
+	current_root=$(_worktree_recovery_store_root "$platform") || return 1
+	current_root_compare="$current_root"
+	if [[ -d "$current_root" ]]; then
+		current_root_compare=$(cd "$current_root" 2>/dev/null && pwd -P) || return 1
+	fi
+	_worktree_recovery_inventory_root "$current_root" "current" "$current_owner" || return 1
+	if legacy_root=$(_worktree_legacy_recovery_root "$platform"); then
+		legacy_root_compare="$legacy_root"
+		if [[ -d "$legacy_root" ]]; then
+			legacy_root_compare=$(cd "$legacy_root" 2>/dev/null && pwd -P) || return 1
+		fi
+		if [[ "$legacy_root_compare" != "$current_root_compare" ]]; then
+			_worktree_recovery_inventory_root "$legacy_root" "legacy" "joint" || return 1
+		fi
+	fi
+	return 0
+}
+
 archive_worktree_path_recoverably() {
 	local wt_path="$1"
 	local caller="$2"
 	local context="${3:-}"
 	local wt_path_real="$wt_path"
-	local trash_root="${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}"
-	local trash_root_real=""
-	local trash_bucket=""
+	local recovery_root=""
+	local recovery_root_real=""
+	local recovery_bucket=""
 	local archive_path=""
 	local recovery_dir=""
 	local recovery_admin=""
+	local completion_marker_tmp=""
 	local worktree_basename=""
 	local git_state=""
 
@@ -714,35 +855,38 @@ archive_worktree_path_recoverably() {
 		_worktree_log_git_refusal "$wt_path" "$caller" "$git_state" "$context"
 		return 1
 	fi
-	if [[ -z "$trash_root" ]]; then
-		[[ -n "${HOME:-}" ]] || return 1
-		trash_root="${HOME}/.Trash"
-	fi
-	[[ "$trash_root" == /* ]] || return 1
-	mkdir -p "$trash_root" 2>/dev/null || return 1
-	trash_root_real=$(cd "$trash_root" 2>/dev/null && pwd -P) || return 1
-	case "$trash_root_real" in
+	recovery_root=$(_worktree_recovery_store_root) || return 1
+	mkdir -p "$recovery_root" 2>/dev/null || return 1
+	recovery_root_real=$(cd "$recovery_root" 2>/dev/null && pwd -P) || return 1
+	case "$recovery_root_real" in
 	"$wt_path_real" | "$wt_path_real"/*) return 1 ;;
 	esac
 	worktree_basename="${wt_path%/}"
 	worktree_basename="${worktree_basename##*/}"
 	[[ -n "$worktree_basename" && "$worktree_basename" != "." &&
 		"$worktree_basename" != "$_WT_RECOVERY_DIR_NAME" ]] || return 1
-	trash_bucket="${trash_root_real}/aidevops-worktree-cleanup-$(date -u '+%Y%m%dT%H%M%SZ')-$$-${RANDOM}"
-	archive_path="${trash_bucket}/${worktree_basename}"
-	recovery_dir="${trash_bucket}/${_WT_RECOVERY_DIR_NAME}"
+	recovery_bucket="${recovery_root_real}/aidevops-worktree-cleanup-$(date -u '+%Y%m%dT%H%M%SZ')-$$-${RANDOM}"
+	archive_path="${recovery_bucket}/${worktree_basename}"
+	recovery_dir="${recovery_bucket}/${_WT_RECOVERY_DIR_NAME}"
 	recovery_admin="${recovery_dir}/admin"
-	mkdir "$trash_bucket" 2>/dev/null || return 1
+	mkdir "$recovery_bucket" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$wt_path_real" "$archive_path" || return 1
 	mkdir "$recovery_dir" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$_WT_ID_ADMIN_REAL" "$recovery_admin" || return 1
 	_worktree_write_recovery_identity "$recovery_dir" || return 1
+	printf '%s\n' "framework" >"${recovery_dir}/storage-owner" || return 1
+	printf '%s\n' "recovery" >"${recovery_dir}/storage-class" || return 1
+	printf '%s\n' "manual-review" >"${recovery_dir}/storage-policy" || return 1
+	printf '%s\n' "$recovery_root_real" >"${recovery_dir}/storage-root" || return 1
 	printf '%s\n' "$_WT_ID_HEAD" >"${recovery_admin}/HEAD" || return 1
 	printf '%s\n' "$_WT_ID_COMMON_REAL" >"${recovery_admin}/commondir" || return 1
 	printf '%s\n' "${archive_path}/.git" >"${recovery_admin}/gitdir" || return 1
 	printf 'gitdir: %s\n' "$recovery_admin" >"${archive_path}/.git" || return 1
 	_worktree_recovery_archive_is_valid "$archive_path" || return 1
 	_worktree_archive_source_matches "$wt_path" "$archive_path" || return 1
+	completion_marker_tmp="${recovery_dir}/.${_WT_RECOVERY_COMPLETE_MARKER}.$$-${RANDOM}"
+	printf '%s\n' "$_WT_RECOVERY_FORMAT" >"$completion_marker_tmp" || return 1
+	mv "$completion_marker_tmp" "${recovery_dir}/${_WT_RECOVERY_COMPLETE_MARKER}" || return 1
 	git_state=$(_worktree_git_lock_state "$wt_path" "$wt_path_real") ||
 		git_state="$_WT_GIT_STATE_UNREADABLE"
 	if [[ "$git_state" != "$_WT_GIT_STATE_CLEAR" ]]; then

@@ -682,7 +682,11 @@ COMMANDS
                          --force-merged: force-remove dirty worktrees when PR is
                            confirmed merged (dirty state = abandoned WIP). Also
                            detects squash merges via gh pr list.
-                         Skips worktrees owned by other active sessions (t189)
+                          Skips worktrees owned by other active sessions (t189)
+
+  recovery               Read-only inventory of current and legacy recoverable
+                         worktree archives. Attributed and unknown buckets remain
+                         protected for manual review; this command never deletes.
 
   registry [list|prune]  View or prune the ownership registry (t189, t197)
                          list: Show all registered worktrees with ownership info
@@ -757,6 +761,15 @@ NOTES
   - Main worktree cannot be removed
 
 EOF
+	return 0
+}
+
+cmd_recovery() {
+	if [[ "$#" -ne 0 ]]; then
+		printf '%s\n' "Usage: worktree-helper.sh recovery" >&2
+		return 1
+	fi
+	worktree_recovery_inventory || return 1
 	return 0
 }
 
