@@ -12,9 +12,13 @@ TEST_ROOT="$(mktemp -d -t pulse-preflight-snapshot.XXXXXX)"
 LOGFILE="${TEST_ROOT}/pulse.log"
 AIDEVOPS_REPOS_JSON="${TEST_ROOT}/repos.json"
 export AIDEVOPS_REPOS_JSON
-cat >"$AIDEVOPS_REPOS_JSON" <<'EOF'
+write_default_repos_json() {
+	cat >"$AIDEVOPS_REPOS_JSON" <<'EOF'
 {"initialized_repos":[{"slug":"owner/repo","review_gate":{"advisory_check_contexts":["CodeFactor"]}}]}
 EOF
+	return 0
+}
+write_default_repos_json
 PULSE_MERGE_QUIET_PERIOD_SECONDS=30
 PULSE_MERGE_NOW_EPOCH="$(_pmrc_iso_to_epoch '2026-01-01T00:10:00Z')"
 PULSE_MERGE_INFRA_RERUN_STATE_DIR="${TEST_ROOT}/infra-reruns"
@@ -370,6 +374,59 @@ assert_effective_rules_have_exact_rest_cost() {
 	return 0
 }
 
+assert_configured_advisory_contexts_are_null_safe() {
+	local contexts="" rc=0
+	cat >"$AIDEVOPS_REPOS_JSON" <<'EOF'
+{"initialized_repos":[{"slug":null},{"slug":"owner/repo","review_gate":{"advisory_check_contexts":["CodeFactor"]}}]}
+EOF
+	contexts=$(_pmrc_configured_advisory_contexts_json "OWNER/REPO") || rc=$?
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$rc" -eq 0 && "$contexts" == '["CodeFactor"]' ]]; then
+		printf 'PASS null repository slug does not poison a later advisory-context match\n'
+	else
+		printf 'FAIL null repository slug lookup (rc=%s, output=%s)\n' "$rc" "$contexts"
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+
+	contexts=""
+	rc=0
+	contexts=$(_pmrc_configured_advisory_contexts_json "other/repo") || rc=$?
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$rc" -eq 0 && "$contexts" == '[]' ]]; then
+		printf 'PASS unmatched repository slug returns an empty advisory-context array\n'
+	else
+		printf 'FAIL unmatched repository slug lookup (rc=%s, output=%s)\n' "$rc" "$contexts"
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+
+	write_default_repos_json
+	return 0
+}
+
+assert_malformed_advisory_contexts_fail_closed_once() {
+	local failure_count=0
+	cat >"$AIDEVOPS_REPOS_JSON" <<'EOF'
+{"initialized_repos":[{"slug":"owner/repo","review_gate":{"advisory_check_contexts":{"private-sentinel":true}}}]}
+EOF
+	assert_gate_blocker "malformed advisory contexts fail closed" \
+		happy_advisory 1 "$PMRC_BLOCKER_SNAPSHOT_UNAVAILABLE"
+	failure_count=$(grep -cF \
+		"configured advisory-context lookup failed for PR #7 in owner/repo" \
+		"$LOGFILE" || true)
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$failure_count" -eq 1 ]] &&
+		! grep -qF "private-sentinel" "$LOGFILE" &&
+		! grep -qF "$AIDEVOPS_REPOS_JSON" "$LOGFILE"; then
+		printf 'PASS malformed advisory contexts emit one privacy-safe failure log\n'
+	else
+		printf 'FAIL malformed advisory-context logging was duplicated or exposed input details\n'
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+
+	write_default_repos_json
+	return 0
+}
+
 set_live_evidence() {
 	local status="$1"
 	local head_sha="${2:-sha-reviewed}"
@@ -484,6 +541,8 @@ main() {
 	assert_infrastructure_rerun_unset_defaults_safe
 	assert_infrastructure_rerun_unset_logfile_safe
 	assert_effective_rules_have_exact_rest_cost
+	assert_configured_advisory_contexts_are_null_safe
+	assert_malformed_advisory_contexts_fail_closed_once
 	assert_snapshot_acquisition_failures_are_audited
 	assert_gate "large paginated check payload streams without argument overflow" large_payload 0
 	assert_large_bot_activity_streams
