@@ -107,7 +107,7 @@ _version_manager_remote_tag_identity() {
 		return 0
 	fi
 	_VERSION_MANAGER_REMOTE_TAG_STATE="present"
-	[[ -n "$_VERSION_MANAGER_REMOTE_TAG_COMMIT" ]] || \
+	[[ -n "$_VERSION_MANAGER_REMOTE_TAG_COMMIT" ]] ||
 		_VERSION_MANAGER_REMOTE_TAG_COMMIT="$_VERSION_MANAGER_REMOTE_TAG_OBJECT"
 	return 0
 }
@@ -311,7 +311,7 @@ _version_manager_prepare_protected_release_head() {
 	if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$release_commit" \
 		"$_VERSION_MANAGER_PROTECTED_RELEASE_HEAD" ||
 		! git -C "$REPO_ROOT" merge-base --is-ancestor origin/main \
-		"$_VERSION_MANAGER_PROTECTED_RELEASE_HEAD"; then
+			"$_VERSION_MANAGER_PROTECTED_RELEASE_HEAD"; then
 		print_error "Protected release branch does not retain both required parents"
 		return 1
 	fi
@@ -446,8 +446,8 @@ _version_manager_create_or_reuse_protected_pr() {
 			rm -f "$body_file"
 			return 1
 		}
-		create_args=(--repo "$repo" --head "$branch_name" --base main \
-			--title "chore(release): preserve signed v${version} publication" \
+		create_args=(--repo "$repo" --head "$branch_name" --base main
+			--title "chore(release): preserve signed v${version} publication"
 			--body-file "$body_file")
 		if [[ "$repo" == "marcusquinn/aidevops" ]]; then
 			if declare -F _version_manager_is_headless_task_worker >/dev/null 2>&1 &&

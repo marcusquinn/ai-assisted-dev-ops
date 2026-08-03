@@ -574,7 +574,7 @@ _release_provenance_verify() {
 			"$repo_slug" "$tag_name" "$_RELEASE_PROVENANCE_TAG_COMMIT" \
 			"$_RELEASE_PROVENANCE_TAG_OBJECT" || return 1
 	fi
-	[[ "$verification_scope" != "$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" ]] || \
+	[[ "$verification_scope" != "$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" ]] ||
 		verification_label=" local source"
 
 	printf 'release-provenance: verified %s%s at %s from PR #%s\n' \
