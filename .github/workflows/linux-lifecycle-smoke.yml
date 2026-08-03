@@ -1,0 +1,39 @@
+name: Linux Lifecycle Smoke
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'setup.sh'
+      - 'aidevops.sh'
+      - '.agents/scripts/**'
+      - '.agents/AGENTS.md'
+      - '.github/workflows/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'setup.sh'
+      - 'aidevops.sh'
+      - '.agents/scripts/**'
+      - '.agents/AGENTS.md'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux-lifecycle-smoke:
+    name: Ubuntu setup and CLI lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Run isolated lifecycle smoke
+      run: bash .agents/scripts/tests/test-linux-lifecycle-smoke.sh
