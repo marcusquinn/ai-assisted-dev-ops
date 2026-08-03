@@ -54,6 +54,7 @@ PROVIDER_SPECS = (
     ),
     ProviderSpec("gumroad", (), "knowledge_social_gumroad.py", (("live", ()),)),
     ProviderSpec("github", (), "knowledge_social_github.py", (("live", ()),)),
+    ProviderSpec("ghost", (), "knowledge_social_ghost.py", (("live", ()),)),
     ProviderSpec(
         "hacker-news",
         ("hn",),

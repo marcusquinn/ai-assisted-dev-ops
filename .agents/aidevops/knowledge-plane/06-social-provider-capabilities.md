@@ -40,6 +40,7 @@ a claim that the route is enabled.
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Patreon | **Live/Gate** creator campaign posts | **No** patron curation or creator-side interaction history | **No** messages, comments, or mentions | **Live/Gate** minimized current creator memberships; **No** patron-owned memberships or subscriptions | **Live** creator campaigns, tiers, and benefits | Creator-owned campaign allowlist, exact read scopes, identity and ownership recheck, 99-request cap, opaque cursors, and a membership-services purpose gate; no patron-account collection. |
 | beehiiv | **Gate/Live/Partial/Export** confirmed posts and paywall-enforced free web content; **Export** drafts and archives | **No** subscriber-derived engagement statistics | **No** | **Gate/Export/No** subscriber records are excluded pending an explicit PII need and authorization | **Gate/No** segments and newsletter-list membership expose audience structure and are not collected | Explicit creator-ownership attestation plus one expected, singly visible publication; exact GET-only API-v2 routes, bounded page replay, 100-page cap, and no subscriber PII, premium expansion, remote media, dashboard automation, or mutation reachability. |
+| Ghost | **Live/Partial** published posts and pages; **Gate** drafts | **No** private reactions or member engagement | **No/Gate** comments; no stable documented integration route | **Live/Partial** public authors; **Gate/No** members and newsletter subscriptions | **Live/Partial** public tags; **Gate** newsletters | Four v6 Content API snapshots bind the exact publication URL before every page; Admin credentials, member PII, comments, automated exports, redirects, and writes remain disabled. |
 | Quora | **Export/No** answers, questions, posts, and comments | **Export/No** bookmarks; **No** upvotes and other curation | **No** | **Export/No** user follows; **No** followed topics or Spaces | **No** | The official export has no published schema. Public content samples lack authoritative owner identity, and the companion account-data schema is unpublished; no adapter or CLI route is enabled. |
 | Skool | **No** posts, comments, and course content | **No** reactions and saved state | **No** notifications and messages | **No** memberships, follows, and groups | **No** courses and calendar feeds | **Export/No** admin membership-question answers only. The official Zapier surface is narrow event automation, the export schema and identity contract are unpublished, and provider policy excludes browser collection. |
 | Substack | **Export/No** publication posts; **No** Notes | **No** comments, likes, restacks, or saved Notes | **No** | **No** reader subscriptions or publication memberships | **No** | Creator ZIP/CSV exports lack published identity/schema contracts; public RSS is not account history, and **Gate/No** bestseller analytics require interactive MCP sign-in and consent. No adapter or CLI route is enabled. |
@@ -75,6 +76,7 @@ falls back to another provider or to an outbound mutation route.
 | Binance Square | **No** | Officially verified surfaces are mutation-only; no adapter, export, browser, or credential route is registered. |
 | Bluesky / AT Protocol | **Live** repository/AppView reads | Chat remains separately permissioned; account identity is a stable DID. |
 | Forem | **Live** multi-instance reads | `dev-community` and `dev.to` are aliases of `forem`, not separate providers. |
+| Ghost | **Live** public publication reads | Content API v6 only; Admin credentials and private member/newsletter/comment data are not registered. |
 
 HubSpot Community remains a Discourse installation and is not registered as a
 separate provider family.
@@ -157,6 +159,15 @@ separate provider family.
   GET-only transport, and atomic persistence. `.agents/content/social-patreon.md`
   records the current API v2, rate, creator-export, privacy-purpose, role, and
   unsupported-category evidence checked on 2026-08-02.
+- **Live Ghost publication:** `.agents/scripts/knowledge_social_ghost.py`,
+  `.agents/scripts/_knowledge_social_ghost*.py`, and
+  `.agents/tests/test-knowledge-social-ghost.sh` prove exact publication URL
+  binding, four independent v6 Content API snapshots, strict numeric
+  pagination, public-tag and author minimization, content-credential rejection,
+  redirect and mutation isolation, terminal coverage, replay, and final lease
+  fencing. `.agents/content/social-ghost.md` records current official Content
+  and Admin authentication, permissions, routes, exports, privacy, retention,
+  and unsupported evidence checked on 2026-08-02.
 - **Live Discourse:** `.agents/scripts/knowledge_social_discourse.py`,
   `.agents/scripts/_knowledge_social_discourse*.py`, and
   `.agents/tests/test-knowledge-social-discourse.sh` prove ten independently
