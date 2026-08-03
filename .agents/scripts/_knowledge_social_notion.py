@@ -134,20 +134,22 @@ def _cursor_value(value: Any) -> str | None:
     return value
 
 
-def task_value(value: Any, limits: Limits) -> Task:
-    if not isinstance(value, dict) or set(value) != TASK_KEYS:
-        raise NotionAdapterError("Notion traversal task has an invalid shape")
-    kind = value.get("kind")
-    if kind not in TASK_KINDS:
-        raise NotionAdapterError("Notion traversal task kind is unsupported")
-    depth = bounded_integer(value.get("depth"), "task depth", 0, limits.max_depth)
+def _task_parent_binding(value: dict[str, Any]) -> tuple[str | None, str | None]:
     parent_kind = value.get("parent_kind")
     if parent_kind not in {None, "page_id", "block_id", "database_id", "data_source_id"}:
         raise NotionAdapterError("Notion traversal parent kind is invalid")
     parent_id = _optional_id(value.get("parent_id"), "task parent ID")
     if (parent_kind is None) != (parent_id is None):
         raise NotionAdapterError("Notion traversal parent binding is incomplete")
-    database_id = _optional_id(value.get("database_id"), "task database ID")
+    return parent_kind, parent_id
+
+
+def _validate_task_binding(
+    kind: str,
+    parent_kind: str | None,
+    parent_id: str | None,
+    database_id: str | None,
+) -> None:
     if kind == "data_source" and (
         database_id is None
         or parent_kind != "database_id"
@@ -164,6 +166,18 @@ def task_value(value: Any, limits: Limits) -> Task:
         raise NotionAdapterError("Notion row task database binding is invalid")
     if parent_kind != "data_source_id" and kind != "data_source" and database_id is not None:
         raise NotionAdapterError("Notion traversal database binding is unexpected")
+
+
+def task_value(value: Any, limits: Limits) -> Task:
+    if not isinstance(value, dict) or set(value) != TASK_KEYS:
+        raise NotionAdapterError("Notion traversal task has an invalid shape")
+    kind = value.get("kind")
+    if kind not in TASK_KINDS:
+        raise NotionAdapterError("Notion traversal task kind is unsupported")
+    depth = bounded_integer(value.get("depth"), "task depth", 0, limits.max_depth)
+    parent_kind, parent_id = _task_parent_binding(value)
+    database_id = _optional_id(value.get("database_id"), "task database ID")
+    _validate_task_binding(kind, parent_kind, parent_id, database_id)
     return Task(
         kind,
         notion_id(value.get("resource_id"), "task resource ID"),
