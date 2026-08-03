@@ -8,6 +8,7 @@ _PULSE_MERGE_FEEDBACK_FINALIZER_LOADED=1
 
 PULSE_FEEDBACK_ROUTE_DEFERRED_RC=75
 PULSE_FEEDBACK_ROUTE_MAINTAINER_RC=76
+PULSE_FEEDBACK_ROUTE_HANDLED_RC=77
 PULSE_FEEDBACK_ROUTE_CLOSED_STATE="CLOSED"
 PULSE_FEEDBACK_ROUTE_HOLD_LABEL="needs-maintainer-review"
 PULSE_FEEDBACK_ROUTE_OPEN_STATE="OPEN"
@@ -84,8 +85,54 @@ _feedback_route_marker() {
 	local kind="$2"
 	local pr_number="$3"
 	local expected_head="$4"
+	local evidence_fingerprint="${5:-}"
+	if [[ -n "$evidence_fingerprint" ]]; then
+		printf '<!-- feedback-route:%s:%s:PR%s:SHA%s:EVIDENCE%s -->' \
+			"$phase" "$kind" "$pr_number" "$expected_head" "$evidence_fingerprint"
+		return 0
+	fi
 	printf '<!-- feedback-route:%s:%s:PR%s:SHA%s -->' "$phase" "$kind" "$pr_number" "$expected_head"
 	return 0
+}
+
+# Return success only when every prior evidence-bound review start marker has
+# an exact completion partner and every completion has an exact start partner.
+# The current start marker may be incomplete because this call resumes it.
+_feedback_route_review_generations_complete() {
+	local issue_body="$1"
+	local pr_number="$2"
+	local current_start="$3"
+	local start_prefix="<!-- feedback-route:start:review:PR${pr_number}:SHA"
+	local completion_prefix="<!-- feedback-route:complete:review:PR${pr_number}:SHA"
+	local marker=""
+	local partner=""
+
+	while IFS= read -r marker; do
+		[[ -n "$marker" ]] || continue
+		[[ "$marker" == *":EVIDENCE"*" -->" ]] || return 1
+		[[ "$marker" == "$current_start" ]] && continue
+		partner="${marker/feedback-route:start:/feedback-route:complete:}"
+		printf '%s' "$issue_body" | grep -qF "$partner" || return 1
+	done < <(printf '%s\n' "$issue_body" | grep -F "$start_prefix" || true)
+
+	while IFS= read -r marker; do
+		[[ -n "$marker" ]] || continue
+		[[ "$marker" == *":EVIDENCE"*" -->" ]] || return 1
+		partner="${marker/feedback-route:complete:/feedback-route:start:}"
+		printf '%s' "$issue_body" | grep -qF "$partner" || return 1
+	done < <(printf '%s\n' "$issue_body" | grep -F "$completion_prefix" || true)
+	return 0
+}
+
+_feedback_route_review_evidence_completed() {
+	local issue_body="$1"
+	local pr_number="$2"
+	local evidence_fingerprint="$3"
+	local completion_prefix="<!-- feedback-route:complete:review:PR${pr_number}:SHA"
+	local evidence_suffix=":EVIDENCE${evidence_fingerprint} -->"
+
+	printf '%s\n' "$issue_body" | grep -F "$completion_prefix" | grep -qF "$evidence_suffix"
+	return $?
 }
 
 _feedback_route_pr_snapshot() {
@@ -436,6 +483,54 @@ ${start_marker}" >/dev/null 2>&1 || close_rc=$?
 	return $?
 }
 
+_feedback_route_existing_evidence_gate() {
+	local kind="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local expected_head="$5"
+	local source_label="$6"
+	local terminal_label="$7"
+	local evidence_fingerprint="$8"
+	local start_marker="$9"
+	local completion_marker="${10}"
+	local issue_body="${11}"
+	local pr_state="${12}"
+	local labels="${13}"
+
+	if printf '%s' "$issue_body" | grep -qF "$completion_marker"; then
+		if ! printf '%s' "$issue_body" | grep -qF "$start_marker"; then
+			_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+				"${kind} completion evidence has no matching start marker"
+			return $?
+		fi
+		if [[ -n "$evidence_fingerprint" && "$pr_state" == "$PULSE_FEEDBACK_ROUTE_OPEN_STATE" ]]; then
+			echo "[pulse-wrapper] feedback finalizer: review evidence ${evidence_fingerprint} for PR #${pr_number} was already routed at head ${expected_head}; leaving reopened PR unchanged" >>"$LOGFILE"
+			return "$PULSE_FEEDBACK_ROUTE_HANDLED_RC"
+		fi
+		_feedback_route_resume_completed "$kind" "$pr_number" "$repo_slug" "$linked_issue" \
+			"$expected_head" "$pr_state" "$source_label" "$terminal_label" "$labels" || return $?
+		return "$PULSE_FEEDBACK_ROUTE_HANDLED_RC"
+	fi
+	if [[ -n "$evidence_fingerprint" ]]; then
+		if _feedback_route_review_evidence_completed "$issue_body" "$pr_number" "$evidence_fingerprint"; then
+			echo "[pulse-wrapper] feedback finalizer: review evidence ${evidence_fingerprint} for PR #${pr_number} was already routed on another head; skipping duplicate route" >>"$LOGFILE"
+			return "$PULSE_FEEDBACK_ROUTE_HANDLED_RC"
+		fi
+		if ! _feedback_route_review_generations_complete "$issue_body" "$pr_number" "$start_marker"; then
+			_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+				"existing review route generation is incomplete or ambiguous"
+			return $?
+		fi
+	elif _feedback_route_body_has_other_head_evidence "$issue_body" "$kind" "$pr_number" \
+		"$start_marker" "$completion_marker"; then
+		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+			"existing ${kind} route evidence belongs to a different PR head"
+		return $?
+	fi
+	return 0
+}
+
 _finalize_feedback_route() {
 	local kind="$1"
 	local pr_number="$2"
@@ -449,6 +544,7 @@ _finalize_feedback_route() {
 	local caller="${10}"
 	local close_comment="${11}"
 	local legacy_match="${12:-$legacy_marker}"
+	local evidence_fingerprint="${13:-}"
 	local start_marker=""
 	local completion_marker=""
 	local snapshot=""
@@ -456,6 +552,7 @@ _finalize_feedback_route() {
 	local current_head=""
 	local labels=""
 	local issue_body=""
+	local evidence_gate_rc=0
 
 	if [[ "${DRY_RUN:-0}" == "1" ]]; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "dry-run forbids ${kind} finalization writes"
@@ -465,8 +562,13 @@ _finalize_feedback_route() {
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "missing or malformed expected head for ${kind} route"
 		return $?
 	}
-	start_marker=$(_feedback_route_marker start "$kind" "$pr_number" "$expected_head")
-	completion_marker=$(_feedback_route_marker complete "$kind" "$pr_number" "$expected_head")
+	if [[ -n "$evidence_fingerprint" ]] && \
+		{ [[ "$kind" != "review" ]] || [[ ! "$evidence_fingerprint" =~ ^[0-9a-f]{64}$ ]]; }; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "malformed evidence identity for ${kind} route"
+		return $?
+	fi
+	start_marker=$(_feedback_route_marker start "$kind" "$pr_number" "$expected_head" "$evidence_fingerprint")
+	completion_marker=$(_feedback_route_marker complete "$kind" "$pr_number" "$expected_head" "$evidence_fingerprint")
 	snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || {
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "current PR snapshot unavailable before ${kind} finalization"
 		return $?
@@ -486,17 +588,13 @@ _finalize_feedback_route() {
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "linked issue body unavailable before ${kind} finalization"
 		return $?
 	}
-	if printf '%s' "$issue_body" | grep -qF "$completion_marker"; then
-		_feedback_route_resume_completed "$kind" "$pr_number" "$repo_slug" "$linked_issue" \
-			"$expected_head" "$pr_state" "$source_label" "$terminal_label" "$labels"
-		return $?
-	fi
-	if _feedback_route_body_has_other_head_evidence "$issue_body" "$kind" "$pr_number" \
-		"$start_marker" "$completion_marker"; then
-		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
-			"existing ${kind} route evidence belongs to a different PR head"
-		return $?
-	fi
+	_feedback_route_existing_evidence_gate "$kind" "$pr_number" "$repo_slug" "$linked_issue" \
+		"$expected_head" "$source_label" "$terminal_label" "$evidence_fingerprint" \
+		"$start_marker" "$completion_marker" "$issue_body" "$pr_state" "$labels" || evidence_gate_rc=$?
+	[[ "$evidence_gate_rc" -eq 0 ]] || {
+		[[ "$evidence_gate_rc" -eq "$PULSE_FEEDBACK_ROUTE_HANDLED_RC" ]] && return 0
+		return "$evidence_gate_rc"
+	}
 	if [[ "$pr_state" != "$PULSE_FEEDBACK_ROUTE_OPEN_STATE" \
 		&& "$pr_state" != "$PULSE_FEEDBACK_ROUTE_CLOSED_STATE" ]]; then
 		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \

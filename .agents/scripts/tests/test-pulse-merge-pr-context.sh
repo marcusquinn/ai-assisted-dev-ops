@@ -325,6 +325,23 @@ test_fresh_interactive_route_does_not_enter_terminal_guard() {
 	return 0
 }
 
+test_review_terminal_label_rechecks_current_evidence() {
+	install_stubs
+	: >"$GH_CALL_LOG"
+	local route_rc=0
+	_route_pr_to_fix_worker "9015" "owner/repo" "456" "review" \
+		"origin:worker,review-routed-to-issue" || route_rc=$?
+	if [[ "$route_rc" -ne 0 ]] \
+		|| ! grep -qF 'dispatch-review 9015 owner/repo 456' "$GH_CALL_LOG" \
+		|| grep -qF 'route-guard 9015 owner/repo 456 review' "$GH_CALL_LOG"; then
+		fail "review terminal label delegates to evidence-aware dispatcher" \
+			"rc=${route_rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	pass "review terminal label delegates to evidence-aware dispatcher"
+	return 0
+}
+
 test_trusted_worker_terminal_guard_outcome_propagates() {
 	install_stubs
 	ROUTE_GUARD_RC=75
@@ -361,6 +378,7 @@ main() {
 	test_linked_issue_maintainer_hold_blocks_route_recovery
 	test_linked_issue_metadata_failure_is_retryable
 	test_fresh_interactive_route_does_not_enter_terminal_guard
+	test_review_terminal_label_rechecks_current_evidence
 	test_trusted_worker_terminal_guard_outcome_propagates
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]

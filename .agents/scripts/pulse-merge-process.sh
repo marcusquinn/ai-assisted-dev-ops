@@ -809,6 +809,11 @@ _route_pr_feedback_terminal_guard() {
 	local routed_label="$6"
 
 	[[ "$has_routed_label" -eq 1 ]] || return 0
+	# Review routing owns finer-grained idempotency: immutable review/comment
+	# evidence distinguishes a genuinely new review generation from a replay.
+	# The PR-level terminal label therefore cannot permanently suppress review
+	# inspection. Conflict and CI routes remain terminal per PR/head.
+	[[ "$kind" != "review" ]] || return 0
 	if ! declare -F _feedback_route_guard_existing_terminal_label >/dev/null 2>&1; then
 		echo "[pulse-wrapper] _route_pr_to_fix_worker: feedback finalizer unavailable behind ${routed_label} on PR #${pr_number} in ${repo_slug}" >>"$LOGFILE"
 		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"

@@ -68,10 +68,10 @@ reset_mock_state() {
 	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
 	# Defaults: populated reviews + comments, empty issue body.
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
-[{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","body":"Two issues in the new helper. Please address before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-1"}]
+[{"id":1001,"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","body":"## Senior review\n\nBLOCK: missing import.\nFix the worker entry point before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-1","submitted_at":"2026-08-03T10:00:00Z","commit_id":"abc123repairsha"}]
 EOF
 	cat >"${TEST_ROOT}/comments.json" <<'EOF'
-[{"user":{"login":"coderabbitai[bot]"},"path":".agents/scripts/pulse-merge.sh","line":650,"original_line":650,"body":"This check has an off-by-one.","html_url":"https://github.com/owner/repo/pull/100#discussion_r1"}]
+[{"id":2001,"user":{"login":"coderabbitai[bot]"},"path":".agents/scripts/pulse-merge.sh","line":650,"original_line":650,"body":"This check has an off-by-one.\nSecond actionable line.","html_url":"https://github.com/owner/repo/pull/100#discussion_r1","updated_at":"2026-08-03T10:01:00Z","commit_id":"abc123repairsha"}]
 EOF
 	echo 'Original issue body.' >"${TEST_ROOT}/issue-body.txt"
 }
@@ -430,7 +430,37 @@ test_build_section_includes_marker_and_citations() {
 			"Expected 'CHANGES_REQUESTED' in section"
 		return 0
 	fi
+	if [[ "$section" != *"  > BLOCK: missing import."* \
+		|| "$section" != *"  > Second actionable line."* ]]; then
+		print_result "build section preserves multiline review and inline findings" 1 \
+			"Expected Markdown-quoted continuation lines. Got: ${section:0:800}"
+		return 0
+	fi
 	print_result "build section includes header, citations, and reviewer" 0
+	return 0
+}
+
+test_build_section_bounds_total_output() {
+	reset_mock_state
+	local long_body=""
+	local reviews_json=""
+	local section=""
+	local original_section_limit="$PULSE_REVIEW_FEEDBACK_SECTION_LIMIT"
+	while [[ ${#long_body} -lt 16000 ]]; do
+		long_body="${long_body}0123456789abcdef"
+	done
+	reviews_json=$(jq -cn --arg body "$long_body" \
+		'[{author:"reviewer",state:"CHANGES_REQUESTED",body:$body,url:"https://github.com/owner/repo/pull/100#review"}]')
+	PULSE_REVIEW_FEEDBACK_SECTION_LIMIT=1000
+	section=$(_build_review_feedback_section "100" "owner/repo" "$reviews_json" "[]")
+	PULSE_REVIEW_FEEDBACK_SECTION_LIMIT="$original_section_limit"
+	if [[ ${#section} -gt 1200 \
+		|| "$section" != *"Additional review feedback omitted by the bounded router"* ]]; then
+		print_result "build section enforces deterministic total bound" 1 \
+			"length=${#section}; test_limit=1000"
+		return 0
+	fi
+	print_result "build section enforces deterministic total bound" 0
 	return 0
 }
 
@@ -452,7 +482,7 @@ test_dispatch_appends_to_issue_body_and_closes_pr() {
 	_dispatch_pr_fix_worker "100" "owner/repo" "42"
 
 	# Verify issue body was updated with the marker.
-	if ! grep -qF "<!-- t2093:review-feedback:PR100 -->" "${TEST_ROOT}/issue-body.txt"; then
+	if ! grep -qE '<!-- t2093:review-feedback:PR100:EVIDENCE[0-9a-f]{64} -->' "${TEST_ROOT}/issue-body.txt"; then
 		print_result "dispatch appends marker to issue body" 1 \
 			"Expected marker in issue-body.txt. Content: $(cat "${TEST_ROOT}/issue-body.txt")"
 		return 0
@@ -529,9 +559,11 @@ test_dispatch_wraps_paginated_feedback_reads() {
 test_dispatch_timeout_fails_open_without_routing_empty_feedback() {
 	reset_mock_state
 	export TEST_TIMEOUT_FAIL_PATTERN="repos/owner/repo/pulls/100/"
-	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
 	unset TEST_TIMEOUT_FAIL_PATTERN
-	if [[ "$(<"${TEST_ROOT}/issue-body.txt")" == "Original issue body." ]] &&
+	if [[ "$dispatch_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		&& "$(<"${TEST_ROOT}/issue-body.txt")" == "Original issue body." ]] &&
 		! grep -qF 'gh pr close 100' "$GH_LOG" &&
 		[[ "$(grep -c '^read gh api repos/owner/repo/pulls/100/' "$TIMEOUT_CALL_LOG" 2>/dev/null || true)" == "2" ]]; then
 		print_result "timed-out feedback reads fail open without closing the PR" 0
@@ -576,9 +608,9 @@ EOF
 review_route_is_complete() {
 	local start_count=0
 	local completion_count=0
-	start_count=$(grep -cF '<!-- feedback-route:start:review:PR100:SHAabc123repairsha -->' \
+	start_count=$(grep -cE '<!-- feedback-route:start:review:PR100:SHAabc123repairsha:EVIDENCE[0-9a-f]{64} -->' \
 		"${TEST_ROOT}/issue-body.txt" 2>/dev/null || true)
-	completion_count=$(grep -cF '<!-- feedback-route:complete:review:PR100:SHAabc123repairsha -->' \
+	completion_count=$(grep -cE '<!-- feedback-route:complete:review:PR100:SHAabc123repairsha:EVIDENCE[0-9a-f]{64} -->' \
 		"${TEST_ROOT}/issue-body.txt" 2>/dev/null || true)
 	[[ "$start_count" -eq 1 && "$completion_count" -eq 1 ]] || return 1
 	[[ "$(<"${TEST_ROOT}/pr-state.txt")" == "CLOSED" ]] || return 1
@@ -869,12 +901,117 @@ EOF
 	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
 		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ]] \
 		|| grep -qF 'gh pr close 100' "$GH_LOG" \
-		|| ! grep -qF 'completed same-head review route was reopened' "$LOGFILE"; then
+		|| ! grep -Eq 'completed same-head review route was reopened|existing review route generation is incomplete or ambiguous' "$LOGFILE"; then
 		print_result "manually reopened completed route remains open" 1 \
 			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
 		return 0
 	fi
 	print_result "completed same-head route is never automatically reclosed" 0
+	return 0
+}
+
+current_review_evidence_fingerprint() {
+	local reviews_json=""
+	local inline_json=""
+	reviews_json=$(jq '[.[] | select(.state == "CHANGES_REQUESTED" or ((.body // "") | length) > 30)
+		| {id: (.id // "" | tostring), author: (.user.login // "unknown"), state: .state,
+		   body: (.body // ""), url: (.html_url // ""),
+		   submitted_at: (.submitted_at // ""), commit_id: (.commit_id // "")}]' \
+		<"${TEST_ROOT}/reviews.json") || return 1
+	inline_json=$(jq '[.[] | {id: (.id // "" | tostring), author: (.user.login // "unknown"),
+		path: (.path // ""), line: (.line // .original_line // 0),
+		body: (.body // ""), url: (.html_url // ""),
+		updated_at: (.updated_at // ""), commit_id: (.commit_id // "")}]' \
+		<"${TEST_ROOT}/comments.json") || return 1
+	_review_feedback_evidence_fingerprint "$reviews_json" "$inline_json"
+	return $?
+}
+
+seed_completed_review_generation() {
+	local head_sha="$1"
+	local evidence_fingerprint="$2"
+	cat >"${TEST_ROOT}/issue-body.txt" <<EOF
+Original issue body.
+
+<!-- feedback-route:start:review:PR100:SHA${head_sha}:EVIDENCE${evidence_fingerprint} -->
+<!-- t2093:review-feedback:PR100:EVIDENCE${evidence_fingerprint} -->
+Previously routed review feedback.
+<!-- feedback-route:complete:review:PR100:SHA${head_sha}:EVIDENCE${evidence_fingerprint} -->
+EOF
+	printf 'origin:worker,auto-dispatch,review-routed-to-issue\n' >"${TEST_ROOT}/pr-labels.txt"
+	return 0
+}
+
+test_dispatch_skips_identical_evidence_on_same_head() {
+	reset_mock_state
+	local evidence_fingerprint=""
+	evidence_fingerprint=$(current_review_evidence_fingerprint) || {
+		print_result "same-head review evidence is fingerprintable" 1 "fingerprint unavailable"
+		return 0
+	}
+	seed_completed_review_generation "abc123repairsha" "$evidence_fingerprint"
+	: >"$GH_LOG"
+	: >"$LOGFILE"
+	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	if grep -qF 'gh pr close 100' "$GH_LOG" \
+		|| grep -qE 'gh issue edit 42 --repo owner/repo --body' "$GH_LOG" \
+		|| ! grep -qF 'was already routed at head abc123repairsha; leaving reopened PR unchanged' "$LOGFILE"; then
+		print_result "identical same-head evidence is a no-op" 1 \
+			"gh=$(tr '\n' ';' <"$GH_LOG"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "identical same-head evidence is a no-op" 0
+	return 0
+}
+
+test_dispatch_skips_identical_evidence_on_changed_head() {
+	reset_mock_state
+	local evidence_fingerprint=""
+	evidence_fingerprint=$(current_review_evidence_fingerprint) || {
+		print_result "identical review evidence is fingerprintable" 1 "fingerprint unavailable"
+		return 0
+	}
+	seed_completed_review_generation "old123repairsha" "$evidence_fingerprint"
+	: >"$GH_LOG"
+	: >"$LOGFILE"
+	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	if grep -qF 'gh pr close 100' "$GH_LOG" \
+		|| grep -qE 'gh issue edit 42 --repo owner/repo --body' "$GH_LOG" \
+		|| ! grep -qF 'already routed on another head; skipping duplicate route' "$LOGFILE"; then
+		print_result "identical evidence stays idempotent across head changes" 1 \
+			"gh=$(tr '\n' ';' <"$GH_LOG"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "identical evidence stays idempotent across head changes" 0
+	return 0
+}
+
+test_dispatch_routes_edited_evidence_on_same_head() {
+	reset_mock_state
+	local prior_fingerprint=""
+	local current_fingerprint=""
+	prior_fingerprint=$(current_review_evidence_fingerprint) || {
+		print_result "prior review evidence is fingerprintable" 1 "fingerprint unavailable"
+		return 0
+	}
+	seed_completed_review_generation "abc123repairsha" "$prior_fingerprint"
+	jq '.[0].body += "\nNew same-head blocking finding."' "${TEST_ROOT}/reviews.json" \
+		>"${TEST_ROOT}/reviews.next" || return 1
+	mv "${TEST_ROOT}/reviews.next" "${TEST_ROOT}/reviews.json"
+	current_fingerprint=$(current_review_evidence_fingerprint) || return 1
+	: >"$GH_LOG"
+	: >"$EVENT_LOG"
+	_dispatch_pr_fix_worker "100" "owner/repo" "42"
+	if [[ "$current_fingerprint" == "$prior_fingerprint" \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" ]] \
+		|| ! grep -qF "EVIDENCE${current_fingerprint}" "${TEST_ROOT}/issue-body.txt" \
+		|| ! grep -qF 'New same-head blocking finding.' "${TEST_ROOT}/issue-body.txt" \
+		|| ! grep -qF 'gh pr close 100' "$GH_LOG"; then
+		print_result "edited evidence routes a new generation on the same head" 1 \
+			"prior=${prior_fingerprint}; current=${current_fingerprint}; events=$(tr '\n' ';' <"$EVENT_LOG")"
+		return 0
+	fi
+	print_result "edited evidence routes a new generation on the same head" 0
 	return 0
 }
 
@@ -1130,6 +1267,7 @@ main() {
 	fi
 
 	test_build_section_includes_marker_and_citations
+	test_build_section_bounds_total_output
 	test_build_section_empty_when_no_content
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
@@ -1147,6 +1285,9 @@ main() {
 	test_dispatch_does_not_transition_started_merged_route
 	test_terminal_guard_rechecks_current_label
 	test_dispatch_holds_reopened_completed_route
+	test_dispatch_skips_identical_evidence_on_same_head
+	test_dispatch_skips_identical_evidence_on_changed_head
+	test_dispatch_routes_edited_evidence_on_same_head
 	test_dispatch_dry_run_has_no_writes
 	test_conflict_dispatch_uses_shared_finalizer
 	test_dispatch_noop_when_no_substantive_feedback

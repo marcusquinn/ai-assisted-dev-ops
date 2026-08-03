@@ -48,6 +48,8 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 # Ensures LOGFILE is safe to dereference in all functions when this module
 # is sourced outside the pulse-wrapper.sh bootstrap context.
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
+: "${PULSE_REVIEW_FEEDBACK_ITEM_LIMIT:=4000}"
+: "${PULSE_REVIEW_FEEDBACK_SECTION_LIMIT:=12000}"
 
 _feedback_finalizer_path="${BASH_SOURCE[0]%/*}/pulse-merge-feedback-finalizer.sh"
 if [[ -r "$_feedback_finalizer_path" ]]; then
@@ -103,24 +105,118 @@ See the original PR for full context: https://github.com/${repo_slug}/pull/${pr_
 
 	local reviews_md=""
 	if [[ "$reviews_count" -gt 0 ]]; then
-		reviews_md=$(printf '%s' "$reviews_json" | jq -r '
-			.[] | "- **@\(.author)** (`\(.state)`): \(((.body // "") | gsub("\r"; "") | split("\n")[0])[0:300])\n  [view review](\(.url // ""))"
+		reviews_md=$(printf '%s' "$reviews_json" | jq -r \
+			--argjson item_limit "$PULSE_REVIEW_FEEDBACK_ITEM_LIMIT" '
+			def quoted_body:
+				((.body // "") | gsub("\r"; "") | .[0:$item_limit]) as $body
+				| if $body == "" then "  > _(no review body provided)_"
+				  else ($body | split("\n") | map("  > " + .) | join("\n")) end;
+			.[] | "- **@\(.author)** (`\(.state)`)\n\(quoted_body)\n  [view review](\(.url // ""))"
 		' 2>/dev/null) || reviews_md=""
 	fi
 
 	local inline_md=""
 	if [[ "$inline_count" -gt 0 ]]; then
-		inline_md=$(printf '%s' "$inline_json" | jq -r '
-			.[] | "- **@\(.author)** `\(.path)`:\(.line // "?") — \(((.body // "") | gsub("\r"; "") | split("\n")[0])[0:300])\n  [view comment](\(.url // ""))"
+		inline_md=$(printf '%s' "$inline_json" | jq -r \
+			--argjson item_limit "$PULSE_REVIEW_FEEDBACK_ITEM_LIMIT" '
+			def quoted_body:
+				((.body // "") | gsub("\r"; "") | .[0:$item_limit]) as $body
+				| if $body == "" then "  > _(no inline comment body provided)_"
+				  else ($body | split("\n") | map("  > " + .) | join("\n")) end;
+			.[] | "- **@\(.author)** `\(.path)`:\(.line // "?")\n\(quoted_body)\n  [view comment](\(.url // ""))"
 		' 2>/dev/null) || inline_md=""
 	fi
 
-	printf '%s\n' "$header"
+	local section="$header"
 	if [[ -n "$reviews_md" ]]; then
-		printf '### Top-level reviews\n\n%s\n\n' "$reviews_md"
+		section="${section}
+### Top-level reviews
+
+${reviews_md}
+"
 	fi
 	if [[ -n "$inline_md" ]]; then
-		printf '### Inline comments (file:line citations)\n\n%s\n\n' "$inline_md"
+		section="${section}
+### Inline comments (file:line citations)
+
+${inline_md}
+"
+	fi
+	printf '%s' "$section" | jq -Rs -r \
+		--argjson section_limit "$PULSE_REVIEW_FEEDBACK_SECTION_LIMIT" '
+		if length > $section_limit then
+			.[0:$section_limit] + "\n\n_[Additional review feedback omitted by the bounded router; use the source links above for full context.]_\n"
+		else . end
+	' 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
+# Compute a stable fingerprint for the complete review evidence set.
+# IDs establish immutable identity while update metadata and rendered fields
+# ensure edited feedback on the same review/comment becomes a new generation.
+# Args: $1=reviews JSON, $2=inline comments JSON.
+#######################################
+_review_feedback_evidence_fingerprint() {
+	local reviews_json="$1"
+	local inline_json="$2"
+	local canonical=""
+	local fingerprint=""
+
+	canonical=$(printf '%s\n%s\n' "$reviews_json" "$inline_json" | jq -csS '
+		.[0] as $reviews | .[1] as $inline |
+		{
+			version: 1,
+			reviews: ($reviews | map({
+				id: (.id // "" | tostring), author: (.author // ""),
+				state: (.state // ""), body: (.body // ""), url: (.url // ""),
+				submitted_at: (.submitted_at // ""), commit_id: (.commit_id // "")
+			}) | sort_by(.id, .submitted_at, .commit_id)),
+			inline: ($inline | map({
+				id: (.id // "" | tostring), author: (.author // ""), path: (.path // ""),
+				line: (.line // 0), body: (.body // ""), url: (.url // ""),
+				updated_at: (.updated_at // ""), commit_id: (.commit_id // "")
+			}) | sort_by(.id, .updated_at, .commit_id))
+		}
+		| select(all(.reviews[]; .id != "") and all(.inline[]; .id != ""))
+	' 2>/dev/null) || return 1
+	[[ -n "$canonical" ]] || return 1
+	fingerprint=$(_ci_repair_hash_text "$canonical") || return 1
+	[[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+	printf '%s\n' "$fingerprint"
+	return 0
+}
+
+_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON="[]"
+_PULSE_REVIEW_FEEDBACK_INLINE_JSON="[]"
+
+_review_feedback_fetch_evidence() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local reviews_rc=0
+	local inline_rc=0
+
+	_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON=""
+	_PULSE_REVIEW_FEEDBACK_INLINE_JSON=""
+	_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON=$(_gh_with_timeout read gh api \
+		"repos/${repo_slug}/pulls/${pr_number}/reviews" --paginate \
+		--jq '[.[] | select(.state == "CHANGES_REQUESTED" or ((.body // "") | length) > 30)
+			| {id: (.id // "" | tostring), author: (.user.login // "unknown"), state: .state,
+			   body: (.body // ""), url: (.html_url // ""),
+			   submitted_at: (.submitted_at // ""), commit_id: (.commit_id // "")}]' \
+		2>/dev/null) || reviews_rc=$?
+	_PULSE_REVIEW_FEEDBACK_INLINE_JSON=$(_gh_with_timeout read gh api \
+		"repos/${repo_slug}/pulls/${pr_number}/comments" --paginate \
+		--jq '[.[] | {id: (.id // "" | tostring), author: (.user.login // "unknown"),
+			path: (.path // ""), line: (.line // .original_line // 0),
+			body: (.body // ""), url: (.html_url // ""),
+			updated_at: (.updated_at // ""), commit_id: (.commit_id // "")}]' \
+		2>/dev/null) || inline_rc=$?
+	[[ -n "$_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON" ]] || _PULSE_REVIEW_FEEDBACK_REVIEWS_JSON="[]"
+	[[ -n "$_PULSE_REVIEW_FEEDBACK_INLINE_JSON" ]] || _PULSE_REVIEW_FEEDBACK_INLINE_JSON="[]"
+	if [[ "$reviews_rc" -ne 0 || "$inline_rc" -ne 0 ]]; then
+		echo "[pulse-wrapper] _dispatch_pr_fix_worker: review evidence unavailable for PR #${pr_number} in ${repo_slug} (reviews_rc=${reviews_rc}, inline_rc=${inline_rc}) — deferring without routing" >>"$LOGFILE"
+		return 1
 	fi
 	return 0
 }
@@ -1980,29 +2076,14 @@ _dispatch_pr_fix_worker() {
 		--description "Issue carries review feedback routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
 
-	# --- Fetch bot/human reviews (substantive: CHANGES_REQUESTED or long body) ---
-	local reviews_json
-	reviews_json=$(_gh_with_timeout read gh api "repos/${repo_slug}/pulls/${pr_number}/reviews" \
-		--paginate \
-		--jq '[.[] | select(.state == "CHANGES_REQUESTED" or ((.body // "") | length) > 30)
-			| {author: (.user.login // "unknown"), state: .state,
-			   body: (.body // ""), url: (.html_url // "")}]' \
-		2>/dev/null) || reviews_json="[]"
-	[[ -n "$reviews_json" ]] || reviews_json="[]"
-
-	# --- Fetch inline review comments (file:line citations) ---
-	local inline_json
-	inline_json=$(_gh_with_timeout read gh api "repos/${repo_slug}/pulls/${pr_number}/comments" \
-		--paginate \
-		--jq '[.[] | {author: (.user.login // "unknown"),
-			path: (.path // ""),
-			line: (.line // .original_line // 0),
-			body: (.body // ""), url: (.html_url // "")}]' \
-		2>/dev/null) || inline_json="[]"
-	[[ -n "$inline_json" ]] || inline_json="[]"
+	if ! _review_feedback_fetch_evidence "$pr_number" "$repo_slug"; then
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	local reviews_json="$_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON"
+	local inline_json="$_PULSE_REVIEW_FEEDBACK_INLINE_JSON"
 
 	# --- Build the Review Feedback markdown section ---
-	local feedback_section
+	local feedback_section=""
 	feedback_section=$(_build_review_feedback_section \
 		"$pr_number" "$repo_slug" "$reviews_json" "$inline_json") || feedback_section=""
 	if [[ -z "$feedback_section" ]]; then
@@ -2010,7 +2091,13 @@ _dispatch_pr_fix_worker() {
 		return 0
 	fi
 
-	local marker="<!-- t2093:review-feedback:PR${pr_number} -->"
+	local evidence_fingerprint=""
+	evidence_fingerprint=$(_review_feedback_evidence_fingerprint "$reviews_json" "$inline_json") || {
+		echo "[pulse-wrapper] _dispatch_pr_fix_worker: review evidence identity unavailable for PR #${pr_number} in ${repo_slug} — deferring without routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	}
+	local marker="<!-- t2093:review-feedback:PR${pr_number}:EVIDENCE${evidence_fingerprint} -->"
+	local legacy_match="<!-- t2093:review-feedback:PR${pr_number} -->"
 	local close_comment
 	close_comment="## Review feedback routed to linked issue #${linked_issue} (t2093)
 
@@ -2032,7 +2119,7 @@ _Closed by deterministic merge pass (pulse-merge.sh, t2093)._"
 	local finalize_rc=0
 	_finalize_feedback_route "review" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head" \
 		"source:review-feedback" "review-routed-to-issue" "$marker" "$feedback_section" \
-		"_dispatch_pr_fix_worker" "$close_comment" || finalize_rc=$?
+		"_dispatch_pr_fix_worker" "$close_comment" "$legacy_match" "$evidence_fingerprint" || finalize_rc=$?
 	if [[ "$finalize_rc" -eq 0 ]]; then
 		echo "[pulse-wrapper] _dispatch_pr_fix_worker: routed review feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug} (t2093)" >>"$LOGFILE"
 	fi
