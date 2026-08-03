@@ -78,7 +78,8 @@ assert_eq "metadata-only status reports locked" "locked" "$($VAULT_HELPER status
 assert_eq "metadata-only setup state is readable" "migration-ready" "$($VAULT_HELPER setup-state)"
 [[ ! -e "${AIDEVOPS_VAULT_DIR}/audit.log" ]] && pass "metadata reads remain audit side-effect free" || fail "metadata reads remain audit side-effect free"
 
-missing_code=$(python3 -S - "$HELPER_DIR" <<'PY'
+missing_code=$(
+	python3 -S - "$HELPER_DIR" <<'PY'
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -94,13 +95,13 @@ PY
 )
 assert_eq "missing crypto emits stable redacted class" "VAULT_DEPENDENCY_MISSING" "$missing_code"
 
-if grep -q '^cryptography==49\.0\.0$' "${REPO_ROOT}/.agents/configs/vault-requirements.txt" &&
+if grep -q '^cryptography==50\.0\.0$' "${REPO_ROOT}/.agents/configs/vault-requirements.txt" &&
 	grep -q 'setup_vault_python_env' "${REPO_ROOT}/setup.sh"; then
 	pass "setup wires the exact-pinned Vault runtime"
 else
 	fail "setup wires the exact-pinned Vault runtime"
 fi
-if python3 - "${REPO_ROOT}/.agents/scripts/setup/modules/tool-install.sh" <<'PY'
+if python3 - "${REPO_ROOT}/.agents/scripts/setup/modules/tool-install.sh" <<'PY'; then
 import pathlib
 import sys
 
@@ -111,7 +112,6 @@ crypto_check = fresh_setup.index('if ! "$env_python" "$runtime_check"; then')
 marker_publish = fresh_setup.index("Failed to publish the verified Vault runtime marker")
 raise SystemExit(0 if crypto_check < marker_publish else 1)
 PY
-then
 	pass "setup publishes ownership marker only after crypto verification"
 else
 	fail "setup publishes ownership marker only after crypto verification"
@@ -119,7 +119,7 @@ fi
 
 safe_home="${TEST_ROOT}/safe-home"
 safe_runtime="${safe_home}/.aidevops/.agent-workspace/python-env/vault"
-mkdir -p "$safe_home"
+(umask 077 && mkdir -p "$safe_home")
 if (umask 077 && mkdir -p "${safe_runtime%/*}" && python3 -m venv --copies "$safe_runtime"); then
 	chmod 755 "$safe_runtime"
 	printf '%s\n' "aidevops-vault-runtime-v1" >"${safe_runtime}/.aidevops-managed-runtime"

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 EXPECTED = {
-    "cryptography": "49.0.0",
+    "cryptography": "50.0.0",
     "cffi": "2.1.0",
     "pycparser": "3.0",
 }
