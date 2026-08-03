@@ -105,6 +105,35 @@ default roots remain distinct from joint OS Trash or operator-selected roots.
 Incomplete, symlinked, unrecognised, or unsized buckets are `unknown`; inventory
 never migrates, rewrites, or deletes them.
 
+Run `worktree-helper.sh recovery plan --output <absolute-path>` to persist a
+versioned `aidevops.worktree-recovery-plan/v1` JSON review artifact. The output
+path must be new, absolute, non-symlinked, and writable. The helper builds the
+complete document in a mode-0600 temporary file beside the destination and
+publishes it atomically without replacing an existing path. Plan generation is
+read-only for every recovery root and archive; it never moves, rewrites, or
+deletes a bucket.
+
+The envelope records its producer, generation time, deterministic plan ID,
+inventory completeness/error state, source roots, reconciled entry/byte totals,
+and ordered `candidate`, `protected`, and `unknown` entries. An incomplete global
+inventory produces no candidates; a partial report downgrades its reported
+entries to unknown. Each attributable entry binds the exact physical bucket and
+archive paths to its format, Git HEAD/branch, source/admin/common identity,
+archive index and completion-marker digests, expected allocated bytes, observed
+local/remote evidence, disposition, and reason codes. Unchanged evidence yields
+the same entries and plan ID; the generation timestamp remains observational.
+
+Candidate status requires a valid complete archive, completed source removal,
+a clean tracked/untracked/ignored Git state, an exact merged commit, a closed
+linked task, no open pull request, no live Git worktree/registry/claim/process
+reference, and exact readable sizing. Positive live or unfinished evidence is
+`protected`. Missing APIs, process visibility, identity, validation, or sizing
+is `unknown`. Identity and allocated bytes are read again immediately before an
+entry is emitted, so concurrent drift downgrades only that entry. Age, size, and
+OpenCode or Claude session history never prove reclaimability. Plan files grant
+no deletion authority; only a future version-matched apply command may consume
+candidate entries after repeating every mutable proof.
+
 An originating OpenCode or Claude session identifier is recovery guidance, not
 deletion proof. Session history can reconstruct text edits and intent but may be
 archived, unavailable, or incomplete and does not prove preservation of ignored

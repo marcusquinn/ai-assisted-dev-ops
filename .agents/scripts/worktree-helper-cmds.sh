@@ -687,6 +687,9 @@ COMMANDS
   recovery               Read-only inventory of current and legacy recoverable
                          worktree archives. Attributed and unknown buckets remain
                          protected for manual review; this command never deletes.
+  recovery plan --output <absolute-path>
+                         Write an exact read-only cleanup plan. Existing or
+                         symlinked outputs and ambiguous evidence fail closed.
 
   registry [list|prune]  View or prune the ownership registry (t189, t197)
                          list: Show all registered worktrees with ownership info
@@ -765,15 +768,35 @@ EOF
 }
 
 cmd_recovery() {
-	if [[ "$#" -ne 0 ]]; then
-		printf '%s\n' "Usage: worktree-helper.sh recovery" >&2
+	local action="${1:-status}"
+	local output_path=""
+
+	case "$action" in
+	status)
+		[[ "$#" -eq 0 || ("$#" -eq 1 && "$1" == "status") ]] || {
+			printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>]" >&2
+			return 1
+		}
+		if declare -F worktree_recovery_lifecycle_status >/dev/null 2>&1; then
+			worktree_recovery_lifecycle_status || return 1
+		else
+			worktree_recovery_inventory || return 1
+		fi
+		;;
+	plan)
+		[[ "$#" -eq 3 && "$2" == "--output" ]] || {
+			printf '%s\n' "Usage: worktree-helper.sh recovery plan --output <absolute-path>" >&2
+			return 1
+		}
+		output_path="$3"
+		declare -F worktree_recovery_plan_write >/dev/null 2>&1 || return 1
+		worktree_recovery_plan_write "$output_path" || return 1
+		;;
+	*)
+		printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>]" >&2
 		return 1
-	fi
-	if declare -F worktree_recovery_lifecycle_status >/dev/null 2>&1; then
-		worktree_recovery_lifecycle_status || return 1
-	else
-		worktree_recovery_inventory || return 1
-	fi
+		;;
+	esac
 	return 0
 }
 
