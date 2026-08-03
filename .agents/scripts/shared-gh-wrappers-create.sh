@@ -29,6 +29,7 @@
 # Include guard
 [[ -n "${_SHARED_GH_WRAPPERS_CREATE_LIB_LOADED:-}" ]] && return 0
 _SHARED_GH_WRAPPERS_CREATE_LIB_LOADED=1
+_GH_CREATE_AUTO_DISPATCH_LABEL="auto-dispatch"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -186,19 +187,20 @@ _gh_ci_prepare_status_label() {
 	return 0
 }
 
-# GH#29394: NMR is reserved for external-author trust gates. Wrapper-created
-# issues are authored by the authenticated token actor, so a live write-level
-# permission check can safely translate a legacy trusted-author NMR request to
-# the structural hold-for-review label before the issue-created event fires.
-# Unknown or insufficient permission fails closed and preserves NMR.
+# GH#29394/GH#29408: NMR is reserved for external-author trust gates.
+# Wrapper-created issues are authored by the authenticated token actor, so a
+# live write-level permission check can safely remove legacy trusted-author NMR.
+# The old NMR request implies dispatch intent unless a separate explicit
+# hold/tracker label suppresses it. Unknown permission fails closed.
 _GH_CI_TRUST_NORMALIZED_ARGS=()
 _gh_ci_replace_nmr_label_csv() {
 	local labels_csv="$1"
+	local replacement_label="$2"
 	local old_ifs="${IFS-}"
 	local ifs_was_set=0
 	local label=""
 	local normalized=""
-	local hold_seen=0
+	local replacement_seen=0
 	local -a labels=()
 
 	[[ -n "${IFS+x}" ]] && ifs_was_set=1
@@ -210,10 +212,13 @@ _gh_ci_replace_nmr_label_csv() {
 	fi
 
 	for label in "${labels[@]}"; do
-		[[ "$label" == "needs-maintainer-review" ]] && label="hold-for-review"
-		if [[ "$label" == "hold-for-review" ]]; then
-			[[ "$hold_seen" -eq 1 ]] && continue
-			hold_seen=1
+		if [[ "$label" == "needs-maintainer-review" ]]; then
+			[[ -n "$replacement_label" ]] || continue
+			label="$replacement_label"
+		fi
+		if [[ -n "$replacement_label" && "$label" == "$replacement_label" ]]; then
+			[[ "$replacement_seen" -eq 1 ]] && continue
+			replacement_seen=1
 		fi
 		if [[ -n "$normalized" ]]; then
 			normalized="${normalized},${label}"
@@ -245,25 +250,65 @@ _gh_ci_prepare_trusted_nmr_labels() {
 		return 0
 	fi
 
+	local infer_dispatch=1
+	local replacement_label="$_GH_CREATE_AUTO_DISPATCH_LABEL"
+	local suppression_label=""
+	for suppression_label in \
+		"hold-for-review" "no-auto-dispatch" "parent-task" "meta" \
+		"persistent" "supervisor" "contributor" "quality-review" \
+		"routine-tracking" "needs-credentials" "status:done" "status:resolved"; do
+		if _gh_wrapper_args_have_label "$suppression_label" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
+			infer_dispatch=0
+			replacement_label=""
+			break
+		fi
+	done
+	if _gh_wrapper_args_have_label "$_GH_CREATE_AUTO_DISPATCH_LABEL" "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"; then
+		infer_dispatch=0
+		replacement_label=""
+	fi
+
 	local i=0
 	local labels_csv=""
+	local original_labels=""
+	local -a normalized_args=()
 	while [[ "$i" -lt ${#_GH_CI_TRUST_NORMALIZED_ARGS[@]} ]]; do
 		case "${_GH_CI_TRUST_NORMALIZED_ARGS[i]}" in
 		--label)
 			if [[ $((i + 1)) -lt ${#_GH_CI_TRUST_NORMALIZED_ARGS[@]} ]]; then
-				labels_csv=$(_gh_ci_replace_nmr_label_csv "${_GH_CI_TRUST_NORMALIZED_ARGS[i + 1]}")
-				_GH_CI_TRUST_NORMALIZED_ARGS[i + 1]="$labels_csv"
-				i=$((i + 1))
+				original_labels="${_GH_CI_TRUST_NORMALIZED_ARGS[i + 1]}"
+				labels_csv=$(_gh_ci_replace_nmr_label_csv "$original_labels" "$replacement_label")
+				if [[ -n "$labels_csv" ]]; then
+					normalized_args+=(--label "$labels_csv")
+				fi
+				if [[ -n "$replacement_label" && ",${original_labels}," == *",needs-maintainer-review,"* ]]; then
+					replacement_label=""
+				fi
+				i=$((i + 2))
+				continue
 			fi
+			normalized_args+=("${_GH_CI_TRUST_NORMALIZED_ARGS[i]}")
 			;;
 		--label=*)
-			labels_csv=$(_gh_ci_replace_nmr_label_csv "${_GH_CI_TRUST_NORMALIZED_ARGS[i]#--label=}")
-			_GH_CI_TRUST_NORMALIZED_ARGS[i]="--label=${labels_csv}"
+			original_labels="${_GH_CI_TRUST_NORMALIZED_ARGS[i]#--label=}"
+			labels_csv=$(_gh_ci_replace_nmr_label_csv "$original_labels" "$replacement_label")
+			if [[ -n "$labels_csv" ]]; then
+				normalized_args+=("--label=${labels_csv}")
+			fi
+			if [[ -n "$replacement_label" && ",${original_labels}," == *",needs-maintainer-review,"* ]]; then
+				replacement_label=""
+			fi
 			;;
+		*) normalized_args+=("${_GH_CI_TRUST_NORMALIZED_ARGS[i]}") ;;
 		esac
 		i=$((i + 1))
 	done
-	print_info "[INFO] GH#29394: translated trusted-author needs-maintainer-review to hold-for-review"
+	_GH_CI_TRUST_NORMALIZED_ARGS=("${normalized_args[@]}")
+	if [[ "$infer_dispatch" -eq 1 ]]; then
+		print_info "[INFO] GH#29408: translated trusted-author needs-maintainer-review to auto-dispatch"
+	else
+		print_info "[INFO] GH#29408: removed trusted-author needs-maintainer-review while preserving explicit lifecycle intent"
+	fi
 	return 0
 }
 
@@ -426,7 +471,7 @@ gh_create_issue() {
 	local issue_output rc auto_assignee="" target_repo=""
 	target_repo=$(_gh_extract_repo_from_args "$@" 2>/dev/null || true)
 	if ! _gh_wrapper_args_have_assignee "$@"; then
-		if _gh_wrapper_args_have_label "auto-dispatch" "$@"; then
+		if _gh_wrapper_args_have_label "$_GH_CREATE_AUTO_DISPATCH_LABEL" "$@"; then
 			# t2157/t2406: auto-dispatch means worker-owned; skip self-assignment.
 			print_info "[INFO] auto-dispatch label present — skipping self-assignment per t2157"
 		else

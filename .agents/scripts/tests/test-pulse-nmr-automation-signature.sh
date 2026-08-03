@@ -17,8 +17,8 @@
 # Post-fix semantics:
 #   - _nmr_application_has_automation_signature  →  matches ONLY trusted
 #     automation defaults/provenance (scanner markers/labels and bounded
-#     workflow reapplication markers). These can be auto-cleared after
-#     reason, breaker, and security gates pass.
+#     workflow reapplication markers). These improve migration diagnostics;
+#     their absence is never evidence of human hold intent.
 #   - _nmr_application_is_circuit_breaker_trip   →  matches ONLY
 #     breaker trips (stale-recovery-tick:escalated,
 #     cost-circuit-breaker:fired, dispatch-backoff:rate_limit_nmr,
@@ -137,14 +137,17 @@ teardown_test_env() {
 set_comments() {
 	local body="$1"
 	printf '%s\n' "$body" >"$COMMENTS_FIXTURE"
+	return 0
 }
 set_issue_meta() {
 	local body="$1"
 	printf '%s\n' "$body" >"$ISSUE_META_FIXTURE"
+	return 0
 }
 set_timeline() {
 	local body="$1"
 	printf '%s\n' "$body" >"$TIMELINE_FIXTURE"
+	return 0
 }
 
 define_helpers_under_test() {
@@ -641,17 +644,19 @@ test_security_review_feedback_preserves_nmr() {
 	return 0
 }
 
-test_manual_hold_still_preserves_nmr() {
-	# No signature of any kind — genuine manual hold. Must preserve NMR.
+test_unreasoned_maintainer_nmr_auto_clears() {
+	# Actor identity and missing automation provenance do not prove a human
+	# decision. A real internal hold uses hold-for-review or structured reason
+	# metadata; unreasoned NMR on a trusted-author issue clears.
 	set_timeline '[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"marcusquinn"},"created_at":"2026-04-19T05:00:00Z"}]'
 	set_comments '[{"created_at":"2026-04-19T05:00:30Z","body":"Holding this pending architecture discussion."}]'
 	set_issue_meta '{"labels":[{"name":"needs-maintainer-review"},{"name":"bug"}]}'
 	if _nmr_applied_by_maintainer 42 marcusquinn/aidevops marcusquinn; then
-		print_result "manual maintainer hold still preserves NMR" 0
+		print_result "unreasoned maintainer NMR auto-clears" 1 \
+			"Expected exit 1 — actor-only history and prose must not manufacture hold intent"
 		return 0
 	fi
-	print_result "manual maintainer hold still preserves NMR" 1 \
-		"Expected exit 0 — no automation signature, this is a manual hold"
+	print_result "unreasoned maintainer NMR auto-clears" 0
 	return 0
 }
 
@@ -899,7 +904,7 @@ main() {
 	test_19756_loop_prevention_breaker_trip_preserves_nmr
 	test_scanner_default_still_auto_approves
 	test_security_review_feedback_preserves_nmr
-	test_manual_hold_still_preserves_nmr
+	test_unreasoned_maintainer_nmr_auto_clears
 	test_non_maintainer_label_actor_is_not_manual_maintainer_hold
 	test_peer_runner_breaker_trip_preserves_nmr
 	test_paginated_timeline_latest_nmr_event_preserves_breaker_trip

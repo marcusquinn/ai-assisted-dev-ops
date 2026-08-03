@@ -36,6 +36,7 @@ setup_test_env() {
 	export REPOS_JSON="${TEST_ROOT}/repos.json"
 	export POSTED_COMMENT="${TEST_ROOT}/posted-comment.txt"
 	export STATUS_CALLS_FILE="${TEST_ROOT}/status-calls.txt"
+	export ISSUE_EDIT_CALLS_FILE="${TEST_ROOT}/issue-edit-calls.txt"
 	export AGENTS_DIR="${TEST_ROOT}"
 	export ISSUE_ASSOC="OWNER"
 	export ISSUE_API_AUTHOR="maintainer"
@@ -45,9 +46,11 @@ setup_test_env() {
 	export ACTOR_PERMISSION="write"
 	export AUTHOR_PERMISSION="write"
 	export NMR_TIMELINE_JSON='[]'
+	export ISSUE_COMMENTS_JSON='[]'
 	: >"$LOGFILE"
 	: >"$POSTED_COMMENT"
 	: >"$STATUS_CALLS_FILE"
+	: >"$ISSUE_EDIT_CALLS_FILE"
 	printf '{"initialized_repos":[{"slug":"owner/repo","maintainer":"maintainer","pulse":true}]}' >"$REPOS_JSON"
 	cat >"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 #!/usr/bin/env bash
@@ -97,7 +100,7 @@ if [[ "${1:-}" == "api" ]]; then
 		exit 0
 	fi
 	if [[ "$path" == */comments ]]; then
-		printf '[]\n'
+		printf '%s\n' "${ISSUE_COMMENTS_JSON:-[]}"
 		exit 0
 	fi
 fi
@@ -105,6 +108,7 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "lock" ]]; then
 	exit 0
 fi
 if [[ "${1:-}" == "issue" && "${2:-}" == "edit" ]]; then
+	printf '%s\n' "$*" >>"${ISSUE_EDIT_CALLS_FILE}"
 	exit 0
 fi
 printf 'unsupported gh invocation: %s\n' "$*" >&2
@@ -279,7 +283,7 @@ test_external_origin_bot_requires_approval() {
 	return 0
 }
 
-test_preserves_peer_maintainer_manual_hold() {
+test_clears_unreasoned_peer_nmr() {
 	setup_test_env
 	export ISSUE_LIST_AUTHOR="trusted-author"
 	export ISSUE_API_AUTHOR="trusted-author"
@@ -287,11 +291,101 @@ test_preserves_peer_maintainer_manual_hold() {
 	export AUTHOR_PERMISSION="write"
 	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"trusted-author"},"created_at":"2026-07-30T20:00:00Z"}]'
 	run_auto_approve
-	if ! grep -q 'aidevops-signed-approval' "$POSTED_COMMENT" 2>/dev/null \
-		&& grep -q -- '--remove-label needs-maintainer-review --add-label hold-for-review' "$STATUS_CALLS_FILE" 2>/dev/null; then
-		print_result "trusted manual NMR becomes hold-for-review without self-approval" 0
+	if [[ ! -s "$POSTED_COMMENT" ]] \
+		&& grep -q -- 'available --remove-label needs-maintainer-review --add-label auto-dispatch' "$STATUS_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- 'hold-for-review' "$STATUS_CALLS_FILE" "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "unreasoned trusted-author NMR clears without manufacturing a hold" 0
 	else
-		print_result "trusted manual NMR becomes hold-for-review without self-approval" 1 "unexpected approval marker or missing hold translation"
+		print_result "unreasoned trusted-author NMR clears without manufacturing a hold" 1 \
+			"comment=$(<"$POSTED_COMMENT") status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_structured_reason_becomes_explicit_hold() {
+	setup_test_env
+	export ISSUE_LIST_AUTHOR="trusted-author"
+	export ISSUE_API_AUTHOR="trusted-author"
+	export ISSUE_ASSOC="COLLABORATOR"
+	export AUTHOR_PERMISSION="write"
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:in-review"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"trusted-author"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export ISSUE_COMMENTS_JSON='[{"created_at":"2026-07-30T20:00:01Z","body":"<!-- nmr-reason code=security class=genuine-authority -->"}]'
+	run_auto_approve
+	if grep -q -- '--remove-label needs-maintainer-review --add-label hold-for-review' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null \
+		&& [[ ! -s "$STATUS_CALLS_FILE" ]] \
+		&& grep -q -- 'nmr-decision-packet reason=security' "$POSTED_COMMENT" 2>/dev/null; then
+		print_result "structured genuine-authority reason becomes explicit hold and preserves status" 0
+	else
+		print_result "structured genuine-authority reason becomes explicit hold and preserves status" 1 \
+			"comment=$(<"$POSTED_COMMENT") status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_trusted_clear_preserves_active_status() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"status:in-review"},{"name":"auto-dispatch"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	run_auto_approve
+	if [[ ! -s "$STATUS_CALLS_FILE" ]] \
+		&& grep -q -- '--remove-label needs-maintainer-review' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- 'status:available\|hold-for-review' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "trusted NMR cleanup preserves active lifecycle status" 0
+	else
+		print_result "trusted NMR cleanup preserves active lifecycle status" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_trusted_clear_preserves_existing_explicit_hold() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"hold-for-review"},{"name":"status:available"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	run_auto_approve
+	if [[ ! -s "$STATUS_CALLS_FILE" ]] \
+		&& grep -q -- '--remove-label needs-maintainer-review' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- '--add-label auto-dispatch' "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "trusted NMR cleanup preserves an independently explicit hold" 0
+	else
+		print_result "trusted NMR cleanup preserves an independently explicit hold" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_legacy_breaker_becomes_structural_block() {
+	setup_test_env
+	export ISSUE_LABELS_JSON='[{"name":"needs-maintainer-review"},{"name":"auto-dispatch"}]'
+	export NMR_TIMELINE_JSON='[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"maintainer"},"created_at":"2026-07-30T20:00:00Z"}]'
+	export ISSUE_COMMENTS_JSON='[{"created_at":"2026-07-30T20:00:02Z","body":"<!-- stale-recovery-tick:escalated (threshold=2) -->"}]'
+	run_auto_approve
+	if grep -q -- '^24479 owner/repo blocked --remove-label needs-maintainer-review --add-label auto-dispatch$' "$STATUS_CALLS_FILE" 2>/dev/null \
+		&& ! grep -q -- 'hold-for-review' "$STATUS_CALLS_FILE" "$ISSUE_EDIT_CALLS_FILE" 2>/dev/null; then
+		print_result "legacy machine breaker becomes status:blocked instead of a human hold" 0
+	else
+		print_result "legacy machine breaker becomes status:blocked instead of a human hold" 1 \
+			"status=$(<"$STATUS_CALLS_FILE") edit=$(<"$ISSUE_EDIT_CALLS_FILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_decision_packet_is_idempotent_across_pages() {
+	setup_test_env
+	export ISSUE_COMMENTS_JSON='[[{"body":"unrelated"}],[{"body":"<!-- nmr-decision-packet reason=security -->"}]]'
+	# shellcheck disable=SC1090
+	source "$NMR_SCRIPT"
+	_nmr_emit_decision_packet 24479 owner/repo security
+	if [[ ! -s "$POSTED_COMMENT" ]]; then
+		print_result "paginated prior decision packet suppresses duplicate comment" 0
+	else
+		print_result "paginated prior decision packet suppresses duplicate comment" 1 "comment=$(<"$POSTED_COMMENT")"
 	fi
 	teardown_test_env
 	return 0
@@ -333,7 +427,12 @@ main() {
 	test_allows_write_authorized_collaborator
 	test_blocks_read_only_collaborator
 	test_external_origin_bot_requires_approval
-	test_preserves_peer_maintainer_manual_hold
+	test_clears_unreasoned_peer_nmr
+	test_structured_reason_becomes_explicit_hold
+	test_trusted_clear_preserves_active_status
+	test_trusted_clear_preserves_existing_explicit_hold
+	test_legacy_breaker_becomes_structural_block
+	test_decision_packet_is_idempotent_across_pages
 	test_ever_nmr_history_bypasses_self_approval_for_trusted_author
 	test_ever_nmr_history_still_blocks_external_author
 	printf '\nTests run: %d\n' "$TESTS_RUN"

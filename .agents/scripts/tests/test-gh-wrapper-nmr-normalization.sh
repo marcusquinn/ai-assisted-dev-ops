@@ -69,13 +69,29 @@ fail() {
 
 _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	--label 'bug,needs-maintainer-review,auto-dispatch'
-[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"bug,hold-for-review,auto-dispatch"* ]] ||
-	fail "trusted creator NMR was not translated"
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"bug,auto-dispatch"* ]] ||
+	fail "trusted creator NMR did not normalize to dispatch intent"
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"hold-for-review"* ]] ||
+	fail "trusted creator NMR manufactured a review hold"
 
 _gh_ci_prepare_trusted_nmr_labels --repo=owner/repo \
 	--label='needs-maintainer-review,hold-for-review,bug'
 [[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"--label=hold-for-review,bug"* ]] ||
-	fail "hold-for-review was not deduplicated"
+	fail "explicit hold-for-review was not preserved while trusted NMR cleared"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"auto-dispatch"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* ]] ||
+	fail "legacy trusted NMR-only intent did not become auto-dispatch"
+
+_gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
+	--label 'parent-task,needs-maintainer-review'
+[[ "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" == *"parent-task"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"needs-maintainer-review"* \
+	&& "${_GH_CI_TRUST_NORMALIZED_ARGS[*]}" != *"auto-dispatch"* ]] ||
+	fail "parent tracker gained dispatch intent while trusted NMR cleared"
 
 _gh_ci_prepare_trusted_nmr_labels --repo owner/repo \
 	--label 'quality-debt,external-contributor,needs-maintainer-review'

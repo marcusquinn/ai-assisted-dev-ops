@@ -23,7 +23,8 @@
 # Acceptance criteria (from GH#20758):
 #   AC1: scanner-label + breaker trip at +60s → preserve NMR (return 0)
 #   AC2: scanner-label + NMR at creation (no breaker) → auto-approve (return 1)
-#   AC3: scanner-label + NMR at +1h (no breaker, no creation-default) → preserve (return 0)
+#   AC3: scanner-label + unreasoned NMR at +1h → normalize (return 1);
+#        missing creation-default provenance does not prove human intent
 #   AC4: existing test suite passes (verified separately)
 #   AC5: no_work_loop breaker on scanner-labelled issue → preserve NMR
 
@@ -236,22 +237,22 @@ test_ac2_review_followup_label_nmr_at_creation_auto_approves() {
 	return 0
 }
 
-# --- AC3: scanner-label + NMR at +1h (manual hold, no breaker) → preserve ---
+# --- AC3: scanner-label + unreasoned NMR at +1h → normalize ---
 
-test_ac3_scanner_label_late_nmr_no_breaker_preserves() {
+test_ac3_scanner_label_late_unreasoned_nmr_normalizes() {
 	# Issue created with source:review-feedback label. NMR applied 1 hour
-	# later (3600s > 300s threshold) with no breaker marker. This is a
-	# manual hold — must preserve NMR.
+	# later (3600s > 300s threshold) with no explicit reason or breaker.
+	# Timing and actor identity alone do not prove a human decision.
 	set_timeline '[{"event":"labeled","label":{"name":"needs-maintainer-review"},"actor":{"login":"marcusquinn"},"created_at":"2026-04-24T05:06:53Z"}]'
 	set_comments '[{"created_at":"2026-04-24T05:06:55Z","body":"Holding for architecture review — the proposed fix changes the scanner API."}]'
 	set_issue_meta '{"labels":[{"name":"source:review-feedback"},{"name":"needs-maintainer-review"}],"created_at":"2026-04-24T04:06:53Z"}'
 
 	if _nmr_applied_by_maintainer 2719 exampleorg/examplerepo marcusquinn; then
-		print_result "AC3: scanner-label + late NMR (no breaker) → PRESERVE" 0
+		print_result "AC3: scanner-label + late unreasoned NMR → normalize" 1 \
+			"Expected exit 1 — use hold-for-review or structured reason metadata for human intent"
 		return 0
 	fi
-	print_result "AC3: scanner-label + late NMR (no breaker) → PRESERVE" 1 \
-		"Expected exit 0 — manual hold must preserve NMR regardless of scanner label"
+	print_result "AC3: scanner-label + late unreasoned NMR → normalize" 0
 	return 0
 }
 
@@ -370,8 +371,8 @@ main() {
 	test_ac2_scanner_label_nmr_at_creation_auto_approves
 	test_ac2_review_followup_label_nmr_at_creation_auto_approves
 
-	# AC3: scanner-label + late NMR (manual hold) → preserve
-	test_ac3_scanner_label_late_nmr_no_breaker_preserves
+	# AC3: scanner-label + late unreasoned NMR → normalize
+	test_ac3_scanner_label_late_unreasoned_nmr_normalizes
 	test_ac3_label_only_check_rejects_late_nmr
 
 	# AC5: no_work_loop breaker on scanner-labelled issue → preserve
