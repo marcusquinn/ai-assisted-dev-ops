@@ -158,8 +158,10 @@ may be reclaimed.
 Under the lock, apply first creates or validates a mode-0600, plan-bound
 `aidevops.worktree-recovery-apply-reservation/v1` at the requested receipt path.
 This reservation prevents a concurrent plan from deleting data and then losing
-its receipt to a path collision. An exact retry may resume an incomplete
-reservation; a different plan fails before mutation. Apply then revalidates every
+its receipt to a path collision. The reservation binds a uniquely allocated
+mode-0600 completion file created before mutation; receipt publication never
+claims or removes a predictable adjacent path. An exact retry may resume an incomplete
+reservation; a different plan or replaced completion file fails before mutation. Apply then revalidates every
 candidate and all mutable evidence before moving any candidate. It rechecks each
 exact identity and allocated byte count immediately before a same-filesystem
 rename into that recovery root's `.retention-trash/<transaction-id>/` directory.

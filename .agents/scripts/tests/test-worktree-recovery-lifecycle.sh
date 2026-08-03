@@ -726,6 +726,64 @@ test_receipt_reservation_blocks_conflicting_plan() {
 	return 0
 }
 
+test_receipt_publication_owns_only_reserved_temp() {
+	local kind="" home_path="" recovery_root="" plan_path="" receipt_path=""
+	local archive_path="" bucket_path="" confirmation="" sidecar_path=""
+	local collision_home="${TEST_DIR}/completion-collision-home"
+	local collision_root="${collision_home}/recovery"
+	local collision_plan="${TEST_DIR}/completion-collision-plan.json"
+	local collision_receipt="${TEST_DIR}/completion-collision-receipt.json"
+	local completion_path=""
+	local rc=0
+
+	printf 'symlink sentinel\n' >"${TEST_DIR}/sidecar-symlink-target" || rc=1
+	for kind in regular directory symlink; do
+		home_path="${TEST_DIR}/sidecar-${kind}-home"
+		recovery_root="${home_path}/recovery"
+		plan_path="${TEST_DIR}/sidecar-${kind}-plan.json"
+		receipt_path="${TEST_DIR}/sidecar-${kind}-receipt.json"
+		sidecar_path="${receipt_path%/*}/.${receipt_path##*/}.next"
+		archive_path=$(create_candidate_plan_fixture "$home_path" \
+			"${TEST_DIR}/sidecar-${kind}-repo" "${TEST_DIR}/sidecar-${kind}-worktree" \
+			"$recovery_root" "bugfix/gh29389-sidecar-${kind}" "$plan_path") || rc=1
+		bucket_path="${archive_path%/*}"
+		confirmation=$(jq -r '.confirmation_token' "$plan_path") || rc=1
+		case "$kind" in
+		regular) printf 'regular sentinel\n' >"$sidecar_path" || rc=1 ;;
+		directory) mkdir "$sidecar_path" || rc=1 ;;
+		symlink) ln -s "${TEST_DIR}/sidecar-symlink-target" "$sidecar_path" || rc=1 ;;
+		esac
+		HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" cmd_recovery apply \
+			--plan "$plan_path" --receipt "$receipt_path" --confirm "$confirmation" >/dev/null || rc=1
+		[[ ! -e "$bucket_path" && -f "$receipt_path" ]] || rc=1
+		case "$kind" in
+		regular) [[ "$(<"$sidecar_path")" == "regular sentinel" ]] || rc=1 ;;
+		directory) [[ -d "$sidecar_path" && ! -L "$sidecar_path" ]] || rc=1 ;;
+		symlink) [[ -L "$sidecar_path" && "$(<"${TEST_DIR}/sidecar-symlink-target")" == "symlink sentinel" ]] || rc=1 ;;
+		esac
+	done
+
+	archive_path=$(create_candidate_plan_fixture "$collision_home" \
+		"${TEST_DIR}/completion-collision-repo" "${TEST_DIR}/completion-collision-worktree" \
+		"$collision_root" "bugfix/gh29389-completion-collision" "$collision_plan") || rc=1
+	bucket_path="${archive_path%/*}"
+	confirmation=$(jq -r '.confirmation_token' "$collision_plan") || rc=1
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_RECEIPT_RESERVATION=1 \
+		HOME="$collision_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$collision_root" cmd_recovery apply \
+		--plan "$collision_plan" --receipt "$collision_receipt" --confirm "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	completion_path=$(jq -r '.completion_path' "$collision_receipt") || rc=1
+	rm -f "$completion_path" || rc=1
+	mkdir "$completion_path" || rc=1
+	if HOME="$collision_home" AIDEVOPS_WORKTREE_TRASH_ROOT="$collision_root" cmd_recovery apply \
+		--plan "$collision_plan" --receipt "$collision_receipt" --confirm "$confirmation" \
+		>/dev/null 2>&1; then rc=1; fi
+	[[ -d "$bucket_path" && -d "$completion_path" ]] || rc=1
+	print_result "receipt_publication_owns_only_reserved_temp" "$rc" \
+		"Expected adjacent sentinels preserved and reserved-temp replacement detected before deletion"
+	return 0
+}
+
 test_shared_producer_lock_fails_closed_and_reclaims_stale() {
 	local home_path="${TEST_DIR}/lock-home"
 	local recovery_root="${home_path}/recovery"
@@ -827,6 +885,7 @@ test_apply_preflight_drift_stages_nothing
 test_apply_resumes_move_and_delete_crash_windows
 test_apply_resumes_transaction_initialization_crashes
 test_receipt_reservation_blocks_conflicting_plan
+test_receipt_publication_owns_only_reserved_temp
 test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

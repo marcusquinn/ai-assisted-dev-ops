@@ -20,6 +20,7 @@ WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING="string"
 WORKTREE_RECOVERY_APPLY_TRASH_SEGMENT="/.retention-trash/"
 WORKTREE_RECOVERY_APPLY_VALIDATED_METADATA=""
 WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON=""
+WORKTREE_RECOVERY_APPLY_RECEIPT_COMPLETION_PATH=""
 
 _worktree_recovery_apply_canonical_path() {
 	local path="$1"
@@ -249,16 +250,18 @@ _worktree_recovery_apply_new_receipt_path() {
 _worktree_recovery_apply_reservation_json() {
 	local apply_metadata="$1"
 	local transaction_id="$2"
+	local completion_path="$3"
 	local reserved_at=""
 
 	reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	printf '%s\n' "$apply_metadata" | jq -c \
 		--arg schema "$WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA" \
-		--arg transaction_id "$transaction_id" --arg reserved_at "$reserved_at" '
+		--arg transaction_id "$transaction_id" --arg reserved_at "$reserved_at" \
+		--arg completion_path "$completion_path" '
 		{schema:$schema,complete:false,plan_id:.plan_id,plan_digest:.plan_digest,
 		confirmation:.confirmation,candidate_count:.candidate_count,
 		expected_allocated_bytes:.candidate_bytes,transaction_id:$transaction_id,
-		reserved_at:$reserved_at}'
+		reserved_at:$reserved_at,completion_path:$completion_path}'
 	return $?
 }
 
@@ -266,15 +269,18 @@ _worktree_recovery_apply_validate_reservation() {
 	local receipt_path="$1"
 	local apply_metadata="$2"
 	local transaction_id="$3"
+	local canonical_receipt=""
+	local completion_path=""
 
-	_worktree_recovery_apply_canonical_path "$receipt_path" >/dev/null || return 1
+	WORKTREE_RECOVERY_APPLY_RECEIPT_COMPLETION_PATH=""
+	canonical_receipt=$(_worktree_recovery_apply_canonical_path "$receipt_path") || return 1
 	[[ -f "$receipt_path" && ! -L "$receipt_path" && -r "$receipt_path" ]] || return 1
 	jq -e --argjson expected "$apply_metadata" \
 		--arg schema "$WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA" \
 		--arg transaction_id "$transaction_id" \
 		--arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" '
 		type == "object" and
-		(keys | sort) == (["candidate_count","complete","confirmation",
+		(keys | sort) == (["candidate_count","complete","completion_path","confirmation",
 			"expected_allocated_bytes","plan_digest","plan_id","reserved_at","schema",
 			"transaction_id"] | sort) and
 		.schema == $schema and .complete == false and
@@ -282,9 +288,36 @@ _worktree_recovery_apply_validate_reservation() {
 		.confirmation == $expected.confirmation and
 		.candidate_count == $expected.candidate_count and
 		.expected_allocated_bytes == $expected.candidate_bytes and
-		.transaction_id == $transaction_id and (.reserved_at | type == $string_type)
-	' "$receipt_path" >/dev/null 2>&1
-	return $?
+		.transaction_id == $transaction_id and (.reserved_at | type == $string_type) and
+		(.completion_path | type == $string_type)
+	' "$receipt_path" >/dev/null 2>&1 || return 1
+	completion_path=$(jq -r '.completion_path' "$receipt_path") || return 1
+	[[ "$completion_path" == "${canonical_receipt%/*}/.${canonical_receipt##*/}.apply."* &&
+		-f "$completion_path" && ! -L "$completion_path" && -w "$completion_path" ]] || return 1
+	WORKTREE_RECOVERY_APPLY_RECEIPT_COMPLETION_PATH="$completion_path"
+	return 0
+}
+
+_worktree_recovery_apply_allocate_receipt_completion() {
+	local receipt_path="$1"
+	local parent_path="${receipt_path%/*}"
+	local base_name="${receipt_path##*/}"
+	local completion_path=""
+	local previous_umask=""
+
+	previous_umask=$(umask)
+	umask 077
+	completion_path=$(mktemp "${parent_path}/.${base_name}.apply.XXXXXX") || {
+		umask "$previous_umask"
+		return 1
+	}
+	umask "$previous_umask"
+	chmod 600 "$completion_path" || {
+		rm -f "$completion_path"
+		return 1
+	}
+	printf '%s\n' "$completion_path"
+	return 0
 }
 
 # Reserve the caller-selected receipt path before any archive mutation. Return 2
@@ -294,6 +327,7 @@ _worktree_recovery_apply_ensure_receipt_reservation() {
 	local apply_metadata="$2"
 	local transaction_id="$3"
 	local reservation_json=""
+	local completion_path=""
 
 	if [[ -e "$receipt_path" || -L "$receipt_path" ]]; then
 		if _worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata"; then
@@ -304,11 +338,38 @@ _worktree_recovery_apply_ensure_receipt_reservation() {
 		return 0
 	fi
 	_worktree_recovery_apply_new_receipt_path "$receipt_path" || return 1
+	completion_path=$(_worktree_recovery_apply_allocate_receipt_completion "$receipt_path") || return 1
 	reservation_json=$(_worktree_recovery_apply_reservation_json \
-		"$apply_metadata" "$transaction_id") || return 1
-	_worktree_recovery_apply_publish_new "$receipt_path" "$reservation_json" || return 1
+		"$apply_metadata" "$transaction_id" "$completion_path") || {
+		rm -f "$completion_path"
+		return 1
+	}
+	_worktree_recovery_apply_publish_new "$receipt_path" "$reservation_json" || {
+		rm -f "$completion_path"
+		return 1
+	}
 	_worktree_recovery_apply_validate_reservation \
 		"$receipt_path" "$apply_metadata" "$transaction_id"
+	return $?
+}
+
+_worktree_recovery_apply_publish_reserved_receipt() {
+	local receipt_path="$1"
+	local apply_metadata="$2"
+	local transaction_id="$3"
+	local receipt_json="$4"
+	local completion_path=""
+
+	_worktree_recovery_apply_validate_reservation \
+		"$receipt_path" "$apply_metadata" "$transaction_id" || return 1
+	completion_path="$WORKTREE_RECOVERY_APPLY_RECEIPT_COMPLETION_PATH"
+	printf '%s\n' "$receipt_json" >"$completion_path" || return 1
+	chmod 600 "$completion_path" || return 1
+	_worktree_recovery_apply_validate_reservation \
+		"$receipt_path" "$apply_metadata" "$transaction_id" || return 1
+	[[ "$completion_path" == "$WORKTREE_RECOVERY_APPLY_RECEIPT_COMPLETION_PATH" ]] || return 1
+	mv "$completion_path" "$receipt_path" || return 1
+	_worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata"
 	return $?
 }
 
@@ -907,10 +968,8 @@ _worktree_recovery_apply_under_lock() {
 	_worktree_recovery_apply_validate_all_staged "$journal_path" || return 1
 	_worktree_recovery_apply_remove_staged "$journal_path" || return 1
 	receipt_json=$(_worktree_recovery_apply_receipt_json "$journal_path" "$apply_metadata") || return 1
-	_worktree_recovery_apply_validate_reservation \
-		"$receipt_path" "$apply_metadata" "$transaction_id" || return 1
-	_worktree_recovery_apply_atomic_replace "$receipt_path" "$receipt_json" || return 1
-	_worktree_recovery_apply_validate_receipt_replay "$receipt_path" "$apply_metadata" || return 1
+	_worktree_recovery_apply_publish_reserved_receipt \
+		"$receipt_path" "$apply_metadata" "$transaction_id" "$receipt_json" || return 1
 	_worktree_recovery_apply_cleanup_transaction "$journal_path" || return 1
 	return 0
 }
@@ -919,7 +978,6 @@ worktree_recovery_apply() {
 	local plan_path="$1"
 	local receipt_path="$2"
 	local supplied_confirmation="$3"
-	local apply_metadata=""
 	local plan_json=""
 	local recovery_root=""
 	local recovery_root_real=""
@@ -927,8 +985,8 @@ worktree_recovery_apply() {
 
 	command -v jq >/dev/null 2>&1 || return 1
 	_worktree_recovery_apply_validate_plan "$plan_path" "$supplied_confirmation" || return 1
-	apply_metadata="$WORKTREE_RECOVERY_APPLY_VALIDATED_METADATA"
 	plan_json="$WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON"
+	receipt_path=$(_worktree_recovery_apply_canonical_path "$receipt_path") || return 1
 	_worktree_recovery_apply_validate_control_path_scope \
 		"$receipt_path" "$plan_json" || return 1
 	recovery_root=$(_worktree_recovery_store_root) || return 1
