@@ -66,6 +66,12 @@ PROVIDER_SPECS = (
     ProviderSpec("mastodon", (), "knowledge_social_mastodon.py", (("live", ()),)),
     ProviderSpec("miniflux", (), "knowledge_social_miniflux.py", (("live", ()),)),
     ProviderSpec(
+        "notion-sites",
+        ("notion",),
+        "knowledge_social_notion.py",
+        (("live", ()),),
+    ),
+    ProviderSpec(
         "readwise-reader",
         ("reader",),
         "knowledge_social_readwise_reader.py",
