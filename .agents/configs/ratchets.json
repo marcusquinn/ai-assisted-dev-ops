@@ -1,15 +1,15 @@
 {
   "version": 2,
   "counter_version": 2,
-  "updated": "2026-08-03T15:55:39Z",
+  "updated": "2026-08-03T15:57:33Z",
   "description": "Compatibility snapshot with verified provenance; active checks compare the working tree with its default-branch merge-base.",
   "comparison": {
     "mode": "merge-base",
     "fail_closed_without_base": true
   },
   "provenance": {
-    "source_commit": "7d7eaff2378588b39f462daac87550bff521d44d",
-    "scripts_tree": "42010ad6982f2723346ff157db00a958141bc96d",
+    "source_commit": "b459bd3cb9007fa9e54cd6f5bf05f74f97d7c19b",
+    "scripts_tree": "d0ecffb70836175a7330308dff6f495461f1ef84",
     "comparison_base_commit": "d6d323c7b5a0eb0c38e488772ce2ce74e5419f8d",
     "migration": {
       "reason": "Replace the non-reproducible 2026-04 snapshot with a commit-bound compatibility snapshot while active checks move to same-definition merge-base deltas",
@@ -37,8 +37,8 @@
     "previous_snapshot": {
       "schema_version": 2,
       "counter_version": 2,
-      "source_commit": "3d1f1a219c876cd762a4e43ac5b4645fa6701b9f",
-      "updated": "2026-08-03T15:51:15Z",
+      "source_commit": "7d7eaff2378588b39f462daac87550bff521d44d",
+      "updated": "2026-08-03T15:55:39Z",
       "counts": {
         "bare_positional_params": 4739,
         "hardcoded_aidevops_path": 448,
