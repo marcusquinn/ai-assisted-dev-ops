@@ -49,6 +49,8 @@ export LOGFILE="$HOME/.aidevops/logs/pulse.log"
 export STOP_FLAG="$HOME/.aidevops/logs/pulse-session.stop"
 export PULSE_MERGE_CHECKPOINT_FILE="$HOME/.aidevops/logs/pulse-merge-checkpoint"
 export PULSE_MERGE_PR_CURSOR_FILE="$HOME/.aidevops/logs/pulse-merge-pr-cursor"
+export PULSE_MERGE_ENRICHMENT_CACHE_FILE="$HOME/.aidevops/logs/pulse-merge-enrichment-cache"
+export PULSE_MERGE_ENRICHMENT_CURSOR_FILE="$HOME/.aidevops/logs/pulse-merge-enrichment-cursor"
 export PULSE_MERGE_BATCH_LIMIT=10
 
 # shellcheck disable=SC1090
@@ -76,12 +78,12 @@ _pmp_now_epoch() {
 }
 
 pulse_pr_list_get() {
-	printf '%s\n' '[{"number":101,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]},{"number":102,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]},{"number":103,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]},{"number":104,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}]'
+	printf '%s\n' '[{"number":101,"state":"OPEN","title":"pending","isDraft":false,"labels":[],"headRefOid":"sha101"},{"number":102,"state":"OPEN","title":"failing","isDraft":false,"labels":[],"headRefOid":"sha102"},{"number":103,"state":"OPEN","title":"ready","isDraft":false,"labels":[],"headRefOid":"sha103"},{"number":104,"state":"OPEN","title":"blocked","isDraft":false,"labels":[],"headRefOid":"sha104"}]'
 	return 0
 }
 
 _pulse_merge_ready_pr_json_fields() {
-	printf '%s' 'number,mergeable,reviewDecision,isDraft,labels,statusCheckRollup'
+	printf '%s' 'number,state,author,title,isDraft,labels,updatedAt,headRefOid,headRefName,baseRefName,createdAt'
 	return 0
 }
 
@@ -106,7 +108,7 @@ _pmp_enrich_prs_with_mergeability() {
 	[[ -n "$repo_slug" ]] || return 1
 	require_single_pr_enrichment_input "$pr_json" || return 1
 	record_enrichment_phase mergeability
-	printf '%s' "$pr_json"
+	printf '%s' "$pr_json" | jq -c 'map(. + {mergeable:(if .number == 104 then "CONFLICTING" else "MERGEABLE" end)})'
 	return 0
 }
 
@@ -116,7 +118,7 @@ _pmp_enrich_prs_with_rest_check_status() {
 	[[ -n "$repo_slug" ]] || return 1
 	require_single_pr_enrichment_input "$pr_json" || return 1
 	record_enrichment_phase checks
-	printf '%s' "$pr_json"
+	printf '%s' "$pr_json" | jq -c 'map(. + {statusCheckRollup:(if .number == 101 then [{status:"IN_PROGRESS",conclusion:null,state:"PENDING"}] elif .number == 102 then [{status:"COMPLETED",conclusion:"FAILURE",state:"FAILURE"}] else [{status:"COMPLETED",conclusion:"SUCCESS",state:"SUCCESS"}] end)})'
 	return 0
 }
 
@@ -126,7 +128,7 @@ _pmp_enrich_prs_with_review_decisions() {
 	[[ -n "$repo_slug" ]] || return 1
 	require_single_pr_enrichment_input "$pr_json" || return 1
 	record_enrichment_phase reviews
-	printf '%s' "$pr_json"
+	printf '%s' "$pr_json" | jq -c 'map(. + {reviewDecision:(if .number == 104 then "CHANGES_REQUESTED" else "APPROVED" end)})'
 	return 0
 }
 
@@ -163,8 +165,12 @@ export PULSE_MERGE_GRACEFUL_BUDGET_SECONDS=2
 _PMP_MERGE_PASS_DEADLINE_EPOCH=$(_pmp_merge_pass_budget_deadline "$FAKE_NOW")
 _merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || first_rc=$?
 assert_eq "first pass pauses when graceful budget is exhausted" "5" "${first_rc:-0}"
-assert_eq "first pass processes only PRs before the budget edge" "101 102 " "$PROCESSED_PRS"
-assert_eq "cursor records next tail PR" "org/repo|2|102|103" "$(tr -d '\n' <"$PULSE_MERGE_PR_CURSOR_FILE")"
+assert_eq "production-shaped backlog prioritizes ready then failing PRs" "103 102 " "$PROCESSED_PRS"
+assert_eq "cursor records next sorted tail PR" "org/repo|2|102|101" "$(tr -d '\n' <"$PULSE_MERGE_PR_CURSOR_FILE")"
+
+# Losing advisory enrichment state must rebuild safely, then resume the
+# authoritative processing cursor rather than repeating completed PRs.
+rm -f "$PULSE_MERGE_ENRICHMENT_CACHE_FILE"
 
 PROCESSED_PRS=""
 FAKE_NOW=200
@@ -172,7 +178,7 @@ export PULSE_MERGE_GRACEFUL_BUDGET_SECONDS=0
 _PMP_MERGE_PASS_DEADLINE_EPOCH=$(_pmp_merge_pass_budget_deadline "$FAKE_NOW")
 _merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || second_rc=$?
 assert_eq "second pass completes normally" "0" "${second_rc:-0}"
-assert_eq "second pass resumes at saved tail PR" "103 104 " "$PROCESSED_PRS"
+assert_eq "second pass resumes at saved sorted tail PR after cache loss" "101 104 " "$PROCESSED_PRS"
 if [[ ! -f "$PULSE_MERGE_PR_CURSOR_FILE" ]]; then
 	TESTS_RUN=$((TESTS_RUN + 1))
 	printf '%sPASS%s: cursor clears after repo completes\n' "$TEST_GREEN" "$TEST_NC"
@@ -189,12 +195,12 @@ assert_budget_pause_after_phase() {
 	PROCESSED_PRS=""
 	ENRICH_TRIGGER_PHASE="$phase"
 	FAKE_NOW=100
-	rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE" "$PULSE_MERGE_PR_CURSOR_FILE"
+	rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE" "$PULSE_MERGE_PR_CURSOR_FILE" "$PULSE_MERGE_ENRICHMENT_CACHE_FILE" "$PULSE_MERGE_ENRICHMENT_CURSOR_FILE"
 	_PMP_MERGE_PASS_DEADLINE_EPOCH=200
 	_merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || pass_rc=$?
 	assert_eq "budget pause after ${phase} enrichment returns resumable status" "5" "$pass_rc"
 	assert_eq "budget pause after ${phase} enrichment processes no incomplete PR" "" "$PROCESSED_PRS"
-	assert_eq "budget pause after ${phase} enrichment persists the current PR" "org/repo|0||101" "$(tr -d '\n' <"$PULSE_MERGE_PR_CURSOR_FILE")"
+	assert_eq "budget pause after ${phase} enrichment persists the current PR" "org/repo|0||101" "$(tr -d '\n' <"$PULSE_MERGE_ENRICHMENT_CURSOR_FILE")"
 	assert_eq "budget pause stops after ${phase} enrichment" "$expected_phases" "$(<"$ENRICH_PHASE_LOG")"
 	return 0
 }
@@ -209,12 +215,14 @@ PROCESSED_PRS=""
 ENRICH_TRIGGER_PHASE=""
 FAKE_NOW=300
 rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE"
+rm -f "$PULSE_MERGE_ENRICHMENT_CACHE_FILE"
 _PMP_MERGE_PASS_DEADLINE_EPOCH=0
 resume_after_enrichment_rc=0
 _merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || resume_after_enrichment_rc=$?
 assert_eq "cycle after enrichment pause completes without cached partial JSON" "0" "$resume_after_enrichment_rc"
-assert_eq "cycle after enrichment pause makes forward progress from current PR" "101 102 103 104 " "$PROCESSED_PRS"
+assert_eq "cycle after enrichment pause makes forward progress in backlog priority order" "103 102 101 104 " "$PROCESSED_PRS"
 assert_eq "successful resumed cycle clears the current-PR cursor" "false" "$([[ -f "$PULSE_MERGE_PR_CURSOR_FILE" ]] && printf true || printf false)"
+assert_eq "successful resumed cycle clears enrichment state" "false" "$([[ -f "$PULSE_MERGE_ENRICHMENT_CACHE_FILE" || -f "$PULSE_MERGE_ENRICHMENT_CURSOR_FILE" ]] && printf true || printf false)"
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
 	printf '\n%sAll %d PR cursor resume tests passed.%s\n' "$TEST_GREEN" "$TESTS_RUN" "$TEST_NC"

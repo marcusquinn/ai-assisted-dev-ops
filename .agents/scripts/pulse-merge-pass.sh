@@ -267,6 +267,118 @@ _pmp_pause_merge_pr_cursor() {
 	return 5
 }
 
+_pmp_merge_enrichment_cache_file() {
+	local process_cursor_file="${PULSE_MERGE_PR_CURSOR_FILE:-${LOGFILE:-/tmp/aidevops-pulse}.pr-cursor}"
+	printf '%s' "${PULSE_MERGE_ENRICHMENT_CACHE_FILE:-${process_cursor_file}.enrichment-cache}"
+	return 0
+}
+
+_pmp_merge_enrichment_cursor_file() {
+	local process_cursor_file="${PULSE_MERGE_PR_CURSOR_FILE:-${LOGFILE:-/tmp/aidevops-pulse}.pr-cursor}"
+	printf '%s' "${PULSE_MERGE_ENRICHMENT_CURSOR_FILE:-${process_cursor_file}.enrichment-cursor}"
+	return 0
+}
+
+_pmp_write_merge_enrichment_cache() {
+	local cache_file="$1"
+	local repo_slug="$2"
+	local cache_json="$3"
+	local cache_state="" temporary_file=""
+	cache_state=$(jq -cn --arg repo "$repo_slug" --argjson prs "$cache_json" '{repo:$repo,prs:$prs}') || return 1
+	temporary_file=$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null) || return 1
+	if ! printf '%s\n' "$cache_state" >"$temporary_file" || ! mv -f "$temporary_file" "$cache_file"; then
+		rm -f "$temporary_file"
+		return 1
+	fi
+	return 0
+}
+
+_pmp_clear_merge_enrichment_state() {
+	local cache_file="" cursor_file=""
+	cache_file=$(_pmp_merge_enrichment_cache_file)
+	cursor_file=$(_pmp_merge_enrichment_cursor_file)
+	[[ -n "$cache_file" ]] && rm -f "$cache_file"
+	[[ -n "$cursor_file" ]] && _pmp_clear_merge_pr_cursor "$cursor_file"
+	return 0
+}
+
+_pmp_pause_merge_enrichment_cursor() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	local cursor_index="$3"
+	local cursor_file="$4"
+	local next_pr="" last_pr=""
+	next_pr=$(_pmp_pr_number_at_index "$pr_json" "$cursor_index") || next_pr=""
+	_pmp_read_merge_pr_cursor_last "$cursor_file" "$repo_slug" last_pr || last_pr=""
+	_pmp_write_merge_pr_cursor "$cursor_file" "$repo_slug" "$cursor_index" "$last_pr" "$next_pr"
+	echo "[pulse-wrapper] Merge pass: graceful time budget exhausted during enrichment for ${repo_slug}; pausing at enrichment cursor index=${cursor_index} next_pr=${next_pr:-none}" >>"${LOGFILE:-/dev/null}"
+	return 5
+}
+
+#######################################
+# Build a complete advisory scheduling snapshot over multiple pulse cycles.
+# Cached enrichment is used only for sorting and telemetry; each PR is enriched
+# again immediately before authoritative eligibility processing.
+# Args: $1=repo slug, $2=fresh PR array, $3=destination variable name
+#######################################
+_pmp_prepare_enriched_pr_backlog() {
+	local repo_slug="$1"
+	local fresh_json="$2"
+	local output_var="$3"
+	local cache_file="" cursor_file="" cache_state="" cached_json='[]' filtered_cache='[]'
+	local pr_count=0 cursor_index=0 pr_obj="" cached_obj="" enriched_obj="" enrichment_rc=0
+
+	[[ "$output_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+	cache_file=$(_pmp_merge_enrichment_cache_file)
+	cursor_file=$(_pmp_merge_enrichment_cursor_file)
+	if [[ -f "$cache_file" ]]; then
+		cache_state=$(<"$cache_file")
+		if printf '%s' "$cache_state" | jq -e --arg repo "$repo_slug" '.repo == $repo and (.prs | type == "array")' >/dev/null 2>&1; then
+			cached_json=$(printf '%s' "$cache_state" | jq -c '.prs') || return 1
+		else
+			cached_json='[]'
+			_pmp_clear_merge_pr_cursor "$cursor_file"
+		fi
+	else
+		_pmp_clear_merge_pr_cursor "$cursor_file"
+	fi
+	filtered_cache=$(jq -cn --argjson fresh "$fresh_json" --argjson cached "$cached_json" '
+		[$cached[] | . as $cached_pr
+		| select(any($fresh[]; .number == $cached_pr.number and ((.headRefOid // "") == ($cached_pr.headRefOid // ""))))]') || return 1
+	_pmp_write_merge_enrichment_cache "$cache_file" "$repo_slug" "$filtered_cache" || return 1
+	pr_count=$(printf '%s' "$fresh_json" | jq 'length' 2>/dev/null) || return 1
+	_pmp_prepare_merge_pr_cursor_resume "$repo_slug" "$fresh_json" "$pr_count" "$cursor_file" "${LOGFILE:-/dev/null}" cursor_index || cursor_index=0
+
+	while [[ "$cursor_index" -lt "$pr_count" ]]; do
+		if [[ -f "${STOP_FLAG:-/dev/null}" ]] || _pmp_merge_pass_budget_exhausted; then
+			_pmp_pause_merge_enrichment_cursor "$repo_slug" "$fresh_json" "$cursor_index" "$cursor_file"
+			return $?
+		fi
+		pr_obj=$(_pmp_pr_object_at_index "$fresh_json" "$cursor_index")
+		cached_obj=$(jq -cn --argjson cache "$filtered_cache" --argjson pr "$pr_obj" '$cache | map(select(.number == $pr.number and ((.headRefOid // "") == ($pr.headRefOid // "")))) | last // empty') || cached_obj=""
+		if [[ -z "$cached_obj" ]]; then
+			enrichment_rc=0
+			enriched_obj=$(_pmp_enrich_single_pr_for_processing "$repo_slug" "$pr_obj") || enrichment_rc=$?
+			if [[ "$enrichment_rc" -eq 5 ]]; then
+				_pmp_pause_merge_enrichment_cursor "$repo_slug" "$fresh_json" "$cursor_index" "$cursor_file"
+				return $?
+			fi
+			[[ "$enrichment_rc" -eq 0 && -n "$enriched_obj" ]] || enriched_obj=$(printf '%s' "$pr_obj" | jq -c '. + {mergeable:"UNKNOWN", reviewDecision:"UNKNOWN", statusCheckRollup:[]}') || return 1
+			filtered_cache=$(jq -cn --argjson cache "$filtered_cache" --argjson pr "$enriched_obj" '[$cache[] | select(.number != $pr.number)] + [$pr]') || return 1
+			_pmp_write_merge_enrichment_cache "$cache_file" "$repo_slug" "$filtered_cache" || return 1
+		fi
+		cursor_index=$((cursor_index + 1))
+		_pmp_write_merge_pr_cursor "$cursor_file" "$repo_slug" "$cursor_index" "$(printf '%s' "$pr_obj" | jq -r '.number // empty')" "$(_pmp_pr_number_at_index "$fresh_json" "$cursor_index")"
+	done
+	_pmp_clear_merge_pr_cursor "$cursor_file"
+	filtered_cache=$(jq -cn --argjson fresh "$fresh_json" --argjson cache "$filtered_cache" '
+		$fresh | map(. as $fresh_pr
+		| ($cache | map(select(.number == $fresh_pr.number and ((.headRefOid // "") == ($fresh_pr.headRefOid // "")))) | last) as $cached_pr
+		| if $cached_pr then $fresh_pr + {mergeable:$cached_pr.mergeable, reviewDecision:$cached_pr.reviewDecision, statusCheckRollup:$cached_pr.statusCheckRollup} else $fresh_pr end)') || return 1
+	printf -v "$output_var" '%s' "$filtered_cache"
+	return 0
+}
+
 _pmp_repo_rows_contain_slug() {
 	local repo_rows="$1"
 	local checkpoint_slug="$2"

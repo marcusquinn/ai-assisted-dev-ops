@@ -469,7 +469,9 @@ _merge_ready_prs_for_repo() {
 
 	if [[ "$pr_count" -eq 0 ]]; then
 		eval "${_merged_var}=0; ${_closed_var}=0; ${_failed_var}=0"
-		if [[ "$pr_list_complete" -eq 1 ]]; then _pmp_mark_same_pass_repo_complete "$repo_slug" 2>/dev/null || true; fi
+		if [[ "$pr_list_complete" -eq 1 ]]; then
+			_pmp_clear_merge_enrichment_state; _pmp_mark_same_pass_repo_complete "$repo_slug" 2>/dev/null || true
+		fi
 		return 0
 	fi
 
@@ -480,9 +482,15 @@ _merge_ready_prs_for_repo() {
 		echo "[pulse-wrapper] Merge pass: per-repo cache setup incomplete for ${repo_slug}; continuing without one or more caches (GH#25696)" >>"$LOGFILE"
 	fi
 
-	# Keep repository-wide preparation transport-free. Potentially blocking
-	# enrichment runs one PR at a time below, after cursor resume and budget
-	# checks, so every completed unit has a durable continuation boundary.
+	local prepared_pr_json="" preparation_rc=0
+	_pmp_prepare_enriched_pr_backlog "$repo_slug" "$pr_json" prepared_pr_json || preparation_rc=$?
+	if [[ "$preparation_rc" -ne 0 ]]; then
+		[[ -n "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" ]] && rm -rf -- "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR"
+		[[ -n "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR" ]] && rm -rf -- "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR"
+		eval "${_merged_var}=0; ${_closed_var}=0; ${_failed_var}=0"
+		return "$preparation_rc"
+	fi
+	pr_json="$prepared_pr_json"
 	_pmp_log_pr_backlog_counts "$repo_slug" "$pr_json"
 	pr_json=$(_pmp_sort_prs_by_backlog_priority "$pr_json" "$repo_slug")
 	_pmp_consolidate_duplicate_pr_groups "$repo_slug" "$pr_json" || true
@@ -511,6 +519,7 @@ _merge_ready_prs_for_repo() {
 		_pmp_write_merge_pr_cursor "$PULSE_MERGE_PR_CURSOR_FILE" "$repo_slug" "$i" "$_cursor_last_pr" "$_cursor_next_pr"
 	done
 	_pmp_clear_merge_pr_cursor "$PULSE_MERGE_PR_CURSOR_FILE"
+	_pmp_clear_merge_enrichment_state
 
 	[[ -n "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" ]] && rm -rf -- "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR"
 	[[ -n "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR" ]] && rm -rf -- "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR"
