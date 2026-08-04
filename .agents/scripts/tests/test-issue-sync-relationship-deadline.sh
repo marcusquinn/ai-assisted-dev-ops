@@ -179,6 +179,24 @@ mixed_summary=$(_relationship_print_summary 1 0 1 2 true)
 [[ "$mixed_summary" == *"Recovery: rerun"* ]] || fail "partial summary omitted recovery command"
 pass "mixed relationship outcomes remain actionable and sanitized"
 
+# Declared relationships with no immutable self-mapping are unfinished work,
+# while a task with no relationship metadata remains a successful no-op.
+printf '%s\n' '- [ ] t3 Declared edge blocked-by:t2' '- [ ] t4 No relationship metadata' >"${TMP_DIR}/TODO.md"
+resolve_task_gh_number() {
+	local task_id="$1"
+	local todo_file="$2"
+	local repo="$3"
+	: "$task_id" "$todo_file" "$repo"
+	return 1
+}
+: >"$_RELATIONSHIP_RESULT_FILE"
+unresolved_result=$(_sync_blocked_by_for_task t3 "${TMP_DIR}/TODO.md" example/repo)
+[[ "$unresolved_result" == "RELS:0 RETRYABLE:1" ]] || fail "unresolved declared mapping was not retryable: $unresolved_result"
+grep -q '^failed:resolution$' "$_RELATIONSHIP_RESULT_FILE" || fail "unresolved mapping did not record failed resolution"
+noop_result=$(_sync_blocked_by_for_task t4 "${TMP_DIR}/TODO.md" example/repo)
+[[ "$noop_result" == "RELS:0 RETRYABLE:0" ]] || fail "relationship-free task was not a successful no-op: $noop_result"
+pass "declared mapping failures retry while relationship-free tasks no-op"
+
 _sync_blocked_by_for_task() {
 	printf 'RELS:0 RETRYABLE:0\n'
 	return 0
