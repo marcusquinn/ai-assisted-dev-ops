@@ -54,14 +54,17 @@ _routine_epoch_to_iso() {
 
 _routine_deferred_until() {
 	local routine_id="$1"
-	local reset_epoch=""
+	local reported_epoch="${2:-}"
+	local reset_epoch="$reported_epoch"
 	local now_epoch=0
 	local jitter_max="${AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS:-60}"
 	local fallback_seconds="${AIDEVOPS_ROUTINE_FAILURE_RETRY_SECONDS:-900}"
 	local checksum=""
 	local jitter=0
 	now_epoch=$(_routine_now_epoch)
-	reset_epoch="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	if ! [[ "$reset_epoch" =~ ^[0-9]+$ && "$reset_epoch" -gt "$now_epoch" ]]; then
+		reset_epoch="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	fi
 	[[ "$fallback_seconds" =~ ^[0-9]+$ ]] || fallback_seconds=900
 	if ! [[ "$reset_epoch" =~ ^[0-9]+$ && "$reset_epoch" -gt "$now_epoch" ]]; then
 		reset_epoch=$((now_epoch + fallback_seconds))
@@ -262,6 +265,8 @@ _routine_execute() {
 	local started_epoch=0
 	local exit_code=0
 	local deferred_until=0
+	local defer_handoff_file=""
+	local reported_deferred_until=""
 	started_epoch=$(date +%s)
 
 	if [[ -n "$run_script" ]]; then
@@ -275,17 +280,22 @@ _routine_execute() {
 		fi
 		# Bash 3.2 with nounset treats expansion of an empty array as an unbound
 		# variable. Keep the zero-argument path separate instead of expanding it.
+		defer_handoff_file=$(mktemp -t aidevops-routine-defer.XXXXXX 2>/dev/null || true)
 		if [[ "${#run_parts[@]}" -gt 1 ]]; then
 			local script_args=("${run_parts[@]:1}")
 			echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path} ${script_args[*]}" >>"$LOGFILE"
-			"$script_path" "${script_args[@]}" >>"$LOGFILE" 2>&1 || exit_code=$?
+			AIDEVOPS_ROUTINE_DEFER_UNTIL_FILE="$defer_handoff_file" "$script_path" "${script_args[@]}" >>"$LOGFILE" 2>&1 || exit_code=$?
 		else
 			echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path}" >>"$LOGFILE"
-			"$script_path" >>"$LOGFILE" 2>&1 || exit_code=$?
+			AIDEVOPS_ROUTINE_DEFER_UNTIL_FILE="$defer_handoff_file" "$script_path" >>"$LOGFILE" 2>&1 || exit_code=$?
+		fi
+		if [[ -n "$defer_handoff_file" && -f "$defer_handoff_file" ]]; then
+			reported_deferred_until=$(awk 'NR == 1 { print; exit }' "$defer_handoff_file" 2>/dev/null || true)
+			rm -f "$defer_handoff_file"
 		fi
 		if [[ "$exit_code" -eq "$_ROUTINE_TEMPFAIL_EXIT" ]]; then
 			status="$_ROUTINE_STATUS_DEFERRED"
-			deferred_until=$(_routine_deferred_until "$routine_id")
+			deferred_until=$(_routine_deferred_until "$routine_id" "$reported_deferred_until")
 			echo "[pulse-wrapper] routine ${routine_id}: deferred by GitHub API cooldown until epoch ${deferred_until}" >>"$LOGFILE"
 		elif [[ "$exit_code" -ne 0 ]]; then
 			status="$_ROUTINE_STATUS_FAILURE"

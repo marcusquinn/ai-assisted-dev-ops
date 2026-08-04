@@ -666,6 +666,26 @@ _gh_secondary_cooldown_parse_response_metadata() {
 	return 0
 }
 
+_gh_secondary_cooldown_acquire_state_lock() {
+	local file="$1"
+	local lock_dir="${file}.lock"
+	local attempts=0
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		attempts=$((attempts + 1))
+		[[ "$attempts" -lt 40 ]] || return 1
+		sleep 0.05
+	done
+	printf '%s' "$lock_dir"
+	return 0
+}
+
+_gh_secondary_cooldown_release_state_lock() {
+	local lock_dir="$1"
+	[[ -n "$lock_dir" ]] || return 0
+	rm -rf "$lock_dir" 2>/dev/null || true
+	return 0
+}
+
 _gh_secondary_cooldown_write_until() {
 	local reason="$1"
 	local response_text="${2:-}"
@@ -711,6 +731,9 @@ _gh_secondary_cooldown_write_until() {
 	local recent_403_count_1m="0"
 	local recent_403_count_5m="0"
 	local recent_secondary_count_5m="0"
+	local existing_expires=0
+	local lock_dir=""
+	local write_rc=0
 	now="$(_gh_secondary_cooldown_now)"
 	if [[ "$expires_at" =~ ^[0-9]+$ && "$expires_at" -gt "$now" ]]; then
 		expires="$expires_at"
@@ -719,6 +742,12 @@ _gh_secondary_cooldown_write_until() {
 	fi
 	file="$(_gh_secondary_cooldown_file)"
 	dir="${file%/*}"
+	mkdir -p "$dir" 2>/dev/null || return 1
+	lock_dir=$(_gh_secondary_cooldown_acquire_state_lock "$file") || return 1
+	existing_expires="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	if [[ "$existing_expires" =~ ^[0-9]+$ && "$existing_expires" -gt "$expires" ]]; then
+		expires="$existing_expires"
+	fi
 	request_id="$(_gh_secondary_cooldown_request_id "$response_text")"
 	_gh_secondary_cooldown_parse_response_metadata "$response_text"
 	body_classification="$(_gh_secondary_cooldown_body_classification "$response_text" "$status" "$ratelimit_remaining")"
@@ -743,14 +772,16 @@ _gh_secondary_cooldown_write_until() {
 	[[ "$recent_403_count_1m" =~ ^[0-9]+$ ]] || recent_403_count_1m="0"
 	[[ "$recent_403_count_5m" =~ ^[0-9]+$ ]] || recent_403_count_5m="0"
 	[[ "$recent_secondary_count_5m" =~ ^[0-9]+$ ]] || recent_secondary_count_5m="0"
-	mkdir -p "$dir" 2>/dev/null || return 1
-
 	if command -v jq >/dev/null 2>&1; then
-		_gh_secondary_cooldown_write_state_jq "$file" || return 1
+		_gh_secondary_cooldown_write_state_jq "$file" || write_rc=$?
 	else
-		_gh_secondary_cooldown_write_state_fallback "$file" || return 1
+		_gh_secondary_cooldown_write_state_fallback "$file" || write_rc=$?
 	fi
-	mv "${file}.tmp" "$file" || return 1
+	if [[ "$write_rc" -eq 0 ]]; then
+		mv "${file}.tmp" "$file" || write_rc=$?
+	fi
+	_gh_secondary_cooldown_release_state_lock "$lock_dir"
+	[[ "$write_rc" -eq 0 ]] || return 1
 	printf '[gh-cooldown] secondary-rate-limit active=true expires_at=%s reason=%s\n' "$expires" "$reason" >&2
 	return 0
 }
@@ -853,16 +884,16 @@ _gh_secondary_cooldown_record_response_if_needed() {
 		if [[ -z "$retry_after" ]] && ! [[ "$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")" =~ ^[0-9]+$ ]]; then
 			expires_at="$(_gh_secondary_cooldown_rest_reset_at "$endpoint_arg" || printf '%s' "$expires_at")"
 		fi
-		_gh_secondary_cooldown_write_until "github-api-rate-limit-status-${status}" "$response_text" "$expires_at" "status-${status}" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg" || true
-		return 0
+		_gh_secondary_cooldown_write_until "github-api-rate-limit-status-${status}" "$response_text" "$expires_at" "status-${status}" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg"
+		return $?
 		;;
 	429)
 		expires_at="$(_gh_secondary_cooldown_header_expires_at "$response_text")"
 		if [[ -z "$retry_after" ]] && ! [[ "$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")" =~ ^[0-9]+$ ]]; then
 			expires_at="$(_gh_secondary_cooldown_rest_reset_at "$endpoint_arg" || printf '%s' "$expires_at")"
 		fi
-		_gh_secondary_cooldown_write_until "github-api-rate-limit-status-${status}" "$response_text" "$expires_at" "status-${status}" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg" || true
-		return 0
+		_gh_secondary_cooldown_write_until "github-api-rate-limit-status-${status}" "$response_text" "$expires_at" "status-${status}" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg"
+		return $?
 		;;
 	esac
 	if [[ "$remaining" =~ ^[0-9]+$ && "$remaining" -eq 0 ]]; then
@@ -870,12 +901,12 @@ _gh_secondary_cooldown_record_response_if_needed() {
 		if [[ -z "$retry_after" ]] && ! [[ "$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")" =~ ^[0-9]+$ ]]; then
 			expires_at="$(_gh_secondary_cooldown_rest_reset_at "$endpoint_arg" || printf '%s' "$expires_at")"
 		fi
-		_gh_secondary_cooldown_write_until "github-api-rate-limit-remaining-zero" "$response_text" "$expires_at" "remaining-zero" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg" || true
-		return 0
+		_gh_secondary_cooldown_write_until "github-api-rate-limit-remaining-zero" "$response_text" "$expires_at" "remaining-zero" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg"
+		return $?
 	fi
 	if [[ "$rc" -ne 0 ]]; then
 		_gh_secondary_cooldown_detect "$response_text" || return 0
-		_gh_secondary_cooldown_write_until "github-secondary-rate-limit" "$response_text" "" "secondary-text" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg" || true
+		_gh_secondary_cooldown_write_until "github-secondary-rate-limit" "$response_text" "" "secondary-text" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg" || return 1
 	fi
 	return 0
 }

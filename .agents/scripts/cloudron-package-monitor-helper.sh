@@ -22,11 +22,51 @@ _cloudron_monitor_error() {
 }
 
 _cloudron_monitor_deferred() {
-	local expires_at=""
-	expires_at="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	local expires_at="${1:-}"
+	local handoff_file="${AIDEVOPS_ROUTINE_DEFER_UNTIL_FILE:-}"
+	if ! [[ "$expires_at" =~ ^[0-9]+$ ]]; then
+		expires_at="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	fi
+	if [[ "$expires_at" =~ ^[0-9]+$ && -n "$handoff_file" ]]; then
+		printf '%s\n' "$expires_at" >"$handoff_file" 2>/dev/null || true
+	fi
 	[[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at="unknown"
 	printf 'DEFERRED: GitHub API cooldown active until epoch %s.\n' "$expires_at" >&2
 	return 75
+}
+
+_cloudron_monitor_last_http_response() {
+	local response_text="$1"
+	printf '%s\n' "$response_text" | awk '
+		/^HTTP\// { response = $0 ORS; found = 1; next }
+		found { response = response $0 ORS }
+		END { printf "%s", response }
+	'
+	return 0
+}
+
+_cloudron_monitor_rate_limit_expires_at() {
+	local response_text="$1"
+	local status=""
+	local remaining=""
+	local classification=""
+	status="$(_gh_secondary_cooldown_status "$response_text")"
+	remaining="$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-remaining")"
+	classification="$(_gh_secondary_cooldown_body_classification "$response_text" "$status" "$remaining")"
+	case "$status" in
+	429) ;;
+	403)
+		case "$classification" in
+		primary-rate-limit | secondary-rate-limit | abuse-detection | rate-limit-message) ;;
+		*) return 1 ;;
+		esac
+		;;
+	*)
+		[[ "$remaining" =~ ^[0-9]+$ && "$remaining" -eq 0 ]] || return 1
+		;;
+	esac
+	_gh_secondary_cooldown_header_expires_at "$response_text"
+	return $?
 }
 
 _cloudron_monitor_response_bodies() {
@@ -47,10 +87,22 @@ _cloudron_monitor_fetch_releases() {
 	local upstream_slug="$1"
 	local endpoint="/repos/${upstream_slug}/releases?per_page=100"
 	local response=""
+	local last_response=""
+	local rate_limit_expires_at=""
 	local api_rc=0
-	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate 2>/dev/null) || api_rc=$?
-	if [[ "$api_rc" -eq 75 ]] || _gh_secondary_cooldown_active; then
+	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate 2>&1) || api_rc=$?
+	if [[ "$api_rc" -eq 75 ]]; then
 		_cloudron_monitor_deferred
+		return $?
+	fi
+	last_response="$(_cloudron_monitor_last_http_response "$response")"
+	if ! _gh_secondary_cooldown_active && [[ -n "$last_response" ]]; then
+		_gh_secondary_cooldown_record_response_if_needed "$api_rc" "$last_response" "GET" "$endpoint" \
+			"per_page=<redacted>" "cloudron_package_releases" "cloudron-package-monitor" "routine" || true
+	fi
+	rate_limit_expires_at="$(_cloudron_monitor_rate_limit_expires_at "$last_response" 2>/dev/null || true)"
+	if _gh_secondary_cooldown_active || [[ "$rate_limit_expires_at" =~ ^[0-9]+$ ]]; then
+		_cloudron_monitor_deferred "$rate_limit_expires_at"
 		return $?
 	fi
 	if [[ "$api_rc" -ne 0 ]]; then

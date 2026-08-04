@@ -93,6 +93,7 @@ reset_case() {
 	: >"$CALL_LOG"
 	: >"$ERR_LOG"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE"
+	rm -rf "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.lock"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE"
 	rm -f "$AIDEVOPS_GH_READ_RAMP_STATE_FILE"
 	unset GH_SECONDARY_FAIL GH_REST_CORE_403_FAIL GH_CORE_RATE_LIMIT_RESET GH_SEARCH_RATE_LIMIT_RESET GH_HEADER_LIMIT_FAIL GH_GENERIC_403_FAIL GH_ABUSE_403_FAIL GH_PRIMARY_REMAINING_ZERO_FAIL GH_PRIMARY_REMAINING_ZERO_SUCCESS GH_LARGE_SUCCESS AIDEVOPS_GH_SECONDARY_COOLDOWN_OVERRIDE AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_LINES AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_BYTES AIDEVOPS_GH_READ_RAMP_BUDGET AIDEVOPS_GH_READ_RAMP_BOOT_SECS AIDEVOPS_GH_READ_RAMP_RECOVERY_SECS AIDEVOPS_GH_READ_RAMP_OVERRIDE AIDEVOPS_GH_AUTH_MODE AIDEVOPS_GH_AUTH_PRINCIPAL AIDEVOPS_GH_COOLDOWN_OPERATION AIDEVOPS_GH_COOLDOWN_WRAPPER AIDEVOPS_GH_COOLDOWN_STAGE AIDEVOPS_GH_API_POOL AIDEVOPS_GH_ROUTE_DECISION 2>/dev/null || true
@@ -336,7 +337,7 @@ test_no_jq_fallback_escapes_json_strings() {
 	local nojq_bin="${TMP_HOME}/nojq-bin"
 	local tool=""
 	mkdir -p "$nojq_bin"
-	for tool in date mkdir mv sed; do
+	for tool in date mkdir mv rm sed; do
 		ln -sf "$(command -v "$tool")" "${nojq_bin}/${tool}"
 	done
 	PATH="$nojq_bin" _gh_secondary_cooldown_write 'quote " reason' 'request id: REQ-123' >/dev/null 2>&1
@@ -479,6 +480,24 @@ test_read_ramp_does_not_defer_writes() {
 	return 1
 }
 
+test_repeated_cooldowns_preserve_longest_boundary() {
+	reset_case
+	local now=""
+	local long_reset=0
+	local short_reset=0
+	now="$(_gh_secondary_cooldown_now)"
+	long_reset=$((now + 1800))
+	short_reset=$((now + 30))
+	_gh_secondary_cooldown_write_until "long-reset" "" "$long_reset" >/dev/null 2>&1
+	_gh_secondary_cooldown_write_until "short-retry-after" "" "$short_reset" >/dev/null 2>&1
+	if jq -e --argjson expected "$long_reset" '.expires_at == $expected' "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" >/dev/null; then
+		printf 'PASS repeated cooldowns preserve the longest boundary\n'
+		return 0
+	fi
+	printf 'FAIL shorter cooldown replaced a longer active boundary\n'
+	return 1
+}
+
 test_secondary_response_writes_cooldown
 test_header_response_writes_retry_after_cooldown
 test_generic_403_diagnostic_distinguishes_forbidden
@@ -498,3 +517,4 @@ test_event_trim_enforces_bytes_below_line_cap
 test_boot_ramp_defers_after_per_minute_budget
 test_cooldown_recovery_ramp_defers_after_budget
 test_read_ramp_does_not_defer_writes
+test_repeated_cooldowns_preserve_longest_boundary

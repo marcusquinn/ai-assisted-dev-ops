@@ -61,6 +61,11 @@ if [[ "${1:-}" == "api" && "$*" == *releases\?per_page=100* ]]; then
             printf 'HTTP/2 429\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"rate limit exceeded"}\n'
             exit 1
             ;;
+        paginated-403-reset)
+            printf 'HTTP/2 200\r\nX-RateLimit-Remaining: 1\r\n\r\n[{"tag_name":"v2.0.0","draft":false,"prerelease":false}]\n'
+            printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"API rate limit exceeded"}\n'
+            exit 1
+            ;;
     esac
     if [[ "${MONITOR_API_FAIL:-false}" == true ]]; then
         printf 'HTTP/2 500\r\n\r\n{"message":"temporary server error"}\n'
@@ -367,6 +372,7 @@ test_monitor_rate_limit_fixtures() {
 	assert_rate_limit_fixture secondary-403-retry 403 secondary-rate-limit
 	assert_rate_limit_fixture primary-429-retry 429 rate-limit-message
 	assert_rate_limit_fixture primary-429-reset 429 rate-limit-message
+	assert_rate_limit_fixture paginated-403-reset 403 primary-rate-limit
 	return 0
 }
 
@@ -398,10 +404,10 @@ WRAPPER
 	export PATH="${bin_dir}:${old_path}"
 	export MONITOR_TEST_LOG="$issue_log"
 	export MONITOR_API_LOG="$api_log"
-	export MONITOR_RATE_FIXTURE=primary-403-reset
+	export MONITOR_RATE_FIXTURE=paginated-403-reset
 	export CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue"
-	export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${home_dir}/.aidevops/cache/gh-secondary-cooldown.json"
-	export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="${home_dir}/.aidevops/cache/gh-cooldown-events.jsonl"
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="/dev/null/cooldown-state.json"
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="/dev/null/cooldown-events.jsonl"
 	export AIDEVOPS_ROUTINE_NOW_EPOCH=9999999900
 	export AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS=7
 	unset _SHARED_GH_SECONDARY_COOLDOWN_LOADED _PULSE_ROUTINES_LOADED
@@ -420,6 +426,7 @@ WRAPPER
 		assert_equal true true "scheduler persists reset plus bounded jitter" ||
 		assert_equal true false "scheduler persists reset plus bounded jitter"
 	assert_equal 1 "$(grep -c '^API ' "$api_log")" "integrated monitor touches only the first registration"
+	assert_equal false "$([[ -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" ]] && printf true || printf false)" "scheduler receives reset evidence when shared cooldown persistence fails"
 
 	AIDEVOPS_ROUTINE_NOW_EPOCH=$((deferred_until - 1))
 	blocked_rc=0
