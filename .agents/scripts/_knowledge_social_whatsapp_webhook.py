@@ -91,17 +91,23 @@ def _verified_values(
 
 
 def _webhook_coverage(observed_at: str) -> list[dict[str, Any]]:
-    states = (
-        ("business_messages", "partial", "prospective_events_received_after_subscription_only"),
-        ("message_statuses", "partial", "only_status_events_delivered_to_this_subscription"),
-        ("history_before_connection", "unavailable", "no_general_business_message_history_endpoint"),
-        ("template_lifecycle", "unavailable", "this_collector_accepts_only_identity_bound_messages_webhooks"),
-        ("personal_and_existing_group_history", "unavailable", "business_webhooks_do_not_authorize_personal_or_preexisting_group_history"),
-        ("edits_and_deletions", "unavailable", "no_complete_retrospective_edit_or_delete_audit_is_documented"),
-    )
+    states = {
+        "business_messages": ("partial", "prospective_events_received_after_subscription_only"),
+        "message_statuses": ("partial", "only_status_events_delivered_to_this_subscription"),
+        "history_before_connection": ("unavailable", "no_general_business_message_history_endpoint"),
+        "template_lifecycle": ("unavailable", "this_collector_accepts_only_identity_bound_messages_webhooks"),
+        "personal_and_existing_group_history": (
+            "unavailable",
+            "business_webhooks_do_not_authorize_personal_or_preexisting_group_history",
+        ),
+        "edits_and_deletions": (
+            "unavailable",
+            "no_complete_retrospective_edit_or_delete_audit_is_documented",
+        ),
+    }
     return [
         coverage_record(stream, observed_at, WEBHOOK_RETENTION, status, reason=reason, exhausted=False)
-        for stream, status, reason in states
+        for stream, (status, reason) in states.items()
     ]
 
 

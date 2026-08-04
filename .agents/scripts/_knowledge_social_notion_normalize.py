@@ -14,36 +14,36 @@ from knowledge_social_import import reject_credentials
 
 PROVENANCE = "notion_public_api_2026_03_11_explicit_roots"
 FIXED_COVERAGE = (
-    (
-        "resolved_comments",
-        "unavailable",
-        "public_api_lists_only_open_unresolved_comments",
-    ),
-    (
-        "file_bytes",
-        "unavailable",
-        "signed_and_external_file_targets_are_never_fetched",
-    ),
-    (
-        "external_embeds",
-        "unavailable",
-        "external_embed_and_bookmark_targets_are_never_fetched",
-    ),
-    (
-        "workspace_search",
-        "unavailable",
-        "title_search_is_not_an_authorized_or_exhaustive_inventory_route",
-    ),
-    (
-        "notion_site_metadata",
-        "unavailable",
-        "public_site_url_is_not_an_account_api_or_authority_grant",
-    ),
-    (
-        "workspace_export",
-        "unavailable",
-        "owner_or_enterprise_admin_export_is_a_separate_import_route",
-    ),
+    {
+        "stream": "resolved_comments",
+        "status": "unavailable",
+        "reason": "public_api_lists_only_open_unresolved_comments",
+    },
+    {
+        "stream": "file_bytes",
+        "status": "unavailable",
+        "reason": "signed_and_external_file_targets_are_never_fetched",
+    },
+    {
+        "stream": "external_embeds",
+        "status": "unavailable",
+        "reason": "external_embed_and_bookmark_targets_are_never_fetched",
+    },
+    {
+        "stream": "workspace_search",
+        "status": "unavailable",
+        "reason": "title_search_is_not_an_authorized_or_exhaustive_inventory_route",
+    },
+    {
+        "stream": "notion_site_metadata",
+        "status": "unavailable",
+        "reason": "public_site_url_is_not_an_account_api_or_authority_grant",
+    },
+    {
+        "stream": "workspace_export",
+        "status": "unavailable",
+        "reason": "owner_or_enterprise_admin_export_is_a_separate_import_route",
+    },
 )
 
 
@@ -109,11 +109,11 @@ def _coverage(observed_at: str) -> list[dict[str, Any]]:
             "latest_at": None,
             "observed_at": observed_at,
             "retention_limit": RETENTION_LIMIT,
-            "status": status,
-            "stream": stream,
-            "unavailable_reason": reason,
+            "status": gap["status"],
+            "stream": gap["stream"],
+            "unavailable_reason": gap["reason"],
         }
-        for stream, status, reason in FIXED_COVERAGE
+        for gap in FIXED_COVERAGE
     ]
 
 
