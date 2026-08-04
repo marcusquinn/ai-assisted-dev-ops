@@ -50,6 +50,18 @@ assert_eq() {
 	return 0
 }
 
+assert_hold() {
+	local expected="$1"
+	local body="$2"
+	local comments="$3"
+	local labels="$4"
+	local name="$5"
+	local actual=0
+	_der_has_hold "$body" "$comments" "$labels" && actual=1
+	assert_eq "$expected" "$actual" "$name"
+	return 0
+}
+
 candidate() {
 	local number="$1"
 	local state="$2"
@@ -241,6 +253,38 @@ assert_eq 0 "$(run_reconcile)" "targeted search count or pagination ambiguity fa
 EDIT_COUNT=0 REREAD_LABELS="status:blocked" SEARCH_AMBIGUOUS=false BODY20=$'Blocked by: **#10**\nOn hold for maintainer'
 assert_eq 0 "$(run_reconcile)" "markdown dependency variant is found while non-dependency hold is preserved"
 
+assert_hold 1 "On hold for maintainer" "" "status:blocked" "direct classifier preserves an explicit operational hold"
+assert_hold 1 "- **Defer until security review**" "" "status:blocked" "direct classifier preserves a prefixed defer directive"
+assert_hold 1 "### On hold for maintainer" "" "status:blocked" "direct classifier preserves an operational hold heading"
+assert_hold 1 "Do-not-dispatch: migration active" "" "status:blocked" "direct classifier preserves a do-not-dispatch directive"
+assert_hold 1 "Hold for release approval" "" "status:blocked" "direct classifier preserves a hold-for directive"
+assert_hold 1 "On hold for maintainer | release manager" "" "status:blocked" "direct classifier preserves an operational hold containing one pipe"
+assert_hold 1 "" "Worker result: **BLOCKED** and cannot proceed safely" "status:blocked" "direct classifier preserves worker escalation comments"
+assert_hold 1 "" "Worker Watchdog Kill" "status:blocked" "direct classifier preserves watchdog escalation comments"
+assert_hold 1 "" "Terminal blocker detected" "status:blocked" "direct classifier preserves terminal blocker comments"
+assert_hold 1 "" "ACTION REQUIRED" "status:blocked" "direct classifier preserves action-required comments"
+assert_hold 1 "" "HUMAN_UNBLOCK_REQUIRED" "status:blocked" "direct classifier preserves human-unblock markers"
+assert_hold 1 "The labels are mentioned descriptively." "" "status:blocked,hold-for-review" "direct classifier preserves exact hold-for-review labels"
+assert_hold 1 "" "" "status:blocked,needs-maintainer-review" "direct classifier preserves exact maintainer-review labels"
+assert_hold 1 "" "" "status:blocked,no-auto-dispatch" "direct classifier preserves exact no-auto-dispatch labels"
+assert_hold 0 "The hold-for-review label is documented here." "" "status:blocked" "direct classifier ignores management-label names in prose"
+assert_hold 0 $'| Outcome | Action |\n| unknown_review | Hold for bounded review; no implementation issue |' "" "status:blocked" "direct classifier ignores hold phrases in Markdown tables"
+assert_hold 0 $'Example:\n```text\nDo not dispatch\n```' "" "status:blocked" "direct classifier ignores hold phrases in fenced examples"
+assert_hold 0 $'Example:\n~~~text\nOn hold for demonstration\n~~~' "" "status:blocked" "direct classifier ignores hold phrases in tilde-fenced examples"
+assert_hold 1 $'Example:\n```text\n<!--\nDo not dispatch\n```\nOn hold for maintainer' "" "status:blocked" "fenced comment syntax cannot hide a later operational hold"
+assert_hold 1 $'<!--\n```text\n-->\nOn hold for maintainer' "" "status:blocked" "commented fence syntax cannot hide a later operational hold"
+assert_hold 0 $'```text\nDo not dispatch\n~~~\nOn hold in the same example\n```' "" "status:blocked" "mismatched fence delimiters cannot expose example holds"
+assert_hold 0 $'````text\nDo not dispatch\n```\nOn hold in the same example\n````' "" "status:blocked" "short fence delimiters cannot close longer examples"
+assert_hold 1 $'```text\nACTION REQUIRED in generated worker output\n```' "" "status:blocked" "strong machine markers remain authoritative inside examples"
+assert_hold 0 "This reference explains why an issue may be on hold for review." "" "status:blocked" "direct classifier ignores explanatory hold prose"
+assert_hold 0 $'<!--\nPaused: example only\n-->' "" "status:blocked" "direct classifier ignores hold phrases in HTML comments"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20=$'Blocked by #10\n\n| Outcome | Action |\n|---|---|\n| unknown_review | Hold for bounded review; no implementation issue |'
+assert_eq 1 "$(run_reconcile)" "classification table prose does not suppress close-event reconciliation"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20=$'Blocked by #10\n\nThis reference explains why an issue may be on hold for review.'
+assert_eq 1 "$(run_reconcile)" "explanatory prose does not suppress close-event reconciliation"
+
 EDIT_COUNT=0 REREAD_LABELS="status:done,status:blocked" BODY20="Blocked by #10"
 assert_eq 0 "$(run_reconcile)" "status done is preserved"
 
@@ -311,6 +355,15 @@ NATIVE_NULL_NODE=false
 EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20="Blocked by #10" COMMENTS='[[]]'
 reconcile_stale_blocked_issues owner/repo >/dev/null 2>&1 || true
 assert_eq 1 "$EDIT_COUNT" "periodic stale sweep releases issue after missed close event"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20=$'Blocked by #10\n\nExample:\n```text\nDo not dispatch\n```'
+reconcile_stale_blocked_issues owner/repo >/dev/null 2>&1 || true
+assert_eq 1 "$EDIT_COUNT" "periodic stale sweep ignores fenced hold examples"
+
+EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20=$'Blocked by #10\n\n> **Paused: awaiting maintainer**'
+reconcile_stale_blocked_issues owner/repo >/dev/null 2>&1 || true
+assert_eq 0 "$EDIT_COUNT" "periodic stale sweep preserves prefixed operational hold lines"
+
 EDIT_COUNT=0 REREAD_LABELS="status:blocked" BODY20="Blocked by #10 and #11"
 stale_sweep_status=0
 reconcile_stale_blocked_issues owner/repo >/dev/null 2>&1 || stale_sweep_status=$?
