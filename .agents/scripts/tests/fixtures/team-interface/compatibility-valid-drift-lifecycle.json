@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "document_type": "drift_lifecycle",
+  "lifecycle_id": "lifecycle:buzz-compatibility:v1",
+  "profile_ref": "compatibility:buzz-acp:v1",
+  "observations": [
+    {
+      "observation_id": "observation:buzz:no-impact",
+      "profile_ref": "compatibility:buzz-acp:v1",
+      "from_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+        "tag_id": "v0.5.4",
+        "release_id": "v0.5.4"
+      },
+      "to_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "1111111111111111111111111111111111111111",
+        "tag_id": "v0.5.5",
+        "release_id": "v0.5.5"
+      },
+      "detected_at": "2026-08-04T18:30:00Z",
+      "checked_at": "2026-08-04T19:00:00Z",
+      "touched_surface_ids": [],
+      "normalized_diff_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "evidence_refs": ["evidence:buzz:no-impact"],
+      "untrusted_text_digest": "sha256:1010101010101010101010101010101010101010101010101010101010101010",
+      "prompt_scan_verdict_ref": "scan:buzz:v0.5.5",
+      "fetch_status": "complete",
+      "correlation_id": "correlation:buzz:v0.5.5",
+      "idempotency_key": "observation:buzz:v0.5.4-v0.5.5"
+    },
+    {
+      "observation_id": "observation:buzz:feature-opportunity",
+      "profile_ref": "compatibility:buzz-acp:v1",
+      "from_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c"
+      },
+      "to_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "2222222222222222222222222222222222222222"
+      },
+      "detected_at": "2026-08-04T19:10:00Z",
+      "checked_at": "2026-08-04T19:20:00Z",
+      "touched_surface_ids": ["acp-runtime"],
+      "normalized_diff_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "evidence_refs": ["evidence:buzz:feature-opportunity"],
+      "untrusted_text_digest": "sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "prompt_scan_verdict_ref": "scan:buzz:feature-opportunity",
+      "fetch_status": "complete",
+      "correlation_id": "correlation:buzz:feature-opportunity",
+      "idempotency_key": "observation:buzz:feature-opportunity"
+    },
+    {
+      "observation_id": "observation:buzz:breaking",
+      "profile_ref": "compatibility:buzz-acp:v1",
+      "from_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c"
+      },
+      "to_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "3333333333333333333333333333333333333333"
+      },
+      "detected_at": "2026-08-04T19:30:00Z",
+      "checked_at": "2026-08-04T19:40:00Z",
+      "touched_surface_ids": ["managed-agent-apis", "acp-runtime"],
+      "normalized_diff_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "evidence_refs": ["evidence:buzz:breaking"],
+      "untrusted_text_digest": "sha256:3030303030303030303030303030303030303030303030303030303030303030",
+      "prompt_scan_verdict_ref": "scan:buzz:breaking",
+      "fetch_status": "complete",
+      "correlation_id": "correlation:buzz:breaking",
+      "idempotency_key": "observation:buzz:breaking"
+    },
+    {
+      "observation_id": "observation:buzz:security-resolved",
+      "profile_ref": "compatibility:buzz-acp:v1",
+      "from_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c"
+      },
+      "to_source": {
+        "source_id": "github:chidiwilliams/Buzz",
+        "source_type": "github_repository",
+        "version_scheme": "release_and_commit",
+        "commit_id": "4444444444444444444444444444444444444444"
+      },
+      "detected_at": "2026-08-04T19:50:00Z",
+      "checked_at": "2026-08-04T20:00:00Z",
+      "touched_surface_ids": ["project-repository-nip", "runners-relay-mesh"],
+      "normalized_diff_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "evidence_refs": ["evidence:buzz:security-resolved"],
+      "untrusted_text_digest": "sha256:4040404040404040404040404040404040404040404040404040404040404040",
+      "prompt_scan_verdict_ref": "scan:buzz:security-resolved",
+      "fetch_status": "complete",
+      "correlation_id": "correlation:buzz:security-resolved",
+      "idempotency_key": "observation:buzz:security-resolved"
+    }
+  ],
+  "assessments": [
+    {
+      "assessment_id": "assessment:buzz:no-impact",
+      "observation_ref": "observation:buzz:no-impact",
+      "classification": "no_impact",
+      "premise": {
+        "state": "falsified",
+        "terminal": true,
+        "evidence_refs": ["evidence:buzz:no-watched-intersection"]
+      },
+      "affected_capability_refs": [],
+      "affected_security_boundaries": [],
+      "fixture_results": [
+        {
+          "fixture_id": "fixture:buzz-acp-runtime",
+          "state": "passed",
+          "terminal": true,
+          "evidence_refs": ["test-run:buzz:no-impact"]
+        }
+      ],
+      "fixtures_terminal": true,
+      "recommended_outcome": "no_action",
+      "baseline_decision": "promote_reviewed_and_last_known_good",
+      "resulting_baseline": {
+        "source": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "source_type": "github_repository",
+          "version_scheme": "release_and_commit",
+          "commit_id": "1111111111111111111111111111111111111111"
+        },
+        "reviewed_at": "2026-08-04T19:00:00Z",
+        "evidence_refs": ["evidence:buzz:no-impact"]
+      },
+      "rationale": "Bounded source evidence showed no watched contract change and the required fixture passed."
+    },
+    {
+      "assessment_id": "assessment:buzz:feature-opportunity",
+      "observation_ref": "observation:buzz:feature-opportunity",
+      "classification": "feature_opportunity",
+      "premise": {
+        "state": "confirmed",
+        "terminal": true,
+        "evidence_refs": ["evidence:buzz:new-acp-option"]
+      },
+      "affected_capability_refs": ["capability:agent:update"],
+      "affected_security_boundaries": [],
+      "fixture_results": [
+        {
+          "fixture_id": "fixture:buzz-acp-runtime",
+          "state": "pending",
+          "terminal": false,
+          "evidence_refs": []
+        }
+      ],
+      "fixtures_terminal": false,
+      "recommended_outcome": "decision_required",
+      "baseline_decision": "last_checked_only",
+      "rationale": "The optional capability lacks terminal fixture evidence and exact worker-ready scope."
+    },
+    {
+      "assessment_id": "assessment:buzz:breaking",
+      "observation_ref": "observation:buzz:breaking",
+      "classification": "breaking_contract",
+      "premise": {
+        "state": "confirmed",
+        "terminal": true,
+        "evidence_refs": ["evidence:buzz:managed-agent-contract-break"]
+      },
+      "affected_capability_refs": ["capability:agent:create", "capability:agent:update"],
+      "affected_security_boundaries": ["boundary:managed-agent-store"],
+      "fixture_results": [
+        {
+          "fixture_id": "fixture:buzz-managed-agent",
+          "state": "failed",
+          "terminal": true,
+          "evidence_refs": ["test-run:buzz:managed-agent-failed"]
+        },
+        {
+          "fixture_id": "fixture:buzz-acp-runtime",
+          "state": "passed",
+          "terminal": true,
+          "evidence_refs": ["test-run:buzz:acp-passed"]
+        }
+      ],
+      "fixtures_terminal": true,
+      "recommended_outcome": "implementation_required",
+      "baseline_decision": "retain_last_known_good",
+      "rationale": "A required managed-agent fixture failed against the bounded source delta."
+    },
+    {
+      "assessment_id": "assessment:buzz:security-resolved",
+      "observation_ref": "observation:buzz:security-resolved",
+      "classification": "security_permission_impact",
+      "premise": {
+        "state": "confirmed",
+        "terminal": true,
+        "evidence_refs": ["evidence:buzz:relay-permission-change"]
+      },
+      "affected_capability_refs": ["capability:runner:dispatch"],
+      "affected_security_boundaries": ["boundary:runner-trust", "boundary:nostr-identity"],
+      "fixture_results": [
+        {
+          "fixture_id": "fixture:buzz-runners",
+          "state": "passed",
+          "terminal": true,
+          "evidence_refs": ["test-run:buzz:security-fix-passed"]
+        }
+      ],
+      "fixtures_terminal": true,
+      "recommended_outcome": "implementation_required",
+      "baseline_decision": "promote_reviewed_and_last_known_good",
+      "resulting_baseline": {
+        "source": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "source_type": "github_repository",
+          "version_scheme": "release_and_commit",
+          "commit_id": "4444444444444444444444444444444444444444"
+        },
+        "reviewed_at": "2026-08-04T20:10:00Z",
+        "evidence_refs": ["merged-fix:buzz:security"]
+      },
+      "rationale": "The security-sensitive delta was fixed and terminal verification passed."
+    }
+  ],
+  "records": [
+    {
+      "record_id": "drift:buzz:no-impact",
+      "observation_ref": "observation:buzz:no-impact",
+      "assessment_ref": "assessment:buzz:no-impact",
+      "state_history": ["detected", "bounded", "premise_verified", "fixtures_terminal", "no_action"],
+      "current_state": "no_action",
+      "dedup": {
+        "drift_key": "sha256:4fd26c1e3ef2c38fab834a115af403827d672f6d9c523ff7402e665d2738f14b",
+        "components": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "adapter_id": "adapter:buzz-acp",
+          "reviewed_from_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+          "observed_to_commit": "1111111111111111111111111111111111111111",
+          "normalized_diff_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sorted_surface_ids": []
+        },
+        "search": {
+          "searched_at": "2026-08-04T19:00:00Z",
+          "scopes": ["missions", "todos", "open_closed_issues", "open_closed_prs", "verified_merged_fixes", "local_records"],
+          "evidence_refs": ["dedup-search:buzz:no-impact"]
+        },
+        "follow_up_refs": []
+      },
+      "resolution_rationale": "No watched contract changed; record evidence without an issue."
+    },
+    {
+      "record_id": "drift:buzz:decision-required",
+      "observation_ref": "observation:buzz:feature-opportunity",
+      "assessment_ref": "assessment:buzz:feature-opportunity",
+      "state_history": ["detected", "bounded", "premise_verified", "decision_required"],
+      "current_state": "decision_required",
+      "dedup": {
+        "drift_key": "sha256:a3c111548edd1668b2f4c0ff4263173fd932e1352faef38e095a96c8d30e6ea1",
+        "components": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "adapter_id": "adapter:buzz-acp",
+          "reviewed_from_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+          "observed_to_commit": "2222222222222222222222222222222222222222",
+          "normalized_diff_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sorted_surface_ids": ["acp-runtime"]
+        },
+        "search": {
+          "searched_at": "2026-08-04T19:20:00Z",
+          "scopes": ["missions", "todos", "open_closed_issues", "open_closed_prs", "verified_merged_fixes", "local_records"],
+          "evidence_refs": ["dedup-search:buzz:feature-opportunity"]
+        },
+        "follow_up_refs": []
+      },
+      "resolution_rationale": "Keep a decision-ready mission note until scope and fixtures are terminal."
+    },
+    {
+      "record_id": "drift:buzz:actionable",
+      "observation_ref": "observation:buzz:breaking",
+      "assessment_ref": "assessment:buzz:breaking",
+      "state_history": ["detected", "bounded", "premise_verified", "fixtures_terminal", "actionable"],
+      "current_state": "actionable",
+      "dedup": {
+        "drift_key": "sha256:01fc6fadfc92cb4b73ead38a8d361a64c745de2c55e39217a85d4fa1ff0b56b5",
+        "components": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "adapter_id": "adapter:buzz-acp",
+          "reviewed_from_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+          "observed_to_commit": "3333333333333333333333333333333333333333",
+          "normalized_diff_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sorted_surface_ids": ["acp-runtime", "managed-agent-apis"]
+        },
+        "search": {
+          "searched_at": "2026-08-04T19:40:00Z",
+          "scopes": ["missions", "todos", "open_closed_issues", "open_closed_prs", "verified_merged_fixes", "local_records"],
+          "evidence_refs": ["dedup-search:buzz:breaking"]
+        },
+        "follow_up_refs": ["issue:buzz:breaking"]
+      },
+      "actionability": {
+        "exact_impact": "Managed-agent saves omit the required ACP runtime argument and break a supported adapter path.",
+        "local_files": [".agents/scripts/buzz-helper.sh"],
+        "local_tests": [".agents/scripts/tests/test-tool-install-buzz.sh"],
+        "worker_ready_brief_ref": "brief:buzz:breaking:v2",
+        "schema_v2_ready": true,
+        "publication_authority_ref": "authority:upstream-watch:owner"
+      },
+      "implementation_issue_ref": "issue:buzz:breaking",
+      "resolution_rationale": "Terminal evidence proves an actionable breaking contract with exact local scope."
+    },
+    {
+      "record_id": "drift:buzz:resolved",
+      "observation_ref": "observation:buzz:security-resolved",
+      "assessment_ref": "assessment:buzz:security-resolved",
+      "state_history": ["detected", "bounded", "premise_verified", "fixtures_terminal", "actionable", "resolved"],
+      "current_state": "resolved",
+      "dedup": {
+        "drift_key": "sha256:8cd569fa95d79c55fc451b1857f50c9178fe9e564b2cb171fe9bfb0f417dff8e",
+        "components": {
+          "source_id": "github:chidiwilliams/Buzz",
+          "adapter_id": "adapter:buzz-acp",
+          "reviewed_from_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+          "observed_to_commit": "4444444444444444444444444444444444444444",
+          "normalized_diff_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sorted_surface_ids": ["project-repository-nip", "runners-relay-mesh"]
+        },
+        "search": {
+          "searched_at": "2026-08-04T20:10:00Z",
+          "scopes": ["missions", "todos", "open_closed_issues", "open_closed_prs", "verified_merged_fixes", "local_records"],
+          "evidence_refs": ["dedup-search:buzz:security-resolved"]
+        },
+        "follow_up_refs": ["issue:buzz:security-fix"],
+        "verified_merged_fix_ref": "merged-fix:buzz:security"
+      },
+      "actionability": {
+        "exact_impact": "Relay permission semantics changed and required a bounded trust-policy adapter update.",
+        "local_files": [".agents/scripts/buzz-helper.sh"],
+        "local_tests": [".agents/scripts/tests/test-tool-install-buzz.sh"],
+        "worker_ready_brief_ref": "brief:buzz:security-fix:v2",
+        "schema_v2_ready": true,
+        "publication_authority_ref": "authority:upstream-watch:owner"
+      },
+      "implementation_issue_ref": "issue:buzz:security-fix",
+      "resolution_rationale": "The verified merged fix passed terminal fixtures and prevents recreation for this drift key.",
+      "resolved_at": "2026-08-04T20:10:00Z"
+    }
+  ]
+}

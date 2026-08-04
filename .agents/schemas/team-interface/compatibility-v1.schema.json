@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:compatibility:v1",
+  "title": "aidevops team-interface compatibility contract v1",
+  "oneOf": [
+    {"$ref": "#/$defs/compatibility_profile_document"},
+    {"$ref": "#/$defs/source_observation_document"},
+    {"$ref": "#/$defs/compatibility_assessment_document"},
+    {"$ref": "#/$defs/drift_lifecycle_document"}
+  ],
+  "$defs": {
+    "core_stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "core_reference_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/reference_id"},
+    "core_compatibility_state": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/compatibility_state"},
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "immutable_commit": {
+      "type": "string",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+    },
+    "repository_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "allOf": [
+        {"pattern": "^[A-Za-z0-9._@+*?{}\\[\\]/-]+$"},
+        {"not": {"pattern": "^/"}},
+        {"not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+        {"not": {"enum": ["*", "**", "**/*", "./**", "."]}}
+      ]
+    },
+    "reference_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/core_reference_id"}
+    },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "source_type", "version_scheme", "commit_id"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/core_stable_id"},
+        "source_type": {"enum": ["git_repository", "github_repository", "package_repository"]},
+        "version_scheme": {"enum": ["commit", "semver_tag", "release_and_commit"]},
+        "commit_id": {"$ref": "#/$defs/immutable_commit"},
+        "tag_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "release_id": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    },
+    "reviewed_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "reviewed_at", "evidence_refs"],
+      "properties": {
+        "source": {"$ref": "#/$defs/source_identity"},
+        "reviewed_at": {"type": "string", "format": "date-time"},
+        "evidence_refs": {"$ref": "#/$defs/reference_list"}
+      }
+    },
+    "checked_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "checked_at", "observation_ref", "evidence_refs"],
+      "properties": {
+        "source": {"$ref": "#/$defs/source_identity"},
+        "checked_at": {"type": "string", "format": "date-time"},
+        "observation_ref": {"$ref": "#/$defs/core_reference_id"},
+        "evidence_refs": {"$ref": "#/$defs/reference_list"}
+      }
+    },
+    "supported_source_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_commit", "maximum_reviewed_commit"],
+      "properties": {
+        "minimum_commit": {"$ref": "#/$defs/immutable_commit"},
+        "maximum_reviewed_commit": {"$ref": "#/$defs/immutable_commit"},
+        "minimum_release": {"type": "string", "minLength": 1, "maxLength": 255},
+        "maximum_reviewed_release": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    },
+    "surface_category": {
+      "enum": [
+        "managed_agent_apis",
+        "acp_runtime",
+        "teams_reconciliation",
+        "workflows_approval",
+        "project_repository_nip",
+        "runners_relay_mesh",
+        "release_install_packaging"
+      ]
+    },
+    "watched_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface_id",
+        "category",
+        "path_patterns",
+        "named_symbols",
+        "rationale",
+        "criticality",
+        "affected_local_paths",
+        "fixture_ids",
+        "expected_capability_semantics",
+        "expected_security_semantics"
+      ],
+      "properties": {
+        "surface_id": {"$ref": "#/$defs/core_stable_id"},
+        "category": {"$ref": "#/$defs/surface_category"},
+        "path_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/repository_relative_path"}
+        },
+        "named_symbols": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 255}
+        },
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "criticality": {"enum": ["low", "medium", "high", "critical"]},
+        "affected_local_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/repository_relative_path"}
+        },
+        "fixture_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_stable_id"}
+        },
+        "expected_capability_semantics": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "expected_security_semantics": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "anyOf": [
+        {"properties": {"path_patterns": {"minItems": 1}}},
+        {"properties": {"named_symbols": {"minItems": 1}}}
+      ]
+    },
+    "fixture_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "test_ref", "capability_refs"],
+      "properties": {
+        "fixture_id": {"$ref": "#/$defs/core_stable_id"},
+        "test_ref": {"$ref": "#/$defs/core_reference_id"},
+        "capability_refs": {"$ref": "#/$defs/reference_list"}
+      }
+    },
+    "fixture_suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_id", "version", "fixtures"],
+      "properties": {
+        "suite_id": {"$ref": "#/$defs/core_stable_id"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/fixture_definition"}
+        }
+      }
+    },
+    "compatibility_profile_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "provider_id",
+        "adapter_id",
+        "adapter_version",
+        "source_id",
+        "source_type",
+        "version_scheme",
+        "supported_source_range",
+        "reviewed_baseline",
+        "last_known_good_baseline",
+        "last_checked",
+        "known_limitations",
+        "required_feature_flags",
+        "fixture_suite",
+        "compatibility_state",
+        "watched_surfaces",
+        "follow_up_references"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "compatibility_profile"},
+        "profile_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "adapter_id": {"$ref": "#/$defs/core_stable_id"},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "source_id": {"$ref": "#/$defs/core_stable_id"},
+        "source_type": {"enum": ["git_repository", "github_repository", "package_repository"]},
+        "version_scheme": {"enum": ["commit", "semver_tag", "release_and_commit"]},
+        "supported_source_range": {"$ref": "#/$defs/supported_source_range"},
+        "reviewed_baseline": {"$ref": "#/$defs/reviewed_baseline"},
+        "last_known_good_baseline": {"$ref": "#/$defs/reviewed_baseline"},
+        "last_checked": {"$ref": "#/$defs/checked_baseline"},
+        "known_limitations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+        },
+        "required_feature_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_stable_id"}
+        },
+        "fixture_suite": {"$ref": "#/$defs/fixture_suite"},
+        "compatibility_state": {"$ref": "#/$defs/core_compatibility_state"},
+        "watched_surfaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/watched_surface"}
+        },
+        "follow_up_references": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        }
+      }
+    },
+    "compatibility_profile_document": {
+      "allOf": [
+        {"$ref": "#/$defs/compatibility_profile_payload"},
+        {
+          "type": "object",
+          "required": ["schema_version", "document_type"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "document_type": {"const": "compatibility_profile"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "fetch_status": {
+      "enum": ["complete", "not_modified", "failed", "partial"]
+    },
+    "source_observation_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "profile_ref",
+        "from_source",
+        "to_source",
+        "detected_at",
+        "checked_at",
+        "touched_surface_ids",
+        "normalized_diff_digest",
+        "evidence_refs",
+        "untrusted_text_digest",
+        "prompt_scan_verdict_ref",
+        "fetch_status",
+        "correlation_id",
+        "idempotency_key"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "source_observation"},
+        "observation_id": {"$ref": "#/$defs/core_stable_id"},
+        "profile_ref": {"$ref": "#/$defs/core_reference_id"},
+        "from_source": {"$ref": "#/$defs/source_identity"},
+        "to_source": {"$ref": "#/$defs/source_identity"},
+        "detected_at": {"type": "string", "format": "date-time"},
+        "checked_at": {"type": "string", "format": "date-time"},
+        "touched_surface_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_stable_id"}
+        },
+        "normalized_diff_digest": {"$ref": "#/$defs/sha256_digest"},
+        "evidence_refs": {"$ref": "#/$defs/reference_list"},
+        "untrusted_text_digest": {"$ref": "#/$defs/sha256_digest"},
+        "prompt_scan_verdict_ref": {"$ref": "#/$defs/core_reference_id"},
+        "fetch_status": {"$ref": "#/$defs/fetch_status"},
+        "correlation_id": {"$ref": "#/$defs/core_stable_id"},
+        "idempotency_key": {"$ref": "#/$defs/core_stable_id"}
+      }
+    },
+    "source_observation_document": {
+      "allOf": [
+        {"$ref": "#/$defs/source_observation_payload"},
+        {
+          "type": "object",
+          "required": ["schema_version", "document_type"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "document_type": {"const": "source_observation"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "classification": {
+      "enum": [
+        "no_impact",
+        "documentation",
+        "compatible_adapter_change",
+        "feature_opportunity",
+        "breaking_contract",
+        "security_permission_impact",
+        "unknown_review"
+      ]
+    },
+    "fixture_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "state", "terminal", "evidence_refs"],
+      "properties": {
+        "fixture_id": {"$ref": "#/$defs/core_stable_id"},
+        "state": {"enum": ["not_run", "pending", "passed", "failed", "error"]},
+        "terminal": {"type": "boolean"},
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "state": {"enum": ["not_run", "pending"]},
+            "terminal": {"const": false},
+            "evidence_refs": {"maxItems": 0}
+          }
+        },
+        {
+          "properties": {
+            "state": {"enum": ["passed", "failed", "error"]},
+            "terminal": {"const": true},
+            "evidence_refs": {"minItems": 1}
+          }
+        }
+      ]
+    },
+    "premise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "terminal", "evidence_refs"],
+      "properties": {
+        "state": {"enum": ["unknown", "confirmed", "falsified"]},
+        "terminal": {"type": "boolean"},
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "state": {"const": "unknown"},
+            "terminal": {"const": false},
+            "evidence_refs": {"maxItems": 0}
+          }
+        },
+        {
+          "properties": {
+            "state": {"enum": ["confirmed", "falsified"]},
+            "terminal": {"const": true},
+            "evidence_refs": {"minItems": 1}
+          }
+        }
+      ]
+    },
+    "compatibility_assessment_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assessment_id",
+        "observation_ref",
+        "classification",
+        "premise",
+        "affected_capability_refs",
+        "affected_security_boundaries",
+        "fixture_results",
+        "fixtures_terminal",
+        "recommended_outcome",
+        "baseline_decision",
+        "rationale"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "compatibility_assessment"},
+        "assessment_id": {"$ref": "#/$defs/core_stable_id"},
+        "observation_ref": {"$ref": "#/$defs/core_reference_id"},
+        "classification": {"$ref": "#/$defs/classification"},
+        "premise": {"$ref": "#/$defs/premise"},
+        "affected_capability_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        },
+        "affected_security_boundaries": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        },
+        "fixture_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/fixture_result"}
+        },
+        "fixtures_terminal": {"type": "boolean"},
+        "recommended_outcome": {"enum": ["no_action", "documentation_follow_up", "decision_required", "implementation_required", "security_hold"]},
+        "baseline_decision": {"enum": ["retain_last_known_good", "last_checked_only", "promote_reviewed_and_last_known_good"]},
+        "resulting_baseline": {"$ref": "#/$defs/reviewed_baseline"},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"baseline_decision": {"const": "promote_reviewed_and_last_known_good"}}},
+          "then": {"required": ["resulting_baseline"]},
+          "else": {"not": {"required": ["resulting_baseline"]}}
+        }
+      ]
+    },
+    "compatibility_assessment_document": {
+      "allOf": [
+        {"$ref": "#/$defs/compatibility_assessment_payload"},
+        {
+          "type": "object",
+          "required": ["schema_version", "document_type"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "document_type": {"const": "compatibility_assessment"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "lifecycle_state": {
+      "enum": ["detected", "bounded", "premise_verified", "fixtures_terminal", "no_action", "decision_required", "actionable", "resolved"]
+    },
+    "dedup_search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["searched_at", "scopes", "evidence_refs"],
+      "properties": {
+        "searched_at": {"type": "string", "format": "date-time"},
+        "scopes": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {"enum": ["missions", "todos", "open_closed_issues", "open_closed_prs", "verified_merged_fixes", "local_records"]}
+        },
+        "evidence_refs": {"$ref": "#/$defs/reference_list"}
+      }
+    },
+    "drift_key_components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "adapter_id", "reviewed_from_commit", "observed_to_commit", "normalized_diff_digest", "sorted_surface_ids"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/core_stable_id"},
+        "adapter_id": {"$ref": "#/$defs/core_stable_id"},
+        "reviewed_from_commit": {"$ref": "#/$defs/immutable_commit"},
+        "observed_to_commit": {"$ref": "#/$defs/immutable_commit"},
+        "normalized_diff_digest": {"$ref": "#/$defs/sha256_digest"},
+        "sorted_surface_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_stable_id"}
+        }
+      }
+    },
+    "dedup_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["drift_key", "components", "search", "follow_up_refs"],
+      "properties": {
+        "drift_key": {"$ref": "#/$defs/sha256_digest"},
+        "components": {"$ref": "#/$defs/drift_key_components"},
+        "search": {"$ref": "#/$defs/dedup_search"},
+        "follow_up_refs": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_reference_id"}
+        },
+        "verified_merged_fix_ref": {"$ref": "#/$defs/core_reference_id"}
+      }
+    },
+    "actionability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exact_impact", "local_files", "local_tests", "worker_ready_brief_ref", "schema_v2_ready", "publication_authority_ref"],
+      "properties": {
+        "exact_impact": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "local_files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/repository_relative_path"}
+        },
+        "local_tests": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/repository_relative_path"}
+        },
+        "worker_ready_brief_ref": {"$ref": "#/$defs/core_reference_id"},
+        "schema_v2_ready": {"const": true},
+        "publication_authority_ref": {"$ref": "#/$defs/core_reference_id"}
+      }
+    },
+    "lifecycle_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "observation_ref", "assessment_ref", "state_history", "current_state", "dedup", "resolution_rationale"],
+      "properties": {
+        "record_id": {"$ref": "#/$defs/core_stable_id"},
+        "observation_ref": {"$ref": "#/$defs/core_reference_id"},
+        "assessment_ref": {"$ref": "#/$defs/core_reference_id"},
+        "state_history": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/lifecycle_state"}
+        },
+        "current_state": {"$ref": "#/$defs/lifecycle_state"},
+        "dedup": {"$ref": "#/$defs/dedup_proof"},
+        "actionability": {"$ref": "#/$defs/actionability"},
+        "implementation_issue_ref": {"$ref": "#/$defs/core_reference_id"},
+        "resolution_rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "resolved_at": {"type": "string", "format": "date-time"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["implementation_issue_ref"]},
+          "then": {
+            "required": ["actionability"],
+            "properties": {"current_state": {"enum": ["actionable", "resolved"]}}
+          }
+        },
+        {
+          "if": {"properties": {"current_state": {"const": "actionable"}}},
+          "then": {"required": ["actionability", "implementation_issue_ref"]}
+        },
+        {
+          "if": {"properties": {"current_state": {"const": "resolved"}}},
+          "then": {"required": ["resolved_at"]},
+          "else": {"not": {"required": ["resolved_at"]}}
+        }
+      ]
+    },
+    "drift_lifecycle_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "lifecycle_id", "profile_ref", "observations", "assessments", "records"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "drift_lifecycle"},
+        "lifecycle_id": {"$ref": "#/$defs/core_stable_id"},
+        "profile_ref": {"$ref": "#/$defs/core_reference_id"},
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/source_observation_payload"}
+        },
+        "assessments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/compatibility_assessment_payload"}
+        },
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/lifecycle_record"}
+        }
+      }
+    }
+  }
+}

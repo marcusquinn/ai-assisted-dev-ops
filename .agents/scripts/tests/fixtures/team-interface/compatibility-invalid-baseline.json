@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "name": "pending fixture promoted to last known good",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:no-impact", "op": "set", "path": "fixture_results.0", "value": {"fixture_id": "fixture:buzz-acp-runtime", "state": "pending", "terminal": false, "evidence_refs": []}},
+        {"target": "assessment", "id": "assessment:buzz:no-impact", "op": "set", "path": "fixtures_terminal", "value": false}
+      ]
+    },
+    {
+      "name": "failed fixture promoted to last known good",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:no-impact", "op": "set", "path": "fixture_results.0", "value": {"fixture_id": "fixture:buzz-acp-runtime", "state": "failed", "terminal": true, "evidence_refs": ["test-run:buzz:failed"]}}
+      ]
+    },
+    {
+      "name": "unknown assessment promoted to last known good",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:no-impact", "op": "set", "path": "classification", "value": "unknown_review"}
+      ]
+    },
+    {
+      "name": "error fixture invalidates prior good baseline",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:no-impact", "op": "set", "path": "fixture_results.0", "value": {"fixture_id": "fixture:buzz-acp-runtime", "state": "error", "terminal": true, "evidence_refs": ["test-run:buzz:error"]}}
+      ]
+    }
+  ]
+}

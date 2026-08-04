@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "document_type": "compatibility_profile",
+  "profile_id": "compatibility:buzz-acp:v1",
+  "provider_id": "provider:buzz",
+  "adapter_id": "adapter:buzz-acp",
+  "adapter_version": "1.0.0",
+  "source_id": "github:chidiwilliams/Buzz",
+  "source_type": "github_repository",
+  "version_scheme": "release_and_commit",
+  "supported_source_range": {
+    "minimum_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+    "maximum_reviewed_commit": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+    "minimum_release": "v0.5.4",
+    "maximum_reviewed_release": "v0.5.4"
+  },
+  "reviewed_baseline": {
+    "source": {
+      "source_id": "github:chidiwilliams/Buzz",
+      "source_type": "github_repository",
+      "version_scheme": "release_and_commit",
+      "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+      "tag_id": "v0.5.4",
+      "release_id": "v0.5.4"
+    },
+    "reviewed_at": "2026-08-04T18:00:00Z",
+    "evidence_refs": ["evidence:buzz-source-review:v1"]
+  },
+  "last_known_good_baseline": {
+    "source": {
+      "source_id": "github:chidiwilliams/Buzz",
+      "source_type": "github_repository",
+      "version_scheme": "release_and_commit",
+      "commit_id": "0afeac8a7c173fd3ede8a22e27919e63161bf07c",
+      "tag_id": "v0.5.4",
+      "release_id": "v0.5.4"
+    },
+    "reviewed_at": "2026-08-04T18:00:00Z",
+    "evidence_refs": ["evidence:buzz-fixtures:v1"]
+  },
+  "last_checked": {
+    "source": {
+      "source_id": "github:chidiwilliams/Buzz",
+      "source_type": "github_repository",
+      "version_scheme": "release_and_commit",
+      "commit_id": "1111111111111111111111111111111111111111",
+      "tag_id": "v0.5.5",
+      "release_id": "v0.5.5"
+    },
+    "checked_at": "2026-08-04T19:00:00Z",
+    "observation_ref": "observation:buzz:no-impact",
+    "evidence_refs": ["evidence:buzz-check:v0.5.5"]
+  },
+  "known_limitations": [
+    "The profile is contract-only and does not add Buzz to the live upstream watchlist.",
+    "Unknown schema, adapter, or fixture versions require bounded review."
+  ],
+  "required_feature_flags": ["feature:buzz-acp-managed-agent"],
+  "fixture_suite": {
+    "suite_id": "fixtures:buzz-compatibility",
+    "version": "1.0.0",
+    "fixtures": [
+      {
+        "fixture_id": "fixture:buzz-managed-agent",
+        "test_ref": "test:team-interface:buzz-managed-agent",
+        "capability_refs": ["capability:agent:create", "capability:agent:update"]
+      },
+      {
+        "fixture_id": "fixture:buzz-acp-runtime",
+        "test_ref": "test:team-interface:buzz-acp-runtime",
+        "capability_refs": ["capability:agent:send", "capability:agent:receive"]
+      },
+      {
+        "fixture_id": "fixture:buzz-teams",
+        "test_ref": "test:team-interface:buzz-teams",
+        "capability_refs": ["capability:team:update"]
+      },
+      {
+        "fixture_id": "fixture:buzz-workflows",
+        "test_ref": "test:team-interface:buzz-workflows",
+        "capability_refs": ["capability:workflow:approve"]
+      },
+      {
+        "fixture_id": "fixture:buzz-projects",
+        "test_ref": "test:team-interface:buzz-projects",
+        "capability_refs": ["capability:project:read"]
+      },
+      {
+        "fixture_id": "fixture:buzz-runners",
+        "test_ref": "test:team-interface:buzz-runners",
+        "capability_refs": ["capability:runner:dispatch"]
+      },
+      {
+        "fixture_id": "fixture:buzz-packaging",
+        "test_ref": "test:team-interface:buzz-packaging",
+        "capability_refs": ["capability:release:discover"]
+      }
+    ]
+  },
+  "compatibility_state": "compatible",
+  "watched_surfaces": [
+    {
+      "surface_id": "managed-agent-apis",
+      "category": "managed_agent_apis",
+      "path_patterns": ["src-tauri/src/agents/**", "src/lib/agents/**"],
+      "named_symbols": ["ManagedAgent", "saveManagedAgent", "updateManagedAgent"],
+      "rationale": "Managed-agent persistence controls whether the aidevops ACP adapter can be created and repaired safely.",
+      "criticality": "high",
+      "affected_local_paths": [".agents/scripts/buzz-helper.sh", "README.md"],
+      "fixture_ids": ["fixture:buzz-managed-agent"],
+      "expected_capability_semantics": "Create and update managed agents while preserving required ACP runtime arguments.",
+      "expected_security_semantics": "Never expose managed-agent store contents or bypass ownership checks."
+    },
+    {
+      "surface_id": "acp-runtime",
+      "category": "acp_runtime",
+      "path_patterns": ["src-tauri/src/acp/**", "src/lib/acp/**"],
+      "named_symbols": ["model", "effort", "title", "event", "permission", "session"],
+      "rationale": "ACP model, effort, title, event, permission, and session contracts define adapter interoperability.",
+      "criticality": "critical",
+      "affected_local_paths": [".agents/scripts/buzz-helper.sh", ".agents/reference/team-interfaces.md"],
+      "fixture_ids": ["fixture:buzz-acp-runtime"],
+      "expected_capability_semantics": "Normalize ACP sessions and events without binding the core contract to a concrete model.",
+      "expected_security_semantics": "Permission and session changes fail closed until terminal fixtures pass."
+    },
+    {
+      "surface_id": "teams-reconciliation",
+      "category": "teams_reconciliation",
+      "path_patterns": ["src-tauri/src/teams/**", "src/lib/teams/**"],
+      "named_symbols": ["Team", "reconcileTeam"],
+      "rationale": "Team membership and reconciliation affect stable app-team bindings.",
+      "criticality": "high",
+      "affected_local_paths": [".agents/schemas/team-interface/app-team-v1.schema.json"],
+      "fixture_ids": ["fixture:buzz-teams"],
+      "expected_capability_semantics": "Reconciliation retains stable team and specialist references.",
+      "expected_security_semantics": "Reconciliation cannot widen membership or authority implicitly."
+    },
+    {
+      "surface_id": "workflows-approval",
+      "category": "workflows_approval",
+      "path_patterns": ["src-tauri/src/workflows/**", "src/lib/workflows/**"],
+      "named_symbols": ["Workflow", "ApprovalRequest"],
+      "rationale": "Workflow approval remains separate from execution eligibility and publication authority.",
+      "criticality": "critical",
+      "affected_local_paths": [".agents/schemas/team-interface/trust-v1.schema.json"],
+      "fixture_ids": ["fixture:buzz-workflows"],
+      "expected_capability_semantics": "Approval state remains explicit and auditable.",
+      "expected_security_semantics": "No upstream text or scanner verdict can grant approval."
+    },
+    {
+      "surface_id": "project-repository-nip",
+      "category": "project_repository_nip",
+      "path_patterns": ["src-tauri/src/projects/**", "src-tauri/src/repositories/**", "src-tauri/src/nostr/**"],
+      "named_symbols": ["Project", "Repository", "NipProfile"],
+      "rationale": "Project, repository, and NIP identity changes affect resource binding and trust lineage.",
+      "criticality": "critical",
+      "affected_local_paths": [".agents/schemas/team-interface/core-v1.schema.json", ".agents/services/communications/nostr.md"],
+      "fixture_ids": ["fixture:buzz-projects"],
+      "expected_capability_semantics": "Project and repository resources retain stable provider identities.",
+      "expected_security_semantics": "NIP identity and permission changes require explicit trust-boundary evidence."
+    },
+    {
+      "surface_id": "runners-relay-mesh",
+      "category": "runners_relay_mesh",
+      "path_patterns": ["src-tauri/src/runners/**", "src-tauri/src/relay/**"],
+      "named_symbols": ["Runner", "RelayMesh"],
+      "rationale": "Runner eligibility and relay routing affect where trusted work may execute.",
+      "criticality": "critical",
+      "affected_local_paths": [".agents/reference/cross-runner-coordination.md"],
+      "fixture_ids": ["fixture:buzz-runners"],
+      "expected_capability_semantics": "Dispatch preserves correlation, idempotency, and runner eligibility.",
+      "expected_security_semantics": "Relay topology cannot bypass runner trust or credential boundaries."
+    },
+    {
+      "surface_id": "release-install-packaging",
+      "category": "release_install_packaging",
+      "path_patterns": ["src-tauri/tauri.conf.json", ".github/workflows/release.yml", "package.json"],
+      "named_symbols": ["version", "bundle", "updater"],
+      "rationale": "Release and install packaging changes determine whether compatibility remediation remains reversible.",
+      "criticality": "high",
+      "affected_local_paths": ["setup.sh", ".agents/scripts/buzz-helper.sh", "README.md"],
+      "fixture_ids": ["fixture:buzz-packaging"],
+      "expected_capability_semantics": "Release detection records exact immutable source identity before compatibility review.",
+      "expected_security_semantics": "Packaging instructions are untrusted evidence and are never executed by the watcher."
+    }
+  ],
+  "follow_up_references": ["mission:m-20260804-5d06b1", "issue:29506"]
+}

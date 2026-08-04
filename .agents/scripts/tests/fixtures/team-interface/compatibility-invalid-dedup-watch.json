@@ -1,0 +1,85 @@
+{
+  "cases": [
+    {
+      "name": "truncated immutable source identity",
+      "document": "profile",
+      "operations": [
+        {"target": "document", "op": "set", "path": "reviewed_baseline.source.commit_id", "value": "0afeac8"}
+      ]
+    },
+    {
+      "name": "absolute watch path",
+      "document": "profile",
+      "operations": [
+        {"target": "surface", "id": "managed-agent-apis", "op": "set", "path": "path_patterns.0", "value": "/src/agents/**"}
+      ]
+    },
+    {
+      "name": "traversal watch path",
+      "document": "profile",
+      "operations": [
+        {"target": "surface", "id": "managed-agent-apis", "op": "set", "path": "path_patterns.0", "value": "../src/**"}
+      ]
+    },
+    {
+      "name": "unbounded whole repository watch",
+      "document": "profile",
+      "operations": [
+        {"target": "surface", "id": "managed-agent-apis", "op": "set", "path": "path_patterns", "value": ["**/*"]}
+      ]
+    },
+    {
+      "name": "empty path and symbol watch",
+      "document": "profile",
+      "operations": [
+        {"target": "surface", "id": "managed-agent-apis", "op": "set", "path": "path_patterns", "value": []},
+        {"target": "surface", "id": "managed-agent-apis", "op": "set", "path": "named_symbols", "value": []}
+      ]
+    },
+    {
+      "name": "duplicate surface ID",
+      "document": "profile",
+      "operations": [
+        {"target": "surface", "id": "acp-runtime", "op": "set", "path": "surface_id", "value": "managed-agent-apis"}
+      ]
+    },
+    {
+      "name": "source observation outside declared watch set",
+      "document": "lifecycle",
+      "operations": [
+        {"target": "observation", "id": "observation:buzz:breaking", "op": "set", "path": "touched_surface_ids", "value": ["unknown-surface"]},
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "dedup.components.sorted_surface_ids", "value": ["unknown-surface"]}
+      ]
+    },
+    {
+      "name": "unsorted watched surface key",
+      "document": "lifecycle",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "dedup.components.sorted_surface_ids", "value": ["managed-agent-apis", "acp-runtime"]}
+      ]
+    },
+    {
+      "name": "unstable drift key after reclassification",
+      "document": "lifecycle",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:breaking", "op": "set", "path": "classification", "value": "compatible_adapter_change"},
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "dedup.drift_key", "value": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+      ]
+    },
+    {
+      "name": "duplicate follow-up publication",
+      "document": "lifecycle",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "dedup.follow_up_refs", "value": ["issue:buzz:breaking", "issue:buzz:breaking-duplicate"]}
+      ]
+    },
+    {
+      "name": "verified merged fix recreated as actionable",
+      "document": "lifecycle",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:resolved", "op": "set", "path": "current_state", "value": "actionable"},
+        {"target": "record", "id": "drift:buzz:resolved", "op": "delete", "path": "resolved_at"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "name": "detected record carries implementation issue",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "current_state", "value": "detected"},
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "state_history", "value": ["detected"]}
+      ]
+    },
+    {
+      "name": "unverified premise enters actionable",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:breaking", "op": "set", "path": "premise", "value": {"state": "unknown", "terminal": false, "evidence_refs": []}}
+      ]
+    },
+    {
+      "name": "pending fixture enters actionable",
+      "operations": [
+        {"target": "assessment", "id": "assessment:buzz:breaking", "op": "set", "path": "fixture_results.0", "value": {"fixture_id": "fixture:buzz-managed-agent", "state": "pending", "terminal": false, "evidence_refs": []}},
+        {"target": "assessment", "id": "assessment:buzz:breaking", "op": "set", "path": "fixtures_terminal", "value": false}
+      ]
+    },
+    {
+      "name": "worker ready file scope missing",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "actionability.local_files", "value": []}
+      ]
+    },
+    {
+      "name": "worker ready test scope missing",
+      "operations": [
+        {"target": "record", "id": "drift:buzz:actionable", "op": "set", "path": "actionability.local_tests", "value": []}
+      ]
+    }
+  ]
+}
