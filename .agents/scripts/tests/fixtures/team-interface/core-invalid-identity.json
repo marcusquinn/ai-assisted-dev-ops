@@ -1,0 +1,40 @@
+{
+  "cases": [
+    {
+      "schema_version": 1,
+      "document_type": "registry",
+      "registry_id": "registry.display-name-negative",
+      "providers": [],
+      "communities": [],
+      "accounts": [],
+      "identities": [{"display_label": "Mutable name only"}],
+      "resources": []
+    },
+    {
+      "schema_version": 1,
+      "document_type": "registry",
+      "registry_id": "registry.unverified-negative",
+      "providers": [],
+      "communities": [],
+      "accounts": [],
+      "identities": [
+        {
+          "identity_id": "identity.unverified",
+          "subject_id": "subject.unknown",
+          "subject_type": "human",
+          "provider_identity_id": "provider-identity.unverified",
+          "provider_id": "matrix",
+          "community_id": "community.matrix.primary",
+          "provider_external_id": "@unknown:example.invalid",
+          "display_label": "Unknown",
+          "verification": {
+            "status": "unverified",
+            "method": "provider_session",
+            "evidence_ref": "evidence:matrix:unknown"
+          }
+        }
+      ],
+      "resources": []
+    }
+  ]
+}

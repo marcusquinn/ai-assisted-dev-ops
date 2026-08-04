@@ -1,0 +1,103 @@
+{
+  "cases": [
+    {
+      "missing": "correlation_id",
+      "document": {
+        "schema_version": 1,
+        "document_type": "event",
+        "event": {
+          "event_id": "event.missing.correlation",
+          "direction": "inbox",
+          "provider_id": "matrix",
+          "provider_version": "v1.13",
+          "lineage": {
+            "community_id": "community.matrix.primary",
+            "conversation_resource_id": "resource.matrix.channel",
+            "provider_event_id": "$missing-correlation"
+          },
+          "verified_actor": {
+            "subject_id": "subject.alice",
+            "subject_type": "human",
+            "roles": ["owner"],
+            "verification": {"status": "verified", "method": "provider_signature", "evidence_ref": "evidence:event:1"},
+            "signature_status": "verified"
+          },
+          "target": {"agent_ref": "agent:build", "app_team_ref": "app-team:ops"},
+          "content": {"content_type": "text/plain", "attachments": [], "metadata": {}},
+          "requested_operation": "read",
+          "authority_scope": {"scopes": ["resource:read"], "broker_decision_ref": "authority:1"},
+          "trust_profile_ref": "trust:standard",
+          "scan_verdict_ref": "scan:1",
+          "idempotency_key": "idempotency.event.1",
+          "occurred_at": "2026-08-04T20:00:00Z"
+        }
+      }
+    },
+    {
+      "missing": "idempotency_key",
+      "document": {
+        "schema_version": 1,
+        "document_type": "event",
+        "event": {
+          "event_id": "event.missing.idempotency",
+          "direction": "inbox",
+          "provider_id": "matrix",
+          "provider_version": "v1.13",
+          "lineage": {
+            "community_id": "community.matrix.primary",
+            "conversation_resource_id": "resource.matrix.channel",
+            "provider_event_id": "$missing-idempotency"
+          },
+          "verified_actor": {
+            "subject_id": "subject.alice",
+            "subject_type": "human",
+            "roles": ["owner"],
+            "verification": {"status": "verified", "method": "provider_signature", "evidence_ref": "evidence:event:2"},
+            "signature_status": "verified"
+          },
+          "target": {"agent_ref": "agent:build", "app_team_ref": "app-team:ops"},
+          "content": {"content_type": "text/plain", "attachments": [], "metadata": {}},
+          "requested_operation": "read",
+          "authority_scope": {"scopes": ["resource:read"], "broker_decision_ref": "authority:2"},
+          "trust_profile_ref": "trust:standard",
+          "scan_verdict_ref": "scan:2",
+          "correlation_id": "correlation.event.2",
+          "occurred_at": "2026-08-04T20:00:00Z"
+        }
+      }
+    },
+    {
+      "missing": "authority_scope",
+      "document": {
+        "schema_version": 1,
+        "document_type": "event",
+        "event": {
+          "event_id": "event.missing.authority",
+          "direction": "outbox",
+          "provider_id": "buzz",
+          "provider_version": "0afeac8",
+          "lineage": {
+            "community_id": "community.buzz.primary",
+            "conversation_resource_id": "resource.buzz.conversation",
+            "provider_event_id": "event/opaque-missing-authority"
+          },
+          "verified_actor": {
+            "subject_id": "subject.agent.primary",
+            "subject_type": "agent",
+            "roles": ["assistant"],
+            "verification": {"status": "verified", "method": "broker_attestation", "evidence_ref": "evidence:event:3"},
+            "signature_status": "not_present"
+          },
+          "target": {"agent_ref": "agent:build", "app_team_ref": "app-team:ops"},
+          "content": {"content_type": "text/plain", "attachments": [], "metadata": {}},
+          "requested_operation": "send",
+          "trust_profile_ref": "trust:restricted",
+          "scan_verdict_ref": "scan:3",
+          "correlation_id": "correlation.event.3",
+          "idempotency_key": "idempotency.event.3",
+          "occurred_at": "2026-08-04T20:00:00Z"
+        }
+      }
+    }
+  ]
+}
