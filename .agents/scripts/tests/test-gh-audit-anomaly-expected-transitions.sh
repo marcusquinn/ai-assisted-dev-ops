@@ -26,13 +26,30 @@ fail() {
 
 TEST_ROOT="$(mktemp -d -t aidevops-gh-anomaly-XXXXXX)"
 LOG_FILE="${TEST_ROOT}/gh-audit.log"
+mkdir -p "${TEST_ROOT}/bin"
+cat >"${TEST_ROOT}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/public/repo" ]]; then
+	printf '%s\n' public
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/private/repo" ]]; then
+	printf '%s\n' private
+	exit 0
+fi
+exit 1
+EOF
+chmod +x "${TEST_ROOT}/bin/gh"
+PATH="${TEST_ROOT}/bin:$PATH"
+export PATH
 
 cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:00:00Z","op":"issue_edit","repo":"example/repo","number":1,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 {"ts":"2026-07-31T00:01:00Z","op":"issue_edit","repo":"example/repo","number":2,"caller_script":"/workspace/.agents/scripts/approval-helper.sh","caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
-{"ts":"2026-07-31T00:02:00Z","op":"issue_edit","repo":"example/repo","number":3,"caller_script":"/tmp/close-issue.sh","caller_function":"main","before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:done"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-review"],"labels_added":["status:done"]},"suspicious":["protected_label_removed:status:in-review"]}
-{"ts":"2026-07-31T00:03:00Z","op":"issue_edit","repo":"example/repo","number":4,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":0,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":-100,"labels_removed":["needs-maintainer-review"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:needs-maintainer-review","body_delta_pct=-100"]}
-{"ts":"2026-07-31T00:04:00Z","op":"issue_edit","repo":"example/repo","number":5,"caller_script":42,"caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
+{"ts":"2026-07-31T00:02:00Z","op":"issue_edit","repo":"private/repo","number":3,"caller_script":"/tmp/close-issue.sh","caller_function":"main","before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:done"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-review"],"labels_added":["status:done"]},"suspicious":["protected_label_removed:status:in-review"]}
+{"ts":"2026-07-31T00:03:00Z","op":"issue_edit","repo":"inaccessible/repo","number":4,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":0,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":-100,"labels_removed":["needs-maintainer-review"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:needs-maintainer-review","body_delta_pct=-100"]}
+{"ts":"2026-07-31T00:04:00Z","op":"issue_edit","repo":"public/repo","number":5,"caller_script":42,"caller_function":"_approval_apply_issue_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 {"ts":"2026-07-31T00:05:00Z","op":"issue_edit","repo":"example/repo","number":6,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_issue_lifecycle_updates","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 {"ts":"2026-07-31T00:06:00Z","op":"pr_edit","repo":"example/repo","number":7,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_pr_lifecycle_updates","flags":{"approval_verified":"v2-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 {"ts":"2026-07-31T00:07:00Z","op":"pr_edit","repo":"example/repo","number":8,"caller_script":"/runtime/agents/scripts/approval-helper.sh","caller_function":"_approval_apply_pr_lifecycle_updates","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
@@ -63,6 +80,10 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #15 |"* ]] || fail "unverified trusted-author NMR removal was hidden"
 [[ "$output" == *"| #16 |"* ]] || fail "trusted-author NMR transition with an additional signal was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
+[[ "$output" != *"private/repo"* ]] || fail "private repository name leaked into the report"
+[[ "$output" != *"inaccessible/repo"* ]] || fail "unverified repository name leaked into the report"
+[[ "$output" == *"[private repository]"* ]] || fail "redacted repository placeholder was missing"
+[[ "$output" == *"public/repo"* ]] || fail "verified public repository name was redacted"
 [[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* &&
 	"$output" != *"| #14 |"* && "$output" != *"| #17 |"* ]] ||
 	fail "an exact expected transition remained actionable"

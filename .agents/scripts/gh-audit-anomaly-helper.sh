@@ -40,6 +40,7 @@ readonly GH_ANOMALY_LOG_FILENAME="gh-audit.log"
 readonly GH_ANOMALY_DEFAULT_REPO="marcusquinn/aidevops"
 readonly GH_ANOMALY_NMR_LABEL="needs-maintainer-review"
 readonly GH_ANOMALY_PERMISSION_LABEL="needs-maintainer-permissions"
+readonly GH_ANOMALY_REDACTED_REPO="[private repository]"
 # Maximum anomaly entries to include in an issue (prevents overly large issues)
 readonly GH_ANOMALY_MAX_ISSUE_ENTRIES=20
 
@@ -119,26 +120,55 @@ _ga_write_state() {
 	return 0
 }
 
+# Return a report-safe repository name. The scanner files into a potentially
+# public repository, so source repositories must fail closed when visibility
+# cannot be proven public. The destination repository is safe to name in its
+# own issue because the issue URL already discloses it.
+# Args: source repo, destination repo
+_ga_report_repo_name() {
+	local source_repo="$1"
+	local issue_repo="$2"
+	local visibility=""
+
+	if [[ -n "$source_repo" && "$source_repo" == "$issue_repo" ]]; then
+		printf '%s\n' "$source_repo"
+		return 0
+	fi
+
+	if [[ "$source_repo" =~ ^[^/]+/[^/]+$ ]] && command -v gh &>/dev/null; then
+		visibility=$(gh api "repos/${source_repo}" --jq '.visibility // (if .private == false then "public" else "private" end)' 2>/dev/null) || visibility=""
+	fi
+	if [[ "$visibility" == "public" ]]; then
+		printf '%s\n' "$source_repo"
+		return 0
+	fi
+
+	printf '%s\n' "$GH_ANOMALY_REDACTED_REPO"
+	return 0
+}
+
 # Format a single anomaly entry for the issue body markdown table.
-# Input: NDJSON line
+# Input: NDJSON line, destination issue repo
 # Output: markdown table row
 _ga_format_anomaly_row() {
 	local entry="$1"
+	local issue_repo="$2"
 	if ! command -v jq &>/dev/null; then
 		echo "| (jq required) | | | | |"
 		return 0
 	fi
 
-	local ts op repo number suspicious caller_function
+	local ts op repo report_repo number suspicious caller_function
 	ts=$(printf '%s' "$entry" | jq -r '.ts // "?"')
 	op=$(printf '%s' "$entry" | jq -r '.op // "?"')
 	repo=$(printf '%s' "$entry" | jq -r '.repo // "?"')
+	report_repo="$(_ga_report_repo_name "$repo" "$issue_repo")"
 	number=$(printf '%s' "$entry" | jq -r '.number // "?"')
 	suspicious=$(printf '%s' "$entry" | jq -r '.suspicious | join(", ")' 2>/dev/null || echo "?")
 	caller_function=$(printf '%s' "$entry" | jq -r '.caller_function // "?"')
 
 	printf '| %s | %s | %s | #%s | %s | %s |\n' \
-		"$ts" "$op" "$repo" "$number" "$suspicious" "$caller_function"
+		"$ts" "$op" "$report_repo" "$number" "$suspicious" "$caller_function"
 
 	return 0
 }
@@ -231,11 +261,12 @@ _cmd_scan_collect_anomalies() {
 }
 
 # Build the markdown issue body for an anomaly report.
-# Args: scan_ts anomaly_count skip_count total_lines entry1 entry2 ...
+# Args: scan_ts anomaly_count skip_count total_lines issue_repo entry1 entry2 ...
 # Output: issue body markdown on stdout.
 _cmd_scan_build_issue_body() {
 	local scan_ts="$1" anomaly_count="$2" skip_count="$3" total_lines="$4"
-	shift 4
+	local issue_repo="$5"
+	shift 5
 
 	# Header (heredoc is easier to review than concatenation).
 	cat <<BODY
@@ -258,7 +289,7 @@ BODY
 				"$anomaly_count" "$GH_ANOMALY_MAX_ISSUE_ENTRIES"
 			break
 		fi
-		_ga_format_anomaly_row "$entry"
+		_ga_format_anomaly_row "$entry" "$issue_repo"
 		included=$((included + 1))
 	done
 
@@ -386,7 +417,7 @@ cmd_scan() {
 	local body_file
 	body_file="$(mktemp -t gh-audit-anomaly-body.XXXXXX)"
 	_cmd_scan_build_issue_body "$scan_ts" "$anomaly_count" "$skip_count" \
-		"$total_lines" "${_sc_anomaly_entries[@]}" >"$body_file"
+		"$total_lines" "$_sc_issue_repo" "${_sc_anomaly_entries[@]}" >"$body_file"
 
 	if [[ "$_sc_dry_run" -eq 1 ]]; then
 		_ga_info "DRY RUN — anomalies found, would file issue on ${_sc_issue_repo}"

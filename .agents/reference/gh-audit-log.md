@@ -256,7 +256,9 @@ The scanner:
    normalization, and worker permission blocking that replaces active lifecycle
    labels with `needs-maintainer-permissions` (the original audit entry remains
    unchanged)
-3. Files a GitHub issue on `marcusquinn/aidevops` with a summary table when anomalies are found
+3. Redacts source repository names unless GitHub confirms they are public (or
+   they match the destination repository), failing closed on lookup errors
+4. Files a GitHub issue on `marcusquinn/aidevops` with a summary table when anomalies are found
 
 To run the scanner manually:
 
