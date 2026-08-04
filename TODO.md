@@ -118,7 +118,6 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [ ] t18128 Cache PR check status by head SHA and refresh actionable changes — reuse terminal aggregate state for immutable heads, refresh pending/unknown state on bounded policy, and keep final required-check/merge authority live. #enhancement #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:standard parent:t18124 blocked-by:t18127 blocks:t18129 ref:GH#27772 logged:2026-07-15 -> [todo/tasks/t18128-brief.md]
 - [ ] t18129 Add cross-process single-flight and shared rate-limit state — consolidate fallback/circuit state and coalesce exact cacheable reads with scoped keys, leases, fencing, bounded waits, and stale-leader recovery. #enhancement #framework #pulse #github-api #reliability #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18128 blocks:t18130 ref:GH#27774 logged:2026-07-15 -> [todo/tasks/t18129-brief.md]
 - [ ] t18130 Invalidate canonical GitHub state from verified webhooks — deduplicate authenticated deliveries, map events to narrow snapshot/head-SHA invalidations before PR processing, and retain secure loopback plus polling fallback. #enhancement #security #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18129 blocks:t18131 ref:GH#27776 logged:2026-07-15 -> [todo/tasks/t18130-brief.md]
-- [ ] t18131 Benchmark API savings, tune rollout, and retire flags — compare equivalent baseline/canary windows, enforce correctness/freshness guardrails, tune bounded defaults, and clean up flags only after evidence. #enhancement #framework #pulse #github-api #observability #efficiency #auto-dispatch ~2h tier:standard parent:t18124 blocked-by:t18130 ref:GH#27777 logged:2026-07-15 -> [todo/tasks/t18131-brief.md]
 - [ ] t18133 Normalize raw PR creation origin provenance — make managed headless `gh pr create` calls preserve one session-origin label so worker drafts enter stale-checkpoint recovery without weakening protected drafts or external-write gates. #bug #framework #pulse #auto-dispatch ~2h tier:standard ref:GH#27802 logged:2026-07-15 -> [todo/tasks/t18133-brief.md]
 - [x] t18134 Eliminate jq E2BIG in objective reconciliation — move known-large issue and PR arrays off argv, preserve the objective payload exactly, and extend the existing large-JSON regression guard. #bug #framework #pulse #reliability #auto-dispatch ~1.5h tier:standard ref:GH#27803 logged:2026-07-15 -> [todo/tasks/t18134-brief.md] pr:#27875 completed:2026-07-15
 - [x] t18135 Preserve privacy scanning through native gh reads — let cold-cache privacy probes use the shim-resolved native GitHub CLI for both auth and repository visibility while retaining standalone behavior and the recursion sentinel. #bug #security #framework #privacy #auto-dispatch ~2h tier:standard ref:GH#27804 logged:2026-07-15 -> [todo/tasks/t18135-brief.md] pr:#27876 completed:2026-07-15
@@ -1275,6 +1274,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18131 Benchmark API savings, tune rollout, and retire flags — compare equivalent baseline/canary windows, enforce correctness/freshness guardrails, tune bounded defaults, and clean up flags only after evidence. #enhancement #framework #pulse #github-api #observability #efficiency #auto-dispatch ~2h tier:standard parent:t18124 blocked-by:t18130 ref:GH#27777 logged:2026-07-15 -> [todo/tasks/t18131-brief.md] pr:#29481 testing:runtime-verified completed:2026-08-04
 - [x] t18192 Pulse: refill all available worker slots immediately after worker exit #feat #performance #priority:high ref:GH#29448 -> [todo/tasks/t18192-brief.md] pr:#29450 testing:runtime-verified completed:2026-08-04
 - [x] t18079 Add safe macOS activity cleaner command and subagent #enhancement ref:GH#26917 pr:#26946 testing:runtime-verified completed:2026-07-10
 - [x] t3600 Expand app-stack architecture guidance #documentation ref:GH#24827 pr:#24826 testing:runtime-verified completed:2026-06-15
@@ -4653,8 +4653,6 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18129 Add cross-process single-flight and shared rate-limit state #auto-dispatch #efficiency #enhancement #framework #github-api #pulse #reliability ref:GH#27774
 
 - [ ] t18130 Invalidate canonical GitHub state from verified webhooks #auto-dispatch #efficiency #enhancement #framework #github-api #pulse #security ref:GH#27776
-
-- [ ] t18131 Benchmark API savings, tune rollout, and retire flags #auto-dispatch #efficiency #enhancement #framework #github-api #observability #pulse ref:GH#27777
 
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #auto-dispatch #bug #framework #reliability ref:GH#27821
 
