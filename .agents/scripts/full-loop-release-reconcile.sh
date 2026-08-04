@@ -25,6 +25,7 @@ _FULL_LOOP_RELEASE_STEP_QUEUE_POSTFLIGHT="Queue exact-tag postflight"
 _FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
 _FULL_LOOP_RELEASE_TRUE="true"
 _FULL_LOOP_RELEASE_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+_FULL_LOOP_RELEASE_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 # shellcheck source=./version-manager-protected-main.sh
 source "${SCRIPT_DIR}/version-manager-protected-main.sh"
@@ -823,7 +824,7 @@ _full_loop_release_write_protected_successor_receipt() {
 	[[ "$source_tag" =~ $_FULL_LOOP_RELEASE_VERSION_TAG_REGEX && "$source_tag" != "$release_tag" ]] || return 1
 	[[ "$source_tag_object" =~ $_FULL_LOOP_SHA40_REGEX && "$source_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	[[ "$source_commit" != "$release_commit" && "$protected_head" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	[[ "$protected_pr" =~ ^[0-9]+$ && -n "$protected_merged_at" ]] || return 1
+	[[ "$protected_pr" =~ ^[0-9]+$ && "$protected_merged_at" =~ $_FULL_LOOP_RELEASE_TIMESTAMP_REGEX ]] || return 1
 
 	aggregate_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" aggregate) || return 1
 	evidence_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" successor) || return 1
@@ -870,6 +871,8 @@ _full_loop_release_write_protected_successor_receipt() {
 		' >"${evidence_path}.tmp.$$" || return 1
 		mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
 	fi
+	_full_loop_verify_successor_superseded_release_evidence \
+		"$evidence_path" "$repo" "$source_pr" || return 1
 	_full_loop_write_release_receipt "$repo" "$source_pr" \
 		"$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
 	_full_loop_update_superseded_cleanup_receipt "$repo" "$source_pr"

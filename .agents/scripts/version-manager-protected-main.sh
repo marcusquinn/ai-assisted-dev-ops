@@ -36,6 +36,7 @@ _VERSION_MANAGER_RELEASE_RESULT_QUEUED="queued"
 _VERSION_MANAGER_MODE_RECONCILE="reconcile"
 _VERSION_MANAGER_PR_STATE_OPEN="open"
 _VERSION_MANAGER_PR_STATE_CLOSED="closed"
+_VERSION_MANAGER_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 _version_manager_push_requires_pr() {
 	local push_output="$1"
@@ -679,7 +680,7 @@ _version_manager_verify_protected_release_supersession() {
 		<<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
 	[[ "$source_tag_object" =~ ^[0-9a-f]{40}$ && "$source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
 	[[ "$protected_pr" =~ ^[0-9]+$ && "$protected_head" =~ ^[0-9a-f]{40}$ ]] || return 1
-	[[ -n "$protected_merged_at" ]] || return 1
+	[[ "$protected_merged_at" =~ $_VERSION_MANAGER_TIMESTAMP_REGEX ]] || return 1
 	git -C "$REPO_ROOT" merge-base --is-ancestor "$source_commit" "$successor_commit" || return 1
 	git -C "$REPO_ROOT" merge-base --is-ancestor "$protected_head" "$successor_commit" || return 1
 

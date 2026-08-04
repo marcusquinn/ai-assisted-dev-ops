@@ -825,9 +825,11 @@ for stale_failure_mode in source-run ancestry latest-remote receipt; do
 done
 printf 'PASS stale receipt supersession binds both releases and fails closed on uncertain evidence\n'
 
-run_protected_predecessor_supersession_fixture() {
-	local mode="$1"
-	local write_log="$2"
+protected_write_log="${TEST_ROOT}/protected-successor-write.log"
+for mode in valid unrelated protected-ancestry unmerged malformed-merge receipt; do
+	rm -f "$protected_write_log"
+	protected_fixture_rc=0
+	write_log="$protected_write_log"
 	(
 		_full_loop_release_source_json_from_tag() {
 			local tag_name="$1"
@@ -881,14 +883,16 @@ run_protected_predecessor_supersession_fixture() {
 			local repo="$1"
 			local tag_name="$2"
 			local reconcile_mode="$3"
+			local merged_at="2026-08-04T00:00:00Z"
 			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" &&
 				"$reconcile_mode" == "status" ]] || return 1
+			[[ "$mode" != "malformed-merge" ]] || merged_at="not-a-timestamp"
 			_VERSION_MANAGER_LOCAL_TAG_OBJECT="$(printf '%040d' 2)"
 			_VERSION_MANAGER_LOCAL_TAG_COMMIT="$(printf '%040d' 3)"
 			_VERSION_MANAGER_PROTECTED_PR_NUMBER=77
 			_VERSION_MANAGER_PROTECTED_PR_JSON=$(jq -cn \
-				--arg head "$(printf '%040d' 33)" \
-				'{head:{sha:$head},merged_at:"2026-08-04T00:00:00Z"}') || return 1
+				--arg head "$(printf '%040d' 33)" --arg merged_at "$merged_at" \
+				'{head:{sha:$head},merged_at:$merged_at}') || return 1
 			if [[ "$mode" == "unmerged" ]]; then
 				_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="pr-pending"
 			else
@@ -923,41 +927,41 @@ run_protected_predecessor_supersession_fixture() {
 			local args="$*"
 			case "$args" in
 			*" merge-base --is-ancestor "*)
-				[[ "$mode" != "unrelated" ]]
-				return $?
+				[[ "$mode" != "unrelated" ]] || return 1
+				if [[ "$mode" == "protected-ancestry" &&
+					"$args" == *"$(printf '%040d' 33) $(printf '%040d' 4)"* ]]; then
+					return 1
+				fi
+				return 0
 				;;
 			esac
 			return 1
 		}
 		_full_loop_release_finalize_stale_supersession test/repo 90 v1.2.3 v1.2.4
-	)
-	return $?
-}
-
-protected_write_log="${TEST_ROOT}/protected-successor-write.log"
-run_protected_predecessor_supersession_fixture valid "$protected_write_log" || {
-	printf 'FAIL unpublished protected predecessor did not reconcile through a published descendant\n'
-	exit 1
-}
-if ! grep -q '"protected_pr":77' "$protected_write_log" ||
-	! grep -q '"protected_head":"0000000000000000000000000000000000000033"' "$protected_write_log"; then
-	printf 'FAIL protected predecessor supersession omitted immutable PR evidence\n'
-	exit 1
-fi
-for protected_failure_mode in unrelated unmerged receipt; do
-	rm -f "$protected_write_log"
-	if run_protected_predecessor_supersession_fixture \
-		"$protected_failure_mode" "$protected_write_log"; then
-		printf 'FAIL %s protected predecessor evidence allowed supersession\n' \
-			"$protected_failure_mode"
+	) || protected_fixture_rc=$?
+	if [[ "$mode" == "valid" ]]; then
+		if [[ "$protected_fixture_rc" -ne 0 ]]; then
+			printf 'FAIL unpublished protected predecessor did not reconcile through a published descendant\n'
+			exit 1
+		fi
+		if ! grep -q '"protected_pr":77' "$protected_write_log" ||
+			! grep -q '"protected_head":"0000000000000000000000000000000000000033"' "$protected_write_log"; then
+			printf 'FAIL protected predecessor supersession omitted immutable PR evidence\n'
+			exit 1
+		fi
+		continue
+	fi
+	if [[ "$protected_fixture_rc" -eq 0 ]]; then
+		printf 'FAIL %s protected predecessor evidence allowed supersession\n' "$mode"
 		exit 1
 	fi
 	[[ ! -e "$protected_write_log" ]] || {
 		printf 'FAIL %s protected predecessor uncertainty wrote terminal evidence\n' \
-			"$protected_failure_mode"
+			"$mode"
 		exit 1
 	}
 done
+unset mode write_log protected_fixture_rc
 printf 'PASS unpublished protected predecessors require merged ancestry and a published successor receipt\n'
 
 (
@@ -978,6 +982,17 @@ printf 'PASS unpublished protected predecessors require merged ancestry and a pu
 		'{source_tag:$source_tag,source_tag_object:$source_tag_object,
 		  source_commit:$source_commit,protected_pr:$protected_pr,
 		  protected_head:$protected_head,protected_merged_at:$protected_merged_at}') || exit 1
+	malformed_protected_json=$(jq -c '.protected_merged_at = "invalid"' \
+		<<<"$protected_json") || exit 1
+	if _full_loop_release_write_protected_successor_receipt test/repo 92 \
+		1111111111111111111111111111111111111111 "$malformed_protected_json" 93 \
+		2222222222222222222222222222222222222222 v1.2.4 \
+		"$(printf '%040d' 4)" 202; then
+		exit 1
+	fi
+	malformed_evidence=$(_full_loop_release_evidence_path test/repo 92 successor) || exit 1
+	[[ ! -e "$malformed_evidence" &&
+		! -e "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-92.status" ]] || exit 1
 	_full_loop_release_write_protected_successor_receipt test/repo 90 \
 		1111111111111111111111111111111111111111 "$protected_json" 91 \
 		2222222222222222222222222222222222222222 v1.2.4 \
