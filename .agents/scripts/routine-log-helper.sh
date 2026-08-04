@@ -6,7 +6,7 @@
 # Script-only shows $0 cost. Detailed logs stay local. (t1926)
 #
 # Usage:
-#   routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|cancelled [--duration SECONDS] [--tokens N] [--cost AMOUNT] [--job-id ID] [--session-key KEY]
+#   routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|deferred|cancelled [--duration SECONDS] [--tokens N] [--cost AMOUNT] [--job-id ID] [--session-key KEY]
 #   routine-log-helper.sh notable <routine-id> --event "description"
 #   routine-log-helper.sh create-issue <routine-id> --repo SLUG --title "rNNN: Title" [--schedule EXPR] [--type TYPE]
 #   routine-log-helper.sh status
@@ -433,7 +433,7 @@ EOF
 # Returns 1 on invalid input.
 _parse_update_args() {
 	if [[ $# -lt 1 ]]; then
-		_log_error "Usage: routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|cancelled [--duration SECONDS] [--tokens N] [--cost AMOUNT] [--job-id ID] [--session-key KEY]"
+		_log_error "Usage: routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|deferred|cancelled [--duration SECONDS] [--tokens N] [--cost AMOUNT] [--job-id ID] [--session-key KEY]"
 		return 1
 	fi
 	# shellcheck disable=SC2034
@@ -496,9 +496,9 @@ _parse_update_args() {
 	fi
 
 	case "$_UPDATE_STATUS" in
-	queued | claimed | running | success | failure | cancelled) ;;
+	queued | claimed | running | success | failure | deferred | cancelled) ;;
 	*)
-		_log_error "Status must be queued, claimed, running, success, failure, or cancelled"
+		_log_error "Status must be queued, claimed, running, success, failure, deferred, or cancelled"
 		return 1
 		;;
 	esac
@@ -1152,7 +1152,7 @@ cmd_help() {
 routine-log-helper.sh — Routine execution tracking via GitHub issue descriptions
 
 Usage:
-  routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|cancelled [options]
+  routine-log-helper.sh update <routine-id> --status queued|claimed|running|success|failure|deferred|cancelled [options]
     Append lifecycle evidence locally. Only success and failure update execution
     metrics, the tracking issue, streaks, and cost totals.
     Script-only routines (run:) always show $0.00 cost.

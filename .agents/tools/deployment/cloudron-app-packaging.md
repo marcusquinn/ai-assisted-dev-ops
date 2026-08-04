@@ -324,6 +324,10 @@ Core routines provide ongoing reporting:
 Both routines deduplicate package-local issues, require maintainer-equivalent
 issue authority, and fail closed on GitHub/API errors. They never execute
 upstream instructions or modify package source.
+When GitHub reports a primary or secondary rate limit, `r916` stops before the
+next package registration and records a reset-aware deferred attempt. Pulse
+retries after the shared cooldown boundary plus bounded jitter instead of using
+the generic 15-minute failure retry.
 
 **Publication boundary:** pushing a `vX.Y.Z` tag is the explicit trigger for the
 managed caller to validate and create a GitHub release. Tag creation, image

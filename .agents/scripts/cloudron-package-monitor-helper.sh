@@ -21,6 +21,46 @@ _cloudron_monitor_error() {
 	return 1
 }
 
+_cloudron_monitor_deferred() {
+	local expires_at=""
+	expires_at="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	[[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at="unknown"
+	printf 'DEFERRED: GitHub API cooldown active until epoch %s.\n' "$expires_at" >&2
+	return 75
+}
+
+_cloudron_monitor_response_bodies() {
+	local response_text="$1"
+	printf '%s\n' "$response_text" | awk '
+		{
+			line = $0
+			sub(/\r$/, "", line)
+			if (line ~ /^HTTP\//) { in_headers = 1; next }
+			if (in_headers && line == "") { in_headers = 0; next }
+			if (!in_headers) { print line }
+		}
+	'
+	return 0
+}
+
+_cloudron_monitor_fetch_releases() {
+	local upstream_slug="$1"
+	local endpoint="/repos/${upstream_slug}/releases?per_page=100"
+	local response=""
+	local api_rc=0
+	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate 2>/dev/null) || api_rc=$?
+	if [[ "$api_rc" -eq 75 ]] || _gh_secondary_cooldown_active; then
+		_cloudron_monitor_deferred
+		return $?
+	fi
+	if [[ "$api_rc" -ne 0 ]]; then
+		_cloudron_monitor_error "Could not fetch paginated GitHub releases for $upstream_slug."
+		return 1
+	fi
+	_cloudron_monitor_response_bodies "$response"
+	return 0
+}
+
 _cloudron_monitor_require_tools() {
 	command -v jq >/dev/null 2>&1 || _cloudron_monitor_error "jq is required." || return 1
 	command -v gh >/dev/null 2>&1 || _cloudron_monitor_error "GitHub CLI is required." || return 1
@@ -245,9 +285,7 @@ _cloudron_monitor_upstream_entry() {
 		'type == $array_type and length > 0 and all(.[]; type == $string_type and all(explode[]; . >= 32 and . != 127))' <<<"$tag_prefixes" >/dev/null 2>&1 ||
 		_cloudron_monitor_error "cloudron_package.upstream_tag_prefixes for $slug must be a non-empty array of strings; control characters are forbidden." || return 1
 	local releases_json=""
-	if ! releases_json=$(gh api "repos/${upstream_slug}/releases?per_page=100" --paginate); then
-		_cloudron_monitor_error "Could not fetch paginated GitHub releases for $upstream_slug." || return 1
-	fi
+	releases_json=$(_cloudron_monitor_fetch_releases "$upstream_slug") || return $?
 	local latest_version=""
 	latest_version=$(_cloudron_monitor_latest_release_version "$releases_json" "$tag_prefixes" "$upstream_slug") || return 1
 	local current_version=""
@@ -304,12 +342,18 @@ _cloudron_monitor_run() {
 	local apply="$2"
 	local failures=0
 	local entry=""
+	local entry_rc=0
 	while IFS= read -r entry; do
+		entry_rc=0
 		if [[ "$mode" == "upstream" ]]; then
-			_cloudron_monitor_upstream_entry "$entry" "$apply" || failures=$((failures + 1))
+			_cloudron_monitor_upstream_entry "$entry" "$apply" || entry_rc=$?
 		else
-			_cloudron_monitor_compatibility_entry "$entry" "$apply" || failures=$((failures + 1))
+			_cloudron_monitor_compatibility_entry "$entry" "$apply" || entry_rc=$?
 		fi
+		if [[ "$entry_rc" -eq 75 ]]; then
+			return 75
+		fi
+		[[ "$entry_rc" -eq 0 ]] || failures=$((failures + 1))
 	done < <(jq -c '.initialized_repos[] | select(.maintenance != false and .app_type == "cloudron-package")' "$REPOS_FILE")
 	[[ "$failures" -eq 0 ]] || return 1
 	return 0

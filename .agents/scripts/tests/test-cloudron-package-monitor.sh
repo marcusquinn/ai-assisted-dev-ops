@@ -6,6 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 HELPER="${SCRIPT_DIR}/../cloudron-package-monitor-helper.sh"
+PULSE_ROUTINES="${SCRIPT_DIR}/../pulse-routines.sh"
+GH_COOLDOWN="${SCRIPT_DIR}/../shared-gh-secondary-cooldown.sh"
 TEST_ROOT=""
 PASSED=0
 FAILED=0
@@ -36,8 +38,35 @@ write_fake_commands() {
 	cat >"${bin_dir}/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "api" && "${2:-}" == repos/*/releases\?per_page=100 && "${3:-}" == "--paginate" ]]; then
-    [[ "${MONITOR_API_FAIL:-false}" != true ]] || exit 1
+if [[ "${1:-}" == "api" && "$*" == *releases\?per_page=100* ]]; then
+    endpoint=""
+    for arg in "$@"; do
+        [[ "$arg" == /repos/*/releases\?per_page=100 ]] && endpoint="$arg"
+    done
+    printf 'API %s\n' "$endpoint" >>"${MONITOR_API_LOG:-/dev/null}"
+    case "${MONITOR_RATE_FIXTURE:-}" in
+        primary-403-reset)
+            printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"API rate limit exceeded"}\n'
+            exit 1
+            ;;
+        secondary-403-retry)
+            printf 'HTTP/2 403\r\nRetry-After: 45\r\nX-RateLimit-Remaining: 50\r\n\r\n{"message":"You have exceeded a secondary rate limit"}\n'
+            exit 1
+            ;;
+        primary-429-retry)
+            printf 'HTTP/2 429\r\nRetry-After: 30\r\nX-RateLimit-Remaining: 0\r\n\r\n{"message":"rate limit exceeded"}\n'
+            exit 1
+            ;;
+        primary-429-reset)
+            printf 'HTTP/2 429\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"rate limit exceeded"}\n'
+            exit 1
+            ;;
+    esac
+    if [[ "${MONITOR_API_FAIL:-false}" == true ]]; then
+        printf 'HTTP/2 500\r\n\r\n{"message":"temporary server error"}\n'
+        exit 1
+    fi
+    printf 'HTTP/2 200\r\nX-RateLimit-Remaining: 100\r\n\r\n'
     if [[ -n "${MONITOR_RELEASES_FILE:-}" ]]; then
         while IFS= read -r line || [[ -n "$line" ]]; do
             printf '%s\n' "$line"
@@ -136,6 +165,24 @@ JSON
   }]
 }
 JSON
+	return 0
+}
+
+write_two_package_fixture() {
+	local home_dir="$1"
+	local repo_dir="$2"
+	local second_repo_dir="${repo_dir}-two"
+	local repos_tmp="${home_dir}/.config/aidevops/repos.tmp.json"
+	write_fixture "$home_dir" "$repo_dir"
+	mkdir -p "$second_repo_dir"
+	cp "${repo_dir}/CloudronManifest.json" "${second_repo_dir}/CloudronManifest.json"
+	jq --arg path "$second_repo_dir" '
+		.initialized_repos += [(.initialized_repos[0]
+			| .slug = "exampleorg/example-package-two"
+			| .path = $path
+			| .cloudron_package.upstream_slug = "exampleorg/upstream-two")]
+	' "${home_dir}/.config/aidevops/repos.json" >"$repos_tmp"
+	mv "$repos_tmp" "${home_dir}/.config/aidevops/repos.json"
 	return 0
 }
 
@@ -281,6 +328,122 @@ test_monitor_fails_closed_on_release_api_error() {
 	return 0
 }
 
+assert_rate_limit_fixture() {
+	local fixture="$1"
+	local expected_status="$2"
+	local expected_classification="$3"
+	local case_root="${TEST_ROOT}/${fixture}"
+	local home_dir="${case_root}/home"
+	local repo_dir="${case_root}/package"
+	local bin_dir="${case_root}/bin"
+	local issue_log="${case_root}/issues.log"
+	local api_log="${case_root}/api.log"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_two_package_fixture "$home_dir" "$repo_dir"
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$issue_log" MONITOR_API_LOG="$api_log" \
+		MONITOR_RATE_FIXTURE="$fixture" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" \
+		bash "$HELPER" upstream --apply 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 75 "$rc" "${fixture} returns EX_TEMPFAIL"
+	assert_equal 1 "$(grep -c '^API ' "$api_log")" "${fixture} stops before the second registration"
+	[[ ! -f "$issue_log" ]] && assert_equal true true "${fixture} creates no issue" || assert_equal true false "${fixture} creates no issue"
+	local cooldown_file="${home_dir}/.aidevops/cache/gh-secondary-cooldown.json"
+	local state_shape=""
+	state_shape=$(jq -r '[.diagnostic.http_status, .diagnostic.body_classification] | @tsv' "$cooldown_file")
+	assert_equal "${expected_status}"$'\t'"${expected_classification}" "$state_shape" "${fixture} records shared cooldown evidence"
+	[[ "$output" == *"DEFERRED: GitHub API cooldown active until epoch"* ]] &&
+		assert_equal true true "${fixture} emits a machine-distinguishable safe status" ||
+		assert_equal true false "${fixture} emits a machine-distinguishable safe status"
+	return 0
+}
+
+test_monitor_rate_limit_fixtures() {
+	assert_rate_limit_fixture primary-403-reset 403 primary-rate-limit
+	assert_rate_limit_fixture secondary-403-retry 403 secondary-rate-limit
+	assert_rate_limit_fixture primary-429-retry 429 rate-limit-message
+	assert_rate_limit_fixture primary-429-reset 429 rate-limit-message
+	return 0
+}
+
+test_monitor_scheduler_cooldown_integration() {
+	local case_root="${TEST_ROOT}/scheduler-integration"
+	local home_dir="${case_root}/home"
+	local repo_dir="${case_root}/package"
+	local bin_dir="${case_root}/bin"
+	local issue_log="${case_root}/issues.log"
+	local api_log="${case_root}/api.log"
+	local state_file="${case_root}/routine-state.json"
+	local pulse_log="${case_root}/pulse.log"
+	local old_home="$HOME"
+	local old_path="$PATH"
+	local deferred_until=0
+	local blocked_rc=0
+	local eligible_count=0
+	local iteration=0
+	write_fake_commands "$bin_dir"
+	write_two_package_fixture "$home_dir" "$repo_dir"
+	mkdir -p "${home_dir}/.aidevops/agents/scripts"
+	cat >"${home_dir}/.aidevops/agents/scripts/rate-monitor.sh" <<WRAPPER
+#!/usr/bin/env bash
+exec bash "$HELPER" upstream --apply
+WRAPPER
+	chmod +x "${home_dir}/.aidevops/agents/scripts/rate-monitor.sh"
+
+	export HOME="$home_dir"
+	export PATH="${bin_dir}:${old_path}"
+	export MONITOR_TEST_LOG="$issue_log"
+	export MONITOR_API_LOG="$api_log"
+	export MONITOR_RATE_FIXTURE=primary-403-reset
+	export CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue"
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${home_dir}/.aidevops/cache/gh-secondary-cooldown.json"
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="${home_dir}/.aidevops/cache/gh-cooldown-events.jsonl"
+	export AIDEVOPS_ROUTINE_NOW_EPOCH=9999999900
+	export AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS=7
+	unset _SHARED_GH_SECONDARY_COOLDOWN_LOADED _PULSE_ROUTINES_LOADED
+	# shellcheck source=../shared-gh-secondary-cooldown.sh
+	source "$GH_COOLDOWN"
+	ROUTINE_STATE_FILE="$state_file"
+	LOGFILE="$pulse_log"
+	ROUTINE_LOG_HELPER="${case_root}/missing-routine-log-helper"
+	# shellcheck source=../pulse-routines.sh
+	source "$PULSE_ROUTINES"
+
+	_routine_execute r916 "Cloudron packages" scripts/rate-monitor.sh "" "$case_root"
+	deferred_until=$(jq -r '.r916.deferred_until' "$state_file")
+	assert_equal deferred "$(jq -r '.r916.last_status' "$state_file")" "rate-limited monitor is classified as deferred"
+	[[ "$deferred_until" -ge 9999999999 && "$deferred_until" -le 10000000006 ]] &&
+		assert_equal true true "scheduler persists reset plus bounded jitter" ||
+		assert_equal true false "scheduler persists reset plus bounded jitter"
+	assert_equal 1 "$(grep -c '^API ' "$api_log")" "integrated monitor touches only the first registration"
+
+	AIDEVOPS_ROUTINE_NOW_EPOCH=$((deferred_until - 1))
+	blocked_rc=0
+	_routine_retry_blocked r916 || blocked_rc=$?
+	assert_equal 0 "$blocked_rc" "deferred routine remains blocked before eligibility"
+	AIDEVOPS_ROUTINE_NOW_EPOCH="$deferred_until"
+	for iteration in 1 2; do
+		blocked_rc=0
+		_routine_retry_blocked r916 || blocked_rc=$?
+		if [[ "$blocked_rc" -ne 0 ]]; then
+			eligible_count=$((eligible_count + 1))
+			_routine_update_state r916 running
+		fi
+	done
+	assert_equal 1 "$eligible_count" "exactly one retry becomes eligible after cooldown expiry"
+
+	export HOME="$old_home"
+	export PATH="$old_path"
+	unset MONITOR_TEST_LOG MONITOR_API_LOG MONITOR_RATE_FIXTURE CLOUDRON_PACKAGE_ISSUE_WRAPPER \
+		AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE \
+		AIDEVOPS_ROUTINE_NOW_EPOCH AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS
+	return 0
+}
+
 test_monitor_rejects_blank_package_title() {
 	local home_dir="${TEST_ROOT}/blank-title-home"
 	local repo_dir="${TEST_ROOT}/blank-title-package"
@@ -312,6 +475,8 @@ main() {
 	test_monitor_rejects_malformed_prefixes
 	test_monitor_rejects_control_characters_in_prefixes
 	test_monitor_fails_closed_on_release_api_error
+	test_monitor_rate_limit_fixtures
+	test_monitor_scheduler_cooldown_integration
 	test_monitor_rejects_blank_package_title
 	printf '\nRan %d tests, %d failed.\n' "$((PASSED + FAILED))" "$FAILED"
 	[[ "$FAILED" -eq 0 ]] || return 1

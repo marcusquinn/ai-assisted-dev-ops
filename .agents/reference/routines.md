@@ -77,6 +77,11 @@ occurrence; nonexistent spring-forward local times fail closed with a diagnostic
 Only successful runs advance `last_run`. Active runs remain blocked for up to six
 hours, and failures retry after 15 minutes by default
 (`AIDEVOPS_ROUTINE_FAILURE_RETRY_SECONDS`) rather than waiting a full period.
+GitHub API cooldown exits are recorded as `deferred`, not `failure`. Their next
+eligible attempt is persisted at the shared cooldown reset or `Retry-After`
+boundary plus up to 60 seconds of deterministic jitter
+(`AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS`); Pulse does not sleep or launch
+a long-lived retry process.
 
 ## Dispatch rules
 

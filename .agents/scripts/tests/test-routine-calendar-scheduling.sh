@@ -138,6 +138,34 @@ assert_pulse_state_policy() {
 	local success_shape=""
 	success_shape=$(jq -r '.r001 | [has("last_run"), .last_status] | @tsv' "$ROUTINE_STATE_FILE")
 	record_result "successful run advances the calendar marker" "$success_shape" $'true\tsuccess'
+
+	AIDEVOPS_ROUTINE_NOW_EPOCH=1000
+	AIDEVOPS_ROUTINE_FAILURE_RETRY_SECONDS=900
+	_routine_update_state r002 failure
+	AIDEVOPS_ROUTINE_NOW_EPOCH=1899
+	blocked_rc=0
+	_routine_retry_blocked r002 || blocked_rc=$?
+	record_result "ordinary failure retains generic retry semantics" "$blocked_rc" 0
+	AIDEVOPS_ROUTINE_NOW_EPOCH=1900
+	blocked_rc=0
+	_routine_retry_blocked r002 || blocked_rc=$?
+	record_result "ordinary failure retries after generic boundary" "$blocked_rc" 1
+
+	AIDEVOPS_ROUTINE_NOW_EPOCH=2000
+	_routine_update_state r003 deferred 2100
+	_routine_update_state r003 deferred 2050
+	local deferred_shape=""
+	deferred_shape=$(jq -r '.r003 | [.last_status, .deferred_until, has("last_run")] | @tsv' "$ROUTINE_STATE_FILE")
+	record_result "repeated deferrals preserve the furthest eligibility boundary" "$deferred_shape" $'deferred\t2100\tfalse'
+	AIDEVOPS_ROUTINE_NOW_EPOCH=2099
+	blocked_rc=0
+	_routine_retry_blocked r003 || blocked_rc=$?
+	record_result "deferred run remains blocked before reset plus jitter" "$blocked_rc" 0
+	AIDEVOPS_ROUTINE_NOW_EPOCH=2100
+	blocked_rc=0
+	_routine_retry_blocked r003 || blocked_rc=$?
+	record_result "deferred run retries at persisted eligibility boundary" "$blocked_rc" 1
+	unset AIDEVOPS_ROUTINE_NOW_EPOCH AIDEVOPS_ROUTINE_FAILURE_RETRY_SECONDS
 	return 0
 }
 

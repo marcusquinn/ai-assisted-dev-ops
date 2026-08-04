@@ -32,6 +32,50 @@
 _PULSE_ROUTINES_LOADED=1
 _ROUTINE_STATUS_SUCCESS="success"
 _ROUTINE_STATUS_FAILURE="failure"
+_ROUTINE_STATUS_DEFERRED="deferred"
+_ROUTINE_TEMPFAIL_EXIT=75
+
+_routine_now_epoch() {
+	local configured="${AIDEVOPS_ROUTINE_NOW_EPOCH:-}"
+	if [[ "$configured" =~ ^[0-9]+$ ]]; then
+		printf '%s' "$configured"
+		return 0
+	fi
+	date +%s
+	return 0
+}
+
+_routine_epoch_to_iso() {
+	local epoch="$1"
+	date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+		date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+	return $?
+}
+
+_routine_deferred_until() {
+	local routine_id="$1"
+	local reset_epoch=""
+	local now_epoch=0
+	local jitter_max="${AIDEVOPS_ROUTINE_COOLDOWN_JITTER_MAX_SECONDS:-60}"
+	local fallback_seconds="${AIDEVOPS_ROUTINE_FAILURE_RETRY_SECONDS:-900}"
+	local checksum=""
+	local jitter=0
+	now_epoch=$(_routine_now_epoch)
+	reset_epoch="$(_gh_secondary_cooldown_expires_at 2>/dev/null || true)"
+	[[ "$fallback_seconds" =~ ^[0-9]+$ ]] || fallback_seconds=900
+	if ! [[ "$reset_epoch" =~ ^[0-9]+$ && "$reset_epoch" -gt "$now_epoch" ]]; then
+		reset_epoch=$((now_epoch + fallback_seconds))
+	fi
+	[[ "$jitter_max" =~ ^[0-9]+$ ]] || jitter_max=60
+	if [[ "$jitter_max" -gt 0 ]]; then
+		checksum=$(printf '%s' "${routine_id}:${reset_epoch}" | cksum)
+		checksum="${checksum%% *}"
+		[[ "$checksum" =~ ^[0-9]+$ ]] || checksum=0
+		jitter=$((checksum % (jitter_max + 1)))
+	fi
+	printf '%s' $((reset_epoch + jitter))
+	return 0
+}
 
 #######################################
 # Read last-run epoch for a routine ID from state file
@@ -66,8 +110,12 @@ _routine_last_run_epoch() {
 _routine_update_state() {
 	local routine_id="$1"
 	local status="$2"
+	local deferred_until="${3:-0}"
+	local now_epoch=0
 	local now_iso
-	now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	now_epoch=$(_routine_now_epoch)
+	now_iso=$(_routine_epoch_to_iso "$now_epoch") || now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	[[ "$deferred_until" =~ ^[0-9]+$ ]] || deferred_until=0
 
 	mkdir -p "$(dirname "$ROUTINE_STATE_FILE")" 2>/dev/null || true
 
@@ -79,9 +127,15 @@ _routine_update_state() {
 
 	local tmp_file
 	tmp_file=$(mktemp "$(dirname "$ROUTINE_STATE_FILE")/.routine-state.XXXXXX")
-	if echo "$existing" | jq --arg id "$routine_id" --arg ts "$now_iso" --arg st "$status" --arg success "$_ROUTINE_STATUS_SUCCESS" '
+	if echo "$existing" | jq --arg id "$routine_id" --arg ts "$now_iso" --arg st "$status" \
+		--arg success "$_ROUTINE_STATUS_SUCCESS" --arg deferred "$_ROUTINE_STATUS_DEFERRED" \
+		--argjson deferred_until "$deferred_until" '
 		.[$id] = ((.[$id] // {}) + {"last_attempt": $ts, "last_status": $st})
 		| if $st == $success then .[$id].last_run = $ts else . end
+		| if $st == $deferred then
+			.[$id].deferred_until = ([.[$id].deferred_until // 0, $deferred_until] | max)
+		  else del(.[$id].deferred_until)
+		  end
 	' >"$tmp_file" 2>/dev/null; then
 		mv "$tmp_file" "$ROUTINE_STATE_FILE"
 	else
@@ -103,6 +157,7 @@ _routine_retry_blocked() {
 	local attempt_iso=""
 	local attempt_epoch=0
 	local now_epoch=0
+	local deferred_until=0
 	[[ "$retry_seconds" =~ ^[0-9]+$ ]] || retry_seconds=900
 	[[ "$running_seconds" =~ ^[0-9]+$ ]] || running_seconds=21600
 	[[ -f "$ROUTINE_STATE_FILE" ]] || return 1
@@ -110,10 +165,14 @@ _routine_retry_blocked() {
 	attempt_iso=$(jq -r --arg id "$routine_id" '.[$id].last_attempt // empty' "$ROUTINE_STATE_FILE" 2>/dev/null || true)
 	[[ -n "$attempt_iso" ]] || return 1
 	attempt_epoch=$(date -d "$attempt_iso" +%s 2>/dev/null) || attempt_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$attempt_iso" +%s 2>/dev/null) || return 1
-	now_epoch=$(date +%s)
+	now_epoch=$(_routine_now_epoch)
 	case "$status" in
 	running) [[ $((now_epoch - attempt_epoch)) -lt "$running_seconds" ]] ;;
 	failure) [[ $((now_epoch - attempt_epoch)) -lt "$retry_seconds" ]] ;;
+	deferred)
+		deferred_until=$(jq -r --arg id "$routine_id" '.[$id].deferred_until // 0' "$ROUTINE_STATE_FILE" 2>/dev/null || true)
+		[[ "$deferred_until" =~ ^[0-9]+$ && "$now_epoch" -lt "$deferred_until" ]]
+		;;
 	*) return 1 ;;
 	esac
 	return $?
@@ -137,12 +196,13 @@ _routine_finalize_terminal() {
 	local status="$2"
 	local started_epoch="$3"
 	local session_key="${4:-}"
+	local deferred_until="${5:-0}"
 	local ended_epoch=0
 	local duration=0
 	ended_epoch=$(date +%s)
 	duration=$((ended_epoch - started_epoch))
 	[[ "$duration" -ge 0 ]] || duration=0
-	_routine_update_state "$routine_id" "$status"
+	_routine_update_state "$routine_id" "$status" "$deferred_until"
 	_routine_record_lifecycle "$routine_id" "$status" "$duration" "$session_key"
 	return 0
 }
@@ -201,6 +261,7 @@ _routine_execute() {
 	local status="$_ROUTINE_STATUS_SUCCESS"
 	local started_epoch=0
 	local exit_code=0
+	local deferred_until=0
 	started_epoch=$(date +%s)
 
 	if [[ -n "$run_script" ]]; then
@@ -222,13 +283,17 @@ _routine_execute() {
 			echo "[pulse-wrapper] routine ${routine_id}: executing script ${script_path}" >>"$LOGFILE"
 			"$script_path" >>"$LOGFILE" 2>&1 || exit_code=$?
 		fi
-		if [[ "$exit_code" -ne 0 ]]; then
+		if [[ "$exit_code" -eq "$_ROUTINE_TEMPFAIL_EXIT" ]]; then
+			status="$_ROUTINE_STATUS_DEFERRED"
+			deferred_until=$(_routine_deferred_until "$routine_id")
+			echo "[pulse-wrapper] routine ${routine_id}: deferred by GitHub API cooldown until epoch ${deferred_until}" >>"$LOGFILE"
+		elif [[ "$exit_code" -ne 0 ]]; then
 			status="$_ROUTINE_STATUS_FAILURE"
 			echo "[pulse-wrapper] routine ${routine_id}: script exited with code ${exit_code}" >>"$LOGFILE"
 		else
 			echo "[pulse-wrapper] routine ${routine_id}: script completed successfully" >>"$LOGFILE"
 		fi
-		_routine_finalize_terminal "$routine_id" "$status" "$started_epoch"
+		_routine_finalize_terminal "$routine_id" "$status" "$started_epoch" "" "$deferred_until"
 		return 0
 	fi
 
