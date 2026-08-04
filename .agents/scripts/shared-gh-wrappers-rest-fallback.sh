@@ -913,7 +913,8 @@ _rest_issue_edit() {
 		return 1
 	fi
 
-	local _issue_path="/repos/${repo}/issues/${num}"
+	local _issue_path=""
+	_issue_path=$(_rest_issue_api_path "$repo" "$num")
 	local has_deltas=0
 	if [[ ${#add_labels[@]} -gt 0 || ${#rm_labels[@]} -gt 0 ||
 		${#add_assignees[@]} -gt 0 || ${#rm_assignees[@]} -gt 0 ]]; then
@@ -935,23 +936,93 @@ _rest_issue_edit() {
 }
 
 #######################################
+# Build the REST issue API path shared by issue and PR operations.
+# Args: $1=repo_slug  $2=issue_or_pr_number
+# Outputs: API path
+#######################################
+_rest_issue_api_path() {
+	local repo="$1"
+	local num="$2"
+	printf '/repos/%s/issues/%s' "$repo" "$num"
+	return 0
+}
+
+#######################################
 # _rest_apply_labels: POST /repos/{owner}/{repo}/issues/{N}/labels.
-# PRs share GitHub's issues label endpoint. Best-effort — failures are
-# silently ignored (labels are non-critical metadata).
+# PRs share GitHub's issues label endpoint.
 #
 # Args: $1=repo_slug  $2=issue_or_pr_number  $3..=label names
-# Returns: 0 always
+# Returns: underlying API result (0 success, 1 failure)
 #######################################
 _rest_apply_labels() {
 	local repo="$1" num="$2"; shift 2
 	[[ $# -eq 0 || -z "$num" ]] && return 0
-	local -a label_args=(-X POST "/repos/${repo}/issues/${num}/labels")
+	local issue_path=""
+	issue_path=$(_rest_issue_api_path "$repo" "$num")
+	local -a label_args=(-X POST "${issue_path}/labels")
 	local _lbl
 	for _lbl in "$@"; do
 		[[ -n "$_lbl" ]] && label_args+=(-f "labels[]=${_lbl}")
 	done
-	gh api "${label_args[@]}" >/dev/null 2>&1 || true
+	_rest_api_call write gh api "${label_args[@]}" >/dev/null 2>&1 || return 1
 	return 0
+}
+
+#######################################
+# Verify that every requested label is present on an issue or PR.
+# Args: $1=repo_slug  $2=issue_or_pr_number  $3..=label names
+# Returns: 0 when all labels are present, 1 on read failure or missing labels.
+#######################################
+_rest_labels_are_present() {
+	local repo="$1" num="$2"; shift 2
+	[[ $# -eq 0 || -z "$num" ]] && return 0
+	local current_labels=""
+	local issue_path=""
+	issue_path=$(_rest_issue_api_path "$repo" "$num")
+	current_labels=$(_rest_api_call read gh api "$issue_path" --jq '.labels[].name' 2>/dev/null) || return 1
+	local expected=""
+	local current=""
+	local found=0
+	for expected in "$@"; do
+		[[ -n "$expected" ]] || continue
+		found=0
+		while IFS= read -r current || [[ -n "$current" ]]; do
+			if [[ "$current" == "$expected" ]]; then
+				found=1
+				break
+			fi
+		done <<<"$current_labels"
+		[[ $found -eq 1 ]] || return 1
+	done
+	return 0
+}
+
+#######################################
+# Apply and verify requested PR labels with bounded retries.
+# A PR already exists when this runs, so callers must not convert an exhausted
+# retry into a generic create failure that could cause a duplicate PR.
+# Args: $1=repo_slug  $2=pr_number  $3..=label names
+# Returns: 0 when verified, 1 when retries are exhausted.
+#######################################
+_rest_apply_labels_verified() {
+	local repo="$1" num="$2"; shift 2
+	[[ $# -eq 0 || -z "$num" ]] && return 0
+	local attempts="${AIDEVOPS_GH_REST_LABEL_ATTEMPTS:-3}"
+	local retry_delay="${AIDEVOPS_GH_REST_LABEL_RETRY_DELAY:-1}"
+	[[ "$attempts" =~ ^[1-5]$ ]] || attempts=3
+	[[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=1
+	local attempt=1
+	while [[ $attempt -le $attempts ]]; do
+		if _rest_apply_labels "$repo" "$num" "$@" \
+			&& _rest_labels_are_present "$repo" "$num" "$@"; then
+			return 0
+		fi
+		if [[ $attempt -lt $attempts && $retry_delay -gt 0 ]]; then
+			sleep "$retry_delay"
+		fi
+		attempt=$((attempt + 1))
+	done
+	return 1
 }
 
 #######################################
@@ -1091,14 +1162,17 @@ _rest_pr_create() {
 		return $rc
 	fi
 
-	printf '%s\n' "$html_url"
-
 	# Apply labels via the issues endpoint (PRs share it).
 	if [[ ${#labels[@]} -gt 0 ]]; then
 		local pr_number
 		pr_number=$(printf '%s' "$html_url" | grep -oE '[0-9]+$' || true)
-		[[ -n "$pr_number" ]] && _rest_apply_labels "$repo" "$pr_number" "${labels[@]}"
+		if [[ -z "$pr_number" ]]; then
+			printf '[aidevops] _rest_pr_create: created PR but could not resolve its number to verify requested labels\n' >&2
+		elif ! _rest_apply_labels_verified "$repo" "$pr_number" "${labels[@]}"; then
+			printf '[aidevops] _rest_pr_create: created PR #%s but could not verify requested labels after bounded retries; not retrying creation\n' "$pr_number" >&2
+		fi
 	fi
+	printf '%s\n' "$html_url"
 	return 0
 }
 
@@ -1166,7 +1240,8 @@ _rest_issue_view() {
 		return 2
 	fi
 
-	local _path="/repos/${repo}/issues/${num}"
+	local _path=""
+	_path=$(_rest_issue_api_path "$repo" "$num")
 	local _gh_cmd=(gh api "$_path")
 	if [[ -n "$json_fields" ]]; then
 		jq_expr="$(_rest_issue_object_json_jq "$json_fields" "$jq_expr")" || return 1

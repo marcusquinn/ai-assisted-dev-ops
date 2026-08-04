@@ -786,6 +786,55 @@ else
 fi
 
 # =============================================================================
+# Test 14b: requested PR labels are verified after application
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"origin:worker"},{"name":"auto-dispatch"}],"assignees":[]}'
+export AIDEVOPS_GH_REST_LABEL_RETRY_DELAY=0
+label_verify_stderr="${TMP}/pr-label-verify-success.stderr"
+_rest_pr_create \
+	--repo "owner/repo" \
+	--title "t9995: verified label test" \
+	--head "feature/t9995-verified-labels" \
+	--base "main" \
+	--label "origin:worker,auto-dispatch" >/dev/null 2>"$label_verify_stderr" || true
+
+if grep -qE '^api /repos/owner/repo/issues/[0-9]+ --jq \.labels\[\]\.name' "$GH_CALLS" 2>/dev/null &&
+	[[ ! -s "$label_verify_stderr" ]]; then
+	pass "_rest_pr_create verifies requested labels after REST application"
+else
+	fail "_rest_pr_create verifies requested labels after REST application" \
+		"GH_CALLS=$(cat "$GH_CALLS"); stderr=$(cat "$label_verify_stderr")"
+fi
+
+# =============================================================================
+# Test 14c: persistent label failure does not turn an existing PR into a retry
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_REST_FAIL_MATCH='POST /repos/owner/repo/issues/9999/labels'
+label_failure_stderr="${TMP}/pr-label-verify-failure.stderr"
+label_failure_output=""
+label_failure_rc=0
+label_failure_output=$(_rest_pr_create \
+	--repo "owner/repo" \
+	--title "t9995: persistent label failure" \
+	--head "feature/t9995-persistent-label-failure" \
+	--base "main" \
+	--label "origin:worker" 2>"$label_failure_stderr") || label_failure_rc=$?
+pull_create_count=$(grep -cE '^api -X POST /repos/owner/repo/pulls' "$GH_CALLS" 2>/dev/null || true)
+label_apply_count=$(grep -cE '^api -X POST /repos/owner/repo/issues/9999/labels' "$GH_CALLS" 2>/dev/null || true)
+
+if [[ $label_failure_rc -eq 0 && "$label_failure_output" == "https://github.com/owner/repo/issues/9999" &&
+	"$pull_create_count" -eq 1 && "$label_apply_count" -eq 3 ]] &&
+	grep -q 'created PR #9999 but could not verify requested labels after bounded retries; not retrying creation' "$label_failure_stderr" 2>/dev/null; then
+	pass "_rest_pr_create surfaces label failure without risking duplicate PR creation"
+else
+	fail "_rest_pr_create surfaces label failure without risking duplicate PR creation" \
+		"rc=${label_failure_rc}; output=${label_failure_output}; pulls=${pull_create_count}; labels=${label_apply_count}; stderr=$(cat "$label_failure_stderr")"
+fi
+unset STUB_REST_FAIL_MATCH STUB_ISSUE_VIEW_FIXTURE AIDEVOPS_GH_REST_LABEL_RETRY_DELAY
+
+# =============================================================================
 # Test 15: gh_pr_comment → falls back to REST when primary fails AND exhausted
 # =============================================================================
 : >"$GH_CALLS"
