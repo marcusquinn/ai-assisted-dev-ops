@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "document_type": "trust_policy",
+  "policy_id": "team-interface.trust.default",
+  "policy_version": 1,
+  "core_schema_id": "urn:aidevops:team-interface:core:v1",
+  "grant_configuration_ref": "role-config:team-interface:v1",
+  "gate_authority_ref": "authority-broker:team-interface:v1",
+  "role_grants": [
+    {
+      "role_id": "owner",
+      "grant_basis": "configured_role",
+      "configuration_ref": "role-config:team-interface:v1",
+      "capability_classes": [
+        "read",
+        "answer",
+        "draft",
+        "non_admin_operation",
+        "role_operation",
+        "owner_operation",
+        "administrator",
+        "secret_access",
+        "destructive",
+        "billing",
+        "publication",
+        "release"
+      ]
+    },
+    {
+      "role_id": "maintainer",
+      "grant_basis": "configured_role",
+      "configuration_ref": "role-config:team-interface:v1",
+      "capability_classes": ["read", "answer", "draft", "non_admin_operation", "role_operation"]
+    },
+    {
+      "role_id": "member",
+      "grant_basis": "configured_role",
+      "configuration_ref": "role-config:team-interface:v1",
+      "capability_classes": ["read", "answer", "draft", "non_admin_operation"]
+    },
+    {
+      "role_id": "external",
+      "grant_basis": "configured_role",
+      "configuration_ref": "role-config:team-interface:v1",
+      "capability_classes": ["read", "draft"]
+    }
+  ],
+  "profiles": [
+    {
+      "profile_id": "owner-local",
+      "structural_controls": [
+        "signature_provenance",
+        "schema",
+        "size_type_path",
+        "correlation",
+        "idempotency",
+        "output_secret"
+      ],
+      "deterministic_scan_mode": "conditional",
+      "semantic_scan_mode": "conditional",
+      "attachment_policy": {
+        "mode": "conditional_sandbox",
+        "sandbox_required_for_extraction": true,
+        "owner_bypass_allowed": false,
+        "active_content_allowed": false,
+        "unsafe_outcome": "reject",
+        "max_size_bytes": 104857600
+      },
+      "default_capabilities": ["read", "answer", "draft", "owner_operation"],
+      "capability_ceiling": [
+        "read",
+        "answer",
+        "draft",
+        "non_admin_operation",
+        "role_operation",
+        "owner_operation",
+        "administrator",
+        "secret_access",
+        "destructive",
+        "billing",
+        "publication",
+        "release"
+      ],
+      "explicit_gate_capabilities": [
+        "administrator",
+        "secret_access",
+        "destructive",
+        "billing",
+        "publication",
+        "release"
+      ],
+      "escalation_conditions": [
+        "suspicious_encoding",
+        "forwarded_content",
+        "unknown_provenance",
+        "external_attachment",
+        "elevated_operation",
+        "deterministic_findings",
+        "scanner_error",
+        "capability_escalation"
+      ]
+    },
+    {
+      "profile_id": "trusted-team",
+      "structural_controls": [
+        "signature_provenance",
+        "schema",
+        "size_type_path",
+        "correlation",
+        "idempotency",
+        "output_secret"
+      ],
+      "deterministic_scan_mode": "cached_required",
+      "semantic_scan_mode": "findings_or_elevation",
+      "attachment_policy": {
+        "mode": "conditional_sandbox",
+        "sandbox_required_for_extraction": true,
+        "owner_bypass_allowed": false,
+        "active_content_allowed": false,
+        "unsafe_outcome": "reject",
+        "max_size_bytes": 52428800
+      },
+      "default_capabilities": ["read", "answer", "draft", "role_operation"],
+      "capability_ceiling": ["read", "answer", "draft", "non_admin_operation", "role_operation"],
+      "explicit_gate_capabilities": [],
+      "escalation_conditions": [
+        "forwarded_content",
+        "unknown_provenance",
+        "external_attachment",
+        "elevated_operation",
+        "deterministic_findings",
+        "scanner_error",
+        "capability_escalation"
+      ]
+    },
+    {
+      "profile_id": "shared-member",
+      "structural_controls": [
+        "signature_provenance",
+        "schema",
+        "size_type_path",
+        "correlation",
+        "idempotency",
+        "output_secret"
+      ],
+      "deterministic_scan_mode": "required",
+      "semantic_scan_mode": "findings_or_elevation",
+      "attachment_policy": {
+        "mode": "sandbox_required",
+        "sandbox_required_for_extraction": true,
+        "owner_bypass_allowed": false,
+        "active_content_allowed": false,
+        "unsafe_outcome": "quarantine",
+        "max_size_bytes": 26214400
+      },
+      "default_capabilities": ["read", "answer", "draft"],
+      "capability_ceiling": ["read", "answer", "draft", "non_admin_operation"],
+      "explicit_gate_capabilities": [],
+      "escalation_conditions": [
+        "forwarded_content",
+        "unknown_provenance",
+        "external_attachment",
+        "elevated_operation",
+        "deterministic_findings",
+        "scanner_error",
+        "capability_escalation"
+      ]
+    },
+    {
+      "profile_id": "external-bridged",
+      "structural_controls": [
+        "signature_provenance",
+        "schema",
+        "size_type_path",
+        "correlation",
+        "idempotency",
+        "output_secret"
+      ],
+      "deterministic_scan_mode": "strict",
+      "semantic_scan_mode": "external_or_elevation",
+      "attachment_policy": {
+        "mode": "isolate_or_quarantine",
+        "sandbox_required_for_extraction": true,
+        "owner_bypass_allowed": false,
+        "active_content_allowed": false,
+        "unsafe_outcome": "quarantine",
+        "max_size_bytes": 10485760
+      },
+      "default_capabilities": ["read", "draft"],
+      "capability_ceiling": ["read", "draft"],
+      "explicit_gate_capabilities": [],
+      "escalation_conditions": [
+        "unknown_provenance",
+        "external_attachment",
+        "elevated_operation",
+        "deterministic_findings",
+        "scanner_error",
+        "capability_escalation"
+      ]
+    }
+  ],
+  "high_risk_capabilities": [
+    "administrator",
+    "secret_access",
+    "destructive",
+    "billing",
+    "publication",
+    "release"
+  ]
+}

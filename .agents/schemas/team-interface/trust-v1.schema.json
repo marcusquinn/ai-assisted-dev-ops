@@ -1,0 +1,735 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:trust:v1",
+  "title": "aidevops team-interface trust contract v1",
+  "oneOf": [
+    {"$ref": "#/$defs/trust_policy_document"},
+    {"$ref": "#/$defs/scan_verdict_document"},
+    {"$ref": "#/$defs/ingress_decision_document"}
+  ],
+  "$defs": {
+    "stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "reference_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/reference_id"},
+    "capability_operation": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/capability_operation"},
+    "verified_actor": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/verified_actor"},
+    "attachment": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/attachment"},
+    "trust_profile_id": {
+      "enum": ["owner-local", "trusted-team", "shared-member", "external-bridged"]
+    },
+    "provenance_class": {
+      "enum": ["owner_direct", "team_direct", "shared_internal", "forwarded", "external", "unknown"]
+    },
+    "capability_class": {
+      "enum": [
+        "read",
+        "answer",
+        "draft",
+        "non_admin_operation",
+        "role_operation",
+        "owner_operation",
+        "administrator",
+        "secret_access",
+        "destructive",
+        "billing",
+        "publication",
+        "release"
+      ]
+    },
+    "high_risk_capability": {
+      "enum": ["administrator", "secret_access", "destructive", "billing", "publication", "release"]
+    },
+    "structural_control": {
+      "enum": [
+        "signature_provenance",
+        "schema",
+        "size_type_path",
+        "correlation",
+        "idempotency",
+        "output_secret"
+      ]
+    },
+    "attachment_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "sandbox_required_for_extraction",
+        "owner_bypass_allowed",
+        "active_content_allowed",
+        "unsafe_outcome",
+        "max_size_bytes"
+      ],
+      "properties": {
+        "mode": {"enum": ["conditional_sandbox", "sandbox_required", "isolate_or_quarantine"]},
+        "sandbox_required_for_extraction": {"const": true},
+        "owner_bypass_allowed": {"const": false},
+        "active_content_allowed": {"const": false},
+        "unsafe_outcome": {"enum": ["quarantine", "reject"]},
+        "max_size_bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
+      }
+    },
+    "trust_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "structural_controls",
+        "deterministic_scan_mode",
+        "semantic_scan_mode",
+        "attachment_policy",
+        "default_capabilities",
+        "capability_ceiling",
+        "explicit_gate_capabilities",
+        "escalation_conditions"
+      ],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/trust_profile_id"},
+        "structural_controls": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/structural_control"},
+          "allOf": [
+            {"contains": {"const": "signature_provenance"}},
+            {"contains": {"const": "schema"}},
+            {"contains": {"const": "size_type_path"}},
+            {"contains": {"const": "correlation"}},
+            {"contains": {"const": "idempotency"}},
+            {"contains": {"const": "output_secret"}}
+          ]
+        },
+        "deterministic_scan_mode": {"enum": ["conditional", "cached_required", "required", "strict"]},
+        "semantic_scan_mode": {"enum": ["conditional", "findings_or_elevation", "external_or_elevation"]},
+        "attachment_policy": {"$ref": "#/$defs/attachment_policy"},
+        "default_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability_class"}
+        },
+        "capability_ceiling": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability_class"}
+        },
+        "explicit_gate_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/high_risk_capability"}
+        },
+        "escalation_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "suspicious_encoding",
+              "forwarded_content",
+              "unknown_provenance",
+              "external_attachment",
+              "elevated_operation",
+              "deterministic_findings",
+              "scanner_error",
+              "capability_escalation"
+            ]
+          }
+        }
+      }
+    },
+    "owner_local_profile": {
+      "allOf": [
+        {"$ref": "#/$defs/trust_profile"},
+        {
+          "properties": {
+            "profile_id": {"const": "owner-local"},
+            "deterministic_scan_mode": {"const": "conditional"},
+            "semantic_scan_mode": {"const": "conditional"},
+            "default_capabilities": {
+              "prefixItems": [
+                {"const": "read"},
+                {"const": "answer"},
+                {"const": "draft"},
+                {"const": "owner_operation"}
+              ],
+              "items": false
+            },
+            "explicit_gate_capabilities": {
+              "prefixItems": [
+                {"const": "administrator"},
+                {"const": "secret_access"},
+                {"const": "destructive"},
+                {"const": "billing"},
+                {"const": "publication"},
+                {"const": "release"}
+              ],
+              "items": false
+            },
+            "escalation_conditions": {
+              "allOf": [
+                {"contains": {"const": "suspicious_encoding"}},
+                {"contains": {"const": "forwarded_content"}},
+                {"contains": {"const": "unknown_provenance"}},
+                {"contains": {"const": "external_attachment"}},
+                {"contains": {"const": "elevated_operation"}},
+                {"contains": {"const": "deterministic_findings"}},
+                {"contains": {"const": "scanner_error"}},
+                {"contains": {"const": "capability_escalation"}}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "trusted_team_profile": {
+      "allOf": [
+        {"$ref": "#/$defs/trust_profile"},
+        {
+          "properties": {
+            "profile_id": {"const": "trusted-team"},
+            "deterministic_scan_mode": {"const": "cached_required"},
+            "semantic_scan_mode": {"const": "findings_or_elevation"},
+            "default_capabilities": {
+              "prefixItems": [
+                {"const": "read"},
+                {"const": "answer"},
+                {"const": "draft"},
+                {"const": "role_operation"}
+              ],
+              "items": false
+            },
+            "capability_ceiling": {
+              "items": {"enum": ["read", "answer", "draft", "non_admin_operation", "role_operation"]}
+            },
+            "explicit_gate_capabilities": {"maxItems": 0},
+            "escalation_conditions": {
+              "allOf": [
+                {"contains": {"const": "forwarded_content"}},
+                {"contains": {"const": "unknown_provenance"}},
+                {"contains": {"const": "external_attachment"}},
+                {"contains": {"const": "elevated_operation"}},
+                {"contains": {"const": "deterministic_findings"}},
+                {"contains": {"const": "scanner_error"}},
+                {"contains": {"const": "capability_escalation"}}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "shared_member_profile": {
+      "allOf": [
+        {"$ref": "#/$defs/trust_profile"},
+        {
+          "properties": {
+            "profile_id": {"const": "shared-member"},
+            "deterministic_scan_mode": {"const": "required"},
+            "semantic_scan_mode": {"const": "findings_or_elevation"},
+            "attachment_policy": {"properties": {"mode": {"const": "sandbox_required"}}},
+            "default_capabilities": {
+              "prefixItems": [{"const": "read"}, {"const": "answer"}, {"const": "draft"}],
+              "items": false
+            },
+            "capability_ceiling": {
+              "items": {"enum": ["read", "answer", "draft", "non_admin_operation"]}
+            },
+            "explicit_gate_capabilities": {"maxItems": 0},
+            "escalation_conditions": {
+              "allOf": [
+                {"contains": {"const": "forwarded_content"}},
+                {"contains": {"const": "unknown_provenance"}},
+                {"contains": {"const": "external_attachment"}},
+                {"contains": {"const": "elevated_operation"}},
+                {"contains": {"const": "deterministic_findings"}},
+                {"contains": {"const": "scanner_error"}},
+                {"contains": {"const": "capability_escalation"}}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "external_bridged_profile": {
+      "allOf": [
+        {"$ref": "#/$defs/trust_profile"},
+        {
+          "properties": {
+            "profile_id": {"const": "external-bridged"},
+            "deterministic_scan_mode": {"const": "strict"},
+            "semantic_scan_mode": {"const": "external_or_elevation"},
+            "attachment_policy": {"properties": {"mode": {"const": "isolate_or_quarantine"}}},
+            "default_capabilities": {
+              "prefixItems": [{"const": "read"}, {"const": "draft"}],
+              "items": false
+            },
+            "capability_ceiling": {
+              "prefixItems": [{"const": "read"}, {"const": "draft"}],
+              "items": false
+            },
+            "explicit_gate_capabilities": {"maxItems": 0},
+            "escalation_conditions": {
+              "allOf": [
+                {"contains": {"const": "unknown_provenance"}},
+                {"contains": {"const": "external_attachment"}},
+                {"contains": {"const": "elevated_operation"}},
+                {"contains": {"const": "deterministic_findings"}},
+                {"contains": {"const": "scanner_error"}},
+                {"contains": {"const": "capability_escalation"}}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "trust_policy_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "policy_id",
+        "policy_version",
+        "core_schema_id",
+        "grant_configuration_ref",
+        "gate_authority_ref",
+        "role_grants",
+        "profiles",
+        "high_risk_capabilities"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "trust_policy"},
+        "policy_id": {"$ref": "#/$defs/stable_id"},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "core_schema_id": {"const": "urn:aidevops:team-interface:core:v1"},
+        "grant_configuration_ref": {"$ref": "#/$defs/reference_id"},
+        "gate_authority_ref": {"$ref": "#/$defs/reference_id"},
+        "role_grants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/configured_grant"}
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {"$ref": "#/$defs/owner_local_profile"},
+            {"$ref": "#/$defs/trusted_team_profile"},
+            {"$ref": "#/$defs/shared_member_profile"},
+            {"$ref": "#/$defs/external_bridged_profile"}
+          ],
+          "items": false
+        },
+        "high_risk_capabilities": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/high_risk_capability"}
+        }
+      }
+    },
+    "verdict_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_digest",
+        "attachment_digests",
+        "provider_id",
+        "provenance_class",
+        "trust_profile_id",
+        "scanner_engine",
+        "scanner_version",
+        "policy_version",
+        "requested_capability_class"
+      ],
+      "properties": {
+        "content_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "attachment_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        },
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "provenance_class": {"$ref": "#/$defs/provenance_class"},
+        "trust_profile_id": {"$ref": "#/$defs/trust_profile_id"},
+        "scanner_engine": {"type": "string", "minLength": 1, "maxLength": 100},
+        "scanner_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "requested_capability_class": {"$ref": "#/$defs/capability_class"}
+      }
+    },
+    "stage_status": {
+      "enum": ["not_required", "not_run", "clean", "findings", "quarantined", "error"]
+    },
+    "stage_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence_refs"],
+      "properties": {
+        "status": {"$ref": "#/$defs/stage_status"},
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/reference_id"}
+        },
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "scan_stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structural", "deterministic", "semantic", "attachment"],
+      "properties": {
+        "structural": {"$ref": "#/$defs/stage_evidence"},
+        "deterministic": {"$ref": "#/$defs/stage_evidence"},
+        "semantic": {"$ref": "#/$defs/stage_evidence"},
+        "attachment": {"$ref": "#/$defs/stage_evidence"}
+      }
+    },
+    "scan_verdict_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "verdict_id", "verdict_key", "stages", "result", "reusable", "created_at"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "scan_verdict"},
+        "verdict_id": {"$ref": "#/$defs/stable_id"},
+        "verdict_key": {"$ref": "#/$defs/verdict_key"},
+        "stages": {"$ref": "#/$defs/scan_stages"},
+        "result": {"enum": ["clean", "findings", "quarantined", "error"]},
+        "reusable": {"type": "boolean"},
+        "created_at": {"type": "string", "format": "date-time"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"result": {"const": "error"}}, "required": ["result"]},
+          "then": {"properties": {"reusable": {"const": false}}}
+        }
+      ]
+    },
+    "attachment_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attachment",
+        "provenance_class",
+        "digest_match",
+        "path_safe",
+        "type_allowed",
+        "active_content",
+        "executable",
+        "archive",
+        "macros",
+        "owner_bypass_used",
+        "extraction",
+        "outcome",
+        "reason_codes"
+      ],
+      "properties": {
+        "attachment": {"$ref": "#/$defs/attachment"},
+        "provenance_class": {"$ref": "#/$defs/provenance_class"},
+        "digest_match": {"type": "boolean"},
+        "path_safe": {"type": "boolean"},
+        "type_allowed": {"type": "boolean"},
+        "active_content": {"type": "boolean"},
+        "executable": {"type": "boolean"},
+        "archive": {"type": "boolean"},
+        "macros": {"type": "boolean"},
+        "owner_bypass_used": {"const": false},
+        "extraction": {"enum": ["not_required", "sandboxed", "quarantined", "rejected"]},
+        "sandbox_ref": {"$ref": "#/$defs/reference_id"},
+        "outcome": {"enum": ["accept", "quarantine", "reject"]},
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/stable_id"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"extraction": {"const": "sandboxed"}}, "required": ["extraction"]},
+          "then": {"required": ["sandbox_ref"]}
+        },
+        {
+          "if": {
+            "anyOf": [
+              {"properties": {"digest_match": {"const": false}}, "required": ["digest_match"]},
+              {"properties": {"path_safe": {"const": false}}, "required": ["path_safe"]},
+              {"properties": {"type_allowed": {"const": false}}, "required": ["type_allowed"]},
+              {"properties": {"active_content": {"const": true}}, "required": ["active_content"]},
+              {"properties": {"executable": {"const": true}}, "required": ["executable"]},
+              {"properties": {"archive": {"const": true}}, "required": ["archive"]},
+              {"properties": {"macros": {"const": true}}, "required": ["macros"]}
+            ]
+          },
+          "then": {
+            "properties": {
+              "outcome": {"enum": ["quarantine", "reject"]},
+              "extraction": {"enum": ["quarantined", "rejected"]}
+            }
+          }
+        }
+      ]
+    },
+    "configured_grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role_id", "grant_basis", "configuration_ref", "capability_classes"],
+      "properties": {
+        "role_id": {"$ref": "#/$defs/stable_id"},
+        "grant_basis": {"const": "configured_role"},
+        "configuration_ref": {"$ref": "#/$defs/reference_id"},
+        "capability_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability_class"}
+        }
+      }
+    },
+    "explicit_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_class", "gate_ref", "authority_ref"],
+      "properties": {
+        "capability_class": {"$ref": "#/$defs/high_risk_capability"},
+        "gate_ref": {"$ref": "#/$defs/reference_id"},
+        "authority_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "output_secret_guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence_ref"],
+      "properties": {
+        "status": {"enum": ["clean", "blocked", "error"]},
+        "evidence_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "allow_capability_evidence": {
+      "oneOf": [
+        {
+          "properties": {
+            "requested_capability_class": {"const": "read"},
+            "capability_ceiling": {"contains": {"const": "read"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "read"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "answer"},
+            "capability_ceiling": {"contains": {"const": "answer"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "answer"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "draft"},
+            "capability_ceiling": {"contains": {"const": "draft"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "draft"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "non_admin_operation"},
+            "capability_ceiling": {"contains": {"const": "non_admin_operation"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "non_admin_operation"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "role_operation"},
+            "capability_ceiling": {"contains": {"const": "role_operation"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "role_operation"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "owner_operation"},
+            "capability_ceiling": {"contains": {"const": "owner_operation"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "owner_operation"}}}, "required": ["capability_classes"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "administrator"},
+            "capability_ceiling": {"contains": {"const": "administrator"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "administrator"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "administrator"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "secret_access"},
+            "capability_ceiling": {"contains": {"const": "secret_access"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "secret_access"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "secret_access"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "destructive"},
+            "capability_ceiling": {"contains": {"const": "destructive"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "destructive"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "destructive"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "billing"},
+            "capability_ceiling": {"contains": {"const": "billing"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "billing"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "billing"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "publication"},
+            "capability_ceiling": {"contains": {"const": "publication"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "publication"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "publication"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        },
+        {
+          "properties": {
+            "requested_capability_class": {"const": "release"},
+            "capability_ceiling": {"contains": {"const": "release"}},
+            "configured_grants": {"contains": {"properties": {"capability_classes": {"contains": {"const": "release"}}}, "required": ["capability_classes"]}},
+            "explicit_gates": {"contains": {"properties": {"capability_class": {"const": "release"}}, "required": ["capability_class", "gate_ref"]}}
+          }
+        }
+      ]
+    },
+    "ingress_decision_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "decision_id",
+        "event_ref",
+        "provider_id",
+        "event_content_digest",
+        "event_attachment_digests",
+        "policy_ref",
+        "grant_configuration_ref",
+        "verified_actor",
+        "provenance_class",
+        "trust_profile_id",
+        "configured_grants",
+        "capability_ceiling",
+        "requested_operation",
+        "requested_capability_class",
+        "explicit_gates",
+        "scan_verdict_ref",
+        "scan_verdict_key",
+        "scan_result",
+        "attachment_decisions",
+        "decision",
+        "reason_codes",
+        "policy_version",
+        "correlation_id",
+        "idempotency_key",
+        "decided_at",
+        "audit_ref",
+        "output_secret_guard"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "ingress_decision"},
+        "decision_id": {"$ref": "#/$defs/stable_id"},
+        "event_ref": {"$ref": "#/$defs/reference_id"},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "event_content_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "event_attachment_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        },
+        "policy_ref": {"$ref": "#/$defs/reference_id"},
+        "grant_configuration_ref": {"$ref": "#/$defs/reference_id"},
+        "verified_actor": {"$ref": "#/$defs/verified_actor"},
+        "provenance_class": {"$ref": "#/$defs/provenance_class"},
+        "trust_profile_id": {"$ref": "#/$defs/trust_profile_id"},
+        "configured_grants": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/configured_grant"}
+        },
+        "capability_ceiling": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability_class"}
+        },
+        "requested_operation": {"$ref": "#/$defs/capability_operation"},
+        "requested_capability_class": {"$ref": "#/$defs/capability_class"},
+        "explicit_gates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/explicit_gate"}
+        },
+        "scan_verdict_ref": {"$ref": "#/$defs/reference_id"},
+        "scan_verdict_key": {"$ref": "#/$defs/verdict_key"},
+        "scan_result": {"enum": ["clean", "findings", "quarantined", "error"]},
+        "attachment_decisions": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/attachment_decision"}
+        },
+        "decision": {"enum": ["allow", "deny", "review", "quarantine"]},
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/stable_id"}
+        },
+        "policy_version": {"type": "integer", "minimum": 1},
+        "correlation_id": {"$ref": "#/$defs/stable_id"},
+        "idempotency_key": {"$ref": "#/$defs/stable_id"},
+        "decided_at": {"type": "string", "format": "date-time"},
+        "audit_ref": {"$ref": "#/$defs/reference_id"},
+        "output_secret_guard": {"$ref": "#/$defs/output_secret_guard"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"decision": {"const": "allow"}}, "required": ["decision"]},
+          "then": {
+            "properties": {
+              "provenance_class": {"not": {"const": "unknown"}},
+              "configured_grants": {"minItems": 1},
+              "scan_result": {"const": "clean"},
+              "attachment_decisions": {
+                "items": {"properties": {"outcome": {"const": "accept"}}, "required": ["outcome"]}
+              },
+              "output_secret_guard": {
+                "properties": {"status": {"const": "clean"}},
+                "required": ["status"]
+              }
+            },
+            "allOf": [{"$ref": "#/$defs/allow_capability_evidence"}]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision": {"const": "allow"},
+              "trust_profile_id": {"enum": ["shared-member", "external-bridged"]}
+            },
+            "required": ["decision", "trust_profile_id"]
+          },
+          "then": {
+            "properties": {
+              "attachment_decisions": {
+                "items": {"properties": {"extraction": {"const": "sandboxed"}}, "required": ["extraction"]}
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

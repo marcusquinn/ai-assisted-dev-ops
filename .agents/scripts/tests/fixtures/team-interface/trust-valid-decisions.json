@@ -1,0 +1,389 @@
+{
+  "documents": [
+    {
+      "schema_version": 1,
+      "document_type": "scan_verdict",
+      "verdict_id": "verdict.owner.clean",
+      "verdict_key": {
+        "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "attachment_digests": [],
+        "provider_id": "buzz",
+        "provenance_class": "owner_direct",
+        "trust_profile_id": "owner-local",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "read"
+      },
+      "stages": {
+        "structural": {"status": "clean", "evidence_refs": ["evidence:structural:owner"]},
+        "deterministic": {"status": "not_required", "evidence_refs": []},
+        "semantic": {"status": "not_required", "evidence_refs": []},
+        "attachment": {"status": "not_required", "evidence_refs": []}
+      },
+      "result": "clean",
+      "reusable": true,
+      "created_at": "2026-08-04T20:30:00Z"
+    },
+    {
+      "schema_version": 1,
+      "document_type": "scan_verdict",
+      "verdict_id": "verdict.team.error",
+      "verdict_key": {
+        "content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "attachment_digests": [],
+        "provider_id": "matrix",
+        "provenance_class": "team_direct",
+        "trust_profile_id": "trusted-team",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "answer"
+      },
+      "stages": {
+        "structural": {"status": "clean", "evidence_refs": ["evidence:structural:team"]},
+        "deterministic": {"status": "error", "evidence_refs": ["evidence:scanner:error"]},
+        "semantic": {"status": "not_run", "evidence_refs": []},
+        "attachment": {"status": "not_required", "evidence_refs": []}
+      },
+      "result": "error",
+      "reusable": false,
+      "created_at": "2026-08-04T20:31:00Z"
+    },
+    {
+      "schema_version": 1,
+      "document_type": "scan_verdict",
+      "verdict_id": "verdict.shared.findings",
+      "verdict_key": {
+        "content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "attachment_digests": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+        "provider_id": "matrix",
+        "provenance_class": "shared_internal",
+        "trust_profile_id": "shared-member",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "non_admin_operation"
+      },
+      "stages": {
+        "structural": {"status": "clean", "evidence_refs": ["evidence:structural:shared"]},
+        "deterministic": {"status": "findings", "evidence_refs": ["evidence:scanner:shared"]},
+        "semantic": {"status": "findings", "evidence_refs": ["evidence:semantic:shared"]},
+        "attachment": {"status": "clean", "evidence_refs": ["evidence:attachment:shared"]}
+      },
+      "result": "findings",
+      "reusable": true,
+      "created_at": "2026-08-04T20:31:30Z"
+    },
+    {
+      "schema_version": 1,
+      "document_type": "scan_verdict",
+      "verdict_id": "verdict.external.quarantined",
+      "verdict_key": {
+        "content_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "attachment_digests": ["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+        "provider_id": "buzz",
+        "provenance_class": "external",
+        "trust_profile_id": "external-bridged",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "read"
+      },
+      "stages": {
+        "structural": {"status": "clean", "evidence_refs": ["evidence:structural:external"]},
+        "deterministic": {"status": "findings", "evidence_refs": ["evidence:scanner:external"]},
+        "semantic": {"status": "not_run", "evidence_refs": []},
+        "attachment": {"status": "quarantined", "evidence_refs": ["evidence:attachment:external"]}
+      },
+      "result": "quarantined",
+      "reusable": true,
+      "created_at": "2026-08-04T20:31:45Z"
+    },
+    {
+      "schema_version": 1,
+      "document_type": "ingress_decision",
+      "decision_id": "decision.owner.allow",
+      "event_ref": "event:owner:001",
+      "provider_id": "buzz",
+      "event_content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "event_attachment_digests": [],
+      "policy_ref": "team-interface.trust.default:v1",
+      "grant_configuration_ref": "role-config:team-interface:v1",
+      "verified_actor": {
+        "subject_id": "subject.owner",
+        "subject_type": "human",
+        "roles": ["owner"],
+        "verification": {
+          "status": "verified",
+          "method": "provider_signature",
+          "evidence_ref": "evidence:actor:owner"
+        },
+        "signature_status": "verified"
+      },
+      "provenance_class": "owner_direct",
+      "trust_profile_id": "owner-local",
+      "configured_grants": [
+        {
+          "role_id": "owner",
+          "grant_basis": "configured_role",
+          "configuration_ref": "role-config:team-interface:v1",
+          "capability_classes": ["read", "answer", "draft", "owner_operation"]
+        }
+      ],
+      "capability_ceiling": ["read", "answer", "draft", "owner_operation"],
+      "requested_operation": "read",
+      "requested_capability_class": "read",
+      "explicit_gates": [],
+      "scan_verdict_ref": "verdict.owner.clean",
+      "scan_verdict_key": {
+        "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "attachment_digests": [],
+        "provider_id": "buzz",
+        "provenance_class": "owner_direct",
+        "trust_profile_id": "owner-local",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "read"
+      },
+      "scan_result": "clean",
+      "attachment_decisions": [],
+      "decision": "allow",
+      "reason_codes": ["configured_grant_within_ceiling"],
+      "policy_version": 1,
+      "correlation_id": "correlation.owner.001",
+      "idempotency_key": "idempotency.owner.001",
+      "decided_at": "2026-08-04T20:30:01Z",
+      "audit_ref": "audit:decision:owner:001",
+      "output_secret_guard": {"status": "clean", "evidence_ref": "evidence:secret-guard:owner"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "ingress_decision",
+      "decision_id": "decision.team.deny",
+      "event_ref": "event:team:001",
+      "provider_id": "matrix",
+      "event_content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "event_attachment_digests": [],
+      "policy_ref": "team-interface.trust.default:v1",
+      "grant_configuration_ref": "role-config:team-interface:v1",
+      "verified_actor": {
+        "subject_id": "subject.team-member",
+        "subject_type": "human",
+        "roles": ["maintainer"],
+        "verification": {
+          "status": "verified",
+          "method": "provider_signature",
+          "evidence_ref": "evidence:actor:team"
+        },
+        "signature_status": "verified"
+      },
+      "provenance_class": "team_direct",
+      "trust_profile_id": "trusted-team",
+      "configured_grants": [
+        {
+          "role_id": "maintainer",
+          "grant_basis": "configured_role",
+          "configuration_ref": "role-config:team-interface:v1",
+          "capability_classes": ["read", "answer", "draft", "role_operation"]
+        }
+      ],
+      "capability_ceiling": ["read", "answer", "draft", "role_operation"],
+      "requested_operation": "send",
+      "requested_capability_class": "answer",
+      "explicit_gates": [],
+      "scan_verdict_ref": "verdict.team.error",
+      "scan_verdict_key": {
+        "content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "attachment_digests": [],
+        "provider_id": "matrix",
+        "provenance_class": "team_direct",
+        "trust_profile_id": "trusted-team",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "answer"
+      },
+      "scan_result": "error",
+      "attachment_decisions": [],
+      "decision": "deny",
+      "reason_codes": ["scanner_error_fail_closed"],
+      "policy_version": 1,
+      "correlation_id": "correlation.team.001",
+      "idempotency_key": "idempotency.team.001",
+      "decided_at": "2026-08-04T20:31:01Z",
+      "audit_ref": "audit:decision:team:001",
+      "output_secret_guard": {"status": "clean", "evidence_ref": "evidence:secret-guard:team"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "ingress_decision",
+      "decision_id": "decision.shared.review",
+      "event_ref": "event:shared:001",
+      "provider_id": "matrix",
+      "event_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "event_attachment_digests": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+      "policy_ref": "team-interface.trust.default:v1",
+      "grant_configuration_ref": "role-config:team-interface:v1",
+      "verified_actor": {
+        "subject_id": "subject.shared-member",
+        "subject_type": "human",
+        "roles": ["member"],
+        "verification": {
+          "status": "verified",
+          "method": "broker_attestation",
+          "evidence_ref": "evidence:actor:shared"
+        },
+        "signature_status": "not_present"
+      },
+      "provenance_class": "shared_internal",
+      "trust_profile_id": "shared-member",
+      "configured_grants": [
+        {
+          "role_id": "member",
+          "grant_basis": "configured_role",
+          "configuration_ref": "role-config:team-interface:v1",
+          "capability_classes": ["read", "answer", "draft"]
+        }
+      ],
+      "capability_ceiling": ["read", "answer", "draft", "non_admin_operation"],
+      "requested_operation": "create",
+      "requested_capability_class": "non_admin_operation",
+      "explicit_gates": [],
+      "scan_verdict_ref": "verdict.shared.findings",
+      "scan_verdict_key": {
+        "content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "attachment_digests": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+        "provider_id": "matrix",
+        "provenance_class": "shared_internal",
+        "trust_profile_id": "shared-member",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "non_admin_operation"
+      },
+      "scan_result": "findings",
+      "attachment_decisions": [
+        {
+          "attachment": {
+            "attachment_id": "attachment.shared.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": 2048,
+            "display_name": "proposal.pdf",
+            "digest": {
+              "algorithm": "sha256",
+              "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "metadata": {}
+          },
+          "provenance_class": "shared_internal",
+          "digest_match": true,
+          "path_safe": true,
+          "type_allowed": true,
+          "active_content": false,
+          "executable": false,
+          "archive": false,
+          "macros": false,
+          "owner_bypass_used": false,
+          "extraction": "sandboxed",
+          "sandbox_ref": "sandbox:attachment:shared:pdf",
+          "outcome": "accept",
+          "reason_codes": ["sandboxed_safe_attachment"]
+        }
+      ],
+      "decision": "review",
+      "reason_codes": ["capability_requires_configured_grant"],
+      "policy_version": 1,
+      "correlation_id": "correlation.shared.001",
+      "idempotency_key": "idempotency.shared.001",
+      "decided_at": "2026-08-04T20:32:00Z",
+      "audit_ref": "audit:decision:shared:001",
+      "output_secret_guard": {"status": "clean", "evidence_ref": "evidence:secret-guard:shared"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "ingress_decision",
+      "decision_id": "decision.external.quarantine",
+      "event_ref": "event:external:001",
+      "provider_id": "buzz",
+      "event_content_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "event_attachment_digests": ["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+      "policy_ref": "team-interface.trust.default:v1",
+      "grant_configuration_ref": "role-config:team-interface:v1",
+      "verified_actor": {
+        "subject_id": "subject.external",
+        "subject_type": "human",
+        "roles": ["external"],
+        "verification": {
+          "status": "verified",
+          "method": "provider_session",
+          "evidence_ref": "evidence:actor:external"
+        },
+        "signature_status": "not_present"
+      },
+      "provenance_class": "external",
+      "trust_profile_id": "external-bridged",
+      "configured_grants": [
+        {
+          "role_id": "external",
+          "grant_basis": "configured_role",
+          "configuration_ref": "role-config:team-interface:v1",
+          "capability_classes": ["read", "draft"]
+        }
+      ],
+      "capability_ceiling": ["read", "draft"],
+      "requested_operation": "read",
+      "requested_capability_class": "read",
+      "explicit_gates": [],
+      "scan_verdict_ref": "verdict.external.quarantined",
+      "scan_verdict_key": {
+        "content_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "attachment_digests": ["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+        "provider_id": "buzz",
+        "provenance_class": "external",
+        "trust_profile_id": "external-bridged",
+        "scanner_engine": "prompt-guard",
+        "scanner_version": "1.0.0",
+        "policy_version": 1,
+        "requested_capability_class": "read"
+      },
+      "scan_result": "quarantined",
+      "attachment_decisions": [
+        {
+          "attachment": {
+            "attachment_id": "attachment.external.executable",
+            "media_type": "application/octet-stream",
+            "size_bytes": 4096,
+            "display_name": "payload.bin",
+            "digest": {
+              "algorithm": "sha256",
+              "value": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            "metadata": {}
+          },
+          "provenance_class": "external",
+          "digest_match": true,
+          "path_safe": true,
+          "type_allowed": false,
+          "active_content": false,
+          "executable": true,
+          "archive": false,
+          "macros": false,
+          "owner_bypass_used": false,
+          "extraction": "quarantined",
+          "outcome": "quarantine",
+          "reason_codes": ["unsafe_executable_attachment"]
+        }
+      ],
+      "decision": "quarantine",
+      "reason_codes": ["unsafe_attachment_quarantined"],
+      "policy_version": 1,
+      "correlation_id": "correlation.external.001",
+      "idempotency_key": "idempotency.external.001",
+      "decided_at": "2026-08-04T20:33:00Z",
+      "audit_ref": "audit:decision:external:001",
+      "output_secret_guard": {"status": "clean", "evidence_ref": "evidence:secret-guard:external"}
+    }
+  ]
+}

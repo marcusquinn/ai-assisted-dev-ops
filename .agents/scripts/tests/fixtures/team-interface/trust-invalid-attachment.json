@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "label": "active content cannot be accepted after extraction",
+      "change": {"active_content": true, "outcome": "accept", "extraction": "sandboxed"}
+    },
+    {
+      "label": "owner trust cannot bypass attachment preflight",
+      "change": {"owner_bypass_used": true}
+    },
+    {
+      "label": "a mismatched digest cannot be accepted",
+      "change": {"digest_match": false, "outcome": "accept", "extraction": "sandboxed"}
+    }
+  ]
+}

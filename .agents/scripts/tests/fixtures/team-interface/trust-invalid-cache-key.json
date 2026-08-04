@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "label": "incomplete key omits scanner version",
+      "remove": "scanner_version"
+    },
+    {
+      "label": "stale policy key cannot reuse the verdict",
+      "change": {"policy_version": 2}
+    },
+    {
+      "label": "attachment digests must be sorted",
+      "change": {
+        "attachment_digests": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    }
+  ]
+}
