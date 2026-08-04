@@ -1,0 +1,350 @@
+{
+  "documents": [
+    {
+      "schema_version": 1,
+      "document_type": "ownership_policy",
+      "policy_id": "reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "resource_kind": "other",
+      "unknown_field_ownership": "review_required",
+      "field_rules": [
+        {"field_path": "/display_label", "ownership": "user_owned", "sensitive": false},
+        {"field_path": "/model_ref", "ownership": "managed", "sensitive": false},
+        {"field_path": "/startup_mode", "ownership": "managed", "sensitive": false},
+        {"field_path": "/instructions_ref", "ownership": "managed", "sensitive": false},
+        {"field_path": "/enabled", "ownership": "managed", "sensitive": false},
+        {"field_path": "/authority_ref", "ownership": "security_required", "sensitive": false},
+        {"field_path": "/credential_ref", "ownership": "security_required", "sensitive": true}
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_input",
+      "input_id": "reconciliation-input.agent-alpha.8",
+      "resource": {"resource_id": "agent.alpha", "provider_id": "provider.example", "community_id": "community.primary", "provider_external_id": "opaque-agent-42", "match_basis": "stable_ids", "management_identity_status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "observed_at": "2026-08-04T20:20:00Z",
+      "observation_hash": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
+      "fields": [
+        {"field_path": "/model_ref", "ownership": "managed", "sensitive": false, "desired": {"present": true, "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "data": {"kind": "reference", "reference_ref": "model:standard"}}, "last_applied": {"present": true, "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "data": {"kind": "reference", "reference_ref": "model:simple"}}, "actual": {"present": true, "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "data": {"kind": "reference", "reference_ref": "model:simple"}}, "actual_observed_at": "2026-08-04T20:20:00Z"}
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_input",
+      "input_id": "reconciliation-input.agent-alpha.7",
+      "resource": {
+        "resource_id": "agent.alpha",
+        "provider_id": "provider.example",
+        "community_id": "community.primary",
+        "provider_external_id": "opaque-agent-42",
+        "match_basis": "stable_ids",
+        "management_identity_status": "verified",
+        "management_owner": "aidevops.team-interface",
+        "manager_marker": "manager:agent.alpha",
+        "display_label": "Human-readable label"
+      },
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "observed_at": "2026-08-04T20:00:00Z",
+      "observation_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fields": [
+        {
+          "field_path": "/display_label",
+          "ownership": "user_owned",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "data": {"kind": "literal", "value": "Desired label"}},
+          "last_applied": {"present": true, "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "data": {"kind": "literal", "value": "Old label"}},
+          "actual": {"present": true, "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "data": {"kind": "literal", "value": "User label"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/model_ref",
+          "ownership": "managed",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "data": {"kind": "reference", "reference_ref": "model:standard"}},
+          "last_applied": {"present": true, "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "data": {"kind": "reference", "reference_ref": "model:simple"}},
+          "actual": {"present": true, "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "data": {"kind": "reference", "reference_ref": "model:simple"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/credential_ref",
+          "ownership": "security_required",
+          "sensitive": true,
+          "desired": {"present": true, "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "data": {"kind": "secret_reference", "secret_ref": "secret:provider-agent"}},
+          "last_applied": {"present": true, "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "data": {"kind": "secret_reference", "secret_ref": "secret:provider-agent"}},
+          "actual": {"present": true, "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "data": {"kind": "secret_reference", "secret_ref": "secret:unverified-drift"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/startup_mode",
+          "ownership": "managed",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "data": {"kind": "literal", "value": "enabled"}},
+          "last_applied": {"present": true, "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "data": {"kind": "literal", "value": "enabled"}},
+          "actual": {"present": true, "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "data": {"kind": "literal", "value": "enabled"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/instructions_ref",
+          "ownership": "managed",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "data": {"kind": "reference", "reference_ref": "instructions:desired"}},
+          "last_applied": {"present": true, "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "data": {"kind": "reference", "reference_ref": "instructions:last-applied"}},
+          "actual": {"present": true, "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "data": {"kind": "reference", "reference_ref": "instructions:user-modified"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/authority_ref",
+          "ownership": "security_required",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "data": {"kind": "reference", "reference_ref": "authority:required"}},
+          "last_applied": {"present": true, "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "data": {"kind": "reference", "reference_ref": "authority:required"}},
+          "actual": {"present": true, "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "data": {"kind": "reference", "reference_ref": "authority:unsafe-drift"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/enabled",
+          "ownership": "managed",
+          "sensitive": false,
+          "desired": {"present": true, "digest": "sha256:1717171717171717171717171717171717171717171717171717171717171717", "data": {"kind": "literal", "value": false}},
+          "last_applied": {"present": true, "digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818", "data": {"kind": "literal", "value": true}},
+          "actual": {"present": true, "digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818", "data": {"kind": "literal", "value": true}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        },
+        {
+          "field_path": "/unclassified_provider_field",
+          "ownership": "unknown",
+          "sensitive": false,
+          "desired": {"present": false},
+          "last_applied": {"present": false},
+          "actual": {"present": true, "digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212", "data": {"kind": "literal", "value": "unmanaged"}},
+          "actual_observed_at": "2026-08-04T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_plan",
+      "plan_id": "plan.agent-alpha.7",
+      "operation_id": "operation.agent-alpha.7",
+      "source_input_id": "reconciliation-input.agent-alpha.7",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "provider_external_id": "opaque-agent-42",
+      "outcome": "disable",
+      "plan_hash": "sha256:677a035ec986f9414db42a198a8041a18c8eb098e837a5ff4cfc526b4dffd2d3",
+      "desired_version": "desired-7",
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "capabilities": {
+        "stable_external_ids": true,
+        "managed_metadata": true,
+        "supported_apply": true,
+        "revision_cas": true,
+        "compatibility": "compatible",
+        "observed_at": "2026-08-04T19:59:00Z",
+        "expires_at": "2026-08-04T20:15:00Z",
+        "evidence_refs": ["capability:provider-example-2.4"]
+      },
+      "management_binding": {"status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "precondition": {
+        "revision_kind": "etag",
+        "observed_revision": "etag-41",
+        "expected_revision": "etag-41",
+        "observation_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observed_at": "2026-08-04T20:00:00Z"
+      },
+      "correlation_id": "correlation.agent-alpha.7",
+      "idempotency_key": "idempotency.agent-alpha.7",
+      "verified_actor_ref": "actor:owner-verified",
+      "authorization_ref": "authorization:decision-7",
+      "created_at": "2026-08-04T20:01:00Z",
+      "expires_at": "2026-08-04T20:16:00Z",
+      "field_decisions": [
+        {
+          "field_path": "/display_label",
+          "ownership": "user_owned",
+          "decision": "preserve_actual",
+          "reason": "user_owned",
+          "actual_matches_last_applied": false,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "last_applied_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "actual_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        {
+          "field_path": "/model_ref",
+          "ownership": "managed",
+          "decision": "apply_desired",
+          "reason": "managed_unchanged",
+          "actual_matches_last_applied": true,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "last_applied_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "actual_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        {
+          "field_path": "/startup_mode",
+          "ownership": "managed",
+          "decision": "no_change",
+          "reason": "already_desired",
+          "actual_matches_last_applied": true,
+          "desired_matches_actual": true,
+          "desired_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "last_applied_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "actual_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+        },
+        {
+          "field_path": "/instructions_ref",
+          "ownership": "managed",
+          "decision": "preserve_actual",
+          "reason": "user_modified",
+          "actual_matches_last_applied": false,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "last_applied_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "actual_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "drift_evidence": {
+            "last_applied_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "actual_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "observed_at": "2026-08-04T20:00:00Z",
+            "evidence_ref": "observation:field-instructions-7"
+          }
+        },
+        {
+          "field_path": "/authority_ref",
+          "ownership": "security_required",
+          "decision": "review_required",
+          "reason": "security_drift",
+          "actual_matches_last_applied": false,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "last_applied_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "actual_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "drift_evidence": {
+            "last_applied_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "actual_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "observed_at": "2026-08-04T20:00:00Z",
+            "evidence_ref": "observation:security-authority-7"
+          }
+        },
+        {
+          "field_path": "/credential_ref",
+          "ownership": "security_required",
+          "decision": "disable_execution",
+          "reason": "security_drift",
+          "actual_matches_last_applied": false,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "last_applied_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "actual_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "drift_evidence": {
+            "last_applied_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "actual_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "observed_at": "2026-08-04T20:00:00Z",
+            "evidence_ref": "observation:security-credential-7"
+          }
+        },
+        {
+          "field_path": "/enabled",
+          "ownership": "managed",
+          "decision": "apply_desired",
+          "reason": "managed_unchanged",
+          "actual_matches_last_applied": true,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:1717171717171717171717171717171717171717171717171717171717171717",
+          "last_applied_digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818",
+          "actual_digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818"
+        },
+        {
+          "field_path": "/unclassified_provider_field",
+          "ownership": "unknown",
+          "decision": "review_required",
+          "reason": "unmanaged_resource",
+          "actual_matches_last_applied": false,
+          "desired_matches_actual": false,
+          "desired_digest": null,
+          "last_applied_digest": null,
+          "actual_digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+          "drift_evidence": {
+            "last_applied_digest": null,
+            "actual_digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+            "observed_at": "2026-08-04T20:00:00Z",
+            "evidence_ref": "observation:unmanaged-field-7"
+          }
+        }
+      ],
+      "audit": {
+        "audit_ref": "audit:plan-agent-alpha-7",
+        "evidence_refs": ["observation:agent-alpha-7", "authorization:decision-7"],
+        "redaction": "redacted",
+        "recorded_at": "2026-08-04T20:01:00Z"
+      }
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_plan",
+      "plan_id": "plan.agent-alpha.draft-8",
+      "operation_id": "operation.agent-alpha.draft-8",
+      "source_input_id": "reconciliation-input.agent-alpha.8",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "provider_external_id": "opaque-agent-42",
+      "outcome": "owner_reviewed_draft",
+      "plan_hash": "sha256:2e631ca70d08420ad16e55bdb13daa37084c1ebb09e10f7a4c33bbf5b6afe895",
+      "desired_version": "desired-8",
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "capabilities": {
+        "stable_external_ids": true,
+        "managed_metadata": false,
+        "supported_apply": false,
+        "revision_cas": false,
+        "compatibility": "degraded",
+        "observed_at": "2026-08-04T20:19:00Z",
+        "expires_at": "2026-08-04T20:35:00Z",
+        "evidence_refs": ["capability:provider-example-draft-only"]
+      },
+      "precondition": {
+        "revision_kind": "revision",
+        "observed_revision": "observation-only-8",
+        "expected_revision": "observation-only-8",
+        "observation_hash": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
+        "observed_at": "2026-08-04T20:20:00Z"
+      },
+      "correlation_id": "correlation.agent-alpha.8",
+      "idempotency_key": "idempotency.agent-alpha.8",
+      "verified_actor_ref": "actor:owner-verified",
+      "authorization_ref": "authorization:draft-8",
+      "created_at": "2026-08-04T20:21:00Z",
+      "expires_at": "2026-08-04T20:36:00Z",
+      "field_decisions": [
+        {
+          "field_path": "/model_ref",
+          "ownership": "managed",
+          "decision": "apply_desired",
+          "reason": "managed_unchanged",
+          "actual_matches_last_applied": true,
+          "desired_matches_actual": false,
+          "desired_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "last_applied_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "actual_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ],
+      "audit": {
+        "audit_ref": "audit:draft-agent-alpha-8",
+        "evidence_refs": ["capability:provider-example-draft-only"],
+        "redaction": "redacted",
+        "recorded_at": "2026-08-04T20:21:00Z"
+      }
+    }
+  ]
+}

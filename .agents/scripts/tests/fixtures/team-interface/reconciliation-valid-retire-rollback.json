@@ -1,0 +1,170 @@
+{
+  "documents": [
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_input",
+      "input_id": "reconciliation-input.agent-alpha.9",
+      "resource": {"resource_id": "agent.alpha", "provider_id": "provider.example", "community_id": "community.primary", "provider_external_id": "opaque-agent-42", "match_basis": "stable_ids", "management_identity_status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "observed_at": "2026-08-04T21:00:00Z",
+      "observation_hash": "sha256:1616161616161616161616161616161616161616161616161616161616161616",
+      "fields": [
+        {"field_path": "/enabled", "ownership": "managed", "sensitive": false, "desired": {"present": true, "digest": "sha256:1717171717171717171717171717171717171717171717171717171717171717", "data": {"kind": "literal", "value": false}}, "last_applied": {"present": true, "digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818", "data": {"kind": "literal", "value": true}}, "actual": {"present": true, "digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818", "data": {"kind": "literal", "value": true}}, "actual_observed_at": "2026-08-04T21:00:00Z"}
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_input",
+      "input_id": "reconciliation-input.agent-alpha.12",
+      "resource": {"resource_id": "agent.alpha", "provider_id": "provider.example", "community_id": "community.primary", "provider_external_id": "opaque-agent-42", "match_basis": "stable_ids", "management_identity_status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "observed_at": "2026-08-04T22:00:00Z",
+      "observation_hash": "sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "fields": [
+        {"field_path": "/model_ref", "ownership": "managed", "sensitive": false, "desired": {"present": true, "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "data": {"kind": "reference", "reference_ref": "model:simple"}}, "last_applied": {"present": true, "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "data": {"kind": "reference", "reference_ref": "model:standard"}}, "actual": {"present": true, "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "data": {"kind": "reference", "reference_ref": "model:standard"}}, "actual_observed_at": "2026-08-04T22:00:00Z"}
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "reconciliation_plan",
+      "plan_id": "plan.agent-alpha.retire-9",
+      "operation_id": "operation.agent-alpha.retire-9",
+      "source_input_id": "reconciliation-input.agent-alpha.9",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "provider_external_id": "opaque-agent-42",
+      "outcome": "retire",
+      "plan_hash": "sha256:bd7c3aff0bf4835a4ef6229ef4605c7e68a7f0f5640f5efa0a8ebb836eb9629b",
+      "desired_version": "desired-9",
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "capabilities": {"stable_external_ids": true, "managed_metadata": true, "supported_apply": true, "revision_cas": true, "compatibility": "compatible", "observed_at": "2026-08-04T21:00:00Z", "expires_at": "2026-08-04T21:15:00Z", "evidence_refs": ["capability:provider-example-2.4"]},
+      "management_binding": {"status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "precondition": {"revision_kind": "etag", "observed_revision": "etag-42", "expected_revision": "etag-42", "observation_hash": "sha256:1616161616161616161616161616161616161616161616161616161616161616", "observed_at": "2026-08-04T21:00:00Z"},
+      "correlation_id": "correlation.agent-alpha.9",
+      "idempotency_key": "idempotency.agent-alpha.9",
+      "verified_actor_ref": "actor:owner-verified",
+      "authorization_ref": "authorization:retire-9",
+      "created_at": "2026-08-04T21:01:00Z",
+      "expires_at": "2026-08-04T21:16:00Z",
+      "field_decisions": [
+        {"field_path": "/enabled", "ownership": "managed", "decision": "apply_desired", "reason": "managed_unchanged", "actual_matches_last_applied": true, "desired_matches_actual": false, "desired_digest": "sha256:1717171717171717171717171717171717171717171717171717171717171717", "last_applied_digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818", "actual_digest": "sha256:1818181818181818181818181818181818181818181818181818181818181818"}
+      ],
+      "retirement": {"action": "archive", "owner_review_ref": "review:retire-agent-alpha-9", "stable_identity_retained": true, "automatic_delete": false},
+      "audit": {"audit_ref": "audit:retire-agent-alpha-9", "evidence_refs": ["review:retire-agent-alpha-9"], "redaction": "redacted", "recorded_at": "2026-08-04T21:01:00Z"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "apply_receipt",
+      "receipt_id": "receipt.agent-alpha.published-7",
+      "operation_id": "operation.agent-alpha.7",
+      "plan_id": "plan.agent-alpha.7",
+      "plan_hash": "sha256:677a035ec986f9414db42a198a8041a18c8eb098e837a5ff4cfc526b4dffd2d3",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "state": "published",
+      "before_revision": "etag-41",
+      "after_revision": "etag-42",
+      "before_digest": "sha256:1919191919191919191919191919191919191919191919191919191919191919",
+      "after_digest": "sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "field_outcomes": [
+        {"field_path": "/model_ref", "planned_decision": "apply_desired", "effect": "applied", "before_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "after_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "evidence_ref": "provider-evidence:model-ref-7"},
+        {"field_path": "/display_label", "planned_decision": "preserve_actual", "effect": "preserved", "before_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "after_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "evidence_ref": "provider-evidence:display-label-7"}
+      ],
+      "provider_receipt_ref": "provider-receipt:operation-agent-alpha-7",
+      "provider_evidence_refs": ["provider-evidence:operation-agent-alpha-7"],
+      "started_at": "2026-08-04T20:02:00Z",
+      "recorded_at": "2026-08-04T20:02:10Z",
+      "read_after_write_required": false,
+      "audit": {"audit_ref": "audit:receipt-agent-alpha-7", "evidence_refs": ["provider-receipt:operation-agent-alpha-7"], "redaction": "redacted", "recorded_at": "2026-08-04T20:02:10Z"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "apply_receipt",
+      "receipt_id": "receipt.agent-alpha.partial-10",
+      "operation_id": "operation.agent-alpha.10",
+      "plan_id": "plan.agent-alpha.10",
+      "plan_hash": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "state": "partial",
+      "before_revision": "etag-42",
+      "after_revision": "unknown-after-partial",
+      "before_digest": "sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "after_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "field_outcomes": [
+        {"field_path": "/model_ref", "planned_decision": "apply_desired", "effect": "unknown", "before_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "after_digest": null, "evidence_ref": "provider-evidence:partial-model-10"}
+      ],
+      "provider_receipt_ref": "provider-receipt:partial-agent-alpha-10",
+      "provider_evidence_refs": ["provider-evidence:partial-agent-alpha-10"],
+      "started_at": "2026-08-04T21:20:00Z",
+      "recorded_at": "2026-08-04T21:20:10Z",
+      "read_after_write_required": true,
+      "audit": {"audit_ref": "audit:partial-agent-alpha-10", "evidence_refs": ["provider-evidence:partial-agent-alpha-10"], "redaction": "redacted", "recorded_at": "2026-08-04T21:20:10Z"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "apply_receipt",
+      "receipt_id": "receipt.agent-alpha.indeterminate-11",
+      "operation_id": "operation.agent-alpha.11",
+      "plan_id": "plan.agent-alpha.11",
+      "plan_hash": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "state": "indeterminate",
+      "before_revision": "etag-42",
+      "after_revision": "unknown-after-timeout",
+      "before_digest": "sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "after_digest": "sha256:2424242424242424242424242424242424242424242424242424242424242424",
+      "field_outcomes": [
+        {"field_path": "/startup_mode", "planned_decision": "apply_desired", "effect": "unknown", "before_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "after_digest": null, "evidence_ref": "provider-evidence:timeout-startup-11"}
+      ],
+      "provider_receipt_ref": "provider-receipt:timeout-agent-alpha-11",
+      "provider_evidence_refs": ["provider-evidence:timeout-agent-alpha-11"],
+      "started_at": "2026-08-04T21:30:00Z",
+      "recorded_at": "2026-08-04T21:30:10Z",
+      "read_after_write_required": true,
+      "audit": {"audit_ref": "audit:indeterminate-agent-alpha-11", "evidence_refs": ["provider-evidence:timeout-agent-alpha-11"], "redaction": "redacted", "recorded_at": "2026-08-04T21:30:10Z"}
+    },
+    {
+      "schema_version": 1,
+      "document_type": "rollback_plan",
+      "plan_id": "plan.agent-alpha.rollback-12",
+      "operation_id": "operation.agent-alpha.rollback-12",
+      "source_input_id": "reconciliation-input.agent-alpha.12",
+      "plan_hash": "sha256:a97d21ddcb5082b385b20e98480861c9b7865c56016e0728bb6d8cccd18ccee9",
+      "resource_id": "agent.alpha",
+      "provider_id": "provider.example",
+      "community_id": "community.primary",
+      "provider_external_id": "opaque-agent-42",
+      "policy_ref": "policy:reconciliation-policy.agent-v1",
+      "policy_version": "1.0.0",
+      "adapter_version": "2.4.0",
+      "capabilities": {"stable_external_ids": true, "managed_metadata": true, "supported_apply": true, "revision_cas": true, "compatibility": "compatible", "observed_at": "2026-08-04T22:00:00Z", "expires_at": "2026-08-04T22:15:00Z", "evidence_refs": ["capability:provider-example-2.4"]},
+      "precondition": {"revision_kind": "etag", "observed_revision": "etag-42", "expected_revision": "etag-42", "observation_hash": "sha256:2020202020202020202020202020202020202020202020202020202020202020", "observed_at": "2026-08-04T22:00:00Z"},
+      "management_binding": {"status": "verified", "management_owner": "aidevops.team-interface", "manager_marker": "manager:agent.alpha"},
+      "receipt_binding": {"receipt_ref": "receipt:receipt.agent-alpha.published-7", "receipt_state": "published", "source_plan_hash": "sha256:677a035ec986f9414db42a198a8041a18c8eb098e837a5ff4cfc526b4dffd2d3", "snapshot_ref": "snapshot:agent-alpha-before-7", "verified_at": "2026-08-04T22:00:00Z"},
+      "restore_fields": [
+        {"field_path": "/model_ref", "ownership": "managed", "receipt_after_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "restore_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+      ],
+      "identity_action": "retain_existing",
+      "delete_or_resurrect": false,
+      "correlation_id": "correlation.agent-alpha.rollback-12",
+      "idempotency_key": "idempotency.agent-alpha.rollback-12",
+      "verified_actor_ref": "actor:owner-verified",
+      "authorization_ref": "authorization:rollback-12",
+      "created_at": "2026-08-04T22:01:00Z",
+      "expires_at": "2026-08-04T22:16:00Z",
+      "audit": {"audit_ref": "audit:rollback-agent-alpha-12", "evidence_refs": ["receipt:receipt.agent-alpha.published-7", "snapshot:agent-alpha-before-7"], "redaction": "redacted", "recorded_at": "2026-08-04T22:01:00Z"}
+    }
+  ]
+}
