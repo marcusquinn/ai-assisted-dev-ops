@@ -201,56 +201,11 @@ _cmd_scan_collect_anomalies() {
 		# aidevops:trust-boundary — fail closed unless each expected transition has
 		# independently meaningful end-state evidence and no extra state change.
 		if ! tail -n +"$((skip_count + 1))" "$log_file" |
-			jq -c --arg nmr "$GH_ANOMALY_NMR_LABEL" --arg permission "$GH_ANOMALY_PERMISSION_LABEL" '
-				def comparable_state:
-					((.before.capture_status // "ok") == "ok")
-					and ((.after.capture_status // "ok") == "ok")
-					and ((.delta.comparable // true) == true);
-				def expected_approval_transition:
-					comparable_state
-					and (
-						(.op == "issue_edit" and .caller_function == "_approval_apply_issue_lifecycle_updates")
-						or (.op == "pr_edit" and .caller_function == "_approval_apply_pr_lifecycle_updates")
-					)
-					and ((.caller_script // "") | endswith("/agents/scripts/approval-helper.sh")
-						or endswith("/.agents/scripts/approval-helper.sh"))
-					and .flags.approval_verified == "v2-current-state"
-					and .suspicious == [("protected_label_removed:" + $nmr)]
-					and (.delta.labels_removed // []) == [$nmr]
-					and (((.delta.labels_added // []) - ["auto-dispatch"]) | length == 0)
-					and (.delta.title_delta_pct == 0)
-					and (.delta.body_delta_pct == 0)
-					and ((.before.labels // []) | index($nmr) != null)
-					and ((.after.labels // []) | index($nmr) == null);
-				def expected_permission_block_transition:
-					comparable_state
-					and .op == "issue_edit"
-					and .caller_function == "permission_apply_block"
-					and ((.caller_script // "") | endswith("/agents/scripts/worker-permission-helper.sh")
-						or endswith("/.agents/scripts/worker-permission-helper.sh"))
-					and ((.after.labels // []) | index($permission) != null)
-					and (((.delta.labels_removed // []) | length) > 0)
-					and (((.delta.labels_removed // []) - [
-						"status:queued", "status:claimed", "status:in-progress", "status:in-review"
-					]) | length == 0)
-					and (((.delta.labels_added // []) - [$permission]) | length == 0)
-					and (.delta.title_delta_pct == 0)
-					and (.delta.body_delta_pct == 0)
-					and ([.after.labels[]? | select(
-						. == "status:queued"
-						or . == "status:claimed"
-						or . == "status:in-progress"
-						or . == "status:in-review"
-					)] | length == 0)
-					and ((.suspicious // []) | length > 0)
-					and all(.suspicious[];
-						. == "protected_label_removed:status:claimed"
-						or . == "protected_label_removed:status:in-progress"
-						or . == "protected_label_removed:status:in-review");
-				select(try ((.suspicious | length) > 0) catch true)
-				| select((try (
-					expected_approval_transition or expected_permission_block_transition
-				) catch false) | not)' >"$filtered_file" 2>/dev/null; then
+			jq -c --arg nmr "$GH_ANOMALY_NMR_LABEL" --arg permission "$GH_ANOMALY_PERMISSION_LABEL" \
+				--arg issue_edit "issue_edit" --arg approval_script "approval-helper.sh" \
+				--arg permission_script "worker-permission-helper.sh" \
+				--arg nmr_script "pulse-nmr-approval.sh" \
+				-f "${SCRIPT_DIR}/gh-audit-anomaly-filter.jq" >"$filtered_file" 2>/dev/null; then
 			rm -f "$filtered_file"
 			_ga_warn "Malformed audit NDJSON detected — checkpoint not advanced"
 			return 1

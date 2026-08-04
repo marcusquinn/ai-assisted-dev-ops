@@ -252,9 +252,10 @@ The scanner:
 1. Reads entries since the last scan (tracked in `~/.aidevops/logs/gh-audit-scanner.state`)
 2. Filters entries with `suspicious[] | length > 0`, excluding only exact,
    fully comparable expected transitions: verified issue/PR approval removal of
-   `needs-maintainer-review`, and worker permission blocking that replaces active
-   lifecycle labels with `needs-maintainer-permissions` (the original audit entry
-   remains unchanged)
+   `needs-maintainer-review`, independently revalidated trusted-author NMR
+   normalization, and worker permission blocking that replaces active lifecycle
+   labels with `needs-maintainer-permissions` (the original audit entry remains
+   unchanged)
 3. Files a GitHub issue on `marcusquinn/aidevops` with a summary table when anomalies are found
 
 To run the scanner manually:
