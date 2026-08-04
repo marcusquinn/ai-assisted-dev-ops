@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {"label": "missing expected revision", "base": "plan.agent-alpha.7", "operation": "remove", "path": "/precondition/expected_revision", "validation": "schema"},
+    {"label": "stale expected revision", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/precondition/expected_revision", "value": "etag-40", "validation": "semantic", "error": "expected revision"},
+    {"label": "expired plan at apply time", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/expires_at", "value": "2026-08-04T20:10:00Z", "apply_at": "2026-08-04T20:11:00Z", "validation": "semantic", "error": "expired"},
+    {"label": "changed payload with unchanged plan hash", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/desired_version", "value": "desired-changed", "validation": "semantic", "error": "plan hash"},
+    {"label": "same operation changed plan hash", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/plan_hash", "value": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "validation": "operation_conflict", "error": "operation ID"},
+    {"label": "same idempotency key changed operation", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/operation_id", "value": "operation.agent-alpha.collision", "second_path": "/plan_hash", "second_value": "sha256:9090909090909090909090909090909090909090909090909090909090909090", "validation": "idempotency_conflict", "error": "idempotency key"},
+    {"label": "decision equality flag contradicts digests", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/field_decisions/1/actual_digest", "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "validation": "semantic", "error": "actual digest mismatch"},
+    {"label": "user-owned equality assertion contradicts digests", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/field_decisions/0/actual_matches_last_applied", "value": true, "validation": "semantic", "error": "derived equality"},
+    {"label": "observed field omitted from decisions", "base": "plan.agent-alpha.7", "operation": "pop", "path": "/field_decisions", "validation": "semantic", "error": "every observed input field"},
+    {"label": "duplicate field decision path", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/field_decisions/1/field_path", "value": "/display_label", "validation": "semantic", "error": "duplicate field paths"},
+    {"label": "input ownership contradicts policy", "base": "reconciliation-input.agent-alpha.7", "operation": "replace", "path": "/fields/0/ownership", "value": "managed", "validation": "semantic", "error": "ownership mismatch"},
+    {"label": "unlisted input ownership inferred", "base": "reconciliation-input.agent-alpha.7", "operation": "replace", "path": "/fields/7/ownership", "value": "managed", "validation": "semantic", "error": "absent from the ownership policy"},
+    {"label": "duplicate input field path", "base": "reconciliation-input.agent-alpha.7", "operation": "replace", "path": "/fields/1/field_path", "value": "/display_label", "validation": "semantic", "error": "duplicate field paths"},
+    {"label": "stale capability evidence", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/capabilities/expires_at", "value": "2026-08-04T20:00:30Z", "validation": "semantic", "error": "capability evidence"},
+    {"label": "ambiguous receipt without read-after-write", "base": "receipt.agent-alpha.indeterminate-11", "operation": "replace", "path": "/read_after_write_required", "value": false, "validation": "schema"},
+    {"label": "published receipt with unknown effect", "base": "receipt.agent-alpha.published-7", "operation": "replace", "path": "/field_outcomes/0/effect", "value": "unknown", "validation": "schema"},
+    {"label": "partial receipt claiming complete effect", "base": "receipt.agent-alpha.partial-10", "operation": "replace", "path": "/field_outcomes/0/effect", "value": "applied", "validation": "schema"},
+    {"label": "retryable receipt claims applied effect", "base": "receipt.agent-alpha.published-7", "operation": "replace", "path": "/state", "value": "retryable", "validation": "schema"},
+    {"label": "terminal receipt claims applied effect", "base": "receipt.agent-alpha.published-7", "operation": "replace", "path": "/state", "value": "terminal", "validation": "schema"},
+    {"label": "conflict receipt claims applied effect", "base": "receipt.agent-alpha.published-7", "operation": "replace", "path": "/state", "value": "conflict", "validation": "schema"},
+    {"label": "duplicate receipt field outcome", "base": "receipt.agent-alpha.published-7", "operation": "replace", "path": "/field_outcomes/1/field_path", "value": "/model_ref", "validation": "semantic", "error": "duplicate field paths"},
+    {"label": "rollback receipt hash mismatch", "base": "plan.agent-alpha.rollback-12", "operation": "replace", "path": "/receipt_binding/source_plan_hash", "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "validation": "semantic", "error": "receipt plan hash"},
+    {"label": "rollback target identity mismatch", "base": "plan.agent-alpha.rollback-12", "operation": "replace", "path": "/resource_id", "value": "agent.other", "validation": "semantic", "error": "source input identity"},
+    {"label": "rollback field evidence mismatch", "base": "plan.agent-alpha.rollback-12", "operation": "replace", "path": "/restore_fields/0/receipt_after_digest", "value": "sha256:abababababababababababababababababababababababababababababababab", "validation": "semantic", "error": "field receipt digest"}
+  ]
+}

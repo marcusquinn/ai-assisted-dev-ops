@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {"label": "display-name adoption", "base": "reconciliation-input.agent-alpha.7", "operation": "replace", "path": "/resource/match_basis", "value": "display_label", "validation": "schema"},
+    {"label": "mutation without verified management binding", "base": "plan.agent-alpha.7", "operation": "remove", "path": "/management_binding", "validation": "schema"},
+    {"label": "mutation bound to missing source input", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/source_input_id", "value": "reconciliation-input.missing", "validation": "semantic", "error": "source input"},
+    {"label": "automatic delete outcome", "base": "plan.agent-alpha.7", "operation": "replace", "path": "/outcome", "value": "delete", "validation": "schema"},
+    {"label": "retirement delete action", "base": "plan.agent-alpha.retire-9", "operation": "replace", "path": "/retirement/action", "value": "delete", "validation": "schema"},
+    {"label": "rollback resurrection", "base": "plan.agent-alpha.rollback-12", "operation": "replace", "path": "/delete_or_resurrect", "value": true, "validation": "schema"},
+    {"label": "rollback user-owned field", "base": "plan.agent-alpha.rollback-12", "operation": "replace", "path": "/restore_fields/0/ownership", "value": "user_owned", "validation": "schema"}
+  ]
+}
