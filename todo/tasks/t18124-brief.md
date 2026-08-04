@@ -184,6 +184,28 @@ for brief in todo/tasks/t1812{5,6,7,8,9}-brief.md todo/tasks/t1813{0,1}-brief.md
 - Webhooks invalidate state but do not replace bounded polling or final live authority checks.
 - Observation windows make wall-clock completion longer than active implementation time.
 
+## Terminal Closeout (2026-08-04)
+
+### Delivered
+
+- All seven planned leaves are native subissues and terminal. Phases 1–6 completed through PRs #27798, #28201, #28206, #28210, #28222, and #28231.
+- The implementation now records exact transport attempts, preserves successful empty snapshots, reuses canonical snapshots, caches terminal check projections by immutable head SHA, coalesces cross-process reads, shares rate-limit state, and invalidates cached state from verified webhook deliveries.
+- Phase 7 produced the deterministic benchmark and repeatedly exercised exact-runtime observation. PR #29481 records the final maintainer-authorized no-go after the exact-cost preflight rejected three successful GraphQL requests whose operation-owned quota cost remained unknown.
+- The final preflight proved the safety boundary: unknown quota evidence remained unknown and prevented a passing comparison. Runtime overrides, observation jobs, and pins were restored afterward.
+
+### Acceptance outcome
+
+- **Satisfied:** the seven planned child issues are linked in order and terminal; implementation phases 1–6 merged with their focused verification.
+- **Satisfied:** stale or unknown cached evidence is not accepted as positive dispatch, review, required-check, or merge authority.
+- **Not proven:** aggregate network-attempt and quota-cost reduction over comparable baseline/canary windows. The final window was intentionally rejected rather than treating unknown successful GraphQL cost as zero.
+- **Not performed:** evidence-dependent TTL tuning, threshold weakening, rollout-flag retirement, or publication.
+
+### Decision
+
+Treat the deployed implementation as the best reasonable bounded state from this programme, not as proof of a mathematical or globally maximal reduction. The known safe engineering optimisations shipped, correctness/freshness authority stayed fail-closed, and further tuning would be speculative without authoritative GraphQL operation cost.
+
+Close t18124 as `not planned` rather than `completed` because its comparative programme-level acceptance criterion was not met. Do not retry the observation protocol or remove retained rollback controls unless a changed technical premise provides authoritative cost for successful GraphQL operations and a maintainer explicitly authorizes new measurement work.
+
 ## Relevant Files
 
 - `.agents/scripts/gh-api-instrument.sh:45-55,98-175,238-251` — current logical-call record and fixed line retention.
