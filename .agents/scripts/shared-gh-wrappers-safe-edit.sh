@@ -26,6 +26,8 @@
 # Include guard
 [[ -n "${_SHARED_GH_WRAPPERS_SAFE_EDIT_LIB_LOADED:-}" ]] && return 0
 _SHARED_GH_WRAPPERS_SAFE_EDIT_LIB_LOADED=1
+_GH_AUDIT_ISSUE_EDIT_OP="issue_edit"
+_GH_AUDIT_NMR_LABEL="needs-maintainer-review"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -235,7 +237,7 @@ _gh_audit_record_op() {
 	# exemption proof only after independently re-verifying the signed approval
 	# and authenticated actor authority against current GitHub state.
 	local approval_target_type=""
-	if [[ "$op" == "issue_edit" && "$caller_function" == "_approval_apply_issue_lifecycle_updates" ]]; then
+	if [[ "$op" == "$_GH_AUDIT_ISSUE_EDIT_OP" && "$caller_function" == "_approval_apply_issue_lifecycle_updates" ]]; then
 		approval_target_type="issue"
 	elif [[ "$op" == "pr_edit" && "$caller_function" == "_approval_apply_pr_lifecycle_updates" ]]; then
 		approval_target_type="pr"
@@ -246,6 +248,15 @@ _gh_audit_record_op() {
 		if [[ "$approval_verification" == "VERIFIED" ]]; then
 			flags_json='{"approval_verified":"v2-current-state"}'
 		fi
+	fi
+	# aidevops:trust-boundary — trusted-author NMR normalization is expected only
+	# when the immutable snapshots show a pure NMR removal and live GitHub state
+	# independently confirms both issue-author and current-token write authority.
+	if [[ "$op" == "$_GH_AUDIT_ISSUE_EDIT_OP" && "$caller_function" == "_nmr_edit_issue_labels" ]] &&
+		[[ "$caller_script" == */agents/scripts/pulse-nmr-approval.sh ||
+			"$caller_script" == */.agents/scripts/pulse-nmr-approval.sh ]] &&
+		_gh_audit_verify_trusted_author_nmr_transition "$repo" "$number" "$before_json" "$after_json"; then
+		flags_json='{"trusted_author_nmr_verified":"v1-current-state"}'
 	fi
 
 	GH_AUDIT_QUIET=true "$audit_helper" record \
@@ -260,6 +271,56 @@ _gh_audit_record_op() {
 		--flags-json "$flags_json" \
 		2>/dev/null || true
 
+	return 0
+}
+
+#######################################
+# Verify an audited trusted-author NMR normalization against live GitHub state.
+# Args: repo, issue number, before JSON, after JSON
+# Returns: 0 only for a comparable NMR removal by a write-authorized actor on a
+# write-authorized author's issue; 1 for incomplete or untrusted evidence.
+#######################################
+_gh_audit_verify_trusted_author_nmr_transition() {
+	local repo="$1"
+	local number="$2"
+	local before_json="$3"
+	local after_json="$4"
+	local issue_json=""
+	local issue_identity=""
+	local issue_author=""
+	local issue_association=""
+	local issue_author_type=""
+	local current_actor=""
+
+	[[ -n "$repo" && "$number" =~ ^[0-9]+$ ]] || return 1
+	declare -F _gh_actor_has_repo_write_authority >/dev/null 2>&1 || return 1
+	jq -e -n --arg nmr "$_GH_AUDIT_NMR_LABEL" \
+		--argjson before "$before_json" --argjson after "$after_json" '
+		($before.capture_status // "ok") == "ok"
+		and ($after.capture_status // "ok") == "ok"
+		and ([$before.labels[]?] | index($nmr) != null)
+		and ([$after.labels[]?] | index($nmr) == null)
+	' >/dev/null 2>&1 || return 1
+
+	issue_json=$(gh api "repos/${repo}/issues/${number}" 2>/dev/null) || return 1
+	printf '%s\n' "$issue_json" | jq -e --arg nmr "$_GH_AUDIT_NMR_LABEL" '
+		([.labels[]?.name] | index($nmr) == null)
+		and ([.labels[]?.name] | index("external-contributor") == null)
+	' >/dev/null 2>&1 || return 1
+	issue_identity=$(printf '%s\n' "$issue_json" | jq -r '
+		if (.user.login // "") != "" and (.author_association // "") != ""
+		then [(.user.login // ""), (.author_association // ""), (.user.type // "")] | @tsv
+		else error("missing issue identity") end
+	' 2>/dev/null) || return 1
+	IFS=$'\t' read -r issue_author issue_association issue_author_type <<<"$issue_identity"
+	[[ -n "$issue_author" && -n "$issue_association" ]] || return 1
+	if [[ "$issue_author_type" != "Bot" ]]; then
+		_gh_actor_has_repo_write_authority "$repo" "$issue_author" "$issue_association" >/dev/null 2>&1 || return 1
+	fi
+
+	current_actor=$(gh api user --jq '.login // empty' 2>/dev/null) || return 1
+	[[ -n "$current_actor" ]] || return 1
+	_gh_actor_has_repo_write_authority "$repo" "$current_actor" "COLLABORATOR" >/dev/null 2>&1 || return 1
 	return 0
 }
 
@@ -294,7 +355,7 @@ gh_issue_edit_safe() {
 		_exit=$?
 	fi
 	_after="$(_gh_audit_fetch_issue_state_json "$_num" "$_repo")"
-	_gh_audit_record_op "issue_edit" "$_repo" "$_num" "$_before" "$_after" \
+	_gh_audit_record_op "$_GH_AUDIT_ISSUE_EDIT_OP" "$_repo" "$_num" "$_before" "$_after" \
 		"${BASH_SOURCE[1]:-}" "${FUNCNAME[1]:-}" "${BASH_LINENO[0]:-0}"
 	return "$_exit"
 }

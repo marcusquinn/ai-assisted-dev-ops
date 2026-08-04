@@ -41,12 +41,16 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:10:00Z","op":"issue_edit","repo":"example/repo","number":11,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":[]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:11:00Z","op":"issue_edit","repo":"example/repo","number":12,"caller_script":"/runtime/agents/scripts/routine-log-helper.sh","caller_function":"_update_tracking_issue","flags":{},"before":{"capture_status":"ok","title_len":27,"body_len":1822,"labels":["routines","routine-tracking"]},"after":{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null},"delta":{"comparable":false,"title_delta_pct":null,"body_delta_pct":null,"labels_removed":null,"labels_added":null},"suspicious":["state_capture_unavailable:after"]}
 {"ts":"2026-07-31T00:12:00Z","op":"issue_edit","repo":"example/repo","number":13,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress","status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review","needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress"]}
+{"ts":"2026-07-31T00:13:00Z","op":"issue_edit","repo":"example/repo","number":14,"caller_script":"/runtime/agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{"trusted_author_nmr_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review","needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
+{"ts":"2026-07-31T00:14:00Z","op":"issue_edit","repo":"example/repo","number":15,"caller_script":"/runtime/agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
+{"ts":"2026-07-31T00:15:00Z","op":"issue_edit","repo":"example/repo","number":16,"caller_script":"/runtime/agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{"trusted_author_nmr_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":0,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":-100,"labels_removed":["needs-maintainer-review"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:needs-maintainer-review","body_delta_pct=-100"]}
+{"ts":"2026-07-31T00:16:00Z","op":"issue_edit","repo":"example/repo","number":17,"caller_script":"/workspace/.agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{"trusted_author_nmr_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":["hold-for-review"]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
 	GH_AUDIT_QUIET=true "$HELPER" scan --all --dry-run)
 
-[[ "$output" == *"**Anomalies found:** 9"* ]] || fail "expected transitions were not excluded exactly"
+[[ "$output" == *"**Anomalies found:** 11"* ]] || fail "expected transitions were not excluded exactly"
 [[ "$output" == *"| #3 |"* ]] || fail "unexpected lifecycle transition was hidden"
 [[ "$output" == *"| #4 |"* ]] || fail "approval transition with an additional signal was hidden"
 [[ "$output" == *"| #5 |"* ]] || fail "malformed provenance was dropped instead of retained"
@@ -56,8 +60,11 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #11 |"* ]] || fail "permission block without its blocker label was hidden"
 [[ "$output" == *"| #12 |"* ]] || fail "unavailable state capture was hidden"
 [[ "$output" == *"| #13 |"* ]] || fail "permission block with a lingering active status was hidden"
+[[ "$output" == *"| #15 |"* ]] || fail "unverified trusted-author NMR removal was hidden"
+[[ "$output" == *"| #16 |"* ]] || fail "trusted-author NMR transition with an additional signal was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
-[[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* ]] ||
+[[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* &&
+	"$output" != *"| #14 |"* && "$output" != *"| #17 |"* ]] ||
 	fail "an exact expected transition remained actionable"
 
 MALFORMED_LOG="${TEST_ROOT}/malformed-audit.log"
@@ -116,6 +123,60 @@ _gh_audit_record_op \
 	"_approval_apply_pr_lifecycle_updates" "1"
 jq -e -s 'map(select(.number == 22))[0].flags == {}' "$PROOF_LOG" >/dev/null ||
 	fail "failed approval verification produced trusted audit proof"
+
+CURRENT_ACTOR="trusted-runner"
+gh() {
+	local command="$1"
+	local resource="${2:-}"
+	[[ "$command" == "api" ]] || return 1
+	case "$resource" in
+	repos/example/repo/issues/25 | repos/example/repo/issues/27)
+		printf '%s\n' '{"user":{"login":"trusted-author","type":"User"},"author_association":"COLLABORATOR","labels":[{"name":"hold-for-review"}]}'
+		;;
+	repos/example/repo/issues/26)
+		printf '%s\n' '{"user":{"login":"external-author","type":"User"},"author_association":"CONTRIBUTOR","labels":[]}'
+		;;
+	user)
+		printf '%s\n' "$CURRENT_ACTOR"
+		;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+_gh_actor_has_repo_write_authority() {
+	local repo_slug="$1"
+	local actor="$2"
+	local association="${3:-NONE}"
+	[[ "$repo_slug" == "example/repo" ]] || return 2
+	[[ "$actor" == "trusted-runner" || ("$actor" == "trusted-author" && "$association" == "COLLABORATOR") ]]
+	return $?
+}
+_gh_audit_record_op \
+	"issue_edit" "example/repo" "25" \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review","needs-maintainer-review"]}' \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review"]}' \
+	"/runtime/agents/scripts/pulse-nmr-approval.sh" \
+	"_nmr_edit_issue_labels" "1"
+jq -e 'select(.number == 25) | .flags.trusted_author_nmr_verified == "v1-current-state"' "$PROOF_LOG" >/dev/null ||
+	fail "trusted-author NMR transition did not produce current-state audit proof"
+_gh_audit_record_op \
+	"issue_edit" "example/repo" "26" \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]}' \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]}' \
+	"/runtime/agents/scripts/pulse-nmr-approval.sh" \
+	"_nmr_edit_issue_labels" "1"
+jq -e -s 'map(select(.number == 26))[0].flags == {}' "$PROOF_LOG" >/dev/null ||
+	fail "external-author NMR removal produced trusted-author audit proof"
+CURRENT_ACTOR="read-only-runner"
+_gh_audit_record_op \
+	"issue_edit" "example/repo" "27" \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review","needs-maintainer-review"]}' \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review"]}' \
+	"/runtime/agents/scripts/pulse-nmr-approval.sh" \
+	"_nmr_edit_issue_labels" "1"
+jq -e -s 'map(select(.number == 27))[0].flags == {}' "$PROOF_LOG" >/dev/null ||
+	fail "read-only current actor produced trusted-author audit proof"
+unset CURRENT_ACTOR
 unset GH_AUDIT_LOG_FILE
 
 gh() {
