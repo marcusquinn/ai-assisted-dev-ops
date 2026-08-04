@@ -243,7 +243,13 @@ jobs:
         if: steps.check-author.outputs.skip != 'true'
         run: |
           echo "=== Creating issues for new tasks ==="
+          set +e
           bash __aidevops/.agents/scripts/issue-sync-helper.sh push --verbose
+          push_rc=$?
+          set -e
+          if [[ "$push_rc" -ne 0 && "$push_rc" -ne 2 ]]; then
+            exit "$push_rc"
+          fi
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
           # t1984: override origin detection and assignee target so issues
@@ -253,6 +259,23 @@ jobs:
           # so by this step the push is guaranteed human (or a non-[bot] actor).
           AIDEVOPS_SESSION_ORIGIN: ${{ endsWith(github.actor, '[bot]') && 'worker' || 'interactive' }}
           AIDEVOPS_SESSION_USER: ${{ endsWith(github.actor, '[bot]') && '' || github.actor }}
+
+      - name: Reconcile issue relationships
+        id: relationship-sync
+        if: steps.check-author.outputs.skip != 'true'
+        run: |
+          echo "=== Reconciling issue relationships ==="
+          set +e
+          bash __aidevops/.agents/scripts/issue-sync-helper.sh relationships --verbose
+          relationship_rc=$?
+          set -e
+          if [[ "$relationship_rc" -eq 0 ]]; then
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Enrich plan-linked issues
         if: steps.check-author.outputs.skip != 'true'
@@ -292,6 +315,12 @@ jobs:
           bash __aidevops/.agents/scripts/issue-sync-helper.sh status || true
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Report pending relationship sync
+        if: steps.relationship-sync.outputs.pending == 'true'
+        run: |
+          echo "Relationship sync remains pending after durable TODO.md ref persistence"
+          exit 1
 
   sync-on-issue:
     name: Sync GitHub Issue → TODO.md

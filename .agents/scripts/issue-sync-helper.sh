@@ -138,11 +138,14 @@ verify_gh_cli() {
 		return 1
 	}
 	[[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]] && return 0
-	gh auth status &>/dev/null 2>&1 || {
-		print_error "gh CLI not authenticated. Run: gh auth login"
-		return 1
-	}
-	return 0
+	gh auth status &>/dev/null 2>&1 && return 0
+	# Stored keyring status can be stale while an App or environment-backed
+	# credential still serves authenticated API requests. Test the capability
+	# issue sync needs before reporting authentication unavailable.
+	gh api graphql -f 'query={viewer{login}}' --jq '.data.viewer.login // empty' &>/dev/null 2>&1 && return 0
+	gh api user --jq '.login // empty' &>/dev/null 2>&1 && return 0
+	print_error "gh CLI cannot authenticate an API request. Run: gh auth login"
+	return 1
 }
 
 # Common preamble for commands that need project_root, repo, todo_file, gh auth

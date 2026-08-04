@@ -19,6 +19,7 @@ TODO_FILE="${TMP_DIR}/TODO.md"
 ATTEMPT_LOG="${TMP_DIR}/attempts.log"
 DEADLINE_FLAG="${TMP_DIR}/deadline"
 BATCH_LIMIT=40
+BLOCKED_MODE="success"
 
 # shellcheck source=../issue-sync-helper.sh
 source "${SCRIPTS_DIR}/issue-sync-helper.sh"
@@ -52,8 +53,15 @@ _sync_blocked_by_for_task() {
 	local repo="$3"
 	: "$todo_file" "$repo"
 	printf '%s\n' "$task_id" >>"$ATTEMPT_LOG"
-	_gh_with_timeout read true >/dev/null
-	printf 'RELS:0 RETRYABLE:0\n'
+	case "$BLOCKED_MODE" in
+	success)
+		_gh_with_timeout read true >/dev/null
+		printf 'RELS:0 RETRYABLE:0\n'
+		;;
+	retry) printf 'RELS:0 RETRYABLE:1\n' ;;
+	error) return 1 ;;
+	*) return 1 ;;
+	esac
 	return 0
 }
 
@@ -133,5 +141,23 @@ small_state=$(_relationship_resume_state_file "example/small")
 [[ ! -e "$small_state" ]] || fail "completed small workset retained stale progress"
 [[ "$small_output" == *"attempted=3 complete=3/3"* && "$small_output" == *"remaining=0"* ]] || fail "small workset summary regressed"
 pass "small relationship worksets retain single-pass correctness"
+
+# A declared dependency that cannot resolve stays pending even with zero
+# backend calls. A helper error uses the same canonical retry classification.
+for BLOCKED_MODE in retry error; do
+	TEST_REPO="example/${BLOCKED_MODE}"
+	printf -- '- [ ] t1 Unresolved task blocked-by:t9 ref:GH#1\n' >"$TODO_FILE"
+	: >"$ATTEMPT_LOG"
+	rm -f "$DEADLINE_FLAG"
+	BATCH_LIMIT=100
+	unresolved_rc=0
+	unresolved_output=$(run_relationship_scoped_command cmd_relationships 2>/dev/null) || unresolved_rc=$?
+	unresolved_state=$(_relationship_resume_state_file "$TEST_REPO")
+	[[ "$unresolved_rc" -eq 1 ]] || fail "${BLOCKED_MODE} relationship result was counted complete"
+	[[ "$(grep -c '^pending=' "$unresolved_state" || true)" -eq 1 ]] || fail "${BLOCKED_MODE} relationship result was not retained in pending state"
+	[[ "$unresolved_output" == *"attempted=1 complete=0/1"* ]] || fail "${BLOCKED_MODE} summary omitted incomplete task telemetry"
+	[[ "$unresolved_output" == *"Backend calls: 0"* ]] || fail "${BLOCKED_MODE} retry unexpectedly made a backend call"
+done
+pass "unresolved and errored relationship work remain pending without backend calls"
 
 printf 'PASS: resumable relationship reconciliation regressions\n'

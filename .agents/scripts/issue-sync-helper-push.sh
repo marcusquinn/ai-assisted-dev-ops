@@ -280,7 +280,7 @@ cmd_push() {
 	print_info "Processing ${#tasks[@]} task(s) for push to $repo"
 	gh_create_label "$repo" "status:available" "0E8A16" "Task is available for claiming"
 
-	local created=0 skipped=0 failed=0
+	local created=0 skipped=0 failed=0 relationships_pending=0
 	for task_id in "${tasks[@]}"; do
 		local result
 		if ! result=$(_push_process_task "$task_id" "$repo" "$todo_file" "$project_root"); then
@@ -288,11 +288,16 @@ cmd_push() {
 		fi
 		[[ "$result" == *"CREATED"* ]] && created=$((created + 1))
 		[[ "$result" == *"SKIPPED"* ]] && skipped=$((skipped + 1))
+		[[ "$result" == *"RELATIONSHIPS_PENDING"* ]] && relationships_pending=$((relationships_pending + 1))
 	done
-	print_info "Push complete: $created created, $skipped skipped, $failed failed"
+	print_info "Push complete: $created created, $skipped skipped, $failed failed, $relationships_pending relationships pending"
 	if [[ $failed -gt 0 ]]; then
 		print_error "Issue creation failed for $failed task(s); TODO.md still contains active task(s) without GitHub refs"
 		return 1
+	fi
+	if [[ $relationships_pending -gt 0 ]]; then
+		print_error "Relationship sync remains pending for $relationships_pending created task(s); durable refs were preserved. Recovery: rerun issue-sync-helper.sh relationships"
+		return 2
 	fi
 	return 0
 }
