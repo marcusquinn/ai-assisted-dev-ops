@@ -285,7 +285,7 @@ _pmp_refresh_native_auto_review_into() {
 }
 
 #######################################
-# Resolve unknown review states once before backlog logging and sorting.
+# Resolve unknown review states before eligibility decisions.
 # Args: $1=repo slug, $2=PR JSON array
 #######################################
 _pmp_enrich_prs_with_review_decisions() {

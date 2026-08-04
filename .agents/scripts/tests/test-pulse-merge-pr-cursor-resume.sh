@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# test-pulse-merge-pr-cursor-resume.sh — GH#26708 regression guard.
+# test-pulse-merge-pr-cursor-resume.sh — GH#26708/GH#29456 regression guard.
 #
 # Verifies a long single-repo merge backlog can pause before the outer hard
 # timeout, persist an in-repo PR cursor, and resume at the tail PRs next pass.
@@ -58,8 +58,19 @@ set +o pipefail 2>/dev/null || true
 
 FAKE_NOW=100
 PROCESSED_PRS=""
+ENRICH_TRIGGER_PHASE=""
+ENRICH_PHASE_LOG="${TMPDIR_TEST}/enrichment-phases.log"
+ENRICH_PHASE_STATE="${TMPDIR_TEST}/enrichment-phase.state"
 
 _pmp_now_epoch() {
+	local current_phase=""
+	if [[ -f "$ENRICH_PHASE_STATE" ]]; then
+		current_phase=$(<"$ENRICH_PHASE_STATE")
+	fi
+	if [[ -n "$ENRICH_TRIGGER_PHASE" && "$current_phase" == "$ENRICH_TRIGGER_PHASE" ]]; then
+		printf '200'
+		return 0
+	fi
 	printf '%s' "$FAKE_NOW"
 	return 0
 }
@@ -74,10 +85,47 @@ _pulse_merge_ready_pr_json_fields() {
 	return 0
 }
 
+record_enrichment_phase() {
+	local phase="$1"
+	printf '%s ' "$phase" >>"$ENRICH_PHASE_LOG"
+	printf '%s' "$phase" >"$ENRICH_PHASE_STATE"
+	return 0
+}
+
+require_single_pr_enrichment_input() {
+	local pr_json="$1"
+	local pr_count=""
+	pr_count=$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null) || return 1
+	[[ "$pr_count" -eq 1 ]] || return 1
+	return 0
+}
+
+_pmp_enrich_prs_with_mergeability() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	require_single_pr_enrichment_input "$pr_json" || return 1
+	record_enrichment_phase mergeability
+	printf '%s' "$pr_json"
+	return 0
+}
+
 _pmp_enrich_prs_with_rest_check_status() {
 	local repo_slug="$1"
 	local pr_json="$2"
 	[[ -n "$repo_slug" ]] || return 1
+	require_single_pr_enrichment_input "$pr_json" || return 1
+	record_enrichment_phase checks
+	printf '%s' "$pr_json"
+	return 0
+}
+
+_pmp_enrich_prs_with_review_decisions() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	require_single_pr_enrichment_input "$pr_json" || return 1
+	record_enrichment_phase reviews
 	printf '%s' "$pr_json"
 	return 0
 }
@@ -108,7 +156,7 @@ _process_single_ready_pr() {
 	return 4
 }
 
-printf '%s=== GH#26708: pulse merge PR cursor resume tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
+printf '%s=== GH#26708/GH#29456: pulse merge PR cursor resume tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
 
 merged=0 closed=0 failed=0 pr_count=0
 export PULSE_MERGE_GRACEFUL_BUDGET_SECONDS=2
@@ -133,6 +181,40 @@ else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
 	printf '%sFAIL%s: cursor clears after repo completes\n' "$TEST_RED" "$TEST_NC"
 fi
+
+assert_budget_pause_after_phase() {
+	local phase="$1"
+	local expected_phases="$2"
+	local pass_rc=0
+	PROCESSED_PRS=""
+	ENRICH_TRIGGER_PHASE="$phase"
+	FAKE_NOW=100
+	rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE" "$PULSE_MERGE_PR_CURSOR_FILE"
+	_PMP_MERGE_PASS_DEADLINE_EPOCH=200
+	_merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || pass_rc=$?
+	assert_eq "budget pause after ${phase} enrichment returns resumable status" "5" "$pass_rc"
+	assert_eq "budget pause after ${phase} enrichment processes no incomplete PR" "" "$PROCESSED_PRS"
+	assert_eq "budget pause after ${phase} enrichment persists the current PR" "org/repo|0||101" "$(tr -d '\n' <"$PULSE_MERGE_PR_CURSOR_FILE")"
+	assert_eq "budget pause stops after ${phase} enrichment" "$expected_phases" "$(<"$ENRICH_PHASE_LOG")"
+	return 0
+}
+
+assert_budget_pause_after_phase mergeability "mergeability "
+assert_budget_pause_after_phase checks "mergeability checks "
+assert_budget_pause_after_phase reviews "mergeability checks reviews "
+
+# The next cycle starts from the durable current-PR cursor and re-enriches from
+# the fresh list response. No partial enrichment cache is required for progress.
+PROCESSED_PRS=""
+ENRICH_TRIGGER_PHASE=""
+FAKE_NOW=300
+rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE"
+_PMP_MERGE_PASS_DEADLINE_EPOCH=0
+resume_after_enrichment_rc=0
+_merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || resume_after_enrichment_rc=$?
+assert_eq "cycle after enrichment pause completes without cached partial JSON" "0" "$resume_after_enrichment_rc"
+assert_eq "cycle after enrichment pause makes forward progress from current PR" "101 102 103 104 " "$PROCESSED_PRS"
+assert_eq "successful resumed cycle clears the current-PR cursor" "false" "$([[ -f "$PULSE_MERGE_PR_CURSOR_FILE" ]] && printf true || printf false)"
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
 	printf '\n%sAll %d PR cursor resume tests passed.%s\n' "$TEST_GREEN" "$TESTS_RUN" "$TEST_NC"

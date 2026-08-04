@@ -312,6 +312,84 @@ _PULSE_MERGE_PROCESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_PULSE_MERGE_PROCESS_DIR}/pulse-merge-duplicate-consolidation.sh"
 
 #######################################
+# Enrich one PR inside the durable PR-cursor boundary. A budget edge after any
+# potentially blocking enrichment phase returns 5 so the caller persists the
+# current PR as the next item rather than starting another network phase.
+# Args: $1=repo slug, $2=PR object
+# Stdout: enriched PR object
+#######################################
+_pmp_enrich_single_pr_for_processing() {
+	local repo_slug="$1"
+	local pr_obj="$2"
+	local enriched_json=""
+
+	[[ -n "$repo_slug" && -n "$pr_obj" ]] || return 1
+	enriched_json=$(jq -cn --argjson pr "$pr_obj" '[$pr]' 2>/dev/null) || return 1
+	enriched_json=$(_pmp_enrich_prs_with_mergeability "$repo_slug" "$enriched_json") || return 1
+	_pmp_merge_pass_budget_exhausted && return 5
+	enriched_json=$(_pmp_enrich_prs_with_rest_check_status "$repo_slug" "$enriched_json") || return 1
+	_pmp_merge_pass_budget_exhausted && return 5
+	enriched_json=$(_pmp_enrich_prs_with_review_decisions "$repo_slug" "$enriched_json") || return 1
+	_pmp_merge_pass_budget_exhausted && return 5
+
+	printf '%s' "$enriched_json" | jq -c '.[0] // empty' 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
+# Prepare one cursor item for eligibility processing. Stop, budget, and
+# cooldown pauses persist the current item before returning status 5.
+# Args: $1=repo, $2=PR array, $3=index, $4=output var,
+#       $5-$7=counter var names, $8-$10=counter values, $11-$12=cache dirs
+#######################################
+_pmp_prepare_pr_at_cursor() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	local cursor_index="$3"
+	local output_var="$4"
+	local merged_var="$5"
+	local closed_var="$6"
+	local failed_var="$7"
+	local merged_count="$8"
+	local closed_count="$9"
+	local failed_count="${10}"
+	local required_contexts_cache_dir="${11}"
+	local author_permission_cache_dir="${12}"
+	local prepared_pr_obj="" enriched_pr_obj="" enrichment_rc=0
+
+	[[ "$output_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+	if [[ -f "$STOP_FLAG" ]]; then
+		_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" stop "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+		return $?
+	fi
+	if _pmp_merge_pass_budget_exhausted; then
+		_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" budget "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+		return $?
+	fi
+	if declare -F _gh_secondary_cooldown_preflight >/dev/null 2>&1 && ! _gh_secondary_cooldown_preflight write >/dev/null 2>&1; then
+		_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" cooldown "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+		return $?
+	fi
+
+	prepared_pr_obj=$(_pmp_pr_object_at_index "$pr_json" "$cursor_index")
+	if [[ -n "$prepared_pr_obj" ]]; then
+		enriched_pr_obj=$(_pmp_enrich_single_pr_for_processing "$repo_slug" "$prepared_pr_obj") || enrichment_rc=$?
+		if [[ "$enrichment_rc" -eq 5 ]]; then
+			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" budget "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+			return $?
+		fi
+		if [[ "$enrichment_rc" -ne 0 || -z "$enriched_pr_obj" ]]; then
+			echo "[pulse-wrapper] Merge pass: PR enrichment failed closed for ${repo_slug} at cursor index=${cursor_index}" >>"$LOGFILE"
+			prepared_pr_obj=$(printf '%s' "$prepared_pr_obj" | jq -c '. + {mergeable:"UNKNOWN", reviewDecision:"UNKNOWN", statusCheckRollup:[]}' 2>/dev/null) || prepared_pr_obj=""
+		else
+			prepared_pr_obj="$enriched_pr_obj"
+		fi
+	fi
+	printf -v "$output_var" '%s' "$prepared_pr_obj"
+	return 0
+}
+
+#######################################
 # Apply one processed PR result to pass counters and durable same-pass evidence.
 # Args: $1=repo, $2=PR number, $3=head SHA, $4=result code,
 #       $5=merged var, $6=closed var, $7=failed var
@@ -402,10 +480,9 @@ _merge_ready_prs_for_repo() {
 		echo "[pulse-wrapper] Merge pass: per-repo cache setup incomplete for ${repo_slug}; continuing without one or more caches (GH#25696)" >>"$LOGFILE"
 	fi
 
-	pr_json=$(_pmp_enrich_prs_with_mergeability "$repo_slug" "$pr_json")
-	pr_json=$(_pmp_enrich_prs_with_rest_check_status "$repo_slug" "$pr_json")
-	pr_json=$(_pmp_enrich_prs_with_review_decisions "$repo_slug" "$pr_json")
-
+	# Keep repository-wide preparation transport-free. Potentially blocking
+	# enrichment runs one PR at a time below, after cursor resume and budget
+	# checks, so every completed unit has a durable continuation boundary.
 	_pmp_log_pr_backlog_counts "$repo_slug" "$pr_json"
 	pr_json=$(_pmp_sort_prs_by_backlog_priority "$pr_json" "$repo_slug")
 	_pmp_consolidate_duplicate_pr_groups "$repo_slug" "$pr_json" || true
@@ -415,20 +492,12 @@ _merge_ready_prs_for_repo() {
 	local i=0
 	_pmp_prepare_merge_pr_cursor_resume "$repo_slug" "$pr_json" "$pr_count" "$PULSE_MERGE_PR_CURSOR_FILE" "$LOGFILE" i || i=0
 	while [[ "$i" -lt "$pr_count" ]]; do
-		if [[ -f "$STOP_FLAG" ]]; then
-			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$i" stop "$_merged_var" "$_closed_var" "$_failed_var" "$merged" "$closed" "$failed" "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR"
-			return $?
-		fi
-		if _pmp_merge_pass_budget_exhausted; then
-			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$i" budget "$_merged_var" "$_closed_var" "$_failed_var" "$merged" "$closed" "$failed" "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR"
-			return $?
-		fi
-		if declare -F _gh_secondary_cooldown_preflight >/dev/null 2>&1 && ! _gh_secondary_cooldown_preflight write >/dev/null 2>&1; then
-			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$i" cooldown "$_merged_var" "$_closed_var" "$_failed_var" "$merged" "$closed" "$failed" "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR"
-			return $?
-		fi
-		local pr_obj
-		pr_obj=$(_pmp_pr_object_at_index "$pr_json" "$i")
+		local pr_obj=""
+		_pmp_prepare_pr_at_cursor "$repo_slug" "$pr_json" "$i" pr_obj "$_merged_var" "$_closed_var" "$_failed_var" "$merged" "$closed" "$failed" "$AIDEVOPS_PULSE_REQUIRED_CONTEXTS_CACHE_DIR" "$AIDEVOPS_PULSE_AUTHOR_PERMISSION_CACHE_DIR" || return $?
+		[[ -n "$pr_obj" ]] || {
+			i=$((i + 1))
+			continue
+		}
 		local _cursor_last_pr="" _cursor_next_pr="" _pr_head_sha=""
 		_cursor_last_pr=$(printf '%s' "$pr_obj" | jq -r '.number // empty' 2>/dev/null) || _cursor_last_pr=""
 		_pr_head_sha=$(printf '%s' "$pr_obj" | jq -r '.headRefOid // empty' 2>/dev/null) || _pr_head_sha=""
