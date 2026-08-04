@@ -241,7 +241,7 @@ postflight quota fix PR #29174 then advanced `main` with terminal
 `release:not-requested` evidence. The exact branch base is
 `dacff2107e272a059bfbba693ab5594742c55f5e`.
 
-The pending aggregation review records authorized Buzz ACP compatibility
+Aggregation PR #29508 records authorized Buzz ACP compatibility
 PR #29503 at `178b684f70f2fd9a60d4ecf41d777a545023736b`. Subsequent terminal
 completion metadata advanced `main` before the explicitly authorized release could publish.
 The exact branch base is `89c4f74e440ef6492c5f0add22d085135272edb2`.
