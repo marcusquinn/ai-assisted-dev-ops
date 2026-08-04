@@ -89,7 +89,7 @@ if [[ "${1:-}" == "api" && " $* " == *" repos/test/repo/pulls "* ]]; then
 	merged_at=null
 	if [[ -f "${PR_MERGED_FILE:?}" ]]; then
 		pr_state=closed
-		merged_at='"2026-08-03T00:00:00Z"'
+		merged_at="${PR_MERGED_AT_JSON:-\"2026-08-03T00:00:00Z\"}"
 	fi
 	author_association="${PR_AUTHOR_ASSOCIATION:-OWNER}"
 	[[ ! -f "${AUTO_MERGE_FILE:?}" ]] || auto_merge='{"merge_method":"merge"}'
@@ -251,6 +251,20 @@ tag_pushes_after=$({ grep -c 'push origin refs/tags/v1.2.3:refs/tags/v1.2.3' "$F
 [[ "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "tag-ready" ]]
 [[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
 printf 'PASS merged protected release status remains read-only after branch deletion\n'
+
+export PR_MERGED_AT_JSON='"not-a-timestamp"'
+tag_pushes_before=$({ grep -c 'push origin refs/tags/v1.2.3:refs/tags/v1.2.3' "$FAKE_GIT_LOG" || true; })
+if _version_manager_reconcile_protected_release_tag test/repo v1.2.3 status \
+	>/dev/null 2>&1 || _version_manager_reconcile_protected_release_tag \
+	test/repo v1.2.3 reconcile >/dev/null 2>&1; then
+	printf 'FAIL malformed protected PR merge evidence authorized reconciliation\n'
+	exit 1
+fi
+tag_pushes_after=$({ grep -c 'push origin refs/tags/v1.2.3:refs/tags/v1.2.3' "$FAKE_GIT_LOG" || true; })
+[[ "$tag_pushes_after" -eq "$tag_pushes_before" ]]
+[[ -z "$("$REAL_GIT" ls-remote --tags "$REMOTE" refs/tags/v1.2.3)" ]]
+unset PR_MERGED_AT_JSON
+printf 'PASS malformed protected PR merge evidence cannot publish a tag\n'
 
 "$REAL_GIT" --git-dir="$REMOTE" update-ref refs/heads/main "$CURRENT_MAIN"
 if _version_manager_reconcile_protected_release_tag test/repo v1.2.3 reconcile \

@@ -555,6 +555,23 @@ _version_manager_queue_protected_main_release() {
 	return 0
 }
 
+_version_manager_verify_protected_pr_state() {
+	local pr_state="$1"
+	local merged_at="$2"
+
+	case "$pr_state" in
+	"$_VERSION_MANAGER_PR_STATE_OPEN") [[ -z "$merged_at" ]] || return 1 ;;
+	"$_VERSION_MANAGER_PR_STATE_CLOSED")
+		if [[ ! "$merged_at" =~ $_VERSION_MANAGER_TIMESTAMP_REGEX ]]; then
+			print_error "Protected release PR #${_VERSION_MANAGER_PROTECTED_PR_NUMBER} lacks valid merge evidence"
+			return 1
+		fi
+		;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
 _version_manager_reconcile_protected_release_tag() {
 	local repo="$1"
 	local tag_name="$2"
@@ -593,14 +610,7 @@ _version_manager_reconcile_protected_release_tag() {
 		"$_VERSION_MANAGER_LOCAL_TAG_OBJECT" "$_VERSION_MANAGER_LOCAL_TAG_COMMIT" || return 1
 	pr_state=$(jq -r '.state // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
 	merged_at=$(jq -r '.merged_at // ""' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
-	if [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" && -z "$merged_at" ]]; then
-		print_error "Protected release PR #${_VERSION_MANAGER_PROTECTED_PR_NUMBER} closed without merge"
-		return 1
-	fi
-	if [[ "$pr_state" != "$_VERSION_MANAGER_PR_STATE_OPEN" &&
-		"$pr_state" != "$_VERSION_MANAGER_PR_STATE_CLOSED" ]]; then
-		return 1
-	fi
+	_version_manager_verify_protected_pr_state "$pr_state" "$merged_at" || return 1
 	_version_manager_remote_branch_head "$branch_name" || return 1
 	remote_branch_head="$_VERSION_MANAGER_PROTECTED_RELEASE_HEAD"
 	if [[ -n "$remote_branch_head" && "$remote_branch_head" != "$pr_head" ]]; then
@@ -623,7 +633,7 @@ _version_manager_reconcile_protected_release_tag() {
 		print_error "Protected release PR does not contain the signed release commit"
 		return 1
 	fi
-	if [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" && -n "$merged_at" ]]; then
+	if [[ "$pr_state" == "$_VERSION_MANAGER_PR_STATE_CLOSED" ]]; then
 		git -C "$REPO_ROOT" fetch origin main --quiet || return 1
 		if ! git -C "$REPO_ROOT" merge-base --is-ancestor \
 			"$_VERSION_MANAGER_LOCAL_TAG_COMMIT" origin/main; then
