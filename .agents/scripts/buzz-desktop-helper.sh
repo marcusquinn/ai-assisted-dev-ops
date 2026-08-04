@@ -111,8 +111,16 @@ _buzz_validate_store() {
 		return 1
 	}
 	_buzz_validate_private_file "$BUZZ_STORE_PATH" "Buzz managed-agent store" || return 1
-	jq -e 'type == "array"' "$BUZZ_STORE_PATH" >/dev/null 2>&1 || {
-		print_error "Buzz managed-agent store is not a valid JSON array"
+	jq -e '
+		def is_array: type == "array";
+		is_array and
+		all(.[];
+			type == "object" and
+			((.pubkey | type) == "string" and (.pubkey | length) > 0) and
+			((.agent_args == null) or (.agent_args | is_array))
+		)
+	' "$BUZZ_STORE_PATH" >/dev/null 2>&1 || {
+		print_error "Buzz managed-agent store has an invalid record schema"
 		return 1
 	}
 	return 0
@@ -130,7 +138,7 @@ _buzz_target_filter() {
 _buzz_eligible_count() {
 	local filter=""
 	filter=$(_buzz_target_filter)
-	jq --argjson target_filter 'null' "
+	jq "
 		[
 			.[]
 			| select(${filter})

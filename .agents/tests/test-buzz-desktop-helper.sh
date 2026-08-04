@@ -273,6 +273,27 @@ test_symlink_store_fails_closed() {
 	return 0
 }
 
+test_malformed_record_fails_closed() {
+	reset_fixture
+	local malformed="${TEST_STORE}.malformed"
+	jq 'map(if .pubkey == "pub-empty-path" then del(.pubkey) else . end)' \
+		"$TEST_STORE" >"$malformed"
+	chmod 600 "$malformed"
+	mv "$malformed" "$TEST_STORE"
+	local before=""
+	local rc=0
+	before=$(file_hash "$TEST_STORE")
+	run_helper apply >/dev/null 2>&1 || rc=$?
+	if [[ "$rc" -ne 0 ]]; then
+		pass "malformed Buzz records fail closed"
+	else
+		fail "malformed Buzz records fail closed" "apply returned zero"
+	fi
+	assert_eq "malformed Buzz store remains unchanged" "$(file_hash "$TEST_STORE")" "$before"
+	assert_file_absent "malformed Buzz store creates no state" "$TEST_STATE_FILE"
+	return 0
+}
+
 test_cli_and_setup_wiring() {
 	if grep -Fq 'buzz) _dispatch_helper "buzz-desktop-helper.sh"' "$CLI_FILE"; then
 		pass "aidevops CLI routes the Buzz helper"
@@ -303,6 +324,7 @@ main() {
 	test_running_app_refuses_mutation
 	test_unknown_version_and_platform_are_noops
 	test_symlink_store_fails_closed
+	test_malformed_record_fails_closed
 	test_cli_and_setup_wiring
 	printf '\nResults: %s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 	[[ "$FAIL_COUNT" -eq 0 ]]
