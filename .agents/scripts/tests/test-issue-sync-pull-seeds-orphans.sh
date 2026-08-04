@@ -5,11 +5,11 @@
 # Regression test for t2698: issue-sync-helper.sh pull must seed TODO.md
 # entries for open orphan GitHub issues instead of only reporting them.
 #
-# Tests the two new functions added to issue-sync-lib.sh:
+# Tests the orphan-seeding library functions and cmd_pull policy:
 #   _labels_json_to_tags()      — reverse-maps labels JSON to #tag tokens
 #   _seed_orphan_todo_line()    — idempotent TODO.md append for orphans
 #
-# Coverage matrix (7 cases from Acceptance criteria):
+# Coverage matrix:
 #   (a) open orphan is seeded with correct line
 #   (b) closed orphan is NOT seeded (handled by caller; lib skips none)
 #   (c) duplicate-run is a no-op (idempotency)
@@ -17,6 +17,10 @@
 #   (e) parent-task label → #parent tag (auto-dispatch maps independently)
 #   (f) dry-run emits "would seed" to stderr, TODO.md unchanged
 #   (g) missing task ID → seeding skipped with log
+#   (h) publication:pending open orphan → deferred without TODO mutation
+#   (i) near-match publication label → ordinary orphan seeding
+#   (j) publication:pending issue with a TODO row → ref sync proceeds
+#   (k) removing publication:pending → orphan seeding resumes
 set -euo pipefail
 
 PASS=0
@@ -27,6 +31,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../issue-sync-lib.sh
 source "${SCRIPT_DIR}/issue-sync-lib.sh"
+# shellcheck source=../issue-sync-helper-labels.sh
+source "${SCRIPT_DIR}/issue-sync-helper-labels.sh"
+# shellcheck source=../issue-sync-helper-commands.sh
+source "${SCRIPT_DIR}/issue-sync-helper-commands.sh"
 
 # Stub for log_verbose — defined in issue-sync-helper.sh, not in the lib.
 # Tests source only the lib, so we provide a no-op here.
@@ -78,6 +86,27 @@ labels_json_of() {
 	return 0
 }
 
+run_pull_with_issues() {
+	local todo_file="$1" open_json="$2" closed_json="${3:-[]}" state=""
+	_CMD_REPO="owner/repo"
+	_CMD_TODO="$todo_file"
+	DRY_RUN="false"
+	_init_cmd() { return 0; }
+	gh_list_issues() {
+		local repo="$1" requested_state="$2" limit="$3"
+		: "$repo" "$limit"
+		if [[ "$requested_state" == "open" ]]; then
+			printf '%s\n' "$open_json"
+		else
+			printf '%s\n' "$closed_json"
+		fi
+		return 0
+	}
+	cmd_pull
+	state="$?"
+	return "$state"
+}
+
 # ─── (a) Open orphan seeded ──────────────────────────────────────────────────
 
 todo_a=$(make_todo)
@@ -101,15 +130,11 @@ check "$ok" "(a) open orphan seeded — #auto-dispatch tag present" "line: $seed
 
 rm -f "$todo_a"
 
-# ─── (b) Closed orphan not seeded (caller responsibility) ───────────────────
-# The caller (cmd_pull) only calls _seed_orphan_todo_line for open issues.
-# This test validates that the library function itself does NOT distinguish
-# open vs closed — that policy lives in cmd_pull.
-# We verify by simply NOT calling _seed_orphan_todo_line for a closed issue
-# and confirming no line appears.
+# ─── (b) Closed orphan not seeded ────────────────────────────────────────────
 
 todo_b=$(make_todo)
-# No call to _seed_orphan_todo_line — simulating caller's open-only guard.
+closed_issues_b='[{"number":20999,"title":"t9999: closed orphan","assignees":[],"labels":[]}]'
+run_pull_with_issues "$todo_b" '[]' "$closed_issues_b" >/dev/null
 closed_line=$(grep -E '^\- \[ \] t9999 ' "$todo_b" || echo "")
 [[ -z "$closed_line" ]] && ok=1 || ok=0
 check "$ok" "(b) closed orphan not seeded — no entry for t9999" "line: '$closed_line'"
@@ -214,6 +239,52 @@ check "$ok" "(g) empty task_id — no malformed entry seeded" \
 	"ret=$empty_ret bad_line='$bad_line'"
 
 rm -f "$todo_g"
+
+# ─── (h) Pending publication orphan is deferred ─────────────────────────────
+
+todo_h=$(make_todo)
+before_h=$(<"$todo_h")
+issues_h='[{"number":20800,"title":"t3000: pending planning publication","assignees":[],"labels":[{"name":"publication:pending"}]}]'
+output_h=$(run_pull_with_issues "$todo_h" "$issues_h" 2>&1)
+after_h=$(<"$todo_h")
+[[ "$before_h" == "$after_h" ]] && ok=1 || ok=0
+check "$ok" "(h) publication:pending orphan — TODO.md unchanged"
+printf '%s' "$output_h" | grep -q 'deferred orphan TODO seeding for #20800 (t3000)' && ok=1 || ok=0
+check "$ok" "(h) publication:pending orphan — issue identified in diagnostic" "output: $output_h"
+printf '%s' "$output_h" | grep -q 'Publication pending deferred: 1' && ok=1 || ok=0
+check "$ok" "(h) publication:pending orphan — deferred summary count is one" "output: $output_h"
+rm -f "$todo_h"
+
+# ─── (i) Exact label matching preserves ordinary orphan recovery ────────────
+
+todo_i=$(make_todo)
+issues_i='[{"number":20801,"title":"t3001: near-match publication label","assignees":[],"labels":[{"name":"publication:pending-later"}]}]'
+run_pull_with_issues "$todo_i" "$issues_i" >/dev/null
+grep -q 'ref:GH#20801' "$todo_i" && ok=1 || ok=0
+check "$ok" "(i) near-match publication label — orphan seeded normally"
+rm -f "$todo_i"
+
+# ─── (j) Existing TODO row synchronizes while publication is pending ────────
+
+todo_j=$(make_todo)
+printf '%s\n' '- [ ] t3002 canonical planning row' >>"$todo_j"
+issues_j='[{"number":20802,"title":"t3002: canonical planning row","assignees":[],"labels":[{"name":"publication:pending"}]}]'
+run_pull_with_issues "$todo_j" "$issues_j" >/dev/null
+grep -E '^\- \[ \] t3002 .*ref:GH#20802' "$todo_j" >/dev/null && ok=1 || ok=0
+check "$ok" "(j) publication:pending with existing row — ref synchronized"
+rm -f "$todo_j"
+
+# ─── (k) Removing pending label resumes orphan recovery ─────────────────────
+
+todo_k=$(make_todo)
+issues_k_pending='[{"number":20803,"title":"t3003: retry publication","assignees":[],"labels":[{"name":"publication:pending"}]}]'
+issues_k_ready='[{"number":20803,"title":"t3003: retry publication","assignees":[],"labels":[]}]'
+run_pull_with_issues "$todo_k" "$issues_k_pending" >/dev/null
+run_pull_with_issues "$todo_k" "$issues_k_ready" >/dev/null
+line_count=$(grep -c '^\- \[ \] t3003 .*ref:GH#20803' "$todo_k" 2>/dev/null || true)
+[[ "$line_count" -eq 1 ]] && ok=1 || ok=0
+check "$ok" "(k) pending label removed — orphan seeding resumes exactly once" "count=$line_count"
+rm -f "$todo_k"
 
 # ─── _labels_json_to_tags unit tests ────────────────────────────────────────
 

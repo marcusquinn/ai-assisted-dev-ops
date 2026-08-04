@@ -36,12 +36,23 @@ fi
 # cmd_pull
 # =============================================================================
 
+_print_pull_summary() {
+	local synced="$1" assignee_synced="$2" orphan_seeded="$3" orphan_skipped="$4"
+	local orphan_open="$5" orphan_closed="$6" publication_deferred="$7" orphan_list="$8"
+	printf "\n=== Pull Summary ===\nRefs synced: %d | Assignees: %d | Orphans seeded: %d | Orphans skipped: %d\n" \
+		"$synced" "$assignee_synced" "$orphan_seeded" "$orphan_skipped"
+	printf "Orphans open: %d closed: %d | Publication pending deferred: %d\n" \
+		"$orphan_open" "$orphan_closed" "$publication_deferred"
+	[[ $orphan_open -gt 0 ]] && print_warning "Open orphans: $orphan_list"
+	[[ $synced -eq 0 && $assignee_synced -eq 0 && $orphan_open -eq 0 ]] && print_success "TODO.md refs up to date"
+	return 0
+}
+
 cmd_pull() {
 	_init_cmd || return 1
 	local repo="$_CMD_REPO" todo_file="$_CMD_TODO"
 	print_info "Pulling issue refs from GitHub ($repo) to TODO.md..."
-	local synced=0 orphan_open=0 orphan_closed=0 assignee_synced=0 orphan_list="" orphan_seeded=0 orphan_skipped=0
-	local state
+	local synced=0 orphan_open=0 orphan_closed=0 assignee_synced=0 orphan_list="" orphan_seeded=0 orphan_skipped=0 publication_deferred=0 state=""
 	for state in open closed; do
 		local json
 		json=$(gh_list_issues "$repo" "$state" 200)
@@ -62,9 +73,14 @@ cmd_pull() {
 			if [[ "$existing_ref" != "$num" ]]; then
 				if [[ -z "$task_line_num" ]]; then
 					if [[ "$state" == "open" ]]; then
-						# t2698: seed a TODO.md entry for the open orphan
 						local labels_json
 						labels_json=$(echo "$issue_line" | jq -r '.labels // []' 2>/dev/null || echo "[]")
+						if _issue_labels_include_exact "$labels_json" "publication:pending"; then
+							print_info "Publication pending: deferred orphan TODO seeding for #$num ($tid)"
+							publication_deferred=$((publication_deferred + 1))
+							continue
+						fi
+						# t2698: seed a TODO.md entry for the open orphan
 						if _seed_orphan_todo_line "$num" "$tid" "$title" "$labels_json" "$todo_file" "${DRY_RUN:-}"; then
 							orphan_seeded=$((orphan_seeded + 1))
 						else
@@ -128,11 +144,8 @@ cmd_pull() {
 			fi
 		done < <(echo "$json" | jq -c '.[]' 2>/dev/null || true)
 	done
-	printf "\n=== Pull Summary ===\nRefs synced: %d | Assignees: %d | Orphans seeded: %d | Orphans skipped: %d\n" \
-		"$synced" "$assignee_synced" "$orphan_seeded" "$orphan_skipped"
-	printf "Orphans open: %d closed: %d\n" "$orphan_open" "$orphan_closed"
-	[[ $orphan_open -gt 0 ]] && print_warning "Open orphans: $orphan_list"
-	[[ $synced -eq 0 && $assignee_synced -eq 0 && $orphan_open -eq 0 ]] && print_success "TODO.md refs up to date"
+	_print_pull_summary "$synced" "$assignee_synced" "$orphan_seeded" "$orphan_skipped" \
+		"$orphan_open" "$orphan_closed" "$publication_deferred" "$orphan_list"
 	return 0
 }
 

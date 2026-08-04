@@ -17,6 +17,8 @@ Use a **hold-until-published** model with an orthogonal
 - An issue created from unpublished local planning state receives
   `publication:pending`. It does not receive `auto-dispatch` or
   `status:available`, even when those are the intended post-publication labels.
+- Creators must include `publication:pending` in the issue-create request rather
+  than add it afterward, so issue-open synchronization cannot race the blocker.
 - A task becomes publishable only when its TODO entry and worker brief (or a
   canonical stub that identifies a worker-ready issue body) are both visible on
   the repository's default branch.
@@ -237,6 +239,10 @@ release ambiguous and can either strand tasks or remove a deliberate hold.
 
 - Existing published issues without `publication:pending` retain legacy
   behavior. Do not bulk-label historical work.
+- Issue-sync pull defers orphan TODO seeding for an open issue carrying the
+  exact `publication:pending` label. Once the canonical row appears, reference
+  synchronization proceeds normally; removing the label before publication
+  restores legacy orphan recovery on the next pull.
 - New task-creation paths opt into the protocol together. During rollout, pulse
   must understand the blocker before creators can emit it, and creators must
   defer available labels before reconciliation is enabled.

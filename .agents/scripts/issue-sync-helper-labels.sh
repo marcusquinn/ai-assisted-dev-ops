@@ -35,6 +35,15 @@ fi
 # GitHub API (gh CLI wrappers — kept for multi-call functions only)
 # =============================================================================
 
+_issue_labels_include_exact() {
+	local labels_json="$1" label_name="$2"
+	if printf '%s' "$labels_json" |
+		jq -e --arg label_name "$label_name" 'any(.[]?; .name == $label_name)' >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
 gh_list_issues() {
 	local repo="$1" state="$2" limit="$3"
 	local -a args=(
