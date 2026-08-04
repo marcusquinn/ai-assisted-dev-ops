@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "label": "membership cannot grant administrator authority",
+      "add": {"membership_grants_administrator": true}
+    },
+    {
+      "label": "model-proposed scopes are not authority inputs",
+      "add": {"model_proposed_scopes": ["administrator"]}
+    },
+    {
+      "label": "clean scanning cannot widen a high-risk capability",
+      "change": {
+        "requested_capability_class": "administrator",
+        "capability_ceiling": ["read", "administrator"],
+        "configured_grants": [
+          {
+            "role_id": "owner",
+            "grant_basis": "configured_role",
+            "configuration_ref": "role-config:team-interface:v1",
+            "capability_classes": ["read", "administrator"]
+          }
+        ],
+        "explicit_gates": []
+      }
+    }
+  ]
+}
