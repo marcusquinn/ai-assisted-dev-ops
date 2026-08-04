@@ -825,6 +825,176 @@ for stale_failure_mode in source-run ancestry latest-remote receipt; do
 done
 printf 'PASS stale receipt supersession binds both releases and fails closed on uncertain evidence\n'
 
+run_protected_predecessor_supersession_fixture() {
+	local mode="$1"
+	local write_log="$2"
+	(
+		_full_loop_release_source_json_from_tag() {
+			local tag_name="$1"
+			case "$tag_name" in
+			v1.2.3)
+				printf '%s\n' '{"source_pr":90,"source_merge":"1111111111111111111111111111111111111111","aggregated_sources":[]}'
+				;;
+			v1.2.4)
+				printf '%s\n' '{"source_pr":91,"source_merge":"2222222222222222222222222222222222222222","aggregated_sources":[]}'
+				;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_resolve_tag_commit() {
+			local tag_name="$1"
+			case "$tag_name" in
+			v1.2.3) printf '%040d\n' 3 ;;
+			v1.2.4) printf '%040d\n' 4 ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_verify_stale_publication_run() {
+			return 1
+		}
+		_full_loop_release_find_workflow_run() {
+			local repo="$1"
+			local tag_name="$2"
+			local tag_commit="$3"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" &&
+				"$tag_commit" == "$(printf '%040d' 3)" ]] || return 1
+			return 3
+		}
+		_full_loop_release_verify_protected_source_provenance() {
+			local repo="$1"
+			local tag_name="$2"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" ]]
+			return $?
+		}
+		_full_loop_release_reset_tag_worktree() {
+			return 0
+		}
+		_full_loop_release_verify_tag_provenance() {
+			local repo="$1"
+			local tag_name="$2"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]]
+			return $?
+		}
+		_version_manager_reconcile_protected_release_tag() {
+			local repo="$1"
+			local tag_name="$2"
+			local reconcile_mode="$3"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" &&
+				"$reconcile_mode" == "status" ]] || return 1
+			_VERSION_MANAGER_LOCAL_TAG_OBJECT="$(printf '%040d' 2)"
+			_VERSION_MANAGER_LOCAL_TAG_COMMIT="$(printf '%040d' 3)"
+			_VERSION_MANAGER_PROTECTED_PR_NUMBER=77
+			_VERSION_MANAGER_PROTECTED_PR_JSON=$(jq -cn \
+				--arg head "$(printf '%040d' 33)" \
+				'{head:{sha:$head},merged_at:"2026-08-04T00:00:00Z"}') || return 1
+			if [[ "$mode" == "unmerged" ]]; then
+				_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="pr-pending"
+			else
+				_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="tag-ready"
+			fi
+			return 0
+		}
+		_full_loop_release_inspect_remote() {
+			local repo="$1"
+			local tag_name="$2"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.4" ]] || return 1
+			_FULL_LOOP_RELEASE_RUN_JSON='{"id":202}'
+			return 0
+		}
+		_full_loop_release_receipt_path() {
+			local repo="$1"
+			local pr_number="$2"
+			[[ "$repo" == "test/repo" ]] || return 1
+			if [[ "$mode" == "receipt" ]]; then
+				printf '%s/missing-protected-%s.status\n' "$TEST_ROOT" "$pr_number"
+			else
+				printf '%s/receipts/test_repo-%s.status\n' "$TEST_ROOT" "$pr_number"
+			fi
+			return 0
+		}
+		_full_loop_release_write_protected_successor_receipt() {
+			local args="$*"
+			printf '%s\n' "$args" >"$write_log"
+			return 0
+		}
+		git() {
+			local args="$*"
+			case "$args" in
+			*" merge-base --is-ancestor "*)
+				[[ "$mode" != "unrelated" ]]
+				return $?
+				;;
+			esac
+			return 1
+		}
+		_full_loop_release_finalize_stale_supersession test/repo 90 v1.2.3 v1.2.4
+	)
+	return $?
+}
+
+protected_write_log="${TEST_ROOT}/protected-successor-write.log"
+run_protected_predecessor_supersession_fixture valid "$protected_write_log" || {
+	printf 'FAIL unpublished protected predecessor did not reconcile through a published descendant\n'
+	exit 1
+}
+if ! grep -q '"protected_pr":77' "$protected_write_log" ||
+	! grep -q '"protected_head":"0000000000000000000000000000000000000033"' "$protected_write_log"; then
+	printf 'FAIL protected predecessor supersession omitted immutable PR evidence\n'
+	exit 1
+fi
+for protected_failure_mode in unrelated unmerged receipt; do
+	rm -f "$protected_write_log"
+	if run_protected_predecessor_supersession_fixture \
+		"$protected_failure_mode" "$protected_write_log"; then
+		printf 'FAIL %s protected predecessor evidence allowed supersession\n' \
+			"$protected_failure_mode"
+		exit 1
+	fi
+	[[ ! -e "$protected_write_log" ]] || {
+		printf 'FAIL %s protected predecessor uncertainty wrote terminal evidence\n' \
+			"$protected_failure_mode"
+		exit 1
+	}
+done
+printf 'PASS unpublished protected predecessors require merged ancestry and a published successor receipt\n'
+
+(
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/protected-evidence-receipts"
+	# shellcheck source=../full-loop-helper-state.sh
+	source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+	_full_loop_update_superseded_cleanup_receipt() {
+		local repo="$1"
+		local pr_number="$2"
+		[[ "$repo" == "test/repo" && "$pr_number" == "90" ]]
+		return $?
+	}
+	protected_json=$(jq -cn \
+		--arg source_tag v1.2.3 --arg source_tag_object "$(printf '%040d' 2)" \
+		--arg source_commit "$(printf '%040d' 3)" --argjson protected_pr 77 \
+		--arg protected_head "$(printf '%040d' 33)" \
+		--arg protected_merged_at '2026-08-04T00:00:00Z' \
+		'{source_tag:$source_tag,source_tag_object:$source_tag_object,
+		  source_commit:$source_commit,protected_pr:$protected_pr,
+		  protected_head:$protected_head,protected_merged_at:$protected_merged_at}') || exit 1
+	_full_loop_release_write_protected_successor_receipt test/repo 90 \
+		1111111111111111111111111111111111111111 "$protected_json" 91 \
+		2222222222222222222222222222222222222222 v1.2.4 \
+		"$(printf '%040d' 4)" 202 || exit 1
+	evidence_path=$(_full_loop_release_evidence_path test/repo 90 successor) || exit 1
+	_full_loop_verify_successor_superseded_release_evidence \
+		"$evidence_path" test/repo 90 || exit 1
+	jq -e '.schema_version == 2
+		and .evidence_type == "protected-predecessor-supersession"
+		and .source_release_tag_object == "0000000000000000000000000000000000000002"
+		and .source_protected_pr == 77
+		and .source_protected_pr_head == "0000000000000000000000000000000000000033"
+		and .release_workflow_run == 202' "$evidence_path" >/dev/null || exit 1
+	grep -qx superseded "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-90.status" || exit 1
+)
+printf 'PASS protected predecessor supersession writes independently verifiable audit evidence\n'
+
 protected_state_log="${TEST_ROOT}/protected-state.log"
 protected_source_log="${TEST_ROOT}/protected-source.log"
 protected_push_log="${TEST_ROOT}/protected-push.log"

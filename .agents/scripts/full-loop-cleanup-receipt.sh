@@ -59,12 +59,10 @@ _full_loop_validate_superseded_evidence() {
 			and ($e.aggregate_merge | type == $string_type and test($sha_regex))
 			and ($e.release_tag | type == $string_type and test($tag_regex))
 			and ($e.release_commit | type == $string_type and test($sha_regex))
-		else $e.schema_version == 1 and $e.evidence_type == "post-publication-supersession"
-			and $e.source_pr == $pr
+		else $e.source_pr == $pr
 			and ($e.source_merge | type == $string_type and test($sha_regex))
 			and ($e.source_release_tag | type == $string_type and test($tag_regex))
 			and ($e.source_release_commit | type == $string_type and test($sha_regex))
-			and ($e.source_workflow_run | type == $number_type and . > 0 and floor == .)
 			and ($e.successor_pr | type == $number_type and . > 0 and floor == . and . != $pr)
 			and ($e.successor_merge | type == $string_type and test($sha_regex))
 			and ($e.release_tag | type == $string_type and test($tag_regex))
@@ -72,7 +70,15 @@ _full_loop_validate_superseded_evidence() {
 			and ($e.release_commit | type == $string_type and test($sha_regex))
 			and $e.release_commit != $e.source_release_commit
 			and ($e.release_workflow_run | type == $number_type and . > 0 and floor == .)
-			and $e.release_workflow_run != $e.source_workflow_run
+			and if $e.schema_version == 1 and $e.evidence_type == "post-publication-supersession" then
+				($e.source_workflow_run | type == $number_type and . > 0 and floor == .)
+				and $e.release_workflow_run != $e.source_workflow_run
+			else $e.schema_version == 2 and $e.evidence_type == "protected-predecessor-supersession"
+				and ($e.source_release_tag_object | type == $string_type and test($sha_regex))
+				and ($e.source_protected_pr | type == $number_type and . > 0 and floor == .)
+				and ($e.source_protected_pr_head | type == $string_type and test($sha_regex))
+				and ($e.source_protected_pr_merged_at | type == $string_type and test($timestamp_regex))
+			end
 		end
 	' "$evidence_path" >/dev/null 2>&1
 	return $?

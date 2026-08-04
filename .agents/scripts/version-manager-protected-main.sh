@@ -29,6 +29,7 @@ _VERSION_MANAGER_LOCAL_TAG_COMMIT=""
 _VERSION_MANAGER_REMOTE_TAG_OBJECT=""
 _VERSION_MANAGER_REMOTE_TAG_COMMIT=""
 _VERSION_MANAGER_REMOTE_TAG_STATE=""
+_VERSION_MANAGER_PROTECTED_SUPERSESSION_JSON=""
 _VERSION_MANAGER_TAG_STATE_ABSENT="absent"
 _VERSION_MANAGER_TAG_STATE_MATCHING="matching"
 _VERSION_MANAGER_RELEASE_RESULT_QUEUED="queued"
@@ -650,5 +651,44 @@ _version_manager_reconcile_protected_release_tag() {
 	_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="pr-pending"
 	printf 'release:queued pr=%s tag=%s head=%s\n' \
 		"$_VERSION_MANAGER_PROTECTED_PR_NUMBER" "$tag_name" "$pr_head"
+	return 0
+}
+
+_version_manager_verify_protected_release_supersession() {
+	local repo="$1"
+	local source_tag="$2"
+	local successor_commit="$3"
+	local source_tag_object=""
+	local source_commit=""
+	local protected_pr=""
+	local protected_head=""
+	local protected_merged_at=""
+
+	_VERSION_MANAGER_PROTECTED_SUPERSESSION_JSON=""
+	[[ "$successor_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+	_version_manager_reconcile_protected_release_tag "$repo" "$source_tag" status \
+		>/dev/null || return 1
+	[[ "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "tag-ready" ]] || return 1
+
+	source_tag_object="$_VERSION_MANAGER_LOCAL_TAG_OBJECT"
+	source_commit="$_VERSION_MANAGER_LOCAL_TAG_COMMIT"
+	protected_pr="$_VERSION_MANAGER_PROTECTED_PR_NUMBER"
+	protected_head=$(jq -r '.head.sha // ""' \
+		<<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
+	protected_merged_at=$(jq -r '.merged_at // ""' \
+		<<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
+	[[ "$source_tag_object" =~ ^[0-9a-f]{40}$ && "$source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+	[[ "$protected_pr" =~ ^[0-9]+$ && "$protected_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+	[[ -n "$protected_merged_at" ]] || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$source_commit" "$successor_commit" || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$protected_head" "$successor_commit" || return 1
+
+	_VERSION_MANAGER_PROTECTED_SUPERSESSION_JSON=$(jq -cn \
+		--arg source_tag "$source_tag" --arg source_tag_object "$source_tag_object" \
+		--arg source_commit "$source_commit" --argjson protected_pr "$protected_pr" \
+		--arg protected_head "$protected_head" --arg protected_merged_at "$protected_merged_at" \
+		'{source_tag:$source_tag,source_tag_object:$source_tag_object,
+		  source_commit:$source_commit,protected_pr:$protected_pr,
+		  protected_head:$protected_head,protected_merged_at:$protected_merged_at}') || return 1
 	return 0
 }
