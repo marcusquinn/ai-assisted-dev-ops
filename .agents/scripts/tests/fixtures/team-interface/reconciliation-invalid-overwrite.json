@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {
+      "label": "user-owned field silently overwritten",
+      "decision": {"field_path": "/display_label", "ownership": "user_owned", "decision": "apply_desired", "reason": "managed_unchanged", "actual_matches_last_applied": true, "desired_matches_actual": false, "desired_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "last_applied_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "actual_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}
+    },
+    {
+      "label": "user-modified managed field silently overwritten",
+      "decision": {"field_path": "/instructions_ref", "ownership": "managed", "decision": "apply_desired", "reason": "managed_unchanged", "actual_matches_last_applied": false, "desired_matches_actual": false, "desired_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "last_applied_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "actual_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+    },
+    {
+      "label": "security drift silently preserved",
+      "decision": {"field_path": "/authority_ref", "ownership": "security_required", "decision": "preserve_actual", "reason": "user_modified", "actual_matches_last_applied": false, "desired_matches_actual": false, "desired_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "last_applied_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "actual_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "drift_evidence": {"last_applied_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "actual_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "observed_at": "2026-08-04T20:00:00Z", "evidence_ref": "observation:security-drift"}}
+    },
+    {
+      "label": "unknown ownership inferred as managed",
+      "decision": {"field_path": "/unclassified", "ownership": "unknown", "decision": "apply_desired", "reason": "managed_unchanged", "actual_matches_last_applied": true, "desired_matches_actual": false, "desired_digest": null, "last_applied_digest": null, "actual_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"}
+    }
+  ]
+}

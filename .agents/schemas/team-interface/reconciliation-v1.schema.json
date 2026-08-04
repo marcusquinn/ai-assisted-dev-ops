@@ -1,0 +1,578 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:reconciliation:v1",
+  "title": "aidevops team-interface reconciliation contract v1",
+  "oneOf": [
+    {"$ref": "#/$defs/ownership_policy_document"},
+    {"$ref": "#/$defs/reconciliation_input_document"},
+    {"$ref": "#/$defs/reconciliation_plan_document"},
+    {"$ref": "#/$defs/apply_receipt_document"},
+    {"$ref": "#/$defs/rollback_plan_document"}
+  ],
+  "$defs": {
+    "core_stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "core_external_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/opaque_external_id"},
+    "core_reference_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/reference_id"},
+    "core_resource_kind": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/resource_kind"},
+    "registered_reference": {
+      "allOf": [
+        {"$ref": "#/$defs/core_reference_id"},
+        {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._:/-]*$"}
+      ]
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"},
+    "optional_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "json_pointer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^/(?:[^~/]|~0|~1)*(?:/(?:[^~/]|~0|~1)*)*$"
+    },
+    "literal_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "literal"},
+        "value": {
+          "oneOf": [
+            {"type": ["string", "number", "boolean", "null"]},
+            {"type": "array", "maxItems": 100, "items": {"type": ["string", "number", "boolean", "null"]}}
+          ]
+        }
+      }
+    },
+    "reference_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reference_ref"],
+      "properties": {
+        "kind": {"const": "reference"},
+        "reference_ref": {"$ref": "#/$defs/registered_reference"}
+      }
+    },
+    "secret_reference_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "secret_ref"],
+      "properties": {
+        "kind": {"const": "secret_reference"},
+        "secret_ref": {"$ref": "#/$defs/registered_reference"}
+      }
+    },
+    "safe_value": {"oneOf": [{"$ref": "#/$defs/literal_value"}, {"$ref": "#/$defs/reference_value"}]},
+    "snapshot_common": {
+      "type": "object",
+      "required": ["present"],
+      "properties": {"present": {"type": "boolean"}},
+      "allOf": [
+        {
+          "if": {"properties": {"present": {"const": false}}, "required": ["present"]},
+          "then": {"not": {"anyOf": [{"required": ["digest"]}, {"required": ["data"]}]}}
+        },
+        {
+          "if": {"properties": {"present": {"const": true}}, "required": ["present"]},
+          "then": {"required": ["digest", "data"]}
+        }
+      ]
+    },
+    "safe_snapshot": {
+      "allOf": [
+        {"$ref": "#/$defs/snapshot_common"},
+        {"type": "object", "properties": {"digest": {"$ref": "#/$defs/digest"}, "data": {"$ref": "#/$defs/safe_value"}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "secret_snapshot": {
+      "allOf": [
+        {"$ref": "#/$defs/snapshot_common"},
+        {"type": "object", "properties": {"digest": {"$ref": "#/$defs/digest"}, "data": {"$ref": "#/$defs/secret_reference_value"}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "ownership_class": {"enum": ["user_owned", "managed", "security_required"]},
+    "input_ownership_class": {"enum": ["user_owned", "managed", "security_required", "unknown"]},
+    "ownership_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_path", "ownership", "sensitive"],
+      "properties": {
+        "field_path": {"$ref": "#/$defs/json_pointer"},
+        "ownership": {"$ref": "#/$defs/ownership_class"},
+        "sensitive": {"type": "boolean"}
+      }
+    },
+    "ownership_policy_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "policy_id", "policy_version", "resource_kind", "unknown_field_ownership", "field_rules"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "ownership_policy"},
+        "policy_id": {"$ref": "#/$defs/core_stable_id"},
+        "policy_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "resource_kind": {"$ref": "#/$defs/core_resource_kind"},
+        "unknown_field_ownership": {"const": "review_required"},
+        "field_rules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ownership_rule"}}
+      }
+    },
+    "field_input_common": {
+      "type": "object",
+      "required": ["field_path", "ownership", "sensitive", "desired", "last_applied", "actual", "actual_observed_at"],
+      "properties": {
+        "field_path": {"$ref": "#/$defs/json_pointer"},
+        "ownership": {"$ref": "#/$defs/input_ownership_class"},
+        "sensitive": {"type": "boolean"},
+        "actual_observed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "field_input": {
+      "oneOf": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_input_common"},
+            {
+              "type": "object",
+              "properties": {
+                "sensitive": {"const": false},
+                "desired": {"$ref": "#/$defs/safe_snapshot"},
+                "last_applied": {"$ref": "#/$defs/safe_snapshot"},
+                "actual": {"$ref": "#/$defs/safe_snapshot"}
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_input_common"},
+            {
+              "type": "object",
+              "properties": {
+                "sensitive": {"const": true},
+                "desired": {"$ref": "#/$defs/secret_snapshot"},
+                "last_applied": {"$ref": "#/$defs/secret_snapshot"},
+                "actual": {"$ref": "#/$defs/secret_snapshot"}
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "resource_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_id", "provider_id", "community_id", "provider_external_id", "match_basis", "management_identity_status"],
+      "properties": {
+        "resource_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/core_external_id"},
+        "match_basis": {"const": "stable_ids"},
+        "management_identity_status": {"enum": ["verified", "missing"]},
+        "management_owner": {"$ref": "#/$defs/core_stable_id"},
+        "manager_marker": {"$ref": "#/$defs/registered_reference"},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"management_identity_status": {"const": "verified"}}, "required": ["management_identity_status"]},
+          "then": {"required": ["management_owner", "manager_marker"]}
+        },
+        {
+          "if": {"properties": {"management_identity_status": {"const": "missing"}}, "required": ["management_identity_status"]},
+          "then": {"not": {"anyOf": [{"required": ["management_owner"]}, {"required": ["manager_marker"]}]}}
+        }
+      ]
+    },
+    "reconciliation_input_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "input_id", "resource", "policy_ref", "policy_version", "adapter_version", "observed_at", "observation_hash", "fields"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "reconciliation_input"},
+        "input_id": {"$ref": "#/$defs/core_stable_id"},
+        "resource": {"$ref": "#/$defs/resource_identity"},
+        "policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "policy_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "observation_hash": {"$ref": "#/$defs/digest"},
+        "fields": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field_input"}}
+      }
+    },
+    "drift_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["last_applied_digest", "actual_digest", "observed_at", "evidence_ref"],
+      "properties": {
+        "last_applied_digest": {"$ref": "#/$defs/optional_digest"},
+        "actual_digest": {"$ref": "#/$defs/optional_digest"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "evidence_ref": {"$ref": "#/$defs/registered_reference"}
+      }
+    },
+    "field_decision_common": {
+      "type": "object",
+      "required": ["field_path", "ownership", "decision", "reason", "actual_matches_last_applied", "desired_matches_actual", "desired_digest", "last_applied_digest", "actual_digest"],
+      "properties": {
+        "field_path": {"$ref": "#/$defs/json_pointer"},
+        "ownership": {"enum": ["user_owned", "managed", "security_required", "unknown"]},
+        "decision": {"enum": ["apply_desired", "preserve_actual", "no_change", "review_required", "disable_execution"]},
+        "reason": {"enum": ["user_owned", "managed_unchanged", "already_desired", "user_modified", "security_drift", "unmanaged_resource"]},
+        "actual_matches_last_applied": {"type": "boolean"},
+        "desired_matches_actual": {"type": "boolean"},
+        "desired_digest": {"$ref": "#/$defs/optional_digest"},
+        "last_applied_digest": {"$ref": "#/$defs/optional_digest"},
+        "actual_digest": {"$ref": "#/$defs/optional_digest"},
+        "drift_evidence": {"$ref": "#/$defs/drift_evidence"}
+      }
+    },
+    "field_decision": {
+      "oneOf": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"properties": {"ownership": {"const": "user_owned"}, "decision": {"const": "preserve_actual"}, "reason": {"const": "user_owned"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"properties": {"ownership": {"const": "managed"}, "actual_matches_last_applied": {"const": true}, "desired_matches_actual": {"const": false}, "decision": {"const": "apply_desired"}, "reason": {"const": "managed_unchanged"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"properties": {"ownership": {"const": "managed"}, "actual_matches_last_applied": {"const": true}, "desired_matches_actual": {"const": true}, "decision": {"const": "no_change"}, "reason": {"const": "already_desired"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"required": ["drift_evidence"], "properties": {"ownership": {"const": "managed"}, "actual_matches_last_applied": {"const": false}, "decision": {"const": "preserve_actual"}, "reason": {"const": "user_modified"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"properties": {"ownership": {"const": "security_required"}, "actual_matches_last_applied": {"const": true}, "desired_matches_actual": {"const": false}, "decision": {"const": "apply_desired"}, "reason": {"const": "managed_unchanged"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"properties": {"ownership": {"const": "security_required"}, "actual_matches_last_applied": {"const": true}, "desired_matches_actual": {"const": true}, "decision": {"const": "no_change"}, "reason": {"const": "already_desired"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"required": ["drift_evidence"], "properties": {"ownership": {"const": "security_required"}, "actual_matches_last_applied": {"const": false}, "decision": {"enum": ["review_required", "disable_execution"]}, "reason": {"const": "security_drift"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/field_decision_common"},
+            {"required": ["drift_evidence"], "properties": {"ownership": {"const": "unknown"}, "decision": {"const": "review_required"}, "reason": {"const": "unmanaged_resource"}}}
+          ],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "capability_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_external_ids", "managed_metadata", "supported_apply", "revision_cas", "compatibility", "observed_at", "expires_at", "evidence_refs"],
+      "properties": {
+        "stable_external_ids": {"type": "boolean"},
+        "managed_metadata": {"type": "boolean"},
+        "supported_apply": {"type": "boolean"},
+        "revision_cas": {"type": "boolean"},
+        "compatibility": {"enum": ["compatible", "degraded", "unsupported", "unknown"]},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/registered_reference"}}
+      }
+    },
+    "management_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "management_owner", "manager_marker"],
+      "properties": {
+        "status": {"const": "verified"},
+        "management_owner": {"$ref": "#/$defs/core_stable_id"},
+        "manager_marker": {"$ref": "#/$defs/registered_reference"}
+      }
+    },
+    "cas_precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision_kind", "observed_revision", "expected_revision", "observation_hash", "observed_at"],
+      "properties": {
+        "revision_kind": {"enum": ["revision", "etag"]},
+        "observed_revision": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "expected_revision": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "observation_hash": {"$ref": "#/$defs/digest"},
+        "observed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "audit_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audit_ref", "evidence_refs", "redaction", "recorded_at"],
+      "properties": {
+        "audit_ref": {"$ref": "#/$defs/registered_reference"},
+        "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/registered_reference"}},
+        "redaction": {"const": "redacted"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "retirement_directive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "owner_review_ref", "stable_identity_retained", "automatic_delete"],
+      "properties": {
+        "action": {"enum": ["disable", "archive", "detach"]},
+        "owner_review_ref": {"$ref": "#/$defs/registered_reference"},
+        "stable_identity_retained": {"const": true},
+        "automatic_delete": {"const": false}
+      }
+    },
+    "reconciliation_plan_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "document_type", "plan_id", "operation_id", "source_input_id", "resource_id", "provider_id", "community_id",
+        "provider_external_id", "outcome", "plan_hash", "desired_version", "policy_ref", "policy_version", "adapter_version",
+        "capabilities", "precondition", "correlation_id", "idempotency_key", "verified_actor_ref", "authorization_ref",
+        "created_at", "expires_at", "field_decisions", "audit"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "reconciliation_plan"},
+        "plan_id": {"$ref": "#/$defs/core_stable_id"},
+        "operation_id": {"$ref": "#/$defs/core_stable_id"},
+        "source_input_id": {"$ref": "#/$defs/core_stable_id"},
+        "resource_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/core_external_id"},
+        "outcome": {"enum": ["create", "update", "no_change", "review", "disable", "retire", "rollback", "owner_reviewed_draft", "unsupported"]},
+        "plan_hash": {"$ref": "#/$defs/digest"},
+        "desired_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "policy_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "capabilities": {"$ref": "#/$defs/capability_evidence"},
+        "management_binding": {"$ref": "#/$defs/management_binding"},
+        "precondition": {"$ref": "#/$defs/cas_precondition"},
+        "correlation_id": {"$ref": "#/$defs/core_stable_id"},
+        "idempotency_key": {"$ref": "#/$defs/core_stable_id"},
+        "verified_actor_ref": {"$ref": "#/$defs/registered_reference"},
+        "authorization_ref": {"$ref": "#/$defs/registered_reference"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "field_decisions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field_decision"}},
+        "retirement": {"$ref": "#/$defs/retirement_directive"},
+        "audit": {"$ref": "#/$defs/audit_evidence"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"outcome": {"enum": ["create", "update", "disable", "retire", "rollback"]}}, "required": ["outcome"]},
+          "then": {
+            "required": ["management_binding"],
+            "properties": {
+              "capabilities": {
+                "properties": {
+                  "stable_external_ids": {"const": true},
+                  "managed_metadata": {"const": true},
+                  "supported_apply": {"const": true},
+                  "revision_cas": {"const": true},
+                  "compatibility": {"const": "compatible"}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capabilities": {
+                "anyOf": [
+                  {"properties": {"stable_external_ids": {"const": false}}},
+                  {"properties": {"managed_metadata": {"const": false}}},
+                  {"properties": {"supported_apply": {"const": false}}},
+                  {"properties": {"revision_cas": {"const": false}}},
+                  {"properties": {"compatibility": {"enum": ["degraded", "unsupported", "unknown"]}}}
+                ]
+              }
+            },
+            "required": ["capabilities"]
+          },
+          "then": {"properties": {"outcome": {"enum": ["owner_reviewed_draft", "unsupported"]}}}
+        },
+        {
+          "if": {"properties": {"outcome": {"const": "retire"}}, "required": ["outcome"]},
+          "then": {"required": ["retirement"]},
+          "else": {"not": {"required": ["retirement"]}}
+        }
+      ]
+    },
+    "field_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_path", "planned_decision", "effect", "before_digest", "after_digest", "evidence_ref"],
+      "properties": {
+        "field_path": {"$ref": "#/$defs/json_pointer"},
+        "planned_decision": {"enum": ["apply_desired", "preserve_actual", "no_change", "review_required", "disable_execution"]},
+        "effect": {"enum": ["applied", "preserved", "unchanged", "disabled", "not_applied", "unknown"]},
+        "before_digest": {"$ref": "#/$defs/optional_digest"},
+        "after_digest": {"$ref": "#/$defs/optional_digest"},
+        "evidence_ref": {"$ref": "#/$defs/registered_reference"}
+      },
+      "allOf": [
+        {"if": {"properties": {"planned_decision": {"const": "apply_desired"}}}, "then": {"properties": {"effect": {"enum": ["applied", "not_applied", "unknown"]}}}},
+        {"if": {"properties": {"planned_decision": {"const": "preserve_actual"}}}, "then": {"properties": {"effect": {"enum": ["preserved", "not_applied", "unknown"]}}}},
+        {"if": {"properties": {"planned_decision": {"enum": ["no_change", "review_required"]}}}, "then": {"properties": {"effect": {"enum": ["unchanged", "not_applied", "unknown"]}}}},
+        {"if": {"properties": {"planned_decision": {"const": "disable_execution"}}}, "then": {"properties": {"effect": {"enum": ["disabled", "not_applied", "unknown"]}}}}
+      ]
+    },
+    "apply_receipt_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "document_type", "receipt_id", "operation_id", "plan_id", "plan_hash", "resource_id", "provider_id",
+        "community_id", "state", "before_revision", "after_revision", "before_digest", "after_digest", "field_outcomes",
+        "provider_receipt_ref", "provider_evidence_refs", "started_at", "recorded_at", "read_after_write_required", "audit"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "apply_receipt"},
+        "receipt_id": {"$ref": "#/$defs/core_stable_id"},
+        "operation_id": {"$ref": "#/$defs/core_stable_id"},
+        "plan_id": {"$ref": "#/$defs/core_stable_id"},
+        "plan_hash": {"$ref": "#/$defs/digest"},
+        "resource_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "state": {"enum": ["published", "retryable", "indeterminate", "terminal", "conflict", "partial"]},
+        "before_revision": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "after_revision": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "before_digest": {"$ref": "#/$defs/digest"},
+        "after_digest": {"$ref": "#/$defs/digest"},
+        "field_outcomes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field_outcome"}},
+        "provider_receipt_ref": {"$ref": "#/$defs/registered_reference"},
+        "provider_evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/registered_reference"}},
+        "started_at": {"type": "string", "format": "date-time"},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "read_after_write_required": {"type": "boolean"},
+        "audit": {"$ref": "#/$defs/audit_evidence"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"enum": ["indeterminate", "partial"]}}, "required": ["state"]},
+          "then": {
+            "properties": {
+              "read_after_write_required": {"const": true},
+              "field_outcomes": {"contains": {"properties": {"effect": {"const": "unknown"}}, "required": ["effect"]}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "published"}}, "required": ["state"]},
+          "then": {"properties": {"field_outcomes": {"items": {"properties": {"effect": {"enum": ["applied", "preserved", "unchanged", "disabled"]}}}}}}
+        },
+        {
+          "if": {"properties": {"state": {"enum": ["retryable", "terminal", "conflict"]}}, "required": ["state"]},
+          "then": {"properties": {"field_outcomes": {"items": {"properties": {"effect": {"const": "not_applied"}}}}}}
+        }
+      ]
+    },
+    "rollback_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_path", "ownership", "receipt_after_digest", "restore_digest"],
+      "properties": {
+        "field_path": {"$ref": "#/$defs/json_pointer"},
+        "ownership": {"const": "managed"},
+        "receipt_after_digest": {"$ref": "#/$defs/digest"},
+        "restore_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "receipt_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_ref", "receipt_state", "source_plan_hash", "snapshot_ref", "verified_at"],
+      "properties": {
+        "receipt_ref": {"$ref": "#/$defs/registered_reference"},
+        "receipt_state": {"const": "published"},
+        "source_plan_hash": {"$ref": "#/$defs/digest"},
+        "snapshot_ref": {"$ref": "#/$defs/registered_reference"},
+        "verified_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "rollback_plan_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "document_type", "plan_id", "operation_id", "source_input_id", "plan_hash", "resource_id", "provider_id", "community_id",
+        "provider_external_id", "policy_ref", "policy_version", "adapter_version", "capabilities", "precondition", "receipt_binding",
+        "management_binding", "restore_fields", "identity_action", "delete_or_resurrect", "correlation_id", "idempotency_key", "verified_actor_ref",
+        "authorization_ref", "created_at", "expires_at", "audit"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "rollback_plan"},
+        "plan_id": {"$ref": "#/$defs/core_stable_id"},
+        "operation_id": {"$ref": "#/$defs/core_stable_id"},
+        "source_input_id": {"$ref": "#/$defs/core_stable_id"},
+        "plan_hash": {"$ref": "#/$defs/digest"},
+        "resource_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/core_external_id"},
+        "policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "policy_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "capabilities": {
+          "allOf": [
+            {"$ref": "#/$defs/capability_evidence"},
+            {
+              "properties": {
+                "stable_external_ids": {"const": true},
+                "managed_metadata": {"const": true},
+                "supported_apply": {"const": true},
+                "revision_cas": {"const": true},
+                "compatibility": {"const": "compatible"}
+              }
+            }
+          ]
+        },
+        "precondition": {"$ref": "#/$defs/cas_precondition"},
+        "management_binding": {"$ref": "#/$defs/management_binding"},
+        "receipt_binding": {"$ref": "#/$defs/receipt_binding"},
+        "restore_fields": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/rollback_field"}},
+        "identity_action": {"const": "retain_existing"},
+        "delete_or_resurrect": {"const": false},
+        "correlation_id": {"$ref": "#/$defs/core_stable_id"},
+        "idempotency_key": {"$ref": "#/$defs/core_stable_id"},
+        "verified_actor_ref": {"$ref": "#/$defs/registered_reference"},
+        "authorization_ref": {"$ref": "#/$defs/registered_reference"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "audit": {"$ref": "#/$defs/audit_evidence"}
+      }
+    }
+  }
+}
