@@ -200,6 +200,25 @@ jq -e -s 'map(select(.number == 27))[0].flags == {}' "$PROOF_LOG" >/dev/null ||
 unset CURRENT_ACTOR
 unset GH_AUDIT_LOG_FILE
 
+gh_issue_view() {
+	printf '%s\n' '{"title":"REST issue snapshot","body":"Protected body","labels":[{"name":"monitoring"}]}'
+	return 0
+}
+gh_pr_view() {
+	printf '%s\n' '{"title":"REST PR snapshot","body":"Protected body","labels":[{"name":"monitoring"}]}'
+	return 0
+}
+gh() {
+	return 1
+}
+wrapped_issue="$(_gh_audit_fetch_issue_state_json "8" "example/repo")"
+wrapped_pr="$(_gh_audit_fetch_pr_state_json "9" "example/repo")"
+jq -e '.capture_status == "ok" and .title_len == 19 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$wrapped_issue" >/dev/null || fail "issue audit capture bypassed the REST-capable read wrapper"
+jq -e '.capture_status == "ok" and .title_len == 16 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$wrapped_pr" >/dev/null || fail "PR audit capture bypassed the REST-capable read wrapper"
+unset -f gh_issue_view gh_pr_view
+
 gh() {
 	local resource="${1:-}"
 	if [[ "$resource" != "issue" && "$resource" != "pr" ]]; then

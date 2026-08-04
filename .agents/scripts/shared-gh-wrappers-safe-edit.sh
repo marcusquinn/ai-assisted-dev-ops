@@ -156,11 +156,17 @@ _gh_audit_fetch_issue_state_json() {
 	}
 
 	local data
-	data=$(gh issue view "$issue_num" --repo "$repo" \
-		--json title,body,labels 2>/dev/null) || {
+	if command -v gh_issue_view >/dev/null 2>&1; then
+		data=$(gh_issue_view "$issue_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	else
+		data=$(gh issue view "$issue_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	fi
+	if [[ -z "$data" ]]; then
 		printf '%s\n' "$unavailable"
 		return 0
-	}
+	fi
 
 	jq -c '{
 		capture_status: "ok",
@@ -192,11 +198,17 @@ _gh_audit_fetch_pr_state_json() {
 	}
 
 	local data
-	data=$(gh pr view "$pr_num" --repo "$repo" \
-		--json title,body,labels 2>/dev/null) || {
+	if command -v gh_pr_view >/dev/null 2>&1; then
+		data=$(gh_pr_view "$pr_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	else
+		data=$(gh pr view "$pr_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	fi
+	if [[ -z "$data" ]]; then
 		printf '%s\n' "$unavailable"
 		return 0
-	}
+	fi
 
 	jq -c '{
 		capture_status: "ok",

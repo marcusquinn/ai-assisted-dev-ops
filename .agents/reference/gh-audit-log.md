@@ -110,6 +110,9 @@ The `suspicious[]` array is populated when any of these signals fires:
 delta can be inferred for that operation.
 
 **Normal causes:** Transient network, authentication, or API availability errors.
+Audit reads use the framework read wrappers, including their REST fallback when
+GraphQL is exhausted; the signal remains actionable when every supported read
+transport is unavailable.
 
 **Abnormal causes:** Persistent loss of audit visibility or a broken state-read path.
 
