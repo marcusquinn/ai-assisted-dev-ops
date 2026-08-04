@@ -216,6 +216,59 @@ add_pr_ref_to_todo() {
 # These mutations are NOT idempotent — duplicates return validation errors.
 # All functions suppress "already taken" / "duplicate sub-issues" errors.
 
+# Resolve an exact repository slug to its immutable GitHub node ID. GraphQL and
+# REST availability can diverge, so each transport gets one bounded attempt and
+# only a response that proves the requested owner/name may establish identity.
+# Arguments:
+#   $1 - repo slug (owner/repo)
+# Returns: repository node ID on stdout, or non-zero when identity is unproven
+_github_repository_slug_matches() {
+	local expected="$1"
+	local actual="$2"
+	local expected_normalized="" actual_normalized=""
+	[[ -n "$expected" && -n "$actual" ]] || return 1
+	expected_normalized=$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')
+	actual_normalized=$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')
+	[[ "$expected_normalized" == "$actual_normalized" ]] && return 0
+	return 1
+}
+
+resolve_repository_node_id() {
+	local repo="$1"
+	[[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || return 1
+	local owner="${repo%%/*}"
+	local name="${repo##*/}"
+	local response="" reported_cost="" repository_id="" response_slug=""
+
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-repository-id-exact-cost" \
+		_gh_with_timeout read gh api graphql \
+		-f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id nameWithOwner}rateLimit{cost}}' \
+		-f owner="$owner" -f name="$name" 2>/dev/null) || response=""
+	if [[ -n "$response" ]]; then
+		reported_cost=$(printf '%s' "$response" | jq -r "$_ISLR_GRAPHQL_COST_FILTER" 2>/dev/null) || reported_cost=""
+	fi
+	if [[ -n "$response" && "$reported_cost" =~ ^[1-9][0-9]*$ ]] &&
+		IFS=$'\034' read -r repository_id response_slug < <(
+			printf '%s' "$response" | jq -r \
+				'[.data.repository.id, .data.repository.nameWithOwner] | map(. // empty) | join("\u001c")' 2>/dev/null
+		) && [[ -n "$repository_id" ]] && _github_repository_slug_matches "$repo" "$response_slug"; then
+		printf '%s\n' "$repository_id"
+		return 0
+	fi
+
+	response=$(_gh_with_timeout read gh api "repos/${repo}" 2>/dev/null) || response=""
+	if [[ -n "$response" ]] && IFS=$'\034' read -r repository_id response_slug < <(
+		printf '%s' "$response" | jq -r \
+			'[.node_id, .full_name] | map(. // empty) | join("\u001c")' 2>/dev/null
+	) && [[ -n "$repository_id" ]] && _github_repository_slug_matches "$repo" "$response_slug"; then
+		printf '%s\n' "$repository_id"
+		return 0
+	fi
+	return 1
+}
+
 # Resolve a task ID to a repository-validated GitHub issue mapping. The
 # coordinator is authoritative; ref:GH remains a migration projection that is
 # backfilled only after both repository and issue node identities are fetched.
@@ -230,7 +283,7 @@ resolve_task_gh_number() {
 	local repo="${3:-}"
 	[[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || return 1
 	local repository_id="" mapping="" coordinator="${SCRIPT_DIR}/task-coordinator.mjs"
-	repository_id=$(_gh_with_timeout read gh api "repos/${repo}" --jq '.node_id // ""' 2>/dev/null || true)
+	repository_id=$(resolve_repository_node_id "$repo" || true)
 	[[ -n "$repository_id" ]] || return 1
 	if [[ -f "$coordinator" ]]; then
 		mapping=$(node "$coordinator" resolve-issue --task-id "$task_id" --forge github \

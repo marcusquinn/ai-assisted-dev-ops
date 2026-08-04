@@ -47,6 +47,25 @@ grep -q '1 failed' "$TMPDIR_TEST/push.out" || fail "cmd_push did not report fail
 grep -q 'Issue creation failed' "$TMPDIR_TEST/push.err" || fail "cmd_push did not emit actionable failure"
 pass "cmd_push returns non-zero when issue creation fails"
 
+_push_process_task() {
+	local task_id="$1"
+	[[ "$task_id" == "t999" ]] || return 1
+	printf 'CREATED RELATIONSHIPS_PENDING\n'
+	return 0
+}
+pending_rc=0
+cmd_push "" >"$TMPDIR_TEST/pending.out" 2>"$TMPDIR_TEST/pending.err" || pending_rc=$?
+[[ "$pending_rc" -eq 2 ]] || fail "cmd_push did not distinguish pending relationships from hard failure"
+grep -q '1 relationships pending' "$TMPDIR_TEST/pending.out" || fail "cmd_push omitted pending relationship count"
+grep -q 'durable refs were preserved' "$TMPDIR_TEST/pending.err" || fail "cmd_push omitted durable relationship recovery guidance"
+pass "cmd_push returns non-zero with durable recovery for pending relationships"
+
+WORKFLOW="$ROOT_DIR/.github/workflows/issue-sync-reusable.yml"
+grep -q 'id: relationship-sync' "$WORKFLOW" || fail "workflow omitted explicit relationship recovery"
+grep -q 'issue-sync-helper.sh relationships --verbose' "$WORKFLOW" || fail "workflow did not retry durable relationship work"
+grep -q "steps.relationship-sync.outputs.pending == 'true'" "$WORKFLOW" || fail "workflow did not report unresolved relationships after persisting refs"
+pass "workflow persists refs before reporting unresolved relationship recovery"
+
 cat >"$TMPDIR_TEST/gh" <<'GH_EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "issue create" ]]; then
@@ -99,3 +118,62 @@ _push_create_issue t999 example/repo /tmp/todo.md 't999: title' body enhancement
 grep -q '^ASSIGN$' "$WRITE_LOG" || fail "assignment did not run after mapping validation"
 grep -q '^LOCK$' "$WRITE_LOG" || fail "lock did not run after mapping validation"
 pass "mapping validation precedes post-create assignment and lock writes"
+
+# Exercise the real immutable mapping gate after creation with independently
+# available repository metadata transports. Both valid splits must authorize
+# post-create writes; total identity outage must leave them untouched.
+_escape_ere() { local value="$1"; printf '%s' "$value"; return 0; }
+strip_code_fences() { command cat; return 0; }
+_gh_with_timeout() {
+	local operation="$1"
+	shift
+	: "$operation"
+	"$@"
+	return $?
+}
+# shellcheck source=../issue-sync-lib-ref.sh
+source "$ROOT_DIR/.agents/scripts/issue-sync-lib-ref.sh"
+SCRIPT_DIR="$TMPDIR_TEST/no-coordinator"
+SPLIT_TRANSPORT="graphql"
+gh() {
+	local group="$1"
+	local action="${2:-}"
+	if [[ "$group" == "issue" && "$action" == "create" ]]; then
+		printf 'https://github.com/example/repo/issues/123\n'
+		return 0
+	fi
+	if [[ "$group" == "issue" && "$action" == "view" ]]; then
+		printf '%s\n' '{"id":"I_123","number":123,"state":"OPEN","updatedAt":"2026-08-04T12:00:00Z"}'
+		return 0
+	fi
+	if [[ "$group" == "issue" && "$action" == "lock" ]]; then
+		printf 'LOCK\n' >>"$WRITE_LOG"
+		return 0
+	fi
+	if [[ "$group" == "api" && "$action" == "graphql" && "$SPLIT_TRANSPORT" == "graphql" ]]; then
+		printf '%s\n' '{"data":{"repository":{"id":"R_example","nameWithOwner":"example/repo"},"rateLimit":{"cost":1}}}'
+		return 0
+	fi
+	if [[ "$group" == "api" && "$action" == "repos/example/repo" && "$SPLIT_TRANSPORT" == "rest" ]]; then
+		printf '%s\n' '{"node_id":"R_example","full_name":"example/repo"}'
+		return 0
+	fi
+	return 1
+}
+printf '%s\n' '- [ ] t999 Created issue ref:GH#123' >"$TMPDIR_TEST/TODO.md"
+for SPLIT_TRANSPORT in graphql rest; do
+	: >"$WRITE_LOG"
+	_push_create_issue t999 example/repo "$TMPDIR_TEST/TODO.md" 't999: title' body enhancement '' || \
+		fail "post-create mapping failed with ${SPLIT_TRANSPORT}-only repository identity"
+	grep -q '^ASSIGN$' "$WRITE_LOG" || fail "${SPLIT_TRANSPORT}-only identity did not authorize assignment"
+	grep -q '^LOCK$' "$WRITE_LOG" || fail "${SPLIT_TRANSPORT}-only identity did not authorize locking"
+done
+pass "either validated repository identity transport authorizes post-create writes"
+
+SPLIT_TRANSPORT="outage"
+: >"$WRITE_LOG"
+if _push_create_issue t999 example/repo "$TMPDIR_TEST/TODO.md" 't999: title' body enhancement ''; then
+	fail "post-create writes succeeded without repository identity proof"
+fi
+[[ ! -s "$WRITE_LOG" ]] || fail "identity outage allowed a post-create write"
+pass "repository identity outage keeps post-create writes fail-closed"

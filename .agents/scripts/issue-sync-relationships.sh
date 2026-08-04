@@ -58,6 +58,7 @@ _NODE_ID_RATE_LIMITED_FILE=""
 _RELATIONSHIP_EDGE_SEEN_FILE=""
 _RELATIONSHIP_RESULT_FILE=""
 _RELATIONSHIP_BACKEND_CALL_FILE=""
+_RELATIONSHIP_SUCCESS_RESULT="RELS:0 RETRYABLE:0"
 _RELATIONSHIP_RETRY_RESULT="RELS:0 RETRYABLE:1"
 _RELATIONSHIP_SYNC_SCOPE_ACTIVE=0
 _RELATIONSHIP_SYNC_DEADLINE_EPOCH=
@@ -873,9 +874,17 @@ _sync_blocked_by_for_task() {
 		blocks) blocks="$value" ;;
 		esac
 	done <<<"$parsed"
-	[[ -z "$blocked_by" && -z "$blocks" ]] && return 0
+	if [[ -z "$blocked_by" && -z "$blocks" ]]; then
+		echo "$_RELATIONSHIP_SUCCESS_RESULT"
+		return 0
+	fi
 	this_gh_num=$(resolve_task_gh_number "$task_id" "$todo_file" "$repo" || true)
-	[[ -z "$this_gh_num" ]] && { log_verbose "$task_id: no ref:GH# — skipping relationships"; return 0; }
+	if [[ -z "$this_gh_num" ]]; then
+		log_verbose "$task_id: declared relationship mapping unresolved; retaining for retry"
+		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+		echo "$_RELATIONSHIP_RETRY_RESULT"
+		return 0
+	fi
 	this_node_id=$(_cached_node_id "$this_gh_num" "$repo")
 	if [[ -z "$this_node_id" ]]; then
 		log_verbose "$task_id: could not resolve node ID for #$this_gh_num"
@@ -1205,7 +1214,7 @@ cmd_relationships() {
 		_relationship_print_progress "$attempted" "$total"
 
 		# Blocked-by / blocks
-		result=$(_sync_blocked_by_for_task "$current_task" "$todo_file" "$repo" 2>/dev/null || echo "RELS:0")
+		result=$(_sync_blocked_by_for_task "$current_task" "$todo_file" "$repo" 2>/dev/null || echo "$_RELATIONSHIP_RETRY_RESULT")
 		n=$(echo "$result" | grep -oE 'RELS:[0-9]+' | head -1 | sed 's/RELS://' || echo "0")
 		blocked_set=$((blocked_set + n))
 		n=$(echo "$result" | grep -oE 'RETRYABLE:[0-9]+' | head -1 | sed 's/RETRYABLE://' || echo "0")
