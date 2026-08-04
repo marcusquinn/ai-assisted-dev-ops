@@ -44,6 +44,7 @@ _HRW_REASON_DRAFT_ESCALATION_FAILED="worker_draft_checkpoint_escalation_failed"
 _HRW_REASON_CLOSED_UNMERGED="worker_closed_unmerged_pr"
 _HRW_REASON_UNVERIFIED_HANDOFF="worker_post_pr_handoff_unverified"
 _HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED="worker_worktree_continuation_state_rejected"
+_HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT="worker_worktree_continuation_owner_absent"
 _HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION="worker_worktree_owner_concurrent_mutation"
 _HRW_REASON_OWNERSHIP_LOST="worker_ownership_lost"
 _HRW_REASON_SENSITIVE_TEMP_PREFLIGHT="worker_sensitive_temp_preflight_failed"
@@ -1361,18 +1362,21 @@ _hrw_transfer_authorized_continuation_owner() {
 	_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED"
 	[[ "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
 	[[ -n "$expected_owner_session" && -n "$expected_owner_task" && -n "$expected_owner_created_at" ]] || return 1
+	if [[ -z "${WORKER_ISSUE_NUMBER:-}" || "$expected_owner_task" != "${WORKER_ISSUE_NUMBER:-}" ]]; then
+		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_task_mismatch"
+		return 1
+	fi
 
 	local owner_info=""
 	owner_info=$(check_worktree_owner "$work_dir" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || {
-		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_owner_mismatch"
+		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT"
 		return 1
 	}
 
 	local owner_pid="" owner_session="" owner_batch="" owner_task="" created_at=""
 	IFS='|' read -r owner_pid owner_session owner_batch owner_task created_at <<<"$owner_info"
-	if [[ -z "${WORKER_ISSUE_NUMBER:-}" || "$expected_owner_task" != "${WORKER_ISSUE_NUMBER:-}" ||
-		"$owner_task" != "${WORKER_ISSUE_NUMBER:-}" ]]; then
+	if [[ "$owner_task" != "${WORKER_ISSUE_NUMBER:-}" ]]; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_task_mismatch"
 		return 1
 	fi
@@ -1514,6 +1518,21 @@ _hrw_claim_worker_worktree() {
 			_hrw_export_worker_worktree_owner_proof "$session_key" "$work_dir" || return 1
 			print_info "[lifecycle] worker_worktree_claimed session=${session_key} branch=${branch} path=${work_dir} pid=$$ mode=continuation"
 			return 0
+		fi
+		if [[ "${_WORKER_PRELAUNCH_FAILURE_REASON:-}" == "$_HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT" ]]; then
+			# The dispatcher snapshot can become stale after the previous owner
+			# exits. Claiming through the registry is the atomic absence check:
+			# a concurrent replacement owner makes this fail closed.
+			if claim_worktree_ownership "$work_dir" "$branch" \
+				--session "$session_key" \
+				--task "${WORKER_ISSUE_NUMBER:-}" \
+				--owner-pid "$$"; then
+				unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
+				_hrw_export_worker_worktree_owner_proof "$session_key" "$work_dir" || return 1
+				print_info "[lifecycle] worker_worktree_claimed session=${session_key} branch=${branch} path=${work_dir} pid=$$ mode=continuation-owner-absent"
+				return 0
+			fi
+			_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION"
 		fi
 		print_error "[fatal] worker worktree continuation transfer rejected: ${work_dir} reason=${_WORKER_PRELAUNCH_FAILURE_REASON:-worker_worktree_live_owner}"
 		return 1

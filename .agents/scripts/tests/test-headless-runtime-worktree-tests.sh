@@ -604,6 +604,87 @@ test_worker_worktree_continuation_transfers_ahead_same_task_owner() {
 	return 0
 }
 
+test_worker_worktree_continuation_claims_absent_expected_owner() {
+	local worktree_dir="${TEST_ROOT}/continuation-owner-absent"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	export WORKER_ISSUE_NUMBER="22438"
+	local owner_created_at="2026-07-18T00:00:02Z"
+	set_continuation_transfer_env "99999" "generation-7" "batch-7" "22438" "$owner_created_at"
+	local claim_calls=0 transfer_calls=0
+
+	claim_worktree_ownership() {
+		claim_calls=$((claim_calls + 1))
+		return 0
+	}
+	check_worktree_owner() {
+		local check_path="$1"
+		[[ -n "$check_path" ]] || return 1
+		return 1
+	}
+	transfer_worktree_ownership_if_expected() {
+		transfer_calls=$((transfer_calls + 1))
+		return 1
+	}
+
+	local status=0 reason="" proof_session=""
+	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
+	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
+	proof_session="${AIDEVOPS_WORKTREE_OWNER_SESSION:-}"
+	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset AIDEVOPS_WORKTREE_OWNER_PID AIDEVOPS_WORKTREE_OWNER_SESSION \
+		AIDEVOPS_WORKTREE_OWNER_TASK AIDEVOPS_WORKTREE_OWNER_PATH 2>/dev/null || true
+	clear_continuation_transfer_env
+
+	if [[ "$status" -eq 0 && "$claim_calls" -eq 1 && "$transfer_calls" -eq 0 &&
+		-z "$reason" && "$proof_session" == "issue-22438" ]]; then
+		print_result "continuation atomically claims a worktree after the expected owner exits" 0
+		return 0
+	fi
+	print_result "continuation atomically claims a worktree after the expected owner exits" 1 \
+		"status=$status claim_calls=$claim_calls transfer_calls=$transfer_calls reason=${reason:-<empty>} proof=${proof_session:-<empty>}"
+	return 0
+}
+
+test_worker_worktree_continuation_absent_owner_race_fails_closed() {
+	local worktree_dir="${TEST_ROOT}/continuation-owner-absent-race"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	export WORKER_ISSUE_NUMBER="22438"
+	local owner_created_at="2026-07-18T00:00:03Z"
+	set_continuation_transfer_env "99999" "generation-7" "batch-7" "22438" "$owner_created_at"
+	local claim_calls=0 transfer_calls=0
+
+	claim_worktree_ownership() {
+		claim_calls=$((claim_calls + 1))
+		return 1
+	}
+	check_worktree_owner() {
+		local check_path="$1"
+		[[ -n "$check_path" ]] || return 1
+		return 1
+	}
+	transfer_worktree_ownership_if_expected() {
+		transfer_calls=$((transfer_calls + 1))
+		return 1
+	}
+
+	local status=0 reason=""
+	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
+	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
+	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	clear_continuation_transfer_env
+
+	if [[ "$status" -ne 0 && "$claim_calls" -eq 1 && "$transfer_calls" -eq 0 &&
+		"$reason" == "worker_worktree_owner_concurrent_mutation" ]]; then
+		print_result "continuation absent-owner fallback rejects a concurrent replacement owner" 0
+		return 0
+	fi
+	print_result "continuation absent-owner fallback rejects a concurrent replacement owner" 1 \
+		"status=$status claim_calls=$claim_calls transfer_calls=$transfer_calls reason=${reason:-<empty>}"
+	return 0
+}
+
 test_worker_worktree_continuation_classifies_task_mismatch() {
 	local worktree_dir="${TEST_ROOT}/continuation-task-mismatch"
 	mkdir -p "$worktree_dir"
