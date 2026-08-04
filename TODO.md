@@ -1218,7 +1218,6 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18190 Restrict needs-maintainer-review to external trust gates #auto-dispatch #bug ref:GH#29394
 
-- [ ] t18192 Pulse: refill all available worker slots immediately after worker exit #feat #performance #priority:high ref:GH#29448 -> [todo/tasks/t18192-brief.md]
 
 ## In Progress
 
@@ -1276,6 +1275,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18192 Pulse: refill all available worker slots immediately after worker exit #feat #performance #priority:high ref:GH#29448 -> [todo/tasks/t18192-brief.md] pr:#29450 testing:runtime-verified completed:2026-08-04
 - [x] t18079 Add safe macOS activity cleaner command and subagent #enhancement ref:GH#26917 pr:#26946 testing:runtime-verified completed:2026-07-10
 - [x] t3600 Expand app-stack architecture guidance #documentation ref:GH#24827 pr:#24826 testing:runtime-verified completed:2026-06-15
 - [x] t3438 Audit pulse GitHub API prefetch for need-to-know caching #auto-dispatch #enhancement ref:GH#22288 pr:#22333 completed:2026-05-02
