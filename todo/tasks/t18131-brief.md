@@ -119,7 +119,7 @@ rg -n 'AIDEVOPS_.*(CACHE|SNAPSHOT|SINGLE|WEBHOOK|GH_API)|feature.flag|rollout|co
 - **Migration/rollback:** Flag/default cleanup follows canary success and records prior values. A regression restores the prior bounded defaults without changing telemetry history.
 - **Mixed-version/backward compatibility:** Do not compare mixed schemas as equivalent. Retain legacy readers until the observed fleet is converged or document a separate cleanup task.
 - **Idempotency/retry:** Re-running with identical inputs/options yields byte-stable metrics apart from an explicitly separated generation timestamp; source cleanup is independently testable.
-- **Partial failure/recovery:** Missing windows, unknown quota cost, incomplete retention, or failed guardrails yield `INCONCLUSIVE`/`REGRESSION`, never a fabricated pass. Keep the parent open and resume after new observation.
+- **Partial failure/recovery:** Missing windows, unknown quota cost, incomplete retention, or failed guardrails yield `INCONCLUSIVE`/`REGRESSION`, never a fabricated pass. Keep the parent open; after the approved deadline run, do not automatically retry this leaf.
 - **Quota attribution:** REST has documented fixed request charges and zero-cost exceptions, but arbitrary GraphQL and higher-level `gh` operations expose no concurrency-safe per-operation cost. Partial attribution must reduce unknowns without relaxing the benchmark's zero-unknown gate.
 
 ### Complexity Impact
@@ -146,19 +146,19 @@ python3 -m json.tool .agents/configs/pulse-sweep-budget.json >/dev/null
 
 - [x] Focused tests pass: quota instrumentation/shim suites plus benchmark/evidence fixtures
 - [x] WIP commit created before post-rebase broad gates: `GH#27777: attribute exact direct REST quota cost`
-- [ ] Evidence-triggered broad verification: changed lint passes; final bounded canary remains pending
+- [x] Terminal evidence gate: changed lint passed; the final preflight rejected unknown GraphQL cost, so the knowingly invalid canary was not launched
 
 ### Safety-Stop Recovery
 
 - **Original objective:** Prove and safely finalise lower GitHub API use without correctness or freshness regression.
-- **Preserved user directions:** Compare real baseline/canary evidence, tune incrementally, and let Pulse complete the chain.
-- **Trigger and evidence:** Not triggered at brief creation.
-- **Completed and verified:** Benchmark/report tooling and bounded exact direct REST quota attribution are implemented with focused and changed-file gates passing.
-- **Remaining acceptance criteria:** Comparable live windows, complete sidecars/guardrails, evidence-led tuning or control retention, and parent closeout criteria below.
+- **Preserved user directions:** Use one production Pulse execution path, avoid competing schedulers and repeated tuning loops, and finish with a binary adopt/no-go decision.
+- **Trigger and evidence:** The approved final preflight retained three successful GraphQL attempts without authoritative per-operation cost, so the zero-unknown gate failed before matched windows began.
+- **Completed and verified:** Benchmark/report tooling and bounded exact direct REST quota attribution remain implemented. The final preflight failed closed, restored operator state, and produced the terminal no-go decision below.
+- **Remaining acceptance criteria:** The original live comparison and adoption criteria remain unmet; this leaf closes as not adopted, and parent t18124 is not close-ready.
 - **Unsafe route not to repeat:** Do not compare unequal retained windows, hide unknown quota cost, or delete rollback flags before canary success.
-- **Next safe route:** Let long-lived pre-attribution runtimes drain, collect a completed fixed window, and rerun the fail-closed benchmark without closing the task prematurely.
-- **Resume condition:** Dependency met; complete comparable baseline/canary telemetry remains required for final tuning and closeout.
-- **Owner and status:** Build+ `tier:standard`; active and evidence-gated.
+- **Next safe route:** No automatic retry. A future attempt requires a separately authorised task that first supplies authoritative operation-owned GraphQL cost or explicitly revises the acceptance contract.
+- **Resume condition:** Explicit new authority plus a changed technical premise; elapsed time or another random workload sample is insufficient.
+- **Owner and status:** Build+ `tier:standard`; terminal no-go on 2026-08-04.
 
 ### Post-release evidence (2026-07-20)
 
@@ -167,7 +167,17 @@ python3 -m json.tool .agents/configs/pulse-sweep-budget.json >/dev/null
 - A later `299s` `v3.32.161` window recorded 634 attempts, 490 known quota points, and 130 unknown-cost attempts. Its 48 GraphQL attempts remained unknown by policy; 48 of 82 unknown REST attempts failed, so success did not prove whether GitHub charged them.
 - Both windows contained long-lived pre-attribution producers alongside current runtimes. In the later window, the same explicit-pagination route produced 101 known and 16 unknown successful page costs, confirming mixed producer generations rather than a current classifier failure. These windows are observations, not comparable canaries.
 - The provisional benchmark returned `INCONCLUSIVE` with 47 decision reasons. The canary sidecar was incomplete, quota remained unknown, and webhook/guardrail coverage remains deliberately unowned as documented in `.agents/reference/github-api-efficiency.md`.
-- Decision: retain every rollout and rollback control. Do not tune defaults, retire flags, or close this task until a homogeneous completed-cycle window and all required evidence groups pass.
+- Decision at that checkpoint: retain every rollout and rollback control and do not tune defaults or retire flags. The later deadline authorisation superseded only the indefinite-open state by permitting a terminal no-go; it did not relax any evidence gate.
+
+### Final deadline run and terminal decision (2026-08-04)
+
+- PR #29453 merged the residual exact-attribution fixes as `fca5c68796f359381e248a61cf82bd32102eb629`. A pinned 360-second smoke then passed with 258 exact attempts, 230 known quota points, and zero unknown-cost attempts.
+- The following long baseline was invalidated rather than reused: its controller had a 37,434-second liveness gap, retained only one scheduled webhook receipt, restored every managed runtime state, and never produced a comparable window.
+- The maintainer explicitly authorised one final 10-hour baseline plus 10-hour canary, with production Pulse as the sole worker launcher, activation/gate boundary probes only, idle-sleep prevention, no retries, and a binary adopt/no-go closeout.
+- The final 360-second preflight observed 276 exact attempts and 267 known quota points. Three successful `graphql-selected` attempts returned HTTP 200 with healthy recorded budgets, but lacked authoritative operation-owned cost. Report digest: `5bc6ec1171bf4227e2cf04a374f8557863a0423ab10afb73b24161771f034162`.
+- The zero-unknown gate therefore rejected the sample. The matched windows and comparator were intentionally not started, avoiding a knowingly non-comparable 20-hour run. The managed profile and runtime pin were removed, no observation jobs remained loaded, and the normal active runtime was restored.
+- **Decision:** terminal no-go. Do not claim aggregate savings, tune defaults, remove dead compatibility fields, or start another observation loop. `v3.32.220` improves exact REST attribution and keeps event refill behind Pulse's existing singleton lock, but this run supplies no direct worker-throughput proof.
+- **Retained controls:** `AIDEVOPS_GH_CHECK_STATUS_CACHE_DISABLE`, `AIDEVOPS_GH_REQUEST_STATE_DISABLE`, `AIDEVOPS_GH_REQUEST_STATE_RATE_DISABLE`, `AIDEVOPS_GH_SINGLEFLIGHT_DISABLE`, `PULSE_BATCH_CONDITIONAL_REST_ENABLED`, `PULSE_BATCH_PREFETCH_ENABLED`, and `PULSE_BATCH_SEARCH_LAST_RESORT` remain unchanged. Their owner is parent t18124; they have no automatic expiry and may be removed only by separately authorised complete comparable evidence. `PULSE_BATCH_PREFETCH_ENABLED=0` remains the broad rollback route.
 
 ### Files Scope
 
@@ -198,11 +208,13 @@ python3 -m json.tool .agents/configs/pulse-sweep-budget.json >/dev/null
 - [ ] Every tuned default has baseline/canary evidence and a rollback trigger; every removed or retained flag has a recorded rationale, owner, and compatibility decision.
 - [ ] All phase-focused tests, benchmark fixtures, ShellCheck, changed lint, required CI, and final canary pass before parent t18124 is closed.
 
+Closure note: these adoption criteria are intentionally not reinterpreted as passing. The maintainer-authorised deadline protocol terminated this leaf as a verified no-go after the preflight correctly rejected unknown GraphQL cost; parent t18124 remains open.
+
 ## Context & Decisions
 
 - Comparable effective windows matter more than configured window labels.
 - Path-level deterministic budgets complement, but do not replace, real aggregate observation.
-- Inconclusive evidence keeps flags and parent open; it is not a failure to be hidden.
+- Inconclusive evidence keeps flags and parent open; after the separately authorised deadline protocol it closes this leaf as a recorded no-go rather than triggering another automatic attempt.
 - Exact universal GraphQL cost attribution is unavailable from cumulative response headers under concurrency; unknown costs remain unknown rather than being estimated or promoted to zero.
 - Release `v3.32.160` was separately authorised and completed; any further publication still requires separate authorisation.
 
@@ -218,7 +230,7 @@ python3 -m json.tool .agents/configs/pulse-sweep-budget.json >/dev/null
 ## Dependencies
 
 - **Blocked by:** No open task dependency; t18130 is closed.
-- **Blocks:** Final closeout of parent t18124.
+- **Blocks:** Parent t18124 remains open with its comparative-adoption criteria unmet; this terminal leaf must not be auto-retried.
 - **External:** Fixed baseline/canary observation windows; no paid service or new credential.
 
 ## Estimate Breakdown
@@ -228,5 +240,5 @@ python3 -m json.tool .agents/configs/pulse-sweep-budget.json >/dev/null
 | Discovery/design | 30m | Final schemas, flags, comparability rules |
 | Implementation | 45m | Benchmark, reference, config cleanup |
 | Tests/report | 45m | Fixtures, owning suites, closeout evidence |
-| Observation | 12–24h wall clock | Final canary after merged phases |
+| Observation | 12–24h wall clock | Repeated bounded observations ended in the terminal no-go recorded above |
 | **Total** | **2h active** | |
