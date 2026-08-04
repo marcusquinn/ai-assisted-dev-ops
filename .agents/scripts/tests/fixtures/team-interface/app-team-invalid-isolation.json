@@ -1,0 +1,7 @@
+{
+  "cases": [
+    {"axis": "identity_ref", "collision": "identity:cross-app-collision"},
+    {"axis": "memory_namespace_ref", "collision": "memory:cross-app-collision"},
+    {"axis": "workspace_root_refs", "collision": ["workspace-root:cross-app-collision"]}
+  ]
+}

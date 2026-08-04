@@ -1,0 +1,130 @@
+{
+  "documents": [
+    {
+      "schema_version": 1,
+      "document_type": "app_team_manifest",
+      "manifest_id": "manifest.app.red",
+      "app_id": "app.red",
+      "team_id": "team.red",
+      "source": {
+        "source_ref": "registry:app-teams",
+        "revision": "red.1",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "provider_binding_refs": ["provider-binding:red"],
+      "community_ref": "community:red",
+      "resource_binding_refs": ["resource-binding:red"],
+      "trust_policy_ref": "trust-policy:red",
+      "authority_policy_ref": "authority-policy:red",
+      "reconciliation_policy_ref": "reconciliation-policy:red",
+      "runner_eligibility": {"eligible": true, "policy_ref": "runner-policy:red"},
+      "local_model_eligibility": {"eligible": true, "policy_ref": "local-model-policy:red"},
+      "specialists": [
+        {
+          "mode": "dedicated",
+          "instance_id": "specialist.red.build",
+          "template_agent_id": "agent.build",
+          "template_source": {
+            "source_ref": "agent-registry:build",
+            "revision": "v1",
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload_tier": "standard",
+          "resource_binding_refs": ["resource-binding:red"],
+          "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+          "identity_ref": "identity:red-build",
+          "memory_namespace_ref": "memory:red-build",
+          "workspace_root_refs": ["workspace-root:red"],
+          "secret_refs": ["secret-ref:red-build"],
+          "publication_mode": "specialist_with_actor",
+          "initiating_actor_required": true,
+          "persistent_teammate": true
+        },
+        {
+          "mode": "shared",
+          "instance_id": "capability.red.security",
+          "capability_ref": "capability:security-review",
+          "template_source": {
+            "source_ref": "capability-registry:security-review",
+            "revision": "v1",
+            "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "workload_tier": "simple",
+          "resource_binding_refs": ["request-resource:red"],
+          "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+          "stateless": true,
+          "memory_mode": "none",
+          "publication_mode": "caller",
+          "request_context_axes": ["app", "team", "community", "project", "actor", "audit"],
+          "workspace_policy_ref": "workspace-policy:red-request",
+          "credential_broker_ref": "credential-broker:red-request",
+          "persistent_teammate": false
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "app_team_manifest",
+      "manifest_id": "manifest.app.blue",
+      "app_id": "app.blue",
+      "team_id": "team.blue",
+      "source": {
+        "source_ref": "registry:app-teams",
+        "revision": "blue.1",
+        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "provider_binding_refs": ["provider-binding:blue"],
+      "community_ref": "community:blue",
+      "resource_binding_refs": ["resource-binding:blue"],
+      "trust_policy_ref": "trust-policy:blue",
+      "authority_policy_ref": "authority-policy:blue",
+      "reconciliation_policy_ref": "reconciliation-policy:blue",
+      "runner_eligibility": {"eligible": true, "policy_ref": "runner-policy:blue"},
+      "local_model_eligibility": {"eligible": false, "policy_ref": "local-model-policy:blue"},
+      "specialists": [
+        {
+          "mode": "cloned",
+          "instance_id": "specialist.blue.content",
+          "template_agent_id": "agent.content",
+          "template_source": {
+            "source_ref": "agent-registry:content",
+            "revision": "v1",
+            "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "workload_tier": "thinking",
+          "resource_binding_refs": ["resource-binding:blue"],
+          "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+          "identity_ref": "identity:blue-content",
+          "memory_namespace_ref": "memory:blue-content",
+          "workspace_root_refs": ["workspace-root:blue"],
+          "secret_refs": ["secret-ref:blue-content"],
+          "publication_mode": "specialist_with_actor",
+          "initiating_actor_required": true,
+          "persistent_teammate": true,
+          "clone_source": {"template_instance_ref": "template-instance:content-v1", "immutable": true},
+          "inherited_mutable_state": false
+        },
+        {
+          "mode": "shared",
+          "instance_id": "capability.blue.security",
+          "capability_ref": "capability:security-review",
+          "template_source": {
+            "source_ref": "capability-registry:security-review",
+            "revision": "v1",
+            "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+          },
+          "workload_tier": "simple",
+          "resource_binding_refs": ["request-resource:blue"],
+          "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+          "stateless": true,
+          "memory_mode": "request_scoped",
+          "publication_mode": "caller",
+          "request_context_axes": ["app", "team", "community", "project", "actor", "audit"],
+          "workspace_policy_ref": "workspace-policy:blue-request",
+          "credential_broker_ref": "credential-broker:blue-request",
+          "persistent_teammate": false
+        }
+      ]
+    }
+  ]
+}

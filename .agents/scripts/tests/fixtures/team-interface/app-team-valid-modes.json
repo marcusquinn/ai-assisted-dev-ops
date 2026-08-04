@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "document_type": "app_team_manifest",
+  "manifest_id": "manifest.app.alpha",
+  "app_id": "app.alpha",
+  "team_id": "team.alpha",
+  "display_label": "Alpha application team",
+  "source": {
+    "source_ref": "registry:app-teams",
+    "revision": "2026-08-04.1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "provider_binding_refs": ["provider-binding:alpha"],
+  "community_ref": "community:alpha",
+  "resource_binding_refs": ["resource-binding:alpha-project"],
+  "trust_policy_ref": "trust-policy:alpha",
+  "authority_policy_ref": "authority-policy:alpha",
+  "reconciliation_policy_ref": "reconciliation-policy:alpha",
+  "runner_eligibility": {
+    "eligible": true,
+    "policy_ref": "runner-policy:alpha"
+  },
+  "local_model_eligibility": {
+    "eligible": false,
+    "policy_ref": "local-model-policy:alpha"
+  },
+  "specialists": [
+    {
+      "mode": "dedicated",
+      "instance_id": "specialist.alpha.build",
+      "template_agent_id": "agent.build",
+      "template_source": {
+        "source_ref": "agent-registry:build",
+        "revision": "v3.32.220",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "workload_tier": "thinking",
+      "resource_binding_refs": ["resource-binding:alpha-project"],
+      "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+      "identity_ref": "identity:alpha-build",
+      "memory_namespace_ref": "memory:alpha-build",
+      "workspace_root_refs": ["workspace-root:alpha"],
+      "secret_refs": ["secret-ref:alpha-build"],
+      "publication_mode": "specialist_with_actor",
+      "initiating_actor_required": true,
+      "persistent_teammate": true
+    },
+    {
+      "mode": "cloned",
+      "instance_id": "specialist.alpha.content",
+      "template_agent_id": "agent.content",
+      "template_source": {
+        "source_ref": "agent-registry:content",
+        "revision": "v3.32.220",
+        "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "workload_tier": "standard",
+      "resource_binding_refs": ["resource-binding:alpha-content"],
+      "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+      "identity_ref": "identity:alpha-content",
+      "memory_namespace_ref": "memory:alpha-content",
+      "workspace_root_refs": ["workspace-root:alpha-content"],
+      "secret_refs": ["secret-ref:alpha-content"],
+      "publication_mode": "specialist_with_actor",
+      "initiating_actor_required": true,
+      "persistent_teammate": true,
+      "clone_source": {
+        "template_instance_ref": "template-instance:content-v1",
+        "immutable": true
+      },
+      "inherited_mutable_state": false
+    },
+    {
+      "mode": "shared",
+      "instance_id": "capability.alpha.security",
+      "capability_ref": "capability:security-review",
+      "template_source": {
+        "source_ref": "capability-registry:security-review",
+        "revision": "v1.4.0",
+        "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "workload_tier": "simple",
+      "resource_binding_refs": ["resource-binding:alpha-review-request"],
+      "audit_context_requirements": ["app", "team", "community", "project", "actor", "audit"],
+      "stateless": true,
+      "memory_mode": "request_scoped",
+      "publication_mode": "caller",
+      "request_context_axes": ["app", "team", "community", "project", "actor", "audit"],
+      "workspace_policy_ref": "workspace-policy:request-scoped",
+      "credential_broker_ref": "credential-broker:security-review",
+      "persistent_teammate": false
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "base_specialist_index": 2,
+  "cases": [
+    {"property": "identity_ref", "value": "identity:shared-leak"},
+    {"property": "memory_namespace_ref", "value": "memory:shared-leak"},
+    {"property": "workspace_root_refs", "value": ["workspace-root:shared-static"]},
+    {"property": "secret_refs", "value": ["secret-ref:shared-direct"]},
+    {"property": "persistent_teammate", "value": true},
+    {"property": "publication_mode", "value": "specialist_with_actor"}
+  ]
+}

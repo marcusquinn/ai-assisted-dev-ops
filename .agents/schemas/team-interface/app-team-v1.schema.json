@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:app-team:v1",
+  "title": "aidevops app-team manifest contract v1",
+  "$ref": "#/$defs/app_team_manifest",
+  "$defs": {
+    "core_stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "core_reference_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/reference_id"},
+    "registered_reference": {
+      "allOf": [
+        {"$ref": "#/$defs/core_reference_id"},
+        {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._:/-]*$"}
+      ]
+    },
+    "reference_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/registered_reference"}
+    },
+    "source_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_ref", "revision", "digest"],
+      "properties": {
+        "source_ref": {"$ref": "#/$defs/registered_reference"},
+        "revision": {"type": "string", "minLength": 1, "maxLength": 255},
+        "digest": {"type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$"}
+      }
+    },
+    "audit_axis": {
+      "enum": ["app", "team", "community", "project", "actor", "audit"]
+    },
+    "audit_axes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/audit_axis"}
+    },
+    "common_specialist": {
+      "type": "object",
+      "required": [
+        "instance_id",
+        "template_source",
+        "workload_tier",
+        "resource_binding_refs",
+        "audit_context_requirements"
+      ],
+      "properties": {
+        "instance_id": {"$ref": "#/$defs/core_stable_id"},
+        "template_agent_id": {"$ref": "#/$defs/core_stable_id"},
+        "capability_ref": {"$ref": "#/$defs/registered_reference"},
+        "template_source": {"$ref": "#/$defs/source_metadata"},
+        "workload_tier": {"enum": ["simple", "standard", "thinking"]},
+        "resource_binding_refs": {"$ref": "#/$defs/reference_list"},
+        "audit_context_requirements": {"$ref": "#/$defs/audit_axes"}
+      },
+      "oneOf": [
+        {"required": ["template_agent_id"], "not": {"required": ["capability_ref"]}},
+        {"required": ["capability_ref"], "not": {"required": ["template_agent_id"]}}
+      ]
+    },
+    "persistent_specialist_fields": {
+      "type": "object",
+      "required": [
+        "identity_ref",
+        "memory_namespace_ref",
+        "workspace_root_refs",
+        "secret_refs",
+        "publication_mode",
+        "initiating_actor_required",
+        "persistent_teammate"
+      ],
+      "properties": {
+        "identity_ref": {"$ref": "#/$defs/registered_reference"},
+        "memory_namespace_ref": {"$ref": "#/$defs/registered_reference"},
+        "workspace_root_refs": {"$ref": "#/$defs/reference_list"},
+        "secret_refs": {"$ref": "#/$defs/reference_list"},
+        "publication_mode": {"const": "specialist_with_actor"},
+        "initiating_actor_required": {"const": true},
+        "persistent_teammate": {"const": true}
+      }
+    },
+    "dedicated_specialist": {
+      "allOf": [
+        {"$ref": "#/$defs/common_specialist"},
+        {"$ref": "#/$defs/persistent_specialist_fields"},
+        {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {"mode": {"const": "dedicated"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "cloned_specialist": {
+      "allOf": [
+        {"$ref": "#/$defs/common_specialist"},
+        {"$ref": "#/$defs/persistent_specialist_fields"},
+        {
+          "type": "object",
+          "required": ["mode", "clone_source", "inherited_mutable_state"],
+          "properties": {
+            "mode": {"const": "cloned"},
+            "clone_source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["template_instance_ref", "immutable"],
+              "properties": {
+                "template_instance_ref": {"$ref": "#/$defs/registered_reference"},
+                "immutable": {"const": true}
+              }
+            },
+            "inherited_mutable_state": {"const": false}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "shared_specialist": {
+      "allOf": [
+        {"$ref": "#/$defs/common_specialist"},
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "stateless",
+            "memory_mode",
+            "publication_mode",
+            "request_context_axes",
+            "workspace_policy_ref",
+            "credential_broker_ref",
+            "persistent_teammate"
+          ],
+          "properties": {
+            "mode": {"const": "shared"},
+            "stateless": {"const": true},
+            "memory_mode": {"enum": ["none", "request_scoped"]},
+            "publication_mode": {"const": "caller"},
+            "request_context_axes": {
+              "allOf": [
+                {"$ref": "#/$defs/audit_axes"},
+                {"contains": {"const": "app"}},
+                {"contains": {"const": "team"}},
+                {"contains": {"const": "community"}},
+                {"contains": {"const": "project"}},
+                {"contains": {"const": "actor"}},
+                {"contains": {"const": "audit"}}
+              ]
+            },
+            "workspace_policy_ref": {"$ref": "#/$defs/registered_reference"},
+            "credential_broker_ref": {"$ref": "#/$defs/registered_reference"},
+            "persistent_teammate": {"const": false}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "specialist": {
+      "oneOf": [
+        {"$ref": "#/$defs/dedicated_specialist"},
+        {"$ref": "#/$defs/cloned_specialist"},
+        {"$ref": "#/$defs/shared_specialist"}
+      ]
+    },
+    "execution_eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible", "policy_ref"],
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "policy_ref": {"$ref": "#/$defs/registered_reference"}
+      }
+    },
+    "app_team_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "manifest_id",
+        "app_id",
+        "team_id",
+        "source",
+        "provider_binding_refs",
+        "community_ref",
+        "resource_binding_refs",
+        "trust_policy_ref",
+        "authority_policy_ref",
+        "reconciliation_policy_ref",
+        "runner_eligibility",
+        "local_model_eligibility",
+        "specialists"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "app_team_manifest"},
+        "manifest_id": {"$ref": "#/$defs/core_stable_id"},
+        "app_id": {"$ref": "#/$defs/core_stable_id"},
+        "team_id": {"$ref": "#/$defs/core_stable_id"},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255},
+        "source": {"$ref": "#/$defs/source_metadata"},
+        "provider_binding_refs": {"$ref": "#/$defs/reference_list"},
+        "community_ref": {"$ref": "#/$defs/registered_reference"},
+        "resource_binding_refs": {"$ref": "#/$defs/reference_list"},
+        "trust_policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "authority_policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "reconciliation_policy_ref": {"$ref": "#/$defs/registered_reference"},
+        "runner_eligibility": {"$ref": "#/$defs/execution_eligibility"},
+        "local_model_eligibility": {"$ref": "#/$defs/execution_eligibility"},
+        "specialists": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/specialist"}
+        }
+      }
+    }
+  }
+}
