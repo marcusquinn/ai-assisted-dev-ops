@@ -111,7 +111,6 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 -->
 
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #bug #framework #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#27821 logged:2026-07-15 -> [todo/tasks/t18132-brief.md]
-- [ ] t18124 Maximise GitHub API efficiency without freshness regressions — coordinate exact transport telemetry, canonical snapshots, immutable-head check caching, cross-process request coalescing, verified webhook invalidation, and comparative rollout evidence through seven sequential leaves. #parent-task #no-auto-dispatch #enhancement #framework #pulse #github-api #efficiency ~13h tier:thinking ref:GH#27768 logged:2026-07-15 -> [todo/tasks/t18124-brief.md]
 - [ ] t18133 Normalize raw PR creation origin provenance — make managed headless `gh pr create` calls preserve one session-origin label so worker drafts enter stale-checkpoint recovery without weakening protected drafts or external-write gates. #bug #framework #pulse #auto-dispatch ~2h tier:standard ref:GH#27802 logged:2026-07-15 -> [todo/tasks/t18133-brief.md]
 - [x] t18134 Eliminate jq E2BIG in objective reconciliation — move known-large issue and PR arrays off argv, preserve the objective payload exactly, and extend the existing large-JSON regression guard. #bug #framework #pulse #reliability #auto-dispatch ~1.5h tier:standard ref:GH#27803 logged:2026-07-15 -> [todo/tasks/t18134-brief.md] pr:#27875 completed:2026-07-15
 - [x] t18135 Preserve privacy scanning through native gh reads — let cold-cache privacy probes use the shim-resolved native GitHub CLI for both auth and repository visibility while retaining standalone behavior and the recursion sentinel. #bug #security #framework #privacy #auto-dispatch ~2h tier:standard ref:GH#27804 logged:2026-07-15 -> [todo/tasks/t18135-brief.md] pr:#27876 completed:2026-07-15
@@ -1268,6 +1267,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18124 Maximise GitHub API efficiency without freshness regressions — coordinate exact transport telemetry, canonical snapshots, immutable-head check caching, cross-process request coalescing, verified webhook invalidation, and comparative rollout evidence through seven sequential leaves. #parent-task #no-auto-dispatch #enhancement #framework #pulse #github-api #efficiency ~13h tier:thinking ref:GH#27768 logged:2026-07-15 -> [todo/tasks/t18124-brief.md] pr:#29500 testing:self-assessed completed:2026-08-04
 - [x] t18130 Invalidate canonical GitHub state from verified webhooks — deduplicate authenticated deliveries, map events to narrow snapshot/head-SHA invalidations before PR processing, and retain secure loopback plus polling fallback. #enhancement #security #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18129 blocks:t18131 ref:GH#27776 logged:2026-07-15 -> [todo/tasks/t18130-brief.md] pr:#28231 completed:2026-08-04
 - [x] t18129 Add cross-process single-flight and shared rate-limit state — consolidate fallback/circuit state and coalesce exact cacheable reads with scoped keys, leases, fencing, bounded waits, and stale-leader recovery. #enhancement #framework #pulse #github-api #reliability #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18128 blocks:t18130 ref:GH#27774 logged:2026-07-15 -> [todo/tasks/t18129-brief.md] pr:#28222 completed:2026-08-04
 - [x] t18128 Cache PR check status by head SHA and refresh actionable changes — reuse terminal aggregate state for immutable heads, refresh pending/unknown state on bounded policy, and keep final required-check/merge authority live. #enhancement #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:standard parent:t18124 blocked-by:t18127 blocks:t18129 ref:GH#27772 logged:2026-07-15 -> [todo/tasks/t18128-brief.md] pr:#28210 completed:2026-08-04
@@ -4639,8 +4639,6 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18122 Add cryptographically scoped worker permission grants #bug ref:GH#27688
 
 - [ ] t18123 Add bounded worker progress blocker logging #bug ref:GH#27732
-
-- [ ] t18124 Maximise GitHub API efficiency without freshness regressions #efficiency #enhancement #framework #github-api #parent #pulse ref:GH#27768
 
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #auto-dispatch #bug #framework #reliability ref:GH#27821
 
