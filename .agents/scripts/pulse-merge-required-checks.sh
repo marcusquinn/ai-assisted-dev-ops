@@ -57,7 +57,7 @@ _pmrc_cache_key() {
 	return 0
 }
 
-_pmrc_classic_protection_unavailable_for_private_repo() {
+_pmrc_private_plan_feature_unavailable() {
 	local response="$1"
 	[[ "$response" == *"Upgrade to GitHub Pro or make this repository public to enable this feature."* ]] || return 1
 	[[ "$response" == *"HTTP 403"* ]] || return 1
@@ -180,12 +180,17 @@ _required_contexts_from_rulesets_for_default_branch() {
 	local repo_slug="$1"
 	local default_branch="$2"
 	local log_target="${LOGFILE:-/dev/stderr}"
-	local rulesets_json=""
+	local rulesets_json="" rulesets_rc=0
 
-	rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>/dev/null) || {
+	rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>&1) || rulesets_rc=$?
+	if [[ "$rulesets_rc" -ne 0 ]]; then
+		if _pmrc_private_plan_feature_unavailable "$rulesets_json"; then
+			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets unavailable for ${repo_slug} on the private plan (HTTP 403) — empty contexts (GH#29484)" >>"$log_target"
+			return 0
+		fi
 		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
 		return 1
-	}
+	fi
 	if ! _pmrc_rulesets_list_schema_valid "$rulesets_json"; then
 		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)" >>"$log_target"
 		return 1
@@ -296,7 +301,7 @@ _required_contexts_for_default_branch_uncached() {
 		local classic_unavailable_reason=""
 		if grep -qi 'HTTP 404\|Not Found' <<<"$protection_resp"; then
 			classic_unavailable_reason="HTTP 404"
-		elif _pmrc_classic_protection_unavailable_for_private_repo "$protection_resp"; then
+		elif _pmrc_private_plan_feature_unavailable "$protection_resp"; then
 			classic_unavailable_reason="private-plan unavailable (HTTP 403)"
 		fi
 		if [[ -n "$classic_unavailable_reason" ]]; then

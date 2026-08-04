@@ -85,6 +85,9 @@ print_result() {
 #   ruleset_review_malformed_response — REST reviews payload is not page arrays
 #   ruleset_review_malformed_element — a REST reviews page contains a non-object
 #   ruleset_review_fetch_error — REST reviews endpoint fails
+#   rulesets_private_plan_unavailable — exact feature-unavailable 403 resolves
+#      to an empty repository-ruleset context set
+#   rulesets_generic_forbidden — generic 403 remains an API failure
 #   error           — branch-protection API exits non-zero
 setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
@@ -147,6 +150,14 @@ fi
 
 if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets"* ]]; then
 	case "${MOCK_GH_MODE:-all_pass}" in
+	rulesets_private_plan_unavailable)
+		printf '%s\n' 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2
+		exit 1
+		;;
+	rulesets_generic_forbidden)
+		printf '%s\n' 'gh: HTTP 403: Resource not accessible by integration' >&2
+		exit 1
+		;;
 	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_mixed_review_status | ruleset_review_zero | ruleset_review_malformed_optional | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error)
 		apply_jq '[{"id":101,"enforcement":"active","target":"branch"}]' "$@"
 		;;
@@ -865,6 +876,35 @@ test_ruleset_review_malformed_optional_does_not_fail_parse() {
 	return 0
 }
 
+test_rulesets_empty_list_resolves_empty() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="all_pass"
+	assert_ruleset_contexts_output "" "successful empty rulesets list resolves to empty contexts"
+	assert_log_empty "successful empty rulesets list writes no failure evidence"
+	return 0
+}
+
+test_rulesets_private_plan_unavailable_resolves_empty() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="rulesets_private_plan_unavailable"
+	assert_ruleset_contexts_output "" "private-plan rulesets 403 resolves to empty contexts"
+	assert_log_contains "rulesets unavailable.*private plan (HTTP 403).*empty contexts" \
+		"private-plan rulesets 403 writes narrow classification evidence"
+	return 0
+}
+
+test_rulesets_generic_forbidden_fails_closed() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="rulesets_generic_forbidden"
+	assert_ruleset_contexts_output "ERR" "generic rulesets 403 remains fail-closed"
+	assert_log_contains "rulesets list failed.*caller will fail closed" \
+		"generic rulesets 403 writes fail-closed evidence"
+	return 0
+}
+
 test_gh_api_error_fails_closed() {
 	# gh exits 1 → the function MUST return 1 (fail-closed). A bubbling
 	# gh error must never auto-merge when --admin would bypass branch
@@ -916,6 +956,9 @@ main() {
 	test_ruleset_mixed_review_status_preserves_both_gates
 	test_ruleset_review_zero_does_not_require_approval
 	test_ruleset_review_malformed_optional_does_not_fail_parse
+	test_rulesets_empty_list_resolves_empty
+	test_rulesets_private_plan_unavailable_resolves_empty
+	test_rulesets_generic_forbidden_fails_closed
 	test_gh_api_error_fails_closed
 	test_required_checks_gh_reads_are_timeout_wrapped
 	test_empty_required_stale_maintainer_gate_fallback_allows_merge

@@ -334,6 +334,26 @@ assert_contains "4.3 firing body cites novel template" "NOVEL_ERROR" "$out"
 assert_contains "4.4 firing body preserves literal backslash evidence" 'payload\\tfield' "$out"
 assert_contains "4.5 firing body has marker" 'detector=log-pattern-novelty' "$out"
 
+# Regression fixture for GH#29485: PID-specific normalization must run before
+# the broad hexadecimal rule so equivalent 6- and 7-digit PIDs share a template.
+LOG_PID_STABLE="$TMPDIR_TEST/log-pid-stable.log"
+{
+	for _ in $(seq 1 100); do
+		printf 'Acquired lock (PID 607677, age 5s, holder: pulse-instance-lock.sh)\n'
+	done
+	for _ in $(seq 1 100); do
+		printf 'Acquired lock (PID 1220368, age 5s, holder: pulse-instance-lock.sh)\n'
+	done
+} > "$LOG_PID_STABLE"
+
+out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
+	"LOG_FILE=$LOG_PID_STABLE" \
+	"RECENT_LINES=100" \
+	"PRIOR_LINES=100" \
+	"NOVELTY_THRESHOLD=10") && rc=0 || rc=$?
+assert_rc "4.6 equivalent 6- and 7-digit PID templates return 0" "0" "$rc"
+assert_empty "4.7 equivalent PID templates emit no finding" "$out"
+
 # Clean fixture: log too short → no-op
 LOG_SHORT="$TMPDIR_TEST/log-short.log"
 for i in $(seq 1 50); do
@@ -343,12 +363,12 @@ done > "$LOG_SHORT"
 out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
 	"LOG_FILE=$LOG_SHORT" \
 	"RECENT_LINES=100") && rc=0 || rc=$?
-assert_rc "4.6 too-short log returns 0" "0" "$rc"
+assert_rc "4.8 too-short log returns 0" "0" "$rc"
 
 # Missing log → no-op
 out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
 	"LOG_FILE=/nonexistent/log.log") && rc=0 || rc=$?
-assert_rc "4.7 missing log returns 0" "0" "$rc"
+assert_rc "4.9 missing log returns 0" "0" "$rc"
 
 # ---------------------------------------------------------------------------
 # Test 5: idle-state-stuck
