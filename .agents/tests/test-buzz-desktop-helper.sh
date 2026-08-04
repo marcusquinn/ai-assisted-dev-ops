@@ -125,6 +125,14 @@ write_store() {
     "name": "Other harness",
     "agent_command": "/usr/local/bin/goose",
     "agent_args": []
+  },
+  {
+    "pubkey": null,
+    "name": "Built-in harness",
+    "is_builtin": true,
+    "agent_command": "builtin",
+    "agent_args": [],
+    "unknown": {"preserve": true}
   }
 ]
 JSON
@@ -173,6 +181,9 @@ test_apply_is_bounded_and_private() {
 		'["acp","--cwd","/project"]'
 	assert_eq "apply preserves unrelated harness arguments" \
 		"$(jq -c '.[] | select(.pubkey == "pub-other") | .agent_args' "$TEST_STORE")" '[]'
+	assert_eq "apply accepts and preserves unrelated null-pubkey records" \
+		"$(jq -c '.[] | select(.name == "Built-in harness") | {pubkey,agent_args,unknown}' "$TEST_STORE")" \
+		'{"pubkey":null,"agent_args":[],"unknown":{"preserve":true}}'
 	assert_eq "apply preserves unknown fields" \
 		"$(jq -r '.[] | select(.pubkey == "pub-empty-path") | .unknown.preserve' "$TEST_STORE")" "true"
 	assert_file_exists "apply records private rollback state" "$TEST_STATE_FILE"

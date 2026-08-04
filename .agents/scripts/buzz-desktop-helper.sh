@@ -113,11 +113,20 @@ _buzz_validate_store() {
 	_buzz_validate_private_file "$BUZZ_STORE_PATH" "Buzz managed-agent store" || return 1
 	jq -e '
 		def is_array: type == "array";
+		def is_string: type == "string";
+		def command_basename:
+			if is_string then (split("/") | last) else "" end;
+		def needs_patch:
+			([.agent_command, .agent_command_override]
+				| map(command_basename)
+				| any(. == "opencode")) and
+			(((.agent_args // []) | length) == 0);
 		is_array and
 		all(.[];
 			type == "object" and
-			((.pubkey | type) == "string" and (.pubkey | length) > 0) and
-			((.agent_args == null) or (.agent_args | is_array))
+			((.agent_args == null) or (.agent_args | is_array)) and
+			((needs_patch | not) or
+				((.pubkey | is_string) and (.pubkey | length) > 0))
 		)
 	' "$BUZZ_STORE_PATH" >/dev/null 2>&1 || {
 		print_error "Buzz managed-agent store has an invalid record schema"
