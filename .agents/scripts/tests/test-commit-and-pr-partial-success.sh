@@ -77,7 +77,7 @@ trap 'rm -rf "$TMP"' EXIT
 STUB_LOG="${TMP}/stub_calls.log"
 GH_API_RESPONSE="${TMP}/gh_api_response.txt"
 : >"$STUB_LOG"
-printf '0\n' >"$GH_API_RESPONSE"  # default: 0 existing MERGE_SUMMARY comments
+printf '0\n' >"$GH_API_RESPONSE" # default: 0 existing MERGE_SUMMARY comments
 
 # =============================================================================
 # Minimal stubs for shared-constants.sh symbols required by full-loop-helper.sh
@@ -95,10 +95,22 @@ if [[ -z "${NC+x}" ]]; then
 fi
 
 # Quiet print stubs — capture to log for assertions
-print_info()    { printf '[INFO] %s\n' "$*" >>"$STUB_LOG"; return 0; }
-print_error()   { printf '[ERROR] %s\n' "$*" >>"$STUB_LOG"; return 0; }
-print_warning() { printf '[WARN] %s\n' "$*" >>"$STUB_LOG"; return 0; }
-print_success() { printf '[OK] %s\n' "$*" >>"$STUB_LOG"; return 0; }
+print_info() {
+	printf '[INFO] %s\n' "$*" >>"$STUB_LOG"
+	return 0
+}
+print_error() {
+	printf '[ERROR] %s\n' "$*" >>"$STUB_LOG"
+	return 0
+}
+print_warning() {
+	printf '[WARN] %s\n' "$*" >>"$STUB_LOG"
+	return 0
+}
+print_success() {
+	printf '[OK] %s\n' "$*" >>"$STUB_LOG"
+	return 0
+}
 
 # =============================================================================
 # Extract the functions under test directly from the helper.
@@ -128,6 +140,13 @@ eval "$(sed -n '/^_resolve_remote_default_branch() {/,/^}/p' "${SCRIPTS_DIR}/ful
 
 # shellcheck disable=SC2312
 eval "$(sed -n '/^_ensure_no_in_progress_integration() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
+
+# Extract the split rebase and push stages used by the compatibility wrapper.
+# shellcheck disable=SC2312
+eval "$(sed -n '/^_rebase_for_push() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
+
+# shellcheck disable=SC2312
+eval "$(sed -n '/^_push_branch() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
 
 # Extract _rebase_and_push
 # shellcheck disable=SC2312

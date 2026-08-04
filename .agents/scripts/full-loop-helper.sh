@@ -63,7 +63,7 @@ source "${SCRIPT_DIR}/full-loop-helper-merge.sh"
 # Collapses full-loop steps 4.1-4.2.1 into a single deterministic call.
 # Workers and interactive sessions both use this — no parallel logic.
 #
-# Usage: full-loop-helper.sh commit-and-pr|create-pr --issue <N> --message <msg> [--title <title>] [--summary <what>] [--testing <how>] [--risk-level <level>] [--testing-level <level>] [--decisions <notes>] [--label <label>...] [--allow-parent-close] [--skip-hooks] [--no-rebase]
+# Usage: full-loop-helper.sh commit-and-pr|create-pr --issue <N> --message <msg> [--title <title>] [--summary <what>] [--testing <how>] [--risk-level <level>] [--testing-level <level>] [--decisions <notes>] [--label <label>...] [--completion-bookkeeping --proof-pr <N> --task-id <tNNN>] [--allow-parent-close] [--skip-hooks] [--no-rebase]
 # Exit codes: 0 = PR created (prints PR number to stdout), 1 = failure
 # --allow-parent-close: skip the parent-task keyword guard (final-phase PR only)
 # --skip-hooks: pass --no-verify to git push (bypasses pre-push hooks). Use for doc-only PRs
@@ -77,6 +77,7 @@ source "${SCRIPT_DIR}/full-loop-helper-merge.sh"
 cmd_commit_and_pr() {
 	local issue_number="" commit_message="" pr_title="" summary_what="" summary_testing="" summary_decisions=""
 	local runtime_risk="" testing_level=""
+	local completion_bookkeeping=0 bookkeeping_proof_pr="" bookkeeping_task_id=""
 	local -a extra_labels=()
 	local allow_parent_close=0
 	local skip_hooks=0 skip_rebase=0
@@ -87,6 +88,9 @@ cmd_commit_and_pr() {
 	local repo="" branch=""
 	_validate_commit_and_pr_inputs "$issue_number" "$commit_message" || return 1
 	_validate_explicit_pr_metadata "$runtime_risk" "$testing_level" || return 1
+	_validate_completion_bookkeeping_request "$completion_bookkeeping" "$bookkeeping_proof_pr" \
+		"$bookkeeping_task_id" "$allow_parent_close" "$repo" \
+		"${extra_labels[@]+"${extra_labels[@]}"}" || return 1
 
 	_stage_and_commit "$commit_message" || return 1
 	# GH#27902: WIP commits are durable checkpoints, not publishable history.
@@ -104,6 +108,9 @@ cmd_commit_and_pr() {
 	local files_changed=""
 	local base_branch="" base_ref=""
 	local closing_keyword="Resolves"
+	if [[ "$completion_bookkeeping" -eq 1 ]]; then
+		closing_keyword="For"
+	fi
 	base_branch=$(_resolve_remote_default_branch origin) || return 1
 	base_ref="origin/${base_branch}"
 	files_changed=$(git diff --name-only "${base_ref}..HEAD" 2>/dev/null | tr '\n' ',' | sed 's/,$//; s/,/, /g' || echo "")
@@ -178,17 +185,35 @@ cmd_commit_and_pr() {
 	# A worker racing an interactive session may finish implementation after
 	# the issue was already resolved. Opening a PR against a closed issue
 	# creates noise, wastes review time, and can trigger duplicate closures.
-	# Applies to all modes (interactive and headless).
+	# The sole exception is explicit interactive completion bookkeeping that
+	# passes the terminal-state, merged-proof, identity, diff, and keyword guard.
 	local _pre_pr_issue_state=""
-	_pre_pr_issue_state=$(gh issue view "$issue_number" --repo "$repo" \
-		--json state -q '.state' 2>/dev/null || echo "")
+	local _pre_pr_issue_reason=""
+	local _pre_pr_issue_meta=""
+	_pre_pr_issue_meta=$(gh issue view "$issue_number" --repo "$repo" \
+		--json state,stateReason --jq '[.state, (.stateReason // "")] | @tsv' 2>/dev/null || echo "")
+	IFS=$'\t' read -r _pre_pr_issue_state _pre_pr_issue_reason <<<"$_pre_pr_issue_meta"
 	if [[ "$_pre_pr_issue_state" == "CLOSED" ]]; then
-		print_error "Aborting: issue #${issue_number} is already closed — not opening a duplicate PR (t2091)"
-		gh_issue_comment "$issue_number" --repo "$repo" \
-			--body "<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+		if [[ "$completion_bookkeeping" -eq 1 ]]; then
+			_validate_closed_issue_completion_bookkeeping "$issue_number" "$repo" \
+				"$_pre_pr_issue_reason" "$bookkeeping_proof_pr" "$bookkeeping_task_id" \
+				"$base_ref" "$pr_body" || return 1
+			if [[ -n "$summary_decisions" ]]; then
+				summary_decisions="${summary_decisions}; ${FULL_LOOP_COMPLETION_BOOKKEEPING_AUDIT}"
+			else
+				summary_decisions="$FULL_LOOP_COMPLETION_BOOKKEEPING_AUDIT"
+			fi
+		else
+			print_error "Aborting: issue #${issue_number} is already closed — not opening a duplicate PR (t2091)"
+			gh_issue_comment "$issue_number" --repo "$repo" \
+				--body "<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 Worker aborted PR creation: issue #${issue_number} was already closed by the time this session completed implementation. No PR was opened.
 <!-- ops:end -->" \
-			2>/dev/null || true
+				2>/dev/null || true
+			return 1
+		fi
+	elif [[ "$completion_bookkeeping" -eq 1 ]]; then
+		print_error "Completion bookkeeping requires issue #${issue_number} to be verified closed with a terminal reason"
 		return 1
 	fi
 
@@ -233,6 +258,8 @@ Commands:
   logs [N]                      Show last N log lines (default: 50)
   commit-and-pr|create-pr --issue N --message "msg"
                                  Stage, commit, rebase, push, create PR, post merge summary
+				 [--completion-bookkeeping --proof-pr N --task-id tNNN]
+				                            Allow audited metadata-only PR for a terminal issue
                 [--skip-hooks]             Pass --no-verify to git push (doc-only PRs, GH#20138)
                 [--no-rebase]              Explicit recovery mode after a failed/aborted rebase
   pre-merge-gate <PR> [REPO]    Check review bot gate before merge (GH#17541)
