@@ -24,6 +24,7 @@ _FULL_LOOP_RELEASE_MODE_RECONCILE="reconcile"
 _FULL_LOOP_RELEASE_STEP_QUEUE_POSTFLIGHT="Queue exact-tag postflight"
 _FULL_LOOP_RELEASE_PROVENANCE_PREDICATE="https://slsa.dev/provenance/v1"
 _FULL_LOOP_RELEASE_TRUE="true"
+_FULL_LOOP_RELEASE_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
 # shellcheck source=./version-manager-protected-main.sh
 source "${SCRIPT_DIR}/version-manager-protected-main.sh"
@@ -789,6 +790,92 @@ _full_loop_release_finalize_reconciliation() {
 	return $?
 }
 
+_full_loop_release_write_protected_successor_receipt() {
+	local repo="$1"
+	local source_pr="$2"
+	local source_merge="$3"
+	local protected_json="$4"
+	local successor_pr="$5"
+	local successor_merge="$6"
+	local release_tag="$7"
+	local release_commit="$8"
+	local release_run="$9"
+	local source_tag=""
+	local source_tag_object=""
+	local source_commit=""
+	local protected_pr=""
+	local protected_head=""
+	local protected_merged_at=""
+	local aggregate_path=""
+	local evidence_path=""
+	local now=""
+
+	[[ "$source_pr" =~ ^[0-9]+$ && "$successor_pr" =~ ^[0-9]+$ && "$source_pr" != "$successor_pr" ]] || return 1
+	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$successor_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$release_tag" =~ $_FULL_LOOP_RELEASE_VERSION_TAG_REGEX && "$release_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$release_run" =~ ^[0-9]+$ && "$release_run" -gt 0 ]] || return 1
+	source_tag=$(jq -er '.source_tag' <<<"$protected_json") || return 1
+	source_tag_object=$(jq -er '.source_tag_object' <<<"$protected_json") || return 1
+	source_commit=$(jq -er '.source_commit' <<<"$protected_json") || return 1
+	protected_pr=$(jq -er '.protected_pr' <<<"$protected_json") || return 1
+	protected_head=$(jq -er '.protected_head' <<<"$protected_json") || return 1
+	protected_merged_at=$(jq -er '.protected_merged_at' <<<"$protected_json") || return 1
+	[[ "$source_tag" =~ $_FULL_LOOP_RELEASE_VERSION_TAG_REGEX && "$source_tag" != "$release_tag" ]] || return 1
+	[[ "$source_tag_object" =~ $_FULL_LOOP_SHA40_REGEX && "$source_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$source_commit" != "$release_commit" && "$protected_head" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$protected_pr" =~ ^[0-9]+$ && -n "$protected_merged_at" ]] || return 1
+
+	aggregate_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" aggregate) || return 1
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" successor) || return 1
+	[[ ! -e "$aggregate_path" ]] || return 1
+	if [[ -f "$evidence_path" ]]; then
+		_full_loop_verify_successor_superseded_release_evidence \
+			"$evidence_path" "$repo" "$source_pr" || return 1
+		jq -e --arg source_merge "$source_merge" --arg source_tag "$source_tag" \
+			--arg source_tag_object "$source_tag_object" --arg source_commit "$source_commit" \
+			--argjson protected_pr "$protected_pr" --arg protected_head "$protected_head" \
+			--arg protected_merged_at "$protected_merged_at" --argjson successor_pr "$successor_pr" \
+			--arg successor_merge "$successor_merge" --arg release_tag "$release_tag" \
+			--arg release_commit "$release_commit" --argjson release_run "$release_run" '
+			.source_merge == $source_merge and .source_release_tag == $source_tag
+			and .source_release_tag_object == $source_tag_object
+			and .source_release_commit == $source_commit
+			and .source_protected_pr == $protected_pr
+			and .source_protected_pr_head == $protected_head
+			and .source_protected_pr_merged_at == $protected_merged_at
+			and .successor_pr == $successor_pr and .successor_merge == $successor_merge
+			and .release_tag == $release_tag and .release_commit == $release_commit
+			and .release_workflow_run == $release_run
+		' "$evidence_path" >/dev/null 2>&1 || return 1
+	else
+		now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+		mkdir -p "${evidence_path%/*}" || return 1
+		jq -cn --arg repo "$repo" --arg status "$_FULL_LOOP_RELEASE_SUPERSEDED" \
+			--arg evidence_type "protected-predecessor-supersession" --argjson source_pr "$source_pr" \
+			--arg source_merge "$source_merge" --arg source_tag "$source_tag" \
+			--arg source_tag_object "$source_tag_object" --arg source_commit "$source_commit" \
+			--argjson protected_pr "$protected_pr" --arg protected_head "$protected_head" \
+			--arg protected_merged_at "$protected_merged_at" --argjson successor_pr "$successor_pr" \
+			--arg successor_merge "$successor_merge" --arg release_tag "$release_tag" \
+			--arg release_commit "$release_commit" --argjson release_run "$release_run" --arg now "$now" '
+			{schema_version:2,evidence_type:$evidence_type,status:$status,repository:$repo,
+			 pr_number:$source_pr,source_pr:$source_pr,source_merge:$source_merge,
+			 source_release_tag:$source_tag,source_release_tag_object:$source_tag_object,
+			 source_release_commit:$source_commit,source_protected_pr:$protected_pr,
+			 source_protected_pr_head:$protected_head,
+			 source_protected_pr_merged_at:$protected_merged_at,
+			 successor_pr:$successor_pr,successor_merge:$successor_merge,
+			 release_tag:$release_tag,release_commit:$release_commit,
+			 release_workflow_run:$release_run,recorded_at:$now}
+		' >"${evidence_path}.tmp.$$" || return 1
+		mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
+	fi
+	_full_loop_write_release_receipt "$repo" "$source_pr" \
+		"$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
+	_full_loop_update_superseded_cleanup_receipt "$repo" "$source_pr"
+	return $?
+}
+
 _full_loop_release_finalize_stale_supersession() {
 	local repo="$1"
 	local requested_pr="$2"
@@ -798,6 +885,8 @@ _full_loop_release_finalize_stale_supersession() {
 	local source_merge=""
 	local source_commit=""
 	local source_run=""
+	local source_run_rc=0
+	local protected_source=""
 	local release_json=""
 	local successor_pr=""
 	local successor_merge=""
@@ -813,11 +902,18 @@ _full_loop_release_finalize_stale_supersession() {
 	' <<<"$source_json") || return 1
 	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	source_commit=$(_full_loop_release_resolve_tag_commit "$source_tag") || return 1
-	_full_loop_release_verify_stale_publication_run \
-		"$repo" "$source_tag" "$source_commit" || return 1
-	source_run=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
-		'.id | select(type == $number_type and . > 0 and floor == .)' \
-		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	if _full_loop_release_verify_stale_publication_run \
+		"$repo" "$source_tag" "$source_commit"; then
+		source_run=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
+			'.id | select(type == $number_type and . > 0 and floor == .)' \
+			<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+	else
+		_full_loop_release_find_workflow_run \
+			"$repo" "$source_tag" "$source_commit" || source_run_rc=$?
+		[[ "$source_run_rc" -eq 3 ]] || return 1
+		_full_loop_release_verify_protected_source_provenance \
+			"$repo" "$source_tag" || return 1
+	fi
 
 	_full_loop_release_reset_tag_worktree || return 1
 	_full_loop_release_verify_tag_provenance "$repo" "$release_tag" || return 1
@@ -833,19 +929,31 @@ _full_loop_release_finalize_stale_supersession() {
 	[[ "$source_commit" != "$release_commit" ]] || return 1
 	git -C "$REPO_ROOT" merge-base --is-ancestor "$source_commit" "$release_commit" \
 		>/dev/null 2>&1 || return 1
+	if [[ -z "$source_run" ]]; then
+		_version_manager_verify_protected_release_supersession \
+			"$repo" "$source_tag" "$release_commit" || return 1
+		protected_source="$_VERSION_MANAGER_PROTECTED_SUPERSESSION_JSON"
+		[[ -n "$protected_source" ]] || return 1
+	fi
 	_full_loop_release_inspect_remote "$repo" "$release_tag" || return 1
 	release_run=$(jq -er --arg number_type "$_FULL_LOOP_RELEASE_JSON_NUMBER_TYPE" \
 		'.id | select(type == $number_type and . > 0 and floor == .)' \
 		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
-	[[ "$source_run" != "$release_run" ]] || return 1
+	[[ -z "$source_run" || "$source_run" != "$release_run" ]] || return 1
 	release_receipt=$(_full_loop_release_receipt_path "$repo" "$successor_pr") || return 1
 	[[ -f "$release_receipt" ]] || return 1
 	IFS= read -r release_status <"$release_receipt" || return 1
 	[[ "$release_status" == "$_FULL_LOOP_RELEASE_PUBLISHED" ]] || return 1
 
-	_full_loop_write_successor_release_receipt "$repo" "$requested_pr" "$source_merge" \
-		"$source_tag" "$source_commit" "$source_run" "$successor_pr" "$successor_merge" \
-		"$release_tag" "$release_commit" "$release_run"
+	if [[ -n "$source_run" ]]; then
+		_full_loop_write_successor_release_receipt "$repo" "$requested_pr" "$source_merge" \
+			"$source_tag" "$source_commit" "$source_run" "$successor_pr" "$successor_merge" \
+			"$release_tag" "$release_commit" "$release_run"
+	else
+		_full_loop_release_write_protected_successor_receipt \
+			"$repo" "$requested_pr" "$source_merge" "$protected_source" \
+			"$successor_pr" "$successor_merge" "$release_tag" "$release_commit" "$release_run"
+	fi
 	return $?
 }
 
