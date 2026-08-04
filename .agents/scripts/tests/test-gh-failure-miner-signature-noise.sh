@@ -80,10 +80,19 @@ gh() {
 		printf '%s\n' '{"jobs":[{"id":84390104069,"conclusion":"failure","check_run_url":"https://api.github.com/repos/marcusquinn/aidevops/check-runs/84390104069","steps":[{"name":"Gate result","conclusion":"failure"}]}]}'
 		return 0
 	fi
+	if [[ "$first" == "api" && "$endpoint" == "repos/marcusquinn/aidevops/actions/runs/30898422945/jobs" ]]; then
+		printf '%s\n' '{"jobs":[{"id":91958107008,"conclusion":"failure","check_run_url":"https://api.github.com/repos/marcusquinn/aidevops/check-runs/91958107008","steps":[{"name":"Enforce gate","conclusion":"failure"}]}]}'
+		return 0
+	fi
 	if [[ "$first" == "run" && "$second" == "view" ]]; then
 		if [[ "${GH_LOG_SCENARIO:-}" == "echoed_runner_guard" ]]; then
 			printf 'resolve-task\tResolve task\t2026-07-14T23:00:00Z\t\033[36;1mif ! command -v git; then echo "Runner Git binary is unavailable"; exit 1; fi\033[0m\n'
 			printf 'resolve-task\tResolve task\t2026-07-14T23:00:01Z\t::error::Closing issue has no exact TODO mapping\n'
+			return 0
+		fi
+		if [[ "${GH_LOG_SCENARIO:-}" == "qlty_unstructured_source" ]]; then
+			printf '%s\n' 'Qlty Smell Regression Enforce gate 2026-08-04T10:01:52.5121359Z # t2133: simplification PRs cannot use ratchet-bump — their goal is to reduce smells, not shift them.'
+			printf '%s\n' $'Qlty Smell Regression\tEnforce gate\t2026-08-04T10:01:52.5242388Z\t##[error]Qlty smell regression detected (exit 1).'
 			return 0
 		fi
 		printf 'gate / review-bot-gate\tUNKNOWN STEP\t2026-06-30T20:14:24.8559907Z\t\033[36;1m# rate-limit grace is disabled — they cannot merge on rate-limit-only.\033[0m\n'
@@ -100,6 +109,11 @@ GH_LOG_SCENARIO="echoed_runner_guard"
 signature=$(extract_failure_signature "marcusquinn/aidevops" "29373303758" "1")
 assert_equals "runner-echoed guard source cannot mask the executed failure" "resolve-task Resolve task 2026-07-14T23:00:01Z ::error::Closing issue has no exact TODO mapping" "$signature"
 
+GH_LOG_SCENARIO="qlty_unstructured_source"
+signature=$(extract_failure_signature "marcusquinn/aidevops" "30898422945" "91958107008")
+assert_equals "GH#29468 qlty source comment cannot mask structured error" "Qlty Smell Regression Enforce gate 2026-08-04T10:01:52.5242388Z ##[error]Qlty smell regression detected (exit 1)." "$signature"
+GH_LOG_SCENARIO="echoed_runner_guard"
+
 event_file=$(mktemp)
 failed_runs_json='[{"name":"Issue sync","id":1,"conclusion":"failure","details_url":"https://github.com/marcusquinn/aidevops/actions/runs/29373303758/job/1","html_url":"https://github.com/marcusquinn/aidevops/actions/runs/29373303758","completed_at":"2026-07-14T23:00:01Z","app":{"slug":"github-actions"}}]'
 checks_json='{"check_runs":[{"name":"Issue sync","conclusion":"failure"},{"name":"ShellCheck","conclusion":"success"}]}'
@@ -114,6 +128,13 @@ below_threshold_output=$(create_systemic_issues "$events_json" "2" "3" "true" 2>
 assert_contains "single policy failure cannot create an advisory below threshold" "No systemic clusters met threshold (2)." "$below_threshold_output"
 rm -f "$event_file"
 unset GH_LOG_SCENARIO
+
+duplicate_events='[
+  {"repo":"marcusquinn/aidevops","source_kind":"pr","source_ref":"29462","check_name":"Qlty Smell Regression","signature":"same failure","details_url":"https://example.invalid/actions/runs/1/job/2","run_id":1},
+  {"repo":"marcusquinn/aidevops","source_kind":"pr","source_ref":"29467","check_name":"Qlty Smell Regression","signature":"same failure","details_url":"https://example.invalid/actions/runs/1/job/2","run_id":1}
+]'
+deduplicated_events=$(deduplicate_failed_events_json "$duplicate_events")
+assert_equals "GH#29468 repeated notification for one check run counts once" "1" "$(printf '%s\n' "$deduplicated_events" | jq 'length')"
 
 filtered=$(filter_signature_noise_lines $'job\tUNKNOWN STEP\ttime\t\033[36;1m# comment cannot merge\033[0m\njob\tStep\ttime\treal error')
 assert_equals "comment-only log lines are filtered" $'job\tStep\ttime\treal error' "$filtered"

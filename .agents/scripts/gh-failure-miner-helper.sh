@@ -192,7 +192,9 @@ filter_signature_noise_lines() {
 			# GitHub Actions sometimes echoes shell comments from multi-line run blocks
 			# as UNKNOWN STEP log rows. Treat plain comments and xtrace-prefixed
 			# comments as noise so they cannot become systemic failure signatures.
-			if (payload ~ /^([+][[:space:]]*)*#[[:space:]]*/) {
+			# Require whitespace or end-of-line after the comment marker so the GitHub
+			# structured `##[error]` annotation remains available as evidence.
+			if (payload ~ /^([+][[:space:]]*)*#([[:space:]]+|$)/) {
 				next
 			}
 			print raw
@@ -319,7 +321,28 @@ extract_failure_signature() {
 	fi
 
 	local candidate
-	candidate=$(printf '%s\n' "$filtered_logs" | awk 'BEGIN{IGNORECASE=1} /error|exception|traceback|failed|denied|timeout|cannot|invalid|forbidden|unauthorized/ {print; exit}')
+	# Prefer an emitted workflow annotation over generic error words in the log.
+	# A malformed/unstructured gh row can retain runner-echoed shell source such as
+	# `echo "::error::..."`; requiring the annotation marker to start a payload
+	# keeps that source from masking the actual terminal error (GH#29468).
+	candidate=$(printf '%s\n' "$filtered_logs" | awk '
+		{
+			payload = $0
+			n = split($0, fields, "\t")
+			if (n >= 4) {
+				payload = fields[4]
+			}
+			sub(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z[[:space:]]+/, "", payload)
+			gsub(/^[[:space:]]+/, "", payload)
+			if (payload ~ /^(::error::|##\[error\])/) {
+				print
+				exit
+			}
+		}
+	')
+	if [[ -z "$candidate" ]]; then
+		candidate=$(printf '%s\n' "$filtered_logs" | awk 'BEGIN{IGNORECASE=1} /error|exception|traceback|failed|denied|timeout|cannot|invalid|forbidden|unauthorized/ {print; exit}')
+	fi
 	if [[ -z "$candidate" ]]; then
 		candidate=$(printf '%s\n' "$filtered_logs" | awk 'NF {print; exit}')
 	fi
@@ -526,6 +549,24 @@ emit_event_json() {
 			affected_paths: $affected_paths,
 			annotations: $annotations
 		}'
+	return 0
+}
+
+deduplicate_failed_events_json() {
+	local events_json="$1"
+	printf '%s\n' "$events_json" | jq '
+		unique_by([
+			.repo,
+			(if ((.details_url // "") | length) > 0 then
+				"details", .details_url
+			elif .run_id != null then
+				"run", (.run_id | tostring), .check_name
+			else
+				"source", .source_kind, .source_ref, .check_name, .signature,
+				(.completed_at // "")
+			end)
+		] | join("|"))
+	'
 	return 0
 }
 
@@ -737,7 +778,9 @@ extract_failed_events_json() {
 		return 0
 	fi
 
-	jq -s '.' "$event_file"
+	local events_json
+	events_json=$(jq -s '.' "$event_file")
+	deduplicate_failed_events_json "$events_json"
 	rm -f "$event_file"
 	return 0
 }
