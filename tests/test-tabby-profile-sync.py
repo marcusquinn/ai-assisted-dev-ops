@@ -262,6 +262,76 @@ class TestGetReposExcludesWorktrees(unittest.TestCase):
         self.assertNotIn(str(wt), paths)
 
 
+class TestGetProfileTargets(unittest.TestCase):
+    """Detected workspaces augment, but do not pollute, repos.json targets."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repos_json = self.root / "repos.json"
+        self.repos_json.write_text('{"initialized_repos": []}')
+
+    def test_existing_buzz_workspace_is_included(self):
+        buzz_path = self.root / ".buzz"
+        buzz_path.mkdir()
+
+        targets = tabby_profile_sync.get_profile_targets(
+            str(self.repos_json), home=str(self.root)
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                {
+                    "path": str(buzz_path),
+                    "name": "Buzz",
+                    "repo": {
+                        "path": str(buzz_path),
+                        "profile_kind": "buzz-workspace",
+                    },
+                }
+            ],
+        )
+
+    def test_missing_buzz_workspace_is_not_included(self):
+        targets = tabby_profile_sync.get_profile_targets(
+            str(self.repos_json), home=str(self.root)
+        )
+
+        self.assertEqual(targets, [])
+
+    def test_buzz_target_builds_opencode_profile_at_workspace(self):
+        buzz_path = self.root / ".buzz"
+        buzz_path.mkdir()
+        targets = tabby_profile_sync.get_profile_targets(
+            str(self.repos_json), home=str(self.root)
+        )
+
+        profiles = tabby_profile_sync.build_new_profiles(
+            targets, existing_cwds=set(), group_id="group-1"
+        )
+
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0][1]
+        self.assertIn("  - name: Buzz", profile)
+        self.assertIn(f"      cwd: {buzz_path}", profile)
+        self.assertIn("        - 'aidevops opencode; exec zsh'", profile)
+
+    def test_registered_buzz_path_is_not_duplicated(self):
+        buzz_path = self.root / ".buzz"
+        buzz_path.mkdir()
+        self.repos_json.write_text(
+            '{{"initialized_repos": [{{"path": "{}"}}]}}'.format(buzz_path)
+        )
+
+        targets = tabby_profile_sync.get_profile_targets(
+            str(self.repos_json), home=str(self.root)
+        )
+
+        self.assertEqual([target["path"] for target in targets], [str(buzz_path)])
+
+
 class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
     """Regression coverage for Tabby OpenCode repair edge cases."""
 

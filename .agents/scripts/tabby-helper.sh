@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# tabby-helper.sh — Generate and sync Tabby terminal profiles from repos.json
+# tabby-helper.sh — Generate and sync Tabby terminal profiles
 #
-# Creates a Tabby profile for each repo in repos.json with:
+# Creates a profile for each repo in repos.json and detected workspaces with:
 # - Unique bright tab colour (dark-mode friendly)
 # - Matching built-in colour scheme (closest hue match)
 # - Direct OpenCode launch that leaves a shell open after exit
 # - Grouped under "Projects"
 #
 # Usage:
-#   tabby-helper.sh sync          # Sync profiles from repos.json (default)
+#   tabby-helper.sh sync          # Sync profiles and detected workspaces (default)
 #   tabby-helper.sh status        # Show current profile status
 #   tabby-helper.sh zshrc         # Deprecated no-op (TABBY_AUTORUN is unused)
 #   tabby-helper.sh fix-shell     # Ensure default local profile uses /bin/zsh (macOS)
@@ -71,7 +71,7 @@ cmd_sync() {
 		return 1
 	fi
 
-	_info "Syncing Tabby profiles from repos.json..."
+	_info "Syncing Tabby profiles from repos.json and detected workspaces..."
 
 	# Back up config before modifying
 	local backup="${TABBY_CONFIG}.backup"

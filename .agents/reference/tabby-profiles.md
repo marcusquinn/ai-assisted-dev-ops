@@ -4,7 +4,10 @@
 # Tabby profiles
 
 Use `.agents/scripts/tabby-profile-sync.py` to generate aidevops project profiles
-from `repos.json`.
+from `repos.json`. When `~/.buzz` exists, setup/update also generates a `Buzz`
+profile rooted there so OpenCode opens the Buzz-scoped session namespace. The
+profile is omitted when Buzz has not created that workspace, and an existing
+profile with the same working directory remains user-owned and unchanged.
 
 OpenCode profiles must not launch with `zsh -i -c opencode`. That shape runs an
 interactive zsh startup while executing a command string, which can make

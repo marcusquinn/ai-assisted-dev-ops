@@ -193,9 +193,9 @@ print_final_instructions() {
 	return 0
 }
 
-# Setup Tabby terminal profiles from repos.json.
-# Creates a profile per registered repo with colour-matched themes and
-# direct split-arg OpenCode launch settings.
+# Setup Tabby terminal profiles from repos.json and detected workspaces.
+# Creates a profile per registered repo plus a Buzz profile when ~/.buzz exists,
+# with colour-matched themes and direct split-arg OpenCode launch settings.
 # Skipped if Tabby is not installed.
 setup_tabby() {
 	local tabby_helper="$HOME/.aidevops/agents/scripts/tabby-helper.sh"
@@ -237,7 +237,7 @@ setup_tabby() {
 	bash "$tabby_helper" status || true
 	echo ""
 	local sync_tabby=""
-	setup_prompt sync_tabby "Sync Tabby profiles from repos.json? [Y/n]: " "Y"
+	setup_prompt sync_tabby "Sync Tabby profiles and detected workspaces? [Y/n]: " "Y"
 	if [[ "$sync_tabby" =~ ^[Yy]?$ ]]; then
 		bash "$tabby_helper" sync
 	else

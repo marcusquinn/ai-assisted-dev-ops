@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 """
-Sync Tabby terminal profiles from aidevops repos.json.
+Sync Tabby terminal profiles from aidevops repos.json and detected workspaces.
 
-Creates a profile for each registered repo with:
+Creates a profile for each registered repo and an optional Buzz workspace with:
 - Unique bright tab colour (dark-mode friendly)
 - Matching built-in Tabby colour scheme (closest hue)
 - Direct OpenCode launch that leaves a shell open after exit
@@ -22,6 +22,7 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from tabby_colour_utils import generate_tab_colour, find_closest_scheme
 from tabby_profile_repair import (
@@ -225,9 +226,41 @@ def get_repos(repos_json_path: str) -> list[dict]:
     return result
 
 
+def get_profile_targets(
+    repos_json_path: str, home: Optional[str] = None
+) -> list[dict]:
+    """Return registered repositories plus detected special workspaces.
+
+    Buzz-backed OpenCode sessions are scoped to ``~/.buzz``. Include that
+    workspace only when it exists, preserving the normal no-unused-profile
+    behavior for users who do not have Buzz installed.
+    """
+    targets = get_repos(repos_json_path)
+    home_path = (
+        os.path.expanduser(home) if home is not None else os.path.expanduser("~")
+    )
+    buzz_path = os.path.join(home_path, ".buzz")
+    if os.path.isdir(buzz_path) and all(
+        target["path"] != buzz_path for target in targets
+    ):
+        targets.append(
+            {
+                "path": buzz_path,
+                "name": "Buzz",
+                "repo": {"path": buzz_path, "profile_kind": "buzz-workspace"},
+            }
+        )
+    return targets
+
+
 def show_status(repos: list[dict], existing_cwds: set[str]) -> None:
-    """Print status of repos vs existing Tabby profiles."""
-    print(f"Repos in repos.json: {len(repos)}")
+    """Print status of profile targets vs existing Tabby profiles."""
+    workspace_count = sum(
+        repo["repo"].get("profile_kind") == "buzz-workspace" for repo in repos
+    )
+    print(f"Repos in repos.json: {len(repos) - workspace_count}")
+    if workspace_count:
+        print(f"Detected workspaces: {workspace_count}")
     has_profile = 0
     needs_profile = 0
     for repo in repos:
@@ -273,7 +306,7 @@ def build_new_profiles(
 
 def sync_profiles(args: argparse.Namespace) -> None:
     """Perform the profile sync: discover new repos and insert their profiles."""
-    repos = get_repos(args.repos_json)
+    repos = get_profile_targets(args.repos_json)
     config_text = load_yaml_simple(args.tabby_config)
     existing_cwds = extract_existing_cwds(config_text)
 
@@ -291,7 +324,7 @@ def sync_profiles(args: argparse.Namespace) -> None:
             save_yaml(args.tabby_config, config_text)
             print(f"Repaired {repaired_count} existing Tabby profile(s).")
         else:
-            print("All repos already have Tabby profiles. Nothing to do.")
+            print("All profile targets already have Tabby profiles. Nothing to do.")
         return
 
     new_block = "\n".join(p[1] for p in new_profiles)
@@ -306,13 +339,15 @@ def sync_profiles(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sync Tabby profiles from repos.json")
+    parser = argparse.ArgumentParser(
+        description="Sync Tabby profiles from repos.json and detected workspaces"
+    )
     parser.add_argument("--repos-json", required=True, help="Path to repos.json")
     parser.add_argument("--tabby-config", required=True, help="Path to Tabby config.yaml")
     parser.add_argument("--status-only", action="store_true", help="Show status without modifying")
     args = parser.parse_args()
 
-    repos = get_repos(args.repos_json)
+    repos = get_profile_targets(args.repos_json)
     config_text = load_yaml_simple(args.tabby_config)
     existing_cwds = extract_existing_cwds(config_text)
 
