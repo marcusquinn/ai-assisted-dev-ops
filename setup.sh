@@ -1483,6 +1483,24 @@ _setup_run_scoped_stage() {
 	return 0
 }
 
+reconcile_buzz_desktop_compatibility() {
+	local helper="${INSTALL_DIR}/agents/scripts/buzz-desktop-helper.sh"
+	[[ -x "$helper" ]] || return 0
+	local rc=0
+	bash "$helper" reconcile --quiet || rc=$?
+	case "$rc" in
+	0) return 0 ;;
+	2)
+		print_warning "Buzz Desktop compatibility reconciliation deferred until Buzz is closed; run: aidevops buzz apply"
+		return 0
+		;;
+	*)
+		print_warning "Buzz Desktop compatibility reconciliation failed; inspect with: aidevops buzz status"
+		return 0
+		;;
+	esac
+}
+
 _setup_run_non_interactive() {
 	print_info "Non-interactive mode: deploying agents and running safe migrations only"
 
@@ -1525,6 +1543,7 @@ _setup_run_non_interactive() {
 	_time_step "validate_opencode_config" validate_opencode_config
 	_time_step "$SETUP_STAGE_AGENTS" deploy_aidevops_agents
 	_time_step "$SETUP_STAGE_OPENCODE_PLUGINS" setup_opencode_plugins
+	_time_step "reconcile_buzz_desktop_compatibility" reconcile_buzz_desktop_compatibility
 	_time_step "_setup_install_pulse_plist_early" _setup_install_pulse_plist_early
 	_time_step "$SETUP_STAGE_HOTFIX_CONFIG" _deploy_hotfix_config
 	_time_step "setup_opencode_desktop_launcher" setup_opencode_desktop_launcher
@@ -1699,6 +1718,7 @@ _setup_run_interactive() {
 		deploy_aidevops_agents
 		_deploy_hotfix_config
 	}
+	reconcile_buzz_desktop_compatibility
 	# Launcher verification reads the deployed VERSION, so it must follow agent
 	# deployment on first-run interactive setup as it already does non-interactively.
 	confirm_step "Install and verify aidevops CLI command" && install_aidevops_cli

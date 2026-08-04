@@ -104,6 +104,7 @@ the required notices and preferred credit text.
 - `aidevops auto-update` - Automatic update polling (enable/disable/status)
 - `aidevops runtime-bundle list` - List retained validated runtime bundles; use `rollback --bundle-id <id> --reason <text>` for an explicit audited rollback
 - `aidevops gpt56-context [enable|disable|status]` - Keep GPT-5.6 at a 300K advertised context window in OpenCode (enabled by default), so 80% auto-compaction runs near 240K before long-context pricing; disable to use native provider limits
+- `aidevops buzz [status|apply|rollback]` - Inspect or manage Buzz Desktop OpenCode ACP compatibility
 - `aidevops secret` - Manage secrets (gopass encrypted, AI-safe)
 - `aidevops security` - Full security assessment (posture, secrets, supply chain)
 - `aidevops lint audit` - Audit native lint/format/typecheck commands and repo-verify hooks
@@ -572,6 +573,25 @@ The native `ai_research` tool uses OpenCode's configured providers and canonical
 - **[Claude](https://claude.ai/)** (Anthropic) - Fully supported alternative provider. Claude models remain useful for fallback, cross-provider verification, and users with Claude Pro/Max OAuth access.
 - **[Tabby](https://tabby.sh/)** - Recommended terminal. Colour-coded Profiles per project/repo, **auto-syncs tab titles with git/session context and marks OpenCode turns from the first submitted message as ⚪, 🔴, 🟡, or 🟢.**
 - **[Zed](https://zed.dev/)** - Recommended editor. High-performance with AI integration (use with the OpenCode Agent Extension).
+
+### Buzz Desktop OpenCode ACP compatibility
+
+Buzz Desktop 0.5.4 can save an OpenCode managed agent without the required
+`acp` runtime argument, causing ACP initialization to time out. On macOS,
+`aidevops init` and `aidevops update` automatically reconcile affected records
+after deploying the current helper. Close Buzz first; if it is running, setup
+defers the change and reports the manual command.
+
+```bash
+aidevops buzz status    # Inspect compatibility state without changing it
+aidevops buzz apply     # Add "acp" only to eligible empty argument lists
+aidevops buzz rollback  # Restore only fields changed by aidevops
+```
+
+The migration preserves custom runtime arguments and unknown record fields,
+uses private backups and rollback state, and fails closed for unsupported Buzz
+versions or unsafe store paths. It never prints the managed-agent store, which
+can contain fallback credentials.
 
 ### Troubleshooting Auth
 
