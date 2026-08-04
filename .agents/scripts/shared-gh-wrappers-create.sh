@@ -891,8 +891,9 @@ _ensure_origin_labels_for_args() {
 	case ",$_ORIGIN_LABELS_ENSURED," in
 	*",$repo,"*) return 0 ;;
 	esac
-	ensure_origin_labels_exist "$repo"
-	_ORIGIN_LABELS_ENSURED="${_ORIGIN_LABELS_ENSURED:+$_ORIGIN_LABELS_ENSURED,}$repo"
+	if ensure_origin_labels_exist "$repo"; then
+		_ORIGIN_LABELS_ENSURED="${_ORIGIN_LABELS_ENSURED:+$_ORIGIN_LABELS_ENSURED,}$repo"
+	fi
 	return 0
 }
 
@@ -901,14 +902,25 @@ _ensure_origin_labels_for_args() {
 ensure_origin_labels_exist() {
 	local repo="$1"
 	[[ -z "$repo" ]] && return 1
-	_gh_with_timeout write gh label create "origin:worker" --repo "$repo" \
-		--description "Created by headless/pulse worker session" \
-		--color "C5DEF5" 2>/dev/null || true
-	_gh_with_timeout write gh label create "origin:interactive" --repo "$repo" \
-		--description "Created by interactive user session" \
-		--color "BFD4F2" 2>/dev/null || true
-	_gh_with_timeout write gh label create "origin:worker-takeover" --repo "$repo" \
-		--description "Worker took over from interactive session" \
-		--color "D4C5F9" 2>/dev/null || true
+	local labels_snapshot=""
+	labels_snapshot=$(_gh_managed_label_names_snapshot "$repo") || return 1
+	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:worker"; then
+		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+			_gh_with_timeout write gh label create "origin:worker" --repo "$repo" \
+			--description "Created by headless/pulse worker session" \
+			--color "C5DEF5" 2>/dev/null || return 1
+	fi
+	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:interactive"; then
+		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+			_gh_with_timeout write gh label create "origin:interactive" --repo "$repo" \
+			--description "Created by interactive user session" \
+			--color "BFD4F2" 2>/dev/null || return 1
+	fi
+	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:worker-takeover"; then
+		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+			_gh_with_timeout write gh label create "origin:worker-takeover" --repo "$repo" \
+			--description "Worker took over from interactive session" \
+			--color "D4C5F9" 2>/dev/null || return 1
+	fi
 	return 0
 }

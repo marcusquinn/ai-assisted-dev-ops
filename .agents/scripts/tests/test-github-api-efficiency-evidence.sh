@@ -222,6 +222,26 @@ EVENTS = [
 complete = transport(EVENTS)
 write_json(ROOT / "complete-report.json", complete)
 
+empty_distribution_names = {
+    "population.unchanged_cycles",
+    "population.actionable_changes",
+    "population.actionable_head_token",
+    "latency.completed_action_ms",
+    "webhook.invalidations",
+    "webhook.lag_ms",
+    "path_budgets.aggregate_check_fetches",
+    "path_budgets.cycle_scoped_aggregate_check_fetches",
+    "path_budgets.cycle_scoped_actionable_head_token",
+}
+empty_distribution_events = [
+    event for event in EVENTS if event[0] not in empty_distribution_names
+]
+empty_distribution_events.append(("population.unchanged_cycles", "4", 1))
+write_json(
+    ROOT / "empty-distributions-report.json",
+    transport(empty_distribution_events),
+)
+
 mixed_contract_events = EVENTS + [
     ("contract", "1", 1),
     ("coverage-start", "800", 1),
@@ -296,6 +316,16 @@ test_contract_migration_evidence() {
     return 0
 }
 
+finish_test_run() {
+    printf "\nTests run: %d\n" "$TESTS_RUN"
+    if [[ "$TESTS_FAILED" -gt 0 ]]; then
+        printf "Tests failed: %d\n" "$TESTS_FAILED"
+        return 1
+    fi
+    printf "All tests passed\n"
+    return 0
+}
+
 main() {
     local complete_report="${TEST_ROOT}/complete-report.json"
     local complete_output="${TEST_ROOT}/complete-evidence.json"
@@ -309,9 +339,9 @@ main() {
     run_build "$complete_report" "$complete_output"
     assert_eq "complete evidence exits zero" "0" "$LAST_EXIT"
     assert_contains "complete evidence reports status" "evidence sidecar: complete" "$LAST_OUTPUT"
-    assert_jq "complete evidence populates every group" ".complete and .population.repository_count == 10 and .population.pulse_cycles == 4 and .population.unchanged_cycles == 3 and .population.actionable_changes == 3 and .population.unique_actionable_head_shas == 2 and .latency.p50_ms == 10 and .latency.p95_ms == 30 and .latency.peak_attempts_per_minute == 2 and .latency.completed_action_p95_ms == 200 and .cache.fresh_hits == 3 and .cache.fresh_empty_hits == 1 and .cache.misses == 2 and .cache.stale == 1 and .cache.invalidated == 1 and .single_flight.leaders == 2 and .single_flight.waits == 1 and .single_flight.takeovers == 0 and .single_flight.duplicate_leaders == 0 and .webhook.invalidations == 2 and .webhook.lag_p50_ms == 30 and .webhook.lag_p95_ms == 30 and .webhook.duplicate_actions == 0 and .webhook.missed_recoveries == 0 and .guardrails.stale_snapshot_detections == 1 and .guardrails.forced_live_refreshes == 1 and .guardrails.stale_positive_decisions == 0 and .guardrails.dispatch_dependency_violations == 0 and .guardrails.required_check_merge_preflight_mismatches == 0 and .path_budgets.aggregate_check_fetches == 2 and .path_budgets.cycle_scoped_aggregate_check_fetches == 2 and .path_budgets.unique_cycle_scoped_actionable_heads == 2 and (._meta.missing_fields | length) == 0" "$complete_output"
+    assert_jq "complete evidence populates every group" ".complete and .population.repository_count == 10 and .population.pulse_cycles == 4 and .population.unchanged_cycles == 3 and .population.actionable_changes == 3 and .population.unique_actionable_head_shas == 2 and .latency.p50_ms == 10 and .latency.p95_ms == 30 and .latency.peak_attempts_per_minute == 2 and .latency.completed_action_samples == 3 and .latency.completed_action_p95_ms == 200 and .cache.fresh_hits == 3 and .cache.fresh_empty_hits == 1 and .cache.misses == 2 and .cache.stale == 1 and .cache.invalidated == 1 and .single_flight.leaders == 2 and .single_flight.waits == 1 and .single_flight.takeovers == 0 and .single_flight.duplicate_leaders == 0 and .webhook.invalidations == 2 and .webhook.lag_samples == 3 and .webhook.lag_p50_ms == 30 and .webhook.lag_p95_ms == 30 and .webhook.duplicate_actions == 0 and .webhook.missed_recoveries == 0 and .guardrails.stale_snapshot_detections == 1 and .guardrails.forced_live_refreshes == 1 and .guardrails.stale_positive_decisions == 0 and .guardrails.dispatch_dependency_violations == 0 and .guardrails.required_check_merge_preflight_mismatches == 0 and .path_budgets.aggregate_check_fetches == 2 and .path_budgets.cycle_scoped_aggregate_check_fetches == 2 and .path_budgets.unique_cycle_scoped_actionable_heads == 2 and (._meta.missing_fields | length) == 0" "$complete_output"
     schema=$(jq -r .schema "$complete_output")
-    assert_eq "sidecar schema is versioned" "aidevops-github-api-efficiency-evidence/v2" "$schema"
+    assert_eq "sidecar schema is versioned" "aidevops-github-api-efficiency-evidence/v3" "$schema"
     repository_set=$(jq -r .population.repository_set_sha256 "$complete_output")
     assert_eq "repository population stays digest-only" "$(printf "a%.0s" {1..64})" "$repository_set"
     expected_digest=$(file_sha256 "$complete_report")
@@ -319,6 +349,11 @@ main() {
     assert_eq "sidecar binds exact transport bytes" "$expected_digest" "$actual_digest"
     mode=$(file_mode "$complete_output")
     assert_eq "sidecar output is private" "600" "$mode"
+
+    local empty_output="${TEST_ROOT}/empty-distributions-evidence.json"
+    run_build "${TEST_ROOT}/empty-distributions-report.json" "$empty_output"
+    assert_eq "observed empty distributions exit zero" "0" "$LAST_EXIT"
+    assert_jq "observed empty distributions remain complete" '.complete == true and .population.unchanged_cycles == 4 and .population.actionable_changes == 0 and .latency.completed_action_samples == 0 and .latency.completed_action_p95_ms == null and .webhook.invalidations == 0 and .webhook.lag_samples == 0 and .webhook.lag_p50_ms == null and .webhook.lag_p95_ms == null and (._meta.missing_fields | length) == 0' "$empty_output"
 
     test_contract_migration_evidence
 
@@ -334,12 +369,12 @@ main() {
     run_build "${TEST_ROOT}/incomplete-report.json" "$incomplete_output"
     assert_eq "partial coverage exits zero" "0" "$LAST_EXIT"
     assert_contains "partial coverage reports incomplete" "evidence sidecar: incomplete" "$LAST_OUTPUT"
-    assert_jq "unsupported group stays null" ".complete == false and .webhook.invalidations == null and .webhook.lag_p50_ms == null and ._meta.coverage_groups.webhook == false and (._meta.missing_fields | length) == 5" "$incomplete_output"
+    assert_jq "unsupported group stays null" ".complete == false and .webhook.invalidations == null and .webhook.lag_samples == null and .webhook.lag_p50_ms == null and ._meta.coverage_groups.webhook == false and (._meta.missing_fields | length) == 6" "$incomplete_output"
 
     local unknown_latency_output="${TEST_ROOT}/unknown-latency-evidence.json"
     run_build "${TEST_ROOT}/unknown-latency-report.json" "$unknown_latency_output"
     assert_eq "unknown latency evidence exits zero" "0" "$LAST_EXIT"
-    assert_jq "unknown latency invalidates only latency coverage" ".complete == false and .latency.p50_ms == null and .latency.p95_ms == null and .latency.peak_attempts_per_minute == null and .latency.completed_action_p95_ms == null and ._meta.coverage_groups.latency == false and (._meta.missing_fields | length) == 4" "$unknown_latency_output"
+    assert_jq "unknown latency invalidates only latency coverage" ".complete == false and .latency.p50_ms == null and .latency.p95_ms == null and .latency.peak_attempts_per_minute == null and .latency.completed_action_samples == null and .latency.completed_action_p95_ms == null and ._meta.coverage_groups.latency == false and (._meta.missing_fields | length) == 5" "$unknown_latency_output"
 
     test_hash_failure_evidence
 
@@ -387,13 +422,8 @@ main() {
     assert_contains "symlink input explains rejection" "regular, non-symlink file" "$LAST_OUTPUT"
     assert_missing "symlink input writes no sidecar" "$linked_output"
 
-    printf "\nTests run: %d\n" "$TESTS_RUN"
-    if [[ "$TESTS_FAILED" -gt 0 ]]; then
-        printf "Tests failed: %d\n" "$TESTS_FAILED"
-        return 1
-    fi
-    printf "All tests passed\n"
-    return 0
+    finish_test_run
+    return $?
 }
 
 main "$@"

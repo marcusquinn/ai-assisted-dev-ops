@@ -310,6 +310,11 @@ if [[ "${1:-}" == "api" ]]; then
 			break
 		fi
 	done
+	if [[ "$*" == *"/pulls/"*"/files"* ]]; then
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "pulse-pr-files-rest" ]] || exit 1
+		printf '%s\n' '.agents/scripts/pulse-merge.sh'
+		exit 0
+	fi
 	if [[ "$*" == *"/pulls/"*"/reviews"* ]]; then
 		if [[ -n "$_jq_filter" ]]; then
 			jq "$_jq_filter" <"${TEST_ROOT}/reviews.json"

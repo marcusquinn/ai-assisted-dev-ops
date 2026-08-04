@@ -578,6 +578,66 @@ else
 fi
 
 # =============================================================================
+# Test 10: response-metered GraphQL population read is exact and fail-closed
+# =============================================================================
+
+cat >"${STUB_DIR}/gh" <<'STUB'
+#!/usr/bin/env bash
+printf 'response=%s route=%s gh %s\n' \
+	"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+	"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >>"$GH_CALLS_LOG"
+[[ "${1:-}" == "api" && "${2:-}" == "graphql" ]] || exit 1
+case "${DIRTY_GRAPHQL_MODE:-valid}" in
+	missing-cost)
+		printf '%s\n' '{"data":{"repository":{"pullRequests":{"nodes":[]}}}}'
+		;;
+	partial-labels)
+		printf '%s\n' '{"data":{"repository":{"pullRequests":{"nodes":[{"number":77,"title":"dirty","mergeStateStatus":"DIRTY","createdAt":"2026-08-01T00:00:00Z","updatedAt":"2026-08-02T00:00:00Z","author":{"login":"worker"},"labels":{"nodes":[{"name":"origin:worker"}],"pageInfo":{"hasNextPage":true}},"headRefName":"fix/dirty","baseRefName":"main","body":"For #77"}]}},"rateLimit":{"cost":1}}}'
+		;;
+	*)
+		printf '%s\n' '{"data":{"repository":{"pullRequests":{"nodes":[{"number":77,"title":"dirty","mergeStateStatus":"DIRTY","createdAt":"2026-08-01T00:00:00Z","updatedAt":"2026-08-02T00:00:00Z","author":{"login":"worker"},"labels":{"nodes":[{"name":"origin:worker"}],"pageInfo":{"hasNextPage":false}},"headRefName":"fix/dirty","baseRefName":"main","body":"For #77"}]}},"rateLimit":{"cost":1}}}'
+		;;
+esac
+exit 0
+STUB
+chmod +x "${STUB_DIR}/gh"
+: >"$GH_CALLS_LOG"
+export PATH="${STUB_DIR}:${PATH_ORIG}"
+export GH_CALLS_LOG
+
+DIRTY_GRAPHQL_MODE=valid
+export DIRTY_GRAPHQL_MODE
+graphql_out=""
+graphql_rc=0
+graphql_out=$(_dirty_pr_sweep_open_prs_graphql "test/repo" 100) || graphql_rc=$?
+if [[ "$graphql_rc" -eq 0 ]] \
+	&& printf '%s' "$graphql_out" | jq -e 'length == 1 and .[0].number == 77 and .[0].labels[0].name == "origin:worker"' >/dev/null \
+	&& grep -q 'response=1 route=dirty-pr-sweep-exact-cost gh api graphql' "$GH_CALLS_LOG"; then
+	print_result "exact GraphQL population read returns compatible JSON and response-owned cost" 0
+else
+	print_result "exact GraphQL population read returns compatible JSON and response-owned cost" 1 "rc=${graphql_rc}; output=${graphql_out}"
+fi
+
+DIRTY_GRAPHQL_MODE=missing-cost
+graphql_rc=0
+_dirty_pr_sweep_open_prs_graphql "test/repo" 100 >/dev/null 2>&1 || graphql_rc=$?
+if [[ "$graphql_rc" -ne 0 ]]; then
+	print_result "exact GraphQL population read rejects missing response cost" 0
+else
+	print_result "exact GraphQL population read rejects missing response cost" 1
+fi
+
+DIRTY_GRAPHQL_MODE=partial-labels
+graphql_rc=0
+_dirty_pr_sweep_open_prs_graphql "test/repo" 100 >/dev/null 2>&1 || graphql_rc=$?
+if [[ "$graphql_rc" -ne 0 ]]; then
+	print_result "exact GraphQL population read rejects partial label metadata" 0
+else
+	print_result "exact GraphQL population read rejects partial label metadata" 1
+fi
+export PATH="$PATH_ORIG"
+
+# =============================================================================
 # Summary
 # =============================================================================
 

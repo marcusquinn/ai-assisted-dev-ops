@@ -111,21 +111,38 @@ setup_test_env() {
 	: >"$GH_LOG"
 	export TEST_ROOT GH_LOG
 
-	# Mock gh: only handles the two `gh pr view` shapes used by this gate
-	# and its delegates. Any other call exits 0 silently.
+	# Mock gh: handles the response-metered GraphQL metadata read plus the two
+	# remaining `gh pr view` shapes used by delegates. Other calls exit 0.
 	cat >"${TEST_ROOT}/bin/gh" <<'GHEOF'
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >>"${GH_LOG:-/dev/null}"
 
-# gh pr view N --repo R --json author,labels,isCrossRepository,headRefOid
-if [[ "$*" == *"--json author,labels,isCrossRepository,headRefOid"* ]]; then
+# Response-metered final-authority metadata read.
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
 	if [[ -f "${TEST_ROOT}/pr-meta-fail" ]]; then
 		exit 1
 	fi
 	if [[ -f "${TEST_ROOT}/pr-meta-empty" ]]; then
 		exit 0
 	fi
-	cat "${TEST_ROOT}/labels.json"
+	has_next_page=false
+	[[ -f "${TEST_ROOT}/pr-meta-partial-labels" ]] && has_next_page=true
+	response=$(jq -c --argjson has_next_page "$has_next_page" '
+		{data: {
+			repository: {pullRequest: {
+				author: .author,
+				labels: {nodes: .labels, pageInfo: {hasNextPage: $has_next_page}},
+				isCrossRepository: .isCrossRepository,
+				headRefOid: .headRefOid
+			}},
+			rateLimit: {cost: 1}
+		}}
+	' "${TEST_ROOT}/labels.json") || exit 1
+	if [[ -f "${TEST_ROOT}/pr-meta-missing-cost" ]]; then
+		printf '%s' "$response" | jq -c 'del(.data.rateLimit)'
+	else
+		printf '%s\n' "$response"
+	fi
 	exit 0
 fi
 
@@ -196,6 +213,7 @@ define_helpers_under_test() {
 		/^_extract_linked_issue\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 	gates_src=$(awk '
+		/^_pulse_merge_admin_pr_json_graphql\(\) \{/,/^}$/ { print }
 		/^_external_pr_has_linked_issue\(\) \{/,/^}$/ { print }
 		/^_external_pr_linked_issue_crypto_approved\(\) \{/,/^}$/ { print }
 		/^_external_pr_current_head_crypto_approved\(\) \{/,/^}$/ { print }
@@ -297,7 +315,7 @@ test_case_m_pr_metadata_command_failure_is_logged() {
 	local result=0
 	_pulse_merge_admin_safety_check "940" "owner/repo" "head-current" || result=$?
 	rm -f "${TEST_ROOT}/pr-meta-fail"
-	if [[ "$result" -eq 1 ]] && grep -qF "gh pr view failed for PR #940 in owner/repo — failing closed" "$LOGFILE"; then
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #940 in owner/repo — failing closed" "$LOGFILE"; then
 		print_result "Case M: PR metadata command failure is logged" 0
 		return 0
 	fi
@@ -311,7 +329,7 @@ test_case_n_empty_pr_metadata_is_logged() {
 	local result=0
 	_pulse_merge_admin_safety_check "941" "owner/repo" "head-current" || result=$?
 	rm -f "${TEST_ROOT}/pr-meta-empty"
-	if [[ "$result" -eq 1 ]] && grep -qF "gh pr view returned empty metadata for PR #941 in owner/repo — failing closed" "$LOGFILE"; then
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #941 in owner/repo — failing closed" "$LOGFILE"; then
 		print_result "Case N: empty PR metadata is logged" 0
 		return 0
 	fi
@@ -324,7 +342,7 @@ test_case_o_malformed_pr_metadata_is_logged() {
 	printf '%s' '{not-json' >"${TEST_ROOT}/labels.json"
 	local result=0
 	_pulse_merge_admin_safety_check "942" "owner/repo" "head-current" || result=$?
-	if [[ "$result" -eq 1 ]] && grep -qF "gh pr view returned malformed metadata for PR #942 in owner/repo — failing closed" "$LOGFILE"; then
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #942 in owner/repo — failing closed" "$LOGFILE"; then
 		print_result "Case O: malformed PR metadata is logged" 0
 		return 0
 	fi
@@ -337,7 +355,7 @@ test_case_p_missing_pr_identity_is_logged() {
 	printf '%s' '{"author":null,"labels":[],"isCrossRepository":false,"headRefOid":""}' >"${TEST_ROOT}/labels.json"
 	local result=0
 	_pulse_merge_admin_safety_check "943" "owner/repo" "head-current" || result=$?
-	if [[ "$result" -eq 1 ]] && grep -qF "missing head SHA or author for PR #943 in owner/repo — failing closed" "$LOGFILE"; then
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #943 in owner/repo — failing closed" "$LOGFILE"; then
 		print_result "Case P: missing PR identity is logged" 0
 		return 0
 	fi
@@ -359,6 +377,36 @@ test_case_q_linked_issue_extraction_failure_is_logged() {
 		return 0
 	fi
 	print_result "Case Q: linked issue extraction failure is logged" 1 "rc=${result}; log=$(cat "$LOGFILE")"
+	return 0
+}
+
+test_case_r_missing_response_cost_fails_closed() {
+	: >"$LOGFILE"
+	set_fixture '[{"name":"bug"}]' 'false' '## Summary\n\nResolves #945' 'VERIFIED'
+	touch "${TEST_ROOT}/pr-meta-missing-cost"
+	local result=0
+	_pulse_merge_admin_safety_check "945" "owner/repo" "head-current" || result=$?
+	rm -f "${TEST_ROOT}/pr-meta-missing-cost"
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #945 in owner/repo — failing closed" "$LOGFILE"; then
+		print_result "Case R: missing response cost fails closed" 0
+		return 0
+	fi
+	print_result "Case R: missing response cost fails closed" 1 "rc=${result}; log=$(cat "$LOGFILE")"
+	return 0
+}
+
+test_case_s_partial_label_connection_fails_closed() {
+	: >"$LOGFILE"
+	set_fixture '[{"name":"bug"}]' 'false' '## Summary\n\nResolves #946' 'VERIFIED'
+	touch "${TEST_ROOT}/pr-meta-partial-labels"
+	local result=0
+	_pulse_merge_admin_safety_check "946" "owner/repo" "head-current" || result=$?
+	rm -f "${TEST_ROOT}/pr-meta-partial-labels"
+	if [[ "$result" -eq 1 ]] && grep -qF "exact GraphQL metadata read failed for PR #946 in owner/repo — failing closed" "$LOGFILE"; then
+		print_result "Case S: partial label connection fails closed" 0
+		return 0
+	fi
+	print_result "Case S: partial label connection fails closed" 1 "rc=${result}; log=$(cat "$LOGFILE")"
 	return 0
 }
 
@@ -629,6 +677,8 @@ main() {
 	test_case_o_malformed_pr_metadata_is_logged
 	test_case_p_missing_pr_identity_is_logged
 	test_case_q_linked_issue_extraction_failure_is_logged
+	test_case_r_missing_response_cost_fails_closed
+	test_case_s_partial_label_connection_fails_closed
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

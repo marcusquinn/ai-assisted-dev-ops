@@ -19,7 +19,7 @@ from github_api_efficiency_metrics import (
 )
 
 
-EVIDENCE_SCHEMA = "aidevops-github-api-efficiency-evidence/v2"
+EVIDENCE_SCHEMA = "aidevops-github-api-efficiency-evidence/v3"
 TRANSPORT_SCHEMA_VERSION = 2
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -62,12 +62,14 @@ EVIDENCE_GROUPS = {
         "p50_ms",
         "p95_ms",
         "peak_attempts_per_minute",
+        "completed_action_samples",
         "completed_action_p95_ms",
     ),
     "cache": ("fresh_hits", "fresh_empty_hits", "misses", "stale", "invalidated"),
     "single_flight": ("leaders", "waits", "takeovers", "duplicate_leaders"),
     "webhook": (
         "invalidations",
+        "lag_samples",
         "lag_p50_ms",
         "lag_p95_ms",
         "duplicate_actions",
@@ -87,6 +89,11 @@ EVIDENCE_GROUPS = {
         "cycle_scoped_aggregate_check_fetches",
         "unique_cycle_scoped_actionable_heads",
     ),
+}
+DISTRIBUTION_SAMPLE_FIELDS = {
+    ("latency", "completed_action_p95_ms"): "completed_action_samples",
+    ("webhook", "lag_p50_ms"): "lag_samples",
+    ("webhook", "lag_p95_ms"): "lag_samples",
 }
 _MEASURED_EVIDENCE_FIELDS = frozenset(
     (
@@ -286,6 +293,27 @@ def _validate_evidence_groups(payload: dict[str, Any]) -> None:
             )
 
 
+def _validate_distribution_relationships(payload: dict[str, Any]) -> None:
+    for (group_name, percentile_field), sample_field in (
+        DISTRIBUTION_SAMPLE_FIELDS.items()
+    ):
+        samples = payload[group_name][sample_field]
+        percentile = payload[group_name][percentile_field]
+        context = f"evidence.{group_name}.{percentile_field}"
+        if samples is None:
+            if percentile is not None:
+                raise BenchmarkInputError(f"{context} requires a sample count")
+            continue
+        if samples == 0 and percentile is not None:
+            raise BenchmarkInputError(
+                f"{context} must be null when its sample count is zero"
+            )
+        if samples > 0 and percentile is None:
+            raise BenchmarkInputError(
+                f"{context} is required when its sample count is positive"
+            )
+
+
 def _validate_evidence(
     payload: dict[str, Any], transport_sha256: str
 ) -> None:
@@ -299,6 +327,7 @@ def _validate_evidence(
         raise BenchmarkInputError("evidence.complete must be boolean")
     _validate_population(payload)
     _validate_evidence_groups(payload)
+    _validate_distribution_relationships(payload)
     _validate_evidence_relationships(payload)
 
 

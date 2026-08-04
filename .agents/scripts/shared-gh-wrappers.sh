@@ -493,6 +493,29 @@ _gh_with_timeout() {
 	return $rc
 }
 
+# Fetch repository label names once before opportunistic managed-label setup.
+# This keeps converged repositories read-only instead of relying on expected
+# HTTP 422 responses from repeated `gh label create` calls.
+_GH_MANAGED_LABEL_CREATE_ROUTE="managed-label-create-rest"
+_gh_managed_label_names_snapshot() {
+	local repo="$1"
+	[[ -n "$repo" ]] || return 1
+	AIDEVOPS_GH_ROUTE_DECISION="managed-label-inventory-rest" \
+		_gh_with_timeout read gh api "/repos/${repo}/labels?per_page=100" --paginate \
+		--jq '.[].name'
+	return $?
+}
+
+_gh_managed_label_snapshot_has() {
+	local snapshot="$1"
+	local expected_name="$2"
+	local actual_name=""
+	while IFS= read -r actual_name; do
+		[[ "$actual_name" == "$expected_name" ]] && return 0
+	done <<<"$snapshot"
+	return 1
+}
+
 # =============================================================================
 # Safe gh Edit Wrappers — Validation (GH#19857)
 # =============================================================================
@@ -946,17 +969,30 @@ set_origin_label() {
 #######################################
 # Ensure solved:* attribution labels exist on a repo (idempotent).
 # Args: $1 — repo slug (owner/repo)
-# Returns: 0 on success/no-op, 1 when repo is empty.
+# Returns: 0 on success/no-op, 1 when inventory or creation fails.
 #######################################
+_SOLVED_LABELS_ENSURED=""
 ensure_solved_labels_exist() {
 	local repo="$1"
 	[[ -z "$repo" ]] && return 1
-	_gh_with_timeout write gh label create "solved:worker" --repo "$repo" \
-		--description "Task was solved by a headless worker" \
-		--color "0E8A16" 2>/dev/null || true
-	_gh_with_timeout write gh label create "solved:interactive" --repo "$repo" \
-		--description "Task was solved by an interactive session" \
-		--color "BFD4F2" 2>/dev/null || true
+	case ",${_SOLVED_LABELS_ENSURED:-}," in
+	*",$repo,"*) return 0 ;;
+	esac
+	local labels_snapshot=""
+	labels_snapshot=$(_gh_managed_label_names_snapshot "$repo") || return 1
+	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "solved:worker"; then
+		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+			_gh_with_timeout write gh label create "solved:worker" --repo "$repo" \
+			--description "Task was solved by a headless worker" \
+			--color "0E8A16" 2>/dev/null || return 1
+	fi
+	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "solved:interactive"; then
+		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+			_gh_with_timeout write gh label create "solved:interactive" --repo "$repo" \
+			--description "Task was solved by an interactive session" \
+			--color "BFD4F2" 2>/dev/null || return 1
+	fi
+	_SOLVED_LABELS_ENSURED="${_SOLVED_LABELS_ENSURED:+$_SOLVED_LABELS_ENSURED,}$repo"
 	return 0
 }
 

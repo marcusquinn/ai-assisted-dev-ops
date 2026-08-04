@@ -236,8 +236,12 @@ _pr_handoff_state_for_branch_or_issue() {
 	fi
 
 	if [[ -n "$branch_name" ]]; then
-		if pr_json=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state all \
-			--limit 10 --json number,state,isDraft,mergedAt,headRefOid,labels,statusCheckRollup 2>/dev/null); then
+		# This lifecycle probe only consumes REST-compatible fields. Prefer the
+		# live pulls endpoint explicitly so a healthy GraphQL pool cannot turn a
+		# recurring exact-head check into an unattributable native query.
+		if pr_json=$(AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_list \
+			--repo "$repo_slug" --head "$branch_name" --state all \
+			--limit 10 --json number,state,isDraft,mergedAt,headRefOid,labels 2>/dev/null); then
 			queried=1
 			pr_state=$(_pr_handoff_state_from_json "$pr_json" "$expected_head")
 			if [[ -n "$pr_state" ]]; then
@@ -258,7 +262,8 @@ _pr_handoff_state_for_branch_or_issue() {
 	fi
 
 	if [[ -n "$issue_number" && "$match_scope" != "head-only" ]]; then
-		if pr_json=$(gh_pr_list --repo "$repo_slug" --search "#${issue_number} in:body" --state open \
+		if pr_json=$(AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_list \
+			--repo "$repo_slug" --search "#${issue_number} in:body" --state open \
 			--limit 10 --json number 2>/dev/null); then
 			queried=1
 			pr_state=$(printf '%s' "$pr_json" | jq -r '.[0].number // empty' 2>/dev/null || true)

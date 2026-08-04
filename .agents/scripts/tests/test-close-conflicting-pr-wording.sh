@@ -57,13 +57,71 @@ print_result() {
 # Response files (written by set_responses):
 #   $TEST_ROOT/commits.json     — output for `gh api repos/.../commits` (JSON array)
 #   $TEST_ROOT/commit-files.txt — output for `gh api repos/.../commits/SHA` (lines)
-#   $TEST_ROOT/pr-files.txt     — output for `gh pr view N --json files` (lines)
+#   $TEST_ROOT/pr-files.txt     — output for pull-files REST pagination (lines)
 #   $TEST_ROOT/pr-labels.txt    — output for `gh pr view N --json labels` (lines)
 #   $TEST_ROOT/pr-branch.txt    — head branch for `gh pr view N --json headRefName`
 #   $TEST_ROOT/pr-base-branch.txt — base branch for `gh pr view N --json baseRefName`
 #
 # A missing or empty response file makes the stub exit 1, simulating a gh
 # API failure for the relevant call.
+append_stub_gh_pr_view() {
+	cat >>"${STUB_DIR}/gh" <<STUB_EOF
+if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
+	field=""
+	args=("\$@")
+	i=2
+	while [[ \$i -lt \${#args[@]} ]]; do
+		if [[ "\${args[\$i]}" == "--json" ]]; then
+			j=\$((i + 1))
+			field="\${args[\$j]}"
+			break
+		fi
+		i=\$((i + 1))
+	done
+	case "\$field" in
+		"headRefName,baseRefName")
+			head_branch="feature/test"; base_branch="main"
+			[[ -f "\${TEST_ROOT}/pr-branch.txt" ]] && head_branch=\$(cat "\${TEST_ROOT}/pr-branch.txt")
+			[[ -f "\${TEST_ROOT}/pr-base-branch.txt" ]] && base_branch=\$(cat "\${TEST_ROOT}/pr-base-branch.txt")
+			printf '%s\t%s\n' "\$head_branch" "\$base_branch"
+			exit 0
+			;;
+		labels)
+			response="\${TEST_ROOT}/pr-labels.txt"
+			if [[ -f "\$response" ]]; then cat "\$response"; fi
+			exit 0
+			;;
+		"labels,author")
+			response="\${TEST_ROOT}/pr-meta.json"
+			if [[ -f "\$response" ]]; then
+				cat "\$response"
+			else
+				echo '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}'
+			fi
+			exit 0
+			;;
+		files)
+			response="\${TEST_ROOT}/pr-files.txt"
+			if [[ ! -s "\$response" ]]; then exit 1; fi
+			cat "\$response"
+			exit 0
+			;;
+		headRefName)
+			response="\${TEST_ROOT}/pr-branch.txt"
+			if [[ -f "\$response" ]]; then cat "\$response"; else echo "feature/test"; fi
+			exit 0
+			;;
+		*)
+			exit 0
+			;;
+	esac
+fi
+
+exit 0
+STUB_EOF
+	return 0
+}
+
 write_stub_gh() {
 	cat >"${STUB_DIR}/gh" <<STUB_EOF
 #!/usr/bin/env bash
@@ -71,8 +129,21 @@ TEST_ROOT="${TEST_ROOT}"
 CAPTURED_COMMENT_FILE="${CAPTURED_COMMENT_FILE}"
 
 if [[ "\$1" == "api" ]]; then
-	url="\$2"
-	if [[ "\$url" =~ /commits/[a-f0-9]+\$ ]]; then
+	url=""
+	for arg in "\$@"; do
+		case "\$arg" in
+		repos/*) url="\$arg"; break ;;
+		esac
+	done
+	if [[ "\$url" =~ /pulls/[0-9]+/files ]]; then
+		[[ "\${AIDEVOPS_GH_ROUTE_DECISION:-}" == "pulse-pr-files-rest" ]] || exit 1
+		response="\${TEST_ROOT}/pr-files.txt"
+		if [[ ! -s "\$response" ]]; then
+			exit 1
+		fi
+		cat "\$response"
+		exit 0
+	elif [[ "\$url" =~ /commits/[a-f0-9]+\$ ]]; then
 		# gh api repos/X/Y/commits/SHA --jq '.files[].filename'
 		response="\${TEST_ROOT}/commit-files.txt"
 		if [[ ! -s "\$response" ]]; then
@@ -104,64 +175,8 @@ if [[ "\$1" == "pr" && "\$2" == "close" ]]; then
 	done
 	exit 0
 fi
-
-	if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
-	field=""
-	args=("\$@")
-	i=2
-	while [[ \$i -lt \${#args[@]} ]]; do
-		if [[ "\${args[\$i]}" == "--json" ]]; then
-			j=\$((i + 1))
-			field="\${args[\$j]}"
-			break
-		fi
-		i=\$((i + 1))
-	done
-	case "\$field" in
-		"headRefName,baseRefName")
-			head_branch="feature/test"; base_branch="main"
-			[[ -f "\${TEST_ROOT}/pr-branch.txt" ]] && head_branch=\$(cat "\${TEST_ROOT}/pr-branch.txt")
-			[[ -f "\${TEST_ROOT}/pr-base-branch.txt" ]] && base_branch=\$(cat "\${TEST_ROOT}/pr-base-branch.txt")
-			printf '%s\t%s\n' "\$head_branch" "\$base_branch"
-			exit 0
-			;;
-		labels)
-			response="\${TEST_ROOT}/pr-labels.txt"
-			if [[ -f "\$response" ]]; then cat "\$response"; fi
-			exit 0
-			;;
-		"labels,author")
-			# GH#20485/GH#29170: _close_conflicting_pr_check_ownership_guard fetches
-			# labels + author metadata in one call. Return pr-meta.json if
-			# present; fall back to a default that simulates a worker PR
-			# (origin:worker label, bot author) so existing tests are unaffected.
-			response="\${TEST_ROOT}/pr-meta.json"
-			if [[ -f "\$response" ]]; then
-				cat "\$response"
-			else
-				echo '{"labels":[{"name":"origin:worker"}],"author":{"login":"aidevops-worker[bot]"}}'
-			fi
-			exit 0
-			;;
-		files)
-			response="\${TEST_ROOT}/pr-files.txt"
-			if [[ ! -s "\$response" ]]; then exit 1; fi
-			cat "\$response"
-			exit 0
-			;;
-		headRefName)
-			response="\${TEST_ROOT}/pr-branch.txt"
-			if [[ -f "\$response" ]]; then cat "\$response"; else echo "feature/test"; fi
-			exit 0
-			;;
-		*)
-			exit 0
-			;;
-	esac
-fi
-
-exit 0
 STUB_EOF
+	append_stub_gh_pr_view
 	chmod +x "${STUB_DIR}/gh"
 	return 0
 }

@@ -141,7 +141,7 @@ relax quota attribution, or make concurrent uninstrumented API traffic exact.
 ### Evidence sidecar
 
 Each transport aggregate has one sidecar using
-`aidevops-github-api-efficiency-evidence/v2`. `transport_sha256` binds the
+`aidevops-github-api-efficiency-evidence/v3`. `transport_sha256` binds the
 sidecar to the exact aggregate bytes. The result also records the sidecar's own
 SHA-256 digest.
 
@@ -181,17 +181,19 @@ aggregate fetches inside the same scope. This distinguishes duplicate fetches in
 one cycle from freshness-required refreshes of an unchanged head in later cycles.
 The generation uses
 `github-api-efficiency-contract-v2-coverage-2.started-at`, so deployment starts a
-fresh bounded window automatically. Version-1 sidecars and earlier contract-2
-coverage windows remain immutable historical evidence.
+fresh bounded window automatically. Version-1 and version-2 sidecars plus
+earlier contract-2 coverage windows remain immutable historical evidence.
 
 The following is an intentionally incomplete template. Replace every required
 `null` with a privacy-safe observed value and set `complete` to `true` only when
-the whole fixed window has been reconciled. The transport digest must be 64
-lowercase hexadecimal characters.
+the whole fixed window has been reconciled. A distribution percentile remains
+`null` when its explicit sample count is observed as zero; this means “not
+applicable,” not “unknown.” The transport digest must be 64 lowercase
+hexadecimal characters.
 
 ```json
 {
-  "schema": "aidevops-github-api-efficiency-evidence/v2",
+  "schema": "aidevops-github-api-efficiency-evidence/v3",
   "transport_sha256": "<sha256-of-exact-transport-report>",
   "complete": false,
   "population": {
@@ -206,6 +208,7 @@ lowercase hexadecimal characters.
     "p50_ms": null,
     "p95_ms": null,
     "peak_attempts_per_minute": null,
+    "completed_action_samples": null,
     "completed_action_p95_ms": null
   },
   "cache": {
@@ -223,6 +226,7 @@ lowercase hexadecimal characters.
   },
   "webhook": {
     "invalidations": null,
+    "lag_samples": null,
     "lag_p50_ms": null,
     "lag_p95_ms": null,
     "duplicate_actions": null,
@@ -246,9 +250,12 @@ lowercase hexadecimal characters.
 ```
 
 Evidence values are non-negative JSON-safe numbers. Counts should remain
-integers. Repository identity is represented only by the SHA-256 digest of the
-sorted fixed repository set; do not put repository names, request payloads,
-tokens, URLs, or raw log records in the sidecar.
+integers. Sidecar v3 adds completed-action and webhook-lag sample counts so an
+observed empty distribution can remain complete without inventing a zero
+latency. Version-2 sidecars remain immutable historical evidence and are not
+accepted for new comparisons. Repository identity is represented only by the
+SHA-256 digest of the sorted fixed repository set; do not put repository names,
+request payloads, tokens, URLs, or raw log records in the sidecar.
 
 ### Evidence ownership
 
@@ -278,7 +285,10 @@ Default comparability rules:
   change by at most `25%`;
 - both reports contain exact attempts, zero unknown quota attempts, zero legacy
   or malformed records, and no unclassified transport attempts;
-- every sidecar field is known and both sidecars are marked complete;
+- every required sidecar field is known and both sidecars are marked complete;
+- a percentile may be null only when its matching sample count is zero; matching
+  empty distributions skip that metric, while one-sided sample availability is
+  noncomparable;
 - both windows contain at least one repository, Pulse cycle, and transport
   attempt.
 

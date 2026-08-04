@@ -106,6 +106,10 @@ POST_CHECK_HEAD="abc123"
 PR_VIEW_CACHE_CONTROL_FILE="${TMP_DIR}/pr-view-cache-control.log"
 : >"$PR_VIEW_CACHE_CONTROL_FILE"
 gh() {
+	if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+		printf '%s\n' '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"","headRefOid":"abc123","headRefName":"fixture-remote"}},"rateLimit":{"cost":1}}}'
+		return 0
+	fi
 	if [[ "$1" == "api" && "$2" == "repos/owner/repo" ]]; then
 		if [[ "$CHECK_MODE" == "api-error" ]]; then
 			return 1

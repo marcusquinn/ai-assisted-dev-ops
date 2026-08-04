@@ -129,7 +129,7 @@ api)
 		if [[ -n "${FIX_GRAPHQL:-}" && -f "$FIX_GRAPHQL" ]]; then
 			cat "$FIX_GRAPHQL"
 		else
-			echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+			echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		fi
 		;;
 	*pulls*/reviews*)
@@ -285,7 +285,7 @@ write_graphql_fixture() {
 	done
 	threads_json+="]"
 	jq -n --argjson nodes "$threads_json" \
-		'{data: {repository: {pullRequest: {reviewThreads: {nodes: $nodes}}}}}' \
+		'{data: {repository: {pullRequest: {reviewThreads: {nodes: $nodes, pageInfo: {hasNextPage: false}}}}, rateLimit: {cost: 1}}}' \
 		>"$out"
 	return 0
 }
@@ -561,7 +561,7 @@ sub="${2:-}"
 case "$cmd" in
 api)
 	case "$sub" in
-	graphql) [[ -f "${FIX_GRAPHQL:-/dev/null}" ]] && cat "$FIX_GRAPHQL" || echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+	graphql) [[ -f "${FIX_GRAPHQL:-/dev/null}" ]] && cat "$FIX_GRAPHQL" || echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}' ;;
 	*pulls*/reviews*) [[ -f "${FIX_REVIEWS:-/dev/null}" ]] && cat "$FIX_REVIEWS" || echo '[]' ;;
 	*pulls*/comments*) [[ -f "${FIX_COMMENTS:-/dev/null}" ]] && cat "$FIX_COMMENTS" || echo '[]' ;;
 	*) echo '{}' ;;
@@ -605,6 +605,22 @@ assert_rc "refresh propagates issue list failure" "2" "$rc"
 assert_contains "refresh logs issue list failure" "do_refresh: gh issue list failed (rc=1)" "$out"
 assert_not_contains "refresh does not treat issue list failure as empty" "No open review-followup issues found" "$out"
 install_ok_gh
+
+echo ""
+echo "Test: fetch_review_threads_json — missing response cost returns exit 2"
+printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}' >"$FIX_GRAPHQL"
+rc=0
+out=$(fetch_review_threads_json "stub/repo" "42" 2>&1) || rc=$?
+assert_rc "fetch_review_threads_json rejects missing response cost" "2" "$rc"
+assert_contains "missing response cost is reported as malformed" "malformed response" "$out"
+
+echo ""
+echo "Test: fetch_review_threads_json — partial thread page returns exit 2"
+printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":true}}}},"rateLimit":{"cost":1}}}' >"$FIX_GRAPHQL"
+rc=0
+out=$(fetch_review_threads_json "stub/repo" "42" 2>&1) || rc=$?
+assert_rc "fetch_review_threads_json rejects partial thread page" "2" "$rc"
+assert_contains "partial thread page is reported as malformed" "malformed response" "$out"
 
 echo ""
 echo "Test: fetch_review_threads_json — gh failure returns exit 2"

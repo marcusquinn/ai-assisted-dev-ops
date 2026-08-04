@@ -240,6 +240,65 @@ _trusted_dependabot_pr_json_graphql() {
 }
 
 #######################################
+# Fetch final merge-authority metadata with response-owned GraphQL cost.
+# Native `gh pr view` hides the operation cost and can become ambiguous under
+# concurrent Pulse traffic. Keep this trust-boundary read self-metering and
+# reject partial label connections.
+# Args: $1=pr_number, $2=repo_slug
+# Output: gh-pr-view-compatible metadata JSON
+# Returns: 0=complete exact-cost snapshot, 1=API/parse/pagination failure
+#######################################
+_pulse_merge_admin_pr_json_graphql() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local owner="${repo_slug%%/*}"
+	local name="${repo_slug#*/}"
+	local response="" pr_json=""
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$owner" != "$name" ]] || return 1
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="pulse-admin-authority-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+		query($owner: String!, $name: String!, $pr: Int!) {
+			repository(owner: $owner, name: $name) {
+				pullRequest(number: $pr) {
+					author { login }
+					labels(first: 100) {
+						nodes { name }
+						pageInfo { hasNextPage }
+					}
+					isCrossRepository
+					headRefOid
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 1
+
+	pr_json=$(printf '%s' "$response" | jq -ce '
+		select(((.errors // []) | type) == "array")
+		| select(((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == "number")
+		| select(.data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| .data.repository.pullRequest as $pr
+		| select($pr != null)
+		| select(($pr.author.login | type) == "string")
+		| select(($pr.isCrossRepository | type) == "boolean")
+		| select(($pr.headRefOid | type) == "string")
+		| select(($pr.labels.nodes | type) == "array")
+		| select($pr.labels.pageInfo.hasNextPage == false)
+		| {
+			author: $pr.author,
+			labels: $pr.labels.nodes,
+			isCrossRepository: $pr.isCrossRepository,
+			headRefOid: $pr.headRefOid
+		}
+	' 2>/dev/null) || return 1
+	printf '%s\n' "$pr_json"
+	return 0
+}
+
+#######################################
 # Verify a Dependabot PR is an authentic, maintainer-allowed version update.
 #
 # This is intentionally narrow: it only grants the collaborator/review-bot
@@ -619,17 +678,16 @@ _pulse_merge_admin_safety_check() {
 	# t2863: initialise multi-var locals at declaration time so set -u
 	# is safe even on a partial-failure path through the assignments.
 	local pr_meta_json="" labels_str="" is_fork="false" current_head_sha="" pr_author=""
-	if ! pr_meta_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json author,labels,isCrossRepository,headRefOid 2>/dev/null); then
-		echo "[pulse-merge] _pulse_merge_admin_safety_check: gh pr view failed for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
+	if ! pr_meta_json=$(_pulse_merge_admin_pr_json_graphql "$pr_number" "$repo_slug"); then
+		echo "[pulse-merge] _pulse_merge_admin_safety_check: exact GraphQL metadata read failed for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
 		return 1
 	fi
 	if [[ -z "$pr_meta_json" ]]; then
-		echo "[pulse-merge] _pulse_merge_admin_safety_check: gh pr view returned empty metadata for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
+		echo "[pulse-merge] _pulse_merge_admin_safety_check: exact GraphQL metadata read returned empty metadata for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
 		return 1
 	fi
 	if ! printf '%s' "$pr_meta_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
-		echo "[pulse-merge] _pulse_merge_admin_safety_check: gh pr view returned malformed metadata for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
+		echo "[pulse-merge] _pulse_merge_admin_safety_check: exact GraphQL metadata read returned malformed metadata for PR #${pr_number} in ${repo_slug} — failing closed" >>"$LOGFILE"
 		return 1
 	fi
 	labels_str=$(printf '%s' "$pr_meta_json" \

@@ -116,28 +116,14 @@ get_pr_changed_files() {
 	local pr_number="$1"
 	local repo_slug="$2"
 
-	local files_json
-	files_json=$(gh pr view "$pr_number" --repo "$repo_slug" --json files 2>/dev/null) || {
-		log_error "Failed to fetch PR #${pr_number} files from ${repo_slug}"
-		return 1
-	}
-
 	local pr_files
-	pr_files=$(printf '%s' "$files_json" | jq -r '(.files // [])[]? | .path // .filename // empty' 2>/dev/null) || {
-		log_warn "Failed to parse PR #${pr_number} file list from gh pr view; trying REST fallback"
-		pr_files=""
-	}
-
-	if [[ -n "$pr_files" ]]; then
-		printf '%s\n' "$pr_files"
-		return 0
-	fi
-
-	# `gh pr view --json files` can return `null` for merged PRs on some gh/API
-	# paths. The pull files REST endpoint remains available after merge, so use
-	# it as the authoritative fallback before declaring the PR unparseable.
-	pr_files=$(gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files" --jq '.[].filename' 2>/dev/null) || {
-		log_error "Failed to fetch PR #${pr_number} file list via REST fallback"
+	# Pull-file pages remain available after merge and expose operation-owned
+	# REST accounting. Use them authoritatively instead of first attempting the
+	# native GraphQL `files` projection, which cannot report its exact cost.
+	pr_files=$(AIDEVOPS_GH_ROUTE_DECISION="verify-close-pr-files-rest" \
+		gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
+			--jq '.[].filename' 2>/dev/null) || {
+		log_error "Failed to fetch PR #${pr_number} file list via REST"
 		return 1
 	}
 

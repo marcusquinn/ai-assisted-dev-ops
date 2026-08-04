@@ -9,6 +9,9 @@ TEST_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 ANCILLARY_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-ancillary-dispatch.sh"
 ANCILLARY_REVIEW_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-ancillary-dispatch-review.sh"
 DIRTY_SWEEP_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-dirty-pr-sweep.sh"
+CONFLICT_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-merge-conflict.sh"
+FEEDBACK_SCRIPT="${TEST_SCRIPT_DIR}/../pulse-merge-feedback.sh"
+VERIFY_CLOSE_SCRIPT="${TEST_SCRIPT_DIR}/../verify-issue-close-helper.sh"
 
 TEST_ROOT=""
 ORIGINAL_HOME="${HOME}"
@@ -160,6 +163,12 @@ main() {
 		print_result "dirty-PR sweep avoids native GraphQL comment views" 1
 	else
 		print_result "dirty-PR sweep avoids native GraphQL comment views" 0
+	fi
+	if grep -Eq '^[[:space:]]*[^#[:space:]].*gh pr view.*--json files' \
+		"$CONFLICT_SCRIPT" "$FEEDBACK_SCRIPT" "$VERIFY_CLOSE_SCRIPT"; then
+		print_result "conflict and close evidence avoids native GraphQL PR-file views" 1
+	else
+		print_result "conflict and close evidence avoids native GraphQL PR-file views" 0
 	fi
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

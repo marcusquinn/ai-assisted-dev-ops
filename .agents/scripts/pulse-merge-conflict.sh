@@ -529,8 +529,15 @@ _verify_pr_overlaps_commit() {
 	local commit_sha="$3"
 
 	local pr_files commit_files
-	pr_files=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json files --jq '.files[].path' 2>/dev/null) || return 1
+	if declare -F _pulse_merge_pr_file_paths_rest >/dev/null 2>&1; then
+		pr_files=$(_pulse_merge_pr_file_paths_rest "$pr_number" "$repo_slug" 2>/dev/null) || return 1
+	else
+		# Isolated callers/tests may source this downstream module without the PR
+		# gates module. Preserve the exact REST contract in that configuration.
+		pr_files=$(AIDEVOPS_GH_ROUTE_DECISION="pulse-pr-files-rest" \
+			gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
+				--jq '.[].filename' 2>/dev/null) || return 1
+	fi
 	[[ -n "$pr_files" ]] || return 1
 
 	commit_files=$(gh api "repos/${repo_slug}/commits/${commit_sha}" \

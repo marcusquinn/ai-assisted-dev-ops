@@ -109,21 +109,24 @@ install_gh_stub() {
 	cat >"${bin_dir}/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-state=""
-while [[ $# -gt 0 ]]; do
-	case "${1:-}" in
-	--state)
-		state="${2:-}"
-		shift 2
-		;;
-	*)
-		shift
-		;;
-	esac
-done
-if [[ "$state" == "open" ]]; then
-	printf '%s\n' "open-pr"
-fi
+printf '%s|%s\n' "${AIDEVOPS_GH_ROUTE_DECISION:-}" "$*" >>"${REMOTE_BRANCH_CLEANUP_GH_CALL_LOG:-/dev/null}"
+[[ "${1:-}" == "api" ]] || exit 1
+endpoint="${2:-}"
+case "$endpoint" in
+*"pulls?state=open&per_page=100&page=1"*)
+	if [[ "${REMOTE_BRANCH_CLEANUP_STUB_FULL_PAGE:-0}" == "1" ]]; then
+		jq -cn '[range(0; 100) | {head: {ref: ("open-pr-" + (. | tostring))}, merged_at: null}]'
+	else
+		printf '%s\n' '[{"head":{"ref":"open-pr"},"merged_at":null}]'
+	fi
+	;;
+*"pulls?state=open&per_page=100&page=2"*)
+	printf '%s\n' '[{"head":{"ref":"open-pr"},"merged_at":null}]'
+	;;
+*"pulls?state=closed&per_page=100&page=1"*) printf '%s\n' '[]' ;;
+*) exit 1 ;;
+esac
+exit 0
 STUB
 	chmod +x "${bin_dir}/gh"
 	return 0
@@ -158,10 +161,15 @@ setup_repo() {
 
 run_dry_run_assertions() {
 	local repo="$1"
-	local output
+	local output gh_calls
 	local gh_bin="$TEST_ROOT/bin"
+	local gh_call_log="$TEST_ROOT/gh-calls.log"
 	install_gh_stub "$gh_bin"
-	output=$(PATH="$gh_bin:$PATH" bash "$HELPER" --repo "$repo" --skip-fetch)
+	: >"$gh_call_log"
+	output=$(REMOTE_BRANCH_CLEANUP_GH_CALL_LOG="$gh_call_log" \
+		REMOTE_BRANCH_CLEANUP_STUB_FULL_PAGE=1 \
+		PATH="$gh_bin:$PATH" bash "$HELPER" --repo "$repo" --skip-fetch)
+	gh_calls=$(<"$gh_call_log")
 
 	assert_contains "$output" "would-del  merged-safe" "merged branch is a deletion candidate"
 	assert_contains "$output" "review     unmerged" "unmerged branch is manual-review only"
@@ -170,6 +178,17 @@ run_dry_run_assertions() {
 	assert_contains "$output" "skip       active-worktree" "active worktree branch is skipped"
 	assert_contains "$output" "protected/default branch" "default branch is protected"
 	assert_contains "$output" "Dry-run only" "default mode is dry-run"
+	assert_contains "$gh_calls" "remote-branch-cleanup-pr-branches-rest|api repos/" "PR branch evidence uses attributed REST reads"
+	assert_contains "$gh_calls" "pulls?state=open&per_page=100&page=1" "open PR branches use the first bounded REST page"
+	assert_contains "$gh_calls" "pulls?state=open&per_page=100&page=2" "a full first page reads the second bounded REST page"
+	if [[ "$gh_calls" == *"page=3"* || "$gh_calls" == *"--paginate"* ]]; then
+		fail "remote branch cleanup must not exceed its two-page REST bound"
+	fi
+	pass "remote branch cleanup caps REST history reads at two pages"
+	if [[ "$gh_calls" == *"pr list"* ]]; then
+		fail "remote branch cleanup must not use native gh pr list"
+	fi
+	pass "remote branch cleanup avoids native gh pr list"
 	return 0
 }
 

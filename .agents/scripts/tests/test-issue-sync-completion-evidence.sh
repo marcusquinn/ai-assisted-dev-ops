@@ -40,26 +40,49 @@ gh_find_merged_pr() {
 	return 0
 }
 gh() {
-	if [[ "$*" == *"issues/125/comments"* ]]; then
+	local args="$*"
+	if [[ "$args" == *"issues/125/comments"* ]]; then
 		printf '%s\n' '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
 		return 1
 	fi
-	if [[ "$*" == *"issues/126/comments"* ]]; then
+	if [[ "$args" == *"issues/126/comments"* ]]; then
 		printf '%s\n' 'not-a-timestamp'
 		return 0
 	fi
-	if [[ "$*" == *"issue view 123"* ]]; then
-		printf '%s\n' '{"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-06-30T01:53:39Z","body":"Completed interactively.\n<!-- aidevops:sig -->","comments":[]}'
+	if [[ "$args" == *"api repos/owner/repo/issues/123"* && "$args" != *"/comments"* ]]; then
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-issue-rest" ]] || return 1
+		printf '%s\n' '{"state":"closed","state_reason":"completed","closed_at":"2026-06-30T01:53:39Z","body":"Completed interactively.\n<!-- aidevops:sig -->"}'
 		return 0
 	fi
-	if [[ "$*" == *"issue view 124"* ]]; then
-		printf '%s\n' '{"state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-06-30T01:53:39Z","body":"Closed without aidevops evidence.","comments":[]}'
+	if [[ "$args" == *"api repos/owner/repo/issues/124"* && "$args" != *"/comments"* ]]; then
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-issue-rest" ]] || return 1
+		printf '%s\n' '{"state":"closed","state_reason":"completed","closed_at":"2026-06-30T01:53:39Z","body":"Closed without aidevops evidence."}'
 		return 0
 	fi
-	if [[ "$*" == *"issue view 127"* ]]; then
-		printf '%s\n' '{"state":"CLOSED","stateReason":"COMPLETED","closedAt":"not-a-timestamp","body":"<!-- aidevops:sig -->","comments":[]}'
+	if [[ "$args" == *"api repos/owner/repo/issues/127"* && "$args" != *"/comments"* ]]; then
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-issue-rest" ]] || return 1
+		printf '%s\n' '{"state":"closed","state_reason":"completed","closed_at":"not-a-timestamp","body":"<!-- aidevops:sig -->"}'
 		return 0
 	fi
+	if [[ "$args" == *"api repos/owner/repo/issues/128"* && "$args" != *"/comments"* ]]; then
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-issue-rest" ]] || return 1
+		printf '%s\n' '{"state":"closed","state_reason":"completed","closed_at":"2026-07-01T02:03:04Z","body":"Completion evidence is in a later comment page."}'
+		return 0
+	fi
+	case "$args" in
+	*"api --paginate --slurp repos/owner/repo/issues/123/comments?per_page=100"* | \
+		*"api --paginate --slurp repos/owner/repo/issues/124/comments?per_page=100"* | \
+		*"api --paginate --slurp repos/owner/repo/issues/127/comments?per_page=100"*)
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-comments-rest" ]] || return 1
+		printf '%s\n' '[[]]'
+		return 0
+		;;
+	*"api --paginate --slurp repos/owner/repo/issues/128/comments?per_page=100"*)
+		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "issue-sync-completion-comments-rest" ]] || return 1
+		printf '%s\n' '[[],[{"body":"Completed via PR #999"}]]'
+		return 0
+		;;
+	esac
 	return 1
 }
 export -f print_warning print_info print_error print_success log_verbose gh_find_merged_pr gh
@@ -171,6 +194,16 @@ if _closed_issue_aidevops_complete_date "owner/repo" "124" >/dev/null; then
 	fail "closed issue without aidevops evidence is not completion evidence"
 else
 	pass "closed issue without aidevops evidence is not completion evidence"
+fi
+
+if completed_date=$(_closed_issue_aidevops_complete_date "owner/repo" "128"); then
+	if [[ "$completed_date" == "2026-07-01" ]]; then
+		pass "paginated REST comments provide later-page completion evidence"
+	else
+		fail "paginated REST completion evidence returned wrong completion date"
+	fi
+else
+	fail "later-page REST comment should provide completion evidence"
 fi
 
 if completed_date=$(_closed_issue_worker_complete_date "owner/repo" "125"); then

@@ -234,15 +234,25 @@ _closed_issue_worker_complete_date() {
 
 _closed_issue_aidevops_complete_date() {
 	local repo="$1" issue_number="$2"
-	local issue_json="" state_reason="" closed_at="" evidence=""
+	local issue_json="" comments_json="" state_reason="" closed_at=""
+	local issue_body="" comment_evidence="" evidence=""
 
-	issue_json=$(gh issue view "$issue_number" --repo "$repo" \
-		--json state,stateReason,closedAt,body,comments 2>/dev/null) || return 1
-	state_reason=$(printf '%s' "$issue_json" | jq -r '.stateReason // ""' 2>/dev/null) || state_reason=""
-	closed_at=$(printf '%s' "$issue_json" | jq -r '.closedAt // ""' 2>/dev/null) || closed_at=""
-	evidence=$(printf '%s' "$issue_json" | jq -r '[.body // "", (.comments[]?.body // "")] | join("\n---\n")' 2>/dev/null) || evidence=""
+	issue_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-issue-rest" \
+		gh api "repos/${repo}/issues/${issue_number}" 2>/dev/null) || return 1
+	comments_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-comments-rest" \
+		gh api --paginate --slurp \
+			"repos/${repo}/issues/${issue_number}/comments?per_page=100" 2>/dev/null) || return 1
+	state_reason=$(printf '%s' "$issue_json" | jq -r '.state_reason // .stateReason // ""' 2>/dev/null) || state_reason=""
+	closed_at=$(printf '%s' "$issue_json" | jq -r '.closed_at // .closedAt // ""' 2>/dev/null) || closed_at=""
+	issue_body=$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null) || return 1
+	comment_evidence=$(printf '%s' "$comments_json" | jq -r \
+		'[.[][]? | .body // ""] | join("\n---\n")' 2>/dev/null) || return 1
+	evidence=$(printf '%s\n---\n%s' "$issue_body" "$comment_evidence")
 
-	[[ "$state_reason" == "COMPLETED" ]] || return 1
+	case "$state_reason" in
+	COMPLETED | completed) ;;
+	*) return 1 ;;
+	esac
 	[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
 	if printf '%s' "$evidence" | grep -qE 'aidevops:sig|CLAIM_RELEASED reason=worker_complete|Task t[0-9]+(\.[0-9]+)* done in TODO\.md|Completed via (\[)?PR #[0-9]+'; then
 		printf '%s\n' "${closed_at%%T*}"

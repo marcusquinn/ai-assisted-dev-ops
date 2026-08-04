@@ -1972,16 +1972,24 @@ _dispatch_conflict_fix_worker() {
 		--description "Issue carries conflict context routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
 
-	# Get the list of files changed in the PR (these are the conflict candidates)
+	# Get the list of files changed in the PR (these are the conflict candidates).
+	# Prefer the operation-owned REST helper from the PR gates module; retain an
+	# exact REST path for isolated module callers.
 	local pr_files
-	pr_files=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json files --jq '[.files[].path] | join("\n")' 2>/dev/null) || pr_files="(could not fetch)"
+	local fetch_failure="(could not fetch)"
+	if declare -F _pulse_merge_pr_file_paths_rest >/dev/null 2>&1; then
+		pr_files=$(_pulse_merge_pr_file_paths_rest "$pr_number" "$repo_slug" 2>/dev/null) || pr_files="$fetch_failure"
+	else
+		pr_files=$(AIDEVOPS_GH_ROUTE_DECISION="pulse-pr-files-rest" \
+			gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
+				--jq '.[].filename' 2>/dev/null) || pr_files="$fetch_failure"
+	fi
 
 	# File count for scope-leak heuristic (t2802). Rely on the already-fetched
 	# file list rather than a second API call — a line count of the joined
 	# output matches the files array length when pr_files fetched cleanly.
 	local pr_file_count=""
-	if [[ -n "$pr_files" ]] && [[ "$pr_files" != "(could not fetch)" ]]; then
+	if [[ -n "$pr_files" ]] && [[ "$pr_files" != "$fetch_failure" ]]; then
 		pr_file_count=$(printf '%s\n' "$pr_files" | grep -c '^.' || true)
 	fi
 

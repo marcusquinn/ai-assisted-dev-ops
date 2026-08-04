@@ -139,6 +139,57 @@ _full_loop_review_bot_gate_helper_path() {
 	return 0
 }
 
+#######################################
+# Fetch the fixed full-loop PR readiness snapshot with response-owned cost.
+# Native `gh pr view` does not expose its GraphQL operation cost, so concurrent
+# activity can otherwise leave the benchmark attempt unattributed.
+# Args: $1=pr_number, $2=repo_slug
+# Output: gh-pr-view-compatible readiness JSON
+# Returns: 0=complete exact-cost snapshot, 1=API/validation failure
+#######################################
+_full_loop_pr_readiness_json_graphql() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local owner="${repo_slug%%/*}"
+	local name="${repo_slug#*/}"
+	local response="" pr_json=""
+	local jq_string_type="string"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$owner" != "$name" ]] || return 1
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="full-loop-readiness-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+		query($owner: String!, $name: String!, $pr: Int!) {
+			repository(owner: $owner, name: $name) {
+				pullRequest(number: $pr) {
+					state
+					isDraft
+					reviewDecision
+					headRefOid
+					headRefName
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 1
+
+	pr_json=$(printf '%s' "$response" | jq -ce --arg string_type "$jq_string_type" '
+		select(((.errors // []) | type) == "array")
+		| select(((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == "number")
+		| select(.data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| .data.repository.pullRequest
+		| select(type == "object")
+		| select((.state | type) == $string_type)
+		| select((.isDraft | type) == "boolean")
+		| select((.headRefOid | type) == $string_type)
+		| select((.headRefName | type) == $string_type)
+		| {state, isDraft, reviewDecision, headRefOid, headRefName}
+	' 2>/dev/null) || return 1
+	printf '%s\n' "$pr_json"
+	return 0
+}
+
 _full_loop_reconcile_stale_coderabbit_review() {
 	local pr_number="$1"
 	local repo="$2"
@@ -156,8 +207,7 @@ _full_loop_reconcile_stale_coderabbit_review() {
 		print_error "PR #${pr_number} retains changes-requested review state; automatic reconciliation was not authorized"
 		return 1
 	fi
-	refreshed_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
-		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
+	refreshed_json=$(_full_loop_pr_readiness_json_graphql "$pr_number" "$repo") || {
 		print_error "Cannot refresh PR #${pr_number} after CodeRabbit reconciliation"
 		return 1
 	}
@@ -176,8 +226,7 @@ _full_loop_verify_pr_readiness() {
 	local verified_head=""
 	local review_decision=""
 
-	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
-		--json state,isDraft,reviewDecision,headRefOid,headRefName 2>/dev/null) || {
+	pr_json=$(_full_loop_pr_readiness_json_graphql "$pr_number" "$repo") || {
 		print_error "Cannot read PR #${pr_number} readiness evidence"
 		return 1
 	}

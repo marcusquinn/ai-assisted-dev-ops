@@ -27,6 +27,18 @@ cat >"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 set -euo pipefail
 printf '%s\n' "gh $*" >>"$GH_LOG"
 
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	review_decision="CHANGES_REQUESTED"
+	if grep -q "dismissals" "$GH_LOG"; then
+		review_decision=""
+	fi
+	if [[ "${READINESS_RESPONSE_MODE:-valid}" == "missing-cost" ]]; then
+		printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"%s","headRefOid":"%s","headRefName":"remote-branch"}}}}\n' "$review_decision" "$CURRENT_HEAD"
+	else
+		printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"%s","headRefOid":"%s","headRefName":"remote-branch"}},"rateLimit":{"cost":1}}}\n' "$review_decision" "$CURRENT_HEAD"
+	fi
+	exit 0
+fi
 if [[ "${1:-}" == "api" && "$*" == *"dismissals"* ]]; then
 	[[ "${DISMISS_FAIL:-0}" == "1" ]] && exit 1
 	exit 0
@@ -94,6 +106,7 @@ reset_fixture() {
 	export HEAD_DRIFT=0
 	export DISMISS_FAIL=0
 	export POST_REVIEW_DECISION=""
+	export READINESS_RESPONSE_MODE="valid"
 	cat >"$REVIEWS_FILE" <<EOF
 [{"id":4782275476,"user":{"login":"coderabbitai[bot]","type":"Bot"},"state":"CHANGES_REQUESTED","commit_id":"${STALE_HEAD}","submitted_at":"2026-07-26T17:52:52Z"}]
 EOF
@@ -243,6 +256,17 @@ test_full_loop_readiness_integration() {
 	else
 		record_result "full-loop readiness reconciles before required checks" 1
 	fi
+
+	: >"$GH_LOG"
+	export READINESS_RESPONSE_MODE="missing-cost"
+	rc=0
+	_full_loop_verify_pr_readiness 42 owner/repo >/dev/null 2>&1 || rc=$?
+	if [[ "$rc" -ne 0 ]] && ! grep -q "exact-checks owner/repo 42 required" "$GH_LOG"; then
+		record_result "full-loop readiness rejects missing response cost" 0
+	else
+		record_result "full-loop readiness rejects missing response cost" 1
+	fi
+	export READINESS_RESPONSE_MODE="valid"
 	return 0
 }
 

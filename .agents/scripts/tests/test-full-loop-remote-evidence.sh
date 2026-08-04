@@ -19,6 +19,27 @@ chmod +x "${ROOT}/helpers/review-bot-gate-helper.sh"
 
 cat >"${ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	state="OPEN"
+	is_draft=false
+	review_decision="APPROVED"
+	case "${GH_TEST_MODE:-pass}" in
+		draft) is_draft=true ;;
+		changes) review_decision="CHANGES_REQUESTED" ;;
+		closed) state="CLOSED" ;;
+		readiness-missing-cost)
+			printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"APPROVED","headRefOid":"abc123","headRefName":"remote-branch"}}}}\n'
+			exit 0
+			;;
+		readiness-errors)
+			printf '%s\n' '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"APPROVED","headRefOid":"abc123","headRefName":"remote-branch"}},"rateLimit":{"cost":1}},"errors":[{"message":"partial"}]}'
+			exit 0
+			;;
+	esac
+	printf '{"data":{"repository":{"pullRequest":{"state":"%s","isDraft":%s,"reviewDecision":"%s","headRefOid":"abc123","headRefName":"remote-branch"}},"rateLimit":{"cost":1}}}\n' \
+		"$state" "$is_draft" "$review_decision"
+	exit 0
+fi
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/testrepo" ]]; then
 	if [[ "${GH_TEST_MODE:-pass}" == "api-error" ]]; then
 		printf '%s\n' 'HTTP 503: service unavailable' >&2
@@ -184,7 +205,7 @@ run_gate cli-no-required || {
 }
 printf 'PASS canonical CLI no-required-checks evidence survives unavailable branch protection\n'
 
-for mode in draft pending changes closed api-error changed-wording malformed empty-array; do
+for mode in draft pending changes closed api-error changed-wording malformed empty-array readiness-missing-cost readiness-errors; do
 	if run_gate "$mode"; then
 		printf 'FAIL unsafe remote state was accepted: %s\n' "$mode"
 		exit 1

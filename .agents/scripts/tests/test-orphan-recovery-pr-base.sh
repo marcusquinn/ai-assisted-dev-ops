@@ -103,6 +103,17 @@ install_test_overrides() {
 		return 0
 	}
 
+	# _attempt_orphan_recovery_pr consumes the richer handoff-state provider
+	# directly. Keep this base-selection test independent of live PR discovery.
+	_pr_handoff_state_for_branch_or_issue() {
+		local branch_name="$1"
+		local issue_number="$2"
+		local repo_slug="$3"
+		[[ -n "$branch_name" && -n "$issue_number" && -n "$repo_slug" ]] || return 1
+		printf 'absent|'
+		return 0
+	}
+
 	_ensure_orphan_recovery_branch_remote() {
 		local work_dir="$1"
 		local branch_name="$2"

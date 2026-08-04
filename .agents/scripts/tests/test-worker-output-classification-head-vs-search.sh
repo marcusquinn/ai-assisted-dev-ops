@@ -122,10 +122,14 @@ case "${1:-}" in
 	pr)
 		case "${2:-}" in
 			list)
+				if [[ "${AIDEVOPS_GH_REST_FIRST_READS:-0}" != "1" ]]; then
+					printf 'lifecycle PR probe did not request REST-first routing\n' >&2
+					exit 1
+				fi
 				if [[ "$mode" == "head" && "${STUB_HEAD_FAIL:-0}" == "1" ]]; then
 					exit 1
 				fi
-				if [[ "$json_fields" == "number,state,isDraft,mergedAt,headRefOid,labels,statusCheckRollup" ]]; then
+				if [[ "$json_fields" == "number,state,isDraft,mergedAt,headRefOid,labels" ]]; then
 					if [[ "$mode" == "head" ]]; then
 						printf '%s\n' "${STUB_HEAD_JSON:-[]}"
 					else

@@ -134,7 +134,43 @@ gh_pr_branches() {
 	if ! command -v gh >/dev/null 2>&1; then
 		return 0
 	fi
-	gh pr list --repo "$(repo_slug)" --state "$state" --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null || true
+
+	local slug=""
+	local api_state=""
+	local jq_filter=""
+	local page=1
+	local page_count=0
+	local page_json=""
+	slug=$(repo_slug)
+	[[ -n "$slug" ]] || return 0
+	case "$state" in
+	open)
+		api_state="open"
+		jq_filter='.[].head.ref'
+		;;
+	merged)
+		api_state="closed"
+		jq_filter='.[] | select(.merged_at != null) | .head.ref'
+		;;
+	closed)
+		api_state="closed"
+		jq_filter='.[] | select(.merged_at == null) | .head.ref'
+		;;
+	*) return 0 ;;
+	esac
+
+	# Preserve the previous 200-PR bound. Unbounded REST pagination can turn a
+	# cleanup pass over a mature repository into a full-history API sweep.
+	while [[ "$page" -le 2 ]]; do
+		page_json=$(AIDEVOPS_GH_ROUTE_DECISION="remote-branch-cleanup-pr-branches-rest" \
+			gh api "repos/${slug}/pulls?state=${api_state}&per_page=100&page=${page}" \
+				2>/dev/null) || return 0
+		page_count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else -1 end' 2>/dev/null) || return 0
+		[[ "$page_count" =~ ^[0-9]+$ ]] || return 0
+		printf '%s' "$page_json" | jq -r "$jq_filter" 2>/dev/null || return 0
+		[[ "$page_count" -lt 100 ]] && break
+		page=$((page + 1))
+	done
 	return 0
 }
 

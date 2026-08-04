@@ -1168,6 +1168,81 @@ _dps_record_audit() {
 # Dispatcher — one repo
 # -----------------------------------------------------------------------------
 
+#######################################
+# Fetch the bounded open-PR sweep population with response-owned GraphQL cost.
+# The merge-state field is GraphQL-only; using native `gh pr list` hides a
+# multi-point cost under concurrency. Reject partial label connections rather
+# than classifying a PR from incomplete ownership metadata.
+# Args: $1=repo_slug, $2=result limit
+# Output: gh-pr-list-compatible JSON array
+# Returns: 0=complete exact-cost snapshot, 1=API/validation failure
+#######################################
+_dirty_pr_sweep_open_prs_graphql() {
+	local repo_slug="$1"
+	local result_limit="$2"
+	local owner="${repo_slug%%/*}"
+	local name="${repo_slug#*/}"
+	local response="" pr_json=""
+	local jq_array_type="array"
+
+	[[ -n "$owner" && -n "$name" && "$owner" != "$name" ]] || return 1
+	[[ "$result_limit" =~ ^[1-9][0-9]*$ && "$result_limit" -le 100 ]] || return 1
+	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="dirty-pr-sweep-exact-cost" \
+		gh api graphql -F owner="$owner" -F name="$name" -F limit="$result_limit" -f query='
+		query($owner: String!, $name: String!, $limit: Int!) {
+			repository(owner: $owner, name: $name) {
+				pullRequests(first: $limit, states: [OPEN], orderBy: {field: CREATED_AT, direction: DESC}) {
+					nodes {
+						number
+						title
+						mergeStateStatus
+						createdAt
+						updatedAt
+						author { login }
+						labels(first: 100) {
+							nodes { name }
+							pageInfo { hasNextPage }
+						}
+						headRefName
+						baseRefName
+						body
+					}
+				}
+			}
+			rateLimit { cost }
+		}' 2>/dev/null) || return 1
+
+	pr_json=$(printf '%s' "$response" | jq -ce --arg array_type "$jq_array_type" '
+		select(((.errors // []) | type) == $array_type)
+		| select(((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == "number")
+		| select(.data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| .data.repository.pullRequests.nodes
+		| select(type == $array_type)
+		| select(all(.[];
+			(.number | type) == "number" and
+			(.labels.nodes | type) == $array_type and
+			.labels.pageInfo.hasNextPage == false
+		))
+		| map({
+			number,
+			title,
+			mergeStateStatus,
+			createdAt,
+			updatedAt,
+			author,
+			labels: .labels.nodes,
+			headRefName,
+			baseRefName,
+			body
+		})
+	' 2>/dev/null) || return 1
+	printf '%s\n' "$pr_json"
+	return 0
+}
+
 _dirty_pr_sweep_for_repo() {
 	local repo_slug="$1"
 	local repo_path="$2"
@@ -1175,9 +1250,8 @@ _dirty_pr_sweep_for_repo() {
 
 	local list_json err_file
 	err_file=$(mktemp) || err_file=/dev/null
-	list_json=$(gh_pr_list --repo "$repo_slug" --state open \
-		--json number,title,mergeStateStatus,createdAt,updatedAt,author,labels,headRefName,baseRefName,body \
-		--limit "$DIRTY_PR_SWEEP_BATCH_LIMIT" 2>"$err_file") || list_json="[]"
+	list_json=$(_dirty_pr_sweep_open_prs_graphql "$repo_slug" "$DIRTY_PR_SWEEP_BATCH_LIMIT" \
+		2>"$err_file") || list_json="[]"
 	[[ -z "$list_json" || "$list_json" == "null" ]] && list_json="[]"
 	rm -f "$err_file" 2>/dev/null || true
 

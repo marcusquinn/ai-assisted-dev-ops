@@ -100,7 +100,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(sys.argv[1])
-EVIDENCE_SCHEMA = "aidevops-github-api-efficiency-evidence/v2"
+EVIDENCE_SCHEMA = "aidevops-github-api-efficiency-evidence/v3"
 REPOSITORY_SET = "a" * 64
 
 
@@ -191,6 +191,7 @@ def evidence(*, p50, p95, burst, completed_p95, webhook_p95, complete=True):
             "p50_ms": p50,
             "p95_ms": p95,
             "peak_attempts_per_minute": burst,
+            "completed_action_samples": 20 if completed_p95 is not None else 0,
             "completed_action_p95_ms": completed_p95,
         },
         "cache": {
@@ -208,6 +209,7 @@ def evidence(*, p50, p95, burst, completed_p95, webhook_p95, complete=True):
         },
         "webhook": {
             "invalidations": 10,
+            "lag_samples": 10 if webhook_p95 is not None else 0,
             "lag_p50_ms": 100,
             "lag_p95_ms": webhook_p95,
             "duplicate_actions": 0,
@@ -264,14 +266,16 @@ PASS_EVIDENCE = evidence(
 )
 
 
-def write_case(name, canary_report, canary_evidence):
+def write_case(name, canary_report, canary_evidence, baseline_evidence=None):
     baseline_report_path = ROOT / f"{name}-baseline-report.json"
     baseline_evidence_path = ROOT / f"{name}-baseline-evidence.json"
     canary_report_path = ROOT / f"{name}-canary-report.json"
     canary_evidence_path = ROOT / f"{name}-canary-evidence.json"
 
     write_json(baseline_report_path, BASELINE_REPORT)
-    baseline_sidecar = copy.deepcopy(BASELINE_EVIDENCE)
+    baseline_sidecar = copy.deepcopy(
+        BASELINE_EVIDENCE if baseline_evidence is None else baseline_evidence
+    )
     baseline_sidecar["transport_sha256"] = hashlib.sha256(
         baseline_report_path.read_bytes()
     ).hexdigest()
@@ -286,6 +290,37 @@ def write_case(name, canary_report, canary_evidence):
 
 
 write_case("pass", PASS_REPORT, PASS_EVIDENCE)
+
+empty_baseline_evidence = copy.deepcopy(BASELINE_EVIDENCE)
+empty_canary_evidence = copy.deepcopy(PASS_EVIDENCE)
+for sidecar in (empty_baseline_evidence, empty_canary_evidence):
+    sidecar["population"]["unchanged_cycles"] = 100
+    sidecar["population"]["actionable_changes"] = 0
+    sidecar["population"]["unique_actionable_head_shas"] = 0
+    sidecar["latency"]["completed_action_samples"] = 0
+    sidecar["latency"]["completed_action_p95_ms"] = None
+    sidecar["webhook"]["invalidations"] = 0
+    sidecar["webhook"]["lag_samples"] = 0
+    sidecar["webhook"]["lag_p50_ms"] = None
+    sidecar["webhook"]["lag_p95_ms"] = None
+    sidecar["path_budgets"]["aggregate_check_fetches"] = 0
+    sidecar["path_budgets"]["cycle_scoped_aggregate_check_fetches"] = 0
+    sidecar["path_budgets"]["unique_cycle_scoped_actionable_heads"] = 0
+write_case(
+    "empty-distributions",
+    PASS_REPORT,
+    empty_canary_evidence,
+    empty_baseline_evidence,
+)
+
+sample_mismatch_evidence = copy.deepcopy(PASS_EVIDENCE)
+sample_mismatch_evidence["latency"]["completed_action_samples"] = 0
+sample_mismatch_evidence["latency"]["completed_action_p95_ms"] = None
+write_case("sample-mismatch", PASS_REPORT, sample_mismatch_evidence)
+
+invalid_distribution_evidence = copy.deepcopy(PASS_EVIDENCE)
+invalid_distribution_evidence["latency"]["completed_action_samples"] = 0
+write_case("distribution-invalid", PASS_REPORT, invalid_distribution_evidence)
 
 regression_report = transport(
     50_000,
@@ -314,6 +349,19 @@ incomplete_evidence = copy.deepcopy(PASS_EVIDENCE)
 incomplete_evidence["complete"] = False
 incomplete_evidence["latency"]["p95_ms"] = None
 write_case("incomplete", PASS_REPORT, incomplete_evidence)
+
+uncovered_distribution_evidence = copy.deepcopy(PASS_EVIDENCE)
+uncovered_distribution_evidence["complete"] = False
+uncovered_distribution_evidence["latency"]["completed_action_samples"] = None
+uncovered_distribution_evidence["latency"]["completed_action_p95_ms"] = None
+uncovered_distribution_evidence["webhook"]["lag_samples"] = None
+uncovered_distribution_evidence["webhook"]["lag_p50_ms"] = None
+uncovered_distribution_evidence["webhook"]["lag_p95_ms"] = None
+write_case(
+    "uncovered-distributions",
+    PASS_REPORT,
+    uncovered_distribution_evidence,
+)
 
 unequal_report = transport(
     50_000,
@@ -452,6 +500,13 @@ test_pass_and_determinism() {
 	else
 		record_result "identical inputs produce byte-stable reports" 1
 	fi
+
+	run_case empty-distributions
+	assert_eq "observed empty distributions can pass" "0" "$LAST_EXIT"
+	assert_jq "empty distributions are explicit and comparable" \
+		'.status == "PASS" and .windows.baseline.latency.completed_action_samples == 0 and .windows.baseline.latency.completed_action_p95_ms == null and .windows.canary.webhook.lag_samples == 0 and .windows.canary.webhook.lag_p95_ms == null' "$LAST_JSON"
+	markdown=$(<"$LAST_MARKDOWN")
+	assert_contains "Markdown distinguishes empty distributions" "not applicable" "$markdown"
 	return 0
 }
 
@@ -473,6 +528,11 @@ test_inconclusive_windows() {
 	assert_jq "incomplete evidence is INCONCLUSIVE" \
 		'.status == "INCONCLUSIVE" and (.reasons | any(contains("marked incomplete"))) and (.reasons | any(contains("latency.p95_ms is unknown")))' "$LAST_JSON"
 
+	run_case uncovered-distributions
+	assert_eq "uncovered distributions exit two" "2" "$LAST_EXIT"
+	assert_jq "uncovered distributions remain INCONCLUSIVE without crashing" \
+		'.status == "INCONCLUSIVE" and (.reasons | any(contains("completed_action_samples is unknown"))) and (.reasons | any(contains("lag_samples is unknown")))' "$LAST_JSON"
+
 	run_case unequal
 	assert_eq "unequal retained windows exit two" "2" "$LAST_EXIT"
 	assert_jq "unequal retained windows are INCONCLUSIVE" \
@@ -482,6 +542,11 @@ test_inconclusive_windows() {
 	assert_eq "non-equivalent workload exits two" "2" "$LAST_EXIT"
 	assert_jq "workload mix is part of comparability" \
 		'.status == "INCONCLUSIVE" and (.comparability.workload_rates_equivalent == false) and (.reasons | any(contains("actionable_changes rates")))' "$LAST_JSON"
+
+	run_case sample-mismatch
+	assert_eq "one-sided completed-action samples exit two" "2" "$LAST_EXIT"
+	assert_jq "one-sided completed-action samples are noncomparable" \
+		'.status == "INCONCLUSIVE" and (.reasons | any(contains("completed-action latency sample availability differs")))' "$LAST_JSON"
 
 	run_case pass 60000
 	assert_eq "pre-rollout canary exits two" "2" "$LAST_EXIT"
@@ -520,6 +585,11 @@ test_fail_closed_transport() {
 	assert_eq "inconsistent population exits two" "2" "$LAST_EXIT"
 	assert_contains "inconsistent population explains rejection" "exceed Pulse cycles" "$LAST_OUTPUT"
 	assert_missing "inconsistent population writes no JSON" "$LAST_JSON"
+
+	run_case distribution-invalid
+	assert_eq "inconsistent distribution exits two" "2" "$LAST_EXIT"
+	assert_contains "inconsistent distribution explains rejection" "must be null when its sample count is zero" "$LAST_OUTPUT"
+	assert_missing "inconsistent distribution writes no JSON" "$LAST_JSON"
 
 	run_case digest
 	assert_eq "mismatched evidence digest exits two" "2" "$LAST_EXIT"

@@ -17,6 +17,7 @@ TESTS_FAILED=0
 TEST_ROOT=""
 GH_FIXTURE_FILE=""
 GH_PR_VIEW_FIXTURE_FILE=""
+GH_GRAPHQL_CALL_LOG=""
 
 print_result() {
 	local test_name="$1"
@@ -46,6 +47,124 @@ _write_gh_stub() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Response-metered GraphQL replacements for the two rich native PR-list shapes.
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	if [[ "${GH_PR_LIST_FAIL:-0}" == "1" ]]; then
+		exit 1
+	fi
+	query_text=""
+	query_string=""
+	query_owner=""
+	query_name=""
+	shift 2
+	for argument in "$@"; do
+		case "$argument" in
+		query=*) query_text="${argument#query=}" ;;
+		queryString=*) query_string="${argument#queryString=}" ;;
+		owner=*) query_owner="${argument#owner=}" ;;
+		name=*) query_name="${argument#name=}" ;;
+		esac
+	done
+	if [[ -n "${GH_GRAPHQL_CALL_LOG:-}" ]]; then
+		printf '%s|%s|%s\n' \
+			"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
+			"${AIDEVOPS_GH_ROUTE_DECISION:-}" \
+			"$query_text" >>"$GH_GRAPHQL_CALL_LOG"
+	fi
+	graphql_cost="2"
+	if [[ "${GH_GRAPHQL_MISSING_COST:-0}" == "1" ]]; then
+		graphql_cost="null"
+	fi
+
+	if [[ "$query_text" == *"search(type: ISSUE"* ]]; then
+		local_repo="${query_string#repo:}"
+		local_repo="${local_repo%% *}"
+		local_search=""
+		if [[ "$query_string" =~ \#([0-9]+) ]]; then
+			local_search="#${BASH_REMATCH[1]}"
+		fi
+		fixture_payload="[]"
+		compound_key="${local_repo}|open|${local_search}"
+		while IFS= read -r line; do
+			[[ -n "$line" ]] || continue
+			fixture_key="${line%|*}"
+			if [[ "$fixture_key" == "$compound_key" ]]; then
+				fixture_payload="${line##*|}"
+				break
+			fi
+		done <"${GH_FIXTURE_FILE}"
+		jq -cn --argjson nodes "$fixture_payload" --argjson cost "$graphql_cost" '
+			{
+				data: {
+					search: {
+						nodes: ($nodes | map(. as $pr | {
+							__typename: "PullRequest",
+							number: $pr.number,
+							title: ($pr.title // null),
+							body: ($pr.body // null),
+							isDraft: ($pr.isDraft // false),
+							reviewDecision: ($pr.reviewDecision // null),
+							mergeStateStatus: ($pr.mergeStateStatus // null),
+							mergeable: ($pr.mergeable // null),
+							changedFiles: ($pr.changedFiles // 0),
+							files: {
+								nodes: ($pr.files // []),
+								pageInfo: {hasNextPage: ($pr.filesHasNextPage // false)}
+							},
+							labels: {
+								nodes: ($pr.labels // []),
+								pageInfo: {hasNextPage: ($pr.labelsHasNextPage // false)}
+							}
+						}))
+					},
+					rateLimit: {cost: $cost}
+				}
+			}'
+		exit 0
+	fi
+EOF
+	_append_gh_stub_graphql_tail "$stub_path"
+	_append_gh_stub_native_reads "$stub_path"
+	chmod +x "$stub_path"
+	return 0
+}
+
+_append_gh_stub_graphql_tail() {
+	local stub_path="$1"
+	cat >>"$stub_path" <<'EOF'
+	if [[ "$query_text" == *"commits(first: 100)"* ]]; then
+		jq -cn --argjson nodes "${GH_OPEN_COMMITS_JSON:-[]}" --argjson cost "$graphql_cost" '
+			{
+				data: {
+					repository: {
+						pullRequests: {
+							nodes: ($nodes | map(. as $pr | {
+								number: $pr.number,
+								title: ($pr.title // null),
+								isDraft: ($pr.isDraft // false),
+								commits: {
+									nodes: [($pr.commits // [])[] | {commit: {messageHeadline: (.messageHeadline // "")}}],
+									pageInfo: {hasNextPage: false}
+								}
+							}))
+						}
+					},
+					rateLimit: {cost: $cost}
+				}
+			}'
+		exit 0
+	fi
+
+	printf 'unsupported GraphQL query in test stub for %s/%s\n' "$query_owner" "$query_name" >&2
+	exit 1
+fi
+EOF
+	return 0
+}
+
+_append_gh_stub_native_reads() {
+	local stub_path="$1"
+	cat >>"$stub_path" <<'EOF'
 # gh pr list — returns fixture JSON for (repo, state, search) lookup.
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
 	if [[ "${GH_PR_LIST_FAIL:-0}" == "1" ]]; then
@@ -117,7 +236,6 @@ fi
 printf 'unsupported gh invocation in test stub: %s\n' "$*" >&2
 exit 1
 EOF
-	chmod +x "$stub_path"
 	return 0
 }
 
@@ -125,16 +243,19 @@ setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
 	GH_FIXTURE_FILE="${TEST_ROOT}/gh-pr-list-fixtures.txt"
 	GH_PR_VIEW_FIXTURE_FILE="${TEST_ROOT}/gh-pr-view-fixtures.txt"
+	GH_GRAPHQL_CALL_LOG="${TEST_ROOT}/gh-graphql-calls.log"
 
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export GH_FIXTURE_FILE
 	export GH_PR_VIEW_FIXTURE_FILE
+	export GH_GRAPHQL_CALL_LOG
 
 	_write_gh_stub "${TEST_ROOT}/bin/gh"
 
 	printf '' >"${GH_FIXTURE_FILE}"
 	printf '' >"${GH_PR_VIEW_FIXTURE_FILE}"
+	printf '' >"${GH_GRAPHQL_CALL_LOG}"
 	return 0
 }
 
@@ -198,6 +319,30 @@ test_has_open_pr_detects_task_id_fallback() {
 	fi
 
 	print_result "has-open-pr detects merged PR via task-id fallback" 1 "Expected merged PR evidence via task-id fallback"
+	return 0
+}
+
+test_has_open_pr_detects_response_metered_commit_reference() {
+	local output=""
+	export GH_OPEN_COMMITS_JSON='[{"number":1060,"title":"Implement exact quota attribution","isDraft":false,"commits":[{"messageHeadline":"Fixes #10000 with response-owned cost"}]}]'
+	printf '' >"$GH_GRAPHQL_CALL_LOG"
+
+	if output=$("$HELPER_SCRIPT" has-open-pr 10000 marcusquinn/aidevops 't10000: exact quota attribution'); then
+		unset GH_OPEN_COMMITS_JSON
+		if [[ "$output" == *"open PR #1060 has commits targeting issue #10000"* ]] && \
+			grep -qF '1|dispatch-dedup-open-commits-exact-cost|' "$GH_GRAPHQL_CALL_LOG" && \
+			grep -qF 'rateLimit { cost }' "$GH_GRAPHQL_CALL_LOG"; then
+			print_result "has-open-pr meters open-commit GraphQL from its response" 0
+			return 0
+		fi
+		print_result "has-open-pr meters open-commit GraphQL from its response" 1 \
+			"output=${output}"
+		return 0
+	fi
+
+	unset GH_OPEN_COMMITS_JSON
+	print_result "has-open-pr meters open-commit GraphQL from its response" 1 \
+		"Expected commit evidence for issue #10000"
 	return 0
 }
 
@@ -360,6 +505,46 @@ test_has_open_pr_fails_closed_when_sibling_lookup_fails() {
 
 	print_result "has-open-pr fails closed when sibling lookup is uncertain" 1 \
 		"rc=${rc} output=${output}"
+	return 0
+}
+
+test_has_open_pr_fails_closed_without_response_owned_cost() {
+	export GH_GRAPHQL_MISSING_COST=1
+	local output=""
+	local rc=0
+	output=$("$HELPER_SCRIPT" has-open-pr 18783 marcusquinn/aidevops 'missing response-owned cost') || rc=$?
+	unset GH_GRAPHQL_MISSING_COST
+
+	if [[ "$rc" -eq 0 && "$output" == PR_LOOKUP_UNCERTAIN:* ]]; then
+		print_result "has-open-pr fails closed without response-owned GraphQL cost" 0
+		return 0
+	fi
+
+	print_result "has-open-pr fails closed without response-owned GraphQL cost" 1 \
+		"rc=${rc} output=${output}"
+	return 0
+}
+
+test_has_open_pr_fails_closed_on_partial_sibling_connections() {
+	local fixture='marcusquinn/aidevops|open|#18784|[{"number":18909,"title":"Interactive checkpoint for #18784","body":"For #18784","isDraft":true,"labels":[{"name":"origin:interactive"}],"labelsHasNextPage":true}]'
+	set_gh_fixtures "$fixture"
+	local output=""
+	local rc=0
+	output=$("$HELPER_SCRIPT" has-open-pr 18784 marcusquinn/aidevops 'partial sibling labels') || rc=$?
+	if [[ "$rc" -ne 0 || "$output" != PR_LOOKUP_UNCERTAIN:* ]]; then
+		print_result "has-open-pr rejects partial sibling labels" 1 "rc=${rc} output=${output}"
+		return 0
+	fi
+
+	fixture='marcusquinn/aidevops|open|#18785|[{"number":18910,"title":"Checkpoint for #18785","body":"For #18785","isDraft":true,"filesHasNextPage":true}]'
+	set_gh_fixtures "$fixture"
+	rc=0
+	output=$("$HELPER_SCRIPT" has-open-pr 18785 marcusquinn/aidevops 'partial sibling files') || rc=$?
+	if [[ "$rc" -eq 0 && "$output" == PR_LOOKUP_UNCERTAIN:* ]]; then
+		print_result "has-open-pr rejects partial sibling connections" 0
+	else
+		print_result "has-open-pr rejects partial sibling connections" 1 "rc=${rc} output=${output}"
+	fi
 	return 0
 }
 
@@ -757,6 +942,7 @@ main() {
 
 	test_has_open_pr_detects_closing_keyword
 	test_has_open_pr_detects_task_id_fallback
+	test_has_open_pr_detects_response_metered_commit_reference
 	test_has_open_pr_returns_nonzero_without_match
 	test_has_open_pr_ignores_planning_for_reference
 	test_has_open_pr_ignores_planning_ref_reference
@@ -767,6 +953,8 @@ main() {
 	test_has_open_pr_marks_worker_draft_for_stale_routing
 	test_has_open_pr_keeps_protected_draft_unroutable
 	test_has_open_pr_fails_closed_when_sibling_lookup_fails
+	test_has_open_pr_fails_closed_without_response_owned_cost
+	test_has_open_pr_fails_closed_on_partial_sibling_connections
 	test_has_open_pr_ignores_open_body_planning_for_reference
 	test_has_open_pr_requires_open_close_keyword_for_our_issue
 	test_has_open_pr_blocks_approved_mergeable_sibling

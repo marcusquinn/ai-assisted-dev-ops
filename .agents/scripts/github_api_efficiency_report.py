@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from github_api_efficiency_inputs import (
+    DISTRIBUTION_SAMPLE_FIELDS,
     EVIDENCE_GROUPS,
     POPULATION_FIELDS,
     Window,
@@ -66,9 +67,14 @@ def _unknown_evidence(window: Window) -> list[str]:
     )
     for group_name, fields in EVIDENCE_GROUPS.items():
         for field in fields:
+            sample_field = DISTRIBUTION_SAMPLE_FIELDS.get((group_name, field))
+            observed_empty = (
+                sample_field is not None
+                and window.evidence[group_name][sample_field] == 0
+            )
             _flag(
                 reasons,
-                window.evidence[group_name][field] is None,
+                window.evidence[group_name][field] is None and not observed_empty,
                 f"{window.label}: {group_name}.{field} is unknown",
             )
     return reasons
@@ -134,8 +140,12 @@ def _pct_change(
 
 
 def _growth_exceeds(
-    baseline: float, canary: float, maximum_pct: float
+    baseline: float | int | None,
+    canary: float | int | None,
+    maximum_pct: float,
 ) -> bool:
+    if baseline is None or canary is None:
+        return False
     if baseline == 0:
         return canary > 0
     return ((canary - baseline) / baseline) * 100 > maximum_pct
@@ -229,6 +239,20 @@ def _comparability(
             reasons,
             rate_differs,
             f"{field} rates are materially non-equivalent",
+        )
+    distribution_samples = (
+        ("latency", "completed_action_samples", "completed-action latency"),
+        ("webhook", "lag_samples", "webhook-lag latency"),
+    )
+    for group_name, sample_field, label in distribution_samples:
+        baseline_samples = baseline.evidence[group_name][sample_field]
+        canary_samples = canary.evidence[group_name][sample_field]
+        baseline_has_samples = baseline_samples is not None and baseline_samples > 0
+        canary_has_samples = canary_samples is not None and canary_samples > 0
+        _flag(
+            reasons,
+            baseline_has_samples != canary_has_samples,
+            f"{label} sample availability differs",
         )
     details = {
         "duration_ratio": round(duration_ratio, 6),
@@ -464,6 +488,18 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _fmt_metric(metric: str, value: Any, values: dict[str, Any]) -> str:
+    sample_fields = {
+        "completed_action_p95_ms": "completed_action_samples",
+        "lag_p50_ms": "lag_samples",
+        "lag_p95_ms": "lag_samples",
+    }
+    sample_field = sample_fields.get(metric)
+    if value is None and sample_field is not None and values.get(sample_field) == 0:
+        return "not applicable"
+    return _fmt(value)
+
+
 def _utc(timestamp: int) -> str:
     return datetime.fromtimestamp(
         timestamp, tz=timezone.utc
@@ -486,8 +522,8 @@ def _metric_table(
     )
     for metric in baseline:
         lines.append(
-            f"| `{metric}` | {_fmt(baseline[metric])} | "
-            f"{_fmt(canary[metric])} |"
+            f"| `{metric}` | {_fmt_metric(metric, baseline[metric], baseline)} | "
+            f"{_fmt_metric(metric, canary[metric], canary)} |"
         )
     lines.append("")
 

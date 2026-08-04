@@ -4,9 +4,9 @@
 #
 # Regression tests for verify-issue-close-helper.sh file overlap verification.
 #
-# GH#22138: `gh pr view --json files` may return `{"files":null}` for merged
-# PRs even though the pull files REST endpoint still returns the changed files.
-# The helper must treat that as a fallback condition, not a parse failure.
+# GH#22138: merged PR changed files remain available through the pull-files REST
+# endpoint. Exact-attribution close verification uses that endpoint directly
+# rather than attempting a native GraphQL files projection first.
 
 set -euo pipefail
 
@@ -52,40 +52,22 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
 	exit 0
 fi
 
-if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
-	case "${3:-}" in
-	100)
-		printf '{"files":null}\n'
-		;;
-	101)
-		printf '{"files":[{"path":".agents/scripts/verify-issue-close-helper.sh"}]}\n'
-		;;
-	102)
-		printf '{"files":[{"path":"setup.sh"},{"path":".agents/scripts/tests/test-setup-stage-timing-observability.sh"}]}\n'
-		;;
-	103)
-		printf '{"files":[{"path":"unrelated/config.sh"}]}\n'
-		;;
-	104)
-		printf '{"files":[{"path":".agents/scripts/gh"}]}\n'
-		;;
-	105)
-		printf '{"files":[{"path":"unrelated/gh"}]}\n'
-		;;
-	106)
-		printf '{"files":[{"path":"unrelated/gh"}]}\n'
-		;;
-	*)
-		printf '{"files":[]}\n'
-		;;
-	esac
-	exit 0
-fi
-
 if [[ "${1:-}" == "api" ]]; then
 	case "${3:-}" in
-	repos/owner/repo/pulls/100/files)
+	repos/owner/repo/pulls/100/files?per_page=100 | repos/owner/repo/pulls/101/files?per_page=100)
 		printf '.agents/scripts/verify-issue-close-helper.sh\n'
+		;;
+	repos/owner/repo/pulls/102/files?per_page=100)
+		printf 'setup.sh\n.agents/scripts/tests/test-setup-stage-timing-observability.sh\n'
+		;;
+	repos/owner/repo/pulls/103/files?per_page=100)
+		printf 'unrelated/config.sh\n'
+		;;
+	repos/owner/repo/pulls/104/files?per_page=100)
+		printf '.agents/scripts/gh\n'
+		;;
+	repos/owner/repo/pulls/105/files?per_page=100 | repos/owner/repo/pulls/106/files?per_page=100)
+		printf 'unrelated/gh\n'
 		;;
 	*)
 		exit 1
@@ -140,8 +122,8 @@ assert_check_rejects() {
 	return 0
 }
 
-assert_check_passes "merged PR files null falls back to REST pull files endpoint" 100
-assert_check_passes "standard gh pr view files array still parses" 101
+assert_check_passes "merged PR files come from the REST pull files endpoint" 100
+assert_check_passes "standard PR files come from the REST pull files endpoint" 101
 assert_check_passes "independent general target survives a supporting specific path" 102 201
 assert_check_rejects "specific target cannot be satisfied by an unrelated same-basename file" 202 103
 assert_check_passes "extensionless repository path matches the exact PR file" 104 203

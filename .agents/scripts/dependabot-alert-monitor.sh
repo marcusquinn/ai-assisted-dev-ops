@@ -12,6 +12,9 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 DEPENDABOT_ALERT_MONITOR_STATE_DIR="${DEPENDABOT_ALERT_MONITOR_STATE_DIR:-${HOME}/.aidevops/cache/dependabot-alert-monitor}"
 DEPENDABOT_ALERT_MONITOR_REPOS_JSON="${DEPENDABOT_ALERT_MONITOR_REPOS_JSON:-${AIDEVOPS_REPOS_JSON:-${HOME}/.config/aidevops/repos.json}}"
 DEPENDABOT_ALERT_MONITOR_MAX_REPOS="${DEPENDABOT_ALERT_MONITOR_MAX_REPOS:-50}"
+DEPENDABOT_ALERT_MONITOR_CORE_RESERVE="${DEPENDABOT_ALERT_MONITOR_CORE_RESERVE:-250}"
+DEPENDABOT_ALERT_MONITOR_CORE_COST_PER_REPO="${DEPENDABOT_ALERT_MONITOR_CORE_COST_PER_REPO:-2}"
+_DAM_RATE_LIMIT_RC=75
 
 _dam_log() {
   local message="$1"
@@ -75,10 +78,68 @@ _dam_list_repos() {
   return $?
 }
 
+_dam_core_remaining() {
+  local remaining=""
+  remaining=$(AIDEVOPS_GH_ROUTE_DECISION="dependabot-alert-monitor-core-budget-rest" \
+    gh api rate_limit --jq '.resources.core.remaining // empty' 2>/dev/null) || return 1
+  [[ "$remaining" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$remaining"
+  return 0
+}
+
+_dam_core_budget_allows_scan() {
+  local repo_count="$1"
+  local reserve="$DEPENDABOT_ALERT_MONITOR_CORE_RESERVE"
+  local cost_per_repo="$DEPENDABOT_ALERT_MONITOR_CORE_COST_PER_REPO"
+  local remaining=""
+  local required=0
+  [[ "$repo_count" =~ ^[0-9]+$ ]] || return 1
+  [[ "$reserve" =~ ^[0-9]+$ ]] || reserve=250
+  [[ "$cost_per_repo" =~ ^[1-9][0-9]*$ ]] || cost_per_repo=2
+  remaining=$(_dam_core_remaining) || {
+    _dam_log "core rate-limit state unavailable; skipping optional Dependabot fanout"
+    return 1
+  }
+  required=$((reserve + (repo_count * cost_per_repo)))
+  if [[ "$remaining" -lt "$required" ]]; then
+    _dam_log "core budget insufficient for Dependabot fanout: remaining=${remaining}, required=${required} (reserve=${reserve}, repos=${repo_count}, cost_per_repo=${cost_per_repo}); skipping"
+    return 1
+  fi
+  return 0
+}
+
+_dam_error_is_rate_limit() {
+  local error_text="$1"
+  local normalized=""
+  normalized=$(printf '%s' "$error_text" | tr '[:upper:]' '[:lower:]')
+  case "$normalized" in
+    *"rate limit"* | *"abuse detection"* | *"temporarily blocked"*) return 0 ;;
+  esac
+  return 1
+}
+
 _dam_fetch_alert_groups() {
   local repo_slug="$1"
   local alerts_json=""
-  alerts_json=$(gh api --paginate --slurp "repos/${repo_slug}/dependabot/alerts?state=open&per_page=100" 2>/dev/null) || return 1
+  local error_file=""
+  local error_text=""
+  local fetch_rc=0
+  error_file=$(mktemp "${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}/dependabot-alert-fetch.XXXXXX") || return 1
+  alerts_json=$(AIDEVOPS_GH_ROUTE_DECISION="dependabot-alert-monitor-alerts-rest" \
+    gh api --paginate --slurp "repos/${repo_slug}/dependabot/alerts?state=open&per_page=100" 2>"$error_file")
+  fetch_rc=$?
+  if [[ "$fetch_rc" -ne 0 ]]; then
+    error_text=$(<"$error_file")
+    rm -f "$error_file" 2>/dev/null || true
+    if _dam_error_is_rate_limit "$error_text"; then
+      return "$_DAM_RATE_LIMIT_RC"
+    fi
+    local remaining=""
+    remaining=$(_dam_core_remaining 2>/dev/null) || remaining=""
+    [[ "$remaining" == "0" ]] && return "$_DAM_RATE_LIMIT_RC"
+    return 1
+  fi
+  rm -f "$error_file" 2>/dev/null || true
   printf '%s\n' "$alerts_json" | jq -r '
     [ .[][]?
       | select(.state == "open")
@@ -231,10 +292,16 @@ dependabot_alert_monitor_scan_repo() {
   local skipped=0
   local package_name ecosystem patched_version manifests severities alert_count group_key
 
-  groups="$(_dam_fetch_alert_groups "$repo_slug")" || {
+  groups="$(_dam_fetch_alert_groups "$repo_slug")"
+  local fetch_rc=$?
+  if [[ "$fetch_rc" -eq "$_DAM_RATE_LIMIT_RC" ]]; then
+    _dam_log "GitHub rate limit reached while reading Dependabot alerts for ${repo_slug}"
+    return "$_DAM_RATE_LIMIT_RC"
+  fi
+  if [[ "$fetch_rc" -ne 0 ]]; then
     _dam_log "unable to read Dependabot alerts for ${repo_slug}; skipping"
     return 0
-  }
+  fi
 
   while IFS=$'\t' read -r package_name ecosystem patched_version manifests severities alert_count; do
     [[ -n "$package_name" ]] || continue
@@ -261,6 +328,10 @@ dependabot_alert_monitor_scan_repos() {
   local repos_json="${1:-$DEPENDABOT_ALERT_MONITOR_REPOS_JSON}"
   local dry_run="${2:-0}"
   local repo_count=0
+  local candidate_count=0
+  local max_repos="$DEPENDABOT_ALERT_MONITOR_MAX_REPOS"
+  local repo_rows=""
+  local scan_rc=0
   local repo_slug repo_path
 
   if [[ ! -f "$repos_json" ]]; then
@@ -268,15 +339,36 @@ dependabot_alert_monitor_scan_repos() {
     return 0
   fi
 
+  [[ "$max_repos" =~ ^[1-9][0-9]*$ ]] || max_repos=50
+  repo_rows=$(_dam_list_repos "$repos_json") || {
+    _dam_log "unable to read managed repositories from ${repos_json}; skipping"
+    return 0
+  }
+  while IFS=$'\t' read -r repo_slug repo_path; do
+    [[ -n "$repo_slug" ]] || continue
+    candidate_count=$((candidate_count + 1))
+    [[ "$candidate_count" -ge "$max_repos" ]] && break
+  done <<<"$repo_rows"
+  [[ "$candidate_count" -gt 0 ]] || {
+    _dam_log "scan complete across 0 managed repo(s)"
+    return 0
+  }
+  _dam_core_budget_allows_scan "$candidate_count" || return 0
+
   while IFS=$'\t' read -r repo_slug repo_path; do
     [[ -n "$repo_slug" ]] || continue
     repo_count=$((repo_count + 1))
-    if [[ "$repo_count" -gt "$DEPENDABOT_ALERT_MONITOR_MAX_REPOS" ]]; then
-      _dam_log "max repo limit reached (${DEPENDABOT_ALERT_MONITOR_MAX_REPOS}); skipping remainder"
+    if [[ "$repo_count" -gt "$max_repos" ]]; then
+      _dam_log "max repo limit reached (${max_repos}); skipping remainder"
       break
     fi
-    dependabot_alert_monitor_scan_repo "$repo_slug" "$dry_run" || true
-  done < <(_dam_list_repos "$repos_json" || true)
+    dependabot_alert_monitor_scan_repo "$repo_slug" "$dry_run"
+    scan_rc=$?
+    if [[ "$scan_rc" -eq "$_DAM_RATE_LIMIT_RC" ]]; then
+      _dam_log "stopping Dependabot fanout after rate-limit response from ${repo_slug}"
+      break
+    fi
+  done <<<"$repo_rows"
 
   _dam_log "scan complete across ${repo_count} managed repo(s)"
   return 0

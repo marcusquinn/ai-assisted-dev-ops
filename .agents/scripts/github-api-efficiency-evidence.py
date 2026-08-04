@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from github_api_efficiency_inputs import (
     BenchmarkInputError,
+    DISTRIBUTION_SAMPLE_FIELDS,
     EVIDENCE_GROUPS,
     EVIDENCE_SCHEMA,
     POPULATION_FIELDS,
@@ -137,6 +138,10 @@ def _sample_percentile(
     raise EvidenceBuildError(f"evidence {name} percentile could not be computed")
 
 
+def _sample_count(events: dict[str, Counter[str]], name: str) -> int:
+    return sum(events.get(name, {}).values())
+
+
 def _window_is_bounded(
     contract: Any, start: int | None, end: int | None, first: int, last: int
 ) -> bool:
@@ -217,8 +222,12 @@ def _missing_fields(payload: dict[str, Any]) -> list[str]:
             missing.append(f"population.{field}")
     for group, fields in EVIDENCE_GROUPS.items():
         for field in fields:
-            if payload[group][field] is None:
-                missing.append(f"{group}.{field}")
+            if payload[group][field] is not None:
+                continue
+            sample_field = DISTRIBUTION_SAMPLE_FIELDS.get((group, field))
+            if sample_field is not None and payload[group][sample_field] == 0:
+                continue
+            missing.append(f"{group}.{field}")
     return missing
 
 
@@ -255,6 +264,11 @@ def _build_latency(
         "peak_attempts_per_minute": _meta_count(
             meta, "peak_attempts_per_minute", covered
         ),
+        "completed_action_samples": (
+            _sample_count(events, "latency.completed_action_ms")
+            if covered
+            else None
+        ),
         "completed_action_p95_ms": (
             _sample_percentile(events, "latency.completed_action_ms", 95)
             if covered
@@ -268,6 +282,9 @@ def _build_webhook(
 ) -> dict[str, int | None]:
     return {
         "invalidations": _covered_count(events, "webhook.invalidations", covered),
+        "lag_samples": (
+            _sample_count(events, "webhook.lag_ms") if covered else None
+        ),
         "lag_p50_ms": (
             _sample_percentile(events, "webhook.lag_ms", 50) if covered else None
         ),

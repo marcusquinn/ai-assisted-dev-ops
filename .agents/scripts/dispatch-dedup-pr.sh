@@ -72,6 +72,156 @@ _ddpr_is_consolidation_task() {
 	return 1
 }
 
+_DDPR_JSON_ARRAY_TYPE="array"
+_DDPR_JSON_NUMBER_TYPE='number'
+
+_ddpr_closing_keyword_pattern() {
+	local issue_number="$1"
+	printf '%s' "(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}([^[:alnum:]_]|$)"
+	return 0
+}
+
+#######################################
+# Fetch open sibling PR candidates with response-owned GraphQL quota cost.
+#
+# Native `gh pr list` hides the multi-point GraphQL cost for this rich field
+# shape. Keep the existing 20-result search bound, but request rateLimit.cost in
+# the same response so exact-cost observations do not rely on cumulative deltas.
+#
+# Args: $1 = issue number, $2 = repo slug
+# Outputs: gh-pr-list-compatible JSON array
+# Returns: 0 for a complete response, 1 for API or validation failure
+#######################################
+_ddpr_graphql_open_siblings() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local search_query="repo:${repo_slug} is:pr is:open #${issue_number}"
+	local response="" pr_json=""
+
+	# shellcheck disable=SC2016
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-siblings-exact-cost" \
+		gh api graphql -F queryString="$search_query" -f query='
+		query($queryString: String!) {
+			search(type: ISSUE, query: $queryString, first: 20) {
+				nodes {
+					__typename
+					... on PullRequest {
+						number title body isDraft reviewDecision
+						mergeStateStatus mergeable changedFiles
+						files(first: 100) {
+							nodes { path }
+							pageInfo { hasNextPage }
+						}
+						labels(first: 100) {
+							nodes { name }
+							pageInfo { hasNextPage }
+						}
+					}
+				}
+			}
+			rateLimit { cost }
+		}
+	' 2>/dev/null) || return 1
+
+	pr_json=$(printf '%s' "$response" | jq -ce \
+		--arg array_type "$_DDPR_JSON_ARRAY_TYPE" --arg number_type "$_DDPR_JSON_NUMBER_TYPE" '
+		select(((.errors // []) | type) == $array_type)
+		| select(((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == $number_type)
+		| select(.data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| .data.search.nodes
+		| select(type == $array_type)
+		| select(all(.[];
+			.__typename == "PullRequest" and
+			(.number | type) == $number_type and
+			(.isDraft | type) == "boolean" and
+			((.files.nodes // []) | type) == $array_type and
+			.files.pageInfo.hasNextPage == false and
+			((.labels.nodes // []) | type) == $array_type and
+			.labels.pageInfo.hasNextPage == false
+		))
+		| map({
+			number,
+			title,
+			body,
+			isDraft,
+			reviewDecision,
+			mergeStateStatus,
+			mergeable,
+			changedFiles,
+			files: (.files.nodes // []),
+			labels: (.labels.nodes // [])
+		})
+	' 2>/dev/null) || return 1
+	printf '%s' "$pr_json"
+	return 0
+}
+
+#######################################
+# Fetch the ten newest open PR commit headlines with response-owned quota cost.
+#
+# Args: $1 = repo slug
+# Outputs: gh-pr-list-compatible JSON array
+# Returns: 0 for a complete response, 1 for API or validation failure
+#######################################
+_ddpr_graphql_open_commits() {
+	local repo_slug="$1"
+	local owner="${repo_slug%%/*}"
+	local repo="${repo_slug#*/}"
+	local response="" pr_json=""
+	[[ -n "$owner" && -n "$repo" && "$owner" != "$repo" && "$repo" != */* ]] || return 1
+
+	# shellcheck disable=SC2016
+	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-commits-exact-cost" \
+		gh api graphql -f owner="$owner" -f name="$repo" -f query='
+		query($owner: String!, $name: String!) {
+			repository(owner: $owner, name: $name) {
+				pullRequests(
+					first: 10,
+					states: [OPEN],
+					orderBy: {field: CREATED_AT, direction: DESC}
+				) {
+					nodes {
+						number title isDraft
+						commits(first: 100) {
+							nodes { commit { messageHeadline } }
+							pageInfo { hasNextPage }
+						}
+					}
+				}
+			}
+			rateLimit { cost }
+		}
+	' 2>/dev/null) || return 1
+
+	pr_json=$(printf '%s' "$response" | jq -ce \
+		--arg array_type "$_DDPR_JSON_ARRAY_TYPE" --arg number_type "$_DDPR_JSON_NUMBER_TYPE" '
+		select(((.errors // []) | type) == $array_type)
+		| select(((.errors // []) | length) == 0)
+		| select((.data.rateLimit.cost | type) == $number_type)
+		| select(.data.rateLimit.cost > 0 and (.data.rateLimit.cost | floor) == .data.rateLimit.cost)
+		| .data.repository.pullRequests.nodes
+		| select(type == $array_type)
+		| select(all(.[];
+			(.number | type) == $number_type and
+			(.isDraft | type) == "boolean" and
+			(.commits.nodes | type) == $array_type and
+			.commits.pageInfo.hasNextPage == false and
+			all(.commits.nodes[]; (.commit.messageHeadline | type) == "string")
+		))
+		| map({
+			number,
+			title,
+			isDraft,
+			commits: [.commits.nodes[].commit | {messageHeadline}]
+		})
+	' 2>/dev/null) || return 1
+	printf '%s' "$pr_json"
+	return 0
+}
+
 #######################################
 # has_open_pr Check 0: healthy open sibling PRs for this issue.
 #
@@ -90,9 +240,7 @@ _has_open_pr_check_healthy_sibling() {
 	local repo_slug="$2"
 
 	local pr_json match_pr draft_pr draft_pr_number draft_pr_kind
-	pr_json=$(gh pr list --repo "$repo_slug" --state open \
-		--search "#${issue_number}" --limit 20 \
-		--json number,title,body,isDraft,reviewDecision,mergeStateStatus,mergeable,changedFiles,files,labels 2>/dev/null) || {
+	pr_json=$(_ddpr_graphql_open_siblings "$issue_number" "$repo_slug") || {
 		printf 'PR_LOOKUP_UNCERTAIN: open PR lookup failed for issue #%s in %s; dispatch is blocked\n' \
 			"$issue_number" "$repo_slug"
 		return 0
@@ -183,23 +331,27 @@ _has_open_pr_check_open_commits() {
 	local repo_slug="$2"
 
 	local open_pr_json open_pr_count
-	open_pr_json=$(gh pr list --repo "$repo_slug" --state open \
-		--json number,title,commits,isDraft --limit 10 2>/dev/null) || open_pr_json="[]"
+	open_pr_json=$(_ddpr_graphql_open_commits "$repo_slug") || {
+		printf 'PR_LOOKUP_UNCERTAIN: open PR commit lookup failed for issue #%s in %s; dispatch is blocked\n' \
+			"$issue_number" "$repo_slug"
+		return 0
+	}
 	open_pr_count=$(printf '%s' "$open_pr_json" | jq 'length' 2>/dev/null) || open_pr_count=0
 	[[ "$open_pr_count" =~ ^[0-9]+$ ]] || open_pr_count=0
 	[[ "$open_pr_count" -eq 0 ]] && return 1
 
 	# Match: closing keyword + #NNN in commit messages, or GH#NNN/#NNN in PR title
-	local close_pattern="(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}([^[:alnum:]_]|$)"
+	local close_pattern=""
+	close_pattern=$(_ddpr_closing_keyword_pattern "$issue_number")
 	local title_pattern="(GH#${issue_number}|#${issue_number})([^[:alnum:]_]|$)"
 
 	local match_pr
 	match_pr=$(printf '%s' "$open_pr_json" | jq -r --arg cp "$close_pattern" --arg tp "$title_pattern" \
-		'[.[] | select((.isDraft // false | not) and (
-			(.title // "" | test($tp)) or
-			((.commits // [])[] | .messageHeadline // "" | test($cp; "i"))
+		'[.[] | select(((.isDraft // false) | not) and (
+			((.title // "") | test($tp)) or
+			any((.commits // [])[]?; ((.messageHeadline // "") | test($cp; "i")))
 		))
-		)] | .[0].number // empty' 2>/dev/null) || match_pr=""
+		] | .[0].number // empty' 2>/dev/null) || match_pr=""
 	if [[ -n "$match_pr" ]]; then
 		printf 'open PR #%s has commits targeting issue #%s\n' "$match_pr" "$issue_number"
 		return 0
@@ -248,7 +400,7 @@ _has_open_pr_check_open_body_keyword() {
 	# Match: closing keyword + optional whitespace + #NNN or owner/repo#NNN
 	# followed by a non-word char or end-of-string (GH#18641 semantics).
 	local close_pattern
-	close_pattern="(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}([^[:alnum:]_]|$)"
+	close_pattern=$(_ddpr_closing_keyword_pattern "$issue_number")
 
 	match_pr=$(printf '%s' "$pr_json" | jq -r --arg pattern "$close_pattern" \
 		'[.[] | select((.isDraft // false | not) and (.body // "" | test($pattern; "i")))] | .[0].number // empty' \
@@ -289,7 +441,7 @@ _has_open_pr_check_merged_keywords() {
 	# Match: closing keyword + optional whitespace + #NNN or owner/repo#NNN
 	# followed by a non-word char or end-of-string (GH#18641 semantics).
 	local close_pattern
-	close_pattern="(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}([^[:alnum:]_]|$)"
+	close_pattern=$(_ddpr_closing_keyword_pattern "$issue_number")
 
 	match_pr=$(printf '%s' "$pr_json" | jq -r --arg pattern "$close_pattern" \
 		'[.[] | select(.body // "" | test($pattern; "i"))] | .[0].number // empty' \
@@ -355,7 +507,8 @@ _has_open_pr_check_task_id_title() {
 	# otherwise we allow dispatch.
 	local merged_pr_body
 	merged_pr_body=$(printf '%s' "$pr_json" | jq -r '.[0].body // empty' 2>/dev/null)
-	local close_pattern_check3="(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}([^[:alnum:]_]|$)"
+	local close_pattern_check3=""
+	close_pattern_check3=$(_ddpr_closing_keyword_pattern "$issue_number")
 	if printf '%s' "$merged_pr_body" | grep -iqE "$close_pattern_check3"; then
 		printf 'merged PR #%s found by task id %s in title\n' "$pr_number" "$task_id"
 		return 0

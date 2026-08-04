@@ -261,17 +261,21 @@ fetch_review_threads_json() {
 	local owner name
 	parse_repo_slug "$repo" owner name
 	local resp rc=0
+	local jq_array_type='array'
 	# SC2016: the $owner/$name/$pr tokens inside this heredoc are GraphQL
 	# variables, not bash variables. The single-quoting is required so
 	# they reach the GraphQL server unexpanded.
 	# shellcheck disable=SC2016
-	resp=$(gh api graphql \
+	resp=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="post-merge-review-threads-exact-cost" \
+		gh api graphql \
 		-F owner="$owner" -F name="$name" -F pr="$pr" \
 		-f query='
 			query($owner: String!, $name: String!, $pr: Int!) {
 				repository(owner: $owner, name: $name) {
 					pullRequest(number: $pr) {
 						reviewThreads(first: 100) {
+							pageInfo { hasNextPage }
 							nodes {
 								isResolved
 								isOutdated
@@ -290,15 +294,26 @@ fetch_review_threads_json() {
 						}
 					}
 				}
+				rateLimit { cost }
 			}
 		') || rc=$?
 	if [[ $rc -ne 0 ]]; then
 		log "fetch_review_threads_json: gh graphql failed for ${repo}#${pr} (rc=${rc})"
 		return 2
 	fi
-	# Validate the response is shaped as expected. If the API returned an
-	# error object instead of data, treat it as a fetch failure.
-	if ! printf '%s' "$resp" | jq -e '.data.repository.pullRequest.reviewThreads' >/dev/null; then
+	# Validate response-owned quota evidence and reject partial thread sets. If
+	# the API returned errors, malformed data, or more than the established
+	# 100-thread bound, treat it as a fetch failure instead of silently deciding
+	# from incomplete review evidence.
+	if ! printf '%s' "$resp" | jq -e --arg array_type "$jq_array_type" '
+		((.errors // []) | type) == $array_type and
+		((.errors // []) | length) == 0 and
+		(.data.rateLimit.cost | type) == "number" and
+		(.data.rateLimit.cost > 0) and
+		((.data.rateLimit.cost | floor) == .data.rateLimit.cost) and
+		(.data.repository.pullRequest.reviewThreads.nodes | type) == $array_type and
+		(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false)
+	' >/dev/null; then
 		log "fetch_review_threads_json: malformed response for ${repo}#${pr}"
 		return 2
 	fi
