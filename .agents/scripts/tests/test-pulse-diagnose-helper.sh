@@ -88,10 +88,46 @@ FIXTURE_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/gh-cooldown-events.jsonl"
 WRAPPER_GH_COOLDOWN="${TMPDIR_TEST}/wrapper-gh-secondary-cooldown.json"
 WRAPPER_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/wrapper-gh-cooldown-events.jsonl"
 FIXTURE_BLOCKERS="${TMPDIR_TEST}/worker-progress-blockers.jsonl"
+FIXTURE_THREAD_STATE_DIR="${TMPDIR_TEST}/pr-review-thread-response"
+FIXTURE_DISPATCH_LEDGER="${TMPDIR_TEST}/dispatch-ledger.jsonl"
+FIXTURE_WORKTREE_REGISTRY="${TMPDIR_TEST}/worktree-registry.db"
+FIXTURE_ANCILLARY_REMOTE="${TMPDIR_TEST}/ancillary-remote.git"
+FIXTURE_ANCILLARY_WORKTREE="${TMPDIR_TEST}/ancillary-worktree"
 export PULSE_DIAGNOSE_BLOCKER_LOG="$FIXTURE_BLOCKERS"
+export PULSE_DIAGNOSE_THREAD_RESPONSE_STATE_DIR="$FIXTURE_THREAD_STATE_DIR"
+export PULSE_DIAGNOSE_DISPATCH_LEDGER_FILE="$FIXTURE_DISPATCH_LEDGER"
+export PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB="$FIXTURE_WORKTREE_REGISTRY"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="$WRAPPER_GH_COOLDOWN"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="$WRAPPER_GH_COOLDOWN_EVENTS"
 unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
+
+mkdir -p "$FIXTURE_THREAD_STATE_DIR"
+git init --bare -q "$FIXTURE_ANCILLARY_REMOTE"
+git clone -q "$FIXTURE_ANCILLARY_REMOTE" "$FIXTURE_ANCILLARY_WORKTREE" 2>/dev/null
+git -C "$FIXTURE_ANCILLARY_WORKTREE" config user.name "aidevops-test"
+git -C "$FIXTURE_ANCILLARY_WORKTREE" config user.email "aidevops-test@example.invalid"
+printf 'tracked\n' >"${FIXTURE_ANCILLARY_WORKTREE}/diagnostic.txt"
+git -C "$FIXTURE_ANCILLARY_WORKTREE" add diagnostic.txt
+git -C "$FIXTURE_ANCILLARY_WORKTREE" commit -q -m "fixture"
+git -C "$FIXTURE_ANCILLARY_WORKTREE" branch -M feature/t2711
+git -C "$FIXTURE_ANCILLARY_WORKTREE" push -q -u origin feature/t2711
+printf 'dirty\n' >>"${FIXTURE_ANCILLARY_WORKTREE}/diagnostic.txt"
+
+cat >"${FIXTURE_THREAD_STATE_DIR}/marcusquinn-aidevops-20340.state" <<'ANCILLARY_STATE'
+attempt_count=2
+dispatched_at=1785834000
+blocked_by=worker
+ANCILLARY_STATE
+cat >"${FIXTURE_THREAD_STATE_DIR}/marcusquinn-aidevops-20340.outcome" <<'ANCILLARY_OUTCOME'
+reason=process_exit
+session_count=2
+finished_at=1785834121
+ANCILLARY_OUTCOME
+jq -cn --arg path "$FIXTURE_ANCILLARY_WORKTREE" \
+	'{session_key:"pr-review-thread-response-marcusquinn-aidevops-20340",status:"failed",lease_phase:"prelaunch",pid:99999999,worktree_path:$path,updated_at:"2026-08-04T09:02:01Z"}' \
+	>"$FIXTURE_DISPATCH_LEDGER"
+sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
+	"CREATE TABLE worktree_owners (worktree_path TEXT PRIMARY KEY, owner_pid INTEGER, owner_session TEXT, owner_batch TEXT, task_id TEXT, created_at TEXT); INSERT INTO worktree_owners VALUES ('${FIXTURE_ANCILLARY_WORKTREE}',99999999,'pr-review-thread-response-marcusquinn-aidevops-20340','batch-1','20300','2026-08-04T09:01:00Z');"
 
 # Create fixture pulse.log with 3+ distinct rule outcomes:
 # 1. PR #20329: escalated by dirty-pr-sweep (notify), then admin-bypass merge
@@ -372,6 +408,22 @@ output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
 assert_contains "shows check failure skip" "pw-merge-skip-checks" "$output"
 assert_contains "shows CI fix routing" "pw-route-ci-fix" "$output"
 assert_contains "PR is still open" "still open" "$output"
+assert_contains "shows integrated ancillary worker heading" "Ancillary workers:" "$output"
+assert_contains "shows ancillary attempts and outcome" "thread-response  attempt=2  sessions=2  outcome=process_exit" "$output"
+assert_contains "shows dead ancillary registry owner" "owner_status=dead" "$output"
+assert_contains "shows dirty ancillary worktree without inventing a blocker" "dirty_files=1  blocked_reason=" "$output"
+assert_contains "shows bounded dirty path evidence" "diagnostic.txt" "$output"
+
+sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
+	"UPDATE worktree_owners SET owner_session='unrelated-worker-session' WHERE worktree_path='${FIXTURE_ANCILLARY_WORKTREE}';"
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 20340 --repo marcusquinn/aidevops --json 2>&1) || true
+assert_eq "JSON rejects mismatched ancillary registry ownership" "mismatch" "$(printf '%s' "$output" | jq -r '.ancillary.registry.owner_status')"
+assert_eq "JSON marks ancillary registry session mismatch" "false" "$(printf '%s' "$output" | jq -r '.ancillary.registry.matches_session')"
+sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
+	"UPDATE worktree_owners SET owner_session='pr-review-thread-response-marcusquinn-aidevops-20340' WHERE worktree_path='${FIXTURE_ANCILLARY_WORKTREE}';"
 
 # --- Test 7: PR #99999 — zero pulse entries (admin-bypass) ---
 printf '\nTest 7: PR #99999 — zero pulse entries (admin-bypass)\n'
@@ -428,6 +480,13 @@ if command -v jq >/dev/null 2>&1; then
 		"$HELPER" pr 28869 --repo marcusquinn/aidevops --json 2>&1) || true
 	assert_eq "JSON preserves total event count" "3" "$(printf '%s' "$output" | jq '.event_count')"
 	assert_eq "JSON preserves both unclassified events" "2" "$(printf '%s' "$output" | jq '[.events[] | select(.rule_id == "unclassified")] | length')"
+	output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+		PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+		PATH="${TMPDIR_TEST}:${PATH}" \
+		"$HELPER" pr 20340 --repo marcusquinn/aidevops --json 2>&1) || true
+	assert_eq "JSON includes ancillary worker" "true" "$(printf '%s' "$output" | jq '.ancillary.present')"
+	assert_eq "JSON includes ancillary dirty count" "1" "$(printf '%s' "$output" | jq '.ancillary.worktree.dirty_count')"
+	assert_eq "JSON classifies ancillary owner dead" "dead" "$(printf '%s' "$output" | jq -r '.ancillary.registry.owner_status')"
 fi
 
 # --- Test 10: missing pulse.log ---

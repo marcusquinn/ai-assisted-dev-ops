@@ -23,6 +23,9 @@
 #   PULSE_DIAGNOSE_GH_API_LOG   — override gh-api-calls.log path
 #   PULSE_DIAGNOSE_BLOCKER_LOG  — override worker-progress-blockers.jsonl path
 #   PULSE_DIAGNOSE_SYSTEMD_TIMER_FILE — override systemd timer unit path
+#   PULSE_DIAGNOSE_THREAD_RESPONSE_STATE_DIR — override ancillary worker state
+#   PULSE_DIAGNOSE_DISPATCH_LEDGER_FILE — override dispatch ledger path
+#   PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB — override worktree registry database
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 # shellcheck source=shared-constants.sh
@@ -52,8 +55,13 @@ readonly DEFAULT_STATS_FILE="${HOME}/.aidevops/logs/pulse-stats.json"
 readonly DEFAULT_GH_API_LOG="${HOME}/.aidevops/logs/gh-api-calls.log"
 readonly DEFAULT_BLOCKER_LOG="${HOME}/.aidevops/logs/worker-progress-blockers.jsonl"
 readonly DEFAULT_SYSTEMD_TIMER_FILE="${HOME}/.config/systemd/user/aidevops-supervisor-pulse.timer"
+readonly DEFAULT_THREAD_RESPONSE_STATE_DIR="${HOME}/.aidevops/.agent-workspace/pr-review-thread-response"
+readonly DEFAULT_DISPATCH_LEDGER_FILE="${HOME}/.aidevops/.agent-workspace/tmp/dispatch-ledger.jsonl"
+readonly DEFAULT_WORKTREE_REGISTRY_DB="${HOME}/.aidevops/.agent-workspace/worktree-registry.db"
 readonly _UNKNOWN="unknown"
 readonly _UNCLASSIFIED="unclassified"
+readonly _PR_HEAD_REF_JSON_PATH=".headRefName"
+readonly _BOOL_TRUE="true"
 # =============================================================================
 # Rule Inventory (Phase A)
 #
@@ -322,7 +330,7 @@ _issue_attempt_summary_json() {
 		now_epoch=$(date +%s 2>/dev/null || printf '0')
 		[[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch=0
 		if [[ "$now_epoch" -lt "$next_eligible" ]]; then
-			active="true"
+			active="$_BOOL_TRUE"
 		fi
 	fi
 
@@ -494,6 +502,8 @@ _CMD_PR_JSON_OUTPUT=0
 _CMD_PR_LOGFILE_OVERRIDE=""
 _CMD_PR_EVENTS=()
 _CMD_PR_EVENT_COUNT=0
+_CMD_PR_ANCILLARY_EMPTY_JSON='{"present":false,"kind":"thread-response"}'
+_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
 
 # Parse cmd_pr CLI arguments into _CMD_PR_* module globals.
 # Returns 1 on validation error.
@@ -503,6 +513,7 @@ _cmd_pr_parse_args() {
 	_CMD_PR_VERBOSE=0
 	_CMD_PR_JSON_OUTPUT=0
 	_CMD_PR_LOGFILE_OVERRIDE=""
+	_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
 
 	while [[ $# -gt 0 ]]; do
 		case "${1}" in
@@ -548,6 +559,214 @@ _cmd_pr_parse_args() {
 			return 1
 		fi
 	fi
+	return 0
+}
+
+# Read one exact key from a scanner state/outcome file.
+# Args: $1=file  $2=key
+_diagnose_kv_value() {
+	local file="$1"
+	local expected_key="$2"
+	[[ -f "$file" ]] || return 0
+	local key=""
+	local value=""
+	while IFS='=' read -r key value; do
+		if [[ "$key" == "$expected_key" ]]; then
+			printf '%s' "$value"
+			return 0
+		fi
+	done <"$file"
+	return 0
+}
+
+# Escape one value for a SQLite string literal.
+# Args: $1=value
+_diagnose_sql_escape() {
+	local value="$1"
+	printf '%s' "${value//\'/\'\'}"
+	return 0
+}
+
+# Return the latest bounded dispatch-ledger row for a session.
+# Args: $1=ledger_file  $2=session_key
+_diagnose_latest_ledger_row() {
+	local ledger_file="$1"
+	local session_key="$2"
+	[[ -f "$ledger_file" ]] || {
+		printf '{}\n'
+		return 0
+	}
+	local max_lines="${PULSE_DIAGNOSE_LEDGER_MAX_LINES:-2000}"
+	[[ "$max_lines" =~ ^[1-9][0-9]{0,4}$ ]] || max_lines=2000
+	tail -n "$max_lines" "$ledger_file" 2>/dev/null | jq -Rsc --arg session "$session_key" '
+		[(split("\n")[] | select(length > 0) | try fromjson catch empty | select(.session_key == $session))]
+		| last // {}
+	' 2>/dev/null || printf '{}\n'
+	return 0
+}
+
+_diagnose_registry_row() {
+	local registry_db="$1"
+	local worktree_path="$2"
+	local session_key="$3"
+	command -v sqlite3 >/dev/null 2>&1 || return 0
+	[[ -f "$registry_db" ]] || return 0
+	if [[ -n "$worktree_path" ]]; then
+		local escaped_path=""
+		escaped_path=$(_diagnose_sql_escape "$worktree_path")
+		sqlite3 -separator '|' "$registry_db" \
+			"SELECT worktree_path, owner_pid, owner_session, task_id, created_at FROM worktree_owners WHERE worktree_path = '${escaped_path}' LIMIT 1;" 2>/dev/null || true
+		return 0
+	fi
+	local escaped_session=""
+	escaped_session=$(_diagnose_sql_escape "$session_key")
+	sqlite3 -separator '|' "$registry_db" \
+		"SELECT worktree_path, owner_pid, owner_session, task_id, created_at FROM worktree_owners WHERE owner_session = '${escaped_session}' ORDER BY created_at DESC LIMIT 1;" 2>/dev/null || true
+	return 0
+}
+
+_diagnose_worktree_json() {
+	local worktree_path="$1"
+	local head_ref="$2"
+	local worktree_exists=false branch="" upstream="" upstream_ahead="" dirty_count=0
+	local upstream_mismatch=false dirty_json='[]'
+	if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+		worktree_exists=true
+		branch=$(git -C "$worktree_path" symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'detached')
+		upstream=$(git -C "$worktree_path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+		if [[ -n "$upstream" ]]; then
+			upstream_ahead=$(git -C "$worktree_path" rev-list --count "${upstream}..HEAD" 2>/dev/null || true)
+		fi
+		local dirty_lines=""
+		dirty_lines=$(git -C "$worktree_path" status --short --untracked-files=normal 2>/dev/null || true)
+		dirty_count=$(printf '%s\n' "$dirty_lines" | awk 'NF { count++ } END { print count + 0 }')
+		dirty_json=$(printf '%s\n' "$dirty_lines" | jq -Rsc 'split("\n") | map(select(length > 0)) | .[0:10]' 2>/dev/null || printf '[]')
+		if [[ -n "$upstream" && -n "$head_ref" && "$upstream" != "origin/${head_ref}" ]]; then
+			upstream_mismatch=true
+		fi
+	fi
+	jq -cn --arg path "$worktree_path" --argjson exists "$worktree_exists" \
+		--arg branch "$branch" --arg upstream "$upstream" --arg ahead "$upstream_ahead" \
+		--argjson mismatch "$upstream_mismatch" --argjson dirty_count "$dirty_count" \
+		--argjson dirty_paths "$dirty_json" \
+		'{path:$path,exists:$exists,branch:$branch,upstream:$upstream,upstream_ahead:$ahead,upstream_mismatch:$mismatch,dirty_count:$dirty_count,dirty_paths:$dirty_paths}'
+	return 0
+}
+
+# Collect bounded ancillary thread-response worker diagnostics for one PR.
+# Args: $1=repo_slug  $2=pr_number  $3=head_ref
+# Output: one JSON object.
+_cmd_pr_collect_ancillary() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local head_ref="$3"
+	local state_dir="${PULSE_DIAGNOSE_THREAD_RESPONSE_STATE_DIR:-$DEFAULT_THREAD_RESPONSE_STATE_DIR}"
+	local ledger_file="${PULSE_DIAGNOSE_DISPATCH_LEDGER_FILE:-$DEFAULT_DISPATCH_LEDGER_FILE}"
+	local registry_db="${PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB:-$DEFAULT_WORKTREE_REGISTRY_DB}"
+	local safe_slug=""
+	safe_slug=$(printf '%s' "$repo_slug" | tr '/:' '--')
+	local session_key="pr-review-thread-response-${safe_slug}-${pr_number}"
+	local state_file="${state_dir}/${safe_slug}-${pr_number}.state"
+	local outcome_file="${state_dir}/${safe_slug}-${pr_number}.outcome"
+
+	local attempt_count="" dispatched_at="" blocked_by="" blocker_reason=""
+	local outcome_reason="" session_count="" finished_at=""
+	attempt_count=$(_diagnose_kv_value "$state_file" attempt_count)
+	dispatched_at=$(_diagnose_kv_value "$state_file" dispatched_at)
+	blocked_by=$(_diagnose_kv_value "$state_file" blocked_by)
+	blocker_reason=$(_diagnose_kv_value "$state_file" blocker_reason)
+	outcome_reason=$(_diagnose_kv_value "$outcome_file" reason)
+	session_count=$(_diagnose_kv_value "$outcome_file" session_count)
+	finished_at=$(_diagnose_kv_value "$outcome_file" finished_at)
+
+	local ledger_json="{}"
+	ledger_json=$(_diagnose_latest_ledger_row "$ledger_file" "$session_key")
+	local ledger_status="" ledger_phase="" ledger_pid="" worktree_path="" ledger_updated_at=""
+	ledger_status=$(printf '%s' "$ledger_json" | jq -r '.status // empty' 2>/dev/null || true)
+	ledger_phase=$(printf '%s' "$ledger_json" | jq -r '.lease_phase // empty' 2>/dev/null || true)
+	ledger_pid=$(printf '%s' "$ledger_json" | jq -r '.pid // empty' 2>/dev/null || true)
+	worktree_path=$(printf '%s' "$ledger_json" | jq -r '.worktree_path // empty' 2>/dev/null || true)
+	ledger_updated_at=$(printf '%s' "$ledger_json" | jq -r '.updated_at // empty' 2>/dev/null || true)
+
+	local registry_row=""
+	registry_row=$(_diagnose_registry_row "$registry_db" "$worktree_path" "$session_key")
+
+	local owner_pid="" owner_session="" owner_task="" owner_created_at=""
+	if [[ -n "$registry_row" ]]; then
+		IFS='|' read -r worktree_path owner_pid owner_session owner_task owner_created_at <<<"$registry_row"
+	fi
+	local owner_status="unknown" owner_matches_session=true
+	if [[ -n "$registry_row" && "$owner_session" != "$session_key" ]]; then
+		owner_status="mismatch"
+		owner_matches_session=false
+	elif [[ "$owner_pid" =~ ^[0-9]+$ ]]; then
+		if kill -0 "$owner_pid" 2>/dev/null; then
+			owner_status="alive"
+		else
+			owner_status="dead"
+		fi
+	fi
+
+	local worktree_json="{}" registry_stale=false
+	worktree_json=$(_diagnose_worktree_json "$worktree_path" "$head_ref")
+	[[ "$owner_status" == "dead" ]] && registry_stale=true
+
+	local present=false
+	if [[ -f "$state_file" || -f "$outcome_file" || "$ledger_json" != "{}" || -n "$registry_row" ]]; then
+		present=true
+	fi
+	jq -cn \
+		--argjson present "$present" \
+		--arg kind "thread-response" \
+		--arg session_key "$session_key" \
+		--arg attempt_count "$attempt_count" \
+		--arg dispatched_at "$dispatched_at" \
+		--arg blocked_by "$blocked_by" \
+		--arg blocked_reason "$blocker_reason" \
+		--arg outcome_reason "$outcome_reason" \
+		--arg session_count "$session_count" \
+		--arg finished_at "$finished_at" \
+		--arg ledger_status "$ledger_status" \
+		--arg ledger_phase "$ledger_phase" \
+		--arg ledger_pid "$ledger_pid" \
+		--arg ledger_updated_at "$ledger_updated_at" \
+		--arg owner_pid "$owner_pid" \
+		--arg owner_session "$owner_session" \
+		--arg owner_task "$owner_task" \
+		--arg owner_created_at "$owner_created_at" \
+		--arg owner_status "$owner_status" \
+		--argjson owner_matches_session "$owner_matches_session" \
+		--argjson registry_stale "$registry_stale" \
+		--argjson worktree "$worktree_json" \
+		'{present:$present,kind:$kind,session_key:$session_key,state:{attempt_count:$attempt_count,dispatched_at:$dispatched_at,blocked_by:$blocked_by,blocked_reason:$blocked_reason},outcome:{reason:$outcome_reason,session_count:$session_count,finished_at:$finished_at},ledger:{status:$ledger_status,lease_phase:$ledger_phase,pid:$ledger_pid,updated_at:$ledger_updated_at},registry:{owner_pid:$owner_pid,owner_session:$owner_session,owner_task:$owner_task,owner_created_at:$owner_created_at,owner_status:$owner_status,matches_session:$owner_matches_session,stale:$registry_stale},worktree:$worktree}'
+	return 0
+}
+
+_render_pr_ancillary_text() {
+	local ancillary_json="$1"
+	[[ "$(printf '%s' "$ancillary_json" | jq -r '.present // false' 2>/dev/null)" == "$_BOOL_TRUE" ]] || return 0
+	local summary=""
+	summary=$(printf '%s' "$ancillary_json" | jq -r '[.state.attempt_count,.outcome.session_count,.outcome.reason,.ledger.status,.ledger.lease_phase,.ledger.pid,.registry.owner_pid,.registry.owner_status,.registry.stale,.worktree.path,.worktree.branch,.worktree.upstream,.worktree.upstream_ahead,.worktree.upstream_mismatch,.worktree.dirty_count,.state.blocked_reason] | map(. // "" | tostring) | join("\u001c")')
+	local attempt="" sessions="" outcome="" ledger_status="" lease_phase="" ledger_pid=""
+	local owner_pid="" owner_status="" registry_stale="" worktree_path="" branch="" upstream=""
+	local upstream_ahead="" upstream_mismatch="" dirty_count="" blocked_reason=""
+	IFS=$'\034' read -r attempt sessions outcome ledger_status lease_phase ledger_pid \
+		owner_pid owner_status registry_stale worktree_path branch upstream upstream_ahead \
+		upstream_mismatch dirty_count blocked_reason <<<"$summary"
+	printf 'Ancillary workers:\n'
+	printf '  thread-response  attempt=%s  sessions=%s  outcome=%s\n' \
+		"$attempt" "$sessions" "$outcome"
+	printf '    ledger_status=%s  lease_phase=%s  pid=%s\n' \
+		"$ledger_status" "$lease_phase" "$ledger_pid"
+	printf '    owner_pid=%s  owner_status=%s  registry_stale=%s\n' \
+		"$owner_pid" "${owner_status:-unknown}" "${registry_stale:-false}"
+	printf '    worktree=%s\n' "$worktree_path"
+	printf '    branch=%s  upstream=%s  ahead=%s  upstream_mismatch=%s\n' \
+		"$branch" "$upstream" "$upstream_ahead" "${upstream_mismatch:-false}"
+	printf '    dirty_files=%s  blocked_reason=%s\n' \
+		"${dirty_count:-0}" "$blocked_reason"
+	printf '%s' "$ancillary_json" | jq -r '.worktree.dirty_paths[]? | "      \(.)"' 2>/dev/null || true
+	printf '\n'
 	return 0
 }
 
@@ -676,7 +895,7 @@ cmd_pr() {
 	local pr_json
 	pr_json=$(_fetch_pr_metadata "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG")
 
-	local pr_author pr_state pr_merged_at pr_closed_at pr_created_at pr_title pr_review_decision pr_mss
+	local pr_author pr_state pr_merged_at pr_closed_at pr_created_at pr_title pr_review_decision pr_mss pr_head_ref
 	pr_author=$(_jq_field "$pr_json" ".author.login" "$_UNKNOWN")
 	pr_state=$(_jq_field "$pr_json" ".state" "$_UNKNOWN")
 	pr_merged_at=$(_jq_field "$pr_json" ".mergedAt" "")
@@ -685,11 +904,14 @@ cmd_pr() {
 	pr_title=$(_jq_field "$pr_json" ".title" "")
 	pr_review_decision=$(_jq_field "$pr_json" ".reviewDecision" "")
 	pr_mss=$(_jq_field "$pr_json" ".mergeStateStatus" "")
+	pr_head_ref=$(_jq_field "$pr_json" "$_PR_HEAD_REF_JSON_PATH" "")
 
 	local merged_flag="no"
 	[[ -n "$pr_merged_at" ]] && merged_flag="yes"
 
 	_cmd_pr_build_events "$log_lines" "$_CMD_PR_VERBOSE"
+	_CMD_PR_ANCILLARY_JSON=$(_cmd_pr_collect_ancillary "$_CMD_PR_REPO_SLUG" "$_CMD_PR_NUMBER" "$pr_head_ref") || \
+		_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
 
 	if [[ "$_CMD_PR_JSON_OUTPUT" -eq 1 ]]; then
 		_render_json "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG" "$pr_author" "$pr_state" "$merged_flag" \
@@ -703,6 +925,7 @@ cmd_pr() {
 		"$merged_flag" "$pr_merged_at" "$pr_title" "$pr_created_at" \
 		"$pr_review_decision" "$pr_mss" "$_CMD_PR_EVENT_COUNT" \
 		"${_CMD_PR_EVENTS[@]+"${_CMD_PR_EVENTS[@]}"}"
+	_render_pr_ancillary_text "$_CMD_PR_ANCILLARY_JSON"
 	return 0
 }
 
@@ -726,7 +949,7 @@ _render_json() {
 	shift 3
 
 	local merged_bool="false"
-	[[ "$merged" == "yes" ]] && merged_bool="true"
+	[[ "$merged" == "yes" ]] && merged_bool="$_BOOL_TRUE"
 
 	printf '{\n'
 	_json_num_field "pr_number" "$pr_number"
@@ -760,7 +983,8 @@ _render_json() {
 			"$ts" "$rule_id" "$script" "$line_range" "$description"
 	done
 
-	printf '\n  ]\n'
+	printf '\n  ],\n'
+	printf '  "ancillary": %s\n' "$_CMD_PR_ANCILLARY_JSON"
 	printf '}\n'
 	return 0
 }
@@ -928,7 +1152,7 @@ _ch_render_json() {
 		[[ -z "$stage" ]] && continue
 		[[ "$last_ok" == "-" ]] && last_ok=""
 		local deg_bool="false"
-		[[ "$degraded" == "$_CH_DEGRADED" ]] && deg_bool="true"
+		[[ "$degraded" == "$_CH_DEGRADED" ]] && deg_bool="$_BOOL_TRUE"
 		[[ "$first" -eq 0 ]] && printf ',\n'
 		first=0
 		printf '    {"stage": "%s", "runs": %s, "timeouts": %s, "p50_secs": %s, "p95_secs": %s, "last_ok_ts": "%s", "degraded": %s}' \
@@ -1212,7 +1436,7 @@ _render_issue_linked_prs() {
 		pr_json=$(_fetch_pr_metadata "$pr_num" "$repo_slug")
 		pr_title=$(_jq_field "$pr_json" "$_IQ_TITLE" "")
 		pr_state=$(_jq_field "$pr_json" "$_IQ_STATE" "$_UNKNOWN")
-		pr_head=$(_jq_field "$pr_json" ".headRefName" "")
+		pr_head=$(_jq_field "$pr_json" "$_PR_HEAD_REF_JSON_PATH" "")
 		pr_merged_at=$(_jq_field "$pr_json" "$_IQ_MERGED" "")
 		printf '  PR #%s  %s  %s\n' "$pr_num" "$pr_state" "${pr_title:-(no title)}"
 		[[ -n "$pr_head" ]] && printf '    Branch: %s\n' "$pr_head"
@@ -1449,7 +1673,7 @@ _render_issue_json() {
 		pr_json=$(_fetch_pr_metadata "$pr_num" "$repo_slug")
 		pr_title=$(_jq_field "$pr_json" "$_IQ_TITLE" "")
 		pr_state=$(_jq_field "$pr_json" "$_IQ_STATE" "$_UNKNOWN")
-		pr_head=$(_jq_field "$pr_json" ".headRefName" "")
+		pr_head=$(_jq_field "$pr_json" "$_PR_HEAD_REF_JSON_PATH" "")
 		pr_merged_at=$(_jq_field "$pr_json" "$_IQ_MERGED" "")
 		local pr_log_lines="" pr_event_count=0 raw_count=""
 		pr_log_lines=$(_collect_pr_log_lines "$pr_num" "$logfile" "$logdir")
