@@ -1,0 +1,263 @@
+{
+  "documents": [
+    {
+      "schema_version": 1,
+      "document_type": "registry",
+      "registry_id": "registry.primary",
+      "providers": [
+        {
+          "provider_id": "buzz",
+          "adapter_id": "adapter.buzz",
+          "adapter_version": "1.0.0",
+          "provider_version": "0afeac8",
+          "capabilities": [
+            {
+              "capability_id": "buzz.messaging",
+              "resource_kinds": ["community", "conversation", "thread"],
+              "operations": ["discover", "read", "send", "receive"],
+              "availability": "available",
+              "owner_review_required": false
+            }
+          ],
+          "compatibility": {
+            "state": "compatible",
+            "reference": "compatibility:buzz:0afeac8",
+            "summary": "Reviewed adapter baseline"
+          }
+        },
+        {
+          "provider_id": "matrix",
+          "adapter_id": "adapter.matrix",
+          "adapter_version": "1.0.0",
+          "provider_version": "v1.13",
+          "capabilities": [
+            {
+              "capability_id": "matrix.messaging",
+              "resource_kinds": ["community", "channel", "thread", "direct_message"],
+              "operations": ["discover", "read", "create", "send", "receive", "invite"],
+              "availability": "degraded",
+              "owner_review_required": true
+            }
+          ],
+          "compatibility": {
+            "state": "degraded",
+            "reference": "compatibility:matrix:v1.13"
+          }
+        }
+      ],
+      "communities": [
+        {
+          "community_id": "community.buzz.primary",
+          "provider_id": "buzz",
+          "provider_external_id": "workspace/01J-opaque",
+          "account_refs": ["account.buzz.bot"],
+          "display_label": "Buzz workspace"
+        },
+        {
+          "community_id": "community.matrix.primary",
+          "provider_id": "matrix",
+          "provider_external_id": "!opaque:example.invalid",
+          "account_refs": ["account.matrix.bot"],
+          "display_label": "Matrix space"
+        }
+      ],
+      "accounts": [
+        {
+          "account_id": "account.buzz.bot",
+          "provider_id": "buzz",
+          "provider_external_id": "managed-agent/opaque-7",
+          "credential_ref": "secret-store:buzz-bot",
+          "display_label": "Buzz agent account"
+        },
+        {
+          "account_id": "account.matrix.bot",
+          "provider_id": "matrix",
+          "provider_external_id": "@agent:example.invalid",
+          "credential_ref": "secret-store:matrix-bot",
+          "display_label": "Matrix agent account"
+        }
+      ],
+      "identities": [
+        {
+          "identity_id": "identity.alice.buzz",
+          "subject_id": "subject.alice",
+          "subject_type": "human",
+          "provider_identity_id": "provider-identity.alice.buzz",
+          "provider_id": "buzz",
+          "community_id": "community.buzz.primary",
+          "provider_external_id": "user/opaque-alice",
+          "display_label": "Alice",
+          "verification": {
+            "status": "verified",
+            "method": "broker_attestation",
+            "evidence_ref": "evidence:buzz:alice:1"
+          }
+        },
+        {
+          "identity_id": "identity.agent.matrix",
+          "subject_id": "subject.agent.primary",
+          "subject_type": "agent",
+          "provider_identity_id": "provider-identity.agent.matrix",
+          "provider_id": "matrix",
+          "community_id": "community.matrix.primary",
+          "provider_external_id": "@agent:example.invalid",
+          "display_label": "Build agent",
+          "verification": {
+            "status": "verified",
+            "method": "provider_session",
+            "evidence_ref": "evidence:matrix:agent:1"
+          },
+          "secret_ref": "secret-store:matrix-session"
+        }
+      ],
+      "resources": [
+        {
+          "resource_id": "resource.buzz.conversation",
+          "provider_id": "buzz",
+          "community_id": "community.buzz.primary",
+          "provider_external_id": "conversation/opaque-main",
+          "kind": "conversation",
+          "display_label": "Engineering",
+          "management_owner": "subject.alice",
+          "compatibility": {
+            "state": "compatible",
+            "reference": "compatibility:buzz:conversation"
+          }
+        },
+        {
+          "resource_id": "resource.buzz.thread",
+          "provider_id": "buzz",
+          "community_id": "community.buzz.primary",
+          "provider_external_id": "thread/opaque-child",
+          "kind": "thread",
+          "parent_resource_id": "resource.buzz.conversation",
+          "display_label": "Release thread",
+          "management_owner": "subject.alice",
+          "compatibility": {
+            "state": "compatible",
+            "reference": "compatibility:buzz:thread"
+          }
+        },
+        {
+          "resource_id": "resource.matrix.channel",
+          "provider_id": "matrix",
+          "community_id": "community.matrix.primary",
+          "provider_external_id": "!opaque-room:example.invalid",
+          "kind": "channel",
+          "display_label": "Operations",
+          "management_owner": "subject.alice",
+          "compatibility": {
+            "state": "degraded",
+            "reference": "compatibility:matrix:room"
+          }
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "document_type": "event",
+      "event": {
+        "event_id": "event.buzz.in.001",
+        "direction": "inbox",
+        "provider_id": "buzz",
+        "provider_version": "0afeac8",
+        "lineage": {
+          "community_id": "community.buzz.primary",
+          "conversation_resource_id": "resource.buzz.conversation",
+          "thread_resource_id": "resource.buzz.thread",
+          "provider_event_id": "event/opaque-in-001",
+          "parent_event_id": "event.buzz.in.000"
+        },
+        "verified_actor": {
+          "subject_id": "subject.alice",
+          "subject_type": "human",
+          "roles": ["owner", "maintainer"],
+          "verification": {
+            "status": "verified",
+            "method": "provider_signature",
+            "evidence_ref": "evidence:buzz:event:001"
+          },
+          "signature_status": "verified"
+        },
+        "target": {
+          "agent_ref": "agent:build-primary",
+          "app_team_ref": "app-team:engineering"
+        },
+        "content": {
+          "content_type": "text/markdown",
+          "text": "Review the release plan.",
+          "attachments": [
+            {
+              "attachment_id": "attachment.plan",
+              "media_type": "application/pdf",
+              "size_bytes": 2048,
+              "display_name": "plan.pdf",
+              "digest": {
+                "algorithm": "sha256",
+                "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "metadata": {"page_count": 2}
+            }
+          ],
+          "metadata": {"source_format": "markdown"}
+        },
+        "requested_operation": "read",
+        "authority_scope": {
+          "scopes": ["resource.buzz.thread:read"],
+          "broker_decision_ref": "authority-decision:buzz:001"
+        },
+        "trust_profile_ref": "trust-profile:standard",
+        "scan_verdict_ref": "scan-verdict:buzz:001",
+        "correlation_id": "correlation.release.001",
+        "idempotency_key": "idempotency.buzz.001",
+        "occurred_at": "2026-08-04T20:00:00Z"
+      }
+    },
+    {
+      "schema_version": 1,
+      "document_type": "event",
+      "event": {
+        "event_id": "event.matrix.out.001",
+        "direction": "outbox",
+        "provider_id": "matrix",
+        "provider_version": "v1.13",
+        "lineage": {
+          "community_id": "community.matrix.primary",
+          "conversation_resource_id": "resource.matrix.channel",
+          "provider_event_id": "$opaque-out-001"
+        },
+        "verified_actor": {
+          "subject_id": "subject.agent.primary",
+          "subject_type": "agent",
+          "roles": ["assistant"],
+          "verification": {
+            "status": "verified",
+            "method": "broker_attestation",
+            "evidence_ref": "evidence:broker:agent:001"
+          },
+          "signature_status": "not_present"
+        },
+        "target": {
+          "agent_ref": "agent:build-primary",
+          "app_team_ref": "app-team:operations"
+        },
+        "content": {
+          "content_type": "text/plain",
+          "text": "Release plan reviewed.",
+          "attachments": [],
+          "metadata": {}
+        },
+        "requested_operation": "send",
+        "authority_scope": {
+          "scopes": ["resource.matrix.channel:send"],
+          "broker_decision_ref": "authority-decision:matrix:001"
+        },
+        "trust_profile_ref": "trust-profile:restricted",
+        "scan_verdict_ref": "scan-verdict:matrix:001",
+        "correlation_id": "correlation.release.001",
+        "idempotency_key": "idempotency.matrix.001",
+        "occurred_at": "2026-08-04T20:01:00Z"
+      }
+    }
+  ]
+}

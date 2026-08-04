@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:core:v1",
+  "title": "aidevops team-interface core contract v1",
+  "oneOf": [
+    {"$ref": "#/$defs/registry_document"},
+    {"$ref": "#/$defs/event_document"}
+  ],
+  "$defs": {
+    "stable_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "opaque_external_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "reference_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "subject_type": {
+      "enum": ["human", "agent", "service"]
+    },
+    "resource_kind": {
+      "enum": ["community", "channel", "conversation", "thread", "direct_message", "group", "other"]
+    },
+    "capability_operation": {
+      "enum": ["discover", "read", "create", "update", "delete", "moderate", "invite", "send", "receive"]
+    },
+    "verification_state": {
+      "enum": ["verified", "unverified", "revoked"]
+    },
+    "compatibility_state": {
+      "enum": ["compatible", "degraded", "unsupported", "unknown"]
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reference"],
+      "properties": {
+        "state": {"$ref": "#/$defs/compatibility_state"},
+        "reference": {"$ref": "#/$defs/reference_id"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_id", "resource_kinds", "operations", "availability", "owner_review_required"],
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/stable_id"},
+        "resource_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/resource_kind"}
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability_operation"}
+        },
+        "availability": {"enum": ["available", "degraded", "unavailable", "unknown"]},
+        "owner_review_required": {"type": "boolean"}
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_id", "adapter_id", "adapter_version", "provider_version", "capabilities", "compatibility"],
+      "properties": {
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "adapter_id": {"$ref": "#/$defs/stable_id"},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "provider_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/capability"}
+        },
+        "compatibility": {"$ref": "#/$defs/compatibility"}
+      }
+    },
+    "community": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["community_id", "provider_id", "provider_external_id", "account_refs", "display_label"],
+      "properties": {
+        "community_id": {"$ref": "#/$defs/stable_id"},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/opaque_external_id"},
+        "account_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/stable_id"}
+        },
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_id", "provider_id", "provider_external_id", "credential_ref", "display_label"],
+      "properties": {
+        "account_id": {"$ref": "#/$defs/stable_id"},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/opaque_external_id"},
+        "credential_ref": {"$ref": "#/$defs/reference_id"},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    },
+    "identity_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "method", "evidence_ref"],
+      "properties": {
+        "status": {
+          "allOf": [
+            {"$ref": "#/$defs/verification_state"},
+            {"const": "verified"}
+          ]
+        },
+        "method": {"enum": ["provider_signature", "provider_session", "broker_attestation", "manual_owner_review"]},
+        "evidence_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_id", "subject_id", "subject_type", "provider_identity_id", "provider_id", "community_id", "provider_external_id", "display_label", "verification"],
+      "properties": {
+        "identity_id": {"$ref": "#/$defs/stable_id"},
+        "subject_id": {"$ref": "#/$defs/stable_id"},
+        "subject_type": {"$ref": "#/$defs/subject_type"},
+        "provider_identity_id": {"$ref": "#/$defs/stable_id"},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "community_id": {"$ref": "#/$defs/stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/opaque_external_id"},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255},
+        "verification": {"$ref": "#/$defs/identity_verification"},
+        "secret_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_id", "provider_id", "community_id", "provider_external_id", "kind", "display_label", "management_owner", "compatibility"],
+      "properties": {
+        "resource_id": {"$ref": "#/$defs/stable_id"},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "community_id": {"$ref": "#/$defs/stable_id"},
+        "provider_external_id": {"$ref": "#/$defs/opaque_external_id"},
+        "kind": {"$ref": "#/$defs/resource_kind"},
+        "parent_resource_id": {"$ref": "#/$defs/stable_id"},
+        "display_label": {"type": "string", "minLength": 1, "maxLength": 255},
+        "management_owner": {"$ref": "#/$defs/stable_id"},
+        "compatibility": {"$ref": "#/$defs/compatibility"}
+      }
+    },
+    "registry_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "registry_id", "providers", "communities", "accounts", "identities", "resources"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "registry"},
+        "registry_id": {"$ref": "#/$defs/stable_id"},
+        "providers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/provider"}},
+        "communities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/community"}},
+        "accounts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/account"}},
+        "identities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/identity"}},
+        "resources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/resource"}}
+      }
+    },
+    "event_lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["community_id", "conversation_resource_id", "provider_event_id"],
+      "properties": {
+        "community_id": {"$ref": "#/$defs/stable_id"},
+        "conversation_resource_id": {"$ref": "#/$defs/stable_id"},
+        "thread_resource_id": {"$ref": "#/$defs/stable_id"},
+        "provider_event_id": {"$ref": "#/$defs/opaque_external_id"},
+        "parent_event_id": {"$ref": "#/$defs/stable_id"}
+      }
+    },
+    "verified_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "subject_type", "roles", "verification", "signature_status"],
+      "properties": {
+        "subject_id": {"$ref": "#/$defs/stable_id"},
+        "subject_type": {"$ref": "#/$defs/subject_type"},
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 100}
+        },
+        "verification": {"$ref": "#/$defs/identity_verification"},
+        "signature_status": {"enum": ["verified", "failed", "not_present"]}
+      }
+    },
+    "bounded_metadata": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "allOf": [
+          {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+          {"not": {"pattern": "(^|_)(token|password|private_key|credential_value|secret_value)($|_)"}}
+        ]
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {"type": "string", "maxLength": 1000},
+          {"type": ["number", "boolean", "null"]}
+        ]
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attachment_id", "media_type", "size_bytes", "digest", "metadata"],
+      "properties": {
+        "attachment_id": {"$ref": "#/$defs/stable_id"},
+        "media_type": {"type": "string", "minLength": 1, "maxLength": 255},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 1073741824},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 255},
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "value"],
+          "properties": {
+            "algorithm": {"const": "sha256"},
+            "value": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+          }
+        },
+        "metadata": {"$ref": "#/$defs/bounded_metadata"}
+      }
+    },
+    "event_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_type", "attachments", "metadata"],
+      "properties": {
+        "content_type": {"type": "string", "minLength": 1, "maxLength": 255},
+        "text": {"type": "string", "maxLength": 100000},
+        "attachments": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/attachment"}},
+        "metadata": {"$ref": "#/$defs/bounded_metadata"}
+      }
+    },
+    "event_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_ref", "app_team_ref"],
+      "properties": {
+        "agent_ref": {"$ref": "#/$defs/reference_id"},
+        "app_team_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "authority_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scopes", "broker_decision_ref"],
+      "properties": {
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 255}
+        },
+        "broker_decision_ref": {"$ref": "#/$defs/reference_id"}
+      }
+    },
+    "normalized_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "direction", "provider_id", "provider_version", "lineage", "verified_actor", "target", "content", "requested_operation", "authority_scope", "trust_profile_ref", "scan_verdict_ref", "correlation_id", "idempotency_key", "occurred_at"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/stable_id"},
+        "direction": {"enum": ["inbox", "outbox"]},
+        "provider_id": {"$ref": "#/$defs/stable_id"},
+        "provider_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "lineage": {"$ref": "#/$defs/event_lineage"},
+        "verified_actor": {"$ref": "#/$defs/verified_actor"},
+        "target": {"$ref": "#/$defs/event_target"},
+        "content": {"$ref": "#/$defs/event_content"},
+        "requested_operation": {"$ref": "#/$defs/capability_operation"},
+        "authority_scope": {"$ref": "#/$defs/authority_scope"},
+        "trust_profile_ref": {"$ref": "#/$defs/reference_id"},
+        "scan_verdict_ref": {"$ref": "#/$defs/reference_id"},
+        "correlation_id": {"$ref": "#/$defs/stable_id"},
+        "idempotency_key": {"$ref": "#/$defs/stable_id"},
+        "occurred_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "event_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "event"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "event"},
+        "event": {"$ref": "#/$defs/normalized_event"}
+      }
+    }
+  }
+}
