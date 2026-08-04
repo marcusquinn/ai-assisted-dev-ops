@@ -160,7 +160,7 @@ shellcheck .agents/scripts/pulse-dispatch-worker-launch.sh .agents/scripts/pulse
 - [x] GitHub claim/release comments, assignment/status transitions, trust checks, dependency checks, and circuit breakers remain mandatory.
 - [x] A busy Pulse lock, stopped Pulse, unavailable GitHub, or disabled feature produces no unsafe launch and retains recoverable trigger evidence.
 - [x] Periodic Pulse scheduling remains a compatibility and crash-recovery fallback.
-- [ ] Focused runtime, ShellCheck, changed-file, CI, review, release, publication, and deployment gates pass.
+- [x] Focused runtime, ShellCheck, changed-file, CI, review, release, publication, and deployment gates pass.
 
 ## Verification Evidence
 
@@ -170,6 +170,7 @@ shellcheck .agents/scripts/pulse-dispatch-worker-launch.sh .agents/scripts/pulse
 - Direct `bash -n`, ShellCheck, `git diff --check`, Bash 3.2 diff ratchet, shell portability, complexity diff ratchets, secret scanning, and changed-file lint pass.
 - Full repository lint reaches pre-existing global ratchet-schema, complexity-debt, and nesting-debt failures; the diff-scoped gates report zero new regressions.
 - Three successful-dispatch fixtures in `test-pulse-wrapper-worker-detection.sh` also fail on an archived clean base revision, so they are recorded as baseline failures rather than event-refill regressions.
+- PR #29450 merged as `184176d60753d4ce7562281615cf532507bde83b`; protected release PR #29451 merged, and v3.32.220 published through terminal-success GitHub, npm, Homebrew, postflight, and local deployment reconciliation.
 
 ## Context & Decisions
 
