@@ -38,6 +38,8 @@ PR_REVIEW_THREAD_RESPONSE_WORKTREE_BASE_DIR="${PR_REVIEW_THREAD_RESPONSE_WORKTRE
 
 PR_REVIEW_THREAD_RESPONSE_PR_LIMIT="${PR_REVIEW_THREAD_RESPONSE_PR_LIMIT:-50}"
 PR_REVIEW_THREAD_RESPONSE_MAX_PER_REPO="${PR_REVIEW_THREAD_RESPONSE_MAX_PER_REPO:-2}"
+PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL="${PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL:-6}"
+PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL="${PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL:-14400}"
 PR_REVIEW_THREAD_RESPONSE_COOLDOWN="${PR_REVIEW_THREAD_RESPONSE_COOLDOWN:-3600}"
 PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL="${PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL:-300}"
 PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN="${PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN:-90}"
@@ -67,6 +69,7 @@ PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
 PRRTS_REASON_HEAD_FETCH_FAILED="pr_head_fetch_failed"
 PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED="pr_head_repository_unverified"
 PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED="review_worktree_ownership_unverified"
+PRRTS_REASON_WORKTREE_OWNED_BY_OTHER_TASK="review_worktree_owned_by_other_task"
 PRRTS_WORKTREE_FAILURE_BLOCKED_BY="$PRRTS_BLOCKED_BY_INFRASTRUCTURE"
 PRRTS_WORKTREE_FAILURE_REASON="review_worktree_preparation_failed"
 PRRTS_WORKTREE_TRANSFER_MODE=""
@@ -803,6 +806,195 @@ _prrts_remove_lock_dir() {
 	return 0
 }
 
+_prrts_global_capacity_lock_dir() {
+	printf '%s/global-capacity.lock\n' "$STATE_DIR"
+	return 0
+}
+
+_prrts_global_capacity_lease_dir() {
+	printf '%s/global-capacity-leases\n' "$STATE_DIR"
+	return 0
+}
+
+_prrts_global_capacity_lease_path() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local safe_slug=""
+	safe_slug="$(_prrts_safe_slug "$repo_slug")"
+	printf '%s/%s-%s.lease\n' "$(_prrts_global_capacity_lease_dir)" "$safe_slug" "$pr_number"
+	return 0
+}
+
+_prrts_capacity_file_value() {
+	local file="$1"
+	local expected_key="$2"
+	[[ -f "$file" ]] || return 0
+	local key=""
+	local value=""
+	while IFS='=' read -r key value; do
+		if [[ "$key" == "$expected_key" ]]; then
+			printf '%s' "$value"
+			return 0
+		fi
+	done <"$file"
+	return 0
+}
+
+_prrts_acquire_global_capacity_mutex() {
+	local lock_var="$1"
+	local lock_dir=""
+	lock_dir="$(_prrts_global_capacity_lock_dir)"
+	local attempt=1
+	while [[ $attempt -le 40 ]]; do
+		if mkdir "$lock_dir" 2>/dev/null; then
+			printf 'pid=%s\n' "$$" >"${lock_dir}/owner"
+			printf -v "$lock_var" '%s' "$lock_dir"
+			return 0
+		fi
+		local lock_pid=""
+		lock_pid="$(_prrts_capacity_file_value "${lock_dir}/owner" pid)"
+		if [[ "$lock_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+			local stale_lock="${lock_dir}.stale.$$"
+			if mv "$lock_dir" "$stale_lock" 2>/dev/null; then
+				rm -rf "$stale_lock"
+				continue
+			fi
+		fi
+		sleep 0.05
+		attempt=$((attempt + 1))
+	done
+	return 1
+}
+
+_prrts_release_global_capacity_mutex() {
+	local lock_dir="$1"
+	[[ -n "$lock_dir" && "$lock_dir" == "${STATE_DIR}/global-capacity.lock" && -d "$lock_dir" ]] || return 0
+	local lock_pid=""
+	lock_pid="$(_prrts_capacity_file_value "${lock_dir}/owner" pid)"
+	[[ "$lock_pid" == "$$" ]] || return 1
+	rm -rf "$lock_dir"
+	return 0
+}
+
+_prrts_global_capacity_lease_is_active() {
+	local lease="$1"
+	local now_epoch="$2"
+	local ttl="$3"
+	local lease_pid="" created_at="0" age=0
+	lease_pid="$(_prrts_capacity_file_value "$lease" pid)"
+	created_at="$(_prrts_capacity_file_value "$lease" created_at)"
+	[[ "$lease_pid" =~ ^[0-9]+$ && "$created_at" =~ ^[0-9]+$ ]] || return 1
+	age=$((now_epoch - created_at))
+	[[ "$age" -ge 0 ]] || return 1
+	kill -0 "$lease_pid" 2>/dev/null || return 1
+	[[ "$age" -lt "$ttl" ]] && return 0
+	local session_key="" process_command=""
+	session_key="$(_prrts_capacity_file_value "$lease" session_key)"
+	[[ -n "$session_key" ]] || return 1
+	process_command=$(ps -p "$lease_pid" -o command= 2>/dev/null || true)
+	case "$process_command" in
+	*"$session_key"*) return 0 ;;
+	esac
+	return 1
+}
+
+# Reserve one authoritative global thread-response worker slot.
+# Args: repo_slug pr_number session_key output_var
+# Returns: 0 reserved, PRRTS_RC_DISPATCH_DEFERRED when full/unavailable.
+_prrts_reserve_global_capacity() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local session_key="$3"
+	local output_var="$4"
+	_prrts_ensure_dirs
+	local lease_dir=""
+	lease_dir="$(_prrts_global_capacity_lease_dir)"
+	mkdir -p "$lease_dir" 2>/dev/null || return "$PRRTS_RC_DISPATCH_DEFERRED"
+	chmod 700 "$lease_dir" 2>/dev/null || true
+	local capacity_lock=""
+	if ! _prrts_acquire_global_capacity_mutex capacity_lock; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} deferred — global worker reservation lock unavailable"
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
+	fi
+
+	local now_epoch=""
+	now_epoch="$(date +%s)"
+	local ttl=""
+	ttl="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL" "14400" "60")"
+	local active=0
+	local lease=""
+	for lease in "${lease_dir}"/*.lease; do
+		[[ -f "$lease" ]] || continue
+		if ! _prrts_global_capacity_lease_is_active "$lease" "$now_epoch" "$ttl"; then
+			rm -f "$lease"
+			continue
+		fi
+		active=$((active + 1))
+	done
+
+	local max_global=""
+	max_global="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL" "6" "1")"
+	local lease_path=""
+	lease_path="$(_prrts_global_capacity_lease_path "$repo_slug" "$pr_number")"
+	if [[ -f "$lease_path" ]]; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} deferred — global worker reservation already active"
+		_prrts_release_global_capacity_mutex "$capacity_lock" || true
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
+	fi
+	if [[ "$active" -ge "$max_global" ]]; then
+		_prrts_log "dispatch: global worker limit reached (${active}/${max_global} active); deferring ${repo_slug}#${pr_number}"
+		_prrts_release_global_capacity_mutex "$capacity_lock" || true
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
+	fi
+
+	local reservation_tmp="${lease_path}.tmp.$$"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'created_at=%s\n' "$now_epoch"
+		printf 'session_key=%s\n' "$session_key"
+	} >"$reservation_tmp"
+	if ! mv "$reservation_tmp" "$lease_path"; then
+		rm -f "$reservation_tmp"
+		_prrts_release_global_capacity_mutex "$capacity_lock" || true
+		return "$PRRTS_RC_DISPATCH_DEFERRED"
+	fi
+	_prrts_release_global_capacity_mutex "$capacity_lock" || true
+	printf -v "$output_var" '%s' "$lease_path"
+	return 0
+}
+
+_prrts_activate_global_capacity() {
+	local reservation_file="$1"
+	local worker_pid="$2"
+	local session_key="$3"
+	[[ -f "$reservation_file" && "$worker_pid" =~ ^[0-9]+$ ]] || return 1
+	local created_at=""
+	created_at="$(_prrts_capacity_file_value "$reservation_file" created_at)"
+	[[ "$created_at" =~ ^[0-9]+$ ]] || return 1
+	local reservation_tmp="${reservation_file}.tmp.$$"
+	{
+		printf 'pid=%s\n' "$worker_pid"
+		printf 'created_at=%s\n' "$created_at"
+		printf 'session_key=%s\n' "$session_key"
+	} >"$reservation_tmp"
+	mv "$reservation_tmp" "$reservation_file" || {
+		rm -f "$reservation_tmp"
+		return 1
+	}
+	return 0
+}
+
+_prrts_release_global_capacity() {
+	local reservation_file="$1"
+	local expected_pid="$2"
+	[[ -f "$reservation_file" && "$reservation_file" == "${STATE_DIR}/global-capacity-leases/"*.lease ]] || return 0
+	local lease_pid=""
+	lease_pid="$(_prrts_capacity_file_value "$reservation_file" pid)"
+	[[ "$lease_pid" == "$expected_pid" ]] || return 1
+	rm -f "$reservation_file"
+	return 0
+}
+
 _prrts_acquire_dispatch_lock() {
 	local repo_slug="$1"
 	local pr_number="$2"
@@ -1495,6 +1687,12 @@ _prrts_worker_task_id() {
 	return 0
 }
 
+_prrts_dispatch_precreate_session() {
+	local pr_number="$1"
+	printf 'dispatch-precreate-%s' "$pr_number"
+	return 0
+}
+
 _prrts_repair_linked_issue() {
 	local pr_number="$1"
 	: "$pr_number"
@@ -1554,7 +1752,7 @@ _prrts_apply_expected_worktree_owner() {
 	if [[ -z "$owner_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
 	elif [[ -z "$worker_task" || "$owner_task" != "$worker_task" ]]; then
-		PRRTS_WORKTREE_FAILURE_REASON="review_worktree_owned_by_other_task"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNED_BY_OTHER_TASK"
 	elif [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" || -z "$owner_created_at" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
 	elif [[ -n "$required_session" && "$owner_session" != "$required_session" ]]; then
@@ -1599,7 +1797,8 @@ _prrts_claim_dispatch_precreate_owner() {
 	local pr_number="$2"
 	local worktree_path="$3"
 	local head_ref="$4"
-	local precreate_session="dispatch-precreate-${pr_number}"
+	local precreate_session=""
+	precreate_session=$(_prrts_dispatch_precreate_session "$pr_number")
 	local worker_task=""
 	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
 	[[ -n "$worker_task" ]] || return 1
@@ -1645,7 +1844,8 @@ _prrts_prepare_created_worktree_owner() {
 	local pr_number="$2"
 	local worktree_path="$3"
 	local head_ref="$4"
-	local precreate_session="dispatch-precreate-${pr_number}"
+	local precreate_session=""
+	precreate_session=$(_prrts_dispatch_precreate_session "$pr_number")
 	local owner_pid=""
 	local owner_session=""
 	local owner_batch=""
@@ -1664,7 +1864,7 @@ _prrts_prepare_created_worktree_owner() {
 	if [[ -z "$owner_task" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
 	elif [[ -z "$worker_task" || "$owner_task" != "$worker_task" ]]; then
-		PRRTS_WORKTREE_FAILURE_REASON="review_worktree_owned_by_other_task"
+		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNED_BY_OTHER_TASK"
 	elif [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_created_at" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
 	else
@@ -1689,6 +1889,111 @@ _prrts_prepare_created_worktree_owner() {
 		return 1
 	fi
 	_prrts_capture_expected_worktree_owner "$repo_slug" "$pr_number" "$worktree_path" "$precreate_session" || return 1
+	return 0
+}
+
+_prrts_claim_existing_worktree_for_reconcile() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local worktree_path="$3"
+	local head_ref="$4"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
+	local worker_task=""
+	local precreate_session=""
+	precreate_session=$(_prrts_dispatch_precreate_session "$pr_number")
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
+	[[ -n "$worker_task" ]] || return 1
+
+	if _prrts_read_worktree_owner_snapshot "$worktree_path" owner_pid owner_session owner_batch owner_task owner_created_at; then
+		if [[ "$owner_task" != "$worker_task" ]]; then
+			PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNED_BY_OTHER_TASK"
+			_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — mismatched review worktree belongs to another task (${worktree_path})"
+			return 1
+		fi
+		if [[ ! "$owner_pid" =~ ^[0-9]+$ ]]; then
+			PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
+			return 1
+		fi
+		if kill -0 "$owner_pid" 2>/dev/null; then
+			PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_live_owner"
+			_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree head mismatch has a live owner pid=${owner_pid}"
+			return 1
+		fi
+		if ! declare -F transfer_worktree_ownership_if_expected >/dev/null 2>&1; then
+			PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED"
+			return 1
+		fi
+		if ! transfer_worktree_ownership_if_expected "$worktree_path" "$head_ref" \
+			--task "$worker_task" --session "$precreate_session" --owner-pid "$$" \
+			--expected-owner-pid "$owner_pid" --expected-session "$owner_session" \
+			--expected-batch "$owner_batch" --expected-task "$owner_task" \
+			--expected-created-at "$owner_created_at" 2>/dev/null; then
+			PRRTS_WORKTREE_FAILURE_REASON="review_worktree_ownership_concurrent_mutation"
+			return 1
+		fi
+		_prrts_capture_expected_worktree_owner "$repo_slug" "$pr_number" "$worktree_path" "$precreate_session" || return 1
+		return 0
+	fi
+
+	_prrts_claim_dispatch_precreate_owner "$repo_slug" "$pr_number" "$worktree_path" "$head_ref" || return 1
+	return 0
+}
+
+_prrts_reconcile_existing_worktree_head() {
+	local repo_slug="$1"
+	local repo_path="$2"
+	local pr_number="$3"
+	local worktree_path="$4"
+	local head_ref="$5"
+	local head_oid="$6"
+	local initial_head="$7"
+	local actual_head="$initial_head"
+	local current_branch=""
+	local status_output=""
+
+	current_branch=$(git -C "$worktree_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+	if [[ "$current_branch" != "$head_ref" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_branch_mismatch"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree branch mismatch (expected ${head_ref}, got ${current_branch:-detached})"
+		return 1
+	fi
+	status_output=$(git -C "$worktree_path" status --porcelain 2>/dev/null) || {
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_status_unavailable"
+		return 1
+	}
+	if [[ -n "$status_output" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_dirty"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree head mismatch is dirty"
+		return 1
+	fi
+	_prrts_claim_existing_worktree_for_reconcile "$repo_slug" "$pr_number" "$worktree_path" "$head_ref" || return 1
+	_prrts_fetch_exact_worker_head "$repo_slug" "$repo_path" "$pr_number" "$head_ref" "$head_oid" || return 1
+
+	status_output=$(git -C "$worktree_path" status --porcelain 2>/dev/null) || {
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_status_unavailable"
+		return 1
+	}
+	current_branch=$(git -C "$worktree_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+	actual_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null) || actual_head=""
+	if [[ -n "$status_output" || "$current_branch" != "$head_ref" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_changed_during_reconcile"
+		return 1
+	fi
+	if ! git -C "$worktree_path" merge-base --is-ancestor "$actual_head" "$head_oid" >/dev/null 2>&1; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_diverged"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree cannot fast-forward to verified PR head"
+		return 1
+	fi
+	if ! git -C "$worktree_path" merge --ff-only "$head_oid" >/dev/null 2>&1; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_fast_forward_failed"
+		return 1
+	fi
+	actual_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null) || actual_head=""
+	if [[ "$actual_head" != "$head_oid" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_fast_forward_unverified"
+		return 1
+	fi
+	_prrts_log "dispatch: ${repo_slug}#${pr_number} fast-forwarded clean exclusively claimed review worktree from ${initial_head} to verified PR head ${head_oid}"
 	return 0
 }
 
@@ -1718,9 +2023,9 @@ _prrts_prepare_worker_worktree() {
 		fi
 		actual_head=$(git -C "$existing_path" rev-parse HEAD 2>/dev/null) || actual_head=""
 		if [[ "$actual_head" != "$head_oid" ]]; then
-			_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree head mismatch (expected ${head_oid}, got ${actual_head:-unknown})"
-			PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_head_mismatch"
-			return 1
+			_prrts_reconcile_existing_worktree_head "$repo_slug" "$repo_path" "$pr_number" "$existing_path" "$head_ref" "$head_oid" "$actual_head" || return 1
+			printf -v "$output_var" '%s' "$existing_path"
+			return 0
 		fi
 		_prrts_prepare_reused_worktree_owner "$repo_slug" "$pr_number" "$existing_path" "$head_ref" || return 1
 		printf -v "$output_var" '%s' "$existing_path"
@@ -1772,6 +2077,7 @@ _prrts_dispatch_worker() {
 	local now_epoch="${11}"
 	local attempt_count="${12}"
 	local maintainer_attention="${13}"
+	local reservation_file="${14}"
 	local prompt_file="" session_key="" model="" worker_worktree_path="" worker_pid="" detach_mode="" outcome_file=""
 	local worker_task="" repair_linked_issue="" worker_login=""
 	local -a cmd worker_cmd
@@ -1843,6 +2149,13 @@ _prrts_dispatch_worker() {
 		nohup "${worker_cmd[@]}" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 	fi
 	worker_pid="$!"
+	if ! _prrts_activate_global_capacity "$reservation_file" "$worker_pid" "$session_key"; then
+		kill "$worker_pid" 2>/dev/null || true
+		_prrts_release_global_capacity "$reservation_file" "$$" || true
+		PRRTS_WORKTREE_FAILURE_REASON="global_worker_reservation_activation_failed"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not activate global worker reservation for pid=${worker_pid}"
+		return 1
+	fi
 	disown "$worker_pid" 2>/dev/null || true
 	_prrts_log "dispatch: launched response worker for ${repo_slug}#${pr_number} in ${worker_worktree_path} session_key=${session_key} pid=${worker_pid} detach=${detach_mode}"
 	return 0
@@ -1862,7 +2175,7 @@ _prrts_dispatch_guarded() {
 	local head_ref="${11:-}"
 	local head_oid="${12:-}"
 	local author="${13:-}"
-	local lock_dir=""
+	local lock_dir="" reservation_file="" session_key=""
 	local attempt_count="1" repeated_same_fingerprint="$PRRTS_BOOL_FALSE" same_head_sha="$PRRTS_BOOL_FALSE" maintainer_attention="$PRRTS_BOOL_FALSE"
 	local failure_maintainer_attention="$PRRTS_BOOL_FALSE"
 	local dispatch_guard_rc=0
@@ -1899,9 +2212,17 @@ _prrts_dispatch_guarded() {
 		_prrts_remove_lock_dir "$lock_dir"
 		return 0
 	fi
+	session_key="$(_prrts_session_key "$repo_slug" "$pr_number")"
+	dispatch_guard_rc=0
+	_prrts_reserve_global_capacity "$repo_slug" "$pr_number" "$session_key" reservation_file || dispatch_guard_rc=$?
+	if [[ "$dispatch_guard_rc" -ne 0 ]]; then
+		_prrts_remove_lock_dir "$lock_dir"
+		return "$dispatch_guard_rc"
+	fi
 	PRRTS_WORKER_OUTCOME_ID="$(date +%s)-$$-${RANDOM}"
 	if ! _prrts_dispatch_worker "$repo_slug" "$repo_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview" \
-		"$head_ref" "$head_oid" "$PRRTS_WORKER_OUTCOME_ID" "$now_epoch" "$attempt_count" "$maintainer_attention"; then
+		"$head_ref" "$head_oid" "$PRRTS_WORKER_OUTCOME_ID" "$now_epoch" "$attempt_count" "$maintainer_attention" "$reservation_file"; then
+		_prrts_release_global_capacity "$reservation_file" "$$" || true
 		if _prrts_prelaunch_failure_needs_maintainer_attention "$PRRTS_WORKTREE_FAILURE_BLOCKED_BY"; then
 			failure_maintainer_attention="$PRRTS_BOOL_TRUE"
 		fi

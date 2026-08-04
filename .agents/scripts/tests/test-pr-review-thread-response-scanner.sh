@@ -172,6 +172,14 @@ if [[ "$*" == *" fetch --no-tags --quiet origin "* ]]; then
 	printf '%s\n' "${STUB_REMOTE_HEAD_AFTER_FETCH:-${STUB_REMOTE_HEAD:-$TEST_HEAD_OID_1}}" >"${GIT_FETCHED_HEAD_STATE}"
 	exit 0
 fi
+GIT_STUB
+	append_fake_git_reconciliation_stub
+	chmod +x "${TEST_ROOT}/bin/git"
+	return 0
+}
+
+append_fake_git_reconciliation_stub() {
+	cat >>"${TEST_ROOT}/bin/git" <<'GIT_STUB'
 if [[ "$*" == *"rev-parse refs/remotes/origin/"* ]]; then
 	if [[ -f "${GIT_FETCHED_HEAD_STATE}" ]]; then
 		cat "${GIT_FETCHED_HEAD_STATE}"
@@ -191,12 +199,44 @@ if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "HEAD" && -f "$
 	done <"${GIT_WORKTREE_REGISTRY}"
 	exit 1
 fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "symbolic-ref" && "$*" == *"--short HEAD"* && -f "${GIT_WORKTREE_REGISTRY}" ]]; then
+	while IFS=$'\t' read -r path branch oid; do
+		if [[ "$path" == "${2:-}" && "$branch" != "__DETACHED__" ]]; then
+			printf '%s\n' "$branch"
+			exit 0
+		fi
+	done <"${GIT_WORKTREE_REGISTRY}"
+	exit 1
+fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "status" && "${4:-}" == "--porcelain" ]]; then
+	if [[ "${STUB_GIT_WORKTREE_DIRTY:-false}" == "true" ]]; then
+		printf ' M diagnostic.txt\n'
+	fi
+	exit 0
+fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "merge-base" && "${4:-}" == "--is-ancestor" ]]; then
+	[[ "${STUB_GIT_DIVERGED:-false}" == "true" ]] && exit 1
+	exit 0
+fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "merge" && "${4:-}" == "--ff-only" && -f "${GIT_WORKTREE_REGISTRY}" ]]; then
+	[[ "${STUB_GIT_FAST_FORWARD_FAIL:-false}" == "true" ]] && exit 1
+	merge_path="${2:-}"
+	merge_oid="${5:-}"
+	while IFS=$'\t' read -r path branch oid; do
+		if [[ "$path" == "$merge_path" ]]; then
+			printf '%s\t%s\t%s\n' "$path" "$branch" "$merge_oid"
+		else
+			printf '%s\t%s\t%s\n' "$path" "$branch" "$oid"
+		fi
+	done <"${GIT_WORKTREE_REGISTRY}" >"${GIT_WORKTREE_REGISTRY}.tmp"
+	mv "${GIT_WORKTREE_REGISTRY}.tmp" "${GIT_WORKTREE_REGISTRY}"
+	exit 0
+fi
 if [[ "$*" == *" cat-file -e "* ]]; then
 	exit 0
 fi
 exit 1
 GIT_STUB
-	chmod +x "${TEST_ROOT}/bin/git"
 	return 0
 }
 
@@ -326,10 +366,12 @@ setup_test_env() {
 	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
+	unset STUB_GIT_WORKTREE_DIRTY STUB_GIT_DIVERGED STUB_GIT_FAST_FORWARD_FAIL
 	unset STUB_WORKTREE_REGISTER_OWNER STUB_WORKTREE_OWNER_PID STUB_WORKTREE_OWNER_SESSION
 	unset STUB_ACTIVE_RESPONSE_WORKER
 	unset STUB_HEADLESS_MARK_COMPLETE
 	unset PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN
+	unset PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL
 	TEST_ROOT="$(mktemp -d -t prrts.XXXXXX)"
 	export HOME="${TEST_ROOT}/home"
 	export LOGFILE="${TEST_ROOT}/scanner.log"
@@ -635,19 +677,78 @@ test_dispatch_blocks_remote_head_drift() {
 	return 0
 }
 
-test_dispatch_blocks_existing_worktree_head_mismatch() {
+test_dispatch_fast_forwards_clean_behind_existing_worktree() {
 	setup_test_env
 	local existing_path="${TEST_ROOT}/existing-review-worktree"
 	mkdir -p "$existing_path"
 	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local reconciled_head=""
+	reconciled_head=$(while IFS=$'\t' read -r path branch oid; do [[ "$path" == "$existing_path" ]] && printf '%s' "$oid"; done <"$GIT_WORKTREE_REGISTRY")
+	if [[ -s "$HEADLESS_LOG" && "$reconciled_head" == "$TEST_HEAD_OID_1" ]] &&
+		grep -Fq "fast-forwarded clean exclusively claimed review worktree from ${TEST_HEAD_OID_2} to verified PR head ${TEST_HEAD_OID_1}" "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch fast-forwards a clean behind existing review worktree" 0
+	else
+		print_result "dispatch fast-forwards a clean behind existing review worktree" 1 \
+			"head=${reconciled_head:-<empty>} headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0) log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_rejects_dirty_existing_worktree_reconcile() {
+	setup_test_env
+	export STUB_GIT_WORKTREE_DIRTY=true
+	local existing_path="${TEST_ROOT}/existing-review-worktree-dirty"
+	mkdir -p "$existing_path"
+	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	if [[ ! -s "$HEADLESS_LOG" ]] &&
-		grep -q '^blocker_reason=existing_review_worktree_head_mismatch$' "$state_file" 2>/dev/null &&
-		! grep -q '^add ' "$WORKTREE_HELPER_LOG" 2>/dev/null; then
-		print_result "dispatch rejects an existing worktree at a different commit" 0
+		grep -q '^blocker_reason=existing_review_worktree_dirty$' "$state_file" 2>/dev/null; then
+		print_result "dispatch never fast-forwards a dirty existing review worktree" 0
 	else
-		print_result "dispatch rejects an existing worktree at a different commit" 1 "state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+		print_result "dispatch never fast-forwards a dirty existing review worktree" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_rejects_diverged_existing_worktree_reconcile() {
+	setup_test_env
+	export STUB_GIT_DIVERGED=true
+	local existing_path="${TEST_ROOT}/existing-review-worktree-diverged"
+	mkdir -p "$existing_path"
+	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q '^blocker_reason=existing_review_worktree_diverged$' "$state_file" 2>/dev/null; then
+		print_result "dispatch rejects a diverged existing review worktree" 0
+	else
+		print_result "dispatch rejects a diverged existing review worktree" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_rejects_live_owned_existing_worktree_reconcile() {
+	setup_test_env
+	local existing_path="${TEST_ROOT}/existing-review-worktree-live"
+	mkdir -p "$existing_path"
+	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
+	register_test_worktree_owner "$existing_path" "feature/review" "1" "existing-review-session" || true
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q '^blocker_reason=existing_review_worktree_live_owner$' "$state_file" 2>/dev/null; then
+		print_result "dispatch never mutates a mismatched worktree with a live owner" 0
+	else
+		print_result "dispatch never mutates a mismatched worktree with a live owner" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
@@ -675,6 +776,29 @@ teardown_test_env() {
 		rm -rf "$TEST_ROOT"
 	fi
 	TEST_ROOT=""
+	return 0
+}
+
+write_active_global_capacity_lease() {
+	local lease_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/global-capacity-leases"
+	mkdir -p "$lease_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'created_at=%s\n' "$(date +%s)"
+		printf 'session_key=pr-review-thread-response-other-repo-99\n'
+	} >"${lease_dir}/other-repo-99.lease"
+	return 0
+}
+
+write_expired_global_capacity_lease() {
+	local session_key="$1"
+	local lease_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/global-capacity-leases"
+	mkdir -p "$lease_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'created_at=%s\n' "$(($(date +%s) - 120))"
+		printf 'session_key=%s\n' "$session_key"
+	} >"${lease_dir}/other-repo-99.lease"
 	return 0
 }
 
@@ -852,6 +976,74 @@ test_dispatch_launches_worker_and_writes_state() {
 		print_result "dispatch launches bounded worker and writes state" 0
 	else
 		print_result "dispatch launches bounded worker and writes state" 1 "headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=${state_file}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_defers_at_atomic_global_capacity() {
+	setup_test_env
+	export PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL=1
+	write_active_global_capacity_lease
+	local status=0
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 >/dev/null 2>&1 || status=$?
+	if [[ "$status" -eq 10 && ! -s "$HEADLESS_LOG" ]] &&
+		grep -Fq 'global worker limit reached (1/1 active); deferring owner/repo#1' "$LOGFILE" 2>/dev/null; then
+		print_result "targeted dispatch defers at the atomic global worker cap" 0
+	else
+		print_result "targeted dispatch defers at the atomic global worker cap" 1 \
+			"status=$status headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0) log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_repo_shares_atomic_global_capacity() {
+	setup_test_env
+	export PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL=1
+	write_active_global_capacity_lease
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo" >/dev/null 2>&1 || true
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -Fq 'global worker limit reached (1/1 active); deferring owner/repo#1' "$LOGFILE" 2>/dev/null &&
+		grep -Fq 'dispatch: owner/repo completed, dispatched=0' "$LOGFILE" 2>/dev/null; then
+		print_result "repository dispatch shares the atomic global worker cap" 0
+	else
+		print_result "repository dispatch shares the atomic global worker cap" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0) log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_preserves_expired_matching_live_capacity_lease() {
+	setup_test_env
+	export PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL=1
+	export PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL=60
+	export STUB_ACTIVE_RESPONSE_WORKER="pr-review-thread-response-other-repo-99"
+	write_expired_global_capacity_lease "$STUB_ACTIVE_RESPONSE_WORKER"
+	local status=0
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 >/dev/null 2>&1 || status=$?
+	if [[ "$status" -eq 10 && ! -s "$HEADLESS_LOG" ]]; then
+		print_result "expired matching live capacity lease still enforces the global cap" 0
+	else
+		print_result "expired matching live capacity lease still enforces the global cap" 1 "status=$status"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_removes_expired_pid_reused_capacity_lease() {
+	setup_test_env
+	export PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL=1
+	export PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL=60
+	export STUB_ACTIVE_RESPONSE_WORKER="pr-review-thread-response-different-repo-77"
+	write_expired_global_capacity_lease "pr-review-thread-response-other-repo-99"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" && ! -f "${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/global-capacity-leases/other-repo-99.lease" ]]; then
+		print_result "expired PID-reused capacity lease is removed" 0
+	else
+		print_result "expired PID-reused capacity lease is removed" 1
 	fi
 	teardown_test_env
 	return 0
@@ -1928,6 +2120,10 @@ main() {
 	test_scan_pr_excludes_human_threads_by_default
 	test_scan_pr_can_include_human_threads_with_opt_in
 	test_dispatch_launches_worker_and_writes_state
+	test_dispatch_pr_defers_at_atomic_global_capacity
+	test_dispatch_repo_shares_atomic_global_capacity
+	test_dispatch_preserves_expired_matching_live_capacity_lease
+	test_dispatch_removes_expired_pid_reused_capacity_lease
 	test_dispatch_detaches_worker_from_parent_process_group
 	test_dispatch_preserves_head_fields_when_labels_are_empty
 	test_dispatch_uses_linked_pr_branch_worktree
@@ -1940,7 +2136,10 @@ main() {
 	test_dispatch_rejects_reused_unverified_owner
 	test_dispatch_blocks_cross_repository_head
 	test_dispatch_blocks_remote_head_drift
-	test_dispatch_blocks_existing_worktree_head_mismatch
+	test_dispatch_fast_forwards_clean_behind_existing_worktree
+	test_dispatch_rejects_dirty_existing_worktree_reconcile
+	test_dispatch_rejects_diverged_existing_worktree_reconcile
+	test_dispatch_rejects_live_owned_existing_worktree_reconcile
 	test_dispatch_cleans_up_failed_exact_head_worktree
 	test_dispatch_prompt_includes_full_thread_command_signatures
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
