@@ -895,7 +895,7 @@ cmd_pr() {
 	local pr_json
 	pr_json=$(_fetch_pr_metadata "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG")
 
-	local pr_author pr_state pr_merged_at pr_closed_at pr_created_at pr_title pr_review_decision pr_mss pr_head_ref
+	local pr_author="" pr_state="" pr_merged_at="" pr_closed_at="" pr_created_at="" pr_title="" pr_review_decision="" pr_mss="" pr_head_ref=""
 	pr_author=$(_jq_field "$pr_json" ".author.login" "$_UNKNOWN")
 	pr_state=$(_jq_field "$pr_json" ".state" "$_UNKNOWN")
 	pr_merged_at=$(_jq_field "$pr_json" ".mergedAt" "")
