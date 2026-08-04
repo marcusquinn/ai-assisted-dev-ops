@@ -373,6 +373,10 @@ _pmp_prepare_pr_at_cursor() {
 
 	prepared_pr_obj=$(_pmp_pr_object_at_index "$pr_json" "$cursor_index")
 	if [[ -n "$prepared_pr_obj" ]]; then
+		# Backlog cache values are advisory and may become stale without a head
+		# change. Remove them so authoritative processing always refreshes all
+		# eligibility state from bounded REST endpoints.
+		prepared_pr_obj=$(printf '%s' "$prepared_pr_obj" | jq -c 'del(.mergeable, .reviewDecision, .statusCheckRollup)') || return 1
 		enriched_pr_obj=$(_pmp_enrich_single_pr_for_processing "$repo_slug" "$prepared_pr_obj") || enrichment_rc=$?
 		if [[ "$enrichment_rc" -eq 5 ]]; then
 			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" budget "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"

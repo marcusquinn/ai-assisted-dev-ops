@@ -347,7 +347,10 @@ _pmp_prepare_enriched_pr_backlog() {
 		| select(any($fresh[]; .number == $cached_pr.number and ((.headRefOid // "") == ($cached_pr.headRefOid // ""))))]') || return 1
 	_pmp_write_merge_enrichment_cache "$cache_file" "$repo_slug" "$filtered_cache" || return 1
 	pr_count=$(printf '%s' "$fresh_json" | jq 'length' 2>/dev/null) || return 1
-	_pmp_prepare_merge_pr_cursor_resume "$repo_slug" "$fresh_json" "$pr_count" "$cursor_file" "${LOGFILE:-/dev/null}" cursor_index || cursor_index=0
+	# Reconcile from the start because list insertion, reordering, or head changes
+	# can invalidate a positional cursor. Exact cached number/head pairs remain
+	# cheap skips, so durable progress does not repeat network enrichment.
+	cursor_index=0
 
 	while [[ "$cursor_index" -lt "$pr_count" ]]; do
 		if [[ -f "${STOP_FLAG:-/dev/null}" ]] || _pmp_merge_pass_budget_exhausted; then

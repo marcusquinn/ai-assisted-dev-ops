@@ -224,6 +224,46 @@ assert_eq "cycle after enrichment pause makes forward progress in backlog priori
 assert_eq "successful resumed cycle clears the current-PR cursor" "false" "$([[ -f "$PULSE_MERGE_PR_CURSOR_FILE" ]] && printf true || printf false)"
 assert_eq "successful resumed cycle clears enrichment state" "false" "$([[ -f "$PULSE_MERGE_ENRICHMENT_CACHE_FILE" || -f "$PULSE_MERGE_ENRICHMENT_CURSOR_FILE" ]] && printf true || printf false)"
 
+# Cached scheduling fields are advisory. Authoritative per-item processing must
+# remove them before calling enrichers that refresh only missing values.
+_pmp_enrich_prs_with_mergeability() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	printf '%s' "$pr_json" | jq -c 'map(if has("mergeable") then . else . + {mergeable:"MERGEABLE"} end)'
+	return 0
+}
+_pmp_enrich_prs_with_rest_check_status() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	printf '%s' "$pr_json" | jq -c 'map(if has("statusCheckRollup") then . else . + {statusCheckRollup:[{status:"COMPLETED",conclusion:"SUCCESS",state:"SUCCESS"}]} end)'
+	return 0
+}
+_pmp_enrich_prs_with_review_decisions() {
+	local repo_slug="$1"
+	local pr_json="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	printf '%s' "$pr_json" | jq -c 'map(if has("reviewDecision") then . else . + {reviewDecision:"CHANGES_REQUESTED"} end)'
+	return 0
+}
+authoritative_pr=""
+_PMP_MERGE_PASS_DEADLINE_EPOCH=0
+_pmp_prepare_pr_at_cursor "org/repo" '[{"number":201,"headRefOid":"same-head","mergeable":"CONFLICTING","reviewDecision":"APPROVED","statusCheckRollup":[]}]' 0 authoritative_pr merged closed failed 0 0 0 "" "" || exit 1
+assert_eq "authoritative processing ignores stale cached mergeability" "MERGEABLE" "$(printf '%s' "$authoritative_pr" | jq -r '.mergeable')"
+assert_eq "authoritative processing ignores stale cached review state" "CHANGES_REQUESTED" "$(printf '%s' "$authoritative_pr" | jq -r '.reviewDecision')"
+
+# Resume scans the fresh list from zero and skips only exact cached number/head
+# pairs, so reordered, inserted, and head-changed items cannot bypass enrichment.
+reconcile_fresh='[{"number":105,"headRefOid":"sha105"},{"number":101,"headRefOid":"sha101"},{"number":102,"headRefOid":"sha102-new"}]'
+reconcile_cache='[{"number":101,"headRefOid":"sha101","mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[]},{"number":102,"headRefOid":"sha102-old","mergeable":"CONFLICTING","reviewDecision":"APPROVED","statusCheckRollup":[]}]'
+_pmp_write_merge_enrichment_cache "$PULSE_MERGE_ENRICHMENT_CACHE_FILE" "org/repo" "$reconcile_cache" || exit 1
+_pmp_write_merge_pr_cursor "$PULSE_MERGE_ENRICHMENT_CURSOR_FILE" "org/repo" 2 102 ""
+reconciled_backlog=""
+_pmp_prepare_enriched_pr_backlog "org/repo" "$reconcile_fresh" reconciled_backlog || exit 1
+assert_eq "reordered and changed fresh items all receive advisory enrichment" "true" "$(printf '%s' "$reconciled_backlog" | jq -r 'all(.[]; has("mergeable") and has("reviewDecision") and has("statusCheckRollup"))')"
+_pmp_clear_merge_enrichment_state
+
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
 	printf '\n%sAll %d PR cursor resume tests passed.%s\n' "$TEST_GREEN" "$TESTS_RUN" "$TEST_NC"
 	exit 0
