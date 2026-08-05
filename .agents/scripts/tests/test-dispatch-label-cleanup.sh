@@ -65,14 +65,14 @@ install_gh_stub() {
 			[[ "${GH_STUB_FAIL_VIEW_ISSUE:-}" != "$issue_number" ]] || return 1
 			if [[ "$*" == *"--json state,stateReason,labels"* ]]; then
 				case "$issue_number" in
-				101) printf 'CLOSED\tCOMPLETED\tauto-dispatch|status:queued\n' ;;
+				101) printf 'CLOSED\tCOMPLETED\tauto-dispatch|status:queued|status:done|needs-maintainer-permissions\n' ;;
 				102) printf 'OPEN\t\tneeds-maintainer-permissions\n' ;;
 				103) printf 'CLOSED\tNOT_PLANNED\t\n' ;;
 				104) printf 'UNKNOWN\t\t\n' ;;
 				*) printf 'CLOSED\tCOMPLETED\tauto-dispatch|status:queued\n' ;;
 				esac
 			else
-				printf 'auto-dispatch\nstatus:queued\n'
+				printf 'auto-dispatch\nstatus:queued\nstatus:done\nneeds-maintainer-permissions\n'
 			fi
 			return 0
 		fi
@@ -121,14 +121,16 @@ test_clear_terminal_labels_removes_dispatch_labels() {
 	clear_terminal_issue_dispatch_labels 42 owner/repo test-context
 	local log_line
 	log_line=$(tr '\n' ' ' <"${TEST_ROOT}/gh.log")
-	if [[ "$log_line" == *"issue view 42 --repo owner/repo"* \
-		&& "$log_line" == *"issue edit 42 --repo owner/repo"* \
-		&& "$log_line" == *"--remove-label auto-dispatch"* \
-		&& "$log_line" == *"--remove-label status:queued"* \
-		&& "$log_line" != *"--remove-label status:in-review"* ]]; then
-		print_result "terminal label cleanup strips only labels currently present" 0
+	if [[ "$log_line" == *"issue view 42 --repo owner/repo"* &&
+		"$log_line" == *"issue edit 42 --repo owner/repo"* &&
+		"$log_line" == *"--remove-label auto-dispatch"* &&
+		"$log_line" == *"--remove-label status:queued"* &&
+		"$log_line" == *"--remove-label needs-maintainer-permissions"* &&
+		"$log_line" != *"--remove-label status:done"* &&
+		"$log_line" != *"--remove-label status:in-review"* ]]; then
+		print_result "terminal label cleanup strips stale permission blockers but preserves done" 0
 	else
-		print_result "terminal label cleanup strips only labels currently present" 1
+		print_result "terminal label cleanup strips stale permission blockers but preserves done" 1
 	fi
 	teardown_env
 	return 0
@@ -150,13 +152,17 @@ test_sweep_reconciles_closed_active_blocker_candidates() {
 	view_count=$(grep -c 'issue view' "${TEST_ROOT}/gh.log" || true)
 	active=$(active_issues | tr '\n' ' ')
 	terminal_count=$(jq -s '[.[] | select(.event == "issue_terminal_reconciled")] | length' "$BLOCKER_LOG")
-	if [[ "$edit_count" == "1" && "$list_count" == "0" && "$view_count" == "3" \
-		&& "$active" == "102 " && "$terminal_count" == "3" ]] &&
+	local edit_log=""
+	edit_log=$(grep 'issue edit 101 ' "${TEST_ROOT}/gh.log" || true)
+	if [[ "$edit_count" == "1" && "$list_count" == "0" && "$view_count" == "3" &&
+		"$active" == "102 " && "$terminal_count" == "3" ]] &&
+		[[ "$edit_log" == *"--remove-label needs-maintainer-permissions"* &&
+			"$edit_log" != *"--remove-label status:done"* ]] &&
 		grep -q 'reason":"issue_closed_not_planned"' "$BLOCKER_LOG" &&
 		grep -q 'blocker sweep resolved=2 checked=3 open=1 ambiguous=0 logger_failed=0' "$LOGFILE"; then
-		print_result "closed blocker sweep resolves every identity without label-dependent discovery" 0
+		print_result "closed done blocker sweep removes stale permission labels and resolves every identity" 0
 	else
-		print_result "closed blocker sweep resolves every identity without label-dependent discovery" 1
+		print_result "closed done blocker sweep removes stale permission labels and resolves every identity" 1
 	fi
 	local before_count="$terminal_count"
 	sweep_closed_auto_dispatch_issues

@@ -22,6 +22,7 @@ _TERMINAL_DISPATCH_LABELS=(
 	"status:claimed"
 	"status:in-progress"
 	"status:in-review"
+	"needs-maintainer-permissions"
 )
 
 _dispatch_label_cleanup_stamp_file() {
