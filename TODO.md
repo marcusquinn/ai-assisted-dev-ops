@@ -1222,7 +1222,6 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [ ] t18190 Restrict needs-maintainer-review to external trust gates #auto-dispatch #bug ref:GH#29394
 
 
-- [ ] t18204 Add private Reach egress and search-observation contracts #auto-dispatch #feat ref:GH#29551
 
 ## In Progress
 
@@ -1280,6 +1279,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18204 Add private Reach egress and search-observation contracts #auto-dispatch #feat ref:GH#29551 pr:#29555 testing:runtime-verified completed:2026-08-05
 - [x] t18124 Maximise GitHub API efficiency without freshness regressions — coordinate exact transport telemetry, canonical snapshots, immutable-head check caching, cross-process request coalescing, verified webhook invalidation, and comparative rollout evidence through seven sequential leaves. #parent-task #no-auto-dispatch #enhancement #framework #pulse #github-api #efficiency ~13h tier:thinking ref:GH#27768 logged:2026-07-15 -> [todo/tasks/t18124-brief.md] pr:#29500 testing:self-assessed completed:2026-08-04
 - [x] t18130 Invalidate canonical GitHub state from verified webhooks — deduplicate authenticated deliveries, map events to narrow snapshot/head-SHA invalidations before PR processing, and retain secure loopback plus polling fallback. #enhancement #security #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18129 blocks:t18131 ref:GH#27776 logged:2026-07-15 -> [todo/tasks/t18130-brief.md] pr:#28231 completed:2026-08-04
 - [x] t18129 Add cross-process single-flight and shared rate-limit state — consolidate fallback/circuit state and coalesce exact cacheable reads with scoped keys, leases, fencing, bounded waits, and stale-leader recovery. #enhancement #framework #pulse #github-api #reliability #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18128 blocks:t18130 ref:GH#27774 logged:2026-07-15 -> [todo/tasks/t18129-brief.md] pr:#28222 completed:2026-08-04
