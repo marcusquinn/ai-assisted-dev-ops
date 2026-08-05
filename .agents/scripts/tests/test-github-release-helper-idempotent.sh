@@ -172,6 +172,13 @@ else
 	print_result 'rate-limited create stops without retry storm' 1 "create_count=$CREATE_COUNT"
 fi
 
+VIEW_COUNT=$(grep -c 'release view' "$FAKE_GH_LOG" 2>/dev/null || true)
+if [[ "$VIEW_COUNT" -eq 1 ]]; then
+	print_result 'rate-limited create avoids a second quota-bound existence check' 0
+else
+	print_result 'rate-limited create avoids a second quota-bound existence check' 1 "view_count=$VIEW_COUNT"
+fi
+
 export FAKE_CREATE_RATE_LIMIT=0
 rc=0
 output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' --reconcile-existing 2>&1) || rc=$?

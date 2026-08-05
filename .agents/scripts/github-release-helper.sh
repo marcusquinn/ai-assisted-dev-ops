@@ -388,6 +388,10 @@ _execute_release_create() {
 		return 0
 	else
 		[[ -n "$output" ]] && printf '%s\n' "$output" >&2
+		if _is_github_rate_limit_error "$output"; then
+			_print_rate_limit_deferral
+			return 75
+		fi
 		if release_exists "$_create_repo" "$_create_tag"; then
 			print_warning "Release '$_create_tag' now exists on $_create_repo — treating duplicate create as already complete"
 			if [[ "$_create_flag_reconcile_existing" == true ]]; then
@@ -395,10 +399,6 @@ _execute_release_create() {
 				return $?
 			fi
 			return 0
-		fi
-		if _is_github_rate_limit_error "$output"; then
-			_print_rate_limit_deferral
-			return 75
 		fi
 		print_error "Failed to create release '$_create_tag' on $_create_repo"
 		return 1
