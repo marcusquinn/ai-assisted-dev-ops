@@ -558,6 +558,161 @@ BRIEF
 done
 
 # =============================================================================
+# Class H: verify execution preserves auth and classifies infrastructure
+# =============================================================================
+
+printf '\n%sClass H: verify execution infrastructure classification%s\n' "$TEST_BLUE" "$TEST_NC"
+
+cat >"$TMP/brief-gh-token.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: '[[ "$GH_TOKEN" == "workflow-token" ]]'
+```
+BRIEF
+
+output=$(GH_TOKEN=workflow-token bash "$VB_HELPER" verify "$TMP/brief-gh-token.md" 2>&1)
+rc=$?
+if [[ $rc -eq 0 && "$output" == *"PASS  [1]"* ]]; then
+	pass "H1 workflow GH_TOKEN is inherited by verify blocks"
+else
+	fail "H1 verify block auth context" "expected rc=0 and PASS, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-gh-auth-failure.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "gh CLI cannot authenticate an API request. Run: gh auth login\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-gh-auth-failure.md" 2>&1)
+rc=$?
+if [[ $rc -eq 3 && "$output" == *"INFRA [1]"* && "$output" == *"Infrastructure: 1"* ]]; then
+	pass "H2 missing gh auth is a typed infrastructure failure"
+else
+	fail "H2 gh auth infrastructure classification" "expected rc=3 and INFRA summary, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-criteria-failure.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "acceptance criterion mismatch\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-criteria-failure.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"FAIL  [1]"* && "$output" == *"Infrastructure: 0"* ]]; then
+	pass "H3 acceptance failures remain distinct from infrastructure failures"
+else
+	fail "H3 acceptance failure classification" "expected rc=1 and FAIL summary, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-mixed-failures.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "acceptance criterion mismatch\n" >&2; exit 1'
+```
+```yaml
+verify:
+  method: bash
+  run: 'printf "Resource not accessible by integration\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-mixed-failures.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"Failed: 1"* && "$output" == *"Infrastructure: 1"* ]]; then
+	pass "H4 acceptance failures take precedence while retaining infrastructure evidence"
+else
+	fail "H4 mixed failure classification" "expected rc=1 with both failure classes, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-exit-124.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'exit 124'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-exit-124.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"FAIL  [1] exit_code=124"* ]]; then
+	pass "H5 exit 124 alone remains an acceptance failure"
+else
+	fail "H5 exit 124 classification" "expected rc=1 and FAIL, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-integration-permission.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "Resource not accessible by integration\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-integration-permission.md" 2>&1)
+rc=$?
+if [[ $rc -eq 3 && "$output" == *"INFRA [1]"* ]]; then
+	pass "H6 GitHub integration permission failures are infrastructure"
+else
+	fail "H6 integration permission classification" "expected rc=3 and INFRA, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-application-403.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "application returned HTTP 403\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-application-403.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"FAIL  [1]"* ]]; then
+	pass "H7 application HTTP 403 remains an acceptance failure"
+else
+	fail "H7 application 403 classification" "expected rc=1 and FAIL, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-application-credentials.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "Bad credentials\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-application-credentials.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"FAIL  [1]"* ]]; then
+	pass "H8 application credential failures remain acceptance failures"
+else
+	fail "H8 application credential classification" "expected rc=1 and FAIL, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-token-output.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "%s\n" "$GH_TOKEN" >&2; exit 1'
+```
+BRIEF
+
+output=$(GH_TOKEN=workflow-secret-token bash "$VB_HELPER" verify "$TMP/brief-token-output.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"[REDACTED]"* && "$output" != *"workflow-secret-token"* ]]; then
+	pass "H9 verify output redacts the inherited GitHub token"
+else
+	fail "H9 GitHub token redaction" "expected redacted output, got rc=$rc; output: $output"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 

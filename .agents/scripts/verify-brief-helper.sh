@@ -13,6 +13,7 @@
 #   0 — all bash verify blocks passed (or no blocks found)
 #   1 — one or more bash verify blocks failed
 #   2 — usage error (missing args, file not found)
+#   3 — verification could not complete because of infrastructure failure
 
 set -euo pipefail
 
@@ -39,6 +40,30 @@ _log() {
 	shift
 	local msg="$*"
 	printf '[%s] %s\n' "$level" "$msg" >&2
+	return 0
+}
+
+_is_infrastructure_failure() {
+	local output="$1"
+
+	if printf '%s\n' "$output" | grep -qiE \
+		'gh CLI cannot authenticate an API request|not logged into any GitHub hosts|gh: Bad credentials|GraphQL: Bad credentials|Resource not accessible by integration|could not resolve host|temporary failure in name resolution|network is unreachable'; then
+		return 0
+	fi
+
+	return 1
+}
+
+_redact_auth_tokens() {
+	local output="$1"
+	local token=""
+
+	for token in "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"; do
+		if [[ -n "$token" ]]; then
+			output="${output//"$token"/[REDACTED]}"
+		fi
+	done
+	printf '%s' "$output"
 	return 0
 }
 
@@ -184,8 +209,10 @@ _cmd_verify() {
 	local total=0
 	local passed=0
 	local failed=0
+	local infrastructure_failed=0
 	local skipped=0
 	local fail_details=""
+	local infrastructure_details=""
 
 	while IFS=$'\t' read -r idx method value; do
 		total=$((total + 1))
@@ -214,10 +241,18 @@ _cmd_verify() {
 		local exit_code=0
 		local output=""
 		output=$(timeout 120 bash -c "$value" 2>&1) || exit_code=$?
+		output=$(_redact_auth_tokens "$output")
 
 		if [[ $exit_code -eq 0 ]]; then
 			passed=$((passed + 1))
 			printf 'PASS  [%d]\n' "$idx"
+		elif _is_infrastructure_failure "$output"; then
+			infrastructure_failed=$((infrastructure_failed + 1))
+			printf 'INFRA [%d] exit_code=%d — verification environment unavailable\n' "$idx" "$exit_code"
+			if [[ -n "$output" ]]; then
+				printf '  output: %s\n' "$output"
+			fi
+			infrastructure_details="${infrastructure_details}Block ${idx} (exit ${exit_code}): ${value}\n"
 		else
 			failed=$((failed + 1))
 			printf 'FAIL  [%d] exit_code=%d\n' "$idx" "$exit_code"
@@ -230,7 +265,8 @@ _cmd_verify() {
 
 	# Summary
 	printf '\n--- Summary ---\n'
-	printf 'Total: %d  Passed: %d  Failed: %d  Skipped: %d\n' "$total" "$passed" "$failed" "$skipped"
+	printf 'Total: %d  Passed: %d  Failed: %d  Infrastructure: %d  Skipped: %d\n' \
+		"$total" "$passed" "$failed" "$infrastructure_failed" "$skipped"
 
 	if [[ $total -eq 0 ]]; then
 		_log "INFO" "No verify: blocks found — nothing to check"
@@ -240,7 +276,19 @@ _cmd_verify() {
 	if [[ $failed -gt 0 ]]; then
 		printf '\nFailed blocks:\n'
 		printf '%b' "$fail_details"
+	fi
+
+	if [[ $infrastructure_failed -gt 0 ]]; then
+		printf '\nInfrastructure failures (retry with network access and authenticated gh):\n'
+		printf '%b' "$infrastructure_details"
+	fi
+
+	if [[ $failed -gt 0 ]]; then
 		return 1
+	fi
+
+	if [[ $infrastructure_failed -gt 0 ]]; then
+		return 3
 	fi
 
 	return 0
@@ -418,8 +466,8 @@ main() {
 	if [[ "$command_status" -eq 0 ]]; then
 		return 0
 	fi
-	if [[ "$command_status" -eq 2 ]]; then
-		return 2
+	if [[ "$command_status" -eq 2 || "$command_status" -eq 3 ]]; then
+		return "$command_status"
 	fi
 	return 1
 }
