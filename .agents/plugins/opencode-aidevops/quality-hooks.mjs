@@ -12,7 +12,12 @@ import { extractAndStoreIntent, consumeIntent } from "./intent-tracing.mjs";
 import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
 import { enrichActiveSpan, detectTaskId, detectSessionOrigin } from "./otel-enrichment.mjs";
-import { checkSecretReadGate, isReadTool } from "./quality-hooks-secret-read.mjs";
+import {
+  checkSecretReadGate,
+  isReadTool,
+  secretReadBlockReason,
+} from "./quality-hooks-secret-read.mjs";
+import { checkSecretReadWithApproval } from "./source-access-approval.mjs";
 import { checkResearchStagingAccess } from "./research-staging-guard.mjs";
 import {
   bindActiveScriptsDir,
@@ -288,6 +293,7 @@ function handleToolBefore(ctx, log, input, output) {
     "aidevops.runtime": "opencode",
   }).catch(() => {});
 
+  const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
   if (isBashTool(input.tool)) {
     const bashArgs = output.args ?? {};
     const bashCwd = bashArgs.workdir || bashArgs.cwd || process.cwd();
@@ -302,7 +308,6 @@ function handleToolBefore(ctx, log, input, output) {
     );
     // t2685: pass scriptsDir + output so the hook can repair (mutate
     // output.args.command) or block (throw) as appropriate.
-    const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
     const signatureModel = ctx.resolveSessionModel(sessionId);
     checkSignatureFooterGate(bashArgs.command || "", log, ctx.scriptsDir, output, {
       model: signatureModel,
@@ -310,7 +315,16 @@ function handleToolBefore(ctx, log, input, output) {
     });
   }
 
-  checkSecretReadGate(input.tool, output.args || {}, log);
+  checkSecretReadWithApproval({
+    tool: input.tool,
+    args: output.args || {},
+    sessionId,
+    scriptsDir: ctx.scriptsDir,
+    isReadTool,
+    secretReadBlockReason,
+    checkSecretReadGate,
+    log,
+  });
   checkResearchStagingAccess(input.tool, output.args || {});
 
   if (!isWriteOrEditTool(input.tool)) return;

@@ -1036,6 +1036,7 @@ _help_commands() {
 	echo "  ip-check <cmd>     IP reputation checks (check/batch/report/providers)"
 	echo "  review-gate <cmd>  Configure review_gate merge policies (rate-limit/completion)"
 	echo "  github-app-auth    GitHub App auth setup/status and API route decisions"
+	echo "  source-access <cmd> Session-bound, sudo-signed source-read approvals"
 	echo "  secret <cmd>       Manage secrets (set/list/run/init/import/status)"
 	echo "  vault <cmd>        Local encrypted Vault broker (init/unlock/lock/status/read/update)"
 	echo "  config <cmd>       Feature toggles (list/get/set/reset/path/help)"
@@ -1064,6 +1065,12 @@ _help_detailed_sections() {
 	echo "  aidevops security supply-chain scan [path] # npm supply-chain IOC scan"
 	echo "  aidevops security check      # Per-repo security posture assessment"
 	echo "  aidevops security dismiss <id> # Dismiss a security advisory"
+	echo ""
+	echo "Temporary source access:"
+	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup"
+	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py approve <id> --ttl 12h"
+	echo "  aidevops source-access status                    # List active/expired approvals"
+	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>"
 	echo ""
 	echo "IP Reputation:"
 	echo "  aidevops ip-check check <ip> # Check IP reputation across providers"
@@ -1843,6 +1850,7 @@ main() {
 	opencode-desktop | oc-desktop) _dispatch_helper "opencode-launcher-helper.sh" "opencode-launcher-helper.sh" desktop "$@" ;;
 	opencode-sandbox | oc-sandbox) _dispatch_helper "opencode-sandbox-helper.sh" "opencode-sandbox-helper.sh" "$@" ;;
 	review-gate | review_gate) _dispatch_helper "review-gate-config-helper.sh" "review-gate-config-helper.sh" "$@" ;;
+	source-access | source_access) _dispatch_helper "source-access-helper.sh" "source-access-helper.sh" "$@" ;;
 	secret | secrets) _dispatch_helper "secret-helper.sh" "secret-helper.sh" "$@" ;;
 	vault) _dispatch_helper "vault-helper.sh" "vault-helper.sh" "$@" ;;
 	approve) _dispatch_helper "approval-helper.sh" "approval-helper.sh" "$@" ;;
