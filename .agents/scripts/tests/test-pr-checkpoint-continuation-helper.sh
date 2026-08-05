@@ -39,6 +39,10 @@ if [[ "$1" == "api" && "$2" == "repos/owner/repo/issues/123" ]]; then
 	printf '%s\n' "${STUB_ISSUE_JSON:-}"
 	exit 0
 fi
+if [[ "$1" == "api" && "$2" == "repos/owner/repo/issues/123/comments?per_page=100" ]]; then
+	printf '%s\n' "${STUB_COMMENTS_JSON:-[]}"
+	exit 0
+fi
 exit 1
 GH_STUB
 chmod +x "${TEST_ROOT}/bin/gh"
@@ -51,10 +55,11 @@ valid_pr_json() {
 	local body="${1:-Resolves #123}"
 	local labels="${2:-}"
 	local closing_refs="${3:-}"
+	local author="${4:-worker-bot}"
 	[[ -n "$labels" ]] || labels='[{"name":"origin:worker"}]'
 	[[ -n "$closing_refs" ]] || closing_refs='[{"number":123,"repository":{"name":"repo","owner":{"login":"owner"}}}]'
-	printf '{"number":42,"state":"OPEN","title":"Continue existing work","body":"%s","closingIssuesReferences":%s,"isDraft":true,"isCrossRepository":false,"labels":%s,"headRefName":"worker/issue-123","headRefOid":"1111111111111111111111111111111111111111","author":{"login":"worker-bot"}}\n' \
-		"$body" "$closing_refs" "$labels"
+	printf '{"number":42,"state":"OPEN","title":"Continue existing work","body":"%s","closingIssuesReferences":%s,"isDraft":true,"isCrossRepository":false,"labels":%s,"headRefName":"worker/issue-123","headRefOid":"1111111111111111111111111111111111111111","author":{"login":"%s"}}\n' \
+		"$body" "$closing_refs" "$labels" "$author"
 	return 0
 }
 
@@ -66,9 +71,16 @@ valid_issue_json() {
 	return 0
 }
 
+valid_checkpoint_comments() {
+	local runner="worker-bot"
+	printf '[[{"id":10,"created_at":"2026-08-04T22:29:37Z","author_association":"COLLABORATOR","body":"CLAIM_RELEASED reason=worker_draft_checkpoint runner=%s ts=2026-08-04T22:29:36Z"}]]\n' "$runner"
+	return 0
+}
+
 STUB_PR_JSON="$(valid_pr_json)"
 STUB_ISSUE_JSON="$(valid_issue_json)"
-export STUB_PR_JSON STUB_ISSUE_JSON
+STUB_COMMENTS_JSON='[]'
+export STUB_PR_JSON STUB_ISSUE_JSON STUB_COMMENTS_JSON
 if row=$(_pcc_target_row "owner/repo" "42" "123") && \
 	[[ "$row" == $'Continue existing work\tworker/issue-123\t1111111111111111111111111111111111111111\tworker-bot\tin-review\tworker-bot' ]]; then
 	print_result "accepts exact open worker draft linked to issue" 0
@@ -136,7 +148,42 @@ for conflicting_status in status:blocked status:done status:in-progress; do
 	fi
 done
 
+STUB_ISSUE_JSON="$(valid_issue_json '[{"name":"status:in-review"},{"name":"origin:interactive"}]')"
+STUB_COMMENTS_JSON="$(valid_checkpoint_comments)"
+if _pcc_target_row "owner/repo" "42" "123" "worker-bot" "worker-bot" >/dev/null; then
+	print_result "accepts interactive-provenance issue with current trusted checkpoint release" 0
+else
+	print_result "accepts interactive-provenance issue with current trusted checkpoint release" 1
+fi
+
+STUB_COMMENTS_JSON='[]'
+if ! _pcc_target_row "owner/repo" "42" "123" "worker-bot" "worker-bot" >/dev/null; then
+	print_result "rejects interactive-provenance issue without checkpoint release" 0
+else
+	print_result "rejects interactive-provenance issue without checkpoint release" 1
+fi
+
+STUB_COMMENTS_JSON='[[
+  {"id":10,"created_at":"2026-08-04T22:29:37Z","author_association":"COLLABORATOR","body":"CLAIM_RELEASED reason=worker_draft_checkpoint runner=worker-bot ts=2026-08-04T22:29:36Z"},
+  {"id":11,"created_at":"2026-08-04T22:30:37Z","author_association":"MEMBER","body":"Interactive session claimed this issue"}
+]]'
+if ! _pcc_target_row "owner/repo" "42" "123" "worker-bot" "worker-bot" >/dev/null; then
+	print_result "rejects replayed checkpoint release after a newer human claim" 0
+else
+	print_result "rejects replayed checkpoint release after a newer human claim" 1
+fi
+
+STUB_COMMENTS_JSON="$(valid_checkpoint_comments)"
+STUB_PR_JSON="$(valid_pr_json 'Resolves #123' '' '' 'foreign-runner')"
+if ! _pcc_target_row "owner/repo" "42" "123" "worker-bot" "worker-bot" >/dev/null; then
+	print_result "rejects foreign-authored worker checkpoint" 0
+else
+	print_result "rejects foreign-authored worker checkpoint" 1
+fi
+
+STUB_PR_JSON="$(valid_pr_json)"
 STUB_ISSUE_JSON="$(valid_issue_json)"
+STUB_COMMENTS_JSON='[]'
 
 DISPATCH_ARGS=""
 DISPATCH_RESULT=0
@@ -195,6 +242,23 @@ else
 	print_result "dispatch binds continuation to exact PR branch and head" 1 "output=${output:-missing} args=${DISPATCH_ARGS:-missing}"
 fi
 
+DISPATCH_RESULT="$PRRTS_RC_DISPATCH_DEFERRED"
+if output=$(_pcc_dispatch "owner/repo" "${TEST_ROOT}/repo" "42" "123" "worker-bot") &&
+	[[ "$output" == *PR_CHECKPOINT_CONTINUATION_DEDUPLICATED* ]]; then
+	print_result "active exact-head continuation is deduplicated as handled" 0
+else
+	print_result "active exact-head continuation is deduplicated as handled" 1 "output=${output:-missing}"
+fi
+
+DISPATCH_RESULT="$PRRTS_RC_MAINTAINER_ATTENTION"
+if ! output=$(_pcc_dispatch "owner/repo" "${TEST_ROOT}/repo" "42" "123" "worker-bot") &&
+	[[ "$output" == *PR_CHECKPOINT_CONTINUATION_EXHAUSTED* ]]; then
+	print_result "bounded retry exhaustion is explicit" 0
+else
+	print_result "bounded retry exhaustion is explicit" 1 "output=${output:-missing}"
+fi
+
+STUB_PR_JSON="$(valid_pr_json 'Resolves #123' '' '' 'stale-runner')"
 STUB_ISSUE_JSON="$(valid_issue_json '' 'stale-runner')"
 STATUS_CALLS=""
 DISPATCH_RESULT=0
@@ -225,12 +289,14 @@ else
 fi
 DISPATCH_RESULT=0
 
+STUB_PR_JSON="$(valid_pr_json)"
 PCC_LINKED_ISSUE="123"
 PCC_HEAD_REF="worker/issue-123"
 PCC_HEAD_OID="1111111111111111111111111111111111111111"
 PCC_ISSUE_ASSIGNEE="worker-bot"
 PCC_EXPECTED_ASSIGNEE="worker-bot"
 PCC_AUTHENTICATED_LOGIN="worker-bot"
+PCC_CHECKPOINT_ASSIGNEE="worker-bot"
 PCC_ORIGINAL_STATUS="in-review"
 PCC_OWNERSHIP_TRANSFERRED=0
 if [[ "$(_prrts_worker_task_id 42)" == "123" ]] &&
@@ -256,6 +322,7 @@ if [[ -f "$prompt_file" ]] && \
 	grep -q 'PR_CHECKPOINT_TARGET_VALID' "$prompt_file" && \
 	grep -Fq "\$AIDEVOPS_PR_REPAIR_LINKED_ISSUE" "$prompt_file" && \
 	grep -Fq "\$AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE" "$prompt_file" && \
+	grep -Fq '"worker-bot"`' "$prompt_file" && \
 	grep -q "HEAD:\$AIDEVOPS_PR_REPAIR_HEAD_REF" "$prompt_file" && \
 	grep -q 'Do not create another branch' "$prompt_file"; then
 	print_result "continuation prompt preserves exact-target ownership contract" 0

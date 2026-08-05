@@ -24,6 +24,7 @@ PCC_HEAD_OID=""
 PCC_ISSUE_ASSIGNEE=""
 PCC_EXPECTED_ASSIGNEE=""
 PCC_AUTHENTICATED_LOGIN=""
+PCC_CHECKPOINT_ASSIGNEE=""
 PCC_ORIGINAL_STATUS=""
 PCC_OWNERSHIP_TRANSFERRED=0
 
@@ -65,7 +66,8 @@ _prrts_prelaunch_target_fence() {
 	local expected_assignee="${PCC_EXPECTED_ASSIGNEE:-$PCC_ISSUE_ASSIGNEE}"
 	local authenticated_login="${PCC_AUTHENTICATED_LOGIN:-$PCC_ISSUE_ASSIGNEE}"
 
-	target_row=$(_pcc_target_row "$repo_slug" "$pr_number" "$PCC_LINKED_ISSUE" "$expected_assignee") || {
+	target_row=$(_pcc_target_row "$repo_slug" "$pr_number" "$PCC_LINKED_ISSUE" \
+		"$expected_assignee" "$PCC_CHECKPOINT_ASSIGNEE") || {
 		PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_eligibility_changed_before_launch"
 		return 1
 	}
@@ -87,7 +89,7 @@ _prrts_prelaunch_target_fence() {
 		}
 		PCC_OWNERSHIP_TRANSFERRED=1
 		target_row=$(_pcc_target_row "$repo_slug" "$pr_number" "$PCC_LINKED_ISSUE" \
-			"$authenticated_login") || {
+			"$authenticated_login" "$PCC_CHECKPOINT_ASSIGNEE") || {
 			_pcc_restore_transferred_ownership "$repo_slug" "$pr_number" || true
 			PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_post_transfer_eligibility_changed"
 			return 1
@@ -184,7 +186,7 @@ PR title: ${safe_title}
 3. Run focused lint/tests for every changed area. Hand-apply fixes; never apply
    AI-review suggestions verbatim or weaken required checks.
 4. Before pushing, run the exact-target fence:
-   \`"${ownership_helper}" verify-pr-checkpoint-target "${repair_number_ref}" "${repo_slug_ref}" "\$AIDEVOPS_PR_REPAIR_HEAD_SHA" "\$AIDEVOPS_PR_REPAIR_HEAD_REF" "${linked_issue_ref}" "${issue_assignee_ref}"\`.
+   \`"${ownership_helper}" verify-pr-checkpoint-target "${repair_number_ref}" "${repo_slug_ref}" "\$AIDEVOPS_PR_REPAIR_HEAD_SHA" "\$AIDEVOPS_PR_REPAIR_HEAD_REF" "${linked_issue_ref}" "${issue_assignee_ref}" "${PCC_CHECKPOINT_ASSIGNEE}"\`.
    Stop without pushing if it no longer reports PR_CHECKPOINT_TARGET_VALID.
 5. Commit the continuation and push without force to the existing remote branch
    using \`git push origin "HEAD:\$AIDEVOPS_PR_REPAIR_HEAD_REF"\`. Never open a
@@ -204,11 +206,32 @@ PROMPT_EOF
 	return 0
 }
 
+_pcc_issue_metadata_is_eligible() {
+	local repo_slug="$1"
+	local issue_json="$2"
+	local linked_issue="$3"
+	local expected_assignee="$4"
+	local checkpoint_assignee="$5"
+	local comments_json="[]"
+
+	if printf '%s' "$issue_json" | jq -e '
+		[.labels[]?.name]
+		| index("origin:interactive") != null
+	' >/dev/null 2>&1; then
+		comments_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" \
+			--paginate --slurp 2>/dev/null) || return 1
+	fi
+	_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" \
+		"$expected_assignee" "$comments_json" "$checkpoint_assignee"
+	return $?
+}
+
 _pcc_target_row() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	local linked_issue="$3"
 	local expected_assignee="${4:-}"
+	local checkpoint_assignee="${5:-$expected_assignee}"
 	local pr_json=""
 	local issue_json=""
 	local target_row=""
@@ -217,8 +240,10 @@ _pcc_target_row() {
 	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
 		--json number,state,title,isDraft,isCrossRepository,labels,headRefName,headRefOid,author,closingIssuesReferences 2>/dev/null) || return 1
 	issue_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || return 1
-	_pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" "$linked_issue" || return 1
-	_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" "$expected_assignee" || return 1
+	_pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" \
+		"$linked_issue" "" "" "$checkpoint_assignee" || return 1
+	_pcc_issue_metadata_is_eligible "$repo_slug" "$issue_json" "$linked_issue" \
+		"$expected_assignee" "$checkpoint_assignee" || return 1
 	issue_assignee=$(printf '%s' "$issue_json" | jq -er \
 		'.assignees[0].login | select(type == "string" and length > 0)' 2>/dev/null) || return 1
 	issue_status=$(printf '%s' "$issue_json" | jq -er '
@@ -262,8 +287,8 @@ _pcc_restore_issue_ownership() {
 	local previous_status="$5"
 	local issue_json=""
 	issue_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || return 1
-	_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" \
-		"$replacement_assignee" || return 1
+	_pcc_issue_metadata_is_eligible "$repo_slug" "$issue_json" "$linked_issue" \
+		"$replacement_assignee" "$PCC_CHECKPOINT_ASSIGNEE" || return 1
 	set_issue_status "$linked_issue" "$repo_slug" "$previous_status" \
 		--add-assignee "$previous_assignee" \
 		--remove-assignee "$replacement_assignee" >/dev/null 2>&1 || return 1
@@ -297,6 +322,7 @@ _pcc_dispatch() {
 	local issue_status=""
 	local now_epoch=""
 	local fingerprint=""
+	local dispatch_rc=0
 
 	if [[ -z "$repo_slug" || ! "$pr_number" =~ ^[0-9]+$ || ! "$linked_issue" =~ ^[0-9]+$ ||
 		-z "$expected_assignee" || -z "$authenticated_login" || ! -d "$repo_path" ]] ||
@@ -305,25 +331,40 @@ _pcc_dispatch() {
 		_pcc_usage >&2
 		return 2
 	fi
-	target_row=$(_pcc_target_row "$repo_slug" "$pr_number" "$linked_issue" "$expected_assignee") || {
+	PCC_EXPECTED_ASSIGNEE="$expected_assignee"
+	PCC_AUTHENTICATED_LOGIN="$authenticated_login"
+	PCC_CHECKPOINT_ASSIGNEE="$expected_assignee"
+	target_row=$(_pcc_target_row "$repo_slug" "$pr_number" "$linked_issue" \
+		"$expected_assignee" "$PCC_CHECKPOINT_ASSIGNEE") || {
 		printf 'PR_CHECKPOINT_CONTINUATION_BLOCKED: PR #%s in %s is not an open, unheld worker draft linked to issue #%s with an exact head\n' \
 			"$pr_number" "$repo_slug" "$linked_issue"
 		return 1
 	}
 	IFS=$'\t' read -r title PCC_HEAD_REF PCC_HEAD_OID author issue_status PCC_ISSUE_ASSIGNEE <<<"$target_row"
 	PCC_LINKED_ISSUE="$linked_issue"
-	PCC_EXPECTED_ASSIGNEE="$expected_assignee"
-	PCC_AUTHENTICATED_LOGIN="$authenticated_login"
 	PCC_ORIGINAL_STATUS="$issue_status"
 	PCC_OWNERSHIP_TRANSFERRED=0
 	[[ -n "$PCC_HEAD_REF" && "$PCC_HEAD_OID" =~ ^[0-9a-fA-F]{40,64}$ &&
 		"$PCC_ISSUE_ASSIGNEE" == "$expected_assignee" ]] || return 1
 	now_epoch=$(date +%s)
 	fingerprint="draft-checkpoint:${PCC_HEAD_OID}:contract-3"
-	if ! _prrts_dispatch_guarded "$repo_slug" "$repo_path" "$pr_number" "$title" "0" \
+	_prrts_dispatch_guarded "$repo_slug" "$repo_path" "$pr_number" "$title" "0" \
 		"$fingerprint" "stale worker draft continuation" "$now_epoch" "$PRRTS_BOOL_FALSE" \
-		"continue-pr" "$PCC_HEAD_REF" "$PCC_HEAD_OID" "$author"; then
+		"continue-pr" "$PCC_HEAD_REF" "$PCC_HEAD_OID" "$author" || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq "$PRRTS_RC_DISPATCH_DEFERRED" ]]; then
+		printf 'PR_CHECKPOINT_CONTINUATION_DEDUPLICATED: PR #%s in %s already has a bounded exact-head continuation\n' \
+			"$pr_number" "$repo_slug"
+		return 0
+	fi
+	if [[ "$dispatch_rc" -eq "$PRRTS_RC_MAINTAINER_ATTENTION" ]]; then
+		printf 'PR_CHECKPOINT_CONTINUATION_EXHAUSTED: PR #%s in %s reached durable bounded-retry state\n' \
+			"$pr_number" "$repo_slug"
+		return 1
+	fi
+	if [[ "$dispatch_rc" -ne 0 ]]; then
 		_pcc_restore_transferred_ownership "$repo_slug" "$pr_number" || true
+		printf 'PR_CHECKPOINT_CONTINUATION_BLOCKED: PR #%s in %s launch failed rc=%s\n' \
+			"$pr_number" "$repo_slug" "$dispatch_rc"
 		return 1
 	fi
 	printf 'PR_CHECKPOINT_CONTINUATION_DISPATCHED: PR #%s in %s at %s for issue #%s\n' \

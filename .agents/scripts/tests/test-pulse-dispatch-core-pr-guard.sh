@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 CORE_SCRIPT="${SCRIPT_DIR}/../pulse-dispatch-core.sh"
+LAYERS_SCRIPT="${SCRIPT_DIR}/../pulse-dispatch-dedup-layers.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -157,11 +158,31 @@ test_interactive_hold_allows_worker_issue() {
 }
 
 test_interactive_hold_emits_structured_block_reason() {
-	if grep -q 'DISPATCH_BLOCK_REASON reason=interactive_review_hold' "$CORE_SCRIPT" && grep -q 'return 3' "$CORE_SCRIPT"; then
+	if grep -q 'DISPATCH_BLOCK_REASON reason=interactive_review_hold' "$LAYERS_SCRIPT" && grep -q 'return 3' "$CORE_SCRIPT"; then
 		print_result "interactive hold emits structured benign block reason" 0
 		return 0
 	fi
 	print_result "interactive hold emits structured benign block reason" 1 "expected structured reason and benign rc=3 in dispatch core"
+	return 0
+}
+
+test_checkpoint_route_precedes_generic_interactive_hold() {
+	if grep -q '_dispatch_interactive_hold_gate' "$CORE_SCRIPT" && python3 - "$LAYERS_SCRIPT" <<'PY'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+start = text.index("_dispatch_interactive_hold_gate() {")
+end = text.index("\n}\n", start)
+body = text[start:end]
+if body.index("_dispatch_interactive_worker_checkpoint_continuation") >= body.index("reason=interactive_review_hold"):
+    raise SystemExit(1)
+PY
+	then
+		print_result "verified checkpoint route precedes generic interactive hold" 0
+		return 0
+	fi
+	print_result "verified checkpoint route precedes generic interactive hold" 1
 	return 0
 }
 
@@ -198,6 +219,7 @@ main() {
 	test_interactive_hold_allows_auto_dispatch_review_handoff
 	test_interactive_hold_allows_worker_issue
 	test_interactive_hold_emits_structured_block_reason
+	test_checkpoint_route_precedes_generic_interactive_hold
 	test_pr_guard_emits_structured_block_reason
 	test_dedup_guard_emits_structured_block_reason
 

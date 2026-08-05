@@ -17,6 +17,7 @@
 #   - _dedup_layer3_title_match
 #   - _dedup_layer4_pr_evidence
 #   - _dedup_layer5_dispatch_comment
+#   - _dispatch_interactive_hold_gate
 #   - _dedup_layer6_assignee_and_stale
 #   - _dedup_layer7_claim_lock
 
@@ -295,6 +296,91 @@ _dispatch_stale_pr_checkpoint_continuation() {
 	fi
 	echo "[pulse-wrapper] Dedup: exact-head continuation deferred for stale draft PR #${pr_number} on issue #${issue_number}; preserving duplicate-dispatch block" >>"$LOGFILE"
 	return 1
+}
+
+#######################################
+# Route the exact worker draft checkpoint produced by an interactive-provenance
+# issue before the generic interactive hold consumes the candidate. The direct
+# continuation helper independently verifies trusted terminal evidence, exact
+# PR linkage/head, worker ownership, issue ownership, and retry bounds.
+# Args: issue number, repo slug, issue title, authenticated login, issue JSON
+# Exit: 0=routed/deduplicated, 1=not a machine checkpoint, 2=verified candidate blocked
+#######################################
+_dispatch_interactive_worker_checkpoint_continuation() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local issue_title="$3"
+	local self_login="$4"
+	local issue_meta_json="$5"
+	local dedup_helper="${SCRIPT_DIR}/dispatch-dedup-helper.sh"
+	local checkpoint_output=""
+	local checkpoint_assignee=""
+	local pr_number=""
+	local continuation_signal=""
+
+	printf '%s' "$issue_meta_json" | jq -e '
+		([.labels[]?.name]) as $labels |
+		((.state // "") | ascii_upcase) == "OPEN" and
+		($labels | index("origin:interactive")) != null and
+		($labels | index("status:in-review")) != null and
+		($labels | index("auto-dispatch")) == null and
+		($labels | any(. == "hold-for-review" or . == "no-auto-dispatch" or
+			. == "needs-maintainer-review" or . == "needs-maintainer-permissions" or
+			. == "persistent" or . == "parent-task" or . == "blocked" or . == "on hold" or
+			. == "research" or . == "research-task") | not) and
+		((.assignees // []) | length) == 1
+	' >/dev/null 2>&1 || return 1
+	checkpoint_assignee=$(printf '%s' "$issue_meta_json" | jq -er '.assignees[0].login' 2>/dev/null) || return 1
+	[[ "$checkpoint_assignee" =~ ^[A-Za-z0-9._-]+(\[bot\])?$ ]] || return 1
+	if has_worker_for_repo_issue "$issue_number" "$repo_slug"; then
+		echo "[dispatch_with_dedup] Verified interactive-provenance candidate #${issue_number} retains a live worker; preserving genuine hold" >>"$LOGFILE"
+		return 1
+	fi
+	[[ -x "$dedup_helper" ]] || return 2
+	checkpoint_output=$("$dedup_helper" has-open-pr "$issue_number" "$repo_slug" "$issue_title" 2>>"$LOGFILE") || return 1
+	if [[ "$checkpoint_output" =~ WORKER_DRAFT_CHECKPOINT:[[:space:]]draft[[:space:]]PR[[:space:]]#([0-9]+) ]]; then
+		pr_number="${BASH_REMATCH[1]}"
+	else
+		return 1
+	fi
+	continuation_signal="STALE_PR_CONTINUATION: issue #${issue_number} in ${repo_slug} — PR #${pr_number} preserved for exact-head continuation assignee=${checkpoint_assignee}"
+	if _dispatch_stale_pr_checkpoint_continuation "$issue_number" "$repo_slug" \
+		"$continuation_signal" "$self_login"; then
+		return 0
+	fi
+	return 2
+}
+
+#######################################
+# Consume an interactive hold. A verified machine checkpoint gets one guarded
+# exact-PR continuation attempt; every other interactive/human hold is unchanged.
+# Args: issue number, repo slug, issue title, authenticated login, issue JSON
+# Exit: 0=hold consumed, 1=no interactive hold
+#######################################
+_dispatch_interactive_hold_gate() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local issue_title="$3"
+	local self_login="$4"
+	local issue_meta_json="$5"
+	local checkpoint_rc=0
+
+	_dispatch_has_interactive_hold "$issue_meta_json" || return 1
+	_dispatch_interactive_worker_checkpoint_continuation "$issue_number" "$repo_slug" \
+		"$issue_title" "$self_login" "$issue_meta_json" || checkpoint_rc=$?
+	case "$checkpoint_rc" in
+	0)
+		echo "[dispatch_with_dedup] DISPATCH_BLOCK_REASON reason=worker_draft_checkpoint_continuation signal=checkpoint_routed issue=#${issue_number} repo=${repo_slug}" >>"$LOGFILE"
+		return 0
+		;;
+	2)
+		echo "[dispatch_with_dedup] DISPATCH_BLOCK_REASON reason=worker_draft_checkpoint_blocked signal=exact_head_continuation_unavailable issue=#${issue_number} repo=${repo_slug}" >>"$LOGFILE"
+		return 0
+		;;
+	esac
+	echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: interactive review hold label present (GH#22948)" >>"$LOGFILE"
+	echo "[dispatch_with_dedup] DISPATCH_BLOCK_REASON reason=interactive_review_hold signal=interactive_review_hold issue=#${issue_number} repo=${repo_slug}" >>"$LOGFILE"
+	return 0
 }
 
 #######################################

@@ -1272,13 +1272,12 @@ _dispatch_dedup_check_layers() {
 	target_state=$(printf '%s' "$issue_meta_json" | jq -r '.state // ""' 2>/dev/null | tr '[:lower:]' '[:upper:]')
 	target_title=$(printf '%s' "$issue_meta_json" | jq -r '.title // ""' 2>/dev/null)
 
-	# GH#22948/GH#22964: interactive/review hold guard independent of assignee
-	# identity. auto-dispatch is an explicit worker handoff, so active claim
-	# liveness/staleness is delegated to Layer 6 instead of blocked here.
+	# GH#22948/GH#22964/GH#29535: interactive/review holds remain independent
+	# of assignee identity. A terminal worker draft checkpoint is the sole narrow
+	# exception: route its existing exact PR before consuming the generic hold.
 	_dss_t0=$(_ds_now_ns)
-	if _dispatch_has_interactive_hold "$issue_meta_json"; then
-		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: interactive review hold label present (GH#22948)" >>"$LOGFILE"
-		echo "[dispatch_with_dedup] DISPATCH_BLOCK_REASON reason=interactive_review_hold signal=interactive_review_hold issue=#${issue_number} repo=${repo_slug}" >>"$LOGFILE"
+	if _dispatch_interactive_hold_gate "$issue_number" "$repo_slug" "$issue_title" \
+		"$self_login" "$issue_meta_json"; then
 		_ds_record "$issue_number" "$repo_slug" "dedup.interactive_hold" "$_dss_t0"
 		return 3
 	fi
