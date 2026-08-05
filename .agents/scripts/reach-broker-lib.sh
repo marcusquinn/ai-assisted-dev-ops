@@ -4,7 +4,7 @@
 # =============================================================================
 # aidevops Reach Broker Library
 # =============================================================================
-# Capability, doctor, profile lease, cookie session, and failure-classification commands.
+# Capability, doctor, session, egress, observation, and failure-classification commands.
 #
 # Usage: source "${SCRIPT_DIR}/reach-broker-lib.sh"
 #
@@ -45,7 +45,14 @@ source "${SCRIPT_DIR}/reach-capabilities-lib.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/reach-session-lib.sh"
 
+# shellcheck source=./reach-egress-lib.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/reach-egress-lib.sh"
+
+# shellcheck source=./reach-observation-lib.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/reach-observation-lib.sh"
+
 # shellcheck source=./reach-failure-lib.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/reach-failure-lib.sh"
-

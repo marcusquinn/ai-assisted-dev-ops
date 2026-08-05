@@ -97,6 +97,11 @@ reach_cookie_dir() {
 	return 0
 }
 
+reach_egress_dir() {
+	printf '%s/egress-profiles' "$(reach_workspace_dir)"
+	return 0
+}
+
 ensure_private_dir() {
 	local dir_path="$1"
 	mkdir -p "$dir_path"

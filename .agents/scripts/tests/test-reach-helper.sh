@@ -80,6 +80,8 @@ printf '=== Reach Helper Tests ===\n\n'
 help_output="$($HELPER help)"
 assert_contains "$help_output" "capabilities --format json" "help lists capabilities command"
 assert_contains "$help_output" "route --objective" "help lists route command"
+assert_contains "$help_output" "egress register|status|clear" "help lists egress broker command"
+assert_contains "$help_output" "observation record --input" "help lists observation recorder command"
 
 capabilities_output="$($HELPER capabilities --format json)"
 assert_json_valid "$capabilities_output" "capabilities emits valid JSON"

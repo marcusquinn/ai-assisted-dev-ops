@@ -376,6 +376,12 @@ Browser execution remains outside the corpus helper and uses an approved private
 profile through the Reach contract. Export only a sanitized mode-0600 JSON
 artifact. The importer cannot launch a browser, submit a form, or reuse cookies.
 
+Reach `search_result_observation` records are contemporaneous search evidence,
+not account archives and not social browser-gap artifacts. They do not satisfy
+an API/archive gap record and cannot be imported as account history. Promotion
+requires a separately reviewed knowledge-staging path that preserves the search
+observation class and its evidence citation; LLM-derived answers remain separate.
+
 The private gap record identifies `provider`, `stream`, `status` (`partial` or
 `unavailable`), `official_routes_exhausted: true`, a sanitized `reason`, and
 `observed_at`, and the tested `selector_version`. The capture identifies the same

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reach Search Observation v1",
+  "description": "Private input contract for a contemporaneous search-result observation. This is distinct from account-history exports and LLM-derived answers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_class",
+    "engine",
+    "collection_method",
+    "query",
+    "observed_at",
+    "egress_profile",
+    "device_class",
+    "signed_in",
+    "authorization_basis",
+    "result_surface",
+    "evidence_path",
+    "evidence_media_type"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evidence_class": {"const": "search_result_observation"},
+    "engine": {"enum": ["brave", "google", "bing"]},
+    "collection_method": {"enum": ["browser", "search_api"]},
+    "query": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "egress_profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "device_class": {"enum": ["desktop", "mobile", "tablet"]},
+    "signed_in": {"type": "boolean"},
+    "authorization_basis": {
+      "enum": ["public_data", "owned_account", "client_approved"]
+    },
+    "storage_authorization_basis": {
+      "enum": ["personal_use", "provider_terms", "provider_permission"]
+    },
+    "result_surface": {
+      "enum": ["web", "news", "images", "videos", "local", "maps", "shopping"]
+    },
+    "evidence_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "evidence_media_type": {
+      "enum": ["application/json", "text/html", "text/plain"]
+    },
+    "notes": {"type": "string", "maxLength": 240}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"signed_in": {"const": true}}},
+      "then": {
+        "properties": {
+          "collection_method": {"const": "browser"},
+          "authorization_basis": {"enum": ["owned_account", "client_approved"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"collection_method": {"const": "search_api"}}},
+      "then": {
+        "required": ["storage_authorization_basis"],
+        "properties": {
+          "engine": {"const": "brave"},
+          "signed_in": {"const": false}
+        }
+      },
+      "else": {"not": {"required": ["storage_authorization_basis"]}}
+    }
+  ]
+}

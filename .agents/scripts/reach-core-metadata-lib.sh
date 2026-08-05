@@ -96,6 +96,12 @@ cookie_file_for_target() {
 	return 0
 }
 
+egress_file_for_profile() {
+	local profile_name="$1"
+	printf '%s/%s.json' "$(reach_egress_dir)" "$(safe_key "$profile_name")"
+	return 0
+}
+
 metadata_is_unexpired() {
 	local file_path="$1"
 	local expires_at=""

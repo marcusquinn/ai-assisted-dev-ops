@@ -6,8 +6,8 @@
 Use this registry when an agent needs to choose the lowest-agency way to reach,
 capture, stage, or mine web content. Route and doctor commands are advisory:
 they report available local primitives and emit a route decision without
-contacting arbitrary targets. Profile and cookie broker commands mutate only
-private reach metadata under the aidevops agent workspace.
+contacting arbitrary targets. Profile, cookie, and egress broker commands mutate
+only private reach metadata under the aidevops agent workspace.
 
 ## Capability Registry
 
@@ -120,8 +120,13 @@ Private state is stored under:
 
 ```text
 ~/.aidevops/.agent-workspace/reach/
-├── leases/           # profile lease metadata, mode 600 JSON files
-└── cookie-sessions/  # cookie source metadata, mode 600 JSON files
+├── .observation-id-key # private keyed-ID material, mode 600
+├── leases/             # profile lease metadata, mode 600 JSON files
+├── cookie-sessions/    # cookie source metadata, mode 600 JSON files
+├── egress-profiles/    # location/egress metadata, mode 600 JSON files
+└── observations/
+    ├── evidence/       # immutable SHA-256-addressed evidence, mode 600
+    └── records/        # private search-observation records, mode 600 JSON
 ```
 
 Profile lease files contain these fields: `schema_version`, `target_key`,
@@ -141,6 +146,95 @@ Safe logging rules:
   state paths.
 - Cookie source paths may exist only inside private metadata files in the reach
   workspace; issue, PR, and transcript output uses the safe label/hash instead.
+
+## Location and Egress Profiles
+
+`reach-helper.sh egress register|status|clear --format json` defines private,
+provider-neutral location profiles without contacting a target or activating a
+VPN/proxy. A registration binds a supported browser class, egress class,
+location/locale, usage scope, session mode, and optional aidevops secret name.
+It never accepts a raw proxy URL as `--credential-ref` and never prints the
+secret-reference name.
+
+```bash
+aidevops secret set REACH_PROXY_US_EAST
+reach-helper.sh egress register \
+  --name account-us-east \
+  --browser brave \
+  --class residential \
+  --scope account \
+  --session-mode stable \
+  --country US \
+  --region NY \
+  --city "New York" \
+  --timezone America/New_York \
+  --locale en-US \
+  --credential-ref REACH_PROXY_US_EAST \
+  --format json
+```
+
+Supported egress classes are `direct`, `vpn`, `socks5`, `residential`, `isp`,
+and `mobile`. Supported browser classes are `brave`, `chromium`, `edge`,
+`chrome`, `firefox`, and `mullvad`; Brave is the default. Proxy-backed classes
+require a credential reference. Direct profiles reject one. VPN profiles may
+omit one when the tunnel is managed outside Reach.
+
+Use `--scope account` only with `--session-mode stable`; the broker rejects
+rotating account profiles. Public observations may declare rotating egress, but
+only to sample an authorized location pool—not to evade blocks, access controls,
+robots, terms, or rate limits. Region and city are stored privately but status
+output exposes only whether they are configured. Runtime adapters must resolve
+credential references through approved secret storage and must verify actual
+egress separately before claiming a location.
+
+## Search-result Observations
+
+`reach-helper.sh observation record --input <private-json> --format json`
+validates and privately records evidence captured elsewhere. The command does
+not launch a browser, call a search API, activate an egress profile, or contact a
+target. Input follows
+`.agents/schemas/reach-search-observation-v1.schema.json`; both the mode-0600
+input and referenced mode-0600 evidence file must already exist.
+
+```json
+{
+  "schema_version": 1,
+  "evidence_class": "search_result_observation",
+  "engine": "brave",
+  "collection_method": "browser",
+  "query": "private query",
+  "observed_at": "2026-08-05T12:00:00Z",
+  "egress_profile": "public-us-east",
+  "device_class": "desktop",
+  "signed_in": false,
+  "authorization_basis": "public_data",
+  "result_surface": "web",
+  "evidence_path": "private-result.html",
+  "evidence_media_type": "text/html"
+}
+```
+
+The recorder accepts Brave, Google, and Bing browser observations. `search_api`
+currently supports Brave only and requires `storage_authorization_basis` set to
+`personal_use`, `provider_terms`, or `provider_permission`. This field records
+the operator's storage assertion; Reach does not independently verify provider
+terms or permissions. Browser observations reject the API-only field. Evidence
+is limited to 25 MiB and `application/json`, `text/html`, or `text/plain`; JSON
+containing common credential-shaped fields fails closed.
+
+Signed-in observations require `owned_account` or `client_approved` authority,
+browser collection, and a stable account-scoped egress profile. Output includes
+an opaque, workspace-keyed observation ID, evidence digest, engine, country, and
+safe environment classes, but never the query, source path, exact city/region,
+secret reference, keyed-ID material, or copied evidence path. Egress remains
+`configured_unverified` until a future runtime adapter independently verifies
+the actual connection.
+
+Search-result observations are contemporaneous evidence, not reconstructed
+history. They remain separate from Google/Microsoft account exports and from
+LLM-derived answers; the recorder rejects alternate evidence classes. Replay is
+idempotent, and promotion into `_knowledge` requires the normal reviewed staging
+path rather than treating the Reach record as authoritative account history.
 
 ## Health Doctors
 
@@ -182,6 +276,12 @@ authorization for that scope.
 - Do not contact arbitrary targets during `doctor` or `capabilities` checks.
 - Do not print credentials, cookie values, proxy auth, local private paths, or
   raw private target strings in route output.
+- Do not pass raw proxy URLs to Reach egress commands. Store the complete value
+  with `aidevops secret set NAME` and register only `--credential-ref NAME`.
+- Keep authenticated account sessions on a stable, location-consistent egress
+  profile. Rotation is limited to authorized public observations.
+- Keep account exports, search-result observations, and LLM-derived answers in
+  separate evidence classes; none may masquerade as another.
 - Do not use proxy, VPN, fingerprint, profile, or cookie changes to bypass
   authentication, authorization, robots, rate-limit, or terms boundaries.
 - Treat proxy, inbox, knowledge, performance, and feedback mutation as follow-up

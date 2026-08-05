@@ -5,7 +5,7 @@
 #
 # Thin orchestrator: cohesive implementation groups live in:
 #   - reach-core-lib.sh     (shared JSON/path/hash/capability helpers)
-#   - reach-broker-lib.sh   (capabilities, doctor, profile, cookie, failure classification)
+#   - reach-broker-lib.sh   (capabilities, session/egress brokers, observations, failure classification)
 #   - reach-route-lib.sh    (minimum-agency route decisions)
 #   - reach-capture-lib.sh  (capture workflow and performance telemetry)
 #   - reach-feedback-lib.sh (feedback mining and issue-body reporting)
@@ -52,6 +52,8 @@ Commands:
   fingerprint doctor --format json
   profile lease|release|status [options] --format json
   cookie status|register|clear [options] --format json
+  egress register|status|clear [options] --format json
+  observation record --input <private-json> --format json
   classify-failure [--http-status <code>] [--has-login-wall true|false] [--has-captcha true|false] [--timeout true|false] [--selector-drift true|false] [--content-empty true|false] [--bot-block true|false] --format json
   route --objective <text> [--auth none|cookie|profile|manual] [--scope public|private] --format json
   watch --once --dry-run --format json
@@ -60,9 +62,10 @@ Commands:
   feedback issue [--dry-run] [--window 7d] [--format markdown|json]
   help
 
-The helper does not contact arbitrary targets. Profile/cookie broker commands
-mutate only private reach metadata under the aidevops agent workspace and never
-print cookie values, proxy credentials, private paths, or raw private targets.
+The helper does not contact arbitrary targets during registry, doctor, route,
+profile, cookie, egress, or observation commands. Broker commands mutate only
+private Reach metadata/evidence and never print queries, cookie values, proxy
+credentials, credential-reference names, private paths, or raw targets.
 EOF
 	return 0
 }
@@ -120,6 +123,14 @@ main() {
 			;;
 		cookie)
 			handle_cookie "$@"
+			return $?
+			;;
+		egress)
+			handle_egress "$@"
+			return $?
+			;;
+		observation)
+			handle_observation "$@"
 			return $?
 			;;
 		classify-failure)

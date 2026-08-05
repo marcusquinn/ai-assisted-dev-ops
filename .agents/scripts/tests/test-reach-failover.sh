@@ -78,10 +78,16 @@ assert_not_contains "$network_output" "$ROOT_DIR" "network doctor omits private 
 isolated_network_doctor() {
 	local temp_dir=""
 	local temp_bin=""
-	temp_dir="$(mktemp -d)"
+	local test_temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local reach_lib=""
+	mkdir -p "$test_temp_root"
+	temp_dir="$(mktemp -d "${test_temp_root}/reach-failover-test.XXXXXX")"
 	temp_bin="${temp_dir}/bin"
 	mkdir -p "$temp_bin"
 	cp "$HELPER" "${temp_dir}/reach-helper.sh"
+	for reach_lib in "${SCRIPT_DIR}/../reach-"*-lib.sh; do
+		cp "$reach_lib" "$temp_dir/"
+	done
 	printf '#!/usr/bin/env bash\nexit 0\n' >"${temp_dir}/anti-detect-helper.sh"
 	chmod +x "${temp_dir}/anti-detect-helper.sh"
 	ln -s /usr/bin/dirname "${temp_bin}/dirname"
