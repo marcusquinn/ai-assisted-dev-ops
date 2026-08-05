@@ -96,7 +96,7 @@ jobs:
           STATE_DIR: ${{ runner.temp }}/aidevops-coordinator
         run: |
           bash __aidevops/.agents/scripts/forge-coordinator-state-helper.sh restore "$STATE_DIR" "${{ github.repository }}" "${{ github.repository_id }}"
-          if [[ -f "$STATE_DIR/.restore-deferred-rate-limit" ]]; then
+          if [[ -f "$STATE_DIR/.restore-deferred" ]]; then
             printf 'available=false\n' >> "$GITHUB_OUTPUT"
           else
             printf 'available=true\n' >> "$GITHUB_OUTPUT"
@@ -141,13 +141,14 @@ jobs:
           fi
 
       - name: Persist durable coordinator state
+        id: coordinator-persist
         if: always() && steps.coordinator-restore.outputs.available == 'true'
         env:
           AIDEVOPS_TASK_COORDINATOR_DB: ${{ runner.temp }}/aidevops-coordinator/tasks.db
         run: node __aidevops/.agents/scripts/task-coordinator.mjs checkpoint
 
       - name: Upload durable coordinator state
-        if: always() && steps.coordinator-restore.outputs.available == 'true'
+        if: always() && steps.coordinator-persist.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: forge-coordinator-${{ github.repository_id }}
