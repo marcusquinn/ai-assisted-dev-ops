@@ -252,7 +252,7 @@ merges advanced `main` after the source received terminal `release:not-requested
 evidence and before the user explicitly authorized publication. The exact branch
 base is `c945b97c7ac10016ad08da035b71d12bd0a391f9`.
 
-The pending corrective aggregation re-reviews authorized PR #29538 at
+Aggregation PR #29549 re-reviews authorized PR #29538 at
 `d83c027410983cf83d5f9afb5d85975b69f6e3ec` and aggregation PR #29545 at
 `9d82088812adfb1793b18746e484216b676a5887` because the latter's required
 provenance lines were separated into distinct Git trailer paragraphs. Subsequent
