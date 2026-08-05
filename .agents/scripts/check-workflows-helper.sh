@@ -154,12 +154,30 @@ _resolve_canonical_template() {
 
 # _resolve_canonical_reusable <reusable_filename>
 # Emits the aidevops source reusable workflow path for content-update checks.
+# Installed agents trees intentionally omit .github/workflows, so fall back to
+# the registered aidevops source checkout from repos.json.
 _resolve_canonical_reusable() {
 	local _reusable_filename="$1"
 	local _repo_local="$REPO_ROOT/.github/workflows/${_reusable_filename}"
 	if [[ -n "$REPO_ROOT" && -f "$_repo_local" ]]; then
 		printf '%s\n' "$_repo_local"
 		return 0
+	fi
+
+	local _source_root=""
+	if [[ -f "$REPOS_JSON" ]]; then
+		_source_root=$(jq -r --arg s "$_DEFAULT_WORKFLOW_REUSABLE_REPO" '
+			[.initialized_repos[]? | select(.slug == $s) | .path // empty]
+			| first // empty
+		' "$REPOS_JSON" 2>/dev/null) || _source_root=""
+	fi
+	if [[ -n "$_source_root" ]]; then
+		_source_root=$(_expand_home_path "$_source_root")
+		_repo_local="$_source_root/.github/workflows/${_reusable_filename}"
+		if [[ -f "$_repo_local" ]]; then
+			printf '%s\n' "$_repo_local"
+			return 0
+		fi
 	fi
 	return 1
 }
