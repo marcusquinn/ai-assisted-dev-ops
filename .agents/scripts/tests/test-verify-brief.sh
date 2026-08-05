@@ -558,6 +558,60 @@ BRIEF
 done
 
 # =============================================================================
+# Class H: verify execution preserves auth and classifies infrastructure
+# =============================================================================
+
+printf '\n%sClass H: verify execution infrastructure classification%s\n' "$TEST_BLUE" "$TEST_NC"
+
+cat >"$TMP/brief-gh-token.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: '[[ "$GH_TOKEN" == "workflow-token" ]]'
+```
+BRIEF
+
+output=$(GH_TOKEN=workflow-token bash "$VB_HELPER" verify "$TMP/brief-gh-token.md" 2>&1)
+rc=$?
+if [[ $rc -eq 0 && "$output" == *"PASS  [1]"* ]]; then
+	pass "H1 workflow GH_TOKEN is inherited by verify blocks"
+else
+	fail "H1 verify block auth context" "expected rc=0 and PASS, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-gh-auth-failure.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "gh CLI cannot authenticate an API request. Run: gh auth login\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-gh-auth-failure.md" 2>&1)
+rc=$?
+if [[ $rc -eq 3 && "$output" == *"INFRA [1]"* && "$output" == *"Infrastructure: 1"* ]]; then
+	pass "H2 missing gh auth is a typed infrastructure failure"
+else
+	fail "H2 gh auth infrastructure classification" "expected rc=3 and INFRA summary, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-criteria-failure.md" <<'BRIEF'
+```yaml
+verify:
+  method: bash
+  run: 'printf "acceptance criterion mismatch\n" >&2; exit 1'
+```
+BRIEF
+
+output=$(bash "$VB_HELPER" verify "$TMP/brief-criteria-failure.md" 2>&1)
+rc=$?
+if [[ $rc -eq 1 && "$output" == *"FAIL  [1]"* && "$output" == *"Infrastructure: 0"* ]]; then
+	pass "H3 acceptance failures remain distinct from infrastructure failures"
+else
+	fail "H3 acceptance failure classification" "expected rc=1 and FAIL summary, got rc=$rc; output: $output"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 

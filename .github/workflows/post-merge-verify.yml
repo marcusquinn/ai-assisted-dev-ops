@@ -93,6 +93,9 @@ jobs:
         id: verify
         env:
           BRIEF_PATH: ${{ steps.brief.outputs.path }}
+          # Verify blocks may invoke gh-backed helpers, so propagate the
+          # permission-scoped workflow token into their shell context.
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set +e  # Capture exit code without failing the step
@@ -118,7 +121,7 @@ jobs:
       - name: Post PR comment with results
         if: steps.verify.outputs.exit_code != '' && steps.brief.outputs.exists == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           TASK_ID: ${{ steps.extract.outputs.task_id }}
           EXIT_CODE: ${{ steps.verify.outputs.exit_code }}
@@ -127,6 +130,8 @@ jobs:
         run: |
           if [[ "$EXIT_CODE" == "0" ]]; then
             STATUS="✅ All verify blocks passed"
+          elif [[ "$EXIT_CODE" == "3" ]]; then
+            STATUS="⚠️ Infrastructure failure prevented verification"
           else
             STATUS="❌ One or more verify blocks failed"
           fi
@@ -149,15 +154,21 @@ jobs:
           # Dedent the heredoc content
           COMMENT_BODY=$(echo "$COMMENT_BODY" | sed 's/^          //')
 
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$COMMENT_BODY"
+          REPORT_FILE="$RUNNER_TEMP/post-merge-verify-report.md"
+          printf '%s\n' "$COMMENT_BODY" > "$REPORT_FILE"
+          printf '%s\n' "$COMMENT_BODY" >> "$GITHUB_STEP_SUMMARY"
+
+          chmod +x .agents/scripts/post-merge-verify-report-helper.sh
+          .agents/scripts/post-merge-verify-report-helper.sh \
+            publish-comment "$REPO" "$PR_NUMBER" "$REPORT_FILE"
 
       # ---------------------------------------------------------------
       # Step 6: Create follow-up issue on failure
       # ---------------------------------------------------------------
       - name: Create follow-up issue on failure
-        if: steps.verify.outputs.exit_code != '0' && steps.verify.outputs.exit_code != ''
+        if: steps.verify.outputs.exit_code == '1'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TASK_ID: ${{ steps.extract.outputs.task_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           VERIFY_OUTPUT: ${{ steps.verify.outputs.output }}
@@ -192,3 +203,24 @@ jobs:
             --title "$TITLE" \
             --body "$BODY" \
             --label "quality-debt"
+
+      # Comment publication is deliberately fail-soft. This final step exposes
+      # the original typed verification outcome as the workflow conclusion.
+      - name: Finalize verification result
+        if: always() && steps.verify.outputs.exit_code != ''
+        env:
+          EXIT_CODE: ${{ steps.verify.outputs.exit_code }}
+        run: |
+          case "$EXIT_CODE" in
+            0)
+              exit 0
+              ;;
+            1)
+              echo "::error::Brief acceptance-criteria verification failed."
+              exit 1
+              ;;
+            *)
+              echo "::error::Brief verification infrastructure failed (exit code ${EXIT_CODE}); retry with an authenticated GitHub context."
+              exit 1
+              ;;
+          esac
