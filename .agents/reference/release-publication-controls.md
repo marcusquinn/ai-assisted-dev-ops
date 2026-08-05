@@ -265,6 +265,12 @@ Concurrent signed `v3.32.224` publication and protected release PR #29550
 advanced `main` after the source merged. The exact branch base is
 `609c76d7411d8a3e64ef32cd132fca35898e6c1c`.
 
+The Buzz Desktop 0.5.5 ACP compatibility aggregation reviews authorized source
+PR #29557 at `8f3b23eb37e632eb29ccdbf63d858e489a453580`. The source already recorded
+terminal `release:not-requested` evidence before the user explicitly authorized
+publication. The exact branch base is
+`8f3b23eb37e632eb29ccdbf63d858e489a453580`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
