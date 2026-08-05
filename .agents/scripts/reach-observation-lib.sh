@@ -30,7 +30,7 @@ handle_observation_record() {
 		case "$arg" in
 			--input) shift; input_file="${1:-}" ;;
 			--format) shift; format="${1:-}" ;;
-			*) log_error "Unknown observation record option: $arg"; return 1 ;;
+			*) log_error "Unknown observation record option"; return 1 ;;
 		esac
 		shift || true
 	done

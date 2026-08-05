@@ -80,6 +80,24 @@ assert_command_fails() {
 	return 0
 }
 
+assert_command_fails_without() {
+	local description="$1"
+	local forbidden="$2"
+	shift 2
+	local output=""
+	if output="$(run_helper "$@" 2>&1)"; then
+		FAIL=$((FAIL + 1))
+		printf '  FAIL: %s (command succeeded)\n' "$description"
+	elif grep -Fq -- "$forbidden" <<<"$output"; then
+		FAIL=$((FAIL + 1))
+		printf '  FAIL: %s (forbidden value was printed)\n' "$description"
+	else
+		PASS=$((PASS + 1))
+		printf '  PASS: %s\n' "$description"
+	fi
+	return 0
+}
+
 assert_private_mode() {
 	local file_path="$1"
 	local description="$2"
@@ -201,6 +219,9 @@ assert_contains "$record_output" '"egress_claim_status": "configured_unverified"
 assert_contains "$record_output" '"query_printed": false' "output declares query redaction"
 assert_not_contains "$record_output" "private sample query" "query is omitted from output"
 assert_not_contains "$record_output" "$TEST_WORKSPACE" "private paths are omitted from output"
+private_path_canary="${TEST_WORKSPACE}/transcript-private-input.json"
+assert_command_fails_without "unknown observation options redact attached paths" \
+	"$private_path_canary" observation record "--input=$private_path_canary"
 
 observation_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["observation_id"])' <<<"$record_output")"
 record_file="${TEST_WORKSPACE}/observations/records/${observation_id}.json"

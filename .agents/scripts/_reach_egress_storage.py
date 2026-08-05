@@ -44,6 +44,8 @@ def _open_private_directory(path: Path) -> int:
             os.close(descriptor)
         raise
     except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
         raise EgressStorageError("egress storage is unavailable") from error
 
 

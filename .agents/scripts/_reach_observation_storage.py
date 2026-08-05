@@ -137,6 +137,7 @@ def observation_id_key(workspace_fd: int) -> bytes:
         )
         if len(key) != OBSERVATION_ID_KEY_BYTES:
             raise ObservationStorageError("observation ID key size is invalid")
+        os.fsync(workspace_fd)
         return key
     generated = secrets.token_bytes(OBSERVATION_ID_KEY_BYTES)
     descriptor, temporary = _create_private_temporary(workspace_fd, "observation-key")
@@ -186,6 +187,7 @@ def copy_evidence(
         stored = read_private_file(destination, "stored evidence", maximum, directory_fd)
         if hashlib.sha256(stored).hexdigest() != expected_hash:
             raise ObservationStorageError("stored evidence hash conflicts")
+        os.fsync(directory_fd)
         return
     file_descriptor, temporary = _create_private_temporary(directory_fd, "evidence")
     try:
@@ -230,6 +232,7 @@ def write_record(
         candidate_without_time.pop("recorded_at", None)
         if existing_without_time != candidate_without_time:
             raise ObservationStorageError("stored observation identity conflicts")
+        os.fsync(directory_fd)
         return "existing"
     file_descriptor, temporary = _create_private_temporary(
         directory_fd, "observation"

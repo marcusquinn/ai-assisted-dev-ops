@@ -262,7 +262,7 @@ parse_egress_register_args() {
 			--notes) shift; EGRESS_REGISTER_NOTES="${1:-}" ;;
 			--force) EGRESS_REGISTER_FORCE="$_REACH_EGRESS_BOOL_TRUE" ;;
 			--format) shift; EGRESS_REGISTER_FORMAT="${1:-}" ;;
-			*) log_error "Unknown egress register option: $arg"; return 1 ;;
+			*) log_error "Unknown egress register option"; return 1 ;;
 		esac
 		shift || true
 	done
@@ -398,7 +398,7 @@ handle_egress_status() {
 		case "$arg" in
 			--name) shift; profile_name="${1:-}" ;;
 			--format) shift; format="${1:-}" ;;
-			*) log_error "Unknown egress status option: $arg"; return 1 ;;
+			*) log_error "Unknown egress status option"; return 1 ;;
 		esac
 		shift || true
 	done
@@ -418,7 +418,7 @@ handle_egress_clear() {
 		case "$arg" in
 			--name) shift; profile_name="${1:-}" ;;
 			--format) shift; format="${1:-}" ;;
-			*) log_error "Unknown egress clear option: $arg"; return 1 ;;
+			*) log_error "Unknown egress clear option"; return 1 ;;
 		esac
 		shift || true
 	done

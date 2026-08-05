@@ -80,6 +80,24 @@ assert_command_fails() {
 	return 0
 }
 
+assert_command_fails_without() {
+	local description="$1"
+	local forbidden="$2"
+	shift 2
+	local output=""
+	if output="$(run_helper "$@" 2>&1)"; then
+		FAIL=$((FAIL + 1))
+		printf '  FAIL: %s (command succeeded)\n' "$description"
+	elif grep -Fq -- "$forbidden" <<<"$output"; then
+		FAIL=$((FAIL + 1))
+		printf '  FAIL: %s (forbidden value was printed)\n' "$description"
+	else
+		PASS=$((PASS + 1))
+		printf '  PASS: %s\n' "$description"
+	fi
+	return 0
+}
+
 assert_private_mode() {
 	local file_path="$1"
 	local description="$2"
@@ -165,6 +183,9 @@ assert_command_fails "direct egress rejects a credential reference" egress regis
 	--name direct-ref --class direct --country US --timezone America/New_York --locale en-US --credential-ref REACH_PROXY_TEST --format json
 assert_command_fails "direct egress cannot declare rotation" egress register \
 	--name direct-rotating --class direct --session-mode rotating --country US --timezone America/New_York --locale en-US --format json
+assert_command_fails_without "unknown egress options redact attached values" \
+	"REACH_TRANSCRIPT_CANARY" egress register \
+	"--credential-ref=REACH_TRANSCRIPT_CANARY"
 
 rotating_output="$(run_helper egress register \
 	--name public-mobile \
