@@ -17,6 +17,8 @@ BUZZ_STATE_FILE="${AIDEVOPS_BUZZ_STATE_FILE:-${BUZZ_STATE_DIR}/buzz-opencode-acp
 BUZZ_BACKUP_DIR="${AIDEVOPS_BUZZ_BACKUP_DIR:-${HOME}/.aidevops/buzz-backups}"
 BUZZ_LOCK_DIR="${AIDEVOPS_BUZZ_LOCK_DIR:-${HOME}/.aidevops/locks/buzz-opencode-acp-fix.lock}"
 BUZZ_BACKUP_RETAIN="${AIDEVOPS_BUZZ_BACKUP_RETAIN:-3}"
+BUZZ_ACP_ARG="acp"
+BUZZ_PLATFORM_DARWIN="Darwin"
 BUZZ_LOCK_HELD=0
 BUZZ_QUIET=false
 BUZZ_LAST_BACKUP=""
@@ -68,7 +70,7 @@ _buzz_is_running() {
 	true | 1) return 0 ;;
 	false | 0) return 1 ;;
 	esac
-	pgrep -x Buzz >/dev/null 2>&1
+	pgrep -x Buzz >/dev/null 2>&1 || pgrep -x buzz-desktop >/dev/null 2>&1
 	return $?
 }
 
@@ -160,11 +162,11 @@ _buzz_eligible_count() {
 _buzz_fixed_count() {
 	local filter=""
 	filter=$(_buzz_target_filter)
-	jq "
+	jq --arg acp "$BUZZ_ACP_ARG" "
 		[
 			.[]
 			| select(${filter})
-			| select((.agent_args // []) == [\"acp\"])
+			| select((.agent_args // []) == [\$acp])
 		] | length
 	" "$BUZZ_STORE_PATH"
 	return $?
@@ -248,10 +250,10 @@ _buzz_write_applied_store() {
 	local destination="$1"
 	local filter=""
 	filter=$(_buzz_target_filter)
-	jq "
+	jq --arg acp "$BUZZ_ACP_ARG" "
 		map(
 			if (${filter}) and (((.agent_args // []) | length) == 0)
-			then .agent_args = [\"acp\"]
+			then .agent_args = [\$acp]
 			else .
 			end
 		)
@@ -310,7 +312,7 @@ _buzz_apply_locked() {
 }
 
 cmd_apply() {
-	[[ "$(_buzz_platform)" == "Darwin" ]] || {
+	[[ "$(_buzz_platform)" == "$BUZZ_PLATFORM_DARWIN" ]] || {
 		_buzz_info "Buzz Desktop compatibility is macOS-only; no changes needed"
 		return 0
 	}
@@ -351,13 +353,76 @@ _buzz_validate_state() {
 	return 0
 }
 
+_buzz_managed_drift_count() {
+	local filter=""
+	filter=$(_buzz_target_filter)
+	jq --slurpfile state "$BUZZ_STATE_FILE" "
+		[
+			.[] as \$record
+			| select(\$record | ${filter})
+			| select(((\$record.agent_args // []) | length) == 0)
+			| select(([\$state[0].records[] | select(.pubkey == \$record.pubkey)] | length) > 0)
+		] | length
+	" "$BUZZ_STORE_PATH"
+	return $?
+}
+
+_buzz_write_reconciled_store() {
+	local destination="$1"
+	local filter=""
+	filter=$(_buzz_target_filter)
+	jq --arg acp "$BUZZ_ACP_ARG" --slurpfile state "$BUZZ_STATE_FILE" "
+		map(
+			. as \$record
+			| ([\$state[0].records[] | select(.pubkey == \$record.pubkey)] | first) as \$owned
+			| if (\$owned != null) and (\$record | ${filter}) and
+				(((\$record.agent_args // []) | length) == 0)
+			  then .agent_args = [\$acp]
+			  else .
+			  end
+		)
+	" "$BUZZ_STORE_PATH" >"$destination"
+	chmod 600 "$destination"
+	return 0
+}
+
+_buzz_reconcile_managed_locked() {
+	local drifted=""
+	drifted=$(_buzz_managed_drift_count) || return 1
+	if [[ "$drifted" -eq 0 ]]; then
+		_buzz_info "Buzz OpenCode ACP compatibility fix remains managed"
+		return 0
+	fi
+	if _buzz_is_running; then
+		print_warning "Buzz Desktop is running; close it and run: aidevops buzz reconcile"
+		return 2
+	fi
+
+	_buzz_create_backup || return 1
+	local store_tmp=""
+	store_tmp=$(mktemp "${BUZZ_STORE_PATH}.aidevops.XXXXXX")
+	if ! _buzz_write_reconciled_store "$store_tmp"; then
+		rm -f "$store_tmp"
+		return 1
+	fi
+	if _buzz_is_running; then
+		rm -f "$store_tmp"
+		print_warning "Buzz Desktop started during reconciliation; no changes were applied"
+		return 2
+	fi
+	mv "$store_tmp" "$BUZZ_STORE_PATH"
+	_buzz_prune_backups
+	_buzz_info "Reapplied OpenCode ACP compatibility to ${drifted} managed Buzz agent record(s)"
+	return 0
+}
+
 _buzz_write_rollback_store() {
 	local destination="$1"
-	jq --slurpfile state "$BUZZ_STATE_FILE" '
+	jq --arg acp "$BUZZ_ACP_ARG" --slurpfile state "$BUZZ_STATE_FILE" '
 		map(
 			. as $record
 			| ([$state[0].records[] | select(.pubkey == $record.pubkey)] | first) as $owned
-			| if ($owned != null and ((.agent_args // []) == ["acp"]))
+			| if ($owned != null and ((.agent_args // []) == [$acp]))
 			  then .agent_args = $owned.original_args
 			  else .
 			  end
@@ -401,7 +466,7 @@ cmd_rollback() {
 }
 
 cmd_status() {
-	if [[ "$(_buzz_platform)" != "Darwin" ]]; then
+	if [[ "$(_buzz_platform)" != "$BUZZ_PLATFORM_DARWIN" ]]; then
 		printf 'Buzz Desktop compatibility: not applicable\n'
 		return 0
 	fi
@@ -434,12 +499,30 @@ cmd_status() {
 }
 
 cmd_reconcile() {
-	if [[ -f "$BUZZ_STATE_FILE" ]]; then
-		_buzz_info "Buzz OpenCode ACP compatibility fix remains managed; use status or rollback for details"
+	[[ -f "$BUZZ_STATE_FILE" ]] || {
+		cmd_apply
+		return $?
+	}
+	[[ "$(_buzz_platform)" == "$BUZZ_PLATFORM_DARWIN" ]] || {
+		_buzz_info "Buzz Desktop compatibility is macOS-only; no changes needed"
+		return 0
+	}
+	local version=""
+	version=$(_buzz_app_version) || {
+		_buzz_info "Buzz Desktop is not installed; no changes needed"
+		return 0
+	}
+	if ! _buzz_is_affected_version "$version"; then
+		_buzz_info "Buzz Desktop ${version} is not in the verified affected-version registry"
 		return 0
 	fi
-	cmd_apply
-	return $?
+	_buzz_validate_store || return 1
+	_buzz_validate_state || return 1
+	_buzz_acquire_lock || return 1
+	_buzz_reconcile_managed_locked
+	local rc=$?
+	_buzz_release_lock
+	return "$rc"
 }
 
 show_help() {

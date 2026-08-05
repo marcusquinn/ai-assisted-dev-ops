@@ -214,6 +214,46 @@ test_reconcile_is_idempotent() {
 	return 0
 }
 
+test_reconcile_repairs_managed_drift() {
+	reset_fixture
+	run_helper apply --quiet
+	local edited="${TEST_STORE}.edited"
+	jq 'map(
+		if .pubkey == "pub-empty-path" then .agent_args = []
+		elif .pubkey == "pub-missing-args" then .agent_args = ["user-choice"]
+		else .
+		end
+	)' "$TEST_STORE" >"$edited"
+	chmod 600 "$edited"
+	mv "$edited" "$TEST_STORE"
+
+	run_helper reconcile --quiet
+	assert_eq "reconcile repairs an aidevops-managed empty argument" \
+		"$(jq -c '.[] | select(.pubkey == "pub-empty-path") | .agent_args' "$TEST_STORE")" '["acp"]'
+	assert_eq "reconcile preserves a later user argument edit" \
+		"$(jq -c '.[] | select(.pubkey == "pub-missing-args") | .agent_args' "$TEST_STORE")" \
+		'["user-choice"]'
+	return 0
+}
+
+test_reconcile_defers_managed_drift_while_running() {
+	reset_fixture
+	run_helper apply --quiet
+	local edited="${TEST_STORE}.edited"
+	jq 'map(if .pubkey == "pub-empty-path" then .agent_args = [] else . end)' \
+		"$TEST_STORE" >"$edited"
+	chmod 600 "$edited"
+	mv "$edited" "$TEST_STORE"
+	local before=""
+	local rc=0
+	before=$(file_hash "$TEST_STORE")
+	TEST_RUNNING=true run_helper reconcile >/dev/null 2>&1 || rc=$?
+	assert_eq "running Buzz defers managed drift reconciliation" "$rc" "2"
+	assert_eq "deferred drift reconciliation leaves store unchanged" \
+		"$(file_hash "$TEST_STORE")" "$before"
+	return 0
+}
+
 test_rollback_restores_owned_fields() {
 	reset_fixture
 	run_helper apply --quiet
@@ -330,6 +370,8 @@ main() {
 	test_status_reports_eligible_records
 	test_apply_is_bounded_and_private
 	test_reconcile_is_idempotent
+	test_reconcile_repairs_managed_drift
+	test_reconcile_defers_managed_drift_while_running
 	test_rollback_restores_owned_fields
 	test_rollback_preserves_later_user_edit
 	test_running_app_refuses_mutation
