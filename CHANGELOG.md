@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.226] - 2026-08-05
+
+### Changed
+
+- Documentation: add Buzz 0.5.5 publication checkpoint
+- Documentation: record Buzz 0.5.5 release aggregation
+
+### Fixed
+
+- support Buzz 0.5.5 ACP reconciliation
+
 ## [3.32.225] - 2026-08-05
 
 ### Changed

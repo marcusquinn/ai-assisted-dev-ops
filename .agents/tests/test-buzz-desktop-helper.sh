@@ -296,11 +296,15 @@ test_running_app_refuses_mutation() {
 	return 0
 }
 
-test_unknown_version_and_platform_are_noops() {
+test_verified_and_unknown_versions_are_bounded() {
+	reset_fixture
+	TEST_VERSION=0.5.5 run_helper reconcile --quiet
+	assert_eq "verified Buzz 0.5.5 release is remediated" \
+		"$(jq '[.[] | select(.agent_args == ["acp"])] | length' "$TEST_STORE")" "2"
 	reset_fixture
 	local before=""
 	before=$(file_hash "$TEST_STORE")
-	TEST_VERSION=0.5.5 run_helper reconcile --quiet
+	TEST_VERSION=0.5.6 run_helper reconcile --quiet
 	assert_eq "unknown future Buzz version is not guessed affected" "$(file_hash "$TEST_STORE")" "$before"
 	TEST_PLATFORM=Linux run_helper reconcile --quiet
 	assert_eq "non-macOS platform is unchanged" "$(file_hash "$TEST_STORE")" "$before"
@@ -375,7 +379,7 @@ main() {
 	test_rollback_restores_owned_fields
 	test_rollback_preserves_later_user_edit
 	test_running_app_refuses_mutation
-	test_unknown_version_and_platform_are_noops
+	test_verified_and_unknown_versions_are_bounded
 	test_symlink_store_fails_closed
 	test_malformed_record_fails_closed
 	test_cli_and_setup_wiring
