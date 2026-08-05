@@ -29,6 +29,14 @@ fi
 
 TESTS_RUN=0
 TESTS_FAILED=0
+TEST_ROOT="$(mktemp -d -t aidevops-gh-edit-safety-XXXXXX)" || exit 1
+export GH_AUDIT_LOG_FILE="${TEST_ROOT}/gh-audit.log"
+
+cleanup() {
+	rm -rf "$TEST_ROOT" 2>/dev/null || true
+	return 0
+}
+trap cleanup EXIT
 
 pass() {
 	local msg="$1"
@@ -69,12 +77,15 @@ gh() {
 }
 export -f gh
 
-# Stub audit-log-helper.sh — record calls but don't do anything
+# Keep audit records produced by integration calls inside the test sandbox.
 AUDIT_LOG_CALLS=()
 
 # Stub jq for config loading
 if ! command -v jq &>/dev/null; then
-	jq() { echo "{}"; return 0; }
+	jq() {
+		echo "{}"
+		return 0
+	}
 	export -f jq
 fi
 
