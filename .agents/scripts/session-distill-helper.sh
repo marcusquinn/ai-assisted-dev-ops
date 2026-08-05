@@ -13,7 +13,7 @@
 #   session-distill-helper.sh propose [file]    # Persist privacy-scanned proposals
 #   session-distill-helper.sh finalize          # Resume eligible proposal finalization
 #   session-distill-helper.sh provenance [...]  # Capture authoritative git provenance
-#   session-distill-helper.sh auto              # Checkpoint, then best-effort proposal pipeline
+#   session-distill-helper.sh auto              # Persist checkpoint, then print a compact receipt
 #
 # Integration:
 #   - Called by /session-review at end of sessions
@@ -71,6 +71,9 @@ readonly SAFE_SESSION_ID="${SESSION_ID//[^a-zA-Z0-9_.-]/_}"
 readonly SESSION_STATE_DIR="$SESSION_DIR/$SAFE_SESSION_ID"
 readonly PROPOSALS_FILE="$SESSION_STATE_DIR/observation-proposals.json"
 readonly PROVENANCE_FILE="$SESSION_STATE_DIR/git-provenance.json"
+readonly DISTILL_STATUS_NONE="none"
+readonly DISTILL_STATUS_NOT_RUN="not-run"
+readonly DISTILL_PROPOSAL_PENDING="pending_review"
 
 # shellcheck disable=SC2034  # Available for future use
 
@@ -450,7 +453,7 @@ propose_learnings() {
 			continue
 		fi
 		now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-		item=$(jq -n --arg key "$key" --arg source "$source_boundary" --arg type "$type" --arg content "$content" --arg tags "$tags" --arg risk "$risk" --arg now "$now" --argjson explicit "$explicit" '{idempotency_key:$key,source_boundary:$source,type:$type,content:$content,tags:$tags,explicit:$explicit,risk:$risk,state:"pending_review",created_at:$now,updated_at:$now}')
+		item=$(jq -n --arg key "$key" --arg source "$source_boundary" --arg type "$type" --arg content "$content" --arg tags "$tags" --arg risk "$risk" --arg now "$now" --arg pending "$DISTILL_PROPOSAL_PENDING" --argjson explicit "$explicit" '{idempotency_key:$key,source_boundary:$source,type:$type,content:$content,tags:$tags,explicit:$explicit,risk:$risk,state:$pending,created_at:$now,updated_at:$now}')
 		proposed=$(printf '%s' "$proposed" | jq -c --argjson item "$item" '. + [$item]')
 	done < <(jq -c '.[]' "$input_file")
 	local ledger
@@ -480,21 +483,102 @@ finalize_proposals() {
 		else
 			status=1
 		fi
-	done < <(jq -r '.items[] | select(.state == "pending_review" and .type == "USER_PREFERENCE" and .explicit == true and .risk == "low") | .idempotency_key' "$PROPOSALS_FILE")
+	done < <(jq -r --arg pending "$DISTILL_PROPOSAL_PENDING" '.items[] | select(.state == $pending and .type == "USER_PREFERENCE" and .explicit == true and .risk == "low") | .idempotency_key' "$PROPOSALS_FILE")
 	return "$status"
 }
 
 #######################################
 # Full auto pipeline
 #######################################
-auto_distill() {
-	log_info "Running resumable session finalization..."
-	# Continuity is independent: capture it even when learning extraction or storage fails.
-	emit_checkpoint
-	if ! analyze_session || ! extract_learnings || ! propose_learnings || ! finalize_proposals; then
-		log_warn "Learning finalization is incomplete; persisted proposals will resume on retry"
+_distill_active_task_count() {
+	local repository_root=""
+	local todo_file=""
+	local count=0
+	repository_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+	for todo_file in "${repository_root}/TODO.md" "$(pwd)/TODO.md"; do
+		[[ -f "$todo_file" ]] || continue
+		count=$(grep -Ec '^[[:space:]]*-[[:space:]]+\[[[:space:]]\][[:space:]]+' "$todo_file" 2>/dev/null || true)
+		break
+	done
+	printf '%s\n' "${count:-0}"
+	return 0
+}
+
+_distill_worktree_count() {
+	local count=0
+	count=$(git worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)
+	printf '%s\n' "${count:-0}"
+	return 0
+}
+
+_distill_proposal_count() {
+	local state="$1"
+	local count=0
+	if [[ -f "$PROPOSALS_FILE" ]]; then
+		count=$(jq --arg state "$state" '[.items[]? | select(.state == $state)] | length' "$PROPOSALS_FILE" 2>/dev/null || true)
 	fi
-	log_success "Session checkpoint complete; observation finalization is best effort"
+	printf '%s\n' "${count:-0}"
+	return 0
+}
+
+_distill_print_auto_receipt() {
+	local checkpoint_status="$1"
+	local proposal_status="$2"
+	local finalization_status="$3"
+	local blocker="$4"
+	local checkpoint_file="$SESSION_STATE_DIR/operational-state.md"
+	local active_tasks="" worktrees="" pending="" finalized="" resumability="unavailable"
+	active_tasks=$(_distill_active_task_count)
+	worktrees=$(_distill_worktree_count)
+	pending=$(_distill_proposal_count "$DISTILL_PROPOSAL_PENDING")
+	finalized=$(_distill_proposal_count "finalized")
+	if [[ -f "$checkpoint_file" || -f "$PROPOSALS_FILE" ]]; then
+		resumability="ready"
+	fi
+	cat <<EOF
+schema: aidevops.session-distill-receipt/v1
+checkpoint: $checkpoint_status
+operational_state: $checkpoint_file
+active_tasks: $active_tasks
+worktrees: $worktrees
+proposal_ledger: $PROPOSALS_FILE
+proposals_pending: $pending
+proposals_finalized: $finalized
+proposal_status: $proposal_status
+finalization_status: $finalization_status
+resumability: $resumability
+blocker: $blocker
+EOF
+	return 0
+}
+
+auto_distill() {
+	local checkpoint_status="saved"
+	local proposal_status="saved"
+	local finalization_status="complete"
+	local blocker="$DISTILL_STATUS_NONE"
+	# Continuity is independent: capture it even when learning extraction or storage fails.
+	if ! emit_checkpoint quiet >/dev/null 2>&1; then
+		checkpoint_status="failed"
+		blocker="checkpoint"
+	fi
+	if ! analyze_session >/dev/null 2>&1; then
+		proposal_status="$DISTILL_STATUS_NOT_RUN"
+		finalization_status="$DISTILL_STATUS_NOT_RUN"
+		[[ "$blocker" == "$DISTILL_STATUS_NONE" ]] && blocker="analysis" || blocker="${blocker},analysis"
+	elif ! extract_learnings >/dev/null 2>&1; then
+		proposal_status="$DISTILL_STATUS_NOT_RUN"
+		finalization_status="$DISTILL_STATUS_NOT_RUN"
+		[[ "$blocker" == "$DISTILL_STATUS_NONE" ]] && blocker="extraction" || blocker="${blocker},extraction"
+	elif ! propose_learnings >/dev/null 2>&1; then
+		proposal_status="failed"
+		finalization_status="$DISTILL_STATUS_NOT_RUN"
+		[[ "$blocker" == "$DISTILL_STATUS_NONE" ]] && blocker="proposal" || blocker="${blocker},proposal"
+	elif ! finalize_proposals >/dev/null 2>&1; then
+		finalization_status="incomplete"
+		[[ "$blocker" == "$DISTILL_STATUS_NONE" ]] && blocker="finalization" || blocker="${blocker},finalization"
+	fi
+	_distill_print_auto_receipt "$checkpoint_status" "$proposal_status" "$finalization_status" "$blocker"
 	return 0
 }
 
@@ -504,6 +588,14 @@ auto_distill() {
 # Complements learnings (what we learned) with state (where we are)
 #######################################
 emit_checkpoint() {
+	local presentation_mode="${1:-full}"
+	case "$presentation_mode" in
+	full | quiet) ;;
+	*)
+		log_error "Unknown checkpoint presentation mode: $presentation_mode"
+		return 1
+		;;
+	esac
 	init_session_dir
 
 	log_info "Capturing operational state..."
@@ -513,14 +605,19 @@ emit_checkpoint() {
 	if [[ -x "$checkpoint_helper" ]]; then
 		# Generate continuation prompt (captures git, supervisor, PR, TODO state)
 		local continuation_output
-		continuation_output="$(bash "$checkpoint_helper" continuation 2>/dev/null || echo "Checkpoint helper unavailable")"
+		if ! continuation_output=$(bash "$checkpoint_helper" continuation 2>/dev/null); then
+			log_error "Checkpoint helper failed"
+			return 1
+		fi
 
 		# Save to session dir for inclusion in distill output
 		local checkpoint_file="$SESSION_STATE_DIR/operational-state.md"
-		echo "$continuation_output" >"$checkpoint_file"
+		printf '%s\n' "$continuation_output" >"$checkpoint_file"
 
 		log_success "Operational state saved to $checkpoint_file"
-		echo "$continuation_output"
+		if [[ "$presentation_mode" == "full" ]]; then
+			printf '%s\n' "$continuation_output"
+		fi
 	else
 		log_warn "session-checkpoint-helper.sh not found at $checkpoint_helper"
 
@@ -537,6 +634,7 @@ emit_checkpoint() {
 **Open PRs**: $open_prs
 **Uncommitted**: $(git status --short 2>/dev/null || echo "unknown")
 FALLBACK_EOF
+		return 1
 	fi
 	return 0
 }
@@ -600,8 +698,8 @@ Usage:
   session-distill-helper.sh propose [file] Persist privacy-scanned observation proposals
   session-distill-helper.sh finalize    Finalize only low-risk explicit preferences
   session-distill-helper.sh provenance Capture authoritative session git provenance
-  session-distill-helper.sh checkpoint  Capture operational state (tasks, PRs, git)
-  session-distill-helper.sh auto        Checkpoint, then best-effort propose → finalize
+  session-distill-helper.sh checkpoint  Capture and display full operational state
+  session-distill-helper.sh auto        Persist full state; print a compact receipt
   session-distill-helper.sh prompt      Generate reflection prompt for AI
   session-distill-helper.sh help        Show this help
 
