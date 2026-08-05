@@ -60,6 +60,14 @@ if [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
 fi
 
 if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
+	if [[ "${FAKE_CREATE_RATE_LIMIT:-0}" == "1" ]]; then
+		printf 'HTTP 403: API rate limit exceeded for installation while calling /repos/marcusquinn/aidevops/releases\n' >&2
+		exit 1
+	fi
+	if [[ "${FAKE_CREATE_PERMISSION:-0}" == "1" ]]; then
+		printf 'HTTP 403: Resource not accessible by integration\n' >&2
+		exit 1
+	fi
 	if [[ "${FAKE_CREATE_DUPLICATES:-0}" == "1" ]]; then
 		: >"$marker_file"
 		printf 'HTTP 422: Validation Failed (Release.tag_name already exists)\n' >&2
@@ -75,6 +83,10 @@ if [[ "${1:-}" == "release" && "${2:-}" == "edit" ]]; then
 		printf 'HTTP 403: API rate limit exceeded for installation\n' >&2
 		exit 1
 	fi
+	if [[ "${FAKE_EDIT_PERMISSION:-0}" == "1" ]]; then
+		printf 'HTTP 403: Resource not accessible by integration\n' >&2
+		exit 1
+	fi
 	exit 0
 fi
 
@@ -88,7 +100,10 @@ export FAKE_GH_RELEASE_MARKER="${TEST_ROOT}/release-created.marker"
 rm -f "$FAKE_GH_LOG" "$FAKE_GH_RELEASE_MARKER"
 export FAKE_RELEASE_EXISTS=1
 export FAKE_CREATE_DUPLICATES=0
+export FAKE_CREATE_RATE_LIMIT=0
+export FAKE_CREATE_PERMISSION=0
 export FAKE_EDIT_RATE_LIMIT=0
+export FAKE_EDIT_PERMISSION=0
 rc=0
 output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' 2>&1) || rc=$?
 if [[ "$rc" -eq 0 && "$output" == *"already exists"* ]]; then
@@ -137,6 +152,57 @@ if [[ "$EDIT_COUNT" -eq 1 ]]; then
 	print_result 'rate-limited metadata reconciliation stops without retry storm' 0
 else
 	print_result 'rate-limited metadata reconciliation stops without retry storm' 1 "edit_count=$EDIT_COUNT"
+fi
+
+rm -f "$FAKE_GH_LOG" "$FAKE_GH_RELEASE_MARKER"
+export FAKE_RELEASE_EXISTS=0
+export FAKE_CREATE_RATE_LIMIT=1
+rc=0
+output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' --reconcile-existing 2>&1) || rc=$?
+if [[ "$rc" -eq 75 && "$output" == *"operation deferred"* && "$output" == *"Re-run the same create command"* ]]; then
+	print_result 'installation rate-limited create returns recoverable deferral' 0
+else
+	print_result 'installation rate-limited create returns recoverable deferral' 1 "rc=$rc output=$output"
+fi
+
+CREATE_COUNT=$(grep -c 'release create' "$FAKE_GH_LOG" 2>/dev/null || true)
+if [[ "$CREATE_COUNT" -eq 1 ]]; then
+	print_result 'rate-limited create stops without retry storm' 0
+else
+	print_result 'rate-limited create stops without retry storm' 1 "create_count=$CREATE_COUNT"
+fi
+
+export FAKE_CREATE_RATE_LIMIT=0
+rc=0
+output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' --reconcile-existing 2>&1) || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *"created"* && -f "$FAKE_GH_RELEASE_MARKER" ]]; then
+	print_result 'rerun after rate-limit reset creates missing release' 0
+else
+	print_result 'rerun after rate-limit reset creates missing release' 1 "rc=$rc output=$output"
+fi
+
+rm -f "$FAKE_GH_LOG" "$FAKE_GH_RELEASE_MARKER"
+export FAKE_RELEASE_EXISTS=0
+export FAKE_CREATE_PERMISSION=1
+rc=0
+output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' 2>&1) || rc=$?
+if [[ "$rc" -eq 1 && "$output" == *"Resource not accessible"* && "$output" != *"operation deferred"* ]]; then
+	print_result 'permanent create permission failure fails closed' 0
+else
+	print_result 'permanent create permission failure fails closed' 1 "rc=$rc output=$output"
+fi
+
+rm -f "$FAKE_GH_LOG" "$FAKE_GH_RELEASE_MARKER"
+export FAKE_CREATE_PERMISSION=0
+export FAKE_RELEASE_EXISTS=1
+export FAKE_EDIT_RATE_LIMIT=0
+export FAKE_EDIT_PERMISSION=1
+rc=0
+output=$("${TEST_SCRIPTS_DIR}/github-release-helper.sh" create 1.2.4 --repo marcusquinn/aidevops --notes 'notes' --reconcile-existing 2>&1) || rc=$?
+if [[ "$rc" -eq 1 && "$output" == *"permanent permission error"* && "$output" != *"metadata reconciliation is deferred"* ]]; then
+	print_result 'permanent metadata permission failure fails closed' 0
+else
+	print_result 'permanent metadata permission failure fails closed' 1 "rc=$rc output=$output"
 fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

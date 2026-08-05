@@ -120,15 +120,24 @@ jobs:
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Create or reconcile GitHub release
+        id: github-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          RELEASE_RC=0
           bash .agents/scripts/github-release-helper.sh create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
             --title "$RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
-            --reconcile-existing
+            --reconcile-existing || RELEASE_RC=$?
+          if [[ "$RELEASE_RC" -eq 75 ]]; then
+            echo "deferred=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::GitHub release creation is deferred until the installation API rate limit resets; re-run this workflow with the same verified tag and correlation"
+            exit 0
+          fi
+          [[ "$RELEASE_RC" -eq 0 ]] || exit "$RELEASE_RC"
+          echo "deferred=false" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -356,6 +365,7 @@ jobs:
           exit 1
 
       - name: Queue exact-tag postflight
+        if: steps.github-release.outputs.deferred != 'true'
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_PAT }}
           JOB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -383,6 +393,10 @@ jobs:
           echo "## Release Published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** $RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "**GitHub:** reconciled" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.github-release.outputs.deferred }}" == "true" ]]; then
+            echo "**GitHub:** deferred by installation API rate limit; re-run recovery after reset" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**GitHub:** reconciled" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "**npm:** verified through Trusted Publisher (OIDC)" >> "$GITHUB_STEP_SUMMARY"
           echo "**Homebrew SHA256:** $RELEASE_SHA256" >> "$GITHUB_STEP_SUMMARY"

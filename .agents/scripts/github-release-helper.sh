@@ -30,8 +30,9 @@
 #
 # Exit codes:
 #   0 — success
-#   1 — validation error or gh command failure
+#   1 — validation error or permanent gh command failure
 #   2 — missing dependency (gh CLI not found or not authenticated)
+#   75 — temporary GitHub rate limit; retry the same idempotent command later
 #
 # Environment:
 #   GITHUB_RELEASE_REPO  Override repo slug (same as --repo flag)
@@ -146,6 +147,34 @@ release_exists() {
 	local tag="$2"
 	gh release view "$tag" --repo "$repo" >/dev/null 2>&1
 	return $?
+}
+
+# Distinguish GitHub quota exhaustion from permanent HTTP 403 permission errors.
+_is_github_rate_limit_error() {
+	local output="$1"
+	if printf '%s\n' "$output" | LC_ALL=C grep -qiE \
+		'api rate limit exceeded|secondary rate limit|rateLimitExceeded|rate limit exceeded for installation'; then
+		return 0
+	fi
+	return 1
+}
+
+_is_github_permission_error() {
+	local output="$1"
+	if _is_github_rate_limit_error "$output"; then
+		return 1
+	fi
+	if printf '%s\n' "$output" | LC_ALL=C grep -qiE \
+		'HTTP 403|Resource not accessible by integration|Must have admin rights|permission denied'; then
+		return 0
+	fi
+	return 1
+}
+
+_print_rate_limit_deferral() {
+	print_warning "GitHub release operation deferred: installation API rate limit exhausted"
+	print_info "Re-run the same create command after the GitHub rate limit resets; existing or missing release state will be reconciled idempotently"
+	return 0
 }
 
 # =============================================================================
@@ -279,7 +308,7 @@ _resolve_create_inputs() {
 # Reconcile optional metadata without invalidating an already verified release.
 _reconcile_release_metadata() {
 	local gh_args=("$_create_tag" "--repo" "$_create_repo" "--title" "$_create_title")
-	local attempt=1 output=""
+	local attempt=1 output="" permission_failure=false
 	if [[ -n "$_create_flag_notes_file" ]]; then
 		gh_args+=("--notes-file" "$_create_flag_notes_file")
 	elif [[ -n "$_create_flag_notes" ]]; then
@@ -292,12 +321,22 @@ _reconcile_release_metadata() {
 			return 0
 		fi
 		print_warning "Release metadata reconciliation attempt $attempt/3 failed: $output"
-		if [[ "$output" == *"rate limit"* || "$output" == *"HTTP 403"* ]]; then
+		if _is_github_rate_limit_error "$output"; then
+			_print_rate_limit_deferral
+			print_warning "Release '$_create_tag' publication is verified; metadata reconciliation is deferred"
+			return 0
+		fi
+		if _is_github_permission_error "$output"; then
+			permission_failure=true
 			break
 		fi
 		((attempt++))
 	done
 
+	if [[ "$permission_failure" == true ]]; then
+		print_error "Release '$_create_tag' metadata reconciliation failed with a permanent permission error"
+		return 1
+	fi
 	if release_exists "$_create_repo" "$_create_tag"; then
 		print_warning "Release '$_create_tag' publication is verified; metadata reconciliation is deferred"
 		return 0
@@ -341,11 +380,14 @@ _execute_release_create() {
 	[[ "$_create_flag_draft" == true ]] && gh_args+=("--draft")
 	[[ "$_create_flag_prerelease" == true ]] && gh_args+=("--prerelease")
 
+	local output=""
 	print_info "Creating release..."
-	if gh release create "${gh_args[@]}"; then
+	if output=$(gh release create "${gh_args[@]}" 2>&1); then
+		[[ -n "$output" ]] && printf '%s\n' "$output"
 		print_success "Release '$_create_tag' created on $_create_repo"
 		return 0
 	else
+		[[ -n "$output" ]] && printf '%s\n' "$output" >&2
 		if release_exists "$_create_repo" "$_create_tag"; then
 			print_warning "Release '$_create_tag' now exists on $_create_repo — treating duplicate create as already complete"
 			if [[ "$_create_flag_reconcile_existing" == true ]]; then
@@ -353,6 +395,10 @@ _execute_release_create() {
 				return $?
 			fi
 			return 0
+		fi
+		if _is_github_rate_limit_error "$output"; then
+			_print_rate_limit_deferral
+			return 75
 		fi
 		print_error "Failed to create release '$_create_tag' on $_create_repo"
 		return 1
@@ -364,6 +410,7 @@ _execute_release_create() {
 # =============================================================================
 
 cmd_create() {
+	local create_rc=0
 	# Initialise state for the create subcommand (reset before each invocation)
 	_create_version=""
 	_create_flag_repo=""
@@ -379,8 +426,8 @@ cmd_create() {
 
 	_parse_create_args "$@" || return 1
 	_resolve_create_inputs || return 1
-	_execute_release_create || return 1
-	return 0
+	_execute_release_create || create_rc=$?
+	return "$create_rc"
 }
 
 cmd_draft() {
