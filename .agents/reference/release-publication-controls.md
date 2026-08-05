@@ -259,6 +259,12 @@ provenance lines were separated into distinct Git trailer paragraphs. Subsequent
 maintained merges advanced `main`; the exact branch base is
 `e0c71469e63192a699a3c90b464aa8999d257733`.
 
+The pending aggregation PR reviews authorized provider-neutral team-interface
+mission PR #29547 at `daeded75e5d39ce5d7c0af956b1260bd88874770`.
+Concurrent signed `v3.32.224` publication and protected release PR #29550
+advanced `main` after the source merged. The exact branch base is
+`609c76d7411d8a3e64ef32cd132fca35898e6c1c`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
