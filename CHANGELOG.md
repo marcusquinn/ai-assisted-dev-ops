@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- tolerate transient `gh auth status` failures during sudo approval recovery (#29608)
+
 ## [3.32.226] - 2026-08-05
 
 ### Changed
