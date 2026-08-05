@@ -42,6 +42,27 @@ assert_classification 'GitHub issue prefix' \
 assert_classification 'plain conventional subject' \
 	'feat: retain ordinary conventional output' \
 	$'added\t- retain ordinary conventional output'
+assert_classification 'GH-prefixed feature squash from PR 29531' \
+	'GH#29530: feat: Add a Buzz-scoped OpenCode Tabby workspace profile' \
+	$'added\t- Add a Buzz-scoped OpenCode Tabby workspace profile'
+assert_classification 'ordinary fix subject' \
+	'fix: retain ordinary fix output' \
+	$'fixed\t- retain ordinary fix output'
+assert_classification 'ordinary docs subject' \
+	'docs: retain ordinary docs output' \
+	$'changed\t- Documentation: retain ordinary docs output'
+assert_classification 'ordinary refactor subject' \
+	'refactor: retain ordinary refactor output' \
+	$'changed\t- Refactor: retain ordinary refactor output'
+assert_classification 'ordinary security subject' \
+	'security: retain ordinary security output' \
+	$'security\t- retain ordinary security output'
+assert_classification 'ordinary chore subject' \
+	'chore: retain ordinary chore output' \
+	$'changed\t- Maintenance: retain ordinary chore output'
+assert_classification 'bare GH-prefixed prose remains unclassified' \
+	'GH#29530: Add a Buzz-scoped OpenCode Tabby workspace profile' \
+	''
 assert_classification 'embedded ID-like text remains unclassified' \
 	'at18079] feat: do not normalize embedded text' \
 	''

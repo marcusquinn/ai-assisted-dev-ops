@@ -834,24 +834,57 @@ _merge_review_state_still_clear() {
 	return 0
 }
 
+# Resolve one authoritative Conventional Commit type from the reviewed PR's
+# commit metadata. Every commit must be conventional and use the same type;
+# mixed, WIP, or otherwise ambiguous histories deliberately produce no type.
+_merge_resolve_conventional_type_from_commits() {
+	local pr_json="$1"
+	printf '%s\n' "$pr_json" | jq -r '
+		[.commits[]?.messageHeadline // empty] as $headlines
+		| [$headlines[]
+			| try capture("^(?<type>feat|fix|docs|refactor|perf|test|chore|style|build|ci|security)(\\([^()[:cntrl:]]+\\))?!?:[[:space:]]+[^[:space:]]").type catch empty
+		] as $types
+		| ($types | unique) as $unique
+		| if ($headlines | length) > 0
+			and ($types | length) == ($headlines | length)
+			and ($unique | length) == 1
+		then $unique[0]
+		else empty
+		end
+	'
+	return 0
+}
+
 # Resolve the reviewed PR title used as the explicit squash-commit subject.
 # Accepted forms match this repository's PR/commit history: a task-prefixed
 # title (tNNN:/GH#NNN:) or a Conventional Commit type with optional scope and
-# breaking marker. Invalid titles fail before any merge mutation.
+# breaking marker. A task-prefixed prose title inherits a category only when
+# every reviewed PR commit carries the same authoritative conventional type.
+# Invalid titles fail before any merge mutation.
 _merge_resolve_squash_subject() {
 	local pr_number="$1"
 	local repo="$2"
+	local pr_json=""
 	local subject=""
 	local task_body=""
-	local conventional_ere='^(feat|fix|docs|refactor|perf|test|chore|style|build|ci)(\([^()[:cntrl:]]+\))?!?:[[:space:]]+[^[:space:]].*$'
+	local conventional_type=""
+	local conventional_ere='^(feat|fix|docs|refactor|perf|test|chore|style|build|ci|security)(\([^()[:cntrl:]]+\))?!?:[[:space:]]+[^[:space:]].*$'
 	local task_ere='^(t[0-9]+|GH#[0-9]+):[[:space:]]+[^[:space:]].*$'
 
-	subject=$(gh pr view "$pr_number" --repo "$repo" --json title --jq '.title' 2>/dev/null) || {
-		print_error "Could not retrieve PR #${pr_number} title for squash-subject validation"
+	pr_json=$(gh pr view "$pr_number" --repo "$repo" --json title,commits 2>/dev/null) || {
+		print_error "Could not retrieve PR #${pr_number} title and commit metadata for squash-subject validation"
 		return 1
 	}
+	subject=$(printf '%s\n' "$pr_json" | jq -r '.title // empty') || return 1
 	if [[ "$subject" =~ $task_ere ]]; then
 		task_body="${subject#*: }"
+		if [[ ! "$task_body" =~ $conventional_ere ]]; then
+			conventional_type=$(_merge_resolve_conventional_type_from_commits "$pr_json")
+			if [[ -n "$conventional_type" ]]; then
+				subject="${subject%%:*}: ${conventional_type}: ${task_body}"
+				task_body="${conventional_type}: ${task_body}"
+			fi
+		fi
 	fi
 	if [[ "$subject" == *$'\n'* || "$subject" == *$'\r'* ||
 		"$task_body" =~ ^[Ww][Ii][Pp][[:space:]:\(] ||

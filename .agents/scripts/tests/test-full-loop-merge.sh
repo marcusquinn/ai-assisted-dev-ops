@@ -154,12 +154,21 @@ write_gh_stub_pr_issue_views() {
 	cat >>"${TEST_ROOT}/bin/gh" <<GHSTUB
 
 	if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "view" ]]; then
-	if [[ "\$*" == *"--json title --jq .title"* ]]; then
-		if [[ "$mode" == "invalid-squash-title" ]]; then
-			echo 'Document recovery'
-		else
-			echo 'GH#28721: fix: preserve reviewed squash subject'
-		fi
+	if [[ "\$*" == *"--json title,commits"* ]]; then
+		case "$mode" in
+		invalid-squash-title)
+			echo '{"title":"Document recovery","commits":[{"messageHeadline":"fix: document recovery"}]}'
+			;;
+		gh-prefix-feature)
+			echo '{"title":"GH#29530: Add a Buzz-scoped OpenCode Tabby workspace profile","commits":[{"messageHeadline":"feat: add Buzz Tabby workspace profile"}]}'
+			;;
+		gh-prefix-no-evidence)
+			echo '{"title":"GH#29530: Add a Buzz-scoped OpenCode Tabby workspace profile","commits":[{"messageHeadline":"wip: add Buzz Tabby workspace profile"}]}'
+			;;
+		*)
+			echo '{"title":"GH#28721: fix: preserve reviewed squash subject","commits":[{"messageHeadline":"wip: document recovery"}]}'
+			;;
+		esac
 		exit 0
 	fi
 	if [[ "\$*" == *"--json state,isDraft,reviewDecision,headRefOid"* ]]; then
@@ -945,6 +954,35 @@ test_wip_draft_takeover_uses_reviewed_pr_title() {
 	return 0
 }
 
+test_gh_prefixed_feature_inherits_commit_category() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	# PR #29531 had a required GH# prefix in its reviewed title while its sole
+	# reviewed commit retained the authoritative conventional feature type.
+	create_gh_stub "gh-prefix-feature"
+
+	local rc=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "1" "0" >/dev/null 2>&1 || rc=$?
+	local expected_subject='--subject GH#29530: feat: Add a Buzz-scoped OpenCode Tabby workspace profile'
+	local subject_present=0
+	grep -q -- "$expected_subject" "${TEST_ROOT}/logs/gh-calls.txt" && subject_present=1
+	print_result "squash subject: GH-prefixed feature retains conventional category" "$((rc == 0 && subject_present == 1 ? 0 : 1))"
+	return 0
+}
+
+test_gh_prefixed_prose_without_evidence_is_not_guessed() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "gh-prefix-no-evidence"
+
+	local rc=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "1" "0" >/dev/null 2>&1 || rc=$?
+	local bare_subject='--subject GH#29530: Add a Buzz-scoped OpenCode Tabby workspace profile'
+	local bare_present=0 guessed_present=0
+	grep -q -- "$bare_subject" "${TEST_ROOT}/logs/gh-calls.txt" && bare_present=1
+	grep -q -- '--subject GH#29530: feat:' "${TEST_ROOT}/logs/gh-calls.txt" && guessed_present=1
+	print_result "squash subject: bare GH prose is not guessed without conventional evidence" "$((rc == 0 && bare_present == 1 && guessed_present == 0 ? 0 : 1))"
+	return 0
+}
+
 test_invalid_squash_title_blocks_before_merge() {
 	rm -f "${TEST_ROOT}/logs/"*.txt
 	create_gh_stub "invalid-squash-title"
@@ -1025,11 +1063,11 @@ create_planning_handoff_fixture() {
 write_handoff_gh_stub() {
 	cat >"${TEST_ROOT}/bin/gh" <<'GHSTUB'
 #!/usr/bin/env bash
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+	printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","isDraft":false,"reviewDecision":"","headRefOid":"%s","headRefName":"main"}},"rateLimit":{"cost":1}}}\n' "${HANDOFF_EXPECTED_HEAD:?}"
+	exit 0
+fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-	if [[ "$*" == *"--json state,isDraft,reviewDecision,headRefOid,headRefName"* ]]; then
-		printf '{"state":"OPEN","isDraft":false,"reviewDecision":"","headRefOid":"%s","headRefName":"main"}\n' "${HANDOFF_EXPECTED_HEAD:?}"
-		exit 0
-	fi
 	if [[ "$*" == *"--json headRefOid"* ]]; then
 		printf '%s\n' "${HANDOFF_EXPECTED_HEAD:?}"
 		exit 0
@@ -1405,6 +1443,8 @@ main() {
 	test_post_merge_unmerged_evidence_fails_closed
 	test_post_merge_api_indeterminate_fails_closed
 	test_wip_draft_takeover_uses_reviewed_pr_title
+	test_gh_prefixed_feature_inherits_commit_category
+	test_gh_prefixed_prose_without_evidence_is_not_guessed
 	test_invalid_squash_title_blocks_before_merge
 	test_non_squash_skips_subject_override
 	test_checkout_free_publication_readiness_handoff
