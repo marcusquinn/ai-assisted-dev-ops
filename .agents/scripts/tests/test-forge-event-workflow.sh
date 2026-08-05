@@ -107,7 +107,15 @@ cat >"${test_root}/bin/gh" <<'GH'
 printf '%s\n' "$*" >>"$GH_CALL_LOG"
 if [[ "$*" == *"actions/artifacts?name=forge-coordinator-R_1&per_page=1"* ]]; then
 	[[ "$*" != *"--jq"* ]] || exit 64
+	if [[ "${GH_EMPTY_EXACT:-0}" == "1" ]]; then
+		printf '{"artifacts":[]}\n'
+		exit 0
+	fi
 	printf '{"artifacts":[{"id":24,"name":"forge-coordinator-R_1","created_at":"2026-02-01T00:00:00Z","expired":false}]}\n'
+	exit 0
+fi
+if [[ "$*" == *"actions/artifacts?per_page=100"* ]]; then
+	printf '{"artifacts":[{"id":22,"name":"forge-coordinator-R_1-old","created_at":"2026-01-01T00:00:00Z","expired":false},{"id":23,"name":"forge-coordinator-R_1-new","created_at":"2026-02-01T00:00:00Z","expired":false},{"id":25,"name":"forge-coordinator-R_1-expired","created_at":"2026-03-01T00:00:00Z","expired":true}]}\n'
 	exit 0
 fi
 [[ "$*" != *$'\n'* ]] || exit 1
@@ -133,6 +141,19 @@ if grep -q -- '--jq' "${test_root}/api.log"; then
 fi
 grep -q 'repos/owner/repo/actions/artifacts/24/zip' "${test_root}/api.log"
 [[ "$(grep -c '/zip' "${test_root}/api.log")" -eq 1 ]]
+
+# Repositories without a stable-name checkpoint use exactly one legacy page.
+mkdir -p "${test_root}/legacy-state"
+: >"${test_root}/legacy-api.log"
+GH_EMPTY_EXACT=1 GH_CALL_LOG="${test_root}/legacy-api.log" PATH="${test_root}/bin:${jq_dir}:/usr/bin:/bin" \
+	bash "$STATE_HELPER" restore "${test_root}/legacy-state" owner/repo R_1
+[[ "$(<"${test_root}/legacy-state/tasks.db")" == "durable-db" ]]
+grep -q 'repos/owner/repo/actions/artifacts?per_page=100' "${test_root}/legacy-api.log"
+grep -q 'repos/owner/repo/actions/artifacts/23/zip' "${test_root}/legacy-api.log"
+if grep -q -- '--paginate\|--slurp' "${test_root}/legacy-api.log"; then
+	printf 'FAIL: legacy coordinator restore must remain one-page bounded\n' >&2
+	exit 1
+fi
 
 # Installation rate exhaustion defers publication without replacing the checkpoint.
 mkdir -p "${test_root}/rate-limit-bin" "${test_root}/rate-limited-state"
