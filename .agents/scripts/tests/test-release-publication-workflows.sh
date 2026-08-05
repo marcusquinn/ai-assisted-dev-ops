@@ -86,6 +86,13 @@ assert_contains "checked-out commit is bound to the immutable tag" \
 	'[[ "$CHECKOUT_COMMIT" == "$TAG_COMMIT" ]]' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow shell variable.
 assert_contains "release notes cross steps through a file" '--notes-file "$RUNNER_TEMP/release-notes.md"' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "rate-limited GitHub release create records a deferred checkpoint" \
+	'echo "deferred=true" >> "$GITHUB_OUTPUT"' "$PACKAGE_WORKFLOW"
+assert_contains "rate-limited GitHub release create has recovery guidance" \
+	"re-run this workflow with the same verified tag and correlation" "$PACKAGE_WORKFLOW"
+assert_contains "postflight waits for deferred GitHub release reconciliation" \
+	"if: steps.github-release.outputs.deferred != 'true'" "$PACKAGE_WORKFLOW"
 assert_absent "release notes cannot inject into generated workflow shell" 'steps.changelog.outputs.body' "$PACKAGE_WORKFLOW"
 assert_absent "release-note collection avoids pipefail truncation" '| head -10' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow expression.
