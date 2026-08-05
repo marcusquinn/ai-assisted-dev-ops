@@ -217,7 +217,28 @@ jq -e '.capture_status == "ok" and .title_len == 19 and .body_len == 14 and .lab
 	<<<"$wrapped_issue" >/dev/null || fail "issue audit capture bypassed the REST-capable read wrapper"
 jq -e '.capture_status == "ok" and .title_len == 16 and .body_len == 14 and .labels == ["monitoring"]' \
 	<<<"$wrapped_pr" >/dev/null || fail "PR audit capture bypassed the REST-capable read wrapper"
-unset -f gh_issue_view gh_pr_view
+
+gh_issue_view() {
+	return 1
+}
+gh_pr_view() {
+	return 1
+}
+_rest_issue_view() {
+	printf '%s\n' '{"title":"REST issue fallback","body":"Protected body","labels":[{"name":"monitoring"}]}'
+	return 0
+}
+_rest_pr_view() {
+	printf '%s\n' '{"title":"REST PR fallback","body":"Protected body","labels":[{"name":"monitoring"}]}'
+	return 0
+}
+fallback_issue="$(_gh_audit_fetch_issue_state_json "8" "example/repo")"
+fallback_pr="$(_gh_audit_fetch_pr_state_json "9" "example/repo")"
+jq -e '.capture_status == "ok" and .title_len == 19 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$fallback_issue" >/dev/null || fail "failed issue wrapper did not exhaust the direct REST fallback"
+jq -e '.capture_status == "ok" and .title_len == 16 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$fallback_pr" >/dev/null || fail "failed PR wrapper did not exhaust the direct REST fallback"
+unset -f gh_issue_view gh_pr_view _rest_issue_view _rest_pr_view
 
 gh() {
 	local resource="${1:-}"

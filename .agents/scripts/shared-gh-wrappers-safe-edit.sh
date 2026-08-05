@@ -163,6 +163,13 @@ _gh_audit_fetch_issue_state_json() {
 		data=$(gh issue view "$issue_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
+	# The routed wrapper's fallback decision can itself be stale or unavailable.
+	# Audit capture is read-only, so exhaust the independent REST transport before
+	# recording a visibility gap.
+	if [[ -z "$data" ]] && command -v _rest_issue_view >/dev/null 2>&1; then
+		data=$(_rest_issue_view "$issue_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	fi
 	if [[ -z "$data" ]]; then
 		printf '%s\n' "$unavailable"
 		return 0
@@ -203,6 +210,10 @@ _gh_audit_fetch_pr_state_json() {
 			--json title,body,labels 2>/dev/null) || data=""
 	else
 		data=$(gh pr view "$pr_num" --repo "$repo" \
+			--json title,body,labels 2>/dev/null) || data=""
+	fi
+	if [[ -z "$data" ]] && command -v _rest_pr_view >/dev/null 2>&1; then
+		data=$(_rest_pr_view "$pr_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
 	if [[ -z "$data" ]]; then
