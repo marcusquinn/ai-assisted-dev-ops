@@ -135,13 +135,16 @@ registered_repo_slug() {
 	return 0
 }
 
-# Resolve the remote that represents the registered GitHub repository. Exact
+# Resolve a remote that represents the registered GitHub repository. Exact
 # fetch+push identity is required. Callers may allow the origin fallback for
-# local mirrors where no configured remote can be parsed as GitHub at all.
+# local mirrors where no configured remote can be parsed as GitHub at all. A
+# caller with a separately pinned identity may opt into equivalent aliases;
+# those are ordered deterministically, with origin preferred when it matches.
 resolve_github_remote() {
 	local repo="$1"
 	local expected_slug="$2"
 	local allow_local_mirror="${3:-true}"
+	local allow_equivalent_aliases="${4:-false}"
 	local expected_lower=""
 	local remote_names=""
 	local remote=""
@@ -158,7 +161,7 @@ resolve_github_remote() {
 	local candidate_count=0
 	local github_seen=0
 	expected_lower=$(printf '%s' "$expected_slug" | tr '[:upper:]' '[:lower:]') || return 1
-	remote_names=$("$REAL_GIT" -C "$repo" remote 2>/dev/null) || return 1
+	remote_names=$("$REAL_GIT" -C "$repo" remote 2>/dev/null | LC_ALL=C sort) || return 1
 	while IFS= read -r remote; do
 		[[ -n "$remote" ]] || continue
 		fetch_urls=$("$REAL_GIT" -C "$repo" config --get-all "remote.${remote}.url" 2>/dev/null || true)
@@ -198,10 +201,16 @@ resolve_github_remote() {
 			[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || remote_matches=0
 		done <<<"$push_urls"
 		[[ "$remote_matches" -eq 1 && "$fetch_count" -gt 0 && "$push_count" -gt 0 ]] || continue
-		candidate="$remote"
+		if [[ -z "$candidate" || "$remote" == "origin" ]]; then
+			candidate="$remote"
+		fi
 		candidate_count=$((candidate_count + 1))
 	done <<<"$remote_names"
-	if [[ "$candidate_count" -eq 1 ]]; then
+	#aidevops:trust-boundary
+	# Multiple names are accepted only after every candidate's complete fetch and
+	# push URL sets independently matched the caller's immutable expected slug.
+	if [[ "$candidate_count" -eq 1 ||
+		("$allow_equivalent_aliases" == "true" && "$candidate_count" -gt 1) ]]; then
 		printf '%s\n' "$candidate"
 		return 0
 	fi
@@ -587,9 +596,11 @@ policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
 registered_slug=""
 expected_slug=""
 allow_local_mirror=true
+allow_equivalent_aliases=false
 if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 	expected_slug="$AIDEVOPS_FRAMEWORK_GITHUB_SLUG"
 	allow_local_mirror=false
+	allow_equivalent_aliases=true
 else
 	registered_slug=$(registered_repo_slug "$repo_path") || {
 		printf 'BLOCKED: registered canonical repository identity is invalid or ambiguous\n' >&2
@@ -597,7 +608,8 @@ else
 	}
 	expected_slug="$registered_slug"
 fi
-if ! canonical_remote=$(resolve_github_remote "$repo_path" "$expected_slug" "$allow_local_mirror"); then
+if ! canonical_remote=$(resolve_github_remote "$repo_path" "$expected_slug" \
+	"$allow_local_mirror" "$allow_equivalent_aliases"); then
 	if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 		printf 'BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous\n' >&2
 	else

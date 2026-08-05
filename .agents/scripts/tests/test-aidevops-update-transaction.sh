@@ -363,8 +363,12 @@ REMOTE_SHA=$(/usr/bin/git -C "$INTEGRATION_PEER" rev-parse HEAD)
 /usr/bin/git clone -q "$INTEGRATION_REMOTE" "$REAL_HELPER_REPO"
 /usr/bin/git -C "$REAL_HELPER_REPO" reset -q --hard "$BASE_SHA"
 FRAMEWORK_URL="https://github.com/marcusquinn/aidevops.git"
+FRAMEWORK_SSH_URL="ssh://git@github.com/marcusquinn/aidevops.git"
 /usr/bin/git -C "$REAL_HELPER_REPO" config "url.${INTEGRATION_REMOTE}.insteadOf" "$FRAMEWORK_URL"
+/usr/bin/git -C "$REAL_HELPER_REPO" config --add "url.${INTEGRATION_REMOTE}.insteadOf" "$FRAMEWORK_SSH_URL"
 /usr/bin/git -C "$REAL_HELPER_REPO" remote set-url origin "$FRAMEWORK_URL"
+/usr/bin/git -C "$REAL_HELPER_REPO" remote add upstream "$FRAMEWORK_URL"
+/usr/bin/git -C "$REAL_HELPER_REPO" remote add origin-ssh "$FRAMEWORK_SSH_URL"
 /usr/bin/git -C "$REAL_HELPER_REPO" remote set-head origin main
 INSTALL_DIR="$REAL_HELPER_REPO"
 _AIDEVOPS_UPDATE_HELPER_DIR="$REPO_ROOT/.agents/scripts"
@@ -374,11 +378,13 @@ if AIDEVOPS_REPOS_CONFIG="$TEST_ROOT/missing-repos.json" AIDEVOPS_REAL_GIT_BIN=/
 	grep -q '"reason":"aidevops-update"' \
 		"$HOME/.aidevops/logs/canonical-recovery-audit.jsonl" &&
 	grep -q '"expected_slug":"marcusquinn/aidevops"' \
+		"$HOME/.aidevops/logs/canonical-recovery-audit.jsonl" &&
+	grep -q '"remote":"origin"' \
 		"$HOME/.aidevops/logs/canonical-recovery-audit.jsonl"; then
-	pass "real canonical helper updates an unregistered framework source checkout"
+	pass "real canonical helper updates with equivalent official remote aliases"
 else
-	fail "real canonical helper updates an unregistered framework source checkout" \
-		"official framework identity did not reach the remote tip"
+	fail "real canonical helper updates with equivalent official remote aliases" \
+		"official aliases did not select and audit origin deterministically"
 fi
 
 mkdir -p "$UPDATE_HELPER_DIR"
