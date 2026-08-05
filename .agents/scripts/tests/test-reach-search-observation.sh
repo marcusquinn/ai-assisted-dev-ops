@@ -344,7 +344,9 @@ import os
 from pathlib import Path
 import sys
 
-spec = importlib.util.spec_from_file_location("reach_search_observation", sys.argv[1])
+script_path = Path(sys.argv[1])
+sys.path.insert(0, str(script_path.parent))
+spec = importlib.util.spec_from_file_location("reach_search_observation", script_path)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
@@ -398,7 +400,9 @@ import os
 from pathlib import Path
 import sys
 
-spec = importlib.util.spec_from_file_location("reach_search_observation", sys.argv[1])
+script_path = Path(sys.argv[1])
+sys.path.insert(0, str(script_path.parent))
+spec = importlib.util.spec_from_file_location("reach_search_observation", script_path)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)

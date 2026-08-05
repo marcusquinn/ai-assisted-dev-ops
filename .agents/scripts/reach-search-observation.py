@@ -12,18 +12,27 @@ import hmac
 import json
 import os
 import re
-import secrets
-import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from _reach_observation_storage import (
+    ObservationStorageError,
+    copy_evidence as _copy_evidence,
+    ensure_private_child_directory as _ensure_private_child_directory,
+    load_json_object as _load_json_object,
+    observation_id_key as _observation_id_key,
+    open_private_child_directory as _open_private_child_directory,
+    open_private_directory as _open_private_directory,
+    read_private_file as _read_private_file,
+    write_record as _write_record,
+)
+from knowledge_source_contract import SourceContractError, reject_credentials
+
 SCHEMA_VERSION = 1
 MAX_INPUT_BYTES = 64 * 1024
 MAX_EVIDENCE_BYTES = 25 * 1024 * 1024
-OBSERVATION_ID_KEY_BYTES = 32
-OBSERVATION_ID_KEY_NAME = ".observation-id-key"
 PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 COUNTRY = re.compile(r"^[A-Z]{2}$")
 LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
@@ -63,48 +72,6 @@ REQUIRED_FIELDS = {
     "evidence_media_type",
 }
 OPTIONAL_FIELDS = {"notes", "storage_authorization_basis"}
-FORBIDDEN_EVIDENCE_KEYS = {
-    "accesstoken",
-    "apikey",
-    "apitoken",
-    "auth",
-    "authentication",
-    "authorization",
-    "bearer",
-    "bearertoken",
-    "clientsecret",
-    "cookie",
-    "cookiejar",
-    "cookies",
-    "credential",
-    "credentials",
-    "csrftoken",
-    "idtoken",
-    "jwt",
-    "oauthtoken",
-    "passphrase",
-    "password",
-    "privatekey",
-    "refreshtoken",
-    "secret",
-    "secretaccesskey",
-    "sessioncookie",
-    "sessiontoken",
-    "setcookie",
-    "token",
-}
-FORBIDDEN_EVIDENCE_SUFFIXES = (
-    "accesstoken",
-    "apikey",
-    "authorization",
-    "clientsecret",
-    "cookie",
-    "password",
-    "privatekey",
-    "refreshtoken",
-    "secretaccesskey",
-    "sessiontoken",
-)
 
 
 class ObservationError(ValueError):
@@ -127,95 +94,23 @@ class EgressContext:
     locale: str
 
 
+@dataclass(frozen=True)
+class PersistenceContext:
+    """Validated inputs and pinned storage for one immutable observation."""
+
+    observation: dict[str, Any]
+    egress: EgressContext
+    evidence_payload: bytes
+    evidence_hash: str
+    evidence_fd: int
+    records_fd: int
+    observation_key: bytes
+
+
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-
-
-def _read_private_file(
-    path: str | Path,
-    label: str,
-    maximum: int,
-    directory_fd: int | None = None,
-) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if nofollow:
-        flags |= nofollow
-    descriptor = -1
-    path_value = os.fspath(path)
-    try:
-        if directory_fd is None:
-            path_stat = os.lstat(path_value)
-            descriptor = os.open(path_value, flags)
-        else:
-            path_stat = os.stat(
-                path_value, dir_fd=directory_fd, follow_symlinks=False
-            )
-            descriptor = os.open(path_value, flags, dir_fd=directory_fd)
-        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
-            raise ObservationError(f"{label} must be a regular non-symlink file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
-            opened = os.fstat(handle.fileno())
-            if (path_stat.st_dev, path_stat.st_ino) != (opened.st_dev, opened.st_ino):
-                raise ObservationError(f"{label} changed while opening")
-            if not stat.S_ISREG(opened.st_mode):
-                raise ObservationError(f"{label} must be a regular non-symlink file")
-            if hasattr(os, "getuid") and opened.st_uid != os.getuid():
-                raise ObservationError(f"{label} owner must be the current user")
-            if stat.S_IMODE(opened.st_mode) & 0o077:
-                raise ObservationError(
-                    f"{label} must not grant group or other permissions"
-                )
-            if opened.st_size <= 0 or opened.st_size > maximum:
-                raise ObservationError(f"{label} size is outside the allowed limit")
-            payload = handle.read(maximum + 1)
-            after = os.fstat(handle.fileno())
-    except ObservationError:
-        raise
-    except OSError as error:
-        raise ObservationError(f"{label} is unavailable") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    opened_identity = (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-    )
-    after_identity = (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    )
-    if (
-        len(payload) > maximum
-        or len(payload) != opened.st_size
-        or opened_identity != after_identity
-    ):
-        raise ObservationError(f"{label} changed while being read")
-    return payload
-
-
-def _load_json_object(
-    path: str | Path,
-    label: str,
-    maximum: int,
-    directory_fd: int | None = None,
-) -> dict[str, Any]:
-    try:
-        value = json.loads(
-            _read_private_file(path, label, maximum, directory_fd).decode("utf-8")
-        )
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ObservationError(f"{label} must be valid UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise ObservationError(f"{label} root must be an object")
-    return value
 
 
 def _required_text(value: Any, field: str, maximum: int = 2048) -> str:
@@ -387,20 +282,6 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _reject_forbidden_json_keys(value: Any) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            normalized = re.sub(r"[^a-z0-9]+", "", str(key).lower())
-            if normalized in FORBIDDEN_EVIDENCE_KEYS or normalized.endswith(
-                FORBIDDEN_EVIDENCE_SUFFIXES
-            ):
-                raise ObservationError("JSON evidence contains credential-shaped fields")
-            _reject_forbidden_json_keys(child)
-    elif isinstance(value, list):
-        for child in value:
-            _reject_forbidden_json_keys(child)
-
-
 def _validate_evidence(path: Path, media_type: str) -> tuple[bytes, str]:
     payload = _read_private_file(path, "evidence file", MAX_EVIDENCE_BYTES)
     if media_type == "application/json":
@@ -408,232 +289,13 @@ def _validate_evidence(path: Path, media_type: str) -> tuple[bytes, str]:
             parsed = json.loads(payload.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError) as error:
             raise ObservationError("JSON evidence must be valid UTF-8 JSON") from error
-        _reject_forbidden_json_keys(parsed)
+        try:
+            reject_credentials(parsed)
+        except SourceContractError as error:
+            raise ObservationError(
+                "JSON evidence contains credential-shaped fields"
+            ) from error
     return payload, _sha256(payload)
-
-
-def _directory_flags() -> int:
-    return (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-
-
-def _validate_private_directory(descriptor: int, label: str) -> None:
-    directory_stat = os.fstat(descriptor)
-    if not stat.S_ISDIR(directory_stat.st_mode):
-        raise ObservationError(f"{label} must be a directory")
-    if hasattr(os, "getuid") and directory_stat.st_uid != os.getuid():
-        raise ObservationError(f"{label} owner must be the current user")
-    if stat.S_IMODE(directory_stat.st_mode) & 0o077:
-        raise ObservationError(f"{label} must not grant group or other permissions")
-
-
-def _open_private_directory(path: Path, label: str) -> int:
-    try:
-        descriptor = os.open(path, _directory_flags())
-        _validate_private_directory(descriptor, label)
-        return descriptor
-    except ObservationError:
-        if "descriptor" in locals():
-            os.close(descriptor)
-        raise
-    except OSError as error:
-        raise ObservationError(f"{label} is unavailable") from error
-
-
-def _open_private_child_directory(parent_fd: int, name: str, label: str) -> int:
-    try:
-        descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
-        _validate_private_directory(descriptor, label)
-        return descriptor
-    except ObservationError:
-        if "descriptor" in locals():
-            os.close(descriptor)
-        raise
-    except OSError as error:
-        raise ObservationError(f"{label} is unavailable") from error
-
-
-def _ensure_private_child_directory(parent_fd: int, name: str, label: str) -> int:
-    created = False
-    try:
-        os.mkdir(name, 0o700, dir_fd=parent_fd)
-        created = True
-    except FileExistsError:
-        pass
-    except OSError as error:
-        raise ObservationError(f"{label} could not be created") from error
-    descriptor = _open_private_child_directory(parent_fd, name, label)
-    if created:
-        os.fsync(parent_fd)
-    return descriptor
-
-
-def _entry_exists(directory_fd: int, name: str) -> bool:
-    try:
-        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        return True
-    except FileNotFoundError:
-        return False
-
-
-def _create_private_temporary(directory_fd: int, prefix: str) -> tuple[int, str]:
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    for _ in range(16):
-        name = f".{prefix}-{secrets.token_hex(12)}"
-        try:
-            return os.open(name, flags, 0o600, dir_fd=directory_fd), name
-        except FileExistsError:
-            continue
-    raise ObservationError("private temporary file could not be allocated")
-
-
-def _unlink_temporary(directory_fd: int, name: str) -> None:
-    try:
-        os.unlink(name, dir_fd=directory_fd)
-        os.fsync(directory_fd)
-    except FileNotFoundError:
-        pass
-
-
-def _observation_id_key(workspace_fd: int) -> bytes:
-    if _entry_exists(workspace_fd, OBSERVATION_ID_KEY_NAME):
-        key = _read_private_file(
-            OBSERVATION_ID_KEY_NAME,
-            "observation ID key",
-            OBSERVATION_ID_KEY_BYTES,
-            workspace_fd,
-        )
-        if len(key) != OBSERVATION_ID_KEY_BYTES:
-            raise ObservationError("observation ID key size is invalid")
-        return key
-    generated = secrets.token_bytes(OBSERVATION_ID_KEY_BYTES)
-    descriptor, temporary = _create_private_temporary(workspace_fd, "observation-key")
-    published = False
-    try:
-        with os.fdopen(descriptor, "wb") as target:
-            os.fchmod(target.fileno(), 0o600)
-            target.write(generated)
-            target.flush()
-            os.fsync(target.fileno())
-        try:
-            os.link(
-                temporary,
-                OBSERVATION_ID_KEY_NAME,
-                src_dir_fd=workspace_fd,
-                dst_dir_fd=workspace_fd,
-                follow_symlinks=False,
-            )
-            published = True
-            os.fsync(workspace_fd)
-        except FileExistsError:
-            pass
-    finally:
-        _unlink_temporary(workspace_fd, temporary)
-    if published:
-        return generated
-    key = _read_private_file(
-        OBSERVATION_ID_KEY_NAME,
-        "observation ID key",
-        OBSERVATION_ID_KEY_BYTES,
-        workspace_fd,
-    )
-    if len(key) != OBSERVATION_ID_KEY_BYTES:
-        raise ObservationError("observation ID key size is invalid")
-    return key
-
-
-def _copy_evidence(
-    payload: bytes, directory_fd: int, destination: str, expected_hash: str
-) -> None:
-    if _entry_exists(directory_fd, destination):
-        stored = _read_private_file(
-            destination, "stored evidence", MAX_EVIDENCE_BYTES, directory_fd
-        )
-        if _sha256(stored) != expected_hash:
-            raise ObservationError("stored evidence hash conflicts")
-        return
-    file_descriptor, temporary = _create_private_temporary(directory_fd, "evidence")
-    try:
-        with os.fdopen(file_descriptor, "wb") as target:
-            os.fchmod(target.fileno(), 0o600)
-            target.write(payload)
-            target.flush()
-            os.fsync(target.fileno())
-        if _sha256(payload) != expected_hash:
-            raise ObservationError("evidence digest changed during recording")
-        try:
-            os.link(
-                temporary,
-                destination,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            os.fsync(directory_fd)
-        except FileExistsError:
-            stored = _read_private_file(
-                destination, "stored evidence", MAX_EVIDENCE_BYTES, directory_fd
-            )
-            if _sha256(stored) != expected_hash:
-                raise ObservationError("stored evidence hash conflicts")
-    finally:
-        _unlink_temporary(directory_fd, temporary)
-
-
-def _write_record(directory_fd: int, name: str, record: dict[str, Any]) -> str:
-    if _entry_exists(directory_fd, name):
-        existing = _load_json_object(
-            name, "stored observation", MAX_INPUT_BYTES, directory_fd
-        )
-        existing_without_time = dict(existing)
-        existing_without_time.pop("recorded_at", None)
-        candidate_without_time = dict(record)
-        candidate_without_time.pop("recorded_at", None)
-        if existing_without_time != candidate_without_time:
-            raise ObservationError("stored observation identity conflicts")
-        return "existing"
-    file_descriptor, temporary = _create_private_temporary(
-        directory_fd, "observation"
-    )
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            json.dump(record, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(
-                temporary,
-                name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            os.fsync(directory_fd)
-        except FileExistsError:
-            existing = _load_json_object(
-                name, "stored observation", MAX_INPUT_BYTES, directory_fd
-            )
-            existing.pop("recorded_at", None)
-            candidate = dict(record)
-            candidate.pop("recorded_at", None)
-            if existing != candidate:
-                raise ObservationError("stored observation identity conflicts")
-            return "existing"
-    finally:
-        _unlink_temporary(directory_fd, temporary)
-    return "recorded"
 
 
 def _evidence_path(input_path: Path, value: str) -> Path:
@@ -667,13 +329,15 @@ def _record(input_path: Path, workspace: Path) -> dict[str, Any]:
         )
         observation_key = _observation_id_key(workspace_fd)
         return _persist_observation(
-            observation,
-            egress,
-            evidence_payload,
-            evidence_hash,
-            evidence_fd,
-            records_fd,
-            observation_key,
+            PersistenceContext(
+                observation,
+                egress,
+                evidence_payload,
+                evidence_hash,
+                evidence_fd,
+                records_fd,
+                observation_key,
+            )
         )
     finally:
         for descriptor in (records_fd, evidence_fd, observations_fd, workspace_fd):
@@ -681,15 +345,11 @@ def _record(input_path: Path, workspace: Path) -> dict[str, Any]:
                 os.close(descriptor)
 
 
-def _persist_observation(
-    observation: dict[str, Any],
-    egress: EgressContext,
-    evidence_payload: bytes,
-    evidence_hash: str,
-    evidence_fd: int,
-    records_fd: int,
-    observation_key: bytes,
-) -> dict[str, Any]:
+def _persist_observation(context: PersistenceContext) -> dict[str, Any]:
+    observation = context.observation
+    egress = context.egress
+    evidence_payload = context.evidence_payload
+    evidence_hash = context.evidence_hash
     environment = {
         "egress_profile_name": egress.profile_name,
         "egress_profile_hash": hashlib.sha256(egress.profile_name.encode()).hexdigest()[:16],
@@ -719,7 +379,7 @@ def _persist_observation(
         "trust": "observed_unverified",
     }
     observation_id = "obs-" + hmac.new(
-        observation_key, _canonical_bytes(record_base), hashlib.sha256
+        context.observation_key, _canonical_bytes(record_base), hashlib.sha256
     ).hexdigest()[:24]
     record = {
         **record_base,
@@ -729,8 +389,16 @@ def _persist_observation(
         .isoformat()
         .replace("+00:00", "Z"),
     }
-    _copy_evidence(evidence_payload, evidence_fd, f"{evidence_hash}.{suffix}", evidence_hash)
-    status = _write_record(records_fd, f"{observation_id}.json", record)
+    _copy_evidence(
+        evidence_payload,
+        context.evidence_fd,
+        f"{evidence_hash}.{suffix}",
+        evidence_hash,
+        MAX_EVIDENCE_BYTES,
+    )
+    status = _write_record(
+        context.records_fd, f"{observation_id}.json", record, MAX_INPUT_BYTES
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "observation_id": observation_id,
@@ -769,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "record":
             print(json.dumps(_record(args.input, args.workspace), sort_keys=True))
             return 0
-    except ObservationError as error:
+    except (ObservationError, ObservationStorageError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     except OSError:
