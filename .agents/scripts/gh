@@ -241,11 +241,13 @@ unset _cand
 # -----------------------------------------------------------------------------
 _SHIM_READ_REWRITE=""
 case "${1:-}:${2:-}" in
-	auth:git-credential | auth:token)
-		# These auth commands only read local credential storage. Counting them as
-		# GraphQL creates false unknown-quota attempts, while transport framing can
-		# break keychain recovery under sudo (GH#27777, GH#29153). Preserve native
-		# stdout, stderr, and exit status byte-for-byte without logging token output.
+	auth:*)
+		# Authentication is a credential-control path, not application API traffic.
+		# Login, logout, refresh, status, token, and git-credential may prompt or
+		# access the OS keyring. Transport framing and telemetry can alter interactive
+		# behaviour or retain sensitive diagnostics (GH#27777, GH#29153). Preserve
+		# native stdin, stdout, stderr, and exit status byte-for-byte for every auth
+		# subcommand.
 		_real_gh="$(_find_real_gh)" || {
 			printf '[aidevops] gh shim: real gh binary not found on PATH\n' >&2
 			exit 127

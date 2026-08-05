@@ -77,8 +77,10 @@ readonly APPROVAL_MARKER="<!-- aidevops-signed-approval -->"
 readonly _APPROVAL_NMR_LABEL="needs-maintainer-review"
 readonly _APPROVAL_AUTO_DISPATCH_LABEL="auto-dispatch"
 readonly _APPROVAL_MISSING_FIELD="__missing__"
+readonly _APPROVAL_GH_INVALID_TOKEN="invalid-token"
 
 _APPROVAL_GH_RATE_LIMIT_RESET=""
+_APPROVAL_GH_AUTH_FAILURE=""
 
 # shellcheck source=approval-snapshot-v2.sh
 source "${SCRIPT_DIR}/approval-snapshot-v2.sh"
@@ -142,24 +144,36 @@ _print_error() {
 	return 0
 }
 
-_approval_probe_core_rate_limit() {
+_approval_probe_auth_failure() {
 	local response=""
-	local api_rc=0
 	# The diagnostic request must respect any active shared secondary cooldown.
 	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
 		_gh_secondary_cooldown_preflight read >/dev/null 2>&1 || return 1
 	fi
-	response=$(gh api user --include --silent 2>/dev/null) || api_rc=$?
-	[[ "$api_rc" -ne 0 && -n "$response" ]] || return 1
+	response=$(gh api user --include --silent 2>/dev/null) || true
+	[[ -n "$response" ]] || return 1
 	printf '%s\n' "$response" | awk '
 		{ sub(/\r$/, "", $0) }
-		$1 ~ /^HTTP\// { status = $2 }
+		$1 ~ /^HTTP\// {
+			status = $2
+			remaining = ""
+			reset = ""
+			resource = ""
+		}
 		tolower($1) == "x-ratelimit-remaining:" { remaining = $2 }
 		tolower($1) == "x-ratelimit-reset:" { reset = $2 }
 		tolower($1) == "x-ratelimit-resource:" { resource = tolower($2) }
 		END {
-			if (status == "403" && remaining == "0" && reset ~ /^[0-9]+$/ && resource == "core") {
-				printf "%s\t%s", remaining, reset
+			if (status ~ /^2[0-9][0-9]$/) {
+				printf "authenticated"
+				exit 0
+			}
+			if ((status == "403" || status == "429") && remaining == "0" && reset ~ /^[0-9]+$/ && resource == "core") {
+				printf "core-rate-limit\t%s", reset
+				exit 0
+			}
+			if (status == "401") {
+				printf "invalid-token"
 				exit 0
 			}
 			exit 1
@@ -174,14 +188,32 @@ _approval_report_core_rate_limit() {
 	return 0
 }
 
+_approval_safe_gh_host() {
+	local host="${GH_HOST:-github.com}"
+	if [[ ! "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+		host="github.com"
+	fi
+	printf '%s' "$host"
+	return 0
+}
+
+_approval_report_invalid_token() {
+	local host=""
+	host="$(_approval_safe_gh_host)"
+	_print_error "GitHub rejected the invoking user's stored gh credential (HTTP 401); this is not a sudo credential-forwarding failure"
+	_print_info "Replace the rejected credential as your normal user: gh auth logout -h ${host}, then gh auth login -h ${host} -s workflow. Do not forward the rejected token through GH_TOKEN."
+	return 0
+}
+
 _approval_use_gh_token() {
 	local token="${1:-}"
 	local previous_token="${GH_TOKEN:-}"
 	local token_was_set="${GH_TOKEN+x}"
-	local quota=""
-	local remaining=""
+	local failure=""
+	local failure_kind=""
 	local reset=""
 	_APPROVAL_GH_RATE_LIMIT_RESET=""
+	_APPROVAL_GH_AUTH_FAILURE=""
 
 	if [[ -z "$token" ]]; then
 		return 1
@@ -191,11 +223,19 @@ _approval_use_gh_token() {
 	if gh auth status >/dev/null 2>&1; then
 		return 0
 	fi
-	if quota=$(_approval_probe_core_rate_limit); then
-		IFS=$'\t' read -r remaining reset <<<"$quota"
-		if [[ "$remaining" == "0" ]]; then
+	if failure=$(_approval_probe_auth_failure); then
+		IFS=$'\t' read -r failure_kind reset <<<"$failure"
+		case "$failure_kind" in
+		authenticated)
+			return 0
+			;;
+		core-rate-limit)
 			_APPROVAL_GH_RATE_LIMIT_RESET="$reset"
-		fi
+			;;
+		"$_APPROVAL_GH_INVALID_TOKEN")
+			_APPROVAL_GH_AUTH_FAILURE="$failure_kind"
+			;;
+		esac
 	fi
 
 	if [[ -n "$token_was_set" ]]; then
@@ -262,6 +302,7 @@ _approval_user_gh_token() {
 
 _require_gh_auth() {
 	_APPROVAL_GH_RATE_LIMIT_RESET=""
+	_APPROVAL_GH_AUTH_FAILURE=""
 	if gh auth status >/dev/null 2>&1; then
 		return 0
 	fi
@@ -277,6 +318,10 @@ _require_gh_auth() {
 			_approval_report_core_rate_limit "$_APPROVAL_GH_RATE_LIMIT_RESET"
 			return 1
 		fi
+		if [[ "$_APPROVAL_GH_AUTH_FAILURE" == "$_APPROVAL_GH_INVALID_TOKEN" ]]; then
+			_approval_report_invalid_token
+			return 1
+		fi
 
 		# Read token directly from gh config file for non-keyring storage.
 		local real_home
@@ -290,6 +335,10 @@ _require_gh_auth() {
 			fi
 			if [[ -n "$_APPROVAL_GH_RATE_LIMIT_RESET" ]]; then
 				_approval_report_core_rate_limit "$_APPROVAL_GH_RATE_LIMIT_RESET"
+				return 1
+			fi
+			if [[ "$_APPROVAL_GH_AUTH_FAILURE" == "$_APPROVAL_GH_INVALID_TOKEN" ]]; then
+				_approval_report_invalid_token
 				return 1
 			fi
 		fi

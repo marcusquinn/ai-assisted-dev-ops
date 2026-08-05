@@ -261,22 +261,18 @@ else
 	_fail "native multi-frame REST quota attribution" "summary: $native_multi_summary log: $(cat "$native_multi_log" 2>/dev/null || true)"
 fi
 
-native_single_log="$TMP/exact-native-single-rest.log"
-native_single_state="$TMP/exact-native-single-rest-state"
+native_single_log="$TMP/exact-native-auth-control.log"
 : >"$native_single_log"
 GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
-	AIDEVOPS_GH_QUOTA_STATE_DIR="$native_single_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
+	AIDEVOPS_TEMP_DIR="$exact_temp" \
 	AIDEVOPS_GH_API_LOG="$native_single_log" STUB_GH_DEBUG_RESPONSE=1 \
 	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core \
 	STUB_GH_DEBUG_STATUS=200 STUB_GH_DEBUG_USED=107 STUB_GH_DEBUG_REMAINING=4893 \
 	STUB_GH_DEBUG_RESET=2000 "$SHIM_RUN" auth status >/dev/null 2>/dev/null
-if [[ "$(_read_last_attempt_field "$native_single_log" 2)" == "gh_auth_status" \
-	&& "$(_read_last_attempt_field "$native_single_log" 3)" == "rest" \
-	&& "$(_read_last_attempt_field "$native_single_log" 15)" == "200" \
-	&& "$(_read_attempt_quota "$native_single_log")" == "1" ]]; then
-	_pass "native single-frame auth REST response records exact cost"
+if [[ ! -s "$native_single_log" ]]; then
+	_pass "native auth control bypasses exact quota transport"
 else
-	_fail "native single-frame auth REST quota attribution" "log: $(cat "$native_single_log" 2>/dev/null || true)"
+	_fail "native auth control quota bypass" "log: $(cat "$native_single_log" 2>/dev/null || true)"
 fi
 
 opaque_single_log="$TMP/exact-native-opaque-single-rest.log"
@@ -375,9 +371,9 @@ zero_frame_state="$TMP/exact-zero-frame-state"
 : >"$zero_frame_log"
 GH_TOKEN=fixture-token AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
 	AIDEVOPS_GH_QUOTA_STATE_DIR="$zero_frame_state" AIDEVOPS_TEMP_DIR="$exact_temp" \
-	AIDEVOPS_GH_API_LOG="$zero_frame_log" "$SHIM_RUN" auth status >/dev/null 2>/dev/null
+	AIDEVOPS_GH_API_LOG="$zero_frame_log" "$SHIM_RUN" repo view owner/repo >/dev/null 2>/dev/null
 if [[ "$(grep -c $'\tgh-quota-bootstrap\t.*\tattempt\t' "$zero_frame_log" || true)" == "1" \
-	&& "$(grep -c $'\tgh_auth_status\t.*\tattempt\t' "$zero_frame_log" || true)" == "0" ]]; then
+	&& "$(grep -c $'\tgh_repo_view\t.*\tattempt\t' "$zero_frame_log" || true)" == "0" ]]; then
 	_pass "valid zero-response capture adds no synthetic transport attempt"
 else
 	_fail "zero-response exact capture" "log: $(cat "$zero_frame_log" 2>/dev/null || true)"

@@ -760,6 +760,11 @@ if [[ "${1:-}:${2:-}" == "auth:token" ]]; then
 	printf 'native-auth-token-stderr\n' >&2
 	exit "${NATIVE_AUTH_TOKEN_STATUS:-0}"
 fi
+if [[ "${1:-}:${2:-}" == "auth:refresh" ]]; then
+	printf 'native-auth-refresh-stdout\n'
+	printf 'native-auth-refresh-stderr\n' >&2
+	exit "${NATIVE_AUTH_REFRESH_STATUS:-0}"
+fi
 page=1
 jq_requested=0
 expect_jq=0
@@ -887,11 +892,44 @@ auth_token_failure_status=$?
 set -e
 assert_eq "local auth token preserves native failure status" "23" "$auth_token_failure_status"
 
+# Credential-mutating auth commands must bypass transport framing too. This
+# keeps device-flow prompts and Keychain writes under native gh control.
+rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
+auth_refresh_expected_output="$TMPDIR/auth-refresh-output.expected"
+auth_refresh_actual_output="$TMPDIR/auth-refresh-output.actual"
+auth_refresh_expected_error="$TMPDIR/auth-refresh-error.expected"
+auth_refresh_actual_error="$TMPDIR/auth-refresh-error.actual"
+printf 'native-auth-refresh-stdout\n' >"$auth_refresh_expected_output"
+printf 'native-auth-refresh-stderr\n' >"$auth_refresh_expected_error"
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
+	"$SHIM_FIXTURE/gh" auth refresh -h github.com \
+	>"$auth_refresh_actual_output" 2>"$auth_refresh_actual_error"
+auth_refresh_output_status=0
+cmp -s "$auth_refresh_expected_output" "$auth_refresh_actual_output" || auth_refresh_output_status=$?
+assert_eq "auth refresh preserves stdout bytes" "0" "$auth_refresh_output_status"
+auth_refresh_error_status=0
+cmp -s "$auth_refresh_expected_error" "$auth_refresh_actual_error" || auth_refresh_error_status=$?
+assert_eq "auth refresh preserves stderr bytes" "0" "$auth_refresh_error_status"
+assert_eq "auth refresh invokes native gh once" "1" "$(grep -c '^auth$' "$NATIVE_ATTEMPT_LOG")"
+assert_path_absent "auth refresh emits no API telemetry" "$AIDEVOPS_GH_API_LOG"
+auth_refresh_failure_status=0
+set +e
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" NATIVE_AUTH_REFRESH_STATUS=29 \
+	"$SHIM_FIXTURE/gh" auth refresh -h github.com >/dev/null 2>/dev/null
+auth_refresh_failure_status=$?
+set -e
+assert_eq "auth refresh preserves native failure status" "29" "$auth_refresh_failure_status"
+
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
 PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
 	"$SHIM_FIXTURE/gh" auth git-credential-extra get >/dev/null
-assert_file_exists "near-match auth command retains API telemetry" "$AIDEVOPS_GH_API_LOG"
-assert_eq "near-match auth command retains one transport attempt" "1" \
+assert_path_absent "all auth control commands bypass API telemetry" "$AIDEVOPS_GH_API_LOG"
+
+rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
+PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
+	"$SHIM_FIXTURE/gh" config get git_protocol >/dev/null
+assert_file_exists "non-auth command retains API telemetry" "$AIDEVOPS_GH_API_LOG"
+assert_eq "non-auth command retains one transport attempt" "1" \
 	"$(awk -F'\t' '$9 == "attempt" { count++ } END { print count + 0 }' "$AIDEVOPS_GH_API_LOG")"
 
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
