@@ -211,13 +211,122 @@ _runtime_diff_is_comments_only() {
 	return 1
 }
 
-_runtime_context_has_critical_pattern() {
+_runtime_context_has_session_pattern() {
 	local context="$1"
-	if [[ "$context" =~ (^|[^[:alnum:]_])(payments?|billing|auth|authentication|authorization|sessions?|credentials?|crypto|cryptograph(y|ic|ical)?)([^[:alnum:]_]|$) ]] ||
+	if [[ "$context" =~ (^|[^[:alnum:]_])sessions?([^[:alnum:]_]|$) ]]; then
+		return 0
+	fi
+	return 1
+}
+
+_runtime_context_has_non_session_critical_pattern() {
+	local context="$1"
+	if [[ "$context" =~ (^|[^[:alnum:]_])(payments?|billing|auth|authentication|authorization|credentials?|crypto|cryptograph(y|ic|ical)?)([^[:alnum:]_]|$) ]] ||
 		[[ "$context" =~ (^|[^[:alnum:]_])data[[:space:]_/-]*delet(e|es|ed|ing|ion)([^[:alnum:]_]|$) ]] ||
 		[[ "$context" =~ (^|[^[:alnum:]_])delet(e|es|ed|ing|ion)[[:space:]_/-]*data([^[:alnum:]_]|$) ]]; then
 		return 0
 	fi
+	return 1
+}
+
+_runtime_context_has_critical_pattern() {
+	local context="$1"
+	_runtime_context_has_non_session_critical_pattern "$context" && return 0
+	_runtime_context_has_session_pattern "$context" && return 0
+	return 1
+}
+
+# Remove complete single-line string and regular-expression literals. If a
+# literal is incomplete or ambiguous, return the original line so classification
+# remains fail-closed. Regex literals are recognized only after an expression
+# delimiter, which covers array/object/assignment forms without treating division
+# or paths as literals.
+_runtime_line_without_complete_literals() {
+	local line="$1"
+	local output="" mode="" character="" next_character=""
+	local previous_significant="" escaped=0 index=0 length=${#line}
+	while [[ "$index" -lt "$length" ]]; do
+		character="${line:$index:1}"
+		if [[ -n "$mode" ]]; then
+			if [[ "$escaped" -eq 1 ]]; then
+				escaped=0
+				index=$((index + 1))
+				continue
+			fi
+			if [[ "$character" == "\\" ]]; then
+				escaped=1
+				index=$((index + 1))
+				continue
+			fi
+			case "$mode" in
+			single) [[ "$character" == "'" ]] && mode="" ;;
+			double) [[ "$character" == '"' ]] && mode="" ;;
+			backtick) [[ "$character" == '`' ]] && mode="" ;;
+			regex) [[ "$character" == "/" ]] && mode="" ;;
+			esac
+			index=$((index + 1))
+			continue
+		fi
+
+		case "$character" in
+		"'") mode="single" ;;
+		'"') mode="double" ;;
+		'`') mode="backtick" ;;
+		"/")
+			next_character="${line:$((index + 1)):1}"
+			if [[ "$next_character" != "/" && "$next_character" != "*" ]]; then
+				case "$previous_significant" in
+				"" | "[" | "(" | "{" | "=" | "," | ":" | ";" | "!" | "?" | "&" | "|") mode="regex" ;;
+				*) output+="$character" ;;
+				esac
+			else
+				output+="$character"
+			fi
+			;;
+		*) output+="$character" ;;
+		esac
+		if [[ -z "$mode" && ! "$character" =~ [[:space:]] ]]; then
+			previous_significant="$character"
+		fi
+		index=$((index + 1))
+	done
+
+	if [[ -n "$mode" ]]; then
+		printf '%s\n' "$line"
+	else
+		printf '%s\n' "$output"
+	fi
+	return 0
+}
+
+_runtime_context_has_session_operation_pattern() {
+	local context="$1"
+	if [[ "$context" =~ (^|[^[:alnum:]_])(create|destroy|delete|revoke|rotate|validate|refresh|expire|invalidate|set|clear)[[:space:]_/-]*(session|cookie|token|login|logout|store)([^[:alnum:]_]|$) ]] ||
+		[[ "$context" =~ (^|[^[:alnum:]_])(session|cookie|token|login|logout)[[:space:]_/-]*(create|destroy|delete|revoke|rotate|validate|refresh|expire|invalidate|set|clear|store|manager|handler|service)([^[:alnum:]_]|$) ]]; then
+		return 0
+	fi
+	return 1
+}
+
+# Raw diff hunks are untyped text. Preserve conservative matching for every
+# critical category except the broad `session` noun; for that noun, ignore only
+# complete literals that have no adjacent executable session operation.
+_runtime_diff_has_critical_pattern() {
+	local context="$1"
+	local line="" content="" executable_context=""
+	while IFS= read -r line; do
+		case "$line" in
+		"+++ "* | "--- "* | "diff --git "* | "index "* | "@@"*) continue ;;
+		+* | -*) content="${line:1}" ;;
+		*) continue ;;
+		esac
+		_runtime_context_has_non_session_critical_pattern "$content" && return 0
+		if _runtime_context_has_session_pattern "$content"; then
+			executable_context=$(_runtime_line_without_complete_literals "$content") || return 0
+			_runtime_context_has_session_pattern "$executable_context" && return 0
+			_runtime_context_has_session_operation_pattern "$executable_context" && return 0
+		fi
+	done <<<"$context"
 	return 1
 }
 
@@ -267,6 +376,7 @@ _derive_runtime_risk() {
 	local runtime_paths=""
 	local context="${summary_what}"
 	local diff_context=""
+	local runtime_context=""
 	local detected_risk="Medium"
 
 	if _runtime_paths_are_low "$files_changed"; then
@@ -275,15 +385,17 @@ _derive_runtime_risk() {
 		detected_risk="Low"
 	else
 		runtime_paths=$(_runtime_paths_keyword_context "$files_changed") || return 1
-		context="${context} ${runtime_paths}"
+		runtime_context="${context} ${runtime_paths}"
 		if [[ -n "$base_ref" ]]; then
 			if ! diff_context=$(_runtime_diff_keyword_context "$base_ref"); then
 				return 1
 			fi
-			context="${context} ${diff_context}"
 		fi
-		context=$(printf '%s' "$context" | tr '[:upper:]' '[:lower:]')
-		if _runtime_context_has_critical_pattern "$context"; then
+		runtime_context=$(printf '%s' "$runtime_context" | tr '[:upper:]' '[:lower:]')
+		diff_context=$(printf '%s' "$diff_context" | tr '[:upper:]' '[:lower:]')
+		context="${runtime_context} ${diff_context}"
+		if _runtime_context_has_critical_pattern "$runtime_context" ||
+			_runtime_diff_has_critical_pattern "$diff_context"; then
 			detected_risk="Critical"
 		elif _runtime_context_has_high_pattern "$context"; then
 			detected_risk="High"

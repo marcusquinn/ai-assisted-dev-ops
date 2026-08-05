@@ -143,6 +143,51 @@ comment_body=$(cd "$COMMENT_REPO" && _build_pr_body \
 	"$comment_base")
 assert_contains "comment-only source change remains Low" "$comment_body" "**Risk level:** Low"
 
+LITERAL_REPO="${TEST_ROOT}/literal-repo"
+mkdir -p "${LITERAL_REPO}/src"
+/usr/bin/git -C "$LITERAL_REPO" init -q
+/usr/bin/git -C "$LITERAL_REPO" config user.name "Runtime Risk Test"
+/usr/bin/git -C "$LITERAL_REPO" config user.email "runtime-risk@example.invalid"
+printf 'export const ignored = [];\n' >"${LITERAL_REPO}/src/browser-qa.js"
+/usr/bin/git -C "$LITERAL_REPO" add src/browser-qa.js
+/usr/bin/git -C "$LITERAL_REPO" -c commit.gpgSign=false commit -qm "fixture: add browser QA helper"
+literal_base=$(/usr/bin/git -C "$LITERAL_REPO" rev-parse HEAD)
+cat >"${LITERAL_REPO}/src/browser-qa.js" <<'EOF'
+export const ignored = [
+  /Session failed to send/i,
+  "Session transport closed",
+];
+EOF
+/usr/bin/git -C "$LITERAL_REPO" add src/browser-qa.js
+/usr/bin/git -C "$LITERAL_REPO" -c commit.gpgSign=false commit -qm "fixture: filter browser diagnostics"
+literal_body=$(cd "$LITERAL_REPO" && _build_pr_body \
+	"29604" \
+	"Filter browser console noise" \
+	"focused tests pass" \
+	"src/browser-qa.js" \
+	"" \
+	"Resolves" \
+	"" \
+	"" \
+	"$literal_base")
+assert_contains "quoted session diagnostics remain Medium" "$literal_body" "**Risk level:** Medium"
+
+literal_session_base=$(/usr/bin/git -C "$LITERAL_REPO" rev-parse HEAD)
+printf 'export const session = createSession();\n' >>"${LITERAL_REPO}/src/browser-qa.js"
+/usr/bin/git -C "$LITERAL_REPO" add src/browser-qa.js
+/usr/bin/git -C "$LITERAL_REPO" -c commit.gpgSign=false commit -qm "fixture: add session management"
+literal_session_body=$(cd "$LITERAL_REPO" && _build_pr_body \
+	"29604" \
+	"Change runtime behavior" \
+	"runtime-verified with session lifecycle fixtures" \
+	"src/browser-qa.js" \
+	"" \
+	"Resolves" \
+	"" \
+	"" \
+	"$literal_session_base")
+assert_contains "executable session behavior remains Critical" "$literal_session_body" "**Risk level:** Critical"
+
 MIXED_REPO="${TEST_ROOT}/mixed-repo"
 mkdir -p "${MIXED_REPO}/src" "${MIXED_REPO}/docs"
 /usr/bin/git -C "$MIXED_REPO" init -q
