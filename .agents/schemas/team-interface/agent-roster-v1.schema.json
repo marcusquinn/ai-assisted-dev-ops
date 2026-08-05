@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:agent-roster:v1",
+  "title": "aidevops canonical agent roster contract v1",
+  "$ref": "#/$defs/agent_roster",
+  "$defs": {
+    "core_stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "source_ref": {
+      "type": "string",
+      "pattern": "^agents:[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$",
+      "not": {"pattern": "(^|/)\\.\\.(/|$)"}
+    },
+    "agent_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "kind",
+        "display_name",
+        "description",
+        "source_ref",
+        "source_digest",
+        "workload_tier"
+      ],
+      "properties": {
+        "agent_id": {
+          "allOf": [
+            {"$ref": "#/$defs/core_stable_id"},
+            {"pattern": "^agent\\.[a-z0-9][a-z0-9._-]*$"}
+          ]
+        },
+        "kind": {"enum": ["primary", "framework_guide"]},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 100},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "source_ref": {"$ref": "#/$defs/source_ref"},
+        "source_digest": {"$ref": "#/$defs/sha256_digest"},
+        "workload_tier": {"enum": ["simple", "standard", "thinking"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "framework_guide"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "agent_id": {"const": "agent.aidevops-guide"},
+              "source_ref": {"const": "agents:aidevops.md"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"kind": {"const": "primary"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "agent_id": {"not": {"const": "agent.aidevops-guide"}}
+            }
+          }
+        }
+      ]
+    },
+    "agent_roster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "roster_id", "roster_digest", "agents"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "agent_roster"},
+        "roster_id": {"const": "agent-roster.aidevops"},
+        "roster_digest": {"$ref": "#/$defs/sha256_digest"},
+        "agents": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/agent_record"},
+          "contains": {
+            "type": "object",
+            "properties": {"kind": {"const": "framework_guide"}},
+            "required": ["kind"]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    }
+  }
+}

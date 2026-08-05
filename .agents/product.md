@@ -1,4 +1,5 @@
 ---
+name: product
 description: Product management - validation, onboarding, monetisation, growth, UI design, and analytics for all app types
 mode: agent
 subagents:

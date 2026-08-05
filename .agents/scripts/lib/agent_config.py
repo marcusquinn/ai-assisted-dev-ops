@@ -243,14 +243,15 @@ def sort_key(name):
 # AGENT DISCOVERY
 # =============================================================================
 
-def discover_primary_agents(agents_dir):
-    """Discover primary agents from root-level .md files.
+def iter_primary_agent_sources(agents_dir):
+    """Yield canonical primary-agent source records in discovery order.
 
-    Returns (primary_agents, sorted_agents, subagent_filtered_count).
+    ``source_name`` falls back to the filename stem for compatibility with
+    custom and test agents created before explicit names were required. New
+    portable consumers can require ``name_explicit`` without changing the
+    existing runtime discovery contract.
     """
-    primary_agents = {}
-    subagent_filtered_count = 0
-
+    records = []
     for filepath in glob.glob(os.path.join(agents_dir, "*.md")):
         filename = os.path.basename(filepath)
         if filename in SKIP_FILES:
@@ -260,6 +261,7 @@ def discover_primary_agents(agents_dir):
         frontmatter = parse_frontmatter(filepath)
         subagents = frontmatter.get('subagents', None)
         model_tier = frontmatter.get('model', None)
+        explicit_name = frontmatter.get('name', None)
 
         if not isinstance(subagents, (list, type(None))):
             print(f"  Warning: {display_name} has malformed subagents value "
@@ -267,11 +269,39 @@ def discover_primary_agents(agents_dir):
                   file=sys.stderr)
             subagents = None
 
-        if subagents:
+        source_name = explicit_name if explicit_name else os.path.splitext(filename)[0]
+        records.append({
+            "path": filepath,
+            "filename": filename,
+            "frontmatter": frontmatter,
+            "source_name": source_name,
+            "name_explicit": bool(explicit_name),
+            "display_name": display_name,
+            "subagents": subagents,
+            "workload_tier": model_tier,
+        })
+
+    for record in sorted(records, key=lambda item: sort_key(item["display_name"])):
+        yield record
+
+
+def discover_primary_agents(agents_dir):
+    """Discover primary agents from root-level .md files.
+
+    Returns (primary_agents, sorted_agents, subagent_filtered_count).
+    """
+    primary_agents = {}
+    subagent_filtered_count = 0
+
+    for record in iter_primary_agent_sources(agents_dir):
+        if record["subagents"]:
             subagent_filtered_count += 1
 
-        primary_agents[display_name] = get_agent_config(
-            display_name, filename, subagents, model_tier
+        primary_agents[record["display_name"]] = get_agent_config(
+            record["display_name"],
+            record["filename"],
+            record["subagents"],
+            record["workload_tier"],
         )
 
     sorted_agents = dict(sorted(primary_agents.items(), key=lambda x: sort_key(x[0])))
