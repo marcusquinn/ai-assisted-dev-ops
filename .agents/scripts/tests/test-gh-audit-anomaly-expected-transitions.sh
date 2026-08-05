@@ -217,6 +217,30 @@ jq -e '.capture_status == "ok" and .title_len == 19 and .body_len == 14 and .lab
 	<<<"$wrapped_issue" >/dev/null || fail "issue audit capture bypassed the REST-capable read wrapper"
 jq -e '.capture_status == "ok" and .title_len == 16 and .body_len == 14 and .labels == ["monitoring"]' \
 	<<<"$wrapped_pr" >/dev/null || fail "PR audit capture bypassed the REST-capable read wrapper"
+
+gh_issue_view() {
+	return 1
+}
+gh_pr_view() {
+	return 1
+}
+gh() {
+	local resource="${1:-}"
+	local operation="${2:-}"
+	[[ "$operation" == "view" ]] || return 1
+	case "$resource" in
+	issue) printf '%s\n' '{"title":"Native issue snapshot","body":"Protected body","labels":[{"name":"monitoring"}]}' ;;
+	pr) printf '%s\n' '{"title":"Native PR snapshot","body":"Protected body","labels":[{"name":"monitoring"}]}' ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+native_fallback_issue="$(_gh_audit_fetch_issue_state_json "8" "example/repo")"
+native_fallback_pr="$(_gh_audit_fetch_pr_state_json "9" "example/repo")"
+jq -e '.capture_status == "ok" and .title_len == 21 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$native_fallback_issue" >/dev/null || fail "issue audit capture did not fall back after the REST-capable wrapper failed"
+jq -e '.capture_status == "ok" and .title_len == 18 and .body_len == 14 and .labels == ["monitoring"]' \
+	<<<"$native_fallback_pr" >/dev/null || fail "PR audit capture did not fall back after the REST-capable wrapper failed"
 unset -f gh_issue_view gh_pr_view
 
 gh() {
