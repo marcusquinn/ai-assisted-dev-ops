@@ -884,8 +884,13 @@ jobs:
               continue
             fi
             PR_STATE=$(printf '%s' "$PR_INFO" | jq -r '.state // empty' 2>/dev/null || true)
+            if [[ -z "$PR_STATE" ]]; then
+              echo "::error::Could not validate state for PR #$PR_NUM from REST metadata"
+              RERUN_SCHEDULING_FAILED=true
+              continue
+            fi
             if [[ "$PR_STATE" != "open" ]]; then
-              echo "::warning::PR #$PR_NUM is ${PR_STATE:-unavailable} — skipping obsolete maintainer-gate refresh"
+              echo "::warning::PR #$PR_NUM is $PR_STATE — skipping obsolete maintainer-gate refresh"
               continue
             fi
             HEAD_SHA=$(printf '%s' "$PR_INFO" | jq -r '.head_sha // empty' 2>/dev/null || true)
@@ -980,7 +985,7 @@ jobs:
             # -----------------------------------------------------------------
             RUN_LOOKUP=""
             if ! RUN_LOOKUP=$(gh api \
-              "repos/${REPO}/actions/workflows/maintainer-gate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request_target&per_page=10" \
+              "repos/${REPO}/actions/workflows/maintainer-gate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request_target&per_page=100" \
               --jq '{
                 completed: ([.workflow_runs[] | select(.status == "completed" and (.conclusion != null)) | {id, status, conclusion}][0] // null),
                 active: ([.workflow_runs[] | select(.status != "completed") | {id, status}][0] // null)

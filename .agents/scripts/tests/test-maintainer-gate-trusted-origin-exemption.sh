@@ -171,6 +171,10 @@ else
 fi
 assert_contains "rerun_maintainer_gate_with_retry" \
 	"Job 3 defines bounded rerun scheduling"
+assert_contains "per_page=100" \
+	"Job 3 queries multiple exact-head workflow runs"
+assert_contains 'select\(\.status == "completed" and \(\.conclusion != null\)\)' \
+	"Job 3 selects a terminal rerunnable workflow run"
 assert_contains "post_maintainer_gate_status_with_retry error" \
 	"Job 3 replaces unresolved pending with terminal error"
 
@@ -207,6 +211,11 @@ gh() {
 				"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
 			return 0
 			;;
+		pr-state-missing)
+			printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":null}\n' \
+				"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
+			return 0
+			;;
 		esac
 		printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":"open"}\n' \
 			"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
@@ -231,6 +240,7 @@ gh() {
 		failure) return 1 ;;
 		missing) printf '{"completed":null,"active":null}\n' ;;
 		active) printf '{"completed":null,"active":{"id":502,"status":"in_progress"}}\n' ;;
+		active-and-completed) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":{"id":502,"status":"in_progress"}}\n' ;;
 		*) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":null}\n' ;;
 		esac
 		return 0
@@ -304,6 +314,7 @@ else
 	run_job3_fixture "MEMBER exemption" "MEMBER" '["origin:interactive"]' "" 0 "found" 0 "success" 0
 	run_job3_fixture "COLLABORATOR write exemption" "COLLABORATOR" '["origin:interactive"]' "write" 0 "found" 0 "success" 0
 	run_job3_fixture "accepted rerun" "NONE" '[]' "" 0 "found" 0 "pending" 1
+	run_job3_fixture "completed run selected behind active run" "NONE" '[]' "" 0 "active-and-completed" 0 "pending" 1
 	run_job3_fixture "transient rerun rejection retries" "NONE" '[]' "" 2 "found" 0 "pending" 3
 	run_job3_fixture "exhausted rerun becomes terminal" "NONE" '[]' "" 3 "found" 1 "error,pending" 3
 	run_job3_fixture "active run remains status owner" "NONE" '[]' "" 0 "active" 0 "" 0
@@ -311,6 +322,7 @@ else
 	run_job3_fixture "run lookup failure remains fail closed" "NONE" '[]' "" 0 "failure" 1 "error" 0
 	run_job3_fixture "closed PR is a non-blocking diagnostic" "NONE" '[]' "" 0 "pr-closed" 0 "" 0
 	run_job3_fixture "missing PR is a non-blocking diagnostic" "NONE" '[]' "" 0 "pr-missing" 0 "" 0
+	run_job3_fixture "missing PR state remains fail closed" "NONE" '[]' "" 0 "pr-state-missing" 1 "" 0
 	run_job3_fixture "transient PR metadata failure remains fail closed" "NONE" '[]' "" 0 "pr-failure" 1 "" 0
 fi
 
