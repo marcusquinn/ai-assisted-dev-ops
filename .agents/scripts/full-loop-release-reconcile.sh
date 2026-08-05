@@ -472,7 +472,11 @@ _full_loop_release_verify_stale_publication_run() {
 	run_conclusion=$(jq -er --arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
 		'.conclusion | select(type == $string_type)' \
 		<<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
-	[[ "$run_status" == "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" && "$run_conclusion" == "$_FULL_LOOP_RELEASE_CONCLUSION_FAILURE" ]] || return 1
+	[[ "$run_status" == "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" ]] || return 1
+	if [[ "$run_conclusion" == "$_FULL_LOOP_RELEASE_CONCLUSION_SUCCESS" ]]; then
+		return 0
+	fi
+	[[ "$run_conclusion" == "$_FULL_LOOP_RELEASE_CONCLUSION_FAILURE" ]] || return 1
 	_full_loop_release_fetch_run_jobs "$repo" "$run_id" || return 1
 	_full_loop_release_stale_publication_jobs_valid "$_FULL_LOOP_RELEASE_RUN_JOBS_JSON"
 	return $?

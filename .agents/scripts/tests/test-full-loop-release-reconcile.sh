@@ -73,6 +73,61 @@ if _full_loop_release_run_jobs_payload_valid \
 fi
 printf 'PASS stale publication proof requires exact successful channels and sole postflight failure\n'
 
+run_stale_publication_verification_fixture() {
+	local mode="$1"
+	(
+		_full_loop_release_find_workflow_run() {
+			local repo="$1"
+			local tag_name="$2"
+			local tag_commit="$3"
+			[[ "$repo" == "test/repo" && "$tag_name" == "v1.2.3" && "$tag_commit" == "$(printf '%040d' 3)" ]] || return 1
+			case "$mode" in
+			success)
+				_FULL_LOOP_RELEASE_RUN_JSON='{"id":101,"status":"completed","conclusion":"success"}'
+				;;
+			partial-failure | other-failure)
+				_FULL_LOOP_RELEASE_RUN_JSON='{"id":101,"status":"completed","conclusion":"failure"}'
+				;;
+			pending)
+				_FULL_LOOP_RELEASE_RUN_JSON='{"id":101,"status":"in_progress","conclusion":"success"}'
+				;;
+			cancelled)
+				_FULL_LOOP_RELEASE_RUN_JSON='{"id":101,"status":"completed","conclusion":"cancelled"}'
+				;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_fetch_run_jobs() {
+			local repo="$1"
+			local run_id="$2"
+			[[ "$repo" == "test/repo" && "$run_id" == "101" ]] || return 1
+			case "$mode" in
+			partial-failure) _FULL_LOOP_RELEASE_RUN_JOBS_JSON="$valid_stale_jobs" ;;
+			other-failure) _FULL_LOOP_RELEASE_RUN_JOBS_JSON=$(stale_publication_jobs_fixture extra-failure) || return 1 ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_full_loop_release_verify_stale_publication_run test/repo v1.2.3 "$(printf '%040d' 3)"
+	)
+	return $?
+}
+
+for accepted_publication_mode in success partial-failure; do
+	if ! run_stale_publication_verification_fixture "$accepted_publication_mode"; then
+		printf 'FAIL %s publication run was rejected as stale-release evidence\n' "$accepted_publication_mode"
+		exit 1
+	fi
+done
+for rejected_publication_mode in pending cancelled other-failure; do
+	if run_stale_publication_verification_fixture "$rejected_publication_mode"; then
+		printf 'FAIL %s publication run was accepted as stale-release evidence\n' "$rejected_publication_mode"
+		exit 1
+	fi
+done
+printf 'PASS stale release evidence accepts successful publication and fails closed otherwise\n'
+
 _full_loop_release_tag_body() {
 	local tag_name="$1"
 	[[ "$tag_name" == "v1.2.3" ]] || return 1
