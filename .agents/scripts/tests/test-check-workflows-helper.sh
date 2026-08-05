@@ -23,6 +23,7 @@
 #  19. Stale local checkout reports local evidence and upstream divergence
 #  20. Repository-scoped checks prefer a matching caller-owned linked worktree
 #      without relying on Git 2.31's --path-format option
+#  21. Installed helper resolves reusable baselines from the registered source repo
 #  13a. Verbose mirror drift shows the rendered and normalised comparison
 #
 # Strategy: Each scenario writes a temporary repos.json + temporary repo trees
@@ -621,6 +622,28 @@ else
 	_fail "repository-scoped check → caller-owned linked-worktree evidence" "json: $json_row"
 fi
 rm -rf "$TMPDIR_20"
+
+# Test 21: Installed agents trees omit source-only reusable workflow files. The
+# helper must resolve their canonical baseline from the registered aidevops repo.
+TMPDIR_21="$(mktemp -d)"
+_setup_fake_home "$TMPDIR_21"
+INSTALLED_HELPER_21="$TMPDIR_21/.aidevops/agents/scripts/check-workflows-helper.sh"
+SOURCE_REPO_21="$TMPDIR_21/repos/aidevops-source"
+mkdir -p "$(dirname "$INSTALLED_HELPER_21")" "$SOURCE_REPO_21/.github/workflows"
+cp "$HELPER" "$INSTALLED_HELPER_21"
+cp "$REPO_ROOT/.github/workflows/issue-sync-reusable.yml" \
+	"$SOURCE_REPO_21/.github/workflows/issue-sync-reusable.yml"
+_write_repos_json "$TMPDIR_21" \
+	"$(jq -n --arg path "$SOURCE_REPO_21" '{initialized_repos: [{slug: "marcusquinn/aidevops", path: $path, local_only: false}]}')"
+json_row=$(HOME="$TMPDIR_21" bash "$INSTALLED_HELPER_21" --json \
+	--repo marcusquinn/aidevops --workflow issue-sync 2>/dev/null || true)
+result=$(printf '%s\n' "$json_row" | jq -r '.classification')
+if [[ "$result" == "CURRENT/REUSABLE" ]]; then
+	_pass "installed helper → registered source reusable baseline"
+else
+	_fail "installed helper → registered source reusable baseline" "json: $json_row"
+fi
+rm -rf "$TMPDIR_21"
 
 # ─── Summary ────────────────────────────────────────────────────────────────
 
