@@ -158,7 +158,7 @@ check_absent \
 
 check_absent \
 	"dispatch tracking labels use canonical tiers" \
-	'(dispatched|implemented|retried|failed):(haiku|sonnet|opus|flash|pro|composer2)' \
+	'(dispatched|implemented|retried|failed):(haiku|sonnet|opus|flash|pro|composer2)\b' \
 	.agents --glob '*.{md,sh,py,mjs,json,jsonc,toon}'
 
 legacy_pin_pattern='model:'"opus-4-7|AIDEVOPS_"'OPUS_ESCALATION_MODEL'

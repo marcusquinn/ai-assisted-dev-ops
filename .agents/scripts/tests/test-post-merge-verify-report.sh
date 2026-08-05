@@ -8,6 +8,8 @@ PASS=0
 FAIL=0
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${TEST_DIR}/../post-merge-verify-report-helper.sh"
+WORKFLOW="${TEST_DIR}/../../../.github/workflows/post-merge-verify.yml"
+PACKAGE_JSON="${TEST_DIR}/../../../package.json"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -76,6 +78,20 @@ if [[ $rc -eq 0 && "$truncated_size" -lt 100 ]] &&
 	pass "verification output is bounded with an explicit truncation marker"
 else
 	fail "verification output truncation" "rc=$rc size=$truncated_size output=$output"
+fi
+
+if grep -qF 'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6' "$WORKFLOW" &&
+	grep -qF 'bun install --frozen-lockfile --ignore-scripts' "$WORKFLOW" &&
+	grep -qF '"ajv": "^8.18.0"' "$PACKAGE_JSON"; then
+	pass "post-merge verification installs locked JavaScript dependencies without lifecycle scripts"
+else
+	fail "post-merge JavaScript dependency bootstrap" "missing direct Ajv dependency, pinned Bun setup, or locked install"
+fi
+
+if grep -qF 'sudo apt-get install --yes ripgrep' "$WORKFLOW"; then
+	pass "post-merge verification installs ripgrep for repository checks"
+else
+	fail "post-merge ripgrep bootstrap" "missing ripgrep package installation"
 fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"

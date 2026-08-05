@@ -85,6 +85,22 @@ jobs:
             echo "No brief found at $BRIEF_PATH — skipping."
           fi
 
+      - name: Setup Bun
+        if: steps.brief.outputs.exists == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install verification dependencies
+        if: steps.brief.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ripgrep
+          fi
+          bun install --frozen-lockfile --ignore-scripts
+
       # ---------------------------------------------------------------
       # Step 4: Run verify blocks
       # ---------------------------------------------------------------

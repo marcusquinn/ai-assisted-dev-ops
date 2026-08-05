@@ -65,10 +65,11 @@
     "vite": "^7.0.0"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
     "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
     "@types/bun": "latest",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "ajv": "^8.18.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "secretlint": "^11.2.5",
