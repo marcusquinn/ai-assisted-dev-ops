@@ -90,13 +90,20 @@ jobs:
           token: ${{ secrets.AIDEVOPS_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Restore durable coordinator state
+        id: coordinator-restore
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STATE_DIR: ${{ runner.temp }}/aidevops-coordinator
-        run: bash __aidevops/.agents/scripts/forge-coordinator-state-helper.sh restore "$STATE_DIR" "${{ github.repository }}" "${{ github.repository_id }}"
+        run: |
+          bash __aidevops/.agents/scripts/forge-coordinator-state-helper.sh restore "$STATE_DIR" "${{ github.repository }}" "${{ github.repository_id }}"
+          if [[ -f "$STATE_DIR/.restore-deferred-rate-limit" ]]; then
+            printf 'available=false\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'available=true\n' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Ingest event and execute publication queue
-        if: github.event_name != 'workflow_dispatch' || inputs.command == 'event'
+        if: steps.coordinator-restore.outputs.available == 'true' && (github.event_name != 'workflow_dispatch' || inputs.command == 'event')
         env:
           AIDEVOPS_TASK_COORDINATOR_DB: ${{ runner.temp }}/aidevops-coordinator/tasks.db
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -119,7 +126,7 @@ jobs:
           bash __aidevops/.agents/scripts/task-publication-worker-helper.sh run
 
       - name: Reconcile bounded mapped subjects and execute publication queue
-        if: github.event_name == 'workflow_dispatch' && (inputs.command == 'reconcile' || inputs.command == 'audit')
+        if: steps.coordinator-restore.outputs.available == 'true' && github.event_name == 'workflow_dispatch' && (inputs.command == 'reconcile' || inputs.command == 'audit')
         env:
           AIDEVOPS_TASK_COORDINATOR_DB: ${{ runner.temp }}/aidevops-coordinator/tasks.db
           AIDEVOPS_RECONCILE_MAX_ISSUES: '100'
@@ -134,16 +141,16 @@ jobs:
           fi
 
       - name: Persist durable coordinator state
-        if: always()
+        if: always() && steps.coordinator-restore.outputs.available == 'true'
         env:
           AIDEVOPS_TASK_COORDINATOR_DB: ${{ runner.temp }}/aidevops-coordinator/tasks.db
         run: node __aidevops/.agents/scripts/task-coordinator.mjs checkpoint
 
       - name: Upload durable coordinator state
-        if: always()
+        if: always() && steps.coordinator-restore.outputs.available == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: forge-coordinator-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: forge-coordinator-${{ github.repository_id }}
           path: ${{ runner.temp }}/aidevops-coordinator/tasks.db
           if-no-files-found: error
           retention-days: 90

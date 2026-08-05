@@ -4,23 +4,103 @@
 
 set -euo pipefail
 
+readonly RESTORE_DEFERRED_MARKER=".restore-deferred-rate-limit"
+
+print_error_file() {
+	local error_file="$1"
+	local line=""
+	while IFS= read -r line; do
+		printf '%s\n' "$line" >&2
+	done <"$error_file"
+	return 0
+}
+
+is_installation_rate_limited() {
+	local error_file="$1"
+	grep -qiE 'API rate limit exceeded for (installation|user)|GraphQL: API rate limit (already )?exceeded' "$error_file" && return 0
+	return 1
+}
+
+defer_rate_limited_restore() {
+	local state_dir="$1"
+	local repository="$2"
+	local error_file="$3"
+	print_error_file "$error_file"
+	touch "${state_dir}/${RESTORE_DEFERRED_MARKER}" || return 1
+	printf '::warning title=Coordinator restore deferred::GitHub API rate limit is exhausted for %s; preserving the latest durable checkpoint and skipping event publication.\n' "$repository" >&2
+	return 0
+}
+
 restore_state() {
 	local state_dir="$1"
 	local repository="$2"
 	local repository_id="$3"
-	local artifact_id="" archive=""
+	local artifact_name="forge-coordinator-${repository_id}"
+	local artifact_id="" artifact_json="" archive="" error_file=""
 	mkdir -p "$state_dir"
-	artifact_id=$(gh api --paginate --slurp "repos/${repository}/actions/artifacts?per_page=100" |
-		jq -r "[.[] | .artifacts[]? | select((.name | startswith(\"forge-coordinator-${repository_id}-\")) and ((.expired // false) == false))] | sort_by([.created_at, .id]) | last | .id // empty") || return 1
-	[[ -n "$artifact_id" ]] || return 0
+	rm -f "${state_dir}/${RESTORE_DEFERRED_MARKER}"
+	error_file=$(mktemp "${state_dir}/restore-error.XXXXXX") || return 1
+
+	# New checkpoints use one stable name, allowing GitHub to filter server-side.
+	# This replaces the former --paginate scan across every repository artifact.
+	if ! artifact_json=$(gh api "repos/${repository}/actions/artifacts?name=${artifact_name}&per_page=1" 2>"$error_file"); then
+		if is_installation_rate_limited "$error_file"; then
+			defer_rate_limited_restore "$state_dir" "$repository" "$error_file"
+			rm -f "$error_file"
+			return 0
+		fi
+		print_error_file "$error_file"
+		rm -f "$error_file"
+		return 1
+	fi
+	artifact_id=$(jq -r --arg name "$artifact_name" '[.artifacts[]? | select((.name == $name) and ((.expired // false) == false))] | sort_by([.created_at, .id]) | last | .id // empty' <<<"$artifact_json") || {
+		rm -f "$error_file"
+		return 1
+	}
+
+	# One bounded legacy page migrates checkpoints written with run-ID suffixes.
+	if [[ -z "$artifact_id" ]]; then
+		if ! artifact_json=$(gh api "repos/${repository}/actions/artifacts?per_page=100" 2>"$error_file"); then
+			if is_installation_rate_limited "$error_file"; then
+				defer_rate_limited_restore "$state_dir" "$repository" "$error_file"
+				rm -f "$error_file"
+				return 0
+			fi
+			print_error_file "$error_file"
+			rm -f "$error_file"
+			return 1
+		fi
+		artifact_id=$(jq -r --arg prefix "${artifact_name}-" '[.artifacts[]? | select((.name | startswith($prefix)) and ((.expired // false) == false))] | sort_by([.created_at, .id]) | last | .id // empty' <<<"$artifact_json") || {
+			rm -f "$error_file"
+			return 1
+		}
+	fi
+	if [[ -z "$artifact_id" ]]; then
+		rm -f "$error_file"
+		return 0
+	fi
 	if [[ ! "$artifact_id" =~ ^[1-9][0-9]*$ ]]; then
 		printf 'Invalid coordinator artifact ID returned for repository %s: %q\n' "$repository" "$artifact_id" >&2
+		rm -f "$error_file"
 		return 1
 	fi
 	archive="${state_dir}/state.zip"
-	gh api "repos/${repository}/actions/artifacts/${artifact_id}/zip" >"$archive" || return 1
-	unzip -oq "$archive" -d "$state_dir" || return 1
-	rm -f "$archive"
+	if ! gh api "repos/${repository}/actions/artifacts/${artifact_id}/zip" >"$archive" 2>"$error_file"; then
+		rm -f "$archive"
+		if is_installation_rate_limited "$error_file"; then
+			defer_rate_limited_restore "$state_dir" "$repository" "$error_file"
+			rm -f "$error_file"
+			return 0
+		fi
+		print_error_file "$error_file"
+		rm -f "$error_file"
+		return 1
+	fi
+	if ! unzip -oq "$archive" -d "$state_dir"; then
+		rm -f "$archive" "$error_file"
+		return 1
+	fi
+	rm -f "$archive" "$error_file"
 	return 0
 }
 
