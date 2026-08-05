@@ -4,7 +4,7 @@
 #
 # test-task-id-collision-guard.sh — Test harness for task-id-collision-guard.sh
 #
-# Covers all 19 acceptance criteria cases:
+# Covers all acceptance criteria cases:
 #   1. Reject: t-ID > counter AND not in linked issue title
 #   2. Allow: t-ID ≤ counter (claimed)
 #   3. Allow: cross-reference confirmed via linked issue title
@@ -24,6 +24,8 @@
 #  17. Allow: subagent/library name with t<digits> substring not extracted as t-ID (GH#21402 / t2993)
 #  18. Allow: multiple product names with embedded t<digits> cause no false positives (GH#21402 / t2993)
 #  19. Allow: cached branch-subject range claim is read even when it is the final line (GH#22558)
+#  22. Allow: push squash commit uses its associated PR body as linked-issue proof (GH#29591)
+#  23. Reject: push commit above the counter without associated issue proof (GH#29591)
 
 set -u
 
@@ -1031,6 +1033,85 @@ test_check_pr_rejects_malformed_task_brief_path() {
 }
 
 # ---------------------------------------------------------------------------
+# Case 22: Allow — a push squash commit gets linked-issue proof from its PR body
+# ---------------------------------------------------------------------------
+test_check_push_associated_pr_issue_proof() {
+	local name="case-22: check-push allows squash commit validated by associated PR issue"
+	local tmpdir
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	local work_repo="${tmpdir}/work"
+	mkdir -p "$work_repo"
+	git -C "$work_repo" init -q -b main
+	git -C "$work_repo" config user.email "test@test.local"
+	git -C "$work_repo" config user.name "Test"
+	git -C "$work_repo" config commit.gpgsign false
+	git -C "$work_repo" config tag.gpgsign false
+	printf '100' >"${work_repo}/.task-counter"
+	git -C "$work_repo" add .task-counter
+	git -C "$work_repo" commit -q -m "init: counter=100"
+	local before_sha
+	before_sha=$(git -C "$work_repo" rev-parse HEAD)
+	printf 'change' >"${work_repo}/change.txt"
+	git -C "$work_repo" add change.txt
+	git -C "$work_repo" commit -q -m "t99999: valid squashed change"
+	local after_sha
+	after_sha=$(git -C "$work_repo" rev-parse HEAD)
+
+	local fake_bin="${tmpdir}/bin"
+	mkdir -p "$fake_bin"
+	cat >"${fake_bin}/gh" <<'GHEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" ]]; then
+	printf 't99999: valid squashed change\n\nResolves #42\n'
+	exit 0
+fi
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+	printf 't99999: claimed task\n'
+	exit 0
+fi
+exit 1
+GHEOF
+	chmod +x "${fake_bin}/gh"
+
+	local rc=0
+	PATH="${fake_bin}:$PATH" \
+		GITHUB_REPOSITORY="example/repo" \
+		GIT_DIR="${work_repo}/.git" \
+		GIT_WORK_TREE="$work_repo" \
+		bash "$GUARD" check-push "$before_sha" "$after_sha" 2>/dev/null || rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		pass "$name"
+	else
+		fail "$name" "expected exit 0 (associated PR body links matching issue), got $rc"
+	fi
+
+	name="case-23: check-push rejects commit without associated PR issue proof"
+	cat >"${fake_bin}/gh" <<'GHEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" ]]; then
+	exit 0
+fi
+exit 1
+GHEOF
+	chmod +x "${fake_bin}/gh"
+	rc=0
+	PATH="${fake_bin}:$PATH" \
+		GITHUB_REPOSITORY="example/repo" \
+		GIT_DIR="${work_repo}/.git" \
+		GIT_WORK_TREE="$work_repo" \
+		bash "$GUARD" check-push "$before_sha" "$after_sha" 2>/dev/null || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		pass "$name"
+	else
+		fail "$name" "expected exit 1 (no associated issue proof), got $rc"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 main() {
@@ -1057,6 +1138,7 @@ main() {
 	test_no_false_positive_multiple_subagent_names
 	test_check_pr_allows_canonical_task_brief_path
 	test_check_pr_rejects_malformed_task_brief_path
+	test_check_push_associated_pr_issue_proof
 
 	printf '\n'
 	printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

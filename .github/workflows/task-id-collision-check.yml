@@ -5,7 +5,7 @@ name: Task-ID Collision Check
 # --no-verify bypasses) on push and pull_request events.
 #
 # The hook (client-side) and this workflow (server-side) implement the same
-# logic via task-id-collision-guard.sh check-pr <PR_NUMBER>.
+# logic via task-id-collision-guard.sh check-pr/check-push modes.
 
 on:
   push:
@@ -71,40 +71,8 @@ jobs:
             echo "Running check-pr for PR #${PR_NUMBER}"
             bash "$GUARD" check-pr "$PR_NUMBER"
           else
-            # Push event: check commits in the push range
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.event.after }}"
-            if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-              echo "New branch push — checking HEAD only"
-              MSG_FILE=$(mktemp)
-              git log -1 --format='%s%n%n%b' > "$MSG_FILE"
-              bash "$GUARD" "$MSG_FILE"
-              rm -f "$MSG_FILE"
-            else
-              echo "Push range: ${BEFORE}..${AFTER}"
-              violations=0
-              while IFS= read -r commit_hash; do
-                [[ -z "$commit_hash" ]] && continue
-                subject=$(git log -1 --format='%s' "$commit_hash")
-                # Skip merge commits
-                if echo "$subject" | grep -qE '^(Merge|fixup!|squash!)'; then
-                  continue
-                fi
-                MSG_FILE=$(mktemp)
-                git log -1 --format='%s%n%n%b' "$commit_hash" > "$MSG_FILE"
-                if ! bash "$GUARD" "$MSG_FILE" 2>&1; then
-                  echo "[task-id-guard][VIOLATION] commit $commit_hash: $subject"
-                  violations=$((violations + 1))
-                fi
-                rm -f "$MSG_FILE"
-              done < <(git rev-list "${BEFORE}..${AFTER}" 2>/dev/null)
-              if [[ "$violations" -gt 0 ]]; then
-                echo ""
-                echo "[task-id-guard][SUMMARY] $violations violation(s) found in push"
-                echo ""
-                echo "Fix: use claim-task-id.sh to allocate t-IDs before using them in commit subjects."
-                exit 1
-              fi
-              echo "[task-id-guard] Push clean — no invented t-IDs detected"
-            fi
+            echo "Push range: ${BEFORE}..${AFTER}"
+            bash "$GUARD" check-push "$BEFORE" "$AFTER"
           fi

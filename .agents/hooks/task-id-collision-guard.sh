@@ -21,6 +21,11 @@
 #     Used by CI to catch commits authored outside the hook.
 #     Exits 0 (all clean) or 1 (one or more violations).
 #
+#   check-push <BEFORE_SHA> <AFTER_SHA>:
+#     Scans non-merge commits in a push and supplements squash commit messages
+#     with their associated PR title/body before checking linked issue proof.
+#     Exits 0 (all clean) or 1 (one or more violations).
+#
 # Environment:
 #   TASK_ID_GUARD_DISABLE=1   — bypass for this invocation (equivalent to --no-verify)
 #   TASK_ID_GUARD_DEBUG=1     — verbose stderr trace
@@ -507,7 +512,7 @@ _check_tid() {
 		return 2
 	fi
 	if [[ "$verify_rc" -eq 1 ]]; then
-		CHECK_MESSAGE_VIOLATION="  ${tid} — numeric ID ${num} > current counter ${counter}, and not confirmed via a linked issue title\n"
+		CHECK_MESSAGE_VIOLATION="  ${tid} — numeric ID ${num} > current counter ${counter}; no matching issue title was found via a commit footer or associated PR body\n"
 		return 1
 	fi
 	return 0
@@ -633,6 +638,70 @@ _pr_commit_oids() {
 	return $?
 }
 
+_associated_pr_context() {
+	local commit_hash="$1"
+	local repository="${GITHUB_REPOSITORY:-}"
+	if [[ -z "$repository" ]] || ! command -v gh >/dev/null 2>&1; then
+		return 1
+	fi
+	gh api -X GET "repos/${repository}/commits/${commit_hash}/pulls" \
+		--jq '.[] | "\(.title)\n\n\(.body // \"\")"' 2>/dev/null
+	return $?
+}
+
+_check_push_commit() {
+	local commit_hash="$1"
+	local commit_msg=""
+	local subject=""
+	local pr_context=""
+	commit_msg=$(git log -1 --format='%s%n%n%b' "$commit_hash" 2>/dev/null) || return 0
+	subject=$(git log -1 --format='%s' "$commit_hash" 2>/dev/null) || return 0
+	pr_context=$(_associated_pr_context "$commit_hash" || true)
+	if [[ -n "$pr_context" ]]; then
+		_debug "Adding associated PR context for push commit $commit_hash"
+		commit_msg="${commit_msg}"$'\n\n'"${pr_context}"
+	fi
+
+	local rc=0
+	_check_message "$commit_msg" "$subject" || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		printf '[task-id-guard][VIOLATION] commit %s: %s\n' "$commit_hash" "$subject" >&2
+		return 1
+	fi
+	return 0
+}
+
+_run_check_push() {
+	local before_sha="${1:-}"
+	local after_sha="${2:-HEAD}"
+	local commits=""
+	if [[ -z "$before_sha" || "$before_sha" == "0000000000000000000000000000000000000000" ]]; then
+		commits=$(git rev-list --no-walk --no-merges "$after_sha" 2>/dev/null)
+	else
+		commits=$(git rev-list --no-merges "${before_sha}..${after_sha}" 2>/dev/null)
+	fi
+	if [[ -z "$commits" ]]; then
+		_info "No non-merge commits in push range — nothing to check"
+		return 0
+	fi
+
+	local total_violations=0
+	local commit_hash
+	while IFS= read -r commit_hash; do
+		[[ -z "$commit_hash" ]] && continue
+		if ! _check_push_commit "$commit_hash"; then
+			total_violations=$((total_violations + 1))
+		fi
+	done <<<"$commits"
+
+	if [[ "$total_violations" -gt 0 ]]; then
+		printf '\n[task-id-guard][SUMMARY] %d violation(s) found in push\n' "$total_violations" >&2
+		return 1
+	fi
+	_info "Push clean — no invented t-IDs detected"
+	return 0
+}
+
 _check_pr_title() {
 	local pr_number="$1"
 	if ! command -v gh >/dev/null 2>&1; then
@@ -753,6 +822,11 @@ main() {
 	check-pr)
 		shift
 		_run_check_pr "$@"
+		return $?
+		;;
+	check-push)
+		shift
+		_run_check_push "$@"
 		return $?
 		;;
 	help | --help | -h)
