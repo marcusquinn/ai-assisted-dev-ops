@@ -645,7 +645,7 @@ _associated_pr_context() {
 		return 1
 	fi
 	gh api -X GET "repos/${repository}/commits/${commit_hash}/pulls" \
-		--jq '.[] | "\(.title)\n\n\(.body // \"\")"' 2>/dev/null
+		--jq '.[] | (.title + "\n\n" + (.body // ""))' 2>/dev/null
 	return $?
 }
 

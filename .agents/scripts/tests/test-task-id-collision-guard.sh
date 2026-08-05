@@ -1065,6 +1065,13 @@ test_check_push_associated_pr_issue_proof() {
 	cat >"${fake_bin}/gh" <<'GHEOF'
 #!/usr/bin/env bash
 if [[ "$1" == "api" ]]; then
+	found_jq=0
+	for arg in "$@"; do
+		if [[ "$arg" == '.[] | (.title + "\n\n" + (.body // ""))' ]]; then
+			found_jq=1
+		fi
+	done
+	[[ "$found_jq" == "1" ]] || exit 1
 	printf 't99999: valid squashed change\n\nResolves #42\n'
 	exit 0
 fi
