@@ -246,7 +246,7 @@ PR #29503 at `178b684f70f2fd9a60d4ecf41d777a545023736b`. Subsequent terminal
 completion metadata advanced `main` before the explicitly authorized release could publish.
 The exact branch base is `89c4f74e440ef6492c5f0add22d085135272edb2`.
 
-The pending aggregation PR reviews authorized Buzz ACP drift-reconciliation
+Aggregation PR #29545 reviews authorized Buzz ACP drift-reconciliation
 PR #29538 at `d83c027410983cf83d5f9afb5d85975b69f6e3ec`. Subsequent maintained
 merges advanced `main` after the source received terminal `release:not-requested`
 evidence and before the user explicitly authorized publication. The exact branch
