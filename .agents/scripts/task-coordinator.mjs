@@ -789,8 +789,9 @@ function verify(path = initialise()) {
   return { ...result, ok: quickCheck === "ok" && foreignKeys.length === 0 && duplicateTasks === 0 && incompleteOperations === 0 };
 }
 function checkpoint(path = initialise()) {
-  const result = sqlite(path, "PRAGMA wal_checkpoint(TRUNCATE);\n");
-  return { checkpointed: result === "0|0|0" || result === "0|0|0\n", result };
+  const result = process.env.AIDEVOPS_TASK_COORDINATOR_TEST_CHECKPOINT_RESULT || sqlite(path, "PRAGMA wal_checkpoint(TRUNCATE);\n");
+  const checkpointed = result === "0|0|0" || result === "0|0|0\n";
+  return { checkpointed, result, ok: checkpointed };
 }
 
 function parseJson(value = "{}") { return JSON.parse(value); }

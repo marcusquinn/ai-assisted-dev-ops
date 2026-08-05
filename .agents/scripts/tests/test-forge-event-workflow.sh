@@ -165,13 +165,14 @@ if grep -q -- '--paginate\|--slurp' "${test_root}/legacy-api.log"; then
 	exit 1
 fi
 
-# An incomplete bounded legacy page defers rather than replacing unknown state.
+# An incomplete bounded legacy page explicitly bootstraps the stable-name path.
 mkdir -p "${test_root}/incomplete-state"
 GH_EMPTY_EXACT=1 GH_INCOMPLETE_LEGACY=1 GH_CALL_LOG="${test_root}/incomplete-api.log" PATH="${test_root}/bin:${jq_dir}:/usr/bin:/bin" \
 	bash "$STATE_HELPER" restore "${test_root}/incomplete-state" owner/repo R_1 2>"${test_root}/incomplete-error"
-[[ -f "${test_root}/incomplete-state/.restore-deferred" ]]
+[[ -f "${test_root}/incomplete-state/.restore-empty-init" ]]
+[[ ! -f "${test_root}/incomplete-state/.restore-deferred" ]]
 [[ ! -f "${test_root}/incomplete-state/tasks.db" ]]
-grep -q 'bounded legacy artifact page is incomplete' "${test_root}/incomplete-error"
+grep -q 'initializing one stable-name checkpoint' "${test_root}/incomplete-error"
 
 # Installation rate exhaustion defers publication without replacing the checkpoint.
 mkdir -p "${test_root}/rate-limit-bin" "${test_root}/rate-limited-state"

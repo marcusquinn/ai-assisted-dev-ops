@@ -5,6 +5,7 @@
 set -euo pipefail
 
 readonly RESTORE_DEFERRED_MARKER=".restore-deferred"
+readonly RESTORE_EMPTY_INIT_MARKER=".restore-empty-init"
 
 print_error_file() {
 	local error_file="$1"
@@ -47,7 +48,7 @@ restore_state() {
 	local artifact_id="" artifact_json="" archive="" error_file=""
 	local legacy_count="" legacy_total=""
 	mkdir -p "$state_dir"
-	rm -f "${state_dir}/${RESTORE_DEFERRED_MARKER}"
+	rm -f "${state_dir}/${RESTORE_DEFERRED_MARKER}" "${state_dir}/${RESTORE_EMPTY_INIT_MARKER}"
 	error_file=$(mktemp "${state_dir}/restore-error.XXXXXX") || return 1
 
 	# New checkpoints use one stable name, allowing GitHub to filter server-side.
@@ -92,9 +93,11 @@ restore_state() {
 			return 1
 		}
 		if [[ -z "$artifact_id" && "$legacy_count" =~ ^[0-9]+$ && "$legacy_total" =~ ^[0-9]+$ ]] && ((legacy_total > legacy_count)); then
-			defer_restore "$state_dir" "$repository" "The bounded legacy artifact page is incomplete"
-			rm -f "$error_file"
-			return 0
+			touch "${state_dir}/${RESTORE_EMPTY_INIT_MARKER}" || {
+				rm -f "$error_file"
+				return 1
+			}
+			printf '::warning title=Coordinator state initialized::No matching checkpoint was found in the bounded legacy artifact page for %s; initializing one stable-name checkpoint without scanning all repository artifacts.\n' "$repository" >&2
 		fi
 	fi
 	if [[ -z "$artifact_id" ]]; then

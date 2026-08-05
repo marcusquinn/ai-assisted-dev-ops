@@ -61,6 +61,12 @@ crash_after=$(node "$COORDINATOR" allocate --operation-id crash-after)
 after=$(node "$COORDINATOR" allocate --operation-id restart --payload '{}' | jq -r '.tasks[0].sequence')
 [[ "$after" -gt "$before" ]]
 node "$COORDINATOR" verify | jq -e '.ok == true' >/dev/null
+node "$COORDINATOR" checkpoint | jq -e '.checkpointed == true and .ok == true' >/dev/null
+if AIDEVOPS_TASK_COORDINATOR_TEST_CHECKPOINT_RESULT='1|2|3' node "$COORDINATOR" checkpoint >"${TEST_ROOT}/busy-checkpoint.json"; then
+	printf 'FAIL busy WAL checkpoint returned success\n' >&2
+	exit 1
+fi
+jq -e '.checkpointed == false and .ok == false' "${TEST_ROOT}/busy-checkpoint.json" >/dev/null
 
 # Strict identifiers, canonical legacy IDs, JSON object shape, and payload limits.
 for invalid_args in \
