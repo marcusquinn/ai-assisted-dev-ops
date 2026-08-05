@@ -135,22 +135,94 @@ registered_repo_slug() {
 	return 0
 }
 
+GIT_CONFIG_CAPTURE_VALUES=""
+GIT_CONFIG_CAPTURE_STATUS=0
+GIT_CONFIG_CAPTURE_HAD_OUTPUT=false
+
+# Capture one complete git-config enumeration without hiding its exit status.
+# The suffix keeps command substitution from stripping record-separating newlines.
+capture_git_config_values() {
+	local repo="$1"
+	local key="$2"
+	local marker="__AIDEVOPS_GIT_CONFIG_CAPTURE_END_8F3D1A__"
+	local suffix=$'\n'"$marker"
+	local captured=""
+	local capture_status=0
+	captured=$(
+		set +e
+		"$REAL_GIT" -C "$repo" config --get-all "$key" 2>/dev/null
+		command_status=$?
+		printf '%s' "$marker"
+		exit "$command_status"
+	) || capture_status=$?
+	GIT_CONFIG_CAPTURE_VALUES=""
+	GIT_CONFIG_CAPTURE_STATUS="$capture_status"
+	GIT_CONFIG_CAPTURE_HAD_OUTPUT=false
+	case "$captured" in
+	"$marker") ;;
+	*"$suffix")
+		GIT_CONFIG_CAPTURE_VALUES="${captured%"$suffix"}"
+		GIT_CONFIG_CAPTURE_HAD_OUTPUT=true
+		;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+GITHUB_REMOTE_URL_COUNT=0
+GITHUB_REMOTE_URLS_MATCH=0
+GITHUB_REMOTE_URL_SEEN=0
+
+validate_github_remote_url_set() {
+	local urls="$1"
+	local expected_lower="$2"
+	local remote_url=""
+	local remote_slug=""
+	local remote_lower=""
+	GITHUB_REMOTE_URL_COUNT=0
+	GITHUB_REMOTE_URLS_MATCH=1
+	GITHUB_REMOTE_URL_SEEN=0
+	while IFS= read -r remote_url; do
+		GITHUB_REMOTE_URL_COUNT=$((GITHUB_REMOTE_URL_COUNT + 1))
+		if [[ -z "$remote_url" ]]; then
+			GITHUB_REMOTE_URLS_MATCH=0
+			continue
+		fi
+		if is_github_remote_url "$remote_url"; then
+			GITHUB_REMOTE_URL_SEEN=1
+		fi
+		remote_slug=$(github_slug_from_remote_url "$remote_url" 2>/dev/null || true)
+		if [[ -z "$remote_slug" ]]; then
+			GITHUB_REMOTE_URLS_MATCH=0
+			continue
+		fi
+		GITHUB_REMOTE_URL_SEEN=1
+		remote_lower=$(printf '%s' "$remote_slug" | tr '[:upper:]' '[:lower:]') || return 1
+		[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || GITHUB_REMOTE_URLS_MATCH=0
+	done <<<"$urls"
+	return 0
+}
+
 # Resolve the remote that represents the registered GitHub repository. Exact
 # fetch+push identity is required. Callers may allow the origin fallback for
-# local mirrors where no configured remote can be parsed as GitHub at all.
+# local mirrors where no configured remote can be parsed as GitHub at all. The
+# pinned framework updater may also accept equivalent aliases after every URL
+# independently resolves to its immutable expected repository identity.
 resolve_github_remote() {
 	local repo="$1"
 	local expected_slug="$2"
 	local allow_local_mirror="${3:-true}"
+	local allow_equivalent_aliases="${4:-false}"
 	local expected_lower=""
 	local remote_names=""
 	local remote=""
+	local fetch_key=""
+	local push_key=""
 	local fetch_urls=""
 	local push_urls=""
-	local remote_url=""
-	local fetch_slug=""
-	local push_slug=""
-	local remote_lower=""
+	local fetch_status=0
+	local push_status=0
+	local push_had_output=false
 	local remote_matches=0
 	local fetch_count=0
 	local push_count=0
@@ -158,50 +230,46 @@ resolve_github_remote() {
 	local candidate_count=0
 	local github_seen=0
 	expected_lower=$(printf '%s' "$expected_slug" | tr '[:upper:]' '[:lower:]') || return 1
-	remote_names=$("$REAL_GIT" -C "$repo" remote 2>/dev/null) || return 1
+	remote_names=$(LC_ALL=C "$REAL_GIT" -C "$repo" remote 2>/dev/null | LC_ALL=C sort) || return 1
 	while IFS= read -r remote; do
 		[[ -n "$remote" ]] || continue
-		fetch_urls=$("$REAL_GIT" -C "$repo" config --get-all "remote.${remote}.url" 2>/dev/null || true)
-		push_urls=$("$REAL_GIT" -C "$repo" config --get-all "remote.${remote}.pushurl" 2>/dev/null || true)
-		[[ -n "$push_urls" ]] || push_urls="$fetch_urls"
-		remote_matches=1
-		fetch_count=0
-		while IFS= read -r remote_url; do
-			[[ -n "$remote_url" ]] || continue
-			fetch_count=$((fetch_count + 1))
-			if is_github_remote_url "$remote_url"; then
-				github_seen=1
-			fi
-			fetch_slug=$(github_slug_from_remote_url "$remote_url" 2>/dev/null || true)
-			if [[ -z "$fetch_slug" ]]; then
-				remote_matches=0
-				continue
-			fi
-			github_seen=1
-			remote_lower=$(printf '%s' "$fetch_slug" | tr '[:upper:]' '[:lower:]') || return 1
-			[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || remote_matches=0
-		done <<<"$fetch_urls"
-		push_count=0
-		while IFS= read -r remote_url; do
-			[[ -n "$remote_url" ]] || continue
-			push_count=$((push_count + 1))
-			if is_github_remote_url "$remote_url"; then
-				github_seen=1
-			fi
-			push_slug=$(github_slug_from_remote_url "$remote_url" 2>/dev/null || true)
-			if [[ -z "$push_slug" ]]; then
-				remote_matches=0
-				continue
-			fi
-			github_seen=1
-			remote_lower=$(printf '%s' "$push_slug" | tr '[:upper:]' '[:lower:]') || return 1
-			[[ -n "$expected_lower" && "$remote_lower" == "$expected_lower" ]] || remote_matches=0
-		done <<<"$push_urls"
+		fetch_key="remote.${remote}.url"
+		push_key="remote.${remote}.pushurl"
+		capture_git_config_values "$repo" "$fetch_key" || return 1
+		fetch_status="$GIT_CONFIG_CAPTURE_STATUS"
+		fetch_urls="$GIT_CONFIG_CAPTURE_VALUES"
+		[[ "$fetch_status" -eq 0 ]] || return 1
+		capture_git_config_values "$repo" "$push_key" || return 1
+		push_status="$GIT_CONFIG_CAPTURE_STATUS"
+		push_urls="$GIT_CONFIG_CAPTURE_VALUES"
+		push_had_output="$GIT_CONFIG_CAPTURE_HAD_OUTPUT"
+		case "$push_status" in
+		0) ;;
+		1)
+			[[ "$push_had_output" == "false" ]] || return 1
+			push_urls="$fetch_urls"
+			;;
+		*) return 1 ;;
+		esac
+		validate_github_remote_url_set "$fetch_urls" "$expected_lower" || return 1
+		fetch_count="$GITHUB_REMOTE_URL_COUNT"
+		remote_matches="$GITHUB_REMOTE_URLS_MATCH"
+		[[ "$GITHUB_REMOTE_URL_SEEN" -eq 0 ]] || github_seen=1
+		validate_github_remote_url_set "$push_urls" "$expected_lower" || return 1
+		push_count="$GITHUB_REMOTE_URL_COUNT"
+		[[ "$GITHUB_REMOTE_URLS_MATCH" -eq 1 ]] || remote_matches=0
+		[[ "$GITHUB_REMOTE_URL_SEEN" -eq 0 ]] || github_seen=1
 		[[ "$remote_matches" -eq 1 && "$fetch_count" -gt 0 && "$push_count" -gt 0 ]] || continue
-		candidate="$remote"
+		if [[ -z "$candidate" || "$remote" == "origin" ]]; then
+			candidate="$remote"
+		fi
 		candidate_count=$((candidate_count + 1))
 	done <<<"$remote_names"
-	if [[ "$candidate_count" -eq 1 ]]; then
+	#aidevops:trust-boundary
+	# Multiple names are accepted only after every candidate's complete fetch and
+	# push URL sets independently matched the caller's immutable expected slug.
+	if [[ "$candidate_count" -eq 1 ||
+		("$allow_equivalent_aliases" == "true" && "$candidate_count" -gt 1) ]]; then
 		printf '%s\n' "$candidate"
 		return 0
 	fi
@@ -587,9 +655,14 @@ policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
 registered_slug=""
 expected_slug=""
 allow_local_mirror=true
+allow_equivalent_aliases=false
+#aidevops:trust-boundary
+# Only framework self-update has an identity pinned independently of repository
+# registration, so ordinary canonical recovery keeps rejecting multiple aliases.
 if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 	expected_slug="$AIDEVOPS_FRAMEWORK_GITHUB_SLUG"
 	allow_local_mirror=false
+	allow_equivalent_aliases=true
 else
 	registered_slug=$(registered_repo_slug "$repo_path") || {
 		printf 'BLOCKED: registered canonical repository identity is invalid or ambiguous\n' >&2
@@ -597,7 +670,8 @@ else
 	}
 	expected_slug="$registered_slug"
 fi
-if ! canonical_remote=$(resolve_github_remote "$repo_path" "$expected_slug" "$allow_local_mirror"); then
+if ! canonical_remote=$(resolve_github_remote \
+	"$repo_path" "$expected_slug" "$allow_local_mirror" "$allow_equivalent_aliases"); then
 	if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 		printf 'BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous\n' >&2
 	else

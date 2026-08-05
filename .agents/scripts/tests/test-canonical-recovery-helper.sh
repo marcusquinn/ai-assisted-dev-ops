@@ -120,6 +120,25 @@ else
 fi
 printf '{"initialized_repos":[{"slug":"example/canonical-remote","path":"%s"}]}\n' \
 	"$RENAMED_REPO" >"$RENAMED_CONFIG"
+CONFIG_FAILURE_GIT="${ROOT}/config-failure-git"
+cat >"$CONFIG_FAILURE_GIT" <<'SH'
+#!/usr/bin/env bash
+set -u
+status=0
+if [[ "${3:-}" == "config" && "${4:-}" == "--get-all" &&
+	"${5:-}" == "${AIDEVOPS_TEST_FAIL_CONFIG_KEY:-}" ]]; then
+	case "${AIDEVOPS_TEST_CONFIG_FAILURE_MODE:-}" in
+	before-output) exit "${AIDEVOPS_TEST_FAIL_STATUS:-2}" ;;
+	after-valid-output)
+		/usr/bin/git "$@" || status=$?
+		[[ "$status" -eq 0 ]] || exit "$status"
+		exit "${AIDEVOPS_TEST_FAIL_STATUS:-2}"
+		;;
+	esac
+fi
+exec /usr/bin/git "$@"
+SH
+chmod +x "$CONFIG_FAILURE_GIT"
 if AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
 	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
 	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH >/dev/null &&
@@ -166,6 +185,56 @@ else
 fi
 /usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.url
 /usr/bin/git -C "$RENAMED_REPO" config --add remote.github.url "$RENAMED_URL"
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.url ""
+empty_url_output=""
+if empty_url_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL empty fetch URL member was accepted\n'
+	exit 1
+elif [[ "$empty_url_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS empty fetch URL member fails before canonical mutation\n'
+else
+	printf 'FAIL empty fetch URL rejection did not prove remote identity failure\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.url
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.url "$RENAMED_URL"
+for failure_mode in before-output after-valid-output; do
+	config_failure_output=""
+	if config_failure_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" \
+		AIDEVOPS_REAL_GIT_BIN="$CONFIG_FAILURE_GIT" \
+		AIDEVOPS_TEST_FAIL_CONFIG_KEY=remote.github.url \
+		AIDEVOPS_TEST_CONFIG_FAILURE_MODE="$failure_mode" \
+		bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+		--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+		printf 'FAIL fetch URL enumeration accepted the %s config failure\n' "$failure_mode"
+		exit 1
+	elif [[ "$config_failure_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+		[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+		printf 'PASS fetch URL enumeration rejects the %s config failure before mutation\n' "$failure_mode"
+	else
+		printf 'FAIL %s fetch URL config failure was not fail-closed\n' "$failure_mode"
+		exit 1
+	fi
+done
+config_failure_output=""
+if config_failure_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" \
+	AIDEVOPS_REAL_GIT_BIN="$CONFIG_FAILURE_GIT" \
+	AIDEVOPS_TEST_FAIL_CONFIG_KEY=remote.github.pushurl \
+	AIDEVOPS_TEST_CONFIG_FAILURE_MODE=after-valid-output AIDEVOPS_TEST_FAIL_STATUS=1 \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL push URL output plus absent status was accepted as an absent key\n'
+	exit 1
+elif [[ "$config_failure_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS push URL output plus absent status fails before canonical mutation\n'
+else
+	printf 'FAIL push URL output plus absent status was not fail-closed\n'
+	exit 1
+fi
 /usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.pushurl
 /usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl \
 	git@github.com:Other/Repository.git
@@ -182,6 +251,23 @@ elif [[ "$multi_url_output" == *"BLOCKED: registered GitHub remote is missing, m
 	printf 'PASS mixed mismatched and matching push URLs fail before canonical mutation\n'
 else
 	printf 'FAIL mixed push URL rejection did not prove remote identity failure\n'
+	exit 1
+fi
+/usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.pushurl
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl \
+	ssh://git@github.com:22/example/canonical-remote.git
+/usr/bin/git -C "$RENAMED_REPO" config --add remote.github.pushurl ""
+empty_url_output=""
+if empty_url_output=$(AIDEVOPS_REPOS_CONFIG="$RENAMED_CONFIG" AIDEVOPS_REAL_GIT_BIN=/usr/bin/git \
+	bash "$HELPER" fast-forward-current --repo "$RENAMED_REPO" --branch main \
+	--issue 28865 --confirm FAST_FORWARD_CANONICAL_BRANCH 2>&1); then
+	printf 'FAIL empty push URL member was accepted\n'
+	exit 1
+elif [[ "$empty_url_output" == *"BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous"* ]] &&
+	[[ "$(/usr/bin/git -C "$RENAMED_REPO" rev-parse HEAD)" == "$renamed_before" ]]; then
+	printf 'PASS empty push URL member fails before canonical mutation\n'
+else
+	printf 'FAIL empty push URL rejection did not prove remote identity failure\n'
 	exit 1
 fi
 /usr/bin/git -C "$RENAMED_REPO" config --unset-all remote.github.pushurl
