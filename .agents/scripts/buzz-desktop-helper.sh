@@ -77,7 +77,7 @@ _buzz_is_running() {
 _buzz_is_affected_version() {
 	local version="$1"
 	case "$version" in
-	0.5.4) return 0 ;;
+	0.5.4 | 0.5.5) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -529,7 +529,7 @@ show_help() {
 	cat <<'EOF'
 Usage: aidevops buzz <status|apply|rollback|reconcile> [--quiet]
 
-Manage the reversible Buzz Desktop 0.5.4 OpenCode ACP compatibility fix.
+Manage the reversible Buzz Desktop 0.5.4-0.5.5 OpenCode ACP compatibility fix.
 
 Commands:
   status      Report whether the installed Buzz version/agents need remediation
