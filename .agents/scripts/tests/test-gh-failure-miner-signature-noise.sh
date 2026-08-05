@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Regression guard for GH#26113/GH#26127/GH#27738: gh-failure-miner must not
+# Regression guard for GH#26113/GH#26127/GH#27738/GH#29522: gh-failure-miner must not
 # cluster GitHub runner-echoed shell source as failure signatures.
 
 set -u
@@ -85,6 +85,11 @@ gh() {
 		return 0
 	fi
 	if [[ "$first" == "run" && "$second" == "view" ]]; then
+		if [[ "${GH_LOG_SCENARIO:-}" == "unstructured_echoed_runner_guard" ]]; then
+			printf '%s\n' 'sync / Sync Issue Hygiene on PR Merge	UNKNOWN STEP	2026-08-04T20:48:14.7114649Z ^[[36;1m  echo "::error::Runner Git binary is unavailable before guard activation"^[[0m'
+			printf '%s\n' 'sync / Sync Issue Hygiene on PR Merge	UNKNOWN STEP	2026-08-04T20:48:27.8644706Z ERROR: closing issue #29494 has no exact ref:GH#29494 TODO mapping'
+			return 0
+		fi
 		if [[ "${GH_LOG_SCENARIO:-}" == "echoed_runner_guard" ]]; then
 			printf 'resolve-task\tResolve task\t2026-07-14T23:00:00Z\t\033[36;1mif ! command -v git; then echo "Runner Git binary is unavailable"; exit 1; fi\033[0m\n'
 			printf 'resolve-task\tResolve task\t2026-07-14T23:00:01Z\t::error::Closing issue has no exact TODO mapping\n'
@@ -108,6 +113,10 @@ assert_equals "runner-echoed shell comment is skipped" "gate / review-bot-gate G
 GH_LOG_SCENARIO="echoed_runner_guard"
 signature=$(extract_failure_signature "marcusquinn/aidevops" "29373303758" "1")
 assert_equals "runner-echoed guard source cannot mask the executed failure" "resolve-task Resolve task 2026-07-14T23:00:01Z ::error::Closing issue has no exact TODO mapping" "$signature"
+
+GH_LOG_SCENARIO="unstructured_echoed_runner_guard"
+signature=$(extract_failure_signature "marcusquinn/aidevops" "29373303758" "1")
+assert_equals "GH#29522 timestamp-prefixed runner source cannot become infrastructure evidence" "sync / Sync Issue Hygiene on PR Merge UNKNOWN STEP 2026-08-04T20:48:27.8644706Z ERROR: closing issue #29494 has no exact ref:GH#29494 TODO mapping" "$signature"
 
 GH_LOG_SCENARIO="qlty_unstructured_source"
 signature=$(extract_failure_signature "marcusquinn/aidevops" "30898422945" "91958107008")
@@ -144,6 +153,9 @@ assert_equals "xtrace-prefixed shell comments are filtered" $'job\tStep\ttime\tr
 
 filtered=$(filter_signature_noise_lines $'job\tStep\ttime\t\033[36;1mif missing; then echo "Runner is unavailable"; fi\033[0m\njob\tStep\ttime\t::error::real policy failure')
 assert_equals "cyan runner-echoed executable source is filtered" $'job\tStep\ttime\t::error::real policy failure' "$filtered"
+
+filtered=$(filter_signature_noise_lines $'sync / Sync Issue Hygiene on PR Merge\tUNKNOWN STEP\t2026-08-04T20:48:14.7114649Z ^[[36;1m  echo "::error::Runner Git binary is unavailable before guard activation"^[[0m\nsync / Sync Issue Hygiene on PR Merge\tUNKNOWN STEP\t2026-08-04T20:48:27.8644706Z ERROR: closing issue #29494 has no exact ref:GH#29494 TODO mapping')
+assert_equals "GH#29522 three-field timestamped source is filtered" $'sync / Sync Issue Hygiene on PR Merge\tUNKNOWN STEP\t2026-08-04T20:48:27.8644706Z ERROR: closing issue #29494 has no exact ref:GH#29494 TODO mapping' "$filtered"
 
 filtered=$(filter_signature_noise_lines $'gate / review-bot-gate\tUNKNOWN STEP\t2026-06-30T20:14:24.8559907Z\t\033[36;1m# rate-limit grace is disabled — they cannot merge on rate-limit-only.\033[0m')
 signature=$(normalize_signature_line "$filtered")

@@ -179,7 +179,10 @@ filter_signature_noise_lines() {
 			# GitHub Actions renders the generated shell source in cyan before
 			# printing command output. Never classify that source as evidence:
 			# guards often contain error text for branches that did not execute.
-			if (source_probe ~ /^(\033\[36;1m|\^\[\[36;1m)/) {
+			# Some gh versions return only three tab-separated fields, leaving the
+			# timestamp before the colour marker (GH#29522).
+			if (source_probe ~ /^(\033\[36;1m|\^\[\[36;1m)/ ||
+				source_probe ~ /Z[[:space:]]+(\033\[36;1m|\^\[\[36;1m)/) {
 				next
 			}
 			gsub(/\033\[[0-9;]*[A-Za-z]/, "", payload)
