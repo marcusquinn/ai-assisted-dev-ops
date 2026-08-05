@@ -14,6 +14,62 @@ from knowledge_social_import import canonical_json, reject_credentials
 
 
 @dataclass(frozen=True)
+class OAuthPageResponseCodec:
+    """Validate the response envelope and opaque mapping cursor for one provider."""
+
+    display_name: str
+    cursor_prefix: str
+    error_type: type[Exception]
+    max_cursor_bytes: int = 4096
+
+    def encode_cursor(self, cursor: dict[str, Any]) -> str:
+        reject_credentials(cursor)
+        payload = canonical_json(cursor).encode("utf-8")
+        if len(payload) > self.max_cursor_bytes:
+            raise self.error_type(
+                f"{self.display_name} checkpoint exceeds the safety limit"
+            )
+        encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        return f"{self.cursor_prefix}{encoded}"
+
+    def decode_cursor(self, cursor: str) -> dict[str, Any]:
+        if not cursor.startswith(self.cursor_prefix):
+            raise self.error_type(
+                f"stored {self.display_name} cursor has an unsupported version"
+            )
+        encoded = cursor.removeprefix(self.cursor_prefix)
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            parsed = json.loads(base64.urlsafe_b64decode(encoded + padding))
+        except (ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise self.error_type(
+                f"stored {self.display_name} cursor is invalid"
+            ) from error
+        if not isinstance(parsed, dict):
+            raise self.error_type(
+                f"stored {self.display_name} cursor has an invalid shape"
+            )
+        reject_credentials(parsed)
+        return parsed
+
+    def response_status(self, payload: dict[str, Any]) -> int:
+        status = payload.get("status", 200)
+        if isinstance(status, bool) or not isinstance(status, int):
+            raise self.error_type(
+                f"{self.display_name} response status must be an integer"
+            )
+        return status
+
+    def page_data(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        data = payload.get("data", [])
+        if not isinstance(data, list) or any(
+            not isinstance(item, dict) for item in data
+        ):
+            raise self.error_type(f"{self.display_name} page data must be an array")
+        return data
+
+
+@dataclass(frozen=True)
 class OAuthPageRequest:
     """Provider-neutral request fields with a provider-specific handle key."""
 

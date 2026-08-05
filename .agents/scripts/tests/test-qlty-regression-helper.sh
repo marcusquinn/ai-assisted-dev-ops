@@ -89,6 +89,24 @@ if [ "${QLTY_STUB_MODE:-parity}" = "cache-sensitive" ]; then
 	fi
 	exit 0
 fi
+if [ "${QLTY_STUB_MODE:-parity}" = "second-pass-unstable" ]; then
+	if [ -z "${XDG_CACHE_HOME:-}" ]; then
+		printf 'missing isolated cache\n' >&2
+		exit 2
+	fi
+	run_count=0
+	if [ -f "$XDG_CACHE_HOME/run-count" ]; then
+		run_count=$(cat "$XDG_CACHE_HOME/run-count")
+	fi
+	run_count=$((run_count + 1))
+	printf '%s\n' "$run_count" >"$XDG_CACHE_HOME/run-count"
+	if [ "$run_count" -eq 2 ]; then
+		printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"transient-a.sh"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"transient-b.sh"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"transient-c.sh"}}}]}]}]}'
+	else
+		printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.sh"}}}]}]}]}'
+	fi
+	exit 0
+fi
 if [ "${QLTY_STUB_MODE:-parity}" = "topology-sensitive" ]; then
 	if [ "$(basename "$PWD")" = "repo" ]; then
 		printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-only.sh"}}}]}]}]}'
@@ -140,6 +158,14 @@ cache_sensitive_output=$(cd "$REPO" && "$HELPER" --base HEAD --head HEAD 2>&1)
 cache_sensitive_rc=$?
 assert_rc "cold-cache-only similar-code findings do not affect same-tree scans" "0" "$cache_sensitive_rc"
 assert_contains "both authoritative scans use warm-cache counts" "base: 1  head: 1  delta: 0" "$cache_sensitive_output"
+
+QLTY_STUB_MODE=second-pass-unstable
+export QLTY_STUB_MODE
+unstable_output=$(cd "$REPO" && "$HELPER" --base HEAD --head HEAD 2>&1)
+unstable_rc=$?
+assert_rc "one unstable second pass cannot affect same-tree scans" "0" "$unstable_rc"
+assert_contains "three-scan identity consensus is reported" "identities stabilized after 3 scans" "$unstable_output"
+assert_contains "consensus scan retains stable counts" "base: 1  head: 1  delta: 0" "$unstable_output"
 
 QLTY_STUB_MODE=topology-sensitive
 export QLTY_STUB_MODE

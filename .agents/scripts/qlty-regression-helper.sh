@@ -103,28 +103,52 @@ run_qlty_sarif() {
 	local _out="$2"
 	local _cache_key=""
 	local _cache_dir=""
+	local _first=""
+	local _second=""
+	local _third=""
 	_cache_key=$(basename "$_out" .sarif)
 	_cache_dir="$TMP_DIR/cache-${_cache_key}"
+	_first="$TMP_DIR/${_cache_key}.first.sarif"
+	_second="$TMP_DIR/${_cache_key}.second.sarif"
+	_third="$TMP_DIR/${_cache_key}.third.sarif"
 	mkdir -p "$_cache_dir"
 	# --all: scan all files; --sarif: JSON output;
 	# --no-snippets: compact; --quiet: suppress progress.
 	# qlty exits non-zero when smells exist — SARIF still written to stdout.
-	# Qlty 0.619.0 and 0.635.0 can emit extra similar-code findings on the
-	# first scan of an empty cache. Warm that per-ref cache, then retain only
-	# the second scan so cold/warm runner state cannot change gate results.
+	# Qlty 0.619.0-0.636.0 can emit intermittent similar-code findings while
+	# warming an empty cache. Accept the first matching identity set from up to
+	# three scans so one transient pass cannot create or hide a regression.
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
-		>/dev/null 2>/dev/null || true
+		>"$_first" 2>/dev/null || true
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
-		>"$_out" 2>/dev/null || true
-	if [ ! -s "$_out" ]; then
+		>"$_second" 2>/dev/null || true
+	if [ ! -s "$_first" ] || [ ! -s "$_second" ]; then
 		log "ERROR: qlty produced no output for $_dir"
 		return 1
 	fi
-	if ! jq -e '.runs[0].results' "$_out" >/dev/null 2>&1; then
-		log "ERROR: qlty output is not valid SARIF: $_out"
+	if ! jq -e '.runs[0].results' "$_first" "$_second" >/dev/null 2>&1; then
+		log "ERROR: qlty output is not valid SARIF for $_dir"
 		return 1
 	fi
-	return 0
+	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_second"); then
+		mv "$_second" "$_out"
+		log "qlty identities stabilized after 2 scans for $_dir"
+		return 0
+	fi
+	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
+		>"$_third" 2>/dev/null || true
+	if [ ! -s "$_third" ] || ! jq -e '.runs[0].results' "$_third" >/dev/null 2>&1; then
+		log "ERROR: qlty third scan did not produce valid SARIF for $_dir"
+		return 1
+	fi
+	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_third") ||
+		cmp -s <(normalized_identities "$_second") <(normalized_identities "$_third"); then
+		mv "$_third" "$_out"
+		log "qlty identities stabilized after 3 scans for $_dir"
+		return 0
+	fi
+	log "ERROR: qlty identities did not stabilize after 3 scans for $_dir"
+	return 1
 }
 
 create_scan_clone() {

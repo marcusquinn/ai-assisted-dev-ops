@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 import sys
 from dataclasses import dataclass
 from typing import Any
 
 from _knowledge_social_collect import CursorState, PageCheckpoint
+from _knowledge_social_oauth_request import OAuthPageResponseCodec
 from knowledge_social_import import canonical_json, reject_credentials
 from knowledge_social_store import SocialStoreError
 
@@ -34,6 +33,11 @@ class GoogleBusinessProfileProviderUnavailableError(
 
 ADAPTER_ERROR = GoogleBusinessProfileAdapterError
 PROVIDER_UNAVAILABLE_ERROR = GoogleBusinessProfileProviderUnavailableError
+PAGE_CODEC = OAuthPageResponseCodec(
+    display_name="Google Business Profile",
+    cursor_prefix=CURSOR_PREFIX,
+    error_type=GoogleBusinessProfileAdapterError,
+)
 
 
 @dataclass(frozen=True)
@@ -110,35 +114,11 @@ def resource_id(value: Any, field: str, *, optional: bool = False) -> str | None
 
 
 def _encode_cursor(cursor: dict[str, Any]) -> str:
-    reject_credentials(cursor)
-    payload = canonical_json(cursor).encode("utf-8")
-    if len(payload) > 4096:
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile checkpoint exceeds the safety limit"
-        )
-    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-    return f"{CURSOR_PREFIX}{encoded}"
+    return PAGE_CODEC.encode_cursor(cursor)
 
 
 def _decode_cursor(cursor: str) -> dict[str, Any]:
-    if not cursor.startswith(CURSOR_PREFIX):
-        raise GoogleBusinessProfileAdapterError(
-            "stored Google Business Profile cursor has an unsupported version"
-        )
-    encoded = cursor.removeprefix(CURSOR_PREFIX)
-    try:
-        padding = "=" * (-len(encoded) % 4)
-        parsed = json.loads(base64.urlsafe_b64decode(encoded + padding))
-    except (ValueError, UnicodeError, json.JSONDecodeError) as error:
-        raise GoogleBusinessProfileAdapterError(
-            "stored Google Business Profile cursor is invalid"
-        ) from error
-    if not isinstance(parsed, dict):
-        raise GoogleBusinessProfileAdapterError(
-            "stored Google Business Profile cursor has an invalid shape"
-        )
-    reject_credentials(parsed)
-    return parsed
+    return PAGE_CODEC.decode_cursor(cursor)
 
 
 def page_request(
@@ -173,22 +153,12 @@ def page_request(
 
 def response_status(payload: dict[str, Any]) -> int:
     """Return a validated HTTP-like status from a provider response."""
-    status = payload.get("status", 200)
-    if isinstance(status, bool) or not isinstance(status, int):
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile response status must be an integer"
-        )
-    return status
+    return PAGE_CODEC.response_status(payload)
 
 
 def page_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Return a validated sanitized record array."""
-    data = payload.get("data", [])
-    if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
-        raise GoogleBusinessProfileAdapterError(
-            "Google Business Profile page data must be an array"
-        )
-    return data
+    return PAGE_CODEC.page_data(payload)
 
 
 def page_checkpoint(
