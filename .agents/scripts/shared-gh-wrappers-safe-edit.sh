@@ -155,11 +155,15 @@ _gh_audit_fetch_issue_state_json() {
 		return 0
 	}
 
-	local data
+	local data=""
 	if command -v gh_issue_view >/dev/null 2>&1; then
 		data=$(gh_issue_view "$issue_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
-	else
+	fi
+	# REST-first routing can be locally unavailable while GitHub's GraphQL
+	# transport remains healthy. Audit capture must try the independent native
+	# read before declaring the state unavailable.
+	if [[ -z "$data" ]]; then
 		data=$(gh issue view "$issue_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
@@ -204,11 +208,14 @@ _gh_audit_fetch_pr_state_json() {
 		return 0
 	}
 
-	local data
+	local data=""
 	if command -v gh_pr_view >/dev/null 2>&1; then
 		data=$(gh_pr_view "$pr_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
-	else
+	fi
+	# Mirror issue capture: a failed REST-capable wrapper is not proof that the
+	# native GraphQL read is unavailable.
+	if [[ -z "$data" ]]; then
 		data=$(gh pr view "$pr_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
