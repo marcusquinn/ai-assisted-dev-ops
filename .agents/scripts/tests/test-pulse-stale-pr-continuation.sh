@@ -35,6 +35,10 @@ if [[ "$1" == "is-assigned" ]]; then
 	printf '%s\n' "${STUB_ASSIGNED_OUTPUT}"
 	exit 1
 fi
+if [[ "$1" == "has-open-pr" ]]; then
+	printf '%s\n' "${STUB_OPEN_PR_OUTPUT:-}"
+	exit "${STUB_OPEN_PR_RC:-0}"
+fi
 exit 1
 DEDUP_STUB
 chmod +x "${SCRIPT_DIR}/dispatch-dedup-helper.sh"
@@ -74,6 +78,7 @@ fi
 
 ROUTE_CALLS=0
 ROUTE_RESULT=0
+LAST_ROUTE_ARGS=""
 _dispatch_stale_pr_checkpoint_continuation() {
 	local _issue_number="$1"
 	local _repo_slug="$2"
@@ -81,6 +86,7 @@ _dispatch_stale_pr_checkpoint_continuation() {
 	local _self_login="$4"
 	: "$_issue_number" "$_repo_slug" "$_assigned_output" "$_self_login"
 	ROUTE_CALLS=$((ROUTE_CALLS + 1))
+	LAST_ROUTE_ARGS="$*"
 	return "$ROUTE_RESULT"
 }
 
@@ -103,6 +109,73 @@ if _dedup_layer6_assignee_and_stale "123" "owner/repo" "runner" && [[ "$ROUTE_CA
 	print_result "changed stale evidence fails closed without continuation or redispatch" 0
 else
 	print_result "changed stale evidence fails closed without continuation or redispatch" 1
+fi
+
+STUB_ACTIVE_WORKER=0
+has_worker_for_repo_issue() {
+	local _issue_number="$1"
+	local _repo_slug="$2"
+	: "$_issue_number" "$_repo_slug"
+	if [[ "$STUB_ACTIVE_WORKER" -eq 1 ]]; then
+		return 0
+	fi
+	return 1
+}
+
+_dispatch_has_interactive_hold() {
+	local issue_meta_json="$1"
+	if printf '%s' "$issue_meta_json" | jq -e '
+		(.labels // []) | map(.name) |
+		((index("auto-dispatch") | not) and (index("status:in-review") or index("origin:interactive")))
+	' >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+checkpoint_meta='{"number":29507,"state":"OPEN","title":"Fixture","labels":[{"name":"origin:interactive"},{"name":"status:in-review"}],"assignees":[{"login":"stale-runner"}]}'
+export STUB_OPEN_PR_OUTPUT='WORKER_DRAFT_CHECKPOINT: draft PR #29519 is a durable checkpoint for issue #29507; ordinary redispatch is blocked'
+export STUB_OPEN_PR_RC=0
+ROUTE_CALLS=0
+ROUTE_RESULT=0
+: >"$LOGFILE"
+if _dispatch_interactive_hold_gate "29507" "owner/repo" "Fixture" "runner" "$checkpoint_meta" &&
+	[[ "$ROUTE_CALLS" -eq 1 && "$LAST_ROUTE_ARGS" == *"PR #29519"* ]] &&
+	grep -q 'reason=worker_draft_checkpoint_continuation signal=checkpoint_routed' "$LOGFILE"; then
+	print_result "#29507 interactive-provenance checkpoint routes exactly one continuation before hold" 0
+else
+	print_result "#29507 interactive-provenance checkpoint routes exactly one continuation before hold" 1
+fi
+
+ROUTE_CALLS=0
+ROUTE_RESULT=1
+: >"$LOGFILE"
+if _dispatch_interactive_hold_gate "29507" "owner/repo" "Fixture" "runner" "$checkpoint_meta" &&
+	[[ "$ROUTE_CALLS" -eq 1 ]] && grep -q 'reason=worker_draft_checkpoint_blocked' "$LOGFILE"; then
+	print_result "verified checkpoint launch failure remains an explicit block" 0
+else
+	print_result "verified checkpoint launch failure remains an explicit block" 1
+fi
+
+export STUB_OPEN_PR_OUTPUT='draft PR #29519 is a durable checkpoint for issue #29507; ordinary redispatch is blocked'
+ROUTE_CALLS=0
+: >"$LOGFILE"
+if _dispatch_interactive_hold_gate "29507" "owner/repo" "Fixture" "runner" "$checkpoint_meta" &&
+	[[ "$ROUTE_CALLS" -eq 0 ]] && grep -q 'reason=interactive_review_hold' "$LOGFILE"; then
+	print_result "otherwise identical human draft remains a genuine interactive hold" 0
+else
+	print_result "otherwise identical human draft remains a genuine interactive hold" 1
+fi
+
+export STUB_OPEN_PR_OUTPUT='WORKER_DRAFT_CHECKPOINT: draft PR #29519 is a durable checkpoint for issue #29507; ordinary redispatch is blocked'
+STUB_ACTIVE_WORKER=1
+ROUTE_CALLS=0
+: >"$LOGFILE"
+if _dispatch_interactive_hold_gate "29507" "owner/repo" "Fixture" "runner" "$checkpoint_meta" &&
+	[[ "$ROUTE_CALLS" -eq 0 ]] && grep -q 'reason=interactive_review_hold' "$LOGFILE"; then
+	print_result "live worker keeps checkpoint under genuine interactive hold" 0
+else
+	print_result "live worker keeps checkpoint under genuine interactive hold" 1
 fi
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then

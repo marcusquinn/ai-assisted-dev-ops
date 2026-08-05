@@ -1188,6 +1188,10 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42" ]]; then
 	printf '%s\n' "${MOCK_CHECKPOINT_ISSUE_JSON:?}"
 	exit 0
 fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42/comments?per_page=100" ]]; then
+	printf '%s\n' "${MOCK_CHECKPOINT_COMMENTS_JSON:-[]}"
+	exit 0
+fi
 exit 1
 EOF
 	chmod +x "${tmp_dir}/bin/gh"
@@ -1197,7 +1201,7 @@ EOF
 	local valid_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"}],"assignees":[{"login":"mockrunner"}]}'
 	local output=""
 	local status=0
-	valid_pr="{\"number\":77,\"state\":\"OPEN\",\"closingIssuesReferences\":[{\"number\":42,\"repository\":{\"name\":\"repo\",\"owner\":{\"login\":\"owner\"}}}],\"isDraft\":true,\"isCrossRepository\":false,\"labels\":[{\"name\":\"origin:worker\"}],\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\"}"
+	valid_pr="{\"number\":77,\"state\":\"OPEN\",\"closingIssuesReferences\":[{\"number\":42,\"repository\":{\"name\":\"repo\",\"owner\":{\"login\":\"owner\"}}}],\"isDraft\":true,\"isCrossRepository\":false,\"labels\":[{\"name\":\"origin:worker\"}],\"headRefName\":\"feature/review\",\"headRefOid\":\"${expected_sha}\",\"author\":{\"login\":\"mockrunner\"}}"
 
 	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
 		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$valid_issue" \
@@ -1262,6 +1266,38 @@ EOF
 	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
 		&& print_result "PR checkpoint target rejects one-for-one reassignment" 0 \
 		|| print_result "PR checkpoint target rejects one-for-one reassignment" 1 "status=$status output=$output"
+
+	status=0
+	local interactive_issue='{"number":42,"state":"open","labels":[{"name":"status:in-review"},{"name":"origin:interactive"}],"assignees":[{"login":"mockrunner"}]}'
+	local checkpoint_comments='[[{"id":10,"created_at":"2026-08-04T22:29:37Z","author_association":"COLLABORATOR","body":"CLAIM_RELEASED reason=worker_draft_checkpoint runner=mockrunner ts=2026-08-04T22:29:36Z"}]]'
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$interactive_issue" \
+		MOCK_CHECKPOINT_COMMENTS_JSON="$checkpoint_comments" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 0 && "$output" == *"PR_CHECKPOINT_TARGET_VALID"* ]] \
+		&& print_result "PR checkpoint target accepts trusted interactive-provenance release" 0 \
+		|| print_result "PR checkpoint target accepts trusted interactive-provenance release" 1 "status=$status output=$output"
+
+	status=0
+	local later_human_claim='[[{"id":10,"created_at":"2026-08-04T22:29:37Z","author_association":"COLLABORATOR","body":"CLAIM_RELEASED reason=worker_draft_checkpoint runner=mockrunner ts=2026-08-04T22:29:36Z"},{"id":11,"created_at":"2026-08-04T22:30:37Z","author_association":"MEMBER","body":"Interactive session claimed this issue"}]]'
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$valid_pr" MOCK_CHECKPOINT_ISSUE_JSON="$interactive_issue" \
+		MOCK_CHECKPOINT_COMMENTS_JSON="$later_human_claim" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects release superseded by human claim" 0 \
+		|| print_result "PR checkpoint target rejects release superseded by human claim" 1 "status=$status output=$output"
+
+	status=0
+	local foreign_pr=""
+	foreign_pr=$(printf '%s' "$valid_pr" | jq -c '.author.login = "foreign-runner"')
+	output=$(PATH="${tmp_dir}/bin:$PATH" MOCK_CHECKPOINT_GH_CALLS="$calls_file" \
+		MOCK_CHECKPOINT_PR_JSON="$foreign_pr" MOCK_CHECKPOINT_ISSUE_JSON="$interactive_issue" \
+		MOCK_CHECKPOINT_COMMENTS_JSON="$checkpoint_comments" \
+		"$CLAIM_HELPER" verify-pr-checkpoint-target 77 owner/repo "$expected_sha" feature/review 42 mockrunner 2>&1) || status=$?
+	[[ "$status" -eq 1 && "$output" == *"PR_CHECKPOINT_TARGET_LOST"* ]] \
+		&& print_result "PR checkpoint target rejects foreign checkpoint author" 0 \
+		|| print_result "PR checkpoint target rejects foreign checkpoint author" 1 "status=$status output=$output"
 
 	rm -rf "$tmp_dir"
 	return 0
