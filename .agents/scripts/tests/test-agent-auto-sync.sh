@@ -259,6 +259,7 @@ create_fake_repo() {
 	local remote_url="$2"
 	local repo_path="$TEST_DIR/$repo_name"
 
+	rm -f "$TEST_HOME/.aidevops/agents" "$TEST_HOME/.aidevops/.deployed-sha"
 	mkdir -p "$repo_path/.agents/scripts/setup/modules"
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git init -q "$repo_path"
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" config user.email test@example.invalid
@@ -275,6 +276,38 @@ create_fake_repo() {
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add .
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit -qm fixture
 	printf '%s\n' "$repo_path"
+	return 0
+}
+
+prepare_active_release_preservation() {
+	local repo_path="$1"
+	local topology="$2"
+	local release_sha=""
+	local active_sha=""
+	local release_tree=""
+
+	release_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD) || return 1
+	case "$topology" in
+	same-tree)
+		PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit --allow-empty -qm "preserve release"
+		active_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD) || return 1
+		;;
+	changed-tree)
+		printf 'post-release change\n' >"$repo_path/preservation-change.txt"
+		PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add preservation-change.txt
+		PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit -qm "change release tree"
+		active_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD) || return 1
+		;;
+	unrelated)
+		release_tree=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse 'HEAD^{tree}') || return 1
+		active_sha=$(printf 'unrelated active bundle\n' | PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit-tree "$release_tree") || return 1
+		PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -q --detach "$active_sha"
+		;;
+	*) return 1 ;;
+	esac
+	invoke_release_sync "$repo_path" >/dev/null 2>&1 || return 1
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -q --detach "$release_sha"
+	printf '%s\n' "$active_sha"
 	return 0
 }
 
@@ -564,6 +597,116 @@ test_release_sync_rejects_stale_sentinel() {
 	return 0
 }
 
+test_release_sync_accepts_validated_same_tree_descendant() {
+	local repo_path
+	local release_sha=""
+	local active_sha=""
+	local output=""
+	repo_path=$(create_fake_repo "release-same-tree-descendant" "https://github.com/marcusquinn/aidevops.git")
+	release_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD)
+	active_sha=$(prepare_active_release_preservation "$repo_path" same-tree)
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1) &&
+		[[ ! -s "$TEST_DIR/sync.log" ]] &&
+		[[ "$output" == *"release ${release_sha:0:12}"* ]] &&
+		[[ "$output" == *"preservation merge ${active_sha:0:12}"* ]] &&
+		[[ "$output" == *"verified no-op"* ]]; then
+		print_result "release sync accepts an exact-verified same-tree preservation descendant without deployment" 0
+	else
+		print_result "release sync accepts an exact-verified same-tree preservation descendant without deployment" 1 "Expected verified no-op evidence without a deploy invocation: $output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_changed_tree_descendant() {
+	local repo_path
+	local output=""
+	repo_path=$(create_fake_repo "release-changed-tree-descendant" "https://github.com/marcusquinn/aidevops.git")
+	prepare_active_release_preservation "$repo_path" changed-tree >/dev/null
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync rejects a changed-tree preservation descendant" 1 "Changed-tree descendant was reported as converged"
+	elif [[ "$output" == *"tree differs from release"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects a changed-tree preservation descendant" 0
+	else
+		print_result "release sync rejects a changed-tree preservation descendant" 1 "Missing fail-closed changed-tree evidence: $output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_unrelated_active_commit() {
+	local repo_path
+	local output=""
+	repo_path=$(create_fake_repo "release-unrelated-active" "https://github.com/marcusquinn/aidevops.git")
+	prepare_active_release_preservation "$repo_path" unrelated >/dev/null
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync rejects an unrelated active commit" 1 "Unrelated active commit was reported as converged"
+	elif [[ "$output" == *"is not a descendant of release"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects an unrelated active commit" 0
+	else
+		print_result "release sync rejects an unrelated active commit" 1 "Missing fail-closed ancestry evidence: $output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_malformed_active_manifest() {
+	local repo_path
+	local output=""
+	repo_path=$(create_fake_repo "release-malformed-active" "https://github.com/marcusquinn/aidevops.git")
+	prepare_active_release_preservation "$repo_path" same-tree >/dev/null
+	printf 'schema=1\nstatus=validated\n' >"$TEST_HOME/.aidevops/agents/.bundle-manifest"
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync rejects a malformed active manifest before deployment" 1 "Malformed active manifest was replaced or reported as converged"
+	elif [[ "$output" == *"manifest git SHA is missing or invalid"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects a malformed active manifest before deployment" 0
+	else
+		print_result "release sync rejects a malformed active manifest before deployment" 1 "Missing fail-closed manifest evidence: $output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_same_tree_descendant_with_stale_stamp() {
+	local repo_path
+	local output=""
+	repo_path=$(create_fake_repo "release-same-tree-stale-stamp" "https://github.com/marcusquinn/aidevops.git")
+	prepare_active_release_preservation "$repo_path" same-tree >/dev/null
+	printf '1111111111111111111111111111111111111111\n' >"$TEST_HOME/.aidevops/.deployed-sha"
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync rejects a same-tree descendant with a stale deployment stamp" 1 "Stale stamp was reported as converged"
+	elif [[ "$output" == *"deployed SHA"* && "$output" == *"does not match release commit"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects a same-tree descendant with a stale deployment stamp" 0
+	else
+		print_result "release sync rejects a same-tree descendant with a stale deployment stamp" 1 "Missing exact-verifier stamp evidence: $output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_same_tree_descendant_with_stale_sentinel() {
+	local repo_path
+	local output=""
+	repo_path=$(create_fake_repo "release-same-tree-stale-sentinel" "https://github.com/marcusquinn/aidevops.git")
+	prepare_active_release_preservation "$repo_path" same-tree >/dev/null
+	printf 'stale release helper\n' >"$TEST_HOME/.aidevops/agents/scripts/version-manager-release.sh"
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync rejects a same-tree descendant with a stale sentinel" 1 "Stale sentinel was reported as converged"
+	elif [[ "$output" == *"active sentinel scripts/version-manager-release.sh"* && "$output" == *"does not match release commit"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects a same-tree descendant with a stale sentinel" 0
+	else
+		print_result "release sync rejects a same-tree descendant with a stale sentinel" 1 "Missing exact-verifier sentinel evidence: $output"
+	fi
+	return 0
+}
+
 test_release_sync_unsets_session_pins() {
 	: >"$TEST_DIR/sync-env.log"
 	local repo_path
@@ -601,6 +744,12 @@ main() {
 	test_release_sync_rejects_stale_active_bundle
 	test_release_sync_rejects_stale_deployed_sha
 	test_release_sync_rejects_stale_sentinel
+	test_release_sync_accepts_validated_same_tree_descendant
+	test_release_sync_rejects_changed_tree_descendant
+	test_release_sync_rejects_unrelated_active_commit
+	test_release_sync_rejects_malformed_active_manifest
+	test_release_sync_rejects_same_tree_descendant_with_stale_stamp
+	test_release_sync_rejects_same_tree_descendant_with_stale_sentinel
 	test_release_sync_unsets_session_pins
 
 	teardown

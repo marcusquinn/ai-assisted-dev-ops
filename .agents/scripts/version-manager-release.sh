@@ -540,10 +540,97 @@ validate_release_deployment_readiness() {
 	return 0
 }
 
+_AIDEVOPS_RELEASE_ACTIVE_PRESERVATION_SHA=""
+
+_verify_active_release_preservation_merge() {
+	local sync_repo_root="$1"
+	local release_sha="$2"
+	local active_link="$3"
+	local stamp_file="$4"
+	local active_manifest=""
+	local manifest_status=""
+	local manifest_sha=""
+	local active_sha=""
+	local release_tree=""
+	local active_tree=""
+	local verify_base=""
+	local verify_root=""
+	local verify_repo=""
+	local verify_exit=0
+
+	_AIDEVOPS_RELEASE_ACTIVE_PRESERVATION_SHA=""
+	[[ -e "$active_link" || -L "$active_link" ]] || return 0
+	_runtime_bundle_verify_active_link "$active_link" || return 1
+	active_manifest="$_AIDEVOPS_RUNTIME_VERIFY_ACTIVE_ROOT/.bundle-manifest"
+	manifest_status=$(_runtime_bundle_verify_manifest_value "$active_manifest" status 2>/dev/null) || manifest_status=""
+	manifest_sha=$(_runtime_bundle_verify_manifest_value "$active_manifest" git_sha 2>/dev/null) || manifest_sha=""
+	if [[ "$manifest_status" != "validated" ]]; then
+		print_error "Post-release deployment gate rejected the active bundle: manifest status is ${manifest_status:-missing}, expected validated"
+		return 1
+	fi
+	active_sha=$(git -C "$sync_repo_root" rev-parse "${manifest_sha}^{commit}" 2>/dev/null) || {
+		print_error "Post-release deployment gate rejected the active bundle: manifest git SHA is missing or invalid"
+		return 1
+	}
+	if [[ "$manifest_sha" != "$active_sha" ]]; then
+		print_error "Post-release deployment gate rejected the active bundle: manifest git SHA is not the full resolved commit"
+		return 1
+	fi
+	[[ "$active_sha" != "$release_sha" ]] || return 0
+
+	if ! git -C "$sync_repo_root" merge-base --is-ancestor "$release_sha" "$active_sha" 2>/dev/null; then
+		print_error "Post-release deployment gate rejected active source ${active_sha:0:12}: it is not a descendant of release ${release_sha:0:12}"
+		return 1
+	fi
+	release_tree=$(git -C "$sync_repo_root" rev-parse "${release_sha}^{tree}" 2>/dev/null) || {
+		print_error "Post-release deployment gate cannot resolve the release tree"
+		return 1
+	}
+	active_tree=$(git -C "$sync_repo_root" rev-parse "${active_sha}^{tree}" 2>/dev/null) || {
+		print_error "Post-release deployment gate cannot resolve the active bundle tree"
+		return 1
+	}
+	if [[ "$release_tree" != "$active_tree" ]]; then
+		print_error "Post-release deployment gate rejected active descendant ${active_sha:0:12}: its tree differs from release ${release_sha:0:12}"
+		return 1
+	fi
+
+	verify_base="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	mkdir -p "$verify_base" || {
+		print_error "Post-release deployment gate cannot create the active-source verification workspace"
+		return 1
+	}
+	verify_root=$(mktemp -d "$verify_base/release-active-verify.XXXXXX") || {
+		print_error "Post-release deployment gate cannot allocate the active-source verification workspace"
+		return 1
+	}
+	verify_repo="$verify_root/repo"
+	if ! git clone --quiet --shared --no-checkout "$sync_repo_root" "$verify_repo" 2>/dev/null ||
+		! git -C "$verify_repo" checkout --quiet --detach "$active_sha" 2>/dev/null; then
+		print_error "Post-release deployment gate cannot materialize active source ${active_sha:0:12} for exact verification"
+		verify_exit=1
+	elif ! verify_aidevops_runtime_bundle_convergence \
+		"$verify_repo" \
+		"$active_sha" \
+		"$active_link" \
+		"$stamp_file"; then
+		verify_exit=1
+	fi
+	if ! rm -rf "$verify_root"; then
+		print_error "Post-release deployment gate could not remove the active-source verification workspace"
+		return 1
+	fi
+	[[ "$verify_exit" -eq 0 ]] || return 1
+
+	_AIDEVOPS_RELEASE_ACTIVE_PRESERVATION_SHA="$active_sha"
+	return 2
+}
+
 run_post_release_agent_sync() {
 	local sync_repo_root="${AIDEVOPS_SYNC_REPO_ROOT:-$REPO_ROOT}"
 	local remote_url
 	local release_sha=""
+	local active_preservation_exit=0
 	remote_url=$(git -C "$sync_repo_root" remote get-url origin 2>/dev/null || echo "")
 
 	if [[ "$remote_url" != *"marcusquinn/aidevops"* ]]; then
@@ -570,6 +657,19 @@ run_post_release_agent_sync() {
 		print_error "Post-release deployment gate cannot resolve the release checkout commit"
 		return 1
 	}
+	_verify_active_release_preservation_merge \
+		"$sync_repo_root" \
+		"$release_sha" \
+		"$HOME/.aidevops/agents" \
+		"$HOME/.aidevops/.deployed-sha" || active_preservation_exit=$?
+	if [[ "$active_preservation_exit" -eq 2 ]]; then
+		print_success "Post-release aidevops runtime already contains release ${release_sha:0:12} through validated preservation merge ${_AIDEVOPS_RELEASE_ACTIVE_PRESERVATION_SHA:0:12} (verified no-op)"
+		return 0
+	fi
+	if [[ "$active_preservation_exit" -ne 0 ]]; then
+		print_error "Post-release deployment gate could not verify the active runtime before deployment"
+		return 1
+	fi
 	deploy_args+=(--expected-sha "$release_sha")
 
 	print_info "Running post-release aidevops agent sync..."
