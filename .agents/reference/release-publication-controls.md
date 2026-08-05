@@ -271,6 +271,12 @@ terminal `release:not-requested` evidence before the user explicitly authorized
 publication. The exact branch base is
 `8f3b23eb37e632eb29ccdbf63d858e489a453580`.
 
+The subsequent Buzz Desktop 0.5.5 publication checkpoint records the user's
+explicit patch-release authorization on the reviewed current `main` ancestry.
+It intentionally carries no aggregation trailers because terminal release
+receipts are irreversible publication boundaries. The exact branch base is
+`7ab73e1de613615587e43f77188d127d699d480b`.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
