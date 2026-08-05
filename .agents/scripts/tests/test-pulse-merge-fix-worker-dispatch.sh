@@ -59,6 +59,7 @@ reset_mock_state() {
 		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION
 	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
 	: >"${TEST_ROOT}/issue-body.txt"
+	printf '[]\n' >"${TEST_ROOT}/issue-comments.json"
 	: >"${TEST_ROOT}/reviews.json"
 	: >"${TEST_ROOT}/comments.json"
 	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
@@ -157,6 +158,19 @@ case "$_subcmd" in
 		exit 1
 	fi
 	printf 'CLOSED\n' >"${TEST_ROOT}/pr-state.txt"
+	exit 0
+	;;
+"issue comment")
+	_body=""
+	for _i in "${!_all_args[@]}"; do
+		if [[ "${_all_args[$_i]}" == "--body" ]]; then
+			_body="${_all_args[$((_i + 1))]:-}"
+			break
+		fi
+	done
+	jq --arg body "$_body" '. + [{body:$body}]' "${TEST_ROOT}/issue-comments.json" \
+		>"${TEST_ROOT}/issue-comments.json.tmp"
+	mv "${TEST_ROOT}/issue-comments.json.tmp" "${TEST_ROOT}/issue-comments.json"
 	exit 0
 	;;
 "pr reopen")
@@ -348,6 +362,10 @@ if [[ "${1:-}" == "api" ]]; then
 		else
 			printf '%s\t%s\n' "$(<"${TEST_ROOT}/issue-labels.txt")" "$(<"${TEST_ROOT}/issue-assignees.txt")"
 		fi
+		exit 0
+	fi
+	if [[ "${2:-}" == "repos/owner/repo/issues/42/comments?per_page=100" ]]; then
+		printf '[%s]\n' "$(<"${TEST_ROOT}/issue-comments.json")"
 		exit 0
 	fi
 fi
@@ -1257,8 +1275,11 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 	local body_edit_count pr_close_count
 	body_edit_count=$(grep -cE 'gh issue edit 42 --repo owner/repo --body' "$GH_LOG" 2>/dev/null || true)
 	pr_close_count=$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true)
+	local claim_release_count
+	claim_release_count=$(grep -cF 'CLAIM_RELEASED reason=feedback_route_ci' "$GH_LOG" 2>/dev/null || true)
 	[[ "$body_edit_count" =~ ^[0-9]+$ ]] || body_edit_count=0
 	[[ "$pr_close_count" =~ ^[0-9]+$ ]] || pr_close_count=0
+	[[ "$claim_release_count" =~ ^[0-9]+$ ]] || claim_release_count=0
 
 	if [[ "$body_edit_count" -ne 2 ]]; then
 		print_result "CI repair dispatch writes start and completion evidence once per PR/head" 1 \
@@ -1268,6 +1289,11 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 	if [[ "$pr_close_count" -ne 1 ]]; then
 		print_result "CI repair dispatch closes PR exactly once per PR/head" 1 \
 			"Expected 1 PR close, got ${pr_close_count}. Log: $(cat "$GH_LOG")"
+		return 0
+	fi
+	if [[ "$claim_release_count" -ne 1 ]]; then
+		print_result "CI repair fallback retires the prior dispatch claim exactly once" 1 \
+			"Expected 1 CLAIM_RELEASED comment, got ${claim_release_count}. Log: $(cat "$GH_LOG")"
 		return 0
 	fi
 	if ! grep -qF '<!-- ci-feedback-fallback:PR100:SHAabc123repairsha -->' "${TEST_ROOT}/issue-body.txt"; then

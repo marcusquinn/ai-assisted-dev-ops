@@ -82,6 +82,55 @@ _feedback_route_issue_endpoint() {
 	return 0
 }
 
+_feedback_route_release_marker() {
+	local kind="$1"
+	local pr_number="$2"
+	local expected_head="$3"
+	printf '<!-- feedback-route:dispatch-release:%s:PR%s:SHA%s -->' \
+		"$kind" "$pr_number" "$expected_head"
+	return 0
+}
+
+_feedback_route_release_exists() {
+	local linked_issue="$1"
+	local repo_slug="$2"
+	local marker="$3"
+	local endpoint="repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100"
+	local comments_json=""
+	# shellcheck disable=SC2016 # $marker is a jq variable supplied below.
+	local filter='any((if type == "array" and ((.[0]? | type) == "array") then .[] else . end)[]?; (.body // "") | contains($marker))'
+
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		comments_json=$(_gh_with_timeout read gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
+	else
+		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
+	fi
+	printf '%s' "$comments_json" | jq -e --arg marker "$marker" "$filter" >/dev/null 2>&1
+	return $?
+}
+
+_feedback_route_release_dispatch_claim() {
+	local kind="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local expected_head="$5"
+	local marker=""
+	local comment_body=""
+
+	marker=$(_feedback_route_release_marker "$kind" "$pr_number" "$expected_head")
+	_feedback_route_release_exists "$linked_issue" "$repo_slug" "$marker" && return 0
+	comment_body="CLAIM_RELEASED reason=feedback_route_${kind} runner=pulse ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+${marker}"
+	if declare -F gh_issue_comment >/dev/null 2>&1; then
+		gh_issue_comment "$linked_issue" --repo "$repo_slug" --body "$comment_body" >/dev/null 2>&1
+		return $?
+	fi
+	_feedback_route_gh_write issue comment "$linked_issue" --repo "$repo_slug" \
+		--body "$comment_body" >/dev/null 2>&1
+	return $?
+}
+
 _feedback_route_marker() {
 	local phase="$1"
 	local kind="$2"
@@ -365,6 +414,12 @@ _feedback_route_finish_closed() {
 			"closed ${kind} route completion evidence could not be verified after write"
 		return $?
 	fi
+	if ! _feedback_route_release_dispatch_claim "$kind" "$pr_number" "$repo_slug" \
+		"$linked_issue" "$expected_head"; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"completed ${kind} route could not retire the prior dispatch claim"
+		return $?
+	fi
 
 	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label"; then
 		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
@@ -398,16 +453,26 @@ _feedback_route_resume_completed() {
 	fi
 	if _feedback_route_labels_include "$labels" "$terminal_label"; then
 		if _feedback_route_issue_is_ready "$linked_issue" "$repo_slug" "$source_label"; then
+			_feedback_route_release_dispatch_claim "$kind" "$pr_number" "$repo_slug" \
+				"$linked_issue" "$expected_head" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 			return 0
 		fi
 		if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" 1; then
 			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "completed ${kind} route could not restore redispatch issue state"
 			return $?
 		fi
+		_feedback_route_release_dispatch_claim "$kind" "$pr_number" "$repo_slug" \
+			"$linked_issue" "$expected_head" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 		return 0
 	fi
 	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" 1; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "completed ${kind} route could not re-verify redispatch issue state"
+		return $?
+	fi
+	if ! _feedback_route_release_dispatch_claim "$kind" "$pr_number" "$repo_slug" \
+		"$linked_issue" "$expected_head"; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"completed ${kind} route could not retire the prior dispatch claim"
 		return $?
 	fi
 	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label"; then
