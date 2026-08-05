@@ -179,6 +179,81 @@ assert_contains "post_maintainer_gate_status_with_retry error" \
 # -------------------------------------------------------------------
 JOB3_RUN_SCRIPT=$(python3 -c 'import sys,yaml; data=yaml.safe_load(open(sys.argv[1])); print(data["jobs"]["retrigger-pr-checks"]["steps"][0]["run"])' "$WORKFLOW_FILE" 2>/dev/null || true)
 
+gh() {
+	local command=""
+	local subcommand=""
+	if [[ $# -gt 0 ]]; then
+		command="$1"
+		shift
+	fi
+	if [[ $# -gt 0 ]]; then
+		subcommand="$1"
+		shift
+	fi
+	local args="$*"
+	if [[ "$command" == "pr" && "$subcommand" == "list" ]]; then
+		printf '%s\n' '[{"number":101,"body":"Resolves #42","title":"fixture"}]'
+		return 0
+	fi
+	if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/pulls/101" ]]; then
+		case "$FIXTURE_LOOKUP_MODE" in
+		pr-missing)
+			printf 'gh: Not Found (HTTP 404)\n' >&2
+			return 1
+			;;
+		pr-failure) return 1 ;;
+		pr-closed)
+			printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":"closed"}\n' \
+				"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
+			return 0
+			;;
+		esac
+		printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":"open"}\n' \
+			"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
+		return 0
+	fi
+	if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/collaborators/fixture-author/permission" ]]; then
+		printf '%s\n' "$FIXTURE_PERMISSION"
+		return 0
+	fi
+	if [[ "$command" == "api" && "$subcommand" == repos/owner/repo/statuses/* ]]; then
+		local status=""
+		case "$args" in
+		*"state=success"*) status="success" ;;
+		*"state=pending"*) status="pending" ;;
+		*"state=error"*) status="error" ;;
+		esac
+		[[ -n "$status" ]] && printf '%s\n' "$status" >>"$FIXTURE_STATUS_FILE"
+		return 0
+	fi
+	if [[ "$command" == "api" && "$subcommand" == repos/owner/repo/actions/workflows/maintainer-gate.yml/runs* ]]; then
+		case "$FIXTURE_LOOKUP_MODE" in
+		failure) return 1 ;;
+		missing) printf '{"completed":null,"active":null}\n' ;;
+		active) printf '{"completed":null,"active":{"id":502,"status":"in_progress"}}\n' ;;
+		*) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":null}\n' ;;
+		esac
+		return 0
+	fi
+	if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/actions/runs/501/rerun" ]]; then
+		local rerun_count=0
+		rerun_count=$(<"$FIXTURE_RERUN_FILE")
+		rerun_count=$((rerun_count + 1))
+		printf '%s' "$rerun_count" >"$FIXTURE_RERUN_FILE"
+		if [[ "$rerun_count" -gt "$FIXTURE_RERUN_FAILURES" ]]; then
+			return 0
+		fi
+		return 1
+	fi
+	return 1
+}
+
+sleep() {
+	local seconds="$1"
+	[[ -n "$seconds" ]]
+	return 0
+}
+
 run_job3_fixture() {
 	local fixture_name="$1"
 	local association="$2"
@@ -203,77 +278,6 @@ run_job3_fixture() {
 		export FIXTURE_PERMISSION="$permission" FIXTURE_RERUN_FAILURES="$rerun_failures"
 		export FIXTURE_LOOKUP_MODE="$lookup_mode" FIXTURE_STATUS_FILE="$status_file"
 		export FIXTURE_RERUN_FILE="$rerun_file"
-		gh() {
-			local command=""
-			local subcommand=""
-			if [[ $# -gt 0 ]]; then
-				command="$1"
-				shift
-			fi
-			if [[ $# -gt 0 ]]; then
-				subcommand="$1"
-				shift
-			fi
-			local args="$*"
-			if [[ "$command" == "pr" && "$subcommand" == "list" ]]; then
-				printf '%s\n' '[{"number":101,"body":"Resolves #42","title":"fixture"}]'
-				return 0
-			fi
-			if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/pulls/101" ]]; then
-				case "$FIXTURE_LOOKUP_MODE" in
-				pr-missing)
-					printf 'gh: Not Found (HTTP 404)\n' >&2
-					return 1
-					;;
-				pr-failure) return 1 ;;
-				pr-closed)
-					printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":"closed"}\n' \
-						"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
-					return 0
-					;;
-				esac
-				printf '{"labels":%s,"assoc":"%s","author":"fixture-author","head_sha":"fixture-head","state":"open"}\n' \
-					"$FIXTURE_LABELS_JSON" "$FIXTURE_ASSOCIATION"
-				return 0
-			fi
-			if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/collaborators/fixture-author/permission" ]]; then
-				printf '%s\n' "$FIXTURE_PERMISSION"
-				return 0
-			fi
-			if [[ "$command" == "api" && "$subcommand" == repos/owner/repo/statuses/* ]]; then
-				local status=""
-				case "$args" in
-				*"state=success"*) status="success" ;;
-				*"state=pending"*) status="pending" ;;
-				*"state=error"*) status="error" ;;
-				esac
-				[[ -n "$status" ]] && printf '%s\n' "$status" >>"$FIXTURE_STATUS_FILE"
-				return 0
-			fi
-			if [[ "$command" == "api" && "$subcommand" == repos/owner/repo/actions/workflows/maintainer-gate.yml/runs* ]]; then
-				case "$FIXTURE_LOOKUP_MODE" in
-				failure) return 1 ;;
-				missing) printf '{"completed":null,"active":null}\n' ;;
-				active) printf '{"completed":null,"active":{"id":502,"status":"in_progress"}}\n' ;;
-				*) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":null}\n' ;;
-				esac
-				return 0
-			fi
-			if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/actions/runs/501/rerun" ]]; then
-				local rerun_count=0
-				rerun_count=$(<"$FIXTURE_RERUN_FILE")
-				rerun_count=$((rerun_count + 1))
-				printf '%s' "$rerun_count" >"$FIXTURE_RERUN_FILE"
-				[[ "$rerun_count" -gt "$FIXTURE_RERUN_FAILURES" ]]
-				return $?
-			fi
-			return 1
-		}
-		sleep() {
-			local seconds="$1"
-			[[ -n "$seconds" ]]
-			return 0
-		}
 		export -f gh sleep
 		bash -c "$JOB3_RUN_SCRIPT"
 	) >/dev/null 2>&1 || fixture_rc=$?
