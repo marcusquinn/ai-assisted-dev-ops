@@ -251,6 +251,108 @@ _recall_build_fts_param() {
 }
 
 #######################################
+# Return whether a query is an exact memory or observation identifier.
+# Usage: _recall_is_exact_id <query>
+#######################################
+_recall_is_exact_id() {
+	local query="$1"
+	[[ "$query" =~ ^(mem|obs)_[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || return 1
+	return 0
+}
+
+#######################################
+# Return whether a known memory table exists in a database.
+# Usage: _recall_table_exists <db_path> <table_name>
+#######################################
+_recall_table_exists() {
+	local db_path="$1"
+	local table_name="$2"
+	local exists
+
+	exists=$(db "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'view') AND name = '$table_name';" 2>/dev/null || printf '0')
+	[[ "$exists" == "1" ]] || return 1
+	return 0
+}
+
+#######################################
+# Look up an exact memory/observation ID and normalize it as recall JSON.
+# Missing tables are skipped for compatibility with older memory databases.
+# Usage: _recall_exact_id_db <db_path> <exact_id>
+# Outputs: JSON array
+#######################################
+_recall_exact_id_db() {
+	local db_path="$1"
+	local exact_id="$2"
+	local selects=()
+	local union_sql=""
+	local select_sql
+
+	if [[ "$exact_id" == mem_* ]]; then
+		if _recall_table_exists "$db_path" "learnings"; then
+			selects+=("SELECT l.id, l.content, l.type, l.tags, l.confidence, l.created_at, '' AS last_accessed_at, 0 AS access_count, 0 AS auto_captured, 0.0 AS usefulness_score, 'live' AS truth_status, '' AS truth_evidence, '' AS replacement_id, '' AS superseded_by, 0.0 AS score, 'learning' AS record_kind, '' AS statement, '' AS observation_id FROM learnings l WHERE l.id = :exact_id")
+		fi
+		if _recall_table_exists "$db_path" "conversation_summaries"; then
+			selects+=("SELECT cs.id, cs.summary AS content, 'CONVERSATION_SUMMARY' AS type, '' AS tags, 'medium' AS confidence, cs.created_at, '' AS last_accessed_at, 0 AS access_count, 0 AS auto_captured, 0.0 AS usefulness_score, 'live' AS truth_status, '' AS truth_evidence, '' AS replacement_id, COALESCE(cs.supersedes_id, '') AS superseded_by, 0.0 AS score, 'conversation_summary' AS record_kind, cs.summary AS statement, '' AS observation_id FROM conversation_summaries cs WHERE cs.id = :exact_id")
+		fi
+		if _recall_table_exists "$db_path" "interactions"; then
+			selects+=("SELECT i.id, i.content, 'INTERACTION' AS type, i.channel AS tags, 'medium' AS confidence, i.created_at, '' AS last_accessed_at, 0 AS access_count, 0 AS auto_captured, 0.0 AS usefulness_score, 'live' AS truth_status, '' AS truth_evidence, '' AS replacement_id, '' AS superseded_by, 0.0 AS score, 'interaction' AS record_kind, i.content AS statement, '' AS observation_id FROM interactions i WHERE i.id = :exact_id")
+		fi
+	elif _recall_table_exists "$db_path" "observations"; then
+		selects+=("SELECT o.observation_id AS id, o.statement AS content, o.kind AS type, '' AS tags, o.confidence, o.created_at, '' AS last_accessed_at, 0 AS access_count, 0 AS auto_captured, 0.0 AS usefulness_score, o.status AS truth_status, '' AS truth_evidence, '' AS replacement_id, '' AS superseded_by, 0.0 AS score, 'observation' AS record_kind, o.statement, o.observation_id FROM observations o WHERE o.observation_id = :exact_id")
+	fi
+
+	if [[ ${#selects[@]} -eq 0 ]]; then
+		printf '[]'
+		return 0
+	fi
+
+	for select_sql in "${selects[@]}"; do
+		if [[ -n "$union_sql" ]]; then
+			union_sql="$union_sql UNION ALL $select_sql"
+		else
+			union_sql="$select_sql"
+		fi
+	done
+
+	local exact_results
+	exact_results=$(
+		db -json "$db_path" <<EOF
+.parameter init
+.parameter set :exact_id "$exact_id"
+$union_sql;
+EOF
+	)
+	local rc=$?
+	[[ $rc -eq 0 ]] || return "$rc"
+	printf '%s' "${exact_results:-[]}"
+	return 0
+}
+
+#######################################
+# Track an exact learning hit without creating access rows for other record types.
+# Usage: _recall_update_exact_access <db_path> <exact_id>
+#######################################
+_recall_update_exact_access() {
+	local db_path="$1"
+	local exact_id="$2"
+
+	[[ "$exact_id" == mem_* ]] || return 0
+	_recall_table_exists "$db_path" "learnings" || return 0
+	_recall_table_exists "$db_path" "learning_access" || return 0
+
+	db "$db_path" <<EOF
+.parameter init
+.parameter set :exact_id "$exact_id"
+INSERT INTO learning_access (id, last_accessed_at, access_count)
+SELECT id, datetime('now'), 1 FROM learnings WHERE id = :exact_id
+ON CONFLICT(id) DO UPDATE SET
+    last_accessed_at = datetime('now'),
+    access_count = access_count + 1;
+EOF
+	return $?
+}
+
+#######################################
 # Execute FTS5 search against a database
 # Usage: _recall_search_db <db_path> <param_query> <entity_fts_join> <entity_fts_where>
 #                          <extra_filters> <auto_join_filter> <limit>
@@ -642,6 +744,25 @@ cmd_recall() {
 	if [[ -z "$query" ]]; then
 		log_error "Query is required. Use --query \"search terms\" or --recent"
 		return 1
+	fi
+
+	# Concrete IDs are deterministic lookups, even when semantic flags are present.
+	# Do not fall through to FTS for a missing exact ID: an unrelated text match
+	# would make a traceable identifier ambiguous.
+	if _recall_is_exact_id "$query"; then
+		local exact_results exact_shared_results=""
+		exact_results=$(_recall_exact_id_db "$MEMORY_DB" "$query") || return $?
+		_recall_update_exact_access "$MEMORY_DB" "$query" || return $?
+		if [[ "$shared_mode" == true && -n "$MEMORY_NAMESPACE" ]]; then
+			local exact_global_db
+			exact_global_db=$(global_db_path)
+			if [[ -f "$exact_global_db" ]]; then
+				exact_shared_results=$(_recall_exact_id_db "$exact_global_db" "$query") || return $?
+				_recall_update_exact_access "$exact_global_db" "$query" || return $?
+			fi
+		fi
+		_recall_output "$format" "$query" "$entity_filter" "$exact_results" "$exact_shared_results" "$limit"
+		return 0
 	fi
 
 	# Handle --semantic or --hybrid mode (delegate to embeddings helper)
