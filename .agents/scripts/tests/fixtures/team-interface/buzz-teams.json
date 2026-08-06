@@ -1,0 +1,27 @@
+[
+  {
+    "id": "builtin-team:welcome",
+    "name": "Welcome Team",
+    "description": "Synthetic built-in team",
+    "persona_ids": ["builtin:fizz"],
+    "is_builtin": true,
+    "instructions": "INSTRUCTION_CANARY",
+    "source_dir": "/private/source/TEAM_PATH_CANARY",
+    "is_symlink": true,
+    "symlink_target": "/private/source/SYMLINK_TARGET_CANARY",
+    "created_at": "2026-08-06T00:00:00Z",
+    "updated_at": "2026-08-06T00:00:00Z"
+  },
+  {
+    "id": "team:custom",
+    "name": "Custom Team",
+    "description": "DESCRIPTION_CANARY",
+    "persona_ids": [],
+    "is_builtin": false,
+    "instructions": "CUSTOM_INSTRUCTION_CANARY",
+    "source_dir": "/private/source/CUSTOM_TEAM_PATH_CANARY",
+    "is_symlink": false,
+    "created_at": "2026-08-06T00:00:00Z",
+    "updated_at": "2026-08-06T00:00:00Z"
+  }
+]

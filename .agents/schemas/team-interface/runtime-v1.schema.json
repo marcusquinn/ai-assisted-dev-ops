@@ -108,6 +108,93 @@
         "owner_review_required": {"type": "boolean"}
       }
     },
+    "inventory_availability": {
+      "enum": ["available", "degraded", "unavailable", "unknown"]
+    },
+    "inventory_display_label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "community_inventory_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["community_id", "display_label", "availability"],
+      "properties": {
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "display_label": {"$ref": "#/$defs/inventory_display_label"},
+        "availability": {"$ref": "#/$defs/inventory_availability"}
+      }
+    },
+    "agent_inventory_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "display_label", "kind", "built_in", "availability"],
+      "properties": {
+        "agent_id": {"$ref": "#/$defs/core_stable_id"},
+        "display_label": {"$ref": "#/$defs/inventory_display_label"},
+        "kind": {"enum": ["definition", "managed_instance"]},
+        "built_in": {"type": "boolean"},
+        "availability": {"$ref": "#/$defs/inventory_availability"},
+        "community_id": {"$ref": "#/$defs/core_stable_id"},
+        "runtime_id": {"$ref": "#/$defs/core_stable_id"},
+        "team_id": {"$ref": "#/$defs/core_stable_id"}
+      }
+    },
+    "team_inventory_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["team_id", "display_label", "built_in", "availability", "member_agent_ids"],
+      "properties": {
+        "team_id": {"$ref": "#/$defs/core_stable_id"},
+        "display_label": {"$ref": "#/$defs/inventory_display_label"},
+        "built_in": {"type": "boolean"},
+        "availability": {"$ref": "#/$defs/inventory_availability"},
+        "member_agent_ids": {
+          "type": "array",
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/core_stable_id"}
+        }
+      }
+    },
+    "runtime_inventory_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_id", "display_label", "availability"],
+      "properties": {
+        "runtime_id": {"$ref": "#/$defs/core_stable_id"},
+        "display_label": {"$ref": "#/$defs/inventory_display_label"},
+        "availability": {"$ref": "#/$defs/inventory_availability"}
+      }
+    },
+    "adapter_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["communities", "agents", "teams", "runtimes"],
+      "properties": {
+        "communities": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/community_inventory_record"}
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/agent_inventory_record"}
+        },
+        "teams": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/team_inventory_record"}
+        },
+        "runtimes": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/runtime_inventory_record"}
+        }
+      }
+    },
     "adapter_observation_document": {
       "type": "object",
       "additionalProperties": false,
@@ -146,7 +233,8 @@
           "maxItems": 100,
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/registered_reference"}
-        }
+        },
+        "inventory": {"$ref": "#/$defs/adapter_inventory"}
       }
     },
     "runtime_state_document": {

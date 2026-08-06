@@ -418,6 +418,46 @@ two Milestone 2 leaves on 2026-08-05:
 - aidevops.app Integration UI/API files remain unknown until that repository is
   inspected for its current backend, navigation, and deployment boundaries.
 
+## Feature 2.3 refreshed Buzz evidence
+
+The Buzz adapter evidence was refreshed on 2026-08-06 against upstream commit
+`e2796d4a8907586b457a65675c2c88c818973173` and installed Buzz Desktop `0.5.5`.
+The merged F2.1 runtime remains unchanged at aidevops commit `6a894fa5f`.
+
+- Buzz Desktop identifies the macOS application as `xyz.block.buzz.app`; its
+  managed-agent and team stores are `agents/managed-agents.json` and
+  `agents/teams.json` below the application-data directory.
+- `ManagedAgentRecord` contains safe identity and relationship fields alongside
+  private keys, auth tags, environment values, prompts, command paths, errors,
+  logs, and local directories. The adapter must parse then project an explicit
+  allowlist rather than serialize provider records.
+- `TeamRecord` supplies stable ID, name, persona membership, and built-in state,
+  but also local source directories and instructions. Inventory exposes only
+  stable identity, display label, built-in state, and normalized member refs.
+- Communities are stored under the WebKit local-storage key
+  `buzz-communities`. The value may contain invite tokens, identity metadata,
+  and repository roots; inventory exposes only local community identity, label,
+  and the relationship needed to bind managed agents.
+- Buzz's internal runtime catalog and Tauri commands are not a supported
+  external read API. F2.3 therefore observes only runtime IDs referenced by
+  managed-agent records and checks stored PIDs without launching Buzz, ACP,
+  package managers, auth probes, or installation commands.
+- The first verified installation reader is macOS-only. It reads
+  `Info.plist`, bounded application-data JSON, and WebKit SQLite in read-only
+  mode. Other platforms report unavailable until their package/data paths are
+  verified from current source or packaging evidence.
+- The runtime observation schema needs one optional closed provider-neutral
+  inventory extension for communities, agents, teams, and runtimes. Existing
+  observations without inventory remain valid; semantic validation rejects
+  duplicate IDs, dangling refs, and non-canonical ordering.
+- Compatibility is known only for Buzz Desktop `0.5.5` at this baseline.
+  Unknown versions remain detectable but report unknown compatibility rather
+  than inheriting current-version assurances.
+
+The adapter remains a trusted static registry entry. It consumes an opaque
+`settings:` reference without resolving credentials and emits no write method,
+provider client, raw diagnostic payload, private path, or secret-bearing field.
+
 Initial non-mutating commands:
 
 ```text
@@ -443,7 +483,10 @@ team-interface-helper.sh doctor --provider buzz
 - Existing Pulse/routine/interactive claims prevent duplicate dispatch.
 - Stale runner leases and fencing tokens cannot publish.
 - Provider/community update announcement is emitted once after verified success.
-- No secret values enter files, logs, UI payloads, prompts, issue bodies, or snapshots.
+- No secret values enter durable adapter state, logs, UI payloads, prompts,
+  issue bodies, or review snapshots. A mode-0600 descriptor-backed SQLite copy
+  may exist only in a private temporary directory during its read-only query
+  and is removed on every normal exit path.
 - Rollback/disable affects one provider/community without breaking direct aidevops use.
 
 ## Current recommendation

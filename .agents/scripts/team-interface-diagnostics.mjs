@@ -8,8 +8,10 @@ const ADAPTER_DIAGNOSTICS = Object.freeze({
   adapter_capability_mismatch: "adapter observation capability mismatch",
   adapter_identity_mismatch: "adapter observation identity mismatch",
   adapter_timeout: "adapter read timed out",
+  dangling_inventory_reference: "adapter observation contains dangling inventory references",
   duplicate_identity: "adapter observation contains duplicate identities",
   invalid_document: "adapter observation failed validation",
+  noncanonical_inventory: "adapter observation inventory order is not canonical",
   unsupported_adapter_read: "adapter read method is unsupported",
 });
 

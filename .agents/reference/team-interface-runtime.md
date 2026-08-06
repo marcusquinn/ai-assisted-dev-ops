@@ -8,8 +8,10 @@ in-tree read adapters, persists validated local observations, and generates
 deterministic reconciliation plans. It does not install providers or expose an
 apply, create, update, delete, send, invite, moderation, or publication route.
 
-The initial static registry is intentionally empty. The Buzz and Matrix feature
-leaves add adapters after this core contract merges.
+The static registry includes the read-only `adapter.buzz` implementation. It is
+inactive until selected by the disabled-by-default runtime configuration. See
+`reference/team-interface-buzz.md` for its supported baseline and projection.
+The Matrix adapter remains a later feature leaf.
 
 ## Commands
 
@@ -90,6 +92,15 @@ timeout and receives an abort signal that trusted adapters must pass to their
 underlying I/O. A pre-frozen adapter definition is still recursively frozen so
 a mutable nested capability cannot bypass registration-time validation.
 
+An observation may include one closed provider-neutral `inventory` containing
+all four arrays: communities, agents, teams, and runtimes. Existing observations
+without inventory remain valid. When inventory is present, the runtime rejects
+duplicate identities, locale-dependent or otherwise non-canonical ID/member
+ordering, dangling agent community/runtime/team references, and unresolved team
+members before state can be written. Inventory records expose display and
+relationship evidence only; they do not establish verified identity, management
+ownership, credentials, or reconciliation authority.
+
 ## Local state and locking
 
 `AIDEVOPS_STATE_DIR` defaults to `~/.aidevops/state`. Runtime state is stored at
@@ -160,7 +171,8 @@ identity, capability, authority, CAS, expiry, and plan-hash binding required by
 
 Errors expose bounded codes and messages, never file contents or unrestricted
 provider payloads. Adapter/provider exceptions become fixed runtime-owned
-messages; only runtime validation categories are retained. Other diagnostics
+messages; only runtime validation categories—including duplicate, non-canonical,
+and dangling inventory failures—are retained. Other diagnostics
 redact home-directory prefixes and credential-shaped assignments, replace
 control characters, and limit messages to 500 characters. Diagnostic codes are
 limited to stable 1-100 character identifiers. Invalid config, schema, lock,
@@ -173,6 +185,7 @@ version 1 performs no inferred migration or provider cleanup.
 ## Verification
 
 ```bash
+node .agents/scripts/tests/test-team-interface-buzz-adapter.mjs
 node .agents/scripts/tests/test-team-interface-runtime.mjs
 node .agents/scripts/tests/test-team-interface-core-schema.mjs
 node .agents/scripts/tests/test-team-interface-reconciliation-schema.mjs

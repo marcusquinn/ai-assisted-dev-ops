@@ -167,14 +167,14 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 ### Milestone 2: Read-only core and initial provider adapters
 
 **Status:** active
-**Estimate:** 20h provisional; 9.5h briefed in the first two independent leaves
+**Estimate:** 21.5h provisional; 14.5h briefed in the first three independent leaves
 **Validation:** A non-mutating CLI/core detects providers, validates configuration, generates stable desired state, reports compatibility/drift, and produces repeatable plans for Buzz and Matrix without installation, credential exposure, or provider writes.
 
 | # | Feature | Task ID | Status | Estimate | Worker | PR |
 |---|---------|---------|--------|----------|--------|----|
 | 2.1 | Implement provider registry, config loader, state store, status/doctor commands, and deterministic dry-run planner `[depends:F1.1] [depends:F1.4]` | t18202 | complete | 6h | marcusquinn | #29619 |
 | 2.2 | Generate the canonical 13 aidevops agents plus the framework guide from discovery metadata, including workload tiers and stable IDs `[depends:F1.3]` | t18203 | complete | 3.5h | marcusquinn | #29605 |
-| 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | pending | pending | brief first | | |
+| 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | t18205 | in progress | 5h | marcusquinn | |
 | 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | pending | pending | brief first | | |
 | 2.5 | Generate restricted OpenCode launch overlays for canonical agent selection, workload variant, interface context, and read-only conversational permissions `[depends:F2.2]` | pending | pending | brief first | | |
 
@@ -354,6 +354,7 @@ Feature budgets are intentionally deferred until briefs identify repositories, u
 | 2026-08-05T02:01:53Z | Milestone 2 worker hand-offs recorded | Both ready leaves were claimed by vladimirdulov, then moved to `needs-maintainer-permissions` without an implementation PR. Their mission rows now preserve the permission-blocked hand-off rather than presenting the leaves as unclaimed; no implementation failure or completion is inferred. |
 | 2026-08-05T22:10:07Z | Milestone 2 roster completed and runtime core resumed | Verified feature 2.2 merged through PR #29605 and marked it complete, independently unblocking feature 2.5. Maintainer-owned interactive work resumed feature 2.1 / t18202 / issue #29542 after the earlier worker released its permission-blocked claim without a PR or pushed recovery branch. |
 | 2026-08-05T23:32:47Z | Milestone 2 runtime core completed | Implemented feature 2.1 through PR #29619: a disabled-by-default provider registry and config loader, guarded local state store, read-only providers/detect/status/doctor commands, and deterministic non-mutating reconciliation planner. Contract, security, state, CLI, and regression suites passed, unblocking the Buzz and Matrix adapter leaves. |
+| 2026-08-06T03:41:51Z | Milestone 2 Buzz adapter implementation started | Validated schema-v2 task t18205, created and claimed child issue #29631 beneath parent #29541, and implemented the first static read-only `adapter.buzz` contract with closed provider-neutral inventory, synthetic private-field canaries, and focused schema/runtime/security tests. The feature remains in progress until checkpoint review, PR gates, and merge complete. |
 
 ## Recovery Log
 
