@@ -75,42 +75,41 @@ _pir_pr_merged_at() {
 # Fetch sub-issue numbers via GitHub GraphQL (t2138).
 #
 # Uses the native `subIssues` relationship on the issue node. Returns
-# newline-separated child issue numbers on stdout. Empty output on any
-# failure, empty graph, or feature-not-enabled. Callers must treat empty
-# output as "fall back to body regex", NOT "no children" — the sub-issue
-# feature is a recent GitHub addition and legacy parents may link
-# children only via body text.
+# newline-separated child issue numbers on stdout. A complete empty graph
+# returns success with empty output so legacy body evidence remains usable.
+# API, metering, projection, and pagination failures return non-zero so callers
+# can defer every mutation rather than confuse unavailable evidence with an
+# authoritative empty graph.
 #
 # Args: $1 = slug (owner/name), $2 = issue number
 #######################################
 _fetch_subissue_numbers() {
 	local slug="$1" issue_num="$2"
-	[[ "$slug" == */* ]] || return 0
-	[[ "$issue_num" =~ ^[0-9]+$ ]] || return 0
+	[[ "$slug" == */* ]] || return 1
+	[[ "$issue_num" =~ ^[0-9]+$ ]] || return 1
 
 	local owner="${slug%%/*}" name="${slug##*/}"
 	# t2138: fetch pageInfo alongside nodes so we can fail-closed when
 	# hasNextPage is true. Partial child lists would silently let the
 	# reconciler close parents before the tail children are checked.
-	# The jq filter returns `PAGINATED` (non-numeric) when hasNextPage=true,
-	# which the caller treats as "empty" → falls back to body regex.
+	# The jq filter returns `PAGINATED` when hasNextPage=true so this source is
+	# marked unavailable instead of authorizing a partial-union close.
 	local graphql_response="" graphql_result="" reported_cost=""
 	# shellcheck disable=SC2016  # GraphQL variable markers ($owner/$name/$number) are intentional literals, not bash expansions
 	graphql_response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_ROUTE_DECISION="pulse-subissues-exact-cost" \
 		gh api graphql \
 		-f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:50){nodes{number state}pageInfo{hasNextPage}}}}rateLimit{cost}}' \
 		-F "owner=$owner" -F "name=$name" -F "number=$issue_num" \
-		2>/dev/null) || return 0
-	reported_cost=$(printf '%s' "$graphql_response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 0
-	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 0
+		2>/dev/null) || return 1
+	reported_cost=$(printf '%s' "$graphql_response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
+	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
 	graphql_result=$(printf '%s' "$graphql_response" | jq -r \
 		'if (.data.repository.issue.subIssues.pageInfo.hasNextPage // false) then "PAGINATED" else (.data.repository.issue.subIssues.nodes // [] | .[] | .number) end' \
-		2>/dev/null) || return 0
+		2>/dev/null) || return 1
 
-	# Fail-closed guard: if hasNextPage, pretend we got nothing so the
-	# caller falls back to body regex (where pagination is not an issue).
+	# A partial native graph can hide an open child omitted from the body.
 	if [[ "$graphql_result" == "PAGINATED" ]]; then
-		return 0
+		return 1
 	fi
 	printf '%s\n' "$graphql_result"
 	return 0
@@ -218,17 +217,19 @@ _extract_children_from_prose() {
 #   arg1 - repository slug
 #   arg2 - parent issue number
 # Outputs: one child issue number per line, deduplicated and sorted.
-# Returns: 0, including on API failure (no comment evidence).
+# Returns: 0=complete read (including no matching comments), 1=unavailable.
 #######################################
 _fetch_children_from_trusted_roadmap_comments() {
 	local slug="$1"
 	local issue_num="$2"
-	[[ -n "$slug" ]] || return 0
-	[[ "$issue_num" =~ ^[0-9]+$ ]] || return 0
+	[[ -n "$slug" ]] || return 1
+	[[ "$issue_num" =~ ^[0-9]+$ ]] || return 1
 
-	gh api --paginate "repos/${slug}/issues/${issue_num}/comments" \
+	local trusted_bodies=""
+	trusted_bodies=$(gh api --paginate "repos/${slug}/issues/${issue_num}/comments" \
 		--jq '.[] | select((.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and (.body | test("(?im)^##[[:space:]]+(Dispatch roadmap|Children|Child issues|Sub-tasks)[[:space:]]*$"))) | .body' \
-		2>/dev/null | awk '
+		2>/dev/null) || return 1
+	printf '%s\n' "$trusted_bodies" | awk '
 		BEGIN { in_section = 0 }
 		/^##[[:space:]]+(Dispatch roadmap|Children|Child [Ii]ssues|Sub-?[Tt]asks)[[:space:]]*$/ { in_section = 1; next }
 		in_section && /^##[[:space:]]/ { in_section = 0 }
@@ -447,6 +448,21 @@ _pir_parent_body_from_json() {
 }
 
 #######################################
+# Extract a non-empty revision timestamp from a complete live issue object.
+# Args: $1=live issue JSON
+# Stdout: updated_at/updatedAt string
+# Returns: 0=revision found, 1=missing, malformed, or non-string revision
+#######################################
+_pir_parent_revision_from_json() {
+	local live_issue_json="$1"
+	printf '%s' "$live_issue_json" | jq -er --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		(.updated_at // .updatedAt) |
+		select(type == $string_type and length > 0)
+	' 2>/dev/null
+	return $?
+}
+
+#######################################
 # Apply the parent close contract to a freshly fetched issue object. A missing
 # or non-string body is ambiguous and therefore blocks closure, while an
 # explicitly empty body preserves the legacy compatibility contract.
@@ -646,7 +662,8 @@ _pir_parent_close_snapshot_is_stable() {
 	local expected_child_nums="$4" expected_child_source="$5" live_parent_revision="$6"
 	local final_parent_body="" final_parent_revision="" child_count=0
 
-	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body"
+	[[ -n "$live_parent_revision" ]] || return 1
+	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body" || return 1
 	[[ "$_PIR_CPT_CHILD_NUMS" == "$expected_child_nums" && \
 		"$_PIR_CPT_CHILD_SOURCE" == "$expected_child_source" ]] || return 1
 	_pir_verify_parent_children_closed "$slug" "$_PIR_CPT_CHILD_NUMS" || return 1
@@ -661,11 +678,58 @@ _pir_parent_close_snapshot_is_stable() {
 	_pir_parent_mutation_is_allowed "$slug" "$parent_num" open || return 1
 	final_parent_body=$(_pir_parent_body_from_json "$_PIR_LIVE_PARENT_JSON") || return 1
 	[[ "$final_parent_body" == "$live_parent_body" ]] || return 1
-	final_parent_revision=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | \
-		jq -r '.updated_at // .updatedAt // ""' 2>/dev/null) || return 1
-	if [[ -n "$live_parent_revision" && "$final_parent_revision" != "$live_parent_revision" ]]; then
-		return 1
-	fi
+	final_parent_revision=$(_pir_parent_revision_from_json "$_PIR_LIVE_PARENT_JSON") || return 1
+	[[ "$final_parent_revision" == "$live_parent_revision" ]] || return 1
+	return 0
+}
+
+#######################################
+# Verify the cross-resource close postcondition. GitHub does not expose an
+# issue-revision compare-and-swap through `gh issue close`, so a successful
+# close is immediately re-read and compensated when our completed closure is
+# proven stale. Unknown or intentional close reasons never authorize reopen.
+# Args: $1=slug, $2=parent, $3=body, $4=child numbers, $5=child source
+# Returns: 0=stable completed close, 1=changed or ambiguous
+#######################################
+_pir_parent_close_postcondition_is_stable() {
+	local slug="$1" parent_num="$2" expected_body="$3"
+	local expected_child_nums="$4" expected_child_source="$5"
+	local live_parent_json="" live_parent_body="" child_count=0
+	_PIR_CPT_POST_CLOSE_REOPEN_ALLOWED=0
+
+	live_parent_json=$(gh api "repos/${slug}/issues/${parent_num}" 2>/dev/null) || return 1
+	printf '%s' "$live_parent_json" | jq -e --argjson issue "$parent_num" '
+		(.number == $issue) and
+		((.state // "" | ascii_downcase) == "closed") and
+		((.state_reason // .stateReason // "" | ascii_downcase) == "completed")
+	' >/dev/null 2>&1 || return 1
+	_PIR_CPT_POST_CLOSE_REOPEN_ALLOWED=1
+	_pir_live_parent_trust_is_allowed "$slug" "$parent_num" "$live_parent_json" || return 1
+	live_parent_body=$(_pir_parent_body_from_json "$live_parent_json") || return 1
+	[[ "$live_parent_body" == "$expected_body" ]] || return 1
+	printf '%s' "$live_parent_json" | jq -e --arg parent "${_PIR_PT_LABEL:-parent-task}" \
+		--arg nmr "${_PIR_NMR_LABEL:-needs-maintainer-review}" \
+		--arg persistent "${_PIR_PERSISTENT_LABEL:-persistent}" \
+		--arg string_type "$_PIR_JSON_TYPE_STRING" '
+		def names: [.labels[]? | if type == $string_type then . else (.name // empty) end];
+		(names | index($parent) != null) and
+		(names | index($nmr) == null) and
+		(names | index($persistent) == null)
+	' >/dev/null 2>&1 || return 1
+	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body" || return 1
+	[[ "$_PIR_CPT_CHILD_NUMS" == "$expected_child_nums" && \
+		"$_PIR_CPT_CHILD_SOURCE" == "$expected_child_source" ]] || return 1
+	_pir_verify_parent_children_closed "$slug" "$_PIR_CPT_CHILD_NUMS" || return 1
+	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
+	_parent_close_contract_incomplete "$live_parent_body" "$child_count" && return 1
+	return 0
+}
+
+_pir_reopen_unstable_parent_close() {
+	local slug="$1" parent_num="$2"
+	gh issue reopen "$parent_num" --repo "$slug" >/dev/null 2>&1 || return 1
+	_mark_parent_review_hold "$slug" "$parent_num"
+	echo "[pulse-wrapper] Reconcile parent-task: reopened #${parent_num} in ${slug} — post-close evidence changed" >>"${LOGFILE:-/dev/null}"
 	return 0
 }
 
@@ -722,12 +786,11 @@ _try_close_parent_tracker() {
 		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" live
 		return 1
 	fi
-	live_parent_revision=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | \
-		jq -r '.updated_at // .updatedAt // ""' 2>/dev/null) || live_parent_revision=""
+	live_parent_revision=$(_pir_parent_revision_from_json "$_PIR_LIVE_PARENT_JSON") || return 1
 
 	# Recollect the graph/body/comment union from the live parent, then re-read
 	# every child. A child linked or reopened after the cached pass blocks close.
-	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body"
+	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body" || return 1
 	child_nums="$_PIR_CPT_CHILD_NUMS"
 	child_source="$_PIR_CPT_CHILD_SOURCE"
 	live_child_nums="$child_nums"
@@ -748,15 +811,24 @@ _try_close_parent_tracker() {
 	child_source="$_PIR_CPT_CHILD_SOURCE"
 	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
 	child_summary="$_PIR_CPT_VERIFIED_CHILD_SUMMARY"
-	gh issue close "$parent_num" --repo "$slug" \
-		--comment "## All declared child tasks completed — closing parent tracker
+	gh issue close "$parent_num" --repo "$slug" >/dev/null 2>&1 || return 1
+	if ! _pir_parent_close_postcondition_is_stable "$slug" "$parent_num" "$live_parent_body" \
+		"$child_nums" "$child_source"; then
+		if [[ "$_PIR_CPT_POST_CLOSE_REOPEN_ALLOWED" -eq 1 ]]; then
+			_pir_reopen_unstable_parent_close "$slug" "$parent_num" || \
+				echo "[pulse-wrapper] Reconcile parent-task: unable to compensate unstable close #${parent_num} in ${slug}" >>"${LOGFILE:-/dev/null}"
+		fi
+		return 1
+	fi
+	gh_issue_comment "$parent_num" --repo "$slug" \
+		--body "## All declared child tasks completed — closing parent tracker
 
 ${child_summary}
 
 All ${child_count} declared child issue(s) are resolved and the parent close contract is complete. Parent tracker closed automatically.
 
 _Detected by reconcile_completed_parent_tasks (pulse-issue-reconcile.sh)._" \
-		>/dev/null 2>&1 || return 1
+		>/dev/null 2>&1 || true
 
 	echo "[pulse-wrapper] Reconcile parent-task: closed #${parent_num} in ${slug} — all ${child_count} children closed (source=${child_source})" >>"$LOGFILE"
 	return 0
@@ -1280,8 +1352,12 @@ _repair_recently_closed_parents_for_slug() {
 	local slug="$1"
 	local max_reopens="${2:-5}"
 	local max_candidates="${3:-10}"
+	local candidate_stride="${4:-$max_candidates}"
+	local candidate_round="${5:-0}"
 	local recent_json=""
+	local candidates_json=""
 	local rows=""
+	local row_count=0 candidate_start=0
 	local issue_num=""
 	local issue_title_b64=""
 	local issue_body_b64=""
@@ -1294,10 +1370,18 @@ _repair_recently_closed_parents_for_slug() {
 	_PIR_RECENT_PARENT_SCANNED=0
 	[[ "$max_reopens" =~ ^[1-9][0-9]*$ ]] || return 0
 	[[ "$max_candidates" =~ ^[1-9][0-9]*$ ]] || return 0
+	[[ "$candidate_stride" =~ ^[1-9][0-9]*$ ]] || return 0
+	[[ "$candidate_round" =~ ^(0|[1-9][0-9]*)$ ]] || return 0
 	declare -F _fetch_recently_closed_parent_tasks >/dev/null 2>&1 || return 0
 	recent_json=$(_fetch_recently_closed_parent_tasks "$slug" "${_PIR_PT_LABEL:-parent-task}") || return 0
-	rows=$(printf '%s' "$recent_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
-		.[] | select((.state // "" | ascii_downcase) == "closed") |
+	candidates_json=$(printf '%s' "$recent_json" | jq -c '
+		[.[] | select((.state // "" | ascii_downcase) == "closed")] | sort_by(.number)
+	' 2>/dev/null) || return 0
+	row_count=$(printf '%s' "$candidates_json" | jq -r 'length' 2>/dev/null) || return 0
+	[[ "$row_count" =~ ^[1-9][0-9]*$ ]] || return 0
+	candidate_start=$((((candidate_round % row_count) * (candidate_stride % row_count)) % row_count))
+	rows=$(printf '%s' "$candidates_json" | jq -r --argjson start "$candidate_start" --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		(.[$start:] + .[:$start])[] |
 		[
 			(.number // "" | tostring),
 			((.title // "") | @base64),
@@ -1323,6 +1407,16 @@ _repair_recently_closed_parents_for_slug() {
 	return 0
 }
 
+_pir_parent_repair_uint_is_safe() {
+	local value="$1"
+	[[ "$value" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+	[[ "${#value}" -lt 10 ]] && return 0
+	[[ "${#value}" -eq 10 && "${value:0:1}" == "1" ]] && return 0
+	[[ "${#value}" -eq 10 && "${value:0:1}" == "2" && \
+		"${value:1}" -le 147483647 ]] && return 0
+	return 1
+}
+
 #######################################
 # Load the persisted recently-closed-parent repository cursor. Missing,
 # malformed, or out-of-range state safely restarts at the first repository.
@@ -1332,10 +1426,14 @@ _repair_recently_closed_parents_for_slug() {
 _pir_parent_repair_cursor_load() {
 	local cursor_file="$1" repo_count="$2" raw_cursor=""
 	_PIR_PARENT_REPAIR_CURSOR=0
-	[[ "$repo_count" =~ ^[1-9][0-9]*$ && -r "$cursor_file" ]] || return 0
-	read -r raw_cursor <"$cursor_file" || return 0
-	[[ "$raw_cursor" =~ ^(0|[1-9][0-9]*)$ ]] || return 0
-	_PIR_PARENT_REPAIR_CURSOR=$((raw_cursor % repo_count))
+	_pir_parent_repair_uint_is_safe "$repo_count" || return 0
+	[[ "$repo_count" -gt 0 && -e "$cursor_file" ]] || return 0
+	if [[ ! -r "$cursor_file" ]] || ! read -r raw_cursor <"$cursor_file" || \
+		! _pir_parent_repair_uint_is_safe "$raw_cursor"; then
+		_pir_parent_repair_cursor_store "$cursor_file" 0 || true
+		return 0
+	fi
+	_PIR_PARENT_REPAIR_CURSOR="$raw_cursor"
 	return 0
 }
 
@@ -1346,7 +1444,7 @@ _pir_parent_repair_cursor_load() {
 #######################################
 _pir_parent_repair_cursor_store() {
 	local cursor_file="$1" next_cursor="$2" state_dir="" temporary=""
-	[[ "$next_cursor" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+	_pir_parent_repair_uint_is_safe "$next_cursor" || return 1
 	state_dir=$(dirname "$cursor_file") || return 1
 	mkdir -p "$state_dir" 2>/dev/null || return 1
 	temporary=$(mktemp "${state_dir}/.parent-repair-cursor.XXXXXX" 2>/dev/null) || return 1
@@ -1377,7 +1475,8 @@ _repair_recently_closed_parents_cycle() {
 	local max_repo_scans="${3:-10}"
 	local max_candidates="${4:-10}"
 	local repo_slugs_json="" ordered_slugs="" slug=""
-	local repo_count=0 rotation_start=0 next_cursor=0
+	local repo_count=0 rotation_sequence=0 rotation_start=0 next_cursor=0
+	local scan_sequence=0 candidate_round=0
 	local cursor_file="${AIDEVOPS_PARENT_REPAIR_CURSOR_FILE:-${HOME}/.aidevops/state/parent-repair-repo.cursor}"
 	local reopens_remaining=0 candidates_remaining=0
 	_PIR_RECENT_PARENT_REPOS_SCANNED=0
@@ -1388,16 +1487,22 @@ _repair_recently_closed_parents_cycle() {
 	[[ "$max_reopens" =~ ^[1-9][0-9]*$ ]] || return 0
 	[[ "$max_repo_scans" =~ ^[1-9][0-9]*$ ]] || return 0
 	[[ "$max_candidates" =~ ^[1-9][0-9]*$ ]] || return 0
+	_pir_parent_repair_uint_is_safe "$max_reopens" || return 0
+	_pir_parent_repair_uint_is_safe "$max_repo_scans" || return 0
+	_pir_parent_repair_uint_is_safe "$max_candidates" || return 0
 	repo_slugs_json=$(jq -c '[
 		.initialized_repos[] |
 		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") |
 		.slug
 	]' "$repos_json" 2>/dev/null) || return 0
 	repo_count=$(printf '%s' "$repo_slugs_json" | jq -r 'length' 2>/dev/null) || return 0
-	[[ "$repo_count" =~ ^[1-9][0-9]*$ ]] || return 0
+	_pir_parent_repair_uint_is_safe "$repo_count" || return 0
+	[[ "$repo_count" -gt 0 ]] || return 0
 
 	_pir_parent_repair_cursor_load "$cursor_file" "$repo_count"
-	rotation_start="$_PIR_PARENT_REPAIR_CURSOR"
+	rotation_sequence="$_PIR_PARENT_REPAIR_CURSOR"
+	rotation_start=$((rotation_sequence % repo_count))
+	scan_sequence="$rotation_sequence"
 	ordered_slugs=$(printf '%s' "$repo_slugs_json" | jq -r --argjson start "$rotation_start" \
 		'(.[$start:] + .[:$start])[]' 2>/dev/null) || return 0
 
@@ -1408,18 +1513,29 @@ _repair_recently_closed_parents_cycle() {
 			"$_PIR_RECENT_PARENT_CYCLE_CANDIDATES" -lt "$max_candidates" ]] || break
 		reopens_remaining=$((max_reopens - _PIR_RECENT_PARENT_CYCLE_REOPENED))
 		candidates_remaining=$((max_candidates - _PIR_RECENT_PARENT_CYCLE_CANDIDATES))
+		candidate_round=$((scan_sequence / repo_count))
 		_PIR_RECENT_PARENT_REPOS_SCANNED=$((_PIR_RECENT_PARENT_REPOS_SCANNED + 1))
-		_repair_recently_closed_parents_for_slug "$slug" "$reopens_remaining" "$candidates_remaining"
+		_repair_recently_closed_parents_for_slug "$slug" "$reopens_remaining" \
+			"$candidates_remaining" "$max_candidates" "$candidate_round"
 		_PIR_RECENT_PARENT_CYCLE_REOPENED=$((_PIR_RECENT_PARENT_CYCLE_REOPENED + _PIR_RECENT_PARENT_REOPENED))
 		_PIR_RECENT_PARENT_CYCLE_CANDIDATES=$((_PIR_RECENT_PARENT_CYCLE_CANDIDATES + _PIR_RECENT_PARENT_SCANNED))
+		if [[ "$scan_sequence" -ge 2147483647 ]]; then
+			scan_sequence=0
+		else
+			scan_sequence=$((scan_sequence + 1))
+		fi
 	done <<<"$ordered_slugs"
 
-	next_cursor=$(((rotation_start + _PIR_RECENT_PARENT_REPOS_SCANNED) % repo_count))
+	if [[ "$rotation_sequence" -gt $((2147483647 - _PIR_RECENT_PARENT_REPOS_SCANNED)) ]]; then
+		next_cursor=0
+	else
+		next_cursor=$((rotation_sequence + _PIR_RECENT_PARENT_REPOS_SCANNED))
+	fi
 	if [[ "$_PIR_RECENT_PARENT_REPOS_SCANNED" -gt 0 ]] && \
 		! _pir_parent_repair_cursor_store "$cursor_file" "$next_cursor"; then
 		echo "[pulse-wrapper] Closed-parent repair scan: unable to persist repository cursor" >>"${LOGFILE:-/dev/null}"
 	fi
-	echo "[pulse-wrapper] Closed-parent repair scan: repos=${_PIR_RECENT_PARENT_REPOS_SCANNED}/${max_repo_scans} candidates=${_PIR_RECENT_PARENT_CYCLE_CANDIDATES}/${max_candidates} reopened=${_PIR_RECENT_PARENT_CYCLE_REOPENED}/${max_reopens} cursor=${rotation_start}->${next_cursor}/${repo_count}" >>"${LOGFILE:-/dev/null}"
+	echo "[pulse-wrapper] Closed-parent repair scan: repos=${_PIR_RECENT_PARENT_REPOS_SCANNED}/${max_repo_scans} candidates=${_PIR_RECENT_PARENT_CYCLE_CANDIDATES}/${max_candidates} reopened=${_PIR_RECENT_PARENT_CYCLE_REOPENED}/${max_reopens} cursor=${rotation_sequence}->${next_cursor}/${repo_count}" >>"${LOGFILE:-/dev/null}"
 	return 0
 }
 
@@ -1434,8 +1550,12 @@ _pir_collect_parent_child_evidence() {
 	local comment_nums=""
 	local source_parts=""
 	local children_section=""
+	_PIR_CPT_CHILD_NUMS=""
+	_PIR_CPT_CHILD_SOURCE="unavailable"
+	_PIR_CPT_KNOWN_CHILD_COUNT=0
 
-	graph_nums=$(_fetch_subissue_numbers "$slug" "$issue_num" | sort -un | grep -v "$self_issue_pattern" | grep -v '^$' || true)
+	graph_nums=$(_fetch_subissue_numbers "$slug" "$issue_num") || return 1
+	graph_nums=$(printf '%s\n' "$graph_nums" | sort -un | grep -v "$self_issue_pattern" | grep -v '^$' || true)
 	[[ -n "$graph_nums" ]] && source_parts="${source_parts:+${source_parts}+}graph"
 	children_section=$(_extract_children_section "$issue_body")
 	if [[ -n "$children_section" ]]; then
@@ -1444,7 +1564,8 @@ _pir_collect_parent_child_evidence() {
 	fi
 	prose_nums=$(_extract_children_from_prose "$issue_body" | grep -v "$self_issue_pattern" || true)
 	[[ -n "$prose_nums" ]] && source_parts="${source_parts:+${source_parts}+}prose"
-	comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num" | grep -v "$self_issue_pattern" || true)
+	comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num") || return 1
+	comment_nums=$(printf '%s\n' "$comment_nums" | grep -v "$self_issue_pattern" || true)
 	[[ -n "$comment_nums" ]] && source_parts="${source_parts:+${source_parts}+}comments"
 	_PIR_CPT_CHILD_NUMS=$(printf '%s\n%s\n%s\n%s\n' "$graph_nums" "$body_nums" "$prose_nums" "$comment_nums" |
 		grep -E '^[0-9]+$' | sort -un | grep -v "$self_issue_pattern" || true)
@@ -1550,7 +1671,7 @@ _action_cpt_single() {
 
 	# Child evidence is the union of graph, body, prose, and trusted roadmap
 	# comments; no single incomplete source may mask another.
-	_pir_collect_parent_child_evidence "$slug" "$issue_num" "$issue_body"
+	_pir_collect_parent_child_evidence "$slug" "$issue_num" "$issue_body" || return 0
 	local child_nums="$_PIR_CPT_CHILD_NUMS"
 	local child_source="$_PIR_CPT_CHILD_SOURCE"
 	local known_child_count="$_PIR_CPT_KNOWN_CHILD_COUNT"

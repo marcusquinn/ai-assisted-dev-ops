@@ -45,6 +45,9 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 export HOME="${TEST_ROOT}/home"
 mkdir -p "${HOME}/.aidevops/logs"
 export LOGFILE="${HOME}/.aidevops/logs/pulse.log"
+export PARENT_REVISION_INITIAL="2026-08-06T00:00:00Z"
+export PARENT_REVISION_FINAL="2026-08-06T00:01:00Z"
+export PARENT_REVISION_CLOSED="2026-08-06T00:02:00Z"
 : >"$LOGFILE"
 
 # -----------------------------------------------------------------------------
@@ -72,11 +75,14 @@ printf '%s\n' "$*" >>"${GH_CALLS}"
 case "$1" in
 	api)
 		shift
+		if [[ "$*" == *"/comments"* && -n "${GH_COMMENTS_EXIT_CODE:-}" ]]; then
+			exit "${GH_COMMENTS_EXIT_CODE}"
+		fi
 		if [[ "${1:-}" == "graphql" ]]; then
 			printf 'graphql-cost-from-response=%s\n' "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" >>"${GH_CALLS}"
 			# Per-scenario override: non-zero exit simulates a GraphQL
 			# failure (auth, rate-limit, network). The helper under test
-			# must treat this as empty and fall back to body regex.
+			# must expose unavailable evidence and defer mutations.
 			if [[ -n "${GH_GRAPHQL_EXIT_CODE:-}" ]]; then
 				exit "${GH_GRAPHQL_EXIT_CODE}"
 			fi
@@ -146,7 +152,11 @@ case "$1" in
 			[[ -f "$local_parent_reads_file" ]] && local_parent_reads=$(<"$local_parent_reads_file")
 			local_parent_reads=$((local_parent_reads + 1))
 			printf '%s\n' "$local_parent_reads" >"$local_parent_reads_file"
+			local_closed_marker="${TEST_ROOT}/gh-parent-closed-${local_issue}"
 			local_issue_files=("${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json")
+			if [[ -f "$local_closed_marker" && -f "${TEST_ROOT}/gh-live-parent-after-close.json" ]]; then
+				local_issue_files=("${TEST_ROOT}/gh-live-parent-after-close.json" "${local_issue_files[@]}")
+			fi
 			local_parent_transition_after="${GH_LIVE_PARENT_TRANSITION_AFTER:-1}"
 			[[ "$local_parent_transition_after" =~ ^[1-9][0-9]*$ ]] || local_parent_transition_after=1
 			if [[ "$local_parent_reads" -gt "$local_parent_transition_after" && \
@@ -158,6 +168,11 @@ case "$1" in
 				local_issue_json=$(jq -c --argjson issue "$local_issue" \
 					'.[] | select(.number == $issue)' "$local_issue_file" 2>/dev/null) || local_issue_json=""
 				if [[ -n "$local_issue_json" ]]; then
+					if [[ -f "$local_closed_marker" ]]; then
+						local_issue_json=$(printf '%s' "$local_issue_json" | jq -c \
+							--arg revision "$PARENT_REVISION_CLOSED" \
+							'.state="closed" | .stateReason="COMPLETED" | .updatedAt=$revision')
+					fi
 					printf '%s\n' "$local_issue_json"
 					exit 0
 				fi
@@ -199,10 +214,14 @@ case "$1" in
 				exit 0
 				;;
 			close)
-				# Record the close call; always succeed
+				touch "${TEST_ROOT}/gh-parent-closed-${3:-unknown}"
 				exit 0
 				;;
-			reopen | comment | edit)
+			reopen)
+				rm -f "${TEST_ROOT}/gh-parent-closed-${3:-unknown}"
+				exit 0
+				;;
+			comment | edit)
 				exit 0
 				;;
 		esac
@@ -258,16 +277,18 @@ reset_scenario() {
 		"${TEST_ROOT}/gh-subissues-after-transition.json" "${TEST_ROOT}/gh-graphql.reads" \
 		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json" \
 		"${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-live-parent-after-first.json" \
+		"${TEST_ROOT}/gh-live-parent-after-close.json" "${TEST_ROOT}"/gh-parent-closed-* \
 		"${TEST_ROOT}"/gh-live-parent-*.reads "${TEST_ROOT}"/gh-child-state-*.reads
 	unset GH_LIVE_PARENT_EXIT_CODE GH_LIVE_PARENT_TRANSITION_AFTER GH_GRAPHQL_TRANSITION_AFTER
+	unset GH_COMMENTS_EXIT_CODE
 	return 0
 }
 
 set_parent_list() {
 	# Args: issue_num title body
 	local num="$1" title="$2" body="$3"
-	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b, state:"open", labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-issue-list.json"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, body:$b, state:"open", updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-issue-list.json"
 	return 0
 }
 
@@ -276,31 +297,41 @@ set_closed_parent_list() {
 	local num="$1" title="$2" body="$3" state_reason="${4:-COMPLETED}"
 	local author_association="${5:-OWNER}" author_login="${6:-maintainer}"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$state_reason" \
-		--arg a "$author_association" --arg l "$author_login" \
-		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:$a, author:{login:$l,type:"User"}}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+		--arg a "$author_association" --arg l "$author_login" --arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:$a, author:{login:$l,type:"User"}}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
 	return 0
 }
 
 set_live_parent() {
 	local num="$1" title="$2" body="$3" state="${4:-open}"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg s "$state" \
-		'[{number:$n, title:$t, body:$b, state:$s, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+		--arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, body:$b, state:$s, updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+	return 0
+}
+
+set_live_parent_without_revision() {
+	local num="$1" title="$2" body="$3"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
+		'[{number:$n, title:$t, body:$b, state:"open", labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
 	return 0
 }
 
 set_live_parent_without_body() {
 	local num="$1" title="$2"
-	jq -n --argjson n "$num" --arg t "$title" \
-		'[{number:$n, title:$t, state:"open", labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+	jq -n --argjson n "$num" --arg t "$title" --arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, state:"open", updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
 	return 0
 }
 
 set_live_closed_parent_transition() {
 	local num="$1" title="$2" body="$3" initial_reason="$4" final_reason="$5"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$initial_reason" \
-		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+		--arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$final_reason" \
-		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent-after-first.json"
+		--arg u "$PARENT_REVISION_FINAL" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent-after-first.json"
 	return 0
 }
 
@@ -480,29 +511,30 @@ else
 fi
 
 # Missing or malformed response-owned cost must fail closed before child-number
-# projection. The parent reconciler will then use its legacy body fallback.
+# projection and report unavailable evidence.
 reset_scenario
 set_subissues "910:CLOSED"
 missing_cost_result=$(GH_GRAPHQL_COST=missing _fetch_subissue_numbers "test/repo" "909")
-if [[ -z "$missing_cost_result" ]]; then
+missing_cost_rc=$?
+if [[ "$missing_cost_rc" -ne 0 && -z "$missing_cost_result" ]]; then
 	print_result "missing GraphQL rateLimit.cost blocks projected child output" 0
 else
 	print_result "missing GraphQL rateLimit.cost blocks projected child output" 1 \
-		"(unexpected output: ${missing_cost_result})"
+		"(rc=${missing_cost_rc}, output=${missing_cost_result})"
 fi
 
 malformed_cost_result=$(GH_GRAPHQL_COST=malformed _fetch_subissue_numbers "test/repo" "909")
-if [[ -z "$malformed_cost_result" ]]; then
+malformed_cost_rc=$?
+if [[ "$malformed_cost_rc" -ne 0 && -z "$malformed_cost_result" ]]; then
 	print_result "malformed GraphQL rateLimit.cost blocks projected child output" 0
 else
 	print_result "malformed GraphQL rateLimit.cost blocks projected child output" 1 \
-		"(unexpected output: ${malformed_cost_result})"
+		"(rc=${malformed_cost_rc}, output=${malformed_cost_result})"
 fi
 
 # -----------------------------------------------------------------------------
-# Scenario 7 (CodeRabbit review feedback): GraphQL call fails hard (exit 1).
-# Legacy body-ref fallback MUST still close the parent. This mirrors the
-# empty-graph scenario but exercises the error-path branch in the helper.
+# Scenario 7: a GraphQL failure is unavailable evidence, not an empty graph.
+# Body refs cannot authorize closure while native children may be undiscovered.
 # -----------------------------------------------------------------------------
 reset_scenario
 set_parent_list 1000 "t1000: graphql-failure" \
@@ -512,23 +544,15 @@ set_child_states "1001:closed:child-x" "1002:closed:child-y"
 GH_GRAPHQL_EXIT_CODE=1 reconcile_completed_parent_tasks >/dev/null 2>&1
 
 if grep -q "issue close 1000" "$GH_CALLS"; then
-	print_result "graphql-error fallback: closes via body regex when GraphQL fails" 0
+	print_result "graphql-error fail-closed: body refs do not bypass unavailable graph" 1
 else
-	print_result "graphql-error fallback: closes via body regex when GraphQL fails" 1 \
-		"(calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
-fi
-
-if grep -q "source=body" "$LOGFILE"; then
-	print_result "graphql-error fallback: log tags child_source=body" 0
-else
-	print_result "graphql-error fallback: log tags child_source=body" 1 \
-		"(log: $(cat "$LOGFILE"))"
+	print_result "graphql-error fail-closed: body refs do not bypass unavailable graph" 0
 fi
 
 # -----------------------------------------------------------------------------
 # Scenario 8 (CodeRabbit review feedback): hasNextPage=true (parent has >50
-# children across pages). Helper MUST fail-closed — treat graph as empty and
-# fall back to body regex so we never close based on a partial child list.
+# children across pages). Helper MUST fail closed and defer closure rather than
+# trust a body that may omit a child from a later graph page.
 # -----------------------------------------------------------------------------
 reset_scenario
 set_parent_list 1100 "t1100: paginated" \
@@ -538,16 +562,25 @@ set_child_states "1101:closed:a" "1102:closed:b"
 GH_GRAPHQL_HAS_NEXT_PAGE=true reconcile_completed_parent_tasks >/dev/null 2>&1
 
 if grep -q "issue close 1100" "$GH_CALLS"; then
-	# Closed via body fallback (graph bailed out)
-	if grep -q "source=body" "$LOGFILE"; then
-		print_result "pagination fail-closed: graph bails, body fallback closes" 0
-	else
-		print_result "pagination fail-closed: graph bails, body fallback closes" 1 \
-			"(closed but source not 'body': $(cat "$LOGFILE"))"
-	fi
+	print_result "pagination fail-closed: partial graph blocks body-authorized close" 1
 else
-	print_result "pagination fail-closed: graph bails, body fallback closes" 1 \
-		"(expected close via body fallback; calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
+	print_result "pagination fail-closed: partial graph blocks body-authorized close" 0
+fi
+
+# Trusted roadmap comments are another independent child source. A failed
+# comment read must block closure even when the graph is authoritatively empty.
+reset_scenario
+set_parent_list 1150 "t1150: comment evidence unavailable" $'## Children\n\n- #1151'
+set_subissues
+set_child_states "1151:closed:body-child"
+GH_COMMENTS_EXIT_CODE=1 reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1150" "$GH_CALLS"; then
+	print_result "comment-error fail-closed: unavailable roadmap evidence blocks close" 1
+elif grep -q "issues/1150/comments" "$GH_CALLS"; then
+	print_result "comment-error fail-closed: unavailable roadmap evidence blocks close" 0
+else
+	print_result "comment-error fail-closed: unavailable roadmap evidence blocks close" 1 \
+		"(trusted comment source was not queried)"
 fi
 
 # -----------------------------------------------------------------------------
@@ -737,8 +770,8 @@ fi
 reset_scenario
 set_parent_list 1498 "t1498: parent state can change" $'## Children\n\n- #1499'
 set_live_parent 1498 "t1498: parent state can change" $'## Children\n\n- #1499'
-jq -n --arg b $'## Children\n\n- #1499' \
-	'[{number:1498,title:"t1498: parent state can change",body:$b,state:"closed",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+jq -n --arg b $'## Children\n\n- #1499' --arg u "$PARENT_REVISION_FINAL" \
+	'[{number:1498,title:"t1498: parent state can change",body:$b,state:"closed",updatedAt:$u,labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
 	>"${TEST_ROOT}/gh-live-parent-after-first.json"
 set_subissues "1499:CLOSED"
 set_child_states "1499:closed:only-child"
@@ -760,7 +793,8 @@ reset_scenario
 set_parent_list 1550 "t1550: parent body can change" $'## Children\n\n- #1551'
 set_live_parent 1550 "t1550: parent body can change" $'## Children\n\n- #1551'
 jq -n --arg b $'<!-- parent-close-contract: keep-open -->\n\n## Children\n\n- #1551' \
-	'[{number:1550,title:"t1550: parent body can change",body:$b,state:"open",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	--arg u "$PARENT_REVISION_FINAL" \
+	'[{number:1550,title:"t1550: parent body can change",body:$b,state:"open",updatedAt:$u,labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
 	>"${TEST_ROOT}/gh-live-parent-after-first.json"
 set_subissues "1551:CLOSED"
 set_child_states "1551:closed:only-child"
@@ -770,6 +804,39 @@ if grep -q "issue close 1550" "$GH_CALLS"; then
 	print_result "final parent fence: concurrent body mutation blocks close" 1
 else
 	print_result "final parent fence: concurrent body mutation blocks close" 0
+fi
+
+# Revision-less live issue responses cannot support a stale-write fence.
+reset_scenario
+set_parent_list 1560 "t1560: revision unavailable" $'## Children\n\n- #1561'
+set_live_parent_without_revision 1560 "t1560: revision unavailable" $'## Children\n\n- #1561'
+set_subissues "1561:CLOSED"
+set_child_states "1561:closed:only-child"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1560" "$GH_CALLS"; then
+	print_result "final parent fence: missing revision defers automatic close" 1
+else
+	print_result "final parent fence: missing revision defers automatic close" 0
+fi
+
+# If the body changes in the mutation window, immediate post-close validation
+# compensates our completed closure and holds the reopened parent for review.
+reset_scenario
+set_parent_list 1570 "t1570: mutation-window body drift" $'## Children\n\n- #1571'
+set_live_parent 1570 "t1570: mutation-window body drift" $'## Children\n\n- #1571'
+set_subissues "1571:CLOSED"
+set_child_states "1571:closed:only-child"
+jq -n --arg b $'<!-- parent-close-contract: keep-open -->\n\n## Children\n\n- #1571' \
+	--arg u "$PARENT_REVISION_CLOSED" \
+	'[{number:1570,title:"t1570: mutation-window body drift",body:$b,state:"closed",stateReason:"COMPLETED",updatedAt:$u,labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	>"${TEST_ROOT}/gh-live-parent-after-close.json"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1570" "$GH_CALLS" && grep -q "issue reopen 1570" "$GH_CALLS" && \
+	! grep -q "closed #1570" "$LOGFILE"; then
+	print_result "post-close fence: mutation-window drift is compensated by reopen" 0
+else
+	print_result "post-close fence: mutation-window drift is compensated by reopen" 1 \
+		"(calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
 fi
 
 # -----------------------------------------------------------------------------

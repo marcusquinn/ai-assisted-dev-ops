@@ -310,7 +310,7 @@ _fetch_recently_closed_parent_tasks() {
 	cutoff=$(_recent_closed_parent_cutoff) || return 1
 	gh_issue_list --repo "$slug" --state closed \
 		--label "$parent_label" --search "closed:>=${cutoff}" \
-		--json number,title,body,state,labels --limit 10 2>/dev/null || return 1
+		--json number,title,body,state,labels --limit 100 2>/dev/null || return 1
 	return 0
 }
 
