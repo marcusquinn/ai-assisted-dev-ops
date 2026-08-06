@@ -128,7 +128,16 @@ case "$1" in
 			if [[ -n "${GH_LIVE_PARENT_EXIT_CODE:-}" ]]; then
 				exit "${GH_LIVE_PARENT_EXIT_CODE}"
 			fi
-			for local_issue_file in "${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"; do
+			local_parent_reads=0
+			local_parent_reads_file="${TEST_ROOT}/gh-live-parent-${local_issue}.reads"
+			[[ -f "$local_parent_reads_file" ]] && local_parent_reads=$(<"$local_parent_reads_file")
+			local_parent_reads=$((local_parent_reads + 1))
+			printf '%s\n' "$local_parent_reads" >"$local_parent_reads_file"
+			local_issue_files=("${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json")
+			if [[ "$local_parent_reads" -gt 1 && -f "${TEST_ROOT}/gh-live-parent-after-first.json" ]]; then
+				local_issue_files=("${TEST_ROOT}/gh-live-parent-after-first.json" "${local_issue_files[@]}")
+			fi
+			for local_issue_file in "${local_issue_files[@]}"; do
 				[[ -f "$local_issue_file" ]] || continue
 				local_issue_json=$(jq -c --argjson issue "$local_issue" \
 					'.[] | select(.number == $issue)' "$local_issue_file" 2>/dev/null) || local_issue_json=""
@@ -145,6 +154,15 @@ case "$1" in
 			local_state_var="ISSUE_${local_issue}_STATE"
 			local_title_var="ISSUE_${local_issue}_TITLE"
 			if [[ "$local_jq" == *".state"* ]]; then
+				local_state_reads=0
+				local_state_reads_file="${TEST_ROOT}/gh-child-state-${local_issue}.reads"
+				[[ -f "$local_state_reads_file" ]] && local_state_reads=$(<"$local_state_reads_file")
+				local_state_reads=$((local_state_reads + 1))
+				printf '%s\n' "$local_state_reads" >"$local_state_reads_file"
+				if [[ "$local_state_reads" -gt 1 && -f "${TEST_ROOT}/gh-child-live-states.env" ]]; then
+					# shellcheck disable=SC1090
+					source "${TEST_ROOT}/gh-child-live-states.env"
+				fi
 				echo "${!local_state_var:-unknown}"
 			elif [[ "$local_jq" == *".title"* ]]; then
 				echo "${!local_title_var:-}"
@@ -220,8 +238,10 @@ reset_scenario() {
 	: >"$GH_CALLS"
 	: >"$LOGFILE"
 	rm -f "${TEST_ROOT}/gh-subissues.json" "${TEST_ROOT}/gh-child-states.env" \
+		"${TEST_ROOT}/gh-child-live-states.env" \
 		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json" \
-		"${TEST_ROOT}/gh-live-parent.json"
+		"${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-live-parent-after-first.json" \
+		"${TEST_ROOT}"/gh-live-parent-*.reads "${TEST_ROOT}"/gh-child-state-*.reads
 	unset GH_LIVE_PARENT_EXIT_CODE
 	return 0
 }
@@ -230,29 +250,40 @@ set_parent_list() {
 	# Args: issue_num title body
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-issue-list.json"
+		'[{number:$n, title:$t, body:$b, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-issue-list.json"
 	return 0
 }
 
 set_closed_parent_list() {
-	# Args: issue_num title body [state_reason]
+	# Args: issue_num title body [state_reason] [author_association] [author_login]
 	local num="$1" title="$2" body="$3" state_reason="${4:-COMPLETED}"
+	local author_association="${5:-OWNER}" author_login="${6:-maintainer}"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$state_reason" \
-		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+		--arg a "$author_association" --arg l "$author_login" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:$a, author:{login:$l,type:"User"}}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
 	return 0
 }
 
 set_live_parent() {
 	local num="$1" title="$2" body="$3" state="${4:-open}"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg s "$state" \
-		'[{number:$n, title:$t, body:$b, state:$s, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-live-parent.json"
+		'[{number:$n, title:$t, body:$b, state:$s, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
 	return 0
 }
 
 set_live_parent_without_body() {
 	local num="$1" title="$2"
 	jq -n --argjson n "$num" --arg t "$title" \
-		'[{number:$n, title:$t, state:"open", labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-live-parent.json"
+		'[{number:$n, title:$t, state:"open", labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+	return 0
+}
+
+set_live_closed_parent_transition() {
+	local num="$1" title="$2" body="$3" initial_reason="$4" final_reason="$5"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$initial_reason" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$final_reason" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent-after-first.json"
 	return 0
 }
 
@@ -282,6 +313,20 @@ set_child_states() {
 			echo "ISSUE_${num}_STATE=${state}"
 			echo "ISSUE_${num}_TITLE=${title}"
 		} >>"${TEST_ROOT}/gh-child-states.env"
+	done
+	return 0
+}
+
+set_live_child_states() {
+	local triples=("$@")
+	local triple="" num="" state="" title=""
+	: >"${TEST_ROOT}/gh-child-live-states.env"
+	for triple in "${triples[@]}"; do
+		IFS=":" read -r num state title <<<"$triple"
+		{
+			echo "ISSUE_${num}_STATE=${state}"
+			echo "ISSUE_${num}_TITLE=${title}"
+		} >>"${TEST_ROOT}/gh-child-live-states.env"
 	done
 	return 0
 }
@@ -596,6 +641,42 @@ else
 	print_result "live close contract: failed live read performs no close" 0
 fi
 
+# A child added to the live body after cached candidate selection must join the
+# final union and block closure while it remains open.
+reset_scenario
+set_parent_list 1480 "t1480: cached child set" $'## Children\n\n- #1481'
+set_live_parent 1480 "t1480: expanded live child set" $'## Children\n\n- #1481\n- #1482'
+set_subissues "1481:CLOSED"
+set_child_states "1481:closed:cached-child" "1482:open:new-live-child"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1480" "$GH_CALLS"; then
+	print_result "live child set: newly linked open child blocks close" 1
+elif grep -q "repos/test/repo/issues/1482 --jq .state" "$GH_CALLS"; then
+	print_result "live child set: newly linked open child blocks close" 0
+else
+	print_result "live child set: newly linked open child blocks close" 1 \
+		"(new child was not re-read)"
+fi
+
+# A known child can reopen after the first state pass. The second state read at
+# the mutation boundary must observe that transition and suppress closure.
+reset_scenario
+set_parent_list 1490 "t1490: child can reopen" $'## Children\n\n- #1491'
+set_live_parent 1490 "t1490: child can reopen" $'## Children\n\n- #1491'
+set_subissues "1491:CLOSED"
+set_child_states "1491:closed:initially-closed"
+set_live_child_states "1491:open:reopened-before-close"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+child_state_reads=$(<"${TEST_ROOT}/gh-child-state-1491.reads")
+if grep -q "issue close 1490" "$GH_CALLS"; then
+	print_result "live child state: reopened child blocks close" 1
+elif [[ "$child_state_reads" -ge 2 ]]; then
+	print_result "live child state: reopened child blocks close" 0
+else
+	print_result "live child state: reopened child blocks close" 1 \
+		"(state_reads=${child_state_reads})"
+fi
+
 # -----------------------------------------------------------------------------
 # Scenario 12: bounded recently-closed scan repairs a premature close only
 # when canonical unfiled phase evidence exists.
@@ -630,6 +711,36 @@ if grep -q "issue reopen 1510" "$GH_CALLS"; then
 	print_result "closed-parent repair: preserves NOT_PLANNED closure" 1
 else
 	print_result "closed-parent repair: preserves NOT_PLANNED closure" 0
+fi
+
+# A completed closure can become intentional while the repair checks comments.
+# The final live stateReason read must preserve the new NOT_PLANNED decision.
+reset_scenario
+set_closed_parent_list 1520 "t1520: closure reason changes" \
+	$'<!-- parent-close-contract: keep-open -->\n\n- [ ] Deferred criterion'
+set_live_closed_parent_transition 1520 "t1520: closure reason changes" \
+	$'<!-- parent-close-contract: keep-open -->\n\n- [ ] Deferred criterion' COMPLETED NOT_PLANNED
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
+if grep -q "issue reopen 1520" "$GH_CALLS"; then
+	print_result "closed-parent repair: final stateReason preserves intentional closure" 1
+elif [[ "$(<"${TEST_ROOT}/gh-live-parent-1520.reads")" -ge 2 ]]; then
+	print_result "closed-parent repair: final stateReason preserves intentional closure" 0
+else
+	print_result "closed-parent repair: final stateReason preserves intentional closure" 1 \
+		"(missing final live re-read)"
+fi
+
+# Closed-parent repair is still a lifecycle mutation and must not bypass the
+# external-author authority/approval gate.
+reset_scenario
+set_closed_parent_list 1530 "t1530: external parent" \
+	$'<!-- parent-close-contract: keep-open -->\n\n- [ ] External criterion' \
+	COMPLETED CONTRIBUTOR outsider
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
+if grep -q "issue reopen 1530" "$GH_CALLS"; then
+	print_result "closed-parent repair: unapproved external author remains blocked" 1
+else
+	print_result "closed-parent repair: unapproved external author remains blocked" 0
 fi
 
 # -----------------------------------------------------------------------------

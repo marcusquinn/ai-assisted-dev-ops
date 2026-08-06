@@ -353,6 +353,7 @@ test_parent_live_hold_gate() {
 		_PIR_PERSISTENT_LABEL="persistent"
 		_PIR_PT_LABEL="parent-task"
 		_PIR_SCRIPT_DIR="/nonexistent"
+		LOGFILE="/dev/null"
 		source "$ACTIONS_SH"
 		LIVE_MODE="clear"
 		gh() {
@@ -360,15 +361,16 @@ test_parent_live_hold_gate() {
 			local endpoint="${2:-}"
 			[[ "$command" == "api" && "$endpoint" == "repos/owner/repo/issues/42" ]] || return 1
 			case "$LIVE_MODE" in
-			clear) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}]}" ;;
-			nmr) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"needs-maintainer-review\"}]}" ;;
-			persistent) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"persistent\"}]}" ;;
-			missing-parent) printf "%s\n" "{\"number\":42,\"labels\":[]}" ;;
+			clear) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			nmr) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"needs-maintainer-review\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			persistent) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"persistent\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			missing-parent) printf "%s\n" "{\"number\":42,\"labels\":[],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			external) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}],\"authorAssociation\":\"CONTRIBUTOR\",\"author\":{\"login\":\"outsider\",\"type\":\"User\"}}" ;;
 			*) return 1 ;;
 			esac
 			return 0
 		}
-		for LIVE_MODE in clear nmr persistent missing-parent api-failure; do
+		for LIVE_MODE in clear nmr persistent missing-parent external api-failure; do
 			_pir_parent_mutation_is_allowed owner/repo 42 &&
 				printf "%s:allowed\n" "$LIVE_MODE" || printf "%s:blocked\n" "$LIVE_MODE"
 		done
@@ -408,11 +410,12 @@ test_parent_live_hold_gate() {
 	printf '%s\n' "$result" | grep -qx 'nmr:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'persistent:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'missing-parent:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'external:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'api-failure:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'cached-hold-collect-calls:0' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'final-gate:1 close-calls:0' || all_ok=0
 	if [[ "$all_ok" -eq 1 ]]; then
-		_pass "parent mutation gate blocks cached/live holds and rechecks at final close"
+		_pass "parent mutation gate blocks cached/live holds, external authors, and final-close races"
 	else
 		_fail "parent mutation gate result mismatch: ${result}"
 	fi
