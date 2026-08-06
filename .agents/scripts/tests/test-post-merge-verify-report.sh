@@ -111,6 +111,36 @@ else
 	fail "post-merge base ref" "missing full-history checkout or pre-merge remote-ref pin"
 fi
 
+export MANAGED_ISSUE_CALL_LOG="$TMPDIR/managed-issue-calls.log"
+gh_create_issue() {
+	printf '%s\n' "$*" >>"$MANAGED_ISSUE_CALL_LOG"
+	printf 'https://github.com/owner/repo/issues/456\n'
+	return 0
+}
+export -f gh_create_issue
+
+output=$(bash "$HELPER" create-follow-up owner/repo "t123: verification failed" "$TMPDIR/body.md" 2>&1)
+rc=$?
+managed_call=$(<"$MANAGED_ISSUE_CALL_LOG")
+if [[ $rc -eq 0 && "$managed_call" == *"--body-file $TMPDIR/body.md"* ]] &&
+	[[ "$managed_call" == *"--label quality-debt"* ]] &&
+	[[ "$managed_call" == *"--label type:bug"* ]] &&
+	[[ "$managed_call" == *"--label auto-dispatch"* ]] &&
+	[[ "$managed_call" == *"--label origin:worker"* ]] &&
+	[[ "$managed_call" == *"--label status:available"* ]]; then
+	pass "failure follow-up issues use the managed wrapper with lifecycle metadata"
+else
+	fail "managed failure follow-up" "rc=$rc output=$output call=$managed_call"
+fi
+
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+if grep -qF 'create-follow-up "$REPO" "$TITLE" "$ISSUE_BODY_FILE"' "$WORKFLOW" &&
+	! grep -qE '^[[:space:]]+gh issue create ' "$WORKFLOW"; then
+	pass "post-merge workflow contains no raw issue creation path"
+else
+	fail "managed workflow issue creation" "workflow does not route exclusively through create-follow-up"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
 	exit 1

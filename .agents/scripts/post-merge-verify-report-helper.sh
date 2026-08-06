@@ -4,10 +4,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
 	printf 'Usage:\n'
 	printf '  post-merge-verify-report-helper.sh truncate-output <output-file> <max-bytes>\n'
 	printf '  post-merge-verify-report-helper.sh publish-comment <repo> <pr-number> <body-file>\n'
+	printf '  post-merge-verify-report-helper.sh create-follow-up <repo> <title> <body-file>\n'
 	return 0
 }
 
@@ -64,6 +67,54 @@ publish_comment() {
 	return 0
 }
 
+load_managed_issue_wrapper() {
+	if declare -F gh_create_issue >/dev/null 2>&1; then
+		return 0
+	fi
+
+	# Load lazily so report truncation and fail-soft comment publication do not
+	# depend on the broader managed-write runtime.
+	# shellcheck source=shared-constants.sh
+	source "${SCRIPT_DIR}/shared-constants.sh"
+	if declare -F gh_create_issue >/dev/null 2>&1; then
+		return 0
+	fi
+
+	printf 'ERROR: managed issue creation wrapper is unavailable.\n' >&2
+	return 1
+}
+
+create_follow_up() {
+	local repo="$1"
+	local title="$2"
+	local body_file="$3"
+
+	if [[ ! -f "$body_file" ]]; then
+		printf 'ERROR: follow-up issue body file not found: %s\n' "$body_file" >&2
+		return 2
+	fi
+	if ! load_managed_issue_wrapper; then
+		return 1
+	fi
+
+	# The post-merge failure is actionable automation-owned work. Supply the
+	# complete dispatch metadata at creation time; gh_create_issue adds the
+	# normalized aidevops signature and enforces managed write safeguards.
+	if AIDEVOPS_SESSION_ORIGIN=worker gh_create_issue --repo "$repo" \
+		--title "$title" \
+		--body-file "$body_file" \
+		--label "quality-debt" \
+		--label "type:bug" \
+		--label "auto-dispatch" \
+		--label "tier:standard" \
+		--label "worker-ready" \
+		--label "origin:worker" \
+		--label "status:available"; then
+		return 0
+	fi
+	return 1
+}
+
 main() {
 	local command="${1:-help}"
 	local repo="${2:-}"
@@ -81,6 +132,14 @@ main() {
 			return 2
 		fi
 		publish_comment "$repo" "$pr_number" "$body_file"
+		return $?
+		;;
+	create-follow-up)
+		if [[ -z "$repo" || -z "$pr_number" || -z "$body_file" ]]; then
+			usage
+			return 2
+		fi
+		create_follow_up "$repo" "$pr_number" "$body_file"
 		return $?
 		;;
 	help | --help | -h)
