@@ -87,6 +87,7 @@ _person_stats_query_count() {
 		return 124
 	fi
 	if [[ "$rc" -ne 0 || ! "$value" =~ ^[0-9]+$ ]]; then
+		echo "GitHub Search API ${label} query failed" >&2
 		printf '%s' "0"
 		return 1
 	fi
@@ -191,7 +192,7 @@ print(','.join(sorted(logins)))
 #   $2 - repo slug (owner/repo)
 #   $3 - since_date (YYYY-MM-DD)
 # Output: JSON array string to stdout
-#         Sets _ps_partial=true on stderr line "PARTIAL=true" if rate limited
+#         Sets _ps_partial=true on stderr line "PARTIAL=true" if any query fails
 #######################################
 _person_stats_query_github() {
 	local logins_csv="$1"
@@ -227,25 +228,25 @@ _person_stats_query_github() {
 		local issues_created
 		local issues_created_rc=0
 		issues_created=$(_person_stats_query_count "issues-created" "search/issues?q=author:${login}+repo:${slug}+type:issue+created:>${since_date}&per_page=1") || issues_created_rc=$?
-		[[ "$issues_created_rc" -eq 124 ]] && _ps_partial=true
+		[[ "$issues_created_rc" -ne 0 ]] && _ps_partial=true
 
 		# PRs created
 		local prs_created
 		local prs_created_rc=0
 		prs_created=$(_person_stats_query_count "prs-created" "search/issues?q=author:${login}+repo:${slug}+type:pr+created:>${since_date}&per_page=1") || prs_created_rc=$?
-		[[ "$prs_created_rc" -eq 124 ]] && _ps_partial=true
+		[[ "$prs_created_rc" -ne 0 ]] && _ps_partial=true
 
 		# PRs merged
 		local prs_merged
 		local prs_merged_rc=0
 		prs_merged=$(_person_stats_query_count "prs-merged" "search/issues?q=author:${login}+repo:${slug}+type:pr+is:merged+merged:>${since_date}&per_page=1") || prs_merged_rc=$?
-		[[ "$prs_merged_rc" -eq 124 ]] && _ps_partial=true
+		[[ "$prs_merged_rc" -ne 0 ]] && _ps_partial=true
 
 		# Issues/PRs commented on (commenter: qualifier counts unique issues, not comments)
 		local commented_on
 		local commented_on_rc=0
 		commented_on=$(_person_stats_query_count "commented-on" "search/issues?q=commenter:${login}+repo:${slug}+updated:>${since_date}&per_page=1") || commented_on_rc=$?
-		[[ "$commented_on_rc" -eq 124 ]] && _ps_partial=true
+		[[ "$commented_on_rc" -ne 0 ]] && _ps_partial=true
 
 		if [[ "$first" == "true" ]]; then
 			first=false
@@ -300,19 +301,22 @@ if format_type == 'json':
     result = {'data': data, 'partial': is_partial}
     print(json.dumps(result, indent=2))
 else:
-    if not data:
-        print(f'_No GitHub activity for the last {period_name}._')
+    grand_total = sum(d['total_output'] for d in data)
+    if grand_total == 0:
+        if is_partial:
+            print('_GitHub activity unavailable or incomplete — one or more Search API queries failed, timed out, or were rate-limited._')
+        else:
+            print(f'_No GitHub activity for the last {period_name}._')
     else:
-        grand_total = sum(d['total_output'] for d in data) or 1
         print(f'| Contributor | Issues | PRs | Merged | Commented | % of Total |')
         print(f'| --- | ---: | ---: | ---: | ---: | ---: |')
         for d in data:
             pct = round(d['total_output'] / grand_total * 100, 1)
             print(f'| {d[\"login\"]} | {d[\"issues_created\"]} | {d[\"prs_created\"]} | {d[\"prs_merged\"]} | {d[\"commented_on\"]} | {pct}% |')
-    if is_partial:
+    if is_partial and grand_total > 0:
         print()
         print('<!-- partial-results -->')
-        print('_Partial results — GitHub Search API rate limit exhausted or a query timed out._')
+        print('_Partial results — one or more GitHub Search API queries failed, timed out, or were rate-limited._')
 " "$format" "$period" "$is_partial"
 
 	return 0
@@ -382,7 +386,11 @@ person_stats() {
 	fi
 
 	if [[ -z "$logins_csv" ]]; then
-		echo "_No contributors found for the last ${period}._"
+		if [[ "$format" == "json" ]]; then
+			printf '%s\n' '{"data":[],"partial":false}'
+		else
+			echo "_No contributors found for the last ${period}._"
+		fi
 		return 0
 	fi
 
@@ -401,7 +409,8 @@ person_stats() {
 
 	# Return distinct exit code so callers can detect truncated payloads.
 	# EX_PARTIAL (75) means "valid output on stdout, but incomplete due to
-	# rate limiting". Callers should cache the output but mark it as partial.
+	# collection failures, rate limiting, or timeouts. Callers should cache the
+	# output but mark it as partial.
 	if [[ "$partial_flag" == "true" ]]; then
 		return "$EX_PARTIAL"
 	fi
@@ -428,8 +437,10 @@ _cross_repo_person_stats_collect_json() {
 	local any_partial=false
 	local rp
 	for rp in "$@"; do
+		repo_count=$((repo_count + 1))
 		if [[ ! -d "$rp/.git" && ! -f "$rp/.git" ]]; then
 			echo "Warning: $rp is not a git repository, skipping" >&2
+			any_partial=true
 			continue
 		fi
 		local repo_json
@@ -442,6 +453,7 @@ _cross_repo_person_stats_collect_json() {
 		if [[ "$repo_rc" -eq "$EX_PARTIAL" ]]; then
 			any_partial=true
 		elif [[ "$repo_rc" -ne 0 ]]; then
+			any_partial=true
 			repo_json='{"data":[],"partial":false}'
 		fi
 		# person_stats --format json returns {"data": [...], "partial": bool}.
@@ -452,8 +464,10 @@ _cross_repo_person_stats_collect_json() {
 		elif echo "$repo_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
 			# Fallback: raw array (shouldn't happen, but defensive)
 			all_json+="${repo_json}"$'\n'
+		else
+			echo "Warning: person stats returned invalid JSON, excluding repository data" >&2
+			any_partial=true
 		fi
-		repo_count=$((repo_count + 1))
 	done
 
 	echo -n "$all_json"
@@ -513,21 +527,24 @@ if format_type == 'json':
     result = {'repo_count': repo_count, 'contributors': results, 'partial': is_partial}
     print(json.dumps(result, indent=2))
 else:
-    if not results:
-        print(f'_No GitHub activity across {repo_count} repos for the last {period_name}._')
+    grand_total = sum(r['total_output'] for r in results)
+    if grand_total == 0:
+        if is_partial:
+            print(f'_Cross-repo GitHub activity unavailable or incomplete across {repo_count} repos — one or more Search API queries or repository collections failed, timed out, or were rate-limited._')
+        else:
+            print(f'_No GitHub activity across {repo_count} repos for the last {period_name}._')
     else:
         print(f'_Across {repo_count} managed repos:_')
         print()
-        grand_total = sum(r['total_output'] for r in results) or 1
         print(f'| Contributor | Issues | PRs | Merged | Commented | % of Total |')
         print(f'| --- | ---: | ---: | ---: | ---: | ---: |')
         for r in results:
             pct = round(r['total_output'] / grand_total * 100, 1)
             print(f'| {r[\"login\"]} | {r[\"issues_created\"]} | {r[\"prs_created\"]} | {r[\"prs_merged\"]} | {r[\"commented_on\"]} | {pct}% |')
-    if is_partial:
+    if is_partial and grand_total > 0:
         print()
         print('<!-- partial-results -->')
-        print('_Partial results — GitHub Search API rate limit exhausted or a query timed out._')
+        print('_Partial results — one or more GitHub Search API queries or repository collections failed, timed out, or were rate-limited._')
 " "$format" "$period" "$repo_count" "$is_partial"
 
 	return 0

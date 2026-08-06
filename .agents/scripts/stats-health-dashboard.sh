@@ -413,7 +413,7 @@ update_health_issues() {
 	fi
 	local cross_repo_cache="${PERSON_STATS_CACHE_DIR}/person-stats-cache-cross-repo.md"
 	if [[ -f "$cross_repo_cache" ]]; then
-		cross_repo_person_stats_md=$(cat "$cross_repo_cache")
+		cross_repo_person_stats_md=$(_read_person_stats_cache "cross-repo")
 	fi
 
 	local updated=0

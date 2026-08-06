@@ -738,7 +738,26 @@ _read_person_stats_cache() {
 	local slug_safe="$1"
 	local ps_cache="${PERSON_STATS_CACHE_DIR}/person-stats-cache-${slug_safe}.md"
 	if [[ -f "$ps_cache" ]]; then
-		cat "$ps_cache"
+		local contributor issues prs merged commented remainder
+		local data_rows=0
+		local all_zero=true
+		while IFS='|' read -r remainder contributor issues prs merged commented remainder; do
+			issues="${issues//[[:space:]]/}"
+			prs="${prs//[[:space:]]/}"
+			merged="${merged//[[:space:]]/}"
+			commented="${commented//[[:space:]]/}"
+			if [[ "$issues" =~ ^[0-9]+$ && "$prs" =~ ^[0-9]+$ && "$merged" =~ ^[0-9]+$ && "$commented" =~ ^[0-9]+$ ]]; then
+				data_rows=$((data_rows + 1))
+				if [[ $((issues + prs + merged + commented)) -ne 0 ]]; then
+					all_zero=false
+				fi
+			fi
+		done <"$ps_cache"
+		if [[ "$data_rows" -gt 0 && "$all_zero" == "true" ]]; then
+			echo "_GitHub activity unavailable — cached all-zero data predates collection-status diagnostics; refresh pending._"
+		else
+			cat "$ps_cache"
+		fi
 	else
 		echo "_Person stats not yet cached._"
 	fi
