@@ -1129,6 +1129,10 @@ _handle_post_merge_actions() {
 			set_solved_label "$linked_issue" "$repo_slug" "$_solved_actor" || true
 			clear_terminal_issue_dispatch_labels "$linked_issue" "$repo_slug" "post-merge-pr-${pr_number}" || true
 			if _gh_with_timeout write gh issue close "$linked_issue" --repo "$repo_slug" 2>/dev/null; then
+				# Closing is not a status transition in GitHub's label model. Converge
+				# explicitly so a merged issue cannot remain dashboard-visible as
+				# available, queued, claimed, in-progress, or in-review.
+				set_issue_status "$linked_issue" "$repo_slug" "done" || true
 				reconcile_dependants_after_verified_closure "$repo_slug" "$linked_issue" || true
 			fi
 			# Reset fast-fail counter now that the issue is resolved (GH#2076)
@@ -1171,6 +1175,7 @@ _handle_post_merge_actions() {
 				set_solved_label "$_superseded_original_issue" "$repo_slug" "$_sup_solved_actor" || true
 				clear_terminal_issue_dispatch_labels "$_superseded_original_issue" "$repo_slug" "post-merge-superseded-pr-${pr_number}" || true
 				if _gh_with_timeout write gh issue close "$_superseded_original_issue" --repo "$repo_slug" 2>/dev/null; then
+					set_issue_status "$_superseded_original_issue" "$repo_slug" "done" || true
 					reconcile_dependants_after_verified_closure "$repo_slug" "$_superseded_original_issue" || true
 				fi
 				fast_fail_reset "$_superseded_original_issue" "$repo_slug" || true

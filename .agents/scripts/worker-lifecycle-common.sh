@@ -1048,6 +1048,41 @@ _escalate_body_has_review_feedback_context() {
 }
 
 #######################################
+# Detect investigation-ready briefs whose exact write surface is intentionally
+# unknown until the investigation runs. Require the complete evidence/plan/test
+# shape plus at least one concrete file path and executable verification command;
+# headings alone must not bypass the missing-context gate.
+#
+# Arguments:
+#   arg1 - issue body text
+# Returns:
+#   0 - body contains bounded investigation context
+#   1 - investigation context is absent or incomplete
+#######################################
+_escalate_body_has_investigation_context() {
+	local issue_body="$1"
+	local heading_pattern=""
+
+	for heading_pattern in \
+		'^#{1,6}[[:space:]]+Evidence[[:space:]]*:?[[:space:]]*$' \
+		'^#{1,6}[[:space:]]+Files to (inspect|review|investigate)( first)?[[:space:]]*:?[[:space:]]*$' \
+		'^#{1,6}[[:space:]]+Approach[[:space:]]*:?[[:space:]]*$' \
+		'^#{1,6}[[:space:]]+Acceptance criteria[[:space:]]*:?[[:space:]]*$' \
+		'^#{1,6}[[:space:]]+Verification[[:space:]]*:?[[:space:]]*$'; do
+		printf '%s\n' "$issue_body" | grep -qiE "$heading_pattern" || return 1
+	done
+
+	# A bounded investigation still needs a concrete starting surface.
+	printf '%s\n' "$issue_body" |
+		grep -qE '[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+\.[a-zA-Z0-9]+' || return 1
+	# Verification must name something executable, not only a prose promise.
+	# shellcheck disable=SC2016 # Backticks are literal Markdown delimiters in the regex.
+	printf '%s\n' "$issue_body" |
+		grep -qE '(^|[[:space:]`])((bash|shellcheck|pytest|python[0-9]*|node|npm|pnpm|yarn|bun|make)[[:space:]]|go[[:space:]]+test([[:space:]]|$)|cargo[[:space:]]+test([[:space:]]|$)|git[[:space:]]+diff([[:space:]]|$)|[.]/|[.][[:alnum:]_/-]+\.sh([[:space:]`]|$))' || return 1
+	return 0
+}
+
+#######################################
 # Body quality gate for escalate_issue_tier (GH#17561)
 # Returns 0 if escalation should proceed, 1 if blocked (posts diagnostic comment).
 # Arguments:
@@ -1072,6 +1107,11 @@ _escalate_body_quality_gate() {
 	if _escalate_body_has_review_feedback_context "$issue_body"; then
 		return 0
 	fi
+	# Investigation briefs cannot know their final write surface yet. Accept the
+	# bounded investigation contract rather than demanding fictional line ranges.
+	if _escalate_body_has_investigation_context "$issue_body"; then
+		return 0
+	fi
 
 	# Check for file path indicators: paths with extensions, EDIT:/NEW: prefixes,
 	# backtick-quoted paths, or "Files to Modify" section headers.
@@ -1088,10 +1128,9 @@ _escalate_body_quality_gate() {
 
 Workers fail when they must explore the entire codebase to find what to change. Adding explicit file paths, reference patterns, and verification commands to the issue body is more effective than escalating to a more expensive model.
 
-**Required:** Update the issue body with a \`## How\` section containing:
-- Files to modify (with paths and line ranges)
-- Reference pattern (\`model on <existing-file>\`)
-- Verification command
+**Required:** Update the issue body with one complete context shape:
+- **Implementation work:** a \`## How\` section with files to modify, a reference pattern, and verification commands.
+- **Investigation work:** \`## Evidence\`, \`## Files to inspect\`, \`## Approach\`, \`## Acceptance criteria\`, and \`## Verification\`, including concrete starting paths and executable checks. Exact modification paths may remain unknown until the investigation completes.
 
 _Automated by \`escalate_issue_tier()\` body quality gate (t1900) in worker-lifecycle-common.sh_"
 	gh_issue_comment "$issue_number" --repo "$repo_slug" \

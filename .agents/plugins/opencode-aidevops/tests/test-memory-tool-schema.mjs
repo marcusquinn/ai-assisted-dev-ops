@@ -36,6 +36,7 @@ describe("aidevops_memory tool schema", () => {
     assert.ok(schema.limit?._zod, "limit must be a Zod schema");
     assert.ok(schema.content?._zod, "content must be a Zod schema");
     assert.ok(schema.confidence?._zod, "confidence must be a Zod schema");
+    assert.match(tools.aidevops_memory.description, /mem_\.\.\..*exact lookup/);
   });
 });
 
@@ -93,7 +94,27 @@ describe("aidevops_memory execution", () => {
 
     assert.equal(result, "recalled");
     assert.equal(calls.length, 1);
-    assert.match(calls[0], /memory-helper\.sh" recall 'schema' --limit '5'$/);
+    assert.match(calls[0], /memory-helper\.sh" recall --query 'schema' --limit '5'$/);
+  });
+
+  test("exact memory ID recall is forwarded once without fallback", async () => {
+    const calls = [];
+    const result = await withMemoryHelper(async (scriptsDir) => {
+      const tools = createTools(scriptsDir, (cmd) => {
+        calls.push(cmd);
+        return "";
+      });
+
+      return tools.aidevops_memory.execute({
+        action: "recall",
+        query: "mem_missing_fixture",
+        limit: 5,
+      });
+    });
+
+    assert.equal(result, "No memories found for this query.");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /memory-helper\.sh" recall --query 'mem_missing_fixture' --limit '5'$/);
   });
 
   test("recall action defaults blank limit values", async () => {
@@ -114,7 +135,7 @@ describe("aidevops_memory execution", () => {
 
       assert.equal(result, "recalled");
       assert.equal(calls.length, 1);
-      assert.match(calls[0], /memory-helper\.sh" recall 'schema' --limit '5'$/);
+      assert.match(calls[0], /memory-helper\.sh" recall --query 'schema' --limit '5'$/);
     }
   });
 
