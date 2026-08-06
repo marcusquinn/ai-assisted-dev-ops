@@ -344,13 +344,16 @@ export function checkSecretReadWithApproval({
   requestRun = execFileSync,
 }) {
   const filePath = readPath(args);
+  // Fail closed before tool-name classification. OpenCode hook identities can
+  // be normalized independently of their argument shape, but no direct tool
+  // invocation should ever receive a root-managed approval snapshot path.
+  if (filePath && isManagedSnapshotPath(filePath)) {
+    throw new Error("[source-access] direct reads of approval snapshots are denied");
+  }
+
   if (!isReadTool(tool) || !filePath) {
     checkSecretReadGate(tool, args, log);
     return;
-  }
-
-  if (isManagedSnapshotPath(filePath)) {
-    throw new Error("[source-access] direct reads of approval snapshots are denied");
   }
 
   const reason = secretReadBlockReason(filePath);

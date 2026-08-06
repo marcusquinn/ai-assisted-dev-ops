@@ -13,7 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   SOURCE_ACCESS_REASON,
@@ -22,6 +23,7 @@ import {
   sourceAccessBrokerMatches,
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
+import { createQualityHooks } from "../quality-hooks.mjs";
 
 const BASE = {
   tool: "read",
@@ -245,6 +247,55 @@ test("broker matching requires exact deployed helper and core bytes", () => {
     assert.equal(sourceAccessBrokerMatches(options), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("managed snapshot denial precedes read-tool classification", () => {
+  let gateCalls = 0;
+  assert.throws(
+    () =>
+      checkSecretReadWithApproval({
+        ...BASE,
+        tool: "functions.read",
+        args: { filePath: "/var/run/aidevops/source-access/snapshots/501/example.source" },
+        isReadTool: () => false,
+        checkSecretReadGate: () => {
+          gateCalls += 1;
+        },
+        verify: () => {
+          throw new Error("verifier must not run");
+        },
+        requestRun: () => {
+          throw new Error("request helper must not run");
+        },
+      }),
+    /direct reads of approval snapshots are denied/,
+  );
+  assert.equal(gateCalls, 0);
+});
+
+test("composed OpenCode before-tool hook denies the live Read argument shape", async () => {
+  const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(tempParent, { recursive: true });
+  const logsDir = mkdtempSync(join(tempParent, "source-access-hook-test-"));
+  const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
+
+  try {
+    const hooks = createQualityHooks({ scriptsDir, logsDir });
+    await assert.rejects(
+      hooks.toolExecuteBefore(
+        { tool: "read", sessionID: BASE.sessionId },
+        {
+          args: {
+            filePath:
+              "/var/run/aidevops/source-access/snapshots/501/0123456789abcdef0123456789abcdef.source",
+          },
+        },
+      ),
+      /direct reads of approval snapshots are denied/,
+    );
+  } finally {
+    rmSync(logsDir, { recursive: true, force: true });
   }
 });
 
