@@ -220,12 +220,13 @@ Running `aidevops security` with no arguments is the single command that covers 
 
 When a read guard identifies only a low-confidence source-code basename match, it emits a scoped request. A maintainer can run the displayed root-broker approval command. Approvals are bound to the exact runtime session, user, Git-tracked regular source path, approved content digest, and guard reason; they expire within 12 hours and never override private-key, environment-file, credential-store, hard-link, symlink, changed-content, or untracked-file denials. The plugin redirects the approved read to a root-controlled immutable snapshot of those bytes so the live path cannot be rebound after verification; revocation removes both receipt and snapshot.
 
-Privileged operations never execute the user-managed aidevops deployment as root. Resolve the immutable commit from the published, signed aidevops release metadata, substitute it for `<verified-release-commit>`, and let root fetch that reviewed broker directly over TLS. Never install the broker from the user-writable deployed tree.
+Privileged operations never execute the user-managed aidevops deployment as root. Resolve the immutable commit from the published, signed aidevops release metadata, substitute it for `<verified-release-commit>`, and let root fetch the reviewed broker files directly over TLS. Never install the broker from the user-writable deployed tree.
 
 ```bash
 sudo -k /usr/bin/install -d -o 0 -g 0 -m 0755 /etc/aidevops/source-access
+sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source_access_core.py" --output /etc/aidevops/source-access/source_access_core.py
 sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source-access-helper.py" --output /etc/aidevops/source-access/source-access-helper.py
-sudo /bin/chmod 0644 /etc/aidevops/source-access/source-access-helper.py
+sudo /bin/chmod 0644 /etc/aidevops/source-access/source_access_core.py /etc/aidevops/source-access/source-access-helper.py
 sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup
 ```
 

@@ -14,7 +14,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-HELPER_PATH = Path(__file__).resolve().parents[1] / "source-access-helper.py"
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+HELPER_PATH = SCRIPTS_DIR / "source-access-helper.py"
 SPEC = importlib.util.spec_from_file_location("source_access_helper", HELPER_PATH)
 assert SPEC and SPEC.loader
 HELPER = importlib.util.module_from_spec(SPEC)
@@ -83,23 +84,27 @@ class SourceAccessHelperTests(unittest.TestCase):
     def _request(self, path: Path | None = None) -> str:
         return HELPER.create_request(
             self.config,
-            session_id=self.session,
-            uid=self.uid,
-            home=self.home,
-            path=str(path or self.source),
-            reason=HELPER.OVERRIDABLE_REASON,
-            now=self.now,
+            HELPER.RequestSpec(
+                session_id=self.session,
+                uid=self.uid,
+                home=self.home,
+                path=str(path or self.source),
+                reason=HELPER.OVERRIDABLE_REASON,
+                now=self.now,
+            ),
         )
 
     def _approve(self, request_id: str | None = None) -> dict[str, object]:
         return HELPER.approve_request(
             self.config,
-            request_id=request_id or self._request(),
-            home=self.home,
-            expected_uid=self.uid,
-            ttl_seconds=HELPER.MAX_TTL_SECONDS,
-            now=self.now,
-            confirm=lambda _request: True,
+            HELPER.ApprovalSpec(
+                request_id=request_id or self._request(),
+                home=self.home,
+                expected_uid=self.uid,
+                ttl_seconds=HELPER.MAX_TTL_SECONDS,
+                now=self.now,
+                confirm=lambda _request: True,
+            ),
         )
 
     def _verify(self, **overrides: object) -> bool:
@@ -111,7 +116,7 @@ class SourceAccessHelperTests(unittest.TestCase):
             "now": self.now + 1,
         }
         arguments.update(overrides)
-        return HELPER.verify_approval(self.config, **arguments)
+        return HELPER.verify_approval(self.config, HELPER.VerificationSpec(**arguments))
 
     def test_exact_signed_scope_verifies(self) -> None:
         payload = self._approve()
@@ -233,6 +238,98 @@ class SourceAccessHelperTests(unittest.TestCase):
         )
         receipt_path.write_text("{", encoding="utf-8")
         self.assertFalse(self._verify())
+        receipt_path.write_text("[]", encoding="utf-8")
+        self.assertFalse(self._verify())
+
+    def test_privileged_bootstrap_rejects_unsafe_core_before_execution(self) -> None:
+        broker = self.root / "broker"
+        broker.mkdir()
+        helper_path = broker / "source-access-helper.py"
+        helper_path.write_text("# bootstrap fixture\n", encoding="utf-8")
+        core_path = broker / "source_access_core.py"
+        marker_path = self.root / "core-executed"
+        core_source = (
+            "from pathlib import Path\n"
+            f"Path({str(marker_path)!r}).write_text('executed', encoding='utf-8')\n"
+            "VALUE = 7\n"
+        )
+        core_path.write_text(core_source, encoding="utf-8")
+        original_module = sys.modules.get(HELPER._SOURCE_CORE_MODULE_NAME)
+
+        def load_fixture() -> object:
+            with mock.patch.object(HELPER, "__file__", str(helper_path)), mock.patch.object(
+                HELPER, "_ROOT_BROKER_PATH", helper_path
+            ), mock.patch.object(HELPER, "_SOURCE_CORE_PATH", core_path), mock.patch.object(
+                HELPER, "_BOOTSTRAP_TRUST_ROOT", self.root
+            ), mock.patch.object(HELPER, "_BOOTSTRAP_TRUST_UID", self.uid), mock.patch.object(
+                HELPER.os, "geteuid", return_value=0
+            ):
+                return HELPER._load_source_access_core()
+
+        try:
+            core_path.chmod(0o666)
+            with self.assertRaisesRegex(RuntimeError, "untrusted broker files"):
+                load_fixture()
+            self.assertFalse(marker_path.exists())
+
+            core_path.chmod(0o644)
+            loaded = load_fixture()
+            self.assertTrue(marker_path.exists())
+            self.assertEqual(loaded.VALUE, 7)
+
+            marker_path.unlink()
+            broker.chmod(0o777)
+            with self.assertRaisesRegex(RuntimeError, "untrusted broker files"):
+                load_fixture()
+            self.assertFalse(marker_path.exists())
+
+            broker.chmod(0o755)
+            core_target = broker / "core-target.py"
+            core_path.replace(core_target)
+            core_path.symlink_to(core_target.name)
+            with self.assertRaisesRegex(RuntimeError, "untrusted broker files"):
+                load_fixture()
+            self.assertFalse(marker_path.exists())
+        finally:
+            if original_module is None:
+                sys.modules.pop(HELPER._SOURCE_CORE_MODULE_NAME, None)
+            else:
+                sys.modules[HELPER._SOURCE_CORE_MODULE_NAME] = original_module
+
+    def test_privileged_bootstrap_accepts_trusted_symlinked_ancestor(self) -> None:
+        canonical_root = self.root / "private" / "etc"
+        broker = canonical_root / "aidevops" / "source-access"
+        broker.mkdir(parents=True)
+        alias_root = self.root / "etc"
+        alias_root.symlink_to(Path("private") / "etc", target_is_directory=True)
+        helper_path = alias_root / "aidevops" / "source-access" / "source-access-helper.py"
+        helper_path.write_text("# bootstrap fixture\n", encoding="utf-8")
+        core_path = broker / "source_access_core.py"
+        marker_path = self.root / "aliased-core-executed"
+        core_path.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker_path)!r}).write_text('executed', encoding='utf-8')\n"
+            "VALUE = 11\n",
+            encoding="utf-8",
+        )
+        original_module = sys.modules.get(HELPER._SOURCE_CORE_MODULE_NAME)
+
+        try:
+            with mock.patch.object(HELPER, "__file__", str(helper_path)), mock.patch.object(
+                HELPER, "_ROOT_BROKER_PATH", helper_path
+            ), mock.patch.object(HELPER, "_SOURCE_CORE_PATH", core_path), mock.patch.object(
+                HELPER, "_BOOTSTRAP_TRUST_ROOT", self.root
+            ), mock.patch.object(HELPER, "_BOOTSTRAP_TRUST_UID", self.uid), mock.patch.object(
+                HELPER.os, "geteuid", return_value=0
+            ):
+                loaded = HELPER._load_source_access_core()
+            self.assertTrue(marker_path.exists())
+            self.assertEqual(loaded.VALUE, 11)
+        finally:
+            if original_module is None:
+                sys.modules.pop(HELPER._SOURCE_CORE_MODULE_NAME, None)
+            else:
+                sys.modules[HELPER._SOURCE_CORE_MODULE_NAME] = original_module
 
     def test_root_and_interactive_terminal_are_required(self) -> None:
         with mock.patch.object(HELPER.os, "geteuid", return_value=1000):

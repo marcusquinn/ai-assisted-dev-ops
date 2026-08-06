@@ -177,61 +177,73 @@ function sourceDigestMatches(filePath, expectedDigest) {
   }
 }
 
-/** Verify a root-owned receipt directly inside the already-loaded plugin. */
-export function verifySourceAccessReceipt({
-  sessionId,
-  filePath,
-  reason,
-  now = Math.floor(Date.now() / 1000),
-  uid = typeof process.getuid === "function" ? process.getuid() : -1,
-  trustUid = 0,
-  stateDir = DEFAULT_STATE_DIR,
-  publicKeyPath = DEFAULT_PUBLIC_KEY,
-  sshKeygen = "/usr/bin/ssh-keygen",
-  git = "/usr/bin/git",
-  gitRun = execFileSync,
-  run = execFileSync,
-}) {
-  let tempDir = "";
+function requireValidReceipt(condition) {
+  if (!condition) throw new Error("source-access receipt is invalid");
+}
+
+function validatedReceipt(options) {
+  const {
+    sessionId,
+    filePath,
+    reason,
+    now = Math.floor(Date.now() / 1000),
+    uid = typeof process.getuid === "function" ? process.getuid() : -1,
+    trustUid = 0,
+    stateDir = DEFAULT_STATE_DIR,
+    publicKeyPath = DEFAULT_PUBLIC_KEY,
+    sshKeygen = "/usr/bin/ssh-keygen",
+    git = "/usr/bin/git",
+    gitRun = execFileSync,
+    run = execFileSync,
+  } = options;
+  requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
+  requireValidReceipt(reason === SOURCE_ACCESS_REASON);
+  requireValidReceipt(uid >= 0);
+  requireValidReceipt(isAbsolute(filePath));
+  requireValidReceipt(!hasSymlinkComponent(filePath));
+  const canonicalPath = realpathSync(filePath);
+  requireValidReceipt(statSync(canonicalPath).isFile());
+  requireValidReceipt(isGitTrackedFile(canonicalPath, git, gitRun));
+  const approvalId = approvalScopeId(sessionId, uid, canonicalPath, reason);
+  const receiptPath = join(stateDir, "approvals", String(uid), `${approvalId}.json`);
+  requireValidReceipt(trustedDirectory(dirname(receiptPath), trustUid));
+  requireValidReceipt(trustedDirectory(dirname(publicKeyPath), trustUid));
+  requireValidReceipt(trustedRegularFile(receiptPath, trustUid));
+  requireValidReceipt(trustedRegularFile(publicKeyPath, trustUid));
+
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  const payload = receipt?.payload;
+  requireValidReceipt(receipt?.schema === RECEIPT_SCHEMA);
+  requireValidReceipt(payload?.schema === PAYLOAD_SCHEMA);
+  requireValidReceipt(payload.approval_id === approvalId);
+  requireValidReceipt(payload.session_id === sessionId);
+  requireValidReceipt(payload.uid === uid);
+  requireValidReceipt(payload.path === canonicalPath);
+  requireValidReceipt(payload.reason === reason);
+  requireValidReceipt(/^[a-f0-9]{64}$/.test(payload.content_sha256 || ""));
+  requireValidReceipt(sourceDigestMatches(canonicalPath, payload.content_sha256));
+  const snapshotPath = join(stateDir, "snapshots", String(uid), `${approvalId}.source`);
+  requireValidReceipt(payload.snapshot_path === snapshotPath);
+  requireValidReceipt(trustedDirectory(dirname(snapshotPath), trustUid));
+  requireValidReceipt(trustedRegularFile(snapshotPath, trustUid));
+  requireValidReceipt(statSync(snapshotPath).size <= MAX_SOURCE_BYTES);
+  const snapshotDigest = createHash("sha256").update(readFileSync(snapshotPath)).digest("hex");
+  requireValidReceipt(snapshotDigest === payload.content_sha256);
+  requireValidReceipt(Number.isInteger(payload.issued_at));
+  requireValidReceipt(Number.isInteger(payload.expires_at));
+  requireValidReceipt(now >= payload.issued_at);
+  requireValidReceipt(now < payload.expires_at);
+  requireValidReceipt(payload.expires_at - payload.issued_at <= MAX_TTL_SECONDS);
+  requireValidReceipt(typeof receipt.signature === "string");
+  requireValidReceipt(receipt.signature.includes("SSH SIGNATURE"));
+  return {payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen};
+}
+
+function verifyReceiptSignature({payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen}) {
+  const tempRoot = verificationTempRoot();
+  mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+  const tempDir = mkdtempSync(join(tempRoot, "source-access-verify-"));
   try {
-    if (!/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId)) return false;
-    if (reason !== SOURCE_ACCESS_REASON || uid < 0 || !isAbsolute(filePath)) return false;
-    if (hasSymlinkComponent(filePath)) return false;
-    const canonicalPath = realpathSync(filePath);
-    if (!statSync(canonicalPath).isFile()) return false;
-    if (!isGitTrackedFile(canonicalPath, git, gitRun)) return false;
-    const approvalId = approvalScopeId(sessionId, uid, canonicalPath, reason);
-    const receiptPath = join(stateDir, "approvals", String(uid), `${approvalId}.json`);
-    if (!trustedDirectory(dirname(receiptPath), trustUid)) return false;
-    if (!trustedDirectory(dirname(publicKeyPath), trustUid)) return false;
-    if (!trustedRegularFile(receiptPath, trustUid)) return false;
-    if (!trustedRegularFile(publicKeyPath, trustUid)) return false;
-
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    const payload = receipt?.payload;
-    if (receipt?.schema !== RECEIPT_SCHEMA || payload?.schema !== PAYLOAD_SCHEMA) return false;
-    if (payload.approval_id !== approvalId) return false;
-    if (payload.session_id !== sessionId || payload.uid !== uid) return false;
-    if (payload.path !== canonicalPath || payload.reason !== reason) return false;
-    if (!/^[a-f0-9]{64}$/.test(payload.content_sha256 || "")) return false;
-    if (!sourceDigestMatches(canonicalPath, payload.content_sha256)) return false;
-    const snapshotPath = join(stateDir, "snapshots", String(uid), `${approvalId}.source`);
-    if (payload.snapshot_path !== snapshotPath) return false;
-    if (!trustedDirectory(dirname(snapshotPath), trustUid)) return false;
-    if (!trustedRegularFile(snapshotPath, trustUid)) return false;
-    if (statSync(snapshotPath).size > MAX_SOURCE_BYTES) return false;
-    const snapshot = readFileSync(snapshotPath);
-    if (createHash("sha256").update(snapshot).digest("hex") !== payload.content_sha256) return false;
-    if (!Number.isInteger(payload.issued_at) || !Number.isInteger(payload.expires_at)) return false;
-    if (now < payload.issued_at || now >= payload.expires_at) return false;
-    if (payload.expires_at - payload.issued_at > MAX_TTL_SECONDS) return false;
-    if (typeof receipt.signature !== "string" || !receipt.signature.includes("SSH SIGNATURE")) {
-      return false;
-    }
-
-    const tempRoot = verificationTempRoot();
-    mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
-    tempDir = mkdtempSync(join(tempRoot, "source-access-verify-"));
     chmodSync(tempDir, 0o700);
     const signaturePath = join(tempDir, "payload.sig");
     const allowedSignersPath = join(tempDir, "allowed_signers");
@@ -264,10 +276,17 @@ export function verifySourceAccessReceipt({
       },
     );
     return { approvedPath: snapshotPath };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/** Verify a root-owned receipt directly inside the already-loaded plugin. */
+export function verifySourceAccessReceipt(options) {
+  try {
+    return verifyReceiptSignature(validatedReceipt(options));
   } catch {
     return false;
-  } finally {
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
