@@ -88,6 +88,11 @@ export LOGFILE="$TEST_TMPDIR/pulse.log"
 # emulating gh api repos/{slug}/actions/runs?status={queued,in_progress}.
 SHIM_DIR="$TEST_TMPDIR/bin"
 mkdir -p "$SHIM_DIR"
+cat >"$SHIM_DIR/gh-actions-status" <<'SHIM_EOF'
+#!/usr/bin/env bash
+exit "${GH_STATUS_SHIM_RC:-0}"
+SHIM_EOF
+chmod +x "$SHIM_DIR/gh-actions-status"
 cat >"$SHIM_DIR/gh" <<'SHIM_EOF'
 #!/usr/bin/env bash
 # Minimal gh shim for test-actions-queue-saturation.sh.
@@ -96,6 +101,7 @@ cat >"$SHIM_DIR/gh" <<'SHIM_EOF'
 #   GH_SHIM_IN_PROGRESS_TOTAL total_count for status=in_progress response (integer)
 #   GH_SHIM_FAIL              if "1", emit empty stdout + exit 1 (API error)
 #   GH_SHIM_PR_VIEW_JSON      raw JSON to return for `gh pr view` calls
+#   GH_SHIM_CHECK_RUNS_JSON   check_runs array for the current head
 
 # NOTE: `local` is invalid at script top-level in bash and aborts the
 # script before printf runs — that's why this shim must use plain vars.
@@ -165,6 +171,15 @@ case "$1" in
 				emit_body "$body" "$@"
 				exit 0
 				;;
+		repos/*/commits/*/check-runs*)
+				body=$(printf '{"check_runs":%s}' "${GH_SHIM_CHECK_RUNS_JSON:-[]}")
+				emit_body "$body" "$@"
+				exit 0
+				;;
+			repos/*/commits/*/status)
+				emit_body '{"statuses":[]}' "$@"
+				exit 0
+				;;
 			*"/branches/"*"/protection"*)
 				# Pretend the branch has no protection rules. Returning
 				# success with `{}` makes the classifier fall through to
@@ -222,11 +237,15 @@ _reset_env() {
 	unset AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN
 	unset AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN
 	unset AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION
+	unset AIDEVOPS_GH_STATUS_HELPER
+	unset GH_STATUS_SHIM_RC
+	export AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1
 	unset AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER
 	unset GH_SHIM_QUEUED_TOTAL
 	unset GH_SHIM_IN_PROGRESS_TOTAL
 	unset GH_SHIM_FAIL
 	unset GH_SHIM_PR_VIEW_JSON
+	unset GH_SHIM_CHECK_RUNS_JSON
 	return 0
 }
 
@@ -282,50 +301,50 @@ echo "${TEST_BLUE}── 1. Saturation detection ──${TEST_NC}"
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "incident shape: queued=110"          "110" "$(_field queued "$out")"
-assert_eq "incident shape: in_progress=3"       "3"   "$(_field in_progress "$out")"
-assert_eq "incident shape: ratio=36"            "36"  "$(_field ratio "$out")"
-assert_eq "incident shape: saturated=1"         "1"   "$(_field saturated "$out")"
+assert_eq "incident shape: queued=110" "110" "$(_field queued "$out")"
+assert_eq "incident shape: in_progress=3" "3" "$(_field in_progress "$out")"
+assert_eq "incident shape: ratio=36" "36" "$(_field ratio "$out")"
+assert_eq "incident shape: saturated=1" "1" "$(_field saturated "$out")"
 
 # 1b: Light load — neither absolute nor ratio threshold met.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=10 GH_SHIM_IN_PROGRESS_TOTAL=10
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "light load: queued=10"               "10"  "$(_field queued "$out")"
-assert_eq "light load: ratio=1"                 "1"   "$(_field ratio "$out")"
-assert_eq "light load: saturated=0"             "0"   "$(_field saturated "$out")"
+assert_eq "light load: queued=10" "10" "$(_field queued "$out")"
+assert_eq "light load: ratio=1" "1" "$(_field ratio "$out")"
+assert_eq "light load: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1c: High absolute, healthy ratio (busy but draining) — NOT saturated.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=51 GH_SHIM_IN_PROGRESS_TOTAL=10
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "busy/healthy: queued=51"             "51"  "$(_field queued "$out")"
-assert_eq "busy/healthy: ratio=5"               "5"   "$(_field ratio "$out")"
-assert_eq "busy/healthy: saturated=0"           "0"   "$(_field saturated "$out")"
+assert_eq "busy/healthy: queued=51" "51" "$(_field queued "$out")"
+assert_eq "busy/healthy: ratio=5" "5" "$(_field ratio "$out")"
+assert_eq "busy/healthy: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1d: Just above ratio threshold — IS saturated.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=51 GH_SHIM_IN_PROGRESS_TOTAL=4
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "above ratio: queued=51"              "51"  "$(_field queued "$out")"
-assert_eq "above ratio: ratio=12"               "12"  "$(_field ratio "$out")"
-assert_eq "above ratio: saturated=1"            "1"   "$(_field saturated "$out")"
+assert_eq "above ratio: queued=51" "51" "$(_field queued "$out")"
+assert_eq "above ratio: ratio=12" "12" "$(_field ratio "$out")"
+assert_eq "above ratio: saturated=1" "1" "$(_field saturated "$out")"
 
 # 1e: Just below queued threshold — NOT saturated regardless of ratio.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=49 GH_SHIM_IN_PROGRESS_TOTAL=1
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "below abs: queued=49"                "49"  "$(_field queued "$out")"
-assert_eq "below abs: ratio=49"                 "49"  "$(_field ratio "$out")"
-assert_eq "below abs: saturated=0"              "0"   "$(_field saturated "$out")"
+assert_eq "below abs: queued=49" "49" "$(_field queued "$out")"
+assert_eq "below abs: ratio=49" "49" "$(_field ratio "$out")"
+assert_eq "below abs: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1f: Zero in_progress — denominator clamps to 1, ratio = queued.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=200 GH_SHIM_IN_PROGRESS_TOTAL=0
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "zero in_progress: queued=200"        "200" "$(_field queued "$out")"
-assert_eq "zero in_progress: ratio=200"         "200" "$(_field ratio "$out")"
-assert_eq "zero in_progress: saturated=1"       "1"   "$(_field saturated "$out")"
+assert_eq "zero in_progress: queued=200" "200" "$(_field queued "$out")"
+assert_eq "zero in_progress: ratio=200" "200" "$(_field ratio "$out")"
+assert_eq "zero in_progress: saturated=1" "1" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 2: fail-open semantics
@@ -336,16 +355,30 @@ echo "${TEST_BLUE}── 2. Fail-open semantics ──${TEST_NC}"
 # 2a: gh-api error → return rc=2, saturated=0.
 _reset_env
 set_shim GH_SHIM_FAIL=1
-out=$(_check_actions_queue_saturation "marcusquinn/aidevops"); rc=$?
-assert_eq "api error: rc=2"                     "2"   "$rc"
-assert_eq "api error: saturated=0"              "0"   "$(_field saturated "$out")"
-assert_eq "api error: queued=0"                 "0"   "$(_field queued "$out")"
+out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
+rc=$?
+assert_eq "api error: rc=2" "2" "$rc"
+assert_eq "api error: saturated=0" "0" "$(_field saturated "$out")"
+assert_eq "api error: queued=0" "0" "$(_field queued "$out")"
 
-# 2b: Empty repo_slug → return rc=0, saturated=0 (defensive default).
+# 2b: a public Actions incident overrides low/unknown repo queue counts.
 _reset_env
-out=$(_check_actions_queue_saturation ""); rc=$?
-assert_eq "empty slug: rc=0"                    "0"   "$rc"
-assert_eq "empty slug: saturated=0"             "0"   "$(_field saturated "$out")"
+export AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=0
+export AIDEVOPS_GH_STATUS_HELPER="$SHIM_DIR/gh-actions-status"
+export GH_STATUS_SHIM_RC=1
+set_shim GH_SHIM_QUEUED_TOTAL=2 GH_SHIM_IN_PROGRESS_TOTAL=2
+out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
+rc=$?
+assert_eq "provider incident: rc=0" "0" "$rc"
+assert_eq "provider incident: saturated=1" "1" "$(_field saturated "$out")"
+assert_eq "provider incident: signal exported" "1" "$(_field provider_incident "$out")"
+
+# 2c: Empty repo_slug → return rc=0, saturated=0 (defensive default).
+_reset_env
+out=$(_check_actions_queue_saturation "")
+rc=$?
+assert_eq "empty slug: rc=0" "0" "$rc"
+assert_eq "empty slug: saturated=0" "0" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 3: bypass + disable controls
@@ -360,7 +393,7 @@ set_shim AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1 \
 	GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
 assert_eq "bypass env: saturated=0 despite real saturation" "0" "$(_field saturated "$out")"
-assert_eq "bypass env: queued=0 (network not consulted)"    "0" "$(_field queued "$out")"
+assert_eq "bypass env: queued=0 (network not consulted)" "0" "$(_field queued "$out")"
 
 # 3b: QUEUED_MIN=0 disables detection entirely.
 _reset_env
@@ -381,15 +414,15 @@ set_shim AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN=5 \
 	AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN=2 \
 	GH_SHIM_QUEUED_TOTAL=10 GH_SHIM_IN_PROGRESS_TOTAL=2
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "lowered thresholds: ratio=5"          "5" "$(_field ratio "$out")"
-assert_eq "lowered thresholds: saturated=1"      "1" "$(_field saturated "$out")"
+assert_eq "lowered thresholds: ratio=5" "5" "$(_field ratio "$out")"
+assert_eq "lowered thresholds: saturated=1" "1" "$(_field saturated "$out")"
 
 # 4b: Raise QUEUED_MIN above incident shape — even canonical incident is OK.
 _reset_env
 set_shim AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN=200 \
 	GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "raised threshold: saturated=0"       "0" "$(_field saturated "$out")"
+assert_eq "raised threshold: saturated=0" "0" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 5: integration with _classify_stuck_pr
@@ -406,37 +439,57 @@ if ! declare -F _classify_stuck_pr >/dev/null 2>&1; then
 	exit 1
 fi
 
-# 5a: is_saturated=1 + rollup has QUEUED check → STUCK_RUNNER_QUEUE_SATURATION.
+_pmrc_snapshot_checks_json() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	[[ -n "$repo_slug" && -n "$head_sha" ]] || return 1
+	printf '%s\n' "${GH_SHIM_CHECK_RUNS_JSON:-[]}"
+	return 0
+}
+
+# 5a: is_saturated=1 + current-head REST checks include QUEUED → saturation.
 _reset_env
-set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Maintainer Gate","status":"QUEUED","conclusion":null}]}'
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
 assert_eq "saturated+queued check: classification" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
 
-# 5b: is_saturated=0 + rollup has QUEUED check → falls through to STUCK_OTHER.
+# 5b: an external app queued during an Actions incident is not runner saturation.
+_reset_env
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Codacy","status":"queued","conclusion":null,"app":{"slug":"codacy-production"}}]'
+classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
+assert_eq "saturated+external queued check: classification" "STUCK_OTHER" "$classification"
+
+# 5c: is_saturated=0 + rollup has QUEUED check → falls through to STUCK_OTHER.
 # The shim's bare repo metadata returns default_branch="main", and the
 # protection probe returns "{}" (success path) — neither STUCK_BRANCHPROTECT_*
 # branch fires. No FAILURE entries in the rollup → STUCK_OTHER.
 _reset_env
-set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Maintainer Gate","status":"QUEUED","conclusion":null}]}'
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "0")
 assert_eq "unsaturated+queued check: classification" "STUCK_OTHER" "$classification"
 
-# 5c: is_saturated=1 + rollup has both QUEUED and FAILURE checks → priority
+# 5d: is_saturated=1 + rollup has both QUEUED and FAILURE checks → priority
 # is QUEUED (the running outage masks per-PR failures).
 _reset_env
-set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Maintainer Gate","status":"QUEUED","conclusion":null},{"name":"Lint","status":"COMPLETED","conclusion":"FAILURE"}]}'
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}},{"name":"Lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
 assert_eq "saturated+queued+failure: priority QUEUED" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
 
-# 5d: is_saturated=0 + rollup has FAILURE only → STUCK_CHECKS_FAILING.
+# 5e: is_saturated=0 + rollup has FAILURE only → STUCK_CHECKS_FAILING.
 _reset_env
-set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Lint","status":"COMPLETED","conclusion":"FAILURE"}]}'
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Lint","status":"completed","conclusion":"failure"}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "0")
 assert_eq "unsaturated+failure only: classification" "STUCK_CHECKS_FAILING" "$classification"
 
-# 5e: Default is_saturated parameter (omitted) → treated as 0.
+# 5f: Default is_saturated parameter (omitted) → treated as 0.
 _reset_env
-set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Maintainer Gate","status":"QUEUED","conclusion":null}]}'
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops")
 assert_eq "default param: treated as is_saturated=0" "STUCK_OTHER" "$classification"
 

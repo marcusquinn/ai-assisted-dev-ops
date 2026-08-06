@@ -61,6 +61,17 @@ def _split_response(response_file: str) -> tuple[int, str, bool, str]:
     )
 
 
+def _normalize_issue_body(item: dict[str, Any]) -> str:
+    if "body" not in item:
+        raise ValueError("missing issue body")
+    issue_body = item["body"]
+    if issue_body is None:
+        return ""
+    if not isinstance(issue_body, str):
+        raise ValueError("invalid issue body")
+    return issue_body
+
+
 def _normalize_items(kind: str, body: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for item in json.loads(body or "[]"):
@@ -75,6 +86,7 @@ def _normalize_items(kind: str, body: str) -> list[dict[str, Any]]:
                     "labels": item.get("labels") or [],
                     "updatedAt": item.get("updated_at") or item.get("updatedAt"),
                     "assignees": item.get("assignees") or [],
+                    "body": _normalize_issue_body(item),
                     "authorAssociation": item.get("author_association") or "NONE",
                     "author": (
                         {
@@ -198,7 +210,7 @@ def _refresh_cached_response(
     if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
         return 1
     if context.kind == "issues":
-        if any("state" not in item for item in items):
+        if any("state" not in item or not isinstance(item.get("body"), str) for item in items):
             return 1
         payload["items"] = [
             item

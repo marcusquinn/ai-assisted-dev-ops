@@ -131,7 +131,12 @@ _read_cache_issues_for_slug() {
 
 	# Read issues array for this slug
 	local issues
-	issues=$(jq -e --arg slug "$slug" '.[$slug].issues // empty' "$cache_file" 2>/dev/null) || return 1
+	local string_type="string" array_type=array object_type=object
+	issues=$(jq -ce --arg slug "$slug" --arg string_type "$string_type" \
+		--arg array_type "$array_type" --arg object_type "$object_type" '
+		.[$slug].issues // empty |
+		select(type == $array_type and all(.[]; type == $object_type and (.body | type) == $string_type))
+	' "$cache_file" 2>/dev/null) || return 1
 	[[ -n "$issues" ]] || return 1
 
 	printf '%s' "$issues"
@@ -1263,6 +1268,8 @@ reconcile_issues_single_pass() {
 	local cpt_total_closed=0 cpt_max_closes=5
 	local cpt_total_nudged=0 cpt_max_nudges=5
 	local cpt_total_escalated=0 cpt_max_escalations=3
+	local cpt_total_reopened=0 cpt_max_reopens=5
+	local cpt_max_repair_repo_scans=10 cpt_max_repair_candidates=10
 	local cpt_esc_hours="${PARENT_DECOMPOSITION_ESCALATION_HOURS:-168}"
 
 	# t2838: periodic parent-task sub-issue backfill — gated by interval
@@ -1345,6 +1352,16 @@ reconcile_issues_single_pass() {
 	_t2984_budget="${RECONCILE_TIME_BUDGET_SECS:-360}"
 	[[ "$_t2984_budget" =~ ^[0-9]+$ ]] || _t2984_budget=360
 
+	# The production scheduler invokes only this single pass. Repair recently
+	# closed parents through a persisted cursor window before open-issue
+	# reconciliation. Separate repo and candidate caps bound list calls and the
+	# more expensive per-parent graph/trust/state validation work respectively.
+	if declare -F _repair_recently_closed_parents_cycle >/dev/null 2>&1; then
+		_repair_recently_closed_parents_cycle "$repos_json" "$cpt_max_reopens" \
+			"$cpt_max_repair_repo_scans" "$cpt_max_repair_candidates"
+		cpt_total_reopened="$_PIR_RECENT_PARENT_CYCLE_REOPENED"
+	fi
+
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
 		# GH#21470: per-slug timing so slow repos are identifiable in the
@@ -1400,12 +1417,14 @@ reconcile_issues_single_pass() {
 		# when labels_csv is empty. "|" is not an IFS whitespace character
 		# so consecutive "|" separators are never collapsed. See bash(1) IFS.
 		local issues_tsv
-		issues_tsv=$(printf '%s' "$issues_json" | jq -r '
+		issues_tsv=$(printf '%s' "$issues_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" \
+			--arg array_type "$_PIR_JSON_TYPE_ARRAY" --arg object_type "$_PIR_JSON_TYPE_OBJECT" '
+			select(type == $array_type and all(.[]; type == $object_type and (.body | type) == $string_type)) |
 			.[] | [
 				(.number // "" | tostring),
 				((.title // "") | @base64),
 				((.labels // []) | map(.name) | join(",")),
-				((.body // "") | @base64),
+				(.body | @base64),
 				(.authorAssociation // ""),
 				((.author.login // "") | @base64),
 				(.author.type // ""),
@@ -1597,7 +1616,7 @@ reconcile_issues_single_pass() {
 	fi
 
 	local _total_actions
-	_total_actions=$((persistent_repaired + external_gated + ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + lia_fixed + pbf_total_run + cbb_total_run))
+	_total_actions=$((persistent_repaired + external_gated + ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + cpt_total_reopened + lia_fixed + pbf_total_run + cbb_total_run))
 
 	# t2984: log when time-budget aborted iteration mid-cycle so operators
 	# can correlate with stage-timing log entries. Always logs (not gated
@@ -1605,9 +1624,9 @@ reconcile_issues_single_pass() {
 	if [[ "$_t2984_aborted" -eq 1 ]]; then
 		local _t2984_elapsed_end
 		_t2984_elapsed_end=$((SECONDS - _t2984_start_ts))
-		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} cpt_reopened=${cpt_total_reopened} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	elif [[ "$_total_actions" -gt 0 ]]; then
-		echo "[pulse-wrapper] reconcile_issues_single_pass: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} cpt_reopened=${cpt_total_reopened} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	fi
 	return 0
 }

@@ -8,6 +8,8 @@ mode: subagent
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 # t18201: Coordinate Milestone 2 read-only team-interface delivery
 
+<!-- parent-close-contract: keep-open -->
+
 ## Pre-flight
 
 - [x] Memory recall: `team-interface Milestone 2 provider registry canonical agent roster` → 0 hits — no reusable stored lesson found.
@@ -71,15 +73,16 @@ the parent acceptance criteria are verified.
 
 ## Children
 
-- **F2.1 / t18202 — filed now:** provider registry, dedicated config loader, local state store, status/doctor commands, and deterministic read-only planner.
-- **F2.2 / t18203 — filed now:** canonical 13-agent roster plus the framework guide, generated from discovery metadata with stable IDs and workload tiers.
-- **F2.3 — deliberately unfiled:** read-only Buzz adapter; brief only after t18202 merges and its adapter contract is current.
-- **F2.4 — deliberately unfiled:** Matrix normalization adapter; brief only after t18202 merges and current Matrix behavior is rechecked.
-- **F2.5 — deliberately unfiled:** restricted OpenCode launch overlays; brief only after t18203 merges and runtime model/variant seams are rechecked.
+- **F2.1 / t18202 / #29542 — complete:** provider registry, dedicated config loader, local state store, status/doctor commands, and deterministic read-only planner merged through PR #29619.
+- **F2.2 / t18203 / #29543 — complete:** canonical 13-agent roster plus the framework guide, generated from discovery metadata with stable IDs and workload tiers, merged through PR #29605.
+- **F2.3 / t18205 / #29631 — complete:** read-only Buzz adapter merged through PR #29636.
+- **F2.4 / t18207 / #29646 — claimed:** Matrix read-only observation and normalized ingress compatibility behind the shared provider/event/authority contracts.
+- **F2.5 / t18208 / #29647 — claimed:** restricted ephemeral OpenCode conversation overlays selected from the canonical roster.
 
 No sequential phase auto-file markers are used. Native GitHub sub-issue links
-identify filed children, while the mission remains the source of truth for
-unfiled features.
+identify all five implementation children. The explicit keep-open close contract
+is removed only by the final integrated-validation PR after every child is
+terminal and the parent acceptance criteria are checked.
 
 ## How (Approach)
 
@@ -88,7 +91,7 @@ unfiled features.
 - **Read first:** `todo/missions/m-20260804-5d06b1/mission.md:149-180,252-270` and the two filed child briefs — these define stage order and current implementation contracts.
 - **Load only if:** parent or child state needs repair — `.agents/reference/parent-task-lifecycle.md:58-76` and `.agents/workflows/brief.md:95-151` define dispatch and relationship gates.
 - **Why:** preserve staged issue creation, permanent parent blocking, and native child relationships without pre-briefing unstable adapters.
-- **Stop when:** t18202 and t18203 are valid, linked, independently available, and F2.3-F2.5 remain unfiled with explicit resume conditions.
+- **Stop when:** all five leaves are linked and terminal, integrated non-mutating Buzz/Matrix/OpenCode validation passes, and the final parent close PR removes the keep-open marker.
 
 ### Files to Modify
 
@@ -97,6 +100,9 @@ unfiled features.
 - NEW: `todo/tasks/t18201-brief.md` — permanent parent decomposition and closure contract.
 - NEW: `todo/tasks/t18202-brief.md` — worker-ready F2.1 runtime-core contract.
 - NEW: `todo/tasks/t18203-brief.md` — worker-ready F2.2 canonical-roster contract.
+- NEW: `todo/tasks/t18205-brief.md` — worker-ready F2.3 Buzz adapter contract.
+- NEW: `todo/tasks/t18207-brief.md` — worker-ready F2.4 Matrix contract.
+- NEW: `todo/tasks/t18208-brief.md` — worker-ready F2.5 OpenCode overlay contract.
 
 ### Complete Write Surface
 
@@ -113,8 +119,8 @@ unfiled features.
 1. Publish this parent with `parent-task` and `no-auto-dispatch`, preserving the `## Children` decomposition without sequential auto-file markers.
 2. Publish t18202 and t18203 only after their schema-v2 readiness checks pass; both are independent and may use `status:available`.
 3. Link both leaves as native sub-issues, verify labels/assignees/body mappings, and keep the parent open.
-4. After t18202 merges, refresh and brief F2.3/F2.4 separately. After t18203 merges, refresh and brief F2.5 separately.
-5. Close the parent only after all five leaves merge and the integrated non-mutating Buzz/Matrix/OpenCode validation passes.
+4. Refresh, brief, publish, and link F2.3/F2.4 after t18202; refresh, brief, publish, and link F2.5 after t18203.
+5. Preserve `parent-close-contract: keep-open` while implementation remains. Close the parent only through a final PR after all five leaves merge and integrated non-mutating Buzz/Matrix/OpenCode validation passes.
 
 ### Hazards and Compatibility
 
@@ -127,10 +133,10 @@ unfiled features.
 ### Verification Before Dispatch
 
 ```bash
-.agents/scripts/verify-brief-helper.sh check-readiness todo/tasks/t18202-brief.md
-.agents/scripts/verify-brief-helper.sh check-readiness todo/tasks/t18203-brief.md
-.agents/scripts/issue-sync-helper.sh relationships t18202 --dry-run
-.agents/scripts/issue-sync-helper.sh relationships t18203 --dry-run
+.agents/scripts/verify-brief-helper.sh check-readiness todo/tasks/t18207-brief.md
+.agents/scripts/verify-brief-helper.sh check-readiness todo/tasks/t18208-brief.md
+.agents/scripts/issue-sync-helper.sh relationships t18207 --dry-run
+.agents/scripts/issue-sync-helper.sh relationships t18208 --dry-run
 ```
 
 - **Surface mapping:** Readiness checks prove the two leaves contain complete write, hazard, verification, and acceptance contracts; exact relationship dry-runs prove task hierarchy without scanning the full backlog.
@@ -158,24 +164,24 @@ unfiled features.
 
 ## Acceptance Criteria
 
-- [ ] The parent is open with `parent-task` and `no-auto-dispatch`, and t18202 plus t18203 appear as native GitHub sub-issues with worker-ready bodies.
+- [ ] The parent is open with `parent-task`, `no-auto-dispatch`, and the explicit keep-open close contract; all five implementation leaves appear as native GitHub sub-issues with worker-ready bodies.
 
   ```yaml
   verify:
     method: bash
-    run: ".agents/scripts/issue-sync-helper.sh relationships t18202 --dry-run && .agents/scripts/issue-sync-helper.sh relationships t18203 --dry-run"
+    run: ".agents/scripts/issue-sync-helper.sh relationships t18207 --dry-run && .agents/scripts/issue-sync-helper.sh relationships t18208 --dry-run"
   ```
 
-- [ ] t18202 and t18203 are independently available for dispatch after readiness validation, while no F2.3, F2.4, F2.5, or F6.6 implementation issue is created prematurely.
+- [ ] t18207 and t18208 are independently available after readiness validation, while F6.6 remains unfiled until all seven of its mission dependencies are complete.
 
   ```yaml
   verify:
     method: codebase
-    pattern: "t18202|t18203|F2.3.*unfiled|F2.4.*unfiled|F2.5.*unfiled"
+    pattern: "t18207|t18208|F6.6"
     path: "todo/tasks/t18201-brief.md"
   ```
 
-- [ ] The parent never receives `auto-dispatch` and must not close before all five Milestone 2 leaves and integrated validation are complete.
+- [ ] The parent never receives `auto-dispatch` and must not close before all five Milestone 2 leaves and integrated validation are complete; the final close PR removes the keep-open marker only after checking these criteria.
 
   ```yaml
   verify:
@@ -199,6 +205,9 @@ unfiled features.
 - `.agents/workflows/brief.md:95-151` — schema-v2 readiness and ordered-work publication contract.
 - `todo/tasks/t18202-brief.md` — F2.1 implementation authority.
 - `todo/tasks/t18203-brief.md` — F2.2 implementation authority.
+- `todo/tasks/t18205-brief.md` — F2.3 implementation authority.
+- `todo/tasks/t18207-brief.md` — F2.4 implementation authority.
+- `todo/tasks/t18208-brief.md` — F2.5 implementation authority.
 
 ## Dependencies
 
@@ -212,7 +221,7 @@ unfiled features.
 |---|---:|---|
 | F2.1 read-only core | 6h | Runtime config/state, adapter registry, planner, CLI, tests, docs |
 | F2.2 canonical roster | 3.5h | Discovery metadata, stable IDs, schema, generator, tests, docs |
-| F2.3 read-only Buzz adapter | 3.5h provisional | Re-estimate after F2.1 merges |
-| F2.4 Matrix adapter | 4h provisional | Re-estimate after F2.1 merges |
-| F2.5 OpenCode launch overlay | 3h provisional | Re-estimate after F2.2 merges |
-| **Total** | **20h provisional** | First 9.5h briefed; downstream estimates are planning bounds only |
+| F2.3 read-only Buzz adapter | 5h | Completed through PR #29636 |
+| F2.4 Matrix adapter | 6h | Current integration, ingress, privacy, and compatibility characterization |
+| F2.5 OpenCode launch overlay | 5h | Schema-backed generator plus final plugin-enforced read-only profile |
+| **Total** | **25.5h** | All five leaves briefed; integrated validation remains parent-owned |

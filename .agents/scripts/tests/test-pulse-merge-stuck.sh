@@ -262,7 +262,7 @@ gh() {
 		fi
 		return 0
 	fi
-	if [[ "$command_name" == "issue" && ( "$subcommand" == "comment" || "$subcommand" == "close" ) ]]; then
+	if [[ "$command_name" == "issue" && ("$subcommand" == "comment" || "$subcommand" == "close") ]]; then
 		printf '%s\n' "gh $*" >>"$GH_CALLS"
 		return 0
 	fi
@@ -361,8 +361,8 @@ AIDEVOPS_MERGE_ZERO_PROGRESS_RECOVERY_CHECK_SECONDS=0
 : >"$LOGFILE"
 pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "0" >/dev/null 2>&1
 pulse_merge_zero_progress_record 2 0 1 >/dev/null 2>&1
-if grep -q 'deterministic conflict/close progress action(s) while zero-progress gauge was already 0' "$LOGFILE" \
-	&& ! grep -q 'after a 0-cycle zero-progress streak while zero-progress gauge was already 0' "$LOGFILE"; then
+if grep -q 'deterministic conflict/close progress action(s) while zero-progress gauge was already 0' "$LOGFILE" &&
+	! grep -q 'after a 0-cycle zero-progress streak while zero-progress gauge was already 0' "$LOGFILE"; then
 	echo "${TEST_GREEN}PASS${TEST_NC}: 5b.4: already-zero recovery reason is direct and non-contradictory"
 else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -493,7 +493,10 @@ _extract_linked_issue() {
 	[[ -n "$repo_slug" ]] || return 1
 	case "$pr_number" in
 	102) return 0 ;;
-	*) printf '77'; return 0 ;;
+	*)
+		printf '77'
+		return 0
+		;;
 	esac
 }
 
@@ -536,7 +539,7 @@ unavailable_state_calls=$(grep -cF '115:example/repo:1:--json state --jq .state 
 assert_eq "6a.2: unavailable current-state reads retain the cached candidate" "1" "$unavailable_state_calls"
 
 _pms_compute_saturation_state() {
-	printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\n'
+	printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\nprovider_incident=0\n'
 	return 0
 }
 
@@ -588,9 +591,9 @@ echo ""
 # progress, not a deterministic merge failure; otherwise the zero-progress
 # detector can file false collapse issues while GitHub is completing the merge.
 TESTS_RUN=$((TESTS_RUN + 1))
-if grep -q "Merge already in progress" "$MERGE_SCRIPT" \
-	&& grep -Fq "_handle_post_merge_actions \"\$pr_number\" \"\$repo_slug\" \"\$linked_issue\" \"\$merge_summary\" \"\$_ipr_labels\"" "$MERGE_SCRIPT" \
-	&& grep -Fq "return \$?" "$MERGE_SCRIPT"; then
+if grep -q "Merge already in progress" "$MERGE_SCRIPT" &&
+	grep -Fq "_handle_post_merge_actions \"\$pr_number\" \"\$repo_slug\" \"\$linked_issue\" \"\$merge_summary\" \"\$_ipr_labels\"" "$MERGE_SCRIPT" &&
+	grep -Fq "return \$?" "$MERGE_SCRIPT"; then
 	echo "${TEST_GREEN}PASS${TEST_NC}: 6d: merge-in-progress is counted as zero-progress-breaking progress"
 else
 	TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -630,7 +633,7 @@ gh_pr_check_runs_rest() {
 	local head_sha="$2"
 	[[ -n "$repo_slug" ]] || return 1
 	case "$head_sha" in
-	sha-queued) printf '[{"name":"Build","conclusion":null,"status":"queued"}]' ;;
+	sha-queued) printf '[{"name":"Build","conclusion":null,"status":"queued","app":{"slug":"github-actions"}}]' ;;
 	sha-failing) printf '[{"name":"Format","conclusion":"failure","status":"completed"},{"name":"Lint","conclusion":"timed_out","status":"completed"}]' ;;
 	sha-legacy-failing) printf '[{"context":"legacy-ci","state":"failure"}]' ;;
 	sha-legacy-error) printf '[{"context":"legacy-error","state":"error"}]' ;;
@@ -687,6 +690,14 @@ _required_contexts_from_rulesets_for_default_branch() {
 got=$(_classify_stuck_pr "201" "example/repo" "1")
 assert_eq "7a: saturated queued check classifies as runner saturation" \
 	"STUCK_RUNNER_QUEUE_SATURATION" "$got"
+
+issue_gate_rc=0
+_pms_should_file_runner_saturation_issue 1 1 2 || issue_gate_rc=$?
+assert_eq "7a.1: provider incidents do not file runner-pool repair issues" "1" "$issue_gate_rc"
+
+issue_gate_rc=0
+_pms_should_file_runner_saturation_issue 1 0 2 || issue_gate_rc=$?
+assert_eq "7a.2: measured runner saturation still files repair issues" "0" "$issue_gate_rc"
 
 got=$(_classify_stuck_pr "202" "example/repo" "0")
 assert_eq "7b: REST check-run failure classifies as checks failing" \
@@ -785,7 +796,10 @@ assert_eq "7c: maintainer review and assignee gate cluster does not file an outa
 	"" "$PMS_TEST_OUTAGE_ARGS"
 
 assert_eq "7d: mixed policy and genuine CI fingerprint remains outage-eligible" \
-	"1" "$(_pms_is_per_pr_gate_fingerprint 'CodeRabbit,CI / build'; printf '%s' "$?")"
+	"1" "$(
+		_pms_is_per_pr_gate_fingerprint 'CodeRabbit,CI / build'
+		printf '%s' "$?"
+	)"
 
 got=$(_pms_format_pr_markdown_list "11,12,13")
 assert_eq "7e: affected-PR Markdown retains the final entry" \

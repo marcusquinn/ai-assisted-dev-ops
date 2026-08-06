@@ -175,6 +175,11 @@ Safety boundaries:
 - Superseded active runs may be cancelled only when the operator/helper can
   prove the run belongs to the same PR/branch, its head SHA is not the latest PR
   head SHA, and the run is still queued or in progress; otherwise leave it alone.
+- Before rerunning a proven infrastructure failure, query the cached public
+  GitHub Status incident feed with `gh-status-helper.sh check-actions`. An active
+  Actions incident suppresses the rerun and classifies delayed queued checks as
+  provider saturation; an unavailable status feed fails open. Use
+  `AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1` only as an explicit emergency bypass.
 
 Diagnosis commands:
 

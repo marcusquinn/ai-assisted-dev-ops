@@ -54,7 +54,20 @@ case "$cmd" in
 	ls)
 		if [[ "${1:-}" == "--flat" ]]; then
 			printf '%s\n' 'aidevops/ZETA_KEY' 'aidevops/ALPHA_KEY' 'aidevops/ALPHA_KEY'
+			if [[ -n "${AIDEVOPS_TEST_SECRET:-}" ]]; then
+				printf '%s\n' 'aidevops/REDACTION_KEY'
+			fi
 		fi
+		exit 0
+		;;
+	show)
+		if [[ "${1:-}" == "-o" ]]; then
+			shift
+		fi
+		case "${1:-}" in
+			aidevops/REDACTION_KEY) printf '%s' "${AIDEVOPS_TEST_SECRET:-}" ;;
+			*) exit 1 ;;
+		esac
 		exit 0
 		;;
 	insert)
@@ -134,7 +147,7 @@ teardown() {
 		rm -rf "$TEST_DIR"
 	fi
 	TEST_DIR=""
-	unset AIDEVOPS_TEST_DIR || true
+	unset AIDEVOPS_TEST_DIR AIDEVOPS_TEST_SECRET || true
 	return 0
 }
 
@@ -215,6 +228,49 @@ test_set_rejects_command_literal_input() {
 	return 0
 }
 
+test_run_redacts_sed_significant_literal_values() {
+	setup
+	trap 'teardown' RETURN
+	local fixture='literal|fixture&with\slashes/[].*^$'
+	export AIDEVOPS_TEST_SECRET="$fixture"
+	local output=""
+	local exit_code=0
+
+	output=$(HOME="$TEST_DIR/home" bash "$HELPER" REDACTION_KEY -- bash -c \
+		'printf "stdout:%s\n" "$REDACTION_KEY"; printf "stderr:%s\n" "$REDACTION_KEY" >&2; exit 23') || exit_code=$?
+
+	if [[ "$exit_code" -eq 23 && "$output" == $'stdout:[REDACTED]\nstderr:[REDACTED]' && "$output" != *"$fixture"* && "$output" != *"unterminated substitute pattern"* ]]; then
+		print_result "run redacts sed-significant literals on both output streams" 0
+	else
+		print_result "run redacts sed-significant literals on both output streams" 1 "Redaction or exit-status assertion failed"
+	fi
+	return 0
+}
+
+test_run_fails_closed_when_redactor_cannot_start() {
+	setup
+	trap 'teardown' RETURN
+	local fixture='literal|fixture&with\slashes/[].*^$'
+	export AIDEVOPS_TEST_SECRET="$fixture"
+	cat >"$TEST_DIR/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 70
+EOF
+	chmod +x "$TEST_DIR/bin/python3"
+	local output=""
+	local exit_code=0
+
+	output=$(HOME="$TEST_DIR/home" bash "$HELPER" REDACTION_KEY -- bash -c \
+		'printf "%s\n" "$REDACTION_KEY"') || exit_code=$?
+
+	if [[ "$exit_code" -ne 0 && "$output" != *"$fixture"* ]]; then
+		print_result "run fails closed when redaction initialization fails" 0
+	else
+		print_result "run fails closed when redaction initialization fails" 1 "Expected sanitized non-zero failure"
+	fi
+	return 0
+}
+
 main() {
 	echo "Running secret-helper regression tests..."
 	echo ""
@@ -222,6 +278,8 @@ main() {
 	test_set_uses_provided_stdin_value
 	test_credentials_read_unescapes_special_chars
 	test_set_rejects_command_literal_input
+	test_run_redacts_sed_significant_literal_values
+	test_run_fails_closed_when_redactor_cannot_start
 	test_inventory_is_names_only_deterministic_json
 	test_inventory_rejects_malformed_gopass_name
 	test_inventory_requires_owner_only_credentials

@@ -178,6 +178,26 @@ _pulse_refresh_repo() {
 	return 0
 }
 
+_pulse_supervisor_prompt() {
+	local pulse_command="$1"
+	local state_file="$2"
+	local prompt="$pulse_command"
+
+	prompt="${pulse_command}
+
+Runtime sandbox rule: supervisor-pulse is launched from the aidevops agent workspace. Do not run Bash tool calls with workdir set to managed repository paths or any other directory outside that workspace. Use the pre-fetched state file and wrapper/helper functions from the current workspace instead. If repo/worktree data is missing, record a diagnostic and exit cleanly rather than requesting external_directory permission."
+	if [[ -f "$state_file" ]]; then
+		prompt="${prompt}
+
+Pre-fetched state file: ${state_file}
+Read this file before proceeding — it contains the current repo/PR/issue state
+gathered by pulse-wrapper.sh BEFORE this session started."
+	fi
+
+	printf '%s\n' "$prompt"
+	return 0
+}
+
 run_pulse() {
 	local underfilled_mode="${1:-0}"
 	local underfill_pct="${2:-0}"
@@ -209,14 +229,8 @@ run_pulse() {
 	if [[ "$trigger_mode" == "daily_sweep" ]]; then
 		pulse_command="/pulse-sweep"
 	fi
-	local prompt="$pulse_command"
-	if [[ -f "$STATE_FILE" ]]; then
-		prompt="${pulse_command}
-
-Pre-fetched state file: ${STATE_FILE}
-Read this file before proceeding — it contains the current repo/PR/issue state
-gathered by pulse-wrapper.sh BEFORE this session started."
-	fi
+	local prompt
+	prompt=$(_pulse_supervisor_prompt "$pulse_command" "$STATE_FILE")
 
 	# Run the provider-aware headless wrapper in background.
 	local -a pulse_cmd=("$HEADLESS_RUNTIME_HELPER" run --role pulse --session-key supervisor-pulse --dir "$PULSE_DIR" --title "Supervisor Pulse" --agent Automate --prompt "$prompt" --tier standard)
@@ -633,7 +647,7 @@ sync_todo_refs_for_repo() (
 	TMPDIR="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}" \
 		AIDEVOPS_PLANNING_BASE_SHA="$base_sha" \
 		planning_publish "$workspace" "chore: sync GitHub issue refs to TODO.md [skip ci]" \
-			origin "$branch_name" "$changed_paths" || publication_rc=$?
+		origin "$branch_name" "$changed_paths" || publication_rc=$?
 	case "$publication_rc" in
 	0) printf '[pulse-wrapper] TODO ref sync status=%s repo=%s commit=%s\n' \
 		"${PLANNING_PUBLISH_RESULT:-noop}" "$repo_slug" "${PLANNING_PUBLISHED_COMMIT:0:12}" >>"$WRAPPER_LOGFILE" ;;

@@ -29,6 +29,14 @@ cat >"$capture_file" <<'JSON'
     "intent": "Inspect generated SDK declarations",
     "risk": {"level": "medium", "grantable": true, "reason": "external boundary"},
     "opencode": {"request_id": "oc-1", "session_id": "ses-1"}
+  }, {
+    "request_id": "perm-tool-discovery",
+    "permission": "external_directory",
+    "patterns": ["~/.qlty/bin/*"],
+    "tool": "read",
+    "intent": "Locate the Qlty executable",
+    "risk": {"level": "medium", "grantable": true, "reason": "external boundary"},
+    "opencode": {"request_id": "oc-2", "session_id": "ses-1"}
   }]
 }
 JSON
@@ -56,6 +64,11 @@ target_marker="**Target:** \`owner/repo#123\`"
 session_marker="**Worker session:** \`issue-123\`"
 if [[ "$rendered_capabilities" != *"$capability_marker"* ]]; then
 	printf 'permission capability summary was empty or incomplete\n' >&2
+	exit 1
+fi
+# shellcheck disable=SC2016 # Markdown backticks are intentional literals.
+if [[ "$rendered_capabilities" != *'Routine tool discovery should use `command -v TOOL`'* ]]; then
+	printf 'known tool-bin read omitted command-based recovery guidance\n' >&2
 	exit 1
 fi
 printf '{invalid-json\n' >"${test_root}/invalid-envelope.json"

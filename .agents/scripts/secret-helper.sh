@@ -36,6 +36,7 @@ readonly TENANTS_DIR="$CONFIG_DIR/tenants"
 readonly GOPASS_PREFIX="aidevops"
 readonly INVENTORY_MAX_NAMES=512
 readonly INVENTORY_MAX_NAME_LENGTH=128
+readonly REDACTION_INIT_ERROR="Unable to initialize secret output redaction"
 
 # Check if gopass is available and initialized
 has_gopass() {
@@ -102,7 +103,7 @@ get_secret_value() {
 	return 0
 }
 
-# Collect all secret values for redaction
+# Collect all secret values for redaction as NUL-delimited literal data.
 collect_secret_values() {
 	local -a values=()
 
@@ -137,48 +138,92 @@ collect_secret_values() {
 		done <"$cred_file"
 	done < <(resolve_credential_files)
 
-	# Output values one per line for the redaction filter
-	printf '%s\n' "${values[@]}"
+	if [[ ${#values[@]} -gt 0 ]]; then
+		printf '%s\0' "${values[@]}"
+	fi
 	return 0
 }
 
 # Redact secret values from a stream
 # Reads stdin, replaces any secret value with [REDACTED]
 redact_stream() {
-	local -a secret_values=()
+	local values_file
+	local previous_umask
+	previous_umask=$(umask)
+	umask 077
+	if ! values_file=$(mktemp); then
+		umask "$previous_umask"
+		print_error "$REDACTION_INIT_ERROR" >&2
+		return 1
+	fi
+	umask "$previous_umask"
+	trap 'rm -f "$values_file"' RETURN
 
-	# Read secret values into array
-	while IFS= read -r val; do
-		[[ -n "$val" ]] && secret_values+=("$val")
-	done < <(collect_secret_values)
+	if ! collect_secret_values >"$values_file"; then
+		print_error "$REDACTION_INIT_ERROR" >&2
+		return 1
+	fi
 
-	if [[ ${#secret_values[@]} -eq 0 ]]; then
+	if [[ ! -s "$values_file" ]]; then
 		# No secrets to redact, pass through
 		cat
 		return 0
 	fi
 
-	# Build sed script for redaction
-	# Sort by length descending to redact longer values first
-	local sed_script=""
-	local sorted_values
-	sorted_values=$(printf '%s\n' "${secret_values[@]}" | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
-
-	while IFS= read -r val; do
-		[[ -z "$val" ]] && continue
-		# Escape special sed characters in the value
-		local escaped
-		escaped=$(printf '%s' "$val" | sed 's/[&/\]/\\&/g; s/\[/\\[/g; s/\]/\\]/g')
-		sed_script="${sed_script}s|${escaped}|[REDACTED]|g;"
-	done <<<"$sorted_values"
-
-	if [[ -n "$sed_script" ]]; then
-		sed "$sed_script"
-	else
-		cat
+	if ! command -v python3 >/dev/null 2>&1; then
+		print_error "$REDACTION_INIT_ERROR" >&2
+		return 1
 	fi
 
-	return 0
+	local exit_code=0
+	python3 -c '
+import sys
+
+with open(sys.argv[1], "rb") as values_handle:
+    secret_values = sorted(
+        {value for value in values_handle.read().split(b"\0") if len(value) >= 4},
+        key=len,
+        reverse=True,
+    )
+
+if not secret_values:
+    raise SystemExit("redaction values were empty")
+
+marker = b"[REDACTED]"
+maximum_length = len(secret_values[0])
+output = sys.stdout.buffer
+pending = b""
+
+def redact_available(data, final=False):
+    keep = 0 if final else maximum_length - 1
+    pieces = []
+    while len(data) > keep:
+        match = next((value for value in secret_values if data.startswith(value)), None)
+        if match is not None:
+            pieces.append(marker)
+            data = data[len(match):]
+        else:
+            pieces.append(data[:1])
+            data = data[1:]
+        if len(pieces) >= 8192:
+            output.write(b"".join(pieces))
+            output.flush()
+            pieces.clear()
+    if pieces:
+        output.write(b"".join(pieces))
+        output.flush()
+    return data
+
+while True:
+    chunk = sys.stdin.buffer.read(65536)
+    if not chunk:
+        break
+    pending = redact_available(pending + chunk)
+
+redact_available(pending, final=True)
+' "$values_file" || exit_code=$?
+
+	return "$exit_code"
 }
 
 # Build environment from gopass secrets
