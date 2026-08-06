@@ -51,6 +51,9 @@ readonly CACHE_MAX_AGE_SECONDS="${AIDEVOPS_GH_STATUS_CACHE_TTL:-60}"
 
 # Indicator literal used by jq fallbacks and case branches.
 readonly INDICATOR_UNKNOWN="unknown"
+readonly STATUS_NETWORK_FAILURE="network_failure"
+readonly ACTIONS_COMPONENT="Actions"
+readonly ACTIONS_INCIDENTS_JQ='[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))]'
 
 # CLI flag state
 ARG_JSON=0
@@ -128,11 +131,31 @@ _ensure_cache() {
 # Subcommands
 # ----------------------------------------------------------------------
 
+_print_component_status_json() {
+	local status="$1"
+	local component="${2:-}"
+	local reason="${3:-}"
+	local impact="${4:-}"
+	local incident="${5:-}"
+	jq -n \
+		--arg status "$status" \
+		--arg component "$component" \
+		--arg reason "$reason" \
+		--arg impact "$impact" \
+		--arg incident "$incident" '
+		{status:$status}
+		+ (if $component == "" then {} else {component:$component} end)
+		+ (if $reason == "" then {} else {reason:$reason} end)
+		+ (if $impact == "" then {} else {impact:$impact} end)
+		+ (if $incident == "" then {} else {incident:$incident} end)'
+	return 0
+}
+
 # cmd_check — fetch overall status, classify, print summary, set exit code.
 cmd_check() {
 	if ! _ensure_cache "$STATUS_URL" "$CACHE_STATUS"; then
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			printf '{"status":"%s","reason":"network_failure"}\n' "$INDICATOR_UNKNOWN"
+			printf '{"status":"%s","reason":"%s"}\n' "$INDICATOR_UNKNOWN" "$STATUS_NETWORK_FAILURE"
 		else
 			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
 		fi
@@ -186,7 +209,7 @@ cmd_check() {
 cmd_check_actions() {
 	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			printf '{"status":"%s","component":"Actions","reason":"network_failure"}\n' "$INDICATOR_UNKNOWN"
+			_print_component_status_json "$INDICATOR_UNKNOWN" "$ACTIONS_COMPONENT" "$STATUS_NETWORK_FAILURE"
 		else
 			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
 		fi
@@ -194,14 +217,13 @@ cmd_check_actions() {
 	fi
 
 	local incident_count="" impact="none" incident_name=""
-	incident_count=$(jq '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))] | length' "$CACHE_INCIDENTS" 2>/dev/null) || return 3
+	incident_count=$(jq "${ACTIONS_INCIDENTS_JQ} | length" "$CACHE_INCIDENTS" 2>/dev/null) || return 3
 	[[ "$incident_count" =~ ^[0-9]+$ ]] || return 3
 	if [[ "$incident_count" -gt 0 ]]; then
-		impact=$(jq -r '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))][0].impact // "unknown"' "$CACHE_INCIDENTS")
-		incident_name=$(jq -r '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))][0].name // "GitHub Actions incident"' "$CACHE_INCIDENTS")
+		impact=$(jq -r "${ACTIONS_INCIDENTS_JQ} | .[0].impact // \"unknown\"" "$CACHE_INCIDENTS")
+		incident_name=$(jq -r "${ACTIONS_INCIDENTS_JQ} | .[0].name // \"GitHub Actions incident\"" "$CACHE_INCIDENTS")
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			jq -n --arg impact "$impact" --arg name "$incident_name" \
-				'{status:"incident",component:"Actions",impact:$impact,incident:$name}'
+			_print_component_status_json "incident" "$ACTIONS_COMPONENT" "" "$impact" "$incident_name"
 		else
 			printf 'incident — Actions affected by %s (%s)\n' "$incident_name" "$impact"
 		fi
@@ -209,7 +231,7 @@ cmd_check_actions() {
 	fi
 
 	if [[ "$ARG_JSON" -eq 1 ]]; then
-		printf '{"status":"operational","component":"Actions"}\n'
+		_print_component_status_json "operational" "$ACTIONS_COMPONENT"
 	else
 		printf 'operational — no unresolved Actions incident\n'
 	fi
@@ -220,7 +242,7 @@ cmd_check_actions() {
 cmd_incidents() {
 	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			printf '{"incidents":[],"reason":"network_failure"}\n'
+			printf '{"incidents":[],"reason":"%s"}\n' "$STATUS_NETWORK_FAILURE"
 		else
 			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
 		fi

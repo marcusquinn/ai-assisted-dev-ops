@@ -352,7 +352,7 @@ _circuit_breaker_status() {
 		local now_epoch
 		now_epoch=$(date +%s 2>/dev/null) || now_epoch=0
 		if [[ "$now_epoch" -gt 0 ]]; then
-			local secs_until_reset=$(( reset_epoch - now_epoch ))
+			local secs_until_reset=$((reset_epoch - now_epoch))
 			if [[ "$secs_until_reset" -gt 0 ]]; then
 				reset_human="${secs_until_reset}s until reset"
 			else
@@ -504,53 +504,53 @@ _main() {
 	shift || true
 
 	case "$cmd" in
-		check)
-			is_graphql_budget_sufficient
-			return $?
-			;;
-		check-actions-queue)
-			# Args: $1=repo_slug. Prints KEY=VALUE lines.
-			local repo_slug="${1:-}"
-			if [[ -z "$repo_slug" ]]; then
-				echo "Usage: pulse-rate-limit-circuit-breaker.sh check-actions-queue <owner/repo>" >&2
-				return 1
-			fi
-			_check_actions_queue_saturation "$repo_slug"
-			return $?
-			;;
-		status)
-			local status_mode="normal"
-			if [[ "${1:-}" == "--cached" ]]; then
-				status_mode="$_CB_RL_MODE_CACHED_ONLY"
-			fi
-			_circuit_breaker_status "$status_mode"
-			return 0
-			;;
-		help | --help | -h)
-			echo "pulse-rate-limit-circuit-breaker.sh — Pulse-level GraphQL rate-limit circuit breaker (t2690) + Actions queue saturation (t3211)"
-			echo ""
-			echo "Usage:"
-			echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=tripped, 2=API error"
-			echo "  pulse-rate-limit-circuit-breaker.sh check-actions-queue OWNER/REPO # KEY=VALUE: queued/in_progress/ratio/saturated"
-			echo "  pulse-rate-limit-circuit-breaker.sh status [--cached]              # human-readable status line"
-			echo ""
-			echo "Environment (GraphQL):"
-			echo "  AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD  fraction threshold (default 0.05 = 5%)"
-			echo "  AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1     emergency bypass"
-			echo "  AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL       rate_limit cache TTL seconds (default 20)"
-			echo ""
-			echo "Environment (Actions queue, t3211):"
-			echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN  min queued runs (default 50; 0 disables)"
-			echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN   min queued/in_progress ratio (default 10)"
-			echo "  AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1      emergency bypass"
-			echo "  AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1         bypass public Actions incident signal"
-			return 0
-			;;
-		*)
-			echo "Unknown command: ${cmd}" >&2
-			echo "Run: pulse-rate-limit-circuit-breaker.sh help" >&2
+	check)
+		is_graphql_budget_sufficient
+		return $?
+		;;
+	check-actions-queue)
+		# Args: $1=repo_slug. Prints KEY=VALUE lines.
+		local repo_slug="${1:-}"
+		if [[ -z "$repo_slug" ]]; then
+			echo "Usage: pulse-rate-limit-circuit-breaker.sh check-actions-queue <owner/repo>" >&2
 			return 1
-			;;
+		fi
+		_check_actions_queue_saturation "$repo_slug"
+		return $?
+		;;
+	status)
+		local status_mode="normal"
+		if [[ "${1:-}" == "--cached" ]]; then
+			status_mode="$_CB_RL_MODE_CACHED_ONLY"
+		fi
+		_circuit_breaker_status "$status_mode"
+		return 0
+		;;
+	help | --help | -h)
+		echo "pulse-rate-limit-circuit-breaker.sh — Pulse-level GraphQL rate-limit circuit breaker (t2690) + Actions queue saturation (t3211)"
+		echo ""
+		echo "Usage:"
+		echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=tripped, 2=API error"
+		echo "  pulse-rate-limit-circuit-breaker.sh check-actions-queue OWNER/REPO # KEY=VALUE: queued/in_progress/ratio/saturated"
+		echo "  pulse-rate-limit-circuit-breaker.sh status [--cached]              # human-readable status line"
+		echo ""
+		echo "Environment (GraphQL):"
+		echo "  AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD  fraction threshold (default 0.05 = 5%)"
+		echo "  AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1     emergency bypass"
+		echo "  AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL       rate_limit cache TTL seconds (default 20)"
+		echo ""
+		echo "Environment (Actions queue, t3211):"
+		echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN  min queued runs (default 50; 0 disables)"
+		echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN   min queued/in_progress ratio (default 10)"
+		echo "  AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1      emergency bypass"
+		echo "  AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1         bypass public Actions incident signal"
+		return 0
+		;;
+	*)
+		echo "Unknown command: ${cmd}" >&2
+		echo "Run: pulse-rate-limit-circuit-breaker.sh help" >&2
+		return 1
+		;;
 	esac
 }
 

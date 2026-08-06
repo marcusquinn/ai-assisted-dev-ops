@@ -301,50 +301,50 @@ echo "${TEST_BLUE}── 1. Saturation detection ──${TEST_NC}"
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "incident shape: queued=110"          "110" "$(_field queued "$out")"
-assert_eq "incident shape: in_progress=3"       "3"   "$(_field in_progress "$out")"
-assert_eq "incident shape: ratio=36"            "36"  "$(_field ratio "$out")"
-assert_eq "incident shape: saturated=1"         "1"   "$(_field saturated "$out")"
+assert_eq "incident shape: queued=110" "110" "$(_field queued "$out")"
+assert_eq "incident shape: in_progress=3" "3" "$(_field in_progress "$out")"
+assert_eq "incident shape: ratio=36" "36" "$(_field ratio "$out")"
+assert_eq "incident shape: saturated=1" "1" "$(_field saturated "$out")"
 
 # 1b: Light load — neither absolute nor ratio threshold met.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=10 GH_SHIM_IN_PROGRESS_TOTAL=10
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "light load: queued=10"               "10"  "$(_field queued "$out")"
-assert_eq "light load: ratio=1"                 "1"   "$(_field ratio "$out")"
-assert_eq "light load: saturated=0"             "0"   "$(_field saturated "$out")"
+assert_eq "light load: queued=10" "10" "$(_field queued "$out")"
+assert_eq "light load: ratio=1" "1" "$(_field ratio "$out")"
+assert_eq "light load: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1c: High absolute, healthy ratio (busy but draining) — NOT saturated.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=51 GH_SHIM_IN_PROGRESS_TOTAL=10
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "busy/healthy: queued=51"             "51"  "$(_field queued "$out")"
-assert_eq "busy/healthy: ratio=5"               "5"   "$(_field ratio "$out")"
-assert_eq "busy/healthy: saturated=0"           "0"   "$(_field saturated "$out")"
+assert_eq "busy/healthy: queued=51" "51" "$(_field queued "$out")"
+assert_eq "busy/healthy: ratio=5" "5" "$(_field ratio "$out")"
+assert_eq "busy/healthy: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1d: Just above ratio threshold — IS saturated.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=51 GH_SHIM_IN_PROGRESS_TOTAL=4
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "above ratio: queued=51"              "51"  "$(_field queued "$out")"
-assert_eq "above ratio: ratio=12"               "12"  "$(_field ratio "$out")"
-assert_eq "above ratio: saturated=1"            "1"   "$(_field saturated "$out")"
+assert_eq "above ratio: queued=51" "51" "$(_field queued "$out")"
+assert_eq "above ratio: ratio=12" "12" "$(_field ratio "$out")"
+assert_eq "above ratio: saturated=1" "1" "$(_field saturated "$out")"
 
 # 1e: Just below queued threshold — NOT saturated regardless of ratio.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=49 GH_SHIM_IN_PROGRESS_TOTAL=1
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "below abs: queued=49"                "49"  "$(_field queued "$out")"
-assert_eq "below abs: ratio=49"                 "49"  "$(_field ratio "$out")"
-assert_eq "below abs: saturated=0"              "0"   "$(_field saturated "$out")"
+assert_eq "below abs: queued=49" "49" "$(_field queued "$out")"
+assert_eq "below abs: ratio=49" "49" "$(_field ratio "$out")"
+assert_eq "below abs: saturated=0" "0" "$(_field saturated "$out")"
 
 # 1f: Zero in_progress — denominator clamps to 1, ratio = queued.
 _reset_env
 set_shim GH_SHIM_QUEUED_TOTAL=200 GH_SHIM_IN_PROGRESS_TOTAL=0
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "zero in_progress: queued=200"        "200" "$(_field queued "$out")"
-assert_eq "zero in_progress: ratio=200"         "200" "$(_field ratio "$out")"
-assert_eq "zero in_progress: saturated=1"       "1"   "$(_field saturated "$out")"
+assert_eq "zero in_progress: queued=200" "200" "$(_field queued "$out")"
+assert_eq "zero in_progress: ratio=200" "200" "$(_field ratio "$out")"
+assert_eq "zero in_progress: saturated=1" "1" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 2: fail-open semantics
@@ -355,10 +355,11 @@ echo "${TEST_BLUE}── 2. Fail-open semantics ──${TEST_NC}"
 # 2a: gh-api error → return rc=2, saturated=0.
 _reset_env
 set_shim GH_SHIM_FAIL=1
-out=$(_check_actions_queue_saturation "marcusquinn/aidevops"); rc=$?
-assert_eq "api error: rc=2"                     "2"   "$rc"
-assert_eq "api error: saturated=0"              "0"   "$(_field saturated "$out")"
-assert_eq "api error: queued=0"                 "0"   "$(_field queued "$out")"
+out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
+rc=$?
+assert_eq "api error: rc=2" "2" "$rc"
+assert_eq "api error: saturated=0" "0" "$(_field saturated "$out")"
+assert_eq "api error: queued=0" "0" "$(_field queued "$out")"
 
 # 2b: a public Actions incident overrides low/unknown repo queue counts.
 _reset_env
@@ -366,16 +367,18 @@ export AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=0
 export AIDEVOPS_GH_STATUS_HELPER="$SHIM_DIR/gh-actions-status"
 export GH_STATUS_SHIM_RC=1
 set_shim GH_SHIM_QUEUED_TOTAL=2 GH_SHIM_IN_PROGRESS_TOTAL=2
-out=$(_check_actions_queue_saturation "marcusquinn/aidevops"); rc=$?
-assert_eq "provider incident: rc=0"              "0" "$rc"
-assert_eq "provider incident: saturated=1"       "1" "$(_field saturated "$out")"
-assert_eq "provider incident: signal exported"   "1" "$(_field provider_incident "$out")"
+out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
+rc=$?
+assert_eq "provider incident: rc=0" "0" "$rc"
+assert_eq "provider incident: saturated=1" "1" "$(_field saturated "$out")"
+assert_eq "provider incident: signal exported" "1" "$(_field provider_incident "$out")"
 
 # 2c: Empty repo_slug → return rc=0, saturated=0 (defensive default).
 _reset_env
-out=$(_check_actions_queue_saturation ""); rc=$?
-assert_eq "empty slug: rc=0"                    "0"   "$rc"
-assert_eq "empty slug: saturated=0"             "0"   "$(_field saturated "$out")"
+out=$(_check_actions_queue_saturation "")
+rc=$?
+assert_eq "empty slug: rc=0" "0" "$rc"
+assert_eq "empty slug: saturated=0" "0" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 3: bypass + disable controls
@@ -390,7 +393,7 @@ set_shim AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1 \
 	GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
 assert_eq "bypass env: saturated=0 despite real saturation" "0" "$(_field saturated "$out")"
-assert_eq "bypass env: queued=0 (network not consulted)"    "0" "$(_field queued "$out")"
+assert_eq "bypass env: queued=0 (network not consulted)" "0" "$(_field queued "$out")"
 
 # 3b: QUEUED_MIN=0 disables detection entirely.
 _reset_env
@@ -411,15 +414,15 @@ set_shim AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN=5 \
 	AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN=2 \
 	GH_SHIM_QUEUED_TOTAL=10 GH_SHIM_IN_PROGRESS_TOTAL=2
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "lowered thresholds: ratio=5"          "5" "$(_field ratio "$out")"
-assert_eq "lowered thresholds: saturated=1"      "1" "$(_field saturated "$out")"
+assert_eq "lowered thresholds: ratio=5" "5" "$(_field ratio "$out")"
+assert_eq "lowered thresholds: saturated=1" "1" "$(_field saturated "$out")"
 
 # 4b: Raise QUEUED_MIN above incident shape — even canonical incident is OK.
 _reset_env
 set_shim AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN=200 \
 	GH_SHIM_QUEUED_TOTAL=110 GH_SHIM_IN_PROGRESS_TOTAL=3
 out=$(_check_actions_queue_saturation "marcusquinn/aidevops")
-assert_eq "raised threshold: saturated=0"       "0" "$(_field saturated "$out")"
+assert_eq "raised threshold: saturated=0" "0" "$(_field saturated "$out")"
 
 # ---------------------------------------------------------------------------
 # Test class 5: integration with _classify_stuck_pr
