@@ -247,6 +247,13 @@ install_helper_stubs() {
 		printf 'cleanup %s %s %s\n' "$issue" "$repo" "$context" >>"$GH_CALL_LOG"
 		return 0
 	}
+	set_issue_status() {
+		local issue="$1"
+		local repo="$2"
+		local status="$3"
+		printf 'status %s %s %s\n' "$issue" "$repo" "$status" >>"$GH_CALL_LOG"
+		return 0
+	}
 	unlock_issue_after_worker() { return 0; }
 	fast_fail_reset() { return 0; }
 	reconcile_dependants_after_verified_closure() { return 0; }
@@ -295,6 +302,8 @@ test_provided_empty_pr_labels_skip_refetch() {
 		"provided empty pr_labels keeps interactive solved attribution"
 	assert_log_contains "$GH_CALL_LOG" "cleanup 22219 marcusquinn/aidevops post-merge-pr-22585" \
 		"post-merge close strips terminal dispatch labels"
+	assert_log_contains "$GH_CALL_LOG" "status 22219 marcusquinn/aidevops done" \
+		"post-merge close converges the linked issue to status:done"
 	return 0
 }
 
@@ -327,6 +336,8 @@ test_superseded_pr_closes_original_issue() {
 		"superseded chain marks original issue solved by worker"
 	assert_log_contains "$GH_CALL_LOG" "cleanup 22219 marcusquinn/aidevops post-merge-superseded-pr-44444" \
 		"superseded close strips terminal dispatch labels"
+	assert_log_contains "$GH_CALL_LOG" "status 22219 marcusquinn/aidevops done" \
+		"superseded close converges the original issue to status:done"
 	return 0
 }
 
