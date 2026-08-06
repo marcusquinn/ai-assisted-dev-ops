@@ -155,6 +155,7 @@ readonly -a EXPECTED_FUNCTIONS=(
 	"_watchdog_check_idle"
 	"_check_watchdog_conditions"
 	"_run_pulse_watchdog"
+	"_pulse_supervisor_prompt"
 	"run_pulse"
 	"cleanup_worktrees"
 	"cleanup_stashes"
@@ -865,16 +866,16 @@ test_sourcing_idempotency() {
 test_deterministic_merge_guard_uses_routine_lock() {
 	local wrapper_file="${PULSE_SCRIPTS_DIR}/pulse-wrapper.sh"
 
-	if grep -qF '.agent-workspace/locks/pulse-merge-routine.lock' "$wrapper_file" \
-		&& grep -qF "kill -0 \"\$_pmr_lock_pid\"" "$wrapper_file"; then
+	if grep -qF '.agent-workspace/locks/pulse-merge-routine.lock' "$wrapper_file" &&
+		grep -qF "kill -0 \"\$_pmr_lock_pid\"" "$wrapper_file"; then
 		print_result "deterministic merge guard checks live pulse-merge-routine PID lock" 0
 	else
 		print_result "deterministic merge guard checks live pulse-merge-routine PID lock" 1 \
 			"missing lock-dir or kill -0 guard in pulse-wrapper.sh"
 	fi
 
-	if grep -qF 'PULSE_MERGE_ROUTINE_TIMEOUT_SECONDS:-600' "$wrapper_file" \
-		&& grep -qF "window=\${_pmr_recent_window}s" "$wrapper_file"; then
+	if grep -qF 'PULSE_MERGE_ROUTINE_TIMEOUT_SECONDS:-600' "$wrapper_file" &&
+		grep -qF "window=\${_pmr_recent_window}s" "$wrapper_file"; then
 		print_result "deterministic merge timestamp guard uses routine timeout window" 0
 	else
 		print_result "deterministic merge timestamp guard uses routine timeout window" 1 \

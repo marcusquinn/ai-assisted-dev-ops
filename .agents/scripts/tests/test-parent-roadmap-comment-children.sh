@@ -24,8 +24,9 @@ assert_source() {
 assert_source "trusted roadmap comment extractor exists" '_fetch_children_from_trusted_roadmap_comments()'
 assert_source "extractor requires an explicit roadmap heading" 'Dispatch roadmap|Children|Child issues|Sub-tasks'
 assert_source "extractor restricts comments to trusted associations" '.author_association == "OWNER"'
-assert_source "reconciler includes trusted comment children" '_c_nums=$(_fetch_children_from_trusted_roadmap_comments'
-assert_source "comment children participate in the union" '"$_p_nums" "$_c_nums"'
+assert_source "reconciler includes trusted comment children" 'comment_nums=$(_fetch_children_from_trusted_roadmap_comments'
+assert_source "unavailable comment evidence fails the union closed" 'comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num") || return 1'
+assert_source "comment children participate in the union" '"$prose_nums" "$comment_nums"'
 
 if [[ "$failures" -gt 0 ]]; then
 	exit 1

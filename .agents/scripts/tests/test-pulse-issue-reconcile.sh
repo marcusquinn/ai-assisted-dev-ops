@@ -131,6 +131,29 @@ test_cache_hit_fresh() {
 	return 0
 }
 
+test_cache_bodyless_row_misses() {
+	local tmp_cache
+	tmp_cache=$(mktemp)
+	local now_ts
+	now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"owner/repo":{"last_prefetch":"%s","issues":[{"number":42,"title":"Bodyless","labels":[]}]}}' \
+		"$now_ts" >"$tmp_cache"
+
+	local result
+	result=$(bash -c "
+		PULSE_PREFETCH_CACHE_FILE='${tmp_cache}'
+		$(grep -A 40 '^_read_cache_issues_for_slug()' "${RECONCILE_SH}" | head -50)
+		_read_cache_issues_for_slug 'owner/repo' && echo HIT || echo MISS
+	" 2>/dev/null)
+	rm -f "$tmp_cache"
+	if [[ "$result" == "MISS" ]]; then
+		_pass "cache-miss: bodyless issue row forces live fallback"
+	else
+		_fail "cache-miss: bodyless issue row — got '${result}'"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Test 5: No raw 'gh issue list' calls outside fallback paths
 # ---------------------------------------------------------------------------
@@ -330,6 +353,7 @@ test_parent_live_hold_gate() {
 		_PIR_PERSISTENT_LABEL="persistent"
 		_PIR_PT_LABEL="parent-task"
 		_PIR_SCRIPT_DIR="/nonexistent"
+		LOGFILE="/dev/null"
 		source "$ACTIONS_SH"
 		LIVE_MODE="clear"
 		gh() {
@@ -337,15 +361,16 @@ test_parent_live_hold_gate() {
 			local endpoint="${2:-}"
 			[[ "$command" == "api" && "$endpoint" == "repos/owner/repo/issues/42" ]] || return 1
 			case "$LIVE_MODE" in
-			clear) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}]}" ;;
-			nmr) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"needs-maintainer-review\"}]}" ;;
-			persistent) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"persistent\"}]}" ;;
-			missing-parent) printf "%s\n" "{\"number\":42,\"labels\":[]}" ;;
+			clear) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			nmr) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"needs-maintainer-review\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			persistent) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"},{\"name\":\"persistent\"}],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			missing-parent) printf "%s\n" "{\"number\":42,\"labels\":[],\"authorAssociation\":\"OWNER\",\"author\":{\"login\":\"maintainer\",\"type\":\"User\"}}" ;;
+			external) printf "%s\n" "{\"number\":42,\"labels\":[{\"name\":\"parent-task\"}],\"authorAssociation\":\"CONTRIBUTOR\",\"author\":{\"login\":\"outsider\",\"type\":\"User\"}}" ;;
 			*) return 1 ;;
 			esac
 			return 0
 		}
-		for LIVE_MODE in clear nmr persistent missing-parent api-failure; do
+		for LIVE_MODE in clear nmr persistent missing-parent external api-failure; do
 			_pir_parent_mutation_is_allowed owner/repo 42 &&
 				printf "%s:allowed\n" "$LIVE_MODE" || printf "%s:blocked\n" "$LIVE_MODE"
 		done
@@ -385,11 +410,12 @@ test_parent_live_hold_gate() {
 	printf '%s\n' "$result" | grep -qx 'nmr:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'persistent:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'missing-parent:blocked' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'external:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'api-failure:blocked' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'cached-hold-collect-calls:0' || all_ok=0
 	printf '%s\n' "$result" | grep -qx 'final-gate:1 close-calls:0' || all_ok=0
 	if [[ "$all_ok" -eq 1 ]]; then
-		_pass "parent mutation gate blocks cached/live holds and rechecks at final close"
+		_pass "parent mutation gate blocks cached/live holds, external authors, and final-close races"
 	else
 		_fail "parent mutation gate result mismatch: ${result}"
 	fi
@@ -468,6 +494,112 @@ test_single_pass_wired_in_engine() {
 		_pass "single-pass engine: wired in dispatch-engine module group (sp_calls=${sp_calls}, legacy_direct=${legacy_calls})"
 	else
 		_fail "single-pass engine: sp_calls=${sp_calls}, legacy_direct=${legacy_calls} (expected sp≥1, legacy=0)"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Parent repair must be reachable from the scheduled single pass, while the
+# legacy multi-stage parent reconciler remains unscheduled.
+# ---------------------------------------------------------------------------
+test_recent_parent_repair_reachable_from_single_pass() {
+	local single_pass_body=""
+	single_pass_body=$(sed -n '/^reconcile_issues_single_pass()/,/^}/p' "$RECONCILE_SH")
+	if printf '%s\n' "$single_pass_body" | grep -q '_repair_recently_closed_parents_cycle' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_reopens=5' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_repo_scans=10' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_candidates=10'; then
+		_pass "single-pass parent repair: bounded recently-closed helper is reachable"
+	else
+		_fail "single-pass parent repair: active path or bounds missing"
+	fi
+	return 0
+}
+
+test_recent_parent_repair_cursor_and_candidate_bounds() {
+	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
+	local helper_defs="" tmp_dir="" repos_json="" cursor_file="" result=""
+	local actual_candidates="" expected_candidates="" actual_scans="" expected_scans="" candidate_fixture=""
+	local cycle=0
+	helper_defs=$(sed -n '/^_repair_recently_closed_parents_for_slug()/,/^_pir_collect_parent_child_evidence()/p' "$actions_sh" | sed '$d')
+	tmp_dir=$(mktemp -d)
+	repos_json="${tmp_dir}/repos.json"
+	cursor_file="${tmp_dir}/parent-repair.cursor"
+	jq -n '{initialized_repos:[range(0;12) as $i | {
+		slug:("owner/repo" + ($i | tostring)), pulse:true, local_only:false
+	}]}' >"$repos_json"
+	candidate_fixture=$(jq -cn '[range(100;112) as $i | {
+		number:$i, title:("candidate-" + ($i | tostring)), body:"",
+		state:"closed", labels:[{name:"parent-task"}]
+	}]')
+
+	result=$(AIDEVOPS_CANDIDATE_FIXTURE="$candidate_fixture" bash -c "
+		${helper_defs}
+		_PIR_JSON_TYPE_STRING=string
+		_PIR_PT_LABEL=parent-task
+		_fetch_recently_closed_parent_tasks() {
+			local slug=\"\$1\" parent_label=\"\$2\"
+			: \"\$slug\" \"\$parent_label\"
+			printf '%s\\n' \"\$AIDEVOPS_CANDIDATE_FIXTURE\"
+			return 0
+		}
+		_action_cpt_single() {
+			local slug=\"\$1\" issue_num=\"\$2\"
+			printf 'candidate:%s:%s\\n' \"\$slug\" \"\$issue_num\"
+			_SP_CPT_REOPENED=0
+			return 0
+		}
+		_repair_recently_closed_parents_for_slug owner/repo 5 3 3 0
+		_repair_recently_closed_parents_for_slug owner/repo 5 3 3 1
+		printf '999999999999999999999999\\n' >'${cursor_file}'
+		_pir_parent_repair_cursor_load '${cursor_file}' 12
+		read -r repaired_cursor <'${cursor_file}'
+		printf 'corrupt:loaded:%s:stored:%s\\n' \"\$_PIR_PARENT_REPAIR_CURSOR\" \"\$repaired_cursor\"
+		rm -f '${cursor_file}'
+		_repair_recently_closed_parents_for_slug() {
+			local slug=\"\$1\" max_reopens=\"\$2\" max_candidates=\"\$3\"
+			local candidate_stride=\"\$4\" candidate_round=\"\$5\"
+			printf 'scan:%s:%s:%s:%s:%s\\n' \"\$slug\" \"\$max_reopens\" \
+				\"\$max_candidates\" \"\$candidate_stride\" \"\$candidate_round\"
+			_PIR_RECENT_PARENT_REOPENED=0
+			_PIR_RECENT_PARENT_SCANNED=1
+			return 0
+		}
+		AIDEVOPS_PARENT_REPAIR_CURSOR_FILE='${cursor_file}'
+		LOGFILE=/dev/null
+		for cycle in {1..13}; do
+			_repair_recently_closed_parents_cycle '${repos_json}' 5 3 3
+			read -r cursor <\"\$AIDEVOPS_PARENT_REPAIR_CURSOR_FILE\"
+			printf 'cycle:%s:cursor:%s:totals:%s:%s:%s\\n' \"\$cycle\" \"\$cursor\" \\
+				\"\$_PIR_RECENT_PARENT_REPOS_SCANNED\" \\
+				\"\$_PIR_RECENT_PARENT_CYCLE_CANDIDATES\" \"\$_PIR_RECENT_PARENT_CYCLE_REOPENED\"
+		done
+	" 2>/dev/null)
+	rm -rf "$tmp_dir"
+
+	local all_ok=1
+	actual_candidates=$(printf '%s\n' "$result" | grep '^candidate:' || true)
+	expected_candidates=$(printf '%s\n' \
+		'candidate:owner/repo:100' 'candidate:owner/repo:101' 'candidate:owner/repo:102' \
+		'candidate:owner/repo:103' 'candidate:owner/repo:104' 'candidate:owner/repo:105')
+	[[ "$actual_candidates" == "$expected_candidates" ]] || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'corrupt:loaded:0:stored:0' || all_ok=0
+	actual_scans=$(printf '%s\n' "$result" | grep '^scan:' || true)
+	expected_scans=$(printf '%s\n' \
+		'scan:owner/repo0:5:3:3:0' 'scan:owner/repo1:5:3:3:0' 'scan:owner/repo2:5:3:3:0' \
+		'scan:owner/repo3:5:3:3:0' 'scan:owner/repo4:5:3:3:0' 'scan:owner/repo5:5:3:3:0' \
+		'scan:owner/repo6:5:3:3:0' 'scan:owner/repo7:5:3:3:0' 'scan:owner/repo8:5:3:3:0' \
+		'scan:owner/repo9:5:3:3:0' 'scan:owner/repo10:5:3:3:0' 'scan:owner/repo11:5:3:3:0' \
+		'scan:owner/repo0:5:3:3:1')
+	[[ "$actual_scans" == "$expected_scans" ]] || all_ok=0
+	for cycle in {1..13}; do
+		printf '%s\n' "$result" | grep -qx \
+			"cycle:${cycle}:cursor:${cycle}:totals:1:1:0" || all_ok=0
+	done
+	if [[ "$all_ok" -eq 1 ]]; then
+		_pass "single-pass parent repair gives each non-empty repo a fixed candidate window and persists round progress"
+	else
+		_fail "single-pass parent repair cursor/cap mismatch: ${result}"
 	fi
 	return 0
 }
@@ -1158,6 +1290,7 @@ test_cache_miss_no_file
 test_cache_miss_no_slug
 test_cache_stale
 test_cache_hit_fresh
+test_cache_bodyless_row_misses
 test_no_raw_gh_issue_list_outside_fallback
 test_single_pass_cache_consolidation
 test_body_in_prefetch_fetch
@@ -1165,6 +1298,8 @@ test_should_predicates
 test_parent_live_hold_gate
 test_pr_merged_at_prefers_wrapper
 test_single_pass_wired_in_engine
+test_recent_parent_repair_reachable_from_single_pass
+test_recent_parent_repair_cursor_and_candidate_bounds
 test_batched_field_extraction_parity
 test_t2984_time_budget_present
 test_t2984_budget_env_validation

@@ -11,6 +11,7 @@
 #
 # Usage:
 #   gh-status-helper.sh check                 # one-line summary; exit 0/1/2
+#   gh-status-helper.sh check-actions         # Actions incident circuit-breaker signal
 #   gh-status-helper.sh incidents             # list active incidents
 #   gh-status-helper.sh correlate             # markdown block for issue comments
 #   gh-status-helper.sh check --json          # JSON output for programmatic callers
@@ -50,6 +51,8 @@ readonly CACHE_MAX_AGE_SECONDS="${AIDEVOPS_GH_STATUS_CACHE_TTL:-60}"
 
 # Indicator literal used by jq fallbacks and case branches.
 readonly INDICATOR_UNKNOWN="unknown"
+readonly STATUS_NETWORK_FAILURE="network_failure"
+readonly ACTIONS_COMPONENT="Actions"
 
 # CLI flag state
 ARG_JSON=0
@@ -127,11 +130,50 @@ _ensure_cache() {
 # Subcommands
 # ----------------------------------------------------------------------
 
+_print_component_status_json() {
+	local status="$1"
+	local component="${2:-}"
+	local reason="${3:-}"
+	local impact="${4:-}"
+	local incident="${5:-}"
+	jq -n \
+		--arg status "$status" \
+		--arg component "$component" \
+		--arg reason "$reason" \
+		--arg impact "$impact" \
+		--arg incident "$incident" '
+		{status:$status}
+		+ (if $component == "" then {} else {component:$component} end)
+		+ (if $reason == "" then {} else {reason:$reason} end)
+		+ (if $impact == "" then {} else {impact:$impact} end)
+		+ (if $incident == "" then {} else {incident:$incident} end)'
+	return 0
+}
+
+_actions_incidents_json() {
+	local cache_file="$1"
+	jq -c '
+		def is_object: type == "object";
+		def valid_component:
+			is_object and (.name | type) == "string";
+		def valid_incident:
+			is_object
+			and (.components | type) == "array"
+			and all(.components[]; valid_component);
+		if (is_object | not)
+			or (.incidents | type) != "array"
+			or (all(.incidents[]; valid_incident) | not)
+		then error("invalid incidents schema")
+		else [.incidents[] | select(any(.components[]; (.name | ascii_downcase) == "actions"))]
+		end' "$cache_file" 2>/dev/null
+	return $?
+}
+
 # cmd_check — fetch overall status, classify, print summary, set exit code.
 cmd_check() {
 	if ! _ensure_cache "$STATUS_URL" "$CACHE_STATUS"; then
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			printf '{"status":"%s","reason":"network_failure"}\n' "$INDICATOR_UNKNOWN"
+			printf '{"status":"%s","reason":"%s"}\n' "$INDICATOR_UNKNOWN" "$STATUS_NETWORK_FAILURE"
 		else
 			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
 		fi
@@ -163,7 +205,7 @@ cmd_check() {
 		;;
 	*)
 		exit_code=3
-		label="unknown"
+		label="$INDICATOR_UNKNOWN"
 		;;
 	esac
 
@@ -179,11 +221,47 @@ cmd_check() {
 	return "$exit_code"
 }
 
+# cmd_check_actions — report whether an unresolved incident affects Actions.
+# This component-specific signal is intentionally stricter than the overall
+# status indicator: even a minor platform incident can make CI retries harmful.
+cmd_check_actions() {
+	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
+		if [[ "$ARG_JSON" -eq 1 ]]; then
+			_print_component_status_json "$INDICATOR_UNKNOWN" "$ACTIONS_COMPONENT" "$STATUS_NETWORK_FAILURE"
+		else
+			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
+		fi
+		return 3
+	fi
+
+	local actions_incidents="" incident_count="" impact="none" incident_name=""
+	actions_incidents=$(_actions_incidents_json "$CACHE_INCIDENTS") || return 3
+	incident_count=$(printf '%s' "$actions_incidents" | jq 'length' 2>/dev/null) || return 3
+	[[ "$incident_count" =~ ^[0-9]+$ ]] || return 3
+	if [[ "$incident_count" -gt 0 ]]; then
+		impact=$(printf '%s' "$actions_incidents" | jq -r --arg unknown "$INDICATOR_UNKNOWN" '.[0].impact // $unknown') || return 3
+		incident_name=$(printf '%s' "$actions_incidents" | jq -r '.[0].name // "GitHub Actions incident"') || return 3
+		if [[ "$ARG_JSON" -eq 1 ]]; then
+			_print_component_status_json "incident" "$ACTIONS_COMPONENT" "" "$impact" "$incident_name"
+		else
+			printf 'incident — Actions affected by %s (%s)\n' "$incident_name" "$impact"
+		fi
+		return 1
+	fi
+
+	if [[ "$ARG_JSON" -eq 1 ]]; then
+		_print_component_status_json "operational" "$ACTIONS_COMPONENT"
+	else
+		printf 'operational — no unresolved Actions incident\n'
+	fi
+	return 0
+}
+
 # cmd_incidents — list unresolved incidents.
 cmd_incidents() {
 	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
 		if [[ "$ARG_JSON" -eq 1 ]]; then
-			printf '{"incidents":[],"reason":"network_failure"}\n'
+			printf '{"incidents":[],"reason":"%s"}\n' "$STATUS_NETWORK_FAILURE"
 		else
 			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
 		fi
@@ -248,6 +326,7 @@ gh-status-helper.sh — Query GitHub Statuspage API for platform health
 
 Usage:
   gh-status-helper.sh check        [--json] [--no-cache]
+  gh-status-helper.sh check-actions [--json] [--no-cache]
   gh-status-helper.sh incidents    [--json] [--no-cache]
   gh-status-helper.sh correlate              [--no-cache]
   gh-status-helper.sh -h | --help
@@ -257,6 +336,8 @@ Exit codes (check):
   1  degraded (major)
   2  outage (critical)
   3  unknown / network failure
+
+Exit codes (check-actions): 0 operational, 1 active incident, 3 unknown.
 
 Cache: ~/.aidevops/cache/gh-status-*.json (60s TTL, override via
 AIDEVOPS_GH_STATUS_CACHE_TTL).
@@ -279,7 +360,7 @@ main() {
 			print_usage
 			return 0
 			;;
-		check | incidents | correlate)
+		check | check-actions | incidents | correlate)
 			subcommand="$arg"
 			;;
 		*)
@@ -293,6 +374,7 @@ main() {
 
 	case "$subcommand" in
 	check) cmd_check ;;
+	check-actions) cmd_check_actions ;;
 	incidents) cmd_incidents ;;
 	correlate) cmd_correlate ;;
 	"")
