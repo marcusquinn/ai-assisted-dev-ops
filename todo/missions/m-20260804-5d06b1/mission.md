@@ -172,8 +172,8 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 
 | # | Feature | Task ID | Status | Estimate | Worker | PR |
 |---|---------|---------|--------|----------|--------|----|
-| 2.1 | Implement provider registry, config loader, state store, status/doctor commands, and deterministic dry-run planner `[depends:F1.1] [depends:F1.4]` | t18202 | permission-blocked | 6h | vladimirdulov | |
-| 2.2 | Generate the canonical 13 aidevops agents plus the framework guide from discovery metadata, including workload tiers and stable IDs `[depends:F1.3]` | t18203 | permission-blocked | 3.5h | vladimirdulov | |
+| 2.1 | Implement provider registry, config loader, state store, status/doctor commands, and deterministic dry-run planner `[depends:F1.1] [depends:F1.4]` | t18202 | complete | 6h | marcusquinn | #29619 |
+| 2.2 | Generate the canonical 13 aidevops agents plus the framework guide from discovery metadata, including workload tiers and stable IDs `[depends:F1.3]` | t18203 | complete | 3.5h | marcusquinn | #29605 |
 | 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | pending | pending | brief first | | |
 | 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | pending | pending | brief first | | |
 | 2.5 | Generate restricted OpenCode launch overlays for canonical agent selection, workload variant, interface context, and read-only conversational permissions `[depends:F2.2]` | pending | pending | brief first | | |
@@ -352,6 +352,8 @@ Feature budgets are intentionally deferred until briefs identify repositories, u
 | 2026-08-05T01:11:33Z | Milestone 2 parent and first leaves allocated | Reserved t18201 as the permanent non-dispatchable Milestone 2 tracker, t18202 for the read-only runtime core, and t18203 for canonical roster generation. Resolved the first config and roster identity boundaries; F2.3-F2.5 remain deliberately unfiled until their direct dependencies merge. |
 | 2026-08-05T01:33:56Z | Milestone 2 parent and first leaves published | Created permanent parent #29541 and worker-ready leaves #29542 and #29543, verified all three immutable repository-scoped mappings, both leaves' required labels and unassigned available state, and the native parent/sub-issue hierarchy. A REST quota failure interrupted #29543 post-create finalisation; the existing mapped issue was recovered without duplication through one bounded GraphQL mutation and independently re-read. F2.3-F2.5 remain deliberately unfiled until their direct dependencies merge. |
 | 2026-08-05T02:01:53Z | Milestone 2 worker hand-offs recorded | Both ready leaves were claimed by vladimirdulov, then moved to `needs-maintainer-permissions` without an implementation PR. Their mission rows now preserve the permission-blocked hand-off rather than presenting the leaves as unclaimed; no implementation failure or completion is inferred. |
+| 2026-08-05T22:10:07Z | Milestone 2 roster completed and runtime core resumed | Verified feature 2.2 merged through PR #29605 and marked it complete, independently unblocking feature 2.5. Maintainer-owned interactive work resumed feature 2.1 / t18202 / issue #29542 after the earlier worker released its permission-blocked claim without a PR or pushed recovery branch. |
+| 2026-08-05T23:32:47Z | Milestone 2 runtime core completed | Implemented feature 2.1 through PR #29619: a disabled-by-default provider registry and config loader, guarded local state store, read-only providers/detect/status/doctor commands, and deterministic non-mutating reconciliation planner. Contract, security, state, CLI, and regression suites passed, unblocking the Buzz and Matrix adapter leaves. |
 
 ## Recovery Log
 

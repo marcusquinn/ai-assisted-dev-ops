@@ -6,15 +6,20 @@
 The team-interface core is the provider-neutral boundary between provider
 adapters, policy brokers, and consumers. Version 1 is defined by
 `schemas/team-interface/core-v1.schema.json` and supports closed `registry` and
-`event` documents. Existing Matrix, direct aidevops, and provider runtimes do
-not write this contract yet.
+`event` documents. The read-only executable surface is defined by
+`schemas/team-interface/runtime-v1.schema.json` and
+`reference/team-interface-runtime.md`. Existing Matrix, direct aidevops, and
+provider runtimes do not use an adapter from this registry yet.
 
 ## Ownership and configuration
 
 Dedicated versioned team-interface documents are authoritative for providers,
-accounts, identities, resources, capabilities, and normalized events. A future
-configuration task may add only enablement plus path or document references to
-`config.jsonc`; rich provider or team state does not belong there.
+accounts, identities, resources, capabilities, and normalized events. Runtime
+selection lives in `~/.config/aidevops/team-interface.json`, using
+`configs/team-interface-config.json.txt` as the disabled template. It contains
+only enablement, document paths, registered adapter IDs, settings references,
+and bounded runtime options. Rich provider or team state does not belong in the
+runtime config or `config.jsonc`.
 
 The core owns normalized identifiers, capability declarations, resource
 relationships, verified actor context, requested authority, and event

@@ -367,6 +367,89 @@ _verify_opencode_plugin_deps() {
 	return 1
 }
 
+# _verify_agent_runtime_deps target_dir
+# Verifies the exact Ajv runtime used by deployed team-interface validators.
+_verify_agent_runtime_deps() {
+	local target_dir="$1"
+	local validators_module="$target_dir/scripts/team-interface-validators.mjs"
+	local manifest_file="$target_dir/package.json"
+
+	[[ -f "$validators_module" && -f "$manifest_file" ]] || return 1
+	command -v node >/dev/null 2>&1 || return 1
+	if node --input-type=module - "$validators_module" "$manifest_file" "$target_dir" <<'NODE'; then
+import {lstatSync, readFileSync, realpathSync} from "node:fs";
+import {createRequire} from "node:module";
+import {isAbsolute, relative, resolve, sep} from "node:path";
+import {pathToFileURL} from "node:url";
+
+const validatorsPath = process.argv[2];
+const manifestPath = process.argv[3];
+const targetPath = process.argv[4];
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const expectedVersion = manifest.dependencies?.ajv;
+const require = createRequire(pathToFileURL(validatorsPath));
+const resolvedPackage = realpathSync(require.resolve("ajv/package.json"));
+const dependencyPath = resolve(targetPath, "node_modules");
+if (lstatSync(dependencyPath).isSymbolicLink()) {
+  throw new Error("Deployed node_modules must not be a symbolic link");
+}
+const dependencyRoot = realpathSync(dependencyPath);
+const dependencyLocation = relative(dependencyRoot, resolvedPackage);
+if (dependencyLocation === ".." || dependencyLocation.startsWith(`..${sep}`) || isAbsolute(dependencyLocation)) {
+  throw new Error("Ajv runtime resolved outside deployed node_modules");
+}
+const actualVersion = JSON.parse(readFileSync(resolvedPackage, "utf8")).version;
+if (!expectedVersion || expectedVersion !== actualVersion) {
+  throw new Error(`Ajv runtime version mismatch: expected ${expectedVersion || "unset"}, found ${actualVersion}`);
+}
+const validators = await import(pathToFileURL(validatorsPath));
+validators.createRuntimeValidators();
+NODE
+		return 0
+	fi
+	return 1
+}
+
+# _install_agent_runtime_deps target_dir
+# Installs the locked dependency set needed by deployed agent-runtime modules.
+_install_agent_runtime_deps() {
+	local target_dir="$1"
+	local validators_module="$target_dir/scripts/team-interface-validators.mjs"
+	local manifest_file="$target_dir/package.json"
+	local lock_file="$target_dir/package-lock.json"
+	local install_log=""
+	local verify_output=""
+
+	[[ -f "$validators_module" ]] || return 0
+	if verify_output=$(_verify_agent_runtime_deps "$target_dir" 2>&1); then
+		return 0
+	fi
+	if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+		print_error "Team-interface runtime dependencies require Node.js and npm: ${verify_output:-import failed}"
+		return 1
+	fi
+	if [[ ! -f "$manifest_file" || ! -f "$lock_file" ]]; then
+		print_error "Agent runtime dependency lockfile is unavailable; runtime bundle activation blocked"
+		return 1
+	fi
+	install_log=$(mktemp "${TMPDIR:-/tmp}/aidevops-agent-runtime-install.XXXXXX") || {
+		print_error "Failed to create the agent runtime dependency install log"
+		return 1
+	}
+	if ! npm ci --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund --prefix "$target_dir" >"$install_log" 2>&1; then
+		print_error "Failed to install agent runtime dependencies; runtime bundle activation blocked"
+		tail -n 12 "$install_log" >&2
+		rm -f "$install_log"
+		return 1
+	fi
+	rm -f "$install_log"
+	if ! verify_output=$(_verify_agent_runtime_deps "$target_dir" 2>&1); then
+		print_error "Agent runtime dependency verification failed after install: ${verify_output:-import failed}"
+		return 1
+	fi
+	return 0
+}
+
 # _install_opencode_plugin_deps target_dir
 # Installs and verifies node_modules for the opencode-aidevops plugin.
 # GH#17829: @bufbuild/protobuf was missing; GH#17891: only symlink on first run.
@@ -1106,6 +1189,7 @@ _deploy_agents_post_copy() {
 	local plugins_file="$4"
 
 	_set_script_permissions_and_report "$target_dir"
+	_install_agent_runtime_deps "$target_dir" || return 1
 	_install_opencode_plugin_deps "$target_dir" || return 1
 	_deploy_version_file "$target_dir" "$repo_dir"
 	_deploy_security_advisories_files "$source_dir"

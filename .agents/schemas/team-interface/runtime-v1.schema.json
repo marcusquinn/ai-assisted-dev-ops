@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:runtime:v1",
+  "title": "aidevops team-interface runtime contract v1",
+  "oneOf": [
+    {"$ref": "#/$defs/runtime_config_document"},
+    {"$ref": "#/$defs/runtime_state_document"},
+    {"$ref": "#/$defs/adapter_observation_document"},
+    {"$ref": "#/$defs/plan_request_document"}
+  ],
+  "$defs": {
+    "core_stable_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/stable_id"},
+    "core_reference_id": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/reference_id"},
+    "registered_reference": {
+      "allOf": [
+        {"$ref": "#/$defs/core_reference_id"},
+        {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._:/-]*$"}
+      ]
+    },
+    "settings_reference": {
+      "allOf": [
+        {"$ref": "#/$defs/registered_reference"},
+        {"pattern": "^settings:[A-Za-z0-9][A-Za-z0-9._:/-]*$"}
+      ]
+    },
+    "document_path": {
+      "type": "string",
+      "minLength": 6,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000]+\\.json$"
+    },
+    "document_paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry_path", "policy_path", "app_team_path"],
+      "properties": {
+        "registry_path": {"$ref": "#/$defs/document_path"},
+        "policy_path": {"$ref": "#/$defs/document_path"},
+        "app_team_path": {"$ref": "#/$defs/document_path"}
+      }
+    },
+    "adapter_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "settings_ref"],
+      "properties": {
+        "adapter_id": {"$ref": "#/$defs/core_stable_id"},
+        "settings_ref": {"$ref": "#/$defs/settings_reference"}
+      }
+    },
+    "runtime_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_timeout_ms",
+        "max_document_bytes",
+        "max_plan_fields",
+        "max_state_observations",
+        "lock_timeout_ms",
+        "lock_stale_ms"
+      ],
+      "properties": {
+        "adapter_timeout_ms": {"type": "integer", "minimum": 10, "maximum": 60000},
+        "max_document_bytes": {"type": "integer", "minimum": 1024, "maximum": 10485760},
+        "max_plan_fields": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "max_state_observations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "lock_timeout_ms": {"type": "integer", "minimum": 0, "maximum": 30000},
+        "lock_stale_ms": {"type": "integer", "minimum": 1000, "maximum": 3600000}
+      }
+    },
+    "runtime_config_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "enabled", "documents", "adapters", "options"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "runtime_config"},
+        "enabled": {"type": "boolean"},
+        "documents": {"$ref": "#/$defs/document_paths"},
+        "adapters": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/adapter_selection"}
+        },
+        "options": {"$ref": "#/$defs/runtime_options"}
+      }
+    },
+    "read_only_capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_id", "resource_kinds", "operations", "availability", "owner_review_required"],
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/core_stable_id"},
+        "resource_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/resource_kind"}
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["discover", "read", "receive"]}
+        },
+        "availability": {"enum": ["available", "degraded", "unavailable", "unknown"]},
+        "owner_review_required": {"type": "boolean"}
+      }
+    },
+    "adapter_observation_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "adapter_id",
+        "provider_id",
+        "adapter_version",
+        "provider_version",
+        "availability",
+        "capabilities",
+        "compatibility",
+        "observed_at",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "adapter_observation"},
+        "adapter_id": {"$ref": "#/$defs/core_stable_id"},
+        "provider_id": {"$ref": "#/$defs/core_stable_id"},
+        "adapter_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "provider_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "availability": {"enum": ["available", "degraded", "unavailable", "unknown"]},
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/read_only_capability"}
+        },
+        "compatibility": {"$ref": "urn:aidevops:team-interface:core:v1#/$defs/compatibility"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/registered_reference"}
+        }
+      }
+    },
+    "runtime_state_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "document_type", "generation", "updated_at", "observations"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "runtime_state"},
+        "generation": {"type": "integer", "minimum": 1},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "observations": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/adapter_observation_document"}
+        }
+      }
+    },
+    "plan_request_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "reconciliation_input",
+        "desired_version",
+        "capabilities",
+        "precondition",
+        "security_drift_action",
+        "verified_actor_ref",
+        "authorization_ref",
+        "created_at",
+        "expires_at",
+        "audit"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "plan_request"},
+        "reconciliation_input": {
+          "$ref": "urn:aidevops:team-interface:reconciliation:v1#/$defs/reconciliation_input_document"
+        },
+        "desired_version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "capabilities": {
+          "$ref": "urn:aidevops:team-interface:reconciliation:v1#/$defs/capability_evidence"
+        },
+        "precondition": {
+          "$ref": "urn:aidevops:team-interface:reconciliation:v1#/$defs/cas_precondition"
+        },
+        "security_drift_action": {"enum": ["review_required", "disable_execution"]},
+        "verified_actor_ref": {"$ref": "#/$defs/registered_reference"},
+        "authorization_ref": {"$ref": "#/$defs/registered_reference"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "audit": {"$ref": "urn:aidevops:team-interface:reconciliation:v1#/$defs/audit_evidence"}
+      }
+    }
+  }
+}

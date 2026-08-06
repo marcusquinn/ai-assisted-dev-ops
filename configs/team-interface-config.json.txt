@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "document_type": "runtime_config",
+  "enabled": false,
+  "documents": {
+    "registry_path": "~/.config/aidevops/team-interface/registry-v1.json",
+    "policy_path": "~/.config/aidevops/team-interface/ownership-policy-v1.json",
+    "app_team_path": "~/.config/aidevops/team-interface/app-team-v1.json"
+  },
+  "adapters": [],
+  "options": {
+    "adapter_timeout_ms": 5000,
+    "max_document_bytes": 1048576,
+    "max_plan_fields": 500,
+    "max_state_observations": 100,
+    "lock_timeout_ms": 4000,
+    "lock_stale_ms": 60000
+  }
+}

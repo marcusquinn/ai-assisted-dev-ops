@@ -137,6 +137,7 @@ node_modules/
 packages/gui-web/dist/
 packages/gui-desktop/dist/
 package-lock.json
+!.agents/package-lock.json
 !.agents/plugins/opencode-aidevops/package-lock.json
 pnpm-lock.yaml
 yarn.lock

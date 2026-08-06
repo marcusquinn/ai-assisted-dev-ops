@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "label": "executable adapter path",
+      "document": {
+        "schema_version": 1,
+        "document_type": "runtime_config",
+        "enabled": true,
+        "documents": {
+          "registry_path": "registry-v1.json",
+          "policy_path": "ownership-policy-v1.json",
+          "app_team_path": "app-team-v1.json"
+        },
+        "adapters": [
+          {
+            "adapter_id": "adapter.mock",
+            "settings_ref": "settings:mock",
+            "module_path": "./adapter.mjs"
+          }
+        ],
+        "options": {
+          "max_document_bytes": 1048576,
+          "max_plan_fields": 100,
+          "max_state_observations": 20,
+          "lock_timeout_ms": 250,
+          "lock_stale_ms": 1000
+        }
+      }
+    },
+    {
+      "label": "secret value",
+      "document": {
+        "schema_version": 1,
+        "document_type": "runtime_config",
+        "enabled": true,
+        "documents": {
+          "registry_path": "registry-v1.json",
+          "policy_path": "ownership-policy-v1.json",
+          "app_team_path": "app-team-v1.json"
+        },
+        "adapters": [
+          {
+            "adapter_id": "adapter.mock",
+            "settings_ref": "settings:mock",
+            "secret_value": "[REDACTED]"
+          }
+        ],
+        "options": {
+          "max_document_bytes": 1048576,
+          "max_plan_fields": 100,
+          "max_state_observations": 20,
+          "lock_timeout_ms": 250,
+          "lock_stale_ms": 1000
+        }
+      }
+    },
+    {
+      "label": "malformed state",
+      "document": {
+        "schema_version": 1,
+        "document_type": "runtime_state",
+        "generation": 0,
+        "updated_at": "not-a-time",
+        "observations": []
+      }
+    }
+  ],
+  "stale_generation": {
+    "expected_generation": 2,
+    "next_generation": 3,
+    "existing_generation": 4
+  },
+  "unsupported_commands": ["apply", "create", "update", "delete", "send", "invite"]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "aidevops-agent-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "ajv": "8.20.0"
+  }
+}

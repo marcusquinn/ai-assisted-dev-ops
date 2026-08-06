@@ -1,0 +1,164 @@
+{
+  "runtime_config": {
+    "schema_version": 1,
+    "document_type": "runtime_config",
+    "enabled": false,
+    "documents": {
+      "registry_path": "registry-v1.json",
+      "policy_path": "ownership-policy-v1.json",
+      "app_team_path": "app-team-v1.json"
+    },
+    "adapters": [],
+    "options": {
+      "adapter_timeout_ms": 100,
+      "max_document_bytes": 1048576,
+      "max_plan_fields": 100,
+      "max_state_observations": 20,
+      "lock_timeout_ms": 250,
+      "lock_stale_ms": 1000
+    }
+  },
+  "adapter_observation": {
+    "schema_version": 1,
+    "document_type": "adapter_observation",
+    "adapter_id": "adapter.mock",
+    "provider_id": "provider.mock",
+    "adapter_version": "1.0.0",
+    "provider_version": "fixture-1",
+    "availability": "available",
+    "capabilities": [
+      {
+        "capability_id": "capability.mock.read",
+        "resource_kinds": ["other"],
+        "operations": ["discover", "read"],
+        "availability": "available",
+        "owner_review_required": false
+      }
+    ],
+    "compatibility": {
+      "state": "compatible",
+      "reference": "compatibility:mock-fixture"
+    },
+    "observed_at": "2026-08-05T20:00:00Z",
+    "evidence_refs": ["evidence:mock-fixture"]
+  },
+  "runtime_state": {
+    "schema_version": 1,
+    "document_type": "runtime_state",
+    "generation": 1,
+    "updated_at": "2026-08-05T20:00:01Z",
+    "observations": [
+      {
+        "schema_version": 1,
+        "document_type": "adapter_observation",
+        "adapter_id": "adapter.mock",
+        "provider_id": "provider.mock",
+        "adapter_version": "1.0.0",
+        "provider_version": "fixture-1",
+        "availability": "available",
+        "capabilities": [
+          {
+            "capability_id": "capability.mock.read",
+            "resource_kinds": ["other"],
+            "operations": ["discover", "read"],
+            "availability": "available",
+            "owner_review_required": false
+          }
+        ],
+        "compatibility": {
+          "state": "compatible",
+          "reference": "compatibility:mock-fixture"
+        },
+        "observed_at": "2026-08-05T20:00:00Z",
+        "evidence_refs": ["evidence:mock-fixture"]
+      }
+    ]
+  },
+  "ownership_policy": {
+    "schema_version": 1,
+    "document_type": "ownership_policy",
+    "policy_id": "runtime-policy.mock",
+    "policy_version": "1.0.0",
+    "resource_kind": "conversation",
+    "unknown_field_ownership": "review_required",
+    "field_rules": [
+      {"field_path": "/enabled", "ownership": "managed", "sensitive": false}
+    ]
+  },
+  "plan_request": {
+    "schema_version": 1,
+    "document_type": "plan_request",
+    "reconciliation_input": {
+      "schema_version": 1,
+      "document_type": "reconciliation_input",
+      "input_id": "reconciliation-input.runtime-fixture",
+      "resource": {
+        "resource_id": "resource.buzz.conversation",
+        "provider_id": "buzz",
+        "community_id": "community.buzz.primary",
+        "provider_external_id": "conversation/opaque-main",
+        "match_basis": "stable_ids",
+        "management_identity_status": "verified",
+        "management_owner": "subject.alice",
+        "manager_marker": "manager:runtime-fixture"
+      },
+      "policy_ref": "policy:runtime-policy.mock",
+      "policy_version": "1.0.0",
+      "adapter_version": "1.0.0",
+      "observed_at": "2026-08-05T20:00:00Z",
+      "observation_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fields": [
+        {
+          "field_path": "/enabled",
+          "ownership": "managed",
+          "sensitive": false,
+          "desired": {
+            "present": true,
+            "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "data": {"kind": "literal", "value": false}
+          },
+          "last_applied": {
+            "present": true,
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "data": {"kind": "literal", "value": true}
+          },
+          "actual": {
+            "present": true,
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "data": {"kind": "literal", "value": true}
+          },
+          "actual_observed_at": "2026-08-05T20:00:00Z"
+        }
+      ]
+    },
+    "desired_version": "fixture-1",
+    "capabilities": {
+      "stable_external_ids": true,
+      "managed_metadata": true,
+      "supported_apply": true,
+      "revision_cas": true,
+      "compatibility": "compatible",
+      "observed_at": "2026-08-05T19:59:00Z",
+      "expires_at": "2026-08-05T20:30:00Z",
+      "evidence_refs": ["capability:runtime-fixture"]
+    },
+    "precondition": {
+      "revision_kind": "etag",
+      "observed_revision": "etag-fixture-1",
+      "expected_revision": "etag-fixture-1",
+      "observation_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "observed_at": "2026-08-05T20:00:00Z"
+    },
+    "security_drift_action": "disable_execution",
+    "verified_actor_ref": "actor:runtime-owner",
+    "authorization_ref": "authorization:runtime-fixture",
+    "created_at": "2026-08-05T20:01:00Z",
+    "expires_at": "2026-08-05T20:20:00Z",
+    "audit": {
+      "audit_ref": "audit:runtime-fixture",
+      "evidence_refs": ["authorization:runtime-fixture"],
+      "redaction": "redacted",
+      "recorded_at": "2026-08-05T20:01:00Z"
+    }
+  }
+}
