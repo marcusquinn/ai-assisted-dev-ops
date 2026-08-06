@@ -247,6 +247,24 @@ test_bodyless_transport_rows_are_rejected() {
 	return 0
 }
 
+test_bodyless_cached_rows_are_rejected() {
+	setup_env
+	local cache_file="$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json"
+	local state_meta="$TEST_ROOT/bodyless-cache-state.log"
+	local now=""
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"timestamp":"%s","items":[{"number":3,"title":"Issue","state":"open","labels":[],"assignees":[],"updatedAt":"%s"}]}\n' \
+		"$now" "$now" >"$cache_file"
+	if "$HELPER" read-cache --kind issues --slug owner/repo >/dev/null 2>"$state_meta" || \
+		"$HELPER" read-snapshot --kind issues --slug owner/repo >/dev/null 2>>"$state_meta"; then
+		print_result "bodyless cached issue rows force live fallback" 1
+	else
+		print_result "bodyless cached issue rows force live fallback" 0
+	fi
+	teardown_env
+	return 0
+}
+
 test_paginated_response_is_not_complete() {
 	setup_env
 	write_gh_stub paginated
@@ -283,7 +301,7 @@ test_read_cache_filters_closed_issues() {
 	setup_env
 	mkdir -p "$PULSE_BATCH_PREFETCH_CACHE_DIR"
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json" <<'JSON'
-{"timestamp":"2026-05-01T00:00:00Z","items":[{"number":10,"title":"Open","state":"open"},{"number":11,"title":"Closed","state":"closed"}]}
+{"timestamp":"2026-05-01T00:00:00Z","items":[{"number":10,"title":"Open","state":"open","body":"Open body"},{"number":11,"title":"Closed","state":"closed","body":"Closed body"}]}
 JSON
 	local output count first
 	output=$("$HELPER" read-cache --kind issues --slug owner/repo)
@@ -771,6 +789,7 @@ SH
 test_unchanged_repo_uses_304_cache
 test_changed_repo_refreshes_cache
 test_bodyless_transport_rows_are_rejected
+test_bodyless_cached_rows_are_rejected
 test_paginated_response_is_not_complete
 test_conditional_failure_routes_to_rest_by_default
 test_search_opt_in_preserves_owner_search

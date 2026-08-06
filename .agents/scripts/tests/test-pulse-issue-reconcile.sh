@@ -131,6 +131,29 @@ test_cache_hit_fresh() {
 	return 0
 }
 
+test_cache_bodyless_row_misses() {
+	local tmp_cache
+	tmp_cache=$(mktemp)
+	local now_ts
+	now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"owner/repo":{"last_prefetch":"%s","issues":[{"number":42,"title":"Bodyless","labels":[]}]}}' \
+		"$now_ts" >"$tmp_cache"
+
+	local result
+	result=$(bash -c "
+		PULSE_PREFETCH_CACHE_FILE='${tmp_cache}'
+		$(grep -A 40 '^_read_cache_issues_for_slug()' "${RECONCILE_SH}" | head -50)
+		_read_cache_issues_for_slug 'owner/repo' && echo HIT || echo MISS
+	" 2>/dev/null)
+	rm -f "$tmp_cache"
+	if [[ "$result" == "MISS" ]]; then
+		_pass "cache-miss: bodyless issue row forces live fallback"
+	else
+		_fail "cache-miss: bodyless issue row — got '${result}'"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Test 5: No raw 'gh issue list' calls outside fallback paths
 # ---------------------------------------------------------------------------
@@ -1175,6 +1198,7 @@ test_cache_miss_no_file
 test_cache_miss_no_slug
 test_cache_stale
 test_cache_hit_fresh
+test_cache_bodyless_row_misses
 test_no_raw_gh_issue_list_outside_fallback
 test_single_pass_cache_consolidation
 test_body_in_prefetch_fetch

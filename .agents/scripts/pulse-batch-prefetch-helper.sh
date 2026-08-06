@@ -1332,7 +1332,10 @@ _cmd_read_cache() {
 	local items=""
 
 	if [[ "$kind" == "$_KIND_ISSUES" ]]; then
-		items=$(jq -ce --arg state_open "$_STATE_OPEN" '[.items[] | select(has("state") and ((.state | ascii_downcase) == $state_open))]' "$_CACHE_SNAPSHOT_PATH" 2>/dev/null) || {
+		items=$(jq -ce --arg state_open "$_STATE_OPEN" --arg type_string "$_JSON_TYPE_STRING" \
+			'select(all(.items[]; (.body | type) == $type_string)) |
+			[.items[] | select(has("state") and ((.state | ascii_downcase) == $state_open))]' \
+			"$_CACHE_SNAPSHOT_PATH" 2>/dev/null) || {
 			_CACHE_SNAPSHOT_STATE="$_CACHE_STATE_MALFORMED"
 			_emit_cache_state "$_CACHE_SNAPSHOT_STATE" "$kind" "$slug"
 			return 1
@@ -1407,7 +1410,8 @@ _cmd_read_snapshot() {
 			select(all(.items[];
 				(.number | type) == "number" and has("title") and
 				(.state | type) == $type_string and (.labels | type) == $type_array and
-				has("updatedAt") and (.assignees | type) == $type_array)) |
+				has("updatedAt") and (.assignees | type) == $type_array and
+				(.body | type) == $type_string)) |
 			.items = [.items[] | select((.state | ascii_downcase) == "open")]
 		else
 			select(all(.items[];

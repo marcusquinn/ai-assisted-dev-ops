@@ -131,7 +131,11 @@ _read_cache_issues_for_slug() {
 
 	# Read issues array for this slug
 	local issues
-	issues=$(jq -e --arg slug "$slug" '.[$slug].issues // empty' "$cache_file" 2>/dev/null) || return 1
+	local string_type="string"
+	issues=$(jq -ce --arg slug "$slug" --arg string_type "$string_type" '
+		.[$slug].issues // empty |
+		select(type == "array" and all(.[]; type == "object" and (.body | type) == $string_type))
+	' "$cache_file" 2>/dev/null) || return 1
 	[[ -n "$issues" ]] || return 1
 
 	printf '%s' "$issues"
@@ -1415,12 +1419,13 @@ reconcile_issues_single_pass() {
 		# when labels_csv is empty. "|" is not an IFS whitespace character
 		# so consecutive "|" separators are never collapsed. See bash(1) IFS.
 		local issues_tsv
-		issues_tsv=$(printf '%s' "$issues_json" | jq -r '
+		issues_tsv=$(printf '%s' "$issues_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
+			select(type == "array" and all(.[]; type == "object" and (.body | type) == $string_type)) |
 			.[] | [
 				(.number // "" | tostring),
 				((.title // "") | @base64),
 				((.labels // []) | map(.name) | join(",")),
-				((.body // "") | @base64),
+				(.body | @base64),
 				(.authorAssociation // ""),
 				((.author.login // "") | @base64),
 				(.author.type // ""),
