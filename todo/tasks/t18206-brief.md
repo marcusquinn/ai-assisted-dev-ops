@@ -63,7 +63,7 @@ Milestone 2 parent.
 - **Rationale:** A partial producer-only change would leave stale/live races and closed-parent recovery unresolved.
 - **Status:** `not-created`
 - **Freshness evidence:** Live #29541 body, closure comment, native child graph, canonical prefetch projection, active single-pass wiring, and prior parent-close fixes were checked on 2026-08-06.
-- **Verification run:** The four focused suites passed 24, 17, 24, and 27 tests; ShellCheck, changed-file lint, and Qlty regression `46 -> 46` also passed on 2026-08-06.
+- **Verification run:** The four focused suites passed 26, 17, 25, and 27 tests; ShellCheck, changed-file lint, and Qlty regression `46 -> 46` also passed on 2026-08-06.
 - **Stale-assumption warning:** Re-run discovery if prefetch projection, parent mutation, or single-pass scheduler files advance before coding.
 
 ## How (Approach)
