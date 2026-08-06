@@ -425,6 +425,7 @@ _pmrc_normalize_snapshot_checks_json() {
 			$pages[]?.check_runs[]? | {
 				source: "check_run",
 				name: (.name // ""),
+				app_slug: (.app.slug // ""),
 				status: ((.status // "") | ascii_downcase),
 				conclusion: ((.conclusion // "") | ascii_downcase),
 				link: (.details_url // .html_url // ""),
@@ -434,6 +435,7 @@ _pmrc_normalize_snapshot_checks_json() {
 			$statuses.statuses[]? | ((.state // "") | ascii_downcase) as $state | {
 				source: "commit_status",
 				name: (.context // ""),
+				app_slug: "",
 				status: (if $state == $pending then $in_progress else $completed end),
 				conclusion: (if $state == $success then $success elif ($state == $failure or $state == $error) then $failure else "" end),
 				link: (.target_url // ""),
@@ -444,8 +446,7 @@ _pmrc_normalize_snapshot_checks_json() {
 		| sort_by(.source, .name, .observed_at)
 		| group_by([.source, .name])
 		| map(
-			# A conditional/skipped rerun is not newer execution evidence. Preserve
-			# the latest executed result so advisory companions cannot disappear.
+			# Preserve the latest executed result so skipped reruns cannot hide advisory companions.
 			. as $runs
 			| ([$runs[] | select(.conclusion != $skipped)] | last) as $executed
 			| $executed // last
@@ -488,11 +489,12 @@ _pmrc_normalize_snapshot_checks_json() {
 						elif ($family == $maintainer and all($effective[]; (.conclusion == $success or .conclusion == "neutral" or .conclusion == $skipped))) then $success
 						else "" end
 					),
+					app_slug: ([$effective[]?.app_slug | select(. != "")] | first // ""),
 					observed_at: ([$effective[]?.observed_at | select(. != "")] | max // ""),
-					members: [$members[] | {name, source, status, conclusion, link, observed_at}]
+					members: [$members[] | {name, source, app_slug, status, conclusion, link, observed_at}]
 				} else
 				($members | sort_by(.observed_at) | last) as $latest
-				| ($latest | del(.family_key)) + {members: [$members[] | {name, source, status, conclusion, link, observed_at}]}
+				| ($latest | del(.family_key)) + {members: [$members[] | {name, source, app_slug, status, conclusion, link, observed_at}]}
 			end
 		)
 		| sort_by(.name)

@@ -497,6 +497,23 @@ EOF
 	return 0
 }
 
+assert_check_run_app_slug_survives_normalization() {
+	local snapshot=""
+	snapshot=$(printf '%s\n%s\n' \
+		'[{"check_runs":[{"name":"Build","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]}]' \
+		'{"statuses":[]}' |
+		_pmrc_normalize_snapshot_checks_json owner/repo sha-reviewed)
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if printf '%s' "$snapshot" | jq -e \
+		'length == 1 and .[0].name == "Build" and .[0].app_slug == "github-actions"' >/dev/null; then
+		printf 'PASS check-run app slug survives current-head normalization\n'
+	else
+		printf 'FAIL check-run app slug was lost during current-head normalization\n'
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+	return 0
+}
+
 assert_review_and_head_snapshot_cases() {
 	assert_gate "same-name check-run and status retain independent source failures" same_name_source_conflict 1
 	set_live_evidence PASS
@@ -563,6 +580,7 @@ main() {
 	assert_infrastructure_rerun_unset_defaults_safe
 	assert_infrastructure_rerun_unset_logfile_safe
 	assert_actions_incident_suppresses_infrastructure_rerun
+	assert_check_run_app_slug_survives_normalization
 	assert_effective_rules_have_exact_rest_cost
 	assert_configured_advisory_contexts_are_null_safe
 	assert_malformed_advisory_contexts_fail_closed_once

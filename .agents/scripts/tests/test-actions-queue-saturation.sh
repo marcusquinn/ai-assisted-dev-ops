@@ -171,7 +171,7 @@ case "$1" in
 				emit_body "$body" "$@"
 				exit 0
 				;;
-			repos/*/commits/*/check-runs)
+		repos/*/commits/*/check-runs*)
 				body=$(printf '{"check_runs":%s}' "${GH_SHIM_CHECK_RUNS_JSON:-[]}")
 				emit_body "$body" "$@"
 				exit 0
@@ -439,42 +439,57 @@ if ! declare -F _classify_stuck_pr >/dev/null 2>&1; then
 	exit 1
 fi
 
+_pmrc_snapshot_checks_json() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	[[ -n "$repo_slug" && -n "$head_sha" ]] || return 1
+	printf '%s\n' "${GH_SHIM_CHECK_RUNS_JSON:-[]}"
+	return 0
+}
+
 # 5a: is_saturated=1 + current-head REST checks include QUEUED → saturation.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
-	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null}]'
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
 assert_eq "saturated+queued check: classification" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
 
-# 5b: is_saturated=0 + rollup has QUEUED check → falls through to STUCK_OTHER.
+# 5b: an external app queued during an Actions incident is not runner saturation.
+_reset_env
+set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Codacy","status":"queued","conclusion":null,"app":{"slug":"codacy-production"}}]'
+classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
+assert_eq "saturated+external queued check: classification" "STUCK_OTHER" "$classification"
+
+# 5c: is_saturated=0 + rollup has QUEUED check → falls through to STUCK_OTHER.
 # The shim's bare repo metadata returns default_branch="main", and the
 # protection probe returns "{}" (success path) — neither STUCK_BRANCHPROTECT_*
 # branch fires. No FAILURE entries in the rollup → STUCK_OTHER.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
-	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null}]'
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "0")
 assert_eq "unsaturated+queued check: classification" "STUCK_OTHER" "$classification"
 
-# 5c: is_saturated=1 + rollup has both QUEUED and FAILURE checks → priority
+# 5d: is_saturated=1 + rollup has both QUEUED and FAILURE checks → priority
 # is QUEUED (the running outage masks per-PR failures).
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
-	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null},{"name":"Lint","status":"completed","conclusion":"failure"}]'
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}},{"name":"Lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
 assert_eq "saturated+queued+failure: priority QUEUED" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
 
-# 5d: is_saturated=0 + rollup has FAILURE only → STUCK_CHECKS_FAILING.
+# 5e: is_saturated=0 + rollup has FAILURE only → STUCK_CHECKS_FAILING.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
 	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Lint","status":"completed","conclusion":"failure"}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "0")
 assert_eq "unsaturated+failure only: classification" "STUCK_CHECKS_FAILING" "$classification"
 
-# 5e: Default is_saturated parameter (omitted) → treated as 0.
+# 5f: Default is_saturated parameter (omitted) → treated as 0.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
-	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null}]'
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops")
 assert_eq "default param: treated as is_saturated=0" "STUCK_OTHER" "$classification"
 

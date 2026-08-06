@@ -64,6 +64,10 @@ cat >"$MOCK_BASE/operational/status.json" <<'EOF'
   "status": {"indicator": "none", "description": "All Systems Operational"}
 }
 EOF
+
+mkdir -p "$MOCK_BASE/malformed-incidents" "$MOCK_BASE/malformed-components"
+printf '%s\n' '{"incidents":{"bad":{"components":[{"name":"Actions"}]}}}' >"$MOCK_BASE/malformed-incidents/unresolved.json"
+printf '%s\n' '{"incidents":[{"name":"Bad schema","components":{"bad":{"name":"Actions"}}}]}' >"$MOCK_BASE/malformed-components/unresolved.json"
 cat >"$MOCK_BASE/operational/unresolved.json" <<'EOF'
 {"page": {"id": "kctbh9vrtdwd"}, "incidents": []}
 EOF
@@ -246,6 +250,20 @@ test_check_actions_component_status() {
 	return 0
 }
 
+test_check_actions_malformed_schema_fails_open() {
+	local fixture out rc
+	for fixture in malformed-incidents malformed-components; do
+		out=$(_isolated_run "$fixture" check-actions --json 2>/dev/null)
+		rc=$?
+		if [[ "$rc" -ne 3 ]]; then
+			print_result "check-actions malformed ${fixture} schema → exit 3" 1 "rc=$rc out=$out"
+		else
+			print_result "check-actions malformed ${fixture} schema → exit 3" 0
+		fi
+	done
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # incidents subcommand
 # ---------------------------------------------------------------------------
@@ -413,6 +431,7 @@ _run_tests() {
 	test_check_outage_returns_2
 	test_check_json_output
 	test_check_actions_component_status
+	test_check_actions_malformed_schema_fails_open
 	test_incidents_empty_when_operational
 	test_incidents_lists_when_degraded
 	test_incidents_json_array

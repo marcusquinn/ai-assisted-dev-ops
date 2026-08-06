@@ -53,7 +53,6 @@ readonly CACHE_MAX_AGE_SECONDS="${AIDEVOPS_GH_STATUS_CACHE_TTL:-60}"
 readonly INDICATOR_UNKNOWN="unknown"
 readonly STATUS_NETWORK_FAILURE="network_failure"
 readonly ACTIONS_COMPONENT="Actions"
-readonly ACTIONS_INCIDENTS_JQ='[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))]'
 
 # CLI flag state
 ARG_JSON=0
@@ -151,6 +150,25 @@ _print_component_status_json() {
 	return 0
 }
 
+_actions_incidents_json() {
+	local cache_file="$1"
+	jq -c '
+		def is_object: type == "object";
+		def valid_component:
+			is_object and (.name | type) == "string";
+		def valid_incident:
+			is_object
+			and (.components | type) == "array"
+			and all(.components[]; valid_component);
+		if (is_object | not)
+			or (.incidents | type) != "array"
+			or (all(.incidents[]; valid_incident) | not)
+		then error("invalid incidents schema")
+		else [.incidents[] | select(any(.components[]; (.name | ascii_downcase) == "actions"))]
+		end' "$cache_file" 2>/dev/null
+	return $?
+}
+
 # cmd_check — fetch overall status, classify, print summary, set exit code.
 cmd_check() {
 	if ! _ensure_cache "$STATUS_URL" "$CACHE_STATUS"; then
@@ -187,7 +205,7 @@ cmd_check() {
 		;;
 	*)
 		exit_code=3
-		label="unknown"
+		label="$INDICATOR_UNKNOWN"
 		;;
 	esac
 
@@ -216,12 +234,13 @@ cmd_check_actions() {
 		return 3
 	fi
 
-	local incident_count="" impact="none" incident_name=""
-	incident_count=$(jq "${ACTIONS_INCIDENTS_JQ} | length" "$CACHE_INCIDENTS" 2>/dev/null) || return 3
+	local actions_incidents="" incident_count="" impact="none" incident_name=""
+	actions_incidents=$(_actions_incidents_json "$CACHE_INCIDENTS") || return 3
+	incident_count=$(printf '%s' "$actions_incidents" | jq 'length' 2>/dev/null) || return 3
 	[[ "$incident_count" =~ ^[0-9]+$ ]] || return 3
 	if [[ "$incident_count" -gt 0 ]]; then
-		impact=$(jq -r "${ACTIONS_INCIDENTS_JQ} | .[0].impact // \"unknown\"" "$CACHE_INCIDENTS")
-		incident_name=$(jq -r "${ACTIONS_INCIDENTS_JQ} | .[0].name // \"GitHub Actions incident\"" "$CACHE_INCIDENTS")
+		impact=$(printf '%s' "$actions_incidents" | jq -r --arg unknown "$INDICATOR_UNKNOWN" '.[0].impact // $unknown') || return 3
+		incident_name=$(printf '%s' "$actions_incidents" | jq -r '.[0].name // "GitHub Actions incident"') || return 3
 		if [[ "$ARG_JSON" -eq 1 ]]; then
 			_print_component_status_json "incident" "$ACTIONS_COMPONENT" "" "$impact" "$incident_name"
 		else
