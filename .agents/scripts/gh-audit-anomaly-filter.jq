@@ -69,9 +69,29 @@ def expected_trusted_author_nmr_transition:
   and ((.before.labels // []) | index($nmr) != null)
   and ((.after.labels // []) | index($nmr) == null);
 
+# Snapshot-read failures are observability degradation, not evidence of a
+# destructive mutation. Keep them in the immutable audit log, but do not file a
+# security-anomaly issue unless the same entry contains another suspicious
+# signal. Require the full non-comparable/null-delta shape so malformed or mixed
+# records continue to fail closed into the report.
+def unavailable_capture_only:
+  ((.suspicious // []) | type) == "array"
+  and ((.suspicious // []) | length) > 0
+  and all(.suspicious[];
+    . == "state_capture_unavailable:before"
+    or . == "state_capture_unavailable:after")
+  and ((.before.capture_status // "ok") == "unavailable"
+    or (.after.capture_status // "ok") == "unavailable")
+  and (.delta.comparable == false)
+  and (.delta.title_delta_pct == null)
+  and (.delta.body_delta_pct == null)
+  and (.delta.labels_removed == null)
+  and (.delta.labels_added == null);
+
 select(try ((.suspicious | length) > 0) catch true)
 | select((try (
   expected_approval_transition
   or expected_permission_block_transition
   or expected_trusted_author_nmr_transition
+  or unavailable_capture_only
 ) catch false) | not)

@@ -355,14 +355,12 @@ assert_grep_fixed \
 	'B7c: incomplete canonical phases post the idempotent phase nudge' \
 	'_post_parent_phases_unfiled_nudge "$slug" "$parent_num"' \
 	"$ACTIONS_TARGET"
-# B7d-vacuous: close path requires child_count > 0
-# alongside all_closed. Pre-fix, a parent referencing only PRs/external
-# refs would skip the per-child loop, leave child_count=0, all_closed
-# defaulting to "true", and produce "All 0 declared child task(s) are
-# resolved." Verify the guard is in place.
+# B7d-vacuous: the shared live/cached child verifier requires a positive
+# verified child count alongside all_closed. Pre-fix, a parent referencing only
+# PRs/external refs could produce "All 0 declared child task(s) are resolved."
 assert_grep_fixed \
 	'B7d: close gate requires child_count > 0 (no vacuous-truth close)' \
-	'[[ "$all_closed" == "true" && "$child_count" -gt 0 ]] || return 1' \
+	'[[ "$all_closed" == "true" && "$_PIR_CPT_VERIFIED_CHILD_COUNT" -gt 0 ]] || return 1' \
 	"$ACTIONS_TARGET"
 # B7e: the `child_count >= 2` short-circuit MUST remain removed.
 # Single-filed-child parents are legitimate (incremental phase rollout);

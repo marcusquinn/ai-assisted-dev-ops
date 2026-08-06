@@ -101,13 +101,13 @@ _PULSE_MERGE_STUCK_CONF="${_PULSE_MERGE_STUCK_DIR}/../configs/pulse-merge-stuck.
 if [[ -f "$_PULSE_MERGE_STUCK_CONF" ]]; then
 	# Only source values for vars that aren't already set by the env.
 	# shellcheck source=/dev/null
-	[[ -z "${AIDEVOPS_MERGE_STUCK_AGE_MINUTES:-}" ]] && \
+	[[ -z "${AIDEVOPS_MERGE_STUCK_AGE_MINUTES:-}" ]] &&
 		AIDEVOPS_MERGE_STUCK_AGE_MINUTES=$(grep -E '^AIDEVOPS_MERGE_STUCK_AGE_MINUTES=' "$_PULSE_MERGE_STUCK_CONF" 2>/dev/null | tail -1 | cut -d= -f2)
-	[[ -z "${AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES:-}" ]] && \
+	[[ -z "${AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES:-}" ]] &&
 		AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES=$(grep -E '^AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES=' "$_PULSE_MERGE_STUCK_CONF" 2>/dev/null | tail -1 | cut -d= -f2)
-	[[ -z "${AIDEVOPS_MERGE_PATTERN_MIN_PRS:-}" ]] && \
+	[[ -z "${AIDEVOPS_MERGE_PATTERN_MIN_PRS:-}" ]] &&
 		AIDEVOPS_MERGE_PATTERN_MIN_PRS=$(grep -E '^AIDEVOPS_MERGE_PATTERN_MIN_PRS=' "$_PULSE_MERGE_STUCK_CONF" 2>/dev/null | tail -1 | cut -d= -f2)
-	[[ -z "${AIDEVOPS_MERGE_STUCK_ENABLED:-}" ]] && \
+	[[ -z "${AIDEVOPS_MERGE_STUCK_ENABLED:-}" ]] &&
 		AIDEVOPS_MERGE_STUCK_ENABLED=$(grep -E '^AIDEVOPS_MERGE_STUCK_ENABLED=' "$_PULSE_MERGE_STUCK_CONF" 2>/dev/null | tail -1 | cut -d= -f2)
 fi
 
@@ -145,8 +145,8 @@ _pms_enrich_pr_state() {
 	local repo_slug="$1"
 	local pr_json="$2"
 
-	if ! declare -F _pmp_enrich_prs_with_mergeability >/dev/null 2>&1 \
-		|| ! declare -F _pmp_enrich_prs_with_review_decisions >/dev/null 2>&1; then
+	if ! declare -F _pmp_enrich_prs_with_mergeability >/dev/null 2>&1 ||
+		! declare -F _pmp_enrich_prs_with_review_decisions >/dev/null 2>&1; then
 		printf '%s' "$pr_json"
 		return 0
 	fi
@@ -182,9 +182,9 @@ readonly _PMS_JQ_REST_FAILURE_SELECTOR='def _ueq(f;v): (f // "" | ascii_upcase) 
 _pms_iso_to_epoch() {
 	local iso="$1"
 	local result
-	result=$(date -d "$iso" +%s 2>/dev/null) \
-		|| result=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null) \
-		|| result=0
+	result=$(date -d "$iso" +%s 2>/dev/null) ||
+		result=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null) ||
+		result=0
 	[[ "$result" =~ ^[0-9]+$ ]] || result=0
 	printf '%s' "$result"
 	return 0
@@ -205,11 +205,20 @@ _pms_is_eligible_stuck() {
 	labels=$(printf '%s' "$pr_obj" | jq -r '[.labels[].name] | join(",")' 2>/dev/null)
 
 	# Skip drafts unconditionally
-	[[ "$is_draft" == "true" ]] && { printf '0'; return 0; }
+	[[ "$is_draft" == "true" ]] && {
+		printf '0'
+		return 0
+	}
 	# Skip hold-for-review opt-out
-	[[ "$labels" == *"hold-for-review"* ]] && { printf '0'; return 0; }
+	[[ "$labels" == *"hold-for-review"* ]] && {
+		printf '0'
+		return 0
+	}
 	# CHANGES_REQUESTED is a real review block, not a stuck state
-	[[ "$review_decision" == "CHANGES_REQUESTED" ]] && { printf '0'; return 0; }
+	[[ "$review_decision" == "CHANGES_REQUESTED" ]] && {
+		printf '0'
+		return 0
+	}
 
 	# MERGEABLE + APPROVED is the canonical eligible-stuck path; CONFLICTING
 	# without a nudge-eligible label is the gap case we still want to detect.
@@ -240,9 +249,9 @@ _pms_check_runs_for_head() {
 	local head_sha="$2"
 	local runs=""
 	local fetch_succeeded=0
-	if [[ -n "$repo_slug" && -n "$head_sha" ]] \
-		&& declare -F _pmp_same_pass_check_evidence_get >/dev/null 2>&1 \
-		&& runs=$(_pmp_same_pass_check_evidence_get "$repo_slug" "$head_sha" 2>/dev/null); then
+	if [[ -n "$repo_slug" && -n "$head_sha" ]] &&
+		declare -F _pmp_same_pass_check_evidence_get >/dev/null 2>&1 &&
+		runs=$(_pmp_same_pass_check_evidence_get "$repo_slug" "$head_sha" 2>/dev/null); then
 		printf '%s' "$runs"
 		return 0
 	fi
@@ -284,11 +293,23 @@ _pms_queued_check_count() {
 	local runs_json="$1"
 	local count=""
 	count=$(printf '%s' "$runs_json" | jq -r \
-		'[.[]? | select((.status // "" | ascii_upcase) == "QUEUED")] | length' \
+		'[.[]? | select(
+			(.status // "" | ascii_upcase) == "QUEUED"
+			and ((.app_slug // .app.slug // "") | IN("github-actions"))
+		)] | length' \
 		2>/dev/null) || count="0"
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	printf '%s' "$count"
 	return 0
+}
+
+_pms_should_file_runner_saturation_issue() {
+	local is_saturated="$1"
+	local provider_incident="$2"
+	local blocked_count="$3"
+	[[ "$blocked_count" =~ ^[0-9]+$ ]] || return 1
+	[[ "$is_saturated" == "1" && "$provider_incident" != "1" && "$blocked_count" -gt 0 ]]
+	return $?
 }
 
 #######################################
@@ -376,9 +397,9 @@ _classify_stuck_pr() {
 	fi
 
 	# Conflict + no nudge label → that gap.
-	if [[ "$mergeable" == "CONFLICTING" \
-		&& "$labels" != *"origin:interactive"* \
-		&& "$labels" != *"origin:worker"* ]]; then
+	if [[ "$mergeable" == "CONFLICTING" &&
+		"$labels" != *"origin:interactive"* &&
+		"$labels" != *"origin:worker"* ]]; then
 		printf 'STUCK_CONFLICT_NO_NUDGE_LABEL'
 		return 0
 	fi
@@ -724,7 +745,10 @@ _detect_pattern_outage() {
 	# Build "fingerprint <TAB> pr_number" lines, then group by fingerprint.
 	local tmp_lines="" tmp_groups=""
 	tmp_lines=$(mktemp "${TMPDIR:-/tmp}/pms-fp-XXXXXX") || return 0
-	tmp_groups=$(mktemp "${TMPDIR:-/tmp}/pms-grp-XXXXXX") || { rm -f "$tmp_lines"; return 0; }
+	tmp_groups=$(mktemp "${TMPDIR:-/tmp}/pms-grp-XXXXXX") || {
+		rm -f "$tmp_lines"
+		return 0
+	}
 	# shellcheck disable=SC2064
 	trap "rm -f '$tmp_lines' '$tmp_groups'" RETURN
 
@@ -1231,8 +1255,8 @@ _pms_close_zero_progress_meta_issue_if_recovered() {
 	local marker_text="merge-stuck:zero-progress"
 	[[ -n "$reason" ]] || reason="merge progress recovered"
 	# #aidevops:trust-boundary — public issue comments can succeed for non-collaborators.
-	if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
-		|| ! repo_allows_pulse_write_actions "$meta_repo"; then
+	if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 ||
+		! repo_allows_pulse_write_actions "$meta_repo"; then
 		echo "[pulse-merge-stuck] _pms_close_zero_progress_meta_issue_if_recovered: skipping recovery write in ${meta_repo} — runner lacks repo write permission" >>"$LOGFILE"
 		return 0
 	fi
@@ -1301,8 +1325,8 @@ _pms_pr_counts_for_zero_progress() {
 	fi
 
 	if [[ "$labels_tokenized" == *",origin:interactive,"* ]]; then
-		if ! declare -F _interactive_pr_auto_merge_allowed >/dev/null 2>&1 \
-			|| ! _interactive_pr_auto_merge_allowed "$pr_number" "$repo_slug" "$labels_str" >/dev/null 2>&1; then
+		if ! declare -F _interactive_pr_auto_merge_allowed >/dev/null 2>&1 ||
+			! _interactive_pr_auto_merge_allowed "$pr_number" "$repo_slug" "$labels_str" >/dev/null 2>&1; then
 			echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — origin:interactive PR requires manual merge" >>"$LOGFILE"
 			return 1
 		fi
@@ -1322,8 +1346,8 @@ _pms_pr_counts_for_zero_progress() {
 			echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — external-contributor PR has no linked issue" >>"$LOGFILE"
 			return 1
 		fi
-		if ! declare -F _has_maintainer_crypto_approval >/dev/null 2>&1 \
-			|| ! _has_maintainer_crypto_approval "$pr_number" "$repo_slug"; then
+		if ! declare -F _has_maintainer_crypto_approval >/dev/null 2>&1 ||
+			! _has_maintainer_crypto_approval "$pr_number" "$repo_slug"; then
 			echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — external-contributor PR linked issue #${external_linked_issue} lacks crypto approval" >>"$LOGFILE"
 			return 1
 		fi
@@ -1336,8 +1360,8 @@ _pms_pr_counts_for_zero_progress() {
 	# candidate is already drained.
 	if declare -F _is_collaborator_author >/dev/null 2>&1; then
 		if ! _is_collaborator_author "$pr_author" "$repo_slug"; then
-			if ! declare -F _has_maintainer_crypto_approval >/dev/null 2>&1 \
-				|| ! _has_maintainer_crypto_approval "$pr_number" "$repo_slug"; then
+			if ! declare -F _has_maintainer_crypto_approval >/dev/null 2>&1 ||
+				! _has_maintainer_crypto_approval "$pr_number" "$repo_slug"; then
 				echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
 				return 1
 			fi
@@ -1383,10 +1407,13 @@ _pms_pr_counts_for_zero_progress() {
 
 _pms_count_eligible_unmerged_for_repo() {
 	local repo_slug="$1"
-	[[ -n "$repo_slug" ]] || { printf '0'; return 0; }
+	[[ -n "$repo_slug" ]] || {
+		printf '0'
+		return 0
+	}
 	local same_pass_count=""
-	if declare -F _pmp_count_same_pass_eligible_unmerged >/dev/null 2>&1 \
-		&& same_pass_count=$(_pmp_count_same_pass_eligible_unmerged "$repo_slug" 2>/dev/null); then
+	if declare -F _pmp_count_same_pass_eligible_unmerged >/dev/null 2>&1 &&
+		same_pass_count=$(_pmp_count_same_pass_eligible_unmerged "$repo_slug" 2>/dev/null); then
 		[[ "$same_pass_count" =~ ^[0-9]+$ ]] || return 2
 		printf '%s' "$same_pass_count"
 		return 0
@@ -1516,26 +1543,26 @@ _pms_handle_classified_pr() {
 	fi
 
 	case "$classification" in
-		STUCK_RUNNER_QUEUE_SATURATION)
-			# Suppress per-PR escalation — caller aggregates for meta-issue.
-			echo "[pulse-merge-stuck] _pms_handle_classified_pr: PR #${pr_num} (${repo_slug}) classified STUCK_RUNNER_QUEUE_SATURATION — suppressing per-PR escalation, will aggregate to meta-issue" >>"$LOGFILE"
-			printf 'SATURATED'
-			;;
-		STUCK_BRANCHPROTECT_404)
-			_handle_stuck_branchprotect_404 "$pr_num" "$repo_slug"
-			printf 'HANDLED'
-			;;
-		STUCK_CONFLICT_NO_NUDGE_LABEL)
-			_handle_stuck_conflict_no_nudge_label "$pr_num" "$repo_slug"
-			printf 'HANDLED'
-			;;
-		STUCK_CHECKS_FAILING|STUCK_BRANCHPROTECT_API_ERROR|STUCK_AUTH|STUCK_OTHER)
-			_escalate_individual_stuck_pr "$pr_num" "$repo_slug" "$classification" "$linked_issue" "$head_sha"
-			printf 'HANDLED'
-			;;
-		*)
-			printf 'HANDLED'
-			;;
+	STUCK_RUNNER_QUEUE_SATURATION)
+		# Suppress per-PR escalation — caller aggregates for meta-issue.
+		echo "[pulse-merge-stuck] _pms_handle_classified_pr: PR #${pr_num} (${repo_slug}) classified STUCK_RUNNER_QUEUE_SATURATION — suppressing per-PR escalation, will aggregate to meta-issue" >>"$LOGFILE"
+		printf 'SATURATED'
+		;;
+	STUCK_BRANCHPROTECT_404)
+		_handle_stuck_branchprotect_404 "$pr_num" "$repo_slug"
+		printf 'HANDLED'
+		;;
+	STUCK_CONFLICT_NO_NUDGE_LABEL)
+		_handle_stuck_conflict_no_nudge_label "$pr_num" "$repo_slug"
+		printf 'HANDLED'
+		;;
+	STUCK_CHECKS_FAILING | STUCK_BRANCHPROTECT_API_ERROR | STUCK_AUTH | STUCK_OTHER)
+		_escalate_individual_stuck_pr "$pr_num" "$repo_slug" "$classification" "$linked_issue" "$head_sha"
+		printf 'HANDLED'
+		;;
+	*)
+		printf 'HANDLED'
+		;;
 	esac
 	return 0
 }
@@ -1637,16 +1664,18 @@ pulse_merge_stuck_run_pass() {
 	local age_threshold_secs=$((AIDEVOPS_MERGE_STUCK_AGE_MINUTES * 60))
 
 	# Compute Actions runner queue saturation ONCE per repo per cycle (t3211).
-	local sat_queued=0 sat_in_progress=0 sat_ratio=0 is_saturated=0 saturation_state
+	local sat_queued=0 sat_in_progress=0 sat_ratio=0 is_saturated=0 provider_incident=0 saturation_state
 	saturation_state=$(_pms_compute_saturation_state "$repo_slug")
 	sat_queued=$(printf '%s\n' "$saturation_state" | grep -E '^queued=' | head -1 | cut -d= -f2)
 	sat_in_progress=$(printf '%s\n' "$saturation_state" | grep -E '^in_progress=' | head -1 | cut -d= -f2)
 	sat_ratio=$(printf '%s\n' "$saturation_state" | grep -E '^ratio=' | head -1 | cut -d= -f2)
 	is_saturated=$(printf '%s\n' "$saturation_state" | grep -E '^saturated=' | head -1 | cut -d= -f2)
+	provider_incident=$(printf '%s\n' "$saturation_state" | grep -E '^provider_incident=' | head -1 | cut -d= -f2) || provider_incident=0
 	[[ "$sat_queued" =~ ^[0-9]+$ ]] || sat_queued=0
 	[[ "$sat_in_progress" =~ ^[0-9]+$ ]] || sat_in_progress=0
 	[[ "$sat_ratio" =~ ^[0-9]+$ ]] || sat_ratio=0
 	[[ "$is_saturated" == "1" ]] || is_saturated=0
+	[[ "$provider_incident" == "1" ]] || provider_incident=0
 	if _pms_diagnostic_budget_exhausted; then
 		[[ -n "$completion_var" ]] && printf -v "$completion_var" '%s' '0'
 		return 0
@@ -1669,11 +1698,11 @@ pulse_merge_stuck_run_pass() {
 	# Update the gauge for this cycle's count.
 	pulse_stats_set_gauge "pulse_merge_eligible_stuck_pr_count" "$eligible_stuck_count"
 
-	# File the runner-queue-saturation meta-issue if saturation was detected
+	# File the runner-queue-saturation meta-issue if measured saturation was detected
 	# AND at least one stuck PR was classified into that bucket. The
-	# saturated-but-no-affected-PRs case (rare — saturation cleared between
-	# the helper call and the PR iteration) is intentionally a no-op.
-	if [[ "$is_saturated" == "1" && "$saturation_blocked_count" -gt 0 ]]; then
+	# saturated-but-no-affected-PRs and provider-incident cases are no-ops:
+	# neither provides measured runner-pool counts for an actionable repair issue.
+	if _pms_should_file_runner_saturation_issue "$is_saturated" "$provider_incident" "$saturation_blocked_count"; then
 		# Strip trailing comma from the aggregated PR list.
 		saturation_blocked_prs="${saturation_blocked_prs%,}"
 		_pms_file_runner_saturation_issue "$repo_slug" \
@@ -1686,7 +1715,7 @@ pulse_merge_stuck_run_pass() {
 		_detect_pattern_outage "$repo_slug" "$(printf '%b' "$stuck_pr_numbers")" "$pr_json" || true
 	fi
 
-	echo "[pulse-merge-stuck] pulse_merge_stuck_run_pass: ${repo_slug} — eligible_stuck=${eligible_stuck_count}, threshold=${AIDEVOPS_MERGE_STUCK_AGE_MINUTES}m, saturated=${is_saturated} (queued=${sat_queued}, in_progress=${sat_in_progress}, ratio=${sat_ratio}, blocked_by_saturation=${saturation_blocked_count})" >>"$LOGFILE"
+	echo "[pulse-merge-stuck] pulse_merge_stuck_run_pass: ${repo_slug} — eligible_stuck=${eligible_stuck_count}, threshold=${AIDEVOPS_MERGE_STUCK_AGE_MINUTES}m, saturated=${is_saturated} (provider_incident=${provider_incident}, queued=${sat_queued}, in_progress=${sat_in_progress}, ratio=${sat_ratio}, blocked_by_saturation=${saturation_blocked_count})" >>"$LOGFILE"
 	return 0
 }
 
@@ -1792,8 +1821,8 @@ pulse_merge_zero_progress_record() {
 	echo "[pulse-merge-stuck] pulse_merge_zero_progress_record: zero_progress_cycles=${cur}/${threshold}, eligible_unmerged=${eligible_unmerged}" >>"$LOGFILE"
 
 	# File only on the threshold-crossing edge to prevent post-close issue storms.
-	if [[ "$cur_before" -lt "$threshold" \
-		&& "$cur" -ge "$threshold" ]]; then
+	if [[ "$cur_before" -lt "$threshold" &&
+		"$cur" -ge "$threshold" ]]; then
 		local stuck_summary
 		stuck_summary=$(pulse_stats_get_gauge "pulse_merge_eligible_stuck_pr_count")
 		stuck_summary="eligible_unmerged_this_cycle=${eligible_unmerged}, eligible_stuck_count=${stuck_summary}, zero_progress_cycles=${cur}"

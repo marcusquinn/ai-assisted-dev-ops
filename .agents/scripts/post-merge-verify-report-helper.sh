@@ -22,7 +22,8 @@ truncate_output() {
 		return 2
 	fi
 
-	output_size=$(wc -c <"$output_file")
+	# BSD wc pads numeric output; normalize it before comparisons and reports.
+	output_size=$(wc -c <"$output_file" | tr -d '[:space:]')
 	if [[ "$output_size" -le "$max_bytes" ]]; then
 		return 0
 	fi

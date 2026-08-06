@@ -167,16 +167,16 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 ### Milestone 2: Read-only core and initial provider adapters
 
 **Status:** active
-**Estimate:** 21.5h provisional; 14.5h briefed in the first three independent leaves
+**Estimate:** 25.5h; all five implementation leaves briefed
 **Validation:** A non-mutating CLI/core detects providers, validates configuration, generates stable desired state, reports compatibility/drift, and produces repeatable plans for Buzz and Matrix without installation, credential exposure, or provider writes.
 
 | # | Feature | Task ID | Status | Estimate | Worker | PR |
 |---|---------|---------|--------|----------|--------|----|
 | 2.1 | Implement provider registry, config loader, state store, status/doctor commands, and deterministic dry-run planner `[depends:F1.1] [depends:F1.4]` | t18202 | complete | 6h | marcusquinn | #29619 |
 | 2.2 | Generate the canonical 13 aidevops agents plus the framework guide from discovery metadata, including workload tiers and stable IDs `[depends:F1.3]` | t18203 | complete | 3.5h | marcusquinn | #29605 |
-| 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | t18205 | in progress | 5h | marcusquinn | |
-| 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | pending | pending | brief first | | |
-| 2.5 | Generate restricted OpenCode launch overlays for canonical agent selection, workload variant, interface context, and read-only conversational permissions `[depends:F2.2]` | pending | pending | brief first | | |
+| 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | t18205 | complete | 5h | marcusquinn | #29636 |
+| 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | t18207 | claimed (#29646) | 6h | marcusquinn | |
+| 2.5 | Generate restricted OpenCode launch overlays for canonical agent selection, workload variant, interface context, and read-only conversational permissions `[depends:F2.2]` | t18208 | claimed (#29647) | 5h | marcusquinn | |
 
 ### Milestone 3: aidevops.app Infrastructure > Integrations control plane
 
@@ -355,6 +355,9 @@ Feature budgets are intentionally deferred until briefs identify repositories, u
 | 2026-08-05T22:10:07Z | Milestone 2 roster completed and runtime core resumed | Verified feature 2.2 merged through PR #29605 and marked it complete, independently unblocking feature 2.5. Maintainer-owned interactive work resumed feature 2.1 / t18202 / issue #29542 after the earlier worker released its permission-blocked claim without a PR or pushed recovery branch. |
 | 2026-08-05T23:32:47Z | Milestone 2 runtime core completed | Implemented feature 2.1 through PR #29619: a disabled-by-default provider registry and config loader, guarded local state store, read-only providers/detect/status/doctor commands, and deterministic non-mutating reconciliation planner. Contract, security, state, CLI, and regression suites passed, unblocking the Buzz and Matrix adapter leaves. |
 | 2026-08-06T03:41:51Z | Milestone 2 Buzz adapter implementation started | Validated schema-v2 task t18205, created and claimed child issue #29631 beneath parent #29541, and implemented the first static read-only `adapter.buzz` contract with closed provider-neutral inventory, synthetic private-field canaries, and focused schema/runtime/security tests. The feature remains in progress until checkpoint review, PR gates, and merge complete. |
+| 2026-08-06T05:10:32Z | Milestone 2 Buzz adapter completed | Feature 2.3 merged through PR #29636 after exact-head review, required checks, read-only source-race hardening, secret-negative fixtures, and Qlty regression verification. The merge closed child #29631 without publishing or deploying a release. |
+| 2026-08-06T14:12:51Z | Milestone 2 tracker recovery and final leaves briefed | Diagnosed parent #29541's premature Pulse closure: canonical issue snapshots omitted `body`, so the active single-pass reconciler saw three terminal graph children but not the unchecked parent acceptance criteria or unfiled F2.4/F2.5 plan. Reserved t18206 for fail-closed snapshot/live-body repair, t18207 for Matrix normalization, and t18208 for restricted OpenCode overlays. The parent close contract remains explicitly open until both leaves merge and integrated validation passes. |
+| 2026-08-06T14:56:57Z | Milestone 2 tracker reopened and final leaves published | Created and claimed systemic repair #29645, Matrix child #29646, and OpenCode child #29647; linked both feature leaves beneath #29541. Synchronized the closed parent's authoritative keep-open body, verified the marker and all five implementation leaves, then reopened #29541. The local #29645 implementation passes all focused and broad gates and now awaits exact-head PR review. |
 
 ## Recovery Log
 
@@ -362,6 +365,7 @@ Feature budgets are intentionally deferred until briefs identify repositories, u
 |-----------|---------|---------|--------------------|--------------------|-----------------|--------|
 | 2026-08-04T20:43:33Z | 1.5 / t18198 | `gh auth status` and the REST repository-identity probe failed after #29506 was created even though live GraphQL identity/quota checks remained healthy, preventing automatic immutable-mapping and relationship finalisation | Existing issue title/body, TODO task identity/ref, exact repository/issue node IDs, and coordinator mapping were verified before any recovery write | Restore `status:blocked` and native blocked-by #29494 without creating a duplicate | Bind the verified immutable mapping, perform one exact native dependency mutation, then re-read labels, assignee, body schema, mapping, dispatchability, and blocked-by state | recovered |
 | 2026-08-05T01:33:56Z | 2.2 / t18203 | The GitHub REST repository-identity quota was exhausted after #29543 was created while authenticated GraphQL reads and mutations remained healthy, so automatic post-create tier and hierarchy finalisation stopped at the immutable-mapping gate | Exact issue title/ref, unassigned open state, repository and issue node IDs, coordinator mapping, desired labels, parent task, and exact-title deduplication were verified before recovery | Add `tier:standard`, attach #29543 beneath #29541, and independently verify both children and all required labels without creating another issue | Use the verified immutable mapping and one bounded GraphQL mutation, then re-read the parent, both children, labels, bodies, and native hierarchy | recovered |
+| 2026-08-06T06:16:57Z | 2 / t18201 | Pulse closed #29541 after its bodyless canonical snapshot exposed only three terminal native children; the live issue still contained unchecked acceptance criteria and two deliberately unfiled features | Mission rows, t18201 close contract, live issue body, native child graph, closure comment, and exact reconciler/cache paths were preserved | Merge systemic repair #29645, complete linked children #29646/#29647, run integrated validation, and remove the keep-open marker only in the final parent-close PR | Keep #29541 open under its synchronized close contract while each remaining leaf completes through an exact-head reviewed PR | recovered |
 
 ## Retrospective
 

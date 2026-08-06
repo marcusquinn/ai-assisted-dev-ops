@@ -94,6 +94,13 @@ else
 	fail "post-merge ripgrep bootstrap" "missing ripgrep package installation"
 fi
 
+if grep -qF 'QLTY_VERSION: "0.636.0"' "$WORKFLOW" &&
+	grep -qF 'qltysh/qlty-action/install@a19242102d17e497f437d7466aa01b528537e899' "$WORKFLOW"; then
+	pass "post-merge verification installs the repository-pinned Qlty CLI"
+else
+	fail "post-merge Qlty bootstrap" "missing pinned Qlty version or install action"
+fi
+
 # shellcheck disable=SC2016 # Workflow expressions and shell variables are intentionally literal.
 if grep -qF 'fetch-depth: 0' "$WORKFLOW" &&
 	grep -qF 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$WORKFLOW" &&
