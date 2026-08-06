@@ -1,0 +1,50 @@
+[
+  {
+    "pubkey": "",
+    "name": "Build Plus Definition",
+    "display_name": "Build+",
+    "slug": "build-plus-aidevops",
+    "runtime": "opencode",
+    "is_builtin": true,
+    "is_active": true,
+    "private_key_nsec": "nsec-fixture-secret-canary",
+    "auth_tag": "auth-fixture-secret-canary",
+    "env_vars": {"FIXTURE_SECRET": "env-fixture-secret-canary"},
+    "system_prompt": "prompt-fixture-secret-canary",
+    "agent_command": "/private/fixture/command-canary",
+    "agent_args": ["--private-arg-canary"],
+    "provider_binary_path": "/private/fixture/provider-canary",
+    "last_error": "error-fixture-secret-canary",
+    "persona_team_dir": "/private/fixture/team-canary"
+  },
+  {
+    "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "name": "Builder Instance",
+    "display_name": "Builder",
+    "relay_url": "wss://relay.example.test",
+    "runtime": "opencode",
+    "team_id": "team-alpha",
+    "runtime_pid": 4242,
+    "is_builtin": false,
+    "is_active": true,
+    "private_key_nsec": "nsec-instance-secret-canary",
+    "auth_tag": "auth-instance-secret-canary",
+    "model": "model-private-canary",
+    "provider": "provider-private-canary",
+    "last_error": "error-instance-private-canary",
+    "log_path": "/private/fixture/log-canary"
+  },
+  {
+    "pubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "name": "Stopped Instance",
+    "relay_url": "wss://relay.example.test/",
+    "runtime": null,
+    "team_id": null,
+    "runtime_pid": 5252,
+    "is_builtin": false,
+    "is_active": true,
+    "settings_ref": "settings:private-canary",
+    "source_dir": "/private/fixture/source-canary",
+    "repo_root": "/private/fixture/repo-canary"
+  }
+]

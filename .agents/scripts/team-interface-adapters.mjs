@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import {deepFreezeDefinition, validateAdapterDefinition} from "./team-interface-adapter-validation.mjs";
+import {buzzAdapter} from "./team-interface-buzz-adapter.mjs";
 import {compareCanonicalText} from "./team-interface-common.mjs";
 
-const BUILTIN_ADAPTERS = Object.freeze([]);
+const BUILTIN_ADAPTERS = Object.freeze([buzzAdapter]);
 
 export {validateAdapterDefinition} from "./team-interface-adapter-validation.mjs";
 

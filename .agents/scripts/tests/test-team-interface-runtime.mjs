@@ -21,6 +21,7 @@ import {
   writeRuntimeState,
 } from "../team-interface-core.mjs";
 import {
+  builtInAdapterRegistry,
   createAdapterRegistry,
   selectConfiguredAdapters,
 } from "../team-interface-adapters.mjs";
@@ -172,6 +173,59 @@ const missingObservedCapabilities = copy(validFixture.adapter_observation);
 missingObservedCapabilities.capabilities = [];
 requireInvalid(validators.adapterObservation, missingObservedCapabilities, "missing observed capabilities");
 
+const inventoryObservation = copy(validFixture.adapter_observation);
+inventoryObservation.inventory = {
+  communities: [
+    {community_id: "community.mock.alpha", display_label: "Alpha", availability: "available"},
+  ],
+  agents: [
+    {
+      agent_id: "agent.mock.alpha",
+      display_label: "Alpha Agent",
+      agent_kind: "instance",
+      is_builtin: false,
+      availability: "available",
+      community_ref: "community.mock.alpha",
+      runtime_ref: "runtime.mock.alpha",
+      team_ref: "team.mock.alpha",
+    },
+    {
+      agent_id: "agent.mock.beta",
+      display_label: "Beta Definition",
+      agent_kind: "definition",
+      is_builtin: true,
+      availability: "available",
+    },
+  ],
+  teams: [
+    {
+      team_id: "team.mock.alpha",
+      display_label: "Alpha Team",
+      is_builtin: false,
+      member_refs: ["agent.mock.alpha"],
+      availability: "available",
+    },
+  ],
+  runtimes: [
+    {
+      runtime_id: "runtime.mock.alpha",
+      display_label: "Alpha Runtime",
+      runtime_kind: "unknown",
+      availability: "available",
+    },
+  ],
+};
+requireValid(validators.adapterObservation, inventoryObservation, "provider-neutral inventory observation");
+for (const [label, mutateInventory] of [
+  ["inventory missing category", (inventory) => delete inventory.runtimes],
+  ["inventory unknown field", (inventory) => { inventory.unknown = []; }],
+  ["inventory agent private field", (inventory) => { inventory.agents[0].model = "private"; }],
+]) {
+  const invalid = copy(inventoryObservation);
+  mutateInventory(invalid.inventory);
+  requireInvalid(validators.adapterObservation, invalid, label);
+}
+
 const inlineTokenConfig = copy(validFixture.runtime_config);
 inlineTokenConfig.adapters = [{adapter_id: "adapter.mock", settings_ref: "token:inline-secret"}];
 requireInvalid(validators.runtimeConfig, inlineTokenConfig, "inline token-shaped adapter setting");
@@ -310,6 +364,8 @@ const mockAdapter = makeAdapter(validFixture.adapter_observation, {
   },
 });
 const mockRegistry = createAdapterRegistry([mockAdapter]);
+assert.deepEqual(builtInAdapterRegistry.ids(), ["adapter.buzz"]);
+assert.equal(builtInAdapterRegistry.get("adapter.buzz").provider_id, "buzz");
 assert.equal(Object.isFrozen(mockAdapter), true);
 assert.equal(Object.isFrozen(mockAdapter.capabilities), true);
 assert.equal(Object.isFrozen(mockAdapter.capabilities[0]), true);
@@ -513,6 +569,46 @@ try {
     assert.equal(invalidResult.errors.length, 1, label);
     assert.equal(invalidResult.errors[0].code, expectedCode, label);
     assert.equal(invalidResult.errors[0].message, expectedMessage, label);
+    assert.equal(pathExists(runtimeStatePaths(runtimeStateRoot).statePath), false, `${label} changed state`);
+  }
+
+  for (const [label, mutateInventory, expectedCode] of [
+    [
+      "duplicate inventory identity",
+      (inventory) => inventory.agents.push(copy(inventory.agents[0])),
+      "duplicate_identity",
+    ],
+    [
+      "non-canonical inventory order",
+      (inventory) => inventory.agents.reverse(),
+      "adapter_read_failed",
+    ],
+    [
+      "dangling inventory reference",
+      (inventory) => { inventory.agents[0].runtime_ref = "runtime.mock.missing"; },
+      "adapter_read_failed",
+    ],
+    [
+      "non-canonical team member references",
+      (inventory) => { inventory.teams[0].member_refs = ["agent.mock.beta", "agent.mock.alpha"]; },
+      "adapter_read_failed",
+    ],
+  ]) {
+    const invalidInventoryAdapter = makeAdapter(inventoryObservation, {
+      detect() {
+        const observation = copy(inventoryObservation);
+        mutateInventory(observation.inventory);
+        return observation;
+      },
+    });
+    const invalidResult = await runDetect({
+      configPath,
+      registry: createAdapterRegistry([invalidInventoryAdapter]),
+      stateRoot: runtimeStateRoot,
+      validators,
+    });
+    assert.equal(invalidResult.errors.length, 1, label);
+    assert.equal(invalidResult.errors[0].code, expectedCode, label);
     assert.equal(pathExists(runtimeStatePaths(runtimeStateRoot).statePath), false, `${label} changed state`);
   }
 

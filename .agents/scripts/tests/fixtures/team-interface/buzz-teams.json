@@ -1,0 +1,21 @@
+[
+  {
+    "id": "builtin-team:welcome",
+    "name": "Welcome Team",
+    "description": "Fixture built-in team",
+    "instructions": "instructions-private-canary",
+    "persona_ids": ["build-plus-aidevops"],
+    "is_builtin": true,
+    "source_dir": "/private/fixture/builtin-team-canary",
+    "symlink_target": "/private/fixture/symlink-canary"
+  },
+  {
+    "id": "team-alpha",
+    "name": "Alpha Team",
+    "description": "Fixture custom team",
+    "instructions": "instructions-alpha-private-canary",
+    "persona_ids": ["build-plus-aidevops"],
+    "is_builtin": false,
+    "source_dir": "/private/fixture/custom-team-canary"
+  }
+]
