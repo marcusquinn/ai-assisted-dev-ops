@@ -235,10 +235,10 @@ set_parent_list() {
 }
 
 set_closed_parent_list() {
-	# Args: issue_num title body
-	local num="$1" title="$2" body="$3"
-	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b, state:"closed", labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+	# Args: issue_num title body [state_reason]
+	local num="$1" title="$2" body="$3" state_reason="${4:-COMPLETED}"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$state_reason" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
 	return 0
 }
 
@@ -619,6 +619,17 @@ if [[ "$reopen_count" -eq 1 && "$_PIR_RECENT_PARENT_REOPENED" -eq 1 ]]; then
 else
 	print_result "closed-parent repair: action is bounded to one reopen per scan" 1 \
 		"(reopen_count=${reopen_count})"
+fi
+
+# An intentional NOT_PLANNED closure is terminal even when stale checklist or
+# keep-open evidence remains in the body.
+reset_scenario
+set_closed_parent_list 1510 "t1510: intentionally cancelled" $'<!-- parent-close-contract: keep-open -->\n\n- [ ] Cancelled criterion' NOT_PLANNED
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
+if grep -q "issue reopen 1510" "$GH_CALLS"; then
+	print_result "closed-parent repair: preserves NOT_PLANNED closure" 1
+else
+	print_result "closed-parent repair: preserves NOT_PLANNED closure" 0
 fi
 
 # -----------------------------------------------------------------------------

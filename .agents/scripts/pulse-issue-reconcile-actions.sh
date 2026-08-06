@@ -1136,7 +1136,12 @@ _repair_recently_closed_parent() {
 	CLOSED | closed) ;;
 	*) return 1 ;;
 	esac
-	printf '%s' "$live_issue_json" | jq -e '(.state // "" | ascii_downcase) == "closed"' \
+	printf '%s' "$live_issue_json" | jq -e '
+		(.state_reason // .stateReason) as $reason |
+		(.state // "" | ascii_downcase) == "closed" and
+		($reason | type) == "string" and
+		($reason | ascii_downcase) == "completed"
+	' \
 		>/dev/null 2>&1 || return 1
 	if _parent_live_close_contract_incomplete "$live_issue_json" "$known_child_count"; then
 		[[ "$_PARENT_CLOSE_CONTRACT_REASON" != "$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE" ]] || return 1
