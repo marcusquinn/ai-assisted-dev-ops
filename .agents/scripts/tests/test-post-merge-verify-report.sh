@@ -94,6 +94,16 @@ else
 	fail "post-merge ripgrep bootstrap" "missing ripgrep package installation"
 fi
 
+# shellcheck disable=SC2016 # Workflow expressions and shell variables are intentionally literal.
+if grep -qF 'fetch-depth: 0' "$WORKFLOW" &&
+	grep -qF 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$WORKFLOW" &&
+	grep -qF 'BASE_SHA: ${{ github.event.pull_request.base.sha }}' "$WORKFLOW" &&
+	grep -qF 'git update-ref "$REMOTE_BASE_REF" "$BASE_SHA"' "$WORKFLOW"; then
+	pass "post-merge verification pins origin base ref to the pre-merge SHA"
+else
+	fail "post-merge base ref" "missing full-history checkout or pre-merge remote-ref pin"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
 	exit 1

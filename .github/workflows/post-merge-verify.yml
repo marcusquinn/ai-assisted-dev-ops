@@ -59,6 +59,27 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      # Acceptance checks are authored before merge and commonly diff against
+      # origin/<base>. Pin that ref to the event's pre-merge base SHA instead of
+      # leaving it absent in the detached checkout or pointing at moving main.
+      - name: Pin verification base ref
+        if: steps.extract.outputs.task_id != ''
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          REMOTE_BASE_REF="refs/remotes/origin/${BASE_REF}"
+
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid pull request base SHA."
+            exit 1
+          fi
+          git check-ref-format "$REMOTE_BASE_REF"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git update-ref "$REMOTE_BASE_REF" "$BASE_SHA"
 
       # ---------------------------------------------------------------
       # Step 3: Check if brief exists and has verify blocks
