@@ -131,10 +131,11 @@ _read_cache_issues_for_slug() {
 
 	# Read issues array for this slug
 	local issues
-	local string_type="string"
-	issues=$(jq -ce --arg slug "$slug" --arg string_type "$string_type" '
+	local string_type="string" array_type=array object_type=object
+	issues=$(jq -ce --arg slug "$slug" --arg string_type "$string_type" \
+		--arg array_type "$array_type" --arg object_type "$object_type" '
 		.[$slug].issues // empty |
-		select(type == "array" and all(.[]; type == "object" and (.body | type) == $string_type))
+		select(type == $array_type and all(.[]; type == $object_type and (.body | type) == $string_type))
 	' "$cache_file" 2>/dev/null) || return 1
 	[[ -n "$issues" ]] || return 1
 
@@ -1416,8 +1417,9 @@ reconcile_issues_single_pass() {
 		# when labels_csv is empty. "|" is not an IFS whitespace character
 		# so consecutive "|" separators are never collapsed. See bash(1) IFS.
 		local issues_tsv
-		issues_tsv=$(printf '%s' "$issues_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
-			select(type == "array" and all(.[]; type == "object" and (.body | type) == $string_type)) |
+		issues_tsv=$(printf '%s' "$issues_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" \
+			--arg array_type "$_PIR_JSON_TYPE_ARRAY" --arg object_type "$_PIR_JSON_TYPE_OBJECT" '
+			select(type == $array_type and all(.[]; type == $object_type and (.body | type) == $string_type)) |
 			.[] | [
 				(.number // "" | tostring),
 				((.title // "") | @base64),

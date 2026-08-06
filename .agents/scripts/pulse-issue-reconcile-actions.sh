@@ -350,6 +350,8 @@ _PARENT_CLOSE_CONTRACT_DECLARED=0
 _PARENT_CLOSE_CONTRACT_UNFILED=""
 _PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE="live-body-unavailable"
 _PIR_JSON_TYPE_STRING=string
+_PIR_JSON_TYPE_ARRAY=array
+_PIR_JSON_TYPE_OBJECT=object
 _PIR_LIVE_PARENT_JSON=""
 _PIR_RECENT_PARENT_REOPENED=0
 _PIR_RECENT_PARENT_SCANNED=0
@@ -521,10 +523,10 @@ _mark_parent_review_hold() {
 _pir_closed_parent_repair_reason() {
 	local live_issue_json="$1" known_child_count="$2"
 	_PIR_CPT_REPAIR_REASON=""
-	printf '%s' "$live_issue_json" | jq -e '
+	printf '%s' "$live_issue_json" | jq -e --arg string_type "$_PIR_JSON_TYPE_STRING" '
 		(.state_reason // .stateReason) as $reason |
 		(.state // "" | ascii_downcase) == "closed" and
-		($reason | type) == "string" and
+		($reason | type) == $string_type and
 		($reason | ascii_downcase) == "completed"
 	' >/dev/null 2>&1 || return 1
 	_parent_live_close_contract_incomplete "$live_issue_json" "$known_child_count" || return 1
@@ -1371,8 +1373,8 @@ _pir_live_parent_trust_is_allowed() {
 		jq -r '.user.login // .author.login // ""' 2>/dev/null) || return 1
 	author_type=$(printf '%s' "$live_issue_json" | \
 		jq -r '.user.type // .author.type // ""' 2>/dev/null) || return 1
-	labels_csv=$(printf '%s' "$live_issue_json" | jq -r '
-		[.labels[]? | if type == "string" then . else (.name // empty) end] | join(",")
+	labels_csv=$(printf '%s' "$live_issue_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		[.labels[]? | if type == $string_type then . else (.name // empty) end] | join(",")
 	' 2>/dev/null) || return 1
 	[[ "$author_type" == "Bot" ]] && author_is_bot="true"
 
@@ -1402,8 +1404,8 @@ _pir_parent_mutation_is_allowed() {
 	#aidevops:trust-boundary -- live NMR/persistent labels stop all parent mutations.
 	printf '%s' "$live_issue_json" | jq -e --argjson issue "$issue_num" \
 		--arg nmr "$nmr_label" --arg parent "$parent_label" \
-		--arg persistent "$persistent_label" '
-		def names: [.labels[]? | if type == "string" then . else (.name // empty) end];
+		--arg persistent "$persistent_label" --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		def names: [.labels[]? | if type == $string_type then . else (.name // empty) end];
 		(.number == $issue) and
 		(names | index($parent) != null) and
 		(names | index($nmr) == null) and
