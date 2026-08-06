@@ -107,6 +107,22 @@ case "$1" in
 				_nodes=$(jq -c '.' "$graphql_nodes_file" 2>/dev/null) || _nodes='[]'
 			fi
 			_has_next="${GH_GRAPHQL_HAS_NEXT_PAGE:-false}"
+			case "${GH_GRAPHQL_SHAPE:-complete}" in
+			errors)
+				jq -cn --argjson nodes "$_nodes" --argjson has_next "$_has_next" \
+					'{errors:[{message:"unavailable"}],data:{repository:{issue:{subIssues:{nodes:$nodes,pageInfo:{hasNextPage:$has_next}}}},rateLimit:{cost:1}}}'
+				exit 0
+				;;
+			null-subissues)
+				jq -cn '{data:{repository:{issue:{subIssues:null}},rateLimit:{cost:1}}}'
+				exit 0
+				;;
+			missing-pageinfo)
+				jq -cn --argjson nodes "$_nodes" \
+					'{data:{repository:{issue:{subIssues:{nodes:$nodes}}},rateLimit:{cost:1}}}'
+				exit 0
+				;;
+			esac
 			case "${GH_GRAPHQL_COST:-1}" in
 			missing)
 				jq -cn --argjson nodes "$_nodes" --argjson has_next "$_has_next" \
@@ -122,6 +138,15 @@ case "$1" in
 					'{data:{repository:{issue:{subIssues:{nodes:$nodes,pageInfo:{hasNextPage:$has_next}}}},rateLimit:{cost:$cost}}}'
 				;;
 			esac
+			exit 0
+		fi
+		if [[ "$*" == *"repos/test/repo/issues -f state=closed"* ]]; then
+			if [[ -f "${TEST_ROOT}/gh-closed-issue-list.json" ]]; then
+				jq -c -s 'map(map(. + {closed_at:"9999-12-31T23:59:59Z"}))' \
+					"${TEST_ROOT}/gh-closed-issue-list.json"
+			else
+				printf '[[]]\n'
+			fi
 			exit 0
 		fi
 		# `gh api repos/X/Y/issues/N --jq '.state // "unknown"'` or `--jq '.title // ""'`
@@ -171,7 +196,7 @@ case "$1" in
 					if [[ -f "$local_closed_marker" ]]; then
 						local_issue_json=$(printf '%s' "$local_issue_json" | jq -c \
 							--arg revision "$PARENT_REVISION_CLOSED" \
-							'.state="closed" | .stateReason="COMPLETED" | .updatedAt=$revision')
+							'.state="closed" | .stateReason=(.stateReason // "COMPLETED") | .updatedAt=$revision')
 					fi
 					printf '%s\n' "$local_issue_json"
 					exit 0
@@ -280,7 +305,7 @@ reset_scenario() {
 		"${TEST_ROOT}/gh-live-parent-after-close.json" "${TEST_ROOT}"/gh-parent-closed-* \
 		"${TEST_ROOT}"/gh-live-parent-*.reads "${TEST_ROOT}"/gh-child-state-*.reads
 	unset GH_LIVE_PARENT_EXIT_CODE GH_LIVE_PARENT_TRANSITION_AFTER GH_GRAPHQL_TRANSITION_AFTER
-	unset GH_COMMENTS_EXIT_CODE
+	unset GH_COMMENTS_EXIT_CODE GH_GRAPHQL_SHAPE
 	return 0
 }
 
@@ -321,6 +346,14 @@ set_live_parent_without_body() {
 	local num="$1" title="$2"
 	jq -n --argjson n "$num" --arg t "$title" --arg u "$PARENT_REVISION_INITIAL" \
 		'[{number:$n, title:$t, state:"open", updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
+	return 0
+}
+
+set_live_closed_parent() {
+	local num="$1" title="$2" body="$3" state_reason="${4:-COMPLETED}"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg r "$state_reason" \
+		--arg u "$PARENT_REVISION_INITIAL" \
+		'[{number:$n, title:$t, body:$b, state:"closed", stateReason:$r, updatedAt:$u, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-live-parent.json"
 	return 0
 }
 
@@ -531,6 +564,18 @@ else
 	print_result "malformed GraphQL rateLimit.cost blocks projected child output" 1 \
 		"(rc=${malformed_cost_rc}, output=${malformed_cost_result})"
 fi
+
+for malformed_shape in errors null-subissues missing-pageinfo; do
+	malformed_shape_result=$(GH_GRAPHQL_SHAPE="$malformed_shape" \
+		_fetch_subissue_numbers "test/repo" "909")
+	malformed_shape_rc=$?
+	if [[ "$malformed_shape_rc" -ne 0 && -z "$malformed_shape_result" ]]; then
+		print_result "malformed GraphQL envelope (${malformed_shape}) is unavailable evidence" 0
+	else
+		print_result "malformed GraphQL envelope (${malformed_shape}) is unavailable evidence" 1 \
+			"(rc=${malformed_shape_rc}, output=${malformed_shape_result})"
+	fi
+done
 
 # -----------------------------------------------------------------------------
 # Scenario 7: a GraphQL failure is unavailable evidence, not an empty graph.
@@ -839,10 +884,54 @@ else
 		"(calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
 fi
 
+# A maintainer can intentionally change the close reason while post-close child
+# evidence is being checked. Compensation must re-read the reason and preserve
+# NOT_PLANNED instead of reopening that intentional closure.
+reset_scenario
+set_parent_list 1580 "t1580: compensation reason changes" $'## Children\n\n- #1581'
+set_live_parent 1580 "t1580: compensation reason changes" $'## Children\n\n- #1581'
+set_subissues "1581:CLOSED"
+jq -n '[{number:1581,state:"CLOSED"},{number:1582,state:"OPEN"}]' \
+	>"${TEST_ROOT}/gh-subissues-after-transition.json"
+set_child_states "1581:closed:original-child" "1582:open:new-child"
+jq -n --arg b $'## Children\n\n- #1581' --arg u "$PARENT_REVISION_CLOSED" \
+	'[{number:1580,title:"t1580: compensation reason changes",body:$b,state:"closed",stateReason:"COMPLETED",updatedAt:$u,labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	>"${TEST_ROOT}/gh-live-parent-after-close.json"
+jq -n --arg b $'## Children\n\n- #1581' --arg u "$PARENT_REVISION_FINAL" \
+	'[{number:1580,title:"t1580: compensation reason changes",body:$b,state:"closed",stateReason:"NOT_PLANNED",updatedAt:$u,labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	>"${TEST_ROOT}/gh-live-parent-after-first.json"
+export GH_GRAPHQL_TRANSITION_AFTER=3
+export GH_LIVE_PARENT_TRANSITION_AFTER=4
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1580" "$GH_CALLS" && ! grep -q "issue reopen 1580" "$GH_CALLS"; then
+	print_result "post-close compensation: fresh NOT_PLANNED reason blocks reopen" 0
+else
+	print_result "post-close compensation: fresh NOT_PLANNED reason blocks reopen" 1 \
+		"(calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 500))"
+fi
+
 # -----------------------------------------------------------------------------
 # Scenario 12: bounded recently-closed scan repairs a premature close only
 # when canonical unfiled phase evidence exists.
 # -----------------------------------------------------------------------------
+
+# Discovery must paginate the complete seven-day set instead of rotating only
+# over an API client's first 100 rows.
+reset_scenario
+jq -n '[range(2000;2101) as $n | {
+	number:$n,title:("t" + ($n | tostring)),body:"",state:"closed",
+	labels:[{name:"parent-task"}],authorAssociation:"OWNER",
+	author:{login:"maintainer",type:"User"}
+}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+complete_recent_json=$(_fetch_recently_closed_parent_tasks test/repo parent-task)
+complete_recent_count=$(printf '%s' "$complete_recent_json" | jq -r 'length')
+if [[ "$complete_recent_count" -eq 101 ]] && grep -q -- '--paginate --slurp' "$GH_CALLS"; then
+	print_result "closed-parent repair: paginated discovery retains rows beyond 100" 0
+else
+	print_result "closed-parent repair: paginated discovery retains rows beyond 100" 1 \
+		"(count=${complete_recent_count}, calls=$(tr '\n' '|' <"$GH_CALLS" | head -c 300))"
+fi
+
 reset_scenario
 set_closed_parent_list 1500 "t1500: prematurely closed" $'## Phases\n\n- Phase 1 - shipped #1501\n- Phase 2 - still unfiled'
 set_subissues "1501:CLOSED"
@@ -862,6 +951,35 @@ if [[ "$reopen_count" -eq 1 && "$_PIR_RECENT_PARENT_REOPENED" -eq 1 ]]; then
 else
 	print_result "closed-parent repair: action is bounded to one reopen per scan" 1 \
 		"(reopen_count=${reopen_count})"
+fi
+
+# Cached list bodies never authorize repair. A live incomplete body must reopen
+# even when the cached body looked complete, and a live complete body must stay
+# closed even when the cached body looked incomplete.
+reset_scenario
+set_closed_parent_list 1502 "t1502: cached complete" $'## Children\n\n- #1503'
+set_live_closed_parent 1502 "t1502: live incomplete" \
+	$'<!-- parent-close-contract: keep-open -->\n\n## Children\n\n- #1503'
+set_subissues "1503:CLOSED"
+set_child_states "1503:closed:only-child"
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
+if grep -q "issue reopen 1502" "$GH_CALLS"; then
+	print_result "closed-parent repair: final live incomplete body overrides cached complete body" 0
+else
+	print_result "closed-parent repair: final live incomplete body overrides cached complete body" 1
+fi
+
+reset_scenario
+set_closed_parent_list 1504 "t1504: cached incomplete" \
+	$'<!-- parent-close-contract: keep-open -->\n\n## Children\n\n- #1505'
+set_live_closed_parent 1504 "t1504: live complete" $'## Children\n\n- #1505'
+set_subissues "1505:CLOSED"
+set_child_states "1505:closed:only-child"
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
+if grep -q "issue reopen 1504" "$GH_CALLS"; then
+	print_result "closed-parent repair: final live complete body overrides cached incomplete body" 1
+else
+	print_result "closed-parent repair: final live complete body overrides cached incomplete body" 0
 fi
 
 # An intentional NOT_PLANNED closure is terminal even when stale checklist or
@@ -912,6 +1030,8 @@ jq -n '[
 	{number:1540,title:"t1540: first candidate",body:"<!-- parent-close-contract: keep-open -->",state:"closed",stateReason:"COMPLETED",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}},
 	{number:1541,title:"t1541: second candidate",body:"<!-- parent-close-contract: keep-open -->",state:"closed",stateReason:"COMPLETED",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}
 ]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+set_live_closed_parent 1540 "t1540: first candidate" \
+	'<!-- parent-close-contract: keep-open -->'
 _repair_recently_closed_parents_for_slug test/repo 5 1 >/dev/null 2>&1
 if [[ "$_PIR_RECENT_PARENT_SCANNED" -ne 1 ]]; then
 	print_result "closed-parent repair: per-repo candidate budget bounds action work" 1 \
