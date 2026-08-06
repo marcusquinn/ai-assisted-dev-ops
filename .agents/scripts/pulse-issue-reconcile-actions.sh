@@ -433,6 +433,20 @@ _parent_close_contract_incomplete() {
 }
 
 #######################################
+# Extract a string body from a complete live issue object.
+# Args: $1=live issue JSON
+# Stdout: exact body string
+# Returns: 0=string body found, 1=missing, malformed, or non-string body
+#######################################
+_pir_parent_body_from_json() {
+	local live_issue_json="$1"
+	printf '%s' "$live_issue_json" | jq -er --arg string_type "$_PIR_JSON_TYPE_STRING" \
+		'select(type == "object" and has("body") and (.body | type) == $string_type) | .body' \
+		2>/dev/null
+	return $?
+}
+
+#######################################
 # Apply the parent close contract to a freshly fetched issue object. A missing
 # or non-string body is ambiguous and therefore blocks closure, while an
 # explicitly empty body preserves the legacy compatibility contract.
@@ -443,18 +457,12 @@ _parent_live_close_contract_incomplete() {
 	local live_issue_json="$1"
 	local known_child_count="${2:-0}"
 	local live_body=""
-	if ! printf '%s' "$live_issue_json" | jq -e --arg string_type "$_PIR_JSON_TYPE_STRING" '
-		type == "object" and has("body") and (.body | type) == $string_type
-	' >/dev/null 2>&1; then
+	if ! live_body=$(_pir_parent_body_from_json "$live_issue_json"); then
 		_PARENT_CLOSE_CONTRACT_REASON="$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE"
 		_PARENT_CLOSE_CONTRACT_DECLARED=0
 		_PARENT_CLOSE_CONTRACT_UNFILED=""
 		return 0
 	fi
-	live_body=$(printf '%s' "$live_issue_json" | jq -r '.body' 2>/dev/null) || {
-		_PARENT_CLOSE_CONTRACT_REASON="$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE"
-		return 0
-	}
 	_parent_close_contract_incomplete "$live_body" "$known_child_count"
 	return $?
 }
@@ -651,10 +659,7 @@ _pir_parent_close_snapshot_is_stable() {
 	# No remote reads may sit between this state/authority/body fence and close.
 	# The revision check also catches metadata mutations when GitHub supplies it.
 	_pir_parent_mutation_is_allowed "$slug" "$parent_num" open || return 1
-	final_parent_body=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | jq -er \
-		--arg string_type "$_PIR_JSON_TYPE_STRING" \
-		'select(type == "object" and has("body") and (.body | type) == $string_type) | .body' \
-		2>/dev/null) || return 1
+	final_parent_body=$(_pir_parent_body_from_json "$_PIR_LIVE_PARENT_JSON") || return 1
 	[[ "$final_parent_body" == "$live_parent_body" ]] || return 1
 	final_parent_revision=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | \
 		jq -r '.updated_at // .updatedAt // ""' 2>/dev/null) || return 1
@@ -710,10 +715,7 @@ _try_close_parent_tracker() {
 	# Re-read the parent at the final mutation boundary so an NMR/persistent hold
 	# added during that interval cannot race the earlier caller-side gate.
 	_pir_parent_mutation_is_allowed "$slug" "$parent_num" open || return 1
-	if ! live_parent_body=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | jq -er \
-		--arg string_type "$_PIR_JSON_TYPE_STRING" \
-		'select(type == "object" and has("body") and (.body | type) == $string_type) | .body' \
-		2>/dev/null); then
+	if ! live_parent_body=$(_pir_parent_body_from_json "$_PIR_LIVE_PARENT_JSON"); then
 		_PARENT_CLOSE_CONTRACT_REASON="$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE"
 		_PARENT_CLOSE_CONTRACT_DECLARED=0
 		_PARENT_CLOSE_CONTRACT_UNFILED=""
@@ -1081,6 +1083,7 @@ _action_ciw_single() {
 _action_rsd_single() {
 	local slug="$1" issue_num="$2" issue_title="$3"
 	local dedup_helper="$4" verify_helper="$5"
+	local available_status="available"
 
 	local dedup_output=""
 	if dedup_output=$("$dedup_helper" has-open-pr "$issue_num" "$slug" "$issue_title" 2>/dev/null); then
@@ -1093,7 +1096,7 @@ _action_rsd_single() {
 			merged_at=$(_pir_pr_merged_at "$pr_num" "$slug") || merged_at=""
 			if [[ -z "$merged_at" ]]; then
 				echo "[pulse-wrapper] Reconcile done: skipped close #${issue_num} in ${slug} — PR #${pr_num} is NOT merged (GH#17871 guard)" >>"$LOGFILE"
-				set_issue_status "$issue_num" "$slug" "available" >/dev/null 2>&1 || return 1
+				set_issue_status "$issue_num" "$slug" "$available_status" >/dev/null 2>&1 || return 1
 				return 2
 			fi
 		fi
@@ -1101,7 +1104,7 @@ _action_rsd_single() {
 		if [[ -n "$pr_num" ]] && [[ -x "$verify_helper" ]]; then
 			if ! "$verify_helper" check "$issue_num" "$pr_num" "$slug" >/dev/null 2>&1; then
 				echo "[pulse-wrapper] Reconcile done: skipped close #${issue_num} in ${slug} — PR #${pr_num} does not touch issue files (GH#17372 guard)" >>"$LOGFILE"
-				set_issue_status "$issue_num" "$slug" "available" >/dev/null 2>&1 || return 1
+				set_issue_status "$issue_num" "$slug" "$available_status" >/dev/null 2>&1 || return 1
 				return 2
 			fi
 		fi
@@ -1116,7 +1119,7 @@ _action_rsd_single() {
 		return 0
 	else
 		# No merged PR — reset for re-evaluation
-		set_issue_status "$issue_num" "$slug" "available" >/dev/null 2>&1 || return 1
+		set_issue_status "$issue_num" "$slug" "$available_status" >/dev/null 2>&1 || return 1
 		echo "[pulse-wrapper] Reconcile done: reset #${issue_num} in ${slug} to status:available — no merged PR evidence" >>"$LOGFILE"
 		return 2
 	fi
@@ -1424,6 +1427,7 @@ _pir_collect_parent_child_evidence() {
 	local slug="$1"
 	local issue_num="$2"
 	local issue_body="$3"
+	local self_issue_pattern="^${issue_num}$"
 	local graph_nums=""
 	local body_nums=""
 	local prose_nums=""
@@ -1431,19 +1435,19 @@ _pir_collect_parent_child_evidence() {
 	local source_parts=""
 	local children_section=""
 
-	graph_nums=$(_fetch_subissue_numbers "$slug" "$issue_num" | sort -un | grep -v "^${issue_num}$" | grep -v '^$' || true)
+	graph_nums=$(_fetch_subissue_numbers "$slug" "$issue_num" | sort -un | grep -v "$self_issue_pattern" | grep -v '^$' || true)
 	[[ -n "$graph_nums" ]] && source_parts="${source_parts:+${source_parts}+}graph"
 	children_section=$(_extract_children_section "$issue_body")
 	if [[ -n "$children_section" ]]; then
-		body_nums=$(printf '%s' "$children_section" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | sort -un | grep -v "^${issue_num}$" || true)
+		body_nums=$(printf '%s' "$children_section" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | sort -un | grep -v "$self_issue_pattern" || true)
 		[[ -n "$body_nums" ]] && source_parts="${source_parts:+${source_parts}+}body"
 	fi
-	prose_nums=$(_extract_children_from_prose "$issue_body" | grep -v "^${issue_num}$" || true)
+	prose_nums=$(_extract_children_from_prose "$issue_body" | grep -v "$self_issue_pattern" || true)
 	[[ -n "$prose_nums" ]] && source_parts="${source_parts:+${source_parts}+}prose"
-	comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num" | grep -v "^${issue_num}$" || true)
+	comment_nums=$(_fetch_children_from_trusted_roadmap_comments "$slug" "$issue_num" | grep -v "$self_issue_pattern" || true)
 	[[ -n "$comment_nums" ]] && source_parts="${source_parts:+${source_parts}+}comments"
 	_PIR_CPT_CHILD_NUMS=$(printf '%s\n%s\n%s\n%s\n' "$graph_nums" "$body_nums" "$prose_nums" "$comment_nums" |
-		grep -E '^[0-9]+$' | sort -un | grep -v "^${issue_num}$" || true)
+		grep -E '^[0-9]+$' | sort -un | grep -v "$self_issue_pattern" || true)
 	_PIR_CPT_CHILD_SOURCE="${source_parts:-none}"
 	_PIR_CPT_KNOWN_CHILD_COUNT=$(printf '%s\n' "$_PIR_CPT_CHILD_NUMS" |
 		awk '$0 ~ /^[0-9]+$/ { c++ } END { print c+0 }')
