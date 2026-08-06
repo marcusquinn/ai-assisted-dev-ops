@@ -1353,7 +1353,7 @@ reconcile_issues_single_pass() {
 	[[ "$_t2984_budget" =~ ^[0-9]+$ ]] || _t2984_budget=360
 
 	# The production scheduler invokes only this single pass. Repair recently
-	# closed parents through a time-rotated repository window before open-issue
+	# closed parents through a persisted cursor window before open-issue
 	# reconciliation. Separate repo and candidate caps bound list calls and the
 	# more expensive per-parent graph/trust/state validation work respectively.
 	if declare -F _repair_recently_closed_parents_cycle >/dev/null 2>&1; then

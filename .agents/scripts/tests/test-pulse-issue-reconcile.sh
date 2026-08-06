@@ -516,18 +516,19 @@ test_recent_parent_repair_reachable_from_single_pass() {
 	return 0
 }
 
-test_recent_parent_repair_rotation_and_candidate_bounds() {
+test_recent_parent_repair_cursor_and_candidate_bounds() {
 	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
-	local helper_def="" tmp_dir="" repos_json="" result=""
-	helper_def=$(sed -n '/^_repair_recently_closed_parents_cycle()/,/^}/p' "$actions_sh")
+	local helper_defs="" tmp_dir="" repos_json="" cursor_file="" result="" actual_scans="" expected_scans=""
+	helper_defs=$(sed -n '/^_pir_parent_repair_cursor_load()/,/^_pir_collect_parent_child_evidence()/p' "$actions_sh" | sed '$d')
 	tmp_dir=$(mktemp -d)
 	repos_json="${tmp_dir}/repos.json"
+	cursor_file="${tmp_dir}/parent-repair.cursor"
 	jq -n '{initialized_repos:[range(0;12) as $i | {
 		slug:("owner/repo" + ($i | tostring)), pulse:true, local_only:false
 	}]}' >"$repos_json"
 
 	result=$(bash -c "
-		${helper_def}
+		${helper_defs}
 		_repair_recently_closed_parents_for_slug() {
 			local slug=\"\$1\" max_reopens=\"\$2\" max_candidates=\"\$3\"
 			printf 'scan:%s:%s:%s\\n' \"\$slug\" \"\$max_reopens\" \"\$max_candidates\"
@@ -535,24 +536,34 @@ test_recent_parent_repair_rotation_and_candidate_bounds() {
 			_PIR_RECENT_PARENT_SCANNED=1
 			return 0
 		}
-		PARENT_REPAIR_ROTATION_INTERVAL_SECS=1
-		PARENT_REPAIR_ROTATION_EPOCH=10
+		AIDEVOPS_PARENT_REPAIR_CURSOR_FILE='${cursor_file}'
 		LOGFILE=/dev/null
-		_repair_recently_closed_parents_cycle '${repos_json}' 5 3 3
-		printf 'totals:%s:%s:%s\\n' \"\$_PIR_RECENT_PARENT_REPOS_SCANNED\" \\
-			\"\$_PIR_RECENT_PARENT_CYCLE_CANDIDATES\" \"\$_PIR_RECENT_PARENT_CYCLE_REOPENED\"
+		for cycle in 1 2 3 4; do
+			_repair_recently_closed_parents_cycle '${repos_json}' 5 3 3
+			read -r cursor <\"\$AIDEVOPS_PARENT_REPAIR_CURSOR_FILE\"
+			printf 'cycle:%s:cursor:%s:totals:%s:%s:%s\\n' \"\$cycle\" \"\$cursor\" \\
+				\"\$_PIR_RECENT_PARENT_REPOS_SCANNED\" \\
+				\"\$_PIR_RECENT_PARENT_CYCLE_CANDIDATES\" \"\$_PIR_RECENT_PARENT_CYCLE_REOPENED\"
+		done
 	" 2>/dev/null)
 	rm -rf "$tmp_dir"
 
 	local all_ok=1
-	printf '%s\n' "$result" | grep -qx 'scan:owner/repo10:5:3' || all_ok=0
-	printf '%s\n' "$result" | grep -qx 'scan:owner/repo11:5:2' || all_ok=0
-	printf '%s\n' "$result" | grep -qx 'scan:owner/repo0:5:1' || all_ok=0
-	printf '%s\n' "$result" | grep -qx 'totals:3:3:0' || all_ok=0
+	actual_scans=$(printf '%s\n' "$result" | grep '^scan:' || true)
+	expected_scans=$(printf '%s\n' \
+		'scan:owner/repo0:5:3' 'scan:owner/repo1:5:2' 'scan:owner/repo2:5:1' \
+		'scan:owner/repo3:5:3' 'scan:owner/repo4:5:2' 'scan:owner/repo5:5:1' \
+		'scan:owner/repo6:5:3' 'scan:owner/repo7:5:2' 'scan:owner/repo8:5:1' \
+		'scan:owner/repo9:5:3' 'scan:owner/repo10:5:2' 'scan:owner/repo11:5:1')
+	[[ "$actual_scans" == "$expected_scans" ]] || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'cycle:1:cursor:3:totals:3:3:0' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'cycle:2:cursor:6:totals:3:3:0' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'cycle:3:cursor:9:totals:3:3:0' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'cycle:4:cursor:0:totals:3:3:0' || all_ok=0
 	if [[ "$all_ok" -eq 1 ]]; then
-		_pass "single-pass parent repair rotates repo order and enforces a global candidate cap"
+		_pass "single-pass parent repair persists fair repo progress and enforces a global candidate cap"
 	else
-		_fail "single-pass parent repair rotation/cap mismatch: ${result}"
+		_fail "single-pass parent repair cursor/cap mismatch: ${result}"
 	fi
 	return 0
 }
@@ -1252,7 +1263,7 @@ test_parent_live_hold_gate
 test_pr_merged_at_prefers_wrapper
 test_single_pass_wired_in_engine
 test_recent_parent_repair_reachable_from_single_pass
-test_recent_parent_repair_rotation_and_candidate_bounds
+test_recent_parent_repair_cursor_and_candidate_bounds
 test_batched_field_extraction_parity
 test_t2984_time_budget_present
 test_t2984_budget_env_validation

@@ -80,12 +80,25 @@ case "$1" in
 			if [[ -n "${GH_GRAPHQL_EXIT_CODE:-}" ]]; then
 				exit "${GH_GRAPHQL_EXIT_CODE}"
 			fi
+			graphql_reads=0
+			graphql_reads_file="${TEST_ROOT}/gh-graphql.reads"
+			[[ -f "$graphql_reads_file" ]] && graphql_reads=$(<"$graphql_reads_file")
+			graphql_reads=$((graphql_reads + 1))
+			printf '%s\n' "$graphql_reads" >"$graphql_reads_file"
+			graphql_transition_after="${GH_GRAPHQL_TRANSITION_AFTER:-0}"
+			[[ "$graphql_transition_after" =~ ^[0-9]+$ ]] || graphql_transition_after=0
+			graphql_nodes_file="${TEST_ROOT}/gh-subissues.json"
+			if [[ "$graphql_transition_after" -gt 0 && \
+				"$graphql_reads" -gt "$graphql_transition_after" && \
+				-f "${TEST_ROOT}/gh-subissues-after-transition.json" ]]; then
+				graphql_nodes_file="${TEST_ROOT}/gh-subissues-after-transition.json"
+			fi
 			# Emit the raw GraphQL envelope. Production retains this shape until
 			# response-owned rateLimit.cost is metered and validated, then projects
 			# child numbers locally.
 			_nodes='[]'
-			if [[ -f "${TEST_ROOT}/gh-subissues.json" ]]; then
-				_nodes=$(jq -c '.' "${TEST_ROOT}/gh-subissues.json" 2>/dev/null) || _nodes='[]'
+			if [[ -f "$graphql_nodes_file" ]]; then
+				_nodes=$(jq -c '.' "$graphql_nodes_file" 2>/dev/null) || _nodes='[]'
 			fi
 			_has_next="${GH_GRAPHQL_HAS_NEXT_PAGE:-false}"
 			case "${GH_GRAPHQL_COST:-1}" in
@@ -134,7 +147,10 @@ case "$1" in
 			local_parent_reads=$((local_parent_reads + 1))
 			printf '%s\n' "$local_parent_reads" >"$local_parent_reads_file"
 			local_issue_files=("${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json")
-			if [[ "$local_parent_reads" -gt 1 && -f "${TEST_ROOT}/gh-live-parent-after-first.json" ]]; then
+			local_parent_transition_after="${GH_LIVE_PARENT_TRANSITION_AFTER:-1}"
+			[[ "$local_parent_transition_after" =~ ^[1-9][0-9]*$ ]] || local_parent_transition_after=1
+			if [[ "$local_parent_reads" -gt "$local_parent_transition_after" && \
+				-f "${TEST_ROOT}/gh-live-parent-after-first.json" ]]; then
 				local_issue_files=("${TEST_ROOT}/gh-live-parent-after-first.json" "${local_issue_files[@]}")
 			fi
 			for local_issue_file in "${local_issue_files[@]}"; do
@@ -239,10 +255,11 @@ reset_scenario() {
 	: >"$LOGFILE"
 	rm -f "${TEST_ROOT}/gh-subissues.json" "${TEST_ROOT}/gh-child-states.env" \
 		"${TEST_ROOT}/gh-child-live-states.env" \
+		"${TEST_ROOT}/gh-subissues-after-transition.json" "${TEST_ROOT}/gh-graphql.reads" \
 		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json" \
 		"${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-live-parent-after-first.json" \
 		"${TEST_ROOT}"/gh-live-parent-*.reads "${TEST_ROOT}"/gh-child-state-*.reads
-	unset GH_LIVE_PARENT_EXIT_CODE
+	unset GH_LIVE_PARENT_EXIT_CODE GH_LIVE_PARENT_TRANSITION_AFTER GH_GRAPHQL_TRANSITION_AFTER
 	return 0
 }
 
@@ -250,7 +267,7 @@ set_parent_list() {
 	# Args: issue_num title body
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
-		'[{number:$n, title:$t, body:$b, labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-issue-list.json"
+		'[{number:$n, title:$t, body:$b, state:"open", labels:[{name:"parent-task"}], authorAssociation:"OWNER", author:{login:"maintainer",type:"User"}}]' >"${TEST_ROOT}/gh-issue-list.json"
 	return 0
 }
 
@@ -675,6 +692,84 @@ elif [[ "$child_state_reads" -ge 2 ]]; then
 else
 	print_result "live child state: reopened child blocks close" 1 \
 		"(state_reads=${child_state_reads})"
+fi
+
+# An unavailable child lookup is unresolved evidence. It must not be omitted
+# merely because another child verifies closed.
+reset_scenario
+set_parent_list 1492 "t1492: child lookup can fail" $'## Children\n\n- #1493\n- #1494'
+set_live_parent 1492 "t1492: child lookup can fail" $'## Children\n\n- #1493\n- #1494'
+set_subissues "1493:CLOSED" "1494:CLOSED"
+set_child_states "1493:closed:known-child"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1492" "$GH_CALLS"; then
+	print_result "live child state: unavailable child fails the close decision closed" 1
+elif grep -q "repos/test/repo/issues/1494 --jq .state" "$GH_CALLS"; then
+	print_result "live child state: unavailable child fails the close decision closed" 0
+else
+	print_result "live child state: unavailable child fails the close decision closed" 1 \
+		"(unavailable child was not checked)"
+fi
+
+# Native graph evidence can change while child states are being checked. Two
+# different live snapshots must defer closure instead of trusting either set.
+reset_scenario
+set_parent_list 1495 "t1495: graph can expand" "Graph-only child tracker"
+set_live_parent 1495 "t1495: graph can expand" "Graph-only child tracker"
+set_subissues "1496:CLOSED"
+jq -n '[{number:1496,state:"CLOSED"},{number:1497,state:"OPEN"}]' \
+	>"${TEST_ROOT}/gh-subissues-after-transition.json"
+set_child_states "1496:closed:known-child" "1497:open:new-child"
+export GH_GRAPHQL_TRANSITION_AFTER=2
+reconcile_completed_parent_tasks >/dev/null 2>&1
+graph_reads=$(<"${TEST_ROOT}/gh-graphql.reads")
+if grep -q "issue close 1495" "$GH_CALLS"; then
+	print_result "live child evidence: changed graph snapshot blocks close" 1
+elif [[ "$graph_reads" -ge 3 ]]; then
+	print_result "live child evidence: changed graph snapshot blocks close" 0
+else
+	print_result "live child evidence: changed graph snapshot blocks close" 1 \
+		"(graph_reads=${graph_reads})"
+fi
+
+# The authoritative final parent read occurs after evidence and child checks.
+# A concurrent close must fail the expected-open fence.
+reset_scenario
+set_parent_list 1498 "t1498: parent state can change" $'## Children\n\n- #1499'
+set_live_parent 1498 "t1498: parent state can change" $'## Children\n\n- #1499'
+jq -n --arg b $'## Children\n\n- #1499' \
+	'[{number:1498,title:"t1498: parent state can change",body:$b,state:"closed",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	>"${TEST_ROOT}/gh-live-parent-after-first.json"
+set_subissues "1499:CLOSED"
+set_child_states "1499:closed:only-child"
+export GH_LIVE_PARENT_TRANSITION_AFTER=2
+reconcile_completed_parent_tasks >/dev/null 2>&1
+parent_reads=$(<"${TEST_ROOT}/gh-live-parent-1498.reads")
+if grep -q "issue close 1498" "$GH_CALLS"; then
+	print_result "final parent fence: concurrent state transition blocks close" 1
+elif [[ "$parent_reads" -ge 3 ]]; then
+	print_result "final parent fence: concurrent state transition blocks close" 0
+else
+	print_result "final parent fence: concurrent state transition blocks close" 1 \
+		"(parent_reads=${parent_reads})"
+fi
+
+# An open parent whose body changes after evidence verification must also defer;
+# the final fence cannot authorize a close using a stale body contract.
+reset_scenario
+set_parent_list 1550 "t1550: parent body can change" $'## Children\n\n- #1551'
+set_live_parent 1550 "t1550: parent body can change" $'## Children\n\n- #1551'
+jq -n --arg b $'<!-- parent-close-contract: keep-open -->\n\n## Children\n\n- #1551' \
+	'[{number:1550,title:"t1550: parent body can change",body:$b,state:"open",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}]' \
+	>"${TEST_ROOT}/gh-live-parent-after-first.json"
+set_subissues "1551:CLOSED"
+set_child_states "1551:closed:only-child"
+export GH_LIVE_PARENT_TRANSITION_AFTER=2
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1550" "$GH_CALLS"; then
+	print_result "final parent fence: concurrent body mutation blocks close" 1
+else
+	print_result "final parent fence: concurrent body mutation blocks close" 0
 fi
 
 # -----------------------------------------------------------------------------

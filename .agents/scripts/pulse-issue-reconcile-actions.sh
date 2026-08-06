@@ -568,8 +568,7 @@ _repair_closed_parent_contract() {
 
 #######################################
 # Re-read each known child and build the close summary. The caller invokes this
-# once for the cached candidate and again after recollecting live parent child
-# evidence at the final mutation boundary.
+# for the cached candidate and for each live evidence snapshot before close.
 # Args: $1=slug, $2=newline-separated child issue numbers
 # Returns: 0=one or more real children and all are closed, 1=otherwise
 #######################################
@@ -586,7 +585,9 @@ _pir_verify_parent_children_closed() {
 			--jq '.state // "unknown"' 2>/dev/null) || child_state="unknown"
 		child_title_line=$(gh api "repos/${slug}/issues/${child_num}" \
 			--jq '.title // ""' 2>/dev/null) || child_title_line=""
-		[[ "$child_state" != "unknown" ]] || continue
+		# An unreadable child is unresolved evidence, not permission to omit it
+		# from the all-closed decision. Fail the whole verification pass closed.
+		[[ "$child_state" != "unknown" ]] || return 1
 
 		_PIR_CPT_VERIFIED_CHILD_COUNT=$((_PIR_CPT_VERIFIED_CHILD_COUNT + 1))
 		case "$child_state" in
@@ -626,6 +627,44 @@ _hold_parent_for_incomplete_close_contract() {
 }
 
 #######################################
+# Verify that live child evidence, child states, parent body/revision, state,
+# labels, and authority remain stable at the final close boundary.
+# Args: $1=slug, $2=parent, $3=body, $4=child numbers, $5=child source,
+#       $6=initial parent revision
+# Returns: 0=stable and closeable, 1=changed or ambiguous
+#######################################
+_pir_parent_close_snapshot_is_stable() {
+	local slug="$1" parent_num="$2" live_parent_body="$3"
+	local expected_child_nums="$4" expected_child_source="$5" live_parent_revision="$6"
+	local final_parent_body="" final_parent_revision="" child_count=0
+
+	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body"
+	[[ "$_PIR_CPT_CHILD_NUMS" == "$expected_child_nums" && \
+		"$_PIR_CPT_CHILD_SOURCE" == "$expected_child_source" ]] || return 1
+	_pir_verify_parent_children_closed "$slug" "$_PIR_CPT_CHILD_NUMS" || return 1
+	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
+	if _parent_close_contract_incomplete "$live_parent_body" "$child_count"; then
+		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" live
+		return 1
+	fi
+
+	# No remote reads may sit between this state/authority/body fence and close.
+	# The revision check also catches metadata mutations when GitHub supplies it.
+	_pir_parent_mutation_is_allowed "$slug" "$parent_num" open || return 1
+	final_parent_body=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | jq -er \
+		--arg string_type "$_PIR_JSON_TYPE_STRING" \
+		'select(type == "object" and has("body") and (.body | type) == $string_type) | .body' \
+		2>/dev/null) || return 1
+	[[ "$final_parent_body" == "$live_parent_body" ]] || return 1
+	final_parent_revision=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | \
+		jq -r '.updated_at // .updatedAt // ""' 2>/dev/null) || return 1
+	if [[ -n "$live_parent_revision" && "$final_parent_revision" != "$live_parent_revision" ]]; then
+		return 1
+	fi
+	return 0
+}
+
+#######################################
 # t2138 / t3544: extract per-parent close logic. Keeps
 # reconcile_completed_parent_tasks under the 100-line shell-complexity
 # threshold and makes the close decision independently testable.
@@ -635,6 +674,8 @@ _hold_parent_for_incomplete_close_contract() {
 _try_close_parent_tracker() {
 	local slug="$1" parent_num="$2" child_nums="$3" child_source="$4" parent_body="${5:-}"
 	local child_summary="" child_count=0 live_parent_body=""
+	local live_child_nums="" live_child_source=""
+	local live_parent_revision=""
 
 	_pir_verify_parent_children_closed "$slug" "$child_nums" || return 1
 	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
@@ -668,7 +709,7 @@ _try_close_parent_tracker() {
 	# Child reads and close-contract checks can span several API round-trips.
 	# Re-read the parent at the final mutation boundary so an NMR/persistent hold
 	# added during that interval cannot race the earlier caller-side gate.
-	_pir_parent_mutation_is_allowed "$slug" "$parent_num" || return 1
+	_pir_parent_mutation_is_allowed "$slug" "$parent_num" open || return 1
 	if ! live_parent_body=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | jq -er \
 		--arg string_type "$_PIR_JSON_TYPE_STRING" \
 		'select(type == "object" and has("body") and (.body | type) == $string_type) | .body' \
@@ -679,12 +720,16 @@ _try_close_parent_tracker() {
 		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" live
 		return 1
 	fi
+	live_parent_revision=$(printf '%s' "$_PIR_LIVE_PARENT_JSON" | \
+		jq -r '.updated_at // .updatedAt // ""' 2>/dev/null) || live_parent_revision=""
 
 	# Recollect the graph/body/comment union from the live parent, then re-read
 	# every child. A child linked or reopened after the cached pass blocks close.
 	_pir_collect_parent_child_evidence "$slug" "$parent_num" "$live_parent_body"
 	child_nums="$_PIR_CPT_CHILD_NUMS"
 	child_source="$_PIR_CPT_CHILD_SOURCE"
+	live_child_nums="$child_nums"
+	live_child_source="$child_source"
 	_pir_verify_parent_children_closed "$slug" "$child_nums" || return 1
 	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
 	child_summary="$_PIR_CPT_VERIFIED_CHILD_SUMMARY"
@@ -692,6 +737,15 @@ _try_close_parent_tracker() {
 		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" live
 		return 1
 	fi
+
+	# Graph relations and trusted roadmap comments can change independently of
+	# the body. Require a stable second snapshot and a final live parent fence.
+	_pir_parent_close_snapshot_is_stable "$slug" "$parent_num" "$live_parent_body" \
+		"$live_child_nums" "$live_child_source" "$live_parent_revision" || return 1
+	child_nums="$_PIR_CPT_CHILD_NUMS"
+	child_source="$_PIR_CPT_CHILD_SOURCE"
+	child_count="$_PIR_CPT_VERIFIED_CHILD_COUNT"
+	child_summary="$_PIR_CPT_VERIFIED_CHILD_SUMMARY"
 	gh issue close "$parent_num" --repo "$slug" \
 		--comment "## All declared child tasks completed — closing parent tracker
 
@@ -1267,10 +1321,50 @@ _repair_recently_closed_parents_for_slug() {
 }
 
 #######################################
-# Scan a bounded, time-rotated repository window for recently closed parents.
-# Rotation prevents a stable repositories.json order from starving repos after
-# the first max_repo_scans entries. max_candidates bounds expensive per-parent
-# GraphQL, comment, child-state, and live-trust checks across the whole cycle.
+# Load the persisted recently-closed-parent repository cursor. Missing,
+# malformed, or out-of-range state safely restarts at the first repository.
+# Args: $1=cursor file, $2=repository count
+# Returns: 0 always; result is exposed through _PIR_PARENT_REPAIR_CURSOR
+#######################################
+_pir_parent_repair_cursor_load() {
+	local cursor_file="$1" repo_count="$2" raw_cursor=""
+	_PIR_PARENT_REPAIR_CURSOR=0
+	[[ "$repo_count" =~ ^[1-9][0-9]*$ && -r "$cursor_file" ]] || return 0
+	read -r raw_cursor <"$cursor_file" || return 0
+	[[ "$raw_cursor" =~ ^(0|[1-9][0-9]*)$ ]] || return 0
+	_PIR_PARENT_REPAIR_CURSOR=$((raw_cursor % repo_count))
+	return 0
+}
+
+#######################################
+# Atomically persist the next recently-closed-parent repository cursor.
+# Args: $1=cursor file, $2=next cursor
+# Returns: 0=stored, 1=invalid or storage failure
+#######################################
+_pir_parent_repair_cursor_store() {
+	local cursor_file="$1" next_cursor="$2" state_dir="" temporary=""
+	[[ "$next_cursor" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+	state_dir=$(dirname "$cursor_file") || return 1
+	mkdir -p "$state_dir" 2>/dev/null || return 1
+	temporary=$(mktemp "${state_dir}/.parent-repair-cursor.XXXXXX" 2>/dev/null) || return 1
+	if ! printf '%s\n' "$next_cursor" >"$temporary"; then
+		rm -f "$temporary" 2>/dev/null || true
+		return 1
+	fi
+	chmod 600 "$temporary" 2>/dev/null || true
+	if ! mv "$temporary" "$cursor_file" 2>/dev/null; then
+		rm -f "$temporary" 2>/dev/null || true
+		return 1
+	fi
+	return 0
+}
+
+#######################################
+# Scan a bounded, cursor-rotated repository window for recently closed parents.
+# Persisted progress prevents a stable repositories.json order or scheduler
+# cadence from starving repos after the first max_repo_scans entries.
+# max_candidates bounds expensive per-parent GraphQL, comment, child-state, and
+# live-trust checks across the whole cycle.
 # Args: $1=repos JSON, $2=max reopens, $3=max repo scans, $4=max candidates
 # Returns: 0 always; outcomes are exposed through _PIR_RECENT_PARENT_CYCLE_*
 #######################################
@@ -1280,7 +1374,8 @@ _repair_recently_closed_parents_cycle() {
 	local max_repo_scans="${3:-10}"
 	local max_candidates="${4:-10}"
 	local repo_slugs_json="" ordered_slugs="" slug=""
-	local repo_count=0 rotation_start=0 rotation_epoch="" rotation_interval=""
+	local repo_count=0 rotation_start=0 next_cursor=0
+	local cursor_file="${AIDEVOPS_PARENT_REPAIR_CURSOR_FILE:-${HOME}/.aidevops/state/parent-repair-repo.cursor}"
 	local reopens_remaining=0 candidates_remaining=0
 	_PIR_RECENT_PARENT_REPOS_SCANNED=0
 	_PIR_RECENT_PARENT_CYCLE_REOPENED=0
@@ -1298,14 +1393,8 @@ _repair_recently_closed_parents_cycle() {
 	repo_count=$(printf '%s' "$repo_slugs_json" | jq -r 'length' 2>/dev/null) || return 0
 	[[ "$repo_count" =~ ^[1-9][0-9]*$ ]] || return 0
 
-	rotation_interval="${PARENT_REPAIR_ROTATION_INTERVAL_SECS:-300}"
-	[[ "$rotation_interval" =~ ^[1-9][0-9]*$ ]] || rotation_interval=300
-	rotation_epoch="${PARENT_REPAIR_ROTATION_EPOCH:-}"
-	if [[ -z "$rotation_epoch" ]]; then
-		rotation_epoch=$(date +%s 2>/dev/null) || rotation_epoch=0
-	fi
-	[[ "$rotation_epoch" =~ ^[0-9]+$ ]] || rotation_epoch=0
-	rotation_start=$(((rotation_epoch / rotation_interval) % repo_count))
+	_pir_parent_repair_cursor_load "$cursor_file" "$repo_count"
+	rotation_start="$_PIR_PARENT_REPAIR_CURSOR"
 	ordered_slugs=$(printf '%s' "$repo_slugs_json" | jq -r --argjson start "$rotation_start" \
 		'(.[$start:] + .[:$start])[]' 2>/dev/null) || return 0
 
@@ -1322,7 +1411,12 @@ _repair_recently_closed_parents_cycle() {
 		_PIR_RECENT_PARENT_CYCLE_CANDIDATES=$((_PIR_RECENT_PARENT_CYCLE_CANDIDATES + _PIR_RECENT_PARENT_SCANNED))
 	done <<<"$ordered_slugs"
 
-	echo "[pulse-wrapper] Closed-parent repair scan: repos=${_PIR_RECENT_PARENT_REPOS_SCANNED}/${max_repo_scans} candidates=${_PIR_RECENT_PARENT_CYCLE_CANDIDATES}/${max_candidates} reopened=${_PIR_RECENT_PARENT_CYCLE_REOPENED}/${max_reopens} rotation_start=${rotation_start}/${repo_count}" >>"${LOGFILE:-/dev/null}"
+	next_cursor=$(((rotation_start + _PIR_RECENT_PARENT_REPOS_SCANNED) % repo_count))
+	if [[ "$_PIR_RECENT_PARENT_REPOS_SCANNED" -gt 0 ]] && \
+		! _pir_parent_repair_cursor_store "$cursor_file" "$next_cursor"; then
+		echo "[pulse-wrapper] Closed-parent repair scan: unable to persist repository cursor" >>"${LOGFILE:-/dev/null}"
+	fi
+	echo "[pulse-wrapper] Closed-parent repair scan: repos=${_PIR_RECENT_PARENT_REPOS_SCANNED}/${max_repo_scans} candidates=${_PIR_RECENT_PARENT_CYCLE_CANDIDATES}/${max_candidates} reopened=${_PIR_RECENT_PARENT_CYCLE_REOPENED}/${max_reopens} cursor=${rotation_start}->${next_cursor}/${repo_count}" >>"${LOGFILE:-/dev/null}"
 	return 0
 }
 
@@ -1390,9 +1484,11 @@ _pir_live_parent_trust_is_allowed() {
 # Re-read the parent immediately before each mutating action. Cached issue lists
 # are only an initial filter; missing metadata, label removal, NMR, persistent
 # state, or unresolved external-author trust all fail closed for this cycle.
+# When supplied, $3 requires the live issue to remain in that exact state.
 _pir_parent_mutation_is_allowed() {
 	local slug="$1"
 	local issue_num="$2"
+	local expected_state="${3:-}"
 	local live_issue_json=""
 	local nmr_label="${_PIR_NMR_LABEL:-needs-maintainer-review}"
 	local parent_label="${_PIR_PT_LABEL:-parent-task}"
@@ -1404,12 +1500,14 @@ _pir_parent_mutation_is_allowed() {
 	#aidevops:trust-boundary -- live NMR/persistent labels stop all parent mutations.
 	printf '%s' "$live_issue_json" | jq -e --argjson issue "$issue_num" \
 		--arg nmr "$nmr_label" --arg parent "$parent_label" \
-		--arg persistent "$persistent_label" --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		--arg persistent "$persistent_label" --arg string_type "$_PIR_JSON_TYPE_STRING" \
+		--arg expected_state "$expected_state" '
 		def names: [.labels[]? | if type == $string_type then . else (.name // empty) end];
 		(.number == $issue) and
 		(names | index($parent) != null) and
 		(names | index($nmr) == null) and
-		(names | index($persistent) == null)
+		(names | index($persistent) == null) and
+		(($expected_state == "") or ((.state // "" | ascii_downcase) == ($expected_state | ascii_downcase)))
 	' >/dev/null 2>&1 || return 1
 	#aidevops:trust-boundary -- live author authority gates every parent mutation.
 	_pir_live_parent_trust_is_allowed "$slug" "$issue_num" "$live_issue_json" || return 1
