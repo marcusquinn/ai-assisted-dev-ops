@@ -1,5 +1,10 @@
 name: Post-Merge Brief Verification
 
+# Keep post-merge acceptance checks on the same pinned Qlty CLI as required PR
+# quality gates. Brief verify blocks may call the repository Qlty helpers.
+env:
+  QLTY_VERSION: "0.636.0"
+
 # t2135: After a PR merges to main, extract the task ID from the PR title,
 # locate the corresponding brief file, parse verify: YAML blocks from its
 # acceptance criteria, and run method:bash blocks. On any failure, open a
@@ -111,6 +116,10 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
+
+      - name: Install Qlty CLI
+        if: steps.brief.outputs.exists == 'true'
+        uses: qltysh/qlty-action/install@a19242102d17e497f437d7466aa01b528537e899 # v2.2.0
 
       - name: Install verification dependencies
         if: steps.brief.outputs.exists == 'true'
