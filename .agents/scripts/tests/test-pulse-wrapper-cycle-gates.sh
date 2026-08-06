@@ -119,8 +119,8 @@ else
 fi
 
 timeout_value=$(<"$TIMEOUT_CALL_FILE")
-if grep -q 'AIDEVOPS_PULSE_IDLE_AVAILABLE_WORK_TIMEOUT:-30' "$SOURCE_SCRIPT" && \
-	[[ "$timeout_value" =~ ^[0-9]+$ ]] && \
+if grep -q 'AIDEVOPS_PULSE_IDLE_AVAILABLE_WORK_TIMEOUT:-30' "$SOURCE_SCRIPT" &&
+	[[ "$timeout_value" =~ ^[0-9]+$ ]] &&
 	[[ "$timeout_value" -ge 1 && "$timeout_value" -le 30 ]]; then
 	pass "idle-work query uses bounded default timeout"
 else
@@ -159,21 +159,21 @@ _pulse_efficiency_cycle_start
 efficiency_cycle_id="${AIDEVOPS_GH_API_EFFICIENCY_CYCLE_ID:-}"
 _PULSE_EFFICIENCY_CYCLE_START_MS=$((_PULSE_EFFICIENCY_CYCLE_START_MS - 25))
 _pulse_efficiency_cycle_finish idle
-if grep -q '^contract=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage-start=[0-9]' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.population=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.latency=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.cache=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.single_flight=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.webhook=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.guardrails=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage.path_budgets=2$' "$EVIDENCE_FILE" \
-	&& grep -q '^population.pulse_cycles=1$' "$EVIDENCE_FILE" \
-	&& grep -q '^population.unchanged_cycles=1$' "$EVIDENCE_FILE" \
-	&& grep -q '^coverage-end=[0-9]' "$EVIDENCE_FILE" \
-	&& [[ "$efficiency_cycle_id" =~ ^[0-9]+$ ]] \
-	&& [[ -z "${AIDEVOPS_GH_API_EFFICIENCY_CYCLE_ID:-}" ]] \
-	&& ! grep -q '^latency.completed_action_ms=' "$EVIDENCE_FILE"; then
+if grep -q '^contract=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage-start=[0-9]' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.population=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.latency=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.cache=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.single_flight=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.webhook=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.guardrails=2$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage.path_budgets=2$' "$EVIDENCE_FILE" &&
+	grep -q '^population.pulse_cycles=1$' "$EVIDENCE_FILE" &&
+	grep -q '^population.unchanged_cycles=1$' "$EVIDENCE_FILE" &&
+	grep -q '^coverage-end=[0-9]' "$EVIDENCE_FILE" &&
+	[[ "$efficiency_cycle_id" =~ ^[0-9]+$ ]] &&
+	[[ -z "${AIDEVOPS_GH_API_EFFICIENCY_CYCLE_ID:-}" ]] &&
+	! grep -q '^latency.completed_action_ms=' "$EVIDENCE_FILE"; then
 	pass "idle cycle publishes complete typed evidence"
 else
 	fail "idle cycle publishes complete typed evidence"
@@ -204,9 +204,9 @@ _pulse_efficiency_cycle_finish idle
 rollover_marker=$(grep '^coverage-end=' "$EVIDENCE_FILE")
 rollover_record_ts=$(grep '^coverage-end=' "$EVIDENCE_TIMESTAMP_FILE")
 rollover_aggregate=$(<"$AGGREGATE_FILE")
-if [[ "$rollover_marker" == "coverage-end=2000" \
-	&& "$rollover_record_ts" == "coverage-end=2000" \
-	&& "$rollover_aggregate" == "|86400|2000" ]]; then
+if [[ "$rollover_marker" == "coverage-end=2000" &&
+	"$rollover_record_ts" == "coverage-end=2000" &&
+	"$rollover_aggregate" == "|86400|2000" ]]; then
 	pass "second rollover keeps coverage marker inside completed cutoff"
 else
 	fail "second rollover keeps coverage marker inside completed cutoff" \
@@ -219,8 +219,8 @@ _pulse_efficiency_now_seconds() {
 }
 
 _pulse_efficiency_cycle_finish idle
-if [[ "$(wc -l <"$AGGREGATE_FILE" | tr -d ' ')" == "1" ]] \
-	&& [[ "$(wc -l <"$TRIM_FILE" | tr -d ' ')" == "1" ]]; then
+if [[ "$(wc -l <"$AGGREGATE_FILE" | tr -d ' ')" == "1" ]] &&
+	[[ "$(wc -l <"$TRIM_FILE" | tr -d ' ')" == "1" ]]; then
 	pass "cycle finish aggregates and trims exactly once"
 else
 	fail "cycle finish aggregates and trims exactly once"
@@ -234,9 +234,9 @@ _pulse_efficiency_cycle_start
 _PULSE_EFFICIENCY_CYCLE_START_MS=$((_PULSE_EFFICIENCY_CYCLE_START_MS - 25))
 _pulse_record_cycle_outcome 0
 _pulse_efficiency_cycle_finish
-if [[ "$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "active" ]] \
-	&& grep -Eq '^latency.completed_action_ms=[1-9][0-9]*$' "$EVIDENCE_FILE" \
-	&& ! grep -q '^population.unchanged_cycles=' "$EVIDENCE_FILE"; then
+if [[ "$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "active" ]] &&
+	grep -Eq '^latency.completed_action_ms=[1-9][0-9]*$' "$EVIDENCE_FILE" &&
+	! grep -q '^population.unchanged_cycles=' "$EVIDENCE_FILE"; then
 	pass "active cycle records completed-action latency"
 else
 	fail "active cycle records completed-action latency"
@@ -270,9 +270,9 @@ _PULSE_HEALTH_PRS_CLOSED_CONFLICTING=0
 _PULSE_CYCLE_BLOCKER_KIND="none"
 _PULSE_EFFICIENCY_CYCLE_OUTCOME="idle"
 _pulse_record_cycle_outcome 1
-if [[ "$FINAL_TYPED_OUTCOME" == "progressed" \
-	&& "$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "active" ]] \
-	&& printf '%s' "$FINAL_PROGRESS_KINDS" | jq -e '. == ["worker-dispatched"]' >/dev/null; then
+if [[ "$FINAL_TYPED_OUTCOME" == "progressed" &&
+	"$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "active" ]] &&
+	printf '%s' "$FINAL_PROGRESS_KINDS" | jq -e '. == ["worker-dispatched"]' >/dev/null; then
 	pass "worker registration maps to typed progress and legacy active"
 else
 	fail "worker registration maps to typed progress and legacy active"
@@ -280,9 +280,9 @@ fi
 
 _PULSE_CYCLE_BLOCKER_KIND="review-gate"
 _pulse_record_cycle_outcome 2
-if [[ "$FINAL_TYPED_OUTCOME" == "blocked" \
-	&& "$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "idle" \
-	&& "$FINAL_PROGRESS_KINDS" == "[]" ]]; then
+if [[ "$FINAL_TYPED_OUTCOME" == "blocked" &&
+	"$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "idle" &&
+	"$FINAL_PROGRESS_KINDS" == "[]" ]]; then
 	pass "typed blocker maps to blocked and legacy idle"
 else
 	fail "typed blocker maps to blocked and legacy idle"
@@ -290,9 +290,9 @@ fi
 
 _PULSE_CYCLE_BLOCKER_KIND="none"
 _pulse_record_cycle_outcome 2
-if [[ "$FINAL_TYPED_OUTCOME" == "idle" \
-	&& "$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "idle" \
-	&& "$FINAL_PROGRESS_KINDS" == "[]" ]]; then
+if [[ "$FINAL_TYPED_OUTCOME" == "idle" &&
+	"$_PULSE_EFFICIENCY_CYCLE_OUTCOME" == "idle" &&
+	"$FINAL_PROGRESS_KINDS" == "[]" ]]; then
 	pass "no durable evidence maps to typed and legacy idle"
 else
 	fail "no durable evidence maps to typed and legacy idle"
@@ -310,9 +310,9 @@ first_population_log=$(<"$EVIDENCE_FILE")
 : >"$EVIDENCE_FILE"
 _prefetch_record_efficiency_population "$local_entries_b"
 repo_hash_b=$(awk -F= '$1 == "population.repository_set_sha256" {print $2}' "$EVIDENCE_FILE")
-if [[ "$repo_hash_a" =~ ^[0-9a-f]{64}$ && "$repo_hash_a" == "$repo_hash_b" ]] \
-	&& printf '%s\n' "$first_population_log" | grep -q '^population.repository_count=2$' \
-	&& ! printf '%s\n' "$first_population_log" | grep -qE 'alpha/repo|beta/repo|/private/'; then
+if [[ "$repo_hash_a" =~ ^[0-9a-f]{64}$ && "$repo_hash_a" == "$repo_hash_b" ]] &&
+	printf '%s\n' "$first_population_log" | grep -q '^population.repository_count=2$' &&
+	! printf '%s\n' "$first_population_log" | grep -qE 'alpha/repo|beta/repo|/private/'; then
 	pass "repository population evidence is deterministic and private"
 else
 	fail "repository population evidence is deterministic and private"
@@ -324,11 +324,20 @@ source "$PREFETCH_REPO"
 : >"$EVIDENCE_FILE"
 PULSE_BATCH_PREFETCH_ENABLED=0
 _prefetch_single_repo_load_snapshots alpha/repo
-if [[ "$(grep -c '^cache.misses=1$' "$EVIDENCE_FILE")" == "2" ]] \
-	&& [[ "$(grep -c '^guardrails.forced_live_refreshes=1$' "$EVIDENCE_FILE")" == "2" ]]; then
+if [[ "$(grep -c '^cache.misses=1$' "$EVIDENCE_FILE")" == "2" ]] &&
+	[[ "$(grep -c '^guardrails.forced_live_refreshes=1$' "$EVIDENCE_FILE")" == "2" ]]; then
 	pass "disabled canonical cache records forced live decisions"
 else
 	fail "disabled canonical cache records forced live decisions"
+fi
+
+SOURCE_CYCLE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pulse-wrapper-cycle.sh"
+if grep -q 'Do not run Bash tool calls with workdir set to managed repository paths' "$SOURCE_CYCLE" &&
+	grep -q 'external_directory permission' "$SOURCE_CYCLE" &&
+	grep -q '_pulse_supervisor_prompt' "$SOURCE_CYCLE"; then
+	pass "supervisor prompt prevents external-workdir permission stalls"
+else
+	fail "supervisor prompt prevents external-workdir permission stalls"
 fi
 
 printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
