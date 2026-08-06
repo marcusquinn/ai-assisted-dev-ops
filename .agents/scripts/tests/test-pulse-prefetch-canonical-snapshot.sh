@@ -113,7 +113,7 @@ update_repo_tier_check_timestamp() {
 	return 0
 }
 
-ISSUE_ITEMS='[{"number":3,"title":"Issue","state":"open","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[],"authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]'
+ISSUE_ITEMS='[{"number":3,"title":"Issue","state":"open","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[],"body":"Line 1\nLine 2 ✓","authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]'
 PR_ITEMS='[{"number":7,"title":"PR","labels":[],"updatedAt":"2026-07-18T09:00:00Z","assignees":[],"createdAt":"2026-07-17T09:00:00Z","author":{"login":"dev"},"headRefOid":"abcdef123456","headRefName":"feature"}]'
 
 snapshot_path() {
@@ -302,6 +302,20 @@ test_incomplete_and_incompatible_pairs_miss() {
 	return 0
 }
 
+test_bodyless_issue_snapshots_miss() {
+	local bodyless_items=""
+	local nonstring_items=""
+	bodyless_items=$(printf '%s' "$ISSUE_ITEMS" | jq 'map(del(.body))')
+	nonstring_items=$(printf '%s' "$ISSUE_ITEMS" | jq 'map(.body = 42)')
+
+	write_complete_pair generation-bodyless "$bodyless_items"
+	assert_pair_misses "bodyless issue snapshots cannot produce cache hits"
+
+	write_complete_pair generation-nonstring "$nonstring_items"
+	assert_pair_misses "non-string issue bodies cannot produce cache hits"
+	return 0
+}
+
 test_cache_entry_records_snapshot_contract() {
 	local entry=""
 	entry=$(_prefetch_build_cache_entry \
@@ -351,6 +365,7 @@ test_complete_empty_pair_is_authoritative
 test_single_repo_cycle_threads_one_snapshot_pair
 test_local_eviction_invalidates_completeness
 test_incomplete_and_incompatible_pairs_miss
+test_bodyless_issue_snapshots_miss
 test_cache_entry_records_snapshot_contract
 test_rest_first_prefetch_avoids_unattributed_review_search
 

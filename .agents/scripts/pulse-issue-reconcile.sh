@@ -1263,6 +1263,8 @@ reconcile_issues_single_pass() {
 	local cpt_total_closed=0 cpt_max_closes=5
 	local cpt_total_nudged=0 cpt_max_nudges=5
 	local cpt_total_escalated=0 cpt_max_escalations=3
+	local cpt_total_reopened=0 cpt_max_reopens=5
+	local cpt_repair_scans=0 cpt_max_repair_scans=10
 	local cpt_esc_hours="${PARENT_DECOMPOSITION_ESCALATION_HOURS:-168}"
 
 	# t2838: periodic parent-task sub-issue backfill — gated by interval
@@ -1365,6 +1367,19 @@ reconcile_issues_single_pass() {
 		local ciw_per_repo=0 ciw_max_repo=20
 		local rsd_per_repo=0 rsd_max_repo=20
 		local lia_per_repo=0 lia_max_repo=10
+
+		# The production scheduler invokes only this single pass. Reach the
+		# bounded seven-day closed-parent repair from here rather than relying on
+		# the unscheduled legacy parent reconciler.
+		if [[ "$cpt_total_reopened" -lt "$cpt_max_reopens" ]] && \
+			[[ "$cpt_repair_scans" -lt "$cpt_max_repair_scans" ]] && \
+			declare -F _repair_recently_closed_parents_for_slug >/dev/null 2>&1; then
+			local cpt_reopens_remaining=0
+			cpt_reopens_remaining=$((cpt_max_reopens - cpt_total_reopened))
+			cpt_repair_scans=$((cpt_repair_scans + 1))
+			_repair_recently_closed_parents_for_slug "$slug" "$cpt_reopens_remaining"
+			cpt_total_reopened=$((cpt_total_reopened + _PIR_RECENT_PARENT_REOPENED))
+		fi
 
 		# Fetch issues ONCE for this slug — all fields required by any stage.
 		# The cache (written each cycle by pulse-prefetch.sh) covers:
@@ -1597,7 +1612,7 @@ reconcile_issues_single_pass() {
 	fi
 
 	local _total_actions
-	_total_actions=$((persistent_repaired + external_gated + ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + lia_fixed + pbf_total_run + cbb_total_run))
+	_total_actions=$((persistent_repaired + external_gated + ciw_closed + rsd_closed + rsd_reset + oimp_total_closed + cpt_total_closed + cpt_total_nudged + cpt_total_escalated + cpt_total_reopened + lia_fixed + pbf_total_run + cbb_total_run))
 
 	# t2984: log when time-budget aborted iteration mid-cycle so operators
 	# can correlate with stage-timing log entries. Always logs (not gated
@@ -1605,9 +1620,9 @@ reconcile_issues_single_pass() {
 	if [[ "$_t2984_aborted" -eq 1 ]]; then
 		local _t2984_elapsed_end
 		_t2984_elapsed_end=$((SECONDS - _t2984_start_ts))
-		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: time-budget abort at ${_t2984_elapsed_end}s (budget=${_t2984_budget}s) — actions completed: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} cpt_reopened=${cpt_total_reopened} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	elif [[ "$_total_actions" -gt 0 ]]; then
-		echo "[pulse-wrapper] reconcile_issues_single_pass: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
+		echo "[pulse-wrapper] reconcile_issues_single_pass: persistent_repaired=${persistent_repaired} external_gated=${external_gated} ciw_closed=${ciw_closed} rsd_closed=${rsd_closed} rsd_reset=${rsd_reset} oimp_closed=${oimp_total_closed} cpt_closed=${cpt_total_closed} cpt_nudged=${cpt_total_nudged} cpt_escalated=${cpt_total_escalated} cpt_reopened=${cpt_total_reopened} lia_fixed=${lia_fixed} pbf_run=${pbf_total_run} cbb_run=${cbb_total_run}" >>"$LOGFILE"
 	fi
 	return 0
 }

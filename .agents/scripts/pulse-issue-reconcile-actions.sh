@@ -348,6 +348,10 @@ _Detected by \`_try_close_parent_tracker\` (pulse-issue-reconcile.sh, t2786). Po
 _PARENT_CLOSE_CONTRACT_REASON=""
 _PARENT_CLOSE_CONTRACT_DECLARED=0
 _PARENT_CLOSE_CONTRACT_UNFILED=""
+_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE="live-body-unavailable"
+_PIR_JSON_TYPE_STRING=string
+_PIR_LIVE_PARENT_JSON=""
+_PIR_RECENT_PARENT_REOPENED=0
 
 _parent_comments_api_path() {
 	local slug="$1" parent_num="$2"
@@ -417,6 +421,33 @@ _parent_close_contract_incomplete() {
 	fi
 
 	return 1
+}
+
+#######################################
+# Apply the parent close contract to a freshly fetched issue object. A missing
+# or non-string body is ambiguous and therefore blocks closure, while an
+# explicitly empty body preserves the legacy compatibility contract.
+# Args: $1=live_issue_json, $2=known_child_count
+# Returns: 0=incomplete or ambiguous, 1=complete or legacy-unknown
+#######################################
+_parent_live_close_contract_incomplete() {
+	local live_issue_json="$1"
+	local known_child_count="${2:-0}"
+	local live_body=""
+	if ! printf '%s' "$live_issue_json" | jq -e --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		type == "object" and has("body") and (.body | type) == $string_type
+	' >/dev/null 2>&1; then
+		_PARENT_CLOSE_CONTRACT_REASON="$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE"
+		_PARENT_CLOSE_CONTRACT_DECLARED=0
+		_PARENT_CLOSE_CONTRACT_UNFILED=""
+		return 0
+	fi
+	live_body=$(printf '%s' "$live_issue_json" | jq -r '.body' 2>/dev/null) || {
+		_PARENT_CLOSE_CONTRACT_REASON="$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE"
+		return 0
+	}
+	_parent_close_contract_incomplete "$live_body" "$known_child_count"
+	return $?
 }
 
 #######################################
@@ -498,6 +529,25 @@ _repair_closed_parent_contract() {
 	return 0
 }
 
+_hold_parent_for_incomplete_close_contract() {
+	local slug="$1"
+	local parent_num="$2"
+	local child_count="$3"
+	local evidence_source="${4:-cached}"
+	if [[ "$_PARENT_CLOSE_CONTRACT_REASON" == "unfiled-phases" ]]; then
+		_post_parent_phases_unfiled_nudge "$slug" "$parent_num" \
+			"$_PARENT_CLOSE_CONTRACT_DECLARED" "$child_count" \
+			"$_PARENT_CLOSE_CONTRACT_UNFILED" || true
+	else
+		_post_parent_close_contract_nudge "$slug" "$parent_num" \
+			"$_PARENT_CLOSE_CONTRACT_REASON" \
+			"<!-- parent-close-contract-incomplete:${_PARENT_CLOSE_CONTRACT_REASON} -->" || true
+	fi
+	_mark_parent_review_hold "$slug" "$parent_num"
+	echo "[pulse-wrapper] Reconcile parent-task: kept #${parent_num} open in ${slug} — incomplete close contract (${_PARENT_CLOSE_CONTRACT_REASON}, evidence=${evidence_source})" >>"${LOGFILE:-/dev/null}"
+	return 0
+}
+
 #######################################
 # t2138 / t3544: extract per-parent close logic. Keeps
 # reconcile_completed_parent_tasks under the 100-line shell-complexity
@@ -554,17 +604,7 @@ _try_close_parent_tracker() {
 	[[ "$all_closed" == "true" && "$child_count" -gt 0 ]] || return 1
 
 	if _parent_close_contract_incomplete "$parent_body" "$child_count"; then
-		if [[ "$_PARENT_CLOSE_CONTRACT_REASON" == "unfiled-phases" ]]; then
-			_post_parent_phases_unfiled_nudge "$slug" "$parent_num" \
-				"$_PARENT_CLOSE_CONTRACT_DECLARED" "$child_count" \
-				"$_PARENT_CLOSE_CONTRACT_UNFILED" || true
-		else
-			_post_parent_close_contract_nudge "$slug" "$parent_num" \
-				"$_PARENT_CLOSE_CONTRACT_REASON" \
-				"<!-- parent-close-contract-incomplete:${_PARENT_CLOSE_CONTRACT_REASON} -->" || true
-		fi
-		_mark_parent_review_hold "$slug" "$parent_num"
-		echo "[pulse-wrapper] Reconcile parent-task: kept #${parent_num} open in ${slug} — incomplete close contract (${_PARENT_CLOSE_CONTRACT_REASON})" >>"${LOGFILE:-/dev/null}"
+		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" cached
 		return 1
 	fi
 
@@ -572,6 +612,10 @@ _try_close_parent_tracker() {
 	# Re-read the parent at the final mutation boundary so an NMR/persistent hold
 	# added during that interval cannot race the earlier caller-side gate.
 	_pir_parent_mutation_is_allowed "$slug" "$parent_num" || return 1
+	if _parent_live_close_contract_incomplete "$_PIR_LIVE_PARENT_JSON" "$child_count"; then
+		_hold_parent_for_incomplete_close_contract "$slug" "$parent_num" "$child_count" live
+		return 1
+	fi
 	gh issue close "$parent_num" --repo "$slug" \
 		--comment "## All declared child tasks completed — closing parent tracker
 
@@ -1086,18 +1130,63 @@ _PIR_CPT_CHILD_SOURCE="none"
 _PIR_CPT_KNOWN_CHILD_COUNT=0
 
 _repair_recently_closed_parent() {
-	local slug="$1" issue_num="$2" issue_body="$3" known_child_count="$4"
+	local slug="$1" issue_num="$2" live_issue_json="$3" known_child_count="$4"
 	local issue_state="$5"
 	case "$issue_state" in
 	CLOSED | closed) ;;
 	*) return 1 ;;
 	esac
-	if _parent_close_contract_incomplete "$issue_body" "$known_child_count"; then
+	printf '%s' "$live_issue_json" | jq -e '(.state // "" | ascii_downcase) == "closed"' \
+		>/dev/null 2>&1 || return 1
+	if _parent_live_close_contract_incomplete "$live_issue_json" "$known_child_count"; then
+		[[ "$_PARENT_CLOSE_CONTRACT_REASON" != "$_PARENT_CLOSE_CONTRACT_LIVE_BODY_UNAVAILABLE" ]] || return 1
 		if _repair_closed_parent_contract "$slug" "$issue_num" \
 			"$_PARENT_CLOSE_CONTRACT_REASON"; then
 			_SP_CPT_REOPENED=1
 		fi
 	fi
+	return 0
+}
+
+_repair_recently_closed_parents_for_slug() {
+	local slug="$1"
+	local max_reopens="${2:-5}"
+	local recent_json=""
+	local rows=""
+	local issue_num=""
+	local issue_title_b64=""
+	local issue_body_b64=""
+	local issue_labels_b64=""
+	local issue_title=""
+	local issue_body=""
+	local issue_labels=""
+	local decode_flag="-d"
+	_PIR_RECENT_PARENT_REOPENED=0
+	[[ "$max_reopens" =~ ^[1-9][0-9]*$ ]] || return 0
+	declare -F _fetch_recently_closed_parent_tasks >/dev/null 2>&1 || return 0
+	recent_json=$(_fetch_recently_closed_parent_tasks "$slug" "${_PIR_PT_LABEL:-parent-task}") || return 0
+	rows=$(printf '%s' "$recent_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
+		.[] | select((.state // "" | ascii_downcase) == "closed") |
+		[
+			(.number // "" | tostring),
+			((.title // "") | @base64),
+			((.body // "") | @base64),
+			(((.labels // []) | map(if type == $string_type then . else (.name // "") end) | join(",")) | @base64)
+		] | join("|")
+	' 2>/dev/null) || return 0
+	[[ "$(uname -s)" == "Darwin" ]] && decode_flag="-D"
+	while IFS='|' read -r issue_num issue_title_b64 issue_body_b64 issue_labels_b64; do
+		[[ "$_PIR_RECENT_PARENT_REOPENED" -lt "$max_reopens" ]] || break
+		[[ "$issue_num" =~ ^[1-9][0-9]*$ ]] || continue
+		issue_title=$(printf '%s' "$issue_title_b64" | base64 "$decode_flag" 2>/dev/null) || continue
+		issue_body=$(printf '%s' "$issue_body_b64" | base64 "$decode_flag" 2>/dev/null) || continue
+		issue_labels=$(printf '%s' "$issue_labels_b64" | base64 "$decode_flag" 2>/dev/null) || continue
+		_action_cpt_single "$slug" "$issue_num" "$issue_title" "$issue_body" \
+			0 0 0 168 CLOSED "$issue_labels"
+		if [[ "$_SP_CPT_REOPENED" -eq 1 ]]; then
+			_PIR_RECENT_PARENT_REOPENED=$((_PIR_RECENT_PARENT_REOPENED + 1))
+		fi
+	done <<<"$rows"
 	return 0
 }
 
@@ -1141,6 +1230,7 @@ _pir_parent_mutation_is_allowed() {
 	local nmr_label="${_PIR_NMR_LABEL:-needs-maintainer-review}"
 	local parent_label="${_PIR_PT_LABEL:-parent-task}"
 	local persistent_label="${_PIR_PERSISTENT_LABEL:-persistent}"
+	_PIR_LIVE_PARENT_JSON=""
 
 	[[ "$slug" == */* && "$issue_num" =~ ^[1-9][0-9]*$ ]] || return 1
 	live_issue_json=$(gh api "repos/${slug}/issues/${issue_num}" 2>/dev/null) || return 1
@@ -1154,6 +1244,7 @@ _pir_parent_mutation_is_allowed() {
 		(names | index($nmr) == null) and
 		(names | index($persistent) == null)
 	' >/dev/null 2>&1 || return 1
+	_PIR_LIVE_PARENT_JSON="$live_issue_json"
 	return 0
 }
 
@@ -1197,10 +1288,9 @@ _action_cpt_single() {
 	# body evidence proves that the close contract remains incomplete.
 	if [[ "$issue_state" == "CLOSED" || "$issue_state" == "closed" ]]; then
 		_pir_parent_mutation_is_allowed "$slug" "$issue_num" || return 0
-		if _repair_recently_closed_parent "$slug" "$issue_num" "$issue_body" \
-			"$known_child_count" "$issue_state"; then
-			return 0
-		fi
+		_repair_recently_closed_parent "$slug" "$issue_num" "$_PIR_LIVE_PARENT_JSON" \
+			"$known_child_count" "$issue_state" || true
+		return 0
 	fi
 
 	if [[ -z "$child_nums" ]]; then

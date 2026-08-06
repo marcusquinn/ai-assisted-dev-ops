@@ -473,6 +473,23 @@ test_single_pass_wired_in_engine() {
 }
 
 # ---------------------------------------------------------------------------
+# Parent repair must be reachable from the scheduled single pass, while the
+# legacy multi-stage parent reconciler remains unscheduled.
+# ---------------------------------------------------------------------------
+test_recent_parent_repair_reachable_from_single_pass() {
+	local single_pass_body=""
+	single_pass_body=$(sed -n '/^reconcile_issues_single_pass()/,/^}/p' "$RECONCILE_SH")
+	if printf '%s\n' "$single_pass_body" | grep -q '_repair_recently_closed_parents_for_slug' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_reopens=5' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_scans=10'; then
+		_pass "single-pass parent repair: bounded recently-closed helper is reachable"
+	else
+		_fail "single-pass parent repair: active path or bounds missing"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Test 10: Batched per-issue field extraction parity (t2904)
 #
 # Verifies the t2904 single-jq-per-repo + base64 round-trip preserves
@@ -1165,6 +1182,7 @@ test_should_predicates
 test_parent_live_hold_gate
 test_pr_merged_at_prefers_wrapper
 test_single_pass_wired_in_engine
+test_recent_parent_repair_reachable_from_single_pass
 test_batched_field_extraction_parity
 test_t2984_time_budget_present
 test_t2984_budget_env_validation

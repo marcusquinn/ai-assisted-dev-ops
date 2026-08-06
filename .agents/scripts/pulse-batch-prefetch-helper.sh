@@ -138,7 +138,7 @@ _CACHE_CARDINALITY_UNKNOWN=unknown
 _CACHE_SNAPSHOT_STATE="missing"
 _CACHE_SNAPSHOT_PATH=""
 _SNAPSHOT_SCHEMA="aidevops-pulse-snapshot/v1"
-_SNAPSHOT_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees,authorAssociation,author"
+_SNAPSHOT_ISSUES_PROJECTION="number,title,state,labels,updatedAt,assignees,body,authorAssociation,author"
 _SNAPSHOT_PRS_PROJECTION="number,title,labels,updatedAt,assignees,createdAt,author,headRefOid,headRefName"
 _BATCH_SNAPSHOT_GENERATION="${PULSE_BATCH_SNAPSHOT_GENERATION:-}"
 _BATCH_SNAPSHOT_AUTH_SCOPE="${PULSE_BATCH_SNAPSHOT_AUTH_SCOPE:-${GH_HOST:-github.com}|${AIDEVOPS_GH_AUTH_MODE:-gh}|${AIDEVOPS_GH_AUTH_PRINCIPAL:-default}}|${AIDEVOPS_GH_API_POOL:-default}"
@@ -311,6 +311,7 @@ _prefetch_rest_issues_for_slug() {
 			labels: (.labels // []),
 			updatedAt: .updated_at,
 			assignees: (.assignees // []),
+			body: (if .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
 			authorAssociation: (.author_association // "NONE"),
 			author: (if .user then {
 				login: (.user.login // ""),
@@ -501,6 +502,7 @@ _normalize_search_to_prefetch_schema() {
 					labels: .labels,
 					updatedAt: .updatedAt,
 					assignees: .assignees,
+					body: (if .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
 					authorAssociation: (.authorAssociation // "NONE"),
 					author: (.author // null)
 				}]
@@ -910,7 +912,7 @@ _refresh_owner_issues() {
 	local issue_json=""
 	issue_json=$(_prefetch_gh_read gh search issues --owner "$owner" --state open \
 		--limit "$BATCH_SEARCH_LIMIT" \
-		--json number,title,state,labels,updatedAt,assignees,authorAssociation,author,repository 2>"$issue_err") || issue_json=""
+		--json number,title,state,labels,updatedAt,assignees,body,authorAssociation,author,repository 2>"$issue_err") || issue_json=""
 	_OWNER_SEARCH_CALLS=$((_OWNER_SEARCH_CALLS + 1))
 
 	if [[ -z "$issue_json" || "$issue_json" == "$_JSON_NULL" ]]; then

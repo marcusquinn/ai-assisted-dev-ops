@@ -125,7 +125,10 @@ case "$1" in
 		# Live parent mutation fences request the complete issue object. Reuse the
 		# current scenario's parent list entry so label/state changes stay coherent.
 		if [[ -n "$local_issue" && -z "$local_jq" ]]; then
-			for local_issue_file in "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"; do
+			if [[ -n "${GH_LIVE_PARENT_EXIT_CODE:-}" ]]; then
+				exit "${GH_LIVE_PARENT_EXIT_CODE}"
+			fi
+			for local_issue_file in "${TEST_ROOT}/gh-live-parent.json" "${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"; do
 				[[ -f "$local_issue_file" ]] || continue
 				local_issue_json=$(jq -c --argjson issue "$local_issue" \
 					'.[] | select(.number == $issue)' "$local_issue_file" 2>/dev/null) || local_issue_json=""
@@ -217,7 +220,9 @@ reset_scenario() {
 	: >"$GH_CALLS"
 	: >"$LOGFILE"
 	rm -f "${TEST_ROOT}/gh-subissues.json" "${TEST_ROOT}/gh-child-states.env" \
-		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json"
+		"${TEST_ROOT}/gh-issue-list.json" "${TEST_ROOT}/gh-closed-issue-list.json" \
+		"${TEST_ROOT}/gh-live-parent.json"
+	unset GH_LIVE_PARENT_EXIT_CODE
 	return 0
 }
 
@@ -234,6 +239,20 @@ set_closed_parent_list() {
 	local num="$1" title="$2" body="$3"
 	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" \
 		'[{number:$n, title:$t, body:$b, state:"closed", labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+	return 0
+}
+
+set_live_parent() {
+	local num="$1" title="$2" body="$3" state="${4:-open}"
+	jq -n --argjson n "$num" --arg t "$title" --arg b "$body" --arg s "$state" \
+		'[{number:$n, title:$t, body:$b, state:$s, labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-live-parent.json"
+	return 0
+}
+
+set_live_parent_without_body() {
+	local num="$1" title="$2"
+	jq -n --argjson n "$num" --arg t "$title" \
+		'[{number:$n, title:$t, state:"open", labels:[{name:"parent-task"}]}]' >"${TEST_ROOT}/gh-live-parent.json"
 	return 0
 }
 
@@ -530,6 +549,54 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Scenario 11b: cached complete evidence cannot outrun a freshly edited parent
+# body. Unchecked criteria and keep-open markers observed at the final mutation
+# boundary block closure.
+# -----------------------------------------------------------------------------
+reset_scenario
+set_parent_list 1450 "t1450: cached complete roadmap" $'## Children\n\n- #1451\n- #1452'
+set_live_parent 1450 "t1450: live incomplete roadmap" $'<!-- parent-close-contract: keep-open -->\n\n## Acceptance Criteria\n\n- [ ] Final validation\n\n## Children\n\n- #1451\n- #1452'
+set_subissues "1451:CLOSED" "1452:CLOSED"
+set_child_states "1451:closed:phase-one" "1452:closed:phase-two"
+
+reconcile_completed_parent_tasks >/dev/null 2>&1
+
+if grep -q "issue close 1450" "$GH_CALLS"; then
+	print_result "live close contract: cached-complete/live-incomplete parent remains open" 1 \
+		"(unexpected close: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
+elif grep -q "evidence=live" "$LOGFILE"; then
+	print_result "live close contract: cached-complete/live-incomplete parent remains open" 0
+else
+	print_result "live close contract: cached-complete/live-incomplete parent remains open" 1 \
+		"(missing live evidence log: $(cat "$LOGFILE"))"
+fi
+
+# Missing body metadata and live-read failure are ambiguity, never authority to
+# close a parent whose cached row looked complete.
+reset_scenario
+set_parent_list 1460 "t1460: cached complete" $'## Children\n\n- #1461'
+set_live_parent_without_body 1460 "t1460: missing live body"
+set_subissues "1461:CLOSED"
+set_child_states "1461:closed:only-child"
+reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1460" "$GH_CALLS"; then
+	print_result "live close contract: missing body fails closed" 1
+else
+	print_result "live close contract: missing body fails closed" 0
+fi
+
+reset_scenario
+set_parent_list 1470 "t1470: cached complete" $'## Children\n\n- #1471'
+set_subissues "1471:CLOSED"
+set_child_states "1471:closed:only-child"
+GH_LIVE_PARENT_EXIT_CODE=1 reconcile_completed_parent_tasks >/dev/null 2>&1
+if grep -q "issue close 1470" "$GH_CALLS"; then
+	print_result "live close contract: failed live read performs no close" 1
+else
+	print_result "live close contract: failed live read performs no close" 0
+fi
+
+# -----------------------------------------------------------------------------
 # Scenario 12: bounded recently-closed scan repairs a premature close only
 # when canonical unfiled phase evidence exists.
 # -----------------------------------------------------------------------------
@@ -538,7 +605,7 @@ set_closed_parent_list 1500 "t1500: prematurely closed" $'## Phases\n\n- Phase 1
 set_subissues "1501:CLOSED"
 set_child_states "1501:closed:phase-one"
 
-reconcile_completed_parent_tasks >/dev/null 2>&1
+_repair_recently_closed_parents_for_slug test/repo 1 >/dev/null 2>&1
 
 if grep -q "issue reopen 1500" "$GH_CALLS"; then
 	print_result "closed-parent repair: reopens deterministic incomplete roadmap" 0
@@ -547,7 +614,7 @@ else
 		"(calls: $(tr '\n' '|' <"$GH_CALLS" | head -c 400))"
 fi
 reopen_count=$(grep -c "issue reopen 1500" "$GH_CALLS" 2>/dev/null || true)
-if [[ "$reopen_count" -eq 1 ]]; then
+if [[ "$reopen_count" -eq 1 && "$_PIR_RECENT_PARENT_REOPENED" -eq 1 ]]; then
 	print_result "closed-parent repair: action is bounded to one reopen per scan" 0
 else
 	print_result "closed-parent repair: action is bounded to one reopen per scan" 1 \
