@@ -401,6 +401,7 @@ _circuit_breaker_status() {
 #   in_progress=M    (count of in-progress workflow runs)
 #   ratio=R          (integer queued / max(in_progress,1); use as advisory)
 #   saturated=0|1    (1 iff both threshold conditions hold)
+#   provider_incident=0|1 (1 iff GitHub Status reports an Actions incident)
 #
 # Returns:
 #   0 — successful query (saturated may be 0 or 1)
@@ -421,21 +422,35 @@ _check_actions_queue_saturation() {
 
 	# Empty repo_slug → cannot query → fail-open with zeros.
 	if [[ -z "$repo_slug" ]]; then
-		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\n'
+		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\nprovider_incident=0\n'
 		return 0
 	fi
 
 	# Emergency bypass.
 	if [[ "${AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION:-0}" == "1" ]]; then
 		echo "${_CB_RL_LOG_PREFIX} AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1 — bypassing actions queue check for ${repo_slug}" >>"$LOGFILE"
-		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\n'
+		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\nprovider_incident=0\n'
 		return 0
 	fi
 
 	# Disabled if QUEUED_MIN is 0.
 	if [[ "$queued_min" -eq 0 ]]; then
-		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\n'
+		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\nprovider_incident=0\n'
 		return 0
+	fi
+
+	# Consult the public provider status only on the stuck/queue path. The helper
+	# caches responses, and an unknown/unreachable Statuspage fails open so a
+	# third-party diagnostic dependency cannot stop healthy automation.
+	local status_helper="${AIDEVOPS_GH_STATUS_HELPER:-${SCRIPT_DIR}/gh-status-helper.sh}"
+	local status_rc=0
+	if [[ "${AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS:-0}" != "1" && -x "$status_helper" ]]; then
+		"$status_helper" check-actions --json >/dev/null 2>&1 || status_rc=$?
+		if [[ "$status_rc" -eq 1 ]]; then
+			echo "${_CB_RL_LOG_PREFIX} GitHub Status reports an active Actions incident — treating delayed queues as provider saturation" >>"$LOGFILE"
+			printf 'queued=0\nin_progress=0\nratio=0\nsaturated=1\nprovider_incident=1\n'
+			return 0
+		fi
 	fi
 
 	# Query Actions runs for queued + in_progress states. per_page=1 is
@@ -448,7 +463,7 @@ _check_actions_queue_saturation() {
 	# Fail-open on any API error — instrumentation must never break the pulse.
 	if [[ -z "$queued_json" || -z "$in_progress_json" ]]; then
 		echo "${_CB_RL_LOG_PREFIX} WARNING: gh api repos/${repo_slug}/actions/runs failed — fail-open with saturated=0" >>"$LOGFILE"
-		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\n'
+		printf 'queued=0\nin_progress=0\nratio=0\nsaturated=0\nprovider_incident=0\n'
 		return 2
 	fi
 
@@ -476,7 +491,7 @@ _check_actions_queue_saturation() {
 		echo "${_CB_RL_LOG_PREFIX} ${repo_slug} actions queue SATURATED: queued=${queued} in_progress=${in_progress} ratio=${ratio} (thresholds queued>${queued_min} ratio>${ratio_min})" >>"$LOGFILE"
 	fi
 
-	printf 'queued=%s\nin_progress=%s\nratio=%s\nsaturated=%s\n' \
+	printf 'queued=%s\nin_progress=%s\nratio=%s\nsaturated=%s\nprovider_incident=0\n' \
 		"$queued" "$in_progress" "$ratio" "$saturated"
 	return 0
 }
@@ -528,6 +543,7 @@ _main() {
 			echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN  min queued runs (default 50; 0 disables)"
 			echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_RATIO_MIN   min queued/in_progress ratio (default 10)"
 			echo "  AIDEVOPS_SKIP_ACTIONS_QUEUE_SATURATION=1      emergency bypass"
+			echo "  AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1         bypass public Actions incident signal"
 			return 0
 			;;
 		*)

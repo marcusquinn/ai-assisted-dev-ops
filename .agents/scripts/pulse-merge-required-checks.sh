@@ -5,6 +5,7 @@
 
 [[ -n "${_PULSE_MERGE_REQUIRED_CHECKS_LOADED:-}" ]] && return 0
 _PULSE_MERGE_REQUIRED_CHECKS_LOADED=1
+_PULSE_MERGE_REQUIRED_CHECKS_DIR="${BASH_SOURCE[0]%/*}"
 PMRC_CHECK_COMPLETED="completed"
 PMRC_CHECK_SUCCESS="success"
 PMRC_CHECK_FAILURE="failure"
@@ -695,6 +696,16 @@ _pmrc_is_explicit_advisory_failure() {
 	return $?
 }
 
+_pmrc_actions_incident_blocks_rerun() {
+	local helper="${AIDEVOPS_GH_STATUS_HELPER:-${_PULSE_MERGE_REQUIRED_CHECKS_DIR:-${HOME:+$HOME/.aidevops/agents/scripts}}/gh-status-helper.sh}"
+	local status_rc=0
+	[[ "${AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS:-0}" != "1" ]] || return 1
+	[[ -x "$helper" ]] || return 1
+	"$helper" check-actions --json >/dev/null 2>&1 || status_rc=$?
+	[[ "$status_rc" -eq 1 ]]
+	return $?
+}
+
 #######################################
 # Request a bounded rerun for a GitHub Actions job whose failed log proves an
 # infrastructure failure. The merge remains blocked until a later snapshot
@@ -727,6 +738,11 @@ _pmrc_rerun_infrastructure_check() {
 		! repo_allows_pulse_write_actions "$repo_slug"; then
 		echo "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — repository writes are disabled" >>"$log_target"
 		return 1
+	fi
+
+	if _pmrc_actions_incident_blocks_rerun; then
+		echo "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — GitHub Status reports an active Actions incident; retry amplification suppressed" >>"$log_target"
+		return 0
 	fi
 
 	mkdir -p "$state_dir" 2>/dev/null || return 1

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Test suite for gh-status-helper.sh — verifies all three subcommands
-# (check, incidents, correlate), all three exit-code branches (operational,
+# Test suite for gh-status-helper.sh — verifies status and component subcommands
+# (check, check-actions, incidents, correlate), all exit-code branches (operational,
 # degraded, outage), the 60s response cache, and network-failure handling.
 #
 # The helper supports a mock interface via AIDEVOPS_GH_STATUS_MOCK_DIR — when
@@ -122,7 +122,7 @@ cat >"$MOCK_BASE/outage/unresolved.json" <<'EOF'
       "name": "Webhooks Delayed",
       "impact": "major",
       "started_at": "2026-04-27T22:10:00Z",
-      "components": [{"id": "c2", "name": "Webhooks"}],
+      "components": [{"id": "c2", "name": "Webhooks"}, {"id": "c3", "name": "Actions"}],
       "incident_updates": [{"id": "u2", "body": "Webhook delivery queue backed up.", "created_at": "2026-04-27T22:12:00Z"}]
     }
   ]
@@ -215,6 +215,34 @@ test_check_json_output() {
 		return 0
 	fi
 	print_result "check --json status='operational'" 0
+	return 0
+}
+
+test_check_actions_component_status() {
+	local out rc
+	out=$(_isolated_run operational check-actions --json 2>/dev/null)
+	rc=$?
+	if [[ "$rc" -ne 0 || "$(printf '%s' "$out" | jq -r '.status')" != "operational" ]]; then
+		print_result "check-actions healthy component → operational" 1 "rc=$rc out=$out"
+	else
+		print_result "check-actions healthy component → operational" 0
+	fi
+
+	out=$(_isolated_run degraded check-actions --json 2>/dev/null)
+	rc=$?
+	if [[ "$rc" -ne 0 || "$(printf '%s' "$out" | jq -r '.status')" != "operational" ]]; then
+		print_result "check-actions ignores unrelated incidents" 1 "rc=$rc out=$out"
+	else
+		print_result "check-actions ignores unrelated incidents" 0
+	fi
+
+	out=$(_isolated_run outage check-actions --json 2>/dev/null)
+	rc=$?
+	if [[ "$rc" -ne 1 || "$(printf '%s' "$out" | jq -r '.status')" != "incident" ]]; then
+		print_result "check-actions active incident → exit 1" 1 "rc=$rc out=$out"
+	else
+		print_result "check-actions active incident → exit 1" 0
+	fi
 	return 0
 }
 
@@ -384,6 +412,7 @@ _run_tests() {
 	test_check_degraded_returns_1
 	test_check_outage_returns_2
 	test_check_json_output
+	test_check_actions_component_status
 	test_incidents_empty_when_operational
 	test_incidents_lists_when_degraded
 	test_incidents_json_array

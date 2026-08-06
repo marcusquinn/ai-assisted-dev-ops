@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../pulse-merge-required-checks.sh"
 TEST_ROOT="$(mktemp -d -t pulse-preflight-snapshot.XXXXXX)"
 LOGFILE="${TEST_ROOT}/pulse.log"
 AIDEVOPS_REPOS_JSON="${TEST_ROOT}/repos.json"
-export AIDEVOPS_REPOS_JSON
+export AIDEVOPS_REPOS_JSON AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=1
 write_default_repos_json() {
 	cat >"$AIDEVOPS_REPOS_JSON" <<'EOF'
 {"initialized_repos":[{"slug":"owner/repo","review_gate":{"advisory_check_contexts":["CodeFactor"]}}]}
@@ -475,6 +475,28 @@ assert_infrastructure_rerun_unset_logfile_safe() {
 	return 0
 }
 
+assert_actions_incident_suppresses_infrastructure_rerun() {
+	local helper="${TEST_ROOT}/gh-status-incident" rc=0
+	cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+	chmod +x "$helper"
+	RERUN_CALLS=0
+	AIDEVOPS_SKIP_GITHUB_ACTIONS_STATUS=0 AIDEVOPS_GH_STATUS_HELPER="$helper" \
+		_pmrc_rerun_infrastructure_check owner/repo 7 required-a \
+		"https://github.com/owner/repo/actions/runs/111/job/222" || rc=$?
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$rc" -eq 0 && "$RERUN_CALLS" -eq 0 ]] &&
+		grep -qF "retry amplification suppressed" "$LOGFILE"; then
+		printf 'PASS active Actions incident suppresses infrastructure rerun\n'
+	else
+		printf 'FAIL active Actions incident did not suppress rerun (rc=%s, calls=%s)\n' "$rc" "$RERUN_CALLS"
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+	return 0
+}
+
 assert_review_and_head_snapshot_cases() {
 	assert_gate "same-name check-run and status retain independent source failures" same_name_source_conflict 1
 	set_live_evidence PASS
@@ -540,6 +562,7 @@ assert_review_and_head_snapshot_cases() {
 main() {
 	assert_infrastructure_rerun_unset_defaults_safe
 	assert_infrastructure_rerun_unset_logfile_safe
+	assert_actions_incident_suppresses_infrastructure_rerun
 	assert_effective_rules_have_exact_rest_cost
 	assert_configured_advisory_contexts_are_null_safe
 	assert_malformed_advisory_contexts_fail_closed_once

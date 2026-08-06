@@ -11,6 +11,7 @@
 #
 # Usage:
 #   gh-status-helper.sh check                 # one-line summary; exit 0/1/2
+#   gh-status-helper.sh check-actions         # Actions incident circuit-breaker signal
 #   gh-status-helper.sh incidents             # list active incidents
 #   gh-status-helper.sh correlate             # markdown block for issue comments
 #   gh-status-helper.sh check --json          # JSON output for programmatic callers
@@ -179,6 +180,42 @@ cmd_check() {
 	return "$exit_code"
 }
 
+# cmd_check_actions — report whether an unresolved incident affects Actions.
+# This component-specific signal is intentionally stricter than the overall
+# status indicator: even a minor platform incident can make CI retries harmful.
+cmd_check_actions() {
+	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
+		if [[ "$ARG_JSON" -eq 1 ]]; then
+			printf '{"status":"%s","component":"Actions","reason":"network_failure"}\n' "$INDICATOR_UNKNOWN"
+		else
+			printf '%s — could not reach Statuspage API\n' "$INDICATOR_UNKNOWN" >&2
+		fi
+		return 3
+	fi
+
+	local incident_count="" impact="none" incident_name=""
+	incident_count=$(jq '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))] | length' "$CACHE_INCIDENTS" 2>/dev/null) || return 3
+	[[ "$incident_count" =~ ^[0-9]+$ ]] || return 3
+	if [[ "$incident_count" -gt 0 ]]; then
+		impact=$(jq -r '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))][0].impact // "unknown"' "$CACHE_INCIDENTS")
+		incident_name=$(jq -r '[.incidents[]? | select(any(.components[]?; ((.name // "") | ascii_downcase) == "actions"))][0].name // "GitHub Actions incident"' "$CACHE_INCIDENTS")
+		if [[ "$ARG_JSON" -eq 1 ]]; then
+			jq -n --arg impact "$impact" --arg name "$incident_name" \
+				'{status:"incident",component:"Actions",impact:$impact,incident:$name}'
+		else
+			printf 'incident — Actions affected by %s (%s)\n' "$incident_name" "$impact"
+		fi
+		return 1
+	fi
+
+	if [[ "$ARG_JSON" -eq 1 ]]; then
+		printf '{"status":"operational","component":"Actions"}\n'
+	else
+		printf 'operational — no unresolved Actions incident\n'
+	fi
+	return 0
+}
+
 # cmd_incidents — list unresolved incidents.
 cmd_incidents() {
 	if ! _ensure_cache "$INCIDENTS_URL" "$CACHE_INCIDENTS"; then
@@ -248,6 +285,7 @@ gh-status-helper.sh — Query GitHub Statuspage API for platform health
 
 Usage:
   gh-status-helper.sh check        [--json] [--no-cache]
+  gh-status-helper.sh check-actions [--json] [--no-cache]
   gh-status-helper.sh incidents    [--json] [--no-cache]
   gh-status-helper.sh correlate              [--no-cache]
   gh-status-helper.sh -h | --help
@@ -257,6 +295,8 @@ Exit codes (check):
   1  degraded (major)
   2  outage (critical)
   3  unknown / network failure
+
+Exit codes (check-actions): 0 operational, 1 active incident, 3 unknown.
 
 Cache: ~/.aidevops/cache/gh-status-*.json (60s TTL, override via
 AIDEVOPS_GH_STATUS_CACHE_TTL).
@@ -279,7 +319,7 @@ main() {
 			print_usage
 			return 0
 			;;
-		check | incidents | correlate)
+		check | check-actions | incidents | correlate)
 			subcommand="$arg"
 			;;
 		*)
@@ -293,6 +333,7 @@ main() {
 
 	case "$subcommand" in
 	check) cmd_check ;;
+	check-actions) cmd_check_actions ;;
 	incidents) cmd_incidents ;;
 	correlate) cmd_correlate ;;
 	"")
