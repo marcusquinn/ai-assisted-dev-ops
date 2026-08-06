@@ -80,7 +80,7 @@ assert_contains "reports denied status" "denied" "$report_output"
 assert_contains "explains Tabby Trash remediation" "grant Full Disk Access to Tabby" "$report_output"
 assert_contains "includes installed inventory" "Tabby: installed" "$report_output"
 
-unknown_output="$(LPC_UNAME=Darwin LPC_ACTIVE_HOST=Tabby LPC_TCC_ROWS="${TEST_ROOT}/missing.txt" LPC_APP_ROOTS="$apps_root" "$HELPER" report --active-host)"
+unknown_output="$(LPC_UNAME=Darwin LPC_ACTIVE_HOST=Tabby LPC_TCC_ROWS="${TEST_ROOT}/missing.txt" LPC_TCC_DB="${TEST_ROOT}/missing.db" LPC_APP_ROOTS="$apps_root" "$HELPER" report --active-host)"
 assert_contains "unreadable TCC state is unknown" "unknown" "$unknown_output"
 assert_contains "unknown is not treated as OK" "Check System Settings" "$unknown_output"
 

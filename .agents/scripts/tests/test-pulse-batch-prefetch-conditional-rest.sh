@@ -85,7 +85,8 @@ if [[ "\$1" == "api" ]]; then
       printf 'HTTP/2 200\\r\\netag: "etag-pr-v2"\\r\\n\\r\\n[{"number":7,"title":"PR","updated_at":"2026-05-02T00:00:00Z","user":{"login":"dev"},"head":{"sha":"abc","ref":"branch"}}]'
       exit 0
     fi
-		printf 'HTTP/2 200\\r\\netag: "etag-issue-v2"\\r\\n\\r\\n[{"number":3,"title":"Issue","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[],"author_association":"CONTRIBUTOR","user":{"login":"reporter","type":"User"}},{"number":4,"title":"PR-shaped issue","pull_request":{},"updated_at":"2026-05-02T00:00:00Z"}]'
+		printf 'HTTP/2 200\\r\\netag: "etag-issue-v2"\\r\\n\\r\\n'
+		jq -cn '[{number:3,title:"Issue",state:"open",body:"Line 1\nLine 2 ✓",updated_at:"2026-05-02T00:00:00Z",labels:[],assignees:[],author_association:"CONTRIBUTOR",user:{login:"reporter",type:"User"}},{number:4,title:"PR-shaped issue",pull_request:{},updated_at:"2026-05-02T00:00:00Z"}]'
     exit 0
   fi
   if [[ "$mode" == "paginated" ]]; then
@@ -93,7 +94,7 @@ if [[ "\$1" == "api" ]]; then
       printf 'HTTP/2 200\r\netag: "etag-pr-page"\r\nlink: <https://api.github.com/repositories/1/pulls?page=2>; rel="next"\r\n\r\n[{"number":8,"title":"PR page","updated_at":"2026-05-02T00:00:00Z","user":{"login":"dev"},"head":{"sha":"def","ref":"branch"}}]'
       exit 0
     fi
-		printf 'HTTP/2 200\r\netag: "etag-issue-page"\r\nlink: <https://api.github.com/repositories/1/issues?page=2>; rel="next"\r\n\r\n[{"number":9,"title":"Issue page","state":"open","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[],"author_association":"MEMBER","user":{"login":"member","type":"User"}}]'
+		printf 'HTTP/2 200\r\netag: "etag-issue-page"\r\nlink: <https://api.github.com/repositories/1/issues?page=2>; rel="next"\r\n\r\n[{"number":9,"title":"Issue page","state":"open","body":"Page body","updated_at":"2026-05-02T00:00:00Z","labels":[],"assignees":[],"author_association":"MEMBER","user":{"login":"member","type":"User"}}]'
     exit 0
   fi
   printf 'HTTP/2 500\\r\\n\\r\\n{}'
@@ -101,7 +102,7 @@ if [[ "\$1" == "api" ]]; then
 fi
 if [[ "\$1" == "search" ]]; then
 	if [[ "\$*" == *'search issues'* ]]; then
-		printf '[{"number":5,"title":"Search issue","state":"open","updatedAt":"2026-05-03T00:00:00Z","labels":[],"assignees":[],"authorAssociation":"CONTRIBUTOR","author":{"login":"reporter","type":"User","is_bot":false},"repository":{"nameWithOwner":"owner/repo"}}]'
+		jq -cn '[{number:5,title:"Search issue",state:"open",body:"Search line 1\nSearch line 2 ✓",updatedAt:"2026-05-03T00:00:00Z",labels:[],assignees:[],authorAssociation:"CONTRIBUTOR",author:{login:"reporter",type:"User",is_bot:false},repository:{nameWithOwner:"owner/repo"}}]'
 		exit 0
 	fi
 	printf '[]'
@@ -116,7 +117,7 @@ SH
 
 seed_cache() {
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json" <<'JSON'
-{"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"issues","projection":"number,title,state,labels,updatedAt,assignees,authorAssociation,author","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":1,"title":"Cached issue","state":"open","labels":[],"assignees":[],"updatedAt":"2026-05-01T00:00:00Z","authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]}
+{"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"issues","projection":"number,title,state,labels,updatedAt,assignees,body,authorAssociation,author","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":1,"title":"Cached issue","state":"open","labels":[],"assignees":[],"body":"Cached body","updatedAt":"2026-05-01T00:00:00Z","authorAssociation":"MEMBER","author":{"login":"member","type":"User","is_bot":false}}]}
 JSON
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/prs-owner__repo.json" <<'JSON'
 {"schema":"aidevops-pulse-snapshot/v1","repository":"owner/repo","collection":"prs","projection":"number,title,labels,updatedAt,assignees,createdAt,author,headRefOid,headRefName","auth_scope":"github.com|default","generation":"seed","source":"conditional-rest","complete":true,"truncated":false,"fetched_at":"2026-05-01T00:00:00Z","timestamp":"2026-05-01T00:00:00Z","etag":"\"etag-v1\"","items":[{"number":2,"title":"Cached PR","labels":[],"assignees":[],"updatedAt":"2026-05-01T00:00:00Z","createdAt":"2026-05-01T00:00:00Z","author":{"login":"dev"},"headRefOid":"seed-sha","headRefName":"seed-branch"}]}
@@ -194,25 +195,71 @@ test_changed_repo_refreshes_cache() {
 	write_gh_stub changed
 	local output
 	output=$("$HELPER" refresh)
-	local issue_count pr_author issue_association issue_author
+	local issue_count pr_author issue_association issue_author issue_body
 	issue_count=$(jq '.items | length' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	pr_author=$(jq -r '.items[0].author.login' "$PULSE_BATCH_PREFETCH_CACHE_DIR/prs-owner__repo.json")
 	local issue_state
 	issue_state=$(jq -r '.items[0].state' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	issue_association=$(jq -r '.items[0].authorAssociation' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	issue_author=$(jq -r '.items[0].author.login' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
+	issue_body=$(jq -r '.items[0].body' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	local issues_snapshot="" prs_snapshot=""
 	issues_snapshot=$("$HELPER" read-snapshot --kind issues --slug owner/repo 2>/dev/null) || issues_snapshot="{}"
 	prs_snapshot=$("$HELPER" read-snapshot --kind prs --slug owner/repo 2>/dev/null) || prs_snapshot="{}"
 	if grep -q 'conditional_refreshes=2' <<<"$output" \
 		&& [[ "$issue_count" == "1" && "$pr_author" == "dev" && "$issue_state" == "open" ]] \
 		&& [[ "$issue_association" == "CONTRIBUTOR" && "$issue_author" == "reporter" ]] \
+		&& [[ "$issue_body" == $'Line 1\nLine 2 ✓' ]] \
 		&& [[ "$(printf '%s' "$issues_snapshot" | jq -r '.schema')" == "aidevops-pulse-snapshot/v1" ]] \
 		&& [[ "$(printf '%s' "$issues_snapshot" | jq -r '.generation')" == "$(printf '%s' "$prs_snapshot" | jq -r '.generation')" ]] \
 		&& [[ "$(printf '%s' "$prs_snapshot" | jq -r '.items[0].headRefOid')" == "abc" ]]; then
 		print_result "changed repo refreshes normalized issue and PR caches" 0
 	else
 		print_result "changed repo refreshes normalized issue and PR caches" 1
+	fi
+	teardown_env
+	return 0
+}
+
+test_bodyless_transport_rows_are_rejected() {
+	setup_env
+	local response_file="$TEST_ROOT/bodyless-response.txt"
+	local cache_file="$PULSE_BATCH_PREFETCH_CACHE_DIR/bodyless-cache.json"
+	local projection="number,title,state,labels,updatedAt,assignees,body,authorAssociation,author"
+	local shell_guard_count=0
+	printf 'HTTP/2 200\r\netag: "bodyless"\r\n\r\n[{"number":3,"title":"Issue","state":"open","labels":[],"assignees":[]}]' >"$response_file"
+	if python3 "$SCRIPT_DIR/../pulse-batch-conditional-cache.py" \
+		issues owner/repo "$response_file" "$cache_file" generation \
+		github.com "$projection" invalidation >/dev/null 2>&1; then
+		print_result "bodyless conditional REST rows fail closed" 1
+	elif [[ -e "$cache_file" ]]; then
+		print_result "bodyless conditional REST rows fail closed" 1
+	else
+		print_result "bodyless conditional REST rows fail closed" 0
+	fi
+	shell_guard_count=$(grep -Fc 'if (has("body") | not) then error("missing issue body")' "$HELPER" 2>/dev/null || true)
+	if [[ "$shell_guard_count" -eq 2 ]]; then
+		print_result "REST and owner-search normalizers reject omitted bodies" 0
+	else
+		print_result "REST and owner-search normalizers reject omitted bodies" 1
+	fi
+	teardown_env
+	return 0
+}
+
+test_bodyless_cached_rows_are_rejected() {
+	setup_env
+	local cache_file="$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json"
+	local state_meta="$TEST_ROOT/bodyless-cache-state.log"
+	local now=""
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"timestamp":"%s","items":[{"number":3,"title":"Issue","state":"open","labels":[],"assignees":[],"updatedAt":"%s"}]}\n' \
+		"$now" "$now" >"$cache_file"
+	if "$HELPER" read-cache --kind issues --slug owner/repo >/dev/null 2>"$state_meta" || \
+		"$HELPER" read-snapshot --kind issues --slug owner/repo >/dev/null 2>>"$state_meta"; then
+		print_result "bodyless cached issue rows force live fallback" 1
+	else
+		print_result "bodyless cached issue rows force live fallback" 0
 	fi
 	teardown_env
 	return 0
@@ -254,7 +301,7 @@ test_read_cache_filters_closed_issues() {
 	setup_env
 	mkdir -p "$PULSE_BATCH_PREFETCH_CACHE_DIR"
 	cat >"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json" <<'JSON'
-{"timestamp":"2026-05-01T00:00:00Z","items":[{"number":10,"title":"Open","state":"open"},{"number":11,"title":"Closed","state":"closed"}]}
+{"timestamp":"2026-05-01T00:00:00Z","items":[{"number":10,"title":"Open","state":"open","body":"Open body"},{"number":11,"title":"Closed","state":"closed","body":"Closed body"}]}
 JSON
 	local output count first
 	output=$("$HELPER" read-cache --kind issues --slug owner/repo)
@@ -601,12 +648,15 @@ test_search_opt_in_preserves_owner_search() {
 	export PULSE_BATCH_SEARCH_LAST_RESORT=0
 	export AIDEVOPS_GH_READ_RAMP_ENABLED=0
 	"$HELPER" refresh >/dev/null
-	local search_association=""
+	local search_association="" search_body=""
 	search_association=$(jq -r '.items[0].authorAssociation // ""' \
+		"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
+	search_body=$(jq -r '.items[0].body // ""' \
 		"$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json")
 	if grep -q 'search issues' "$TEST_ROOT/gh-calls.log" \
 		&& grep -q 'search prs' "$TEST_ROOT/gh-calls.log" \
-		&& [[ "$search_association" == "CONTRIBUTOR" ]]; then
+		&& [[ "$search_association" == "CONTRIBUTOR" ]] \
+		&& [[ "$search_body" == $'Search line 1\nSearch line 2 ✓' ]]; then
 		print_result "search opt-in preserves owner search fallback" 0
 	else
 		print_result "search opt-in preserves owner search fallback" 1
@@ -738,6 +788,8 @@ SH
 
 test_unchanged_repo_uses_304_cache
 test_changed_repo_refreshes_cache
+test_bodyless_transport_rows_are_rejected
+test_bodyless_cached_rows_are_rejected
 test_paginated_response_is_not_complete
 test_conditional_failure_routes_to_rest_by_default
 test_search_opt_in_preserves_owner_search

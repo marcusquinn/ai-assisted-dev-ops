@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # Regression coverage for GH#28997 and GH#29141: expected lifecycle transitions
-# remain audited without hiding destructive changes or unavailable state reads.
+# remain audited without hiding destructive changes. Unavailable-only state
+# reads remain in the audit log but are not actionable security anomalies.
 
 set -euo pipefail
 
@@ -62,6 +63,8 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:14:00Z","op":"issue_edit","repo":"example/repo","number":15,"caller_script":"/runtime/agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":[]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":[]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
 {"ts":"2026-07-31T00:15:00Z","op":"issue_edit","repo":"example/repo","number":16,"caller_script":"/runtime/agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{"trusted_author_nmr_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":0,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":-100,"labels_removed":["needs-maintainer-review"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:needs-maintainer-review","body_delta_pct=-100"]}
 {"ts":"2026-07-31T00:16:00Z","op":"issue_edit","repo":"example/repo","number":17,"caller_script":"/workspace/.agents/scripts/pulse-nmr-approval.sh","caller_function":"_nmr_edit_issue_labels","flags":{"trusted_author_nmr_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["needs-maintainer-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["hold-for-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["needs-maintainer-review"],"labels_added":["hold-for-review"]},"suspicious":["protected_label_removed:needs-maintainer-review"]}
+{"ts":"2026-07-31T00:17:00Z","op":"issue_edit","repo":"example/repo","number":18,"caller_script":"/runtime/agents/scripts/routine-log-helper.sh","caller_function":"_update_tracking_issue","before":{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null},"after":{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null},"delta":{"comparable":false,"title_delta_pct":null,"body_delta_pct":null,"labels_removed":null,"labels_added":null},"suspicious":["state_capture_unavailable:before","state_capture_unavailable:after"]}
+{"ts":"2026-07-31T00:18:00Z","op":"issue_edit","repo":"example/repo","number":19,"caller_script":"/runtime/agents/scripts/routine-log-helper.sh","caller_function":"_update_tracking_issue","before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring"]},"after":{"capture_status":"unavailable","title_len":null,"body_len":null,"labels":null},"delta":{"comparable":false,"title_delta_pct":null,"body_delta_pct":null,"labels_removed":null,"labels_added":null},"suspicious":["state_capture_unavailable:after","body_delta_pct=-100"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
@@ -75,17 +78,18 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #8 |"* ]] || fail "unverified PR approval provenance was trusted"
 [[ "$output" == *"| #10 |"* ]] || fail "permission block with an additional signal was hidden"
 [[ "$output" == *"| #11 |"* ]] || fail "permission block without its blocker label was hidden"
-[[ "$output" == *"| #12 |"* ]] || fail "unavailable state capture was hidden"
 [[ "$output" == *"| #13 |"* ]] || fail "permission block with a lingering active status was hidden"
 [[ "$output" == *"| #15 |"* ]] || fail "unverified trusted-author NMR removal was hidden"
 [[ "$output" == *"| #16 |"* ]] || fail "trusted-author NMR transition with an additional signal was hidden"
+[[ "$output" == *"| #19 |"* ]] || fail "unavailable capture with an additional destructive signal was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
 [[ "$output" != *"private/repo"* ]] || fail "private repository name leaked into the report"
 [[ "$output" != *"inaccessible/repo"* ]] || fail "unverified repository name leaked into the report"
 [[ "$output" == *"[private repository]"* ]] || fail "redacted repository placeholder was missing"
 [[ "$output" == *"public/repo"* ]] || fail "verified public repository name was redacted"
 [[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* &&
-	"$output" != *"| #14 |"* && "$output" != *"| #17 |"* ]] ||
+	"$output" != *"| #12 |"* && "$output" != *"| #14 |"* && "$output" != *"| #17 |"* &&
+	"$output" != *"| #18 |"* ]] ||
 	fail "an exact expected transition remained actionable"
 
 MALFORMED_LOG="${TEST_ROOT}/malformed-audit.log"

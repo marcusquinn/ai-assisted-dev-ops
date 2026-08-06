@@ -268,7 +268,44 @@ test_eslint_flat_config_root_allowlist() {
 	return 0
 }
 
-# --- Test 14: arbitrary root artifacts remain rejected ---
+# --- Test 14: npm lockfiles pass staged root validation ---
+test_npm_lockfile_root_validation() {
+	local fixture_dir
+	fixture_dir=$(mktemp -d)
+	local hook_dir="${fixture_dir}/.agents/scripts"
+	local hook_output=""
+	local hook_rc=0
+
+	mkdir -p "$hook_dir"
+	cp "$TEST_SCRIPTS_DIR/pre-commit-hook.sh" "$hook_dir/pre-commit-hook.sh"
+	cp "$TEST_SCRIPTS_DIR/shared-constants.sh" "$hook_dir/shared-constants.sh"
+	git -C "$fixture_dir" init --quiet
+	printf '%s\n' '{"name":"root-allowlist-fixture"}' >"${fixture_dir}/package.json"
+	printf '%s\n' '{"name":"root-allowlist-fixture","lockfileVersion":3,"packages":{}}' >"${fixture_dir}/package-lock.json"
+	git -C "$fixture_dir" add package.json package-lock.json
+
+	hook_output=$(cd "$fixture_dir" && HOOK_MODE=pre-commit bash "$hook_dir/pre-commit-hook.sh" 2>&1) || hook_rc=$?
+	if [[ "$hook_rc" -eq 0 ]]; then
+		print_result "root validation permits package.json with package-lock.json" 0
+	else
+		print_result "root validation permits package.json with package-lock.json" 1 "$hook_output"
+	fi
+
+	printf '%s\n' 'fixture artifact' >"${fixture_dir}/VERIFY-ROOT-ARTIFACT.md"
+	git -C "$fixture_dir" add VERIFY-ROOT-ARTIFACT.md
+	hook_rc=0
+	hook_output=$(cd "$fixture_dir" && HOOK_MODE=pre-commit bash "$hook_dir/pre-commit-hook.sh" 2>&1) || hook_rc=$?
+	if [[ "$hook_rc" -ne 0 && "$hook_output" == *"VERIFY-ROOT-ARTIFACT.md"* ]]; then
+		print_result "root validation still rejects arbitrary verification artifacts" 0
+	else
+		print_result "root validation still rejects arbitrary verification artifacts" 1 "$hook_output"
+	fi
+
+	rm -rf "$fixture_dir"
+	return 0
+}
+
+# --- Test 15: arbitrary root artifacts remain absent from the allowlist ---
 test_arbitrary_root_artifact_not_allowlisted() {
 	local hook_file="$TEST_SCRIPTS_DIR/pre-commit-hook.sh"
 	local artifact_file="VERIFY-ROOT-ARTIFACT.md"
@@ -298,6 +335,7 @@ test_status_reports_pre_push
 test_pre_commit_dispatcher_sets_mode
 test_pre_push_dispatcher_sets_mode
 test_eslint_flat_config_root_allowlist
+test_npm_lockfile_root_validation
 test_arbitrary_root_artifact_not_allowlisted
 
 echo ""
