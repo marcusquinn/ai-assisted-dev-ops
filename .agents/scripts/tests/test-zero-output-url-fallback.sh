@@ -108,10 +108,14 @@ write_state 1
 GH_COMMENT_ZERO_COUNT=0
 GH_COMMENT_METRICS=""
 normal_prompt=$(_dlw_prepare_prompt_for_launch 123 owner/repo "Test issue" "FULL EMBEDDED BRIEF")
+# shellcheck disable=SC2016 # Markdown backticks are intentional literals.
 if [[ "$normal_prompt" == *"FULL EMBEDDED BRIEF"* ]] \
 	&& [[ "$normal_prompt" == *"First-pass completion contract"* ]] \
 	&& [[ "$normal_prompt" == *"do not hand off while it is draft or has unpushed changes"* ]] \
 	&& [[ "$normal_prompt" == *"Never poll those gates or bypass approval, review, CI, branch-protection, or security controls"* ]] \
+	&& [[ "$normal_prompt" == *'routine tool discovery'* ]] \
+	&& [[ "$normal_prompt" == *'command -v TOOL'* ]] \
+	&& [[ "$normal_prompt" == *'Do not use file-reading tools to inspect `~/.bun/bin`, `~/.qlty/bin`, or `~/.local/bin`'* ]] \
 	&& [[ "$normal_prompt" != *"continue on that PR through local and remote verification"* ]]; then
 	pass "below fallback threshold keeps embedded prompt"
 else

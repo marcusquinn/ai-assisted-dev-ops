@@ -306,11 +306,21 @@ _recent_closed_parent_cutoff() {
 
 _fetch_recently_closed_parent_tasks() {
 	local slug="$1" parent_label="$2"
-	local cutoff=""
+	local cutoff="" cutoff_timestamp="" pages=""
 	cutoff=$(_recent_closed_parent_cutoff) || return 1
-	gh_issue_list --repo "$slug" --state closed \
-		--label "$parent_label" --search "closed:>=${cutoff}" \
-		--json number,title,body,state,labels --limit 10 2>/dev/null || return 1
+	cutoff_timestamp="${cutoff}T00:00:00Z"
+	pages=$(gh api --paginate --slurp --method GET "repos/${slug}/issues" \
+		-f state=closed -f "labels=${parent_label}" -f "since=${cutoff_timestamp}" \
+		-f per_page=100 2>/dev/null) || return 1
+	printf '%s' "$pages" | jq -c --arg cutoff "$cutoff_timestamp" '
+		try [
+			.[][] |
+			select(has("pull_request") | not) |
+			select((.state // "" | ascii_downcase) == "closed") |
+			select((.closed_at // "") >= $cutoff) |
+			{number, title, body, state, labels}
+		] catch error("invalid paginated issue response")
+	' 2>/dev/null || return 1
 	return 0
 }
 

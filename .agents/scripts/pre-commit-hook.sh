@@ -793,7 +793,9 @@ _init_root_file_allowlist() {
 		"eslint.config.js" "eslint.config.mjs" "eslint.config.cjs"
 		"eslint.config.ts" "eslint.config.mts" "eslint.config.cts"
 		# Build/package files
-		"package.json" "bun.lock" "requirements.txt" "requirements-lock.txt"
+		"package.json" "package-lock.json" "npm-shrinkwrap.json"
+		"pnpm-lock.yaml" "yarn.lock" "bun.lock" "bun.lockb"
+		"requirements.txt" "requirements-lock.txt"
 		# Scripts
 		"setup.sh" "aidevops.sh"
 		# Public shell entrypoints. Implementation modules belong under

@@ -59,6 +59,8 @@ RUNNER_USER=$(gh api user --jq '.login' 2>/dev/null || whoami)
 
 The wrapper already fetched all open PRs and issues. Data is in your prompt between `--- PRE-FETCHED STATE ---` markers or in the state file path provided. Use it directly — do NOT run `gh pr list` or `gh issue list` (root cause of the "only processes first repo" bug).
 
+**Sandbox rule:** this unattended pulse runs from the aidevops agent workspace, not from each repo. Do NOT run Bash with `workdir` set to a managed repo path (for example to run `git worktree list`). OpenCode treats that as high-risk `external_directory` shell access and stalls for human permission. Use pre-fetched state or wrapper/helper functions from the current workspace; if required repo/worktree data is missing, log a diagnostic and exit cleanly.
+
 ### 3. Approve and merge ready PRs (free — no worker slot needed)
 
 **Most merging is handled deterministically by `merge_ready_prs_all_repos()` in pulse-wrapper.sh** before the LLM session starts. Focus on edge cases: PRs needing CI fix workers, `CHANGES_REQUESTED`, external contributor PRs, complex merge conflicts.

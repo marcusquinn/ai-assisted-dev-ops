@@ -468,6 +468,11 @@ team-interface-helper.sh plan --request plan-request.json
 team-interface-helper.sh doctor --provider buzz
 ```
 
+## Features 2.4 and 2.5 refreshed evidence
+
+See [Milestone 2 final-leaf source review](milestone-2-final-leaves.md) for the
+implementation-ready Matrix and restricted OpenCode evidence.
+
 ## Required verification families
 
 - Canonical agent additions/removals propagate without list edits.

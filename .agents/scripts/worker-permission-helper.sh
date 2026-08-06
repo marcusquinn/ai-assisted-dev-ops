@@ -178,10 +178,15 @@ permission_render_capabilities() {
 	local envelope_file="$1"
 	jq -r '.capabilities[] |
 		def safe: gsub("<"; "&lt;") | gsub(">"; "&gt;");
+		def avoidable_tool_bin_read:
+			.permission == "external_directory"
+			and .tool == "read"
+			and any(.patterns[]?; test("/[.](bun|qlty)/bin/[*][*]?$|/[.]local/bin/[*][*]?$"));
 		"- **" + .permission + "** via `" + .tool + "` — "
 		+ (if (.patterns | length) == 0 then "(no pattern supplied)" else (.patterns | map(tojson | safe) | join(", ")) end)
 		+ "\n  - Reason: " + (if .intent == "" then "No additional model rationale was available." else (.intent | safe) end)
 		+ "\n  - Risk: **" + .risk.level + "** — " + (.risk.reason | safe)
+		+ (if avoidable_tool_bin_read then "\n  - Recovery: Routine tool discovery should use `command -v TOOL`, `TOOL --version`, or a repository wrapper instead of reading the install directory." else "" end)
 		+ (if .risk.grantable then "" else "\n  - **Not grantable:** sensitive scope requires an alternative approach." end)' \
 		"$envelope_file"
 	return $?
