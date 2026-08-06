@@ -180,6 +180,53 @@ run_daily_quality_sweep() {
 }
 
 #######################################
+# Verify that Qlty scanned the live remote default tip before creating issues.
+# The dashboard may still report a scan from a lagging service checkout, but
+# remediation issues must not claim that stale findings exist on the current
+# default branch.
+#
+# Arguments:
+#   $1 - repo slug (owner/repo)
+#   $2 - scanned repo path
+#######################################
+_qlty_scan_matches_remote_default() {
+	local repo_slug="$1"
+	local repo_path="$2"
+	local logfile="${LOGFILE:-/dev/null}"
+	local local_head
+	local remote_head
+	local worktree_state
+
+	if ! local_head=$(git -C "$repo_path" rev-parse --verify HEAD 2>/dev/null); then
+		printf '[stats] Qlty remediation: cannot resolve scanned HEAD for %s; skipping issue creation\n' \
+			"$repo_slug" >>"$logfile"
+		return 1
+	fi
+	if ! worktree_state=$(git -C "$repo_path" status --porcelain --untracked-files=normal 2>/dev/null); then
+		printf '[stats] Qlty remediation: cannot inspect scanned checkout for %s; skipping issue creation\n' \
+			"$repo_slug" >>"$logfile"
+		return 1
+	fi
+	if [[ -n "$worktree_state" ]]; then
+		printf '[stats] Qlty remediation: scanned checkout has local changes for %s; skipping uncommitted scan\n' \
+			"$repo_slug" >>"$logfile"
+		return 1
+	fi
+	if ! remote_head=$(gh api "repos/${repo_slug}/commits/HEAD" --jq '.sha // empty' 2>/dev/null); then
+		printf '[stats] Qlty remediation: cannot resolve remote default HEAD for %s; skipping issue creation\n' \
+			"$repo_slug" >>"$logfile"
+		return 1
+	fi
+	remote_head="${remote_head%%$'\n'*}"
+	if [[ -z "$remote_head" || "$local_head" != "$remote_head" ]]; then
+		printf '[stats] Qlty remediation: scanned HEAD %s does not match remote default %s for %s; skipping stale scan\n' \
+			"${local_head:0:12}" "${remote_head:0:12}" "$repo_slug" >>"$logfile"
+		return 1
+	fi
+	return 0
+}
+
+#######################################
 # Run Qlty CLI analysis on a repo.
 #
 # t2066: local SARIF smell count is the PRIMARY grade source. The Qlty Cloud
@@ -225,7 +272,8 @@ _sweep_qlty() {
 	# When repository-wide debt exceeds the configured absolute threshold, create
 	# bounded, per-file remediation issues from this same SARIF scan. The pulse
 	# handles dispatch deduplication, worker capacity, and active-PR collisions.
-	if [[ -n "$qlty_sarif" && "$qlty_smell_count" -gt 0 ]]; then
+	if [[ -n "$qlty_sarif" && "$qlty_smell_count" -gt 0 ]] &&
+		_qlty_scan_matches_remote_default "$repo_slug" "$repo_path"; then
 		local qlty_smell_threshold
 		qlty_smell_threshold=$(_repo_qlty_smell_threshold "$repo_path")
 		local issues_created
@@ -844,8 +892,8 @@ _simplification_issue_label_csv() {
 	# #aidevops:trust-boundary — NMR is an external-origin approval gate. When
 	# the authenticated sweep identity has repo write authority, the issue author
 	# is already trusted and should not be parked behind maintainer review.
-	if declare -F _gh_current_user_allows_repo_write >/dev/null 2>&1 \
-		&& _gh_current_user_allows_repo_write "$repo_slug"; then
+	if declare -F _gh_current_user_allows_repo_write >/dev/null 2>&1 &&
+		_gh_current_user_allows_repo_write "$repo_slug"; then
 		echo "[stats] Function-complexity-debt issues: trusted current user ${AIDEVOPS_GH_WRITE_PERMISSION_USER:-unknown} (${AIDEVOPS_GH_WRITE_PERMISSION_LEVEL:-unknown}) — skipping needs-maintainer-review" >>"$LOGFILE"
 	else
 		simplification_labels="${simplification_labels},needs-maintainer-review"
