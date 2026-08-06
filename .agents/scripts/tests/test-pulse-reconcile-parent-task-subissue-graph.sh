@@ -743,6 +743,23 @@ else
 	print_result "closed-parent repair: unapproved external author remains blocked" 0
 fi
 
+# The per-repository helper must honour the cycle's remaining candidate budget,
+# even when the fetched page contains more repairable parents.
+reset_scenario
+jq -n '[
+	{number:1540,title:"t1540: first candidate",body:"<!-- parent-close-contract: keep-open -->",state:"closed",stateReason:"COMPLETED",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}},
+	{number:1541,title:"t1541: second candidate",body:"<!-- parent-close-contract: keep-open -->",state:"closed",stateReason:"COMPLETED",labels:[{name:"parent-task"}],authorAssociation:"OWNER",author:{login:"maintainer",type:"User"}}
+]' >"${TEST_ROOT}/gh-closed-issue-list.json"
+_repair_recently_closed_parents_for_slug test/repo 5 1 >/dev/null 2>&1
+if [[ "$_PIR_RECENT_PARENT_SCANNED" -ne 1 ]]; then
+	print_result "closed-parent repair: per-repo candidate budget bounds action work" 1 \
+		"(scanned=${_PIR_RECENT_PARENT_SCANNED})"
+elif ! grep -q "issue reopen 1540" "$GH_CALLS" || grep -q "issue reopen 1541" "$GH_CALLS"; then
+	print_result "closed-parent repair: per-repo candidate budget bounds action work" 1
+else
+	print_result "closed-parent repair: per-repo candidate budget bounds action work" 0
+fi
+
 # -----------------------------------------------------------------------------
 # Scenario 13: a stamped phase plan with no parseable phase rows is invalid.
 # Whitespace-only parser output must not bypass the contract and close a parent.

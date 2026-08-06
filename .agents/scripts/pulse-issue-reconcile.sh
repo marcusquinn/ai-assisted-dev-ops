@@ -1268,7 +1268,7 @@ reconcile_issues_single_pass() {
 	local cpt_total_nudged=0 cpt_max_nudges=5
 	local cpt_total_escalated=0 cpt_max_escalations=3
 	local cpt_total_reopened=0 cpt_max_reopens=5
-	local cpt_repair_scans=0 cpt_max_repair_scans=10
+	local cpt_max_repair_repo_scans=10 cpt_max_repair_candidates=10
 	local cpt_esc_hours="${PARENT_DECOMPOSITION_ESCALATION_HOURS:-168}"
 
 	# t2838: periodic parent-task sub-issue backfill — gated by interval
@@ -1351,6 +1351,16 @@ reconcile_issues_single_pass() {
 	_t2984_budget="${RECONCILE_TIME_BUDGET_SECS:-360}"
 	[[ "$_t2984_budget" =~ ^[0-9]+$ ]] || _t2984_budget=360
 
+	# The production scheduler invokes only this single pass. Repair recently
+	# closed parents through a time-rotated repository window before open-issue
+	# reconciliation. Separate repo and candidate caps bound list calls and the
+	# more expensive per-parent graph/trust/state validation work respectively.
+	if declare -F _repair_recently_closed_parents_cycle >/dev/null 2>&1; then
+		_repair_recently_closed_parents_cycle "$repos_json" "$cpt_max_reopens" \
+			"$cpt_max_repair_repo_scans" "$cpt_max_repair_candidates"
+		cpt_total_reopened="$_PIR_RECENT_PARENT_CYCLE_REOPENED"
+	fi
+
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
 		# GH#21470: per-slug timing so slow repos are identifiable in the
@@ -1371,19 +1381,6 @@ reconcile_issues_single_pass() {
 		local ciw_per_repo=0 ciw_max_repo=20
 		local rsd_per_repo=0 rsd_max_repo=20
 		local lia_per_repo=0 lia_max_repo=10
-
-		# The production scheduler invokes only this single pass. Reach the
-		# bounded seven-day closed-parent repair from here rather than relying on
-		# the unscheduled legacy parent reconciler.
-		if [[ "$cpt_total_reopened" -lt "$cpt_max_reopens" ]] && \
-			[[ "$cpt_repair_scans" -lt "$cpt_max_repair_scans" ]] && \
-			declare -F _repair_recently_closed_parents_for_slug >/dev/null 2>&1; then
-			local cpt_reopens_remaining=0
-			cpt_reopens_remaining=$((cpt_max_reopens - cpt_total_reopened))
-			cpt_repair_scans=$((cpt_repair_scans + 1))
-			_repair_recently_closed_parents_for_slug "$slug" "$cpt_reopens_remaining"
-			cpt_total_reopened=$((cpt_total_reopened + _PIR_RECENT_PARENT_REOPENED))
-		fi
 
 		# Fetch issues ONCE for this slug — all fields required by any stage.
 		# The cache (written each cycle by pulse-prefetch.sh) covers:

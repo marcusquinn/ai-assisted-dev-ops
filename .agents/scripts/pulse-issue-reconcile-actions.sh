@@ -353,6 +353,9 @@ _PIR_JSON_TYPE_STRING=string
 _PIR_LIVE_PARENT_JSON=""
 _PIR_RECENT_PARENT_REOPENED=0
 _PIR_RECENT_PARENT_SCANNED=0
+_PIR_RECENT_PARENT_REPOS_SCANNED=0
+_PIR_RECENT_PARENT_CYCLE_REOPENED=0
+_PIR_RECENT_PARENT_CYCLE_CANDIDATES=0
 _PIR_CPT_VERIFIED_CHILD_COUNT=0
 _PIR_CPT_VERIFIED_CHILD_SUMMARY=""
 _PIR_CPT_REPAIR_REASON=""
@@ -1217,6 +1220,7 @@ _repair_recently_closed_parent() {
 _repair_recently_closed_parents_for_slug() {
 	local slug="$1"
 	local max_reopens="${2:-5}"
+	local max_candidates="${3:-10}"
 	local recent_json=""
 	local rows=""
 	local issue_num=""
@@ -1228,7 +1232,9 @@ _repair_recently_closed_parents_for_slug() {
 	local issue_labels=""
 	local decode_flag="-d"
 	_PIR_RECENT_PARENT_REOPENED=0
+	_PIR_RECENT_PARENT_SCANNED=0
 	[[ "$max_reopens" =~ ^[1-9][0-9]*$ ]] || return 0
+	[[ "$max_candidates" =~ ^[1-9][0-9]*$ ]] || return 0
 	declare -F _fetch_recently_closed_parent_tasks >/dev/null 2>&1 || return 0
 	recent_json=$(_fetch_recently_closed_parent_tasks "$slug" "${_PIR_PT_LABEL:-parent-task}") || return 0
 	rows=$(printf '%s' "$recent_json" | jq -r --arg string_type "$_PIR_JSON_TYPE_STRING" '
@@ -1242,17 +1248,79 @@ _repair_recently_closed_parents_for_slug() {
 	' 2>/dev/null) || return 0
 	[[ "$(uname -s)" == "Darwin" ]] && decode_flag="-D"
 	while IFS='|' read -r issue_num issue_title_b64 issue_body_b64 issue_labels_b64; do
-		[[ "$_PIR_RECENT_PARENT_REOPENED" -lt "$max_reopens" ]] || break
+		[[ "$_PIR_RECENT_PARENT_REOPENED" -lt "$max_reopens" && \
+			"$_PIR_RECENT_PARENT_SCANNED" -lt "$max_candidates" ]] || break
 		[[ "$issue_num" =~ ^[1-9][0-9]*$ ]] || continue
 		issue_title=$(printf '%s' "$issue_title_b64" | base64 "$decode_flag" 2>/dev/null) || continue
 		issue_body=$(printf '%s' "$issue_body_b64" | base64 "$decode_flag" 2>/dev/null) || continue
 		issue_labels=$(printf '%s' "$issue_labels_b64" | base64 "$decode_flag" 2>/dev/null) || continue
+		_PIR_RECENT_PARENT_SCANNED=$((_PIR_RECENT_PARENT_SCANNED + 1))
 		_action_cpt_single "$slug" "$issue_num" "$issue_title" "$issue_body" \
 			0 0 0 168 CLOSED "$issue_labels"
 		if [[ "$_SP_CPT_REOPENED" -eq 1 ]]; then
 			_PIR_RECENT_PARENT_REOPENED=$((_PIR_RECENT_PARENT_REOPENED + 1))
 		fi
 	done <<<"$rows"
+	return 0
+}
+
+#######################################
+# Scan a bounded, time-rotated repository window for recently closed parents.
+# Rotation prevents a stable repositories.json order from starving repos after
+# the first max_repo_scans entries. max_candidates bounds expensive per-parent
+# GraphQL, comment, child-state, and live-trust checks across the whole cycle.
+# Args: $1=repos JSON, $2=max reopens, $3=max repo scans, $4=max candidates
+# Returns: 0 always; outcomes are exposed through _PIR_RECENT_PARENT_CYCLE_*
+#######################################
+_repair_recently_closed_parents_cycle() {
+	local repos_json="$1"
+	local max_reopens="${2:-5}"
+	local max_repo_scans="${3:-10}"
+	local max_candidates="${4:-10}"
+	local repo_slugs_json="" ordered_slugs="" slug=""
+	local repo_count=0 rotation_start=0 rotation_epoch="" rotation_interval=""
+	local reopens_remaining=0 candidates_remaining=0
+	_PIR_RECENT_PARENT_REPOS_SCANNED=0
+	_PIR_RECENT_PARENT_CYCLE_REOPENED=0
+	_PIR_RECENT_PARENT_CYCLE_CANDIDATES=0
+
+	[[ -f "$repos_json" ]] || return 0
+	[[ "$max_reopens" =~ ^[1-9][0-9]*$ ]] || return 0
+	[[ "$max_repo_scans" =~ ^[1-9][0-9]*$ ]] || return 0
+	[[ "$max_candidates" =~ ^[1-9][0-9]*$ ]] || return 0
+	repo_slugs_json=$(jq -c '[
+		.initialized_repos[] |
+		select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") |
+		.slug
+	]' "$repos_json" 2>/dev/null) || return 0
+	repo_count=$(printf '%s' "$repo_slugs_json" | jq -r 'length' 2>/dev/null) || return 0
+	[[ "$repo_count" =~ ^[1-9][0-9]*$ ]] || return 0
+
+	rotation_interval="${PARENT_REPAIR_ROTATION_INTERVAL_SECS:-300}"
+	[[ "$rotation_interval" =~ ^[1-9][0-9]*$ ]] || rotation_interval=300
+	rotation_epoch="${PARENT_REPAIR_ROTATION_EPOCH:-}"
+	if [[ -z "$rotation_epoch" ]]; then
+		rotation_epoch=$(date +%s 2>/dev/null) || rotation_epoch=0
+	fi
+	[[ "$rotation_epoch" =~ ^[0-9]+$ ]] || rotation_epoch=0
+	rotation_start=$(((rotation_epoch / rotation_interval) % repo_count))
+	ordered_slugs=$(printf '%s' "$repo_slugs_json" | jq -r --argjson start "$rotation_start" \
+		'(.[$start:] + .[:$start])[]' 2>/dev/null) || return 0
+
+	while IFS= read -r slug; do
+		[[ -n "$slug" ]] || continue
+		[[ "$_PIR_RECENT_PARENT_REPOS_SCANNED" -lt "$max_repo_scans" && \
+			"$_PIR_RECENT_PARENT_CYCLE_REOPENED" -lt "$max_reopens" && \
+			"$_PIR_RECENT_PARENT_CYCLE_CANDIDATES" -lt "$max_candidates" ]] || break
+		reopens_remaining=$((max_reopens - _PIR_RECENT_PARENT_CYCLE_REOPENED))
+		candidates_remaining=$((max_candidates - _PIR_RECENT_PARENT_CYCLE_CANDIDATES))
+		_PIR_RECENT_PARENT_REPOS_SCANNED=$((_PIR_RECENT_PARENT_REPOS_SCANNED + 1))
+		_repair_recently_closed_parents_for_slug "$slug" "$reopens_remaining" "$candidates_remaining"
+		_PIR_RECENT_PARENT_CYCLE_REOPENED=$((_PIR_RECENT_PARENT_CYCLE_REOPENED + _PIR_RECENT_PARENT_REOPENED))
+		_PIR_RECENT_PARENT_CYCLE_CANDIDATES=$((_PIR_RECENT_PARENT_CYCLE_CANDIDATES + _PIR_RECENT_PARENT_SCANNED))
+	done <<<"$ordered_slugs"
+
+	echo "[pulse-wrapper] Closed-parent repair scan: repos=${_PIR_RECENT_PARENT_REPOS_SCANNED}/${max_repo_scans} candidates=${_PIR_RECENT_PARENT_CYCLE_CANDIDATES}/${max_candidates} reopened=${_PIR_RECENT_PARENT_CYCLE_REOPENED}/${max_reopens} rotation_start=${rotation_start}/${repo_count}" >>"${LOGFILE:-/dev/null}"
 	return 0
 }
 

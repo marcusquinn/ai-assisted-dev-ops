@@ -505,12 +505,54 @@ test_single_pass_wired_in_engine() {
 test_recent_parent_repair_reachable_from_single_pass() {
 	local single_pass_body=""
 	single_pass_body=$(sed -n '/^reconcile_issues_single_pass()/,/^}/p' "$RECONCILE_SH")
-	if printf '%s\n' "$single_pass_body" | grep -q '_repair_recently_closed_parents_for_slug' \
+	if printf '%s\n' "$single_pass_body" | grep -q '_repair_recently_closed_parents_cycle' \
 		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_reopens=5' \
-		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_scans=10'; then
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_repo_scans=10' \
+		&& printf '%s\n' "$single_pass_body" | grep -q 'cpt_max_repair_candidates=10'; then
 		_pass "single-pass parent repair: bounded recently-closed helper is reachable"
 	else
 		_fail "single-pass parent repair: active path or bounds missing"
+	fi
+	return 0
+}
+
+test_recent_parent_repair_rotation_and_candidate_bounds() {
+	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
+	local helper_def="" tmp_dir="" repos_json="" result=""
+	helper_def=$(sed -n '/^_repair_recently_closed_parents_cycle()/,/^}/p' "$actions_sh")
+	tmp_dir=$(mktemp -d)
+	repos_json="${tmp_dir}/repos.json"
+	jq -n '{initialized_repos:[range(0;12) as $i | {
+		slug:("owner/repo" + ($i | tostring)), pulse:true, local_only:false
+	}]}' >"$repos_json"
+
+	result=$(bash -c "
+		${helper_def}
+		_repair_recently_closed_parents_for_slug() {
+			local slug=\"\$1\" max_reopens=\"\$2\" max_candidates=\"\$3\"
+			printf 'scan:%s:%s:%s\\n' \"\$slug\" \"\$max_reopens\" \"\$max_candidates\"
+			_PIR_RECENT_PARENT_REOPENED=0
+			_PIR_RECENT_PARENT_SCANNED=1
+			return 0
+		}
+		PARENT_REPAIR_ROTATION_INTERVAL_SECS=1
+		PARENT_REPAIR_ROTATION_EPOCH=10
+		LOGFILE=/dev/null
+		_repair_recently_closed_parents_cycle '${repos_json}' 5 3 3
+		printf 'totals:%s:%s:%s\\n' \"\$_PIR_RECENT_PARENT_REPOS_SCANNED\" \\
+			\"\$_PIR_RECENT_PARENT_CYCLE_CANDIDATES\" \"\$_PIR_RECENT_PARENT_CYCLE_REOPENED\"
+	" 2>/dev/null)
+	rm -rf "$tmp_dir"
+
+	local all_ok=1
+	printf '%s\n' "$result" | grep -qx 'scan:owner/repo10:5:3' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'scan:owner/repo11:5:2' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'scan:owner/repo0:5:1' || all_ok=0
+	printf '%s\n' "$result" | grep -qx 'totals:3:3:0' || all_ok=0
+	if [[ "$all_ok" -eq 1 ]]; then
+		_pass "single-pass parent repair rotates repo order and enforces a global candidate cap"
+	else
+		_fail "single-pass parent repair rotation/cap mismatch: ${result}"
 	fi
 	return 0
 }
@@ -1210,6 +1252,7 @@ test_parent_live_hold_gate
 test_pr_merged_at_prefers_wrapper
 test_single_pass_wired_in_engine
 test_recent_parent_repair_reachable_from_single_pass
+test_recent_parent_repair_rotation_and_candidate_bounds
 test_batched_field_extraction_parity
 test_t2984_time_budget_present
 test_t2984_budget_env_validation
