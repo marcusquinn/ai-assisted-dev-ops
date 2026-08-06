@@ -20,8 +20,10 @@ from typing import Any, Callable
 SCHEMA_REQUEST = "aidevops-source-access-request/v1"
 SCHEMA_RECEIPT = "aidevops-source-access-receipt/v1"
 SCHEMA_PAYLOAD = "aidevops-source-access-approval/v1"
+SCHEMA_TRUST = "aidevops-source-access-trust/v1"
 SIGNATURE_NAMESPACE = "aidevops-source-access-v1"
 SIGNER_IDENTITY = "source-access@aidevops.sh"
+TRUST_KEY_SOURCE_DEDICATED = "dedicated"
 OVERRIDABLE_REASON = "secret-bearing basename"
 MAX_TTL_SECONDS = 12 * 60 * 60
 REQUEST_REUSE_SECONDS = 60 * 60
@@ -50,18 +52,19 @@ class Config:
     config_dir: Path = Path("/etc/aidevops/source-access")
     state_dir: Path = Path("/var/run/aidevops/source-access")
     request_root: Path | None = None
-    signing_key: Path | None = None
     trust_uid: int = 0
 
     @property
     def private_key(self) -> Path:
-        if self.signing_key is not None:
-            return self.signing_key
         return self.config_dir / "private" / "source-access.key"
 
     @property
     def public_key(self) -> Path:
         return self.config_dir / "source-access.pub"
+
+    @property
+    def trust_marker(self) -> Path:
+        return self.config_dir / "source-access.trust"
 
 
 @dataclass(frozen=True)
@@ -361,6 +364,63 @@ def _trusted_directory(path: Path, owner_uid: int) -> bool:
     return _trusted_node(path, owner_uid, stat.S_ISDIR, 0o022)
 
 
+def _trusted_private_directory(path: Path, owner_uid: int) -> bool:
+    return _trusted_node(path, owner_uid, stat.S_ISDIR, 0o077)
+
+
+def _derive_public_key(config: Config) -> bytes:
+    _require_source(
+        _trusted_private_directory(config.private_key.parent, config.trust_uid),
+        "source-access signing key directory ownership or permissions are unsafe",
+    )
+    _require_source(
+        _trusted_private_key(config.private_key, config.trust_uid),
+        "source-access signing key ownership or permissions are unsafe",
+    )
+    result = _run(
+        [
+            SSH_KEYGEN,
+            "-y",
+            "-f",
+            str(config.private_key),
+        ]
+    )
+    _require_source(result.returncode == 0, "failed to derive the source-access verification key")
+    public_key = result.stdout.strip()
+    _require_source(
+        public_key.startswith(b"ssh-ed25519 ") and b"\n" not in public_key,
+        "failed to derive a valid source-access verification key",
+    )
+    return public_key
+
+
+def _trust_marker_content(public_key: bytes) -> bytes:
+    return (
+        b"schema="
+        + SCHEMA_TRUST.encode("ascii")
+        + b"\nkey_source="
+        + TRUST_KEY_SOURCE_DEDICATED.encode("ascii")
+        + b"\npublic_key="
+        + public_key
+        + b"\n"
+    )
+
+
+def validate_key_material(config: Config) -> None:
+    trust_error = "source-access signing trust ownership, permissions, or key binding are unsafe"
+    _require_source(_trusted_directory(config.config_dir, config.trust_uid), trust_error)
+    _require_source(_trusted_file(config.public_key, config.trust_uid), trust_error)
+    _require_source(_trusted_file(config.trust_marker, config.trust_uid), trust_error)
+    derived_public_key = _derive_public_key(config)
+    try:
+        public_key = config.public_key.read_bytes()
+        trust_marker = config.trust_marker.read_bytes()
+    except OSError as exc:
+        raise SourceAccessError(trust_error) from exc
+    _require_source(public_key == derived_public_key + b"\n", trust_error)
+    _require_source(trust_marker == _trust_marker_content(derived_public_key), trust_error)
+
+
 def _load_request(
     config: Config, home: Path, request_id: str, expected_uid: int
 ) -> dict[str, Any]:
@@ -379,26 +439,72 @@ def _load_request(
     return request
 
 
-def setup_key_material(config: Config) -> None:
+def _prepare_trusted_directory(path: Path, mode: int, owner_uid: int) -> None:
+    if os.path.lexists(path):
+        _require_source(
+            _trusted_directory(path, owner_uid),
+            "source-access signing key directory ownership or permissions are unsafe",
+        )
+    else:
+        try:
+            path.mkdir(mode=mode)
+        except OSError as exc:
+            raise SourceAccessError("failed to create the source-access signing key directory") from exc
+        if os.geteuid() == 0:
+            os.chown(path, owner_uid, 0)
+    os.chmod(path, mode)
     _require_source(
-        _trusted_directory(config.private_key.parent, config.trust_uid),
-        "existing approval key directory ownership or permissions are unsafe",
+        _trusted_directory(path, owner_uid),
+        "source-access signing key directory ownership or permissions are unsafe",
     )
+
+
+def _generate_dedicated_signing_key(config: Config) -> None:
+    public_companion = Path(f"{config.private_key}.pub")
+    _prepare_trusted_directory(config.config_dir, 0o755, config.trust_uid)
+    _prepare_trusted_directory(config.private_key.parent, 0o700, config.trust_uid)
     _require_source(
-        _trusted_private_key(config.private_key, config.trust_uid),
-        "existing root-owned aidevops approval key is unavailable",
+        not os.path.lexists(config.private_key) and not os.path.lexists(public_companion),
+        "source-access signing key path already exists or is unsafe",
     )
-    _ensure_directory(config.config_dir, 0o755, config.trust_uid)
     result = _run(
         [
             SSH_KEYGEN,
-            "-y",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "aidevops-source-access-signing",
             "-f",
             str(config.private_key),
         ]
     )
-    _require_source(result.returncode == 0, "failed to derive the source-access verification key")
-    atomic_write(config.public_key, result.stdout.strip() + b"\n", 0o644, config.trust_uid)
+    _require_source(result.returncode == 0, "failed to create the source-access signing key")
+    for key_path in (config.private_key, public_companion):
+        if os.geteuid() == 0:
+            os.chown(key_path, config.trust_uid, 0)
+        os.chmod(key_path, 0o600)
+        _require_source(
+            _trusted_private_key(key_path, config.trust_uid),
+            "failed to create the source-access signing key",
+        )
+
+
+def setup_key_material(config: Config) -> None:
+    if not os.path.lexists(config.private_key):
+        _generate_dedicated_signing_key(config)
+    _prepare_trusted_directory(config.config_dir, 0o755, config.trust_uid)
+    public_key = _derive_public_key(config)
+    atomic_write(config.public_key, public_key + b"\n", 0o644, config.trust_uid)
+    atomic_write(
+        config.trust_marker,
+        _trust_marker_content(public_key),
+        0o644,
+        config.trust_uid,
+    )
+    validate_key_material(config)
 
 
 def list_approvals(config: Config, *, uid: int, now: int | None = None) -> list[dict[str, Any]]:

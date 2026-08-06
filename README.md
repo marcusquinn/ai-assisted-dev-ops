@@ -213,23 +213,14 @@ aidevops security scan-deps    # Unpinned dependency check
 aidevops security check        # Per-repo security posture assessment
 aidevops security dismiss <id> # Dismiss a security advisory after taking action
 aidevops source-access status  # List temporary source-read approvals
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>
+sudo -k /usr/bin/python3 -I -B /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>
 ```
 
 Running `aidevops security` with no arguments is the single command that covers everything — user security posture, plaintext secret detection, supply chain IoC scanning, and active advisories.
 
 When a read guard identifies only a low-confidence source-code basename match, it emits a scoped request. A maintainer can run the displayed root-broker approval command. Approvals are bound to the exact runtime session, user, Git-tracked regular source path, approved content digest, and guard reason; they expire within 12 hours and never override private-key, environment-file, credential-store, hard-link, symlink, changed-content, or untracked-file denials. The plugin redirects the approved read to a root-controlled immutable snapshot of those bytes so the live path cannot be rebound after verification; revocation removes both receipt and snapshot.
 
-Privileged operations never execute the user-managed aidevops deployment as root. Resolve the immutable commit from the published, signed aidevops release metadata, substitute it for `<verified-release-commit>`, and let root fetch the reviewed broker files directly over TLS. Never install the broker from the user-writable deployed tree.
-
-```bash
-sudo -k /usr/bin/install -d -o 0 -g 0 -m 0755 /etc/aidevops/source-access
-sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source_access_core.py" --output /etc/aidevops/source-access/source_access_core.py
-sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source-access-helper.py" --output /etc/aidevops/source-access/source-access-helper.py
-sudo /bin/chmod 0644 /etc/aidevops/source-access/source_access_core.py /etc/aidevops/source-access/source-access-helper.py
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup
-```
+`setup.sh` and interactive `aidevops update` provision this capability automatically. Setup verifies the published signed tag, asks for one sudo confirmation, has root fetch the exact reviewed broker bytes directly over TLS, compares those downloads byte-for-byte with the signed Git objects, and then creates a dedicated root-only signing key under `/etc/aidevops/source-access`. It never executes or copies the user-writable aidevops deployment as root. The plugin also rejects approvals whenever the installed broker bytes differ from the active release. Headless updates cannot request sudo, so they leave the capability fail-closed; the next terminal `aidevops update` completes provisioning without a separate bootstrap procedure.
 
 **Security advisories** are delivered via `aidevops update` and shown in the session greeting until dismissed. The scanner never exposes secret values — only file locations and key names. All remediation commands should be run in a separate terminal, not inside AI chat sessions.
 

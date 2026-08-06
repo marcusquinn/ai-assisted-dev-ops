@@ -19,6 +19,7 @@ import {
   SOURCE_ACCESS_REASON,
   canonicalReceiptPayload,
   checkSecretReadWithApproval,
+  sourceAccessBrokerMatches,
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
 
@@ -30,6 +31,7 @@ const BASE = {
   scriptsDir: "/framework/scripts",
   isReadTool: (tool) => tool.toLowerCase() === "read",
   secretReadBlockReason: () => SOURCE_ACCESS_REASON,
+  brokerMatches: () => true,
   checkSecretReadGate: () => {
     throw new Error("[secret-read-guard] blocked read: secret-bearing basename");
   },
@@ -69,14 +71,47 @@ test("an unapproved scope creates a request and preserves the original block", (
       checkSecretReadWithApproval({
         ...BASE,
         verify: () => false,
-        requestRun: (_command, args) => {
-          calls.push(args);
+        requestRun: (command, args) => {
+          calls.push({ command, args });
           return "0123456789abcdef0123456789abcdef\n";
         },
       }),
-    /sudo -k \/usr\/bin\/python3 \/etc\/aidevops\/source-access\/source-access-helper.py approve 0123456789abcdef0123456789abcdef --ttl 12h/,
+    /sudo -k \/usr\/bin\/python3 -I -B \/etc\/aidevops\/source-access\/source-access-helper.py approve 0123456789abcdef0123456789abcdef --ttl 12h/,
   );
-  assert.deepEqual(calls.map((args) => args[1]), ["request"]);
+  assert.deepEqual(calls, [
+    {
+      command: "/usr/bin/python3",
+      args: [
+        "-I",
+        "-B",
+        "/etc/aidevops/source-access/source-access-helper.py",
+        "request",
+        "--session",
+        BASE.sessionId,
+        "--path",
+        BASE.args.filePath,
+        "--reason",
+        SOURCE_ACCESS_REASON,
+      ],
+    },
+  ]);
+});
+
+test("malformed request output cannot alter the displayed sudo command", () => {
+  let error;
+  try {
+    checkSecretReadWithApproval({
+      ...BASE,
+      verify: () => false,
+      requestRun: () => "0123456789abcdef0123456789abcdef; sudo attacker-command\n",
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /secret-read-guard/);
+  assert.doesNotMatch(error.message, /To approve only this tracked source path/);
+  assert.doesNotMatch(error.message, /attacker-command/);
 });
 
 test("hard-denial reasons never invoke the approval helper", () => {
@@ -154,6 +189,61 @@ test("direct reads of root-managed snapshots are denied", () => {
       }),
     /direct reads of approval snapshots are denied/,
   );
+});
+
+test("a stale root broker fails closed without creating an approval request", () => {
+  let helperCalls = 0;
+  let verifierCalls = 0;
+  assert.throws(
+    () =>
+      checkSecretReadWithApproval({
+        ...BASE,
+        brokerMatches: () => false,
+        verify: () => {
+          verifierCalls += 1;
+          return true;
+        },
+        requestRun: () => {
+          helperCalls += 1;
+          return "";
+        },
+      }),
+    /Run aidevops update from an interactive terminal to reconcile it/,
+  );
+  assert.equal(verifierCalls, 0);
+  assert.equal(helperCalls, 0);
+});
+
+test("broker matching requires exact deployed helper and core bytes", () => {
+  const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(tempParent, { recursive: true });
+  const root = mkdtempSync(join(tempParent, "source-access-broker-match-test-"));
+  const scriptsDir = join(root, "scripts");
+  const brokerDir = join(root, "broker");
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  try {
+    mkdirSync(scriptsDir);
+    mkdirSync(brokerDir);
+    const expectedHelper = join(scriptsDir, "source-access-helper.py");
+    const expectedCore = join(scriptsDir, "source_access_core.py");
+    const brokerHelper = join(brokerDir, "source-access-helper.py");
+    const brokerCore = join(brokerDir, "source_access_core.py");
+    writeFileSync(expectedHelper, "helper-v1\n", { mode: 0o644 });
+    writeFileSync(expectedCore, "core-v1\n", { mode: 0o644 });
+    writeFileSync(brokerHelper, "helper-v1\n", { mode: 0o644 });
+    writeFileSync(brokerCore, "core-v1\n", { mode: 0o644 });
+    const options = {
+      scriptsDir,
+      trustUid: uid,
+      brokerHelperPath: brokerHelper,
+      brokerCorePath: brokerCore,
+    };
+    assert.equal(sourceAccessBrokerMatches(options), true);
+    writeFileSync(brokerCore, "core-v2\n", { mode: 0o644 });
+    assert.equal(sourceAccessBrokerMatches(options), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("the loaded verifier accepts only the exact signed receipt", () => {

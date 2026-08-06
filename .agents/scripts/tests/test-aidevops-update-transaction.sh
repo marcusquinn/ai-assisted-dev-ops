@@ -46,7 +46,7 @@ extract_function() {
 	return 0
 }
 
-for function_name in _update_verify_deployment_state _run_update_setup_transaction _update_render_changelog cmd_update; do
+for function_name in _update_verify_deployment_state _run_update_setup_transaction _run_update_source_access_reconciliation _update_render_changelog cmd_update; do
 	extract_function "$function_name" "$TEST_ROOT/$function_name.sh"
 	# shellcheck source=/dev/null
 	source "$TEST_ROOT/$function_name.sh"

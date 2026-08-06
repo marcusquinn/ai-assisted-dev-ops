@@ -35,6 +35,7 @@ NC='\033[0m' # No Color
 CLEAN_MODE=false
 INTERACTIVE_MODE=false
 NON_INTERACTIVE="${AIDEVOPS_NON_INTERACTIVE:-false}"
+SETUP_EXPLICIT_NON_INTERACTIVE="${AIDEVOPS_NON_INTERACTIVE:-false}"
 UPDATE_TOOLS_MODE=false
 SETUP_STAGE=""
 SETUP_STAGE_OPENCODE="setup_opencode_cli"
@@ -45,6 +46,7 @@ SETUP_STAGE_PULSE="setup_supervisor_pulse"
 SETUP_STAGE_GUI_DESKTOP="setup_gui_desktop_app"
 SETUP_STAGE_AI_SESSION="setup_ai_session_incremental"
 SETUP_STAGE_RUNTIME_CONFIG="reconcile_runtime_config"
+SETUP_STAGE_SOURCE_ACCESS="setup_source_access_broker"
 SETUP_STAGE_OPENCODE_PLUGINS="setup_opencode_plugins"
 SETUP_STAGE_HOTFIX_CONFIG="_deploy_hotfix_config"
 SETUP_GUI_APP_NAME="aidevops.app"
@@ -372,6 +374,8 @@ source "${SETUP_IMPL_MODULES_DIR}/tool-beads.sh"
 # shellcheck disable=SC1091
 source "${SETUP_IMPL_MODULES_DIR}/config.sh"
 # shellcheck disable=SC1091
+source "${SETUP_IMPL_MODULES_DIR}/source-access.sh"
+# shellcheck disable=SC1091
 source "${SETUP_IMPL_MODULES_DIR}/plugins.sh"
 # shellcheck disable=SC1091
 source "${SETUP_IMPL_MODULES_DIR}/schedulers.sh"
@@ -392,6 +396,7 @@ parse_args() {
 			;;
 		--non-interactive | -n)
 			NON_INTERACTIVE=true
+			SETUP_EXPLICIT_NON_INTERACTIVE=true
 			shift
 			;;
 		--update | -u)
@@ -433,8 +438,9 @@ parse_args() {
 			echo "Use --clean after removing or renaming agents to sync deletions."
 			echo "Use --interactive to control each step individually."
 			echo "Use --non-interactive for CI/CD or AI agent shells (no stdin required)."
-			echo "Use --stage for targeted updates: opencode, agents, runtime-config, hooks, tabby, pulse, gui-desktop, ai-session, full."
-			echo "Stage aliases: ${SETUP_STAGE_OPENCODE}, ${SETUP_STAGE_AGENTS}, ${SETUP_STAGE_RUNTIME_CONFIG}, ${SETUP_STAGE_HOOKS}, ${SETUP_STAGE_TABBY}, ${SETUP_STAGE_PULSE}, ${SETUP_STAGE_GUI_DESKTOP}, ${SETUP_STAGE_AI_SESSION}."
+			echo "Use --stage for targeted updates: opencode, agents, runtime-config, source-access, hooks, tabby, pulse, gui-desktop, ai-session, full."
+			echo "Stage aliases: ${SETUP_STAGE_OPENCODE}, ${SETUP_STAGE_AGENTS}, ${SETUP_STAGE_RUNTIME_CONFIG}, ${SETUP_STAGE_SOURCE_ACCESS}, ${SETUP_STAGE_HOOKS}, ${SETUP_STAGE_TABBY}, ${SETUP_STAGE_PULSE}, ${SETUP_STAGE_GUI_DESKTOP}, ${SETUP_STAGE_AI_SESSION}."
+			echo "The source-access stage may request sudo when attached to an interactive terminal."
 			echo "Install ${SETUP_GUI_APP_NAME} explicitly with --stage gui-desktop or AIDEVOPS_GUI_DESKTOP_INSTALL=true."
 			echo "Use --update to check for tool updates after setup completes."
 			exit 0
@@ -457,6 +463,7 @@ _setup_print_stage_help() {
 	printf '  opencode | %s          Repair/install OpenCode CLI only\n' "$SETUP_STAGE_OPENCODE"
 	printf '  agents   | %s     Deploy .agents scripts/prompts only\n' "$SETUP_STAGE_AGENTS"
 	printf '  runtime-config | %s  Reconcile generated runtime commands/configuration\n' "$SETUP_STAGE_RUNTIME_CONFIG"
+	printf '  source-access | %s  Install/verify the signed root broker\n' "$SETUP_STAGE_SOURCE_ACCESS"
 	printf '  hooks    | %s          Install safety hooks only\n' "$SETUP_STAGE_HOOKS"
 	printf '  tabby    | %s                 Sync Tabby profiles only\n' "$SETUP_STAGE_TABBY"
 	printf '  pulse    | %s      Install/refresh pulse scheduler only\n' "$SETUP_STAGE_PULSE"
@@ -472,6 +479,7 @@ _setup_canonical_stage() {
 	opencode | "$SETUP_STAGE_OPENCODE") printf '%s' "$SETUP_STAGE_OPENCODE" ;;
 	agents | "$SETUP_STAGE_AGENTS") printf '%s' "$SETUP_STAGE_AGENTS" ;;
 	runtime-config | runtime | "$SETUP_STAGE_RUNTIME_CONFIG") printf '%s' "$SETUP_STAGE_RUNTIME_CONFIG" ;;
+	source-access | "$SETUP_STAGE_SOURCE_ACCESS") printf '%s' "$SETUP_STAGE_SOURCE_ACCESS" ;;
 	hooks | "$SETUP_STAGE_HOOKS") printf '%s' "$SETUP_STAGE_HOOKS" ;;
 	tabby | "$SETUP_STAGE_TABBY") printf '%s' "$SETUP_STAGE_TABBY" ;;
 	pulse | "$SETUP_STAGE_PULSE") printf '%s' "$SETUP_STAGE_PULSE" ;;
@@ -1452,6 +1460,14 @@ _setup_run_scoped_stage() {
 	"$SETUP_STAGE_RUNTIME_CONFIG")
 		_time_step "$SETUP_STAGE_RUNTIME_CONFIG" _setup_reconcile_runtime_config
 		;;
+	"$SETUP_STAGE_SOURCE_ACCESS")
+		if [[ "$SETUP_EXPLICIT_NON_INTERACTIVE" == "true" ]]; then
+			_time_step "$SETUP_STAGE_SOURCE_ACCESS" setup_source_access_broker
+		else
+			AIDEVOPS_SOURCE_ACCESS_INTERACTIVE=true \
+				_time_step "$SETUP_STAGE_SOURCE_ACCESS" setup_source_access_broker
+		fi
+		;;
 	"$SETUP_STAGE_HOOKS")
 		_time_step "$SETUP_STAGE_HOOKS" setup_safety_hooks
 		;;
@@ -1549,6 +1565,7 @@ _setup_run_non_interactive() {
 	_time_step "setup_opencode_desktop_launcher" setup_opencode_desktop_launcher
 	_time_step "sync_agent_sources" sync_agent_sources
 	_time_step "install_aidevops_cli" install_aidevops_cli || print_warning "aidevops CLI installation encountered issues; continuing configuration reconciliation"
+	_time_step "setup_source_access_broker" setup_source_access_broker_nonfatal
 	_time_step "setup_shellcheck_wrapper" setup_shellcheck_wrapper
 	if is_feature_enabled safety_hooks 2>/dev/null; then
 		_time_step "$SETUP_STAGE_HOOKS" setup_safety_hooks
@@ -1722,6 +1739,9 @@ _setup_run_interactive() {
 	# Launcher verification reads the deployed VERSION, so it must follow agent
 	# deployment on first-run interactive setup as it already does non-interactively.
 	confirm_step "Install and verify aidevops CLI command" && install_aidevops_cli
+	if confirm_step "Install the secure source-access approval broker"; then
+		AIDEVOPS_SOURCE_ACCESS_INTERACTIVE=true setup_source_access_broker_nonfatal
+	fi
 	confirm_step "Sync agents from private repositories" && sync_agent_sources
 	confirm_step "Set up routines repo (private repo for recurring operational jobs)" && setup_routines
 	is_feature_enabled safety_hooks 2>/dev/null && confirm_step "Install Claude Code safety hooks (block destructive commands)" && setup_safety_hooks

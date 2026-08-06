@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import stat
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -73,12 +73,26 @@ def _validate_privileged_core_import() -> None:
 
 def _load_source_access_core() -> Any:
     _validate_privileged_core_import()
-    spec = importlib.util.spec_from_file_location(_SOURCE_CORE_MODULE_NAME, _SOURCE_CORE_PATH)
-    _bootstrap_require(spec is not None)
-    _bootstrap_require(spec.loader is not None)
-    module = importlib.util.module_from_spec(spec)
+    try:
+        source = _SOURCE_CORE_PATH.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(
+            "refusing privileged source-access startup from unavailable broker files"
+        ) from exc
+    module = types.ModuleType(_SOURCE_CORE_MODULE_NAME)
+    module.__file__ = str(_SOURCE_CORE_PATH)
+    module.__package__ = ""
+    previous_module = sys.modules.get(_SOURCE_CORE_MODULE_NAME)
     sys.modules[_SOURCE_CORE_MODULE_NAME] = module
-    spec.loader.exec_module(module)
+    try:
+        code = compile(source, str(_SOURCE_CORE_PATH), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+    except BaseException:
+        if previous_module is None:
+            sys.modules.pop(_SOURCE_CORE_MODULE_NAME, None)
+        else:
+            sys.modules[_SOURCE_CORE_MODULE_NAME] = previous_module
+        raise
     return module
 
 
@@ -89,9 +103,11 @@ OVERRIDABLE_REASON = _SOURCE_CORE.OVERRIDABLE_REASON
 REQUEST_REUSE_SECONDS = _SOURCE_CORE.REQUEST_REUSE_SECONDS
 SCHEMA_PAYLOAD = _SOURCE_CORE.SCHEMA_PAYLOAD
 SCHEMA_RECEIPT = _SOURCE_CORE.SCHEMA_RECEIPT
+SCHEMA_TRUST = _SOURCE_CORE.SCHEMA_TRUST
 SIGNATURE_NAMESPACE = _SOURCE_CORE.SIGNATURE_NAMESPACE
 SIGNER_IDENTITY = _SOURCE_CORE.SIGNER_IDENTITY
 SSH_KEYGEN = _SOURCE_CORE.SSH_KEYGEN
+TRUST_KEY_SOURCE_DEDICATED = _SOURCE_CORE.TRUST_KEY_SOURCE_DEDICATED
 ApprovalBinding = _SOURCE_CORE.ApprovalBinding
 ApprovalSpec = _SOURCE_CORE.ApprovalSpec
 Config = _SOURCE_CORE.Config
@@ -102,7 +118,6 @@ _load_request = _SOURCE_CORE._load_request
 _run = _SOURCE_CORE._run
 _trusted_directory = _SOURCE_CORE._trusted_directory
 _trusted_file = _SOURCE_CORE._trusted_file
-_trusted_private_key = _SOURCE_CORE._trusted_private_key
 _validate_reason = _SOURCE_CORE._validate_reason
 _validate_session_id = _SOURCE_CORE._validate_session_id
 atomic_write = _SOURCE_CORE.atomic_write
@@ -116,6 +131,7 @@ request_directory = _SOURCE_CORE.request_directory
 scope_id = _SOURCE_CORE.scope_id
 secure_source_content = _SOURCE_CORE.secure_source_content
 setup_key_material = _SOURCE_CORE.setup_key_material
+validate_key_material = _SOURCE_CORE.validate_key_material
 
 __all__ = [
     "MAX_TTL_SECONDS",
@@ -134,15 +150,13 @@ __all__ = [
     "parse_ttl",
     "revoke_approval",
     "setup_key_material",
+    "validate_key_material",
     "verify_approval",
 ]
 
 
 def _sign_payload(config: Config, payload: dict[str, Any]) -> str:
-    if not _trusted_directory(config.private_key.parent, config.trust_uid) or not _trusted_private_key(
-        config.private_key, config.trust_uid
-    ):
-        raise SourceAccessError("source-access private key ownership or permissions are unsafe")
+    validate_key_material(config)
     with tempfile.TemporaryDirectory(prefix="aidevops-source-access-sign-") as temp_dir:
         payload_path = Path(temp_dir) / "payload.json"
         payload_path.write_bytes(canonical_json(payload))
@@ -361,17 +375,21 @@ def _trusted_root_broker(config: Config) -> bool:
         return False
 
 
-def _require_root_tty(config: Config) -> None:
+def _require_root_broker(config: Config, *, require_tty: bool) -> None:
     if os.geteuid() != 0:
         raise SourceAccessError("privileged commands must use the installed root-owned source-access broker")
-    if not sys.stdin.isatty():
+    if require_tty and not sys.stdin.isatty():
         raise SourceAccessError("this command requires an interactive terminal")
     if not _trusted_root_broker(config):
         raise SourceAccessError("refusing privileged execution outside the root-owned source-access broker")
 
 
+def _require_root_tty(config: Config) -> None:
+    _require_root_broker(config, require_tty=True)
+
+
 def _confirm_setup() -> bool:
-    print("Reuse the root-owned aidevops approval key for source-access signatures.")
+    print("Create a dedicated root-only key for source-access signatures.")
     return input("Type SETUP SOURCE ACCESS to confirm: ") == "SETUP SOURCE ACCESS"
 
 
@@ -403,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     revoke = subparsers.add_parser("revoke")
     revoke.add_argument("approval_id")
     subparsers.add_parser("status")
+    subparsers.add_parser("trust-check")
     return parser
 
 
@@ -411,7 +430,7 @@ def _run_setup(_args: argparse.Namespace, config: Config, _uid: int, _home: Path
     if not _confirm_setup():
         raise SourceAccessError("source-access setup cancelled")
     setup_key_material(config)
-    print("Source-access trust is configured with the existing approval key.")
+    print("Source-access trust is configured with a dedicated root-only key.")
     return 0
 
 
@@ -471,10 +490,16 @@ def _run_status(_args: argparse.Namespace, config: Config, uid: int, _home: Path
     return 0
 
 
+def _run_trust_check(_args: argparse.Namespace, config: Config, _uid: int, _home: Path) -> int:
+    _require_root_broker(config, require_tty=False)
+    validate_key_material(config)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     uid, home = real_user()
-    config = Config(signing_key=home / ".aidevops" / "approval-keys" / "private" / "approval.key")
+    config = Config()
     handlers = {
         "setup": _run_setup,
         "request": _run_request,
@@ -482,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
         "verify": _run_verify,
         "revoke": _run_revoke,
         "status": _run_status,
+        "trust-check": _run_trust_check,
     }
     try:
         return handlers[args.command](args, config, uid, home)

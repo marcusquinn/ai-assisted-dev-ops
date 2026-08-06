@@ -285,6 +285,18 @@ _run_update_setup_transaction() {
 	return 0
 }
 
+_run_update_source_access_reconciliation() {
+	local setup_script="${INSTALL_DIR}/setup.sh"
+
+	[[ -t 0 ]] || return 0
+	[[ -z "${AIDEVOPS_AUTO_UPDATE:-}" ]] || return 0
+	[[ "${AIDEVOPS_NON_INTERACTIVE:-false}" != "true" ]] || return 0
+	if ! AIDEVOPS_SOURCE_ACCESS_INTERACTIVE=true bash "$setup_script" --stage source-access; then
+		print_warning "Source-access broker provisioning remains deferred and fail-closed"
+	fi
+	return 0
+}
+
 _update_render_changelog() {
 	local old_hash="$1"
 	local new_hash="$2"
@@ -435,6 +447,7 @@ cmd_update() {
 		_update_fresh_install || return 1
 	fi
 
+	_run_update_source_access_reconciliation
 	_update_sync_projects "$skip_project_sync" "$(get_version)"
 	if [[ "$skip_project_sync" != "$_AIDEVOPS_UPDATE_TRUE" && "$reconcile_repo_verify" == "$_AIDEVOPS_UPDATE_TRUE" ]]; then
 		_update_reconcile_repo_verify
@@ -930,6 +943,7 @@ _cmd_setup_help() {
 	printf '%s\n' "  opencode  Repair/install the OpenCode CLI only"
 	printf '%s\n' "  agents    Deploy aidevops agents/scripts only"
 	printf '%s\n' "  runtime-config  Reconcile generated runtime commands/configuration"
+	printf '%s\n' "  source-access  Install/verify the signed root approval broker"
 	printf '%s\n' "  hooks     Install safety hooks only"
 	printf '%s\n' "  tabby     Sync Tabby terminal profiles only"
 	printf '%s\n' "  pulse     Install/refresh the pulse scheduler only"
@@ -995,7 +1009,7 @@ cmd_setup() {
 _help_commands() {
 	echo "Commands:"
 	echo "  init [features]    Initialize aidevops in current project"
-	echo "  setup --scope <s>  Run scoped setup/deploy (opencode, agents, hooks, tabby, pulse, gui-desktop, ai-session, full)"
+	echo "  setup --scope <s>  Run scoped setup/deploy (opencode, agents, source-access, hooks, tabby, pulse, gui-desktop, ai-session, full)"
 	echo "  init-routines      Scaffold private routines repo (--org <name> | --local)"
 	echo "  upgrade-planning   Upgrade TODO.md/PLANS.md to latest templates"
 	echo "  features           List available features for init"
@@ -1067,10 +1081,10 @@ _help_detailed_sections() {
 	echo "  aidevops security dismiss <id> # Dismiss a security advisory"
 	echo ""
 	echo "Temporary source access:"
-	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup"
-	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py approve <id> --ttl 12h"
+	echo "  aidevops update                              # Install/verify broker during normal setup"
+	echo "  sudo -k /usr/bin/python3 -I -B /etc/aidevops/source-access/source-access-helper.py approve <id> --ttl 12h"
 	echo "  aidevops source-access status                    # List active/expired approvals"
-	echo "  sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>"
+	echo "  sudo -k /usr/bin/python3 -I -B /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>"
 	echo ""
 	echo "IP Reputation:"
 	echo "  aidevops ip-check check <ip> # Check IP reputation across providers"

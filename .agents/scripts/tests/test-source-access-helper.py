@@ -7,6 +7,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import py_compile
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,10 +57,9 @@ class SourceAccessHelperTests(unittest.TestCase):
             config_dir=self.root / "system-config",
             state_dir=self.root / "system-state",
             request_root=self.root / "requests",
-            signing_key=self.root / "approval-private" / "approval.key",
             trust_uid=self.uid,
         )
-        self.config.private_key.parent.mkdir(mode=0o700)
+        self.config.private_key.parent.mkdir(parents=True, mode=0o700)
         subprocess.run(
             [
                 HELPER.SSH_KEYGEN,
@@ -68,7 +69,7 @@ class SourceAccessHelperTests(unittest.TestCase):
                 "-N",
                 "",
                 "-C",
-                "aidevops-approval-signing",
+                "aidevops-source-access-signing",
                 "-f",
                 str(self.config.private_key),
             ],
@@ -241,7 +242,88 @@ class SourceAccessHelperTests(unittest.TestCase):
         receipt_path.write_text("[]", encoding="utf-8")
         self.assertFalse(self._verify())
 
-    def test_privileged_bootstrap_rejects_unsafe_core_before_execution(self) -> None:
+    def test_setup_generates_dedicated_root_only_key_when_approval_key_is_absent(self) -> None:
+        dedicated_config = HELPER.Config(
+            config_dir=self.root / "dedicated-config",
+            state_dir=self.root / "dedicated-state",
+            trust_uid=self.uid,
+        )
+
+        HELPER.setup_key_material(dedicated_config)
+
+        self.assertTrue(dedicated_config.private_key.is_file())
+        self.assertTrue(dedicated_config.public_key.is_file())
+        self.assertTrue(dedicated_config.trust_marker.is_file())
+        self.assertEqual(stat.S_IMODE(dedicated_config.private_key.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(dedicated_config.public_key.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(dedicated_config.trust_marker.stat().st_mode), 0o644)
+        derived_public = subprocess.run(
+            [HELPER.SSH_KEYGEN, "-y", "-f", str(dedicated_config.private_key)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(dedicated_config.public_key.read_text(encoding="utf-8").strip(), derived_public)
+        self.assertEqual(
+            dedicated_config.trust_marker.read_text(encoding="utf-8"),
+            f"schema={HELPER.SCHEMA_TRUST}\n"
+            f"key_source={HELPER.TRUST_KEY_SOURCE_DEDICATED}\n"
+            f"public_key={derived_public}\n",
+        )
+        HELPER.validate_key_material(dedicated_config)
+
+        dedicated_config.private_key.parent.chmod(0o755)
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "directory ownership"):
+            HELPER.validate_key_material(dedicated_config)
+        dedicated_config.private_key.parent.chmod(0o700)
+
+        replacement_key = self.root / "replacement-signing-key"
+        subprocess.run(
+            [
+                HELPER.SSH_KEYGEN,
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "replacement-source-access-signing",
+                "-f",
+                str(replacement_key),
+            ],
+            check=True,
+        )
+        dedicated_config.private_key.write_bytes(replacement_key.read_bytes())
+        dedicated_config.private_key.chmod(0o600)
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "key binding"):
+            HELPER.validate_key_material(dedicated_config)
+
+    def test_setup_records_existing_dedicated_key_binding(self) -> None:
+        derived_public = self.config.public_key.read_text(encoding="utf-8").strip()
+        self.assertEqual(
+            self.config.trust_marker.read_text(encoding="utf-8"),
+            f"schema={HELPER.SCHEMA_TRUST}\n"
+            f"key_source={HELPER.TRUST_KEY_SOURCE_DEDICATED}\n"
+            f"public_key={derived_public}\n",
+        )
+        HELPER.validate_key_material(self.config)
+
+    def test_setup_rejects_dangling_dedicated_key_symlink(self) -> None:
+        symlink_config = HELPER.Config(
+            config_dir=self.root / "symlink-config",
+            state_dir=self.root / "symlink-state",
+            trust_uid=self.uid,
+        )
+        symlink_config.private_key.parent.mkdir(parents=True, mode=0o700)
+        outside_target = self.root / "outside-signing-key"
+        symlink_config.private_key.symlink_to(outside_target)
+
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "ownership or permissions are unsafe"):
+            HELPER.setup_key_material(symlink_config)
+
+        self.assertFalse(outside_target.exists())
+
+    def test_privileged_bootstrap_rejects_unsafe_core_and_ignores_bytecode(self) -> None:
         broker = self.root / "broker"
         broker.mkdir(mode=0o755)
         broker.chmod(0o755)
@@ -280,6 +362,26 @@ class SourceAccessHelperTests(unittest.TestCase):
             self.assertEqual(loaded.VALUE, 7)
 
             marker_path.unlink()
+            core_path.write_text("VALUE = 13\n", encoding="utf-8")
+            malicious_source = broker / "malicious-core.py"
+            malicious_source.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(marker_path)!r}).write_text('bytecode', encoding='utf-8')\n"
+                "VALUE = 99\n",
+                encoding="utf-8",
+            )
+            bytecode_path = Path(importlib.util.cache_from_source(str(core_path)))
+            bytecode_path.parent.mkdir()
+            py_compile.compile(
+                str(malicious_source),
+                cfile=str(bytecode_path),
+                doraise=True,
+                invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            )
+            loaded = load_fixture()
+            self.assertFalse(marker_path.exists())
+            self.assertEqual(loaded.VALUE, 13)
+
             broker.chmod(0o777)
             with self.assertRaisesRegex(RuntimeError, "untrusted broker files"):
                 load_fixture()

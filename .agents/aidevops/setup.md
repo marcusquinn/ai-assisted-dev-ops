@@ -25,7 +25,7 @@ tools:
 - **AI-session update**: `./setup.sh --stage ai-session` applies changed deploy stages and falls back to full setup when unsafe
 - **Agents**: `~/.aidevops/agents/` | **Backups**: `~/.aidevops/config-backups/` | **Credentials**: `~/.config/aidevops/credentials.sh`
 
-**What setup.sh does**: checks required deps (`jq`, `curl`, `ssh`, `sqlite3`) and optional deps (`sshpass`, `gh`, `glab`, `tea`); copies `.agents/` → `~/.aidevops/agents/` with timestamped config backups; injects AGENTS.md pointer into `~/.opencode/AGENTS.md`, `~/.cursor/AGENTS.md`, `~/.claude/AGENTS.md`, `~/.config/cursor/AGENTS.md`; updates OpenCode agent paths in `~/.config/opencode/opencode.json`.
+**What setup.sh does**: checks required deps (`jq`, `curl`, `ssh`, `sqlite3`) and optional deps (`sshpass`, `gh`, `glab`, `tea`); copies `.agents/` → `~/.aidevops/agents/` with timestamped config backups; injects AGENTS.md pointer into `~/.opencode/AGENTS.md`, `~/.cursor/AGENTS.md`, `~/.claude/AGENTS.md`, `~/.config/cursor/AGENTS.md`; updates OpenCode agent paths in `~/.config/opencode/opencode.json`; and provisions the root-owned source-access broker from the exact signed release when an interactive terminal can authorize sudo.
 
 **Deployed structure**: `~/.aidevops/agents/` (AGENTS.md, aidevops/, tools/, services/, workflows/, scripts/) + `~/.aidevops/config-backups/[YYYYMMDD_HHMMSS]/`
 
@@ -44,18 +44,23 @@ Use scoped setup when the change is isolated and a full deploy would add avoidab
 |---|---|
 | Agent/script-only change | `./setup.sh --stage agents` or `aidevops setup --scope agents` |
 | OpenCode CLI/shim/setup logic | `./setup.sh --stage opencode` or `aidevops setup --scope opencode` |
+| Source-access broker repair | `./setup.sh --stage source-access` or `aidevops setup --scope source-access` |
 | Hook change | `./setup.sh --stage hooks` or `aidevops setup --scope hooks` |
 | Tabby profile change | `./setup.sh --stage tabby` or `aidevops setup --scope tabby` |
 | Pulse or merge-scheduler plist change | `./setup.sh --stage pulse` or `aidevops setup --scope pulse` |
 | AI session after release/update | `./setup.sh --stage ai-session` or `aidevops setup --scope ai-session` |
 
 `./setup.sh --stage` also accepts the canonical stage names: `setup_opencode_cli`,
-`deploy_aidevops_agents`, `setup_safety_hooks`, `setup_tabby`, and
-`setup_supervisor_pulse`. The `ai-session` scope compares `~/.aidevops/.deployed-sha`
+`deploy_aidevops_agents`, `setup_source_access_broker`, `setup_safety_hooks`,
+`setup_tabby`, and `setup_supervisor_pulse`. The `ai-session` scope compares `~/.aidevops/.deployed-sha`
 with the current checkout, runs the changed deploy stages, verifies `VERSION` and
 `.deployed-sha`, and then runs full non-interactive setup only when incremental setup
 is unsafe or fails. The Pulse scope refreshes both the main supervisor and the
 dedicated merge scheduler. Unknown stages fail non-zero and print the valid list.
+
+Normal interactive setup/update reconciles source-access automatically. The scoped
+command is a repair/testing surface, not a required post-install step. Non-TTY
+automation never prompts for sudo and leaves an unavailable broker fail-closed.
 
 ## Manual Configuration
 

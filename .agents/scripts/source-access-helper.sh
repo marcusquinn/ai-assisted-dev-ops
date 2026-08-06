@@ -12,4 +12,4 @@ if [[ "$EUID" -eq 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "${SCRIPT_DIR}/source-access-helper.py" "$@"
+exec /usr/bin/python3 -I -B "${SCRIPT_DIR}/source-access-helper.py" "$@"

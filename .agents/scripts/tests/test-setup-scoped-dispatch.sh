@@ -107,6 +107,7 @@ test_setup_stage_contract() {
 	assert_contains "opencode scope maps to setup_opencode_cli" "$text" "opencode | \"\$SETUP_STAGE_OPENCODE\") printf '%s' \"\$SETUP_STAGE_OPENCODE\""
 	assert_contains "agents scope maps to deploy_aidevops_agents" "$text" "agents | \"\$SETUP_STAGE_AGENTS\") printf '%s' \"\$SETUP_STAGE_AGENTS\""
 	assert_contains "runtime-config scope maps to reconciliation" "$text" "runtime-config | runtime | \"\$SETUP_STAGE_RUNTIME_CONFIG\") printf '%s' \"\$SETUP_STAGE_RUNTIME_CONFIG\""
+	assert_contains "source-access scope maps to signed broker setup" "$text" "source-access | \"\$SETUP_STAGE_SOURCE_ACCESS\") printf '%s' \"\$SETUP_STAGE_SOURCE_ACCESS\""
 	assert_contains "hooks scope maps to setup_safety_hooks" "$text" "hooks | \"\$SETUP_STAGE_HOOKS\") printf '%s' \"\$SETUP_STAGE_HOOKS\""
 	assert_contains "tabby scope maps to setup_tabby" "$text" "tabby | \"\$SETUP_STAGE_TABBY\") printf '%s' \"\$SETUP_STAGE_TABBY\""
 	assert_contains "pulse scope maps to setup_supervisor_pulse" "$text" "pulse | \"\$SETUP_STAGE_PULSE\") printf '%s' \"\$SETUP_STAGE_PULSE\""
@@ -236,6 +237,7 @@ test_cli_scope_contract() {
 	assert_contains "aidevops setup lists gui-desktop scope" "$text" "gui-desktop  Install native macOS aidevops.app only"
 	assert_contains "aidevops setup lists ai-session scope" "$text" "ai-session  Apply changed deploy stages; fall back to full setup if needed"
 	assert_contains "aidevops setup lists runtime-config scope" "$text" "runtime-config  Reconcile generated runtime commands/configuration"
+	assert_contains "aidevops setup lists source-access scope" "$text" "source-access  Install/verify the signed root approval broker"
 	assert_contains "aidevops setup passes scope to setup.sh" "$text" "bash \"\$setup_script\" --stage \"\$scope\""
 	assert_contains "aidevops setup full preserves full setup" "$text" "bash \"\$setup_script\" --non-interactive"
 	return 0
