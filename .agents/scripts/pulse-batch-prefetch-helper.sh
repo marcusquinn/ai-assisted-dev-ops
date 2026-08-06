@@ -311,7 +311,7 @@ _prefetch_rest_issues_for_slug() {
 			labels: (.labels // []),
 			updatedAt: .updated_at,
 			assignees: (.assignees // []),
-			body: (if .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
+			body: (if (has("body") | not) then error("missing issue body") elif .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
 			authorAssociation: (.author_association // "NONE"),
 			author: (if .user then {
 				login: (.user.login // ""),
@@ -502,7 +502,7 @@ _normalize_search_to_prefetch_schema() {
 					labels: .labels,
 					updatedAt: .updatedAt,
 					assignees: .assignees,
-					body: (if .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
+					body: (if (has("body") | not) then error("missing issue body") elif .body == null then "" elif (.body | type) == "string" then .body else error("invalid issue body") end),
 					authorAssociation: (.authorAssociation // "NONE"),
 					author: (.author // null)
 				}]

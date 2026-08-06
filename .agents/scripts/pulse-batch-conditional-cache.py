@@ -62,7 +62,9 @@ def _split_response(response_file: str) -> tuple[int, str, bool, str]:
 
 
 def _normalize_issue_body(item: dict[str, Any]) -> str:
-    issue_body = item.get("body")
+    if "body" not in item:
+        raise ValueError("missing issue body")
+    issue_body = item["body"]
     if issue_body is None:
         return ""
     if not isinstance(issue_body, str):

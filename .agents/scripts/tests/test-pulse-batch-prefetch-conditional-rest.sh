@@ -221,6 +221,32 @@ test_changed_repo_refreshes_cache() {
 	return 0
 }
 
+test_bodyless_transport_rows_are_rejected() {
+	setup_env
+	local response_file="$TEST_ROOT/bodyless-response.txt"
+	local cache_file="$PULSE_BATCH_PREFETCH_CACHE_DIR/bodyless-cache.json"
+	local projection="number,title,state,labels,updatedAt,assignees,body,authorAssociation,author"
+	local shell_guard_count=0
+	printf 'HTTP/2 200\r\netag: "bodyless"\r\n\r\n[{"number":3,"title":"Issue","state":"open","labels":[],"assignees":[]}]' >"$response_file"
+	if python3 "$SCRIPT_DIR/../pulse-batch-conditional-cache.py" \
+		issues owner/repo "$response_file" "$cache_file" generation \
+		github.com "$projection" invalidation >/dev/null 2>&1; then
+		print_result "bodyless conditional REST rows fail closed" 1
+	elif [[ -e "$cache_file" ]]; then
+		print_result "bodyless conditional REST rows fail closed" 1
+	else
+		print_result "bodyless conditional REST rows fail closed" 0
+	fi
+	shell_guard_count=$(grep -Fc 'if (has("body") | not) then error("missing issue body")' "$HELPER" 2>/dev/null || true)
+	if [[ "$shell_guard_count" -eq 2 ]]; then
+		print_result "REST and owner-search normalizers reject omitted bodies" 0
+	else
+		print_result "REST and owner-search normalizers reject omitted bodies" 1
+	fi
+	teardown_env
+	return 0
+}
+
 test_paginated_response_is_not_complete() {
 	setup_env
 	write_gh_stub paginated
@@ -744,6 +770,7 @@ SH
 
 test_unchanged_repo_uses_304_cache
 test_changed_repo_refreshes_cache
+test_bodyless_transport_rows_are_rejected
 test_paginated_response_is_not_complete
 test_conditional_failure_routes_to_rest_by_default
 test_search_opt_in_preserves_owner_search
