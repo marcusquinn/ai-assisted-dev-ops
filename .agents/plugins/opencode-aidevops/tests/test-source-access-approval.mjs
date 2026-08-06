@@ -215,8 +215,8 @@ test("the loaded verifier accepts only the exact signed receipt", () => {
     const signature = readFileSync(`${payloadPath}.sig`, "utf8");
     const receiptDir = join(stateDir, "approvals", String(uid));
     const snapshotDir = join(stateDir, "snapshots", String(uid));
-    mkdirSync(receiptDir, { recursive: true });
-    mkdirSync(snapshotDir, { recursive: true });
+    mkdirSync(receiptDir, { recursive: true, mode: 0o755 });
+    mkdirSync(snapshotDir, { recursive: true, mode: 0o755 });
     writeFileSync(payload.snapshot_path, readFileSync(source), { mode: 0o444 });
     writeFileSync(
       join(receiptDir, `${approvalId}.json`),

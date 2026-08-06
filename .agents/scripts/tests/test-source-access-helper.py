@@ -243,9 +243,11 @@ class SourceAccessHelperTests(unittest.TestCase):
 
     def test_privileged_bootstrap_rejects_unsafe_core_before_execution(self) -> None:
         broker = self.root / "broker"
-        broker.mkdir()
+        broker.mkdir(mode=0o755)
+        broker.chmod(0o755)
         helper_path = broker / "source-access-helper.py"
         helper_path.write_text("# bootstrap fixture\n", encoding="utf-8")
+        helper_path.chmod(0o644)
         core_path = broker / "source_access_core.py"
         marker_path = self.root / "core-executed"
         core_source = (
@@ -300,10 +302,13 @@ class SourceAccessHelperTests(unittest.TestCase):
         canonical_root = self.root / "private" / "etc"
         broker = canonical_root / "aidevops" / "source-access"
         broker.mkdir(parents=True)
+        for trusted_directory in (canonical_root.parent, canonical_root, broker.parent, broker):
+            trusted_directory.chmod(0o755)
         alias_root = self.root / "etc"
         alias_root.symlink_to(Path("private") / "etc", target_is_directory=True)
         helper_path = alias_root / "aidevops" / "source-access" / "source-access-helper.py"
         helper_path.write_text("# bootstrap fixture\n", encoding="utf-8")
+        helper_path.chmod(0o644)
         core_path = broker / "source_access_core.py"
         marker_path = self.root / "aliased-core-executed"
         core_path.write_text(
@@ -312,6 +317,7 @@ class SourceAccessHelperTests(unittest.TestCase):
             "VALUE = 11\n",
             encoding="utf-8",
         )
+        core_path.chmod(0o644)
         original_module = sys.modules.get(HELPER._SOURCE_CORE_MODULE_NAME)
 
         try:

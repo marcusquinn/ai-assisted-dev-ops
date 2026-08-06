@@ -21,10 +21,14 @@ TMP_REL_PARENT=$(mktemp -d)
 TMP_CDPATH_PARENT=$(mktemp -d)
 FAKE_BIN=$(mktemp -d)
 QLTY_PWD_FILE="${TMP_HOME}/qlty-pwd.txt"
+QLTY_CREATE_CALLS="${TMP_HOME}/qlty-create-calls.txt"
+LOCAL_HEAD="1111111111111111111111111111111111111111"
+REMOTE_HEAD="$LOCAL_HEAD"
+WORKTREE_STATE=""
 export HOME="$TMP_HOME"
 export LOGFILE="${TMP_HOME}/test.log"
 export QUALITY_SWEEP_STATE_DIR="${TMP_HOME}/state"
-export QLTY_PWD_FILE
+export QLTY_PWD_FILE QLTY_CREATE_CALLS LOCAL_HEAD REMOTE_HEAD WORKTREE_STATE
 PATH="${FAKE_BIN}:${PATH}"
 export PATH
 
@@ -51,13 +55,35 @@ exit 22
 CURL
 chmod +x "${FAKE_BIN}/curl"
 
+cat >"${FAKE_BIN}/git" <<'GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"rev-parse --verify HEAD"* ]]; then
+	printf '%s\n' "${LOCAL_HEAD:?}"
+	exit 0
+fi
+if [[ "$*" == *"status --porcelain --untracked-files=normal"* ]]; then
+	printf '%s' "${WORKTREE_STATE:-}"
+	exit 0
+fi
+exit 1
+GIT
+chmod +x "${FAKE_BIN}/git"
+
 # Source dependencies. stats-functions.sh expects shared-constants and
 # worker-lifecycle-common to be sourced first.
 source "${SCRIPTS_DIR}/shared-constants.sh"
 source "${SCRIPTS_DIR}/worker-lifecycle-common.sh"
 source "${SCRIPTS_DIR}/stats-functions.sh"
 
+gh() {
+	printf '%s\n' "$REMOTE_HEAD"
+	return 0
+}
+
 _create_simplification_issues() {
+	printf '%s\n' "called" >>"$QLTY_CREATE_CALLS"
+	printf '%s' "1"
 	return 0
 }
 
@@ -86,6 +112,38 @@ if [[ "$qlty_section" != *"scripts/example.sh"* ]]; then
 	printf '%s\n' "FAIL qlty section omitted SARIF file path"
 	exit 1
 fi
+
+if [[ "$(<"$QLTY_CREATE_CALLS")" != "called" ]]; then
+	printf '%s\n' "FAIL current default scan did not create remediation issues"
+	exit 1
+fi
+
+REMOTE_HEAD="2222222222222222222222222222222222222222"
+export REMOTE_HEAD
+_sweep_qlty "owner/repo" "$TMP_REPO" >/dev/null
+if [[ "$(<"$QLTY_CREATE_CALLS")" != "called" ]]; then
+	printf '%s\n' "FAIL stale default scan created remediation issues"
+	exit 1
+fi
+if ! grep -q 'skipping stale scan' "$LOGFILE"; then
+	printf '%s\n' "FAIL stale default scan did not record its skip reason"
+	exit 1
+fi
+
+REMOTE_HEAD="$LOCAL_HEAD"
+WORKTREE_STATE=" M scripts/example.sh"
+export REMOTE_HEAD WORKTREE_STATE
+_sweep_qlty "owner/repo" "$TMP_REPO" >/dev/null
+if [[ "$(<"$QLTY_CREATE_CALLS")" != "called" ]]; then
+	printf '%s\n' "FAIL dirty default scan created remediation issues"
+	exit 1
+fi
+if ! grep -q 'skipping uncommitted scan' "$LOGFILE"; then
+	printf '%s\n' "FAIL dirty default scan did not record its skip reason"
+	exit 1
+fi
+WORKTREE_STATE=""
+export WORKTREE_STATE
 
 mkdir -p "${TMP_REL_PARENT}/target-repo/.qlty" "${TMP_CDPATH_PARENT}/target-repo/.qlty"
 printf '%s\n' '[plugins]' >"${TMP_REL_PARENT}/target-repo/.qlty/qlty.toml"
