@@ -222,6 +222,39 @@ GIT
 	return 0
 }
 
+write_sync_race_git_wrapper() {
+	local wrapper_path="$1"
+	cat >"$wrapper_path" <<'GIT'
+#!/usr/bin/env bash
+set -u
+args=" $* "
+case "$args" in
+*" fetch -q origin aidevops/issue-sync-todo "*)
+	count=0
+	[[ ! -f "${SYNC_GIT_COUNTER:?}" ]] || count=$(<"$SYNC_GIT_COUNTER")
+	count=$((count + 1))
+	printf '%s\n' "$count" >"$SYNC_GIT_COUNTER"
+	if [[ "$count" -eq "${SYNC_GIT_TRIGGER_COUNT:?}" ]]; then
+		case "${SYNC_GIT_ACTION:?}" in
+		advance)
+			"${REAL_GIT:?}" --git-dir="${SYNC_GIT_ORIGIN:?}" update-ref \
+				refs/heads/aidevops/issue-sync-todo "${SYNC_GIT_ADVANCE_SHA:?}"
+			;;
+		delete)
+			"${REAL_GIT:?}" --git-dir="${SYNC_GIT_ORIGIN:?}" update-ref -d \
+				refs/heads/aidevops/issue-sync-todo
+			;;
+		*) exit 98 ;;
+		esac
+	fi
+	;;
+esac
+exec "${REAL_GIT:?}" "$@"
+GIT
+	chmod +x "$wrapper_path"
+	return 0
+}
+
 install_main_rejection_hook() {
 	local origin_dir="$1"
 	local mode="$2"
@@ -433,6 +466,114 @@ test_shallow_checkout_recovers_stale_pr_history() {
 	return 0
 }
 
+test_concurrent_pr_advance_rebuilds_snapshot() {
+	local origin_dir="$TMP/race-origin.git"
+	local seed_dir="$TMP/race-seed"
+	local work_dir="$TMP/race-work"
+	local concurrent_dir="$TMP/race-concurrent"
+	local fake_bin="$TMP/race-bin"
+	local gh_log="$TMP/race-gh.log"
+	local pr_marker="$TMP/race-pr.marker"
+	local output_file="$TMP/race-output.log"
+	local wrapper="$TMP/race-git"
+	local counter="$TMP/race-counter"
+	local sync_ref="refs/heads/aidevops/issue-sync-todo"
+	local concurrent_sha=""
+	local remote_todo=""
+	local real_git=""
+	real_git=$(command -v git) || return 1
+	create_origin "$origin_dir" "$seed_dir"
+	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
+	perl -0pi -e 's/t9001 original task/t9001 stale PR event/' "$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "stale issue-sync PR event" >/dev/null
+	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
+	git -C "$seed_dir" checkout main >/dev/null
+	git clone --branch aidevops/issue-sync-todo "$origin_dir" "$concurrent_dir" >/dev/null 2>&1
+	git_init_repo "$concurrent_dir"
+	perl -0pi -e 's/t9003 third task/t9003 concurrent PR event/' "$concurrent_dir/TODO.md"
+	git -C "$concurrent_dir" add TODO.md
+	git -C "$concurrent_dir" commit -m "concurrent issue-sync PR event" >/dev/null
+	concurrent_sha=$(git -C "$concurrent_dir" rev-parse HEAD)
+	git -C "$concurrent_dir" push origin HEAD:refs/heads/concurrent-candidate >/dev/null
+	git clone "$origin_dir" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	write_sync_race_git_wrapper "$wrapper"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	: >"$pr_marker"
+	perl -0pi -e 's/t9002 second task/t9002 current runner event/' "$work_dir/TODO.md"
+	if ! (
+		export REAL_GIT="$real_git" SYNC_GIT_ORIGIN="$origin_dir" SYNC_GIT_COUNTER="$counter"
+		export SYNC_GIT_TRIGGER_COUNT=2 SYNC_GIT_ACTION=advance SYNC_GIT_ADVANCE_SHA="$concurrent_sha"
+		run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$pr_marker" \
+			"$TMP/race-head" "$TMP/race-title" "$output_file" 3 \
+			"fixture-token" "" "" "$wrapper"
+	); then
+		fail "concurrent issue-sync PR advance rebuilds the snapshot"
+		return 0
+	fi
+	remote_todo=$(git --git-dir="$origin_dir" show "${sync_ref}:TODO.md")
+	if [[ "$remote_todo" != *"t9001 stale PR event"* ||
+		"$remote_todo" != *"t9002 current runner event"* ||
+		"$remote_todo" != *"t9003 concurrent PR event"* ]]; then
+		fail "concurrent issue-sync PR advance rebuilds the snapshot"
+	elif ! grep -q "branch changed concurrently" "$output_file"; then
+		fail "concurrent issue-sync PR advance rebuilds the snapshot"
+	else
+		pass "concurrent issue-sync PR advance rebuilds the snapshot"
+	fi
+	return 0
+}
+
+test_pr_branch_deletion_during_fetch_rebuilds() {
+	local origin_dir="$TMP/fetch-delete-origin.git"
+	local seed_dir="$TMP/fetch-delete-seed"
+	local work_dir="$TMP/fetch-delete-work"
+	local fake_bin="$TMP/fetch-delete-bin"
+	local gh_log="$TMP/fetch-delete-gh.log"
+	local output_file="$TMP/fetch-delete-output.log"
+	local wrapper="$TMP/fetch-delete-git"
+	local counter="$TMP/fetch-delete-counter"
+	local sync_ref="refs/heads/aidevops/issue-sync-todo"
+	local create_count=0
+	local real_git=""
+	real_git=$(command -v git) || return 1
+	create_origin "$origin_dir" "$seed_dir"
+	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
+	perl -0pi -e 's/t9001 original task/t9001 deletion race event/' "$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "deletion race event" >/dev/null
+	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
+	git -C "$seed_dir" checkout main >/dev/null
+	git clone "$origin_dir" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	write_sync_race_git_wrapper "$wrapper"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	perl -0pi -e 's/t9002 second task/t9002 deletion recovery event/' "$work_dir/TODO.md"
+	if ! (
+		export REAL_GIT="$real_git" SYNC_GIT_ORIGIN="$origin_dir" SYNC_GIT_COUNTER="$counter"
+		export SYNC_GIT_TRIGGER_COUNT=1 SYNC_GIT_ACTION=delete SYNC_GIT_ADVANCE_SHA=unused
+		run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$TMP/fetch-delete-pr.marker" \
+			"$TMP/fetch-delete-head" "$TMP/fetch-delete-title" "$output_file" 3 \
+			"fixture-token" "" "" "$wrapper"
+	); then
+		fail "issue-sync PR deletion during fetch rebuilds safely"
+		return 0
+	fi
+	create_count=$(grep -c $'gh\tpr\tcreate' "$gh_log" || true)
+	if ! git --git-dir="$origin_dir" show-ref --verify --quiet "$sync_ref" ||
+		[[ "$create_count" -ne 1 ]]; then
+		fail "issue-sync PR deletion during fetch rebuilds safely"
+	else
+		pass "issue-sync PR deletion during fetch rebuilds safely"
+	fi
+	return 0
+}
+
 test_non_gh006_failure_does_not_open_pr() {
 	local origin_dir="$TMP/terminal-origin.git"
 	local seed_dir="$TMP/terminal-seed"
@@ -604,6 +745,8 @@ test_successful_push
 test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
 test_shallow_checkout_recovers_stale_pr_history
+test_concurrent_pr_advance_rebuilds_snapshot
+test_pr_branch_deletion_during_fetch_rebuilds
 test_non_gh006_failure_does_not_open_pr
 test_deleted_pr_branch_retries_before_opening_pr
 test_actions_pr_creation_uses_pat_fallback

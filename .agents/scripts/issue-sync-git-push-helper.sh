@@ -19,6 +19,7 @@ ISSUE_SYNC_DEFAULT_COMMIT_MESSAGE="${ISSUE_SYNC_COMMIT_SUBJECT} [skip ci]"
 ISSUE_SYNC_LAST_PUBLISH_OUTPUT=""
 ISSUE_SYNC_BASE_SHA=""
 ISSUE_SYNC_SOURCE_BASE_SHA=""
+ISSUE_SYNC_EXPECTED_TARGET_SHA=""
 
 issue_sync_git() {
 	_planning_git "$@"
@@ -210,6 +211,7 @@ issue_sync_fetch_pr_history() {
 	local default_branch="$2"
 	local branch_name="$3"
 	local is_shallow=""
+	local branch_rc=0
 	is_shallow=$(issue_sync_git -C "$repo_path" rev-parse --is-shallow-repository) || {
 		echo "::error::Unable to inspect issue-sync checkout history"
 		return 1
@@ -217,11 +219,17 @@ issue_sync_fetch_pr_history() {
 	if [[ "$is_shallow" == "true" ]]; then
 		issue_sync_git -C "$repo_path" fetch -q --unshallow origin \
 			"$default_branch" "$branch_name" || {
+			branch_rc=0
+			issue_sync_remote_branch_sha "$repo_path" "$branch_name" >/dev/null || branch_rc=$?
+			[[ "$branch_rc" -ne 2 ]] || return 2
 			echo "::error::Unable to recover history for the stale issue-sync PR branch"
 			return 1
 		}
 	fi
 	issue_sync_git -C "$repo_path" fetch -q origin "$branch_name" || {
+		branch_rc=0
+		issue_sync_remote_branch_sha "$repo_path" "$branch_name" >/dev/null || branch_rc=$?
+		[[ "$branch_rc" -ne 2 ]] || return 2
 		echo "::error::Unable to fetch the issue-sync PR branch"
 		return 1
 	}
@@ -238,15 +246,22 @@ issue_sync_prepare_pr_snapshot() {
 	local sync_ancestor="${state_dir}/sync-ancestor"
 	local sync_todo="${state_dir}/sync-todo"
 	local branch_rc=0
+	local fetch_rc=0
 
+	ISSUE_SYNC_EXPECTED_TARGET_SHA=""
 	issue_sync_prepare_base_snapshot "$repo_path" "$default_branch" "$source_file" "$state_dir" || return 1
 	sync_sha=$(issue_sync_remote_branch_sha "$repo_path" "$ISSUE_SYNC_PR_BRANCH") || branch_rc=$?
 	if [[ "$branch_rc" -eq 2 ]]; then
 		return 0
 	fi
 	[[ "$branch_rc" -eq 0 ]] || return 1
-	issue_sync_fetch_pr_history "$repo_path" "$default_branch" "$ISSUE_SYNC_PR_BRANCH" || return 1
+	issue_sync_fetch_pr_history "$repo_path" "$default_branch" "$ISSUE_SYNC_PR_BRANCH" || fetch_rc=$?
+	if [[ "$fetch_rc" -eq 2 ]]; then
+		return 0
+	fi
+	[[ "$fetch_rc" -eq 0 ]] || return 1
 	sync_sha=$(issue_sync_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+	ISSUE_SYNC_EXPECTED_TARGET_SHA="$sync_sha"
 	sync_base=$(issue_sync_git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_base" "$sync_ancestor" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_sha" "$sync_todo" || return 1
@@ -359,6 +374,7 @@ issue_sync_publish_via_pr() {
 		rc=0
 		AIDEVOPS_PLANNING_PARENT_BRANCH="$default_branch" \
 			AIDEVOPS_PLANNING_BASE_SHA="$ISSUE_SYNC_BASE_SHA" \
+			AIDEVOPS_PLANNING_EXPECTED_TARGET_SHA="$ISSUE_SYNC_EXPECTED_TARGET_SHA" \
 			PLANNING_PUBLISH_MAX_RETRIES=1 \
 			issue_sync_capture_planning_publish "$repo_path" "$branch_commit_msg" origin \
 			"$ISSUE_SYNC_PR_BRANCH" TODO.md "$output_file" || rc=$?

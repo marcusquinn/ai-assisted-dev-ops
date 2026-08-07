@@ -775,7 +775,12 @@ _planning_publish_resolve_attempt() {
 	resolution_tail="${parent_resolution#*|}"
 	expected_sha="${resolution_tail%%|*}"
 	target_sha="${resolution_tail#*|}"
-	if [[ -n "${AIDEVOPS_PLANNING_PARENT_BRANCH:-}" && "$attempt" -gt 1 && \
+	if [[ "${AIDEVOPS_PLANNING_EXPECTED_TARGET_SHA+x}" == "x" &&
+		"$target_sha" != "${AIDEVOPS_PLANNING_EXPECTED_TARGET_SHA}" ]]; then
+		_planning_publish_log_retryable_conflict "$publication_id"
+		return 2
+	fi
+	if [[ -n "${AIDEVOPS_PLANNING_PARENT_BRANCH:-}" && "$attempt" -gt 1 &&
 		"$target_sha" != "$previous_target_sha" ]]; then
 		if [[ -z "$previous_target_sha" || -z "$target_sha" ]] || \
 			_planning_publish_parent_conflicts "$repo_path" "$previous_target_sha" "$target_sha" "$snapshot_file"; then
