@@ -52,7 +52,7 @@
         "@fontsource/ibm-plex-serif": "5.2.7",
         "@fontsource/inter": "5.2.8",
         "@fontsource/mohave": "5.2.10",
-        "@fontsource/playpen-sans": "5.2.8",
+        "@fontsource/playpen-sans": "5.3.0",
         "@fontsource/poppins": "5.2.7",
         "@fontsource/source-sans-3": "5.2.9",
         "@fontsource/source-serif-4": "5.2.9",
@@ -195,7 +195,7 @@
 
     "@fontsource/mohave": ["@fontsource/mohave@5.2.10", "", {}, "sha512-YyK9N7xedYTpFRPo5lpTeNhBOqzapv/WdRv6YtyOHiux/JA5C/sPa6+wL92nNq4sYN7acSFyQQaSFzIoK8VLGw=="],
 
-    "@fontsource/playpen-sans": ["@fontsource/playpen-sans@5.2.8", "", {}, "sha512-lT8GrhQunGZgTiGIBhFjQQ3kcWEPNDCUQQdXwOI236lw6CnQTVKo5xqxukPaxlGUgn21P59g6jrq6+AuQdqNIQ=="],
+    "@fontsource/playpen-sans": ["@fontsource/playpen-sans@5.3.0", "", {}, "sha512-94O9WdgAmvFpAjsPOgg5JZII4clcNeeMqQdNZh7Jz40rmcNv05jzwxyuw25IRjTb4o2aMV7eXjXC8GTFo/+s8Q=="],
 
     "@fontsource/poppins": ["@fontsource/poppins@5.2.7", "", {}, "sha512-6uQyPmseo4FgI97WIhA4yWRlNaoLk4vSDK/PyRwdqqZb5zAEuc+Kunt8JTMcsHYUEGYBtN15SNkMajMdqUSUmg=="],
 
