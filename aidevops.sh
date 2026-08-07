@@ -316,6 +316,19 @@ _update_render_changelog() {
 }
 
 # Update/upgrade command
+cmd_update_help() {
+	echo "Usage: aidevops update [OPTIONS]"
+	echo ""
+	echo "Update the AI DevOps Framework."
+	echo ""
+	echo "Options:"
+	echo "  --skip-project-sync  Skip registered project synchronization"
+	echo "  --compact            Reduce update output"
+	echo "  --verbose            Show full update output"
+	echo "  -h, --help           Show this help message"
+	return 0
+}
+
 cmd_update() {
 	local skip_project_sync=false
 	local reconcile_repo_verify=false
@@ -1716,6 +1729,20 @@ main() {
 			case "$arg" in
 			-h | --help)
 				_dispatch_helper "$check_workflows_helper" "$check_workflows_helper" "$@"
+				return $?
+				;;
+			esac
+		done
+	fi
+
+	# Update help must return before startup checks or cmd_update(), which can
+	# inspect repositories, fetch remotes, deploy agents, and synchronize projects.
+	if [[ "$command" == "update" || "$command" == "upgrade" || "$command" == "u" ]]; then
+		local arg
+		for arg in "$@"; do
+			case "$arg" in
+			help | -h | --help)
+				cmd_update_help
 				return $?
 				;;
 			esac
