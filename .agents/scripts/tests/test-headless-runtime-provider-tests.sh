@@ -116,11 +116,12 @@ test_blocked_completion_records_blocked_label() {
 test_capability_escalation_ladder_is_bounded_and_exact() {
 	local result=0
 	local route_output=""
+	local route_output_file="${TEST_ROOT}/capability-escalation-route-output.txt"
 	local _capability_escalation_tier=""
 	local _capability_escalation_model=""
 	local _capability_escalation_variant=""
 	local _capability_escalation_label=""
-	route_output=$(
+	(
 		model_tier_next() {
 			local current_tier="$1"
 			case "$current_tier" in
@@ -162,7 +163,8 @@ test_capability_escalation_ladder_is_bounded_and_exact() {
 			_resolve_capability_escalation "pulse" "simple"; then
 			exit 1
 		fi
-	) || result=1
+	) >"$route_output_file" || result=1
+	[[ -f "$route_output_file" ]] && route_output=$(<"$route_output_file")
 	local expected_output=$'standard|openai/gpt-5.6-terra|high\nthinking|openai/gpt-5.6-sol|medium'
 	[[ "$route_output" == "$expected_output" ]] || result=1
 	print_result "Capability escalation follows the bounded configured tier order" "$result"

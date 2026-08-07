@@ -155,7 +155,7 @@ bash .agents/scripts/tests/test-worker-diagnostic-evidence.sh
 ### Recoverability Checkpoint
 
 - [x] Focused tests pass: Node and focused shell matrix listed above.
-- [x] WIP commit created before publication gates: `feat: implement provider-neutral routing and feedback` (`ca14d9c4c`).
+- [x] WIP commit created before publication gates: `feat: implement provider-neutral routing and feedback`.
 - [x] Evidence-triggered broad verification then run: `.agents/scripts/linters-local.sh` passed.
 
 ### Safety-Stop Recovery
