@@ -286,9 +286,9 @@ receipts are irreversible publication boundaries. The exact branch base is
 - Aggregation PR #29632 re-reviews PRs #29620, #29626, and #29629 at
   exact base `4365863f8b7e0cabe30a62c39b92fba92e667408`, whose signature footer followed
   the reviewed trailers and prevented parsing.
-- Aggregation PR #29744 reviews authorized dependency hardening PR #29721 at
-  `d53b458a6ee82e3dccd922c3791b9f9f088efa8f`; maintained merges advanced `main`
-  before publication from exact base `f9e68c486bf9995902c92bb64b79cde57055fa3b`.
+- The pending successor re-reviews authorized dependency hardening PR #29721 at
+  `d53b458a6ee82e3dccd922c3791b9f9f088efa8f` after PR #29744's signed footer
+  prevented trailer parsing; its exact base is `ab6e6c01e4a957301359a9a7f05a268bb39ff118`.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
