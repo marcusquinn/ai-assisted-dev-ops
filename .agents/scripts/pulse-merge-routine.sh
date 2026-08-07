@@ -116,6 +116,8 @@ fi
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-wrapper-config.sh"
+# shellcheck source=./pulse-rate-limit-circuit-breaker.sh
+source "${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-repo-meta.sh"
 # GH#28207: pulse-merge.sh reconciles dependants after verified issue closure,
@@ -271,6 +273,34 @@ _pmr_graphql_budget_allows_run() {
 		return 1
 	fi
 	return 0
+}
+
+# Unknown quota evidence remains fail-closed until a later authoritative probe
+# succeeds; unlike a known floor, it is logged as an availability/evidence fault.
+_pmr_rest_core_progress_allows_run() {
+	local progress_rc=0
+	if declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows progress || progress_rc=$?
+	elif declare -F pulse_rest_core_reserve_allows >/dev/null 2>&1; then
+		pulse_rest_core_reserve_allows || progress_rc=$?
+	else
+		return 0
+	fi
+	case "$progress_rc" in
+	0)
+		return 0
+		;;
+	1)
+		_pmr_log WARN "Known REST-core progress floor reached (rc=1); deferring merge pass until a later authoritative probe allows progress while preserving critical maintainer quota (GH#29742)"
+		;;
+	2)
+		_pmr_log WARN "REST-core quota evidence unavailable (rc=2); deferring merge pass fail-closed until a later authoritative probe succeeds while preserving critical maintainer quota (GH#29742)"
+		;;
+	*)
+		_pmr_log WARN "Unexpected REST-core progress decision (rc=${progress_rc}); deferring merge pass fail-closed while preserving critical maintainer quota (GH#29742)"
+		;;
+	esac
+	return 1
 }
 
 _pmr_require_gh_auth() {
@@ -454,6 +484,10 @@ cmd_run() {
 		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
 		return 0
 	fi
+	if ! _pmr_rest_core_progress_allows_run; then
+		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
+		return 0
+	fi
 
 	# Wrap merge_ready_prs_all_repos with a hard timeout ceiling (t3041, GH#21708).
 	# Whatever the underlying hang site (gh API call, flock deadlock, infinite
@@ -524,6 +558,9 @@ cmd_dry_run() {
 		return 1
 	fi
 	if ! _pmr_graphql_budget_allows_run; then
+		return 0
+	fi
+	if ! _pmr_rest_core_progress_allows_run; then
 		return 0
 	fi
 

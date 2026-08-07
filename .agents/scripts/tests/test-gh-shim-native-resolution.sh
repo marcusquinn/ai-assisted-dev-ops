@@ -118,7 +118,7 @@ fi
 : >"$TMP/native.log"
 if NATIVE_GH_LOG="$TMP/native.log" PATH="$TMP/fallback-tools:$TMP/fallback-bin:$TMP/fallback-native" \
 	"$TMP/runtime-bundles/old/agents/scripts/gh" --version && [[ $(wc -l <"$TMP/native.log" | tr -d ' ') -eq 1 ]]; then
-	pass "shell fallback resolves a symlinked managed shim without python3"
+	pass "shell fallback reaches native gh without recursing through a symlinked managed shim"
 else
 	fail "shell fallback selected a symlinked managed shim"
 fi
