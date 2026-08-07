@@ -275,14 +275,17 @@ _pmr_graphql_budget_allows_run() {
 	return 0
 }
 
-_pmr_rest_core_reserve_allows_run() {
-	if ! declare -F pulse_rest_core_reserve_allows >/dev/null 2>&1; then
+_pmr_rest_core_progress_allows_run() {
+	local progress_rc=0
+	if declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows progress || progress_rc=$?
+	elif declare -F pulse_rest_core_reserve_allows >/dev/null 2>&1; then
+		pulse_rest_core_reserve_allows || progress_rc=$?
+	else
 		return 0
 	fi
-	local reserve_rc=0
-	pulse_rest_core_reserve_allows || reserve_rc=$?
-	if [[ "$reserve_rc" -ne 0 ]]; then
-		_pmr_log WARN "REST-core reserve unavailable or exhausted (rc=${reserve_rc}); deferring merge pass to preserve interactive maintainer quota (GH#29736)"
+	if [[ "$progress_rc" -ne 0 ]]; then
+		_pmr_log WARN "REST-core progress floor unavailable or exhausted (rc=${progress_rc}); deferring merge pass while preserving critical maintainer quota (GH#29742)"
 		return 1
 	fi
 	return 0
@@ -469,7 +472,7 @@ cmd_run() {
 		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
 		return 0
 	fi
-	if ! _pmr_rest_core_reserve_allows_run; then
+	if ! _pmr_rest_core_progress_allows_run; then
 		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
 		return 0
 	fi
@@ -545,7 +548,7 @@ cmd_dry_run() {
 	if ! _pmr_graphql_budget_allows_run; then
 		return 0
 	fi
-	if ! _pmr_rest_core_reserve_allows_run; then
+	if ! _pmr_rest_core_progress_allows_run; then
 		return 0
 	fi
 

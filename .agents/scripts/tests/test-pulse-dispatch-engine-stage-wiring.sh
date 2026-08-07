@@ -273,7 +273,7 @@ assert_grep \
 	"$ENGINE"
 assert_grep \
 	"9b: label maintenance is an independently timed preflight stage" \
-	'run_stage_with_timeout "preflight_label_maintenance"' \
+	'_pulse_run_budget_priority_stage_with_timeout "preflight_label_maintenance"' \
 	"$ENGINE"
 assert_grep \
 	"9c: capacity and label maintenance use separate helper functions" \
@@ -290,26 +290,26 @@ assert_grep \
 assert_order \
 	"9e: capacity completes before the initial fill" \
 	'^[[:space:]]*run_stage_with_timeout "preflight_capacity"' \
-	'^[[:space:]]*_preflight_early_dispatch([[:space:]]|$)' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_early_dispatch"' \
 	"$ENGINE"
 assert_order \
 	"9f: initial fill precedes label maintenance" \
-	'^[[:space:]]*_preflight_early_dispatch([[:space:]]|$)' \
-	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_early_dispatch"' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage_with_timeout "preflight_label_maintenance"' \
 	"$ENGINE"
 assert_order \
 	"9g: label maintenance precedes trusted NMR reconciliation" \
-	'^[[:space:]]*run_stage_with_timeout "preflight_label_maintenance"' \
-	'^[[:space:]]*_preflight_trusted_nmr_reconcile([[:space:]]|$)' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage_with_timeout "preflight_label_maintenance"' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_trusted_nmr_reconcile"' \
 	"$ENGINE"
 assert_order \
 	"9g2: trusted NMR reconciliation precedes the same-cycle refill" \
-	'^[[:space:]]*_preflight_trusted_nmr_reconcile([[:space:]]|$)' \
-	'^[[:space:]]*_preflight_post_label_refill([[:space:]]|$)' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_trusted_nmr_reconcile"' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_post_label_refill"' \
 	"$ENGINE"
 assert_order \
 	"9h: post-label refill precedes async housekeeping" \
-	'^[[:space:]]*_preflight_post_label_refill([[:space:]]|$)' \
+	'^[[:space:]]*_pulse_run_budget_priority_stage "preflight_post_label_refill"' \
 	'^[[:space:]]*_pulse_start_post_dispatch_housekeeping([[:space:]]|$)' \
 	"$ENGINE"
 assert_not_grep \
