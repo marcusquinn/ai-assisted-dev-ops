@@ -66,27 +66,25 @@ Full active lifecycle recognised: `status:queued`, `status:in-progress`, `status
 
 ## Issue-Sync TODO Auto-Completion (t2029 → t2166)
 
-`issue-sync.yml` auto-marks TODO entries complete on PR merge but cannot push to `main` without a `SYNC_PAT` — branch protection rejects `github-actions[bot]` pushes (`required_approving_review_count: 1`). On personal-account classic protection, `bypass_pull_request_allowances` returning HTTP 500 describes the unsupported `github-actions[bot]` bypass-list path; it does not prove a fine-grained admin/maintainer PAT cannot help, because `SYNC_PAT` changes the authenticated push principal.
+`issue-sync.yml` auto-marks TODO entries complete on PR merge. It first attempts direct publication, then treats a terminal GH006 protection rejection as a request to create or update one deterministic issue-sync PR. The job-scoped `GITHUB_TOKEN` opens that PR when the repository setting **Allow GitHub Actions to create and approve pull requests** is enabled. When that setting is disabled, `SYNC_PAT` is the bounded PR API fallback; branch protection and administrator enforcement remain unchanged.
 
-**To enable auto-sync** (run in a separate terminal, NOT in AI chat):
+**To configure the fallback when Actions PR creation is disabled** (run in a separate terminal, NOT in AI chat):
 
-Create a fine-grained PAT in GitHub UI: `Settings → Developer settings → Personal access tokens → Fine-grained → Only selected repositories → <repo> → Contents: Read and write`, then:
+Create a fine-grained PAT in GitHub UI: `Settings → Developer settings → Personal access tokens → Fine-grained → Only selected repositories → <repo> → Contents: Read and write; Pull requests: Read and write`, then set it through the interactive prompt:
 
 ```bash
-gh secret set SYNC_PAT --repo <owner>/<repo> --body "<PAT>"
+gh secret set SYNC_PAT --repo <owner>/<repo>
 ```
 
-`SYNC_PAT` is per-repo — every repo using `issue-sync.yml` needs it set independently. The requirement is unchanged under the reusable-workflow model (t2770): `secrets: inherit` in the caller grants the reusable workflow access to the caller's secrets, so the PAT still has to exist in each downstream repo.
+`SYNC_PAT` is per-repo. It is required for protected issue-sync publication only when Actions cannot create the fallback PR; repositories that enable Actions PR creation can use the job token alone. Under the reusable-workflow model, `secrets: inherit` in a same-owner caller grants access to the caller's secret, so any required PAT still has to exist in each downstream repo.
 
-Once set, the job log reads: `SYNC_PAT present — TODO.md push will use PAT`.
+When GH006 and disabled Actions PR creation coincide, the job first attempts the least-privilege job token, recovers any concurrent PR, then retries the PR API write once with `SYNC_PAT`. Token values are never logged.
 
-Without it, the workflow posts a remediation comment containing both the root-cause fix and the `ta[redacted-credential].sh` immediate workaround.
+Without either Actions PR creation or a sufficiently scoped `SYNC_PAT`, the deterministic branch remains available for recovery but the workflow fails closed because it cannot open the PR.
 
-**t2166** extended the fallback to all four jobs and promotes the missing-secret signal to `::warning::` so operators see it on every run.
+**t2166** extended protected-publication handling to all four jobs. GH#29679 replaces its direct-push remediation path with the deterministic PR flow and reports which credential path is available without printing token values.
 
-**Currently active for:** `marcusquinn/aidevops` (verified end-to-end 2026-04-19). Other registered repos still emit the t2166 warning until set per-repo — visible via `aidevops security check`.
-
-**Detector scope (t2806, GH#20745):** `aidevops security check` detects the need for SYNC_PAT under both classic branch-protection rules AND repository rulesets. Repos migrated to the modern rulesets API (Settings → Rules → Rulesets) return 404 on the legacy `/branches/{branch}/protection` endpoint but carry protection via `/repos/{slug}/rulesets`; the detector now falls back to the rulesets path when the classic endpoint reports "not protected". See `security-posture-helper.sh::_branch_is_rulesets_protected`.
+**Detector scope (t2806, GH#20745):** `aidevops security check` detects protected issue-sync publication under both classic branch-protection rules and repository rulesets, then checks whether Actions may create the fallback PR. It advises on `SYNC_PAT` only when protection requires the PR path and the job token cannot create it. See `security-posture-helper-repo.sh::_branch_is_rulesets_protected` and `_actions_can_create_pull_requests`.
 
 **Known false-positive (pending t2252):** the auto-completion path may mis-mark planning-only PRs (those using `Ref #NNN` / `For #NNN` without closing keywords) as `status:done` on merge — tracked as GH#19782.
 

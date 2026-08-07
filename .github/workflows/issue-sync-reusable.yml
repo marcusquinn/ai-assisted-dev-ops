@@ -53,7 +53,7 @@ on:
         description: 'Optional token with read access to a private configured helper repository'
       SYNC_PAT:
         required: false
-        description: 'Optional fine-grained PAT with Contents:read/write for direct TODO.md publication; protected branches fall back to a PR'
+        description: 'Optional fine-grained PAT with Contents:read/write; add Pull requests:read/write when it must backstop disabled Actions PR creation'
 
 jobs:
   forge-event:
@@ -201,9 +201,9 @@ jobs:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR when Actions PR creation is enabled."
           else
-            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
+            echo "::notice::SYNC_PAT present — direct TODO.md publication uses PAT; GH006 routes through a PR and can retry its API write with that PAT."
           fi
 
       - name: Checkout
@@ -305,6 +305,7 @@ jobs:
         if: steps.check-author.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIDEVOPS_ISSUE_SYNC_PR_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
             echo "No TODO.md changes to publish"
@@ -368,9 +369,9 @@ jobs:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR when Actions PR creation is enabled."
           else
-            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
+            echo "::notice::SYNC_PAT present — direct TODO.md publication uses PAT; GH006 routes through a PR and can retry its API write with that PAT."
           fi
 
       - name: Checkout
@@ -413,6 +414,7 @@ jobs:
         if: steps.check-issue.outputs.sync == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIDEVOPS_ISSUE_SYNC_PR_TOKEN: ${{ secrets.SYNC_PAT }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
@@ -652,9 +654,9 @@ jobs:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR when Actions PR creation is enabled."
           else
-            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
+            echo "::notice::SYNC_PAT present — direct TODO.md publication uses PAT; GH006 routes through a PR and can retry its API write with that PAT."
           fi
 
       - name: Checkout
@@ -693,6 +695,7 @@ jobs:
         if: inputs.command == 'pull' || inputs.command == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIDEVOPS_ISSUE_SYNC_PR_TOKEN: ${{ secrets.SYNC_PAT }}
           SYNC_COMMAND: ${{ inputs.command }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
@@ -743,9 +746,9 @@ jobs:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR when Actions PR creation is enabled."
           else
-            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
+            echo "::notice::SYNC_PAT present — direct TODO.md publication uses PAT; GH006 routes through a PR and can retry its API write with that PAT."
           fi
 
       # t3204: pull the framework scripts up front so the closing-hygiene and
@@ -1220,9 +1223,10 @@ jobs:
           # keywords. See the guard at the top of the run block.
           RANGE_SYNTAX: ${{ steps.extract.outputs.range_syntax }}
           # Git retains the checkout credential for direct contents pushes.
-          # GitHub API writes use the job-scoped pull-requests permission so a
-          # contents-only SYNC_PAT does not need broader scope.
+          # Prefer the job-scoped token for PR API writes; when repository
+          # settings disable Actions PR creation, retry with SYNC_PAT.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIDEVOPS_ISSUE_SYNC_PR_TOKEN: ${{ secrets.SYNC_PAT }}
           # t2048: expose secret presence as a boolean-ish env var. GitHub
           # hides secret values from logs, but ${{ secrets.SYNC_PAT != '' }}
           # evaluates to 'true' or 'false' at workflow-compile time and is
@@ -1263,13 +1267,13 @@ jobs:
             exit 0
           fi
 
-          # Keep the active Git credential path visible. GitHub API writes use
-          # the job-scoped GITHUB_TOKEN in both cases; direct Git publication
-          # may use SYNC_PAT, while GH006 always routes through a PR.
+          # Keep the active credential path visible. The job-scoped token is
+          # preferred for PR API writes; SYNC_PAT is a bounded fallback when
+          # repository settings disable Actions PR creation.
           if [[ -n "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::Using SYNC_PAT for direct TODO.md publication; GH006 will update one protected-branch PR."
+            echo "::notice::Using SYNC_PAT for direct TODO.md publication and as the bounded PR API fallback after GH006."
           else
-            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
+            echo "::notice::SYNC_PAT not present — GH006 PR publication requires Actions PR creation to be enabled."
           fi
 
           # GH#28464: use the same fail-closed completion predicate as direct

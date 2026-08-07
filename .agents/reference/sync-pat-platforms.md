@@ -22,16 +22,14 @@ on GitHub Actions). Issues are then authored by the bot, which:
 
 1. Reports `author_association: NONE` (or platform equivalent), tripping the
    t2449 worker-briefed auto-merge gate.
-2. Cannot push to a branch-protected default branch on most platforms,
-   leaving TODO.md sync commits silently failing.
+2. Cannot push to a branch-protected default branch on most platforms. The
+   workflow routes terminal GH006 rejection through one deterministic PR; if
+   Actions PR creation is disabled, the job token cannot open that PR either.
 
-Do not equate `bypass_pull_request_allowances` with `SYNC_PAT`. The former is
-the classic branch-protection bypass list for `github-actions[bot]`/apps; the
-latter changes the authenticated push principal to the maintainer/admin PAT
-owner. A missing or empty bypass list does not prove `SYNC_PAT` cannot help.
-Before filing or approving a false-positive advisory issue, prove that a
-correctly scoped admin/maintainer PAT cannot bypass the repo's actual
-protection settings.
+`SYNC_PAT` does not weaken or bypass default-branch protection. Direct GH006
+rejection still routes through review and required checks. The PAT is used as
+the bounded PR API fallback only after the job token fails and concurrent-PR
+recovery finds nothing.
 
 ## Security posture (cross-platform)
 
@@ -94,7 +92,7 @@ Minimum scopes for the `issue-sync.yml` workflow:
 |-------|-----|
 | `contents: write` | Push the `chore: sync ref:GH#NNN` commit back to default branch |
 | `issues: write` | Create issues from TODO.md entries |
-| `pull_requests: write` | Update PR titles/bodies during issue-sync follow-ups |
+| `pull_requests: write` | Open the deterministic protected-branch fallback PR when Actions PR creation is disabled; update PR metadata during follow-ups |
 | `metadata: read` | Required by all fine-grained PATs (auto-applied) |
 
 Do NOT add `actions: read/write` (workflow can't trigger itself), `secrets`
@@ -122,25 +120,27 @@ The helper never reads the secret value — it only confirms presence.
 
 ### Detection of need
 
-`security-posture-helper.sh` Phase 7 (`_check_sync_pat_need`) determines
+`security-posture-helper-repo.sh` Phase 7 (`_check_sync_pat_need`) determines
 whether a repo needs `SYNC_PAT` based on:
 
 1. Does `.github/workflows/issue-sync.yml` exist? (No → not needed.)
 2. Is the default branch protected (classic protection OR rulesets, t2806)?
    (No → not needed.)
-3. Does protection require approving reviews? (No → not needed.)
-4. Is `SYNC_PAT` already set? (Yes → not needed.)
+3. Can GitHub Actions create the deterministic fallback PR? (Yes → not needed
+   for protected publication.)
+4. Is `SYNC_PAT` already set? (Yes → configured.)
 
-If all four conditions resolve to "this repo needs `SYNC_PAT`", an advisory
-file is written at `~/.aidevops/advisories/sync-pat-<SLUG_SAFE>.advisory` and
-the `setup-debt-helper.sh` aggregator picks it up for the toast warning + the
+When issue-sync exists, protection blocks direct publication, Actions cannot
+create the fallback PR, and the secret is absent, an advisory is written at
+`~/.aidevops/advisories/sync-pat-<SLUG_SAFE>.advisory`. The
+`setup-debt-helper.sh` aggregator picks it up for the toast warning and
 `/setup-git` walkthrough.
 
 `aidevops security dismiss sync-pat-*` is an operator opt-out/defer path for a
 known setup-debt warning. Treat dismissal as local risk acceptance or scheduling
 debt, not as evidence that `_check_sync_pat_need` is wrong. Do not suppress the
-advisory solely because `bypass_pull_request_allowances` is absent, null, empty,
-or unavailable.
+advisory solely because approval count is zero; a pull-request or required-check
+rule can still reject the direct publication path.
 
 ---
 
