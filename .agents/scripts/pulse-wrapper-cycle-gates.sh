@@ -39,6 +39,21 @@ _PULSE_EFFICIENCY_CONTRACT_VERSION=2
 _PULSE_EFFICIENCY_COVERAGE_GENERATION=2
 _PULSE_LEGACY_CYCLE_OUTCOME_PENDING=0
 
+_pulse_core_budget_gate() {
+	local core_rc=0
+	if ! declare -F is_core_budget_sufficient >/dev/null 2>&1; then
+		return 0
+	fi
+	is_core_budget_sufficient || core_rc=$?
+	if [[ "$core_rc" -eq 1 ]]; then
+		printf '[pulse-wrapper] REST core reserve reached; deferring API-heavy cycle stages (GH#29736)\n' \
+			>>"${LOGFILE:-/dev/null}"
+		return 1
+	fi
+	# Probe errors fail open to preserve existing availability semantics.
+	return 0
+}
+
 _pulse_efficiency_record() {
 	local name="$1"
 	local value="${2:-1}"

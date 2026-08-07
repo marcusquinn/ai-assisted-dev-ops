@@ -188,6 +188,9 @@ _pulse_run_merge_only() {
 	local _mo_lockdir="${HOME}/.aidevops/locks/pulse-merge-instance.lock"
 	local _mo_log="${HOME}/.aidevops/logs/pulse-merge.log"
 	local _mo_last_run="${HOME}/.aidevops/logs/pulse-merge-routine-last-run"
+	if declare -F _pulse_core_budget_gate >/dev/null 2>&1 && ! _pulse_core_budget_gate; then
+		return 0
+	fi
 
 	mkdir -p "${HOME}/.aidevops/locks" "$(dirname "$_mo_log")" 2>/dev/null || true
 

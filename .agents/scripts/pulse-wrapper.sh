@@ -1221,6 +1221,10 @@ source "${SCRIPT_DIR}/pulse-wrapper-cycle-gates.sh"
 # ---------------------------------------------------------------------------
 _pulse_run_deterministic_pipeline() {
 	_pulse_drain_prefetch_counters # t3027: bridge subshell counters
+	if ! _pulse_core_budget_gate; then
+		_pulse_cycle_state_note_blocker core-rate-limit pulse-wrapper rest-core-reserve || true
+		return 0
+	fi
 	if [[ -f "$STOP_FLAG" ]]; then
 		_pulse_cycle_state_note_blocker stop-requested pulse-wrapper stop-flag || true
 	fi
@@ -1746,6 +1750,11 @@ main() {
 	if [[ "${PULSE_DRY_RUN:-0}" != "1" ]]; then
 		_pulse_cycle_state_start
 		write_pulse_health_file || true
+	fi
+	if ! _pulse_core_budget_gate; then
+		_pulse_cycle_state_note_blocker core-rate-limit pulse-wrapper rest-core-reserve || true
+		_pulse_cycle_state_finish_if_needed blocked
+		return 0
 	fi
 
 	# GH#22631: `circuit-breaker-helper.sh status` can report an overdue

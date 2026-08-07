@@ -116,6 +116,8 @@ fi
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-wrapper-config.sh"
+# shellcheck source=./pulse-rate-limit-circuit-breaker.sh
+source "${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-repo-meta.sh"
 # GH#28207: pulse-merge.sh reconciles dependants after verified issue closure,
@@ -261,6 +263,12 @@ _pmr_graphql_remaining() {
 }
 
 _pmr_graphql_budget_allows_run() {
+	local core_rc=0
+	is_core_budget_sufficient || core_rc=$?
+	if [[ "$core_rc" -eq 1 ]]; then
+		_pmr_log WARN "REST core reserve reached; deferring merge pass to preserve interactive maintainer quota (GH#29736)"
+		return 1
+	fi
 	local threshold="${AIDEVOPS_PULSE_MERGE_GRAPHQL_MIN_REMAINING:-500}"
 	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=500
 	local remaining=""

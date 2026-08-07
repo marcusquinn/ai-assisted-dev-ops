@@ -89,6 +89,13 @@ export -f pulse_stats_increment pulse_stats_get_24h
 #   STUB_GH_RESET     — GraphQL reset epoch (default: now+3600)
 #   STUB_GH_FAIL      — 1 to make gh api rate_limit fail entirely
 gh() {
+	if [[ "$1" == "api" && "$2" == "user" ]]; then
+		[[ -n "${STUB_GH_CORE_HEADER_REMAINING:-}" ]] || return 0
+		printf 'HTTP/2.0 200 OK\nX-Ratelimit-Limit: %s\nX-Ratelimit-Remaining: %s\nX-Ratelimit-Reset: %s\nX-Ratelimit-Resource: core\n' \
+			"${STUB_GH_CORE_HEADER_LIMIT:-5000}" "${STUB_GH_CORE_HEADER_REMAINING}" \
+			"${STUB_GH_CORE_HEADER_RESET:-$(($(date +%s) + 3600))}"
+		return 0
+	fi
 	if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 		printf 'rate-limit\n' >>"$GH_RATE_CALLS"
 		[[ "${STUB_GH_DELAY:-0}" == "0" ]] || sleep "$STUB_GH_DELAY"
@@ -153,6 +160,7 @@ reset_test_state() {
 	: >"$STATS_COUNTER_FILE"
 	: >"$GH_RATE_CALLS"
 	rm -f "${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state"
+	rm -f "${HOME}/.aidevops/logs/pulse-core-circuit-breaker.state"
 	rm -f "${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json"
 	unset AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER 2>/dev/null || true
 	unset AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL 2>/dev/null || true
@@ -163,6 +171,8 @@ reset_test_state() {
 	unset STUB_GH_CORE_LIMIT 2>/dev/null || true
 	unset STUB_GH_FAIL 2>/dev/null || true
 	unset STUB_GH_DELAY 2>/dev/null || true
+	unset STUB_GH_CORE_HEADER_REMAINING STUB_GH_CORE_HEADER_LIMIT STUB_GH_CORE_HEADER_RESET 2>/dev/null || true
+	unset AIDEVOPS_PULSE_CORE_RESERVE AIDEVOPS_SKIP_PULSE_CORE_CIRCUIT_BREAKER 2>/dev/null || true
 	STUB_GH_REMAINING=5000
 	STUB_GH_LIMIT=5000
 	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD="0.05"
@@ -773,6 +783,72 @@ test_shared_rate_probe_coalesces_consumers() {
 	return 0
 }
 
+test_core_breaker_uses_authoritative_headers() {
+	reset_test_state
+	export STUB_GH_CORE_REMAINING=4997
+	export STUB_GH_CORE_HEADER_REMAINING=900
+	export AIDEVOPS_PULSE_CORE_RESERVE=1000
+	local rc=0
+	is_core_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		pass "REST core breaker trusts active-principal response headers over rate_limit projection"
+	else
+		fail "REST core breaker should trip on authoritative remaining=900 (rc=$rc)"
+	fi
+	return 0
+}
+
+test_core_breaker_passes_above_reserve() {
+	reset_test_state
+	export STUB_GH_CORE_REMAINING=900
+	export STUB_GH_CORE_HEADER_REMAINING=4000
+	export AIDEVOPS_PULSE_CORE_RESERVE=1000
+	local rc=0
+	is_core_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		pass "REST core breaker passes when authoritative budget exceeds reserve"
+	else
+		fail "REST core breaker should pass on authoritative remaining=4000 (rc=$rc)"
+	fi
+	return 0
+}
+
+test_core_breaker_recovers_after_reset() {
+	reset_test_state
+	export STUB_GH_CORE_HEADER_REMAINING=500
+	export AIDEVOPS_PULSE_CORE_RESERVE=1000
+	is_core_budget_sufficient >/dev/null 2>&1 || true
+	if [[ ! -f "${HOME}/.aidevops/logs/pulse-core-circuit-breaker.state" ]]; then
+		fail "REST core breaker should write state on trip"
+		return 0
+	fi
+	rm -f "${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json"
+	export STUB_GH_CORE_HEADER_REMAINING=4500
+	local rc=0
+	is_core_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 0 && ! -f "${HOME}/.aidevops/logs/pulse-core-circuit-breaker.state" ]]; then
+		pass "REST core breaker clears state after budget reset"
+	else
+		fail "REST core breaker should recover after reset (rc=$rc)"
+	fi
+	return 0
+}
+
+test_graphql_bypass_preserves_core_reserve() {
+	reset_test_state
+	export STUB_GH_CORE_HEADER_REMAINING=500
+	export AIDEVOPS_PULSE_CORE_RESERVE=1000
+	export AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		pass "GraphQL emergency bypass does not bypass REST core reserve"
+	else
+		fail "GraphQL bypass must retain REST core protection (rc=$rc)"
+	fi
+	return 0
+}
+
 # =============================================================================
 # Run all tests
 # =============================================================================
@@ -795,6 +871,10 @@ test_graphql_exhausted_rest_core_healthy_allows_dispatch
 test_graphql_exhausted_rest_core_low_blocks_dispatch
 test_graphql_exhausted_rest_fallback_disabled_blocks_dispatch
 test_shared_rate_probe_coalesces_consumers
+test_core_breaker_uses_authoritative_headers
+test_core_breaker_passes_above_reserve
+test_core_breaker_recovers_after_reset
+test_graphql_bypass_preserves_core_reserve
 
 # =============================================================================
 # Summary

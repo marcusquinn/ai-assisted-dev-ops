@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# pulse-rate-limit-circuit-breaker.sh — Pulse-level circuit breaker for GraphQL rate-limit budget (t2690, GH#20310)
+# pulse-rate-limit-circuit-breaker.sh — Pulse-level circuit breakers for GitHub API budgets (t2690, GH#20310, GH#29736)
 #
-# Proactive defence: pauses worker dispatch when the GitHub GraphQL rate-limit
+# Proactive defence: pauses Pulse work when the GitHub GraphQL or REST core
 # budget is exhausted or nearly exhausted. Without this, the pulse keeps spawning
 # workers that fail at step 1 (issue read / PR create / issue edit), burning
 # $0.05–$0.25 per doomed dispatch and triggering watchdog kills.
@@ -54,6 +54,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+_CB_RL_THRESHOLD_WAS_SET="${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD+x}"
+_CB_RL_THRESHOLD_OVERRIDE="${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD:-}"
+_CB_RL_CORE_RESERVE_WAS_SET="${AIDEVOPS_PULSE_CORE_RESERVE+x}"
+_CB_RL_CORE_RESERVE_OVERRIDE="${AIDEVOPS_PULSE_CORE_RESERVE:-}"
 
 # shellcheck source=./shared-gh-request-state.sh
 if [[ -f "${SCRIPT_DIR}/shared-gh-request-state.sh" ]]; then
@@ -77,12 +81,21 @@ if [[ -z "${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD+x}" ]] && [[ -f "$_CB_RL_CO
 	# shellcheck disable=SC1090
 	source "$_CB_RL_CONF"
 fi
+if [[ -n "$_CB_RL_THRESHOLD_WAS_SET" ]]; then
+	AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD="$_CB_RL_THRESHOLD_OVERRIDE"
+fi
+if [[ -n "$_CB_RL_CORE_RESERVE_WAS_SET" ]]; then
+	AIDEVOPS_PULSE_CORE_RESERVE="$_CB_RL_CORE_RESERVE_OVERRIDE"
+fi
+unset _CB_RL_THRESHOLD_WAS_SET _CB_RL_THRESHOLD_OVERRIDE
+unset _CB_RL_CORE_RESERVE_WAS_SET _CB_RL_CORE_RESERVE_OVERRIDE
 
 # LOGFILE for sourced-mode usage (caller sets it; standalone mode defines a default).
 LOGFILE="${LOGFILE:-${HOME}/.aidevops/logs/pulse.log}"
 
 # State file for tracking when the breaker last tripped (for status reporting).
 _CIRCUIT_BREAKER_STATE_FILE="${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state"
+_CORE_CIRCUIT_BREAKER_STATE_FILE="${HOME}/.aidevops/logs/pulse-core-circuit-breaker.state"
 
 # Short-lived cache for the free rate_limit endpoint. The dispatch loop can ask
 # for budget state once per candidate; caching keeps diagnostics and in-loop
@@ -126,10 +139,80 @@ _cb_gh_read() {
 }
 
 #######################################
+# Parse authoritative REST core quota headers from a framed API response.
+#
+# Args:
+#   $1 - `gh api --include --silent` response headers
+#
+# Stdout: compact JSON with remaining, limit, and reset.
+#######################################
+_cb_core_headers_json() {
+	local response="$1"
+	local parsed=""
+	local status=""
+	local remaining=""
+	local limit=""
+	local reset=""
+	local resource=""
+	parsed=$(printf '%s\n' "$response" | awk '
+		{ sub(/\r$/, "", $0) }
+		$1 ~ /^HTTP\// {
+			status = $2
+			remaining = ""
+			limit = ""
+			reset = ""
+			resource = ""
+		}
+		tolower($1) == "x-ratelimit-remaining:" { remaining = $2 }
+		tolower($1) == "x-ratelimit-limit:" { limit = $2 }
+		tolower($1) == "x-ratelimit-reset:" { reset = $2 }
+		tolower($1) == "x-ratelimit-resource:" { resource = tolower($2) }
+		END {
+			if ((status ~ /^2[0-9][0-9]$/ || status == "403" || status == "429") &&
+				resource == "core" && remaining ~ /^[0-9]+$/ && limit ~ /^[0-9]+$/ && reset ~ /^[0-9]+$/) {
+				printf "%s\t%s\t%s", remaining, limit, reset
+				exit 0
+			}
+			exit 1
+		}') || parsed=""
+	[[ -n "$parsed" ]] || return 1
+	IFS=$'\t' read -r remaining limit reset <<<"$parsed"
+	[[ "$remaining" =~ ^[0-9]+$ && "$limit" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 1
+	jq -cn --argjson remaining "$remaining" --argjson limit "$limit" --argjson reset "$reset" \
+		'{remaining:$remaining,limit:$limit,reset:$reset,source:"response-headers"}'
+	return $?
+}
+
+#######################################
 # Fetch the full rate-limit projection through the circuit breaker's timeout.
 #######################################
 _cb_rate_limit_transport() {
-	_cb_gh_read gh api rate_limit
+	local rate_json="" header_response="" header_core=""
+	local projected_remaining="" projected_reset="" header_remaining="" header_reset=""
+	rate_json=$(_cb_gh_read gh api rate_limit) || return 1
+	if [[ "${AIDEVOPS_PULSE_CORE_AUTHORITATIVE_PROBE:-1}" != "1" ]]; then
+		printf '%s\n' "$rate_json"
+		return 0
+	fi
+
+	# `/rate_limit` can report a different principal/window from the credential
+	# used by ordinary REST calls. One cached `/user` request supplies the actual
+	# response headers for the transport principal that Pulse is consuming.
+	header_response=$(_cb_gh_read gh api user --include --silent 2>/dev/null) || true
+	header_core=$(_cb_core_headers_json "$header_response" 2>/dev/null) || header_core=""
+	if [[ -z "$header_core" ]]; then
+		printf '%s\n' "$rate_json"
+		return 0
+	fi
+
+	projected_remaining=$(printf '%s' "$rate_json" | jq -r '.resources.core.remaining // ""' 2>/dev/null) || projected_remaining=""
+	projected_reset=$(printf '%s' "$rate_json" | jq -r '.resources.core.reset // ""' 2>/dev/null) || projected_reset=""
+	header_remaining=$(printf '%s' "$header_core" | jq -r '.remaining') || header_remaining=""
+	header_reset=$(printf '%s' "$header_core" | jq -r '.reset') || header_reset=""
+	if [[ "$projected_remaining" != "$header_remaining" || "$projected_reset" != "$header_reset" ]]; then
+		echo "${_CB_RL_LOG_PREFIX} REST core projection mismatch: rate_limit=${projected_remaining:-?}@${projected_reset:-?} response_headers=${header_remaining:-?}@${header_reset:-?}; using response headers (GH#29736)" >>"$LOGFILE"
+	fi
+	jq -c --argjson core "$header_core" '.resources.core = $core' <<<"$rate_json"
 	return $?
 }
 
@@ -152,6 +235,54 @@ _cb_rate_limit_json() {
 	[[ "$mode" == "$_CB_RL_MODE_CACHED_ONLY" ]] && return 1
 	_cb_rate_limit_transport
 	return $?
+}
+
+#######################################
+# Check whether the authenticated REST core budget preserves maintainer headroom.
+#
+# Returns: 0 when Pulse may proceed, 1 when it must defer, 2 on probe error.
+#######################################
+is_core_budget_sufficient() {
+	if [[ "${AIDEVOPS_SKIP_PULSE_CORE_CIRCUIT_BREAKER:-0}" == "1" ]]; then
+		echo "${_CB_RL_LOG_PREFIX} AIDEVOPS_SKIP_PULSE_CORE_CIRCUIT_BREAKER=1 — bypassing REST core check" >>"$LOGFILE"
+		return 0
+	fi
+
+	local reserve="${AIDEVOPS_PULSE_CORE_RESERVE:-1000}"
+	[[ "$reserve" =~ ^[0-9]+$ ]] || reserve=1000
+	[[ "$reserve" -gt 0 ]] || return 0
+
+	local rate_json=""
+	local remaining=""
+	local limit=""
+	local reset=""
+	rate_json=$(_cb_rate_limit_json normal) || rate_json=""
+	if [[ -z "$rate_json" ]]; then
+		echo "${_CB_RL_LOG_PREFIX} WARNING: REST core quota probe failed — proceeding fail-open" >>"$LOGFILE"
+		return 2
+	fi
+	remaining=$(printf '%s' "$rate_json" | jq -r '.resources.core.remaining // ""') || remaining=""
+	limit=$(printf '%s' "$rate_json" | jq -r '.resources.core.limit // ""') || limit=""
+	reset=$(printf '%s' "$rate_json" | jq -r '.resources.core.reset // ""') || reset=""
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ ]]; then
+		echo "${_CB_RL_LOG_PREFIX} WARNING: could not parse REST core quota — proceeding fail-open" >>"$LOGFILE"
+		return 2
+	fi
+
+	if [[ "$remaining" -le "$reserve" ]]; then
+		echo "${_CB_RL_LOG_PREFIX} REST core reserve reached: remaining=${remaining}/${limit} <= reserve=${reserve}, reset=${reset} — deferring nonessential Pulse work (GH#29736)" >>"$LOGFILE"
+		printf '%s %s %s %s\n' "$(date +%s)" "$remaining" "$limit" "$reset" >"$_CORE_CIRCUIT_BREAKER_STATE_FILE" 2>/dev/null || true
+		if declare -F pulse_stats_increment >/dev/null 2>&1; then
+			pulse_stats_increment "pulse_core_circuit_broken" 2>/dev/null || true
+		fi
+		return 1
+	fi
+
+	if [[ -f "$_CORE_CIRCUIT_BREAKER_STATE_FILE" ]]; then
+		echo "${_CB_RL_LOG_PREFIX} REST core budget recovered: remaining=${remaining}/${limit} > reserve=${reserve}" >>"$LOGFILE"
+		rm -f "$_CORE_CIRCUIT_BREAKER_STATE_FILE" 2>/dev/null || true
+	fi
+	return 0
 }
 
 #######################################
@@ -209,9 +340,15 @@ _cb_allow_dispatch_with_rest_fallback() {
 # Returns: 0 when dispatch may proceed, 1 when dispatch should defer, 2 on API error.
 #######################################
 is_graphql_budget_sufficient() {
-	# Emergency bypass.
+	# The REST core reserve is independent: bypassing the GraphQL breaker must
+	# never consume quota reserved for interactive maintainer operations.
+	local core_rc=0
+	is_core_budget_sufficient || core_rc=$?
+	[[ "$core_rc" -ne 1 ]] || return 1
+
+	# GraphQL-only emergency bypass.
 	if [[ "${AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER:-0}" == "1" ]]; then
-		echo "${_CB_RL_LOG_PREFIX} AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1 — bypassing rate-limit check" >>"$LOGFILE"
+		echo "${_CB_RL_LOG_PREFIX} AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1 — bypassing GraphQL rate-limit check" >>"$LOGFILE"
 		return 0
 	fi
 
