@@ -107,6 +107,14 @@ case "${QLTY_STUB_MODE:-empty}" in
 		fi
 		exit 0
 		;;
+	topology-sensitive)
+		if [ -d .git ]; then
+			printf '{"runs":[{"results":[{"ruleId":"file-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"stable.py"}}}]}]}]}'
+		else
+			printf '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-a.py"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-b.py"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-c.py"}}}]}]}]}'
+		fi
+		exit 0
+		;;
 	fail)
 		printf '{"runs":[{"results":[{"ruleId":"file-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.py"}}}]},{"ruleId":"function-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"b.py"}}}]},{"ruleId":"function-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"b.py"}}}]}]}]}'
 		exit 0
@@ -183,7 +191,7 @@ pass_rc=$?
 assert_rc "valid SARIF below threshold passes" "0" "$pass_rc"
 assert_contains "valid SARIF reports headroom" "Within threshold" "$pass_output"
 assert_contains "valid SARIF reports qlty version" "Qlty version: qlty test-stub" "$pass_output"
-assert_contains "valid SARIF reports scan mode" "Scan mode: direct-checkout" "$pass_output"
+assert_contains "valid SARIF reports scan mode" "Scan mode: isolated-clone" "$pass_output"
 assert_contains "valid SARIF reports logical root" "Scan root: repository-root" "$pass_output"
 assert_contains "valid SARIF reports normalized count" "Normalized result count: 1" "$pass_output"
 assert_contains "valid SARIF reports per-rule counts" $'  1\tfile-complexity' "$pass_output"
@@ -200,6 +208,14 @@ repeated_cache_output=$($HELPER "$CONF" 2>&1)
 repeated_cache_rc=$?
 assert_rc "repeated isolated-cache scan remains stable" "0" "$repeated_cache_rc"
 assert_contains "repeated scan retains stable count" "Normalized result count: 1" "$repeated_cache_output"
+
+write_stub_qlty topology-sensitive "$BIN_DIR"
+topology_sensitive_output=$($HELPER "$CONF" 2>&1)
+topology_sensitive_rc=$?
+assert_rc "direct-checkout-only similar-code findings do not affect the gate" "0" "$topology_sensitive_rc"
+assert_contains "absolute scan uses standalone clone topology" "Creating standalone clone" "$topology_sensitive_output"
+assert_contains "standalone clone retains stable count" "Normalized result count: 1" "$topology_sensitive_output"
+assert_not_contains "direct-checkout-only identities are excluded" "direct-a.py" "$topology_sensitive_output"
 
 write_stub_qlty fail "$BIN_DIR"
 fail_output=$("$HELPER" "$CONF" 2>&1)
