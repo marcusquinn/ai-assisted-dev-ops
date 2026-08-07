@@ -115,6 +115,14 @@ if [ "${QLTY_STUB_MODE:-parity}" = "topology-sensitive" ]; then
 	fi
 	exit 0
 fi
+if [ "${QLTY_STUB_MODE:-parity}" = "unchanged-file-regression" ] && [ "$(basename "$PWD")" = "head-worktree" ]; then
+	printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.sh"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"unchanged.py"}}}]}]}]}'
+	exit 0
+fi
+if [ "${QLTY_STUB_MODE:-parity}" = "changed-file-regression" ] && [ "$(basename "$PWD")" = "head-worktree" ]; then
+	printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.sh"}}}]},{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.sh"}}}],"relatedLocations":[{"physicalLocation":{"artifactLocation":{"uri":"VERSION"}}}]}]}]}'
+	exit 0
+fi
 printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.sh"}}}]}]}]}'
 exit 0
 STUB
@@ -178,8 +186,22 @@ printf 'metadata only\n' >"$REPO/VERSION"
 (cd "$REPO" && "$GIT_PATH" add VERSION && "$GIT_PATH" commit --quiet -m "metadata fixture") || exit 1
 metadata_output=$(cd "$REPO" && "$HELPER" --base HEAD^ --head HEAD 2>&1)
 metadata_rc=$?
-assert_rc "metadata-only commit preserves unchanged source findings" "0" "$metadata_rc"
-assert_contains "metadata-only scan reports zero delta" "base: 1  head: 1  delta: 0" "$metadata_output"
+assert_rc "metadata-only commit diff-scopes unchanged source findings" "0" "$metadata_rc"
+assert_contains "metadata-only scan reports zero delta" "base: 0  head: 0  delta: 0" "$metadata_output"
+
+QLTY_STUB_MODE=unchanged-file-regression
+export QLTY_STUB_MODE
+unchanged_regression_output=$(cd "$REPO" && "$HELPER" --base HEAD^ --head HEAD 2>&1)
+unchanged_regression_rc=$?
+assert_rc "new similar-code findings confined to unchanged files do not regress" "0" "$unchanged_regression_rc"
+assert_contains "unchanged duplicate clusters are diff-scoped" "base: 0  head: 0  delta: 0" "$unchanged_regression_output"
+
+QLTY_STUB_MODE=changed-file-regression
+export QLTY_STUB_MODE
+changed_regression_output=$(cd "$REPO" && "$HELPER" --base HEAD^ --head HEAD 2>&1)
+changed_regression_rc=$?
+assert_rc "similar-code clusters involving a changed related location still regress" "1" "$changed_regression_rc"
+assert_contains "changed duplicate cluster remains counted" "base: 0  head: 1  delta: 1" "$changed_regression_output"
 
 QLTY_STUB_MODE=mismatch
 export QLTY_STUB_MODE
