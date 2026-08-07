@@ -98,12 +98,15 @@ writes, implement provider approval, alter persistent user config, or release.
 - NEW: `.agents/reference/team-interface-opencode-overlays.md` — contract, threat model, compatibility, launch, rollback, and verification.
 - EDIT: `.agents/scripts/opencode-launcher-helper.sh` — fixed-argv conversation/ACP path with cwd and validated overlay environment.
 - NEW: `.agents/plugins/opencode-aidevops/team-interface-context.mjs` — parse/validate bounded context and supply the root-session transform/variant evidence.
+- NEW: `.agents/plugins/opencode-aidevops/team-interface-roster-binding.mjs` — regenerate and bind the fresh canonical roster, selected identity, overlay bytes, and source digest at consumption.
+- NEW: `.agents/plugins/opencode-aidevops/team-interface-runtime-boundary.mjs` — attest private runtime directories, bootstrap config, runtime package metadata, pinned plugin, and project binding.
 - NEW: `.agents/plugins/opencode-aidevops/team-interface-path-guard.mjs` — enforce project-root, symlink, search-scope, and credential-path restrictions before permitted local tools execute.
 - EDIT: `.agents/plugins/opencode-aidevops/config-hook.mjs` and `config-safety-guards.mjs` — branch before normal widening registration and apply closed conversation isolation to the resolved config.
 - EDIT: `.agents/plugins/opencode-aidevops/index.mjs` and root chat-parameter routing — inject bounded context and resolve the selected workload variant without persisting model IDs.
 - NEW: `.agents/scripts/tests/test-team-interface-opencode-overlay.mjs` — schema, roster, canonical output, secret/path/model/tool negative tests.
 - NEW: `.agents/plugins/opencode-aidevops/tests/test-team-interface-conversation-profile.mjs` — final effective config, plugin ordering, context, root variant, and escape negatives.
 - NEW: `.agents/scripts/tests/test-team-interface-opencode-installed-runtime.mjs` — bounded installed OpenCode effective-config and ACP startup canary with persistent-config exclusions.
+- NEW: `.agents/scripts/team-interface-opencode-project-root.mjs` — validate canonical repository registrations and linked-worktree Git identity without widening cwd.
 - EDIT: `.agents/scripts/tests/test-opencode-launcher-helper.sh` — fixed argv, cwd, env, redaction, passthrough/auto/unsafe input rejection.
 - EDIT: team-interface/OpenCode references and README where the new user command is exposed.
 - EDIT: `TODO.md`, mission/source-review, and this brief for task/completion evidence.
@@ -193,12 +196,15 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 - `.agents/reference/team-interface-opencode-overlays.md`
 - `.agents/scripts/opencode-launcher-helper.sh`
 - `.agents/plugins/opencode-aidevops/team-interface-context.mjs`
+- `.agents/plugins/opencode-aidevops/team-interface-roster-binding.mjs`
+- `.agents/plugins/opencode-aidevops/team-interface-runtime-boundary.mjs`
 - `.agents/plugins/opencode-aidevops/team-interface-path-guard.mjs`
 - `.agents/plugins/opencode-aidevops/config-hook.mjs`
 - `.agents/plugins/opencode-aidevops/config-safety-guards.mjs`
 - `.agents/plugins/opencode-aidevops/index.mjs`
 - `.agents/scripts/tests/test-team-interface-opencode-overlay.mjs`
 - `.agents/scripts/tests/test-team-interface-opencode-installed-runtime.mjs`
+- `.agents/scripts/team-interface-opencode-project-root.mjs`
 - `.agents/plugins/opencode-aidevops/tests/test-team-interface-conversation-profile.mjs`
 - `.agents/scripts/tests/test-opencode-launcher-helper.sh`
 - `.agents/reference/team-interfaces.md`

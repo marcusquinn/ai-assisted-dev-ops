@@ -171,13 +171,13 @@ export function conversationBootstrapConfig(pluginUrl) {
   } catch {
     throw new ConversationOverlayError("invalid_environment", "conversation plugin URL is invalid");
   }
-  if (
-    parsedPluginUrl.protocol !== "file:"
-    || parsedPluginUrl.username
-    || parsedPluginUrl.password
-    || parsedPluginUrl.search
-    || parsedPluginUrl.hash
-  ) {
+  const forbiddenUrlParts = [
+    parsedPluginUrl.username,
+    parsedPluginUrl.password,
+    parsedPluginUrl.search,
+    parsedPluginUrl.hash,
+  ].filter(Boolean);
+  if (parsedPluginUrl.protocol !== "file:" || forbiddenUrlParts.length > 0) {
     throw new ConversationOverlayError("invalid_environment", "conversation plugin URL must identify one local file");
   }
   return {

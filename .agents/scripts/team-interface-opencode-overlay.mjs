@@ -16,11 +16,9 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import {homedir} from "node:os";
-import {dirname, isAbsolute, join, parse, relative, resolve, sep} from "node:path";
+import {dirname, join, resolve} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import {randomBytes} from "node:crypto";
-import {execFileSync} from "node:child_process";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import {
@@ -34,11 +32,14 @@ import {
 } from "../plugins/opencode-aidevops/team-interface-context.mjs";
 import {readBoundedJson, TeamInterfaceError} from "./team-interface-common.mjs";
 import {verifyConversationEffectiveConfig} from "./team-interface-opencode-effective-config.mjs";
+import {
+  ProjectRootValidationError,
+  validateRegisteredProjectRoot,
+} from "./team-interface-opencode-project-root.mjs";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_DIRECTORY = resolve(SCRIPT_DIRECTORY, "../schemas/team-interface");
 const CANONICAL_AGENTS_DIRECTORY = resolve(SCRIPT_DIRECTORY, "..");
-const GIT_BINARY = "/usr/bin/git";
 const MAX_ROSTER_BYTES = 1024 * 1024;
 const MAX_CONTEXT_BYTES = 16 * 1024;
 const MAX_OVERLAY_BYTES = 64 * 1024;
@@ -250,114 +251,13 @@ function prepareConfig(argumentsList) {
   return 0;
 }
 
-function hasSymlinkComponent(filePath) {
-  const absolutePath = resolve(filePath);
-  const root = parse(absolutePath).root;
-  let current = root;
-  for (const part of absolutePath.slice(root.length).split(sep).filter(Boolean)) {
-    current = join(current, part);
-    if (lstatSync(current).isSymbolicLink()) return true;
-  }
-  return false;
-}
-
-function isPathWithin(base, candidate) {
-  const remainder = relative(base, candidate);
-  return remainder === ""
-    || (!isAbsolute(remainder) && remainder !== ".." && !remainder.startsWith(`..${sep}`));
-}
-
-function gitProjectMetadata(projectRoot) {
-  try {
-    const topLevel = realpathSync(execFileSync(
-      GIT_BINARY,
-      ["-C", projectRoot, "rev-parse", "--show-toplevel"],
-      {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000},
-    ).trim());
-    if (topLevel !== projectRoot) return null;
-    const commonDirectory = realpathSync(execFileSync(
-      GIT_BINARY,
-      ["-C", projectRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-      {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000},
-    ).trim());
-    return {commonDirectory, topLevel};
-  } catch {
-    return null;
-  }
-}
-
-function expandedRegisteredPath(value, homeDirectory) {
-  if (typeof value !== "string" || !value) return "";
-  const expanded = value === "~"
-    ? homeDirectory
-    : value.startsWith("~/") ? join(homeDirectory, value.slice(2)) : value;
-  if (!isAbsolute(expanded) || !existsSync(expanded)) return "";
-  try {
-    return realpathSync(expanded);
-  } catch {
-    return "";
-  }
-}
-
-function rejectSensitiveProjectRoot(candidate, homeDirectory) {
-  const sensitiveRoots = [
-    join(homeDirectory, ".aws"),
-    join(homeDirectory, ".azure"),
-    join(homeDirectory, ".config"),
-    join(homeDirectory, ".docker"),
-    join(homeDirectory, ".gnupg"),
-    join(homeDirectory, ".kube"),
-    join(homeDirectory, ".local", "share", "opencode"),
-    join(homeDirectory, ".ssh"),
-  ].map((sensitiveRoot) => resolve(sensitiveRoot));
-  if (
-    candidate === parse(candidate).root
-    || candidate === homeDirectory
-    || isPathWithin(candidate, homeDirectory)
-    || sensitiveRoots.some((sensitiveRoot) => isPathWithin(sensitiveRoot, candidate))
-  ) {
-    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a bounded project root");
-  }
-}
-
 function validateProjectRoot(argumentsList) {
   const options = parseOptions(argumentsList, new Set(["--dir", "--repos"]));
   const requestedDirectory = requireOption(options, "--dir");
   const reposPath = requireOption(options, "--repos");
-  if (!isAbsolute(requestedDirectory) || hasSymlinkComponent(requestedDirectory)) {
-    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd must be an absolute non-symlink project root");
-  }
-  const candidate = realpathSync(requestedDirectory);
-  if (!statSync(candidate).isDirectory()) {
-    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a directory");
-  }
-  const homeDirectory = realpathSync(homedir());
-  rejectSensitiveProjectRoot(candidate, homeDirectory);
-
-  const repos = readBoundedJson(resolve(reposPath), MAX_ROSTER_BYTES, "registered repositories");
-  if (!Array.isArray(repos?.initialized_repos)) {
-    throw new OverlayGeneratorError("invalid_document", "registered repository metadata is invalid");
-  }
-  const registeredRoots = repos.initialized_repos
-    .map((entry) => expandedRegisteredPath(entry?.path, homeDirectory))
-    .filter(Boolean);
-  if (registeredRoots.includes(candidate)) {
-    process.stdout.write(`${candidate}\n`);
-    return 0;
-  }
-
-  const candidateGit = gitProjectMetadata(candidate);
-  if (candidateGit) {
-    const linkedToRegisteredRoot = registeredRoots.some((registeredRoot) => {
-      const registeredGit = gitProjectMetadata(registeredRoot);
-      return registeredGit?.commonDirectory === candidateGit.commonDirectory;
-    });
-    if (linkedToRegisteredRoot) {
-      process.stdout.write(`${candidate}\n`);
-      return 0;
-    }
-  }
-  throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a registered canonical project or linked worktree root");
+  const candidate = validateRegisteredProjectRoot({requestedDirectory, reposPath});
+  process.stdout.write(`${candidate}\n`);
+  return 0;
 }
 
 function verifyEffectiveConfig(argumentsList) {
@@ -399,15 +299,22 @@ function usage() {
   return 0;
 }
 
+const COMMAND_HANDLERS = Object.freeze({
+  "--help": usage,
+  "-h": usage,
+  generate,
+  help: usage,
+  "prepare-config": prepareConfig,
+  validate,
+  "validate-project-root": validateProjectRoot,
+  "verify-effective": verifyEffectiveConfig,
+});
+
 export function main(argv = process.argv.slice(2)) {
   const [command = "help", ...argumentsList] = argv;
-  if (["help", "--help", "-h"].includes(command)) return usage();
-  if (command === "generate") return generate(argumentsList);
-  if (command === "validate") return validate(argumentsList);
-  if (command === "prepare-config") return prepareConfig(argumentsList);
-  if (command === "validate-project-root") return validateProjectRoot(argumentsList);
-  if (command === "verify-effective") return verifyEffectiveConfig(argumentsList);
-  throw new OverlayGeneratorError("invalid_arguments", `unsupported command: ${command}`);
+  const handler = COMMAND_HANDLERS[command];
+  if (!handler) throw new OverlayGeneratorError("invalid_arguments", `unsupported command: ${command}`);
+  return handler(argumentsList);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -415,6 +322,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exitCode = main();
   } catch (error) {
     const known = error instanceof OverlayGeneratorError
+      || error instanceof ProjectRootValidationError
       || error instanceof TeamInterfaceError
       || error?.name === "ConversationOverlayError";
     const message = known ? error.message : "unexpected validation failure";

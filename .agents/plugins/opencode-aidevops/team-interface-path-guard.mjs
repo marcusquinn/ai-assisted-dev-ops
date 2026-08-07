@@ -46,6 +46,23 @@ function rejectSymlinkTraversal(projectRoot, candidate) {
   }
 }
 
+function rejectSearchSymlink(entry, child, projectRoot) {
+  if (!entry.isSymbolicLink()) return;
+  const resolvedChild = realpathSync(child);
+  if (!isPathWithin(projectRoot, resolvedChild)) {
+    throw new Error("[conversation-path-guard] search scope contains an out-of-root symbolic link");
+  }
+  throw new Error("[conversation-path-guard] search scope contains symbolic-link traversal");
+}
+
+function inspectSearchEntry(entry, directory, projectRoot, queue) {
+  if (entry.isDirectory() && DEFAULT_IGNORED_DIRECTORIES.has(entry.name)) return;
+  const child = join(directory, entry.name);
+  rejectCredentialPath(child);
+  rejectSearchSymlink(entry, child, projectRoot);
+  if (entry.isDirectory()) queue.push(child);
+}
+
 function validateSearchTree(candidate, projectRoot) {
   if (!lstatSync(candidate).isDirectory()) return;
   const queue = [candidate];
@@ -57,19 +74,7 @@ function validateSearchTree(candidate, projectRoot) {
     if (entryCount > MAX_SEARCH_ENTRIES) {
       throw new Error("[conversation-path-guard] search scope exceeds the fail-closed entry limit");
     }
-    for (const entry of entries) {
-      if (entry.isDirectory() && DEFAULT_IGNORED_DIRECTORIES.has(entry.name)) continue;
-      const child = join(directory, entry.name);
-      rejectCredentialPath(child);
-      if (entry.isSymbolicLink()) {
-        const resolvedChild = realpathSync(child);
-        if (!isPathWithin(projectRoot, resolvedChild)) {
-          throw new Error("[conversation-path-guard] search scope contains an out-of-root symbolic link");
-        }
-        throw new Error("[conversation-path-guard] search scope contains symbolic-link traversal");
-      }
-      if (entry.isDirectory()) queue.push(child);
-    }
+    for (const entry of entries) inspectSearchEntry(entry, directory, projectRoot, queue);
   }
 }
 
