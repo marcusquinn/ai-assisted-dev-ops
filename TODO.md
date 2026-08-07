@@ -1208,7 +1208,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18175 Clarify self-improvement auto-dispatch authority boundary #documentation ref:GH#28582
 
-- [ ] t18176 Plan secure personal and shared social knowledge corpora #parent-task #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md]
+- [x] t18176 Plan secure personal and shared social knowledge corpora #parent-task #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md] pr:#28621 completed:2026-07-25
 
 - [x] t18177 Add approval-bound shared X scheduling and notification operations #feat #framework #knowledge #security ~8h tier:thinking ref:GH#28627 -> [todo/tasks/t18177-brief.md] pr:#28630 completed:2026-07-25
 
@@ -1225,6 +1225,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 
 - [ ] t18209 Implement provider-neutral routing, observability, and completion feedback #feat #models #observability #interactive #priority:high ~4h tier:thinking ref:GH#29674 assignee:marcusquinn started:2026-08-07T02:34:27Z -> [todo/tasks/t18209-brief.md]
+
+- [ ] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679
 
 ## In Progress
 
@@ -4735,7 +4737,7 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18175 Clarify self-improvement auto-dispatch authority boundary #documentation ref:GH#28582
 
-- [ ] t18176 Plan secure personal and shared social knowledge corpora #enhancement #framework #knowledge #parent #security ref:GH#28587
+- [x] t18176 Plan secure personal and shared social knowledge corpora #enhancement #framework #knowledge #parent #security ref:GH#28587 pr:#28621 completed:2026-07-25
 
 - [x] t18178 Unify review evidence and policy adapters #bug ref:GH#28632 pr:#28634 completed:2026-07-25
 
