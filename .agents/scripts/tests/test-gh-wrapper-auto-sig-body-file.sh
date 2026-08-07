@@ -91,8 +91,14 @@ _ensure_origin_labels_for_args() { return 0; }
 _gh_should_fallback_to_rest() { return 1; }
 _rest_should_fallback() { return 1; }
 _gh_auto_link_sub_issue() { return 0; }
-session_origin_label() { printf '%s' "origin:worker"; return 0; }
-detect_session_origin() { printf '%s' "worker"; return 0; }
+session_origin_label() {
+	printf '%s' "origin:worker"
+	return 0
+}
+detect_session_origin() {
+	printf '%s' "worker"
+	return 0
+}
 
 reset_capture() {
 	: >"$GH_ARGV_RECORD_FILE"
@@ -235,12 +241,37 @@ assert_ephemeral_comment_uses_exact_shim_without_rest_retry() {
 	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$body_file" \
 		gh_issue_comment 1 --repo o/r --body-file "$body_file" \
 		>/dev/null 2>&1 || call_status=$?
-	if [[ "$call_status" -ne 0 && "$rest_calls" -eq 0 && \
+	if [[ "$call_status" -ne 0 && "$rest_calls" -eq 0 &&
 		"$exact_command" == "${TEST_SCRIPTS_DIR}/gh" && -f "$body_file" ]]; then
 		print_result "ephemeral comment requires exact shim and disables REST retry" 0
 	else
 		print_result "ephemeral comment requires exact shim and disables REST retry" 1 \
 			"status=${call_status}, rest_calls=${rest_calls}, command=${exact_command}, body_exists=$([[ -f "$body_file" ]] && printf yes || printf no)"
+	fi
+	return 0
+}
+
+assert_close_comment_signed_once() {
+	_gh_audit_fetch_issue_state_json() {
+		printf '%s\n' '{"capture_status":"ok"}'
+		return 0
+	}
+	_gh_audit_record_op() { return 0; }
+	local close_form="$1"
+	reset_capture
+	case "$close_form" in
+	long) gh_issue_close_safe 1 --repo o/r --reason completed --comment "verified close" >/dev/null 2>&1 ;;
+	equals) gh_issue_close_safe 1 --repo o/r --reason completed --comment="verified close" >/dev/null 2>&1 ;;
+	short) gh_issue_close_safe 1 --repo o/r --reason completed -c "verified close" >/dev/null 2>&1 ;;
+	esac
+	local close_count signature_count
+	close_count=$(grep -c '^<close>$' "$GH_ARGV_RECORD_FILE" 2>/dev/null || true)
+	signature_count=$(grep -c '<!-- aidevops:sig -->' "$GH_ARGV_RECORD_FILE" 2>/dev/null || true)
+	if [[ "$close_count" == "1" && "$signature_count" == "1" ]]; then
+		print_result "gh_issue_close_safe ${close_form} comment signs one native close" 0
+	else
+		print_result "gh_issue_close_safe ${close_form} comment signs one native close" 1 \
+			"close_count=${close_count}, signature_count=${signature_count}"
 	fi
 	return 0
 }
@@ -253,6 +284,9 @@ assert_missing_body_file_rejected_before_gh
 assert_signature_only_body_rejected_before_gh
 assert_signature_only_body_file_rejected_before_gh
 assert_ephemeral_comment_uses_exact_shim_without_rest_retry
+assert_close_comment_signed_once long
+assert_close_comment_signed_once equals
+assert_close_comment_signed_once short
 
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

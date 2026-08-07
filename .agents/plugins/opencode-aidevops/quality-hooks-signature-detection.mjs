@@ -50,10 +50,18 @@ function isCommentOrGitCommit(trimmedLine) {
   return trimmedLine.startsWith("#") || /\bgit\s+commit\b/.test(trimmedLine);
 }
 
-function lineHasGhWriteCommand(line, ghWritePattern) {
+function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
   const trimmed = line.trim();
   if (isCommentOrGitCommit(trimmed)) return false;
-  return ghWritePattern.test(stripQuotedStrings(trimmed));
+  const command = stripQuotedStrings(trimmed);
+  if (ghWritePattern.test(command)) return true;
+  // A close without a comment is a state-only mutation and must retain native
+  // behaviour. A close with --comment/-c publishes content and therefore needs
+  // the same signature gate as issue comment/create.
+  return (
+    ghIssueClosePattern.test(command) &&
+    /(?:^|\s)(?:--comment(?:=|\s)|-c(?:=|\s))/.test(command)
+  );
 }
 
 /**
@@ -65,9 +73,11 @@ export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
   const ghWritePattern =
     /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
+  const ghIssueClosePattern =
+    /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+issue\s+close\b/;
   return stripHeredocBodies(cmd)
     .split("\n")
-    .some((line) => lineHasGhWriteCommand(line, ghWritePattern));
+    .some((line) => lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern));
 }
 
 /**

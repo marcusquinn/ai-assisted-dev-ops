@@ -56,6 +56,38 @@ else
 	_fail "--body original content preservation" "argv: $argv"
 fi
 
+# =============================================================================
+# Test 2b: issue-close comments use the same one-shot signature injection
+# =============================================================================
+echo ""
+echo "Test 2b: issue-close comments are signed without splitting close"
+for close_form in long equals short; do
+	_reset_log
+	case "$close_form" in
+	long) "$SHIM_RUN" issue close 123 --repo owner/repo --reason completed --comment "close evidence" 2>/dev/null ;;
+	equals) "$SHIM_RUN" issue close 123 --repo owner/repo --reason completed --comment="close evidence" 2>/dev/null ;;
+	short) "$SHIM_RUN" issue close 123 --repo owner/repo --reason completed -c "close evidence" 2>/dev/null ;;
+	esac
+	argv=$(_read_argv)
+	close_count=$(grep -c '^close$' "$STUB_GH_LOG" 2>/dev/null || true)
+	if [[ "$argv" == *"<!-- aidevops:sig -->"* && "$argv" == *"--reason"* &&
+		"$argv" == *"completed"* && "$close_count" -eq 1 ]]; then
+		_pass "${close_form} issue-close comment signs exactly one close mutation"
+	else
+		_fail "${close_form} issue-close comment signing" "argv: $argv"
+	fi
+done
+
+_reset_log
+"$SHIM_RUN" issue close 124 --repo owner/repo --reason completed 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == $'issue\nclose\n124\n--repo\nowner/repo\n--reason\ncompleted' ]] &&
+	[[ ! -s "$STUB_SIG_LOG" ]]; then
+	_pass "comment-free issue close passes through unchanged"
+else
+	_fail "comment-free issue close pass-through" "argv: $argv"
+fi
+
 # Inline marker prose is not a completed signature footer.
 echo ""
 echo "Test 2a: inline marker prose gets a standalone signature"
@@ -148,10 +180,10 @@ STUB_GH_EPHEMERAL_SOURCE="$ephemeral_body" \
 	2>"$TMP/ephemeral.err"
 argv=$(_read_argv)
 captured_body=$(<"$STUB_GH_BODY_LOG")
-if [[ "$argv" == *$'--body-file\n/dev/fd/9'* && \
-	"$captured_body" == *"validated review body"* && \
-	"$captured_body" == *"<!-- aidevops:sig -->"* && \
-	! -e "$ephemeral_body" && ! -L "$ephemeral_body" && \
+if [[ "$argv" == *$'--body-file\n/dev/fd/9'* &&
+	"$captured_body" == *"validated review body"* &&
+	"$captured_body" == *"<!-- aidevops:sig -->"* &&
+	! -e "$ephemeral_body" && ! -L "$ephemeral_body" &&
 	! -e "$ephemeral_parent" && ! -L "$ephemeral_parent" ]]; then
 	_pass "ephemeral body reaches native gh only after verified unlink"
 else
@@ -176,7 +208,7 @@ if STUB_GH_EPHEMERAL_SOURCE="$blocked_body" \
 	"$SHIM_RUN" issue comment 791 --repo owner/repo --body-file "$blocked_body" \
 	2>"$TMP/ephemeral-cleanup.err"; then
 	_fail "ephemeral cleanup failure gate" "shim returned success"
-elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" ]] && \
+elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" ]] &&
 	grep -q 'cleanup could not be verified before transport' "$TMP/ephemeral-cleanup.err"; then
 	_pass "ephemeral cleanup failure blocks native transport"
 else
@@ -195,7 +227,7 @@ if AIDEVOPS_GH_SHIM_DISABLE=1 \
 	"$SHIM_RUN" issue comment 792 --repo owner/repo --body-file "$bypass_body" \
 	2>"$TMP/ephemeral-bypass.err"; then
 	_fail "ephemeral shim bypass gate" "shim returned success"
-elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" && -f "$bypass_body" ]] && \
+elif [[ ! -s "$STUB_GH_MAIN_CALL_LOG" && -f "$bypass_body" ]] &&
 	grep -q 'cannot bypass the aidevops gh shim' "$TMP/ephemeral-bypass.err"; then
 	_pass "ephemeral transport blocks shim bypass before native gh"
 else

@@ -6,9 +6,10 @@
 #            + GraphQL→REST read rewriting under low budget (t3037)
 # =============================================================================
 #
-# Intercepts GitHub content writes (`gh issue/pr create|edit|comment|review`
+# Intercepts GitHub content writes (`gh issue/pr create|edit|comment|close|review`
 # and selected `gh api` REST write endpoints), calls
 # gh-signature-helper.sh footer, and appends the footer to --body / --body-file
+# / issue-close --comment
 # when the canonical HTML marker `<!-- aidevops:sig -->` is missing. Every
 # other gh subcommand is passed straight through with minimal overhead.
 #
@@ -843,6 +844,9 @@ _body_eq=0
 _body_file_idx=-1
 _body_file_val=""
 _body_file_eq=0
+_comment_idx=-1
+_comment_val=""
+_comment_eq=0
 
 while [[ $_i -lt ${#_modified_args[@]} ]]; do
 	case "${_modified_args[_i]}" in
@@ -866,6 +870,26 @@ while [[ $_i -lt ${#_modified_args[@]} ]]; do
 		_body_file_val="${_modified_args[_i]#--body-file=}"
 		_body_file_eq=1
 		;;
+	--comment)
+		_comment_idx=$_i
+		_comment_val="${_modified_args[_i + 1]:-}"
+		_comment_eq=0
+		;;
+	--comment=*)
+		_comment_idx=$_i
+		_comment_val="${_modified_args[_i]#--comment=}"
+		_comment_eq=1
+		;;
+	-c)
+		_comment_idx=$_i
+		_comment_val="${_modified_args[_i + 1]:-}"
+		_comment_eq=0
+		;;
+	-c=*)
+		_comment_idx=$_i
+		_comment_val="${_modified_args[_i]#-c=}"
+		_comment_eq=1
+		;;
 	esac
 	_i=$((_i + 1))
 done
@@ -885,6 +909,25 @@ if [[ $_body_idx -ge 0 && -n "$_body_val" ]]; then
 				_modified_args[_body_idx]="--body=${_new_body}"
 			else
 				_modified_args[_body_idx + 1]="$_new_body"
+			fi
+		fi
+	fi
+fi
+
+# --- issue close --comment/-c case ------------------------------------------
+# Keep the close comment on the native close invocation so GitHub performs one
+# comment-and-close mutation. Splitting it into `issue comment && issue close`
+# would make retry recovery ambiguous if the first write succeeded and closure
+# failed. This mirrors --body signing while preserving every close-only flag.
+if [[ $_comment_idx -ge 0 && -n "$_comment_val" ]]; then
+	if ! grep -Fqx '<!-- aidevops:sig -->' <<<"$_comment_val"; then
+		_sig_footer=$("$SIG_HELPER" footer --body "$_comment_val" 2>/dev/null || echo "")
+		if [[ -n "$_sig_footer" ]]; then
+			_new_comment="${_comment_val}${_sig_footer}"
+			if [[ $_comment_eq -eq 1 ]]; then
+				_modified_args[_comment_idx]="--comment=${_new_comment}"
+			else
+				_modified_args[_comment_idx + 1]="$_new_comment"
 			fi
 		fi
 	fi

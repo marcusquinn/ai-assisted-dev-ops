@@ -355,12 +355,17 @@ _gh_wrapper_auto_assignee() {
 	return 0
 }
 
-# t2115: Auto-append signature footer to --body/--body-file when missing.
+# t2115: Auto-append signature footer to --body/--body-file and issue-close
+# --comment/-c content when missing.
 # Populates global _GH_WRAPPER_SIG_MODIFIED_ARGS with the (possibly modified) args.
 # Callers should invoke _gh_wrapper_auto_sig "$@" then
 #   set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
 # Non-fatal: if signature generation fails, original args are preserved.
 _GH_WRAPPER_SIG_MODIFIED_ARGS=()
+_GH_WRAPPER_COMMENT_VAL=""
+_GH_WRAPPER_COMMENT_IDX=-1
+_GH_WRAPPER_COMMENT_IS_EQ=0
+_GH_WRAPPER_COMMENT_FLAG=""
 _gh_wrapper_abs_body_file_path() {
 	local body_file_path="$1"
 	[[ -z "$body_file_path" ]] && return 1
@@ -375,6 +380,63 @@ _gh_wrapper_abs_body_file_path() {
 	body_file_base=$(basename "$body_file_path") || return 1
 	body_file_dir=$(cd "$body_file_dir" 2>/dev/null && pwd) || return 1
 	printf '%s/%s\n' "$body_file_dir" "$body_file_base"
+	return 0
+}
+
+_gh_wrapper_collect_close_comment_arg() {
+	_GH_WRAPPER_COMMENT_VAL=""
+	_GH_WRAPPER_COMMENT_IDX=-1
+	_GH_WRAPPER_COMMENT_IS_EQ=0
+	_GH_WRAPPER_COMMENT_FLAG=""
+	local i=0
+	local -a args=("$@")
+	while [[ $i -lt ${#args[@]} ]]; do
+		case "${args[i]}" in
+		--comment)
+			_GH_WRAPPER_COMMENT_IDX=$i
+			_GH_WRAPPER_COMMENT_VAL="${args[i + 1]:-}"
+			_GH_WRAPPER_COMMENT_IS_EQ=0
+			_GH_WRAPPER_COMMENT_FLAG="--comment"
+			;;
+		--comment=*)
+			_GH_WRAPPER_COMMENT_IDX=$i
+			_GH_WRAPPER_COMMENT_VAL="${args[i]#--comment=}"
+			_GH_WRAPPER_COMMENT_IS_EQ=1
+			_GH_WRAPPER_COMMENT_FLAG="--comment"
+			;;
+		-c)
+			_GH_WRAPPER_COMMENT_IDX=$i
+			_GH_WRAPPER_COMMENT_VAL="${args[i + 1]:-}"
+			_GH_WRAPPER_COMMENT_IS_EQ=0
+			_GH_WRAPPER_COMMENT_FLAG="-c"
+			;;
+		-c=*)
+			_GH_WRAPPER_COMMENT_IDX=$i
+			_GH_WRAPPER_COMMENT_VAL="${args[i]#-c=}"
+			_GH_WRAPPER_COMMENT_IS_EQ=1
+			_GH_WRAPPER_COMMENT_FLAG="-c"
+			;;
+		esac
+		i=$((i + 1))
+	done
+	return 0
+}
+
+_gh_wrapper_auto_sig_close_comment() {
+	local sig_helper="$1"
+	shift
+	_gh_wrapper_collect_close_comment_arg "$@"
+	[[ $_GH_WRAPPER_COMMENT_IDX -ge 0 && -n "$_GH_WRAPPER_COMMENT_VAL" ]] || return 1
+	grep -Fqx '<!-- aidevops:sig -->' <<<"$_GH_WRAPPER_COMMENT_VAL" && return 0
+	local comment_sig_footer
+	comment_sig_footer=$("$sig_helper" footer --body "$_GH_WRAPPER_COMMENT_VAL" 2>/dev/null || echo "")
+	[[ -z "$comment_sig_footer" ]] && return 0
+	local new_comment="${_GH_WRAPPER_COMMENT_VAL}${comment_sig_footer}"
+	if [[ "$_GH_WRAPPER_COMMENT_IS_EQ" -eq 1 ]]; then
+		_GH_WRAPPER_SIG_MODIFIED_ARGS[_GH_WRAPPER_COMMENT_IDX]="${_GH_WRAPPER_COMMENT_FLAG}=${new_comment}"
+	else
+		_GH_WRAPPER_SIG_MODIFIED_ARGS[_GH_WRAPPER_COMMENT_IDX + 1]="$new_comment"
+	fi
 	return 0
 }
 
@@ -411,6 +473,13 @@ _gh_wrapper_auto_sig() {
 		esac
 		i=$((i + 1))
 	done
+
+	# gh issue close accepts comment text inline only. Keep its comment attached
+	# to the close request so a failed close cannot leave a separately-posted
+	# duplicate comment on retry.
+	if _gh_wrapper_auto_sig_close_comment "$sig_helper" "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"; then
+		return 0
+	fi
 
 	# Handle --body case
 	if [[ $body_idx -ge 0 && -n "$body_val" ]]; then

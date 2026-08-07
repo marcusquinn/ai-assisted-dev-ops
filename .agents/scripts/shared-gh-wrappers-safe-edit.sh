@@ -423,12 +423,18 @@ gh_pr_edit_safe() {
 
 #######################################
 # gh_issue_close_safe — close a GitHub issue with audit logging.
-# Records before/after state in gh-audit.log.
+# Records before/after state in gh-audit.log. Comment-bearing close calls are
+# signed before the native one-shot close so retries cannot double-post.
 # All arguments are forwarded to gh issue close.
 # Returns the exit code of the underlying gh command.
 #######################################
 gh_issue_close_safe() {
+	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_issue_close_safe 2>/dev/null || true
+	if command -v _gh_wrapper_auto_sig >/dev/null 2>&1; then
+		_gh_wrapper_auto_sig "$@"
+		set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
+	fi
 	local _num _repo _before _after
 	_num="$(_gh_extract_number_from_args "$@")"
 	_repo="$(_gh_extract_repo_from_args "$@")"

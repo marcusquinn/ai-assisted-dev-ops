@@ -4,8 +4,9 @@
 // ---------------------------------------------------------------------------
 // Signature footer gate (GH#12805, t1755, t2685, t2893)
 // ---------------------------------------------------------------------------
-// Enforces that every `gh issue create|comment` and `gh pr create|comment`
-// command posts a body ending with the canonical aidevops signature footer.
+// Enforces that every `gh issue create|comment`, comment-bearing `gh issue
+// close`, and `gh pr create|comment` command posts content ending with the
+// canonical aidevops signature footer.
 // Extracted from quality-hooks.mjs (t2685) to keep the main module below
 // the qlty file-complexity ratchet.
 //
@@ -127,17 +128,17 @@ function _generateSignature(helperPath, bodyValue, log, options = {}) {
  * @returns {boolean}
  */
 function _hasUnparseableBody(cmd) {
-  const bodyStart = cmd.search(/--body(?:-file)?(?:=|\s)/);
+  const bodyStart = cmd.search(/(?:--(?:body(?:-file)?|comment)|-c)(?:=|\s)/);
   const afterBody = bodyStart === -1 ? "" : cmd.slice(bodyStart);
   return (
-    /--body(?:-file)?\s*=?\s*(?:<<-?\s*['"]?\w+|<\()/.test(cmd) ||
+    /(?:--(?:body(?:-file)?|comment)|-c)\s*=?\s*(?:<<-?\s*['"]?\w+|<\()/.test(cmd) ||
     afterBody.includes("$(") ||
     /`[^`]*`/.test(afterBody)
   );
 }
 
 /**
- * Match the `--body "value"` / `--body 'value'` / `--body=QUOTED` forms.
+ * Match `--body` and issue-close `--comment`/`-c` value forms.
  * Returns { match, bodyValue, quote } on the first match, or null.
  *
  * Returning null is "no body arg matched" — distinct from a structured
@@ -148,9 +149,9 @@ function _hasUnparseableBody(cmd) {
  */
 function _matchBodyArg(cmd) {
   const patterns = [
-    { re: /--body\s+"((?:[^"\\]|\\.)*)"/, quote: '"' },
-    { re: /--body\s+'((?:[^'\\]|\\.)*)'/, quote: "'" },
-    { re: /--body=(['"])((?:(?!\1).)*)\1/, quote: null },
+    { re: /(?:--(?:body|comment)|-c)\s+"((?:[^"\\]|\\.)*)"/, quote: '"' },
+    { re: /(?:--(?:body|comment)|-c)\s+'((?:[^'\\]|\\.)*)'/, quote: "'" },
+    { re: /(?:--(?:body|comment)|-c)=(['"])((?:(?!\1).)*)\1/, quote: null },
   ];
   for (const pat of patterns) {
     const m = cmd.match(pat.re);
@@ -163,8 +164,8 @@ function _matchBodyArg(cmd) {
 }
 
 /**
- * Repair a `--body "VALUE"` form by rewriting the command with sig-augmented
- * body.
+ * Repair an inline content form by rewriting it with a signature-augmented
+ * body/comment.
  *
  * Returns `{ status: "ok", cmd }` on success or
  * `{ status: "fail", reason, detail }` when the helper failed or the
@@ -199,7 +200,8 @@ function _repairBodyArg(cmd, parsed, helperPath, log, options = {}) {
 
 /**
  * Attempt to append the canonical signature footer to the command's body.
- * Handles `--body "value"`, `--body=value`, and `--body-file path` forms.
+ * Handles `--body "value"`, `--body=value`, `--body-file path`, and
+ * issue-close `--comment`/`-c` forms.
  *
  * Returns a structured result so the throw site can name the specific
  * failure cause:

@@ -71,6 +71,16 @@ describe("isGhWriteCommand", () => {
     assert.equal(isGhWriteCommand('gh issue create --title "t" --body "x"'), true);
   });
 
+  test("detects comment-bearing gh issue close forms", () => {
+    assert.equal(isGhWriteCommand('gh issue close 1 --comment "x"'), true);
+    assert.equal(isGhWriteCommand('gh issue close 1 --comment="x"'), true);
+    assert.equal(isGhWriteCommand('gh issue close 1 -c "x"'), true);
+  });
+
+  test("leaves comment-free gh issue close outside content enforcement", () => {
+    assert.equal(isGhWriteCommand('gh issue close 1 --reason completed'), false);
+  });
+
   test("detects gh pr create", () => {
     assert.equal(isGhWriteCommand('gh pr create --title "t" --body "x"'), true);
   });
@@ -300,6 +310,31 @@ describe("tryRepairSignature", () => {
     assert.equal(out.status, "ok");
     assert.ok(out.cmd.includes(SIG_MARKER));
     assert.ok(out.cmd.includes("hello"));
+  });
+
+  test("repairs all issue-close comment forms without changing close flags", () => {
+    const dir = setupStubHelper();
+    const { log } = makeLogger();
+    for (const cmd of [
+      'gh issue close 1 --repo o/r --reason completed --comment "hello"',
+      'gh issue close 1 --repo o/r --reason completed --comment="hello"',
+      'gh issue close 1 --repo o/r --reason completed -c "hello"',
+    ]) {
+      const out = tryRepairSignature(cmd, dir, log);
+      assert.equal(out.status, "ok");
+      assert.ok(out.cmd.includes(SIG_MARKER));
+      assert.ok(out.cmd.includes("--reason completed"));
+    }
+  });
+
+  test("repairs a chained issue close without splitting its one-shot mutation", () => {
+    const dir = setupStubHelper();
+    const { log } = makeLogger();
+    const cmd = 'git status --short && gh issue close 1 --repo o/r --comment "hello"';
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.equal(out.status, "ok");
+    assert.ok(out.cmd.startsWith("git status --short && gh issue close"));
+    assert.ok(out.cmd.includes(SIG_MARKER));
   });
 
   test("appends sig to --body-file on disk", () => {
@@ -833,6 +868,15 @@ describe("tryRepairSignature structured failures (t2893)", () => {
     const dir = setupStubHelper();
     const { log } = makeLogger();
     const cmd = 'gh issue comment 1 --body-file <(echo "dynamic")';
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.equal(out.status, "fail");
+    assert.equal(out.reason, FAIL_REASON.UNPARSEABLE_BODY);
+  });
+
+  test("UNPARSEABLE_BODY: command-substitution issue-close comment", () => {
+    const dir = setupStubHelper();
+    const { log } = makeLogger();
+    const cmd = 'gh issue close 1 --comment "$(build-comment)"';
     const out = tryRepairSignature(cmd, dir, log);
     assert.equal(out.status, "fail");
     assert.equal(out.reason, FAIL_REASON.UNPARSEABLE_BODY);
