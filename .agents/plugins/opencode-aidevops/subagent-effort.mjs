@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { existsSync, readFileSync } from "fs";
+import { withUnambiguousProviderFallbacks } from "./model-routing-reasoning.mjs";
 import { createSubagentEffortHandlers } from "./subagent-effort-handlers.mjs";
 
 const VARIANT_RANK = {
@@ -49,22 +50,6 @@ export function normalizeEffortTier(value) {
 function normalizeVariant(value) {
   const variant = String(value || "").trim().toLowerCase();
   return variant === "default" ? "" : variant;
-}
-
-function withUnambiguousProviderFallbacks(policy) {
-  const variantsByProvider = new Map();
-  for (const [model, variant] of Object.entries(policy)) {
-    const separator = model.indexOf("/");
-    if (separator <= 0) continue;
-    const provider = model.slice(0, separator);
-    const variants = variantsByProvider.get(provider) || new Set();
-    variants.add(variant);
-    variantsByProvider.set(provider, variants);
-  }
-  const fallbacks = [...variantsByProvider]
-    .filter(([provider, variants]) => !Object.hasOwn(policy, provider) && variants.size === 1)
-    .map(([provider, variants]) => [provider, [...variants][0]]);
-  return {...policy, ...Object.fromEntries(fallbacks)};
 }
 
 export function loadTierReasoningPolicies(paths) {

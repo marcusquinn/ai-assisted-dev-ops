@@ -13,6 +13,7 @@ import {
   routingProfile,
   selectConnectedRoutingCandidate,
 } from "../model-routing.mjs";
+import { withUnambiguousProviderFallbacks } from "../model-routing-reasoning.mjs";
 import {
   applyAgentRoutingProfile,
   registerAgentRoutingIntent,
@@ -138,6 +139,18 @@ test("connected provider state selects the first usable same-tier candidate", ()
     selectConnectedRoutingCandidate(routing, "standard", providerState),
     "anthropic/fallback",
   );
+});
+
+test("conversation routing derives only unambiguous provider fallbacks", () => {
+  assert.deepEqual(
+    withUnambiguousProviderFallbacks({"openai/model-a": "high"}),
+    {"openai/model-a": "high", openai: "high"},
+  );
+  const ambiguous = withUnambiguousProviderFallbacks({
+    "openai/model-a": "high",
+    "openai/model-b": "max",
+  });
+  assert.equal(Object.hasOwn(ambiguous, "openai"), false);
 });
 
 test("agent routing metadata defers tier selection while preserving explicit model pins", () => {
