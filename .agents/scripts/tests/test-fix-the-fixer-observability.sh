@@ -112,7 +112,9 @@ DETECTOR_SH="$SCRIPTS_DIR/pulse-fix-the-fixer-detector.sh"
 DEDUP_SH="$SCRIPTS_DIR/dispatch-dedup-helper.sh"
 RUNTIME_SH="$SCRIPTS_DIR/headless-runtime-helper.sh"
 LIFECYCLE_SH="$SCRIPTS_DIR/worker-lifecycle-common.sh"
+LIFECYCLE_VERBOSE_SH="$SCRIPTS_DIR/worker-lifecycle-verbose.sh"
 WRAPPER_SH="$SCRIPTS_DIR/pulse-wrapper.sh"
+WRAPPER_CYCLE_GATES_SH="$SCRIPTS_DIR/pulse-wrapper-cycle-gates.sh"
 
 # Capture all source files up front via cat — sourcing any of these helpers
 # in later tests may inherit set -e / pipefail / readonly globals that
@@ -121,12 +123,16 @@ detector_src=""
 dedup_src=""
 runtime_src=""
 lifecycle_src=""
+lifecycle_verbose_src=""
 wrapper_src=""
-[[ -r "$DETECTOR_SH" ]]  && detector_src="$(cat "$DETECTOR_SH")"
-[[ -r "$DEDUP_SH" ]]     && dedup_src="$(cat "$DEDUP_SH")"
-[[ -r "$RUNTIME_SH" ]]   && runtime_src="$(cat "$RUNTIME_SH")"
+wrapper_cycle_gates_src=""
+[[ -r "$DETECTOR_SH" ]] && detector_src="$(cat "$DETECTOR_SH")"
+[[ -r "$DEDUP_SH" ]] && dedup_src="$(cat "$DEDUP_SH")"
+[[ -r "$RUNTIME_SH" ]] && runtime_src="$(cat "$RUNTIME_SH")"
 [[ -r "$LIFECYCLE_SH" ]] && lifecycle_src="$(cat "$LIFECYCLE_SH")"
-[[ -r "$WRAPPER_SH" ]]   && wrapper_src="$(cat "$WRAPPER_SH")"
+[[ -r "$LIFECYCLE_VERBOSE_SH" ]] && lifecycle_verbose_src="$(cat "$LIFECYCLE_VERBOSE_SH")"
+[[ -r "$WRAPPER_SH" ]] && wrapper_src="$(cat "$WRAPPER_SH")"
+[[ -r "$WRAPPER_CYCLE_GATES_SH" ]] && wrapper_cycle_gates_src="$(cat "$WRAPPER_CYCLE_GATES_SH")"
 
 echo "${TEST_BLUE}== test-fix-the-fixer-observability.sh (t3077) ==${TEST_NC}"
 echo "  repo: $REPO_ROOT"
@@ -171,14 +177,16 @@ assert_contains "runtime calls verbose checkpoint at worker_started" \
 	"_emit_verbose_checkpoint worker_started" "$runtime_src"
 
 # ---------------------------------------------------------------------------
-# Test 5: worker-lifecycle-common.sh defines the verbose lifecycle helpers.
+# Test 5: worker-lifecycle-common.sh sources the verbose lifecycle helpers.
 # ---------------------------------------------------------------------------
+assert_contains "lifecycle sources verbose checkpoint module" \
+	"worker-lifecycle-verbose.sh" "$lifecycle_src"
 assert_contains "lifecycle defines _emit_verbose_checkpoint" \
-	"_emit_verbose_checkpoint()" "$lifecycle_src"
+	"_emit_verbose_checkpoint()" "$lifecycle_verbose_src"
 assert_contains "lifecycle defines _start_verbose_lifecycle_watcher" \
-	"_start_verbose_lifecycle_watcher()" "$lifecycle_src"
+	"_start_verbose_lifecycle_watcher()" "$lifecycle_verbose_src"
 assert_contains "lifecycle defines _cleanup_verbose_lifecycle_watcher" \
-	"_cleanup_verbose_lifecycle_watcher()" "$lifecycle_src"
+	"_cleanup_verbose_lifecycle_watcher()" "$lifecycle_verbose_src"
 
 # ---------------------------------------------------------------------------
 # Test 6 + 7: _emit_verbose_checkpoint is opt-in (no-op without env flag,
@@ -189,7 +197,7 @@ test_emit_optin() {
 	source "$LIFECYCLE_SH"
 	# Off-state: no output.
 	local out_off
-	out_off=$( (AIDEVOPS_VERBOSE_LIFECYCLE=0 _emit_verbose_checkpoint test_event "k=v") 2>&1 )
+	out_off=$( (AIDEVOPS_VERBOSE_LIFECYCLE=0 _emit_verbose_checkpoint test_event "k=v") 2>&1)
 	if [[ -z "$out_off" ]]; then
 		echo "${TEST_GREEN}PASS${TEST_NC}: _emit_verbose_checkpoint silent when AIDEVOPS_VERBOSE_LIFECYCLE=0"
 	else
@@ -201,7 +209,7 @@ test_emit_optin() {
 
 	# On-state: structured emit on stderr containing event token.
 	local out_on
-	out_on=$( (AIDEVOPS_VERBOSE_LIFECYCLE=1 _emit_verbose_checkpoint test_event "k=v") 2>&1 )
+	out_on=$( (AIDEVOPS_VERBOSE_LIFECYCLE=1 _emit_verbose_checkpoint test_event "k=v") 2>&1)
 	assert_contains "_emit_verbose_checkpoint emits event token when ON" "test_event" "$out_on"
 	assert_contains "_emit_verbose_checkpoint emits lifecycle prefix when ON" "[lifecycle]" "$out_on"
 	assert_contains "_emit_verbose_checkpoint emits supplied metadata when ON" "k=v" "$out_on"
@@ -253,11 +261,11 @@ test_preflight_sentinel
 # Test 10: pulse-wrapper.sh wires the detector helper.
 # ---------------------------------------------------------------------------
 assert_contains "wrapper defines _pulse_run_fix_the_fixer_detector_if_stale" \
-	"_pulse_run_fix_the_fixer_detector_if_stale()" "$wrapper_src"
+	"_pulse_run_fix_the_fixer_detector_if_stale()" "$wrapper_cycle_gates_src"
 assert_contains "wrapper main calls the detector" \
 	"_pulse_run_fix_the_fixer_detector_if_stale" "$wrapper_src"
 assert_contains "wrapper sentinel uses canonical path token" \
-	"pulse-fix-the-fixer-last-run" "$wrapper_src"
+	"pulse-fix-the-fixer-last-run" "$wrapper_cycle_gates_src"
 assert_contains "wrapper default cadence is 3600s (hourly)" \
 	"3600" "$wrapper_src"
 
