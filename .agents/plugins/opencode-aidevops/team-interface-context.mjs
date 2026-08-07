@@ -100,13 +100,7 @@ export function appendConversationSystemContext(output, conversation) {
   return 1;
 }
 
-export async function applyConversationRootVariant(
-  input,
-  output,
-  conversation,
-  {client, resolveVariant, tierReasoning},
-) {
-  if (!conversation) return 0;
+async function loadRootSession(input, client) {
   const sessionID = input?.message?.sessionID || input?.sessionID;
   if (!sessionID || typeof client?.session?.get !== "function") {
     throw new ConversationOverlayError("runtime_incompatible", "OpenCode root-session metadata is unavailable");
@@ -116,19 +110,27 @@ export async function applyConversationRootVariant(
   if (!session || session.parentID) {
     throw new ConversationOverlayError("subagent_forbidden", "conversation overlays cannot route nested sessions");
   }
+}
+
+function validateRequestedAgent(input, conversation) {
   const requestedAgent = input?.message?.agent;
   if (requestedAgent && requestedAgent !== conversation.overlay.agent.display_name) {
     throw new ConversationOverlayError("agent_mismatch", "root session selected a different agent profile");
   }
+}
+
+function resolveConversationVariant(input, conversation, resolveVariant, tierReasoning) {
   const providerID = input?.provider?.id || input?.model?.providerID || "";
   const modelID = input?.model?.id || input?.model?.modelID || "";
-  const variant = resolveVariant(
+  return resolveVariant(
     conversation.overlay.workload_tier,
     providerID,
     modelID,
     tierReasoning,
   );
-  if (!variant) return 0;
+}
+
+function applyResolvedVariant(output, variant) {
   if (!output || typeof output !== "object") {
     throw new ConversationOverlayError("runtime_incompatible", "OpenCode chat parameter output is unavailable");
   }
@@ -137,6 +139,20 @@ export async function applyConversationRootVariant(
   if (Object.hasOwn(output.options, "reasoning_effort")) {
     output.options.reasoning_effort = variant;
   }
+}
+
+export async function applyConversationRootVariant(
+  input,
+  output,
+  conversation,
+  {client, resolveVariant, tierReasoning},
+) {
+  if (!conversation) return 0;
+  await loadRootSession(input, client);
+  validateRequestedAgent(input, conversation);
+  const variant = resolveConversationVariant(input, conversation, resolveVariant, tierReasoning);
+  if (!variant) return 0;
+  applyResolvedVariant(output, variant);
   return 1;
 }
 

@@ -19,7 +19,6 @@ import {
 } from "./quality-hooks-secret-read.mjs";
 import { checkSecretReadWithApproval } from "./source-access-approval.mjs";
 import { checkResearchStagingAccess } from "./research-staging-guard.mjs";
-import { enforceConversationPathAccess } from "./team-interface-path-guard.mjs";
 import {
   bindActiveScriptsDir,
   checkCanonicalGitSafetyGate,
@@ -316,7 +315,6 @@ function handleToolBefore(ctx, log, input, output) {
     });
   }
 
-  enforceConversationPathAccess(input.tool, output.args || {}, ctx.conversation);
   checkSecretReadWithApproval({
     tool: input.tool,
     args: output.args || {},
@@ -389,7 +387,7 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
 }
 
 export function createQualityHooks(deps) {
-  const { scriptsDir, logsDir, continuationGuard, conversation } = deps;
+  const { scriptsDir, logsDir, continuationGuard } = deps;
   const activeScriptsDir = deps.activeScriptsDir ?? scriptsDir;
   const activeScriptsDirBinding = bindActiveScriptsDir(activeScriptsDir, scriptsDir);
   const qualityLogPath = join(logsDir, "quality-hooks.log");
@@ -413,7 +411,6 @@ export function createQualityHooks(deps) {
     detailLogPath,
     detailMaxBytes,
     continuationGuard,
-    conversation,
     resolveSessionModel: typeof deps.resolveSessionModel === "function"
       ? deps.resolveSessionModel
       : () => "",

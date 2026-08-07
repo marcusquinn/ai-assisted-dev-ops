@@ -318,7 +318,6 @@ export async function AidevopsPlugin({ directory, client }) {
     scriptsDir: SCRIPTS_DIR,
     logsDir: LOGS_DIR,
     continuationGuard,
-    conversation,
     resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId),
   });
 
