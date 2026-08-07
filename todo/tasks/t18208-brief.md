@@ -64,10 +64,10 @@ writes, implement provider approval, alter persistent user config, or release.
 
 - **Decision:** Skipped
 - **Rationale:** Schema, generator, launcher, final plugin guard, and effective-config/runtime tests must be reviewed as one security boundary.
-- **Status:** the accepted review repairs are replayed onto PR #29673's preserved head with current `origin/main` integrated; the PR remains closed only until the verified head is fast-forwarded and reopened
+- **Status:** merged through PR #29673 as `670d77b074928d70ef07e62055c8f434c7258db1`; post-merge verification repairs merged through PRs #29689 and #29687
 - **Freshness evidence:** Roster generator/schema, OpenCode launcher/config generator, plugin config mutation order, research-only policy, installed OpenCode 1.18.9 behavior, and collision searches were refreshed on 2026-08-06.
-- **Verification run:** Focused, broad, installed-runtime, changed-file lint, and both Qlty gates pass at replayed code checkpoint `72990d372`; exact-head PR review and CI lifecycle gates remain.
-- **Stale-assumption warning:** Recheck installed OpenCode config/ACP behavior and plugin hook contracts if runtime or launcher source advances before merge.
+- **Verification run:** Focused, broad, installed-runtime, changed-file lint, Qlty 49/49, exact-head review, remote CI, and merged-main integration gates pass.
+- **Stale-assumption warning:** Recheck installed OpenCode config/ACP behavior and plugin hook contracts before any downstream authority or provider integration extends this boundary.
 
 ## How (Approach)
 
@@ -173,7 +173,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 
 - [x] Schema/generator/plugin/launcher focused tests pass.
 - [x] WIP commit created before real runtime/broad gates: `wip: add restricted OpenCode conversation overlays`.
-- [x] Effective OpenCode 1.18.9 config and bounded ACP startup evidence is recorded; exact-head PR review remains a lifecycle gate.
+- [x] Effective OpenCode 1.18.9 config and bounded ACP startup evidence is recorded; exact-head PR review and merge gates passed.
 
 ### Safety-Stop Recovery
 
@@ -181,11 +181,11 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 - **Preserved user directions:** Continue through the no-release full loop; never widen authority, persist provider secrets, or modify canonical user config.
 - **Trigger and evidence:** not triggered.
 - **Completed and verified:** schema, generator, source binding, launcher, plugin mutation order, tool/permission isolation, workload variant, bounded context, automated regressions, documentation, and installed-runtime smoke.
-- **Remaining acceptance criteria:** exact-head PR review/merge, integrated Milestone 2 validation, and parent bookkeeping.
+- **Remaining acceptance criteria:** none for F2.5; integrated Milestone 2 validation now passes and parent bookkeeping is handled by the final t18201 closeout PR.
 - **Unsafe route not to repeat:** Do not rely on `OPENCODE_CONFIG_CONTENT` alone, select a persistent primary without final denial, permit task/network tools, store model IDs, concatenate raw prompts, or accept arbitrary launch args/env.
-- **Next safe route:** fast-forward the original PR branch to the replayed exact head, reopen PR #29673, inspect its exact-head review/CI state once, and invoke the managed merge gate once.
-- **Resume condition:** local/remote PR head and current base are verified before the managed push or merge side effect.
-- **Owner and status:** maintainer-owned interactive repair; verified locally with PR #29673 pending fast-forward, reopen, and exact-head lifecycle gates.
+- **Next safe route:** preserve the merged proof and continue only through separately scoped downstream mission features.
+- **Resume condition:** a downstream brief verifies current roster, plugin, launcher, and installed-runtime contracts before extending conversational authority.
+- **Owner and status:** maintainer-owned interactive repair; merged and verified without release.
 
 ### Files Scope
 
@@ -251,7 +251,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 
 ## Completion Evidence
 
-- **Pull request:** [#29673](https://github.com/marcusquinn/aidevops/pull/29673) remains closed unmerged with changes requested; replayed code checkpoint `72990d372` preserves original remote head `695f97fd4`, includes current `origin/main`, and is ready for a normal fast-forward update and reopen.
+- **Pull request:** [#29673](https://github.com/marcusquinn/aidevops/pull/29673) merged as `670d77b074928d70ef07e62055c8f434c7258db1` after the accepted security repairs, exact-head review, and required CI gates passed.
 - **Implementation:** the closed schema, canonical contract/generator, bounded
   plugin context, workload routing, final config isolation, effective-config
   verifier, and fixed-argv launcher are implemented in the scoped paths above.
@@ -263,16 +263,25 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
   project/worktree cwd validation, credential-safe local path enforcement, and
   a minimal conversation-only hook surface address all six accepted findings.
 - **Broad verification:** team-interface, provider, runtime, compatibility, and
-  full plugin suites pass locally at code checkpoint `72990d372`; the full
-  plugin suite reports 565 passing tests.
+  full plugin suites pass from the merged-main tree; the expanded full plugin
+  suite reports 595 passing tests.
 - **Runtime verification:** isolated OpenCode 1.18.9 `debug config` excludes
   persistent home/project canaries and verifies the generated restriction
   profile; an actual ACP process remains healthy for the bounded startup window
   without provider traffic before test termination.
 - **Quality:** JavaScript/Bash/Python syntax checks, ShellCheck, secretlint,
-  Markdown, and changed-file lint pass at code checkpoint `72990d372`. Qlty
-  reports base/head parity at 49 smells with delta zero, and 0 smells across 8
-  eligible new files.
+  Markdown, and changed-file lint pass. PR #29689 restored Qlty to 49/49
+  without increasing the threshold.
+- **Post-merge verification:** issue #29686 identified isolation-sensitive test
+  assumptions after merge; PR #29687 repaired the tests, passed exact-head
+  review and CI, and established the merged integration baseline at
+  `0c817c462fc87d583c89a6ab768807daab5892df`.
+- **Integrated validation:** overlay/roster, 14-case restricted profile,
+  16-case launcher, 12-case server launcher, workload-tier, subagent guard,
+  installed OpenCode 1.18.9, and full 595-test plugin suites pass from the
+  merged integration baseline.
+- **Publication:** no provider write, persistent user-config mutation,
+  deployment, publication, or release was requested or performed.
 - **Environment note:** `bun` is unavailable on the host. The first push used
   the repository's narrow `AIDEVOPS_PREPUSH_REPO_VERIFY=0` bypass only after the
   relevant checks above passed.
@@ -298,7 +307,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 ## Dependencies
 
 - **Blocked by:** none; F2.2 / #29543 is closed through PR #29605.
-- **Blocks:** Milestone 2 integrated validation, F4.5 owner-reviewed Buzz onboarding, F6.2 conversational delegation, and F6.6 project-scoped Buzz channels.
+- **Unblocks:** Milestone 2 completion and the F2.5 dependency edge for F4.5, F6.2, and F6.6; those features retain their remaining independent dependencies and briefing gates.
 - **External:** installed OpenCode is used only for local bounded effective-config/startup verification; no provider credential, publication, release, or deployment is required.
 
 ## Estimate
